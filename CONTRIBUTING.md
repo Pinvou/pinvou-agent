@@ -28,6 +28,10 @@ merge queue validates its combined tree against the latest `main`; manually reba
 again only to resolve a real conflict or when the queue reports an integration
 failure that requires a branch change.
 
+When resolving conflicts, preserve compatible functionality and user changes from
+both sides. Do not choose between behaviorally different alternatives without
+explaining the options and their impact to the user.
+
 ## DCO
 
 Every human-authored commit must include a valid `Signed-off-by`:
@@ -36,21 +40,11 @@ Every human-authored commit must include a valid `Signed-off-by`:
 git commit -s
 ```
 
-Use `--signoff` when amending or rebasing existing commits. See [DCO.md](DCO.md). CI rejects unsigned human commits; trusted Dependabot and GitHub Actions bot commits are exempt.
+Use `--signoff` when amending or rebasing existing commits. See [DCO.md](DCO.md). CI rejects unsigned human commits; trusted Dependabot and GitHub Actions bot commits and merge commits (more than one parent) are exempt.
 
 ## Where changes belong
 
-Pinvou Agent uses [CodeWhale](https://github.com/Pinvou/CodeWhale) as its agent engine. Do not reimplement engine capabilities in the desktop layer.
-
-| Goal | Location |
-|---|---|
-| Add a domain agent or tool bundle | A `SKILL.md` package |
-| Connect an external API | An independent MCP server or connector |
-| Change model guidance | Bundle `instructions.md` |
-| Change desktop UI, Tauri integration, or runtime configuration | `pinvou3-app/` |
-| Fix a reusable engine issue | CodeWhale, upstream first |
-
-CodeWhale changes must follow the fork boundary in [AGENTS.md](AGENTS.md) and [`docs/fork-policy.md`](docs/fork-policy.md), including the required same-PR documentation, fingerprints, and tests.
+Pinvou Agent uses [CodeWhale](https://github.com/Pinvou/CodeWhale) as its agent engine. Do not reimplement engine capabilities in the desktop layer. The extension-boundary table is defined once in [AGENTS.md](AGENTS.md) §2; CodeWhale changes must follow it and [`docs/fork-policy.md`](docs/fork-policy.md), including the required same-PR documentation, fingerprints, and tests.
 
 ## Commit messages
 
@@ -79,6 +73,12 @@ npm --prefix pinvou3-app run build:ui
 npm --prefix pinvou3-app test
 cargo fmt --manifest-path pinvou3-app/src-tauri/Cargo.toml -- --check
 cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
+```
+
+Optionally, enable the local commit-msg hook to catch commit-message format issues before pushing:
+
+```bash
+git config core.hooksPath .githooks
 ```
 
 Run additional frontend, Relay, Rust, CodeWhale, or platform checks when relevant. The workflows in [`.github/workflows/`](.github/workflows/) are the source of truth for automated gates. Disclose checks that could not be run locally.

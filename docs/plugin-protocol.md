@@ -52,7 +52,7 @@
 ```
 my-plugin.zip
 ├── plugin.json                     ← 插件清单（权威；缺省则走结构回退，§5.2）
-├── mcp/<server-id>/                ← MCP server（脚本 + 可选 manifest.json）
+├── mcp/                            ← MCP server（扁平单目录；v1 一包一 server）
 │   ├── manifest.json
 │   └── server.py
 ├── skills/<skill-name>/            ← SKILL.md 目录（可多个）
@@ -90,10 +90,12 @@ my-plugin.zip
   "license": "MIT",
   "homepage": "https://…",
 
-  // 组件声明（目录引用，导入时校验存在）
+  // 组件声明（目录引用，导入时校验存在；v1 已实施：mcp_servers 与 skills，
+  // 其中 MCP 组件 dir 必须精确为 "mcp"——一包一 server，见 §5.1 与
+  // plugin-package-spec.md §2；多 server 为本协议 v2 草案方向）
   "components": {
     "mcp_servers": [
-      { "id": "weather", "dir": "mcp/weather" }
+      { "id": "weather", "dir": "mcp" }
     ],
     "skills": [
       { "id": "weather-interpret", "dir": "skills/weather-interpret" }
@@ -103,18 +105,19 @@ my-plugin.zip
     ]
   },
 
-  // 凭据声明（收敛进 BundleInfo.credentials；本体只进 keyring）
+  // ⏳ 凭据声明（未实施：v1 解析落入 extra 不消费；凭据仍声明在
+  // mcp/manifest.json 的 ToolManifest 通道，见 plugin-package-spec.md §6）
   "credentials": [
     { "key": "AMAP_KEY", "target": "env", "required": true },
     { "key": "QCC_TOKEN", "target": "bearer", "required": false }
   ],
 
-  // 配置弹窗字段（收敛进 config_fields；label/placeholder 留前端 i18n overlay）
+  // ⏳ 配置弹窗字段（未实施，同上）
   "config_fields": [
     { "key": "AMAP_KEY", "required": true, "target": "env", "secret": true }
   ],
 
-  // 依赖软声明（进 readiness 与依赖阶段；v1 仅提示/预检，不强制安装）
+  // ⏳ 依赖软声明（未实施：仅存 extra，无 readiness/依赖阶段消费）
   "dependencies": {
     "runtimes": ["python3"],
     "pip": ["requests"]
@@ -129,9 +132,9 @@ my-plugin.zip
 | `id` | `BundleRecord.id` + 目录名 | 复用 `is_safe_skill_name` 泛化为 `is_safe_component_id` |
 | `components.mcp_servers[].id` | `BundleInfo.mcp_servers` | 对应 `ToolManifest.id`；其 `manifest.json` 仍是该 server 的启动真相源 |
 | `components.skills[].id` | `BundleInfo.skills` | = SKILL.md frontmatter `name`，导入时校验一致 |
-| `components.workflows[].id` | `BundleInfo.workflows`（新增） | = `workflow.json` 的 `id`，导入时校验一致 |
-| `credentials` / `config_fields` | `BundleInfo.credentials` / `config_fields` | 复用 `bundle::tool_credentials` / `tool_config_fields` 的收敛口径 |
-| `dependencies` | `BundleRecord.extra`（v1 只记录） | 后续收编 `assets/pip/` 时进依赖阶段 |
+| `components.workflows[].id` | `BundleInfo.workflows`（新增） | = `workflow.json` 的 `id`，导入时校验一致；workflows 通道模块待建（v2，见 §8） |
+| `credentials` / `config_fields` | `BundleInfo.credentials` / `config_fields` | ⏳ 设计去向；v1 落 `extra` 不消费，实际凭据收敛仍走 `bundle::tool_credentials` / `tool_config_fields`（ToolManifest 通道） |
+| `dependencies` | `BundleRecord.extra`（v1 只记录） | ⏳ 后续收编 `assets/pip/` 时进依赖阶段 |
 
 前向兼容纪律（与 `store.rs` 同款）：`plugin.json` 解析**不用**
 `deny_unknown_fields`，未知字段经 flatten 保留；`manifest_version` 高于当前支持
@@ -170,11 +173,12 @@ detect_plugin(zip):
       return Bare(components, kind)           # 生成派生 manifest 落盘
 ```
 
-结构回退的 MCP 识别规则（新增，保守）：
+结构回退的 MCP 识别规则（与实现对齐）：
 
-- 路径命中 `mcp/**/manifest.json` 且该 JSON 具备 `command` 或 `servers` 字段 →
-  视为 MCP server，server id 取 manifest `id`。
-- 直接根级 `manifest.json` 且含 `command`/`servers` → 单 server MCP 包。
+- 精确路径 `mcp/manifest.json` 且能解析、`id` 非空 → 视为 MCP server（不要求
+  `command`/`servers` 字段）。
+- zip 内**任意其他位置**的 `manifest.json` 能解析出 `ToolManifest`、`id` 非空且
+  具备 `command` 或 `servers` 字段 → 视为 MCP server，规范化入 `mcp/`。
 
 > 现状注记（六轮评审补）：当前实现（`plugin_import.rs::detect_components`）
 > 只识别 `mcp_servers` / `skills` 两类组件（含裸技能/裸 MCP 回退），伪代码中的
@@ -248,17 +252,18 @@ workflows 非空                              → Workflow
 ```
 ~/.pinvou3/bundles/<id>/
 ├── plugin.json                    ← 规范化插件清单（自描述；裸包导入时由识别层生成）
-├── mcp/<server-id>/               ← MCP server 脚本 + manifest.json（同现状）
+├── mcp/                           ← MCP server 脚本 + manifest.json（扁平单目录，同现状）
 ├── skills/<skill-name>/           ← SKILL.md 目录（同现状）
 ├── workflows/<workflow-id>/       ← workflow.json + scripts/  ← 新增
-└── archive.zip                    ← 上传原件存档（repair/update 用，§4 已预留）
+└── archive.zip                    ← 上传原件存档（repair/update 用，§4 已预留）⏳ 未实施
 ```
 
 落盘规则：
 
 1. 解包到 `bundles/<id>/.stage/` → 校验（§9）→ 原子 rename 到 `bundles/<id>/`
    （与技能/MCP 现有 staged + rename 同范式）。
-2. `archive.zip` 存**原始字节**（非二次压缩），`content_fingerprint` 覆盖
+2. `archive.zip` 存**原始字节**（非二次压缩）——⏳ 未实施：当前导入管线不写
+   archive.zip，repair/update 场景需用户重新提供原件；`content_fingerprint` 覆盖
    解包后的内容目录（`skill_marketplace::dir_fingerprint` 同口径，跳过隐藏/
    标记文件）。
 3. 登记 `BundleRecord { id, source: Upload("<zip名>"), installed: true,
@@ -277,9 +282,9 @@ workflows 非空                              → Workflow
 
 | 组件 | 供给通道（现状复用） | 说明 |
 |---|---|---|
-| `mcp_servers` | `MarketplaceManager::available_tools` 读 `bundles/<id>/mcp/manifest.json` → 写 `mcp.json` 供底座 FileSource | 上传 MCP 首次进入 `available_tools` 的新布局扫描路径（已就位，§13 未提交改动含旧布局退役） |
+| `mcp_servers` | `MarketplaceManager::available_tools` 读 `bundles/<id>/mcp/manifest.json` → 写 `mcp.json` 供底座 FileSource | 上传 MCP 首次进入 `available_tools` 的新布局扫描路径（旧 `bundle/mcp-servers/` 布局退役已合入 main） |
 | `skills` | `SkillMarketplaceManager::find_skill_dir` + 会话组合目录物化（`skill_materialization`） | 纯 Skill 插件与现状上传技能同构 |
-| `workflows` | `workflow_registry::discover` 扫描 `bundle/workflow/` | **需新增**：`discover` 增补 `bundles/<id>/workflows/` 来源，或导入时把 workflow 目录同步到 `bundle/workflow/`（见 §12 决策 D） |
+| `workflows` | `workflow_registry::discover` 扫描 `bundle/workflow/` | ⏳ 模块待建（v2）：`discover` 增补 `bundles/<id>/workflows/` 来源，或导入时把 workflow 目录同步到 `bundle/workflow/`（见 §12 决策 D） |
 
 查询层 `BundleRegistry::list_bundles` 汇总上传插件源，商店卡片由后端 `BundleInfo`
 合成（前端继续退化为动作渲染器）。
@@ -320,7 +325,7 @@ workflows 非空                              → Workflow
 2. 预检     —— schema（空包拒收）/ 穿越 / symlink / 体积 / 名字 / has_executables 确认
 3. 凭据     —— 按 credentials[].target 入 keyring（v1 上传后按需在 install/configure 阶段收集）
 4. 依赖     —— 记录 dependencies 进 extra；pip 安装延后到 install（同现有 MCP 管线）
-5. 登记     —— staged 解包 → 原子 rename → 写 BundleRecord + archive.zip
+5. 登记     —— staged 解包 → 原子 rename → 写 BundleRecord（archive.zip 存档 ⏳ 未实施）
 6. 供给     —— 重算 mcp.json（含 MCP）/ 会话技能物化（含 skills）/ workflow 发现（含 workflows）
 7. 热刷     —— refresh_live_sessions_skills + execpolicy ruleset（含脚本包的 deny 规则）
 ```
@@ -344,7 +349,7 @@ workflows 非空                              → Workflow
 |---|---|---|
 | `mcp_servers` | `disallowed_tools` 按 `mcp_{server}_*` 排除 | ✅ 现状 |
 | `skills` | 物化排除 + execpolicy deny（带脚本时按脚本×解释器生成 typed Deny） | ✅ 现状 |
-| `workflows` | **新增**：`workflow_registry::discover` 按禁用包过滤 scenario 解析 | ⛔ 待定，见 §12 D |
+| `workflows` | **新增**：`workflow_registry::discover` 按禁用包过滤 scenario 解析 | ⛔ 模块待建（v2），见 §12 D |
 | `commands`/`hooks` | execpolicy（预留） | ⛔ §12 |
 
 纪律不变：禁用体验可走供给层，禁用保证必须在执行层（`capability-governance.md` §5.1）。
@@ -382,10 +387,11 @@ workflows 非空                              → Workflow
 - `bundle.rs` 的 `derive_bundle_kind` / `BundleKind` / `BundleInfo` 按 §6 扩展，
   是唯二的结构性改动点（外加 `BundleRegistry::list_bundles` 增补上传插件源）。
 - `skill_marketplace.rs` 的 zip 防护（`enclosed_name` / symlink / 大小 / rank）
-  抽为共享 `plugin_import` 模块复用，技能导入退化为「只含 skills 组件的插件导入」。
-- 当前工作区未提交的改动（旧 `bundle/mcp-servers/` 布局退役、`available_tools`
-  只读新布局）正好是 MCP 组件进入统一读取路径的前置，实施插件协议时应基于
-  该改动之上，避免重新引入旧布局回退。
+  抽为共享 `plugin_import` 模块复用，技能导入收编为「只含 skills 组件的插件导入」
+  （⏳ 待办：现状仅 `read_zip_entry_bounded` 已共享，旧技能导入命令仍走
+  `SkillMarketplaceManager::import_package` 旧管线，见 §10 现状注记）。
+- 旧 `bundle/mcp-servers/` 布局退役与 `available_tools` 只读新布局已合入 main
+  （`marketplace/mod.rs`），是 MCP 组件进入统一读取路径的前置。
 
 ---
 
@@ -400,8 +406,8 @@ workflows 非空                              → Workflow
 | 层级 | 触发 | 通道 | v1 |
 |---|---|---|---|
 | 包级下载 | 商店输入 URL / 远程分发 | `import_plugin_package_from_url` → 下载 → 复用 §10 管线 | ⏳ 未实现（草案） |
-| 组件级远程资源 | `plugin.json` 声明 `source:"remote"` | 安装时 AssetManager 下载并验 SHA-256 | ✅（CLI 二进制）|
-| 依赖级下载 | `dependencies.pip` / `runtimes` | 现有 pip / runtime 管线（§4，软声明） | ✅ |
+| 组件级远程资源 | `plugin.json` 声明 `source:"remote"` | 安装时 AssetManager 下载并验 SHA-256 | ⏳（仅内置 CLI 走该管线；plugin.json 声明式触发为草案）|
+| 依赖级下载 | `dependencies.pip` / `runtimes` | 现有 pip / runtime 管线（§4，软声明） | ⏳（pip 管线现仅消费 `mcp/manifest.json` 的 `pip_dependencies`；`plugin.json` 的 `dependencies` 键未消费，见 §10） |
 
 ### 14.2 包级下载（商店 URL 导入）
 

@@ -73,7 +73,7 @@ Pinvou Agent 不只是一个聊天界面。它把通用工作、视觉设计和�
 
 - **本地语音输入**，语音模型按需下载
 - GPU、内存、磁盘、模型服务与上下文使用情况**集中监控**
-- Linux 应用内更新，macOS / Windows OTA 链路适配
+- 版本更新通过 GitHub Releases 分发（应用内更新检查暂未启用）
 - 会话、设置、知识和运行时扩展统一保存在 `~/.pinvou3/`
 
 > [!NOTE]
@@ -102,7 +102,7 @@ Pinvou Agent 不只是一个聊天界面。它把通用工作、视觉设计和�
 
 ## 🤖 模型接入
 
-Pinvou Agent 支持**本地 vLLM** 和任意 **OpenAI-compatible API**。应用内可保存多个模型配置，并在不同会话间快速切换；当前提供本地 vLLM、DeepSeek、Kimi、通义千问、豆包、MiniMax、智谱、MiMo 等配置模板，也可以填写自定义兼容端点。
+Pinvou Agent 支持**本地 vLLM** 和任意 **OpenAI-compatible API**。应用内可保存多个模型配置，为云端配置设置可选显示别名，并在不改变实际请求模型 ID 的情况下于不同会话间快速切换；当前提供本地 vLLM、DeepSeek、Kimi、通义千问、豆包、MiniMax、智谱、MiMo、OpenAI、Anthropic、Gemini、xAI 等配置模板，也可以填写自定义兼容端点。
 
 本地 vLLM 示例：
 
@@ -124,7 +124,7 @@ export DEEPSEEK_MODEL="qwen36_35b_256k"
 - [Tauri 2 系统依赖](https://v2.tauri.app/start/prerequisites/)
 - 一个可访问的 OpenAI-compatible 模型端点
 
-源码树支持 **Linux、Windows 和 macOS**；Linux 发布包的目标基线为 Ubuntu 22.04 及以上（glibc 2.35+，x86_64 与 arm64；deb 另要求 WebKitGTK 2.40+，已应用标准更新源的 22.04 系统均满足），macOS 当前目标为 Apple Silicon (arm64) + macOS 11.0+。语音识别引擎可按构建配置打包；文件解析（PDF / Office / OCR / 压缩包等）依赖可选外部工具，可通过 Homebrew 或各工具官网安装。
+源码树支持 **Linux、Windows 和 macOS**；Linux 发布包的目标基线为 Ubuntu 22.04 及以上（glibc 2.35+，x86_64 与 arm64；deb 另要求 WebKitGTK 2.40+，已应用标准更新源的 22.04 系统均满足），macOS 发布包为 universal（Apple Silicon + Intel）构建、要求 macOS 11.0+。语音识别引擎可按构建配置打包；文件解析（PDF / Office / OCR / 压缩包等）依赖可选外部工具，可通过 Homebrew、apt 或各工具官网安装。
 
 ### 启动应用
 
@@ -145,7 +145,7 @@ git submodule update --init --recursive
 ## 🏗️ 架构
 
 [![Tauri](https://img.shields.io/badge/Tauri-2.0-24C8D8?logo=tauri&logoColor=white)](https://v2.tauri.app/)
-[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white)](https://react.dev/)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev/)
 [![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)](https://vite.dev/)
 [![Rust](https://img.shields.io/badge/Rust-stable-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 
@@ -177,6 +177,8 @@ CodeWhale（Agent 底座 submodule）
 ```text
 pinvou3-app/          Tauri 2 + React/Vite 桌面应用
 CodeWhale/            Agent 底座 submodule
+pinvou-knowledge/     可复用知识库核心与自包含服务器
+remote-control-relay/ 扫码远控的可选自托管 relay
 pinvou3-app/resources/mcp-servers/
                       独立 MCP 服务
 scripts/              测试、守卫、构建与发布脚本

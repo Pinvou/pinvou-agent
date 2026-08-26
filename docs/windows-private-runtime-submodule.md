@@ -121,6 +121,9 @@ cargo check
 6. 更新主仓库 lock 中的 commit 和 manifest SHA-256；
 7. 从干净 checkout 验证 staging 和安装包。
 
+上述 `scripts/pack-component.ps1` 与 `scripts/update-manifest.ps1` 位于
+`private-runtimes/windows` 运行时子模块内，父仓库中没有这两个文件，不要在父仓查找。
+
 不得使用 `git submodule update --remote` 参与发布构建，也不得只更新 gitlink 而不更新
 lock。若 Git LFS 没有拉取成功，resolver 会识别 pointer 文件并在打包前失败。
 

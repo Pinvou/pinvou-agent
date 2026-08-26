@@ -73,7 +73,7 @@ Use **Codex, Claude Code, or Kimi** through [ACP](docs/multi-agent-acp.md) in th
 
 - **Local voice input** with on-demand speech model downloads
 - **Centralized monitoring** of GPU, memory, disk, model service, and context usage
-- **In-app updates** on Linux, with OTA delivery on macOS and Windows
+- **Updates via GitHub Releases** — in-app update checks are not enabled yet
 - Sessions, settings, knowledge, and runtime extensions all live under `~/.pinvou3/`
 
 > [!NOTE]
@@ -102,7 +102,7 @@ Use **Codex, Claude Code, or Kimi** through [ACP](docs/multi-agent-acp.md) in th
 
 ## 🤖 Model Access
 
-Pinvou Agent works with **local vLLM** and any **OpenAI-compatible API**. Save multiple model configurations in the app and switch between them per session. Built-in templates cover local vLLM, DeepSeek, Kimi, Qwen, Doubao, MiniMax, Zhipu, and MiMo — or fill in any custom compatible endpoint.
+Pinvou Agent works with **local vLLM** and any **OpenAI-compatible API**. Save multiple model configurations in the app, give cloud configurations optional display aliases, and switch between them per session without changing the model identifier sent to the provider. Built-in templates cover local vLLM, DeepSeek, Kimi, Qwen, Doubao, MiniMax, Zhipu (GLM), MiMo, OpenAI, Anthropic, Gemini, and xAI — or fill in any custom compatible endpoint.
 
 Local vLLM example:
 
@@ -124,7 +124,7 @@ Endpoints, model names, and API keys can also be managed directly in the applica
 - The [Tauri 2 system dependencies](https://v2.tauri.app/start/prerequisites/) for your platform
 - An accessible OpenAI-compatible model endpoint
 
-The source tree supports **Linux, Windows, and macOS**. Linux release packages target Ubuntu 22.04 or newer (glibc 2.35+) on x86_64 and arm64; the deb also requires WebKitGTK 2.40+ (any 22.04 system with the standard updates pocket applied satisfies this). The initial macOS target is Apple Silicon on macOS 11 or later.
+The source tree supports **Linux, Windows, and macOS**. Linux release packages target Ubuntu 22.04 or newer (glibc 2.35+) on x86_64 and arm64; the deb also requires WebKitGTK 2.40+ (any 22.04 system with the standard updates pocket applied satisfies this). macOS release packages are universal (Apple Silicon and Intel) builds for macOS 11 or later. Speech-recognition engines can be packaged per build configuration; file parsing (PDF / Office / OCR / archives) relies on optional external tools installable via your platform's package manager (see `pinvou3-app/INSTALL.md`).
 
 ### Run from source
 
@@ -145,7 +145,7 @@ git submodule update --init --recursive
 ## 🏗️ Architecture
 
 [![Tauri](https://img.shields.io/badge/Tauri-2.0-24C8D8?logo=tauri&logoColor=white)](https://v2.tauri.app/)
-[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white)](https://react.dev/)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev/)
 [![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)](https://vite.dev/)
 [![Rust](https://img.shields.io/badge/Rust-stable-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 
@@ -175,6 +175,8 @@ CodeWhale (agent engine submodule)
 ```text
 pinvou3-app/          Tauri 2 + React/Vite desktop application
 CodeWhale/            Agent engine submodule
+pinvou-knowledge/     Reusable knowledge core and self-contained server
+remote-control-relay/ Optional self-hosted relay for QR-code remote control
 pinvou3-app/resources/mcp-servers/
                       Independent local MCP servers
 scripts/              Tests, guards, build, and release helpers
@@ -205,7 +207,7 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for th
 - 💡 [GitHub Discussions](https://github.com/Pinvou/pinvou-agent/discussions) — questions and ideas (community support is best-effort, see [SUPPORT.md](SUPPORT.md))
 - 🔒 **Do not report security vulnerabilities in public issues** — use the private channel in [SECURITY.md](SECURITY.md) or email `security@pinvou.com`
 
-Licensing, third-party attribution, SBOM, and brand-use boundaries are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), [docs/sbom.md](docs/sbom.md), and [TRADEMARKS.md](TRADEMARKS.md).
+Licensing, third-party attribution, SBOM, brand-use boundaries, and the extension marketplace overview are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), [docs/sbom.md](docs/sbom.md), [TRADEMARKS.md](TRADEMARKS.md), and [docs/工具市场.md](docs/工具市场.md).
 
 ## 🔗 Friendly Links
 

@@ -614,6 +614,8 @@ function localUserNamed(m, localModelNameFn) {
 
 function selectorMainLabel(m, t) {
   if (!m) return '';
+  const alias = m.preset === 'local_vllm' ? '' : String(m.alias || '').trim();
+  if (alias) return alias;
   const localModelNameFn = t && t.uiSettingsDetail && t.uiSettingsDetail.localModelName;
   if (localUserNamed(m, localModelNameFn)) return m.name;
   if (m.preset === 'local_vllm' && isPresetModel(m) && typeof localModelNameFn === 'function') {
@@ -624,6 +626,7 @@ function selectorMainLabel(m, t) {
 
 function selectorSubLabel(m, t) {
   if (!m) return '';
+  if (m.preset !== 'local_vllm' && String(m.alias || '').trim()) return m.model || m.name || '';
   const localModelNameFn = t && t.uiSettingsDetail && t.uiSettingsDetail.localModelName;
   if (localUserNamed(m, localModelNameFn)) return m.model;   // 主=name -> 副=model
   if (isPresetModel(m)) return providerLabelForModel(m, t);  // 主=name/title -> 副=provider 归属

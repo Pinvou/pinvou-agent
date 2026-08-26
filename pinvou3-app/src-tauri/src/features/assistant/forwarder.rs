@@ -855,6 +855,8 @@ pub(crate) fn spawn_event_forwarder(
                         cache_miss_tokens: u64::from(usage.prompt_cache_miss_tokens.unwrap_or(0)),
                         cache_write_tokens: u64::from(usage.prompt_cache_write_tokens.unwrap_or(0)),
                         reasoning_tokens: u64::from(usage.reasoning_tokens.unwrap_or(0)),
+                        // 与 chat:usage 同一来源：代码页 hydration 回填用量 chip 分母。
+                        context_window: u64::from(bridge.usage_context_window()),
                     });
                     #[cfg(feature = "benchmark-hooks")]
                     if crate::features::assistant::timing::eval_observation_enabled(&session_id) {
@@ -1040,6 +1042,7 @@ pub(crate) fn spawn_event_forwarder(
                     auto,
                     messages_before,
                     messages_after,
+                    post_input_tokens,
                     ..
                 } => {
                     let payload = json!({
@@ -1050,6 +1053,9 @@ pub(crate) fn spawn_event_forwarder(
                         "message": message,
                         "messages_before": messages_before,
                         "messages_after": messages_after,
+                        // Conservative post-compaction context estimate for refreshing the
+                        // usage chip before the next authoritative chat:usage event.
+                        "post_tokens": post_input_tokens,
                     });
                     let _ = app.emit("chat:compaction", payload.clone());
                     crate::features::remote_control::forward_app_event(
@@ -1057,6 +1063,16 @@ pub(crate) fn spawn_event_forwarder(
                         "chat:compaction",
                         payload,
                     );
+                    // Compaction does not call start_turn, and its TurnComplete carries zero
+                    // usage. Persist this estimate separately so hydration does not restore
+                    // the stale pre-compaction value.
+                    if let Some(tokens) = post_input_tokens.filter(|tokens| *tokens > 0) {
+                        crate::features::assistant::timing::record_context_snapshot(
+                            &session_id,
+                            tokens,
+                            u64::from(bridge.usage_context_window()),
+                        );
+                    }
                 }
                 Event::CompactionFailed { message, auto, .. } => {
                     let payload = json!({ "session_id": session_id, "phase": "fail", "auto": auto, "message": message });

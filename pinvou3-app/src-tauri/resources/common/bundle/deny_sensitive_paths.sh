@@ -96,18 +96,20 @@ if [[ "$TOOL" == "exec_shell"* ]]; then
 fi
 
 # 5) 技能型连接器被误当 MCP 自省：企微/飞书/钉钉/腾讯会议是「技能型连接器」
-#    （wecomcli-* / lark-* / dws / tmeet-skill，
-#    无 MCP schema），模型却可能对它们调 list_mcp_resources / list_mcp_resource_templates
+#    （无 MCP schema），模型却可能对它们调 list_mcp_resources / list_mcp_resource_templates
 #    去自省能力 → 必然失败 → 误判「没连上」，甚至谎称缺技能。这里拦掉并把纠正回传：
-#    deny 文案走 **stdout 首行**（fold_tool_call_before_results 在 exit 2 时取 stdout 首行
-#    作 deny_reason，喂回模型当 tool 失败原因），引导模型改用 load_skill。
+#    fold_tool_call_before_results 在 exit 2 时只从 stdout 的 JSON {"decision":"deny",
+#    "reason":...} 取 reason 喂回模型（非 JSON stdout = passthrough，reason 落为通用
+#    文案），所以必须输出单行 JSON，引导模型改用 load_skill。
 #    取代原 bundle/instructions.md 常驻那条软纪律：零常驻 prompt + 现场硬反馈对小模型更准。
+#    文案刻意不回显连接器名、不列举技能/CLI 名：模型问一个不应连带知道全部，
+#    且对「已禁用」的连接器不确认其存在（disable 感知审计，泄漏面 2）。
 if [[ "$TOOL" == "list_mcp_resources" || "$TOOL" == "list_mcp_resource_templates" ]]; then
     # 关键词覆盖模型可能传的各种写法:英文 wecom/weixin/wework、中文全称「企业微信」
     # (注意「企微」子串不含在「企业微信」里,必须显式列全称)、feishu/lark/飞书、
     # 以及 dingtalk/dingding/dws/钉钉、tmeet/tencent meeting/腾讯会议。
     if [[ "$ARGS" =~ (wecom|weixin|wework|feishu|lark|dingtalk|dingding|dws|tmeet|tencent[[:space:]_-]?meeting|企微|企业微信|微信|飞书|钉钉|腾讯会议) ]]; then
-        echo "企微/飞书/钉钉/腾讯会议不是 MCP server（无 schema），是技能型连接器：请改用 load_skill 加载 wecomcli-* / lark-* / dws / tmeet-skill 技能，再按技能说明跑 wecom-cli / lark-cli / dws / tmeet。连接状态以工具面板为准，自省失败不代表未连接。"
+        echo '{"decision":"deny","reason":"该名称不是 MCP server（无 MCP schema），无法用 list_mcp_resources 自省。若它是技能型连接器，请用 load_skill 加载其对应技能后按技能说明使用。连接状态以工具面板为准，自省失败不代表未连接。"}'
         exit 2
     fi
 fi

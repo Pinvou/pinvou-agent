@@ -398,6 +398,7 @@
       turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
+      compactInactive: "The session engine is not running yet. Send a message before compacting the context",
       gpuUnavailable: "GPU info unavailable",
       superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
       approved: "✅ Approved", echoGo: "✅ Do it",
@@ -506,6 +507,7 @@
       turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
+      compactInactive: "セッション Engine はまだ起動していません。メッセージを送信してからコンテキストを圧縮してください",
       gpuUnavailable: "GPU 情報を取得できません",
       superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
       approved: "✅ 承認済み", echoGo: "✅ これでいく",
@@ -614,6 +616,7 @@
       turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
+      compactInactive: "会话引擎尚未运行。请先发送一条消息，再压缩上下文",
       gpuUnavailable: "GPU 信息不可用",
       superOn: "⚠️ 超级权限已开启", superOff: "超级权限已关闭",
       approved: "✅ 已批准", echoGo: "✅ 就这么干",
@@ -4653,6 +4656,10 @@
       : { message: text, attachments: attachmentsPayload, sessionId: sid, restrictTools: !!restrictTools };
     return invoke(chatCommand, chatArgs)
       .then(function () {
+        // 新一轮已被后端受理：会话中未提交的「打开」（pending enable）自此进入
+        // 上下文并锁死（ComposerToolMenu 监听）。bridge 层不反向依赖 features，
+        // 与 pinvou:tools-changed 一样内联派发。
+        try { window.dispatchEvent(new CustomEvent("pinvou:chat-round-committed", { detail: { scope: "plain" } })); } catch (_) {}
         recordAuthoritySyncDiagnostic("local_turn_admitted", Object.assign({
           operation: "send",
         }, authoritySyncBufferSnapshot(sid, turnOwnerBuffer)));
@@ -4950,6 +4957,8 @@
         submission.args,
         submission.requestId,
       );
+      // 首轮提交成功 = 新一轮已受理：未提交的「打开」转正锁死（同 doSendFor）。
+      try { window.dispatchEvent(new CustomEvent("pinvou:chat-round-committed", { detail: { scope: "plain" } })); } catch (_) {}
       acceptFirstTurnSubmission(submission, metadata);
     } catch (error) {
       submission.inFlight = false;
@@ -7395,6 +7404,8 @@
         displayMessage: displayEcho,
         planId: planTicket,
       });
+      // 接受计划 = 后端受理新一轮（reserve_turn + 重跑）：未提交的「打开」转正锁死。
+      try { window.dispatchEvent(new CustomEvent("pinvou:chat-round-committed", { detail: { scope: "plain" } })); } catch (_) {}
       if (planBuffer) planBuffer.deferredRemoteUserEvent = null;
       applyAuthoritativeModeState(sid, st);
     } catch (e) {
@@ -7617,6 +7628,8 @@
     emitPetEvent("pet:turn_start", sid);
     try {
       await invoke("edit_last_turn", { newMessage: newText, sessionId: sid });
+      // 编辑重跑 = 后端受理新一轮：未提交的「打开」转正锁死（同 doSendFor）。
+      try { window.dispatchEvent(new CustomEvent("pinvou:chat-round-committed", { detail: { scope: "plain" } })); } catch (_) {}
       if (editBuffer) editBuffer.deferredRemoteUserEvent = null;
     } catch (e) {
       var errorText = String(e && e.message ? e.message : e || "");
@@ -7646,7 +7659,10 @@
   async function compactNow() {
     var sid = state.activeSessionId;
     if (!sid) return;
-    try { await invoke("compact_now", { sessionId: state.activeSessionId }); } catch (e) { addSystemItemFor(sid, bt("compactFail") + ": " + e); }
+    try { await invoke("compact_now", { sessionId: state.activeSessionId }); } catch (e) {
+      var compactErr = String(e || "");
+      addSystemItemFor(sid, bt("compactFail") + ": " + (compactErr.indexOf("session_engine_not_running") >= 0 ? bt("compactInactive") : compactErr));
+    }
   }
 
   // ── 产物面板 ─────────────────────────────────────────────────────

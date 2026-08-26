@@ -6,8 +6,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-PUBLISHED_HEAD="07d183e350ce4a1ed4f91bdfa1875c996e710d2b"
-PUBLISHED_COMMITS=13
+PUBLISHED_HEAD="feb8761aeda31749f3d54c6e1f8ef460540567a1"
+PUBLISHED_COMMITS=14
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -17,21 +17,21 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 r9 公开四主题基线拓扑 ──"
+bold "── 第 0 层：v0.9.5 r10 公开四主题基线拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
   expected_commits="$PUBLISHED_COMMITS"
-  green "  ✓ CodeWhale gitlink 指向 r9 四主题公开基线 $PUBLISHED_HEAD"
+  green "  ✓ CodeWhale gitlink 指向 r10 四主题公开基线 $PUBLISHED_HEAD"
 else
   expected_commits=""
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r9 公开 head $PUBLISHED_HEAD"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r10 公开 head $PUBLISHED_HEAD"
   fail=1
 fi
 
 if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null; then
-  green "  ✓ r9 公开基线继承官方 v0.9.5"
+  green "  ✓ r10 公开基线继承官方 v0.9.5"
 else
-  red "  ✗ r9 公开基线未继承官方 v0.9.5 $EXPECTED_UPSTREAM"
+  red "  ✗ r10 公开基线未继承官方 v0.9.5 $EXPECTED_UPSTREAM"
   fail=1
 fi
 
@@ -39,7 +39,7 @@ commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev
 if [[ -n "$expected_commits" && "$commit_count" == "$expected_commits" ]]; then
   green "  ✓ v0.9.5 之上 $expected_commits 个登记提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r9 合法拓扑应为 ${expected_commits:-13}"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r10 合法拓扑应为 ${expected_commits:-14}"
   fail=1
 fi
 
@@ -67,6 +67,13 @@ fingerprints=(
   "T1|编辑上一轮截断在真实用户消息        |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_edit_last_turn_cuts_at_user_prompt_before_tool_results"
   "T1|无用户消息可编辑时报错不发送        |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_edit_last_turn_without_user_prompt_errors_and_sends_nothing"
   "T1|不支持的最新用户内容拒绝编辑        |CodeWhale/crates/tui/src/core/engine.rs|edit_last_turn_unsupported_user_content"
+  "T1|kimi-for-coding 固定采样剥离        |CodeWhale/crates/tui/src/client/chat.rs|fn apply_kimi_code_coding_plan_fixed_sampling("
+  "T1|kimi-for-coding 固定采样回归        |CodeWhale/crates/tui/src/client/chat.rs|fn forkguard_kimi_code_coding_plan_strips_non_one_temperature"
+  "T1|deepseek-v4 Chat 文档采样契约回归   |CodeWhale/crates/tui/src/client/chat.rs|fn forkguard_deepseek_v4_chat_preserves_documented_temperature"
+  "T1|deepseek-v4-flash Responses 采样 shim |CodeWhale/crates/tui/src/client/responses.rs|requires_default_temperature"
+  "T1|deepseek-v4-flash Responses 采样回归 |CodeWhale/crates/tui/src/client/responses/tests.rs|fn forkguard_deepseek_v4_flash_responses_drops_non_one_temperature"
+  "T1|压缩完成事件携带新上下文估算        |CodeWhale/crates/tui/src/core/events.rs|post_input_tokens: Option<u64>"
+  "T1|压缩后估算覆盖完整请求输入          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_compaction_completed_reports_complete_post_input_tokens"
 
   "T2|宿主额外工具入口                    |CodeWhale/crates/tui/src/core/engine.rs|pub struct ExtraTools("
   "T2|动态禁用工具操作                    |CodeWhale/crates/tui/src/core/ops.rs|SetDisallowedTools { tools: Vec<String> }"

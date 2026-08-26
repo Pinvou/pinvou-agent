@@ -155,6 +155,17 @@ test('预设行主标签 = name(item.title)', () => {
 test('自定义行主标签 = 模型 ID', () => {
   assert.strictEqual(selectorMainLabel(mk({ name: 'OpenAI 兼容', preset: 'openai_compatible', provider_kind: 'custom', model: 'meta-llama/llama-4-scout' }), t), 'meta-llama/llama-4-scout');
 });
+test('cloud model alias takes precedence in the main label', () => {
+  assert.strictEqual(selectorMainLabel(mk({ alias: 'Daily assistant', model: 'deepseek-v4-pro' }), t), 'Daily assistant');
+});
+test('blank model alias falls back to the existing label', () => {
+  assert.strictEqual(selectorMainLabel(mk({ alias: '   ', model: 'meta-llama/llama-4-scout' }), t), 'meta-llama/llama-4-scout');
+});
+test('local model alias is ignored by selector labels', () => {
+  const local = mk({ alias: 'Must not render', name: '我的模型', preset: 'local_vllm', model: 'qwen36_35b_256k' });
+  assert.strictEqual(selectorMainLabel(local, t), '我的模型');
+  assert.strictEqual(selectorSubLabel(local, t), 'qwen36_35b_256k');
+});
 test('本地已命名 -> 用 name', () => {
   assert.strictEqual(selectorMainLabel(mk({ name: '我的模型', preset: 'local_vllm', model: 'qwen36_35b_256k' }), t), '我的模型');
 });
@@ -175,6 +186,9 @@ test('OpenAI Compatible 自定义行副标题 = modelPresetOpenaiCompatible', ()
 });
 test('本地已命名副标题 = model', () => {
   assert.strictEqual(selectorSubLabel(mk({ name: '我的模型', preset: 'local_vllm', model: 'qwen36_35b_256k' }), t), 'qwen36_35b_256k');
+});
+test('aliased model subtitle preserves the wire model ID', () => {
+  assert.strictEqual(selectorSubLabel(mk({ alias: 'Daily assistant', model: 'deepseek-v4-pro' }), t), 'deepseek-v4-pro');
 });
 
 // --- 回归:Finding #2 预设行 title===model 时主副不可重复 ---

@@ -15,7 +15,7 @@
 # mac-build / release-*)不在任何规则范围内。
 #
 # 用法:scripts/cache-janitor.sh [--dry-run]
-# 依赖:gh cli;GH_TOKEN 需具备 actions:write(删除)与 pull-requests:read(查状态)。
+# 依赖:gh cli;python3;GH_TOKEN 需具备 actions:write(删除)与 pull-requests:read(查状态)。
 set -euo pipefail
 
 DRY_RUN=0

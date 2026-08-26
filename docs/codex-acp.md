@@ -12,13 +12,9 @@ pinvou3 在主页输入区提供“工作 / 代码”两种模式：“工作”
 “代码”可选 Codex / Claude Code / Kimi（ACP）或品悟原生。两类会话按最近更新时间
 混排在左侧统一会话列表中，以各自 Agent 图标区分，不再占用单独的侧边栏入口。
 ACP 会话仍使用独立的 ACP 事件、权限和持久化链路，不进入 CodeWhale `ChatView`；
-品悟原生代码会话复用 CodeWhale Engine 与 `chat` 命令、`chat:*` 事件链路。
-原生会话遵循“两个根”：LLM 的执行根（engine cwd、shell 与文件工具）可以是用户
-绑定的项目目录，应用账本根（附件、审计、产物）永远在
-`~/.pinvou3/sessions/<id>/` 私有目录；系统提示词为编码专用（共享层 + 代码层，
-代码层引用底座 core_execution 并附代码场景纪律，无产出物/成品卡语义）。品悟原生
-会话还可开启 Pinvou 多智能体模式；delegated-agent 状态与专家名册使用会话私有根，
-不会写入绑定项目。外部 ACP 会话不继承该开关。
+品悟原生代码会话复用 CodeWhale Engine 与 `chat` 命令、`chat:*` 事件链路。原生
+会话的“两个根”、编码专用系统提示词与多智能体开关的完整语义见
+[`multi-agent-acp.md`](./multi-agent-acp.md)（多 Agent 单一真相源）。
 
 ## 开发环境使用
 
@@ -37,13 +33,10 @@ ACP 会话仍使用独立的 ACP 事件、权限和持久化链路，不进入 C
    同一个项目可以创建多个独立会话；会话开始后不能更换目录，需要切换项目时新建会话。
    品悟原生会话同样支持临时会话与项目目录两种工作区：绑项目后 LLM 直接在项目目录
    中执行，而附件、审计等应用账本仍写入会话私有目录（“两个根”）。
-4. 页面会读取 Agent 实际上报的模型、模式和配置项。系统 Codex 缺失时，经用户确认后
-   执行 OpenAI 官方安装脚本安装当时的 latest；安装后直接探测 `~/.local/bin/codex`
-   的绝对路径，不要求重启 App 或依赖桌面进程的 PATH。版本过旧时先判定安装来源：
-   macOS Homebrew cask 安装的旧版改用
-   `brew upgrade --cask codex`，npm 全局（`@openai/codex`）安装的旧版改用
-   `npm install -g @openai/codex@latest`；官方脚本来源或无法识别来源时重新运行官方脚本。
-   用户拒绝升级时保持 Codex 不可用，不静默安装第二份副本。ACP Bridge 版本固定为 `1.1.5`。
+4. 页面会读取 Agent 实际上报的模型、模式和配置项。系统 Codex 缺失或版本过旧时，
+   经用户确认后安装/升级（安装来源判定与各渠道升级命令见
+   [`multi-agent-acp.md`](./multi-agent-acp.md) 安装矩阵）；用户拒绝时保持不可用，
+   不静默安装第二份副本。ACP Bridge 版本固定为 `1.1.5`。
 5. 输入消息即可使用流式回答、思考、工具步骤、计划、权限选择、停止生成和会话恢复。
 
 ## 会话与权限状态
@@ -156,8 +149,8 @@ Linux 发布脚本会自动准备 Bridge。单独执行 Tauri 构建前也可手
 入口也会自动准备该目录。
 生成物由 `.gitignore` 排除，不进入源码仓库；Bridge 不包含 Codex CLI。正式包不依赖
 系统 Node/npm 来运行 ACP Bridge；系统 Codex 缺失时由应用经用户确认运行 OpenAI 官方
-安装脚本。npm 全局来源的旧版经用户确认后用 `npm install -g @openai/codex@latest`
-升级，其他来源按官方脚本升级。
+安装脚本。旧版升级按来源分流（npm / brew cask / 官方脚本），具体命令矩阵见
+`multi-agent-acp.md` 的「CLI 探测与安装」。
 
 ## 边界
 

@@ -1,6 +1,6 @@
 # vendor/ — 本地化前端依赖（离线/内网可用）
 
-前端使用 Vite 构建，但仍不依赖 CDN。这里仅保留必须在 `tauri-bridge.js` 之前加载的经典脚本；
+前端使用 Vite 构建，但仍不依赖 CDN。这里仅保留必须在 `src/platform/tauri/bridge.js` 之前加载的经典脚本；
 React / ReactDOM 由 npm 依赖打包进 `dist/assets/`。
 
 | 文件 | 版本 | SHA-256 | 来源 / 许可证 | 用途 |

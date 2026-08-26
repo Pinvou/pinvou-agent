@@ -120,8 +120,9 @@ my-plugin.zip
 
 没有 `plugin.json` 时按目录结构识别，并落盘一份派生的规范化 `plugin.json`：
 
-- **裸 MCP**：`mcp/manifest.json`（标准布局），或根级 `manifest.json` 能解析出
-  `ToolManifest` 且声明了 `command` 或 `servers` → 识别为纯 MCP，规范化为 `mcp/`。
+- **裸 MCP**：`mcp/manifest.json`（标准布局，只要求能解析且 `id` 非空），或 zip 内
+  **任意其他位置**的 `manifest.json` 能解析出 `ToolManifest`、`id` 非空且声明了
+  `command` 或 `servers` → 识别为纯 MCP，规范化为 `mcp/`。
 - **裸技能**：`skills/<name>/SKILL.md`，或任意位置 `SKILL.md`（frontmatter `name`
   合法）→ 识别为纯技能，规范化为 `skills/<name>/`。
 
@@ -148,8 +149,9 @@ MCP server 的启动真相源。本地 stdio server 的必填与常用字段：
 本地 stdio 约定：
 
 - `command` = 解释器（`python` / `node` / …）。
-- `args` = 入口脚本，**推荐脚本命名为 `server.py`** 且 `args: ["server.py"]`
-  （安装时会被重写为 `bundles/<id>/mcp/server.py` 绝对路径）。
+- `args` = 入口脚本，**脚本必须命名为 `server.py`** 且 `args: ["server.py"]`
+  （安装时仅 `server.py`（或以 `/server.py` 结尾的参数）会被重写为 `bundles/<id>/mcp/server.py`
+  绝对路径；其他脚本名原样写入 mcp.json，无法定位安装目录）。
 - 依赖 pip 包 → 声明 `"pip_dependencies": ["requests"]`。注意：上传/导入路径
   **不会自动安装**（供应链安全，仅日志提示需用户自行 `pip install`）；只有内置
   商店工具的安装管线才会自动装。
@@ -174,11 +176,11 @@ MCP server 的启动真相源。本地 stdio server 的必填与常用字段：
 
 ---
 
-## 7. ~~spanner 组件（扳手插件）~~（已移除）
+## 7. ~~spanner 组件（扳手插件）~~（已移除，历史存档）
 
 > 2026-08：spanner 独立组件模型已移除。脚本可执行能力的演进方向是 skill 包
 > SKILL.md frontmatter `tools[]` + `runtime` 段 + `skill-run` wrapper——
-> **该方向为 RFC 草案，执行通路未实施**（详见 `plugin-protocol.md`）。旧包中的 `spanner` 字段
+> **该方向为 RFC 草案，执行通路未实施**（完整历史设计见 `plugin-protocol.md` §15 存档）。旧包中的 `spanner` 字段
 > 经 plugin.json `extra` 保留、deser 不炸，但不再合成 mcp/manifest.json。
 
 介于「脚本 skill」与「MCP」之间：声明式 schema + 无状态单次进程 + 自带运行时。
@@ -250,9 +252,9 @@ metadata:                       # 可选
 
 | 用途 | 规则 |
 |---|---|
-| 包 `id`（`plugin.json.id`） | `[a-z0-9-_]{1,64}`，小写 |
-| MCP `id`（`ToolManifest.id`） / 组件 `id` | `[a-z0-9-_]{1,64}`，小写 |
-| 技能 `name`（`SKILL.md`） | `[a-zA-Z0-9_-]{1,64}` |
+| 包 `id`（`plugin.json.id`） | `[a-z0-9-_]{1,64}`，小写；导入强制（`is_safe_component_id`）。无 `plugin.json` 的裸包按回退识别取 id，改走 `is_safe_skill_name`（`[a-zA-Z0-9_-]{1,64}`，允许大小写） |
+| MCP `id`（`ToolManifest.id`）与 `components.mcp_servers[].id` | 规范要求 `[a-zA-Z0-9_-]{1,64}`（建议小写）。**导入侧实际只强制**：两侧 id 一致、组件 `dir` 精确为 `mcp`；组件 id 字符集暂不校验（已知缺口，单独跟踪） |
+| 技能 `name`（`SKILL.md`）与 `components.skills[].id` | 规范要求 `[a-zA-Z0-9_-]{1,64}`（允许大小写）且两者一致。**导入侧实际只强制**（清单路径）：组件 `dir` 精确为 `skills/<id>` 且其中存在 `SKILL.md`；frontmatter 不解析，name 与声明 id 的一致性及字符集均暂不校验（已知缺口，单独跟踪）。裸技能回退路径（无 `plugin.json`）取 frontmatter `name` 并校验字符集 |
 
 禁止 `.`、`..`、路径分隔符；与已下线内置名冲突会拒收。
 
@@ -263,11 +265,19 @@ metadata:                       # 可选
 导入时统一预检，任一不过即拒收、不留半安装态：
 
 1. 路径穿越（`enclosed_name()` + 写出前二次断言）。
-2. symlink / hardlink（`unix_mode` 高 4 位 = `0o120000`）。
-3. 体积：解压累计 ≤ 200 MiB。
-4. 名字安全（§10）。
-5. 组件声明与实际一致（声明的 `dir` 必须存在；skill 目录必须有 `SKILL.md`）。
+2. symlink（`unix_mode` 文件类型位 `mode & 0o170000 == 0o120000` 即 S_IFLNK；zip 中 hardlink 表现为普通文件副本，无独立类型位，不在此拦截）。
+3. 体积：解压累计 ≤ 200 MiB；zip 头声明与实际解压大小不符（伪造头/zip bomb）拒收。
+4. 名字安全（§10；清单路径仅包 id 强制字符集，组件 id 校验缺口见 §10 表）。
+5. 组件声明与实际一致：
+   - 声明的 `dir` 必须存在；skill 目录必须有 `SKILL.md`；
+   - MCP 组件 `dir` 必须精确为 `mcp`（其他值拒收），且组件 `id` 与 `mcp/manifest.json` 的 `id` 交叉一致；
+   - 未声明或未被识别的 `skills/<other>/` 子树整体拒收（防止不可见孤儿技能）。
 6. 凭据不落盘（§6）。
+7. `manifest_version` 高于支持版本时拒装（§3）。
+8. 命名冲突：与预置 MCP（`mcp_catalog`）、内置 CLI 技能目录或已下线技能名冲突时拒收。
+9. **同 id 包更新语义**：已存在的包 id 仅允许同内容重导（视为原子替换）；内容不同的同名包拒收——更新包内容需更换包 id，或先手动删除 `~/.pinvou3/bundles/<id>/` 目录再导入（Upload 来源包卸载时保留该目录作为用户唯一副本，"先卸载再导入"清不掉同 id 冲突）。
+
+> 导入成功 ≠ 立即可用：出于安全默认，上传包安装后 code 模式默认禁用，需用户在能力开关中显式开启。
 
 ---
 

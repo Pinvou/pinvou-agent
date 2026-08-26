@@ -42,7 +42,8 @@ lark-sheets、lark-im、lark-task、lark-wiki、lark-base。
    收录 + CLI 命令直给」口径,不复制其目录)。
 3. 以该 tag 为三方合并基线,按下文登记逐条重放本地修改后,保留本 NOTICE。
 
-本目录下的 `visual-design/` 为品悟自研技能,不来自 lark-cli 上游,sync 时不涉及。
+自研技能 `visual-design/` 已移至 `../builtin-skills/visual-design/`(能力包统一模型,
+PR #302),不在本目录内,不来自 lark-cli 上游,sync 时不涉及。
 
 (对账注 2026-08-16:本 NOTICE 内文引用上游文件时,lark-shared 域内的
 `references/lark-wiki-token-routing.md` 全称为

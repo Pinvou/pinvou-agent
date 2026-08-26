@@ -45,7 +45,8 @@ const codexEn = {
   temporarySessionDesc:'Use an isolated directory managed by Pinvou', recentProjects:'Recent projects',
   nativeBlockedNotice:'A dangerous command was blocked and not executed',
   compactStart:'Compacting context', compactDone:'Context compacted', compactFail:'Context compaction failed',
-  nativeCompactTitle:'Click to compact the context now and free up session memory',
+  nativeCompactInactive:'The session engine is not running yet. Send a message before compacting the context',
+  nativeUsageTitle:(used,pct)=>`Context used: ${used}${pct == null ? '' : ` (${pct}%)`}. Click to compact now and free up session memory`,
   nativeMemory:'Memory', nativeMemoryTitle:'Memories active in this session',
   // Native-lane Plan approval card: status/failure copy mirrors the bridge BT table.
   nativePlanApproved:'✅ Approved', nativePlanDiscarded:'🚪 Plan discarded',
@@ -933,6 +934,8 @@ Object.assign(dictEn.uiSettingsDetail.modelDescriptions, {
 });
 
 dictEn.uiSettingsDetail.customCodingPlanDesc = 'Enter a Coding Plan model ID manually';
+dictEn.uiSettingsDetail.modelAlias = 'Alias';
+dictEn.uiSettingsDetail.modelAliasPlaceholder = 'Optional, e.g. Daily assistant';
 
 dictEn.uiSettingsDetail.customModelTitles = {
   glm:'Custom GLM model', qwen:'Custom Qwen model',

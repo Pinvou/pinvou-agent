@@ -6,7 +6,7 @@
 
 > **落地状态**（2026-08-14）：§1、§2 为现状（能力档案已退役，模式能力差量
 > 已收敛为静态表 `MODE_TABLE`）；§3 的存储已收敛为**单一 `disabled_bundles.json`**
-> （`{scopes, initialized, project_skills_enabled}`，键 = 包 id，见 §3.2），取代原
+> （`{scopes, hidden_scopes, initialized, project_skills_enabled}`，键 = 包 id，见 §3.2），取代原
 > `disabled_connectors.json` + `disabled_skills.json` 双文件与 `skill:` 前缀跨文件借道；
 > companion 联动排除改由包模型现算（`bundle::skill_owner_package`）。§3.1 的
 > 统一包模型与「一个包 = 一个开关」已部分落地（`BundleStore` + `bundle_readiness`），
@@ -158,7 +158,7 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
   禁用名单；查引擎实际暴露的 `model_name`（运行时发现，底座权威）为
   **已定方向、未实施**——落地后清单错配（如 id 含连字符）才不会导致
   "禁不掉"；
-- **唯一失效入口** `capability_changed`：任何开关不可能漏刷下游；
+- **唯一失效入口** `capability_changed`（目标形态，未实施；现状为各开关命令分别触发 `refresh_live_sessions_skills` 等刷新）：任何开关不可能漏刷下游；
 - spawn 初值与热刷同经 `bridge.shape_disallowed_tools` 按会话整形。
 
 ## 4. 模式扩展（新增设计/聊天等模式时）
@@ -197,7 +197,7 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
 面是经 `Bash` 调用 CLI，开关只能隐藏引导；要封死需 Bash hook 拦截，
 当前作为已接受风险记录于此。
 
-## 6. 前端接线
+## 6. 前端接线（目标形态，未实施——现状为 `set_disabled_connectors` / `set_disabled_skills` / `set_bundle_visibility` 等各开关命令 + `remote_control:tools_changed` 事件）
 
 - 命令面：`list_capability_items(scope)` 读全量状态（默认已合并），
   `set_capability_enabled(scope, id, enabled)` 唯一写入口；前端不在 JS 侧

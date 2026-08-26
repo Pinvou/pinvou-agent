@@ -32,15 +32,15 @@
 |---|---|---|---|
 | **W** 窗口 | app 探测 | vLLM `max_model_len` | probe → `RouteLimits.context_tokens`；失败 → 名字 hint → 128,000 兜底 |
 | **O** 输出预留 | app 派生 | 单次回复留的空间 | `clamp(业务需求 24,576, 下限 ~6,144, 上界 W/4)` |
-| **E** 紧急线 | 底座，**不要自己算** | 全量输入硬天花板 | `W − O − 1,024`（turn_loop.rs:288 → context.rs:600） |
+| **E** 紧急线 | 底座，**不要自己算** | 全量输入硬天花板 | `W − O − 1,024`（入口为底座 `context_input_budget_for_route`，`crates/tui/src/core/engine/context.rs`） |
 | **T** 正常线 | app 推导后填 `token_threshold` | 温和摘要触发点 | 见 §3 |
 
 底座的 40%/75%/90% pressure 分级只用于显示，不是触发线。
 
 ### 两把尺问题（所有复杂度的根）
 
-- **T 的判据**（`should_compact`, compaction.rs:694）：可摘要**子集**的 **raw 尺**（bytes÷4，无放大）。
-- **E 的判据**（`estimated_input_tokens`, compaction.rs:658）：**全量** input 的 **conservative 尺**（raw×1.5 + system÷3 + framing）。
+- **T 的判据**（`should_compact`，`crates/tui/src/compaction.rs`，0.9.5 约 :765）：可摘要**子集**的 **raw 尺**（bytes÷4，无放大）。
+- **E 的判据**（保守估算，`crates/tui/src/compaction.rs`，0.9.5 约 :749）：**全量** input 的 **conservative 尺**（raw×1.5 + system÷3 + framing）。
 
 两条线不是一把尺，差异是**乘性的 ×1.5**，不是加性的。这就是为什么 T 必须做尺换算、
 为什么阶段一 T 只能到 ~50% 而不是 75%。**真正的解法是消灭两把尺（§4 上游线），
@@ -48,7 +48,7 @@
 
 ## 2. 现状与根因
 
-现状：`token_threshold` 写死 190,000（bridge/mod.rs:629），窗口靠 `qwen36_35b_256k`
+现状：阈值由 `derive_compaction_threshold`（`features/assistant/platform/bridge.rs`）按 `(E−S)/1.5 − 22000` 派生（早期实现曾写死 190,000），窗口靠 `qwen36_35b_256k`
 名字后缀 hint 派生。
 
 客户机（cube-f840）翻车根因：vLLM 启动丢了 `--served-model-name qwen36_35b_256k`，

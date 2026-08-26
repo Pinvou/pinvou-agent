@@ -22,7 +22,7 @@
 | Agent 进程 | 独立子进程（ACP stdio JSON-RPC） | 进程内 CodeWhale Engine（Rust 库） |
 | 会话池 | `AcpPool` | `EnginePool` |
 | 发消息命令 | `codex_acp_prompt` | `chat`（显式 sessionId） |
-| 事件流 | `acp:event` | `chat:*`（13+2 个事件） |
+| 事件流 | `acp:event` | `chat:*`（前端订阅清单 `NATIVE_CHAT_EVENTS` 共 18 项，R-1/R-3 增补后） |
 | 前端投影 | `projectAcpTimeline` | `code-native-lane.js` → `projectDeepSeekConversation` |
 | 展示层 | `ConversationTimeline`（共用） | 同左 |
 | 会话存储 | `SessionStore` + `SessionAgentStore` | 同左（`SessionMode` 模式标记，见 §3.1） |
@@ -139,7 +139,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 ### 前端
 
-- `features/codex/code-native-lane.js`（新增）：每会话 lane（items/busy/thinking/tokens），13+2 个 `chat:*` 事件消费、hydration、乐观气泡、回声去重、shell 后台任务收口、compaction 系统项。
+- `features/codex/code-native-lane.js`（新增）：每会话 lane（items/busy/thinking/tokens），消费 `NATIVE_CHAT_EVENTS` 订阅清单的 18 个 `chat:*` 事件（R-1/R-3 增补后；switch 另有 `chat:plan_resolved` 分支对齐 bridge 语义：该事件由 `app/commands/interaction.rs` 的 `discard_plan` 运行时 emit 并转发远控、bridge 路径有监听，但未列入 `NATIVE_CHAT_EVENTS`，该分支经此订阅不可达）、hydration、乐观气泡、回声去重、shell 后台任务收口、compaction 系统项。
 - `features/codex/CodexAcpView.jsx`：按 `agent_id === 'pinvou'` 分流（发送/事件/确认卡/取消/busy），ACP 专属 UI 隐藏，工作区选择器与项目目录流程，四配置控件接入与草稿暂存，pending/busy 恢复。
 - `features/chat/composer-controls.jsx`（新增，自 ChatView 提取）：`ComposerKbSelector`/`ComposerModeChip`/`COMPOSER_ICON_BUTTON_CLASS`，可选显式会话态 props。
 - `features/settings/SettingsView.jsx`：`ComposerModelSelector` 增加显式会话态 props（sessionId/sessionModelId/onSwitchModel）；`ComposerToolMenu` 增加 `triggerVariant='pill'`。
@@ -204,6 +204,14 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 ### 8.3 代码会话工具开关（按模式 scope）
 
+> **修订注记（2026-08-22）**：本节与 §8.6 描述的双文件（`disabled_connectors.json` /
+> `disabled_skills.json`）形态已被 #287/#302 的能力包统一模型取代——现行实现为单一
+> `~/.pinvou3/disabled_bundles.json`（`features/marketplace/scope.rs`：包 id × 模式
+> 禁用集 + `hidden_scopes` 可见性轴，读到旧双文件即迁移不删；`skill_scope.rs` 为纯
+> re-export 兼容别名层）。开关粒度从"连接器 id"变为"包 id"（含技能/CLI）。
+> 本节其余机制（DenyAll 安全默认、初始化语义、组合目录联动）仍准确；现行完整
+> 形态以 `docs/capability-governance.md` 为准。下文保留双文件描述作历史语义参考。
+
 - 连接器禁用列表按会话模式 scope 分开持久化（`disabled_connectors.json` 存
   `{ "scopes": { "<mode>": [...] }, "initialized": [...] }`，scope 键即
   `SessionMode` 的 kebab-case 名；旧版裸数组与 `{ plain, code,
@@ -258,6 +266,10 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 ### 8.6 skill 按 scope 治理（双 scope 持久化 + 组合目录）
 
+> **修订注记（2026-08-22）**：本节开头描述的 `disabled_skills.json` 已并入 §8.3
+> 注记所述的单一 `disabled_bundles.json`（包 id 粒度）；组合目录物化、三段式时机、
+> `load_skill` 联动与项目级 skills 机制仍为现行行为。历史双文件描述保留作参考。
+
 - **开关按模式 scope 持久化**：`~/.pinvou3/disabled_skills.json` 存
   `{ "scopes": { "<mode>": [...] }, "initialized": [...], project_skills_enabled }`
   （与 `disabled_connectors.json` 同构）；旧数据迁移——裸数组 → plain scope，
@@ -292,6 +304,14 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - 治理机制的当前形态见 `docs/capability-governance.md`。
 
 ### 8.7 权限默认值与两层持久化（2026-08-06）
+
+> **修订注记（2026-08-22）**：本节的"两层持久化"语义已被 PR #263（三工作区三分
+> lane）取代，现行语义以 `docs/code-mode-解耦与权限持久化-改动说明.md` 第六节与
+> `features/sessions/mode_state.rs` 为准。主要变化：① per-session mode 持久化
+> 现覆盖**所有会话**（含 plain），文件更名为 `~/.pinvou3/sessions/_session_mode_states.json`
+> （旧 `_code_mode_states.json` 回退读一次）；② `accept_plan` 的任务级 yolo 切换
+> 已纳入 per-session 持久化（确认提交后写入）；③ 全局 lane 默认只由草稿态显式
+> 切换经 `set_mode_default` 写入。下文保留 2026-08-06 语义作历史参考。
 
 原生 code 会话的 Plan/Yolo 默认值与记忆策略（plain 会话行为不变：mode 仅驻
 内存、默认 Yolo、不落盘）：

@@ -10,10 +10,12 @@ Create a signed-off commit with:
 git commit -s
 ```
 
-The trailer must match the commit author:
+The trailer should match the commit author:
 
 ```text
 Signed-off-by: Your Name <your.email@example.com>
 ```
 
 Every commit in a pull request must be signed off. This is a developer attestation, not a GPG or SSH cryptographic signature.
+
+How CI enforces this (`.github/workflows/dco.yml`): the check verifies that a `Signed-off-by:` trailer is present in each commit's message; it does not compare the trailer's name/email against the commit author — keeping them in sync is the developer's responsibility. Trusted Dependabot and GitHub Actions bot commits, and merge commits (more than one parent), are exempt.
