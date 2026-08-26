@@ -490,8 +490,13 @@ fn apply_display_meta(
 }
 
 /// 展示字段值的统一校验（写入与预检共用同一口径）：控制字符/换行一律拒绝
-/// （单行 UI 展示与 SKILL.md 单行回写都无法表达，且各包形态行为一致），
+/// （单行 UI 展示与 SKILL.md 单行回写都无法表达，此条各包形态行为一致），
 /// 超过字符上限 → Err。`field_label` 用人类可读字段名，不外泄内部 key。
+///
+/// 注意：单技能包的 SKILL.md 同步在回写时另有更严的单行互洽限制（拒双引号/
+/// 反斜杠/首尾单引号，见 `rewrite_frontmatter_description`）——同一值在非
+/// 单技能包可存、在单技能包会被整体拒绝，这是同步能力差异使然，不是本函数的
+/// 口径不一致。
 fn check_display_value(field_label: &str, v: &str, max_chars: usize) -> Result<(), String> {
     if v.chars().any(|c| c.is_control()) {
         return Err(format!("{field_label}含控制字符/换行，不支持"));

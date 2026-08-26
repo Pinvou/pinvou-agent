@@ -7,6 +7,7 @@ import { localizeTool, mergeConfigFields, TsActionBtn, tsCategories, tsSkillIcon
 import { MAX_SKILL_ZIP_BYTES, pickSkillDrop, fileToBase64 } from './skill-import-logic.js';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
 import { can } from '../../shared/platform.js';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
 
 const OAUTH_UI_TIMEOUT_MS = 90_000;
 
@@ -683,7 +684,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   onChange={e => setDesc(e.target.value)}
                   // 后端展示说明只接受单行（控制字符校验拒换行），Enter 在此
                   // 只会换来一次必败的保存——直接拦截，避免用户按回车后困惑。
-                  onKeyDown={e => { if (e.key === 'Enter') e.preventDefault(); }}
+                  // IME 合成中的 Enter 是确认候选词（中/日文输入法），不得拦截。
+                  onKeyDown={e => { if (e.key === 'Enter' && !isImeComposing(e)) e.preventDefault(); }}
                   className={`${inputCls} resize-none`}
                 />
               </div>

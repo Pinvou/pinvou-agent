@@ -2742,6 +2742,77 @@ mod tests {
         });
     }
 
+    /// list_tools（composer 工具菜单数据源）必须与 BundleRegistry::list
+    /// （bundle_readiness）同口径应用上传包的展示名/说明覆盖——两处标题
+    /// 不一致就是这条路径漏了覆盖（评审发现的测试空缺）。
+    #[test]
+    fn list_tools_applies_upload_display_override() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "up-disp",
+                r#"{
+                    "id":"up-disp","name":"ManifestName","description":"manifest d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"python","args":["server.py"]
+                }"#,
+            );
+            let store = store::BundleStore::new();
+            store
+                .upsert(store::BundleRecord::installed_now(
+                    "up-disp",
+                    store::BundleSource::Upload("pkg.zip".to_string()),
+                ))
+                .unwrap();
+            store
+                .set_display_meta("up-disp", Some("我的工具"), Some("自定义说明"))
+                .unwrap();
+
+            let tools = MarketplaceManager::new().list_tools();
+            let t = tools.iter().find(|t| t.id == "up-disp").unwrap();
+            assert_eq!(t.name, "我的工具", "extra 覆盖应优先于 manifest name");
+            assert_eq!(t.description, "自定义说明");
+
+            // 清空覆盖 → 回退 manifest 值
+            store
+                .set_display_meta("up-disp", Some(""), Some(""))
+                .unwrap();
+            let tools = MarketplaceManager::new().list_tools();
+            let t = tools.iter().find(|t| t.id == "up-disp").unwrap();
+            assert_eq!(t.name, "ManifestName");
+            assert_eq!(t.description, "manifest d");
+        });
+    }
+
+    /// bundles.json 损坏时 list_tools 降级为「无覆盖」（warn + manifest 原值），
+    /// 不得 panic 或丢工具——与 bundle.rs 的 store 读回退同口径。
+    #[test]
+    fn list_tools_degrades_to_manifest_values_when_store_corrupt() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "up-corrupt",
+                r#"{
+                    "id":"up-corrupt","name":"ManifestName","description":"manifest d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"python","args":["server.py"]
+                }"#,
+            );
+            let store = store::BundleStore::new();
+            store
+                .upsert(store::BundleRecord::installed_now(
+                    "up-corrupt",
+                    store::BundleSource::Upload("pkg.zip".to_string()),
+                ))
+                .unwrap();
+            store
+                .set_display_meta("up-corrupt", Some("我的工具"), None)
+                .unwrap();
+            // 直接腐坏 bundles.json（绕过 store 的原子写）
+            std::fs::write(store.file_path(), "{not json").unwrap();
+
+            let tools = MarketplaceManager::new().list_tools();
+            let t = tools.iter().find(|t| t.id == "up-corrupt").unwrap();
+            assert_eq!(t.name, "ManifestName", "store 读失败应降级为 manifest 值");
+        });
+    }
+
     #[test]
     fn model_tool_names_prefix_dedup_and_lowercase() {
         with_temp_home(|| {
