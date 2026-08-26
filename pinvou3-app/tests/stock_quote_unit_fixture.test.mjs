@@ -9,6 +9,7 @@
 // cannot import .jsx natively.
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
@@ -20,7 +21,9 @@ globalThis.window = globalThis.window || { TauriBridge: undefined };
 
 const vite = await createServer({
   configFile: false,
-  root: new URL('..', import.meta.url).pathname,
+  // URL.pathname is not a native path on Windows ('/D:/...') and stays
+  // percent-encoded on POSIX; fileURLToPath is the portable form.
+  root: fileURLToPath(new URL('..', import.meta.url)),
   logLevel: 'error',
   server: { middlewareMode: true },
   optimizeDeps: { noDiscovery: true },
