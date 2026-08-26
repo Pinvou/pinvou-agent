@@ -74,7 +74,7 @@ pub use events::{
     AcpEventEnvelope,
 };
 use latest::LatestVersionProbe;
-use operation_gate::begin_prompt_turn;
+use operation_gate::admit_prompt_turn;
 pub use providers::{
     AcpProvidersView, ImportResult, ProviderManager, ProviderRecord, ProviderWireApi,
 };
@@ -2988,11 +2988,11 @@ impl AcpPool {
             &workspace_references,
             &runtime.prompt_capabilities,
         )?;
-        begin_prompt_turn(&runtime.busy, &runtime.configuring, session_id)?;
-        if let Err(error) = self.session_store.touch_activity(session_id) {
-            runtime.busy.store(false, Ordering::Release);
-            return Err(error).context("更新 ACP 会话最近活跃时间失败");
-        }
+        admit_prompt_turn(&runtime.busy, &runtime.configuring, session_id, || {
+            self.session_store
+                .touch_activity(session_id)
+                .context("更新 ACP 会话最近活跃时间失败")
+        })?;
         let pool = self.clone();
         let session_id = session_id.to_string();
         tokio::spawn(async move {

@@ -53,23 +53,37 @@ pub(super) fn begin_prompt(busy: &AtomicBool, configuring: &AtomicBool) -> Resul
     Ok(())
 }
 
-/// Admit a prompt turn: reserve the busy slot, then register the timing turn.
+/// Admit a prompt turn atomically across the fallible activity touch.
 ///
-/// The registration must happen inside the admitted section and before the
-/// prompt task is spawned: the spawned task can complete (fast mock response,
-/// instant connection error) and call `timing::finish_turn` before
-/// `send_message` returns, so registering from the caller after the await
-/// would race that finish — the completion would find an empty queue and be
-/// dropped, leaving the late registration as a stale unpaired entry.
-/// Registering only after admission also guarantees a rejected concurrent
-/// submit never enqueues a ghost turn whose send_error finish would clear
-/// the in-flight turn's queue (round-7 review invariant).
-pub(super) fn begin_prompt_turn(
+/// The sequence — busy admission, activity touch, timing registration — must
+/// stay atomic with respect to the touch failure: registration writes both a
+/// queue entry and a persisted `user_start` event that only a spawned prompt's
+/// `timing::finish_turn` can pair, so registering before a touch that then
+/// fails would leak both with no task left to finish them (round-8 review).
+/// Running the touch inside the admitted section (busy held) preserves the
+/// admission semantics and lets the failure path roll back the slot before
+/// returning.
+///
+/// The timing registration must also happen inside the admitted section and
+/// before the prompt task is spawned: the spawned task can complete (fast mock
+/// response, instant connection error) and call `timing::finish_turn` before
+/// `send_message` returns, so registering from the caller after the await would
+/// race that finish — the completion would find an empty queue and be dropped,
+/// leaving the late registration as a stale unpaired entry. Registering only
+/// after admission also guarantees a rejected concurrent submit never enqueues
+/// a ghost turn whose send_error finish would clear the in-flight turn's
+/// queue (round-7 review invariant).
+pub(super) fn admit_prompt_turn(
     busy: &AtomicBool,
     configuring: &AtomicBool,
     session_id: &str,
+    touch_activity: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
     begin_prompt(busy, configuring)?;
+    if let Err(error) = touch_activity() {
+        busy.store(false, Ordering::Release);
+        return Err(error);
+    }
     crate::features::assistant::timing::start_turn(session_id);
     Ok(())
 }
@@ -253,12 +267,12 @@ mod tests {
 
     /// The timing turn must be registered inside the admitted section, before
     /// the caller can race an immediate completion. Simulates the production
-    /// sequence in `AcpPool::send_message`: `begin_prompt_turn` (admission +
-    /// registration), then a synchronous completion arriving before the
-    /// method would have returned. The terminal must be attributed to the
-    /// registered turn and the queue must be empty afterwards; a caller-side
-    /// registration after the await would instead leave the completion
-    /// dropped and a stale unpaired entry behind.
+    /// sequence in `AcpPool::send_message`: `admit_prompt_turn` (admission +
+    /// activity touch + registration), then a synchronous completion arriving
+    /// before the method would have returned. The terminal must be attributed
+    /// to the registered turn and the queue must be empty afterwards; a
+    /// caller-side registration after the await would instead leave the
+    /// completion dropped and a stale unpaired entry behind.
     #[test]
     fn admitted_prompt_turn_survives_immediate_completion() {
         let _guard = crate::platform::paths::tests::ENV_LOCK
@@ -278,14 +292,14 @@ mod tests {
         let configuring = AtomicBool::new(false);
         let sid = "acp-admission-immediate-completion";
 
-        begin_prompt_turn(&busy, &configuring, sid).unwrap();
+        admit_prompt_turn(&busy, &configuring, sid, || Ok(())).unwrap();
         // Admission registered the turn synchronously, before any spawned
         // prompt task can run: the queue holds it at this point.
         assert!(crate::features::assistant::timing::has_queued_active_turn(
             sid
         ));
         // Immediate completion: happens-before any post-await caller code.
-        // begin_prompt_turn has already registered the turn, so the terminal
+        // admit_prompt_turn has already registered the turn, so the terminal
         // lands on it instead of being dropped on an empty queue.
         crate::features::assistant::timing::finish_turn(sid, "Completed", None);
 
@@ -332,10 +346,10 @@ mod tests {
         let sid = "acp-admission-rejected-submit";
 
         // First submit is admitted and its turn registered.
-        begin_prompt_turn(&busy, &configuring, sid).unwrap();
+        admit_prompt_turn(&busy, &configuring, sid, || Ok(())).unwrap();
         // Concurrent second submit is rejected by busy admission: no turn is
         // registered (no ghost queue entry).
-        let rejected = begin_prompt_turn(&busy, &configuring, sid);
+        let rejected = admit_prompt_turn(&busy, &configuring, sid, || Ok(()));
         assert!(rejected.is_err());
         assert!(
             !crate::features::assistant::timing::has_extra_queued_turns(sid),
@@ -359,6 +373,77 @@ mod tests {
             "in-flight terminal must be recorded exactly once"
         );
         assert_eq!(done[0].status.as_deref(), Some("Completed"));
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    /// Round-8 regression (failure injection): an activity-touch failure after
+    /// successful busy admission must leave no residue of any kind — the busy
+    /// slot is released for the next submit, no timing queue entry remains,
+    /// and no `user_start` lifecycle event is persisted (registration writes
+    /// both, and with no prompt task spawned nothing would ever pair a
+    /// terminal with them). The next admitted submit must then behave as if
+    /// the failed one never happened.
+    #[test]
+    fn activity_touch_failure_releases_slot_and_defers_registration() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-acp-touch-failure-timing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("PINVOU3_HOME", &tmp);
+
+        let busy = AtomicBool::new(false);
+        let configuring = AtomicBool::new(false);
+        let sid = "acp-admission-touch-failure";
+
+        // Injected store failure: the session store cannot persist the
+        // activity update (disk full, corrupted session file, invalid id...).
+        let failed = admit_prompt_turn(&busy, &configuring, sid, || {
+            Err(anyhow::anyhow!("simulated touch_activity failure"))
+        });
+        assert!(failed.is_err(), "touch failure must propagate to caller");
+
+        // Busy slot rolled back: the session is immediately submittable.
+        assert!(
+            !busy.load(Ordering::Acquire),
+            "busy slot must be released on touch failure"
+        );
+        // No queue entry was registered for the failed submit.
+        assert!(
+            !crate::features::assistant::timing::has_queued_active_turn(sid),
+            "failed submit must not leave a queued timing entry"
+        );
+        // No lifecycle event was persisted: there is no accepted turn whose
+        // start a later terminal could be misattributed to.
+        let timeline = crate::features::assistant::timing::read_timeline(sid).unwrap();
+        assert!(
+            timeline.is_empty(),
+            "failed submit must not persist any timing event"
+        );
+
+        // The next submit on the same session is unaffected: admitted, turn
+        // registered, and a terminal pairs with it exactly.
+        admit_prompt_turn(&busy, &configuring, sid, || Ok(())).unwrap();
+        assert!(crate::features::assistant::timing::has_queued_active_turn(
+            sid
+        ));
+        crate::features::assistant::timing::finish_turn(sid, "Completed", None);
+
+        let timeline = crate::features::assistant::timing::read_timeline(sid).unwrap();
+        let done: Vec<_> = timeline
+            .iter()
+            .filter(|e| e.event == "assistant_done")
+            .collect();
+        assert_eq!(done.len(), 1, "next turn terminal recorded exactly once");
+        assert_eq!(timeline[0].event, "user_start");
+        assert_eq!(done[0].turn_id, timeline[0].turn_id);
 
         let _ = std::fs::remove_dir_all(tmp);
     }
