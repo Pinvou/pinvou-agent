@@ -364,9 +364,10 @@ try {
   const loginMod = readFileSync(path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'login.rs'), 'utf8');
   const introspectMod = readFileSync(path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'introspect.rs'), 'utf8');
   const operationGate = readFileSync(path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'operation_gate.rs'), 'utf8');
-  // PR #339 round 9 把活跃时间落盘折进 admit_prompt_turn（operation_gate.rs），
-  // 使 touch 失败无法泄漏已注册的 timing turn；touch 本身仍在
-  // AcpPool::send_message 内、早于 timing 注册与 spawn 的 prompt 任务。
+  // PR #339 round 9 folds the activity persistence into `admit_prompt_turn`
+  // (operation_gate.rs) so a touch failure cannot leak a registered timing
+  // turn; the touch itself still runs inside `AcpPool::send_message`, before
+  // the timing registration and the spawned prompt task.
   assert.ok(/self\.session_store\s+\.touch_activity\(session_id\)/.test(runtime)
     && /admit_prompt_turn\(&runtime\.busy, &runtime\.configuring, session_id, \|\|/s.test(runtime)
     && operationGate.includes('fn admit_prompt_turn')
