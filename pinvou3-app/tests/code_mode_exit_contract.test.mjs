@@ -40,18 +40,31 @@ assertClearBefore(
   'bridge composerPrefill',
 );
 
-// 3. Scheduled-run shortcut: both the unavailable-bridge fallback and the
-// successful openScheduledRunChat branch land on the scheduled view showing a
-// regular conversation, so the mode is cleared once at the entry.
+// 3. Scheduled-run shortcut: the unavailable-bridge fallback and the
+// successful openScheduledRunChat branch each land on the scheduled view
+// showing a regular conversation, so each branch clears the mode right
+// before navigating. The entry must NOT clear unconditionally: when the open
+// fails the user is still on the active code session, and an entry-side clear
+// would leave it behind the standard sidebar.
 {
-  const body = windowFrom('async function handleOpenScheduledRunShortcut(run)', 1200);
-  assertClearBefore(body, 'scheduled', 'handleOpenScheduledRunShortcut');
-  const firstNav = body.indexOf("setCurrentView('scheduled')");
+  const head = windowFrom('async function handleOpenScheduledRunShortcut(run)', 700);
+  const fallbackAt = head.indexOf('if (!bridge.available || !bridge.scheduled.openScheduledRunChat)');
+  assert.ok(fallbackAt > -1, 'handleOpenScheduledRunShortcut: fallback branch marker not found');
   assert.ok(
-    body.includes("setCurrentView('scheduled')", firstNav + 1),
-    'handleOpenScheduledRunShortcut: expected both branches covered by the shared entry-point clear',
+    !head.slice(0, fallbackAt).includes('setCodeModeOn(false)'),
+    'handleOpenScheduledRunShortcut: entry must not clear code mode — the failed-open path stays on the active code session',
   );
 }
+assertClearBefore(
+  windowFrom('if (!bridge.available || !bridge.scheduled.openScheduledRunChat)'),
+  'scheduled',
+  'scheduled-run shortcut fallback branch',
+);
+assertClearBefore(
+  windowFrom('const opened = await bridge.scheduled.openScheduledRunChat(run, task);'),
+  'scheduled',
+  'scheduled-run shortcut open branch',
+);
 
 // 4. Pet scheduled notice: opening the run chat lands on the scheduled view.
 assertClearBefore(
@@ -77,6 +90,32 @@ assertClearBefore(
   windowFrom("if (!SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled')"),
   'chat',
   'retired scheduled entry fallback',
+);
+
+// 7. New chat: the non-codex branch of handleNewChat lands on a normal chat
+// draft. This covers the tool-intent path (tool store "new chat with this
+// tool") that force-skips the codex draft even while code mode is on, plus
+// forceMode='chat' call sites — the highest-traffic exit path of the mode.
+assertClearBefore(
+  windowFrom("// Every landing here is a normal chat (tool intent, forceMode='chat',", 600),
+  'chat',
+  'handleNewChat normal-chat branch',
+);
+
+// 8. Session list: opening a normal chat session is the baseline exit path.
+assertClearBefore(
+  windowFrom('async function handleSwitchSession(id)', 500),
+  'chat',
+  'handleSwitchSession',
+);
+
+// 9. navigateFromScheduledRun('chat') serves the collapsed-rail "current chat"
+// and the mobile bottom tab — the round-2 P1 fix site. The navigation uses a
+// variable, so pin the guard line itself instead of a clear-before-nav order.
+assert.match(
+  main,
+  /setCurrentView\(nextView\);[\s\S]{0,300}if \(nextView === 'chat'\) setCodeModeOn\(false\);/,
+  "navigateFromScheduledRun('chat'): navigating back to chat must exit code mode",
 );
 
 console.log('code mode exit contract tests passed');
