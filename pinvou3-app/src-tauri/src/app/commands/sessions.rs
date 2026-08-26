@@ -453,10 +453,10 @@ pub async fn delete_session(
     if result.is_ok() {
         pool.forget_session(&id);
         // Clearing keys of process-level per-session maps (timing/
-        //         // pending_user_input/memory/monitor) is done uniformly by the
-        //         // SessionPurgedHook fired on delete paths (registered at the lib.rs
-        //         // composition root; Chat goes through store.delete, ScheduledRun
-        //         // through purge_session_side_maps).
+        // pending_user_input/memory/monitor) is done uniformly by the
+        // SessionPurgedHook fired on delete paths (registered at the lib.rs
+        // composition root; Chat goes through store.delete, ScheduledRun
+        // through purge_session_side_maps).
         let payload = serde_json::json!({ "id": &id });
         let _ = app.emit("session:deleted", payload.clone());
         crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);

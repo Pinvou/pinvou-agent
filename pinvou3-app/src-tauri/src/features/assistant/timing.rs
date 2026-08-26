@@ -171,8 +171,8 @@ pub fn start_turn(session_id: &str) -> String {
 }
 
 /// On session deletion, clear its residual unpaired turn queues (map keys
-/// /// accumulate per session id and would grow unbounded over the app lifetime
-/// /// without this).
+/// accumulate per session id and would grow unbounded over the app lifetime
+/// without this).
 pub fn clear_session(session_id: &str) {
     if let Ok(mut map) = active_turns().lock() {
         map.remove(session_id);
@@ -307,13 +307,13 @@ fn finish_turn_internal(
     #[cfg(any(feature = "benchmark-hooks", test))] include_observation: bool,
 ) {
     // Only one turn per session is in flight at a time (turn-lock
-    //     // serialization), so the finishing turn is always the last one queued;
-    //     // take from the tail. Earlier entries can only be stale ids left by the
-    //     // "canceled before submit" path (start_turn followed by
-    //     // emit_unsubmitted_interrupted_terminal, no assistant_done) — popping
-    //     // FIFO would attribute assistant_done to the stale turn and leave the
-    //     // real id stuck in the queue forever. Clear the whole queue here;
-    //     // stale turns produce no terminal event.
+    // serialization), so the finishing turn is always the last one queued;
+    // take from the tail. Earlier entries can only be stale ids left by the
+    // "canceled before submit" path (start_turn followed by
+    // emit_unsubmitted_interrupted_terminal, no assistant_done) — popping
+    // FIFO would attribute assistant_done to the stale turn and leave the
+    // real id stuck in the queue forever. Clear the whole queue here;
+    // stale turns produce no terminal event.
     let active_turn = active_turns().lock().ok().and_then(|mut map| {
         let id = map.get_mut(session_id)?.pop_back();
         map.remove(session_id);
@@ -358,8 +358,8 @@ fn finish_turn_internal(
 #[cfg(any(feature = "benchmark-hooks", test))]
 fn record_first_event(session_id: &str, event: &'static str, tool_name: Option<&str>) {
     // Take the tail: consistent with finish_turn_internal's tail-pop
-    //     // semantics — earlier entries are stale turns left by "canceled before
-    //     // submit"; observation events must land on the truly in-flight turn.
+    // semantics — earlier entries are stale turns left by "canceled before
+    // submit"; observation events must land on the truly in-flight turn.
     let turn_id = active_turns().lock().ok().and_then(|mut map| {
         let active = map.get_mut(session_id)?.back_mut()?;
         active
@@ -1143,12 +1143,12 @@ mod tests {
     }
 
     /// Earlier entries in the queue can only be stale ids left by the
-    ///     /// "canceled before submit" path (no terminal recorded). Start two
-    ///     /// turns in a row to simulate stale residue, then finish: the terminal
-    ///     /// must be attributed to the last queued turn, and once the queue is
-    ///     /// cleared a further finish records nothing — a FIFO pop would
-    ///     /// attribute assistant_done to the stale turn while the real id stays
-    ///     /// stuck in the queue, mis-attributing later turns.
+    /// "canceled before submit" path (no terminal recorded). Start two
+    /// turns in a row to simulate stale residue, then finish: the terminal
+    /// must be attributed to the last queued turn, and once the queue is
+    /// cleared a further finish records nothing — a FIFO pop would
+    /// attribute assistant_done to the stale turn while the real id stays
+    /// stuck in the queue, mis-attributing later turns.
     #[test]
     fn finish_turn_attributes_terminal_to_newest_queued_turn() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -1195,8 +1195,8 @@ mod tests {
     }
 
     /// After clear_session removes a session's residual unpaired queues, a
-    ///     /// late finish must not record events to that session's sidecar;
-    ///     /// repeated clears are idempotent.
+    /// late finish must not record events to that session's sidecar;
+    /// repeated clears are idempotent.
     #[test]
     fn clear_session_empties_queue_and_silences_late_finish() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -1288,11 +1288,11 @@ mod tests {
     /// single observation finish, and this test pins the "one finish
     /// consumes one active turn" semantics.
     /// Attribution follows the tail-pop semantics (finish_turn_internal):
-    ///     /// under the single-flight guarantee the in-flight turn is the last one
-    ///     /// queued, and earlier entries are stale turns left by "canceled before
-    ///     /// submit" — the terminal lands on second, the whole queue is cleared,
-    ///     /// stale first produces no terminal event, and later finishes are
-    ///     /// no-ops.
+    /// under the single-flight guarantee the in-flight turn is the last one
+    /// queued, and earlier entries are stale turns left by "canceled before
+    /// submit" — the terminal lands on second, the whole queue is cleared,
+    /// stale first produces no terminal event, and later finishes are
+    /// no-ops.
     #[test]
     fn single_observation_finish_tail_pops_latest_turn_and_clears_queue() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -1326,8 +1326,8 @@ mod tests {
             .collect();
         assert_eq!(done_events.len(), 1, "exactly one turn must be finished");
         // Tail-pop attribution: the terminal lands on the last-queued
-        //         // second (the in-flight turn under single flight); stale first
-        //         // produces no terminal event.
+        // second (the in-flight turn under single flight); stale first
+        // produces no terminal event.
         assert_eq!(done_events[0].turn_id, second);
         // observation 字段随该次收尾落盘,不因重复收尾丢失。
         assert_eq!(done_events[0].tool_calls, Some(0));

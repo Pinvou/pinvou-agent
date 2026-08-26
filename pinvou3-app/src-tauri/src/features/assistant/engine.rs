@@ -535,16 +535,16 @@ impl TurnLifecycle {
     }
 
     /// Prune transcript rules that can no longer match an engine snapshot,
-    ///     /// keeping only the current in-flight reservation's rule (a defensive
-    ///     /// backstop; well-formed call sites never see concurrent in-flight
-    ///     /// turns). Two call sites: after a successful `SyncSession` rebuild —
-    ///     /// the hydrated history is the forwarder-sanitized one, the raw prompts
-    ///     /// in the persisted transcript were replaced by display messages, and
-    ///     /// stale rules can no longer match the new engine's snapshot; and after
-    ///     /// engine reclaim — the engine transcript is destroyed with it, removing
-    ///     /// the only live carrier of the raw prompts. Each rule holds both the
-    ///     /// full raw prompt and the display copy, so residency only accumulates
-    ///     /// linearly with turns (long sessions can reach tens of MB).
+    /// keeping only the current in-flight reservation's rule (a defensive
+    /// backstop; well-formed call sites never see concurrent in-flight
+    /// turns). Two call sites: after a successful `SyncSession` rebuild —
+    /// the hydrated history is the forwarder-sanitized one, the raw prompts
+    /// in the persisted transcript were replaced by display messages, and
+    /// stale rules can no longer match the new engine's snapshot; and after
+    /// engine reclaim — the engine transcript is destroyed with it, removing
+    /// the only live carrier of the raw prompts. Each rule holds both the
+    /// full raw prompt and the display copy, so residency only accumulates
+    /// linearly with turns (long sessions can reach tens of MB).
     pub(crate) fn prune_stale_transcript_rules(&self) {
         let mut state = self.state.lock();
         let keep = state.active_reservation_id;
@@ -2672,9 +2672,9 @@ mod turn_lifecycle_tests {
         }
 
         // Production shape: the interactive path reserves (lifecycle
-        //         // active) → installs this turn's rule → spawn/resync triggers the
-        //         // prune. Stale rules (completed turns) must be dropped while the
-        //         // in-flight reservation's rule survives.
+        // active) → installs this turn's rule → spawn/resync triggers the
+        // prune. Stale rules (completed turns) must be dropped while the
+        // in-flight reservation's rule survives.
         let mut active = lifecycle.reserve().expect("reserve");
         active
             .set_transcript(TranscriptOperation::Append, message("user", "live display"))

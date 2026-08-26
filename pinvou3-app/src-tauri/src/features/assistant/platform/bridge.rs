@@ -42,9 +42,9 @@ use crate::features::assistant::session_policy::SessionPolicy;
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 
 /// Process-wide shared credential-store handle. `SystemCredentialStore`'s
-/// /// backend caches (one `Secrets` per keyring service) live on the instance;
-/// /// a per-call new() throws the probe/service resolution away and repeats it
-/// /// several times per turn.
+/// backend caches (one `Secrets` per keyring service) live on the instance;
+/// a per-call new() throws the probe/service resolution away and repeats it
+/// several times per turn.
 fn shared_credential_store() -> &'static SystemCredentialStore {
     static STORE: std::sync::OnceLock<SystemCredentialStore> = std::sync::OnceLock::new();
     STORE.get_or_init(SystemCredentialStore::new)

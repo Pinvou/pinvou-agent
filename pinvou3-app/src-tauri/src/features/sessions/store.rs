@@ -338,11 +338,11 @@ impl SessionStore {
             self.save_hidden_sessions();
         }
         // The hook fires after all store-side map locks are released (same
-        //         // policy as the retention path in retention.rs): holding locks
-        //         // while calling process-level cleanup would introduce lock-ordering
-        //         // risk. Hook implementations only do idempotent keyed removal; when
-        //         // nobody registered (tests/early startup), deletion completes as
-        //         // usual.
+        // policy as the retention path in retention.rs): holding locks
+        // while calling process-level cleanup would introduce lock-ordering
+        // risk. Hook implementations only do idempotent keyed removal; when
+        // nobody registered (tests/early startup), deletion completes as
+        // usual.
         self.notify_session_purged(id);
         Ok(())
     }
@@ -365,19 +365,19 @@ impl SessionStore {
     }
 
     /// Register a session-purged hook (dependency inversion, see
-    ///     /// [`SessionPurgedHook`]). The app composition root registers the
-    ///     /// timing/pending_user_input cleanup once the pool is ready; store
-    ///     /// clones share the same Arc, so injection takes effect immediately.
+    /// [`SessionPurgedHook`]). The app composition root registers the
+    /// timing/pending_user_input cleanup once the pool is ready; store
+    /// clones share the same Arc, so injection takes effect immediately.
     pub fn register_session_purged_hook(&self, hook: SessionPurgedHook) {
         self.session_purged_hooks.write().push(hook);
     }
 
     /// Notifies all registered parties after a session is deleted from the
-    ///     /// store ([`SessionStore::delete`] and deep paths without an app handle
-    ///     /// such as retention policy/scheduled cleanup). Failures are silent
-    ///     /// (hook implementations own their idempotency) and must not block the
-    ///     /// deletion path; callers must fire this only after all store-side
-    ///     /// locks are released.
+    /// store ([`SessionStore::delete`] and deep paths without an app handle
+    /// such as retention policy/scheduled cleanup). Failures are silent
+    /// (hook implementations own their idempotency) and must not block the
+    /// deletion path; callers must fire this only after all store-side
+    /// locks are released.
     pub(crate) fn notify_session_purged(&self, id: &str) {
         for hook in self.session_purged_hooks.read().iter() {
             hook(id);

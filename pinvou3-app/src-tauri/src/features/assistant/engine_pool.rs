@@ -291,12 +291,12 @@ where
     store.delete(session_id)?;
     forget();
     // timing is process-level state within the same feature, so keys can
-    //     // be cleared directly (no dependency inversion needed). This covers
-    //     // paths that bypass the app composition root where the
-    //     // SessionPurgedHook is not registered (eval teardown, tests): unpaired
-    //     // turn-queue keys pinned by session id would otherwise grow unbounded
-    //     // under create/delete cycles like GAIA. Idempotent overlap with the
-    //     // hook cleanup fired from store.delete; no duplicated side effects.
+    // be cleared directly (no dependency inversion needed). This covers
+    // paths that bypass the app composition root where the
+    // SessionPurgedHook is not registered (eval teardown, tests): unpaired
+    // turn-queue keys pinned by session id would otherwise grow unbounded
+    // under create/delete cycles like GAIA. Idempotent overlap with the
+    // hook cleanup fired from store.delete; no duplicated side effects.
     crate::features::assistant::timing::clear_session(session_id);
     Ok(())
 }
@@ -1135,11 +1135,11 @@ impl EnginePool {
                     eprintln!("[engine_pool] sync history for {session_id} failed: {error:?}");
                 } else {
                     // The hydrated history is forwarder-sanitized: old
-                    //                     // transcript rules can no longer match the new engine's
-                    //                     // snapshot, so prune them to stop rules accumulating per
-                    //                     // turn. The interactive path installs rules around spawn
-                    //                     // (reserve already marked active); the retain predicate
-                    //                     // guarantees the in-flight reservation's rule survives.
+                    // transcript rules can no longer match the new engine's
+                    // snapshot, so prune them to stop rules accumulating per
+                    // turn. The interactive path installs rules around spawn
+                    // (reserve already marked active); the retain predicate
+                    // guarantees the in-flight reservation's rule survives.
                     turn_lifecycle.prune_stale_transcript_rules();
                 }
             }
@@ -1370,11 +1370,11 @@ impl EnginePool {
             );
         }
         // After reclaim the engine transcript is destroyed with it,
-        //         // removing the only live carrier of old raw prompts (the on-disk
-        //         // history is sanitized). Drop rules that can no longer match,
-        //         // stopping cross-engine-generation residency until session deletion;
-        //         // the in-flight reservation's rule is kept as a backstop (normal
-        //         // reclaim finalizes in-flight turns first).
+        // removing the only live carrier of old raw prompts (the on-disk
+        // history is sanitized). Drop rules that can no longer match,
+        // stopping cross-engine-generation residency until session deletion;
+        // the in-flight reservation's rule is kept as a backstop (normal
+        // reclaim finalizes in-flight turns first).
         if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
             lifecycle.prune_stale_transcript_rules();
         }
@@ -3177,10 +3177,10 @@ mod scheduled_model_tests {
     }
 
     /// Regression: the eval teardown paths (`ProductChatRuntime::close` /
-    ///     /// `delete_eval_session`) reuse delete_chat_session, but submit already
-    ///     /// ran `timing::start_turn`; deletion must clear the session's unpaired
-    ///     /// queue key in ACTIVE_TURNS, or a single GAIA pass's ~165 create/delete
-    ///     /// cycles would grow the process-level map unbounded.
+    /// `delete_eval_session`) reuse delete_chat_session, but submit already
+    /// ran `timing::start_turn`; deletion must clear the session's unpaired
+    /// queue key in ACTIVE_TURNS, or a single GAIA pass's ~165 create/delete
+    /// cycles would grow the process-level map unbounded.
     #[tokio::test]
     async fn chat_delete_clears_queued_turn_timing_state() {
         let _env_guard = crate::platform::paths::tests::ENV_LOCK

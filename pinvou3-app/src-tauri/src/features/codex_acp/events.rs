@@ -848,9 +848,9 @@ impl EventBridge {
         if terminal {
             self.record_tool_complete(&call);
             // When the first notification is already terminal (no later
-            //             // update), the tool_update removal path never runs; leaving the
-            //             // entry here would pin its raw_input/raw_output until bridge
-            //             // teardown.
+            // update), the tool_update removal path never runs; leaving the
+            // entry here would pin its raw_input/raw_output until bridge
+            // teardown.
             self.tools.lock().remove(&id);
         }
     }

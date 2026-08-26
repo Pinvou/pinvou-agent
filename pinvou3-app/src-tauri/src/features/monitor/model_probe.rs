@@ -197,20 +197,20 @@ fn model_api_key(model: &SavedModel) -> Option<String> {
 /// 当前模型健康探测 + 本地 vLLM Prometheus metrics 解析。
 ///
 /// Process-wide shared client: both the monitor page's 1 Hz polling and the
-/// /// chat page's status dot go through here; a fresh Client per call would
-/// /// rebuild TLS/connection pools every second with zero reuse. The 3s probe
-/// /// timeout moves to per-request, keeping the original semantics. Two
-/// /// OnceLock caveats:
-/// /// 1. reqwest enables system-proxy detection by default; the proxy config
-/// ///    is snapshotted at first build and never re-read for the process
-/// ///    lifetime — changing the system proxy mid-session needs an app
-/// ///    restart to take effect;
-/// /// 2. A build failure (TLS/system config unavailable) is cached
-/// ///    process-wide as `None` with no per-call retry, preserving the
-/// ///    caller's "probe failed → fall back to configured values" downgrade —
-/// ///    Client::default() panics on the same failure and is not a usable
-/// ///    fallback. Request-level errors are unaffected and remain per-call,
-/// ///    handled by the caller.
+/// chat page's status dot go through here; a fresh Client per call would
+/// rebuild TLS/connection pools every second with zero reuse. The 3s probe
+/// timeout moves to per-request, keeping the original semantics. Two
+/// OnceLock caveats:
+/// 1. reqwest enables system-proxy detection by default; the proxy config
+/// is snapshotted at first build and never re-read for the process
+/// lifetime — changing the system proxy mid-session needs an app
+/// restart to take effect;
+/// 2. A build failure (TLS/system config unavailable) is cached
+/// process-wide as `None` with no per-call retry, preserving the
+/// caller's "probe failed → fall back to configured values" downgrade —
+/// Client::default() panics on the same failure and is not a usable
+/// fallback. Request-level errors are unaffected and remain per-call,
+/// handled by the caller.
 fn shared_probe_client() -> Option<&'static reqwest::Client> {
     static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
     CLIENT

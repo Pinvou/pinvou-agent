@@ -31,9 +31,9 @@ const MODEL_API_KEY_SERVICE: &str = "pinvou3-model-api-key";
 /// 在"访问 Keychain + 读写值缓存"整段持有对应 key 的锁,串行化同一凭据的所有操作;不同 key
 /// 互不阻塞。锁内部从不嵌套 `value_cache`/`KEY_LOCKS` 之外的锁,无死锁风险。
 /// Sole exception: after a successful `delete`, the lock registration is
-/// /// removed only when no in-flight thread still holds the old lock handle
-/// /// (`Arc::strong_count` gate); otherwise the registration stays and
-/// /// converges on the next `delete`, so mutual exclusion never breaks.
+/// removed only when no in-flight thread still holds the old lock handle
+/// (`Arc::strong_count` gate); otherwise the registration stays and
+/// converges on the next `delete`, so mutual exclusion never breaks.
 ///
 /// **安全权衡**:缓存值为明文 secret,仅在进程内存(不落盘),与本 crate 内其他明文 secret
 /// 在内存中的驻留(如 bridge 注入给引擎的 api_key、marketplace 重灌进进程 env 的 mcp
@@ -45,13 +45,13 @@ const MODEL_API_KEY_SERVICE: &str = "pinvou3-model-api-key";
 /// 访问"App 或其它进程新增了该 item,本应用在重启前仍读到 `None`(设置页误显示"未配置")。
 /// 这是进程级内存缓存的固有边界,正常改 keychain 的路径走应用 UI(经 `set`/`delete` 同步
 /// updating the cache synchronously), so the impact is limited. The
-/// /// symmetric cost: after a successful `delete` the `None` placeholder is no
-/// /// longer kept (preventing unbounded accumulation for dynamic keys), so the
-/// /// first `get` after a delete touches the keyring backend once more — under
-/// /// macOS ad-hoc signing this can surface one extra authorization prompt;
-/// /// this trades "at most one backend access per delete" for cache
-/// /// correctness and does not affect #175's "no repeated prompts during use"
-/// /// goal.
+/// symmetric cost: after a successful `delete` the `None` placeholder is no
+/// longer kept (preventing unbounded accumulation for dynamic keys), so the
+/// first `get` after a delete touches the keyring backend once more — under
+/// macOS ad-hoc signing this can surface one extra authorization prompt;
+/// this trades "at most one backend access per delete" for cache
+/// correctness and does not affect #175's "no repeated prompts during use"
+/// goal.
 static VALUE_CACHE: OnceLock<Mutex<HashMap<(String, String), Option<String>>>> = OnceLock::new();
 
 fn value_cache() -> &'static Mutex<HashMap<(String, String), Option<String>>> {
@@ -432,18 +432,18 @@ impl CredentialStore for SystemCredentialStore {
             started_at.elapsed().as_millis()
         );
         // After a successful delete, remove the cache entry and the
-        //         // per-key lock registration outright (still inside the same
-        //         // critical section): the None placeholder in the value cache and
-        //         // KEY_LOCKS entries would otherwise accumulate forever under
-        //         // dynamic keys (e.g. remote-knowledge's per-join request_id) with
-        //         // no query value after deletion — "known absent" is expressible by
-        //         // a missing entry. The lock registration is removed only when no
-        //         // in-flight handle remains (map holds 1 + this function's local
-        //         // 1 = 2): if a get/set still held the old handle, deregistering
-        //         // would let later operations create a second lock and lose mutual
-        //         // exclusion with the in-flight operation (cache and backend
-        //         // effects could reorder); a leftover registration converges on the
-        //         // next delete.
+        // per-key lock registration outright (still inside the same
+        // critical section): the None placeholder in the value cache and
+        // KEY_LOCKS entries would otherwise accumulate forever under
+        // dynamic keys (e.g. remote-knowledge's per-join request_id) with
+        // no query value after deletion — "known absent" is expressible by
+        // a missing entry. The lock registration is removed only when no
+        // in-flight handle remains (map holds 1 + this function's local
+        // 1 = 2): if a get/set still held the old handle, deregistering
+        // would let later operations create a second lock and lose mutual
+        // exclusion with the in-flight operation (cache and backend
+        // effects could reorder); a leftover registration converges on the
+        // next delete.
         if result.is_ok() {
             if let Ok(mut cache) = value_cache().lock() {
                 cache.remove(&(reference.service.clone(), reference.account.clone()));
@@ -694,10 +694,10 @@ mod tests {
     }
 
     /// After a successful `delete`, the cache entry and the per-key lock
-    ///     /// registration are both removed (dynamic keys such as
-    ///     /// remote-knowledge's request_id leave no residue); a later `get` takes
-    ///     /// the cache-miss path → the backend confirms "absent" and still
-    ///     /// returns None.
+    /// registration are both removed (dynamic keys such as
+    /// remote-knowledge's request_id leave no residue); a later `get` takes
+    /// the cache-miss path → the backend confirms "absent" and still
+    /// returns None.
     #[test]
     fn system_store_delete_removes_cache_and_lock_entries() {
         let backend = Arc::new(FakeKeyringStore::new());

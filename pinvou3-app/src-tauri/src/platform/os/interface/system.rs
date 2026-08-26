@@ -9,10 +9,10 @@ pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String>
 /// Spawn a fire-and-forget process and reap it per platform semantics.
 ///
 /// On Unix a posix reaper thread `wait()`s to prevent zombies; Windows has
-/// /// no waitpid contract and dropping the handle after spawn lets the system
-/// /// reclaim the process. Meant for reuse from the features layer (browser
-/// /// launches for open/notify and the like), avoiding per-caller inline
-/// /// `cfg` platform details.
+/// no waitpid contract and dropping the handle after spawn lets the system
+/// reclaim the process. Meant for reuse from the features layer (browser
+/// launches for open/notify and the like), avoiding per-caller inline
+/// `cfg` platform details.
 pub fn spawn_detached_and_reap(command: &mut std::process::Command) -> std::io::Result<()> {
     #[cfg(unix)]
     {

@@ -16,16 +16,16 @@ impl NotificationState {
     pub fn should_notify(&self, key: String) -> bool {
         let mut turns = self.notified_turns.lock();
         // A duplicate with the same key (terminal-event replay)
-        //         // short-circuits first: otherwise the prefix cleanup below would
-        //         // remove this very entry and re-inserting it would be misreported
-        //         // as "first".
+        // short-circuits first: otherwise the prefix cleanup below would
+        // remove this very entry and re-inserting it would be misreported
+        // as "first".
         if turns.contains(&key) {
             return false;
         }
         // Keys look like `{session_id}:{turn_id}`: only the newest dedup
-        //         // record per session needs to survive (duplicate terminal events
-        //         // always follow the same turn). Without the prefix cleanup the set
-        //         // would grow unbounded with completed turns.
+        // record per session needs to survive (duplicate terminal events
+        // always follow the same turn). Without the prefix cleanup the set
+        // would grow unbounded with completed turns.
         let session_prefix = match key.split_once(':') {
             Some((session, _)) => format!("{session}:"),
             None => String::new(),
@@ -158,10 +158,10 @@ mod tests {
         assert!(state.should_notify("session:next-turn".to_string()));
         assert!(!state.should_notify("session:next-turn".to_string()));
         // Once the next turn lands, only the newest record per session
-        //         // survives: the old turn's key was already pruned by prefix (the
-        //         // set is bounded) and its reappearance is treated as a new event —
-        //         // duplicate terminal events always follow the same turn, so an old
-        //         // key reappearing across turns has no real dedup need.
+        // survives: the old turn's key was already pruned by prefix (the
+        // set is bounded) and its reappearance is treated as a new event —
+        // duplicate terminal events always follow the same turn, so an old
+        // key reappearing across turns has no real dedup need.
         assert!(state.should_notify("session:turn".to_string()));
         // Other sessions are unaffected.
         assert!(state.should_notify("other:turn".to_string()));

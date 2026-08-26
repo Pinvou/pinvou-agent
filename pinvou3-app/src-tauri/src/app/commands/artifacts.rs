@@ -495,9 +495,9 @@ struct VisualCacheEntry {
 }
 
 /// Cache budget: a single result can reach several MB (30-page PDF data
-///     /// URIs / inline-image HTML), and keys embed mtime — every rewrite of the
-///     /// same artifact yields a new key. Without a cap, long sessions accumulate
-///     /// hundreds of MB.
+/// URIs / inline-image HTML), and keys embed mtime — every rewrite of the
+/// same artifact yields a new key. Without a cap, long sessions accumulate
+/// hundreds of MB.
 const MAX_VISUAL_CACHE_ENTRIES: usize = 16;
 const MAX_VISUAL_CACHE_BYTES: usize = 96 * 1024 * 1024;
 
@@ -521,16 +521,16 @@ fn visual_cache_next_tick() -> u64 {
 }
 
 /// Key format is `path|mtime_millis`. Paths on macOS/Linux may contain `|`
-///     /// (a legal filename byte) while the numeric mtime field never does —
-///     /// same-path yielding must split from the right; a left split parses
-///     /// `/tmp/a|b.pdf` as `/tmp/a` and clobbers unrelated entries.
+/// (a legal filename byte) while the numeric mtime field never does —
+/// same-path yielding must split from the right; a left split parses
+/// `/tmp/a|b.pdf` as `/tmp/a` and clobbers unrelated entries.
 fn visual_cache_path(key: &str) -> &str {
     key.rsplit_once('|').map_or(key, |(path, _)| path)
 }
 
 /// Hits refresh the LRU clock; on insert, stale same-path keys yield
-///     /// directly, then the byte+entry dual budget evicts from the
-///     /// least-recently-used side.
+/// directly, then the byte+entry dual budget evicts from the
+/// least-recently-used side.
 fn visual_cache_insert(
     state: &mut std::collections::HashMap<String, VisualCacheEntry>,
     key: String,
@@ -583,8 +583,8 @@ pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String
         return Err(format!("not a file: {}", p.display()));
     }
     // Millisecond precision: an agent's atomic rewrites can emit several
-    //     // versions within the same second; second-granularity mtime would serve
-    //     // the second version a stale preview of the first.
+    // versions within the same second; second-granularity mtime would serve
+    // the second version a stale preview of the first.
     let mtime = std::fs::metadata(&p)
         .and_then(|m| m.modified())
         .ok()
@@ -676,9 +676,9 @@ fn open_with_libreoffice(path: &std::path::Path) -> Result<(), String> {
     }
 
     // Dropping the Child after spawn never reclaims the process (Unix
-    //     // zombies); route through the platform's fire-and-forget + reap
-    //     // interface (the first soffice instance can stay resident, and the
-    //     // reaper thread then parks until it exits).
+    // zombies); route through the platform's fire-and-forget + reap
+    // interface (the first soffice instance can stay resident, and the
+    // reaper thread then parks until it exits).
     let mut command = std::process::Command::new(&program);
     command.arg(crate::platform::os::external_application_path(path));
     crate::platform::os::spawn_detached_and_reap(&mut command)
@@ -1054,9 +1054,9 @@ mod visual_cache_tests {
     #[test]
     fn pipe_in_filename_parses_key_on_last_separator() {
         // Filenames may contain `|`: key parsing must split on the last
-        //         // separator (rsplit_once). A left split parses `/tmp/a|b.pdf|1` as
-        //         // `/tmp/a`, making unrelated files sharing the prefix
-        //         // (`/tmp/a|c.pdf`) evict each other's entries.
+        // separator (rsplit_once). A left split parses `/tmp/a|b.pdf|1` as
+        // `/tmp/a`, making unrelated files sharing the prefix
+        // (`/tmp/a|c.pdf`) evict each other's entries.
         let mut state = fresh_state();
         visual_cache_insert(&mut state, "/tmp/a|b.pdf|1".into(), result_with(8));
         visual_cache_insert(&mut state, "/tmp/a|c.pdf|1".into(), result_with(8));
@@ -1114,8 +1114,8 @@ mod visual_cache_tests {
     #[test]
     fn over_budget_single_entry_is_skipped_and_keeps_warm_entries() {
         // A single result over the byte budget: it must not be inserted,
-        //         // let alone wipe the whole table (including unrelated hot entries)
-        //         // in the eviction loop.
+        // let alone wipe the whole table (including unrelated hot entries)
+        // in the eviction loop.
         let mut state = fresh_state();
         visual_cache_insert(&mut state, "/a/small.pdf|1".into(), result_with(8));
         visual_cache_insert(

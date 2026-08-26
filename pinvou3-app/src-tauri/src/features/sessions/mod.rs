@@ -164,9 +164,9 @@ pub struct SessionStore {
     /// 的扫描结果不得回填(陈旧快照复活会驻留到下一次写)。见 store.rs。
     pub(crate) list_cache_generation: Arc<AtomicU64>,
     /// Session-purged hook (dependency inversion): see
-    ///     /// [`SessionPurgedHook`]. None = nobody registered (tests/early
-    ///     /// startup); deletion proceeds and only the process-level state goes
-    ///     /// unnotified.
+    /// [`SessionPurgedHook`]. None = nobody registered (tests/early
+    /// startup); deletion proceeds and only the process-level state goes
+    /// unnotified.
     session_purged_hooks: Arc<RwLock<Vec<SessionPurgedHook>>>,
 }
 
@@ -185,12 +185,12 @@ pub type ExecutionRootResolver = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sy
 pub type CodeSessionPredicate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Session-purged hook: fired by [`SessionStore::delete`] and deep deletion
-/// /// paths inside the sessions feature (retention policy/scheduled cleanup),
-/// /// notifying process-level state holders (timing/pending_user_input, etc.)
-/// /// to clear their keys. Same injection reason as `ExecutionRootResolver` —
-/// /// `sessions` must not depend on `assistant` in reverse (the architecture
-/// /// guard's feature dependency direction); the app composition root
-/// /// registers it.
+/// paths inside the sessions feature (retention policy/scheduled cleanup),
+/// notifying process-level state holders (timing/pending_user_input, etc.)
+/// to clear their keys. Same injection reason as `ExecutionRootResolver` —
+/// `sessions` must not depend on `assistant` in reverse (the architecture
+/// guard's feature dependency direction); the app composition root
+/// registers it.
 pub type SessionPurgedHook = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// 一个会话的两个根:

@@ -2438,9 +2438,9 @@ fn retention_purge_notifies_session_purged_hooks() {
     let id = chat.metadata.id.clone();
 
     // Dependency inversion: deep retention-policy deletions inside the
-    //     // sessions feature notify process-level state holders via the hook
-    //     // (timing/pending_user_input registered by the composition root); with
-    //     // nobody registered, deletion proceeds as usual.
+    // sessions feature notify process-level state holders via the hook
+    // (timing/pending_user_input registered by the composition root); with
+    // nobody registered, deletion proceeds as usual.
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let recorder = seen.clone();
     store.register_session_purged_hook(std::sync::Arc::new(move |sid: &str| {

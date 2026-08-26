@@ -452,15 +452,15 @@ pub fn run() {
                         move |session_id: &str| agents.is_code_session(session_id)
                     }));
                     // SessionStore::delete and deep deletion paths without
-                    //                     // an app handle (retention policy/scheduled cleanup)
-                    //                     // clear process-level per-session keys uniformly via
-                    //                     // the purge hook, matching the delete_session command's
-                    //                     // cleanup (dependency inversion, see SessionPurgedHook —
-                    //                     // sessions must not depend on assistant in reverse).
-                    //                     // MonitorState is managed late in setup while the hook
-                    //                     // only runs at deletion time, so try_state finds it in
-                    //                     // place; if unmanaged (very early deletions) the item is
-                    //                     // skipped.
+                    // an app handle (retention policy/scheduled cleanup)
+                    // clear process-level per-session keys uniformly via
+                    // the purge hook, matching the delete_session command's
+                    // cleanup (dependency inversion, see SessionPurgedHook —
+                    // sessions must not depend on assistant in reverse).
+                    // MonitorState is managed late in setup while the hook
+                    // only runs at deletion time, so try_state finds it in
+                    // place; if unmanaged (very early deletions) the item is
+                    // skipped.
                     let app_for_purge_hook = handle.clone();
                     store_for_engine
                         .register_session_purged_hook(std::sync::Arc::new(move |session_id: &str| {
@@ -470,9 +470,9 @@ pub fn run() {
                             );
                             crate::features::memory::discard_turn_capture(session_id);
                             // Self-metrics accumulate per session key
-                            //                             // (warmed_sessions inserts on every TurnComplete
-                            //                             // and is never reclaimed); clear the keys on
-                            //                             // deletion.
+                            // (warmed_sessions inserts on every TurnComplete
+                            // and is never reclaimed); clear the keys on
+                            // deletion.
                             if let Some(metrics) = app_for_purge_hook
                                 .try_state::<crate::features::monitor::MonitorState>()
                                 .map(|state| state.self_metrics())
