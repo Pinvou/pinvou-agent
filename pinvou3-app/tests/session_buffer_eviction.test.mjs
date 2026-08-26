@@ -1,27 +1,38 @@
 /**
- * 会话 buffer LRU 淘汰回归测试（PR #339 五审 P1/P2）：
+ * Session buffer LRU eviction regression tests (PR #339, round-5 P1/P2):
  *
- * P1 —— 全会话 LRU 淘汰空闲 buffer 时连同 composerDraft 一起丢弃。磁盘
- * transcript 只含已提交内容，草稿（Tauri 与 Web 均不落盘）一旦淘汰即从
- * 「可恢复」变「永久丢失」。修复：淘汰前把不可重水化的轻量草稿转移到
- * evictedSessionDrafts 侧表（独立上限 256），buffer 重建时回填；真实会话
- * 删除（purgeSessionBuffer）时作废，不得回流。
+ * P1 — The all-session LRU evicting an idle buffer used to drop its
+ * composerDraft with it. Disk transcripts hold committed content only and
+ * drafts are never persisted (both tauri and web), so eviction turned a
+ * recoverable draft into permanent loss. Fix: before eviction the
+ * non-rehydratable lightweight draft moves to an evictedSessionDrafts side
+ * table (bounded at 256 entries / 1M chars each) and every buffer-rebuild
+ * path restores it; when a bound would be exceeded the eviction is refused
+ * so the draft stays in the live buffer; real session deletion
+ * (purgeSessionBuffer) invalidates stashed drafts so they never flow back.
  *
- * P2 —— LRU 淘汰把 scene 事件的 localStorage 缓存键当会话删除清理。该缓存
- * 是 sidecar 保存失败/离线时的唯一恢复副本（savePinvouSceneEventsForSession
- * 的后端失败被有意吞掉，syncPinvouSceneEventsForSession 靠它兜底重放）。
- * 修复：容量淘汰（reason="evict"）保留缓存键，仅真实会话删除
- * （reason="delete"）清理。
+ * P2 — LRU eviction used to clean the scene-events localStorage cache key
+ * as if it were session deletion. That cache is the only recovery copy
+ * when the sidecar save fails or we are offline
+ * (savePinvouSceneEventsForSession intentionally swallows backend
+ * failures; syncPinvouSceneEventsForSession replays from it). Fix:
+ * capacity eviction (reason="evict") keeps the key; only real session
+ * deletion (reason="delete") cleans it.
  *
- * tauri 侧经 sessions.js factory 注入（同 session_nav_race.test.mjs），
- * web 侧整桥 vm 装载（同 session_nav_race_web.test.mjs）驱动公开 API
- * switchToSession/setComposerDraft/deleteSession 走生产路径。
+ * The tauri side loads the sessions.js factory (same as
+ * session_nav_race.test.mjs); the web side boots the whole bridge in a vm
+ * (same as session_nav_race_web.test.mjs) and drives the public API
+ * switchToSession/setComposerDraft/deleteSession through production paths.
  *
- * 复审追加：
- * - fresh 物化（ensureSession/persona 加卡）的空 buffer 必须标
- *   loadedFromDisk，否则带草稿切回时落慢路径被 freshBuffer() 顶替丢草稿；
- * - personaPlaceholderTitles 是会话元数据，容量淘汰保留、真实删除才清理；
- * - 超过 64K 字符上限的草稿不入暂存侧表，淘汰后重建 buffer 草稿为空。
+ * Follow-up rounds added:
+ * - fresh materialization (ensureSession/persona card) must mark the empty
+ *   buffer loadedFromDisk, otherwise switching back with a draft falls
+ *   into the slow path and the freshBuffer() replacement drops the draft;
+ * - personaPlaceholderTitles is session metadata: kept on capacity
+ *   eviction, cleaned only on real deletion;
+ * - eviction must never lose a draft: over-cap and capacity-boundary
+ *   drafts are preserved (stash overflow refuses eviction instead of
+ *   silently discarding user input).
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -35,7 +46,7 @@ const bridgeDir = path.join(here, '..', 'src', 'platform', 'tauri', 'bridge');
 const webBridgeRoot = path.resolve(here, '..', 'src', 'platform', 'web');
 const read = relativePath => fs.readFileSync(path.join(webBridgeRoot, relativePath), 'utf8');
 
-// ── tauri sessions.js factory 装载 ────────────────────────────────
+// ── tauri sessions.js factory boot ───────────────────────────────────
 
 function loadTauriSessionsFeature(overrides) {
   const root = { __PINVOU_SHARED_I18N__: {} };
@@ -123,87 +134,122 @@ function loadTauriSessionsFeature(overrides) {
   return { api, state, sessionStates, purgeLog, calls };
 }
 
-// ── P1：33 会话淘汰后草稿回填（tauri）──────────────────────────────
+// ── P1: 33-session eviction restores drafts via the side table (tauri) ──
 
-test('tauri 33 会话 LRU：淘汰最旧空闲 buffer，草稿经侧表回填，buffer 数有界', () => {
+test('tauri 33-session LRU evicts the oldest idle buffer, restores its draft, keeps buffer count bounded', () => {
   const { api, state, sessionStates, purgeLog } = loadTauriSessionsFeature();
   const total = 33;
   for (let i = 1; i <= total; i++) {
     api.switchActiveTo(`s${i}`, null);
-    // 切入后输入：离开 s_i 时 saveWorkingSetTo 快照的才是 draft-i（生产语义）。
+    // Type after switching in: what saveWorkingSetTo snapshots when leaving
+    // s_i is draft-i (production semantics).
     state.composerDraft = `draft-${i}`;
     state.messages = [{ role: 'user', content: `m${i}` }];
   }
-  // 第 33 次切换的 touch 使 sessionStates 达到 33 → 淘汰最旧的 s1。
+  // The 33rd switch's touch brings sessionStates to 33 → evicts oldest s1.
   assert.equal(purgeLog.filter(e => e.reason === 'evict').length, 1);
   assert.deepEqual(purgeLog[0], { id: 's1', reason: 'evict' });
-  assert.equal(Object.keys(sessionStates).length, 32, '重对象 buffer 必须有界（≤32）');
-  assert.equal(sessionStates.s1, undefined, '最旧空闲 buffer 必须被淘汰');
-  assert.equal(sessionStates.s2.composerDraft, 'draft-2', '存活 buffer 草稿原样');
+  assert.equal(Object.keys(sessionStates).length, 32, 'heavy buffers must stay bounded (≤32)');
+  assert.equal(sessionStates.s1, undefined, 'the oldest idle buffer must be evicted');
+  assert.equal(sessionStates.s2.composerDraft, 'draft-2', 'surviving buffers keep their drafts');
 
-  // 重访问 s1：switchActiveTo 重建 buffer（非 fresh）→ 暂存草稿回填。
+  // Revisit s1: switchActiveTo rebuilds the buffer (non-fresh) → the
+  // stashed draft is restored.
   api.switchActiveTo('s1', null);
-  assert.equal(state.composerDraft, 'draft-1', '淘汰时的未发送草稿必须经侧表恢复');
+  assert.equal(state.composerDraft, 'draft-1', 'the unsent draft at eviction time must be restored via the side table');
   assert.equal(sessionStates.s1.composerDraft, 'draft-1');
-  // 重水化语义：新 buffer 不携带旧 messages（由 load_session 慢路径重建）。
+  // Rehydration semantics: the new buffer carries no old messages (the
+  // load_session slow path rebuilds them).
   assert.equal(state.messages.length, 0);
 });
 
-test('tauri 淘汰保护谓词：busy / queued / remote 不回收', () => {
+test('tauri eviction protection predicates: busy / queued / remote buffers are never reclaimed', () => {
   const { api, state, sessionStates } = loadTauriSessionsFeature();
   api.switchActiveTo('s1', null);
   state.composerDraft = 'd1';
-  state.busy = true; // 回合进行中离开：saveWorkingSetTo 把 busy 快照进 s1 buffer
+  state.busy = true; // leaving mid-turn: saveWorkingSetTo snapshots busy into s1's buffer
   for (let i = 2; i <= 34; i++) {
     api.switchActiveTo(`s${i}`, null);
     state.composerDraft = `d${i}`;
   }
-  assert.notEqual(sessionStates.s1, undefined, 'busy buffer 不得被容量淘汰');
+  assert.notEqual(sessionStates.s1, undefined, 'a busy buffer must not be evicted for capacity');
   assert.equal(sessionStates.s1.busy, true);
   assert.equal(Object.keys(sessionStates).length, 32);
 });
 
-test('tauri purgeSessionBuffer：真实会话删除作废暂存草稿，不回流同 id 重建 buffer', () => {
+test('tauri purgeSessionBuffer: real session deletion invalidates stashed drafts so they never flow back', () => {
   const { api, state, sessionStates, purgeLog } = loadTauriSessionsFeature();
   for (let i = 1; i <= 33; i++) {
     api.switchActiveTo(`s${i}`, null);
     state.composerDraft = `draft-${i}`;
   }
-  assert.equal(sessionStates.s1, undefined, '前置：s1 已被淘汰且草稿已暂存');
+  assert.equal(sessionStates.s1, undefined, 'precondition: s1 already evicted and its draft stashed');
   assert.deepEqual(purgeLog[0], { id: 's1', reason: 'evict' });
 
   api.purgeSessionBuffer('s1');
   assert.deepEqual(purgeLog[purgeLog.length - 1], { id: 's1', reason: 'delete' },
-    '真实删除必须以 delete reason 通知宿主（scene 键清理的依据）');
+    'real deletion must notify the host with the delete reason (the scene-key cleanup depends on it)');
   const rebuilt = api.getBuffer('s1');
-  assert.equal(rebuilt.composerDraft, '', '已删除会话的暂存草稿不得回流');
+  assert.equal(rebuilt.composerDraft, '', 'a deleted session\'s stashed draft must not flow back');
 
-  // 对照：未删除的 s2 暂存草稿仍可回填。
+  // Control: s2's stashed draft (not deleted) is still restorable.
   api.switchActiveTo('s2', null);
   assert.equal(state.composerDraft, 'draft-2');
 });
 
-test('tauri 暂存草稿侧表有界（256）：远超上限的淘汰逐出最旧暂存', () => {
+test('tauri oversized drafts never lost: eviction is refused when the stash cannot retain the draft', () => {
+  const { api, state, sessionStates } = loadTauriSessionsFeature();
+  api.switchActiveTo('s1', null);
+  // A transport-level write can bypass the composer input cap, producing an
+  // oversized draft (over the 1M-char stash bound).
+  state.composerDraft = 'x'.repeat(1000001);
+  for (let i = 2; i <= 33; i++) {
+    api.switchActiveTo(`s${i}`, null);
+    state.composerDraft = `d${i}`;
+  }
+  // s1 is oldest and idle, but its oversized draft cannot be safely
+  // stashed: the eviction must be refused so the draft stays in the live
+  // buffer (never silently discarded). s2 becomes the oldest eligible
+  // buffer and is evicted instead.
+  assert.notEqual(sessionStates.s1, undefined,
+    'eviction must be refused when the stash cannot retain the draft');
+  assert.equal(sessionStates.s1.composerDraft, 'x'.repeat(1000001),
+    'the oversized unsent draft must survive in the resident buffer');
+  assert.equal(sessionStates.s2, undefined,
+    'the next eligible buffer (s2) is evicted instead');
+  assert.equal(sessionStates.s3.composerDraft, 'd3', 'surviving buffers keep their small drafts');
+  // The refusal must not wedge the LRU: another eligible session is evicted
+  // instead, keeping the count bounded.
+  assert.equal(Object.keys(sessionStates).length, 32,
+    'the LRU must still evict an eligible buffer to stay bounded');
+});
+
+test('tauri stash capacity boundary: the 257th drafted session keeps its draft (eviction refused, no silent loss)', () => {
   const { api, state } = loadTauriSessionsFeature();
-  const total = 32 + 257; // 289 个会话 → 257 次淘汰 → 暂存表 257 条超限逐出 s1
+  // 32 resident + 257 evictions = 289 sessions: the 257th stash insert
+  // would exceed the 256-entry side table.
+  const total = 32 + 257;
   for (let i = 1; i <= total; i++) {
     api.switchActiveTo(`s${i}`, null);
     state.composerDraft = `draft-${i}`;
   }
-  // 探查本身会触发新一轮淘汰+暂存（挤掉当时的表头），所以只断言两个
-  // 稳定不变量：最早的暂存（s1）已被逐出；近期暂存（第 257 个被淘汰的
-  // s257）仍在表内。二者都不受探查顺序影响。
-  assert.equal(api.getBuffer('s1').composerDraft, '', '最早的暂存草稿被侧表上限逐出');
+  // s1 (oldest, draft already stashed earlier) was evicted; its stash is
+  // still within the 256-entry table and restorable.
+  assert.equal(api.getBuffer('s1').composerDraft, 'draft-1',
+    'the earliest stashed draft is restored when the side table is within its entry bound');
+  // The 257th eviction (s257's) was refused to avoid evicting the oldest
+  // stash entry — the draft survives in the resident buffer.
   assert.equal(api.getBuffer('s257').composerDraft, 'draft-257',
-    '近期暂存草稿仍在侧表内（侧表非无限，但容量远大于 buffer 上限）');
+    'the capacity-boundary draft is preserved (eviction refused rather than silently discarding input)');
 });
 
-// ── 复审 BLOCKER：fresh 物化空 buffer 的草稿丢失回归（tauri）─────────
+// ── Review BLOCKER: fresh materialization draft-loss regression (tauri) ──
 
-test('tauri fresh 物化空会话带草稿：切走再切回经 switchToSession 不丢草稿', async () => {
+test('tauri fresh-materialized empty session with a draft: switching away and back via switchToSession keeps the draft', async () => {
   const { api, state, sessionStates } = loadTauriSessionsFeature({
     invoke(name, args) {
-      // persona 加卡物化的会话在磁盘上是零消息空会话。
+      // A session materialized by equipping a persona card is a zero-message
+      // empty session on disk.
       if (name === 'load_session') {
         return Promise.resolve({
           metadata: { id: args.id, message_count: 0 },
@@ -214,102 +260,115 @@ test('tauri fresh 物化空会话带草稿：切走再切回经 switchToSession 
       return Promise.resolve({});
     },
   });
-  // persona 加卡物化：switchActiveTo(id, {fresh:true}) 建空 buffer（无 messages）。
+  // Persona-card materialization: switchActiveTo(id, {fresh:true}) builds an
+  // empty buffer (no messages).
   api.switchActiveTo('persona-1', { fresh: true });
-  state.composerDraft = 'persona-draft'; // 用户输入未发送草稿
-  // 切走：saveWorkingSetTo 把草稿快照进 persona-1 的后台 buffer。
+  state.composerDraft = 'persona-draft'; // user's unsent draft
+  // Switch away: saveWorkingSetTo snapshots the draft into persona-1's
+  // background buffer.
   api.switchActiveTo('other', null);
-  assert.equal(sessionStates['persona-1'].composerDraft, 'persona-draft', '前置：草稿已快照进 buffer');
-  // 切回：fresh 物化的空 buffer 已标 loadedFromDisk → 快路径命中、草稿保留。
-  // 回归前 buffer 未标，门控拒绝后落慢路径，sessionStates[id] 被
-  // freshBuffer() 顶替且不经侧表暂存，草稿被静默丢弃。
+  assert.equal(sessionStates['persona-1'].composerDraft, 'persona-draft', 'precondition: the draft was snapshotted into the buffer');
+  // Switch back: the fresh empty buffer is marked loadedFromDisk → the fast
+  // path hits and the draft survives. Before the regression fix the buffer
+  // was unmarked, the gate rejected it onto the slow path, sessionStates[id]
+  // was replaced by freshBuffer() without the side-table stash, and the
+  // draft was silently dropped.
   assert.equal(await api.switchToSession('persona-1'), true);
   assert.equal(state.composerDraft, 'persona-draft',
-    'fresh 物化空会话的未发送草稿不得在切回时丢失');
+    'the unsent draft of a fresh-materialized empty session must not be lost on switching back');
   assert.equal(sessionStates['persona-1'].loadedFromDisk, true,
-    'fresh 物化的空 buffer 必须标 loadedFromDisk（快路径门控依据）');
+    'a fresh empty buffer must be marked loadedFromDisk (the fast-path gate depends on it)');
 });
 
-// ── 复审：personaPlaceholderTitles 只随真实删除清理 ──────────────────
+// ── personaPlaceholderTitles cleaned only on real deletion ─────────────
 
-test('tauri LRU 容量淘汰保留 personaPlaceholderTitles，真实删除才清理', () => {
+test('tauri LRU capacity eviction keeps personaPlaceholderTitles; real deletion cleans it', () => {
   const personaPlaceholderTitles = {};
   const { api, state } = loadTauriSessionsFeature({ personaPlaceholderTitles });
   api.switchActiveTo('s1', null);
-  personaPlaceholderTitles.s1 = true; // 加卡占位标题标记
+  personaPlaceholderTitles.s1 = true; // persona-card placeholder title marker
   state.composerDraft = 'd1';
   for (let i = 2; i <= 33; i++) {
     api.switchActiveTo(`s${i}`, null);
     state.composerDraft = `d${i}`;
   }
   assert.equal(personaPlaceholderTitles.s1, true,
-    '容量淘汰不得删除占位标题标记（重水化路径不会恢复它）');
+    'capacity eviction must not delete the placeholder-title marker (rehydration never restores it)');
 
   api.purgeSessionBuffer('s1');
   assert.equal(personaPlaceholderTitles.s1, undefined,
-    '真实会话删除必须清理占位标题标记');
+    'real session deletion must clean the placeholder-title marker');
 });
 
-test('web personaPlaceholderTitles 只在真实删除时清理（源码契约）', () => {
+test('web personaPlaceholderTitles cleaned only on real deletion (source contract)', () => {
   const webBridge = read('bridge.js');
   const bodyOf = signature => {
     const start = webBridge.indexOf(signature);
-    assert.ok(start > 0, `${signature} 必须存在`);
+    assert.ok(start > 0, `${signature} must exist`);
     const end = webBridge.indexOf('\n  function ', start + 1);
     return webBridge.slice(start, end > 0 ? end : undefined);
   };
   assert.ok(!/delete personaPlaceholderTitles/.test(bodyOf('function pruneSessionBuffers')),
-    '全会话 LRU 淘汰不得清理 personaPlaceholderTitles');
+    'the all-session LRU eviction must not clean personaPlaceholderTitles');
   assert.ok(!/delete personaPlaceholderTitles/.test(bodyOf('function pruneScheduledSessionBuffers')),
-    'scheduled LRU 淘汰不得清理 personaPlaceholderTitles');
+    'the scheduled LRU eviction must not clean personaPlaceholderTitles');
   assert.ok(/delete personaPlaceholderTitles\[id\]/.test(bodyOf('function purgeSessionBuffer')),
-    '真实会话删除（purgeSessionBuffer）必须清理 personaPlaceholderTitles');
+    'real session deletion (purgeSessionBuffer) must clean personaPlaceholderTitles');
 });
 
-// ── 复审：64K 草稿字符上限 ────────────────────────────────────────────
+// ── draft stash bounds: eviction is refused instead of losing input ────
 
-test('tauri 超长草稿（>64K）不入暂存侧表：淘汰后重建 buffer 草稿为空', () => {
+test('tauri oversized draft (>1M chars) is never stashed-and-dropped: eviction is refused and the draft survives', () => {
   const { api, state, sessionStates } = loadTauriSessionsFeature();
   api.switchActiveTo('s1', null);
-  // transport 级写入可绕过 Composer 的输入上限，产生超长草稿。
-  state.composerDraft = 'x'.repeat(65537);
+  // A transport-level write can bypass the composer input cap, producing an
+  // oversized draft. It must not be silently lost at eviction time.
+  state.composerDraft = 'y'.repeat(1000001);
   for (let i = 2; i <= 33; i++) {
     api.switchActiveTo(`s${i}`, null);
     state.composerDraft = `d${i}`;
   }
-  assert.equal(sessionStates.s2.composerDraft, 'd2', '存活 buffer 的小草稿不受影响');
-  // s1 已被淘汰；超长草稿未入侧表，重建 buffer 不回填。
-  assert.equal(api.getBuffer('s1').composerDraft, '',
-    '超过 64K 字符上限的草稿不随淘汰暂存，重建后为空');
+  // s1 is the oldest idle buffer but its draft exceeds the stash char
+  // bound: the eviction is refused and the draft stays resident.
+  assert.notEqual(sessionStates.s1, undefined,
+    'a buffer whose draft cannot be safely retained must not be evicted');
+  assert.equal(sessionStates.s1.composerDraft.length, 1000001,
+    'the oversized draft survives in the resident buffer');
+  // The LRU stays bounded by evicting the next eligible session instead.
+  assert.equal(Object.keys(sessionStates).length, 32,
+    'the buffer count stays bounded via other eligible evictions');
 });
 
-// ── P2：scene 缓存键语义（源码契约 + tauri hook reason）────────────
+// ── P2: scene cache key semantics (source contract + tauri hook reason) ──
 
-test('scene 事件 localStorage 键只在真实会话删除时清理（tauri hook 契约）', () => {
+test('scene-events localStorage key cleaned only on real session deletion (tauri hook contract)', () => {
   const tauriBridge = fs.readFileSync(path.join(bridgeDir, '..', 'bridge.js'), 'utf8');
-  // onSessionBufferPurged 必须按 reason 区分，仅 delete 清理 scene 缓存键。
+  // onSessionBufferPurged must distinguish by reason; only delete cleans
+  // the scene cache key.
   assert.match(tauriBridge, /onSessionBufferPurged: function \(id, reason\)/,
-    'tauri bridge hook 必须接收淘汰原因');
+    'the tauri bridge hook must receive the eviction reason');
   const sceneRemoves = tauriBridge.match(/removeItem\(PINVOU_SCENE_EVENTS_STORAGE_PREFIX \+ id\)/g) || [];
-  assert.equal(sceneRemoves.length, 1, 'tauri bridge 只应有一处 scene 键清理（hook 内）');
+  assert.equal(sceneRemoves.length, 1, 'the tauri bridge must have exactly one scene-key cleanup (inside the hook)');
   const hookBody = tauriBridge.slice(
     tauriBridge.indexOf('onSessionBufferPurged: function (id, reason)'),
-    tauriBridge.indexOf('onSessionBufferPurged: function (id, reason)') + 900);
-  assert.match(hookBody, /reason === "delete"[\s\S]{0,400}removeItem\(PINVOU_SCENE_EVENTS_STORAGE_PREFIX/,
-    'scene 键清理必须被 reason === "delete" 门控');
+    tauriBridge.indexOf('onSessionBufferPurged: function (id, reason)') + 1600);
+  const hookTail = hookBody.slice(hookBody.indexOf('reason === "delete"'));
+  assert.match(hookTail, /removeItem\(PINVOU_SCENE_EVENTS_STORAGE_PREFIX/,
+    'the scene-key cleanup must be gated on reason === "delete"');
 
-  // web 桥：两处 LRU 淘汰循环不得清理 scene 键；清理只存在于 purgeSessionBuffer。
+  // Web bridge: neither LRU eviction loop may clean the scene key; cleanup
+  // exists only in purgeSessionBuffer.
   const webBridge = read('bridge.js');
   const webSceneRemoves = webBridge.match(/removeItem\(PINVOU_SCENE_EVENTS_STORAGE_PREFIX \+ id\)/g) || [];
-  assert.equal(webSceneRemoves.length, 1, 'web bridge 的 scene 键清理只应在 purgeSessionBuffer（真实删除）');
+  assert.equal(webSceneRemoves.length, 1, 'the web bridge\'s scene-key cleanup must exist only in purgeSessionBuffer (real deletion)');
   const purgeAt = webBridge.indexOf('function purgeSessionBuffer');
   const pruneAt = webBridge.indexOf('function pruneSessionBuffers');
   assert.ok(purgeAt > 0 && pruneAt > 0);
   assert.ok(webSceneRemoves[0] && webBridge.indexOf(webSceneRemoves[0]) > purgeAt,
-    'web scene 键清理必须位于 purgeSessionBuffer 内');
+    'the web scene-key cleanup must live inside purgeSessionBuffer');
 });
 
-// ── web 桥：整桥装载驱动公开 API ──────────────────────────────────
+// ── web bridge: full-bridge vm boot driving the public API ────────────
 
 function bootWebBridge() {
   const storage = new Map();
@@ -380,11 +439,12 @@ function bootWebBridge() {
   });
   vm.runInContext(read('bridge.js'), context, { filename: 'platform/web/bridge.js' });
   const flat = windowObject.TauriBridge;
-  // 冷切换走 loadSessionForClient 的 chunk 协议：单块 eof 返回。
+  // Cold switches go through loadSessionForClient's chunk protocol: a
+  // single-chunk eof response.
   handlers.web_access_load_session_chunk = args => {
     calls.chunkLoads.push(args.id);
     const saved = {
-      metadata: { id: args.id, title: `会话 ${args.id}`, message_count: 1 },
+      metadata: { id: args.id, title: `session ${args.id}`, message_count: 1 },
       messages: [{ role: 'user', content: `hello ${args.id}` }],
       transcript_revision: 1,
       artifacts: [],
@@ -404,87 +464,98 @@ function bootWebBridge() {
   };
 }
 
-// ── P1（web）：33+ 会话淘汰后草稿仍恢复 ────────────────────────────
+// ── P1 (web): drafts survive 33+ session eviction ─────────────────────
 
-test('web 34 会话 LRU：淘汰 s1 后重访问，草稿经侧表回填且走磁盘重水化', async () => {
+test('web 34-session LRU: evicted s1 revisited — draft restored via the side table with a disk rehydration', async () => {
   const rt = bootWebBridge();
-  // s1 冷加载（慢路径建立 loadedFromDisk buffer）并留下未发送草稿。
+  // s1 cold-loads (slow path builds a loadedFromDisk buffer) and leaves an
+  // unsent draft.
   assert.equal(await rt.flat.switchToSession('s1'), true);
   rt.flat.setComposerDraft('web-unsent-draft');
-  // 再切换 33 个会话：第 34 个会话建立时容量淘汰 s1（最旧空闲）。
+  // Switch through 33 more sessions: the 34th session's creation evicts s1
+  // (oldest idle).
   for (let i = 2; i <= 34; i++) {
     assert.equal(await rt.flat.switchToSession(`s${i}`), true);
   }
   const loadsBefore = rt.calls.chunkLoads.filter(id => id === 's1').length;
-  assert.equal(loadsBefore, 1, '前置：s1 此前只冷加载过一次');
-  // 切回 s1：buffer 已被淘汰 → 必须重新走 chunk 重水化（证明淘汰真实发生）。
+  assert.equal(loadsBefore, 1, 'precondition: s1 was cold-loaded exactly once before');
+  // Switch back to s1: the buffer was evicted → the chunk rehydration must
+  // run again (proving the eviction really happened).
   assert.equal(await rt.flat.switchToSession('s1'), true);
   const loadsAfter = rt.calls.chunkLoads.filter(id => id === 's1').length;
-  assert.equal(loadsAfter, 2, 's1 被淘汰后重访问必须重新水化（重对象确已释放）');
+  assert.equal(loadsAfter, 2, 'a revisited evicted session must rehydrate (heavy objects really released)');
   assert.equal(rt.flat.getComposerDraft(), 'web-unsent-draft',
-    '淘汰时的未发送草稿必须经侧表恢复');
+    'the unsent draft at eviction time must be restored via the side table');
 });
 
-test('web 超长草稿（>64K）不入暂存侧表：淘汰重水化后草稿为空', async () => {
+test('web oversized draft (>1M chars) survives: eviction is refused instead of silently dropping input', async () => {
   const rt = bootWebBridge();
   assert.equal(await rt.flat.switchToSession('s1'), true);
-  // transport 级 setter 可绕过 Composer 的输入上限，产生超长草稿。
-  rt.flat.setComposerDraft('x'.repeat(65537));
+  // A transport-level setter can bypass the composer input cap, producing
+  // an oversized draft. It must not be lost to eviction.
+  rt.flat.setComposerDraft('x'.repeat(1000001));
   for (let i = 2; i <= 34; i++) {
     assert.equal(await rt.flat.switchToSession(`s${i}`), true);
   }
-  // s1 已被容量淘汰；切回重新水化后超长草稿不得回填。
+  // s1 is the oldest idle session but its draft exceeds the stash char
+  // bound: the eviction is refused and the draft survives in the resident
+  // buffer (no rehydration needed, no silent loss).
   assert.equal(await rt.flat.switchToSession('s1'), true);
-  assert.equal(rt.flat.getComposerDraft(), '',
-    '超过 64K 字符上限的草稿不随淘汰暂存，重水化后为空');
+  assert.equal(rt.flat.getComposerDraft(), 'x'.repeat(1000001),
+    'an oversized unsent draft must survive eviction (eviction refused rather than dropped)');
 });
 
-// ── P2（web）：保存失败 + 淘汰 + 重水化 ────────────────────────────
+// ── P2 (web): failed save + eviction + rehydration ─────────────────────
 
-test('web scene sidecar 保存失败 + 容量淘汰后，localStorage 缓存仍可恢复', async () => {
+test('web scene sidecar save failure + capacity eviction: the localStorage cache still recovers', async () => {
   const rt = bootWebBridge();
   const key = 'pinvou_scene_events_v1:s1';
-  // 模拟「sidecar 尚无数据、后端保存失败」：get 返回空数组、save 拒绝，
-  // localStorage 缓存是唯一副本（savePinvouSceneEventsForSession 的后端
-  // 失败被有意吞掉，留下缓存）。
+  // Simulate "sidecar has no data yet and the backend save fails": get
+  // returns an empty array, save rejects, and the localStorage cache is
+  // the only copy (savePinvouSceneEventsForSession intentionally swallows
+  // the backend failure, leaving the cache).
   rt.handlers.get_session_pinvou_scene_events = () => [];
   rt.handlers.save_session_pinvou_scene_events = () => Promise.reject(new Error('offline'));
   rt.storage.set(key, JSON.stringify([{ pos: 0, scene: 'work:document-writing' }]));
 
   assert.equal(await rt.flat.switchToSession('s1'), true);
   assert.equal(rt.view().pinvouSceneEvents.length, 1,
-    'sidecar 空 + 保存失败时必须由 localStorage 缓存兜底恢复');
+    'with an empty sidecar and a failed save, the localStorage cache must back the recovery');
   assert.equal(rt.storage.has(key), true);
 
   for (let i = 2; i <= 34; i++) {
     assert.equal(await rt.flat.switchToSession(`s${i}`), true);
   }
-  // 容量淘汰不得清理恢复副本。
+  // Capacity eviction must not clean the recovery copy.
   assert.equal(rt.storage.has(key), true,
-    'LRU 容量淘汰不得删除 scene 事件的唯一离线恢复副本');
-  // 淘汰后重水化仍然恢复。
+    'LRU capacity eviction must not delete the only offline recovery copy of scene events');
+  // Rehydration after eviction still recovers.
   assert.equal(await rt.flat.switchToSession('s1'), true);
   assert.equal(rt.view().pinvouSceneEvents.length, 1,
-    '淘汰 + 重水化后 scene 映射必须从缓存恢复');
+    'after eviction + rehydration the scene mapping must recover from the cache');
 
-  // 对照：真实会话删除才清理缓存键。
+  // Control: real session deletion cleans the cache key.
   rt.handlers.delete_session = () => ({});
   assert.equal(await rt.flat.deleteSession('s1'), true);
   assert.equal(rt.storage.has(key), false,
-    '真实会话删除必须清理 scene 缓存键（防无界累积）');
+    'real session deletion must clean the scene cache key (preventing unbounded accumulation)');
 });
 
-// ── 计划任务重开：淘汰后 scheduled 打开流程的草稿恢复 ────────────────
-// openScheduledRunChatOnce 两分支（queued/running 的 beginScheduledOpenActivation
-// 与其余的 scheduledRunBuffer）都先经 getBuffer 重建 buffer——回填发生在
-// getBuffer 恢复点（switchToSessionInternal 的 hydrateLive 入口恢复是防御
-// 性兜底，正常调用图不可达）。本测试锁定可达路径：淘汰 → 计划任务重开 →
-// 草稿必须回到可见工作集。
+// ── scheduled-run reopen: draft recovery via the scheduled open flow after eviction ───
 
-test('web 计划任务重开：淘汰后经 scheduled 打开，草稿经 getBuffer 重建回填', async () => {
+// Both openScheduledRunChatOnce branches (beginScheduledOpenActivation for
+// queued/running, scheduledRunBuffer otherwise) rebuild the buffer via
+// getBuffer first — the restore happens at the getBuffer restore point
+// (the switchToSessionInternal hydrateLive entry restore is a defensive
+// backstop, unreachable on the normal call graph). This test pins the
+// reachable path: eviction → scheduled-run reopen → the draft must return
+// to the visible working set.
+
+test('web scheduled-run reopen: after eviction, the scheduled open restores the draft via the getBuffer rebuild', async () => {
   const rt = bootWebBridge();
-  // sched 会话此前被切到过并留下未发送草稿，后被容量淘汰（buffer 无了，
-  // 草稿只剩侧表）。running 运行重开走 hydrateLiveSession: true 路径。
+  // The sched session was visited earlier and left an unsent draft, then
+  // was evicted by capacity (buffer gone, draft only in the side table).
+  // Reopening a running run takes the hydrateLiveSession: true path.
   const sid = 'sched-run-1';
   assert.equal(await rt.flat.switchToSession(sid), true);
   rt.flat.setComposerDraft('sched-live-draft');
@@ -496,28 +567,30 @@ test('web 计划任务重开：淘汰后经 scheduled 打开，草稿经 getBuff
     { id: 'task-1' },
   ), true);
   assert.equal(rt.flat.getComposerDraft(), 'sched-live-draft',
-    '淘汰后计划任务重开（getBuffer 重建）必须回填侧表草稿');
-  assert.equal(rt.view().pinvouSceneEvents.length, 0, '注水成功：会话已打开');
+    'a scheduled-run reopen after eviction (getBuffer rebuild) must restore the side-table draft');
+  assert.equal(rt.view().pinvouSceneEvents.length, 0, 'hydration succeeded: the session is open');
   assert.notEqual(rt.view().activeSessionId, null);
 });
 
-// ── web getBuffer 回填：迟到事件重建 buffer 的恢复点 ─────────────────
+// ── web getBuffer restore: the rebuild point for late events ──────────
 
-test('web 迟到 chat:usage 事件：淘汰后经事件 getBuffer 重建，草稿回填', async () => {
+test('web late chat:usage event: buffer rebuilt by the event via getBuffer, draft restored', async () => {
   const rt = bootWebBridge();
   assert.equal(await rt.flat.switchToSession('s1'), true);
   rt.flat.setComposerDraft('late-event-draft');
   for (let i = 2; i <= 34; i++) {
     assert.equal(await rt.flat.switchToSession(`s${i}`), true);
   }
-  // s1 已被容量淘汰；非回合事件（chat:usage）点名 s1 → onSessionEvent 经
-  // getBuffer 重建空 buffer → 回填暂存草稿。之后切回走快路径，草稿仍在。
+  // s1 was evicted; a non-turn event (chat:usage) naming s1 →
+  // onSessionEvent rebuilds an empty buffer via getBuffer → the stashed
+  // draft is restored. Switching back then takes the fast path with the
+  // draft intact.
   const listeners = rt.listeners && rt.listeners['chat:usage'];
-  assert.ok(Array.isArray(listeners) && listeners.length > 0, 'chat:usage 监听已注册');
+  assert.ok(Array.isArray(listeners) && listeners.length > 0, 'the chat:usage listener is registered');
   for (const fn of listeners) {
     await fn({ event: 'chat:usage', payload: { session_id: 's1', input_tokens: 10 } });
   }
   assert.equal(await rt.flat.switchToSession('s1'), true);
   assert.equal(rt.flat.getComposerDraft(), 'late-event-draft',
-    '迟到事件经 getBuffer 重建 buffer 时必须回填侧表草稿');
+    'a late event rebuilding the buffer via getBuffer must restore the side-table draft');
 });

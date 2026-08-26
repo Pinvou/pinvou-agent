@@ -771,30 +771,43 @@
   var scheduledRunOpenInFlight = Object.create(null);
   var MAX_SCHEDULED_SESSION_BUFFERS = 64;
   var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
-  // 全会话缓冲上限：sessionStates 每条持有完整 messages+chatItems（重会话
-  // 1-4MB/条），曾只对 scheduled 会话做 64 条 LRU——普通会话切过即永久驻留。
-  // 上限取 32：典型用户活跃切换集中在个位数，32×1-4MB 最坏约 32-128MB，
-  // 超出上限的冷门会话命中率趋近于零；被淘汰会话重访问走 load_session 磁盘
-  // 重水化，代价仅一次重载。
+  // All-session buffer cap: each sessionStates entry holds the full
+  // messages+chatItems (heavy sessions run 1-4MB each); previously only
+  // scheduled sessions had a 64-entry LRU — normal sessions stayed
+  // resident forever once visited. Cap at 32: typical users actively
+  // switch among single-digit counts, 32 × 1-4MB worst case is
+  // ~32-128MB, and cold sessions beyond the cap have near-zero hit
+  // rate; revisiting an evicted session goes through load_session disk
+  // rehydration, costing one reload.
   var MAX_SESSION_BUFFERS = 32;
-  // composerDraft 等不可重水化的轻量草稿不随 buffer 淘汰丢弃（web 桥不落盘
-  // 草稿，磁盘 transcript 只含已提交内容）：淘汰前先转移到这张侧表，buffer
-  // 重建时回填。侧表只存短字符串且条数上限远大于 buffer 上限，重对象仍随
-  // 淘汰照常释放。超过 MAX_EVICTED_SESSION_DRAFT_CHARS 的超长草稿不入表、
-  // 随淘汰丢弃——普通会话此前从不被淘汰，这是全会话 LRU 新引入的丢弃面
-  // （外部 transport 调用可绕过 Composer 的输入上限产生超长草稿）。
+  // Unsent composer drafts are the one piece of a working set that cannot be
+  // rebuilt from disk (this bridge never persists drafts; transcripts hold
+  // committed content only): before a buffer is dropped, its draft moves to
+  // this side table and every rebuild path restores it. The table is bounded
+  // (256 entries, 1M chars per draft — 10x the composer input cap), and when
+  // a bound would be exceeded the eviction is refused instead: the buffer
+  // stays resident rather than silently losing user input. Real session
+  // deletion (purgeSessionBuffer) invalidates stashed drafts so they never
+  // flow back into a recycled session id.
   var MAX_EVICTED_SESSION_DRAFTS = 256;
-  var MAX_EVICTED_SESSION_DRAFT_CHARS = 65536;
+  var MAX_EVICTED_SESSION_DRAFT_CHARS = 1000000;
   var evictedSessionDrafts = Object.create(null);
+  // Returns true when the buffer's non-rehydratable state is safely retained
+  // (or empty) and the caller may drop the buffer; false means eviction must
+  // be skipped so the draft stays in the live buffer.
   function stashEvictedSessionDraft(id, buf) {
-    if (!id || !buf) return;
-    delete evictedSessionDrafts[id]; // 重新入队时移到表尾,溢出时从表头淘汰
+    if (!id || !buf) return true;
     var draft = String(buf.composerDraft || "");
-    if (!draft) return;
-    if (draft.length > MAX_EVICTED_SESSION_DRAFT_CHARS) return;
+    if (!draft) {
+      delete evictedSessionDrafts[id]; // input was cleared; a stale stash must not resurrect it
+      return true;
+    }
+    if (draft.length > MAX_EVICTED_SESSION_DRAFT_CHARS) return false;
+    if (!evictedSessionDrafts[id]
+        && Object.keys(evictedSessionDrafts).length >= MAX_EVICTED_SESSION_DRAFTS) return false;
+    delete evictedSessionDrafts[id]; // re-stashing moves the entry to the table tail
     evictedSessionDrafts[id] = draft;
-    var keys = Object.keys(evictedSessionDrafts);
-    if (keys.length > MAX_EVICTED_SESSION_DRAFTS) delete evictedSessionDrafts[keys[0]];
+    return true;
   }
   function restoreEvictedSessionDraft(id, buf) {
     if (!id || !buf || buf.composerDraft) return;
@@ -965,16 +978,19 @@
       var id = scheduledIds[i];
       var buf = sessionStates[id];
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
-      stashEvictedSessionDraft(id, buf);
+      if (!stashEvictedSessionDraft(id, buf)) continue; // draft cannot be safely retained; keep the buffer
       delete sessionStates[id];
       delete turnUsageDirty[id];
-      // personaPlaceholderTitles 是轻量会话元数据（占位标题可被自动标题覆盖
-      // 的标记），重水化路径不会恢复它；容量淘汰必须保留，仅真实会话删除
-      // （purgeSessionBuffer）才清理。
-      // scene 事件的 localStorage 缓存是 sidecar 保存失败/离线时的唯一恢复
-      // 副本（savePinvouSceneEventsForSession 的后端失败被有意吞掉，
-      // syncPinvouSceneEventsForSession 靠它兜底重放），容量淘汰不得删键；
-      // 真实会话删除（purgeSessionBuffer）才清理。
+      // personaPlaceholderTitles is lightweight session metadata (the marker
+      // for placeholder titles that auto-rename may override); rehydration
+      // never restores it, so capacity eviction must keep it and only real
+      // session deletion (purgeSessionBuffer) cleans it.
+      // The localStorage cache of scene events is the only recovery copy
+      // when the sidecar save fails or we are offline
+      // (savePinvouSceneEventsForSession intentionally swallows backend
+      // failures; syncPinvouSceneEventsForSession replays from this
+      // cache); capacity eviction must not delete the key — only real
+      // session deletion (purgeSessionBuffer) cleans it.
       // The owner tombstone has its own bounded LRU and must outlive a
       // presentation-buffer eviction. Otherwise a stale `running` list row can
       // resurrect a run that already emitted chat:done.
@@ -989,9 +1005,13 @@
     pruneSessionBuffers(id);
     return buf;
   }
-  // 全会话 LRU：与 scheduled 淘汰共用保护谓词（busy/queued/remote turn 不回收），
-  // 仅淘汰空闲 buffer。messages/chatItems 可从磁盘重水化；composerDraft 等
-  // 不可重水化的草稿先转移到 evictedSessionDrafts 侧表，重建时回填。
+  // All-session LRU: shares the scheduled eviction's protection
+  // predicates (busy/queued/remote turns are never reclaimed); only
+  // idle buffers are evicted. messages/chatItems rehydrate from disk;
+  // non-rehydratable drafts such as composerDraft move to the
+  // evictedSessionDrafts side table first and are restored on rebuild;
+  // when the table cannot hold a draft the eviction is refused (see
+  // stashEvictedSessionDraft).
   function pruneSessionBuffers(keepId) {
     var ids = Object.keys(sessionStates);
     var overflow = ids.length - MAX_SESSION_BUFFERS;
@@ -1004,25 +1024,28 @@
       var id = ids[i];
       var buf = sessionStates[id];
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
-      stashEvictedSessionDraft(id, buf);
+      if (!stashEvictedSessionDraft(id, buf)) continue; // draft cannot be safely retained; keep the buffer
       delete sessionStates[id];
       delete turnUsageDirty[id];
-      // personaPlaceholderTitles 标记随淘汰保留（见 scheduled 淘汰处说明），
-      // 仅 purgeSessionBuffer（真实删除）清理。
-      // scene 缓存键在容量淘汰时保留（唯一离线恢复副本），见上方 scheduled
-      // 淘汰处的说明；仅 purgeSessionBuffer（真实会话删除）清理。
+      // personaPlaceholderTitles survives capacity eviction (see the
+      // comment at the scheduled eviction site); only purgeSessionBuffer
+      // (real deletion) cleans it.
+      // The scene cache key survives capacity eviction (the only offline
+      // recovery copy), see the comment at the scheduled eviction site
+      // above; only purgeSessionBuffer (real session deletion) cleans
+      // it.
       overflow -= 1;
     }
   }
   function purgeSessionBuffer(id) {
     if (typeof id !== "string" || !id) return;
     delete sessionStates[id];
-    // 真实会话删除:任何暂存草稿一并作废,不得回流到同 id 的重建 buffer。
+    // Real session deletion: any stashed draft is invalidated too and must not flow back into a rebuilt buffer with the same id.
     delete evictedSessionDrafts[id];
     delete turnUsageDirty[id];
     delete personaPlaceholderTitles[id];
     delete scheduledRunSessionOwners[id];
-    // scene 事件 localStorage 键随会话删除一并清理,避免随历史会话数无界累积。
+    // The scene-events localStorage key is cleaned together with session deletion, avoiding unbounded accumulation across historical sessions.
     if (window.localStorage) {
       try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch (_) {}
     }
@@ -3494,8 +3517,9 @@
         mergeHydratedArtifacts(saved.artifacts, liveArtifacts),
         state.activeSessionId
       );
-      // live 注水:toolMeta 可能含在飞工具条目(tool_use 未进 messages),
-      // 保留给后续 chat:tool_end 用。
+      // Live hydration: toolMeta may hold in-flight tool entries
+      // (tool_use not yet in messages); keep them for the later
+      // chat:tool_end.
       rerenderFromMessages({ keepLiveToolMeta: true });
       if (hasLivePresentation) {
         currentStreamId = mergeHydratedChatItems(liveChatItems, liveCurrentStreamId);
@@ -3507,7 +3531,7 @@
       saveWorkingSetTo(liveBuffer);
     } else {
       sessionStates[id] = freshBuffer();
-      // 慢路径磁盘重水化不经 getBuffer,淘汰时暂存的草稿须在这里回填。
+      // The slow-path disk rehydration bypasses getBuffer; the draft stashed at eviction time must be restored here.
       restoreEvictedSessionDraft(id, sessionStates[id]);
       loadWorkingSetFrom(sessionStates[id]);
       state.messages = Array.isArray(saved.messages) ? saved.messages : [];
@@ -4011,17 +4035,23 @@
   }
 
   // ── Rerender from messages (session restore) ─────────────────────
-  // opts.keepLiveToolMeta: live 会话注水(hydrateLiveSession)时传入 —— 此刻
-  // toolMeta 可能持有在飞工具的条目(tool_use 尚未进 messages),清空会让
-  // 后续 chat:tool_end 拿不到 meta(选择卡卡死/成品卡退化)。
+  // opts.keepLiveToolMeta: passed when hydrating a live session
+  // (hydrateLiveSession) — toolMeta may hold entries for in-flight
+  // tools (tool_use not yet in messages), and clearing it would leave
+  // the later chat:tool_end without its meta (stuck selection card /
+  // degraded artifact card).
   function rerenderFromMessages(opts) {
     state.chatItems = [];
     itemIdSeq = 0;
-    // 重放会把每条历史 tool_use 的元数据(含 write/patch 的大 args)重新加入
-    // toolMeta 供 tool_result 回填,回填后并不删除——残留随工作集存进 buffer
-    // 驻留,内存由 32 条全会话 LRU 上限兜底。durable 重放开始即清空(非
-    // live 注水时),收回的只是中断回合留下的孤儿条目(实时事件路径本身
-    // 插删均衡);随后重放为 messages 内的历史 tool_use 重建所需条目。
+    // Replay re-adds every historical tool_use's metadata (including
+    // write/patch's large args) to toolMeta for tool_result backfill and
+    // never deletes after backfill — the residue resides in the buffer
+    // with the working set, and memory is bounded by the 32-entry
+    // all-session LRU cap. Durable replay clears first (when not live
+    // hydrating), reclaiming only orphan entries left by interrupted
+    // turns (the live event path itself stays insert/delete balanced);
+    // the replay then rebuilds the needed entries for the historical
+    // tool_uses inside messages.
     if (!(opts && opts.keepLiveToolMeta)) toolMeta = {};
     // 卡牌事件按 pos 插回原位(pos=事件发生时的 messages 数)。让重载历史不割裂。
     var pe = Array.isArray(state.personaEvents) ? state.personaEvents : [];
@@ -5347,7 +5377,7 @@
     notify();
     if (!actions || !actions.length) return;
     // 按动作类型分组,组装一条 Boss 消息发给主 AI(Boss 驾驶,非自动回传):
-    //   fix/verify=产物缺陷定向修订(verify 先核实);adopt=Boss 已定的决策;ask=让 AI 正式问。
+    // fix/verify=产物缺陷定向修订(verify 先核实);adopt=Boss 已定的决策;ask=让 AI 正式问。
     var fix = actions.filter(function (a) { return a.t === "fix"; });
     var verify = actions.filter(function (a) { return a.t === "verify"; });
     var adopt = actions.filter(function (a) { return a.t === "adopt"; });
@@ -8325,10 +8355,10 @@
   }
   // 挂件还原的请求序号 + 最近成功加持的目标会话(与 tauri personas.js 对齐)：
   // - syncActivePersona 仅 sid 校验挡不住 A→B→A 的 ABA 与同会话乱序(慢响应
-  //   返回 null 会把刚加持的挂件覆盖掉,且无人再纠正)。序号在每次 sync 发起
-  //   与 equip/unequip 权威写时递增,旧快照一律作废(审计补充)。
+  // 返回 null 会把刚加持的挂件覆盖掉,且无人再纠正)。序号在每次 sync 发起
+  // 与 equip/unequip 权威写时递增,旧快照一律作废(审计补充)。
   // - lastEquippedSid 供 equip 后紧随的播报(如卡牌制造者引导卡)定向回
-  //   发起会话——equip 的 await 窗口用户可能已切走。
+  // 发起会话——equip 的 await 窗口用户可能已切走。
   var personaSyncSeq = 0;
   var lastEquippedSid = null;
   // 切换/重载 session 后,从后端拉该 session 的加持状态还原挂件(backend 是真相)。
