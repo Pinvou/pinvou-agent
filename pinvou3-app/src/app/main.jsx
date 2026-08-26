@@ -1191,10 +1191,12 @@ function workspaceDisplayName(path) {
       async function handleOpenScheduledRunShortcut(run) {
         if (!run || !run.sessionId) return;
         // A scheduled-run session is a normal chat: both the fallback and the
-        // successful-open branches land on the scheduled view, so exit code mode once at
-        // the entry — otherwise a regular session shows behind a code-only session list.
-        setCodeModeOn(false);
+        // successful-open branches land on the scheduled view, so each branch
+        // exits code mode right before navigating. Clearing once at the entry
+        // would also clear it when the open fails, leaving an active code
+        // session behind the standard sidebar and New chat creating plain drafts.
         if (!bridge.available || !bridge.scheduled.openScheduledRunChat) {
+          setCodeModeOn(false);
           setCurrentView('scheduled');
           closeMobileSidebar();
           return;
@@ -1205,7 +1207,10 @@ function workspaceDisplayName(path) {
           model: run.taskModel || null,
         };
         const opened = await bridge.scheduled.openScheduledRunChat(run, task);
-        if (opened) setCurrentView('scheduled');
+        if (opened) {
+          setCodeModeOn(false);
+          setCurrentView('scheduled');
+        }
       }
 
       function handleNewChat(installedToolId, forceMode) {
@@ -1232,6 +1237,11 @@ function workspaceDisplayName(path) {
           setCodexDraftEpoch(value => value + 1);
           setCurrentView('codex');
         } else {
+          // Every landing here is a normal chat (tool intent, forceMode='chat',
+          // code mode off, or codex unsupported on this host). createNewSession
+          // nulls activeSessionId, so the bridge sync guard cannot heal a stale
+          // codeModeOn afterwards — clear it here.
+          setCodeModeOn(false);
           if (bridge.available) bridge.sessions.createNewSession();
           setCurrentView('chat');
         }
