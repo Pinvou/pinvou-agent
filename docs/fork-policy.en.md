@@ -1,14 +1,14 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-08-26. Public maintenance baseline: upstream `v0.9.5` r10; PRs #16, #17, and #19 are published within the existing four long-lived topics. PR #24 is the reviewed r11 shell-decoder candidate.
+> Updated: 2026-08-26. Public maintenance branch: upstream `v0.9.5` plus the existing four long-lived topics at the r11 head merged through CodeWhale PR #29; immutable r11 tag publication is pending.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
 ## Baseline
 
 - Upstream: `Hmbown/CodeWhale` `v0.9.5` at `853cb707bbcf4f7dc4268fba6d811e0d04083f9c`.
-- Public maintenance branch: `Pinvou/CodeWhale:pinvou3-clean` at `feb8761ae` (`pinvou-v0.9.5-r10`); r11 candidate `654490026edf2a3105858ff644c7087a23dd5f6c` is in `Pinvou/CodeWhale#24`.
+- Public maintenance branch: `Pinvou/CodeWhale:pinvou3-clean` at `665b46cd9e67326459223aa662931bd36d726004`, merged through `Pinvou/CodeWhale#29`; immutable tag `pinvou-v0.9.5-r11` is pending.
 - The pre-upgrade head `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` remains available as tag `pinvou-v0.9.0-r4` and branch `backup/pinvou3-clean-v0.9.0-r4`.
-- `Pinvou/CodeWhale#16`, `#17`, and `#19` were squash-merged as `8aa5f77d35ac1d00d1f444193543307a7e9b391c`, `07d183e350ce4a1ed4f91bdfa1875c996e710d2b`, and `feb8761aeda31749f3d54c6e1f8ef460540567a1`; `pinvou3-clean` and immutable tag `pinvou-v0.9.5-r10` are publicly reachable at the latter commit. Tags `r1` through `r10` remain immutable. The parent r11 PR remains Draft until CodeWhale #24 merges and immutable tag `pinvou-v0.9.5-r11` resolves to the final maintenance head.
+- `Pinvou/CodeWhale#16`, `#17`, and `#19` were squash-merged as `8aa5f77d35ac1d00d1f444193543307a7e9b391c`, `07d183e350ce4a1ed4f91bdfa1875c996e710d2b`, and `feb8761aeda31749f3d54c6e1f8ef460540567a1`; `pinvou3-clean` and immutable tag `pinvou-v0.9.5-r10` are publicly reachable at the latter commit. PR #27 then refreshed the advisory baseline and PR #29 merged the r11 shell decoder at `665b46cd9e67326459223aa662931bd36d726004`. Tags `r1` through `r10` remain immutable. The parent r11 PR remains Draft until immutable tag `pinvou-v0.9.5-r11` resolves to that final maintenance head.
 - Keep exactly four long-lived topics:
 
   1. Host embedding and routing boundary
@@ -22,7 +22,7 @@ The exact commits and fingerprints are recorded in [`docs/fork-modifications.md`
 
 - Prefer the app bridge, bundle instructions/Skills, MCP/connectors/plugins, then an upstream contribution. Keep a fork patch only when the behavior must be atomic inside CodeWhale's Engine, SubAgent, Task, or Automation lifecycle.
 - Product tool policy, UI, workspace selection, and business routing stay in `pinvou3-app`.
-- The soft drift limits are 1,500 net added lines and 200 fork-distinct lines per file (net = added minus removed, same accounting as the register). The r11 candidate is 66 files and `+6389/-794` (net 5,595 added lines); exceeding a limit is not an automatic rejection but requires an explicit retention and reduction assessment. The retained volume includes the published conversation lifecycle and fixed-sampling/compaction boundaries plus the stateful shell decoder. Future reduction prioritizes generic per-turn policy, host insertion/edit APIs, session snapshot/recovery APIs, provider compatibility, shell decoding, and Automation lifecycle fixes for upstreaming.
+- The soft drift limits are 1,500 net added lines and 200 fork-distinct lines per file (net = added minus removed, same accounting as the register). The final r11 maintenance head is 71 files and `+6522/-816` (net 5,706 added lines); exceeding a limit is not an automatic rejection but requires an explicit retention and reduction assessment. The retained volume includes the published conversation lifecycle and fixed-sampling/compaction boundaries plus the stateful shell decoder. Future reduction prioritizes generic per-turn policy, host insertion/edit APIs, session snapshot/recovery APIs, provider compatibility, shell decoding, and Automation lifecycle fixes for upstreaming.
 - Fixups are squashed into their owning topic; no long-lived catch-up commit chains are maintained, and generic host configuration, routing, tools, Automation, and OAuth must remain within their owning boundary.
 - A fork-distinct change must update the modification register and guard fingerprints, include a result-oriented `forkguard_*` test where applicable, and pass `./scripts/fork-guard.sh --fast`.
 - For a large upstream refactor, clean re-fork from the release tag and re-express each surviving topic. Do not preserve merge-conflict batches as long-lived history.

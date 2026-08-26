@@ -326,7 +326,7 @@ jobs:
           python3 scripts/architecture-guard.py --base-ref "origin/$base_ref"
 
       - name: 公开底座 gitlink 可达性
-        # PR 与 merge queue 均严格要求 gitlink 对齐不可变标签；标签发布前（如当前 r11 候选期）verifier 按设计 fail-closed。
+        # Fail closed: PRs and merge-queue commits must match the current immutable public tag.
         run: ./scripts/verify-public-submodule.sh
 
       - name: 初始化公共底座 submodule

@@ -6,8 +6,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-EXPECTED_HEAD="654490026edf2a3105858ff644c7087a23dd5f6c"
-EXPECTED_COMMITS=15
+EXPECTED_HEAD="665b46cd9e67326459223aa662931bd36d726004"
+EXPECTED_COMMITS=20
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -17,21 +17,21 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 r11 候选四主题基线拓扑 ──"
+bold "── 第 0 层：v0.9.5 r11 四主题基线拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
   expected_commits="$EXPECTED_COMMITS"
-  green "  ✓ CodeWhale gitlink 指向 r11 四主题候选 $EXPECTED_HEAD"
+  green "  ✓ CodeWhale gitlink 指向 r11 四主题维护 head $EXPECTED_HEAD"
 else
   expected_commits=""
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r11 候选 $EXPECTED_HEAD"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r11 维护 head $EXPECTED_HEAD"
   fail=1
 fi
 
 if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null; then
-  green "  ✓ r11 候选继承官方 v0.9.5"
+  green "  ✓ r11 维护 head 继承官方 v0.9.5"
 else
-  red "  ✗ r11 候选未继承官方 v0.9.5 $EXPECTED_UPSTREAM"
+  red "  ✗ r11 维护 head 未继承官方 v0.9.5 $EXPECTED_UPSTREAM"
   fail=1
 fi
 
@@ -39,7 +39,7 @@ commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev
 if [[ -n "$expected_commits" && "$commit_count" == "$expected_commits" ]]; then
   green "  ✓ v0.9.5 之上 $expected_commits 个登记提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r11 候选拓扑应为 ${expected_commits:-15}"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r11 维护拓扑应为 ${expected_commits:-20}"
   fail=1
 fi
 
