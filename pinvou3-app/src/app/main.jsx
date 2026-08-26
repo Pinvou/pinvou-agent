@@ -2347,16 +2347,20 @@ function workspaceDisplayName(path) {
             </div>
 
             {/* Right-edge drag to resize: only offered on the expanded desktop shell;
-                double-click resets to the default width */}
+                double-click resets to the default width. Focusable separator semantics
+                (tabIndex + value range) per WAI-ARIA authoring practices. */}
             {isSidebarOpen && !isCompactShell && (
-              <div
+              <hr
                 data-testid="sidebar-resize-handle"
-                role="separator"
                 aria-orientation="vertical"
+                tabIndex={0}
+                aria-valuenow={sidebarWidth}
+                aria-valuemin={SIDEBAR_WIDTH_MIN}
+                aria-valuemax={SIDEBAR_WIDTH_MAX}
                 title={t.sidebarResize}
                 onPointerDown={beginSidebarResize}
                 onDoubleClick={resetSidebarWidth}
-                className={`absolute top-0 bottom-0 right-0 w-[6px] cursor-col-resize z-50 touch-none transition-colors ${
+                className={`absolute top-0 bottom-0 right-0 w-[6px] border-0 cursor-col-resize z-50 touch-none transition-colors ${
                   sidebarResizing
                     ? 'bg-[#0B57D0]/40'
                     : (activeTheme === 'dark' ? 'hover:bg-[#A8C7FA]/30' : 'hover:bg-[#0B57D0]/25')
