@@ -53,6 +53,27 @@ pub(super) fn begin_prompt(busy: &AtomicBool, configuring: &AtomicBool) -> Resul
     Ok(())
 }
 
+/// Admit a prompt turn: reserve the busy slot, then register the timing turn.
+///
+/// The registration must happen inside the admitted section and before the
+/// prompt task is spawned: the spawned task can complete (fast mock response,
+/// instant connection error) and call `timing::finish_turn` before
+/// `send_message` returns, so registering from the caller after the await
+/// would race that finish — the completion would find an empty queue and be
+/// dropped, leaving the late registration as a stale unpaired entry.
+/// Registering only after admission also guarantees a rejected concurrent
+/// submit never enqueues a ghost turn whose send_error finish would clear
+/// the in-flight turn's queue (round-7 review invariant).
+pub(super) fn begin_prompt_turn(
+    busy: &AtomicBool,
+    configuring: &AtomicBool,
+    session_id: &str,
+) -> Result<()> {
+    begin_prompt(busy, configuring)?;
+    crate::features::assistant::timing::start_turn(session_id);
+    Ok(())
+}
+
 enum SessionConfigChange<'a> {
     Model(&'a str),
     Mode(&'a str),
@@ -228,5 +249,117 @@ mod tests {
             assert!(configuring.load(Ordering::Acquire));
         }
         assert!(!configuring.load(Ordering::Acquire));
+    }
+
+    /// The timing turn must be registered inside the admitted section, before
+    /// the caller can race an immediate completion. Simulates the production
+    /// sequence in `AcpPool::send_message`: `begin_prompt_turn` (admission +
+    /// registration), then a synchronous completion arriving before the
+    /// method would have returned. The terminal must be attributed to the
+    /// registered turn and the queue must be empty afterwards; a caller-side
+    /// registration after the await would instead leave the completion
+    /// dropped and a stale unpaired entry behind.
+    #[test]
+    fn admitted_prompt_turn_survives_immediate_completion() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-acp-admission-timing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("PINVOU3_HOME", &tmp);
+
+        let busy = AtomicBool::new(false);
+        let configuring = AtomicBool::new(false);
+        let sid = "acp-admission-immediate-completion";
+
+        begin_prompt_turn(&busy, &configuring, sid).unwrap();
+        // Admission registered the turn synchronously, before any spawned
+        // prompt task can run: the queue holds it at this point.
+        assert!(crate::features::assistant::timing::has_queued_active_turn(
+            sid
+        ));
+        // Immediate completion: happens-before any post-await caller code.
+        // begin_prompt_turn has already registered the turn, so the terminal
+        // lands on it instead of being dropped on an empty queue.
+        crate::features::assistant::timing::finish_turn(sid, "Completed", None);
+
+        let timeline = crate::features::assistant::timing::read_timeline(sid).unwrap();
+        let done: Vec<_> = timeline
+            .iter()
+            .filter(|e| e.event == "assistant_done")
+            .collect();
+        assert_eq!(done.len(), 1, "immediate completion must be recorded");
+        assert_eq!(
+            timeline[0].event, "user_start",
+            "terminal must pair with the registered turn"
+        );
+        assert_eq!(done[0].turn_id, timeline[0].turn_id);
+        assert!(
+            !crate::features::assistant::timing::has_queued_active_turn(sid),
+            "queue must be empty after the paired finish"
+        );
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    /// A submit rejected by busy admission must neither enqueue a ghost turn
+    /// nor disturb the in-flight turn's queue entry: its send_error finish
+    /// (if the caller emits one) finds only the in-flight turn and would be
+    /// attributed correctly, and the in-flight terminal is never swallowed.
+    #[test]
+    fn rejected_concurrent_submit_never_clears_in_flight_turn() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-acp-reject-timing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("PINVOU3_HOME", &tmp);
+
+        let busy = AtomicBool::new(false);
+        let configuring = AtomicBool::new(false);
+        let sid = "acp-admission-rejected-submit";
+
+        // First submit is admitted and its turn registered.
+        begin_prompt_turn(&busy, &configuring, sid).unwrap();
+        // Concurrent second submit is rejected by busy admission: no turn is
+        // registered (no ghost queue entry).
+        let rejected = begin_prompt_turn(&busy, &configuring, sid);
+        assert!(rejected.is_err());
+        assert!(
+            !crate::features::assistant::timing::has_extra_queued_turns(sid),
+            "rejected submit must not enqueue a second queue entry"
+        );
+
+        // The in-flight turn finishes; a late send_error from the rejected
+        // caller afterwards must be a no-op (empty queue), so the in-flight
+        // terminal is recorded exactly once and never swallowed.
+        crate::features::assistant::timing::finish_turn(sid, "Completed", None);
+        crate::features::assistant::timing::finish_turn(sid, "send_error", Some("busy"));
+
+        let timeline = crate::features::assistant::timing::read_timeline(sid).unwrap();
+        let done: Vec<_> = timeline
+            .iter()
+            .filter(|e| e.event == "assistant_done")
+            .collect();
+        assert_eq!(
+            done.len(),
+            1,
+            "in-flight terminal must be recorded exactly once"
+        );
+        assert_eq!(done[0].status.as_deref(), Some("Completed"));
+
+        let _ = std::fs::remove_dir_all(tmp);
     }
 }

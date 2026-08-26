@@ -188,6 +188,17 @@ pub(crate) fn has_queued_active_turn(session_id: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Test probe: queue length for this session (1 means exactly the single
+/// in-flight turn; admission-race tests assert a rejected submit leaves it
+/// at 1 rather than enqueueing a ghost second entry).
+#[cfg(test)]
+pub(crate) fn has_extra_queued_turns(session_id: &str) -> bool {
+    active_turns()
+        .lock()
+        .map(|map| map.get(session_id).is_some_and(|queue| queue.len() > 1))
+        .unwrap_or(false)
+}
+
 /// 旧调用点(无 usage):落盘不带 usage 字段,reader API 反序列化为 None。
 /// 保留是为了不强迫所有调用点同步升级(commands.rs:200 的 send_error 兜底等)。
 pub fn finish_turn(session_id: &str, status: &str, error: Option<&str>) {

@@ -74,7 +74,7 @@ pub use events::{
     AcpEventEnvelope,
 };
 use latest::LatestVersionProbe;
-use operation_gate::begin_prompt;
+use operation_gate::begin_prompt_turn;
 pub use providers::{
     AcpProvidersView, ImportResult, ProviderManager, ProviderRecord, ProviderWireApi,
 };
@@ -2988,7 +2988,7 @@ impl AcpPool {
             &workspace_references,
             &runtime.prompt_capabilities,
         )?;
-        begin_prompt(&runtime.busy, &runtime.configuring)?;
+        begin_prompt_turn(&runtime.busy, &runtime.configuring, session_id)?;
         if let Err(error) = self.session_store.touch_activity(session_id) {
             runtime.busy.store(false, Ordering::Release);
             return Err(error).context("更新 ACP 会话最近活跃时间失败");

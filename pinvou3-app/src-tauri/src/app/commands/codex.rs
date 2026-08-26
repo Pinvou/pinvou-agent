@@ -281,16 +281,14 @@ pub(crate) async fn codex_acp_prompt_with_attachments(
         message.as_str()
     };
     super::sessions::apply_default_session_title(&store, &session_id, title_source)?;
-    // start_turn must run after send_message's busy admission succeeds: ACP
-    //     // has no native-lane reserve/terminal_closing gate, so if the turn were
-    //     // queued before admission, a failed concurrent submit's send_error finish
-    //     // would clear the whole queue and swallow the in-flight turn's terminal
-    //     // recording.
+    // Timing registration lives inside `AcpPool::send_message`, after busy
+    // admission succeeds but before the prompt task is spawned: the spawned
+    // turn can complete before `send_message` returns, so registering here
+    // (after the await) would race that finish and drop the completion.
     acp_pool
         .send_message(&session_id, message, attachments, workspace_references)
         .await
         .map_err(|error| format!("ACP Agent send failed: {error:#}"))?;
-    let _turn_id = crate::features::assistant::timing::start_turn(&session_id);
     Ok(())
 }
 
