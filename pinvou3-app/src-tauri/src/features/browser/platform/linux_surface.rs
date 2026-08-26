@@ -56,11 +56,17 @@ pub(super) fn show(webview: &Webview, bounds: Option<NativeSurfaceBounds>) -> Re
     let label = webview.label().to_string();
     with_webview_result(webview, "native browser surface show", move |native| {
         let result = attach_widget(native).and_then(|fixed| {
+            // `show_active_workspace` hides every tab before selecting the active
+            // one. GTK3 discards `size_allocate` for an invisible non-toplevel
+            // widget, so the old order updated GtkFixed's child position but left
+            // WebKit's page viewport at its previous size. Make both widgets visible
+            // first, then perform the allocation synchronously. GTK cannot paint
+            // between these calls because this closure is one main-thread dispatch.
+            fixed.show();
+            native.show();
             if let Some(bounds) = bounds {
                 apply_bounds(&fixed, native, bounds)?;
             }
-            fixed.show();
-            native.show();
             Ok(())
         });
         result.map_err(|error| {
@@ -310,6 +316,9 @@ fn apply_bounds(
     native: &webkit2gtk::WebView,
     bounds: NativeSurfaceBounds,
 ) -> Result<(), String> {
+    if !fixed.is_visible() || !native.is_visible() {
+        return Err("WebView must be visible before applying Linux native bounds".to_string());
+    }
     let scale = f64::from(native.scale_factor());
     if scale <= 0.0 {
         return Err("WebView scale factor is invalid".to_string());

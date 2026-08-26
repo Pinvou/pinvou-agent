@@ -89,3 +89,28 @@ test('failed fresh-overlay attach leaves the child WebView reattachable', () => 
     'attach must detach the child WebView only after install_overlay succeeds',
   );
 });
+
+test('Linux resize shows WebKit before synchronously allocating its drawing area', () => {
+  // The host intentionally hides every workspace tab before each show. GTK3
+  // drops size_allocate for an invisible non-toplevel widget, leaving only
+  // GtkFixed's position update and the old WebKit page viewport. Keep show +
+  // allocation in the same acknowledged GTK dispatch, with allocation strictly
+  // after both widgets become visible. Visibility is sufficient even when the
+  // top-level window is temporarily unmapped (for example while minimized).
+  const showStart = linuxSurface.indexOf('pub(super) fn show');
+  const hideStart = linuxSurface.indexOf('pub(super) fn hide', showStart);
+  assert.notStrictEqual(showStart, -1, 'show function not found');
+  assert.notStrictEqual(hideStart, -1, 'hide function not found after show');
+  const show = linuxSurface.slice(showStart, hideStart);
+  const fixedShowAt = show.indexOf('fixed.show();');
+  const nativeShowAt = show.indexOf('native.show();');
+  const applyAt = show.indexOf('apply_bounds(&fixed, native, bounds)?;');
+  assert.ok(
+    fixedShowAt >= 0 && fixedShowAt < nativeShowAt && nativeShowAt < applyAt,
+    'the fixed overlay and WebKit view must be visible before applying new bounds',
+  );
+  assert.match(
+    linuxSurface,
+    /if !fixed\.is_visible\(\) \|\| !native\.is_visible\(\) \{[\s\S]{0,180}WebView must be visible before applying Linux native bounds/,
+  );
+});
