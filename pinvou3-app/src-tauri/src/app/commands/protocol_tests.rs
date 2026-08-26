@@ -248,6 +248,10 @@ command_protocol!(
         "import_skill_md_bytes",
         "import_skill_package_bytes",
         "uninstall_marketplace_skill",
+        "list_recycled_plugins",
+        "restore_recycled_plugin",
+        "purge_recycled_plugin",
+        "export_recycled_plugin",
         "bundle_readiness",
         "export_plugin_spec"
     ]

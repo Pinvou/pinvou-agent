@@ -95,6 +95,8 @@ disconnect / uninstall / enable_in(scope)…），每个动作带可用性与原
 ```
 ~/.pinvou3/
 ├── marketplace/bundles.json        ← 真相源（BundleRecord 集合）
+├── marketplace/recycle-bin.json    ← 回收站清单（Upload 包卸载的软删除登记）
+├── marketplace/recycle-bin/<id>/   ← 回收站包目录（整包搬移，可恢复/手动彻底删除）
 ├── bundles/                        ← 每包一个目录，唯一属主
 │   └── <id>/
 │       ├── mcp/                    ← server 脚本（安装时释放，非启动全量释放）
@@ -110,7 +112,12 @@ disconnect / uninstall / enable_in(scope)…），每个动作带可用性与原
 规则：
 
 1. **一个包 = 一个目录 = 一个属主。** 安装 = staged 解包 + 原子 rename；
-   卸载 = 删登记 + 删目录。`.installed-from` 标记文件取消，来源与指纹进 bundles.json。
+   卸载 = 删登记 + 目录按来源处置：Upload 来源（用户唯一副本）整包搬入回收站
+   （`marketplace/recycle-bin/<id>/`，含 mcp/ 与 skills/；恢复 = 搬回 + 重走安装
+   管线，凭据 secrets 卸载时已删需重填；彻底删除由用户手动触发；条目也可导出为
+   符合插件包规范的 zip——plugin.json/mcp/skills 平铺在 zip 根，可经统一导入管线
+   重新导入），Preset/Builtin 可重释放仍物理删除。`.installed-from` 标记文件取消，
+   来源与指纹进 bundles.json。
 2. **包内容住包目录，外部依赖住资产库。** CLI 二进制是厂商 URL 下载的版本化外部依赖
    （生命周期由 lock 表驱动，与包登记解耦，卸载时保留/清理可独立决策）；
    技能内脚本是包内容（不可再下载、随包版本变化、属主唯一），不拆。

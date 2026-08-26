@@ -191,6 +191,8 @@ pub struct SkillMarketplaceManager {
     /// bundles.json 写入口（Phase 2 起为安装态/来源/指纹的登记处；写失败不翻盘
     /// 主操作，fail loud 到日志）
     bundle_store: super::store::BundleStore,
+    /// 回收站写入口（Upload 来源卸载 = 整包搬入回收站，用户唯一副本不删）
+    recycle_bin: super::recycle_bin::RecycleBin,
 }
 
 impl Default for SkillMarketplaceManager {
@@ -205,6 +207,7 @@ impl SkillMarketplaceManager {
             packages_root: paths::bundles_root(),
             legacy_skills_dir: paths::bundle_skills_dir(),
             bundle_store: super::store::BundleStore::new(),
+            recycle_bin: super::recycle_bin::RecycleBin::new(),
         }
     }
 
@@ -222,6 +225,7 @@ impl SkillMarketplaceManager {
                 packages_root: dir.join("bundles"),
                 legacy_skills_dir: dir.join("bundle/skills"),
                 bundle_store: super::store::BundleStore::with_file(dir.join("bundles.json")),
+                recycle_bin: super::recycle_bin::RecycleBin::with_roots(dir.clone()),
             },
         }
     }
@@ -723,6 +727,11 @@ impl SkillMarketplaceManager {
     ///   in `~/.pinvou3/user/skills/`;
     /// - 目录已不存在（外部删除/安装中途失败）时仍删 BundleStore 记录——记录
     ///   即安装态登记，删记录不以目录存在为前提，否则卡成永远"已安装"的瘫记录。
+    ///
+    /// 例外（回收站）：Upload 来源的独立上传技能包（属主 = 技能自身）不做物理
+    /// 删除——整个 `bundles/<id>/` 搬入回收站（用户唯一副本，可恢复/手动彻底
+    /// 删除）；companion 技能随属主 MCP 包整包回收，其候选目录已随包搬离，
+    /// 下方循环自然跳过、结尾清登记即可（recycle-aware）。
     pub fn uninstall(&self, skill_id: &str) -> Result<(), String> {
         // 预置 id(pua/nuwa) → skill_name;上传技能 id 即目录名本身。
         let dir_name = self
@@ -739,6 +748,46 @@ impl SkillMarketplaceManager {
         let import_lock = super::plugin_import::import_lock_for(skill_id);
         let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
         let legacy = self.legacy_skills_dir.join(&dir_name);
+
+        // Upload 独立技能包回收（必须先于一切物理删除；fail-closed 与 MCP 卸载
+        // 同口径：bundles.json 读不出按可能 Upload 处理 —— 中止卸载报错，不照删
+        // 用户唯一副本）。属主 = 技能自身且包目录在 → 整包搬入回收站，return。
+        let record = self.bundle_store.get(skill_id).map_err(|e| {
+            format!("读取 bundles.json 失败，中止卸载 {skill_id}（fail-closed）: {e}")
+        })?;
+        if let Some(record) = record {
+            if matches!(record.source, super::store::BundleSource::Upload(_)) {
+                let owner = super::bundle::skill_owner_package(&dir_name);
+                let pkg_dir = self.packages_root.join(skill_id);
+                if owner == skill_id && pkg_dir.is_dir() {
+                    // 独立上传技能包：整个 bundles/<id>/ 搬入回收站（技能内容是
+                    // 用户唯一副本），跳过下方 remove_dir_all。
+                    let display_name = match &record.source {
+                        super::store::BundleSource::Upload(zip) => zip.clone(),
+                        _ => skill_id.to_string(),
+                    };
+                    if let Err(e) = self.bundle_store.remove(skill_id) {
+                        log::warn!("[skill-marketplace] bundles.json 镜像删除失败（uninstall {skill_id}）: {e}");
+                    }
+                    if let Err(e) = self.recycle_bin.recycle_package(
+                        skill_id,
+                        super::recycle_bin::KIND_SKILL,
+                        &display_name,
+                        record.clone(),
+                    ) {
+                        // 回收失败（目录已回滚原位）：登记回写保持一致，卸载 fail loud。
+                        if let Err(re) = self.bundle_store.upsert(record) {
+                            log::warn!("[skill-marketplace] 回收失败后登记回写失败（{skill_id}）: {re}");
+                        }
+                        return Err(format!("移入回收站失败（{skill_id}）: {e}"));
+                    }
+                    return Ok(());
+                }
+                // companion 技能（属主为 MCP 包）：随属主包卸载整包回收；单独卸载
+                // 走下方物理删除（当前 UI 不提供 companion 单独卸载入口）。
+            }
+        }
+
         let mut deleted_any = false;
         for dir in self.package_candidate_dirs(&dir_name) {
             if !dir.is_dir() {
@@ -2613,51 +2662,50 @@ mod tests {
     /// 预置 government-writing 从嵌入资源落盘（按包聚合布局）→ list 反映
     /// installed → 卸载删目录的全链路。技能目录经 `package_skill_dir` 取
     /// （owner 推导依赖 manifest 环境，测试不硬编码绝对布局）。
+    /// 走 env 隔离（with_temp_home + SkillMarketplaceManager::new()）：owner 推导
+    /// （skill_owner_package 的条件认领）读 env 安装态，with_roots 注入的路径管
+    /// 不到它——真实家目录装有 gongwen（本技能的认领属主）时，with_roots 版本会
+    /// 与并发的 env 测试互相干扰（实测竞态 flake）。
     #[test]
     fn install_then_uninstall_preset_roundtrip() {
-        let tmp = fresh_dir("roundtrip");
-        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        with_temp_home(|| {
+            let mgr = SkillMarketplaceManager::new();
 
-        mgr.install("government-writing").unwrap();
-        let skill_dir = mgr.package_skill_dir("government-writing");
-        assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
-        assert!(
-            !skill_dir.join(".installed-from").exists(),
-            "标记已退役，不应再写"
-        );
-        assert!(
-            skill_dir.join("templates").is_dir(),
-            "templates/ 应一并复制"
-        );
-        assert_eq!(
-            read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
-            Some("government-writing")
-        );
-        // install 登记内容指纹（update_available 的比对基准）
-        let store =
-            crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
-        assert!(
-            store
+            mgr.install("government-writing").unwrap();
+            let skill_dir = mgr.package_skill_dir("government-writing");
+            assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
+            assert!(
+                !skill_dir.join(".installed-from").exists(),
+                "标记已退役，不应再写"
+            );
+            assert!(
+                skill_dir.join("templates").is_dir(),
+                "templates/ 应一并复制"
+            );
+            assert_eq!(
+                read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
+                Some("government-writing")
+            );
+            // install 登记内容指纹（update_available 的比对基准）
+            let store = crate::features::marketplace::store::BundleStore::new();
+            assert!(store
                 .get("government-writing")
                 .unwrap()
-                .expect("install should register the skill")
+                .expect("install 应登记")
                 .content_fingerprint
-                .is_some()
-        );
-        assert!(
-            mgr.list_skills()
+                .is_some());
+            assert!(mgr
+                .list_skills()
                 .iter()
-                .any(|s| s.id == "government-writing" && s.installed)
-        );
+                .any(|s| s.id == "government-writing" && s.installed));
 
-        mgr.uninstall("government-writing").unwrap();
-        assert!(!skill_dir.exists(), "卸载应删目录");
-        assert!(
-            mgr.list_skills()
+            mgr.uninstall("government-writing").unwrap();
+            assert!(!skill_dir.exists(), "卸载应删目录");
+            assert!(mgr
+                .list_skills()
                 .iter()
-                .any(|s| s.id == "government-writing" && !s.installed)
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
+                .any(|s| s.id == "government-writing" && !s.installed));
+        });
     }
 
     /// F1 回归：认领翻转后的滞留副本（物理在 `bundles/<其他包>/skills/<name>`，
@@ -3127,42 +3175,41 @@ mod tests {
 
     /// 预置 pptx 从嵌入资源落盘 → list 反映 installed → 卸载删目录的全链路。
     /// pptx 是「PPT 生成」MCP 的同名 companion 技能(manifest `companion_skills`)。
+    /// env 隔离原因同 install_then_uninstall_preset_roundtrip。
     #[test]
     fn install_then_uninstall_pptx_preset_roundtrip() {
-        let tmp = fresh_dir("pptx");
-        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        with_temp_home(|| {
+            let mgr = SkillMarketplaceManager::new();
 
-        mgr.install("pptx").unwrap();
-        let skill_dir = mgr.package_skill_dir("pptx");
-        assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
-        assert!(!skill_dir.join(".installed-from").exists(), "标记已退役");
-        assert_eq!(
-            read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
-            Some("pptx")
-        );
-        let skill_md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
-        assert!(
-            skill_md.contains("mcp_pptx_make_pptx"),
-            "应引导调用 pptx MCP 工具"
-        );
-        assert!(
-            skill_md.contains("present_artifact(path, title)"),
-            "应要求产物卡交付"
-        );
-        assert!(
-            mgr.list_skills()
+            mgr.install("pptx").unwrap();
+            let skill_dir = mgr.package_skill_dir("pptx");
+            assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
+            assert!(!skill_dir.join(".installed-from").exists(), "标记已退役");
+            assert_eq!(
+                read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
+                Some("pptx")
+            );
+            let skill_md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+            assert!(
+                skill_md.contains("mcp_pptx_make_pptx"),
+                "应引导调用 pptx MCP 工具"
+            );
+            assert!(
+                skill_md.contains("present_artifact(path, title)"),
+                "应要求产物卡交付"
+            );
+            assert!(mgr
+                .list_skills()
                 .iter()
-                .any(|s| s.id == "pptx" && s.installed)
-        );
+                .any(|s| s.id == "pptx" && s.installed));
 
-        mgr.uninstall("pptx").unwrap();
-        assert!(!skill_dir.exists(), "卸载应删目录");
-        assert!(
-            mgr.list_skills()
+            mgr.uninstall("pptx").unwrap();
+            assert!(!skill_dir.exists(), "卸载应删目录");
+            assert!(mgr
+                .list_skills()
                 .iter()
-                .any(|s| s.id == "pptx" && !s.installed)
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
+                .any(|s| s.id == "pptx" && !s.installed));
+        });
     }
 
     /// Visualizer 预置技能带 references/ 子树,安装后必须可被 SkillRegistry 读取。
@@ -3285,65 +3332,66 @@ mod tests {
     /// 诱导执行的无校验和全局安装路径没有收益。
     #[test]
     fn install_tencent_docs_preset_with_official_references() {
-        let tmp = fresh_dir("tdoc");
-        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        // env 隔离原因同 install_then_uninstall_preset_roundtrip（tencent-docs
+        // 被同名 MCP 条件认领，owner 推导读 env 安装态）。
+        with_temp_home(|| {
+            let mgr = SkillMarketplaceManager::new();
 
-        mgr.install("tencent-docs-skill").unwrap();
-        // 预置 id 是市场名(tencent-docs-skill),落盘按 frontmatter name(tencent-docs)
-        // 经 package_skill_dir 推导 owner——与 gongwen 等同名 companion 不同,勿硬编码。
-        let skill_dir = mgr.package_skill_dir("tencent-docs");
-        assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
-        assert_eq!(
-            read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
-            Some("tencent-docs")
-        );
-        for reference in [
-            "references/manage_references.md",
-            "references/smartsheet_references.md",
-            "references/docengine_references.md",
-            "references/slideengine_references.md",
-            "sheet/api/mcp-api.md",
-            "smartcanvas/entry.md",
-            "slide/entry.md",
-        ] {
-            assert!(
-                skill_dir.join(reference).is_file(),
-                "{reference} 应随包落盘"
+            mgr.install("tencent-docs-skill").unwrap();
+            // 预置 id 是市场名(tencent-docs-skill),落盘按 frontmatter name(tencent-docs)
+            // 经 package_skill_dir 推导 owner——与 gongwen 等同名 companion 不同,勿硬编码。
+            let skill_dir = mgr.package_skill_dir("tencent-docs");
+            assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
+            assert_eq!(
+                read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
+                Some("tencent-docs")
             );
-        }
-        // mcporter 依赖脚本不应 vendored 进来
-        for dropped in ["setup.sh", "import_file.sh", "ocr.js"] {
+            for reference in [
+                "references/manage_references.md",
+                "references/smartsheet_references.md",
+                "references/docengine_references.md",
+                "references/slideengine_references.md",
+                "sheet/api/mcp-api.md",
+                "smartcanvas/entry.md",
+                "slide/entry.md",
+            ] {
+                assert!(
+                    skill_dir.join(reference).is_file(),
+                    "{reference} 应随包落盘"
+                );
+            }
+            // mcporter 依赖脚本不应 vendored 进来
+            for dropped in ["setup.sh", "import_file.sh", "ocr.js"] {
+                assert!(
+                    !skill_dir.join(dropped).exists(),
+                    "{dropped} 依赖 mcporter,不应保留"
+                );
+            }
             assert!(
-                !skill_dir.join(dropped).exists(),
-                "{dropped} 依赖 mcporter,不应保留"
+                !skill_dir
+                    .join("sidebar-pptx-generator/scripts/setup.js")
+                    .exists(),
+                "setup.js 是无校验和的全局安装脚本,工作流不使用 slidep CLI,不应保留"
             );
-        }
-        assert!(
-            !skill_dir
-                .join("sidebar-pptx-generator/scripts/setup.js")
-                .exists(),
-            "setup.js 是无校验和的全局安装脚本,工作流不使用 slidep CLI,不应保留"
-        );
-        assert!(
-            skill_dir
-                .join("sidebar-pptx-generator/scripts/get_slide_info.sh")
-                .is_file(),
-            "适配版状态脚本应在"
-        );
-        let skmd = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
-        assert!(
-            !skmd.contains("mcporter"),
-            "SKILL.md 不应残留 mcporter 调用说明"
-        );
-        assert!(
-            mgr.list_skills()
+            assert!(
+                skill_dir
+                    .join("sidebar-pptx-generator/scripts/get_slide_info.sh")
+                    .is_file(),
+                "适配版状态脚本应在"
+            );
+            let skmd = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+            assert!(
+                !skmd.contains("mcporter"),
+                "SKILL.md 不应残留 mcporter 调用说明"
+            );
+            assert!(mgr
+                .list_skills()
                 .iter()
-                .any(|s| s.id == "tencent-docs-skill" && s.installed)
-        );
+                .any(|s| s.id == "tencent-docs-skill" && s.installed));
 
-        mgr.uninstall("tencent-docs-skill").unwrap();
-        assert!(!skill_dir.exists(), "卸载应删目录");
-        let _ = std::fs::remove_dir_all(&tmp);
+            mgr.uninstall("tencent-docs-skill").unwrap();
+            assert!(!skill_dir.exists(), "卸载应删目录");
+        });
     }
 
     /// 不在包目录的目录（旧布局内置/手放）拒绝卸载,防误删。
@@ -3404,6 +3452,106 @@ mod tests {
         // frontmatter description 应被解析展示;subtitle 留空交前端回退
         assert_eq!(listed.description, "t");
         assert!(listed.subtitle.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Upload 技能卸载 → 整包搬入回收站（不物理删除）：目录从 bundles_root 搬走、
+    /// 登记移除、回收清单有记录（含原 zip 展示名与记录快照）。
+    #[test]
+    fn uninstall_uploaded_skill_recycles_package() {
+        use std::io::Write;
+        let tmp = fresh_dir("uninstall_upload");
+        let zip_path = tmp.join("pkg.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("up-skill/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: up-skill\ndescription: d\n---\n# hi")
+                .unwrap();
+            zw.start_file("up-skill/ref.md", opts).unwrap();
+            zw.write_all(b"reference body").unwrap();
+            zw.finish().unwrap();
+        }
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        mgr.import_package_named(zip_path.to_str().unwrap(), "pkg.zip")
+            .unwrap();
+        let pkg_dir = tmp.join("bundles/up-skill");
+        assert!(pkg_dir.join("skills/up-skill/SKILL.md").is_file());
+
+        mgr.uninstall("up-skill").unwrap();
+
+        assert!(!pkg_dir.exists(), "Upload 卸载后包目录应搬离 bundles_root");
+        let recycled_dir = tmp.join("recycle-bin/up-skill");
+        assert!(
+            recycled_dir.join("skills/up-skill/SKILL.md").is_file(),
+            "技能内容应完整保留在回收站"
+        );
+        assert!(
+            recycled_dir.join("skills/up-skill/ref.md").is_file(),
+            "辅助文件应一并保留"
+        );
+        let store =
+            crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
+        assert!(
+            store.get("up-skill").unwrap().is_none(),
+            "卸载应移除 bundles.json 登记"
+        );
+        let list = mgr.recycle_bin.list().unwrap();
+        assert_eq!(list.len(), 1, "回收清单应有记录");
+        assert_eq!(list[0].id, "up-skill");
+        assert_eq!(list[0].display_name, "pkg.zip");
+        assert_eq!(list[0].kind, crate::features::marketplace::recycle_bin::KIND_SKILL);
+        assert!(!list[0].package_missing);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Preset 技能卸载维持物理删除（可重释放），不进回收站。
+    #[test]
+    fn uninstall_preset_skill_stays_physical_delete() {
+        let tmp = fresh_dir("uninstall_preset");
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        mgr.install("visualizer").unwrap();
+        let skill_dir = tmp.join("bundles/visualizer/skills/visualizer");
+        assert!(skill_dir.join("SKILL.md").is_file());
+
+        mgr.uninstall("visualizer").unwrap();
+
+        assert!(!skill_dir.exists(), "Preset 卸载应物理删除目录");
+        assert!(
+            mgr.recycle_bin.list().unwrap().is_empty(),
+            "Preset 卸载不得进回收站"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// companion 联动（recycle-aware）：Upload 组合包卸载 MCP 时整包已被搬入
+    /// 回收站，随后联动卸载 companion 技能时目录已不在包目录 —— 只清登记、
+    /// 返回 Ok，不报错不误删回收站内容。
+    #[test]
+    fn uninstall_companion_after_package_recycled_is_recycle_aware() {
+        let tmp = fresh_dir("recycle_aware");
+        // 模拟「组合包已整包回收」：回收站里存在含该技能的包目录。
+        let recycled_skill = tmp.join("recycle-bin/some-bundle/skills/recycle-aware-skill");
+        std::fs::create_dir_all(&recycled_skill).unwrap();
+        std::fs::write(recycled_skill.join("SKILL.md"), "---\nname: recycle-aware-skill\n---").unwrap();
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+
+        mgr.uninstall("recycle-aware-skill")
+            .expect("包已回收的 companion 卸载应 recycle-aware 成功");
+        assert!(
+            recycled_skill.join("SKILL.md").is_file(),
+            "回收站内容不得被误删"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 回收站外的未知技能（目录不在包目录、回收站也没有）仍按原语义拒绝删除。
+    #[test]
+    fn uninstall_unknown_skill_still_refused() {
+        let tmp = fresh_dir("unknown_refused");
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        assert!(mgr.uninstall("never-installed").is_err());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

@@ -260,7 +260,8 @@ fn collect_landed_disk_files(
 /// 文件的句柄，此时 rename 报 os error 5（拒绝访问），稍等即可恢复——真实
 /// 导入与测试并发下都实测命中。仅 `PermissionDenied` 重试（Unix 上该错误是
 /// 真实权限问题，由 `cfg!(windows)` 限定不进入重试）。
-fn rename_dir_with_retry(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+/// `pub(crate)`：回收站包目录搬移（recycle_bin）复用同一重试口径。
+pub(crate) fn rename_dir_with_retry(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
     const ATTEMPTS: u32 = 20;
     for attempt in 1..=ATTEMPTS {
         match std::fs::rename(src, dst) {

@@ -885,6 +885,13 @@ s5: { title:'视觉设计', subtitle:'设计系统直出网页 / banner / 海报
 Object.assign(dictZh.uiToolStore, {
   groupByType:'按类型', groupByBusiness:'按业务',
   typeGroups:{ bundle:'插件包', mcp:'MCP', skill:'Skill', cli:'CLI 集成', api:'API & Webhook', upcoming:'即将上线' },
+  recycleBin:'回收站', recycleBinTitle:'插件回收站', recycleBinEmpty:'回收站是空的', recycleBinEmptyHint:'上传的插件卸载后会移到这里，可恢复或彻底删除。',
+  recycleBinLoadFailed:'回收站读取失败，请重试', recycledAt:time=>`回收于 ${time}`,
+  recycleRestore:'恢复', recycleRestoreUnavailable:'包文件已缺失，无法恢复', recyclePurge:'彻底删除',
+  recyclePurgeTitle:name=>`彻底删除「${name}」？`, recyclePurgeHint:'删除后无法恢复，插件包文件将被永久移除。',
+  recycleRestored:name=>`已恢复「${name}」`, recycleRestoredCredentials:name=>`已恢复「${name}」；凭据已在卸载时删除，请重新填写。`, recyclePurged:name=>`已彻底删除「${name}」`,
+  recycleExport:'导出', recycleExportUnavailable:'包文件已缺失，无法导出', recycleExported:name=>`已导出为 ${name}`,
+  movedToRecycleBinQuoted:name=>`已卸载「${name}」，移入回收站`,
 });
 
 

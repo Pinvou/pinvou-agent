@@ -946,6 +946,88 @@ pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), Str
 }
 
 // ---------------------------------------------------------------------------
+// 插件中心回收站（Upload 来源包卸载的软删除：列表 / 恢复 / 彻底删除）
+// ---------------------------------------------------------------------------
+
+/// 回收站列表（只读；Web 端 access-policy 放行 list_*）。
+#[tauri::command]
+pub fn list_recycled_plugins(
+) -> Result<Vec<crate::features::marketplace::recycle_bin::RecycledPluginInfo>, String> {
+    crate::features::marketplace::recycle_bin::RecycleBin::new().list()
+}
+
+/// 恢复回收站包为已安装状态（变更操作）：搬回 bundles/<id>/ + 重建登记 +
+/// MCP 组件重新供给。返回 credentials_required 提示前端引导重填凭据。
+#[tauri::command]
+pub async fn restore_recycled_plugin(
+    id: String,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<crate::features::marketplace::recycle_bin::RestoreRecycledResult, String> {
+    let result = tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::recycle_bin::restore_plugin(&id)
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))??;
+    // 恢复 = 重新进入供给：mcp 热刷工具白名单 + skills 热刷会话组合目录 +
+    // 包脚本纳入 deny 规则集（与 import/uninstall 同一时机语义）。
+    pool.refresh_disallowed_tools().await;
+    pool.refresh_live_sessions_skills().await;
+    pool.refresh_permission_rulesets().await;
+    Ok(result)
+}
+
+/// 彻底删除回收站包（变更操作，fail-closed：仅删清单中存在的条目）。
+#[tauri::command]
+pub async fn purge_recycled_plugin(id: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::recycle_bin::RecycleBin::new().purge(&id)
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))?
+}
+
+/// 导出回收站包为 zip 插件包（变更操作；Web 只读不放行）：弹原生保存对话框，
+/// zip 内容对齐插件包规范（可经统一导入管线重新导入）。
+/// 返回 Some(保存路径)；用户取消 → None；失败 Err。
+#[tauri::command]
+pub async fn export_recycled_plugin(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    // 默认文件名：<包id>.zip（id 已满足 [a-z0-9-_] 安全字符集，无需净化；
+    // 不用 display_name——裸 .md 上传的技能 display_name 是 "SKILL.md"，
+    // 导出默认名会变成无意义的 "SKILL.md.zip"）。
+    let default_name = recycle_export_default_name(&id);
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_file_name(&default_name)
+        .add_filter("插件包 (zip)", &["zip"])
+        .blocking_save_file()
+    else {
+        return Ok(None); // 用户取消保存对话框
+    };
+    let path = picked
+        .into_path()
+        .map_err(|e| format!("解析文件路径: {e}"))?;
+    let dest = path.to_string_lossy().into_owned();
+    let export_id = id.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::recycle_bin::RecycleBin::new()
+            .export_package(&export_id, std::path::Path::new(&dest))
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))??;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+/// 导出默认文件名：`<包id>.zip`（id 已是安全字符集，直接使用）。
+fn recycle_export_default_name(id: &str) -> String {
+    format!("{id}.zip")
+}
+
+// ---------------------------------------------------------------------------
 // 能力包就绪态（修复方案 V1：统一 bundle_readiness，收敛五个连接器 status 命令）
 // ---------------------------------------------------------------------------
 
@@ -1247,5 +1329,14 @@ mod tests {
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 导出默认文件名：恒为 `<包id>.zip`（id 安全字符集，无需净化；不再用
+    /// display_name——裸 .md 上传的技能 display_name 是 "SKILL.md"，会导出
+    /// 无意义的 "SKILL.md.zip"）。
+    #[test]
+    fn recycle_export_default_name_is_package_id_zip() {
+        assert_eq!(recycle_export_default_name("my-pkg"), "my-pkg.zip");
+        assert_eq!(recycle_export_default_name("up-skill"), "up-skill.zip");
     }
 }
