@@ -548,7 +548,7 @@ mod tests {
     }
 
     fn test_workspace(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
+        crate::platform::os::user_home_dir().join(format!(
             "pinvou3-attachment-upload-{name}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
