@@ -14,22 +14,31 @@
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
-/// spawn 一个"点火即忘"的短命外部进程并负责收割，避免 Unix 僵尸。
+/// Spawn a short-lived fire-and-forget external process and reap it, avoiding Unix zombies.
 ///
-/// std 的 `Command::spawn()` 返回的 Child 被 drop 时**不会**回收子进程
-/// （不像 tokio 的 kill_on_drop），父进程也不自动 reap；每次 open/xdg-open
-/// 都会留一个 zombie 直到父进程退出。这里起一个 detached 收割线程 `wait()`，
-/// 打开文件/发通知类命令通常毫秒级退出，线程随即结束，常驻成本可忽略。
-/// 例外是 agent 登录拉起浏览器（`codex_acp::open_agent_login_url`）：
-/// firefox/chrome 的首个实例本身就是长驻浏览器进程，收割线程会停驻在
-/// `wait()` 里直到浏览器退出——每个长驻实例占一个 parked 线程，成本仍可
-/// 接受；只是线程创建失败的同步回退会阻塞同样久（见下），仍优于僵尸累积。
-/// 收割线程创建失败（线程数/内存受限的极端场景）时在调用线程同步 `wait()`：
-/// 命令已成功启动，此时慢命令的极端卡顿优于僵尸累积 + 误报打开失败。
+/// Dropping the Child returned by std's `Command::spawn()` does **not**
+/// /// reclaim the child (unlike tokio's kill_on_drop) and the parent never
+/// /// auto-reaps; every open/xdg-open would leave a zombie until the parent
+/// /// exits. This starts a detached reaper thread to `wait()`; open-file and
+/// /// notification commands usually exit in milliseconds, ending the thread
+/// /// immediately, so the steady-state cost is negligible.
+/// /// The exception is agent-login browser launches
+/// /// (`codex_acp::open_agent_login_url`): the first firefox/chrome instance
+/// /// is itself a long-lived browser process, so the reaper thread parks in
+/// /// `wait()` until the browser exits — one parked thread per long-lived
+/// /// instance, still an acceptable cost; only the synchronous fallback on
+/// /// thread-creation failure blocks for just as long (see below), which
+/// /// remains preferable to zombie accumulation.
+/// When reaper-thread creation fails (thread-count/memory-constrained edge
+/// /// cases), `wait()` synchronously on the calling thread: the command has
+/// /// already launched successfully, and a rare stall on a slow command beats
+/// /// zombie accumulation plus a bogus "open failed" report.
 pub fn spawn_detached_and_reap(command: &mut std::process::Command) -> std::io::Result<()> {
     use std::sync::{Arc, Mutex};
-    // `Builder::spawn` 失败时闭包被 drop（不归还），Child 的所有权无法要回；
-    // 经共享的 Option 中转：收割线程与失败回退路径先到先得，只有一方能 take。
+    // When `Builder::spawn` fails the closure is dropped (not returned),
+    //     // so ownership of the Child cannot be taken back; route it through a
+    //     // shared Option instead: the reaper thread and the failure fallback
+    //     // race for it, and only one side can take it.
     let child = Arc::new(Mutex::new(Some(command.spawn()?)));
     let thread_child = Arc::clone(&child);
     match std::thread::Builder::new()
@@ -113,12 +122,15 @@ mod tests {
 
     #[test]
     fn spawn_detached_and_reap_reaps_true_command() {
-        // `true`（PATH 查找，通常解析为 /bin/true）毫秒级退出：验证 spawn
-        // 成功且收割线程不 panic。
-        // 僵尸是否复排除非查 proc 表不可见，这里至少锁定接口契约（Ok + 不死锁）。
+        // `true` (PATH lookup, usually /bin/true) exits in milliseconds:
+        //         // verifies the spawn succeeded and the reaper thread does not
+        //         // panic.
+        //         // Whether the zombie is actually reaped is invisible without
+        //         // reading the proc table; this at least pins the interface
+        //         // contract (Ok + no deadlock).
         let mut command = std::process::Command::new("true");
         spawn_detached_and_reap(&mut command).expect("spawn true");
-        // 给收割线程一点时间完成 wait，测试本身无阻塞断言。
+        // Give the reaper thread a moment to finish its wait; the test itself makes no blocking assertion.
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 

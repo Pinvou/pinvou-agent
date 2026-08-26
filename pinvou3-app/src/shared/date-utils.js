@@ -1,8 +1,9 @@
 
 
-// Intl.DateTimeFormat 构造开销显著，而侧栏每次 App 渲染都会对全部会话调
-// formatSessionDate/formatDateGroupLabel。按 locale|opts 缓存 formatter
-// （键空间封闭：三语言 × 两种 opts）。
+// Intl.DateTimeFormat construction is expensive, and the sidebar calls
+// formatSessionDate/formatDateGroupLabel for every session on each App
+// render. Cache formatters by locale|opts (closed key space: three
+// languages × two opts variants).
 const formatterCache = new Map();
 function cachedFormatter(locale, optsKey, opts) {
   const key = `${locale}|${optsKey}`;

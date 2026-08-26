@@ -451,12 +451,16 @@ pub fn run() {
                         let agents = code_session_agents.clone();
                         move |session_id: &str| agents.is_code_session(session_id)
                     }));
-                    // SessionStore::delete 与保留策略/定时清理等深层删除路径（无
-                    // app handle）统一经删除钩子清进程级 per-session 键，与
-                    // delete_session 命令的清理同口径（依赖倒置，见
-                    // SessionPurgedHook——sessions 不能反向依赖 assistant）。
-                    // MonitorState 在 setup 后段才 manage，钩子在删除时才执行，
-                    // try_state 读时已在位；未 manage（极早期删除）则跳过该项。
+                    // SessionStore::delete and deep deletion paths without
+                    //                     // an app handle (retention policy/scheduled cleanup)
+                    //                     // clear process-level per-session keys uniformly via
+                    //                     // the purge hook, matching the delete_session command's
+                    //                     // cleanup (dependency inversion, see SessionPurgedHook —
+                    //                     // sessions must not depend on assistant in reverse).
+                    //                     // MonitorState is managed late in setup while the hook
+                    //                     // only runs at deletion time, so try_state finds it in
+                    //                     // place; if unmanaged (very early deletions) the item is
+                    //                     // skipped.
                     let app_for_purge_hook = handle.clone();
                     store_for_engine
                         .register_session_purged_hook(std::sync::Arc::new(move |session_id: &str| {
@@ -465,8 +469,10 @@ pub fn run() {
                                 session_id,
                             );
                             crate::features::memory::discard_turn_capture(session_id);
-                            // 自测指标按 session 键累积（warmed_sessions 在每轮
-                            // TurnComplete 插入、从不回收），随删除一并清键。
+                            // Self-metrics accumulate per session key
+                            //                             // (warmed_sessions inserts on every TurnComplete
+                            //                             // and is never reclaimed); clear the keys on
+                            //                             // deletion.
                             if let Some(metrics) = app_for_purge_hook
                                 .try_state::<crate::features::monitor::MonitorState>()
                                 .map(|state| state.self_metrics())

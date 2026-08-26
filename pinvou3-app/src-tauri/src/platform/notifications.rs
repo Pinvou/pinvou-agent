@@ -15,14 +15,17 @@ pub struct NotificationState {
 impl NotificationState {
     pub fn should_notify(&self, key: String) -> bool {
         let mut turns = self.notified_turns.lock();
-        // 同 key 重复（终态事件重放）先短路：否则下方前缀清理会把这条本身
-        // 也清掉、再插回时误报"首次"。
+        // A duplicate with the same key (terminal-event replay)
+        //         // short-circuits first: otherwise the prefix cleanup below would
+        //         // remove this very entry and re-inserting it would be misreported
+        //         // as "first".
         if turns.contains(&key) {
             return false;
         }
-        // key 形如 `{session_id}:{turn_id}`：同一 session 只需保留最新一条去重
-        // 记录（重复终态事件总是紧跟同一 turn）。不清前缀会让集合随完成轮数
-        // 无界增长。
+        // Keys look like `{session_id}:{turn_id}`: only the newest dedup
+        //         // record per session needs to survive (duplicate terminal events
+        //         // always follow the same turn). Without the prefix cleanup the set
+        //         // would grow unbounded with completed turns.
         let session_prefix = match key.split_once(':') {
             Some((session, _)) => format!("{session}:"),
             None => String::new(),
@@ -154,11 +157,13 @@ mod tests {
         assert!(!state.should_notify("session:turn".to_string()));
         assert!(state.should_notify("session:next-turn".to_string()));
         assert!(!state.should_notify("session:next-turn".to_string()));
-        // next-turn 落位后同 session 只保留最新一条：旧 turn key 已按前缀淘汰
-        // （集合有界），其重现按新事件处理——重复终态事件总是紧跟同一 turn，
-        // 跨 turn 重现的旧 key 不存在真实的去重需求。
+        // Once the next turn lands, only the newest record per session
+        //         // survives: the old turn's key was already pruned by prefix (the
+        //         // set is bounded) and its reappearance is treated as a new event —
+        //         // duplicate terminal events always follow the same turn, so an old
+        //         // key reappearing across turns has no real dedup need.
         assert!(state.should_notify("session:turn".to_string()));
-        // 其他 session 不受影响。
+        // Other sessions are unaffected.
         assert!(state.should_notify("other:turn".to_string()));
     }
 }

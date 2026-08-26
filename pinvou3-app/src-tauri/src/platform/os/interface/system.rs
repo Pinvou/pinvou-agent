@@ -6,11 +6,13 @@ pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String>
     super::super::platform::open_target(target, label)
 }
 
-/// spawn 一个“点火即忘”进程并按平台语义收割。
+/// Spawn a fire-and-forget process and reap it per platform semantics.
 ///
-/// Unix 上经 posix 收割线程 `wait()` 防僵尸；Windows 无 waitpid 契约，
-/// spawn 后 drop 句柄即由系统回收。供 features 层复用（open/notify 同类
-/// 的浏览器拉起等），避免各自内联 `cfg` 平台细节。
+/// On Unix a posix reaper thread `wait()`s to prevent zombies; Windows has
+/// /// no waitpid contract and dropping the handle after spawn lets the system
+/// /// reclaim the process. Meant for reuse from the features layer (browser
+/// /// launches for open/notify and the like), avoiding per-caller inline
+/// /// `cfg` platform details.
 pub fn spawn_detached_and_reap(command: &mut std::process::Command) -> std::io::Result<()> {
     #[cfg(unix)]
     {

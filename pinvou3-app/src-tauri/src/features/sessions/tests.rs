@@ -2437,8 +2437,10 @@ fn retention_purge_notifies_session_purged_hooks() {
         .expect("create chat");
     let id = chat.metadata.id.clone();
 
-    // 依赖倒置：sessions feature 深层的保留策略删除经钩子通知进程级状态持有
-    // 者（timing/pending_user_input 由组合根注册），未注册时删除照常。
+    // Dependency inversion: deep retention-policy deletions inside the
+    //     // sessions feature notify process-level state holders via the hook
+    //     // (timing/pending_user_input registered by the composition root); with
+    //     // nobody registered, deletion proceeds as usual.
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let recorder = seen.clone();
     store.register_session_purged_hook(std::sync::Arc::new(move |sid: &str| {
@@ -2448,7 +2450,11 @@ fn retention_purge_notifies_session_purged_hooks() {
     store.purge_session_side_maps(&[id.clone()]);
 
     let notified = seen.lock().unwrap().clone();
-    assert_eq!(notified, vec![id], "删除钩子必须收到被清会话 id");
+    assert_eq!(
+        notified,
+        vec![id],
+        "the purge hook must receive the deleted session id"
+    );
 }
 
 // ===================== code 会话权限模式（两层持久化 + 默认值解析）=====================

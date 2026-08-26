@@ -163,8 +163,10 @@ pub struct SessionStore {
     /// `list_cache` 的代数计数:每次失效自增,回填前比对——miss 期间发生过写
     /// 的扫描结果不得回填(陈旧快照复活会驻留到下一次写)。见 store.rs。
     pub(crate) list_cache_generation: Arc<AtomicU64>,
-    /// 会话删除钩子（依赖倒置）：见 [`SessionPurgedHook`]。None = 无人注册
-    /// （测试/启动早期），删除照常、仅进程级状态无人跟进。
+    /// Session-purged hook (dependency inversion): see
+    ///     /// [`SessionPurgedHook`]. None = nobody registered (tests/early
+    ///     /// startup); deletion proceeds and only the process-level state goes
+    ///     /// unnotified.
     session_purged_hooks: Arc<RwLock<Vec<SessionPurgedHook>>>,
 }
 
@@ -182,10 +184,13 @@ pub type ExecutionRootResolver = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sy
 /// "品悟原生 code 会话"，不会误伤 ACP 会话自己的权限模式。
 pub type CodeSessionPredicate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
-/// 会话删除钩子：[`SessionStore::delete`] 及保留策略/定时清理等 sessions
-/// feature 深层删除路径触发，通知进程级状态持有者（timing/pending_user_input
-/// 等）同步清键。与 `ExecutionRootResolver` 同样的注入理由——`sessions` 不能
-/// 反向依赖 `assistant`（架构守卫的 feature 依赖方向），由 app 组合根注册。
+/// Session-purged hook: fired by [`SessionStore::delete`] and deep deletion
+/// /// paths inside the sessions feature (retention policy/scheduled cleanup),
+/// /// notifying process-level state holders (timing/pending_user_input, etc.)
+/// /// to clear their keys. Same injection reason as `ExecutionRootResolver` —
+/// /// `sessions` must not depend on `assistant` in reverse (the architecture
+/// /// guard's feature dependency direction); the app composition root
+/// /// registers it.
 pub type SessionPurgedHook = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// 一个会话的两个根:

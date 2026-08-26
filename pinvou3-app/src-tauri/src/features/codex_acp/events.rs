@@ -847,8 +847,10 @@ impl EventBridge {
         self.emit_protocol("tool_call", call.clone(), notification_meta);
         if terminal {
             self.record_tool_complete(&call);
-            // 首个通知即终态（无后续 update）时没有 tool_update 的删除路径兜底，
-            // 不在此移除会让含 raw_input/raw_output 的条目驻留到 bridge 销毁。
+            // When the first notification is already terminal (no later
+            //             // update), the tool_update removal path never runs; leaving the
+            //             // entry here would pin its raw_input/raw_output until bridge
+            //             // teardown.
             self.tools.lock().remove(&id);
         }
     }

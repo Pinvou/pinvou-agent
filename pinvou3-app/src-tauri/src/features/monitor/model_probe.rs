@@ -196,15 +196,21 @@ fn model_api_key(model: &SavedModel) -> Option<String> {
 
 /// 当前模型健康探测 + 本地 vLLM Prometheus metrics 解析。
 ///
-/// 客户端进程级共享：监控页 1 Hz 轮询 + 聊天页顶栏状态点都会走这里，
-/// 每次新建 Client 意味着每秒重建 TLS/连接池、零复用。3s 探测超时移到
-/// per-request 保持原语义。OnceLock 口径注意两点：
-/// 1. reqwest 默认启用系统代理检测，代理配置在首次构建时快照、进程生命
-///    周期内不再重读——会话中途改系统代理需重启应用才生效；
-/// 2. 构建失败（TLS/系统配置不可用）缓存为进程级 `None`，不做逐调用重试，
-///    保持调用方「探测失败 → fallback 配置值」的原降级路径——Client::default()
-///    在同类失败上同样 panic，不是可用的回退。请求级错误不受影响，仍逐调用
-///    由调用方处理。
+/// Process-wide shared client: both the monitor page's 1 Hz polling and the
+/// /// chat page's status dot go through here; a fresh Client per call would
+/// /// rebuild TLS/connection pools every second with zero reuse. The 3s probe
+/// /// timeout moves to per-request, keeping the original semantics. Two
+/// /// OnceLock caveats:
+/// /// 1. reqwest enables system-proxy detection by default; the proxy config
+/// ///    is snapshotted at first build and never re-read for the process
+/// ///    lifetime — changing the system proxy mid-session needs an app
+/// ///    restart to take effect;
+/// /// 2. A build failure (TLS/system config unavailable) is cached
+/// ///    process-wide as `None` with no per-call retry, preserving the
+/// ///    caller's "probe failed → fall back to configured values" downgrade —
+/// ///    Client::default() panics on the same failure and is not a usable
+/// ///    fallback. Request-level errors are unaffected and remain per-call,
+/// ///    handled by the caller.
 fn shared_probe_client() -> Option<&'static reqwest::Client> {
     static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
     CLIENT

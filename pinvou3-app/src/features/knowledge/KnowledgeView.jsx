@@ -141,9 +141,12 @@ function ModelProgressIndicator({ downloading, percent, label }) {
       const [outSortDir, setOutSortDir] = useState('desc');
       const [outputPreview, setOutputPreview] = useState(null);
       const outPreviewCache = useRef({});
-      // 预览结果可达数 MB（office 全文 HTML / 图片 base64），key 含 mtime——文件
-      // 每次重写都产生新 key。条数上限会漏掉"少量超大条目"的轴：48 × 数 MB
-      // 仍可达数百 MB。双轴封顶：条数 + 累计字节预算，插入序淘汰最旧。
+      // Preview results can reach several MB (full-text office HTML /
+      // image base64) and keys embed mtime — every file rewrite yields a
+      // new key. An entry cap alone misses the "few huge entries" axis:
+      // 48 × several MB can still reach hundreds of MB. Dual cap: entries
+      // + cumulative byte budget, evicting oldest-first by insertion
+      // order.
       const MAX_OUT_PREVIEW_CACHE = 48;
       const MAX_OUT_PREVIEW_CACHE_BYTES = 32 * 1024 * 1024;
       const outPreviewValueBytes = (v) => {
@@ -159,8 +162,10 @@ function ModelProgressIndicator({ downloading, percent, label }) {
         cache[key] = value;
         let keys = Object.keys(cache);
         let totalBytes = keys.reduce((sum, k) => sum + outPreviewValueBytes(cache[k]), 0);
-        // 超任一预算都从最旧(插入序在前)的条目开始淘汰；同产物旧 mtime 的
-        // 陈旧条目也在其中。单条超过字节预算的极端值最多留 1 条。
+        // Either budget being exceeded evicts from the oldest entries
+        // (earliest in insertion order); stale entries with old mtimes of
+        // the same artifact are included. A single entry over the byte
+        // budget leaves at most 1 entry.
         while (keys.length > 1
           && (keys.length > MAX_OUT_PREVIEW_CACHE || totalBytes > MAX_OUT_PREVIEW_CACHE_BYTES)) {
           const oldest = keys[0];

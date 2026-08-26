@@ -41,9 +41,10 @@ use crate::features::assistant::runtime_model::RuntimeModelCredential;
 use crate::features::assistant::session_policy::SessionPolicy;
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 
-/// 进程级共享凭据库句柄。`SystemCredentialStore` 的后端缓存（每个 keyring
-/// service 一个 `Secrets`）挂在实例上，逐调用点 new() 会把 probe/service 解析
-/// 结果整个丢弃，每轮 turn 重复执行多次。
+/// Process-wide shared credential-store handle. `SystemCredentialStore`'s
+/// /// backend caches (one `Secrets` per keyring service) live on the instance;
+/// /// a per-call new() throws the probe/service resolution away and repeats it
+/// /// several times per turn.
 fn shared_credential_store() -> &'static SystemCredentialStore {
     static STORE: std::sync::OnceLock<SystemCredentialStore> = std::sync::OnceLock::new();
     STORE.get_or_init(SystemCredentialStore::new)

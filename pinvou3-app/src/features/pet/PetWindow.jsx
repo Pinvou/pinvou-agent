@@ -137,10 +137,13 @@ function PetSprite({ pet, animation }) {
   );
 }
 
-// 600ms tick 的按值稳定比较：列表长度与逐卡 (sessionId,status,updatedAt,title,body)
-// 均一致时视为未变化，让 setState 保住旧引用、跳过整棵活动卡树的重渲染。
-// body 必须参与比较：文案派生自 i18n 词典，语言切换会不改事件字段只改 body，
-// 缺了它卡片会一直显示切换前的语言。
+// Value-based stable comparison for the 600ms tick: when the list length
+// and every card's (sessionId,status,updatedAt,title,body) all match, the
+// update is considered unchanged, letting setState keep the old reference
+// and skip re-rendering the whole activity-card tree.
+// body must participate: its text derives from the i18n dictionary, and a
+// language switch changes body without touching the event fields — without
+// it, cards would keep showing the pre-switch language forever.
 function sameActivities(prev, next) {
   if (prev === next) return true;
   if (!Array.isArray(prev) || !Array.isArray(next) || prev.length !== next.length) return false;
@@ -324,11 +327,12 @@ export default function PetWindow({
   const refresh = () => {
     const now = Date.now();
     const next = deriveActivities(stateRef.current, now, petCopy);
-    // 600ms 恒频 tick：deriveActivities 每次返回全新数组/对象身份，直接
-    // setState 会让空闲期也全量重渲染（每张卡重跑 markdown 渲染）。按值
-    // 稳定比较跳过未变化的提交。
+    // Constant 600ms tick: deriveActivities returns fresh array/object
+    // identities every time, so a direct setState would fully re-render
+    // even when idle (each card re-runs its markdown render). The
+    // value-based stable comparison skips unchanged commits.
     setActivities((prev) => (sameActivities(prev, next) ? prev : next));
-    // deriveAnimation 只取首条状态：复用上面的推导，避免每 tick 双份排序。
+    // deriveAnimation only reads the first card's status: it reuses the derivation above, avoiding a second sort per tick.
     const nextAnimation = next.length ? next[0].status : null;
     setBaseAnimation((prev) => (prev === nextAnimation ? prev : (nextAnimation || 'idle')));
   };

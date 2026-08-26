@@ -170,15 +170,16 @@ pub fn start_turn(session_id: &str) -> String {
     turn_id
 }
 
-/// 会话删除时清空其残留的未配对 turn 队列（map 键随会话 id 累积，不清理会
-/// 随 app 生命周期无界增长）。
+/// On session deletion, clear its residual unpaired turn queues (map keys
+/// /// accumulate per session id and would grow unbounded over the app lifetime
+/// /// without this).
 pub fn clear_session(session_id: &str) {
     if let Ok(mut map) = active_turns().lock() {
         map.remove(session_id);
     }
 }
 
-/// 测试探针：该 session 是否仍有未配对 turn 队列条目（删除路径回归断言用）。
+/// Test probe: whether this session still has unpaired turn-queue entries (for deletion-path regression assertions).
 #[cfg(test)]
 pub(crate) fn has_queued_active_turn(session_id: &str) -> bool {
     active_turns()
@@ -294,11 +295,14 @@ fn finish_turn_internal(
     >,
     #[cfg(any(feature = "benchmark-hooks", test))] include_observation: bool,
 ) {
-    // 每会话同一时刻只有一轮在飞（turn lock 串行），收尾的必是最后入队的 turn；
-    // 从队尾取。队列里更早的条目只能是"未提交即取消"路径（start_turn 后走
-    // emit_unsubmitted_interrupted_terminal，不落 assistant_done）残留的陈旧
-    // id——若按 FIFO 弹出，assistant_done 会记到陈旧 turn 上，且真 id 永远
-    // 留在队列里。这里整段清掉，陈旧轮不产生终态事件。
+    // Only one turn per session is in flight at a time (turn-lock
+    //     // serialization), so the finishing turn is always the last one queued;
+    //     // take from the tail. Earlier entries can only be stale ids left by the
+    //     // "canceled before submit" path (start_turn followed by
+    //     // emit_unsubmitted_interrupted_terminal, no assistant_done) — popping
+    //     // FIFO would attribute assistant_done to the stale turn and leave the
+    //     // real id stuck in the queue forever. Clear the whole queue here;
+    //     // stale turns produce no terminal event.
     let active_turn = active_turns().lock().ok().and_then(|mut map| {
         let id = map.get_mut(session_id)?.pop_back();
         map.remove(session_id);
@@ -342,8 +346,9 @@ fn finish_turn_internal(
 
 #[cfg(any(feature = "benchmark-hooks", test))]
 fn record_first_event(session_id: &str, event: &'static str, tool_name: Option<&str>) {
-    // 取队尾:与 finish_turn_internal 的尾弹语义一致——队列更早的条目是
-    // "未提交即取消"残留的陈旧 turn,观测事件必须落在真正在飞的一轮上。
+    // Take the tail: consistent with finish_turn_internal's tail-pop
+    //     // semantics — earlier entries are stale turns left by "canceled before
+    //     // submit"; observation events must land on the truly in-flight turn.
     let turn_id = active_turns().lock().ok().and_then(|mut map| {
         let active = map.get_mut(session_id)?.back_mut()?;
         active
@@ -1126,10 +1131,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(tmp);
     }
 
-    /// 队列里更早的条目只能是"未提交即取消"路径残留的陈旧 id(不落终态)。
-    /// 连续两轮 start 模拟陈旧残留后收尾:终态必须归属最后入队的 turn,且
-    /// 清队后再次收尾不再落事件——按 FIFO 弹出会把 assistant_done 记到陈旧
-    /// turn 上,且真 id 永远滞留在队列里轮转误记后续轮次。
+    /// Earlier entries in the queue can only be stale ids left by the
+    ///     /// "canceled before submit" path (no terminal recorded). Start two
+    ///     /// turns in a row to simulate stale residue, then finish: the terminal
+    ///     /// must be attributed to the last queued turn, and once the queue is
+    ///     /// cleared a further finish records nothing — a FIFO pop would
+    ///     /// attribute assistant_done to the stale turn while the real id stays
+    ///     /// stuck in the queue, mis-attributing later turns.
     #[test]
     fn finish_turn_attributes_terminal_to_newest_queued_turn() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -1159,7 +1167,7 @@ mod tests {
         );
         assert_ne!(done[0].turn_id, stale);
 
-        // 队列已整段清空:再次收尾不得再落终态事件。
+        // The queue has been fully cleared: another finish must not record a terminal event.
         finish_turn(sid, "Completed", None);
         assert_eq!(
             read_timeline(sid)
@@ -1175,8 +1183,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(tmp);
     }
 
-    /// clear_session 清掉会话残留的未配对队列后,迟到的 finish 不得再向该
-    /// 会话的 sidecar 落事件;重复 clear 幂等。
+    /// After clear_session removes a session's residual unpaired queues, a
+    ///     /// late finish must not record events to that session's sidecar;
+    ///     /// repeated clears are idempotent.
     #[test]
     fn clear_session_empties_queue_and_silences_late_finish() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -1260,13 +1269,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(tmp);
     }
 
-    /// 排队双轮:同 session 连续两个 start_turn 入队后,一次 observation 收尾
-    /// 只消费一个轮次。此前 forwarder 双重 finish(usage 版 + observation 版)
-    /// 会连 pop 两次,把第二轮的 assistant_done 提前写坏;该调用点已收敛为
-    /// 单次 observation 收尾,本测试钉住"一次收尾只消费一个活跃轮"的语义。
-    /// 归属按尾弹语义(finish_turn_internal):单飞保证下在飞的必是最后入队
-    /// 的 turn,更早条目是"未提交即取消"残留的陈旧轮——终态落在 second 上,
-    /// 整队清除后陈旧的 first 不产生终态事件,后续收尾为 no-op。
+    /// Two queued turns: after two consecutive start_turn calls enqueue on
+    /// the same session, one observation finish consumes a single turn.
+    /// The forwarder previously double-finished (usage variant +
+    /// observation variant), popping twice and corrupting the second
+    /// turn's assistant_done; that call site has since converged to a
+    /// single observation finish, and this test pins the "one finish
+    /// consumes one active turn" semantics.
+    /// Attribution follows the tail-pop semantics (finish_turn_internal):
+    ///     /// under the single-flight guarantee the in-flight turn is the last one
+    ///     /// queued, and earlier entries are stale turns left by "canceled before
+    ///     /// submit" — the terminal lands on second, the whole queue is cleared,
+    ///     /// stale first produces no terminal event, and later finishes are
+    ///     /// no-ops.
     #[test]
     fn single_observation_finish_tail_pops_latest_turn_and_clears_queue() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -1299,14 +1314,15 @@ mod tests {
             .filter(|event| event.event == "assistant_done")
             .collect();
         assert_eq!(done_events.len(), 1, "exactly one turn must be finished");
-        // 尾弹归属:终态落在最后入队的 second(单飞下的在飞轮),陈旧的
-        // first 不产生终态事件。
+        // Tail-pop attribution: the terminal lands on the last-queued
+        //         // second (the in-flight turn under single flight); stale first
+        //         // produces no terminal event.
         assert_eq!(done_events[0].turn_id, second);
         // observation 字段随该次收尾落盘,不因重复收尾丢失。
         assert_eq!(done_events[0].tool_calls, Some(0));
         assert!(done_events[0].authorized_tool_catalog.is_some());
 
-        // 队列已整段清除:后续收尾为 no-op,不得再落终态事件。
+        // The queue has been fully cleared: later finishes are no-ops and must not record terminal events.
         finish_turn_with_observation(sid, "Completed", None, None, None);
         let timeline = read_timeline(sid).unwrap();
         let done_events: Vec<_> = timeline

@@ -26,12 +26,18 @@
           since_navigation_ms: Math.max(0, Number(sinceNavigationMs) || 0),
         };
         entries.push(entry);
-        // visibility/error 等监听器在启动后仍会持续打点，而 web 端 invoke 不可用、
-        // 桌面端启动批次早已上报。保留最近 64 条防止数组随交互无界增长（启动
-        // 关键阶段通常在 40 条以内，截断只影响极端后期的重复 visibilitychange）。
-        // sent 游标同步前移补偿截断；sent ≥ dropped 时丢弃的确实是已上报条目，
-        // web 端 sent 恒 0，丢弃的是本就无从上报的条目。在途批次混入被删条目的
-        // 场景由 flush 回调按批次末条身份重定位兜底（见 relocateSent）。
+        // Listeners such as visibility/error keep marking after startup,
+        // while the web build has no invoke available and the desktop
+        // startup batch was reported long ago. Keep the most recent 64
+        // entries so the array cannot grow unbounded with interaction
+        // (startup's critical phases usually stay under 40 entries; the
+        // truncation only affects repeated late visibilitychange marks).
+        // The sent cursor advances in step to compensate; when
+        // sent >= dropped the dropped entries were indeed already
+        // reported, and on web sent stays 0, so what is dropped could
+        // never have been reported anyway. An in-flight batch mixing in
+        // truncated entries is handled by the flush callback relocating
+        // the cursor by the batch tail's identity (see relocateSent).
         if (entries.length > 64) {
           var dropped = entries.length - 64;
           entries.splice(0, dropped);
@@ -62,11 +68,15 @@
         }, delay || 0);
       }
 
-      // flush 回调不能直接 sent += batch.length：截断可能已把批次里的条目从数组
-      // 删除，按计数推进会把这些已删条目计入游标，让后到的真实条目被
-      // sent >= entries.length 短路误判为已上报而永不发送。按批次末条的身份
-      // 重定位：找到即推进到它之后；整批被删则归零重发（Rust 端逐行 append、
-      // 2MiB 轮转，重复上报无害）。
+      // The flush callback cannot simply do sent += batch.length:
+      // truncation may already have removed some of the batch's entries
+      // from the array, and advancing by count would fold those deleted
+      // entries into the cursor, letting later real entries be
+      // short-circuited by sent >= entries.length as falsely reported and
+      // never sent. Relocate by the in-flight batch tail's identity:
+      // found → advance past it; whole batch dropped → reset and resend
+      // (the Rust side appends line-by-line with a 2MiB rotation, so
+      // duplicate reports are harmless).
       function relocateSent() {
         if (inflightTail == null) return 0;
         for (var i = entries.length - 1; i >= 0; i--) {

@@ -45,14 +45,20 @@
     return result;
   }
 
-  // 订阅回调每次通知都会 pick 出全新外层对象：任何一处状态变化（如流式
-  // token）都让所有域订阅者拿到新引用、全量重渲染。逐订阅者缓存上次的
-  // (full, slice)：full 未换引用时复用上次 slice，保持身份稳定。注意这是
-  // 整快照粒度（web 传输层只在全部状态无变更时复用同一 full 引用），弱于
-  // 桌面端 bridge 的按域 revision 缓存：任一域变化仍会让未变域的 slice 换
-  // 新外层对象（内层字段引用仍与 flat 订阅者共享，身份共享契约见
-  // web_bridge_domain_contract 测试，不受影响）。full 由通知方按变更重建，
-  // 同一 full 引用意味着本域字段集合不可能变化。
+  // Subscriber callbacks pick a fresh outer object on every
+  // notification: any state change anywhere (e.g. a streaming token)
+  // hands every domain subscriber a new reference and a full re-render.
+  // Cache the last (full, slice) per subscriber: when full keeps its
+  // reference, reuse the last slice to keep identity stable. Note this
+  // is whole-snapshot granularity (the web transport only reuses the
+  // same full reference when nothing at all changed), weaker than the
+  // desktop bridge's per-domain revision cache: a change in any domain
+  // still swaps the outer object of unchanged domains' slices (inner
+  // field references remain shared with flat subscribers; the identity
+  // sharing contract lives in the web_bridge_domain_contract test and
+  // is unaffected). full is rebuilt by the notifier per change, so the
+  // same full reference implies this domain's field set cannot have
+  // changed.
   function stablePick() {
     var lastFull = null;
     var lastSlice = null;
@@ -86,13 +92,17 @@
 
   function subscribeMany(domains, callback) {
     getMany(domains);
-    // 每个域独立 stable 缓存：stablePick 闭包按 (lastFull,lastSlice) 单槽记忆，
-    // 共用一个实例会在多域间互相覆盖。
+    // One stable cache per domain: the stablePick closure memoizes a
+    // single (lastFull,lastSlice) slot; sharing one instance across
+    // domains would make them overwrite each other.
     var stables = {};
     domains.forEach(function (domainName) { stables[domainName] = stablePick(); });
-    // 合并外层对象同样按 full 引用单槽记忆：订阅方是 React setState 时只能按
-    // 整体身份 bail out，每轮新建合并对象会让无变更通知也触发全量重渲染，
-    // 抵消内层 slice 的身份稳定（消费方见 useBridge.js 的 subscribeMany）。
+    // The combined outer object is likewise memoized on the full
+    // reference in a single slot: a React setState subscriber can only
+    // bail out on whole-object identity, and rebuilding the combined
+    // object every round would make even no-change notifications trigger
+    // full re-renders, cancelling out the inner slices' identity
+    // stability (see useBridge.js's subscribeMany for the consumer).
     var lastFull = null;
     var lastResult = null;
     return flat.subscribe(function (full) {

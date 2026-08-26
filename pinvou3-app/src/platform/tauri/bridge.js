@@ -873,17 +873,22 @@
     state: state, invoke: invoke, listen: listen, notify: notify,
     sessionStates: sessionStates, scheduledRunSessionOwners: scheduledRunSessionOwners,
     personaPlaceholderTitles: personaPlaceholderTitles, turnUsageDirty: turnUsageDirty,
-    // 会话 buffer 删除/淘汰时清理宿主侧 per-session 副表（modeStateEpochs
-    // 定义在本文件后段，无法直接传入引用，用延迟取值 hook）。
+    // Clean host-side per-session side tables when a session buffer is
+    // deleted/evicted (modeStateEpochs is defined later in this file, so
+    // the reference cannot be passed in directly — a lazy-lookup hook).
     onSessionBufferPurged: function (id, reason) {
       delete modeStateEpochs[id];
-      // scene 事件的 localStorage 缓存是 sidecar 保存失败/离线时的唯一恢复
-      // 副本（savePinvouSceneEventsForSession 的后端失败被有意吞掉，
-      // syncPinvouSceneEventsForSession 靠它兜底重放）。LRU 容量淘汰
-      // （reason === "evict"）≠ 会话删除：此时删键会让一次保存失败 +
-      // 淘汰的组合静默丢失全部 scene 映射，且键本体只有几百字节，保留
-      // 代价远低于丢数据。仅真实会话删除（"delete"）时清理，防随历史
-      // 会话数无界累积（约 5MB 配额共享）。
+      // The localStorage cache of scene events is the only recovery copy
+      // when the sidecar save fails or we are offline
+      // (savePinvouSceneEventsForSession intentionally swallows backend
+      // failures; syncPinvouSceneEventsForSession replays from this
+      // cache). LRU capacity eviction (reason === "evict") ≠ session
+      // deletion: removing the key here would let one failed save +
+      // eviction silently lose all scene mappings, and the key itself is
+      // only a few hundred bytes — keeping it costs far less than losing
+      // data. Clean only on real session deletion ("delete"), preventing
+      // unbounded accumulation across historical sessions (~5MB shared
+      // quota).
       if (id && reason === "delete" && window.localStorage) {
         try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch (_) {}
       }
@@ -1724,17 +1729,23 @@
   }
 
   // ── Rerender from messages (session restore) ─────────────────────
-  // opts.keepLiveToolMeta: live 会话注水(hydrateLiveSession)时传入 —— 此刻
-  // buffer 的 toolMeta 可能持有在飞工具的条目(tool_use 尚未进 messages),
-  // 清空会让后续 chat:tool_end 拿不到 meta(选择卡卡死/成品卡退化)。
+  // opts.keepLiveToolMeta: passed when hydrating a live session
+  // (hydrateLiveSession) — the buffer's toolMeta may hold entries for
+  // in-flight tools (tool_use not yet in messages), and clearing it would
+  // leave the later chat:tool_end without its meta (stuck selection
+  // card / degraded artifact card).
   function rerenderFromMessages(opts) {
     state.chatItems = [];
     itemIdSeq = 0;
-    // 重放会把每条历史 tool_use 的元数据(含 write/patch 的大 args)重新加入
-    // toolMeta 供 tool_result 回填,回填后并不删除——残留随工作集存进 buffer
-    // 驻留,内存由 32 条全会话 LRU 上限兜底。durable 重放开始即清空(非
-    // live 注水时),收回的只是中断回合留下的孤儿条目(实时事件路径本身
-    // 插删均衡);随后重放为 messages 内的历史 tool_use 重建所需条目。
+    // Replay re-adds every historical tool_use's metadata (including
+    // write/patch's large args) to toolMeta for tool_result backfill and
+    // never deletes after backfill — the residue resides in the buffer
+    // with the working set, and memory is bounded by the 32-entry
+    // all-session LRU cap. Durable replay clears first (when not live
+    // hydrating), reclaiming only orphan entries left by interrupted
+    // turns (the live event path itself stays insert/delete balanced);
+    // the replay then rebuilds the needed entries for the historical
+    // tool_uses inside messages.
     if (!(opts && opts.keepLiveToolMeta)) toolMeta = {};
     // 卡牌事件按 pos 插回原位(pos=事件发生时的 messages 数)。让重载历史不割裂。
     var pe = Array.isArray(state.personaEvents) ? state.personaEvents : [];

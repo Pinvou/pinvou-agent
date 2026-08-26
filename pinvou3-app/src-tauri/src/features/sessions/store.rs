@@ -337,9 +337,12 @@ impl SessionStore {
         if removed_hidden {
             self.save_hidden_sessions();
         }
-        // 钩子在所有 store 侧 map 锁释放后触发（与 retention.rs 保留路径
-        // 同口径）：回调进程级清理时持锁会引入锁序风险。钩子方只做幂等的
-        // keyed removal；未注册（测试/启动早期）时删除照常完成。
+        // The hook fires after all store-side map locks are released (same
+        //         // policy as the retention path in retention.rs): holding locks
+        //         // while calling process-level cleanup would introduce lock-ordering
+        //         // risk. Hook implementations only do idempotent keyed removal; when
+        //         // nobody registered (tests/early startup), deletion completes as
+        //         // usual.
         self.notify_session_purged(id);
         Ok(())
     }
@@ -361,16 +364,20 @@ impl SessionStore {
         self.reconcile_code_default_modes();
     }
 
-    /// 注册会话删除钩子（依赖倒置，见 [`SessionPurgedHook`]）。app 组合根在
-    /// pool 就绪后注册 timing/pending_user_input 清理；store clone 共享同一
-    /// Arc，注入即时生效。
+    /// Register a session-purged hook (dependency inversion, see
+    ///     /// [`SessionPurgedHook`]). The app composition root registers the
+    ///     /// timing/pending_user_input cleanup once the pool is ready; store
+    ///     /// clones share the same Arc, so injection takes effect immediately.
     pub fn register_session_purged_hook(&self, hook: SessionPurgedHook) {
         self.session_purged_hooks.write().push(hook);
     }
 
-    /// 会话从 store 删除（[`SessionStore::delete`] 及保留策略/定时清理等无
-    /// app handle 的深层路径）后通知全部注册方。失败静默（钩子方自负责幂等），
-    /// 不得阻塞删除主流程；调用方必须在 store 侧锁全部释放后触发。
+    /// Notifies all registered parties after a session is deleted from the
+    ///     /// store ([`SessionStore::delete`] and deep paths without an app handle
+    ///     /// such as retention policy/scheduled cleanup). Failures are silent
+    ///     /// (hook implementations own their idempotency) and must not block the
+    ///     /// deletion path; callers must fire this only after all store-side
+    ///     /// locks are released.
     pub(crate) fn notify_session_purged(&self, id: &str) {
         for hook in self.session_purged_hooks.read().iter() {
             hook(id);

@@ -290,10 +290,13 @@ where
     evict_locked().await;
     store.delete(session_id)?;
     forget();
-    // timing 是同 feature 的进程级状态，可直接清键（无依赖倒置问题）。
-    // 这条覆盖不经 app 组合根、SessionPurgedHook 未注册的路径（eval 拆除、
-    // 测试）：未配对 turn 队列的键随会话 id 驻留会随 GAIA 这类建删循环
-    // 无界增长。与 store.delete 触发的钩子清理幂等重叠，无重复副作用。
+    // timing is process-level state within the same feature, so keys can
+    //     // be cleared directly (no dependency inversion needed). This covers
+    //     // paths that bypass the app composition root where the
+    //     // SessionPurgedHook is not registered (eval teardown, tests): unpaired
+    //     // turn-queue keys pinned by session id would otherwise grow unbounded
+    //     // under create/delete cycles like GAIA. Idempotent overlap with the
+    //     // hook cleanup fired from store.delete; no duplicated side effects.
     crate::features::assistant::timing::clear_session(session_id);
     Ok(())
 }
@@ -1131,10 +1134,12 @@ impl EnginePool {
                     }
                     eprintln!("[engine_pool] sync history for {session_id} failed: {error:?}");
                 } else {
-                    // 注水的是 forwarder 净化后的历史：旧 transcript 规则不可能再
-                    // 匹配新引擎的快照，清理以阻止规则随轮数累积驻留。交互路径
-                    // 的规则安装在 spawn 前后（reserve 已置 active），retain 谓词
-                    // 保证在飞预留的规则仍被保留。
+                    // The hydrated history is forwarder-sanitized: old
+                    //                     // transcript rules can no longer match the new engine's
+                    //                     // snapshot, so prune them to stop rules accumulating per
+                    //                     // turn. The interactive path installs rules around spawn
+                    //                     // (reserve already marked active); the retain predicate
+                    //                     // guarantees the in-flight reservation's rule survives.
                     turn_lifecycle.prune_stale_transcript_rules();
                 }
             }
@@ -1364,9 +1369,12 @@ impl EnginePool {
                 session_id
             );
         }
-        // 引擎回收后其 transcript 随之销毁，旧 raw prompt 的唯一存活载体消失
-        // （磁盘历史是净化后的）。清掉不再可能匹配的规则，阻止跨引擎世代驻留
-        // 到会话删除；在飞预留的规则兜底保留（正常回收已先终态化在飞轮）。
+        // After reclaim the engine transcript is destroyed with it,
+        //         // removing the only live carrier of old raw prompts (the on-disk
+        //         // history is sanitized). Drop rules that can no longer match,
+        //         // stopping cross-engine-generation residency until session deletion;
+        //         // the in-flight reservation's rule is kept as a backstop (normal
+        //         // reclaim finalizes in-flight turns first).
         if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
             lifecycle.prune_stale_transcript_rules();
         }
@@ -3168,10 +3176,11 @@ mod scheduled_model_tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
-    /// 回归：eval 拆除路径（`ProductChatRuntime::close` / `delete_eval_session`）
-    /// 复用 delete_chat_session，但 submit 已 `timing::start_turn`；删除必须清掉
-    /// ACTIVE_TURNS 里该会话的未配对队列键，否则 GAIA 单 pass ~165 个建删循环
-    /// 会让进程级 map 无界增长。
+    /// Regression: the eval teardown paths (`ProductChatRuntime::close` /
+    ///     /// `delete_eval_session`) reuse delete_chat_session, but submit already
+    ///     /// ran `timing::start_turn`; deletion must clear the session's unpaired
+    ///     /// queue key in ACTIVE_TURNS, or a single GAIA pass's ~165 create/delete
+    ///     /// cycles would grow the process-level map unbounded.
     #[tokio::test]
     async fn chat_delete_clears_queued_turn_timing_state() {
         let _env_guard = crate::platform::paths::tests::ENV_LOCK
@@ -3191,11 +3200,11 @@ mod scheduled_model_tests {
             .expect("chat session")
             .metadata
             .id;
-        // eval submit 路径先 start_turn；提交失败/中断时该键驻留，由删除兜底。
+        // The eval submit path runs start_turn first; on submit failure or interruption the key stays resident, and deletion is the backstop.
         crate::features::assistant::timing::start_turn(&session_id);
         assert!(
             crate::features::assistant::timing::has_queued_active_turn(&session_id),
-            "precondition: turn 已入队"
+            "precondition: turn already queued"
         );
 
         let locks = SessionTurnLocks::default();
@@ -3205,7 +3214,7 @@ mod scheduled_model_tests {
 
         assert!(
             !crate::features::assistant::timing::has_queued_active_turn(&session_id),
-            "delete_chat_session 必须清空该会话的未配对 turn 队列"
+            "delete_chat_session must clear the session's unpaired turn queue"
         );
 
         match previous_home {

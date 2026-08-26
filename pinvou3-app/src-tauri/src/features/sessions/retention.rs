@@ -251,11 +251,13 @@ impl SessionStore {
             self.save_hidden_sessions();
         }
 
-        // 进程级 turn 状态 map（timing/pending_user_input）的键随会话 id 累
-        // 积，由 app 组合根注册的删除钩子清理（见 SessionPurgedHook；这里不
-        // 能直接依赖 assistant feature）。否则残留的未配对 turn 队列会随 app
-        // 生命周期无界增长，迟到的 finish 还会在已删会话目录外重建孤儿
-        // timing sidecar。
+        // Keys of process-level turn-state maps (timing/pending_user_input)
+        //         // accumulate per session id and are cleaned by the purge hook
+        //         // registered by the app composition root (see SessionPurgedHook;
+        //         // this module must not depend on the assistant feature directly).
+        //         // Otherwise residual unpaired turn queues grow unbounded over the
+        //         // app lifetime, and a late finish would rebuild an orphan timing
+        //         // sidecar outside the deleted session's directory.
         for id in ids {
             self.notify_session_purged(id);
         }

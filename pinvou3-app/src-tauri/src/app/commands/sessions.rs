@@ -452,9 +452,11 @@ pub async fn delete_session(
     };
     if result.is_ok() {
         pool.forget_session(&id);
-        // 进程级 per-session map（timing/pending_user_input/memory/monitor）
-        // 的清键由删除路径触发的 SessionPurgedHook 统一完成（lib.rs 组合根
-        // 注册；Chat 走 store.delete，ScheduledRun 走 purge_session_side_maps）。
+        // Clearing keys of process-level per-session maps (timing/
+        //         // pending_user_input/memory/monitor) is done uniformly by the
+        //         // SessionPurgedHook fired on delete paths (registered at the lib.rs
+        //         // composition root; Chat goes through store.delete, ScheduledRun
+        //         // through purge_session_side_maps).
         let payload = serde_json::json!({ "id": &id });
         let _ = app.emit("session:deleted", payload.clone());
         crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);

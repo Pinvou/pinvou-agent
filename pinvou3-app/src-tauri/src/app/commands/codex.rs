@@ -281,9 +281,11 @@ pub(crate) async fn codex_acp_prompt_with_attachments(
         message.as_str()
     };
     super::sessions::apply_default_session_title(&store, &session_id, title_source)?;
-    // start_turn 必须在 send_message 的 busy 准入成功之后：ACP 无原生链路的
-    // reserve/terminal_closing 闸门，若在准入前入队，并发的第二次提交失败时
-    // send_error 收尾会把队列整段清掉，吞掉在飞轮的终态记点。
+    // start_turn must run after send_message's busy admission succeeds: ACP
+    //     // has no native-lane reserve/terminal_closing gate, so if the turn were
+    //     // queued before admission, a failed concurrent submit's send_error finish
+    //     // would clear the whole queue and swallow the in-flight turn's terminal
+    //     // recording.
     acp_pool
         .send_message(&session_id, message, attachments, workspace_references)
         .await

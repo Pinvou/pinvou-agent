@@ -494,8 +494,10 @@ struct VisualCacheEntry {
     touched: u64,
 }
 
-/// 缓存预算：单条结果可达数 MB（30 页 PDF data URI / 内联图片 HTML），
-/// 且键含 mtime——同一产物每次重写都会产生新键。无上限会让长会话累积数百 MB。
+/// Cache budget: a single result can reach several MB (30-page PDF data
+///     /// URIs / inline-image HTML), and keys embed mtime — every rewrite of the
+///     /// same artifact yields a new key. Without a cap, long sessions accumulate
+///     /// hundreds of MB.
 const MAX_VISUAL_CACHE_ENTRIES: usize = 16;
 const MAX_VISUAL_CACHE_BYTES: usize = 96 * 1024 * 1024;
 
@@ -518,23 +520,28 @@ fn visual_cache_next_tick() -> u64 {
     VISUAL_CACHE_CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// 键格式为 `路径|毫秒mtime`。路径在 macOS/Linux 上可含 `|`(合法文件名字节),
-/// mtime 数字段不会——同路径让位判定必须从右侧切分,左侧切分会把 `/tmp/a|b.pdf`
-/// 误解析成 `/tmp/a` 而误伤无关条目。
+/// Key format is `path|mtime_millis`. Paths on macOS/Linux may contain `|`
+///     /// (a legal filename byte) while the numeric mtime field never does —
+///     /// same-path yielding must split from the right; a left split parses
+///     /// `/tmp/a|b.pdf` as `/tmp/a` and clobbers unrelated entries.
 fn visual_cache_path(key: &str) -> &str {
     key.rsplit_once('|').map_or(key, |(path, _)| path)
 }
 
-/// 命中刷新 LRU 时钟；插入时同路径旧 mtime 键直接让位，再按字节+条目双预算
-/// 从最久未用侧淘汰。
+/// Hits refresh the LRU clock; on insert, stale same-path keys yield
+///     /// directly, then the byte+entry dual budget evicts from the
+///     /// least-recently-used side.
 fn visual_cache_insert(
     state: &mut std::collections::HashMap<String, VisualCacheEntry>,
     key: String,
     result: VisualResult,
 ) {
-    // 单条即超字节预算的结果直接不缓存：否则插入后淘汰循环会先把整库
-    // （含无关热条目）清空、最后连它自己也逐出，等于一次大结果抹掉全缓存。
-    // 调用方拿到的响应在插入前已 clone，跳过缓存不影响本次返回。
+    // A result that alone exceeds the byte budget is simply not cached:
+    // once inserted, the eviction loop would drain the whole table
+    // (including unrelated hot entries) and finally evict the result
+    // itself — one large result wiping the entire cache. The caller's
+    // response was cloned before insert, so skipping the cache does not
+    // affect this return.
     if visual_result_bytes(&result) > MAX_VISUAL_CACHE_BYTES {
         return;
     }
@@ -575,8 +582,9 @@ pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String
     if !p.is_file() {
         return Err(format!("not a file: {}", p.display()));
     }
-    // 毫秒精度：agent 的原子重写可以在同一秒内连发多版，秒级 mtime 会让
-    // 第二版拿到第一版的陈旧预览。
+    // Millisecond precision: an agent's atomic rewrites can emit several
+    //     // versions within the same second; second-granularity mtime would serve
+    //     // the second version a stale preview of the first.
     let mtime = std::fs::metadata(&p)
         .and_then(|m| m.modified())
         .ok()
@@ -667,8 +675,10 @@ fn open_with_libreoffice(path: &std::path::Path) -> Result<(), String> {
         return Err(crate::platform::os::libreoffice_missing_message().into());
     }
 
-    // spawn 后 drop Child 不回收子进程（Unix 僵尸），统一走点火即忘 +
-    // 收割的平台接口（soffice 首实例可能长驻，收割线程会停驻到其退出）。
+    // Dropping the Child after spawn never reclaims the process (Unix
+    //     // zombies); route through the platform's fire-and-forget + reap
+    //     // interface (the first soffice instance can stay resident, and the
+    //     // reaper thread then parks until it exits).
     let mut command = std::process::Command::new(&program);
     command.arg(crate::platform::os::external_application_path(path));
     crate::platform::os::spawn_detached_and_reap(&mut command)
@@ -1037,24 +1047,33 @@ mod visual_cache_tests {
         let mut state = fresh_state();
         visual_cache_insert(&mut state, "/a/doc.docx|1001".into(), result_with(8));
         visual_cache_insert(&mut state, "/a/doc.docx|2002".into(), result_with(8));
-        assert_eq!(state.len(), 1, "同路径旧 mtime 键应让位");
+        assert_eq!(state.len(), 1, "stale same-path mtime key must yield");
         assert!(state.contains_key("/a/doc.docx|2002"));
     }
 
     #[test]
     fn pipe_in_filename_parses_key_on_last_separator() {
-        // 文件名可含 `|`：键解析必须按最后一个分隔符右切（rsplit_once）。
-        // 左切分会把 `/tmp/a|b.pdf|1` 解析成 `/tmp/a`，让同前缀的无关文件
-        // （`/tmp/a|c.pdf`）互相误逐出对方的条目。
+        // Filenames may contain `|`: key parsing must split on the last
+        //         // separator (rsplit_once). A left split parses `/tmp/a|b.pdf|1` as
+        //         // `/tmp/a`, making unrelated files sharing the prefix
+        //         // (`/tmp/a|c.pdf`) evict each other's entries.
         let mut state = fresh_state();
         visual_cache_insert(&mut state, "/tmp/a|b.pdf|1".into(), result_with(8));
         visual_cache_insert(&mut state, "/tmp/a|c.pdf|1".into(), result_with(8));
-        assert_eq!(state.len(), 2, "文件名含 | 的两个不同文件必须共存");
+        assert_eq!(
+            state.len(),
+            2,
+            "two distinct files with | in the name must coexist"
+        );
         assert!(state.contains_key("/tmp/a|b.pdf|1"));
         assert!(state.contains_key("/tmp/a|c.pdf|1"));
-        // 同名文件（含 |）新 mtime 仍应让位旧条目。
+        // A same-name file (containing |) with a fresh mtime must still yield the old entry.
         visual_cache_insert(&mut state, "/tmp/a|b.pdf|2".into(), result_with(8));
-        assert_eq!(state.len(), 2, "同名含 | 文件按路径让位，不影响邻居");
+        assert_eq!(
+            state.len(),
+            2,
+            "same-name | file yields by path without affecting neighbors"
+        );
         assert!(!state.contains_key("/tmp/a|b.pdf|1"));
         assert!(state.contains_key("/tmp/a|b.pdf|2"));
         assert!(state.contains_key("/tmp/a|c.pdf|1"));
@@ -1067,7 +1086,10 @@ mod visual_cache_tests {
             visual_cache_insert(&mut state, format!("/p/{i}.pdf|1"), result_with(8));
         }
         assert_eq!(state.len(), MAX_VISUAL_CACHE_ENTRIES);
-        assert!(!state.contains_key("/p/0.pdf|1"), "最旧条目应被淘汰");
+        assert!(
+            !state.contains_key("/p/0.pdf|1"),
+            "oldest entry must be evicted"
+        );
         assert!(state.contains_key(&format!("/p/{}.pdf|1", MAX_VISUAL_CACHE_ENTRIES)));
     }
 
@@ -1084,15 +1106,16 @@ mod visual_cache_tests {
                 .map(|e| visual_result_bytes(&e.result))
                 .sum::<usize>()
                 <= MAX_VISUAL_CACHE_BYTES,
-            "累计字节应回落到预算内"
+            "total bytes must fall back within the budget"
         );
-        assert!(state.len() >= 1, "至少保留最新一条");
+        assert!(state.len() >= 1, "at least the newest entry must survive");
     }
 
     #[test]
     fn over_budget_single_entry_is_skipped_and_keeps_warm_entries() {
-        // 单条结果即超字节预算：不得入库，更不得在淘汰循环里把整库
-        // （含无关热条目）一起抹掉。
+        // A single result over the byte budget: it must not be inserted,
+        //         // let alone wipe the whole table (including unrelated hot entries)
+        //         // in the eviction loop.
         let mut state = fresh_state();
         visual_cache_insert(&mut state, "/a/small.pdf|1".into(), result_with(8));
         visual_cache_insert(
@@ -1103,11 +1126,11 @@ mod visual_cache_tests {
         assert_eq!(state.len(), 1);
         assert!(
             state.contains_key("/a/small.pdf|1"),
-            "超预算插入不得清掉已有热条目"
+            "an over-budget insert must not clear existing hot entries"
         );
         assert!(
             !state.contains_key("/a/huge.pdf|1"),
-            "单条超字节预算的结果不缓存"
+            "a single result over the byte budget is not cached"
         );
     }
 }
