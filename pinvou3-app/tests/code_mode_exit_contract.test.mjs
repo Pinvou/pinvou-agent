@@ -104,17 +104,17 @@ assertClearBefore(
 
 // 8. Session list: opening a normal chat session is the baseline exit path.
 assertClearBefore(
-  windowFrom('async function handleSwitchSession(id)', 500),
+  windowFrom('const handleSwitchSession = useCallback(async (id) => {', 500),
   'chat',
   'handleSwitchSession',
 );
 
 // 9. navigateFromScheduledRun('chat') serves the collapsed-rail "current chat"
-// and the mobile bottom tab — the round-2 P1 fix site. The navigation uses a
-// variable, so pin the guard line itself instead of a clear-before-nav order.
+// and the mobile bottom tab — the round-2 P1 fix site. The clear precedes the
+// navigation variable, matching the clear-before-nav order of the other sites.
 assert.match(
   main,
-  /setCurrentView\(nextView\);[\s\S]{0,300}if \(nextView === 'chat'\) setCodeModeOn\(false\);/,
+  /if \(nextView === 'chat'\) setCodeModeOn\(false\);\s*setCurrentView\(nextView\);/,
   "navigateFromScheduledRun('chat'): navigating back to chat must exit code mode",
 );
 
