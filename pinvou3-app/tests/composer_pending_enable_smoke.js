@@ -12,11 +12,11 @@ const fs = require('fs'), path = require('path'), os = require('os');
 const { startUiTestServer } = require('./ui_test_server');
 
 function loadPuppeteer() {
-  try { return require('puppeteer-core'); } catch (_) { /* fall through */ }
+  try { return require('puppeteer-core'); } catch { /* fall through */ }
   const npx = path.join(os.homedir(), '.npm', '_npx');
   if (fs.existsSync(npx)) for (const d of fs.readdirSync(npx)) {
     const p = path.join(npx, d, 'node_modules', 'puppeteer-core');
-    if (fs.existsSync(p)) try { return require(p); } catch (_) { /* next */ }
+    if (fs.existsSync(p)) try { return require(p); } catch { /* next */ }
   }
   console.error('SKIP: 找不到 puppeteer-core');
   process.exit(2);
@@ -97,7 +97,7 @@ function injectSource() {
   })();`;
 }
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+const sleep = ms => new Promise(r => { setTimeout(r, ms); });
 
 (async () => {
   // 默认用构建产物起本地服务；设 PINVOU3_TEST_URL 可直接打正在运行的 dev server。
@@ -227,8 +227,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const failed = results.filter(r => !r.pass).length;
   console.log(failed ? `\n❌ ${failed}/${results.length} FAILED` : `\n✅ ALL ${results.length} PASS`);
   process.exit(failed ? 1 : 0);
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 })().catch(e => {
-  try { fs.rmSync(PROFILE, { recursive: true, force: true }); } catch (_) {}
+  try { fs.rmSync(PROFILE, { recursive: true, force: true }); } catch { /* profile dir already gone */ }
   console.error('FATAL', e.stack || e);
   process.exit(1);
 });

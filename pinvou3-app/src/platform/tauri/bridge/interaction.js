@@ -238,7 +238,7 @@
         displayMessage: displayEcho,
       });
       // 接受计划 = 后端受理新一轮（reserve_turn + 重跑）：未提交的「打开」转正锁死。
-      try { window.dispatchEvent(new CustomEvent("pinvou:chat-round-committed", { detail: { scope: "plain" } })); } catch (_) {}
+      try { window.dispatchEvent(new CustomEvent("pinvou:chat-round-committed", { detail: { scope: "plain" } })); } catch { /* silently ignored */ }
       if (planBuffer) planBuffer.deferredRemoteUserEvent = null;
       applyAuthoritativeModeState(sid, st);
     } catch (e) {
@@ -524,7 +524,7 @@
     try {
       await invoke("edit_last_turn", { newMessage: newText, sessionId: state.activeSessionId });
       // 编辑重跑 = 后端受理新一轮：未提交的「打开」转正锁死（同 doSendFor）。
-      try { window.dispatchEvent(new CustomEvent("pinvou:chat-round-committed", { detail: { scope: "plain" } })); } catch (_) {}
+      try { window.dispatchEvent(new CustomEvent("pinvou:chat-round-committed", { detail: { scope: "plain" } })); } catch { /* silently ignored */ }
     } catch (e) {
       // 失败恢复必须定向触发会话（web 对齐）：直接写全局会把 busy/错误提示
       // 砸进别的会话（编辑是在 sid 上发起的）。

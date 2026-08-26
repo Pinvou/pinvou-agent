@@ -10,7 +10,7 @@ const notifyChatRoundCommitted = (scope) => {
     window.dispatchEvent(new CustomEvent('pinvou:chat-round-committed', {
       detail: { scope: scope === 'code' ? 'code' : 'plain' },
     }));
-  } catch (_) {}
+  } catch { /* silently ignored */ }
 };
 
 export { notifyComposerToolsChanged, notifyChatRoundCommitted };
