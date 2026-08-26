@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AppWindow, Check, Copy, ExternalLink, FolderOpen, Link, X,
@@ -108,7 +108,7 @@ export function CodeViewerModal({
   }, []);
 
   useEffect(() => {
-    if (!copied) return undefined;
+    if (!copied) return;
     const timer = window.setTimeout(() => setCopied(''), 1200);
     return () => window.clearTimeout(timer);
   }, [copied]);
@@ -184,6 +184,8 @@ export function CodeViewerModal({
 
   return createPortal(
     <div data-testid="code-viewer-modal" className="fixed inset-0 z-[300] flex items-center justify-center">
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; keyboard path handled by Escape and the title-bar close button */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container */}
       <div className="absolute inset-0 bg-black/30 backdrop-blur-[1px]" onClick={onClose} />
       <div
         ref={dialogRef}
@@ -281,7 +283,10 @@ export function CodeViewerModal({
           copy={copy}
         />
 
+        {/* biome-ignore lint/a11y/useSemanticElements: drag splitter needs div semantics (role=separator is a smoke-test contract) */}
+        {/* biome-ignore lint/a11y/useFocusableInteractive: drag splitter relies on mouse dragging; see above for the div semantics */}
         <div
+          // biome-ignore lint/a11y/useAriaPropsForRole: drag splitter is not a focusable control, valuenow semantics do not apply; role is a smoke-test contract
           role="separator"
           aria-label={copy.resizeWidth}
           aria-orientation="vertical"
@@ -290,7 +295,10 @@ export function CodeViewerModal({
           className="absolute inset-y-0 right-0 z-10 w-1.5 cursor-col-resize hover:bg-[#0B57D0]/40 dark:hover:bg-[#A8C7FA]/50 transition-colors"
           title={copy.resizeWidth}
         />
+        {/* biome-ignore lint/a11y/useSemanticElements: drag splitter needs div semantics (role=separator is a smoke-test contract) */}
+        {/* biome-ignore lint/a11y/useFocusableInteractive: drag splitter relies on mouse dragging; see above for the div semantics */}
         <div
+          // biome-ignore lint/a11y/useAriaPropsForRole: drag splitter is not a focusable control, valuenow semantics do not apply; role is a smoke-test contract
           role="separator"
           aria-label={copy.resizeHeight}
           aria-orientation="horizontal"
@@ -299,7 +307,10 @@ export function CodeViewerModal({
           className="absolute inset-x-0 bottom-0 z-10 h-1.5 cursor-row-resize hover:bg-[#0B57D0]/40 dark:hover:bg-[#A8C7FA]/50 transition-colors"
           title={copy.resizeHeight}
         />
+        {/* biome-ignore lint/a11y/useSemanticElements: drag splitter needs div semantics (role=separator is a smoke-test contract) */}
+        {/* biome-ignore lint/a11y/useFocusableInteractive: drag splitter relies on mouse dragging; see above for the div semantics */}
         <div
+          // biome-ignore lint/a11y/useAriaPropsForRole: drag splitter is not a focusable control, valuenow semantics do not apply; role is a smoke-test contract
           role="separator"
           aria-label={copy.resizeCorner}
           data-testid="code-viewer-resize-xy"

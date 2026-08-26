@@ -92,7 +92,7 @@ function bootWebBridge() {
         .filter(candidate => candidate !== listener);
     },
     dispatchEvent(event) {
-      (windowListeners[event.type] || []).slice().forEach(listener => listener(event));
+      [...(windowListeners[event.type] || [])].forEach(listener => listener(event));
       return true;
     },
     setTimeout,
@@ -148,7 +148,7 @@ test('web ensureSession：create_session 等待期间再进草稿 → 不物化�
   const p = rt.personas.equipPersona('persona-x'); // 草稿加卡 → ensureSession → create
   rt.leave(); // 慢 create_session 期间用户点了「新建对话」（再进草稿）
   create.resolve({ id: 'chat-new', transcript_revision: 1 });
-  await new Promise(r => setTimeout(r, 0)); // ensureSession 返回 null → equipPersona 放弃
+  await new Promise(r => { setTimeout(r, 0); }); // ensureSession 返回 null → equipPersona 放弃
   const view = rt.view();
   assert.equal(view.activeSessionId, null, '不得劫持用户的新草稿');
   assert.equal(view.activePersona, null, '卡不得挂进新草稿');
@@ -164,7 +164,7 @@ test('web ensureSession：无导航 → 正常物化（既有行为保持）', a
   const rename = rt.defer('rename_session');
   const p = rt.personas.equipPersona('persona-x');
   create.resolve({ id: 'chat-ok', transcript_revision: 1 });
-  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => { setTimeout(r, 0); });
   equip.resolve({ id: 'persona-x', name: 'X' });
   list.resolve([]);
   rename.resolve({});
@@ -180,11 +180,11 @@ test('web ensureSession：尾部 await 期间再进草稿 → 物化中止不漂
   const list = rt.defer('list_sessions'); // 挂住尾部链，制造真实 await 窗口
   const p = rt.personas.equipPersona('persona-x');
   create.resolve({ id: 'chat-tail', transcript_revision: 1 });
-  await new Promise(r => setTimeout(r, 0)); // 物化推进到尾部 refreshHistoryList 并挂起
+  await new Promise(r => { setTimeout(r, 0); }); // 物化推进到尾部 refreshHistoryList 并挂起
   rt.leave(); // 尾部 await 期间再进草稿
   list.resolve([]);
   const equip = rt.defer('equip_persona');
-  await new Promise(r => setTimeout(r, 0)); // ensureSession 收尾返回 null → equip 放弃
+  await new Promise(r => { setTimeout(r, 0); }); // ensureSession 收尾返回 null → equip 放弃
   const view = rt.view();
   assert.equal(view.activeSessionId, null, '尾部窗口的再进草稿同样必须中止物化');
   equip.resolve({ id: 'persona-x', name: 'X' });
@@ -231,7 +231,7 @@ test('web archiveSession（普通会话）：归档失败但等待期间再进�
   const rename = rt.defer('rename_session');
   const priming = rt.personas.equipPersona('persona-x'); // 物化并激活 chat-a
   create.resolve({ id: 'chat-a', transcript_revision: 1 });
-  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => { setTimeout(r, 0); });
   equip.resolve({ id: 'persona-x', name: 'X' });
   list1.resolve([{ id: 'chat-a', title: 'A', updated_at: 1 }]);
   rename.resolve({});
@@ -241,7 +241,7 @@ test('web archiveSession（普通会话）：归档失败但等待期间再进�
   const list2 = rt.defer('list_sessions');
   const set = rt.defer('set_session_archived');
   const p = rt.sessions.archiveSession('chat-a');
-  await new Promise(r => setTimeout(r, 0)); // 推进到 leaveSessionView 已执行
+  await new Promise(r => { setTimeout(r, 0); }); // 推进到 leaveSessionView 已执行
   assert.equal(rt.view().activeSessionId, null);
   rt.leave(); // 归档等待期间用户再进草稿：token 前移、active 仍为 null
   set.reject(new Error('backend down'));
@@ -259,7 +259,7 @@ test('web archiveSession（普通会话）：归档失败且无导航 → 回滚
   const rename = rt.defer('rename_session');
   const priming = rt.personas.equipPersona('persona-x');
   create.resolve({ id: 'chat-a', transcript_revision: 1 });
-  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => { setTimeout(r, 0); });
   equip.resolve({ id: 'persona-x', name: 'X' });
   list1.resolve([{ id: 'chat-a', title: 'A', updated_at: 1 }]);
   rename.resolve({});
@@ -268,7 +268,7 @@ test('web archiveSession（普通会话）：归档失败且无导航 → 回滚
   const list2 = rt.defer('list_sessions');
   const set = rt.defer('set_session_archived');
   const p = rt.sessions.archiveSession('chat-a');
-  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => { setTimeout(r, 0); });
   set.reject(new Error('backend down'));
   list2.resolve([]);
   assert.equal(await p, false);
@@ -282,7 +282,7 @@ test('web archiveSession（scheduled run）：归档失败但等待期间再进�
   const list = rt.defer('list_sessions');
   const set = rt.defer('set_session_archived');
   const p = rt.sessions.archiveSession('sched-run-1');
-  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => { setTimeout(r, 0); });
   assert.equal(rt.view().activeSessionId, null);
   rt.leave(); // 等待期间再进草稿
   set.reject(new Error('backend down'));
@@ -298,7 +298,7 @@ test('web archiveSession（scheduled run）：归档失败且无导航 → activ
   const list = rt.defer('list_sessions');
   const set = rt.defer('set_session_archived');
   const p = rt.sessions.archiveSession('sched-run-1');
-  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => { setTimeout(r, 0); });
   set.reject(new Error('backend down'));
   list.resolve([]);
   assert.equal(await p, false);

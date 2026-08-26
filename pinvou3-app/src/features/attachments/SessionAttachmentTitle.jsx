@@ -1,4 +1,3 @@
-import React from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 
 export function SessionAttachmentTitle({ presentation }) {

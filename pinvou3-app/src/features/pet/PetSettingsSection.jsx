@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Check } from '../../components/icons.jsx';
 import {
   buildPreviewSequence,
@@ -24,6 +24,7 @@ function PreviewSprite({ atlasUrl }) {
   const sequence = useMemo(() => buildPreviewSequence(), []);
   const [frameIndex, setFrameIndex] = useState(0);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the preview frame when the atlas changes; one-shot mirror
   useEffect(() => setFrameIndex(0), [atlasUrl]);
   useEffect(() => {
     const frame = sequence.frames[frameIndex] || sequence.frames[0];
@@ -74,17 +75,17 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
   const loadPetCover = (id) => {
     setAssets((state) => ({
       ...state,
-      [id]: { ...(state[id] || {}), coverFailed: false },
+      [id]: { ...state[id], coverFailed: false },
     }));
     PET_REGISTRY[id].cover()
       .then(loadImage)
       .then((cover) => {
         if (!aliveRef.current) return;
-        setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), cover } }));
+        setAssets((state) => ({ ...state, [id]: { ...state[id], cover } }));
       })
       .catch(() => {
         if (!aliveRef.current) return;
-        setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), coverFailed: true } }));
+        setAssets((state) => ({ ...state, [id]: { ...state[id], coverFailed: true } }));
       });
   };
 
@@ -94,24 +95,24 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
     if (current && (current.status === 'loading' || current.atlasStatus === 'loading')) return;
     setAssets((state) => ({
       ...state,
-      [id]: { ...(state[id] || {}), status: 'loading', coverFailed: false, atlasStatus: 'loading' },
+      [id]: { ...state[id], status: 'loading', coverFailed: false, atlasStatus: 'loading' },
     }));
     const entry = PET_REGISTRY[id];
     entry.cover()
       .then(loadImage)
       .then((cover) => {
         if (!aliveRef.current) return;
-        setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), cover } }));
+        setAssets((state) => ({ ...state, [id]: { ...state[id], cover } }));
       })
       .catch(() => {
         if (!aliveRef.current) return;
-        setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), coverFailed: true } }));
+        setAssets((state) => ({ ...state, [id]: { ...state[id], coverFailed: true } }));
       });
     entry.atlas()
       .then(loadImage)
       .then((atlas) => {
         if (!aliveRef.current) return;
-        setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), atlas, atlasStatus: 'ready', status: 'ready' } }));
+        setAssets((state) => ({ ...state, [id]: { ...state[id], atlas, atlasStatus: 'ready', status: 'ready' } }));
         // 重试路径与 ensurePetAtlas 同一收口语义:加载期间用户已点击该卡
         // (重试在途时点击只能排队,ensurePetAtlas 因 atlasStatus=loading 早退、
         // 无人发起回调),完成即执行排队的选择,不丢点击。
@@ -128,7 +129,7 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
         // 失败腿同样消费排队:排队的选择等不到就绪,丢弃并让用户看到失败态,
         // 不残留误触发(之后 hover 不会再无点击切换)。
         if (pendingSelectRef.current === id) pendingSelectRef.current = null;
-        setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), status: 'error', atlasStatus: 'error' } }));
+        setAssets((state) => ({ ...state, [id]: { ...state[id], status: 'error', atlasStatus: 'error' } }));
       });
   };
 
@@ -140,13 +141,16 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
     PET_IDS.forEach((id) => {
       if (!assets[id]) loadPetCover(id);
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only backfill missing covers when the section appears; depending on assets would cause a load-store-retrigger loop
   }, [enabled]);
 
   // 当前选中宠的图集随区域出现预载(它随时会被桌宠窗口使用);其余宠 hover 才载。
   // 不把 entry 纳入依赖:图集失败会写新 entry,重跑会变成失败-重试死循环;
   // 主路径靠 ensurePetAtlas 在 !entry 时也照常发起(见下)来保证生效。
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/immutability -- ensurePetAtlas is declared after the effect as a preload entry only; it is initialized by the time it runs
     if (enabled && currentId) ensurePetAtlas(currentId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- including ensurePetAtlas/assets would retrigger via the atlas-failure write
   }, [enabled, currentId]);
 
   const pendingSelectRef = useRef(null);
@@ -155,12 +159,12 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
     // entry 不存在时也要照常发起:预载 effect 首次运行时封面尚未入库,
     // 在此早退会让「当前宠图集随区域出现预载」在主路径上从不生效。
     if (entry && (entry.atlas || entry.atlasStatus === 'loading')) return;
-    setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), atlasStatus: 'loading' } }));
+    setAssets((state) => ({ ...state, [id]: { ...state[id], atlasStatus: 'loading' } }));
     PET_REGISTRY[id].atlas()
       .then(loadImage)
       .then((atlas) => {
         if (!aliveRef.current) return;
-        setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), atlas, atlasStatus: 'ready', status: 'ready' } }));
+        setAssets((state) => ({ ...state, [id]: { ...state[id], atlas, atlasStatus: 'ready', status: 'ready' } }));
         // 加载期间用户已点击该卡:完成即执行排队的选择。
         const pending = pendingSelectRef.current;
         if (pending === id) {
@@ -173,7 +177,7 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
       .catch(() => {
         if (!aliveRef.current) return;
         if (pendingSelectRef.current === id) pendingSelectRef.current = null;
-        setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), atlasStatus: 'error' } }));
+        setAssets((state) => ({ ...state, [id]: { ...state[id], atlasStatus: 'error' } }));
       });
   };
 
@@ -203,6 +207,7 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
 
   return (
     <div className="mt-4">
+      {/* biome-ignore lint/a11y/useSemanticElements: horizontal card swipe track (the region landmark semantics are kept for screen readers); the section element has no swipe semantics */}
       <div
         id="pet-selector-panel"
         role="region"

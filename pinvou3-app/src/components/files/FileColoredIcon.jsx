@@ -1,4 +1,3 @@
-import React from 'react';
 import { resolveAppAssetUrl } from '../../shared/asset-url.mjs';
 import { resolveFileIcon } from './file-icon-theme.js';
 
@@ -12,7 +11,7 @@ export function FileColoredIcon({ name, isDir = false, isOpen = false, size = 14
       width={size}
       height={size}
       draggable={false}
-      className={`shrink-0 object-contain${className ? ` ${className}` : ''}`}
+      className={`shrink-0 object-contain${className ? ' ' + className : ''}`}
     />
   );
 }

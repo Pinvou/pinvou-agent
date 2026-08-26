@@ -29,7 +29,7 @@ export function assistantExportFilename(format, date = new Date()) {
 }
 
 export function buildAssistantResponseExport(markdown, format, options = {}) {
-  const normalized = String(markdown || '').replace(/\r\n?/g, '\n').trim();
+  const normalized = String(markdown || '').replaceAll(/\r\n?/g, '\n').trim();
   if (format === 'md') {
     return {
       content: normalized ? `${normalized}\n` : '',

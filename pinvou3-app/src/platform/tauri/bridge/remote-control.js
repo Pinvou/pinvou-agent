@@ -2,29 +2,32 @@
  * Persistent Web access administration for the desktop Tauri bridge.
  */
 (function (root) {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic-script artifact; strict mode is part of the payload
   "use strict";
-  var registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting the statement would diverge from the artifact
+  const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["remote-control"] = function (context) {
-    var state = context.state;
-    var notify = context.notify;
-    var invoke = context.invoke;
-    var listen = context.listen;
-    var bt = context.bt;
-    var desktopProxyStarted = false;
-    var eventForwarders = {};
-    var policyPromise = null;
-    var bridgeGeneration = (function () {
+    const state = context.state;
+    const notify = context.notify;
+    const invoke = context.invoke;
+    const listen = context.listen;
+    const bt = context.bt;
+    let desktopProxyStarted = false;
+    const eventForwarders = {};
+    let policyPromise = null;
+    const bridgeGeneration = (function () {
       try {
         if (root.crypto && typeof root.crypto.randomUUID === "function") {
-          return "webview_" + root.crypto.randomUUID().replace(/-/g, "_"); // safari14-ok: guarded above
+          return "webview_" + root.crypto.randomUUID().replaceAll('-', "_"); // safari14-ok: guarded above
         }
-      } catch (_) {}
+      } catch { /* fall through to the fallback below when UUID generation throws */ }
+      // eslint-disable-next-line sonarjs/pseudo-random -- non-security use: webview dedup ID; the timestamp prefix already guarantees basic uniqueness
       return "webview_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
     })();
 
     function loadAccessPolicy() {
       if (policyPromise) return policyPromise;
-      var url = new URL("platform/web/access-policy.json", document.baseURI);
+      const url = new URL("platform/web/access-policy.json", document.baseURI);
       policyPromise = fetch(url, { cache: "no-store" }).then(function (response) {
         if (!response.ok) throw new Error("Web access policy unavailable (" + response.status + ")");
         return response.json();
@@ -38,12 +41,13 @@
     }
 
     function eventPayload(event) {
+      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor; Object.hasOwn is unavailable, and this call is already the safe form
       return event && Object.prototype.hasOwnProperty.call(event, "payload") ? event.payload : (event || {});
     }
 
     function respondToWebAccess(requestId, ok, result, error) {
       return invoke("web_access_rpc_respond", {
-        requestId: requestId,
+        requestId,
         generation: bridgeGeneration,
         ok: !!ok,
         result: result === undefined ? null : result,
@@ -56,12 +60,12 @@
     async function startDesktopProxy() {
       if (desktopProxyStarted || typeof listen !== "function" || typeof fetch !== "function") return;
       desktopProxyStarted = true;
-      var policyReady = loadAccessPolicy();
+      const policyReady = loadAccessPolicy();
 
       // Install every allowlisted desktop-side forwarder before the bridge
       // readiness ACK so browser subscriptions cannot miss early events.
-      var eventForwardersReady = policyReady.then(function (policy) {
-        return Promise.all(Array.from(policy.events).map(function (name) {
+      const eventForwardersReady = policyReady.then(function (policy) {
+        return Promise.all([...policy.events].map(function (name) {
           if (eventForwarders[name]) return Promise.resolve();
           return listen(name, function (appEvent) {
             invoke("web_access_publish_event", {
@@ -74,16 +78,16 @@
         }));
       });
 
-      var rpcListenerReady = listen("web_access:rpc_request", async function (event) {
-        var request = eventPayload(event);
-        var requestId = request.request_id || request.requestId || request.id;
-        var requestGeneration = request.bridge_generation || request.bridgeGeneration;
+      const rpcListenerReady = listen("web_access:rpc_request", async function (event) {
+        const request = eventPayload(event);
+        const requestId = request.request_id || request.requestId || request.id;
+        const requestGeneration = request.bridge_generation || request.bridgeGeneration;
         if (!requestId || requestGeneration !== bridgeGeneration) return;
 
-        var mayExecute = false;
+        let mayExecute;
         try {
           mayExecute = await invoke("web_access_rpc_begin", {
-            requestId: requestId,
+            requestId,
             generation: bridgeGeneration,
           });
         } catch (error) {
@@ -92,7 +96,7 @@
         }
         if (!mayExecute) return;
 
-        var policy;
+        let policy;
         try {
           policy = await policyReady;
         } catch (error) {
@@ -101,7 +105,7 @@
           return;
         }
 
-        var command = String(request.command || "");
+        const command = String(request.command || "");
         if (!policy.commands.has(command)) {
           await respondToWebAccess(requestId, false, null, bt("remoteCmdNotAllowed")(command));
           return;
@@ -112,33 +116,33 @@
         }
 
         try {
-          var result = await invoke(command, request.args || {});
+          const result = await invoke(command, request.args || {});
           await respondToWebAccess(requestId, true, result, null);
         } catch (error) {
           await respondToWebAccess(requestId, false, null, error && error.message ? error.message : error);
         }
       });
 
-      var subscribeListenerReady = listen("web_access:event_subscribe", async function (event) {
-        var policy;
+      const subscribeListenerReady = listen("web_access:event_subscribe", async function (event) {
+        let policy;
         try {
           policy = await policyReady;
         } catch (error) {
           console.error("[WebAccess] policy load failed", error);
           return;
         }
-        var name = String(eventPayload(event).event || "");
+        const name = String(eventPayload(event).event || "");
         if (!name || !policy.events.has(name)) return;
         await eventForwardersReady;
       });
 
       // Forwarders remain installed for the lifetime of the authoritative main
       // WebView. Rust filters delivery according to the current Web lease.
-      var unsubscribeListenerReady = listen("web_access:event_unsubscribe", function () {});
+      const unsubscribeListenerReady = listen("web_access:event_unsubscribe", function () {});
       // Keep the desktop indicator in sync with the actual browser connection.
       // The access endpoint is intentionally persistent, so `active` only means
       // that the QR/link remains valid; it does not mean a phone is connected.
-      var statusListenerReady = listen("web_access:status", function (event) {
+      const statusListenerReady = listen("web_access:status", function (event) {
         state.webAccess = Object.assign({}, state.webAccess, eventPayload(event));
         notify();
       });
@@ -163,14 +167,14 @@
     // UI 指示写反（审计 a）。用户操作意图序号——陈旧响应作废，终态由最新
     // 意图的完成写入收敛：web_access:status 事件 payload 不含 starting，
     // 事件无法清理该标志，须由每个意图完成路径（含失败）显式兜底。
-    var webAccessIntentSeq = 0;
-    var webAccessStatusSeq = 0;
+    let webAccessIntentSeq = 0;
+    let webAccessStatusSeq = 0;
 
     async function refreshRemoteControlStatus(expectedIntentSeq) {
-      var intentSeq = expectedIntentSeq === undefined ? webAccessIntentSeq : expectedIntentSeq;
-      var statusSeq = ++webAccessStatusSeq;
+      const intentSeq = expectedIntentSeq === undefined ? webAccessIntentSeq : expectedIntentSeq;
+      const statusSeq = ++webAccessStatusSeq;
       try {
-        var status = await invoke("web_access_status");
+        const status = await invoke("web_access_status");
         if (intentSeq !== webAccessIntentSeq || statusSeq !== webAccessStatusSeq) return status;
         state.webAccess = Object.assign({}, state.webAccess, status || {});
       } catch (error) {
@@ -181,12 +185,12 @@
     }
 
     async function startRemoteControl(options) {
-      var seq = ++webAccessIntentSeq;
-      var wasActive = !!state.webAccess.active;
+      const seq = ++webAccessIntentSeq;
+      const wasActive = !!state.webAccess.active;
       state.webAccess = Object.assign({}, state.webAccess, { starting: true, last_error: null });
       notify();
       try {
-        var info = await invoke("web_access_enable", {
+        const info = await invoke("web_access_enable", {
           allowHostWorkspace: !!(options && options.allowHostWorkspace),
         });
         // A newer user action owns the state now; discard this stale result.
@@ -209,7 +213,7 @@
     }
 
     async function stopRemoteControl() {
-      var seq = ++webAccessIntentSeq;
+      const seq = ++webAccessIntentSeq;
       try {
         await invoke("web_access_disable");
       } catch (error) {
@@ -227,9 +231,9 @@
     }
 
     async function refreshRemoteControlQr() {
-      var seq = ++webAccessIntentSeq;
+      const seq = ++webAccessIntentSeq;
       try {
-        var info = await invoke("web_access_rotate");
+        const info = await invoke("web_access_rotate");
         if (seq !== webAccessIntentSeq) return info;
         state.webAccess = Object.assign({}, state.webAccess, info || {}, {
           active: true, web_client_connected: false, last_error: null, starting: false,
@@ -249,31 +253,33 @@
       return invoke("web_access_relay_settings");
     }
 
+    // eslint-disable-next-line sonarjs/no-invariant-returns -- echoing info from both branches is an intentional API contract
     async function setWebRelayAddress(address) {
-      var seq = ++webAccessIntentSeq;
-      var info = await invoke("web_access_set_relay", { address: address });
+      const seq = ++webAccessIntentSeq;
+      const info = await invoke("web_access_set_relay", { address });
       if (seq !== webAccessIntentSeq) return info;
       await refreshRemoteControlStatus(seq);
       return info;
     }
 
+    // eslint-disable-next-line sonarjs/no-invariant-returns -- echoing info from both branches is an intentional API contract
     async function resetWebRelayAddress() {
-      var seq = ++webAccessIntentSeq;
-      var info = await invoke("web_access_reset_relay");
+      const seq = ++webAccessIntentSeq;
+      const info = await invoke("web_access_reset_relay");
       if (seq !== webAccessIntentSeq) return info;
       await refreshRemoteControlStatus(seq);
       return info;
     }
 
     return {
-      startDesktopProxy: startDesktopProxy,
-      refreshRemoteControlStatus: refreshRemoteControlStatus,
-      startRemoteControl: startRemoteControl,
-      stopRemoteControl: stopRemoteControl,
-      refreshRemoteControlQr: refreshRemoteControlQr,
-      getWebRelaySettings: getWebRelaySettings,
-      setWebRelayAddress: setWebRelayAddress,
-      resetWebRelayAddress: resetWebRelayAddress,
+      startDesktopProxy,
+      refreshRemoteControlStatus,
+      startRemoteControl,
+      stopRemoteControl,
+      refreshRemoteControlQr,
+      getWebRelaySettings,
+      setWebRelayAddress,
+      resetWebRelayAddress,
     };
   };
 })(window);

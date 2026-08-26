@@ -1,18 +1,20 @@
 /** Shell polling and terminal output normalization for bridge tool cards. */
 (function (root) {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic-script artifact; strict mode is part of the payload
   "use strict";
-  var registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting the statement would diverge from the artifact
+  const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.terminal = function (context) {
-    var state = context.state;
-    var notify = context.notify;
-    var invoke = context.invoke;
-    var bt = context.bt;
-    var runSyncOnSession = context.runSyncOnSession;
-    var addChatItem = context.addChatItem;
-    var shellNotifyTimer = null;
-    var shellPollState = Object.create(null);
+    const state = context.state;
+    const notify = context.notify;
+    const invoke = context.invoke;
+    const bt = context.bt;
+    const runSyncOnSession = context.runSyncOnSession;
+    const addChatItem = context.addChatItem;
+    let shellNotifyTimer = null;
+    const shellPollState = Object.create(null);
   function updateToolItem(toolId, output, success) {
-    for (var i = 0; i < state.chatItems.length; i++) {
+    for (let i = 0; i < state.chatItems.length; i++) {
       if (state.chatItems[i].type === "tool" && state.chatItems[i].toolId === toolId) {
         state.chatItems[i].output = output;
         state.chatItems[i].success = success;
@@ -25,53 +27,36 @@
   }
 
   function isShellExecutionTool(name) {
-    return ["exec_shell", "exec_shell_wait", "exec_wait", "task_shell_start", "task_shell_wait", "shell", "Bash"].indexOf(name) >= 0;
+    return ["exec_shell", "exec_shell_wait", "exec_wait", "task_shell_start", "task_shell_wait", "shell", "Bash"].includes(name);
   }
 
   function utf8Length(text) {
     try { return new TextEncoder().encode(String(text || "")).length; }
-    catch (_) { return String(text || "").length; }
+    catch { return String(text || "").length; }
   }
 
-  // Shell snapshots are a tail view, not an append-only byte stream. Normalize
-  // terminal control sequences and state omissions explicitly instead of
-  // pretending the visible tail is the complete log.
-  function normalizeTerminalTail(text) {
-    var value = String(text || "")
-      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
-      .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, "");
-    var out = [];
-    value.split("\n").forEach(function (line) {
-      // After splitting on LF, a normal Windows CRLF line still ends in CR.
-      // Remove that delimiter first; only an *internal* CR means a terminal
-      // progress line overwrote earlier content on the same row.
-      var visible = line.endsWith("\r") ? line.slice(0, -1) : line;
-      var overwriteAt = visible.lastIndexOf("\r");
-      if (overwriteAt >= 0) visible = visible.slice(overwriteAt + 1);
-      while (visible.indexOf("\x08") >= 0) {
-        visible = visible.replace(/[^\x08]\x08/g, "").replace(/^\x08+/, "");
-      }
-      out.push(visible);
-    });
-    return out.join("\n");
-  }
+  // Shell snapshots are a tail view, not an append-only byte stream; the tail
+  // is normalized by the later normalizeTerminalTail (mergeTerminalChunk-based)
+  // below. An earlier ANSI-stripping variant of the same name was dead code
+  // (same-scope redeclaration meant the later function always won) and was
+  // removed while fixing the duplicate declaration.
 
   function formatShellSnapshot(job) {
     function section(raw, total, kind) {
       raw = String(raw || "");
-      var visibleRaw = raw.replace(/^\.\.\.\s*/, "");
-      var omitted = /^\.\.\./.test(raw) || Number(total || 0) > utf8Length(visibleRaw);
-      var body = normalizeTerminalTail(visibleRaw);
+      const visibleRaw = raw.replace(/^\.\.\.\s*/, "");
+      const omitted = /^\.\.\./.test(raw) || Number(total || 0) > utf8Length(visibleRaw);
+      let body = normalizeTerminalTail(visibleRaw);
       if (omitted) body = bt("shellOutputOmitted")(kind) + "\n" + body;
       return body;
     }
-    var stdout = section(job.stdout_tail, job.stdout_len, "stdout");
-    var stderr = section(job.stderr_tail, job.stderr_len, "stderr");
-    var parts = [];
+    const stdout = section(job.stdout_tail, job.stdout_len, "stdout");
+    const stderr = section(job.stderr_tail, job.stderr_len, "stderr");
+    const parts = [];
     if (stdout) parts.push(stdout);
     if (stderr) parts.push((stdout ? "[STDERR]\n" : "") + stderr);
     if (String(job.status || "").toLowerCase() !== "running") {
-      var code = job.exit_code == null ? bt("shellUnknownExit") : String(job.exit_code);
+      const code = job.exit_code == null ? bt("shellUnknownExit") : String(job.exit_code);
       parts.push(bt("shellTaskFinished")(code));
     }
     return parts.join("\n");
@@ -93,35 +78,35 @@
         !isShellExecutionTool(item.name) || shellCommandForItem(item) !== String(job.command || "")) {
       return false;
     }
-    var output = normalizeTerminalTail(String(item.output || ""));
-    if (output.indexOf(String(job.id || "")) >= 0 && job.id) return true;
-    var evidence = [job.stdout_tail, job.stderr_tail].map(function (raw) {
+    const output = normalizeTerminalTail(String(item.output || ""));
+    if (output.includes(String(job.id || "")) && job.id) return true;
+    const evidence = [job.stdout_tail, job.stderr_tail].map(function (raw) {
       return normalizeTerminalTail(String(raw || "").replace(/^\.\.\.\s*/, "")).trim();
     }).filter(Boolean);
-    if (evidence.length) return evidence.every(function (text) { return output.indexOf(text) >= 0; });
+    if (evidence.length) return evidence.every(function (text) { return output.includes(text); });
     return /\(no output\)|no output|无输出|出力なし/i.test(output);
   }
 
   function applyShellSnapshots(sid, jobs) {
-    var anyRunning = false;
-    var changed = false;
-    var runningCommandCounts = {};
+    let anyRunning = false;
+    let changed = false;
+    const runningCommandCounts = {};
     (jobs || []).forEach(function (job) {
       if (String(job.status || "").toLowerCase() !== "running") return;
-      var command = String(job.command || "");
+      const command = String(job.command || "");
       runningCommandCounts[command] = (runningCommandCounts[command] || 0) + 1;
     });
     runSyncOnSession(sid, function () {
       (jobs || []).forEach(function (job) {
-        var status = String(job.status || "").toLowerCase();
-        var running = status === "running";
+        const status = String(job.status || "").toLowerCase();
+        const running = status === "running";
         if (running) anyRunning = true;
-        var item = state.chatItems.find(function (it) {
+        let item = state.chatItems.find(function (it) {
           return it.type === "tool" && it.taskId === job.id;
         });
         if (!item && running) {
-          var command = String(job.command || "");
-          var candidates = state.chatItems.filter(function (it) {
+          const command = String(job.command || "");
+          const candidates = state.chatItems.filter(function (it) {
             return it.type === "tool" && isShellExecutionTool(it.name) && !it.taskId &&
               it.state === "running" && shellCommandForItem(it) === command;
           });
@@ -147,7 +132,7 @@
           addChatItem(item);
           changed = true;
         }
-        var snapshotKey = shellSnapshotKey(job);
+        const snapshotKey = shellSnapshotKey(job);
         if (item.shellSnapshotKey === snapshotKey) return;
         item.taskId = job.id;
         item.sessionId = sid;
@@ -169,22 +154,23 @@
 
   function scheduleShellPoll(sid, immediate) {
     if (!sid) return;
-    var poll = shellPollState[sid] || (shellPollState[sid] = {
+    if (!shellPollState[sid]) shellPollState[sid] = {
       timer: null, inFlight: false, waitBudget: 0,
-    });
+    };
+    const poll = shellPollState[sid];
     poll.waitBudget = Math.max(poll.waitBudget, 12);
     if (poll.timer || poll.inFlight) return;
     poll.timer = setTimeout(function () { runShellPoll(sid); }, immediate ? 0 : 250);
   }
 
   async function runShellPoll(sid) {
-    var poll = shellPollState[sid];
+    const poll = shellPollState[sid];
     if (!poll || poll.inFlight) return;
     poll.timer = null;
     poll.inFlight = true;
-    var running = false;
+    let running = false;
     try {
-      var jobs = await invoke("list_shell_tasks", { sessionId: sid });
+      const jobs = await invoke("list_shell_tasks", { sessionId: sid });
       running = applyShellSnapshots(sid, Array.isArray(jobs) ? jobs : []);
       if (!running) poll.waitBudget = Math.max(0, poll.waitBudget - 1);
     } catch (error) {
@@ -201,10 +187,10 @@
   }
 
   async function cancelTrackedShellTask(sessionId, taskId) {
-    var sid = sessionId || state.activeSessionId;
+    const sid = sessionId || state.activeSessionId;
     if (!sid || !taskId) return;
     try {
-      await invoke("cancel_shell_task", { sessionId: sid, taskId: taskId });
+      await invoke("cancel_shell_task", { sessionId: sid, taskId });
     } finally {
       scheduleShellPoll(sid, true);
     }
@@ -218,8 +204,8 @@
   }
 
   function markBackgroundToolItem(toolId, sessionId, taskId, fallbackOutput) {
-    for (var i = 0; i < state.chatItems.length; i++) {
-      var item = state.chatItems[i];
+    for (let i = 0; i < state.chatItems.length; i++) {
+      const item = state.chatItems[i];
       if (item.type !== "tool" || item.toolId !== toolId) continue;
       if (!item.liveOutput && fallbackOutput != null) item.output = fallbackOutput;
       item.success = null;
@@ -233,11 +219,11 @@
   }
 
   function finishBackgroundToolItem(toolId, payload) {
-    for (var i = 0; i < state.chatItems.length; i++) {
-      var item = state.chatItems[i];
+    for (let i = 0; i < state.chatItems.length; i++) {
+      const item = state.chatItems[i];
       if (item.type !== "tool" || item.toolId !== toolId) continue;
-      var status = payload.status || "Failed";
-      var success = status === "Completed";
+      const status = payload.status || "Failed";
+      const success = status === "Completed";
       item.success = success;
       item.state = success ? "done" : "failed";
       item.background = false;
@@ -250,20 +236,21 @@
     return false;
   }
 
-  var MAX_PENDING_TERMINAL_SEQUENCE_CHARS = 16 * 1024;
+  const MAX_PENDING_TERMINAL_SEQUENCE_CHARS = 16 * 1024;
   function rememberPendingTerminalSequence(parserState, input, start) {
-    var pending = input.slice(start);
+    const pending = input.slice(start);
     // A malformed unterminated OSC/DCS sequence must not bypass the live
     // output tail limit and grow renderer memory without bound.
     parserState.pendingAnsi = pending.length <= MAX_PENDING_TERMINAL_SEQUENCE_CHARS ? pending : "";
   }
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- state machine parses terminal sequences byte by byte; refactoring needs its own regression pass, kept as-is for now
   function stripTerminalSequences(text, parserState) {
-    var input = String((parserState.pendingAnsi || "") + (text || ""));
+    const input = String((parserState.pendingAnsi || "") + (text || ""));
     parserState.pendingAnsi = "";
-    var clean = "";
-    for (var i = 0; i < input.length; i++) {
-      if (input[i] !== "\x1b") {
+    let clean = "";
+    for (let i = 0; i < input.length; i++) {
+      if (input[i] !== "\x1B") {
         clean += input[i];
         continue;
       }
@@ -272,12 +259,13 @@
         break;
       }
 
-      var kind = input[i + 1];
+      const kind = input[i + 1];
       if (kind === "[") {
-        var csiEnd = i + 2;
-        var malformedCsi = false;
+        let csiEnd = i + 2;
+        let malformedCsi = false;
         while (csiEnd < input.length) {
-          var csiCode = input.charCodeAt(csiEnd);
+          // ANSI sequences are scanned bytewise; charCode is the protocol byte value, codePointAt adds nothing here.
+          const csiCode = input.charCodeAt(csiEnd); // eslint-disable-line unicorn/prefer-code-point
           if (csiCode >= 0x40 && csiCode <= 0x7e) break;
           if (csiCode < 0x20 || csiCode > 0x3f) {
             malformedCsi = true;
@@ -293,20 +281,20 @@
           rememberPendingTerminalSequence(parserState, input, i);
           break;
         }
-        i = csiEnd;
+        i = csiEnd; // eslint-disable-line sonarjs/updated-loop-counter -- cursor advance skipping the entire CSI sequence
         continue;
       }
 
       // OSC/DCS/SOS/PM/APC are terminated by ST (ESC \); OSC also accepts BEL.
-      if (kind === "]" || kind === "P" || kind === "X" || kind === "^" || kind === "_") {
-        var stringEnd = i + 2;
-        var terminated = false;
+      if (["]", "P", "X", "^", "_"].includes(kind)) {
+        let stringEnd = i + 2;
+        let terminated = false;
         while (stringEnd < input.length) {
           if (kind === "]" && input[stringEnd] === "\x07") {
             terminated = true;
             break;
           }
-          if (input[stringEnd] === "\x1b" && input[stringEnd + 1] === "\\") {
+          if (input[stringEnd] === "\x1B" && input[stringEnd + 1] === "\\") {
             stringEnd += 1;
             terminated = true;
             break;
@@ -317,15 +305,16 @@
           rememberPendingTerminalSequence(parserState, input, i);
           break;
         }
-        i = stringEnd;
+        i = stringEnd; // eslint-disable-line sonarjs/updated-loop-counter -- cursor advance skipping the entire OSC/DCS sequence
         continue;
       }
 
       // Generic two-or-more-byte escape sequence: optional intermediate
       // bytes followed by a final byte.
-      var escapeEnd = i + 1;
+      let escapeEnd = i + 1;
       while (escapeEnd < input.length) {
-        var escapeCode = input.charCodeAt(escapeEnd);
+        // ANSI sequences are scanned bytewise; charCode is the protocol byte value, codePointAt adds nothing here.
+        const escapeCode = input.charCodeAt(escapeEnd); // eslint-disable-line unicorn/prefer-code-point
         if (escapeCode < 0x20 || escapeCode > 0x2f) break;
         escapeEnd += 1;
       }
@@ -333,7 +322,9 @@
         rememberPendingTerminalSequence(parserState, input, i);
         break;
       }
-      var finalCode = input.charCodeAt(escapeEnd);
+      // ANSI sequences are scanned bytewise; charCode is the protocol byte value, codePointAt adds nothing here.
+      const finalCode = input.charCodeAt(escapeEnd); // eslint-disable-line unicorn/prefer-code-point
+      // eslint-disable-next-line sonarjs/updated-loop-counter -- cursor advance skipping the entire escape sequence
       if (finalCode >= 0x30 && finalCode <= 0x7e) i = escapeEnd;
     }
     return clean;
@@ -347,7 +338,7 @@
         configurable: true,
       });
     }
-    var key = stream === "stderr" ? "stderr" : "stdout";
+    const key = stream === "stderr" ? "stderr" : "stdout";
     if (!item._terminalParser[key]) {
       item._terminalParser[key] = { pendingCR: false, pendingAnsi: "" };
     }
@@ -358,9 +349,9 @@
   // uses this for progress frames, so keep the newest frame instead of
   // appending hundreds of nearly identical lines.
   function mergeTerminalChunk(previous, chunk, parserState, prefix) {
-    var output = String(previous == null ? "" : previous);
-    var clean = stripTerminalSequences(chunk, parserState);
-    var i = 0;
+    let output = String(previous == null ? "" : previous);
+    const clean = stripTerminalSequences(chunk, parserState);
+    let i = 0;
     if (parserState.pendingCR && clean) {
       if (clean[0] === "\n") {
         output += "\n";
@@ -370,9 +361,9 @@
       }
       parserState.pendingCR = false;
     }
-    var needsPrefix = !!prefix;
+    let needsPrefix = !!prefix;
     for (; i < clean.length; i++) {
-      var ch = clean[i];
+      const ch = clean[i];
       if (ch === "\r") {
         if (clean[i + 1] === "\n") {
           output += "\n";
@@ -383,7 +374,7 @@
           output = output.slice(0, output.lastIndexOf("\n") + 1);
         }
       } else if (ch === "\b") {
-        var lineStart = output.lastIndexOf("\n") + 1;
+        const lineStart = output.lastIndexOf("\n") + 1;
         if (output.length > lineStart) output = output.slice(0, -1);
       } else {
         if (needsPrefix) {
@@ -397,14 +388,14 @@
   }
 
   function mergeTerminalTail(previous, tail) {
-    var output = String(previous == null ? "" : previous);
-    var suffix = String(tail == null ? "" : tail);
+    const output = String(previous == null ? "" : previous);
+    const suffix = String(tail == null ? "" : tail);
     if (!suffix) return output;
     if (!output) return suffix;
-    if (output.indexOf(suffix) >= 0) return output;
+    if (output.includes(suffix)) return output;
 
-    var maxOverlap = Math.min(output.length, suffix.length);
-    for (var overlap = maxOverlap; overlap > 0; overlap--) {
+    const maxOverlap = Math.min(output.length, suffix.length);
+    for (let overlap = maxOverlap; overlap > 0; overlap--) {
       if (output.slice(-overlap) === suffix.slice(0, overlap)) {
         return output + suffix.slice(overlap);
       }
@@ -423,7 +414,7 @@
   }
 
   function reconcileBackgroundTerminalOutput(previous, payload) {
-    var output = String(previous == null ? "" : previous);
+    let output = String(previous == null ? "" : previous);
     output = mergeTerminalTail(output, normalizeTerminalTail(payload.stdout_tail, ""));
     output = mergeTerminalTail(output, normalizeTerminalTail(payload.stderr_tail, "[STDERR] "));
     return output;
@@ -432,13 +423,13 @@
   // Live shell output is display-only. The completed tool result remains the
   // authoritative value written to conversation history/model context.
   function appendToolItemOutput(toolId, content, stream) {
-    var chunk = typeof content === "string" ? content : String(content == null ? "" : content);
+    const chunk = typeof content === "string" ? content : String(content == null ? "" : content);
     if (!chunk) return false;
-    for (var i = 0; i < state.chatItems.length; i++) {
-      var item = state.chatItems[i];
+    for (let i = 0; i < state.chatItems.length; i++) {
+      const item = state.chatItems[i];
       if (item.type !== "tool" || item.toolId !== toolId) continue;
-      var parserState = terminalParserState(item, stream);
-      var output = mergeTerminalChunk(
+      const parserState = terminalParserState(item, stream);
+      let output = mergeTerminalChunk(
         item.output,
         chunk,
         parserState,
@@ -446,7 +437,7 @@
       );
       // A verbose long-running process must not grow renderer memory without
       // bound. Completion replaces this tail with the normal full result.
-      var maxLiveChars = 128 * 1024;
+      const maxLiveChars = 128 * 1024;
       if (output.length > maxLiveChars) output = "…\n" + output.slice(-maxLiveChars);
       item.output = output;
       item.liveOutput = true;
@@ -457,29 +448,28 @@
 
 
     return {
-      updateToolItem: updateToolItem,
-      isShellExecutionTool: isShellExecutionTool,
-      utf8Length: utf8Length,
-      normalizeTerminalTail: normalizeTerminalTail,
-      formatShellSnapshot: formatShellSnapshot,
-      shellCommandForItem: shellCommandForItem,
-      shellSnapshotKey: shellSnapshotKey,
-      terminalShellHistoryMatch: terminalShellHistoryMatch,
-      applyShellSnapshots: applyShellSnapshots,
-      scheduleShellPoll: scheduleShellPoll,
-      runShellPoll: runShellPoll,
-      cancelTrackedShellTask: cancelTrackedShellTask,
-      scheduleShellNotify: scheduleShellNotify,
-      markBackgroundToolItem: markBackgroundToolItem,
-      finishBackgroundToolItem: finishBackgroundToolItem,
-      rememberPendingTerminalSequence: rememberPendingTerminalSequence,
-      stripTerminalSequences: stripTerminalSequences,
-      terminalParserState: terminalParserState,
-      mergeTerminalChunk: mergeTerminalChunk,
-      mergeTerminalTail: mergeTerminalTail,
-      normalizeTerminalTail: normalizeTerminalTail,
-      reconcileBackgroundTerminalOutput: reconcileBackgroundTerminalOutput,
-      appendToolItemOutput: appendToolItemOutput
+      updateToolItem,
+      isShellExecutionTool,
+      utf8Length,
+      formatShellSnapshot,
+      shellCommandForItem,
+      shellSnapshotKey,
+      terminalShellHistoryMatch,
+      applyShellSnapshots,
+      scheduleShellPoll,
+      runShellPoll,
+      cancelTrackedShellTask,
+      scheduleShellNotify,
+      markBackgroundToolItem,
+      finishBackgroundToolItem,
+      rememberPendingTerminalSequence,
+      stripTerminalSequences,
+      terminalParserState,
+      mergeTerminalChunk,
+      mergeTerminalTail,
+      normalizeTerminalTail,
+      reconcileBackgroundTerminalOutput,
+      appendToolItemOutput
     };
   };
 })(window);

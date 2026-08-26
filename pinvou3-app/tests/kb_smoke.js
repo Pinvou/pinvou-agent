@@ -9,11 +9,11 @@
 const fs = require('fs'), path = require('path'), os = require('os');
 const { startUiTestServer } = require('./ui_test_server');
 function loadPuppeteer() {
-  try { return require('puppeteer-core'); } catch (e) {}
+  try { return require('puppeteer-core'); } catch { /* fall through */ }
   const npx = path.join(os.homedir(), '.npm', '_npx');
   if (fs.existsSync(npx)) for (const d of fs.readdirSync(npx)) {
     const p = path.join(npx, d, 'node_modules', 'puppeteer-core');
-    if (fs.existsSync(p)) { try { return require(p); } catch (e) {} }
+    if (fs.existsSync(p)) { try { return require(p); } catch { /* next */ } }
   }
   console.error('SKIP: 找不到 puppeteer-core'); process.exit(2);
 }
@@ -350,7 +350,7 @@ function injectSource() {
   })();`;
 }
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+const sleep = ms => new Promise(r => { setTimeout(r, ms); });
 async function clickContains(page, sel, text) {
   return page.evaluate((sel, text) => {
     const els = [...document.querySelectorAll(sel)].filter(el => (el.textContent || '').includes(text));
@@ -399,7 +399,7 @@ async function chooseRemoteUploadSource(page, testId) {
   // 切到「产出物」一级视图
   await page.evaluate(() => { const b = document.querySelector('[title*="侧边栏"],[title*="展开"]'); if (b) b.click(); });
   await sleep(400);
-  const entered = await clickContains(page, 'button,div,span,a', '产出物');
+  await clickContains(page, 'button,div,span,a', '产出物');
   await sleep(700);
   await page.waitForFunction(() => document.body.innerText.includes('跨会话报告.md'), { timeout: 5000 }).catch(() => {});
   await sleep(300);
@@ -1630,4 +1630,5 @@ async function chooseRemoteUploadSource(page, testId) {
   const failed = results.filter(r => !r.pass).length;
   console.log(failed ? `\n❌ ${failed}/${results.length} FAILED` : `\n✅ ALL ${results.length} PASS`);
   process.exit(failed ? 1 : 0);
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 })().catch(e => { console.error('FATAL', e.message); process.exit(1); });

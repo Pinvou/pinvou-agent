@@ -136,7 +136,7 @@ assert.equal(isImeComposing(synth(false, 13)), false, '普通 Enter 应判定为
 assert.equal(isImeComposing(native(false, 13)), false, '原生普通 Enter 应判定为非合成');
 
 // 4) 安全性:缺失字段(理论不应发生)不抛错,回退到非合成以保留旧行为。
-assert.equal(isImeComposing(undefined), false, 'undefined 事件应安全返回 false');
+assert.equal(isImeComposing(), false, 'undefined 事件应安全返回 false');
 assert.equal(isImeComposing({}), false, '空事件应安全返回 false');
 assert.equal(isImeComposing({ nativeEvent: null }), false, 'nativeEvent 为 null 应安全返回 false');
 

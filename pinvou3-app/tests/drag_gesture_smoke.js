@@ -6,10 +6,10 @@
  */
 const fs = require('fs'), path = require('path'), os = require('os');
 const { startUiTestServer } = require('./ui_test_server');
-function loadPuppeteer(){ try{return require('puppeteer-core');}catch(e){}
+function loadPuppeteer(){ try{return require('puppeteer-core');}catch{ /* fall through */ }
   const npx=path.join(os.homedir(),'.npm','_npx');
   if(fs.existsSync(npx))for(const d of fs.readdirSync(npx)){const p=path.join(npx,d,'node_modules','puppeteer-core');
-    if(fs.existsSync(p)){try{return require(p);}catch(e){}}}
+    if(fs.existsSync(p)){try{return require(p);}catch{ /* next */ }}}
   console.error('SKIP: 找不到 puppeteer-core');process.exit(2);}
 const puppeteer=loadPuppeteer();
 const CHROME=process.env.CHROME||['/snap/bin/chromium','/usr/bin/chromium','/usr/bin/chromium-browser','/usr/bin/google-chrome','/usr/bin/google-chrome-stable'].find(p=>fs.existsSync(p));
@@ -42,6 +42,7 @@ function injectSource(){return `(function(){
     dialog:{open:async()=>null}
   };
 })();`;}
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 (async()=>{
   const {url:INDEX}=await startUiTestServer();
   const browser=await puppeteer.launch({executablePath:CHROME,headless:'new',userDataDir:PROFILE,args:['--no-sandbox']});
@@ -51,12 +52,12 @@ function injectSource(){return `(function(){
   await page.setViewport({width:1440,height:1000,deviceScaleFactor:1});
   await page.evaluateOnNewDocument(injectSource());
   await page.goto(INDEX,{waitUntil:'networkidle0'});
-  await new Promise(r=>setTimeout(r,1500));
+  await new Promise(r=> { setTimeout(r,1500); });
   let ok=true;
 
   const toggle=await page.$('[data-sidebar-toggle]');
   if(!toggle){console.error('FAIL: 无 data-sidebar-toggle',pageErrors.length?'PAGEERROR: '+pageErrors.join(' | '):'');ok=false;}
-  else{ await toggle.click(); await new Promise(r=>setTimeout(r,400)); }
+  else{ await toggle.click(); await new Promise(r=> { setTimeout(r,400); }); }
 
   // 取「系统监控」导航行(data-nav="monitor"),在其上长按起手。
   const box=ok?await page.evaluate(()=>{
@@ -70,7 +71,7 @@ function injectSource(){return `(function(){
     const sx=box.x+20, sy=box.y+box.h/2;       // 行左侧(图标处)
     await page.mouse.move(sx,sy);
     await page.mouse.down();
-    await new Promise(r=>setTimeout(r,480));    // 长按 > 350ms,期间不动
+    await new Promise(r=> { setTimeout(r,480); });    // long-press > 350ms without moving
     const calls=await page.evaluate(()=>window.__CALLS__.filter(c=>c.cmd==='begin_detach_drag'));
     await page.mouse.up();
     if(!calls.some(c=>c.args&&c.args.kind==='monitor')){console.error('FAIL: 长按未以 kind=monitor 调 begin_detach_drag，实际:',JSON.stringify(calls));ok=false;}
@@ -86,7 +87,7 @@ function injectSource(){return `(function(){
     const sx=codingBox.x+20, sy=codingBox.y+codingBox.h/2;
     await page.mouse.move(sx,sy);
     await page.mouse.down();
-    await new Promise(r=>setTimeout(r,480));
+    await new Promise(r=> { setTimeout(r,480); });
     const calls=await page.evaluate(()=>window.__CALLS__.filter(c=>c.cmd==='begin_detach_drag'));
     await page.mouse.up();
     if(!calls.some(c=>c.args&&c.args.kind==='codex-session'&&c.args.id==='coding-detach-1')){console.error('FAIL: Coding 会话长按未携带固定 session id，实际:',JSON.stringify(calls));ok=false;}

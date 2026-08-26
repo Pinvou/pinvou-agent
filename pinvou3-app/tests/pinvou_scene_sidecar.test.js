@@ -99,6 +99,7 @@ function rec(name, pass, detail = '') {
   console.log(`${pass ? '✅' : '❌'} ${name}${detail ? '  ' + detail : ''}`);
 }
 
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 (async () => {
   {
     const { feature, state, invokes, sceneEvents } = createFeature();
@@ -155,7 +156,7 @@ function rec(name, pass, detail = '') {
         false,
         true,
       );
-    } catch (_) {
+    } catch {
       rejected = true;
     }
     rec('发送准入失败时不提交 scene sidecar',
@@ -236,7 +237,7 @@ function rec(name, pass, detail = '') {
       { id: 2, text: 'payload 2', displayText: '第二条', attachments: [], meta: null, restrictTools: false },
     );
     feature.flushQueued('s1');
-    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => { setImmediate(resolve); });
     rec('queued 队首发送失败时按原顺序回队且不吞后续消息',
       state.queued.length === 2 &&
         state.queued[0].id === 1 && state.queued[1].id === 2 &&
@@ -268,7 +269,7 @@ function rec(name, pass, detail = '') {
     'normalize allowlist must register work:personal-workbench across tauri bridge, web bridge and Rust backend');
 
   rec('远程消息不会越过已有 FIFO 队列',
-    /var remoteBuffer = getBuffer\(sid\);/.test(chatEventsSource) &&
+    /(?:var|const|let) remoteBuffer = getBuffer\(sid\);/.test(chatEventsSource) &&
       /isBusyFor\(sid\) \|\| \(remoteBuffer && remoteBuffer\.queued && remoteBuffer\.queued\.length > 0\)/.test(chatEventsSource) &&
       /if \(!isBusyFor\(sid\)\) flushQueued\(sid\);/.test(chatEventsSource),
     'mobile user messages must enqueue behind pending local turns');

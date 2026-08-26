@@ -5,13 +5,13 @@ const path = require('path');
 const { startUiTestServer } = require('./ui_test_server');
 
 function loadPuppeteer() {
-  try { return require('puppeteer-core'); } catch (_) { /* fall through */ }
+  try { return require('puppeteer-core'); } catch { /* fall through */ }
   const npx = path.join(os.homedir(), '.npm', '_npx');
   if (fs.existsSync(npx)) {
     for (const directory of fs.readdirSync(npx)) {
       const candidate = path.join(npx, directory, 'node_modules', 'puppeteer-core');
       if (fs.existsSync(candidate)) {
-        try { return require(candidate); } catch (_) { /* try next */ }
+        try { return require(candidate); } catch { /* try next */ }
       }
     }
   }
@@ -170,7 +170,7 @@ async function waitUntil(predicate, message, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    await new Promise((resolve) => { setTimeout(resolve, 40); });
   }
   throw new Error(message);
 }
@@ -291,7 +291,7 @@ async function main() {
       figureWidth: sprite.closest('.pet-card-figure').getBoundingClientRect().width,
       figureHeight: sprite.closest('.pet-card-figure').getBoundingClientRect().height,
     }));
-    await new Promise((resolve) => setTimeout(resolve, 350));
+    await new Promise((resolve) => { setTimeout(resolve, 350); });
     const previewAfter = await page.$eval('[data-pet-id="ace-taffy"] .pet-card-sprite', (sprite) => (
       getComputedStyle(sprite).backgroundPosition
     ));
@@ -332,7 +332,7 @@ async function main() {
     if (selectedAfterSuccess !== 'ace-taffy') throw new Error('点击未切换到 Ace Taffy');
 
     await page.click('[data-pet-id="langlang"] .pet-card-main');
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise((resolve) => { setTimeout(resolve, 150); });
     const rollback = await page.evaluate(() => ({
       selected: window.__PET_TEST__.getSelectedPet(),
       aceSelected: document.querySelector('[data-pet-id="ace-taffy"]').classList.contains('pet-card--selected'),
@@ -453,6 +453,7 @@ async function main() {
   }
 }
 
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 main().catch((error) => {
   console.error('FAIL:', error && error.stack ? error.stack : error);
   process.exit(1);

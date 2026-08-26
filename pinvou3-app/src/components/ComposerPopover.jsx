@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { isWeb } from '../shared/platform.js';
 
@@ -17,7 +17,7 @@ function useAnchoredPosition(open, triggerRef, active) {
   useLayoutEffect(() => {
     if (!open || !active || !triggerRef.current) {
       setStyle(null);
-      return undefined;
+      return;
     }
     const position = () => {
       const trigger = triggerRef.current;
@@ -40,12 +40,17 @@ function useAnchoredPosition(open, triggerRef, active) {
     };
     position();
     window.addEventListener('resize', position);
-    window.visualViewport && window.visualViewport.addEventListener('resize', position);
-    window.visualViewport && window.visualViewport.addEventListener('scroll', position);
+    // visualViewport exists on desktop Safari 14+/iOS; skip the listener when absent, behavior unchanged
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', position);
+      window.visualViewport.addEventListener('scroll', position);
+    }
     return () => {
       window.removeEventListener('resize', position);
-      window.visualViewport && window.visualViewport.removeEventListener('resize', position);
-      window.visualViewport && window.visualViewport.removeEventListener('scroll', position);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', position);
+        window.visualViewport.removeEventListener('scroll', position);
+      }
     };
   }, [open, active, triggerRef]);
   return style;
@@ -58,11 +63,16 @@ function useAnchoredPosition(open, triggerRef, active) {
 // 弹层打开时再点触发按钮会先被外点关闭、随后 toggle 又把它重新打开。
 function useOutsidePointerClose(open, onClose, insideRefs) {
   const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
   const insideRefsRef = useRef(insideRefs);
-  insideRefsRef.current = insideRefs;
+  // latest-ref sync: write back in an effect, not during render, to avoid
+  // render-time ref access; the consumer (pointerdown capture listener) only
+  // fires after commit, so behavior is unchanged.
   useEffect(() => {
-    if (!open) return undefined;
+    onCloseRef.current = onClose;
+    insideRefsRef.current = insideRefs;
+  });
+  useEffect(() => {
+    if (!open) return;
     const handlePointerDown = (event) => {
       const refs = insideRefsRef.current || [];
       const inside = refs.some((ref) => ref && ref.current && ref.current.contains(event.target));
@@ -89,6 +99,12 @@ const ComposerPopover = ({ open, onClose, triggerRef, compact, desktopClassName,
   }
   return createPortal(
     <>
+      {/* Transparent outside-click dismiss layer: only absorbs pointer clicks to
+          close the popover; the keyboard path is handled by the trigger button
+          (re-activating toggles it closed) and the real <button type="button">
+          menu items inside the panel, so this is a non-interactive element. */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: pointer-only outside-click dismiss layer; keyboard path handled by the trigger button and panel buttons */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-only outside-click dismiss layer, non-interactive container */}
       <div className="fixed inset-0 z-40" onClick={onClose}></div>
       <div {...menuProps} style={style || { position: 'fixed', visibility: 'hidden' }} className={`fixed ${POPOVER_SURFACE}`}>
         {children}

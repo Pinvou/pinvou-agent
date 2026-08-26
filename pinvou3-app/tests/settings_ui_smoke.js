@@ -34,13 +34,13 @@ assert.doesNotMatch(
 );
 
 function loadPuppeteer() {
-  try { return require('puppeteer-core'); } catch (_) { /* fall through */ }
+  try { return require('puppeteer-core'); } catch { /* fall through */ }
   const npx = path.join(os.homedir(), '.npm', '_npx');
   if (fs.existsSync(npx)) {
     for (const directory of fs.readdirSync(npx)) {
       const candidate = path.join(npx, directory, 'node_modules', 'puppeteer-core');
       if (fs.existsSync(candidate)) {
-        try { return require(candidate); } catch (_) { /* try next */ }
+        try { return require(candidate); } catch { /* try next */ }
       }
     }
   }
@@ -307,7 +307,7 @@ function injectSource() {
   })();`;
 }
 
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const sleep = ms => new Promise(resolve => { setTimeout(resolve, ms); });
 const callCount = (page, cmd) => page.evaluate(command =>
   window.__SETTINGS_TEST__.calls.filter(call => call.cmd === command).length, cmd);
 
@@ -789,7 +789,7 @@ async function modalWidth(page, headingText) {
       vllmModel: text.includes('qwen36_35b_256k'),
       providerLine: text.includes('Ollama · http://127.0.0.1:11434/v1') && text.includes('vLLM · http://127.0.0.1:8000/v1'),
       notLoadedTag: text.includes('未加载') && text.includes('尚未载入内存，首次使用时会自动加载'),
-      loadedSortedFirst: text.indexOf('qwen2.5-coder:32b') > -1 && text.indexOf('deepseek-r1:14b') > -1
+      loadedSortedFirst: text.includes('qwen2.5-coder:32b') && text.includes('deepseek-r1:14b')
         && text.indexOf('qwen2.5-coder:32b') < text.indexOf('deepseek-r1:14b'),
     };
   });
@@ -1106,7 +1106,7 @@ async function modalWidth(page, headingText) {
     const text = result ? (result.textContent || '') : '';
     const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'test_image_input_capability');
     return {
-      text: text,
+      text,
       args: call && call.args,
       showsSupported: text.includes('支持图片'),
       showsReply: text.includes('模型回复：红色'),
@@ -1134,7 +1134,7 @@ async function modalWidth(page, headingText) {
     const root = document.querySelector('[data-testid="model-form-dialog"]');
     const result = root && root.querySelector('[data-testid="image-capability-test-result"]');
     const text = result ? (result.textContent || '') : '';
-    return { text: text, showsEnableHint: text.includes('可在上方将图片输入能力设为') };
+    return { text, showsEnableHint: text.includes('可在上方将图片输入能力设为') };
   });
   rec('⑦.img.8 档位为自动处理时 supported 结果提示可设为「支持图片」', imageTestAutoHint.showsEnableHint, imageTestAutoHint.text);
   await page.evaluate(() => window.__SETTINGS_TEST__.setImageTestResponse({ status: 'unsupported', verified: false, summary: 'this model does not support image input', http_status: 400 }));
@@ -1145,7 +1145,7 @@ async function modalWidth(page, headingText) {
     const result = root && root.querySelector('[data-testid="image-capability-test-result"]');
     const text = result ? (result.textContent || '') : '';
     return {
-      text: text,
+      text,
       showsUnsupported: text.includes('不支持图像识别'),
       showsProvider: text.includes('does not support image input'),
     };
@@ -1161,7 +1161,7 @@ async function modalWidth(page, headingText) {
     const result = root && root.querySelector('[data-testid="image-capability-test-result"]');
     const text = result ? (result.textContent || '') : '';
     return {
-      text: text,
+      text,
       showsUnverified: text.includes('未能正确识别图像，原因未知'),
       showsProvider: text.includes('正方形图片'),
       noEnableHint: !text.includes('可在上方将图片输入能力设为'),
@@ -1176,7 +1176,7 @@ async function modalWidth(page, headingText) {
     const root = document.querySelector('[data-testid="model-form-dialog"]');
     const result = root && root.querySelector('[data-testid="image-capability-test-result"]');
     const text = result ? (result.textContent || '') : '';
-    return { text: text, showsError: text.includes('测试失败') && !text.includes('不支持图像识别') && !text.includes('支持图片') };
+    return { text, showsError: text.includes('测试失败') && !text.includes('不支持图像识别') && !text.includes('支持图片') };
   });
   rec('⑦.img.10 error 结果与「不支持」严格区分', imageTestError.showsError, imageTestError.text);
   // 表单值变化后上一次测试结果应清除(恢复提示文案)。已存 Key 的模型占位符是掩码,按类型选择。
@@ -1187,7 +1187,7 @@ async function modalWidth(page, headingText) {
     const root = document.querySelector('[data-testid="model-form-dialog"]');
     const result = root && root.querySelector('[data-testid="image-capability-test-result"]');
     const text = result ? (result.textContent || '') : '';
-    return { text: text, backToHint: text.includes('纯色测试图') };
+    return { text, backToHint: text.includes('纯色测试图') };
   });
   rec('⑦.img.11 表单值变化后清除上一次测试结果', imageTestCleared.backToHint, imageTestCleared.text);
   await clickExact(page, '取消');
@@ -1329,7 +1329,7 @@ async function modalWidth(page, headingText) {
   await clickExact(page, '取消');
   await sleep(150);
 
-  const modelsBeforeSearchSave = await page.evaluate(() => window.__SETTINGS_TEST__.models().map(model => model.id).sort());
+  const modelsBeforeSearchSave = await page.evaluate(() => window.__SETTINGS_TEST__.models().map(model => model.id).sort()); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of string arrays matches assertion expectations
   const savesBeforePick = await callCount(page, 'save_search_settings_and_restart');
   await clickExact(page, '添加搜索源');
   await sleep(250);
@@ -1369,7 +1369,7 @@ async function modalWidth(page, headingText) {
   rec('⑫ 确认重启后写入搜索源和凭据草稿', searchSaved && searchSaved.provider === 'bocha' && searchSaved.enabled.includes('bocha') && searchSaved.bochaAction === 'replace' && searchSaved.bochaKey === 'bocha-key', JSON.stringify(searchSaved));
 
   await clickSettingsSection(page, '搜索');
-  const modelsAfterSearchSave = await page.evaluate(() => window.__SETTINGS_TEST__.models().map(model => model.id).sort());
+  const modelsAfterSearchSave = await page.evaluate(() => window.__SETTINGS_TEST__.models().map(model => model.id).sort()); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of string arrays matches assertion expectations
   rec('新增模型后保存搜索配置不会清空模型', JSON.stringify(modelsAfterSearchSave) === JSON.stringify(modelsBeforeSearchSave), JSON.stringify({ modelsBeforeSearchSave, modelsAfterSearchSave }));
   const savesBeforeDeleteLater = await callCount(page, 'update_search_settings');
   const restartsBeforeDeleteLater = await callCount(page, 'save_search_settings_and_restart');
@@ -1550,6 +1550,7 @@ async function modalWidth(page, headingText) {
   const failed = results.filter(result => !result.pass).length;
   console.log(failed ? `\n❌ ${failed}/${results.length} FAILED` : `\n✅ ALL ${results.length} PASS`);
   process.exit(failed ? 1 : 0);
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 })().catch(error => {
   console.error('FATAL', error.stack || error.message);
   process.exit(1);

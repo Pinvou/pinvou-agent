@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ChevronDown, ChevronRight, X } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { ConversationTimeline } from '../conversation/ConversationTimeline.jsx';
@@ -47,6 +47,7 @@ function clampPanelWidth(width, rootWidth) {
 
 function savedPanelWidth() {
   try {
+    // eslint-disable-next-line unicorn/prefer-number-coercion -- integer semantics required: parse failure or non-integer width must fall back to the default; Number() would accept decimals
     const value = Number.parseInt(localStorage.getItem(PANEL_WIDTH_KEY) || '', 10);
     return Number.isFinite(value) && value >= PANEL_MIN_WIDTH ? value : PANEL_DEFAULT_WIDTH;
   } catch {
@@ -117,6 +118,7 @@ function CompactToolRow({ item, conversationCopy }) {
   );
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- list/detail dual-state panel: poll reset, ancestor expansion, and window stepping share the same session lifecycle state; splitting would sever their coordination
 export function SubagentTranscriptPanel({
   sessionId,
   initialAgentId,
@@ -132,6 +134,7 @@ export function SubagentTranscriptPanel({
 
   const [selectedAgentId, setSelectedAgentId] = useState(initialAgentId || null);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- mirror once when the externally selected agent changes, to avoid showing stale details
     setSelectedAgentId(initialAgentId || null);
   }, [sessionId, initialAgentId, selectionRequestId]);
 
@@ -140,11 +143,12 @@ export function SubagentTranscriptPanel({
   const [listReadFailed, setListReadFailed] = useState(false);
   const [listWake, setListWake] = useState(0);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset list state on session switch; one-shot mirror
     setAgents(null);
     setListReadFailed(false);
   }, [sessionId]);
   useEffect(() => {
-    if (!bridge.available) return undefined;
+    if (!bridge.available) return;
     return startTranscriptPolling({
       read: () => bridge.multiAgent.listSubagentTranscripts(sessionId),
       onMessages: (list) => {
@@ -168,7 +172,7 @@ export function SubagentTranscriptPanel({
     && !listReadFailed
     && agents.every((entry) => entry.done);
   useEffect(() => {
-    if (!listPollingDormant || typeof window === 'undefined') return undefined;
+    if (!listPollingDormant || typeof window === 'undefined') return;
     const wakeForNewAgent = (event) => {
       const detail = event && event.detail;
       if (!detail || detail.sessionId !== sessionId || !detail.agentId) return;
@@ -187,12 +191,14 @@ export function SubagentTranscriptPanel({
   const roleOrdinals = useMemo(() => subagentRoleOrdinals(agents || []), [agents]);
   const [expandedAgentIds, setExpandedAgentIds] = useState(() => new Set());
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously clear the expansion set on session switch; one-shot mirror
     setExpandedAgentIds(new Set());
   }, [sessionId]);
   useEffect(() => {
     if (!selectedAgentId || !Array.isArray(agents)) return;
     const ancestors = subagentAncestorIds(agents, selectedAgentId);
     if (!ancestors.length) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously expand the ancestor chain after selecting an agent so the target row stays visible
     setExpandedAgentIds((current) => {
       if (ancestors.every(id => current.has(id))) return current;
       return new Set([...current, ...ancestors]);
@@ -224,9 +230,11 @@ export function SubagentTranscriptPanel({
   const transcriptUnavailable = !!(agent && agent.has_transcript === false);
   const terminalWithoutTranscript = agentDone && transcriptUnavailable;
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the visible window step when switching agents
     setVisibleTranscriptItems(TRANSCRIPT_WINDOW_STEP);
   }, [sessionId, selectedAgentId]);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously clear old records and reset read state when switching agents
     setMessages(null);
     setTranscriptReadFailed(false);
     transcriptCursorRef.current = null;
@@ -393,7 +401,10 @@ export function SubagentTranscriptPanel({
       className="flex relative max-w-[88vw] min-w-0 shrink-0 border-l border-black/[0.06] dark:border-white/[0.07] bg-white/92 dark:bg-[#17181A]/96 backdrop-blur-xl flex-col"
       data-testid="subagent-transcript-panel"
     >
+      {/* biome-ignore lint/a11y/useFocusableInteractive: drag divider relies on mouse dragging; div semantics */}
+      {/* biome-ignore lint/a11y/useSemanticElements: drag divider requires div semantics */}
       <div
+        // biome-ignore lint/a11y/useAriaPropsForRole: drag divider is not a focusable control; valuenow semantics do not apply
         role="separator"
         aria-label={copy.panelResize}
         aria-orientation="vertical"

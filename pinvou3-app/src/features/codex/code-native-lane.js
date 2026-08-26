@@ -81,12 +81,17 @@ function parseNativeUserAnswers(content, questions) {
   // 用无原型对象：question id 仅被后端校验非空，constructor/toString/__proto__ 是合法输入，
   // 普通 {} 会让这些键命中 Object.prototype 继承属性，.push 抛 TypeError（复核 P1）。
   const byId = Object.create(null);
-  ans.forEach(a => { if (a && a.id != null) (byId[a.id] = byId[a.id] || []).push(a); });
+  ans.forEach(a => {
+    if (a && a.id != null) {
+      byId[a.id] = byId[a.id] || [];
+      byId[a.id].push(a);
+    }
+  });
   const out = [];
   for (const q of questions) {
     const matches = byId[q.id];
     if (!matches || !matches.length) { out.push(null); continue; }
-    matches.forEach(a => out.push({ id: q.id, label: a.label, value: a.value }));
+    matches.forEach(a => { out.push({ id: q.id, label: a.label, value: a.value }); });
   }
   return out;
 }
@@ -101,12 +106,12 @@ export function composeNativePlanMarkdown(snapshots) {
   if (plan && Array.isArray(plan.items)) {
     if (plan.explanation) lines.push('**方案：**', plan.explanation, '');
     lines.push('**步骤：**');
-    plan.items.forEach((item, index) => lines.push(`${index + 1}. ${sym(item.status)} ${item.step}`));
+    plan.items.forEach((item, index) => { lines.push(`${index + 1}. ${sym(item.status)} ${item.step}`); });
     lines.push('');
   }
   if (todos && Array.isArray(todos.items)) {
     lines.push('**细分待办：**');
-    todos.items.forEach((item, index) => lines.push(`${index + 1}. ${sym(item.status)} ${item.content}`));
+    todos.items.forEach((item, index) => { lines.push(`${index + 1}. ${sym(item.status)} ${item.content}`); });
   }
   return lines.length > 0 ? lines.join('\n') : '（plan 为空）';
 }
@@ -132,7 +137,7 @@ function openTimelineStart(lane, withinMs = 0) {
   const open = [...lane.timeline]
     .reverse()
     .find(event => event.event === 'user_start'
-      && !lane.timeline.some(other => other.event === 'assistant_done' && other.turn_id === event.turn_id));
+      && lane.timeline.every(other => !(other.event === 'assistant_done' && other.turn_id === event.turn_id)));
   if (!open) return null;
   if (withinMs > 0 && Math.abs(Date.now() - Number(open.timestamp || 0)) > withinMs) return null;
   return open;
@@ -171,10 +176,12 @@ function finalizeStream(lane) {
 function finalizeReasoning(lane) {
   const completedAt = Date.now();
   for (const item of lane.items) {
-    if (item && item.type === 'reasoning' && item.streaming) {
-      item.streaming = false;
-      item.completedAt = completedAt;
+    if (!(item && item.type === 'reasoning' && item.streaming)) {
+      continue;
     }
+
+    item.streaming = false;
+    item.completedAt = completedAt;
   }
 }
 
@@ -200,6 +207,7 @@ export function removeLocalUserMessage(lane, id) {
 
 /// chat:* 事件 → lane 状态。payload 一律带 session_id（后端 forwarder 打 tag）。
 /// 返回是否有可视变化；无变化时 React 侧不必 bump 渲染。
+// eslint-disable-next-line sonarjs/cognitive-complexity -- chat:* event dispatch: each event maps to one lane state transition; the switch branches are the event contract
 export function applyNativeChatEvent(lane, name, payload) {
   const p = payload || {};
   switch (name) {
@@ -224,15 +232,13 @@ export function applyNativeChatEvent(lane, name, payload) {
         });
       }
       const lastUser = [...lane.items].reverse().find(item => item && item.type === 'user');
-      if (lastUser) {
-        // 本地乐观插入已覆盖：文本一致，或刚发送（本地气泡带 📎 附件名等展示
+      // 本地乐观插入已覆盖：文本一致，或刚发送（本地气泡带 📎 附件名等展示
         // 修饰，与后端回声文本不同）30 秒内视为同一消息的回声。
-        if (lastUser.text === content
-          || (lastUser.localEchoTs && Date.now() - lastUser.localEchoTs < 30000)) {
+        if (lastUser && (lastUser.text === content
+          || (lastUser.localEchoTs && Date.now() - lastUser.localEchoTs < 30000))) {
           delete lastUser.localEchoTs;
           return changed;
         }
-      }
       lane.items.push({ id: nextId(lane), type: 'user', text: content, time: timeStr() });
       recordTurnStarted(lane);
       lane.busy = true;
@@ -542,6 +548,7 @@ function messageText(blocks) {
 /// 方案卡降级语义与 work 冷启动对齐：只还原**只读历史卡**（planId 为空、不可批准）——
 /// 后端没有按会话查询待批方案快照的接口（mode_state 只有 pending_plan_id，work 侧也不读），
 /// 待批方案跨 remount 不再可点批准，用户让 AI 重出方案即可。
+// eslint-disable-next-line sonarjs/cognitive-complexity -- session message hydration: restore each persisted shape by category; splitting would lose paired-state semantics
 export function hydrateNativeLane(lane, saved, timelineEvents = []) {
   // 同窗口切回正在跑的会话时，lane 已被 chat:* 事件推进过：磁盘快照（只落已提交
   // 内容）会滞后于实时状态，hydration 后保留 busy，由后续事件继续推进；冷启动
@@ -631,9 +638,9 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
               cardState: result.is_error ? 'cancelled' : 'submitted',
               // 还原用户曾提交的答案：历史卡切走再切回后仍能看到自己选了啥。
               // （#226 已保证走到这里 result 存在，无需 result && 守卫）
-              restoredAnswers: !result.is_error
-                ? parseNativeUserAnswers(result.content, questions)
-                : null,
+              restoredAnswers: result.is_error
+                ? null
+                : parseNativeUserAnswers(result.content, questions),
               time: '',
             });
           }
@@ -682,10 +689,12 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
   }
   // 未被 tool_result 回填的工具卡按失败收尾，避免历史里残留"执行中"。
   for (const item of lane.items) {
-    if (item && item.type === 'tool' && item.state !== 'done') {
-      item.state = 'done';
-      item.success = item.success === null ? false : item.success;
+    if (!(item && item.type === 'tool' && item.state !== 'done')) {
+      continue;
     }
+
+    item.state = 'done';
+    item.success = item.success === null ? false : item.success;
   }
   lane.timeline = Array.isArray(timelineEvents) ? [...timelineEvents] : [];
   // Restore the newest usage-bearing turn or compaction snapshot after the mutable lane is

@@ -72,7 +72,7 @@ try {
   await page.waitForSelector('fieldset input[type="radio"]', { timeout: 10000 });
 
   const locate = (labelText) => page.evaluate((text) => {
-    const labels = Array.from(document.querySelectorAll('[data-testid="special-card"] label'));
+    const labels = [...document.querySelectorAll('[data-testid="special-card"] label')];
     const label = labels.find((el) => el.innerText.includes(text) && el.querySelector('input'));
     if (!label) return null;
     const input = label.querySelector('input');
@@ -97,7 +97,7 @@ try {
 
   const submitButtonDisabled = () => page.evaluate(() => {
     const card = document.querySelector('[data-testid="special-card"]');
-    const btn = Array.from(card.querySelectorAll('button')).find((el) => el.textContent.includes('提交'));
+    const btn = [...card.querySelectorAll('button')].find((el) => el.textContent.includes('提交'));
     return btn ? btn.disabled : null;
   });
 
@@ -114,7 +114,7 @@ try {
 
   await page.evaluate(() => {
     const card = document.querySelector('[data-testid="special-card"]');
-    const btn = Array.from(card.querySelectorAll('button')).find((el) => el.textContent.includes('提交'));
+    const btn = [...card.querySelectorAll('button')].find((el) => el.textContent.includes('提交'));
     if (btn) btn.click();
   });
   await page.waitForFunction(() => document.body.innerText.includes('已提交（锁定）'), { timeout: 5000 });
@@ -136,7 +136,7 @@ try {
   // ── 锁定卡用 initialAnswers（含 __proto__）还原选中态 ──────────
   const lockedChecked = await page.evaluate(() => {
     const card = document.querySelector('[data-testid="locked-special-card"]');
-    const input = Array.from(card.querySelectorAll('input[type="radio"]'))
+    const input = [...card.querySelectorAll('input[type="radio"]')]
       .find((el) => el.name.endsWith('__proto__-choice'));
     return input ? input.checked : null;
   });

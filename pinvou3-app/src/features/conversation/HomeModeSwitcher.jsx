@@ -1,4 +1,3 @@
-import React from 'react';
 import { Briefcase, Code, Palette, Settings } from '../../components/icons.jsx';
 import { AcpAgentLogo } from '../codex/AcpAgentLogo.jsx';
 import { IosSegmentedControl } from '../../components/IosControls.jsx';

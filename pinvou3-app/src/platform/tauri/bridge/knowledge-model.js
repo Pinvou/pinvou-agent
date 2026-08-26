@@ -3,24 +3,26 @@
  * Registered before bridge.js builds the backwards-compatible facade.
  */
 (function (root) {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim classic-script artifact; strict mode is part of the payload
   "use strict";
-  var registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting statements would diverge from the artifact
+  const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["knowledge-model"] = function (context) {
-    var state = context.state;
-    var notify = context.notify;
-    var invoke = context.invoke;
-    var listen = context.listen;
+    const state = context.state;
+    const notify = context.notify;
+    const invoke = context.invoke;
+    const listen = context.listen;
 
   // Model files may be installed by the bundled shared-knowledge host after
   // desktop startup. Keep the authoritative bridge snapshot synchronized with
   // status queries and peer-process installs so stale startup state cannot win.
   listen("kb_model:status", function (e) {
-    var status = e && e.payload;
+    const status = e && e.payload;
     if (!status) return;
     state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
       startupLoading: !!status.loading,
       startupReady: typeof status.ready === "boolean" ? status.ready : state.kbModelSetup.startupReady,
-      status: status,
+      status,
     });
     notify();
   });
@@ -31,7 +33,7 @@
     state.kbModelSetup = Object.assign({}, state.kbModelSetup, { downloading: true, error: null, progress: { stage: "start" } });
     notify();
     try {
-      var st = await invoke("kb_model_download", { repair: !!repair });
+      const st = await invoke("kb_model_download", { repair: !!repair });
       state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
         downloading: false,
         startupLoading: false,
@@ -42,7 +44,7 @@
       notify();
       return st;
     } catch (e) {
-      var failedStatus = await invoke("kb_model_status").catch(function () { return null; });
+      const failedStatus = await invoke("kb_model_status").catch(function () { return null; });
       state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
         downloading: false,
         startupLoading: false,
@@ -59,8 +61,8 @@
     invoke("kb_model_cancel").catch(function () {});
   }
     return {
-      downloadKbModel: downloadKbModel,
-      cancelKbModel: cancelKbModel
+      downloadKbModel,
+      cancelKbModel
     };
   };
 })(window);

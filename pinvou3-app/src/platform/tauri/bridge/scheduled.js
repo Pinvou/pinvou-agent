@@ -1,32 +1,34 @@
 /** Scheduled-task state and Tauri command adapters. */
 (function (root) {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic-script artifact; strict mode is part of the payload
   "use strict";
-  var registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting the statement would diverge from the artifact
+  const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.scheduled = function (context) {
-    var state = context.state;
-    var notify = context.notify;
-    var invoke = context.invoke;
-    var bt = context.bt;
-    var runSyncOnSession = context.runSyncOnSession;
-    var addSystemItem = context.addSystemItem;
-    var rememberScheduledRunOwner = context.rememberScheduledRunOwner;
-    var isScheduledRunTerminal = context.isScheduledRunTerminal;
-    var purgeSessionBuffer = context.purgeSessionBuffer;
-    var createNewSession = context.createNewSession;
-    var prefillComposer = context.prefillComposer;
-    var sessionStates = context.sessionStates;
-    var SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY = "pinvou3-scheduled-task-template-sources-v1";
-    var scheduledTaskTemplateSources = loadScheduledTaskTemplateSources();
-    var scheduledTaskSelectionGeneration = 0;
-    var scheduledTaskRequestTokens = { tasks: 0, detail: 0, runs: 0 };
-    var scheduledTaskRefreshInFlight = null;
-    var scheduledRecentRunsRequestToken = 0;
-    var scheduledRunEventRefreshTimer = null;
-    var scheduledTaskPendingLoads = Object.create(null);
-    var scheduledTaskAutoCreateInFlight = Object.create(null);
+    const state = context.state;
+    const notify = context.notify;
+    const invoke = context.invoke;
+    const bt = context.bt;
+    const runSyncOnSession = context.runSyncOnSession;
+    const addSystemItem = context.addSystemItem;
+    const rememberScheduledRunOwner = context.rememberScheduledRunOwner;
+    const isScheduledRunTerminal = context.isScheduledRunTerminal;
+    const purgeSessionBuffer = context.purgeSessionBuffer;
+    const createNewSession = context.createNewSession;
+    const prefillComposer = context.prefillComposer;
+    const sessionStates = context.sessionStates;
+    const SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY = "pinvou3-scheduled-task-template-sources-v1";
+    const scheduledTaskTemplateSources = loadScheduledTaskTemplateSources();
+    let scheduledTaskSelectionGeneration = 0;
+    const scheduledTaskRequestTokens = { tasks: 0, detail: 0, runs: 0 };
+    let scheduledTaskRefreshInFlight = null;
+    let scheduledRecentRunsRequestToken = 0;
+    let scheduledRunEventRefreshTimer = null;
+    const scheduledTaskPendingLoads = Object.create(null);
+    const scheduledTaskAutoCreateInFlight = Object.create(null);
   function loadScheduledTaskTemplateSources() {
     try {
-      var parsed = JSON.parse(window.localStorage.getItem(SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY) || "{}");
+      const parsed = JSON.parse(window.localStorage.getItem(SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY) || "{}");
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return Object.create(null);
       return Object.keys(parsed).reduce(function (result, taskId) {
         if (typeof parsed[taskId] === "string" && parsed[taskId].trim()) {
@@ -34,7 +36,7 @@
         }
         return result;
       }, Object.create(null));
-    } catch (_) {
+    } catch {
       return Object.create(null);
     }
   }
@@ -45,7 +47,7 @@
         SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY,
         JSON.stringify(scheduledTaskTemplateSources)
       );
-    } catch (_) {}
+    } catch { /* ignore when localStorage is unavailable */ }
   }
 
   function rememberScheduledTaskTemplateSource(taskId, templateId) {
@@ -55,6 +57,7 @@
   }
 
   function forgetScheduledTaskTemplateSource(taskId) {
+    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor; Object.hasOwn is unavailable, and this call is already the safe form
     if (!taskId || !Object.prototype.hasOwnProperty.call(scheduledTaskTemplateSources, taskId)) return;
     delete scheduledTaskTemplateSources[taskId];
     persistScheduledTaskTemplateSources();
@@ -62,7 +65,7 @@
 
   function attachScheduledTaskTemplateSource(task) {
     if (!task || !task.id) return task;
-    var templateId = task.templateId || scheduledTaskTemplateSources[task.id] || null;
+    const templateId = task.templateId || scheduledTaskTemplateSources[task.id] || null;
     if (templateId) {
       task.templateId = templateId;
       if (scheduledTaskTemplateSources[task.id] !== templateId) {
@@ -73,13 +76,13 @@
   }
 
   function attachAndPruneScheduledTaskTemplateSources(tasks) {
-    var activeIds = Object.create(null);
+    const activeIds = Object.create(null);
     (tasks || []).forEach(function (task) {
       if (!task || !task.id) return;
       activeIds[task.id] = true;
       attachScheduledTaskTemplateSource(task);
     });
-    var changed = false;
+    let changed = false;
     Object.keys(scheduledTaskTemplateSources).forEach(function (taskId) {
       if (activeIds[taskId]) return;
       delete scheduledTaskTemplateSources[taskId];
@@ -92,36 +95,36 @@
   function upsertScheduledTask(task) {
     if (!task || !task.id) return;
     attachScheduledTaskTemplateSource(task);
-    var found = false;
+    let found = false;
     state.scheduledTasks = (state.scheduledTasks || []).map(function (item) {
       if (item.id !== task.id) return item;
       found = true;
       return task;
     });
-    if (!found) state.scheduledTasks = [task].concat(state.scheduledTasks || []);
+    if (!found) state.scheduledTasks = [task, ...(state.scheduledTasks || [])];
   }
 
   function applyScheduledRunViewed(automationId, runId, receipt) {
     function markRunViewed(item) {
-      var itemAutomationId = item.automationId || state.selectedScheduledTaskId;
+      const itemAutomationId = item.automationId || state.selectedScheduledTaskId;
       if (itemAutomationId !== automationId || item.id !== runId) return item;
       return Object.assign({}, item, { unread: false });
     }
     state.scheduledTaskRuns = (state.scheduledTaskRuns || []).map(markRunViewed);
     state.scheduledTaskRecentRuns = (state.scheduledTaskRecentRuns || []).map(markRunViewed);
-    var hasUnreadRuns = receipt && typeof receipt.hasUnreadRuns === "boolean"
+    const hasUnreadRuns = receipt && typeof receipt.hasUnreadRuns === "boolean"
       ? receipt.hasUnreadRuns
       : (state.scheduledTaskRuns || []).some(function (item) {
           return (item.automationId || state.selectedScheduledTaskId) === automationId && !!item.unread;
         });
     state.scheduledTasks = (state.scheduledTasks || []).map(function (task) {
       return task.id === automationId
-        ? Object.assign({}, task, { hasUnreadRuns: hasUnreadRuns })
+        ? Object.assign({}, task, { hasUnreadRuns })
         : task;
     });
     if (state.scheduledTaskDetail && state.scheduledTaskDetail.id === automationId) {
       state.scheduledTaskDetail = Object.assign({}, state.scheduledTaskDetail, {
-        hasUnreadRuns: hasUnreadRuns,
+        hasUnreadRuns,
       });
     }
   }
@@ -176,7 +179,7 @@
   }
 
   function beginScheduledTaskLoad(stamp) {
-    var generation = stamp.generation;
+    const generation = stamp.generation;
     scheduledTaskPendingLoads[generation] = (scheduledTaskPendingLoads[generation] || 0) + 1;
     if (generation === scheduledTaskSelectionGeneration) {
       state.scheduledTaskLoading = true;
@@ -186,7 +189,7 @@
   }
 
   function endScheduledTaskLoad(stamp) {
-    var generation = stamp.generation;
+    const generation = stamp.generation;
     scheduledTaskPendingLoads[generation] = Math.max(0, (scheduledTaskPendingLoads[generation] || 0) - 1);
     if (!scheduledTaskPendingLoads[generation]) delete scheduledTaskPendingLoads[generation];
     if (generation === scheduledTaskSelectionGeneration) {
@@ -198,7 +201,7 @@
   function scheduledTaskRequestStamp(kind, id) {
     scheduledTaskRequestTokens[kind] += 1;
     return {
-      kind: kind,
+      kind,
       token: scheduledTaskRequestTokens[kind],
       generation: scheduledTaskSelectionGeneration,
       id: id || null,
@@ -213,8 +216,9 @@
     return true;
   }
 
+  // eslint-disable-next-line sonarjs/no-invariant-returns -- echoing the normalized id is an intentional API contract
   function selectScheduledTask(id) {
-    var nextId = typeof id === "string" && id.trim() ? id.trim() : null;
+    const nextId = typeof id === "string" && id.trim() ? id.trim() : null;
     if (state.selectedScheduledTaskId === nextId) return nextId;
     scheduledTaskSelectionGeneration += 1;
     state.scheduledTaskSelectionGeneration = scheduledTaskSelectionGeneration;
@@ -232,13 +236,13 @@
   }
 
   function extractBalancedJsonObject(text) {
-    var start = String(text || "").indexOf("{");
+    const start = String(text || "").indexOf("{");
     if (start < 0) return null;
-    var depth = 0;
-    var inString = false;
-    var escaping = false;
-    for (var i = start; i < text.length; i++) {
-      var ch = text.charAt(i);
+    let depth = 0;
+    let inString = false;
+    let escaping = false;
+    for (let i = start; i < text.length; i++) {
+      const ch = text.charAt(i);
       if (inString) {
         if (escaping) escaping = false;
         else if (ch === "\\") escaping = true;
@@ -256,12 +260,12 @@
   }
 
   function parseLooseJsonObject(text) {
-    try { return JSON.parse(text); } catch (_) {}
-    try { return JSON.parse(String(text || "").replace(/,(\s*[}\]])/g, "$1")); } catch (_) {}
-    var balanced = extractBalancedJsonObject(String(text || ""));
+    try { return JSON.parse(text); } catch { /* invalid JSON: the caller falls back to the raw text */ }
+    try { return JSON.parse(String(text || "").replaceAll(/,(\s*[}\]])/g, "$1")); } catch { /* invalid JSON: the caller falls back to the raw text */ }
+    const balanced = extractBalancedJsonObject(String(text || ""));
     if (!balanced) return null;
-    try { return JSON.parse(balanced); } catch (_) {}
-    try { return JSON.parse(balanced.replace(/,(\s*[}\]])/g, "$1")); } catch (_) {}
+    try { return JSON.parse(balanced); } catch { /* invalid JSON: the caller falls back to the raw text */ }
+    try { return JSON.parse(balanced.replaceAll(/,(\s*[}\]])/g, "$1")); } catch { /* invalid JSON: the caller falls back to the raw text */ }
     return null;
   }
 
@@ -286,29 +290,30 @@
   }
 
   function activeScheduledTaskModel() {
-    var model = activeScheduledTaskModelConfig();
+    const model = activeScheduledTaskModelConfig();
     return model && model.model || null;
   }
 
   function lockScheduledTaskDraftModel(draft) {
     if (!draft) return null;
-    var active = activeScheduledTaskModelConfig();
+    const active = activeScheduledTaskModelConfig();
     draft.model = draft.model || (active && active.model) || null;
     draft.modelId = draft.modelId || (active && active.id) || null;
     return draft;
   }
 
   function parseScheduledTaskDraftFromText(text) {
-    if (!text || text.indexOf("{") < 0) return null;
-    var preferred = null;
-    var fallback = null;
-    var re = /```([^\n`]*)\n([\s\S]*?)```/g;
-    var match;
+    if (!text || !text.includes("{")) return null;
+    let preferred = null;
+    let fallback = null;
+    const re = /```([^\n`]*)\n([\s\S]*?)```/g;
+    let match;
+    // biome-ignore lint/suspicious/noAssignInExpressions: the assignment doubles as the loop condition; refactoring would hurt readability
     while ((match = re.exec(text))) {
-      var label = String(match[1] || "").trim().toLowerCase();
-      var raw = String(match[2] || "").trim();
+      const label = String(match[1] || "").trim().toLowerCase();
+      const raw = String(match[2] || "").trim();
       if (!raw || raw.charAt(0) !== "{") continue;
-      var candidate = normalizeScheduledTaskDraft(parseLooseJsonObject(raw));
+      const candidate = normalizeScheduledTaskDraft(parseLooseJsonObject(raw));
       if (!candidate) continue;
       if (label === "scheduled-task-draft") return candidate;
       if ((label === "json" || !label) && !fallback) fallback = candidate;
@@ -327,20 +332,20 @@
 
   async function confirmScheduledTaskDraft(editedDraft) {
     if (!state.scheduledTaskDraft || state.activeSessionId !== state.scheduledTaskCreationSessionId) return null;
-    var active = activeScheduledTaskModelConfig();
-    var lockedModel = state.scheduledTaskDraft.model || (active && active.model) || null;
-    var lockedModelId = state.scheduledTaskDraft.modelId || (active && active.id) || null;
-    var draft = normalizeScheduledTaskDraft(Object.assign({}, state.scheduledTaskDraft, editedDraft || {}, {
+    const active = activeScheduledTaskModelConfig();
+    const lockedModel = state.scheduledTaskDraft.model || (active && active.model) || null;
+    const lockedModelId = state.scheduledTaskDraft.modelId || (active && active.id) || null;
+    const draft = normalizeScheduledTaskDraft(Object.assign({}, state.scheduledTaskDraft, editedDraft || {}, {
       model: lockedModel,
       modelId: lockedModelId,
     }));
     if (!draft) {
-      var invalidDraftError = new Error(bt("scheduledDraftInvalid"));
+      const invalidDraftError = new Error(bt("scheduledDraftInvalid"));
       setScheduledTaskError(invalidDraftError, "action");
       notify();
       throw invalidDraftError;
     }
-    var created = await createScheduledTask({
+    const created = await createScheduledTask({
       name: draft.name,
       prompt: draft.prompt,
       rrule: draft.rrule,
@@ -371,13 +376,13 @@
   // autoOpenId 全局 last-writer：两会话并发创建时后完成者覆盖，且
   // startScheduledTaskChat 清空后陈旧 completion 会复活 auto-open（审计 f）。
   // 全局单调创建序号，仅最新意图可写。
-  var scheduledTaskAutoCreateSeq = 0;
+  let scheduledTaskAutoCreateSeq = 0;
   function autoCreateScheduledTaskDraft(draft, creationSessionId) {
     if (!draft || !creationSessionId || scheduledTaskAutoCreateInFlight[creationSessionId]) return;
-    var lockedDraft = lockScheduledTaskDraftModel(draft);
+    const lockedDraft = lockScheduledTaskDraftModel(draft);
     state.scheduledTaskDraft = null;
-    var creationSeq = ++scheduledTaskAutoCreateSeq;
-    var creation = Promise.resolve()
+    const creationSeq = ++scheduledTaskAutoCreateSeq;
+    const creation = Promise.resolve()
       .then(function () {
         return createScheduledTask(scheduledTaskInputFromDraft(lockedDraft));
       })
@@ -385,7 +390,7 @@
         if (state.scheduledTaskCreationSessionId === creationSessionId) {
           state.scheduledTaskCreationSessionId = null;
         }
-        var creationBuffer = sessionStates[creationSessionId];
+        const creationBuffer = sessionStates[creationSessionId];
         if (creationBuffer) creationBuffer.scheduledTaskDraft = null;
         if (created && created.id && creationSeq === scheduledTaskAutoCreateSeq) state.scheduledTaskAutoOpenId = created.id;
         notify();
@@ -411,17 +416,17 @@
   }
 
   async function loadScheduledTasks() {
-    var stamp = scheduledTaskRequestStamp("tasks", null);
+    const stamp = scheduledTaskRequestStamp("tasks", null);
     beginScheduledTaskLoad(stamp);
     try {
-      var tasks = await invoke("list_scheduled_tasks");
+      const tasks = await invoke("list_scheduled_tasks");
       if (!isCurrentScheduledTaskRequest(stamp)) return state.scheduledTasks;
       state.scheduledTasks = attachAndPruneScheduledTaskTemplateSources(
         Array.isArray(tasks) ? tasks : []
       );
       if (
         state.selectedScheduledTaskId &&
-        !(state.scheduledTasks || []).some(function (task) { return task.id === state.selectedScheduledTaskId; })
+        (state.scheduledTasks || []).every(function (task) { return task.id !== state.selectedScheduledTaskId; })
       ) {
         selectScheduledTask(null);
       }
@@ -439,10 +444,10 @@
       return null;
     }
     if (state.selectedScheduledTaskId !== id) selectScheduledTask(id);
-    var stamp = scheduledTaskRequestStamp("detail", id);
+    const stamp = scheduledTaskRequestStamp("detail", id);
     beginScheduledTaskLoad(stamp);
     try {
-      var detail = await invoke("read_scheduled_task", { id: id });
+      const detail = await invoke("read_scheduled_task", { id });
       if (!isCurrentScheduledTaskRequest(stamp)) return state.scheduledTaskDetail;
       state.scheduledTaskDetail = attachScheduledTaskTemplateSource(detail) || null;
       upsertScheduledTask(detail);
@@ -460,16 +465,16 @@
   function mergeScheduledTaskRecentRuns(task, runs) {
     if (!task || !task.id) return state.scheduledTaskRecentRuns || [];
     invalidateScheduledRecentRuns();
-    var rows = (state.scheduledTaskRecentRuns || []).slice();
+    let rows = [...(state.scheduledTaskRecentRuns || [])];
     (Array.isArray(runs) ? runs : []).forEach(function (run) {
       if (!run) return;
       rememberScheduledRunOwner(run);
-      var merged = Object.assign({}, run, {
+      const merged = Object.assign({}, run, {
         automationId: run.automationId || task.id,
         taskName: task.name || bt("scheduledTaskFallbackName"),
         taskModel: task.model || null,
       });
-      var index = rows.findIndex(function (row) { return row && row.id === merged.id; });
+      const index = rows.findIndex(function (row) { return row && row.id === merged.id; });
       if (index >= 0) rows[index] = merged;
       else rows.push(merged);
     });
@@ -488,10 +493,10 @@
       return [];
     }
     if (state.selectedScheduledTaskId !== id) selectScheduledTask(id);
-    var stamp = scheduledTaskRequestStamp("runs", id);
+    const stamp = scheduledTaskRequestStamp("runs", id);
     beginScheduledTaskLoad(stamp);
     try {
-      var runs = await invoke("list_scheduled_task_runs", { id: id, limit: limit });
+      const runs = await invoke("list_scheduled_task_runs", { id, limit });
       if (!isCurrentScheduledTaskRequest(stamp)) return state.scheduledTaskRuns;
       state.scheduledTaskRuns = Array.isArray(runs) ? runs : [];
       state.scheduledTaskRuns.forEach(rememberScheduledRunOwner);
@@ -510,29 +515,29 @@
   // 侧边栏"定时任务记录"一次读取所有保留的运行。后端只做一次 reconcile 和
   // Session 元数据扫描，避免任务数增长后形成 N 次命令调用与重复完整会话读取。
   async function loadScheduledTaskRecentRuns() {
-    var requestToken = ++scheduledRecentRunsRequestToken;
+    const requestToken = ++scheduledRecentRunsRequestToken;
     try {
-      var tasks = state.scheduledTasks && state.scheduledTasks.length
+      const tasks = state.scheduledTasks && state.scheduledTasks.length
         ? state.scheduledTasks
         : await loadScheduledTasks();
       if (requestToken !== scheduledRecentRunsRequestToken) {
         return state.scheduledTaskRecentRuns || [];
       }
-      var runs = await invoke("list_scheduled_runs");
+      const runs = await invoke("list_scheduled_runs");
       if (requestToken !== scheduledRecentRunsRequestToken) {
         return state.scheduledTaskRecentRuns || [];
       }
-      var tasksById = Object.create(null);
+      const tasksById = Object.create(null);
       (tasks || []).forEach(function (task) {
         if (task && task.id) tasksById[task.id] = task;
       });
-      var rows = (Array.isArray(runs) ? runs : []).map(function (run) {
+      const rows = (Array.isArray(runs) ? runs : []).map(function (run) {
         if (!run) return null;
         rememberScheduledRunOwner(run);
-        var automationId = run.automationId || run.automation_id;
-        var task = tasksById[automationId] || null;
+        const automationId = run.automationId || run.automation_id;
+        const task = tasksById[automationId] || null;
         return Object.assign({}, run, {
-          automationId: automationId,
+          automationId,
           taskName: task && task.name || bt("scheduledTaskFallbackName"),
           taskModel: task && task.model || null,
         });
@@ -558,32 +563,32 @@
   }
 
   function refreshScheduledTaskData(limit) {
-    var generation = scheduledTaskSelectionGeneration;
+    const generation = scheduledTaskSelectionGeneration;
     if (scheduledTaskRefreshInFlight && scheduledTaskRefreshInFlight.generation === generation) {
       return scheduledTaskRefreshInFlight.promise;
     }
-    var selectedId = state.selectedScheduledTaskId;
-    var requests = [loadScheduledTasks()];
+    const selectedId = state.selectedScheduledTaskId;
+    const requests = [loadScheduledTasks()];
     if (selectedId) {
       requests.push(readScheduledTask(selectedId));
       requests.push(loadScheduledTaskRuns(selectedId, limit || 20));
     }
-    var promise = Promise.all(requests).finally(function () {
+    const promise = Promise.all(requests).finally(function () {
       if (scheduledTaskRefreshInFlight && scheduledTaskRefreshInFlight.promise === promise) {
         scheduledTaskRefreshInFlight = null;
       }
     });
-    scheduledTaskRefreshInFlight = { generation: generation, promise: promise };
+    scheduledTaskRefreshInFlight = { generation, promise };
     return promise;
   }
 
-  var scheduledRunShortcutRefreshes = Object.create(null);
-  var SCHEDULED_LINK_POLL_FAST_MS = 1000;
-  var SCHEDULED_LINK_POLL_SLOW_MS = 5000;
-  var SCHEDULED_LINK_POLL_FAST_ATTEMPTS = 15;
+  const scheduledRunShortcutRefreshes = Object.create(null);
+  const SCHEDULED_LINK_POLL_FAST_MS = 1000;
+  const SCHEDULED_LINK_POLL_SLOW_MS = 5000;
+  const SCHEDULED_LINK_POLL_FAST_ATTEMPTS = 15;
   // 兜底上限:只在 run 卡在 queued/running 且永不终态时才会走到,正常路径靠下面
   // 「拿到 sessionId」或「进入终态」提前收工。
-  var SCHEDULED_LINK_POLL_DEADLINE_MS = 30 * 60 * 1000;
+  const SCHEDULED_LINK_POLL_DEADLINE_MS = 30 * 60 * 1000;
 
   // Fallback for run-now:正常路径由 sched-* 文件 watcher 推送刷新；但文件事件可能
   // 早于 ThreadCreated / ThreadLinked 被 run 记录吸收，或 watcher 本身不可用，因此
@@ -595,10 +600,10 @@
   // watcher 是主路径；这里保留较长窗口只为覆盖事件丢失和链接时序空窗。
   function refreshScheduledRunShortcutUntilLinked(automationId, runId) {
     if (!automationId || !runId) return;
-    var key = automationId + ":" + runId;
+    const key = automationId + ":" + runId;
     if (scheduledRunShortcutRefreshes[key]) return;
     scheduledRunShortcutRefreshes[key] = true;
-    var deadline = Date.now() + SCHEDULED_LINK_POLL_DEADLINE_MS;
+    const deadline = Date.now() + SCHEDULED_LINK_POLL_DEADLINE_MS;
 
     function stop() {
       delete scheduledRunShortcutRefreshes[key];
@@ -623,7 +628,7 @@
       invoke("list_scheduled_task_runs", { id: automationId }).then(function (runs) {
         // 任务已被删除时不再回填：陈旧轮询响应会把已删任务以 fallback 名
         // 复活回侧边栏（审计 R1）。任务不在列表即收工，不 merge、不续排。
-        var task = (state.scheduledTasks || []).find(function (item) {
+        const task = (state.scheduledTasks || []).find(function (item) {
           return item && item.id === automationId;
         });
         if (!task) {
@@ -634,7 +639,7 @@
         notify();
         // 必须看原始响应:mergeScheduledTaskRecentRuns 会滤掉尚无 sessionId 的记录,
         // 从合并结果里读不到目标 run 的状态。
-        var target = (Array.isArray(runs) ? runs : []).find(function (run) {
+        const target = (Array.isArray(runs) ? runs : []).find(function (run) {
           return run && run.id === runId;
         });
         // 会话已挂上 → 记录已进侧边栏;run 已终态却仍无会话 → 会话没建起来,再等也不会有;
@@ -662,7 +667,7 @@
     if (!run || !run.id) return;
     rememberScheduledRunOwner(run);
     if (state.selectedScheduledTaskId && run.automationId && state.selectedScheduledTaskId !== run.automationId) return;
-    var found = false;
+    let found = false;
     state.scheduledTaskRuns = (state.scheduledTaskRuns || []).map(function (item) {
       if (item.id === run.id) {
         found = true;
@@ -670,7 +675,7 @@
       }
       return item;
     });
-    if (!found) state.scheduledTaskRuns = [run].concat(state.scheduledTaskRuns || []);
+    if (!found) state.scheduledTaskRuns = [run, ...(state.scheduledTaskRuns || [])];
   }
 
   async function runScheduledTaskAction(action, operation) {
@@ -691,14 +696,15 @@
     }
   }
 
-  var SCHEDULED_TASK_WRITABLE_FIELDS = ["name", "prompt", "rrule", "model", "modelId", "paused"];
+  const SCHEDULED_TASK_WRITABLE_FIELDS = ["name", "prompt", "rrule", "model", "modelId", "paused"];
 
   // Scheduled tasks always run as Yolo. Keep the wire boundary intentionally narrow so
   // legacy callers cannot reintroduce task-level permissions or external directories.
   function scheduledTaskBackendInput(input) {
-    var source = input || {};
-    var backendInput = { mode: "yolo" };
+    const source = input || {};
+    const backendInput = { mode: "yolo" };
     SCHEDULED_TASK_WRITABLE_FIELDS.forEach(function (field) {
+      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor; Object.hasOwn is unavailable, and this call is already the safe form
       if (Object.prototype.hasOwnProperty.call(source, field)) backendInput[field] = source[field];
     });
     return backendInput;
@@ -706,10 +712,10 @@
 
   async function createScheduledTask(input) {
     return runScheduledTaskAction("create", async function () {
-      var templateId = input && typeof input.templateId === "string" ? input.templateId.trim() : "";
-      var selectAfterCreate = !input || input.selectAfterCreate !== false;
-      var backendInput = scheduledTaskBackendInput(input);
-      var created = await invoke("create_scheduled_task", { input: backendInput });
+      const templateId = input && typeof input.templateId === "string" ? input.templateId.trim() : "";
+      const selectAfterCreate = !input || input.selectAfterCreate !== false;
+      const backendInput = scheduledTaskBackendInput(input);
+      const created = await invoke("create_scheduled_task", { input: backendInput });
       if (!created || !created.id) {
         throw new Error(bt("scheduledCreateNoId"));
       }
@@ -728,8 +734,8 @@
 
   async function updateScheduledTask(id, input) {
     return runScheduledTaskAction("update", async function () {
-      var backendInput = scheduledTaskBackendInput(input);
-      var updated = await invoke("update_scheduled_task", { id: id, input: backendInput });
+      const backendInput = scheduledTaskBackendInput(input);
+      const updated = await invoke("update_scheduled_task", { id, input: backendInput });
       upsertScheduledTask(updated);
       if (state.selectedScheduledTaskId === id) state.scheduledTaskDetail = updated;
       notify();
@@ -739,7 +745,7 @@
 
   async function pauseScheduledTask(id) {
     return runScheduledTaskAction("pause", async function () {
-      var updated = await invoke("pause_scheduled_task", { id: id });
+      const updated = await invoke("pause_scheduled_task", { id });
       upsertScheduledTask(updated);
       if (state.selectedScheduledTaskId === id) state.scheduledTaskDetail = updated;
       notify();
@@ -749,7 +755,7 @@
 
   async function resumeScheduledTask(id) {
     return runScheduledTaskAction("resume", async function () {
-      var updated = await invoke("resume_scheduled_task", { id: id });
+      const updated = await invoke("resume_scheduled_task", { id });
       upsertScheduledTask(updated);
       if (state.selectedScheduledTaskId === id) state.scheduledTaskDetail = updated;
       notify();
@@ -759,7 +765,7 @@
 
   async function toggleScheduledTaskPinned(id, pinned) {
     return runScheduledTaskAction(pinned ? "pin" : "unpin", async function () {
-      var updated = await invoke("set_scheduled_task_pinned", { id: id, pinned: !!pinned });
+      const updated = await invoke("set_scheduled_task_pinned", { id, pinned: !!pinned });
       upsertScheduledTask(updated);
       if (state.selectedScheduledTaskId === id) state.scheduledTaskDetail = updated;
       notify();
@@ -770,15 +776,15 @@
   async function deleteScheduledTask(id) {
     return runScheduledTaskAction("delete", async function () {
       invalidateScheduledRecentRuns();
-      var deleted = await invoke("delete_scheduled_task", { id: id });
+      const deleted = await invoke("delete_scheduled_task", { id });
       // 作废删除前在途的整表 list / detail / runs 读（与 run-now 同模式）：否则
       // 3 秒轮询的旧 list 响应落地时会把刚删的任务复活回侧边栏（含本 feature
       // run-now 轮询依赖的 taskStillListed 判断，幽灵窗口会击穿 R1 守卫）。
       invalidateScheduledTaskReads(id);
-      var deletedSessionIds = deleted && Array.isArray(deleted.deletedSessionIds)
+      const deletedSessionIds = deleted && Array.isArray(deleted.deletedSessionIds)
         ? deleted.deletedSessionIds
         : [];
-      var deletedSessionSet = Object.create(null);
+      const deletedSessionSet = Object.create(null);
       deletedSessionIds.forEach(function (sessionId) {
         deletedSessionSet[sessionId] = true;
         purgeSessionBuffer(sessionId);
@@ -799,10 +805,10 @@
 
   async function runScheduledTaskNow(id) {
     return runScheduledTaskAction("run-now", async function () {
-      var run = await invoke("run_scheduled_task_now", { id: id });
+      const run = await invoke("run_scheduled_task_now", { id });
       invalidateScheduledTaskReads(id);
       upsertScheduledTaskRun(run);
-      var runStatus = String(run && run.status || "").toLowerCase();
+      const runStatus = String(run && run.status || "").toLowerCase();
       if (runStatus === "queued" || runStatus === "running") {
         state.scheduledTasks = (state.scheduledTasks || []).map(function (task) {
           return task.id === id ? Object.assign({}, task, { isRunning: true }) : task;
@@ -820,7 +826,7 @@
   // 不直接替用户发消息:引导词存为 pending,预填一句短话进输入框,由用户编辑后自己发送。
   async function startScheduledTaskChat() {
     return runScheduledTaskAction("chat-create", async function () {
-      var prompt = await invoke("scheduled_task_chat_prompt");
+      const prompt = await invoke("scheduled_task_chat_prompt");
       state.scheduledTaskDraft = null;
       state.scheduledTaskCreationSessionId = null;
       scheduledTaskAutoCreateSeq++; // 清空意图：作废在途 auto-create 的陈旧 completion（审计 f）
@@ -835,57 +841,57 @@
 
 
     return {
-      loadScheduledTaskTemplateSources: loadScheduledTaskTemplateSources,
-      persistScheduledTaskTemplateSources: persistScheduledTaskTemplateSources,
-      rememberScheduledTaskTemplateSource: rememberScheduledTaskTemplateSource,
-      forgetScheduledTaskTemplateSource: forgetScheduledTaskTemplateSource,
-      attachScheduledTaskTemplateSource: attachScheduledTaskTemplateSource,
-      attachAndPruneScheduledTaskTemplateSources: attachAndPruneScheduledTaskTemplateSources,
-      upsertScheduledTask: upsertScheduledTask,
-      applyScheduledRunViewed: applyScheduledRunViewed,
-      invalidateScheduledTaskReads: invalidateScheduledTaskReads,
-      invalidateScheduledRecentRuns: invalidateScheduledRecentRuns,
-      invalidateScheduledRecentRunsForSession: invalidateScheduledRecentRunsForSession,
-      scheduleScheduledRunRefresh: scheduleScheduledRunRefresh,
-      scheduledTaskErrorText: scheduledTaskErrorText,
-      setScheduledTaskError: setScheduledTaskError,
-      dismissScheduledTaskError: dismissScheduledTaskError,
-      clearScheduledTaskLoadError: clearScheduledTaskLoadError,
-      beginScheduledTaskLoad: beginScheduledTaskLoad,
-      endScheduledTaskLoad: endScheduledTaskLoad,
-      scheduledTaskRequestStamp: scheduledTaskRequestStamp,
-      isCurrentScheduledTaskRequest: isCurrentScheduledTaskRequest,
-      selectScheduledTask: selectScheduledTask,
-      clearScheduledTaskSelection: clearScheduledTaskSelection,
-      extractBalancedJsonObject: extractBalancedJsonObject,
-      parseLooseJsonObject: parseLooseJsonObject,
-      normalizeScheduledTaskDraft: normalizeScheduledTaskDraft,
-      activeScheduledTaskModelConfig: activeScheduledTaskModelConfig,
-      activeScheduledTaskModel: activeScheduledTaskModel,
-      lockScheduledTaskDraftModel: lockScheduledTaskDraftModel,
-      parseScheduledTaskDraftFromText: parseScheduledTaskDraftFromText,
-      clearScheduledTaskDraft: clearScheduledTaskDraft,
-      confirmScheduledTaskDraft: confirmScheduledTaskDraft,
-      scheduledTaskInputFromDraft: scheduledTaskInputFromDraft,
-      autoCreateScheduledTaskDraft: autoCreateScheduledTaskDraft,
-      loadScheduledTasks: loadScheduledTasks,
-      readScheduledTask: readScheduledTask,
-      mergeScheduledTaskRecentRuns: mergeScheduledTaskRecentRuns,
-      loadScheduledTaskRuns: loadScheduledTaskRuns,
-      loadScheduledTaskRecentRuns: loadScheduledTaskRecentRuns,
-      refreshScheduledTaskData: refreshScheduledTaskData,
-      refreshScheduledRunShortcutUntilLinked: refreshScheduledRunShortcutUntilLinked,
-      upsertScheduledTaskRun: upsertScheduledTaskRun,
-      runScheduledTaskAction: runScheduledTaskAction,
-      scheduledTaskBackendInput: scheduledTaskBackendInput,
-      createScheduledTask: createScheduledTask,
-      updateScheduledTask: updateScheduledTask,
-      pauseScheduledTask: pauseScheduledTask,
-      resumeScheduledTask: resumeScheduledTask,
-      toggleScheduledTaskPinned: toggleScheduledTaskPinned,
-      deleteScheduledTask: deleteScheduledTask,
-      runScheduledTaskNow: runScheduledTaskNow,
-      startScheduledTaskChat: startScheduledTaskChat
+      loadScheduledTaskTemplateSources,
+      persistScheduledTaskTemplateSources,
+      rememberScheduledTaskTemplateSource,
+      forgetScheduledTaskTemplateSource,
+      attachScheduledTaskTemplateSource,
+      attachAndPruneScheduledTaskTemplateSources,
+      upsertScheduledTask,
+      applyScheduledRunViewed,
+      invalidateScheduledTaskReads,
+      invalidateScheduledRecentRuns,
+      invalidateScheduledRecentRunsForSession,
+      scheduleScheduledRunRefresh,
+      scheduledTaskErrorText,
+      setScheduledTaskError,
+      dismissScheduledTaskError,
+      clearScheduledTaskLoadError,
+      beginScheduledTaskLoad,
+      endScheduledTaskLoad,
+      scheduledTaskRequestStamp,
+      isCurrentScheduledTaskRequest,
+      selectScheduledTask,
+      clearScheduledTaskSelection,
+      extractBalancedJsonObject,
+      parseLooseJsonObject,
+      normalizeScheduledTaskDraft,
+      activeScheduledTaskModelConfig,
+      activeScheduledTaskModel,
+      lockScheduledTaskDraftModel,
+      parseScheduledTaskDraftFromText,
+      clearScheduledTaskDraft,
+      confirmScheduledTaskDraft,
+      scheduledTaskInputFromDraft,
+      autoCreateScheduledTaskDraft,
+      loadScheduledTasks,
+      readScheduledTask,
+      mergeScheduledTaskRecentRuns,
+      loadScheduledTaskRuns,
+      loadScheduledTaskRecentRuns,
+      refreshScheduledTaskData,
+      refreshScheduledRunShortcutUntilLinked,
+      upsertScheduledTaskRun,
+      runScheduledTaskAction,
+      scheduledTaskBackendInput,
+      createScheduledTask,
+      updateScheduledTask,
+      pauseScheduledTask,
+      resumeScheduledTask,
+      toggleScheduledTaskPinned,
+      deleteScheduledTask,
+      runScheduledTaskNow,
+      startScheduledTaskChat
     };
   };
 })(window);

@@ -12,12 +12,12 @@ export function formatAttachmentDisplayText(text, attachmentNames = []) {
 
 export function splitAttachmentLine(text) {
   const raw = String(text == null ? '' : text);
-  if (raw.startsWith('📎 ') && raw.indexOf('\n') < 0) {
+  if (raw.startsWith('📎 ') && !raw.includes('\n')) {
     return { text: '', attachments: parseNames(raw.slice(3)) };
   }
   const sep = '\n\n📎 ';
   const at = raw.lastIndexOf(sep);
-  if (at >= 0 && raw.indexOf('\n', at + sep.length) < 0) {
+  if (at >= 0 && !raw.includes('\n', at + sep.length)) {
     const attachments = parseNames(raw.slice(at + sep.length));
     if (attachments.length) return { text: raw.slice(0, at), attachments };
   }
@@ -59,7 +59,7 @@ function parseNames(line) {
       if (Array.isArray(names) && names.every(name => typeof name === 'string')) {
         return names.filter(Boolean);
       }
-    } catch (_) {}
+    } catch { /* non-JSON lines fall back to the legacy format */ }
   }
   // Compatibility for transcripts written before JSON attachment markers.
   return line

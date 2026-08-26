@@ -55,7 +55,7 @@ test("groups sort by their latest activity, temporary group stays last", () => {
 
 test("empty or invalid input returns an empty array", () => {
   assert.deepEqual(groupSessionsByFolder([]), []);
-  assert.deepEqual(groupSessionsByFolder(undefined), []);
+  assert.deepEqual(groupSessionsByFolder(), []);
   assert.deepEqual(groupSessionsByFolder(null), []);
 });
 

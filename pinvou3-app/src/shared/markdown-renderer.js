@@ -1,4 +1,5 @@
 import createDOMPurify from 'dompurify';
+/* eslint-disable import-x/namespace -- marked's ESM internals are resolved by the runtime */
 import { Marked } from 'marked';
 import { escapeCodeHtml, highlightCode } from './syntax-highlighter.js';
 import { MARKDOWN_OPTIONS, scanMarkdownFences } from './markdown-fences.js';
@@ -22,7 +23,7 @@ function getPurifier() {
 }
 
 function neutralizeRawDangerousTags(html) {
-  return html.replace(DANGEROUS_TAGS_RE, (_, inner) => `&lt;${inner}&gt;`);
+  return html.replaceAll(DANGEROUS_TAGS_RE, (_, inner) => `&lt;${inner}&gt;`);
 }
 
 function fencedCodeIsClosed(token) {

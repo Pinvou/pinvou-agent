@@ -1,31 +1,32 @@
 (function () {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic-script artifact; strict mode is part of the payload
   "use strict";
 
-  var registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting the statement would diverge from the artifact
+  const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["artifact-tracker"] = function (context) {
-    var state = context.state;
-    var invoke = context.invoke;
-    var notify = context.notify;
-    var sessionStates = context.sessionStates;
-    var isScheduledRunSession = context.isScheduledRunSession;
+    const state = context.state;
+    const invoke = context.invoke;
+    const notify = context.notify;
+    const isScheduledRunSession = context.isScheduledRunSession;
 
   // ── 产物跟踪 ─────────────────────────────────────────────────────
   function basename(p) {
     if (!p) return "";
-    var parts = String(p).split(/[\\/]/);
+    const parts = String(p).split(/[\\/]/);
     return parts[parts.length - 1] || p;
   }
   function isAbsPath(p) {
     return typeof p === "string" && (p.charAt(0) === "/" || /^[A-Za-z]:[\\/]/.test(p));
   }
   function normalizedPath(p) {
-    return String(p || "").replace(/\\/g, "/");
+    return String(p || "").replaceAll('\\', "/");
   }
   function noteArtifactChange(path, event, sessionId) {
     if (!path) return;
     state.artifactChange = {
       seq: (state.artifactChange && state.artifactChange.seq || 0) + 1,
-      path: path,
+      path,
       event: event || "modified",
       sessionId: sessionId || "",
       at: Date.now(),
@@ -33,16 +34,16 @@
     notify();
   }
   function isSharedMcpArtifactPath(path) {
-    return normalizedPath(path).indexOf("/sessions/default/artifacts/") >= 0;
+    return normalizedPath(path).includes("/sessions/default/artifacts/");
   }
   function artifactBelongsToSession(path, sid) {
     if (!path || !sid) return false;
     if (!isAbsPath(path)) return true;
     if (isSharedMcpArtifactPath(path)) return true;
-    var normalized = normalizedPath(path);
-    if (normalized.indexOf("/sessions/") >= 0) {
-      return normalized.indexOf("/sessions/" + sid + "/workspace/") >= 0 ||
-        normalized.indexOf("/sessions/" + sid + "/artifacts/") >= 0;
+    const normalized = normalizedPath(path);
+    if (normalized.includes("/sessions/")) {
+      return normalized.includes("/sessions/" + sid + "/workspace/") ||
+        normalized.includes("/sessions/" + sid + "/artifacts/");
     }
     return true;
   }
@@ -55,7 +56,7 @@
   // 办公文档 + markdown 报告 + 数据表 + 图片 + 打包件都算成品(覆盖 AI 常见产出格式)。
   // 中间/草稿(.txt/.json/.xml 等)刻意不在此列 → 不进面板,避免一堆过程文件污染产物列表;
   // 这类格式若确是成品,靠模型 present_artifact 显式挂出(present 过的不受扩展名门控)。
-  var DELIVERABLE_EXTS = [
+  const DELIVERABLE_EXTS = [
     "pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls",
     "md", "csv", "png", "jpg", "jpeg", "svg", "gif", "webp", "zip",
   ];
@@ -63,42 +64,42 @@
   // 不进产出物列表)。tmp/ 下的文件即使扩展名是成品型(.md/.html 等)也不算自动成品;
   // 确需展示只能靠模型显式 present_artifact(显式 present 不经 isDeliverable 门控)。
   function isTmpPath(path) {
-    var segs = normalizedPath(path).split("/");
-    for (var i = 0; i < segs.length; i++) {
+    const segs = normalizedPath(path).split("/");
+    for (let i = 0; i < segs.length; i++) {
       if (segs[i] === "tmp") return true;
     }
     return false;
   }
   function isDeliverable(path) {
     if (isTmpPath(path)) return false;
-    var ext = (String(path || "").split(".").pop() || "").toLowerCase();
-    return DELIVERABLE_EXTS.indexOf(ext) >= 0;
+    const ext = (String(path || "").split(".").pop() || "").toLowerCase();
+    return DELIVERABLE_EXTS.includes(ext);
   }
   function trackArtifact(path) {
     if (!path) return;
-    var bn = basename(path);
-    for (var i = 0; i < state.artifacts.length; i++) {
+    const bn = basename(path);
+    for (let i = 0; i < state.artifacts.length; i++) {
       if (basename(state.artifacts[i].path) === bn) {
         // 已有同名:write_file 跟踪的是相对路径、disk watcher 推的是绝对路径——同一文件
         // 两种 path 会重复。新 path 绝对而旧的相对则用绝对替换(open 可靠),否则忽略重复。
         if (isAbsPath(path) && !isAbsPath(state.artifacts[i].path)) {
-          state.artifacts[i] = { path: path, basename: bn };
+          state.artifacts[i] = { path, basename: bn };
           notify();
         }
         return;
       }
     }
-    state.artifacts.push({ path: path, basename: bn });
+    state.artifacts.push({ path, basename: bn });
     notify();
   }
   function markTurnDirtyArtifact(path) {
-    var bn = basename(path);
+    const bn = basename(path);
     if (!bn) return;
     if ((state.turnDirtyArtifacts || []).some(function (p) { return basename(p) === bn; })) return;
     state.turnDirtyArtifacts.push(path);
   }
   function untrackArtifact(path) {
-    var before = state.artifacts.length;
+    const before = state.artifacts.length;
     state.artifacts = state.artifacts.filter(function (a) { return a.path !== path; });
     if (state.artifacts.length !== before) notify();
   }
@@ -108,10 +109,10 @@
   // 从 chatItems 里的成品卡推导,无需单独 per-session map(chatItems 已按 session
   // 隔离 + rerender 重建)。返回最近一张同名成品卡(取 title/description 复用)。
   function findPresentedArtifact(path) {
-    var bn = basename(path);
+    const bn = basename(path);
     if (!bn) return null;
-    for (var i = state.chatItems.length - 1; i >= 0; i--) {
-      var it = state.chatItems[i];
+    for (let i = state.chatItems.length - 1; i >= 0; i--) {
+      const it = state.chatItems[i];
       if (it.type === "artifact_card" && basename(it.path) === bn) return it;
     }
     return null;
@@ -122,38 +123,40 @@
     if (!sid) return;
     if (isScheduledRunSession(sid)) return;
     try {
-      var files = await invoke("list_workspace_files", { sessionId: sid });
+      const files = await invoke("list_workspace_files", { sessionId: sid });
       if (sid !== state.activeSessionId) return; // 已切走,放弃(避免写错 session)
-      var byName = {};
+      const byName = {};
       state.artifacts.forEach(function (a) { byName[basename(a.path)] = a; });
-      var added = false;
+      let added = false;
       files.forEach(function (p) {
-        var bn = basename(p);
-        var ex = byName[bn];
+        const bn = basename(p);
+        const ex = byName[bn];
         // 已 present_artifact 过的成品在 saved.artifacts(ex 命中);扫盘只「新增」成品型文件,
         // 不再把所有过程文件全扫进面板(修「飞书 CLI scratch 全暴露成产物」)。
         if (!ex) {
           if (!isDeliverable(p)) return;
-          var na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true;
+          const na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true;
         }
         else if (isAbsPath(p) && !isAbsPath(ex.path)) { ex.path = p; added = true; } // 相对→绝对,open 可靠
       });
       if (added) {
         notify();
-        try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch (_) {}
+        try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch { /* disk-write failure must not block the frontend update */ }
       }
-    } catch (e) { /* workspace 不存在(新 session)等,忽略 */ }
+    } catch { /* workspace 不存在(新 session)等,忽略 */ }
   }
   function pushArtifactPath(paths, path) {
     if (typeof path !== "string" || !path.trim()) return;
     path = path.trim();
-    if (paths.indexOf(path) < 0) paths.push(path);
+    if (!paths.includes(path)) paths.push(path);
   }
   function extractPatchHeaderPaths(patch, paths) {
     String(patch || "").split(/\r?\n/).forEach(function (line) {
-      var custom = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/.exec(line);
+      // eslint-disable-next-line sonarjs/super-linear-regex -- input is split by line and line length is bounded by the patch header; backtracking is negligible
+      const custom = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/.exec(line);
       if (custom) { pushArtifactPath(paths, custom[1]); return; }
-      var unified = /^\+\+\+\s+(?:b\/)?(.+?)\s*$/.exec(line);
+      // eslint-disable-next-line sonarjs/super-linear-regex -- input is split by line and line length is bounded by the patch header; backtracking is negligible
+      const unified = /^\+\+\+\s+(?:b\/)?(.+?)\s*$/.exec(line);
       if (unified && unified[1] !== "/dev/null") pushArtifactPath(paths, unified[1]);
     });
   }
@@ -161,9 +164,9 @@
   function extractArtifactPaths(args) {
     if (!args) return [];
     if (typeof args === "string") {
-      try { args = JSON.parse(args); } catch (e) { return []; }
+      try { args = JSON.parse(args); } catch { return []; }
     }
-    var paths = [];
+    const paths = [];
     pushArtifactPath(paths, args.path || args.file_path || args.filename);
     [args.replace, args.changes].forEach(function (changes) {
       if (!Array.isArray(changes)) return;
@@ -181,11 +184,11 @@
 
   function fileMutationAction(name, args) {
     if (typeof args === "string") {
-      try { args = JSON.parse(args); } catch (_) { args = null; }
+      try { args = JSON.parse(args); } catch { args = null; }
     }
     if (String(name || "").toLowerCase() === "file") {
-      var action = String(args && args.action || "").toLowerCase();
-      return action === "write" || action === "edit" || action === "patch" ? action : null;
+      const action = String(args && args.action || "").toLowerCase();
+      return ["write", "edit", "patch"].includes(action) ? action : null;
     }
     if (name === "write_file") return "write";
     if (name === "edit_file") return "edit";
@@ -204,23 +207,23 @@
   // 兼容两种结果格式:直接 payload {abs_path} / MCP content 数组 {content:[{text}]} 包一层。
   function parseToolResultPayload(toolResultContent) {
     try {
-      var raw = typeof toolResultContent === "string" ? toolResultContent : JSON.stringify(toolResultContent || {});
-      var obj = JSON.parse(raw);
+      const raw = typeof toolResultContent === "string" ? toolResultContent : JSON.stringify(toolResultContent || {});
+      const obj = JSON.parse(raw);
       if (obj && obj.content && obj.content[0] && typeof obj.content[0].text === "string") {
         try {
-          var inner = JSON.parse(obj.content[0].text);
+          const inner = JSON.parse(obj.content[0].text);
           if (inner && typeof inner === "object") return inner;
-        } catch (_) {}
+        } catch { /* use the outer object when the inner value is not JSON */ }
       }
       return obj;
-    } catch (_) {
+    } catch {
       return null;
     }
   }
   function artifactPathFromToolOutput(toolResultContent) {
-    var obj = parseToolResultPayload(toolResultContent);
+    const obj = parseToolResultPayload(toolResultContent);
     if (!obj || typeof obj !== "object") return null;
-    var p = obj.abs_path || obj.path || obj.file_path || obj.local_path;
+    const p = obj.abs_path || obj.path || obj.file_path || obj.local_path;
     return typeof p === "string" && p ? p : null;
   }
   function shouldUseToolOutputAsArtifact(name) {
@@ -232,34 +235,34 @@
   }
   function presentArtifactAbsPath(toolResultContent, fallbackPath) {
     fallbackPath = fallbackPath || "";
-    var parsed = artifactPathFromToolOutput(toolResultContent);
+    const parsed = artifactPathFromToolOutput(toolResultContent);
     if (parsed) return parsed;
     return fallbackPath;
   }
 
 
     return {
-      basename: basename,
-      isAbsPath: isAbsPath,
-      normalizedPath: normalizedPath,
-      noteArtifactChange: noteArtifactChange,
-      isSharedMcpArtifactPath: isSharedMcpArtifactPath,
-      artifactBelongsToSession: artifactBelongsToSession,
-      filterSessionArtifacts: filterSessionArtifacts,
-      isDeliverable: isDeliverable,
-      trackArtifact: trackArtifact,
-      markTurnDirtyArtifact: markTurnDirtyArtifact,
-      untrackArtifact: untrackArtifact,
-      findPresentedArtifact: findPresentedArtifact,
-      reconcileArtifacts: reconcileArtifacts,
-      extractArtifactPaths: extractArtifactPaths,
-      extractArtifactPath: extractArtifactPath,
-      fileMutationAction: fileMutationAction,
-      isPresentArtifactTool: isPresentArtifactTool,
-      parseToolResultPayload: parseToolResultPayload,
-      artifactPathFromToolOutput: artifactPathFromToolOutput,
-      shouldUseToolOutputAsArtifact: shouldUseToolOutputAsArtifact,
-      presentArtifactAbsPath: presentArtifactAbsPath,
+      basename,
+      isAbsPath,
+      normalizedPath,
+      noteArtifactChange,
+      isSharedMcpArtifactPath,
+      artifactBelongsToSession,
+      filterSessionArtifacts,
+      isDeliverable,
+      trackArtifact,
+      markTurnDirtyArtifact,
+      untrackArtifact,
+      findPresentedArtifact,
+      reconcileArtifacts,
+      extractArtifactPaths,
+      extractArtifactPath,
+      fileMutationAction,
+      isPresentArtifactTool,
+      parseToolResultPayload,
+      artifactPathFromToolOutput,
+      shouldUseToolOutputAsArtifact,
+      presentArtifactAbsPath,
     };
   };
 })();

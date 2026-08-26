@@ -73,7 +73,7 @@ export function getCurrentTauriWindow() {
 export function tryGetCurrentTauriWindow() {
   try {
     return getCurrentTauriWindow();
-  } catch (_) {
+  } catch {
     return null;
   }
 }

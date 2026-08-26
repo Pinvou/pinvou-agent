@@ -13,6 +13,15 @@
     "audit:compat": "node scripts/audit-compat.mjs",
     "prepare:codex-bridge": "node scripts/tauri/codex-bridge.js",
     "lint:ui": "eslint src/app src/components src/features src/hooks src/platform src/shared",
+    "lint:node": "eslint tests scripts eslint.config.mjs vite.config.js",
+    "lint": "npm run lint:ui && npm run lint:node",
+    "lint:fix": "eslint src/app src/components src/features src/hooks src/platform src/shared tests scripts --fix",
+    "lint:ox": "oxlint src",
+    "lint:biome": "biome lint src",
+    "lint:knip": "knip",
+    "lint:cycles": "madge --circular --extensions js,jsx --warning src",
+    "lint:duplicates": "jscpd src --min-tokens 70 --reporters console --ignore \"**/vendor/**,**/dist/**\"",
+    "check:types": "tsc -p jsconfig.json",
     "check:architecture": "python ../scripts/architecture-guard.py",
     "build": "node scripts/tauri/build.js build",
     "build:msi": "node scripts/tauri/build.js build --bundles msi",
@@ -113,12 +122,29 @@
     "test:markdown": "node tests/markdown_syntax_highlight.test.mjs && node tests/markdown_bridge_fallback_safety.test.mjs"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.10",
+    "@eslint/js": "^10.0.1",
     "@tauri-apps/cli": "^2.11.4",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.1.0",
     "acorn": "^8.18.0",
-    "eslint": "^10.6.0",
+    "eslint": "^10.9.0",
     "eslint-plugin-compat": "^7.0.2",
+    "eslint-plugin-import-x": "^4.17.1",
+    "eslint-plugin-jsdoc": "^64.2.1",
+    "eslint-plugin-n": "^18.3.0",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-sonarjs": "^4.2.0",
+    "eslint-plugin-unicorn": "^73.0.0",
+    "globals": "^17.11.0",
+    "jscpd": "^5.0.16",
+    "knip": "^6.32.2",
+    "madge": "^8.0.0",
+    "oxlint": "^1.79.0",
     "puppeteer-core": "^25.8.0",
+    "typescript": "^5.9.3",
     "vite": "^8.2.2"
   },
   "dependencies": {
@@ -129,5 +155,10 @@
     "react-dom": "^19.2.8",
     "turndown": "^7.2.4",
     "turndown-plugin-gfm": "^1.0.2"
+  },
+  "overrides": {
+    "eslint-plugin-react": {
+      "eslint": "$eslint"
+    }
   }
 }

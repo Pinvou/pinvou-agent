@@ -46,7 +46,7 @@ export function resolveOAuthInstallOutcome(toolName, loginResult, authStatus, co
   return {
     connected: false,
     authState: {
-      ...(authStatus || {}),
+      ...authStatus,
       installed: true,
       mcp_configured: authStatus?.mcp_configured ?? true,
       oauth_required: true,

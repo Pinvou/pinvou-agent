@@ -76,6 +76,7 @@ const buffer = {
 let rejectChat = true;
 const context = {
   state,
+  // eslint-disable-next-line no-unused-vars -- stub keeps the full call signature
   invoke(command) {
     return rejectChat ? Promise.reject(new Error('当前模型不可用')) : Promise.resolve();
   },
@@ -159,7 +160,7 @@ assert.match(
 );
 assert.match(
   chatEventsSource,
-  /invoke\("get_session_timeline", \{ sessionId: sessionId \}\)/,
+  /invoke\("get_session_timeline", \{ (?:sessionId: sessionId|sessionId) \}\)/,
   '时间线补偿必须读取当前完成会话，而不是依赖全局 active session',
 );
 assert.match(chatEventsSource, /turnErrorNotice && item\.text === notice/);
@@ -185,7 +186,7 @@ assert.match(
 assert.match(bridgeMessagesSource, /payload\.shell_cleanup_failed/);
 assert.match(webBridgeSource, /PinvouBridgeMessages\.showShellCleanupFailure/);
 assert.equal(
-  (bridgeMessagesSource.match(/^    (zh|en|ja):/gm) || []).length,
+  (bridgeMessagesSource.match(/^ {4}(zh|en|ja):/gm) || []).length,
   3,
   'Shell cleanup warning must provide zh/en/ja translations',
 );

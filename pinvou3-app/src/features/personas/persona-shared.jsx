@@ -3,7 +3,7 @@
 // (CardPoolView/PersonaEditorModal)可独立成懒加载 chunk,不再把
 // 主 chunk 的常驻引用一并拖进卡池。内容与 Personas.jsx 原实现的唯一差异:
 // AppIcon 的头像 img 补了 loading="lazy" decoding="async"(本 PR 主题内优化)。
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { AppWindow, Award, Briefcase, Cpu, Feather, Globe, Lock, Navigation, Palette, Radio, Terminal, TrendingUp, User } from '../../components/icons.jsx';
 const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', finance:'金融', 'game-development':'游戏', gis:'地理信息', hr:'人力', legal:'法务', marketing:'营销', 'paid-media':'投放', product:'产品', 'project-management':'项管', sales:'销售', security:'安全', 'spatial-computing':'空间计算', specialized:'专项', 'supply-chain':'供应链', support:'客服', testing:'测试', tool:'工具' };
     // 部门标签按当前 UI 语言取词(t.depts),DEPT_LABELS(中文)兜底
@@ -27,7 +27,7 @@ export const deptColor = (d) => DEPT_COLOR[d] || '#9aa0a6';
     const AVATAR_N = 50;
 export function avatarSrc(id) {
       let h = 0; const s = String(id || '');
-      for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+      for (let i = 0; i < s.length; i++) h = (h * 31 + s.codePointAt(i)) >>> 0;
       const n = (h % AVATAR_N) + 1;
       return 'avatars/avatar-' + (n < 10 ? '0' + n : n) + '.svg';
     }
@@ -39,9 +39,9 @@ export const AppIcon = ({ card, cls = 'w-14 h-14 rounded-[14px]', fb = 26 }) => 
       const Fallback = DEPT_ICON[(card && card.dept)] || User;
       return (
         <div className={cls + ' shrink-0 overflow-hidden flex items-center justify-center bg-[#F2F2F7] dark:bg-[#2C2C2E]'}>
-          {!err
-            ? <img src={avatarSrc(card && (card.id || card.name))} alt="" loading="lazy" decoding="async" className="w-full h-full object-cover" onError={() => setErr(true)} />
-            : <Fallback size={fb} style={{ color: '#8E8E93' }} strokeWidth={1.5} />}
+          {err
+            ? <Fallback size={fb} style={{ color: '#8E8E93' }} strokeWidth={1.5} />
+            : <img src={avatarSrc(card && (card.id || card.name))} alt="" loading="lazy" decoding="async" className="w-full h-full object-cover" onError={() => setErr(true)} />}
         </div>
       );
     };
@@ -61,10 +61,12 @@ export const AppIcon = ({ card, cls = 'w-14 h-14 rounded-[14px]', fb = 26 }) => 
             <div style={{ width:2, height:52, background: isDark?'linear-gradient(#3a3a3c,#5a5a5e)':'linear-gradient(#d1d1d6,#aeaeb2)' }}></div>
             <div className="w-2.5 h-2.5 rounded-full -mt-1 mb-2 bg-[#e8e8ed] dark:bg-[#1c1c1e] border-2 border-[#c7c7cc] dark:border-[#48484a]"></div>
             {/* 卡片 */}
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: lanyard-card click is a mouse shortcut; the keyboard path is served by controls inside the card-pool popover */}
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: lanyard-card click hot zone; not a standalone interactive control */}
             <div onClick={onOpenPicker} title={t.cpLanyardSwap}
               className="relative rounded-[14px] p-3 w-[150px] cursor-pointer transition-transform hover:-translate-y-0.5 bg-[#fff] dark:bg-[#1C1C1E] border border-[rgba(0,0,0,.06)] dark:border-[#2c2c2e]"
               style={{ boxShadow:'0 8px 24px -8px rgba(0,0,0,.3)' }}>
-              <button onClick={(e)=>{ e.stopPropagation(); onRemove(); }} title={t.cpLanyardRemove}
+              <button type="button" onClick={(e)=>{ e.stopPropagation(); onRemove(); }} title={t.cpLanyardRemove}
                 className="absolute -top-2 -right-2 w-5 h-5 rounded-full flex items-center justify-center text-[11px] leading-none bg-[#fff] dark:bg-[#2C2C2E] border border-[rgba(0,0,0,.1)] dark:border-[#48484a]"
                 style={{ color:'#8E8E93', boxShadow:'0 2px 6px rgba(0,0,0,.15)' }}>✕</button>
               <div className="flex flex-col items-center text-center gap-2">

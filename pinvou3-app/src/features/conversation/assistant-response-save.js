@@ -10,7 +10,7 @@ function downloadInBrowser({ content, filename, mimeType }) {
   anchor.href = url;
   anchor.download = filename;
   anchor.style.display = 'none';
-  document.body.appendChild(anchor);
+  document.body.append(anchor);
   anchor.click();
   anchor.remove();
   setTimeout(() => URL.revokeObjectURL(url), 0);
@@ -30,7 +30,7 @@ export async function shareAssistantResponseWithSystem({ title, text }) {
   const share = globalThis.navigator?.share;
   if (typeof share !== 'function') return 'unavailable';
   try {
-    await share.call(globalThis.navigator, { title, text });
+    await share.call(navigator, { title, text });
     return 'shared';
   } catch (error) {
     if (error?.name === 'AbortError') return 'cancelled';

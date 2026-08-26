@@ -494,7 +494,7 @@ const CLOUD_MODEL_PROVIDERS = MODEL_CATALOG.cloud;
 function normalizeEndpointUrl(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
-  return raw.replace(/\/+$/, '');
+  return raw.replace(/\/+$/, ''); // eslint-disable-line sonarjs/super-linear-regex -- trailing-slash normalization; input is a user-entered URL of bounded length
 }
 function normalizeOpenAiBaseUrl(value) {
   const trimmed = normalizeEndpointUrl(value);
@@ -680,8 +680,7 @@ function isOpenaiGpt55ApiModel(lower) {
 
 // 对齐 models.rs `is_openai_gpt_56_api_model`。
 function isOpenaiGpt56ApiModel(lower) {
-  return lower === 'gpt-5.6' || lower === 'gpt-5.6-sol'
-    || lower === 'gpt-5.6-terra' || lower === 'gpt-5.6-luna';
+  return ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'].includes(lower);
 }
 
 // 对齐 models.rs `is_openai_codex_model`。
@@ -730,11 +729,11 @@ function hasOpenaiDateSnapshotSuffix(lower, prefix) {
 function isOfficialDeepseekBaseUrl(baseUrl) {
   const normalized = String(baseUrl || '')
     .trim()
-    .replace(/\/+$/, '')
+    .replace(/\/+$/, '') // eslint-disable-line sonarjs/super-linear-regex -- trailing-slash normalization; input is a user-entered URL of bounded length
     .replace(/\/beta$/, '')
     .replace(/\/v1$/, '')
     .toLowerCase();
-  return normalized === 'https://api.deepseek.com' || normalized === 'https://api.deepseeki.com';
+  return ['https://api.deepseek.com', 'https://api.deepseeki.com'].includes(normalized);
 }
 
 // 底座对 moonshot/zai/minimax 的 tiered effort 只按「精确 first-party base_url + 模型名」
@@ -788,13 +787,13 @@ function reasoningProviderForModel(model) {
   if (preset === 'local_vllm') return 'vllm';
   if (vendor) {
     if (vendor === 'deepseek') return 'deepseek';
-    if (vendor === 'kimi' || vendor === 'moonshot') return 'moonshot';
-    if (vendor === 'glm' || vendor === 'zai' || vendor === 'zhipu') return 'zai';
+    if (['kimi', 'moonshot'].includes(vendor)) return 'moonshot';
+    if (['glm', 'zai', 'zhipu'].includes(vendor)) return 'zai';
     if (vendor === 'minimax') return 'minimax';
-    if (vendor === 'mimo' || vendor === 'xiaomi' || vendor === 'xiaomi-mimo') return 'xiaomi-mimo';
-    if (vendor === 'doubao' || vendor === 'volcengine') return 'volcengine';
-    if (vendor === 'anthropic' || vendor === 'claude') return 'anthropic';
-    if (vendor === 'xai' || vendor === 'grok') return null; // 底座空操作，不提供切换
+    if (['mimo', 'xiaomi', 'xiaomi-mimo'].includes(vendor)) return 'xiaomi-mimo';
+    if (['doubao', 'volcengine'].includes(vendor)) return 'volcengine';
+    if (['anthropic', 'claude'].includes(vendor)) return 'anthropic';
+    if (['xai', 'grok'].includes(vendor)) return null; // 底座空操作，不提供切换
     if (vendor === 'openai') return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
     return null; // qwen / tencent / gemini / google 无档位
   }

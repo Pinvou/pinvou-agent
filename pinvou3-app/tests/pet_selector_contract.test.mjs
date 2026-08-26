@@ -44,8 +44,8 @@ assert.match(bridge, /["']pet:selected_changed["']/);
 assert.match(bridge, /selectedPet:\s*["']lingling["']/);
 assert.match(bridge, /listen\(["']pet:selected_changed["']/);
 assert.match(bridge, /async function setSelectedPet\(id\)/);
-assert.match(bridge, /invoke\(["']set_selected_pet["'],\s*\{\s*id:\s*id\s*\}\)/);
-assert.match(bridge, /setSelectedPet:\s*setSelectedPet/);
+assert.match(bridge, /invoke\(["']set_selected_pet["'],\s*\{\s*(?:id:\s*id|id)\s*\}\)/);
+assert.match(bridge, /setSelectedPet\s*:\s*setSelectedPet|setSelectedPet(?=\s*[,}])/);
 assert.match(
   bridge,
   /state\.settings\.pet\s*=\s*Object\.assign\(\{\},\s*state\.settings\.pet\s*\|\|\s*\{\}/,

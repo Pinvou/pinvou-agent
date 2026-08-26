@@ -12,25 +12,26 @@
  * 仅在共享渲染器尚未安装时才调用本文件的 vendor 全局兜底；本文件不再重复该委托。
  */
 (function (root) {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim classic-script artifact; strict mode is part of the payload
   "use strict";
 
   // 抹平裸 <script>/<style>/<iframe> 等危险标签：在 marked.parse 【之后】做替换而非之前，
   // 只命中正文裸写的 HTML，不会双重转义代码块里已被转义的 `<script>` 字面量。
-  var DANGEROUS_TAGS_RE = /<(\/?(?:script|style|iframe|object|embed|link|meta)\b[^>]*)>/gi;
+  const DANGEROUS_TAGS_RE = /<(\/?(?:script|style|iframe|object|embed|link|meta)\b[^>]*)>/gi;
 
   function neutralizeRawDangerousTags(html) {
-    return html.replace(DANGEROUS_TAGS_RE, function (_, inner) { return "&lt;" + inner + "&gt;"; });
+    return html.replaceAll(DANGEROUS_TAGS_RE, function (_, inner) { return "&lt;" + inner + "&gt;"; });
   }
 
   function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, function (c) {
+    return String(s).replaceAll(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
   }
 
   function renderMarkdown(text) {
     if (!root.marked || !root.DOMPurify) return escapeHtml(text);
-    var html = neutralizeRawDangerousTags(root.marked.parse(text || ""));
+    const html = neutralizeRawDangerousTags(root.marked.parse(text || ""));
     return root.DOMPurify.sanitize(html, {
       // 兜底：即使 neutralize 有漏网（罕见 HTML 注释/CDATA 等），DOMPurify 仍剥掉这些
       FORBID_TAGS: ["style", "iframe", "object", "embed", "link", "meta"],
@@ -42,5 +43,6 @@
     root.marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false });
   }
 
-  root.PinvouMarkdownBridgeFallback = Object.freeze({ renderMarkdown: renderMarkdown });
-})(typeof window !== "undefined" ? window : this);
+  root.PinvouMarkdownBridgeFallback = Object.freeze({ renderMarkdown });
+// eslint-disable-next-line unicorn/no-this-outside-of-class -- UMD root reference
+})(typeof window === "undefined" ? this : window);

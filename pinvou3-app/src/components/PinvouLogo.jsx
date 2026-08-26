@@ -1,4 +1,3 @@
-import React from 'react';
 import { resolveAppAssetUrl } from '../shared/asset-url.mjs';
 
 const PINVOU_BRAND_BLUE_URL = resolveAppAssetUrl('assets/brand/brand-blue.png');

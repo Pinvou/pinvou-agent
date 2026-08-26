@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Check, Copy, ExternalLink, FolderOpen, Link, X,
 } from '../../components/icons.jsx';
@@ -167,7 +167,7 @@ export function ReaderApp() {
   }, [openTab]);
 
   useEffect(() => {
-    if (!copied) return undefined;
+    if (!copied) return;
     const timer = window.setTimeout(() => setCopied(''), 1200);
     return () => window.clearTimeout(timer);
   }, [copied]);

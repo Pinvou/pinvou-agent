@@ -115,8 +115,8 @@ function emptyTurn(id) {
 function normalizeTurnStatus(status, completed) {
   const normalized = String(status || '').toLowerCase();
   if (normalized === 'completed') return 'Completed';
-  if (normalized === 'failed' || normalized === 'send_error' || normalized === 'refused') return 'Failed';
-  if (normalized === 'interrupted' || normalized === 'cancelled' || normalized === 'canceled') return 'Interrupted';
+  if (['failed', 'send_error', 'refused'].includes(normalized)) return 'Failed';
+  if (['interrupted', 'cancelled', 'canceled'].includes(normalized)) return 'Interrupted';
   if (normalized === 'limitreached' || normalized === 'limit_reached') return 'LimitReached';
   return completed ? String(status || 'Completed') : 'incomplete';
 }
@@ -149,7 +149,7 @@ export function pairDeepSeekTimeline(events = []) {
     if (!record) {
       record = {
         id,
-        turnIndex: Number.isInteger(event.ui_turn_index) ? event.ui_turn_index : null,
+        turnIndex: Number.isSafeInteger(event.ui_turn_index) ? event.ui_turn_index : null,
         startedAt: null,
         completedAt: null,
         status: 'incomplete',
@@ -162,7 +162,7 @@ export function pairDeepSeekTimeline(events = []) {
     }
     if (event.event === 'user_start') {
       record.startedAt = Number(event.timestamp || 0) || event.ts || null;
-      if (Number.isInteger(event.ui_turn_index)) record.turnIndex = event.ui_turn_index;
+      if (Number.isSafeInteger(event.ui_turn_index)) record.turnIndex = event.ui_turn_index;
     } else {
       record.completedAt = Number(event.timestamp || 0) || event.ts || null;
       record.rawStatus = String(event.status || '');
@@ -204,7 +204,7 @@ export function projectDeepSeekConversation({
     const item = chatItems[index];
     if (!item) continue;
     if (item.type === 'user') {
-      current = emptyTurn(`deepseek-${sessionId || 'session'}-turn-${item.id != null ? item.id : index}`);
+      current = emptyTurn(`deepseek-${sessionId || 'session'}-turn-${item.id == null ? index : item.id}`);
       current.userItem = item;
       current.userText = String(item.text || '');
       turns.push(current);
@@ -236,7 +236,7 @@ export function projectDeepSeekConversation({
   const timeline = pairDeepSeekTimeline(timelineEvents);
   const assigned = new Set();
   for (const record of timeline) {
-    if (!Number.isInteger(record.turnIndex) || !userTurns[record.turnIndex]) continue;
+    if (!Number.isSafeInteger(record.turnIndex) || !userTurns[record.turnIndex]) continue;
     const turn = userTurns[record.turnIndex];
     Object.assign(turn, {
       status: record.status,

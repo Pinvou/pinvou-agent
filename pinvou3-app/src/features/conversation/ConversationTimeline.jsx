@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
+import React, { useId, useMemo, useState, useSyncExternalStore } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
@@ -96,14 +96,17 @@ const DEFAULT_COPY = {
   usage: (input, output) => `输入 ${input} · 输出 ${output}`,
   contextUsage: (used, size) => `上下文 ${used} / ${size}`,
   attachment: '附件',
-  operations: (count, failedCount) => `执行 ${count} 项${failedCount ? ` · ${failedCount} 项失败` : ''}`,
+  operations: (count, failedCount) => {
+    const suffix = failedCount ? ` · ${failedCount} 项失败` : '';
+    return `执行 ${count} 项${suffix}`;
+  },
   copyReply: '复制回复',
   copyReplySuccess: '已复制',
   copyReplyFailed: '复制失败',
 };
 
 function conversationCopy(copy) {
-  return { ...DEFAULT_COPY, ...(copy || {}) };
+  return { ...DEFAULT_COPY, ...copy };
 }
 
 function localizedSemanticLabel(value, copy) {
@@ -120,8 +123,10 @@ function localizedSemanticLabel(value, copy) {
 }
 
 export function ConversationMarkdown({ text, className = '', onOpenExternal, onOpenResource }) {
-  // 懒加载语言注册完成会 bump 版本号:加入 deps 让历史消息重算,恢复高亮。
+  // lazy language registration bumps the version when it completes; the version must stay in the useMemo deps
+  // (syntax-highlighter.js contract), otherwise already-rendered code stays plain text after registration completes.
   const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- syntaxVersion is a version counter; any change requires recomputing to restore highlighting
   const html = useMemo(() => renderMarkdown(text), [text, syntaxVersion]);
   const openLink = (event) => {
     const anchor = event.target && event.target.closest && event.target.closest('a[href]');
@@ -137,6 +142,8 @@ export function ConversationMarkdown({ text, className = '', onOpenExternal, onO
     }
   };
   return (
+    // biome-ignore lint/a11y/useKeyWithClickEvents: link-interception layer; the keyboard path is covered by the rendered <a>'s own focus
+    // biome-ignore lint/a11y/noStaticElementInteractions: static rich-text container; onClick only intercepts links to open them externally
     <div
       className={`codex-markdown conversation-markdown text-[15px] leading-7 ${className}`}
       onClick={openLink}
@@ -179,12 +186,15 @@ export function ConversationStatusBadge({ status, copy }) {
 
 export function ConversationActivityIndicator({
   turn,
-  now = Date.now(),
+  now = 0,
   onRequestAttention,
   className = '',
   copy,
 }) {
   const c = conversationCopy(copy);
+  // elapsedMs falls back to Date.now() when now=0; reading the current time during render only displays elapsed time and does not feed state derivation.
+  // eslint-disable-next-line react-hooks/purity -- elapsed time is a display value that naturally drifts over time; re-rendering is driven by the parent's polling of now
+  const nowMs = now || Date.now();
   if (!turn || turn.status !== 'running') return null;
   const waitingPermission = turn.waitingPermission
     || (turn.permissions || []).some(permission => !permission.resolved);
@@ -201,7 +211,7 @@ export function ConversationActivityIndicator({
       {waitingAttention
         ? <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
         : <span className="w-3 h-3 rounded-full border-2 border-current/20 border-t-current animate-spin" />}
-      <span>{label} · {c.elapsed(elapsedMs(turn.startedAt, null, now))}</span>
+      <span>{label} · {c.elapsed(elapsedMs(turn.startedAt, null, nowMs))}</span>
     </>
   );
   const sharedClass = `h-6 flex items-center gap-2 px-1 text-[12px] ${
@@ -286,11 +296,12 @@ function CommandExecutionItem({ item, now, copy }) {
   const detailsId = useId();
   const countHint = details.commandCount > 1 ? ` · ${c.segments(details.commandCount)}` : '';
   const duration = c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
+  const exitHint = details.exitCode == null ? '' : ` · exit ${details.exitCode}`;
   const outcome = state === 'running'
     ? `${c.running} · ${duration}`
     : state === 'failed'
-      ? `${c.executionFailed}${details.exitCode == null ? '' : ` · exit ${details.exitCode}`}`
-      : `${c.executionFinished}${details.exitCode == null ? '' : ` · exit ${details.exitCode}`} · ${duration}`;
+      ? `${c.executionFailed}${exitHint}`
+      : `${c.executionFinished}${exitHint} · ${duration}`;
   return (
     <div className={`rounded-xl border ${state === 'failed' ? 'border-red-500/20' : 'border-black/[0.05] dark:border-white/[0.07]'} bg-white/45 dark:bg-white/[0.015]`}>
       <CompactItemRow icon={<Terminal size={13} />} title={localizedSemanticLabel(details.summary, c)}
@@ -323,11 +334,11 @@ function SearchToolItem({ item, now, onOpenExternal, copy }) {
   const query = details.query || tool.title || c.webContent;
   const toolName = String(tool.name || '').trim() || 'web_search';
   const queryLabel = query.length > 48 ? `${query.slice(0, 48)}…` : query;
-  const resultLabel = details.count != null
-    ? c.results(details.count)
-    : details.results.length
+  const resultLabel = details.count == null
+    ? details.results.length
       ? c.recognizedResults(details.results.length)
-      : c.returnedResults;
+      : c.returnedResults
+    : c.results(details.count);
   const sourceLabel = localizedSemanticLabel(details.source, c);
   const meta = state === 'running'
     ? `${queryLabel} · ${sourceLabel} · ${c.inProgress} · ${duration}`
@@ -345,7 +356,7 @@ function SearchToolItem({ item, now, onOpenExternal, copy }) {
             <div className="mt-2 divide-y divide-black/[0.05] dark:divide-white/[0.06]">
               {details.results.slice(0, 5).map((result, index) => {
                 let domain = '';
-                try { domain = new URL(result.url).hostname.replace(/^www\./, ''); } catch (_) {}
+                try { domain = new URL(result.url).hostname.replace(/^www\./, ''); } catch { /* invalid URL: don't show the domain */ }
                 return (
                   <button
                     key={result.url}
@@ -403,16 +414,17 @@ function FetchToolItem({ item, now, onOpenExternal, copy }) {
   const detailsId = useId();
   const duration = c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const toolName = String(tool.name || '').trim() || 'fetch_url';
-  const statusLabel = details.status != null
-    ? `HTTP ${details.status}`
-    : state === 'failed'
+  const statusLabel = details.status == null
+    ? state === 'failed'
       ? c.requestFailed
-      : c.returned;
+      : c.returned
+    : `HTTP ${details.status}`;
   const targetLabel = localizedSemanticLabel(details.target, c);
   const contentTypeLabel = localizedSemanticLabel(details.contentTypeLabel, c);
+  const truncatedHint = details.truncated ? ` · ${c.contentTruncated}` : '';
   const meta = state === 'running'
     ? `${targetLabel} · ${c.inProgress} · ${duration}`
-    : `${targetLabel} · ${statusLabel} · ${contentTypeLabel}${details.truncated ? ` · ${c.contentTruncated}` : ''}`;
+    : `${targetLabel} · ${statusLabel} · ${contentTypeLabel}${truncatedHint}`;
   return (
     <div className={`rounded-xl border ${
       state === 'failed'
@@ -489,18 +501,23 @@ function GenericToolItem({ item, now, onOpenResource, copy }) {
   const detailsId = useId();
   const duration = c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const label = item.type === 'file_change' ? c.fileChange : (tool.kind || c.tool);
+  const stateLabel = state === 'running'
+    ? `${c.inProgress} · ${duration}`
+    : state === 'failed'
+      ? c.failed
+      : `${c.executionFinished} · ${duration}`;
   const resources = toolWorkspaceResources(tool);
   return (
     <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-white/45 dark:bg-white/[0.015]">
       <CompactItemRow icon={<Wrench size={13} />} title={localizedSemanticLabel(tool.title || label, c)}
-        meta={`${label} · ${state === 'running' ? `${c.inProgress} · ${duration}` : state === 'failed' ? c.failed : `${c.executionFinished} · ${duration}`}`}
+        meta={`${label} · ${stateLabel}`}
         status={state} open={open} controlsId={detailsId}
         onToggle={() => setOpen(value => !value)} />
       <WorkspaceResourceButtons resources={resources} onOpenResource={onOpenResource} />
       {open && (
         <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
           <StructuredValue label={c.arguments} value={tool.rawInput} />
-          <StructuredValue label={c.result} value={tool.rawOutput != null ? tool.rawOutput : tool.content} />
+          <StructuredValue label={c.result} value={tool.rawOutput == null ? tool.content : tool.rawOutput} />
         </div>
       )}
     </div>
@@ -540,9 +557,10 @@ function ToolGroup({ group, now, renderToolItem, onOpenExternal, onOpenResource,
   const failed = failedCount > 0;
   const runningItem = [...items].reverse().find(item => terminalStatus(item.status) === 'running');
   const runningLabel = runningToolLabel(runningItem, c);
-  const summary = `${running ? `${c.executing}${runningLabel ? ` · ${runningLabel}` : ''}` : c.executionSteps} · ${c.items(items.length)}${
-    failedCount ? ` · ${c.failedItems(failedCount)}` : ''
-  }`;
+  const runningSuffix = runningLabel ? ` · ${runningLabel}` : '';
+  const leadLabel = running ? `${c.executing}${runningSuffix}` : c.executionSteps;
+  const failedSuffix = failedCount ? ` · ${c.failedItems(failedCount)}` : '';
+  const summary = `${leadLabel} · ${c.items(items.length)}${failedSuffix}`;
   const [open, setOpen] = useState(running);
   const expanded = running || open;
   const detailsId = useId();
@@ -648,7 +666,7 @@ function PermissionCard({ permission, pending, onRespond, responding, agentLabel
             : <StructuredValue label={c.operationArguments} value={tool.rawInput} />}
           <div className="mt-3 flex flex-wrap gap-2">
             {options.map(option => (
-              <button key={option.optionId} disabled={!actionable || responding}
+              <button type="button" key={option.optionId} disabled={!actionable || responding}
                 onClick={() => onRespond(permission.toolCallId, option.optionId)}
                 className={`max-w-full min-w-0 whitespace-normal break-all px-3 py-1.5 rounded-xl text-[12px] leading-5 font-medium transition-colors ${
                   String(option.kind || '').startsWith('allow')
@@ -697,7 +715,7 @@ function DefaultItem({
       />
     );
   }
-  if (item.type === 'tool' || item.type === 'command_execution' || item.type === 'file_change') {
+  if (['tool', 'command_execution', 'file_change'].includes(item.type)) {
     return (
       <ToolItem
         item={item}

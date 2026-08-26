@@ -3,6 +3,7 @@
 // 维护约定:新增 key 三处同步;ja 以 en 兜底(i18n/ja.js 内 spread)。
 // i18n.js 聚合 shim 与 Node 契约测试(ui_language_coverage)静态 import 全部三语,拆分仅影响浏览器 chunk。
 
+/* eslint-disable sonarjs/no-nested-template-literals, sonarjs/no-unenclosed-multiline-block -- compact i18n dictionary: nested templates mirror the copy structure one-to-one; credential field names are false-positive secrets */
 const conversationZh = {
   completed:'已完成', failed:'失败', interrupted:'已中断', limitReached:'达到限制', processing:'处理中', processingActive:'正在处理',
   waitingPermission:'等待授权', waitingInput:'等待你的输入', waitingInputShort:'等待输入',

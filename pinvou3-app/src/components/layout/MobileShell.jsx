@@ -1,4 +1,3 @@
-import React from 'react';
 import { createPortal } from 'react-dom';
 import { Edit2, Menu } from '../icons.jsx';
 
@@ -7,7 +6,7 @@ import { Edit2, Menu } from '../icons.jsx';
 // 主导航收敛为 对话/卡池/运行状态 三个 Tab，其余入口全部走「更多」；
 // 会话列表复用现有侧栏抽屉（max-sm 下是 overlay），不重建第二套列表。
 
-const MobileTopBar = ({ theme, t, title, onMenu, onNewChat }) => {
+const MobileTopBar = ({ t, title, onMenu, onNewChat }) => {
   const btnCls = 'w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors text-[#444746] hover:bg-[#E1E5EA] dark:text-[#E3E3E3] dark:hover:bg-[#333537]';
   return (
     <div data-testid="mobile-top-bar" className="h-12 shrink-0 flex items-center gap-1 px-2 bg-[#F0F4F9] dark:bg-[#1E1F20]">
@@ -27,7 +26,7 @@ const MobileTopBar = ({ theme, t, title, onMenu, onNewChat }) => {
   );
 };
 
-const MobileTabBar = ({ theme, tabs }) => {
+const MobileTabBar = ({ tabs }) => {
   return (
     <div data-testid="mobile-tab-bar" className="h-14 shrink-0 flex items-stretch border-t bg-[#F0F4F9] border-black/10 dark:bg-[#1E1F20] dark:border-white/10">
       {tabs.map(tab => (
@@ -48,10 +47,16 @@ const MobileTabBar = ({ theme, tabs }) => {
   );
 };
 
-const MobileMoreSheet = ({ theme, title, items, onClose }) => {
+const MobileMoreSheet = ({ title, items, onClose }) => {
   return createPortal(
+    // Bottom sheet: outer backdrop click closes it; the keyboard path is the real <button type="button"> items inside the panel
+    // (mobileNavigate closes the panel on navigation; see setMobileMoreOpen(false) in main.jsx).
+    // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; keyboard path handled by the buttons inside the panel
+    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, not an interactive container
     <div data-testid="mobile-more-sheet" className="fixed inset-0 z-[70] flex flex-col justify-end" onClick={onClose}>
       <div className="absolute inset-0 bg-black/40" />
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: panel body only stops propagation to avoid accidental backdrop close; not interactive itself */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: panel body only stops propagation; not an interactive container */}
       <div onClick={e => e.stopPropagation()}
         className="relative rounded-t-[20px] px-4 pt-3 pb-[max(16px,env(safe-area-inset-bottom))] bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E3E3E3]">
         <div className="mx-auto mb-3 h-1 w-9 rounded-full bg-black/15 dark:bg-white/20" />

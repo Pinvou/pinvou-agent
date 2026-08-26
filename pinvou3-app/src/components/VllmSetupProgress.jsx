@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 
-const VllmSetupProgress = ({ phase, attempt, isDark, t }) => {
+const VllmSetupProgress = ({ phase, attempt, t }) => {
       const [secs, setSecs] = useState(0);
       useEffect(() => { const id = setInterval(() => setSecs(s => s + 1), 1000); return () => clearInterval(id); }, []);
       const steps = [
@@ -9,7 +9,7 @@ const VllmSetupProgress = ({ phase, attempt, isDark, t }) => {
         { key: 'ready', label: t.vllmStepReady },
       ];
       const order = { authorizing: 0, waiting: 1, ready: 2 };
-      const cur = order[phase] != null ? order[phase] : 0;
+      const cur = order[phase] == null ? 0 : order[phase];
       const mmss = Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
       return (
         <div className="py-1">

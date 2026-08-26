@@ -3,55 +3,57 @@
  * Registered before bridge.js builds the backwards-compatible facade.
  */
 (function (root) {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim classic-script artifact; strict mode is part of the payload
   "use strict";
-  var registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting statements would diverge from the artifact
+  const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["artifacts"] = function (context) {
-    var state = context.state;
-    var notify = context.notify;
-    var invoke = context.invoke;
-    var bt = context.bt;
-    var addSystemItem = context.addSystemItem;
-    var dialogOpen = context.dialogOpen;
-    var basename = context.basename;
-    var isDeliverable = context.isDeliverable;
-    var isAbsPath = context.isAbsPath;
-    var sessionStates = context.sessionStates;
-    var discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
-    var attachIdSeq = 0;
+    const state = context.state;
+    const notify = context.notify;
+    const invoke = context.invoke;
+    const bt = context.bt;
+    const addSystemItem = context.addSystemItem;
+    const dialogOpen = context.dialogOpen;
+    const basename = context.basename;
+    const isDeliverable = context.isDeliverable;
+    const isAbsPath = context.isAbsPath;
+    const sessionStates = context.sessionStates;
+    const discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
+    let attachIdSeq = 0;
   // ── 产物面板 ─────────────────────────────────────────────────────
-  function artifactInfo(path) { return invoke("artifact_info", { path: path }); }
-  function readArtifactText(path) { return invoke("read_artifact_text", { path: path }); }
-  function writeArtifactText(path, content) { return invoke("write_artifact_text", { path: path, content: content }); }
-  function readArtifactImageB64(path) { return invoke("read_artifact_image_b64", { path: path }); }
+  function artifactInfo(path) { return invoke("artifact_info", { path }); }
+  function readArtifactText(path) { return invoke("read_artifact_text", { path }); }
+  function writeArtifactText(path, content) { return invoke("write_artifact_text", { path, content }); }
+  function readArtifactImageB64(path) { return invoke("read_artifact_image_b64", { path }); }
   // pptx 封面缩略图：读 docProps/thumbnail.jpeg → data URL（无则 null）。本地数据、无外链。
-  function readArtifactThumbnail(path) { return invoke("read_artifact_thumbnail", { path: path }).catch(function () { return null; }); }
-  function renderArtifactVisual(path) { return invoke("render_artifact_visual", { path: path }); }
-  function openContainingFolder(path) { return invoke("open_containing_folder", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
-  function revealSessionFolder(sessionId) { return invoke("reveal_session_folder", { sessionId: sessionId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
-  function openScheduledTaskFolder(automationId) { return invoke("open_scheduled_task_folder", { automationId: automationId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
-  function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  function readArtifactThumbnail(path) { return invoke("read_artifact_thumbnail", { path }).catch(function () { return null; }); }
+  function renderArtifactVisual(path) { return invoke("render_artifact_visual", { path }); }
+  function openContainingFolder(path) { return invoke("open_containing_folder", { path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  function revealSessionFolder(sessionId) { return invoke("reveal_session_folder", { sessionId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  function openScheduledTaskFolder(automationId) { return invoke("open_scheduled_task_folder", { automationId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  function openInSystem(path) { return invoke("open_in_system", { path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   // 仅放白名单 URL (metaso.cn / open.bochaai.com),后端 open_external_url 强制校验。
-  function openExternalUrl(url) { return invoke("open_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  function openExternalUrl(url) { return invoke("open_external_url", { url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   // ACP 消息/产物预览里由用户亲自点击的 HTTP(S) 外链；后端与工具白名单入口分开校验。
-  function openUserExternalUrl(url) { return invoke("open_user_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  function openUserExternalUrl(url) { return invoke("open_user_external_url", { url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   function deliverableCategory(path) {
-    var ext = (String(path || "").split(".").pop() || "").toLowerCase();
-    if (ext === "html" || ext === "htm" || ext === "mhtml" || ext === "mht") return "web";
-    if (ext === "ppt" || ext === "pptx" || ext === "odp" || ext === "dps") return "ppt";
-    if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "heic"].indexOf(ext) >= 0) return "img";
+    const ext = (String(path || "").split(".").pop() || "").toLowerCase();
+    if (["html", "htm", "mhtml", "mht"].includes(ext)) return "web";
+    if (["ppt", "pptx", "odp", "dps"].includes(ext)) return "ppt";
+    if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "heic"].includes(ext)) return "img";
     return "doc";
   }
   function sessionTitleById(sid) {
-    var m = state.sessions.find(function (s) { return s.id === sid; });
+    const m = state.sessions.find(function (s) { return s.id === sid; });
     return (m && m.title) || "";
   }
   function currentMemoryArtifacts() {
-    var rows = [];
+    const rows = [];
     function addFrom(sid, arts) {
       (arts || []).forEach(function (a) {
-        var path = a && a.path;
+        const path = a && a.path;
         if (!path || !isDeliverable(path)) return;
-        rows.push({ path: path, sessionId: sid || state.activeSessionId, source: sessionTitleById(sid || state.activeSessionId), name: basename(path) });
+        rows.push({ path, sessionId: sid || state.activeSessionId, source: sessionTitleById(sid || state.activeSessionId), name: basename(path) });
       });
     }
     addFrom(state.activeSessionId, state.artifacts);
@@ -61,27 +63,27 @@
   // 跨会话产出物索引:磁盘 session JSON 为主,再合并当前内存工作集。
   // 新产物在 chat:done/save_session_artifacts 前也能立刻出现在「产出物」一级入口。
   async function listDeliverableIndex() {
-    var disk = await invoke("list_deliverable_index").catch(function () { return []; });
-    var byPath = {};
+    const disk = await invoke("list_deliverable_index").catch(function () { return []; });
+    const byPath = {};
     (disk || []).forEach(function (x) { if (x && x.path) byPath[x.path] = x; });
-    var mem = currentMemoryArtifacts().filter(function (x) { return x.path && !byPath[x.path]; });
-    var hydrated = await Promise.all(mem.map(async function (x) {
-      var path = x.path;
+    const mem = currentMemoryArtifacts().filter(function (x) { return x.path && !byPath[x.path]; });
+    const hydrated = await Promise.all(mem.map(async function (x) {
+      let path = x.path;
       if (!isAbsPath(path) && x.sessionId) {
         try {
-          var ws = await invoke("list_workspace_files", { sessionId: x.sessionId });
-          var bn = basename(path);
-          var resolved = (ws || []).find(function (p) { return basename(p) === bn; });
+          const ws = await invoke("list_workspace_files", { sessionId: x.sessionId });
+          const bn = basename(path);
+          const resolved = (ws || []).find(function (p) { return basename(p) === bn; });
           if (resolved) path = resolved;
-        } catch (_) {}
+        } catch { /* keep the original path on parse failure */ }
       }
-      var info = null;
-      try { info = await artifactInfo(path); } catch (_) {}
-      var ext = (String(path).split(".").pop() || "").toLowerCase();
+      let info = null;
+      try { info = await artifactInfo(path); } catch { /* degrade to no-details when info is missing */ }
+      const ext = (String(path).split(".").pop() || "").toLowerCase();
       return {
         name: x.name || basename(path),
-        path: path,
-        ext: ext,
+        path,
+        ext,
         category: deliverableCategory(path),
         sessionId: x.sessionId || "",
         source: x.source || sessionTitleById(x.sessionId) || "",
@@ -99,9 +101,9 @@
   // active_id)解析相对路径 —— 切回「有 buffer」的会话后端 active 不更新,只有卡片自带
   // session 才解析得准(否则相对路径被拼到错的 workspace 报 not a file)。绝对路径无视它。
   function openArtifactExternal(path, sessionId) {
-    var ext = (String(path).split(".").pop() || "").toLowerCase();
-    var cmd = (ext === "html" || ext === "htm") ? "open_artifact_window" : "open_in_system";
-    return invoke(cmd, { path: path, sessionId: sessionId || null }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
+    const ext = (String(path).split(".").pop() || "").toLowerCase();
+    const cmd = (ext === "html" || ext === "htm") ? "open_artifact_window" : "open_in_system";
+    return invoke(cmd, { path, sessionId: sessionId || null }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
   }
   function downloadArtifact(path, sessionId) {
     return openArtifactExternal(path, sessionId);
@@ -109,31 +111,31 @@
 
   // ── 附件 ────────────────────────────────────────────────────────
   async function addAttachmentByPath(path) {
-    var id = ++attachIdSeq;
-    var att = { id: id, basename: basename(path), status: "parsing", result: null, error: null };
+    const id = ++attachIdSeq;
+    const att = { id, basename: basename(path), status: "parsing", result: null, error: null };
     state.attachments.push(att); notify();
     try {
-      var result = await invoke("ingest_file", { path: path });
+      const result = await invoke("ingest_file", { path });
       att.status = "ready"; att.result = result;
     } catch (e) { att.status = "error"; att.error = String(e); }
     notify();
   }
   async function addDroppedFileAttachment(file) {
     if (!file) return;
-    var id = ++attachIdSeq;
-    var att = { id: id, basename: file.name || "attachment", status: "parsing", result: null, error: null, cancelled: false, uploadId: null };
+    const id = ++attachIdSeq;
+    const att = { id, basename: file.name || "attachment", status: "parsing", result: null, error: null, cancelled: false, uploadId: null };
     state.attachments.push(att);
     notify();
     try {
-      var uploader = root.PinvouChunkedFileUpload;
+      const uploader = root.PinvouChunkedFileUpload;
       if (!uploader || typeof uploader.uploadFile !== "function") {
         throw new Error("chunked attachment uploader is unavailable");
       }
-      var uploadId = uploader.uploadId("desktop_attach");
+      const uploadId = uploader.uploadId("desktop_attach");
       att.uploadId = uploadId;
-      var completed = await uploader.uploadFile({
-        file: file,
-        uploadId: uploadId,
+      const completed = await uploader.uploadFile({
+        file,
+        uploadId,
         isCancelled: function () { return att.cancelled; },
         sendChunk: function (chunk) {
           return invoke("ingest_draft_file_chunk", {
@@ -154,7 +156,7 @@
           }
         },
       });
-      var result = completed.result;
+      const result = completed.result;
       Object.defineProperty(result, "__pinvouManagedDraftAttachmentId", {
         configurable: true,
         value: uploadId,
@@ -202,12 +204,12 @@
 
   async function addPasteImage(filename, bytes) {
     try {
-      var path = await invoke("save_paste_image", { filename: filename, bytes: bytes });
+      const path = await invoke("save_paste_image", { filename, bytes });
       await addAttachmentByPath(path);
     } catch (e) { addSystemItem(bt("pasteImageFailed") + e); }
   }
   function removeAttachment(id) {
-    var removed = state.attachments.find(function (a) { return a.id === id; });
+    const removed = state.attachments.find(function (a) { return a.id === id; });
     if (removed) {
       removed.cancelled = true;
       if (removed.status === "ready" && removed.result) {
@@ -230,31 +232,31 @@
   async function pickAndAttach() {
     if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return; }
     try {
-      var selected = await dialogOpen({ multiple: true });
+      const selected = await dialogOpen({ multiple: true });
       if (!selected) return;
-      var paths = Array.isArray(selected) ? selected : [selected];
-      for (var i = 0; i < paths.length; i++) { await addAttachmentByPath(paths[i]); }
+      const paths = Array.isArray(selected) ? selected : [selected];
+      for (let i = 0; i < paths.length; i++) { await addAttachmentByPath(paths[i]); }
     } catch (e) { addSystemItem(bt("filePickFailed") + e); }
   }
   // 文件选择按钮在桌面仍走原生路径；HTML5 拖放拿不到路径时通过同一域方法
   // 分块写入 sessionless 草稿区，直到实际发送才归属到目标会话。
   async function uploadDeviceFiles(files) {
-    var list = Array.prototype.slice.call(files || []).filter(Boolean);
-    for (var index = 0; index < list.length; index++) {
+    const list = Array.prototype.slice.call(files || []).filter(Boolean);
+    for (let index = 0; index < list.length; index++) {
       await addDroppedFileAttachment(list[index]);
     }
   }
 
   async function adoptManagedAttachments(attachments, sessionId) {
-    var list = Array.prototype.slice.call(attachments || []);
-    for (var index = 0; index < list.length; index++) {
-      var attachment = list[index];
-      var result = attachment && attachment.result;
-      var uploadId = result && result.__pinvouManagedDraftAttachmentId;
+    const list = Array.prototype.slice.call(attachments || []);
+    for (let index = 0; index < list.length; index++) {
+      const attachment = list[index];
+      const result = attachment && attachment.result;
+      const uploadId = result && result.__pinvouManagedDraftAttachmentId;
       if (!uploadId) continue;
-      var adopted = await invoke("adopt_draft_attachment", {
-        sessionId: sessionId,
-        uploadId: uploadId,
+      const adopted = await invoke("adopt_draft_attachment", {
+        sessionId,
+        uploadId,
       });
       Object.defineProperty(adopted, "__pinvouManagedAttachmentSessionId", {
         configurable: true,
@@ -269,31 +271,31 @@
 
 
     return {
-      artifactInfo: artifactInfo,
-      readArtifactText: readArtifactText,
-      writeArtifactText: writeArtifactText,
-      readArtifactImageB64: readArtifactImageB64,
-      readArtifactThumbnail: readArtifactThumbnail,
-      renderArtifactVisual: renderArtifactVisual,
-      openContainingFolder: openContainingFolder,
-      revealSessionFolder: revealSessionFolder,
-      openScheduledTaskFolder: openScheduledTaskFolder,
-      openInSystem: openInSystem,
-      openArtifactExternal: openArtifactExternal,
-      downloadArtifact: downloadArtifact,
-      listDeliverableIndex: listDeliverableIndex,
-      openExternalUrl: openExternalUrl,
-      openUserExternalUrl: openUserExternalUrl,
-      addAttachmentByPath: addAttachmentByPath,
-      addPasteImage: addPasteImage,
-      removeAttachment: removeAttachment,
-      clearAttachments: clearAttachments,
-      pickAndAttach: pickAndAttach,
-      uploadDeviceFiles: uploadDeviceFiles,
-      adoptManagedAttachments: adoptManagedAttachments,
-      resolveConversationAttachment: resolveConversationAttachment,
-      openConversationAttachment: openConversationAttachment,
-      revealConversationAttachment: revealConversationAttachment
+      artifactInfo,
+      readArtifactText,
+      writeArtifactText,
+      readArtifactImageB64,
+      readArtifactThumbnail,
+      renderArtifactVisual,
+      openContainingFolder,
+      revealSessionFolder,
+      openScheduledTaskFolder,
+      openInSystem,
+      openArtifactExternal,
+      downloadArtifact,
+      listDeliverableIndex,
+      openExternalUrl,
+      openUserExternalUrl,
+      addAttachmentByPath,
+      addPasteImage,
+      removeAttachment,
+      clearAttachments,
+      pickAndAttach,
+      uploadDeviceFiles,
+      adoptManagedAttachments,
+      resolveConversationAttachment,
+      openConversationAttachment,
+      revealConversationAttachment
     };
   };
 })(window);

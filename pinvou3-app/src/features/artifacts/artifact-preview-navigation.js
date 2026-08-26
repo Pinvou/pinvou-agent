@@ -8,7 +8,7 @@ export function normalizeUserExternalUrl(value) {
     if (!['http:', 'https:'].includes(parsed.protocol)) return '';
     if (!parsed.hostname || parsed.username || parsed.password) return '';
     return parsed.href;
-  } catch (_) {
+  } catch {
     return '';
   }
 }
@@ -29,12 +29,13 @@ export function buildArtifactPreviewDocument(html) {
     'var h=(a.getAttribute("href")||"").trim();',
     'e.preventDefault();',
     'if(h.charAt(0)==="#"&&h.length>1){var el=document.getElementById(h.slice(1));if(el)el.scrollIntoView({behavior:"smooth"});return;}',
-    'if(/^https?:\\/\\//i.test(h)){window.parent.postMessage({type:' + messageType + ',url:h},"*");}',
+    String.raw`if(/^https?:\/\//i.test(h)){window.parent.postMessage({type:` + messageType + ',url:h},"*");}',
     '},true);',
     'document.addEventListener("submit",function(e){e.preventDefault();},true);',
     '})();',
   ].join('');
-  return '<script>' + bootstrap + '<\/script>'
+  // \u003c escape keeps the literal "</script>" out of the source so it is not truncated when inlined into HTML.
+  return '<script>' + bootstrap + '\u003C/script>'
     + '<style>html,body{background:#15171a;margin:0;}</style>'
     + String(html || '');
 }

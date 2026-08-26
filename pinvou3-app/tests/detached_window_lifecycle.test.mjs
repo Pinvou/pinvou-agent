@@ -21,7 +21,7 @@ function featureRegistry(calls) {
           return function (...args) {
             calls.push({ kind: 'feature', feature, method: String(method), args });
             if (feature === 'sessions' && method === 'switchToSession') return Promise.resolve(true);
-            return Promise.resolve(undefined);
+            return Promise.resolve();
           };
         },
       });

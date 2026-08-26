@@ -1,16 +1,17 @@
 /** Remote desktop-host file picker used by the browser WebUI. */
 (function () {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic script; strict mode is the payload
   "use strict";
 
   if (!window.PinvouPlatform || window.PinvouPlatform.kind !== "web") return;
-  var client = window.PinvouWebClient;
+  const client = window.PinvouWebClient;
   if (!client) return;
 
-  var activePicker = null;
+  let activePicker = null;
 
   // 文案单一来源是 shared/i18n.js 的 uiPlatformMisc.hostFilePicker,由 React 入口
   // 按当前语言挂到 window.PinvouHostFilePickerStrings;此处保留中文兜底(纯脚本无法 import ES module)。
-  var FALLBACK_LABELS = {
+  const FALLBACK_LABELS = {
     pickFolderTitle: "选择桌面端文件夹", pickFileTitle: "选择桌面端文件",
     close: "关闭", goUp: "上一级", loadingPath: "正在读取桌面端目录…", loading: "正在读取…",
     cancel: "取消", chooseThisFolder: "选择此文件夹", choose: "选择",
@@ -23,16 +24,16 @@
   };
 
   function pickerLabels() {
-    var custom = window.PinvouHostFilePickerStrings || {};
-    var merged = {};
-    for (var key in FALLBACK_LABELS) {
-      merged[key] = custom[key] !== undefined ? custom[key] : FALLBACK_LABELS[key];
+    const custom = window.PinvouHostFilePickerStrings || {};
+    const merged = {};
+    for (const key in FALLBACK_LABELS) {
+      merged[key] = custom[key] === undefined ? FALLBACK_LABELS[key] : custom[key];
     }
     return merged;
   }
 
   function element(tag, className, text) {
-    var node = document.createElement(tag);
+    const node = document.createElement(tag);
     if (className) node.className = className;
     if (text !== undefined) node.textContent = text;
     return node;
@@ -44,20 +45,20 @@
 
   function allowedByFilters(entry, filters) {
     if (entryIsDirectory(entry) || !filters || !filters.length) return true;
-    var extensions = [];
+    const extensions = [];
     filters.forEach(function (filter) {
       (filter.extensions || []).forEach(function (extension) {
         extensions.push(String(extension).replace(/^\./, "").toLowerCase());
       });
     });
     if (!extensions.length) return true;
-    var name = String(entry.name || "");
-    var extension = name.indexOf(".") >= 0 ? name.split(".").pop().toLowerCase() : "";
-    return extensions.indexOf(extension) >= 0;
+    const name = String(entry.name || "");
+    const extension = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
+    return extensions.includes(extension);
   }
 
   function formatSize(value) {
-    var size = Number(value || 0);
+    const size = Number(value || 0);
     if (!size) return "";
     if (size < 1024) return size + " B";
     if (size < 1024 * 1024) return (size / 1024).toFixed(1) + " KB";
@@ -67,68 +68,68 @@
 
   function openRemoteHostPicker(options) {
     options = options || {};
-    var labels = pickerLabels();
+    const labels = pickerLabels();
     if (activePicker) return Promise.reject(new Error(labels.alreadyOpen));
 
     return new Promise(function (resolve, reject) {
-      var directoryMode = options.directory === true;
-      var multiple = !directoryMode && options.multiple === true;
-      var selected = new Map();
-      var currentPath = null;
-      var parentPath = null;
-      var currentWorkspaceHandle = null;
-      var rootEntries = [];
-      var showingRoots = false;
-      var disposed = false;
-      var loadGeneration = 0;
-      var initialPath = options.defaultPath || null;
-      var initialPathPending = Boolean(initialPath);
+      const directoryMode = options.directory === true;
+      const multiple = !directoryMode && options.multiple === true;
+      const selected = new Map();
+      let currentPath = null;
+      let parentPath = null;
+      let currentWorkspaceHandle = null;
+      let rootEntries = [];
+      let showingRoots = false;
+      let disposed = false;
+      let loadGeneration = 0;
+      const initialPath = options.defaultPath || null;
+      let initialPathPending = Boolean(initialPath);
 
-      var overlay = element("div", "pinvou-host-picker-overlay");
-      var panel = element("div", "pinvou-host-picker-panel");
-      var header = element("div", "pinvou-host-picker-header");
-      var heading = element("div", "pinvou-host-picker-heading", options.title || (directoryMode ? labels.pickFolderTitle : labels.pickFileTitle));
-      var close = element("button", "pinvou-host-picker-icon", "×");
+      const overlay = element("div", "pinvou-host-picker-overlay");
+      const panel = element("div", "pinvou-host-picker-panel");
+      const header = element("div", "pinvou-host-picker-header");
+      const heading = element("div", "pinvou-host-picker-heading", options.title || (directoryMode ? labels.pickFolderTitle : labels.pickFileTitle));
+      const close = element("button", "pinvou-host-picker-icon", "×");
       close.type = "button";
       close.setAttribute("aria-label", labels.close);
-      header.appendChild(heading);
-      header.appendChild(close);
+      header.append(heading);
+      header.append(close);
 
-      var toolbar = element("div", "pinvou-host-picker-toolbar");
-      var rootsButton = element("button", "pinvou-host-picker-root-button", labels.thisComputer);
+      const toolbar = element("div", "pinvou-host-picker-toolbar");
+      const rootsButton = element("button", "pinvou-host-picker-root-button", labels.thisComputer);
       rootsButton.type = "button";
       rootsButton.title = labels.thisComputer;
       rootsButton.disabled = true;
-      var up = element("button", "pinvou-host-picker-icon", "←");
+      const up = element("button", "pinvou-host-picker-icon", "←");
       up.type = "button";
       up.title = labels.goUp;
-      var pathLabel = element("div", "pinvou-host-picker-path", labels.loadingPath);
-      toolbar.appendChild(rootsButton);
-      toolbar.appendChild(up);
-      toolbar.appendChild(pathLabel);
+      const pathLabel = element("div", "pinvou-host-picker-path", labels.loadingPath);
+      toolbar.append(rootsButton);
+      toolbar.append(up);
+      toolbar.append(pathLabel);
 
-      var body = element("div", "pinvou-host-picker-body");
-      var status = element("div", "pinvou-host-picker-status", labels.loading);
-      body.appendChild(status);
+      const body = element("div", "pinvou-host-picker-body");
+      const status = element("div", "pinvou-host-picker-status", labels.loading);
+      body.append(status);
 
-      var footer = element("div", "pinvou-host-picker-footer");
-      var selectionLabel = element("div", "pinvou-host-picker-selection", "");
-      var actions = element("div", "pinvou-host-picker-actions");
-      var cancel = element("button", "pinvou-host-picker-button", labels.cancel);
-      var confirm = element("button", "pinvou-host-picker-button pinvou-host-picker-primary", directoryMode ? labels.chooseThisFolder : labels.choose);
+      const footer = element("div", "pinvou-host-picker-footer");
+      const selectionLabel = element("div", "pinvou-host-picker-selection", "");
+      const actions = element("div", "pinvou-host-picker-actions");
+      const cancel = element("button", "pinvou-host-picker-button", labels.cancel);
+      const confirm = element("button", "pinvou-host-picker-button pinvou-host-picker-primary", directoryMode ? labels.chooseThisFolder : labels.choose);
       cancel.type = confirm.type = "button";
       confirm.disabled = !directoryMode;
-      actions.appendChild(cancel);
-      actions.appendChild(confirm);
-      footer.appendChild(selectionLabel);
-      footer.appendChild(actions);
+      actions.append(cancel);
+      actions.append(confirm);
+      footer.append(selectionLabel);
+      footer.append(actions);
 
-      panel.appendChild(header);
-      panel.appendChild(toolbar);
-      panel.appendChild(body);
-      panel.appendChild(footer);
-      overlay.appendChild(panel);
-      document.body.appendChild(overlay);
+      panel.append(header);
+      panel.append(toolbar);
+      panel.append(body);
+      panel.append(footer);
+      overlay.append(panel);
+      document.body.append(overlay);
       activePicker = overlay;
 
       function finish(value, error) {
@@ -142,7 +143,7 @@
       }
 
       function updateSelection() {
-        var count = selected.size;
+        const count = selected.size;
         selectionLabel.textContent = directoryMode
           ? (currentPath ? labels.currentFolder(currentPath) : "")
           : (count ? labels.selectedCount(count) : "");
@@ -177,35 +178,35 @@
         entries = entries.filter(function (entry) { return allowedByFilters(entry, options.filters); });
         if (!preserveOrder) {
           entries.sort(function (a, b) {
-            var ad = entryIsDirectory(a) ? 0 : 1;
-            var bd = entryIsDirectory(b) ? 0 : 1;
+            const ad = entryIsDirectory(a) ? 0 : 1;
+            const bd = entryIsDirectory(b) ? 0 : 1;
             return ad - bd || String(a.name || "").localeCompare(String(b.name || ""), "zh-CN");
           });
         }
 
         if (!entries.length) {
-          body.appendChild(element("div", "pinvou-host-picker-empty", labels.emptyFolder));
+          body.append(element("div", "pinvou-host-picker-empty", labels.emptyFolder));
         }
         entries.forEach(function (entry) {
-          var row = element("button", "pinvou-host-picker-row");
+          const row = element("button", "pinvou-host-picker-row");
           row.type = "button";
-          var icon = element("span", "pinvou-host-picker-file-icon", entryIsDirectory(entry) ? "📁" : "📄");
-          var displayName = entry.kind === "root" && entry.name === "Home"
+          const icon = element("span", "pinvou-host-picker-file-icon", entryIsDirectory(entry) ? "📁" : "📄");
+          const displayName = entry.kind === "root" && entry.name === "Home"
             ? labels.home
             : (entry.name || entry.path || "");
-          var name = element("span", "pinvou-host-picker-name", displayName);
-          var size = element("span", "pinvou-host-picker-size", entryIsDirectory(entry) ? "" : formatSize(entry.size));
-          row.appendChild(icon);
-          row.appendChild(name);
-          row.appendChild(size);
+          const name = element("span", "pinvou-host-picker-name", displayName);
+          const size = element("span", "pinvou-host-picker-size", entryIsDirectory(entry) ? "" : formatSize(entry.size));
+          row.append(icon);
+          row.append(name);
+          row.append(size);
           if (selected.has(entry.path)) row.classList.add("is-selected");
           row.addEventListener("click", function () { chooseEntry(entry, row); });
           row.addEventListener("dblclick", function () {
             if (entryIsDirectory(entry)) return;
             selected.set(entry.path, entry);
-            finish(multiple ? Array.from(selected.keys()) : entry.path);
+            finish(multiple ? [...selected.keys()] : entry.path);
           });
-          body.appendChild(row);
+          body.append(row);
         });
         updateSelection();
       }
@@ -229,7 +230,7 @@
         pathLabel.textContent = labels.thisComputer;
         rootsButton.disabled = false;
         up.disabled = true;
-        renderEntries(rootEntries.slice(), true);
+        renderEntries([...rootEntries], true);
       }
 
       function renderListing(listing) {
@@ -242,11 +243,11 @@
         pathLabel.textContent = currentPath || labels.thisComputer;
         rootsButton.disabled = rootEntries.length === 0;
         up.disabled = !parentPath && rootEntries.length === 0;
-        renderEntries(listing && Array.isArray(listing.entries) ? listing.entries.slice() : [], false);
+        renderEntries(listing && Array.isArray(listing.entries) ? [...listing.entries] : [], false);
       }
 
       function load(path) {
-        var generation = ++loadGeneration;
+        const generation = ++loadGeneration;
         showingRoots = false;
         currentWorkspaceHandle = null;
         rootsButton.disabled = rootEntries.length === 0;
@@ -268,8 +269,8 @@
             return;
           }
           rootsButton.disabled = rootEntries.length === 0;
-          var message = String(error && error.message ? error.message : error);
-          var code = String(error && error.code ? error.code : "");
+          let message = String(error && error.message ? error.message : error);
+          const code = String(error && error.code ? error.code : "");
           if (code === "host_workspace_not_authorized" || message === "host_workspace_not_authorized") {
             message = labels.workspaceNotAuthorized;
           }
@@ -292,14 +293,14 @@
         if (directoryMode && options.workspaceGrant === true) {
           finish({ path: currentPath, workspaceHandle: currentWorkspaceHandle });
         } else if (directoryMode) finish(currentPath);
-        else finish(multiple ? Array.from(selected.keys()) : Array.from(selected.keys())[0] || null);
+        else finish(multiple ? [...selected.keys()] : [...selected.keys()][0] || null);
       });
       window.addEventListener("keydown", onKeyDown);
       load(initialPath);
     });
   }
 
-  var style = document.createElement("style");
+  const style = document.createElement("style");
   style.textContent = [
     // This file is copied verbatim into dist (never transpiled by the build):
     // the inset shorthand must stay expanded and backdrop-filter must stay
@@ -316,7 +317,7 @@
     "html:not(.dark) .pinvou-host-picker-panel{border-color:#dadce0;background:#fff;color:#202124}html:not(.dark) .pinvou-host-picker-header,html:not(.dark) .pinvou-host-picker-toolbar,html:not(.dark) .pinvou-host-picker-footer{border-color:#dadce0}html:not(.dark) .pinvou-host-picker-root-button:hover,html:not(.dark) .pinvou-host-picker-row:hover{background:#f1f3f4}html:not(.dark) .pinvou-host-picker-row.is-selected{background:#d2e3fc;color:#174ea6}",
     "@media(max-width:600px){.pinvou-host-picker-overlay{align-items:stretch;padding:0}.pinvou-host-picker-panel{width:100%;height:100%;max-height:none;border:0;border-radius:0}.pinvou-host-picker-footer{padding-bottom:max(12px,env(safe-area-inset-bottom))}.pinvou-host-picker-selection{display:none}}",
   ].join("");
-  document.head.appendChild(style);
+  document.head.append(style);
 
   window.PinvouHostFilePicker = {
     open: openRemoteHostPicker,

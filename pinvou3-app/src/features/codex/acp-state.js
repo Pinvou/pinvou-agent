@@ -14,7 +14,7 @@ export function unifiedConversationUiEnabled() {
 
 export function updateAcpAttachmentDraft(drafts, attachmentId, update) {
   for (const [owner, attachments] of Object.entries(drafts || {})) {
-    if (!attachments.some(attachment => attachment.id === attachmentId)) continue;
+    if (attachments.every(attachment => attachment.id !== attachmentId)) continue;
     return {
       ...drafts,
       [owner]: attachments.map(attachment => (
@@ -43,10 +43,10 @@ function mergeTool(current, update) {
   return {
     ...current,
     ...update,
-    content: update.content !== undefined ? update.content : current.content,
-    locations: update.locations !== undefined ? update.locations : current.locations,
-    rawInput: update.rawInput !== undefined ? update.rawInput : current.rawInput,
-    rawOutput: update.rawOutput !== undefined ? update.rawOutput : current.rawOutput,
+    content: update.content === undefined ? current.content : update.content,
+    locations: update.locations === undefined ? current.locations : update.locations,
+    rawInput: update.rawInput === undefined ? current.rawInput : update.rawInput,
+    rawOutput: update.rawOutput === undefined ? current.rawOutput : update.rawOutput,
   };
 }
 
@@ -178,6 +178,7 @@ export function presentTurnItems(items) {
  * 把不可变 ACP event log 投影成 Codex 的 Thread → Turn → Item 模型。
  * 原始 event log 仍是事实源；tool update 只更新同一个 tool_call_id。
  */
+// eslint-disable-next-line sonarjs/cognitive-complexity -- event log to Turn/Item projection: single-pass merge of many ACP event shapes; splitting would repeat the traversal
 export function projectAcpTimeline(input) {
   const seen = new Set();
   const events = [...(input || [])]

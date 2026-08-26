@@ -1,11 +1,10 @@
-import React, { lazy, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
-import { I, Plus, Edit2, Trash2, ClipboardList, BarChart2, Settings, Monitor, Smartphone, Brain, BrainCircuit, Clock, Sun, Moon, Zap, Package, RotateCcw, Search, Upload, Lightbulb, Paperclip, Mic, Send, Store, Terminal, ChevronDown, IconGrid, IconList, Copy, CheckCircle2, AlertTriangle, Menu, MoreHorizontal, Check, Filter, Database, Download, FolderPlus, Award, Feather, AppWindow, Radio, Palette, Briefcase, StopCircle, XCircle, Wrench, Layers, MessageSquare, X, ArrowLeft, FolderOpen, ExternalLink, BookOpen, Code, FileText, Hexagon, Layout, Presentation, Mail, MessageCircle, Navigation, Video, Puzzle, LineChart, Building2, Cpu, Server, Globe, ChevronLeft, XIcon, CloudSun, TrendingUp, TrendingDown, GridIcon, TableIcon, PresentationIcon, ImageIcon, Archive, PetPawIcon } from '../components/icons.jsx';
+import { Edit2, BarChart2, Settings, Smartphone, Clock, Package, Search, ChevronDown, Menu, MoreHorizontal, Check, Filter, Layers, MessageSquare, X, BookOpen, Puzzle, PetPawIcon, FolderOpen, IconList } from '../components/icons.jsx';
 import { ArchiveConfirmDialog, ArchiveToast, NavItem, RecentItem } from '../components/layout/NavigationComponents.jsx';
 import { AcpAgentLogo } from '../features/codex/AcpAgentLogo.jsx';
-import { CodexAcpView } from '../features/codex/LazyCodexAcpView.jsx';
 import { PinvouLogo } from '../components/PinvouLogo.jsx';
 import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layout/MobileShell.jsx';
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
@@ -121,8 +120,13 @@ function workspaceDisplayName(path) {
   return parts[parts.length - 1] || String(path || '');
 }
 
+    // App root component: aggregates bridge state, routing, and all sidebar/overlay UI. Size and complexity are historical
+    // evolution; splitting requires a dedicated refactor task (involving a hundred-plus closure handlers and test contracts);
+    // only lint fixes here, no behavior change.
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- due to the App root component's size; behavior preservation takes priority, split needs a dedicated refactor
     const App = () => {
       if (!appFirstRenderMarked) {
+        // One-shot startup marker: module-level boolean set on first render, unrelated to component state (no rerender needed).
         appFirstRenderMarked = true;
         window.__PINVOU_STARTUP__.mark('react:app_render_start');
       }
@@ -237,8 +241,11 @@ function workspaceDisplayName(path) {
       }, []);
       useEffect(() => {
         if (!codexAcpSupported || !isTauriAvailable()) {
+          // Clear the code-session mirror when bridge capabilities change to avoid stale unreachable sessions;
+          // the synchronous setState guarantees it takes effect in this render pass.
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously clear the mirror when the capability is disabled, preventing renders of unreachable sessions
           setCodexSessions([]);
-          return undefined;
+          return;
         }
         let disposed = false;
         const unlisteners = [];
@@ -309,16 +316,18 @@ function workspaceDisplayName(path) {
         });
         return () => {
           disposed = true;
-          unlisteners.forEach(unlisten => unlisten());
+          unlisteners.forEach(unlisten => { unlisten(); });
         };
       }, [codexAcpSupported, refreshCodexSessions]);
       // 供全局事件监听器读取最新视图状态（监听器只注册一次，不能闭包旧值）。
+      // latest-ref render-time mirror: event callbacks (fired post-commit) read the latest value, an officially
+      // sanctioned React escape hatch; writing back via an effect would introduce a brief stale-value window around commit.
       const activeChatRef = useRef(activeChat);
       activeChatRef.current = activeChat;
       const currentViewRef = useRef(currentView);
       currentViewRef.current = currentView;
       useEffect(() => {
-        if (!isTauriAvailable()) return undefined;
+        if (!isTauriAvailable()) return;
         const guard = createPetActivationGuard();
         let disposed = false;
         let unlisten = null;
@@ -359,7 +368,7 @@ function workspaceDisplayName(path) {
           const value = window.localStorage.getItem('pinvou.web.language');
           // 首帧引导(文件尾 ensureLanguage)已保证 localStorage 选中的语言词典就位
           return value && dict[value] ? value : systemLanguage;
-        } catch (_) { return systemLanguage; }
+        } catch { return systemLanguage; }
       });
       // 语言切换统一走该门(handleSetLanguage):装载完成乱序时只落地最新选择。
       const switchToLanguage = useRef(createLatestLanguageGate()).current;
@@ -384,11 +393,12 @@ function workspaceDisplayName(path) {
       // 模型配置（动态适配）——草稿模式，确认后才保存
       // 默认预设平台感知:macOS/Windows 无本地 vLLM(后端命令已 cfg 掉),默认 DeepSeek;
       // Linux 保持 local_vllm(麒麟环境默认有本地大模型)。与 bridge prefs::ModelPreset::default() 对齐。
-      const [modelPreset, setModelPreset] = useState(() => defaultModelPresetForCapabilities(platformCapabilities));
-      const [customModelName, setCustomModelName] = useState('');
-      const [customBaseUrl, setCustomBaseUrl] = useState('');
-      const [customApiKey, setCustomApiKey] = useState('');
-      const [modelProfiles, setModelProfiles] = useState({});
+      // Keep only the setter: draft values are currently managed inside the settings page; here we backfill once during startup bootstrap.
+      const [, setModelPreset] = useState(() => defaultModelPresetForCapabilities(platformCapabilities));
+      const [, setCustomModelName] = useState('');
+      const [, setCustomBaseUrl] = useState('');
+      const [, setCustomApiKey] = useState('');
+      const [, setModelProfiles] = useState({});
       const modelConfigInitRef = useRef(false);
       const searchConfigInitRef = useRef(false);
       const uiPrefsInitRef = useRef(false);
@@ -432,12 +442,6 @@ function workspaceDisplayName(path) {
           apiKey: profile.api_key || (fallback && fallback.apiKey) || '',
         };
       }
-      function mergeModelDraft(profiles, preset, name, baseUrl, apiKey) {
-        return {
-          ...(profiles || {}),
-          [preset]: normalizedModelProfile(name, baseUrl, apiKey),
-        };
-      }
       const [isSidebarOpen, setIsSidebarOpen] = useState(false);
       // 移动壳层只作用于 Web 端紧凑视口：底部 Tab + 顶栏，侧栏只保留抽屉形态。
       const compactViewport = useCompactViewport();
@@ -447,7 +451,7 @@ function workspaceDisplayName(path) {
       // iOS Safari 聚焦输入框时会尝试滚动整个文档。紧凑 Web 壳层本身已经按
       // visualViewport 缩高，若再允许文档级平移，整个应用会被推到键盘上方，只剩白屏。
       useEffect(() => {
-        if (!isCompactShell) return undefined;
+        if (!isCompactShell) return;
 
         const html = document.documentElement;
         const body = document.body;
@@ -512,17 +516,18 @@ function workspaceDisplayName(path) {
       const beginTearOff = (kind, id, label, info) => {
         const inv = isTauriAvailable() ? invokeTauri : null;
         if (!inv || !info) return;
-        inv('begin_detach_drag', { kind, id: id != null ? id : null });
+        inv('begin_detach_drag', { kind, id: id == null ? null : id });
         dragOffsetRef.current = { dx: info.dx, dy: info.dy };
         setDragAvatar({
-          key: kind + ':' + (id != null ? id : ''), label: label || kind,
+          key: kind + ':' + (id == null ? '' : id), label: label || kind,
           w: info.w, h: info.h, x: info.startX - info.dx, y: info.startY - info.dy,
         });
         if (window.getSelection) { const s = window.getSelection(); if (s && s.removeAllRanges) s.removeAllRanges(); }
       };
       // 拖拽中:光标移动 → 更新 avatar 位置(光标 - 抓取偏移,相对位置锁定);禁选 + 抓手光标。
+      const dragAvatarActive = !!dragAvatar;
       useEffect(() => {
-        if (!dragAvatar) return;
+        if (!dragAvatarActive) return;
         const prevUS = document.body.style.userSelect, prevCur = document.body.style.cursor;
         document.body.style.userSelect = 'none';
         document.body.style.cursor = 'grabbing';
@@ -536,7 +541,7 @@ function workspaceDisplayName(path) {
           document.body.style.userSelect = prevUS;
           document.body.style.cursor = prevCur;
         };
-      }, [!!dragAvatar]);
+      }, [dragAvatarActive]);
       // 原生拖拽结束(松手/取消)→ 收起 avatar。
       useEffect(() => {
         if (!isTauriAvailable()) return;
@@ -547,6 +552,9 @@ function workspaceDisplayName(path) {
 
       // 兜底 zh:词典 chunk 装载失败时按 zh 渲染而非白屏(与 PetWindow/ReaderApp 同口径)。
       const t = dict[language] || dict.zh;
+      // The desk-pet reply consumption loop (mounted once) reads a latest-ref mirror of current-language error copy.
+      const petI18nTextRef = useRef(null);
+      petI18nTextRef.current = t.uiMainApp;
       // 静态 HTML 的 <title>/<html lang> 与非模块脚本(远程文件选择器、web bootstrap)拿不到语言上下文,
       // 在此按当前语言同步,并把选择器/bootstrap 错误文案暴露给 platform/web/ 下的脚本。
       // 桌宠窗口标题由 PetWindow 自行同步(主包不做桌宠检测,见 pet_bootstrap_isolation 测试)。
@@ -574,19 +582,85 @@ function workspaceDisplayName(path) {
         setPersonaEditor({ initial });
       }
 
-      function handleActivateSkill(name) {
-        setCodeModeOn(false);
-        setChatPrefill(t.skillPrefill(name));
-        setCurrentView('chat');
-      }
-
       // Sync from bridge state
+      // One-shot bootstrap: backfill the search-config draft baseline when bridge settings first arrive, then use draft mode
+      // (saved only on confirm) so the effect never overwrites unsaved local edits with old on-disk values.
+      const initSearchConfigFromSettings = (settings) => {
+        const search = settings.search || {};
+        const credentials = search.credentials || {};
+        const saved = {
+          provider: search.provider || 'bing',
+          apiKey: search.api_key || '',
+          credentials,
+          enabledProviders: Array.isArray(search.enabled_providers) && search.enabled_providers.length
+            ? [...new Set(['bing', ...search.enabled_providers])]
+            : ['bing', search.provider || 'bing'].filter(Boolean),
+        };
+        const drafts = {};
+        const actions = {};
+        SEARCH_KEY_PROVIDERS.forEach(p => {
+          drafts[p] = '';
+          actions[p] = 'keep_existing';
+        });
+        if (saved.apiKey && saved.provider !== 'bing') {
+          drafts[saved.provider] = saved.apiKey;
+          actions[saved.provider] = 'replace';
+        }
+        setSearchProvider(saved.provider);
+        setEnabledSearchProviders(saved.enabledProviders);
+        setSearchApiKey(drafts[saved.provider] || '');
+        setSearchKeyDrafts(drafts);
+        setSearchKeyActions(actions);
+        savedSearchConfigRef.current = saved;
+        searchConfigInitRef.current = true;
+      };
+      // One-shot bootstrap: backfill the model-config draft baseline. When custom_* is null, fill real values from
+      // PRESET_DEFAULTS — inputs show the effective config instead of a gray placeholder masquerading as one.
+      const initModelConfigFromSettings = (settings, effectiveModelConfig) => {
+        const adv = settings.advanced || {};
+        const effective = effectiveModelConfig || {};
+        const preset = effective.preset || adv.model_preset || defaultModelPresetForCapabilities(platformCapabilities);
+        const profiles = { ...adv.model_profiles };
+        const fallback = {
+          name: effective.model || adv.custom_model_name || '',
+          baseUrl: effective.base_url || adv.custom_base_url || '',
+          apiKey: '',
+        };
+        const saved = modelDraftForPreset(preset, profiles, fallback);
+        profiles[preset] = normalizedModelProfile(saved.name, saved.baseUrl, saved.apiKey);
+        setModelProfiles(profiles);
+        setModelPreset(saved.preset);
+        setCustomModelName(saved.name);
+        setCustomBaseUrl(saved.baseUrl);
+        setCustomApiKey(saved.apiKey);
+        savedModelConfigRef.current = saved;
+        modelConfigInitRef.current = true;
+      };
+      // One-shot bootstrap: restore persisted UI language/theme and notification prefs (desktop); on Web the language uses local storage.
+      const initUiPrefsFromSettings = (settings) => {
+        if (isWeb) {
+          bootedLanguageRef.current = language;
+        } else {
+          const lang = TAG_TO_LANG[settings.language];
+          // 落盘语言可能尚未装载(en/ja 惰性 chunk);ensure 后再切,失败停在系统语言
+          if (lang && lang !== language) ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
+          // engine 已用此语言启动,作为「需重启」基线(切语言不重启 engine,见 commands.rs)
+          bootedLanguageRef.current = lang || language;
+          // 后端 Theme 枚举(prefs.rs)只认 genesis/liquid-light/liquid-dark;深色=genesis,浅色=liquid-light
+          const th = settings.theme === 'liquid-light' ? 'light' : 'dark';
+          if (th !== activeTheme) setActiveTheme(th);
+        }
+        const notifications = settings.notifications || {};
+        setTaskCompletedNotif(notifications.task_completed !== false && notifications.enabled !== false);
+        uiPrefsInitRef.current = true;
+      };
       useEffect(() => {
         if (!bs) return;
         // activeChat 始终跟随 bridge(含 null:草稿态清掉近期列表高亮)。仅在物化成
         // 真实 session(非 null)时才强制切回 chat 视图——草稿态/删会话不该把用户从
         // monitor/settings 拽走。
         if (bs.activeSessionId !== activeChat) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- activeChat is a local mirror of bridge state and must sync with bridge pushes
           setActiveChat(bs.activeSessionId);
           if (bs.activeSessionId && currentView !== 'codex' && currentView !== 'monitor' && currentView !== 'settings' && currentView !== 'search' && currentView !== 'scheduled') {
             // An external session switch (web remote control, etc.) that materializes
@@ -610,77 +684,15 @@ function workspaceDisplayName(path) {
           setCurrentView('scheduled');
         }
         // UI 语言/主题:启动时从落盘 settings 恢复一次；无语言配置时后端已按系统 locale 补齐。
-        if (!uiPrefsInitRef.current && bs.settings) {
-          if (isWeb) {
-            bootedLanguageRef.current = language;
-          } else {
-            const lang = TAG_TO_LANG[bs.settings.language];
-            // 落盘语言可能尚未装载(en/ja 惰性 chunk);ensure 后再切,失败停在系统语言
-            if (lang && lang !== language) ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
-            // engine 已用此语言启动,作为「需重启」基线(切语言不重启 engine,见 commands.rs)
-            bootedLanguageRef.current = lang || language;
-            // 后端 Theme 枚举(prefs.rs)只认 genesis/liquid-light/liquid-dark;深色=genesis,浅色=liquid-light
-            const th = bs.settings.theme === 'liquid-light' ? 'light' : 'dark';
-            if (th !== activeTheme) setActiveTheme(th);
-          }
-          const notifications = bs.settings.notifications || {};
-          setTaskCompletedNotif(notifications.task_completed !== false && notifications.enabled !== false);
-          uiPrefsInitRef.current = true;
-        }
+        if (!uiPrefsInitRef.current && bs.settings) initUiPrefsFromSettings(bs.settings);
         // 搜索配置：只在第一次从后端加载初始值，后续走草稿模式（确认后才保存并重启）。
-        if (!searchConfigInitRef.current && bs.settings) {
-          const search = bs.settings.search || {};
-          const credentials = search.credentials || {};
-          const saved = {
-            provider: search.provider || 'bing',
-            apiKey: search.api_key || '',
-            credentials: credentials,
-            enabledProviders: Array.isArray(search.enabled_providers) && search.enabled_providers.length
-              ? Array.from(new Set(['bing', ...search.enabled_providers]))
-              : ['bing', search.provider || 'bing'].filter(Boolean),
-          };
-          const drafts = {};
-          const actions = {};
-          SEARCH_KEY_PROVIDERS.forEach(p => {
-            drafts[p] = '';
-            actions[p] = 'keep_existing';
-          });
-          if (saved.apiKey && saved.provider !== 'bing') {
-            drafts[saved.provider] = saved.apiKey;
-            actions[saved.provider] = 'replace';
-          }
-          setSearchProvider(saved.provider);
-          setEnabledSearchProviders(saved.enabledProviders);
-          setSearchApiKey(drafts[saved.provider] || '');
-          setSearchKeyDrafts(drafts);
-          setSearchKeyActions(actions);
-          savedSearchConfigRef.current = saved;
-          searchConfigInitRef.current = true;
-        }
+        if (!searchConfigInitRef.current && bs.settings) initSearchConfigFromSettings(bs.settings);
         // 模型配置：只在第一次从后端加载初始值，后续走草稿模式（确认后才保存），
-        // 避免 useEffect 把未保存的本地修改覆盖回 disk 旧值。
-        // custom_* 为 null 时用 PRESET_DEFAULTS 填成真实值——输入框显示当前生效配置，
-        // 而不是灰色 placeholder 冒充。
-        if (!modelConfigInitRef.current && bs.settings) {
-          const adv = bs.settings.advanced || {};
-          const effective = bs.effectiveModelConfig || {};
-          const preset = effective.preset || adv.model_preset || defaultModelPresetForCapabilities(platformCapabilities);
-          const profiles = { ...(adv.model_profiles || {}) };
-          const fallback = {
-            name: effective.model || adv.custom_model_name || '',
-            baseUrl: effective.base_url || adv.custom_base_url || '',
-            apiKey: '',
-          };
-          const saved = modelDraftForPreset(preset, profiles, fallback);
-          profiles[preset] = normalizedModelProfile(saved.name, saved.baseUrl, saved.apiKey);
-          setModelProfiles(profiles);
-          setModelPreset(saved.preset);
-          setCustomModelName(saved.name);
-          setCustomBaseUrl(saved.baseUrl);
-          setCustomApiKey(saved.apiKey);
-          savedModelConfigRef.current = saved;
-          modelConfigInitRef.current = true;
-        }
+        if (!modelConfigInitRef.current && bs.settings) initModelConfigFromSettings(bs.settings, bs.effectiveModelConfig);
+        // The effect subscribes to the bridge snapshot bs; one-shot bootstrap/init flags are guarded by internal refs,
+        // and the remaining deps (activeChat/currentView/language, etc.) are render-state reads — including them would
+        // rerun the whole sync logic on every UI change.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [bs]);
 
       // HMR/旧前端状态可能仍停在已下线入口；立即回到仍可访问的视图。
@@ -691,18 +703,6 @@ function workspaceDisplayName(path) {
         }
       }, [currentView]);
 
-      // 草稿 vs 已保存基线 → 模型卡是否显示「保存并重启」操作条
-      const savedModel = savedModelConfigRef.current;
-      const modelConfigDirty = !!savedModel && (
-        modelPreset !== savedModel.preset ||
-        customModelName !== savedModel.name ||
-        customBaseUrl !== savedModel.baseUrl ||
-        customApiKey !== savedModel.apiKey
-      );
-      function normalizedSearchApiKeyValue(value) {
-        const trimmed = (value || '').trim();
-        return trimmed ? trimmed : null;
-      }
       function searchCredentialForProvider(provider) {
         const saved = savedSearchConfigRef.current;
         return (saved && saved.credentials && saved.credentials[provider]) || {};
@@ -722,13 +722,13 @@ function workspaceDisplayName(path) {
       }
       function buildSearchSettingsPayload() {
         const baseSearch = (bs && bs.settings && bs.settings.search) || {};
-        const credentials = { ...(baseSearch.credentials || {}) };
+        const credentials = { ...baseSearch.credentials };
         SEARCH_KEY_PROVIDERS.forEach(provider => {
           const action = searchProviderKeyAction(provider);
           const draft = searchKeyDrafts[provider] || '';
           if (action === 'delete' || (action === 'replace' && draft.trim())) {
             credentials[provider] = {
-              ...(credentials[provider] || {}),
+              ...credentials[provider],
               api_key: action === 'replace' ? draft.trim() : '',
               credential_action: action,
             };
@@ -737,7 +737,7 @@ function workspaceDisplayName(path) {
         return {
           ...baseSearch,
           provider: searchProvider,
-          enabled_providers: Array.from(new Set(['bing', ...enabledSearchProviders, searchProvider])),
+          enabled_providers: [...new Set(['bing', ...enabledSearchProviders, searchProvider])],
           api_key: null,
           credentials,
         };
@@ -745,9 +745,10 @@ function workspaceDisplayName(path) {
       // 搜索配置也影响 EngineConfig,需保存后重启进程才生效。
       const savedSearch = savedSearchConfigRef.current;
       const searchCredentialDirty = SEARCH_KEY_PROVIDERS.some(searchProviderCredentialDirty);
+      const providerSetKey = (providers) => JSON.stringify([...new Set(providers)].sort((a, b) => a.localeCompare(b)));
       const searchNeedsRestart = !!savedSearch && (
         searchProvider !== savedSearch.provider ||
-        JSON.stringify(Array.from(new Set(enabledSearchProviders)).sort()) !== JSON.stringify(Array.from(new Set(savedSearch.enabledProviders || ['bing'])).sort()) ||
+        providerSetKey(enabledSearchProviders) !== providerSetKey(savedSearch.enabledProviders || ['bing']) ||
         searchCredentialDirty
       );
       // 语言已即时写盘+切 UI,但 LLM 的 locale_tag 要重启 engine 才生效 → 偏离启动语言就提示。
@@ -804,7 +805,7 @@ function workspaceDisplayName(path) {
         .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt)));
       const scheduledRunShortcuts = (bs && bs.scheduledTaskRecentRuns && bs.scheduledTaskRecentRuns.length)
         ? bs.scheduledTaskRecentRuns
-        : (!bridge.available ? PREVIEW_SCHEDULED_RUN_SHORTCUTS.map(run => ({ ...run, taskName: t[run.taskNameKey] || run.taskNameKey })) : []);
+        : (bridge.available ? [] : PREVIEW_SCHEDULED_RUN_SHORTCUTS.map(run => ({ ...run, taskName: t[run.taskNameKey] || run.taskNameKey })));
       const scheduledRunSessionIds = new Set(
         scheduledRunShortcuts
           .map(run => run && run.sessionId)
@@ -850,8 +851,7 @@ function workspaceDisplayName(path) {
           };
         });
       const scheduledRunHistory = scheduledRunItems.filter(chat => !chat.pinned);
-      const pinnedHistory = pinnedChatHistory
-        .concat(scheduledRunItems.filter(chat => chat.pinned))
+      const pinnedHistory = [...pinnedChatHistory, ...scheduledRunItems.filter(chat => chat.pinned)]
         .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt)));
 
       function decorateScheduledRunChat(chat, run) {
@@ -919,6 +919,7 @@ function workspaceDisplayName(path) {
       // Exiting code mode resets the primary-nav collapse bar, so the next entry starts
       // from the default collapsed form.
       useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the nav collapse state synchronously on exit, ensuring the next code-mode entry starts collapsed
         if (!codeModeOn) setCodeNavExpanded(false);
       }, [codeModeOn]);
       const [archiveConfirm, setArchiveConfirm] = useState(null);
@@ -987,9 +988,29 @@ function workspaceDisplayName(path) {
           // Same as above.
         }
       }, []);
+      // Keyboard resizing per the WAI-ARIA Window Splitter pattern: arrows move by a
+      // step (Shift widens it), Home/End jump to the bounds. Each adjustment goes through
+      // the same clamping and persistence as the pointer flow.
+      const SIDEBAR_RESIZE_KEY_STEP = 24;
+      const keyboardSidebarResize = useCallback((event) => {
+        const step = SIDEBAR_RESIZE_KEY_STEP * (event.shiftKey ? 4 : 1);
+        let next;
+        if (event.key === 'ArrowLeft') next = sidebarWidthRef.current - step;
+        else if (event.key === 'ArrowRight') next = sidebarWidthRef.current + step;
+        else if (event.key === 'Home') next = SIDEBAR_WIDTH_MIN;
+        else if (event.key === 'End') next = SIDEBAR_WIDTH_MAX;
+        else return;
+        event.preventDefault();
+        applySidebarWidth(clampSidebarWidth(next));
+        try {
+          localStorage.setItem('pinvou_sidebar_width', String(sidebarWidthRef.current));
+        } catch {
+          // Same as pointer resize: applies to this session only when storage is unavailable.
+        }
+      }, []);
 
       useEffect(() => {
-        if (!taskFilterOpen) return undefined;
+        if (!taskFilterOpen) return;
         const closeOnPointerDown = (event) => {
           if (taskFilterRef.current && !taskFilterRef.current.contains(event.target)) {
             setTaskFilterOpen(false);
@@ -1019,15 +1040,16 @@ function workspaceDisplayName(path) {
         { id: 'pinned_first', label: t.sidebarTaskSortPinnedFirst },
         { id: 'recent', label: t.sidebarTaskSortRecent },
       ];
-      const allSidebarTasks = pinnedHistory
-        .map((chat) => {
+      const allSidebarTasks = [
+        ...pinnedHistory.map((chat) => {
           const run = chat.scheduledRun || scheduledRunBySessionId[chat.id];
           const item = decorateScheduledRunChat(chat, run);
           return { ...item, taskKind: run ? 'scheduled' : 'regular' };
-        })
-        .concat(regularHistory.map(chat => ({ ...chat, taskKind: 'regular' })))
-        .concat(scheduledRunHistory.map(chat => ({ ...chat, taskKind: 'scheduled' })))
-        .concat(codexHistory);
+        }),
+        ...regularHistory.map(chat => ({ ...chat, taskKind: 'regular' })),
+        ...scheduledRunHistory.map(chat => ({ ...chat, taskKind: 'scheduled' })),
+        ...codexHistory,
+      ];
       const sidebarTaskHistory = allSidebarTasks
         .filter((chat) => {
           if (taskListFilter === 'pinned') return !!chat.pinned;
@@ -1065,7 +1087,7 @@ function workspaceDisplayName(path) {
           if (!byDate.has(key)) byDate.set(key, []);
           byDate.get(key).push(chat);
         });
-        byDate.forEach((rows, key) => sidebarTaskGroups.push({ key, rows }));
+        byDate.forEach((rows, key) => { sidebarTaskGroups.push({ key, rows }); });
         sidebarTaskGroups.sort((a, b) => {
           if (a.key === 'unknown') return 1;
           if (b.key === 'unknown') return -1;
@@ -1088,14 +1110,18 @@ function workspaceDisplayName(path) {
             sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)))
         : [];
 
+      // latest-ref mirror: the pet-snapshot broadcast effect only subscribes to bs.sessions/sessionBusy/language,
+      // while snapshot contents (id/title/working) are read via refs to reduce effect resubscription.
       petSnapshotRef.current = chatHistory.map(chat => ({
         id: chat.id,
         title: chat.title,
         working: chat.working,
       }));
+      const petSessions = bs && bs.sessions;
+      const petSessionBusy = bs && bs.sessionBusy;
       useEffect(() => {
         const ev = isTauriAvailable() ? tauriEvents : null;
-        if (!ev) return undefined;
+        if (!ev) return;
         let disposed = false;
         let unlisten = null;
         // 内容指纹:多会话并发时 sessionBusy/sessions 每次 notify 都换新引用,
@@ -1126,7 +1152,7 @@ function workspaceDisplayName(path) {
           disposed = true;
           if (unlisten) unlisten();
         };
-      }, [bs && bs.sessions, bs && bs.sessionBusy, language]);
+      }, [petSessions, petSessionBusy, language]);
 
       async function navigateFromScheduledRun(nextView, beforeNavigate) {
         if (bs && bs.scheduledRunContext && bridge.available && bridge.scheduled.exitScheduledRunChat) {
@@ -1259,7 +1285,7 @@ function workspaceDisplayName(path) {
         setCodeModeOn(false);
         handleNewChat(null, 'chat');
         if (!bridge.available) return;
-        var card = await bridge.personas.equipPersona('pinvou-card-creator'); // 先加持(落新 session + 加持气泡)
+        const card = await bridge.personas.equipPersona('pinvou-card-creator'); // 先加持(落新 session + 加持气泡)
         if (card) bridge.personas.postCardCreatorIntro();                     // 加持成功才追加引导卡(持久化,切会话/重启不丢);失败则放弃后续,避免错投(二审补充)
       }
 
@@ -1292,7 +1318,7 @@ function workspaceDisplayName(path) {
       // 卡片自动消失，不需要用户再去点。
       useEffect(() => {
         const ev = isTauriAvailable() ? tauriEvents : null;
-        if (!ev) return undefined;
+        if (!ev) return;
         let disposed = false;
         const unlisteners = [];
         const emitToPet = (name, payload) => emitPetEvent(ev, name, payload);
@@ -1314,7 +1340,7 @@ function workspaceDisplayName(path) {
         }).catch(() => {});
         return () => {
           disposed = true;
-          unlisteners.forEach((fn) => { try { fn(); } catch (_) {} });
+          unlisteners.forEach((fn) => { try { fn(); } catch { /* listener teardown failure is ignorable */ } });
         };
       }, []);
 
@@ -1332,7 +1358,7 @@ function workspaceDisplayName(path) {
       useEffect(() => {
         const ev = isTauriAvailable() ? tauriEvents : null;
         const core = isTauriAvailable() ? tauriCommands : null;
-        if (!ev || !core) return undefined;
+        if (!ev || !core) return;
         const emitToPet = (name, payload) => emitPetEvent(ev, name, payload);
         let disposed = false;
         let consuming = false;
@@ -1416,25 +1442,29 @@ function workspaceDisplayName(path) {
         window.addEventListener('focus', consumePetNavigation);
         void consumePetNavigation();
         Promise.all(subscriptions).then((items) => {
-          if (disposed) items.forEach(fn => fn());
+          if (disposed) items.forEach(fn => { fn(); });
           else unlisteners.push(...items);
         }).catch(() => {});
         return () => {
           disposed = true;
           window.removeEventListener('focus', consumePetNavigation);
-          unlisteners.forEach(fn => { try { fn(); } catch (_) {} });
+          unlisteners.forEach(fn => { try { fn(); } catch { /* listener teardown failure is ignorable */ } });
         };
       }, []);
 
       useEffect(() => {
         const ev = isTauriAvailable() ? tauriEvents : null;
         const core = isTauriAvailable() ? tauriCommands : null;
-        if (!ev || !core || !bridge.available || !bridge.chat.sendMessageToSession) return undefined;
+        if (!ev || !core || !bridge.available || !bridge.chat.sendMessageToSession) return;
         let disposed = false;
         let consuming = false;
         let rerun = false;
         let unlisten = null;
         const emitToPet = (name, payload) => emitPetEvent(ev, name, payload);
+        // The consumption loop registers once on mount; error copy must follow the current UI language, read via latest-ref.
+        const petTextRef = petI18nTextRef;
+        const petSessionMissingText = () => (petTextRef.current && petTextRef.current.petSessionMissing) || '';
+        const petTaskStartFailedText = () => (petTextRef.current && petTextRef.current.petTaskStartFailed) || '';
         const consume = async () => {
           if (disposed) return;
           if (consuming) {
@@ -1444,7 +1474,10 @@ function workspaceDisplayName(path) {
           consuming = true;
           try {
             if (typeof bridge.lifecycle.init === 'function') await bridge.lifecycle.init();
-            while (!disposed) {
+            // disposed is only flipped in this effect's cleanup, immutable inside the loop;
+            // continue/return branches after each request decide whether to exit.
+            for (;;) {
+              if (disposed) break;
               const request = await core.invoke('take_pet_reply');
               if (!request) break;
               const requestId = request.request_id || request.requestId;
@@ -1457,17 +1490,17 @@ function workspaceDisplayName(path) {
                 session => String(session.id) === String(sid),
               ) || liveSessions.some(session => String(session.id) === String(sid));
               if (!sessionExists) {
-                await emitToPet('pet:reply_failed', {
+                emitToPet('pet:reply_failed', {
                   request_id: requestId,
                   session_id: sid,
-                  error: t.uiMainApp.petSessionMissing,
+                  error: petSessionMissingText(),
                   unavailable: true,
                 }).catch(() => {});
                 continue;
               }
               try {
                 const result = await bridge.chat.sendMessageToSession(sid, text);
-                await emitToPet('pet:reply_accepted', {
+                emitToPet('pet:reply_accepted', {
                   request_id: requestId,
                   session_id: sid,
                 }).catch(() => {});
@@ -1477,12 +1510,12 @@ function workspaceDisplayName(path) {
                     return emitToPet('pet:reply_failed', {
                       request_id: requestId,
                       session_id: sid,
-                      error: String(outcome?.error?.message || outcome?.error || t.uiMainApp.petTaskStartFailed),
+                      error: String(outcome?.error?.message || outcome?.error || petTaskStartFailedText()),
                     }).catch(() => {});
                   });
                 }
               } catch (error) {
-                await emitToPet('pet:reply_failed', {
+                emitToPet('pet:reply_failed', {
                   request_id: requestId,
                   session_id: sid,
                   error: String(error && error.message ? error.message : error),
@@ -1504,6 +1537,8 @@ function workspaceDisplayName(path) {
           else unlisten = fn;
         }).catch(() => {});
         void consume();
+        // The effect intentionally registers the pet-reply consumption loop once on mount; error copy reads the current language via ref,
+        // avoiding repeated listener reattachment on language switches.
         return () => {
           disposed = true;
           if (unlisten) unlisten();
@@ -1581,7 +1616,7 @@ function workspaceDisplayName(path) {
           archiveCodex: id => bridge.sessions.archiveSession(id),
         });
         const nextCodexSessions = await refreshCodexSessions().catch(() => null);
-        if (activeCodexId && Array.isArray(nextCodexSessions) && !nextCodexSessions.some(session => session.id === activeCodexId)) {
+        if (activeCodexId && Array.isArray(nextCodexSessions) && nextCodexSessions.every(session => session.id !== activeCodexId)) {
           updateActiveCodexSession(null);
         }
         if (result.succeeded > 0) setArchiveToast(true);
@@ -1595,7 +1630,7 @@ function workspaceDisplayName(path) {
           delete: id => bridge.sessions.deleteSession(id),
         });
         const nextCodexSessions = await refreshCodexSessions().catch(() => null);
-        if (activeCodexId && Array.isArray(nextCodexSessions) && !nextCodexSessions.some(session => session.id === activeCodexId)) {
+        if (activeCodexId && Array.isArray(nextCodexSessions) && nextCodexSessions.every(session => session.id !== activeCodexId)) {
           updateActiveCodexSession(null);
         }
         reportBatchFailures(result);
@@ -1646,7 +1681,7 @@ function workspaceDisplayName(path) {
       function handleSetTheme(th) {
         setActiveTheme(th);
         if (isWeb) {
-          try { window.localStorage.setItem('pinvou.web.theme', th); } catch (_) {}
+          try { window.localStorage.setItem('pinvou.web.theme', th); } catch { /* silently degrade when WebView disables storage */ }
           return;
         }
         if (bridge.available) {
@@ -1656,13 +1691,13 @@ function workspaceDisplayName(path) {
 
       function handleSetSearchProvider(p) {
         if (p === searchProvider) return;
-        setEnabledSearchProviders(prev => Array.from(new Set(['bing', ...prev, p])));
+        setEnabledSearchProviders(prev => [...new Set(['bing', ...prev, p])]);
         setSearchProvider(p);
         setSearchApiKey(searchKeyDrafts[p] || '');
       }
 
       function handleAddSearchProvider(p) {
-        setEnabledSearchProviders(prev => Array.from(new Set(['bing', ...prev, p])));
+        setEnabledSearchProviders(prev => [...new Set(['bing', ...prev, p])]);
         handleSetSearchProvider(p);
       }
 
@@ -1721,7 +1756,7 @@ function workspaceDisplayName(path) {
         switchToLanguage(lang, () => {
           setLanguage(lang);
           if (isWeb) {
-            try { window.localStorage.setItem('pinvou.web.language', lang); } catch (_) {}
+            try { window.localStorage.setItem('pinvou.web.language', lang); } catch { /* silently degrade when WebView disables storage */ }
             return;
           }
           if (isTauriAvailable()) {
@@ -1764,70 +1799,6 @@ function workspaceDisplayName(path) {
       // 侧栏任务列表「按日期折叠」开关:纯 UI 偏好,写 settings.sidebar.date_grouping
       function handleSetSidebarDateGrouping(enabled) {
         if (bridge.available) bridge.settings.saveSettings({ sidebar: { date_grouping: !!enabled } });
-      }
-
-      function buildAdvancedOverrides(overrides) {
-        const baseAdvanced = (bs && bs.settings && bs.settings.advanced) ? bs.settings.advanced : {};
-        const nextPreset = overrides.model_preset !== undefined ? overrides.model_preset : modelPreset;
-        const nextModelName = overrides.custom_model_name !== undefined ? overrides.custom_model_name : customModelName;
-        const nextBaseUrl = overrides.custom_base_url !== undefined ? overrides.custom_base_url : customBaseUrl;
-        const nextApiKey = overrides.custom_api_key !== undefined ? overrides.custom_api_key : customApiKey;
-        const nextProfiles = {
-          ...(baseAdvanced.model_profiles || {}),
-          ...(modelProfiles || {}),
-          [nextPreset]: normalizedModelProfile(nextModelName, nextBaseUrl, nextApiKey),
-        };
-        return {
-          ...baseAdvanced,
-          ...overrides,
-          model_preset: nextPreset,
-          custom_model_name: nextModelName || null,
-          custom_base_url: nextBaseUrl || null,
-          custom_api_key: nextApiKey || null,
-          model_profiles: nextProfiles,
-        };
-      }
-
-      // 模型配置改为草稿模式：只更新 state，点击确认后统一保存并重启
-      function handleChangeModelPreset(p) {
-        const nextProfiles = mergeModelDraft(modelProfiles, modelPreset, customModelName, customBaseUrl, customApiKey);
-        const saved = savedModelConfigRef.current;
-        if (saved && p === saved.preset) {
-          // 切回已保存的来源 → 还原已保存值（而非厂商默认），dirty 自然归零
-          setModelProfiles(nextProfiles);
-          setModelPreset(saved.preset);
-          setCustomModelName(saved.name);
-          setCustomBaseUrl(saved.baseUrl);
-          setCustomApiKey(saved.apiKey);
-          return;
-        }
-        const draft = modelDraftForPreset(p, nextProfiles);
-        setModelProfiles(nextProfiles);
-        setModelPreset(p);
-        setCustomBaseUrl(draft.baseUrl);
-        setCustomModelName(draft.name);
-        setCustomApiKey(draft.apiKey);
-      }
-      function handleSetCustomModelName(v) {
-        setCustomModelName(v);
-      }
-      function handleSetCustomBaseUrl(v) {
-        setCustomBaseUrl(v);
-      }
-      function handleSetCustomApiKey(v) {
-        setCustomApiKey(v);
-      }
-      function handleConfirmModelConfig() {
-        if (bridge.available) {
-          bridge.settings.saveSettingsAndRestart({
-            advanced: buildAdvancedOverrides({
-              model_preset: modelPreset,
-              custom_model_name: customModelName || null,
-              custom_base_url: customBaseUrl || null,
-              custom_api_key: customApiKey || null,
-            }),
-          });
-        }
       }
 
       // 移动壳层派生数据：顶栏标题跟随当前视图（对话态显示会话标题）；
@@ -1970,6 +1941,7 @@ function workspaceDisplayName(path) {
 
           {/* ================= Sidebar (Gemini Style) ================= */}
           <div
+            id="app-sidebar"
             data-testid="app-sidebar"
             style={{
               // The compact-shell drawer does not inherit the persisted desktop width:
@@ -1993,7 +1965,7 @@ function workspaceDisplayName(path) {
 
             {/* Header / Logo */}
             <div className={`px-4 py-3 max-sm:px-3 max-sm:py-0 flex items-center ${isSidebarOpen ? 'gap-3' : 'justify-center'} overflow-hidden`}>
-              <button
+              <button type="button"
                 data-sidebar-toggle
                 onClick={() => setIsSidebarOpen(!isSidebarOpen)}
                 title={isSidebarOpen ? t.sidebarCollapse : t.sidebarExpand}
@@ -2261,15 +2233,7 @@ function workspaceDisplayName(path) {
                           {t.sidebarTaskEmpty}
                         </div>
                       )
-                    ) : !sidebarDateGrouping ? (
-                      <div className="space-y-0.5">
-                        {sidebarTaskHistory.length > 0 ? sidebarTaskHistory.map(renderSidebarTaskItem) : (
-                          <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
-                            {t.sidebarTaskEmpty}
-                          </div>
-                        )}
-                      </div>
-                    ) : (sidebarPinnedHoisted.length > 0 || sidebarTaskGroups.length > 0) ? (
+                    ) : sidebarDateGrouping ? (sidebarPinnedHoisted.length > 0 || sidebarTaskGroups.length > 0) ? (
                       <>
                         {sidebarPinnedHoisted.length > 0 && (
                           <div className="space-y-0.5">
@@ -2301,6 +2265,14 @@ function workspaceDisplayName(path) {
                       <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
                         {t.sidebarTaskEmpty}
                       </div>
+                    ) : (
+                      <div className="space-y-0.5">
+                        {sidebarTaskHistory.length > 0 ? sidebarTaskHistory.map(renderSidebarTaskItem) : (
+                          <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
+                            {t.sidebarTaskEmpty}
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -2312,7 +2284,7 @@ function workspaceDisplayName(path) {
               <div className={`${isSidebarOpen ? 'flex items-center justify-between gap-2' : 'flex flex-col items-center gap-3'}`}>
                 {!isSidebarOpen && (
                   <>
-                    {can('webAccessAdmin') && <button
+                    {can('webAccessAdmin') && <button type="button"
                       onClick={handleOpenWebAccess}
                       title={t.uiRemote.title}
                       className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#E3E3E3] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
@@ -2320,14 +2292,14 @@ function workspaceDisplayName(path) {
                       <Smartphone size={18} />
                       {isWebAccessConnected && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
                     </button>}
-                    {can('pet') && <button
+                    {can('pet') && <button type="button"
                       onClick={() => handleSetPetEnabled(!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled))}
                       title={(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? t.uiPet.hide : t.uiMainApp.petSummon}
                       className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? 'text-[#34A853]' : (activeTheme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#444746]')} ${activeTheme === 'dark' ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}
                     >
                       <PetPawIcon />
                     </button>}
-                    <button
+                    <button type="button"
                       data-testid="nav-settings"
                       onClick={() => openSettingsSection('general')}
                       title={t.settings}
@@ -2339,7 +2311,7 @@ function workspaceDisplayName(path) {
                   </>
                 )}
                 {showMegacubeSite && (
-                  <button
+                  <button type="button"
                     onClick={() => invokeTauri('open_external_url', { url: 'https://www.h3c.com/cn/pub/minisite/202606/MegaCube/megacube/index.html' })}
                     title={t.megacubeSite}
                     className={`flex items-center rounded-xl transition-colors ${isSidebarOpen ? 'flex-1 min-w-0 px-2 py-1.5 gap-3' : 'justify-center w-10 h-10'} ${activeTheme === 'dark' ? 'hover:bg-[#333537] active:bg-[#3A3C3E]' : 'hover:bg-[#E1E5EA] active:bg-[#D8DCE1]'}`}
@@ -2352,7 +2324,7 @@ function workspaceDisplayName(path) {
                 )}
                 {isSidebarOpen && (
                   <div className="flex items-center gap-1">
-                    {can('webAccessAdmin') && <button
+                    {can('webAccessAdmin') && <button type="button"
                       onClick={handleOpenWebAccess}
                       title={t.uiRemote.title}
                       className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]'}`}
@@ -2360,14 +2332,14 @@ function workspaceDisplayName(path) {
                       <Smartphone size={18} />
                       {isWebAccessConnected && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#34A853]" />}
                     </button>}
-                    {can('pet') && <button
+                    {can('pet') && <button type="button"
                       onClick={() => handleSetPetEnabled(!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled))}
                       title={(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? t.uiPet.hide : t.uiMainApp.petSummon}
                       className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? 'text-[#34A853]' : (activeTheme === 'dark' ? 'text-[#C4C7C5]' : 'text-[#444746]')} ${activeTheme === 'dark' ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}
                     >
                       <PetPawIcon />
                     </button>}
-                    <button
+                    <button type="button"
                       data-testid="nav-settings"
                       onClick={() => navigateFromScheduledRun('settings')}
                       title={t.settings}
@@ -2396,16 +2368,24 @@ function workspaceDisplayName(path) {
             </div>
 
             {/* Right-edge drag to resize: only offered on the expanded desktop shell;
-                double-click resets to the default width */}
+                double-click resets to the default width. Focusable separator semantics
+                (tabIndex + value range + arrow keys) per the WAI-ARIA Window Splitter
+                pattern; the controlled pane is the sidebar itself. */}
             {isSidebarOpen && !isCompactShell && (
-              <div
+              <hr
                 data-testid="sidebar-resize-handle"
-                role="separator"
                 aria-orientation="vertical"
+                tabIndex={0}
+                aria-valuenow={sidebarWidth}
+                aria-valuemin={SIDEBAR_WIDTH_MIN}
+                aria-valuemax={SIDEBAR_WIDTH_MAX}
+                aria-label={t.sidebarResize}
+                aria-controls="app-sidebar"
                 title={t.sidebarResize}
                 onPointerDown={beginSidebarResize}
                 onDoubleClick={resetSidebarWidth}
-                className={`absolute top-0 bottom-0 right-0 w-[6px] cursor-col-resize z-50 touch-none transition-colors ${
+                onKeyDown={keyboardSidebarResize}
+                className={`absolute top-0 bottom-0 right-0 w-[6px] border-0 cursor-col-resize z-50 touch-none transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#0B57D0] ${
                   sidebarResizing
                     ? 'bg-[#0B57D0]/40'
                     : (activeTheme === 'dark' ? 'hover:bg-[#A8C7FA]/30' : 'hover:bg-[#0B57D0]/25')
@@ -2551,7 +2531,11 @@ function workspaceDisplayName(path) {
 
             {/* 存入成功 → iOS 确认窗:去查看我的卡牌 / 暂不 */}
             {savedConfirm && (
+              // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by real buttons inside the card
+              // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
               <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,.4)' }} onClick={() => setSavedConfirm(null)}>
+                {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by real buttons inside the card */}
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
                 <div onClick={(e) => e.stopPropagation()} className="w-[270px] rounded-[14px] overflow-hidden text-center"
                   style={{ background: activeTheme === 'dark' ? 'rgba(44,44,46,.95)' : 'rgba(250,250,250,.95)', backdropFilter:'blur(20px)', WebkitBackdropFilter:'blur(20px)', fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
                   <div className="px-4 pt-5 pb-4">
@@ -2559,9 +2543,9 @@ function workspaceDisplayName(path) {
                     <div className="text-[13px] mt-1.5" style={{ color: activeTheme === 'dark' ? 'rgba(235,235,245,.6)' : 'rgba(60,60,67,.6)' }}>{t.cpSavedDesc(savedConfirm.name || '')}</div>
                   </div>
                   <div className="flex" style={{ borderTop: '0.5px solid ' + (activeTheme === 'dark' ? 'rgba(84,84,88,.65)' : 'rgba(60,60,67,.29)') }}>
-                    <button onClick={() => setSavedConfirm(null)} className="flex-1 h-11 text-[17px]" style={{ color: activeTheme === 'dark' ? '#0A84FF' : '#007AFF' }}>{t.cpSavedLater}</button>
+                    <button type="button" onClick={() => setSavedConfirm(null)} className="flex-1 h-11 text-[17px]" style={{ color: activeTheme === 'dark' ? '#0A84FF' : '#007AFF' }}>{t.cpSavedLater}</button>
                     <div style={{ width:'0.5px', background: activeTheme === 'dark' ? 'rgba(84,84,88,.65)' : 'rgba(60,60,67,.29)' }} />
-                    <button onClick={() => { setPoolMyOnly(true); setSavedConfirm(null); setCurrentView('cardpool'); }} className="flex-1 h-11 text-[17px] font-semibold" style={{ color: activeTheme === 'dark' ? '#0A84FF' : '#007AFF' }}>{t.cpSavedView}</button>
+                    <button type="button" onClick={() => { setPoolMyOnly(true); setSavedConfirm(null); setCurrentView('cardpool'); }} className="flex-1 h-11 text-[17px] font-semibold" style={{ color: activeTheme === 'dark' ? '#0A84FF' : '#007AFF' }}>{t.cpSavedView}</button>
                   </div>
                 </div>
               </div>
@@ -2584,7 +2568,7 @@ function workspaceDisplayName(path) {
                   </div>
                   <div className="text-[14px] leading-relaxed mb-4" style={{ opacity: .85 }}>{t.apiKeyGateDesc}</div>
                   <div className="flex justify-end">
-                    <button onClick={() => openSettingsSection('model')}
+                    <button type="button" onClick={() => openSettingsSection('model')}
                       className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.apiKeyGateBtn}</button>
                   </div>
                 </div>
@@ -2593,8 +2577,12 @@ function workspaceDisplayName(path) {
 
             {/* MegaCube(GB10) 本地大模型一键引导 —— 全局首屏弹窗;引导中禁止背景关窗 */}
             {can('localModelSetup') && bs && bs.vllmSetup && bs.vllmSetup.eligible && !bs.vllmSetupDismissed && (
+              // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by real buttons inside the dialog
+              // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
               <div className="fixed inset-0 z-[56] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}
                    onClick={() => { if (!bs.vllmBootstrapping) bridge.vllm.dismissVllmSetup(); }}>
+                {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by real buttons inside the dialog */}
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
                 <div className="w-full max-w-[440px] rounded-2xl p-6 ts-modal-in" onClick={(e) => e.stopPropagation()}
                      style={{ background: activeTheme === 'dark' ? '#1E1F20' : '#FFFFFF', color: activeTheme === 'dark' ? '#E3E3E3' : '#1F1F1F', boxShadow: '0 12px 48px rgba(0,0,0,.35)' }}>
                   <div className="flex items-center gap-2 mb-3">
@@ -2607,7 +2595,7 @@ function workspaceDisplayName(path) {
                     <div>
                       <div className="text-[14px] leading-relaxed mb-4">{t.vllmSetupDone}</div>
                       <div className="flex justify-end">
-                        <button onClick={() => bridge.available && bridge.updater.restartApp()}
+                        <button type="button" onClick={() => bridge.available && bridge.updater.restartApp()}
                           className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.restartNow}</button>
                       </div>
                     </div>
@@ -2616,9 +2604,9 @@ function workspaceDisplayName(path) {
                       <div className="text-[14px] font-medium mb-1" style={{ color: '#E5484D' }}>{t.vllmSetupFailed}</div>
                       <div className="text-[13px] leading-relaxed mb-4 break-words" style={{ opacity: .75 }}>{bs.vllmBootstrapError}</div>
                       <div className="flex justify-end gap-2">
-                        <button onClick={() => bridge.vllm.dismissVllmSetup()}
+                        <button type="button" onClick={() => bridge.vllm.dismissVllmSetup()}
                           className="h-9 px-4 rounded-lg text-[14px]" style={{ background: activeTheme === 'dark' ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)' }}>{t.vllmSetupSkip}</button>
-                        <button onClick={() => bridge.vllm.bootstrapLocalVllm()}
+                        <button type="button" onClick={() => bridge.vllm.bootstrapLocalVllm()}
                           className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupRetry}</button>
                       </div>
                     </div>
@@ -2626,9 +2614,9 @@ function workspaceDisplayName(path) {
                     <div>
                       <div className="text-[14px] leading-relaxed mb-4" style={{ opacity: .85 }}>{t.vllmDeclineDesc}</div>
                       <div className="flex justify-end gap-2">
-                        <button onClick={() => setVllmDeclineConfirm(false)}
+                        <button type="button" onClick={() => setVllmDeclineConfirm(false)}
                           className="h-9 px-4 rounded-lg text-[14px]" style={{ background: activeTheme === 'dark' ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)' }}>{t.vllmDeclineReconsider}</button>
-                        <button onClick={() => { setVllmDeclineConfirm(false); bridge.vllm.declineVllmSetup(); }}
+                        <button type="button" onClick={() => { setVllmDeclineConfirm(false); bridge.vllm.declineVllmSetup(); }}
                           className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#E5484D' }}>{t.vllmDeclineConfirm}</button>
                       </div>
                     </div>
@@ -2636,12 +2624,12 @@ function workspaceDisplayName(path) {
                     <div>
                       <div className="text-[14px] leading-relaxed mb-4" style={{ opacity: .85 }}>{t.vllmSetupDesc}</div>
                       <div className="flex items-center justify-between gap-2">
-                        <button onClick={() => setVllmDeclineConfirm(true)}
+                        <button type="button" onClick={() => setVllmDeclineConfirm(true)}
                           className="h-9 px-3 rounded-lg text-[13px] hover:underline" style={{ color: activeTheme === 'dark' ? '#8E8E8E' : '#757575' }}>{t.vllmSetupNever}</button>
                         <div className="flex gap-2">
-                          <button onClick={() => bridge.vllm.dismissVllmSetup()}
+                          <button type="button" onClick={() => bridge.vllm.dismissVllmSetup()}
                             className="h-9 px-4 rounded-lg text-[14px]" style={{ background: activeTheme === 'dark' ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)' }}>{t.vllmSetupSkip}</button>
-                          <button onClick={() => bridge.vllm.bootstrapLocalVllm()}
+                          <button type="button" onClick={() => bridge.vllm.bootstrapLocalVllm()}
                             className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupEnable}</button>
                         </div>
                       </div>
@@ -2653,17 +2641,21 @@ function workspaceDisplayName(path) {
 
             {/* Pinvou 检阅弹窗(品/悟) —— 居中弹窗 + 毛玻璃背景(虚化身后 app);全局,任何视图都能弹;点背景或卡内「跳过」关闭 */}
             {bs && bs.pinvouModal && (
+              // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the top-right close button (a real button below)
+              // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
               <div className="fixed inset-0 z-[55] flex items-center justify-center p-6"
                    style={{ background: activeTheme === 'dark' ? 'rgba(0,0,0,.45)' : 'rgba(255,255,255,.35)', backdropFilter: 'blur(20px) saturate(140%)', WebkitBackdropFilter: 'blur(20px) saturate(140%)' }}
                    onClick={() => { if (!bs.pinvouModal.loading) bridge.interaction.dismissPinvouReview(); }}>
                 {/* loading 期间禁止背景点击关窗:召唤(直连 vLLM,5-30s)仍在后台跑、守卫仍 held,
                     点背景误关会表现为"闪一下没反应、要等一会才能再点"。锁住后 spinner 全程可见,
                     出结果/错误后才可点背景关。 */}
+                {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the top-right close button (a real button below) */}
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
                 <div className="relative w-full max-w-[720px] overflow-hidden bg-white dark:bg-[#1C1C1E] rounded-[20px] shadow-[0_20px_60px_rgba(0,0,0,0.28)] ts-modal-in"
                      onClick={(e) => e.stopPropagation()}
                      style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
                   {/* 关闭按钮：所有状态(含 loading)常驻;loading 时点它=取消等待并关窗,in-flight 结果由守卫丢弃 */}
-                  <button onClick={() => bridge.available && bridge.interaction.dismissPinvouReview()} aria-label={t.pvSkip}
+                  <button type="button" onClick={() => bridge.available && bridge.interaction.dismissPinvouReview()} aria-label={t.pvSkip}
                     className="absolute top-3.5 right-3.5 z-10 w-7 h-7 flex items-center justify-center rounded-full bg-black/[0.06] dark:bg-white/10 text-[#8E8E93] hover:bg-black/10 dark:hover:bg-white/15 active:scale-90 transition-colors">
                     <X size={16} />
                   </button>
@@ -2733,7 +2725,7 @@ function workspaceDisplayName(path) {
     // 长按达成前移动 >10px = 视为滚动/取消;长按达成后吞掉随之而来的 click(避免又切视图);
     // 按在内部按钮/输入框上不起手(让它们自理)。按下即禁选,防止长按选中下方文字。
     window.__PINVOU_STARTUP__.mark('react:create_root_start');
-    const root = createRoot(document.getElementById('root'));
+    const root = createRoot(document.querySelector('#root'));
     window.__PINVOU_STARTUP__.mark('react:create_root_done');
     const __q = new URLSearchParams(window.location.search);
     // 首帧语言引导:zh 词典内嵌(Promise 已 resolve,仅一个微任务),en/ja 系统
@@ -2744,8 +2736,8 @@ function workspaceDisplayName(path) {
       if (!isWeb) return null;
       try {
         const value = window.localStorage.getItem('pinvou.web.language');
-        return value && (value === 'zh' || value === 'en' || value === 'ja') ? value : null;
-      } catch (_) { return null; }
+        return value && ['zh', 'en', 'ja'].includes(value) ? value : null;
+      } catch { return null; }
     })();
     ensureLanguage(__storedLang || __initialLang).catch(() => {}).then(function () {
       if (__q.get('detached') === '1') {

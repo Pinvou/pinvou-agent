@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { isWeb, platform } from '../../shared/platform.js';
 
 const BLOCKING = new Set(['credentials_missing', 'denied', 'revoked', 'replaced', 'incompatible_desktop']);
@@ -11,7 +11,7 @@ export function WebConnectionStatus({ theme, t }) {
   ));
 
   useEffect(() => {
-    if (!isWeb || typeof platform.onConnectionChange !== 'function') return undefined;
+    if (!isWeb || typeof platform.onConnectionChange !== 'function') return;
     return platform.onConnectionChange(setConnection);
   }, []);
 

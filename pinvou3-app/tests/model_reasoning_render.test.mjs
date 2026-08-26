@@ -152,7 +152,7 @@ const chatViewSource = readFileSync(
 );
 assert.match(
   chatViewSource,
-  /if \(item\.type === 'reasoning'\) return undefined;/,
+  /if \(item\.type === 'reasoning'\) return(?: undefined)?;/,
   'ChatView must delegate reasoning items to ConversationTimeline instead of the legacy ChatBubble',
 );
 

@@ -45,11 +45,11 @@ for (const entry of registered) {
   );
 }
 
-const registeredFiles = registered.map((entry) => entry.file).sort();
+const registeredFiles = registered.map((entry) => entry.file).sort(); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
 const onDiskFiles = fs
   .readdirSync(vendorDir)
   .filter((name) => name.endsWith('.js'))
-  .sort();
+  .sort(); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
 assert.deepStrictEqual(
   onDiskFiles,
   registeredFiles,

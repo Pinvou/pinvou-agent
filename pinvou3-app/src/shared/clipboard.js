@@ -13,7 +13,7 @@ export function fallbackCopyText(text) {
       textarea.style.left = '-9999px';
       textarea.style.top = '-9999px';
       textarea.style.opacity = '0';
-      document.body.appendChild(textarea);
+      document.body.append(textarea);
       textarea.focus();
       textarea.select();
       textarea.setSelectionRange(0, textarea.value.length);
@@ -21,7 +21,7 @@ export function fallbackCopyText(text) {
     } catch {
       resolve(false);
     } finally {
-      if (textarea?.parentNode) textarea.parentNode.removeChild(textarea);
+      if (textarea?.parentNode) textarea.remove();
     }
   });
 }

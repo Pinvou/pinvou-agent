@@ -11,7 +11,7 @@ export function useCompactViewport() {
   ));
 
   useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return undefined;
+    if (typeof window.matchMedia !== 'function') return;
     const media = window.matchMedia(query);
     const onChange = () => setCompact(media.matches);
     media.addEventListener?.('change', onChange);
@@ -36,8 +36,8 @@ export function useVisualViewportHeight() {
   const [height, setHeight] = useState(read);
 
   useEffect(() => {
-    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
-    if (!vv) return undefined;
+    const vv = typeof window === 'undefined' ? null : window.visualViewport;
+    if (!vv) return;
     const onChange = () => setHeight(Math.round(vv.height));
     vv.addEventListener('resize', onChange);
     vv.addEventListener('scroll', onChange);

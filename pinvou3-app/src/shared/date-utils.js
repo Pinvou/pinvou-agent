@@ -17,7 +17,7 @@ function cachedFormatter(locale, optsKey, opts) {
 
 function formatSessionDate(ts, language) {
       if (!ts) return '';
-      const d = new Date(typeof ts === 'number' ? ts : ts);
+      const d = new Date(ts);
       const now = new Date();
       let diff = now - d;
       if (diff < 0) diff = 0; // 时钟漂移/未来时间戳 → 当「刚刚」,不出现负数
@@ -43,8 +43,8 @@ function formatSessionDate(ts, language) {
     // 侧栏任务列表按日期堆叠:本地日历日 key(YYYY-MM-DD),无时间戳归 'unknown'
     function localDateKey(ts) {
       if (!ts) return 'unknown';
-      const d = new Date(typeof ts === 'number' ? ts : ts);
-      if (isNaN(d.getTime())) return 'unknown';
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) return 'unknown';
       return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     }
 

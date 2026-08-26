@@ -192,6 +192,6 @@ assert.doesNotMatch(chatSource, /active:scale-95/);
 assert.match(chatSource, /}, FLOATING_VOICE_CLICK_SUPPRESSION_MS\);/);
 assert.match(chatSource, /onClick=\{handleFloatingVoiceClick\}/);
 assert.match(chatSource, /data-testid="composer-voice-button"/);
-assert.match(chatSource, /reason === 'pointerup' \|\| reason === 'lostpointercapture' \|\| reason === 'buttons-released'/);
+assert.match(chatSource, /(?:reason === 'pointerup' \|\| reason === 'lostpointercapture' \|\| reason === 'buttons-released'|\['pointerup', 'lostpointercapture', 'buttons-released'\]\.includes\(reason\))/);
 
 console.log('floating_voice_drag_logic: ok');

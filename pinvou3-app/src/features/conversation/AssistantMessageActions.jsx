@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Check,
@@ -45,7 +45,7 @@ export function AssistantMessageFooter({ children }) {
 }
 
 export function AssistantMessageActions({ text, resolveText, copy }) {
-  const instanceId = useId().replace(/:/g, '');
+  const instanceId = useId().replaceAll(':', '');
   const [copyStatus, setCopyStatus] = useState('idle');
   const [menu, setMenu] = useState(null);
   const [feedback, setFeedback] = useState(null);
@@ -97,7 +97,7 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
   }, [restoreTriggerFocus]);
 
   useEffect(() => {
-    if (!menu) return undefined;
+    if (!menu) return;
     const frame = window.requestAnimationFrame(() => {
       menuItemsRef.current[0]?.focus({ preventScroll: true });
     });
@@ -105,7 +105,7 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
   }, [menu]);
 
   useEffect(() => {
-    if (!menu) return undefined;
+    if (!menu) return;
     const close = event => {
       if (event?.target?.closest?.('[data-assistant-message-action-menu]')) return;
       if (exportTriggerRef.current?.contains(event?.target)) return;
@@ -142,12 +142,12 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
   };
 
   const handleCopy = async () => {
-    let copied = false;
+    let copied;
     try {
       const value = await responseText();
       copied = await copyClipboardText(value);
     } catch {
-      copied = false;
+      copied = false; // copy failure: fall through to the failed feedback branch
     }
     setFeedback(null);
     setCopyStatus(copied ? 'copied' : 'failed');
@@ -229,7 +229,7 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
       // copyForShare() 会二次 reject 逃出 catch(unhandled rejection 且无反馈)。
       // 只复用 try 里已解析成功的 value 复制;连 value 都没有时如实报分享失败。
       try {
-        const copied = value !== null ? await copyClipboardText(value) : false;
+        const copied = value === null ? false : await copyClipboardText(value);
         showFeedback(copied ? copy.shareUnavailable : copy.shareFailed, !copied);
       } catch {
         showFeedback(copy.shareFailed, true);
@@ -249,7 +249,7 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
       let opened = false;
       try {
         opened = await openAssistantShareTarget(target);
-      } catch {}
+      } catch { /* if launching the external target fails, fall back to opening in the browser */ }
       showFeedback(opened ? copy.shareCopiedOpen(appLabel) : copy.shareCopiedWeb(appLabel));
     } catch {
       showFeedback(copy.shareFailed, true);
@@ -354,8 +354,12 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
                 <Share2 size={16} className="shrink-0" />
                 <span className="min-w-0"><span className="block font-medium">{copy.shareSystem}</span><span className="block truncate text-[11px] text-[#747775] dark:text-[#9AA0A6]">{copy.shareSystemHint}</span></span>
               </button>
+              {/* biome-ignore lint/a11y/useSemanticElements: visual menu divider; hr would break the established menu styling */}
+              {/* biome-ignore lint/a11y/useAriaPropsForRole: visual menu divider; valuenow semantics do not apply */}
+              {/* biome-ignore lint/a11y/useFocusableInteractive: visual menu divider; not a focusable control */}
               <div role="separator" className="mx-3 my-1 border-t border-black/[0.08] dark:border-white/10" />
               <div id={`${menuIds.share}-apps-label`} role="presentation" className="px-3 pb-1 pt-1 text-[11px] font-medium text-[#747775] dark:text-[#9AA0A6]">{copy.shareApps}</div>
+              {/* biome-ignore lint/a11y/useSemanticElements: the group-label container carries the established layout styles; fieldset cannot */}
               <div role="group" aria-labelledby={`${menuIds.share}-apps-label`}>
                 {SHARE_TARGETS.map((target, index) => (
                   <button ref={element => { menuItemsRef.current[index + 1] = element; }} key={target} type="button" role="menuitem" aria-label={copy.shareTargets[target]} data-testid={`assistant-share-${target}`} className={`${menuItemClass} !min-h-9 !py-1.5`} onClick={() => handleAppShare(target)}>

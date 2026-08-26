@@ -1,9 +1,9 @@
 // 设置页「ACP 管理」（模型设置页内子页，原「Provider 管理」分节）：三 Agent 标签页
 // + Provider 卡片（切换/编辑/删除）、导入导出、env 冲突警告、CLI 状态区（安装/更新/卸载）。
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  AlertTriangle, ChevronDown, Download, Edit2, Lock, Plus, RefreshCw,
+  AlertTriangle, Download, Edit2, Lock, Plus, RefreshCw,
   Terminal, Trash2, Upload, X,
 } from '../../components/icons.jsx';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
@@ -56,6 +56,7 @@ const PROVIDER_SECTION_CACHE = new Map();
 // 缓存（结束态保留供重开查看，安装结束不再自动收起）。
 const INSTALL_LOG_CACHE = { log: null, phase: null };
 
+/* eslint-disable sonarjs/cognitive-complexity -- composite view of three Agent tabs plus the install/import-export/delete flows;legacy view; tracked separately */
 export function ProvidersSection({ t }) {
   const copy = t.uiAcpProviders;
   const [activeAgent, setActiveAgent] = useState('codex');
@@ -196,7 +197,7 @@ export function ProvidersSection({ t }) {
   // loadAgent 按 agent 加载并写缓存，仅当该 agent 仍是当前标签页时更新展示；
   // 进入页面即三路并行加载（见下方 effect），切标签页全部读缓存秒开。
   const activeAgentRef = useRef(activeAgent);
-  activeAgentRef.current = activeAgent;
+  activeAgentRef.current = activeAgent; // eslint-disable-line react-hooks/refs -- synchronously mirror the latest activeAgent during render so async callbacks can tell "still the current tab"
   const loadAgent = useCallback(async (agent, recheck = false, quiet = false) => {
     if (!quiet && agent === activeAgentRef.current) setLoading(true);
     try {
@@ -235,6 +236,7 @@ export function ProvidersSection({ t }) {
   };
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously hydrate from cache/clear on tab switch; instant open without flashing a loading state
     setError('');
     // 进入页面/切换标签页：三个 Agent 并行加载。当前标签页有缓存先展示，
     // 其余后台静默刷新；无缓存的标签页照常显示加载态。
@@ -268,7 +270,7 @@ export function ProvidersSection({ t }) {
   // 靠轮询把 status.installing 接上（取消按钮随之出现）。
   const installInFlight = installing || busy === 'install:' + activeAgent;
   useEffect(() => {
-    if (!installInFlight) return undefined;
+    if (!installInFlight) return;
     const timer = window.setInterval(() => {
       refresh(false, true);
     }, 2000);
@@ -278,7 +280,7 @@ export function ProvidersSection({ t }) {
   // 安装进度事件：后端逐行推送（kind=command 为实际执行的命令行，stdout/stderr
   // 为输出最新一行，80ms 限流）。只消费当前标签页 Agent 的事件，避免切页串扰。
   useEffect(() => {
-    if (!isTauriAvailable()) return undefined;
+    if (!isTauriAvailable()) return;
     let unlisten = null;
     tauriEvents
       .listen('acp:install-progress', event => {
@@ -286,7 +288,7 @@ export function ProvidersSection({ t }) {
         if (payload.agent !== activeAgentRef.current) return;
         if (payload.kind === 'command') {
           setInstallPhase('installing');
-          applyInstallLog({ agent: payload.agent, command: payload.value });
+          applyInstallLog({ agent: payload.agent, command: payload.value }); // eslint-disable-line react-hooks/immutability -- applyInstallLog is declared below; the closure is ready by the time event callbacks run
         } else if (payload.value) {
           applyInstallLog({ agent: payload.agent, line: payload.value });
         }
@@ -306,13 +308,13 @@ export function ProvidersSection({ t }) {
   useEffect(() => {
     const cachedLog = INSTALL_LOG_CACHE.log;
     if (cachedLog && cachedLog.agent === activeAgent && INSTALL_LOG_CACHE.phase) {
-      setInstallPhase(INSTALL_LOG_CACHE.phase);
+      setInstallPhase(INSTALL_LOG_CACHE.phase); // eslint-disable-line react-hooks/set-state-in-effect -- synchronously restore the cached install phase when the panel reopens
       return;
     }
     if (status && status.installing && status.install_command) {
       setInstallPhase('installing');
       applyInstallLog(prev => ({
-        ...(prev || {}),
+        ...prev,
         agent: activeAgent,
         command: status.install_command,
         line: status.install_latest_line || (prev && prev.line),
@@ -405,7 +407,7 @@ export function ProvidersSection({ t }) {
   //（command 事件只在安装开始时发一次，重挂载后收不到）。
   const applyInstallLog = patch => {
     setInstallLog(prev => {
-      const next = { ...(prev || {}), ...patch };
+      const next = { ...prev, ...patch };
       INSTALL_LOG_CACHE.log = next;
       return next;
     });
@@ -561,7 +563,7 @@ export function ProvidersSection({ t }) {
       {/* Agent 标签页 */}
       <div className="flex gap-1.5">
         {AGENTS.map(agent => (
-          <button
+          <button type="button"
             key={agent.key}
             data-testid={`acp-agent-tab-${agent.key}`}
             onClick={() => setActiveAgent(agent.key)}
@@ -586,7 +588,7 @@ export function ProvidersSection({ t }) {
               className={`rounded-xl px-3 py-2.5 text-[12px] text-red-500 shadow-lg backdrop-blur-md bg-[#FEF2F2]/95 dark:bg-[#2A1A1A]/95`}
             >
               {error}
-              <button onClick={refresh} className="ml-2 underline">{copy.retry}</button>
+              <button type="button" onClick={refresh} className="ml-2 underline">{copy.retry}</button>
             </div>
           )}
           {notice && (
@@ -663,7 +665,7 @@ export function ProvidersSection({ t }) {
 
       {/* 工具栏 */}
       <div className="flex items-center gap-2">
-        <button
+        <button type="button"
           data-testid="acp-provider-add"
           onClick={() => { setEditing(null); setFormOpen(true); }}
           className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[12px] font-semibold inline-flex items-center gap-1.5"
@@ -671,7 +673,7 @@ export function ProvidersSection({ t }) {
           <Plus size={14} />
           {copy.addProvider}
         </button>
-        <button
+        <button type="button"
           data-testid="acp-provider-export"
           onClick={doExport}
           disabled={providers.length === 0}
@@ -680,7 +682,7 @@ export function ProvidersSection({ t }) {
           <Download size={13} />
           {copy.export}
         </button>
-        <button
+        <button type="button"
           data-testid="acp-provider-import"
           onClick={() => setImportOpen(true)}
           className="h-9 px-3 rounded-full text-[12px] font-medium border border-black/[0.08] dark:border-white/[0.12] inline-flex items-center gap-1.5"
@@ -688,7 +690,7 @@ export function ProvidersSection({ t }) {
           <Upload size={13} />
           {copy.import}
         </button>
-        <button
+        <button type="button"
           data-testid="acp-provider-refresh"
           onClick={refresh}
           className="h-9 px-3 rounded-full text-[12px] font-medium border border-black/[0.08] dark:border-white/[0.12] inline-flex items-center gap-1.5"
@@ -727,7 +729,7 @@ export function ProvidersSection({ t }) {
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
                   {!isCurrent(provider.id) && (
-                    <button
+                    <button type="button"
                       data-testid={`acp-provider-switch-${provider.id}`}
                       onClick={() => switchTo(provider.id, false)}
                       disabled={busyOnAgent || !provider.hasCredential}
@@ -738,7 +740,7 @@ export function ProvidersSection({ t }) {
                       {copy.switch}
                     </button>
                   )}
-                  <button
+                  <button type="button"
                     data-testid={`acp-provider-edit-${provider.id}`}
                     onClick={() => { setEditing(provider); setFormOpen(true); }}
                     className="h-8 w-8 rounded-full flex items-center justify-center border border-black/[0.08] dark:border-white/[0.12]"
@@ -746,7 +748,7 @@ export function ProvidersSection({ t }) {
                   >
                     <Edit2 size={13} />
                   </button>
-                  <button
+                  <button type="button"
                     data-testid={`acp-provider-delete-${provider.id}`}
                     onClick={() => setDeleteConfirm(provider)}
                     className="h-8 w-8 rounded-full flex items-center justify-center border border-black/[0.08] dark:border-white/[0.12] hover:text-red-500"
@@ -766,7 +768,7 @@ export function ProvidersSection({ t }) {
         <div className="flex items-center gap-2 text-[12px]">
           {officialBadgeEffective}
           {!view.officialActive && (
-            <button
+            <button type="button"
               data-testid="acp-provider-switch-official"
               onClick={() => switchTo(null, true)}
               disabled={busyOnAgent}
@@ -785,9 +787,7 @@ export function ProvidersSection({ t }) {
           <Terminal size={14} />
           {copy.cliSection}
         </div>
-        {!status ? (
-          <div className="text-[12px] opacity-60">{copy.loading}</div>
-        ) : (
+        {status ? (
           <>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] opacity-80">
               <span>{copy.version}: {status.version || copy.notInstalled}</span>
@@ -797,7 +797,7 @@ export function ProvidersSection({ t }) {
             </div>
             <div className="flex items-center gap-2">
               {runInstallAction && (
-                <button
+                <button type="button"
                   data-testid="acp-cli-install-update"
                   onClick={() => installOrUpdate(status.install_action)}
                   disabled={installing || busyOnAgent}
@@ -807,7 +807,7 @@ export function ProvidersSection({ t }) {
                 </button>
               )}
               {installing && (
-                <button
+                <button type="button"
                   data-testid="acp-cli-install-cancel"
                   onClick={cancelInstall}
                   disabled={busy === 'cancel-install:' + activeAgent}
@@ -817,7 +817,7 @@ export function ProvidersSection({ t }) {
                 </button>
               )}
               {status.installed && !status.authenticated && !loginWaiting && (
-                <button
+                <button type="button"
                   data-testid="acp-cli-login"
                   onClick={startLogin}
                   disabled={busyOnAgent}
@@ -829,7 +829,7 @@ export function ProvidersSection({ t }) {
               {/* 登出的是官方账号：中转生效时禁用并提示，避免误当「登出中转」
                   把可切回官方的凭据登没了（kimi 走 provider remove，同规则） */}
               {status.installed && status.authenticated && (
-                <button
+                <button type="button"
                   data-testid="acp-cli-logout"
                   onClick={doLogout}
                   disabled={busyOnAgent || Boolean(view && !view.officialActive)}
@@ -840,7 +840,7 @@ export function ProvidersSection({ t }) {
                 </button>
               )}
               {status.installed && (
-                <button
+                <button type="button"
                   data-testid="acp-cli-uninstall"
                   onClick={() => setUninstallConfirm({ cleanup: false })}
                   disabled={busyOnAgent}
@@ -849,7 +849,7 @@ export function ProvidersSection({ t }) {
                   {busy === 'uninstall:' + activeAgent ? copy.uninstallBusy : copy.uninstall}
                 </button>
               )}
-              <button
+              <button type="button"
                 onClick={recheck}
                 disabled={recheckingOnAgent || busyOnAgent}
                 className="h-8 px-3 rounded-full text-[11px] font-medium border border-black/[0.08] dark:border-white/[0.12] inline-flex items-center gap-1.5 disabled:opacity-50"
@@ -892,7 +892,7 @@ export function ProvidersSection({ t }) {
                   <RefreshCw size={12} className="animate-spin" />
                   <span>{copy.loginWaiting}</span>
                   {status.login_url && (
-                    <button
+                    <button type="button"
                       data-testid="acp-cli-login-open-url"
                       onClick={() => invokeTauri('open_acp_agent_login_url', { agentId: activeAgent }).catch(e => setError(String(e)))}
                       className="h-7 px-3 rounded-full bg-[#007AFF] text-white text-[11px] font-semibold"
@@ -910,7 +910,7 @@ export function ProvidersSection({ t }) {
                       placeholder={copy.loginCodePlaceholder}
                       className="h-8 flex-1 rounded-lg px-2.5 font-mono text-[12px] outline-none bg-black/[0.05] dark:bg-white/[0.07]"
                     />
-                    <button
+                    <button type="button"
                       data-testid="acp-cli-login-submit"
                       onClick={submitLoginCode}
                       disabled={!loginCode.trim()}
@@ -923,6 +923,8 @@ export function ProvidersSection({ t }) {
               </div>
             )}
           </>
+        ) : (
+          <div className="text-[12px] opacity-60">{copy.loading}</div>
         )}
       </div>
 
@@ -939,13 +941,17 @@ export function ProvidersSection({ t }) {
 
       {/* 删除确认 */}
       {deleteConfirm && (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the cancel button inside the dialog
+        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={() => setDeleteConfirm(null)}>
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
           <div onClick={event => event.stopPropagation()} className={`w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
             <h3 className="text-[16px] font-semibold">{copy.deleteTitle}</h3>
             <p className="mt-2 text-[13px] leading-relaxed opacity-75">{copy.deleteDesc(deleteConfirm.name)}</p>
             <div className="mt-6 flex justify-end gap-2">
-              <button onClick={() => setDeleteConfirm(null)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
-              <button data-testid="acp-provider-delete-confirm" onClick={remove} disabled={busyOnAgent} className="h-9 px-4 rounded-full bg-red-500 text-white text-[13px] font-semibold disabled:opacity-50">{copy.deleteConfirm}</button>
+              <button type="button" onClick={() => setDeleteConfirm(null)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
+              <button type="button" data-testid="acp-provider-delete-confirm" onClick={remove} disabled={busyOnAgent} className="h-9 px-4 rounded-full bg-red-500 text-white text-[13px] font-semibold disabled:opacity-50">{copy.deleteConfirm}</button>
             </div>
           </div>
         </div>
@@ -953,9 +959,13 @@ export function ProvidersSection({ t }) {
 
       {/* 卸载确认 */}
       {uninstallConfirm && (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the cancel button inside the dialog
+        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={() => setUninstallConfirm(null)}>
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
           <div onClick={event => event.stopPropagation()} className={`w-[min(420px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
-            <h3 className="text-[16px] font-semibold">{copy.uninstallTitle.replace('{agent}', copy[`agent${activeAgent[0].toUpperCase()}${activeAgent.slice(1)}`])}</h3>
+            <h3 className="text-[16px] font-semibold">{copy.uninstallTitle.replace('{agent}', () => copy[`agent${activeAgent[0].toUpperCase()}${activeAgent.slice(1)}`])}</h3>
             <p className="mt-2 text-[13px] leading-relaxed opacity-75">{copy.uninstallDesc}</p>
             <label className="mt-4 flex items-start gap-2 text-[12px] opacity-80 cursor-pointer">
               <input
@@ -971,8 +981,8 @@ export function ProvidersSection({ t }) {
               </span>
             </label>
             <div className="mt-6 flex justify-end gap-2">
-              <button onClick={() => setUninstallConfirm(null)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
-              <button data-testid="acp-uninstall-confirm" onClick={uninstall} disabled={busyOnAgent} className="h-9 px-4 rounded-full bg-red-500 text-white text-[13px] font-semibold disabled:opacity-50">
+              <button type="button" onClick={() => setUninstallConfirm(null)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
+              <button type="button" data-testid="acp-uninstall-confirm" onClick={uninstall} disabled={busyOnAgent} className="h-9 px-4 rounded-full bg-red-500 text-white text-[13px] font-semibold disabled:opacity-50">
                 {busy === 'uninstall:' + activeAgent ? copy.uninstallBusy : copy.uninstall}
               </button>
             </div>
@@ -982,7 +992,11 @@ export function ProvidersSection({ t }) {
 
       {/* 导出（含明文 key 警告） */}
       {exportOpen && (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the close/cancel buttons inside the dialog
+        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={() => setExportOpen(false)}>
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
           <div onClick={event => event.stopPropagation()} className={`w-[min(560px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
             <div className="flex items-start gap-2">
               <AlertTriangle size={17} className="mt-0.5 shrink-0 text-amber-500" />
@@ -990,7 +1004,7 @@ export function ProvidersSection({ t }) {
                 <h3 className="text-[15px] font-semibold">{copy.exportWarningTitle}</h3>
                 <p className="mt-1 text-[12px] leading-relaxed opacity-75">{copy.exportWarningDesc}</p>
               </div>
-              <button onClick={() => setExportOpen(false)} className="h-8 w-8 rounded-full flex items-center justify-center hover:bg-black/[0.06] dark:hover:bg-white/[0.08]"><X size={15} /></button>
+              <button type="button" onClick={() => setExportOpen(false)} className="h-8 w-8 rounded-full flex items-center justify-center hover:bg-black/[0.06] dark:hover:bg-white/[0.08]"><X size={15} /></button>
             </div>
             <textarea
               data-testid="acp-provider-export-json"
@@ -1000,10 +1014,10 @@ export function ProvidersSection({ t }) {
               className="mt-4 h-56 w-full rounded-xl p-3 font-mono text-[11px] outline-none bg-black/[0.05] dark:bg-white/[0.06] resize-none custom-scrollbar"
             />
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={() => setExportOpen(false)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
+              <button type="button" onClick={() => setExportOpen(false)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
               {/* 不自动复制到剪贴板：明文 key 意外粘贴到聊天/网页有泄露风险，
                   改为全选让用户主动复制 */}
-              <button
+              <button type="button"
                 data-testid="acp-provider-export-select"
                 onClick={event => { event.currentTarget.closest('div').previousElementSibling.select(); }}
                 className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[13px] font-semibold"
@@ -1017,7 +1031,11 @@ export function ProvidersSection({ t }) {
 
       {/* 导入 */}
       {importOpen && (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the close/cancel buttons inside the dialog
+        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={() => setImportOpen(false)}>
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
           <div onClick={event => event.stopPropagation()} className={`w-[min(560px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
             <h3 className="text-[15px] font-semibold">{copy.import}</h3>
             {/* 导入同样可能含明文 key：来源信任警示（复审低危 6） */}
@@ -1033,8 +1051,8 @@ export function ProvidersSection({ t }) {
               className="mt-3 h-52 w-full rounded-xl p-3 font-mono text-[11px] outline-none bg-black/[0.05] dark:bg-white/[0.06] resize-none custom-scrollbar"
             />
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={() => setImportOpen(false)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
-              <button
+              <button type="button" onClick={() => setImportOpen(false)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
+              <button type="button"
                 data-testid="acp-provider-import-confirm"
                 onClick={doImport}
                 disabled={busyOnAgent || !String(importJson || '').trim()}
@@ -1049,3 +1067,4 @@ export function ProvidersSection({ t }) {
     </div>
   );
 }
+/* eslint-enable sonarjs/cognitive-complexity -- legacy view; tracked separately */

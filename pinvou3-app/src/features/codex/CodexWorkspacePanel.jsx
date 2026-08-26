@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AppWindow, Check, ChevronDown, ChevronRight, ExternalLink, FileText,
   Link, Plus, RefreshCw, Search, X,
@@ -36,6 +36,7 @@ function clampWorkspaceWidth(width, rootWidth) {
 
 function savedWorkspaceWidth() {
   try {
+    // eslint-disable-next-line unicorn/prefer-number-coercion -- width needs integer semantics: non-integer or parse failure falls back to the default
     const value = Number.parseInt(localStorage.getItem(WORKSPACE_WIDTH_KEY) || '', 10);
     return Number.isFinite(value) && value >= WORKSPACE_MIN_WIDTH
       ? value
@@ -99,7 +100,7 @@ function WorkspaceTree({
     const open = expanded.has(entry.relativePath);
     const referenced = referencedPaths.has(entry.relativePath);
     return (
-      <React.Fragment key={entry.relativePath}>
+      <Fragment key={entry.relativePath}>
         <div
           className="group h-8 flex items-center gap-1.5 rounded-lg pr-1 hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
           style={{ paddingLeft: 6 + depth * 14 }}
@@ -188,7 +189,7 @@ function WorkspaceTree({
             copy={copy}
           />
         )}
-      </React.Fragment>
+      </Fragment>
     );
   });
 }
@@ -231,7 +232,7 @@ export function CodexWorkspacePanel({
   const systemOpenAvailable = can('externalSystemOpen');
 
   useEffect(() => {
-    if (!visible) return undefined;
+    if (!visible) return;
     const clampToViewport = () => {
       const panel = panelRef.current;
       const rootWidth = panel?.parentElement?.getBoundingClientRect().width || window.innerWidth;
@@ -340,6 +341,7 @@ export function CodexWorkspacePanel({
   useEffect(() => {
     // 工作区切换：作废在途预览响应（见 showFile 的序号校验）。
     previewRequestRef.current += 1;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the whole panel state on workspace switch; one-shot mirror
     setEntriesByDirectory({});
     setExpanded(new Set());
     setQuery('');
@@ -355,6 +357,7 @@ export function CodexWorkspacePanel({
     } else if (onChangeCount) {
       onChangeCount(0);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset and reload only on workspace/session switch edges; depending on the load functions would repeatedly trigger full refreshes
   }, [sessionId, browsePath]);
 
   useEffect(() => {
@@ -369,10 +372,11 @@ export function CodexWorkspacePanel({
       }
     }, 350);
     return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debounced reload: triggered by refresh token/visibility/expansion set; depending on the load functions would repeatedly rebuild the timer
   }, [refreshToken, sessionId, visible, tab, expanded]);
 
   useEffect(() => {
-    if (!visible || !browsable) return undefined;
+    if (!visible || !browsable) return;
     const timer = window.setInterval(() => {
       if (document.visibilityState !== 'visible') return;
       if (tab === 'files') {
@@ -384,13 +388,15 @@ export function CodexWorkspacePanel({
       if (sessionId && tab === 'changes') loadChanges();
     }, 2000);
     return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- polling subscription: configured by visibility/tab/expansion set; depending on the load functions would repeatedly rebuild the timer
   }, [visible, browsable, tab, sessionId, browsePath, expanded]);
 
   useEffect(() => {
     if (!browsable || !query.trim()) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset results and search state when the query is cleared; one-shot mirror
       setSearchResults([]);
       setSearching(false);
-      return undefined;
+      return;
     }
     setSearching(true);
     const timer = window.setTimeout(async () => {
@@ -408,6 +414,7 @@ export function CodexWorkspacePanel({
       }
     }, 250);
     return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- search debounce: triggered only by query/scope; depending on the load functions would repeatedly rebuild the timer
   }, [query, sessionId, browsePath]);
 
   async function toggleDirectory(entry) {
@@ -494,7 +501,10 @@ export function CodexWorkspacePanel({
       style={{ width: `${panelWidth}px` }}
       className={`${visible ? 'flex' : 'hidden'} relative max-w-[88vw] min-w-0 shrink-0 border-l border-black/[0.06] dark:border-white/[0.07] bg-white/92 dark:bg-[#17181A]/96 backdrop-blur-xl flex-col`}
     >
+      {/* biome-ignore lint/a11y/useFocusableInteractive: drag divider relies on mouse dragging; div semantics */}
+      {/* biome-ignore lint/a11y/useSemanticElements: drag divider requires div semantics */}
       <div
+        // biome-ignore lint/a11y/useAriaPropsForRole: drag divider is not a focusable control; valuenow semantics do not apply
         role="separator"
         aria-label={copy.resize}
         aria-orientation="vertical"
@@ -590,10 +600,7 @@ export function CodexWorkspacePanel({
             </>
           ) : (
             <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-2 py-3">
-              {!sessionId ? (
-                // draft（无会话）模式：变更对比依赖会话基线，给专属空态而非复用旧会话文案。
-                <div className="py-12 px-4 text-center text-[11px] leading-5 text-gray-400">{copy.noSessionChanges}</div>
-              ) : (
+              {sessionId ? (
                 <>
                   {!changes?.baselineAvailable && (
                     <div className="mx-1 mb-2 rounded-lg bg-amber-500/8 px-2.5 py-2 text-[10px] leading-4 text-amber-700 dark:text-amber-300">
@@ -635,6 +642,9 @@ export function CodexWorkspacePanel({
                     <div className="py-12 text-center text-[11px] text-gray-400">{copy.noChanges}</div>
                   )}
                 </>
+              ) : (
+                // draft（无会话）模式：变更对比依赖会话基线，给专属空态而非复用旧会话文案。
+                <div className="py-12 px-4 text-center text-[11px] leading-5 text-gray-400">{copy.noSessionChanges}</div>
               )}
             </div>
           )}

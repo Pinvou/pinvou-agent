@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
-import { Download, ExternalLink, FolderOpen, Maximize2, Minimize2, XCircle } from '../../components/icons.jsx';
+import { ExternalLink, FolderOpen, Maximize2, Minimize2, XCircle } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { ScaledHtmlPreview } from '../settings/composer-shared.jsx';
@@ -36,7 +36,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       const ext = ((name || '').split('.').pop() || '').toUpperCase();
       return ext || (kind || 'FILE');
     };
-    const normalizeArtifactPath = (path) => String(path || '').replace(/\\/g, '/').toLowerCase();
+    const normalizeArtifactPath = (path) => String(path || '').replaceAll('\\', '/').toLowerCase();
     const sameArtifactPath = (left, right) => {
       const a = normalizeArtifactPath(left);
       const b = normalizeArtifactPath(right);
@@ -61,6 +61,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       + 'img{max-width:100%;height:auto;}'
       + '</style>';
 
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- unified preview/design workbench panel: every state-machine branch maps to a preview kind or a design runtime event; splitting would sever the pv/sel linkage
     const ArtifactsPanel = ({ bs, t, onClose, isWide, onGotoSettings, isFullscreen = false, onToggleFullscreen, preferredArtifactPath, onPreviewArtifact, designMode = false, designCommand, selectedDesignElement, designChanges = [], onDesignRuntimeStatus, onDesignElementSelected, onDesignChangeApplied, onDesignMutation, onDesignApplyChange, onDesignClearChanges, onDesignAiSubmit, designAiState, onDesignAiStateChange }) => {
       const uiA = t.uiArtifacts;
       const showDesignWorkbench = isFullscreen && designMode;
@@ -89,6 +90,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       const designRuntimeScriptRef = useRef(null);
       const designAiTimerRef = useRef(null);
       const designChangesRef = useRef(designChanges);
+      // eslint-disable-next-line react-hooks/refs -- latest-ref sync: read only in callbacks/events (publishing design changes); render output does not depend on it
       designChangesRef.current = designChanges;
 
       function setDesignStatus(status, error) {
@@ -119,7 +121,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         const apply = (prev) => {
           const base = prev || { text: '', status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0 };
           const patch = typeof patchOrUpdater === 'function' ? patchOrUpdater(base) : patchOrUpdater;
-          return { ...base, ...(patch || {}) };
+          return { ...base, ...patch };
         };
         if (onDesignAiStateChange) onDesignAiStateChange(apply);
         else setLocalDesignAiState(apply);
@@ -171,7 +173,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       };
 
       useEffect(() => {
-        if (designAiStatus !== 'sending' && designAiStatus !== 'running') return undefined;
+        if (designAiStatus !== 'sending' && designAiStatus !== 'running') return;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- set the elapsed-time baseline immediately, then let the timer advance it every second
         setDesignAiNow(Date.now());
         const timer = window.setInterval(() => setDesignAiNow(Date.now()), 1000);
         return () => window.clearInterval(timer);
@@ -182,7 +185,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (!frame || !frame.contentWindow) return;
         try {
           frame.contentWindow.postMessage({ type: DESIGN_MESSAGE_TYPES.DESTROY }, '*');
-        } catch (_) {
+        } catch {
           // ignore
         }
       }
@@ -193,7 +196,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         try {
           frame.contentWindow.postMessage(message, '*');
           return true;
-        } catch (_) {
+        } catch {
           return false;
         }
       }
@@ -221,7 +224,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (!designMode || !frame || !frame.contentWindow) return;
         setDesignStatus('injecting');
         try {
-          const script = designRuntimeScriptRef.current || (designRuntimeScriptRef.current = buildDesignRuntimeScript());
+          if (!designRuntimeScriptRef.current) designRuntimeScriptRef.current = buildDesignRuntimeScript();
+          const script = designRuntimeScriptRef.current;
           frame.contentWindow.eval(script);
         } catch (error) {
           setDesignStatus('error', String(error && error.message || error));
@@ -236,10 +240,10 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (!designMode) {
           destroyDesignRuntime();
           setDesignStatus('idle');
-          return undefined;
+          return;
         }
         injectDesignRuntime(designFrameRef.current);
-        return undefined;
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- re-inject only when the preview document identity changes; depending on the inject function itself would break that trigger timing
       }, [designMode, tab, pv.kind, pv.text, pv.visual && pv.visual.html]);
 
       useEffect(() => {
@@ -255,6 +259,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         } else if (designCommand.kind === 'clear') {
           postDesignCommand({ type: DESIGN_MESSAGE_TYPES.CLEAR_CHANGES });
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- trigger once per command sequence number; the designCommand object/callback is a new reference on every render
       }, [designMode, designCommand && designCommand.seq]);
 
       useEffect(() => {
@@ -274,20 +279,19 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             setDesignStatus('idle');
           } else if (data.type === DESIGN_MESSAGE_TYPES.CHANGE_APPLIED) {
             if (onDesignChangeApplied) onDesignChangeApplied(data.payload || {});
-          } else if (data.type === DESIGN_MESSAGE_TYPES.ELEMENT_MUTATED) {
-            if (onDesignMutation) onDesignMutation(data.payload || {});
-          }
+          } else if (data.type === DESIGN_MESSAGE_TYPES.ELEMENT_MUTATED && onDesignMutation) onDesignMutation(data.payload || {});
         };
         window.addEventListener('message', onMessage);
         return () => {
           window.removeEventListener('message', onMessage);
           destroyDesignRuntime();
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- the event listener only needs to mount once; callbacks are forwarded via ref/params, and adding them as deps would repeatedly rebind and replay design changes
       }, [onDesignElementSelected, onDesignRuntimeStatus, onDesignMutation]);
 
       async function flushMarkdownPreview() {
         if (tab !== 'preview' || pv.kind !== 'md' || !mdPreviewRef.current) return true;
-        return await mdPreviewRef.current.flush();
+        return mdPreviewRef.current.flush();
       }
 
       function hasDirtyMarkdownPreview() {
@@ -301,7 +305,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         (async () => {
           const entries = await Promise.all(artifacts.map(async (a) => {
             try { return [a.path, await bridge.artifacts.artifactInfo(a.path)]; }
-            catch (_) { return [a.path, null]; }
+            catch { return [a.path, null]; }
           }));
           if (cancelled) return;
           const m = {};
@@ -309,12 +313,13 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           setInfos(m);
         })();
         return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- pathsKey is a stable digest of artifacts; depending on the artifacts array directly would refetch on every reference change
       }, [pathsKey, activeSessionId]);
 
       // 切 session(artifacts 整批换了)→ 选中文件已不在新列表 → 清预览、退回列表。
       // 路径含 session id,故「不在列表」可靠区分换 session vs 同 session 内新增文件。
       useEffect(() => {
-        if (sel && !artifacts.some((a) => a.path === sel.path)) {
+        if (sel && artifacts.every((a) => a.path !== sel.path)) {
           const change = bs && bs.artifactChange;
           if (
             changeMatchesSession(change, bs) &&
@@ -322,6 +327,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             sameArtifactPath(change.path, sel.path)
           ) {
             if (hasDirtyMarkdownPreview()) {
+              // eslint-disable-next-line react-hooks/set-state-in-effect -- deleted externally while local unsaved edits exist: synchronously flag the interception so dirty data is not overwritten
               setExternalUpdateBlocked('removed');
               setTab('preview');
               return;
@@ -339,6 +345,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           })();
           return () => { cancelled = true; };
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- trigger on the pathsKey digest; depending on closure functions like flush/hasDirty would change the trigger frequency
       }, [pathsKey]);
 
       async function preview(a, options = {}) {
@@ -360,7 +367,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             const info = await bridge.artifacts.artifactInfo(sel.path);
             if (cancelled) return;
             if (!info || !info.exists) { setPv({ missing: true, info }); return; }
-            if (info.kind === 'md' || info.kind === 'html' || info.kind === 'text') {
+            if (['md', 'html', 'text'].includes(info.kind)) {
               const text = await bridge.artifacts.readArtifactText(sel.path);
               if (!cancelled) setPv({ kind: info.kind, text, info });
             } else {
@@ -372,6 +379,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           }
         })();
         return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- load once on the selected-path + loading edge only; unrelated deps like artifacts would trigger duplicate fetches
       }, [sel && sel.path, pv.loading]);
 
       useEffect(() => {
@@ -380,15 +388,19 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           ? artifacts.find((a) => sameArtifactPath(a.path, preferredArtifactPath))
           : null;
         const fallback = artifacts[artifacts.length - 1] || null;
-        const target = preferred || (!sel ? fallback : null);
+        const target = preferred || (sel ? null : fallback);
         if (!target) return;
         if (sel && sameArtifactPath(sel.path, target.path)) return;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- auto-select the newest artifact when entering the panel; a one-off sync of the external list into local selection state
         preview(target, { skipFlush: !sel });
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- auto-select only needs evaluating on candidate-set/selected-path change edges; depending on the preview function would retrigger it repeatedly
       }, [preferredArtifactPath, pathsKey, activeSessionId, sel && sel.path, pv.loading]);
 
+      const selectedArtifactPath = sel && sel.path;
       useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously collapse the menu on selection/tab switch; no cascading render risk
         setArtifactMenuOpen(false);
-      }, [sel && sel.path, tab]);
+      }, [selectedArtifactPath, tab]);
 
       async function handleTabSelect(key) {
         if (key === tab) return;
@@ -415,7 +427,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (!change?.seq || !sel || tab !== 'preview') return;
         if (!changeMatchesSession(change, bs)) return;
         if (!sameArtifactPath(change.path, sel.path)) return;
-        if (designAiStatus === 'sending' || designAiStatus === 'running' || designAiStatus === 'refreshing') {
+        if (['sending', 'running', 'refreshing'].includes(designAiStatus)) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously flip the AI state when a disk change arrives, avoiding a stale status indicator
           setDesignAiStatePatch({ status: 'updated', startedAt: 0 });
           resetDesignAiStatusSoon();
         }
@@ -438,10 +451,12 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           if (sel) await preview(sel);
         })();
         return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- trigger only on the artifactChange.seq edge; other deps would re-evaluate the preview refresh on every render
       }, [bs?.artifactChange?.seq]);
 
       useEffect(() => {
         if (designAiStatus === 'sending' && bs && bs.busy) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously advance the AI state machine sending→running on the busy edge
           setDesignAiStatePatch((current) => ({ status: 'running', startedAt: current.startedAt || Date.now() }));
         }
         if ((designAiStatus === 'sending' || designAiStatus === 'running') && bs && !bs.busy) {
@@ -454,6 +469,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             if (designAiPendingPath) resetDesignAiStatusSoon(2600);
           }, 3500);
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- the state machine is driven by busy/status edges; adding function deps would rebuild the timer repeatedly
       }, [bs && bs.busy, designAiStatus, designAiPendingPath]);
 
       useEffect(() => () => {
@@ -464,14 +480,14 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       const needsDependencyCheck = (message) => /LibreOffice/i.test(String(message || ''));
       const dependencyCheckButton = (message) => (
         needsDependencyCheck(message) && onGotoSettings
-          ? <button onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium bg-black/5 hover:bg-black/10 text-[#1F1F1F] dark:bg-white/10 dark:hover:bg-white/20 dark:text-[#E3E3E3]`}>{t.depGoInstall || t.depInstallBtn}</button>
+          ? <button type="button" onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium bg-black/5 hover:bg-black/10 text-[#1F1F1F] dark:bg-white/10 dark:hover:bg-white/20 dark:text-[#E3E3E3]`}>{t.depGoInstall || t.depInstallBtn}</button>
           : null
       );
       const tabBtn = (key, label) => {
         const active = tab === key;
         const disabled = key === 'preview' && !sel;
         return (
-          <button key={key} disabled={disabled}
+          <button type="button" key={key} disabled={disabled}
             onClick={() => !disabled && handleTabSelect(key)}
             className={`px-4 py-1.5 rounded-full text-[13px] font-medium transition-colors
               ${active ? 'bg-[#E8EDF2] text-[#1F1F1F] dark:bg-[#333537] dark:text-[#E3E3E3]'
@@ -520,6 +536,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                   const itemInfo = infos[a.path];
                   const active = sel && sameArtifactPath(sel.path, a.path);
                   return (
+                    // biome-ignore lint/a11y/useFocusableInteractive: menu-item container; the keyboard path is handled by the inner real button (artifact-switcher-item)
                     <div
                       key={a.path}
                       role="menuitem"
@@ -602,6 +619,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           return (
             <ScaledHtmlPreview
               html={pv.text || ''}
+              title={(sel && sel.path) || t.apTabPreview}
               onFrameLoad={handlePreviewFrameLoad}
               onOpenExternal={(url) => bridge.artifacts.openUserExternalUrl(url)}
               zoomMode={showDesignWorkbench ? htmlZoomMode : 'auto-width'}
@@ -621,6 +639,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             <div className="flex flex-col gap-2 h-full">
               {vis.warning && <div className={`flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]`}><span>⚠️ {vis.warning}</span>{dependencyCheckButton(vis.warning)}</div>}
               <iframe sandbox="allow-same-origin allow-scripts" className="w-full flex-1 min-h-[480px] border-0 block bg-white"
+                title={(sel && sel.path) || t.apTabPreview}
                 data-testid="artifact-html-preview-frame"
                 onLoad={(e) => handlePreviewFrameLoad(e.currentTarget)}
                 srcDoc={(vis.html || '') + OFFICE_HTML_STYLE} />
@@ -647,7 +666,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             <p className="text-[13px] max-w-[360px]">{(vis && vis.warning) || t.apUnsupported}</p>
             {vis && dependencyCheckButton(vis.warning)}
             {(!isWeb || canDownloadArtifacts) && (
-              <button onClick={() => sel && bridge.artifacts.openArtifactExternal(sel.path)} className={cardBtnCls('primary')}>
+              <button type="button" onClick={() => sel && bridge.artifacts.openArtifactExternal(sel.path)} className={cardBtnCls('primary')}>
                 {t.apBtnOpen}
               </button>
             )}
@@ -657,6 +676,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
 
       return (
         <div className={isWide ? "relative w-full h-full" : "absolute inset-0 z-30 flex justify-end pointer-events-auto"}>
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the title-bar close button (artifact-close) */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container */}
           {!isWide && <div className="absolute inset-0 bg-black/40" onClick={handleClose}></div>}
           <div className={`relative h-full flex flex-col bg-white dark:bg-[#1E1F20] ${isWide ? 'w-full border-l border-black/10 dark:border-white/10' : 'w-[680px] max-w-[88vw] shadow-2xl animate-in slide-in-from-right duration-200'}`}>
             {/* header + tabs */}
@@ -664,7 +685,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
               {renderArtifactSwitcher()}
               <div className="flex items-center gap-1.5">
                 {onToggleFullscreen && (
-                  <button
+                  <button type="button"
                     onClick={onToggleFullscreen}
                     data-testid="artifact-fullscreen-toggle"
                     aria-label={designMode
@@ -684,7 +705,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                     {designMode && <span>{isFullscreen ? uiA.fsExitEditShort : uiA.fsEditMode}</span>}
                   </button>
                 )}
-                <button
+                <button type="button"
                   onClick={handleClose}
                   data-testid="artifact-close"
                   aria-label={uiA.closePreviewAria}
@@ -704,7 +725,9 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                   ) : artifacts.map((a) => {
                     const info = infos[a.path];
                     return (
-                      <div key={a.path} onClick={() => preview(a)}
+                      // biome-ignore lint/a11y/useSemanticElements: the list row has multiple nested layouts and inline buttons; a button would break existing styles
+                      <div key={a.path} role="button" tabIndex={0} onClick={() => preview(a)}
+                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); preview(a); } }}
                         className={`group flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer
                           ${sel && sel.path === a.path ? 'bg-[#E8EDF2] dark:bg-[#333537]' : 'hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C]'}`}>
                         <ArtifactTileIcon name={a.basename} />
@@ -714,16 +737,14 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                             {t.apLastMod} {info ? apFormatMtime(info.modified) : '—'}
                           </div>
                         </div>
-                        {canOpenContainingFolder && <button title={t.apBtnLocate} onClick={(e) => { e.stopPropagation(); bridge.artifacts.openContainingFolder(a.path); }}
+                        {canOpenContainingFolder && <button type="button" title={t.apBtnLocate} onClick={(e) => { e.stopPropagation(); bridge.artifacts.openContainingFolder(a.path); }}
                           className={`opacity-0 group-hover:opacity-100 w-8 h-8 rounded-full flex items-center justify-center hover:bg-white text-[#444746] dark:hover:bg-[#1E1F20] dark:text-[#C4C7C5]`}><FolderOpen size={16} /></button>
                         }
                       </div>
                     );
                   })}
                 </div>
-              ) : !sel ? (
-                <div className={`flex-1 flex items-center justify-center text-[13px] ${muted}`}>{t.apPreviewHint}</div>
-              ) : (
+              ) : sel ? (
                 <>
                   {/* preview content */}
                   <div className={`flex-1 min-h-0 flex min-w-0 ${showDesignWorkbench ? 'flex-row' : 'flex-col xl:flex-row'}`}>
@@ -894,13 +915,13 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                     ) : null}
                     <div className="mt-3 flex items-center gap-2">
                       {(!isWeb || canDownloadArtifacts) && (
-                        <button onClick={() => bridge.artifacts.openArtifactExternal(sel.path)}
+                        <button type="button" onClick={() => bridge.artifacts.openArtifactExternal(sel.path)}
                           className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls('primary')}`}>
                           <ExternalLink size={15} /> {t.apBtnOpen}
                         </button>
                       )}
                       {canOpenContainingFolder && (
-                        <button onClick={() => bridge.artifacts.openContainingFolder(sel.path)}
+                        <button type="button" onClick={() => bridge.artifacts.openContainingFolder(sel.path)}
                           className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls()}`}>
                           <FolderOpen size={15} /> {t.apBtnLocate}
                         </button>
@@ -908,6 +929,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                     </div>
                   </div>}
                 </>
+              ) : (
+                <div className={`flex-1 flex items-center justify-center text-[13px] ${muted}`}>{t.apPreviewHint}</div>
               )}
             </div>
           </div>

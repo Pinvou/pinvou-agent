@@ -1150,7 +1150,7 @@ assert.match(viewCode, /className="pet-resize-grip-icon"/);
 assert.match(viewCode, /d="M2 14H14V2"/);
 assert.match(
   viewCode,
-  /className="pet-character-slot"[\s\S]{0,2800}?\{allowResize && \([\s\S]{0,240}?className="pet-resize-grip"/,
+  /className="pet-character-slot"[\s\S]{0,3200}?\{allowResize && \([\s\S]{0,240}?className="pet-resize-grip"/,
   'the optional resize grip must live inside the scaled character slot',
 );
 assert.doesNotMatch(viewCode, /onWheel=/);

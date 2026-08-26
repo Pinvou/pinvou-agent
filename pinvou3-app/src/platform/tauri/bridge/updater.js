@@ -3,21 +3,23 @@
  * Registered before bridge.js builds the backwards-compatible facade.
  */
 (function (root) {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim classic-script artifact; strict mode is part of the payload
   "use strict";
-  var registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting statements would diverge from the artifact
+  const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["updater"] = function (context) {
-    var state = context.state;
-    var notify = context.notify;
-    var invoke = context.invoke;
-    var refreshHistoryList = context.refreshHistoryList;
-    var listen = context.listen;
-    var getBuffer = context.getBuffer;
-    var bt = context.bt;
+    const state = context.state;
+    const notify = context.notify;
+    const invoke = context.invoke;
+    const refreshHistoryList = context.refreshHistoryList;
+    const listen = context.listen;
+    const getBuffer = context.getBuffer;
+    const bt = context.bt;
   // ── 应用内升级 ───────────────────────────────────────────────────
   // 链路: check_for_update(对比服务器 latest.json) → download_update(流式下载+sha256,
   // 进度走 update:progress 事件) → install_update(pkexec apt) → restart_app。
   listen("update:progress", function (e) {
-    var p = e.payload || {};
+    const p = e.payload || {};
     state.updateProgress = p.total ? Math.round((p.downloaded / p.total) * 100) : 0;
     notify();
   });
@@ -26,10 +28,10 @@
     notify();
   });
   listen("remote_control:session_created", function (e) {
-    var s = e && e.payload && e.payload.session;
+    const s = e && e.payload && e.payload.session;
     if (s && s.id) {
       getBuffer(s.id);
-      if (!state.sessions.some(function (item) { return item.id === s.id; })) {
+      if (state.sessions.every(function (item) { return item.id !== s.id; })) {
         state.sessions.unshift({
           id: s.id,
           title: s.title || bt("newChatFallbackTitle"),
@@ -44,22 +46,22 @@
   async function loadAppVersion() {
     try {
       state.appVersion = await invoke("get_app_version");
-    } catch (_) {}
+    } catch { /* leaving the version empty on read failure is fine */ }
   }
   // 启动静默检查: 失败全吞(网络差/更新源挂了不打扰用户)。结果不管新旧都存——
   // available 驱动红点,current_version 给设置页显示当前版本用。
   async function checkForUpdateSilently() {
     try {
-      var info = await invoke("check_for_update");
+      const info = await invoke("check_for_update");
       if (info && info.current_version) state.appVersion = info.current_version;
       if (info) { state.updateInfo = info; notify(); }
-    } catch (e) { /* 静默 */ }
+    } catch { /* 静默 */ }
   }
   // 设置页手动检查: 错误和「已是最新」都要反馈。
   async function checkForUpdate() {
     state.updateChecking = true; state.updateCheckError = null; notify();
     try {
-      var info = await invoke("check_for_update");
+      const info = await invoke("check_for_update");
       if (info && info.current_version) state.appVersion = info.current_version;
       state.updateInfo = info;
       if (!info.available) state.updateCheckError = "latest"; // 前端按 i18n 显示「已是最新」
@@ -76,13 +78,13 @@
     // download/install 参数须仍指向发起时的版本（审计）。当前基线的 install_update
     // 为 unsupported 桩（info 未参与行为），此配对为面向完整平台实现的防御性修复。
     // invoke 文本保持原样。
-    var info = state.updateInfo;
-    var shouldRestartAfterInstall = info.platform !== "windows";
-    var installed = false;
+    const info = state.updateInfo;
+    const shouldRestartAfterInstall = info.platform !== "windows";
+    let installed = false;
     state.updateDownloading = true; state.updateCancelling = false;
     state.updateProgress = 0; state.updateError = null; notify();
     try {
-      var downloadResult = await invoke("download_update", { info: state.updateInfo });
+      const downloadResult = await invoke("download_update", { info: state.updateInfo });
       state.updateProgress = 100; notify();
       state.updateInfo = info; // 复原：install 用发起时的版本元数据，不随静默检查漂移
       if (downloadResult && typeof downloadResult === "object" && downloadResult.installer_path) {
@@ -116,13 +118,13 @@
   }
 
     return {
-      loadAppVersion: loadAppVersion,
-      checkForUpdateSilently: checkForUpdateSilently,
-      checkForUpdate: checkForUpdate,
-      downloadAndInstallUpdate: downloadAndInstallUpdate,
-      cancelUpdate: cancelUpdate,
-      restartApp: restartApp,
-      reportPendingUpdateResult: reportPendingUpdateResult
+      loadAppVersion,
+      checkForUpdateSilently,
+      checkForUpdate,
+      downloadAndInstallUpdate,
+      cancelUpdate,
+      restartApp,
+      reportPendingUpdateResult
     };
   };
 })(window);

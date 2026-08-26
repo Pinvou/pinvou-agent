@@ -53,7 +53,9 @@ const lazyDictPending = new Map();
 export function ensureLanguage(lang) {
   // hasOwnProperty.call 防止 'constructor'/'toString' 等原型链同名键命中
   // (Safari 14 无 Object.hasOwn,与 syntax-highlighter 同款写法)。
+  // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already in safe form
   if (Object.prototype.hasOwnProperty.call(dict, lang)) return Promise.resolve(true);
+  // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already in safe form
   const loader = Object.prototype.hasOwnProperty.call(LAZY_DICT_LOADERS, lang)
     ? LAZY_DICT_LOADERS[lang]
     : null;

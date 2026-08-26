@@ -88,8 +88,8 @@ test('Vite build contains every local classic runtime script referenced by index
 }, () => {
   const sourceIndex = fs.readFileSync(path.join(sourceRoot, 'index.html'), 'utf8');
 
-  const expected = localClassicScriptPaths(sourceIndex).sort();
-  const built = localClassicScriptPaths(fs.readFileSync(distIndexPath, 'utf8')).sort();
+  const expected = localClassicScriptPaths(sourceIndex).sort(); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
+  const built = localClassicScriptPaths(fs.readFileSync(distIndexPath, 'utf8')).sort(); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
   assert.ok(expected.length > 0, 'index.html must retain classic runtime scripts');
   assert.deepEqual(built, expected, 'built index classic runtime references changed');
 

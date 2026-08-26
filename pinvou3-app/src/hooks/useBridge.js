@@ -12,9 +12,12 @@ function useBridgeState(domains) {
   const domainKey = domains.join('|');
   const [bridgeState, setBridgeState] = useState(() => mergeSlices(domains));
   useEffect(() => {
-    if (!bridge.available) return undefined;
+    if (!bridge.available) return;
     bridge.lifecycle.init().catch(e => console.warn('[TauriBridge] init failed', e));
     return bridge.state.subscribeMany(domains, setBridgeState);
+    // Callers pass domains as inline array literals, so depending on its identity would resubscribe on every render;
+    // domainKey is the semantic dependency; domains is read fresh on each effect run.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [domainKey]);
   return bridgeState;
 }
@@ -22,7 +25,7 @@ function useBridgeState(domains) {
 function usePlatformCapability(capability) {
   const [supported, setSupported] = useState(() => can(capability));
   useEffect(() => {
-    if (!isWeb) return undefined;
+    if (!isWeb) return;
     const refresh = () => setSupported(can(capability));
     window.addEventListener('pinvou:web-capabilities', refresh);
     window.addEventListener('pinvou:web-connection', refresh);
@@ -43,7 +46,7 @@ function usePlatformCapability(capability) {
 // `https://localhost.example.com` / `http://127.0.0.10.example.com` 误判为本地。
 function baseUrlIsLoopback(baseUrl) {
   try {
-    const hostname = new URL(baseUrl).hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
+    const hostname = new URL(baseUrl).hostname.replaceAll(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
     if (hostname === 'localhost' || hostname === '::1') return true;
     const octets = hostname.split('.');
     return octets.length === 4

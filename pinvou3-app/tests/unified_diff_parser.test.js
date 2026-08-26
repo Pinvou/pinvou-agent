@@ -198,7 +198,7 @@ test('parse does not crash on truncated preview', () => {
 test('parse safe on null/empty input', () => {
   assert.strictEqual(parseUnifiedDiff('').ok, false);
   assert.strictEqual(parseUnifiedDiff(null).ok, false);
-  assert.strictEqual(parseUnifiedDiff(undefined).ok, false);
+  assert.strictEqual(parseUnifiedDiff().ok, false);
 });
 
 // 11. 后端真实输出 —— `format!("{diff}\n{summary}")` 会在 diff body 与 summary

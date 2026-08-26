@@ -88,6 +88,7 @@ function loadInteractionRuntime() {
     isBusyFor() { return false; },
     markRemoteTurn() {},
     turnUsageDirty: {},
+    // eslint-disable-next-line no-unused-vars -- stub keeps the full call signature
     invoke(name, args) {
       calls.push(name);
       if (deferred[name] && deferred[name].promise) return deferred[name].promise;

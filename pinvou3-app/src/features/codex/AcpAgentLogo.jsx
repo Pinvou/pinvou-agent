@@ -1,4 +1,3 @@
-import React from 'react';
 import claudeIcon from '../../brand-icons/claude.png';
 import kimiIcon from '../../brand-icons/kimi-code.png';
 import { CodexLogo } from '../../components/CodexLogo.jsx';

@@ -21,18 +21,18 @@ const _ARTIFACT_FMT = {
     };
     const _artifactKind = (p) => {
       const ext = (String(p || '').split('.').pop() || '').toLowerCase();
-      if (ext === 'pptx' || ext === 'ppt') return 'pptx';
-      if (ext === 'docx' || ext === 'doc') return 'docx';
-      if (ext === 'xlsx' || ext === 'xls' || ext === 'csv') return 'xlsx';
+      if (['pptx', 'ppt'].includes(ext)) return 'pptx';
+      if (['docx', 'doc'].includes(ext)) return 'docx';
+      if (['xlsx', 'xls', 'csv'].includes(ext)) return 'xlsx';
       if (ext === 'pdf') return 'pdf';
-      if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].indexOf(ext) >= 0) return 'image';
+      if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) return 'image';
       if (ext === 'html' || ext === 'htm') return 'html';
       if (ext === 'md' || ext === 'markdown') return 'markdown';
-      if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz'].indexOf(ext) >= 0) return 'archive';
-      if (['mp3', 'wav', 'm4a', 'flac', 'ogg', 'aac'].indexOf(ext) >= 0) return 'audio';
-      if (['mp4', 'mov', 'avi', 'mkv', 'webm'].indexOf(ext) >= 0) return 'video';
-      if (['js', 'mjs', 'cjs', 'ts', 'jsx', 'tsx', 'py', 'rs', 'go', 'java', 'c', 'h', 'cpp', 'hpp', 'cs', 'sh', 'bat', 'ps1', 'rb', 'php', 'swift', 'kt', 'vue', 'css', 'scss'].indexOf(ext) >= 0) return 'code';
-      if (['json', 'xml', 'yml', 'yaml', 'toml', 'sql', 'ini'].indexOf(ext) >= 0) return 'data';
+      if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz'].includes(ext)) return 'archive';
+      if (['mp3', 'wav', 'm4a', 'flac', 'ogg', 'aac'].includes(ext)) return 'audio';
+      if (['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext)) return 'video';
+      if (['js', 'mjs', 'cjs', 'ts', 'jsx', 'tsx', 'py', 'rs', 'go', 'java', 'c', 'h', 'cpp', 'hpp', 'cs', 'sh', 'bat', 'ps1', 'rb', 'php', 'swift', 'kt', 'vue', 'css', 'scss'].includes(ext)) return 'code';
+      if (['json', 'xml', 'yml', 'yaml', 'toml', 'sql', 'ini'].includes(ext)) return 'data';
       return 'other';
     };
 

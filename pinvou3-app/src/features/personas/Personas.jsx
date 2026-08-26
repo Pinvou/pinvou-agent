@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronLeft, ChevronRight, Plus, Sparkles, User, X } from '../../components/icons.jsx';
 import { IosSearchField } from '../../components/IosControls.jsx';
@@ -33,12 +33,19 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
         }
         if (bridge.available && bridge.personas.readPersonaBody) {
           bridge.personas.readPersonaBody(card.id).then(b=>setBody(b||'')).catch(()=>setBody(t.cpBodyLoadFailed));
-        } else { setBody(''); }
+        } else {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously clear the body when there is no backend read channel
+          setBody('');
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch the body once by card.id when the popover mounts; post-fetch body state is not a trigger condition
       }, []);
-      const tc = deptColor(card.dept);
       const cd = personaText(card, t);
       return (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the dialog's top-right close button
+        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
         <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center md:p-6" style={{ background:'rgba(0,0,0,.6)', backdropFilter:'blur(2px)', WebkitBackdropFilter:'blur(2px)', fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }} onClick={onClose}>
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
           <div ref={panelRef} onClick={(e)=>e.stopPropagation()}
             className="w-full h-[88vh] md:h-auto md:max-h-[84vh] md:max-w-[560px] flex flex-col rounded-t-[14px] md:rounded-[14px] overflow-hidden bg-[#F2F2F7] dark:bg-[#1C1C1E] text-[#000] dark:text-[#fff]">
             {/* 顶部:头像 + 名称/部门 + 关闭 */}
@@ -48,7 +55,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
                 <h2 className="text-[20px] font-semibold truncate text-[#000] dark:text-[#fff]">{cd.name}</h2>
                 <p className="text-[13px] mt-0.5" style={{ color:'#8E8E93' }}>{deptLabelFor(t, card.dept)}{card.source==='user'?' · ' + t.cpBadgeUser:''}</p>
               </div>
-              <button onClick={onClose} className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-[#F2F2F7] dark:bg-[#2C2C2E]" style={{ color:'#8E8E93' }}><X size={16}/></button>
+              <button type="button" onClick={onClose} className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-[#F2F2F7] dark:bg-[#2C2C2E]" style={{ color:'#8E8E93' }}><X size={16}/></button>
             </div>
             {cd.description ? <div className="px-5 py-3 text-[14px] shrink-0 text-[#3C3C43] dark:text-[#C7C7CC] bg-[#fff] dark:bg-[#000] border-t border-[rgba(198,198,200,.4)] dark:border-[#1C1C1E]">{cd.description}</div> : null}
             {/* 完整人设 */}
@@ -60,7 +67,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
             </div>
             {/* 加持/取消 */}
             <div className="p-4 shrink-0 border-t border-[rgba(198,198,200,.5)] dark:border-[#38383A]">
-              <button onClick={()=>onEquip(card)} className={"w-full py-3 rounded-[12px] text-[16px] font-semibold transition-colors " + (equipped ? 'bg-[#E5E5EA] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff]' : 'bg-[#0A84FF] dark:bg-[#007AFF] text-[#fff]')}>
+              <button type="button" onClick={()=>onEquip(card)} className={"w-full py-3 rounded-[12px] text-[16px] font-semibold transition-colors " + (equipped ? 'bg-[#E5E5EA] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff]' : 'bg-[#0A84FF] dark:bg-[#007AFF] text-[#fff]')}>
                 {equipped ? t.cpDetailUnequip : t.cpEquipShort}
               </button>
             </div>
@@ -76,7 +83,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
       const [confirmDel, setConfirmDel] = useState(false);
       const [name, setName] = useState(init.name || '');
       const [dept, setDept] = useState(init.dept && init.dept !== 'tool' ? init.dept : 'specialized');
-      const [emoji, setEmoji] = useState(init.emoji || '🃏');
+      const [emoji] = useState(init.emoji || '🃏');
       const [description, setDescription] = useState(init.description || '');
       const [body, setBody] = useState(init.body || '');
       const [saving, setSaving] = useState(false);
@@ -86,28 +93,32 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
         if (isEdit && !init.body && bridge.available && bridge.personas.readPersonaBody) {
           bridge.personas.readPersonaBody(init.id).then(function (b) { setBody(b || ''); }).catch(function () {});
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch the full body once by init.id when the editor mounts; body state is not a trigger condition
       }, []);
-      const tc = deptColor(dept);
       async function save() {
         if (!name.trim()) { setErr(t.cpErrName); return; }
         if (!body.trim()) { setErr(t.cpErrBody); return; }
         setSaving(true); setErr('');
-        var input = { name: name.trim(), dept: dept, emoji: emoji || '🃏', color: init.color || deptColor(dept), description: description.trim(), body: body };
+        const input = { name: name.trim(), dept, emoji: emoji || '🃏', color: init.color || deptColor(dept), description: description.trim(), body };
         try {
-          var sum = isEdit ? await bridge.personas.updatePersona(init.id, input) : await bridge.personas.createPersona(input);
+          const sum = isEdit ? await bridge.personas.updatePersona(init.id, input) : await bridge.personas.createPersona(input);
           if (onSaved) onSaved(sum);
           onClose();
         } catch (e) { setErr(t.cpErrSave(e)); setSaving(false); }
       }
       return (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the nav-bar cancel button
+        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
         <div className="fixed inset-0 z-[60] flex items-end md:items-center justify-center md:p-4"
           style={{ background:'rgba(0,0,0,.6)', backdropFilter:'blur(2px)', WebkitBackdropFilter:'blur(2px)', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }} onClick={onClose}>
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
           <div onClick={(e)=>e.stopPropagation()} className="w-full h-[90vh] md:h-auto md:max-h-[85vh] md:max-w-md flex flex-col rounded-t-[14px] md:rounded-[14px] overflow-hidden bg-[#F2F2F7] dark:bg-[#1C1C1E] text-[#000] dark:text-[#fff]">
             {/* 导航栏 */}
             <div className="flex justify-between items-center px-4 h-14 shrink-0 border-b border-[rgba(198,198,200,.5)] dark:border-[#38383A]">
-              <button onClick={onClose} className="text-[17px] text-[#007AFF] dark:text-[#0A84FF]">{t.cpCancel}</button>
+              <button type="button" onClick={onClose} className="text-[17px] text-[#007AFF] dark:text-[#0A84FF]">{t.cpCancel}</button>
               <span className="text-[17px] font-semibold">{isEdit ? t.cpEditCard : t.cpNewCard}</span>
-              <button onClick={save} disabled={saving} className={"text-[17px] font-semibold " + (saving ? 'text-[#8E8E93]' : 'text-[#007AFF] dark:text-[#0A84FF]')}>{saving ? t.cpSaving : (isEdit ? t.cpSaveEdit : t.cpCreate)}</button>
+              <button type="button" onClick={save} disabled={saving} className={"text-[17px] font-semibold " + (saving ? 'text-[#8E8E93]' : 'text-[#007AFF] dark:text-[#0A84FF]')}>{saving ? t.cpSaving : (isEdit ? t.cpSaveEdit : t.cpCreate)}</button>
             </div>
             {/* 表单 */}
             <div className="flex-1 overflow-y-auto p-4 space-y-6">
@@ -142,7 +153,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
               </div>
               {/* 删除(编辑态) */}
               {isEdit ? (
-                <button onClick={()=>{ if(confirmDel){ bridge.personas.deletePersona(init.id).then(()=>{ if(onDeleted) onDeleted(init); onClose(); }); } else setConfirmDel(true); }}
+                <button type="button" onClick={()=>{ if(confirmDel){ bridge.personas.deletePersona(init.id).then(()=>{ if(onDeleted) { onDeleted(init); } onClose(); }); } else { setConfirmDel(true); } }}
                   className="w-full rounded-[10px] py-3 text-[17px] transition-colors bg-[#fff] dark:bg-[#000]" style={{ color:'#FF3B30' }}>
                   {confirmDel ? t.cpDelThisConfirm : t.cpDeleteThis}
                 </button>
@@ -166,6 +177,8 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
         { src:'avatars/banner-4.svg', ...face(4) },
       ];
       return (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: the whole banner is clickable as a mouse shortcut; the keyboard path is handled by the real start-card button
+        // biome-ignore lint/a11y/noStaticElementInteractions: promo banner click hotspot, not a standalone interactive control
         <div onClick={onStart} className="relative w-full overflow-hidden cursor-pointer select-none flex items-stretch"
           style={{ height:200, borderRadius:20, background:'linear-gradient(135deg, #EEEDFE 0%, #E6F1FB 50%, #E1F5EE 100%)',
             boxShadow: isDark // isDark dynamic-value: 保留 (multi-stop boxShadow)
@@ -178,7 +191,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
           {/* 左侧内容 */}
           <div className="relative z-10 shrink-0 flex flex-col justify-center" style={{ width:430, padding:'0 36px' }}>
             <div style={{ fontSize:28, fontWeight:800, color:'#26215C', lineHeight:1.15, letterSpacing:'-.5px', marginBottom:18 }}>{t.cpAICreate} <span style={{ color:'#534AB7' }}>{t.bnrTitleHi}</span></div>
-            <button onClick={(e)=>{ e.stopPropagation(); onStart && onStart(); }} className="inline-flex items-center gap-1.5 self-start active:opacity-80" style={{ background:'#534AB7', color:'#fff', padding:'10px 22px', borderRadius:14, fontSize:14, fontWeight:600, marginBottom:18, boxShadow:'0 4px 14px rgba(83,74,183,.35)' }}>{t.bnrStart}</button>
+            <button type="button" onClick={(e)=>{ e.stopPropagation(); onStart && onStart(); }} className="inline-flex items-center gap-1.5 self-start active:opacity-80" style={{ background:'#534AB7', color:'#fff', padding:'10px 22px', borderRadius:14, fontSize:14, fontWeight:600, marginBottom:18, boxShadow:'0 4px 14px rgba(83,74,183,.35)' }}>{t.bnrStart}</button>
             <div className="flex gap-2">
               {[['1',t.bnrStep1],['2',t.bnrStep2],['3',t.bnrStep3]].map(s => (
                 <div key={s[0]} className="flex items-center gap-1.5" style={{ background:'rgba(255,255,255,.85)', borderRadius:10, padding:'7px 11px', border:'1px solid rgba(175,169,236,.3)' }}>
@@ -201,7 +214,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
         </div>
       );
     };
-    const CardPoolView = ({ theme, t, bs, onEquipped, onAICreate, initialMyOnly }) => {
+    const CardPoolView = ({ theme, t, bs, onAICreate, initialMyOnly }) => {
       const isDark = theme === 'dark';
       const pool = (bs && bs.personaPool) || { loadState: 'idle' };
       // 268 张卡走模块级缓存(不进 notify 快照),loadState 变化驱动重渲染。
@@ -218,14 +231,17 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
       const [editor, setEditor] = useState(null); // null | { initial }
       const [chooser, setChooser] = useState(false); // 造卡方式选择(AI/手动)
       const [myOnly, setMyOnly] = useState(!!initialMyOnly); // 「我的卡牌」facet(从存入确认窗"去查看"进来则默认开)
-      const [confirmDelId, setConfirmDelId] = useState(null); // 卡上删除二次确认
+      // biome-ignore lint/correctness/noUnusedVariables: delete-confirmation state is only written in the event flow (legacy placeholder); list rows never read it
+      const [confirmDelId, setConfirmDelId] = useState(null); // eslint-disable-line no-unused-vars, sonarjs/no-unused-vars, sonarjs/no-dead-store -- delete-confirmation state is only written in the event flow (legacy placeholder); list rows never read it
 
       useEffect(() => { if (bridge.available) bridge.personas.loadPersonas(); }, []);
-      useEffect(() => { setVisible(60); }, [query, activeDept, myOnly]);
-      useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(null), 2400); return () => clearTimeout(id); }, [toast]);
+      useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the visible count on filter changes; a one-off mirror
+        setVisible(60);
+      }, [query, activeDept, myOnly]);
+      useEffect(() => { if (!toast) { return; } const id = setTimeout(() => setToast(null), 2400); return () => clearTimeout(id); }, [toast]);
 
       const counts = {}; list.forEach(c => { counts[c.dept] = (counts[c.dept]||0)+1; });
-      const userCount = list.filter(c => c.source === 'user').length;
       const q = query.trim().toLowerCase();
       const filtered = list.filter(c => {
         if (myOnly && c.source !== 'user') return false;
@@ -234,21 +250,17 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
           // 原文 + 本地化名/简介都进搜索域,中英日关键词均可命中
           const loc = personaText(c, t);
           const hay = (c.name+' '+c.description+' '+loc.name+' '+loc.description+' '+c.dept+' '+deptLabelFor(t, c.dept)).toLowerCase();
-          if (hay.indexOf(q) < 0) return false;
+          if (!hay.includes(q)) return false;
         }
         return true;
       });
       const shown = filtered.slice(0, visible);
 
-      function resetFacets() { setActiveDept(ALL_DEPT); setQuery(''); setMyOnly(false); }
-      function editCard(card, e){ if(e) e.stopPropagation(); setEditor({ initial: card }); }
-      function doDelete(card, e){ if(e) e.stopPropagation(); setConfirmDelId(null);
+      function editCard(card, e){ if(e) { e.stopPropagation(); } setEditor({ initial: card }); }
+      function doDelete(card, e){ if(e) { e.stopPropagation(); } setConfirmDelId(null);
         Promise.resolve(bridge.personas.deletePersona(card.id)).then(function(){ setToast(t.cpToastDeleted(card.name)); }).catch(function(){ setToast(t.cpToastDelFailed); }); }
-      function onMove(e){ const el=e.currentTarget; const r=el.getBoundingClientRect(); const px=(e.clientX-r.left)/r.width, py=(e.clientY-r.top)/r.height;
-        el.style.transform=`perspective(900px) rotateX(${(0.5-py)*9}deg) rotateY(${(px-0.5)*11}deg) translateY(-3px)`;
-        el.style.setProperty('--mx',(px*100)+'%'); el.style.setProperty('--my',(py*100)+'%'); }
-      function onLeave(e){ e.currentTarget.style.transform=''; }
-      function equip(card, e){ if(e) e.stopPropagation();
+      // The card 3D hover effect (onMove/onLeave) and the resetFacets quick view reset are not wired up; the original implementation remains in git history
+      function equip(card, e){ if(e) { e.stopPropagation(); }
         if (active && active.id===card.id) { bridge.personas.unequipPersona(); setToast(t.cpToastUnequipped(personaText(card, t).name)); }
         else { Promise.resolve(bridge.personas.equipPersona(card.id)).then(s => { if (s) setToast(t.cpToastEquipped(targetTitle || t.cpCurrentChat, personaText(s, t).name)); }); } }
       function openDetail(card, e){ const r=e.currentTarget.getBoundingClientRect();
@@ -258,13 +270,13 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
       const scrollRef = useRef(null);
       const [showL, setShowL] = useState(false);
       const [showR, setShowR] = useState(false);
-      const checkScroll = () => { const el = scrollRef.current; if (!el) return; setShowL(el.scrollLeft > 2); setShowR(el.scrollLeft < el.scrollWidth - el.clientWidth - 2); };
-      useEffect(() => { const el = scrollRef.current; if (!el) return; checkScroll(); el.addEventListener('scroll', checkScroll); window.addEventListener('resize', checkScroll); return () => { el.removeEventListener('scroll', checkScroll); window.removeEventListener('resize', checkScroll); }; }, [list.length]);
-      const scrollPills = (dx) => { if (scrollRef.current) scrollRef.current.scrollBy({ left: dx, behavior: 'smooth' }); };
+      const checkScroll = () => { const el = scrollRef.current; if (!el) { return; } setShowL(el.scrollLeft > 2); setShowR(el.scrollLeft < el.scrollWidth - el.clientWidth - 2); };
+      useEffect(() => { const el = scrollRef.current; if (!el) { return; } checkScroll(); el.addEventListener('scroll', checkScroll); window.addEventListener('resize', checkScroll); return () => { el.removeEventListener('scroll', checkScroll); window.removeEventListener('resize', checkScroll); }; }, [list.length]);
+      const scrollPills = (dx) => { if (scrollRef.current) { scrollRef.current.scrollBy({ left: dx, behavior: 'smooth' }); } };
       // 右键上下文菜单(自制卡 编辑/删除,macOS 风);点别处/滚动关闭
       const [ctx, setCtx] = useState(null); // { card, x, y }
-      useEffect(() => { if (!ctx) return; const close = () => setCtx(null); window.addEventListener('click', close); window.addEventListener('scroll', close, true); return () => { window.removeEventListener('click', close); window.removeEventListener('scroll', close, true); }; }, [ctx]);
-      function openCtx(card, e){ if (card.source !== 'user') return; e.preventDefault(); e.stopPropagation(); setCtx({ card, x: e.clientX, y: e.clientY }); }
+      useEffect(() => { if (!ctx) { return; } const close = () => setCtx(null); window.addEventListener('click', close); window.addEventListener('scroll', close, true); return () => { window.removeEventListener('click', close); window.removeEventListener('scroll', close, true); }; }, [ctx]);
+      function openCtx(card, e){ if (card.source !== 'user') { return; } e.preventDefault(); e.stopPropagation(); setCtx({ card, x: e.clientX, y: e.clientY }); }
 
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden animate-in fade-in duration-300 bg-[#fff] dark:bg-[#131314]"
@@ -285,7 +297,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
                       className="w-full min-w-0 lg:max-w-[360px] lg:flex-1"
                     />
                     <div className="flex shrink-0 items-center justify-end gap-3">
-                      <button
+                      <button type="button"
                         data-testid="my-personas-toggle"
                         data-active={myOnly ? 'true' : 'false'}
                         onClick={() => setMyOnly(!myOnly)}
@@ -293,7 +305,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
                         <User size={14} className="mr-2 opacity-70" />
                         {t.cpMyCards}
                       </button>
-                      <button onClick={() => setChooser(true)} title={t.cpNewCardTitle}
+                      <button type="button" onClick={() => setChooser(true)} title={t.cpNewCardTitle}
                         className="inline-flex h-9 items-center rounded-full bg-[#007AFF] px-4 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-[#0066D6]">
                         <Plus size={14} className="mr-2" />
                         {t.cpNewCard}
@@ -311,18 +323,18 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
 
                 {/* 分类药丸 + 左右滚动箭头 */}
                 <div className="relative pt-2 pb-4 group">
-                  {showL ? <button onClick={() => scrollPills(-220)} className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full flex items-center justify-center border opacity-0 group-hover:opacity-100 transition shadow-sm bg-[#fff] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff] border-[rgba(198,198,200,.6)] dark:border-[#38383A]"><ChevronLeft size={18} /></button> : null}
+                  {showL ? <button type="button" onClick={() => scrollPills(-220)} className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full flex items-center justify-center border opacity-0 group-hover:opacity-100 transition shadow-sm bg-[#fff] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff] border-[rgba(198,198,200,.6)] dark:border-[#38383A]"><ChevronLeft size={18} /></button> : null}
                   <div ref={scrollRef} className="flex overflow-x-auto gap-2 no-scrollbar scroll-smooth">
-                    {[ALL_DEPT].concat(DEPT_ORDER.filter(k => counts[k])).map(k => {
+                    {[ALL_DEPT, ...DEPT_ORDER.filter(k => counts[k])].map(k => {
                       const isAll = k === ALL_DEPT; const on = isAll ? activeDept === ALL_DEPT : activeDept === k;
                       return (
-                        <button key={k} onClick={() => setActiveDept(k)} className={"h-9 whitespace-nowrap shrink-0 text-[13px] px-3.5 rounded-full font-semibold transition-colors " + (on ? 'bg-[#3A3A3C] dark:bg-[#fff] text-[#fff] dark:text-[#000]' : 'bg-[#F2F2F7] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff]')}>
+                        <button type="button" key={k} onClick={() => setActiveDept(k)} className={"h-9 whitespace-nowrap shrink-0 text-[13px] px-3.5 rounded-full font-semibold transition-colors " + (on ? 'bg-[#3A3A3C] dark:bg-[#fff] text-[#fff] dark:text-[#000]' : 'bg-[#F2F2F7] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff]')}>
                           {isAll ? t.cpAll : deptLabelFor(t, k)}
                         </button>
                       );
                     })}
                   </div>
-                  {showR ? <button onClick={() => scrollPills(220)} className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full flex items-center justify-center border opacity-0 group-hover:opacity-100 transition shadow-sm bg-[#fff] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff] border-[rgba(198,198,200,.6)] dark:border-[#38383A]"><ChevronRight size={18} /></button> : null}
+                  {showR ? <button type="button" onClick={() => scrollPills(220)} className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full flex items-center justify-center border opacity-0 group-hover:opacity-100 transition shadow-sm bg-[#fff] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff] border-[rgba(198,198,200,.6)] dark:border-[#38383A]"><ChevronRight size={18} /></button> : null}
                 </div>
 
                 {/* 列表 */}
@@ -335,6 +347,8 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
                     <div className="grid gap-x-8 gap-y-0" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }}>
                       {shown.map(c => { const isEmpowered = active && active.id === c.id; const isUser = c.source === 'user'; const cd = personaText(c, t);
                         return (
+                          // biome-ignore lint/a11y/useKeyWithClickEvents: card-row click is a shortcut; the keyboard path is handled by the in-row action buttons
+                          // biome-ignore lint/a11y/noStaticElementInteractions: card-row click hotspot, not a standalone interactive control
                           <div key={c.id} onClick={(e) => openDetail(c, e)} onContextMenu={(e) => openCtx(c, e)}
                             className="group py-4 flex flex-col gap-2.5 border-b cursor-pointer border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A]">
                             <div className="flex items-center gap-4">
@@ -343,8 +357,8 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
                                 <h2 className="text-[17px] font-semibold tracking-tight truncate mb-0.5 text-[#000] dark:text-[#fff]">{cd.name}</h2>
                                 <p className="text-[13px] truncate text-[rgba(60,60,67,.6)] dark:text-[rgba(235,235,245,.6)]">{deptLabelFor(t, c.dept)}{isUser ? ' · ' + t.cpBadgeUser : ''}</p>
                               </div>
-                              {isUser ? <button onClick={(e) => openCtx(c, e)} title={t.cpEdit} className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-[18px] opacity-0 group-hover:opacity-100 transition-opacity" style={{ color: '#8E8E93' }}>⋯</button> : null}
-                              <button onClick={(e) => equip(c, e)} className={"shrink-0 text-[15px] font-bold px-5 py-1.5 rounded-full transition active:opacity-70 bg-[#F2F2F7] dark:bg-[#2C2C2E] " + (isEmpowered ? 'text-[#8E8E93]' : 'text-[#007AFF] dark:text-[#0A84FF]')}>
+                              {isUser ? <button type="button" onClick={(e) => openCtx(c, e)} title={t.cpEdit} className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-[18px] opacity-0 group-hover:opacity-100 transition-opacity" style={{ color: '#8E8E93' }}>⋯</button> : null}
+                              <button type="button" onClick={(e) => equip(c, e)} className={"shrink-0 text-[15px] font-bold px-5 py-1.5 rounded-full transition active:opacity-70 bg-[#F2F2F7] dark:bg-[#2C2C2E] " + (isEmpowered ? 'text-[#8E8E93]' : 'text-[#007AFF] dark:text-[#0A84FF]')}>
                                 {isEmpowered ? t.cpUnequip : t.cpEquipShort}
                               </button>
                             </div>
@@ -361,7 +375,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
                   )}
                   {filtered.length > visible ? (
                     <div className="flex justify-center mt-6">
-                      <button onClick={() => setVisible(visible + 60)} className="text-[15px] px-5 py-2 text-[#007AFF] dark:text-[#0A84FF]">{t.cpShowMore(filtered.length - visible)}</button>
+                      <button type="button" onClick={() => setVisible(visible + 60)} className="text-[15px] px-5 py-2 text-[#007AFF] dark:text-[#0A84FF]">{t.cpShowMore(filtered.length - visible)}</button>
                     </div>
                   ) : null}
                 </div>
@@ -372,12 +386,14 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
 
           {/* 右键菜单（自制卡 编辑/删除，macOS 风） */}
           {ctx ? (
+            // biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; the keyboard path is handled by the real buttons inside the menu
+            // biome-ignore lint/a11y/noStaticElementInteractions: context-menu positioning container; menu items are real buttons
             <div className="fixed z-[100] min-w-[128px] rounded-[10px] overflow-hidden border text-[14px] bg-[#fff] dark:bg-[#2C2C2E] border-[rgba(0,0,0,.08)] dark:border-[#38383A]"
-              style={{ left: Math.min(ctx.x, (typeof window !== 'undefined' ? window.innerWidth : 9999) - 150), top: Math.min(ctx.y, (typeof window !== 'undefined' ? window.innerHeight : 9999) - 100), boxShadow: '0 10px 40px rgba(0,0,0,.25)' }}
+              style={{ left: Math.min(ctx.x, (typeof window === 'undefined' ? 9999 : window.innerWidth) - 150), top: Math.min(ctx.y, (typeof window === 'undefined' ? 9999 : window.innerHeight) - 100), boxShadow: '0 10px 40px rgba(0,0,0,.25)' }}
               onClick={(e) => e.stopPropagation()}>
-              <button onClick={() => { editCard(ctx.card); setCtx(null); }} className="w-full text-left px-4 py-2.5 text-[#000] dark:text-[#fff]">{t.cpMenuEdit}</button>
+              <button type="button" onClick={() => { editCard(ctx.card); setCtx(null); }} className="w-full text-left px-4 py-2.5 text-[#000] dark:text-[#fff]">{t.cpMenuEdit}</button>
               <div className="h-px bg-[rgba(0,0,0,.06)] dark:bg-[#38383A]" />
-              <button onClick={() => { doDelete(ctx.card); setCtx(null); }} className="w-full text-left px-4 py-2.5" style={{ color: '#FF3B30' }}>{t.cpDelete}</button>
+              <button type="button" onClick={() => { doDelete(ctx.card); setCtx(null); }} className="w-full text-left px-4 py-2.5" style={{ color: '#FF3B30' }}>{t.cpDelete}</button>
             </div>
           ) : null}
 
@@ -397,17 +413,21 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
 
           {/* 造卡方式选择(iOS action sheet) —— portal 到 body,跳出卡池 z-10 上下文,蒙层才能盖住侧边栏 */}
           {chooser ? createPortal((
+            // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the real buttons inside the panel
+            // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
             <div className="fixed inset-0 z-[70] flex items-end md:items-center justify-center md:p-4" style={{ background:'rgba(0,0,0,.6)', backdropFilter:'blur(2px)', WebkitBackdropFilter:'blur(2px)' }} onClick={()=>setChooser(false)}>
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
               <div onClick={(e)=>e.stopPropagation()} className="w-full md:max-w-sm flex flex-col gap-2 p-3 md:p-0">
                 <div className="rounded-[14px] overflow-hidden bg-[#fff] dark:bg-[#1C1C1E]">
-                  <button onClick={()=>{ setChooser(false); if (onAICreate) onAICreate(); }} className="w-full flex items-center gap-3 px-4 py-4 text-left border-b border-[rgba(198,198,200,.5)] dark:border-[#38383A]">
+                  <button type="button" onClick={()=>{ setChooser(false); if (onAICreate) onAICreate(); }} className="w-full flex items-center gap-3 px-4 py-4 text-left border-b border-[rgba(198,198,200,.5)] dark:border-[#38383A]">
                     <div className="w-10 h-10 rounded-[12px] flex items-center justify-center shrink-0 bg-[#007AFF] dark:bg-[#0A84FF]"><Sparkles size={20} style={{ color:'#fff' }} /></div>
                     <div className="min-w-0">
                       <div className="text-[16px] font-semibold flex items-center gap-2 text-[#000] dark:text-[#fff]">{t.cpAICreate} <span className="text-[10px] px-1.5 py-0.5 rounded bg-[rgba(0,122,255,.12)] dark:bg-[rgba(10,132,255,.2)] text-[#007AFF] dark:text-[#0A84FF]">{t.chooserRecommend}</span></div>
                       <div className="text-[13px] mt-0.5 text-[rgba(60,60,67,.6)] dark:text-[rgba(235,235,245,.6)]">{t.chooserAIDesc}</div>
                     </div>
                   </button>
-                  <button onClick={()=>{ setChooser(false); setEditor({ initial: null }); }} className="w-full flex items-center gap-3 px-4 py-4 text-left">
+                  <button type="button" onClick={()=>{ setChooser(false); setEditor({ initial: null }); }} className="w-full flex items-center gap-3 px-4 py-4 text-left">
                     <div className="w-10 h-10 rounded-[12px] flex items-center justify-center shrink-0 bg-[#F2F2F7] dark:bg-[#2C2C2E] text-[#007AFF] dark:text-[#0A84FF]"><Plus size={20} /></div>
                     <div className="min-w-0">
                       <div className="text-[16px] font-semibold text-[#000] dark:text-[#fff]">{t.chooserManualTitle}</div>
@@ -415,7 +435,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
                     </div>
                   </button>
                 </div>
-                <button onClick={()=>setChooser(false)} className="w-full rounded-[14px] py-3.5 text-[17px] font-semibold bg-[#fff] dark:bg-[#2C2C2E] text-[#007AFF] dark:text-[#0A84FF]">{t.cpCancel}</button>
+                <button type="button" onClick={()=>setChooser(false)} className="w-full rounded-[14px] py-3.5 text-[17px] font-semibold bg-[#fff] dark:bg-[#2C2C2E] text-[#007AFF] dark:text-[#0A84FF]">{t.cpCancel}</button>
               </div>
             </div>
           ), document.body) : null}

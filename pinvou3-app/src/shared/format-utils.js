@@ -6,6 +6,7 @@
  * 由两处统一引用 window.PinvouFormatUtils。
  */
 (function (root) {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim classic-script artifact; strict mode is part of the payload
   "use strict";
 
   function fmtMiB(mib) {
@@ -20,7 +21,7 @@
   }
   function fmtDuration(secs) {
     if (secs == null || secs < 0) return "—";
-    var h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
+    const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
     if (h > 0) return h + "h " + m + "m";
     if (m > 0) return m + "m " + (secs % 60) + "s";
     return secs + "s";
@@ -33,9 +34,10 @@
   }
 
   root.PinvouFormatUtils = Object.freeze({
-    fmtMiB: fmtMiB,
-    fmtKiB: fmtKiB,
-    fmtDuration: fmtDuration,
-    fmtTok: fmtTok,
+    fmtMiB,
+    fmtKiB,
+    fmtDuration,
+    fmtTok,
   });
-})(typeof window !== "undefined" ? window : this);
+// eslint-disable-next-line unicorn/no-this-outside-of-class -- UMD root reference
+})(typeof window === "undefined" ? this : window);

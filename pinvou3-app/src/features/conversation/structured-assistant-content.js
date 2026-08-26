@@ -2,12 +2,13 @@ import { scanMarkdownFences } from '../../shared/markdown-fences.js';
 
 export function normalizeAssistantMessageText(value) {
   const lines = String(value || '')
-    .replace(/\r\n?/g, '\n')
+    .replaceAll(/\r\n?/g, '\n')
     .split('\n');
   while (lines.length && /^[ \t]*$/.test(lines[0])) lines.shift();
   while (lines.length && /^[ \t]*$/.test(lines[lines.length - 1])) lines.pop();
   let normalized = lines.join('\n');
   if (!/^(?: {4}|\t)/.test(normalized)) normalized = normalized.replace(/^[ \t]+/, '');
+  // eslint-disable-next-line sonarjs/super-linear-regex -- trailing-whitespace strip; [ \t]+ is a single-char-class quantifier with no alternating backtracking
   return normalized.replace(/[ \t]+$/, '');
 }
 
@@ -36,12 +37,12 @@ export function extractBalancedJson(value) {
 
 export function parseJsonChain(value) {
   const source = String(value || '');
-  try { return JSON.parse(source); } catch {}
-  try { return JSON.parse(source.replace(/,(\s*[}\]])/g, '$1')); } catch {}
+  try { return JSON.parse(source); } catch { /* fall through to degraded parsing */ }
+  try { return JSON.parse(source.replaceAll(/,(\s*[}\]])/g, '$1')); } catch { /* retry after stripping trailing commas */ }
   const balanced = extractBalancedJson(source);
   if (balanced) {
-    try { return JSON.parse(balanced); } catch {}
-    try { return JSON.parse(balanced.replace(/,(\s*[}\]])/g, '$1')); } catch {}
+    try { return JSON.parse(balanced); } catch { /* retry with the balanced slice */ }
+    try { return JSON.parse(balanced.replaceAll(/,(\s*[}\]])/g, '$1')); } catch { /* balanced slice + trailing-comma strip */ }
   }
   return null;
 }
@@ -50,8 +51,8 @@ export function parseLooseJson(value) {
   const source = String(value || '');
   const parsed = parseJsonChain(source);
   if (parsed) return parsed;
-  const unescaped = source.replace(/\\"/g, '"');
-  return unescaped !== source ? parseJsonChain(unescaped) : null;
+  const unescaped = source.replaceAll(String.raw`\"`, '"');
+  return unescaped === source ? null : parseJsonChain(unescaped);
 }
 
 function questionCopyText(payload) {

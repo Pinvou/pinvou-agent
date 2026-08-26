@@ -110,6 +110,7 @@ function hideWindowsChildProcesses(entrypointPath) {
         "Windows ACP Bridge 子进程入口已变化，无法安全应用隐藏控制台补丁",
       );
     }
+    // eslint-disable-next-line unicorn/no-unsafe-string-replacement -- replacement value is a controlled literal
     source = source.replace(visibleSpawn, hiddenSpawn);
   }
   fs.writeFileSync(entrypointPath, source);

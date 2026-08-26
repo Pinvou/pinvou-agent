@@ -68,7 +68,7 @@ try {
 
   // 按选项文本定位 label；返回 label 与内部 input 的 box，便于分别点击文本/圆点。
   const locate = (labelText) => page.evaluate((text) => {
-    const labels = Array.from(document.querySelectorAll('label'));
+    const labels = [...document.querySelectorAll('label')];
     const label = labels.find((el) => el.innerText.includes(text) && el.querySelector('input'));
     if (!label) return null;
     const input = label.querySelector('input');
@@ -100,9 +100,9 @@ try {
   // 仅采集交互卡（q-lang/q-skill）的 fieldset 状态；页面下方锁定还原卡有合法历史选中态，
   // 不应混入交互断言。交互卡是文档中前两个 fieldset（按渲染顺序）。
   const checkedState = () => page.evaluate(() => {
-    const fieldsets = Array.from(document.querySelectorAll('fieldset'));
+    const fieldsets = [...document.querySelectorAll('fieldset')];
     const interactive = fieldsets.slice(0, 2);
-    return interactive.flatMap((f) => Array.from(f.querySelectorAll('input')).map((i) => ({
+    return interactive.flatMap((f) => [...f.querySelectorAll('input')].map((i) => ({
       name: i.name,
       checked: i.checked,
       type: i.type,
@@ -151,7 +151,7 @@ try {
 
   // ── 提交：__submits 记录答案；锁定卡还原已选 ───────────────────
   await page.evaluate(() => {
-    const btn = Array.from(document.querySelectorAll('button')).find((el) => el.textContent.includes('提交'));
+    const btn = [...document.querySelectorAll('button')].find((el) => el.textContent.includes('提交'));
     if (btn) btn.click();
   });
   await page.waitForFunction(() => document.body.innerText.includes('已提交（锁定）'), { timeout: 5000 });
@@ -160,7 +160,7 @@ try {
   const langGroup = submits[0].find((g) => g.questionId === 'q-lang');
   const skillGroup = submits[0].find((g) => g.questionId === 'q-skill');
   assert(langGroup && langGroup.answers.some((a) => a.label === 'Python'), '单选答案 Python 提交', submits);
-  const skillLabels = skillGroup ? skillGroup.answers.map((a) => a.label).sort() : [];
+  const skillLabels = skillGroup ? skillGroup.answers.map((a) => a.label).sort() : []; // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
   assert(JSON.stringify(skillLabels) === JSON.stringify(['后端', '运维']), '多选答案 后端+运维 提交', submits);
 
   // 锁定卡渲染 initialAnswers 选中态（resolved 卡高亮恢复）。
@@ -168,8 +168,8 @@ try {
   // checkbox 的 input.value 是默认 "on"，故取 label 文本）：q-lang=Python、q-skill=前端。
   const lockedChecked = await page.evaluate(() => {
     const card = document.querySelector('[data-testid="locked-restore-card"]');
-    const fieldsets = Array.from(card.querySelectorAll('fieldset'));
-    return fieldsets.map((f) => Array.from(f.querySelectorAll('label'))
+    const fieldsets = [...card.querySelectorAll('fieldset')];
+    return fieldsets.map((f) => [...f.querySelectorAll('label')]
       .filter((l) => l.querySelector('input') && l.querySelector('input').checked)
       .map((l) => l.textContent.trim()));
   });
@@ -182,8 +182,8 @@ try {
   // ── 评审 P2：其他值 == 预设 value 时还原为“其他”而非预设 ─────────
   const otherCollision = await page.evaluate(() => {
     const card = document.querySelector('[data-testid="other-collision-card"]');
-    const textInputs = Array.from(card.querySelectorAll('input[type="text"]'));
-    const radios = Array.from(card.querySelectorAll('input[type="radio"]'));
+    const textInputs = [...card.querySelectorAll('input[type="text"]')];
+    const radios = [...card.querySelectorAll('input[type="radio"]')];
     return {
       otherValue: textInputs.length ? textInputs[0].value : null,
       checkedCount: radios.filter((r) => r.checked).length,
@@ -196,7 +196,7 @@ try {
   //     重挂载应高亮预设“其他”项，且无自定义输入（allowOther=false 不渲染）。
   const presetNamedOther = await page.evaluate(() => {
     const card = document.querySelector('[data-testid="preset-named-other-card"]');
-    const radios = Array.from(card.querySelectorAll('input[type="radio"]'));
+    const radios = [...card.querySelectorAll('input[type="radio"]')];
     const otherInput = card.querySelector('input[type="text"]');
     return {
       // 预设“其他”项是第一个 radio，应被选中（高亮恢复）。
@@ -213,8 +213,8 @@ try {
   //     不得按 value 回退把撞值的“其他”答案误判为预设 A，应还原为自定义输入且不高亮预设。
   const crossLang = await page.evaluate(() => {
     const card = document.querySelector('[data-testid="cross-lang-cold-card"]');
-    const textInputs = Array.from(card.querySelectorAll('input[type="text"]'));
-    const radios = Array.from(card.querySelectorAll('input[type="radio"]'));
+    const textInputs = [...card.querySelectorAll('input[type="text"]')];
+    const radios = [...card.querySelectorAll('input[type="radio"]')];
     return {
       otherValue: textInputs.length ? textInputs[0].value : null,
       checkedCount: radios.filter((r) => r.checked).length,

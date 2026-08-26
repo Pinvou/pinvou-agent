@@ -80,6 +80,6 @@ test('status queries and completed host downloads synchronize the desktop model'
   assert.match(webBridge, /listen\("kb_model:status"/u);
   assert.match(
     tauriBridge,
-    /installBridgeFeature\("knowledge-model", \{[^}]*listen: listen[^}]*\}\)/u,
+    /installBridgeFeature\("knowledge-model", \{[^}]*listen(?:: listen)?[^}]*\}\)/u,
   );
 });

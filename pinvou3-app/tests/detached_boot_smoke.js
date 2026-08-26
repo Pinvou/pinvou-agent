@@ -9,11 +9,11 @@
 const fs = require('fs'), path = require('path'), os = require('os');
 const { startUiTestServer } = require('./ui_test_server');
 function loadPuppeteer() {
-  try { return require('puppeteer-core'); } catch (e) {}
+  try { return require('puppeteer-core'); } catch { /* fall through */ }
   const npx = path.join(os.homedir(), '.npm', '_npx');
   if (fs.existsSync(npx)) for (const d of fs.readdirSync(npx)) {
     const p = path.join(npx, d, 'node_modules', 'puppeteer-core');
-    if (fs.existsSync(p)) { try { return require(p); } catch (e) {} }
+    if (fs.existsSync(p)) { try { return require(p); } catch { /* next */ } }
   }
   console.error('SKIP: 找不到 puppeteer-core'); process.exit(2);
 }
@@ -81,6 +81,7 @@ function injectSource() {
   })();`;
 }
 
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 (async () => {
   const { url } = await startUiTestServer();
   const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new',
@@ -92,7 +93,7 @@ function injectSource() {
   page.on('pageerror', error => console.error('PAGEERROR:', String(error)));
   await page.evaluateOnNewDocument(injectSource());
   await page.goto(url + '?detached=1&kind=session&id=detached-session-42', { waitUntil: 'networkidle0' });
-  await new Promise(r => setTimeout(r, 1500)); // 等 babel 编译 + 首渲染
+  await new Promise(r => { setTimeout(r, 1500); }); // wait for babel compile + first render
 
   const detachedFlag = await page.evaluate(() => window.__PINVOU_DETACHED__ === true);
   const text = await page.evaluate(() => document.body.innerText || '');
@@ -105,7 +106,7 @@ function injectSource() {
   await page.goto(url + '?detached=1&kind=session&id=detached-session-42', { waitUntil: 'networkidle0' });
   try {
     await page.waitForFunction(() => document.body.innerText.includes('DETACHED_SESSION_HISTORY_OK'), { timeout: 5000 });
-  } catch (_) {
+  } catch {
     console.error('FAIL: detached session 未渲染目标会话历史'); ok = false;
   }
   const activeSessionId = await page.evaluate(() => window.TauriBridge.state.get('sessions').activeSessionId);
@@ -116,7 +117,7 @@ function injectSource() {
   await page.goto(url + '?detached=1&kind=codex-session&id=detached-codex-42', { waitUntil: 'networkidle0' });
   try {
     await page.waitForFunction(() => document.body.innerText.includes('DETACHED_CODEX_HISTORY_OK'), { timeout: 5000 });
-  } catch (_) {
+  } catch {
     const diagnostic = await page.evaluate(() => ({text:document.body.innerText, invokes:window.__DETACHED_INVOKES__}));
     console.error('FAIL: detached Coding session 未渲染目标会话历史', JSON.stringify(diagnostic)); ok = false;
   }
@@ -127,7 +128,7 @@ function injectSource() {
   }));
   try {
     await page.waitForFunction(() => document.body.innerText.includes('DETACHED_CODEX_STREAM_OK'), { timeout: 5000 });
-  } catch (_) {
+  } catch {
     console.error('FAIL: detached Coding session 未接收实时 ACP 事件'); ok = false;
   }
 
@@ -135,7 +136,7 @@ function injectSource() {
   try {
     await page.waitForFunction(() => document.body.innerText.includes('DETACHED_NATIVE_HISTORY_OK')
       && document.body.innerText.includes('DETACHED_NATIVE_REPLY_OK'), { timeout: 5000 });
-  } catch (_) {
+  } catch {
     console.error('FAIL: detached 品悟 Coding session 未还原目标会话历史'); ok = false;
   }
   await page.evaluate(() => {
@@ -144,7 +145,7 @@ function injectSource() {
   });
   try {
     await page.waitForFunction(() => document.body.innerText.includes('DETACHED_NATIVE_STREAM_OK'), { timeout: 5000 });
-  } catch (_) {
+  } catch {
     console.error('FAIL: detached 品悟 Coding session 未接收实时 chat 事件'); ok = false;
   }
 
@@ -152,7 +153,7 @@ function injectSource() {
   try {
     await page.waitForFunction(() => document.body.innerText.includes('DETACHED-MONITOR-CPU')
       && document.body.innerText.includes('DETACHED_MONITOR_OK'), { timeout: 5000 });
-  } catch (_) {
+  } catch {
     console.error('FAIL: detached monitor 未渲染系统状态快照'); ok = false;
   }
 

@@ -104,7 +104,7 @@ for (const relativePath of [
   const bridgeSource = await readFile(new URL(relativePath, import.meta.url), 'utf8');
   assert.match(
     bridgeSource,
-    /var item = q\.shift\(\);[\s\S]*var displayText = item\.displayText == null[\s\S]*formatAttachmentDisplayText\(item\.text, attachments\)/,
+    /(?:var|const|let) item = q\.shift\(\);[\s\S]*(?:var|const|let) displayText = item\.displayText == null[\s\S]*formatAttachmentDisplayText\(item\.text, attachments\)/,
     `${relativePath} must preserve each queued message's own display text and attachment fallback`,
   );
   assert.doesNotMatch(

@@ -14,12 +14,12 @@ const fs = require('fs'), path = require('path'), os = require('os');
 const { startUiTestServer } = require('./ui_test_server');
 
 function loadPuppeteer() {
-  try { return require('puppeteer-core'); } catch (e) { /* fall through */ }
+  try { return require('puppeteer-core'); } catch { /* fall through */ }
   const npx = path.join(os.homedir(), '.npm', '_npx');
   if (fs.existsSync(npx)) {
     for (const d of fs.readdirSync(npx)) {
       const p = path.join(npx, d, 'node_modules', 'puppeteer-core');
-      if (fs.existsSync(p)) { try { return require(p); } catch (e) { /* next */ } }
+      if (fs.existsSync(p)) { try { return require(p); } catch { /* next */ } }
     }
   }
   console.error('SKIP: 找不到 puppeteer-core。装一个再跑:  npm i -D puppeteer-core   (或  npx -y puppeteer-core)');
@@ -75,7 +75,7 @@ function injectSource() {
       {role:'user',content:[{type:'tool_result',tool_use_id:'t-shell-history',content:'history output'}]},
       {role:'assistant',content:[{type:'tool_use',id:'t-mcp',name:'mcp_pptx_make_pptx',input:{title:'季度报告'}}]},
       {role:'user',content:[{type:'tool_result',tool_use_id:'t-mcp',content:'{"path":"/home/x/季度报告.pptx"}'}]},
-      {role:'assistant',content:[{type:'text',text:'\\u0060\\u0060\\u0060json\\n{"name":"Reviewer\\\'s Agent","body":"hidden-prompt","description":"It\\\'s a highlighted JSON card"}\\n\\u0060\\u0060\\u0060'}]},
+      {role:'assistant',content:[{type:'text',text:'\\u0060\\u0060\\u0060json\\n{"name":"Reviewer\\'s Agent","body":"hidden-prompt","description":"It\\'s a highlighted JSON card"}\\n\\u0060\\u0060\\u0060'}]},
       {role:'assistant',content:[{type:'text',text:'\\u0060\\u0060\\u0060card-question\\n{"question":"继续执行？","options":["继续","取消"]}\\n\\u0060\\u0060\\u0060'}]}]}};
     function invoke(cmd,args){
       window.__TAURI_INVOKES__.push({cmd:cmd,args:args||{}});
@@ -201,7 +201,7 @@ function injectSource() {
   })();`;
 }
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+const sleep = ms => new Promise(r => { setTimeout(r, ms); });
 async function clickText(page, t) {
   return page.evaluate((t) => {
     const els = [...document.querySelectorAll('span,div,button,a')].filter(el => (el.textContent || '').trim() === t);
@@ -649,11 +649,12 @@ async function expand(page) {
   await page.keyboard.press('Escape'); await sleep(200);
 
   // ①a-3 对话管理页必须按 Codex 会话类型路由，不能误走普通聊天 switchToSession。
+  // 会话行是「标题 button + 操作按钮并列」结构：点标题 button 即选择会话。
   await clickText(page, '查看全部'); await sleep(500);
   const codexManagedOpen = await page.evaluate(() => {
     const label = [...document.querySelectorAll('span')]
       .find(node => (node.textContent || '').trim() === 'Codex回归会话' && node.getBoundingClientRect().left > 300);
-    const row = label && label.closest('div[class*="cursor-pointer"]');
+    const row = label && label.closest('button');
     if (!row) return { found: false };
     row.click();
     return { found: true };
@@ -680,14 +681,14 @@ async function expand(page) {
     const children = [...(footer?.children || [])];
     if (!button || children.length < 2) return { found: false, childCount: children.length };
     button.click();
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise(resolve => { setTimeout(resolve, 50); });
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText: async () => { throw new Error('clipboard denied'); } },
     });
     document.execCommand = () => false;
     button.click();
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise(resolve => { setTimeout(resolve, 50); });
     const firstRect = children[0].getBoundingClientRect();
     return {
       found: true,
@@ -723,7 +724,7 @@ async function expand(page) {
     const reasoningToggle = turn?.querySelector('[data-testid="conversation-reasoning-toggle"]');
     const reasoningBefore = controlledState(reasoningToggle);
     reasoningToggle?.click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await new Promise(resolve => { requestAnimationFrame(() => requestAnimationFrame(resolve)); });
     const reasoningAfter = controlledState(reasoningToggle);
     const reasoning = turn?.querySelector('[data-testid="conversation-reasoning-content"]');
     const commandButton = turn?.querySelector('[data-testid="conversation-compact-item-toggle"]');
@@ -738,16 +739,16 @@ async function expand(page) {
     const planRect = plan?.getBoundingClientRect();
     const summaryRect = summary?.getBoundingClientRect();
     reasoningToggle?.click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await new Promise(resolve => { requestAnimationFrame(() => requestAnimationFrame(resolve)); });
     const reasoningCollapsed = controlledState(reasoningToggle);
     const commandClipped = Boolean(commandTitle && commandTitle.scrollWidth > commandTitle.clientWidth
       && commandButton.scrollWidth <= commandButton.clientWidth + 1);
     const commandBefore = controlledState(commandButton);
     commandButton?.click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await new Promise(resolve => { requestAnimationFrame(() => requestAnimationFrame(resolve)); });
     const commandAfter = controlledState(commandButton);
     commandButton?.click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await new Promise(resolve => { requestAnimationFrame(() => requestAnimationFrame(resolve)); });
     const commandCollapsed = controlledState(commandButton);
     return {
       found: Boolean(turn && reasoning && plan && summary && commandButton && commandTitle),
@@ -824,7 +825,7 @@ async function expand(page) {
     const expandedBefore = summary?.getAttribute('aria-expanded') || '';
     const detailsBefore = Boolean(controls && document.getElementById(controls));
     summary?.click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await new Promise(resolve => { requestAnimationFrame(() => requestAnimationFrame(resolve)); });
     return {
       summary: summary?.textContent.trim() || '',
       containsRawCommand: Boolean(summary?.textContent.includes('overflow-marker-')),
@@ -855,7 +856,8 @@ async function expand(page) {
   const managedActiveState = await page.evaluate(() => {
     const label = [...document.querySelectorAll('span')]
       .find(node => (node.textContent || '').trim() === 'Codex回归会话' && node.getBoundingClientRect().left > 300);
-    const row = label && label.closest('div[class*="cursor-pointer"]');
+    // 标题 button 的父级即行容器(active 背景挂在容器上)。
+    const row = label && (label.closest('button')?.parentElement || null);
     return {
       found: !!row,
       activeClass: !!(row && (row.classList.contains('bg-[#333537]') || row.classList.contains('bg-[#E1E5EA]'))),
@@ -908,7 +910,7 @@ async function expand(page) {
   });
   await sleep(700);
   const modelModalOutsideClick = await page.evaluate(async () => {
-    const settle = () => new Promise(resolve => setTimeout(resolve, 50));
+    const settle = () => new Promise(resolve => { setTimeout(resolve, 50); });
     const modelSection = [...document.querySelectorAll('aside button')]
       .find(button => (button.textContent || '').trim() === '模型');
     if (modelSection) {
@@ -998,7 +1000,7 @@ async function expand(page) {
     JSON.stringify({ hit, ...restored }));
 
   const multiKb = await page.evaluate(async () => {
-    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const wait = ms => new Promise(resolve => { setTimeout(resolve, ms); });
     document.querySelector('[data-testid="kb-mount-trigger"]')?.click();
     await wait(100);
     const row = name => [...document.querySelectorAll('[data-testid="kb-mount-row"]')]
@@ -1034,7 +1036,7 @@ async function expand(page) {
     multiKb.menuText.includes('项目资料') && multiKb.menuText.includes('已停用'),
     JSON.stringify(multiKb));
   const kbRuntimeGate = await page.evaluate(async () => {
-    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const wait = ms => new Promise(resolve => { setTimeout(resolve, ms); });
     window.__KB_MODEL_STATUS__ = { installed: true, ready: false, loading: true };
     const trigger = document.querySelector('[data-testid="kb-mount-trigger"]');
     // 上一个场景结束时菜单仍展开：先关闭，再打开以刷新运行时状态。
@@ -1059,7 +1061,7 @@ async function expand(page) {
     kbRuntimeGate.disabled && kbRuntimeGate.blockedCopy && kbRuntimeGate.mountCallsUnchanged,
     JSON.stringify(kbRuntimeGate));
   const kbRepairFlow = await page.evaluate(async () => {
-    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const wait = ms => new Promise(resolve => { setTimeout(resolve, ms); });
     window.__KB_MODEL_STATUS__ = {
       installed: true,
       ready: false,
@@ -1077,7 +1079,7 @@ async function expand(page) {
       .find(button => (button.textContent || '').includes('重新下载并修复'));
     repairButton?.click();
     await wait(250);
-    const calls = window.__KB_MODEL_DOWNLOAD_ARGS__.slice();
+    const calls = [...window.__KB_MODEL_DOWNLOAD_ARGS__];
     return {
       failedVisible,
       repairFound: Boolean(repairButton),
@@ -1103,7 +1105,7 @@ async function expand(page) {
     const footer = action.closest('[data-testid="assistant-message-footer"]');
     const footerChildren = [...(footer?.children || [])];
     button.click();
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise(resolve => { setTimeout(resolve, 50); });
     return {
       found: true,
       copied: window.__ASSISTANT_COPY_TEXT__ || '',
@@ -1139,7 +1141,7 @@ async function expand(page) {
     if (!exportButton || !shareButton) return { found: false };
 
     exportButton.click();
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await new Promise(resolve => { setTimeout(resolve, 30); });
     const exportMenu = document.querySelector('[data-testid="assistant-message-export-menu"]');
     const markdownOption = exportMenu?.querySelector('[data-testid="assistant-export-md"]');
     const htmlOption = exportMenu?.querySelector('[data-testid="assistant-export-html"]');
@@ -1160,21 +1162,21 @@ async function expand(page) {
     exportMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
     const exportEnd = document.activeElement === htmlOption;
     exportMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await new Promise(resolve => { setTimeout(resolve, 30); });
     const exportEscapeRestored = !document.querySelector('[data-testid="assistant-message-export-menu"]') &&
       document.activeElement === exportButton && exportButton.getAttribute('aria-expanded') === 'false';
 
     exportButton.click();
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await new Promise(resolve => { setTimeout(resolve, 30); });
     document.querySelector('[data-testid="assistant-export-html"]')?.click();
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await new Promise(resolve => { setTimeout(resolve, 30); });
     const exportInvoke = [...window.__TAURI_INVOKES__]
       .reverse()
       .find(call => call.cmd === 'export_assistant_response');
     const exportSelectionRestored = document.activeElement === exportButton;
 
     shareButton.click();
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await new Promise(resolve => { setTimeout(resolve, 30); });
     let shareMenu = document.querySelector('[data-testid="assistant-message-share-menu"]');
     const targets = ['wechat', 'wecom', 'feishu', 'dingtalk', 'qq'];
     const allTargets = targets.every(target => shareMenu?.querySelector(`[data-testid="assistant-share-${target}"]`));
@@ -1194,15 +1196,15 @@ async function expand(page) {
     shareMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
     const shareArrowUpWrap = document.activeElement === qqShare;
     shareMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await new Promise(resolve => { setTimeout(resolve, 30); });
     const tabClosedWithoutRestore = !document.querySelector('[data-testid="assistant-message-share-menu"]') &&
       document.activeElement !== shareButton;
 
     shareButton.click();
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await new Promise(resolve => { setTimeout(resolve, 30); });
     shareMenu = document.querySelector('[data-testid="assistant-message-share-menu"]');
     shareMenu?.querySelector('[data-testid="assistant-share-feishu"]')?.click();
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await new Promise(resolve => { setTimeout(resolve, 30); });
     const shareInvoke = [...window.__TAURI_INVOKES__]
       .reverse()
       .find(call => call.cmd === 'open_assistant_share_target');
@@ -1583,7 +1585,7 @@ async function expand(page) {
     window.__PAUSE_BACKEND_STATUS_POLL__=true;
     let count=0;
     const unsubscribe=window.TauriBridge.state.subscribe('chat', () => { count+=1; });
-    await new Promise(resolve=>setTimeout(resolve,650));
+    await new Promise(resolve=> { setTimeout(resolve,650); });
     unsubscribe();
     window.__PAUSE_BACKEND_STATUS_POLL__=false;
     return count;
@@ -1642,7 +1644,8 @@ async function expand(page) {
   const archiveMenuOpened = await page.evaluate(() => {
     const label = [...document.querySelectorAll('span')]
       .find(node => (node.textContent || '').trim() === '第三季度财报分析' && node.getBoundingClientRect().left < 330);
-    const row = label && label.closest('div[class*="cursor-pointer"]');
+    // 在标题 button 上派发 contextmenu,事件冒泡到行容器打开右键菜单。
+    const row = label && label.closest('button');
     if (!row) return false;
     const rect = row.getBoundingClientRect();
     row.dispatchEvent(new MouseEvent('contextmenu', {
@@ -1755,7 +1758,7 @@ async function expand(page) {
         detailsPresent: Boolean(controls && document.getElementById(controls)),
       };
     };
-    const settle = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const settle = () => new Promise(resolve => { requestAnimationFrame(() => requestAnimationFrame(resolve)); });
     const reasoningToggle = document.querySelector('[data-testid="conversation-reasoning-toggle"]');
     const reasoningBefore = state(reasoningToggle);
     reasoningToggle?.click();
@@ -1846,7 +1849,7 @@ async function expand(page) {
       await emit('chat:reasoning_delta', { session_id: 's1', index: `legacy-reasoning-${i}`, text: `离屏推理历史 ${i} `.repeat(40) });
       await emit('chat:reasoning_done', { session_id: 's1', index: `legacy-reasoning-${i}` });
     }
-    await new Promise(r => setTimeout(r, 400));
+    await new Promise(r => { setTimeout(r, 400); });
     const wrappers = [...document.querySelectorAll('.cv-bubble')];
     const emptyWrappers = wrappers.filter(w => w.children.length === 0);
     const reasoningLeaked = document.body.innerText.includes('离屏推理历史');
@@ -1863,10 +1866,88 @@ async function expand(page) {
     legacyReasoningGuard.emptyCount === 0 && !legacyReasoningGuard.reasoningLeaked,
     JSON.stringify(legacyReasoningGuard));
 
+  // ⑩c Keyboard operability of the sidebar resize handle (WAI-ARIA Window
+  // Splitter): focusable, arrow-key stepping, Home/End land on the clamped
+  // bounds, aria-valuenow tracks the width, persistence matches the pointer path.
+  await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
+  await sleep(250);
+  const sidebarWidthOf = () => page.evaluate(() => {
+    const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+    return sidebar ? Math.round(sidebar.getBoundingClientRect().width) : -1;
+  });
+  const pressHandle = (key, shift = false) => page.evaluate((k, withShift) => {
+    const handle = document.querySelector('[data-testid="sidebar-resize-handle"]');
+    if (!handle) throw new Error('sidebar-resize-handle not found');
+    handle.dispatchEvent(new KeyboardEvent('keydown', {
+      key: k, bubbles: true, cancelable: true, shiftKey: withShift,
+    }));
+  }, key, shift);
+  const handleState = await page.evaluate(() => {
+    const handle = document.querySelector('[data-testid="sidebar-resize-handle"]');
+    if (!handle) return null;
+    return {
+      focusable: handle.tabIndex === 0,
+      role: handle.tagName === 'HR' ? 'separator(hr)' : handle.getAttribute('role'),
+      ariaValueNow: Number(handle.getAttribute('aria-valuenow')),
+      ariaValueMin: Number(handle.getAttribute('aria-valuemin')),
+      ariaValueMax: Number(handle.getAttribute('aria-valuemax')),
+      hasAriaLabel: handle.hasAttribute('aria-label'),
+      ariaControls: handle.getAttribute('aria-controls'),
+      controlsExist: !!document.getElementById(handle.getAttribute('aria-controls') || ''),
+    };
+  });
+  const initialWidth = await sidebarWidthOf();
+  const ariaWidth = () => page.evaluate(() => {
+    const handle = document.querySelector('[data-testid="sidebar-resize-handle"]');
+    return handle ? Number(handle.getAttribute('aria-valuenow')) : -1;
+  });
+  await pressHandle('ArrowRight');
+  await sleep(60);
+  const afterGrow = await ariaWidth();
+  await pressHandle('ArrowLeft', true);
+  await sleep(60);
+  const afterShrink = await ariaWidth();
+  await pressHandle('Home');
+  await sleep(60);
+  const atMin = await ariaWidth();
+  await pressHandle('ArrowLeft');
+  await sleep(60);
+  const clampedBelow = await ariaWidth();
+  await pressHandle('End');
+  await sleep(60);
+  const atMax = await ariaWidth();
+  await pressHandle('ArrowRight');
+  await sleep(60);
+  const clampedAbove = await ariaWidth();
+  const persistedAtMax = await page.evaluate(() => window.localStorage.getItem('pinvou_sidebar_width'));
+  const ariaAtMax = await ariaWidth();
+  // After the CSS transition (300ms) settles, the real layout width must equal
+  // the aria state — keyboard and pointer paths share the same width source.
+  await sleep(450);
+  const settledWidth = await sidebarWidthOf();
+  rec('⑩c sidebar splitter keyboard resize (arrows/Home/End + boundary clamping + persistence)',
+    !!handleState
+      && handleState.focusable
+      && handleState.role === 'separator(hr)'
+      && handleState.ariaValueMin === 220 && handleState.ariaValueMax === 480
+      && handleState.hasAriaLabel
+      && handleState.ariaControls === 'app-sidebar' && handleState.controlsExist
+      && initialWidth === 280
+      && afterGrow === initialWidth + 24
+      // 304 - 96 = 208 is below the floor; one Shift+Left bottoms out and clamps to 220 (same path as Home).
+      && afterShrink === 220
+      && atMin === 220 && clampedBelow === 220
+      && atMax === 480 && clampedAbove === 480
+      && persistedAtMax === '480'
+      && ariaAtMax === 480
+      && settledWidth === 480,
+    JSON.stringify({ handleState, initialWidth, afterGrow, afterShrink, atMin, clampedBelow, atMax, clampedAbove, persistedAtMax, ariaAtMax, settledWidth }));
+
   if (errs.length) console.log('⚠️ PAGEERRORS:', errs.slice(0, 3).join(' | '));
   await browser.close();
 
   const failed = results.filter(r => !r.pass).length;
   console.log(failed ? `\n❌ ${failed}/${results.length} FAILED` : `\n✅ ALL ${results.length} PASS`);
   process.exit(failed ? 1 : 0);
+// eslint-disable-next-line unicorn/prefer-top-level-await -- existing async main() structure of the smoke script
 })().catch(e => { console.error('FATAL', e.message); process.exit(1); });

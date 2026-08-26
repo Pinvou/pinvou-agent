@@ -7,14 +7,15 @@
  * additionally redacts content-like fields before anything leaves the client.
  */
 (function (root) {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic-script artifact; strict mode is part of the payload
   "use strict";
 
-  var COMMAND = "record_authority_sync_diagnostics";
-  var STORAGE_KEY = "pinvou.authority_sync.diagnostics.v1";
-  var MAX_QUEUE_ENTRIES = 256;
-  var MAX_BATCH_ENTRIES = 32;
-  var MAX_STRING_CHARS = 2048;
-  var ALLOWED_EVENTS = new Set([
+  const COMMAND = "record_authority_sync_diagnostics";
+  const STORAGE_KEY = "pinvou.authority_sync.diagnostics.v1";
+  const MAX_QUEUE_ENTRIES = 256;
+  const MAX_BATCH_ENTRIES = 32;
+  const MAX_STRING_CHARS = 2048;
+  const ALLOWED_EVENTS = new Set([
     "authority_sync_notice_shown", "browser_network_offline", "browser_network_online",
     "chat_done_classified", "connection_state_changed", "diagnostics_initialized",
     "document_visibility_changed", "local_send_blocked_by_remote_sync",
@@ -25,20 +26,20 @@
     "session_download_capability_wait_failed", "session_download_cleanup",
     "transcript_committed_event_received",
   ]);
-  var IDENTIFIER_FIELDS = new Set(["session_id", "active_session_id", "trace_id", "download_id"]);
-  var REVISION_FIELDS = new Set([
+  const IDENTIFIER_FIELDS = new Set(["session_id", "active_session_id", "trace_id", "download_id"]);
+  const REVISION_FIELDS = new Set([
     "session_revision", "committed_revision", "expected_committed_revision", "saved_revision", "event_revision",
   ]);
   // Keep in lockstep with Rust's normalize_nonnegative_number cap (10^15) in
   // features/sessions/diagnostics.rs; the contract test enforces the pairing.
-  var MAX_NUMBER_VALUE = 1000000000000000;
-  var NUMBER_FIELDS = new Set([
+  const MAX_NUMBER_VALUE = 1000000000000000;
+  const NUMBER_FIELDS = new Set([
     "message_count", "chat_item_count", "queued_count", "expected_assistant_key_length",
     "baseline_message_count", "minimum_terminal_message_count", "attempt", "attempts", "elapsed_ms",
     "saved_message_count", "chunk_count", "bytes_received", "declared_total_bytes",
     "cleanup_requested_count", "cleanup_failed_count", "cleanup_succeeded_count", "restored_queue_count",
   ]);
-  var BOOLEAN_FIELDS = new Set([
+  const BOOLEAN_FIELDS = new Set([
     "buffer_present", "local_turn_owned", "remote_turn_active", "remote_terminal_seen",
     "loaded_from_disk", "buffer_busy", "ui_busy", "baseline_trusted", "preserve_committed_revision",
     "snapshot_present", "completed_local_turn", "requires_authority_reconcile", "terminal_error_present",
@@ -46,7 +47,7 @@
     "concurrent_turn", "error_present", "cancellable_lease", "cancel_requested", "cancel_succeeded",
     "desktop_online",
   ]);
-  var ENUM_FIELDS = {
+  const ENUM_FIELDS = {
     reason: new Set(["assistant_identity_missing", "invalid_snapshot", "load_session_error", "message_count_short", "revision_mismatch"]),
     error_category: new Set([
       "cancel_rpc_failed", "capability_snapshot_timeout", "capability_snapshot_unavailable",
@@ -59,44 +60,47 @@
     status: new Set(["connected", "connecting", "desktop_offline", "error", "idle", "local", "unknown"]),
     visibility: new Set(["hidden", "prerender", "unknown", "visible"]),
   };
-  var queue = [];
-  var sequence = 0;
-  var flushing = false;
-  var retryTimer = null;
-  var lastConnectionSignature = "";
+  let queue = [];
+  let sequence = 0;
+  let flushing = false;
+  let retryTimer = null;
+  let lastConnectionSignature = "";
 
   function randomId(prefix) {
     try {
       if (root.crypto && typeof root.crypto.randomUUID === "function") {
         return prefix + "_" + root.crypto.randomUUID(); // safari14-ok: guarded above
       }
-    } catch (_) {}
+    } catch { /* fall through to the fallback below when UUID generation fails */ }
+    // eslint-disable-next-line sonarjs/pseudo-random -- not security-sensitive: diagnostics dedupe ID; the timestamp prefix already ensures basic uniqueness
     return prefix + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
   }
 
-  var clientRunId = randomId("authority_sync_client");
+  const clientRunId = randomId("authority_sync_client");
 
   function isSensitiveKey(key) {
-    var normalized = String(key || "").toLowerCase().replace(/-/g, "_");
+    const normalized = String(key || "").toLowerCase().replaceAll('-', "_");
+    // eslint-disable-next-line sonarjs/regex-complexity -- the redaction field whitelist is deliberately exhaustive; splitting it would reduce auditability
     return /^(access_token|api_key|authorization|body|content|cookie|credential|credentials|cwd|directory|error|file_path|id_token|local_path|message|output|password|path|prompt|refresh_token|request|response|secret|text|token|user_input)$/.test(normalized) ||
+      // eslint-disable-next-line sonarjs/regex-complexity -- the redaction suffix blacklist is deliberately exhaustive; splitting it would reduce auditability
       /(_access_token|_api_key|_authorization|_body|_content|_cookie|_credential|_credentials|_directory|_error|_file_path|_id_token|_local_path|_message|_output|_password|_path|_prompt|_refresh_token|_request|_response|_secret|_user_input)$/.test(normalized);
   }
 
   function cleanString(value) {
     return String(value == null ? "" : value)
-      .replace(/\b(?:Cookie|Set-Cookie)\s*:[^\r\n]*/gi, "Cookie: [REDACTED]")
-      .replace(/[\r\n\t]+/g, " ")
-      .replace(/\bBearer\s+\S+/gi, "Bearer [REDACTED]")
-      .replace(/\bBasic\s+\S+/gi, "Basic [REDACTED]")
-      .replace(/([?&](?:access_token|api_key|token|secret|password)=)[^&#\s]+/gi, "$1[REDACTED]")
-      .replace(/\b(?:access_token|api_key|authorization|cookie|token|secret|password)\s*=\s*[^\s;,]+/gi, function (match) {
+      .replaceAll(/\b(?:Cookie|Set-Cookie)\s*:[^\r\n]*/gi, "Cookie: [REDACTED]")
+      .replaceAll(/[\r\n\t]+/g, " ")
+      .replaceAll(/\bBearer\s+\S+/gi, "Bearer [REDACTED]")
+      .replaceAll(/\bBasic\s+\S+/gi, "Basic [REDACTED]")
+      .replaceAll(/([?&](?:access_token|api_key|token|secret|password)=)[^&#\s]+/gi, "$1[REDACTED]")
+      .replaceAll(/\b(?:access_token|api_key|authorization|cookie|token|secret|password)\s*=\s*[^\s;,]+/gi, function (match) {
         return match.slice(0, match.indexOf("=") + 1) + "[REDACTED]";
       })
-      .replace(/\bfile:\/\/\/?[^\s]+/gi, "[LOCAL_PATH]")
-      .replace(/\b[A-Za-z]:[\\/][^\s]+/g, "[LOCAL_PATH]")
-      .replace(/\\{2}[^\\\s]+\\[^\s]+/g, "[LOCAL_PATH]")
-      .replace(/(^|\s)~[\\/][^\s]+/g, "$1[LOCAL_PATH]")
-      .replace(/\/(?:Users|home|tmp|private\/var|var\/folders)\/[^\s]+/g, "[LOCAL_PATH]")
+      .replaceAll(/\bfile:\/\/\/?[^\s]+/gi, "[LOCAL_PATH]")
+      .replaceAll(/\b[A-Za-z]:[\\/][^\s]+/g, "[LOCAL_PATH]")
+      .replaceAll(/\\{2}[^\\\s]+\\[^\s]+/g, "[LOCAL_PATH]")
+      .replaceAll(/(^|\s)~[\\/][^\s]+/g, "$1[LOCAL_PATH]")
+      .replaceAll(/\/(?:Users|home|tmp|private\/var|var\/folders)\/[^\s]+/g, "[LOCAL_PATH]")
       .slice(0, MAX_STRING_CHARS);
   }
 
@@ -108,7 +112,7 @@
       return value.slice(0, 64).map(function (entry) { return sanitize(entry, depth + 1); });
     }
     if (typeof value === "object") {
-      var result = {};
+      const result = {};
       Object.keys(value).slice(0, 64).forEach(function (key) {
         result[key] = isSensitiveKey(key) ? "[REDACTED]" : sanitize(value[key], depth + 1);
       });
@@ -127,9 +131,9 @@
 
   function normalizeDetails(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-    var output = {};
+    const output = {};
     Object.keys(value).forEach(function (key) {
-      var candidate = value[key];
+      const candidate = value[key];
       if (key === "transport") {
         output.transport = normalizeDetails(candidate);
       } else if (IDENTIFIER_FIELDS.has(key) && typeof candidate === "string" &&
@@ -138,10 +142,9 @@
       } else if (REVISION_FIELDS.has(key) && typeof candidate === "string" &&
           (candidate === "" || /^[A-Fa-f0-9]{64}$/.test(candidate))) {
         output[key] = candidate.toLowerCase();
-      } else if (NUMBER_FIELDS.has(key) && (candidate === null ||
-          (Number.isSafeInteger(candidate) && candidate >= 0 && candidate <= MAX_NUMBER_VALUE))) {
-        output[key] = candidate;
-      } else if (BOOLEAN_FIELDS.has(key) && typeof candidate === "boolean") {
+      } else if ((NUMBER_FIELDS.has(key) && (candidate === null ||
+          (Number.isSafeInteger(candidate) && candidate >= 0 && candidate <= MAX_NUMBER_VALUE))) ||
+          (BOOLEAN_FIELDS.has(key) && typeof candidate === "boolean")) {
         output[key] = candidate;
       } else if (key === "cause" && typeof candidate === "string" && allowedCause(candidate)) {
         output.cause = candidate;
@@ -149,7 +152,7 @@
         output[key] = candidate;
       } else if (key === "saved_roles" && Array.isArray(candidate) && candidate.length <= 12 &&
           candidate.every(function (role) { return /^(assistant|invalid|system|tool|user)$/.test(role); })) {
-        output.saved_roles = candidate.slice();
+        output.saved_roles = [...candidate];
       }
     });
     return sanitize(output, 0);
@@ -157,7 +160,7 @@
 
   function normalizeConnection(snapshot) {
     snapshot = snapshot || {};
-    var output = {};
+    const output = {};
     if (/^(desktop|unknown|web)$/.test(snapshot.platform_kind)) output.platform_kind = snapshot.platform_kind;
     if (typeof snapshot.browser_online === "boolean") output.browser_online = snapshot.browser_online;
     if (/^(hidden|prerender|unknown|visible)$/.test(snapshot.visibility)) output.visibility = snapshot.visibility;
@@ -171,11 +174,11 @@
   }
 
   function connectionSnapshot() {
-    var platform = root.PinvouPlatform || {};
-    var state = null;
+    const platform = root.PinvouPlatform || {};
+    let state = null;
     try {
       if (typeof platform.getConnectionState === "function") state = platform.getConnectionState();
-    } catch (_) {}
+    } catch { /* treat connection-state read failure as unknown */ }
     return {
       platform_kind: platform.kind || (root.__TAURI__ ? "desktop" : "unknown"),
       browser_online: !root.navigator || root.navigator.onLine !== false,
@@ -188,10 +191,10 @@
 
   function loadQueue() {
     try {
-      var raw = root.localStorage && root.localStorage.getItem(STORAGE_KEY);
-      var parsed = raw ? JSON.parse(raw) : [];
+      const raw = root.localStorage && root.localStorage.getItem(STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
       if (Array.isArray(parsed)) queue = parsed.slice(-MAX_QUEUE_ENTRIES);
-    } catch (_) {
+    } catch {
       queue = [];
     }
   }
@@ -201,7 +204,7 @@
       if (!root.localStorage) return;
       if (queue.length) root.localStorage.setItem(STORAGE_KEY, JSON.stringify(queue));
       else root.localStorage.removeItem(STORAGE_KEY);
-    } catch (_) {}
+    } catch { /* keep the queue in memory only when localStorage is unavailable */ }
   }
 
   function invokeFunction() {
@@ -209,11 +212,11 @@
   }
 
   function commandAvailable() {
-    var platform = root.PinvouPlatform || {};
+    const platform = root.PinvouPlatform || {};
     if (!platform.isWeb) return true;
     try {
       return typeof platform.canInvoke === "function" && platform.canInvoke(COMMAND) === true;
-    } catch (_) {
+    } catch {
       return false;
     }
   }
@@ -228,10 +231,10 @@
 
   function flush() {
     if (flushing || !queue.length || !commandAvailable()) return Promise.resolve(false);
-    var invoke = invokeFunction();
+    const invoke = invokeFunction();
     if (typeof invoke !== "function") return Promise.resolve(false);
-    var batch = queue.slice(0, MAX_BATCH_ENTRIES);
-    var ids = Object.create(null);
+    const batch = queue.slice(0, MAX_BATCH_ENTRIES);
+    const ids = Object.create(null);
     batch.forEach(function (entry) { ids[entry.event_id] = true; });
     flushing = true;
     return Promise.resolve(invoke(COMMAND, { entries: batch })).then(function () {
@@ -249,11 +252,11 @@
   }
 
   function record(event, details) {
-    event = cleanString(event).replace(/[^A-Za-z0-9_.:-]/g, "").slice(0, 160);
+    event = cleanString(event).replaceAll(/[^A-Za-z0-9_.:-]/g, "").slice(0, 160);
     if (!ALLOWED_EVENTS.has(event)) return "";
-    var snapshot = connectionSnapshot();
-    var entry = {
-      event: event,
+    const snapshot = connectionSnapshot();
+    const entry = {
+      event,
       event_id: clientRunId + "_" + (++sequence),
       connection: normalizeConnection(snapshot),
       details: normalizeDetails(details || {}),
@@ -266,7 +269,7 @@
   }
 
   function recordConnection(state) {
-    var signature = JSON.stringify({
+    const signature = JSON.stringify({
       status: state && state.status || "unknown",
       desktop_online: !!(state && state.desktop_online),
       browser_online: !root.navigator || root.navigator.onLine !== false,
@@ -275,7 +278,7 @@
       flush();
       return;
     }
-    var previous = lastConnectionSignature;
+    const previous = lastConnectionSignature;
     lastConnectionSignature = signature;
     record("connection_state_changed", {
       previous_signature: previous,
@@ -285,7 +288,7 @@
   }
 
   loadQueue();
-  var platform = root.PinvouPlatform || {};
+  const platform = root.PinvouPlatform || {};
   if (typeof platform.onConnectionChange === "function") {
     platform.onConnectionChange(recordConnection);
   }
@@ -302,9 +305,9 @@
   }
 
   root.PinvouAuthoritySyncDiagnostics = Object.freeze({
-    record: record,
-    flush: flush,
-    connectionSnapshot: connectionSnapshot,
+    record,
+    flush,
+    connectionSnapshot,
     pendingCount: function () { return queue.length; },
   });
   // 恢复条数在本次 record 入队前度量，此刻 queue.length 即恢复规模。

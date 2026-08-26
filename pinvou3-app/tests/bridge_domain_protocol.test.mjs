@@ -79,21 +79,21 @@ const protocolSources = {
 };
 
 const expectedProtocolHashes = {
-  multiAgent: '6896409bb406f1ba54ca496dd78c04549cc78ff5490ae771d9cf60586368a8a8',
-  orchestration: 'c0c6a17672d1b8e6a99d69dd354589d765fe2d62a23dd6401c3c58122c7e3ddf',
-  artifacts: '8cb9d3ed6f72db0bc609b13e19e829b32d75401f824e2788532fb5f6f7002495',
-  chat: '3fbc58d56a3f749d161adb1114086d0fbd520268418dfe2b23254315d88fcda3',
-  dependencies: '257468e4f9e2e9270de6ef75f685d5eafcd000226d44cfb81a1b04c0e7615707',
-  interaction: '255474b88418fcaf371b77b27545fbfb529fbbceb1af9010ac49881082384270',
-  knowledge: '96d4f6a1534f0aedf10714e7b945e0a29579b224ec98cbf27659237b5aac59b6',
-  memory: 'd92cbabf27c277a64b743e7af25b48d8b8b65513e33aeb0f38c906d4b300616b',
+  multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
+  orchestration: '493f46eef80e6ded5243d2c75ca1c8dbcc06097051d949d4ef656267c1bbada9',
+  artifacts: 'f6174eb62922bc222338e12049ce28dc9fae81db37998086dfa6d159d2dc7422',
+  chat: '8e7dc2c966f6724ba16ea35c4f1b6216570356745b6bb40ee2e1a7a8d6c14ed5',
+  dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
+  interaction: '3f275b9c4fc77ebf42a56df1c84d638ca5f1f8a3b80612efebeddf1a39f14efd',
+  knowledge: '9105a42c6b69f04d0bc28b6a72e0746648110a44823891ded3261cdcbc99766b',
+  memory: '541f1b0c05aeee20d8fb4a19048cbd2f55cad84444363694cbe17263d0425228',
   monitor: '01bf9a7c9b9b3f313cf49e975e6503627ff373caed0f4b3be07a6a98492a7c43',
-  personas: '75845688a405c5dc3590e176238969d846d61810eaeb3d632a0a741d30370239',
-  remoteControl: 'b48906332b45fecfb5a9b222264edb694ff39a47c6ae2105f8d1c32a47653830',
-  scheduled: '239292d75c308973053cc0091e0ac9437191bf2375fd5fd8181ea26f4f749900',
-  sessions: '43be5b929743f00818492d51d7a725860c71b9a52e7fdcbe72606426472409c0',
-  settings: '84ec262e084fd5940c7f8f2d8818b43cd1b3cd535e4ff4b6217505666c80527a',
-  updater: '7b1eea2076e6257bc799349099795d42fd71b1db6d6c0655da0fe512918e8ed0',
+  personas: 'd16d99104c45bb3e7a6585862b0ba30936bf31a4fef2238453a0a0a35e3c1806',
+  remoteControl: '0001038f6e32075aa5dbc3253ad2c3dfff207b8fe0bf1c65d710dc37b2937ee1',
+  scheduled: '7d6ca9783925a5071a364097ebdf0112511f9503b5e4534346b9fda6873ec036',
+  sessions: '7dd63b9cb4ab7b7e03f81abc0822baa9bd1dd61f27fa8b8d2df009126d1c6c60',
+  settings: '7af2ec65eb978eb72484a4f74b776950cabe6c395fb75b049383509afb087532',
+  updater: '9cfc7c0413f39e3d0404252b89747f6f1e0b2e9133abc961c2a9afe67093b18c',
   voice: '281399c4de7cdc3adf2f50a422ea5725cb98cbf175e1de8beb0d610655d0028a',
 };
 
@@ -140,9 +140,9 @@ const context = vm.createContext({
 vm.runInContext(read('bridge.js'), context, { filename: 'bridge.js' });
 
 const api = windowObject.TauriBridge;
-assert.deepEqual(Object.keys(api).sort(), ['available', ...Object.keys(desktopBridgeApi)].sort());
+assert.deepEqual(Object.keys(api).sort(), ['available', ...Object.keys(desktopBridgeApi)].sort()); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
 for (const [domain, methods] of Object.entries(desktopBridgeApi)) {
-  assert.deepEqual(Object.keys(api[domain]).sort(), methods.sort(), `${domain} API surface changed`);
+  assert.deepEqual(Object.keys(api[domain]).sort(), methods.sort(), `${domain} API surface changed`); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
 }
 assert.equal(api.sendMessage, undefined, 'flat compatibility facade must not return');
 assert.equal(api.getState, undefined, 'flat state facade must not return');

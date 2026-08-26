@@ -168,7 +168,7 @@ assert.doesNotMatch(
 const kimiStatus = feature.match(
   // 容忍 Windows checkout（autocrlf）的 CRLF 行尾；LF 环境同样匹配。
 
-  /if backend == AgentBackend::KimiAcp \{([\s\S]*?)\r?\n        \}\r?\n\r?\n        let \(agent_id/,
+  /if backend == AgentBackend::KimiAcp \{([\s\S]*?)\r?\n {8}\}\r?\n\r?\n {8}let \(agent_id/,
 );
 assert.ok(kimiStatus, "Kimi status branch must remain explicit");
 assert.match(kimiStatus[1], /bridge_ready: true/);

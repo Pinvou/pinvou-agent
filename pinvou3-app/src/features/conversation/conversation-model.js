@@ -1,8 +1,8 @@
-const ESC = String.fromCharCode(0x1b);
-const BEL = String.fromCharCode(0x07);
-const C1_CSI = String.fromCharCode(0x9b);
-const OSC_SEQUENCE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g');
-const CSI_SEQUENCE = new RegExp(`(?:${ESC}\\[|${C1_CSI})[0-?]*[ -/]*[@-~]`, 'g');
+const ESC = String.fromCodePoint(0x1b);
+const BEL = String.fromCodePoint(0x07);
+const C1_CSI = String.fromCodePoint(0x9b);
+const OSC_SEQUENCE = new RegExp(String.raw`${ESC}\][\s\S]*?(?:${BEL}|${ESC}\\)`, 'g');
+const CSI_SEQUENCE = new RegExp(String.raw`(?:${ESC}\[|${C1_CSI})[0-?]*[ -/]*[@-~]`, 'g');
 const SINGLE_ESCAPE_SEQUENCE = new RegExp(`${ESC}[()][0-2A-Z]`, 'g');
 /**
  * 底座 `agent` 工具的 spawn 判定（与协调操作区分）。
@@ -97,7 +97,7 @@ export function toolWorkspaceResources(tool) {
   const visit = (value) => {
     if (!value || typeof value !== 'object') return;
     if (value.type === 'resource_link') add(value.uri, value.name);
-    if (value.type === 'diff') add(value.path);
+    else if (value.type === 'diff') add(value.path);
     if (Array.isArray(value)) value.forEach(visit);
     else Object.values(value).forEach(visit);
   };
@@ -143,7 +143,7 @@ export function isShrinkClampedToBottom(element, lastScrollHeight, epsilon = 1) 
 export function captureConversationScrollPosition(element, stickToBottom = false) {
   if (!element) return null;
   return {
-    stickToBottom: Boolean(stickToBottom),
+    stickToBottom,
     bottomGap: Math.max(0, element.scrollHeight - element.scrollTop - element.clientHeight),
   };
 }
@@ -163,9 +163,9 @@ export function restoreConversationScrollPosition(element, snapshot) {
  */
 export function stripTerminalControlSequences(value) {
   return String(value ?? '')
-    .replace(OSC_SEQUENCE, '')
-    .replace(CSI_SEQUENCE, '')
-    .replace(SINGLE_ESCAPE_SEQUENCE, '');
+    .replaceAll(OSC_SEQUENCE, '')
+    .replaceAll(CSI_SEQUENCE, '')
+    .replaceAll(SINGLE_ESCAPE_SEQUENCE, '');
 }
 
 function searchToolName(tool) {
@@ -197,10 +197,10 @@ export function isFetchTool(tool) {
 
 function decodeSearchFragment(value) {
   return String(value || '')
-    .replace(/\\r/g, '')
-    .replace(/\\n/g, '\n')
-    .replace(/\\"/g, '"')
-    .replace(/\\\\/g, '\\')
+    .replaceAll(String.raw`\r`, '')
+    .replaceAll(String.raw`\n`, '\n')
+    .replaceAll(String.raw`\"`, '"')
+    .replaceAll('\\\\', '\\')
     .trim();
 }
 
@@ -223,7 +223,7 @@ function collectSearchResults(rawOutput) {
   const results = [];
   const seen = new Set();
   function add(titleValue, urlValue) {
-    const title = decodeSearchFragment(titleValue).replace(/\s+/g, ' ');
+    const title = decodeSearchFragment(titleValue).replaceAll(/\s+/g, ' ');
     const url = validSearchUrl(urlValue);
     if (!title || !url || seen.has(url)) return;
     seen.add(url);
@@ -233,8 +233,10 @@ function collectSearchResults(rawOutput) {
   // web_search: title 紧邻 url；同花顺新闻 MCP: url 后夹带 id/uid 等字段再到 title。
   let match;
   const titleThenUrl = /"title"\s*:\s*"([^"\n]{1,500})"\s*,\s*"url"\s*:\s*"([^"\n]{1,2000})"/g;
+  // biome-ignore lint/suspicious/noAssignInExpressions: assignment doubles as the loop condition; refactoring hurts readability
   while ((match = titleThenUrl.exec(text))) add(match[1], match[2]);
   const urlThenTitle = /"url"\s*:\s*"(https?:[^"\n]{1,2000})"[\s\S]{0,700}?"title"\s*:\s*"([^"\n]{1,500})"/g;
+  // biome-ignore lint/suspicious/noAssignInExpressions: assignment doubles as the loop condition; refactoring hurts readability
   while ((match = urlThenTitle.exec(text))) add(match[2], match[1]);
   return results;
 }
@@ -244,7 +246,7 @@ export function searchToolDetails(tool) {
   const rawInput = tool && tool.rawInput && typeof tool.rawInput === 'object'
     ? tool.rawInput
     : {};
-  const rawOutputValue = tool && (tool.rawOutput != null ? tool.rawOutput : tool.content);
+  const rawOutputValue = tool && (tool.rawOutput == null ? tool.content : tool.rawOutput);
   const rawOutput = typeof rawOutputValue === 'string'
     ? rawOutputValue
     : rawOutputValue == null
@@ -278,7 +280,7 @@ export function fetchToolDetails(tool) {
   const rawInput = tool && tool.rawInput && typeof tool.rawInput === 'object'
     ? tool.rawInput
     : {};
-  const rawOutputValue = tool && (tool.rawOutput != null ? tool.rawOutput : tool.content);
+  const rawOutputValue = tool && (tool.rawOutput == null ? tool.content : tool.rawOutput);
   const rawOutput = typeof rawOutputValue === 'string'
     ? rawOutputValue
     : rawOutputValue == null
@@ -286,7 +288,7 @@ export function fetchToolDetails(tool) {
       : JSON.stringify(rawOutputValue, null, 2);
   let payload = rawOutputValue && typeof rawOutputValue === 'object' ? rawOutputValue : null;
   if (!payload && rawOutput) {
-    try { payload = JSON.parse(rawOutput); } catch (_) {}
+    try { payload = JSON.parse(rawOutput); } catch { /* non-JSON output is treated as text */ }
   }
   payload = payload && typeof payload === 'object' ? payload : {};
   const url = String(payload.url || rawInput.url || '').trim();
@@ -296,12 +298,12 @@ export function fetchToolDetails(tool) {
     const parsed = new URL(url);
     hostname = parsed.hostname.replace(/^www\./, '');
     const path = parsed.pathname === '/' ? '' : parsed.pathname;
-    target = `${hostname}${path.length > 36 ? `${path.slice(0, 36)}…` : path}`;
-  } catch (_) {}
+    target = path.length > 36 ? `${hostname}${path.slice(0, 36)}…` : `${hostname}${path}`;
+  } catch { /* invalid URL: show the original text as-is */ }
   const statusValue = payload.status;
   const status = statusValue == null || statusValue === '' ? null : Number(statusValue);
   const content = typeof payload.content === 'string' ? payload.content : '';
-  const preview = content.replace(/\s+/g, ' ').trim().slice(0, 320);
+  const preview = content.replaceAll(/\s+/g, ' ').trim().slice(0, 320);
   const contentType = String(payload.content_type
     || (payload.headers && (payload.headers['content-type'] || payload.headers['Content-Type']))
     || '');

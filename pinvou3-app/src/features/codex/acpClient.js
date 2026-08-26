@@ -279,7 +279,7 @@ export function getAcpAgentStatus(agentId, recheck = false) {
 }
 
 async function adoptNativeDraftAttachments(sessionId, attachments) {
-  const prepared = Array.from(attachments || []);
+  const prepared = [...attachments || []];
   for (const result of prepared) {
     const draftUploadId = result && result.__pinvouManagedDraftAttachmentId;
     if (!draftUploadId) continue;
@@ -306,7 +306,7 @@ export async function submitAcpPrompt({ sessionId, message, attachments, workspa
     }
     const attachmentHandles = (attachments || []).map(acpAttachmentHandle);
     if (attachmentHandles.some(handle => !handle)) {
-      return Promise.reject(acpClientError('web_acp_attachment_invalid'));
+      throw acpClientError('web_acp_attachment_invalid');
     }
     return invokeTauri('web_access_codex_acp_prompt', {
       sessionId,

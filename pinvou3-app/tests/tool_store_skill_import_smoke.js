@@ -9,11 +9,11 @@ const fs = require('fs'), path = require('path'), os = require('os');
 const { startUiTestServer } = require('./ui_test_server');
 
 function loadPuppeteer() {
-  try { return require('puppeteer-core'); } catch (_) { /* fall through */ }
+  try { return require('puppeteer-core'); } catch { /* fall through */ }
   const npx = path.join(os.homedir(), '.npm', '_npx');
   if (fs.existsSync(npx)) for (const d of fs.readdirSync(npx)) {
     const p = path.join(npx, d, 'node_modules', 'puppeteer-core');
-    if (fs.existsSync(p)) try { return require(p); } catch (_) { /* next */ }
+    if (fs.existsSync(p)) try { return require(p); } catch { /* next */ }
   }
   console.error('SKIP: 找不到 puppeteer-core');
   process.exit(2);
@@ -89,9 +89,10 @@ function injectSource() {
   })();`;
 }
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+const sleep = ms => new Promise(r => { setTimeout(r, ms); });
 let failures = 0;
 const rec = (name, ok, debug) => { console.log(`${ok ? '✅' : '❌'} ${name}${ok ? '' : (debug ? ' :: ' + debug : '')}`); if (!ok) failures++; };
+// eslint-disable-next-line no-unused-vars -- test stub; assigned later, kept intentionally
 async function clickExact(page, text) {
   return page.evaluate((t) => {
     const els = [...document.querySelectorAll('button,span,div,a')].filter(el => (el.textContent || '').trim() === t);
@@ -160,11 +161,11 @@ async function clickExact(page, text) {
       const dt = new DataTransfer();
       dt.items.add(file);
       document.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
-      await new Promise(r => setTimeout(r, 600));
+      await new Promise(r => { setTimeout(r, 600); });
       const call = window.__PINVOU_MOCK_CALLS__.find(c => c.cmd === 'import_plugin_package_bytes_cmd');
       if (!call) return { ok: false, why: 'no call' };
       let decoded = null;
-      try { decoded = atob(call.args.dataBase64); } catch (_) {}
+      try { decoded = atob(call.args.dataBase64); } catch { /* not base64 text */ }
       const correctName = call.args.filename === 'my-skill.zip';
       const correctBytes = decoded === 'PK\x03\x04' + String.fromCharCode(1, 2, 3);
       return { ok: correctName && correctBytes, why: JSON.stringify({ name: call.args.filename, bytesOk: correctBytes }) };
@@ -182,7 +183,7 @@ async function clickExact(page, text) {
       const btn = row.querySelector('button');
       if (!btn) return { ok: false, why: 'no button' };
       btn.click();
-      await new Promise(r => setTimeout(r, 600));
+      await new Promise(r => { setTimeout(r, 600); });
       const call = window.__PINVOU_MOCK_CALLS__.find(c => c.cmd === 'uninstall_marketplace_skill');
       return { ok: !!call && call.args.skillId === 'my-test-skill', why: JSON.stringify(call && call.args) };
     });
@@ -192,4 +193,5 @@ async function clickExact(page, text) {
   }
   console.log(failures ? `\n❌ ${failures} FAIL` : '\n✅ ALL PASS');
   process.exit(failures ? 1 : 0);
+// eslint-disable-next-line unicorn/prefer-top-level-await -- existing async main() structure of the smoke script
 })().catch(e => { console.error(e); process.exit(1); });

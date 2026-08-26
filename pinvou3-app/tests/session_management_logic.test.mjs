@@ -21,7 +21,7 @@ const archiveResult = await runSessionBatch([
     return true;
   },
 });
-assert.deepEqual(calls.sort(), ['archive:chat-1', 'archiveCodex:codex-1']);
+assert.deepEqual(calls.sort(), ['archive:chat-1', 'archiveCodex:codex-1']); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
 assert.deepEqual(archiveResult, { total: 2, succeeded: 2, failed: 0 });
 
 const partialResult = await runSessionBatch([

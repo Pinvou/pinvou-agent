@@ -1,56 +1,54 @@
 /** Session working sets, switching, hydration, and lifecycle operations. */
 (function (root) {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim classic-script artifact; strict mode is part of the payload
   "use strict";
-  var registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting statements would diverge from the artifact
+  const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.sessions = function (context) {
-    var state = context.state;
+    const state = context.state;
     // Optional hook: clean host-side per-session side tables when a
     // session buffer is reclaimed/deleted (bridge.js's modeStateEpochs,
     // the scene-events localStorage key).
     // reason === "evict" is an LRU capacity eviction, "delete" a real
     // session deletion; the host distinguishes them to keep recoverable
     // data (e.g. the scene cache key) on eviction. No return value.
-    var onSessionBufferPurged = context.onSessionBufferPurged || null;
-    var invoke = context.invoke;
-    var listen = context.listen;
-    var notify = context.notify;
-    var sessionStates = context.sessionStates;
-    var scheduledRunSessionOwners = context.scheduledRunSessionOwners;
-    var personaPlaceholderTitles = context.personaPlaceholderTitles;
-    var runSyncOnSession = context.runSyncOnSession;
-    var persistMessagesFor = context.persistMessagesFor;
-    var resetPendingAssistant = context.resetPendingAssistant;
-    var stopThinking = context.stopThinking;
-    var rerenderFromMessages = context.rerenderFromMessages;
-    var syncModeState = context.syncModeState;
-    var applyAuthoritativeModeState = context.applyAuthoritativeModeState;
-    var currentDraftModeState = context.currentDraftModeState;
-    var syncActivePersona = context.syncActivePersona;
-    var syncMountedCollection = context.syncMountedCollection;
-    var reconcileArtifacts = context.reconcileArtifacts;
-    var loadSessionModel = context.loadSessionModel;
-    var clearScheduledTaskSelection = context.clearScheduledTaskSelection;
-    var invalidateScheduledRecentRunsForSession = context.invalidateScheduledRecentRunsForSession;
-    var refreshHistoryListForRun = context.refreshHistoryListForRun;
-    var addSystemItem = context.addSystemItem;
-    var turnUsageDirty = context.turnUsageDirty;
-    var basename = context.basename;
-    var isAbsPath = context.isAbsPath;
-    var filterSessionArtifacts = context.filterSessionArtifacts;
-    var scheduleShellPoll = context.scheduleShellPoll;
-    var bt = context.bt;
-    var setScheduledTaskError = context.setScheduledTaskError;
-    var userMessageDisplayText = context.userMessageDisplayText;
-    var loadMemoryOverview = context.loadMemoryOverview;
-    var isScheduledRunSession = context.isScheduledRunSession;
-    var invalidateScheduledTaskReads = context.invalidateScheduledTaskReads;
-    var applyScheduledRunViewed = context.applyScheduledRunViewed;
-    var loadScheduledTaskRecentRuns = context.loadScheduledTaskRecentRuns;
-    var loadPinvouSceneEventsForSession = context.loadPinvouSceneEventsForSession || function () { return []; };
-    var syncPinvouSceneEventsForSession = context.syncPinvouSceneEventsForSession ||
+    const onSessionBufferPurged = context.onSessionBufferPurged || null;
+    const invoke = context.invoke;
+    const listen = context.listen;
+    const notify = context.notify;
+    const sessionStates = context.sessionStates;
+    const scheduledRunSessionOwners = context.scheduledRunSessionOwners;
+    const personaPlaceholderTitles = context.personaPlaceholderTitles;
+    const runSyncOnSession = context.runSyncOnSession;
+    const resetPendingAssistant = context.resetPendingAssistant;
+    const rerenderFromMessages = context.rerenderFromMessages;
+    const syncModeState = context.syncModeState;
+    const applyAuthoritativeModeState = context.applyAuthoritativeModeState;
+    const currentDraftModeState = context.currentDraftModeState;
+    const syncActivePersona = context.syncActivePersona;
+    const syncMountedCollection = context.syncMountedCollection;
+    const reconcileArtifacts = context.reconcileArtifacts;
+    const loadSessionModel = context.loadSessionModel;
+    const invalidateScheduledRecentRunsForSession = context.invalidateScheduledRecentRunsForSession;
+    const addSystemItem = context.addSystemItem;
+    const turnUsageDirty = context.turnUsageDirty;
+    const basename = context.basename;
+    const isAbsPath = context.isAbsPath;
+    const filterSessionArtifacts = context.filterSessionArtifacts;
+    const scheduleShellPoll = context.scheduleShellPoll;
+    const bt = context.bt;
+    const setScheduledTaskError = context.setScheduledTaskError;
+    const userMessageDisplayText = context.userMessageDisplayText;
+    const loadMemoryOverview = context.loadMemoryOverview;
+    const isScheduledRunSession = context.isScheduledRunSession;
+    const invalidateScheduledTaskReads = context.invalidateScheduledTaskReads;
+    const applyScheduledRunViewed = context.applyScheduledRunViewed;
+    const loadScheduledTaskRecentRuns = context.loadScheduledTaskRecentRuns;
+    const loadPinvouSceneEventsForSession = context.loadPinvouSceneEventsForSession || function () { return []; };
+    const syncPinvouSceneEventsForSession = context.syncPinvouSceneEventsForSession ||
       function (sid) { return Promise.resolve(loadPinvouSceneEventsForSession(sid)); };
-    var MAX_SCHEDULED_SESSION_BUFFERS = 64;
-    var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
+    const MAX_SCHEDULED_SESSION_BUFFERS = 64;
+    const MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
     // All-session buffer cap: each sessionStates entry holds the full
     // messages+chatItems (with rendered html)+artifacts (heavy sessions
     // run 1-4MB each); previously only scheduled sessions had a 64-entry
@@ -60,45 +58,45 @@
     // beyond 32 have near-zero hit rate; revisiting an evicted session
     // goes through load_session disk rehydration (already supported by
     // ensureSessionBufferLoaded/switchTo), costing one reload.
-    var MAX_SESSION_BUFFERS = 32;
-  // Unsent composer drafts are the one piece of a working set that cannot be
-  // rebuilt from disk (transcripts hold committed content only), so eviction
-  // must never drop them: before a buffer is dropped, its draft moves to this
-  // side table and every rebuild path restores it. The table is bounded
-  // (256 entries, 1M chars per draft — 10x the composer input cap), and when
-  // a bound would be exceeded the eviction is refused instead: the buffer
-  // stays resident rather than silently losing user input. Real session
-  // deletion (purgeSessionBuffer) invalidates stashed drafts so they never
-  // flow back into a recycled session id.
-  var MAX_EVICTED_SESSION_DRAFTS = 256;
-  var MAX_EVICTED_SESSION_DRAFT_CHARS = 1000000;
-  var sessionBufferTouchClock = 0;
-  var scheduledRunOwnerTouchClock = 0;
-  var scheduledRunOpenInFlight = Object.create(null);
-  var sessionSwitchRequestToken = 0;
-  var evictedSessionDrafts = Object.create(null);
-  // Returns true when the buffer's non-rehydratable state is safely retained
-  // (or empty) and the caller may drop the buffer; false means eviction must
-  // be skipped so the draft stays in the live buffer.
-  function stashEvictedSessionDraft(id, buf) {
-    if (!id || !buf) return true;
-    var draft = String(buf.composerDraft || "");
-    if (!draft) {
-      delete evictedSessionDrafts[id]; // input was cleared; a stale stash must not resurrect it
+    const MAX_SESSION_BUFFERS = 32;
+    // Unsent composer drafts are the one piece of a working set that cannot be
+    // rebuilt from disk (transcripts hold committed content only), so eviction
+    // must never drop them: before a buffer is dropped, its draft moves to this
+    // side table and every rebuild path restores it. The table is bounded
+    // (256 entries, 1M chars per draft — 10x the composer input cap), and when
+    // a bound would be exceeded the eviction is refused instead: the buffer
+    // stays resident rather than silently losing user input. Real session
+    // deletion (purgeSessionBuffer) invalidates stashed drafts so they never
+    // flow back into a recycled session id.
+    const MAX_EVICTED_SESSION_DRAFTS = 256;
+    const MAX_EVICTED_SESSION_DRAFT_CHARS = 1000000;
+    let sessionBufferTouchClock = 0;
+    let scheduledRunOwnerTouchClock = 0;
+    const scheduledRunOpenInFlight = Object.create(null);
+    let sessionSwitchRequestToken = 0;
+    const evictedSessionDrafts = Object.create(null);
+    // Returns true when the buffer's non-rehydratable state is safely retained
+    // (or empty) and the caller may drop the buffer; false means eviction must
+    // be skipped so the draft stays in the live buffer.
+    function stashEvictedSessionDraft(id, buf) {
+      if (!id || !buf) return true;
+      const draft = String(buf.composerDraft || "");
+      if (!draft) {
+        delete evictedSessionDrafts[id]; // input was cleared; a stale stash must not resurrect it
+        return true;
+      }
+      if (draft.length > MAX_EVICTED_SESSION_DRAFT_CHARS) return false;
+      if (!evictedSessionDrafts[id]
+          && Object.keys(evictedSessionDrafts).length >= MAX_EVICTED_SESSION_DRAFTS) return false;
+      delete evictedSessionDrafts[id]; // re-stashing moves the entry to the table tail
+      evictedSessionDrafts[id] = draft;
       return true;
     }
-    if (draft.length > MAX_EVICTED_SESSION_DRAFT_CHARS) return false;
-    if (!evictedSessionDrafts[id]
-        && Object.keys(evictedSessionDrafts).length >= MAX_EVICTED_SESSION_DRAFTS) return false;
-    delete evictedSessionDrafts[id]; // re-stashing moves the entry to the table tail
-    evictedSessionDrafts[id] = draft;
-    return true;
-  }
-  function restoreEvictedSessionDraft(id, buf) {
-    if (!id || !buf || buf.composerDraft) return;
-    var draft = evictedSessionDrafts[id];
-    if (draft) buf.composerDraft = draft;
-  }
+    function restoreEvictedSessionDraft(id, buf) {
+      if (!id || !buf || buf.composerDraft) return;
+      const draft = evictedSessionDrafts[id];
+      if (draft) buf.composerDraft = draft;
+    }
   function freshBuffer() {
     return {
       messages: [], chatItems: [], composerDraft: "", turnTimeline: [], activeTurnTimelineId: null, personaEvents: [], pinvouReviews: [], pinvouSceneEvents: [], artifacts: [], busy: false, queued: [],
@@ -150,18 +148,18 @@
       state.scheduledTaskCreationSessionId === id;
   }
   function pruneScheduledSessionBuffers(keepId) {
-    var scheduledIds = Object.keys(sessionStates).filter(function (id) {
+    const scheduledIds = Object.keys(sessionStates).filter(function (id) {
       return !!sessionStates[id].scheduledRunSession;
     });
-    var overflow = scheduledIds.length - MAX_SCHEDULED_SESSION_BUFFERS;
+    let overflow = scheduledIds.length - MAX_SCHEDULED_SESSION_BUFFERS;
     if (overflow <= 0) return;
     scheduledIds.sort(function (left, right) {
-      var delta = (sessionStates[left].lastTouched || 0) - (sessionStates[right].lastTouched || 0);
+      const delta = (sessionStates[left].lastTouched || 0) - (sessionStates[right].lastTouched || 0);
       return delta || left.localeCompare(right);
     });
-    for (var i = 0; i < scheduledIds.length && overflow > 0; i++) {
-      var id = scheduledIds[i];
-      var buf = sessionStates[id];
+    for (let i = 0; i < scheduledIds.length && overflow > 0; i++) {
+      const id = scheduledIds[i];
+      const buf = sessionStates[id];
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
       if (!stashEvictedSessionDraft(id, buf)) continue; // draft cannot be safely retained; keep the buffer
       delete sessionStates[id];
@@ -191,16 +189,16 @@
   // final backstop, and a buffer whose draft cannot be safely stashed is kept
   // resident rather than evicted.
   function pruneSessionBuffers(keepId) {
-    var ids = Object.keys(sessionStates);
-    var overflow = ids.length - MAX_SESSION_BUFFERS;
+    const ids = Object.keys(sessionStates);
+    let overflow = ids.length - MAX_SESSION_BUFFERS;
     if (overflow <= 0) return;
     ids.sort(function (left, right) {
-      var delta = (sessionStates[left].lastTouched || 0) - (sessionStates[right].lastTouched || 0);
+      const delta = (sessionStates[left].lastTouched || 0) - (sessionStates[right].lastTouched || 0);
       return delta || left.localeCompare(right);
     });
-    for (var i = 0; i < ids.length && overflow > 0; i++) {
-      var id = ids[i];
-      var buf = sessionStates[id];
+    for (let i = 0; i < ids.length && overflow > 0; i++) {
+      const id = ids[i];
+      const buf = sessionStates[id];
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
       if (!stashEvictedSessionDraft(id, buf)) continue; // draft cannot be safely retained; keep the buffer
       delete sessionStates[id];
@@ -234,7 +232,7 @@
   }
   function registerScheduledRunOwner(id, phase) {
     if (typeof id !== "string" || !id) return null;
-    var owner = scheduledRunSessionOwners[id];
+    let owner = scheduledRunSessionOwners[id];
     if (!owner) owner = scheduledRunSessionOwners[id] = { phase: null, lastTouched: 0 };
     if (owner.phase !== "terminal" && phase) owner.phase = phase;
     owner.lastTouched = ++scheduledRunOwnerTouchClock;
@@ -242,8 +240,8 @@
     return owner;
   }
   function scheduledRunOwnerVisibleRank(id) {
-    var runs = state.scheduledTaskRuns || [];
-    for (var i = 0; i < runs.length; i++) {
+    const runs = state.scheduledTaskRuns || [];
+    for (let i = 0; i < runs.length; i++) {
       if (runs[i] && runs[i].sessionId === id) return i;
     }
     return -1;
@@ -258,53 +256,53 @@
     return scheduledRunOwnerPriority(id) > 1;
   }
   function pruneScheduledRunSessionOwner(id) {
-    if (!scheduledRunSessionOwners[id] || isProtectedScheduledRunOwner(id, null)) return;
+    if (!scheduledRunSessionOwners[id] || isProtectedScheduledRunOwner(id)) return;
     delete scheduledRunSessionOwners[id];
   }
   function pruneScheduledRunSessionOwners() {
-    var ids = Object.keys(scheduledRunSessionOwners);
+    const ids = Object.keys(scheduledRunSessionOwners);
     if (ids.length <= MAX_SCHEDULED_RUN_SESSION_OWNERS) return;
     ids.sort(function (left, right) {
-      var priorityDelta = scheduledRunOwnerPriority(right) - scheduledRunOwnerPriority(left);
+      const priorityDelta = scheduledRunOwnerPriority(right) - scheduledRunOwnerPriority(left);
       if (priorityDelta) return priorityDelta;
-      var leftVisibleRank = scheduledRunOwnerVisibleRank(left);
-      var rightVisibleRank = scheduledRunOwnerVisibleRank(right);
+      const leftVisibleRank = scheduledRunOwnerVisibleRank(left);
+      const rightVisibleRank = scheduledRunOwnerVisibleRank(right);
       if (leftVisibleRank >= 0 || rightVisibleRank >= 0) {
         if (leftVisibleRank < 0) return 1;
         if (rightVisibleRank < 0) return -1;
         if (leftVisibleRank !== rightVisibleRank) return leftVisibleRank - rightVisibleRank;
       }
-      var touchDelta = (scheduledRunSessionOwners[right].lastTouched || 0) -
+      const touchDelta = (scheduledRunSessionOwners[right].lastTouched || 0) -
         (scheduledRunSessionOwners[left].lastTouched || 0);
       return touchDelta || left.localeCompare(right);
     });
-    for (var i = MAX_SCHEDULED_RUN_SESSION_OWNERS; i < ids.length; i++) {
+    for (let i = MAX_SCHEDULED_RUN_SESSION_OWNERS; i < ids.length; i++) {
       delete scheduledRunSessionOwners[ids[i]];
     }
   }
   function isScheduledRunTerminal(status) {
-    var value = String(status || "").toLowerCase();
-    return value === "completed" || value === "failed" || value === "canceled";
+    const value = String(status || "").toLowerCase();
+    return ["completed", "failed", "canceled"].includes(value);
   }
   function rememberScheduledRunOwner(run) {
     if (!run) return;
-    var id = typeof run.sessionId === "string" ? run.sessionId.trim() : "";
+    const id = typeof run.sessionId === "string" ? run.sessionId.trim() : "";
     if (!id) return;
-    var status = String(run.status || "").toLowerCase();
-    var phase = isScheduledRunTerminal(status)
+    const status = String(run.status || "").toLowerCase();
+    const phase = isScheduledRunTerminal(status)
       ? "terminal"
       : (status === "queued" || status === "running" ? "active" : null);
     registerScheduledRunOwner(id, phase);
   }
   function scheduledRunBuffer(id) {
-    var buf = getBuffer(id);
+    const buf = getBuffer(id);
     if (!buf) return null;
     registerScheduledRunOwner(id, null);
     return touchSessionBuffer(id, buf, true);
   }
   function markScheduledInitialTurnActive(id) {
-    var buf = scheduledRunBuffer(id);
-    var owner = registerScheduledRunOwner(id, "active");
+    const buf = scheduledRunBuffer(id);
+    const owner = registerScheduledRunOwner(id, "active");
     if (!buf) return buf;
     if (buf.scheduledInitialTurnPhase === "terminal" || (owner && owner.phase === "terminal")) {
       buf.scheduledInitialTurnPhase = "terminal";
@@ -318,7 +316,7 @@
     return buf;
   }
   function markScheduledInitialTurnTerminal(id) {
-    var buf = scheduledRunBuffer(id);
+    const buf = scheduledRunBuffer(id);
     registerScheduledRunOwner(id, "terminal");
     if (!buf || buf.scheduledInitialTurnPhase === "terminal") return buf;
     if (buf.scheduledInitialTurnPhase !== "active") {
@@ -328,15 +326,15 @@
     return buf;
   }
   function beginScheduledOpenActivation(id) {
-    var previous = sessionStates[id] || null;
-    var snapshot = {
-      id: id,
+    const previous = sessionStates[id] || null;
+    const snapshot = {
+      id,
       existed: !!previous,
       previousPhase: previous && previous.scheduledInitialTurnPhase,
       previousBusy: previous ? !!previous.busy : false,
       previousStateBusy: state.activeSessionId === id ? !!state.busy : null,
     };
-    var buf = markScheduledInitialTurnActive(id);
+    const buf = markScheduledInitialTurnActive(id);
     snapshot.buffer = buf;
     snapshot.activationTouch = buf && buf.lastTouched;
     snapshot.changed = !!buf && (
@@ -348,15 +346,15 @@
   }
   function rollbackScheduledOpenActivation(snapshot) {
     if (!snapshot || !snapshot.changed) return;
-    var current = sessionStates[snapshot.id];
+    const current = sessionStates[snapshot.id];
     if (!current || current !== snapshot.buffer) return;
     if (current.scheduledInitialTurnPhase === "terminal") return;
     if (current.lastTouched !== snapshot.activationTouch) return;
-    if (!snapshot.existed) {
-      delete sessionStates[snapshot.id];
-    } else {
+    if (snapshot.existed) {
       current.scheduledInitialTurnPhase = snapshot.previousPhase;
       current.busy = snapshot.previousBusy;
+    } else {
+      delete sessionStates[snapshot.id];
     }
     if (state.activeSessionId === snapshot.id && snapshot.previousStateBusy !== null) {
       state.busy = snapshot.previousStateBusy;
@@ -407,21 +405,21 @@
       : (state.mountedCollection == null ? [] : [{ collectionId: state.mountedCollection, enabled: true }]);
     state.mountedCollectionsRevision = Number(buf.mountedCollectionsRevision || 0);
     state.scheduledTaskDraft = buf.scheduledTaskDraft || null;
-    var s = buf.stream || {};
+    const s = buf.stream || {};
     context.currentStreamText = s.currentStreamText || ""; context.currentStreamId = s.currentStreamId || 0;
     context.pendingAssistantText = s.pendingAssistantText || ""; context.pendingAssistantBlocks = s.pendingAssistantBlocks || [];
     context.itemIdSeq = s.itemIdSeq || 0; context.toolMeta = s.toolMeta || {};
   }
   function hydrateWorkingSetFromSaved(buf, saved) {
     if (!buf || !saved) return;
-    var completedRemoteTurn = !!buf.remoteTerminalSeen || (!!buf.remoteTurnActive && !buf.busy);
+    const completedRemoteTurn = !!buf.remoteTerminalSeen || (!!buf.remoteTurnActive && !buf.busy);
     buf.messages = Array.isArray(saved.messages) ? saved.messages : [];
     buf.sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
     buf.chatItems = [];
     buf.turnTimeline = [];
     buf.activeTurnTimelineId = null;
     buf.artifacts = Array.isArray(saved.artifacts) ? saved.artifacts.map(function (a) {
-      var p = typeof a === "string" ? a : (a.storage_path || a.path || "");
+      const p = typeof a === "string" ? a : (a.storage_path || a.path || "");
       return { path: p, basename: basename(p) };
     }) : [];
     buf.artifacts = filterSessionArtifacts(buf.artifacts, saved.metadata && saved.metadata.id);
@@ -445,16 +443,16 @@
   async function ensureSessionBufferLoaded(sid) {
     if (!sid) return;
     if (sid === state.activeSessionId) return;
-    var buf = getBuffer(sid);
-    var meta = state.sessions.find(function (s) { return s.id === sid; }) || {};
-    var knownCount = Number(meta.message_count || 0);
+    const buf = getBuffer(sid);
+    const meta = state.sessions.find(function (s) { return s.id === sid; }) || {};
+    const knownCount = Number(meta.message_count || 0);
     if (buf.busy) return;
     if (buf.loadedFromDisk && (!knownCount || buf.messages.length >= knownCount)) return;
     if (!buf.loadedFromDisk && buf.messages.length && (!knownCount || buf.messages.length >= knownCount)) return;
-    var saved = await invoke("load_session", { id: sid, setActive: false });
-    var savedMessages = saved && Array.isArray(saved.messages) ? saved.messages : [];
-    var savedMetadataCount = saved && saved.metadata ? Number(saved.metadata.message_count || 0) : 0;
-    var savedCount = Math.max(Number.isFinite(savedMetadataCount) ? savedMetadataCount : 0, savedMessages.length);
+    const saved = await invoke("load_session", { id: sid, setActive: false });
+    const savedMessages = saved && Array.isArray(saved.messages) ? saved.messages : [];
+    const savedMetadataCount = saved && saved.metadata ? Number(saved.metadata.message_count || 0) : 0;
+    const savedCount = Math.max(Number.isFinite(savedMetadataCount) ? savedMetadataCount : 0, savedMessages.length);
     // Shell 轮询等后台展示项会先写入 chatItems，但不代表会话正文已经加载。
     // 只有内存里确有 transcript messages 且不短于磁盘版本时，才能跳过 hydration。
     if (buf.messages.length && savedCount <= buf.messages.length) {
@@ -465,10 +463,10 @@
     // 快照 hydrate 会截断正在流式生成的内容，必须复检后放弃（审计）。
     if (buf.busy || buf.remoteTurnActive) return;
     hydrateWorkingSetFromSaved(buf, saved);
-    try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch (e) { buf.personaEvents = []; }
-    try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch (e) { buf.pinvouReviews = []; }
+    try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch { buf.personaEvents = []; }
+    try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch { buf.pinvouReviews = []; }
     buf.pinvouSceneEvents = await syncPinvouSceneEventsForSession(sid);
-    try { buf.turnTimeline = await invoke("get_session_timeline", { sessionId: sid }) || []; } catch (e) { buf.turnTimeline = []; }
+    try { buf.turnTimeline = await invoke("get_session_timeline", { sessionId: sid }) || []; } catch { buf.turnTimeline = []; }
     // 手机可能在桌面仍停留草稿页/其他 session 时先唤醒这个后台 session。
     // 仅 hydrate messages 而把 chatItems 留空，会让后续 switchToSession 命中缓存快路径，
     // 不再 rerenderFromMessages，桌面便只看得到手机唤醒后的新内容，历史像是“丢了”。
@@ -490,10 +488,10 @@
     // (active still pointing at the old value) would evict an idle target
     // that happens to be oldest, and the subsequent freshBuffer()
     // replacement would silently show an empty session.
-    var previousActiveId = state.activeSessionId;
+    const previousActiveId = state.activeSessionId;
     state.activeSessionId = id;
     if (previousActiveId) saveWorkingSetTo(getBuffer(previousActiveId));
-    var buf = sessionStates[id];
+    let buf = sessionStates[id];
     if (!buf || (opts && opts.fresh)) {
       buf = sessionStates[id] = freshBuffer();
       // fresh is for sessions just materialized on this side: the empty
@@ -517,11 +515,11 @@
   // 整表覆盖式刷新：并发调用（list_changed 事件、chat:done 收尾、归档/改名等操作）
   // 乱序返回时旧列表会覆盖新列表（如刚删除的会话复活、改名被回退）。用请求序号
   // 做后发者胜（审计）。
-  var historyListSeq = 0;
+  let historyListSeq = 0;
   async function refreshHistoryList() {
-    var seq = ++historyListSeq;
+    const seq = ++historyListSeq;
     try {
-      var sessions = await invoke("list_sessions");
+      const sessions = await invoke("list_sessions");
       if (seq !== historyListSeq) return;
       state.sessions = sessions;
     } catch (e) {
@@ -530,10 +528,10 @@
       state.sessions = [];
     }
     try {
-      var archivedSessions = await invoke("list_archived_sessions");
+      const archivedSessions = await invoke("list_archived_sessions");
       if (seq !== historyListSeq) return;
       state.archivedSessions = archivedSessions;
-    } catch (e) {
+    } catch {
       if (seq !== historyListSeq) return;
       state.archivedSessions = state.archivedSessions || [];
     }
@@ -576,21 +574,21 @@
   // 并发防护（审计）：草稿态双击发送会并发 create_session，导致两条消息分家到两个新
   // 会话——in-flight 复用同一 promise；create_session await 期间用户切走会物化在错误
   // 会话（导航被劫持）——物化前校验 activeSessionId 仍为空，已切走则只登记后台 buffer。
-  var ensureSessionInFlight = null;
+  let ensureSessionInFlight = null;
   async function ensureSession() {
     if (state.activeSessionId) return state.activeSessionId;
     if (ensureSessionInFlight) return ensureSessionInFlight;
     // 捕获导航 token：仅判 activeSessionId 覆盖不了「再进草稿」——enterDraft
     // 只推进 token 不改 activeSessionId（仍为 null），在途 create_session 返回
     // 后必须连同 token 一起校验，否则会劫持用户新进的草稿（三审 P1）。
-    var navToken = sessionSwitchRequestToken;
-    var p = (async function () {
+    const navToken = sessionSwitchRequestToken;
+    const p = (async function () {
       // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
       try {
-        var meta = await invoke("create_session");
+        const meta = await invoke("create_session");
         // create_session 等待期间用户可能已发送/清空输入，必须读取最新值，
         // 不能把 await 前的已发送文本带入新 session。
-        var composerDraft = state.composerDraft || "";
+        const composerDraft = state.composerDraft || "";
         // create_session 等待期间用户可能已退出草稿（切到既有会话或再进草稿）：
         // 物化不得劫持 active（审计 F1），新会话登记为后台 buffer 等下次切换，
         // 调用方按 null 处理不发送本条消息。离开草稿的寄存开关意图一并作废。
@@ -604,7 +602,7 @@
         }
         // 草稿期开的多智能体开关此刻才落后端（开关本身不物化会话）。先取后
         // 清：switchActiveTo 会把寄存意图当作已消费。
-        var pendingMultiAgent = state.pendingDraftMultiAgent === true;
+        const pendingMultiAgent = state.pendingDraftMultiAgent === true;
         state.pendingDraftMultiAgent = false;
         switchActiveTo(meta.id, { fresh: true });
         // 草稿态因首条消息/加卡等实质操作物化为 session 时，输入草稿也要
@@ -621,7 +619,7 @@
             // 中止，不发送本条消息。
             try {
               await invoke("delete_session", { id: meta.id });
-            } catch (cleanupError) {
+            } catch {
               // 空会话残留可手动删除，不掩盖主错误。
             }
             enterDraft();
@@ -641,13 +639,13 @@
         // 三分 lane 语义：后端 plain 缺省恒 Yolo、不区分 work/design 两个 lane；
         // 新会话所在 lane 的全局默认为 plan 时，在物化此刻显式应用（写入即成为
         // 该会话自己的 per-session 记录，全局默认不受影响）。
-        var laneDefault = state.modeDefaults
+        const laneDefault = state.modeDefaults
           && state.modeDefaults[state.modeLane === "design" ? "design" : "work"];
         // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
         // 可能已切走，对当前 active 会话执行 set_plan_mode_next 会改错对象。
         if (laneDefault === "plan") {
           try {
-            var laneModeState = await invoke("set_plan_mode_next", { sessionId: meta.id });
+            const laneModeState = await invoke("set_plan_mode_next", { sessionId: meta.id });
             applyAuthoritativeModeState(meta.id, laneModeState);
           } catch (laneModeError) {
             runSyncOnSession(meta.id, function () {
@@ -689,34 +687,34 @@
   }
 
   function hydratedMessageKey(message, hideInternalEnvelope) {
-    var blocks = message && Array.isArray(message.content) ? message.content : [];
+    let blocks = message && Array.isArray(message.content) ? message.content : [];
     if (message && message.role === "user") {
-      var resultIds = blocks.filter(function (block) {
+      const resultIds = blocks.filter(function (block) {
         return block && block.type === "tool_result" && block.tool_use_id;
-      }).map(function (block) { return block.tool_use_id; }).sort();
+      }).map(function (block) { return block.tool_use_id; }).sort(function (a, b) { return a < b ? -1 : a > b ? 1 : 0; }); // key normalization needs lexicographic order; declare the semantics explicitly
       if (resultIds.length) return "user:tool_results:" + resultIds.join("|");
       return "user:text:" + userMessageDisplayText(blocks, hideInternalEnvelope);
     }
     if (message && message.role === "assistant") {
-      var toolIds = blocks.filter(function (block) {
+      const toolIds = blocks.filter(function (block) {
         return block && block.type === "tool_use" && block.id;
-      }).map(function (block) { return block.id; }).sort();
+      }).map(function (block) { return block.id; }).sort(function (a, b) { return a < b ? -1 : a > b ? 1 : 0; }); // key normalization needs lexicographic order; declare the semantics explicitly
       if (toolIds.length) return "assistant:tool_uses:" + toolIds.join("|");
       blocks = blocks.filter(function (block) { return !block || block.type !== "thinking"; });
-      try { return "assistant:" + JSON.stringify(blocks); } catch (_) {}
+      try { return "assistant:" + JSON.stringify(blocks); } catch { /* persist the raw text on serialization failure */ }
     }
-    try { return JSON.stringify(message); } catch (_) { return String(message); }
+    try { return JSON.stringify(message); } catch { return String(message); }
   }
 
   function mergeHydratedMessages(durableMessages, liveMessages, hideInternalEnvelope) {
-    var durable = Array.isArray(durableMessages) ? durableMessages.slice() : [];
-    var counts = Object.create(null);
+    const durable = Array.isArray(durableMessages) ? [...durableMessages] : [];
+    const counts = Object.create(null);
     durable.forEach(function (message) {
-      var key = hydratedMessageKey(message, hideInternalEnvelope);
+      const key = hydratedMessageKey(message, hideInternalEnvelope);
       counts[key] = (counts[key] || 0) + 1;
     });
     (Array.isArray(liveMessages) ? liveMessages : []).forEach(function (message) {
-      var key = hydratedMessageKey(message, hideInternalEnvelope);
+      const key = hydratedMessageKey(message, hideInternalEnvelope);
       if (counts[key]) {
         counts[key] -= 1;
       } else {
@@ -727,21 +725,21 @@
   }
 
   function mergeHydratedArtifacts(durableArtifacts, liveArtifacts) {
-    var merged = [];
-    var seen = Object.create(null);
-    (durableArtifacts || []).concat(liveArtifacts || []).forEach(function (artifact) {
-      var path = typeof artifact === "string" ? artifact : (artifact && (artifact.path || artifact.storage_path)) || "";
-      var identity = basename(path);
+    const merged = [];
+    const seen = Object.create(null);
+    [...(durableArtifacts || []), ...(liveArtifacts || [])].forEach(function (artifact) {
+      const path = typeof artifact === "string" ? artifact : (artifact && (artifact.path || artifact.storage_path)) || "";
+      const identity = basename(path);
       if (!path || !identity) return;
       if (seen[identity] !== undefined) {
-        var existingIndex = seen[identity];
+        const existingIndex = seen[identity];
         if (isAbsPath(path) && !isAbsPath(merged[existingIndex].path)) {
-          merged[existingIndex] = { path: path, basename: identity };
+          merged[existingIndex] = { path, basename: identity };
         }
         return;
       }
       seen[identity] = merged.length;
-      merged.push({ path: path, basename: identity });
+      merged.push({ path, basename: identity });
     });
     return merged;
   }
@@ -757,26 +755,26 @@
     if (item.type === "plan_card" && item.planId) return "plan:" + item.planId;
     if (item.type === "user") return "user:" + String(item.text || item.html || "");
     if (item.type === "system") return "system:" + String(item.text || "");
-    var stable = Object.assign({}, item);
+    const stable = Object.assign({}, item);
     delete stable.id;
     delete stable.time;
     delete stable.streaming;
-    try { return item.type + ":" + JSON.stringify(stable); } catch (_) { return item.type + ":" + String(stable); }
+    try { return item.type + ":" + JSON.stringify(stable); } catch { return item.type + ":" + String(stable); }
   }
 
   function mergeHydratedChatItems(liveChatItems, liveCurrentStreamId) {
-    var remappedCurrentStreamId = 0;
-    var availableByKey = Object.create(null);
+    let remappedCurrentStreamId = 0;
+    const availableByKey = Object.create(null);
     function interruptedDisplayRange(item) {
       if (!item || item.interruptedDisplayOnly !== true) return null;
-      var anchorIndex = -1;
-      var nextUserIndex = -1;
-      var afterMessageIndex = Number(item.afterMessageIndex);
+      let anchorIndex = -1;
+      let nextUserIndex = -1;
+      const afterMessageIndex = Number(item.afterMessageIndex);
       if (Number.isFinite(afterMessageIndex) && afterMessageIndex >= 0) {
-        for (var index = 0; index < state.chatItems.length; index++) {
-          var candidate = state.chatItems[index];
+        for (let index = 0; index < state.chatItems.length; index++) {
+          const candidate = state.chatItems[index];
           if (!candidate || candidate.type !== "user") continue;
-          var candidateMessageIndex = Number(candidate.messageIndex);
+          const candidateMessageIndex = Number(candidate.messageIndex);
           if (candidateMessageIndex === afterMessageIndex) anchorIndex = index;
           else if (anchorIndex >= 0 && candidateMessageIndex > afterMessageIndex) {
             nextUserIndex = index;
@@ -784,11 +782,11 @@
           }
         }
       }
-      var afterUserOrdinal = Number(item.afterUserOrdinal);
-      if (anchorIndex < 0 && Number.isInteger(afterUserOrdinal) && afterUserOrdinal >= 0) {
-        var userOrdinal = -1;
-        for (var fallbackIndex = 0; fallbackIndex < state.chatItems.length; fallbackIndex++) {
-          var fallback = state.chatItems[fallbackIndex];
+      const afterUserOrdinal = Number(item.afterUserOrdinal);
+      if (anchorIndex < 0 && Number.isSafeInteger(afterUserOrdinal) && afterUserOrdinal >= 0) {
+        let userOrdinal = -1;
+        for (let fallbackIndex = 0; fallbackIndex < state.chatItems.length; fallbackIndex++) {
+          const fallback = state.chatItems[fallbackIndex];
           if (!fallback || fallback.type !== "user") continue;
           userOrdinal += 1;
           if (userOrdinal === afterUserOrdinal) anchorIndex = fallbackIndex;
@@ -807,18 +805,18 @@
       };
     }
     state.chatItems.forEach(function (item, index) {
-      var key = hydratedChatItemKey(item);
+      const key = hydratedChatItemKey(item);
       if (!key) return;
       if (!availableByKey[key]) availableByKey[key] = [];
       availableByKey[key].push(index);
     });
     (liveChatItems || []).forEach(function (item) {
-      var key = hydratedChatItemKey(item);
-      var range = interruptedDisplayRange(item);
-      var existingIndex = -1;
+      const key = hydratedChatItemKey(item);
+      const range = interruptedDisplayRange(item);
+      let existingIndex = -1;
       if (range) {
-        for (var rangeIndex = range.start; rangeIndex < range.end; rangeIndex++) {
-          var rangeItem = state.chatItems[rangeIndex];
+        for (let rangeIndex = range.start; rangeIndex < range.end; rangeIndex++) {
+          const rangeItem = state.chatItems[rangeIndex];
           if (rangeItem && rangeItem.interruptedDisplayOnly !== true &&
               hydratedChatItemKey(rangeItem) === key) {
             existingIndex = rangeIndex;
@@ -826,18 +824,18 @@
           }
         }
       } else {
-        var matches = key && availableByKey[key];
+        const matches = key && availableByKey[key];
         existingIndex = matches && matches.length ? matches.shift() : -1;
       }
       if (existingIndex >= 0) {
-        var existingId = state.chatItems[existingIndex].id;
+        const existingId = state.chatItems[existingIndex].id;
         state.chatItems[existingIndex] = Object.assign({}, state.chatItems[existingIndex], item, {
           id: existingId,
         });
         if (item && item.id === liveCurrentStreamId) remappedCurrentStreamId = existingId;
         return;
       }
-      var clone = Object.assign({}, item, { id: ++context.itemIdSeq });
+      const clone = Object.assign({}, item, { id: ++context.itemIdSeq });
       if (item && item.id === liveCurrentStreamId) remappedCurrentStreamId = clone.id;
       if (range && range.end < state.chatItems.length) {
         state.chatItems.splice(range.end, 0, clone);
@@ -851,10 +849,11 @@
     return remappedCurrentStreamId;
   }
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
   async function switchToSessionInternal(id, preserveScheduledRunContext, errorScope, options) {
-    var requestToken = ++sessionSwitchRequestToken;
-    var forceDurableLoad = !!(options && options.forceDurableLoad);
-    var hydrateLiveSession = !!(options && options.hydrateLiveSession);
+    const requestToken = ++sessionSwitchRequestToken;
+    const forceDurableLoad = !!(options && options.forceDurableLoad);
+    const hydrateLiveSession = !!(options && options.hydrateLiveSession);
     if (!id) {
       reportSessionSwitchFailure(new Error(bt("runHasNoSession")), errorScope);
       return false;
@@ -884,8 +883,8 @@
     // only one system chatItem (no busy flag, no messages), and admitting
     // it by chatItems would permanently show a history-less view with no
     // self-heal.
-    var existingBuffer = sessionStates[id];
-    var cachedBufferUsable = existingBuffer && (existingBuffer.loadedFromDisk ||
+    const existingBuffer = sessionStates[id];
+    const cachedBufferUsable = existingBuffer && (existingBuffer.loadedFromDisk ||
       existingBuffer.busy || existingBuffer.remoteTurnActive ||
       (existingBuffer.messages && existingBuffer.messages.length));
     if (cachedBufferUsable && !forceDurableLoad && !hydrateLiveSession) {
@@ -901,9 +900,9 @@
       reconcileArtifacts(id); // 对账磁盘产物(fire-and-forget)
       return true;
     }
-    var saved;
+    let saved;
     try {
-      saved = await invoke("load_session", { id: id });
+      saved = await invoke("load_session", { id });
     } catch (e) {
       if (requestToken === sessionSwitchRequestToken) reportSessionSwitchFailure(e, errorScope);
       return false;
@@ -914,13 +913,13 @@
       return false;
     }
 
-    var personaEvents = [];
-    var pinvouReviews = [];
-    var pinvouSceneEvents = await syncPinvouSceneEventsForSession(id);
-    var turnTimeline = [];
-    try { personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch (_) {}
-    try { pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch (_) {}
-    try { turnTimeline = await invoke("get_session_timeline", { sessionId: id }) || []; } catch (_) {}
+    let personaEvents = [];
+    let pinvouReviews = [];
+    const pinvouSceneEvents = await syncPinvouSceneEventsForSession(id);
+    let turnTimeline = [];
+    try { personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch { /* optional data; default to empty */ }
+    try { pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch { /* optional data; default to empty */ }
+    try { turnTimeline = await invoke("get_session_timeline", { sessionId: id }) || []; } catch { /* optional data; default to empty */ }
     if (requestToken !== sessionSwitchRequestToken) return false;
 
     // load_session 与必要的直接会话数据均成功后，才一次性提交 active/context。
@@ -929,13 +928,13 @@
     state.scheduledTaskPendingGuide = null;
     state.activeSessionId = saved.metadata.id;
     if (hydrateLiveSession) {
-      var liveBuffer = sessionStates[id] || freshBuffer();
+      const liveBuffer = sessionStates[id] || freshBuffer();
       loadWorkingSetFrom(liveBuffer);
-      var liveMessages = Array.isArray(state.messages) ? state.messages.slice() : [];
-      var liveChatItems = Array.isArray(state.chatItems) ? state.chatItems.slice() : [];
-      var liveArtifacts = Array.isArray(state.artifacts) ? state.artifacts.slice() : [];
-      var liveCurrentStreamId = context.currentStreamId;
-      var hasLivePresentation = !!state.busy || !!context.currentStreamText || !!context.pendingAssistantText ||
+      const liveMessages = Array.isArray(state.messages) ? [...state.messages] : [];
+      const liveChatItems = Array.isArray(state.chatItems) ? [...state.chatItems] : [];
+      const liveArtifacts = Array.isArray(state.artifacts) ? [...state.artifacts] : [];
+      const liveCurrentStreamId = context.currentStreamId;
+      const hasLivePresentation = !!state.busy || !!context.currentStreamText || !!context.pendingAssistantText ||
         (Array.isArray(context.pendingAssistantBlocks) && context.pendingAssistantBlocks.length > 0);
       state.messages = mergeHydratedMessages(
         saved.messages,
@@ -992,14 +991,14 @@
   }
 
   async function openScheduledRunChatOnce(run, task) {
-    var sessionId = run && typeof run.sessionId === "string" ? run.sessionId.trim() : "";
+    const sessionId = run && typeof run.sessionId === "string" ? run.sessionId.trim() : "";
     if (!sessionId) {
       reportSessionSwitchFailure(new Error(bt("runHasNoSession")), "scheduled");
       return false;
     }
     rememberScheduledRunOwner(run);
-    var runStatus = String(run && run.status || "").toLowerCase();
-    var openActivation = null;
+    const runStatus = String(run && run.status || "").toLowerCase();
+    let openActivation = null;
     if (runStatus === "queued" || runStatus === "running") {
       openActivation = beginScheduledOpenActivation(sessionId);
     } else {
@@ -1007,20 +1006,20 @@
     }
     setScheduledTaskError(null);
     notify();
-    var returnSessionId = state.scheduledRunContext
+    const returnSessionId = state.scheduledRunContext
       ? state.scheduledRunContext.returnSessionId
       : state.activeSessionId;
-    var liveBuffer = sessionStates[sessionId];
-    var hasLiveTurn = !!(liveBuffer && (
+    const liveBuffer = sessionStates[sessionId];
+    const hasLiveTurn = !!(liveBuffer && (
       liveBuffer.busy ||
       liveBuffer.scheduledInitialTurnPhase === "active" ||
       (liveBuffer.queued && liveBuffer.queued.length) ||
       (liveBuffer.thinking && liveBuffer.thinking.active)
     ));
-    var isTerminalRun = runStatus === "completed" || runStatus === "failed" || runStatus === "canceled";
-    var forceDurableLoad = isTerminalRun && !hasLiveTurn;
-    var switched = await switchToSessionInternal(sessionId, true, "scheduled", {
-      forceDurableLoad: forceDurableLoad,
+    const isTerminalRun = ["completed", "failed", "canceled"].includes(runStatus);
+    const forceDurableLoad = isTerminalRun && !hasLiveTurn;
+    const switched = await switchToSessionInternal(sessionId, true, "scheduled", {
+      forceDurableLoad,
       hydrateLiveSession: !isTerminalRun,
     });
     if (!switched) {
@@ -1030,13 +1029,13 @@
     }
     if (forceDurableLoad) markScheduledInitialTurnTerminal(sessionId);
     else scheduledRunBuffer(sessionId);
-    var automationId = (run && run.automationId) || (task && task.id) || null;
-    var runId = (run && (run.runId || run.id)) || null;
+    const automationId = (run && run.automationId) || (task && task.id) || null;
+    const runId = (run && (run.runId || run.id)) || null;
     state.scheduledRunContext = {
-      sessionId: sessionId,
-      returnSessionId: returnSessionId,
-      automationId: automationId,
-      runId: runId,
+      sessionId,
+      returnSessionId,
+      automationId,
+      runId,
       taskName: (task && task.name) || (run && (run.taskName || run.name)) || "",
       model: (task && task.model) || null,
       mode: "yolo",
@@ -1045,9 +1044,9 @@
     notify();
     if (automationId && runId && runStatus === "completed") {
       try {
-        var receipt = await invoke("mark_scheduled_run_viewed", {
-          automationId: automationId,
-          runId: runId,
+        const receipt = await invoke("mark_scheduled_run_viewed", {
+          automationId,
+          runId,
         });
         invalidateScheduledTaskReads(automationId);
         applyScheduledRunViewed(automationId, runId, receipt);
@@ -1060,10 +1059,10 @@
   }
 
   function openScheduledRunChat(run, task) {
-    var sessionId = run && typeof run.sessionId === "string" ? run.sessionId.trim() : "";
+    const sessionId = run && typeof run.sessionId === "string" ? run.sessionId.trim() : "";
     if (!sessionId) return openScheduledRunChatOnce(run, task);
     if (scheduledRunOpenInFlight[sessionId]) return scheduledRunOpenInFlight[sessionId];
-    var opening = openScheduledRunChatOnce(run, task);
+    const opening = openScheduledRunChatOnce(run, task);
     scheduledRunOpenInFlight[sessionId] = opening;
     function clearOpening() {
       if (scheduledRunOpenInFlight[sessionId] === opening) {
@@ -1075,10 +1074,10 @@
   }
 
   async function exitScheduledRunChat() {
-    var context = state.scheduledRunContext;
+    const context = state.scheduledRunContext;
     if (!context) return false;
     if (context.returnSessionId && context.returnSessionId !== context.sessionId) {
-      var restored = await switchToSessionInternal(context.returnSessionId, true, "scheduled");
+      const restored = await switchToSessionInternal(context.returnSessionId, true, "scheduled");
       if (restored) {
         state.scheduledRunContext = null;
         notify();
@@ -1131,7 +1130,7 @@
 
   if (typeof listen === "function") {
     listen("session:deleted", function (event) {
-      var payload = event && event.payload || {};
+      const payload = event && event.payload || {};
       applyDeletedSession(payload.id);
     }).catch(function (error) {
       console.error("[sessions] session:deleted listener failed", error);
@@ -1144,7 +1143,7 @@
       console.error("[sessions] session:list_changed listener failed", error);
     });
     listen("session:model_changed", function (event) {
-      var payload = event && event.payload || {};
+      const payload = event && event.payload || {};
       if (payload.id !== state.activeSessionId) return;
       Promise.resolve(loadSessionModel(payload.id)).catch(function (error) {
         console.error("[sessions] session:model_changed refresh failed", error);
@@ -1153,7 +1152,7 @@
       console.error("[sessions] session:model_changed listener failed", error);
     });
     listen("session:persona_changed", function (event) {
-      var payload = event && event.payload || {};
+      const payload = event && event.payload || {};
       if (payload.id !== state.activeSessionId) return;
       Promise.resolve(syncActivePersona()).then(notify).catch(function (error) {
         console.error("[sessions] session:persona_changed refresh failed", error);
@@ -1167,7 +1166,7 @@
     try {
       // 后端按 SessionKind 分发:定时运行会话在 delete_session 里联动删除
       // 该次 Session、Run 与底座 Task,任务定义与共享工作间保留。
-      await invoke("delete_session", { id: id });
+      await invoke("delete_session", { id });
       // 复用远端事件与本地操作的统一清理路径，并保留批量操作所需的结果语义。
       return applyDeletedSession(id);
     } catch (e) {
@@ -1179,8 +1178,8 @@
   async function renameSession(id, title) {
     invalidateScheduledRecentRunsForSession(id);
     try {
-      await invoke("rename_session", { id: id, title: title });
-      var s = state.sessions.find(function (s) { return s.id === id; });
+      await invoke("rename_session", { id, title });
+      const s = state.sessions.find(function (s) { return s.id === id; });
       if (s) s.title = title;
       state.scheduledTaskRecentRuns = (state.scheduledTaskRecentRuns || []).map(function (run) {
         return run && run.sessionId === id ? Object.assign({}, run, { sessionTitle: title }) : run;
@@ -1194,12 +1193,12 @@
 
   async function toggleSessionPinned(id, pinned) {
     invalidateScheduledRecentRunsForSession(id);
-    var s = state.sessions.find(function (s) { return s.id === id; });
-    var scheduledRun = recentScheduledRunForSession(id);
-    var prev = s ? !!s.pinned : false;
-    var prevPinnedAt = s ? s.pinned_at : null;
-    var previousRunPinned = scheduledRun ? !!scheduledRun.pinned : false;
-    var previousRunPinnedAt = scheduledRun ? scheduledRun.pinnedAt : null;
+    const s = state.sessions.find(function (s) { return s.id === id; });
+    const scheduledRun = recentScheduledRunForSession(id);
+    const prev = s ? !!s.pinned : false;
+    const prevPinnedAt = s ? s.pinned_at : null;
+    const previousRunPinned = scheduledRun ? !!scheduledRun.pinned : false;
+    const previousRunPinnedAt = scheduledRun ? scheduledRun.pinnedAt : null;
     if (s) {
       s.pinned = !!pinned;
       s.pinned_at = pinned ? new Date().toISOString() : null;
@@ -1210,7 +1209,7 @@
     }
     notify();
     try {
-      await invoke("set_session_pinned", { id: id, pinned: !!pinned });
+      await invoke("set_session_pinned", { id, pinned: !!pinned });
       await refreshHistoryList();
     } catch (e) {
       if (s) {
@@ -1228,14 +1227,14 @@
 
   async function archiveSession(id) {
     invalidateScheduledRecentRunsForSession(id);
-    var idx = state.sessions.findIndex(function (s) { return s.id === id; });
+    const idx = state.sessions.findIndex(function (s) { return s.id === id; });
     if (idx < 0) {
       // 定时运行会话不在 state.sessions;收起 = 从侧边栏记录移除,进设置页归档列表。
-      var scheduledRun = recentScheduledRunForSession(id);
+      const scheduledRun = recentScheduledRunForSession(id);
       // Codex 等独立会话也不在 state.sessions；交给后端判定并刷新统一历史列表。
       if (!scheduledRun) {
         try {
-          await invoke("set_session_archived", { id: id, archived: true });
+          await invoke("set_session_archived", { id, archived: true });
           await refreshHistoryList();
           return true;
         } catch (e) {
@@ -1243,13 +1242,13 @@
           return false;
         }
       }
-      var previousRuns = state.scheduledTaskRecentRuns || [];
-      var wasViewingRun = state.activeSessionId === id;
-      var previousContext = state.scheduledRunContext;
+      const previousRuns = state.scheduledTaskRecentRuns || [];
+      const wasViewingRun = state.activeSessionId === id;
+      const previousContext = state.scheduledRunContext;
       // 归档等待期间的导航 token：失败回滚时「activeSessionId === null」不足以
       // 证明无新导航——用户再进草稿也保持 null（enterDraft 只推进 token），
       // 仅 token 未前移才允许把 active 拽回归档会话（三审 P1）。
-      var navToken = sessionSwitchRequestToken;
+      const navToken = sessionSwitchRequestToken;
       // 与普通会话收纳同语义:保留 buffer(还能从设置页还原后重开),但要离开当前视图。
       if (wasViewingRun) saveWorkingSetTo(getBuffer(id));
       state.scheduledTaskRecentRuns = previousRuns.filter(function (run) {
@@ -1258,7 +1257,7 @@
       leaveSessionView(id);
       notify();
       try {
-        await invoke("set_session_archived", { id: id, archived: true });
+        await invoke("set_session_archived", { id, archived: true });
         await refreshHistoryList();
         return true;
       } catch (e) {
@@ -1278,19 +1277,19 @@
         return false;
       }
     }
-    var s = state.sessions[idx];
-    var archived = Object.assign({}, s, { archived: true, archived_at: new Date().toISOString(), pinned: false, pinned_at: null });
-    var wasActive = state.activeSessionId === id;
+    const s = state.sessions[idx];
+    const archived = Object.assign({}, s, { archived: true, archived_at: new Date().toISOString(), pinned: false, pinned_at: null });
+    const wasActive = state.activeSessionId === id;
     // 与 scheduled 分支同源：失败回滚须以导航 token 证明「无新导航」——
     // 归档等待期间再进草稿 activeSessionId 仍为 null（三审 P1）。
-    var navToken = sessionSwitchRequestToken;
+    const navToken = sessionSwitchRequestToken;
     if (wasActive) saveWorkingSetTo(getBuffer(id));
     state.sessions.splice(idx, 1);
-    state.archivedSessions = [archived].concat((state.archivedSessions || []).filter(function (x) { return x.id !== id; }));
+    state.archivedSessions = [archived, ...(state.archivedSessions || []).filter(function (x) { return x.id !== id; })];
     leaveSessionView(id);
     notify();
     try {
-      await invoke("set_session_archived", { id: id, archived: true });
+      await invoke("set_session_archived", { id, archived: true });
       await refreshHistoryList();
       return true;
     } catch (e) {
@@ -1310,16 +1309,16 @@
   }
 
   async function restoreArchivedSession(id) {
-    var idx = (state.archivedSessions || []).findIndex(function (s) { return s.id === id; });
+    const idx = (state.archivedSessions || []).findIndex(function (s) { return s.id === id; });
     if (idx < 0) return false;
-    var s = state.archivedSessions[idx];
+    const s = state.archivedSessions[idx];
     invalidateScheduledRecentRunsForSession(id);
-    var restored = Object.assign({}, s, { archived: false, archived_at: null });
+    const restored = Object.assign({}, s, { archived: false, archived_at: null });
     state.archivedSessions.splice(idx, 1);
-    state.sessions = [restored].concat(state.sessions || []);
+    state.sessions = [restored, ...(state.sessions || [])];
     notify();
     try {
-      await invoke("set_session_archived", { id: id, archived: false });
+      await invoke("set_session_archived", { id, archived: false });
       await refreshHistoryList();
       // 还原的定时运行会话回侧边栏"定时任务记录"(refreshHistoryList 只管普通会话)。
       if (String(id).indexOf("sched-") === 0) loadScheduledTaskRecentRuns().catch(function () {});
@@ -1336,53 +1335,53 @@
   // 实时态有专属气泡的工具（方案卡），重建时要还原成原卡而非普通工具卡。
 
     return {
-      freshBuffer: freshBuffer,
-      getBuffer: getBuffer,
-      isProtectedScheduledBuffer: isProtectedScheduledBuffer,
-      pruneScheduledSessionBuffers: pruneScheduledSessionBuffers,
-      touchSessionBuffer: touchSessionBuffer,
-      purgeSessionBuffer: purgeSessionBuffer,
-      registerScheduledRunOwner: registerScheduledRunOwner,
-      scheduledRunOwnerVisibleRank: scheduledRunOwnerVisibleRank,
-      scheduledRunOwnerPriority: scheduledRunOwnerPriority,
-      isProtectedScheduledRunOwner: isProtectedScheduledRunOwner,
-      pruneScheduledRunSessionOwner: pruneScheduledRunSessionOwner,
-      pruneScheduledRunSessionOwners: pruneScheduledRunSessionOwners,
-      isScheduledRunTerminal: isScheduledRunTerminal,
-      rememberScheduledRunOwner: rememberScheduledRunOwner,
-      scheduledRunBuffer: scheduledRunBuffer,
-      markScheduledInitialTurnActive: markScheduledInitialTurnActive,
-      markScheduledInitialTurnTerminal: markScheduledInitialTurnTerminal,
-      beginScheduledOpenActivation: beginScheduledOpenActivation,
-      rollbackScheduledOpenActivation: rollbackScheduledOpenActivation,
-      saveWorkingSetTo: saveWorkingSetTo,
-      loadWorkingSetFrom: loadWorkingSetFrom,
-      hydrateWorkingSetFromSaved: hydrateWorkingSetFromSaved,
-      ensureSessionBufferLoaded: ensureSessionBufferLoaded,
-      switchActiveTo: switchActiveTo,
-      refreshHistoryList: refreshHistoryList,
-      enterDraft: enterDraft,
-      createNewSession: createNewSession,
-      ensureSession: ensureSession,
-      reportSessionSwitchFailure: reportSessionSwitchFailure,
-      hydratedMessageKey: hydratedMessageKey,
-      mergeHydratedMessages: mergeHydratedMessages,
-      mergeHydratedArtifacts: mergeHydratedArtifacts,
-      hydratedChatItemKey: hydratedChatItemKey,
-      mergeHydratedChatItems: mergeHydratedChatItems,
-      switchToSessionInternal: switchToSessionInternal,
-      switchToSession: switchToSession,
-      openScheduledRunChatOnce: openScheduledRunChatOnce,
-      openScheduledRunChat: openScheduledRunChat,
-      exitScheduledRunChat: exitScheduledRunChat,
-      recentScheduledRunForSession: recentScheduledRunForSession,
-      leaveSessionView: leaveSessionView,
-      applyDeletedSession: applyDeletedSession,
-      deleteSession: deleteSession,
-      renameSession: renameSession,
-      toggleSessionPinned: toggleSessionPinned,
-      archiveSession: archiveSession,
-      restoreArchivedSession: restoreArchivedSession
+      freshBuffer,
+      getBuffer,
+      isProtectedScheduledBuffer,
+      pruneScheduledSessionBuffers,
+      touchSessionBuffer,
+      purgeSessionBuffer,
+      registerScheduledRunOwner,
+      scheduledRunOwnerVisibleRank,
+      scheduledRunOwnerPriority,
+      isProtectedScheduledRunOwner,
+      pruneScheduledRunSessionOwner,
+      pruneScheduledRunSessionOwners,
+      isScheduledRunTerminal,
+      rememberScheduledRunOwner,
+      scheduledRunBuffer,
+      markScheduledInitialTurnActive,
+      markScheduledInitialTurnTerminal,
+      beginScheduledOpenActivation,
+      rollbackScheduledOpenActivation,
+      saveWorkingSetTo,
+      loadWorkingSetFrom,
+      hydrateWorkingSetFromSaved,
+      ensureSessionBufferLoaded,
+      switchActiveTo,
+      refreshHistoryList,
+      enterDraft,
+      createNewSession,
+      ensureSession,
+      reportSessionSwitchFailure,
+      hydratedMessageKey,
+      mergeHydratedMessages,
+      mergeHydratedArtifacts,
+      hydratedChatItemKey,
+      mergeHydratedChatItems,
+      switchToSessionInternal,
+      switchToSession,
+      openScheduledRunChatOnce,
+      openScheduledRunChat,
+      exitScheduledRunChat,
+      recentScheduledRunForSession,
+      leaveSessionView,
+      applyDeletedSession,
+      deleteSession,
+      renameSession,
+      toggleSessionPinned,
+      archiveSession,
+      restoreArchivedSession
     };
   };
 })(window);

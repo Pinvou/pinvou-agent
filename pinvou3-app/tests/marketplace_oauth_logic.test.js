@@ -28,7 +28,7 @@ assert.match(toolStoreView, /oauthUiTimeoutResult\(oauthServerName\)/);
 assert.doesNotMatch(toolStoreView, /oauthUiTimeoutResult\('yuandian_mcp'\)/);
 assert.doesNotMatch(toolStoreView, /尚未完成元典 OAuth|尚未连接华宇元典/);
 
-let pending = resolveOAuthInstallOutcome(
+const pending = resolveOAuthInstallOutcome(
   toolName,
   { status: 'timeout', message: '授权超时', server_name: 'canva_mcp' },
   pendingAuth
@@ -41,7 +41,7 @@ assert.strictEqual(pending.alert.isError, true);
 assert.strictEqual(pending.alert.title, 'Canva 可画授权超时');
 assertNoYuandian(pending);
 
-let falseSuccess = resolveOAuthInstallOutcome(
+const falseSuccess = resolveOAuthInstallOutcome(
   toolName,
   { status: 'connected', message: 'ok', server_name: 'canva_mcp' },
   pendingAuth
@@ -53,7 +53,7 @@ assert.strictEqual(falseSuccess.selectedToolPatch.installed, false);
 assert.match(falseSuccess.alert.subtitle, /未检测到 OAuth token/);
 assertNoYuandian(falseSuccess);
 
-let connected = resolveOAuthInstallOutcome(
+const connected = resolveOAuthInstallOutcome(
   toolName,
   { status: 'connected', message: 'ok', server_name: 'canva_mcp' },
   connectedAuth
@@ -65,7 +65,7 @@ assert.strictEqual(connected.selectedToolPatch.installed, true);
 assert.strictEqual(connected.alert.isError, false);
 assertNoYuandian(connected);
 
-let timeoutAtCallbackBoundary = resolveOAuthInstallOutcome(
+const timeoutAtCallbackBoundary = resolveOAuthInstallOutcome(
   toolName,
   { status: 'timeout', message: '授权超时', server_name: 'canva_mcp' },
   connectedAuth
@@ -75,7 +75,7 @@ assert.strictEqual(timeoutAtCallbackBoundary.authState.oauth_token_present, true
 assert.strictEqual(timeoutAtCallbackBoundary.selectedToolPatch.installed, true);
 assertNoYuandian(timeoutAtCallbackBoundary);
 
-let cancelled = resolveOAuthInstallOutcome(
+const cancelled = resolveOAuthInstallOutcome(
   toolName,
   { status: 'cancelled', message: '已取消等待浏览器授权', server_name: 'canva_mcp' },
   pendingAuth
@@ -88,7 +88,7 @@ assert.match(cancelled.alert.title, /授权已取消/);
 assert.match(cancelled.alert.subtitle, /已取消/);
 assertNoYuandian(cancelled);
 
-let serviceError = resolveOAuthInstallOutcome(
+const serviceError = resolveOAuthInstallOutcome(
   toolName,
   { status: 'service_error', message: 'OAuth 授权服务返回错误或 404', server_name: 'canva_mcp' },
   pendingAuth
@@ -99,7 +99,7 @@ assert.strictEqual(serviceError.authState.oauth_token_present, false);
 assert.match(serviceError.alert.title, /授权服务错误/);
 assertNoYuandian(serviceError);
 
-let providerError = resolveOAuthInstallOutcome(
+const providerError = resolveOAuthInstallOutcome(
   toolName,
   { status: 'provider_error', message: 'OAuth 授权服务拒绝了本次授权', server_name: 'canva_mcp' },
   pendingAuth

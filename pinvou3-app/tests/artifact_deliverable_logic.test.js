@@ -8,7 +8,6 @@ const path = require("path");
 const vm = require("vm");
 
 const appRoot = path.resolve(__dirname, "..");
-const repoRoot = path.resolve(appRoot, "..");
 
 // 两侧同一组预期:tmp/ 段一律 false,成品扩展名普通路径 true
 const CASES = [
@@ -80,11 +79,11 @@ function evalIsDeliverable(snippet, label) {
   assert.strictEqual(feature.fileMutationAction("File", { action: "patch" }), "patch");
   assert.strictEqual(feature.fileMutationAction("File", { action: "read" }), null);
   assert.deepStrictEqual(
-    Array.from(feature.extractArtifactPaths({
+    [...feature.extractArtifactPaths({
       action: "patch",
       changes: [{ path: "report.md" }],
       patch: "*** Update File: report.md\n*** Add File: appendix.md\n+++ b/summary.md",
-    })),
+    })],
     ["report.md", "appendix.md", "summary.md"],
     "File.patch 必须追踪全部去重后的产物路径",
   );
@@ -94,7 +93,7 @@ function evalIsDeliverable(snippet, label) {
 //    连续代码块 + normalizedPath(isTmpPath 复用它)执行
 {
   const src = fs.readFileSync(path.join(appRoot, "src", "platform", "web", "bridge.js"), "utf8");
-  const blockStart = src.indexOf("var DELIVERABLE_EXTS");
+  const blockStart = src.search(/\b(?:var|const|let) DELIVERABLE_EXTS/);
   const blockEnd = src.indexOf("function trackArtifact");
   assert.ok(blockStart >= 0 && blockEnd > blockStart, "web bridge.js 应存在 DELIVERABLE_EXTS..isDeliverable 代码块");
   const snippet = extractFunction(src, "normalizedPath") + "\n" + src.slice(blockStart, blockEnd);

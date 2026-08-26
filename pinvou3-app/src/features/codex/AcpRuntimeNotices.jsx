@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AlertTriangle, RefreshCw, Sparkles, Terminal } from '../../components/icons.jsx';
 import {
   runtimeInstallInProgress,
@@ -10,6 +10,7 @@ function setupHintText(copy, hint) {
   return copy.setupHints?.[hint] || '';
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- runtime notices dispatch four mutually exclusive shapes by noticeMode (check/install/login/error); the branches are the copy matrix
 export function RuntimeNotice({
   status,
   working,
@@ -28,9 +29,11 @@ export function RuntimeNotice({
   const [authorizationCode, setAuthorizationCode] = useState('');
   const [declinedUpgrade, setDeclinedUpgrade] = useState(false);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously clear the auth-code input when the login flow restarts; one-shot mirror
     setAuthorizationCode('');
   }, [status?.agent_id, status?.login_in_progress]);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the "skip upgrade" state when the version/reset key changes; one-shot mirror
     setDeclinedUpgrade(false);
   }, [resetKey, status?.agent_id, status?.installed, status?.latest_version]);
   const noticeMode = runtimeNoticeMode(status, declinedUpgrade || suppressAdvisoryUpgrade);
@@ -50,7 +53,7 @@ export function RuntimeNotice({
           {visibleError && <div className="mt-2 text-[11px] text-red-500">{visibleError}</div>}
         </div>
         {!isCodex && (
-          <button onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-red-500/20 text-[12px] font-medium">
+          <button type="button" onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-red-500/20 text-[12px] font-medium">
             {copy.recheck}
           </button>
         )}
@@ -72,11 +75,11 @@ export function RuntimeNotice({
     const installButtons = {
       official_script: copy.confirmInstall,
     };
-    const hint = !managementAvailable
-      ? copy.manageAgentOnDesktop(agentName)
-      : isPackageManagerUpgrade
+    const hint = managementAvailable
+      ? isPackageManagerUpgrade
         ? copy.packageManagerUpgradeHint(status.install_source)
-        : installHints[action] || setupHintText(copy, status.setup_hint) || copy.manualInstallHint(agentName);
+        : installHints[action] || setupHintText(copy, status.setup_hint) || copy.manualInstallHint(agentName)
+      : copy.manageAgentOnDesktop(agentName);
     const busyLabel = copy.installing;
     return (
       <div className="rounded-2xl border border-blue-500/20 bg-blue-500/[0.05] p-4 flex items-center gap-3">
@@ -94,29 +97,29 @@ export function RuntimeNotice({
           <div className="mt-0.5 text-[12px] text-gray-500">{hint}</div>
           {visibleError && <div className="mt-1 text-[11px] text-red-500">{visibleError}</div>}
         </div>
-        {!managementAvailable ? (
-          <button onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium">
-            {copy.recheck}
-          </button>
-        ) : canAutoUpgrade ? (
+        {managementAvailable ? canAutoUpgrade ? (
           <div className="flex shrink-0 items-center gap-2">
             {canDeferUpgrade && (
-              <button onClick={() => setDeclinedUpgrade(true)} disabled={working || installing} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium disabled:opacity-50">
+              <button type="button" onClick={() => setDeclinedUpgrade(true)} disabled={working || installing} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium disabled:opacity-50">
                 {copy.declineUpgrade}
               </button>
             )}
-            <button onClick={() => onInstall()} disabled={working || installing} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50 inline-flex items-center gap-1.5">
+            <button type="button" onClick={() => onInstall()} disabled={working || installing} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50 inline-flex items-center gap-1.5">
               {installing && <RefreshCw size={12} className="animate-spin" />}
               {installing ? busyLabel : copy.upgrade}
             </button>
           </div>
         ) : installButtons[action] ? (
-          <button onClick={() => onInstall()} disabled={working || installing} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50 inline-flex items-center gap-1.5">
+          <button type="button" onClick={() => onInstall()} disabled={working || installing} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50 inline-flex items-center gap-1.5">
             {installing && <RefreshCw size={12} className="animate-spin" />}
             {installing ? busyLabel : installButtons[action]}
           </button>
         ) : (
-          <button onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium">
+          <button type="button" onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium">
+            {copy.recheck}
+          </button>
+        ) : (
+          <button type="button" onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium">
             {copy.recheck}
           </button>
         )}
@@ -133,11 +136,11 @@ export function RuntimeNotice({
     const signedOutTitle = copy.agentNotLoggedIn
       ? copy.agentNotLoggedIn(agentName)
       : copy.notLoggedIn;
-    const loginHint = !managementAvailable
-      ? copy.manageAgentOnDesktop(agentName)
-      : copy.agentLoginHint
+    const loginHint = managementAvailable
+      ? copy.agentLoginHint
         ? copy.agentLoginHint(agentName)
-        : (setupHintText(copy, status.setup_hint) || copy.loginHint);
+        : (setupHintText(copy, status.setup_hint) || copy.loginHint)
+      : copy.manageAgentOnDesktop(agentName);
     return (
       <div className="rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-4 flex items-start gap-3">
         <Sparkles size={19} className="text-amber-500 shrink-0" />
@@ -186,16 +189,16 @@ export function RuntimeNotice({
         {managementAvailable ? (
           <>
             {loginUrlReady && (
-              <button onClick={onOpenLogin} className="px-3 py-1.5 rounded-xl border border-amber-500/30 text-amber-700 dark:text-amber-300 text-[12px] font-medium">
+              <button type="button" onClick={onOpenLogin} className="px-3 py-1.5 rounded-xl border border-amber-500/30 text-amber-700 dark:text-amber-300 text-[12px] font-medium">
                 {copy.reopenAuth}
               </button>
             )}
-            <button onClick={onLogin} disabled={working || waitingForLogin} className="px-3 py-1.5 rounded-xl bg-amber-500 text-white text-[12px] font-medium disabled:opacity-50">
+            <button type="button" onClick={onLogin} disabled={working || waitingForLogin} className="px-3 py-1.5 rounded-xl bg-amber-500 text-white text-[12px] font-medium disabled:opacity-50">
               {waitingForLogin ? copy.waitAuth : copy.authorize}
             </button>
           </>
         ) : (
-          <button onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-amber-500/30 text-amber-700 dark:text-amber-300 text-[12px] font-medium">
+          <button type="button" onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-amber-500/30 text-amber-700 dark:text-amber-300 text-[12px] font-medium">
             {copy.recheck}
           </button>
         )}

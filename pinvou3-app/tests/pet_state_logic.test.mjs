@@ -295,7 +295,7 @@ try {
     { id: 's5', working: false },
   ], 1, now + 60_000);
   assert.deepEqual(
-    deriveActivities(keep, now + 60_001).map((item) => item.sessionId).sort(),
+    deriveActivities(keep, now + 60_001).map((item) => item.sessionId).sort(), // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
     ['s4', 's5'],
     'not-working snapshots must never clear cards that wait for the user',
   );

@@ -116,9 +116,9 @@ async function primeSessionA(rt) {
   const rename = rt.defer('rename_session');
   const p = rt.personas.equipPersona('persona-prime');
   create.resolve({ id: 'chat-a', transcript_revision: 1 });
-  await new Promise(r => setTimeout(r, 0)); // ensureSession 链推进到 equip_persona
+  await new Promise(r => { setTimeout(r, 0); }); // ensureSession 链推进到 equip_persona
   equip.resolve({ id: 'persona-prime', name: '引导卡' });
-  await new Promise(r => setTimeout(r, 0)); // equip 恢复并挂起在 rename(标题默认)
+  await new Promise(r => { setTimeout(r, 0); }); // equip 恢复并挂起在 rename(标题默认)
   rename.resolve({});
   await p;
   const view = rt.view();
@@ -179,7 +179,7 @@ test('web: syncActivePersona 切走后陈旧快照不覆盖新会话挂件', asy
   rt.emit('session:persona_changed', { id: 'chat-a' }); // A 的后端事件到达
   rt.leave(); // 响应返回前切草稿(草稿工作集已换空)
   get.resolve({ id: 'persona-other', name: '别的专家' });
-  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => { setTimeout(r, 0); });
   assert.equal(rt.view().activePersona, null, '陈旧快照不得把挂件写进切走后的草稿');
 });
 
@@ -191,7 +191,7 @@ test('web: saveMemoryProfilePatch 切走后写结果不落进当前面板', asyn
   const p = rt.memory.saveMemoryProfilePatch({ name: 'A 的档案' });
   rt.leave(); // update 往返期间切草稿
   update.resolve({ profile: { name: 'A 的档案' }, runtime: null, warnings: [] });
-  await new Promise(r => setTimeout(r, 0)); // update 恢复；尾部重载已发起并挂起
+  await new Promise(r => { setTimeout(r, 0); }); // update 恢复；尾部重载已发起并挂起
   assert.equal(rt.view().memory.profile, null, '切走后 A 的写结果不得即时渲染进草稿面板');
   overview.resolve(null);
   await p;
@@ -212,7 +212,7 @@ test('web: syncActivePersona 慢响应不得覆盖权威 equip（同会话乱序
   await equipP;
   assert.equal(rt.view().activePersona && rt.view().activePersona.id, 'persona-x');
   get.resolve(null); // 慢 sync 后到，旧快照是「无卡」
-  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => { setTimeout(r, 0); });
   assert.equal(rt.view().activePersona && rt.view().activePersona.id, 'persona-x',
     '慢 sync 的旧快照不得覆盖刚加持的挂件');
 });
@@ -225,7 +225,7 @@ test('web: equipPersona rename 挂起期间切走：不插卡/不写挂件', asy
   const rename = rt.defer('rename_session');
   const p = rt.personas.equipPersona('persona-x');
   equip.resolve({ id: 'persona-x', name: '专家X' });
-  await new Promise(r => setTimeout(r, 0)); // equip 恢复并挂起在 rename
+  await new Promise(r => { setTimeout(r, 0); }); // equip 恢复并挂起在 rename
   rt.leave(); // rename 挂起期间切草稿
   rename.resolve({});
   await p;
@@ -264,15 +264,15 @@ test('web: 会话切回的 presentation-sync 不得被在途旧 sync 覆盖（�
   rt.setHandler('get_active_persona', () => Promise.resolve({ id: 'persona-prime', name: '引导卡' }));
   const overview = rt.defer('get_memory_overview');
   const switchP = rt.sessions.switchToSession('chat-a');
-  await new Promise(r => setTimeout(r, 0)); // 推进到 presentation-sync 的 Promise.all 挂起
+  await new Promise(r => { setTimeout(r, 0); }); // 推进到 presentation-sync 的 Promise.all 挂起
   overview.resolve(null); // presentation-sync 提交：bump 序号 + 写回权威挂件
-  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => { setTimeout(r, 0); });
   assert.equal(rt.view().activeSessionId, 'chat-a', '已切回 A');
   assert.equal(rt.view().activePersona && rt.view().activePersona.id, 'persona-prime',
     'presentation-sync 权威挂件已写回');
   // 旧 sync 的陈旧响应此刻才返回：sid 仍是 chat-a，无人 bump 时会覆盖权威挂件
   staleGet.resolve(null);
-  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => { setTimeout(r, 0); });
   await switchP;
   assert.equal(rt.view().activePersona && rt.view().activePersona.id, 'persona-prime',
     '在途旧 sync 的陈旧快照不得覆盖 presentation-sync 写回的权威挂件');
