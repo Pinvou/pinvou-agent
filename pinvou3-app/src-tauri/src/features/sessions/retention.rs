@@ -250,6 +250,17 @@ impl SessionStore {
         if removed_hidden {
             self.save_hidden_sessions();
         }
+
+        // Keys of process-level turn-state maps (timing/pending_user_input)
+        // accumulate per session id and are cleaned by the purge hook
+        // registered by the app composition root (see SessionPurgedHook;
+        // this module must not depend on the assistant feature directly).
+        // Otherwise residual unpaired turn queues grow unbounded over the
+        // app lifetime, and a late finish would rebuild an orphan timing
+        // sidecar outside the deleted session's directory.
+        for id in ids {
+            self.notify_session_purged(id);
+        }
     }
 
     pub(crate) fn purge_all_scheduled_side_maps(&self) {

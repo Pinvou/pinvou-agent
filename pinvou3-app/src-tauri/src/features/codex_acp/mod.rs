@@ -74,7 +74,7 @@ pub use events::{
     AcpEventEnvelope,
 };
 use latest::LatestVersionProbe;
-use operation_gate::begin_prompt;
+use operation_gate::admit_prompt_turn;
 pub use providers::{
     AcpProvidersView, ImportResult, ProviderManager, ProviderRecord, ProviderWireApi,
 };
@@ -2829,10 +2829,9 @@ impl AcpPool {
         .into_iter()
         .find_map(find_in_path)
         {
-            std::process::Command::new(&browser)
-                .arg("--new-window")
-                .arg(&url)
-                .spawn()
+            let mut browser_command = std::process::Command::new(&browser);
+            browser_command.arg("--new-window").arg(&url);
+            crate::platform::os::spawn_detached_and_reap(&mut browser_command)
                 .with_context(|| format!("启动浏览器失败: {}", browser.display()))?;
             eprintln!(
                 "[pinvou3-app] {} authorization page requested via {}",
@@ -2989,11 +2988,11 @@ impl AcpPool {
             &workspace_references,
             &runtime.prompt_capabilities,
         )?;
-        begin_prompt(&runtime.busy, &runtime.configuring)?;
-        if let Err(error) = self.session_store.touch_activity(session_id) {
-            runtime.busy.store(false, Ordering::Release);
-            return Err(error).context("更新 ACP 会话最近活跃时间失败");
-        }
+        admit_prompt_turn(&runtime.busy, &runtime.configuring, session_id, || {
+            self.session_store
+                .touch_activity(session_id)
+                .context("更新 ACP 会话最近活跃时间失败")
+        })?;
         let pool = self.clone();
         let session_id = session_id.to_string();
         tokio::spawn(async move {

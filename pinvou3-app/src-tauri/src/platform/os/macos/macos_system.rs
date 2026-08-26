@@ -24,20 +24,15 @@ fn is_executable(path: &Path) -> bool {
 }
 
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
-    Command::new("/usr/bin/open")
-        .arg(target.as_ref())
-        .spawn()
-        .map_err(|e| format!("系统打开失败({label}): {e}"))?;
-    Ok(())
+    super::super::posix::spawn_detached_and_reap(Command::new("/usr/bin/open").arg(target.as_ref()))
+        .map_err(|e| format!("系统打开失败({label}): {e}"))
 }
 
 pub fn reveal_target(target: &Path) -> Result<(), String> {
-    Command::new("/usr/bin/open")
-        .arg("-R")
-        .arg(target)
-        .spawn()
-        .map_err(|error| format!("文件管理器定位失败: {error}"))?;
-    Ok(())
+    super::super::posix::spawn_detached_and_reap(
+        Command::new("/usr/bin/open").arg("-R").arg(target),
+    )
+    .map_err(|error| format!("文件管理器定位失败: {error}"))
 }
 
 pub fn command_exists(command: &str) -> bool {

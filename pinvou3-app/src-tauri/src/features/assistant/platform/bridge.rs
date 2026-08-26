@@ -41,6 +41,15 @@ use crate::features::assistant::runtime_model::RuntimeModelCredential;
 use crate::features::assistant::session_policy::SessionPolicy;
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 
+/// Process-wide shared credential-store handle. `SystemCredentialStore`'s
+/// backend caches (one `Secrets` per keyring service) live on the instance;
+/// a per-call new() throws the probe/service resolution away and repeats it
+/// several times per turn.
+fn shared_credential_store() -> &'static SystemCredentialStore {
+    static STORE: std::sync::OnceLock<SystemCredentialStore> = std::sync::OnceLock::new();
+    STORE.get_or_init(SystemCredentialStore::new)
+}
+
 // Qwen3.6 在 vLLM 里是 passthrough 字符串（不走 alias）;`_256k` 后缀语义与
 // ops 同步要求见 `ModelPreset::default_model` 的 LocalVllm 注释（prefs/model.rs）。
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
@@ -847,7 +856,7 @@ impl Pinvou3Bridge {
             }
         }
         if let Some(m) = self.effective_model() {
-            let store = SystemCredentialStore::new();
+            let store = shared_credential_store();
             if let Some(reference) = &m.credential_ref {
                 match store.get(reference) {
                     Ok(Some(key)) if !key.trim().is_empty() => return key,
@@ -882,7 +891,7 @@ impl Pinvou3Bridge {
     /// 本地 vLLM/loopback 无鉴权场景返回占位 key(底座要求非空)。
     fn api_key_for_saved_model(model: &SavedModel) -> String {
         if let Some(reference) = &model.credential_ref {
-            let store = SystemCredentialStore::new();
+            let store = shared_credential_store();
             match store.get(reference) {
                 Ok(Some(key)) if !key.trim().is_empty() => return key,
                 Ok(_) => {}
@@ -1028,7 +1037,7 @@ impl Pinvou3Bridge {
         }
         if let Some(credential) = self.prefs.search.credentials.get(&provider) {
             if let Some(reference) = &credential.credential_ref {
-                let store = SystemCredentialStore::new();
+                let store = shared_credential_store();
                 match store.get(reference) {
                     Ok(Some(key)) if !key.trim().is_empty() => return Some(key),
                     Ok(_) => {}

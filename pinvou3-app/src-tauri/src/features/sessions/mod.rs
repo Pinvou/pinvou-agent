@@ -163,6 +163,11 @@ pub struct SessionStore {
     /// `list_cache` 的代数计数:每次失效自增,回填前比对——miss 期间发生过写
     /// 的扫描结果不得回填(陈旧快照复活会驻留到下一次写)。见 store.rs。
     pub(crate) list_cache_generation: Arc<AtomicU64>,
+    /// Session-purged hook (dependency inversion): see
+    /// [`SessionPurgedHook`]. None = nobody registered (tests/early
+    /// startup); deletion proceeds and only the process-level state goes
+    /// unnotified.
+    session_purged_hooks: Arc<RwLock<Vec<SessionPurgedHook>>>,
 }
 
 /// 原生代码会话(品悟 Engine)的执行根解析器:绑定了项目目录的原生代码会话
@@ -178,6 +183,15 @@ pub type ExecutionRootResolver = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sy
 /// ACP 会话在其 store 里恒为 plain（`bind_*` 时显式重置），故本判定命中即
 /// "品悟原生 code 会话"，不会误伤 ACP 会话自己的权限模式。
 pub type CodeSessionPredicate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+/// Session-purged hook: fired by [`SessionStore::delete`] and deep deletion
+/// paths inside the sessions feature (retention policy/scheduled cleanup),
+/// notifying process-level state holders (timing/pending_user_input, etc.)
+/// to clear their keys. Same injection reason as `ExecutionRootResolver` —
+/// `sessions` must not depend on `assistant` in reverse (the architecture
+/// guard's feature dependency direction); the app composition root
+/// registers it.
+pub type SessionPurgedHook = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// 一个会话的两个根:
 /// - `execution`:Engine cwd / shell 执行目录。绑了项目目录的原生代码会话 = 项目

@@ -14,6 +14,50 @@
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
+/// Spawn a short-lived fire-and-forget external process and reap it, avoiding Unix zombies.
+///
+/// Dropping the Child returned by std's `Command::spawn()` does **not**
+/// reclaim the child (unlike tokio's kill_on_drop) and the parent never
+/// auto-reaps; every open/xdg-open would leave a zombie until the parent
+/// exits. This starts a detached reaper thread to `wait()`; open-file and
+/// notification commands usually exit in milliseconds, ending the thread
+/// immediately, so the steady-state cost is negligible.
+/// The exception is agent-login browser launches
+/// (`codex_acp::open_agent_login_url`): the first firefox/chrome instance
+/// is itself a long-lived browser process, so the reaper thread parks in
+/// `wait()` until the browser exits — one parked thread per long-lived
+/// instance, still an acceptable cost; only the synchronous fallback on
+/// thread-creation failure blocks for just as long (see below), which
+/// remains preferable to zombie accumulation.
+/// When reaper-thread creation fails (thread-count/memory-constrained edge
+/// cases), `wait()` synchronously on the calling thread: the command has
+/// already launched successfully, and a rare stall on a slow command beats
+/// zombie accumulation plus a bogus "open failed" report.
+pub fn spawn_detached_and_reap(command: &mut std::process::Command) -> std::io::Result<()> {
+    use std::sync::{Arc, Mutex};
+    // When `Builder::spawn` fails the closure is dropped (not returned),
+    // so ownership of the Child cannot be taken back; route it through a
+    // shared Option instead: the reaper thread and the failure fallback
+    // race for it, and only one side can take it.
+    let child = Arc::new(Mutex::new(Some(command.spawn()?)));
+    let thread_child = Arc::clone(&child);
+    match std::thread::Builder::new()
+        .name("unix-child-reaper".to_string())
+        .spawn(move || {
+            if let Some(mut owned) = thread_child.lock().ok().and_then(|mut slot| slot.take()) {
+                let _ = owned.wait();
+            }
+        }) {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            if let Some(mut owned) = child.lock().ok().and_then(|mut slot| slot.take()) {
+                let _ = owned.wait();
+            }
+            Ok(())
+        }
+    }
+}
+
 /// 把外部传入的路径字符串原样转为 `PathBuf`。
 /// linux 与 macOS 实现相同（皆 `PathBuf::from(value)`），收口于此。
 pub fn platform_compat_path(value: &str) -> PathBuf {
@@ -74,5 +118,25 @@ mod tests {
         // 无论 PATH 状态如何，至少返回 python3
         let cmd = python_command();
         assert!(cmd == "python3" || cmd == "python");
+    }
+
+    #[test]
+    fn spawn_detached_and_reap_reaps_true_command() {
+        // `true` (PATH lookup, usually /bin/true) exits in milliseconds:
+        // verifies the spawn succeeded and the reaper thread does not
+        // panic.
+        // Whether the zombie is actually reaped is invisible without
+        // reading the proc table; this at least pins the interface
+        // contract (Ok + no deadlock).
+        let mut command = std::process::Command::new("true");
+        spawn_detached_and_reap(&mut command).expect("spawn true");
+        // Give the reaper thread a moment to finish its wait; the test itself makes no blocking assertion.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    #[test]
+    fn spawn_detached_and_reap_reports_missing_binary() {
+        let mut command = std::process::Command::new("/nonexistent/pinvou3-reaper-test");
+        assert!(spawn_detached_and_reap(&mut command).is_err());
     }
 }

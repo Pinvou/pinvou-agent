@@ -127,12 +127,34 @@ async fn request_ima(
         return Err("IMA 请求 body 必须是 JSON object。".to_string());
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("创建 IMA 客户端失败: {e}"))?;
+    // Process-wide shared client: building a Client per call re-creates the
+    // TLS config/connection pool, wasting all keep-alive/h2 reuse against
+    // the same host (ima.qq.com). The timeout moves to per-request
+    // (reqwest::RequestBuilder::timeout), keeping the same 30s.
+    // Two OnceLock caveats:
+    // 1. reqwest enables system-proxy detection by default; the proxy
+    // config is snapshotted at first build and never re-read for the
+    // process lifetime — changing the system proxy mid-session needs an
+    // app restart to take effect.
+    // 2. A build failure (TLS/system config unavailable) is cached
+    // process-wide as Err with no per-call retry (retrying an identical
+    // failure is pointless; Client::default() panics on the same failure
+    // and is not a usable fallback). Request-level errors (connection
+    // refused/timeout) are unaffected by the cache and still propagate
+    // per call.
+    static CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
+        std::sync::OnceLock::new();
+    let client = CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .build()
+                .map_err(|e| format!("创建 IMA 客户端失败: {e}"))
+        })
+        .as_ref()
+        .map_err(Clone::clone)?;
     let response = client
         .post(format!("{IMA_BASE_URL}/{api_path}"))
+        .timeout(std::time::Duration::from_secs(30))
         .header("ima-openapi-clientid", client_id)
         .header("ima-openapi-apikey", api_key)
         .header(

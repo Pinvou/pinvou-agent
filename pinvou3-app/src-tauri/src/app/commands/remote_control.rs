@@ -666,6 +666,10 @@ pub async fn web_access_create_session_and_chat(
             .delete(&session_id)
             .map_err(|rollback_error| format!("rollback Session {session_id}: {rollback_error:#}"));
         pool.forget_session(&session_id);
+        // The chat may have already run (possibly past start_turn):
+        // process-level residual keys such as the timing queue / pending
+        // user input are cleaned uniformly by the SessionPurgedHook fired
+        // from store.delete, matching the delete_session command.
         return match rollback {
             Ok(()) => Err(error),
             Err(rollback_error) => Err(format!("{error}; {rollback_error}")),

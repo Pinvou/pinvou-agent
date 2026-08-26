@@ -489,11 +489,88 @@ impl VisualResult {
 }
 
 /// 可视化预览结果缓存（按 路径|mtime 键）。soffice/pdftoppm 一次 1-3s，缓存后二次秒开。
-fn visual_cache() -> &'static parking_lot::Mutex<std::collections::HashMap<String, VisualResult>> {
+struct VisualCacheEntry {
+    result: VisualResult,
+    touched: u64,
+}
+
+/// Cache budget: a single result can reach several MB (30-page PDF data
+/// URIs / inline-image HTML), and keys embed mtime — every rewrite of the
+/// same artifact yields a new key. Without a cap, long sessions accumulate
+/// hundreds of MB.
+const MAX_VISUAL_CACHE_ENTRIES: usize = 16;
+const MAX_VISUAL_CACHE_BYTES: usize = 96 * 1024 * 1024;
+
+fn visual_result_bytes(result: &VisualResult) -> usize {
+    result.html.as_ref().map_or(0, |s| s.len())
+        + result.images.iter().map(|s| s.len()).sum::<usize>()
+}
+
+fn visual_cache() -> &'static parking_lot::Mutex<std::collections::HashMap<String, VisualCacheEntry>>
+{
     static CACHE: std::sync::OnceLock<
-        parking_lot::Mutex<std::collections::HashMap<String, VisualResult>>,
+        parking_lot::Mutex<std::collections::HashMap<String, VisualCacheEntry>>,
     > = std::sync::OnceLock::new();
     CACHE.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()))
+}
+
+static VISUAL_CACHE_CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn visual_cache_next_tick() -> u64 {
+    VISUAL_CACHE_CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Key format is `path|mtime_millis`. Paths on macOS/Linux may contain `|`
+/// (a legal filename byte) while the numeric mtime field never does —
+/// same-path yielding must split from the right; a left split parses
+/// `/tmp/a|b.pdf` as `/tmp/a` and clobbers unrelated entries.
+fn visual_cache_path(key: &str) -> &str {
+    key.rsplit_once('|').map_or(key, |(path, _)| path)
+}
+
+/// Hits refresh the LRU clock; on insert, stale same-path keys yield
+/// directly, then the byte+entry dual budget evicts from the
+/// least-recently-used side.
+fn visual_cache_insert(
+    state: &mut std::collections::HashMap<String, VisualCacheEntry>,
+    key: String,
+    result: VisualResult,
+) {
+    // A result that alone exceeds the byte budget is simply not cached:
+    // once inserted, the eviction loop would drain the whole table
+    // (including unrelated hot entries) and finally evict the result
+    // itself — one large result wiping the entire cache. The caller's
+    // response was cloned before insert, so skipping the cache does not
+    // affect this return.
+    if visual_result_bytes(&result) > MAX_VISUAL_CACHE_BYTES {
+        return;
+    }
+    let path = visual_cache_path(&key).to_string();
+    state.retain(|k, _| visual_cache_path(k) != path);
+    let touched = visual_cache_next_tick();
+    state.insert(key, VisualCacheEntry { result, touched });
+    while state.len() > MAX_VISUAL_CACHE_ENTRIES {
+        evict_oldest_visual_entry(state);
+    }
+    while state
+        .values()
+        .map(|e| visual_result_bytes(&e.result))
+        .sum::<usize>()
+        > MAX_VISUAL_CACHE_BYTES
+        && !state.is_empty()
+    {
+        evict_oldest_visual_entry(state);
+    }
+}
+
+fn evict_oldest_visual_entry(state: &mut std::collections::HashMap<String, VisualCacheEntry>) {
+    if let Some(oldest) = state
+        .iter()
+        .min_by_key(|(_, entry)| entry.touched)
+        .map(|(k, _)| k.clone())
+    {
+        state.remove(&oldest);
+    }
 }
 
 /// 把 office/pdf/图片产物转成可视化预览：office→自包含 HTML，pdf→逐页 PNG，图片→data URI。
@@ -505,15 +582,19 @@ pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String
     if !p.is_file() {
         return Err(format!("not a file: {}", p.display()));
     }
+    // Millisecond precision: an agent's atomic rewrites can emit several
+    // versions within the same second; second-granularity mtime would serve
+    // the second version a stale preview of the first.
     let mtime = std::fs::metadata(&p)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis())
         .unwrap_or(0);
     let cache_key = format!("{}|{}", p.display(), mtime);
-    if let Some(hit) = visual_cache().lock().get(&cache_key).cloned() {
-        return Ok(hit);
+    if let Some(hit) = visual_cache().lock().get_mut(&cache_key) {
+        hit.touched = visual_cache_next_tick();
+        return Ok(hit.result.clone());
     }
 
     let ext = p
@@ -574,7 +655,7 @@ pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String
 
     // unsupported 不缓存：可能是工具暂缺，装上后下次重试。
     if result.mode != "unsupported" {
-        visual_cache().lock().insert(cache_key, result.clone());
+        visual_cache_insert(&mut visual_cache().lock(), cache_key, result.clone());
     }
     Ok(result)
 }
@@ -594,9 +675,13 @@ fn open_with_libreoffice(path: &std::path::Path) -> Result<(), String> {
         return Err(crate::platform::os::libreoffice_missing_message().into());
     }
 
-    std::process::Command::new(&program)
-        .arg(crate::platform::os::external_application_path(path))
-        .spawn()
+    // Dropping the Child after spawn never reclaims the process (Unix
+    // zombies); route through the platform's fire-and-forget + reap
+    // interface (the first soffice instance can stay resident, and the
+    // reaper thread then parks until it exits).
+    let mut command = std::process::Command::new(&program);
+    command.arg(crate::platform::os::external_application_path(path));
+    crate::platform::os::spawn_detached_and_reap(&mut command)
         .map_err(|e| format!("LibreOffice 打开失败: {e}"))?;
     Ok(())
 }
@@ -938,4 +1023,114 @@ pub async fn open_artifact_window(
         .build()
         .map_err(|e| format!("build artifact window: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod visual_cache_tests {
+    use super::*;
+
+    fn result_with(bytes: usize) -> VisualResult {
+        VisualResult {
+            mode: "html".into(),
+            html: Some("x".repeat(bytes)),
+            images: vec![],
+            warning: None,
+        }
+    }
+
+    fn fresh_state() -> std::collections::HashMap<String, VisualCacheEntry> {
+        std::collections::HashMap::new()
+    }
+
+    #[test]
+    fn same_path_stale_mtime_yields_on_insert() {
+        let mut state = fresh_state();
+        visual_cache_insert(&mut state, "/a/doc.docx|1001".into(), result_with(8));
+        visual_cache_insert(&mut state, "/a/doc.docx|2002".into(), result_with(8));
+        assert_eq!(state.len(), 1, "stale same-path mtime key must yield");
+        assert!(state.contains_key("/a/doc.docx|2002"));
+    }
+
+    #[test]
+    fn pipe_in_filename_parses_key_on_last_separator() {
+        // Filenames may contain `|`: key parsing must split on the last
+        // separator (rsplit_once). A left split parses `/tmp/a|b.pdf|1` as
+        // `/tmp/a`, making unrelated files sharing the prefix
+        // (`/tmp/a|c.pdf`) evict each other's entries.
+        let mut state = fresh_state();
+        visual_cache_insert(&mut state, "/tmp/a|b.pdf|1".into(), result_with(8));
+        visual_cache_insert(&mut state, "/tmp/a|c.pdf|1".into(), result_with(8));
+        assert_eq!(
+            state.len(),
+            2,
+            "two distinct files with | in the name must coexist"
+        );
+        assert!(state.contains_key("/tmp/a|b.pdf|1"));
+        assert!(state.contains_key("/tmp/a|c.pdf|1"));
+        // A same-name file (containing |) with a fresh mtime must still yield the old entry.
+        visual_cache_insert(&mut state, "/tmp/a|b.pdf|2".into(), result_with(8));
+        assert_eq!(
+            state.len(),
+            2,
+            "same-name | file yields by path without affecting neighbors"
+        );
+        assert!(!state.contains_key("/tmp/a|b.pdf|1"));
+        assert!(state.contains_key("/tmp/a|b.pdf|2"));
+        assert!(state.contains_key("/tmp/a|c.pdf|1"));
+    }
+
+    #[test]
+    fn entry_cap_evicts_oldest_touched() {
+        let mut state = fresh_state();
+        for i in 0..=MAX_VISUAL_CACHE_ENTRIES as u64 {
+            visual_cache_insert(&mut state, format!("/p/{i}.pdf|1"), result_with(8));
+        }
+        assert_eq!(state.len(), MAX_VISUAL_CACHE_ENTRIES);
+        assert!(
+            !state.contains_key("/p/0.pdf|1"),
+            "oldest entry must be evicted"
+        );
+        assert!(state.contains_key(&format!("/p/{}.pdf|1", MAX_VISUAL_CACHE_ENTRIES)));
+    }
+
+    #[test]
+    fn byte_budget_evicts_until_under_cap() {
+        let mut state = fresh_state();
+        let per = MAX_VISUAL_CACHE_BYTES / 4 + 1024;
+        for i in 0..4 {
+            visual_cache_insert(&mut state, format!("/big/{i}.pdf|1"), result_with(per));
+        }
+        assert!(
+            state
+                .values()
+                .map(|e| visual_result_bytes(&e.result))
+                .sum::<usize>()
+                <= MAX_VISUAL_CACHE_BYTES,
+            "total bytes must fall back within the budget"
+        );
+        assert!(state.len() >= 1, "at least the newest entry must survive");
+    }
+
+    #[test]
+    fn over_budget_single_entry_is_skipped_and_keeps_warm_entries() {
+        // A single result over the byte budget: it must not be inserted,
+        // let alone wipe the whole table (including unrelated hot entries)
+        // in the eviction loop.
+        let mut state = fresh_state();
+        visual_cache_insert(&mut state, "/a/small.pdf|1".into(), result_with(8));
+        visual_cache_insert(
+            &mut state,
+            "/a/huge.pdf|1".into(),
+            result_with(MAX_VISUAL_CACHE_BYTES + 1),
+        );
+        assert_eq!(state.len(), 1);
+        assert!(
+            state.contains_key("/a/small.pdf|1"),
+            "an over-budget insert must not clear existing hot entries"
+        );
+        assert!(
+            !state.contains_key("/a/huge.pdf|1"),
+            "a single result over the byte budget is not cached"
+        );
+    }
 }

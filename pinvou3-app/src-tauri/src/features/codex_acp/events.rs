@@ -843,10 +843,15 @@ impl EventBridge {
             &input,
         );
         let terminal = is_terminal(call.status);
-        self.tools.lock().insert(id, call.clone());
+        self.tools.lock().insert(id.clone(), call.clone());
         self.emit_protocol("tool_call", call.clone(), notification_meta);
         if terminal {
             self.record_tool_complete(&call);
+            // When the first notification is already terminal (no later
+            // update), the tool_update removal path never runs; leaving the
+            // entry here would pin its raw_input/raw_output until bridge
+            // teardown.
+            self.tools.lock().remove(&id);
         }
     }
 

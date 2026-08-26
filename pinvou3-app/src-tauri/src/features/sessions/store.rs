@@ -28,6 +28,7 @@ use super::scheduled::ChatEngineState;
 use super::transcript::{looks_like_truncating_overwrite, transcript_revision};
 use super::validators::{generate_session_id, persisted_system_prompt, validate_session_id};
 use super::CodeSessionPredicate;
+use super::SessionPurgedHook;
 use crate::core::mode_state::SerializableMode;
 use crate::platform::prefs::UserPrefs;
 use std::collections::HashSet;
@@ -175,6 +176,7 @@ impl SessionStore {
             session_mode_states: Arc::new(RwLock::new(HashMap::new())),
             code_permission: Arc::new(RwLock::new(prefs_snapshot.code_permission)),
             mode_defaults: Arc::new(RwLock::new(prefs_snapshot.mode_defaults)),
+            session_purged_hooks: Arc::new(RwLock::new(Vec::new())),
         };
         store.load_scheduled_profiles()?;
         store.reconcile_scheduled_profiles_locked()?;
@@ -335,6 +337,13 @@ impl SessionStore {
         if removed_hidden {
             self.save_hidden_sessions();
         }
+        // The hook fires after all store-side map locks are released (same
+        // policy as the retention path in retention.rs): holding locks
+        // while calling process-level cleanup would introduce lock-ordering
+        // risk. Hook implementations only do idempotent keyed removal; when
+        // nobody registered (tests/early startup), deletion completes as
+        // usual.
+        self.notify_session_purged(id);
         Ok(())
     }
 
@@ -353,6 +362,26 @@ impl SessionStore {
     pub fn set_code_session_predicate(&self, predicate: CodeSessionPredicate) {
         *self.code_session_predicate.write() = Some(predicate);
         self.reconcile_code_default_modes();
+    }
+
+    /// Register a session-purged hook (dependency inversion, see
+    /// [`SessionPurgedHook`]). The app composition root registers the
+    /// timing/pending_user_input cleanup once the pool is ready; store
+    /// clones share the same Arc, so injection takes effect immediately.
+    pub fn register_session_purged_hook(&self, hook: SessionPurgedHook) {
+        self.session_purged_hooks.write().push(hook);
+    }
+
+    /// Notifies all registered parties after a session is deleted from the
+    /// store ([`SessionStore::delete`] and deep paths without an app handle
+    /// such as retention policy/scheduled cleanup). Failures are silent
+    /// (hook implementations own their idempotency) and must not block the
+    /// deletion path; callers must fire this only after all store-side
+    /// locks are released.
+    pub(crate) fn notify_session_purged(&self, id: &str) {
+        for hook in self.session_purged_hooks.read().iter() {
+            hook(id);
+        }
     }
 
     pub(crate) fn reconcile_code_default_modes(&self) {

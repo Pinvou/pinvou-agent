@@ -451,6 +451,35 @@ pub fn run() {
                         let agents = code_session_agents.clone();
                         move |session_id: &str| agents.is_code_session(session_id)
                     }));
+                    // SessionStore::delete and deep deletion paths without
+                    // an app handle (retention policy/scheduled cleanup)
+                    // clear process-level per-session keys uniformly via
+                    // the purge hook, matching the delete_session command's
+                    // cleanup (dependency inversion, see SessionPurgedHook —
+                    // sessions must not depend on assistant in reverse).
+                    // MonitorState is managed late in setup while the hook
+                    // only runs at deletion time, so try_state finds it in
+                    // place; if unmanaged (very early deletions) the item is
+                    // skipped.
+                    let app_for_purge_hook = handle.clone();
+                    store_for_engine
+                        .register_session_purged_hook(std::sync::Arc::new(move |session_id: &str| {
+                            crate::features::assistant::timing::clear_session(session_id);
+                            crate::features::assistant::pending_user_input::clear_session(
+                                session_id,
+                            );
+                            crate::features::memory::discard_turn_capture(session_id);
+                            // Self-metrics accumulate per session key
+                            // (warmed_sessions inserts on every TurnComplete
+                            // and is never reclaimed); clear the keys on
+                            // deletion.
+                            if let Some(metrics) = app_for_purge_hook
+                                .try_state::<crate::features::monitor::MonitorState>()
+                                .map(|state| state.self_metrics())
+                            {
+                                metrics.drop_session(session_id);
+                            }
+                        }));
                     // 远程端正式支持代码会话之前，先过滤原生代码会话事件（与 Engine
                     // bridge 共用同一份 SessionAgentStore 判定）。
                     remote_control_manager.set_code_session_predicate(std::sync::Arc::new({

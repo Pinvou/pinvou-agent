@@ -12,6 +12,7 @@
       var entries = [];
       var sent = 0;
       var flushInFlight = false;
+      var inflightTail = null;
       var flushTimer = null;
       var longTaskCount = 0;
       var resourceCount = 0;
@@ -25,6 +26,23 @@
           since_navigation_ms: Math.max(0, Number(sinceNavigationMs) || 0),
         };
         entries.push(entry);
+        // Listeners such as visibility/error keep marking after startup,
+        // while the web build has no invoke available and the desktop
+        // startup batch was reported long ago. Keep the most recent 64
+        // entries so the array cannot grow unbounded with interaction
+        // (startup's critical phases usually stay under 40 entries; the
+        // truncation only affects repeated late visibilitychange marks).
+        // The sent cursor advances in step to compensate; when
+        // sent >= dropped the dropped entries were indeed already
+        // reported, and on web sent stays 0, so what is dropped could
+        // never have been reported anyway. An in-flight batch mixing in
+        // truncated entries is handled by the flush callback relocating
+        // the cursor by the batch tail's identity (see relocateSent).
+        if (entries.length > 64) {
+          var dropped = entries.length - 64;
+          entries.splice(0, dropped);
+          sent = Math.max(0, sent - dropped);
+        }
         console.info("[startup] +" + entry.since_navigation_ms.toFixed(3) + "ms " + entry.stage, entry.detail);
         scheduleFlush(0);
       }
@@ -50,13 +68,32 @@
         }, delay || 0);
       }
 
+      // The flush callback cannot simply do sent += batch.length:
+      // truncation may already have removed some of the batch's entries
+      // from the array, and advancing by count would fold those deleted
+      // entries into the cursor, letting later real entries be
+      // short-circuited by sent >= entries.length as falsely reported and
+      // never sent. Relocate by the in-flight batch tail's identity:
+      // found → advance past it; whole batch dropped → reset and resend
+      // (the Rust side appends line-by-line with a 2MiB rotation, so
+      // duplicate reports are harmless).
+      function relocateSent() {
+        if (inflightTail == null) return 0;
+        for (var i = entries.length - 1; i >= 0; i--) {
+          if (entries[i] === inflightTail) return i + 1;
+        }
+        return 0;
+      }
+
       function flush() {
         var invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
         if (!invoke || flushInFlight || sent >= entries.length) return;
         var batch = entries.slice(sent);
         flushInFlight = true;
+        inflightTail = batch[batch.length - 1];
         invoke("report_frontend_startup", { entries: batch }).then(function () {
-          sent += batch.length;
+          sent = relocateSent();
+          inflightTail = null;
           flushInFlight = false;
           if (sent < entries.length) scheduleFlush(0);
         }).catch(function () {

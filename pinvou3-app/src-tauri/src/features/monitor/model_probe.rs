@@ -195,6 +195,29 @@ fn model_api_key(model: &SavedModel) -> Option<String> {
 }
 
 /// 当前模型健康探测 + 本地 vLLM Prometheus metrics 解析。
+///
+/// Process-wide shared client: both the monitor page's 1 Hz polling and the
+/// chat page's status dot go through here; a fresh Client per call would
+/// rebuild TLS/connection pools every second with zero reuse. The 3s probe
+/// timeout moves to per-request, keeping the original semantics. Two
+/// OnceLock caveats:
+/// 1. reqwest enables system-proxy detection by default; the proxy config
+/// is snapshotted at first build and never re-read for the process
+/// lifetime — changing the system proxy mid-session needs an app
+/// restart to take effect;
+/// 2. A build failure (TLS/system config unavailable) is cached
+/// process-wide as `None` with no per-call retry, preserving the
+/// caller's "probe failed → fall back to configured values" downgrade —
+/// Client::default() panics on the same failure and is not a usable
+/// fallback. Request-level errors are unaffected and remain per-call,
+/// handled by the caller.
+fn shared_probe_client() -> Option<&'static reqwest::Client> {
+    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| reqwest::Client::builder().build().ok())
+        .as_ref()
+}
+
 async fn snapshot_for_model_config(
     upstream: &str,
     configured_model: Option<String>,
@@ -203,10 +226,7 @@ async fn snapshot_for_model_config(
     provider: String,
     api_key: Option<&str>,
 ) -> Option<VllmSnapshot> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .ok()?;
+    let client = shared_probe_client()?;
     let target_kind = if preset == ModelPreset::LocalVllm {
         "local"
     } else {
@@ -216,7 +236,7 @@ async fn snapshot_for_model_config(
 
     // 1) /models 健康
     let models_url = models_probe_url(upstream);
-    let mut request = client.get(models_url);
+    let mut request = client.get(models_url).timeout(Duration::from_secs(3));
     if let Some(key) = api_key.map(str::trim).filter(|key| !key.is_empty()) {
         if is_anthropic_endpoint(upstream) {
             request = request
@@ -328,7 +348,12 @@ async fn snapshot_for_model_config(
         .then(|| strip_v1_suffix(upstream).map(|h| format!("{h}/metrics")))
         .flatten();
     let metrics_resp = match metrics_url {
-        Some(u) => client.get(&u).send().await.ok(),
+        Some(u) => client
+            .get(&u)
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await
+            .ok(),
         None => None,
     };
     let metrics_text = match metrics_resp {
@@ -570,10 +595,7 @@ fn vllm_target_kind(upstream: &str) -> &'static str {
 /// 窗口推导(见 docs/context-compaction-设计.md)。探测失败(vLLM 没起/超时)返回
 /// `(None, None)`,调用方 fallback 配置值 + 名字 hint 老路。
 pub async fn probe_vllm_model_info(base_url: &str) -> (Option<String>, Option<u32>) {
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-    else {
+    let Some(client) = shared_probe_client() else {
         return (None, None);
     };
     let url = if base_url.trim_end_matches('/').ends_with("/v1") {
@@ -581,7 +603,7 @@ pub async fn probe_vllm_model_info(base_url: &str) -> (Option<String>, Option<u3
     } else {
         format!("{}/v1/models", base_url.trim_end_matches('/'))
     };
-    let Ok(resp) = client.get(url).send().await else {
+    let Ok(resp) = client.get(url).timeout(Duration::from_secs(3)).send().await else {
         return (None, None);
     };
     if !resp.status().is_success() {

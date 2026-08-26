@@ -771,6 +771,49 @@
   var scheduledRunOpenInFlight = Object.create(null);
   var MAX_SCHEDULED_SESSION_BUFFERS = 64;
   var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
+  // All-session buffer cap: each sessionStates entry holds the full
+  // messages+chatItems (heavy sessions run 1-4MB each); previously only
+  // scheduled sessions had a 64-entry LRU — normal sessions stayed
+  // resident forever once visited. Cap at 32: typical users actively
+  // switch among single-digit counts, 32 × 1-4MB worst case is
+  // ~32-128MB, and cold sessions beyond the cap have near-zero hit
+  // rate; revisiting an evicted session goes through load_session disk
+  // rehydration, costing one reload.
+  var MAX_SESSION_BUFFERS = 32;
+  // Unsent composer drafts are the one piece of a working set that cannot be
+  // rebuilt from disk (this bridge never persists drafts; transcripts hold
+  // committed content only): before a buffer is dropped, its draft moves to
+  // this side table and every rebuild path restores it. The table is bounded
+  // (256 entries, 1M chars per draft — 10x the composer input cap), and when
+  // a bound would be exceeded the eviction is refused instead: the buffer
+  // stays resident rather than silently losing user input. Real session
+  // deletion (purgeSessionBuffer) invalidates stashed drafts so they never
+  // flow back into a recycled session id.
+  var MAX_EVICTED_SESSION_DRAFTS = 256;
+  var MAX_EVICTED_SESSION_DRAFT_CHARS = 1000000;
+  var evictedSessionDrafts = Object.create(null);
+  // Returns true when the buffer's non-rehydratable state is safely retained
+  // (or empty) and the caller may drop the buffer; false means eviction must
+  // be skipped so the draft stays in the live buffer.
+  function stashEvictedSessionDraft(id, buf) {
+    if (!id || !buf) return true;
+    var draft = String(buf.composerDraft || "");
+    if (!draft) {
+      delete evictedSessionDrafts[id]; // input was cleared; a stale stash must not resurrect it
+      return true;
+    }
+    if (draft.length > MAX_EVICTED_SESSION_DRAFT_CHARS) return false;
+    if (!evictedSessionDrafts[id]
+        && Object.keys(evictedSessionDrafts).length >= MAX_EVICTED_SESSION_DRAFTS) return false;
+    delete evictedSessionDrafts[id]; // re-stashing moves the entry to the table tail
+    evictedSessionDrafts[id] = draft;
+    return true;
+  }
+  function restoreEvictedSessionDraft(id, buf) {
+    if (!id || !buf || buf.composerDraft) return;
+    var draft = evictedSessionDrafts[id];
+    if (draft) buf.composerDraft = draft;
+  }
   var sessionBufferTouchClock = 0;
   var scheduledRunOwnerTouchClock = 0;
   var suppressNotify = false;
@@ -906,12 +949,16 @@
   }
   function getBuffer(id) {
     if (!id) return null;
-    if (!sessionStates[id]) sessionStates[id] = freshBuffer();
+    if (!sessionStates[id]) {
+      sessionStates[id] = freshBuffer();
+      restoreEvictedSessionDraft(id, sessionStates[id]);
+    }
     return touchSessionBuffer(id, sessionStates[id], id.indexOf("sched-") === 0);
   }
   function isProtectedScheduledBuffer(id, buf) {
     return id === state.activeSessionId ||
       !!buf.busy ||
+      !!buf.remoteTurnActive ||
       buf.scheduledInitialTurnPhase === "active" ||
       !!(buf.queued && buf.queued.length) ||
       !!(state.scheduledRunContext && state.scheduledRunContext.sessionId === id) ||
@@ -931,8 +978,19 @@
       var id = scheduledIds[i];
       var buf = sessionStates[id];
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
+      if (!stashEvictedSessionDraft(id, buf)) continue; // draft cannot be safely retained; keep the buffer
       delete sessionStates[id];
       delete turnUsageDirty[id];
+      // personaPlaceholderTitles is lightweight session metadata (the marker
+      // for placeholder titles that auto-rename may override); rehydration
+      // never restores it, so capacity eviction must keep it and only real
+      // session deletion (purgeSessionBuffer) cleans it.
+      // The localStorage cache of scene events is the only recovery copy
+      // when the sidecar save fails or we are offline
+      // (savePinvouSceneEventsForSession intentionally swallows backend
+      // failures; syncPinvouSceneEventsForSession replays from this
+      // cache); capacity eviction must not delete the key — only real
+      // session deletion (purgeSessionBuffer) cleans it.
       // The owner tombstone has its own bounded LRU and must outlive a
       // presentation-buffer eviction. Otherwise a stale `running` list row can
       // resurrect a run that already emitted chat:done.
@@ -944,14 +1002,53 @@
     if (scheduled) buf.scheduledRunSession = true;
     buf.lastTouched = ++sessionBufferTouchClock;
     if (buf.scheduledRunSession) pruneScheduledSessionBuffers(id);
+    pruneSessionBuffers(id);
     return buf;
+  }
+  // All-session LRU: shares the scheduled eviction's protection
+  // predicates (busy/queued/remote turns are never reclaimed); only
+  // idle buffers are evicted. messages/chatItems rehydrate from disk;
+  // non-rehydratable drafts such as composerDraft move to the
+  // evictedSessionDrafts side table first and are restored on rebuild;
+  // when the table cannot hold a draft the eviction is refused (see
+  // stashEvictedSessionDraft).
+  function pruneSessionBuffers(keepId) {
+    var ids = Object.keys(sessionStates);
+    var overflow = ids.length - MAX_SESSION_BUFFERS;
+    if (overflow <= 0) return;
+    ids.sort(function (left, right) {
+      var delta = (sessionStates[left].lastTouched || 0) - (sessionStates[right].lastTouched || 0);
+      return delta || left.localeCompare(right);
+    });
+    for (var i = 0; i < ids.length && overflow > 0; i++) {
+      var id = ids[i];
+      var buf = sessionStates[id];
+      if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
+      if (!stashEvictedSessionDraft(id, buf)) continue; // draft cannot be safely retained; keep the buffer
+      delete sessionStates[id];
+      delete turnUsageDirty[id];
+      // personaPlaceholderTitles survives capacity eviction (see the
+      // comment at the scheduled eviction site); only purgeSessionBuffer
+      // (real deletion) cleans it.
+      // The scene cache key survives capacity eviction (the only offline
+      // recovery copy), see the comment at the scheduled eviction site
+      // above; only purgeSessionBuffer (real session deletion) cleans
+      // it.
+      overflow -= 1;
+    }
   }
   function purgeSessionBuffer(id) {
     if (typeof id !== "string" || !id) return;
     delete sessionStates[id];
+    // Real session deletion: any stashed draft is invalidated too and must not flow back into a rebuilt buffer with the same id.
+    delete evictedSessionDrafts[id];
     delete turnUsageDirty[id];
     delete personaPlaceholderTitles[id];
     delete scheduledRunSessionOwners[id];
+    // The scene-events localStorage key is cleaned together with session deletion, avoiding unbounded accumulation across historical sessions.
+    if (window.localStorage) {
+      try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch (_) {}
+    }
     if (state.scheduledRunContext && state.scheduledRunContext.sessionId === id) {
       state.scheduledRunContext = null;
     }
@@ -1444,14 +1541,24 @@
   }
   // 把 active 工作集存好后切到 id 的 buffer(opts.fresh=新建空 buffer)。
   function switchActiveTo(id, opts) {
-    if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
+    // Set the new active id before touching the old buffer: the LRU prune
+    // triggered by that touch protects the target via activeSessionId. Touching
+    // the old buffer first (active id still old) could evict an idle target as
+    // the oldest entry, and the freshBuffer() fallback below would silently
+    // show an empty session.
+    var previousActiveId = state.activeSessionId;
     state.activeSessionId = id;
+    if (previousActiveId) saveWorkingSetTo(getBuffer(previousActiveId));
     var buf = sessionStates[id];
     if (!buf || (opts && opts.fresh)) {
       buf = sessionStates[id] = freshBuffer();
       // `fresh` is used for a Session this client just created, so its empty
-      // buffer is authoritative rather than an event-created partial cache.
+      // buffer is authoritative rather than an event-created partial cache —
+      // and it must not resurrect a draft stashed from an earlier eviction of
+      // the same (recycled) id. Non-fresh fallback recreates an evicted
+      // buffer, so restore its stashed draft.
       if (opts && opts.fresh) buf.loadedFromDisk = true;
+      else restoreEvictedSessionDraft(id, buf);
     }
     touchSessionBuffer(id, buf, id.indexOf("sched-") === 0);
     loadWorkingSetFrom(buf);
@@ -3289,7 +3396,10 @@
       reportSessionSwitchFailure(new Error(bt("runNoSession")), errorScope);
       return false;
     }
-    if (hydrateLiveSession && !sessionStates[id]) sessionStates[id] = freshBuffer();
+    if (hydrateLiveSession && !sessionStates[id]) {
+      sessionStates[id] = freshBuffer();
+      restoreEvictedSessionDraft(id, sessionStates[id]);
+    }
     var existingBuffer = sessionStates[id];
     if (existingBuffer && (existingBuffer.remoteTurnActive ||
         (!existingBuffer.loadedFromDisk &&
@@ -3407,7 +3517,10 @@
         mergeHydratedArtifacts(saved.artifacts, liveArtifacts),
         state.activeSessionId
       );
-      rerenderFromMessages();
+      // Live hydration: toolMeta may hold in-flight tool entries
+      // (tool_use not yet in messages); keep them for the later
+      // chat:tool_end.
+      rerenderFromMessages({ keepLiveToolMeta: true });
       if (hasLivePresentation) {
         currentStreamId = mergeHydratedChatItems(liveChatItems, liveCurrentStreamId);
       } else {
@@ -3417,7 +3530,10 @@
       liveBuffer.sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
       saveWorkingSetTo(liveBuffer);
     } else {
-      loadWorkingSetFrom(sessionStates[id] = freshBuffer());
+      sessionStates[id] = freshBuffer();
+      // The slow-path disk rehydration bypasses getBuffer; the draft stashed at eviction time must be restored here.
+      restoreEvictedSessionDraft(id, sessionStates[id]);
+      loadWorkingSetFrom(sessionStates[id]);
       state.messages = Array.isArray(saved.messages) ? saved.messages : [];
       sessionStates[id].loadedFromDisk = true;
       sessionStates[id].sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
@@ -3919,9 +4035,24 @@
   }
 
   // ── Rerender from messages (session restore) ─────────────────────
-  function rerenderFromMessages() {
+  // opts.keepLiveToolMeta: passed when hydrating a live session
+  // (hydrateLiveSession) — toolMeta may hold entries for in-flight
+  // tools (tool_use not yet in messages), and clearing it would leave
+  // the later chat:tool_end without its meta (stuck selection card /
+  // degraded artifact card).
+  function rerenderFromMessages(opts) {
     state.chatItems = [];
     itemIdSeq = 0;
+    // Replay re-adds every historical tool_use's metadata (including
+    // write/patch's large args) to toolMeta for tool_result backfill and
+    // never deletes after backfill — the residue resides in the buffer
+    // with the working set, and memory is bounded by the 32-entry
+    // all-session LRU cap. Durable replay clears first (when not live
+    // hydrating), reclaiming only orphan entries left by interrupted
+    // turns (the live event path itself stays insert/delete balanced);
+    // the replay then rebuilds the needed entries for the historical
+    // tool_uses inside messages.
+    if (!(opts && opts.keepLiveToolMeta)) toolMeta = {};
     // 卡牌事件按 pos 插回原位(pos=事件发生时的 messages 数)。让重载历史不割裂。
     var pe = Array.isArray(state.personaEvents) ? state.personaEvents : [];
     function emitPersonaAt(atOrAfter, isTail) {
@@ -5246,7 +5377,7 @@
     notify();
     if (!actions || !actions.length) return;
     // 按动作类型分组,组装一条 Boss 消息发给主 AI(Boss 驾驶,非自动回传):
-    //   fix/verify=产物缺陷定向修订(verify 先核实);adopt=Boss 已定的决策;ask=让 AI 正式问。
+    // fix/verify=产物缺陷定向修订(verify 先核实);adopt=Boss 已定的决策;ask=让 AI 正式问。
     var fix = actions.filter(function (a) { return a.t === "fix"; });
     var verify = actions.filter(function (a) { return a.t === "verify"; });
     var adopt = actions.filter(function (a) { return a.t === "adopt"; });
@@ -8224,10 +8355,10 @@
   }
   // 挂件还原的请求序号 + 最近成功加持的目标会话(与 tauri personas.js 对齐)：
   // - syncActivePersona 仅 sid 校验挡不住 A→B→A 的 ABA 与同会话乱序(慢响应
-  //   返回 null 会把刚加持的挂件覆盖掉,且无人再纠正)。序号在每次 sync 发起
-  //   与 equip/unequip 权威写时递增,旧快照一律作废(审计补充)。
+  // 返回 null 会把刚加持的挂件覆盖掉,且无人再纠正)。序号在每次 sync 发起
+  // 与 equip/unequip 权威写时递增,旧快照一律作废(审计补充)。
   // - lastEquippedSid 供 equip 后紧随的播报(如卡牌制造者引导卡)定向回
-  //   发起会话——equip 的 await 窗口用户可能已切走。
+  // 发起会话——equip 的 await 窗口用户可能已切走。
   var personaSyncSeq = 0;
   var lastEquippedSid = null;
   // 切换/重载 session 后,从后端拉该 session 的加持状态还原挂件(backend 是真相)。

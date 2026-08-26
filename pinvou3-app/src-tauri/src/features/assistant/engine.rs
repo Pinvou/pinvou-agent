@@ -534,6 +534,25 @@ impl TurnLifecycle {
         Ok(())
     }
 
+    /// Prune transcript rules that can no longer match an engine snapshot,
+    /// keeping only the current in-flight reservation's rule (a defensive
+    /// backstop; well-formed call sites never see concurrent in-flight
+    /// turns). Two call sites: after a successful `SyncSession` rebuild —
+    /// the hydrated history is the forwarder-sanitized one, the raw prompts
+    /// in the persisted transcript were replaced by display messages, and
+    /// stale rules can no longer match the new engine's snapshot; and after
+    /// engine reclaim — the engine transcript is destroyed with it, removing
+    /// the only live carrier of the raw prompts. Each rule holds both the
+    /// full raw prompt and the display copy, so residency only accumulates
+    /// linearly with turns (long sessions can reach tens of MB).
+    pub(crate) fn prune_stale_transcript_rules(&self) {
+        let mut state = self.state.lock();
+        let keep = state.active_reservation_id;
+        state
+            .transcript_rules
+            .retain(|rule| Some(rule.reservation_id) == keep);
+    }
+
     fn ensure_reservation_active(&self, reservation_id: u64) -> Result<()> {
         let state = self.state.lock();
         if state.active
@@ -2635,6 +2654,49 @@ mod turn_lifecycle_tests {
         assert!(!matched);
         assert_eq!(messages, vec![engine_user("private actual")]);
         drop(next);
+    }
+
+    #[test]
+    fn prune_stale_transcript_rules_keeps_only_active_reservation() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        for round in 0..3 {
+            let mut reservation = lifecycle.reserve().expect("reserve");
+            let display_text = format!("display {round}");
+            let raw_text = format!("private raw {round}");
+            reservation
+                .set_transcript(TranscriptOperation::Append, message("user", &display_text))
+                .unwrap();
+            reservation.prepare_actual_user_content(raw_text).unwrap();
+            reservation.mark_submitted();
+            assert!(lifecycle.finish_once(|| {}).is_some());
+        }
+
+        // Production shape: the interactive path reserves (lifecycle
+        // active) → installs this turn's rule → spawn/resync triggers the
+        // prune. Stale rules (completed turns) must be dropped while the
+        // in-flight reservation's rule survives.
+        let mut active = lifecycle.reserve().expect("reserve");
+        active
+            .set_transcript(TranscriptOperation::Append, message("user", "live display"))
+            .unwrap();
+        active
+            .prepare_actual_user_content("live raw".to_string())
+            .unwrap();
+        lifecycle.prune_stale_transcript_rules();
+        let (messages, matched) = lifecycle.sanitize_messages(vec![engine_user("private raw 1")]);
+        assert!(!matched);
+        assert_eq!(messages, vec![engine_user("private raw 1")]);
+        let (sanitized, matched) = lifecycle.sanitize_messages(vec![engine_user("live raw")]);
+        assert!(matched);
+        assert_eq!(sanitized, vec![message("user", "live display")]);
+
+        // Engine reclaim (idle, no in-flight reservation): no rule can match anymore; clear the whole section.
+        active.mark_submitted();
+        assert!(lifecycle.finish_once(|| {}).is_some());
+        lifecycle.prune_stale_transcript_rules();
+        let (messages, matched) = lifecycle.sanitize_messages(vec![engine_user("live raw")]);
+        assert!(!matched);
+        assert_eq!(messages, vec![engine_user("live raw")]);
     }
 }
 

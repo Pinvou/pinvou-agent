@@ -2429,6 +2429,34 @@ fn retention_purge_also_updates_multi_agent_flags() {
     );
 }
 
+#[test]
+fn retention_purge_notifies_session_purged_hooks() {
+    let (store, _guard) = isolated_store();
+    let chat = store
+        .create_new("m".into(), None, std::env::temp_dir())
+        .expect("create chat");
+    let id = chat.metadata.id.clone();
+
+    // Dependency inversion: deep retention-policy deletions inside the
+    // sessions feature notify process-level state holders via the hook
+    // (timing/pending_user_input registered by the composition root); with
+    // nobody registered, deletion proceeds as usual.
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder = seen.clone();
+    store.register_session_purged_hook(std::sync::Arc::new(move |sid: &str| {
+        recorder.lock().unwrap().push(sid.to_string());
+    }));
+
+    store.purge_session_side_maps(&[id.clone()]);
+
+    let notified = seen.lock().unwrap().clone();
+    assert_eq!(
+        notified,
+        vec![id],
+        "the purge hook must receive the deleted session id"
+    );
+}
+
 // ===================== code 会话权限模式（两层持久化 + 默认值解析）=====================
 
 /// 注入一个简易 code 会话判定：列表内的 id 视为品悟原生 code 会话。

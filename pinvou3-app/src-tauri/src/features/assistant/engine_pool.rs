@@ -290,6 +290,14 @@ where
     evict_locked().await;
     store.delete(session_id)?;
     forget();
+    // timing is process-level state within the same feature, so keys can
+    // be cleared directly (no dependency inversion needed). This covers
+    // paths that bypass the app composition root where the
+    // SessionPurgedHook is not registered (eval teardown, tests): unpaired
+    // turn-queue keys pinned by session id would otherwise grow unbounded
+    // under create/delete cycles like GAIA. Idempotent overlap with the
+    // hook cleanup fired from store.delete; no duplicated side effects.
+    crate::features::assistant::timing::clear_session(session_id);
     Ok(())
 }
 
@@ -1093,6 +1101,7 @@ impl EnginePool {
             .map_err(|e| anyhow::anyhow!("materialize session skills join: {e}"))?
             .map_err(|e| anyhow::anyhow!("materialize session skills: {e}"))?;
         }
+        let turn_lifecycle = self.turn_lifecycles.for_session(session_id);
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
             self.store.clone(),
@@ -1101,7 +1110,7 @@ impl EnginePool {
             extra_tools,
             self.bridge
                 .shape_disallowed_tools(session_id, self.compute_disallowed_tools()),
-            self.turn_lifecycles.for_session(session_id),
+            turn_lifecycle.clone(),
             shell_manager,
             turn_shell_tasks,
         )
@@ -1124,6 +1133,14 @@ impl EnginePool {
                         });
                     }
                     eprintln!("[engine_pool] sync history for {session_id} failed: {error:?}");
+                } else {
+                    // The hydrated history is forwarder-sanitized: old
+                    // transcript rules can no longer match the new engine's
+                    // snapshot, so prune them to stop rules accumulating per
+                    // turn. The interactive path installs rules around spawn
+                    // (reserve already marked active); the retain predicate
+                    // guarantees the in-flight reservation's rule survives.
+                    turn_lifecycle.prune_stale_transcript_rules();
                 }
             }
             Ok(_) => {}
@@ -1351,6 +1368,15 @@ impl EnginePool {
                 "[engine_pool] emitted interrupted terminal before reclaim sid={}",
                 session_id
             );
+        }
+        // After reclaim the engine transcript is destroyed with it,
+        // removing the only live carrier of old raw prompts (the on-disk
+        // history is sanitized). Drop rules that can no longer match,
+        // stopping cross-engine-generation residency until session deletion;
+        // the in-flight reservation's rule is kept as a backstop (normal
+        // reclaim finalizes in-flight turns first).
+        if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
+            lifecycle.prune_stale_transcript_rules();
         }
         // 先级联取消全部后台子智能体，再关闭引擎（ADR-0006）。两个 op 走同一条
         // 通道，FIFO 保证取消先于关闭被处理；否则删除/换模型回收后，会话派生的
@@ -3142,6 +3168,54 @@ mod scheduled_model_tests {
         assert!(!fake_engine_present.load(Ordering::Acquire));
         assert!(forgotten.load(Ordering::Acquire));
         assert!(store.load(&session_id).is_err());
+
+        match previous_home {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// Regression: the eval teardown paths (`ProductChatRuntime::close` /
+    /// `delete_eval_session`) reuse delete_chat_session, but submit already
+    /// ran `timing::start_turn`; deletion must clear the session's unpaired
+    /// queue key in ACTIVE_TURNS, or a single GAIA pass's ~165 create/delete
+    /// cycles would grow the process-level map unbounded.
+    #[tokio::test]
+    async fn chat_delete_clears_queued_turn_timing_state() {
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-engine-pool-chat-delete-timing-{}",
+            std::process::id()
+        ));
+        let previous_home = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&home);
+        std::env::set_var("PINVOU3_HOME", &home);
+
+        let store = SessionStore::boot().expect("session store");
+        let session_id = store
+            .create_new("wire-model".to_string(), None, home.join("workspace"))
+            .expect("chat session")
+            .metadata
+            .id;
+        // The eval submit path runs start_turn first; on submit failure or interruption the key stays resident, and deletion is the backstop.
+        crate::features::assistant::timing::start_turn(&session_id);
+        assert!(
+            crate::features::assistant::timing::has_queued_active_turn(&session_id),
+            "precondition: turn already queued"
+        );
+
+        let locks = SessionTurnLocks::default();
+        delete_chat_session_with_gate(&locks, &store, &session_id, || async {}, || {})
+            .await
+            .expect("delete chat");
+
+        assert!(
+            !crate::features::assistant::timing::has_queued_active_turn(&session_id),
+            "delete_chat_session must clear the session's unpaired turn queue"
+        );
 
         match previous_home {
             Some(value) => std::env::set_var("PINVOU3_HOME", value),

@@ -281,18 +281,15 @@ pub(crate) async fn codex_acp_prompt_with_attachments(
         message.as_str()
     };
     super::sessions::apply_default_session_title(&store, &session_id, title_source)?;
-    crate::features::assistant::timing::start_turn(&session_id);
+    // Timing registration lives inside `AcpPool::send_message`, after busy
+    // admission succeeds but before the prompt task is spawned: the spawned
+    // turn can complete before `send_message` returns, so registering here
+    // (after the await) would race that finish and drop the completion.
     acp_pool
         .send_message(&session_id, message, attachments, workspace_references)
         .await
-        .map_err(|error| {
-            crate::features::assistant::timing::finish_turn(
-                &session_id,
-                "send_error",
-                Some(&format!("{error:#}")),
-            );
-            format!("ACP Agent send failed: {error:#}")
-        })
+        .map_err(|error| format!("ACP Agent send failed: {error:#}"))?;
+    Ok(())
 }
 
 // 会话内浏览走 session_id（解析会话工作区并校验可用性）；

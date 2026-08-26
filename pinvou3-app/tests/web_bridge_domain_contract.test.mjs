@@ -298,6 +298,20 @@ assert.ok(
   'Web domain adapter must load after the flat transport',
 );
 
+const stableCombined = [];
+const unsubscribeStableCombined = api.state.subscribeMany(['sessions', 'chat'], snapshot => { stableCombined.push(snapshot); });
+api.chat.prefillComposer('stable-combined-identity');
+api.chat.removeQueued('no-such-queued-id');
+assert.equal(stableCombined.length, 2, 'no-change notifications must still reach multi-domain subscribers');
+assert.equal(stableCombined[0], stableCombined[1],
+  'multi-domain combined slices must reuse identity when the transport snapshot is unchanged');
+assert.ok(Object.isFrozen(stableCombined[0]), 'the reused combined slice must stay frozen');
+api.chat.prefillComposer('stable-combined-identity-2');
+assert.equal(stableCombined.length, 3);
+assert.notEqual(stableCombined[1], stableCombined[2], 'a real state change must produce a new combined slice');
+assert.equal(stableCombined[2].composerPrefill.text, 'stable-combined-identity-2');
+unsubscribeStableCombined();
+
 invokeResponse = async command => command === 'web_access_ingest_file' ? new Date(0) : null;
 await assert.rejects(api.attachments.addAttachmentByPath('/tmp/non-plain.txt'), /only supports arrays and plain objects/);
 const nonPlainAttachment = flat.getState().attachments.at(-1);

@@ -141,6 +141,39 @@ function ModelProgressIndicator({ downloading, percent, label }) {
       const [outSortDir, setOutSortDir] = useState('desc');
       const [outputPreview, setOutputPreview] = useState(null);
       const outPreviewCache = useRef({});
+      // Preview results can reach several MB (full-text office HTML /
+      // image base64) and keys embed mtime — every file rewrite yields a
+      // new key. An entry cap alone misses the "few huge entries" axis:
+      // 48 × several MB can still reach hundreds of MB. Dual cap: entries
+      // + cumulative byte budget, evicting oldest-first by insertion
+      // order.
+      const MAX_OUT_PREVIEW_CACHE = 48;
+      const MAX_OUT_PREVIEW_CACHE_BYTES = 32 * 1024 * 1024;
+      const outPreviewValueBytes = (v) => {
+        if (!v) return 0;
+        if (typeof v.url === 'string') return v.url.length;
+        if (typeof v.html === 'string') return v.html.length;
+        if (typeof v.text === 'string') return v.text.length;
+        return 256;
+      };
+      const rememberOutPreview = useCallback((key, value) => {
+        const cache = outPreviewCache.current;
+        if (cache[key]) { cache[key] = value; return; }
+        cache[key] = value;
+        let keys = Object.keys(cache);
+        let totalBytes = keys.reduce((sum, k) => sum + outPreviewValueBytes(cache[k]), 0);
+        // Either budget being exceeded evicts from the oldest entries
+        // (earliest in insertion order); stale entries with old mtimes of
+        // the same artifact are included. A single entry over the byte
+        // budget leaves at most 1 entry.
+        while (keys.length > 1
+          && (keys.length > MAX_OUT_PREVIEW_CACHE || totalBytes > MAX_OUT_PREVIEW_CACHE_BYTES)) {
+          const oldest = keys[0];
+          totalBytes -= outPreviewValueBytes(cache[oldest]);
+          delete cache[oldest];
+          keys = keys.slice(1);
+        }
+      }, []);
       const outPreviewQueue = useRef({ active: 0, jobs: [] });
       const runQueuedPreview = useCallback((job) => new Promise((resolve, reject) => {
         const q = outPreviewQueue.current;
@@ -347,17 +380,17 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                 next = { kind: 'text', text: text.slice(0, 1600) };
               }
               if (!next) next = { kind: 'fallback' };
-              outPreviewCache.current[cacheKey] = next;
+              rememberOutPreview(cacheKey, next);
               return next;
             } catch (e) {
               const next = { kind: 'fallback', error: String(e) };
-              outPreviewCache.current[cacheKey] = next;
+              rememberOutPreview(cacheKey, next);
               return next;
             }
           }).then((next) => { if (alive) setPv(next); });
           }, 80);
           return () => { alive = false; clearTimeout(timer); };
-        }, [cacheKey, visible, o.path, o.category, ext, outputSessionId, runQueuedPreview]);
+        }, [cacheKey, visible, o.path, o.category, ext, outputSessionId, runQueuedPreview, rememberOutPreview]);
 
         const htmlPreviewDoc = (html) => '<style>html,body{overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
         const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
@@ -471,17 +504,17 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                   next = { kind: 'text', text: text.slice(0, 1200) };
                 }
                 if (!next) next = { kind: 'fallback' };
-                outPreviewCache.current[cacheKey] = next;
+                rememberOutPreview(cacheKey, next);
                 return next;
               } catch (e) {
                 const next = { kind: 'fallback', error: String(e) };
-                outPreviewCache.current[cacheKey] = next;
+                rememberOutPreview(cacheKey, next);
                 return next;
               }
             }).then((next) => { if (alive) setPv(next); });
           }, 80);
           return () => { alive = false; clearTimeout(timer); };
-        }, [cacheKey, visible, f.path, ext, runQueuedPreview]);
+        }, [cacheKey, visible, f.path, ext, runQueuedPreview, rememberOutPreview]);
 
         const col = extColor(ext);
         const htmlPreviewDoc = (html) => '<style>*{animation-duration:.001s!important;}</style>' + (html || '');

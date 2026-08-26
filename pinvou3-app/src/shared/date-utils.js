@@ -1,5 +1,20 @@
 
 
+// Intl.DateTimeFormat construction is expensive, and the sidebar calls
+// formatSessionDate/formatDateGroupLabel for every session on each App
+// render. Cache formatters by locale|opts (closed key space: three
+// languages × two opts variants).
+const formatterCache = new Map();
+function cachedFormatter(locale, optsKey, opts) {
+  const key = `${locale}|${optsKey}`;
+  let fmt = formatterCache.get(key);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat(locale, opts);
+    formatterCache.set(key, fmt);
+  }
+  return fmt;
+}
+
 function formatSessionDate(ts, language) {
       if (!ts) return '';
       const d = new Date(typeof ts === 'number' ? ts : ts);
@@ -20,10 +35,9 @@ function formatSessionDate(ts, language) {
       const days = Math.floor(diff / 86400000);
       if (days < 7) return L.daysAgo(days);                               // 2~6 天
       // ≥7 天:日期;跨年带年份(只写月日会有歧义)
-      const opts = d.getFullYear() === now.getFullYear()
-        ? { month: 'short', day: 'numeric' }
-        : { year: 'numeric', month: 'short', day: 'numeric' };
-      return d.toLocaleDateString(L.locale, opts);
+      return d.getFullYear() === now.getFullYear()
+        ? cachedFormatter(L.locale, 'md', { month: 'short', day: 'numeric' }).format(d)
+        : cachedFormatter(L.locale, 'ymd', { year: 'numeric', month: 'short', day: 'numeric' }).format(d);
     }
 
     // 侧栏任务列表按日期堆叠:本地日历日 key(YYYY-MM-DD),无时间戳归 'unknown'
@@ -46,10 +60,9 @@ function formatSessionDate(ts, language) {
       if (key === localDateKey(Date.now() - 86400000)) return L.yesterday;
       const [y, m, d] = key.split('-').map(Number);
       const date = new Date(y, m - 1, d);
-      const opts = y === new Date().getFullYear()
-        ? { month: 'short', day: 'numeric' }
-        : { year: 'numeric', month: 'short', day: 'numeric' };
-      return date.toLocaleDateString(L.locale, opts);
+      return y === new Date().getFullYear()
+        ? cachedFormatter(L.locale, 'md', { month: 'short', day: 'numeric' }).format(date)
+        : cachedFormatter(L.locale, 'ymd', { year: 'numeric', month: 'short', day: 'numeric' }).format(date);
     }
 
 export { formatSessionDate, localDateKey, formatDateGroupLabel };

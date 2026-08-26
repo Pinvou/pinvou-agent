@@ -53,7 +53,6 @@ import {
   applyEvent,
   createPetState,
   deriveActivities,
-  deriveAnimation,
   markSessionViewed,
   removeSessionActivity,
 } from './pet-state.js';
@@ -138,7 +137,27 @@ function PetSprite({ pet, animation }) {
   );
 }
 
-function PetActivityBody({ text, expanded = false }) {
+// Value-based stable comparison for the 600ms tick: when the list length
+// and every card's (sessionId,status,updatedAt,title,body) all match, the
+// update is considered unchanged, letting setState keep the old reference
+// and skip re-rendering the whole activity-card tree.
+// body must participate: its text derives from the i18n dictionary, and a
+// language switch changes body without touching the event fields — without
+// it, cards would keep showing the pre-switch language forever.
+function sameActivities(prev, next) {
+  if (prev === next) return true;
+  if (!Array.isArray(prev) || !Array.isArray(next) || prev.length !== next.length) return false;
+  for (let i = 0; i < prev.length; i += 1) {
+    const a = prev[i];
+    const b = next[i];
+    if (!a || !b) return false;
+    if (a.sessionId !== b.sessionId || a.status !== b.status
+      || a.updatedAt !== b.updatedAt || a.title !== b.title || a.body !== b.body) return false;
+  }
+  return true;
+}
+
+const PetActivityBody = React.memo(function PetActivityBody({ text, expanded = false }) {
   const source = String(text || '');
   const className = expanded
     ? 'pet-activity-body pet-activity-body-expanded'
@@ -150,7 +169,7 @@ function PetActivityBody({ text, expanded = false }) {
       dangerouslySetInnerHTML={{ __html: renderPetMarkdown(source) }}
     />
   );
-}
+});
 
 export default function PetWindow({
   allowResize = true,
@@ -307,8 +326,15 @@ export default function PetWindow({
 
   const refresh = () => {
     const now = Date.now();
-    setActivities(deriveActivities(stateRef.current, now, petCopy));
-    setBaseAnimation(deriveAnimation(stateRef.current, now) || 'idle');
+    const next = deriveActivities(stateRef.current, now, petCopy);
+    // Constant 600ms tick: deriveActivities returns fresh array/object
+    // identities every time, so a direct setState would fully re-render
+    // even when idle (each card re-runs its markdown render). The
+    // value-based stable comparison skips unchanged commits.
+    setActivities((prev) => (sameActivities(prev, next) ? prev : next));
+    // deriveAnimation only reads the first card's status: it reuses the derivation above, avoiding a second sort per tick.
+    const nextAnimation = next.length ? next[0].status : null;
+    setBaseAnimation((prev) => (prev === nextAnimation ? prev : (nextAnimation || 'idle')));
   };
 
   useEffect(() => {
@@ -1201,7 +1227,7 @@ export default function PetWindow({
     event.preventDefault();
     event.stopPropagation();
     removeSessionActivity(stateRef.current, sessionId);
-    setActivities(deriveActivities(stateRef.current, Date.now(), petCopy));
+    refresh();
     dispatchCardUi({ type: 'dismiss', sessionId });
   };
 

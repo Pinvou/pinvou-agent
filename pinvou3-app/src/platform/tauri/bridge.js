@@ -873,6 +873,26 @@
     state: state, invoke: invoke, listen: listen, notify: notify,
     sessionStates: sessionStates, scheduledRunSessionOwners: scheduledRunSessionOwners,
     personaPlaceholderTitles: personaPlaceholderTitles, turnUsageDirty: turnUsageDirty,
+    // Clean host-side per-session side tables when a session buffer is
+    // deleted/evicted (modeStateEpochs is defined later in this file, so
+    // the reference cannot be passed in directly — a lazy-lookup hook).
+    onSessionBufferPurged: function (id, reason) {
+      delete modeStateEpochs[id];
+      // The localStorage cache of scene events is the only recovery copy
+      // when the sidecar save fails or we are offline
+      // (savePinvouSceneEventsForSession intentionally swallows backend
+      // failures; syncPinvouSceneEventsForSession replays from this
+      // cache). LRU capacity eviction (reason === "evict") ≠ session
+      // deletion: removing the key here would let one failed save +
+      // eviction silently lose all scene mappings, and the key itself is
+      // only a few hundred bytes — keeping it costs far less than losing
+      // data. Clean only on real session deletion ("delete"), preventing
+      // unbounded accumulation across historical sessions (~5MB shared
+      // quota).
+      if (id && reason === "delete" && window.localStorage) {
+        try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch (_) {}
+      }
+    },
     runSyncOnSession: runSyncOnSession, persistMessagesFor: persistMessagesFor,
     resetPendingAssistant: function () { return resetPendingAssistant.apply(null, arguments); },
     stopThinking: function () { return stopThinking.apply(null, arguments); },
@@ -1709,9 +1729,24 @@
   }
 
   // ── Rerender from messages (session restore) ─────────────────────
-  function rerenderFromMessages() {
+  // opts.keepLiveToolMeta: passed when hydrating a live session
+  // (hydrateLiveSession) — the buffer's toolMeta may hold entries for
+  // in-flight tools (tool_use not yet in messages), and clearing it would
+  // leave the later chat:tool_end without its meta (stuck selection
+  // card / degraded artifact card).
+  function rerenderFromMessages(opts) {
     state.chatItems = [];
     itemIdSeq = 0;
+    // Replay re-adds every historical tool_use's metadata (including
+    // write/patch's large args) to toolMeta for tool_result backfill and
+    // never deletes after backfill — the residue resides in the buffer
+    // with the working set, and memory is bounded by the 32-entry
+    // all-session LRU cap. Durable replay clears first (when not live
+    // hydrating), reclaiming only orphan entries left by interrupted
+    // turns (the live event path itself stays insert/delete balanced);
+    // the replay then rebuilds the needed entries for the historical
+    // tool_uses inside messages.
+    if (!(opts && opts.keepLiveToolMeta)) toolMeta = {};
     // 卡牌事件按 pos 插回原位(pos=事件发生时的 messages 数)。让重载历史不割裂。
     var pe = Array.isArray(state.personaEvents) ? state.personaEvents : [];
     function emitPersonaAt(atOrAfter, isTail) {

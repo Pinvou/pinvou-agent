@@ -363,7 +363,16 @@ try {
   // 断言需读对应子模块。
   const loginMod = readFileSync(path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'login.rs'), 'utf8');
   const introspectMod = readFileSync(path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'introspect.rs'), 'utf8');
-  assert.ok(runtime.includes('self.session_store.touch_activity(session_id)'),
+  const operationGate = readFileSync(path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'operation_gate.rs'), 'utf8');
+  // PR #339 round 9 folds the activity persistence into `admit_prompt_turn`
+  // (operation_gate.rs) so a touch failure cannot leak a registered timing
+  // turn; the touch itself still runs inside `AcpPool::send_message`, before
+  // the timing registration and the spawned prompt task.
+  assert.ok(/self\.session_store\s+\.touch_activity\(session_id\)/.test(runtime)
+    && /admit_prompt_turn\(&runtime\.busy, &runtime\.configuring, session_id, \|\|/s.test(runtime)
+    && operationGate.includes('fn admit_prompt_turn')
+    && /if let Err\(error\) = touch_activity\(\) \{\s*busy\.store\(false, Ordering::Release\);/s.test(operationGate)
+    && /touch_activity\(\)[\s\S]*timing::start_turn\(session_id\)/.test(operationGate),
     'an accepted ACP turn must persist the session activity timestamp before it starts');
   assert.ok(runtime.includes('interrupt_orphaned_turns("application_restarted")')
     && runtime.includes('cancel_without_active_prompt')
