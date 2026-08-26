@@ -13,6 +13,7 @@ use anyhow::Result;
 use chrono::Utc;
 use deepseek_tui::models::{ContentBlock, ImageUrlContent, Message, SystemPrompt};
 use deepseek_tui::session_manager::create_saved_session_with_id_and_mode;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -1088,15 +1089,26 @@ fn checked_scheduled_delete_removes_profile_json_and_runtime_directory() {
         .expect_err("ordinary chat deletion must reject scheduled runs");
     assert!(err.to_string().contains("through their automation"));
 
+    let (mut deletions, replay) = store.subscribe_session_deletions();
+    assert!(replay.is_empty());
+
     let err = store
         .delete_scheduled_run(&id, "another-task")
         .expect_err("wrong owner must fail");
     assert!(err.to_string().contains("task ownership"));
+    assert!(matches!(
+        deletions.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
     assert!(runtime_dir.exists());
 
     store
         .delete_scheduled_run(&id, "task-delete")
         .expect("delete scheduled run");
+    assert_eq!(
+        deletions.try_recv().expect("scheduled deletion event").id,
+        id
+    );
     assert!(store.scheduled_profile(&id).is_none());
     assert!(store.active_id().is_none());
     assert!(store.session_model_id(&id).is_none());
@@ -1104,6 +1116,62 @@ fn checked_scheduled_delete_removes_profile_json_and_runtime_directory() {
     assert!(!store.is_pinned(&id));
     assert!(!runtime_dir.exists());
     assert!(!paths::sessions_root().join(format!("{id}.json")).exists());
+}
+
+#[test]
+fn scheduled_delete_emits_tombstone_when_record_commit_precedes_cleanup_error() {
+    let (store, _g) = isolated_store();
+    let scheduled = store
+        .create_scheduled_run(scheduled_profile("task-partial-delete"))
+        .expect("create scheduled run");
+    let id = scheduled.metadata.id;
+    let runtime_dir = store.manager.sessions_dir().join(&id);
+    std::fs::create_dir_all(&runtime_dir).expect("create scheduled runtime dir");
+    std::fs::write(runtime_dir.join("pending.txt"), "pending cleanup")
+        .expect("write runtime marker");
+    let (mut deletions, replay) = store.subscribe_session_deletions();
+    assert!(replay.is_empty());
+    store
+        .inject_post_record_delete_fault(&id, ErrorKind::PermissionDenied)
+        .expect("inject post-record cleanup error");
+
+    let error = store
+        .delete_scheduled_run(&id, "task-partial-delete")
+        .expect_err("cleanup error must remain visible to caller");
+
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .expect("original io cleanup error")
+            .kind(),
+        ErrorKind::PermissionDenied
+    );
+    assert!(
+        !store
+            .manager
+            .sessions_dir()
+            .join(format!("{id}.json"))
+            .exists(),
+        "durable session record was committed as deleted"
+    );
+    assert_eq!(
+        deletions
+            .try_recv()
+            .expect("partial scheduled deletion tombstone")
+            .id,
+        id
+    );
+    assert!(
+        store.scheduled_profile(&id).is_some(),
+        "profile cleanup remains retryable after the reported error"
+    );
+    assert!(runtime_dir.exists(), "runtime cleanup remains retryable");
+
+    store
+        .delete_scheduled_run(&id, "task-partial-delete")
+        .expect("idempotent retry finishes remaining cleanup");
+    assert!(store.scheduled_profile(&id).is_none());
+    assert!(!runtime_dir.exists());
 }
 
 #[test]
@@ -1287,6 +1355,77 @@ fn chat_retention_does_not_evict_scheduled_conversation() {
     assert!(store.scheduled_session_exists(&scheduled.metadata.id));
     assert!(store.scheduled_profile(&scheduled.metadata.id).is_some());
     assert_eq!(store.list().expect("chat list").len(), 50);
+    let (_deletions, replay) = store.subscribe_session_deletions();
+    let pruned = replay.first().expect("late retention deletion replay");
+    assert!(
+        store.load(&pruned.id).is_err(),
+        "retention event must name the deleted chat"
+    );
+}
+
+#[test]
+fn retention_emits_tombstone_when_record_commit_precedes_cleanup_error() {
+    let (store, _g) = isolated_store();
+    let oldest_id = "retention-partial-delete";
+    let now = Utc::now();
+    for index in 0..=MAX_SESSIONS_PER_KIND {
+        let id = if index == MAX_SESSIONS_PER_KIND {
+            oldest_id.to_string()
+        } else {
+            format!("retention-live-{index}")
+        };
+        let mut session = create_saved_session_with_id_and_mode(
+            id,
+            &[],
+            "/retention-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store
+            .save_session_atomic(&session)
+            .expect("seed session without eager retention");
+    }
+    store
+        .session_models
+        .write()
+        .insert(oldest_id.to_string(), "stale-model".to_string());
+    let (mut deletions, replay) = store.subscribe_session_deletions();
+    assert!(replay.is_empty());
+    store
+        .inject_post_record_delete_fault(oldest_id, ErrorKind::PermissionDenied)
+        .expect("inject post-record cleanup error");
+
+    let error = store
+        .enforce_session_retention_locked()
+        .expect_err("retention must preserve cleanup error");
+
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .expect("original io cleanup error")
+            .kind(),
+        ErrorKind::PermissionDenied
+    );
+    assert!(!store
+        .manager
+        .sessions_dir()
+        .join(format!("{oldest_id}.json"))
+        .exists());
+    assert_eq!(
+        deletions
+            .try_recv()
+            .expect("partial retention deletion tombstone")
+            .id,
+        oldest_id
+    );
+    assert!(
+        !store.session_models.read().contains_key(oldest_id),
+        "committed retention deletions purge process-local side maps"
+    );
+    assert_eq!(store.list().expect("retained chat list").len(), 50);
 }
 
 #[test]
@@ -1721,6 +1860,113 @@ fn delete_removes_session() {
         .expect("create");
     store.delete(&s.metadata.id).expect("delete");
     assert!(store.load(&s.metadata.id).is_err(), "load after delete");
+}
+
+#[test]
+fn delete_emits_tombstone_when_record_commit_precedes_cleanup_error() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id;
+    let runtime_dir = store.manager.sessions_dir().join(&id);
+    std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+    std::fs::write(runtime_dir.join("pending.txt"), "pending cleanup")
+        .expect("write runtime marker");
+    let (mut deletions, replay) = store.subscribe_session_deletions();
+    assert!(replay.is_empty());
+    store
+        .inject_post_record_delete_fault(&id, ErrorKind::PermissionDenied)
+        .expect("inject post-record cleanup error");
+
+    let error = store
+        .delete(&id)
+        .expect_err("cleanup error must remain visible to caller");
+
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .expect("original io cleanup error")
+            .kind(),
+        ErrorKind::PermissionDenied
+    );
+    assert!(
+        !store
+            .manager
+            .sessions_dir()
+            .join(format!("{id}.json"))
+            .exists(),
+        "durable session record was committed as deleted"
+    );
+    assert_eq!(
+        deletions.try_recv().expect("partial deletion tombstone").id,
+        id
+    );
+    assert!(runtime_dir.exists(), "failed cleanup remains retryable");
+
+    store
+        .delete(&id)
+        .expect("idempotent retry finishes remaining cleanup");
+    assert!(!runtime_dir.exists());
+}
+
+#[test]
+fn deletion_subscription_replays_delete_that_happened_before_subscribe() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id;
+
+    store.delete(&id).expect("delete before subscriber exists");
+
+    let (mut deletions, replay) = store.subscribe_session_deletions();
+    assert_eq!(replay, vec![SessionDeleted { id }]);
+    assert!(matches!(
+        deletions.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+}
+
+#[test]
+fn repeated_delete_emits_idempotent_wakeups_but_keeps_one_tombstone() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id;
+    let (mut deletions, replay) = store.subscribe_session_deletions();
+    assert!(replay.is_empty());
+
+    store.delete(&id).expect("first delete");
+    store.delete(&id).expect("idempotent delete");
+
+    assert_eq!(deletions.try_recv().expect("first wakeup").id, id);
+    assert_eq!(deletions.try_recv().expect("second wakeup").id, id);
+    assert_eq!(
+        store.session_deletion_tombstones(),
+        vec![SessionDeleted { id }]
+    );
+}
+
+#[test]
+fn lagged_deletion_subscriber_can_replay_every_tombstone() {
+    let (store, _g) = isolated_store();
+    let (mut deletions, replay) = store.subscribe_session_deletions();
+    assert!(replay.is_empty());
+
+    for index in 0..200 {
+        store.notify_session_deleted(&format!("deleted-{index}"));
+    }
+
+    assert!(matches!(
+        deletions.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) if skipped > 0
+    ));
+    let tombstones = store.session_deletion_tombstones();
+    assert_eq!(tombstones.len(), 200);
+    assert!(tombstones.iter().any(|event| event.id == "deleted-0"));
+    assert!(tombstones.iter().any(|event| event.id == "deleted-199"));
 }
 
 #[test]

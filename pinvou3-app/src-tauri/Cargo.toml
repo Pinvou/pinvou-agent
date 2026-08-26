@@ -31,6 +31,9 @@ default = ["local-embed"]
 local-embed = ["pinvou-knowledge/local-embed"]
 dev-tools = []
 benchmark-hooks = ["dep:agent-backend-api"]
+# 隔离的 macOS BrowserCore 真机验收构建。正式发布只由
+# `platform::capabilities::MACOS_BROWSER_RELEASED` 控制；此 feature 永不加入 default。
+browser-macos-preview = []
 
 [build-dependencies]
 tauri-build = { version = "2.6.1", features = [] }
@@ -44,7 +47,7 @@ serde = { version = "1.0", features = ["derive"] }
 semver = "1"
 toml = "1"
 log = "0.4"
-tauri = { version = "2.11.1", features = [] }
+tauri = { version = "2.11.1", features = ["unstable"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2.4.2"
@@ -175,6 +178,19 @@ tauri = { version = "2.11.1", features = ["macos-private-api"] }
 objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
+# BrowserCore invokes WKWebView's public async JavaScript API directly.  Keep
+# the binding surface deliberately narrow: the page world, main-frame async
+# completion, and the WKWebView class itself.  AppKit input is dispatched
+# through the existing objc2-app-kit dependency below; no Safari/remote
+# debugging process is involved.
+objc2-web-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-app-kit",
+    "WKContentWorld",
+    "WKFrameInfo",
+    "WKWebView",
+] }
 # block2: Speech framework 的 recognitionTask result handler 是 Obj-C block,
 # voice_asr_speech.rs 用 block2::RcBlock 包装 Rust 闭包。版本对齐 objc2 0.6 family。
 block2 = "0.6"
@@ -206,6 +222,8 @@ msg_parser = "0.3.0"
 # 此处显式声明只为把 app 直接依赖收敛到更轻的 windows-core(windows::core::* 即其 re-export)。
 windows-core = "0.61"
 
+# 进程存活探测（kill(pid, 0) 语义，见 platform/os/posix.rs process_alive）：
+# browser watch 删除 stale 端口文件前的持有者护栏。
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
@@ -223,6 +241,14 @@ webkit2gtk = "2.0"
 # macOS-only 传递依赖(readkey/readmouse/macos-accessibility-client)——这些本就永不编译
 # (device_query 的 windows/macOS dep 是 cfg-gated 死重),仅污染 lockfile。仅用 xlib feature。
 x11 = { version = "2.21", features = ["xlib"] }
+# BrowserCore reads JSON results from WebKitGTK's evaluate_javascript callback.
+# This is already a transitive WebKit dependency; declaring it directly keeps
+# the platform driver on the public typed API instead of reaching into FFI.
+javascriptcore = { package = "javascriptcore-rs", version = "1.1" }
+# Tauri's unstable Wry plugin API lets the browser feature pre-register its
+# dedicated WebKit context with automation enabled. Keep this exact version
+# aligned with Tauri's resolved runtime so the unstable runtime API cannot drift.
+tauri-runtime-wry = "=2.11.4"
 
 # =============================================================================
 # Lint 门禁 —— 硬门禁设计:只启用「当前实测零欠账」的 lint(deny);

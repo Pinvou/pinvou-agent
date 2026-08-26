@@ -44,12 +44,13 @@ mod validators;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
+use tokio::sync::broadcast;
 
 pub use crate::core::mode_state::{ModeLane, SerializableMode};
 use crate::platform::paths;
@@ -168,6 +169,22 @@ pub struct SessionStore {
     /// startup); deletion proceeds and only the process-level state goes
     /// unnotified.
     session_purged_hooks: Arc<RwLock<Vec<SessionPurgedHook>>>,
+    /// Process-local deletion wakeups. The durable session store remains the
+    /// source of truth; this is a feature-neutral lifecycle seam consumed by
+    /// composition-root services (for example, browser workspace teardown).
+    pub(crate) session_deletions: broadcast::Sender<SessionDeleted>,
+    /// Successful/idempotent deletes seen during this process. Keeping the
+    /// unique ids lets late subscribers replay boot-time retention and lets a
+    /// lagged broadcast receiver recover without sessions depending on any
+    /// downstream feature.
+    pub(crate) deleted_session_ids: Arc<RwLock<HashSet<String>>>,
+}
+
+/// Feature-neutral notification emitted after a session has been deleted (or
+/// an idempotent delete confirms it was already absent).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionDeleted {
+    pub(crate) id: String,
 }
 
 /// 原生代码会话(品悟 Engine)的执行根解析器:绑定了项目目录的原生代码会话

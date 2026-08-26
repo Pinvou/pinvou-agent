@@ -1,8 +1,11 @@
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::linux_path;
+
+// Unix 通用 helper 从 posix.rs 继承（与 linux_path.rs 的 Wave 3 去重同口径）。
+pub use super::super::posix::process_alive;
 
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     super::super::posix::spawn_detached_and_reap(Command::new("xdg-open").arg(target.as_ref()))
@@ -215,4 +218,10 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
         "/usr/bin/nvidia-smi",
         "/usr/local/bin/nvidia-smi",
     ]
+}
+
+/// 随安装包捆绑的 node：Linux 复用 codex-bridge 运行时 node（无捆绑时 None，
+/// 消费方回退系统 PATH 探测）。
+pub fn bundled_node() -> Option<PathBuf> {
+    crate::platform::paths::bundled_connector_node()
 }

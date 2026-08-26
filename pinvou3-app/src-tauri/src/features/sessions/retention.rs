@@ -59,7 +59,6 @@ impl SessionStore {
         let mut chat_count = 0usize;
         let mut deleted_ids = Vec::new();
         let mut delete_error = None;
-        let mut snapshot_dirty = false;
         for metadata in sessions {
             // Scheduled sessions own additional records outside sessions/.
             // Generic chat cleanup must not delete only the transcript and
@@ -69,27 +68,21 @@ impl SessionStore {
             }
             chat_count += 1;
             if chat_count > MAX_SESSIONS_PER_KIND {
-                match self.manager.delete_session(&metadata.id) {
-                    Ok(()) => deleted_ids.push(metadata.id),
-                    Err(error) if error.kind() == ErrorKind::NotFound => {}
-                    Err(error) => {
-                        // 上游 delete_session 先删 JSON 再清目录:即使最终返回
-                        // Err,会话 JSON 也可能已从盘上消失(部分失败)。凡发起
-                        // 过删除即视为快照过期,不能只认 Ok 分支——否则幽灵条目
-                        // 会驻留到下一次任意写。id 不进 deleted_ids(side maps
-                        // 只对确认完全删除的会话清)。
-                        snapshot_dirty = true;
-                        if delete_error.is_none() {
-                            delete_error = Some(
-                                anyhow::anyhow!(error)
-                                    .context(format!("delete retained session {}", metadata.id)),
-                            );
-                        }
+                let id = metadata.id;
+                let (committed, result) = self.delete_session_record(&id);
+                if committed {
+                    deleted_ids.push(id.clone());
+                }
+                if let Err(error) = result {
+                    if error.kind() != ErrorKind::NotFound && delete_error.is_none() {
+                        delete_error = Some(
+                            anyhow::anyhow!(error).context(format!("delete retained session {id}")),
+                        );
                     }
                 }
             }
         }
-        if !deleted_ids.is_empty() || snapshot_dirty {
+        if !deleted_ids.is_empty() {
             // 保留策略删掉的会话使列表快照过期;部分失败(JSON 已删、Err 提前
             // 冒泡)同样过期——不能只认 Ok 分支,否则幽灵条目驻留到下一次任意写。
             self.invalidate_list_cache();
@@ -155,6 +148,10 @@ impl SessionStore {
 
         let mut removed = Vec::new();
         for id in stale_ids {
+            // The transcript is already absent. Notify before fallible
+            // sidecar cleanup so downstream process-local resources cannot be
+            // stranded if that cleanup needs a later reconciliation retry.
+            self.notify_session_deleted(&id);
             self.remove_scheduled_runtime_dir(&id)?;
             removed.push(id);
         }
@@ -532,12 +529,12 @@ impl SessionStore {
             .insert(id.clone(), profile.clone());
         if let Err(err) = self.save_scheduled_profiles() {
             self.scheduled_profiles.write().remove(&id);
-            let rollback = self.manager.delete_session(&id);
             // 回滚删除本身也是一次落盘变更:失效列表缓存,防止并发读者恰在
             // save 失效与回滚删除之间重扫到 sched-*.json 并以当时的代数回填,
             // 让已被回滚的幽灵会话滞留在缓存里。
             self.invalidate_list_cache();
-            if let Err(rollback_error) = rollback {
+            let (_, rollback_result) = self.delete_session_record(&id);
+            if let Err(rollback_error) = rollback_result {
                 return Err(anyhow::anyhow!(
                     "save scheduled session profile: {err:#}; rollback scheduled session {id} also failed: {rollback_error}"
                 ));
@@ -551,6 +548,9 @@ impl SessionStore {
     pub fn delete_scheduled_run(&self, id: &str, expected_task_id: &str) -> Result<()> {
         let _mutation = self.scheduled_mutation.lock();
         let Some(profile) = self.scheduled_profile(id) else {
+            // Idempotent retry: the durable profile may already be gone while
+            // a process-local consumer still owns resources for this id.
+            self.notify_session_deleted(id);
             return Ok(());
         };
         if profile.task_id != expected_task_id {
@@ -563,7 +563,8 @@ impl SessionStore {
         // 同 store.delete:上游先删 JSON 再清目录,Err 也可能已变更盘面,
         // 按「已发起删除即失效」处理(Err 提前 return 不得跳过失效)。
         self.invalidate_list_cache();
-        match self.manager.delete_session(id) {
+        let (_, delete_result) = self.delete_session_record(id);
+        match delete_result {
             Ok(()) => {}
             Err(err) if err.kind() == ErrorKind::NotFound => {}
             Err(err) => return Err(err).with_context(|| format!("delete scheduled session {id}")),

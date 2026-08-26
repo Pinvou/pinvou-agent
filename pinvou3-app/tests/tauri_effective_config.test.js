@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const {
@@ -9,13 +10,16 @@ const {
   mergeConfig,
 } = require("../scripts/tauri/effective-config.js");
 const {
+  chromeDevtoolsMcpEnvironment,
   configSpecs,
   prepareCodexBridge,
+  prepareChromeDevtoolsMcpForPlatform,
   prepareWindowsCodexBridge,
   prepareTauriArgs,
   runTauri,
   tauriRuntimeEnvironment,
   tauriCommandIndex,
+  supportsChromeDevtoolsMcp,
 } = require("../scripts/tauri/build.js");
 const {
   platformArchitectureConfigPath,
@@ -27,6 +31,39 @@ const {
 } = require("../scripts/tauri/startup-window-config.js");
 const { requireWrapper, WRAPPER_ENV } = require("../scripts/tauri/require-wrapper.js");
 const { WINDOWS_BRIDGE_CONFIG_PATH } = require("../scripts/tauri/codex-bridge.js");
+const {
+  ADAPTER_VERSION,
+  applyTargetIdAdapter,
+} = require("../scripts/tauri/chrome-devtools-mcp.js");
+
+assert.equal(ADAPTER_VERSION, "pinvou-target-id-v1");
+{
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pinvou-cdmcp-adapter-"));
+  const sourceDir = path.join(root, "build", "src");
+  const responsePath = path.join(sourceDir, "McpResponse.js");
+  fs.mkdirSync(sourceDir, { recursive: true });
+  fs.writeFileSync(
+    responsePath,
+    [
+      "function createStructuredPage(mcpPage) {",
+      "    const entry = {",
+      "        id: mcpPage.id,",
+      "        url: mcpPage.pptrPage.url(),",
+      "    };",
+      "}",
+    ].join("\n"),
+  );
+  applyTargetIdAdapter(root);
+  applyTargetIdAdapter(root); // 幂等：构建重试不能重复插入字段
+  const adapted = fs.readFileSync(responsePath, "utf8");
+  assert.equal(
+    adapted.split("target_id: mcpPage.pptrPage.target()._targetId").length - 1,
+    1,
+  );
+  fs.writeFileSync(responsePath, "// upstream drift");
+  assert.throws(() => applyTargetIdAdapter(root), /adapter 锚点异常/);
+  fs.rmSync(root, { recursive: true, force: true });
+}
 
 let preparedBridge = null;
 prepareCodexBridge({
@@ -140,6 +177,33 @@ assert.deepEqual(
   "macOS dev must receive the platform overlay (native titlebar) to match packaged output",
 );
 assert.deepEqual(
+  prepareTauriArgs(["dev", "--features", "browser-macos-preview"], { platform: "darwin" }),
+  [
+    "dev",
+    "--config",
+    platformConfigPath("darwin"),
+    "--features",
+    "browser-macos-preview",
+  ],
+  "the isolated macOS BrowserCore preview feature must reach the Tauri Cargo build unchanged",
+);
+assert.deepEqual(
+  prepareTauriArgs(
+    ["build", "--features", "browser-macos-preview", "--target", "universal-apple-darwin"],
+    { platform: "darwin" },
+  ),
+  [
+    "build",
+    "--config",
+    platformConfigPath("darwin"),
+    "--features",
+    "browser-macos-preview",
+    "--target",
+    "universal-apple-darwin",
+  ],
+  "preview packaging must remain an explicit opt-in instead of changing normal macOS builds",
+);
+assert.deepEqual(
   configSpecs(prepareTauriArgs(["dev", "-c", explicitOverlay], { platform: "darwin" })),
   [platformConfigPath("darwin"), explicitOverlay],
   "explicit macOS dev overlays must override the automatic platform overlay",
@@ -152,6 +216,58 @@ assert.match(
   buildSource,
   /if \(isDev\)[\s\S]*?prepareWindowsCodexBridge\(\)/,
   "Windows dev must prepare the ACP Bridge without packaging overlays",
+);
+const preparedBrowserPlatforms = [];
+for (const platform of ["win32", "darwin", "linux"]) {
+  const result = prepareChromeDevtoolsMcpForPlatform({
+    platform,
+    prepare: (options) => {
+      preparedBrowserPlatforms.push(options.platform);
+      return "prepared";
+    },
+  });
+  assert.equal(
+    result,
+    platform === "win32" ? "prepared" : false,
+    `${platform} must follow its declared Chrome MCP packaging capability`,
+  );
+  assert.equal(supportsChromeDevtoolsMcp(platform), platform === "win32");
+}
+assert.deepEqual(
+  preparedBrowserPlatforms,
+  ["win32"],
+  "only the Windows WebView2 backend may prepare chrome-devtools-mcp",
+);
+const browserDevEnvironment = chromeDevtoolsMcpEnvironment(
+  true,
+  { PINVOU_TEST_ENV: "kept" },
+  "win32",
+);
+assert.equal(browserDevEnvironment.PINVOU_TEST_ENV, "kept");
+assert.match(
+  browserDevEnvironment.PINVOU3_CDMCP_BIN,
+  /resources[\\/]platforms[\\/]windows[\\/]chrome-devtools-mcp[\\/]build[\\/]src[\\/]bin[\\/]chrome-devtools-mcp\.js$/,
+);
+for (const platform of ["darwin", "linux"]) {
+  const displayOnlyEnvironment = chromeDevtoolsMcpEnvironment(
+    true,
+    { PINVOU_TEST_ENV: "kept", PINVOU3_CDMCP_BIN: "stale-external-entry" },
+    platform,
+  );
+  assert.deepEqual(
+    displayOnlyEnvironment,
+    { PINVOU_TEST_ENV: "kept" },
+    `${platform} inactive browser substrate must neither inject nor inherit a Chrome MCP entry`,
+  );
+}
+assert.deepEqual(
+  chromeDevtoolsMcpEnvironment(
+    false,
+    { PINVOU_TEST_ENV: "kept", PINVOU3_CDMCP_BIN: "stale-external-entry" },
+    "win32",
+  ),
+  { PINVOU_TEST_ENV: "kept" },
+  "packaged Windows builds must resolve chrome-devtools-mcp only from the app resource directory",
 );
 let tauriInvocation = null;
 const tauriEnvironment = { PINVOU_TEST_ENV: "kept" };
@@ -202,11 +318,24 @@ assert.equal(
   linux.bundle.resources["resources/platforms/linux/codex-bridge/"],
   "runtime/codex-bridge",
 );
+assert.equal(
+  linux.bundle.resources["resources/platforms/linux/chrome-devtools-mcp/"],
+  undefined,
+  "Linux BrowserCore must not package the Windows-only chrome-devtools-mcp backend",
+);
+assert.ok(
+  linux.bundle.linux.deb.depends.includes("webkit2gtk-driver"),
+  "Linux BrowserCore packages must install the WebKitGTK WebDriver backend",
+);
 const linuxManifest = buildResourceManifest(linux, { platform: "linux" });
 assert.ok(linuxManifest.resourceFileCount > 0);
 assert.ok(linuxManifest.files.some((file) => file.destination.startsWith("runtime/asr/")));
 assert.ok(
   linuxManifest.files.some((file) => file.destination.startsWith("runtime/codex-bridge/")),
+);
+assert.ok(
+  !linuxManifest.files.some((file) => file.destination.startsWith("runtime/chrome-devtools-mcp/")),
+  "Linux resource manifest must exclude chrome-devtools-mcp",
 );
 
 assert.equal(platformArchitectureConfigPath("linux", "arm64"), null);
@@ -254,6 +383,11 @@ assert.equal(
   undefined,
   "macOS system Speech must not bundle the legacy SenseVoice runtime",
 );
+assert.equal(
+  macos.bundle.resources["resources/platforms/macos/chrome-devtools-mcp/"],
+  undefined,
+  "macOS BrowserCore packages must not carry chrome-devtools-mcp",
+);
 const macosManifest = buildResourceManifest(macos, { platform: "darwin" });
 assert.ok(
   macosManifest.files.some((file) => file.destination.startsWith("runtime/codex-bridge/")),
@@ -270,6 +404,77 @@ for (const locale of ["en", "zh-Hans", "ja"]) {
 assert.ok(
   !macosManifest.files.some((file) => file.destination.startsWith("runtime/asr/")),
   "macOS resource manifest must not contain a legacy ASR runtime",
+);
+assert.ok(
+  !macosManifest.files.some((file) => file.destination.startsWith("runtime/chrome-devtools-mcp/")),
+  "macOS resource manifest must exclude chrome-devtools-mcp",
+);
+
+const macosEntitlementsPath = path.join(
+  __dirname,
+  "..",
+  "src-tauri",
+  "packaging",
+  "macos",
+  "entitlements.plist",
+);
+const macosEntitlements = fs.readFileSync(macosEntitlementsPath);
+const macosEntitlementsText = macosEntitlements.toString("utf8");
+assert.ok(
+  !macosEntitlements.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])),
+  "codesign entitlements must not contain a UTF-8 BOM",
+);
+assert.ok(
+  !macosEntitlementsText.includes("\r") && !macosEntitlementsText.includes("<!--"),
+  "Apple codesign requires canonical LF-only entitlements without XML comments",
+);
+assert.match(macosEntitlementsText, /<key>com\.apple\.security\.device\.audio-input<\/key>/);
+const repoAttributes = fs.readFileSync(path.join(__dirname, "..", "..", ".gitattributes"), "utf8");
+assert.match(
+  repoAttributes,
+  /^pinvou3-app\/src-tauri\/packaging\/macos\/entitlements\.plist text eol=lf$/m,
+  "Windows checkouts must preserve the codesign entitlement file's LF line endings",
+);
+
+const windows = composeEffectiveConfig([platformConfigPath("win32")]).effectiveConfig;
+assert.equal(
+  windows.bundle.resources["resources/platforms/windows/chrome-devtools-mcp/"],
+  "runtime/chrome-devtools-mcp",
+  "Windows must package the adapter used by the app-owned WebView2 CDP endpoint",
+);
+const windowsManifest = buildResourceManifest(windows, { platform: "win32" });
+assert.ok(
+  windowsManifest.files.some((file) => file.destination.startsWith("runtime/chrome-devtools-mcp/")),
+  "Windows resource manifest must contain chrome-devtools-mcp",
+);
+
+const runtimeBundleExtraction = fs.readFileSync(
+  path.join(
+    __dirname,
+    "..",
+    "src-tauri",
+    "src",
+    "features",
+    "runtime_bundle",
+    "platform",
+    "extraction.rs",
+  ),
+  "utf8",
+);
+assert.match(
+  runtimeBundleExtraction,
+  /#\[cfg\(any\(target_os = "linux", target_os = "macos"\)\)\][\s\S]*?fn browser_mcp_entry_for_session[\s\S]*?@pinvou\/browser-core/,
+  "Linux and macOS must register the unified Pinvou BrowserCore wrapper",
+);
+assert.match(
+  runtimeBundleExtraction,
+  /#\[cfg\(target_os = "linux"\)\]\s*find_webkit_webdriver\(\)\?;/,
+  "Linux BrowserCore must keep its WebKitWebDriver runtime gate",
+);
+assert.match(
+  runtimeBundleExtraction,
+  /#\[cfg\(target_os = "windows"\)\]\s*fn browser_mcp_entry_for_session[\s\S]*?PINVOU3_CDMCP_BIN/,
+  "the chrome-devtools-mcp environment override must remain inside the Windows-only path",
 );
 
 // macOS 主窗口走系统原生红绿灯顶栏(titleBarStyle=Overlay),前端据此隐藏自绘三键。

@@ -47,11 +47,14 @@ function injectSource() {
   return `(function(){
     window.__TAURI_EVENT_HANDLERS__={};
     window.__TAURI_INVOKES__=[];
+    window.__BROWSER_RUNNING__=false;
+    window.__BROWSER_STATUS_RESOLVERS__=[];
     window.__KB_MODEL_STATUS__={installed:true,ready:true,loading:false};
     window.__KB_MODEL_DOWNLOAD_ARGS__=[];
     let SESSIONS=[
       {id:'s-pinned-old',title:'置顶旧会话',created_at:'2026-06-01T08:00:00Z',updated_at:'2026-06-01T08:00:00Z',pinned:true,pinned_at:'2026-07-20T08:00:00Z'},
       {id:'s-attachment',title:'看看这个\\n\\n📎 PINV',title_attachment_names:['PINVOU-M0-开源决策基线.md'],created_at:Date.now()-2000,updated_at:Date.now()-2000},
+      {id:'s-browser-b',title:'浏览器隔离会话',created_at:Date.now()-1500,updated_at:Date.now()-1500},
       {id:'s1',title:'第三季度财报分析',created_at:Date.now()-1000,updated_at:Date.now()}
     ];
     let CODEX_SESSIONS=[{id:'codex-1',agent_id:'codex',title:'Codex回归会话',created_at:new Date(Date.now()-1000).toISOString(),updated_at:new Date().toISOString(),workspace_kind:'temporary',workspace_path:''}];
@@ -59,6 +62,8 @@ function injectSource() {
     let ARCHIVED_SESSIONS=[];
     let MOUNTED_COLLECTIONS=[];
     let MOUNTED_COLLECTIONS_REVISION=0;
+    let BROWSER_TABS=[{target_id:'browser-tab-1',title:'Example Domain',url:'https://example.com/',active:true}];
+    let BROWSER_ACTIVE='browser-tab-1';
     window.__SHELL_JOBS__=[{
       id:'task-history-done',job_id:'history-1',command:'history-shell',cwd:'C:/tmp',status:'Completed',
       exit_code:0,elapsed_ms:20,stdout_tail:'history output',stderr_tail:'',stdout_len:14,stderr_len:0,
@@ -81,7 +86,7 @@ function injectSource() {
       window.__TAURI_INVOKES__.push({cmd:cmd,args:args||{}});
       switch(cmd){
         case 'get_settings': return Promise.resolve({theme:'liquid-light',language:'zh-Hans'});
-        case 'get_platform_capabilities': return Promise.resolve({codexAcpSupported:true});
+        case 'get_platform_capabilities': return Promise.resolve({codexAcpSupported:true,browserNativeDisplay:true,localModelSetup:true,dependencyInstall:true});
         case 'get_effective_model_config': return Promise.resolve({model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
         case 'list_sessions': return Promise.resolve(SESSIONS);
         case 'list_codex_acp_sessions': return Promise.resolve(CODEX_SESSIONS);
@@ -116,6 +121,68 @@ function injectSource() {
         case 'check_for_update': return Promise.resolve({available:false});
         case 'check_dependencies': return Promise.resolve([]);
         case 'list_marketplace_tools': return Promise.resolve([]);
+        case 'browser_status': {
+          const snapshot=function(){
+            const active=BROWSER_TABS.find(function(tab){return tab.target_id===BROWSER_ACTIVE;})||BROWSER_TABS[0];
+            return {sessionId:args.sessionId,running:window.__BROWSER_RUNNING__,activeTab:active&&active.target_id,url:active&&active.url||'about:blank',controlOwner:'agent',controlRevision:1};
+          };
+          if(window.__DELAY_BROWSER_STATUS__) return new Promise(function(resolve){
+            window.__BROWSER_STATUS_RESOLVERS__.push(function(){resolve(snapshot());});
+            window.__RESOLVE_BROWSER_STATUS__=function(){
+              window.__DELAY_BROWSER_STATUS__=false;
+              const resolvers=window.__BROWSER_STATUS_RESOLVERS__.splice(0);
+              window.__RESOLVE_BROWSER_STATUS__=null;
+              resolvers.forEach(function(run){run();});
+            };
+          });
+          return Promise.resolve(snapshot());
+        }
+        case 'browser_prepare': window.__BROWSER_RUNNING__=true; return Promise.resolve({sessionId:args.sessionId});
+        case 'browser_list_tabs': return Promise.resolve(window.__BROWSER_RUNNING__?BROWSER_TABS:[]);
+        case 'browser_begin_surface_generation':
+          if(window.__FAIL_BROWSER_SURFACE_GENERATION__) return Promise.reject(new Error('surface generation unavailable'));
+          window.__BROWSER_SURFACE_GENERATION__=(window.__BROWSER_SURFACE_GENERATION__||0)+1;
+          return Promise.resolve(window.__BROWSER_SURFACE_GENERATION__);
+        case 'browser_show_native_surface':
+          if(window.__FAIL_BROWSER_SURFACE_SHOW__) return Promise.reject(new Error('surface show unavailable'));
+          if(window.__DELAY_BROWSER_SHOW__) return new Promise(function(resolve){
+            window.__RESOLVE_BROWSER_SHOW__=function(value){
+              window.__DELAY_BROWSER_SHOW__=false;
+              window.__RESOLVE_BROWSER_SHOW__=null;
+              resolve(value !== false);
+            };
+          });
+          return Promise.resolve(window.__BROWSER_NATIVE_RESULT__ === true);
+        case 'browser_create_tab': {
+          const id='browser-tab-'+(BROWSER_TABS.length+1);
+          BROWSER_TABS=BROWSER_TABS.map(function(tab){return Object.assign({},tab,{active:false});});
+          BROWSER_TABS.push({target_id:id,title:'新标签页',url:args.url||'about:blank',active:true});
+          BROWSER_ACTIVE=id;
+          return Promise.resolve(id);
+        }
+        case 'browser_activate_tab':
+          BROWSER_ACTIVE=args.targetId;
+          BROWSER_TABS=BROWSER_TABS.map(function(tab){return Object.assign({},tab,{active:tab.target_id===BROWSER_ACTIVE});});
+          return Promise.resolve(null);
+        case 'browser_close_tab':
+          BROWSER_TABS=BROWSER_TABS.filter(function(tab){return tab.target_id!==args.targetId;});
+          if(!BROWSER_TABS.some(function(tab){return tab.target_id===BROWSER_ACTIVE;})) BROWSER_ACTIVE=BROWSER_TABS[0]&&BROWSER_TABS[0].target_id;
+          return Promise.resolve(null);
+        case 'browser_hand_back_to_agent': return Promise.resolve({controlOwner:'agent',controlRevision:3});
+        case 'browser_stop': window.__BROWSER_RUNNING__=false; return Promise.resolve(null);
+        case 'browser_hide_native_surface':
+          if(window.__FAIL_BROWSER_HIDE__) return Promise.reject(new Error('surface hide unavailable'));
+          if(window.__DELAY_BROWSER_HIDE__) return new Promise(function(resolve){
+            window.__RESOLVE_BROWSER_HIDE__=function(){
+              window.__DELAY_BROWSER_HIDE__=false;
+              window.__RESOLVE_BROWSER_HIDE__=null;
+              resolve(null);
+            };
+          });
+          return Promise.resolve(null);
+        case 'voice_asr_status': return Promise.resolve(window.__VOICE_ASR_MISSING__
+          ? {ready:false,installable:true,missing:['model'],engine:{installed:true}}
+          : {ready:true,installable:true,missing:[],engine:{installed:true}});
         case 'create_session': return Promise.resolve({id:'s-new',metadata:{id:'s-new'}});
         case 'set_session_archived':
           if (args && args.archived) {
@@ -165,7 +232,7 @@ function injectSource() {
         case 'get_session_persona_events': return Promise.resolve([]);
         case 'get_session_pinvou_reviews': return Promise.resolve([]);
         case 'summon_pinvou': return Promise.resolve({personas:[{id:'travel',label:'旅行规划',primary:true}],alternates:['budget'],trace:'看了下，有几点确认',recommendations:[{topic:'预算',pick:'中档',why:'稳妥'}],issues:[{severity:'high',kind:'quality',persona:'travel',text:'日期冲突',suggestion:'对齐'}],coverage:[],framework:[],risk:'medium',confidence:0.8});
-        case 'load_session': return Promise.resolve(CONV[args&&args.id]||{metadata:{id:'x'},messages:[],artifacts:[]});
+        case 'load_session': return Promise.resolve(CONV[args&&args.id]||{metadata:{id:args&&args.id},messages:[],artifacts:[]});
         case 'get_session_timeline': return Promise.resolve([
           {turn_id:'copy-deepseek',event:'user_start',timestamp:1000,ui_turn_index:0},
           {turn_id:'copy-deepseek',event:'assistant_done',timestamp:3000,status:'Completed',usage:{input_tokens:12,output_tokens:4}},
@@ -260,6 +327,549 @@ async function expand(page) {
       && visualShell.backgroundColor !== 'rgba(0, 0, 0, 0)',
     JSON.stringify(visualShell),
   );
+
+  // Agent 启动浏览器后，桌面端应在所属任务右侧展开侧栏；原生窗口承载命令在
+  // headless mock 中返回 false，组件必须明确显示不可用状态且不能回退截图流。
+  await page.setViewport({ width: 1228, height: 1000, deviceScaleFactor: 1 });
+  await sleep(120);
+  const browserPane = await page.evaluate(async () => {
+    document.querySelector('[data-sidebar-toggle]')?.click();
+    await new Promise(resolve => setTimeout(resolve, 320));
+    const task = [...document.querySelectorAll('[data-testid="regular-sidebar-item"]')]
+      .find(node => (node.textContent || '').includes('第三季度财报分析'));
+    task?.click();
+    await new Promise(resolve => setTimeout(resolve, 320));
+    const sidebarOpenBeforeBrowser = (document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width || 0) > 200;
+    localStorage.removeItem('pinvou_right_dock_ratio');
+    localStorage.removeItem('pinvou_browser_panel_ratio');
+    localStorage.setItem('pinvou_browser_panel_width', '520');
+    const handlers = window.__TAURI_EVENT_HANDLERS__['browser:activated'] || [];
+    for (const handler of handlers) await handler({ payload: {} });
+    await new Promise(resolve => setTimeout(resolve, 60));
+    const unscopedIgnored = !document.querySelector('[data-testid="browser-side-pane"]');
+    const defaultDockSwitcher = document.querySelector('[data-testid="chat-right-dock-switcher"]');
+    const defaultDockTrigger = document.querySelector('[data-testid="chat-right-dock-switcher-trigger"]');
+    defaultDockTrigger?.click();
+    await new Promise(resolve => setTimeout(resolve, 40));
+    const defaultBrowserOption = document.querySelector('[data-testid="chat-right-dock-option-browser"]');
+    const defaultBrowserEntryVisible = !!defaultDockSwitcher && !!defaultBrowserOption;
+    window.__FAIL_BROWSER_SURFACE_SHOW__ = true;
+    window.__DELAY_BROWSER_STATUS__ = true;
+    const nativeShowsBeforeInitialStatus = window.__TAURI_INVOKES__
+      .filter(call => call.cmd === 'browser_show_native_surface').length;
+    defaultBrowserOption?.click();
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const initialStatusGated = window.__TAURI_INVOKES__
+      .filter(call => call.cmd === 'browser_show_native_surface').length === nativeShowsBeforeInitialStatus;
+    window.__RESOLVE_BROWSER_STATUS__?.();
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const prepareCall = [...window.__TAURI_INVOKES__].reverse().find(call => call.cmd === 'browser_prepare');
+    const dockSwitcher = document.querySelector('[data-testid="chat-right-dock-switcher"]');
+    const dockSwitcherTrigger = document.querySelector('[data-testid="chat-right-dock-switcher-trigger"]');
+    dockSwitcherTrigger?.click();
+    await new Promise(resolve => setTimeout(resolve, 40));
+    const unifiedDockEntry = !!dockSwitcher
+      && !document.querySelector('[data-testid="browser-pane-toggle"]')
+      && !!document.querySelector('[data-testid="chat-right-dock-option-artifact-preview"]')
+      && !!document.querySelector('[data-testid="chat-right-dock-option-browser"]');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    const pane = document.querySelector('[data-testid="browser-side-pane"]');
+    const dockHost = document.querySelector('[data-testid="right-dock-host"]');
+    const close = pane?.querySelector('button[title="收起浏览器侧栏"]');
+    const newTab = pane?.querySelector('button[title="新标签页"]');
+    const generationFailureVisible = !!pane?.querySelector('[data-testid="browser-native-unavailable"]');
+    window.__FAIL_BROWSER_SURFACE_SHOW__ = false;
+    pane?.querySelector('[data-testid="browser-native-unavailable"] button')?.click();
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const generationRecovered = window.__TAURI_INVOKES__
+      .filter(call => call.cmd === 'browser_show_native_surface').length >= 2;
+    const separator = dockHost?.querySelector('[role="separator"]');
+    const widthBeforeResize = dockHost?.getBoundingClientRect().width || 0;
+    const migratedRatio = Number.parseFloat(localStorage.getItem('pinvou_right_dock_ratio') || '0');
+    const legacyMigrated = migratedRatio > 0 && migratedRatio < 1
+      && localStorage.getItem('pinvou_browser_panel_width') == null;
+    if (separator) {
+      const rect = separator.getBoundingClientRect();
+      const resizeDelta = widthBeforeResize > 500 ? 80 : -80;
+      separator.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true,
+        button: 0,
+        pointerId: 1,
+        pointerType: 'mouse',
+        isPrimary: true,
+        clientX: rect.left,
+        clientY: rect.top + 20,
+      }));
+      document.dispatchEvent(new PointerEvent('pointermove', {
+        bubbles: true,
+        pointerId: 1,
+        pointerType: 'mouse',
+        isPrimary: true,
+        clientX: rect.left + resizeDelta,
+        clientY: rect.top + 20,
+      }));
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      document.dispatchEvent(new PointerEvent('pointerup', {
+        bubbles: true,
+        pointerId: 1,
+        pointerType: 'mouse',
+        isPrimary: true,
+      }));
+      await new Promise(resolve => setTimeout(resolve, 80));
+    }
+    const widthAfterResize = dockHost?.getBoundingClientRect().width || 0;
+    const storedRatio = Number.parseFloat(localStorage.getItem('pinvou_right_dock_ratio') || '0');
+    const renderedRatio = Number.parseFloat(dockHost?.dataset.preferredRatio || '0');
+    newTab?.click();
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const createCall = [...window.__TAURI_INVOKES__].reverse().find(call => call.cmd === 'browser_create_tab');
+    const newTabProductState = !!pane?.querySelector('[data-testid="browser-new-tab-page"]')
+      && pane?.querySelector('[data-testid="browser-url-input"]')?.value === '';
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['browser:control-changed'] || [])) {
+      await handler({ payload: { sessionId: 's1', owner: 'user', revision: 2 } });
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const ownershipBeforeHandBack = document.querySelector('[data-testid="browser-control-owner"]');
+    const handBack = document.querySelector('[data-testid="browser-hand-back"]');
+    const userTakeoverVisible = ownershipBeforeHandBack?.dataset.owner === 'user' && !!handBack;
+    handBack?.click();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const handBackCall = [...window.__TAURI_INVOKES__].reverse().find(call => call.cmd === 'browser_hand_back_to_agent');
+    const beforeClose = {
+      pane: !!pane,
+      chat: !!document.querySelector('[data-testid="chat-scroll"]'),
+      view: !!document.querySelector('[data-testid="browser-view"]'),
+      unscopedIgnored,
+      defaultBrowserEntryVisible,
+      lazyPrepared: prepareCall?.args?.sessionId === 's1',
+      unifiedDockEntry,
+      nativeAttempted: window.__TAURI_INVOKES__.some(call => call.cmd === 'browser_show_native_surface'),
+      generationFailureVisible,
+      initialStatusGated,
+      generationRecovered,
+      legacyMigrated,
+      multiTab: pane?.querySelectorAll('[role="button"][aria-pressed]').length === 2,
+      newTabProductState,
+      scopedCreate: createCall?.args?.sessionId === 's1',
+      userTakeoverVisible,
+      explicitHandBack: handBackCall?.args?.sessionId === 's1',
+      resized: Math.abs(widthBeforeResize - widthAfterResize) > 50,
+      resizeStored: storedRatio > 0 && storedRatio < 1 && Math.abs(storedRatio - renderedRatio) < 0.001,
+      narrowLayoutProtected: sidebarOpenBeforeBrowser
+        && (document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width || 0) < 100
+        && (document.querySelector('[data-testid="chat-composer-wrap"]')?.getBoundingClientRect().width || 0) > 300,
+    };
+    // 后续原生表面时序验证必须回到真实网页；新标签页按产品设计会主动
+    // 隐藏 about:blank 原生表面并由 React 渲染，不应把该安全行为误判成 show 失败。
+    const realTab = [...(pane?.querySelectorAll('[role="button"][aria-pressed]') || [])]
+      .find(node => (node.textContent || '').includes('Example Domain'));
+    realTab?.click();
+    await new Promise(resolve => setTimeout(resolve, 120));
+    // 首次成功显示后，重复的同尺寸 ResizeObserver/window resize 不得继续
+    // hide/show 原生 child WebView；否则会制造 IPC 抖动和可见闪烁。
+    await new Promise(resolve => setTimeout(resolve, 160));
+    const successfulShowStart = window.__TAURI_INVOKES__.length;
+    window.__BROWSER_NATIVE_RESULT__ = true;
+    window.dispatchEvent(new Event('resize'));
+    await new Promise(resolve => setTimeout(resolve, 80));
+    for (let i = 0; i < 5; i += 1) window.dispatchEvent(new Event('resize'));
+    await new Promise(resolve => setTimeout(resolve, 80));
+    const successfulVisibilityCalls = window.__TAURI_INVOKES__
+      .slice(successfulShowStart)
+      .filter(call => call.cmd === 'browser_show_native_surface' || call.cmd === 'browser_hide_native_surface');
+    const successfulBoundsKeys = [];
+    let visibleBoundsKey = '';
+    let duplicateBoundsDeduped = false;
+    for (const call of successfulVisibilityCalls) {
+      if (call.cmd === 'browser_hide_native_surface') {
+        visibleBoundsKey = '';
+        continue;
+      }
+      const key = JSON.stringify(call.args?.bounds || null);
+      successfulBoundsKeys.push(key);
+      if (key === visibleBoundsKey) {
+        duplicateBoundsDeduped = false;
+        break;
+      }
+      duplicateBoundsDeduped = true;
+      visibleBoundsKey = key;
+    }
+    const dockBarrierTrigger = document.querySelector('[data-testid="chat-right-dock-switcher-trigger"]');
+    dockBarrierTrigger?.click();
+    await new Promise(resolve => setTimeout(resolve, 40));
+    window.__DELAY_BROWSER_HIDE__ = true;
+    document.querySelector('[data-testid="chat-right-dock-option-artifact-preview"]')?.click();
+    await new Promise(resolve => setTimeout(resolve, 80));
+    const dockSwitchWithheldUntilHideAck = pane?.getAttribute('aria-hidden') === 'false'
+      && document.querySelector('[data-testid="artifact-side-panel"]')
+        ?.getAttribute('aria-hidden') !== 'false';
+    const dockHidePending = typeof window.__RESOLVE_BROWSER_HIDE__ === 'function';
+    window.__RESOLVE_BROWSER_HIDE__?.();
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const dockSwitchPublishedAfterHideAck = pane?.getAttribute('aria-hidden') === 'true'
+      && document.querySelector('[data-testid="artifact-side-panel"]')
+        ?.getAttribute('aria-hidden') === 'false';
+    const hideCallsBeforeArtifactFullscreen = window.__TAURI_INVOKES__
+      .filter(call => call.cmd === 'browser_hide_native_surface').length;
+    document.querySelector('[data-testid="artifact-fullscreen-toggle"]')?.click();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const artifactFullscreenAfterDockHide = pane?.getAttribute('aria-hidden') === 'true'
+      && !!document.querySelector('[data-testid="artifact-fullscreen-panel"]')
+      && window.__TAURI_INVOKES__
+        .filter(call => call.cmd === 'browser_hide_native_surface').length === hideCallsBeforeArtifactFullscreen;
+    document.querySelector('[data-testid="artifact-fullscreen-toggle"]')?.click();
+    await new Promise(resolve => setTimeout(resolve, 80));
+    document.querySelector('[data-testid="chat-right-dock-switcher-trigger"]')?.click();
+    await new Promise(resolve => setTimeout(resolve, 40));
+    document.querySelector('[data-testid="chat-right-dock-option-browser"]')?.click();
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const dockBrowserRestored = pane?.getAttribute('aria-hidden') === 'false';
+
+    // RightDock 子级遮挡层必须先拿到 native hide ACK 再发布。失败时保持
+    // fail-closed；迟到 ACK 也不能靠仍挂载的旧树抢先显示。
+    const toolMenuTrigger = document.querySelector('[data-testid="composer-tool-menu-trigger"]');
+    window.__FAIL_BROWSER_HIDE__ = true;
+    toolMenuTrigger?.click();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const composerHideFailureFailClosed = !document.querySelector('[data-testid="composer-tool-menu"]')
+      && pane?.getAttribute('aria-hidden') === 'false';
+    window.__FAIL_BROWSER_HIDE__ = false;
+    toolMenuTrigger?.click();
+    await new Promise(resolve => setTimeout(resolve, 40));
+    window.__DELAY_BROWSER_HIDE__ = true;
+    toolMenuTrigger?.click();
+    await new Promise(resolve => setTimeout(resolve, 80));
+    const composerWithheldUntilHideAck = !document.querySelector('[data-testid="composer-tool-menu"]');
+    const composerHidePending = typeof window.__RESOLVE_BROWSER_HIDE__ === 'function';
+    toolMenuTrigger?.click();
+    window.__RESOLVE_BROWSER_HIDE__?.();
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const composerLateAckIgnored = !document.querySelector('[data-testid="composer-tool-menu"]')
+      && pane?.getAttribute('aria-hidden') === 'false';
+    window.__DELAY_BROWSER_HIDE__ = true;
+    toolMenuTrigger?.click();
+    await new Promise(resolve => setTimeout(resolve, 80));
+    window.__RESOLVE_BROWSER_HIDE__?.();
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const composerPublishedAfterHideAck = !!document.querySelector('[data-testid="composer-tool-menu"]');
+    // 桌面 ComposerPopover 通过 document 捕获阶段的 pointerdown 关闭；仅移动
+    // WebUI 使用 portal backdrop。命中真实桌面外点，避免测试把菜单及原生表面
+    // 遮挡租约留到后续用例。
+    document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const browserRestoredAfterComposer = pane?.getAttribute('aria-hidden') === 'false';
+
+    window.__VOICE_ASR_MISSING__ = true;
+    window.__DELAY_BROWSER_HIDE__ = true;
+    document.querySelector('[data-testid="composer-voice-button"]')?.click();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const voiceSetupWithheldUntilHideAck = !document.querySelector('[data-testid="voice-asr-setup-dialog"]');
+    const voiceSetupHidePending = typeof window.__RESOLVE_BROWSER_HIDE__ === 'function';
+    window.__RESOLVE_BROWSER_HIDE__?.();
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const voiceSetupPublishedAfterHideAck = !!document.querySelector('[data-testid="voice-asr-setup-dialog"]');
+    window.TauriBridge.voice.closeVoiceAsrSetup();
+    window.__VOICE_ASR_MISSING__ = false;
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const browserRestoredAfterVoiceSetup = pane?.getAttribute('aria-hidden') === 'false';
+
+    const dragData = new DataTransfer();
+    dragData.items.add(new File(['native surface gate'], 'native-surface-gate.txt', {type:'text/plain'}));
+    window.__DELAY_BROWSER_HIDE__ = true;
+    document.dispatchEvent(new DragEvent('dragenter', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: dragData,
+    }));
+    await new Promise(resolve => setTimeout(resolve, 80));
+    const attachmentDropWithheldUntilHideAck = !document.querySelector('[data-testid="attachment-drop-overlay"]');
+    const attachmentDropHidePending = typeof window.__RESOLVE_BROWSER_HIDE__ === 'function';
+    window.__RESOLVE_BROWSER_HIDE__?.();
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const attachmentDropPublishedAfterHideAck = document.querySelector('[data-testid="attachment-drop-overlay"]')
+      ?.getAttribute('aria-hidden') === 'false';
+    document.dispatchEvent(new DragEvent('dragleave', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: dragData,
+    }));
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const browserRestoredAfterAttachmentDrop = pane?.getAttribute('aria-hidden') === 'false';
+
+    const hideCallsBeforeSettings = window.__TAURI_INVOKES__
+      .filter(call => call.cmd === 'browser_hide_native_surface').length;
+    const showCallsBeforeSettings = window.__TAURI_INVOKES__
+      .filter(call => call.cmd === 'browser_show_native_surface').length;
+    const visibilityRaceStart = window.__TAURI_INVOKES__.length;
+    window.__DELAY_BROWSER_SHOW__ = true;
+    const nativeHost = document.querySelector('[data-testid="browser-native-host"]');
+    if (nativeHost) nativeHost.style.transform = 'translateX(1px)';
+    window.dispatchEvent(new Event('resize'));
+    await new Promise(resolve => setTimeout(resolve, 60));
+    const delayedShowPending = typeof window.__RESOLVE_BROWSER_SHOW__ === 'function';
+    window.__DELAY_BROWSER_HIDE__ = true;
+    document.querySelector('[data-testid="nav-settings"]')?.click();
+    await new Promise(resolve => setTimeout(resolve, 80));
+    const settingsWithheldUntilHideAck = !document.querySelector('[data-testid="settings-dialog"]')
+      && !!document.querySelector('[data-testid="browser-side-pane"]');
+    const delayedHidePending = typeof window.__RESOLVE_BROWSER_HIDE__ === 'function';
+    const showsWhileHidePending = window.__TAURI_INVOKES__
+      .filter(call => call.cmd === 'browser_show_native_surface').length;
+    if (nativeHost) nativeHost.style.transform = 'translateX(2px)';
+    window.dispatchEvent(new Event('resize'));
+    await new Promise(resolve => setTimeout(resolve, 60));
+    const resizeShowBlockedWhileHidePending = window.__TAURI_INVOKES__
+      .filter(call => call.cmd === 'browser_show_native_surface').length === showsWhileHidePending;
+    window.__RESOLVE_BROWSER_HIDE__?.();
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const settingsDockHost = document.querySelector('[data-testid="right-dock-host"]');
+    const settingsIsolated = !!document.querySelector('[data-testid="settings-dialog"]')
+      && !!settingsDockHost
+      && getComputedStyle(settingsDockHost).display === 'none';
+    const settingsNativeHidden = window.__TAURI_INVOKES__
+      .filter(call => call.cmd === 'browser_hide_native_surface').length > hideCallsBeforeSettings;
+    window.__RESOLVE_BROWSER_SHOW__?.(true);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const visibilityRaceCalls = window.__TAURI_INVOKES__
+      .slice(visibilityRaceStart)
+      .filter(call => call.cmd === 'browser_show_native_surface' || call.cmd === 'browser_hide_native_surface');
+    const lateShowRehidden = delayedShowPending
+      && visibilityRaceCalls.some(call => call.cmd === 'browser_show_native_surface')
+      && visibilityRaceCalls.at(-1)?.cmd === 'browser_hide_native_surface';
+    document.querySelector('[data-testid="settings-close"]')?.click();
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const restoredAfterSettings = !!document.querySelector('[data-testid="browser-side-pane"]');
+    const nativeRestoredAfterSettings = window.__TAURI_INVOKES__
+      .filter(call => call.cmd === 'browser_show_native_surface').length > showCallsBeforeSettings;
+    const restoredPane = document.querySelector('[data-testid="browser-side-pane"]');
+    const restoredClose = restoredPane?.querySelector('button[title="收起浏览器侧栏"]');
+    (restoredClose || close)?.click();
+    await new Promise(resolve => setTimeout(resolve, 80));
+    if (nativeHost) nativeHost.style.transform = '';
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['browser:stopped'] || [])) {
+      await handler({ payload: { sessionId: 's1' } });
+    }
+    return {
+      ...beforeClose,
+      settingsIsolated,
+      settingsWithheldUntilHideAck,
+      delayedHidePending,
+      resizeShowBlockedWhileHidePending,
+      dockSwitchWithheldUntilHideAck,
+      dockHidePending,
+      dockSwitchPublishedAfterHideAck,
+      dockBrowserRestored,
+      artifactFullscreenAfterDockHide,
+      composerHideFailureFailClosed,
+      composerWithheldUntilHideAck,
+      composerHidePending,
+      composerLateAckIgnored,
+      composerPublishedAfterHideAck,
+      browserRestoredAfterComposer,
+      voiceSetupWithheldUntilHideAck,
+      voiceSetupHidePending,
+      voiceSetupPublishedAfterHideAck,
+      browserRestoredAfterVoiceSetup,
+      attachmentDropWithheldUntilHideAck,
+      attachmentDropHidePending,
+      attachmentDropPublishedAfterHideAck,
+      browserRestoredAfterAttachmentDrop,
+      settingsNativeHidden,
+      duplicateBoundsDeduped,
+      successfulBoundsKeys,
+      successfulVisibilityCalls: successfulVisibilityCalls.map(call => ({ cmd: call.cmd, bounds: call.args?.bounds || null })),
+      lateShowRehidden,
+      restoredAfterSettings,
+      nativeRestoredAfterSettings,
+      collapsed: !document.querySelector('[data-testid="browser-side-pane"]'),
+      nativeHidden: window.__TAURI_INVOKES__.some(call => call.cmd === 'browser_hide_native_surface'),
+    };
+  });
+  rec(
+    '⓪c Agent 浏览器按任务展开，原生不可用时不回退截图流',
+    browserPane.pane && browserPane.chat && browserPane.view && browserPane.unscopedIgnored
+      && browserPane.defaultBrowserEntryVisible && browserPane.lazyPrepared
+      && browserPane.unifiedDockEntry
+      && browserPane.nativeAttempted && browserPane.multiTab && browserPane.scopedCreate
+      && browserPane.newTabProductState
+      && browserPane.generationFailureVisible && browserPane.generationRecovered
+      && browserPane.initialStatusGated
+      && browserPane.userTakeoverVisible && browserPane.explicitHandBack
+      && browserPane.legacyMigrated && browserPane.resized && browserPane.resizeStored
+      && browserPane.narrowLayoutProtected
+      && browserPane.dockSwitchWithheldUntilHideAck && browserPane.dockHidePending
+      && browserPane.dockSwitchPublishedAfterHideAck && browserPane.dockBrowserRestored
+      && browserPane.artifactFullscreenAfterDockHide
+      && browserPane.composerHideFailureFailClosed
+      && browserPane.composerWithheldUntilHideAck && browserPane.composerHidePending
+      && browserPane.composerLateAckIgnored
+      && browserPane.composerPublishedAfterHideAck && browserPane.browserRestoredAfterComposer
+      && browserPane.voiceSetupWithheldUntilHideAck && browserPane.voiceSetupHidePending
+      && browserPane.voiceSetupPublishedAfterHideAck && browserPane.browserRestoredAfterVoiceSetup
+      && browserPane.attachmentDropWithheldUntilHideAck && browserPane.attachmentDropHidePending
+      && browserPane.attachmentDropPublishedAfterHideAck && browserPane.browserRestoredAfterAttachmentDrop
+      && browserPane.settingsWithheldUntilHideAck && browserPane.delayedHidePending
+      && browserPane.resizeShowBlockedWhileHidePending
+      && browserPane.settingsIsolated && browserPane.settingsNativeHidden
+      && browserPane.duplicateBoundsDeduped && browserPane.lateShowRehidden
+      && browserPane.restoredAfterSettings && browserPane.nativeRestoredAfterSettings
+      && browserPane.collapsed && browserPane.nativeHidden,
+    JSON.stringify(browserPane),
+  );
+
+  const browserSessionUiIsolation = await page.evaluate(async () => {
+    const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    const switchSession = async (sessionId) => {
+      await window.TauriBridge.sessions.switchToSession(sessionId);
+      await wait(360);
+    };
+    const selectedDockOption = async () => {
+      document.querySelector('[data-testid="chat-right-dock-switcher-trigger"]')?.click();
+      await wait(50);
+      const browser = document.querySelector('[data-testid="chat-right-dock-option-browser"]');
+      const artifacts = document.querySelector('[data-testid="chat-right-dock-option-artifact-preview"]');
+      const result = browser?.getAttribute('aria-checked') === 'true'
+        ? 'browser'
+        : artifacts?.getAttribute('aria-checked') === 'true'
+          ? 'artifact-preview'
+          : '';
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      return result;
+    };
+    const browserPaneVisible = () => {
+      const pane = document.querySelector('[data-testid="browser-side-pane"]');
+      return !!pane && pane.getAttribute('aria-hidden') === 'false';
+    };
+
+    window.__BROWSER_RUNNING__ = true;
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['browser:activated'] || [])) {
+      await handler({ payload: { sessionId: 's1' } });
+    }
+    await wait(240);
+    const sessionAInitial = {
+      selected: await selectedDockOption(),
+      browserVisible: browserPaneVisible(),
+    };
+
+    await switchSession('s-browser-b');
+    document.querySelector('[data-testid="chat-right-dock-switcher-trigger"]')?.click();
+    await wait(50);
+    document.querySelector('[data-testid="chat-right-dock-option-artifact-preview"]')?.click();
+    await wait(160);
+    const sessionBArtifact = {
+      selected: await selectedDockOption(),
+      browserVisible: browserPaneVisible(),
+      artifactVisible: document.querySelector('[data-testid="artifact-side-panel"]')
+        ?.getAttribute('aria-hidden') === 'false',
+    };
+
+    await switchSession('s1');
+    const sessionARestored = {
+      selected: await selectedDockOption(),
+      browserVisible: browserPaneVisible(),
+    };
+    document.querySelector('[data-testid="browser-side-pane"] button[title="收起浏览器侧栏"]')?.click();
+    await wait(120);
+
+    await switchSession('s-browser-b');
+    const sessionBRestored = {
+      selected: await selectedDockOption(),
+      browserVisible: browserPaneVisible(),
+      artifactVisible: document.querySelector('[data-testid="artifact-side-panel"]')
+        ?.getAttribute('aria-hidden') === 'false',
+    };
+
+    await switchSession('s1');
+    const sessionAStayedClosed = !document.querySelector('[data-testid="browser-side-pane"]');
+    return {
+      sessionAInitial,
+      sessionBArtifact,
+      sessionARestored,
+      sessionBRestored,
+      sessionAStayedClosed,
+    };
+  });
+  rec(
+    '⓪c-1 浏览器侧栏展开与 Dock 选中项按 session 隔离',
+    browserSessionUiIsolation.sessionAInitial.selected === 'browser'
+      && browserSessionUiIsolation.sessionAInitial.browserVisible
+      && browserSessionUiIsolation.sessionBArtifact.selected === 'artifact-preview'
+      && !browserSessionUiIsolation.sessionBArtifact.browserVisible
+      && browserSessionUiIsolation.sessionBArtifact.artifactVisible
+      && browserSessionUiIsolation.sessionARestored.selected === 'browser'
+      && browserSessionUiIsolation.sessionARestored.browserVisible
+      && browserSessionUiIsolation.sessionBRestored.selected === 'artifact-preview'
+      && !browserSessionUiIsolation.sessionBRestored.browserVisible
+      && browserSessionUiIsolation.sessionBRestored.artifactVisible
+      && browserSessionUiIsolation.sessionAStayedClosed,
+    JSON.stringify(browserSessionUiIsolation),
+  );
+
+  // 右侧面板保存的是用户比例，而不是窄窗口下的临时像素宽度。
+  // 验证宽屏 -> 单栏 -> 宽屏循环后能精确恢复，左导航也随约束恢复。
+  await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+  await sleep(150);
+  const sidePanelCycleBefore = await page.evaluate(async () => {
+    window.__BROWSER_RUNNING__ = true;
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['browser:activated'] || [])) {
+      await handler({ payload: { sessionId: 's1' } });
+    }
+    await new Promise(resolve => setTimeout(resolve, 420));
+    const pane = document.querySelector('[data-testid="right-dock-host"]');
+    return {
+      width: pane?.getBoundingClientRect().width || 0,
+      ratio: pane?.dataset.preferredRatio || '',
+      mode: pane?.dataset.layoutMode || '',
+      sidebarWidth: document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width || 0,
+    };
+  });
+  await page.setViewport({ width: 880, height: 800, deviceScaleFactor: 1 });
+  await sleep(520);
+  const sidePanelCycleNarrow = await page.evaluate(() => {
+    const pane = document.querySelector('[data-testid="right-dock-host"]');
+    return {
+      mode: pane?.dataset.layoutMode || '',
+      ratio: pane?.dataset.preferredRatio || '',
+      sidebarWidth: document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width || 0,
+    };
+  });
+  await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+  await sleep(520);
+  const sidePanelCycleAfter = await page.evaluate(async () => {
+    const pane = document.querySelector('[data-testid="right-dock-host"]');
+    const result = {
+      width: pane?.getBoundingClientRect().width || 0,
+      ratio: pane?.dataset.preferredRatio || '',
+      mode: pane?.dataset.layoutMode || '',
+      sidebarWidth: document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width || 0,
+    };
+    window.__BROWSER_RUNNING__ = false;
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['browser:stopped'] || [])) {
+      await handler({ payload: { sessionId: 's1' } });
+    }
+    return result;
+  });
+  const sidePanelCycle = {
+    before: sidePanelCycleBefore,
+    narrow: sidePanelCycleNarrow,
+    after: sidePanelCycleAfter,
+  };
+  rec(
+    '⓪④ 右侧面板缩小切单栏后按原比例恢复',
+    sidePanelCycleBefore.mode === 'split'
+      && sidePanelCycleBefore.width > 0
+      && sidePanelCycleNarrow.mode === 'single'
+      && sidePanelCycleNarrow.ratio === sidePanelCycleBefore.ratio
+      && sidePanelCycleNarrow.sidebarWidth < 100
+      && sidePanelCycleAfter.mode === 'split'
+      && sidePanelCycleAfter.ratio === sidePanelCycleBefore.ratio
+      && Math.abs(sidePanelCycleAfter.width - sidePanelCycleBefore.width) <= 2
+      && sidePanelCycleAfter.sidebarWidth > 200,
+    JSON.stringify(sidePanelCycle),
+  );
+  // 浏览器隔离用例临时进入了 s1；恢复草稿页，保持后续“启动态”回归的原始前提。
+  await clickText(page, '新对话');
+  await sleep(250);
 
   // Windows 平板尺寸会展示浮动语音按钮。用浏览器输入通道覆盖鼠标、触控笔与触摸，
   // 并动态验证 capture 丢失、pointercancel、窗口失焦后的视觉态和点击语义。
@@ -1748,7 +2358,13 @@ async function expand(page) {
   await expand(page); await sleep(200);
   await page.waitForSelector('[data-testid="codex-sidebar-item"]', { timeout: 10000 }).catch(() => {});
   await page.evaluate(() => document.querySelector('[data-testid="codex-sidebar-item"]')?.click());
-  await sleep(500);
+  // CodexAcpView is lazy-loaded; wait for the legacy timeline instead of assuming
+  // the chunk and hydrated session will settle within a fixed local delay.
+  await page.waitForFunction(() => (
+    document.querySelector('[data-testid="conversation-reasoning-toggle"]')
+    && document.querySelector('[data-testid="conversation-tool-group-summary"]')
+    && document.querySelector('[data-testid="conversation-compact-item-toggle"]')
+  ), { timeout: 20000 }).catch(() => {});
   const legacyConversationA11y = await page.evaluate(async () => {
     const state = (toggle) => {
       const controls = toggle?.getAttribute('aria-controls') || '';

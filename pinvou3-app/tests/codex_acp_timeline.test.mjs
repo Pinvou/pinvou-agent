@@ -4,6 +4,12 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  activateRightDockPanel,
+  createRightDockState,
+  hideRightDockPanel,
+  rightDockSnapshot,
+} from '../src/components/layout/right-dock-state.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
@@ -421,6 +427,8 @@ try {
   'the legacy ACP permission card must use the shared zh/en/ja conversation copy');
   const codexWorkspace = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexWorkspacePanel.jsx'), 'utf8');
   const runtimeStatus = readFileSync(path.join(root, 'src', 'features', 'codex', 'runtimeStatus.js'), 'utf8');
+  const resizableSidePanel = readFileSync(path.join(root, 'src', 'components', 'layout', 'ResizableSidePanel.jsx'), 'utf8');
+  const rightDock = readFileSync(path.join(root, 'src', 'components', 'layout', 'RightDock.jsx'), 'utf8');
   const homeModeSwitcher = readFileSync(path.join(root, 'src', 'features', 'conversation', 'HomeModeSwitcher.jsx'), 'utf8');
   const iosControls = readFileSync(path.join(root, 'src', 'components', 'IosControls.jsx'), 'utf8');
   const codexLogo = readFileSync(path.join(root, 'src', 'components', 'CodexLogo.jsx'), 'utf8');
@@ -623,11 +631,46 @@ try {
     && codexWorkspace.includes('copy.files')
     && codexWorkspace.includes('copy.changed'),
   'active Codex sessions must expose a right-side Files/Changes workspace panel');
-  assert.ok(codexWorkspace.includes("WORKSPACE_WIDTH_KEY = 'pinvou_codex_workspace_width'")
-    && codexWorkspace.includes('onMouseDown={startPanelResize}')
-    && codexWorkspace.includes('onDoubleClick={resetPanelWidth}')
-    && codexWorkspace.includes("document.body.style.cursor = 'col-resize'"),
-  'the Codex workspace panel must support persisted drag resizing and double-click reset');
+  assert.ok(codexWorkspace.includes('<RightDockPanel')
+    && codexWorkspace.includes('panelId="codex-workspace"')
+    && rightDock.includes('storageKey="pinvou_right_dock_ratio"')
+    && rightDock.includes("'pinvou_codex_workspace_ratio'")
+    && rightDock.includes("'pinvou_codex_workspace_width'")
+    && rightDock.includes('<ResizableSidePanel')
+    && resizableSidePanel.includes('onPointerDown={startResize}')
+    && resizableSidePanel.includes('onDoubleClick={resetRatio}')
+    && resizableSidePanel.includes("document.body.style.cursor = 'col-resize'"),
+  'the shared right dock must preserve persisted drag resizing and double-click reset for Codex workspace');
+  const workspaceToggleBlock = codexView.slice(
+    codexView.indexOf('const toggleWorkspacePanel'),
+    codexView.indexOf('const closeWorkspacePanel'),
+  );
+  const subagentOpenBlock = codexView.slice(
+    codexView.indexOf("const onOpen = (event) => {", codexView.indexOf("pinvou:open-subagent") - 800),
+    codexView.indexOf("window.addEventListener('pinvou:open-subagent'"),
+  );
+  assert.ok(codexView.includes('{(activeSession || (!isWeb && draftWorkspacePath)) && (')
+    && !codexView.includes('{!subagentPanel && (')
+    && codexWorkspace.includes('visible={visible}')
+    && codexWorkspace.includes('activationKey={activationKey}')
+    && codexWorkspace.includes('onActiveChange={onActiveChange}')
+    && codexView.includes('activationKey={workspaceDockActivation}')
+    && codexView.includes('onActiveChange={setWorkspaceDockActive}')
+    && !workspaceToggleBlock.includes('setSubagentPanel(null)')
+    && !subagentOpenBlock.includes('setWorkspaceOpen(false)'),
+  'Codex workspace and subagent panels must remain mounted independently and delegate visibility to Right Dock');
+  assert.ok(codexView.includes('if (workspaceOpen && workspaceDockActive)')
+    && codexView.includes('setWorkspaceDockActivation(value => value + 1)')
+    && codexView.includes('[subagentPanel, workspaceDockActivation, workspaceOpen]'),
+  'an already-open hidden workspace must reactivate without remounting and preserve conversation scroll');
+
+  let codexDockState = createRightDockState();
+  codexDockState = activateRightDockPanel(codexDockState, 'codex-workspace');
+  codexDockState = activateRightDockPanel(codexDockState, 'subagent-transcript');
+  assert.equal(rightDockSnapshot(codexDockState).activePanelId, 'subagent-transcript');
+  codexDockState = hideRightDockPanel(codexDockState, 'subagent-transcript');
+  assert.equal(rightDockSnapshot(codexDockState).activePanelId, 'codex-workspace',
+    'closing the active subagent panel must reveal the still-mounted workspace');
   assert.ok(codexWorkspace.includes('listAcpWorkspace({')
     && codexWorkspace.includes('previewAcpWorkspaceFile({')
     && codexWorkspace.includes('loadAcpWorkspaceChanges({')

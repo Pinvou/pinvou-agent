@@ -107,6 +107,169 @@ fn install_rustls_provider() {
     drop(rustls::crypto::aws_lc_rs::default_provider().install_default());
 }
 
+const SESSION_BROWSER_CLEANUP_INITIAL_RETRY: std::time::Duration =
+    std::time::Duration::from_millis(250);
+const SESSION_BROWSER_CLEANUP_MAX_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[derive(Default)]
+struct SessionBrowserCleanupClaims(std::collections::HashSet<String>);
+
+impl SessionBrowserCleanupClaims {
+    fn claim(&mut self, session_id: &str) -> bool {
+        self.0.insert(session_id.to_string())
+    }
+}
+
+fn next_session_browser_cleanup_retry(current: std::time::Duration) -> std::time::Duration {
+    current
+        .saturating_mul(2)
+        .min(SESSION_BROWSER_CLEANUP_MAX_RETRY)
+}
+
+async fn cleanup_deleted_session_browser_until_success(
+    app: tauri::AppHandle,
+    session_id: String,
+) -> String {
+    let mut retry_delay = SESSION_BROWSER_CLEANUP_INITIAL_RETRY;
+    let mut attempt = 1_u64;
+
+    loop {
+        let result = match app.try_state::<features::browser::BrowserManager>() {
+            Some(browser) => browser.delete_for_session(&session_id).await,
+            None => Err("browser manager is unavailable".to_string()),
+        };
+
+        match result {
+            Ok(()) => return session_id,
+            Err(error) => {
+                eprintln!(
+                    "[sessions] browser cleanup failed for deleted session {session_id} \
+                     (attempt {attempt}); retrying in {} ms: {error}",
+                    retry_delay.as_millis()
+                );
+                tokio::time::sleep(retry_delay).await;
+                retry_delay = next_session_browser_cleanup_retry(retry_delay);
+                attempt = attempt.saturating_add(1);
+            }
+        }
+    }
+}
+
+async fn reconcile_orphaned_session_browser_files_until_success(
+    app: tauri::AppHandle,
+    store: SessionStore,
+) {
+    let mut retry_delay = SESSION_BROWSER_CLEANUP_INITIAL_RETRY;
+    let mut attempt = 1_u64;
+
+    loop {
+        let result = store
+            .list()
+            .and_then(|mut sessions| {
+                sessions.extend(store.list_scheduled()?);
+                Ok(sessions)
+            })
+            .map(|sessions| {
+                sessions
+                    .into_iter()
+                    .map(|session| session.id)
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            })
+            .map_err(|error| format!("读取全部现存任务列表失败: {error}"))
+            .and_then(|active_session_ids| {
+                app.try_state::<features::browser::BrowserManager>()
+                    .ok_or_else(|| "browser manager is unavailable".to_string())?
+                    .reconcile_session_files(&active_session_ids)
+            });
+
+        match result {
+            Ok(()) => return,
+            Err(error) => {
+                eprintln!(
+                    "[sessions] startup browser orphan reconciliation failed \
+                     (attempt {attempt}); retrying in {} ms: {error}",
+                    retry_delay.as_millis()
+                );
+                tokio::time::sleep(retry_delay).await;
+                retry_delay = next_session_browser_cleanup_retry(retry_delay);
+                attempt = attempt.saturating_add(1);
+            }
+        }
+    }
+}
+
+/// Wire the feature-neutral SessionStore lifecycle seam to browser teardown at
+/// the application composition root. Sessions never depend on browser code;
+/// other per-session resources can subscribe to the same seam later.
+fn spawn_deleted_session_browser_cleanup(app: tauri::AppHandle, store: SessionStore) {
+    let (mut deletions, replay) = store.subscribe_session_deletions();
+    tauri::async_runtime::spawn(async move {
+        use futures_util::{stream::FuturesUnordered, StreamExt};
+
+        let mut pending = std::collections::VecDeque::from(replay);
+        let mut claimed_session_ids = SessionBrowserCleanupClaims::default();
+        let mut cleanups = FuturesUnordered::new();
+        let mut deletions_open = true;
+
+        loop {
+            while let Some(deletion) = pending.pop_front() {
+                // Subscribe-then-snapshot, repeated delete wakeups and lagged
+                // tombstone replay can all produce the same id. Claim it for
+                // the process lifetime so exactly one retry loop owns cleanup.
+                if claimed_session_ids.claim(&deletion.id) {
+                    // Deny late wrapper work synchronously before the async teardown/retry
+                    // begins. Browser owns the deny registry; sessions remains feature-neutral.
+                    if let Some(browser) = app.try_state::<features::browser::BrowserManager>() {
+                        browser.mark_session_deleted(&deletion.id);
+                    }
+                    cleanups.push(cleanup_deleted_session_browser_until_success(
+                        app.clone(),
+                        deletion.id,
+                    ));
+                }
+            }
+
+            if !deletions_open && cleanups.is_empty() {
+                break;
+            }
+
+            tokio::select! {
+                received = deletions.recv(), if deletions_open => match received {
+                    Ok(deletion) => pending.push_back(deletion),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        // Replaying all process-local tombstones is deliberate:
+                        // process-lifetime claiming makes replay idempotent,
+                        // while guessing which overwritten ids were missed
+                        // could strand a WebView.
+                        eprintln!(
+                            "[sessions] deletion listener lagged by {skipped}; replaying tombstones"
+                        );
+                        pending.extend(store.session_deletion_tombstones());
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        // Existing retry loops still run to success. In normal
+                        // application operation the store remains alive; at
+                        // process shutdown Tauri drops this runtime task.
+                        deletions_open = false;
+                    }
+                },
+                // Poll every per-session retry loop concurrently. A slow or
+                // failing WebView teardown therefore never blocks intake or a
+                // different session's cleanup.
+                Some(_completed_session_id) = cleanups.next(), if !cleanups.is_empty() => {}
+            }
+        }
+    });
+}
+
+fn spawn_orphaned_session_browser_reconciliation(app: tauri::AppHandle, store: SessionStore) {
+    tauri::async_runtime::spawn(reconcile_orphaned_session_browser_files_until_success(
+        app, store,
+    ));
+}
+
 /// `iframe[srcdoc]` 在 WebKitGTK 中会作为宿主 WebView 的 `about:srcdoc` 导航
 /// 进入 Wry 的 navigation handler。这里只放行浏览器内部的两个空文档地址；
 /// 主窗口和 iframe 的任意外部来源仍走初始 origin 限制。
@@ -141,6 +304,9 @@ pub fn build_tauri_context() -> tauri::Context {
 }
 
 pub fn run() {
+    // WebKitGTK reads its RemoteInspector endpoint while constructing the first
+    // WebContext, so the browser feature must reserve it before Tauri starts.
+    features::browser::prepare_process_environment();
     // 必须最先执行:进程级选定 rustls CryptoProvider。
     // 见 Cargo.toml 的 rustls/reqwest 注释——reqwest 0.13 自带 aws-lc-rs 但只「借用」
     // provider,不写入默认槽;而 oauth2(经 reqwest 0.12)把 rustls 0.23 的 `ring` feature
@@ -282,6 +448,7 @@ pub fn run() {
                 .spawn(|| {
                     features::files::attachment_upload::sweep_stale_draft_attachments();
                 });
+            features::browser::install_automation_context(app);
             #[cfg(target_os = "macos")]
             features::updater::cleanup_stale_backup();
             if cfg!(debug_assertions) {
@@ -364,6 +531,28 @@ pub fn run() {
                 // 实际使用 session 相关命令会失败,但聊天能跑
                 SessionStore::boot_for_process_startup().expect("session store boot fallback")
             });
+            // 浏览器 transient 协议必须在任何 Engine/scheduler/remote producer 启动前
+            // 建立启动屏障：spawn_watch 会同步隔离上进程 host-request 目录，随后才
+            // 接受本进程请求。若放在 engine_pool 之后，开机即运行的定时任务可能先
+            // 写入有效请求，却被误当成崩溃遗留文件清掉。
+            {
+                let mgr = features::browser::BrowserManager::new();
+                mgr.bind_app(app.handle().clone());
+                let browser_session_store = store_for_engine.clone();
+                mgr.bind_session_validator(std::sync::Arc::new(move |session_id| {
+                    browser_session_store.load(session_id).is_ok()
+                }));
+                app.manage(mgr);
+                features::browser::BrowserManager::spawn_watch(app.handle().clone());
+                spawn_deleted_session_browser_cleanup(
+                    app.handle().clone(),
+                    store_for_engine.clone(),
+                );
+                spawn_orphaned_session_browser_reconciliation(
+                    app.handle().clone(),
+                    store_for_engine.clone(),
+                );
+            }
             // 原生代码会话的执行根解析需要共享 AcpPool 持有的 SessionAgentStore
             // （多实例各自读盘，只有这份 clone 与 AcpPool 同一份 Arc）。
             let (code_session_agents, acp_pool_for_capabilities) =
@@ -610,6 +799,21 @@ pub fn run() {
             commands::behavior_telemetry::track_behavior_event,
             commands::assistant_response::export_assistant_response,
             commands::assistant_response::open_assistant_share_target,
+            commands::browser::browser_stop,
+            commands::browser::browser_status,
+            commands::browser::browser_prepare,
+            commands::browser::browser_hand_back_to_agent,
+            commands::browser::browser_show_native_surface,
+            commands::browser::browser_hide_native_surface,
+            commands::browser::browser_begin_surface_generation,
+            commands::browser::browser_navigate,
+            commands::browser::browser_back,
+            commands::browser::browser_forward,
+            commands::browser::browser_reload,
+            commands::browser::browser_list_tabs,
+            commands::browser::browser_create_tab,
+            commands::browser::browser_close_tab,
+            commands::browser::browser_activate_tab,
             commands::startup::report_frontend_startup,
             commands::diagnostics::record_authority_sync_diagnostics,
             commands::startup::reveal_startup_window,
@@ -1033,16 +1237,26 @@ pub fn run() {
     let mut resumed_reported = false;
     app.run(move |app, event| match event {
         tauri::RunEvent::Ready => startup::mark("tauri:event_loop:ready"),
-        tauri::RunEvent::Resumed if !resumed_reported => {
-            resumed_reported = true;
-            startup::mark("tauri:event_loop:first_resumed");
-        }
         tauri::RunEvent::Exit => {
+            startup::mark("tauri:event_loop:exit");
+            // 浏览器：主进程退出时刷新 URL 恢复清单，销毁应用内原生 WebView 并
+            // 清理运行期 target/端点；不删除恢复清单，也没有外部 Chrome 进程。
+            if let Some(mgr) = app.try_state::<features::browser::BrowserManager>() {
+                mgr.shutdown_on_exit();
+            }
+            // 退出语义必须保留最近一次恢复清单。这里不能再异步调用普通 stop()：
+            // shutdown_on_exit 因锁竞争跳过显式关闭时，迟到的 stop() 可能随后取得
+            // 锁并按“用户停止浏览器”的语义删除恢复清单。进程退出会销毁剩余
+            // WebView；协调文件已由 shutdown_on_exit 无条件清理。
             // 退出收割:同步执行——Exit 后进程即将结束,这是最后的清理窗口。
             // 重启(app.restart())跳过本事件,调用点在 restart 前主动调同一辅助函数。
             startup::mark("exit:cleanup:start");
             tauri::async_runtime::block_on(harvest_child_processes(app));
             startup::mark("exit:cleanup:done");
+        }
+        tauri::RunEvent::Resumed if !resumed_reported => {
+            resumed_reported = true;
+            startup::mark("tauri:event_loop:first_resumed");
         }
         _ => {}
     });
@@ -1127,6 +1341,38 @@ mod navigation_policy_tests {
                 "must not classify as embedded document: {blocked}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod session_browser_cleanup_retry_tests {
+    use super::{
+        next_session_browser_cleanup_retry, SessionBrowserCleanupClaims,
+        SESSION_BROWSER_CLEANUP_INITIAL_RETRY, SESSION_BROWSER_CLEANUP_MAX_RETRY,
+    };
+
+    #[test]
+    fn repeated_events_and_tombstone_replay_claim_one_cleanup_per_session() {
+        let mut claims = SessionBrowserCleanupClaims::default();
+
+        assert!(claims.claim("session-a"));
+        assert!(!claims.claim("session-a"));
+        assert!(claims.claim("session-b"));
+        assert!(!claims.claim("session-a"));
+        assert!(!claims.claim("session-b"));
+    }
+
+    #[test]
+    fn cleanup_retry_uses_exponential_backoff_with_a_fixed_cap() {
+        let mut delay = SESSION_BROWSER_CLEANUP_INITIAL_RETRY;
+        for expected_millis in [500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000] {
+            delay = next_session_browser_cleanup_retry(delay);
+            assert_eq!(delay.as_millis(), expected_millis);
+        }
+        assert_eq!(
+            next_session_browser_cleanup_retry(SESSION_BROWSER_CLEANUP_MAX_RETRY),
+            SESSION_BROWSER_CLEANUP_MAX_RETRY
+        );
     }
 }
 

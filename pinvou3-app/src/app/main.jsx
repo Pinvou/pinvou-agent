@@ -2,8 +2,14 @@ import { lazy, startTransition, Suspense, useCallback, useEffect, useLayoutEffec
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
-import { Edit2, BarChart2, Settings, Smartphone, Clock, Package, Search, ChevronDown, Menu, MoreHorizontal, Check, Filter, Layers, MessageSquare, X, BookOpen, Puzzle, PetPawIcon, FolderOpen, IconList } from '../components/icons.jsx';
+import { Edit2, BarChart2, Settings, Smartphone, Clock, Package, Search, ChevronDown, Menu, MoreHorizontal, Check, Filter, Layers, MessageSquare, X, XIcon, Globe, BookOpen, Puzzle, PetPawIcon, FolderOpen, IconList } from '../components/icons.jsx';
 import { ArchiveConfirmDialog, ArchiveToast, NavItem, RecentItem } from '../components/layout/NavigationComponents.jsx';
+import { SidePanelLayoutProvider } from '../components/layout/ResizableSidePanel.jsx';
+import {
+  RightDockHost,
+  RightDockPanel,
+  RightDockProvider,
+} from '../components/layout/RightDock.jsx';
 import { AcpAgentLogo } from '../features/codex/AcpAgentLogo.jsx';
 import { PinvouLogo } from '../components/PinvouLogo.jsx';
 import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layout/MobileShell.jsx';
@@ -16,6 +22,22 @@ import { TEMPORARY_GROUP_KEY, groupSessionsByFolder } from '../shared/sidebar-gr
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
+import {
+  acquireNativeSurfaceTransitionHide,
+  BrowserView,
+} from '../features/browser/BrowserView.jsx';
+import { createNativeSurfaceTransitionGate } from '../features/browser/native-surface-transition.mjs';
+import {
+  activateBrowserPane,
+  beginBrowserOpen,
+  browserOpenStateFor,
+  browserPaneStateFor,
+  closeBrowserPane,
+  removeBrowserPaneState,
+  restoreBrowserPane,
+  selectArtifactsPane,
+  settleBrowserOpen,
+} from '../features/browser/browser-pane-state.mjs';
 import { SettingsErrorBoundary } from '../features/settings/SettingsErrorBoundary.jsx';
 import { ViewErrorBoundary } from '../shared/ViewErrorBoundary.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
@@ -189,14 +211,331 @@ function workspaceDisplayName(path) {
         };
       }, []);
       const [activeChat, setActiveChat] = useState(null);
-      const [currentView, setCurrentViewRaw] = useState('chat');
-      // 视图切换包 startTransition:把懒加载 chunk 的等待从「紧急更新」降级为
-      // 「过渡更新」,React 19 下新挂载的独立 Suspense 边界仍会先显示 ViewFallback
-      // (已展示内容的旧边界不会被隐藏),但切换本身不被 chunk 网络阻塞、可被打断。
-      // 实际体验靠预取兜底:侧栏悬停/聚焦预取 + 首帧后空闲预取 scheduled/settings。
-      const setCurrentView = (nextView) => startTransition(() => setCurrentViewRaw(nextView));
+      const [currentView, setCurrentViewState] = useState('chat');
+      const [sessionSyncEpoch, setSessionSyncEpoch] = useState(0);
       const [activeTheme, setActiveTheme] = useState('dark');
+      // 浏览器状态按工作会话保存：切换对话时只显示该对话自己的 WebView2；登录
+      // Profile 仍由后端全局共享。缺少 sessionId 的旧事件必须 fail-closed，不能
+      // 降级为全局入口，否则会把一个任务的页面暴露到其他任务。
+      const [browserSessions, setBrowserSessions] = useState({});
+      const [browserPaneStates, setBrowserPaneStates] = useState({});
+      const [browserOpenStates, setBrowserOpenStates] = useState({});
+      const browserOpenAttemptsRef = useRef({});
+      const [browserResizeActive, setBrowserResizeActive] = useState(false);
+      const [browserOwnershipSlot, setBrowserOwnershipSlot] = useState(null);
+      const [browserDocumentHidden, setBrowserDocumentHidden] = useState(() => (
+        typeof document !== 'undefined' && document.visibilityState === 'hidden'
+      ));
+      const [rightDockState, setRightDockState] = useState({
+        activePanelId: null,
+        mountedPanelCount: 0,
+        visiblePanelCount: 0,
+        openSidePanelCount: 0,
+        occluded: false,
+      });
+      // Child overlays publish through RightDockProvider. Keep their reservation
+      // in App state in the same React batch as the child permit so BrowserView is
+      // suspended in the very commit that first exposes the overlay.
+      const [rightDockOcclusionPublications, setRightDockOcclusionPublications] = useState([]);
+      const browserSurfaceTransitionContextRef = useRef({
+        sessionId: null,
+        hasWorkspace: false,
+        visible: false,
+        compact: false,
+        scheduledRunChat: false,
+      });
+      const browserTransitionPublishingRef = useRef(0);
+      const browserActiveTransitionIsCurrentRef = useRef(() => true);
+      const browserSessionTransitionPendingRef = useRef(0);
+      const browserBridgeSessionTransitionRef = useRef(null);
+      const browserUiTransitionGateRef = useRef(null);
+      if (!browserUiTransitionGateRef.current) {
+        browserUiTransitionGateRef.current = createNativeSurfaceTransitionGate({
+          acquireHide: acquireNativeSurfaceTransitionHide,
+          getContext: () => browserSurfaceTransitionContextRef.current,
+          onError: (error) => {
+            console.error('[browser] native-surface transition failed', error);
+          },
+        });
+      }
+      const handleRightDockStateChange = useCallback((next) => {
+        setRightDockState((current) => (
+          current.activePanelId === next.activePanelId
+          && current.mountedPanelCount === next.mountedPanelCount
+          && current.visiblePanelCount === next.visiblePanelCount
+          && current.openSidePanelCount === next.openSidePanelCount
+          && current.occluded === next.occluded
+            ? current
+            : next
+        ));
+      }, []);
+      // Keep the currently published task identity stable while a bridge session
+      // switch is waiting behind the native-surface hide barrier.
+      const browserSessionId = activeChat || (bs && bs.activeSessionId) || null;
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
+      const browserNativeDisplayAvailable = !!platformCapabilities.browserNativeDisplay;
+      const browserSessionIdRef = useRef(browserSessionId);
+      browserSessionIdRef.current = browserSessionId;
+      const browserPaneState = browserPaneStateFor(browserPaneStates, browserSessionId);
+      const browserOpenState = browserOpenStateFor(browserOpenStates, browserSessionId);
+      const browserPaneOpen = browserPaneState.open;
+      const browserPaneSelected = browserPaneState.browserSelected;
+      const browserDockSelectedPanelId = browserPaneSelected ? 'browser' : 'artifact-preview';
+      const browserDockActivationKey = `${browserSessionId || ''}:${browserPaneState.activation}`;
+      const browserActive = browserNativeDisplayAvailable
+        && !!(browserSessionId && browserSessions[browserSessionId]);
+      const browserViewSessionId = browserSessionId;
+      const browserPaneAllowed = currentView === 'chat'
+        || (currentView === 'scheduled' && !!(bs && bs.scheduledRunContext));
+      const browserWorkspaceStarting = browserOpenState.status === 'starting';
+      const browserWorkspaceError = browserOpenState.status === 'failed'
+        ? browserOpenState.error
+        : '';
+      function runBrowserUiTransition(publish, options) {
+        const tracksSession = options?.channel === 'session';
+        if (tracksSession) browserSessionTransitionPendingRef.current += 1;
+        const finishRequest = () => {
+          if (!tracksSession) return;
+          browserSessionTransitionPendingRef.current -= 1;
+          if (
+            browserSessionTransitionPendingRef.current === 0
+            && options?.reconcileSessionOnSettle !== false
+          ) {
+            setSessionSyncEpoch((epoch) => epoch + 1);
+          }
+        };
+        let result;
+        try {
+          result = browserUiTransitionGateRef.current.run((transition) => {
+            const previousIsCurrent = browserActiveTransitionIsCurrentRef.current;
+            browserActiveTransitionIsCurrentRef.current = transition.isCurrent;
+            browserTransitionPublishingRef.current += 1;
+            const finish = () => {
+              browserTransitionPublishingRef.current -= 1;
+              if (browserActiveTransitionIsCurrentRef.current === transition.isCurrent) {
+                browserActiveTransitionIsCurrentRef.current = previousIsCurrent;
+              }
+            };
+            try {
+              const publishResult = publish(transition);
+              if (publishResult && typeof publishResult.then === 'function') {
+                return Promise.resolve(publishResult).finally(finish);
+              }
+              finish();
+              return publishResult;
+            } catch (error) {
+              finish();
+              throw error;
+            }
+          }, options);
+        } catch (error) {
+          finishRequest();
+          throw error;
+        }
+        if (result && typeof result.then === 'function') {
+          return Promise.resolve(result).finally(finishRequest);
+        }
+        finishRequest();
+        return result;
+      }
+      function setCurrentView(nextView) {
+        const resolvedView = typeof nextView === 'function'
+          ? nextView(currentViewRef.current)
+          : nextView;
+        // A publication that already owns the native-surface hide lease must be
+        // urgent: the later React-commit marker is only authoritative when the
+        // target tree cannot remain deferred behind it. Normal view switches keep
+        // the main-branch transition priority so lazy chunks stay interruptible.
+        if (browserTransitionPublishingRef.current > 0) {
+          setCurrentViewState(resolvedView);
+          return true;
+        }
+        const context = browserSurfaceTransitionContextRef.current;
+        const keepsDesktopBrowserVisible = !context.compact && (
+          resolvedView === 'chat'
+          || (resolvedView === 'scheduled' && context.scheduledRunChat)
+        );
+        const needsNativeHide = !!context.visible && !keepsDesktopBrowserVisible;
+        if (!needsNativeHide) {
+          browserUiTransitionGateRef.current.invalidate('view');
+          startTransition(() => setCurrentViewState(resolvedView));
+          return true;
+        }
+        return runBrowserUiTransition(() => {
+          setCurrentViewState(resolvedView);
+        }, {
+          channel: 'view',
+          hideMode: 'visible',
+        });
+      }
+      const publishRightDockOcclusion = useCallback((occlusionId, publish) => (
+        browserUiTransitionGateRef.current.run(({ isCurrent }) => {
+          if (!isCurrent()) return false;
+          const published = publish();
+          if (published === false) return false;
+          setRightDockOcclusionPublications((current) => (
+            current.includes(occlusionId) ? current : [...current, occlusionId]
+          ));
+          return true;
+        }, {
+          channel: `right-dock-occlusion:${occlusionId}`,
+          hideMode: 'visible',
+        })
+      ), []);
+      const releaseRightDockOcclusion = useCallback((occlusionId) => {
+        browserUiTransitionGateRef.current.invalidate(`right-dock-occlusion:${occlusionId}`);
+        setRightDockOcclusionPublications((current) => (
+          current.includes(occlusionId)
+            ? current.filter((id) => id !== occlusionId)
+            : current
+        ));
+      }, []);
+      const selectRightDockPanel = useCallback((panelId, sessionId) => {
+        const selectedSessionId = sessionId || browserSessionIdRef.current;
+        if (!selectedSessionId) return;
+        const publish = () => {
+          setBrowserPaneStates((current) => (
+            panelId === 'browser'
+              ? activateBrowserPane(current, selectedSessionId)
+              : selectArtifactsPane(current, selectedSessionId)
+          ));
+        };
+        const context = browserSurfaceTransitionContextRef.current;
+        void runBrowserUiTransition(publish, {
+          channel: 'right-dock',
+          hideMode: panelId !== 'browser' && context.sessionId === selectedSessionId
+            ? 'visible'
+            : 'none',
+        });
+      }, []);
+      const closeBrowserDock = useCallback((sessionId) => {
+        const selectedSessionId = sessionId || browserSessionIdRef.current;
+        if (!selectedSessionId) return;
+        const context = browserSurfaceTransitionContextRef.current;
+        void runBrowserUiTransition(() => {
+          setBrowserPaneStates((current) => closeBrowserPane(current, selectedSessionId));
+        }, {
+          channel: 'right-dock',
+          hideMode: context.sessionId === selectedSessionId ? 'visible' : 'none',
+        });
+      }, []);
+      const openBrowserDock = useCallback(async () => {
+        const requestedSessionId = browserSessionId;
+        if (!browserNativeDisplayAvailable || !requestedSessionId || !browserPaneAllowed) return;
+        setBrowserPaneStates((current) => activateBrowserPane(current, requestedSessionId));
+        if (browserActive) return;
+        const attempt = (browserOpenAttemptsRef.current[requestedSessionId] || 0) + 1;
+        browserOpenAttemptsRef.current[requestedSessionId] = attempt;
+        setBrowserOpenStates((current) => (
+          beginBrowserOpen(current, requestedSessionId, attempt)
+        ));
+        try {
+          const prepared = await invokeTauri('browser_prepare', { sessionId: requestedSessionId });
+          if (!prepared || prepared.sessionId !== requestedSessionId) {
+            throw new Error('browser_prepare returned an invalid session identity');
+          }
+          setBrowserSessions((current) => ({ ...current, [requestedSessionId]: true }));
+          setBrowserOpenStates((current) => (
+            settleBrowserOpen(current, requestedSessionId, attempt, 'idle')
+          ));
+        } catch (error) {
+          setBrowserOpenStates((current) => settleBrowserOpen(
+            current,
+            requestedSessionId,
+            attempt,
+            'failed',
+            typeof error === 'string' ? error : String(error),
+          ));
+        }
+      }, [
+        browserActive,
+        browserNativeDisplayAvailable,
+        browserPaneAllowed,
+        browserSessionId,
+      ]);
+      useEffect(() => {
+        if (!browserNativeDisplayAvailable) {
+          setBrowserSessions({});
+          setBrowserPaneStates({});
+          setBrowserOpenStates({});
+          browserOpenAttemptsRef.current = {};
+          return undefined;
+        }
+        let disposed = false;
+        const unlisteners = [];
+        // 先注册监听、再查状态兜底：顺序反了会在「状态查询返回」与「监听生效」
+        // 之间的窗口错过 browser:activated（Rust 端 activated 标记阻止重发），
+        // 浏览器侧栏会一直不出现，直到下次主 WebView 重载。
+        tauriEvents.listen('browser:activated', (event) => {
+          if (disposed) return;
+          const sessionId = event.payload?.sessionId;
+          if (!sessionId) return;
+          setBrowserSessions((current) => ({ ...current, [sessionId]: true }));
+          setBrowserPaneStates((current) => activateBrowserPane(current, sessionId));
+        }).then(unlisten => {
+          if (disposed) unlisten();
+          else unlisteners.push(unlisten);
+        }).catch(() => {});
+        tauriEvents.listen('browser:stopped', (event) => {
+          if (disposed) return;
+          const sessionId = event.payload?.sessionId;
+          if (sessionId) {
+            setBrowserSessions((current) => {
+              const next = { ...current };
+              delete next[sessionId];
+              return next;
+            });
+            setBrowserPaneStates((current) => removeBrowserPaneState(current, sessionId));
+          } else {
+            setBrowserSessions({});
+            setBrowserPaneStates({});
+          }
+        }).then(unlisten => {
+          if (disposed) unlisten();
+          else unlisteners.push(unlisten);
+        }).catch(() => {});
+        return () => {
+          disposed = true;
+          unlisteners.forEach(u => u && u());
+        };
+      }, [browserNativeDisplayAvailable]);
+      useEffect(() => {
+        const syncVisibility = () => setBrowserDocumentHidden(document.visibilityState === 'hidden');
+        const handlePageHide = () => setBrowserDocumentHidden(true);
+        document.addEventListener('visibilitychange', syncVisibility);
+        window.addEventListener('pagehide', handlePageHide);
+        window.addEventListener('pageshow', syncVisibility);
+        return () => {
+          document.removeEventListener('visibilitychange', syncVisibility);
+          window.removeEventListener('pagehide', handlePageHide);
+          window.removeEventListener('pageshow', syncVisibility);
+        };
+      }, []);
+      // WebView 重载或切换对话后查询该会话状态兜底。存在页面就恢复入口；不存在
+      // 时不清除其他会话记录，它们切回后仍可各自恢复。
+      useEffect(() => {
+        if (!browserNativeDisplayAvailable || !browserSessionId) return undefined;
+        let disposed = false;
+        invokeTauri('browser_status', { sessionId: browserSessionId }).then((st) => {
+          if (
+            disposed
+            || !st
+            || st.sessionId !== browserSessionId
+            || (!st.running && !st.restoreError)
+          ) return;
+          setBrowserSessions((current) => ({ ...current, [browserSessionId]: true }));
+          // 首次发现已恢复的工作区时恢复展开；若用户已在本次窗口中明确
+          // 收起或选择产物，则保留该 session 自己的意图。
+          setBrowserPaneStates((current) => restoreBrowserPane(current, browserSessionId));
+        }).catch(() => {});
+        return () => { disposed = true; };
+      }, [browserNativeDisplayAvailable, browserSessionId]);
+      // 紧凑布局仍使用全屏 browser 视图；桌面布局改为对话右侧侧栏。
+      useEffect(() => {
+        if (!browserActive && currentView === 'browser') {
+          setCurrentView('chat');
+        }
+      }, [browserActive, currentView]);
       const showMegacubeSite = !!platformCapabilities.showMegacubeSite;
       const codexAcpSupported = usePlatformCapability('acpCodeMode') && (isWeb || !!platformCapabilities.codexAcpSupported);
       const [codexSessions, setCodexSessions] = useState([]);
@@ -443,9 +782,33 @@ function workspaceDisplayName(path) {
         };
       }
       const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+      const [openSidePanelCount, setOpenSidePanelCount] = useState(0);
+      const restoreSidebarAfterConstraintRef = useRef(false);
       // 移动壳层只作用于 Web 端紧凑视口：底部 Tab + 顶栏，侧栏只保留抽屉形态。
       const compactViewport = useCompactViewport();
       const isCompactShell = isWeb && compactViewport;
+      const browserDockAvailable = !isCompactShell
+        && browserNativeDisplayAvailable;
+      // 任一右侧面板展开后，窄窗口优先保留主内容与面板。自动收起只改变临时
+      // 布局，窗口恢复或面板关闭后还原用户原本展开的左导航。
+      useEffect(() => {
+        if (isCompactShell) return undefined;
+        const fitWorkspace = () => {
+          const constrained = openSidePanelCount > 0 && window.innerWidth < 1320;
+          if (constrained) {
+            setIsSidebarOpen((current) => {
+              if (current) restoreSidebarAfterConstraintRef.current = true;
+              return false;
+            });
+          } else if (restoreSidebarAfterConstraintRef.current) {
+            restoreSidebarAfterConstraintRef.current = false;
+            setIsSidebarOpen(true);
+          }
+        };
+        fitWorkspace();
+        window.addEventListener('resize', fitWorkspace);
+        return () => window.removeEventListener('resize', fitWorkspace);
+      }, [isCompactShell, isSidebarOpen, openSidePanelCount]);
       // iOS Safari 上 100dvh 不等于真实可见高度（动态工具栏/安全区），用 visualViewport 兜底。
       const visualViewportHeight = useVisualViewportHeight();
       // iOS Safari 聚焦输入框时会尝试滚动整个文档。紧凑 Web 壳层本身已经按
@@ -497,6 +860,7 @@ function workspaceDisplayName(path) {
       const [savedConfirm, setSavedConfirm] = useState(null); // 存入成功 → iOS 确认窗 {name}
       const [poolMyOnly, setPoolMyOnly] = useState(false); // 跳卡池时是否直接落「我的卡牌」筛选(从确认窗"去查看"进来=true)
       const [webAccessOpen, setWebAccessOpen] = useState(false);
+      const [publishedBrowserOverlayIntent, setPublishedBrowserOverlayIntent] = useState('');
       const [settingsUpdateFocusTick, setSettingsUpdateFocusTick] = useState(0);
       const [settingsInitialSection, setSettingsInitialSection] = useState('general');
       // 收纳 toast「前往查看」→ 对话管理页并直接展开「已收纳」面板(一次性信号,SearchView 消费后复位)
@@ -659,15 +1023,41 @@ function workspaceDisplayName(path) {
         // activeChat 始终跟随 bridge(含 null:草稿态清掉近期列表高亮)。仅在物化成
         // 真实 session(非 null)时才强制切回 chat 视图——草稿态/删会话不该把用户从
         // monitor/settings 拽走。
+        const nextSessionId = bs.activeSessionId;
+        const bridgeTransition = browserBridgeSessionTransitionRef.current;
+        let bridgeSessionNeedsSync = bridgeTransition !== null
+          && bridgeTransition.sessionId !== nextSessionId;
         if (bs.activeSessionId !== activeChat) {
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- activeChat is a local mirror of bridge state and must sync with bridge pushes
-          setActiveChat(bs.activeSessionId);
-          if (bs.activeSessionId && currentView !== 'codex' && currentView !== 'monitor' && currentView !== 'settings' && currentView !== 'search' && currentView !== 'scheduled') {
-            // An external session switch (web remote control, etc.) that materializes
-            // a normal chat view must exit code mode, otherwise the code sidebar and the
-            // codex-draft New chat behavior leak onto a regular session.
-            setCodeModeOn(false);
-            setCurrentView('chat');
+          bridgeSessionNeedsSync = true;
+        }
+        if (bridgeSessionNeedsSync) {
+          const publishSession = ({ isCurrent }) => {
+            if (!isCurrent()) return false;
+            setActiveChat(nextSessionId);
+            const publishedView = currentViewRef.current;
+            if (nextSessionId && publishedView !== 'codex' && publishedView !== 'monitor' && publishedView !== 'settings' && publishedView !== 'search' && publishedView !== 'scheduled' && publishedView !== 'browser') {
+              // A normal bridge session must not inherit code-only sidebar/draft state.
+              setCodeModeOn(false);
+              setCurrentView('chat');
+            }
+            return true;
+          };
+          // Every distinct bridge target receives a serialized latest-wins ticket.
+          // A token, rather than only the session id, prevents an old B -> C -> B
+          // completion from clearing the newest B transition.
+          if (bridgeTransition?.sessionId !== nextSessionId) {
+            const transitionToken = { sessionId: nextSessionId };
+            browserBridgeSessionTransitionRef.current = transitionToken;
+            const transitionResult = runBrowserUiTransition(publishSession, {
+              channel: 'session',
+              hideMode: 'workspace',
+              serialize: true,
+            });
+            void Promise.resolve(transitionResult).finally(() => {
+              if (browserBridgeSessionTransitionRef.current === transitionToken) {
+                browserBridgeSessionTransitionRef.current = null;
+              }
+            });
           }
         }
         if (bs.superPermEnabled !== superPerm) setSuperPerm(bs.superPermEnabled);
@@ -691,9 +1081,10 @@ function workspaceDisplayName(path) {
         if (!modelConfigInitRef.current && bs.settings) initModelConfigFromSettings(bs.settings, bs.effectiveModelConfig);
         // The effect subscribes to the bridge snapshot bs; one-shot bootstrap/init flags are guarded by internal refs,
         // and the remaining deps (activeChat/currentView/language, etc.) are render-state reads — including them would
-        // rerun the whole sync logic on every UI change.
+        // rerun the whole sync logic on every UI change. sessionSyncEpoch intentionally
+        // retriggers reconciliation after the serialized browser session gate settles.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [bs]);
+      }, [bs, sessionSyncEpoch]);
 
       // HMR/旧前端状态可能仍停在已下线入口；立即回到仍可访问的视图。
       useEffect(() => {
@@ -1155,18 +1546,28 @@ function workspaceDisplayName(path) {
       }, [petSessions, petSessionBusy, language]);
 
       async function navigateFromScheduledRun(nextView, beforeNavigate) {
-        if (bs && bs.scheduledRunContext && bridge.available && bridge.scheduled.exitScheduledRunChat) {
-          const exited = await bridge.scheduled.exitScheduledRunChat();
-          if (!exited) return false;
-        }
-        if (beforeNavigate) beforeNavigate();
-        setCurrentView(nextView);
-        // Landing back on the normal chat view (collapsed rail "current chat", mobile
-        // bottom tab) must exit code mode: the mode follows the session type, otherwise the
-        // code sidebar style and the codex-draft New chat behavior leak onto the chat view.
-        if (nextView === 'chat') setCodeModeOn(false);
-        closeMobileSidebar();
-        return true;
+        const context = browserSurfaceTransitionContextRef.current;
+        const keepsDesktopBrowserVisible = !context.compact && (
+          nextView === 'chat'
+          || (nextView === 'scheduled' && context.scheduledRunChat)
+        );
+        return runBrowserUiTransition(async ({ isCurrent }) => {
+          if (bs && bs.scheduledRunContext && bridge.available && bridge.scheduled.exitScheduledRunChat) {
+            const exited = await bridge.scheduled.exitScheduledRunChat();
+            if (!exited || !isCurrent()) return false;
+          }
+          if (beforeNavigate) beforeNavigate();
+          if (nextView === 'chat') setCodeModeOn(false);
+          setCurrentView(nextView);
+          if (bs && bs.scheduledRunContext) setActiveChat(bridge.activeSessionId || null);
+          closeMobileSidebar();
+          return true;
+        }, {
+          channel: 'view',
+          hideMode: bs && bs.scheduledRunContext
+            ? 'workspace'
+            : keepsDesktopBrowserVisible ? 'none' : 'visible',
+        });
       }
 
       function openSettingsSection(section = 'general') {
@@ -1195,22 +1596,29 @@ function workspaceDisplayName(path) {
         // exits code mode right before navigating. Clearing once at the entry
         // would also clear it when the open fails, leaving an active code
         // session behind the standard sidebar and New chat creating plain drafts.
-        if (!bridge.available || !bridge.scheduled.openScheduledRunChat) {
+        return runBrowserUiTransition(async ({ isCurrent }) => {
+          if (!bridge.available || !bridge.scheduled.openScheduledRunChat) {
+            setCodeModeOn(false);
+            setCurrentView('scheduled');
+            closeMobileSidebar();
+            return true;
+          }
+          const task = {
+            id: run.automationId,
+            name: run.taskName || t.scheduledPlans,
+            model: run.taskModel || null,
+          };
+          const opened = await bridge.scheduled.openScheduledRunChat(run, task);
+          if (!opened || !isCurrent()) return false;
           setCodeModeOn(false);
+          setActiveChat(run.sessionId);
           setCurrentView('scheduled');
-          closeMobileSidebar();
-          return;
-        }
-        const task = {
-          id: run.automationId,
-          name: run.taskName || t.scheduledPlans,
-          model: run.taskModel || null,
-        };
-        const opened = await bridge.scheduled.openScheduledRunChat(run, task);
-        if (opened) {
-          setCodeModeOn(false);
-          setCurrentView('scheduled');
-        }
+          return true;
+        }, {
+          channel: 'session',
+          hideMode: 'workspace',
+          serialize: true,
+        });
       }
 
       function handleNewChat(installedToolId, forceMode) {
@@ -1218,9 +1626,9 @@ function workspaceDisplayName(path) {
         // 本不传参,但若哪天有调用点写成 onClick={handleNewChat},React 会把事件对象当首参塞进来——
         // 那是 truthy 的 SyntheticEvent,会被当成 toolId 置进 welcomeToolId → ToolWelcomeCard 查不到
         // 工具渲染 null → 欢迎语整块空白。守卫挡住这条暗坑。
-        if (typeof installedToolId === 'string' && installedToolId) {
-          setJustInstalledTool(installedToolId);
-        }
+        const toolIntentId = typeof installedToolId === 'string' && installedToolId
+          ? installedToolId
+          : null;
         // Follow code mode rather than the current page: in code mode, even on
         // output/monitor tool pages, New chat still creates a code session draft;
         // forceMode serves call sites that must land on a normal chat, such as AI card
@@ -1228,24 +1636,36 @@ function workspaceDisplayName(path) {
         // Calls carrying a tool intent (tool store "new chat with this tool") must also
         // land on a normal chat: the tool welcome card is only consumed by ChatView, so a
         // codex draft would silently drop the intent and leak it into the next session.
-        const hasToolIntent = typeof installedToolId === 'string' && !!installedToolId;
+        const hasToolIntent = !!toolIntentId;
         const wantCode = forceMode
           ? forceMode === 'code'
           : !hasToolIntent && codeModeOn;
-        if (wantCode && codexAcpSupported) {
-          updateActiveCodexSession(null);
-          setCodexDraftEpoch(value => value + 1);
-          setCurrentView('codex');
-        } else {
-          // Every landing here is a normal chat (tool intent, forceMode='chat',
-          // code mode off, or codex unsupported on this host). createNewSession
-          // nulls activeSessionId, so the bridge sync guard cannot heal a stale
-          // codeModeOn afterwards — clear it here.
-          setCodeModeOn(false);
-          if (bridge.available) bridge.sessions.createNewSession();
-          setCurrentView('chat');
-        }
-        closeMobileSidebar();
+        return runBrowserUiTransition(async ({ isCurrent }) => {
+          if (!isCurrent()) return false;
+          if (wantCode && codexAcpSupported) {
+            setCodeModeOn(true);
+            updateActiveCodexSession(null);
+            setCodexDraftEpoch(value => value + 1);
+            setCurrentView('codex');
+          } else {
+            // Every landing here is a normal chat (tool intent, forceMode='chat',
+            // code mode off, or codex unsupported on this host). createNewSession
+            // nulls activeSessionId, so the bridge sync guard cannot heal a stale
+            // codeModeOn afterwards — clear it here.
+            setCodeModeOn(false);
+            if (bridge.available) await bridge.sessions.createNewSession();
+            if (!isCurrent()) return false;
+            if (toolIntentId) setJustInstalledTool(toolIntentId);
+            setActiveChat(null);
+            setCurrentView('chat');
+          }
+          closeMobileSidebar();
+          return true;
+        }, {
+          channel: 'session',
+          hideMode: 'workspace',
+          serialize: true,
+        });
       }
 
       function handleSwitchHomeMode(mode) {
@@ -1290,10 +1710,8 @@ function workspaceDisplayName(path) {
 
       // AI 造卡:新对话 + 加持「卡牌制造专家」+ 一条 iOS 引导卡 → 用户在空输入框描述需求,复用 persona-card 草稿流程入库
       async function startAICard() {
-        // Card creation must land on a normal chat session: even when started from the
-        // card pool in code mode, exit code mode first.
-        setCodeModeOn(false);
-        handleNewChat(null, 'chat');
+        const created = await handleNewChat(null, 'chat');
+        if (!created) return;
         if (!bridge.available) return;
         const card = await bridge.personas.equipPersona('pinvou-card-creator'); // 先加持(落新 session + 加持气泡)
         if (card) bridge.personas.postCardCreatorIntro();                     // 加持成功才追加引导卡(持久化,切会话/重启不丢);失败则放弃后续,避免错投(二审补充)
@@ -1301,14 +1719,20 @@ function workspaceDisplayName(path) {
 
       async function handleSwitchSession(id) {
         if (!bridge.available) return;
-        // Opening a normal chat session exits code mode (mode follows session type).
-        setCodeModeOn(false);
-        // Web RPC 可能跨公网 Relay：先关闭抽屉并切入聊天路由，后台再加载会话。
-        setCurrentView('chat');
-        closeMobileSidebar();
-        const switched = await bridge.sessions.switchToSession(id);
-        if (!switched) return;
-        setActiveChat(id);
+        return runBrowserUiTransition(async ({ isCurrent }) => {
+          // Web RPC 可能跨公网 Relay：先关闭抽屉并切入聊天路由，后台再加载会话。
+          setCodeModeOn(false);
+          setCurrentView('chat');
+          closeMobileSidebar();
+          const switched = await bridge.sessions.switchToSession(id);
+          if (!switched || !isCurrent()) return false;
+          setActiveChat(id);
+          return true;
+        }, {
+          channel: 'session',
+          hideMode: 'workspace',
+          serialize: true,
+        });
       }
 
       async function handleSearchSelect(id) {
@@ -1392,17 +1816,29 @@ function workspaceDisplayName(path) {
               }
               let opened = false;
               try {
-                opened = await bridge.scheduled.openScheduledRunChat({
-                  id: runId,
-                  automationId,
-                  sessionId,
-                  status: 'completed',
-                  endedAt,
-                  unread: true,
+                const published = await runBrowserUiTransition(async ({ isCurrent }) => {
+                  opened = await bridge.scheduled.openScheduledRunChat({
+                    id: runId,
+                    automationId,
+                    sessionId,
+                    status: 'completed',
+                    endedAt,
+                    unread: true,
+                  }, {
+                    id: automationId,
+                    name: taskName,
+                  });
+                  if (!opened || !isCurrent()) return false;
+                  setCodeModeOn(false);
+                  setActiveChat(sessionId);
+                  setCurrentView('scheduled');
+                  return true;
                 }, {
-                  id: automationId,
-                  name: taskName,
+                  channel: 'session',
+                  hideMode: 'workspace',
+                  serialize: true,
                 });
+                if (!published) opened = false;
               } catch (error) {
                 console.error('[pet scheduled navigation] open failed', error);
               }
@@ -1410,9 +1846,6 @@ function workspaceDisplayName(path) {
                 emitToPet('pet:scheduled_notice_open_failed', { run_id: runId }).catch(() => {});
                 return;
               }
-              setCodeModeOn(false);
-              setActiveChat(sessionId);
-              setCurrentView('scheduled');
               emitToPet('pet:scheduled_notice_opened', { run_id: runId }).catch(() => {});
               return;
             }
@@ -1426,20 +1859,17 @@ function workspaceDisplayName(path) {
             if (!bridge.available) return;
             const sessionExists = petSnapshotRef.current.some((session) => String(session.id) === String(sid));
             if (!sessionExists) {
+              emitToPet('pet:session_unavailable', { session_id: sid }).catch(() => {});
               setCodeModeOn(false);
               setCurrentView('chat');
               setPetFocusComposerTick(value => value + 1);
-              emitToPet('pet:session_unavailable', { session_id: sid }).catch(() => {});
               return;
             }
-            const switched = await bridge.sessions.switchToSession(sid);
+            const switched = await handleSwitchSession(sid);
             if (!switched) {
               emitToPet('pet:session_unavailable', { session_id: sid }).catch(() => {});
               return;
             }
-            setCodeModeOn(false);
-            setActiveChat(sid);
-            setCurrentView('chat');
             setPetFocusComposerTick(value => value + 1);
             emitToPet('pet:session_viewed', { session_id: sid }).catch(() => {});
           } catch (error) {
@@ -1818,12 +2248,12 @@ function workspaceDisplayName(path) {
         ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
         : currentView === 'codex'
           ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.sidebarTaskFilterCode)
-        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
+        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings, browser: t.browser }[currentView] || 'PINVOU');
       const mobileNavigate = (view, beforeNavigate) => {
         setMobileMoreOpen(false);
         navigateFromScheduledRun(view, beforeNavigate);
       };
-      const mobileMoreViews = ['search', 'outputs', 'knowledge', 'toolStore', 'settings'];
+      const mobileMoreViews = ['search', 'outputs', 'knowledge', 'toolStore', 'settings', 'browser'];
       const mobileMoreActive = mobileMoreViews.includes(currentView)
         || (currentView === 'scheduled' && !(bs && bs.scheduledRunContext));
 
@@ -1861,6 +2291,82 @@ function workspaceDisplayName(path) {
         );
       };
 
+      const apiKeyGateOpen = shouldShowApiKeyGate(bs, currentView, bridge.available);
+      const vllmSetupModalOpen = !!(
+        can('localModelSetup')
+        && bs
+        && bs.vllmSetup
+        && bs.vllmSetup.eligible
+        && !bs.vllmSetupDismissed
+      );
+      const browserOverlayIntent = [
+        archiveConfirm ? 'archive-confirm' : '',
+        searchOverlayOpen ? 'search' : '',
+        personaEditor ? 'persona-editor' : '',
+        savedConfirm ? 'saved-confirm' : '',
+        can('webAccessAdmin') && webAccessOpen ? 'web-access' : '',
+        apiKeyGateOpen ? 'api-key' : '',
+        vllmSetupModalOpen ? 'vllm-setup' : '',
+        bs && bs.pinvouModal ? 'pinvou-review' : '',
+        isCompactShell && isSidebarOpen ? 'mobile-sidebar' : '',
+        isCompactShell && mobileMoreOpen ? 'mobile-more' : '',
+      ].filter(Boolean).join('|');
+      const browserOverlayPublicationReady = !!browserOverlayIntent
+        && publishedBrowserOverlayIntent === browserOverlayIntent;
+      // Keep the surface hidden while one already-published overlay hands off to
+      // another. The replacement itself is still withheld until its own barrier
+      // attempt has settled.
+      const browserOverlayOpen = !!publishedBrowserOverlayIntent;
+      const browserBlockingLayerOpen = !browserPaneAllowed || browserOverlayOpen;
+      const browserSurfaceSuspended = browserResizeActive
+        || browserDocumentHidden
+        || rightDockOcclusionPublications.length > 0
+        || rightDockState.occluded
+        || rightDockState.activePanelId !== 'browser'
+        || browserBlockingLayerOpen;
+      const compactBrowserSurfaceSuspended = browserDocumentHidden
+        || browserOverlayOpen
+        || currentView !== 'browser';
+      const browserNativeSurfaceVisible = isCompactShell
+        ? browserActive && currentView === 'browser' && !compactBrowserSurfaceSuspended
+        : browserActive
+          && browserPaneOpen
+          && browserPaneSelected
+          && !browserSurfaceSuspended;
+      const browserSurfaceTransitionContext = {
+        sessionId: browserViewSessionId,
+        hasWorkspace: browserActive && !!browserViewSessionId,
+        visible: browserNativeSurfaceVisible,
+        compact: isCompactShell,
+        scheduledRunChat: !!(bs && bs.scheduledRunContext),
+      };
+      useLayoutEffect(() => {
+        browserSurfaceTransitionContextRef.current = browserSurfaceTransitionContext;
+      }, [
+        browserSurfaceTransitionContext.sessionId,
+        browserSurfaceTransitionContext.hasWorkspace,
+        browserSurfaceTransitionContext.visible,
+        browserSurfaceTransitionContext.compact,
+        browserSurfaceTransitionContext.scheduledRunChat,
+      ]);
+      useLayoutEffect(() => {
+        let disposed = false;
+        if (!browserOverlayIntent) {
+          browserUiTransitionGateRef.current.invalidate('overlay');
+          setPublishedBrowserOverlayIntent('');
+          return () => { disposed = true; };
+        }
+        void runBrowserUiTransition(() => {
+          if (disposed) return false;
+          setPublishedBrowserOverlayIntent(browserOverlayIntent);
+          return true;
+        }, {
+          channel: 'overlay',
+          hideMode: 'visible',
+        });
+        return () => { disposed = true; };
+      }, [browserOverlayIntent]);
+
       return (
         <div data-testid="app-root" data-current-view={currentView} data-platform={isWeb ? 'web' : 'desktop'}
           className={`flex flex-col h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
@@ -1887,7 +2393,7 @@ function workspaceDisplayName(path) {
             </div>
           )}
 
-          {archiveConfirm && createPortal(
+          {archiveConfirm && browserOverlayPublicationReady && createPortal(
             <ArchiveConfirmDialog
               theme={activeTheme}
               t={t}
@@ -1918,7 +2424,7 @@ function workspaceDisplayName(path) {
             document.body
           )}
 
-          {searchOverlayOpen && createPortal(
+          {searchOverlayOpen && browserOverlayPublicationReady && createPortal(
             <SearchOverlay
               theme={activeTheme}
               history={chatHistory}
@@ -1937,9 +2443,15 @@ function workspaceDisplayName(path) {
               onNewChat={currentView === 'chat' || currentView === 'codex' ? () => handleNewChat() : undefined} />
           )}
 
+          <SidePanelLayoutProvider onPresenceChange={setOpenSidePanelCount}>
+          <RightDockProvider
+            onStateChange={handleRightDockStateChange}
+            onBeforeOcclusionPublish={publishRightDockOcclusion}
+            onOcclusionRelease={releaseRightDockOcclusion}
+          >
           <div className={`flex flex-1 min-h-0 ${activeTheme === 'dark' ? (isSidebarOpen ? 'bg-[#1E1F20]' : 'bg-[#131314]') : 'bg-[#F0F4F9]'}`}>
 
-          {isWeb && isSidebarOpen && (
+          {isWeb && isSidebarOpen && browserOverlayPublicationReady && (
             <button
               type="button"
               data-testid="mobile-navigation-close"
@@ -1960,7 +2472,7 @@ function workspaceDisplayName(path) {
               // z-40 sidebar).
               width: isSidebarOpen && !isCompactShell ? sidebarWidth : undefined,
               ...(isCompactShell ? {
-                display: isSidebarOpen ? 'flex' : 'none',
+                display: isSidebarOpen && browserOverlayPublicationReady ? 'flex' : 'none',
                 position: 'fixed',
                 left: 0,
                 top: 48,
@@ -2405,7 +2917,8 @@ function workspaceDisplayName(path) {
           </div>
 
           {/* ================= Main Content ================= */}
-          <div className={`flex-1 flex flex-col relative min-w-0 overflow-hidden ${activeTheme === 'dark' ? 'bg-[#131314]' : 'bg-white'} ${isCompactShell ? '' : 'rounded-tl-[28px]'}`}>
+          <div className={`flex-1 flex relative min-w-0 overflow-hidden ${activeTheme === 'dark' ? 'bg-[#131314]' : 'bg-white'} ${isCompactShell ? '' : 'rounded-tl-[28px]'}`}>
+            <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
 
             {/* Gemini Style Background Glow */}
             {(currentView === 'chat'
@@ -2459,9 +2972,18 @@ function workspaceDisplayName(path) {
                 />
               </SettingsErrorBoundary>
             )}
+            {isCompactShell && browserActive && currentView === 'browser' && (
+              <BrowserView
+                key={browserViewSessionId}
+                theme={activeTheme}
+                t={t}
+                sessionId={browserViewSessionId}
+                nativeSurfaceSuspended={compactBrowserSurfaceSuspended}
+              />
+            )}
             {currentView === 'toolStore' && <LazyToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <LazyCardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => { setCodeModeOn(false); setCurrentView('chat'); }} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
-            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={handleOpenPersonaEditor} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} />}
+            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={handleOpenPersonaEditor} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} browserDockAvailable={browserDockAvailable} browserDockOpen={browserPaneOpen} rightDockActivePanelId={browserDockSelectedPanelId} onRightDockPanelSelectionChange={selectRightDockPanel} onOpenBrowserDock={openBrowserDock} />}
             {codexAcpSupported && currentView === 'codex' && (
               <LazyCodexAcpView
                 theme={activeTheme}
@@ -2481,7 +3003,7 @@ function workspaceDisplayName(path) {
             )}
             {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (
               bs && bs.scheduledRunContext ? (
-                <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={handleOpenPersonaEditor} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />
+                <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={handleOpenPersonaEditor} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} browserDockAvailable={browserDockAvailable} browserDockOpen={browserPaneOpen} rightDockActivePanelId={browserDockSelectedPanelId} onRightDockPanelSelectionChange={selectRightDockPanel} onOpenBrowserDock={openBrowserDock} />
               ) : (
                 <LazyScheduledTasksView theme={activeTheme} t={t} onOpenChat={() => { setCodeModeOn(false); setCurrentView('chat'); }} onGotoModelSettings={() => openSettingsSection('model')} />
               )
@@ -2518,7 +3040,7 @@ function workspaceDisplayName(path) {
               </Suspense>
             </ViewErrorBoundary>
 
-            {can('webAccessAdmin') && webAccessOpen && (
+            {can('webAccessAdmin') && webAccessOpen && browserOverlayPublicationReady && (
               <ViewErrorBoundary t={t}>
               <Suspense fallback={null}>
               <LazyWebAccessModal theme={activeTheme} bs={bs} t={t} onClose={() => setWebAccessOpen(false)} />
@@ -2528,7 +3050,7 @@ function workspaceDisplayName(path) {
 
             {/* App 级自创卡编辑器: 聊天里「存入卡牌池」草稿走这条。错误边界与
                 WebAccessModal 同款:lazy chunk 拉取失败不能卸载整个应用窗口。 */}
-            {personaEditor && (
+            {personaEditor && browserOverlayPublicationReady && (
               <ViewErrorBoundary t={t}>
               <Suspense fallback={null}>
               <LazyPersonaEditorModal initial={personaEditor.initial} isDark={activeTheme === 'dark'} t={t}
@@ -2540,9 +3062,7 @@ function workspaceDisplayName(path) {
             )}
 
             {/* 存入成功 → iOS 确认窗:去查看我的卡牌 / 暂不 */}
-            {savedConfirm && (
-              // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by real buttons inside the card
-              // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
+            {savedConfirm && browserOverlayPublicationReady && (
               <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,.4)' }} onClick={() => setSavedConfirm(null)}>
                 {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by real buttons inside the card */}
                 {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
@@ -2568,7 +3088,7 @@ function workspaceDisplayName(path) {
                 和 loopback OpenAI-compatible 端点允许无鉴权。unavailable 同样需拦截:macOS 上用户在 Keychain
                 授权弹窗点"拒绝"时 credential_state 变 unavailable(见 prefs.rs:785),
                 此时不盖遮罩用户仍可发消息 → 命中 Keychain 错误,与 missing 同等后果。 */}
-            {shouldShowApiKeyGate(bs, currentView, bridge.available) && (
+            {apiKeyGateOpen && browserOverlayPublicationReady && (
               <div className="fixed inset-0 z-[57] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}>
                 <div className="w-full max-w-[400px] rounded-2xl p-6 ts-modal-in"
                      style={{ background: activeTheme === 'dark' ? '#1E1F20' : '#FFFFFF', color: activeTheme === 'dark' ? '#E3E3E3' : '#1F1F1F', boxShadow: '0 12px 48px rgba(0,0,0,.35)' }}>
@@ -2586,9 +3106,7 @@ function workspaceDisplayName(path) {
             )}
 
             {/* MegaCube(GB10) 本地大模型一键引导 —— 全局首屏弹窗;引导中禁止背景关窗 */}
-            {can('localModelSetup') && bs && bs.vllmSetup && bs.vllmSetup.eligible && !bs.vllmSetupDismissed && (
-              // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by real buttons inside the dialog
-              // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
+            {vllmSetupModalOpen && browserOverlayPublicationReady && (
               <div className="fixed inset-0 z-[56] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}
                    onClick={() => { if (!bs.vllmBootstrapping) bridge.vllm.dismissVllmSetup(); }}>
                 {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by real buttons inside the dialog */}
@@ -2650,9 +3168,7 @@ function workspaceDisplayName(path) {
             )}
 
             {/* Pinvou 检阅弹窗(品/悟) —— 居中弹窗 + 毛玻璃背景(虚化身后 app);全局,任何视图都能弹;点背景或卡内「跳过」关闭 */}
-            {bs && bs.pinvouModal && (
-              // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the top-right close button (a real button below)
-              // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
+            {bs && bs.pinvouModal && browserOverlayPublicationReady && (
               <div className="fixed inset-0 z-[55] flex items-center justify-center p-6"
                    style={{ background: activeTheme === 'dark' ? 'rgba(0,0,0,.45)' : 'rgba(255,255,255,.35)', backdropFilter: 'blur(20px) saturate(140%)', WebkitBackdropFilter: 'blur(20px) saturate(140%)' }}
                    onClick={() => { if (!bs.pinvouModal.loading) bridge.interaction.dismissPinvouReview(); }}>
@@ -2676,8 +3192,92 @@ function workspaceDisplayName(path) {
               </div>
             )}
 
+            </div>
+            {browserDockAvailable && browserPaneOpen
+              && (browserActive || browserWorkspaceStarting || browserWorkspaceError) && (
+              <RightDockPanel
+                panelId="browser"
+                visible={browserPaneAllowed && browserPaneSelected}
+                activationKey={browserDockActivationKey}
+                className={`overflow-hidden border-l ${
+                  activeTheme === 'dark' ? 'border-[#2A2B2E] bg-[#101113]' : 'border-[#E5E7EB] bg-white'
+                }`}
+                dataTestId="browser-side-pane"
+              >
+                <div
+                  className={`flex h-9 shrink-0 items-center justify-between border-b px-3 text-[13px] ${
+                    activeTheme === 'dark' ? 'border-[#2A2B2E] text-[#E8E8E8]' : 'border-[#E5E7EB] text-[#222]'
+                  }`}
+                >
+                  <span className="truncate">{t.browser}</span>
+                  <div className="flex items-center gap-1">
+                    <div
+                      ref={setBrowserOwnershipSlot}
+                      className="contents"
+                      data-browser-control-slot="ownership"
+                    />
+                    <button
+                      type="button"
+                      className={`rounded p-1 ${activeTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}
+                      title={t.browserPaneClose}
+                      aria-label={t.browserPaneClose}
+                      onClick={() => {
+                        const selectedSessionId = browserSessionIdRef.current;
+                        closeBrowserDock(selectedSessionId);
+                      }}
+                    >
+                      <XIcon size={15} />
+                    </button>
+                  </div>
+                </div>
+                <div className="min-h-0 flex-1">
+                  {browserActive ? (
+                    <BrowserView
+                      key={browserViewSessionId}
+                      theme={activeTheme}
+                      t={t}
+                      sessionId={browserViewSessionId}
+                      nativeSurfaceSuspended={browserSurfaceSuspended}
+                      ownershipSlot={browserOwnershipSlot}
+                    />
+                  ) : (
+                    <div
+                      className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-[13px]"
+                      data-testid="browser-workspace-starting"
+                      style={{ color: activeTheme === 'dark' ? '#B8B8B8' : '#555' }}
+                    >
+                      <Globe size={28} style={{ opacity: 0.45 }} />
+                      <div>{browserWorkspaceStarting ? t.browserLoading : t.browserError}</div>
+                      {browserWorkspaceError && (
+                        <>
+                          <div style={{ opacity: 0.7, wordBreak: 'break-word' }}>{browserWorkspaceError}</div>
+                          <button
+                            type="button"
+                            onClick={openBrowserDock}
+                            className={`rounded-full px-4 py-2 font-medium ${
+                              activeTheme === 'dark'
+                                ? 'bg-[#A8C7FA] text-[#062E6F] hover:bg-[#B8D2FA]'
+                                : 'bg-[#0B57D0] text-white hover:bg-[#0842A0]'
+                            }`}
+                          >
+                            {t.browserRetry}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </RightDockPanel>
+            )}
+            <RightDockHost
+              resizeLabel={t.uiMultiAgent.panelResize}
+              resizeHint={t.uiMultiAgent.panelResizeHint}
+              onResizeActiveChange={setBrowserResizeActive}
+            />
           </div>
           </div>
+          </RightDockProvider>
+          </SidePanelLayoutProvider>
 
           {isCompactShell && (
             <MobileTabBar theme={activeTheme} tabs={[
@@ -2698,10 +3298,12 @@ function workspaceDisplayName(path) {
             ]} />
           )}
 
-          {isCompactShell && mobileMoreOpen && (
+          {isCompactShell && mobileMoreOpen && browserOverlayPublicationReady && (
             <MobileMoreSheet theme={activeTheme} title={t.mobileMore} onClose={() => setMobileMoreOpen(false)} items={[
               { key: 'search', label: t.searchChats, icon: <Search size={18} />,
                 active: currentView === 'search', onClick: () => mobileNavigate('search') },
+              ...(browserActive ? [{ key: 'browser', label: t.browser, icon: <Globe size={18} />,
+                active: currentView === 'browser', onClick: () => mobileNavigate('browser') }] : []),
               ...(SCHEDULED_TASKS_ENTRY_ENABLED ? [{ key: 'scheduled', label: t.scheduledPlans, icon: <Clock size={18} />,
                 active: currentView === 'scheduled', dot: scheduledUnread,
                 onClick: () => mobileNavigate('scheduled') }] : []),

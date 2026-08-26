@@ -8,6 +8,30 @@ pub(crate) struct DesktopCapabilities {
     pub(crate) task_completion_notifications_default: bool,
     pub(crate) local_vllm_supported: bool,
     pub(crate) codex_acp_supported: bool,
+    pub(crate) browser_native_display: bool,
+    pub(crate) browser_agent_automation: bool,
+    pub(crate) browser_cdp: bool,
+}
+
+/// macOS BrowserCore 的唯一正式发布开关。真机 E2E 完成前保持 `false`；验收构建
+/// 使用非默认 Cargo feature `browser-macos-preview`，不得改动生产默认值。
+const MACOS_BROWSER_RELEASED: bool = false;
+
+fn browser_product_enabled_for(os: &str, macos_preview: bool) -> bool {
+    match os {
+        "windows" | "linux" => true,
+        "macos" => MACOS_BROWSER_RELEASED || macos_preview,
+        _ => false,
+    }
+}
+
+/// 内嵌浏览器产品能力的单一语义门控。Runtime MCP、原生工作区与公开 capability
+/// 必须共同消费此函数，避免出现 Agent 有工具但 UI 没有画板的半开放状态。
+pub(crate) fn browser_product_enabled() -> bool {
+    browser_product_enabled_for(
+        std::env::consts::OS,
+        cfg!(feature = "browser-macos-preview"),
+    )
 }
 
 pub(crate) fn current() -> DesktopCapabilities {
@@ -22,6 +46,11 @@ pub(crate) fn current() -> DesktopCapabilities {
         task_completion_notifications_default: !cfg!(target_os = "linux"),
         local_vllm_supported: cfg!(target_os = "linux"),
         codex_acp_supported: supports_codex_acp(std::env::consts::OS),
+        // 显示与 Agent 自动化原子开放：二者不能分别按平台 cfg 声明，否则模型可能
+        // 获得工具而用户看不到同一个页面。macOS 验收构建也走同一语义 helper。
+        browser_native_display: browser_product_enabled(),
+        browser_agent_automation: browser_product_enabled(),
+        browser_cdp: cfg!(target_os = "windows"),
     }
 }
 
@@ -62,6 +91,15 @@ mod tests {
             capabilities.codex_acp_supported,
             supports_codex_acp(std::env::consts::OS)
         );
+        assert_eq!(
+            capabilities.browser_native_display,
+            browser_product_enabled()
+        );
+        assert_eq!(
+            capabilities.browser_agent_automation,
+            browser_product_enabled()
+        );
+        assert_eq!(capabilities.browser_cdp, is_windows());
     }
 
     #[test]
@@ -70,5 +108,17 @@ mod tests {
         assert!(supports_codex_acp("windows"));
         assert!(supports_codex_acp("macos"));
         assert!(!supports_codex_acp("android"));
+    }
+
+    #[test]
+    fn browser_product_gate_matches_release_and_preview_semantics() {
+        assert!(browser_product_enabled_for("windows", false));
+        assert!(browser_product_enabled_for("linux", false));
+        assert_eq!(
+            browser_product_enabled_for("macos", false),
+            MACOS_BROWSER_RELEASED
+        );
+        assert!(browser_product_enabled_for("macos", true));
+        assert!(!browser_product_enabled_for("android", true));
     }
 }

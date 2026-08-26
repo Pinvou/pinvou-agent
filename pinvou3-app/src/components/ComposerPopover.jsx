@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { isWeb } from '../shared/platform.js';
+import { useRightDockOcclusion } from './layout/RightDock.jsx';
 
 // 四个输入框下拉菜单（工具 / 知识库 / 模型 / 模式）共用的面板视觉。定位随平台不同，
 // 外观一致，抽出来避免四处复制。
@@ -87,11 +88,15 @@ function useOutsidePointerClose(open, onClose, insideRefs) {
 // portal 到 <body> 并按触发按钮真实屏幕位置锚定。`desktopClassName` 是各菜单原有的桌面
 // 定位样式，移动端统一用 POPOVER_SURFACE + 计算出的 inline 定位。
 const ComposerPopover = ({ open, onClose, triggerRef, compact, desktopClassName, menuProps, children }) => {
+  const popoverId = useId();
+  // 系统 child WebView 位于 React 合成层之上；菜单打开时必须通过共享 Dock
+  // 遮挡协议先隐藏原生表面，否则全屏 click-away 层在浏览器区域无法收到点击。
+  const publicationReady = useRightDockOcclusion(`composer-popover-${popoverId}`, open);
   const anchored = isWeb && compact;
   const style = useAnchoredPosition(open, triggerRef, anchored);
   const panelRef = useRef(null);
-  useOutsidePointerClose(open && !anchored, onClose, [panelRef, triggerRef]);
-  if (!open) return null;
+  useOutsidePointerClose(open && publicationReady && !anchored, onClose, [panelRef, triggerRef]);
+  if (!open || !publicationReady) return null;
   if (!anchored) {
     return (
       <div {...menuProps} ref={panelRef} className={desktopClassName}>{children}</div>
@@ -105,7 +110,7 @@ const ComposerPopover = ({ open, onClose, triggerRef, compact, desktopClassName,
           menu items inside the panel, so this is a non-interactive element. */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: pointer-only outside-click dismiss layer; keyboard path handled by the trigger button and panel buttons */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-only outside-click dismiss layer, non-interactive container */}
-      <div className="fixed inset-0 z-40" onClick={onClose}></div>
+      <div data-testid="composer-popover-backdrop" className="fixed inset-0 z-40" onClick={onClose}></div>
       <div {...menuProps} style={style || { position: 'fixed', visibility: 'hidden' }} className={`fixed ${POPOVER_SURFACE}`}>
         {children}
       </div>

@@ -350,7 +350,8 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("timeout-minutes: 120", rust_test)
         self.assertIn(
             'RUSTFLAGS: "-C link-arg=-fuse-ld=lld '
-            '-C link-arg=-Wl,--thinlto-jobs=1"',
+            '-C link-arg=-Wl,--thinlto-jobs=1 '
+            '-C link-arg=-Wl,--threads=1"',
             rust_test,
         )
 

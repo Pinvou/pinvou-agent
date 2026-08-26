@@ -100,6 +100,28 @@ mod libc {
     }
 }
 
+/// Return whether a path is a regular file the current platform can execute.
+/// Unix discovery must not advertise a chmod 0644 placeholder as a usable
+/// runtime; Windows execution permission is represented by ACLs/file type and
+/// is ultimately enforced by process creation.
+pub(crate) fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReplaceState {
     Committed,
@@ -200,6 +222,17 @@ pub(crate) fn recover_interrupted_replace(
 /// 要么是新完整内容，永无中间态。失败清理按替换终态区分（对齐
 /// artifacts 版）：不得把装着旧完整内容的恢复候选一并删掉。
 pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
+    atomic_write_impl(path, content, false)
+}
+
+/// 与 `atomic_write` 相同的替换语义，但临时文件从创建起即使用私密权限。
+/// 用于包含密钥或无鉴权本地端口信息的配置，避免 Unix 上在 rename 前出现
+/// umask 默认权限窗口；Windows 继续依赖用户目录 ACL。
+pub(crate) fn atomic_write_private(path: &Path, content: &[u8]) -> io::Result<()> {
+    atomic_write_impl(path, content, true)
+}
+
+fn atomic_write_impl(path: &Path, content: &[u8], private: bool) -> io::Result<()> {
     use std::io::Write as _;
 
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -219,10 +252,14 @@ pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
     let backup = parent.join(format!(".{file_name}.bak-{token}"));
 
     let stage_result = (|| -> io::Result<()> {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
+        let mut file = if private {
+            create_secret_file(&tmp)?
+        } else {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)?
+        };
         file.write_all(content)?;
         file.sync_all()?;
         drop(file);
@@ -1179,7 +1216,7 @@ fn reserved_target_is_unchanged_impl(_file: &File, path: &Path) -> bool {
 pub(crate) mod tests {
     use std::path::Path;
 
-    use super::atomic_write;
+    use super::{atomic_write, atomic_write_private, is_executable_file};
     #[cfg(any(
         windows,
         target_os = "macos",
@@ -1344,6 +1381,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn executable_file_check_rejects_directories_and_unix_non_executable_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-executable-file-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("runtime");
+        std::fs::write(&file, b"runtime").unwrap();
+        assert!(!is_executable_file(&dir));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(!is_executable_file(&file));
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(is_executable_file(&file));
+        }
+        #[cfg(not(unix))]
+        assert!(is_executable_file(&file));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn atomic_write_round_trips_content() {
         let dir = std::env::temp_dir().join(format!("pinvou3-atomic-write-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1374,6 +1438,36 @@ pub(crate) mod tests {
             })
             .collect();
         assert!(leftover.is_empty(), "leftover files: {leftover:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn private_atomic_write_replaces_existing_content() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-private-atomic-write-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("secret.json");
+
+        atomic_write_private(&path, b"old").expect("initial private write");
+        atomic_write_private(&path, b"new").expect("replace private write");
+        assert_eq!(std::fs::read(&path).expect("read target"), b"new");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&path)
+                    .expect("target metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

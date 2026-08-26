@@ -12,6 +12,9 @@ pub fn current_system_locale() -> Option<String> {
         .filter(|locale| !locale.trim().is_empty())
 }
 
+// Unix 通用 helper 从 posix.rs 继承（与 linux 侧同一份实现，见 posix.rs）。
+pub use super::super::posix::process_alive;
+
 /// 校验路径存在且至少有一个可执行位(owner/group/other 任一有 x bit)。
 /// 与 Linux 侧 `which` 自带的可执行性校验对齐:`command_exists` 此前只调
 /// `Path::is_file()`,若目录里有同名但无执行权限的残留文件(手动 touch、
@@ -145,6 +148,12 @@ pub fn email_manual_hint() -> Option<&'static str> {
 /// Mac 无 NVIDIA 驱动。
 pub fn nvidia_smi_candidates() -> Vec<&'static str> {
     Vec::new()
+}
+
+/// 随安装包捆绑的 node：macOS 复用 codex-bridge 运行时 node（无捆绑时 None，
+/// 消费方回退系统 PATH 探测）。
+pub fn bundled_node() -> Option<PathBuf> {
+    crate::platform::paths::bundled_connector_node()
 }
 
 pub fn libreoffice_tool_path() -> PathBuf {

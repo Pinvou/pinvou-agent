@@ -3,7 +3,7 @@
 //! 与 detach.rs 的撕离窗口平行——撕离是"通用面板搬家"(带边框、可缩放、落位最大化),
 //! 桌宠语义完全相反(固定小窗 + 透明 + 置顶),故独立成模块,不复用 detached kind。
 //! 动画状态由前端 pet 窗口自己监听全局 `chat:*` 事件驱动,Rust 侧只管窗口生命周期。
-//! 注意:pet 窗口的 JS 端 IPC 权限在 capabilities/default.json 的 windows 里登记,
+//! 注意：pet WebView 的 JS 端 IPC 权限在 capabilities/default.json 的 webviews 里登记，
 //! 漏掉会导致 listen/startDragging 全部静默被拒(宠物不动、拖不了)。
 
 use serde::{Deserialize, Serialize};

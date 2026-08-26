@@ -7,6 +7,21 @@
 
 use super::*;
 
+#[cfg(target_os = "linux")]
+fn find_webkit_webdriver() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("PINVOU3_WEBKIT_WEBDRIVER_BIN")
+        .map(PathBuf::from)
+        .filter(|path| crate::platform::filesystem::is_executable_file(path))
+    {
+        return Some(path);
+    }
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .map(|directory| directory.join("WebKitWebDriver"))
+        .find(|candidate| crate::platform::filesystem::is_executable_file(candidate))
+}
+
 #[derive(Debug, Clone)]
 pub struct Pinvou3Bundle {
     pub root: PathBuf,
@@ -584,20 +599,36 @@ impl Pinvou3Bundle {
                 .unwrap()
                 .insert("servers".into(), serde_json::json!({}));
         }
-        let servers = mcp["servers"].as_object_mut().unwrap();
-        // 迁移:旧版 server key 是 `pinvou`(与产品名 `pinvou3` 差一个 3,模型采样必漂成
-        // pinvou3 → `Failed to find MCP server: pinvou3`)。改用 `pinvou3` 对齐产品名,并删掉
-        // 旧 `pinvou` 条目——upsert 不会自动删旧名,不删会留两个指向同一脚本的 server。
-        servers.remove("pinvou");
         // Windows 用内置 pythonw(无窗口 + 自带依赖);其他平台系统 python3。见 paths::python_command。
         let python_cmd = paths::python_command();
-        servers.insert(
-            "pinvou3".to_string(),
-            serde_json::json!({
-                "command": python_cmd.clone(),
-                "args": [present_server.to_string_lossy()]
-            }),
-        );
+        {
+            let servers = mcp["servers"].as_object_mut().unwrap();
+            // 迁移:旧版 server key 是 `pinvou`(与产品名 `pinvou3` 差一个 3,模型采样必漂成
+            // pinvou3 → `Failed to find MCP server: pinvou3`)。改用 `pinvou3` 对齐产品名,并删掉
+            // 旧 `pinvou` 条目——upsert 不会自动删旧名,不删会留两个指向同一脚本的 server。
+            servers.remove("pinvou");
+            servers.insert(
+                "pinvou3".to_string(),
+                serde_json::json!({
+                    "command": python_cmd.clone(),
+                    "args": [present_server.to_string_lossy()]
+                }),
+            );
+            // 浏览器 MCP（工作模式 Agent 操作应用内原生 WebView）**不注册到全局 mcp.json**：
+            // 门控语义是「只有工作模式会话暴露 browser 工具」。仅清理本应用历史残留
+            // 的 browser 条目（command 指向 browser-wrapper.mjs）；用户自配的同名 MCP
+            // server（如 playwright-mcp）不属于本应用，必须保留——无条件删除会在每次
+            // 启动时静默摧毁用户配置。browser 条目由 `work_mode_mcp_config_path` 在
+            // assistant 引擎会话启动时注入会话专用 mcp 文件
+            // （`~/.pinvou3/browser/mcp.work.json`）。
+            let remove_browser_residue = servers
+                .get("browser")
+                .map(is_browser_wrapper_residue)
+                .unwrap_or(false);
+            if remove_browser_residue {
+                servers.remove("browser");
+            }
+        }
         self.refresh_mcp_python_commands(&mut mcp, &python_cmd)?;
         let json = serde_json::to_string_pretty(&mcp).map_err(std::io::Error::other)?;
         // 写回前与现有文件比对:内容一致则跳过写盘(避免每次启动重写 mcp.json)。
@@ -617,6 +648,269 @@ impl Pinvou3Bundle {
         }
         let existing = std::fs::read_to_string(&self.mcp_json).unwrap_or_default();
         serde_json::from_str(&existing).unwrap_or_else(|_| serde_json::json!({"servers": {}}))
+    }
+
+    /// 在 Windows、Linux 与 macOS 生成统一的 `browser` MCP server 条目（不写盘，由
+    /// [`Self::work_mode_mcp_config_path`] 注入工作模式会话专用 mcp.json）。
+    /// macOS/Linux 使用应用自有 BrowserCore，不读取开发环境中的
+    /// `PINVOU3_CDMCP_BIN`，也不允许外部 Chrome 冒充内置页面。Windows 前置条件：
+    /// 1. vendor 的 chrome-devtools-mcp 入口存在（打包资源，或 `PINVOU3_CDMCP_BIN` 覆盖）；
+    /// 2. node 运行时可用（随包捆绑 node 优先，回退系统 PATH node）；
+    /// 3. wrapper 脚本已释放到 `~/.pinvou3/bundle/mcp-servers/`。
+    /// 任一不满足 → None（工作模式会话回退全局配置，模型拿不到浏览器工具）。
+    pub fn browser_mcp_entry(&self) -> Option<serde_json::Value> {
+        self.browser_mcp_entry_for_session(None)
+    }
+
+    /// 未开放平台没有 Agent 自动化后端，环境变量和本地残留都不得
+    /// 绕过 capability 注册 browser MCP。
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    fn browser_mcp_entry_for_session(
+        &self,
+        _session_id: Option<&str>,
+    ) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// Linux and macOS use the same agent-facing wrapper and host-request
+    /// protocol as Windows, but BrowserCore executes directly against the
+    /// task-owned system WebView. Neither platform packages nor starts Chrome
+    /// MCP; only Linux additionally needs WebKitWebDriver for trusted input.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn browser_mcp_entry_for_session(&self, session_id: Option<&str>) -> Option<serde_json::Value> {
+        if !crate::platform::capabilities::browser_product_enabled() {
+            return None;
+        }
+        #[cfg(target_os = "linux")]
+        find_webkit_webdriver()?;
+        let node = crate::platform::os::bundled_node().or_else(find_system_node)?;
+        let wrapper = paths::bundle_browser_wrapper();
+        if !wrapper.is_file() {
+            return None;
+        }
+        let cdp_port_json = paths::browser_cdp_port_json();
+        let mut env = serde_json::json!({ "CI": "1" });
+        if let Some(session_id) = session_id {
+            env["PINVOU3_BROWSER_SESSION_ID"] = serde_json::json!(session_id);
+            env["PINVOU3_BROWSER_SESSION_TOKEN"] =
+                serde_json::json!(paths::browser_session_token(session_id));
+        }
+        Some(serde_json::json!({
+            "command": node,
+            "args": [
+                wrapper.to_string_lossy(),
+                "@pinvou/browser-core",
+                cdp_port_json.to_string_lossy(),
+            ],
+            "env": env,
+        }))
+    }
+
+    /// 生成绑定到单个工作会话的 browser MCP 条目。Windows wrapper 使用这里
+    /// 注入的会话身份请求对应 WebView2，并在连接 chrome-devtools-mcp 后锁定
+    /// 该页面；不同会话仍共享同一个 WebView2 Profile（Cookie/登录态）。
+    #[cfg(target_os = "windows")]
+    fn browser_mcp_entry_for_session(&self, session_id: Option<&str>) -> Option<serde_json::Value> {
+        if !crate::platform::capabilities::browser_product_enabled() {
+            return None;
+        }
+        let mcp_bin = std::env::var_os("PINVOU3_CDMCP_BIN")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_file())
+            .or_else(paths::bundled_chrome_devtools_mcp_bin)?;
+        let node = crate::platform::os::bundled_node().or_else(find_system_node)?;
+        // Windows 的 Tauri resource_dir 可能返回 `\\?\C:\...` verbatim 路径。
+        // Node 把这种形式作为入口脚本参数时会错误地只解析到盘符并以 EISDIR 退出；
+        // 所有交给外部进程的可执行文件/脚本路径统一降为平台兼容形式。
+        let mcp_bin = crate::platform::os::platform_compat_path(&mcp_bin.to_string_lossy());
+        let node = crate::platform::os::platform_compat_path(&node.to_string_lossy());
+        let wrapper = paths::bundle_browser_wrapper();
+        if !wrapper.is_file() {
+            return None;
+        }
+        let wrapper = crate::platform::os::platform_compat_path(&wrapper.to_string_lossy());
+        let cdp_port_json = crate::platform::os::platform_compat_path(
+            &paths::browser_cdp_port_json().to_string_lossy(),
+        );
+        let mut env = serde_json::json!({
+            // 离线双保险（wrapper 也自带这些参数/env）
+            "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS": "1",
+            "CI": "1"
+        });
+        if let Some(session_id) = session_id {
+            env["PINVOU3_BROWSER_SESSION_ID"] = serde_json::json!(session_id);
+            env["PINVOU3_BROWSER_SESSION_TOKEN"] =
+                serde_json::json!(paths::browser_session_token(session_id));
+        }
+        Some(serde_json::json!({
+            "command": node,
+            "args": [
+                wrapper.to_string_lossy(),
+                mcp_bin.to_string_lossy(),
+                cdp_port_json.to_string_lossy(),
+            ],
+            "env": env
+        }))
+    }
+
+    /// 浏览器能力不可用的静态原因（模型可见）。None = 前置条件齐备，不注入。
+    /// 只做静态判定：vendor chrome-devtools-mcp / node / wrapper
+    /// 存在性，以及 wrapper 记录的最近一次动态启动失败（`last-error.json`，
+    /// 24h 内新鲜）。动态失败（原生宿主/CDP 未就绪）发生在会话建立之后，
+    /// 当次会话读不到，由 instructions §浏览器能力 的通用兜底指引覆盖；重开会话
+    /// 时此处能读到上次原因，模型可据此精确引导用户。
+    pub fn browser_unavailability_reason(&self) -> Option<String> {
+        if !crate::platform::capabilities::browser_product_enabled() {
+            return Some(
+                "浏览器工具(`mcp_browser_*`)在当前产品构建中尚未开放；不要改用外部浏览器或截图流。"
+                    .to_string(),
+            );
+        }
+        let mut missing: Vec<&str> = Vec::new();
+        #[cfg(target_os = "windows")]
+        if std::env::var_os("PINVOU3_CDMCP_BIN")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_file())
+            .is_none()
+            && paths::bundled_chrome_devtools_mcp_bin().is_none()
+        {
+            missing.push(
+                "内置的 chrome-devtools-mcp 运行时未就绪(安装包自带,开发环境需先执行 vendor 构建)",
+            );
+        }
+        #[cfg(target_os = "linux")]
+        if find_webkit_webdriver().is_none() {
+            missing.push("WebKitWebDriver 不可用（请安装 webkit2gtk-driver）");
+        }
+        if crate::platform::os::bundled_node().is_none() && find_system_node().is_none() {
+            missing.push("node 运行时不可用");
+        }
+        if !paths::bundle_browser_wrapper().is_file() {
+            missing.push("浏览器 wrapper 脚本未释放");
+        }
+        // 内置浏览器只使用应用持有的系统 WebView；任何平台都不得静默回退到
+        // 外部 Chrome。尚未开放的平台明确不可用。
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+        missing.push("当前平台的应用内原生浏览器自动化后端尚未就绪");
+        if !missing.is_empty() {
+            return Some(format!(
+                "浏览器工具(`mcp_browser_*`)当前不可用:{}。需要浏览器时,请按上述原因说明，不要改用外部浏览器或截图流。",
+                missing.join("; ")
+            ));
+        }
+        // 最近一次动态启动失败(原生宿主启动失败/CDP 未就绪等),24h 内新鲜才提示。
+        let Ok(raw) = std::fs::read_to_string(paths::browser_last_error_json()) else {
+            return None;
+        };
+        let Ok(state) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            return None;
+        };
+        let reason = state.get("reason").and_then(|r| r.as_str()).unwrap_or("");
+        let at = state.get("at").and_then(|t| t.as_i64()).unwrap_or(0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if reason.is_empty() || now.saturating_sub(at) > 24 * 3600 {
+            return None;
+        }
+        Some(format!(
+            "浏览器工具(`mcp_browser_*`)上次启动失败:{reason}。若用户需要浏览器,请引导其重开会话重试。"
+        ))
+    }
+
+    /// 工作模式（assistant 引擎）会话的 mcp 配置路径：
+    /// 全局 mcp.json + browser 条目（条件满足时），原子写到
+    /// `~/.pinvou3/browser/mcp.work.json` 后返回该路径。条件不满足且用户占用了
+    /// 保留名 `browser` 时仍生成会话副本，将其改名为 `browser_user[_N]`，避免
+    /// 外部工具冒充应用内浏览器；全局配置保持原样。多工作模式会话并发重建同一
+    /// 文件，内容确定、tmp+rename 幂等。
+    pub fn work_mode_mcp_config_path(&self) -> PathBuf {
+        self.write_work_mode_mcp_config(None)
+    }
+
+    /// 对话级工作模式 MCP 配置：内容与全局工作模式配置相同，但 browser wrapper
+    /// 带有该对话身份。每个 Engine 因而拥有独立的工具路由上下文，不会因另一个
+    /// 对话切页而改操作对象。
+    pub fn work_mode_mcp_config_path_for_session(&self, session_id: &str) -> PathBuf {
+        self.write_work_mode_mcp_config(Some(session_id))
+    }
+
+    fn write_work_mode_mcp_config(&self, session_id: Option<&str>) -> PathBuf {
+        let base = self.mcp_json.clone();
+        let browser_entry = self.browser_mcp_entry_for_session(session_id);
+        // 解析失败（用户手改坏 / 并发读到半截 JSON）或合法但非 object（如 `[]`）
+        // 都回落全局配置而不是捏造空配置继续：空配置会让本会话丢失全部
+        // marketplace 工具、只剩 browser，且完全静默；非 object 往下走
+        // `as_object_mut().unwrap()` 会直接 panic。回落只是少了 browser 工具，
+        // 全局侧口径不受影响。
+        let mcp: serde_json::Value = match std::fs::read_to_string(&base)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        {
+            Some(v) if v.is_object() => v,
+            _ => return base,
+        };
+        let has_reserved_browser = mcp
+            .get("servers")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|servers| servers.contains_key("browser"));
+        if browser_entry.is_none() && !has_reserved_browser {
+            return base;
+        }
+        let work_path = session_id.map_or_else(paths::browser_work_mcp_json, |session_id| {
+            paths::browser_session_mcp_json(session_id)
+        });
+        let mut obj = mcp;
+        if obj.get("servers").and_then(|s| s.as_object()).is_none() {
+            obj.as_object_mut()
+                .unwrap()
+                .insert("servers".into(), serde_json::json!({}));
+        }
+        // `browser` 是工作会话中 Pinvou 内嵌浏览器的保留名。用户自配的同名
+        // server（如 playwright-mcp）只在会话副本中确定性改名为 browser_user、
+        // browser_user_2...；全局 mcp.json 原样不动。这样 Agent 的
+        // `mcp_browser_*` 永远路由到同一套 Pinvou Browser MCP，同时用户工具仍以
+        // `mcp_browser_user[_N]_*` 保留。本应用历史 wrapper 残留则直接清理。即使
+        // 内置后端当前不可用也必须保留该命名边界，不能让用户 server 以
+        // `mcp_browser_*` 冒充应用内同页浏览器。
+        let servers = obj["servers"].as_object_mut().unwrap();
+        if let Some(browser_entry) = browser_entry {
+            install_work_mode_browser_server(servers, browser_entry);
+        } else {
+            reserve_work_mode_browser_server_name(servers);
+        }
+        if let Some(parent) = work_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+            // 工作模式会话建立先于原生浏览器宿主启动（后者才收紧 0700）：常见路径下
+            // browser/ 会长期保持 umask 默认权限，创建后立刻收紧，与
+            // 原生宿主生命周期同口径（文件本身均 0600，这里是目录列表级卫生）。
+            crate::platform::os::make_private_dir(parent);
+        }
+        match serde_json::to_string_pretty(&obj) {
+            Ok(json) => {
+                // 内容未变跳过重写：每次 spawn 会话（含随后回落全局的 code 会话）
+                // 都会走到这里，相同内容还做原子替换是纯无效磁盘写放。
+                if std::fs::read_to_string(&work_path)
+                    .map(|existing| existing == json)
+                    .unwrap_or(false)
+                {
+                    return work_path;
+                }
+                // 内容含全局 mcp.json 完整副本（可能带用户自配 server 的密钥
+                // env）：创建即收紧 0600，并允许 Windows 原子覆盖已有配置。
+                if crate::platform::filesystem::atomic_write_private(&work_path, json.as_bytes())
+                    .is_ok()
+                {
+                    return work_path;
+                }
+                // 写失败降级：仍返回专用路径会让引擎拉到旧文件或缺文件，
+                // 不如直接退回全局配置（无 browser 工具，功能侧降级而非报错）。
+                base
+            }
+            // 序列化失败（obj 为 Value 实际不会失败）按写失败同口径回落。
+            Err(_) => base,
+        }
     }
 
     /// 启动自愈:`mcp.json` 里本地 python server 的 `command` 是**安装时写死**的,老条目
@@ -760,6 +1054,27 @@ impl Pinvou3Bundle {
         // 旧 manifest 不再是唯一明文救援副本，可删。
         for spec in crate::features::marketplace::mcp_catalog::MCP_PACKAGES {
             let _ = std::fs::remove_dir_all(dir.join(spec.id));
+        }
+        // 浏览器 MCP wrapper(零依赖 node,stdin/stdout 是 MCP 协议;wrapper 由 node 直接执行,
+        // 不依赖可执行位；内容不变时不重写，实际写入后再补 Unix 可执行位)
+        let wrapper = paths::bundle_browser_wrapper();
+        let wrapper_written = self.write_if_changed(&wrapper, BROWSER_WRAPPER_MJS)?;
+        #[cfg(not(unix))]
+        let _ = wrapper_written;
+        self.write_if_changed(
+            &dir.join("browser-wrapper-protocol.mjs"),
+            BROWSER_WRAPPER_PROTOCOL_MJS,
+        )?;
+        self.write_if_changed(
+            &dir.join("browser-core-protocol.mjs"),
+            BROWSER_CORE_PROTOCOL_MJS,
+        )?;
+        #[cfg(unix)]
+        if wrapper_written {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perm = std::fs::metadata(&wrapper)?.permissions();
+            perm.set_mode(0o755);
+            std::fs::set_permissions(&wrapper, perm)?;
         }
         Ok(())
     }

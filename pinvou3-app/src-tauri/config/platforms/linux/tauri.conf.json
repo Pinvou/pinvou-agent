@@ -13,7 +13,8 @@
         "postInstallScript": "packaging/linux/deb/scripts/postinst.sh",
         "preRemoveScript": "packaging/linux/deb/scripts/prerm.sh",
         "depends": [
-          "libwebkit2gtk-4.1-0 (>= 2.40)"
+          "libwebkit2gtk-4.1-0 (>= 2.40)",
+          "webkit2gtk-driver"
         ],
         "recommends": [
           "poppler-utils",

@@ -697,9 +697,11 @@ jobs:
       #   - lld:link 阶段处理 LLVM bitcode(lld 原生支持,BFD ld 不支持)。
       #   - --thinlto-jobs=1:避免多个 ThinLTO backend 并行把 16GB runner
       #     推过内存峰值并导致 hosted runner 与 GitHub 失联。
+      #   - --threads=1:lld 的最终链接也限制为单线程；BrowserCore 扩大测试二进制后，
+      #     仅限制 ThinLTO backend 仍会在最终链接阶段耗尽 hosted runner 内存。
       # 不设 codegen-units:dev 默认 256,对 test 改动最小(不影响 release 的 codegen=1)。
       CARGO_PROFILE_DEV_LTO: "thin"
-      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1"
     # dev profile 的 line-tables-only 已固化进 Cargo.toml [profile.dev],不再需要
     # CARGO_PROFILE_DEV_DEBUG 环境变量。
     steps:
