@@ -1063,6 +1063,17 @@ pub fn import_plugin_package(
     if let Err(e) = super::store::BundleStore::new().upsert_preserving(record) {
         log::warn!("[plugin-import] bundles.json 镜像写入失败（import {id}）: {e}");
     }
+    // 导入即重基线：包内容整体替换后，旧包的 SKILL.md 说明备份（存于 extra，
+    // upsert_preserving 原样保留）随之失效——不清掉会让「清覆盖恢复」把**旧包**
+    // 的原描述写进新包（口径同 skill_marketplace::import_package_named）。三条
+    // UI 上传通道（选文件/拖 zip/拖 .md）都汇聚在这条统一导入路径上；首装无
+    // 备份时不写，避免无谓 churn。
+    let store = super::store::BundleStore::new();
+    if matches!(store.skill_desc_backup(&id), Ok(Some(_))) {
+        if let Err(e) = store.set_skill_desc_backup(&id, None) {
+            log::warn!("[plugin-import] 清理说明备份失败（import {id}）: {e}");
+        }
+    }
 
     Ok(PluginImportReport {
         id,
@@ -1308,6 +1319,97 @@ mod tests {
             Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
             // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 统一导入路径（三条 UI 上传通道的汇聚点）重导入时必须重基线 SKILL.md 说明
+    /// 备份：导入 v1 → 设说明（备份 orig1）→ 按文档建议删包目录后导入 v2 →
+    /// 旧备份必须被丢弃，清覆盖后恢复的是 v2 的 orig2，而非旧包的 orig1
+    /// （重基线修复最初只落在遗留路径 import_package_named 上，UI 全走不到）。
+    #[test]
+    fn unified_reimport_rebaselines_skill_description_backup() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-unified-rebaseline-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        let make_zip = |path: &std::path::Path, desc: &str| {
+            let f = std::fs::File::create(path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("my-skill/SKILL.md", opts).unwrap();
+            zw.write_all(format!("---\nname: greet\ndescription: {desc}\n---\n# hi").as_bytes())
+                .unwrap();
+            zw.finish().unwrap();
+        };
+        make_zip(&dir.join("v1.zip"), "orig1");
+
+        let report =
+            import_plugin_package(&dir.join("v1.zip").to_string_lossy(), "v1.zip").unwrap();
+        assert_eq!(report.id, "greet");
+        let store = crate::features::marketplace::store::BundleStore::new();
+        assert!(
+            store.skill_desc_backup("greet").unwrap().is_none(),
+            "首装不应有备份"
+        );
+
+        // 设展示说明：单技能包回写 SKILL.md + 备份原值 orig1
+        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+            .update_display_meta("greet", None, Some("new desc"))
+            .unwrap();
+        assert_eq!(
+            store.skill_desc_backup("greet").unwrap().as_deref(),
+            Some("orig1"),
+            "首次回写应备份原值"
+        );
+
+        // 文档 §12 的换版路径：删除包目录（保留登记）后重导入 v2（内容不同）
+        let _ = std::fs::remove_dir_all(dir.join("bundles").join("greet"));
+        make_zip(&dir.join("v2.zip"), "orig2");
+        let report =
+            import_plugin_package(&dir.join("v2.zip").to_string_lossy(), "v2.zip").unwrap();
+        assert_eq!(report.id, "greet");
+
+        // 重基线断言（回归点）：旧包备份必须被丢弃，展示覆盖本身按语义保留
+        assert_eq!(
+            store.skill_desc_backup("greet").unwrap(),
+            None,
+            "统一导入重导入必须重基线说明备份（旧包备份恢复进新包=数据损坏）"
+        );
+        assert_eq!(
+            crate::features::marketplace::store::display_override(
+                &store.get("greet").unwrap().unwrap(),
+                crate::features::marketplace::store::EXTRA_DISPLAY_DESCRIPTION
+            )
+            .as_deref(),
+            Some("new desc"),
+            "展示覆盖按既定语义跨重导入保留"
+        );
+
+        // 清覆盖：无备份 → 不动文件，SKILL.md 保持 v2 的 orig2（而非被恢复成 orig1）
+        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+            .update_display_meta("greet", None, Some(""))
+            .unwrap();
+        let md = std::fs::read_to_string(dir.join("bundles/greet/skills/greet/SKILL.md")).unwrap();
+        assert!(
+            md.contains("description: orig2"),
+            "SKILL.md 应保持新包原值: {md}"
+        );
+        assert!(!md.contains("orig1"), "旧包原值不得被恢复进新包: {md}");
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

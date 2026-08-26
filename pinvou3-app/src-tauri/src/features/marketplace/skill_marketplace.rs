@@ -1874,10 +1874,12 @@ fn replace_top_level_description(
                     replaced = true;
                     i += 1;
                     // 块状：续行 = 空行或缩进行（与读端消费口径一致），遇顶层字段
-                    // 结束。起始 `|`/`>` 一律算（含 |- >- |+ >+ chomping 变体与
-                    // 缩进指示符；平摊解析器只认六个变体，但顶层标量后跟缩进内容
-                    // 在真实 YAML 里本就只能是块，一并消费使两种读法都得到新值）。
-                    if rest.starts_with('|') || rest.starts_with('>') {
+                    // 结束。判定与引擎/读端同口径：**六个精确标记**。`|2` 这类带
+                    // 缩进指示符的写法对引擎是普通值，其缩进续行是独立平铺键
+                    // （里面可以有引擎可见的 `name:`）——按前缀匹配去消费会把
+                    // 这些键一并吞掉，轻则技能静默改名、重则缺 name 被引擎整包
+                    // 拒收；不消费时它们留在原位，平铺 last-wins 语义不受影响。
+                    if is_engine_block_marker(rest) {
                         while i < fm_end {
                             let l = lines[i];
                             if !l.trim().is_empty() && l.len() == l.trim_start().len() {
@@ -1984,8 +1986,9 @@ fn remove_frontmatter_description(content: &str) -> Result<String, String> {
                 let rest = t[colon + 1..].trim();
                 if key.eq_ignore_ascii_case("description") {
                     i += 1;
-                    // 块状续行一并删除（口径同 rewrite_frontmatter_description）
-                    if rest.starts_with('|') || rest.starts_with('>') {
+                    // 块状续行一并删除（口径同 rewrite_frontmatter_description：
+                    // 六个精确标记才消费，`|2` 续行是引擎可见的独立键，不动）
+                    if is_engine_block_marker(rest) {
                         while i < fm_end {
                             let l = lines[i];
                             if !l.trim().is_empty() && l.len() == l.trim_start().len() {
@@ -2017,6 +2020,15 @@ fn remove_frontmatter_description(content: &str) -> Result<String, String> {
         return Err("SKILL.md 删行结果与读取口径互洽校验失败（内部不一致），拒绝落盘".to_string());
     }
     Ok(s)
+}
+
+/// 引擎块标量判定：**六个精确变体**（`|`/`>` 及其 `-`/`+` chomping），与
+/// `parse_skill` 的精确匹配、读端 [`read_skill_description_from_str`] 的
+/// `is_block_scalar` 同口径。`|2` 等带缩进指示符的写法对引擎是**普通值**，
+/// 其缩进续行是独立平铺键（可含引擎可见的 `name:`）——写端消费旧 description
+/// 块续行前必须用本判定，前缀匹配会把这类续行误吞。
+fn is_engine_block_marker(value: &str) -> bool {
+    matches!(value, ">" | "|" | ">-" | ">+" | "|-" | "|+")
 }
 
 /// 行视图（第一个整行 `---` 边界内）的顶层 `description:` 行数——写端口径的
@@ -3781,6 +3793,46 @@ mod tests {
         }
     }
 
+    /// 带缩进指示符的块标记（`|2`）对引擎是**普通值**，其缩进续行是独立平铺键
+    /// ——里面可以有引擎可见的 `name:`。写端按前缀匹配消费续行会把这些键一并
+    /// 吞掉：轻则技能静默改名（name 落回前面的顶层值），重则 name 只存在于
+    /// 续行里、消费后引擎整包拒收（技能消失）。必须只对六个精确标记消费续行。
+    #[test]
+    fn rewrite_keeps_indent_indicator_continuations_as_flat_keys() {
+        // name 在续行里 last-wins 生效（引擎口径）——消费续行会让 name 落回
+        // "real"（静默改名）
+        let md = "---\nname: real\ndescription: |2\n  name: flat-wins\n---\n# hi";
+        let out = rewrite_frontmatter_description(md, "新描述").unwrap();
+        assert!(
+            out.contains("  name: flat-wins"),
+            "缩进指示符续行是引擎可见的平铺键，不得被消费: {out}"
+        );
+        assert_eq!(
+            out.match_indices("name:").count(),
+            2,
+            "两个 name 键都必须保留"
+        );
+        assert_eq!(
+            read_skill_description_from_str(&out).as_deref(),
+            Some("新描述")
+        );
+
+        // name 只存在于续行里（引擎接受）——消费续行会让 SKILL.md 缺 name、
+        // 引擎整包拒收。删行恢复（清覆盖空哨兵）同样不得消费。
+        let md_only = "---\ndescription: |2\n  name: in-continuation\n---\n# hi";
+        let out = rewrite_frontmatter_description(md_only, "新描述").unwrap();
+        assert!(
+            out.contains("  name: in-continuation"),
+            "不得吞掉唯一 name: {out}"
+        );
+        let out_rm = remove_frontmatter_description(&out).unwrap();
+        assert!(
+            out_rm.contains("  name: in-continuation"),
+            "删行恢复同样不得消费缩进指示符续行: {out_rm}"
+        );
+        assert_eq!(read_skill_description_from_str(&out_rm), None);
+    }
+
     /// 嵌套 map 的缩进 `description:` 行不在原位替换（会破坏嵌套结构）：
     /// 顶层新行插在 frontmatter 末尾——平摊解析（CodeWhale）重复键 last-wins，
     /// 插在嵌套行之前会被盖回旧值。嵌套行原样保留。
@@ -4012,6 +4064,79 @@ mod tests {
             md_before,
             "无备份的清覆盖不得动文件"
         );
+    }
+
+    /// 清覆盖恢复的两个手改分支（此前零测试钉住）：备份存续期间用户手工改过
+    /// SKILL.md 的 description——(a) 改回备份原值 → 跳过重写只清备份 key；
+    /// (b) 改成第三值 → 恢复以备份为准覆盖手改（文档 §12 明示语义）。
+    #[test]
+    fn restore_skips_rewrite_when_hand_edited_back_and_overwrites_third_value() {
+        let setup = |tag: &str| {
+            let tmp = fresh_dir(tag);
+            let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+            let skill_dir = tmp.join("bundles/rb2-skill/skills/rb2-skill");
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            std::fs::write(
+                skill_dir.join("SKILL.md"),
+                "---\nname: rb2-skill\ndescription: 原描述\n---\n",
+            )
+            .unwrap();
+            let store = crate::features::marketplace::store::BundleStore::with_file(
+                tmp.join("bundles.json"),
+            );
+            store
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "rb2-skill",
+                        crate::features::marketplace::store::BundleSource::Upload(
+                            "pkg.zip".to_string(),
+                        ),
+                    ),
+                )
+                .unwrap();
+            mgr.update_display_meta("rb2-skill", None, Some("覆盖描述"))
+                .unwrap();
+            (tmp, mgr, skill_dir, store)
+        };
+
+        // (a) 手改回备份原值：文件已是目标态，恢复应跳过重写（字节不变）只清 key。
+        // mgr 持有 ENV_LOCK 守卫（with_roots 语义），场景结束必须显式 drop 再进
+        // 下一场景，否则第二个 setup 的 with_roots 永久等锁。
+        {
+            let (_tmp_a, mgr_a, skill_dir_a, store_a) = setup("restore_hand_back");
+            let md_a = std::fs::read_to_string(skill_dir_a.join("SKILL.md")).unwrap();
+            let hand_back = md_a.replace("description: 覆盖描述", "description: 原描述");
+            std::fs::write(skill_dir_a.join("SKILL.md"), &hand_back).unwrap();
+            mgr_a
+                .update_display_meta("rb2-skill", None, Some(""))
+                .unwrap();
+            assert_eq!(
+                std::fs::read_to_string(skill_dir_a.join("SKILL.md")).unwrap(),
+                hand_back,
+                "手改回原值后清覆盖不得重写文件（no-op 路径）"
+            );
+            assert!(store_a.skill_desc_backup("rb2-skill").unwrap().is_none());
+        }
+
+        // (b) 手改成第三值：恢复以备份为准，覆盖手改
+        {
+            let (_tmp_b, mgr_b, skill_dir_b, store_b) = setup("restore_hand_third");
+            let md_b = std::fs::read_to_string(skill_dir_b.join("SKILL.md")).unwrap();
+            std::fs::write(
+                skill_dir_b.join("SKILL.md"),
+                md_b.replace("description: 覆盖描述", "description: 手改的第三值"),
+            )
+            .unwrap();
+            mgr_b
+                .update_display_meta("rb2-skill", None, Some(""))
+                .unwrap();
+            let md_b = std::fs::read_to_string(skill_dir_b.join("SKILL.md")).unwrap();
+            assert!(
+                md_b.contains("description: 原描述") && !md_b.contains("手改的第三值"),
+                "手改第三值时恢复应以备份原值覆盖: {md_b}"
+            );
+            assert!(store_b.skill_desc_backup("rb2-skill").unwrap().is_none());
+        }
     }
 
     /// 原本没有 description 的单技能包：回写备份空串哨兵，清覆盖删行恢复缺失态。
