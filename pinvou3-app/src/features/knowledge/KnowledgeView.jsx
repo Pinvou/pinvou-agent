@@ -174,6 +174,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
           delete cache[oldest];
           keys = keys.slice(1);
         }
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- MAX_OUT_PREVIEW_CACHE*/outPreviewValueBytes are render-invariant; listing them would churn the callback identity every render
       }, []);
       const outPreviewQueue = useRef({ active: 0, jobs: [] });
       const runQueuedPreview = useCallback((job) => new Promise((resolve, reject) => {

@@ -878,7 +878,7 @@
       // unbounded accumulation across historical sessions (~5MB shared
       // quota).
       if (id && reason === "delete" && window.localStorage) {
-        try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch (_) {}
+        try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch { /* localStorage may be unavailable or full; the key is a cache and its loss is non-fatal */ }
       }
     },
     runSyncOnSession, persistMessagesFor,

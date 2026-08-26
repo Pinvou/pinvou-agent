@@ -5,6 +5,7 @@ import {
   useReducer,
   useRef,
   useState,
+  memo,
 } from 'react';
 import { createPetActivationState, loadActivePet } from './pet-active.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -158,7 +159,7 @@ function sameActivities(prev, next) {
   return true;
 }
 
-const PetActivityBody = React.memo(function PetActivityBody({ text, expanded = false }) {
+const PetActivityBody = memo(function PetActivityBody({ text, expanded = false }) {
   const source = String(text || '');
   const className = expanded
     ? 'pet-activity-body pet-activity-body-expanded'

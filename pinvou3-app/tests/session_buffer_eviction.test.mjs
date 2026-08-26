@@ -91,7 +91,7 @@ function loadTauriSessionsFeature(overrides) {
     addSystemItem(text) { state.chatItems.push({ type: 'system', text }); },
     addChatItem(item) { state.chatItems.push(item); },
     timeStr() { return ''; },
-    invoke(name, args) {
+    invoke(name) {
       calls.invoke.push(name);
       return Promise.resolve({});
     },

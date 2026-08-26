@@ -1047,7 +1047,7 @@
     delete scheduledRunSessionOwners[id];
     // The scene-events localStorage key is cleaned together with session deletion, avoiding unbounded accumulation across historical sessions.
     if (window.localStorage) {
-      try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch (_) {}
+      try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch { /* localStorage may be unavailable or full; the key is a cache and its loss is non-fatal */ }
     }
     if (state.scheduledRunContext && state.scheduledRunContext.sessionId === id) {
       state.scheduledRunContext = null;
