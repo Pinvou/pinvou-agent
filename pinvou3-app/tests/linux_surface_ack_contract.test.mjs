@@ -64,3 +64,28 @@ test('host visibility state changes only after physical hide succeeds', () => {
     /pub fn browser_hide_native_surface[\s\S]{0,300}-> Result<\(\), String>[\s\S]{0,240}mgr\.hide_native_surface/,
   );
 });
+
+test('failed fresh-overlay attach leaves the child WebView reattachable', () => {
+  // attach_widget's fresh-overlay path must not detach the task WebView before
+  // install_overlay commits: install_overlay can still fail its parent-changed
+  // guard, and a detached child would fail every retry at the "no GTK parent
+  // container" guard, permanently losing the surface. The reattach path above
+  // (find_overlay_host → remove+put) is safe because the overlay already
+  // exists, so pin only the fresh-overlay segment after it.
+  const attachStart = linuxSurface.indexOf('fn attach_widget(');
+  const prepareStart = linuxSurface.indexOf('fn prepare_main_widget(', attachStart);
+  assert.notStrictEqual(attachStart, -1, 'attach_widget not found');
+  assert.notStrictEqual(prepareStart, -1, 'prepare_main_widget not found after attach_widget');
+  const attach = linuxSurface.slice(attachStart, prepareStart);
+  const freshAt = attach.indexOf('let children = vbox.children();');
+  assert.notStrictEqual(freshAt, -1, 'fresh-overlay segment not found');
+  const fresh = attach.slice(freshAt);
+  const installAt = fresh.indexOf('let fixed = install_overlay(&vbox, &main_widget, main_index)?;');
+  const removeAt = fresh.indexOf('vbox.remove(native);');
+  assert.notStrictEqual(installAt, -1, 'fresh-overlay install call not found');
+  assert.notStrictEqual(removeAt, -1, 'fresh-overlay detach not found');
+  assert.ok(
+    installAt < removeAt,
+    'attach must detach the child WebView only after install_overlay succeeds',
+  );
+});

@@ -6080,10 +6080,13 @@ fn write_hosted_response(request_path: &std::path::Path, response: &Value) -> Re
         std::fs::create_dir_all(parent).map_err(|error| {
             format!("Failed to create browser host response directory: {error}")
         })?;
+        // The response carries the opaque tab lease; keep other local users
+        // from reading it while it exists. Same pattern as the Prepare journal.
+        crate::platform::os::make_private_dir(parent);
     }
     let encoded = serde_json::to_vec(response)
         .map_err(|error| format!("Failed to encode browser host response: {error}"))?;
-    crate::platform::filesystem::atomic_write(&response_path, &encoded)
+    crate::platform::filesystem::atomic_write_private(&response_path, &encoded)
         .map_err(|error| format!("Failed to write browser host response: {error}"))
 }
 
@@ -6505,6 +6508,9 @@ fn reset_host_request_directory_for_process_start(
         .map_err(|error| {
             format!("Failed to create current-process browser host request directory: {error}")
         })?;
+    // Request files carry session tokens and opaque leases; tighten at creation
+    // instead of relying on a later browser_home sweep to chmod it.
+    crate::platform::os::make_private_dir(request_dir);
 
     if let Some(quarantine) = quarantined {
         let cleanup = match std::fs::symlink_metadata(&quarantine) {

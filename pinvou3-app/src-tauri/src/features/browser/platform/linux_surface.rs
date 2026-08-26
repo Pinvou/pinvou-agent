@@ -200,8 +200,13 @@ fn attach_widget(native: &webkit2gtk::WebView) -> Result<gtk::Fixed, String> {
         .map(|(index, child)| (index, child.clone()))
         .ok_or_else(|| "Main app WebView was not found; cannot create overlay".to_string())?;
 
-    vbox.remove(native);
+    // install_overlay's only failure path (parent-changed guard) runs before it
+    // mutates anything, so detaching native only after it succeeded keeps the
+    // failed attach retryable: native still has its GTK parent for the next
+    // attempt. Removing native first would strand it parentless and make every
+    // retry fail at the "no GTK parent container" guard above.
     let fixed = install_overlay(&vbox, &main_widget, main_index)?;
+    vbox.remove(native);
     fixed.put(native, 0, 0);
     native.set_size_request(1, 1);
     Ok(fixed)

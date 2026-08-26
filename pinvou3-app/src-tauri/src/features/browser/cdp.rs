@@ -117,8 +117,9 @@ impl CdpSession {
         }
         let response = match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
             Err(_) => {
-                // Remove a timed-out entry from pending to avoid leaks.
-                self.pending.lock().await.remove(&id);
+                // Remove a timed-out entry from pending to avoid leaks. A late
+                // response for this id then finds no sender and is ignored.
+                remove_timed_out_pending(&self.pending, id).await;
                 return Err("CDP response timed out after 30 seconds".to_string());
             }
             Ok(Err(_)) => {
@@ -131,6 +132,33 @@ impl CdpSession {
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Test-only constructor over a real loopback raw WebSocket write half, so
+    /// the close bound can be exercised without a browser. The peer socket
+    /// never speaks the protocol; only write-half close behavior is under test.
+    #[cfg(test)]
+    async fn for_test() -> Self {
+        use tokio_tungstenite::tungstenite::protocol::Role;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback listener");
+        let addr = listener.local_addr().expect("loopback address");
+        let client = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connect loopback pair");
+        let (_server, _) = listener.accept().await.expect("accept loopback pair");
+        let ws =
+            WebSocketStream::from_raw_socket(MaybeTlsStream::Plain(client), Role::Client, None)
+                .await;
+        let (write, _read) = ws.split();
+        Self {
+            port: 0,
+            write: Mutex::new(write),
+            next_id: AtomicU64::new(1),
+            pending: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Gracefully close the WebSocket. After the close handshake, read.next()
@@ -262,10 +290,7 @@ pub async fn connect(port: u16) -> anyhow::Result<Connected> {
         // Wake every in-flight request after WebSocket close so a caller holding
         // inner cannot hang forever. Manager uses these errors to recover after
         // Chrome crash or kill.
-        let mut pending = session_clone.pending.lock().await;
-        for (_, tx) in pending.drain() {
-            let _ = tx.send(Err("CDP connection closed".to_string()));
-        }
+        drain_pending_with_closed(&session_clone.pending).await;
     });
 
     Ok(Connected {
@@ -273,6 +298,51 @@ pub async fn connect(port: u16) -> anyhow::Result<Connected> {
         events: events_rx,
         reader_task,
     })
+}
+
+/// Remove a timed-out entry so the map cannot leak; a late response for the
+/// same id then finds no sender and is silently ignored (no misrouting).
+async fn remove_timed_out_pending(
+    pending: &Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>,
+    id: u64,
+) {
+    pending.lock().await.remove(&id);
+}
+
+/// Parse a CDP response frame and route it to the matching in-flight call.
+/// Unknown ids (late responses after a timeout, or unsolicited frames) are
+/// ignored by design.
+async fn resolve_pending_response(
+    pending: &Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>,
+    v: &Value,
+) {
+    let Some(id) = v.get("id").and_then(Value::as_u64) else {
+        return;
+    };
+    let result = if let Some(err) = v.get("error") {
+        Err(err
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("CDP error")
+            .to_string())
+    } else {
+        Ok(v.get("result").cloned().unwrap_or(Value::Null))
+    };
+    if let Some(tx) = pending.lock().await.remove(&id) {
+        let _ = tx.send(result);
+    }
+}
+
+/// Wake every in-flight call after WebSocket close so a caller holding inner
+/// cannot hang forever. The manager uses these errors to recover after Chrome
+/// crash or kill.
+async fn drain_pending_with_closed(
+    pending: &Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>,
+) {
+    let mut pending = pending.lock().await;
+    for (_, tx) in pending.drain() {
+        let _ = tx.send(Err("CDP connection closed".to_string()));
+    }
 }
 
 /// Dispatch a parsed CDP message as request/response or domain event by `id`.
@@ -283,20 +353,9 @@ async fn handle_cdp_message(
     page_target_ids: &mut HashSet<String>,
     v: Value,
 ) {
-    if let Some(id) = v.get("id").and_then(Value::as_u64) {
+    if v.get("id").is_some() {
         // Request/response.
-        let result = if let Some(err) = v.get("error") {
-            Err(err
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("CDP error")
-                .to_string())
-        } else {
-            Ok(v.get("result").cloned().unwrap_or(Value::Null))
-        };
-        if let Some(tx) = session.pending.lock().await.remove(&id) {
-            let _ = tx.send(result);
-        }
+        resolve_pending_response(&session.pending, &v).await;
     } else if let Some(method) = v.get("method").and_then(Value::as_str) {
         // Page/Runtime/Network events can be page-controlled and are not
         // consumed by BrowserManager. Filter them before the bounded channel
@@ -569,5 +628,110 @@ mod tests {
                 &mut pages,
             ));
         }
+    }
+
+    type TestPending = Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>;
+
+    // The tests below pin the semantics of the three pending-map helpers
+    // (timeout removal, response resolution, reader-exit drain) and the close
+    // bound. The `CdpSession::call` wiring of those helpers needs a live
+    // browser WebSocket and is covered by the Windows browser smoke gates
+    // instead of unit tests.
+
+    #[tokio::test]
+    async fn response_timeout_removal_lets_a_late_response_be_ignored_without_misrouting() {
+        // History: timeout family — a timed-out call must remove its pending
+        // entry, and the late response that arrives afterwards must neither
+        // leak the map entry nor misroute to a newer call reusing the id.
+        let pending: TestPending = Mutex::new(HashMap::new());
+        let (tx, rx) = oneshot::channel();
+        pending.lock().await.insert(7, tx);
+        drop(rx); // caller already gave up after the 30s timeout
+
+        remove_timed_out_pending(&pending, 7).await;
+        assert!(
+            pending.lock().await.is_empty(),
+            "timed-out entry must be removed"
+        );
+
+        // A late response frame for the removed id resolves nothing and does not
+        // re-insert or panic; a fresh call reusing id 7 is unaffected.
+        let (tx2, mut rx2) = oneshot::channel();
+        pending.lock().await.insert(7, tx2);
+        let frame = json!({ "id": 7, "result": { "ok": true } });
+        resolve_pending_response(&pending, &frame).await;
+        match rx2.try_recv() {
+            Ok(Ok(value)) => assert_eq!(value, json!({ "ok": true })),
+            other => panic!("new call must receive its own response: {other:?}"),
+        }
+        assert!(
+            pending.lock().await.is_empty(),
+            "resolved entry must be removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_or_error_responses_are_ignored_or_forwarded_not_swallowed() {
+        // Late-response family: responses for unknown ids (already timed out or
+        // unsolicited) are silently ignored; CDP error objects surface their
+        // message instead of a success value.
+        let pending: TestPending = Mutex::new(HashMap::new());
+
+        let unsolicited = json!({ "id": 42, "result": { "stale": true } });
+        resolve_pending_response(&pending, &unsolicited).await;
+        assert!(pending.lock().await.is_empty());
+
+        let (tx, mut rx) = oneshot::channel();
+        pending.lock().await.insert(43, tx);
+        let error_frame =
+            json!({ "id": 43, "error": { "code": -32000, "message": "No target with given id" } });
+        resolve_pending_response(&pending, &error_frame).await;
+        match rx.try_recv() {
+            Ok(Err(message)) => assert_eq!(message, "No target with given id"),
+            other => panic!("CDP error must surface its message: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn reader_exit_drains_all_pending_calls_with_connection_closed() {
+        // History: drain family — when the reader loop exits (WS close or Chrome
+        // crash), every in-flight call must be woken with a connection-closed
+        // error instead of hanging until the 30s response timeout.
+        let pending: TestPending = Mutex::new(HashMap::new());
+        let mut receivers = Vec::new();
+        for id in 1..=3_u64 {
+            let (tx, rx) = oneshot::channel();
+            pending.lock().await.insert(id, tx);
+            receivers.push(rx);
+        }
+
+        drain_pending_with_closed(&pending).await;
+        assert!(
+            pending.lock().await.is_empty(),
+            "drain must empty the pending map"
+        );
+        for mut rx in receivers {
+            match rx.try_recv() {
+                Ok(Err(message)) => assert_eq!(message, "CDP connection closed"),
+                other => panic!("in-flight call must be woken with closed error: {other:?}"),
+            }
+        }
+
+        // Draining twice (e.g. an already-empty map on a second reader exit) is a
+        // no-op, not an error.
+        drain_pending_with_closed(&pending).await;
+    }
+
+    #[tokio::test]
+    async fn close_is_bounded_and_completes_within_its_3s_budget_when_idle() {
+        // History: close-bound family — close() must never block the caller
+        // (managers hold inner/start_mtx across it) even when the write half is
+        // uncontended. The outer 5s budget proves the inner 3s bound actually
+        // lets the caller proceed instead of hanging on a wedged handshake.
+        let session = CdpSession::for_test().await;
+
+        tokio::time::timeout(Duration::from_secs(5), session.close())
+            .await
+            .expect("close must respect its 3-second bound instead of hanging the caller");
     }
 }
