@@ -45,6 +45,18 @@ const linuxAutomation = readFileSync(
   ),
   'utf8',
 );
+const linuxSurface = readFileSync(
+  path.join(
+    projectRoot,
+    'src-tauri',
+    'src',
+    'features',
+    'browser',
+    'platform',
+    'linux_surface.rs',
+  ),
+  'utf8',
+);
 const browserPaths = readFileSync(
   path.join(projectRoot, 'src-tauri', 'src', 'platform', 'paths.rs'),
   'utf8',
@@ -105,6 +117,24 @@ test('浏览器展示层只承载原生表面，不订阅连续截图流', () =>
   assert.doesNotMatch(browserManager, /browser:frame/);
   assert.doesNotMatch(cdpClient, /Page\.screencastFrame/);
   assert.doesNotMatch(cdpClient, /Page\.screencastFrameAck/);
+});
+
+test('Linux 子 WebView 使用 fixed overlay 限定侧栏区域并在布局失败时保持隐藏', () => {
+  assert.match(nativePlatform, /#\[cfg\(target_os = "linux"\)\]\s*mod linux_surface;/);
+  assert.match(nativePlatform, /linux_surface::attach\(webview\)/);
+  assert.match(nativePlatform, /linux_surface::show\(webview, bounds\)/);
+  assert.match(nativePlatform, /linux_surface::prepare\(&main_webview\)/);
+  assert.match(nativeHost, /super::attach_native_surface\(&webview\)/);
+  assert.match(nativeHost, /super::show_native_surface\(&webview, workspace\.bounds\)/);
+  assert.match(linuxSurface, /gtk::Overlay::new\(\)/);
+  assert.match(linuxSurface, /gtk::Fixed::new\(\)/);
+  assert.match(linuxSurface, /overlay\.add_overlay\(&fixed\)/);
+  assert.match(linuxSurface, /fixed\.put\(native, 0, 0\)/);
+  assert.match(linuxSurface, /fixed\.move_\(native, logical\.x, logical\.y\)/);
+  assert.match(linuxSurface, /native\.set_size_request\(logical\.width, logical\.height\)/);
+  assert.match(linuxSurface, /let scale = f64::from\(native\.scale_factor\(\)\)/);
+  assert.match(linuxSurface, /native\.hide\(\);[\s\S]{0,180}Linux 原生浏览器表面显示失败/);
+  assert.doesNotMatch(linuxSurface, /\.show_all\(/);
 });
 
 test('Windows MCP 同时开启 pageId 路由与结构化 targetId 输出', () => {

@@ -17,6 +17,9 @@ mod linux;
 #[cfg(target_os = "linux")]
 mod linux_automation;
 
+#[cfg(target_os = "linux")]
+mod linux_surface;
+
 #[cfg(target_os = "macos")]
 mod macos;
 
@@ -276,6 +279,57 @@ fn classify_browser_core_binding_navigation(label: &str, url: &str) -> bool {
     }
 }
 
+/// Page-load callbacks are the authoritative main-document commit signal. The
+/// Linux WebDriver adapter briefly commits a private marker while recovering a
+/// handle; keep that exact implementation URL out of UI and persistence.
+fn is_browser_core_binding_url(url: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        return linux_automation::is_binding_marker_url(url);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = url;
+        false
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn attach_native_surface(webview: &tauri::Webview) -> Result<(), String> {
+    linux_surface::attach(webview)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn attach_native_surface(_webview: &tauri::Webview) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn show_native_surface(
+    webview: &tauri::Webview,
+    bounds: Option<super::NativeSurfaceBounds>,
+) -> Result<(), String> {
+    linux_surface::show(webview, bounds)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn show_native_surface(
+    webview: &tauri::Webview,
+    bounds: Option<super::NativeSurfaceBounds>,
+) -> Result<(), String> {
+    if let Some(bounds) = bounds {
+        webview
+            .set_bounds(tauri::Rect {
+                position: tauri::PhysicalPosition::new(bounds.x, bounds.y).into(),
+                size: tauri::PhysicalSize::new(bounds.width as u32, bounds.height as u32).into(),
+            })
+            .map_err(|error| format!("调整浏览器标签页位置失败: {error}"))?;
+    }
+    webview
+        .show()
+        .map_err(|error| format!("显示浏览器标签页失败: {error}"))
+}
+
 /// Prepare process-wide browser automation state before Tauri creates any
 /// WebKit context. Other platforms intentionally have no process hook.
 pub(crate) fn prepare_process_environment() {
@@ -298,6 +352,15 @@ pub(crate) fn install_automation_context(_app: &mut tauri::App) {
     #[cfg(target_os = "linux")]
     if let Err(error) = linux_automation::install_automation_context(_app) {
         eprintln!("[browser] Linux WebKit automation context unavailable: {error}");
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use tauri::Manager;
+        if let Some(main_webview) = _app.get_webview("main") {
+            if let Err(error) = linux_surface::prepare(&main_webview) {
+                eprintln!("[browser] Linux 原生浏览器 overlay 预初始化失败: {error}");
+            }
+        }
     }
 }
 

@@ -42,6 +42,13 @@ static AUTOMATION_CONTEXT_ERROR: OnceLock<String> = OnceLock::new();
 static DRIVER_RUNTIME: OnceLock<Arc<WebDriverRuntime>> = OnceLock::new();
 static WEBVIEW_BINDINGS: OnceLock<Mutex<HashMap<String, WebviewBinding>>> = OnceLock::new();
 
+pub(super) fn is_binding_marker_url(url: &str) -> bool {
+    url.strip_prefix(BINDING_MARKER_PREFIX)
+        .is_some_and(|nonce| {
+            nonce.len() == 64 && nonce.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+}
+
 #[derive(Clone)]
 struct WebviewBinding {
     /// Rotating, host-only challenge used solely to recover the WebDriver
@@ -1907,6 +1914,9 @@ mod tests {
         let marker = binding_marker_url(&rotated).expect("encode marker");
         assert!(!marker.as_str().contains(&first_label));
         assert_eq!(marker.as_str(), format!("{BINDING_MARKER_PREFIX}{rotated}"));
+        assert!(is_binding_marker_url(marker.as_str()));
+        assert!(!is_binding_marker_url(&format!("{marker}0")));
+        assert!(!is_binding_marker_url("about:blank"));
 
         unregister_webview_binding(&first_label);
         unregister_webview_binding(&second_label);

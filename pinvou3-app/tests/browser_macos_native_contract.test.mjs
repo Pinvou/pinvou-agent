@@ -60,6 +60,14 @@ const extraction = read(
   'extraction.rs',
 );
 const browser = read('src-tauri', 'src', 'features', 'browser', 'mod.rs');
+const nativeHost = read(
+  'src-tauri',
+  'src',
+  'features',
+  'browser',
+  'platform',
+  'host.rs',
+);
 const main = read('src', 'app', 'main.jsx');
 const normalMacBuildEntrypoints = [
   read('package.json'),
@@ -80,6 +88,24 @@ test('macOS BrowserCore evaluates async JSON in the exact WKWebView page world',
   assert.match(macos, /await \(async \(\) =>/);
   assert.match(macos, /JSON\.stringify/);
   assert.match(cargo, /objc2-web-kit[\s\S]{0,260}"WKWebView"/);
+});
+
+test('macOS 地址状态只由主文档 commit 发布，不把重定向或 iframe 请求当成已导航', () => {
+  const policyHandler = nativeHost.slice(
+    nativeHost.indexOf('.on_navigation'),
+    nativeHost.indexOf('.on_page_load'),
+  );
+  const pageLoadHandler = nativeHost.slice(
+    nativeHost.indexOf('.on_page_load'),
+    nativeHost.indexOf('.on_document_title_changed'),
+  );
+
+  assert.doesNotMatch(policyHandler, /emit\("browser:(?:navigation|tabs-changed)"/);
+  assert.match(pageLoadHandler, /payload\.event\(\) != PageLoadEvent::Started/);
+  assert.match(pageLoadHandler, /let committed_url = payload\.url\(\)\.as_str\(\)/);
+  assert.match(pageLoadHandler, /emit\("browser:navigation", &payload\)/);
+  assert.match(pageLoadHandler, /emit\("browser:tabs-changed", &payload\)/);
+  assert.match(pageLoadHandler, /is_browser_core_binding_url\(committed_url\)/);
 });
 
 test('macOS binding is host-authoritative and leaks no remote-page credential', () => {

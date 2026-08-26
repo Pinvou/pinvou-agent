@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::json;
 use tauri::{
-    webview::{DownloadEvent, NewWindowResponse},
+    webview::{DownloadEvent, NewWindowResponse, PageLoadEvent},
     Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewBuilder, WebviewUrl,
 };
 
@@ -2813,6 +2813,11 @@ fn build_webview<P: PlatformWebviewConfig>(
     let navigation_control = Arc::clone(&control);
     let publication = Arc::new(std::sync::atomic::AtomicBool::new(published));
     let navigation_publication = Arc::clone(&publication);
+    let committed_navigation_app = app.clone();
+    let committed_navigation_session_id = session_id.to_string();
+    let committed_navigation_tab_token = tab_token.to_string();
+    let committed_navigation_control = Arc::clone(&control);
+    let committed_navigation_publication = Arc::clone(&publication);
     let title_app = app.clone();
     let title_session_id = session_id.to_string();
     let title_tab_token = tab_token.to_string();
@@ -2935,40 +2940,51 @@ fn build_webview<P: PlatformWebviewConfig>(
                 );
                 return false;
             }
-            let displayed_url = sanitize_marker_url(url.to_string(), &navigation_tab_token);
-            let payload = json!({
-                "sessionId": navigation_session_id,
-                "tab": navigation_tab_token,
-                "url": displayed_url,
-            });
-            let _ = navigation_app.emit("browser:navigation", &payload);
-            let _ = navigation_app.emit("browser:tabs-changed", &payload);
-            if !internal_marker {
-                if let Some(snapshot) = navigation_control
-                    .bump_for_navigation_if_no_active_agent_operation()
-                {
-                    emit_control_changed(
-                        &navigation_app,
-                        &navigation_session_id,
-                        &navigation_tab_token,
-                        snapshot,
-                    );
-                }
-            }
-            // 导航回调可能在持有 native_surface 锁的 `navigate` 调用栈内同步触发，
-            // 不能在这里重入同一把锁。投递到下一轮后再从宿主 WebView 读取 URL 并
-            // 原子刷新恢复清单；即使应用崩溃，也不会依赖退出事件才保存页面。
-            if !internal_marker {
-                let persist_app = navigation_app.clone();
-                let persist_session_id = navigation_session_id.clone();
-                tauri::async_runtime::spawn(async move {
-                    let manager = persist_app.state::<super::super::BrowserManager>();
-                    if let Err(error) = manager.persist_native_restore(&persist_session_id) {
-                        eprintln!("[browser] 持久化页面导航失败: {error}");
-                    }
-                });
-            }
             true
+        })
+        .on_page_load(move |_webview, payload| {
+            // Wry's navigation-policy callback includes redirects and child
+            // frames on WKWebView. Only a committed main document is allowed
+            // to update the address bar, control revision and restore state.
+            if payload.event() != PageLoadEvent::Started
+                || !committed_navigation_publication.load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return;
+            }
+            let committed_url = payload.url().as_str();
+            if has_internal_marker_for_token(committed_url, &committed_navigation_tab_token)
+                || super::is_browser_core_binding_url(committed_url)
+            {
+                return;
+            }
+            let payload = json!({
+                "sessionId": committed_navigation_session_id,
+                "tab": committed_navigation_tab_token,
+                "url": committed_url,
+            });
+            let _ = committed_navigation_app.emit("browser:navigation", &payload);
+            let _ = committed_navigation_app.emit("browser:tabs-changed", &payload);
+            if let Some(snapshot) = committed_navigation_control
+                .bump_for_navigation_if_no_active_agent_operation()
+            {
+                emit_control_changed(
+                    &committed_navigation_app,
+                    &committed_navigation_session_id,
+                    &committed_navigation_tab_token,
+                    snapshot,
+                );
+            }
+            // Page-load delegates run on the native UI thread and may still be
+            // nested under WebView dispatch. Persist asynchronously to avoid
+            // re-entering the native_surface lock.
+            let persist_app = committed_navigation_app.clone();
+            let persist_session_id = committed_navigation_session_id.clone();
+            tauri::async_runtime::spawn(async move {
+                let manager = persist_app.state::<super::super::BrowserManager>();
+                if let Err(error) = manager.persist_native_restore(&persist_session_id) {
+                    eprintln!("[browser] 持久化页面导航失败: {error}");
+                }
+            });
         })
         .on_document_title_changed(move |_webview, title| {
             if !title_publication.load(std::sync::atomic::Ordering::SeqCst) {
@@ -3048,6 +3064,23 @@ fn build_webview<P: PlatformWebviewConfig>(
             }
             Err(close_error) => Err(WebviewBuildError::with_survivor(
                 format!("初始化隐藏浏览器标签页失败: {hide_error}; 补偿关闭失败: {close_error}"),
+                entry,
+            )),
+        };
+    }
+    if let Err(attach_error) = super::attach_native_surface(&webview) {
+        entry.unpublish();
+        return match webview.close() {
+            Ok(()) => {
+                super::unregister_browser_core_webview_binding(&entry.label);
+                Err(WebviewBuildError::new(format!(
+                    "初始化浏览器标签页原生容器失败: {attach_error}"
+                )))
+            }
+            Err(close_error) => Err(WebviewBuildError::with_survivor(
+                format!(
+                    "初始化浏览器标签页原生容器失败: {attach_error}; 补偿关闭失败: {close_error}"
+                ),
                 entry,
             )),
         };
@@ -3142,17 +3175,7 @@ fn show_active_workspace(app: &tauri::AppHandle, workspace: &Workspace) -> Resul
     let webview = app
         .get_webview(&entry.label)
         .ok_or_else(|| "当前浏览器标签页表面不存在".to_string())?;
-    if let Some(bounds) = workspace.bounds {
-        webview
-            .set_bounds(tauri::Rect {
-                position: PhysicalPosition::new(bounds.x, bounds.y).into(),
-                size: PhysicalSize::new(bounds.width as u32, bounds.height as u32).into(),
-            })
-            .map_err(|e| format!("调整浏览器标签页位置失败: {e}"))?;
-    }
-    webview
-        .show()
-        .map_err(|e| format!("显示浏览器标签页失败: {e}"))
+    super::show_native_surface(&webview, workspace.bounds)
 }
 
 fn reconcile_workspace_close(
