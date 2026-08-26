@@ -881,6 +881,23 @@ async function expand(page) {
     JSON.stringify(codexBatchArchive));
   await page.evaluate(() => document.querySelector('button[aria-label="取消"]')?.click());
 
+  // End of the codex block: opening a code session from the chat manager page enters
+  // code mode (sidebar style, collapsed nav, and New chat behavior all follow the mode).
+  // Later cases rely on the standard sidebar and chat view, so exit code mode explicitly
+  // to avoid polluting downstream assertions.
+  // The exit path must not open any existing normal session (case ③ relies on the first
+  // entry into 「第三季度财报分析」 rehydrating the Shell history card taskId from disk;
+  // pre-opening would route the second entry through the cache path): click 「新对话」
+  // into the code draft page first, then switch back to work mode via the
+  // HomeModeSwitcher — without touching any existing session.
+  await clickText(page, '新对话'); await sleep(500);
+  await page.evaluate(() => document.querySelector('[data-testid="home-mode-work"]')?.click());
+  await sleep(700);
+  const exitedCodeMode = await page.evaluate(() =>
+    document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') === 'chat'
+      && !document.querySelector('[data-testid="sidebar-primary-nav-expand"]'));
+  rec('①a-6 HomeModeSwitcher 切回工作模式退出 code 模式', exitedCodeMode, String(exitedCodeMode));
+
   // 模型表单可能包含尚未保存的名称、地址和密钥，点击遮罩层不能意外丢失草稿；
   // 只有显式点击“取消”才关闭。
   const modelModalOpened = await page.evaluate(() => {

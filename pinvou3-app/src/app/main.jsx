@@ -13,6 +13,7 @@ import { bridge, useBridgeState, usePlatformCapability, activeModelIsLocal, shou
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
+import { TEMPORARY_GROUP_KEY, groupSessionsByFolder } from '../shared/sidebar-grouping.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
@@ -574,6 +575,7 @@ function workspaceDisplayName(path) {
       }
 
       function handleActivateSkill(name) {
+        setCodeModeOn(false);
         setChatPrefill(t.skillPrefill(name));
         setCurrentView('chat');
       }
@@ -587,6 +589,10 @@ function workspaceDisplayName(path) {
         if (bs.activeSessionId !== activeChat) {
           setActiveChat(bs.activeSessionId);
           if (bs.activeSessionId && currentView !== 'codex' && currentView !== 'monitor' && currentView !== 'settings' && currentView !== 'search' && currentView !== 'scheduled') {
+            // An external session switch (web remote control, etc.) that materializes
+            // a normal chat view must exit code mode, otherwise the code sidebar and the
+            // codex-draft New chat behavior leak onto a regular session.
+            setCodeModeOn(false);
             setCurrentView('chat');
           }
         }
@@ -594,6 +600,9 @@ function workspaceDisplayName(path) {
         if (bs.composerPrefill && bs.composerPrefill.id && bs.composerPrefill.id !== composerPrefillSeenRef.current) {
           composerPrefillSeenRef.current = bs.composerPrefill.id;
           setChatPrefill(bs.composerPrefill.text || '');
+          // A composer prefill lands on the normal chat input: same rule — exit code
+          // mode before materializing the chat view.
+          setCodeModeOn(false);
           setCurrentView('chat');
         }
         if (SCHEDULED_TASKS_ENTRY_ENABLED && bs.scheduledTaskAutoOpenId && bs.scheduledTaskAutoOpenId !== scheduledTaskAutoOpenSeenRef.current) {
@@ -677,6 +686,7 @@ function workspaceDisplayName(path) {
       // HMR/旧前端状态可能仍停在已下线入口；立即回到仍可访问的视图。
       useEffect(() => {
         if (!SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled') {
+          setCodeModeOn(false);
           setCurrentView('chat');
         }
       }, [currentView]);
@@ -777,6 +787,8 @@ function workspaceDisplayName(path) {
           : t.uiCodex.temporarySession,
         date: formatSessionDate(session.updated_at || session.created_at, language),
         updatedAt: session.updated_at || session.created_at || '',
+        workspacePath: session.workspace_path || '',
+        workspaceKind: session.workspace_kind || '',
         pinned: !!session.pinned,
         pinnedAt: session.pinned_at || '',
         working: !!codexBusyBySession[session.id],
@@ -872,9 +884,109 @@ function workspaceDisplayName(path) {
       const taskFilterRef = useRef(null);
       // 日期组展开状态:未点过的组按默认值走(今天展开、以往折叠),点过后记住用户选择
       const [dateGroupOpen, setDateGroupOpen] = useState({});
+      // Code-style sidebar: enabled by default in code mode (folder grouping +
+      // collapsed primary nav); the bottom-right button switches back to the standard
+      // style. The choice is persisted and survives re-entering code mode.
+      const [sidebarCodeStyle, setSidebarCodeStyle] = useState(() => {
+        try {
+          return localStorage.getItem('pinvou_sidebar_code_style') === 'normal' ? 'normal' : 'code';
+        } catch {
+          return 'code';
+        }
+      });
+      const toggleSidebarCodeStyle = useCallback(() => {
+        setSidebarCodeStyle(prev => {
+          const next = prev === 'code' ? 'normal' : 'code';
+          try {
+            localStorage.setItem('pinvou_sidebar_code_style', next);
+          } catch {
+            // When the WebView disables storage, still allow switching for this window.
+          }
+          return next;
+        });
+      }, []);
+      // Folder group expand state: all expanded by default; once toggled, remember the choice
+      const [folderGroupOpen, setFolderGroupOpen] = useState({});
+      // In code style the primary nav collapses to a single row by default; expanding is
+      // remembered for the session (reset when code mode exits)
+      const [codeNavExpanded, setCodeNavExpanded] = useState(false);
+      // Code mode is a mode, not a page: after entering, navigating to output/monitor
+      // pages keeps code mode — the sidebar stays code-styled and New chat still creates
+      // code sessions; only explicitly switching back to work/design, or opening a normal
+      // chat session, exits it.
+      const [codeModeOn, setCodeModeOn] = useState(false);
+      const codeStyleActive = codeModeOn && sidebarCodeStyle === 'code';
+      // Exiting code mode resets the primary-nav collapse bar, so the next entry starts
+      // from the default collapsed form.
+      useEffect(() => {
+        if (!codeModeOn) setCodeNavExpanded(false);
+      }, [codeModeOn]);
       const [archiveConfirm, setArchiveConfirm] = useState(null);
       const [archiveToast, setArchiveToast] = useState(false);
       const [settingsToast, setSettingsToast] = useState('');
+
+      // Expanded sidebar width: drag the right edge to adjust (220~480px), double-click
+      // the handle to reset to default; the choice is persisted.
+      const SIDEBAR_WIDTH_DEFAULT = 280;
+      const SIDEBAR_WIDTH_MIN = 220;
+      const SIDEBAR_WIDTH_MAX = 480;
+      const clampSidebarWidth = (w) => Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, w));
+      const [sidebarWidth, setSidebarWidth] = useState(() => {
+        try {
+          const saved = Number(localStorage.getItem('pinvou_sidebar_width'));
+          return Number.isFinite(saved) && saved > 0 ? clampSidebarWidth(saved) : SIDEBAR_WIDTH_DEFAULT;
+        } catch {
+          return SIDEBAR_WIDTH_DEFAULT;
+        }
+      });
+      // Disable the width transition while dragging to avoid follow lag; the ref lets
+      // pointerup read the latest width for persistence.
+      const [sidebarResizing, setSidebarResizing] = useState(false);
+      const sidebarWidthRef = useRef(sidebarWidth);
+      const applySidebarWidth = (w) => {
+        sidebarWidthRef.current = w;
+        setSidebarWidth(w);
+      };
+      const beginSidebarResize = useCallback((event) => {
+        event.preventDefault();
+        const handle = event.currentTarget;
+        const startX = event.clientX;
+        const startWidth = sidebarWidthRef.current;
+        setSidebarResizing(true);
+        const onMove = (moveEvent) => {
+          applySidebarWidth(clampSidebarWidth(startWidth + moveEvent.clientX - startX));
+        };
+        const onUp = () => {
+          setSidebarResizing(false);
+          window.removeEventListener('pointermove', onMove);
+          window.removeEventListener('pointerup', onUp);
+          window.removeEventListener('pointercancel', onUp);
+          try {
+            localStorage.setItem('pinvou_sidebar_width', String(sidebarWidthRef.current));
+          } catch {
+            // When the WebView disables storage, the width applies only this once.
+          }
+        };
+        // Capture the pointer and listen for pointercancel so an interrupted drag
+        // (window blur / touch taken over by a system gesture) still settles; otherwise
+        // resizing sticks at true (transition permanently disabled) and listeners leak.
+        try {
+          handle.setPointerCapture(event.pointerId);
+        } catch {
+          // Fall back to window listeners when an old WebView does not support capture.
+        }
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+        window.addEventListener('pointercancel', onUp);
+      }, []);
+      const resetSidebarWidth = useCallback(() => {
+        applySidebarWidth(SIDEBAR_WIDTH_DEFAULT);
+        try {
+          localStorage.setItem('pinvou_sidebar_width', String(SIDEBAR_WIDTH_DEFAULT));
+        } catch {
+          // Same as above.
+        }
+      }, []);
 
       useEffect(() => {
         if (!taskFilterOpen) return undefined;
@@ -961,6 +1073,21 @@ function workspaceDisplayName(path) {
         });
       }
 
+      // Code-style sidebar: lists only code sessions, grouped by folder (workspace);
+      // groups and rows both sort by latest activity descending, temporary sessions merge
+      // into one bottom group; with "pinned first", pinned code sessions hoist above the
+      // folder groups.
+      const sidebarCodeTasks = codeStyleActive
+        ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex')
+        : [];
+      const sidebarFolderPinned = taskListSort === 'pinned_first'
+        ? sidebarCodeTasks.filter(chat => !!chat.pinned)
+        : [];
+      const sidebarFolderGroups = codeStyleActive
+        ? groupSessionsByFolder(
+            sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)))
+        : [];
+
       petSnapshotRef.current = chatHistory.map(chat => ({
         id: chat.id,
         title: chat.title,
@@ -1008,6 +1135,10 @@ function workspaceDisplayName(path) {
         }
         if (beforeNavigate) beforeNavigate();
         setCurrentView(nextView);
+        // Landing back on the normal chat view (collapsed rail "current chat", mobile
+        // bottom tab) must exit code mode: the mode follows the session type, otherwise the
+        // code sidebar style and the codex-draft New chat behavior leak onto the chat view.
+        if (nextView === 'chat') setCodeModeOn(false);
         closeMobileSidebar();
         return true;
       }
@@ -1033,6 +1164,10 @@ function workspaceDisplayName(path) {
 
       async function handleOpenScheduledRunShortcut(run) {
         if (!run || !run.sessionId) return;
+        // A scheduled-run session is a normal chat: both the fallback and the
+        // successful-open branches land on the scheduled view, so exit code mode once at
+        // the entry — otherwise a regular session shows behind a code-only session list.
+        setCodeModeOn(false);
         if (!bridge.available || !bridge.scheduled.openScheduledRunChat) {
           setCurrentView('scheduled');
           closeMobileSidebar();
@@ -1047,7 +1182,7 @@ function workspaceDisplayName(path) {
         if (opened) setCurrentView('scheduled');
       }
 
-      function handleNewChat(installedToolId) {
+      function handleNewChat(installedToolId, forceMode) {
         // 类型守卫:installedToolId 必须是字符串 toolId。侧边栏按钮 onClick={() => handleNewChat()}
         // 本不传参,但若哪天有调用点写成 onClick={handleNewChat},React 会把事件对象当首参塞进来——
         // 那是 truthy 的 SyntheticEvent,会被当成 toolId 置进 welcomeToolId → ToolWelcomeCard 查不到
@@ -1055,7 +1190,18 @@ function workspaceDisplayName(path) {
         if (typeof installedToolId === 'string' && installedToolId) {
           setJustInstalledTool(installedToolId);
         }
-        if (currentView === 'codex' && codexAcpSupported) {
+        // Follow code mode rather than the current page: in code mode, even on
+        // output/monitor tool pages, New chat still creates a code session draft;
+        // forceMode serves call sites that must land on a normal chat, such as AI card
+        // creation.
+        // Calls carrying a tool intent (tool store "new chat with this tool") must also
+        // land on a normal chat: the tool welcome card is only consumed by ChatView, so a
+        // codex draft would silently drop the intent and leak it into the next session.
+        const hasToolIntent = typeof installedToolId === 'string' && !!installedToolId;
+        const wantCode = forceMode
+          ? forceMode === 'code'
+          : !hasToolIntent && codeModeOn;
+        if (wantCode && codexAcpSupported) {
           updateActiveCodexSession(null);
           setCodexDraftEpoch(value => value + 1);
           setCurrentView('codex');
@@ -1068,10 +1214,12 @@ function workspaceDisplayName(path) {
 
       function handleSwitchHomeMode(mode) {
         if (mode === 'code' && codexAcpSupported) {
+          setCodeModeOn(true);
           updateActiveCodexSession(null);
           setCodexDraftEpoch(value => value + 1);
           setCurrentView('codex');
         } else if (mode === 'design') {
+          setCodeModeOn(false);
           // 仅草稿态（无活跃会话）才开新会话：从 code 页切回时 bridge 的
           // activeSessionId 仍是原工作会话，强制 createNewSession 会新建一个
           // plain 会话（默认 Yolo），把用户切过的 Plan 顶掉——表现为「从代码
@@ -1090,6 +1238,7 @@ function workspaceDisplayName(path) {
           }
           setCurrentView('chat');
         } else if (mode === 'work') {
+          setCodeModeOn(false);
           const scopeKey = bridge.activeSessionId
             ? createPinvouModeScopeKey(bridge.activeSessionId)
             : undefined;
@@ -1105,7 +1254,10 @@ function workspaceDisplayName(path) {
 
       // AI 造卡:新对话 + 加持「卡牌制造专家」+ 一条 iOS 引导卡 → 用户在空输入框描述需求,复用 persona-card 草稿流程入库
       async function startAICard() {
-        handleNewChat();
+        // Card creation must land on a normal chat session: even when started from the
+        // card pool in code mode, exit code mode first.
+        setCodeModeOn(false);
+        handleNewChat(null, 'chat');
         if (!bridge.available) return;
         var card = await bridge.personas.equipPersona('pinvou-card-creator'); // 先加持(落新 session + 加持气泡)
         if (card) bridge.personas.postCardCreatorIntro();                     // 加持成功才追加引导卡(持久化,切会话/重启不丢);失败则放弃后续,避免错投(二审补充)
@@ -1113,6 +1265,8 @@ function workspaceDisplayName(path) {
 
       async function handleSwitchSession(id) {
         if (!bridge.available) return;
+        // Opening a normal chat session exits code mode (mode follows session type).
+        setCodeModeOn(false);
         // Web RPC 可能跨公网 Relay：先关闭抽屉并切入聊天路由，后台再加载会话。
         setCurrentView('chat');
         closeMobileSidebar();
@@ -1127,6 +1281,7 @@ function workspaceDisplayName(path) {
       }
 
       function handleSwitchCodexSession(id) {
+        setCodeModeOn(true);
         updateActiveCodexSession(id);
         setCurrentView('codex');
         closeMobileSidebar();
@@ -1219,6 +1374,7 @@ function workspaceDisplayName(path) {
                 emitToPet('pet:scheduled_notice_open_failed', { run_id: runId }).catch(() => {});
                 return;
               }
+              setCodeModeOn(false);
               setActiveChat(sessionId);
               setCurrentView('scheduled');
               emitToPet('pet:scheduled_notice_opened', { run_id: runId }).catch(() => {});
@@ -1226,6 +1382,7 @@ function workspaceDisplayName(path) {
             }
             const sid = request.session_id || request.sessionId;
             if (!sid) {
+              setCodeModeOn(false);
               setCurrentView('chat');
               setPetFocusComposerTick(value => value + 1);
               return;
@@ -1233,6 +1390,7 @@ function workspaceDisplayName(path) {
             if (!bridge.available) return;
             const sessionExists = petSnapshotRef.current.some((session) => String(session.id) === String(sid));
             if (!sessionExists) {
+              setCodeModeOn(false);
               setCurrentView('chat');
               setPetFocusComposerTick(value => value + 1);
               emitToPet('pet:session_unavailable', { session_id: sid }).catch(() => {});
@@ -1243,6 +1401,7 @@ function workspaceDisplayName(path) {
               emitToPet('pet:session_unavailable', { session_id: sid }).catch(() => {});
               return;
             }
+            setCodeModeOn(false);
             setActiveChat(sid);
             setCurrentView('chat');
             setPetFocusComposerTick(value => value + 1);
@@ -1812,14 +1971,21 @@ function workspaceDisplayName(path) {
           {/* ================= Sidebar (Gemini Style) ================= */}
           <div
             data-testid="app-sidebar"
-            style={isCompactShell ? {
-              display: isSidebarOpen ? 'flex' : 'none',
-              position: 'fixed',
-              left: 0,
-              top: 48,
-              bottom: 56,
-            } : undefined}
-            className={`${isSidebarOpen ? 'w-[280px]' : 'w-[68px]'} shrink-0 flex flex-col z-40 transition-all duration-300 ${
+            style={{
+              // The compact-shell drawer does not inherit the persisted desktop width:
+              // the drawer has no drag handle, and a width beyond the viewport would cover
+              // the tap-on-backdrop-to-dismiss channel (the z-30 backdrop sits below the
+              // z-40 sidebar).
+              width: isSidebarOpen && !isCompactShell ? sidebarWidth : undefined,
+              ...(isCompactShell ? {
+                display: isSidebarOpen ? 'flex' : 'none',
+                position: 'fixed',
+                left: 0,
+                top: 48,
+                bottom: 56,
+              } : {}),
+            }}
+            className={`${isSidebarOpen ? (isCompactShell ? 'w-[280px]' : '') : 'w-[68px]'} relative shrink-0 flex flex-col z-40 ${sidebarResizing ? '' : 'transition-all duration-300'} ${
               activeTheme === 'light'
                 ? 'bg-[#F0F4F9]'
                 : (isSidebarOpen ? 'bg-[#1E1F20]' : 'bg-[#131314]')
@@ -1855,7 +2021,10 @@ function workspaceDisplayName(path) {
               )}
             </div>
 
-            {/* Navigation — shrink-0 固定不滚动,list 再多也不挤压 nav */}
+            {/* Navigation — shrink-0 keeps it from scrolling; no matter how long the
+                list is, it never squeezes the nav. In code style it collapses to a single
+                collapse bar by default, but New chat stays pinned; the remaining nav items
+                can be collapsed again at the bottom after expanding. */}
             <div data-testid="sidebar-primary-nav" className={`shrink-0 flex flex-col gap-0.5 mt-1.5 max-sm:gap-0 max-sm:mt-1 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
               <NavItem
                 icon={<Edit2 size={18} />} label={t.newChat}
@@ -1863,6 +2032,8 @@ function workspaceDisplayName(path) {
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => handleNewChat()}
               />
+              {/* On the compact shell search is only reachable from the nav, so it must
+                  stay pinned even when collapsed */}
               {(!isSidebarOpen || isCompactShell) && (
                 <NavItem
                   icon={<Search size={18} />} label={t.searchChats}
@@ -1872,6 +2043,19 @@ function workspaceDisplayName(path) {
                   onClick={() => setSearchOverlayOpen(true)}
                 />
               )}
+              {codeStyleActive && isSidebarOpen && !codeNavExpanded ? (
+                <button
+                  type="button"
+                  data-testid="sidebar-primary-nav-expand"
+                  onClick={() => setCodeNavExpanded(true)}
+                  title={t.sidebarNavExpand}
+                  className={`w-full h-8 px-4 flex items-center justify-between rounded-full text-[13px] font-semibold transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
+                >
+                  <span className="truncate">{t.sidebarNavExpand}</span>
+                  <ChevronDown size={14} className="shrink-0" />
+                </button>
+              ) : (
+              <>
               {SCHEDULED_TASKS_ENTRY_ENABLED && (
                 <NavItem
                   icon={<Clock size={18} />} label={t.scheduledPlans}
@@ -1944,6 +2128,19 @@ function workspaceDisplayName(path) {
                   onClick={() => navigateFromScheduledRun('chat')}
                 />
               )}
+              {codeStyleActive && isSidebarOpen && codeNavExpanded && (
+                <button
+                  type="button"
+                  onClick={() => setCodeNavExpanded(false)}
+                  title={t.sidebarNavCollapse}
+                  className={`w-full h-7 px-4 flex items-center justify-between rounded-full text-[12px] transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
+                >
+                  <span className="truncate">{t.sidebarNavCollapse}</span>
+                  <ChevronDown size={14} className="shrink-0 rotate-180" />
+                </button>
+              )}
+              </>
+              )}
             </div>
 
             {/* Recents — 独立 flex-1 + overflow-y-auto,只在展开态显示。
@@ -1959,7 +2156,7 @@ function workspaceDisplayName(path) {
                       activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'
                     }`}>
                       <span className="truncate">
-                        {t.sidebarTaskList} ({sidebarTaskHistory.length})
+                        {t.sidebarTaskList} ({codeStyleActive ? sidebarCodeTasks.length : sidebarTaskHistory.length})
                       </span>
                       <span className="flex items-center">
                         {/* 对话管理页入口:悬停任务列表行显现(触屏常显),替代原搜索入口 */}
@@ -2025,7 +2222,46 @@ function workspaceDisplayName(path) {
                     )}
                   </div>
                   <div className="space-y-1">
-                    {!sidebarDateGrouping ? (
+                    {codeStyleActive ? (
+                      (sidebarFolderPinned.length > 0 || sidebarFolderGroups.length > 0) ? (
+                        <>
+                          {sidebarFolderPinned.length > 0 && (
+                            <div className="space-y-0.5">
+                              {sidebarFolderPinned.map(renderSidebarTaskItem)}
+                            </div>
+                          )}
+                          {sidebarFolderGroups.map((group) => {
+                            const isOpen = folderGroupOpen[group.key] ?? true;
+                            const label = group.key === TEMPORARY_GROUP_KEY
+                              ? t.uiCodex.temporarySession
+                              : workspaceDisplayName(group.key);
+                            return (
+                              <div key={group.key}>
+                                <button
+                                  type="button"
+                                  data-testid="sidebar-folder-group"
+                                  title={group.key === TEMPORARY_GROUP_KEY ? undefined : group.key}
+                                  onClick={() => setFolderGroupOpen(prev => ({ ...prev, [group.key]: !isOpen }))}
+                                  className={`w-full h-7 px-4 flex items-center justify-between rounded-full text-[12px] transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
+                                >
+                                  <span className="truncate">{label} ({group.rows.length})</span>
+                                  <ChevronDown size={14} className={`shrink-0 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
+                                </button>
+                                {isOpen && (
+                                  <div className="mt-1 space-y-0.5">
+                                    {group.rows.map(renderSidebarTaskItem)}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </>
+                      ) : (
+                        <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
+                          {t.sidebarTaskEmpty}
+                        </div>
+                      )
+                    ) : !sidebarDateGrouping ? (
                       <div className="space-y-0.5">
                         {sidebarTaskHistory.length > 0 ? sidebarTaskHistory.map(renderSidebarTaskItem) : (
                           <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
@@ -2142,8 +2378,40 @@ function workspaceDisplayName(path) {
                     </button>
                   </div>
                 )}
+                {/* Sidebar style toggle in code mode: separate from the left icon group,
+                    pinned to the sidebar's bottom-right corner */}
+                {isSidebarOpen && codeModeOn && (
+                  <button
+                    type="button"
+                    data-testid="sidebar-code-style-toggle"
+                    onClick={toggleSidebarCodeStyle}
+                    title={sidebarCodeStyle === 'code' ? t.sidebarCodeStyleOff : t.sidebarCodeStyleOn}
+                    aria-label={sidebarCodeStyle === 'code' ? t.sidebarCodeStyleOff : t.sidebarCodeStyleOn}
+                    className={`ml-auto relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${sidebarCodeStyle === 'code' ? (activeTheme === 'dark' ? 'bg-[#004A77] text-[#C2E7FF] hover:bg-[#0B5C8F]' : 'bg-[#D3E3FD] text-[#0B57D0] hover:bg-[#C2DAFC]') : (activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]')}`}
+                  >
+                    {sidebarCodeStyle === 'code' ? <FolderOpen size={18} /> : <IconList size={18} />}
+                  </button>
+                )}
               </div>
             </div>
+
+            {/* Right-edge drag to resize: only offered on the expanded desktop shell;
+                double-click resets to the default width */}
+            {isSidebarOpen && !isCompactShell && (
+              <div
+                data-testid="sidebar-resize-handle"
+                role="separator"
+                aria-orientation="vertical"
+                title={t.sidebarResize}
+                onPointerDown={beginSidebarResize}
+                onDoubleClick={resetSidebarWidth}
+                className={`absolute top-0 bottom-0 right-0 w-[6px] cursor-col-resize z-50 touch-none transition-colors ${
+                  sidebarResizing
+                    ? 'bg-[#0B57D0]/40'
+                    : (activeTheme === 'dark' ? 'hover:bg-[#A8C7FA]/30' : 'hover:bg-[#0B57D0]/25')
+                }`}
+              />
+            )}
           </div>
 
           {/* ================= Main Content ================= */}
@@ -2202,7 +2470,7 @@ function workspaceDisplayName(path) {
               </SettingsErrorBoundary>
             )}
             {currentView === 'toolStore' && <LazyToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
-            {currentView === 'cardpool' && <LazyCardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
+            {currentView === 'cardpool' && <LazyCardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => { setCodeModeOn(false); setCurrentView('chat'); }} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={handleOpenPersonaEditor} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} />}
             {codexAcpSupported && currentView === 'codex' && (
               <LazyCodexAcpView
@@ -2225,7 +2493,7 @@ function workspaceDisplayName(path) {
               bs && bs.scheduledRunContext ? (
                 <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={handleOpenPersonaEditor} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />
               ) : (
-                <LazyScheduledTasksView theme={activeTheme} t={t} onOpenChat={() => setCurrentView('chat')} onGotoModelSettings={() => openSettingsSection('model')} />
+                <LazyScheduledTasksView theme={activeTheme} t={t} onOpenChat={() => { setCodeModeOn(false); setCurrentView('chat'); }} onGotoModelSettings={() => openSettingsSection('model')} />
               )
             )}
             {/* 草稿态(无 session)也渲染挂件,但强制空态——让欢迎页保留「＋加持卡牌」入口。
