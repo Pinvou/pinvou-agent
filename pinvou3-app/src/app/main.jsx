@@ -2,7 +2,7 @@ import { lazy, startTransition, Suspense, useCallback, useEffect, useLayoutEffec
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
-import { Edit2, BarChart2, Settings, Smartphone, Clock, Package, Search, ChevronDown, Menu, MoreHorizontal, Check, Filter, Layers, MessageSquare, X, BookOpen, Puzzle, PetPawIcon } from '../components/icons.jsx';
+import { Edit2, BarChart2, Settings, Smartphone, Clock, Package, Search, ChevronDown, Menu, MoreHorizontal, Check, Filter, Layers, MessageSquare, X, BookOpen, Puzzle, PetPawIcon, FolderOpen, IconList } from '../components/icons.jsx';
 import { ArchiveConfirmDialog, ArchiveToast, NavItem, RecentItem } from '../components/layout/NavigationComponents.jsx';
 import { AcpAgentLogo } from '../features/codex/AcpAgentLogo.jsx';
 import { PinvouLogo } from '../components/PinvouLogo.jsx';
@@ -919,6 +919,7 @@ function workspaceDisplayName(path) {
       // Exiting code mode resets the primary-nav collapse bar, so the next entry starts
       // from the default collapsed form.
       useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the nav collapse state synchronously on exit, ensuring the next code-mode entry starts collapsed
         if (!codeModeOn) setCodeNavExpanded(false);
       }, [codeModeOn]);
       const [archiveConfirm, setArchiveConfirm] = useState(null);

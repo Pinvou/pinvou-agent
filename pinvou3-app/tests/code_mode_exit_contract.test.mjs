@@ -27,7 +27,7 @@ function assertClearBefore(window, view, label) {
 // 1. Bridge sync effect: an externally changed activeSessionId materializes a
 // normal chat view (web remote control and friends).
 assertClearBefore(
-  windowFrom("if (bs.activeSessionId !== activeChat)"),
+  windowFrom("if (bs.activeSessionId !== activeChat)", 900),
   'chat',
   'bridge activeSessionId sync',
 );
@@ -48,7 +48,7 @@ assertClearBefore(
   assertClearBefore(body, 'scheduled', 'handleOpenScheduledRunShortcut');
   const firstNav = body.indexOf("setCurrentView('scheduled')");
   assert.ok(
-    body.indexOf("setCurrentView('scheduled')", firstNav + 1) > -1,
+    body.includes("setCurrentView('scheduled')", firstNav + 1),
     'handleOpenScheduledRunShortcut: expected both branches covered by the shared entry-point clear',
   );
 }
