@@ -624,21 +624,30 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// composer 菜单两处标题不一致。
     pub fn list_tools(&self) -> Vec<MarketplaceToolInfo> {
         let installed = self.installed_ids();
-        let store = store::BundleStore::new();
+        // 一次读全量记录（含 Upload 门禁），避免逐工具取锁+整文件解析的 N+1；
+        // 读失败（如损坏 JSON）warn 后降级为「无覆盖」，口径同 bundle.rs 的
+        // store 读回退。
+        let upload_records: Vec<store::BundleRecord> = match store::BundleStore::new().records() {
+            Ok(records) => records
+                .into_iter()
+                .filter(|r| matches!(r.source, store::BundleSource::Upload(_)))
+                .collect(),
+            Err(e) => {
+                log::warn!("[marketplace] BundleStore 读取失败，list_tools 不应用展示覆盖: {e}");
+                Vec::new()
+            }
+        };
+        let upload_by_id: std::collections::HashMap<&str, &store::BundleRecord> =
+            upload_records.iter().map(|r| (r.id.as_str(), r)).collect();
         self.available_tools()
             .into_iter()
             .map(|m| {
-                let (name, description) = match store
-                    .get(&m.id)
-                    .ok()
-                    .flatten()
-                    .filter(|r| matches!(r.source, store::BundleSource::Upload(_)))
-                {
+                let (name, description) = match upload_by_id.get(m.id.as_str()) {
                     Some(record) => {
-                        let name = store::display_override(&record, store::EXTRA_DISPLAY_NAME)
+                        let name = store::display_override(record, store::EXTRA_DISPLAY_NAME)
                             .unwrap_or(m.name.clone());
                         let description =
-                            store::display_override(&record, store::EXTRA_DISPLAY_DESCRIPTION)
+                            store::display_override(record, store::EXTRA_DISPLAY_DESCRIPTION)
                                 .unwrap_or(m.description.clone());
                         (name, description)
                     }

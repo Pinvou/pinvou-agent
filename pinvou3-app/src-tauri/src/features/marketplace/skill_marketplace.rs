@@ -1051,6 +1051,10 @@ impl SkillMarketplaceManager {
             SyncDesc::Set(desc) => {
                 let content = std::fs::read_to_string(&md_path)
                     .map_err(|e| format!("读取 {} 失败: {e}", md_path.display()))?;
+                // 先纯校验/改写（rewrite 无 IO）：值不可单行表达（含引号/反斜杠等）
+                // 时在任何落盘之前报错——备份 key 与 SKILL.md 都不被触碰，不留下
+                // 「命令 Err 但 extra 已写入」的中间态。
+                let new_content = rewrite_frontmatter_description(&content, desc)?;
                 // 首次回写前备份引擎口径原值（含「原本没有」空串哨兵）——
                 // 清覆盖时据此恢复，frontmatter 默认值不因覆盖过一次而丢失。
                 // 互斥（同锁 RMW）+ 时机（首写前）保证不会备份到自己的回写值。
@@ -1062,7 +1066,6 @@ impl SkillMarketplaceManager {
                         Some(original.as_deref().unwrap_or("")),
                     )?;
                 }
-                let new_content = rewrite_frontmatter_description(&content, desc)?;
                 self.write_skill_md_and_fingerprint(bundle_id, &md_path, content, new_content)?;
                 Ok(true)
             }
@@ -1080,7 +1083,11 @@ impl SkillMarketplaceManager {
                     let new_content = if backup.is_empty() {
                         remove_frontmatter_description(&content)?
                     } else {
-                        rewrite_frontmatter_description(&content, &backup)?
+                        // 备份原值可能是块状多行或含引号（引擎口径原样留存），
+                        // Set 路径的单行 rewrite 会把它拒之门外 → 清空从此
+                        // 永久 Err。恢复走无损渲染（单行 plain 或块状字面量），
+                        // 任何生产路径产出的备份都能回读。
+                        restore_frontmatter_description(&content, &backup)?
                     };
                     self.write_skill_md_and_fingerprint(bundle_id, &md_path, content, new_content)?;
                 }
@@ -1529,7 +1536,11 @@ fn read_skill_description(md_path: &Path) -> Option<String> {
     let raw = read_skill_description_from_str(&std::fs::read_to_string(md_path).ok()?)?;
     // 展示口径截断（与 MAX_DISPLAY_DESCRIPTION_CHARS 对齐）；备份/互洽校验用
     // `read_skill_description_from_str` 的原值，不截断。
-    Some(raw.chars().take(240).collect())
+    Some(
+        raw.chars()
+            .take(super::store::MAX_DISPLAY_DESCRIPTION_CHARS)
+            .collect(),
+    )
 }
 
 /// 解析 SKILL.md frontmatter 的 `description:` **原值**（不截断；展示读取与
@@ -1537,7 +1548,8 @@ fn read_skill_description(md_path: &Path) -> Option<String> {
 /// 解析器**（`CodeWhale/crates/tui/src/skills/mod.rs` 的 `parse_skill`）：
 ///
 /// - 任意缩进的 `description:` 行都算（平摊解析不区分嵌套），重复键 last-wins，
-///   后出现的空值覆盖先出现的非空值；
+///   后出现的空值覆盖先出现的非空值；**例外**：其他键的 `|`/`>` 块状续行属于
+///   那个键的值（引擎对任意键消费块续行），块内的 `description:` 行不算；
 /// - 支持六种块状标记（`|` `>` 及 `|-` `|+` `>-` `>+` chomping）：续行 = 缩进
 ///   大于键行基准缩进的行与空行，按首个非空行缩进剥一层；literal 按 `\n` 连接，
 ///   folded 非空行以空格折叠、空行成段间换行；
@@ -1570,12 +1582,34 @@ pub(crate) fn read_skill_description_from_str(content: &str) -> Option<String> {
             i += 1;
             continue;
         };
+        let value = value.trim();
+        let is_block_scalar = matches!(value, ">" | "|" | ">-" | ">+" | "|-" | "|+");
         if key.trim().to_ascii_lowercase() != "description" {
-            i += 1;
+            // 引擎对**任意键**消费块状续行（is_block_scalar 判定在键过滤之前，
+            // `|`/`>` 块整块进那个键的值）——其他键块内的 `description:` 行
+            // 不是 description。镜像必须同样跳过这些续行，否则会读出引擎侧
+            // 不存在的幻影 description。
+            if is_block_scalar {
+                let base_indent = raw.len() - raw.trim_start().len();
+                i += 1;
+                while i < lines.len() {
+                    let raw_line = lines[i];
+                    if raw_line.trim().is_empty() {
+                        i += 1;
+                        continue;
+                    }
+                    if raw_line.len() - raw_line.trim_start().len() > base_indent {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+            } else {
+                i += 1;
+            }
             continue;
         }
-        let value = value.trim();
-        if matches!(value, ">" | "|" | ">-" | ">+" | "|-" | "|+") {
+        if is_block_scalar {
             let is_folded = value.starts_with('>');
             let chomp_strip = value.ends_with('-');
             let chomp_keep = value.ends_with('+');
@@ -1685,14 +1719,14 @@ pub(crate) fn read_skill_description_from_str(content: &str) -> Option<String> {
 /// - 没有 description → 插在 name 行之后（无 name 行则插在 opening `---` 后）；
 /// - 统一写单行。读端只做「剥成对双/单引号」、不做反转义，因此值含 `"` 或 `\` 时
 ///   双引号包裹转义会与读值不符（不互洽），含换行也无法单行表达——这两类值连同
-///   首尾成对引号（读端会剥掉丢字符）一律 Err 拒绝，不猜；
+///   首尾成对引号（读端会剥掉丢字符）一律 Err 拒绝，不猜（Set 路径；**Restore
+///   路径不走这里**，见 [`restore_frontmatter_description`]——备份原值可能是
+///   多行/含引号，走无损块状渲染）；
 /// - 值在 YAML plain scalar 下不安全（前导指示符、内嵌 `: ` / ` #`、块状标记、
 ///   关键字/数字形态）时整体双引号包裹——此时值内已无 `"` 和 `\`，包裹后读端剥
 ///   引号即得原值；
-/// - frontmatter 边界取**前两个 `---`**（与引擎一致）。若该区间内存在第二个
-///   `description:`（含块状续行里的裸 `---` 造成的边界内缩进副本等结构性多重
-///   定义），原位替换会漏改其一、last-wins 读法仍得旧值 → 返回
-///   `Err("...frontmatter 内存在多个 description 定义")` 结构性拒绝，不盲改。
+/// - 替换机制/结构守卫见 [`replace_top_level_description`]（frontmatter 边界取
+///   **前两个 `---`**，与引擎一致；区间内第二个 `description:` 结构性拒绝）。
 fn rewrite_frontmatter_description(content: &str, description: &str) -> Result<String, String> {
     let v = description.trim();
     if v.is_empty() {
@@ -1714,7 +1748,72 @@ fn rewrite_frontmatter_description(content: &str, description: &str) -> Result<S
     } else {
         format!("description: {v}")
     };
+    replace_top_level_description(content, &[new_line], v)
+}
 
+/// 清覆盖恢复专用：把备份的引擎口径**原值**无损渲染成 frontmatter 行。与 Set
+/// 路径的单行严格校验不同——备份值可能天然多行（原文件 `|`/`>` 块）或含引号
+/// （原文件 plain 值内嵌引号），单行 rewrite 会把它们拒之门外，清空从此永久
+/// Err。渲染策略：
+///
+/// - 单行值能以 plain 形无损回读（无换行/引号/反斜杠/首尾空白、plain 安全）→
+///   写单行（与常见原文件形态一致，字节最省）；
+/// - 其余值写块状字面量 `|-`（无尾换行）/`|+`（有尾换行，chomping 保尾部空行），
+///   续行按 2 空格缩进**逐字**保留——块内容只剥一层基准缩进，引号、行内空白、
+///   多行结构都原样回读，互洽校验（[`replace_top_level_description`]）兜底。
+///
+/// 限制：首个非空行不得带前导空格（引擎块读取以它定基准缩进，剥掉后无法还原）。
+/// 生产读取器产出的备份天然满足（单行值被 trim、块值首行剥尽缩进）；手改
+/// bundles.json 塞入的畸形备份由互洽校验 Err 拒绝（fail-closed，不动文件）。
+fn render_description_lines_lossless(v: &str) -> Result<Vec<String>, String> {
+    if v.is_empty() {
+        return Err("恢复说明为空（空哨兵走删行恢复，不进块状渲染）".to_string());
+    }
+    if v.chars().any(|c| c.is_control() && c != '\n') {
+        return Err("备份说明含除换行外的控制字符，拒绝恢复".to_string());
+    }
+    let plain_safe = !v.contains('\n')
+        && !v.starts_with(' ')
+        && !v.ends_with(' ')
+        && !v.contains('"')
+        && !v.contains('\\')
+        && !v.starts_with('\'')
+        && !v.ends_with('\'')
+        && !yaml_plain_needs_quotes(v);
+    if plain_safe {
+        return Ok(vec![format!("description: {v}")]);
+    }
+    let marker = if v.ends_with('\n') { "|+" } else { "|-" };
+    let mut out = vec![format!("description: {marker}")];
+    for l in v.split('\n') {
+        out.push(if l.is_empty() {
+            String::new()
+        } else {
+            format!("  {l}")
+        });
+    }
+    Ok(out)
+}
+
+/// 清覆盖时把 SKILL.md frontmatter 的 description 恢复为备份原值（无损渲染，
+/// 见 [`render_description_lines_lossless`]）。空串哨兵的删行恢复不走这里
+/// （调用方走 [`remove_frontmatter_description`]）。
+fn restore_frontmatter_description(content: &str, backup: &str) -> Result<String, String> {
+    let new_lines = render_description_lines_lossless(backup)?;
+    replace_top_level_description(content, &new_lines, backup)
+}
+
+/// 把顶层 description 行替换为 `new_lines`（单行 plain 或块状多行），Set 回写与
+/// Restore 共用：frontmatter 边界判定（前两个 `---`）、旧块状续行消费、插入
+/// 位置选择（嵌套 description 时插 frontmatter 末尾——last-wins）与全部结构
+/// 守卫。互洽校验以 `expect` 为准：改写结果经镜像读取器必须**精确**读回
+/// `expect`（Set 传 trim 后新值；Restore 传备份原值，不 trim——恢复不得静默
+/// 归一化原值）。任何读写口径分歧直接 Err，不落盘。
+fn replace_top_level_description(
+    content: &str,
+    new_lines: &[String],
+    expect: &str,
+) -> Result<String, String> {
     let newline = if content.contains("\r\n") {
         "\r\n"
     } else {
@@ -1753,7 +1852,7 @@ fn rewrite_frontmatter_description(content: &str, description: &str) -> Result<S
                 let key = &t[..colon];
                 let rest = t[colon + 1..].trim();
                 if key.eq_ignore_ascii_case("description") {
-                    out.push(new_line.clone());
+                    out.extend(new_lines.iter().cloned());
                     replaced = true;
                     i += 1;
                     // 块状：续行 = 空行或缩进行（与读端消费口径一致），遇顶层字段
@@ -1793,7 +1892,7 @@ fn rewrite_frontmatter_description(content: &str, description: &str) -> Result<S
         } else {
             name_line_at.map_or(1, |x| x + 1)
         };
-        out.insert(at, new_line);
+        out.splice(at..at, new_lines.iter().cloned());
     }
     for l in &lines[fm_end..] {
         out.push((*l).to_string());
@@ -1811,10 +1910,11 @@ fn rewrite_frontmatter_description(content: &str, description: &str) -> Result<S
         return Err("SKILL.md frontmatter 内存在多个 description 定义，拒绝回写".to_string());
     }
     // 互洽校验（生产路径常开，非 debug_assert）：改写结果经镜像读取器必须读回
-    // 新值。嵌套 description 走「frontmatter 末尾插入」，last-wins 语义下该断言
-    // 同时验证插入位置正确。失败说明写口径与引擎镜像读口径出现了分歧——这正是
-    // 本函数存在的意义，直接 Err 而不是落盘一个引擎读不回的值。
-    if read_skill_description_from_str(&s).as_deref() != Some(v) {
+    // expect（Set = trim 后新值；Restore = 备份原值，不 trim——恢复不得静默
+    // 归一化原值）。嵌套 description 走「frontmatter 末尾插入」，last-wins
+    // 语义下该断言同时验证插入位置正确。失败说明写口径与引擎镜像读口径出现了
+    // 分歧——直接 Err，不落盘一个引擎读不回的值。
+    if read_skill_description_from_str(&s).as_deref() != Some(expect) {
         return Err("SKILL.md 回写结果与读取口径互洽校验失败（内部不一致），拒绝落盘".to_string());
     }
     Ok(s)
@@ -2133,9 +2233,10 @@ mod tests {
     }
 
     /// 读取器是 CodeWhale 引擎平铺解析器（`parse_skill`）的镜像：本测试把引擎
-    /// 语义逐条钉住——嵌套缩进 description 也算（平摊不区分嵌套）、重复键
-    /// last-wins、chomping 变体、成对引号剥离、`#` 注释行跳过、首 --- 前容忍
-    /// 空白、BOM 降级 None、空值覆盖。改读取器前先对照引擎实现再同步本测试。
+    /// 语义逐条钉住——嵌套缩进 description 也算（平摊不区分嵌套；其他键的
+    /// `|`/`>` 块状续行除外，见用例）、重复键 last-wins、chomping 变体、成对
+    /// 引号剥离、`#` 注释行跳过、首 --- 前容忍空白、BOM 降级 None、空值覆盖。
+    /// 改读取器前先对照引擎实现再同步本测试。
     #[test]
     fn skill_description_mirrors_engine_flat_parser() {
         // 嵌套（缩进）description 也算——引擎平摊解析不区分嵌套 map
@@ -2146,6 +2247,32 @@ mod tests {
             .as_deref(),
             Some("嵌套说明"),
             "引擎平摊读取嵌套 description，镜像不得只认顶层"
+        );
+        // **例外**：其他键的块状续行属于那个键的值——引擎对任意键消费
+        // `|`/`>` 块（is_block_scalar 判定在键过滤之前），块内的
+        // `description:` 行不是 description。镜像若只跳键行会读出引擎侧
+        // 不存在的幻影 description（回归钉：镜像曾在此分歧）。
+        assert_eq!(
+            read_skill_description_from_str(
+                "---\nname: x\ninstructions: |\n  description: fake\n---\nbody\n"
+            ),
+            None,
+            "其他键的 literal 块内 description 行不得算作 description"
+        );
+        assert_eq!(
+            read_skill_description_from_str(
+                "---\nname: x\nnotes: >\n  description: folded-fake\n---\n"
+            ),
+            None,
+            "其他键的 folded 块内 description 行不得算作 description"
+        );
+        // 块消费结束后，真正的顶层 description 仍能读到（last-wins 到它）
+        assert_eq!(
+            read_skill_description_from_str(
+                "---\nname: x\ninstructions: |\n  任意内容\ndescription: 真说明\n---\n"
+            )
+            .as_deref(),
+            Some("真说明")
         );
         // 重复键 last-wins；后出现的空值覆盖先出现的非空值
         assert_eq!(
@@ -3823,6 +3950,143 @@ mod tests {
             "清覆盖应删除 description 行: {md}"
         );
         assert_eq!(md, "---\nname: nb-skill\n---\n");
+    }
+
+    /// 原说明为**块状多行**或**含引号**的单技能包：设覆盖成功（备份为引擎口径
+    /// 原值，多行/含引号）后清空不再永久报错——恢复走无损渲染（安全值写单行
+    /// plain，其余写块状字面量），引擎读回值与备份逐字一致；备份 key 清除。
+    /// 回归钉：此前恢复把备份值送进 Set 路径的单行 rewrite，含 `\n`/引号必被
+    /// 拒 → 清空从此永久 Err、覆盖永远清不掉（唯一自愈是手改 SKILL.md 与备份
+    /// 逐字一致）。
+    #[test]
+    fn restore_reverts_block_scalar_and_quoted_description_backup_on_clear() {
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "block_literal",
+                "---\nname: mb-skill\ndescription: |\n  第一行\n  第二行\n---\n正文\n",
+                "第一行\n第二行",
+            ),
+            (
+                "plain_with_quotes",
+                "---\nname: mq-skill\ndescription: 说\"你好\"，含\\反斜杠\n---\n",
+                "说\"你好\"，含\\反斜杠",
+            ),
+        ];
+        for (tag, original_md, expected_backup) in cases {
+            let tmp = fresh_dir(tag);
+            let id = format!("{tag}-skill");
+            let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+            let skill_dir = tmp.join(format!("bundles/{id}/skills/{id}"));
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            std::fs::write(skill_dir.join("SKILL.md"), original_md).unwrap();
+            let store = crate::features::marketplace::store::BundleStore::with_file(
+                tmp.join("bundles.json"),
+            );
+            store
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        &id,
+                        crate::features::marketplace::store::BundleSource::Upload(
+                            "pkg.zip".to_string(),
+                        ),
+                    ),
+                )
+                .unwrap();
+
+            mgr.update_display_meta(&id, None, Some("覆盖描述"))
+                .unwrap();
+            let backup = store.skill_desc_backup(&id).unwrap().expect("应已备份原值");
+            assert_eq!(&backup, expected_backup, "[{tag}] 备份应为引擎口径原值");
+            let md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+            assert!(md.contains("description: 覆盖描述"), "[{tag}] {md}");
+
+            // 此前正是在这一步永久报错（备份值被 Set 路径单行校验拒绝）
+            mgr.update_display_meta(&id, None, Some("  ")).unwrap();
+            let md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+            assert!(
+                !md.contains("覆盖描述"),
+                "[{tag}] 清覆盖后不得残留覆盖值: {md}"
+            );
+            assert_eq!(
+                read_skill_description_from_str(&md).as_deref(),
+                Some(*expected_backup),
+                "[{tag}] 恢复后引擎读值必须与备份逐字一致: {md}"
+            );
+            assert!(
+                store.skill_desc_backup(&id).unwrap().is_none(),
+                "[{tag}] 恢复后备份 key 应清除"
+            );
+        }
+    }
+
+    /// Set 路径的顺序契约：值含双引号（rewrite 必拒）时**先**校验后备份——
+    /// 命令 Err 且 extra 不落任何 key、SKILL.md 字节不变（不留下「报错但
+    /// 备份 key 已持久化」的中间态）。
+    #[test]
+    fn set_description_rejected_before_backup_write() {
+        let tmp = fresh_dir("set_quote_reject");
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        let skill_dir = tmp.join("bundles/q-skill/skills/q-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let original = "---\nname: q-skill\ndescription: 原描述\n---\n";
+        std::fs::write(skill_dir.join("SKILL.md"), original).unwrap();
+        let store =
+            crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
+        store
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    "q-skill",
+                    crate::features::marketplace::store::BundleSource::Upload(
+                        "pkg.zip".to_string(),
+                    ),
+                ),
+            )
+            .unwrap();
+
+        let err = mgr
+            .update_display_meta("q-skill", Some("新名"), Some("带\"引号\"的说明"))
+            .unwrap_err();
+        assert!(err.contains("双引号"), "{err}");
+        assert!(
+            store.skill_desc_backup("q-skill").unwrap().is_none(),
+            "校验失败的 Set 不得落备份 key"
+        );
+        assert_eq!(
+            std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap(),
+            original,
+            "校验失败的 Set 不得动 SKILL.md"
+        );
+    }
+
+    /// 无损恢复渲染器单测：单行安全值写 plain、多行/含引号值写块状字面量，
+    /// 经镜像读取器逐字回读；畸形控制字符拒绝。
+    #[test]
+    fn renders_lossless_description_lines() {
+        let roundtrip = |v: &str| {
+            let md = restore_frontmatter_description("---\nname: x\ndescription: 占位\n---\n", v)
+                .unwrap();
+            assert_eq!(
+                read_skill_description_from_str(&md).as_deref(),
+                Some(v),
+                "{md}"
+            );
+            md
+        };
+        // 单行 plain 安全 → 单行写法
+        let md = roundtrip("单行说明");
+        assert!(md.contains("description: 单行说明"), "{md}");
+        // 多行（含空行与缩进保留）→ 块状字面量 |-
+        let md = roundtrip("第一行\n\n  缩进行\n第二行");
+        assert!(md.contains("description: |-\n"), "{md}");
+        // 含双引号/反斜杠（plain 单行被 Set 路径拒绝的形态）→ 也走块状
+        let md = roundtrip("说\"你好\"含\\反斜杠");
+        assert!(md.contains("description: |-\n"), "{md}");
+        // 尾换行 → |+ 保形 chomping
+        let md = roundtrip("值\n\n");
+        assert!(md.contains("description: |+\n"), "{md}");
+        // 除换行外的控制字符 → 拒绝（fail-closed，不动文件）
+        assert!(render_description_lines_lossless("带\u{7}控制符").is_err());
+        assert!(render_description_lines_lossless("").is_err());
     }
 
     /// 编排门禁：未登记 / 预置来源拒绝；超长说明在回写**之前**被拒（SKILL.md

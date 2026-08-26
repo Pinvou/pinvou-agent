@@ -575,20 +575,36 @@ pub async fn update_bundle_display_meta(
     display_description: Option<String>,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
-    let dirty = tokio::task::spawn_blocking(move || {
+    let may_touch_skill_md = display_description.is_some(); // 单技能包可能动 SKILL.md
+    let dirty = match tokio::task::spawn_blocking(move || {
         let mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
-        let touched_skill_md = display_description.is_some(); // 单技能包可能动 SKILL.md
         mgr.update_display_meta(&id, display_name.as_deref(), display_description.as_deref())?;
-        Ok::<bool, String>(touched_skill_md)
+        Ok::<bool, String>(may_touch_skill_md)
     })
     .await
-    .map_err(|e| format!("任务执行失败: {e}"))??;
-    // SKILL.md 回写/恢复改了包内容：热刷在线会话组合目录与 deny 规则集
-    // （与 update_marketplace_skill 同一收尾）。失败路径也刷：sync 可能在
-    // set_display_meta 报错前已动过 SKILL.md（窄窗口），让模型侧尽早一致。
-    if dirty {
-        pool.refresh_live_sessions_skills().await;
-        pool.refresh_permission_rulesets().await;
+    {
+        Ok(result) => result,
+        Err(e) => return Err(format!("任务执行失败: {e}")),
+    };
+    match dirty {
+        // SKILL.md 回写/恢复改了包内容：热刷在线会话组合目录与 deny 规则集
+        // （与 update_marketplace_skill 同一收尾）。
+        Ok(touched) => {
+            if touched {
+                pool.refresh_live_sessions_skills().await;
+                pool.refresh_permission_rulesets().await;
+            }
+        }
+        Err(e) => {
+            // 失败路径也刷：sync 可能在 set_display_meta 报错前已动过 SKILL.md
+            // （窄窗口），让模型侧尽早一致。失败点在 sync 前/中/后不可知，按
+            // 「可能动过」处理——热刷是幂等的目录重扫，多刷一次无害。
+            if may_touch_skill_md {
+                pool.refresh_live_sessions_skills().await;
+                pool.refresh_permission_rulesets().await;
+            }
+            return Err(e);
+        }
     }
     Ok(())
 }

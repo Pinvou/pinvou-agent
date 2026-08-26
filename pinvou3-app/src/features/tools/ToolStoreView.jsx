@@ -623,14 +623,20 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const [name, setName] = useState(dialog.name || '');
       const [desc, setDesc] = useState(dialog.description || '');
       const [error, setError] = useState(null);
+      // 保存进行中：防重复点击双发请求（后端写幂等但避免重复 IPC/刷新）。
+      const [saving, setSaving] = useState(false);
       const inputCls = "w-full px-3 py-2 rounded-lg text-[14px] outline-none transition-colors border bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400 focus:border-[#007AFF] dark:bg-[#1C1C1E] dark:border-[#3A3A3C] dark:text-white dark:placeholder-slate-500 dark:focus:border-[#0A84FF]";
       const handleConfirm = async () => {
+        if (saving) return;
+        setSaving(true);
         // 关闭/提交由调用方决定：确认失败时返回错误文案，弹窗保留输入。
         try {
           const err = await onConfirm({ name, description: desc });
           if (err) setError(err);
         } catch (e) {
           setError(String(e));
+        } finally {
+          setSaving(false);
         }
       };
       return (
@@ -675,6 +681,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   placeholder={copy.displayDescriptionPlaceholder}
                   value={desc}
                   onChange={e => setDesc(e.target.value)}
+                  // 后端展示说明只接受单行（控制字符校验拒换行），Enter 在此
+                  // 只会换来一次必败的保存——直接拦截，避免用户按回车后困惑。
+                  onKeyDown={e => { if (e.key === 'Enter') e.preventDefault(); }}
                   className={`${inputCls} resize-none`}
                 />
               </div>
@@ -699,7 +708,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               <button
                 data-testid="edit-display-save"
                 onClick={handleConfirm}
-                className={`w-full py-3 text-[17px] font-semibold text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5`}
+                disabled={saving}
+                className={`w-full py-3 text-[17px] font-semibold text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5 disabled:opacity-50`}
               >
                 {copy.editDisplaySave}
               </button>
