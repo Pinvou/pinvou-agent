@@ -1029,7 +1029,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           const bs = bundleStates[x.id] || null;
           const base = {
             id: 'mcp-' + x.id, backendId: x.id, title: x.name || x.id, subtitle: '',
-            category: 'life', type: 'MCP Server', mcpServer: true,
+            category: 'other', type: 'MCP Server', mcpServer: true,
             version: x.version ? `v${String(x.version).replace(/^v/i, '')}` : '—',
             latency: storeCopy.localLatency, desc: x.description || '',
             icon: Server, color: 'bg-gradient-to-b from-slate-400 to-slate-600',
@@ -1110,7 +1110,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           const skillInstalled = skillBs ? skillBs.installed : !!x.installed;
           return localizeSkill({
             id: 'mcp-skill-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || '',
-            // 有配套 MCP(companion)的卡 = 工具包:徽标与分组归 bundle,安装态跟随 MCP
+            // 有配套 MCP(companion)的卡 = 工具包:徽标与分组归 bundle,安装态跟随 MCP。
+            // 业务类 category 跟随 companion MCP(mcpEntry 查 tsToolsData/tsToolWelcomeData);
+            // 查不到 MCP 或其无 category 时标 'skill'——仅作类型维度标记
+            // (getToolTypeGroup 据此归 Skill 组),业务维度由 getToolBusinessGroup
+            // 落「其他」(初步设计,见 tool-common 注释)。
             category: mcpEntry ? (mcpEntry.category || 'skill') : 'skill',
             type: mcpId ? ((storeCopy.typeGroups || {}).bundle || 'Bundle') : 'Skill',
             companionBundle: !!mcpId,
@@ -1124,7 +1128,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         });
       const uploadedSkills = skillBackend.filter(x => x.user_uploaded).map(x => ({
         id: 'up-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || storeCopy.uploadedSkill,
-        category: 'skill', type: 'Skill', version: '—', latency: storeCopy.localLatency, desc: x.description || '',
+        // 用户上传技能无业务归属元数据,业务分组落「其他」;类型分组仍按 userUploaded 归 Skill。
+        category: 'other', type: 'Skill', version: '—', latency: storeCopy.localLatency, desc: x.description || '',
         icon: Package, color: 'bg-gradient-to-b from-slate-400 to-slate-600', installed: true, userUploaded: true,
         actions: actionsOf(bundleStates[x.id]),
       }));
@@ -1145,7 +1150,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const typeLabel = id => ((storeCopy.typeGroups || {})[id]) || id;
       const primaryGroupOf = groupBy === 'type' ? typeGroupOf : getToolBusinessGroup;
       const sectionGroupOf = groupBy === 'type' ? getToolBusinessGroup : typeGroupOf;
-      const sectionOrder = groupBy === 'type' ? [...TOOL_BUSINESS_GROUPS, 'skill'] : TOOL_TYPE_GROUPS;
+      // 业务分区顺序即 TOOL_BUSINESS_GROUPS('skill' 已不再是业务分组——仅标 'skill'
+      // 的条目由 getToolBusinessGroup 落 'other';类型维度仍有 Skill 组)。
+      const sectionOrder = groupBy === 'type' ? TOOL_BUSINESS_GROUPS : TOOL_TYPE_GROUPS;
       const sectionLabelOf = groupBy === 'type' ? catLabel : typeLabel;
       // 二级筛选 chips:第一项恒为「全部」,其余只展示当前列表里有内容的组。
       // eslint-disable-next-line react-hooks/exhaustive-deps -- groupChips is rebuilt on every render; using it as the dep of the effect below is the existing contract, and useMemo would change list render behavior

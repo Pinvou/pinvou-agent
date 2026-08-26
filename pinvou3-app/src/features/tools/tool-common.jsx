@@ -696,7 +696,7 @@ const AcFmtIcon = FileTypeIcon;
     // 注:pptx 不在此——它是「PPT 生成」MCP 的同名 companion 技能,卡片由后端
     // list_marketplace_skills 数据合成(见 ToolStoreView 的 companionSkillCards)。
     const tsSkillsData = [
-      { id: 's5', title: '视觉设计', subtitle: '设计系统直出网页 / banner / 海报 / 简历', category: 'skill', type: 'Skill', version: '内置', latency: '本地', desc: '内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', icon: Palette, color: 'bg-gradient-to-b from-pink-400 to-fuchsia-600', installed: true, authRequired: false, builtin: true },
+      { id: 's5', title: '视觉设计', subtitle: '设计系统直出网页 / banner / 海报 / 简历', category: 'other', type: 'Skill', version: '内置', latency: '本地', desc: '内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', icon: Palette, color: 'bg-gradient-to-b from-pink-400 to-fuchsia-600', installed: true, authRequired: false, builtin: true },
     ];
 
     // 后端合成技能卡的补充展示数据(按 backendId 取):
@@ -709,7 +709,7 @@ const AcFmtIcon = FileTypeIcon;
       { id: 'dev', label: '研发' },
       { id: 'finance', label: '金融数据' },
       { id: 'life', label: '生活实用' },
-      { id: 'skill', label: '技能' },
+      { id: 'other', label: '其他' },
     ];
 
     // ── 列表视图双维度分组(纯函数,ToolStoreView 消费;分支互斥、按优先级短路) ──
@@ -718,7 +718,8 @@ const AcFmtIcon = FileTypeIcon;
     const TOOL_TYPE_GROUPS = ['bundle', 'mcp', 'skill', 'cli', 'api', 'upcoming'];
     const getToolTypeGroup = (tool, bundleMcpIds) => {
       if (!tool) return 'upcoming';
-      // companion 合成卡优先判 bundle:卡面 category 恒为 skill,须先于 skill 规则短路
+      // companion 合成卡优先判 bundle:其 category 可为 'skill'(独立技能)或
+      // companion MCP 的业务类,不能靠 category 值判型,须按 companionBundle 标志短路
       if (tool.companionBundle) return 'bundle';
       // mcpServer/oauthMcp 显式标记位须先于 userUploaded/skill 分支（二轮评审：
       // 自定义上传的 MCP 卡同时带 userUploaded + mcpServer，旧顺序被错归为 Skill 组）。
@@ -732,12 +733,15 @@ const AcFmtIcon = FileTypeIcon;
       if (tool.oauthMcp || tool.mcpServer || /mcp/i.test(tool.type || '')) return 'mcp';
       return 'api';
     };
-    // 业务分组:直接取条目 category(数据即业务类 id);技能卡单列 'skill',不参与业务分类。
-    const TOOL_BUSINESS_GROUPS = ['collab', 'docs', 'dev', 'finance', 'life'];
+    // 业务分组:直接取条目 category(数据即业务类 id)。无明确业务归属的条目
+    // (自定义上传 MCP、用户上传技能、内置视觉设计,以及 category 缺失/无法识别/
+    // 仅标 'skill' 的——'skill' 是类型而非业务类)一律落 'other' 单列「其他」,
+    // 不再兜底 'life'——未知条目错挂「生活实用」比单列「其他」更难发现。
+    // (初步设计:后续若给技能/插件补业务元数据,再把可识别者移出 'other'。)
+    const TOOL_BUSINESS_GROUPS = ['collab', 'docs', 'dev', 'finance', 'life', 'other'];
     const getToolBusinessGroup = (tool) => {
-      if (!tool) return 'life';
-      if (tool.category === 'skill') return 'skill';
-      return TOOL_BUSINESS_GROUPS.includes(tool.category) ? tool.category : 'life';
+      if (!tool) return 'other';
+      return TOOL_BUSINESS_GROUPS.includes(tool.category) ? tool.category : 'other';
     };
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- tool-card action buttons render many branches; legacy view; tracked separately
