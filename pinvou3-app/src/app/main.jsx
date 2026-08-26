@@ -589,8 +589,9 @@ function workspaceDisplayName(path) {
         if (bs.activeSessionId !== activeChat) {
           setActiveChat(bs.activeSessionId);
           if (bs.activeSessionId && currentView !== 'codex' && currentView !== 'monitor' && currentView !== 'settings' && currentView !== 'search' && currentView !== 'scheduled') {
-            // 外部会话切换(web 遥控等)物化出普通 chat 视图时必须退出 code 模式,
-            // 否则 code 边栏与「新对话」建 codex 草稿的行为残留到普通会话上。
+            // An external session switch (web remote control, etc.) that materializes
+            // a normal chat view must exit code mode, otherwise the code sidebar and the
+            // codex-draft New chat behavior leak onto a regular session.
             setCodeModeOn(false);
             setCurrentView('chat');
           }
@@ -599,7 +600,8 @@ function workspaceDisplayName(path) {
         if (bs.composerPrefill && bs.composerPrefill.id && bs.composerPrefill.id !== composerPrefillSeenRef.current) {
           composerPrefillSeenRef.current = bs.composerPrefill.id;
           setChatPrefill(bs.composerPrefill.text || '');
-          // prefill 落普通聊天输入框:同上,物化 chat 视图前退出 code 模式。
+          // A composer prefill lands on the normal chat input: same rule — exit code
+          // mode before materializing the chat view.
           setCodeModeOn(false);
           setCurrentView('chat');
         }
@@ -882,8 +884,9 @@ function workspaceDisplayName(path) {
       const taskFilterRef = useRef(null);
       // 日期组展开状态:未点过的组按默认值走(今天展开、以往折叠),点过后记住用户选择
       const [dateGroupOpen, setDateGroupOpen] = useState({});
-      // code 样式边栏:进入 code 模式默认启用(按文件夹分组+折叠主导航),
-      // 右下角可切回普通样式;选择持久化,重进 code 模式仍生效。
+      // Code-style sidebar: enabled by default in code mode (folder grouping +
+      // collapsed primary nav); the bottom-right button switches back to the standard
+      // style. The choice is persisted and survives re-entering code mode.
       const [sidebarCodeStyle, setSidebarCodeStyle] = useState(() => {
         try {
           return localStorage.getItem('pinvou_sidebar_code_style') === 'normal' ? 'normal' : 'code';
@@ -897,21 +900,24 @@ function workspaceDisplayName(path) {
           try {
             localStorage.setItem('pinvou_sidebar_code_style', next);
           } catch {
-            // WebView 禁用 storage 时仍允许当前窗口内切换。
+            // When the WebView disables storage, still allow switching for this window.
           }
           return next;
         });
       }, []);
-      // 文件夹组展开状态:默认全部展开,点过后记住用户选择
+      // Folder group expand state: all expanded by default; once toggled, remember the choice
       const [folderGroupOpen, setFolderGroupOpen] = useState({});
-      // code 样式下主导航默认折叠成一行,展开后记住当次选择(退出 code 模式即重置)
+      // In code style the primary nav collapses to a single row by default; expanding is
+      // remembered for the session (reset when code mode exits)
       const [codeNavExpanded, setCodeNavExpanded] = useState(false);
-      // code 模式是「模式」而非「页面」:进入后点击导航工具切到输出/监控等页面
-      // 仍留在 code 模式,边栏保持 code 样式、新对话仍建 code 会话;
-      // 只有显式切回工作/设计、或点开普通聊天会话时才退出。
+      // Code mode is a mode, not a page: after entering, navigating to output/monitor
+      // pages keeps code mode — the sidebar stays code-styled and New chat still creates
+      // code sessions; only explicitly switching back to work/design, or opening a normal
+      // chat session, exits it.
       const [codeModeOn, setCodeModeOn] = useState(false);
       const codeStyleActive = codeModeOn && sidebarCodeStyle === 'code';
-      // 退出 code 模式后主导航折叠条复位,下次进入仍是折叠的默认形态。
+      // Exiting code mode resets the primary-nav collapse bar, so the next entry starts
+      // from the default collapsed form.
       useEffect(() => {
         if (!codeModeOn) setCodeNavExpanded(false);
       }, [codeModeOn]);
@@ -919,7 +925,8 @@ function workspaceDisplayName(path) {
       const [archiveToast, setArchiveToast] = useState(false);
       const [settingsToast, setSettingsToast] = useState('');
 
-      // 展开态边栏宽度:右边沿拖拽调整(220~480px),双击把手复位默认,选择持久化。
+      // Expanded sidebar width: drag the right edge to adjust (220~480px), double-click
+      // the handle to reset to default; the choice is persisted.
       const SIDEBAR_WIDTH_DEFAULT = 280;
       const SIDEBAR_WIDTH_MIN = 220;
       const SIDEBAR_WIDTH_MAX = 480;
@@ -932,7 +939,8 @@ function workspaceDisplayName(path) {
           return SIDEBAR_WIDTH_DEFAULT;
         }
       });
-      // 拖拽中关闭宽度过渡动画,避免跟随延迟;ref 供 pointerup 时读最新宽度落盘。
+      // Disable the width transition while dragging to avoid follow lag; the ref lets
+      // pointerup read the latest width for persistence.
       const [sidebarResizing, setSidebarResizing] = useState(false);
       const sidebarWidthRef = useRef(sidebarWidth);
       const applySidebarWidth = (w) => {
@@ -956,15 +964,16 @@ function workspaceDisplayName(path) {
           try {
             localStorage.setItem('pinvou_sidebar_width', String(sidebarWidthRef.current));
           } catch {
-            // WebView 禁用 storage 时仅当次生效。
+            // When the WebView disables storage, the width applies only this once.
           }
         };
-        // 捕获指针并监听 pointercancel:窗口失焦/触摸被系统手势接管时也能收尾,
-        // 否则 resizing 卡 true(过渡动画永久禁用)且监听器泄漏。
+        // Capture the pointer and listen for pointercancel so an interrupted drag
+        // (window blur / touch taken over by a system gesture) still settles; otherwise
+        // resizing sticks at true (transition permanently disabled) and listeners leak.
         try {
           handle.setPointerCapture(event.pointerId);
         } catch {
-          // 旧 WebView 不支持捕获时退化为 window 监听。
+          // Fall back to window listeners when an old WebView does not support capture.
         }
         window.addEventListener('pointermove', onMove);
         window.addEventListener('pointerup', onUp);
@@ -975,7 +984,7 @@ function workspaceDisplayName(path) {
         try {
           localStorage.setItem('pinvou_sidebar_width', String(SIDEBAR_WIDTH_DEFAULT));
         } catch {
-          // 同上。
+          // Same as above.
         }
       }, []);
 
@@ -1064,8 +1073,10 @@ function workspaceDisplayName(path) {
         });
       }
 
-      // code 样式边栏:只列 code 会话,按文件夹(workspace)分组,组间/组内均按最后活跃
-      // 倒序,temporary 会话合并沉底;「置顶优先」时置顶 code 会话提升到文件夹组之上。
+      // Code-style sidebar: lists only code sessions, grouped by folder (workspace);
+      // groups and rows both sort by latest activity descending, temporary sessions merge
+      // into one bottom group; with "pinned first", pinned code sessions hoist above the
+      // folder groups.
       const sidebarCodeTasks = codeStyleActive
         ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex')
         : [];
@@ -1124,8 +1135,9 @@ function workspaceDisplayName(path) {
         }
         if (beforeNavigate) beforeNavigate();
         setCurrentView(nextView);
-        // 落回普通聊天视图(折叠栏「当前对话」、移动端底部 tab)必须退出 code 模式:
-        // 模式跟随会话类型,否则 code 边栏样式与「新对话」建 codex 草稿的行为残留到 chat 视图。
+        // Landing back on the normal chat view (collapsed rail "current chat", mobile
+        // bottom tab) must exit code mode: the mode follows the session type, otherwise the
+        // code sidebar style and the codex-draft New chat behavior leak onto the chat view.
         if (nextView === 'chat') setCodeModeOn(false);
         closeMobileSidebar();
         return true;
@@ -1152,8 +1164,9 @@ function workspaceDisplayName(path) {
 
       async function handleOpenScheduledRunShortcut(run) {
         if (!run || !run.sessionId) return;
-        // 定时任务会话是普通聊天:fallback 与成功打开两条分支都落 scheduled 视图,
-        // 统一在入口处退出 code 模式,否则普通会话套着 code 边栏(只剩 code 会话列表)。
+        // A scheduled-run session is a normal chat: both the fallback and the
+        // successful-open branches land on the scheduled view, so exit code mode once at
+        // the entry — otherwise a regular session shows behind a code-only session list.
         setCodeModeOn(false);
         if (!bridge.available || !bridge.scheduled.openScheduledRunChat) {
           setCurrentView('scheduled');
@@ -1177,10 +1190,13 @@ function workspaceDisplayName(path) {
         if (typeof installedToolId === 'string' && installedToolId) {
           setJustInstalledTool(installedToolId);
         }
-        // 跟随 code 模式而非当前页面:code 模式下即使停在输出/监控等工具页,
-        // 「新对话」仍建 code 会话草稿;forceMode 供 AI 造卡等必须落普通聊天的调用点使用。
-        // 带工具意图的调用(工具商店「用此工具新对话」)同样必须落普通聊天:
-        // 工具欢迎卡只由 ChatView 消费,落 codex 草稿会静默丢弃意图并残留到下一个会话。
+        // Follow code mode rather than the current page: in code mode, even on
+        // output/monitor tool pages, New chat still creates a code session draft;
+        // forceMode serves call sites that must land on a normal chat, such as AI card
+        // creation.
+        // Calls carrying a tool intent (tool store "new chat with this tool") must also
+        // land on a normal chat: the tool welcome card is only consumed by ChatView, so a
+        // codex draft would silently drop the intent and leak it into the next session.
         const hasToolIntent = typeof installedToolId === 'string' && !!installedToolId;
         const wantCode = forceMode
           ? forceMode === 'code'
@@ -1238,7 +1254,8 @@ function workspaceDisplayName(path) {
 
       // AI 造卡:新对话 + 加持「卡牌制造专家」+ 一条 iOS 引导卡 → 用户在空输入框描述需求,复用 persona-card 草稿流程入库
       async function startAICard() {
-        // 造卡必须落普通聊天会话:即使在 code 模式下从卡片池发起,也要先退出 code 模式。
+        // Card creation must land on a normal chat session: even when started from the
+        // card pool in code mode, exit code mode first.
         setCodeModeOn(false);
         handleNewChat(null, 'chat');
         if (!bridge.available) return;
@@ -1248,7 +1265,7 @@ function workspaceDisplayName(path) {
 
       async function handleSwitchSession(id) {
         if (!bridge.available) return;
-        // 点开普通聊天会话即退出 code 模式(模式跟随会话类型,而非停留页面)。
+        // Opening a normal chat session exits code mode (mode follows session type).
         setCodeModeOn(false);
         // Web RPC 可能跨公网 Relay：先关闭抽屉并切入聊天路由，后台再加载会话。
         setCurrentView('chat');
@@ -1955,8 +1972,10 @@ function workspaceDisplayName(path) {
           <div
             data-testid="app-sidebar"
             style={{
-              // 紧凑壳抽屉不继承桌面持久化宽度:抽屉无拖把手可调,
-              // 宽于视口时会盖死点遮罩关闭的通道(z-30 在侧栏 z-40 之下)。
+              // The compact-shell drawer does not inherit the persisted desktop width:
+              // the drawer has no drag handle, and a width beyond the viewport would cover
+              // the tap-on-backdrop-to-dismiss channel (the z-30 backdrop sits below the
+              // z-40 sidebar).
               width: isSidebarOpen && !isCompactShell ? sidebarWidth : undefined,
               ...(isCompactShell ? {
                 display: isSidebarOpen ? 'flex' : 'none',
@@ -2002,9 +2021,10 @@ function workspaceDisplayName(path) {
               )}
             </div>
 
-            {/* Navigation — shrink-0 固定不滚动,list 再多也不挤压 nav。
-                code 样式下默认折叠成一行折叠条,但「新对话」常驻不折叠;
-                其余导航项展开后可在底部收起。 */}
+            {/* Navigation — shrink-0 keeps it from scrolling; no matter how long the
+                list is, it never squeezes the nav. In code style it collapses to a single
+                collapse bar by default, but New chat stays pinned; the remaining nav items
+                can be collapsed again at the bottom after expanding. */}
             <div data-testid="sidebar-primary-nav" className={`shrink-0 flex flex-col gap-0.5 mt-1.5 max-sm:gap-0 max-sm:mt-1 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
               <NavItem
                 icon={<Edit2 size={18} />} label={t.newChat}
@@ -2012,7 +2032,8 @@ function workspaceDisplayName(path) {
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => handleNewChat()}
               />
-              {/* 紧凑壳下搜索只在导航里有入口,折叠时也必须常驻 */}
+              {/* On the compact shell search is only reachable from the nav, so it must
+                  stay pinned even when collapsed */}
               {(!isSidebarOpen || isCompactShell) && (
                 <NavItem
                   icon={<Search size={18} />} label={t.searchChats}
@@ -2357,7 +2378,8 @@ function workspaceDisplayName(path) {
                     </button>
                   </div>
                 )}
-                {/* code 模式下边栏样式切换:与左侧图标组分开,单独钉在边栏右下角 */}
+                {/* Sidebar style toggle in code mode: separate from the left icon group,
+                    pinned to the sidebar's bottom-right corner */}
                 {isSidebarOpen && codeModeOn && (
                   <button
                     type="button"
@@ -2373,7 +2395,8 @@ function workspaceDisplayName(path) {
               </div>
             </div>
 
-            {/* 右边沿拖拽调宽:仅展开态桌面壳提供;双击复位默认宽度 */}
+            {/* Right-edge drag to resize: only offered on the expanded desktop shell;
+                double-click resets to the default width */}
             {isSidebarOpen && !isCompactShell && (
               <div
                 data-testid="sidebar-resize-handle"

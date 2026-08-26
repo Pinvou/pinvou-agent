@@ -881,12 +881,15 @@ async function expand(page) {
     JSON.stringify(codexBatchArchive));
   await page.evaluate(() => document.querySelector('button[aria-label="取消"]')?.click());
 
-  // codex 区块结束:code 会话在对话管理页被点开后即进入 code 模式(侧边栏样式、
-  // 折叠导航、「新对话」行为都跟随模式)。后续用例依赖普通侧边栏与聊天视图,
-  // 必须显式退出 code 模式,避免污染下游断言。
-  // 退出路径不能点开任何普通会话(③ 依赖「第三季度财报分析」首次切入时的磁盘
-  // 水合来重建 Shell 历史卡 taskId,预开会让二次切入走缓存路径):先点「新对话」
-  // 进 code 草稿页,再用 HomeModeSwitcher 切回工作模式——全程不触碰已有会话。
+  // End of the codex block: opening a code session from the chat manager page enters
+  // code mode (sidebar style, collapsed nav, and New chat behavior all follow the mode).
+  // Later cases rely on the standard sidebar and chat view, so exit code mode explicitly
+  // to avoid polluting downstream assertions.
+  // The exit path must not open any existing normal session (case ③ relies on the first
+  // entry into 「第三季度财报分析」 rehydrating the Shell history card taskId from disk;
+  // pre-opening would route the second entry through the cache path): click 「新对话」
+  // into the code draft page first, then switch back to work mode via the
+  // HomeModeSwitcher — without touching any existing session.
   await clickText(page, '新对话'); await sleep(500);
   await page.evaluate(() => document.querySelector('[data-testid="home-mode-work"]')?.click());
   await sleep(700);

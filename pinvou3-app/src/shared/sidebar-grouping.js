@@ -1,18 +1,21 @@
-// 侧栏 code 样式:code 会话按文件夹(workspace)分组的纯逻辑。
-// 与 date-utils.js 同为纯函数模块,不依赖 UI/i18n,便于 node 侧单测。
+// Sidebar code style: pure logic that groups code sessions by folder (workspace).
+// Like date-utils.js, this is a pure-function module with no UI/i18n dependencies,
+// so it can be unit-tested on the node side.
 
-// temporary 工作区会话的统一组 key:它们的工作区目录由 session id 推导,
-// 按路径分桶会产生大量一次性组,归入一组沉底更符合「临时」语义。
+// Shared group key for temporary-workspace sessions: their workspace directory is
+// derived from the session id, so bucketing by path would produce many one-off groups;
+// merging them into a single bottom group matches the "temporary" semantics.
 const TEMPORARY_GROUP_KEY = '__temporary__';
 
 function itemTime(item) {
   return String((item && (item.updatedAt || item.pinnedAt)) || '');
 }
 
-// 输入仅 code 会话:[{ workspacePath, workspaceKind, updatedAt, ... }]。
-// 返回 [{ key, rows, latestAt }]:project 会话按 workspacePath 分桶,
-// temporary 会话合并为一组;组内按最后活跃(updatedAt)倒序,
-// 组间按组内最新活跃倒序,temporary 组恒沉底。
+// Input is code sessions only: [{ workspacePath, workspaceKind, updatedAt, ... }].
+// Returns [{ key, rows, latestAt }]: project sessions bucket by workspacePath, temporary
+// sessions merge into one group; rows sort by latest activity (updatedAt) descending,
+// groups sort by their latest activity descending, and the temporary group always sinks
+// to the bottom.
 function groupSessionsByFolder(items) {
   const byFolder = new Map();
   (Array.isArray(items) ? items : []).forEach((item) => {
