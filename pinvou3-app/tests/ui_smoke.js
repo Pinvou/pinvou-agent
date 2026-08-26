@@ -649,11 +649,12 @@ async function expand(page) {
   await page.keyboard.press('Escape'); await sleep(200);
 
   // ①a-3 对话管理页必须按 Codex 会话类型路由，不能误走普通聊天 switchToSession。
+  // 会话行是「标题 button + 操作按钮并列」结构：点标题 button 即选择会话。
   await clickText(page, '查看全部'); await sleep(500);
   const codexManagedOpen = await page.evaluate(() => {
     const label = [...document.querySelectorAll('span')]
       .find(node => (node.textContent || '').trim() === 'Codex回归会话' && node.getBoundingClientRect().left > 300);
-    const row = label && label.closest('div[class*="cursor-pointer"]');
+    const row = label && label.closest('button');
     if (!row) return { found: false };
     row.click();
     return { found: true };
@@ -855,7 +856,8 @@ async function expand(page) {
   const managedActiveState = await page.evaluate(() => {
     const label = [...document.querySelectorAll('span')]
       .find(node => (node.textContent || '').trim() === 'Codex回归会话' && node.getBoundingClientRect().left > 300);
-    const row = label && label.closest('div[class*="cursor-pointer"]');
+    // 标题 button 的父级即行容器(active 背景挂在容器上)。
+    const row = label && (label.closest('button')?.parentElement || null);
     return {
       found: !!row,
       activeClass: !!(row && (row.classList.contains('bg-[#333537]') || row.classList.contains('bg-[#E1E5EA]'))),
@@ -1642,7 +1644,8 @@ async function expand(page) {
   const archiveMenuOpened = await page.evaluate(() => {
     const label = [...document.querySelectorAll('span')]
       .find(node => (node.textContent || '').trim() === '第三季度财报分析' && node.getBoundingClientRect().left < 330);
-    const row = label && label.closest('div[class*="cursor-pointer"]');
+    // 在标题 button 上派发 contextmenu,事件冒泡到行容器打开右键菜单。
+    const row = label && label.closest('button');
     if (!row) return false;
     const rect = row.getBoundingClientRect();
     row.dispatchEvent(new MouseEvent('contextmenu', {

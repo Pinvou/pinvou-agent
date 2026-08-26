@@ -13,7 +13,11 @@ const LONGPRESS_MS = 350;
       };
       const onPointerDown = (e) => {
         if (e.button !== 0 || !kind) return;
-        if (e.target && e.target.closest && e.target.closest('button,input')) return;
+        // Session rows put the drag handlers on their label button, which is
+        // itself marked data-drag-surface: presses on it start the long-press
+        // drag. Every other button/input (pin, more, confirm…) lacks the
+        // marker and is skipped so pressing an action never picks up the row.
+        if (e.target && e.target.closest && e.target.closest('button:not([data-drag-surface]), input')) return;
         const rect = e.currentTarget.getBoundingClientRect();
         startRef.current = { x: e.clientX, y: e.clientY, rect };
         pickedRef.current = false;

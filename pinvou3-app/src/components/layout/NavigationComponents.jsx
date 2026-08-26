@@ -308,31 +308,33 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
           </div>
         );
       }
-      // Keyboard path: the session row itself can be selected with Enter/Space (previously click-only; this adds real keyboard reachability).
-      // Only effective when focus is on the row itself, so Enter bubbling from inner buttons (pin/more) does not accidentally trigger selection;
-      // Dragging is pure pointer interaction (useLongPressDrag); the keyboard path needs no guardClick.
-      const selectChatOnKey = (e) => {
-        if (e.target !== e.currentTarget) return;
-        if ((e.key === 'Enter' || e.key === ' ') && !isImeComposing(e)) {
-          e.preventDefault();
-          selectChat();
-        }
-      };
+      // Keyboard path: the label button below is a native <button type="button">,
+      // so Enter/Space activation and Tab focus come from the platform. Only the
+      // label button selects the session; pin/more/delete are sibling controls,
+      // so no interactive control is nested inside another one.
       return (
-        // Real buttons like pin/more are nested inline; converting to <button type="button"> would create illegally nested interactive elements, so a role="button" container pattern is used.
-        // biome-ignore lint/a11y/useSemanticElements: real buttons are nested inline and cannot become <button type="button"> (illegal nesting); a container role carries interactivity
-        <div role="button" tabIndex={0} onKeyDown={selectChatOnKey}
-          onClick={sessionDragKind ? drag.guardClick(selectChat) : selectChat}
-          {...dragProps}
+        // Row container: NOT interactive. It only hosts the context menu, drag
+        // styling (persona target highlight / dragging opacity) and hover
+        // grouping; session selection is the label button, so the action
+        // buttons are siblings instead of descendants of an ARIA button.
+        // biome-ignore lint/a11y/noStaticElementInteractions: right-click is a pointer-only shortcut for the same menu the "more" button opens; keyboard users use that button (menu items are real buttons, Escape closes)
+        <div
+          role="presentation"
           onContextMenu={openContextMenu}
-          data-testid={chat.testId}
           data-drag-kind={sessionDragKind || undefined}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={recentItemRowStyle(dragging, personaTarget, isDark)}
-          className={`group flex h-11 items-center px-4 rounded-full cursor-pointer text-[15px] transition-all
+          className={`group flex h-11 items-center rounded-full text-[15px] transition-all
             ${personaTarget ? ''
               : active ? 'bg-[#E1E5EA] text-[#1F1F1F] dark:bg-[#333537] dark:text-white'
                      : 'text-[#1F1F1F] hover:bg-[#E1E5EA] dark:text-[#E3E3E3] dark:hover:bg-[#282A2C]'}`}>{/* isDark dynamic-value: 保留 (personaTarget boxShadow 运行时拼色,与 background/color 同对象) */}
+          <button
+            type="button"
+            data-testid={chat.testId}
+            data-drag-surface
+            onClick={sessionDragKind ? drag.guardClick(selectChat) : selectChat}
+            {...dragProps}
+            className="flex min-w-0 flex-1 cursor-pointer items-center self-stretch border-0 bg-transparent px-4 text-left">
           {personaTarget && <Sparkles size={13} className="shrink-0 mr-1.5 text-[#007AFF] dark:text-[#0A84FF]" />}
           {chat.leadingIcon && (
             <span className="mr-3 flex h-5 w-5 shrink-0 items-center justify-center opacity-95">
@@ -356,10 +358,9 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
               className="mr-1 h-2 w-2 shrink-0 rounded-full group-hover:hidden"
               style={{ background: '#0B57D0' }} />
           )}
+          </button>
           {confirming ? (
-            // biome-ignore lint/a11y/useKeyWithClickEvents: container only stops bubbling to avoid accidentally triggering session-row selection; not an interactive control itself
-            // biome-ignore lint/a11y/noStaticElementInteractions: container only stops bubbling; a non-interactive container
-            <div className="flex items-center gap-0.5 shrink-0" onClick={e => e.stopPropagation()}>
+            <div className="mr-4 flex items-center gap-0.5 shrink-0">
               <span className="text-[11px] mr-0.5 text-[#C5221F] dark:text-[#F28B82]">{t.riDelQ}</span>
               <button type="button" title={t.riDelConfirm} onClick={(e) => { e.stopPropagation(); onDelete(chat.id); }}
                 className="w-6 h-6 rounded-full flex items-center justify-center text-[#C5221F] hover:bg-[#FAD2CF] dark:text-[#F28B82] dark:hover:bg-[#5c2b29]"><Check size={14} /></button>
@@ -371,11 +372,11 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
               {/* 默认: 显示日期(辨识每条会话什么时候发生);hover/active 时换成置顶/更多按钮,重命名/收纳/删除在更多菜单里。
                   窄屏无 hover：按钮组常显、日期让位，保证触屏可达。 */}
               {chat.date && (
-                <span className="text-[11px] shrink-0 opacity-60 whitespace-nowrap group-hover:hidden max-sm:hidden text-[#5F6368] dark:text-[#9AA0A6]">
+                <span className="text-[11px] mr-4 shrink-0 opacity-60 whitespace-nowrap group-hover:hidden max-sm:hidden text-[#5F6368] dark:text-[#9AA0A6]">
                   {chat.date}
                 </span>
               )}
-              <div className="hidden group-hover:flex max-sm:flex items-center gap-0.5 shrink-0">
+              <div className="mr-4 hidden group-hover:flex max-sm:flex items-center gap-0.5 shrink-0">
                 <button type="button" title={chat.pinned ? t.riUnpin : t.riPin} onClick={(e) => { e.stopPropagation(); onTogglePinned && onTogglePinned(chat.id, !chat.pinned); }}
                   className="w-6 h-6 rounded-full flex items-center justify-center transition-colors text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746]">
                   {chat.pinned ? <PinOffIcon size={13} /> : <PinIcon size={13} />}
