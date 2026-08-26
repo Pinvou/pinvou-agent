@@ -200,7 +200,7 @@ export default defineConfig([
   // Node-side code (tests, build scripts) runs on Node 22 in CI, so its
   // language floor is the Node 22 feature set, not the webview ES2021 one.
   {
-    files: ['tests/**/*.{js,mjs}', 'scripts/**/*.{js,mjs}', 'vite.config.js'],
+    files: ['tests/**/*.{js,mjs}', 'scripts/**/*.{js,mjs}', 'vite.config.js', 'eslint.config.mjs'],
     languageOptions: {
       ecmaVersion: 2024,
       sourceType: 'module',
@@ -220,9 +220,6 @@ export default defineConfig([
       ...js.configs.recommended.rules,
       ...nPlugin.configs['flat/recommended-module'].rules,
       ...importX.configs.recommended.rules,
-      // eslint.config.mjs imports the lint plugins themselves; import-x cannot
-      // parse their dual ESM/CJS entries and reports phantom parse errors.
-      // These two rules lack an ignore option, so scope them to code files.
       'no-var': 'error',
       'prefer-const': 'error',
       eqeqeq: ['error', 'smart'],
@@ -251,6 +248,18 @@ export default defineConfig([
       // without extensions in shebang form; hashbangs are intentional there.
       'n/hashbang': 'off',
     },
+  },
+  // eslint.config.mjs is linted too (it used to fall through every block and
+  // got `rules: {}` from --print-config). It imports the lint plugins
+  // themselves, and import-x cannot parse their dual ESM/CJS entries — it
+  // reports phantom parse errors on those imports — so every import-x rule
+  // is off for this one file; the rest of the Node-side rules still apply.
+  {
+    files: ['eslint.config.mjs'],
+    plugins: { 'import-x': importX },
+    rules: Object.fromEntries(
+      Object.keys(importX.configs.recommended.rules).map((rule) => [rule, 'off'])
+    ),
   },
   {
     ignores: ['dist/**', 'node_modules/**', 'src/vendor/**', 'src-tauri/**', 'coverage/**'],

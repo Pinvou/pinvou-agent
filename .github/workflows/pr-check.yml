@@ -261,6 +261,14 @@ jobs:
               - 'pinvou3-app/package-lock.json'
               - 'pinvou3-app/vite.config.js'
               - 'pinvou3-app/eslint.config.mjs'
+              # 静态门禁配置(oxlint/Biome/knip/jsconfig)与 Safari 14 兼容审计脚本
+              # 只在 frontend-test 内消费;不列入则 config-only PR 会静默跳过
+              # 全部 lint 门禁(test_ci_gate_policy 锁定此路由)。
+              - 'pinvou3-app/.oxlintrc.json'
+              - 'pinvou3-app/biome.jsonc'
+              - 'pinvou3-app/knip.json'
+              - 'pinvou3-app/jsconfig.json'
+              - 'pinvou3-app/scripts/audit-compat.mjs'
               - 'pinvou3-app/src-tauri/tauri.conf.json'
               - '.gitmodules'
               - '.github/workflows/pr-check.yml'

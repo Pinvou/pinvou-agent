@@ -125,6 +125,33 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("npm run test:browser-smoke", frontend)
         self.assertEqual(frontend.count("npm run test:markdown"), 0)
 
+    def test_static_analysis_gate_configs_route_to_frontend_test(self):
+        # The static-analysis gates (oxlint/Biome/knip/jsconfig/audit-compat)
+        # only run inside frontend-test, so their config files must be in the
+        # frontend path filter; otherwise a config-only PR skips every gate
+        # that consumes the file it changed.
+        changes = _without_yaml_comments(
+            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
+                "\n  fast-gate:", maxsplit=1
+            )[0]
+        )
+        frontend_paths = changes.split(
+            "            frontend:", maxsplit=1
+        )[1].split("            relay:", maxsplit=1)[0]
+        for path in (
+            "pinvou3-app/.oxlintrc.json",
+            "pinvou3-app/biome.jsonc",
+            "pinvou3-app/knip.json",
+            "pinvou3-app/jsconfig.json",
+            "pinvou3-app/eslint.config.mjs",
+            "pinvou3-app/scripts/audit-compat.mjs",
+        ):
+            self.assertIn(
+                f"- '{path}'",
+                frontend_paths,
+                f"静态门禁配置 {path} 不在 frontend filter 中,config-only PR 会静默跳过 frontend-test",
+            )
+
     def test_merge_queue_uses_real_path_filtering_and_product_gates(self):
         changes = self.pr_workflow.split(
             "\n  changes:", maxsplit=1
