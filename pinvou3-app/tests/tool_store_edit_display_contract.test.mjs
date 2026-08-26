@@ -15,10 +15,6 @@ const toolStoreSource = await readFile(
   new URL('../src/features/tools/ToolStoreView.jsx', import.meta.url),
   'utf8',
 );
-const i18nSource = await readFile(
-  new URL('../src/shared/i18n.js', import.meta.url),
-  'utf8',
-);
 
 // 1. TsActionBtn 的 specs 映射认识 edit_display 动作，点击路由到 onEditDisplay。
 assert.match(
@@ -122,11 +118,20 @@ assert.match(
 );
 
 // 5. 三语词条：uiToolCommon.editDisplay 与 uiToolStore 的对话框 key 三语齐全
-// （结构性奇偶由 ui_language_coverage.test.mjs 兜底，这里钉关键 key 存在）。
+// （词典已按语言拆分为 src/shared/i18n/{zh,en,ja}.js 惰性 chunk；结构性奇偶
+// 由 ui_language_coverage.test.mjs 兜底，这里钉关键 key 存在）。
+const dictNames = { zh: 'dictZh', en: 'dictEn', ja: 'dictJa' };
+const chunkSources = {};
+for (const lang of ['zh', 'en', 'ja']) {
+  chunkSources[lang] = await readFile(
+    new URL(`../src/shared/i18n/${lang}.js`, import.meta.url),
+    'utf8',
+  );
+}
 for (const lang of ['zh', 'en', 'ja']) {
   assert.match(
-    i18nSource,
-    new RegExp(`dict\\.${lang}\\.uiToolCommon = \\{[\\s\\S]*?editDisplay:`),
+    chunkSources[lang],
+    new RegExp(`${dictNames[lang]}\\.uiToolCommon = \\{[\\s\\S]*?editDisplay:`),
     `uiToolCommon.editDisplay missing for ${lang}`,
   );
 }
@@ -138,7 +143,8 @@ for (const key of [
   'editDisplaySave',
   'editDisplaySaved',
 ]) {
-  const occurrences = i18nSource.match(new RegExp(`${key}:`, 'g')) || [];
+  const occurrences = ['zh', 'en', 'ja']
+    .flatMap((lang) => chunkSources[lang].match(new RegExp(`${key}:`, 'g')) || []);
   assert.equal(occurrences.length, 3, `${key} must exist in all three uiToolStore dicts`);
 }
 
