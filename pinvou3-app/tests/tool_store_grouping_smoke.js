@@ -110,11 +110,13 @@ async function clickChip(page, text) {
     }));
     rec('点击「全部」chip 复位', await clickExact(page, '全部'));
     await sleep(300);
-    // 主维度=类型 → 下方按业务分区
+    // 主维度=类型 → 下方按业务分区。业务归属未知的条目(内置视觉设计/独立技能/
+    // 自定义上传 MCP)落「其它」分区;「技能」不再是业务分区(仅作类型维度组)。
     const sectionsByType = await page.evaluate(() => [...document.querySelectorAll('h3')].map(h => (h.textContent || '').trim()));
-    for (const label of ['沟通协作', '文档知识', '金融数据', '生活实用', '技能']) {
+    for (const label of ['沟通协作', '文档知识', '金融数据', '生活实用', '其它']) {
       rec(`按类型时业务分区「${label}」渲染`, sectionsByType.includes(label));
     }
+    rec('按类型时业务分区不含「技能」', !sectionsByType.includes('技能'));
 
     // 数量徽标 == 分区内实际渲染条目数(分区内工具卡标题同为 h3,故条目数 = h3 总数 - 1)
     const badgeSections = await page.evaluate(() => [...document.querySelectorAll('div.items-baseline')].map(head => ({
@@ -153,7 +155,7 @@ async function clickChip(page, text) {
     rec('点击「按业务」segment', await clickExact(page, '按业务'));
     await sleep(300);
     const bizChips = await page.evaluate(() => [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim()));
-    for (const label of ['全部', '沟通协作', '文档知识', '研发', '金融数据', '生活实用']) {
+    for (const label of ['全部', '沟通协作', '文档知识', '研发', '金融数据', '生活实用', '其它']) {
       rec(`业务维度 chip「${label}」渲染`, bizChips.includes(label));
     }
     rec('业务维度 chip 不含「技能」', !bizChips.includes('技能'));
