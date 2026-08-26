@@ -36,6 +36,7 @@ try {
     buildElicitationContent,
     commandExecutionDetails,
     createAcpEventSeqTracker,
+    createAcpGapResyncScheduler,
     mergeAcpTimelineSnapshot,
     projectAcpTimeline,
     resolveAcpSessionControls,
@@ -243,8 +244,10 @@ try {
   assert.equal(appendAcpEvent(events, events[0]).length, events.length, 'duplicate seq must be ignored');
   assert.equal(appendAcpEvent(events.slice(0, 2), events[2]).length, 3);
 
-  // 看门狗跳过停滞前序后,Web 直播流出现 envelope-seq 空洞:跟踪器必须报告
-  // 'gap' 让视图层重取权威时间线;重连回放(旧 seq 重复投递)与会话隔离不得误报。
+  // After the watchdog skips a stalled predecessor, the web live stream shows
+  // an envelope-seq hole: the tracker must report 'gap' so the view layer can
+  // refetch the authoritative timeline; reconnect replay (duplicate delivery
+  // of older seqs) and session isolation must not misreport.
   const seqTracker = createAcpEventSeqTracker();
   assert.equal(seqTracker.note('session-1', 0), 'ignored', 'non-positive seq carries no ordering signal');
   assert.equal(seqTracker.note('', 3), 'ignored', 'a missing session id carries no ordering signal');
@@ -263,6 +266,119 @@ try {
   assert.equal(seqTracker.note('session-2', 13), 'ok', 'snapshot rebase advances the baseline without a gap');
   seqTracker.rebase('session-1', 2);
   assert.equal(seqTracker.note('session-1', 7), 'ok', 'rebase never regresses a live-advanced baseline');
+
+  // A transient resync failure must not permanently disable healing: note()
+  // advances its baseline before reporting 'gap', so later live envelopes
+  // look continuous and never retrigger on their own. The scheduler retries
+  // a failed resync with exponential backoff until an attempt succeeds or
+  // the attempt budget is exhausted.
+  {
+    const timers = [];
+    const useFakeTimers = () => ({
+      setTimeout: (fn, delay) => {
+        timers.push({ fn, delay });
+        return timers.length;
+      },
+      clearTimeout: (id) => {
+        const pending = timers[id - 1];
+        if (pending) pending.fn = null;
+      },
+    });
+    const attemptLog = [];
+    const retryLog = [];
+    const giveUpLog = [];
+    const makeScheduler = attempts => createAcpGapResyncScheduler(
+      async sessionId => {
+        attemptLog.push(sessionId);
+        if (attemptLog.length < attempts) throw new Error('transient network failure');
+      },
+      {
+        maxAttempts: 5,
+        baseDelayMs: 800,
+        maxDelayMs: 3200,
+        onRetry: (sessionId, attempt, error) => retryLog.push([sessionId, attempt, error.message]),
+        onGiveUp: (sessionId, attempt, error) => giveUpLog.push([sessionId, attempt, error.message]),
+        ...useFakeTimers(),
+      },
+    );
+    const fireNext = () => {
+      const pending = timers.find(entry => entry.fn);
+      assert.ok(pending, 'a timer must be pending when the scheduler expects to fire');
+      const fn = pending.fn;
+      pending.fn = null;
+      fn();
+      return Promise.resolve();
+    };
+    const fireLatest = () => {
+      const pending = timers.filter(entry => entry.fn).pop();
+      assert.ok(pending, 'a timer must be pending when the scheduler expects to fire');
+      const fn = pending.fn;
+      pending.fn = null;
+      fn();
+      return Promise.resolve();
+    };
+
+    // Heal on the second attempt: the first resync fails, the retry lands.
+    const healing = makeScheduler(2);
+    healing.schedule('session-1');
+    assert.equal(timers[0].delay, 800, 'the first attempt is debounced by the base delay');
+    await fireNext();
+    assert.deepEqual(attemptLog, ['session-1'], 'the debounced timer fires one resync attempt');
+    await Promise.resolve();
+    assert.deepEqual(retryLog, [['session-1', 1, 'transient network failure']],
+      'a failed attempt schedules a backoff retry instead of giving up');
+    const backoff = timers.find(entry => entry.fn);
+    assert.equal(backoff.delay, 1600, 'the retry delay doubles after the first failure');
+    await fireNext();
+    await Promise.resolve();
+    assert.deepEqual(attemptLog, ['session-1', 'session-1'],
+      'the retry attempt runs and succeeds, healing the gap');
+    assert.deepEqual(giveUpLog, [], 'no give-up once an attempt succeeds');
+
+    // Exhaust the budget: five consecutive failures stop rescheduling, and a
+    // later gap report starts a fresh cycle with the base delay again.
+    const givingUp = makeScheduler(Infinity);
+    givingUp.schedule('session-2');
+    const delays = [];
+    for (let i = 0; i < 5; i += 1) {
+      const pending = timers.find(entry => entry.fn);
+      assert.ok(pending, `attempt ${i + 1} must have a pending timer`);
+      delays.push(pending.delay);
+      await fireNext();
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    assert.deepEqual(delays, [800, 1600, 3200, 3200, 3200],
+      'backoff doubles per failure and is capped at maxDelayMs');
+    assert.equal(attemptLog.length, 7, 'five failing attempts plus the two healing attempts above');
+    assert.deepEqual(giveUpLog, [['session-2', 5, 'transient network failure']],
+      'the scheduler gives up only after the attempt budget is exhausted');
+    assert.ok(!timers.some(entry => entry.fn), 'no timer remains after giving up');
+    givingUp.schedule('session-2');
+    const fresh = timers.find(entry => entry.fn);
+    assert.equal(fresh.delay, 800, 'a fresh gap report after exhaustion restarts at the base delay');
+    givingUp.cancel();
+
+    // A burst of gap reports collapses into one attempt, and cancel() drops
+    // the pending attempt entirely.
+    const debounced = makeScheduler(Infinity);
+    debounced.schedule('session-3');
+    debounced.schedule('session-3');
+    debounced.schedule('session-3');
+    assert.equal(attemptLog.filter(id => id === 'session-3').length, 0, 'nothing fires before the debounce window');
+    const liveTimers = () => timers.filter(entry => entry.fn);
+    assert.equal(liveTimers().length, 1,
+      'a burst of gap reports collapses into a single pending timer');
+    fireLatest();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(attemptLog.filter(id => id === 'session-3').length, 1,
+      'the collapsed timer fires a single resync attempt');
+    debounced.schedule('session-3');
+    assert.equal(liveTimers().length, 1, 'a rescheduled attempt is pending');
+    debounced.cancel();
+    assert.equal(liveTimers().length, 0, 'cancel() drops the pending attempt');
+  }
 
   const liveAfterSnapshot = event(14, 'agent_message_chunk', {
     update: { content: { type: 'text', text: '重连期间到达' } },
@@ -857,12 +973,16 @@ try {
     assert.equal(Array.isArray(Object.getPrototypeOf(content)), false, 'content 保持无原型对象，不得被 __proto__ 赋值改原型');
   }
 
-  // ── M-E journal 探针语义锁定：transport 级（endpoint 活跃）而非订阅者级 ──
-  // #336 把 acp:event 的 projection+journal 门控从「有浏览器订阅者」改为
-  // 「远程端点活跃」：断线窗口（端点在、浏览器暂离）事件仍须进 journal，
-  // 重连 replay 才能补齐；反之把语义改回订阅者级会静默重开断线窗口丢事件。
-  // 锁定三处：manager 探针只看 endpoint；事件侧投影门控走 transport 探针；
-  // AppEventBus 的接线不回退到 subscriber 语义。
+  // ── M-E journal probe semantics lock: transport-level (endpoint active),
+  // not subscriber-level ──
+  // #336 changes the acp:event projection+journal gate from "a browser
+  // subscriber exists" to "a remote endpoint is active": during a disconnect
+  // window (endpoint up, browser temporarily away) events must still be
+  // journaled so reconnect replay can backfill; reverting to the subscriber
+  // semantics would silently reopen that disconnect window and drop events.
+  // Three places are locked: the manager probe looks only at the endpoint;
+  // the event-side projection gate uses the transport probe; the AppEventBus
+  // wiring must not fall back to subscriber semantics.
   {
     const managerMod = readFileSync(
       path.join(root, 'src-tauri', 'src', 'features', 'remote_control', 'manager', 'mod.rs'),

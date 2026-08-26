@@ -58,11 +58,13 @@ import { SearchOverlay } from '../features/search/SearchOverlay.jsx';
 import { UpdateNoticeButton } from '../features/updater/UpdateNoticeButton.jsx';
 import { Lanyard } from '../features/personas/persona-shared.jsx';
 import { VIEW_LOADERS, prefetchView } from './view-loaders.js';
-// 低频视图懒加载:VIEW_LOADERS(见 view-loaders.js)是统一的动态 import 出口,
-// React.lazy 与 NavItem 悬停/聚焦预取共用同一工厂,保证命中同一模块缓存。
-// codex 例外:经 LazyCodexAcpView 包装渲染,内部 import 同一 CodexAcpView
-// 模块(与预取共享缓存),并为 chunk 拉取失败提供就地重试边界。
-// ChatView 与 Lanyard 启动即渲染,保持静态 import。
+// Low-traffic views are lazy-loaded: VIEW_LOADERS (see view-loaders.js) is the
+// single dynamic-import outlet; React.lazy and the NavItem hover/focus
+// prefetch share the same factory so they hit the same module cache.
+// codex is the exception: it renders through the LazyCodexAcpView wrapper,
+// which imports the same CodexAcpView module (sharing the prefetch cache) and
+// adds an in-place retry boundary for chunk fetch failures.
+// ChatView and Lanyard render at startup and stay statically imported.
 const LazySettingsView = lazy(() => VIEW_LOADERS.settings().then(m => ({ default: m.SettingsView })));
 const LazyToolStoreView = lazy(() => VIEW_LOADERS.toolStore().then(m => ({ default: m.ToolStoreView })));
 const LazyCardPoolView = lazy(() => VIEW_LOADERS.cardpool().then(m => ({ default: m.CardPoolView })));

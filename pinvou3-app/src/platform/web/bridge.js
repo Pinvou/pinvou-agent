@@ -5330,8 +5330,9 @@
     state.composerPrefill = { id: (state.composerPrefill.id || 0) + 1, text: String(text || "") };
     notify();
   }
-  // 撤销一条待发消息(点 chip 的 ✕)。排队项携带的附件句柄同步释放,
-  // 与桌面端 removeQueued 的 discard 语义对齐。
+  // Undo one queued message (the ✕ on its chip). Attachment handles carried
+  // by the queued item are released in lockstep, matching the discard
+  // semantics of the desktop removeQueued path.
   function removeQueued(id) {
     let removed = null;
     state.queued = state.queued.filter(function (q) {
@@ -8253,8 +8254,10 @@
     } catch (e) {
       if (!e || e.code !== "device_upload_cancelled") {
         att.status = "error";
-        // 桌面端完整性失败回稳定 wire code(transfer.rs),按当前语言映射;
-        // 其余错误沿用原文(既有行为,翻译收敛另行跟进)。
+        // Desktop integrity failures come back as a stable wire code
+        // (transfer.rs) and map to the current language; other errors keep
+        // their raw text (existing behavior; translation convergence is a
+        // separate follow-up).
         const rawUploadError = String(e && e.message ? e.message : e);
         att.error = e && e.code === "device_upload_empty"
           ? bt("deviceUploadEmpty")(file.name)

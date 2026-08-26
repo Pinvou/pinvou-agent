@@ -129,7 +129,7 @@ const runtimeStatus = await readFile(
   'utf8',
 );
 const draftStatusEffect = view.match(
-  /useEffect\(\(\) => \{\s+\/\/ 草稿态按需读取([\s\S]*?)\n {2}\}, \[activeAgentId, activeId\]\);/,
+  /useEffect\(\(\) => \{\s+\/\/ In draft, read the selected agent's status([\s\S]*?)\n {2}\}, \[activeAgentId, activeId\]\);/,
 );
 assert.ok(draftStatusEffect, 'draft Agent status effect must remain explicit');
 assert.match(

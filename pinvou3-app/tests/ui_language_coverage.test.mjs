@@ -123,8 +123,9 @@ assert.match(main, /<LazyToolStoreView[^>]*t=\{t\}/);
 assert.match(main, /<WebConnectionStatus[^>]*t=\{t\}/);
 assert.match(main, /<SettingsErrorBoundary[^>]*t=\{t\}/);
 assert.match(viewLoaders, new RegExp("codex: \\(\\) => import\\('\\.\\./features/codex/CodexAcpView\\.jsx'\\)"));
-// 主窗口经 LazyCodexAcpView 包装渲染(wrapper 内部消费同一 view-loaders chunk),
-// 错误兜底文案仍走 i18n。
+// The main window renders codex through the LazyCodexAcpView wrapper (which
+// internally consumes the same view-loaders chunk); its error fallback copy
+// still flows through i18n.
 assert.match(main, /<CodexAcpView[^>]*t=\{t\}/);
 const settingsErrorBoundary = source('features/settings/SettingsErrorBoundary.jsx');
 assert.match(settingsErrorBoundary, /settingsCopy\.settingsLoadFailed/);

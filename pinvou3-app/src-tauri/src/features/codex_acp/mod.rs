@@ -2563,10 +2563,11 @@ impl AcpPool {
         self.providers.import(agent, json)
     }
 
-    /// 会话级 Provider 覆盖（F11）：写入 per-session 配置的 "provider" 键并重启该
-    /// Agent 的全部会话 runtime（配置按 Agent 生效，无法只重启一个）；
-    /// `provider_id=None` 恢复该 Agent 官方登录。解析优先级：
-    /// 会话 option > 全局 current_provider。
+    /// Per-session provider override (F11): writes the "provider" key into the
+    /// per-session config and restarts every session runtime of that agent
+    /// (the config applies per agent, so one runtime cannot restart alone);
+    /// `provider_id=None` restores the agent's official login. Resolution
+    /// order: session option > global current_provider.
     pub async fn set_acp_session_provider(
         &self,
         session_id: &str,
@@ -2576,9 +2577,10 @@ impl AcpPool {
             bail!("当前会话不是 ACP 会话");
         }
         let backend = self.backend(session_id);
-        // Provider 切换会重启该 Agent 的全部会话 runtime，不只是当前会话；
-        // 该 Agent 任一会话正在生成时必须先拒绝（与 set_model/set_mode 的
-        // busy 语义一致），而不是硬杀进行中的 turn。
+        // Switching providers restarts every session runtime of that agent,
+        // not just the current one; reject while any of its sessions is
+        // generating (same busy semantics as set_model/set_mode) instead of
+        // hard-killing an in-flight turn.
         if self.sessions.lock().await.iter().any(|(id, runtime)| {
             self.agents.backend(id) == backend
                 && runtime.busy.load(std::sync::atomic::Ordering::Acquire)

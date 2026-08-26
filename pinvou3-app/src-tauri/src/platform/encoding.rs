@@ -20,9 +20,11 @@ pub(crate) fn hex_lower(bytes: &[u8]) -> String {
     out
 }
 
-/// 校验并归一化客户端提供的整文件 sha256 摘要(64 个十六进制字符,容忍首尾
-/// 空白与大小写),桌面暂存文件校验与 Web 上传缓冲校验共用同一格式规则,
-/// 改规则只改一处。非法格式返回 None,由调用方给出各自的错误文案。
+/// Validate and normalize a client-provided whole-file sha256 digest (64 hex
+/// characters; surrounding whitespace and letter case are tolerated). The
+/// desktop staging-file check and the web upload-buffer check share this one
+/// format rule so a rule change happens in one place. Returns None for an
+/// invalid format; callers provide their own error copy.
 pub(crate) fn normalize_sha256_hex(expected: &str) -> Option<String> {
     let expected = expected.trim().to_ascii_lowercase();
     (expected.len() == 64 && expected.bytes().all(|b| b.is_ascii_hexdigit())).then_some(expected)
@@ -72,13 +74,14 @@ mod tests {
 
     #[test]
     fn sha256_digest_normalization() {
-        // 合法:64 个十六进制字符,首尾空白被裁剪,大写被归一为小写。
+        // Valid: 64 hex characters; surrounding whitespace trimmed, uppercase
+        // normalized to lowercase.
         let digest = "a".repeat(63) + "B";
         assert_eq!(
             normalize_sha256_hex(&format!(" {digest} ")),
             Some("a".repeat(63) + "b")
         );
-        // 长度不是 64 / 非 hex 字符 → None。
+        // Wrong length or non-hex characters → None.
         assert_eq!(normalize_sha256_hex(&"a".repeat(63)), None);
         assert_eq!(normalize_sha256_hex(&"g".repeat(64)), None);
         assert_eq!(normalize_sha256_hex("not-hex"), None);

@@ -40,6 +40,7 @@ import {
   appendAcpEvent,
   buildElicitationContent,
   createAcpEventSeqTracker,
+  createAcpGapResyncScheduler,
   mergeAcpTimelineSnapshot,
   updateAcpAttachmentDraft,
   commandExecutionDetails,
@@ -1098,7 +1099,25 @@ export function CodexAcpView({
   const sessionLoadRequestRef = useRef(0);
   const acpEventSeqTrackerRef = useRef(null);
   if (!acpEventSeqTrackerRef.current) acpEventSeqTrackerRef.current = createAcpEventSeqTracker();
-  const acpGapResyncTimerRef = useRef(null);
+  const acpGapResyncRef = useRef(null);
+  if (!acpGapResyncRef.current) {
+    acpGapResyncRef.current = createAcpGapResyncScheduler(sessionId => {
+      if (activeIdRef.current !== sessionId) return;
+      return resyncAcpSessionAfterGap(sessionId);
+    }, {
+      onAttempt: (sessionId, attempt) => console.warn(
+        `[acp] live event sequence gap detected for ${sessionId}; resyncing from the authoritative timeline (attempt ${attempt})`,
+      ),
+      onRetry: (sessionId, attempt, error) => console.warn(
+        `[acp] timeline resync after event sequence gap failed (attempt ${attempt}); retrying with backoff`,
+        error,
+      ),
+      onGiveUp: (sessionId, attempt, error) => console.warn(
+        `[acp] timeline resync after event sequence gap gave up after ${attempt} attempts; the gap stays unhealed until reconnect or session reopen`,
+        error,
+      ),
+    });
+  }
   const preserveDraftWorkspaceRef = useRef(false);
   const draftEpochRef = useRef(draftEpoch);
   const activeIdRef = useRef(activeId);
@@ -1887,17 +1906,22 @@ export function CodexAcpView({
     }
   }
 
-  // 快照合并后把直播 seq 基线推进到快照最大 seq(只升不降),避免重取后
-  // 把已按序到达的直播事件误判为断档。
+  // After merging a snapshot, advance the live-seq baseline to the snapshot's
+  // max seq (never regress) so refetches do not misjudge in-order live events
+  // as gaps.
   function rebaseAcpEventSeqTracker(sessionId, timeline) {
     const maxSeq = (timeline || []).reduce((max, event) => Math.max(max, Number(event?.seq) || 0), 0);
     acpEventSeqTrackerRef.current.rebase(sessionId, maxSeq);
   }
 
-  // Web 直播流 envelope-seq 断档自愈:看门狗跳过停滞前序后,缺失的
-  // permission/终态信封不会在连接内补发。检测到跳号后防抖重取权威时间线与
-  // 挂起状态并合并(merge 对乱序/重复到达幂等),不动加载 spinner、不取消
-  // 在途的会话切换加载。
+  // Self-healing for envelope-seq gaps in the web live stream: after the
+  // watchdog skips a stalled predecessor, the missing permission/terminal
+  // envelopes are not re-delivered within the connection. On a detected gap,
+  // debounce-refetch the authoritative timeline and pending state and merge
+  // (merge is idempotent for out-of-order/duplicate arrivals), without
+  // touching the loading spinner or cancelling an in-flight session-switch
+  // load. A failed refetch retries with bounded exponential backoff so a
+  // single transient failure cannot permanently disable healing for that gap.
   async function resyncAcpSessionAfterGap(sessionId) {
     const [timeline, permissions, elicitations] = await Promise.all([
       loadAcpTimeline(sessionId),
@@ -1912,15 +1936,7 @@ export function CodexAcpView({
   }
 
   function scheduleAcpGapResync(sessionId) {
-    if (acpGapResyncTimerRef.current) clearTimeout(acpGapResyncTimerRef.current);
-    acpGapResyncTimerRef.current = setTimeout(() => {
-      acpGapResyncTimerRef.current = null;
-      if (activeIdRef.current !== sessionId) return;
-      console.warn(`[acp] live event sequence gap detected for ${sessionId}; resyncing from the authoritative timeline`);
-      resyncAcpSessionAfterGap(sessionId).catch(error => {
-        console.warn('[acp] timeline resync after event sequence gap failed', error);
-      });
-    }, 800);
+    acpGapResyncRef.current.schedule(sessionId);
   }
 
   async function createSession({ shouldActivate = () => true, prepareSession = null } = {}) {
@@ -2135,8 +2151,9 @@ export function CodexAcpView({
         )),
         onError: err => {
           if (err?.code === 'device_upload_cancelled') return;
-          // 桌面端的完整性失败经 Relay 以稳定 wire code 到达 message
-          // (transfer.rs),映射为当前语言文案而不是透传原始错误。
+          // Desktop integrity failures arrive as a stable wire code in
+          // message (transfer.rs); map to the current-language copy instead
+          // of passing the raw error through.
           const uploadErrorText = String(err?.message || '');
           const displayError = err?.code === 'device_upload_too_large'
             ? t.uiAttachments.deviceUploadTooLarge(file.name)
@@ -2278,8 +2295,10 @@ export function CodexAcpView({
     listenTauri('acp:event', message => {
       if (disposed) return;
       const incoming = message.payload;
-      // 直播 seq 连续性检查先于合并:看门狗跳过停滞前序后,后续事件照常到达,
-      // 仅靠 appendAcpEvent 会静默留下空洞;检测到跳号则防抖重取权威时间线自愈。
+      // Live seq continuity check runs before merging: after the watchdog
+      // skips a stalled predecessor, later events still arrive in order, and
+      // appendAcpEvent alone would silently keep the hole; on a detected gap,
+      // debounce-refetch the authoritative timeline to self-heal.
       if (incoming && acpEventSeqTrackerRef.current.note(incoming.sessionId, incoming.seq) === 'gap'
           && incoming.sessionId === activeIdRef.current) {
         scheduleAcpGapResync(incoming.sessionId);
@@ -2322,10 +2341,7 @@ export function CodexAcpView({
     });
     return () => {
       disposed = true;
-      if (acpGapResyncTimerRef.current) {
-        clearTimeout(acpGapResyncTimerRef.current);
-        acpGapResyncTimerRef.current = null;
-      }
+      acpGapResyncRef.current.cancel();
       if (unlisten) unlisten();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- ACP event subscription mounts once; depending on refresh functions would repeatedly unbind/resubscribe
@@ -2382,10 +2398,13 @@ export function CodexAcpView({
   }, []);
 
   useEffect(() => {
-    // 草稿态按需读取选中 Agent 的状态：切换即强制重探测（CLI 可能刚在
-    // App 外安装/升级，缓存会停留在旧的未安装结论）。已有会话由 loadSession
-    // 读取，跳过以避免并发执行两次 CLI/认证探测。原生（品悟）会话没有 ACP
-    // 状态机，跳过 get_acp_agent_status（后端会拒绝非 ACP agent）。
+    // In draft, read the selected agent's status on demand: switching agents
+    // forces a fresh probe (the CLI may have been installed/upgraded outside
+    // the app, and the cache would keep a stale not-installed verdict).
+    // Sessions with an id are covered by loadSession; skip here to avoid
+    // running the CLI/auth probes twice concurrently. Native (pinvou)
+    // sessions have no ACP state machine; skip get_acp_agent_status (the
+    // backend rejects non-ACP agents).
     if (activeAgentId === 'pinvou') {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- native sessions have no ACP state machine; synchronously clear the status display
       setStatus(null);

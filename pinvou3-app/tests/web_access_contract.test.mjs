@@ -411,9 +411,11 @@ assert.doesNotMatch(codexView,
 assert.match(acpErrors, /CONTROLLED_WEB_ERROR[\s\S]*?copy\.operationFailed/,
   'controlled Web error codes must become localized UI copy instead of raw browser text');
 
-// 上传完整性失败必须回稳定 wire code,由 Web 客户端映射为三语文案;中文原文
-// 不得再经 Relay 透传给 en/ja 用户(评审 P2)。web_access_upload_attachment_chunk
-// 同时服务普通会话与 ACP 代码模式,两侧展示路径都必须识别这两个码。
+// Upload integrity failures must surface a stable wire code that the web
+// client maps to trilingual copy; the Chinese raw text must no longer pass
+// through the Relay to en/ja users (review P2).
+// web_access_upload_attachment_chunk serves both plain sessions and the ACP
+// code mode, so both display paths must recognize these two codes.
 assert.match(remoteControlManager, /WEB_ATTACHMENT_DIGEST_INVALID: &str = "web_attachment_digest_invalid"/,
   'the malformed-digest failure must be a stable wire code');
 assert.match(remoteControlManager, /WEB_ATTACHMENT_INTEGRITY_MISMATCH: &str = "web_attachment_integrity_mismatch"/,
@@ -439,15 +441,17 @@ assert.equal((i18n.match(/deviceUploadDigestInvalid:/g) || []).length, 3,
 assert.equal((i18n.match(/deviceUploadIntegrityMismatch:/g) || []).length, 3,
   'the ACP mismatch copy must exist in all three i18n dictionaries');
 
-// 看门狗跳过停滞前序后,Web 直播流出现 envelope-seq 空洞;监听器必须检测跳号
-// 并防抖重取权威时间线自愈(不再只能等重连/重开会话),合并后推进跟踪器基线。
+// After the watchdog skips a stalled predecessor, the web live stream shows
+// an envelope-seq hole; the listener must detect the jump and debounce-refetch
+// the authoritative timeline to self-heal (instead of waiting for a
+// reconnect/session reopen), merging the snapshot and rebasing the tracker.
 assert.match(codexView, /acpEventSeqTrackerRef\.current\.note\(incoming\.sessionId, incoming\.seq\) === 'gap'[\s\S]*?scheduleAcpGapResync\(incoming\.sessionId\)/,
   'the live acp:event listener must detect envelope-seq gaps and schedule a resync');
-assert.match(codexView, /setTimeout\([\s\S]*?resyncAcpSessionAfterGap\(sessionId\)[\s\S]*?\}, 800\)/,
-  'the gap resync must be debounced');
+assert.match(codexView, /createAcpGapResyncScheduler\(sessionId => \{[\s\S]*?resyncAcpSessionAfterGap\(sessionId\);[\s\S]*?\}, \{/,
+  'the gap resync must go through the bounded-retry scheduler wrapping resyncAcpSessionAfterGap');
 assert.match(codexView, /mergeAcpTimelineSnapshot\(timeline, current, sessionId\)[\s\S]*?rebaseAcpEventSeqTracker\(sessionId, timeline\)/,
   'the gap resync must merge the authoritative snapshot and rebase the tracker');
-assert.match(codexView, /clearTimeout\(acpGapResyncTimerRef\.current\)/,
+assert.match(codexView, /acpGapResyncRef\.current\.cancel\(\)/,
   'the pending gap resync must be cancelled on unmount');
 
 assert.match(bootstrap, /sendRaw\(\{ \.\.\.value, v: protocolVersion, lease_id: this\.leaseId \}\)/);

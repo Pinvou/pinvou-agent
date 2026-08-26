@@ -382,11 +382,13 @@ export function appendAcpEvent(events, incoming) {
   return [...(events || []), incoming].sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
 }
 
-// 服务端 OrderedWebDelivery 看门狗在停滞前序超时后跳过空洞,Web 直播流因此
-// 可能出现 envelope-seq 跳号(桌面原生链路在同一有序单元内落盘+广播,无损
-// 有序,不受影响)。该跟踪器按会话记录直播已见的最大 seq:发现跳号即报告
-// 'gap',由视图层防抖触发权威时间线重取,把缺失的 permission/终态事件补回;
-// 重连回放与重复投递按 'duplicate' 忽略。
+// The server-side OrderedWebDelivery watchdog skips a hole after a stalled
+// predecessor times out, so the web live stream can show envelope-seq jumps
+// (the desktop native path persists and broadcasts within the same ordered
+// unit and is unaffected). The tracker records the max live seq per session
+// and reports 'gap' on a jump so the view layer can refetch the authoritative
+// timeline and restore the missing permission/terminal events; reconnect
+// replays and duplicate deliveries return 'duplicate' and are ignored.
 export function createAcpEventSeqTracker() {
   const lastSeqBySession = new Map();
   return {
@@ -398,12 +400,72 @@ export function createAcpEventSeqTracker() {
       lastSeqBySession.set(sessionId, value);
       return last > 0 && value > last + 1 ? 'gap' : 'ok';
     },
-    // 快照合并后以已知最大 seq 为基线;直播已推进到的更高 seq 不回退。
+    // After a snapshot merge, baseline on the known max seq; a higher seq the
+    // live stream already advanced to never regresses.
     rebase(sessionId, seq) {
       const value = Number(seq) || 0;
       if (!sessionId || value <= 0) return;
       if (value > (lastSeqBySession.get(sessionId) || 0)) lastSeqBySession.set(sessionId, value);
     },
+  };
+}
+
+// Bounded backoff driver for gap resyncs. note() advances its baseline before
+// reporting 'gap', so after a failed resync the following live envelopes look
+// continuous and never retrigger on their own; without retries a single
+// transient failure would permanently disable healing for that gap. schedule()
+// debounces a burst of gap reports into one attempt; each failure reschedules
+// with exponential backoff until an attempt succeeds or the attempt budget is
+// exhausted. A fresh gap report after exhaustion starts a new cycle, and
+// cancel() drops any pending attempt (unmount).
+export function createAcpGapResyncScheduler(resync, {
+  maxAttempts = 5,
+  baseDelayMs = 800,
+  maxDelayMs = 12800,
+  setTimeout = null,
+  clearTimeout = null,
+  onAttempt = null,
+  onRetry = null,
+  onGiveUp = null,
+} = {}) {
+  const attemptBudget = Math.max(1, Number(maxAttempts) || 1);
+  const firstDelayMs = Math.max(0, Number(baseDelayMs) || 0);
+  const ceilingMs = Math.max(firstDelayMs, Number(maxDelayMs) || 0);
+  const scheduleTimer = setTimeout || globalThis.setTimeout.bind(globalThis);
+  const cancelTimer = clearTimeout || globalThis.clearTimeout.bind(globalThis);
+  let timer = null;
+  let failures = 0;
+  const delayAfterFailures = count => Math.min(firstDelayMs * 2 ** count, ceilingMs);
+  const clearTimer = () => {
+    if (timer !== null) {
+      cancelTimer(timer);
+      timer = null;
+    }
+  };
+  const fire = async sessionId => {
+    timer = null;
+    if (onAttempt) onAttempt(sessionId, failures + 1);
+    try {
+      await resync(sessionId);
+      failures = 0;
+    } catch (error) {
+      failures += 1;
+      if (failures >= attemptBudget) {
+        if (onGiveUp) onGiveUp(sessionId, failures, error);
+        return;
+      }
+      if (onRetry) onRetry(sessionId, failures, error);
+      clearTimer();
+      timer = scheduleTimer(() => { fire(sessionId); }, delayAfterFailures(failures));
+    }
+  };
+  return {
+    schedule(sessionId) {
+      if (failures >= attemptBudget) failures = 0;
+      clearTimer();
+      timer = scheduleTimer(() => { fire(sessionId); }, firstDelayMs);
+    },
+    cancel: clearTimer,
   };
 }
 
