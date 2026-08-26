@@ -363,6 +363,34 @@ impl SessionAgentStore {
             .unwrap_or_default()
     }
 
+    /// 返回绑定到指定项目工作区的 code 会话 id（ACP 与原生代码会话；
+    /// 双方路径都规范化后比较，容忍符号链接/尾斜杠差异）。
+    pub fn code_sessions_in_workspace(&self, root: &Path) -> Vec<String> {
+        let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        self.records
+            .read()
+            .iter()
+            .filter(|(_, record)| {
+                if record.workspace_kind != CodexWorkspaceKind::Project {
+                    return false;
+                }
+                if !record.mode.is_code() && !record.backend.is_acp() {
+                    return false;
+                }
+                record
+                    .workspace_path
+                    .as_deref()
+                    .map(|path| {
+                        let path =
+                            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+                        path == canonical
+                    })
+                    .unwrap_or(false)
+            })
+            .map(|(session_id, _)| session_id.clone())
+            .collect()
+    }
+
     /// 在 ACP 会话创建时永久绑定 Agent 与执行目录。
     ///
     /// `set_acp_workspace` 是当前前端创建会话时的主入口；这个更窄的 API 保留给
@@ -885,6 +913,53 @@ mod tests {
             records: Arc::new(RwLock::new(HashMap::new())),
         };
         assert_eq!(store.backend("missing"), AgentBackend::Deepseek);
+    }
+
+    #[test]
+    fn code_sessions_in_workspace_matches_project_code_records_only() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir()
+            .join(format!("pinvou3-agent-store-ws-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let record = |kind, path, mode, backend| SessionAgentRecord {
+            backend,
+            mode,
+            workspace_kind: kind,
+            workspace_path: path,
+            ..SessionAgentRecord::default()
+        };
+        let store = SessionAgentStore {
+            path: dir.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::from([
+                (
+                    "acp-proj".to_string(),
+                    record(CodexWorkspaceKind::Project, Some(dir.clone()),
+                        SessionMode::Plain, AgentBackend::CodexAcp),
+                ),
+                (
+                    "native-proj".to_string(),
+                    record(CodexWorkspaceKind::Project, Some(dir.clone()),
+                        SessionMode::Code, AgentBackend::Deepseek),
+                ),
+                (
+                    "temp-code".to_string(),
+                    record(CodexWorkspaceKind::Temporary, None,
+                        SessionMode::Code, AgentBackend::Deepseek),
+                ),
+                (
+                    "plain-chat".to_string(),
+                    record(CodexWorkspaceKind::Project, Some(dir.clone()),
+                        SessionMode::Plain, AgentBackend::Deepseek),
+                ),
+            ]))),
+        };
+        let mut sessions = store.code_sessions_in_workspace(&dir);
+        sessions.sort();
+        assert_eq!(sessions, vec!["acp-proj".to_string(), "native-proj".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

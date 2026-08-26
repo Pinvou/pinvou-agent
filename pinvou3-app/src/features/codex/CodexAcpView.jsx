@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import {
-  AlertTriangle, Brain, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, Mic, Monitor, Paperclip,
+  AlertTriangle, Brain, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, GitBranch, Mic, Monitor, Paperclip,
   Plus, RefreshCw, Send, Sparkles, StopCircle, Terminal, Upload, User, Wrench,
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
@@ -121,6 +121,7 @@ import {
 } from '../../platform/tauri/client.js';
 import {
   cancelAcpSession,
+  checkoutAcpWorkspaceBranch,
   createAcpSession,
   discardAcpAttachment,
   getAcpSessionInfo,
@@ -129,6 +130,7 @@ import {
   loadAcpPendingPermissions,
   loadAcpTimeline,
   listAcpSessions,
+  listAcpWorkspaceBranches,
   openAcpExternalUrl,
   pickAcpWorkspace,
   respondAcpElicitation,
@@ -165,6 +167,49 @@ function workspaceName(path, unknownDirectory) {
   const normalized = String(path || '').replace(/[\\/]+$/, '');
   if (!normalized) return unknownDirectory;
   return normalized.split(/[\\/]/).filter(Boolean).pop() || normalized;
+}
+
+// 分支显示/切换 pill：会话 header 与草稿 header（已选项目目录、未开会话）共用。
+// 非 git 工作区或 detached HEAD（current 为空）时隐藏；web 端由调用方不渲染。
+function BranchSelector({ copy, branches, disabled, busy, menuOpen, onToggle, onSelect, triggerRef, panelRef }) {
+  if (!branches?.git || !branches.current) return null;
+  return (
+    <div className="relative shrink-0">
+      <button
+        type="button"
+        ref={triggerRef}
+        data-testid="codex-branch-selector"
+        onClick={onToggle}
+        disabled={disabled}
+        className="h-8 max-w-[200px] px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[13px] font-medium bg-blue-500/10 text-blue-600 dark:text-blue-300 hover:bg-blue-500/20 dark:hover:bg-blue-400/20 disabled:opacity-50"
+        title={busy ? copy.branchSwitchBusyError : copy.branchTooltip}
+      >
+        <GitBranch size={13} className="shrink-0" />
+        <span className="truncate">{branches.current}</span>
+        <ChevronDown size={12} className="shrink-0" />
+      </button>
+      {menuOpen && (
+        <div ref={panelRef} className="absolute z-40 top-9 right-0 w-[240px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
+          <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">{copy.branches}</div>
+          <div className="max-h-64 overflow-y-auto custom-scrollbar">
+            {branches.branches.map(name => (
+              <button
+                key={name}
+                type="button"
+                title={name}
+                onClick={() => onSelect(name)}
+                className="w-full rounded-lg px-3 py-2 flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+              >
+                <GitBranch size={13} className={`shrink-0 ${name === branches.current ? 'text-blue-500' : 'text-gray-400'}`} />
+                <span className={`truncate text-[13px] ${name === branches.current ? 'font-semibold text-blue-600 dark:text-blue-300' : ''}`}>{name}</span>
+                {name === branches.current && <Check size={13} className="ml-auto shrink-0 text-blue-500" />}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // token 缩写与主聊天 ChatView 的 fmtCtxTok 同款（1.2k / 3.4M）。
@@ -1090,6 +1135,17 @@ export function CodexAcpView({
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  // 分支显示/切换（仅桌面端）：branches = { git, current, branches[] }，null 表示未加载。
+  const [workspaceBranches, setWorkspaceBranches] = useState(null);
+  const [branchMenuOpen, setBranchMenuOpen] = useState(false);
+  const [branchBusy, setBranchBusy] = useState(false);
+  // 脏工作区切换前的待确认分支名（自绘确认弹窗，Tauri WebView2 下 window.confirm 不弹）。
+  const [pendingBranchSwitch, setPendingBranchSwitch] = useState(null);
+  const [branchSwitchDirtyCount, setBranchSwitchDirtyCount] = useState(0);
+  // 第二步「提交后切换」弹窗：待提交后切换的目标分支。
+  const [commitBranchSwitch, setCommitBranchSwitch] = useState(null);
+  const [branchCommitMessage, setBranchCommitMessage] = useState('');
+  const [workspaceRefreshTick, setWorkspaceRefreshTick] = useState(0);
   // 这四个 composer 弹层不能用 `fixed inset-0` 关闭层：composer 容器的 backdrop-blur
   // 会成为 fixed 后代的包含块，使关闭层只覆盖输入框区域、外点失效。统一用
   // document 级 pointerdown 外点检测（见 ComposerPopover.jsx）。
@@ -1101,12 +1157,73 @@ export function CodexAcpView({
   const memoryTriggerRef = useRef(null);
   const accountMenuPanelRef = useRef(null);
   const accountMenuTriggerRef = useRef(null);
+  const branchMenuPanelRef = useRef(null);
+  const branchMenuTriggerRef = useRef(null);
   useOutsidePointerClose(commandOpen, () => setCommandOpen(false), [commandMenuPanelRef, commandMenuTriggerRef]);
   useOutsidePointerClose(workspaceMenuOpen, () => setWorkspaceMenuOpen(false), [workspaceMenuPanelRef, workspaceMenuTriggerRef]);
   useOutsidePointerClose(memoryOpen, () => setMemoryOpen(false), [memoryPanelRef, memoryTriggerRef]);
   useOutsidePointerClose(accountMenuOpen, () => setAccountMenuOpen(false), [accountMenuPanelRef, accountMenuTriggerRef]);
+  useOutsidePointerClose(branchMenuOpen, () => setBranchMenuOpen(false), [branchMenuPanelRef, branchMenuTriggerRef]);
+
+  async function checkoutWorkspaceBranch(branch, mode, commitMessage) {
+    if ((!activeId && !branchWorkspacePath) || !branch || branchBusy) return;
+    // 运行中切换分支可能导致 Agent 的后续编辑落到错误的分支上（或 checkout
+    // 因文件占用失败），统一在执行层拦截；正常路径已被 UI 禁用挡住，这里
+    // 覆盖的是「确认弹窗打开期间 Agent 开始运行」这类竞态。
+    if (busy) {
+      setError(codexCopy.branchSwitchBusyError);
+      return;
+    }
+    setBranchBusy(true);
+    try {
+      const next = await checkoutAcpWorkspaceBranch({
+        sessionId: activeId || null,
+        workspacePath: branchWorkspacePath,
+        branch,
+        mode: mode || 'carry',
+        commitMessage: commitMessage || null,
+      });
+      setWorkspaceBranches(next);
+      // 分支切换后工作区内容已变化，触发工作区面板刷新更改列表。
+      setWorkspaceRefreshTick(tick => tick + 1);
+    } catch (err) {
+      showError(err);
+    } finally {
+      setBranchBusy(false);
+    }
+  }
+
+  async function handleBranchSelect(branch) {
+    if ((!activeId && !branchWorkspacePath) || !branch
+        || branch === workspaceBranches?.current || branchBusy || busy) return;
+    setBranchMenuOpen(false);
+    // 脏工作区先确认再切换（dirtyCount 由分支扫描一并返回，草稿态同样可用）。
+    const dirtyCount = workspaceBranches?.dirtyCount || 0;
+    if (dirtyCount > 0) {
+      setBranchSwitchDirtyCount(dirtyCount);
+      setBranchCommitMessage('');
+      setPendingBranchSwitch(branch);
+      return;
+    }
+    await checkoutWorkspaceBranch(branch, 'carry');
+  }
   const [dismissedFailureKey, setDismissedFailureKey] = useState('');
   const [draftWorkspacePath, setDraftWorkspacePath] = useState(null);
+  // 会话内用 sessionId 解析工作区；草稿态（会话未创建）直接扫描已选目录。
+  const branchWorkspacePath = activeId ? null : draftWorkspacePath;
+  // 会话或草稿工作区变化时加载分支（仅桌面端；非 git 工作区返回 git:false，控件自动隐藏）。
+  useEffect(() => {
+    setBranchMenuOpen(false);
+    setPendingBranchSwitch(null);
+    setCommitBranchSwitch(null);
+    setWorkspaceBranches(null);
+    if (isWeb || (!activeId && !branchWorkspacePath)) return undefined;
+    let cancelled = false;
+    listAcpWorkspaceBranches({ sessionId: activeId || null, workspacePath: branchWorkspacePath })
+      .then(result => { if (!cancelled) setWorkspaceBranches(result); })
+      .catch(() => { if (!cancelled) setWorkspaceBranches(null); });
+    return () => { cancelled = true; };
+  }, [activeId, branchWorkspacePath]);
   const [draftWorkspaceHandle, setDraftWorkspaceHandle] = useState(null);
   const [recentWorkspaces, setRecentWorkspaces] = useState(loadRecentWorkspaces);
   const [draftControlsCache, setDraftControlsCache] = useState(loadDraftControlsCache);
@@ -3494,6 +3611,19 @@ export function CodexAcpView({
             </div>
           </div>
           {configApplying && <span className="text-[10px] text-blue-500 animate-pulse">{codexCopy.applyingConfig}</span>}
+          {!isWeb && (
+            <BranchSelector
+              copy={codexCopy}
+              branches={workspaceBranches}
+              disabled={branchBusy || busy}
+              busy={busy}
+              menuOpen={branchMenuOpen}
+              onToggle={() => setBranchMenuOpen(value => !value)}
+              onSelect={name => handleBranchSelect(name).catch(showError)}
+              triggerRef={branchMenuTriggerRef}
+              panelRef={branchMenuPanelRef}
+            />
+          )}
           {busy && <StatusBadge status="running" copy={t.uiConversation} />}
           <button
             type="button"
@@ -3516,7 +3646,18 @@ export function CodexAcpView({
         </header>
         )}
         {!isWeb && !activeSession && draftWorkspacePath && (
-        <header className="h-14 shrink-0 px-5 flex items-center justify-end border-b border-black/[0.05] dark:border-white/[0.06]">
+        <header className="h-14 shrink-0 px-5 flex items-center justify-end gap-3 border-b border-black/[0.05] dark:border-white/[0.06]">
+          <BranchSelector
+            copy={codexCopy}
+            branches={workspaceBranches}
+            disabled={branchBusy}
+            busy={false}
+            menuOpen={branchMenuOpen}
+            onToggle={() => setBranchMenuOpen(value => !value)}
+            onSelect={name => handleBranchSelect(name).catch(showError)}
+            triggerRef={branchMenuTriggerRef}
+            panelRef={branchMenuPanelRef}
+          />
           <button
             type="button"
             data-testid="codex-workspace-toggle"
@@ -4277,6 +4418,134 @@ export function CodexAcpView({
             onConfirm={confirmRewindUndo}
           />
         )}
+        {pendingBranchSwitch && (
+          // 脏工作区分支切换：操作选项弹窗（自绘，Tauri WebView2 下 window.confirm 不弹）。
+          // 与 NativeYoloConfirmCard 同理挂在输入框容器外，避免 backdrop-blur 包含块限制。
+          <div
+            data-testid="codex-branch-switch-confirm"
+            className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
+            onClick={event => {
+              event.stopPropagation();
+              setPendingBranchSwitch(null);
+            }}
+          >
+            <div
+              onClick={event => event.stopPropagation()}
+              className="w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]"
+            >
+              <p className="text-[13px] leading-relaxed opacity-85">
+                {codexCopy.branchSwitchDirtyConfirm(pendingBranchSwitch, branchSwitchDirtyCount)}
+              </p>
+              <div className="mt-4 flex flex-col gap-1.5">
+                {[
+                  { testid: 'codex-branch-switch-carry', label: codexCopy.branchSwitchCarry, hint: codexCopy.branchSwitchCarryHint,
+                    onClick: () => {
+                      const branch = pendingBranchSwitch;
+                      setPendingBranchSwitch(null);
+                      checkoutWorkspaceBranch(branch, 'carry');
+                    } },
+                  { testid: 'codex-branch-switch-stash', label: codexCopy.branchSwitchStash, hint: codexCopy.branchSwitchStashHint,
+                    onClick: () => {
+                      const branch = pendingBranchSwitch;
+                      setPendingBranchSwitch(null);
+                      checkoutWorkspaceBranch(branch, 'stash');
+                    } },
+                  { testid: 'codex-branch-switch-commit', label: codexCopy.branchSwitchCommit, hint: codexCopy.branchSwitchCommitHint,
+                    onClick: () => {
+                      // 进入第二步：提交信息弹窗。
+                      setCommitBranchSwitch(pendingBranchSwitch);
+                      setPendingBranchSwitch(null);
+                    } },
+                ].map(option => (
+                  <button
+                    key={option.testid}
+                    type="button"
+                    data-testid={option.testid}
+                    onClick={option.onClick}
+                    disabled={branchBusy}
+                    className="w-full rounded-xl px-3 py-2.5 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06] disabled:opacity-50"
+                  >
+                    <span className="block text-[13px] font-semibold">{option.label}</span>
+                    <span className="block text-[11px] text-gray-400 mt-0.5 leading-relaxed">{option.hint}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="mt-4 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setPendingBranchSwitch(null)}
+                  disabled={branchBusy}
+                  className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12] disabled:opacity-50"
+                >
+                  {codexCopy.branchSwitchCancel}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {commitBranchSwitch && (
+          // 第二步：提交信息弹窗（「提交后切换」）。
+          <div
+            data-testid="codex-branch-commit-dialog"
+            className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
+            onClick={event => {
+              event.stopPropagation();
+              setCommitBranchSwitch(null);
+            }}
+          >
+            <div
+              onClick={event => event.stopPropagation()}
+              className="w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]"
+            >
+              <p className="text-[13px] leading-relaxed opacity-85">
+                {codexCopy.branchSwitchCommitPrompt(commitBranchSwitch)}
+              </p>
+              <textarea
+                autoFocus
+                data-testid="codex-branch-switch-commit-message"
+                value={branchCommitMessage}
+                onChange={event => setBranchCommitMessage(event.target.value)}
+                onKeyDown={event => {
+                  // 多行输入：Enter 换行，Ctrl/Cmd+Enter 提交；输入法合成期间不触发。
+                  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)
+                      && !isImeComposing(event) && branchCommitMessage.trim() && !branchBusy) {
+                    const branch = commitBranchSwitch;
+                    const message = branchCommitMessage.trim();
+                    setCommitBranchSwitch(null);
+                    checkoutWorkspaceBranch(branch, 'commit', message);
+                  }
+                }}
+                placeholder={codexCopy.branchSwitchCommitPlaceholder}
+                rows={4}
+                className="mt-4 w-full px-3 py-2 rounded-xl text-[13px] leading-relaxed resize-none bg-black/[0.04] dark:bg-white/[0.06] outline-none border border-transparent focus:border-[#007AFF]/60 placeholder:text-gray-400"
+              />
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCommitBranchSwitch(null)}
+                  disabled={branchBusy}
+                  className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12] disabled:opacity-50"
+                >
+                  {codexCopy.branchSwitchCancel}
+                </button>
+                <button
+                  type="button"
+                  data-testid="codex-branch-switch-commit-ok"
+                  onClick={() => {
+                    const branch = commitBranchSwitch;
+                    const message = branchCommitMessage.trim();
+                    setCommitBranchSwitch(null);
+                    checkoutWorkspaceBranch(branch, 'commit', message);
+                  }}
+                  disabled={branchBusy || !branchCommitMessage.trim()}
+                  className="h-9 px-4 rounded-full text-white text-[13px] font-semibold bg-[#007AFF] disabled:opacity-50"
+                >
+                  {codexCopy.branchSwitchCommit}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {(activeSession || (!isWeb && draftWorkspacePath)) && (
           <CodexWorkspacePanel
             session={activeSession}
@@ -4287,7 +4556,7 @@ export function CodexAcpView({
             onClose={closeWorkspacePanel}
             references={workspaceReferences}
             onAddReference={addWorkspaceReference}
-            refreshToken={isNativeAgent ? nativeLaneTick : events.length}
+            refreshToken={(isNativeAgent ? nativeLaneTick : events.length) + workspaceRefreshTick}
             onChangeCount={setWorkspaceChangeCount}
             copy={t.uiCodexWorkspace}
           />

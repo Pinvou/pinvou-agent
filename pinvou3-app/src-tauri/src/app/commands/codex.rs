@@ -12,7 +12,8 @@ use tauri::State;
 use crate::features::assistant::engine_pool::EnginePool;
 use crate::features::codex_acp::reader_window::{self, ReaderOpenRequest};
 use crate::features::codex_acp::workspace::{
-    self, WorkspaceChanges, WorkspaceDiff, WorkspaceEntry, WorkspaceListing, WorkspacePreview,
+    self, WorkspaceBranches, WorkspaceChanges, WorkspaceDiff, WorkspaceEntry, WorkspaceListing,
+    WorkspacePreview,
 };
 use crate::features::codex_acp::{
     AcpAgentDescriptor, AcpEventEnvelope, AcpPool, AgentBackend, CodexAcpPendingElicitation,
@@ -409,6 +410,55 @@ pub async fn get_codex_workspace_diff(
     })
     .await
     .map_err(|error| format!("读取 Codex 文件差异任务失败: {error}"))?
+}
+
+#[tauri::command]
+pub async fn list_codex_workspace_branches(
+    session_id: Option<String>,
+    workspace_path: Option<String>,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<WorkspaceBranches, String> {
+    let root = codex_workspace_root(session_id.as_deref(), workspace_path.as_deref(), &acp_pool)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        workspace::workspace_branches(&root)
+            .map_err(|error| format!("读取 Codex 工作区分支失败: {error:#}"))
+    })
+    .await
+    .map_err(|error| format!("读取 Codex 工作区分支任务失败: {error}"))?
+}
+
+#[tauri::command]
+pub async fn checkout_codex_workspace_branch(
+    session_id: Option<String>,
+    workspace_path: Option<String>,
+    branch: String,
+    mode: String,
+    commit_message: Option<String>,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<WorkspaceBranches, String> {
+    let root = codex_workspace_root(session_id.as_deref(), workspace_path.as_deref(), &acp_pool)?;
+    let mode = workspace::BranchSwitchMode::parse(&mode)
+        .map_err(|error| format!("切换 Codex 工作区分支失败: {error:#}"))?;
+    // 跨会话防护：同一工作区上任意会话（含发起方之外的其他会话）有在途回合时
+    // 拒绝切换，避免运行中的 Agent 把后续编辑落到错误分支。前端只挡当前会话，
+    // 后端这里做强制兜底（ACP 与原生 code 会话统一看 assistant::timing 的在途登记）。
+    let running = acp_pool
+        .agents()
+        .code_sessions_in_workspace(&root)
+        .into_iter()
+        .filter(|session_id| crate::features::assistant::timing::has_active_turn(session_id))
+        .count();
+    if running > 0 {
+        return Err(format!(
+            "该工作区有 {running} 个会话正在运行，请等待运行结束后再切换分支"
+        ));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        workspace::checkout_workspace_branch(&root, &branch, mode, commit_message.as_deref())
+            .map_err(|error| format!("切换 Codex 工作区分支失败: {error:#}"))
+    })
+    .await
+    .map_err(|error| format!("切换 Codex 工作区分支任务失败: {error}"))?
 }
 
 #[tauri::command]

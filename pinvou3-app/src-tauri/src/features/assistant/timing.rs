@@ -205,6 +205,15 @@ pub fn finish_turn(session_id: &str, status: &str, error: Option<&str>) {
     finish_turn_with_usage(session_id, status, error, None);
 }
 
+/// 是否有未收口的在途回合（start_turn 已登记、finish_turn 未弹出）。
+/// 用于跨会话安全守卫（如禁止在同工作区会话运行中切换 Git 分支）。
+pub fn has_active_turn(session_id: &str) -> bool {
+    active_turns()
+        .lock()
+        .map(|map| map.get(session_id).is_some_and(|queue| !queue.is_empty()))
+        .unwrap_or(false)
+}
+
 /// Records post-compaction context usage without creating a turn.
 ///
 /// Manual and automatic compaction do not call `start_turn`, and `TurnComplete` carries zero
