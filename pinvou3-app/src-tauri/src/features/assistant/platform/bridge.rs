@@ -2863,7 +2863,7 @@ mod tests {
 
     /// CLI 硬拦截规则集（scope 门禁的 execpolicy 通道）：按会话 scope 的被禁
     /// CLI 连接器生成二进制 deny 规则——plain 默认无规则；code 未初始化默认
-    /// 全禁 4 个内置 CLI 二进制；显式开启后仅余被禁者。并钉住底座执行语义：
+    /// 全禁内置 CLI 二进制；显式开启后仅余被禁者。并钉住底座执行语义：
     /// deny 在直跑 / 链式 / wrapper 形态下都硬拒（AskForApproval::Never 也拦）。
     #[test]
     fn cli_deny_ruleset_follows_scope_disabled_connectors() {
@@ -2902,7 +2902,7 @@ mod tests {
             .iter()
             .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny));
 
-        // code 未初始化 → 默认全禁 4 个内置 CLI 二进制（与连接器开关默认同语义），
+        // code 未初始化 → 默认全禁内置 CLI 二进制（与连接器开关默认同语义），
         // 每个二进制发裸名 + .exe/.cmd 变体共 3 条。
         let rs = bridge.cli_deny_ruleset("sess-code");
         let mut bins: Vec<&str> = rs
@@ -2923,6 +2923,9 @@ mod tests {
                 "tmeet",
                 "tmeet.cmd",
                 "tmeet.exe",
+                "weibo-cli",
+                "weibo-cli.cmd",
+                "weibo-cli.exe",
                 "wecom-cli",
                 "wecom-cli.cmd",
                 "wecom-cli.exe"

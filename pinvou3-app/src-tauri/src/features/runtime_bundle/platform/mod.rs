@@ -302,6 +302,10 @@ mod tests {
     use super::*;
     use crate::bridge::paths::tests::ENV_LOCK;
 
+    fn pkg_skills(id: &str) -> std::path::PathBuf {
+        paths::bundles_root().join(id).join("skills")
+    }
+
     #[test]
     fn work_instructions_use_only_canonical_model_visible_tools() {
         let rendered = instructions_md();
@@ -613,7 +617,6 @@ mod tests {
         std::env::set_var("PINVOU3_HOME", &tmp);
         let bundle = Pinvou3Bundle::paths();
         // 连接器技能现按包聚合落盘：bundles/<pkg>/skills/<dir>（§4 新布局）。
-        let pkg_skills = |id: &str| paths::bundles_root().join(id).join("skills");
         std::fs::create_dir_all(pkg_skills("feishu")).unwrap();
 
         assert!(!bundle.cached_feishu_skills_visible());
@@ -643,7 +646,7 @@ mod tests {
             std::fs::write(path.join("SKILL.md"), "test").unwrap();
         }
         for dir in WEIBO_SKILL_DIRS {
-            let path = bundle.skills_dir.join(dir);
+            let path = pkg_skills("weibo").join(dir);
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("SKILL.md"), "test").unwrap();
         }
@@ -713,20 +716,21 @@ mod tests {
         let tmp = tempdir();
         std::env::set_var("PINVOU3_HOME", &tmp);
         let bundle = Pinvou3Bundle::paths();
-        std::fs::create_dir_all(&bundle.skills_dir).unwrap();
+        let target = pkg_skills("weibo");
+        std::fs::create_dir_all(&target).unwrap();
 
         bundle.apply_weibo_skills(true).unwrap();
         for dir in WEIBO_SKILL_DIRS {
-            assert!(bundle.skills_dir.join(dir).join("SKILL.md").is_file());
+            assert!(target.join(dir).join("SKILL.md").is_file());
         }
-        assert!(bundle.skills_dir.join("NOTICE-weibo.md").is_file());
+        assert!(target.join("NOTICE-weibo.md").is_file());
         assert!(bundle.cached_weibo_skills_visible());
 
         bundle.apply_weibo_skills(false).unwrap();
         for dir in WEIBO_SKILL_DIRS {
-            assert!(!bundle.skills_dir.join(dir).exists());
+            assert!(!target.join(dir).exists());
         }
-        assert!(!bundle.skills_dir.join("NOTICE-weibo.md").exists());
+        assert!(!target.join("NOTICE-weibo.md").exists());
         assert!(!bundle.cached_weibo_skills_visible());
 
         cleanup(&tmp);

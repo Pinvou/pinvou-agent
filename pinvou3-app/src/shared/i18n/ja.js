@@ -792,7 +792,7 @@ desktopHint:'先にデスクトップで Obsidian をインストールして保
   updateSkillOverwriteHint:'ストアの最新バージョンで上書きします。このスキルへのローカルの変更は失われます。',
   notConnectedYet:name=>`「${name}」はまだ接続されていません。`,
   loginFrameTitle:name=>`${name} ログイン`, loginPageLoadFailed:'ログインページを読み込めませんでした。下のブラウザー認証をご利用ください', waitingAuth:'認証を待機中…', openInBrowser:'ブラウザーで開く',
-  mini:{ scan:'スキャン待ち', install:pct=>`インストール ${pct}%`, extract:pct=>`展開 ${pct}%`, connecting:'接続中', title:'タップして進捗を表示' },
+  mini:{ scan:'スキャン待ち', authorize:'認証中', install:pct=>`インストール ${pct}%`, extract:pct=>`展開 ${pct}%`, connecting:'接続中', title:'タップして進捗を表示' },
   feishuSteps:[
 { key:'runtime', label:'ランタイムを準備', sub:'アプリ同梱の Node を使用' },
 { key:'cli', label:'接続コンポーネントをインストール', sub:'lark-cli · 初回は約 40 秒' },
