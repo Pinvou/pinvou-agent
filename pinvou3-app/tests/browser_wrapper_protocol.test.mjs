@@ -1,4 +1,6 @@
+/* eslint-disable no-promise-executor-return -- Promise executors adapt timer and callback APIs whose registration handles are intentionally ignored. */
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
@@ -10,10 +12,16 @@ import {
   browserHostBackendPolicy,
   browserToolMayMutate,
   buildBijectivePageTokenMaps,
+  BROWSER_PROTOCOL_FRAME_MAX_BYTES,
+  BROWSER_PROTOCOL_FRAME_TOO_LARGE_ERROR_CODE,
+  BROWSER_STARTUP_BACKLOG_EXCEEDED_ERROR_CODE,
+  createBoundedLineBacklog,
+  createBoundedNdjsonDecoder,
   createHostCallerHeartbeat,
   createHostCancellationTombstone,
   createHostLeaseAssertionRequest,
   createHostRequestEnvelope,
+  createOrderedWritableQueue,
   effectiveNavigateType,
   explicitOwnedPageId,
   filterPagesResult,
@@ -43,6 +51,193 @@ import {
   runVisiblePageOperation,
   uncancelledBufferedRequests,
 } from '../src-tauri/resources/common/bundle/mcp-servers/browser-wrapper-protocol.mjs';
+
+test('ordered writable queue preserves protocol order across backpressure', async () => {
+  class ControlledWritable extends EventEmitter {
+    chunks = [];
+
+    write(chunk) {
+      this.chunks.push(chunk);
+      return this.chunks.length !== 1;
+    }
+  }
+
+  const stream = new ControlledWritable();
+  const queue = createOrderedWritableQueue(stream);
+  const first = queue.write('first\n');
+  const second = queue.write('second\n');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(stream.chunks, ['first\n']);
+
+  stream.emit('drain');
+  await Promise.all([first, second]);
+  await queue.flush();
+  assert.deepEqual(stream.chunks, ['first\n', 'second\n']);
+});
+
+test('ordered writable queue reports stdout failure once and fails flush', async () => {
+  class BlockedWritable extends EventEmitter {
+    write() {
+      return false;
+    }
+  }
+
+  const failures = [];
+  const stream = new BlockedWritable();
+  const queue = createOrderedWritableQueue(stream, {
+    onError: (error) => failures.push(error.message),
+  });
+  const pending = queue.write('response\n');
+  await new Promise((resolve) => setImmediate(resolve));
+  stream.emit('error', new Error('broken pipe'));
+  await pending;
+
+  await assert.rejects(queue.flush(), /broken pipe/);
+  stream.emit('error', new Error('later failure'));
+  assert.deepEqual(failures, ['broken pipe']);
+});
+
+test('ordered writable queue fails deterministically when a blocked stream closes', async () => {
+  class BlockedWritable extends EventEmitter {
+    write() {
+      return false;
+    }
+  }
+
+  const stream = new BlockedWritable();
+  const queue = createOrderedWritableQueue(stream);
+  const pending = queue.write('response\n');
+  await new Promise((resolve) => setImmediate(resolve));
+  stream.emit('close');
+  await pending;
+  await assert.rejects(queue.flush(), /closed before queued output drained/);
+});
+
+test('ordered writable queue permits one oversized active response', async () => {
+  class AcceptingWritable extends EventEmitter {
+    chunks = [];
+
+    write(chunk) {
+      this.chunks.push(chunk);
+      return true;
+    }
+  }
+
+  const stream = new AcceptingWritable();
+  const queue = createOrderedWritableQueue(stream, { maxPendingBytes: 8 });
+  const oversized = 'x'.repeat(1024 * 1024 + 1);
+  await queue.write(oversized);
+  await queue.flush();
+
+  assert.equal(stream.chunks.length, 1);
+  assert.equal(stream.chunks[0].length, oversized.length);
+  assert.equal(queue.pendingBytes, 0);
+  assert.equal(queue.queuedBytes, 0);
+});
+
+test('ordered writable queue bounds follow-up backlog behind an oversized stalled response', async () => {
+  class BlockedWritable extends EventEmitter {
+    chunks = [];
+
+    write(chunk) {
+      this.chunks.push(chunk);
+      return false;
+    }
+  }
+
+  const failures = [];
+  const stream = new BlockedWritable();
+  const queue = createOrderedWritableQueue(stream, {
+    maxPendingBytes: 8,
+    onError: (error) => failures.push(error.message),
+  });
+  const oversized = 'x'.repeat(32);
+  const first = queue.write(oversized);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(stream.chunks, [oversized]);
+
+  const second = queue.write('12345678');
+  assert.equal(queue.queuedBytes, 8);
+  const saturated = queue.write('9');
+  await Promise.all([first, second, saturated]);
+
+  assert.deepEqual(stream.chunks, [oversized]);
+  assert.equal(queue.pendingBytes, 0);
+  assert.equal(queue.queuedBytes, 0);
+  await assert.rejects(queue.flush(), /8-byte queued backlog limit/);
+  assert.deepEqual(failures, ['Writable queue exceeded its 8-byte queued backlog limit']);
+});
+
+test('bounded NDJSON decoder rejects a no-newline frame as soon as it crosses the cap', () => {
+  const decoder = createBoundedNdjsonDecoder({
+    maxFrameBytes: 8,
+    source: 'test stdin',
+  });
+
+  assert.deepEqual(decoder.push(Buffer.from('1234')), []);
+  assert.deepEqual(decoder.push(Buffer.from('5678')), []);
+  assert.throws(
+    () => decoder.push(Buffer.from('9')),
+    new RegExp(`${BROWSER_PROTOCOL_FRAME_TOO_LARGE_ERROR_CODE}.*8-byte`),
+  );
+  assert.equal(decoder.pendingBytes, 8);
+});
+
+test('bounded NDJSON decoder rejects an oversized complete line before publication', () => {
+  const decoder = createBoundedNdjsonDecoder({
+    maxFrameBytes: 8,
+    source: 'test child stdout',
+  });
+
+  assert.throws(
+    () => decoder.push(Buffer.from('123456789\n')),
+    new RegExp(`${BROWSER_PROTOCOL_FRAME_TOO_LARGE_ERROR_CODE}.*9 bytes`),
+  );
+  assert.ok(decoder.failure);
+});
+
+test('startup request backlog rejects count and byte floods with a stable error', () => {
+  const countBounded = createBoundedLineBacklog({
+    maxLines: 2,
+    maxBytes: 32,
+    source: 'test startup backlog',
+  });
+  countBounded.push('one');
+  countBounded.push('two');
+  assert.throws(
+    () => countBounded.push('three'),
+    new RegExp(BROWSER_STARTUP_BACKLOG_EXCEEDED_ERROR_CODE),
+  );
+
+  const byteBounded = createBoundedLineBacklog({
+    maxLines: 4,
+    maxBytes: 5,
+    source: 'test startup backlog',
+  });
+  byteBounded.push('12345');
+  assert.throws(
+    () => byteBounded.push('6'),
+    new RegExp(BROWSER_STARTUP_BACKLOG_EXCEEDED_ERROR_CODE),
+  );
+  assert.deepEqual(byteBounded.drain(), ['12345']);
+  assert.equal(byteBounded.bytes, 0);
+});
+
+test('bounded NDJSON decoder preserves a normal response larger than one MiB', () => {
+  const decoder = createBoundedNdjsonDecoder({
+    maxFrameBytes: BROWSER_PROTOCOL_FRAME_MAX_BYTES,
+    source: 'test large response',
+  });
+  const response = JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    result: { content: 'x'.repeat(1024 * 1024 + 1) },
+  });
+  const lines = decoder.push(Buffer.from(`${response}\n`));
+
+  assert.deepEqual(lines, [response]);
+  assert.equal(decoder.pendingBytes, 0);
+});
 
 test('official browser tool retries use a conservative mutation allowlist', () => {
   for (const name of [
@@ -100,7 +295,7 @@ const WRAPPER_URL = new URL(
   import.meta.url,
 );
 
-test('Windows 原生工作区保留多标签工具并隐藏不可读的截图工具', () => {
+test('Windows native workspace retains multi-tab tools and hides unusable screenshot tools', () => {
   const catalog = {
     toolsListResult: {
       tools: [
@@ -180,7 +375,7 @@ test('disabled browser tools are rejected before wrapper startup or upstream pro
   );
 });
 
-test('shim 工具目录暴露的 pageId schema 与上游 experimental routing 一致', () => {
+test('shim catalog exposes the upstream experimental pageId routing schema', () => {
   const catalog = {
     toolsListResult: {
       tools: [
@@ -217,7 +412,7 @@ test('shim 工具目录暴露的 pageId schema 与上游 experimental routing �
   assert.equal(catalog.toolsListResult.tools[0].inputSchema.properties.pageId, undefined);
 });
 
-test('最终多标签模式不再把 new_page 改写成当前页导航', () => {
+test('final multi-tab mode no longer rewrites new_page as current-page navigation', () => {
   const line = JSON.stringify({
     jsonrpc: '2.0',
     id: 7,
@@ -227,7 +422,7 @@ test('最终多标签模式不再把 new_page 改写成当前页导航', () => {
   assert.equal(adaptHostedBrowserToolCall(line), line);
 });
 
-test('background new_page 保留后台预创建语义', () => {
+test('background new_page preserves background precreation semantics', () => {
   const line = JSON.stringify({
     jsonrpc: '2.0',
     id: 8,
@@ -240,7 +435,7 @@ test('background new_page 保留后台预创建语义', () => {
   assert.equal(adaptHostedBrowserToolCall(line), line);
 });
 
-test('浏览器宿主策略不包含外部 Chrome 回退', () => {
+test('browser host policy contains no external Chrome fallback', () => {
   assert.deepEqual(browserHostBackendPolicy('win32'), {
     action: 'request-native-host',
     backend: 'webview2',
@@ -267,11 +462,11 @@ test('浏览器宿主策略不包含外部 Chrome 回退', () => {
   }
 });
 
-test('ensureBrowserRunning 控制流不能调用外部浏览器辅助函数', () => {
+test('ensureBrowserRunning control flow cannot call external-browser helpers', () => {
   const source = readFileSync(WRAPPER_URL, 'utf8');
   const start = source.indexOf('async function ensureBrowserRunning()');
-  const end = source.indexOf('// MCP 目录', start);
-  assert.ok(start >= 0 && end > start, '应能定位 ensureBrowserRunning 实现');
+  const end = source.indexOf('// MCP catalog', start);
+  assert.ok(start >= 0 && end > start, 'ensureBrowserRunning implementation must be locatable');
   const body = source.slice(start, end);
   assert.match(body, /browserHostBackendPolicy\(process\.platform\)/);
   assert.doesNotMatch(body, /\b(?:startChrome|findChrome|pickFreePort)\s*\(/);
@@ -279,12 +474,12 @@ test('ensureBrowserRunning 控制流不能调用外部浏览器辅助函数', ()
   assert.doesNotMatch(
     source,
     /\b(?:startChrome|findChrome|pickFreePort|writePortFile|killChromeChild)\s*\(/,
-    '外部浏览器启动与清理辅助函数应从产品代码中彻底移除',
+    'external-browser startup and cleanup helpers must be absent from product code',
   );
   assert.doesNotMatch(source, /PINVOU_BROWSER_CHROME_PATH/);
 });
 
-test('宿主请求使用唯一响应路径、幂等键和超时取消 tombstone', () => {
+test('host requests use unique response paths, idempotency keys, and timeout tombstones', () => {
   const identity = {
     requestId: '123-456-a1b2c3d4',
     sessionId: 'session-a',
@@ -367,7 +562,7 @@ test('宿主请求使用唯一响应路径、幂等键和超时取消 tombstone'
   assert.ok(timeoutStart >= 0 && timeoutEnd > timeoutStart);
   assert.ok(
     timeoutBody.indexOf('atomicWriteJson(tombstonePath') < timeoutBody.indexOf('unlinkSync(requestPath)'),
-    '超时时必须先提交取消 tombstone，再撤回尚未领取的请求',
+    'timeout must publish the cancellation tombstone before withdrawing an unclaimed request',
   );
   assert.match(timeoutBody, /quarantineTimedOutHostResponse\(responsePath, tombstonePath\)/);
   const quarantineStart = source.indexOf('function quarantineTimedOutHostResponse(');
@@ -377,16 +572,16 @@ test('宿主请求使用唯一响应路径、幂等键和超时取消 tombstone'
   assert.doesNotMatch(
     quarantineBody,
     /unlinkSync\(tombstonePath\)/,
-    '调用方不得按 TTL 删除取消权威；只能等待宿主消费',
+    'the caller must not delete cancellation authority by TTL and must await host consumption',
   );
   const requestStart = source.indexOf('async function requestHost(');
-  const requestEnd = source.indexOf('/**\n * Windows 主应用负责创建', requestStart);
+  const requestEnd = source.indexOf('/**\n * The Windows main application owns', requestStart);
   const requestBody = source.slice(requestStart, requestEnd);
   assert.match(requestBody, /return parseHostResponseEnvelope\(response/);
   assert.doesNotMatch(requestBody, /response\?\.request_id != null/);
 });
 
-test('v3 host response 身份字段缺失或不匹配时必须拒绝', () => {
+test('v3 host responses reject missing or mismatched identity fields', () => {
   const requestId = '123-456-a1b2c3d4';
   const idempotencyKey = `0123456789abcdef/${requestId}`;
   const response = {
@@ -440,7 +635,7 @@ test('v3 host response 身份字段缺失或不匹配时必须拒绝', () => {
   );
 });
 
-test('启动失败不会给启动期间已取消的 buffered 请求回错误', () => {
+test('startup failure does not answer buffered requests cancelled during startup', () => {
   const lines = [
     JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call' }),
     JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call' }),
@@ -453,14 +648,17 @@ test('启动失败不会给启动期间已取消的 buffered 请求回错误', (
   const start = source.indexOf('async function startProxy()');
   const end = source.indexOf('function writeChildRaw(', start);
   const body = source.slice(start, end);
-  assert.match(body, /const failed = uncancelledBufferedRequests\(bufferedLines, cancelledIds\)/);
+  assert.match(
+    body,
+    /const failed = uncancelledBufferedRequests\(bufferedLines\.drain\(\), cancelledIds\)/,
+  );
   assert.ok(
     body.indexOf('const failed = uncancelledBufferedRequests') < body.indexOf('cancelledIds.clear()'),
-    '取消集合必须在失败请求过滤之后才能清空',
+    'the cancellation set must be cleared only after failed requests are filtered',
   );
 });
 
-test('解析 structuredContent 页面并保留稳定 pageId', () => {
+test('structuredContent pages preserve stable pageIds', () => {
   const result = {
     structuredContent: {
       pages: [
@@ -472,7 +670,7 @@ test('解析 structuredContent 页面并保留稳定 pageId', () => {
   assert.deepEqual(parseBrowserPages(result), result.structuredContent.pages);
 });
 
-test('list_pages 可接收宿主权威 targetId 字段', () => {
+test('list_pages accepts authoritative host targetId fields', () => {
   assert.deepEqual(parseBrowserPages({
     structuredContent: {
       pages: [{
@@ -492,7 +690,7 @@ test('list_pages 可接收宿主权威 targetId 字段', () => {
   }]);
 });
 
-test('旧 MCP 协议可从文本结果解析页面', () => {
+test('legacy MCP protocol parses pages from text results', () => {
   const pages = parseBrowserPages({
     content: [{
       type: 'text',
@@ -505,7 +703,7 @@ test('旧 MCP 协议可从文本结果解析页面', () => {
   ]);
 });
 
-test('第一次前台 new_page 只复用宿主初始化空白页', () => {
+test('first foreground new_page only reuses the host bootstrap blank page', () => {
   const sessionToken = '0123456789abcdef';
   const bootstrapWorkspace = {
     version: 2,
@@ -561,10 +759,10 @@ test('第一次前台 new_page 只复用宿主初始化空白页', () => {
     },
     page: { id: 2, url: 'about:blank', targetId: 'target-b' },
     pageToken: 'fedcba9876543210',
-  }), false, '用户创建的普通空白标签不能被当成初始化占位页覆盖');
+  }), false, 'a normal user-created blank tab must not be overwritten as a bootstrap placeholder');
 });
 
-test('list_pages 只向 Agent 返回当前对话允许的标签', () => {
+test('list_pages only returns tabs allowed for the current conversation', () => {
   const result = {
     content: [{ type: 'text', text: '## Pages\n1: A (https://a.test)\n2: B (https://b.test) [selected]\n3: C (https://c.test)' }],
     structuredContent: {
@@ -583,7 +781,7 @@ test('list_pages 只向 Agent 返回当前对话允许的标签', () => {
   assert.match(filtered.content[0].text, /3: C.*\[selected\]/);
 });
 
-test('wrapper 过滤用于 target join 的同一份 list_pages 结果', () => {
+test('wrapper filters the same list_pages result used for target joining', () => {
   const source = readFileSync(WRAPPER_URL, 'utf8');
   const helperStart = source.indexOf('function filteredPagesResult(');
   const helperEnd = source.indexOf('async function verifyHostedPageAlignment(', helperStart);
@@ -603,7 +801,7 @@ test('wrapper 过滤用于 target join 的同一份 list_pages 结果', () => {
   assert.match(listBody, /return filteredPagesResult\(listResult\)/);
 });
 
-test('识别初始对话页和新建内嵌标签 marker', () => {
+test('bootstrap conversation and newly embedded tab markers are recognized', () => {
   const result = {
     structuredContent: {
       pages: [
@@ -617,7 +815,7 @@ test('识别初始对话页和新建内嵌标签 marker', () => {
   assert.equal(findHostedTabPage(result, '../unsafe'), null);
 });
 
-test('MCP 重启后按宿主 active target 恢复已导航页面，不依赖 URL marker', () => {
+test('MCP restart restores navigated pages from the active host target without URL markers', () => {
   const workspace = {
     version: 2,
     mapping_authority: 'host',
@@ -650,11 +848,11 @@ test('MCP 重启后按宿主 active target 恢复已导航页面，不依赖 URL
         ],
       },
     }, workspace, '0123456789abcdef'),
-    /重复 target_id/,
+    /duplicate target_id/,
   );
 });
 
-test('URL fragment 消失后只接受已验证的宿主页映射', () => {
+test('only verified host page mappings survive after URL fragments disappear', () => {
   const result = {
     structuredContent: {
       pages: [
@@ -668,7 +866,7 @@ test('URL fragment 消失后只接受已验证的宿主页映射', () => {
   assert.equal(findHostedTabPage(result, '0123456789abcdef', pageTokens), null);
 });
 
-test('远程 URL marker 或不匹配的 structured target 不能冒充宿主页面', () => {
+test('remote URL markers and mismatched structured targets cannot impersonate host pages', () => {
   const sessionToken = '0123456789abcdef';
   const tabToken = 'fedcba9876543210';
   assert.equal(findHostedSessionPage({
@@ -709,12 +907,12 @@ test('远程 URL marker 或不匹配的 structured target 不能冒充宿主页�
   assert.doesNotMatch(discoverBody, /page\.url\.includes\(`/);
 });
 
-test('wrapper 不向远程页面主世界写入会话或标签 token', () => {
+test('wrapper never writes session or tab tokens into the remote page main world', () => {
   const source = readFileSync(WRAPPER_URL, 'utf8');
   assert.doesNotMatch(source, /__PINVOU_BROWSER_TAB_TOKEN__|markerInitScript/);
 });
 
-test('wrapper 运行时严格消费 v2 映射并完整接线宿主 lease 协议', () => {
+test('wrapper runtime strictly consumes v2 mappings and fully wires the host lease protocol', () => {
   const source = readFileSync(WRAPPER_URL, 'utf8');
   const readStart = source.indexOf('function readWorkspaceState()');
   const readEnd = source.indexOf('async function requestHostedOperation(', readStart);
@@ -738,11 +936,17 @@ test('wrapper 运行时严格消费 v2 映射并完整接线宿主 lease 协议'
     );
   }
   assert.match(routeBody, /emits_trusted_input: emitsInput/);
+  assert.match(routeBody, /observational_only: observationalOnly/);
   assert.match(routeBody, /onRefreshFailure:[\s\S]{0,500}signalManagedUpstreamCancellation/);
   assert.match(routeBody, /emitsTrustedInput \? 'refresh_agent_input' : 'refresh_agent_operation'/);
   assert.match(
     routeBody,
     /heartbeatIntervalMs: emitsTrustedInput[\s\S]{0,120}WINDOWS_AGENT_OPERATION_HEARTBEAT_INTERVAL_MS/,
+  );
+  assert.match(
+    source,
+    /observationalOnly: !browserToolMayMutate\(name\)/,
+    'only the explicit observation allowlist may run while user navigation is pending',
   );
   const inputWindowMs = Number(
     source.match(/const WINDOWS_TRUSTED_INPUT_WINDOW_MS = (\d+);/)?.[1],
@@ -799,18 +1003,18 @@ test('wrapper 运行时严格消费 v2 映射并完整接线宿主 lease 协议'
   assert.match(
     newBody,
     /runOnVisibleHostedPage\([\s\S]*?callUpstreamTool\(\s*'navigate_page'/,
-    '初始化空白页复用必须在可见页 lease 内执行导航',
+    'bootstrap blank-page reuse must navigate within the visible-page lease',
   );
-  assert.match(newBody, /URL 首航由宿主在未发布的 staging 标签内完成/);
+  assert.match(newBody, /The host performs initial URL navigation inside an unpublished staging tab/);
   const createStart = newBody.indexOf('const creationAuthorization');
   assert.doesNotMatch(
     newBody.slice(createStart),
     /callUpstreamTool\(\s*'navigate_page'/,
-    '真正创建标签后的 lease 已失效，前后台 new_page 都不得由 wrapper 直连 target 首航',
+    'the lease is stale after physical tab creation, so the wrapper must not perform initial target navigation',
   );
 });
 
-test('pageId 与 tabToken 映射强制双射，重复项不能任取首个', () => {
+test('pageId and tabToken mapping is bijective and rejects duplicate first-match selection', () => {
   const { pageToToken, tokenToPage } = buildBijectivePageTokenMaps([
     [7, '0123456789abcdef'],
     [8, 'fedcba9876543210'],
@@ -823,44 +1027,44 @@ test('pageId 与 tabToken 映射强制双射，重复项不能任取首个', () 
       [7, '0123456789abcdef'],
       [7, 'fedcba9876543210'],
     ]),
-    /重复 pageId/,
+    /duplicate pageId/,
   );
   assert.throws(
     () => buildBijectivePageTokenMaps([
       [7, '0123456789abcdef'],
       [8, '0123456789abcdef'],
     ]),
-    /重复 tabToken/,
+    /duplicate tabToken/,
   );
   assert.throws(
     () => buildBijectivePageTokenMaps([
       [7, '0123456789abcdef'],
       [7, '0123456789abcdef'],
     ]),
-    /重复 pageId/,
+    /duplicate pageId/,
   );
 });
 
-test('显式 pageId 必须在同步或选择前通过当前对话归属校验', () => {
+test('explicit pageId must pass current-conversation ownership before synchronization or selection', () => {
   const pages = new Map([[7, '0123456789abcdef']]);
   assert.equal(explicitOwnedPageId({}, pages), null);
   assert.equal(explicitOwnedPageId({ pageId: 7 }, pages), 7);
-  assert.throws(() => explicitOwnedPageId({ pageId: '7' }, pages), /不属于当前对话/);
-  assert.throws(() => explicitOwnedPageId({ pageId: 8 }, pages), /不属于当前对话/);
+  assert.throws(() => explicitOwnedPageId({ pageId: '7' }, pages), /does not belong to this conversation/);
+  assert.throws(() => explicitOwnedPageId({ pageId: 8 }, pages), /does not belong to this conversation/);
 
   const source = readFileSync(WRAPPER_URL, 'utf8');
-  const ordinaryStart = source.indexOf('// 所有普通页面工具执行前');
-  const ordinaryEnd = source.indexOf('// 与 MCP 子进程的握手 id', ordinaryStart);
+  const ordinaryStart = source.indexOf('// Before every ordinary page-scoped tool');
+  const ordinaryEnd = source.indexOf('// Handshake IDs used with the MCP child process', ordinaryStart);
   const ordinaryBody = source.slice(ordinaryStart, ordinaryEnd);
   assert.ok(
     ordinaryBody.indexOf('explicitOwnedPageId(args, pageIdToTabToken)') <
       ordinaryBody.indexOf('await syncWorkspacePagesBeforeDispatch(false, msg.id)'),
-    '显式 pageId 归属必须早于任何页面同步/选择',
+    'explicit pageId ownership must precede any page synchronization or selection',
   );
   assert.match(
     ordinaryBody,
     /const requestedTabToken =[\s\S]*?await syncWorkspacePagesBeforeDispatch[\s\S]*?pageIdToTabToken\.get\(requestedPageId\) !== requestedTabToken/,
-    '同步后必须拒绝复用同一 numeric pageId 的另一标签',
+    'a different tab reusing the same numeric pageId must be rejected after synchronization',
   );
 
   const routeStart = source.indexOf('async function routeHostedToolCall(');
@@ -873,7 +1077,7 @@ test('显式 pageId 必须在同步或选择前通过当前对话归属校验', 
   );
 
   const closeStart = source.indexOf("if (name === 'close_page')", newStart);
-  const closeEnd = source.indexOf('// 所有普通页面工具执行前', closeStart);
+  const closeEnd = source.indexOf('// Before every ordinary page-scoped tool', closeStart);
   const closeBody = source.slice(closeStart, closeEnd);
   assert.match(
     closeBody,
@@ -881,7 +1085,7 @@ test('显式 pageId 必须在同步或选择前通过当前对话归属校验', 
   );
 });
 
-test('v2 宿主权威映射必须完整，残缺状态不得回落网页 marker', () => {
+test('authoritative v2 host mappings must be complete and never fall back to page markers', () => {
   const workspace = parseAuthoritativeHostWorkspace({
     version: 2,
     mapping_authority: 'host',
@@ -903,7 +1107,7 @@ test('v2 宿主权威映射必须完整，残缺状态不得回落网页 marker'
       active_tab: '0123456789abcdef',
       tabs: [{ token: '0123456789abcdef' }],
     }),
-    /未提供 v2 权威 target 映射/,
+    /did not provide an authoritative v2 target mapping/,
   );
   assert.throws(
     () => parseAuthoritativeHostWorkspace({
@@ -914,7 +1118,7 @@ test('v2 宿主权威映射必须完整，残缺状态不得回落网页 marker'
       active_tab: '0123456789abcdef',
       tabs: [{ token: '0123456789abcdef' }],
     }),
-    /缺少权威 target_id/,
+    /missing an authoritative target_id/,
   );
   assert.throws(
     () => parseAuthoritativeHostWorkspace({
@@ -928,11 +1132,11 @@ test('v2 宿主权威映射必须完整，残缺状态不得回落网页 marker'
         { token: 'fedcba9876543210', target_id: 'same-target' },
       ],
     }),
-    /重复 target_id/,
+    /duplicate target_id/,
   );
 });
 
-test('activate_tab lease schema 严格生成 assert_host_lease 参数', () => {
+test('activate_tab lease schema strictly generates assert_host_lease arguments', () => {
   const lease = parseHostActivationLease({
     sessionId: 'session-a',
     tabToken: '0123456789abcdef',
@@ -966,7 +1170,7 @@ test('activate_tab lease schema 严格生成 assert_host_lease 参数', () => {
       revision: 12,
       owner: 'agent',
     }),
-    /缺少 dispatch lease/,
+    /missing a dispatch lease/,
   );
   assert.throws(
     () => parseHostActivationLease({
@@ -977,7 +1181,7 @@ test('activate_tab lease schema 严格生成 assert_host_lease 参数', () => {
       owner: 'agent',
       lease: '0123456789abcdef0123456789abcdef',
     }, { targetId: 'target-a' }),
-    /targetId 与宿主映射不一致/,
+    /targetId does not match the host mapping/,
   );
   assert.throws(
     () => parseHostActivationLease({
@@ -988,11 +1192,11 @@ test('activate_tab lease schema 严格生成 assert_host_lease 参数', () => {
       owner: 'user',
       lease: '0123456789abcdef0123456789abcdef',
     }),
-    /未把控制权授予 Agent/,
+    /did not grant control to the Agent/,
   );
 });
 
-test('create/close mutation 使用独立 authorization_tab_token，createId 绑定 request_id', () => {
+test('create and close mutations use authorization_tab_token and bind creationId to request_id', () => {
   const lease = {
     sessionId: 'session-a',
     tabToken: '0123456789abcdef',
@@ -1043,7 +1247,7 @@ test('create/close mutation 使用独立 authorization_tab_token，createId 绑�
       operation: 'create_tab',
       requestedTabToken: 'fedcba9876543210',
     }),
-    /creationId 与 request_id 不一致/,
+    /creationId does not match request_id/,
   );
   assert.throws(
     () => parseCreatedTabResult({
@@ -1058,7 +1262,7 @@ test('create/close mutation 使用独立 authorization_tab_token，createId 绑�
   );
 });
 
-test('new_page/close_page 的 v3 CAS 接线与精确补偿不可退化', () => {
+test('new_page and close_page retain v3 CAS wiring and exact compensation', () => {
   const source = readFileSync(WRAPPER_URL, 'utf8');
   const newStart = source.indexOf("if (name === 'new_page')");
   const closeStart = source.indexOf("if (name === 'close_page')", newStart);
@@ -1067,7 +1271,7 @@ test('new_page/close_page 的 v3 CAS 接线与精确补偿不可退化', () => {
   assert.ok(
     newBody.indexOf('const creationAuthorization = await runOnVisibleHostedPage') <
       newBody.indexOf("'create_tab'"),
-    'create_tab 前必须先激活当前 active 页取得 lease',
+    'create_tab must first activate the current active page and acquire its lease',
   );
   assert.match(newBody, /\.\.\.hostMutationAuthorizationPayload\(creationAuthorization\.activationResult\)/);
   assert.match(
@@ -1093,7 +1297,7 @@ test('new_page/close_page 的 v3 CAS 接线与精确补偿不可退化', () => {
   const compensationBody = newBody.slice(catchStart);
   assert.doesNotMatch(compensationBody, /requestHostedOperation\('close_tab'/);
 
-  const ordinaryStart = source.indexOf('// 所有普通页面工具执行前', closeStart);
+  const ordinaryStart = source.indexOf('// Before every ordinary page-scoped tool', closeStart);
   const closeBody = source.slice(closeStart, ordinaryStart);
   assert.match(closeBody, /tab_token: closingToken/);
   assert.match(closeBody, /\.\.\.hostMutationAuthorizationPayload\(aligned\.activationResult\)/);
@@ -1102,7 +1306,7 @@ test('new_page/close_page 的 v3 CAS 接线与精确补偿不可退化', () => {
   assert.match(closeBody, /\(\) => cancelledProxyRequestIds\.has\(msg\.id\)/);
 });
 
-test('lease dispatch 在执行失败或取消时也会 finally 关闭宿主操作窗口', async (t) => {
+test('leased dispatch always closes the host operation window after failure or cancellation', async (t) => {
   const activationLease = {
     sessionId: 'session-a',
     tabToken: '0123456789abcdef',
@@ -1111,7 +1315,7 @@ test('lease dispatch 在执行失败或取消时也会 finally 关闭宿主操�
     owner: 'agent',
     lease: '0123456789abcdef0123456789abcdef',
   };
-  await t.test('工具执行失败后关闭', async () => {
+  await t.test('closes after tool execution fails', async () => {
     const events = [];
     await assert.rejects(
       runLeasedHostDispatch({
@@ -1138,7 +1342,7 @@ test('lease dispatch 在执行失败或取消时也会 finally 关闭宿主操�
     ]);
   });
 
-  await t.test('begin 后收到取消也关闭且不执行工具', async () => {
+  await t.test('closes without executing after cancellation follows begin', async () => {
     const events = [];
     let checks = 0;
     await assert.rejects(
@@ -1158,7 +1362,7 @@ test('lease dispatch 在执行失败或取消时也会 finally 关闭宿主操�
     assert.deepEqual(events, ['active', 'begin', 'active', 'end']);
   });
 
-  await t.test('begin acknowledgement 丢失时也尽力撤销同一 lease', async () => {
+  await t.test('best-effort revokes the same lease when begin acknowledgement is lost', async () => {
     const events = [];
     await assert.rejects(
       runLeasedHostDispatch({
@@ -1176,7 +1380,7 @@ test('lease dispatch 在执行失败或取消时也会 finally 关闭宿主操�
     assert.deepEqual(events, ['active', 'begin', 'end']);
   });
 
-  await t.test('工具已提交后 end 清理失败保留成功结果且只记录告警', async () => {
+  await t.test('preserves a committed tool result when end cleanup only reports a warning', async () => {
     const events = [];
     let executions = 0;
     const result = await runLeasedHostDispatch({
@@ -1209,7 +1413,7 @@ test('lease dispatch 在执行失败或取消时也会 finally 关闭宿主操�
     ]);
   });
 
-  await t.test('非输入工具也续租，且 heartbeat 必须在 end 前完全停止', async () => {
+  await t.test('renews non-input tool leases and fully stops heartbeat before end', async () => {
     const events = [];
     let refreshes = 0;
     const result = await runLeasedHostDispatch({
@@ -1237,7 +1441,7 @@ test('lease dispatch 在执行失败或取消时也会 finally 关闭宿主操�
     assert.equal(refreshes, settledRefreshes, 'no heartbeat may outlive endOperation');
   });
 
-  await t.test('heartbeat 失败但上游已成功时保留已提交结果', async () => {
+  await t.test('preserves a committed result when heartbeat fails after upstream success', async () => {
     let executions = 0;
     const result = await runLeasedHostDispatch({
       activationLease,
@@ -1260,7 +1464,7 @@ test('lease dispatch 在执行失败或取消时也会 finally 关闭宿主操�
     assert.equal(result.isError, false);
   });
 
-  await t.test('heartbeat 失败且上游取消时返回不可重放的未知提交结果', async () => {
+  await t.test('returns a non-replayable unknown outcome when heartbeat and upstream cancellation fail', async () => {
     let executions = 0;
     const result = await runLeasedHostDispatch({
       activationLease,
@@ -1290,7 +1494,7 @@ test('lease dispatch 在执行失败或取消时也会 finally 关闭宿主操�
     assert.match(result.content[0].text, /Do not repeat the action/);
   });
 
-  await t.test('heartbeat 失败且上游返回 tool error 时也标记为未知且不可重放', async () => {
+  await t.test('marks upstream tool errors unknown and non-replayable after heartbeat failure', async () => {
     const result = await runLeasedHostDispatch({
       activationLease,
       emitsTrustedInput: true,
@@ -1316,7 +1520,7 @@ test('lease dispatch 在执行失败或取消时也会 finally 关闭宿主操�
   });
 });
 
-test('识别 experimental page-id-routing 中的页面级工具', () => {
+test('page-scoped tools in experimental page-id-routing are recognized', () => {
   const names = pageScopedToolNames({
     tools: [
       {
@@ -1332,7 +1536,7 @@ test('识别 experimental page-id-routing 中的页面级工具', () => {
   assert.deepEqual([...names], ['navigate_page']);
 });
 
-test('按上游工具注解识别需要 trusted-input suppression 的操作', () => {
+test('upstream tool annotations identify operations requiring trusted-input suppression', () => {
   const names = inputToolNames({
     tools: [
       { name: 'click', annotations: { category: 'input' } },
@@ -1343,7 +1547,7 @@ test('按上游工具注解识别需要 trusted-input suppression 的操作', ()
   assert.deepEqual([...names], ['click', 'type_text']);
 });
 
-test('页面级工具注入当前对话的 pageId 并保留原参数', () => {
+test('page-scoped tools inject the current conversation pageId without mutating arguments', () => {
   const message = {
     jsonrpc: '2.0',
     id: 8,
@@ -1357,10 +1561,10 @@ test('页面级工具注入当前对话的 pageId 并保留原参数', () => {
   assert.equal(routed.params.arguments.pageId, 17);
   assert.equal(routed.params.arguments.url, 'https://example.com');
   assert.equal(routed.params.arguments.initScript, 'patchedScript();\nuserScript()');
-  assert.equal(message.params.arguments.pageId, undefined, '不得原地修改请求');
+  assert.equal(message.params.arguments.pageId, undefined, 'the original request must not be mutated');
 });
 
-test('显式后台 pageId 必须先激活宿主标签、选择 Target、复核后才执行', async () => {
+test('explicit background pageId activates host tab, selects Target, and verifies before execution', async () => {
   const events = [];
   const pageTokens = new Map([
     [11, 'aaaaaaaaaaaaaaaa'],
@@ -1404,8 +1608,8 @@ test('显式后台 pageId 必须先激活宿主标签、选择 Target、复核�
   assert.deepEqual(result.executionResult, { ok: true });
 });
 
-test('页面归属、宿主激活、Target 选择或复核失败时不得执行工具', async (t) => {
-  await t.test('跨对话 pageId 在任何副作用前拒绝', async () => {
+test('ownership, host activation, Target selection, and verification failures prevent execution', async (t) => {
+  await t.test('rejects cross-conversation pageId before side effects', async () => {
     let called = false;
     await assert.rejects(
       runVisiblePageOperation({
@@ -1416,12 +1620,12 @@ test('页面归属、宿主激活、Target 选择或复核失败时不得执行�
         verify: async () => { called = true; },
         execute: async () => { called = true; },
       }),
-      /不属于当前对话/,
+      /does not belong to this conversation/,
     );
     assert.equal(called, false);
   });
 
-  await t.test('宿主 lease 复核失败时不选择 Target', async () => {
+  await t.test('does not select a Target when host lease verification fails', async () => {
     const events = [];
     await assert.rejects(
       runVisiblePageOperation({
@@ -1445,7 +1649,7 @@ test('页面归属、宿主激活、Target 选择或复核失败时不得执行�
   });
 
   for (const failedPhase of ['activate', 'select', 'verify']) {
-    await t.test(`${failedPhase} 失败不执行`, async () => {
+    await t.test(`${failedPhase} failure does not execute`, async () => {
       const events = [];
       const fail = (phase) => {
         events.push(phase);
@@ -1467,7 +1671,7 @@ test('页面归属、宿主激活、Target 选择或复核失败时不得执行�
   }
 });
 
-test('排队调用在激活后收到取消时不会继续选择或执行', async () => {
+test('queued call cancelled after activation does not continue to selection or execution', async () => {
   const events = [];
   let checks = 0;
   await assert.rejects(
@@ -1488,7 +1692,7 @@ test('排队调用在激活后收到取消时不会继续选择或执行', async
   assert.deepEqual(events, ['activate']);
 });
 
-test('复核后页面归属发生变化时仍不得进入实际执行', async () => {
+test('ownership change after verification still prevents actual execution', async () => {
   const pageTokens = new Map([[3, 'aaaaaaaaaaaaaaaa']]);
   let executed = false;
   await assert.rejects(
@@ -1500,12 +1704,12 @@ test('复核后页面归属发生变化时仍不得进入实际执行', async ()
       verify: async () => pageTokens.delete(3),
       execute: async () => { executed = true; },
     }),
-    /不属于当前对话|归属在执行前发生变化/,
+    /does not belong to this conversation|ownership changed before execution/i,
   );
   assert.equal(executed, false);
 });
 
-test('受管工具取消通知改写为当前内部请求 id 且不修改原消息', () => {
+test('managed-tool cancellation remaps the internal request id without mutating input', () => {
   const message = {
     jsonrpc: '2.0',
     method: 'notifications/cancelled',
@@ -1518,10 +1722,10 @@ test('受管工具取消通知改写为当前内部请求 id 且不修改原消�
 
   const source = readFileSync(WRAPPER_URL, 'utf8');
   const queueStart = source.indexOf('function queueProxyLine(');
-  const childStart = source.indexOf('function onProxyChildData(', queueStart);
+  const childStart = source.indexOf('function processProxyChildLine(', queueStart);
   const queueBody = source.slice(queueStart, childStart);
   assert.match(queueBody, /cancelManagedUpstreamRequest\(/);
-  assert.match(queueBody, /msg\.params\?\.reason \|\| '浏览器工具调用已取消'/);
+  assert.match(queueBody, /msg\.params\?\.reason \|\| 'Browser tool call was cancelled'/);
   const cancelStart = source.indexOf('function cancelManagedUpstreamRequest(');
   const cancelEnd = source.indexOf('function queueProxyLine(', cancelStart);
   const cancelBody = source.slice(cancelStart, cancelEnd);
@@ -1531,19 +1735,19 @@ test('受管工具取消通知改写为当前内部请求 id 且不修改原消�
   assert.ok(
     cancelBody.indexOf('if (pending?.awaitRealSettlement)') <
       cancelBody.indexOf('internalRequests.delete(internalRequestId)'),
-    '已 begin 的受管 dispatch 只能合作取消并等待真实上游终态',
+    'a begun managed dispatch must cancel cooperatively and await the real upstream terminal state',
   );
   const childEnd = source.indexOf('function callUpstreamRequest(', childStart);
   const childBody = source.slice(childStart, childEnd);
   assert.match(childBody, /discardedInternalRequestIds\.delete\(msg\.id\)/);
   assert.ok(
     childBody.indexOf('discardedInternalRequestIds.delete') <
-      childBody.lastIndexOf("process.stdout.write(line + '\\n')"),
-    '取消/超时后的内部晚响应必须先丢弃，不能泄漏给外部引擎',
+      childBody.lastIndexOf("writeRawOut(line + '\\n')"),
+    'late internal responses after cancellation or timeout must be discarded before reaching the engine',
   );
 });
 
-test('受管 dispatch 的取消、超时与 child exit 都在真实终态后结束宿主操作', () => {
+test('managed dispatch cancellation, timeout, and child exit end host operations after real settlement', () => {
   const source = readFileSync(WRAPPER_URL, 'utf8');
   const requestStart = source.indexOf('function callUpstreamRequest(');
   const requestEnd = source.indexOf('function callUpstreamTool(', requestStart);
@@ -1558,18 +1762,21 @@ test('受管 dispatch 的取消、超时与 child exit 都在真实终态后结�
   assert.ok(
     shutdownBody.indexOf('await cleanup()') <
       shutdownBody.indexOf('settleInternalRequestsAfterUpstreamStopped(reason)'),
-    '必须先确认上游停止，再结算仍在执行的内部请求',
+    'upstream must be confirmed stopped before settling in-flight internal requests',
   );
   assert.ok(
     shutdownBody.indexOf('settleInternalRequestsAfterUpstreamStopped(reason)') <
       shutdownBody.indexOf('await Promise.allSettled([proxyQueue, hostCoreQueue])'),
-    '结算上游请求后仍须等待 leased dispatch finally/end 完成',
+    'leased dispatch finally/end must complete after upstream request settlement',
   );
   assert.match(source, /child\.on\('exit',[\s\S]*?gracefulShutdown\(/);
   assert.match(source, /process\.stdin\.on\('end',[\s\S]*?gracefulShutdown\(/);
+  assert.match(source, /process\.on\('SIGHUP',[\s\S]*?gracefulShutdown\(/);
+  assert.match(source, /process\.on\('uncaughtException',[\s\S]*?gracefulShutdown\(/);
+  assert.match(source, /process\.on\('unhandledRejection',[\s\S]*?gracefulShutdown\(/);
 });
 
-test('应用内导航拒绝本地文件和脚本协议', () => {
+test('in-app navigation rejects local-file and script schemes', () => {
   assert.equal(isAllowedBrowserUrl('https://example.com/path'), true);
   assert.equal(isAllowedBrowserUrl('http://127.0.0.1:3000/'), true);
   assert.equal(isAllowedBrowserUrl('about:blank'), true);
@@ -1579,20 +1786,20 @@ test('应用内导航拒绝本地文件和脚本协议', () => {
   assert.equal(isAllowedBrowserUrl('example.com'), false);
 });
 
-test('navigate_page 省略 type 但携带 url 时仍走严格 URL 白名单', () => {
+test('navigate_page with url and omitted type still uses the strict URL allowlist', () => {
   assert.equal(effectiveNavigateType({ url: 'https://example.com' }), 'url');
   assert.equal(effectiveNavigateType({ type: 'url', url: 'https://example.com' }), 'url');
   assert.equal(effectiveNavigateType({ type: 'reload' }), 'reload');
   assert.equal(assertAllowedHostedNavigation({ url: 'https://example.com' }), 'url');
   assert.throws(
     () => assertAllowedHostedNavigation({ url: 'file:///C:/Users/example/secrets.txt' }),
-    /仅支持 http\/https\/about:blank/,
+    /only supports http, https, and about:blank URLs/,
   );
   assert.throws(
     () => assertAllowedHostedNavigation({ url: 'javascript:alert(1)' }),
-    /仅支持 http\/https\/about:blank/,
+    /only supports http, https, and about:blank URLs/,
   );
-  // 显式 reload 不会使用多余 url 参数执行导航；显式 type 优先。
+  // An explicit reload ignores an extra url argument; explicit type wins.
   assert.equal(
     assertAllowedHostedNavigation({ type: 'reload', url: 'javascript:ignored()' }),
     'reload',
@@ -1600,11 +1807,11 @@ test('navigate_page 省略 type 但携带 url 时仍走严格 URL 白名单', ()
 
   const source = readFileSync(WRAPPER_URL, 'utf8');
   const routeStart = source.indexOf('async function routeHostedToolCall(');
-  const routeEnd = source.indexOf('// 与 MCP 子进程的握手 id', routeStart);
+  const routeEnd = source.indexOf('// Handshake IDs used with the MCP child process', routeStart);
   const routeBody = source.slice(routeStart, routeEnd);
   assert.ok(
     routeBody.indexOf("if (name === 'navigate_page') assertAllowedHostedNavigation(args)") <
       routeBody.indexOf('if (!runtimePageScopedTools.has(name))'),
-    'URL 白名单必须先于可能的非受管透传分支',
+    'URL allowlisting must happen before any unmanaged passthrough branch',
   );
 });

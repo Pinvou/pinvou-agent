@@ -341,7 +341,7 @@ async fn adopt_upload(
     if tokio::fs::try_exists(&target_dir).await.unwrap_or(false) {
         let (_, target_file) = managed_completed_file(target_workspace, upload_id).await?;
         let _ = remove_dir_if_present(&upload_completed_dir(source_workspace, upload_id)).await;
-        return Ok(file_ingest::ingest(&target_file));
+        return Ok(ingest_managed_file(&target_file));
     }
 
     let (source_dir, source_file) = managed_completed_file(source_workspace, upload_id).await?;
@@ -360,11 +360,19 @@ async fn adopt_upload(
         let _ = remove_dir_if_present(&target_dir).await;
         return Err(format!("迁移附件草稿失败：{error}"));
     }
-    let result = file_ingest::ingest(&target_file);
+    let result = ingest_managed_file(&target_file);
     if let Err(error) = remove_dir_if_present(&source_dir).await {
         eprintln!("[attachment] cleanup adopted draft failed: {error}");
     }
     Ok(result)
+}
+
+fn ingest_managed_file(path: &Path) -> IngestResult {
+    // Windows canonicalization adds a `\\?\` prefix. Keep the idempotent
+    // retry response byte-for-byte stable with the first adoption while still
+    // using the canonical path for containment validation above.
+    let compatible = crate::platform::os::platform_compat_path(&path.to_string_lossy());
+    file_ingest::ingest(&compatible)
 }
 
 /// Append one HTML5 drop chunk inside a session-owned workspace.
@@ -531,14 +539,16 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     fn set_file_modified(path: &std::path::Path, modified: SystemTime) {
-        std::fs::File::open(path)
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
             .unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(modified))
             .unwrap();
     }
 
     fn test_workspace(name: &str) -> PathBuf {
-        crate::platform::os::user_home_dir().join(format!(
+        std::env::temp_dir().join(format!(
             "pinvou3-attachment-upload-{name}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

@@ -147,9 +147,10 @@ pub async fn install_update(
 }
 
 /// 重启应用使新版本生效（exec 新 inode）。restart 跳过 RunEvent::Exit，
-/// 先同步收割 ACP/连接器子进程，避免孤儿进程驻留。
+/// Synchronously close the browser host and reap ACP/connector child processes first so
+/// native surfaces and orphan processes do not remain resident.
 pub async fn restart_app(app: AppHandle) -> Result<(), String> {
-    crate::harvest_child_processes(&app).await;
+    crate::prepare_app_restart(&app).await;
     app.restart();
 }
 

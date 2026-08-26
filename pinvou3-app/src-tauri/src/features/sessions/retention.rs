@@ -15,6 +15,8 @@
 //!    retention depends on, plus the runtime-sidecar purges.
 
 use std::io::ErrorKind;
+#[cfg(test)]
+use std::{collections::HashMap, sync::LazyLock};
 
 use anyhow::{Context, Result};
 
@@ -34,6 +36,10 @@ use deepseek_tui::artifacts::{ArtifactKind, ArtifactRecord};
 use deepseek_tui::session_manager::create_saved_session_with_id_and_mode;
 use deepseek_tui::session_manager::{SavedSession, SessionMetadata};
 use std::path::PathBuf;
+
+#[cfg(test)]
+static SCHEDULED_RUNTIME_DELETE_FAULTS: LazyLock<parking_lot::Mutex<HashMap<String, ErrorKind>>> =
+    LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 
 impl SessionStore {
     pub(crate) fn save_session_atomic(&self, session: &SavedSession) -> Result<PathBuf> {
@@ -376,11 +382,32 @@ impl SessionStore {
             bail!("Refusing to remove runtime data for ordinary chat session '{id}'");
         }
         let runtime_dir = self.manager.sessions_dir().join(id);
+        #[cfg(test)]
+        if let Some(kind) = SCHEDULED_RUNTIME_DELETE_FAULTS.lock().remove(id) {
+            return Err(std::io::Error::new(
+                kind,
+                "injected scheduled runtime directory cleanup failure",
+            ))
+            .with_context(|| format!("remove scheduled runtime dir {}", runtime_dir.display()));
+        }
         if runtime_dir.exists() {
             std::fs::remove_dir_all(&runtime_dir).with_context(|| {
                 format!("remove scheduled runtime dir {}", runtime_dir.display())
             })?;
         }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_scheduled_runtime_delete_fault(
+        &self,
+        id: &str,
+        kind: ErrorKind,
+    ) -> Result<()> {
+        validate_scheduled_session_id(id)?;
+        SCHEDULED_RUNTIME_DELETE_FAULTS
+            .lock()
+            .insert(id.to_string(), kind);
         Ok(())
     }
 
@@ -549,9 +576,47 @@ impl SessionStore {
         let _mutation = self.scheduled_mutation.lock();
         let Some(profile) = self.scheduled_profile(id) else {
             // Idempotent retry: the durable profile may already be gone while
-            // a process-local consumer still owns resources for this id.
+            // a process-local consumer still owns resources for this id. An
+            // orphan `sched-*.json` without a profile is deliberately retained
+            // (see reconcile_scheduled_profiles_locked), so only an actually
+            // absent transcript is a durable deletion lifecycle event.
+            let record_path = scheduled_session_file(&self.manager, id)?;
+            match std::fs::metadata(&record_path) {
+                Ok(_) => return Ok(()),
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "inspect scheduled session record before idempotent delete {}",
+                            record_path.display()
+                        )
+                    });
+                }
+            }
+
             self.notify_session_deleted(id);
-            return Ok(());
+            self.scheduled_profiles.write().remove(id);
+            self.purge_session_side_maps(&[id.to_string()]);
+            self.invalidate_list_cache();
+
+            let runtime_cleanup = self.remove_scheduled_runtime_dir(id);
+            let profile_persist = self.save_scheduled_profiles();
+            return match (runtime_cleanup, profile_persist) {
+                (Ok(()), Ok(())) => Ok(()),
+                (runtime_cleanup, profile_persist) => {
+                    let mut failures = Vec::new();
+                    if let Err(error) = runtime_cleanup {
+                        failures.push(format!("runtime cleanup: {error:#}"));
+                    }
+                    if let Err(error) = profile_persist {
+                        failures.push(format!("profile persistence: {error:#}"));
+                    }
+                    Err(anyhow::anyhow!(
+                        "idempotent scheduled session delete {id} completed with cleanup errors: {}",
+                        failures.join("; ")
+                    ))
+                }
+            };
         };
         if profile.task_id != expected_task_id {
             bail!(
@@ -560,22 +625,67 @@ impl SessionStore {
             );
         }
 
-        // 同 store.delete:上游先删 JSON 再清目录,Err 也可能已变更盘面,
-        // 按「已发起删除即失效」处理(Err 提前 return 不得跳过失效)。
+        // As in store.delete, deleting the durable JSON can commit before a
+        // later directory cleanup reports an error. Once committed, remove
+        // every scheduled/store side map even while preserving that error for
+        // the caller.
         self.invalidate_list_cache();
-        let (_, delete_result) = self.delete_session_record(id);
-        match delete_result {
-            Ok(()) => {}
-            Err(err) if err.kind() == ErrorKind::NotFound => {}
-            Err(err) => return Err(err).with_context(|| format!("delete scheduled session {id}")),
+        let (committed, delete_result) = self.delete_session_record(id);
+        let delete_error = match delete_result {
+            Ok(()) => None,
+            Err(err) if err.kind() == ErrorKind::NotFound => None,
+            Err(err) if committed => Some(err),
+            Err(err) => {
+                return Err(err).with_context(|| format!("delete scheduled session {id}"));
+            }
+        };
+
+        if committed {
+            self.scheduled_profiles.write().remove(id);
+            self.purge_session_side_maps(&[id.to_string()]);
         }
         self.invalidate_list_cache();
-        self.remove_scheduled_runtime_dir(id)?;
+        let runtime_cleanup = self.remove_scheduled_runtime_dir(id);
+        let profile_persist = if committed {
+            match self.save_scheduled_profiles() {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    // Keep ownership metadata in memory when its durable removal
+                    // did not commit. A same-process retry must be able to persist
+                    // the removal instead of treating the missing transcript as a
+                    // fully completed idempotent delete.
+                    self.scheduled_profiles
+                        .write()
+                        .insert(id.to_string(), profile.clone());
+                    Err(error)
+                }
+            }
+        } else {
+            Ok(())
+        };
 
-        self.scheduled_profiles.write().remove(id);
-        self.purge_session_side_maps(&[id.to_string()]);
-        self.save_scheduled_profiles()?;
-        Ok(())
+        match (delete_error, runtime_cleanup, profile_persist) {
+            (None, Ok(()), Ok(())) => Ok(()),
+            (Some(error), Ok(()), Ok(())) => {
+                Err(error).with_context(|| format!("delete scheduled session {id}"))
+            }
+            (delete_error, runtime_cleanup, profile_persist) => {
+                let mut failures = Vec::new();
+                if let Some(error) = delete_error {
+                    failures.push(format!("durable record cleanup: {error}"));
+                }
+                if let Err(error) = runtime_cleanup {
+                    failures.push(format!("runtime cleanup: {error:#}"));
+                }
+                if let Err(error) = profile_persist {
+                    failures.push(format!("profile persistence: {error:#}"));
+                }
+                Err(anyhow::anyhow!(
+                    "delete scheduled session {id} completed with cleanup errors: {}",
+                    failures.join("; ")
+                ))
+            }
+        }
     }
 
     pub(crate) fn append_scheduled_artifact_path(&self, id: &str, path: PathBuf) -> Result<()> {

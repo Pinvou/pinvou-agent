@@ -159,9 +159,10 @@ impl SessionPolicy {
         matches!(self.mode, SessionMode::Code)
     }
 
-    /// 该模式向模型暴露 browser MCP 工具（`mcp_browser_*`，工作模式有头浏览器）。
-    /// 消费点：bridge 的 mcp 配置路径选择与系统提示词「浏览器能力不可用」注入
-    /// 须同口径（工具注册与能力声明一致），此处是唯一分支点。
+    /// Returns whether this mode exposes Browser MCP tools (`mcp_browser_*`) for the headed
+    /// Work-mode browser. Bridge configuration-path selection and injection of the browser-
+    /// unavailable system message must use the same decision so registration and capability
+    /// declarations remain aligned. This is their sole branch point.
     pub fn exposes_browser_mcp(&self) -> bool {
         matches!(self.mode, SessionMode::Plain)
     }

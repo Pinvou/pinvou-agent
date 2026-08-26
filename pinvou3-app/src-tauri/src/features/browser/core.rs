@@ -41,15 +41,22 @@ async fn call(webview: &Webview, method: &str, arguments: Value) -> Result<Value
         webview,
         core_call(method, arguments)?,
         platform::BrowserCoreEvaluationMode::ReadOnly,
+        None,
     )
     .await
 }
 
-async fn call_mutating(webview: &Webview, method: &str, arguments: Value) -> Result<Value, String> {
+async fn call_mutating(
+    webview: &Webview,
+    authorization: &NativeTabLease,
+    method: &str,
+    arguments: Value,
+) -> Result<Value, String> {
     platform::evaluate_browser_core_json(
         webview,
         core_call(method, arguments)?,
         platform::BrowserCoreEvaluationMode::MayMutate,
+        Some(authorization),
     )
     .await
 }
@@ -504,15 +511,20 @@ pub(crate) async fn execute_page_tool(
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
-            let output = match call_mutating(webview, "evaluate", json!([function, args])).await {
-                Ok(output) => output,
-                Err(error) => {
-                    if let Some(outcome) = committed_platform_outcome("Script evaluation", &error) {
-                        return Ok(outcome);
+            let output =
+                match call_mutating(webview, authorization, "evaluate", json!([function, args]))
+                    .await
+                {
+                    Ok(output) => output,
+                    Err(error) => {
+                        if let Some(outcome) =
+                            committed_platform_outcome("Script evaluation", &error)
+                        {
+                            return Ok(outcome);
+                        }
+                        return Err(error);
                     }
-                    return Err(error);
-                }
-            };
+                };
             Ok(tool_text(
                 serde_json::to_string_pretty(&output).unwrap_or_else(|_| "null".to_string()),
                 Some(json!({ "result": output })),

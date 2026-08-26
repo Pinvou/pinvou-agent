@@ -346,6 +346,11 @@ fn sanitize_web_path_value(value: Value) -> Value {
 fn absolute_host_path(path: &str) -> bool {
     let bytes = path.as_bytes();
     std::path::Path::new(path).is_absolute()
+        // ACP timelines can be reopened on a different OS. Windows path
+        // parsing does not classify a single-leading-slash POSIX path as
+        // absolute, so retain only its basename instead of treating it as a
+        // relative value and redacting the whole field later.
+        || path.starts_with('/')
         || path.starts_with("\\\\")
         || path.starts_with("//")
         || (bytes.len() >= 3

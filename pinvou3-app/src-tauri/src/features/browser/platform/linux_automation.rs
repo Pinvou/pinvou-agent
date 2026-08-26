@@ -25,7 +25,7 @@ use tauri_runtime_wry::{
     Context, EventLoopIterationContext, Message, Plugin, PluginBuilder, WebContext, WebContextStore,
 };
 
-use super::state::{NativeTabLease, WorkspaceControl};
+use super::state::{NativeTabLease, UserNavigationState, WorkspaceControl};
 use super::NativeInput;
 
 const DRIVER_BIN_ENV: &str = "PINVOU3_WEBKIT_WEBDRIVER_BIN";
@@ -35,12 +35,16 @@ const DRIVER_START_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const DRIVER_SESSION_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(2);
 const BINDING_MARKER_PREFIX: &str = "about:blank#pinvou-webdriver-bind-";
 const ACTION_COMMIT_UNKNOWN_WEBDRIVER: &str = "browser/action-commit-unknown-webdriver";
+const PROCESS_SHUTDOWN_ERROR: &str = "browser/process-shutting-down";
 
 static INSPECTOR_PORT: OnceLock<u16> = OnceLock::new();
 static AUTOMATION_CONTEXT_READY: AtomicBool = AtomicBool::new(false);
 static AUTOMATION_CONTEXT_ERROR: OnceLock<String> = OnceLock::new();
 static DRIVER_RUNTIME: OnceLock<Arc<WebDriverRuntime>> = OnceLock::new();
 static WEBVIEW_BINDINGS: OnceLock<Mutex<HashMap<String, WebviewBinding>>> = OnceLock::new();
+/// Permanent process-lifecycle latch. A normal browser stop may be restarted;
+/// an application restart/exit may not spawn a new driver after final cleanup.
+static PROCESS_SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 pub(super) fn is_binding_marker_url(url: &str) -> bool {
     url.strip_prefix(BINDING_MARKER_PREFIX)
@@ -59,11 +63,27 @@ struct WebviewBinding {
     /// that process-local transition can be hidden from UI and persistence.
     active_binding_nonce: Option<String>,
     binding_marker_seen: bool,
+    /// Exact host-owned URL armed immediately before the marker is restored.
+    /// The synchronous navigation-policy callback must recognize this as an
+    /// internal transition without trying to re-enter the navigation mutex
+    /// held by the guarded dispatch.
+    active_binding_restore_url: Option<String>,
     /// Exact host tab identity. This never enters the page or WebDriver.
     tab_token: String,
     /// Do not keep a closed workspace alive merely because the process-wide
     /// WebDriver runtime once observed one of its WebViews.
     control: Weak<WorkspaceControl>,
+    /// Production bindings share the host navigation generation so handle
+    /// recovery cannot replace an in-flight top-level page.
+    navigation: Option<Weak<Mutex<super::state::UserNavigationState>>>,
+}
+
+#[derive(Clone)]
+struct BindingNavigationGeneration {
+    tab_token: String,
+    navigation: Arc<Mutex<UserNavigationState>>,
+    control: Arc<WorkspaceControl>,
+    admission_epoch: u128,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +145,18 @@ struct WebDriverOperationGate {
 impl WebDriverOperationGate {
     async fn run<T>(&self, operation: impl Future<Output = T>) -> T {
         let _guard = self.lock.lock().await;
+        operation.await
+    }
+
+    async fn run_if_active<T>(
+        &self,
+        shutting_down: &AtomicBool,
+        operation: impl Future<Output = Result<T, String>>,
+    ) -> Result<T, String> {
+        let _guard = self.lock.lock().await;
+        if shutting_down.load(Ordering::SeqCst) {
+            return Err(PROCESS_SHUTDOWN_ERROR.to_string());
+        }
         operation.await
     }
 }
@@ -198,6 +230,24 @@ pub(super) fn register_webview_binding(
     tab_token: &str,
     control: &Arc<WorkspaceControl>,
 ) -> Result<(), String> {
+    register_webview_binding_inner(label, tab_token, control, None)
+}
+
+pub(super) fn register_webview_binding_with_navigation(
+    label: &str,
+    tab_token: &str,
+    control: &Arc<WorkspaceControl>,
+    navigation: &Arc<Mutex<super::state::UserNavigationState>>,
+) -> Result<(), String> {
+    register_webview_binding_inner(label, tab_token, control, Some(Arc::downgrade(navigation)))
+}
+
+fn register_webview_binding_inner(
+    label: &str,
+    tab_token: &str,
+    control: &Arc<WorkspaceControl>,
+    navigation: Option<Weak<Mutex<super::state::UserNavigationState>>>,
+) -> Result<(), String> {
     if label.is_empty() || label.len() > 256 {
         return Err("browser/webkit-binding-label-invalid".to_string());
     }
@@ -208,7 +258,13 @@ pub(super) fn register_webview_binding(
     let mut registry = registry.lock();
     let incoming_control = Arc::downgrade(control);
     let registration_is_identical = registry.get(label).is_some_and(|binding| {
-        binding.tab_token == tab_token && Weak::ptr_eq(&binding.control, &incoming_control)
+        binding.tab_token == tab_token
+            && Weak::ptr_eq(&binding.control, &incoming_control)
+            && match (&binding.navigation, &navigation) {
+                (Some(existing), Some(incoming)) => Weak::ptr_eq(existing, incoming),
+                (None, None) => true,
+                _ => false,
+            }
     });
     if !registration_is_identical {
         let nonce = fresh_binding_nonce(&registry);
@@ -218,8 +274,10 @@ pub(super) fn register_webview_binding(
                 nonce,
                 active_binding_nonce: None,
                 binding_marker_seen: false,
+                active_binding_restore_url: None,
                 tab_token: tab_token.to_string(),
                 control: incoming_control,
+                navigation,
             },
         );
     }
@@ -269,11 +327,15 @@ fn rotate_binding_nonce(label: &str) -> Result<String, String> {
     binding.nonce = nonce.clone();
     binding.active_binding_nonce = Some(nonce.clone());
     binding.binding_marker_seen = false;
+    binding.active_binding_restore_url = None;
     Ok(nonce)
 }
 
 /// Classify a navigation against the exact, process-local binding challenge.
-/// The first different URL is the restored real page and closes the window.
+/// Both the marker and the exact host-armed restore URL are internal. The
+/// latter is important because WebView::navigate may synchronously invoke the
+/// policy callback while the guarded binding transaction owns the navigation
+/// mutex. Any other URL closes an observed marker window without being hidden.
 pub(super) fn classify_binding_navigation(label: &str, url: &str) -> bool {
     let Some(registry) = WEBVIEW_BINDINGS.get() else {
         return false;
@@ -292,14 +354,36 @@ pub(super) fn classify_binding_navigation(label: &str, url: &str) -> bool {
         binding.binding_marker_seen = true;
         return true;
     }
+    if binding.active_binding_restore_url.as_deref() == Some(url) {
+        binding.active_binding_nonce = None;
+        binding.binding_marker_seen = false;
+        binding.active_binding_restore_url = None;
+        return true;
+    }
     // A callback already queued before the host initiated its marker
     // navigation must not cancel the classification window. Only the real URL
     // following an observed marker closes it.
     if binding.binding_marker_seen {
         binding.active_binding_nonce = None;
         binding.binding_marker_seen = false;
+        binding.active_binding_restore_url = None;
     }
     false
+}
+
+fn arm_binding_restore_url(label: &str, nonce: &str, url: &str) -> Result<(), String> {
+    let registry = WEBVIEW_BINDINGS
+        .get()
+        .ok_or_else(|| "browser/webkit-binding-not-registered".to_string())?;
+    let mut registry = registry.lock();
+    let binding = registry
+        .get_mut(label)
+        .ok_or_else(|| "browser/webkit-binding-not-registered".to_string())?;
+    if binding.active_binding_nonce.as_deref() != Some(nonce) {
+        return Err("browser/webkit-binding-generation-changed".to_string());
+    }
+    binding.active_binding_restore_url = Some(url.to_string());
+    Ok(())
 }
 
 fn cancel_binding_navigation(label: &str, nonce: &str) {
@@ -309,6 +393,7 @@ fn cancel_binding_navigation(label: &str, nonce: &str) {
             if binding.active_binding_nonce.as_deref() == Some(nonce) {
                 binding.active_binding_nonce = None;
                 binding.binding_marker_seen = false;
+                binding.active_binding_restore_url = None;
             }
         }
     }
@@ -348,6 +433,38 @@ fn authorize_registered_mutation(
     Ok(())
 }
 
+/// Revalidate arbitrary page-script mutation without opening the trusted-input
+/// grace window, and keep the control lock through the actual native dispatch.
+/// Script execution can synthesize page state but cannot produce an OS-trusted
+/// input event, so it still needs the exact live Agent lease without an
+/// authorize-then-eval takeover window.
+pub(super) fn dispatch_script_mutation_if_authorized<T, F>(
+    label: &str,
+    authorization: &NativeTabLease,
+    dispatch: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    let control = {
+        let bindings = WEBVIEW_BINDINGS
+            .get()
+            .ok_or_else(|| "browser/webkit-binding-stale".to_string())?
+            .lock();
+        let binding = bindings
+            .get(label)
+            .ok_or_else(|| "browser/webkit-binding-stale".to_string())?;
+        if binding.tab_token != authorization.tab_token {
+            return Err("browser/webkit-tab-binding-mismatch".to_string());
+        }
+        Weak::upgrade(&binding.control)
+    }
+    .ok_or_else(|| "browser/webkit-binding-stale".to_string())?;
+    control
+        .dispatch_if_agent_authorized(authorization, dispatch)?
+        .ok_or_else(|| "browser/webkit-control-lease-lost".to_string())
+}
+
 fn partially_committed_error(action: &str, completed_steps: usize, error: String) -> String {
     format!(
         "browser/action-partially-committed: {action} completed {completed_steps} native step(s) before failure: {error}"
@@ -363,8 +480,7 @@ fn binding_marker_url(nonce: &str) -> Result<tauri::Url, String> {
 pub(super) async fn wait_until_ready() -> Result<(), String> {
     let runtime = runtime()?;
     runtime
-        .operations
-        .run(runtime.ensure_session_locked(true))
+        .run_active(runtime.ensure_session_locked(true))
         .await
         .map(|_| ())
 }
@@ -372,8 +488,7 @@ pub(super) async fn wait_until_ready() -> Result<(), String> {
 pub(super) async fn bind_webview(webview: &Webview) -> Result<(), String> {
     let runtime = runtime()?;
     runtime
-        .operations
-        .run(runtime.select_webview_locked(webview))
+        .run_active(runtime.select_webview_locked(webview, None))
         .await
         .map(|_| ())
 }
@@ -388,9 +503,10 @@ pub(super) async fn dispatch_input(
     let actions = actions_for_input(input)?;
     let authorization = authorization.clone();
     runtime
-        .operations
-        .run(async {
-            runtime.select_webview_locked(webview).await?;
+        .run_active(async {
+            runtime
+                .select_webview_locked(webview, Some(&authorization))
+                .await?;
             let session = runtime.current_session_locked()?;
             runtime
                 .request_authorized_locked(
@@ -420,9 +536,10 @@ pub(super) async fn click_element(
     let runtime = runtime()?;
     let authorization = authorization.clone();
     runtime
-        .operations
-        .run(async {
-            runtime.select_webview_locked(webview).await?;
+        .run_active(async {
+            runtime
+                .select_webview_locked(webview, Some(&authorization))
+                .await?;
             let session = runtime.current_session_locked()?;
             let element = runtime.element_for_uid_locked(&session, uid).await?;
             for completed_clicks in 0..click_count {
@@ -459,9 +576,10 @@ pub(super) async fn fill_element(
     let runtime = runtime()?;
     let authorization = authorization.clone();
     runtime
-        .operations
-        .run(async {
-            runtime.select_webview_locked(webview).await?;
+        .run_active(async {
+            runtime
+                .select_webview_locked(webview, Some(&authorization))
+                .await?;
             let session = runtime.current_session_locked()?;
             let element = runtime.element_for_uid_locked(&session, uid).await?;
             runtime
@@ -502,9 +620,10 @@ pub(super) async fn type_text(
     let submit = submit_key.map(webdriver_key_sequence).transpose()?;
     let authorization = authorization.clone();
     runtime
-        .operations
-        .run(async {
-            runtime.select_webview_locked(webview).await?;
+        .run_active(async {
+            runtime
+                .select_webview_locked(webview, Some(&authorization))
+                .await?;
             let session = runtime.current_session_locked()?;
             let element = runtime.active_element_locked(&session).await?;
             let mut text_committed = false;
@@ -552,9 +671,10 @@ pub(super) async fn press_key(
     let sequence = webdriver_key_sequence(key)?;
     let authorization = authorization.clone();
     runtime
-        .operations
-        .run(async {
-            runtime.select_webview_locked(webview).await?;
+        .run_active(async {
+            runtime
+                .select_webview_locked(webview, Some(&authorization))
+                .await?;
             let session = runtime.current_session_locked()?;
             let element = runtime.active_element_locked(&session).await?;
             runtime
@@ -584,9 +704,10 @@ pub(super) async fn handle_dialog(
     let runtime = runtime()?;
     let authorization = authorization.clone();
     runtime
-        .operations
-        .run(async {
-            runtime.select_webview_locked(webview).await?;
+        .run_active(async {
+            runtime
+                .select_webview_locked(webview, Some(&authorization))
+                .await?;
             let session = runtime.current_session_locked()?;
             let dialog_text = runtime
                 .request_in_session_locked(&session, Method::GET, "alert/text", None)
@@ -652,10 +773,20 @@ pub(super) async fn shutdown_for_stop() {
     runtime.shutdown_for_stop().await;
 }
 
-/// Process-exit fallback. The async browser lifecycle must use
-/// [`shutdown_for_stop`]; exit cannot await and only makes a best effort to
-/// terminate the child before the OS tears down the process.
+/// Close process admission before restart waits for the operation gate. Calls
+/// already queued on that gate recheck the latch after acquiring it and fail
+/// without starting a fresh WebKitWebDriver child.
+pub(super) fn begin_process_shutdown() {
+    PROCESS_SHUTTING_DOWN.store(true, Ordering::SeqCst);
+}
+
+/// Synchronous process-exit collector. The async browser lifecycle still uses
+/// [`shutdown_for_stop`] to drain the operation gate, while Exit closes process
+/// admission and takes the same child slot lock as spawn publication. Either a
+/// child is published first and collected here, or publication observes the
+/// latch and never spawns it.
 pub(super) fn shutdown_for_exit() {
+    begin_process_shutdown();
     let Some(runtime) = DRIVER_RUNTIME.get() else {
         return;
     };
@@ -663,10 +794,34 @@ pub(super) fn shutdown_for_exit() {
 }
 
 fn runtime() -> Result<Arc<WebDriverRuntime>, String> {
+    ensure_process_active(&PROCESS_SHUTTING_DOWN)?;
     DRIVER_RUNTIME
         .get()
         .cloned()
         .ok_or_else(|| "browser/webkit-webdriver-unavailable".to_string())
+}
+
+fn ensure_process_active(shutting_down: &AtomicBool) -> Result<(), String> {
+    if shutting_down.load(Ordering::SeqCst) {
+        Err(PROCESS_SHUTDOWN_ERROR.to_string())
+    } else {
+        Ok(())
+    }
+}
+
+/// Spawn and publish a child while holding the same slot lock used by the
+/// synchronous Exit collector. Exit stores the latch before taking this lock:
+/// either publication wins and Exit takes the published child, or Exit wins
+/// and this function observes the latch without spawning.
+fn publish_process_child_if_active<T>(
+    shutting_down: &AtomicBool,
+    slot: &Mutex<Option<T>>,
+    spawn: impl FnOnce() -> Result<T, String>,
+) -> Result<(), String> {
+    let mut slot = slot.lock();
+    ensure_process_active(shutting_down)?;
+    *slot = Some(spawn()?);
+    Ok(())
 }
 
 fn reserve_loopback_port() -> Result<u16, String> {
@@ -727,6 +882,15 @@ impl WebDriverRuntime {
             child.take();
         }
         alive
+    }
+
+    async fn run_active<T>(
+        &self,
+        operation: impl Future<Output = Result<T, String>>,
+    ) -> Result<T, String> {
+        self.operations
+            .run_if_active(&PROCESS_SHUTTING_DOWN, operation)
+            .await
     }
 
     /// Read the already-selected live session without starting or recovering
@@ -799,6 +963,7 @@ impl WebDriverRuntime {
     }
 
     async fn start_session_locked(&self) -> Result<DriverSession, String> {
+        ensure_process_active(&PROCESS_SHUTTING_DOWN)?;
         self.reset_driver(DriverSessionState::Idle);
         let binary = find_driver_binary().ok_or_else(|| {
             format!(
@@ -807,14 +972,15 @@ impl WebDriverRuntime {
         })?;
         let driver_port = reserve_loopback_port()?;
         let endpoint = format!("http://127.0.0.1:{driver_port}");
-        let child = Command::new(&binary)
-            .arg(format!("--port={driver_port}"))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| format!("start {}: {error}", binary.display()))?;
-        *self.child.lock() = Some(child);
+        publish_process_child_if_active(&PROCESS_SHUTTING_DOWN, &self.child, || {
+            Command::new(&binary)
+                .arg(format!("--port={driver_port}"))
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|error| format!("start {}: {error}", binary.display()))
+        })?;
         *self.session.lock() = DriverSessionState::Starting;
 
         let deadline = tokio::time::Instant::now() + SESSION_READY_TIMEOUT;
@@ -826,6 +992,10 @@ impl WebDriverRuntime {
             }
             let last_error = match self.create_session_attempt(&endpoint).await {
                 Ok(session_id) => {
+                    if let Err(error) = ensure_process_active(&PROCESS_SHUTTING_DOWN) {
+                        self.reset_driver(DriverSessionState::Idle);
+                        return Err(error);
+                    }
                     let ready = DriverSession {
                         endpoint: endpoint.clone(),
                         session_id,
@@ -1122,7 +1292,11 @@ impl WebDriverRuntime {
         }
     }
 
-    async fn select_webview_locked(&self, webview: &Webview) -> Result<String, String> {
+    async fn select_webview_locked(
+        &self,
+        webview: &Webview,
+        authorization: Option<&NativeTabLease>,
+    ) -> Result<String, String> {
         let label = webview.label().to_string();
         if expected_binding_nonce(&label).is_none() {
             return Err("browser/webkit-binding-not-registered".to_string());
@@ -1136,15 +1310,11 @@ impl WebDriverRuntime {
             self.ensure_current_locked(&handle).await?;
             return Ok(handle);
         }
-
         // A remote page is an adversarial principal: a main-world nonce can be read and relayed
         // to another task through same-origin storage. Rebinding therefore navigates only this
         // host-owned WebView to a random internal marker, resolves the exact WebDriver handle,
         // and then reloads the prior URL. This is deliberately a reload after driver recovery;
         // preserving in-page state is less important than maintaining task isolation.
-        let original_url = webview
-            .url()
-            .map_err(|error| format!("browser/webkit-binding-read-url-failed: {error}"))?;
         let expected_nonce = rotate_binding_nonce(&label)?;
         let marker_url = match binding_marker_url(&expected_nonce) {
             Ok(marker_url) => marker_url,
@@ -1154,23 +1324,68 @@ impl WebDriverRuntime {
             }
         };
         let marker = marker_url.to_string();
-        if let Err(error) = webview.navigate(marker_url) {
-            cancel_binding_navigation(&label, &expected_nonce);
-            return Err(format!(
-                "browser/webkit-binding-marker-navigation-failed: {error}"
-            ));
-        }
+        let marker_dispatch = dispatch_guarded_binding_navigation(
+            webview,
+            &label,
+            authorization,
+            None,
+            move |webview| {
+                // URL sampling, epoch capture and marker enqueue share one
+                // navigation critical section. A completed B navigation can
+                // therefore occur wholly before this snapshot (and be read as
+                // B), or after it (and invalidate the epoch), never between an
+                // A snapshot and a newer baseline.
+                let original_url = webview
+                    .url()
+                    .map_err(|error| format!("browser/webkit-binding-read-url-failed: {error}"))?;
+                webview.navigate(marker_url).map_err(|error| {
+                    format!("browser/webkit-binding-navigation-failed: {error}")
+                })?;
+                Ok(original_url)
+            },
+        );
+        let (binding_generation, original_url) = match marker_dispatch {
+            Ok(result) => result,
+            Err(error) => {
+                cancel_binding_navigation(&label, &expected_nonce);
+                return Err(format!(
+                    "browser/webkit-binding-marker-navigation-failed: {error}"
+                ));
+            }
+        };
 
         let bind_result = async {
             let handle = self.locate_binding_marker_locked(&label, &marker).await?;
             self.ensure_current_locked(&handle).await?;
             if original_url.as_str() != marker {
-                self.request_locked(
-                    Method::POST,
-                    "url",
-                    Some(json!({ "url": original_url.as_str() })),
-                )
-                .await?;
+                // The restore is dispatched through the host WebView while
+                // holding the shared navigation-generation lock. If the user
+                // started a navigation after the marker was issued, the user
+                // generation wins and this restore is rejected before it can
+                // physically replace the visible page.
+                let restore_nonce = expected_nonce.clone();
+                let restore_url = original_url.clone();
+                let restore_label = label.clone();
+                dispatch_guarded_binding_navigation(
+                    webview,
+                    &label,
+                    authorization,
+                    Some(&binding_generation),
+                    move |webview| {
+                        // Arm the exact real URL before enqueue so a
+                        // synchronous navigation-policy callback classifies
+                        // marker -> restore as internal and never re-enters the
+                        // navigation mutex held by this dispatch.
+                        arm_binding_restore_url(
+                            &restore_label,
+                            &restore_nonce,
+                            restore_url.as_str(),
+                        )?;
+                        webview.navigate(restore_url).map_err(|error| {
+                            format!("browser/webkit-binding-navigation-failed: {error}")
+                        })
+                    },
+                )?;
             }
             Ok::<String, String>(handle)
         }
@@ -1178,16 +1393,42 @@ impl WebDriverRuntime {
 
         match bind_result {
             Ok(handle) => {
+                if original_url.as_str() == marker {
+                    cancel_binding_navigation(&label, &expected_nonce);
+                }
                 self.ensure_current_locked(&handle).await?;
                 self.handles.lock().insert(label.clone(), handle.clone());
                 Ok(handle)
             }
             Err(error) => {
                 // The authoritative mapping was never published. Restore the user's prior page
-                // best-effort and fail closed rather than guessing a WebDriver handle by URL/order.
+                // only while the original lease/generation still owns the
+                // transaction. A user takeover must never be overwritten by
+                // best-effort compensation.
                 if original_url.as_str() != marker {
-                    let _ = webview.navigate(original_url);
+                    let restore_nonce = expected_nonce.clone();
+                    let restore_url = original_url;
+                    let restore_label = label.clone();
+                    let _ = dispatch_guarded_binding_navigation(
+                        webview,
+                        &label,
+                        authorization,
+                        Some(&binding_generation),
+                        move |webview| {
+                            arm_binding_restore_url(
+                                &restore_label,
+                                &restore_nonce,
+                                restore_url.as_str(),
+                            )?;
+                            webview.navigate(restore_url).map_err(|dispatch_error| {
+                                format!(
+                                    "browser/webkit-binding-navigation-failed: {dispatch_error}"
+                                )
+                            })
+                        },
+                    );
                 }
+                cancel_binding_navigation(&label, &expected_nonce);
                 Err(error)
             }
         }
@@ -1251,6 +1492,115 @@ fn expected_binding_nonce(label: &str) -> Option<String> {
             .get(label)
             .map(|binding| binding.nonce.clone())
     })
+}
+
+fn validate_binding_navigation_generation(
+    navigation_state: &mut UserNavigationState,
+    navigation: &Arc<Mutex<UserNavigationState>>,
+    control: &Arc<WorkspaceControl>,
+    tab_token: &str,
+    expected: Option<&BindingNavigationGeneration>,
+) -> Result<BindingNavigationGeneration, String> {
+    let admission_epoch = navigation_state.navigation_admission_epoch();
+    if let Some(expected) = expected {
+        if expected.tab_token != tab_token
+            || !Arc::ptr_eq(&expected.navigation, navigation)
+            || !Arc::ptr_eq(&expected.control, control)
+        {
+            return Err("browser/webkit-binding-generation-changed".to_string());
+        }
+        if expected.admission_epoch != admission_epoch {
+            return Err("browser/webkit-binding-navigation-generation-changed".to_string());
+        }
+    }
+    if navigation_state.navigation_admission_busy() {
+        return Err("browser/webkit-binding-deferred-during-navigation".to_string());
+    }
+    Ok(BindingNavigationGeneration {
+        tab_token: tab_token.to_string(),
+        navigation: Arc::clone(navigation),
+        control: Arc::clone(control),
+        admission_epoch,
+    })
+}
+
+fn binding_registration_matches(label: &str, expected: &BindingNavigationGeneration) -> bool {
+    WEBVIEW_BINDINGS.get().is_some_and(|bindings| {
+        let bindings = bindings.lock();
+        bindings.get(label).is_some_and(|binding| {
+            let navigation_matches = binding
+                .navigation
+                .as_ref()
+                .and_then(Weak::upgrade)
+                .is_some_and(|navigation| Arc::ptr_eq(&navigation, &expected.navigation));
+            let control_matches = Weak::upgrade(&binding.control)
+                .is_some_and(|control| Arc::ptr_eq(&control, &expected.control));
+            binding.tab_token == expected.tab_token && navigation_matches && control_matches
+        })
+    })
+}
+
+fn dispatch_guarded_binding_navigation<T, F>(
+    webview: &Webview,
+    label: &str,
+    authorization: Option<&NativeTabLease>,
+    expected: Option<&BindingNavigationGeneration>,
+    dispatch: F,
+) -> Result<(BindingNavigationGeneration, T), String>
+where
+    F: FnOnce(&Webview) -> Result<T, String>,
+{
+    let (navigation, control, tab_token) = {
+        let bindings = WEBVIEW_BINDINGS
+            .get()
+            .ok_or_else(|| "browser/webkit-binding-not-registered".to_string())?
+            .lock();
+        let binding = bindings
+            .get(label)
+            .ok_or_else(|| "browser/webkit-binding-not-registered".to_string())?;
+        (
+            binding
+                .navigation
+                .as_ref()
+                .and_then(Weak::upgrade)
+                .ok_or_else(|| "browser/webkit-binding-navigation-unavailable".to_string())?,
+            Weak::upgrade(&binding.control)
+                .ok_or_else(|| "browser/webkit-binding-stale".to_string())?,
+            binding.tab_token.clone(),
+        )
+    };
+    if authorization.is_some_and(|lease| lease.tab_token != tab_token) {
+        return Err("browser/webkit-tab-binding-mismatch".to_string());
+    }
+
+    // Mutating script dispatches take the control lock before enqueueing work
+    // on this same WebView. Keep one global order (control -> navigation ->
+    // binding registry) so a concurrent operation cannot deadlock with marker
+    // recovery. The navigation guard remains held through the synchronous
+    // WebView enqueue, closing the check/dispatch overwrite window.
+    let dispatch_with_navigation = || {
+        let mut navigation_state = navigation.lock();
+        let generation = validate_binding_navigation_generation(
+            &mut navigation_state,
+            &navigation,
+            &control,
+            &tab_token,
+            expected,
+        )?;
+        if !binding_registration_matches(label, &generation) {
+            return Err("browser/webkit-binding-generation-changed".to_string());
+        }
+        let result = dispatch(webview)?;
+        drop(navigation_state);
+        Ok((generation, result))
+    };
+    if let Some(authorization) = authorization {
+        control
+            .dispatch_if_agent_authorized(authorization, dispatch_with_navigation)?
+            .ok_or_else(|| "browser/webkit-control-lease-lost".to_string())
+    } else {
+        dispatch_with_navigation()
+    }
 }
 
 fn ready_session_for_live_process(
@@ -2088,9 +2438,90 @@ mod tests {
         let second = rotate_binding_nonce(&label).expect("rotate second binding nonce");
         let second_marker = format!("{BINDING_MARKER_PREFIX}{second}");
         assert!(classify_binding_navigation(&label, &second_marker));
-        assert!(!classify_binding_navigation(&label, "https://example.com/"));
+        arm_binding_restore_url(&label, &second, "https://example.com/")
+            .expect("arm exact restore URL");
+        assert!(classify_binding_navigation(&label, "https://example.com/"));
         assert!(!classify_binding_navigation(&label, &second_marker));
         unregister_webview_binding(&label);
+    }
+
+    #[test]
+    fn completed_navigation_invalidates_binding_restore_generation() {
+        let navigation = Arc::new(Mutex::new(UserNavigationState::default()));
+        let control = Arc::new(WorkspaceControl::new(0, NativeControlOwner::Unclaimed));
+        let baseline = {
+            let mut state = navigation.lock();
+            validate_binding_navigation_generation(
+                &mut state,
+                &navigation,
+                &control,
+                "aaaaaaaaaaaaaaaa",
+                None,
+            )
+            .expect("capture idle binding generation")
+        };
+
+        {
+            let mut state = navigation.lock();
+            state.observe_started("https://example.com/b");
+            assert!(matches!(
+                state.finish("https://example.com/b"),
+                super::super::state::NavigationCommitDecision::Current { request_id: None }
+            ));
+            // B is fully settled and admission is idle again. Epoch identity,
+            // rather than a busy bit, must still reject restoring stale A.
+            assert!(!state.navigation_admission_busy());
+        }
+
+        let error = {
+            let mut state = navigation.lock();
+            match validate_binding_navigation_generation(
+                &mut state,
+                &navigation,
+                &control,
+                "aaaaaaaaaaaaaaaa",
+                Some(&baseline),
+            ) {
+                Ok(_) => panic!("completed B must invalidate stale A restore"),
+                Err(error) => error,
+            }
+        };
+        assert_eq!(
+            error,
+            "browser/webkit-binding-navigation-generation-changed"
+        );
+    }
+
+    #[test]
+    fn unchanged_idle_navigation_allows_binding_restore_generation() {
+        let navigation = Arc::new(Mutex::new(UserNavigationState::default()));
+        let control = Arc::new(WorkspaceControl::new(0, NativeControlOwner::Unclaimed));
+        let baseline = {
+            let mut state = navigation.lock();
+            validate_binding_navigation_generation(
+                &mut state,
+                &navigation,
+                &control,
+                "bbbbbbbbbbbbbbbb",
+                None,
+            )
+            .expect("capture idle binding generation")
+        };
+
+        let restored = {
+            let mut state = navigation.lock();
+            validate_binding_navigation_generation(
+                &mut state,
+                &navigation,
+                &control,
+                "bbbbbbbbbbbbbbbb",
+                Some(&baseline),
+            )
+            .expect("unchanged generation may restore")
+        };
+        assert_eq!(restored.admission_epoch, baseline.admission_epoch);
+        assert!(Arc::ptr_eq(&restored.navigation, &baseline.navigation));
+        assert!(Arc::ptr_eq(&restored.control, &baseline.control));
     }
 
     #[tokio::test]
@@ -2148,6 +2579,103 @@ mod tests {
             &*events.lock(),
             &["select-a", "action-a", "select-b", "action-b"]
         );
+    }
+
+    #[tokio::test]
+    async fn queued_operation_rechecks_process_shutdown_after_acquiring_gate() {
+        let gate = Arc::new(WebDriverOperationGate::default());
+        let shutting_down = Arc::new(AtomicBool::new(false));
+        let release_first = Arc::new(tokio::sync::Notify::new());
+        let (first_entered_tx, first_entered_rx) = tokio::sync::oneshot::channel();
+
+        let first = {
+            let gate = Arc::clone(&gate);
+            let shutting_down = Arc::clone(&shutting_down);
+            let release_first = Arc::clone(&release_first);
+            tokio::spawn(async move {
+                gate.run_if_active(shutting_down.as_ref(), async {
+                    first_entered_tx.send(()).expect("signal first operation");
+                    release_first.notified().await;
+                    Ok::<_, String>(())
+                })
+                .await
+            })
+        };
+        first_entered_rx
+            .await
+            .expect("first operation entered gate");
+
+        let late_operation_ran = Arc::new(AtomicBool::new(false));
+        let late = {
+            let gate = Arc::clone(&gate);
+            let shutting_down = Arc::clone(&shutting_down);
+            let late_operation_ran = Arc::clone(&late_operation_ran);
+            tokio::spawn(async move {
+                gate.run_if_active(shutting_down.as_ref(), async {
+                    late_operation_ran.store(true, Ordering::SeqCst);
+                    Ok::<_, String>(())
+                })
+                .await
+            })
+        };
+
+        shutting_down.store(true, Ordering::SeqCst);
+        release_first.notify_one();
+        assert_eq!(first.await.unwrap(), Ok(()));
+        assert_eq!(late.await.unwrap(), Err(PROCESS_SHUTDOWN_ERROR.to_string()));
+        assert!(!late_operation_ran.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn synchronous_exit_collects_a_child_published_during_spawn() {
+        let shutting_down = Arc::new(AtomicBool::new(false));
+        let slot = Arc::new(Mutex::new(None::<u32>));
+        let (spawn_entered_tx, spawn_entered_rx) = std::sync::mpsc::channel();
+        let (release_spawn_tx, release_spawn_rx) = std::sync::mpsc::channel();
+
+        let publisher = {
+            let shutting_down = Arc::clone(&shutting_down);
+            let slot = Arc::clone(&slot);
+            std::thread::spawn(move || {
+                publish_process_child_if_active(shutting_down.as_ref(), slot.as_ref(), || {
+                    spawn_entered_tx.send(()).unwrap();
+                    release_spawn_rx.recv().unwrap();
+                    Ok(7)
+                })
+            })
+        };
+        spawn_entered_rx.recv().unwrap();
+
+        let collector = {
+            let shutting_down = Arc::clone(&shutting_down);
+            let slot = Arc::clone(&slot);
+            std::thread::spawn(move || {
+                shutting_down.store(true, Ordering::SeqCst);
+                slot.lock().take()
+            })
+        };
+        release_spawn_tx.send(()).unwrap();
+
+        assert_eq!(publisher.join().unwrap(), Ok(()));
+        assert_eq!(collector.join().unwrap(), Some(7));
+        assert!(slot.lock().is_none());
+    }
+
+    #[test]
+    fn synchronous_exit_latch_prevents_a_late_child_spawn() {
+        let shutting_down = AtomicBool::new(true);
+        let slot = Mutex::new(None::<u32>);
+        let spawn_called = AtomicBool::new(false);
+
+        assert_eq!(
+            publish_process_child_if_active(&shutting_down, &slot, || {
+                spawn_called.store(true, Ordering::SeqCst);
+                Ok(7)
+            }),
+            Err(PROCESS_SHUTDOWN_ERROR.to_string())
+        );
+        assert!(!spawn_called.load(Ordering::SeqCst));
+        assert!(slot.lock().is_none());
     }
 
     #[tokio::test]

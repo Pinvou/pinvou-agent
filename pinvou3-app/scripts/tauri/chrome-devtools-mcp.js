@@ -1,12 +1,14 @@
-// 构建期 vendor 官方 chrome-devtools-mcp（Apache-2.0，自包含构建）到
-// `src-tauri/resources/platforms/<os>/chrome-devtools-mcp/`，随安装包 resource overlay
-// 打进 `runtime/chrome-devtools-mcp`。构建机需要网络（与品悟使用期离线无关）。
+// Vendor the official chrome-devtools-mcp (Apache-2.0) as a self-contained build under
+// `src-tauri/resources/platforms/<os>/chrome-devtools-mcp/`. The package resource overlay
+// installs it under `runtime/chrome-devtools-mcp`. Vendoring requires network access at
+// build time; the installed Pinvou application remains offline-capable.
 //
-// 幂等：目标目录存在且 `.vendor-version.json` 版本一致即跳过；版本/完整性变更自动重做。
-// 完整性：npm registry tarball 的 sha512 integrity 硬编码校验（防止供应链篡改）。
+// Idempotence: skip only when marker metadata and the adapted output hash match.
+// Integrity: pin both the registry tarball SHA-512 and the adapted output SHA-256.
 //
-// 用法：node scripts/tauri/chrome-devtools-mcp.js
-// 由 build.js 在 dev/build/bundle 启动前自动调用；也可手动 `node scripts/tauri/chrome-devtools-mcp.js` 预热。
+// Usage: node scripts/tauri/chrome-devtools-mcp.js
+// build.js runs this automatically before dev/build/bundle. Run it manually to warm the
+// vendored output before starting the project scripts.
 
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -15,49 +17,60 @@ const { spawnSync } = require("node:child_process");
 const { APP_ROOT } = require("./platform-config.js");
 
 const VERSION = "1.7.0";
-// npm registry 对 chrome-devtools-mcp@1.7.0 的 integrity（sha512 base64，去掉 `sha512-` 前缀）
+// npm registry integrity for chrome-devtools-mcp@1.7.0 (SHA-512 base64 without `sha512-`).
 const INTEGRITY_SHA512 =
   "6xFW7oiUxTxZuHcfyYBkKQtmttjCbfifKZMSEk5CV8H2FucvKweYiJr8CblddYHtYjA4C14K9VAs1r49906RBA==";
 const TARBALL_URL = `https://registry.npmjs.org/chrome-devtools-mcp/-/chrome-devtools-mcp-${VERSION}.tgz`;
 const MARKER_NAME = ".vendor-version.json";
 const ADAPTER_VERSION = "pinvou-target-id-v1";
+// SHA-256 of chrome-devtools-mcp@1.7.0 build/src/McpResponse.js after the
+// guarded target_id adapter below has been applied. The tarball integrity
+// anchors the upstream input; this digest anchors the exact rewritten output.
+const ADAPTED_RESPONSE_SHA256 =
+  "e08698ba25c72b304152da1de99005d2415b9034c7edd46615d942dac174e0a6";
 
 const PLATFORM_DIR = { darwin: "macos", linux: "linux", win32: "windows" };
 
-// 被 git 跟踪的占位 .gitkeep：vendor 重建（rmSync 整个目录）后重写，内容必须与
-// resources/platforms/*/chrome-devtools-mcp/.gitkeep 的提交版本逐字节一致，否则
-// vendor 后工作区必现 .gitkeep 改动、来回提交互相覆盖。CI 的 Tauri 资源布局测试
-// （tauri_platform_layout / tauri_effective_config）靠资源存在性断言把关。
-const GITKEEP = `本目录由 pinvou3-app/scripts/tauri/chrome-devtools-mcp.js 构建期 vendor：
-npm registry 官方 chrome-devtools-mcp（Apache-2.0，sha512 硬编码校验），
-产物 build/（rollup 自包含，约 13MB；含受守卫的 target_id 薄适配）
-+ catalog-shim.json（懒启动 shim 应答目录）
-+ .vendor-version.json，随安装包经 resource overlay 分发到 runtime/chrome-devtools-mcp。
+// The tracked .gitkeep is recreated after vendoring removes the whole directory. Its bytes
+// must match the committed resources/platforms/*/chrome-devtools-mcp/.gitkeep; otherwise a
+// vendor build always dirties the worktree and competing commits overwrite one another.
+// Tauri resource layout tests (`tauri_platform_layout` and `tauri_effective_config`) use its
+// presence as the checked-in resource anchor.
+const GITKEEP = `This directory is populated at build time by pinvou3-app/scripts/tauri/chrome-devtools-mcp.js:
+the official npm registry chrome-devtools-mcp package (Apache-2.0, pinned SHA-512),
+its self-contained Rollup build/ output (about 13 MB, with a guarded target_id adapter),
++ catalog-shim.json (lazy-start shim response catalog),
++ .vendor-version.json, distributed through the package resource overlay as runtime/chrome-devtools-mcp.
 
-本 .gitkeep 被 git 跟踪，保证 CI 的 Tauri 资源布局测试（tauri_platform_layout /
-tauri_effective_config）通过资源存在性断言；构建产物被 .gitignore 忽略。
-npm run dev 会自动 vendor 并把该入口注入开发进程；直接绕过项目脚本启动 Tauri 时不保证可用。
+This tracked .gitkeep preserves the resource directory for the Tauri layout tests
+(tauri_platform_layout and tauri_effective_config); generated output is ignored by .gitignore.
+npm run dev vendors the runtime automatically and injects its entry point into the development
+process. Browser MCP is not guaranteed when Tauri is started outside the project scripts.
 `;
 
 function outputRoot(platform = process.platform) {
   const dir = PLATFORM_DIR[platform];
-  if (!dir) throw new Error(`不支持的平台: ${platform}`);
+  if (!dir) throw new Error(`Unsupported platform: ${platform}`);
   return path.join(APP_ROOT, "src-tauri", "resources", "platforms", dir, "chrome-devtools-mcp");
 }
 
-function expectedMarker() {
-  return { name: "chrome-devtools-mcp", version: VERSION, adapter: ADAPTER_VERSION };
+function expectedMarker(responseSha256 = ADAPTED_RESPONSE_SHA256) {
+  return {
+    name: "chrome-devtools-mcp",
+    version: VERSION,
+    adapter: ADAPTER_VERSION,
+    responseSha256,
+  };
 }
 
-/**
- * 官方 list_pages 的 structuredContent 只有 MCP 自己的数字 pageId。应用宿主按
- * Chromium targetId 维护对话/标签归属；若缺少这个 join key，MCP 进程一重启就
- * 只能按 URL 猜页面，存在跨对话误操作风险。
- *
- * 适配严格匹配 1.7.0 的单个源码片段，版本升级或上游结构变化时直接让 vendor
- * 构建失败，要求人工复核；不做模糊替换，也不修改工具行为。
- */
-function applyTargetIdAdapter(root) {
+function sha256File(file) {
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+function assertTargetIdAdapterIntegrity(
+  root,
+  { expectedSha256 = ADAPTED_RESPONSE_SHA256 } = {},
+) {
   const responsePath = path.join(root, "build", "src", "McpResponse.js");
   const source = fs.readFileSync(responsePath, "utf8");
   const original = [
@@ -73,25 +86,69 @@ function applyTargetIdAdapter(root) {
   ].join("\n");
   const originalCount = source.split(original).length - 1;
   const adaptedCount = source.split(adapted).length - 1;
-  if (adaptedCount === 1 && originalCount === 0) return;
-  if (originalCount !== 1 || adaptedCount !== 0) {
+  if (adaptedCount !== 1 || originalCount !== 0) {
     throw new Error(
-      `chrome-devtools-mcp targetId adapter 锚点异常 (original=${originalCount}, adapted=${adaptedCount})`,
+      `Unexpected final chrome-devtools-mcp targetId adapter state (original=${originalCount}, adapted=${adaptedCount})`,
     );
   }
-  fs.writeFileSync(responsePath, source.replace(original, adapted));
-  const verified = fs.readFileSync(responsePath, "utf8");
-  if (verified.split("target_id: mcpPage.pptrPage.target()._targetId").length - 1 !== 1) {
-    throw new Error("chrome-devtools-mcp targetId adapter 写入后校验失败");
+  const actualSha256 = sha256File(responsePath);
+  if (actualSha256 !== expectedSha256) {
+    throw new Error(
+      `chrome-devtools-mcp targetId adapter SHA-256 mismatch (expected ${expectedSha256.slice(0, 16)}…, actual ${actualSha256.slice(0, 16)}…)`,
+    );
   }
+  return actualSha256;
 }
 
-function isPrepared(platform = process.platform) {
-  const root = outputRoot(platform);
+/**
+ * Upstream list_pages structuredContent contains only MCP's numeric pageId. The application
+ * host tracks conversation and tab ownership by Chromium targetId. Without this join key,
+ * a restarted MCP process could only guess pages by URL and might act across conversations.
+ *
+ * The adapter strictly matches one source fragment from version 1.7.0. A version upgrade or
+ * upstream structural change fails the vendor build and requires review. It performs no
+ * fuzzy replacement and does not change tool behavior.
+ */
+function applyTargetIdAdapter(
+  root,
+  { expectedSha256 = ADAPTED_RESPONSE_SHA256 } = {},
+) {
+  const responsePath = path.join(root, "build", "src", "McpResponse.js");
+  const source = fs.readFileSync(responsePath, "utf8");
+  const original = [
+    "    const entry = {",
+    "        id: mcpPage.id,",
+    "        url: mcpPage.pptrPage.url(),",
+  ].join("\n");
+  const adapted = [
+    "    const entry = {",
+    "        id: mcpPage.id,",
+    "        target_id: mcpPage.pptrPage.target()._targetId,",
+    "        url: mcpPage.pptrPage.url(),",
+  ].join("\n");
+  const originalCount = source.split(original).length - 1;
+  const adaptedCount = source.split(adapted).length - 1;
+  if (adaptedCount === 1 && originalCount === 0) {
+    return assertTargetIdAdapterIntegrity(root, { expectedSha256 });
+  }
+  if (originalCount !== 1 || adaptedCount !== 0) {
+    throw new Error(
+      `Unexpected chrome-devtools-mcp targetId adapter anchor state (original=${originalCount}, adapted=${adaptedCount})`,
+    );
+  }
+  fs.writeFileSync(responsePath, source.split(original).join(adapted));
+  return assertTargetIdAdapterIntegrity(root, { expectedSha256 });
+}
+
+function isPreparedRoot(root, marker = expectedMarker()) {
   try {
     const actual = JSON.parse(fs.readFileSync(path.join(root, MARKER_NAME), "utf8"));
-    if (JSON.stringify(actual) !== JSON.stringify(expectedMarker())) return false;
-    // 自包含构建的关键入口 + 懒启动 shim 目录存在即视为完整（发布物无 node_modules）
+    if (JSON.stringify(actual) !== JSON.stringify(marker)) return false;
+    if (sha256File(path.join(root, "build", "src", "McpResponse.js")) !== marker.responseSha256) {
+      return false;
+    }
+    // A complete self-contained build has its main entry point, lazy-start shim catalog,
+    // and exact final adapter hash. Packaged output has no node_modules.
     return (
       fs.existsSync(path.join(root, "build", "src", "bin", "chrome-devtools-mcp.js")) &&
       fs.existsSync(path.join(root, "catalog-shim.json"))
@@ -99,6 +156,10 @@ function isPrepared(platform = process.platform) {
   } catch {
     return false;
   }
+}
+
+function isPrepared(platform = process.platform) {
+  return isPreparedRoot(outputRoot(platform));
 }
 
 function run(cmd, args, { cwd, inherit = false, input, env } = {}) {
@@ -114,14 +175,15 @@ function run(cmd, args, { cwd, inherit = false, input, env } = {}) {
   if (result.error) throw result.error;
   if (result.status !== 0) {
     const err = String(result.stderr || result.stdout || "").trim();
-    throw new Error(`${cmd} ${args.join(" ")} 失败 status=${result.status}${err ? `: ${err.slice(0, 500)}` : ""}`);
+    throw new Error(`${cmd} ${args.join(" ")} failed with status=${result.status}${err ? `: ${err.slice(0, 500)}` : ""}`);
   }
   return result;
 }
 
-// 捕获 MCP 握手/工具目录（catalog-shim.json）：browser-wrapper 懒启动 shim 阶段
-// 直接用它应答引擎的 initialize/tools/list（chrome-devtools-mcp 的工具是静态注册，
-// 无浏览器连接即可枚举；stdin EOF 后 server 自行退出，spawnSync 一次性喂入即可）。
+// Capture the MCP handshake and tool catalog in catalog-shim.json. During lazy startup,
+// browser-wrapper uses it to answer the Engine's initialize and tools/list calls directly.
+// chrome-devtools-mcp registers tools statically, so enumeration needs no browser connection.
+// The server exits at stdin EOF, allowing spawnSync to supply the complete exchange at once.
 function captureCatalog(entry, root) {
   const lines = [
     JSON.stringify({
@@ -155,16 +217,16 @@ function captureCatalog(entry, root) {
     try {
       msg = JSON.parse(line);
     } catch {
-      continue; // 非协议输出（不应出现，stdout 仅供协议）
+      continue; // Ignore non-protocol output; stdout should normally be protocol-only.
     }
     if (msg.id === 1 && msg.result) initializeResult = msg.result;
     if (msg.id === 2 && msg.result) toolsListResult = msg.result;
   }
   if (!initializeResult || !toolsListResult || !Array.isArray(toolsListResult.tools)) {
-    throw new Error("捕获 MCP 工具目录失败（initialize/tools/list 应答缺失）");
+    throw new Error("Failed to capture the MCP catalog: initialize or tools/list response missing");
   }
   if (toolsListResult.nextCursor) {
-    throw new Error("捕获 MCP 工具目录失败：tools/list 出现分页（需扩展捕获逻辑）");
+    throw new Error("Failed to capture the MCP catalog: paginated tools/list is not supported");
   }
   const catalog = { initializeResult, toolsListResult };
   fs.writeFileSync(path.join(root, "catalog-shim.json"), JSON.stringify(catalog));
@@ -181,35 +243,37 @@ function prepareChromeDevtoolsMcp({ platform = process.platform } = {}) {
   fs.mkdirSync(stagingRoot, { recursive: true });
   console.log(`[chrome-devtools-mcp] vendor ${VERSION} → ${root}`);
   try {
-    // 1) 同步下载（curl 三平台自带；弱网构建机加重试，release 构建不脆断）
+    // 1) Download synchronously. curl is available on all three build platforms; retries
+    //    keep release builds from failing immediately on a weak connection.
     run("curl", ["-fsSL", "--retry", "3", "--retry-delay", "2", "--retry-all-errors", "-o", tarball, TARBALL_URL], { cwd: stagingRoot });
-    // 2) sha512 完整性校验
+    // 2) Verify SHA-512 integrity.
     const hash = crypto.createHash("sha512").update(fs.readFileSync(tarball)).digest("base64");
     if (hash !== INTEGRITY_SHA512) {
       throw new Error(
-        `chrome-devtools-mcp@${VERSION} sha512 校验失败（期望 ${INTEGRITY_SHA512.slice(0, 16)}…，实际 ${hash.slice(0, 16)}…）`,
+        `chrome-devtools-mcp@${VERSION} SHA-512 mismatch (expected ${INTEGRITY_SHA512.slice(0, 16)}…, actual ${hash.slice(0, 16)}…)`,
       );
     }
-    // 3) 解压（tar 三平台自带：macOS/Linux bsdtar、Windows 10+ tar.exe）
+    // 3) Extract with tar (bsdtar on macOS/Linux and tar.exe on Windows 10+).
     run("tar", ["-xzf", tarball, "-C", stagingRoot], { cwd: stagingRoot });
     const unpacked = path.join(stagingRoot, "package");
     if (!fs.existsSync(unpacked)) {
-      throw new Error(`解压后缺少 package/ 目录（tarball 结构变化）`);
+      throw new Error("Extracted tarball is missing package/; the upstream layout changed");
     }
-    // 4) 原子落位
+    // 4) Move the prepared package into place.
     fs.rmSync(root, { recursive: true, force: true });
     fs.mkdirSync(path.dirname(root), { recursive: true });
     fs.renameSync(unpacked, root);
-    // 4.5) 重写被 git 跟踪的占位 .gitkeep（rmSync 已删掉旧文件；CI 资源布局
-    //      测试依赖目录在 checkout 上存在，占位文件不可缺失）。
+    // 4.5) Recreate the tracked .gitkeep removed with the old directory. CI resource-layout
+    //      tests depend on this directory existing in a clean checkout.
     fs.writeFileSync(path.join(root, ".gitkeep"), GITKEEP);
-    // 5) 应用受守卫的最小 adapter，再执行上游入口冒烟。
+    // 5) Apply the guarded minimal adapter, then smoke-test the upstream entry point.
     applyTargetIdAdapter(root);
-    // 5.5) 自包含冒烟：当前 node 直接跑 --help（不装任何依赖，验证零依赖可离线跑）
+    // 5.5) Self-contained smoke test: run --help with the current Node.js installation and
+    //      no installed dependencies to prove that the runtime works offline.
     const entry = path.join(root, "build", "src", "bin", "chrome-devtools-mcp.js");
-    if (!fs.existsSync(entry)) throw new Error("解压后缺少 build/src/bin/chrome-devtools-mcp.js");
+    if (!fs.existsSync(entry)) throw new Error("Extracted package is missing build/src/bin/chrome-devtools-mcp.js");
     run(process.execPath, [entry, "--help"], { cwd: root });
-    // 5.6) 捕获 initialize/tools/list 目录（browser-wrapper 懒启动 shim 应答来源）
+    // 5.6) Capture initialize/tools/list as the browser-wrapper lazy-start shim source.
     captureCatalog(entry, root);
     // 6) marker
     fs.writeFileSync(path.join(root, MARKER_NAME), JSON.stringify(expectedMarker(), null, 2));
@@ -221,10 +285,15 @@ function prepareChromeDevtoolsMcp({ platform = process.platform } = {}) {
 }
 
 module.exports = {
+  ADAPTED_RESPONSE_SHA256,
   ADAPTER_VERSION,
+  GITKEEP,
   applyTargetIdAdapter,
+  assertTargetIdAdapterIntegrity,
+  expectedMarker,
   prepareChromeDevtoolsMcp,
   isPrepared,
+  isPreparedRoot,
   outputRoot,
 };
 

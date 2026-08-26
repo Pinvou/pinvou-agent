@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import {
+  invokeObservedPanelSelection,
+  isSubagentPanelPublicationCurrent,
+} from '../src/features/chat/subagent-panel-publication.mjs';
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
@@ -9,13 +13,13 @@ const composerPopover = read('../src/components/ComposerPopover.jsx');
 const attachmentDrop = read('../src/features/attachments/AttachmentDropOverlay.jsx');
 const chatView = read('../src/features/chat/ChatView.jsx');
 const main = read('../src/app/main.jsx');
-const uiSmoke = read('./ui_smoke.js');
 
 test('RightDock occlusion is a publication permit rather than a post-commit notice', () => {
   assert.match(rightDock, /onBeforeOcclusionPublish\(occlusionId, commit\)/);
   assert.match(rightDock, /const publish = \(\) => \{[\s\S]*setPublicationReady\(true\)/);
-  assert.match(rightDock, /return !active \? false : \(!dock \|\| !occlusionId \? true : publicationReady\)/);
-  assert.match(rightDock, /dock\.releaseOcclusion\(occlusionId\)/);
+  assert.match(rightDock, /return active \? \(!dock \|\| !occlusionId \? true : publicationReady\) : false/);
+  assert.match(rightDock, /const releaseOcclusion = dock\?\.releaseOcclusion/);
+  assert.match(rightDock, /releaseOcclusion\(occlusionId\)/);
 });
 
 test('every child overlay that can cover the native browser waits for the permit', () => {
@@ -23,6 +27,14 @@ test('every child overlay that can cover the native browser waits for the permit
   assert.match(attachmentDrop, /if \(active && !publicationReady\) return null/);
   assert.match(chatView, /voiceAsrSetupPublicationReady && \(\(\) =>/);
   assert.match(chatView, /data-testid="voice-asr-setup-dialog"/);
+  assert.match(
+    chatView,
+    /useRightDockOcclusion\(\s*'artifact-fullscreen',[\s\S]*?artifactsVisible && artifactsFullscreen/,
+  );
+  assert.match(
+    chatView,
+    /artifactsVisible && artifactsFullscreen && artifactFullscreenPublicationReady && createPortal/,
+  );
 });
 
 test('App reserves BrowserView suspension in the same gated publication batch', () => {
@@ -33,8 +45,78 @@ test('App reserves BrowserView suspension in the same gated publication batch', 
   assert.match(main, /onOcclusionRelease=\{releaseRightDockOcclusion\}/);
 });
 
-test('artifact fullscreen relies on the already ACK-gated artifact dock switch', () => {
-  assert.doesNotMatch(chatView, /useRightDockOcclusion\('artifact-fullscreen'/);
-  assert.match(uiSmoke, /artifactFullscreenAfterDockHide/);
-  assert.match(uiSmoke, /hideCallsBeforeArtifactFullscreen/);
+test('subagent selection and its first render share the App ACK-gated publication', () => {
+  assert.match(main, /selectRightDockPanel = useCallback\(\(panelId, sessionId, publishSelection\)/);
+  assert.match(main, /const childPublished = publishSelection\?\.\(\{/);
+  assert.match(main, /browserSessionIdRef\.current === selectedSessionId/);
+  assert.match(
+    chatView,
+    /invokeObservedPanelSelection\(\s*onRightDockPanelSelectionChange,[\s\S]*?\['subagent-transcript', requestedSessionId, publishOpen\]/,
+  );
+  assert.match(
+    chatView,
+    /isSubagentPanelPublicationCurrent\(\{[\s\S]*?sessionId: requestedSessionId,[\s\S]*?currentSessionId: activeSessionIdRef\.current/,
+  );
+  assert.match(chatView, /restorePanelId: current[\s\S]*?current\.restorePanelId/);
+});
+
+test('a newer subagent open invalidates a delayed close across same-session ABA', () => {
+  const sessionId = 'session-a';
+  const delayedCloseRequestId = 2;
+  const newerOpenRequestId = 3;
+
+  assert.equal(isSubagentPanelPublicationCurrent({
+    transitionCurrent: true,
+    requestId: delayedCloseRequestId,
+    currentRequestId: newerOpenRequestId,
+    sessionId,
+    currentSessionId: sessionId,
+  }), false);
+  assert.equal(isSubagentPanelPublicationCurrent({
+    transitionCurrent: true,
+    requestId: delayedCloseRequestId,
+    currentRequestId: delayedCloseRequestId,
+    sessionId,
+    currentSessionId: 'session-b',
+  }), false);
+  assert.equal(isSubagentPanelPublicationCurrent({
+    transitionCurrent: false,
+    requestId: newerOpenRequestId,
+    currentRequestId: newerOpenRequestId,
+    sessionId,
+    currentSessionId: sessionId,
+  }), false);
+  assert.equal(isSubagentPanelPublicationCurrent({
+    transitionCurrent: true,
+    requestId: newerOpenRequestId,
+    currentRequestId: newerOpenRequestId,
+    sessionId,
+    currentSessionId: sessionId,
+  }), true);
+  assert.match(
+    chatView,
+    /const closeSubagentPanel[\s\S]*?const requestId = subagentPanelRequestRef\.current \+ 1[\s\S]*?isSubagentPanelPublicationCurrent\(\{[\s\S]*?currentRequestId: subagentPanelRequestRef\.current/,
+  );
+});
+
+test('asynchronous and synchronous panel selection failures are observed', async () => {
+  const asyncFailure = new Error('async selection failed');
+  const syncFailure = new Error('sync selection failed');
+  const reported = [];
+  const onError = (error) => reported.push(error);
+
+  const asyncResult = invokeObservedPanelSelection(
+    () => Promise.reject(asyncFailure),
+    [],
+    onError,
+  );
+  assert.equal(await asyncResult, false);
+  assert.equal(invokeObservedPanelSelection(() => {
+    throw syncFailure;
+  }, [], onError), false);
+  assert.deepEqual(reported, [asyncFailure, syncFailure]);
+  assert.match(
+    chatView,
+    /invokeObservedPanelSelection\([\s\S]*?onRightDockPanelSelectionChange,[\s\S]*?reportRightDockSelectionFailure/,
+  );
 });

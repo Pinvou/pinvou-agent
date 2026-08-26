@@ -13,7 +13,7 @@ import {
   settleBrowserOpen,
 } from '../src/features/browser/browser-pane-state.mjs';
 
-test('浏览器侧栏的展开与选中意图按 session 隔离', () => {
+test('browser-pane open and selection intent is isolated by session', () => {
   let states = {};
   states = activateBrowserPane(states, 'session-a');
   states = activateBrowserPane(states, 'session-b');
@@ -36,7 +36,7 @@ test('浏览器侧栏的展开与选中意图按 session 隔离', () => {
   assert.equal(browserPaneStateFor(states, 'session-b').browserSelected, false);
 });
 
-test('状态恢复不覆盖用户在当前窗口做出的收起选择', () => {
+test('state restoration does not override the user closing the pane in this window', () => {
   let states = restoreBrowserPane({}, 'session-a');
   assert.equal(browserPaneStateFor(states, 'session-a').open, true);
 
@@ -53,7 +53,7 @@ test('状态恢复不覆盖用户在当前窗口做出的收起选择', () => {
   });
 });
 
-test('浏览器 prepare 结果按 session 与 attempt 隔离，迟到结果不能覆盖新状态', () => {
+test('browser prepare results are isolated by session and attempt so stale results cannot win', () => {
   let states = {};
   states = beginBrowserOpen(states, 'session-a', 1);
   states = beginBrowserOpen(states, 'session-b', 1);

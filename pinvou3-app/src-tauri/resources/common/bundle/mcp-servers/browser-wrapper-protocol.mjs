@@ -1,6 +1,7 @@
 /**
- * Windows 原生多标签协议的纯函数部分。wrapper 只向当前对话暴露其工作区页面，
- * 但保留 chrome-devtools-mcp 原生 pageId，避免重写所有页面级工具。
+ * Pure functions for the native Windows multi-tab protocol. The wrapper only
+ * exposes workspace pages owned by the current conversation while preserving
+ * chrome-devtools-mcp's native pageId values for page-scoped tools.
  */
 
 import {
@@ -27,12 +28,305 @@ const NON_MUTATING_BROWSER_TOOLS = new Set([
 ]);
 
 export const DISABLED_BROWSER_TOOL_ERROR_CODE = 'permission/browser-tool-disabled';
+export const BROWSER_PROTOCOL_FRAME_MAX_BYTES = 64 * 1024 * 1024;
+export const BROWSER_PROTOCOL_FRAME_TOO_LARGE_ERROR_CODE =
+  'browser/protocol-frame-too-large';
+export const BROWSER_STARTUP_BACKLOG_EXCEEDED_ERROR_CODE =
+  'browser/startup-backlog-exceeded';
 
 const RECOVERABLE_HOST_CORE_WORKSPACE_ERROR_CODES = new Set([
   'browser/workspace-unavailable',
   'browser/workspace-missing',
   'browser/workspace-stopped',
 ]);
+
+function normalizeWritableError(error) {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function boundedProtocolError(code, message) {
+  const error = new Error(`${code}: ${message}`);
+  error.code = code;
+  return error;
+}
+
+/**
+ * Incrementally split a byte stream into NDJSON frames without retaining an
+ * unbounded partial line. Newline is a single ASCII byte in UTF-8, so scanning
+ * the raw bytes preserves multibyte characters split across stream chunks.
+ */
+export function createBoundedNdjsonDecoder({
+  maxFrameBytes = BROWSER_PROTOCOL_FRAME_MAX_BYTES,
+  source = 'protocol input',
+} = {}) {
+  if (!Number.isSafeInteger(maxFrameBytes) || maxFrameBytes < 1) {
+    throw new TypeError('maxFrameBytes must be a positive safe integer');
+  }
+  if (typeof source !== 'string' || !source) {
+    throw new TypeError('source must be a non-empty string');
+  }
+
+  let chunks = [];
+  let pendingBytes = 0;
+  let failure = null;
+
+  const rejectOversizedFrame = (nextBytes) => {
+    failure ||= boundedProtocolError(
+      BROWSER_PROTOCOL_FRAME_TOO_LARGE_ERROR_CODE,
+      `${source} exceeded the ${maxFrameBytes}-byte NDJSON frame limit (${nextBytes} bytes)`,
+    );
+    throw failure;
+  };
+
+  const append = (segment) => {
+    if (segment.length === 0) return;
+    const nextBytes = pendingBytes + segment.length;
+    if (nextBytes > maxFrameBytes) rejectOversizedFrame(nextBytes);
+    // Copy the partial segment so a short tail does not retain an entire large
+    // stream chunk. Compact occasionally to bound per-chunk object overhead.
+    chunks.push(Buffer.from(segment));
+    pendingBytes = nextBytes;
+    if (chunks.length >= 1024) {
+      chunks = [Buffer.concat(chunks, pendingBytes)];
+    }
+  };
+
+  const finishLine = () => {
+    const line = chunks.length === 0
+      ? ''
+      : chunks.length === 1
+        ? chunks[0].toString('utf8')
+        : Buffer.concat(chunks, pendingBytes).toString('utf8');
+    chunks = [];
+    pendingBytes = 0;
+    return line;
+  };
+
+  return {
+    push(chunk) {
+      if (failure) throw failure;
+      const bytes = Buffer.isBuffer(chunk)
+        ? chunk
+        : chunk instanceof Uint8Array
+          ? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+          : Buffer.from(String(chunk), 'utf8');
+      const lines = [];
+      let cursor = 0;
+      for (;;) {
+        const newline = bytes.indexOf(0x0a, cursor);
+        if (newline < 0) break;
+        append(bytes.subarray(cursor, newline));
+        lines.push(finishLine());
+        cursor = newline + 1;
+      }
+      append(bytes.subarray(cursor));
+      return lines;
+    },
+    reset() {
+      chunks = [];
+      pendingBytes = 0;
+      failure = null;
+    },
+    get pendingBytes() {
+      return pendingBytes;
+    },
+    get failure() {
+      return failure;
+    },
+  };
+}
+
+/**
+ * Bound requests accepted while the lazy MCP child is starting. A count limit
+ * prevents tiny-message floods and a byte limit covers a few very large calls.
+ */
+export function createBoundedLineBacklog({
+  maxLines,
+  maxBytes,
+  source = 'startup request backlog',
+} = {}) {
+  if (!Number.isSafeInteger(maxLines) || maxLines < 1) {
+    throw new TypeError('maxLines must be a positive safe integer');
+  }
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    throw new TypeError('maxBytes must be a positive safe integer');
+  }
+  if (typeof source !== 'string' || !source) {
+    throw new TypeError('source must be a non-empty string');
+  }
+
+  let lines = [];
+  let bytes = 0;
+
+  return {
+    push(line) {
+      const value = String(line);
+      const lineBytes = Buffer.byteLength(value);
+      const nextLines = lines.length + 1;
+      const nextBytes = bytes + lineBytes;
+      if (nextLines > maxLines || nextBytes > maxBytes) {
+        throw boundedProtocolError(
+          BROWSER_STARTUP_BACKLOG_EXCEEDED_ERROR_CODE,
+          `${source} exceeded its ${maxLines}-request/${maxBytes}-byte limit`,
+        );
+      }
+      lines.push(value);
+      bytes = nextBytes;
+      return lines.length;
+    },
+    snapshot() {
+      return [...lines];
+    },
+    drain() {
+      const drained = lines;
+      lines = [];
+      bytes = 0;
+      return drained;
+    },
+    clear() {
+      lines = [];
+      bytes = 0;
+    },
+    get length() {
+      return lines.length;
+    },
+    get bytes() {
+      return bytes;
+    },
+  };
+}
+
+/**
+ * Serialize writes to a Node writable stream without allowing queued backlog
+ * to grow without bound. One active response may exceed the backlog limit
+ * because valid DOM/evaluate JSON-RPC results can be large; later responses are
+ * bounded while that write drains. A stream error permanently closes the queue,
+ * reports the failure once, and makes `flush()` reject deterministically.
+ */
+export function createOrderedWritableQueue(
+  stream,
+  { onError = () => {}, maxPendingBytes = 1024 * 1024 } = {},
+) {
+  if (!stream || typeof stream.write !== 'function' || typeof stream.on !== 'function') {
+    throw new TypeError('createOrderedWritableQueue requires a writable stream');
+  }
+  if (!Number.isSafeInteger(maxPendingBytes) || maxPendingBytes < 1) {
+    throw new TypeError('maxPendingBytes must be a positive safe integer');
+  }
+
+  let tail = Promise.resolve();
+  let failure = null;
+  let activeWriteFailure = null;
+  let errorReported = false;
+  let activeBytes = 0;
+  let queuedBytes = 0;
+  let scheduledWrites = 0;
+
+  const recordFailure = (error) => {
+    if (!failure) failure = normalizeWritableError(error);
+    if (activeWriteFailure) {
+      const rejectActiveWrite = activeWriteFailure;
+      activeWriteFailure = null;
+      rejectActiveWrite(failure);
+    }
+    if (!errorReported) {
+      errorReported = true;
+      try {
+        onError(failure);
+      } catch {
+        // Error reporting must not replace the original stream failure.
+      }
+    }
+  };
+
+  stream.on('error', recordFailure);
+  stream.on('close', () => {
+    recordFailure(new Error('Writable stream closed before queued output drained'));
+  });
+
+  const writeChunk = (chunk) => new Promise((resolve, reject) => {
+    let waitingForDrain = false;
+    let settled = false;
+
+    const cleanup = () => {
+      if (waitingForDrain && typeof stream.off === 'function') stream.off('drain', onDrain);
+      if (activeWriteFailure === fail) activeWriteFailure = null;
+    };
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(normalizeWritableError(error));
+    };
+    const onDrain = () => finish();
+
+    activeWriteFailure = fail;
+    try {
+      const accepted = stream.write(String(chunk));
+      if (settled) return;
+      if (accepted) {
+        finish();
+      } else {
+        waitingForDrain = true;
+        stream.once('drain', onDrain);
+      }
+    } catch (error) {
+      recordFailure(error);
+    }
+  });
+
+  return {
+    write(chunk) {
+      const value = String(chunk);
+      const bytes = Buffer.byteLength(value);
+      if (failure) return tail;
+      const becomesActive = scheduledWrites === 0;
+      if (!becomesActive && bytes > maxPendingBytes - queuedBytes) {
+        recordFailure(new Error(
+          `Writable queue exceeded its ${maxPendingBytes}-byte queued backlog limit`,
+        ));
+        return tail;
+      }
+      scheduledWrites += 1;
+      if (becomesActive) activeBytes = bytes;
+      else queuedBytes += bytes;
+      tail = tail.then(async () => {
+        if (!becomesActive) {
+          queuedBytes -= bytes;
+          activeBytes = bytes;
+        }
+        try {
+          if (!failure) await writeChunk(value);
+        } catch (error) {
+          recordFailure(error);
+        } finally {
+          activeBytes = 0;
+          scheduledWrites -= 1;
+        }
+      });
+      return tail;
+    },
+    async flush() {
+      await tail;
+      if (failure) throw failure;
+    },
+    get failure() {
+      return failure;
+    },
+    get pendingBytes() {
+      return activeBytes + queuedBytes;
+    },
+    get queuedBytes() {
+      return queuedBytes;
+    },
+  };
+}
 
 /**
  * Only lifecycle errors that guarantee BrowserCore rejected the request before
@@ -114,12 +408,14 @@ export function adaptBrowserCatalog(value) {
     ...value,
     toolsListResult: {
       ...value.toolsListResult,
-      // CodeWhale 当前把 MCP image content 序列化进纯文本 ToolResult，模型只会
-      // 收到一段 base64，而不会收到可视觉理解的图像块。内嵌浏览器本身已经实时
-      // 给用户显示页面；继续向 Agent 暴露截图只会浪费上下文并诱发“截图成功 =
-      // 已完成视觉确认”的错误结论。视觉结果管线真正接通前先从目录隐藏。
-      // catalog-shim 在浏览器启动前捕获，未携带运行期 experimental-page-id-routing
-      // 开关；这里镜像上游 1.7.0 的 schema 变换，让 Agent 真正看得到显式 pageId。
+      // CodeWhale currently serializes MCP image content into a text-only
+      // ToolResult, so the model receives base64 text rather than a visually
+      // interpretable image. The embedded browser already renders the page for
+      // the user. Keep screenshots hidden until the visual-result pipeline is
+      // connected, avoiding wasted context and false claims of visual review.
+      // catalog-shim is captured before browser startup and does not include
+      // the runtime experimental-page-id-routing flag. Mirror the upstream
+      // 1.7.0 schema transformation so the Agent sees the explicit pageId.
       tools: tools
         .filter((tool) => !isDisabledBrowserToolName(tool?.name))
         .map(exposePageIdRouting),
@@ -127,7 +423,8 @@ export function adaptBrowserCatalog(value) {
   };
 }
 
-// 兼容旧调用方；最终多标签模式不再把 new_page/close_page 改写为 navigate_page。
+// Compatibility export for older callers. Final multi-tab mode no longer
+// rewrites new_page or close_page into navigate_page.
 export function adaptHostedBrowserToolCall(line) {
   return line;
 }
@@ -161,7 +458,7 @@ export function browserHostBackendPolicy(platform) {
     action: 'unsupported',
     backend: null,
     code: 'unsupported/host-backend-unavailable',
-    message: `当前平台尚无原生浏览器自动化后端 (${platform || 'unknown'})`,
+    message: `No native browser automation backend is available on this platform (${platform || 'unknown'})`,
   };
 }
 
@@ -180,14 +477,16 @@ export function effectiveNavigateType(args = {}) {
 export function assertAllowedHostedNavigation(args = {}) {
   const effectiveType = effectiveNavigateType(args);
   if (effectiveType === 'url' && !isAllowedBrowserUrl(args?.url)) {
-    throw new Error('应用内浏览器仅支持 http/https/about:blank 协议');
+    throw new Error('The in-app browser only supports http, https, and about:blank URLs');
   }
   return effectiveType;
 }
 
 /**
- * 启动阶段的请求与取消通知可能在同一个 stdin chunk 内到达。失败应答前必须基于
- * 取消集合做快照过滤，不能先 clear 再遍历，否则已取消请求会收到伪造的启动错误。
+ * Requests and cancellation notifications can arrive in the same stdin chunk
+ * during startup. Filter against a snapshot of the cancellation set before
+ * emitting failures; clearing it first would fabricate startup errors for
+ * already-cancelled requests.
  */
 export function uncancelledBufferedRequests(lines, cancelledRequestIds) {
   const cancelled = cancelledRequestIds instanceof Set
@@ -205,29 +504,29 @@ export function uncancelledBufferedRequests(lines, cancelledRequestIds) {
 
 function assertHostRequestIdentity(sessionToken, requestId) {
   if (!TAB_TOKEN_PATTERN.test(sessionToken || '')) {
-    throw new Error('浏览器宿主请求的 sessionToken 无效');
+    throw new Error('Browser host request has an invalid sessionToken');
   }
   if (!HOST_REQUEST_ID_PATTERN.test(requestId || '')) {
-    throw new Error('浏览器宿主请求的 requestId 无效');
+    throw new Error('Browser host request has an invalid requestId');
   }
 }
 
 function assertWrapperInstanceNonce(wrapperInstanceNonce) {
   if (!WRAPPER_INSTANCE_NONCE_PATTERN.test(wrapperInstanceNonce || '')) {
-    throw new Error('浏览器宿主请求的 wrapperInstanceNonce 无效');
+    throw new Error('Browser host request has an invalid wrapperInstanceNonce');
   }
 }
 
 function assertHostCallerIdentity(callerPid, wrapperInstanceNonce) {
   if (!Number.isSafeInteger(callerPid) || callerPid <= 0 || callerPid > 0xffff_ffff) {
-    throw new Error('浏览器宿主请求的 callerPid 无效');
+    throw new Error('Browser host request has an invalid callerPid');
   }
   assertWrapperInstanceNonce(wrapperInstanceNonce);
 }
 
 export function hostCallerHeartbeatArtifactName(sessionToken, wrapperInstanceNonce) {
   if (!TAB_TOKEN_PATTERN.test(sessionToken || '')) {
-    throw new Error('浏览器宿主调用方心跳的 sessionToken 无效');
+    throw new Error('Browser host caller heartbeat has an invalid sessionToken');
   }
   assertWrapperInstanceNonce(wrapperInstanceNonce);
   return `${sessionToken}-${wrapperInstanceNonce}.heartbeat`;
@@ -241,14 +540,14 @@ export function createHostCallerHeartbeat({
   heartbeatAt = Date.now(),
 }) {
   if (typeof sessionId !== 'string' || !sessionId) {
-    throw new Error('浏览器宿主调用方心跳的 sessionId 无效');
+    throw new Error('Browser host caller heartbeat has an invalid sessionId');
   }
   if (!TAB_TOKEN_PATTERN.test(sessionToken || '')) {
-    throw new Error('浏览器宿主调用方心跳的 sessionToken 无效');
+    throw new Error('Browser host caller heartbeat has an invalid sessionToken');
   }
   assertHostCallerIdentity(callerPid, wrapperInstanceNonce);
   if (!Number.isSafeInteger(heartbeatAt) || heartbeatAt <= 0) {
-    throw new Error('浏览器宿主调用方心跳时间无效');
+    throw new Error('Browser host caller heartbeat has an invalid timestamp');
   }
   return {
     protocol_version: HOST_REQUEST_PROTOCOL_VERSION,
@@ -284,13 +583,13 @@ export function createHostRequestEnvelope({
   assertHostRequestIdentity(sessionToken, requestId);
   assertHostCallerIdentity(callerPid, wrapperInstanceNonce);
   if (typeof sessionId !== 'string' || !sessionId) {
-    throw new Error('浏览器宿主请求的 sessionId 无效');
+    throw new Error('Browser host request has an invalid sessionId');
   }
   if (typeof operation !== 'string' || !operation) {
-    throw new Error('浏览器宿主请求的 operation 无效');
+    throw new Error('Browser host request has an invalid operation');
   }
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    throw new Error('浏览器宿主请求 payload 必须是对象');
+    throw new Error('Browser host request payload must be an object');
   }
   return {
     ...payload,
@@ -318,7 +617,7 @@ export function createHostCancellationTombstone({
   assertHostRequestIdentity(sessionToken, requestId);
   assertHostCallerIdentity(callerPid, wrapperInstanceNonce);
   if (typeof sessionId !== 'string' || !sessionId) {
-    throw new Error('浏览器宿主取消记录的 sessionId 无效');
+    throw new Error('Browser host cancellation record has an invalid sessionId');
   }
   return {
     protocol_version: HOST_REQUEST_PROTOCOL_VERSION,
@@ -335,28 +634,28 @@ export function createHostCancellationTombstone({
 }
 
 /**
- * pageId 与宿主 tabToken 必须是一一对应关系。输入保留为 entries，而不是先转
- * Map，确保重复 pageId 不会在校验前被 Map 的覆盖语义吞掉。
+ * pageId and host tabToken must form a bijection. Keep the input as entries
+ * until validation so Map overwrite semantics cannot hide duplicate pageIds.
  */
 export function buildBijectivePageTokenMaps(entries) {
   if (!entries || typeof entries[Symbol.iterator] !== 'function') {
-    throw new Error('页面映射必须是可迭代的 [pageId, tabToken] 列表');
+    throw new Error('Page mapping must be an iterable list of [pageId, tabToken] entries');
   }
   const pageToToken = new Map();
   const tokenToPage = new Map();
   for (const entry of entries) {
     if (!Array.isArray(entry) || entry.length < 2) {
-      throw new Error('页面映射项格式无效');
+      throw new Error('Page mapping entry has an invalid shape');
     }
     const [pageId, tabToken] = entry;
     if (!Number.isInteger(pageId) || !TAB_TOKEN_PATTERN.test(tabToken || '')) {
-      throw new Error('页面映射项包含无效 pageId 或 tabToken');
+      throw new Error('Page mapping entry contains an invalid pageId or tabToken');
     }
     if (pageToToken.has(pageId)) {
-      throw new Error(`页面映射包含重复 pageId: ${pageId}`);
+      throw new Error(`Page mapping contains duplicate pageId: ${pageId}`);
     }
     if (tokenToPage.has(tabToken)) {
-      throw new Error(`页面映射包含重复 tabToken: ${tabToken}`);
+      throw new Error(`Page mapping contains duplicate tabToken: ${tabToken}`);
     }
     pageToToken.set(pageId, tabToken);
     tokenToPage.set(tabToken, pageId);
@@ -365,43 +664,45 @@ export function buildBijectivePageTokenMaps(entries) {
 }
 
 export function assertBijectivePageTokenMap(pageTokens) {
-  if (!(pageTokens instanceof Map)) throw new Error('页面映射必须是 Map');
+  if (!(pageTokens instanceof Map)) throw new Error('Page mapping must be a Map');
   return buildBijectivePageTokenMaps(pageTokens.entries());
 }
 
 /**
- * 返回调用方显式提供且属于当前对话的 pageId；未提供时返回 null。属性存在但值
- * 非整数时必须拒绝，不能把畸形/跨对话 pageId 静默降级成“使用当前页”。
+ * Return the explicitly supplied pageId when it belongs to this conversation,
+ * or null when omitted. Reject present non-integer values rather than silently
+ * degrading malformed or cross-conversation IDs to "use the current page."
  */
 export function explicitOwnedPageId(args, pageTokens) {
   if (!Object.prototype.hasOwnProperty.call(args || {}, 'pageId')) return null;
   assertBijectivePageTokenMap(pageTokens);
   const pageId = args.pageId;
   if (!Number.isInteger(pageId) || !pageTokens.has(pageId)) {
-    throw new Error('页面不存在或不属于当前对话');
+    throw new Error('Page does not exist or does not belong to this conversation');
   }
   return pageId;
 }
 
 /**
- * 宿主权威 target 映射只接受显式 v2 schema。不得把 v1 的页面脚本 marker、URL
- * fragment 或残缺 v2 状态静默解释成权威映射。
+ * The authoritative host target mapping only accepts the explicit v2 schema.
+ * Never interpret a v1 page-script marker, URL fragment, or partial v2 state
+ * as an authoritative mapping.
  */
 export function parseAuthoritativeHostWorkspace(value, expectedSessionToken = null) {
   if (value?.version !== 2 || value.mapping_authority !== 'host') {
-    throw new Error('宿主工作区未提供 v2 权威 target 映射');
+    throw new Error('Host workspace did not provide an authoritative v2 target mapping');
   }
   if (!TAB_TOKEN_PATTERN.test(value.session_token || '')) {
-    throw new Error('宿主工作区 session_token 无效');
+    throw new Error('Host workspace has an invalid session_token');
   }
   if (expectedSessionToken != null && value.session_token !== expectedSessionToken) {
-    throw new Error('宿主工作区 session_token 不匹配');
+    throw new Error('Host workspace session_token does not match');
   }
   if (!Number.isInteger(value.revision) || value.revision < 0) {
-    throw new Error('宿主工作区 revision 无效');
+    throw new Error('Host workspace has an invalid revision');
   }
   if (!TAB_TOKEN_PATTERN.test(value.active_tab || '') || !Array.isArray(value.tabs)) {
-    throw new Error('宿主工作区 active_tab 或 tabs 无效');
+    throw new Error('Host workspace has invalid active_tab or tabs data');
   }
 
   const tokens = new Set();
@@ -410,19 +711,19 @@ export function parseAuthoritativeHostWorkspace(value, expectedSessionToken = nu
     const token = tab?.token;
     const targetId = tab?.target_id;
     if (!TAB_TOKEN_PATTERN.test(token || '')) {
-      throw new Error('宿主权威 target 映射包含无效 tabToken');
+      throw new Error('Authoritative host target mapping contains an invalid tabToken');
     }
     if (typeof targetId !== 'string' || !targetId.trim()) {
-      throw new Error(`宿主标签 ${token} 缺少权威 target_id`);
+      throw new Error(`Host tab ${token} is missing an authoritative target_id`);
     }
-    if (tokens.has(token)) throw new Error(`宿主工作区包含重复 tabToken: ${token}`);
-    if (targets.has(targetId)) throw new Error(`宿主工作区包含重复 target_id: ${targetId}`);
+    if (tokens.has(token)) throw new Error(`Host workspace contains duplicate tabToken: ${token}`);
+    if (targets.has(targetId)) throw new Error(`Host workspace contains duplicate target_id: ${targetId}`);
     tokens.add(token);
     targets.add(targetId);
     return { token, target_id: targetId };
   });
   if (!tokens.has(value.active_tab)) {
-    throw new Error('宿主工作区 active_tab 不在权威 target 映射中');
+    throw new Error('Host workspace active_tab is absent from the authoritative target mapping');
   }
   return {
     ...value,
@@ -436,31 +737,31 @@ export function parseHostActivationLease(value, expected = {}) {
   const tabToken = value?.tabToken ?? value?.tab_token;
   const targetId = value?.targetId ?? value?.target_id;
   if (typeof sessionId !== 'string' || !sessionId) {
-    throw new Error('activate_tab 响应缺少有效 sessionId');
+    throw new Error('activate_tab response is missing a valid sessionId');
   }
   if (!TAB_TOKEN_PATTERN.test(tabToken || '')) {
-    throw new Error('activate_tab 响应缺少有效 tabToken');
+    throw new Error('activate_tab response is missing a valid tabToken');
   }
   if (typeof targetId !== 'string' || !targetId.trim()) {
-    throw new Error('activate_tab 响应缺少权威 targetId');
+    throw new Error('activate_tab response is missing an authoritative targetId');
   }
   if (!Number.isInteger(value?.revision) || value.revision < 0) {
-    throw new Error('activate_tab 响应缺少有效 revision');
+    throw new Error('activate_tab response is missing a valid revision');
   }
   if (!/^[0-9a-f]{32}$/.test(value?.lease || '')) {
-    throw new Error('activate_tab 响应缺少 dispatch lease');
+    throw new Error('activate_tab response is missing a dispatch lease');
   }
   if (value?.owner !== 'agent') {
-    throw new Error('activate_tab 响应未把控制权授予 Agent');
+    throw new Error('activate_tab response did not grant control to the Agent');
   }
   if (expected.sessionId != null && expected.sessionId !== sessionId) {
-    throw new Error('activate_tab 响应的 sessionId 与请求不一致');
+    throw new Error('activate_tab response sessionId does not match the request');
   }
   if (expected.tabToken != null && expected.tabToken !== tabToken) {
-    throw new Error('activate_tab 响应的 tabToken 与请求不一致');
+    throw new Error('activate_tab response tabToken does not match the request');
   }
   if (expected.targetId != null && expected.targetId !== targetId) {
-    throw new Error('activate_tab 响应的 targetId 与宿主映射不一致');
+    throw new Error('activate_tab response targetId does not match the host mapping');
   }
   return {
     sessionId,
@@ -483,9 +784,10 @@ export function hostLeaseAssertionPayload(activationLease) {
 }
 
 /**
- * create/close 是宿主状态 mutation，tab_token 可能表示“新标签”，不能与授权来源
- * 混用。authorization_tab_token 明确指出 lease 所属的当前/目标标签，其余 CAS
- * 字段保持与 NativeTabLease 一致。
+ * create and close mutate host state, and tab_token may denote a new tab, so it
+ * cannot also identify the authorization source. authorization_tab_token
+ * explicitly identifies the current or target tab that owns the lease; the
+ * remaining CAS fields match NativeTabLease.
  */
 export function hostMutationAuthorizationPayload(activationLease) {
   const lease = parseHostActivationLease(activationLease);
@@ -498,25 +800,26 @@ export function hostMutationAuthorizationPayload(activationLease) {
 }
 
 export function parseCreatedTabResult(value, { tabToken, creationId } = {}) {
-  // v3 的 create result 是安全协议的一部分，不接受旧字段别名。否则一个只实现
-  // 了一半的新宿主会被 wrapper 当成 CAS 已完成，后续补偿却无法可靠绑定创建代次。
+  // The v3 create result is part of the security protocol and does not accept
+  // legacy aliases. Otherwise the wrapper could accept a partially upgraded
+  // host as CAS-complete while compensation cannot bind the creation epoch.
   const resultTabToken = value?.tabToken;
   const targetId = value?.targetId;
   const resultCreationId = value?.creationId;
   if (!TAB_TOKEN_PATTERN.test(resultTabToken || '')) {
-    throw new Error('create_tab 响应缺少有效 tabToken');
+    throw new Error('create_tab response is missing a valid tabToken');
   }
   if (typeof targetId !== 'string' || !targetId.trim()) {
-    throw new Error('create_tab 响应缺少有效 targetId');
+    throw new Error('create_tab response is missing a valid targetId');
   }
   if (!HOST_REQUEST_ID_PATTERN.test(resultCreationId || '')) {
-    throw new Error('create_tab 响应缺少有效 creationId');
+    throw new Error('create_tab response is missing a valid creationId');
   }
   if (tabToken != null && resultTabToken !== tabToken) {
-    throw new Error('create_tab 响应的 tabToken 与请求不一致');
+    throw new Error('create_tab response tabToken does not match the request');
   }
   if (creationId != null && resultCreationId !== creationId) {
-    throw new Error('create_tab 响应的 creationId 与 request_id 不一致');
+    throw new Error('create_tab response creationId does not match request_id');
   }
   return {
     tabToken: resultTabToken,
@@ -526,8 +829,9 @@ export function parseCreatedTabResult(value, { tabToken, creationId } = {}) {
 }
 
 /**
- * v3 response envelope 的身份字段是必填而非“存在时才验证”。否则过期/伪造的
- * 响应可能被另一个 CAS mutation 接受。create_tab 还强制 creationId=request_id。
+ * Identity fields in a v3 response envelope are mandatory, not conditionally
+ * validated. Otherwise another CAS mutation could accept a stale or forged
+ * response. create_tab additionally requires creationId=request_id.
  */
 export function parseHostResponseEnvelope(value, {
   requestId,
@@ -536,19 +840,19 @@ export function parseHostResponseEnvelope(value, {
   requestedTabToken = null,
 } = {}) {
   if (value?.protocol_version !== HOST_REQUEST_PROTOCOL_VERSION) {
-    throw new Error('浏览器宿主响应缺少有效 protocol_version=3');
+    throw new Error('Browser host response is missing valid protocol_version=3');
   }
   if (typeof requestId !== 'string' || value?.request_id !== requestId) {
-    throw new Error('浏览器宿主响应缺少或返回了不匹配的 request_id');
+    throw new Error('Browser host response is missing request_id or returned a mismatch');
   }
   if (typeof idempotencyKey !== 'string' || value?.idempotency_key !== idempotencyKey) {
-    throw new Error('浏览器宿主响应缺少或返回了不匹配的 idempotency_key');
+    throw new Error('Browser host response is missing idempotency_key or returned a mismatch');
   }
   if (typeof value?.ok !== 'boolean') {
-    throw new Error('浏览器宿主响应缺少布尔 ok 字段');
+    throw new Error('Browser host response is missing a boolean ok field');
   }
   if (!value.ok) {
-    throw new Error(value?.error || `浏览器宿主操作 ${operation || 'unknown'} 失败`);
+    throw new Error(value?.error || `Browser host operation ${operation || 'unknown'} failed`);
   }
   const result = value.result ?? {};
   return operation === 'create_tab'
@@ -756,12 +1060,14 @@ export function routeToolCallToPage(message, pageId, argumentPatch = {}) {
 }
 
 /**
- * 在受管浏览器中执行页面操作前，将 Agent 的目标页与用户可见标签原子对齐。
+ * Atomically align the Agent's target page with the user-visible tab before
+ * performing a managed browser page operation.
  *
- * pageTokens 是当前任务对话唯一允许的 pageId -> tabToken 映射。调用方负责把
- * activate/select/verify/execute 都放在同一条串行队列中；这里固定各阶段顺序，
- * 并在每个有副作用的阶段前重新确认归属及取消状态。任何一步失败时 execute
- * 都不会被调用，避免工具静默落到后台页或其他任务对话的页面。
+ * pageTokens is the only allowed pageId -> tabToken mapping for the current
+ * task conversation. The caller serializes activate/select/verify/execute;
+ * this function fixes their order and rechecks ownership and cancellation
+ * before each side effect. execute is never called after a failed phase, so a
+ * tool cannot silently land on a background page or another task's page.
  */
 export async function runVisiblePageOperation({
   pageId,
@@ -778,13 +1084,14 @@ export async function runVisiblePageOperation({
   const alignmentStartedAt = now();
   const ownedTabToken = () => {
     if (!Number.isInteger(pageId) || !(pageTokens instanceof Map)) {
-      throw new Error('页面不存在或不属于当前对话');
+      throw new Error('Page does not exist or does not belong to this conversation');
     }
-    // 每个阶段都重验双射，防止并发刷新映射时把一个 token 留给多个 pageId。
+    // Revalidate the bijection at every phase so a concurrent refresh cannot
+    // leave one token assigned to multiple pageIds.
     assertBijectivePageTokenMap(pageTokens);
     const token = pageTokens.get(pageId);
     if (typeof token !== 'string' || !token) {
-      throw new Error('页面不存在或不属于当前对话');
+      throw new Error('Page does not exist or does not belong to this conversation');
     }
     return token;
   };
@@ -793,24 +1100,25 @@ export async function runVisiblePageOperation({
   await ensureActive();
   const activationResult = await activateTab(tabToken);
 
-  // 宿主切换期间用户可能关闭标签，不能依赖第一次检查的陈旧映射。
+  // The user may close a tab during host activation; do not trust the mapping
+  // captured by the initial check.
   await ensureActive();
-  if (ownedTabToken() !== tabToken) throw new Error('页面归属在激活过程中发生变化');
+  if (ownedTabToken() !== tabToken) throw new Error('Page ownership changed during activation');
   await assertLease({ pageId, tabToken, activationResult, phase: 'select' });
   const selectionResult = await selectPage(pageId);
 
   await ensureActive();
-  if (ownedTabToken() !== tabToken) throw new Error('页面归属在选择过程中发生变化');
+  if (ownedTabToken() !== tabToken) throw new Error('Page ownership changed during selection');
   await assertLease({ pageId, tabToken, activationResult, phase: 'verify' });
   const verificationResult = await verify({ pageId, tabToken, activationResult });
 
   await ensureActive();
-  if (ownedTabToken() !== tabToken) throw new Error('页面归属在执行前发生变化');
+  if (ownedTabToken() !== tabToken) throw new Error('Page ownership changed before execution');
   if (recordAlignment) {
     try {
       recordAlignment(Math.max(0, now() - alignmentStartedAt));
     } catch {
-      // 性能诊断绝不能改变页面操作结果。
+      // Performance diagnostics must never change the page-operation result.
     }
   }
   const executionResult = execute
@@ -946,7 +1254,7 @@ export function findHostedSessionPage(result, sessionToken) {
   const matches = parseBrowserPages(result).filter(
     (page) => !page.targetId && page.url === marker,
   );
-  if (matches.length > 1) throw new Error('MCP 页面列表包含重复 session marker');
+  if (matches.length > 1) throw new Error('MCP page list contains duplicate session markers');
   return matches[0] || null;
 }
 
@@ -957,22 +1265,23 @@ export function findHostedTabPage(result, tabToken, pageTokens = new Map()) {
     (page) => pageTokens.get(page.id) === tabToken ||
       (!page.targetId && page.url === marker),
   );
-  if (matches.length > 1) throw new Error(`MCP 页面列表包含重复 tab marker: ${tabToken}`);
+  if (matches.length > 1) throw new Error(`MCP page list contains duplicate tab marker: ${tabToken}`);
   return matches[0] || null;
 }
 
 /**
- * MCP 握手时也必须使用宿主权威 target join。仅新建 about:blank 尚未导航时允许
- * fragment bootstrap；已导航页面或 wrapper/MCP 重启后由 target_id 直接恢复。
+ * MCP handshake must also use the authoritative host target join. Fragment
+ * bootstrap is allowed only for a newly created, not-yet-navigated about:blank;
+ * navigated pages and wrapper/MCP restarts recover directly by target_id.
  */
 export function findHostedWorkspacePage(result, workspace, expectedSessionToken) {
   const state = parseAuthoritativeHostWorkspace(workspace, expectedSessionToken);
   const active = state.tabs.find((tab) => tab.token === state.active_tab);
-  if (!active) throw new Error('宿主工作区缺少当前激活标签');
+  if (!active) throw new Error('Host workspace has no active tab');
   const pages = parseBrowserPages(result);
   const targetMatches = pages.filter((page) => page.targetId === active.target_id);
   if (targetMatches.length > 1) {
-    throw new Error(`MCP 页面列表包含重复 target_id: ${active.target_id}`);
+    throw new Error(`MCP page list contains duplicate target_id: ${active.target_id}`);
   }
   if (targetMatches.length === 1) return targetMatches[0];
   return active.token === expectedSessionToken

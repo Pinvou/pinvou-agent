@@ -1,9 +1,10 @@
-本目录由 pinvou3-app/scripts/tauri/chrome-devtools-mcp.js 构建期 vendor：
-npm registry 官方 chrome-devtools-mcp（Apache-2.0，sha512 硬编码校验），
-产物 build/（rollup 自包含，约 13MB；含受守卫的 target_id 薄适配）
-+ catalog-shim.json（懒启动 shim 应答目录）
-+ .vendor-version.json，随安装包经 resource overlay 分发到 runtime/chrome-devtools-mcp。
+This directory is populated at build time by pinvou3-app/scripts/tauri/chrome-devtools-mcp.js:
+the official npm registry chrome-devtools-mcp package (Apache-2.0, pinned SHA-512),
+its self-contained Rollup build/ output (about 13 MB, with a guarded target_id adapter),
++ catalog-shim.json (lazy-start shim response catalog),
++ .vendor-version.json, distributed through the package resource overlay as runtime/chrome-devtools-mcp.
 
-本 .gitkeep 被 git 跟踪，保证 CI 的 Tauri 资源布局测试（tauri_platform_layout /
-tauri_effective_config）通过资源存在性断言；构建产物被 .gitignore 忽略。
-npm run dev 会自动 vendor 并把该入口注入开发进程；直接绕过项目脚本启动 Tauri 时不保证可用。
+This tracked .gitkeep preserves the resource directory for the Tauri layout tests
+(tauri_platform_layout and tauri_effective_config); generated output is ignored by .gitignore.
+npm run dev vendors the runtime automatically and injects its entry point into the development
+process. Browser MCP is not guaranteed when Tauri is started outside the project scripts.

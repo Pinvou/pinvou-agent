@@ -40,6 +40,18 @@ fn isolated_store() -> (SessionStore, std::sync::MutexGuard<'static, ()>) {
     (store, guard)
 }
 
+fn record_session_deletions(store: &SessionStore) -> Arc<std::sync::Mutex<Vec<String>>> {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&seen);
+    store.register_session_deleted_hook(Arc::new(move |session_id| {
+        recorder
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(session_id.to_string());
+    }));
+    seen
+}
+
 fn user_text(text: &str) -> Message {
     Message {
         role: "user".into(),
@@ -1089,25 +1101,27 @@ fn checked_scheduled_delete_removes_profile_json_and_runtime_directory() {
         .expect_err("ordinary chat deletion must reject scheduled runs");
     assert!(err.to_string().contains("through their automation"));
 
-    let (mut deletions, replay) = store.subscribe_session_deletions();
-    assert!(replay.is_empty());
+    let deletions = record_session_deletions(&store);
 
     let err = store
         .delete_scheduled_run(&id, "another-task")
         .expect_err("wrong owner must fail");
     assert!(err.to_string().contains("task ownership"));
-    assert!(matches!(
-        deletions.try_recv(),
-        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-    ));
+    assert!(deletions
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .is_empty());
     assert!(runtime_dir.exists());
 
     store
         .delete_scheduled_run(&id, "task-delete")
         .expect("delete scheduled run");
     assert_eq!(
-        deletions.try_recv().expect("scheduled deletion event").id,
-        id
+        deletions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_slice(),
+        &[id.clone()]
     );
     assert!(store.scheduled_profile(&id).is_none());
     assert!(store.active_id().is_none());
@@ -1119,7 +1133,7 @@ fn checked_scheduled_delete_removes_profile_json_and_runtime_directory() {
 }
 
 #[test]
-fn scheduled_delete_emits_tombstone_when_record_commit_precedes_cleanup_error() {
+fn scheduled_delete_notifies_hook_when_record_commit_precedes_cleanup_error() {
     let (store, _g) = isolated_store();
     let scheduled = store
         .create_scheduled_run(scheduled_profile("task-partial-delete"))
@@ -1129,8 +1143,13 @@ fn scheduled_delete_emits_tombstone_when_record_commit_precedes_cleanup_error() 
     std::fs::create_dir_all(&runtime_dir).expect("create scheduled runtime dir");
     std::fs::write(runtime_dir.join("pending.txt"), "pending cleanup")
         .expect("write runtime marker");
-    let (mut deletions, replay) = store.subscribe_session_deletions();
-    assert!(replay.is_empty());
+    store.set_active(Some(id.clone()));
+    store
+        .set_session_model_id(&id, Some("partial-delete-model".to_string()))
+        .expect("set scheduled model override");
+    store.set_hidden(&id, true);
+    store.set_pinned(&id, true);
+    let deletions = record_session_deletions(&store);
     store
         .inject_post_record_delete_fault(&id, ErrorKind::PermissionDenied)
         .expect("inject post-record cleanup error");
@@ -1156,22 +1175,148 @@ fn scheduled_delete_emits_tombstone_when_record_commit_precedes_cleanup_error() 
     );
     assert_eq!(
         deletions
-            .try_recv()
-            .expect("partial scheduled deletion tombstone")
-            .id,
-        id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_slice(),
+        &[id.clone()]
+    );
+    assert!(store.scheduled_profile(&id).is_none());
+    assert!(store.active_id().is_none());
+    assert!(store.session_model_id(&id).is_none());
+    assert!(!store.is_hidden(&id));
+    assert!(!store.is_pinned(&id));
+    assert!(!runtime_dir.exists());
+}
+
+#[test]
+fn scheduled_delete_retry_finishes_runtime_cleanup_after_profile_removal() {
+    let (store, _guard) = isolated_store();
+    let scheduled = store
+        .create_scheduled_run(scheduled_profile("task-runtime-delete-retry"))
+        .expect("create scheduled run");
+    let id = scheduled.metadata.id;
+    let runtime_dir = store.manager.sessions_dir().join(&id);
+    std::fs::create_dir_all(&runtime_dir).expect("create scheduled runtime dir");
+    std::fs::write(runtime_dir.join("pending.txt"), "pending cleanup")
+        .expect("write runtime marker");
+    store.set_active(Some(id.clone()));
+    store
+        .set_session_model_id(&id, Some("stale-model".to_string()))
+        .expect("set scheduled model override");
+    store.set_hidden(&id, true);
+    store.set_pinned(&id, true);
+    store
+        .inject_post_record_delete_fault(&id, ErrorKind::PermissionDenied)
+        .expect("leave the runtime directory after durable record deletion");
+    store
+        .inject_scheduled_runtime_delete_fault(&id, ErrorKind::PermissionDenied)
+        .expect("fail the scheduled runtime cleanup once");
+
+    let error = store
+        .delete_scheduled_run(&id, "task-runtime-delete-retry")
+        .expect_err("the first runtime cleanup failure must remain visible");
+
+    assert!(error.to_string().contains("runtime cleanup"));
+    assert!(!store
+        .manager
+        .sessions_dir()
+        .join(format!("{id}.json"))
+        .exists());
+    assert!(store.scheduled_profile(&id).is_none());
+    assert!(runtime_dir.exists(), "failed cleanup must remain retryable");
+    assert!(store.active_id().is_none());
+    assert!(store.session_model_id(&id).is_none());
+    assert!(!store.is_hidden(&id));
+    assert!(!store.is_pinned(&id));
+
+    store
+        .delete_scheduled_run(&id, "task-runtime-delete-retry")
+        .expect("idempotent retry must finish scheduled runtime cleanup");
+
+    assert!(!runtime_dir.exists());
+    assert!(store.scheduled_profile(&id).is_none());
+}
+
+#[test]
+fn scheduled_delete_without_profile_does_not_misreport_retained_transcript_as_deleted() {
+    let (store, _guard) = isolated_store();
+    let scheduled = store
+        .create_scheduled_run(scheduled_profile("task-orphan-transcript"))
+        .expect("create scheduled run");
+    let id = scheduled.metadata.id;
+    store.scheduled_profiles.write().remove(&id);
+    store
+        .save_scheduled_profiles()
+        .expect("persist missing-profile state");
+    let deletions = record_session_deletions(&store);
+
+    store
+        .delete_scheduled_run(&id, "task-orphan-transcript")
+        .expect("missing profile is an idempotent no-op");
+
+    assert!(
+        store.load(&id).is_ok(),
+        "an orphan scheduled transcript is deliberately retained"
+    );
+    assert!(
+        deletions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty(),
+        "a retained durable transcript must not emit a deletion lifecycle event"
+    );
+}
+
+#[test]
+fn scheduled_delete_profile_persistence_failure_remains_retryable_after_record_commit() {
+    let (store, _guard) = isolated_store();
+    let scheduled = store
+        .create_scheduled_run(scheduled_profile("task-profile-delete-retry"))
+        .expect("create scheduled run");
+    let id = scheduled.metadata.id;
+    store.set_active(Some(id.clone()));
+    store
+        .set_session_model_id(&id, Some("stale-model".to_string()))
+        .expect("set scheduled model override");
+
+    let profile_path = store.scheduled_profiles_path.as_ref();
+    std::fs::remove_file(profile_path).expect("remove profile registry");
+    std::fs::create_dir(profile_path).expect("replace profile registry with a directory");
+
+    let error = store
+        .delete_scheduled_run(&id, "task-profile-delete-retry")
+        .expect_err("profile removal persistence must fail");
+
+    assert!(error.to_string().contains("profile persistence"));
+    assert!(
+        !store
+            .manager
+            .sessions_dir()
+            .join(format!("{id}.json"))
+            .exists(),
+        "the durable transcript deletion remains committed"
     );
     assert!(
         store.scheduled_profile(&id).is_some(),
-        "profile cleanup remains retryable after the reported error"
+        "in-memory ownership metadata must remain available for retry"
     );
-    assert!(runtime_dir.exists(), "runtime cleanup remains retryable");
+    assert!(store.active_id().is_none());
+    assert!(
+        store.session_model_override(&id).is_none(),
+        "the deleted session's independent model sidecar must be purged"
+    );
+    assert_eq!(
+        store.session_model_id(&id).as_deref(),
+        Some("scheduled-model-id"),
+        "retry ownership metadata still supplies the scheduled profile model"
+    );
 
+    std::fs::remove_dir(profile_path).expect("repair profile registry path");
     store
-        .delete_scheduled_run(&id, "task-partial-delete")
-        .expect("idempotent retry finishes remaining cleanup");
+        .delete_scheduled_run(&id, "task-profile-delete-retry")
+        .expect("retry persists profile removal");
     assert!(store.scheduled_profile(&id).is_none());
-    assert!(!runtime_dir.exists());
+    assert!(store.session_model_id(&id).is_none());
 }
 
 #[test]
@@ -1191,6 +1336,7 @@ fn scheduled_creation_rolls_back_when_profile_write_fails() {
     )
     .expect("store");
     std::fs::create_dir_all(&profile_path).expect("make profile path a directory");
+    let deletions = record_session_deletions(&store);
 
     // 种子会话用于构造完整字段的幽灵元数据(改 id/title),其落盘本身 bump 一次
     // 代数;随后记录调用前代数。
@@ -1235,6 +1381,11 @@ fn scheduled_creation_rolls_back_when_profile_write_fails() {
         "rollback invalidation must prevent a phantom scheduled session from surviving in the cache"
     );
     assert!(store.scheduled_profiles.read().is_empty());
+    let rollback_deletions = deletions
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(rollback_deletions.len(), 1);
+    assert!(rollback_deletions[0].starts_with("sched-"));
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1336,6 +1487,7 @@ fn orphan_transcript_does_not_consume_live_scheduled_retention_budget() {
 #[test]
 fn chat_retention_does_not_evict_scheduled_conversation() {
     let (store, _g) = isolated_store();
+    let deletions = record_session_deletions(&store);
     let scheduled = store
         .create_scheduled_run(scheduled_profile("task-retained-across-chat-pruning"))
         .expect("scheduled conversation");
@@ -1355,16 +1507,20 @@ fn chat_retention_does_not_evict_scheduled_conversation() {
     assert!(store.scheduled_session_exists(&scheduled.metadata.id));
     assert!(store.scheduled_profile(&scheduled.metadata.id).is_some());
     assert_eq!(store.list().expect("chat list").len(), 50);
-    let (_deletions, replay) = store.subscribe_session_deletions();
-    let pruned = replay.first().expect("late retention deletion replay");
+    let pruned = deletions
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .first()
+        .cloned()
+        .expect("retention deletion hook");
     assert!(
-        store.load(&pruned.id).is_err(),
+        store.load(&pruned).is_err(),
         "retention event must name the deleted chat"
     );
 }
 
 #[test]
-fn retention_emits_tombstone_when_record_commit_precedes_cleanup_error() {
+fn retention_notifies_hook_when_record_commit_precedes_cleanup_error() {
     let (store, _g) = isolated_store();
     let oldest_id = "retention-partial-delete";
     let now = Utc::now();
@@ -1392,8 +1548,7 @@ fn retention_emits_tombstone_when_record_commit_precedes_cleanup_error() {
         .session_models
         .write()
         .insert(oldest_id.to_string(), "stale-model".to_string());
-    let (mut deletions, replay) = store.subscribe_session_deletions();
-    assert!(replay.is_empty());
+    let deletions = record_session_deletions(&store);
     store
         .inject_post_record_delete_fault(oldest_id, ErrorKind::PermissionDenied)
         .expect("inject post-record cleanup error");
@@ -1416,10 +1571,10 @@ fn retention_emits_tombstone_when_record_commit_precedes_cleanup_error() {
         .exists());
     assert_eq!(
         deletions
-            .try_recv()
-            .expect("partial retention deletion tombstone")
-            .id,
-        oldest_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_slice(),
+        &[oldest_id.to_string()]
     );
     assert!(
         !store.session_models.read().contains_key(oldest_id),
@@ -1863,7 +2018,7 @@ fn delete_removes_session() {
 }
 
 #[test]
-fn delete_emits_tombstone_when_record_commit_precedes_cleanup_error() {
+fn delete_notifies_hook_when_record_commit_precedes_cleanup_error() {
     let (store, _g) = isolated_store();
     let session = store
         .create_new("/model".into(), None, std::env::temp_dir())
@@ -1873,8 +2028,15 @@ fn delete_emits_tombstone_when_record_commit_precedes_cleanup_error() {
     std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
     std::fs::write(runtime_dir.join("pending.txt"), "pending cleanup")
         .expect("write runtime marker");
-    let (mut deletions, replay) = store.subscribe_session_deletions();
-    assert!(replay.is_empty());
+    let deletions = record_session_deletions(&store);
+    let purged = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let purge_recorder = Arc::clone(&purged);
+    store.register_session_purged_hook(Arc::new(move |session_id| {
+        purge_recorder
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(session_id.to_string());
+    }));
     store
         .inject_post_record_delete_fault(&id, ErrorKind::PermissionDenied)
         .expect("inject post-record cleanup error");
@@ -1899,8 +2061,19 @@ fn delete_emits_tombstone_when_record_commit_precedes_cleanup_error() {
         "durable session record was committed as deleted"
     );
     assert_eq!(
-        deletions.try_recv().expect("partial deletion tombstone").id,
-        id
+        deletions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_slice(),
+        &[id.clone()]
+    );
+    assert_eq!(
+        purged
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_slice(),
+        &[id.clone()],
+        "a committed ordinary deletion purges process state even when directory cleanup fails"
     );
     assert!(runtime_dir.exists(), "failed cleanup remains retryable");
 
@@ -1911,62 +2084,89 @@ fn delete_emits_tombstone_when_record_commit_precedes_cleanup_error() {
 }
 
 #[test]
-fn deletion_subscription_replays_delete_that_happened_before_subscribe() {
+fn deletion_hooks_are_runtime_only_and_do_not_retain_process_history() {
     let (store, _g) = isolated_store();
     let session = store
         .create_new("/model".into(), None, std::env::temp_dir())
         .expect("create");
     let id = session.metadata.id;
 
-    store.delete(&id).expect("delete before subscriber exists");
+    store.delete(&id).expect("delete before hook exists");
 
-    let (mut deletions, replay) = store.subscribe_session_deletions();
-    assert_eq!(replay, vec![SessionDeleted { id }]);
-    assert!(matches!(
-        deletions.try_recv(),
-        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-    ));
-}
-
-#[test]
-fn repeated_delete_emits_idempotent_wakeups_but_keeps_one_tombstone() {
-    let (store, _g) = isolated_store();
-    let session = store
-        .create_new("/model".into(), None, std::env::temp_dir())
-        .expect("create");
-    let id = session.metadata.id;
-    let (mut deletions, replay) = store.subscribe_session_deletions();
-    assert!(replay.is_empty());
-
-    store.delete(&id).expect("first delete");
-    store.delete(&id).expect("idempotent delete");
-
-    assert_eq!(deletions.try_recv().expect("first wakeup").id, id);
-    assert_eq!(deletions.try_recv().expect("second wakeup").id, id);
+    let deletions = record_session_deletions(&store);
+    assert!(deletions
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .is_empty());
+    store
+        .delete(&id)
+        .expect("idempotent runtime delete notifies the registered hook");
     assert_eq!(
-        store.session_deletion_tombstones(),
-        vec![SessionDeleted { id }]
+        deletions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_slice(),
+        &[id]
     );
 }
 
 #[test]
-fn lagged_deletion_subscriber_can_replay_every_tombstone() {
+fn repeated_delete_emits_idempotent_runtime_wakeups() {
     let (store, _g) = isolated_store();
-    let (mut deletions, replay) = store.subscribe_session_deletions();
-    assert!(replay.is_empty());
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id;
+    let deletions = record_session_deletions(&store);
 
-    for index in 0..200 {
-        store.notify_session_deleted(&format!("deleted-{index}"));
-    }
+    store.delete(&id).expect("first delete");
+    store.delete(&id).expect("idempotent delete");
 
-    assert!(matches!(
-        deletions.try_recv(),
-        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) if skipped > 0
-    ));
-    let tombstones = store.session_deletion_tombstones();
-    assert_eq!(tombstones.len(), 200);
-    assert!(tombstones.iter().any(|event| event.id == "deleted-0"));
-    assert!(tombstones.iter().any(|event| event.id == "deleted-199"));
+    assert_eq!(
+        deletions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_slice(),
+        &[id.clone(), id]
+    );
+}
+
+#[test]
+fn deletion_hook_invocation_does_not_hold_the_registry_lock() {
+    let (store, _g) = isolated_store();
+    let nested_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let registered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let store_for_hook = store.clone();
+    let registered_for_hook = Arc::clone(&registered);
+    let nested_calls_for_hook = Arc::clone(&nested_calls);
+    store.register_session_deleted_hook(Arc::new(move |_| {
+        if !registered_for_hook.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let nested_calls = Arc::clone(&nested_calls_for_hook);
+            store_for_hook.register_session_deleted_hook(Arc::new(move |_| {
+                nested_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+        }
+    }));
+
+    store.notify_session_deleted("first-runtime-deletion");
+    assert_eq!(nested_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    store.notify_session_deleted("second-runtime-deletion");
+    assert_eq!(nested_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn invalid_precommit_delete_does_not_emit_durable_deletion_hook() {
+    let (store, _guard) = isolated_store();
+    let deletions = record_session_deletions(&store);
+
+    let (committed, result) = store.delete_session_record("");
+
+    assert!(!committed);
+    assert!(result.is_err());
+    assert!(deletions
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .is_empty());
 }
 
 #[test]

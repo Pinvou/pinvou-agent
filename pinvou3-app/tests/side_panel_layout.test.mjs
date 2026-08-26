@@ -27,7 +27,7 @@ const profiles = [
   ['right-dock', 0.45, { minWidth: 420, minMainWidth: 520, maxWidthRatio: 0.65 }],
 ];
 
-test('共享右侧宿主缩小再放大后按原比例恢复', () => {
+test('shared right host restores its ratio after shrinking and expanding', () => {
   for (const [name, ratio, constraints] of profiles) {
     const initial = resolveSidePanelLayout(1600, ratio, constraints);
     const narrowed = resolveSidePanelLayout(1000, ratio, constraints);
@@ -39,7 +39,7 @@ test('共享右侧宿主缩小再放大后按原比例恢复', () => {
   }
 });
 
-test('空间不足时进入单栏且不修改用户比例', () => {
+test('insufficient space enters single-column mode without changing the user ratio', () => {
   const constraints = { minWidth: 420, minMainWidth: 520, maxWidthRatio: 0.65 };
   const layout = resolveSidePanelLayout(820, 0.5, constraints);
   assert.equal(layout.overlay, true);
@@ -48,28 +48,28 @@ test('空间不足时进入单栏且不修改用户比例', () => {
   assert.equal(resolveSidePanelLayout(1600, layout.preferredRatio, constraints).width, 800);
 });
 
-test('拖拽只写比例，比例输入会被规范化', () => {
+test('dragging writes only a normalized ratio', () => {
   assert.equal(sidePanelRatioFromWidth(640, 1600), 0.4);
   assert.equal(normalizeSidePanelRatio(720, 0.45), 0.9);
   assert.equal(normalizeSidePanelRatio(Number.NaN, 0.45), 0.45);
 });
 
-test('窄窗与上限夹取期间不迁移旧像素宽度', () => {
+test('legacy pixel width is not migrated while narrow or max-width clamped', () => {
   const constraints = { minWidth: 420, minMainWidth: 520, maxWidthRatio: 0.65 };
   assert.equal(sidePanelRatioForLegacyWidth(720, 820, 0.5, constraints), null,
-    '单栏期间不得把临时全宽写回为偏好');
+    'single-column mode must not persist its temporary full width');
   assert.equal(sidePanelRatioForLegacyWidth(720, 1000, 0.5, constraints), null,
-    '受最大宽度夹取时应等待更宽容器再迁移');
+    'max-width clamping must wait for a wider container before migration');
   assert.equal(sidePanelRatioForLegacyWidth(720, 1600, 0.5, constraints), 0.45,
-    '容器恢复后按原始像素宽度迁移');
+    'restored space must migrate from the original pixel width');
 });
 
-test('中断拖拽后的缩小与放大仍由拖拽前比例决定', () => {
+test('resize after an interrupted drag still uses the pre-drag ratio', () => {
   const constraints = { minWidth: 420, minMainWidth: 520, maxWidthRatio: 0.65 };
   const preferredRatio = 0.5;
   const before = resolveSidePanelLayout(1600, preferredRatio, constraints);
   const temporaryDragWidth = 470;
-  assert.notEqual(temporaryDragWidth, before.width, '测试必须包含未提交的临时宽度');
+  assert.notEqual(temporaryDragWidth, before.width, 'the fixture must include uncommitted drag width');
   const minimized = resolveSidePanelLayout(820, preferredRatio, constraints);
   const restored = resolveSidePanelLayout(1600, minimized.preferredRatio, constraints);
   assert.equal(minimized.overlay, true);
@@ -77,7 +77,7 @@ test('中断拖拽后的缩小与放大仍由拖拽前比例决定', () => {
   assert.equal(restored.preferredRatio, preferredRatio);
 });
 
-test('拖拽取消、窗口变化和最小化路径都回滚临时 DOM 宽度', () => {
+test('drag cancel, resize, and minimize paths all roll back temporary DOM width', () => {
   const component = source('components', 'layout', 'ResizableSidePanel.jsx');
   assert.match(component, /const startingRatio = preferredRatio;/);
   assert.match(component, /const restoreTransientWidth = \(\) => \{/);
@@ -89,7 +89,7 @@ test('拖拽取消、窗口变化和最小化路径都回滚临时 DOM 宽度', 
   assert.match(component, /document\.addEventListener\('visibilitychange', onVisibilityChange\)/);
 });
 
-test('Right Dock 只有一个物理宿主，逻辑面板按最近激活回退', () => {
+test('Right Dock has one physical host and falls back to the latest active logical panel', () => {
   let state = createRightDockState();
   state = mountRightDockPanel(state, 'browser');
   state = activateRightDockPanel(state, 'browser');
@@ -116,7 +116,7 @@ test('Right Dock 只有一个物理宿主，逻辑面板按最近激活回退', 
   assert.equal(rightDockSnapshot(state).activePanelId, 'artifact-preview');
 });
 
-test('Right Dock 被全屏画布遮挡时保留面板状态但不暴露宿主', () => {
+test('fullscreen canvas occlusion preserves Right Dock state without exposing its host', () => {
   let state = createRightDockState();
   state = activateRightDockPanel(state, 'browser');
   state = setRightDockOcclusion(state, 'artifact-fullscreen', true);
@@ -131,7 +131,7 @@ test('Right Dock 被全屏画布遮挡时保留面板状态但不暴露宿主', 
   assert.equal(rightDockSnapshot(state).activePanelId, 'browser');
 });
 
-test('所有面板使用共享比例分栏，聊天不再依赖视口级大边距', () => {
+test('all panels share ratio layout and chat no longer relies on viewport breakpoints', () => {
   const main = source('app', 'main.jsx');
   const chat = source('features', 'chat', 'ChatView.jsx');
   const subagent = source('features', 'multiagent', 'SubagentTranscriptPanel.jsx');
@@ -156,7 +156,8 @@ test('所有面板使用共享比例分栏，聊天不再依赖视口级大边�
   assert.doesNotMatch(codex, /<ResizableSidePanel/);
   assert.doesNotMatch(chat, /if \(artifactsVisible\) setSubagentPanel\(null\)/);
   assert.match(main, /const browserSurfaceSuspended = browserResizeActive[\s\S]*rightDockState\.activePanelId !== 'browser'[\s\S]*browserBlockingLayerOpen/);
-  assert.doesNotMatch(chat, /useRightDockOcclusion\('artifact-fullscreen'/);
+  assert.match(chat, /useRightDockOcclusion\(\s*'artifact-fullscreen'/);
+  assert.match(chat, /artifactsFullscreen && artifactFullscreenPublicationReady && createPortal/);
   assert.match(chat, /panelId="artifact-preview"[\s\S]*visible=\{rightDockActivePanelId !== 'browser'\}[\s\S]*onToggleFullscreen=\{\(\) => setArtifactsFullscreen\(true\)\}/);
   assert.doesNotMatch(chat, /lg:px-40/);
   assert.match(chat, /ResizeObserver\(measure\)/);

@@ -89,8 +89,9 @@ function useOutsidePointerClose(open, onClose, insideRefs) {
 // 定位样式，移动端统一用 POPOVER_SURFACE + 计算出的 inline 定位。
 const ComposerPopover = ({ open, onClose, triggerRef, compact, desktopClassName, menuProps, children }) => {
   const popoverId = useId();
-  // 系统 child WebView 位于 React 合成层之上；菜单打开时必须通过共享 Dock
-  // 遮挡协议先隐藏原生表面，否则全屏 click-away 层在浏览器区域无法收到点击。
+  // The system child WebView sits above React compositing. Before opening this menu, use the
+  // shared Dock occlusion protocol to hide the native surface; otherwise the full-screen
+  // click-away layer cannot receive pointer input over the browser region.
   const publicationReady = useRightDockOcclusion(`composer-popover-${popoverId}`, open);
   const anchored = isWeb && compact;
   const style = useAnchoredPosition(open, triggerRef, anchored);

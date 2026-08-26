@@ -1,11 +1,18 @@
-// 普通对话模式的内嵌浏览器侧栏：
-// - 显示与 Agent 共用的系统原生 WebView，多标签按当前对话隔离
-// - 原生表面不可用时显式报错并允许重试，不使用连续截图作为浏览回退
-// - 地址栏导航 + 后退/前进/刷新 + 新建/切换/关闭标签 + 在系统浏览器打开
-// 仅当当前对话实际启用浏览器能力（Rust 端 emit browser:activated）后挂载，
-// 未调用时不渲染、不加载。
+// Embedded browser dock for normal chats:
+// - Shows the system-native WebView shared with the Agent, with tabs scoped per chat.
+// - Reports native-surface failures explicitly and allows retry; no screenshot fallback.
+// - Supports address navigation, history, reload, tab management, and external opening.
+// It mounts only after Rust emits browser:activated for the current chat.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useReducer,
+  useRef,
+  useState,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { invokeTauri, listenTauri } from '../../platform/tauri/client.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -29,12 +36,33 @@ import {
   RefreshCw,
   XIcon,
 } from '../../components/icons.jsx';
+import { hideNativeSurfaceWithRetry } from './native-surface-transition.mjs';
+import {
+  EMPTY_PERSISTENCE_WARNING,
+  isPersistenceStatusCurrent,
+  persistenceWarningReducer,
+  visiblePersistenceWarning,
+} from './persistence-warning.mjs';
+import { dispatchBrowserNavigation } from './browser-navigation.mjs';
+import {
+  awaitBrowserListenerReadiness,
+  browserStatusRetryDelay,
+  eventTargetsActiveBrowserTab,
+  isBrowserSnapshotDomainCurrent,
+  isFragmentOnlyBrowserNavigation,
+  isMonotonicControlRevision,
+  navigationEventSettlesPending,
+  reconcilePendingNavigationWithActiveTab,
+  shouldHydrateBrowserAddressInput,
+} from './browser-state-sync.mjs';
 
-// 底层用安全的空文档初始化原生 WebView；产品界面统一呈现为“新标签页”，
-// 不向用户暴露 about:blank 这一实现细节。
+// The host initializes a native WebView with a safe blank document. Present it as a
+// product new-tab page without exposing the about:blank implementation detail.
 const HOME_URL = 'about:blank';
+const NAVIGATION_PENDING_TIMEOUT_MS = 30_000;
 let nativeSurfaceGenerationPromise = null;
 let nativeSurfaceVisibilitySequence = 0;
+let nativeSurfaceIntentSequence = 0;
 
 // The browser page is one physical native surface, while React effects can overlap
 // briefly during portal remounts, responsive layout changes, or HMR. Keep the
@@ -42,12 +70,14 @@ let nativeSurfaceVisibilitySequence = 0;
 // command and an obsolete cleanup cannot hide a newer task's surface.
 const nativeSurfaceCoordinator = {
   owner: null,
-  transitionOwner: null,
+  intentOwner: null,
+  transitionOwners: new Set(),
   desired: 'unknown',
   sessionId: null,
   boundsKey: '',
   phase: 'unknown',
   pending: null,
+  intentSequence: 0,
 };
 const nativeSurfaceResumeListeners = new Set();
 
@@ -89,12 +119,13 @@ function claimNativeSurfaceShow(owner, sessionId, bounds, boundsKey) {
   // A React transition already owns a hide ACK barrier. ResizeObserver/HMR
   // callbacks from the still-published old tree must not supersede that hide
   // with a newer show sequence.
-  if (nativeSurfaceCoordinator.transitionOwner) return Promise.resolve(false);
+  if (nativeSurfaceCoordinator.transitionOwners.size > 0) return Promise.resolve(false);
   if (
     nativeSurfaceCoordinator.desired === 'show'
     && sameNativeSurfaceTarget(sessionId, boundsKey)
   ) {
     nativeSurfaceCoordinator.owner = owner;
+    nativeSurfaceCoordinator.intentOwner = owner;
     if (nativeSurfaceCoordinator.phase === 'visible') return Promise.resolve(true);
     if (nativeSurfaceCoordinator.phase === 'showing' && nativeSurfaceCoordinator.pending) {
       return nativeSurfaceCoordinator.pending;
@@ -102,10 +133,12 @@ function claimNativeSurfaceShow(owner, sessionId, bounds, boundsKey) {
   }
 
   nativeSurfaceCoordinator.owner = owner;
+  nativeSurfaceCoordinator.intentOwner = owner;
   nativeSurfaceCoordinator.desired = 'show';
   nativeSurfaceCoordinator.sessionId = sessionId;
   nativeSurfaceCoordinator.boundsKey = boundsKey;
   nativeSurfaceCoordinator.phase = 'showing';
+  nativeSurfaceCoordinator.intentSequence = ++nativeSurfaceIntentSequence;
   const pending = invokeNativeSurface('browser_show_native_surface', { sessionId, bounds })
     .then((shown) => {
       const available = !!shown;
@@ -136,16 +169,40 @@ function claimNativeSurfaceHide(owner, sessionId) {
     && nativeSurfaceCoordinator.sessionId === sessionId
     && (nativeSurfaceCoordinator.phase === 'hiding' || nativeSurfaceCoordinator.phase === 'hidden')
   ) {
-    nativeSurfaceCoordinator.owner = owner;
+    // Multiple UI channels may share the same physical hide. Do not replace
+    // the creator's retry identity: doing so would cancel its only retry and
+    // make the later lease observe a failed barrier it accidentally caused.
     return nativeSurfaceCoordinator.pending || Promise.resolve();
   }
 
   nativeSurfaceCoordinator.owner = owner;
+  nativeSurfaceCoordinator.intentOwner = owner;
   nativeSurfaceCoordinator.desired = 'hide';
   nativeSurfaceCoordinator.sessionId = sessionId;
   nativeSurfaceCoordinator.boundsKey = '';
   nativeSurfaceCoordinator.phase = 'hiding';
-  const pending = invokeNativeSurface('browser_hide_native_surface', { sessionId })
+  const intentSequence = ++nativeSurfaceIntentSequence;
+  nativeSurfaceCoordinator.intentSequence = intentSequence;
+  const intentIsCurrent = () => (
+    nativeSurfaceCoordinator.pending === pending
+    && nativeSurfaceCoordinator.desired === 'hide'
+    && nativeSurfaceCoordinator.sessionId === sessionId
+    && nativeSurfaceCoordinator.owner === nativeSurfaceCoordinator.intentOwner
+    && nativeSurfaceCoordinator.intentSequence === intentSequence
+  );
+  const pending = hideNativeSurfaceWithRetry({
+    hide: () => invokeNativeSurface('browser_hide_native_surface', { sessionId }),
+    isCurrent: intentIsCurrent,
+    waitBeforeRetry: () => new Promise((resolve) => {
+      window.setTimeout(resolve, 50);
+    }),
+    onError: (error, { attempt, willRetry }) => {
+      console.error(
+        `[browser] native surface hide failed (session=${sessionId}, attempt=${attempt}/2, retry=${willRetry})`,
+        error,
+      );
+    },
+  })
     .then(() => {
       if (
         nativeSurfaceCoordinator.pending === pending
@@ -167,29 +224,36 @@ function claimNativeSurfaceHide(owner, sessionId) {
   return pending;
 }
 
+function observeNativeSurfaceHide(promise, reason) {
+  void Promise.resolve(promise).catch((error) => {
+    console.error(`[browser] native surface hide did not complete (${reason})`, error);
+  });
+}
+
 function resumeNativeSurfaceOwner(owner, sessionId) {
-  if (nativeSurfaceCoordinator.transitionOwner !== owner) return;
-  nativeSurfaceCoordinator.transitionOwner = null;
-  if (nativeSurfaceCoordinator.owner === owner) {
-    nativeSurfaceCoordinator.owner = null;
-    nativeSurfaceCoordinator.desired = 'unknown';
-    nativeSurfaceCoordinator.boundsKey = '';
-    if (nativeSurfaceCoordinator.phase !== 'hidden') {
-      nativeSurfaceCoordinator.phase = 'unknown';
-    }
+  if (!nativeSurfaceCoordinator.transitionOwners.delete(owner)) return;
+  if (nativeSurfaceCoordinator.transitionOwners.size > 0) return;
+  nativeSurfaceCoordinator.owner = null;
+  nativeSurfaceCoordinator.intentOwner = null;
+  nativeSurfaceCoordinator.desired = 'unknown';
+  nativeSurfaceCoordinator.boundsKey = '';
+  if (nativeSurfaceCoordinator.phase !== 'hidden') {
+    nativeSurfaceCoordinator.phase = 'unknown';
   }
-  nativeSurfaceResumeListeners.forEach((listener) => listener(sessionId));
+  nativeSurfaceResumeListeners.forEach((listener) => {
+    listener(sessionId);
+  });
 }
 
 // React layers cannot cover a native child WebView. Callers acquire this lease
 // before publishing an overlay/view/session switch, then release it after the
-// React state mutation has been queued. A failed hide never yields a lease.
+// guarded React tree has committed. A failed hide never yields a lease.
 export async function acquireNativeSurfaceTransitionHide(fallbackSessionId) {
   const owner = Symbol('browser-native-surface-transition');
   const sessionId = nativeSurfaceCoordinator.sessionId || fallbackSessionId;
   if (!sessionId) return { release() {} };
 
-  nativeSurfaceCoordinator.transitionOwner = owner;
+  nativeSurfaceCoordinator.transitionOwners.add(owner);
   try {
     await claimNativeSurfaceHide(owner, sessionId);
   } catch (error) {
@@ -218,11 +282,31 @@ function releaseNativeSurface(owner, sessionId) {
   if (nativeSurfaceCoordinator.owner !== owner) return Promise.resolve();
   if (nativeSurfaceCoordinator.desired === 'hide') {
     nativeSurfaceCoordinator.owner = null;
+    nativeSurfaceCoordinator.intentOwner = null;
     return nativeSurfaceCoordinator.pending || Promise.resolve();
   }
   return claimNativeSurfaceHide(owner, sessionId);
 }
 
+function BrowserIconButton({ title, icon, onClick, disabled = false, className }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      className={className}
+      onClick={onClick}
+      disabled={disabled}
+      style={disabled ? { opacity: 0.35 } : undefined}
+    >
+      {icon}
+    </button>
+  );
+}
+
+// This component coordinates native-surface ownership, lifecycle events, and toolbar state.
+// Splitting those state machines is a dedicated refactor; their behavior is pinned by browser tests.
+// eslint-disable-next-line sonarjs/cognitive-complexity -- keep the cross-process lifecycle in one audited component for this change
 export function BrowserView({
   theme,
   t,
@@ -240,16 +324,69 @@ export function BrowserView({
   const [activeSession, setActiveSession] = useState(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
-  const [persistenceWarning, setPersistenceWarning] = useState('');
+  const [persistenceWarningState, dispatchPersistenceWarning] = useReducer(
+    persistenceWarningReducer,
+    EMPTY_PERSISTENCE_WARNING,
+  );
   const [controlOwner, setControlOwner] = useState(null);
   const [controlRevision, setControlRevision] = useState(null);
   const wheelRef = useRef(null);
   const urlInputRef = useRef(null);
+  const committedUrlRef = useRef('');
+  const urlInputFocusedRef = useRef(false);
+  const urlInputDirtyRef = useRef(false);
+  const addressOwnerSessionIdRef = useRef(sessionId);
   const activeSessionRef = useRef(null);
   const sessionIdRef = useRef(sessionId);
   const statusRequestEpochRef = useRef(0);
   const tabsRequestEpochRef = useRef(0);
-  sessionIdRef.current = sessionId;
+  const lifecycleEventEpochRef = useRef(0);
+  const tabsEventEpochRef = useRef(0);
+  const controlEventEpochRef = useRef(0);
+  const errorEventEpochRef = useRef(0);
+  const persistenceEventEpochRef = useRef(0);
+  const controlRevisionRef = useRef(null);
+  const navigationRequestEpochRef = useRef(0);
+  const pendingNavigationRef = useRef(null);
+  const navigationWatchdogRef = useRef(0);
+  const browserViewMountedRef = useRef(true);
+  const navigationClientId = useId();
+  const beginErrorOperation = useCallback(() => {
+    const operationEpoch = errorEventEpochRef.current + 1;
+    errorEventEpochRef.current = operationEpoch;
+    setError('');
+    return operationEpoch;
+  }, []);
+  const reportErrorForOperation = useCallback((operationEpoch, operationError) => {
+    // A newer command or host event owns the banner. A late failure from an
+    // older invoke must not overwrite that newer success/error state.
+    if (
+      !browserViewMountedRef.current
+      || errorEventEpochRef.current !== operationEpoch
+    ) return false;
+    errorEventEpochRef.current += 1;
+    setError(typeof operationError === 'string' ? operationError : String(operationError));
+    return true;
+  }, []);
+  const clearNavigationWatchdog = useCallback(() => {
+    if (!navigationWatchdogRef.current) return;
+    window.clearTimeout(navigationWatchdogRef.current);
+    navigationWatchdogRef.current = 0;
+  }, []);
+  const publishCommittedUrl = useCallback((nextUrl, ownerSessionId = sessionIdRef.current) => {
+    if (ownerSessionId !== addressOwnerSessionIdRef.current) return false;
+    const committedUrl = nextUrl || '';
+    committedUrlRef.current = committedUrl;
+    setUrl(committedUrl);
+    if (shouldHydrateBrowserAddressInput({
+      focused: urlInputFocusedRef.current,
+      dirty: urlInputDirtyRef.current,
+    })) {
+      setUrlInput(browserAddressValue(committedUrl));
+    }
+    return true;
+  }, []);
+  const persistenceWarning = visiblePersistenceWarning(persistenceWarningState);
   const showingNewTab = running && isInternalBlankPageUrl(url);
   const nativeSurfaceReady = shouldShowNativeBrowserSurface({
     statusResolved: initialStatusResolved,
@@ -260,21 +397,56 @@ export function BrowserView({
   const shouldSuspendNativeSurface = !nativeSurfaceReady;
 
   useEffect(() => {
-    const resume = () => setSurfaceEpoch((epoch) => epoch + 1);
-    nativeSurfaceResumeListeners.add(resume);
-    return () => nativeSurfaceResumeListeners.delete(resume);
+    browserViewMountedRef.current = true;
+    return () => {
+      browserViewMountedRef.current = false;
+      statusRequestEpochRef.current += 1;
+      tabsRequestEpochRef.current += 1;
+      errorEventEpochRef.current += 1;
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    sessionIdRef.current = sessionId;
+    if (addressOwnerSessionIdRef.current === sessionId) return;
+    addressOwnerSessionIdRef.current = sessionId;
+    urlInputFocusedRef.current = false;
+    urlInputDirtyRef.current = false;
+    committedUrlRef.current = '';
+    activeSessionRef.current = null;
+    urlInputRef.current?.blur();
+    setUrl('');
+    setUrlInput('');
+    setActiveSession(null);
   }, [sessionId]);
 
-  // 工具栏由 React 提供，页面由应用内系统 WebView 原生承载。这里故意没有
-  // 截图回退：创建失败必须对用户可见，不能静默切换身份与交互语义。
+  useEffect(() => {
+    const resume = () => setSurfaceEpoch((epoch) => epoch + 1);
+    nativeSurfaceResumeListeners.add(resume);
+    return () => {
+      nativeSurfaceResumeListeners.delete(resume);
+      navigationRequestEpochRef.current += 1;
+      pendingNavigationRef.current = null;
+      clearNavigationWatchdog();
+    };
+  }, [clearNavigationWatchdog, sessionId]);
+
+  // React owns the toolbar while the system WebView owns the page. There is no
+  // screenshot fallback: creation failures must remain visible to the user.
   useEffect(() => {
     const host = wheelRef.current;
-    if (!host || !sessionId) return undefined;
+    if (!host || !sessionId) return;
     const surfaceOwner = Symbol(`browser-surface:${sessionId}`);
     if (shouldSuspendNativeSurface) {
-      claimNativeSurfaceHide(surfaceOwner, sessionId).catch(() => {});
+      observeNativeSurfaceHide(
+        claimNativeSurfaceHide(surfaceOwner, sessionId),
+        'suspend',
+      );
       return () => {
-        void releaseNativeSurface(surfaceOwner, sessionId).catch(() => {});
+        observeNativeSurfaceHide(
+          releaseNativeSurface(surfaceOwner, sessionId),
+          'suspended effect cleanup',
+        );
       };
     }
     let disposed = false;
@@ -310,12 +482,18 @@ export function BrowserView({
         if (shown) lastShownBoundsKey = boundsKey;
         setNativeAvailable(!!shown);
         if (!shown) {
-          claimNativeSurfaceHide(surfaceOwner, sessionId).catch(() => {});
+          observeNativeSurfaceHide(
+            claimNativeSurfaceHide(surfaceOwner, sessionId),
+            'show unavailable',
+          );
         }
       } catch {
         if (!disposed && nativeSurfaceCoordinator.owner === surfaceOwner) {
           setNativeAvailable(false);
-          claimNativeSurfaceHide(surfaceOwner, sessionId).catch(() => {});
+          observeNativeSurfaceHide(
+            claimNativeSurfaceHide(surfaceOwner, sessionId),
+            'show failure cleanup',
+          );
         }
       } finally {
         recordBrowserPerformance('dock_surface_show_ms', browserPerformanceNow() - showStartedAt);
@@ -342,17 +520,26 @@ export function BrowserView({
       observer.disconnect();
       window.removeEventListener('resize', scheduleSync);
       if (raf) cancelAnimationFrame(raf);
-      releaseNativeSurface(surfaceOwner, sessionId).catch(() => {});
+      observeNativeSurfaceHide(
+        releaseNativeSurface(surfaceOwner, sessionId),
+        'visible effect cleanup',
+      );
     };
   }, [sessionId, surfaceEpoch, shouldSuspendNativeSurface]);
 
-  // ---- 状态同步 ----
-  const refreshStatus = useCallback(async () => {
+  // ---- State synchronization ----
+  const refreshStatus = useCallback(async ({ preserveError = false } = {}) => {
     const requestedSessionId = sessionId;
+    if (!browserViewMountedRef.current) return 'stale';
     const requestEpoch = statusRequestEpochRef.current + 1;
     statusRequestEpochRef.current = requestEpoch;
+    const lifecycleEventEpoch = lifecycleEventEpochRef.current;
+    const controlEventEpoch = controlEventEpochRef.current;
+    const errorEventEpoch = errorEventEpochRef.current;
+    const persistenceEventEpoch = persistenceEventEpochRef.current;
     const isCurrent = () => (
-      sessionIdRef.current === requestedSessionId
+      browserViewMountedRef.current
+      && sessionIdRef.current === requestedSessionId
       && statusRequestEpochRef.current === requestEpoch
     );
     try {
@@ -362,247 +549,571 @@ export function BrowserView({
         'workspace_restore_status_ms',
         browserPerformanceNow() - statusStartedAt,
       );
-      if (!isCurrent() || st?.sessionId !== requestedSessionId) return;
-      setRunning(!!st.running);
-      setUrl(st.url || '');
-      // 同步回填地址栏输入框：挂载/切标签/开关标签后 Rust 不 emit
-      // browser:navigation，不回填则输入框停留上一标签页的 URL。初始化
-      // about:blank 仅是宿主实现细节，地址栏应保持空白。
-      setUrlInput(browserAddressValue(st.url));
-      if (st.activeTab) {
-        activeSessionRef.current = st.activeTab;
-        setActiveSession(st.activeTab);
+      if (!isCurrent() || st?.sessionId !== requestedSessionId) return 'stale';
+      if (isBrowserSnapshotDomainCurrent(
+        lifecycleEventEpoch,
+        lifecycleEventEpochRef.current,
+      )) {
+        setRunning(!!st.running);
+        const nextActiveTab = st.activeTab || null;
+        const reconciledPendingNavigation = reconcilePendingNavigationWithActiveTab(
+          pendingNavigationRef.current,
+          nextActiveTab,
+        );
+        pendingNavigationRef.current = reconciledPendingNavigation;
+        if (reconciledPendingNavigation == null) clearNavigationWatchdog();
+        // A navigation intent publishes its address before dispatch. Until a
+        // Finished event or dispatch failure settles it, even a newer status
+        // call still contains the previous committed URL and must not flash it
+        // back into the address bar. Switching tabs, however, detaches that
+        // intent from the newly active tab and immediately resumes hydration.
+        if (reconciledPendingNavigation == null) {
+          publishCommittedUrl(st.url, requestedSessionId);
+        }
+        activeSessionRef.current = nextActiveTab;
+        setActiveSession(nextActiveTab);
       }
-      setControlOwner(st.controlOwner || null);
-      setControlRevision(Number.isFinite(st.controlRevision) ? st.controlRevision : null);
-      setPersistenceWarning(st.persistenceWarning || '');
-      // 真正的恢复失败必须留在浏览器侧栏中可见；正常不存在的工作区由
-      // main.jsx 保持关闭，不应伪装成错误或自动展开。
-      setError(st.restoreError || '');
+      if (isBrowserSnapshotDomainCurrent(
+        controlEventEpoch,
+        controlEventEpochRef.current,
+      )) {
+        const nextRevision = Number.isFinite(st.controlRevision) ? st.controlRevision : null;
+        if (
+          nextRevision == null
+          || isMonotonicControlRevision(controlRevisionRef.current, nextRevision)
+        ) {
+          controlRevisionRef.current = nextRevision;
+          setControlOwner(st.controlOwner || null);
+          setControlRevision(nextRevision);
+        }
+      }
+      if (isPersistenceStatusCurrent(
+        persistenceEventEpoch,
+        persistenceEventEpochRef.current,
+      )) {
+        dispatchPersistenceWarning({ type: 'hydrate', message: st.persistenceWarning || '' });
+      }
+      // Keep genuine restore failures visible in the dock. main.jsx keeps a normally
+      // absent workspace closed, so it must not look like an error or auto-expand.
+      if (
+        !preserveError
+        && isBrowserSnapshotDomainCurrent(errorEventEpoch, errorEventEpochRef.current)
+      ) {
+        setError(st.restoreError || '');
+      }
       setInitialStatusResolved(true);
+      return 'success';
     } catch (e) {
-      if (!isCurrent()) return;
-      setRunning(false);
-      setControlOwner(null);
-      setControlRevision(null);
-      setPersistenceWarning('');
-      setError(typeof e === 'string' ? e : String(e));
+      if (!isCurrent()) return 'stale';
+      if (isBrowserSnapshotDomainCurrent(
+        lifecycleEventEpoch,
+        lifecycleEventEpochRef.current,
+      )) {
+        setRunning(false);
+      }
+      if (isBrowserSnapshotDomainCurrent(
+        controlEventEpoch,
+        controlEventEpochRef.current,
+      )) {
+        controlRevisionRef.current = null;
+        setControlOwner(null);
+        setControlRevision(null);
+      }
+      // A failed status RPC is not evidence that a previously reported
+      // persistence failure was repaired. Keep the warning until a successful
+      // empty snapshot or browser:persistence-restored explicitly clears it.
+      if (
+        !preserveError
+        && isBrowserSnapshotDomainCurrent(errorEventEpoch, errorEventEpochRef.current)
+      ) {
+        setError(typeof e === 'string' ? e : String(e));
+      }
       setInitialStatusResolved(true);
+      return 'failed';
     }
-  }, [sessionId]);
+  }, [clearNavigationWatchdog, publishCommittedUrl, sessionId]);
   const refreshTabs = useCallback(async () => {
     const requestedSessionId = sessionId;
+    if (!browserViewMountedRef.current) return;
     const requestEpoch = tabsRequestEpochRef.current + 1;
     tabsRequestEpochRef.current = requestEpoch;
+    const tabsEventEpoch = tabsEventEpochRef.current;
     try {
       const list = await invokeTauri('browser_list_tabs', { sessionId: requestedSessionId });
       if (
-        sessionIdRef.current !== requestedSessionId
+        !browserViewMountedRef.current
+        || sessionIdRef.current !== requestedSessionId
         || tabsRequestEpochRef.current !== requestEpoch
+        || !isBrowserSnapshotDomainCurrent(tabsEventEpoch, tabsEventEpochRef.current)
       ) return;
       setTabs(list || []);
     } catch {
-      /* 浏览器未就绪时静默 */
+      /* The browser may not be ready yet. */
     }
   }, [sessionId]);
+  const retryStatus = useCallback(() => {
+    errorEventEpochRef.current += 1;
+    setError('');
+    setInitialStatusResolved(false);
+    void refreshStatus();
+    void refreshTabs();
+  }, [refreshStatus, refreshTabs]);
 
   useEffect(() => {
     let disposed = false;
-    refreshStatus();
-    refreshTabs();
+    let reconciliationTimer = 0;
+    let statusRetryTimer = 0;
+    let listenerRegistrationFailed = false;
     const unsubs = [];
-    // 退订竞态守卫：listenTauri 的 promise 可能在组件卸载后才 resolve，
-    // 此时 push 进已失效的 unsubs 会让监听器永不退订，并在已卸载组件上继续
-    // setState。与 main.jsx 的 browser 监听采用同款 disposed 模式。
-    const guard = (p) => p.then((u) => {
+    const registrations = [];
+    // listenTauri may resolve after unmount. Unsubscribe immediately instead of
+    // adding the callback to an inactive list and leaking updates into this component.
+    const guard = (eventName, promise) => {
+      const registration = Promise.resolve(promise).then((u) => {
       if (disposed) u && u();
       else unsubs.push(u);
-    }).catch(() => {});
-    guard(listenTauri('browser:navigation', (e) => {
-      // 只对当前激活标签页的导航更新地址栏：后台标签页的 frameNavigated
-      // 不应覆盖地址栏，否则 openExternal 会打开非当前标签页的 URL。
+      }).catch((registrationError) => {
+        if (disposed) return;
+        listenerRegistrationFailed = true;
+        console.error(`[browser] failed to register ${eventName} listener`, registrationError);
+      });
+      registrations.push(registration);
+    };
+    guard('browser:navigation', listenTauri('browser:navigation', (e) => {
+      if (disposed || !browserViewMountedRef.current) return;
+      // Only the active tab may update the address bar. A background frameNavigated
+      // event must not make openExternal target the wrong tab.
       const p = e.payload || {};
       if (p.sessionId !== sessionId) return;
-      if (p.url && (p.tab == null || activeSessionRef.current == null || p.tab === activeSessionRef.current)) {
-        setUrl(p.url);
-        setUrlInput(browserAddressValue(p.url));
-        if (p.sessionId) refreshTabs();
+      const pendingNavigation = pendingNavigationRef.current;
+      const settlesPendingNavigation = navigationEventSettlesPending(
+        pendingNavigation,
+        p.tab,
+        p.requestId,
+        activeSessionRef.current,
+      );
+      if (settlesPendingNavigation) {
+        pendingNavigationRef.current = null;
+        clearNavigationWatchdog();
       }
-    }));
-    guard(listenTauri('browser:tabs-changed', (event) => {
-      if (event.payload?.sessionId !== sessionId) return;
+      if (!p.url || !eventTargetsActiveBrowserTab(p.tab, activeSessionRef.current)) {
+        // During initial restore there is not yet an authoritative active tab.
+        // Do not guess from the first event (which may belong to a background
+        // tab); ask the host for the active mapping instead.
+        if (activeSessionRef.current == null) {
+          lifecycleEventEpochRef.current += 1;
+          refreshStatus();
+        }
+        return;
+      }
+      // A Finished event from an older request on this same tab may arrive
+      // after a newer optimistic intent. Keep the newer address until its
+      // requestId is committed by the host.
+      if (pendingNavigation && !settlesPendingNavigation) return;
+      lifecycleEventEpochRef.current += 1;
+      publishCommittedUrl(p.url, sessionId);
       refreshTabs();
-      // 激活标签页可能被 MCP 关闭后由 Rust 自愈切换到其他页：同步地址栏/activeTab。
+    }));
+    guard('browser:tabs-changed', listenTauri('browser:tabs-changed', (event) => {
+      if (disposed || !browserViewMountedRef.current) return;
+      if (event.payload?.sessionId !== sessionId) return;
+      tabsEventEpochRef.current += 1;
+      lifecycleEventEpochRef.current += 1;
+      refreshTabs();
+      // Rust may recover to another tab after MCP closes the active one.
       refreshStatus();
     }));
-    guard(listenTauri('browser:tab-title', (event) => {
+    guard('browser:tab-title', listenTauri('browser:tab-title', (event) => {
+      if (disposed || !browserViewMountedRef.current) return;
       const payload = event.payload || {};
       if (payload.sessionId !== sessionId) return;
       if (!payload.tab || !payload.title) return;
+      tabsEventEpochRef.current += 1;
       setTabs((current) => current.map((tab) => (
         tab.target_id === payload.tab ? { ...tab, title: payload.title } : tab
       )));
+      // The event may arrive while the first list_tabs call is in flight. Its
+      // epoch was just invalidated, and the local merge is a no-op if that tab
+      // has not hydrated yet, so fetch the host's URL-paired title snapshot.
+      refreshTabs();
     }));
-    guard(listenTauri('browser:activated', (event) => {
+    guard('browser:activated', listenTauri('browser:activated', (event) => {
+      if (disposed || !browserViewMountedRef.current) return;
       if (event.payload?.sessionId !== sessionId) return;
+      lifecycleEventEpochRef.current += 1;
+      tabsEventEpochRef.current += 1;
       refreshStatus();
       refreshTabs();
       setSurfaceEpoch((epoch) => epoch + 1);
     }));
-    guard(listenTauri('browser:stopped', (event) => {
+    guard('browser:stopped', listenTauri('browser:stopped', (event) => {
+      if (disposed || !browserViewMountedRef.current) return;
       if (event.payload?.sessionId && event.payload.sessionId !== sessionId) return;
+      statusRequestEpochRef.current += 1;
+      tabsRequestEpochRef.current += 1;
+      lifecycleEventEpochRef.current += 1;
+      tabsEventEpochRef.current += 1;
+      controlEventEpochRef.current += 1;
+      errorEventEpochRef.current += 1;
+      persistenceEventEpochRef.current += 1;
+      pendingNavigationRef.current = null;
+      clearNavigationWatchdog();
+      activeSessionRef.current = null;
+      controlRevisionRef.current = null;
       setRunning(false);
+      setActiveSession(null);
       setError('');
       setControlOwner(null);
       setControlRevision(null);
-      setPersistenceWarning('');
+      dispatchPersistenceWarning({ type: 'clear' });
+      setInitialStatusResolved(true);
     }));
-    guard(listenTauri('browser:control-changed', (event) => {
+    guard('browser:control-changed', listenTauri('browser:control-changed', (event) => {
+      if (disposed || !browserViewMountedRef.current) return;
       const payload = event.payload || {};
       if (payload.sessionId !== sessionId) return;
+      // WorkspaceControl is shared by every tab. tabToken identifies the
+      // causal tab for diagnostics/lease checks; it does not scope ownership.
+      if (!isMonotonicControlRevision(controlRevisionRef.current, payload.revision)) return;
+      controlEventEpochRef.current += 1;
+      controlRevisionRef.current = payload.revision;
       setControlOwner(payload.owner || null);
-      setControlRevision(Number.isFinite(payload.revision) ? payload.revision : null);
+      setControlRevision(payload.revision);
     }));
-    guard(listenTauri('browser:navigation-blocked', (event) => {
+    guard('browser:navigation-blocked', listenTauri('browser:navigation-blocked', (event) => {
+      if (disposed || !browserViewMountedRef.current) return;
       const payload = event.payload || {};
       if (payload.sessionId !== sessionId) return;
+      const settlesPendingNavigation = navigationEventSettlesPending(
+        pendingNavigationRef.current,
+        payload.tab,
+        payload.requestId,
+        activeSessionRef.current,
+      );
+      if (settlesPendingNavigation) {
+        pendingNavigationRef.current = null;
+        clearNavigationWatchdog();
+        lifecycleEventEpochRef.current += 1;
+      }
+      errorEventEpochRef.current += 1;
       const scheme = payload.scheme ? ` (${payload.scheme})` : '';
       setError(`${t.browserBlockedNavigation}${scheme}`);
+      if (settlesPendingNavigation) {
+        // Restore the last committed address without immediately clearing the
+        // security error that explains why the optimistic target was rejected.
+        refreshStatus({ preserveError: true });
+      }
     }));
-    guard(listenTauri('browser:automation-unavailable', (event) => {
+    guard('browser:automation-unavailable', listenTauri('browser:automation-unavailable', (event) => {
+      if (disposed || !browserViewMountedRef.current) return;
       const payload = event.payload || {};
       if (payload.sessionId !== sessionId) return;
+      errorEventEpochRef.current += 1;
       setError(t.browserAutomationUnavailable);
     }));
-    guard(listenTauri('browser:download-blocked', (event) => {
+    guard('browser:download-blocked', listenTauri('browser:download-blocked', (event) => {
+      if (disposed || !browserViewMountedRef.current) return;
       const payload = event.payload || {};
       if (payload.sessionId !== sessionId) return;
+      errorEventEpochRef.current += 1;
       setError(t.browserDownloadBlocked(payload.source || ''));
     }));
-    guard(listenTauri('browser:persistence-warning', (event) => {
+    guard('browser:persistence-warning', listenTauri('browser:persistence-warning', (event) => {
+      if (disposed || !browserViewMountedRef.current) return;
       const payload = event.payload || {};
       if (payload.sessionId !== sessionId) return;
-      setPersistenceWarning(payload.error || t.browserPersistenceWarning);
+      persistenceEventEpochRef.current += 1;
+      dispatchPersistenceWarning({
+        type: 'report',
+        message: payload.error || t.browserPersistenceWarning,
+      });
     }));
-    guard(listenTauri('browser:persistence-restored', (event) => {
+    guard('browser:persistence-restored', listenTauri('browser:persistence-restored', (event) => {
+      if (disposed || !browserViewMountedRef.current) return;
       if (event.payload?.sessionId !== sessionId) return;
-      setPersistenceWarning('');
+      persistenceEventEpochRef.current += 1;
+      dispatchPersistenceWarning({ type: 'clear' });
     }));
+
+    // Register every event stream before the first snapshot. Otherwise a
+    // transition between an early status response and a late listener ACK can
+    // be lost permanently. Failed registration degrades to bounded polling.
+    void awaitBrowserListenerReadiness(registrations, {
+      schedule: window.setTimeout.bind(window),
+      cancel: window.clearTimeout.bind(window),
+    }).then((listenersReady) => {
+      if (disposed) return;
+      if (!listenersReady) {
+        listenerRegistrationFailed = true;
+        console.error('[browser] listener registration timed out; enabling reconciliation');
+      }
+      const hydrateInitialStatus = async (failedAttempt = 0) => {
+        const outcome = await refreshStatus();
+        if (disposed || outcome !== 'failed' || listenerRegistrationFailed) return;
+        const retryDelay = browserStatusRetryDelay(failedAttempt);
+        if (retryDelay == null) return;
+        statusRetryTimer = window.setTimeout(() => {
+          statusRetryTimer = 0;
+          void hydrateInitialStatus(failedAttempt + 1);
+        }, retryDelay);
+      };
+      void hydrateInitialStatus();
+      void refreshTabs();
+      if (listenerRegistrationFailed) {
+        reconciliationTimer = window.setInterval(() => {
+          void refreshStatus();
+          void refreshTabs();
+        }, 2000);
+      }
+    });
     return () => {
       disposed = true;
-      unsubs.forEach((u) => u && u());
+      if (reconciliationTimer) window.clearInterval(reconciliationTimer);
+      if (statusRetryTimer) window.clearTimeout(statusRetryTimer);
+      unsubs.forEach((unsubscribe) => {
+        if (unsubscribe) unsubscribe();
+      });
     };
   }, [
     refreshStatus,
     refreshTabs,
+    clearNavigationWatchdog,
+    publishCommittedUrl,
     sessionId,
+    t,
     t.browserAutomationUnavailable,
     t.browserBlockedNavigation,
     t.browserDownloadBlocked,
     t.browserPersistenceWarning,
   ]);
 
-  // ---- 导航 ----
+  // ---- Navigation ----
   const navigate = useCallback(async (raw) => {
     let target = (raw || '').trim();
     if (!target) return;
+    // The host dispatches against its active tab. Until the first status has
+    // supplied that identity, an event cannot be correlated safely and may
+    // leave an optimistic address pending forever.
+    if (activeSessionRef.current == null) {
+      refreshStatus();
+      return;
+    }
     if (!/^https?:\/\//i.test(target) && target !== 'about:blank') {
       target = 'https://' + target;
     }
-    try {
-      setError('');
-      await invokeTauri('browser_navigate', { sessionId, url: target });
-      setUrlInput(browserAddressValue(target));
-    } catch (e) {
-      setError(typeof e === 'string' ? e : String(e));
+    const navigationEpoch = navigationRequestEpochRef.current + 1;
+    navigationRequestEpochRef.current = navigationEpoch;
+    const requestId = `${navigationClientId}-${navigationEpoch}`;
+    const fragmentOnly = isFragmentOnlyBrowserNavigation(url, target);
+    clearNavigationWatchdog();
+    pendingNavigationRef.current = fragmentOnly
+      ? null
+      : {
+        epoch: navigationEpoch,
+        tab: activeSessionRef.current,
+        requestId,
+      };
+    if (!fragmentOnly) {
+      navigationWatchdogRef.current = window.setTimeout(() => {
+        if (
+          !browserViewMountedRef.current
+          || pendingNavigationRef.current?.requestId !== requestId
+        ) return;
+        pendingNavigationRef.current = null;
+        navigationWatchdogRef.current = 0;
+        lifecycleEventEpochRef.current += 1;
+        refreshStatus();
+        refreshTabs();
+      }, NAVIGATION_PENDING_TIMEOUT_MS);
     }
-  }, [sessionId]);
+    const errorOperationEpoch = beginErrorOperation();
+    try {
+      await dispatchBrowserNavigation({
+        target: browserAddressValue(target),
+        publishInput: (address) => {
+          lifecycleEventEpochRef.current += 1;
+          setUrlInput(address);
+          if (fragmentOnly) publishCommittedUrl(target, sessionId);
+        },
+        dispatch: () => invokeTauri('browser_navigate', {
+          sessionId,
+          url: target,
+          requestId,
+        }),
+      });
+    } catch (e) {
+      if (navigationRequestEpochRef.current !== navigationEpoch) return;
+      pendingNavigationRef.current = null;
+      clearNavigationWatchdog();
+      if (reportErrorForOperation(errorOperationEpoch, e)) {
+        refreshStatus({ preserveError: true });
+      }
+    }
+  }, [
+    beginErrorOperation,
+    clearNavigationWatchdog,
+    navigationClientId,
+    reportErrorForOperation,
+    sessionId,
+    refreshStatus,
+    refreshTabs,
+    publishCommittedUrl,
+    url,
+  ]);
 
   const runNav = useCallback(async (cmd) => {
+    navigationRequestEpochRef.current += 1;
+    pendingNavigationRef.current = null;
+    clearNavigationWatchdog();
+    lifecycleEventEpochRef.current += 1;
+    const errorOperationEpoch = beginErrorOperation();
     try {
-      setError('');
       await invokeTauri(cmd, { sessionId });
+      refreshStatus();
+      refreshTabs();
     } catch (e) {
-      setError(typeof e === 'string' ? e : String(e));
+      reportErrorForOperation(errorOperationEpoch, e);
     }
-  }, [sessionId]);
+  }, [
+    beginErrorOperation,
+    clearNavigationWatchdog,
+    reportErrorForOperation,
+    sessionId,
+    refreshStatus,
+    refreshTabs,
+  ]);
 
   const openExternal = useCallback(async () => {
     if (!url || isInternalBlankPageUrl(url)) return;
+    const errorOperationEpoch = beginErrorOperation();
     try {
       await invokeTauri('open_user_external_url', { url });
     } catch (e) {
-      setError(typeof e === 'string' ? e : String(e));
+      reportErrorForOperation(errorOperationEpoch, e);
     }
-  }, [url]);
+  }, [beginErrorOperation, reportErrorForOperation, url]);
 
-  // ---- 多标签 ----
+  // ---- Tabs ----
   const createTab = useCallback(async () => {
+    const errorOperationEpoch = beginErrorOperation();
     try {
       await invokeTauri('browser_create_tab', { sessionId, url: HOME_URL, background: false });
       refreshTabs();
-      // 新标签页激活后刷新 URL/activeTab 状态：Rust 侧 create_tab 不 emit
-      // browser:navigation（about:blank 无 frameNavigated），不刷新则地址栏
-      // 停留在旧页、"在系统浏览器打开"会拿到上一个标签页的 URL。
+      // create_tab does not emit browser:navigation for about:blank, so refresh state
+      // after activation or the address bar and external-open URL stay on the old tab.
       refreshStatus();
     } catch (e) {
-      setError(typeof e === 'string' ? e : String(e));
+      reportErrorForOperation(errorOperationEpoch, e);
     }
-  }, [sessionId, refreshTabs, refreshStatus]);
+  }, [beginErrorOperation, reportErrorForOperation, sessionId, refreshTabs, refreshStatus]);
 
   const closeTab = useCallback(
     async (targetId) => {
+      const errorOperationEpoch = beginErrorOperation();
       try {
         await invokeTauri('browser_close_tab', { sessionId, targetId });
         refreshTabs();
         refreshStatus();
       } catch (e) {
-        setError(typeof e === 'string' ? e : String(e));
+        reportErrorForOperation(errorOperationEpoch, e);
       }
     },
-    [sessionId, refreshTabs, refreshStatus]
+    [beginErrorOperation, reportErrorForOperation, sessionId, refreshTabs, refreshStatus]
   );
 
   const activateTab = useCallback(
     async (targetId) => {
+      const errorOperationEpoch = beginErrorOperation();
       try {
         const switchStartedAt = browserPerformanceNow();
         await invokeTauri('browser_activate_tab', { sessionId, targetId });
+        if (
+          !browserViewMountedRef.current
+          || sessionIdRef.current !== sessionId
+        ) return;
         recordBrowserPerformance('tab_switch_ms', browserPerformanceNow() - switchStartedAt);
+        pendingNavigationRef.current = reconcilePendingNavigationWithActiveTab(
+          pendingNavigationRef.current,
+          targetId,
+        );
         activeSessionRef.current = targetId;
         setActiveSession(targetId);
-        // 刷新 URL/导航状态：Rust 侧 activate_tab 切换原生子视图但不 emit
-        // browser:navigation，不刷新则地址栏显示旧页 URL、openExternal
-        // 可能把上一标签页的 URL 发给系统浏览器。
+        // activate_tab switches the native child view without browser:navigation.
+        // Refresh state so the address bar and openExternal follow the selected tab.
         refreshStatus();
       } catch (e) {
-        setError(typeof e === 'string' ? e : String(e));
+        reportErrorForOperation(errorOperationEpoch, e);
       }
     },
-    [sessionId, refreshStatus]
+    [beginErrorOperation, reportErrorForOperation, sessionId, refreshStatus]
   );
 
   const stopBrowser = useCallback(async () => {
+    const errorOperationEpoch = beginErrorOperation();
     try {
       await invokeTauri('browser_stop', { sessionId });
+      if (
+        !browserViewMountedRef.current
+        || sessionIdRef.current !== sessionId
+      ) return;
+      // The command response and browser:stopped event use independent IPC
+      // deliveries. Invalidate every older status response before publishing
+      // the local success so a delayed running=true snapshot cannot reopen it.
+      statusRequestEpochRef.current += 1;
+      lifecycleEventEpochRef.current += 1;
       setRunning(false);
     } catch (e) {
-      setError(typeof e === 'string' ? e : String(e));
+      reportErrorForOperation(errorOperationEpoch, e);
     }
-  }, [sessionId]);
+  }, [beginErrorOperation, reportErrorForOperation, sessionId]);
 
   const handBackToAgent = useCallback(async () => {
+    const errorOperationEpoch = beginErrorOperation();
     try {
-      setError('');
       const control = await invokeTauri('browser_hand_back_to_agent', { sessionId });
-      setControlOwner(control?.controlOwner || 'agent');
-      setControlRevision(Number.isFinite(control?.controlRevision) ? control.controlRevision : null);
+      if (
+        !browserViewMountedRef.current
+        || sessionIdRef.current !== sessionId
+      ) return;
+      const nextRevision = Number.isFinite(control?.controlRevision)
+        ? control.controlRevision
+        : null;
+      if (isMonotonicControlRevision(controlRevisionRef.current, nextRevision)) {
+        controlEventEpochRef.current += 1;
+        controlRevisionRef.current = nextRevision;
+        setControlOwner(control?.controlOwner || 'agent');
+        setControlRevision(nextRevision);
+      } else {
+        refreshStatus();
+      }
     } catch (e) {
-      setError(typeof e === 'string' ? e : String(e));
+      reportErrorForOperation(errorOperationEpoch, e);
     }
-  }, [sessionId]);
+  }, [beginErrorOperation, reportErrorForOperation, refreshStatus, sessionId]);
 
-  // ---- 渲染 ----
+  const handleAddressFocus = useCallback(() => {
+    urlInputFocusedRef.current = true;
+  }, []);
+
+  const handleAddressChange = useCallback((event) => {
+    urlInputDirtyRef.current = true;
+    setUrlInput(event.target.value);
+  }, []);
+  const handleAddressBlur = useCallback(() => {
+    urlInputFocusedRef.current = false;
+    if (!urlInputDirtyRef.current) return;
+    urlInputDirtyRef.current = false;
+    setUrlInput(browserAddressValue(committedUrlRef.current));
+  }, []);
+  const handleAddressSubmit = useCallback(() => {
+    // A submitted value becomes the user's committed navigation intent. It is
+    // now safe for Finished/status hydration to publish the canonical redirect
+    // (for example an HTTP -> HTTPS upgrade) while the input remains focused.
+    urlInputDirtyRef.current = false;
+    void navigate(urlInput);
+  }, [navigate, urlInput]);
+
+  // ---- Rendering ----
   const shell = 'flex h-full flex-col overflow-hidden';
   const toolbarCls = `flex shrink-0 items-center gap-1 border-b px-2 py-1.5 ${
     isDark ? 'border-[#2A2B2E] bg-[#17181A]' : 'border-[#E5E7EB] bg-[#F8F9FA]'
@@ -610,19 +1121,6 @@ export function BrowserView({
   const btnCls = `rounded-md p-1.5 transition-colors ${
     isDark ? 'text-[#B8B8B8] hover:bg-[#2A2B2E] hover:text-[#F2F2F2]' : 'text-[#555] hover:bg-[#ECECEC] hover:text-[#111]'
   }`;
-  const iconBtn = (title, icon, onClick, disabled) => (
-    <button
-      type="button"
-      title={title}
-      aria-label={title}
-      className={btnCls}
-      onClick={onClick}
-      disabled={disabled}
-      style={disabled ? { opacity: 0.35 } : undefined}
-    >
-      {icon}
-    </button>
-  );
   const ownerIsUser = controlOwner === 'user';
   const ownerIsUnclaimed = controlOwner === 'unclaimed';
   const ownershipControl = running && controlOwner ? (
@@ -663,7 +1161,7 @@ export function BrowserView({
   return (
     <div className={shell} data-testid="browser-view">
       {ownershipSlot && ownershipControl ? createPortal(ownershipControl, ownershipSlot) : null}
-      {/* 标签条在地址栏上方，与桌面浏览器/Codex 的信息层级一致。 */}
+      {/* Keep tabs above the address bar, matching desktop browsers and Codex. */}
       {tabs.length > 0 && (
         <div
           className={`flex shrink-0 items-center gap-1 overflow-x-auto px-2 py-1 ${
@@ -671,8 +1169,9 @@ export function BrowserView({
           }`}
         >
           {tabs.map((tab) => {
-            const active = tab.target_id === (activeSession || activeSessionRef.current);
+            const active = tab.target_id === activeSession;
             return (
+              /* biome-ignore lint/a11y/useSemanticElements: the composite tab contains a nested close button, so the outer activator cannot itself be a button */
               <div
                 key={tab.target_id}
                 role="button"
@@ -714,15 +1213,35 @@ export function BrowserView({
               </div>
             );
           })}
-          {iconBtn(t.browserNewTab, <Plus size={15} />, createTab)}
+          <BrowserIconButton
+            title={t.browserNewTab}
+            icon={<Plus size={15} />}
+            onClick={createTab}
+            className={btnCls}
+          />
         </div>
       )}
 
-      {/* 工具条 */}
+      {/* Toolbar */}
       <div className={toolbarCls}>
-        {iconBtn(t.browserBack, <ChevronLeft size={17} />, () => runNav('browser_back'))}
-        {iconBtn(t.browserForward, <ChevronRight size={17} />, () => runNav('browser_forward'))}
-        {iconBtn(t.browserRefresh, <RefreshCw size={16} />, () => runNav('browser_reload'))}
+        <BrowserIconButton
+          title={t.browserBack}
+          icon={<ChevronLeft size={17} />}
+          onClick={() => runNav('browser_back')}
+          className={btnCls}
+        />
+        <BrowserIconButton
+          title={t.browserForward}
+          icon={<ChevronRight size={17} />}
+          onClick={() => runNav('browser_forward')}
+          className={btnCls}
+        />
+        <BrowserIconButton
+          title={t.browserRefresh}
+          icon={<RefreshCw size={16} />}
+          onClick={() => runNav('browser_reload')}
+          className={btnCls}
+        />
         <form
           className="mx-1 flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1"
           style={{
@@ -731,7 +1250,7 @@ export function BrowserView({
           }}
           onSubmit={(e) => {
             e.preventDefault();
-            navigate(urlInput);
+            handleAddressSubmit();
           }}
         >
           <Globe size={14} style={{ opacity: 0.5 }} />
@@ -741,29 +1260,44 @@ export function BrowserView({
             style={{ color: isDark ? '#E8E8E8' : '#222' }}
             placeholder={t.browserUrlPlaceholder}
             value={urlInput}
-            onChange={(e) => setUrlInput(e.target.value)}
-            // IME 组合确认候选词的 Enter 不得触发提交导航（macOS WKWebView
-            // bug 165004 下 isComposing 已复位但 keyCode 229 保留，必须走
-            // 统一守卫；契约见 tests/ime_compose_guard.test.mjs）。
+            onFocus={handleAddressFocus}
+            onChange={handleAddressChange}
+            onBlur={handleAddressBlur}
+            disabled={!activeSession}
+            // Enter used to confirm an IME candidate must not submit navigation.
+            // macOS WKWebView bug 165004 can clear isComposing while retaining
+            // keyCode 229, so use the shared guard tested by ime_compose_guard.
             onKeyDown={(e) => { if (e.key === 'Enter' && isImeComposing(e)) e.preventDefault(); }}
             spellCheck={false}
             data-testid="browser-url-input"
           />
         </form>
         {!ownershipSlot && ownershipControl}
-        {iconBtn(t.browserOpenExternal, <ExternalLink size={15} />, openExternal, !url || isInternalBlankPageUrl(url))}
-        {iconBtn(t.browserStop, <XIcon size={16} />, stopBrowser)}
+        <BrowserIconButton
+          title={t.browserOpenExternal}
+          icon={<ExternalLink size={15} />}
+          onClick={openExternal}
+          disabled={!url || isInternalBlankPageUrl(url)}
+          className={btnCls}
+        />
+        <BrowserIconButton
+          title={t.browserStop}
+          icon={<XIcon size={16} />}
+          onClick={stopBrowser}
+          className={btnCls}
+        />
       </div>
 
-      {/* 原生 child WebView 永远绘制在 React DOM 之上，不能把错误浮层放进其
-          占位节点，否则用户实际看不到。横幅占据独立布局行，出现时宿主 bounds
-          会随 ResizeObserver 自动下移。 */}
+      {/* The native child WebView always paints above React. Keep error banners in a
+          separate layout row so they remain visible and ResizeObserver shifts bounds. */}
       {running && error && (
         <button
           type="button"
           data-testid="browser-error-banner"
-          role="alert"
-          onClick={() => setError('')}
+          onClick={() => {
+            errorEventEpochRef.current += 1;
+            setError('');
+          }}
           className="mx-2 my-1 shrink-0 rounded-md px-3 py-2 text-left text-[12px] shadow-sm"
           style={{
             background: isDark ? '#2A1B1B' : '#FDECEC',
@@ -786,12 +1320,24 @@ export function BrowserView({
             color: isDark ? '#F1D98A' : '#705500',
           }}
         >
-          <div>{t.browserPersistenceWarning}</div>
+          <div className="flex items-start gap-2">
+            <div className="min-w-0 flex-1">{t.browserPersistenceWarning}</div>
+            <button
+              type="button"
+              data-testid="browser-persistence-warning-dismiss"
+              title={t.winClose}
+              aria-label={t.winClose}
+              className="shrink-0 rounded p-0.5 transition-colors hover:bg-black/10 dark:hover:bg-white/10"
+              onClick={() => dispatchPersistenceWarning({ type: 'dismiss' })}
+            >
+              <XIcon size={13} />
+            </button>
+          </div>
           <div className="mt-1" style={{ opacity: 0.75, wordBreak: 'break-all' }}>{persistenceWarning}</div>
         </div>
       )}
 
-      {/* 原生页面覆盖这个占位区域；React 只负责状态与错误提示。 */}
+      {/* The native page covers this slot; React owns only state and error feedback. */}
       <div
         ref={wheelRef}
         className="relative min-h-0 flex-1 overflow-hidden"
@@ -804,6 +1350,14 @@ export function BrowserView({
               <div>
                 <div>{t.browserError}</div>
                 <div className="mt-2" style={{ opacity: 0.6 }}>{error}</div>
+                <button
+                  type="button"
+                  data-testid="browser-status-retry"
+                  className={`mt-4 rounded-md border px-3 py-1.5 ${isDark ? 'border-white/15 hover:bg-white/10' : 'border-black/15 hover:bg-black/5'}`}
+                  onClick={retryStatus}
+                >
+                  {t.browserRetry}
+                </button>
               </div>
             ) : (
               <div>

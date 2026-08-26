@@ -1,8 +1,9 @@
-//! 桌面系统 WebView 的公共承载层。
+//! Shared hosting layer for desktop system WebViews.
 //!
-//! 工作区、标签、布局和页面生命周期不依赖具体浏览器内核；平台实现只负责配置
-//! WebView builder 以及声明可用的自动化后端。这样 macOS/Linux 可以复用真实
-//! 系统 WebView，而不会被误报成支持 Chrome CDP。
+//! Workspace, tab, layout, and page lifecycles are browser-engine independent.
+//! Platform implementations only configure the WebView builder and declare an
+//! available automation backend. macOS and Linux can therefore reuse real
+//! system WebViews without being misreported as Chrome CDP capable.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -22,8 +23,8 @@ use tauri::{
 use super::super::{NativeSurfaceBounds, TabInfo};
 use super::state::{
     AgentCallerEpoch, ControlSnapshot, NativeControlOwner, NativeRequestCancel, NativeRequestClaim,
-    NativeTabLease, RequestLedger, RetainedAgentOperation, SurfaceEntry, TabRegistry,
-    WorkspaceControl,
+    NativeTabLease, NavigationCommitDecision, RequestLedger, RetainedAgentOperation, SurfaceEntry,
+    TabRegistry, UserNavigationState, WorkspaceControl,
 };
 use super::{NativeSurfaceCapabilities, NativeWorkspaceRestore};
 
@@ -33,10 +34,12 @@ use crate::platform::paths;
 
 const WEBVIEW_LABEL_PREFIX: &str = "agent-browser-";
 const USER_TAKEOVER_SCHEME: &str = "pinvou-user-takeover";
+const LOCATION_CHANGE_SCHEME: &str = "pinvou-location-change";
 const USER_CONTROL_IDLE_TIMEOUT: Duration = Duration::from_secs(3);
 const WORKSPACE_RESTORE_VERSION: u8 = 1;
-/// 单个任务浏览器可持有的已发布标签与隐藏 staging 总数。恢复清单与运行时创建
-/// 共用同一上限，避免页面通过 window.open 或并发 new_page 无界创建 child WebView。
+/// Maximum combined published and hidden staging tabs per task browser. Restore
+/// manifests and runtime creation share this limit so window.open or concurrent
+/// new_page calls cannot create child WebViews without bound.
 const MAX_WORKSPACE_TABS: usize = 64;
 const MAX_RESTORE_URL_LEN: usize = 16 * 1024;
 const MAX_SAFE_PAGE_ID: u64 = (1_u64 << 53) - 1;
@@ -79,9 +82,9 @@ fn next_native_page_id() -> Result<u64, String> {
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             (current < NATIVE_PAGE_ID_SEQUENCE_LIMIT).then(|| current + 1)
         })
-        .map_err(|_| "浏览器 pageId 空间已耗尽，请重启应用".to_string())?;
+        .map_err(|_| "Browser pageId space is exhausted; restart the app".to_string())?;
     compose_native_page_id(*NATIVE_PAGE_ID_INCARNATION, sequence)
-        .ok_or_else(|| "浏览器 pageId 空间已耗尽，请重启应用".to_string())
+        .ok_or_else(|| "Browser pageId space is exhausted; restart the app".to_string())
 }
 
 fn compose_native_page_id(incarnation: u64, sequence: u64) -> Option<u64> {
@@ -108,8 +111,9 @@ struct WorkspaceRestoreTab {
 }
 
 pub(crate) trait PlatformWebviewConfig: Default {
-    /// 现有 BrowserManager 的 `prepare` 返回值表示“同一页面已具备 Agent 自动化”。
-    /// WebKit 平台在自有工具后端接通前必须保持 false，不能让上层误连 CDP。
+    /// BrowserManager `prepare` means that this same page supports Agent
+    /// automation. WebKit platforms must keep this false until their own tool
+    /// backend is connected so callers cannot attempt CDP by mistake.
     const ACTIVATION_READY: bool;
 
     fn capabilities(&self) -> NativeSurfaceCapabilities;
@@ -159,11 +163,14 @@ pub(crate) struct DesktopBrowserSurface<P: PlatformWebviewConfig> {
     platform: P,
     data_directory: Option<PathBuf>,
     workspaces: HashMap<String, Workspace>,
-    /// Agent create_tab 的隐藏候选页。只有 target 发现、首航提交和最终 lease CAS
-    /// 全部成功后才移入工作区；因此异步绑定失败绝不会关闭用户已接管的已发布页面。
+    /// Hidden candidate pages for Agent create_tab. A candidate moves into the
+    /// workspace only after target discovery, initial navigation, and final
+    /// lease CAS all succeed, so asynchronous binding failure cannot close a
+    /// published page already taken over by the user.
     staged_tabs: HashMap<(String, String), SurfaceEntry>,
-    /// UI/User popup 同样先在隐藏 marker 上完成自动化绑定。这里仅记录其最终发布时
-    /// 是否应保持后台；候选 WebView 本体仍由 staged_tabs 统一持有和清理。
+    /// UI/user popups also complete automation binding behind a hidden marker.
+    /// This records only whether final publication stays in the background;
+    /// staged_tabs continues to own and clean the candidate WebView itself.
     staged_user_tabs: HashMap<(String, String), bool>,
     /// Native children whose initial hide and compensating close both failed.
     /// They are owned for cleanup/capacity only and are never eligible for
@@ -193,7 +200,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         self.platform.capabilities()
     }
 
-    /// 对 requestId 做幂等 claim。只有 `Execute` 允许创建资源。
+    /// Idempotently claim requestId. Only `Execute` may create resources.
     pub fn claim_request(
         &mut self,
         session_id: &str,
@@ -202,7 +209,8 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         self.requests.claim(session_id, request_id)
     }
 
-    /// 提交请求结果。返回 false 时 cancel tombstone 已先到达，调用方必须回滚资源。
+    /// Commit a request result. false means the cancellation tombstone arrived
+    /// first and the caller must roll back the resource.
     pub fn complete_request(
         &mut self,
         session_id: &str,
@@ -212,7 +220,8 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         self.requests.complete(session_id, request_id, result)
     }
 
-    /// 取消请求；`AlreadyCompleted` 携带调用方执行补偿回滚所需的原结果。
+    /// Cancel a request. `AlreadyCompleted` carries the original result needed
+    /// by the caller for compensating rollback.
     pub fn cancel_request(
         &mut self,
         session_id: &str,
@@ -230,12 +239,22 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             .acknowledge_cancellation(session_id, request_id)
     }
 
-    /// 兼容现有 BrowserManager 的准备入口。
+    pub fn purge_session_requests(&mut self, session_id: &str) -> Result<usize, String> {
+        self.requests.purge_session(session_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn request_record_count(&self) -> usize {
+        self.requests.len()
+    }
+
+    /// Compatibility preparation entry point for the existing BrowserManager.
     ///
-    /// macOS/Linux 已具备真实页面承载能力，但在自有 Agent 工具后端接通前，不能
-    /// 返回 true 让 chrome-devtools-mcp 尝试连接 WebKit。因此这些平台通过
-    /// [`Self::prepare_display_only`] 提供可编译、可独立验证的显示层，现有运行路径
-    /// 仍安全回退。
+    /// macOS and Linux can host real pages, but must not return true and let
+    /// chrome-devtools-mcp connect to WebKit before their own Agent tool backend
+    /// is ready. These platforms expose a compilable, independently verifiable
+    /// display layer through [`Self::prepare_display_only`] while existing
+    /// runtime paths continue to fail safely.
     pub fn prepare(
         &mut self,
         app: &tauri::AppHandle,
@@ -257,9 +276,10 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         )
     }
 
-    /// 用户从普通模式主动展开浏览器时按需创建空白工作区。仅“打开侧栏”不等于
-    /// 用户已经接管页面，因此保持 Unclaimed；随后用户真实交互或 Agent 首个工具
-    /// 会以现有控制权协议认领该工作区。
+    /// Create a blank workspace on demand when the user opens the browser from
+    /// ordinary mode. Opening the side panel alone is not user takeover, so it
+    /// stays Unclaimed. Real user interaction or the Agent's first tool then
+    /// claims it through the existing control protocol.
     pub fn prepare_unclaimed(
         &mut self,
         app: &tauri::AppHandle,
@@ -281,7 +301,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         )
     }
 
-    /// 创建真实系统 WebView 工作区，但不对 Agent 自动化能力作任何承诺。
+    /// Create a real system-WebView workspace without promising Agent automation.
     pub fn prepare_display_only(
         &mut self,
         app: &tauri::AppHandle,
@@ -299,8 +319,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         )
     }
 
-    /// 读取可跨应用进程恢复的最小页面清单。该清单与 MCP 使用的运行期 target
-    /// 映射完全分离：它不包含 session/tab token、targetId、lease 或控制权状态。
+    /// Read the minimal page manifest recoverable across app processes. It is
+    /// completely separate from the MCP runtime target mapping and contains no
+    /// session/tab token, targetId, lease, or control-owner state.
     pub fn read_restore_workspace(
         session_id: &str,
     ) -> Result<Option<NativeWorkspaceRestore>, String> {
@@ -310,14 +331,15 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             Ok(encoded) => encoded,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => {
-                return Err(format!("读取浏览器恢复清单失败: {error}"));
+                return Err(format!("Failed to read browser restore manifest: {error}"));
             }
         };
         parse_restore_workspace(&encoded).map(Some)
     }
 
-    /// 恢复失败时把调用前读取的清单原样写回，避免构建期间的 about:blank 导航事件
-    /// 覆盖最后一个可用快照。
+    /// On restore failure, rewrite the manifest read before the call verbatim so
+    /// about:blank navigation events during construction cannot overwrite the
+    /// last usable snapshot.
     pub fn write_restore_workspace(
         session_id: &str,
         restore: &NativeWorkspaceRestore,
@@ -328,9 +350,11 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         )
     }
 
-    /// 从恢复清单创建一组全新的原生 WebView。任何声明 Agent 自动化的后端都先
-    /// 停留在私有 marker；调用方必须为每个新 tab 绑定本进程的新 target、完成首航，
-    /// 最后一个标签完成后才会整体发布。display-only 平台才可直接加载 URL。
+    /// Create fresh native WebViews from a restore manifest. Any backend that
+    /// advertises Agent automation remains behind a private marker until the
+    /// caller binds a new process-local target and completes initial navigation
+    /// for every tab; publish all only after the final tab completes. Only
+    /// display-only platforms may load URLs directly.
     pub fn prepare_restored_surface(
         &mut self,
         app: &tauri::AppHandle,
@@ -341,23 +365,27 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         restore: &NativeWorkspaceRestore,
     ) -> Result<Vec<String>, String> {
         if session_id.is_empty() || !is_valid_token(session_token) {
-            return Err("浏览器会话身份无效".to_string());
+            return Err("Browser session identity is invalid".to_string());
         }
         if restore.urls.is_empty()
             || restore.urls.len() > MAX_WORKSPACE_TABS
             || restore.active_index >= restore.urls.len()
+            || restore
+                .urls
+                .iter()
+                .any(|url| !is_trackable_surface_url(url))
         {
-            return Err("浏览器恢复清单无效".to_string());
+            return Err("Browser restore manifest is invalid".to_string());
         }
         if automation_port.is_some() && !P::ACTIVATION_READY {
-            return Err("当前平台没有可用的浏览器自动化后端".to_string());
+            return Err("No browser automation backend is available on this platform".to_string());
         }
         self.reap_quarantined_for_session(app, session_id)?;
         if self.workspaces.contains_key(session_id) {
             return Ok(self
                 .workspaces
                 .get(session_id)
-                .expect("工作区已检查")
+                .expect("workspace was already validated")
                 .tabs
                 .iter()
                 .map(|tab| tab.token.clone())
@@ -375,13 +403,14 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         }
 
         std::fs::create_dir_all(data_directory)
-            .map_err(|error| format!("创建浏览器数据目录失败: {error}"))?;
+            .map_err(|error| format!("Failed to create browser data directory: {error}"))?;
         crate::platform::os::make_private_dir(data_directory);
         self.platform.prepare(automation_port, data_directory)?;
         self.data_directory = Some(data_directory.to_path_buf());
 
-        // 恢复清单不持久化控制权。重启本身既不是用户接管，也不是 Agent 授权；
-        // 恢复页保持中立，随后真实发生的 UI/可信输入或 Agent lease 认领决定 owner。
+        // Restore manifests do not persist control ownership. A restart is
+        // neither user takeover nor Agent authorization. Restored pages remain
+        // neutral until real UI/trusted input or an Agent lease claims ownership.
         let control = Arc::new(WorkspaceControl::new(1, NativeControlOwner::Unclaimed));
         let mut entries: Vec<SurfaceEntry> = Vec::with_capacity(restore.urls.len());
         let mut tab_tokens = Vec::with_capacity(restore.urls.len());
@@ -413,18 +442,24 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                     return match cleanup {
                         Ok(()) => Err(error.message),
                         Err(cleanup_error) => Err(format!(
-                            "{}; 恢复构建失败后的表面对账尚未完成: {cleanup_error}",
+                            "{}; surface reconciliation after restore construction failure is incomplete: {cleanup_error}",
                             error.message
                         )),
                     };
                 }
             };
+            // Automation-capable restores start on a private marker. Keep the
+            // manifest's already-validated URL as the fallback until the new
+            // process observes a valid top-level URL from the fresh WebView.
+            entry.remember_url(url);
             entries.push(entry);
             tab_tokens.push(tab_token);
         }
 
         let mut entries = entries.into_iter();
-        let first = entries.next().expect("恢复清单至少包含一个标签");
+        let first = entries
+            .next()
+            .expect("restore manifest contains at least one tab");
         let mut tabs = TabRegistry::from_entry(first);
         for entry in entries {
             tabs.insert(entry)?;
@@ -448,8 +483,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             },
         );
         if requires_automation_binding {
-            // 旧 target 映射只属于上一个进程。新 WebView 全部完成 bind + navigate 前
-            // 不写半成品映射，也不发布 control/tabs 事件。
+            // Old target mappings belong only to the previous process. Do not
+            // write partial mappings or publish control/tabs events until every
+            // new WebView completes bind and navigation.
             let _ = std::fs::remove_file(paths::browser_workspace_state_json(session_token));
         } else {
             if let Err(error) = self.persist_workspace(session_id) {
@@ -458,7 +494,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                         if !workspace.tabs.is_empty() {
                             self.workspaces.insert(session_id.to_string(), workspace);
                         }
-                        return Err(format!("{error}; 回滚恢复工作区失败: {close_error}"));
+                        return Err(format!(
+                            "{error}; failed to roll back restored workspace: {close_error}"
+                        ));
                     }
                 }
                 return Err(error);
@@ -556,9 +594,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
     ) -> Result<(), String> {
         reconcile_quarantined_close(&mut self.quarantined_tabs, session_id, |entry| {
             if let Some(webview) = app.get_webview(&entry.label) {
-                webview
-                    .close()
-                    .map_err(|error| format!("关闭隔离系统 WebView 失败: {error}"))?;
+                webview.close().map_err(|error| {
+                    format!("Failed to close quarantined system WebView: {error}")
+                })?;
             }
             Ok(())
         })
@@ -586,7 +624,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             .count();
         if published.saturating_add(staged).saturating_add(quarantined) >= MAX_WORKSPACE_TABS {
             return Err(format!(
-                "单个任务最多打开 {MAX_WORKSPACE_TABS} 个浏览器标签，请先关闭不再使用的标签"
+                "A task can open at most {MAX_WORKSPACE_TABS} browser tabs; close unused tabs first"
             ));
         }
         Ok(())
@@ -602,7 +640,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         initial_owner: NativeControlOwner,
     ) -> Result<bool, String> {
         if session_id.is_empty() || !is_valid_token(session_token) {
-            return Err("浏览器会话身份无效".to_string());
+            return Err("Browser session identity is invalid".to_string());
         }
         self.reap_quarantined_for_session(app, session_id)?;
         if self
@@ -617,7 +655,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         }
         if let Some(workspace) = self.workspaces.get(session_id) {
             if workspace.session_token != session_token {
-                return Err("浏览器会话 token 与现有工作区不一致".to_string());
+                return Err(
+                    "Browser session token does not match the existing workspace".to_string(),
+                );
             }
             if !workspace.tabs.is_empty() {
                 return Ok(true);
@@ -626,11 +666,11 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         if self.workspaces.iter().any(|(owner_session, workspace)| {
             owner_session != session_id && workspace.tabs.by_token(session_token).is_some()
         }) {
-            return Err("浏览器标签 token 已属于其他对话".to_string());
+            return Err("Browser tab token already belongs to another conversation".to_string());
         }
 
         std::fs::create_dir_all(data_directory)
-            .map_err(|e| format!("创建浏览器数据目录失败: {e}"))?;
+            .map_err(|e| format!("Failed to create browser data directory: {e}"))?;
         crate::platform::os::make_private_dir(data_directory);
         self.platform.prepare(automation_port, data_directory)?;
         self.data_directory = Some(data_directory.to_path_buf());
@@ -653,7 +693,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 return match cleanup {
                     Ok(()) => Err(error.message),
                     Err(cleanup_error) => Err(format!(
-                        "{}; 初始化失败后的表面对账尚未完成: {cleanup_error}",
+                        "{}; surface reconciliation after initialization failure is incomplete: {cleanup_error}",
                         error.message
                     )),
                 };
@@ -678,7 +718,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                     if !workspace.tabs.is_empty() {
                         self.workspaces.insert(session_id.to_string(), workspace);
                     }
-                    return Err(format!("{error}; 回滚浏览器工作区失败: {close_error}"));
+                    return Err(format!(
+                        "{error}; failed to roll back browser workspace: {close_error}"
+                    ));
                 }
             }
             return Err(error);
@@ -689,7 +731,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                     if !workspace.tabs.is_empty() {
                         self.workspaces.insert(session_id.to_string(), workspace);
                     }
-                    return Err(format!("{error}; 回滚浏览器工作区失败: {close_error}"));
+                    return Err(format!(
+                        "{error}; failed to roll back browser workspace: {close_error}"
+                    ));
                 }
             }
             let _ = std::fs::remove_file(paths::browser_workspace_state_json(session_token));
@@ -712,9 +756,11 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         self.create_user_tab(app, session_id, tab_token, url, background)
     }
 
-    /// wrapper 创建标签必须携带当前可见页的同一宿主 lease。WebView 可以先在隐藏
-    /// 状态 staging，但注册到工作区前必须在控制锁内 CAS 提交；用户接管先提交时
-    /// 立即关闭 staging WebView，绝不覆盖 User owner。
+    /// Wrapper tab creation must carry the same host lease as the currently
+    /// visible page. A WebView may be staged while hidden, but must CAS-commit
+    /// under the control lock before workspace registration. If user takeover
+    /// commits first, close the staged WebView immediately and never overwrite
+    /// the User owner.
     pub fn create_tab_for_agent(
         &mut self,
         app: &tauri::AppHandle,
@@ -726,7 +772,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         creation_id: &str,
     ) -> Result<Option<String>, String> {
         if !is_valid_token(tab_token) || creation_id.is_empty() {
-            return Err("浏览器标签或创建 generation 身份无效".to_string());
+            return Err("Browser tab or creation generation identity is invalid".to_string());
         }
         self.reap_quarantined_for_session(app, session_id)?;
         if self
@@ -742,7 +788,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 .keys()
                 .any(|(_, quarantined_token)| quarantined_token == tab_token)
         {
-            return Err("浏览器标签 token 已被其他创建请求占用".to_string());
+            return Err(
+                "Browser tab token is already reserved by another create request".to_string(),
+            );
         }
         self.ensure_tab_capacity(session_id)?;
         let workspace = match self.workspaces.get(session_id) {
@@ -754,15 +802,18 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             .control
             .assert_agent_lease(authorization.revision, &authorization.lease)
         {
-            return Err("Agent mutation lease 已失效；用户可能已接管浏览器".to_string());
+            return Err(
+                "Agent mutation lease expired; the user may have taken over the browser"
+                    .to_string(),
+            );
         }
         if !self.platform.is_initialized() {
-            return Err("浏览器系统 WebView 尚未就绪".to_string());
+            return Err("Browser system WebView is not ready".to_string());
         }
         let data_directory = self
             .data_directory
             .clone()
-            .ok_or_else(|| "浏览器数据目录尚未就绪".to_string())?;
+            .ok_or_else(|| "Browser data directory is not ready".to_string())?;
         let mut entry = match build_webview(
             &self.platform,
             app,
@@ -789,8 +840,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         Ok(Some(tab_token.to_string()))
     }
 
-    /// Discover 后由 BrowserManager 调用：先让隐藏页首航，再在同一宿主 lease 的
-    /// CAS 临界区内写入权威映射、发布页面并按 background 决定是否激活。
+    /// Called by BrowserManager after discovery: navigate the hidden page first,
+    /// then write the authoritative mapping, publish the page, and optionally
+    /// activate it according to background within the same host-lease CAS section.
     #[allow(clippy::too_many_arguments)]
     pub fn commit_created_tab_for_agent<F>(
         &mut self,
@@ -830,7 +882,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             ) {
                 Ok(_) => Ok(false),
                 Err(rollback_error) => Err(format!(
-                    "新建标签未提交；精确回滚隐藏候选失败: {rollback_error}"
+                    "New tab was not committed; exact rollback of hidden candidate failed: {rollback_error}"
                 )),
             },
             Err(error) => match self.rollback_staged_agent_creation(
@@ -841,7 +893,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             ) {
                 Ok(_) => Err(error),
                 Err(rollback_error) => {
-                    Err(format!("{error}; 精确回滚隐藏候选失败: {rollback_error}"))
+                    Err(format!("{error}; exact rollback of hidden candidate failed: {rollback_error}"))
                 }
             },
         }
@@ -865,60 +917,75 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         F: FnMut() -> Result<(), String>,
     {
         if automation_target.is_empty() || automation_target.len() > 512 {
-            return Err("浏览器自动化 targetId 无效".to_string());
+            return Err("Browser automation targetId is invalid".to_string());
         }
         if self
             .workspaces
             .values()
             .any(|workspace| workspace.tabs.token_for_target(automation_target).is_some())
         {
-            return Err("浏览器自动化 target 已属于其他标签".to_string());
+            return Err("Browser automation target already belongs to another tab".to_string());
         }
         let key = (session_id.to_string(), tab_token.to_string());
         let mut entry = self
             .staged_tabs
             .get(&key)
             .cloned()
-            .ok_or_else(|| "待提交的浏览器标签不存在".to_string())?;
+            .ok_or_else(|| "Pending browser tab does not exist".to_string())?;
         if entry.created_by_request_id.as_deref() != Some(creation_id) {
-            return Err("创建 generation 与待提交标签不匹配".to_string());
+            return Err("Creation generation does not match the pending tab".to_string());
         }
         let workspace = self
             .workspaces
             .get_mut(session_id)
-            .ok_or_else(|| "浏览器工作区不存在".to_string())?;
+            .ok_or_else(|| "Browser workspace does not exist".to_string())?;
         validate_agent_mutation(workspace, session_id, authorization, None)?;
 
         let webview = app
             .get_webview(&entry.label)
-            .ok_or_else(|| "待提交的浏览器标签页表面不存在".to_string())?;
+            .ok_or_else(|| "Pending browser tab surface does not exist".to_string())?;
+        if !is_trackable_surface_url(requested_url) {
+            return Err("browser/url-not-allowed".to_string());
+        }
         let requested_url = requested_url
             .parse::<tauri::Url>()
-            .map_err(|error| format!("浏览器首航地址无效: {error}"))?;
+            .map_err(|error| format!("Initial browser navigation URL is invalid: {error}"))?;
         let control = Arc::clone(&workspace.control);
         caller_guard()?;
         if retained_popup
             .is_some_and(|retained| !control.authorize_retained_agent_operation(retained))
         {
-            return Err("popup Agent operation holder 已失效".to_string());
+            return Err("Popup Agent operation holder expired".to_string());
         }
-        if !control.authorize_agent_dispatch(authorization) {
-            return Err("Agent mutation lease 已失效；用户可能已接管浏览器".to_string());
+        // With entry.published=false, initial navigation and its synchronous
+        // callbacks cannot publish UI events or change control ownership.
+        // URL admission above excludes the control-taking takeover scheme. The
+        // short navigation guard ends inside begin_external_navigation before
+        // the allowed-target callback can run; keep control through the native
+        // enqueue so no authorize-then-navigate gap remains.
+        if control
+            .dispatch_if_agent_authorized(authorization, || {
+                entry.begin_external_navigation(true);
+                webview.navigate(requested_url).map_err(|error| {
+                    format!(
+                        "{ACTION_COMMIT_UNKNOWN_TAB_NAVIGATION}: hidden browser tab initial-navigation response is uncertain: {error}"
+                    )
+                })
+            })?
+            .is_none()
+        {
+            return Err("Agent mutation lease expired; the user may have taken over the browser".to_string());
         }
-        // entry.published=false，首航及其同步回调不会发布 UI 事件或改变控制权。
-        webview.navigate(requested_url).map_err(|error| {
-            format!("{ACTION_COMMIT_UNKNOWN_TAB_NAVIGATION}: 浏览器隐藏标签首航响应不确定: {error}")
-        })?;
         caller_guard().map_err(|error| {
             format!(
-                "{ACTION_COMMIT_UNKNOWN_TAB_NAVIGATION}: 隐藏标签首航已派发，但调用方 epoch 已失效: {error}"
+                "{ACTION_COMMIT_UNKNOWN_TAB_NAVIGATION}: hidden-tab initial navigation was dispatched but the caller epoch expired: {error}"
             )
         })?;
         if retained_popup
             .is_some_and(|retained| !control.authorize_retained_agent_operation(retained))
         {
             return Err(format!(
-                "{ACTION_COMMIT_UNKNOWN_TAB_NAVIGATION}: 隐藏标签首航已派发，但 popup holder 已失效"
+                "{ACTION_COMMIT_UNKNOWN_TAB_NAVIGATION}: hidden-tab initial navigation was dispatched but the popup holder expired"
             ));
         }
         entry.automation_target = Some(automation_target.to_string());
@@ -944,10 +1011,10 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                     if let Err(restore_error) =
                         persist_workspace_snapshot(workspace, authorization.revision)
                     {
-                        eprintln!("[browser] 回滚新标签映射失败: {restore_error}");
+                        eprintln!("[browser] Failed to roll back new-tab mapping: {restore_error}");
                     }
                     if let Err(restore_error) = show_active_workspace(app, workspace) {
-                        eprintln!("[browser] 回滚新标签显示失败: {restore_error}");
+                        eprintln!("[browser] Failed to roll back new-tab display: {restore_error}");
                     }
                     return Err(error);
                 }
@@ -958,10 +1025,10 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         if !matches!(committed, Ok(Some(_))) {
             return match committed {
                 Ok(None) => Err(format!(
-                    "{ACTION_COMMIT_UNKNOWN_TAB_NAVIGATION}: 首航已派发，但 Agent mutation lease 在发布前失效"
+                    "{ACTION_COMMIT_UNKNOWN_TAB_NAVIGATION}: initial navigation was dispatched but the Agent mutation lease expired before publication"
                 )),
                 Err(error) => Err(format!(
-                    "{ACTION_COMMIT_UNKNOWN_TAB_NAVIGATION}: 首航已派发，但宿主发布失败: {error}"
+                    "{ACTION_COMMIT_UNKNOWN_TAB_NAVIGATION}: initial navigation was dispatched but host publication failed: {error}"
                 )),
                 Ok(Some(_)) => unreachable!(),
             };
@@ -970,7 +1037,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         let snapshot = control.snapshot();
         emit_control_changed(app, session_id, &workspace.active_tab, snapshot);
         if let Err(error) = self.persist_restore_workspace(app, session_id) {
-            eprintln!("[browser] 新建标签已提交，但恢复清单刷新失败: {error}");
+            eprintln!("[browser] New tab committed but restore-manifest refresh failed: {error}");
         }
         Ok(true)
     }
@@ -984,7 +1051,10 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         background: bool,
     ) -> Result<Option<String>, String> {
         if !is_valid_token(tab_token) {
-            return Err("浏览器标签身份无效".to_string());
+            return Err("Browser tab identity is invalid".to_string());
+        }
+        if !is_trackable_surface_url(url) {
+            return Err("browser/url-not-allowed".to_string());
         }
         self.reap_quarantined_for_session(app, session_id)?;
         if self.workspaces.iter().any(|(owner_session, workspace)| {
@@ -998,7 +1068,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 .keys()
                 .any(|(_, quarantined_token)| quarantined_token == tab_token)
         {
-            return Err("浏览器标签 token 已属于其他对话".to_string());
+            return Err("Browser tab token already belongs to another conversation".to_string());
         }
         let Some(workspace) = self.workspaces.get(session_id) else {
             return Ok(None);
@@ -1010,14 +1080,14 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         let workspace = self
             .workspaces
             .get(session_id)
-            .expect("工作区已在容量检查前确认存在");
+            .expect("workspace existence was checked before capacity");
         if !self.platform.is_initialized() {
-            return Err("浏览器系统 WebView 尚未就绪".to_string());
+            return Err("Browser system WebView is not ready".to_string());
         }
         let data_directory = self
             .data_directory
             .clone()
-            .ok_or_else(|| "浏览器数据目录尚未就绪".to_string())?;
+            .ok_or_else(|| "Browser data directory is not ready".to_string())?;
         let control = Arc::clone(&workspace.control);
         let initial_url = marked_blank_url(url, tab_token);
         let mut entry = match build_webview(
@@ -1052,7 +1122,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         let workspace = self
             .workspaces
             .get_mut(session_id)
-            .expect("工作区已在上方检查");
+            .expect("workspace was checked above");
         if let Err(error) = workspace.tabs.insert(entry) {
             if let Some(webview) = app.get_webview(&created_label) {
                 let _ = webview.close();
@@ -1074,30 +1144,37 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 }
                 if let Err(restore_error) = persist_workspace_snapshot(workspace, rollback.revision)
                 {
-                    eprintln!("[browser] 回滚用户新建标签映射失败: {restore_error}");
+                    eprintln!(
+                        "[browser] Failed to roll back user-created tab mapping: {restore_error}"
+                    );
                 }
                 if let Err(restore_error) = show_active_workspace(app, workspace) {
-                    eprintln!("[browser] 回滚用户新建标签显示失败: {restore_error}");
+                    eprintln!(
+                        "[browser] Failed to roll back user-created tab display: {restore_error}"
+                    );
                 }
                 emit_control_changed(app, session_id, &workspace.active_tab, rollback);
                 return Err(error);
             }
         }
         created_publication.store(true, std::sync::atomic::Ordering::SeqCst);
-        // CAS 后用户可能已经再次接管；读取当前状态再发事件，不能用旧 Agent
-        // snapshot 覆盖更新后的 UI。
+        // The user may take over again after CAS. Read current state before
+        // emitting and never overwrite updated UI with an old Agent snapshot.
         let snapshot = control.snapshot();
         emit_control_changed(app, session_id, &workspace.active_tab, snapshot);
         if let Err(error) = self.persist_workspace(session_id) {
-            eprintln!("[browser] 用户新建标签后的映射持久化失败: {error}");
+            eprintln!("[browser] Failed to persist mapping after user-created tab: {error}");
         }
         if let Err(error) = self.persist_restore_workspace(app, session_id) {
-            eprintln!("[browser] 用户新建标签后的恢复清单刷新失败: {error}");
+            eprintln!(
+                "[browser] Failed to refresh restore manifest after user-created tab: {error}"
+            );
         }
         Ok(Some(tab_token.to_string()))
     }
 
-    /// 将 wrapper 发现的底层 target 绑定到宿主 tab。该双射跨全部对话强制唯一。
+    /// Bind an underlying target discovered by the wrapper to a host tab. This
+    /// bijection is globally unique across all conversations.
     pub fn bind_target(
         &mut self,
         session_id: &str,
@@ -1105,7 +1182,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         automation_target: &str,
     ) -> Result<bool, String> {
         if automation_target.is_empty() || automation_target.len() > 512 {
-            return Err("浏览器自动化 targetId 无效".to_string());
+            return Err("Browser automation targetId is invalid".to_string());
         }
         if self.workspaces.iter().any(|(owner_session, workspace)| {
             workspace
@@ -1120,14 +1197,14 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                     && (owner_session != session_id || owner_tab != tab_token)
             })
         {
-            return Err("浏览器自动化 target 已属于其他标签".to_string());
+            return Err("Browser automation target already belongs to another tab".to_string());
         }
         let staged_key = (session_id.to_string(), tab_token.to_string());
         if self.staged_user_tabs.contains_key(&staged_key) {
             let entry = self
                 .staged_tabs
                 .get_mut(&staged_key)
-                .ok_or_else(|| "用户待绑定标签状态不完整".to_string())?;
+                .ok_or_else(|| "User tab awaiting binding has incomplete state".to_string())?;
             if entry.automation_target.as_deref() == Some(automation_target) {
                 return Ok(true);
             }
@@ -1159,7 +1236,8 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             .map(ToOwned::to_owned)
     }
 
-    /// BrowserManager 只需对这些标签执行首次 CDP marker 发现，不必读取页面主世界归属。
+    /// BrowserManager only needs initial CDP marker discovery for these tabs and
+    /// never reads ownership from the page main world.
     pub fn unbound_tabs(&self, session_id: &str) -> Vec<String> {
         self.workspaces
             .get(session_id)
@@ -1208,18 +1286,22 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             .workspaces
             .get(session_id)
             .and_then(|workspace| workspace.bounds);
-        hide_all(window.app_handle(), &self.workspaces);
+        hide_all(window.app_handle(), &self.workspaces).map_err(|error| {
+            format!("Failed to hide old surface before switching native browser workspace: {error}")
+        })?;
         set_exclusive_workspace_visibility(&mut self.workspaces, session_id);
         {
             let workspace = self
                 .workspaces
                 .get_mut(session_id)
-                .expect("工作区已在上方检查");
+                .expect("workspace was checked above");
             workspace.bounds = Some(bounds);
         }
         let show_result = show_active_workspace(
             window.app_handle(),
-            self.workspaces.get(session_id).expect("工作区已在上方检查"),
+            self.workspaces
+                .get(session_id)
+                .expect("workspace was checked above"),
         );
         if let Err(error) = show_result {
             if let Some(workspace) = self.workspaces.get_mut(session_id) {
@@ -1235,7 +1317,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                     match show_active_workspace(window.app_handle(), previous) {
                         Ok(()) => self.active_session = Some(previous_session.to_string()),
                         Err(restore_error) => {
-                            eprintln!("[browser] 回滚原生工作区显示失败: {restore_error}");
+                            eprintln!("[browser] Failed to roll back native workspace display: {restore_error}");
                             if let Some(previous) = self.workspaces.get_mut(previous_session) {
                                 previous.visible = false;
                             }
@@ -1258,10 +1340,10 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             match session_id {
                 Some(session_id) => {
                     if let Some(workspace) = self.workspaces.get(session_id) {
-                        hide_workspace(app, workspace);
+                        hide_workspace(app, workspace)?;
                     }
                 }
-                None => hide_all(app, &self.workspaces),
+                None => hide_all(app, &self.workspaces)?,
             }
         }
         match session_id {
@@ -1315,7 +1397,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             session_owns_visible_surface,
             workspace.visible,
         ) {
-            Some(app.ok_or_else(|| "应用句柄尚未就绪".to_string())?)
+            Some(app.ok_or_else(|| "App handle is not ready".to_string())?)
         } else {
             None
         };
@@ -1335,7 +1417,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                         if let Err(restore_error) =
                             persist_workspace_snapshot(workspace, expected_revision)
                         {
-                            eprintln!("[browser] 回滚取消标签激活失败: {restore_error}");
+                            eprintln!("[browser] Failed to roll back cancelled tab activation: {restore_error}");
                         }
                         let _ = show_active_workspace(app, workspace);
                         return Err(error);
@@ -1353,7 +1435,8 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         Ok(true)
     }
 
-    /// Agent 激活标签时返回短期 lease；执行任何工具前必须调用 [`Self::assert_lease`]。
+    /// Return a short-lived lease when the Agent activates a tab. Every tool
+    /// must call [`Self::assert_lease`] before execution.
     pub fn activate_tab_with_lease(
         &mut self,
         app: Option<&tauri::AppHandle>,
@@ -1390,8 +1473,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         }))
     }
 
-    /// 用户在 UI 中立即把当前标签交还给 Agent。空闲自动交还不会预签发 lease；
-    /// 返回的新 lease 仅供这个显式快捷入口使用，并会替换、撤销旧 lease。
+    /// Immediately return the current tab to the Agent from the UI. Automatic
+    /// idle handback does not preissue a lease. This new lease exists only for
+    /// the explicit shortcut and replaces and revokes the old lease.
     pub fn hand_back_to_agent(
         &mut self,
         app: Option<&tauri::AppHandle>,
@@ -1417,7 +1501,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             return Ok(None);
         };
         if workspace.tabs.by_token(tab_token).is_none() {
-            return Err("标签页不存在或不属于当前对话".to_string());
+            return Err("Tab does not exist or does not belong to this conversation".to_string());
         }
         let target_id = workspace
             .tabs
@@ -1425,16 +1509,20 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             .map(ToOwned::to_owned)
             .unwrap_or_default();
         if owner == NativeControlOwner::Agent && target_id.is_empty() {
-            return Err("浏览器标签尚未绑定宿主权威 automation target".to_string());
+            return Err(
+                "Browser tab is not bound to an authoritative host automation target".to_string(),
+            );
         }
-        // workspace.visible 只能表达该工作区自己的期望；物理表面是应用全局唯一的。
-        // 只有同时持有 active_session 的前台工作区才允许 activate 触发 show，后台
-        // Agent 激活只更新该工作区标签/lease，不能抢占用户正在看的其他任务。
+        // workspace.visible expresses only this workspace's intent while the
+        // physical surface is app-global. Only the foreground workspace holding
+        // active_session may show on activate. Background Agent activation only
+        // updates that workspace's tab/lease and cannot preempt another task the
+        // user is viewing.
         let visible_app = if workspace_may_present_native_surface(
             session_owns_visible_surface,
             workspace.visible,
         ) {
-            Some(app.ok_or_else(|| "应用句柄尚未就绪".to_string())?)
+            Some(app.ok_or_else(|| "App handle is not ready".to_string())?)
         } else {
             None
         };
@@ -1455,7 +1543,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                             if let Err(restore_error) =
                                 persist_workspace_snapshot(workspace, previous_revision)
                             {
-                                eprintln!("[browser] 回滚标签激活映射失败: {restore_error}");
+                                eprintln!("[browser] Failed to roll back tab activation mapping: {restore_error}");
                             }
                             let _ = show_active_workspace(app, workspace);
                             return Err(error);
@@ -1465,7 +1553,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 })?;
             let Some((snapshot, lease, ())) = issued else {
                 return Err(
-                    "用户刚刚操作了浏览器；停止操作 3 秒后会自动恢复，也可点击“交还 Agent”立即恢复"
+                    "The user just operated the browser. Agent control resumes after 3 seconds of inactivity or immediately after Return to Agent."
                         .to_string(),
                 );
             };
@@ -1477,16 +1565,17 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             if let Some(app) = visible_app {
                 if let Err(error) = show_active_workspace(app, workspace) {
                     workspace.active_tab = previous_active;
-                    // 不能把 control revision 倒退到失败前；用一个新的 User mutation
-                    // 发布回滚结果，让任何观察到失败激活的旧 lease/事件都失效。
+                    // Never rewind control revision to its pre-failure value.
+                    // Publish rollback as a new User mutation so every old lease
+                    // or event that observed the failed activation becomes stale.
                     let rollback = control.bump(Some(NativeControlOwner::User));
                     if let Err(restore_error) =
                         persist_workspace_snapshot(workspace, rollback.revision)
                     {
-                        eprintln!("[browser] 回滚用户标签激活映射失败: {restore_error}");
+                        eprintln!("[browser] Failed to roll back user tab activation mapping: {restore_error}");
                     }
                     if let Err(restore_error) = show_active_workspace(app, workspace) {
-                        eprintln!("[browser] 回滚用户标签激活显示失败: {restore_error}");
+                        eprintln!("[browser] Failed to roll back user tab activation display: {restore_error}");
                     }
                     emit_control_changed(app, session_id, &workspace.active_tab, rollback);
                     return Err(error);
@@ -1495,24 +1584,28 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             (snapshot, String::new())
         };
         if let Some(app) = app {
-            // 用户可在 Agent 临界区释放后立即接管；发当前快照避免迟到的 Agent
-            // 事件覆盖 UI 中更新后的 User owner。
+            // The user can take over immediately after the Agent critical section
+            // releases. Emit the current snapshot so a late Agent event cannot
+            // overwrite the updated User owner in the UI.
             emit_control_changed(app, session_id, tab_token, control.snapshot());
         }
         if owner != NativeControlOwner::Agent {
             if let Err(error) = self.persist_workspace(session_id) {
-                eprintln!("[browser] 用户切换标签后的映射持久化失败: {error}");
+                eprintln!("[browser] Failed to persist mapping after user tab switch: {error}");
             }
         }
         if let Some(app) = app {
             if let Err(error) = self.persist_restore_workspace(app, session_id) {
-                eprintln!("[browser] 标签激活后的恢复清单刷新失败: {error}");
+                eprintln!(
+                    "[browser] Failed to refresh restore manifest after tab activation: {error}"
+                );
             }
         }
         Ok(Some((snapshot, target_id, lease)))
     }
 
-    /// 同时复核 session、tab、target、revision、owner 与宿主不透明能力令牌。
+    /// Validate session, tab, target, revision, owner, and the opaque host
+    /// capability token together.
     pub fn assert_lease(&self, lease: &NativeTabLease) -> Result<bool, String> {
         let Some(workspace) = self.workspaces.get(&lease.session_id) else {
             return Ok(false);
@@ -1528,15 +1621,32 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 .assert_agent_lease(lease.revision, &lease.lease))
     }
 
-    /// 在每个工具 dispatch 前原子复核 lease；输入类工具还会打开短时 trusted-event 抑制窗。
+    /// Atomically validate the lease before every tool dispatch. Input tools
+    /// additionally open a short trusted-event suppression window.
     pub fn begin_agent_operation(
         &self,
         lease: &NativeTabLease,
         emits_trusted_input: bool,
+        observational_only: bool,
         caller_pid: u32,
         wrapper_instance_nonce: &str,
     ) -> Result<bool, String> {
         if !self.assert_lease(lease)? {
+            return Ok(false);
+        }
+        if !observational_only
+            && self
+                .workspaces
+                .get(&lease.session_id)
+                .and_then(|workspace| workspace.tabs.by_token(&lease.tab_token))
+                .is_some_and(SurfaceEntry::navigation_admission_busy)
+        {
+            // Automatic hand-back after user idleness must not let an Agent
+            // mutation navigate/rebind the WebView while an accepted native
+            // navigation generation (including same-document/history) still
+            // owns anonymous callbacks. Explicit read-only observations remain
+            // available so the Agent can verify whether a load completed or
+            // failed.
             return Ok(false);
         }
         let caller_epoch = AgentCallerEpoch::new(caller_pid, wrapper_instance_nonce.to_string())?;
@@ -1552,10 +1662,11 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             }))
     }
 
-    /// 仅续期当前这一个已 begin 的 trusted-input dispatch。`assert_lease` 先复核宿主
-    /// workspace 的 session/tab/target/revision/opaque lease；WorkspaceControl 再在同一锁内
-    /// 要求 active_agent_operation 与整个 lease 完全相等。迟到 heartbeat 因此不能
-    /// 续期已结束操作、新操作或用户接管后的旧授权。
+    /// Renew only the current begun trusted-input dispatch. `assert_lease` first
+    /// validates workspace session/tab/target/revision/opaque lease;
+    /// WorkspaceControl then requires active_agent_operation to equal the whole
+    /// lease under the same lock. A late heartbeat therefore cannot renew a
+    /// finished operation, a new operation, or authorization predating takeover.
     pub fn refresh_agent_input(&self, lease: &NativeTabLease) -> Result<bool, String> {
         if !self.assert_lease(lease)? {
             return Ok(false);
@@ -1579,9 +1690,10 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             .is_some_and(|workspace| workspace.control.refresh_agent_operation(lease)))
     }
 
-    /// dispatch 完成后立即结束 active operation。已派发的 WebKit 事件可能在下一个
-    /// run-loop 回合才触发 takeover delegate，因此仅保留至多 100ms 的 callback grace；
-    /// 显式 UI 接管仍会直接 bump revision 并立即清除该窗口。
+    /// End the active operation immediately after dispatch. A dispatched WebKit
+    /// event may not invoke the takeover delegate until the next run-loop turn,
+    /// so retain at most 100ms of callback grace. Explicit UI takeover still
+    /// bumps revision and clears the window immediately.
     pub fn end_agent_operation(&self, lease: &NativeTabLease) {
         if let Some(workspace) = self.workspaces.get(&lease.session_id) {
             workspace.control.end_agent_operation(lease);
@@ -1703,13 +1815,15 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             return Ok(false);
         };
         if entry.created_by_request_id.as_deref() != Some(creation_id) {
-            return Err("创建补偿 generation 与待提交标签不匹配".to_string());
+            return Err(
+                "Creation-compensation generation does not match the pending tab".to_string(),
+            );
         }
         let label = entry.label.clone();
         if let Some(webview) = app.and_then(|app| app.get_webview(&label)) {
             webview
                 .close()
-                .map_err(|error| format!("关闭待提交浏览器标签失败: {error}"))?;
+                .map_err(|error| format!("Failed to close pending browser tab: {error}"))?;
         }
         super::unregister_browser_core_webview_binding(&label);
         self.staged_tabs.remove(&staged_key);
@@ -1717,7 +1831,8 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         Ok(true)
     }
 
-    /// 仅供 request tombstone 回滚本请求刚创建的标签；不改变现有控制权 owner。
+    /// Used only by a request tombstone to roll back the tab created by that
+    /// request. It does not change the existing control owner.
     pub fn rollback_created_tab(
         &mut self,
         app: Option<&tauri::AppHandle>,
@@ -1735,37 +1850,40 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             return Ok(false);
         };
         if entry.created_by_request_id.as_deref() != Some(creation_id) {
-            return Err("创建补偿 generation 与当前标签不匹配".to_string());
+            return Err(
+                "Creation-compensation generation does not match the current tab".to_string(),
+            );
         }
-        let expected_revision = entry
-            .created_at_revision
-            .ok_or_else(|| "创建补偿缺少提交 generation".to_string())?;
+        let expected_revision = entry.created_at_revision.ok_or_else(|| {
+            "Creation compensation is missing the committed generation".to_string()
+        })?;
         let current = workspace.control.snapshot();
         if current.owner != NativeControlOwner::Agent || current.revision != expected_revision {
-            // 用户接管或任意后续 mutation 已把这个 creation generation 安全取代。
-            // 晚到 tombstone 只能 ACK 并保留页面，不能无限重试，更不能误关用户页面。
+            // User takeover or any later mutation safely superseded this creation
+            // generation. A late tombstone may only acknowledge and retain the
+            // page; it must neither retry forever nor close a user page.
             return Ok(false);
         }
         if workspace.tabs.len() <= 1 {
-            return Err("至少保留一个浏览器标签页".to_string());
+            return Err("At least one browser tab must remain".to_string());
         }
         let entry = entry.clone();
         let control = Arc::clone(&workspace.control);
         let workspace = self
             .workspaces
             .get_mut(session_id)
-            .expect("工作区已在上方检查");
+            .expect("workspace was checked above");
         let committed = control.commit_agent_generation_rollback(expected_revision, || {
             if let Some(webview) = app.and_then(|app| app.get_webview(&entry.label)) {
                 webview
                     .close()
-                    .map_err(|error| format!("关闭浏览器标签页失败: {error}"))?;
+                    .map_err(|error| format!("Failed to close browser tab: {error}"))?;
             }
             remove_tab_from_workspace(workspace, tab_token);
             if workspace.visible {
-                let app = app.ok_or_else(|| "应用句柄尚未就绪".to_string())?;
+                let app = app.ok_or_else(|| "App handle is not ready".to_string())?;
                 if let Err(error) = show_active_workspace(app, workspace) {
-                    eprintln!("[browser] 创建补偿后显示回退页失败: {error}");
+                    eprintln!("[browser] Failed to show fallback page after creation compensation: {error}");
                 }
             }
             Ok(())
@@ -1775,23 +1893,24 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         }
         super::unregister_browser_core_webview_binding(&entry.label);
         if let Err(error) = self.persist_workspace(session_id) {
-            eprintln!("[browser] 创建补偿后的映射持久化失败: {error}");
+            eprintln!("[browser] Failed to persist mapping after creation compensation: {error}");
         }
         if let Some(app) = app {
             if let Err(error) = self.persist_restore_workspace(app, session_id) {
-                eprintln!("[browser] 创建补偿后的恢复清单刷新失败: {error}");
+                eprintln!("[browser] Failed to refresh restore manifest after creation compensation: {error}");
             }
             let workspace = self
                 .workspaces
                 .get(session_id)
-                .expect("补偿提交后工作区仍存在");
+                .expect("workspace still exists after compensation commit");
             emit_control_changed(app, session_id, &workspace.active_tab, control.snapshot());
         }
         Ok(true)
     }
 
-    /// UI/用户 popup 创建失败的精确补偿；只能作用于没有 Agent creation
-    /// generation 的标签，避免误删并发 Agent 创建的新资源。
+    /// Exact compensation for failed UI/user popup creation. It can affect only
+    /// tabs without an Agent creation generation, preventing deletion of a new
+    /// resource concurrently created by the Agent.
     pub fn rollback_user_created_tab(
         &mut self,
         app: Option<&tauri::AppHandle>,
@@ -1804,11 +1923,11 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 .staged_tabs
                 .get(&staged_key)
                 .map(|entry| entry.label.clone())
-                .ok_or_else(|| "用户待发布标签状态不完整".to_string())?;
+                .ok_or_else(|| "User tab awaiting publication has incomplete state".to_string())?;
             if let Some(webview) = app.and_then(|app| app.get_webview(&label)) {
-                webview
-                    .close()
-                    .map_err(|error| format!("关闭用户待发布浏览器标签失败: {error}"))?;
+                webview.close().map_err(|error| {
+                    format!("Failed to close user browser tab awaiting publication: {error}")
+                })?;
             }
             super::unregister_browser_core_webview_binding(&label);
             self.staged_tabs.remove(&staged_key);
@@ -1822,7 +1941,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             return Ok(false);
         };
         if entry.created_by_request_id.is_some() {
-            return Err("用户创建补偿不能删除 Agent generation 标签".to_string());
+            return Err(
+                "User creation compensation cannot delete an Agent-generation tab".to_string(),
+            );
         }
         self.close_tab_as(app, session_id, tab_token, None, None)
     }
@@ -1839,18 +1960,17 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             return Ok(false);
         };
         if workspace.tabs.len() <= 1 {
-            return Err("至少保留一个浏览器标签页".to_string());
+            return Err("At least one browser tab must remain".to_string());
         }
-        let entry = workspace
-            .tabs
-            .by_token(tab_token)
-            .cloned()
-            .ok_or_else(|| "标签页不存在或不属于当前对话".to_string())?;
-        let app = app.ok_or_else(|| "应用句柄尚未就绪，无法关闭浏览器标签".to_string())?;
+        let entry = workspace.tabs.by_token(tab_token).cloned().ok_or_else(|| {
+            "Tab does not exist or does not belong to this conversation".to_string()
+        })?;
+        let app =
+            app.ok_or_else(|| "App handle is not ready; cannot close browser tab".to_string())?;
         let agent_committed = owner == Some(NativeControlOwner::Agent);
         if agent_committed {
-            let authorization =
-                authorization.ok_or_else(|| "Agent 关闭标签缺少宿主 mutation lease".to_string())?;
+            let authorization = authorization
+                .ok_or_else(|| "Agent tab close is missing a host mutation lease".to_string())?;
             validate_agent_mutation(workspace, session_id, authorization, Some(tab_token))?;
             let control = Arc::clone(&workspace.control);
             let committed = control.commit_agent_mutation(authorization, || {
@@ -1859,51 +1979,59 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                         .close()
                         .map_err(|error| {
                             format!(
-                                "browser/action-commit-unknown-after-tab-close: 原生标签关闭响应不确定: {error}"
+                                "browser/action-commit-unknown-after-tab-close: native tab-close response is uncertain: {error}"
                             )
                         })?;
                 }
                 remove_tab_from_workspace(workspace, tab_token);
                 if workspace.visible {
-                    // 页面已关闭后显示 fallback 失败不能逆转 close；记录错误但仍
-                    // 提交注册表/control，避免宿主状态声称已关闭页仍然存在。
+                    // Failure to show fallback after the page is closed cannot
+                    // reverse close. Record it but commit registry/control so host
+                    // state never claims the closed page still exists.
                     if let Err(error) = show_active_workspace(app, workspace) {
-                        eprintln!("[browser] Agent 关闭标签后显示回退页失败: {error}");
+                        eprintln!("[browser] Failed to show fallback page after Agent tab close: {error}");
                     }
                 }
                 Ok(())
             })?;
             if committed.is_none() {
-                return Err("Agent mutation lease 已失效；用户可能已接管浏览器".to_string());
+                return Err(
+                    "Agent mutation lease expired; the user may have taken over the browser"
+                        .to_string(),
+                );
             }
         } else {
             if let Some(webview) = app.get_webview(&entry.label) {
                 webview.close().map_err(|error| {
                     format!(
-                        "browser/action-commit-unknown-after-tab-close: 原生标签关闭响应不确定: {error}"
+                        "browser/action-commit-unknown-after-tab-close: native tab-close response is uncertain: {error}"
                     )
                 })?;
             }
             remove_tab_from_workspace(workspace, tab_token);
             workspace.control.bump(owner);
             if workspace.visible {
-                // WebView close 已经物理提交；fallback show 失败不能把成功的 close
-                // 伪装成失败，否则调用方重试只会得到“标签不存在”。
+                // WebView close is physically committed. A failed fallback show
+                // cannot disguise the successful close as failure, or caller
+                // retry would only report that the tab does not exist.
                 if let Err(error) = show_active_workspace(app, workspace) {
-                    eprintln!("[browser] 用户关闭标签后显示回退页失败: {error}");
+                    eprintln!(
+                        "[browser] Failed to show fallback page after user tab close: {error}"
+                    );
                 }
             }
         }
         super::unregister_browser_core_webview_binding(&entry.label);
         let snapshot = workspace.control.snapshot();
         emit_control_changed(app, session_id, &workspace.active_tab, snapshot);
-        // WebView close 已是不可逆物理提交；后续快照失败不得把成功操作伪装成失败，
-        // 否则调用方重试会得到“标签不存在”。保持成功并让后续状态刷新继续修复。
+        // WebView close is an irreversible physical commit. A later snapshot
+        // failure must not disguise success as failure, or retry reports that the
+        // tab is absent. Preserve success and let later state refresh repair it.
         if let Err(error) = self.persist_workspace(session_id) {
-            eprintln!("[browser] 关闭标签后的映射持久化失败: {error}");
+            eprintln!("[browser] Failed to persist mapping after tab close: {error}");
         }
         if let Err(error) = self.persist_restore_workspace(app, session_id) {
-            eprintln!("[browser] 关闭标签后的恢复清单刷新失败: {error}");
+            eprintln!("[browser] Failed to refresh restore manifest after tab close: {error}");
         }
         Ok(true)
     }
@@ -1912,8 +2040,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         self.close_impl(app, true)
     }
 
-    /// 应用进程退出只销毁当次 WebView/target 映射，保留已经原子写入的 URL 清单，
-    /// 供下次按对话惰性重建。显式“停止浏览器”仍走 [`Self::close`] 删除清单。
+    /// App-process exit destroys only current WebView/target mappings and keeps
+    /// the atomically written URL manifest for lazy per-conversation rebuild.
+    /// Explicit Stop Browser still calls [`Self::close`] and deletes the manifest.
     pub fn close_preserving_restore(
         &mut self,
         app: Option<&tauri::AppHandle>,
@@ -1927,7 +2056,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         delete_restore: bool,
     ) -> Result<(), String> {
         if app.is_none() && self.has_sessions() {
-            return Err("应用句柄尚未就绪，无法关闭浏览器".to_string());
+            return Err("App handle is not ready; cannot close browser".to_string());
         }
         let mut session_ids = self.workspaces.keys().cloned().collect::<Vec<_>>();
         for (session_id, _) in self.staged_tabs.keys() {
@@ -1967,8 +2096,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         self.close_session_impl(app, session_id, true)
     }
 
-    /// 恢复过程中部分 WebView 创建失败时只回滚当次原生资源，保留原始恢复清单，
-    /// 下一次状态查询仍可重试。
+    /// If some WebViews fail during restore, roll back only native resources
+    /// created by this attempt and retain the original manifest for the next
+    /// status query to retry.
     pub fn close_session_preserving_restore(
         &mut self,
         app: Option<&tauri::AppHandle>,
@@ -1995,7 +2125,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         if !owns_workspace && !owns_quarantine {
             return Ok(self.has_sessions());
         }
-        let app = app.ok_or_else(|| "应用句柄尚未就绪，无法对账失败的浏览器恢复".to_string())?;
+        let app = app.ok_or_else(|| {
+            "App handle is not ready; cannot reconcile failed browser restore".to_string()
+        })?;
         self.quarantine_workspace_for_failed_restore(session_id);
         self.reap_quarantined_for_session(app, session_id)?;
         Ok(self.has_sessions())
@@ -2023,7 +2155,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             return Ok(self.has_sessions());
         }
 
-        let app = app.ok_or_else(|| "应用句柄尚未就绪，无法关闭对话浏览器".to_string())?;
+        let app = app.ok_or_else(|| {
+            "App handle is not ready; cannot close conversation browser".to_string()
+        })?;
         let mut errors = Vec::new();
         if let Some(workspace) = self.workspaces.get_mut(session_id) {
             if let Err(error) = close_workspace(app, workspace) {
@@ -2045,7 +2179,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             let workspace = self
                 .workspaces
                 .remove(session_id)
-                .expect("空工作区在关闭期间由同一互斥锁保护");
+                .expect("empty workspace remains protected by the same mutex during close");
             let _ = std::fs::remove_file(paths::browser_workspace_state_json(
                 &workspace.session_token,
             ));
@@ -2055,20 +2189,26 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 }
             }
         } else if let Some(workspace) = self.workspaces.get(session_id) {
-            // WebView close 是逐页不可逆提交。失败时注册表只保留真实 survivor；
-            // 已发布 survivor 同步成为新的恢复真相，未发布 restore staging 则保留
-            // 调用前清单，供清理成功后重新执行完整恢复。
+            // WebView close commits irreversibly per page. On failure, the
+            // registry retains only real survivors. Published survivors become
+            // the new restore truth; unpublished restore staging retains the
+            // pre-call manifest for a full retry after cleanup succeeds.
             if let Err(error) = self.persist_workspace(session_id) {
-                errors.push(format!("保存部分关闭后的浏览器状态失败: {error}"));
+                errors.push(format!(
+                    "Failed to save browser state after partial close: {error}"
+                ));
             }
             if workspace.tabs.iter().any(SurfaceEntry::is_published) {
                 if let Err(error) = self.persist_restore_workspace(app, session_id) {
-                    errors.push(format!("保存部分关闭后的恢复清单失败: {error}"));
+                    errors.push(format!(
+                        "Failed to save restore manifest after partial close: {error}"
+                    ));
                 }
             }
         } else if delete_restore {
-            // 仅有 staging 的异常状态没有可恢复的用户页面；停止操作仍应删除旧清单，
-            // staging 本身保留在内存中，下一次幂等 stop 会继续关闭它。
+            // A staging-only exceptional state has no recoverable user page.
+            // Stop still deletes the old manifest while staging remains in memory
+            // for the next idempotent stop to continue closing it.
             if let Err(error) = remove_restore_file(&paths::browser_session_token(session_id)) {
                 errors.push(error);
             }
@@ -2101,7 +2241,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 .retain(|(owner_session, _), _| owner_session != session_id);
             return Ok(());
         }
-        let app = app.ok_or_else(|| "应用句柄尚未就绪，无法关闭待提交浏览器标签".to_string())?;
+        let app = app.ok_or_else(|| {
+            "App handle is not ready; cannot close pending browser tab".to_string()
+        })?;
         reconcile_staged_close(
             &mut self.staged_tabs,
             &mut self.staged_user_tabs,
@@ -2110,7 +2252,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 if let Some(webview) = app.get_webview(&entry.label) {
                     webview
                         .close()
-                        .map_err(|error| format!("关闭系统 WebView 失败: {error}"))?;
+                        .map_err(|error| format!("Failed to close system WebView: {error}"))?;
                 }
                 Ok(())
             },
@@ -2131,8 +2273,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         if !entry.is_published() {
             return None;
         }
-        let url = app?.get_webview(&entry.label)?.url().ok()?.to_string();
-        Some((entry.token.clone(), sanitize_marker_url(url, &entry.token)))
+        let webview = app?.get_webview(&entry.label)?;
+        let url = resolve_surface_url(entry, Some(&webview)).ok()?;
+        Some((entry.token.clone(), url))
     }
 
     pub fn list_tabs(
@@ -2148,15 +2291,14 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 .iter()
                 .filter(|entry| entry.is_published())
                 .filter_map(|entry| {
-                    let url = sanitize_marker_url(
-                        app.get_webview(&entry.label)?.url().ok()?.to_string(),
-                        &entry.token,
-                    );
-                    let title = url
-                        .parse::<tauri::Url>()
-                        .ok()
-                        .and_then(|url| url.host_str().map(ToOwned::to_owned))
-                        .unwrap_or_else(|| "about:blank".to_string());
+                    let webview = app.get_webview(&entry.label)?;
+                    let url = resolve_surface_url(entry, Some(&webview)).ok()?;
+                    let title = entry.title_for_url(&url).unwrap_or_else(|| {
+                        url.parse::<tauri::Url>()
+                            .ok()
+                            .and_then(|url| url.host_str().map(ToOwned::to_owned))
+                            .unwrap_or_else(|| "about:blank".to_string())
+                    });
                     Some(TabInfo {
                         target_id: entry.token.clone(),
                         page_id: Some(entry.page_id),
@@ -2181,24 +2323,155 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         app: Option<&tauri::AppHandle>,
         session_id: &str,
         url: &str,
+        request_id: &str,
     ) -> Result<bool, String> {
         let Some(workspace) = self.workspaces.get(session_id) else {
             return Ok(false);
         };
-        let entry = active_entry(workspace).ok_or_else(|| "当前标签页不存在".to_string())?;
-        let app = app.ok_or_else(|| "应用句柄尚未就绪".to_string())?;
+        let entry =
+            active_entry(workspace).ok_or_else(|| "Current tab does not exist".to_string())?;
+        let app = app.ok_or_else(|| "App handle is not ready".to_string())?;
         let webview = app
             .get_webview(&entry.label)
-            .ok_or_else(|| "对话浏览器表面不存在".to_string())?;
-        self.mark_user_control(app, session_id, &entry.token)?;
+            .ok_or_else(|| "Conversation browser surface does not exist".to_string())?;
         let target_url = marked_blank_url(url, &entry.token);
-        webview
-            .navigate(
-                target_url
-                    .parse()
-                    .map_err(|e| format!("浏览器地址无效: {e}"))?,
-            )
-            .map_err(|e| format!("浏览器导航失败: {e}"))?;
+        let target_url: tauri::Url = target_url
+            .parse()
+            .map_err(|e| format!("Browser URL is invalid: {e}"))?;
+        let intent_url =
+            validated_surface_url(target_url.to_string(), &entry.token).ok_or_else(|| {
+                "Browser navigation target cannot be used for event correlation".to_string()
+            })?;
+        let cross_document = !is_fragment_only_navigation(&entry.last_known_url(), &intent_url);
+        let had_navigation_in_flight = entry.navigation_in_flight();
+        self.mark_user_control(app, session_id, &entry.token)?;
+        entry.begin_user_navigation(request_id, intent_url, cross_document)?;
+        if had_navigation_in_flight {
+            // Advance (or fail-closed reject) the generation before stopping
+            // the old document. Otherwise a rejected same-URL retry would
+            // accidentally terminate the only generation we can still track.
+            let _ = webview.eval("window.stop()");
+        }
+        if let Err(error) = webview.navigate(target_url) {
+            entry.fail_user_navigation(request_id);
+            return Err(format!("Browser navigation failed: {error}"));
+        }
+        Ok(true)
+    }
+
+    /// Dispatch a Hosted BrowserCore navigation through the same generation
+    /// seam used by the address bar. The caller already holds and revalidates
+    /// the Agent lease; this method owns only navigation identity/lifecycle.
+    pub fn navigate_tab_for_agent(
+        &self,
+        app: &tauri::AppHandle,
+        session_id: &str,
+        tab_token: &str,
+        url: &str,
+        authorization: &NativeTabLease,
+    ) -> Result<bool, String> {
+        let Some(workspace) = self.workspaces.get(session_id) else {
+            return Ok(false);
+        };
+        let entry = workspace.tabs.by_token(tab_token).ok_or_else(|| {
+            "Tab does not exist or does not belong to this conversation".to_string()
+        })?;
+        if !is_trackable_surface_url(url) {
+            return Err("browser/url-not-allowed".to_string());
+        }
+        let webview = app
+            .get_webview(&entry.label)
+            .ok_or_else(|| "Conversation browser surface does not exist".to_string())?;
+        let target_url = marked_blank_url(url, tab_token);
+        let target_url: tauri::Url = target_url
+            .parse()
+            .map_err(|error| format!("Browser URL is invalid: {error}"))?;
+        let intent_url =
+            validated_surface_url(target_url.to_string(), tab_token).ok_or_else(|| {
+                "Browser navigation target cannot be used for event correlation".to_string()
+            })?;
+        let cross_document = !is_fragment_only_navigation(&entry.last_known_url(), &intent_url);
+        dispatch_agent_tab_action(workspace, session_id, tab_token, authorization, || {
+            if entry.navigation_admission_busy() {
+                return Err("Browser page is still loading; verify the current page before dispatching another navigation".to_string());
+            }
+            entry.begin_external_navigation(cross_document);
+            webview.navigate(target_url).map_err(|error| {
+                format!(
+                    "browser/action-commit-unknown-after-navigation-dispatch: URL navigation acknowledgement was inconclusive: {error}"
+                )
+            })
+        })?;
+        Ok(true)
+    }
+
+    pub fn history_step_tab_for_agent(
+        &self,
+        app: &tauri::AppHandle,
+        session_id: &str,
+        tab_token: &str,
+        delta: i8,
+        authorization: &NativeTabLease,
+    ) -> Result<bool, String> {
+        let Some(workspace) = self.workspaces.get(session_id) else {
+            return Ok(false);
+        };
+        let entry = workspace.tabs.by_token(tab_token).ok_or_else(|| {
+            "Tab does not exist or does not belong to this conversation".to_string()
+        })?;
+        let webview = app
+            .get_webview(&entry.label)
+            .ok_or_else(|| "Conversation browser surface does not exist".to_string())?;
+        dispatch_agent_tab_action(workspace, session_id, tab_token, authorization, || {
+            if entry.navigation_admission_busy() {
+                return Err("Browser page is still loading; verify the current page before dispatching history navigation".to_string());
+            }
+            entry.begin_external_navigation(false);
+            webview
+                .eval(if delta < 0 {
+                    "history.back()"
+                } else {
+                    "history.forward()"
+                })
+                .map_err(|error| {
+                format!(
+                    "browser/action-commit-unknown-after-navigation-dispatch: history navigation acknowledgement was inconclusive: {error}"
+                )
+                })
+        })?;
+        Ok(true)
+    }
+
+    pub fn reload_tab_for_agent(
+        &self,
+        app: &tauri::AppHandle,
+        session_id: &str,
+        tab_token: &str,
+        authorization: &NativeTabLease,
+    ) -> Result<bool, String> {
+        let Some(workspace) = self.workspaces.get(session_id) else {
+            return Ok(false);
+        };
+        let entry = workspace.tabs.by_token(tab_token).ok_or_else(|| {
+            "Tab does not exist or does not belong to this conversation".to_string()
+        })?;
+        let webview = app
+            .get_webview(&entry.label)
+            .ok_or_else(|| "Conversation browser surface does not exist".to_string())?;
+        dispatch_agent_tab_action(workspace, session_id, tab_token, authorization, || {
+            if entry.navigation_admission_busy() {
+                return Err(
+                    "Browser page is still loading; verify the current page before reloading"
+                        .to_string(),
+                );
+            }
+            entry.begin_external_navigation(true);
+            webview.reload().map_err(|error| {
+                format!(
+                    "browser/action-commit-unknown-after-navigation-dispatch: reload acknowledgement was inconclusive: {error}"
+                )
+            })
+        })?;
         Ok(true)
     }
 
@@ -2214,34 +2487,41 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         tab_token: &str,
         url: &str,
     ) -> Result<bool, String> {
-        let app = app.ok_or_else(|| "应用句柄尚未就绪".to_string())?;
+        let app = app.ok_or_else(|| "App handle is not ready".to_string())?;
+        if !is_trackable_surface_url(url) {
+            return Err("browser/url-not-allowed".to_string());
+        }
         let staged_key = (session_id.to_string(), tab_token.to_string());
         if let Some(background) = self.staged_user_tabs.get(&staged_key).copied() {
-            let entry = self
-                .staged_tabs
-                .get(&staged_key)
-                .cloned()
-                .ok_or_else(|| "用户待发布标签状态不完整".to_string())?;
+            let entry =
+                self.staged_tabs.get(&staged_key).cloned().ok_or_else(|| {
+                    "User tab awaiting publication has incomplete state".to_string()
+                })?;
             if entry.automation_target.is_none() {
-                return Err("标签页尚未绑定宿主权威 automation target".to_string());
+                return Err(
+                    "Tab is not bound to an authoritative host automation target".to_string(),
+                );
             }
             let webview = app
                 .get_webview(&entry.label)
-                .ok_or_else(|| "待发布浏览器表面不存在".to_string())?;
+                .ok_or_else(|| "Browser surface awaiting publication does not exist".to_string())?;
             let target_url = marked_blank_url(url, tab_token);
-            webview
-                .navigate(
-                    target_url
-                        .parse()
-                        .map_err(|error| format!("浏览器地址无效: {error}"))?,
-                )
-                .map_err(|error| format!("浏览器隐藏标签首航失败: {error}"))?;
+            let target_url = target_url
+                .parse()
+                .map_err(|error| format!("Browser URL is invalid: {error}"))?;
+            entry.begin_external_navigation(true);
+            if let Err(error) = webview.navigate(target_url) {
+                entry.cancel_active_navigation();
+                return Err(format!(
+                    "Hidden browser tab initial navigation failed: {error}"
+                ));
+            }
 
             let (snapshot, active_tab) = {
                 let workspace = self
                     .workspaces
                     .get_mut(session_id)
-                    .ok_or_else(|| "浏览器工作区不存在".to_string())?;
+                    .ok_or_else(|| "Browser workspace does not exist".to_string())?;
                 let control = Arc::clone(&workspace.control);
                 let previous_active = workspace.active_tab.clone();
                 workspace.tabs.insert(entry.clone())?;
@@ -2256,7 +2536,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                     if let Err(restore_error) =
                         persist_workspace_snapshot(workspace, rollback.revision)
                     {
-                        eprintln!("[browser] 回滚用户待发布标签映射失败: {restore_error}");
+                        eprintln!("[browser] Failed to roll back user pending-tab mapping: {restore_error}");
                     }
                     emit_control_changed(app, session_id, &workspace.active_tab, rollback);
                     return Err(error);
@@ -2269,10 +2549,10 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                         if let Err(restore_error) =
                             persist_workspace_snapshot(workspace, rollback.revision)
                         {
-                            eprintln!("[browser] 回滚用户待发布标签显示映射失败: {restore_error}");
+                            eprintln!("[browser] Failed to roll back user pending-tab display mapping: {restore_error}");
                         }
                         if let Err(restore_error) = show_active_workspace(app, workspace) {
-                            eprintln!("[browser] 回滚用户待发布标签物理表面失败: {restore_error}");
+                            eprintln!("[browser] Failed to roll back user pending-tab physical surface: {restore_error}");
                         }
                         emit_control_changed(app, session_id, &workspace.active_tab, rollback);
                         return Err(error);
@@ -2286,7 +2566,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             self.staged_user_tabs.remove(&staged_key);
             emit_control_changed(app, session_id, &active_tab, snapshot);
             if let Err(error) = self.persist_restore_workspace(app, session_id) {
-                eprintln!("[browser] 用户标签已发布，但恢复清单刷新失败: {error}");
+                eprintln!(
+                    "[browser] User tab published but restore-manifest refresh failed: {error}"
+                );
             }
             return Ok(true);
         }
@@ -2294,27 +2576,28 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         let Some(workspace) = self.workspaces.get(session_id) else {
             return Ok(false);
         };
-        let entry = workspace
-            .tabs
-            .by_token(tab_token)
-            .ok_or_else(|| "标签页不存在或不属于当前对话".to_string())?;
+        let entry = workspace.tabs.by_token(tab_token).ok_or_else(|| {
+            "Tab does not exist or does not belong to this conversation".to_string()
+        })?;
         if entry.automation_target.is_none() {
-            return Err("标签页尚未绑定宿主权威 automation target".to_string());
+            return Err("Tab is not bound to an authoritative host automation target".to_string());
         }
         let webview = app
             .get_webview(&entry.label)
-            .ok_or_else(|| "对话浏览器表面不存在".to_string())?;
+            .ok_or_else(|| "Conversation browser surface does not exist".to_string())?;
         let target_url = marked_blank_url(url, tab_token);
-        webview
-            .navigate(
-                target_url
-                    .parse()
-                    .map_err(|error| format!("浏览器地址无效: {error}"))?,
-            )
-            .map_err(|error| format!("浏览器导航失败: {error}"))?;
+        let target_url = target_url
+            .parse()
+            .map_err(|error| format!("Browser URL is invalid: {error}"))?;
+        entry.begin_external_navigation(true);
+        if let Err(error) = webview.navigate(target_url) {
+            entry.cancel_active_navigation();
+            return Err(format!("Browser navigation failed: {error}"));
+        }
 
-        // 恢复工作区的全部 WebView 都保持 unpublished，直到最后一个标签已经取得
-        // 当前进程 target 且完成首航。这样 list/status/popup 永远看不到半恢复状态。
+        // Keep every restored WebView unpublished until the final tab has a
+        // current-process target and completed initial navigation. list, status,
+        // and popup therefore never observe a partially restored workspace.
         let should_publish_restore = workspace
             .tabs
             .iter()
@@ -2349,19 +2632,25 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         let Some(workspace) = self.workspaces.get(session_id) else {
             return Ok(false);
         };
-        let entry = active_entry(workspace).ok_or_else(|| "当前标签页不存在".to_string())?;
-        let app = app.ok_or_else(|| "应用句柄尚未就绪".to_string())?;
+        let entry =
+            active_entry(workspace).ok_or_else(|| "Current tab does not exist".to_string())?;
+        let app = app.ok_or_else(|| "App handle is not ready".to_string())?;
         let webview = app
             .get_webview(&entry.label)
-            .ok_or_else(|| "对话浏览器表面不存在".to_string())?;
+            .ok_or_else(|| "Conversation browser surface does not exist".to_string())?;
+        if entry.navigation_in_flight() {
+            let _ = webview.eval("window.stop()");
+        }
         self.mark_user_control(app, session_id, &entry.token)?;
-        webview
-            .eval(if delta < 0 {
-                "history.back()"
-            } else {
-                "history.forward()"
-            })
-            .map_err(|e| format!("浏览器历史导航失败: {e}"))?;
+        entry.begin_external_navigation(false);
+        if let Err(error) = webview.eval(if delta < 0 {
+            "history.back()"
+        } else {
+            "history.forward()"
+        }) {
+            entry.cancel_active_navigation();
+            return Err(format!("Browser history navigation failed: {error}"));
+        }
         Ok(true)
     }
 
@@ -2369,15 +2658,21 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         let Some(workspace) = self.workspaces.get(session_id) else {
             return Ok(false);
         };
-        let entry = active_entry(workspace).ok_or_else(|| "当前标签页不存在".to_string())?;
-        let app = app.ok_or_else(|| "应用句柄尚未就绪".to_string())?;
+        let entry =
+            active_entry(workspace).ok_or_else(|| "Current tab does not exist".to_string())?;
+        let app = app.ok_or_else(|| "App handle is not ready".to_string())?;
         let webview = app
             .get_webview(&entry.label)
-            .ok_or_else(|| "对话浏览器表面不存在".to_string())?;
+            .ok_or_else(|| "Conversation browser surface does not exist".to_string())?;
+        if entry.navigation_in_flight() {
+            let _ = webview.eval("window.stop()");
+        }
         self.mark_user_control(app, session_id, &entry.token)?;
-        webview
-            .reload()
-            .map_err(|e| format!("刷新浏览器页面失败: {e}"))?;
+        entry.begin_external_navigation(true);
+        if let Err(error) = webview.reload() {
+            entry.cancel_active_navigation();
+            return Err(format!("Failed to reload browser page: {error}"));
+        }
         Ok(true)
     }
 
@@ -2412,7 +2707,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         let workspace = self
             .workspaces
             .get_mut(session_id)
-            .ok_or_else(|| "浏览器工作区不存在".to_string())?;
+            .ok_or_else(|| "Browser workspace does not exist".to_string())?;
         workspace.prepare_generation = request_id.map(|request_id| PrepareGeneration {
             request_id: request_id.to_string(),
             revision: workspace.control.snapshot().revision,
@@ -2538,13 +2833,14 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         let state = workspace.control.bump(Some(NativeControlOwner::User));
         emit_control_changed(app, session_id, tab_token, state);
         if let Err(error) = self.persist_workspace(session_id) {
-            eprintln!("[browser] 用户接管后的映射持久化失败: {error}");
+            eprintln!("[browser] Failed to persist mapping after user takeover: {error}");
         }
         Ok(())
     }
 
-    /// 只在定时器仍对应最后一次用户动作时自动释放控制权。该提交和 revision
-    /// 校验共用 WorkspaceControl 锁，因此迟到定时器不能覆盖后续操作。
+    /// Automatically release control only while the timer still corresponds to
+    /// the latest user action. Commit and revision validation share the
+    /// WorkspaceControl lock so a late timer cannot overwrite a later action.
     pub fn release_user_control_if_idle(
         &mut self,
         app: &tauri::AppHandle,
@@ -2563,13 +2859,16 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         let active_tab = workspace.active_tab.clone();
         emit_control_changed(app, session_id, &active_tab, snapshot);
         if let Err(error) = self.persist_workspace(session_id) {
-            eprintln!("[browser] 自动交还控制权后的映射持久化失败: {error}");
+            eprintln!(
+                "[browser] Failed to persist mapping after automatic control handback: {error}"
+            );
         }
         Ok(true)
     }
 
-    /// 原子保存用户可恢复的最小页面清单。URL 来自宿主 WebView 本身，不接受前端
-    /// 或 MCP 提交的 target 映射；内部 marker 会收敛为 about:blank。
+    /// Atomically save the minimal user-recoverable page manifest. URLs come
+    /// from host WebViews, never frontend or MCP target mappings. Internal
+    /// markers normalize to about:blank.
     pub fn persist_restore_workspace(
         &self,
         app: &tauri::AppHandle,
@@ -2578,7 +2877,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         let workspace = self
             .workspaces
             .get(session_id)
-            .ok_or_else(|| "浏览器工作区不存在".to_string())?;
+            .ok_or_else(|| "Browser workspace does not exist".to_string())?;
         // A restored workspace remains an unpublished transaction until every
         // fresh WebView has been bound and navigated. Navigation callbacks and
         // process exit may race that transaction; preserve the last complete
@@ -2590,26 +2889,17 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             .tabs
             .iter()
             .position(|tab| tab.token == workspace.active_tab)
-            .ok_or_else(|| "浏览器当前标签不在工作区内".to_string())?;
+            .ok_or_else(|| "Current browser tab is not in the workspace".to_string())?;
         let mut tabs = Vec::with_capacity(workspace.tabs.len());
         for entry in workspace.tabs.iter() {
             let webview = app
                 .get_webview(&entry.label)
-                .ok_or_else(|| "浏览器标签页表面不存在".to_string())?;
-            let url = sanitize_marker_url(
-                webview
-                    .url()
-                    .map_err(|error| format!("读取浏览器标签页地址失败: {error}"))?
-                    .to_string(),
-                &entry.token,
-            );
-            if url.len() > MAX_RESTORE_URL_LEN || !super::super::is_allowed_url(&url) {
-                return Err("浏览器标签页地址不能写入恢复清单".to_string());
-            }
+                .ok_or_else(|| "Browser tab surface does not exist".to_string())?;
+            let url = resolve_surface_url(entry, Some(&webview))?;
             tabs.push(json!({ "url": url }));
         }
         if tabs.is_empty() || tabs.len() > MAX_WORKSPACE_TABS {
-            return Err("浏览器恢复标签数量无效".to_string());
+            return Err("Browser restore tab count is invalid".to_string());
         }
         let restore = NativeWorkspaceRestore {
             urls: tabs
@@ -2644,7 +2934,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         let workspace = self
             .workspaces
             .get(session_id)
-            .ok_or_else(|| "浏览器工作区不存在".to_string())?;
+            .ok_or_else(|| "Browser workspace does not exist".to_string())?;
         persist_workspace_snapshot(workspace, workspace.control.snapshot().revision)
     }
 }
@@ -2655,8 +2945,9 @@ fn workspace_restore_ready(workspace: &Workspace) -> bool {
 
 fn persist_workspace_snapshot(workspace: &Workspace, revision: u64) -> Result<(), String> {
     let path = paths::browser_workspace_state_json(&workspace.session_token);
-    // 对外只发布完整、可严格解析的 v2 权威映射。prepare/create 到 bind_target
-    // 之间删除旧快照，避免 wrapper 把 null 或陈旧 target 当成可执行状态。
+    // Publish only complete, strictly parseable authoritative v2 mappings.
+    // Delete old snapshots between prepare/create and bind_target so the wrapper
+    // cannot treat a null or stale target as executable state.
     if workspace
         .tabs
         .iter()
@@ -2666,17 +2957,22 @@ fn persist_workspace_snapshot(workspace: &Workspace, revision: u64) -> Result<()
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
-                return Err(format!("清理未完成的浏览器工作区状态失败: {error}"));
+                return Err(format!(
+                    "Failed to remove incomplete browser workspace state: {error}"
+                ));
             }
         }
         return Ok(());
     }
-    std::fs::create_dir_all(path.parent().expect("工作区状态文件应有父目录"))
-        .map_err(|e| format!("创建浏览器工作区状态目录失败: {e}"))?;
+    std::fs::create_dir_all(
+        path.parent()
+            .expect("workspace state file has a parent directory"),
+    )
+    .map_err(|e| format!("Failed to create browser workspace state directory: {e}"))?;
     let value = workspace_state_value_with_revision(workspace, revision);
     let encoded = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
     crate::platform::filesystem::atomic_write(&path, &encoded)
-        .map_err(|e| format!("写入浏览器工作区状态失败: {e}"))
+        .map_err(|e| format!("Failed to write browser workspace state: {e}"))
 }
 
 fn workspace_state_value(workspace: &Workspace) -> serde_json::Value {
@@ -2703,20 +2999,23 @@ fn workspace_state_value_with_revision(workspace: &Workspace, revision: u64) -> 
 
 fn parse_restore_workspace(encoded: &[u8]) -> Result<NativeWorkspaceRestore, String> {
     let decoded: WorkspaceRestoreFile = serde_json::from_slice(encoded)
-        .map_err(|error| format!("解析浏览器恢复清单失败: {error}"))?;
+        .map_err(|error| format!("Failed to parse browser restore manifest: {error}"))?;
     if decoded.version != WORKSPACE_RESTORE_VERSION {
-        return Err(format!("不支持的浏览器恢复清单版本: {}", decoded.version));
+        return Err(format!(
+            "Unsupported browser restore manifest version: {}",
+            decoded.version
+        ));
     }
     if decoded.tabs.is_empty()
         || decoded.tabs.len() > MAX_WORKSPACE_TABS
         || decoded.active_index >= decoded.tabs.len()
     {
-        return Err("浏览器恢复清单的标签数量或当前标签无效".to_string());
+        return Err("Browser restore manifest has an invalid tab count or active tab".to_string());
     }
     let mut urls = Vec::with_capacity(decoded.tabs.len());
     for tab in decoded.tabs {
-        if tab.url.len() > MAX_RESTORE_URL_LEN || !super::super::is_allowed_url(&tab.url) {
-            return Err("浏览器恢复清单包含不受支持的页面地址".to_string());
+        if !is_trackable_surface_url(&tab.url) {
+            return Err("Browser restore manifest contains an unsupported page URL".to_string());
         }
         urls.push(tab.url);
     }
@@ -2736,12 +3035,15 @@ fn write_restore_workspace_file(
         || restore
             .urls
             .iter()
-            .any(|url| url.len() > MAX_RESTORE_URL_LEN || !super::super::is_allowed_url(url))
+            .any(|url| !is_trackable_surface_url(url))
     {
-        return Err("浏览器恢复清单无效".to_string());
+        return Err("Browser restore manifest is invalid".to_string());
     }
-    let parent = path.parent().expect("浏览器恢复清单应有父目录");
-    std::fs::create_dir_all(parent).map_err(|error| format!("创建浏览器恢复目录失败: {error}"))?;
+    let parent = path
+        .parent()
+        .expect("browser restore manifest has a parent directory");
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("Failed to create browser restore directory: {error}"))?;
     crate::platform::os::make_private_dir(parent);
     let tabs = restore
         .urls
@@ -2753,16 +3055,18 @@ fn write_restore_workspace_file(
         "active_index": restore.active_index,
         "tabs": tabs,
     }))
-    .map_err(|error| format!("编码浏览器恢复清单失败: {error}"))?;
+    .map_err(|error| format!("Failed to encode browser restore manifest: {error}"))?;
     crate::platform::filesystem::atomic_write_private(path, &encoded)
-        .map_err(|error| format!("写入浏览器恢复清单失败: {error}"))
+        .map_err(|error| format!("Failed to write browser restore manifest: {error}"))
 }
 
 fn remove_restore_file(session_token: &str) -> Result<(), String> {
     match std::fs::remove_file(paths::browser_workspace_restore_json(session_token)) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("删除浏览器恢复清单失败: {error}")),
+        Err(error) => Err(format!(
+            "Failed to delete browser restore manifest: {error}"
+        )),
     }
 }
 
@@ -2794,16 +3098,22 @@ fn build_webview<P: PlatformWebviewConfig>(
 ) -> Result<SurfaceEntry, WebviewBuildError> {
     let window = app
         .get_window("main")
-        .ok_or_else(|| WebviewBuildError::new("主窗口尚未就绪".to_string()))?;
+        .ok_or_else(|| WebviewBuildError::new("Main window is not ready".to_string()))?;
     let parsed_url = url
         .parse()
-        .map_err(|e| WebviewBuildError::new(format!("浏览器初始地址无效: {e}")))?;
+        .map_err(|e| WebviewBuildError::new(format!("Initial browser URL is invalid: {e}")))?;
+    let initial_last_known_url =
+        validated_surface_url(url.to_string(), tab_token).ok_or_else(|| {
+            WebviewBuildError::new(
+                "Initial browser URL cannot be written to restore state".to_string(),
+            )
+        })?;
     let page_id = next_native_page_id().map_err(WebviewBuildError::new)?;
     let label = format!("{WEBVIEW_LABEL_PREFIX}{tab_token}");
     if let Some(stale) = app.get_webview(&label) {
-        stale
-            .close()
-            .map_err(|e| WebviewBuildError::new(format!("关闭失效浏览器标签页失败: {e}")))?;
+        stale.close().map_err(|e| {
+            WebviewBuildError::new(format!("Failed to close invalid browser tab: {e}"))
+        })?;
     }
 
     let navigation_app = app.clone();
@@ -2818,6 +3128,15 @@ fn build_webview<P: PlatformWebviewConfig>(
     let committed_navigation_tab_token = tab_token.to_string();
     let committed_navigation_control = Arc::clone(&control);
     let committed_navigation_publication = Arc::clone(&publication);
+    let last_known_url = Arc::new(parking_lot::RwLock::new(initial_last_known_url));
+    let committed_last_known_url = Arc::clone(&last_known_url);
+    let last_known_title = Arc::new(parking_lot::RwLock::new(None));
+    let title_last_known_title = Arc::clone(&last_known_title);
+    let user_navigation = Arc::new(parking_lot::Mutex::new(UserNavigationState::default()));
+    let navigation_user_navigation = Arc::clone(&user_navigation);
+    let committed_user_navigation = Arc::clone(&user_navigation);
+    let navigation_callback_last_known_url = Arc::clone(&last_known_url);
+    let navigation_callback_last_known_title = Arc::clone(&last_known_title);
     let title_app = app.clone();
     let title_session_id = session_id.to_string();
     let title_tab_token = tab_token.to_string();
@@ -2834,9 +3153,11 @@ fn build_webview<P: PlatformWebviewConfig>(
         .capabilities()
         .chrome_devtools_protocol
         .then_some(tab_token);
-    super::register_browser_core_webview_binding(&label, tab_token, &control)
+    super::register_browser_core_webview_binding(&label, tab_token, &control, &user_navigation)
         .map_err(WebviewBuildError::new)?;
-    let init_script = browser_initialization_script(cdp_tab_token);
+    let location_signal_nonce = format!("{:032x}", rand::random::<u128>());
+    let navigation_location_signal_nonce = location_signal_nonce.clone();
+    let init_script = browser_initialization_script(cdp_tab_token, &location_signal_nonce);
     let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed_url));
     let builder = match platform.configure_builder(builder, data_directory) {
         Ok(builder) => builder,
@@ -2851,8 +3172,9 @@ fn build_webview<P: PlatformWebviewConfig>(
         .initialization_script_for_all_frames(init_script)
         .on_download(move |_webview, event| {
             if let DownloadEvent::Requested { url, .. } = event {
-                // URL 可能含一次性 token/查询参数；只向 UI 暴露 origin，不记录本地
-                // destination。内嵌下载默认拒绝，用户可在系统浏览器自行处理。
+                // URLs may contain one-time tokens or query parameters. Expose
+                // only the origin to UI and never record a local destination.
+                // Embedded downloads are denied; users can use a system browser.
                 let source = match (url.scheme(), url.host_str()) {
                     (scheme, Some(host)) => format!("{scheme}://{host}"),
                     (scheme, None) => format!("{scheme}:"),
@@ -2869,16 +3191,108 @@ fn build_webview<P: PlatformWebviewConfig>(
             false
         })
         .on_navigation(move |url| {
+            if let Some(signal_nonce) = location_change_signal_nonce(url) {
+                if signal_nonce == navigation_location_signal_nonce {
+                    let live_url = navigation_app
+                        .get_webview(&navigation_label)
+                        .and_then(|webview| webview.url().ok())
+                        .and_then(|url| {
+                            validated_surface_url(url.to_string(), &navigation_tab_token)
+                        });
+                    if let Some(live_url) = live_url {
+                        let request_id = {
+                            let mut navigation = navigation_user_navigation.lock();
+                            if navigation.navigation_in_flight() {
+                                // A trusted history mutation can happen after
+                                // Started but before Finished. Keep it inside
+                                // that generation without publishing early;
+                                // Finished remains the cross-document commit.
+                                let _ =
+                                    navigation.observe_same_document_during_load(&live_url);
+                                None
+                            } else {
+                                match navigation.finish_same_document(&live_url) {
+                                    NavigationCommitDecision::Current { request_id } => {
+                                        Some(request_id)
+                                    }
+                                    NavigationCommitDecision::Stale => None,
+                                }
+                            }
+                        };
+                        let Some(request_id) = request_id else {
+                            return false;
+                        };
+                        let Some(changed) = commit_surface_url_before_publication(
+                            &navigation_publication,
+                            &navigation_callback_last_known_url,
+                            Some(&navigation_callback_last_known_title),
+                            &live_url,
+                        ) else {
+                            // Hidden staging surfaces still settle their
+                            // generation and in-memory committed URL, but may
+                            // not publish UI/control/durable state before the
+                            // host atomically commits the tab.
+                            return false;
+                        };
+                        if changed {
+                            let payload = json!({
+                                "sessionId": navigation_session_id,
+                                "tab": navigation_tab_token,
+                                "url": live_url,
+                                "requestId": request_id,
+                            });
+                            let _ = navigation_app.emit("browser:navigation", &payload);
+                            let _ = navigation_app.emit("browser:tabs-changed", &payload);
+                            if let Some(snapshot) = navigation_control
+                                .bump_for_navigation_if_no_active_agent_operation()
+                            {
+                                emit_control_changed(
+                                    &navigation_app,
+                                    &navigation_session_id,
+                                    &navigation_tab_token,
+                                    snapshot,
+                                );
+                            }
+                            let persist_app = navigation_app.clone();
+                            let persist_session_id = navigation_session_id.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let manager =
+                                    persist_app.state::<super::super::BrowserManager>();
+                                if let Err(error) =
+                                    manager.persist_native_restore(&persist_session_id)
+                                {
+                                    eprintln!(
+                                        "[browser] Failed to persist same-document page navigation: {error}"
+                                    );
+                                }
+                            });
+                        }
+                    }
+                }
+                // The reserved signal never becomes a page/history entry.
+                return false;
+            }
             let binding_marker = super::classify_browser_core_binding_navigation(
                 &navigation_label,
                 url.as_str(),
             );
-            // Agent create_tab 首航发生在隐藏 staging WebView。此时只做协议校验，
-            // 不让 marker/真实 URL 回调提前改变控制权、污染恢复清单或显示 UI。
+            let internal_marker =
+                has_internal_marker_for_token(url.as_str(), &navigation_tab_token);
+            if has_reserved_marker_shape(url.as_str()) && !binding_marker && !internal_marker {
+                return false;
+            }
+            // Agent create_tab initial navigation occurs in a hidden staging
+            // WebView. Validate protocol only, preventing marker/real URL
+            // callbacks from changing ownership, restore state, or UI early.
             if !navigation_publication.load(std::sync::atomic::Ordering::SeqCst) {
-                return binding_marker
-                    || has_internal_marker_for_token(url.as_str(), &navigation_tab_token)
-                    || super::super::is_allowed_url(url.as_str());
+                if let Some(target_url) =
+                    validated_surface_url(url.to_string(), &navigation_tab_token)
+                {
+                    navigation_user_navigation
+                        .lock()
+                        .observe_requested_target(&target_url);
+                }
+                return binding_marker || internal_marker || is_trackable_surface_url(url.as_str());
             }
             // Linux temporarily navigates an already-published WebView to a
             // process-local marker while recovering its WebDriver handle.
@@ -2888,14 +3302,16 @@ fn build_webview<P: PlatformWebviewConfig>(
                 return true;
             }
             if let Some(interaction) = user_takeover_interaction(url) {
-                // CDP/平台输入同样可能产生 isTrusted=true；只有 wrapper 在 lease 复核后
-                // 显式打开的短输入窗口可以抑制这次 fail-safe 接管。
+                // CDP/platform input may also produce isTrusted=true. Only the
+                // short input window explicitly opened by the wrapper after lease
+                // validation can suppress this fail-safe takeover.
                 if navigation_control.agent_input_in_progress() {
                     return false;
                 }
-                // 这是有意设计成低权限、单向的信号通道：远程页面即使主动导航到
-                // 该保留 scheme，也只能让 Agent 暂停并把控制权交给用户，不能
-                // 调用任意 Tauri command 或取得宿主数据。
+                // This is deliberately a low-privilege one-way signal. Even if a
+                // remote page navigates to the reserved scheme, it can only pause
+                // the Agent and hand control to the user; it cannot call arbitrary
+                // Tauri commands or obtain host data.
                 // Every real user activity advances the revision. This both
                 // revokes any Agent lease and restarts the 3-second idle
                 // hand-back window; timers created by earlier activity then
@@ -2921,58 +3337,129 @@ fn build_webview<P: PlatformWebviewConfig>(
                 tauri::async_runtime::spawn(async move {
                     let manager = persist_app.state::<super::super::BrowserManager>();
                     if let Err(error) = manager.persist_native_restore(&persist_session_id) {
-                        eprintln!("[browser] 持久化用户接管状态失败，将后台重试: {error}");
+                        eprintln!("[browser] Failed to persist user takeover state; retrying in background: {error}");
                     }
                 });
-                // 在 WebView 提交导航前拒绝，保留 scheme 不会进入页面历史记录。
+                // Reject before WebView commits navigation so the reserved scheme
+                // never enters page history.
                 return false;
             }
-            let internal_marker =
-                has_internal_marker_for_token(url.as_str(), &navigation_tab_token);
-            if !internal_marker && !super::super::is_allowed_url(url.as_str()) {
+            if !internal_marker && !is_trackable_surface_url(url.as_str()) {
+                // Wry policy callbacks do not expose main-frame identity on
+                // every backend. A blocked iframe must not cancel the active
+                // top-level generation; failed top-level redirects are closed
+                // by the bounded generation watchdog instead.
+                let request_id = navigation_user_navigation
+                    .lock()
+                    .current_request_id_for_blocked_target(url.as_str());
                 let _ = navigation_app.emit(
                     "browser:navigation-blocked",
                     json!({
                         "sessionId": navigation_session_id,
                         "tab": navigation_tab_token,
                         "scheme": url.scheme(),
+                        "requestId": request_id,
                     }),
                 );
                 return false;
             }
+            if let Some(target_url) =
+                validated_surface_url(url.to_string(), &navigation_tab_token)
+            {
+                navigation_user_navigation
+                    .lock()
+                    .observe_requested_target(&target_url);
+            }
             true
         })
-        .on_page_load(move |_webview, payload| {
-            // Wry's navigation-policy callback includes redirects and child
-            // frames on WKWebView. Only a committed main document is allowed
-            // to update the address bar, control revision and restore state.
-            if payload.event() != PageLoadEvent::Started
-                || !committed_navigation_publication.load(std::sync::atomic::Ordering::SeqCst)
-            {
+        .on_page_load(move |webview, payload| {
+            if payload.event() == PageLoadEvent::Started {
+                let live_url = webview.url().ok().map(|url| url.to_string());
+                if let Some(started_url) = committed_top_level_url(
+                    payload.url().as_str(),
+                    live_url.as_deref(),
+                    &committed_navigation_tab_token,
+                ) {
+                    committed_user_navigation
+                        .lock()
+                        .observe_started(&started_url);
+                }
+                // Started is only a generation proof. It must never publish
+                // an address, title or restore snapshot.
                 return;
             }
-            let committed_url = payload.url().as_str();
-            if has_internal_marker_for_token(committed_url, &committed_navigation_tab_token)
-                || super::is_browser_core_binding_url(committed_url)
-            {
+            // A finished payload whose URL equals Webview::url() is the only
+            // engine-independent evidence available here that this callback
+            // belongs to the current top-level document. WKWebView may report
+            // redirect/frame starts, while WebKitGTK may transiently expose a
+            // relative URL during document replacement; neither may update
+            // the address bar or the durable restore manifest.
+            if payload.event() != PageLoadEvent::Finished {
                 return;
             }
+            let payload_url = payload.url().as_str();
+            // The exact current-tab marker is how an explicit about:blank
+            // navigation is represented; committed_top_level_url canonicalizes
+            // it after Finished/live equality. Binding markers never represent
+            // user-visible navigation and stay excluded before that seam.
+            if super::is_browser_core_binding_url(payload_url) {
+                return;
+            }
+            let live_url = webview.url().ok().map(|url| url.to_string());
+            let Some(committed_url) = committed_top_level_url(
+                payload_url,
+                live_url.as_deref(),
+                &committed_navigation_tab_token,
+            ) else {
+                // A redirect/obsolete callback whose payload no longer equals
+                // the WebView's live top-level URL cannot close the load gate.
+                // Only a matching Finished commit may admit same-document
+                // signals again; this is the macOS HTTP/HTTPS flicker barrier.
+                return;
+            };
+            let request_id = match committed_user_navigation.lock().finish(&committed_url) {
+                NavigationCommitDecision::Current { request_id } => request_id,
+                NavigationCommitDecision::Stale => {
+                    // payload==live rules out an iframe callback but does not
+                    // prove which overlapping top-level navigation produced
+                    // it. The host generation map is the second mandatory
+                    // gate; an obsolete generation may neither publish nor
+                    // reopen same-document sampling.
+                    return;
+                }
+            };
+            let Some(changed) = commit_surface_url_before_publication(
+                &committed_navigation_publication,
+                &committed_last_known_url,
+                None,
+                &committed_url,
+            ) else {
+                // `navigate` may synchronously deliver Finished on some native
+                // engines. Preserve the commit for the staging transaction,
+                // while leaving UI/control/persistence behind publication.
+                return;
+            };
             let payload = json!({
                 "sessionId": committed_navigation_session_id,
                 "tab": committed_navigation_tab_token,
                 "url": committed_url,
+                "requestId": request_id,
             });
+            // Completion is also a synchronization signal for optimistic UI
+            // navigation. Re-submitting the same URL must still settle it.
             let _ = committed_navigation_app.emit("browser:navigation", &payload);
-            let _ = committed_navigation_app.emit("browser:tabs-changed", &payload);
-            if let Some(snapshot) = committed_navigation_control
-                .bump_for_navigation_if_no_active_agent_operation()
-            {
-                emit_control_changed(
-                    &committed_navigation_app,
-                    &committed_navigation_session_id,
-                    &committed_navigation_tab_token,
-                    snapshot,
-                );
+            if changed {
+                let _ = committed_navigation_app.emit("browser:tabs-changed", &payload);
+                if let Some(snapshot) = committed_navigation_control
+                    .bump_for_navigation_if_no_active_agent_operation()
+                {
+                    emit_control_changed(
+                        &committed_navigation_app,
+                        &committed_navigation_session_id,
+                        &committed_navigation_tab_token,
+                        snapshot,
+                    );
+                }
             }
             // Page-load delegates run on the native UI thread and may still be
             // nested under WebView dispatch. Persist asynchronously to avoid
@@ -2982,11 +3469,20 @@ fn build_webview<P: PlatformWebviewConfig>(
             tauri::async_runtime::spawn(async move {
                 let manager = persist_app.state::<super::super::BrowserManager>();
                 if let Err(error) = manager.persist_native_restore(&persist_session_id) {
-                    eprintln!("[browser] 持久化页面导航失败: {error}");
+                    eprintln!("[browser] Failed to persist page navigation: {error}");
                 }
             });
         })
-        .on_document_title_changed(move |_webview, title| {
+        .on_document_title_changed(move |webview, title| {
+            let Some(title_url) = webview
+                .url()
+                .ok()
+                .and_then(|url| validated_surface_url(url.to_string(), &title_tab_token))
+            else {
+                return;
+            };
+            let title: String = title.chars().take(512).collect();
+            *title_last_known_title.write() = Some((title_url, title.clone()));
             if !title_publication.load(std::sync::atomic::Ordering::SeqCst) {
                 return;
             }
@@ -3003,7 +3499,7 @@ fn build_webview<P: PlatformWebviewConfig>(
             if !popup_publication.load(std::sync::atomic::Ordering::SeqCst) {
                 return NewWindowResponse::Deny;
             }
-            if !super::super::is_allowed_url(url.as_str()) {
+            if !is_trackable_surface_url(url.as_str()) {
                 let _ = popup_app.emit(
                     "browser:navigation-blocked",
                     json!({
@@ -3013,9 +3509,11 @@ fn build_webview<P: PlatformWebviewConfig>(
                 );
                 return NewWindowResponse::Deny;
             }
-            // 只有已 begin 的原子 dispatch 才能从 Rust 控制状态复制完整 lease。
-            // 没有有效授权的页面自发 popup 走 User；捕获到授权后则由 BrowserManager
-            // 使用隐藏 staging + 最终 CAS 发布，用户接管先发生时安全拒绝晚到的新页。
+            // Only a begun atomic dispatch may copy the complete lease from Rust
+            // control state. A spontaneous popup without valid authorization is
+            // User-owned. With authorization, BrowserManager uses hidden staging
+            // plus final CAS publication and safely rejects a late page when user
+            // takeover commits first.
             let authorization =
                 popup_agent_authorization(&popup_control, &popup_session_id, &popup_tab_token);
             let app = popup_app.clone();
@@ -3026,7 +3524,7 @@ fn build_webview<P: PlatformWebviewConfig>(
                     .create_popup_tab(&session_id, url.to_string(), authorization)
                     .await
                 {
-                    eprintln!("[browser] 接管网页新窗口失败: {error}");
+                    eprintln!("[browser] Failed to adopt new page window: {error}");
                 }
             });
             NewWindowResponse::Deny
@@ -3040,7 +3538,7 @@ fn build_webview<P: PlatformWebviewConfig>(
         Err(error) => {
             super::unregister_browser_core_webview_binding(&label);
             return Err(WebviewBuildError::new(format!(
-                "创建系统 WebView 浏览器标签页失败: {error}"
+                "Failed to create system-WebView browser tab: {error}"
             )));
         }
     };
@@ -3052,6 +3550,9 @@ fn build_webview<P: PlatformWebviewConfig>(
         created_by_request_id: None,
         published: publication,
         created_at_revision: None,
+        last_known_url,
+        last_known_title,
+        user_navigation,
     };
     if let Err(hide_error) = webview.hide() {
         entry.unpublish();
@@ -3059,11 +3560,11 @@ fn build_webview<P: PlatformWebviewConfig>(
             Ok(()) => {
                 super::unregister_browser_core_webview_binding(&entry.label);
                 Err(WebviewBuildError::new(format!(
-                    "初始化隐藏浏览器标签页失败: {hide_error}"
+                    "Failed to initialize hidden browser tab: {hide_error}"
                 )))
             }
             Err(close_error) => Err(WebviewBuildError::with_survivor(
-                format!("初始化隐藏浏览器标签页失败: {hide_error}; 补偿关闭失败: {close_error}"),
+                format!("Failed to initialize hidden browser tab: {hide_error}; compensating close failed: {close_error}"),
                 entry,
             )),
         };
@@ -3074,12 +3575,12 @@ fn build_webview<P: PlatformWebviewConfig>(
             Ok(()) => {
                 super::unregister_browser_core_webview_binding(&entry.label);
                 Err(WebviewBuildError::new(format!(
-                    "初始化浏览器标签页原生容器失败: {attach_error}"
+                    "Failed to initialize native browser-tab container: {attach_error}"
                 )))
             }
             Err(close_error) => Err(WebviewBuildError::with_survivor(
                 format!(
-                    "初始化浏览器标签页原生容器失败: {attach_error}; 补偿关闭失败: {close_error}"
+                    "Failed to initialize native browser-tab container: {attach_error}; compensating close failed: {close_error}"
                 ),
                 entry,
             )),
@@ -3113,16 +3614,41 @@ fn validate_agent_mutation(
         || workspace.tabs.target_for_token(&authorization.tab_token)
             != Some(authorization.target_id.as_str())
     {
-        return Err("Agent mutation lease 与当前宿主标签不一致".to_string());
+        return Err("Agent mutation lease does not match the current host tab".to_string());
     }
     Ok(())
+}
+
+/// Validate host identity, then keep the workspace control lock through the
+/// final native enqueue. This is the common linearization seam for Agent tab
+/// navigation/history/reload operations. Its lock order is control -> the
+/// short navigation-state calls below -> native enqueue; those navigation
+/// guards are released before the WebView call. Agent URL admission excludes
+/// the takeover scheme, so a synchronous allowed-target `on_navigation`
+/// callback only touches navigation state and never re-enters control. Page
+/// self-navigation can run only after the asynchronous enqueue returns.
+fn dispatch_agent_tab_action<T, F>(
+    workspace: &Workspace,
+    session_id: &str,
+    tab_token: &str,
+    authorization: &NativeTabLease,
+    dispatch: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    validate_agent_mutation(workspace, session_id, authorization, Some(tab_token))?;
+    workspace
+        .control
+        .dispatch_if_agent_authorized(authorization, dispatch)?
+        .ok_or_else(|| "browser/control-lease-lost".to_string())
 }
 
 fn remove_tab_from_workspace(workspace: &mut Workspace, tab_token: &str) {
     let (index, _) = workspace
         .tabs
         .remove_token(tab_token)
-        .expect("标签在关闭 WebView 前已检查");
+        .expect("tab was checked before closing WebView");
     if workspace.active_tab == tab_token {
         if workspace.tabs.is_empty() {
             workspace.active_tab.clear();
@@ -3132,22 +3658,44 @@ fn remove_tab_from_workspace(workspace: &mut Workspace, tab_token: &str) {
         workspace.active_tab = workspace
             .tabs
             .token_at(fallback)
-            .expect("关闭后至少保留一个标签")
+            .expect("at least one tab remains after close")
             .to_string();
     }
 }
 
-fn hide_workspace(app: &tauri::AppHandle, workspace: &Workspace) {
+fn hide_workspace(app: &tauri::AppHandle, workspace: &Workspace) -> Result<(), String> {
+    let mut errors = Vec::new();
     for entry in workspace.tabs.iter() {
         if let Some(webview) = app.get_webview(&entry.label) {
-            let _ = webview.hide();
+            if let Err(error) = super::hide_native_surface(&webview) {
+                errors.push(format!("{}: {error}", entry.label));
+            }
         }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Failed to hide native browser tab: {}",
+            errors.join("; ")
+        ))
     }
 }
 
-fn hide_all(app: &tauri::AppHandle, workspaces: &HashMap<String, Workspace>) {
-    for workspace in workspaces.values() {
-        hide_workspace(app, workspace);
+fn hide_all(app: &tauri::AppHandle, workspaces: &HashMap<String, Workspace>) -> Result<(), String> {
+    let mut errors = Vec::new();
+    // Hiding is fail-safe: try every workspace even after one physical ACK
+    // fails, then return the aggregate so the caller keeps logical visibility
+    // unchanged and can retry the transition.
+    for (session_id, workspace) in workspaces {
+        if let Err(error) = hide_workspace(app, workspace) {
+            errors.push(format!("{session_id}: {error}"));
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
     }
 }
 
@@ -3170,11 +3718,11 @@ fn workspace_may_present_native_surface(
 }
 
 fn show_active_workspace(app: &tauri::AppHandle, workspace: &Workspace) -> Result<(), String> {
-    hide_workspace(app, workspace);
-    let entry = active_entry(workspace).ok_or_else(|| "当前标签页不存在".to_string())?;
+    hide_workspace(app, workspace)?;
+    let entry = active_entry(workspace).ok_or_else(|| "Current tab does not exist".to_string())?;
     let webview = app
         .get_webview(&entry.label)
-        .ok_or_else(|| "当前浏览器标签页表面不存在".to_string())?;
+        .ok_or_else(|| "Current browser tab surface does not exist".to_string())?;
     super::show_native_surface(&webview, workspace.bounds)
 }
 
@@ -3193,7 +3741,7 @@ fn reconcile_workspace_close(
             .tabs
             .by_token(&token)
             .cloned()
-            .expect("关闭清单来自同一工作区快照");
+            .expect("close list came from the same workspace snapshot");
         match close_entry(&entry) {
             Ok(()) => {
                 super::unregister_browser_core_webview_binding(&entry.label);
@@ -3206,7 +3754,7 @@ fn reconcile_workspace_close(
         Ok(())
     } else {
         Err(format!(
-            "关闭对话浏览器标签页失败，仍有 {} 个表面可重试: {}",
+            "Failed to close conversation browser tabs; {} surfaces remain retryable: {}",
             workspace.tabs.len(),
             errors.join("; ")
         ))
@@ -3230,7 +3778,7 @@ fn reconcile_staged_close(
         let entry = staged_tabs
             .get(&key)
             .cloned()
-            .expect("待关闭 staging 清单来自同一映射快照");
+            .expect("pending staging close list came from the same mapping snapshot");
         match close_entry(&entry) {
             Ok(()) => {
                 super::unregister_browser_core_webview_binding(&entry.label);
@@ -3249,7 +3797,7 @@ fn reconcile_staged_close(
             .filter(|(owner_session, _)| owner_session == session_id)
             .count();
         Err(format!(
-            "关闭待提交浏览器标签失败，仍有 {survivors} 个表面可重试: {}",
+            "Failed to close pending browser tabs; {survivors} surfaces remain retryable: {}",
             errors.join("; ")
         ))
     }
@@ -3271,7 +3819,7 @@ fn reconcile_quarantined_close(
         let entry = quarantined_tabs
             .get(&key)
             .cloned()
-            .expect("隔离清单来自同一映射快照");
+            .expect("quarantine list came from the same mapping snapshot");
         match close_entry(&entry) {
             Ok(()) => {
                 super::unregister_browser_core_webview_binding(&entry.label);
@@ -3288,7 +3836,7 @@ fn reconcile_quarantined_close(
             .filter(|(owner_session, _)| owner_session == session_id)
             .count();
         Err(format!(
-            "关闭隔离浏览器标签失败，仍有 {survivors} 个表面可重试: {}",
+            "Failed to close quarantined browser tabs; {survivors} surfaces remain retryable: {}",
             errors.join("; ")
         ))
     }
@@ -3299,7 +3847,7 @@ fn close_workspace(app: &tauri::AppHandle, workspace: &mut Workspace) -> Result<
         if let Some(webview) = app.get_webview(&entry.label) {
             webview
                 .close()
-                .map_err(|error| format!("关闭系统 WebView 失败: {error}"))?;
+                .map_err(|error| format!("Failed to close system WebView: {error}"))?;
         }
         Ok(())
     })
@@ -3329,7 +3877,7 @@ fn emit_control_changed(
             if let Err(error) =
                 manager.release_user_control_if_idle(&release_session_id, snapshot.revision)
             {
-                eprintln!("[browser] 自动交还浏览器控制权失败: {error}");
+                eprintln!("[browser] Failed to return browser control automatically: {error}");
             }
         });
     }
@@ -3343,9 +3891,150 @@ fn sanitize_marker_url(url: String, expected_tab_token: &str) -> String {
     }
 }
 
+/// A URL may enter native page history only when the host can also publish and
+/// persist it. Applying the restore-size ceiling at the navigation-policy seam
+/// prevents a remote page from committing an oversized HTTP(S) URL that later
+/// callbacks would have to discard, leaving the WebView and host state split.
+fn is_trackable_surface_url(url: &str) -> bool {
+    url.len() <= MAX_RESTORE_URL_LEN && super::super::is_allowed_url(url)
+}
+
+fn validated_surface_url(url: String, expected_tab_token: &str) -> Option<String> {
+    let url = sanitize_marker_url(url, expected_tab_token);
+    // The current tab's bootstrap marker canonicalizes to about:blank above.
+    // A marker carrying any other valid tab/session token is still an
+    // implementation URL and must never become address-bar or restore state.
+    if internal_marker_token(&url).is_some() || super::is_browser_core_binding_url(&url) {
+        return None;
+    }
+    is_trackable_surface_url(&url).then_some(url)
+}
+
+fn committed_top_level_url(
+    payload_url: &str,
+    live_url: Option<&str>,
+    expected_tab_token: &str,
+) -> Option<String> {
+    if super::is_browser_core_binding_url(payload_url) {
+        return None;
+    }
+    let payload_url = validated_surface_url(payload_url.to_string(), expected_tab_token)?;
+    let live_url = live_url
+        .filter(|url| !super::is_browser_core_binding_url(url))
+        .and_then(|url| validated_surface_url(url.to_string(), expected_tab_token))?;
+    (payload_url == live_url).then_some(payload_url)
+}
+
+/// Commit host-owned in-memory navigation state before consulting the
+/// publication barrier. Native engines may deliver a synchronous commit while
+/// a new/restored tab is still staged; suppressing UI and durable side effects
+/// must not also discard the only authoritative URL that the later publication
+/// transaction needs.
+fn commit_surface_url_before_publication(
+    publication: &std::sync::atomic::AtomicBool,
+    last_known_url: &parking_lot::RwLock<String>,
+    same_document_title: Option<&parking_lot::RwLock<Option<(String, String)>>>,
+    committed_url: &str,
+) -> Option<bool> {
+    let previous_url = {
+        let mut previous = last_known_url.write();
+        if *previous == committed_url {
+            None
+        } else {
+            let old = previous.clone();
+            *previous = committed_url.to_string();
+            Some(old)
+        }
+    };
+    if let (Some(title), Some(previous_url)) = (same_document_title, previous_url.as_deref()) {
+        if let Some((title_url, _)) = title.write().as_mut() {
+            if title_url == previous_url {
+                *title_url = committed_url.to_string();
+            }
+        }
+    }
+    publication
+        .load(std::sync::atomic::Ordering::SeqCst)
+        .then_some(previous_url.is_some())
+}
+
+fn is_fragment_only_navigation(previous_url: &str, next_url: &str) -> bool {
+    if previous_url == next_url {
+        return false;
+    }
+    let (Ok(mut previous), Ok(mut next)) =
+        (tauri::Url::parse(previous_url), tauri::Url::parse(next_url))
+    else {
+        return false;
+    };
+    previous.set_fragment(None);
+    next.set_fragment(None);
+    previous == next
+}
+
+/// Resolve the current top-level URL without allowing one transient engine
+/// value to remove a live tab or invalidate the whole restore manifest.
+/// The host-owned last committed value is authoritative. `Webview::url()` is
+/// only a corruption-recovery fallback when that host value is invalid.
+fn resolve_surface_url(
+    entry: &SurfaceEntry,
+    webview: Option<&tauri::Webview>,
+) -> Result<String, String> {
+    let live_url = webview
+        .and_then(|webview| webview.url().ok())
+        .map(|url| url.to_string());
+    resolve_surface_url_value(entry, live_url)
+}
+
+fn resolve_surface_url_value(
+    entry: &SurfaceEntry,
+    live_url: Option<String>,
+) -> Result<String, String> {
+    let fallback = validated_surface_url(entry.last_known_url(), &entry.token);
+    let live_url = live_url.and_then(|raw_url| {
+        if has_internal_marker_for_token(&raw_url, &entry.token)
+            || super::is_browser_core_binding_url(&raw_url)
+        {
+            return None;
+        }
+        let url = validated_surface_url(raw_url, &entry.token)?;
+        // `about:blank` is a common transient replacement value. A completed
+        // top-level blank navigation updates last_known_url in on_page_load;
+        // until then it must not overwrite a real restore target.
+        if url == "about:blank" {
+            return None;
+        }
+        Some(url)
+    });
+    // The host-owned Finished/same-document commit remains authoritative,
+    // preventing HTTP/HTTPS redirect starts from flashing into the address bar.
+    if let Some(fallback) = fallback {
+        return Ok(fallback);
+    }
+
+    if let Some(url) = live_url {
+        entry.remember_url(&url);
+        return Ok(url);
+    }
+
+    Err("Browser tab has no recoverable top-level URL".to_string())
+}
+
 fn has_internal_marker_for_token(url: &str, expected_tab_token: &str) -> bool {
     is_valid_token(expected_tab_token)
         && internal_marker_token(url).is_some_and(|token| token == expected_tab_token)
+}
+
+fn has_reserved_marker_shape(url: &str) -> bool {
+    const PREFIXES: [&str; 6] = [
+        "about:blank#pinvou-session-",
+        "about:blank#pinvou-tab-",
+        "about:blank%23pinvou-session-",
+        "about:blank%23pinvou-tab-",
+        "about:blank#pinvou-webdriver-bind-",
+        "about:blank%23pinvou-webdriver-bind-",
+    ];
+    PREFIXES.iter().any(|prefix| url.starts_with(prefix))
 }
 
 fn internal_marker_token(url: &str) -> Option<&str> {
@@ -3372,7 +4061,14 @@ fn marked_blank_url(url: &str, tab_token: &str) -> String {
     }
 }
 
-fn browser_initialization_script(cdp_tab_token: Option<&str>) -> String {
+fn browser_initialization_script(
+    cdp_tab_token: Option<&str>,
+    location_signal_nonce: &str,
+) -> String {
+    debug_assert!(location_signal_nonce.len() == 32);
+    debug_assert!(location_signal_nonce
+        .bytes()
+        .all(|byte| byte.is_ascii_hexdigit()));
     let bootstrap_identity = cdp_tab_token
         .map(|tab_token| {
             debug_assert!(is_valid_token(tab_token));
@@ -3393,6 +4089,33 @@ fn browser_initialization_script(cdp_tab_token: Option<&str>) -> String {
 (() => {{
 {bootstrap_identity}
   const deferSignal = globalThis.queueMicrotask.bind(globalThis);
+  const signalLocationChange = () => {{
+    deferSignal(() => {{
+      try {{ globalThis.location.href = '{LOCATION_CHANGE_SCHEME}://history/{location_signal_nonce}'; }} catch (_) {{}}
+    }});
+  }};
+  const nativePushState = globalThis.history.pushState;
+  const nativeReplaceState = globalThis.history.replaceState;
+  Object.defineProperty(globalThis.history, 'pushState', {{
+    configurable: true,
+    writable: true,
+    value: function (...args) {{
+      const result = Reflect.apply(nativePushState, this, args);
+      signalLocationChange();
+      return result;
+    }}
+  }});
+  Object.defineProperty(globalThis.history, 'replaceState', {{
+    configurable: true,
+    writable: true,
+    value: function (...args) {{
+      const result = Reflect.apply(nativeReplaceState, this, args);
+      signalLocationChange();
+      return result;
+    }}
+  }});
+  globalThis.addEventListener('popstate', signalLocationChange, {{ passive: true }});
+  globalThis.addEventListener('hashchange', signalLocationChange, {{ passive: true }});
   const signalTakeover = (event) => {{
     if (!event.isTrusted) return;
     deferSignal(() => {{
@@ -3418,6 +4141,14 @@ fn user_takeover_interaction(url: &tauri::Url) -> Option<&str> {
         "wheel" => Some("wheel"),
         _ => None,
     }
+}
+
+fn location_change_signal_nonce(url: &tauri::Url) -> Option<&str> {
+    if url.scheme() != LOCATION_CHANGE_SCHEME || url.host_str() != Some("history") {
+        return None;
+    }
+    let nonce = url.path().trim_matches('/');
+    (nonce.len() == 32 && nonce.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(nonce)
 }
 
 fn is_valid_token(token: &str) -> bool {
@@ -3522,6 +4253,11 @@ mod tests {
                     created_by_request_id: None,
                     published: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     created_at_revision: None,
+                    last_known_url: Arc::new(parking_lot::RwLock::new("about:blank".to_string())),
+                    last_known_title: Arc::new(parking_lot::RwLock::new(None)),
+                    user_navigation: Arc::new(parking_lot::Mutex::new(
+                        UserNavigationState::default(),
+                    )),
                 }),
                 active_tab: token,
                 bounds: None,
@@ -3548,7 +4284,230 @@ mod tests {
             created_by_request_id: creation_id.map(ToOwned::to_owned),
             published: Arc::new(std::sync::atomic::AtomicBool::new(published)),
             created_at_revision: None,
+            last_known_url: Arc::new(parking_lot::RwLock::new("about:blank".to_string())),
+            last_known_title: Arc::new(parking_lot::RwLock::new(None)),
+            user_navigation: Arc::new(parking_lot::Mutex::new(UserNavigationState::default())),
         }
+    }
+
+    #[test]
+    fn last_known_url_stays_authoritative_over_live_webview_samples() {
+        let entry = test_entry("0123456789abcdef", "test-webview", 1, true, None);
+        entry.remember_url("http://127.0.0.1:8765/snake.html");
+        entry.begin_external_navigation(true);
+
+        assert_eq!(
+            resolve_surface_url_value(&entry, None).unwrap(),
+            "http://127.0.0.1:8765/snake.html"
+        );
+        for live_sample in [
+            "https://example.com/a-different-page",
+            "relative/path",
+            "about:blank",
+            "about:blank#pinvou-session-0123456789abcdef",
+            "about:blank#pinvou-tab-0123456789abcdef",
+            "about:blank%23pinvou-session-0123456789abcdef",
+            "about:blank%23pinvou-tab-0123456789abcdef",
+            "about:blank#pinvou-session-fedcba9876543210",
+            "about:blank#pinvou-tab-fedcba9876543210",
+            "about:blank%23pinvou-session-fedcba9876543210",
+            "about:blank%23pinvou-tab-fedcba9876543210",
+        ] {
+            assert_eq!(
+                resolve_surface_url_value(&entry, Some(live_sample.to_string())).unwrap(),
+                "http://127.0.0.1:8765/snake.html",
+                "status/persistence sampling must not bypass the Finished commit boundary"
+            );
+        }
+
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            resolve_surface_url_value(
+                &entry,
+                Some(format!(
+                    "about:blank#pinvou-webdriver-bind-{}",
+                    "a".repeat(64)
+                )),
+            )
+            .unwrap(),
+            "http://127.0.0.1:8765/snake.html"
+        );
+
+        assert_eq!(entry.last_known_url(), "http://127.0.0.1:8765/snake.html");
+    }
+
+    #[test]
+    fn legal_live_url_repairs_only_an_invalid_host_fallback() {
+        let entry = test_entry("0123456789abcdef", "test-webview", 1, true, None);
+
+        entry.remember_url("relative/path");
+        assert!(resolve_surface_url_value(&entry, None).is_err());
+        for rejected_live in [
+            "relative/path",
+            "about:blank",
+            "about:blank#pinvou-session-0123456789abcdef",
+            "about:blank#pinvou-tab-0123456789abcdef",
+            "about:blank%23pinvou-session-0123456789abcdef",
+            "about:blank%23pinvou-tab-0123456789abcdef",
+            "about:blank#pinvou-session-fedcba9876543210",
+            "about:blank#pinvou-tab-fedcba9876543210",
+            "about:blank%23pinvou-session-fedcba9876543210",
+            "about:blank%23pinvou-tab-fedcba9876543210",
+        ] {
+            assert!(resolve_surface_url_value(&entry, Some(rejected_live.to_string())).is_err());
+            assert_eq!(entry.last_known_url(), "relative/path");
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let binding_marker = format!("about:blank#pinvou-webdriver-bind-{}", "a".repeat(64));
+            assert!(resolve_surface_url_value(&entry, Some(binding_marker)).is_err());
+            assert_eq!(entry.last_known_url(), "relative/path");
+        }
+
+        assert_eq!(
+            resolve_surface_url_value(
+                &entry,
+                Some("http://127.0.0.1:8765/recovered.html".to_string()),
+            )
+            .unwrap(),
+            "http://127.0.0.1:8765/recovered.html"
+        );
+        assert_eq!(
+            entry.last_known_url(),
+            "http://127.0.0.1:8765/recovered.html"
+        );
+
+        entry.begin_external_navigation(true);
+        assert_eq!(
+            resolve_surface_url_value(
+                &entry,
+                Some("https://example.com/must-not-replace-recovery".to_string()),
+            )
+            .unwrap(),
+            "http://127.0.0.1:8765/recovered.html"
+        );
+    }
+
+    #[test]
+    fn finished_top_level_commit_requires_matching_payload_and_live_url() {
+        let token = "0123456789abcdef";
+        let committed = "http://127.0.0.1:8765/snake.html";
+
+        assert_eq!(
+            committed_top_level_url(committed, Some(committed), token),
+            Some(committed.to_string())
+        );
+        assert_eq!(committed_top_level_url(committed, None, token), None);
+        assert_eq!(
+            committed_top_level_url(committed, Some("https://example.com/redirect"), token),
+            None
+        );
+        assert_eq!(
+            committed_top_level_url("relative/path", Some("relative/path"), token),
+            None
+        );
+
+        for marker in [
+            "about:blank#pinvou-session-0123456789abcdef",
+            "about:blank#pinvou-tab-0123456789abcdef",
+            "about:blank%23pinvou-session-0123456789abcdef",
+            "about:blank%23pinvou-tab-0123456789abcdef",
+        ] {
+            assert_eq!(
+                committed_top_level_url(marker, Some(marker), token),
+                Some("about:blank".to_string())
+            );
+            assert_eq!(
+                committed_top_level_url(committed, Some(marker), token),
+                None
+            );
+        }
+
+        for marker in [
+            "about:blank#pinvou-session-fedcba9876543210",
+            "about:blank#pinvou-tab-fedcba9876543210",
+            "about:blank%23pinvou-session-fedcba9876543210",
+            "about:blank%23pinvou-tab-fedcba9876543210",
+        ] {
+            assert_eq!(committed_top_level_url(marker, Some(marker), token), None);
+            assert_eq!(
+                committed_top_level_url(committed, Some(marker), token),
+                None
+            );
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let binding_marker = format!("about:blank#pinvou-webdriver-bind-{}", "a".repeat(64));
+            assert_eq!(
+                committed_top_level_url(&binding_marker, Some(&binding_marker), token),
+                None
+            );
+            assert_eq!(
+                committed_top_level_url(committed, Some(&binding_marker), token),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn unpublished_surface_keeps_in_memory_commit_behind_publication_barrier() {
+        let publication = std::sync::atomic::AtomicBool::new(false);
+        let last_known_url = parking_lot::RwLock::new("https://example.com/page".to_string());
+        let title = parking_lot::RwLock::new(Some((
+            "https://example.com/page".to_string(),
+            "Example".to_string(),
+        )));
+
+        assert_eq!(
+            commit_surface_url_before_publication(
+                &publication,
+                &last_known_url,
+                Some(&title),
+                "https://example.com/page#ready",
+            ),
+            None,
+            "an unpublished surface must not emit UI/control side effects"
+        );
+        assert_eq!(*last_known_url.read(), "https://example.com/page#ready");
+        assert_eq!(
+            *title.read(),
+            Some((
+                "https://example.com/page#ready".to_string(),
+                "Example".to_string(),
+            )),
+            "the staging transaction still needs the committed URL/title pair"
+        );
+
+        publication.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            commit_surface_url_before_publication(
+                &publication,
+                &last_known_url,
+                None,
+                "https://example.com/next",
+            ),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn completed_navigation_to_owned_blank_marker_replaces_remote_restore_url() {
+        let token = "0123456789abcdef";
+        let marker = "about:blank#pinvou-tab-0123456789abcdef";
+        let entry = test_entry(token, "test-webview", 1, true, None);
+        entry.remember_url("https://example.com/remote");
+
+        let committed = committed_top_level_url(marker, Some(marker), token)
+            .expect("the exact published tab marker is a completed blank page");
+        entry.remember_url(&committed);
+
+        assert_eq!(entry.last_known_url(), "about:blank");
+        assert_eq!(
+            resolve_surface_url_value(&entry, None).unwrap(),
+            "about:blank"
+        );
     }
 
     #[test]
@@ -3586,6 +4545,11 @@ mod tests {
                     created_by_request_id: Some(format!("create-{index}")),
                     published: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     created_at_revision: None,
+                    last_known_url: Arc::new(parking_lot::RwLock::new("about:blank".to_string())),
+                    last_known_title: Arc::new(parking_lot::RwLock::new(None)),
+                    user_navigation: Arc::new(parking_lot::Mutex::new(
+                        UserNavigationState::default(),
+                    )),
                 },
             );
         }
@@ -4019,6 +4983,11 @@ mod tests {
                     created_by_request_id: None,
                     published: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     created_at_revision: None,
+                    last_known_url: Arc::new(parking_lot::RwLock::new("about:blank".to_string())),
+                    last_known_title: Arc::new(parking_lot::RwLock::new(None)),
+                    user_navigation: Arc::new(parking_lot::Mutex::new(
+                        UserNavigationState::default(),
+                    )),
                 }),
                 active_tab: token,
                 bounds: None,
@@ -4109,7 +5078,10 @@ mod tests {
 
     #[test]
     fn takeover_script_exposes_only_a_trusted_low_privilege_signal() {
-        let script = browser_initialization_script(Some("0123456789abcdef"));
+        let script = browser_initialization_script(
+            Some("0123456789abcdef"),
+            "0123456789abcdef0123456789abcdef",
+        );
         assert!(script.contains("event.isTrusted"));
         assert!(script.contains("queueMicrotask.bind"));
         assert!(script.contains("pinvou-user-takeover://interaction/"));
@@ -4123,11 +5095,76 @@ mod tests {
         assert!(!script.contains("PINVOU_BROWSER_TAB_TOKEN"));
         assert!(!script.contains("__TAURI__"));
         assert!(!script.contains("invoke("));
+        assert!(script.contains("history.pushState"));
+        assert!(script.contains("history.replaceState"));
+        assert!(script.contains("hashchange"));
+        assert!(
+            script.contains("pinvou-location-change://history/0123456789abcdef0123456789abcdef")
+        );
+    }
+
+    #[test]
+    fn same_document_signal_requires_the_exact_per_webview_nonce() {
+        let url =
+            tauri::Url::parse("pinvou-location-change://history/0123456789abcdef0123456789abcdef")
+                .unwrap();
+        assert_eq!(
+            location_change_signal_nonce(&url),
+            Some("0123456789abcdef0123456789abcdef")
+        );
+        for rejected in [
+            "pinvou-location-change://other/0123456789abcdef0123456789abcdef",
+            "pinvou-location-change://history/short",
+            "pinvou-location-change://history/0123456789abcdef0123456789abcdef-extra",
+        ] {
+            assert_eq!(
+                location_change_signal_nonce(&tauri::Url::parse(rejected).unwrap()),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn only_fragment_changes_bypass_the_cross_document_load_gate() {
+        assert!(is_fragment_only_navigation(
+            "https://example.com/path?q=1#old",
+            "https://example.com/path?q=1#new"
+        ));
+        assert!(!is_fragment_only_navigation(
+            "https://example.com/path",
+            "https://example.com/other"
+        ));
+        assert!(!is_fragment_only_navigation(
+            "https://example.com/path",
+            "https://example.com/path"
+        ));
+    }
+
+    #[test]
+    fn oversized_http_self_navigation_is_rejected_before_native_commit() {
+        let prefix = "https://example.com/";
+        let at_limit = format!("{prefix}{}", "a".repeat(MAX_RESTORE_URL_LEN - prefix.len()));
+        let oversized = format!("{at_limit}a");
+
+        assert_eq!(at_limit.len(), MAX_RESTORE_URL_LEN);
+        assert!(super::super::super::is_allowed_url(&oversized));
+        assert!(is_trackable_surface_url(&at_limit));
+        assert!(!is_trackable_surface_url(&oversized));
+        assert_eq!(
+            validated_surface_url(oversized, "0123456789abcdef"),
+            None,
+            "the navigation-policy callback must reject an allowed-scheme URL that cannot be persisted"
+        );
     }
 
     #[test]
     fn browser_core_page_script_contains_no_task_or_tab_identity() {
-        let script = browser_initialization_script(None);
+        let location_nonce = "fedcbafedcbafedcbafedcbafedcbafe";
+        let script = browser_initialization_script(None, location_nonce);
+        assert!(
+            script.contains(location_nonce),
+            "the per-WebView history signal nonce is intentionally page-visible"
+        );
         assert!(!script.contains("0123456789abcdef"));
         assert!(!script.contains("PINVOU_BROWSER_BOOTSTRAP_TOKEN"));
         assert!(!script.contains("session_token"));
@@ -4228,6 +5265,21 @@ mod tests {
         assert_eq!(user_takeover_interaction(&pointer), Some("pointerdown"));
         assert_eq!(user_takeover_interaction(&unrelated), None);
         assert_eq!(user_takeover_interaction(&unknown), None);
+        for allowed_agent_target in [
+            "http://example.com/interaction/pointerdown",
+            "https://example.com/interaction/pointerdown",
+            "about:blank",
+        ] {
+            let allowed_agent_target = allowed_agent_target.parse::<tauri::Url>().unwrap();
+            assert_eq!(
+                user_takeover_interaction(&allowed_agent_target),
+                None,
+                "an admitted Agent target must not enter the control-taking callback branch"
+            );
+        }
+        assert!(!super::super::super::is_allowed_url(
+            "pinvou-user-takeover://interaction/pointerdown"
+        ));
     }
 
     #[test]
@@ -4262,6 +5314,60 @@ mod tests {
             .control
             .bump(Some(NativeControlOwner::User));
         assert!(!surface.assert_lease(&lease).unwrap());
+    }
+
+    #[test]
+    fn agent_tab_action_dispatch_is_atomic_with_final_control_authorization() {
+        let mut surface = surface_with_workspace("session-a");
+        let control = {
+            let workspace = surface.workspaces.get_mut("session-a").unwrap();
+            workspace
+                .tabs
+                .bind_target("0123456789abcdef", "target-a")
+                .unwrap();
+            Arc::clone(&workspace.control)
+        };
+        let (snapshot, opaque_lease) = control.issue_agent_lease();
+        let authorization = NativeTabLease::from_assertion(
+            "session-a",
+            "0123456789abcdef",
+            "target-a",
+            snapshot.revision,
+            opaque_lease,
+        )
+        .unwrap();
+        assert!(control.begin_agent_operation(&authorization, false));
+
+        let dispatches = std::sync::atomic::AtomicUsize::new(0);
+        assert_eq!(
+            dispatch_agent_tab_action(
+                &surface.workspaces["session-a"],
+                "session-a",
+                "0123456789abcdef",
+                &authorization,
+                || {
+                    dispatches.fetch_add(1, Ordering::SeqCst);
+                    Ok("queued")
+                },
+            ),
+            Ok("queued")
+        );
+
+        control.bump(Some(NativeControlOwner::User));
+        assert_eq!(
+            dispatch_agent_tab_action(
+                &surface.workspaces["session-a"],
+                "session-a",
+                "0123456789abcdef",
+                &authorization,
+                || {
+                    dispatches.fetch_add(1, Ordering::SeqCst);
+                    Ok("must-not-run")
+                },
+            ),
+            Err("browser/control-lease-lost".to_string())
+        );
+        assert_eq!(dispatches.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -4356,6 +5462,11 @@ mod tests {
                     created_by_request_id: None,
                     published: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     created_at_revision: None,
+                    last_known_url: Arc::new(parking_lot::RwLock::new("about:blank".to_string())),
+                    last_known_title: Arc::new(parking_lot::RwLock::new(None)),
+                    user_navigation: Arc::new(parking_lot::Mutex::new(
+                        UserNavigationState::default(),
+                    )),
                 }),
                 active_tab: token,
                 bounds: None,

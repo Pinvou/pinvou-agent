@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createPinvouBrowserCoreCatalog } from '../src-tauri/resources/common/bundle/mcp-servers/browser-core-protocol.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (...segments) => readFileSync(path.join(root, ...segments), 'utf8');
@@ -68,6 +69,14 @@ const nativeHost = read(
   'platform',
   'host.rs',
 );
+const browserWrapper = read(
+  'src-tauri',
+  'resources',
+  'common',
+  'bundle',
+  'mcp-servers',
+  'browser-wrapper.mjs',
+);
 const main = read('src', 'app', 'main.jsx');
 const normalMacBuildEntrypoints = [
   read('package.json'),
@@ -90,22 +99,66 @@ test('macOS BrowserCore evaluates async JSON in the exact WKWebView page world',
   assert.match(cargo, /objc2-web-kit[\s\S]{0,260}"WKWebView"/);
 });
 
-test('macOS 地址状态只由主文档 commit 发布，不把重定向或 iframe 请求当成已导航', () => {
+test('macOS publishes address state only from top-level commits, not redirects or iframe requests', () => {
   const policyHandler = nativeHost.slice(
     nativeHost.indexOf('.on_navigation'),
     nativeHost.indexOf('.on_page_load'),
+  );
+  const crossDocumentPolicyHandler = policyHandler.slice(
+    policyHandler.indexOf('let binding_marker'),
   );
   const pageLoadHandler = nativeHost.slice(
     nativeHost.indexOf('.on_page_load'),
     nativeHost.indexOf('.on_document_title_changed'),
   );
+  const committedUrlResolver = nativeHost.slice(
+    nativeHost.indexOf('fn committed_top_level_url'),
+    nativeHost.indexOf('fn resolve_surface_url'),
+  );
+  const validatedUrlResolver = nativeHost.slice(
+    nativeHost.indexOf('fn validated_surface_url'),
+    nativeHost.indexOf('fn committed_top_level_url'),
+  );
 
-  assert.doesNotMatch(policyHandler, /emit\("browser:(?:navigation|tabs-changed)"/);
-  assert.match(pageLoadHandler, /payload\.event\(\) != PageLoadEvent::Started/);
-  assert.match(pageLoadHandler, /let committed_url = payload\.url\(\)\.as_str\(\)/);
+  // The nonce-authenticated history signal may publish a same-document URL;
+  // during a cross-document load it only advances that generation and waits
+  // for Finished; ordinary policy/redirect callbacks still cannot publish.
+  assert.match(policyHandler, /location_change_signal_nonce\(url\)/);
+  assert.match(policyHandler, /navigation\.navigation_in_flight\(\)/);
+  assert.match(policyHandler, /observe_same_document_during_load\(&live_url\)/);
+  assert.match(policyHandler, /finish_same_document\(&live_url\)/);
+  assert.doesNotMatch(
+    crossDocumentPolicyHandler,
+    /emit\("browser:(?:navigation|tabs-changed)"/,
+  );
+  assert.match(pageLoadHandler, /payload\.event\(\) != PageLoadEvent::Finished/);
+  assert.match(pageLoadHandler, /payload\.event\(\) == PageLoadEvent::Started/);
+  assert.match(pageLoadHandler, /observe_started\(&started_url\)/);
+  assert.match(pageLoadHandler, /NavigationCommitDecision::Stale/);
+  assert.match(
+    pageLoadHandler,
+    /committed_top_level_url\(\s*payload_url,\s*live_url\.as_deref\(\),\s*&committed_navigation_tab_token,/,
+  );
+  assert.doesNotMatch(pageLoadHandler, /has_internal_marker_for_token\(payload_url/);
+  assert.match(pageLoadHandler, /is_browser_core_binding_url\(payload_url\)/);
   assert.match(pageLoadHandler, /emit\("browser:navigation", &payload\)/);
   assert.match(pageLoadHandler, /emit\("browser:tabs-changed", &payload\)/);
-  assert.match(pageLoadHandler, /is_browser_core_binding_url\(committed_url\)/);
+  assert.match(committedUrlResolver, /is_browser_core_binding_url\(payload_url\)/);
+  assert.match(validatedUrlResolver, /sanitize_marker_url\(url, expected_tab_token\)/);
+  assert.match(validatedUrlResolver, /internal_marker_token\(&url\)\.is_some\(\)/);
+  assert.match(
+    committedUrlResolver,
+    /validated_surface_url\(payload_url\.to_string\(\), expected_tab_token\)\?/,
+  );
+  assert.match(
+    committedUrlResolver,
+    /live_url[\s\S]*\.filter\(\|url\| !super::is_browser_core_binding_url\(url\)\)/,
+  );
+  assert.match(
+    committedUrlResolver,
+    /validated_surface_url\(url\.to_string\(\), expected_tab_token\)/,
+  );
+  assert.match(committedUrlResolver, /\(payload_url == live_url\)\.then_some\(payload_url\)/);
 });
 
 test('macOS binding is host-authoritative and leaks no remote-page credential', () => {
@@ -154,6 +207,17 @@ test('macOS trusted input stays app-scoped and unsupported gestures fail closed'
   );
   assert.match(macos, /trusted-input-gesture-unavailable-on-wkwebview/);
   assert.match(macos, /dialog-backend-unavailable-on-wkwebview/);
+  const darwinCatalog = createPinvouBrowserCoreCatalog({ includeDialog: false });
+  assert.equal(
+    darwinCatalog.toolsListResult.tools.some((tool) => tool.name === 'handle_dialog'),
+    false,
+    'the macOS BrowserCore catalog must not advertise its unsupported dialog tool',
+  );
+  assert.match(
+    browserWrapper,
+    /includeDialog: process\.platform !== 'darwin'/,
+    'the host-core catalog must wire the macOS platform to the dialog filter',
+  );
   assert.match(
     platform,
     /target_os = "macos"[\s\S]{0,260}macos::handle_dialog\(webview, authorization, action, prompt_text\)/,
@@ -266,12 +330,12 @@ test('BrowserCore marks only dispatched evaluate_script interruptions commit-unk
   );
   assert.match(
     core,
-    /async fn call_mutating\([\s\S]{0,500}BrowserCoreEvaluationMode::MayMutate/,
+    /async fn call_mutating\([\s\S]{0,240}authorization: &NativeTabLease[\s\S]{0,500}BrowserCoreEvaluationMode::MayMutate,[\s\S]{0,100}Some\(authorization\)/,
   );
-  assert.match(mutatingBranch, /call_mutating\(webview, "evaluate"/);
+  assert.match(mutatingBranch, /call_mutating\(webview, authorization, "evaluate"/);
   assert.match(mutatingBranch, /committed_platform_outcome\("Script evaluation", &error\)/);
   assert.equal(
-    (core.match(/call_mutating\(webview, "evaluate"/g) || []).length,
+    (core.match(/call_mutating\(webview, authorization, "evaluate"/g) || []).length,
     1,
     'only evaluate_script may opt into mutating script commit semantics',
   );
@@ -280,10 +344,22 @@ test('BrowserCore marks only dispatched evaluate_script interruptions commit-unk
     ['WKWebView', macEvaluation, 'callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler'],
     ['WebKitGTK', linuxEvaluation, 'call_async_javascript_function'],
   ]) {
-    assert.match(evaluation, /if !callback_state\.begin\(\) \{\s*return;\s*\}/, name);
+    assert.match(
+      evaluation,
+      /let dispatch = \|\| \{\s*if !callback_state\.begin\(\) \{\s*return Ok\(\(\)\);\s*\}/,
+      name,
+    );
+    assert.match(evaluation, /authorization: Option<&NativeTabLease>/, name);
+    assert.match(evaluation, /evaluation_authorization\(mode, authorization\)/, name);
+    assert.match(evaluation, /dispatch_script_mutation_if_authorized/, name);
     assert.ok(
       evaluation.indexOf('callback_state.begin()') < evaluation.indexOf(nativeCall),
       `${name} must cross the shared dispatch boundary before starting page JavaScript`,
+    );
+    assert.match(
+      evaluation,
+      new RegExp(`let dispatch = \\|\\| \\{[\\s\\S]*${nativeCall}[\\s\\S]*dispatch_script_mutation_if_authorized\\([\\s\\S]*dispatch`),
+      `${name} must pass the native JavaScript enqueue closure through final host authorization`,
     );
     assert.match(evaluation, /BrowserCoreEvaluationMode::MayMutate/, name);
     assert.match(evaluation, /ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION/, name);
@@ -291,6 +367,33 @@ test('BrowserCore marks only dispatched evaluate_script interruptions commit-unk
 
   assert.match(core, /ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION/);
   assert.match(core, /"retryable": false/);
+});
+
+test('hosted navigation carries the exact lease through generation begin and native enqueue', () => {
+  for (const method of [
+    'navigate_tab_for_agent',
+    'history_step_tab_for_agent',
+    'reload_tab_for_agent',
+  ]) {
+    const start = nativeHost.indexOf(`pub fn ${method}`);
+    assert.notEqual(start, -1, method);
+    const body = nativeHost.slice(start, nativeHost.indexOf('\n    pub fn ', start + 1));
+    assert.match(body, /authorization: &NativeTabLease/, method);
+    assert.match(body, /dispatch_agent_tab_action\(/, method);
+    assert.ok(
+      body.indexOf('dispatch_agent_tab_action(') < body.indexOf('begin_external_navigation('),
+      `${method} must begin its generation inside the final authorization seam`,
+    );
+  }
+  assert.match(
+    nativeHost,
+    /fn dispatch_agent_tab_action[\s\S]{0,800}dispatch_if_agent_authorized\(authorization, dispatch\)/,
+  );
+  assert.match(
+    browser,
+    /navigate_tab_for_agent\([\s\S]{0,240}&authorization/,
+    'initial blank reuse must pass its exact begun lease',
+  );
 });
 
 test('macOS native input scopes firstResponder and never focuses a hidden task surface', () => {
@@ -404,7 +507,7 @@ test('macOS post-dispatch focus failures become structured non-retryable tool ou
 
 test('macOS native-input provenance refresh is strict and callback grace stays bounded', () => {
   const macAuthorization = macos.slice(
-    macos.indexOf('fn authorize_agent_input_for_label'),
+    macos.indexOf('fn registered_control_for_authorization'),
     macos.indexOf('#[derive(Clone)]'),
   );
   const authorize = state.slice(
@@ -498,7 +601,7 @@ test('macOS browser release is atomic and fail-closed outside explicit preview b
   );
   const watch = browser.slice(
     browser.indexOf('pub fn spawn_watch'),
-    browser.indexOf('// -----------------------------------------------------------------------\n    // 生命周期'),
+    browser.indexOf('// -----------------------------------------------------------------------\n    // Lifecycle'),
   );
   const status = browser.slice(
     browser.indexOf('pub async fn status'),
@@ -527,7 +630,7 @@ test('macOS browser release is atomic and fail-closed outside explicit preview b
   );
   assert.match(
     main,
-    /if \(!browserNativeDisplayAvailable \|\| !browserSessionId\) return undefined;[\s\S]{0,180}browser_status/,
+    /if \(!browserNativeDisplayAvailable \|\| !browserSessionId\) return;[\s\S]*?const readiness = browserLifecycleListenersReadyRef\.current;[\s\S]*?Promise\.resolve\(readiness\)\.then[\s\S]*?browser_status/,
   );
   assert.match(main, /\{browserDockAvailable && browserPaneOpen/);
   assert.doesNotMatch(main, /navigator\.userAgent|target_os|browser-macos-preview/);

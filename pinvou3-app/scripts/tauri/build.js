@@ -1,4 +1,5 @@
 const { spawnSync } = require("node:child_process");
+const path = require("node:path");
 const { writeEffectiveArtifacts } = require("./effective-config.js");
 const {
   prepareCodexBridge,
@@ -197,10 +198,10 @@ function main() {
     : undefined;
   if (isDev) {
     prepareCodexBridge();
-    // Tauri dev 不应用安装包 resource overlay，因此开发进程需要直接指向
-    // 工作区内已校验的 vendor 入口。当前只有 Windows WebView2 暴露应用自有
-    // CDP；Linux 使用 BrowserCore/WebKitWebDriver，macOS 产品能力当前关闭；
-    // 两者都不能准备或回退到外部 Chrome。
+    // Tauri dev does not apply the package resource overlay, so the development process
+    // points directly to the verified workspace vendor entry. Only Windows WebView2 exposes
+    // app-owned CDP. Linux uses BrowserCore/WebKitWebDriver and macOS product capability is
+    // currently disabled; neither platform may prepare or fall back to external Chrome.
     prepareChromeDevtoolsMcpForPlatform();
     prepareWindowsCodexBridge();
     const developmentHost = prepareKnowledgeHost({ development: true });

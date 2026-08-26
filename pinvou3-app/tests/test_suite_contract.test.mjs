@@ -88,6 +88,17 @@ test("the full browser suite covers every platform-independent smoke", () => {
 test("the full browser suite has unique commands and a portable runner", () => {
   const labels = FULL_FRONTEND_SMOKES.map(({ kind, target }) => `${kind}:${target}`);
   assert.equal(new Set(labels).size, labels.length);
+  const npmCommand = commandFor({ kind: "npm", target: "test:bridge-smoke" });
+  if (process.platform === "win32") {
+    assert.equal(npmCommand.executable, process.execPath);
+    assert.match(npmCommand.args[0], /npm-cli\.js$/u);
+    assert.deepEqual(npmCommand.args.slice(1), ["run", "test:bridge-smoke"]);
+  } else {
+    assert.deepEqual(npmCommand, {
+      executable: "npm",
+      args: ["run", "test:bridge-smoke"],
+    });
+  }
   assert.deepEqual(commandFor({ kind: "node", target: "tests/example_smoke.js" }), {
     executable: process.execPath,
     args: ["tests/example_smoke.js"],

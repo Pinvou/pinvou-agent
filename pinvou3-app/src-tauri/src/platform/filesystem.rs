@@ -225,9 +225,10 @@ pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
     atomic_write_impl(path, content, false)
 }
 
-/// 与 `atomic_write` 相同的替换语义，但临时文件从创建起即使用私密权限。
-/// 用于包含密钥或无鉴权本地端口信息的配置，避免 Unix 上在 rename 前出现
-/// umask 默认权限窗口；Windows 继续依赖用户目录 ACL。
+/// Uses the same replacement semantics as `atomic_write`, but creates the temporary file
+/// with private permissions immediately. Use it for configurations containing secrets or
+/// unauthenticated local-port data to avoid a pre-rename default-umask window on Unix.
+/// Windows continues to rely on the user-directory ACL.
 pub(crate) fn atomic_write_private(path: &Path, content: &[u8]) -> io::Result<()> {
     atomic_write_impl(path, content, true)
 }

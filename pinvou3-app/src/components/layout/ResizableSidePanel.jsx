@@ -1,4 +1,4 @@
-import React, {
+import {
   createContext,
   useCallback,
   useContext,
@@ -24,7 +24,7 @@ function uniqueStorageKeys(keys) {
 
 function storedPreference(storageKey, legacyRatioStorageKeys, legacyPixelStorageKeys, fallback) {
   try {
-    const value = Number.parseFloat(localStorage.getItem(storageKey) || '');
+    const value = Number(localStorage.getItem(storageKey) || '');
     if (value > 0 && value < 1) {
       return {
         ratio: normalizeSidePanelRatio(value, fallback),
@@ -33,7 +33,7 @@ function storedPreference(storageKey, legacyRatioStorageKeys, legacyPixelStorage
       };
     }
     for (const key of legacyRatioStorageKeys) {
-      const legacyRatio = Number.parseFloat(localStorage.getItem(key) || '');
+      const legacyRatio = Number(localStorage.getItem(key) || '');
       if (legacyRatio > 0 && legacyRatio < 1) {
         return {
           ratio: normalizeSidePanelRatio(legacyRatio, fallback),
@@ -44,7 +44,7 @@ function storedPreference(storageKey, legacyRatioStorageKeys, legacyPixelStorage
     }
     let legacyPixelWidth = Number.NaN;
     for (const key of legacyPixelStorageKeys) {
-      const valueForKey = Number.parseFloat(localStorage.getItem(key) || '');
+      const valueForKey = Number(localStorage.getItem(key) || '');
       if (valueForKey > 1) {
         legacyPixelWidth = valueForKey;
         break;
@@ -67,11 +67,11 @@ function rememberRatio(storageKey, ratio, legacyStorageKeys) {
       if (key !== storageKey) localStorage.removeItem(key);
     }
   } catch {
-    // localStorage 不可用时仅保留当前窗口内的比例。
+    // When localStorage is unavailable, retain the ratio only for this window lifetime.
   }
 }
 
-/** 汇总任意深度的右侧面板，让应用外壳统一处理左导航和窄窗策略。 */
+/** Collect nested right-side panels so the app shell can apply one navigation/narrow policy. */
 export function SidePanelLayoutProvider({ children, onPresenceChange }) {
   const panelsRef = useRef(new Set());
   const reportPresence = useCallback((panelId, present) => {
@@ -95,8 +95,9 @@ export function SidePanelLayoutProvider({ children, onPresenceChange }) {
 }
 
 /**
- * 对话右侧面板的统一分栏：保存用户比例，容器变化时只计算临时宽度。
- * 当主区与面板的最小宽度无法同时满足时，面板自动切成单栏，不挤压主内容。
+ * Shared split layout for conversation-side panels. Persist the user's ratio and compute
+ * only a temporary width as the container changes. When the main and panel minimum widths
+ * cannot both fit, switch to a single pane instead of squeezing the main content.
  */
 export function ResizableSidePanel({
   children,
@@ -122,27 +123,21 @@ export function ResizableSidePanel({
   const panelRef = useRef(null);
   const resizeCleanupRef = useRef(null);
   const normalizedDefaultRatio = normalizeSidePanelRatio(defaultRatio);
-  const legacyStorageKeysRef = useRef(null);
-  if (!legacyStorageKeysRef.current) {
-    legacyStorageKeysRef.current = {
-      pixel: uniqueStorageKeys([legacyPixelStorageKey, ...legacyPixelStorageKeys]),
-      ratio: uniqueStorageKeys(legacyRatioStorageKeys),
-    };
-  }
-  const legacyStorageKeys = legacyStorageKeysRef.current;
-  const initialPreferenceRef = useRef(null);
-  if (!initialPreferenceRef.current) {
-    initialPreferenceRef.current = storedPreference(
+  const [legacyStorageKeys] = useState(() => ({
+    pixel: uniqueStorageKeys([legacyPixelStorageKey, ...legacyPixelStorageKeys]),
+    ratio: uniqueStorageKeys(legacyRatioStorageKeys),
+  }));
+  const [initialPreference] = useState(() => (
+    storedPreference(
       storageKey,
       legacyStorageKeys.ratio,
       legacyStorageKeys.pixel,
       normalizedDefaultRatio,
-    );
-  }
-  const legacyPixelWidthRef = useRef(initialPreferenceRef.current.legacyPixelWidth);
-  const [preferredRatio, setPreferredRatio] = useState(() => (
-    initialPreferenceRef.current.ratio
+    )
   ));
+  const legacyPixelWidthRef = useRef(initialPreference.legacyPixelWidth);
+  const initialLegacyRatioPendingRef = useRef(initialPreference.legacyRatioPending);
+  const [preferredRatio, setPreferredRatio] = useState(initialPreference.ratio);
   const [containerWidth, setContainerWidth] = useState(0);
   const constraints = useMemo(() => ({ minWidth, minMainWidth, maxWidthRatio }), [
     maxWidthRatio,
@@ -152,26 +147,26 @@ export function ResizableSidePanel({
   const layout = resolveSidePanelLayout(containerWidth, preferredRatio, constraints);
 
   useEffect(() => {
-    if (!initialPreferenceRef.current.legacyRatioPending) return;
-    initialPreferenceRef.current.legacyRatioPending = false;
+    if (!initialLegacyRatioPendingRef.current) return;
+    initialLegacyRatioPendingRef.current = false;
     rememberRatio(
       storageKey,
-      initialPreferenceRef.current.ratio,
+      initialPreference.ratio,
       [...legacyStorageKeys.ratio, ...legacyStorageKeys.pixel],
     );
-  }, [legacyStorageKeys, storageKey]);
+  }, [initialPreference.ratio, legacyStorageKeys, storageKey]);
 
   useEffect(() => {
-    if (!reportPresence || !visible) return undefined;
+    if (!reportPresence || !visible) return;
     reportPresence(presenceId, true);
     return () => reportPresence(presenceId, false);
   }, [presenceId, reportPresence, visible]);
 
   useLayoutEffect(() => {
-    if (!visible) return undefined;
+    if (!visible) return;
     const panel = panelRef.current;
     const container = panel?.parentElement;
-    if (!container) return undefined;
+    if (!container) return;
     let frame = 0;
     const measure = () => {
       if (frame) cancelAnimationFrame(frame);
@@ -326,6 +321,7 @@ export function ResizableSidePanel({
       data-preferred-ratio={preferredRatio.toFixed(4)}
     >
       {!layout.overlay && (
+        // biome-ignore lint/a11y/useSemanticElements: this focusable WAI-ARIA splitter handles pointer resizing; Chromium's native hr behavior breaks the drag/release sequence
         <div
           role="separator"
           tabIndex={0}

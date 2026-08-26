@@ -399,14 +399,16 @@ impl Pinvou3Bridge {
             rendered.push_str("\n\n");
             rendered.push_str(block);
         }
-        // [pinvou3] 浏览器能力静态不可用时,把可读原因与恢复指引注入模型(§浏览器能力
-        // 已声明能力存在与"工具缺失怎么办"的通用兜底;这里给出精确原因)。只在工作模式
-        // 注入,且只在不可用时追加——可用时 system 文本逐字节不变,不破 prefix-cache。
-        // 门控经 bridge 语义方法（含外部 ACP 运行时轴排除），与工具注册口径
-        // （见 build_engine_config_for_session）同源。
+        // When browser capabilities are statically unavailable, inject a model-readable
+        // reason and recovery guidance. The Browser capabilities section already explains
+        // the general missing-tool fallback; this block supplies the precise reason. Add it
+        // only to Work-mode sessions and only while unavailable, preserving the byte-exact
+        // system prompt (and prefix cache) on the healthy path. The bridge semantic gate,
+        // including exclusion of external ACP runtimes, is shared with tool registration in
+        // `build_engine_config_for_session`.
         if self.exposes_browser_mcp(session_id) {
             if let Some(hint) = self.bundle.browser_unavailability_reason() {
-                rendered.push_str("\n\n## 浏览器能力不可用\n");
+                rendered.push_str("\n\n## Browser capabilities unavailable\n");
                 rendered.push_str(&hint);
             }
         }
@@ -478,8 +480,9 @@ impl Pinvou3Bridge {
         !external_acp && self.session_policy(session_id).supports_multi_agent_mode()
     }
 
-    /// 该 session 是否暴露 browser MCP 工具。Plain 工作模式只是必要条件；外部
-    /// ACP 会话虽然同属 Plain，却不由 Pinvou Engine 执行，必须经运行时轴排除。
+    /// Returns whether this session exposes Browser MCP tools. Plain Work mode is necessary
+    /// but not sufficient: external ACP sessions are also Plain, yet do not execute through
+    /// the Pinvou Engine and must be excluded on the runtime axis.
     pub fn exposes_browser_mcp(&self, session_id: &str) -> bool {
         let external_acp = self
             .external_acp_session_predicate
@@ -1346,10 +1349,11 @@ impl Pinvou3Bridge {
             allow_shell: self.allow_shell(),
             trust_mode: true,
             notes_path: paths::notes_path(),
-            // 工作模式门控：browser MCP 工具只对 assistant 引擎（工作模式）会话暴露。
-            // 全局 mcp.json 不含 browser 条目；此处生成「全局 + browser」的会话专用
-            // 配置文件（条件不满足时直接回落全局配置）。codex ACP 等外部 Agent 不走
-            // 本路径，天然拿不到浏览器工具。
+            // Work-mode gate: Browser MCP tools are exposed only to assistant Engine
+            // sessions. Global mcp.json has no browser entry; this creates a session-specific
+            // global-plus-browser configuration and falls back to global configuration when
+            // prerequisites are missing. External Agents such as Codex ACP do not use this
+            // path and therefore cannot receive browser tools.
             mcp_config_path: self.bundle.work_mode_mcp_config_path(),
             skills_dir: self.bundle.skills_dir.clone(),
             plugin_registry: None,
@@ -1567,13 +1571,15 @@ impl Pinvou3Bridge {
         cfg.exec_policy_engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
             self.scope_deny_ruleset(session_id)
         ]);
-        // 代码模式（原生代码会话）与外部 ACP 会话不暴露 browser MCP 工具：回落
-        // 全局 mcp.json（无 browser 条目）。系统提示词与工具注册统一走同一门控。
+        // Native Code-mode and external ACP sessions do not expose Browser MCP tools. They
+        // fall back to global mcp.json, which has no browser entry. System instructions and
+        // tool registration share this gate.
         if !self.exposes_browser_mcp(session_id) {
             cfg.mcp_config_path = crate::platform::paths::mcp_config_path();
         } else {
-            // 工作会话使用独立 browser wrapper 配置：Agent 的工具上下文固定到
-            // 本会话 WebView2，不受其他会话打开/切换页面影响。
+            // A Work-mode session uses its own browser-wrapper configuration, pinning the
+            // Agent tool context to this session's WebView2 page so other sessions cannot
+            // redirect it by opening or switching pages.
             cfg.mcp_config_path = self
                 .bundle
                 .work_mode_mcp_config_path_for_session(session_id);
@@ -5208,9 +5214,9 @@ mod tests {
         );
     }
 
-    /// 浏览器 MCP 门控（bridge 消费侧）：工作模式会话用会话专用 mcp.work.json，
-    /// code 会话回落全局 mcp.json（无 browser 条目）；「浏览器能力不可用」提示
-    /// 只注入工作模式会话、且 code 会话永不注入。
+    /// Verifies the bridge-side Browser MCP gate: Work-mode sessions use a session-specific
+    /// mcp.work.json, Code-mode sessions fall back to global mcp.json without a browser
+    /// entry, and the unavailable-capability message is injected only into Work mode.
     #[test]
     fn browser_mcp_gating_follows_session_mode() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME", "PINVOU3_SESSION_ARTIFACTS"]);
@@ -5222,47 +5228,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::env::set_var("PINVOU3_HOME", &root);
 
-        // code 会话判定：predicate 命中 → Code 模式。
+        // Sessions matching the predicate use Code mode.
         let mut bridge = fixture_bridge();
         bridge.set_code_session_predicate(std::sync::Arc::new(|s| s.starts_with("sess-code")));
 
-        // 空临时 HOME 下 vendor chrome-devtools-mcp 必缺失 → 不可用原因必返回，
-        // 注入路径可确定性构造。
+        // An empty temporary home lacks vendored chrome-devtools-mcp, so a deterministic
+        // unavailable reason must be returned for the injection path.
         let reason = bridge.bundle.browser_unavailability_reason();
         assert!(
             reason.is_some(),
-            "前置缺失时静态探测应返回不可用原因（注入测试的前提）"
+            "static probing must return an unavailable reason when prerequisites are missing"
         );
 
-        // 1) mcp 配置路径：code 会话回落全局，工作模式用会话专用（browser 前置
-        //    缺失时 work 路径同样回落全局——由 runtime_bundle 侧测试覆盖回落语义，
-        //    这里断言「code 会话不拿 work 专用路径」的口径）。
+        // 1) MCP configuration: Code mode falls back to global configuration and Work mode
+        //    uses a session-specific configuration. Runtime-bundle tests cover the Work-mode
+        //    fallback when browser prerequisites are absent; this test asserts that Code
+        //    mode never receives the Work-mode path.
         let cfg_code = bridge.build_engine_config_for_session("sess-code-1");
         assert_eq!(
             cfg_code.mcp_config_path,
             crate::platform::paths::mcp_config_path(),
-            "code 会话必须回落全局 mcp.json（不暴露 mcp_browser_*）"
+            "Code-mode sessions must fall back to global mcp.json without mcp_browser_*"
         );
 
-        // 2) 系统提示词：code 会话永不注入「浏览器能力不可用」；工作模式（前置
-        //    缺失时）必须注入。
+        // 2) System instructions: Code mode never receives the unavailable-capability
+        //    message, while Work mode receives it when prerequisites are absent.
         let prompt_code = bridge.build_session_system_prompt("sess-code-1");
         assert!(
-            !prompt_code.contains("## 浏览器能力不可用"),
-            "code 会话不应注入浏览器不可用提示"
+            !prompt_code.contains("## Browser capabilities unavailable"),
+            "Code-mode sessions must not receive the browser-unavailable message"
         );
         assert!(
-            !prompt_code.contains("## 浏览器能力"),
-            "code 会话使用 code 层 instructions，不应出现工作层 §浏览器能力"
+            !prompt_code.contains("## Browser capabilities"),
+            "Code-mode sessions use Code instructions and must not contain Work-mode Browser capabilities"
         );
         let prompt_work = bridge.build_session_system_prompt("sess-work-1");
         assert!(
-            prompt_work.contains("## 浏览器能力"),
-            "工作模式应渲染 §浏览器能力"
+            prompt_work.contains("## Browser capabilities"),
+            "Work mode must render Browser capabilities"
         );
         assert!(
-            prompt_work.contains("## 浏览器能力不可用"),
-            "前置缺失时工作模式应注入不可用原因"
+            prompt_work.contains("## Browser capabilities unavailable"),
+            "Work mode must inject an unavailable reason when prerequisites are missing"
         );
 
         let _ = std::fs::remove_dir_all(&root);
@@ -5287,13 +5294,13 @@ mod tests {
         assert_eq!(
             cfg.mcp_config_path,
             crate::platform::paths::mcp_config_path(),
-            "外部 ACP 会话必须回落全局 mcp.json（不暴露 mcp_browser_*）"
+            "external ACP sessions must fall back to global mcp.json without mcp_browser_*"
         );
         assert!(
             !bridge
                 .build_session_system_prompt("sess-acp-1")
-                .contains("## 浏览器能力不可用"),
-            "外部 ACP 会话不应注入浏览器不可用提示"
+                .contains("## Browser capabilities unavailable"),
+            "external ACP sessions must not receive the browser-unavailable message"
         );
 
         let _ = std::fs::remove_dir_all(&root);

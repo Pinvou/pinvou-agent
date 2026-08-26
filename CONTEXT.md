@@ -1,93 +1,93 @@
 # Pinvou Agent
 
-Pinvou Agent 是以任务对话为中心、可按需展开工作表面的桌面智能助手。
+Pinvou Agent is a desktop assistant organized around task conversations and work surfaces that open only when needed.
 
-## 浏览器工作区
+## Browser workspace
 
-**任务对话**：
-左侧任务列表中的一个独立对话，是浏览器页面与标签页状态的归属边界；收起工作表面或切换到其他任务对话不会销毁其现场。
-_Avoid_: 执行步骤、子任务、全局会话
+**Task conversation**:
+An independent conversation in the task list. It is the ownership boundary for browser pages and tab state; collapsing a work surface or switching to another conversation does not destroy its state.
+_Avoid_: execution step, subtask, global session
 
-**浏览器侧栏**：
-当前任务对话中与对话并排显示的浏览器工作区；它可以展开或收起，但不替换任务对话。
-_Avoid_: 浏览器 Tab、浏览器主页面、左侧全局浏览器入口
+**Browser side panel**:
+The browser workspace shown beside the current task conversation. It can be expanded or collapsed, but it does not replace the task conversation.
+_Avoid_: browser tab, browser home page, global browser entry in the left sidebar
 
-**右侧工作 Dock**：
-任务对话旁唯一的可调整工作区域，承载浏览器、产物、子智能体或代码工作区；切换内容不销毁各自状态。
-_Avoid_: 多重右侧栏、嵌套分隔栏
+**Right work Dock**:
+The single resizable work area beside a task conversation. It hosts the browser, artifacts, subagents, or a code workspace; switching content does not destroy the state of those surfaces.
+_Avoid_: multiple right sidebars, nested splitters
 
-**单栏工作模式**：
-窗口不足以同时容纳任务对话和右侧工作 Dock 时，只显示其中一项的响应式状态；恢复双栏时沿用此前比例，不把临时尺寸写回偏好。
-_Avoid_: 将对话压成窄条、临时宽度覆盖用户比例
+**Single-pane work mode**:
+The responsive state used when the window is too narrow to show both the task conversation and the right work Dock. Only one is shown at a time; returning to two panes restores the previous ratio instead of saving the temporary size as a preference.
+_Avoid_: compressing the conversation into a narrow strip, overwriting the user's ratio with a temporary width
 
-**浏览器展示意图**：
-请求右侧工作 Dock 展示浏览器的前台意图；当前任务对话的首次可见操作可自动触发，后台活动不得触发，用户手动选择具有优先权。
-_Avoid_: 任意工具调用自动展开、后台对话抢占
+**Browser presentation intent**:
+The foreground intent to show the browser in the right work Dock. The first visible operation in the current task conversation may trigger it automatically; background activity must not, and an explicit user selection has priority.
+_Avoid_: opening on every tool call, letting a background conversation steal focus
 
-**浏览器会话**：
-归属于单个任务对话的一组浏览器页面、标签页及导航状态；收起侧栏或切换任务对话时保留现场，再次返回时恢复显示。
-_Avoid_: 全局浏览器、应用级标签页
+**Browser session**:
+The set of browser pages, tabs, and navigation state owned by one task conversation. Collapsing the side panel or switching conversations preserves the state so it can be shown again later.
+_Avoid_: global browser, application-wide tabs
 
-**浏览器会话恢复**：
-应用重启后按任务对话保存最小 URL 清单，并用全新的 WebView、标签身份、自动化 target 和 lease 恢复标签、顺序及当前页面；沿用持久浏览器身份，但不复用任何旧进程运行期身份。恢复后的控制权为中立未认领态，用户或 Agent 的下一次真实操作原子取得控制权，重启本身不伪装成用户接管或静默 Agent 授权。网页进程中的临时内存状态不属于恢复保证。
-_Avoid_: 完整进程快照、全量网页内存恢复
+**Browser session restoration**:
+After an application restart, restore the minimal URL list for each task conversation with new WebViews, tab identities, automation targets, and leases while preserving tab order and the active page. The persistent browser identity is retained, but no process-lifetime identity is reused. Restored ownership starts neutral and unclaimed; the next real user or Agent action claims it atomically. A restart itself is neither user takeover nor silent Agent authorization. Temporary in-page memory is outside the restoration guarantee.
+_Avoid_: full process snapshot, complete in-page memory restoration
 
-**浏览器身份**：
-由整个应用共享的用户浏览身份，包括网站登录状态；它不决定某个任务拥有哪些页面。
-_Avoid_: 任务账号、会话 Profile
+**Browser identity**:
+The user browsing identity shared by the application, including website sign-in state. It does not determine which pages belong to a task.
+_Avoid_: task account, session profile
 
-**默认浏览身份**：
-应用初始提供并由所有任务对话共享的持久浏览器身份；它可以重置，但不与任何单个任务对话共同销毁。
-_Avoid_: 默认任务、临时会话身份
+**Default browser identity**:
+The persistent browsing identity initially provided by the application and shared by all task conversations. It can be reset, but deleting any one task conversation does not delete it.
+_Avoid_: default task, temporary session identity
 
-**原生浏览器表面**：
-用户可直接查看和操作的真实浏览器窗口表面；Agent 与用户控制同一页面，连续截图不作为用户浏览网页的展示链路或故障回退模式。
-_Avoid_: 截图浏览模式、视频流浏览器
+**Native browser surface**:
+The real browser surface that the user can view and operate directly. The Agent and user control the same page; a continuous screenshot stream is neither the page-display path nor a failure fallback.
+_Avoid_: screenshot browsing mode, video-stream browser
 
-**可见页面操作**：
-Agent 对浏览器页面进行的观察或交互；目标页面必须成为所属浏览器会话的当前标签页。后台任务对话可以继续操作自己的当前页面，但不得抢占用户正在查看的其他任务对话；用户返回后可立即观察并接管。
-_Avoid_: 后台页面操作、隐藏标签操作
+**Visible-page operation**:
+An Agent observation or interaction with a browser page. The target must first become the current tab of its browser session. A background task conversation may continue operating its own current page without taking over the conversation or page the user is viewing; the user can observe and take over immediately on return.
+_Avoid_: operating a background page, interacting with a hidden tab
 
-**后台浏览器活动**：
-非当前任务对话中的 Agent 对其自有浏览器会话进行的操作；活动保持对话隔离，并以状态提示告知用户，不改变当前任务对话。
-_Avoid_: 跨对话抢占、全局浏览器操作
+**Background browser activity**:
+Agent activity in the browser session of a task conversation other than the one currently shown. It remains isolated to that conversation and is surfaced as status only; it does not change the user's current conversation or Dock selection.
+_Avoid_: cross-conversation takeover, global browser operation
 
-**后台标签预创建**：
-在浏览器会话中创建并加载一个暂不成为当前页面的标签；除预加载外，Agent 必须先激活该标签才能继续观察或交互。
-_Avoid_: 后台标签操作、隐藏页面交互
+**Background tab precreation**:
+Create and load a tab without making it the current page yet. Apart from preloading, the Agent must activate that tab before observing or interacting with it.
+_Avoid_: background-tab operation, hidden-page interaction
 
-**浏览器控制权**：
-决定用户或 Agent 当前能否对某个浏览器会话执行页面操作的独占状态；用户直接操作页面即取得短时控制权，每次真实操作都会续期，停止操作 3 秒后自动恢复 Agent，也可明确立即交还。
-_Avoid_: 并发控制、无 revision 守卫的迟到自动恢复
+**Browser control ownership**:
+The exclusive state that determines whether the user or Agent may operate a browser session. Direct page interaction gives the user a short-lived lease; each real interaction renews it. Control returns to the Agent after three seconds of user inactivity, or immediately when the user explicitly hands it back.
+_Avoid_: concurrent control, delayed auto-release without a revision guard
 
-**用户接管**：
-用户通过直接操作页面取得所属浏览器会话短时控制权并暂停后续 Agent 页面操作的行为；接管只影响对应任务对话，并在最后一次用户操作 3 秒后用 revision CAS 自动释放。一次已经通过 lease 复核并开始的浏览器工具按原子 dispatch 完成，不承诺中途中断已提交给平台后端的当前调用；接管保证阻止下一项工具。操作结束时立即撤销 active operation；只有确实派发过原生输入的调用保留不超过 100ms 的 post-dispatch callback grace，用来识别该输入稍晚到达的 WebView 回调。显式 UI 接管仍立即生效并清除该窗口；750ms 只是在 dispatch 异常退出时防止永久吞掉用户接管的保险上限。
+**User takeover**:
+The user directly operates a page, receives short-lived control of that browser session, and pauses subsequent Agent page operations. Takeover affects only the corresponding task conversation and is released after three seconds of inactivity through revision-guarded compare-and-swap. A browser tool that has already passed its lease check and begun dispatch completes atomically; takeover does not promise to interrupt an operation already committed to the platform backend, but it blocks the next tool. Ending an operation immediately revokes its active-operation state. Only calls that actually dispatched native input retain a post-dispatch callback grace period of at most 100 ms so a slightly delayed WebView callback can be attributed correctly. Explicit UI takeover still takes effect immediately and clears that window; 750 ms is only a fail-safe upper bound that prevents an abnormal dispatch exit from suppressing takeover forever.
 
-原子 dispatch 已经开始后，MCP 取消只能作为合作取消信号：wrapper 必须等平台后端返回，或先确认其子进程已经停止、不能再派发输入，随后才执行 `end_agent_operation`。若上游终态无法证明页面动作未发生，返回 `retryable=false` 的 commit-unknown 工具结果，禁止自动重放；外部调用方已取消时可丢弃结果，但不能提前释放宿主操作窗口。
+After dispatch begins, MCP cancellation is cooperative. The wrapper must wait for the platform backend to return, or stop its child process and prove that no further input can be dispatched, before calling `end_agent_operation`. If the terminal state cannot prove whether the page action occurred, return a non-retryable commit-unknown result. An external caller that has already cancelled may discard the result, but it must not release the host operation window early.
 
-已 begin dispatch 触发的 popup 只能携带 Rust 内存中的完整 lease，通过隐藏 staging 与最终 CAS 继续保持 Agent 所有权；无有效 dispatch 授权的页面 popup 转为 User 所有权。用户接管先于 CAS 时，晚到 popup 必须安全拒绝。
-_Avoid_: 仅聚焦页面、用户与 Agent 同时输入
+A popup caused by an already-started dispatch may retain Agent ownership only by carrying the complete in-memory Rust lease through hidden staging and the final compare-and-swap. A popup without valid dispatch authorization becomes user-owned. If user takeover wins before the final compare-and-swap, the late popup must be rejected safely.
+_Avoid_: treating page focus as ownership, concurrent user and Agent input
 
-**浏览器受保护能力请求**：
-网页或 Agent 使用文件、媒体设备、定位、通知等受保护能力前，需要由浏览器侧栏展示并等待用户决定的目标闭环；当前 PR 尚未实现通用审批 broker。内嵌下载安全默认禁用并提示用户在系统浏览器打开；文件上传工具不暴露且禁止直呼或绕过；其他能力保持内核默认拒绝/提示，不得静默授权。
-_Avoid_: 静默授权、模型自行批准
+**Protected browser capability request**:
+A browser side-panel flow that presents a request and waits for the user before a page or Agent may use files, media devices, location, notifications, or another protected capability. This PR does not implement a general approval broker. Embedded downloads are denied by default and instruct the user to open the page in the system browser. No file-upload tool is exposed, and direct calls or workarounds are forbidden. Other capabilities retain the engine's default deny-or-prompt behavior and must never be granted silently.
+_Avoid_: silent permission grant, model-approved permission
 
-**语义高风险审批**：
-针对付款、删除、最终提交等业务含义触发的用户确认；它属于通用 Agent 审批能力，不由浏览器平台权限替代。
-_Avoid_: 浏览器受保护能力请求、协议拦截
+**Semantic high-risk approval**:
+User confirmation triggered by the business meaning of an action, such as payment, deletion, or final submission. This belongs to the general Agent approval system, not to browser platform permissions.
+_Avoid_: protected browser capability request, protocol interception
 
-**核心浏览器能力**：
-用户与 Agent 完成常规网页任务所需、并由所有桌面平台一致提供的浏览、观察和交互能力。
-_Avoid_: 平台特有工具、完整开发者工具
+**Core browser capability**:
+The browsing, observation, and interaction functionality required for ordinary web tasks and provided consistently across supported desktop platforms.
+_Avoid_: platform-specific tool, complete developer-tools surface
 
-**原生页面输入**：
-Agent 根据页面语义确定目标后，通过浏览器表面的原生输入通道完成点击、输入、按键或拖拽，使操作与用户直接交互具有相同页面语义。
-_Avoid_: JavaScript 合成点击、全局系统控制
+**Native page input**:
+After resolving a target from page semantics, the Agent uses the browser surface's native input channel for clicks, text, keys, or drag operations so the page receives the same semantics as direct user interaction.
+_Avoid_: synthetic JavaScript click, global system control
 
-**兼容交互回退**：
-原生页面输入不可用时采用的受限交互路径；必须显式标识其能力边界，不视为核心浏览器能力已经满足。
-_Avoid_: 静默降级、核心交互
+**Compatibility interaction fallback**:
+A constrained interaction path used when native page input is unavailable. Its capability boundary must be explicit, and it does not count as satisfying the core browser capability.
+_Avoid_: silent downgrade, claiming core interaction is complete
 
-**高级浏览器能力**：
-由特定浏览器内核提供的诊断、性能分析等扩展能力；可按平台能力声明，但不得改变核心浏览器能力的行为。
-_Avoid_: 三端基础能力、默认必备工具
+**Advanced browser capability**:
+Diagnostics, performance analysis, or another extension provided by a particular browser engine. Platforms may declare these capabilities explicitly, but they must not change the behavior of the core browser contract.
+_Avoid_: cross-platform baseline capability, default required tool

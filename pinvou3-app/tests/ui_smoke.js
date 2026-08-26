@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable no-promise-executor-return -- Browser-side waits adapt timer and animation callback APIs whose handles are intentionally ignored. */
 /**
  * pinvou3 前端 UI 冒烟回归测试 — headless chromium + mock TauriBridge,加载真 src/index.html。
  * 覆盖易回归的前端通路:
@@ -328,8 +329,9 @@ async function expand(page) {
     JSON.stringify(visualShell),
   );
 
-  // Agent 启动浏览器后，桌面端应在所属任务右侧展开侧栏；原生窗口承载命令在
-  // headless mock 中返回 false，组件必须明确显示不可用状态且不能回退截图流。
+  // After the Agent starts the browser, desktop UI expands the owning task's side panel. The
+  // native-surface command returns false in this headless mock, so the component must show an
+  // explicit unavailable state and must not fall back to a screenshot stream.
   await page.setViewport({ width: 1228, height: 1000, deviceScaleFactor: 1 });
   await sleep(120);
   const browserPane = await page.evaluate(async () => {
@@ -459,14 +461,16 @@ async function expand(page) {
         && (document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width || 0) < 100
         && (document.querySelector('[data-testid="chat-composer-wrap"]')?.getBoundingClientRect().width || 0) > 300,
     };
-    // 后续原生表面时序验证必须回到真实网页；新标签页按产品设计会主动
-    // 隐藏 about:blank 原生表面并由 React 渲染，不应把该安全行为误判成 show 失败。
+    // Later native-surface timing checks must return to a real page. By design, a new tab
+    // hides the native about:blank surface and lets React render it; do not mistake that
+    // security behavior for a show failure.
     const realTab = [...(pane?.querySelectorAll('[role="button"][aria-pressed]') || [])]
       .find(node => (node.textContent || '').includes('Example Domain'));
     realTab?.click();
     await new Promise(resolve => setTimeout(resolve, 120));
-    // 首次成功显示后，重复的同尺寸 ResizeObserver/window resize 不得继续
-    // hide/show 原生 child WebView；否则会制造 IPC 抖动和可见闪烁。
+    // After the first successful show, repeated same-size ResizeObserver/window resize
+    // callbacks must not keep hiding and showing the native child WebView, which would cause
+    // IPC churn and visible flicker.
     await new Promise(resolve => setTimeout(resolve, 160));
     const successfulShowStart = window.__TAURI_INVOKES__.length;
     window.__BROWSER_NATIVE_RESULT__ = true;
@@ -525,8 +529,9 @@ async function expand(page) {
     await new Promise(resolve => setTimeout(resolve, 120));
     const dockBrowserRestored = pane?.getAttribute('aria-hidden') === 'false';
 
-    // RightDock 子级遮挡层必须先拿到 native hide ACK 再发布。失败时保持
-    // fail-closed；迟到 ACK 也不能靠仍挂载的旧树抢先显示。
+    // A child occlusion layer in RightDock must receive the native hide ACK before
+    // publication. Fail closed on error, and do not let a late ACK publish through a stale
+    // tree that is still mounted.
     const toolMenuTrigger = document.querySelector('[data-testid="composer-tool-menu-trigger"]');
     window.__FAIL_BROWSER_HIDE__ = true;
     toolMenuTrigger?.click();
@@ -552,9 +557,9 @@ async function expand(page) {
     window.__RESOLVE_BROWSER_HIDE__?.();
     await new Promise(resolve => setTimeout(resolve, 120));
     const composerPublishedAfterHideAck = !!document.querySelector('[data-testid="composer-tool-menu"]');
-    // 桌面 ComposerPopover 通过 document 捕获阶段的 pointerdown 关闭；仅移动
-    // WebUI 使用 portal backdrop。命中真实桌面外点，避免测试把菜单及原生表面
-    // 遮挡租约留到后续用例。
+    // Desktop ComposerPopover closes on document-capture pointerdown; only mobile WebUI uses
+    // a portal backdrop. Click a real desktop outside target so this test does not leave the
+    // menu and its native-surface occlusion lease active for later cases.
     document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
     await new Promise(resolve => setTimeout(resolve, 120));
     const browserRestoredAfterComposer = pane?.getAttribute('aria-hidden') === 'false';
@@ -686,7 +691,7 @@ async function expand(page) {
     };
   });
   rec(
-    '⓪c Agent 浏览器按任务展开，原生不可用时不回退截图流',
+    '⓪c Agent browser expands per task and never falls back to screenshots when native display is unavailable',
     browserPane.pane && browserPane.chat && browserPane.view && browserPane.unscopedIgnored
       && browserPane.defaultBrowserEntryVisible && browserPane.lazyPrepared
       && browserPane.unifiedDockEntry
@@ -790,7 +795,7 @@ async function expand(page) {
     };
   });
   rec(
-    '⓪c-1 浏览器侧栏展开与 Dock 选中项按 session 隔离',
+    '⓪c-1 browser side-panel expansion and Dock selection are isolated by session',
     browserSessionUiIsolation.sessionAInitial.selected === 'browser'
       && browserSessionUiIsolation.sessionAInitial.browserVisible
       && browserSessionUiIsolation.sessionBArtifact.selected === 'artifact-preview'
@@ -805,8 +810,8 @@ async function expand(page) {
     JSON.stringify(browserSessionUiIsolation),
   );
 
-  // 右侧面板保存的是用户比例，而不是窄窗口下的临时像素宽度。
-  // 验证宽屏 -> 单栏 -> 宽屏循环后能精确恢复，左导航也随约束恢复。
+  // Persist the user's side-panel ratio rather than a temporary narrow-window pixel width.
+  // Verify exact restoration across wide -> single-pane -> wide, including left navigation.
   await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
   await sleep(150);
   const sidePanelCycleBefore = await page.evaluate(async () => {
@@ -855,7 +860,7 @@ async function expand(page) {
     after: sidePanelCycleAfter,
   };
   rec(
-    '⓪④ 右侧面板缩小切单栏后按原比例恢复',
+    '⓪④ side panel restores its ratio after narrow single-pane mode',
     sidePanelCycleBefore.mode === 'split'
       && sidePanelCycleBefore.width > 0
       && sidePanelCycleNarrow.mode === 'single'
@@ -867,7 +872,8 @@ async function expand(page) {
       && sidePanelCycleAfter.sidebarWidth > 200,
     JSON.stringify(sidePanelCycle),
   );
-  // 浏览器隔离用例临时进入了 s1；恢复草稿页，保持后续“启动态”回归的原始前提。
+  // The browser-isolation case temporarily entered s1. Restore the draft page so later
+  // startup-state regressions retain their original precondition.
   await clickText(page, '新对话');
   await sleep(250);
 

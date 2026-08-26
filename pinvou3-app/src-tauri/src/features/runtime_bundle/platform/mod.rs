@@ -102,20 +102,22 @@ pub const BUNDLE_VERSION: &str = concat!("0.23-", env!("BUNDLE_INSTRUCTIONS_HASH
 pub const INSTRUCTIONS_SHARED_MD: &str =
     include_str!("../../../../resources/common/bundle/instructions-shared.md");
 
-/// work 模式层：§工作环境（产出物面板语义与 tmp/ 规则）+ §浏览器能力（内嵌有头
-/// 浏览器的发现与使用指引，模型侧唯一"知道有这个能力"的静态入口）+ §工具与事实 的
-/// present_artifact 成品条。三段以空行分隔，供 [`work_layer_sections`] 切分。
+/// Work-mode layer: the `## 工作环境` section for artifact-panel and tmp/ semantics, the
+/// `## Browser capabilities` section as the model's static discovery entry point for the
+/// embedded headed browser, and the present_artifact rule from `## 工具与事实`. Blank lines
+/// separate the three sections for [`work_layer_sections`].
 pub const INSTRUCTIONS_WORK_MD: &str =
     include_str!("../../../../resources/common/bundle/instructions-work.md");
 
-/// work 层三段：§工作环境 整节（无尾换行）、§浏览器能力 整节（无尾换行）与
-/// 成品条（含尾换行）。
+/// Returns the three Work-layer sections: the complete `## 工作环境` section and complete
+/// `## Browser capabilities` section without trailing newlines, plus the artifact rule with
+/// its trailing newline.
 fn work_layer_sections() -> (&'static str, &'static str, &'static str) {
     let (env_section, rest) = INSTRUCTIONS_WORK_MD
         .split_once("\n\n")
-        .expect("instructions-work.md 必须是 §工作环境 段 + 空行 + §浏览器能力 段");
+        .expect("instructions-work.md must contain the '## 工作环境' section, a blank line, and the '## Browser capabilities' section");
     let (browser_section, artifact_rule) = rest.split_once("\n\n").expect(
-        "instructions-work.md 必须是 §工作环境 段 + 空行 + §浏览器能力 段 + 空行 + 成品条段",
+        "instructions-work.md must contain '## 工作环境', '## Browser capabilities', and the artifact rule separated by blank lines",
     );
     (env_section, browser_section, artifact_rule)
 }
@@ -127,8 +129,9 @@ pub fn instructions_md() -> &'static str {
     RENDERED.get_or_init(|| {
         let (env_section, browser_section, artifact_rule) = work_layer_sections();
         INSTRUCTIONS_SHARED_MD
-            // §工作环境 位：§工作环境 + §浏览器能力 整体替换占位行（两段均无尾
-            // 换行，先补 §浏览器能力 的换行形成节间空行，再补整体换行接下文）。
+            // Replace the environment placeholder with both `## 工作环境` and
+            // `## Browser capabilities`. Neither section has a trailing newline, so add
+            // the inter-section blank line and one final newline before following content.
             .replace(
                 "{{PINVOU3_MODE_ENV_SECTION}}",
                 &format!("{env_section}\n\n{browser_section}\n"),
@@ -274,8 +277,9 @@ pub fn install_prompt_overrides() {
 pub const PRESENT_ARTIFACT_SERVER_PY: &str =
     include_str!("../../../../resources/common/bundle/mcp-servers/present_artifact_server.py");
 
-/// 浏览器 MCP wrapper(零依赖 node stdio):与 Rust BrowserManager 协调应用内原生 WebView,
-/// 再以 `--browser-url` 托管 vendor 的 chrome-devtools-mcp。编译期内嵌同 present_artifact。
+/// Zero-dependency Node.js stdio wrapper for Browser MCP. It coordinates the app-owned
+/// native WebView with Rust BrowserManager, then hosts vendored chrome-devtools-mcp through
+/// `--browser-url`. Like present_artifact, it is embedded at compile time.
 pub const BROWSER_WRAPPER_MJS: &str =
     include_str!("../../../../resources/common/bundle/mcp-servers/browser-wrapper.mjs");
 pub const BROWSER_WRAPPER_PROTOCOL_MJS: &str =
@@ -309,7 +313,8 @@ pub const MULTIAGENT_DEPTH_GUARD_PS1: &str =
 /// 内嵌的 exec_shell CLI 兼容环境 hook：读取登录 shell 环境并过滤凭证。
 pub const SHELL_ENV_SH: &str = include_str!("../../../../resources/common/bundle/shell_env.sh");
 
-/// 浏览器 MCP 的 node 运行时回退：随包捆绑 node 不可用（dev 模式）时，找系统 PATH node。
+/// Browser MCP Node.js runtime fallback: search PATH when bundled Node.js is unavailable,
+/// which is expected in some development configurations.
 fn find_system_node() -> Option<std::path::PathBuf> {
     let bin = if cfg!(windows) { "node.exe" } else { "node" };
     std::env::var_os("PATH").and_then(|p| {
@@ -319,10 +324,11 @@ fn find_system_node() -> Option<std::path::PathBuf> {
     })
 }
 
-/// 判定 mcp.json 中的 `browser` 条目是否为本应用的历史残留：现行形态 command
-/// 为 node、wrapper 在 args[0]；早期形态（首个 commit 曾直接写入全局 mcp.json）
-/// command 直指 wrapper——跑过该构建的开发机会永久残留。用户自配的同名 server
-/// （如 playwright-mcp）两者都不命中，必须保留。
+/// Returns whether the `browser` entry in mcp.json is historical residue owned by this app.
+/// The current shape uses Node.js as command and puts the wrapper in args[0]. An early build
+/// wrote the wrapper directly as the command in global mcp.json, leaving persistent residue
+/// on development machines that ran it. User-defined servers with the same name, such as
+/// playwright-mcp, match neither shape and must be preserved.
 fn is_browser_wrapper_residue(entry: &serde_json::Value) -> bool {
     let cmd = entry.get("command").and_then(serde_json::Value::as_str);
     let wrapper_in_args = entry
@@ -481,38 +487,46 @@ mod tests {
 
     #[test]
     fn work_instructions_include_browser_capability_section() {
-        // 模型发现链的静态入口：§浏览器能力 必须渲染在 §工作环境 与 §工具与事实 之间，
-        // 且声明模型可见的工具名与 registry-first 覆盖（browser 不在 registry，走 mcp_browser_*）。
+        // The model's static discovery entry point, `## Browser capabilities`, must render
+        // between `## 工作环境` and `## 工具与事实`. It must name the model-visible tools and
+        // override registry-first guidance because built-in Browser MCP is not in the registry.
         let rendered = instructions_md();
-        let env_at = rendered.find("## 工作环境").expect("§工作环境 存在");
-        let browser_at = rendered.find("## 浏览器能力").expect("§浏览器能力 存在");
-        let tools_at = rendered.find("## 工具与事实").expect("§工具与事实 存在");
+        let env_at = rendered
+            .find("## 工作环境")
+            .expect("the '## 工作环境' section must exist");
+        let browser_at = rendered
+            .find("## Browser capabilities")
+            .expect("the Browser capabilities section must exist");
+        let tools_at = rendered
+            .find("## 工具与事实")
+            .expect("the '## 工具与事实' section must exist");
         assert!(
             env_at < browser_at && browser_at < tools_at,
-            "§浏览器能力 应位于 §工作环境 与 §工具与事实 之间"
+            "Browser capabilities must appear between the Work environment and Tools and facts sections"
         );
         assert!(
             rendered.contains("mcp_browser_"),
-            "应声明模型可见的 mcp_browser_* 工具名"
+            "the instructions must name model-visible mcp_browser_* tools"
         );
         assert!(
             rendered.contains("registry_sync"),
-            "应覆盖 registry-first 指令对浏览器任务的误导（内置浏览器不走 registry）"
+            "the instructions must override registry-first guidance for the built-in browser"
         );
         assert!(
-            rendered.contains("不得把“截图成功”表述成“已看图”或“视觉确认”"),
-            "应明确截图工具结果不是模型可读的图像输入"
+            rendered.contains("Never describe a successful screenshot as having seen or visually confirmed the page"),
+            "the instructions must state that screenshot results are not model-readable image input"
         );
         assert!(
-            !rendered.contains("take_screenshot` 看视觉细节"),
-            "不得把截图工具宣传成尚未接通的模型视觉能力"
+            !rendered.contains("take_screenshot` to inspect visual details"),
+            "the instructions must not advertise screenshot output as model visual capability"
         );
     }
 
     #[test]
     fn browser_unavailability_reason_reports_missing_runtime() {
-        // 空临时 HOME：平台自动化后端和/或 wrapper 缺失，必须返回模型可读原因
-        //（静默降级是"模型找不到浏览器能力"的直接根因，原因必须可注入、可引导用户修复）。
+        // An empty temporary home lacks the platform automation backend and/or wrapper. The
+        // static probe must return a model-readable, injectable reason instead of silently
+        // hiding browser capability and leaving the model unable to discover it.
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
         std::env::set_var("PINVOU3_HOME", &tmp);
@@ -520,40 +534,92 @@ mod tests {
         let bundle = Pinvou3Bundle::paths();
         let msg = bundle
             .browser_unavailability_reason()
-            .expect("前置缺失应返回不可用原因");
+            .expect("missing prerequisites must return an unavailable reason");
         if !crate::platform::capabilities::browser_product_enabled() {
             assert!(
-                msg.contains("当前产品构建中尚未开放"),
-                "发布门控关闭时应优先报告产品尚未开放: {msg}"
+                msg.contains("not enabled in this product build"),
+                "a closed release gate must report that the product build does not enable browser tools: {msg}"
             );
         }
         #[cfg(windows)]
         assert!(
             msg.contains("chrome-devtools-mcp"),
-            "应点名缺失的运行时: {msg}"
+            "the message must name the missing runtime: {msg}"
         );
         #[cfg(target_os = "linux")]
         assert!(
-            msg.contains("WebKitWebDriver") || msg.contains("浏览器 wrapper"),
-            "应点名 Linux 缺失的 WebDriver 或 wrapper: {msg}"
+            msg.contains("WebKitWebDriver") || msg.contains("browser wrapper"),
+            "the message must name the missing Linux WebDriver or wrapper: {msg}"
         );
         #[cfg(target_os = "macos")]
         if crate::platform::capabilities::browser_product_enabled() {
             assert!(
-                msg.contains("浏览器 wrapper"),
-                "预览或发布构建应点名 macOS 缺失的 wrapper: {msg}"
+                msg.contains("browser wrapper"),
+                "preview or released builds must name the missing macOS wrapper: {msg}"
             );
         }
         #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         assert!(
-            msg.contains("当前产品构建中尚未开放"),
-            "应明确当前平台尚未开放自动化后端: {msg}"
+            msg.contains("not enabled in this product build"),
+            "the message must state that this platform has no released automation backend: {msg}"
         );
         assert!(
             msg.contains("mcp_browser_"),
-            "应指明缺失的是浏览器工具: {msg}"
+            "the message must identify browser tools as unavailable: {msg}"
         );
         cleanup(&tmp);
+    }
+
+    #[test]
+    fn browser_last_error_accepts_only_fresh_whitelisted_codes() {
+        let now = 2_000_000_u64;
+        let known = format!(
+            r#"{{"code":"browser/core-backend-unavailable","at":{},"reason":"C:\\Users\\private\\workspace"}}"#,
+            now - 10
+        );
+        let (code, hint) = super::extraction::browser_last_error_hint(&known, now)
+            .expect("fresh whitelisted code should be mapped");
+        assert_eq!(code, "browser/core-backend-unavailable");
+        assert!(hint.contains("BrowserCore"));
+        assert!(!hint.contains("Users"));
+        assert!(!hint.contains("workspace"));
+
+        let cancelled = format!(r#"{{"code":"browser/request-cancelled","at":{}}}"#, now - 1);
+        assert_eq!(
+            super::extraction::browser_last_error_hint(&cancelled, now),
+            None,
+            "ordinary cancellation is not a persistent availability failure"
+        );
+
+        let legacy_with_path = format!(
+            r#"{{"reason":"transport closed at /Users/private/project","at":{}}}"#,
+            now - 1
+        );
+        assert_eq!(
+            super::extraction::browser_last_error_hint(&legacy_with_path, now),
+            None,
+            "legacy raw reasons must never be copied into model-visible instructions"
+        );
+
+        let expired = format!(
+            r#"{{"code":"browser/host-backend-unavailable","at":{}}}"#,
+            now - 24 * 60 * 60 - 1
+        );
+        assert_eq!(
+            super::extraction::browser_last_error_hint(&expired, now),
+            None,
+            "stale availability failures must expire"
+        );
+
+        let future = format!(
+            r#"{{"code":"browser/host-backend-unavailable","at":{}}}"#,
+            now + 301
+        );
+        assert_eq!(
+            super::extraction::browser_last_error_hint(&future, now),
+            None,
+            "crafted future timestamps must not stay fresh indefinitely"
+        );
     }
 
     #[test]
@@ -1564,9 +1630,11 @@ mod tests {
             std::process::id(),
             crate::bridge::paths::tests::unique_suffix()
         );
-        std::env::var_os("TMPDIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        // `std::env::temp_dir` already honors the platform's temporary-dir
+        // convention. A literal `/tmp` is not the same location on Windows
+        // after `PINVOU3_HOME` passes through `platform_compat_path`, which can
+        // split this fixture across two drives.
+        std::env::temp_dir()
             .join(format!("pinvou3-bundle-test-{id}"))
             .to_string_lossy()
             .into_owned()
@@ -1577,11 +1645,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// 浏览器 MCP 门控（ADR：只有工作模式会话暴露 browser 工具）：
-    /// 1. 全局 mcp.json 永不注册 browser 条目（含历史残留清理）；
-    /// 2. 前置条件不满足时 `work_mode_mcp_config_path` 回落全局路径；
-    /// 3. 条件满足时生成「全局 + Pinvou browser」的会话专用文件；若全局已有用户
-    ///    browser，则仅在会话副本中确定性改名并保留，绝不让它占用保留名。
+    /// Verifies the Browser MCP gate defined by the ADR:
+    /// 1. global mcp.json never registers a browser entry and historical residue is removed;
+    /// 2. `work_mode_mcp_config_path` falls back to the global path when prerequisites fail;
+    /// 3. when prerequisites pass, it creates a session-specific global-plus-Pinvou-browser
+    ///    file and deterministically renames any user-owned browser server only in that copy.
     #[test]
     fn browser_mcp_entry_is_gated_to_work_mode_config() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -1592,8 +1660,8 @@ mod tests {
         let bundle = Pinvou3Bundle::paths();
         std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
 
-        // 1) 全局 mcp.json：用户自配的 browser server（command 非本应用 wrapper）
-        //    必须原样保留，仅清理本应用历史残留（command 指向 browser-wrapper.mjs）。
+        // 1) Preserve a user-defined browser server in global mcp.json byte-for-byte. Remove
+        //    only historical app-owned residue whose command targets browser-wrapper.mjs.
         std::fs::write(
             &bundle.mcp_json,
             r#"{"servers":{"browser":{"command":"/old/browser"},"weather":{"command":"python3","args":["/x/w.py"]}}}"#,
@@ -1604,18 +1672,19 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
         assert!(
             mcp["servers"].as_object().unwrap().contains_key("browser"),
-            "用户自配 browser server 不应被删除"
+            "a user-defined browser server must not be deleted"
         );
         assert_eq!(
             mcp["servers"]["browser"]["command"], "/old/browser",
-            "用户自配 browser server 内容应原样保留"
+            "a user-defined browser server must remain unchanged"
         );
 
         if bundle.browser_mcp_entry().is_none() {
-            // 内置后端不可用时也不能把用户的同名 server 原样交给工作会话，否则
-            // Agent 会把 `mcp_browser_*` 误认为应用内同页浏览器。只改会话副本，
-            // 全局文件仍保持用户原配置。macOS 默认构建必经此分支；preview 构建
-            // 若运行时齐备则由后文的 builtin 冲突场景覆盖。
+            // Even when the built-in backend is unavailable, do not expose a user server
+            // under the reserved name in Work mode: the Agent would mistake `mcp_browser_*`
+            // for the same-page embedded browser. Rename only in the session copy and leave
+            // global configuration unchanged. Default macOS builds take this branch; preview
+            // builds with complete prerequisites use the built-in conflict case below.
             let reserved_path = bundle.work_mode_mcp_config_path_for_session("work/gated");
             assert_ne!(reserved_path, bundle.mcp_json);
             let reserved: serde_json::Value =
@@ -1633,7 +1702,8 @@ mod tests {
             assert_eq!(global_after_reservation, mcp);
         }
 
-        // 1b) 本应用历史残留（command 指向 wrapper）→ 清理，全局永不注册。
+        // 1b) Remove historical app-owned wrapper residue; global configuration never
+        //     registers Browser MCP.
         std::fs::write(
             &bundle.mcp_json,
             r#"{"servers":{"browser":{"command":"/x/browser-wrapper.mjs"},"weather":{"command":"python3","args":["/x/w.py"]}}}"#,
@@ -1644,19 +1714,20 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
         assert!(
             !mcp2["servers"].as_object().unwrap().contains_key("browser"),
-            "本应用历史残留的 browser 条目应被清理"
+            "historical app-owned browser residue must be removed"
         );
 
-        // 2) 前置条件不满足（无 vendor 入口）→ 回落全局 mcp.json，不写会话专用文件。
+        // 2) Missing prerequisites (no vendor entry point) fall back to global mcp.json
+        //    without writing a session-specific file.
         assert_eq!(
             bundle.work_mode_mcp_config_path(),
             bundle.mcp_json,
-            "条件不满足应直接返回全局 mcp.json"
+            "missing prerequisites must return global mcp.json"
         );
 
-        // 3) 条件满足（Windows vendor、Linux WebKitWebDriver，或 macOS WKWebView
-        //    BrowserCore；三者都还需要 wrapper + PATH node）
-        //    → 生成会话专用文件；尚未开放的平台仍必须 fail-closed。
+        // 3) Complete prerequisites (Windows vendor, Linux WebKitWebDriver, or macOS
+        //    WKWebView BrowserCore, plus wrapper and Node.js) generate a session-specific
+        //    file. Unreleased platforms must still fail closed.
         let fake_bin = std::path::PathBuf::from(&tmp).join("fake-cdmcp-entry.js");
         std::fs::write(&fake_bin, "#!/usr/bin/env node\n").unwrap();
         #[cfg(windows)]
@@ -1682,59 +1753,60 @@ mod tests {
         if !crate::platform::capabilities::browser_product_enabled() {
             assert_eq!(
                 work_path, bundle.mcp_json,
-                "未开放产品构建即使存在环境残留也不得注册 browser MCP"
+                "an unreleased product build must not register Browser MCP from environment residue"
             );
             assert_eq!(
                 bundle.work_mode_mcp_config_path_for_session("work/session-A"),
                 bundle.mcp_json,
-                "没有同名冲突时，未开放产品构建不必生成会话级副本"
+                "an unreleased build without a reserved-name conflict needs no session copy"
             );
             assert!(bundle
                 .browser_unavailability_reason()
-                .is_some_and(|reason| reason.contains("当前产品构建中尚未开放")));
+                .is_some_and(|reason| reason.contains("not enabled in this product build")));
         } else {
             assert_ne!(
                 work_path, bundle.mcp_json,
-                "条件满足应返回会话专用 mcp 文件"
+                "complete prerequisites must return a session-specific MCP file"
             );
             let work: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&work_path).unwrap()).unwrap();
             let servers = work["servers"].as_object().unwrap();
             assert!(
                 servers.contains_key("browser"),
-                "会话专用文件应含 browser 条目"
+                "the session-specific file must contain a browser entry"
             );
             assert!(
                 servers.contains_key("weather"),
-                "marketplace 条目 weather 应保留"
+                "the marketplace weather entry must be preserved"
             );
             let args = servers["browser"]["args"].as_array().unwrap();
             assert_eq!(
                 args.len(),
                 3,
-                "browser wrapper 只接收 wrapper、平台后端入口和宿主状态文件"
+                "the browser wrapper must receive only the wrapper, platform backend entry, and host-state file"
             );
             assert!(
                 args[0].as_str().unwrap().ends_with("browser-wrapper.mjs"),
-                "browser 条目应以 wrapper 为入口"
+                "the browser entry must use the wrapper as its entry point"
             );
             assert!(
                 !args[0].as_str().unwrap().starts_with(r"\\?\"),
-                "交给 Node 的 wrapper 入口不得保留 Windows verbatim 前缀"
+                "the wrapper entry passed to Node.js must not retain a Windows verbatim prefix"
             );
             #[cfg(windows)]
             assert!(
                 !args[1].as_str().unwrap().starts_with(r"\\?\"),
-                "交给 Node 的 MCP 入口不得保留 Windows verbatim 前缀"
+                "the MCP entry passed to Node.js must not retain a Windows verbatim prefix"
             );
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             assert_eq!(
                 args[1], "@pinvou/browser-core",
-                "Linux/macOS 必须选择应用内 BrowserCore，不能注册 Chrome MCP"
+                "Linux and macOS must select in-app BrowserCore instead of registering Chrome MCP"
             );
 
-            // 4) 每个工作会话得到独立配置文件与稳定 token；wrapper env 带原始
-            // session_id 用于宿主请求，路径/label 只使用安全 token。
+            // 4) Each Work-mode session receives an independent configuration and stable
+            //    token. The wrapper environment retains the original session_id for host
+            //    requests, while paths and labels use only the safe token.
             let session_path = bundle.work_mode_mcp_config_path_for_session("work/session-A");
             assert_ne!(session_path, work_path);
             assert_eq!(
@@ -1752,8 +1824,9 @@ mod tests {
                 crate::platform::paths::browser_session_token("work/session-A")
             );
 
-            // 5) 用户在全局配置占用了保留名 browser 时，全局文件完全不变；工作
-            // 会话固定让 browser 指向 Pinvou wrapper，并在已有别名之后保留用户条目。
+            // 5) When a user occupies the reserved browser name globally, leave the global
+            //    file unchanged. Work mode always points browser to the Pinvou wrapper and
+            //    preserves the user entry after existing deterministic aliases.
             let global_with_conflict = serde_json::json!({
                 "servers": {
                     "browser": {
@@ -1781,11 +1854,11 @@ mod tests {
                     .as_str()
                     .unwrap()
                     .ends_with("browser-wrapper.mjs"),
-                "会话保留名 browser 必须始终指向 Pinvou wrapper"
+                "the session-reserved browser name must always target the Pinvou wrapper"
             );
             assert_eq!(
                 conflict["servers"]["browser_user_3"], global_with_conflict["servers"]["browser"],
-                "用户同名 server 应迁移到首个无冲突的确定性别名"
+                "the conflicting user server must move to the first deterministic free alias"
             );
             assert_eq!(
                 conflict["servers"]["browser_user"],
@@ -1799,12 +1872,12 @@ mod tests {
                 serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
             assert_eq!(
                 global_after, global_with_conflict,
-                "生成会话副本不得改写用户的全局 mcp.json"
+                "generating a session copy must not rewrite the user's global mcp.json"
             );
             assert_eq!(
                 bundle.browser_unavailability_reason(),
                 None,
-                "用户占用全局 browser 名不再使内嵌浏览器降级或注入错误提示"
+                "a globally user-owned browser name must not degrade the embedded browser or inject an error"
             );
         }
 

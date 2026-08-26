@@ -146,7 +146,7 @@ assert.ok(
   'the three-second fallback must refresh tasks, selected detail, and runs through one bridge transaction'
 );
 assert.ok(
-  /async function handleSwitchSession\(id\)[\s\S]{0,220}runBrowserUiTransition[\s\S]{0,260}setCurrentView\('chat'\)[\s\S]{0,180}await bridge\.sessions\.switchToSession\(id\)[\s\S]{0,180}!switched \|\| !isCurrent\(\)[\s\S]{0,260}channel: 'session'[\s\S]{0,100}hideMode: 'workspace'[\s\S]{0,80}serialize: true/.test(indexHtml),
+  /const handleSwitchSession = useCallback\(async \(id\) => \{[\s\S]{0,220}runBrowserUiTransition[\s\S]{0,260}setCurrentView\('chat'\)[\s\S]{0,180}await bridge\.sessions\.switchToSession\(id\)[\s\S]{0,180}!switched \|\| !isCurrent\(\)[\s\S]{0,260}channel: 'session'[\s\S]{0,100}hideMode: 'workspace'[\s\S]{0,80}serialize: true/.test(indexHtml),
   'ordinary session navigation must hide the native browser before publishing the chat route and loading the remote session'
 );
 assert.ok(

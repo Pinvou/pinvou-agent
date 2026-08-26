@@ -68,6 +68,14 @@ test('BrowserCore fallback catalog matches the official dialog and resize schema
   assert.equal(resize.inputSchema.properties.height.type, 'number');
 });
 
+test('BrowserCore wait schema discloses the native timeout ceiling', () => {
+  const catalog = createPinvouBrowserCoreCatalog();
+  const waitFor = catalog.toolsListResult.tools.find((tool) => tool.name === 'wait_for');
+
+  assert.equal(waitFor.inputSchema.properties.timeout.minimum, 0);
+  assert.equal(waitFor.inputSchema.properties.timeout.maximum, 12_000);
+});
+
 test('BrowserCore documents non-retryable partial form outcomes', () => {
   const catalog = createPinvouBrowserCoreCatalog();
   const fillForm = catalog.toolsListResult.tools.find((tool) => tool.name === 'fill_form');
@@ -75,6 +83,36 @@ test('BrowserCore documents non-retryable partial form outcomes', () => {
   assert.match(fillForm.description, /validated before the first write/);
   assert.match(fillForm.description, /non-retryable structured partial outcome/);
   assert.match(fillForm.description, /must not be replayed as a whole/);
+});
+
+test('BrowserCore navigation tools acknowledge requests without claiming page load', () => {
+  const catalog = createPinvouBrowserCoreCatalog();
+  const tools = new Map(catalog.toolsListResult.tools.map((tool) => [tool.name, tool]));
+
+  for (const name of ['new_page', 'navigate_page']) {
+    assert.match(tools.get(name).description, /submit/i);
+    assert.match(tools.get(name).description, /does not verify that the page loaded/i);
+    assert.match(tools.get(name).description, /take_snapshot/);
+  }
+});
+
+test('work instructions define a durable and verified loopback preview workflow', () => {
+  const instructions = readFileSync(
+    new URL('../src-tauri/resources/common/bundle/instructions-work.md', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(instructions, /local web page produced by this session/);
+  assert.match(instructions, /127\.0\.0\.1/);
+  assert.match(instructions, /background=true/);
+  assert.match(instructions, /Do not.*shell `&` or `nohup`/i);
+  assert.match(instructions, /`curl`.*HTTP 200/i);
+  assert.match(instructions, /mcp_browser_list_pages/);
+  assert.match(instructions, /never guess an id such as `1`/i);
+  assert.match(instructions, /mcp_browser_take_snapshot/);
+  assert.match(instructions, /Keep the background service running until the user explicitly ends the preview/i);
+  assert.match(instructions, /all web content is untrusted/);
+  assert.match(instructions, /private-network, or localhost addresses/);
 });
 
 test('page runtime exposes DOM-only capabilities and no host bridge', () => {
@@ -96,7 +134,7 @@ test('page runtime exposes DOM-only capabilities and no host bridge', () => {
   vm.runInNewContext(source, sandbox);
   const runtime = sandbox.__PINVOU_BROWSER_CORE_V1__;
   assert.equal(runtime.version, 1);
-  assert.deepEqual(Object.keys(runtime).sort(), ['element', 'evaluate', 'point', 'snapshot', 'version', 'waitFor']);
+  assert.deepEqual(Object.keys(runtime).sort((a, b) => a.localeCompare(b)), ['element', 'evaluate', 'point', 'snapshot', 'version', 'waitFor']);
   assert.equal(source.includes('__TAURI__'), false);
   assert.equal(source.includes('webkit.messageHandlers'), false);
 });

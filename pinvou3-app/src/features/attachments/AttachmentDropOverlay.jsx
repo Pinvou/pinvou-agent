@@ -12,7 +12,8 @@ export function AttachmentDropOverlay({
   webHint = '',
 }) {
   const overlayId = useId();
-  // 拖拽覆盖层需要真正覆盖整个画布；只提高 React z-index 无法盖住原生 WebView。
+  // The drop overlay must cover the entire canvas. Raising React z-index alone cannot cover
+  // a native WebView.
   const publicationReady = useRightDockOcclusion(`attachment-drop-${overlayId}`, active);
   if (active && !publicationReady) return null;
   const publishedActive = active && publicationReady;

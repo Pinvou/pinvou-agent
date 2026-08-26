@@ -306,6 +306,10 @@ impl<'a> WebSavedSession<'a> {
 fn is_absolute_host_path(path: &str) -> bool {
     let bytes = path.as_bytes();
     Path::new(path).is_absolute()
+        // `Path::is_absolute` follows the build host's syntax. A POSIX path
+        // received from a saved cross-platform Session is therefore not
+        // absolute on Windows unless we recognize its leading slash here.
+        || path.starts_with('/')
         || path.starts_with("\\\\")
         || path.starts_with("//")
         || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')

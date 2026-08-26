@@ -103,9 +103,8 @@ source ~/.zshrc
 ## 永久方案(规划中)
 
 接入 Apple Developer ID 签名 + 公证后,应用获得**稳定证书身份**,Keychain ACL 可
-持久命中,「始终允许」即真正生效、不再反复弹。落地点与前置条件如下；实际
-`pinvou3-app/src-tauri/packaging/macos/entitlements.plist` 为满足 Apple codesign
-契约而保持 LF-only 且不含 XML 注释:
+持久命中,「始终允许」即真正生效、不再反复弹。落地点与前置条件见
+`pinvou3-app/src-tauri/packaging/macos/entitlements.plist` 的注释路线图:
 
 1. `tauri.conf.json`:`macOS.hardenedRuntime = true`(公证要求 Hardened Runtime)。
 2. 配置 `signingIdentity` 为 Developer ID Application 证书 + `notarytool` 公证。

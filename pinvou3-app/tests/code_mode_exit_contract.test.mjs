@@ -27,7 +27,7 @@ function assertClearBefore(window, view, label) {
 // 1. Bridge sync effect: an externally changed activeSessionId materializes a
 // normal chat view (web remote control and friends).
 assertClearBefore(
-  windowFrom("if (bs.activeSessionId !== activeChat)", 900),
+  windowFrom('const publishSession = ({ isCurrent }) => {', 900),
   'chat',
   'bridge activeSessionId sync',
 );

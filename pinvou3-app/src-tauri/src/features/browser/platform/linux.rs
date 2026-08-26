@@ -6,6 +6,7 @@
 //! desktop-wide mouse or keyboard.
 
 use serde_json::Value;
+use std::sync::Arc;
 use tauri::Webview;
 
 use webkit2gtk::WebViewExt;
@@ -25,46 +26,74 @@ pub(super) async fn evaluate_json(
     webview: &Webview,
     script: String,
     mode: BrowserCoreEvaluationMode,
+    authorization: Option<&NativeTabLease>,
 ) -> Result<Value, String> {
+    let authorization = super::evaluation_authorization(mode, authorization)?.cloned();
+    let label = webview.label().to_string();
     let (tx, rx) = tokio::sync::oneshot::channel();
+    let sender = Arc::new(parking_lot::Mutex::new(Some(tx)));
     let dispatch_state = AsyncDispatchState::new();
     let callback_state = dispatch_state.clone();
     webview
         .with_webview(move |platform| {
             let webview = platform.inner();
-            if !callback_state.begin() {
-                return;
-            }
             let completion_state = callback_state.clone();
-            webview.call_async_javascript_function(
-                &script,
-                None,
-                None,
-                Some("pinvou://browser-core"),
-                None::<&webkit2gtk::gio::Cancellable>,
-                move |result| {
-                    let result = result
-                        .map_err(|error| format!("WebKitGTK JavaScript 执行失败: {error}"))
-                        .and_then(|value| {
-                            use javascriptcore::ValueExt;
-                            value
-                                .to_json(0)
-                                .map(|json| json.to_string())
-                                .ok_or_else(|| {
-                                    "WebKitGTK JavaScript 结果不能序列化为 JSON".to_string()
-                                })
-                        })
-                        .and_then(|json| {
-                            serde_json::from_str(&json).map_err(|error| {
-                                format!("解析 WebKitGTK JavaScript 结果失败: {error}")
+            let callback_sender = Arc::clone(&sender);
+            let dispatch = || {
+                if !callback_state.begin() {
+                    return Ok(());
+                }
+                webview.call_async_javascript_function(
+                    &script,
+                    None,
+                    None,
+                    Some("pinvou://browser-core"),
+                    None::<&webkit2gtk::gio::Cancellable>,
+                    move |result| {
+                        let result = result
+                            .map_err(|error| {
+                                format!("WebKitGTK JavaScript evaluation failed: {error}")
                             })
-                        });
-                    let _ = tx.send(result);
-                    completion_state.finish();
-                },
-            );
+                            .and_then(|value| {
+                                use javascriptcore::ValueExt;
+                                value
+                                    .to_json(0)
+                                    .map(|json| json.to_string())
+                                    .ok_or_else(|| {
+                                        "WebKitGTK JavaScript result cannot be serialized as JSON"
+                                            .to_string()
+                                    })
+                            })
+                            .and_then(|json| {
+                                serde_json::from_str(&json).map_err(|error| {
+                                    format!("Failed to parse WebKitGTK JavaScript result: {error}")
+                                })
+                            });
+                        if let Some(sender) = callback_sender.lock().take() {
+                            let _ = sender.send(result);
+                        }
+                        completion_state.finish();
+                    },
+                );
+                Ok(())
+            };
+            let result = if let Some(authorization) = authorization.as_ref() {
+                linux_automation::dispatch_script_mutation_if_authorized(
+                    &label,
+                    authorization,
+                    dispatch,
+                )
+            } else {
+                dispatch()
+            };
+            if let Err(error) = result {
+                if let Some(sender) = sender.lock().take() {
+                    let _ = sender.send(Err(error));
+                }
+                callback_state.cancel_pending();
+            }
         })
-        .map_err(|error| format!("访问 WebKitGTK 页面失败: {error}"))?;
+        .map_err(|error| format!("Failed to access WebKitGTK page: {error}"))?;
 
     let commit_unknown_prefix = matches!(mode, BrowserCoreEvaluationMode::MayMutate)
         .then_some(ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION);
@@ -72,8 +101,8 @@ pub(super) async fn evaluate_json(
         .wait(
             rx,
             EVALUATION_TIMEOUT,
-            "WebKitGTK JavaScript 执行超时",
-            "WebKitGTK JavaScript 回调已关闭",
+            "WebKitGTK JavaScript evaluation timed out",
+            "WebKitGTK JavaScript callback closed",
             commit_unknown_prefix,
         )
         .await

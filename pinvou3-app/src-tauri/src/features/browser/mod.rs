@@ -1,16 +1,18 @@
-//! 浏览器功能模块：管理 Agent 与用户共享的原生浏览器会话、导航与多标签页控制。
-//! 用户展示链路只使用主窗口内的系统 WebView 子视图；原生表面不可用时显式报错，
-//! 不启动连续截图流或外部浏览器作为浏览回退。
+//! Browser feature: manages native browser sessions, navigation, and tabs shared by
+//! the Agent and user. The user-visible path uses only system WebView child views in
+//! the main window. An unavailable native surface is reported explicitly; continuous
+//! screenshot streaming and external-browser display fallbacks are not used.
 //!
-//! 与 MCP wrapper（`bundle/mcp-servers/browser-wrapper.mjs`）通过
-//! `~/.pinvou3/browser/cdp-port.json` 协调同一浏览器实例。Windows 上 wrapper 先写
-//! `host-requests/*.json` 请求主应用按对话创建 WebView2，再让 chrome-devtools-mcp 连接其
-//! 回环 CDP 端口。CDP 只承担 Windows Agent 自动化，不承担用户画面传输。
+//! The MCP wrapper (`bundle/mcp-servers/browser-wrapper.mjs`) coordinates the same
+//! browser instance through `~/.pinvou3/browser/cdp-port.json`. On Windows, the
+//! wrapper first writes `host-requests/*.json` so the main app creates a task-owned
+//! WebView2, then connects chrome-devtools-mcp to its loopback CDP port. CDP is used
+//! only for Windows Agent automation, not for transporting the user-visible page.
 //!
-//! 端范围：**本期仅桌面端**。`browser:*` 事件仅本地 `emit`，不转发远端 WebUI
-//! （relay 的 `access-policy.json` 白名单不含任何 `browser:*` 事件/命令，
-//! 转发只会被拒绝并刷日志）——web/移动端暂不提供浏览器 Tab 与交互
-//! （"三端共享"为后续迭代项，勿在文档中宣称已支持）。
+//! Scope: **desktop only for this release**. `browser:*` events are emitted locally
+//! and are not forwarded to the remote Web UI (the relay `access-policy.json`
+//! allowlist contains no `browser:*` events or commands). Web/mobile browser tabs
+//! and interaction remain future work and must not be documented as supported.
 
 mod cdp;
 mod core;
@@ -18,7 +20,7 @@ mod platform;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -61,18 +63,22 @@ impl NativeSurfaceBounds {
             || !(1..=MAX_SIZE).contains(&self.width)
             || !(1..=MAX_SIZE).contains(&self.height)
         {
-            return Err("原生浏览器区域超出有效范围".to_string());
+            return Err("native browser bounds are outside the valid range".to_string());
         }
         Ok(self)
     }
 }
 
-/// 标签页身份（targetId）→ flatten sessionId 缓存。用于自动化连接内复用 attach，
-/// 并在 target 生命周期变化时自愈当前激活状态；不作为 UI 事件作用域来源。
+/// Tab identity (targetId) to flattened sessionId cache. Reuses attachments within
+/// one automation connection and repairs active state as targets change. It is not
+/// the source of UI event scope.
 type PageSessions = Arc<parking_lot::Mutex<HashMap<String, String>>>;
 type BrowserSessionValidator = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
-/// 单个页面标签页。
+const BROWSER_WATCH_RETRY_INITIAL_MS: u64 = 250;
+const BROWSER_WATCH_RETRY_MAX_MS: u64 = 30_000;
+
+/// One page tab.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TabInfo {
     pub target_id: String,
@@ -85,54 +91,69 @@ pub struct TabInfo {
 #[derive(Default)]
 struct Inner {
     port: Option<u16>,
-    /// browser 级 CDP 会话（一条连接管所有标签页）。
+    /// Browser-level CDP session (one connection manages all tabs).
     session: Option<Arc<CdpSession>>,
-    /// 当前激活标签页的 flatten sessionId。
+    /// Flattened sessionId for the active tab.
     active_session: Option<String>,
-    /// 当前激活标签页的 targetId（与 active_session 同步维护）。对外（status /
-    /// 事件 payload）的标签页身份一律用 targetId——sessionId 是每次 attach 的
-    /// 产物、同一标签页每次 attach 都不同，不能作为身份。
+    /// targetId for the active tab, kept in sync with active_session. Public status
+    /// and event payloads always identify tabs by targetId. A sessionId is created
+    /// for each attachment and changes when the same tab is reattached.
     active_target: Option<String>,
-    /// 事件循环任务句柄（防重复启动/可中止）。
+    /// Event-loop task handle, used to prevent duplicate loops and allow aborting.
     loop_task: Option<tokio::task::JoinHandle<()>>,
-    /// CDP WebSocket 读循环任务句柄（stop/崩溃重置时可中止，防读循环残留）。
+    /// CDP WebSocket reader task, aborted on stop/crash reset to avoid stale readers.
     reader_task: Option<tokio::task::JoinHandle<()>>,
 }
 
-/// 浏览器管理器（Tauri State 注入，单例）。
+/// Browser manager injected as singleton Tauri state.
 pub struct BrowserManager {
     inner: tokio::sync::Mutex<Inner>,
-    /// 启动临界区互斥：串行化整个启动序列（协调浏览器 → 自动化连接 → attach →
-    /// 事件循环），避免 watch 轮询与 Tauri 命令并发进入产生双事件循环或句柄
-    /// 丢失（single-flight）。stop() 也参与本锁，
-    /// 保证 stop 不会在启动序列中途"看到空状态提前返回"而被启动方随后覆盖。
+    /// Startup critical-section mutex. Serializes browser coordination, automation
+    /// connection, attachment, and event-loop setup so watcher polling and Tauri
+    /// commands cannot create duplicate loops or lose handles. stop() also joins
+    /// this single-flight lock so it cannot return on transient empty state and be
+    /// overwritten by the rest of an in-progress startup.
     start_mtx: tokio::sync::Mutex<()>,
-    /// 停止代际计数：stop() 每次 +1；ensure_started 启动前记录、完成后核对，
-    /// 启动期间被 stop 打断时丢弃本次启动结果（避免 stop 被吞、浏览器残留）。
+    /// Serializes lifecycle mutations for one task without making slow
+    /// automation readiness/binding waits block unrelated task workspaces.
+    /// Weak entries are pruned whenever a task lock is requested.
+    session_lifecycle_locks: parking_lot::Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
+    /// Admission gate held through each hosted request's final platform
+    /// dispatch. Data and control scanners take concurrent read guards so a
+    /// slow page operation cannot starve the control-lease heartbeat; restart
+    /// takes the write guard before `start_mtx` and waits for all accepted work.
+    hosted_request_gate: tokio::sync::RwLock<()>,
+    /// Stop generation. Every stop increments it; ensure_started snapshots and
+    /// rechecks it, discarding startup results interrupted by a stop.
     stop_gen: std::sync::atomic::AtomicU64,
-    /// "已向前端 emit 过 browser:activated"标记（watch 与 stop 共享）：
-    /// stop()/崩溃路径置 false，保证再次接入时必重新 emit（前端 Tab 重现）。
+    /// Whether browser:activated has been emitted. Shared by watch and stop; stop
+    /// and crash paths clear it so reconnection always republishes the frontend tab.
     activated: std::sync::atomic::AtomicBool,
-    /// 主进程退出标记：shutdown_on_exit 置位后 watch 退出、ensure_started 拒绝——
-    /// 防止退出瞬间 watch 重新拉起 Chrome 成为无人回收的孤儿进程。
+    /// Main-process shutdown flag. Once shutdown_on_exit sets it, watch exits and
+    /// ensure_started rejects work, preventing an orphan browser at process exit.
     shutting_down: std::sync::atomic::AtomicBool,
-    /// 宿主签发 renderer generation，并在同 generation 内只接受递增 sequence。
-    /// renderer/HMR 重载后先取得新 generation，旧 renderer 的迟到 show/hide 即使
-    /// sequence 更大也无法覆盖新任务。该锁覆盖原生 visibility mutation 的提交点。
+    /// Host-issued renderer generation with monotonically increasing sequences per
+    /// generation. After renderer/HMR reload, late show/hide calls from an older
+    /// generation cannot override the new renderer. This lock covers the native
+    /// visibility mutation commit point.
     surface_visibility: parking_lot::Mutex<SurfaceVisibilityClock>,
-    /// target_id → flatten sessionId 缓存：同一标签页复用 attach。CDP 对同一
-    /// target 的每次 attach 都产生独立 session 且不自动释放，无缓存会在高频
-    /// 枚举/切换下无界泄漏 Chrome 侧 session。
+    /// target_id to flattened sessionId cache. CDP creates a distinct session for
+    /// every attachment and does not release it automatically; without reuse,
+    /// frequent enumeration and switching would leak Chrome-side sessions.
     page_sessions: PageSessions,
     app: parking_lot::Mutex<Option<AppHandle>>,
-    /// Session 生命周期由 composition root 注入窄校验器；browser feature 不依赖
-    /// sessions sibling。删除事件先写本地 deny tombstone，再异步销毁 WebView/文件。
+    /// The composition root injects a narrow session-lifecycle validator so the
+    /// browser feature does not depend on its sessions sibling. Deletion first sets
+    /// a local pending deny marker, then tears down WebViews/files asynchronously.
+    /// Successful cleanup removes the marker; the durable validator then remains
+    /// the authority for rejecting absent tasks.
     session_validator: parking_lot::Mutex<Option<BrowserSessionValidator>>,
-    deleted_session_ids: parking_lot::RwLock<HashSet<String>>,
-    /// 原生 mutation 已物理提交后，恢复清单/权威映射的 I/O 失败不能把操作伪装成
-    /// 失败。这里保留按任务可见的降级状态，并由单任务退避队列持续修复。
-    /// 恢复点写入和告警/worker 状态提交必须处于同一临界区，避免旧 worker 成功退出时
-    /// 吞掉刚发生的新失败，留下“有告警但无人重试”的状态。
+    pending_deleted_session_ids: parking_lot::RwLock<HashSet<String>>,
+    /// After a native mutation commits physically, restore-manifest/authoritative-map
+    /// I/O failure must not make the operation appear uncommitted. Keep task-visible
+    /// degraded state and repair it through a per-task backoff queue. Restore writes
+    /// and warning/worker state updates share one critical section so an older worker
+    /// cannot consume a fresh failure while exiting successfully.
     persistence_io: parking_lot::Mutex<()>,
     persistence_warnings: parking_lot::Mutex<HashMap<String, String>>,
     persistence_retries: parking_lot::Mutex<HashSet<String>>,
@@ -140,16 +161,21 @@ pub struct BrowserManager {
     /// host requests are reset. Any recovery failure blocks every browser
     /// entry point so a stale restore manifest cannot be published first.
     prepare_recovery_error: parking_lot::Mutex<Option<String>>,
+    /// Startup recovery/consumer installation is re-armed after transient I/O
+    /// failures. Only the current capped delay is retained; successful startup
+    /// resets it, so this cannot grow with process lifetime or failure count.
+    watch_retry_delay_ms: std::sync::atomic::AtomicU64,
     /// Only commits produced by this process may use disappearance of its
     /// transient request/response artifacts as a success acknowledgement.
     /// Recovered commits are deliberately absent: process-start reset also
     /// makes those artifacts disappear and must not be mistaken for wrapper ACK.
     locally_committed_prepares: parking_lot::Mutex<HashSet<(String, String)>>,
-    /// 启动孤儿清理只允许删除这个时刻之前已存在的文件。本进程在静态 session
-    /// 快照之后并发创建的 restore/workspace/mcp 文件即使不在快照中也绝不命中。
+    /// Startup orphan cleanup may delete only files that predate this cutoff. Files
+    /// created by this process after the static session snapshot are never eligible.
     startup_reconcile_cutoff: SystemTime,
-    /// 三端原生浏览器承载状态。平台细节封装在 feature 内的 platform 适配层；
-    /// 不支持的平台显式返回 unsupported，不切换到截图或外部浏览器。
+    /// Three-platform native browser host state. Platform details stay in feature
+    /// adapters; unsupported capabilities are explicit and never switch to a
+    /// screenshot or external-browser fallback.
     native_surface: parking_lot::Mutex<platform::NativeBrowserSurface>,
 }
 
@@ -177,6 +203,11 @@ struct HostedBrowserRequest {
     background: bool,
     #[serde(default)]
     emits_trusted_input: bool,
+    /// Only the small, explicit observation allowlist may set this. Missing or
+    /// future tool metadata therefore remains fail-closed while a user
+    /// navigation generation is loading.
+    #[serde(default)]
+    observational_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, serde::Deserialize)]
@@ -242,6 +273,25 @@ impl HostedBrowserOperation {
     const fn requires_live_caller(self) -> bool {
         !matches!(self, Self::EndAgentOperation | Self::RollbackCreatedTab)
     }
+}
+
+/// Keep this allowlist aligned with `browserToolMayMutate` in the Windows
+/// wrapper protocol. Unknown and script-capable tools are intentionally
+/// classified as mutations so a future tool cannot bypass an accepted user
+/// navigation merely because this host predates it.
+fn browser_core_tool_is_observational(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "list_pages"
+            | "select_page"
+            | "take_snapshot"
+            | "wait_for"
+            | "get_console_message"
+            | "get_network_request"
+            | "list_console_messages"
+            | "list_network_requests"
+            | "performance_analyze_insight"
+    )
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -445,8 +495,9 @@ impl SurfaceVisibilityClock {
     }
 }
 
-/// 原生工作区可按对话关闭。只要注册表中还有任意工作区，未知 session 都必须按幂等
-/// 成功处理，绝不能退化成全局 stop 误伤其他对话；注册表为空时则清理共享自动化运行时。
+/// Native workspaces are closed per task. While any workspace is registered, an
+/// unknown session is an idempotent success and must never fall back to a global stop.
+/// The shared automation runtime is cleaned only when the registry is empty.
 fn scoped_stop_action(requested_exists: bool, has_native_sessions: bool) -> ScopedStopAction {
     if requested_exists {
         ScopedStopAction::CloseNativeSession
@@ -462,6 +513,8 @@ impl BrowserManager {
         Self {
             inner: tokio::sync::Mutex::new(Inner::default()),
             start_mtx: tokio::sync::Mutex::new(()),
+            session_lifecycle_locks: parking_lot::Mutex::new(HashMap::new()),
+            hosted_request_gate: tokio::sync::RwLock::new(()),
             stop_gen: std::sync::atomic::AtomicU64::new(0),
             activated: std::sync::atomic::AtomicBool::new(false),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
@@ -469,11 +522,12 @@ impl BrowserManager {
             page_sessions: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             app: parking_lot::Mutex::new(None),
             session_validator: parking_lot::Mutex::new(None),
-            deleted_session_ids: parking_lot::RwLock::new(HashSet::new()),
+            pending_deleted_session_ids: parking_lot::RwLock::new(HashSet::new()),
             persistence_io: parking_lot::Mutex::new(()),
             persistence_warnings: parking_lot::Mutex::new(HashMap::new()),
             persistence_retries: parking_lot::Mutex::new(HashSet::new()),
             prepare_recovery_error: parking_lot::Mutex::new(None),
+            watch_retry_delay_ms: std::sync::atomic::AtomicU64::new(BROWSER_WATCH_RETRY_INITIAL_MS),
             locally_committed_prepares: parking_lot::Mutex::new(HashSet::new()),
             startup_reconcile_cutoff: SystemTime::now(),
             native_surface: parking_lot::Mutex::new(platform::NativeBrowserSurface::default()),
@@ -484,12 +538,52 @@ impl BrowserManager {
         *self.session_validator.lock() = Some(validator);
     }
 
-    /// Composition root 在收到删除事件后、开始任何异步清理前调用。之后所有迟到的
-    /// wrapper 请求都 fail-closed；实际 WebView/restore/MCP 文件清理可独立重试。
+    fn session_lifecycle_lock(&self, session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.session_lifecycle_locks.lock();
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(session_id).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        locks.insert(session_id.to_string(), Arc::downgrade(&lock));
+        lock
+    }
+
+    /// Called by the composition root after durable deletion and before asynchronous
+    /// cleanup. All late wrapper requests then fail closed, while WebView, restore,
+    /// and MCP file cleanup can retry independently.
     pub(crate) fn mark_session_deleted(&self, session_id: &str) {
-        self.deleted_session_ids
+        self.pending_deleted_session_ids
             .write()
             .insert(session_id.to_string());
+    }
+
+    fn clear_session_deleted(&self, session_id: &str) {
+        self.pending_deleted_session_ids.write().remove(session_id);
+    }
+
+    fn next_watch_retry_delay(&self) -> Duration {
+        let current = self
+            .watch_retry_delay_ms
+            .fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |delay| Some(delay.saturating_mul(2).min(BROWSER_WATCH_RETRY_MAX_MS)),
+            )
+            .unwrap_or(BROWSER_WATCH_RETRY_MAX_MS);
+        Duration::from_millis(current)
+    }
+
+    fn reset_watch_retry_delay(&self) {
+        self.watch_retry_delay_ms.store(
+            BROWSER_WATCH_RETRY_INITIAL_MS,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+
+    fn mark_watch_consumer_ready(&self) {
+        *self.prepare_recovery_error.lock() = None;
+        self.reset_watch_retry_delay();
     }
 
     fn ensure_browser_session_allowed(&self, session_id: &str) -> Result<(), String> {
@@ -498,31 +592,54 @@ impl BrowserManager {
                 return Err(error);
             }
             return Err(format!(
-                "browser/prepare-recovery-pending: 持久 Prepare 补偿尚未完成: {error}"
+                "browser/prepare-recovery-pending: durable Prepare compensation is incomplete: {error}"
             ));
         }
-        if self.deleted_session_ids.read().contains(session_id) {
-            return Err("任务已删除；拒绝迟到的浏览器宿主请求".to_string());
+        if self.pending_deleted_session_ids.read().contains(session_id) {
+            return Err("task was deleted; rejecting a late browser host request".to_string());
         }
         let validator = self
             .session_validator
             .lock()
             .clone()
-            .ok_or_else(|| "任务生命周期校验器尚未就绪".to_string())?;
+            .ok_or_else(|| "task lifecycle validator is not ready".to_string())?;
         if !validator(session_id) {
-            return Err("任务不存在；拒绝孤儿浏览器宿主请求".to_string());
+            return Err(
+                "task does not exist; rejecting an orphan browser host request".to_string(),
+            );
         }
         Ok(())
     }
 
-    /// 每个 renderer 生命周期先向宿主申请 generation；generation 只在 Rust 进程内
-    /// 单调递增，不依赖会因 HMR/崩溃归零的 JS 模块变量。
+    fn browser_session_is_deleted_or_absent(&self, session_id: &str) -> bool {
+        if self.pending_deleted_session_ids.read().contains(session_id) {
+            return true;
+        }
+        self.session_validator
+            .lock()
+            .as_ref()
+            .is_some_and(|validator| !validator(session_id))
+    }
+
+    fn ensure_accepting_browser_work(&self) -> Result<(), String> {
+        if self.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+            Err(
+                "application is shutting down; browser operations are no longer accepted"
+                    .to_string(),
+            )
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Each renderer lifecycle first requests a host generation. It increases only
+    /// within the Rust process and does not depend on JS state reset by HMR/crashes.
     pub fn begin_surface_generation(&self) -> u64 {
         self.surface_visibility.lock().begin_generation()
     }
 
-    /// 尝试显示当前平台的系统原生 WebView 浏览器表面。返回 false 表示原生表面
-    /// 尚未创建；前端会显示错误与重试，不切换到其他显示链路。
+    /// Attempts to show the platform-native WebView surface. False means the surface
+    /// has not been created; the frontend reports/retries without changing display path.
     pub async fn show_native_surface(
         &self,
         window: &tauri::Window,
@@ -531,13 +648,14 @@ impl BrowserManager {
         visibility_generation: u64,
         visibility_sequence: u64,
     ) -> Result<bool, String> {
+        self.ensure_accepting_browser_work()?;
         let bounds = bounds.validate()?;
         let mut visibility = self.surface_visibility.lock();
         if !visibility.claim(visibility_generation, visibility_sequence) {
             return Ok(false);
         }
-        // visibility 锁一直持有到原生 mutation 提交，确保新的 generation 签发不会
-        // 夹在 claim 与 show 之间，从而让旧 renderer 在签发之后才落地。
+        // Keep the visibility lock through the native mutation commit so issuing a
+        // new generation cannot interleave between claim and show.
         self.native_surface.lock().show(window, session_id, bounds)
     }
 
@@ -575,6 +693,10 @@ impl BrowserManager {
         app: &AppHandle,
         control_only: bool,
     ) -> Result<bool, String> {
+        let _hosted_request_guard = self.hosted_request_gate.read().await;
+        if self.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(false);
+        }
         let dir = paths::browser_host_requests_dir();
         let Ok(entries) = std::fs::read_dir(&dir) else {
             return Ok(false);
@@ -602,11 +724,13 @@ impl BrowserManager {
             if control_only {
                 continue;
             }
-            // 同 stem 请求本轮一律不能越过 tombstone；即使补偿失败，也只能保留
-            // 两份 artifact 等待重试，不能继续执行原始 create/close。
+            // Requests with this stem cannot pass the cancellation marker in this
+            // scan. Even if compensation fails, retain both artifacts for retry and
+            // never execute the original create/close operation.
             blocked_requests.insert(cancellation_path.with_extension("json"));
-            // 补偿失败必须保留 tombstone + ledger record，并由 watcher 显式重试；
-            // 删除文件会把瞬时 WebView/I/O 失败永久变成资源泄漏。
+            // A compensation failure retains the cancellation marker and ledger
+            // record for explicit watcher retry. Removing them would turn transient
+            // WebView/I/O failure into a permanent resource leak.
             if let Err(error) = self
                 .process_hosted_cancellation(app, &cancellation_path)
                 .await
@@ -623,7 +747,7 @@ impl BrowserManager {
             let raw = match std::fs::read_to_string(&request_path) {
                 Ok(raw) => raw,
                 Err(error) => {
-                    eprintln!("[browser] 读取浏览器宿主请求失败: {error}");
+                    eprintln!("[browser] failed to read browser host request: {error}");
                     let _ = std::fs::remove_file(&request_path);
                     continue;
                 }
@@ -631,7 +755,7 @@ impl BrowserManager {
             let request = match serde_json::from_str::<HostedBrowserRequest>(&raw) {
                 Ok(request) => request,
                 Err(error) => {
-                    eprintln!("[browser] 浏览器宿主请求格式无效: {error}");
+                    eprintln!("[browser] malformed browser host request: {error}");
                     let _ = std::fs::remove_file(&request_path);
                     continue;
                 }
@@ -640,7 +764,7 @@ impl BrowserManager {
                 continue;
             }
             if let Err(error) = validate_hosted_request(&request, &request_path) {
-                eprintln!("[browser] 浏览器宿主请求身份无效: {error}");
+                eprintln!("[browser] invalid browser host request identity: {error}");
                 let _ = std::fs::remove_file(&request_path);
                 handled = true;
                 continue;
@@ -895,7 +1019,8 @@ impl BrowserManager {
         if errors.is_empty() {
             Ok(handled)
         } else {
-            // watcher 会重排下一轮，但本轮其他 session 已经得到公平处理。
+            // The watcher will schedule another scan; other sessions still receive
+            // fair service in this pass.
             Err(errors.join("; "))
         }
     }
@@ -906,10 +1031,13 @@ impl BrowserManager {
         cancellation_path: &std::path::Path,
     ) -> Result<(), String> {
         let raw = std::fs::read_to_string(cancellation_path)
-            .map_err(|error| format!("读取浏览器宿主取消记录失败: {error}"))?;
+            .map_err(|error| format!("failed to read browser host cancellation record: {error}"))?;
         let cancellation: HostedBrowserCancellation = serde_json::from_str(&raw)
-            .map_err(|error| format!("浏览器宿主取消记录格式无效: {error}"))?;
+            .map_err(|error| format!("invalid browser host cancellation record: {error}"))?;
         validate_hosted_cancellation(&cancellation, cancellation_path)?;
+        if self.discard_absent_session_cancellation(&cancellation, cancellation_path)? {
+            return Ok(());
+        }
         let disposition = self
             .native_surface
             .lock()
@@ -930,8 +1058,9 @@ impl BrowserManager {
                 ));
                 remove_hosted_request_artifacts(cancellation_path)?;
             }
-            // 请求仍在同一个串行 consumer 的执行路径中。保留 tombstone；执行方
-            // 提交 rollback record 后会在上方 `!committed` 分支补偿并 ACK。
+            // The request is still running in this serial consumer. Retain the
+            // cancellation marker; after the executor commits its rollback record,
+            // the `!committed` branch above compensates and acknowledges it.
             NativeRequestCancel::AwaitingCompletion => {}
             NativeRequestCancel::Tombstoned | NativeRequestCancel::AlreadyCanceled => {
                 let journal = matching_hosted_prepare_journal_for_cancellation(&cancellation)?;
@@ -952,6 +1081,28 @@ impl BrowserManager {
             }
         }
         Ok(())
+    }
+
+    fn discard_absent_session_cancellation(
+        &self,
+        cancellation: &HostedBrowserCancellation,
+        cancellation_path: &std::path::Path,
+    ) -> Result<bool, String> {
+        if !self.browser_session_is_deleted_or_absent(&cancellation.session_id) {
+            return Ok(false);
+        }
+        // A deleted task's write-side teardown drains the scanner and owns
+        // complete workspace cleanup. Do not create a new ledger tombstone from
+        // a late wrapper cancellation; remove only its process-local protocol
+        // artifacts. The same rule drops artifacts orphaned across startup when
+        // the durable task validator reports no owner.
+        remove_matching_hosted_prepare_journal(cancellation)?;
+        self.locally_committed_prepares.lock().remove(&(
+            cancellation.session_token.clone(),
+            cancellation.request_id.clone(),
+        ));
+        remove_hosted_request_artifacts(cancellation_path)?;
+        Ok(true)
     }
 
     async fn rollback_hosted_record(&self, app: &AppHandle, record: &Value) -> Result<(), String> {
@@ -990,8 +1141,9 @@ impl BrowserManager {
                     .and_then(Value::as_str)
                     .unwrap_or_default();
                 if !tab_token.is_empty() && !creation_id.is_empty() {
-                    // false 是安全终态：用户接管/后续 mutation 已使 generation 失效，
-                    // 页面必须保留，但 tombstone 可以 ACK；只有 Err 才需要重试。
+                    // False is a safe terminal state: user takeover or a later
+                    // mutation invalidated the generation. Preserve the page but
+                    // acknowledge the cancellation marker; only Err is retryable.
                     let _ = self.native_surface.lock().rollback_created_tab(
                         Some(app),
                         session_id,
@@ -1117,14 +1269,15 @@ impl BrowserManager {
                 let tab_token = request
                     .tab_token
                     .as_deref()
-                    .ok_or_else(|| "新建标签页请求缺少 tab_token".to_string())?;
+                    .ok_or_else(|| "create-tab request is missing tab_token".to_string())?;
                 let requested_url = request.url.as_deref().unwrap_or("about:blank");
                 if !is_allowed_url(requested_url) {
-                    return Err("仅支持 http/https/about:blank 协议".to_string());
+                    return Err("only http, https, and about:blank URLs are supported".to_string());
                 }
                 let authorization = native_mutation_lease_from_request(request)?;
-                // 先用唯一 marker 建立 WebView2 target；宿主发现并绑定 target 后在隐藏
-                // 表面完成 requested_url 首航，再通过 lease CAS 发布，避免弹窗与错页导航。
+                // First create a WebView2 target with a unique marker. After the host
+                // discovers and binds it, navigate the hidden surface to requested_url,
+                // then publish through lease CAS to avoid popups and wrong-tab navigation.
                 let marker = format!("about:blank#pinvou-tab-{tab_token}");
                 ensure_hosted_caller_live(request)?;
                 let created = self.native_surface.lock().create_tab_for_agent(
@@ -1137,7 +1290,10 @@ impl BrowserManager {
                     &request.request_id,
                 )?;
                 if created.is_none() {
-                    return Err("当前会话不是可自动化的原生浏览器工作区".to_string());
+                    return Err(
+                        "current session is not an automatable native browser workspace"
+                            .to_string(),
+                    );
                 }
                 if let Err(error) = ensure_hosted_caller_live(request) {
                     return match self.rollback_staged_agent_tab(
@@ -1190,7 +1346,7 @@ impl BrowserManager {
                     None,
                     || ensure_hosted_caller_live(request),
                 )? {
-                    return Err("新建标签页在提交前已关闭".to_string());
+                    return Err("new tab was closed before commit".to_string());
                 }
                 let _ = app.emit(
                     "browser:tabs-changed",
@@ -1216,23 +1372,32 @@ impl BrowserManager {
                 let tab_token = request
                     .tab_token
                     .as_deref()
-                    .ok_or_else(|| "切换标签页请求缺少 tab_token".to_string())?;
+                    .ok_or_else(|| "activate-tab request is missing tab_token".to_string())?;
                 ensure_hosted_caller_live(request)?;
                 let (previous_tab, previous_control, lease) = {
                     let mut surface = self.native_surface.lock();
-                    let previous_tab = surface
-                        .active_tab_token(&request.session_id)
-                        .ok_or_else(|| "当前会话不是可自动化的原生浏览器工作区".to_string())?;
-                    let previous_control = surface
-                        .control_state(&request.session_id)
-                        .ok_or_else(|| "当前会话不是可自动化的原生浏览器工作区".to_string())?;
+                    let previous_tab =
+                        surface
+                            .active_tab_token(&request.session_id)
+                            .ok_or_else(|| {
+                                "current session is not an automatable native browser workspace"
+                                    .to_string()
+                            })?;
+                    let previous_control =
+                        surface.control_state(&request.session_id).ok_or_else(|| {
+                            "current session is not an automatable native browser workspace"
+                                .to_string()
+                        })?;
                     let Some(lease) = surface.activate_tab_with_lease(
                         Some(app),
                         &request.session_id,
                         tab_token,
                     )?
                     else {
-                        return Err("当前会话不是可自动化的原生浏览器工作区".to_string());
+                        return Err(
+                            "current session is not an automatable native browser workspace"
+                                .to_string(),
+                        );
                     };
                     (previous_tab, previous_control, lease)
                 };
@@ -1258,10 +1423,12 @@ impl BrowserManager {
                 let tab_token = request
                     .tab_token
                     .as_deref()
-                    .ok_or_else(|| "关闭标签页请求缺少 tab_token".to_string())?;
+                    .ok_or_else(|| "close-tab request is missing tab_token".to_string())?;
                 let authorization = native_mutation_lease_from_request(request)?;
                 if authorization.tab_token != tab_token {
-                    return Err("关闭标签的 authorization_tab_token 必须等于目标标签".to_string());
+                    return Err(
+                        "close-tab authorization_tab_token must match the target tab".to_string(),
+                    );
                 }
                 ensure_hosted_caller_live(request)?;
                 if !self.native_surface.lock().close_tab_for_agent(
@@ -1270,7 +1437,10 @@ impl BrowserManager {
                     tab_token,
                     &authorization,
                 )? {
-                    return Err("当前会话不是可自动化的原生浏览器工作区".to_string());
+                    return Err(
+                        "current session is not an automatable native browser workspace"
+                            .to_string(),
+                    );
                 }
                 let _ = app.emit(
                     "browser:tabs-changed",
@@ -1280,16 +1450,14 @@ impl BrowserManager {
                 Ok(HostedBrowserOutcome::new(json!({})))
             }
             HostedBrowserOperation::RollbackCreatedTab => {
-                let tab_token = request
-                    .tab_token
-                    .as_deref()
-                    .ok_or_else(|| "创建补偿请求缺少 tab_token".to_string())?;
-                let creation_id = request
-                    .creation_id
-                    .as_deref()
-                    .ok_or_else(|| "创建补偿请求缺少 creation_id".to_string())?;
+                let tab_token = request.tab_token.as_deref().ok_or_else(|| {
+                    "create compensation request is missing tab_token".to_string()
+                })?;
+                let creation_id = request.creation_id.as_deref().ok_or_else(|| {
+                    "create compensation request is missing creation_id".to_string()
+                })?;
                 if !valid_host_request_id(creation_id) {
-                    return Err("创建补偿 generation 无效".to_string());
+                    return Err("create compensation generation is invalid".to_string());
                 }
                 if !self.native_surface.lock().rollback_created_tab(
                     Some(app),
@@ -1297,7 +1465,7 @@ impl BrowserManager {
                     tab_token,
                     creation_id,
                 )? {
-                    return Err("待补偿的创建标签不存在".to_string());
+                    return Err("tab pending create compensation does not exist".to_string());
                 }
                 let _ = app.emit(
                     "browser:tabs-changed",
@@ -1310,7 +1478,10 @@ impl BrowserManager {
                 let lease = native_lease_from_request(request)?;
                 ensure_hosted_caller_live(request)?;
                 if !self.native_surface.lock().assert_lease(&lease)? {
-                    return Err("浏览器宿主 lease 已失效；页面可能已被用户接管".to_string());
+                    return Err(
+                        "browser host lease expired; the user may have taken over the page"
+                            .to_string(),
+                    );
                 }
                 Ok(HostedBrowserOutcome::new(json!({})))
             }
@@ -1320,10 +1491,13 @@ impl BrowserManager {
                 if !self.native_surface.lock().begin_agent_operation(
                     &lease,
                     request.emits_trusted_input,
+                    request.observational_only,
                     request.caller_pid,
                     &request.wrapper_instance_nonce,
                 )? {
-                    return Err("浏览器宿主 lease 已失效；已阻止工具执行".to_string());
+                    return Err(
+                        "browser host lease expired; tool execution was blocked".to_string()
+                    );
                 }
                 Ok(HostedBrowserOutcome::with_rollback(
                     json!({}),
@@ -1342,7 +1516,7 @@ impl BrowserManager {
                 ensure_hosted_caller_live(request)?;
                 if !self.native_surface.lock().refresh_agent_input(&lease)? {
                     return Err(
-                        "browser/agent-input-refresh-rejected: 工具操作已结束或 lease 已失效"
+                        "browser/agent-input-refresh-rejected: tool operation ended or its lease expired"
                             .to_string(),
                     );
                 }
@@ -1353,7 +1527,7 @@ impl BrowserManager {
                 ensure_hosted_caller_live(request)?;
                 if !self.native_surface.lock().refresh_agent_operation(&lease)? {
                     return Err(
-                        "browser/agent-operation-refresh-rejected: 工具操作已结束或 lease 已失效"
+                        "browser/agent-operation-refresh-rejected: tool operation ended or its lease expired"
                             .to_string(),
                     );
                 }
@@ -1488,6 +1662,7 @@ impl BrowserManager {
                 if !self.native_surface.lock().begin_agent_operation(
                     &authorization,
                     false,
+                    false,
                     request.caller_pid,
                     &request.wrapper_instance_nonce,
                 )? {
@@ -1500,25 +1675,17 @@ impl BrowserManager {
                     return Err(error);
                 }
                 let navigation_result = (|| {
-                    let label = self
-                        .native_surface
+                    self.native_surface
                         .lock()
-                        .webview_label_for_tab(&request.session_id, &authorization_tab)
-                        .ok_or_else(|| "browser/native-surface-missing".to_string())?;
-                    let webview = app
-                        .get_webview(&label)
-                        .ok_or_else(|| "browser/native-surface-missing".to_string())?;
-                    webview
-                        .navigate(
-                            requested_url
-                                .parse()
-                                .map_err(|error| format!("browser/invalid-url: {error}"))?,
-                        )
-                        .map_err(|error| {
-                            format!(
-                                "browser/action-commit-unknown-after-navigation-dispatch: {error}"
-                            )
-                        })
+                        .navigate_tab_for_agent(
+                            app,
+                            &request.session_id,
+                            &authorization_tab,
+                            requested_url,
+                            &authorization,
+                        )?
+                        .then_some(())
+                        .ok_or_else(|| "browser/native-surface-missing".to_string())
                 })();
                 self.native_surface
                     .lock()
@@ -1535,11 +1702,15 @@ impl BrowserManager {
                 );
                 self.persist_native_restore_best_effort(&request.session_id);
                 return Ok(HostedBrowserOutcome::new(browser_core_tool_result(
-                    format!("Opened page: {requested_url}"),
+                    format!(
+                        "Navigation dispatched to {requested_url}; page load is not verified. Call take_snapshot or list_pages to verify."
+                    ),
                     Some(json!({
                         "tabToken": authorization_tab,
                         "targetId": format!("native:{authorization_tab}"),
                         "reusedInitialBlank": true,
+                        "navigationDispatched": true,
+                        "loadVerified": false,
                     })),
                 )));
             }
@@ -1547,6 +1718,7 @@ impl BrowserManager {
             ensure_hosted_caller_live(request)?;
             if !self.native_surface.lock().begin_agent_operation(
                 &authorization,
+                false,
                 false,
                 request.caller_pid,
                 &request.wrapper_instance_nonce,
@@ -1624,8 +1796,15 @@ impl BrowserManager {
                 self.persist_native_restore_best_effort(&request.session_id);
                 Ok(HostedBrowserOutcome::with_rollback(
                     browser_core_tool_result(
-                        format!("Opened page: {requested_url}"),
-                        Some(json!({ "tabToken": tab_token, "targetId": target_id })),
+                        format!(
+                            "Navigation dispatched to {requested_url}; page load is not verified. Call take_snapshot or list_pages to verify."
+                        ),
+                        Some(json!({
+                            "tabToken": tab_token,
+                            "targetId": target_id,
+                            "navigationDispatched": true,
+                            "loadVerified": false,
+                        })),
                     ),
                     json!({
                         "kind": "created_tab",
@@ -1679,6 +1858,7 @@ impl BrowserManager {
             if !self.native_surface.lock().begin_agent_operation(
                 &lease,
                 false,
+                false,
                 request.caller_pid,
                 &request.wrapper_instance_nonce,
             )? {
@@ -1725,6 +1905,7 @@ impl BrowserManager {
         if !self.native_surface.lock().begin_agent_operation(
             &lease,
             false,
+            browser_core_tool_is_observational(tool_name),
             request.caller_pid,
             &request.wrapper_instance_nonce,
         )? {
@@ -1758,46 +1939,70 @@ impl BrowserManager {
                             return Err("browser/url-not-allowed".to_string());
                         }
                         ensure_hosted_caller_live(request)?;
-                        webview
-                            .navigate(
-                                url.parse()
-                                    .map_err(|error| format!("browser/invalid-url: {error}"))?,
-                            )
-                            .map_err(|error| {
-                                format!(
-                                    "browser/action-commit-unknown-after-navigation-dispatch: URL navigation acknowledgement was inconclusive: {error}"
-                                )
-                            })?;
+                        self.native_surface
+                            .lock()
+                            .navigate_tab_for_agent(
+                                app,
+                                &request.session_id,
+                                &tab_token,
+                                url,
+                                &lease,
+                            )?
+                            .then_some(())
+                            .ok_or_else(|| "browser/native-surface-missing".to_string())?;
                     }
                     "back" => {
                         ensure_hosted_caller_live(request)?;
-                        webview.eval("history.back()").map_err(|error| {
-                            format!(
-                                "browser/action-commit-unknown-after-navigation-dispatch: back navigation acknowledgement was inconclusive: {error}"
-                            )
-                        })?
+                        self.native_surface
+                            .lock()
+                            .history_step_tab_for_agent(
+                                app,
+                                &request.session_id,
+                                &tab_token,
+                                -1,
+                                &lease,
+                            )?
+                            .then_some(())
+                            .ok_or_else(|| "browser/native-surface-missing".to_string())?
                     }
                     "forward" => {
                         ensure_hosted_caller_live(request)?;
-                        webview.eval("history.forward()").map_err(|error| {
-                            format!(
-                                "browser/action-commit-unknown-after-navigation-dispatch: forward navigation acknowledgement was inconclusive: {error}"
-                            )
-                        })?
+                        self.native_surface
+                            .lock()
+                            .history_step_tab_for_agent(
+                                app,
+                                &request.session_id,
+                                &tab_token,
+                                1,
+                                &lease,
+                            )?
+                            .then_some(())
+                            .ok_or_else(|| "browser/native-surface-missing".to_string())?
                     }
                     "reload" => {
                         ensure_hosted_caller_live(request)?;
-                        webview.reload().map_err(|error| {
-                            format!(
-                                "browser/action-commit-unknown-after-navigation-dispatch: reload acknowledgement was inconclusive: {error}"
-                            )
-                        })?
+                        self.native_surface
+                            .lock()
+                            .reload_tab_for_agent(
+                                app,
+                                &request.session_id,
+                                &tab_token,
+                                &lease,
+                            )?
+                            .then_some(())
+                            .ok_or_else(|| "browser/native-surface-missing".to_string())?
                     }
                     _ => return Err("browser/invalid-navigation-type".to_string()),
                 }
                 Ok(browser_core_tool_result(
-                    format!("Navigation requested: {navigation_type}"),
-                    None,
+                    format!(
+                        "Navigation command dispatched ({navigation_type}); page load is not verified. Call take_snapshot or list_pages to verify."
+                    ),
+                    Some(json!({
+                        "navigationType": navigation_type,
+                        "navigationDispatched": true,
+                        "loadVerified": false,
+                    })),
                 ))
             } else {
                 ensure_hosted_caller_live(request)?;
@@ -1830,7 +2035,9 @@ impl BrowserManager {
                 || request.session_id != session_id
                 || request.session_token != session_token
             {
-                return Err("浏览器 Prepare 日志请求身份不一致".to_string().into());
+                return Err("browser Prepare journal request identity mismatch"
+                    .to_string()
+                    .into());
             }
         }
 
@@ -1839,7 +2046,11 @@ impl BrowserManager {
         if journal_path.exists() {
             let journal = read_hosted_prepare_journal(&journal_path)?;
             if journal.compensation.session_id != session_id {
-                return Err("浏览器 Prepare 日志与当前任务不一致".to_string().into());
+                return Err(
+                    "browser Prepare journal does not belong to the current task"
+                        .to_string()
+                        .into(),
+                );
             }
             let cancellation_wins =
                 matching_hosted_cancellation_for_compensation(&journal.compensation)?;
@@ -1951,12 +2162,14 @@ impl BrowserManager {
                 }
             }
             ("none", None) => {}
-            _ => return Err("浏览器 Prepare 日志补偿 generation 无效".to_string()),
+            _ => {
+                return Err("browser Prepare journal compensation generation is invalid".to_string())
+            }
         }
         if compensation.rollback_kind == "prepared_session" {
             remove_file_and_verify_absent(
                 &paths::browser_workspace_restore_json(&compensation.session_token),
-                "删除未提交 Prepare 恢复清单",
+                "remove uncommitted Prepare restore manifest",
             )?;
         }
         Ok(())
@@ -1967,6 +2180,8 @@ impl BrowserManager {
         app: &AppHandle,
         journal: &HostedPrepareJournal,
     ) -> Result<(), String> {
+        let session_lock = self.session_lifecycle_lock(&journal.compensation.session_id);
+        let _session_guard = session_lock.lock().await;
         let _start_guard = self.start_mtx.lock().await;
         self.rollback_prepare_journal_with_start_lock(app, journal)
             .await
@@ -1982,23 +2197,35 @@ impl BrowserManager {
         hosted_request: Option<&HostedBrowserRequest>,
     ) -> Result<(Value, PreparedWorkspaceDisposition), PrepareWorkspaceError> {
         if !crate::platform::capabilities::browser_product_enabled() {
-            return Err("当前产品构建尚未开放应用内浏览器".to_string().into());
+            return Err("in-app browser is not enabled in this product build"
+                .to_string()
+                .into());
         }
-        // Restore and prepare form one lifecycle transaction. Holding this
-        // guard across both phases prevents a completed stop_for_session from
-        // being followed by an older prepare recreating a blank workspace.
-        let _start_guard = self.start_mtx.lock().await;
+        // Restore and prepare form one per-task lifecycle transaction. The
+        // global start lock is released while waiting for automation binding,
+        // allowing an unrelated task workspace to make progress.
+        let session_lock = self.session_lifecycle_lock(session_id);
+        let _session_guard = session_lock.lock().await;
+        let start_guard = self.start_mtx.lock().await;
+        // A direct UI Prepare may have started waiting before restart closed
+        // admission. Recheck after the shared lifecycle gate so it cannot
+        // recreate a WebView during child harvesting.
+        self.ensure_accepting_browser_work()?;
         self.ensure_browser_session_allowed(session_id)?;
         self.begin_hosted_prepare_with_start_lock(app, session_id, session_token, hosted_request)
             .await?;
         let prepared = async {
             if platform::browser_core_available() {
                 let restore_outcome = if !self.native_surface.lock().has_session(session_id) {
-                    self.restore_saved_workspace_with_start_lock(session_id)
+                    self.restore_saved_workspace_releasing_start_lock(session_id, start_guard)
                         .await?
                 } else {
+                    drop(start_guard);
                     RestoreWorkspaceOutcome::Existing
                 };
+                let _start_guard = self.start_mtx.lock().await;
+                self.ensure_accepting_browser_work()?;
+                self.ensure_browser_session_allowed(session_id)?;
                 return self
                     .prepare_browser_core_workspace_with_start_lock(
                         app,
@@ -2011,14 +2238,19 @@ impl BrowserManager {
                     .await;
             }
 
-            // Wrapper 可能比前端状态查询更早到达（例如应用重启后立即继续任务）。先按
-            // URL 清单重建，避免普通 prepare 用一个空白页覆盖尚未恢复的多标签工作区。
+            // The wrapper can arrive before the UI status query after an app
+            // restart. Restore the URL manifest first so an ordinary Prepare
+            // cannot replace a saved multi-tab workspace with a blank page.
             let restore_outcome = if !self.native_surface.lock().has_session(session_id) {
-                self.restore_saved_workspace_with_start_lock(session_id)
+                self.restore_saved_workspace_releasing_start_lock(session_id, start_guard)
                     .await?
             } else {
+                drop(start_guard);
                 RestoreWorkspaceOutcome::Existing
             };
+            let _start_guard = self.start_mtx.lock().await;
+            self.ensure_accepting_browser_work()?;
+            self.ensure_browser_session_allowed(session_id)?;
             let (had_session, had_sessions) = {
                 let surface = self.native_surface.lock();
                 (surface.has_session(session_id), surface.has_sessions())
@@ -2027,16 +2259,16 @@ impl BrowserManager {
             if had_sessions {
                 let port = existing_port.ok_or_else(|| {
                     PrepareWorkspaceError::from(
-                        "原生浏览器工作区仍在运行，但自动化端点状态缺失；已保留现有任务，请重试"
+                        "native browser workspaces are running but automation endpoint state is missing; existing tasks were preserved, retry the operation"
                             .to_string(),
                     )
                 })?;
                 if !self.native_surface.lock().owns_port(port) {
-                    return Err("自动化端点与现有原生浏览器工作区不匹配".to_string().into());
+                    return Err("automation endpoint does not match the existing native browser workspace".to_string().into());
                 }
             } else if let Some(port) = existing_port {
                 if !self.native_surface.lock().owns_port(port) {
-                    return Err("检测到不属于当前原生浏览器工作区的自动化端点"
+                    return Err("detected an automation endpoint not owned by the current native browser workspace"
                         .to_string()
                         .into());
                 }
@@ -2064,12 +2296,12 @@ impl BrowserManager {
                 )?
             };
             if !prepared {
-                return Err("当前平台不支持原生浏览器表面".to_string().into());
+                return Err("native browser surfaces are unsupported on this platform".to_string().into());
             }
             if existing_port.is_none() {
                 if !probe_cdp(port, Duration::from_secs(15)).await {
                     self.rollback_new_native_workspace(app, session_id, had_session);
-                    return Err("WebView2 已创建但 CDP 未就绪".to_string().into());
+                    return Err("WebView2 was created but CDP did not become ready".to_string().into());
                 }
                 if let Err(error) = write_port_file(port, "app", None) {
                     self.rollback_new_native_workspace(app, session_id, had_session);
@@ -2098,7 +2330,8 @@ impl BrowserManager {
                 RestoreWorkspaceOutcome::Restored => PreparedWorkspaceDisposition::RestoredExisting,
                 RestoreWorkspaceOutcome::Existing => PreparedWorkspaceDisposition::Existing,
                 RestoreWorkspaceOutcome::Missing if had_session => {
-                    // Another prepare won the race while this request waited for start_mtx.
+                    // Another prepare won while this task waited for its
+                    // lifecycle lock.
                     PreparedWorkspaceDisposition::Existing
                 }
                 RestoreWorkspaceOutcome::Missing => PreparedWorkspaceDisposition::CreatedBlank,
@@ -2120,6 +2353,10 @@ impl BrowserManager {
         match prepared {
             Ok(prepared) => Ok(prepared),
             Err(mut error) => {
+                // The restore helper intentionally released the global lock
+                // before automation waits. Reacquire it for durable rollback
+                // and shared-runtime compensation.
+                let _cleanup_start_guard = self.start_mtx.lock().await;
                 if hosted_request.is_some() {
                     let journal_path = hosted_prepare_journal_path_for(session_token);
                     if journal_path.exists() {
@@ -2131,7 +2368,7 @@ impl BrowserManager {
                                     .and_then(|()| remove_hosted_prepare_journal(&journal_path))
                                 {
                                     error.message = format!(
-                                        "{}; Prepare 失败后的持久补偿尚未完成: {cleanup_error}",
+                                        "{}; durable compensation after Prepare failure is incomplete: {cleanup_error}",
                                         error.message
                                     );
                                     if error.rollback.is_none() {
@@ -2141,7 +2378,7 @@ impl BrowserManager {
                             }
                             Err(cleanup_error) => {
                                 error.message = format!(
-                                    "{}; Prepare 失败后的持久日志不可读: {cleanup_error}",
+                                    "{}; durable journal after Prepare failure is unreadable: {cleanup_error}",
                                     error.message
                                 );
                             }
@@ -2271,9 +2508,11 @@ impl BrowserManager {
                 || journal.compensation.idempotency_key != request.idempotency_key
                 || journal.compensation.session_id != request.session_id
             {
-                return Err("浏览器 Prepare 持久日志被其他 generation 占用"
-                    .to_string()
-                    .into());
+                return Err(
+                    "browser Prepare durable journal is owned by another generation"
+                        .to_string()
+                        .into(),
+                );
             }
             journal.compensation.rollback_kind =
                 disposition.rollback_kind().unwrap_or("none").to_string();
@@ -2306,10 +2545,12 @@ impl BrowserManager {
                     .err();
                 let mut details = Vec::new();
                 if let Some(error) = journal_error {
-                    details.push(format!("更新持久补偿 phase 失败: {error}"));
+                    details.push(format!(
+                        "failed to update durable compensation phase: {error}"
+                    ));
                 }
                 if let Some(error) = cancellation_error {
-                    details.push(format!("写入取消记录失败: {error}"));
+                    details.push(format!("failed to write cancellation record: {error}"));
                 }
                 let message = if details.is_empty() {
                     liveness_error
@@ -2359,13 +2600,14 @@ impl BrowserManager {
             hosted_protocol_now_ms()?,
             prepare_compensation,
         );
-        let encoded = serde_json::to_vec(&cancellation)
-            .map_err(|error| format!("编码浏览器宿主内部取消记录失败: {error}"))?;
+        let encoded = serde_json::to_vec(&cancellation).map_err(|error| {
+            format!("failed to encode internal browser host cancellation record: {error}")
+        })?;
         match crate::platform::filesystem::atomic_write(&cancellation_path, &encoded) {
             Ok(()) => Ok(()),
             Err(error) => {
                 let first_error = format!(
-                    "写入浏览器宿主内部取消记录 {} 失败: {error}",
+                    "failed to write internal browser host cancellation record {}: {error}",
                     cancellation_path.display()
                 );
                 let retry_app = app.clone();
@@ -2384,7 +2626,7 @@ impl BrowserManager {
                             .load(std::sync::atomic::Ordering::SeqCst)
                         {
                             eprintln!(
-                                "[browser] 应用退出前仍未能持久化 Prepare 补偿记录: {}",
+                                "[browser] still unable to persist Prepare compensation before application exit: {}",
                                 cancellation_path.display()
                             );
                             return;
@@ -2397,14 +2639,16 @@ impl BrowserManager {
         }
     }
 
-    /// 普通模式的浏览器入口始终可见；用户首次展开时才创建当前任务的空白
-    /// WebView 工作区，避免应用启动即为所有任务分配原生页面。
+    /// The browser entry remains visible in normal mode. A blank WebView workspace
+    /// is created for the current task only when the user first expands it.
     pub async fn prepare_for_user(&self, browser_session_id: &str) -> Result<Value, String> {
+        let _admission_guard = self.hosted_request_gate.read().await;
+        self.ensure_accepting_browser_work()?;
         let app = self
             .app
             .lock()
             .clone()
-            .ok_or_else(|| "应用句柄尚未就绪".to_string())?;
+            .ok_or_else(|| "application handle is not ready".to_string())?;
         let session_token = paths::browser_session_token(browser_session_id);
         let (result, _) = self
             .prepare_native_workspace(&app, browser_session_id, &session_token, false, None, None)
@@ -2423,6 +2667,8 @@ impl BrowserManager {
         expected_revision: u64,
         preserve_restore: bool,
     ) -> Result<(), String> {
+        let session_lock = self.session_lifecycle_lock(browser_session_id);
+        let _session_guard = session_lock.lock().await;
         let _start_guard = self.start_mtx.lock().await;
         self.rollback_prepared_session_with_start_lock(
             browser_session_id,
@@ -2462,8 +2708,9 @@ impl BrowserManager {
         Ok(())
     }
 
-    /// prepare 的后置探测/协调文件提交失败时只回滚本次新建的工作区。已有会话保持
-    /// 原样；最后一个新工作区移除后才重置共享平台环境。
+    /// If post-Prepare probing or coordination-file commit fails, roll back only
+    /// the workspace created by this request. Existing sessions remain untouched;
+    /// reset shared platform state only after removing the last new workspace.
     fn rollback_new_native_workspace(
         &self,
         app: &AppHandle,
@@ -2481,23 +2728,24 @@ impl BrowserManager {
             }
             Ok(true) => {}
             Err(error) => {
-                eprintln!("[browser] 回滚原生浏览器工作区失败: {error}");
+                eprintln!("[browser] failed to roll back native browser workspace: {error}");
             }
         }
     }
 
-    /// 绑定 AppHandle（setup 时调用一次）。
+    /// Binds AppHandle once during setup.
     pub fn bind_app(&self, app: AppHandle) {
         *self.app.lock() = Some(app);
     }
 
-    /// 导航事件在 WebView 回调栈退出后调用此入口，避免重入 native_surface 锁。
+    /// Called after the WebView navigation callback unwinds to avoid reentering
+    /// the native_surface lock.
     pub(crate) fn persist_native_restore(&self, browser_session_id: &str) -> Result<(), String> {
         let app = self
             .app
             .lock()
             .clone()
-            .ok_or_else(|| "应用句柄尚未就绪".to_string())?;
+            .ok_or_else(|| "application handle is not ready".to_string())?;
         let _persistence_guard = self.persistence_io.lock();
         match self.persist_native_restore_once(&app, browser_session_id) {
             Ok(()) => {
@@ -2573,7 +2821,7 @@ impl BrowserManager {
                 let manager = retry_app.state::<BrowserManager>();
                 let _persistence_guard = manager.persistence_io.lock();
                 let session_gone = manager
-                    .deleted_session_ids
+                    .pending_deleted_session_ids
                     .read()
                     .contains(&retry_session_id)
                     || !manager.native_surface.lock().has_session(&retry_session_id);
@@ -2602,20 +2850,26 @@ impl BrowserManager {
 
     fn persist_native_restore_best_effort(&self, browser_session_id: &str) {
         if let Err(error) = self.persist_native_restore(browser_session_id) {
-            eprintln!("[browser] 原生浏览器状态已提交，持久化将在后台重试: {error}");
+            eprintln!("[browser] native browser state committed; persistence will retry in the background: {error}");
         }
     }
 
-    /// 如果当前对话存在上次进程保存的 URL 清单，则惰性重建原生页面。所有 WebView、
-    /// tab token、CDP target 和 lease 都是本进程新建；清单中的 active index 只用于
-    /// 选择新标签，不复用任何运行期身份。
+    /// Lazily rebuilds native pages from the URL manifest saved by the previous
+    /// process. WebViews, tab tokens, CDP targets, and leases are always new in this
+    /// process; active_index selects a new tab and never reuses runtime identity.
     async fn restore_saved_workspace(
         &self,
         browser_session_id: &str,
     ) -> Result<RestoreWorkspaceOutcome, String> {
-        let _start_guard = self.start_mtx.lock().await;
+        let _admission_guard = self.hosted_request_gate.read().await;
+        let session_lock = self.session_lifecycle_lock(browser_session_id);
+        let _session_guard = session_lock.lock().await;
+        let start_guard = self.start_mtx.lock().await;
+        // status() can be queued behind restart cleanup. Never rebuild native
+        // WebViews from the preserved manifest after process admission closes.
+        self.ensure_accepting_browser_work()?;
         let outcome = self
-            .restore_saved_workspace_with_start_lock(browser_session_id)
+            .restore_saved_workspace_releasing_start_lock(browser_session_id, start_guard)
             .await?;
         if matches!(outcome, RestoreWorkspaceOutcome::Restored) {
             self.native_surface
@@ -2633,15 +2887,19 @@ impl BrowserManager {
         Ok(outcome)
     }
 
-    /// Restore phase for callers that already hold the shared lifecycle lock.
+    /// Restore phase for callers that hold the task lifecycle lock and pass
+    /// ownership of the global start lock. The lock protects shared runtime
+    /// staging, then is released before slow per-tab automation waits.
     /// Publication is deliberately left to the caller so a hosted Prepare can
     /// record its rollback generation before UI/user code can mutate it.
-    async fn restore_saved_workspace_with_start_lock(
+    async fn restore_saved_workspace_releasing_start_lock(
         &self,
         browser_session_id: &str,
+        start_guard: tokio::sync::MutexGuard<'_, ()>,
     ) -> Result<RestoreWorkspaceOutcome, String> {
-        // 发布门控关闭时连恢复清单都不读取，更不能据此创建隐藏 WebView；清单
-        // 原样保留，未来正式开放或 preview 验收构建仍可恢复。
+        // When the product gate is closed, do not even read the restore manifest or
+        // create hidden WebViews from it. Preserve it unchanged for a future enabled
+        // or preview acceptance build.
         if !crate::platform::capabilities::browser_product_enabled() {
             return Ok(RestoreWorkspaceOutcome::Missing);
         }
@@ -2672,10 +2930,10 @@ impl BrowserManager {
             .app
             .lock()
             .clone()
-            .ok_or_else(|| "应用句柄尚未就绪".to_string())?;
+            .ok_or_else(|| "application handle is not ready".to_string())?;
         self.ensure_browser_session_allowed(browser_session_id)?;
         if self.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err("应用正在退出，不恢复浏览器".to_string());
+            return Err("application is shutting down; browser restore was rejected".to_string());
         }
         {
             let mut surface = self.native_surface.lock();
@@ -2685,11 +2943,15 @@ impl BrowserManager {
             if surface.has_session(browser_session_id) {
                 let has_remaining = surface
                     .close_session_preserving_restore(Some(&app), browser_session_id)
-                    .map_err(|error| format!("上次浏览器恢复的残留表面尚未清理完成: {error}"))?;
+                    .map_err(|error| format!("residual surface from the previous browser restore is not fully cleaned: {error}"))?;
                 if !has_remaining {
                     surface
                         .close_preserving_restore(Some(&app))
-                        .map_err(|error| format!("重置上次浏览器恢复环境失败: {error}"))?;
+                        .map_err(|error| {
+                            format!(
+                                "failed to reset the previous browser restore environment: {error}"
+                            )
+                        })?;
                 }
             }
         }
@@ -2712,14 +2974,20 @@ impl BrowserManager {
         };
         if let Some(port) = existing_port {
             if !self.native_surface.lock().owns_port(port) {
-                return Err("检测到不属于当前应用的浏览器自动化端点".to_string());
+                return Err(
+                    "detected a browser automation endpoint not owned by this application"
+                        .to_string(),
+                );
             }
         }
         if capabilities.chrome_devtools_protocol
             && self.native_surface.lock().has_sessions()
             && existing_port.is_none()
         {
-            return Err("其他对话的原生浏览器仍在运行，但自动化端点状态缺失".to_string());
+            return Err(
+                "another task's native browser is running but automation endpoint state is missing"
+                    .to_string(),
+            );
         }
         let port = if capabilities.chrome_devtools_protocol {
             Some(match existing_port {
@@ -2739,12 +3007,15 @@ impl BrowserManager {
             &restore,
         )?;
         let created_new_port = capabilities.chrome_devtools_protocol && existing_port.is_none();
+        drop(start_guard);
 
         let restored = async {
             if let Some(port) = port {
                 if created_new_port {
                     if !probe_cdp(port, Duration::from_secs(15)).await {
-                        return Err("WebView2 已重建但 CDP 未就绪".to_string());
+                        return Err(
+                            "WebView2 was restored but CDP did not become ready".to_string()
+                        );
                     }
                     write_port_file(port, "app", None)?;
                 }
@@ -2755,7 +3026,10 @@ impl BrowserManager {
                         tab_token,
                         &target_id,
                     )? {
-                        return Err("恢复标签在绑定新 automation target 前已关闭".to_string());
+                        return Err(
+                            "restored tab closed before binding its new automation target"
+                                .to_string(),
+                        );
                     }
                     if !self.native_surface.lock().navigate_tab_after_bind(
                         Some(&app),
@@ -2763,7 +3037,7 @@ impl BrowserManager {
                         tab_token,
                         url,
                     )? {
-                        return Err("恢复标签在导航前已关闭".to_string());
+                        return Err("restored tab closed before navigation".to_string());
                     }
                 }
             } else if browser_core_available {
@@ -2784,7 +3058,9 @@ impl BrowserManager {
                         tab_token,
                         &target_id,
                     )? {
-                        return Err("恢复标签在绑定 BrowserCore target 前已关闭".to_string());
+                        return Err(
+                            "restored tab closed before binding its BrowserCore target".to_string()
+                        );
                     }
                     if !self.native_surface.lock().navigate_tab_after_bind(
                         Some(&app),
@@ -2792,38 +3068,54 @@ impl BrowserManager {
                         tab_token,
                         url,
                     )? {
-                        return Err("恢复标签在 BrowserCore 首航前已关闭".to_string());
+                        return Err(
+                            "restored tab closed before its initial BrowserCore navigation"
+                                .to_string(),
+                        );
                     }
                 }
             }
-            // prepare_restored_surface 已按 active_index 设置当前标签。恢复过程不能调用
-            // UI activate_tab：那会把“应用重启”伪装成用户接管，使 Agent 必须等待一次
-            // 并不存在的手工交还。恢复后的中立 owner 由下一次真实操作原子认领。
+            // prepare_restored_surface selected the active tab from active_index.
+            // Restore must not call UI activate_tab: doing so would misclassify an app
+            // restart as user takeover and force the Agent to await a nonexistent handoff.
+            // The next real operation atomically claims the neutral restored owner.
             if tab_tokens.get(restore.active_index).is_none() {
-                return Err("恢复清单当前标签无效".to_string());
+                return Err("restore manifest has an invalid active tab".to_string());
             }
-            // navigate 是异步提交；此处原样保留已验证清单，随后真实导航事件会
-            // 用宿主 WebView 当前 URL 更新它，避免短暂 marker 覆盖恢复快照。
+            // Navigation is submitted asynchronously. Keep the validated manifest
+            // unchanged here; real navigation events will update it from the host
+            // WebView URL without letting a transient marker replace the snapshot.
             platform::NativeBrowserSurface::write_restore_workspace(browser_session_id, &restore)?;
             Ok::<(), String>(())
         }
         .await;
 
         if let Err(error) = restored {
+            // Another task may have adopted this transaction's newly published
+            // CDP endpoint while the global start lock was released for target
+            // binding. Reenter the shared-runtime transaction before removing
+            // A's surfaces or deciding whether the port file is now unowned.
+            let _cleanup_start_guard = self.start_mtx.lock().await;
             let mut surface = self.native_surface.lock();
             let cleanup = surface
                 .quarantine_failed_restore(Some(&app), browser_session_id)
                 .and_then(|has_remaining| {
                     if has_remaining {
-                        Ok(())
+                        Ok(true)
                     } else {
-                        surface.close_preserving_restore(Some(&app))
+                        surface.close_preserving_restore(Some(&app)).map(|()| false)
                     }
                 });
             drop(surface);
-            if created_new_port {
-                let _ = std::fs::remove_file(paths::browser_cdp_port_json());
-            }
+            let cleanup = cleanup.and_then(|has_remaining| {
+                if created_new_port {
+                    remove_failed_restore_port_if_unshared(
+                        port.expect("a newly created CDP endpoint always has a port"),
+                        has_remaining,
+                    )?;
+                }
+                Ok(())
+            });
             let restore_write = platform::NativeBrowserSurface::write_restore_workspace(
                 browser_session_id,
                 &restore,
@@ -2831,13 +3123,13 @@ impl BrowserManager {
             return match (cleanup, restore_write) {
                 (Ok(()), Ok(())) => Err(error),
                 (Err(cleanup_error), Ok(())) => Err(format!(
-                    "{error}; 恢复失败后的表面对账尚未完成: {cleanup_error}"
+                    "{error}; surface reconciliation after restore failure is incomplete: {cleanup_error}"
                 )),
                 (Ok(()), Err(restore_error)) => Err(format!(
-                    "{error}; 重写原始恢复清单失败: {restore_error}"
+                    "{error}; failed to rewrite the original restore manifest: {restore_error}"
                 )),
                 (Err(cleanup_error), Err(restore_error)) => Err(format!(
-                    "{error}; 恢复失败后的表面对账尚未完成: {cleanup_error}; 重写原始恢复清单失败: {restore_error}"
+                    "{error}; surface reconciliation after restore failure is incomplete: {cleanup_error}; failed to rewrite the original restore manifest: {restore_error}"
                 )),
             };
         }
@@ -2845,42 +3137,78 @@ impl BrowserManager {
         Ok(RestoreWorkspaceOutcome::Restored)
     }
 
-    /// 监听 `cdp-port.json`：检测到当前应用原生宿主发布的有效端口且品悟尚未接入时，
-    /// 自动 `ensure_started` 并 emit `browser:activated` —— 前端据此在
-    /// "工作模式 + 模型实际调用浏览器能力"时显示浏览器 Tab（不调用则永不出现/加载）。
+    fn schedule_watch_retry(app: AppHandle) {
+        let delay = {
+            let manager = app.state::<BrowserManager>();
+            if manager
+                .shutting_down
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return;
+            }
+            manager.next_watch_retry_delay()
+        };
+        eprintln!(
+            "[browser] browser startup recovery/request consumer will retry in {} ms",
+            delay.as_millis()
+        );
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let shutting_down = app
+                .state::<BrowserManager>()
+                .shutting_down
+                .load(std::sync::atomic::Ordering::SeqCst);
+            if !shutting_down {
+                BrowserManager::spawn_watch(app);
+            }
+        });
+    }
+
+    /// Watches `cdp-port.json`. When the app's native host publishes a valid port
+    /// and Pinvou is not connected, calls ensure_started and emits browser:activated.
+    /// The frontend uses this to reveal the browser only when a model actually uses
+    /// browser capability in Work mode.
     ///
-    /// 另承担异常恢复：已接入但 WebView2 CDP 失联时只重置自动化连接并发送按任务
-    /// `browser:automation-unavailable`；真实页面保持可见、可由用户手动操作。
+    /// Also handles failure recovery: if an attached WebView2 CDP endpoint is lost,
+    /// reset only automation and emit task-scoped browser:automation-unavailable.
+    /// The real page remains visible and manually usable.
     pub fn spawn_watch(app: AppHandle) {
         let manager = app.state::<BrowserManager>();
         match recover_hosted_prepare_journals_for_process_start() {
-            Ok(()) => *manager.prepare_recovery_error.lock() = None,
+            Ok(()) => {}
             Err(error) => {
                 *manager.prepare_recovery_error.lock() = Some(error.clone());
-                eprintln!("[browser] 恢复持久 Prepare 补偿失败: {error}");
+                eprintln!("[browser] failed to recover durable Prepare compensation: {error}");
+                drop(manager);
+                Self::schedule_watch_retry(app);
                 return;
             }
         }
-        // host request/response/cancelled 都是单进程临时协议，不属于可恢复任务状态。
-        // watcher 注册前原子换出整个旧目录，保证上次崩溃遗留的 create/close 即使
-        // session 仍存在也绝不会在新进程重放；换出失败则 fail-closed，不启动 consumer。
+        // Host request/response/cancelled artifacts are process-local protocol state,
+        // not recoverable task state. Atomically replace the old directory before
+        // installing the watcher so create/close requests left by a crashed process
+        // are never replayed. Fail closed if isolation fails.
         if let Err(error) =
             reset_host_request_directory_for_process_start(&paths::browser_host_requests_dir())
         {
             *manager.prepare_recovery_error.lock() = Some(format!(
-                "browser/host-consumer-unavailable: 隔离旧宿主请求失败: {error}"
+                "browser/host-consumer-unavailable: failed to isolate stale host requests: {error}"
             ));
-            eprintln!("[browser] 隔离旧原生浏览器宿主请求失败: {error}");
+            eprintln!("[browser] failed to isolate stale native browser host requests: {error}");
+            drop(manager);
+            Self::schedule_watch_retry(app);
             return;
         }
-        // 先隔离上次进程的瞬时请求，再按产品语义 fail-closed。门控关闭时不创建
-        // watcher、不扫描请求目录，也不启动 CDP/BrowserCore 健康检查。
+        // Isolate the previous process's transient requests before applying the
+        // product gate. When disabled, install no watcher, scanner, or health check.
         if !crate::platform::capabilities::browser_product_enabled() {
+            manager.mark_watch_consumer_ready();
             return;
         }
-        // 浏览器标签操作是前台交互，不能跟随 2s 的自动化健康检查节拍。数据面
-        // 请求仍由单个消费者顺序处理，避免激活/关闭乱序；lease 心跳、begin/end
-        // 另走只处理内存状态的轻量通道，不能被其他会话的慢 prepare/CDP 阻塞。
+        // Tab operations are foreground interactions and cannot wait for the two-second
+        // automation health cadence. A single consumer orders data-plane activate/close
+        // requests, while lease heartbeat and begin/end use a lightweight in-memory
+        // control path that slow Prepare/CDP work in another task cannot block.
         let request_app = app.clone();
         tauri::async_runtime::spawn(async move {
             let request_dir = paths::browser_host_requests_dir();
@@ -2889,17 +3217,25 @@ impl BrowserManager {
                     .state::<BrowserManager>()
                     .prepare_recovery_error
                     .lock() = Some(format!(
-                    "browser/host-consumer-unavailable: 创建宿主请求目录失败: {error}"
+                    "browser/host-consumer-unavailable: failed to create host request directory: {error}"
                 ));
-                eprintln!("[browser] 创建原生浏览器请求目录失败: {error}");
+                eprintln!("[browser] failed to create native browser request directory: {error}");
+                BrowserManager::schedule_watch_retry(request_app.clone());
                 return;
             }
+            // Keep requests fail-closed, and preserve exponential backoff, until
+            // the asynchronous consumer has a usable directory. The watcher may
+            // still fall back to periodic scanning, so directory readiness is the
+            // last fallible prerequisite for installing a consumer.
+            request_app
+                .state::<BrowserManager>()
+                .mark_watch_consumer_ready();
             let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
             let (control_tx, mut control_rx) = tokio::sync::mpsc::unbounded_channel();
             let notify_tx = event_tx.clone();
             let notify_control_tx = control_tx.clone();
-            let watcher =
-                match notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            let watcher = match notify::recommended_watcher(
+                move |event: notify::Result<notify::Event>| {
                     if let Ok(event) = event {
                         let contains_request = event.paths.iter().any(|path| {
                             matches!(
@@ -2912,20 +3248,21 @@ impl BrowserManager {
                             let _ = notify_control_tx.send(());
                         }
                     }
-                }) {
-                    Ok(watcher) => Some(watcher),
-                    Err(error) => {
-                        eprintln!(
-                            "[browser] 初始化原生浏览器请求监听失败，退化为周期扫描: {error}"
+                },
+            ) {
+                Ok(watcher) => Some(watcher),
+                Err(error) => {
+                    eprintln!(
+                            "[browser] failed to initialize native browser request watcher; using periodic scanning: {error}"
                         );
-                        None
-                    }
-                };
+                    None
+                }
+            };
             let _watcher = watcher.and_then(|mut watcher: RecommendedWatcher| {
                 match watcher.watch(&request_dir, RecursiveMode::NonRecursive) {
                     Ok(()) => Some(watcher),
                     Err(error) => {
-                        eprintln!("[browser] 监听原生浏览器请求目录失败，退化为周期扫描: {error}");
+                        eprintln!("[browser] failed to watch native browser request directory; using periodic scanning: {error}");
                         None
                     }
                 }
@@ -2941,7 +3278,9 @@ impl BrowserManager {
                         .prepare_requested_native_control_requests(&control_app)
                         .await
                     {
-                        eprintln!("[browser] 处理浏览器宿主控制请求失败: {error}");
+                        eprintln!(
+                            "[browser] failed to process browser host control request: {error}"
+                        );
                     }
                     tokio::select! {
                         event = control_rx.recv() => {
@@ -2950,20 +3289,23 @@ impl BrowserManager {
                             }
                             while control_rx.try_recv().is_ok() {}
                         }
-                        // notify 只是低延迟优化；即使文件系统事件丢失，也必须在
-                        // Windows 400ms input-heartbeat 预算内发现控制请求。
+                        // Notification is only a latency optimization. Even if a file
+                        // event is lost, discover control requests within the Windows
+                        // 400 ms input-heartbeat budget.
                         _ = tokio::time::sleep(Duration::from_millis(100)) => {}
                     }
                 }
             });
-            // 注册 watcher 的窄窗口里可能已有本进程新请求，启动后立即扫描一次；
-            // 上进程遗留请求已由同步启动屏障隔离，不会进入这里。
+            // Requests from this process may arrive during watcher installation, so
+            // scan immediately. The synchronous startup barrier already isolated any
+            // artifacts from the previous process.
             {
                 let mgr = request_app.state::<BrowserManager>();
                 if let Err(error) = mgr.prepare_requested_native_surfaces(&request_app).await {
-                    eprintln!("[browser] 处理原生浏览器请求失败: {error}");
-                    // cancellation rollback 的瞬时 WebView/I/O 失败会保留 tombstone
-                    // 与 ledger record；显式排队重试，不能依赖同一文件再次触发 notify。
+                    eprintln!("[browser] failed to process native browser request: {error}");
+                    // Transient WebView/I/O failure during cancellation rollback retains
+                    // the marker and ledger record. Queue an explicit retry instead of
+                    // relying on the same file to trigger another notification.
                     tokio::time::sleep(Duration::from_millis(250)).await;
                     let _ = event_tx.send(());
                 }
@@ -2978,11 +3320,11 @@ impl BrowserManager {
                         if event.is_none() {
                             break;
                         }
-                        // 合并一次原子写/rename 产生的重复通知。
+                        // Coalesce duplicate events from one atomic write/rename.
                         tokio::time::sleep(Duration::from_millis(5)).await;
                         while event_rx.try_recv().is_ok() {}
                         if let Err(error) = mgr.prepare_requested_native_surfaces(&request_app).await {
-                            eprintln!("[browser] 处理原生浏览器请求失败: {error}");
+                            eprintln!("[browser] failed to process native browser request: {error}");
                             tokio::time::sleep(Duration::from_millis(250)).await;
                             let _ = event_tx.send(());
                         }
@@ -2999,20 +3341,21 @@ impl BrowserManager {
                 }
             }
         });
-        // 必须走 tauri::async_runtime：setup 闭包在 wry 事件循环主线程同步调用，
-        // 无 tokio runtime 上下文，裸 tokio::spawn 会 panic（there is no reactor
-        // running）导致应用启动即崩。
+        // setup runs synchronously on the wry event-loop thread without a Tokio
+        // context. Use tauri::async_runtime; raw tokio::spawn would panic because
+        // no reactor is running and crash application startup.
         tauri::async_runtime::spawn(async move {
             let mut fail_count = 0u32;
             loop {
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 let mgr = app.state::<BrowserManager>();
-                // 主进程退出后不再重连自动化端点。
+                // Do not reconnect automation after main-process shutdown begins.
                 if mgr.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
                     break;
                 }
-                // 已接入但自动化端点持续失联时，只重置 CDP 连接。用户正在看的
-                // 原生表面仍由宿主持有，不能因为自动化故障销毁页面或登录状态。
+                // If an attached automation endpoint remains unavailable, reset only
+                // the CDP connection. The host still owns the user-visible surface;
+                // automation failure must not destroy its page or login state.
                 {
                     let mut inner = mgr.inner.lock().await;
                     if inner.session.is_some() {
@@ -3024,15 +3367,15 @@ impl BrowserManager {
                             fail_count = 0;
                             continue;
                         }
-                        // 与下方 stale 端口文件路径同口径防抖：单次探测失败可能是
-                        // 系统休眠/高负载下 /json/version 瞬时超时，直接拆毁会话会
-                        // 误杀用户正在看的浏览器（全部标签页与模型工作现场丢失）。
+                        // Apply the same debounce as the stale-port-file path below.
+                        // A single probe can time out during resume or high load; tearing
+                        // down immediately would lose all visible tabs and Agent context.
                         fail_count += 1;
                         if fail_count < 5 {
                             continue;
                         }
                         fail_count = 0;
-                        eprintln!("[browser] 自动化端点失联（端口 {port}），重置 CDP 连接");
+                        eprintln!("[browser] automation endpoint lost on port {port}; resetting CDP connection");
                         if let Some(task) = inner.loop_task.take() {
                             task.abort();
                         }
@@ -3048,9 +3391,10 @@ impl BrowserManager {
                         mgr.page_sessions.lock().clear();
                         mgr.activated
                             .store(false, std::sync::atomic::Ordering::SeqCst);
-                        // 前端严格按任务过滤事件；全局 payload 会被每个右侧面板忽略。
-                        // 对仍由原生宿主持有的每个工作区发送精确 sessionId，显示页继续
-                        // 保留，仅标记 Agent 自动化暂不可用。
+                        // The frontend filters events strictly by task and ignores a
+                        // global payload. Emit the exact sessionId for every workspace
+                        // still hosted natively, preserving the page while marking only
+                        // Agent automation unavailable.
                         let session_ids = mgr.native_surface.lock().session_ids();
                         for session_id in session_ids {
                             let _ = app.emit(
@@ -3061,7 +3405,8 @@ impl BrowserManager {
                         continue;
                     }
                 }
-                // 未接入：只连接当前应用原生宿主发布且仍归其所有的端点。
+                // When detached, connect only to an endpoint still owned and published
+                // by this application's native host.
                 let Some(port) = live_port().await else {
                     fail_count = 0;
                     continue;
@@ -3074,19 +3419,19 @@ impl BrowserManager {
                     mgr.activated
                         .store(true, std::sync::atomic::Ordering::SeqCst);
                 } else {
-                    eprintln!("[browser] 接入原生页面自动化端点失败，稍后重试");
+                    eprintln!("[browser] failed to attach the native-page automation endpoint; retrying later");
                 }
             }
         });
     }
 
     // -----------------------------------------------------------------------
-    // 生命周期
+    // Lifecycle
     // -----------------------------------------------------------------------
 
-    /// 复用现有 browser 级连接重新激活一个页面（首检路径与 start_mtx 二次快检
-    /// 共用）：重开会泄漏旧读循环/事件循环任务（无 close/abort 即永久运行），
-    /// 且两条连接同时收 browser 级 Target 事件会让前端收到重复通知。
+    /// Reactivates a page on the existing browser-level connection. Shared by the
+    /// initial and post-start_mtx checks. Opening another connection would leak the
+    /// old reader/event-loop tasks and duplicate browser-level Target events.
     async fn reattach_existing(
         &self,
         session: Arc<cdp::CdpSession>,
@@ -3094,10 +3439,15 @@ impl BrowserManager {
     ) -> Result<(), String> {
         let (target_id, sid) = attach_first_page_cached(&session, &self.page_sessions).await?;
         let mut inner = self.inner.lock().await;
-        // attach 期间若 stop() 已执行（代际变化），弃用本次结果——否则会把
-        // 旧连接的流切到新 session 上（新流启动失败叠加旧流已停 → 帧流死亡）。
-        if self.stop_gen.load(std::sync::atomic::Ordering::SeqCst) != gen {
-            return Err("浏览器启动期间已被停止".to_string());
+        // If stop() ran during attachment, discard this generation. Otherwise an old
+        // connection could switch to a new session after its prior stream stopped.
+        if self.stop_gen.load(std::sync::atomic::Ordering::SeqCst) != gen
+            || self.shutting_down.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(
+                "browser was stopped during startup or the application is shutting down"
+                    .to_string(),
+            );
         }
         switch_active_session_locked(&mut inner, &sid).await?;
         self.page_sessions.lock().insert(target_id.clone(), sid);
@@ -3105,50 +3455,53 @@ impl BrowserManager {
         Ok(())
     }
 
-    /// 确保 Windows 原生浏览器的 CDP 自动化连接已接入。幂等：已连接则直接复用。
+    /// Ensures the Windows native browser CDP automation connection is attached.
+    /// Idempotently reuses an existing connection.
     pub async fn ensure_started(&self) -> Result<(), String> {
-        // 主进程退出中：拒绝启动（否则退出瞬间被 watch 拉起成孤儿 Chrome）。
+        // Reject startup during main-process shutdown to avoid an orphan browser.
         if self.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err("应用正在退出，不再启动浏览器".to_string());
+            return Err("application is shutting down; browser startup was rejected".to_string());
         }
-        // 等锁前的 stop 代际快照：start_mtx 等待期间 stop() 完成（代际 +1）时，
-        // 拿到锁后立即放弃——否则显式停止会被进行中的启动/ watch 轮询"复活"，
-        // 退出路径下还会产出无人回收的孤儿 Chrome。
+        // Snapshot the stop generation before waiting for start_mtx. If stop completes
+        // while waiting, abandon startup after acquiring the lock so polling cannot
+        // resurrect an explicitly stopped browser or create one during shutdown.
         let gen_before_wait = self.stop_gen.load(std::sync::atomic::Ordering::SeqCst);
         {
             let inner = self.inner.lock().await;
             if inner.session.is_some() && inner.active_session.is_some() {
                 return Ok(());
             }
-            // session 仍在但 active_session 为空（最后标签页被关闭后）：
-            // 复用现有连接重新激活一个页面，而不是重开第二条 WebSocket——
-            // 重开会泄漏旧读循环/事件循环任务（无 close/abort 即永久运行），
-            // 且两条连接同时收 browser 级 Target 事件会让前端收到重复通知。
+            // If the connection remains but active_session is empty after the last tab
+            // closes, reactivate a page on the existing connection instead of opening
+            // a second WebSocket and leaking/duplicating its reader and event loop.
             if inner.session.is_some() {
-                let session = inner.session.clone().expect("session is_some 已检查");
+                let session = inner.session.clone().expect("session presence was checked");
                 let gen = self.stop_gen.load(std::sync::atomic::Ordering::SeqCst);
-                // 不持 inner 锁做网络 await（attach 走 CDP 调用）；之后重新拿锁提交状态。
+                // Do not hold inner across CDP attachment I/O; reacquire it to commit state.
                 drop(inner);
                 return self.reattach_existing(session, gen).await;
             }
         }
 
-        // single-flight：整个启动序列持 start_mtx，并发调用者在此等待后复用
-        // 已完成的状态，而不是各自再启动一遍（双事件循环/句柄丢失）。
+        // start_mtx makes startup single-flight. Concurrent callers wait and reuse
+        // committed state instead of starting duplicate loops and losing handles.
         let _start_guard = self.start_mtx.lock().await;
+        // The initial check may have passed before restart closed admission.
+        // Recheck after the lifecycle lock so a queued watch iteration cannot
+        // reconnect automation after restart cleanup releases the lock.
+        self.ensure_accepting_browser_work()?;
         if self.stop_gen.load(std::sync::atomic::Ordering::SeqCst) != gen_before_wait {
-            return Err("浏览器启动等待期间已被停止".to_string());
+            return Err("browser was stopped while startup was waiting".to_string());
         }
-        // stop 代际快照：启动期间若 stop() 执行（代际 +1），完成后丢弃本次结果。
+        // Discard startup results if stop increments the generation while starting.
         let gen_at_start = self.stop_gen.load(std::sync::atomic::Ordering::SeqCst);
         {
             let inner = self.inner.lock().await;
             if let Some(session) = inner.session.clone() {
-                // 二次快检必须与 start_mtx 外的首检同口径：等待锁期间状态可能已
-                // 变为「session 在、active 空」（如 close_tab 关掉最后一个标签页），
-                // 该形态落入下方全量启动会无清理地覆盖旧 session/loop_task/
-                // reader_task（第二条 WS + 双事件循环，旧任务永久泄漏）。重附着
-                // 涉及网络 await 且不能再进 start_mtx，先释放两把锁再走重附着。
+                // Match the initial check after acquiring start_mtx. State may become
+                // "connection present, active session absent" while waiting (for example,
+                // after closing the last tab). Full startup would overwrite and leak the
+                // old connection/tasks, so release both locks and reattach over the network.
                 if inner.active_session.is_some() {
                     return Ok(());
                 }
@@ -3158,28 +3511,32 @@ impl BrowserManager {
             }
         }
 
-        // 1) 只接入宿主原生工作区公布的自动化端点。这里不再自启外部 Chrome：
-        // 原生宿主失败必须原样暴露，不能静默切换页面表面、身份或交互语义。
+        // Connect only to an automation endpoint published by the native workspace.
+        // Never launch external Chrome here; native-host failure must remain explicit
+        // rather than silently changing surface, identity, or interaction semantics.
         let port = live_port()
             .await
-            .ok_or_else(|| "原生浏览器自动化端点尚未就绪".to_string())?;
+            .ok_or_else(|| "native browser automation endpoint is not ready".to_string())?;
         if !self.native_surface.lock().owns_port(port) {
-            return Err("自动化端点不属于当前应用的原生浏览器工作区".to_string());
+            return Err(
+                "automation endpoint is not owned by this application's native browser workspace"
+                    .to_string(),
+            );
         }
-        // 2-5) 连接 CDP / attach / 启域 / 事件循环。session/reader 句柄提到
-        // 闭包外，任一步失败都要关闭 WS 并中止读循环。
+        // Connect CDP, attach, enable domains, and start the event loop. Keep session
+        // and reader handles outside the closure so every failure closes/aborts them.
         let mut boot_session: Option<Arc<cdp::CdpSession>> = None;
         let mut boot_reader: Option<tokio::task::JoinHandle<()>> = None;
         let boot: Result<(), String> = async {
             let connected = cdp::connect(port)
                 .await
-                .map_err(|e| format!("CDP 连接失败: {e:#}"))?;
+                .map_err(|e| format!("CDP connection failed: {e:#}"))?;
             let session = connected.session;
             boot_session = Some(Arc::clone(&session));
             boot_reader = Some(connected.reader_task);
 
-            // 开启 Target 发现：内部状态机需要 Target.targetCreated/targetDestroyed
-            // 自愈 CDP target/session 映射。UI 事件由原生宿主按任务作用域发送。
+            // Enable Target discovery so internal state can repair target/session
+            // mappings. The native host sends task-scoped UI events.
             session
                 .call(
                     None,
@@ -3187,7 +3544,7 @@ impl BrowserManager {
                     json!({ "discover": true }),
                 )
                 .await
-                .map_err(|e| format!("Target.setDiscoverTargets 失败: {e}"))?;
+                .map_err(|e| format!("Target.setDiscoverTargets failed: {e}"))?;
 
             let (target_id, session_id) =
                 attach_first_page_cached(&session, &self.page_sessions).await?;
@@ -3195,30 +3552,32 @@ impl BrowserManager {
             session
                 .call(Some(&session_id), "Page.enable", json!({}))
                 .await
-                .map_err(|e| format!("Page.enable 失败: {e}"))?;
+                .map_err(|e| format!("Page.enable failed: {e}"))?;
             let app = self
                 .app
                 .lock()
                 .clone()
-                .ok_or_else(|| "BrowserManager 未绑定 AppHandle".to_string())?;
+                .ok_or_else(|| "BrowserManager has no bound AppHandle".to_string())?;
             let loop_task = tokio::spawn(run_event_loop(app, connected.events));
 
-            // 启动期间被 stop() 打断（代际已变）：丢弃本次结果，避免 stop 被吞、
-            // 浏览器以无 UI 状态残留（watch 视 session alive 而不再重置）。
-            // WS 关闭与读循环中止统一由下方失败路径的 boot_session/boot_reader 完成。
+            // If stop interrupted startup, discard the result so stop is not lost and
+            // the browser cannot remain connected without UI publication. The common
+            // failure path closes the WebSocket and aborts its reader.
             if self.stop_gen.load(std::sync::atomic::Ordering::SeqCst) != gen_at_start {
-                return Err("浏览器启动期间已被停止".to_string());
+                return Err("browser was stopped during startup".to_string());
             }
 
             let mut inner = self.inner.lock().await;
-            // 锁内再核对一次代际与退出标记：上方 gen 检查到拿到 inner 锁之间存在
-            // 窗口，期间 stop()/shutdown_on_exit（也 bump 代际）可能已完成；等锁
-            // 期间被停止/退出时若照样提交 session，会留下无人管理的连接。丢弃走
-            // 统一失败清理（关闭 boot_session 并中止 boot_reader）。
+            // Recheck generation and shutdown under inner. stop/shutdown can complete
+            // between the prior check and this lock; committing then would orphan a
+            // connection. Discard through the common cleanup path instead.
             if self.stop_gen.load(std::sync::atomic::Ordering::SeqCst) != gen_at_start
                 || self.shutting_down.load(std::sync::atomic::Ordering::SeqCst)
             {
-                return Err("浏览器启动期间已被停止或应用正在退出".to_string());
+                return Err(
+                    "browser was stopped during startup or the application is shutting down"
+                        .to_string(),
+                );
             }
             inner.port = Some(port);
             inner.session = Some(session);
@@ -3231,44 +3590,47 @@ impl BrowserManager {
         .await;
 
         if let Err(e) = &boot {
-            // 关闭本次启动建立的 WS 并中止读循环，避免每次重试净泄漏一条连接
-            // 与一个读循环任务。close 幂等（gen 中断路径已关过也无害）。
+            // Close this startup's WebSocket and abort its reader so retries do not
+            // leak one connection/task each. close is idempotent.
             if let Some(session) = boot_session.take() {
                 let _ = session.close().await;
             }
             if let Some(task) = boot_reader.take() {
                 task.abort();
             }
-            // 清空 page_sessions 缓存：sessionId 是每条 WebSocket 连接私有的，本次
-            // 连接已在上方关闭——残留条目会让下次 ensure_started 的新连接命中死 sid
-            // （必然失败 → watch 无限重试，且 browser:activated 从未 emit，用户无
-            // UI 入口触发 stop，只能重启应用）。
+            // Clear page_sessions because sessionIds are WebSocket-local. Retaining
+            // entries after closing this connection would make the next connection
+            // reuse dead ids, fail forever, and never publish browser:activated.
             self.page_sessions.lock().clear();
             return Err(e.clone());
         }
-        // 成功接入：清除历史失败记录，避免 24h 内向模型注入陈旧的「浏览器不可用」
-        // 原因。
+        // Clear historical failure state after successful attachment so models do not
+        // receive a stale browser-unavailable reason for the next 24 hours.
         let _ = std::fs::remove_file(paths::browser_last_error_json());
         Ok(())
     }
 
-    /// 停止浏览器：断开自动化连接、关闭应用持有的原生页面、清理协调文件并通知前端
-    /// （emit `browser:stopped`，前端据此隐藏浏览器面板）。
+    /// Stops the browser: disconnects automation, closes app-owned native pages,
+    /// cleans coordination files, and emits browser:stopped for the frontend.
     ///
-    /// 与 `ensure_started` 共享 `start_mtx`（同序：先 start_mtx 再 inner）：stop 不会
-    /// 在启动序列中途"看到空状态提前返回"而被随后完成的启动覆盖；代际 +1 让进行中的
-    /// 启动在完成后自弃结果。
+    /// Shares start_mtx with ensure_started (start_mtx before inner), preventing stop
+    /// from returning on transient empty state. Incrementing the generation makes an
+    /// in-progress startup discard its result.
     pub async fn stop(&self) -> Result<(), String> {
-        // 先参与 single-flight（与 ensure_started 同序获取，无死锁），保证 stop 与
-        // 启动序列及原生工作区创建串行。
+        let _admission_guard = self.hosted_request_gate.write().await;
+        // Join the same lock order as ensure_started so stop is serialized with startup
+        // and native workspace creation.
         let _start_guard = self.start_mtx.lock().await;
+        // A UI stop queued before restart must not run after restart has
+        // preserved restore state and released the lifecycle lock.
+        self.ensure_accepting_browser_work()?;
         self.stop_with_start_lock().await
     }
 
-    /// 调用方已持有 start_mtx 的完整停止路径。供按对话关闭最后一个原生工作区时
-    /// 复用，避免释放生命周期锁后新工作区插入、再被旧的全局清理误伤。
+    /// Full stop path for callers already holding start_mtx. Reused when closing the
+    /// last task workspace so a newly inserted workspace cannot be hit by old cleanup.
     async fn stop_with_start_lock(&self) -> Result<(), String> {
-        // +1 代际，让已被本 stop 打断的启动完成后自弃。
+        // Advance the generation so startup interrupted by this stop self-discards.
         self.stop_gen
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         // Do not clear the publication bit before irreversible native close:
@@ -3282,12 +3644,14 @@ impl BrowserManager {
             inner
                 .port
                 .map(|port| surface.owns_port(port))
-                // 原生页面可能已创建但 CDP watch 尚未把端口提交到 inner；此时
-                // 关闭最后一个工作区仍必须清理原生 runtime 和协调文件。
+                // Native pages may exist before the CDP watcher commits the port
+                // into inner. Closing the final workspace must still clean the
+                // native runtime and coordination files.
                 .unwrap_or_else(|| surface.is_initialized())
         };
-        // CDP 仅是应用内原生页面的自动化通道，不能用 Browser.close 关闭整个
-        // WebView 运行时；先断开连接，再由宿主精确销毁其子视图。
+        // CDP is only the automation channel for in-app native pages. Do not use
+        // Browser.close to stop the entire WebView runtime; disconnect first and
+        // let the host destroy its child views precisely.
         if let Some(session) = inner.session.take() {
             let _ = session.close().await;
         }
@@ -3312,9 +3676,10 @@ impl BrowserManager {
         self.page_sessions.lock().clear();
         self.activated
             .store(false, std::sync::atomic::Ordering::SeqCst);
-        // 通知前端隐藏浏览器 Tab（main.jsx / BrowserView 监听 browser:stopped）。
-        // 仅在浏览器确实运行过/激活过时通知：从未启动的 stop（如 RunEvent::Exit
-        // 兜底路径）不产生伪事件。
+        // Tell the frontend to hide the browser tab (main.jsx and BrowserView
+        // listen for browser:stopped). Emit only after the browser actually ran
+        // or activated; a stop that never started, such as RunEvent::Exit fallback,
+        // must not fabricate an event.
         if had_session || was_activated {
             if let Some(app) = self.app.lock().clone() {
                 let _ = app.emit("browser:stopped", json!({}));
@@ -3325,12 +3690,34 @@ impl BrowserManager {
         Ok(())
     }
 
-    /// 停止当前对话的原生浏览器。还有其他对话页面时只销毁本页并保留共享
-    /// WebView2 环境；最后一个页面关闭时复用完整 stop 路径清理 CDP 与协调文件。
+    /// Stop the native browser for the current conversation. While other
+    /// conversation pages remain, destroy only this page and retain the shared
+    /// WebView2 environment. Closing the final page reuses the complete stop path
+    /// to clean CDP and coordination files.
     pub async fn stop_for_session(&self, browser_session_id: &str) -> Result<(), String> {
-        // 与创建/全局停止串行：关闭最后一个工作区到共享 runtime 清理之间不能插入
-        // 新工作区，否则旧关闭请求会把刚创建的其他对话一并销毁。
+        let _admission_guard = self.hosted_request_gate.read().await;
+        self.stop_for_session_with_hosted_gate_held(browser_session_id)
+            .await
+    }
+
+    /// Performs scoped stop after the caller has acquired hosted-request
+    /// admission. Task deletion holds the write side as a drain barrier, while
+    /// ordinary UI stop holds a read guard so unrelated request scans continue.
+    async fn stop_for_session_with_hosted_gate_held(
+        &self,
+        browser_session_id: &str,
+    ) -> Result<(), String> {
+        let session_lock = self.session_lifecycle_lock(browser_session_id);
+        let _session_guard = session_lock.lock().await;
+        // Serialize with creation and global stop. A new workspace cannot appear
+        // between closing the last workspace and cleaning the shared runtime, or
+        // the old close request would destroy the newly created conversation.
         let _start_guard = self.start_mtx.lock().await;
+        // Keep task deletion and UI stop fail-closed during process restart.
+        // Internal hosted-request compensation intentionally calls the
+        // *_with_start_lock helpers instead: its admission read guard makes
+        // restart wait until that already-accepted transaction has drained.
+        self.ensure_accepting_browser_work()?;
         let app = self.app.lock().clone();
         let action = {
             let surface = self.native_surface.lock();
@@ -3341,15 +3728,17 @@ impl BrowserManager {
         };
         let mut result = match action {
             ScopedStopAction::IgnoreUnknownNativeSession => {
-                // 与导航/标签变更的恢复点写入使用同一锁；否则删除清单可能被
-                // 迟到的持久化任务重新写入。
+                // Share the restore-point lock with navigation/tab updates;
+                // otherwise a late persistence task could recreate the manifest.
                 let _persistence_guard = self.persistence_io.lock();
                 platform::NativeBrowserSurface::delete_restore_workspace(browser_session_id)
             }
-            // 注册表为空时清理共享自动化运行时；该分支不会触碰其他对话工作区。
+            // Clean the shared automation runtime when the registry is empty.
+            // This branch never touches another conversation workspace.
             ScopedStopAction::StopManagedRuntime => {
-                // 恢复点删除是“停止”语义的持久提交点。它失败时不能先销毁运行时，
-                // 否则命令虽然报错，下次启动却仍会恢复已经被用户关掉的页面。
+                // Restore-point deletion is the durable commit for Stop. Do not
+                // destroy the runtime first when it fails, or the command reports
+                // failure while next startup restores a page the user closed.
                 {
                     let _persistence_guard = self.persistence_io.lock();
                     platform::NativeBrowserSurface::delete_restore_workspace(browser_session_id)?;
@@ -3357,16 +3746,19 @@ impl BrowserManager {
                 self.stop_with_start_lock().await
             }
             ScopedStopAction::CloseNativeSession => {
-                // 在不可逆关闭 WebView 前先提交“不要再恢复”。宿主逐页对账：成功关闭
-                // 的页面立即从注册表删除，失败项保留为 survivor 并重写恢复清单，下一次
-                // stop 只重试真实 survivor，不能把已物理关闭的旧页面重新写回。
+                // Commit "do not restore" before irreversibly closing WebViews.
+                // Reconcile per page: remove successfully closed pages immediately,
+                // retain failures as survivors, and rewrite the manifest. The next
+                // stop retries only real survivors, never physically closed pages.
                 let has_remaining = {
-                    // 该锁只覆盖同步的“读旧清单→删除→关闭/补偿”提交区间，不能跨
-                    // 下方 async runtime stop；否则 Tauri command future 将不再 Send。
+                    // This lock covers only the synchronous read-old-manifest ->
+                    // delete -> close/compensate commit section. It cannot span the
+                    // async runtime stop below or the Tauri command future is not Send.
                     let _persistence_guard = self.persistence_io.lock();
-                    // 原生锁必须在读取/删除恢复点前取得：UI 标签操作虽不经过
-                    // persistence_io，但都会经过 native_surface。否则它可能在“删除”
-                    // 与“关闭”之间写回一份新清单，造成已停止页面下次启动复活。
+                    // Acquire the native lock before reading/deleting restore state.
+                    // UI tab operations skip persistence_io but always use
+                    // native_surface; otherwise one could write a new manifest
+                    // between delete and close and resurrect a stopped page.
                     let mut surface = self.native_surface.lock();
                     platform::NativeBrowserSurface::delete_restore_workspace(browser_session_id)?;
                     let close_result =
@@ -3406,22 +3798,47 @@ impl BrowserManager {
         result
     }
 
-    /// 删除任务时使用的完整浏览器清理。普通 UI “关闭浏览器”保留该任务的 MCP
-    /// 配置，任务删除则在 WebView/restore 清理成功后再删除配置；NotFound 幂等成功，
-    /// 其他 I/O 错误返回给 composition-root 重试队列。
+    /// Full browser cleanup used when deleting a task. Ordinary UI Close Browser
+    /// retains the task MCP configuration; task deletion removes it only after
+    /// WebView/restore cleanup succeeds. NotFound is idempotent success; other I/O
+    /// errors return to the composition-root retry queue.
     pub async fn delete_for_session(&self, browser_session_id: &str) -> Result<(), String> {
-        self.stop_for_session(browser_session_id).await?;
+        // Drain every accepted scanner before teardown. No cancellation can
+        // create or mutate this task's request-ledger generation between native
+        // cleanup and the final purge below.
+        let _admission_guard = self.hosted_request_gate.write().await;
+        self.stop_for_session_with_hosted_gate_held(browser_session_id)
+            .await?;
         match std::fs::remove_file(paths::browser_session_mcp_json(browser_session_id)) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!("删除任务浏览器 MCP 配置失败: {error}")),
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Failed to delete task browser MCP configuration: {error}"
+                ));
+            }
         }
+        remove_hosted_prepare_journal_for_session(browser_session_id)?;
+        remove_hosted_request_artifacts_for_session(browser_session_id)?;
+
+        // Purge retry/compensation records only after every fallible teardown
+        // step succeeds. A failed attempt deliberately retains CancelPending
+        // state so the next cleanup can compensate the exact committed result.
+        self.native_surface
+            .lock()
+            .purge_session_requests(browser_session_id)?;
+        // The injected durable validator is now the source of truth; release
+        // the process-local deny marker only after host artifacts and ledger
+        // obligations are gone.
+        self.clear_session_deleted(browser_session_id);
+        Ok(())
     }
 
-    /// 进程启动时用当前仍存在的任务集合清理上次崩溃遗留的浏览器文件。磁盘文件名
-    /// 只含 session token，因此先在内存中对 active session ID 做同样散列；不需要
-    /// 把原始 session ID 写进恢复清单。任一 I/O 失败都会聚合返回，composition root
-    /// 可用有限退避持续重试；单个孤儿已删除后再次执行仍幂等。
+    /// At process startup, use the current task set to remove browser files left
+    /// by the previous crash. Disk names contain only session tokens, so hash
+    /// active session IDs in memory without storing raw IDs in restore manifests.
+    /// Aggregate I/O failures for bounded-backoff composition-root retries;
+    /// rerunning after an orphan is deleted remains idempotent.
     pub fn reconcile_session_files(&self, active_session_ids: &[String]) -> Result<(), String> {
         let active_tokens = active_session_ids
             .iter()
@@ -3439,40 +3856,43 @@ impl BrowserManager {
         )
     }
 
-    /// `Target.targetCreated` 补激活（由事件循环调用）：全部标签页被关闭后
-    /// （active 为空）模型经 MCP 新建标签页时，自动把自动化会话接到新页。
+    /// `Target.targetCreated` activation repair, called by the event loop. When
+    /// all tabs were closed and active is empty, attach the automation session to
+    /// a tab newly created by the model through MCP.
     async fn on_target_created(&self, target_id: &str) {
         let gen = self.stop_gen.load(std::sync::atomic::Ordering::SeqCst);
         let session = {
             let inner = self.inner.lock().await;
             if inner.active_session.is_some() {
-                return; // 已有激活页：新建的是后台标签页，不动用户正在看的页面
+                return; // An active page exists; keep the new background tab hidden.
             }
             let Some(session) = inner.session.clone() else {
                 return;
             };
             session
         };
-        // 不持 inner 锁做 attach（CDP 网络 await），完成后重新拿锁提交。
+        // Attach without holding inner across CDP network await, then reacquire it
+        // for commit.
         let Ok(sid) = attach_page_cached(&session, &self.page_sessions, target_id).await else {
             return;
         };
         let mut inner = self.inner.lock().await;
         if self.stop_gen.load(std::sync::atomic::Ordering::SeqCst) != gen {
-            return; // attach 期间被 stop：弃用结果
+            return; // Stop raced with attach; discard the result.
         }
         if inner.active_session.is_some() {
-            return; // 并发路径已激活其他页
+            return; // A concurrent path already activated another page.
         }
         if switch_active_session_locked(&mut inner, &sid).await.is_ok() {
             inner.active_target = Some(target_id.to_string());
         }
     }
 
-    /// `Target.targetDestroyed` 自愈（由事件循环调用）：激活标签页被 MCP/页面
-    /// 脚本关闭时切到剩余页；无剩余页则清空 active——下次
-    /// `ensure_started` 经 `reattach_existing` 复用连接重附着（不再冻结在
-    /// 已销毁 target 的最后一帧上）。close_tab 主动关闭已先行处理，此处幂等。
+    /// `Target.targetDestroyed` repair, called by the event loop. When MCP or page
+    /// script closes the active tab, switch to a survivor. If none remain, clear
+    /// active so the next `ensure_started` reuses the connection through
+    /// `reattach_existing` instead of freezing on the destroyed target's final
+    /// frame. Explicit close_tab handles itself first; this path is idempotent.
     async fn on_target_destroyed(&self, target_id: &str) {
         self.page_sessions.lock().remove(target_id);
         let mut inner = self.inner.lock().await;
@@ -3484,8 +3904,8 @@ impl BrowserManager {
             inner.active_target = None;
             return;
         };
-        // 枚举剩余页（刚销毁的 target 可能仍在 Chrome 列表中，显式排除；
-        // attach 失败的将死 target 由 list_page_tabs 内部跳过）。
+        // Enumerate survivors. Explicitly exclude the destroyed target, which may
+        // remain in Chrome's list; list_page_tabs skips dying targets that fail attach.
         if let Ok(tabs) = list_page_tabs(&session, &self.page_sessions).await {
             if let Some(first) = tabs.iter().find(|t| t.target_id != target_id) {
                 let sid = self.page_sessions.lock().get(&first.target_id).cloned();
@@ -3497,25 +3917,229 @@ impl BrowserManager {
                 }
             }
         }
-        // 无剩余页（或切换失败）：被销毁 target 的 flatten session 已随它失效，
-        // 无需停流，直接清空 active 等下次重附着。
+        // With no survivor or failed switching, the destroyed target's flattened
+        // session is already invalid. Clear active without stopping a stream and
+        // await the next reattach.
         inner.active_session = None;
         inner.active_target = None;
     }
 
-    /// 主进程退出时的同步兜底清理：关闭应用持有的原生页面、截断自动化连接并
-    /// 清理协调文件。原生页面生命周期不依赖外部浏览器进程。
+    /// A bounded CDP lifecycle queue may intentionally coalesce a target churn
+    /// burst. Rebuild both the attach cache and active target from one
+    /// authoritative Target.getTargets snapshot rather than applying deltas
+    /// after an overflow gap.
+    async fn reconcile_target_lifecycle(&self) -> Result<TargetLifecycleReconcileOutcome, String> {
+        let generation = self.stop_gen.load(std::sync::atomic::Ordering::SeqCst);
+        let (session, cached_sessions) = {
+            let inner = self.inner.lock().await;
+            let Some(session) = inner.session.clone() else {
+                return Ok(TargetLifecycleReconcileOutcome::Reconciled);
+            };
+            (session, self.page_sessions.lock().clone())
+        };
+
+        // Never let an old connection write the process-wide attach cache
+        // before the generation/session check below. Seed a private snapshot
+        // with reusable sessions, attach missing live targets there, then
+        // merge only if this exact connection is still current.
+        let snapshot_sessions = Arc::new(parking_lot::Mutex::new(cached_sessions.clone()));
+        let mut tabs = match list_page_tabs_authoritative(&session, &snapshot_sessions).await {
+            Ok(tabs) => tabs,
+            Err(error) => {
+                // An incomplete delta stream may no longer be trusted. If the
+                // authoritative snapshot itself fails on the same connection,
+                // invalidate that automation connection fail-closed. The
+                // existing watch reconnects it without closing native pages.
+                self.invalidate_target_lifecycle_connection(generation, &session)
+                    .await;
+                return Ok(TargetLifecycleReconcileOutcome::ConnectionInvalidated(
+                    format!("CDP target lifecycle resynchronization failed: {error}"),
+                ));
+            }
+        };
+        tabs.sort_by(|left, right| left.target_id.cmp(&right.target_id));
+        let live_targets = tabs
+            .iter()
+            .map(|tab| tab.target_id.clone())
+            .collect::<HashSet<_>>();
+        let mut live_sessions = snapshot_sessions.lock().clone();
+        live_sessions.retain(|target_id, _| live_targets.contains(target_id));
+        let captured_targets = cached_sessions.keys().cloned().collect::<HashSet<_>>();
+
+        let mut inner = self.inner.lock().await;
+        if self.stop_gen.load(std::sync::atomic::Ordering::SeqCst) != generation
+            || !inner
+                .session
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &session))
+        {
+            return Ok(TargetLifecycleReconcileOutcome::Reconciled);
+        }
+        let desired_target = reconciled_active_target(
+            inner.active_target.as_deref(),
+            tabs.iter().map(|tab| tab.target_id.as_str()),
+        );
+        let Some(desired_target) = desired_target else {
+            inner.active_session = None;
+            inner.active_target = None;
+            merge_reconciled_page_sessions(&self.page_sessions, &captured_targets, &live_sessions);
+            return Ok(TargetLifecycleReconcileOutcome::Reconciled);
+        };
+        let Some(desired_session) = live_sessions.get(&desired_target) else {
+            let error = format!(
+                "CDP target lifecycle resynchronization has no attach session: {desired_target}"
+            );
+            drop(inner);
+            self.invalidate_target_lifecycle_connection(generation, &session)
+                .await;
+            return Ok(TargetLifecycleReconcileOutcome::ConnectionInvalidated(
+                error,
+            ));
+        };
+        if inner.active_target.as_deref() == Some(desired_target.as_str())
+            && inner.active_session.as_deref() == Some(desired_session.as_str())
+        {
+            merge_reconciled_page_sessions(&self.page_sessions, &captured_targets, &live_sessions);
+            return Ok(TargetLifecycleReconcileOutcome::Reconciled);
+        }
+        if let Err(error) = switch_active_session_locked(&mut inner, desired_session).await {
+            drop(inner);
+            self.invalidate_target_lifecycle_connection(generation, &session)
+                .await;
+            return Ok(TargetLifecycleReconcileOutcome::ConnectionInvalidated(
+                format!("CDP target lifecycle resynchronization switch failed: {error}"),
+            ));
+        }
+        merge_reconciled_page_sessions(&self.page_sessions, &captured_targets, &live_sessions);
+        inner.active_target = Some(desired_target);
+        Ok(TargetLifecycleReconcileOutcome::Reconciled)
+    }
+
+    async fn invalidate_target_lifecycle_connection(
+        &self,
+        generation: u64,
+        session: &Arc<CdpSession>,
+    ) {
+        let (current_session, reader_task) = {
+            let mut inner = self.inner.lock().await;
+            if self.stop_gen.load(std::sync::atomic::Ordering::SeqCst) != generation
+                || !inner
+                    .session
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, session))
+            {
+                return;
+            }
+            // This method runs inside loop_task. Taking and dropping its
+            // JoinHandle detaches it; aborting our own task here could cancel
+            // cleanup before the reader/session senders are closed.
+            inner.loop_task.take();
+            let reader_task = inner.reader_task.take();
+            let current_session = inner.session.take();
+            inner.port = None;
+            inner.active_session = None;
+            inner.active_target = None;
+            self.page_sessions.lock().clear();
+            (current_session, reader_task)
+        };
+        self.activated
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        if let Some(current_session) = current_session {
+            current_session.close().await;
+        }
+        if let Some(reader_task) = reader_task {
+            reader_task.abort();
+        }
+    }
+
+    /// Complete asynchronous cleanup before app restart: close app-owned native
+    /// pages, terminate automation connections, and remove coordination files.
+    /// Native page lifetime does not depend on an external browser process.
     ///
-    /// 该方法由 Tauri 主线程调用，绝不能等待浏览器锁：持久化 worker 可能正持
-    /// `native_surface` 等待主线程执行 WebView getter。锁竞争时保留最近一次原子
-    /// restore 快照，WebView 交给进程退出销毁；协调文件仍无条件清理。
-    pub fn shutdown_on_exit(&self) {
-        // 先置退出标记：watch 下一轮退出、ensure_started 拒绝新连接。
+    /// This runs in the explicit restart command's async path and can await
+    /// lifecycle and persistence locks. Lock order is hosted admission -> start
+    /// -> persistence_io -> native_surface, allowing active WebView getters and
+    /// persistence transactions to settle before manifest refresh and surface close.
+    pub async fn shutdown_before_restart(&self) {
+        // Restart is an intentional async lifecycle boundary, unlike the
+        // non-blocking RunEvent::Exit fallback below. Stop new work first and
+        // serialize with any start/restore transaction so no late startup can
+        // publish resources after cleanup.
         self.shutting_down
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        // 同时 bump stop 代际：进行中的启动序列（网络 await 阶段不持 inner 锁，
-        // 下方 try_lock 会成功空转）在提交点前核对该代际，不等则丢弃结果并走
-        // 失败清理——否则退出瞬间在飞的启动会把连接提交进已清空的 inner。
+        platform::begin_browser_core_process_shutdown();
+        self.stop_gen
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Hosted scanners acquire a read guard before any request dispatch;
+        // restart takes the write side before start_mtx. Once held, every
+        // request accepted before shutdown has settled, while later scans fail
+        // closed after acquiring their read guard.
+        let _hosted_request_guard = self.hosted_request_gate.write().await;
+        let _start_guard = self.start_mtx.lock().await;
+
+        let app = self.app.lock().clone();
+        {
+            // Preserve the established persistence_io -> native_surface lock
+            // order. Restart may wait here; it must not silently skip the last
+            // restore snapshot or native surface close merely because a
+            // persistence callback was already in flight.
+            let _persistence_guard = self.persistence_io.lock();
+            let mut surface = self.native_surface.lock();
+            if surface.is_initialized() {
+                if let Some(app) = app.as_ref() {
+                    if let Err(error) = surface.persist_all_restore(app) {
+                        eprintln!(
+                            "[browser] Failed to refresh browser restore manifest before restart; retaining the previous complete manifest: {error}"
+                        );
+                    }
+                }
+                if let Err(error) = surface.close_preserving_restore(app.as_ref()) {
+                    eprintln!("[browser] Failed to close native browser pages before restart; process exit will reclaim them: {error}");
+                }
+            }
+        }
+
+        // Linux waits for the process-wide WebDriver operation gate after the
+        // permanent admission latch is closed. This drains operations accepted
+        // before restart and performs the final session/child reset.
+        platform::shutdown_browser_core_for_stop().await;
+
+        let mut inner = self.inner.lock().await;
+        if let Some(task) = inner.loop_task.take() {
+            task.abort();
+        }
+        if let Some(task) = inner.reader_task.take() {
+            task.abort();
+        }
+        if let Some(session) = inner.session.take() {
+            let _ = session.close().await;
+        }
+        inner.port = None;
+        inner.active_session = None;
+        inner.active_target = None;
+        drop(inner);
+
+        self.page_sessions.lock().clear();
+        self.persistence_warnings.lock().clear();
+        self.persistence_retries.lock().clear();
+        self.activated
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let _ = std::fs::remove_file(paths::browser_cdp_port_json());
+        clear_host_request_files();
+    }
+
+    /// Non-blocking fallback for the Tauri Exit event. Explicit async
+    /// lifecycle boundaries such as app.restart() must use
+    /// [`Self::shutdown_before_restart`] instead.
+    pub fn shutdown_on_exit(&self) {
+        // Set the exit marker first so the watcher exits on its next iteration and
+        // ensure_started rejects new connections.
+        self.shutting_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        // Also bump the stop generation. An in-flight startup sequence does not
+        // hold inner during network await, so try_lock below may observe it empty.
+        // Check the generation before commit and discard/clean mismatches, or a
+        // startup racing exit could commit into the cleared inner state.
         self.stop_gen
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         platform::shutdown_browser_core_for_exit();
@@ -3525,22 +4149,25 @@ impl BrowserManager {
                 if surface.is_initialized() {
                     if let Some(app) = app.as_ref() {
                         if let Err(error) = surface.persist_all_restore(app) {
-                            // 导航/标签变更已持续写盘；退出快照失败时保留上一份完整清单，
-                            // 不以部分写入或删除破坏已有恢复点。
-                            eprintln!("[browser] 退出时刷新浏览器恢复清单失败: {error}");
+                            // Navigation and tab changes persist continuously. If
+                            // the exit snapshot fails, retain the previous complete
+                            // manifest instead of damaging it with partial write/delete.
+                            eprintln!("[browser] Failed to refresh browser restore manifest during exit: {error}");
                         }
                     }
                     if let Err(error) = surface.close_preserving_restore(app.as_ref()) {
-                        eprintln!("[browser] 退出时关闭原生浏览器页面失败: {error}");
+                        eprintln!(
+                            "[browser] Failed to close native browser pages during exit: {error}"
+                        );
                     }
                 }
             } else {
                 eprintln!(
-                    "[browser] 退出时原生浏览器状态锁被占用，保留最近恢复点并交由进程销毁页面"
+                    "[browser] Native browser state lock is busy during exit; retaining the latest restore point and letting process exit destroy pages"
                 );
             }
         } else {
-            eprintln!("[browser] 退出时恢复持久化正在进行，保留最近恢复点并交由进程销毁页面");
+            eprintln!("[browser] Restore persistence is active during exit; retaining the latest restore point and letting process exit destroy pages");
         }
 
         if let Ok(mut inner) = self.inner.try_lock() {
@@ -3551,7 +4178,8 @@ impl BrowserManager {
                 task.abort();
             }
             if let Some(session) = inner.session.take() {
-                // 尽力关闭 WS 截断读循环（退出事件不会等待异步关闭完成）。
+                // Best-effort close WS to terminate the read loop; the exit event
+                // does not await asynchronous close completion.
                 let session = Arc::clone(&session);
                 tauri::async_runtime::spawn(async move { session.close().await });
             }
@@ -3559,20 +4187,22 @@ impl BrowserManager {
             inner.active_session = None;
             inner.active_target = None;
         } else {
-            eprintln!("[browser] 退出时自动化状态锁被占用，交由进程退出回收连接");
+            eprintln!("[browser] Automation state lock is busy during exit; process exit will reclaim the connection");
         }
         if let Some(mut page_sessions) = self.page_sessions.try_lock() {
             page_sessions.clear();
         }
         self.activated
             .store(false, std::sync::atomic::Ordering::SeqCst);
-        // 只有 app 会发布该端口；即使任一内存锁繁忙，退出后端点也必然失效。
+        // Only the app publishes this port. The endpoint necessarily becomes
+        // invalid after exit even when an in-memory lock is busy.
         let _ = std::fs::remove_file(paths::browser_cdp_port_json());
         clear_host_request_files();
     }
 
-    /// 查询状态（前端挂载/轮询用）。`activeTab` 为激活标签页的 targetId
-    /// （前端标签身份统一用 targetId；sessionId 每次 attach 都不同，不可作身份）。
+    /// Query status for frontend mount/polling. `activeTab` is the active tab's
+    /// targetId. Frontend tab identity always uses targetId because sessionId
+    /// changes on every attach.
     pub async fn status(&self, browser_session_id: &str) -> Value {
         if !crate::platform::capabilities::browser_product_enabled() {
             return json!({
@@ -3586,7 +4216,7 @@ impl BrowserManager {
         let restore_error = match self.restore_saved_workspace(browser_session_id).await {
             Ok(_) => None,
             Err(error) => {
-                eprintln!("[browser] 恢复对话浏览器失败: {error}");
+                eprintln!("[browser] Failed to restore conversation browser: {error}");
                 Some(error)
             }
         };
@@ -3648,18 +4278,21 @@ impl BrowserManager {
             .app
             .lock()
             .clone()
-            .ok_or_else(|| "应用句柄尚未就绪".to_string())?;
+            .ok_or_else(|| "App handle is not ready".to_string())?;
         let control = {
             let mut surface = self.native_surface.lock();
             if surface
                 .hand_back_to_agent(Some(&app), browser_session_id)?
                 .is_none()
             {
-                return Err("指定对话的原生浏览器工作区不存在".to_string());
+                return Err(
+                    "Native browser workspace for the specified conversation does not exist"
+                        .to_string(),
+                );
             }
             surface
                 .control_state(browser_session_id)
-                .ok_or_else(|| "浏览器控制权状态不可用".to_string())?
+                .ok_or_else(|| "Browser control state is unavailable".to_string())?
         };
         self.persist_native_restore_best_effort(browser_session_id);
         Ok(json!({
@@ -3678,7 +4311,7 @@ impl BrowserManager {
             .app
             .lock()
             .clone()
-            .ok_or_else(|| "应用句柄尚未就绪".to_string())?;
+            .ok_or_else(|| "App handle is not ready".to_string())?;
         self.native_surface.lock().release_user_control_if_idle(
             &app,
             browser_session_id,
@@ -3686,13 +4319,16 @@ impl BrowserManager {
         )
     }
 
-    /// 标签页列表（实时枚举 page 类型 target；attach 复用缓存，防 session 泄漏）。
+    /// List tabs by live enumeration of page targets. Attach reuses the cache to
+    /// prevent session leaks.
     pub async fn list_tabs(&self, browser_session_id: &str) -> Result<Vec<TabInfo>, String> {
         let app = self.app.lock().clone();
         self.native_surface
             .lock()
             .list_tabs(app.as_ref(), browser_session_id)
-            .ok_or_else(|| "指定对话的原生浏览器工作区不存在".to_string())
+            .ok_or_else(|| {
+                "Native browser workspace for the specified conversation does not exist".to_string()
+            })
     }
 
     /// Resolve a hidden marker WebView to this process's automation identity without exposing
@@ -3720,9 +4356,12 @@ impl BrowserManager {
 
         let port = live_port()
             .await
-            .ok_or_else(|| "原生浏览器自动化端点尚未就绪".to_string())?;
+            .ok_or_else(|| "Native browser automation endpoint is not ready".to_string())?;
         if !self.native_surface.lock().owns_port(port) {
-            return Err("自动化端点不属于当前应用的原生浏览器工作区".to_string());
+            return Err(
+                "Automation endpoint does not belong to this app's native browser workspace"
+                    .to_string(),
+            );
         }
         discover_native_target(port, tab_token).await
     }
@@ -3741,7 +4380,9 @@ impl BrowserManager {
             creation_id,
         )? {
             true => Ok(()),
-            false => Err("隐藏候选标签在绑定失败补偿前已丢失".to_string()),
+            false => {
+                Err("Hidden candidate tab disappeared before bind-failure compensation".to_string())
+            }
         }
     }
 
@@ -3757,7 +4398,10 @@ impl BrowserManager {
             tab_token,
         )? {
             true => Ok(()),
-            false => Err("用户隐藏候选标签在绑定失败补偿前已丢失".to_string()),
+            false => Err(
+                "Hidden user candidate tab disappeared before bind-failure compensation"
+                    .to_string(),
+            ),
         }
     }
 
@@ -3771,16 +4415,23 @@ impl BrowserManager {
         url: String,
         authorization: Option<RetainedAgentOperation>,
     ) -> Result<String, String> {
+        // Popup callbacks bypass the hosted-request scanner. Serialize their
+        // complete create/bind/publish transaction with restart cleanup.
+        let _admission_guard = self.hosted_request_gate.read().await;
+        let session_lock = self.session_lifecycle_lock(browser_session_id);
+        let _session_guard = session_lock.lock().await;
+        let _start_guard = self.start_mtx.lock().await;
         if let Some(retained) = authorization {
             let result = async {
+                self.ensure_accepting_browser_work()?;
                 if !is_allowed_url(&url) {
-                    return Err("仅支持 http/https/about:blank 协议".to_string());
+                    return Err("Only http, https, and about:blank URLs are supported".to_string());
                 }
                 let app = self
                     .app
                     .lock()
                     .clone()
-                    .ok_or_else(|| "应用句柄尚未就绪".to_string())?;
+                    .ok_or_else(|| "App handle is not ready".to_string())?;
                 self.create_agent_popup_tab(&app, browser_session_id, url, &retained)
                     .await
             }
@@ -3793,14 +4444,15 @@ impl BrowserManager {
                 .release_popup_agent_operation(&retained);
             return result;
         }
+        self.ensure_accepting_browser_work()?;
         if !is_allowed_url(&url) {
-            return Err("仅支持 http/https/about:blank 协议".to_string());
+            return Err("Only http, https, and about:blank URLs are supported".to_string());
         }
         let app = self
             .app
             .lock()
             .clone()
-            .ok_or_else(|| "应用句柄尚未就绪".to_string())?;
+            .ok_or_else(|| "App handle is not ready".to_string())?;
         self.create_native_bound_tab(&app, browser_session_id, url, false)
             .await
     }
@@ -3814,7 +4466,7 @@ impl BrowserManager {
     ) -> Result<String, String> {
         let authorization = retained.authorization();
         if authorization.session_id != browser_session_id {
-            return Err("popup Agent lease 与当前对话不一致".to_string());
+            return Err("Popup Agent lease does not match the current conversation".to_string());
         }
         let caller_epoch = retained.caller_epoch();
         let session_token = paths::browser_session_token(browser_session_id);
@@ -3829,7 +4481,7 @@ impl BrowserManager {
             .lock()
             .authorize_popup_agent_operation(retained)
         {
-            return Err("popup Agent operation holder 已失效".to_string());
+            return Err("Popup Agent operation holder expired".to_string());
         }
         let tab_token = self.native_surface.lock().generate_tab_token();
         let creation_id = format!(
@@ -3848,7 +4500,10 @@ impl BrowserManager {
             &creation_id,
         )?;
         if created.is_none() {
-            return Err("指定对话的原生浏览器工作区不存在".to_string());
+            return Err(
+                "Native browser workspace for the specified conversation does not exist"
+                    .to_string(),
+            );
         }
 
         if let Err(error) = ensure_hosted_caller_epoch_live(
@@ -3878,9 +4533,9 @@ impl BrowserManager {
                 &tab_token,
                 &creation_id,
             ) {
-                Ok(()) => Err("popup Agent operation holder 已失效".to_string()),
+                Ok(()) => Err("Popup Agent operation holder expired".to_string()),
                 Err(rollback_error) => Err(format!(
-                    "popup Agent operation holder 已失效; {rollback_error}"
+                    "Popup Agent operation holder expired; {rollback_error}"
                 )),
             };
         }
@@ -3933,9 +4588,9 @@ impl BrowserManager {
                 &tab_token,
                 &creation_id,
             ) {
-                Ok(()) => Err("popup Agent operation holder 已失效".to_string()),
+                Ok(()) => Err("Popup Agent operation holder expired".to_string()),
                 Err(rollback_error) => Err(format!(
-                    "popup Agent operation holder 已失效; {rollback_error}"
+                    "Popup Agent operation holder expired; {rollback_error}"
                 )),
             };
         }
@@ -3958,7 +4613,7 @@ impl BrowserManager {
                 )
             },
         )? {
-            return Err("popup 标签页在提交前已关闭".to_string());
+            return Err("Popup tab closed before commit".to_string());
         }
         let _ = app.emit(
             "browser:tabs-changed",
@@ -3986,7 +4641,10 @@ impl BrowserManager {
             surface.create_tab(app, browser_session_id, &tab_token, &marker, background)?
         };
         let Some(created) = created else {
-            return Err("指定对话的原生浏览器工作区不存在".to_string());
+            return Err(
+                "Native browser workspace for the specified conversation does not exist"
+                    .to_string(),
+            );
         };
         let binding = async {
             let target_id = self
@@ -3997,7 +4655,7 @@ impl BrowserManager {
                 &tab_token,
                 &target_id,
             )? {
-                return Err("新建标签页在绑定自动化 target 前已关闭".to_string());
+                return Err("New tab closed before binding its automation target".to_string());
             }
             if !self.native_surface.lock().navigate_tab_after_bind(
                 Some(app),
@@ -4005,7 +4663,7 @@ impl BrowserManager {
                 &tab_token,
                 &url,
             )? {
-                return Err("新建标签页在导航前已关闭".to_string());
+                return Err("New tab closed before navigation".to_string());
             }
             Ok::<(), String>(())
         }
@@ -4024,28 +4682,36 @@ impl BrowserManager {
         Ok(created)
     }
 
-    /// 在指定对话的原生浏览器工作区中新建标签页。
+    /// Create a tab in the specified conversation's native browser workspace.
     pub async fn create_tab(
         &self,
         browser_session_id: &str,
         url: String,
         background: bool,
     ) -> Result<String, String> {
-        // 与 navigate 同款协议白名单：防 file:///javascript: 等本地/脚本协议被注入。
+        // Toolbar tab creation is also a direct WebView creator, so it joins
+        // the same lifecycle gate as prepare and page popup creation.
+        let _admission_guard = self.hosted_request_gate.read().await;
+        let session_lock = self.session_lifecycle_lock(browser_session_id);
+        let _session_guard = session_lock.lock().await;
+        let _start_guard = self.start_mtx.lock().await;
+        self.ensure_accepting_browser_work()?;
+        // Use the same scheme allowlist as navigate to prevent injection of local
+        // or script schemes such as file:// and javascript:.
         if !is_allowed_url(&url) {
-            return Err("仅支持 http/https/about:blank 协议".to_string());
+            return Err("Only http, https, and about:blank URLs are supported".to_string());
         }
         let app = self
             .app
             .lock()
             .clone()
-            .ok_or_else(|| "应用句柄尚未就绪".to_string())?;
+            .ok_or_else(|| "App handle is not ready".to_string())?;
         self.create_native_bound_tab(&app, browser_session_id, url, background)
             .await
     }
 
-    /// 关闭标签页。仅当关掉的是当前激活页时才自动切到第一个剩余页——关后台
-    /// 标签页不应动用户正在看的页面。
+    /// Close a tab. Switch to the first survivor only when closing the active tab;
+    /// closing a background tab must not move the page the user is viewing.
     pub async fn close_tab(
         &self,
         browser_session_id: &str,
@@ -4066,10 +4732,13 @@ impl BrowserManager {
             self.persist_native_restore_best_effort(browser_session_id);
             return Ok(());
         }
-        Err("指定对话或标签页的原生浏览器工作区不存在".to_string())
+        Err(
+            "Native browser workspace for the specified conversation or tab does not exist"
+                .to_string(),
+        )
     }
 
-    /// 切换激活标签页（targetId）。
+    /// Switch the active tab by targetId.
     pub async fn activate_tab(
         &self,
         browser_session_id: &str,
@@ -4090,27 +4759,36 @@ impl BrowserManager {
             self.persist_native_restore_best_effort(browser_session_id);
             return Ok(());
         }
-        Err("指定对话或标签页的原生浏览器工作区不存在".to_string())
+        Err(
+            "Native browser workspace for the specified conversation or tab does not exist"
+                .to_string(),
+        )
     }
 
     // -----------------------------------------------------------------------
-    // 导航 / 交互
+    // Navigation / interaction
     // -----------------------------------------------------------------------
 
-    /// 导航到指定 URL。
-    pub async fn navigate(&self, browser_session_id: &str, url: String) -> Result<(), String> {
+    /// Navigate to the specified URL.
+    pub async fn navigate(
+        &self,
+        browser_session_id: &str,
+        url: String,
+        request_id: &str,
+    ) -> Result<(), String> {
         if !is_allowed_url(&url) {
-            return Err("仅支持 http/https/about:blank 协议".to_string());
+            return Err("Only http, https, and about:blank URLs are supported".to_string());
         }
         let app = self.app.lock().clone();
-        if self
-            .native_surface
-            .lock()
-            .navigate(app.as_ref(), browser_session_id, &url)?
-        {
+        if self.native_surface.lock().navigate(
+            app.as_ref(),
+            browser_session_id,
+            &url,
+            request_id,
+        )? {
             return Ok(());
         }
-        Err("指定对话的原生浏览器工作区不存在".to_string())
+        Err("Native browser workspace for the specified conversation does not exist".to_string())
     }
 
     pub async fn go_back(&self, browser_session_id: &str) -> Result<(), String> {
@@ -4130,7 +4808,7 @@ impl BrowserManager {
         )? {
             return Ok(());
         }
-        Err("指定对话的原生浏览器工作区不存在".to_string())
+        Err("Native browser workspace for the specified conversation does not exist".to_string())
     }
 
     pub async fn reload(&self, browser_session_id: &str) -> Result<(), String> {
@@ -4142,14 +4820,20 @@ impl BrowserManager {
         {
             return Ok(());
         }
-        Err("指定对话的原生浏览器工作区不存在".to_string())
+        Err("Native browser workspace for the specified conversation does not exist".to_string())
     }
 }
 
 // ---------------------------------------------------------------------------
-// 事件循环：只维护内部 target 生命周期状态。面向 UI 的导航、标题和标签事件
-// 由原生宿主按 sessionId 发送，禁止从全局 CDP 连接广播无任务归属的事件。
+// Event loop: maintain only internal target lifecycle state. The native host
+// emits UI-facing navigation, title, and tab events by sessionId. Never broadcast
+// taskless events from the global CDP connection.
 // ---------------------------------------------------------------------------
+enum TargetLifecycleReconcileOutcome {
+    Reconciled,
+    ConnectionInvalidated(String),
+}
+
 async fn run_event_loop(app: AppHandle, mut events: tokio::sync::mpsc::Receiver<cdp::CdpEvent>) {
     use cdp::CdpEvent;
     while let Some(ev) = events.recv().await {
@@ -4160,17 +4844,20 @@ async fn run_event_loop(app: AppHandle, mut events: tokio::sync::mpsc::Receiver<
                 params,
             } => match method.as_str() {
                 "Target.targetCreated" | "Target.targetDestroyed" => {
-                    // 协议形状差异与路由判定见 route_target_event：created 带完整
-                    // targetInfo（可过滤非页面 target），destroyed 只有 { targetId }。
+                    // See route_target_event for protocol-shape differences:
+                    // created carries full targetInfo for filtering non-page targets,
+                    // while destroyed carries only { targetId }.
                     match route_target_event(&method, &params) {
                         TargetEventRoute::Ignore => continue,
-                        // 激活页被（MCP/页面脚本）销毁时先自愈切换，再通知前端刷新。
+                        // When MCP or page script destroys the active page, repair
+                        // selection before notifying the frontend.
                         TargetEventRoute::Destroy(tid) => {
                             app.state::<BrowserManager>()
                                 .on_target_destroyed(&tid)
                                 .await;
                         }
-                        // 全部标签页关闭后模型新建标签页：自动补激活新页。
+                        // If the model creates a tab after all tabs closed,
+                        // automatically activate the new page.
                         TargetEventRoute::Create(tid) => {
                             app.state::<BrowserManager>().on_target_created(&tid).await;
                         }
@@ -4178,12 +4865,30 @@ async fn run_event_loop(app: AppHandle, mut events: tokio::sync::mpsc::Receiver<
                 }
                 _ => {}
             },
+            CdpEvent::LifecycleResync { signal } => {
+                // Rearm before the network snapshot: any overflow after this
+                // receive schedules one later reconciliation, while all drops
+                // before it are covered by the snapshot below.
+                signal.begin_consume();
+                match app
+                    .state::<BrowserManager>()
+                    .reconcile_target_lifecycle()
+                    .await
+                {
+                    Ok(TargetLifecycleReconcileOutcome::Reconciled) => {}
+                    Ok(TargetLifecycleReconcileOutcome::ConnectionInvalidated(error)) => {
+                        eprintln!("[browser] {error}; reset CDP connection and waiting for automatic reconnect");
+                        break;
+                    }
+                    Err(error) => eprintln!("[browser] {error}"),
+                }
+            }
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// 内部工具（free functions，便于无 &self 时调用）
+// Internal free functions for call sites without &self.
 // ---------------------------------------------------------------------------
 
 fn reconcile_browser_session_file_dirs(
@@ -4197,7 +4902,7 @@ fn reconcile_browser_session_file_dirs(
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => {
-                errors.push(format!("读取 {} 失败: {error}", directory.display()));
+                errors.push(format!("Failed to read {}: {error}", directory.display()));
                 continue;
             }
         };
@@ -4205,7 +4910,10 @@ fn reconcile_browser_session_file_dirs(
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(error) => {
-                    errors.push(format!("枚举 {} 失败: {error}", directory.display()));
+                    errors.push(format!(
+                        "Failed to enumerate {}: {error}",
+                        directory.display()
+                    ));
                     continue;
                 }
             };
@@ -4215,7 +4923,7 @@ fn reconcile_browser_session_file_dirs(
             }
             let Some(token) = path.file_stem().and_then(|value| value.to_str()) else {
                 errors.push(format!(
-                    "浏览器会话文件名不是有效 UTF-8: {}",
+                    "Browser session filename is not valid UTF-8: {}",
                     path.display()
                 ));
                 continue;
@@ -4234,23 +4942,25 @@ fn reconcile_browser_session_file_dirs(
                 match std::fs::symlink_metadata(&path).and_then(|metadata| metadata.modified()) {
                     Ok(modified) => modified,
                     Err(error) => {
-                        // 无法证明是上进程遗留文件时 fail-safe 保留，下一启动重试。
+                        // Retain fail-safely when previous-process ownership cannot
+                        // be proven and retry on the next startup.
                         errors.push(format!(
-                            "读取浏览器文件时间 {} 失败: {error}",
+                            "Failed to read browser file timestamp {}: {error}",
                             path.display()
                         ));
                         continue;
                     }
                 };
             if modified >= startup_cutoff {
-                // 当前进程可能在 active-session 静态快照之后刚创建该文件；绝不能
-                // 让后台 reconciliation 用旧 token 集误删新任务状态。
+                // The current process may have created this file after the static
+                // active-session snapshot. Background reconciliation must never
+                // use a stale token set to delete new task state.
                 continue;
             }
             if let Err(error) = std::fs::remove_file(&path) {
                 if error.kind() != std::io::ErrorKind::NotFound {
                     errors.push(format!(
-                        "删除孤儿浏览器文件 {} 失败: {error}",
+                        "Failed to delete orphaned browser file {}: {error}",
                         path.display()
                     ));
                 }
@@ -4264,21 +4974,50 @@ fn reconcile_browser_session_file_dirs(
     }
 }
 
-/// browser 级 Target 事件的路由判定（纯函数，便于单测协议形状）。
+/// Route browser-level Target events. Pure for protocol-shape unit tests.
 ///
-/// 协议形状差异（实测/协议文档）：`Target.targetCreated` 的 params 携带完整
-/// `targetInfo`（可按 type 过滤掉 iframe/worker 等非页面 target，避免把内部状态机
-/// 暴露给无关 target 的事件风暴）；
-/// `Target.targetDestroyed` 的 params **只有 `{ targetId }`**，没有 targetInfo——
-/// 对它按 targetInfo.type 过滤会把全部销毁事件丢弃（type 恒取不到），激活页销毁
-/// 自愈（on_target_destroyed）即成为死代码。销毁事件不做类型过滤：
-/// on_target_destroyed 内部（page_sessions 删除 + active_target 比对）本身幂等，
-/// 非页面 target 传入无害。
+/// Observed/documented protocol-shape difference: `Target.targetCreated` params
+/// carry complete `targetInfo`, allowing type-based filtering of non-page targets
+/// such as iframe/worker before their event storms reach the internal state
+/// machine. `Target.targetDestroyed` params contain only `{ targetId }`, without
+/// targetInfo. The CDP reader filters non-page destruction using the page-ID set
+/// maintained from targetCreated; this function must read top-level targetId and
+/// never require the nonexistent targetInfo.type.
 #[derive(Debug, PartialEq, Eq)]
 enum TargetEventRoute {
     Create(String),
     Destroy(String),
     Ignore,
+}
+
+fn reconciled_active_target<'a>(
+    current: Option<&str>,
+    live_targets: impl IntoIterator<Item = &'a str>,
+) -> Option<String> {
+    let live_targets = live_targets.into_iter().collect::<Vec<_>>();
+    current
+        .filter(|current| live_targets.contains(current))
+        .or_else(|| live_targets.first().copied())
+        .map(str::to_string)
+}
+
+fn merge_reconciled_page_sessions(
+    pages: &PageSessions,
+    captured_targets: &HashSet<String>,
+    live_sessions: &HashMap<String, String>,
+) {
+    let mut pages = pages.lock();
+    // Remove only stale entries that belonged to the cache generation used by
+    // this snapshot. A target attached concurrently after the snapshot began
+    // must not be erased merely because it was absent from the older response.
+    pages.retain(|target_id, _| {
+        !captured_targets.contains(target_id) || live_sessions.contains_key(target_id)
+    });
+    pages.extend(
+        live_sessions
+            .iter()
+            .map(|(target_id, session_id)| (target_id.clone(), session_id.clone())),
+    );
 }
 
 fn route_target_event(method: &str, params: &Value) -> TargetEventRoute {
@@ -4301,11 +5040,12 @@ fn route_target_event(method: &str, params: &Value) -> TargetEventRoute {
     }
 }
 
-/// 导航/新建标签页的 URL 协议白名单（UI 与宿主 WebView 回调共用）：http/https/about:blank，
-/// 大小写不敏感（与前端地址栏预检 `/^https?:\/\//i` 同口径）；file:/
-/// javascript:/data:/chrome: 等本地/脚本协议一律拒绝（fail-closed）。
-/// 已发布和未发布的原生页面都会经过同一回调校验，因此 Tauri release/dev
-/// 特权 origin 同样不能由 MCP 导航绕过。
+/// URL-scheme allowlist shared by navigation/new-tab UI and host WebView
+/// callbacks: case-insensitive http, https, and about:blank, matching frontend
+/// address preflight `/^https?:\/\//i`. Reject local/script schemes including
+/// file, javascript, data, and chrome. Published and unpublished native pages use
+/// the same callback validation, so MCP navigation cannot bypass privileged Tauri
+/// release or development origins.
 fn is_allowed_url(url: &str) -> bool {
     let Ok(parsed) = tauri::Url::parse(url) else {
         return false;
@@ -4326,16 +5066,18 @@ fn is_allowed_url(url: &str) -> bool {
                 reserved_dev_host && parsed.port_or_known_default() == Some(1420);
             !reserved_release_origin && !reserved_dev_origin
         }),
-        // WebView 标签使用 fragment 保存本机随机标记；它仍然是 about:blank，
-        // 但 about:config/about:srcdoc 等其他内部页面必须保持拒绝。
+        // A WebView tab stores a local random marker in the fragment while
+        // remaining about:blank. Other internal pages such as about:config and
+        // about:srcdoc remain denied.
         "about" => parsed.path() == "blank" && parsed.query().is_none(),
         _ => false,
     }
 }
 
-/// attach 指定页面 target，复用缓存中已有的 flatten session。CDP 对同一 target
-/// 的每次 attach 都产生独立 session 且不自动释放——无缓存时高频枚举（每次
-/// tabs-changed 触发前端刷新）会无界泄漏 Chrome 侧 session。
+/// Attach a page target and reuse its cached flattened session. CDP creates an
+/// independent session for every attach to the same target and does not release
+/// it automatically. Without caching, high-frequency enumeration on every
+/// tabs-changed frontend refresh leaks Chrome-side sessions without bound.
 async fn attach_page_cached(
     session: &CdpSession,
     pages: &PageSessions,
@@ -4351,13 +5093,13 @@ async fn attach_page_cached(
             json!({ "targetId": target_id, "flatten": true }),
         )
         .await
-        .map_err(|e| format!("attach 失败: {e}"))?
+        .map_err(|e| format!("attach failed: {e}"))?
         .get("sessionId")
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
     if sid.is_empty() {
-        return Err("attachToTarget 未返回 sessionId".to_string());
+        return Err("attachToTarget did not return sessionId".to_string());
     }
     pages.lock().insert(target_id.to_string(), sid.clone());
     Ok(sid)
@@ -4370,7 +5112,7 @@ async fn attach_first_page_cached(
     let targets = session
         .call(None, "Target.getTargets", json!({}))
         .await
-        .map_err(|e| format!("Target.getTargets 失败: {e}"))?;
+        .map_err(|e| format!("Target.getTargets failed: {e}"))?;
     let mut page_id: Option<String> = None;
     if let Some(infos) = targets.get("targetInfos").and_then(Value::as_array) {
         for info in infos {
@@ -4389,7 +5131,7 @@ async fn attach_first_page_cached(
             let v = session
                 .call(None, "Target.createTarget", json!({ "url": "about:blank" }))
                 .await
-                .map_err(|e| format!("Target.createTarget 失败: {e}"))?;
+                .map_err(|e| format!("Target.createTarget failed: {e}"))?;
             v.get("targetId")
                 .and_then(Value::as_str)
                 .unwrap_or("")
@@ -4400,20 +5142,21 @@ async fn attach_first_page_cached(
     Ok((target_id, sid))
 }
 
-/// 将宿主刚创建、尚未导航的 about:blank WebView 精确绑定到 CDP target。
-/// token 只存在于一次性的内部空白页：优先匹配 URL fragment；WebView2 若从
-/// Target 列表省略 fragment，则只在 about:blank 候选上读取宿主初始化脚本写入的
-/// bootstrap 标记。任何 http(s) 页面都不会被当作绑定来源。
+/// Precisely bind a newly host-created, not-yet-navigated about:blank WebView to
+/// its CDP target. The token exists only on a one-time internal blank page. Match
+/// URL fragment first; if WebView2 omits it from the Target list, read the host
+/// initialization script's bootstrap marker only on about:blank candidates. No
+/// http(s) page is ever a binding source.
 async fn discover_native_target(port: u16, tab_token: &str) -> Result<String, String> {
-    let connected = cdp::connect(port)
-        .await
-        .map_err(|error| format!("连接原生页面自动化端点失败: {error:#}"))?;
+    let connected = cdp::connect(port).await.map_err(|error| {
+        format!("Failed to connect to native-page automation endpoint: {error:#}")
+    })?;
     let session = connected.session;
     let result = async {
         let targets = session
             .call(None, "Target.getTargets", json!({}))
             .await
-            .map_err(|error| format!("枚举原生页面 target 失败: {error}"))?;
+            .map_err(|error| format!("Failed to enumerate native-page targets: {error}"))?;
         let expected_session_marker = format!("#pinvou-session-{tab_token}");
         let expected_tab_marker = format!("#pinvou-tab-{tab_token}");
         let mut matches = Vec::new();
@@ -4434,7 +5177,7 @@ async fn discover_native_target(port: u16, tab_token: &str) -> Result<String, St
                 matches.push(target_id.to_string());
                 continue;
             }
-            // 远程页面即使主动定义同名 global 也不能伪造归属。
+            // A remote page cannot forge ownership by defining a same-name global.
             if url != "about:blank" && !url.starts_with("about:blank#") {
                 continue;
             }
@@ -4445,11 +5188,11 @@ async fn discover_native_target(port: u16, tab_token: &str) -> Result<String, St
                     json!({ "targetId": target_id, "flatten": true }),
                 )
                 .await
-                .map_err(|error| format!("绑定原生页面 target 失败: {error}"))?;
+                .map_err(|error| format!("Failed to bind native-page target: {error}"))?;
             let sid = attached
                 .get("sessionId")
                 .and_then(Value::as_str)
-                .ok_or_else(|| "绑定原生页面 target 未返回 sessionId".to_string())?;
+                .ok_or_else(|| "Binding native-page target did not return sessionId".to_string())?;
             let marker = session
                 .call(
                     Some(sid),
@@ -4460,7 +5203,7 @@ async fn discover_native_target(port: u16, tab_token: &str) -> Result<String, St
                     }),
                 )
                 .await
-                .map_err(|error| format!("读取原生页面 bootstrap 标记失败: {error}"))?;
+                .map_err(|error| format!("Failed to read native-page bootstrap marker: {error}"))?;
             if marker.pointer("/result/value").and_then(Value::as_str) == Some(tab_token) {
                 matches.push(target_id.to_string());
             }
@@ -4469,8 +5212,11 @@ async fn discover_native_target(port: u16, tab_token: &str) -> Result<String, St
         matches.dedup();
         match matches.as_slice() {
             [target_id] => Ok(target_id.clone()),
-            [] => Err("未找到宿主新建页面对应的唯一自动化 target".to_string()),
-            _ => Err("宿主页面 bootstrap 标记对应多个自动化 target，已拒绝绑定".to_string()),
+            [] => Err("No unique automation target matches the host-created page".to_string()),
+            _ => Err(
+                "Host-page bootstrap marker matches multiple automation targets; binding denied"
+                    .to_string(),
+            ),
         }
     }
     .await;
@@ -4479,7 +5225,7 @@ async fn discover_native_target(port: u16, tab_token: &str) -> Result<String, St
     result
 }
 
-/// 端口文件有效且 CDP 存活时返回端口（live 探测）。
+/// Return the port only when its file is valid and a live CDP probe succeeds.
 async fn live_port() -> Option<u16> {
     let raw = std::fs::read_to_string(paths::browser_cdp_port_json()).ok()?;
     let p = parse_host_owned_port_json(&raw)?;
@@ -4490,65 +5236,122 @@ async fn list_page_tabs(
     session: &CdpSession,
     pages: &PageSessions,
 ) -> Result<Vec<TabInfo>, String> {
+    list_page_tabs_with_policy(session, pages, PageTabAttachPolicy::BestEffort).await
+}
+
+/// Lifecycle reconciliation must distinguish a truly destroyed page from a
+/// still-live page whose flatten-session attach failed temporarily. Treating
+/// the latter as absent would make an incomplete snapshot delete a live cache
+/// entry or active target, so this variant fails the entire authoritative
+/// snapshot and lets the caller reconnect.
+async fn list_page_tabs_authoritative(
+    session: &CdpSession,
+    pages: &PageSessions,
+) -> Result<Vec<TabInfo>, String> {
+    list_page_tabs_with_policy(session, pages, PageTabAttachPolicy::Authoritative).await
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PageTabAttachPolicy {
+    BestEffort,
+    Authoritative,
+}
+
+fn accept_page_attachment(
+    policy: PageTabAttachPolicy,
+    target_id: &str,
+    result: Result<String, String>,
+) -> Result<bool, String> {
+    match result {
+        Ok(_) => Ok(true),
+        Err(_) if policy == PageTabAttachPolicy::BestEffort => Ok(false),
+        Err(error) => Err(format!(
+            "Authoritative Target.getTargets snapshot cannot attach live page {target_id}: {error}"
+        )),
+    }
+}
+
+async fn list_page_tabs_with_policy(
+    session: &CdpSession,
+    pages: &PageSessions,
+    policy: PageTabAttachPolicy,
+) -> Result<Vec<TabInfo>, String> {
     let targets = session
         .call(None, "Target.getTargets", json!({}))
         .await
-        .map_err(|e| format!("Target.getTargets 失败: {e}"))?;
+        .map_err(|e| format!("Target.getTargets failed: {e}"))?;
     let mut tabs = Vec::new();
-    if let Some(infos) = targets.get("targetInfos").and_then(Value::as_array) {
-        for info in infos {
-            if info.get("type").and_then(Value::as_str) != Some("page") {
-                continue;
+    let Some(infos) = targets.get("targetInfos").and_then(Value::as_array) else {
+        return if policy == PageTabAttachPolicy::Authoritative {
+            Err("Authoritative Target.getTargets snapshot is missing targetInfos".to_string())
+        } else {
+            Ok(tabs)
+        };
+    };
+    for info in infos {
+        if info.get("type").and_then(Value::as_str) != Some("page") {
+            continue;
+        }
+        let target_id = info
+            .get("targetId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if target_id.is_empty() {
+            if policy == PageTabAttachPolicy::Authoritative {
+                return Err(
+                    "Live page in authoritative Target.getTargets snapshot is missing targetId"
+                        .to_string(),
+                );
             }
-            let target_id = info
-                .get("targetId")
+            continue;
+        }
+        // Reuse cached attaches. Enumeration occurs on every tab addition/removal;
+        // without caching, each pass creates a flattened session that CDP never
+        // releases automatically, producing an unbounded leak.
+        if !accept_page_attachment(
+            policy,
+            &target_id,
+            attach_page_cached(session, pages, &target_id).await,
+        )? {
+            continue;
+        }
+        tabs.push(TabInfo {
+            target_id,
+            page_id: None,
+            title: info
+                .get("title")
                 .and_then(Value::as_str)
                 .unwrap_or("")
-                .to_string();
-            // attach 复用缓存：枚举高频发生（每次标签页增删），不缓存会每次都
-            // 新建 flatten session（CDP 不自动释放，无界泄漏）。
-            if attach_page_cached(session, pages, &target_id)
-                .await
-                .is_err()
-            {
-                continue;
-            }
-            tabs.push(TabInfo {
-                target_id,
-                page_id: None,
-                title: info
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
-                url: info
-                    .get("url")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
-            });
-        }
+                .to_string(),
+            url: info
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        });
     }
     Ok(tabs)
 }
 
-/// 切换 Agent 自动化所使用的 flatten session。用户画面由同一页面的原生 WebView
-/// 直接呈现，这里只启用页面协议域，不启动任何连续截图流。
+/// Switch the flattened session used for Agent automation. The native WebView of
+/// the same page renders directly for the user, so enable only page protocol
+/// domains here and never start a continuous screenshot stream.
 async fn switch_active_session_locked(inner: &mut Inner, sid: &str) -> Result<(), String> {
     let session = inner
         .session
         .as_ref()
-        .ok_or_else(|| "浏览器未启动".to_string())?;
+        .ok_or_else(|| "Browser is not started".to_string())?;
     session
         .call(Some(sid), "Page.enable", json!({}))
         .await
-        .map_err(|e| format!("Page.enable 失败: {e}"))?;
+        .map_err(|e| format!("Page.enable failed: {e}"))?;
     inner.active_session = Some(sid.to_string());
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// 原生宿主自动化端点协调
+// Native-host automation endpoint coordination
 // ---------------------------------------------------------------------------
 
 fn valid_host_token(value: &str) -> bool {
@@ -4574,7 +5377,7 @@ fn validate_hosted_caller_identity(
     wrapper_instance_nonce: &str,
 ) -> Result<(), String> {
     if caller_pid == 0 || !valid_wrapper_instance_nonce(wrapper_instance_nonce) {
-        return Err("浏览器宿主调用方 epoch 身份无效".to_string());
+        return Err("Browser host caller epoch identity is invalid".to_string());
     }
     Ok(())
 }
@@ -4597,23 +5400,23 @@ fn validate_hosted_identity(
     extension: &str,
 ) -> Result<(), String> {
     if protocol_version != 3 {
-        return Err("浏览器宿主协议版本不受支持".to_string());
+        return Err("Browser host protocol version is unsupported".to_string());
     }
     if !valid_browser_session_id(session_id)
         || !valid_host_token(session_token)
         || paths::browser_session_token(session_id) != session_token
     {
-        return Err("浏览器宿主请求的会话身份校验失败".to_string());
+        return Err("Browser host request session identity validation failed".to_string());
     }
     if !valid_host_request_id(request_id) {
-        return Err("浏览器宿主 request_id 无效".to_string());
+        return Err("Browser host request_id is invalid".to_string());
     }
     if idempotency_key != format!("{session_token}/{request_id}") {
-        return Err("浏览器宿主 idempotency_key 无效".to_string());
+        return Err("Browser host idempotency_key is invalid".to_string());
     }
     let expected_name = format!("{session_token}-{request_id}.{extension}");
     if path.file_name().and_then(|name| name.to_str()) != Some(expected_name.as_str()) {
-        return Err("浏览器宿主请求文件名与请求身份不匹配".to_string());
+        return Err("Browser host request filename does not match request identity".to_string());
     }
     Ok(())
 }
@@ -4632,7 +5435,7 @@ fn validate_hosted_request(
         "json",
     )?;
     if request.operation.as_str().is_empty() {
-        return Err("浏览器宿主操作无效".to_string());
+        return Err("Browser host operation is invalid".to_string());
     }
     validate_hosted_caller_identity(request.caller_pid, &request.wrapper_instance_nonce)?;
     let now_ms = hosted_protocol_now_ms()?;
@@ -4643,10 +5446,10 @@ fn validate_hosted_request(
 fn hosted_protocol_now_ms() -> Result<u64, String> {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map_err(|_| "系统时间早于 Unix epoch，拒绝浏览器宿主请求".to_string())?
+        .map_err(|_| "System time predates Unix epoch; rejecting browser host request".to_string())?
         .as_millis()
         .try_into()
-        .map_err(|_| "系统时间超出浏览器宿主协议范围".to_string())
+        .map_err(|_| "System time exceeds browser host protocol range".to_string())
 }
 
 fn validate_hosted_request_freshness_at(
@@ -4657,7 +5460,7 @@ fn validate_hosted_request_freshness_at(
     if request.requested_at == 0
         || request.requested_at > now_ms.saturating_add(CLOCK_SKEW_TOLERANCE_MS)
     {
-        return Err("浏览器宿主请求时间戳无效".to_string());
+        return Err("Browser host request timestamp is invalid".to_string());
     }
     if now_ms.saturating_sub(request.requested_at) > request.operation.maximum_artifact_age_ms() {
         return Err("browser/host-request-expired: caller is no longer live".to_string());
@@ -4752,19 +5555,19 @@ fn write_hosted_prepare_journal(journal: &HostedPrepareJournal) -> Result<(), St
     let path = hosted_prepare_journal_path_for(&journal.compensation.session_token);
     let parent = path
         .parent()
-        .ok_or_else(|| "浏览器 Prepare 持久日志缺少父目录".to_string())?;
+        .ok_or_else(|| "Browser Prepare journal has no parent directory".to_string())?;
     std::fs::create_dir_all(parent).map_err(|error| {
         format!(
-            "创建浏览器 Prepare 持久日志目录 {} 失败: {error}",
+            "Failed to create browser Prepare journal directory {}: {error}",
             parent.display()
         )
     })?;
     crate::platform::os::make_private_dir(parent);
     let encoded = serde_json::to_vec(journal)
-        .map_err(|error| format!("编码浏览器 Prepare 持久日志失败: {error}"))?;
+        .map_err(|error| format!("Failed to encode browser Prepare journal: {error}"))?;
     crate::platform::filesystem::atomic_write_private(&path, &encoded).map_err(|error| {
         format!(
-            "写入浏览器 Prepare 持久日志 {} 失败: {error}",
+            "Failed to write browser Prepare journal {}: {error}",
             path.display()
         )
     })
@@ -4773,12 +5576,12 @@ fn write_hosted_prepare_journal(journal: &HostedPrepareJournal) -> Result<(), St
 fn read_hosted_prepare_journal(path: &Path) -> Result<HostedPrepareJournal, String> {
     let raw = std::fs::read_to_string(path).map_err(|error| {
         format!(
-            "读取浏览器 Prepare 持久日志 {} 失败: {error}",
+            "Failed to read browser Prepare journal {}: {error}",
             path.display()
         )
     })?;
     let journal: HostedPrepareJournal = serde_json::from_str(&raw)
-        .map_err(|error| format!("浏览器 Prepare 持久日志格式无效: {error}"))?;
+        .map_err(|error| format!("Browser Prepare journal has an invalid format: {error}"))?;
     validate_hosted_prepare_journal(&journal, path)?;
     Ok(journal)
 }
@@ -4789,14 +5592,14 @@ fn remove_hosted_prepare_journal(path: &Path) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
             return Err(format!(
-                "删除浏览器 Prepare 持久日志 {} 失败: {error}",
+                "Failed to delete browser Prepare journal {}: {error}",
                 path.display()
             ))
         }
     }
     if path.exists() {
         return Err(format!(
-            "删除浏览器 Prepare 持久日志 {} 后仍可见",
+            "Browser Prepare journal {} remains visible after deletion",
             path.display()
         ));
     }
@@ -4813,7 +5616,7 @@ fn remove_hosted_prepare_journal_for_session(session_id: &str) -> Result<(), Str
     if journal.compensation.session_id != session_id
         || journal.compensation.session_token != session_token
     {
-        return Err("拒绝删除其他任务的 Prepare 持久日志".to_string());
+        return Err("Refusing to delete another task's Prepare journal".to_string());
     }
     remove_hosted_prepare_journal(&path)
 }
@@ -4868,12 +5671,12 @@ fn matching_hosted_cancellation_for_compensation(
     }
     let raw = std::fs::read_to_string(&cancellation_path).map_err(|error| {
         format!(
-            "读取 Prepare 取消记录 {} 失败: {error}",
+            "Failed to read Prepare cancellation record {}: {error}",
             cancellation_path.display()
         )
     })?;
-    let cancellation: HostedBrowserCancellation =
-        serde_json::from_str(&raw).map_err(|error| format!("Prepare 取消记录格式无效: {error}"))?;
+    let cancellation: HostedBrowserCancellation = serde_json::from_str(&raw)
+        .map_err(|error| format!("Prepare cancellation record has an invalid format: {error}"))?;
     validate_hosted_cancellation(&cancellation, &cancellation_path)?;
     if cancellation.request_id != compensation.request_id
         || cancellation.idempotency_key != compensation.idempotency_key
@@ -4882,7 +5685,7 @@ fn matching_hosted_cancellation_for_compensation(
         || cancellation.caller_pid != compensation.caller_pid
         || cancellation.wrapper_instance_nonce != compensation.wrapper_instance_nonce
     {
-        return Err("Prepare 取消记录与持久 generation 不一致".to_string());
+        return Err("Prepare cancellation record does not match persisted generation".to_string());
     }
     Ok(true)
 }
@@ -4903,7 +5706,7 @@ fn remove_matching_hosted_prepare_journal_for_request(
         || compensation.caller_pid != request.caller_pid
         || compensation.wrapper_instance_nonce != request.wrapper_instance_nonce
     {
-        return Err("拒绝删除其他请求的 Prepare 持久日志".to_string());
+        return Err("Refusing to delete another request's Prepare journal".to_string());
     }
     remove_hosted_prepare_journal(&path)
 }
@@ -4920,7 +5723,7 @@ fn validate_hosted_prepare_journal(
         || journal.requested_at == 0
         || journal.updated_at == 0
     {
-        return Err("浏览器 Prepare 持久日志协议无效".to_string());
+        return Err("Browser Prepare journal protocol is invalid".to_string());
     }
     validate_hosted_caller_identity(
         compensation.caller_pid,
@@ -4940,7 +5743,7 @@ fn validate_hosted_prepare_journal(
         "json",
     )?;
     if path != hosted_prepare_journal_path_for(&compensation.session_token) {
-        return Err("浏览器 Prepare 持久日志路径与会话身份不一致".to_string());
+        return Err("Browser Prepare journal path does not match session identity".to_string());
     }
     match compensation.rollback_kind.as_str() {
         "none" if compensation.revision.is_none() => {}
@@ -4948,17 +5751,17 @@ fn validate_hosted_prepare_journal(
             if !matches!(journal.phase, HostedPreparePhase::Pending)
                 && compensation.revision.unwrap_or_default() == 0
             {
-                return Err("浏览器 Prepare 持久日志缺少补偿 revision".to_string());
+                return Err("Browser Prepare journal is missing compensation revision".to_string());
             }
         }
-        _ => return Err("浏览器 Prepare 持久日志补偿类型无效".to_string()),
+        _ => return Err("Browser Prepare journal compensation type is invalid".to_string()),
     }
     match journal.phase {
         HostedPreparePhase::Committed => {
             let response = journal
                 .response
                 .as_ref()
-                .ok_or_else(|| "已提交 Prepare 日志缺少响应".to_string())?;
+                .ok_or_else(|| "Committed Prepare journal is missing its response".to_string())?;
             if response.get("protocol_version").and_then(Value::as_u64)
                 != Some(compensation.protocol_version as u64)
                 || response.get("request_id").and_then(Value::as_str)
@@ -4967,11 +5770,11 @@ fn validate_hosted_prepare_journal(
                     != Some(compensation.idempotency_key.as_str())
                 || response.get("ok").and_then(Value::as_bool) != Some(true)
             {
-                return Err("已提交 Prepare 日志响应身份无效".to_string());
+                return Err("Committed Prepare journal response identity is invalid".to_string());
             }
         }
         _ if journal.response.is_some() => {
-            return Err("未提交 Prepare 日志不得携带成功响应".to_string())
+            return Err("Uncommitted Prepare journal cannot contain a success response".to_string())
         }
         _ => {}
     }
@@ -4983,7 +5786,7 @@ fn validate_hosted_prepare_compensation(
     allow_missing_revision: bool,
 ) -> Result<(), String> {
     if compensation.protocol_version != 3 || compensation.kind != "host_prepare_compensation" {
-        return Err("浏览器 Prepare 补偿协议无效".to_string());
+        return Err("Browser Prepare compensation protocol is invalid".to_string());
     }
     validate_hosted_caller_identity(
         compensation.caller_pid,
@@ -5009,7 +5812,7 @@ fn validate_hosted_prepare_compensation(
         {
             Ok(())
         }
-        _ => Err("浏览器 Prepare 补偿 generation 无效".to_string()),
+        _ => Err("Browser Prepare compensation generation is invalid".to_string()),
     }
 }
 
@@ -5022,14 +5825,14 @@ fn reap_acknowledged_committed_prepare_journals(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
             return Err(format!(
-                "读取浏览器 Prepare 持久日志目录 {} 失败: {error}",
+                "Failed to read browser Prepare journal directory {}: {error}",
                 journal_dir.display()
             ))
         }
     };
     for entry in entries {
         let path = entry
-            .map_err(|error| format!("枚举浏览器 Prepare 持久日志失败: {error}"))?
+            .map_err(|error| format!("Failed to enumerate browser Prepare journals: {error}"))?
             .path();
         if path.extension().and_then(|value| value.to_str()) != Some("json") {
             continue;
@@ -5147,7 +5950,7 @@ fn ensure_hosted_caller_epoch_live_at(
         wrapper_instance_nonce,
         &heartbeat,
         now_ms,
-        crate::platform::os::platform::process_alive(caller_pid),
+        crate::platform::os::process_alive(caller_pid),
     )
 }
 
@@ -5193,7 +5996,7 @@ fn validate_hosted_cancellation(
     path: &std::path::Path,
 ) -> Result<(), String> {
     if cancellation.kind != "host_request_cancelled" {
-        return Err("浏览器宿主取消记录类型无效".to_string());
+        return Err("Browser host cancellation record type is invalid".to_string());
     }
     validate_hosted_caller_identity(
         cancellation.caller_pid,
@@ -5218,7 +6021,10 @@ fn validate_hosted_cancellation(
             || compensation.caller_pid != cancellation.caller_pid
             || compensation.wrapper_instance_nonce != cancellation.wrapper_instance_nonce
         {
-            return Err("浏览器宿主取消记录的 Prepare 补偿身份不一致".to_string());
+            return Err(
+                "Browser host cancellation record has mismatched Prepare compensation identity"
+                    .to_string(),
+            );
         }
     }
     Ok(())
@@ -5271,13 +6077,14 @@ fn should_reuse_browser_core_initial_tab(
 fn write_hosted_response(request_path: &std::path::Path, response: &Value) -> Result<(), String> {
     let response_path = request_path.with_extension("response");
     if let Some(parent) = response_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("创建浏览器宿主响应目录失败: {error}"))?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!("Failed to create browser host response directory: {error}")
+        })?;
     }
-    let encoded =
-        serde_json::to_vec(response).map_err(|error| format!("浏览器宿主响应编码失败: {error}"))?;
+    let encoded = serde_json::to_vec(response)
+        .map_err(|error| format!("Failed to encode browser host response: {error}"))?;
     crate::platform::filesystem::atomic_write(&response_path, &encoded)
-        .map_err(|error| format!("写入浏览器宿主响应失败: {error}"))
+        .map_err(|error| format!("Failed to write browser host response: {error}"))
 }
 
 fn remove_hosted_request_artifacts(path: &std::path::Path) -> Result<(), String> {
@@ -5289,7 +6096,7 @@ fn remove_hosted_request_artifacts(path: &std::path::Path) -> Result<(), String>
     ] {
         if let Err(error) = std::fs::remove_file(&artifact) {
             if error.kind() != std::io::ErrorKind::NotFound {
-                errors.push(format!("删除 {} 失败: {error}", artifact.display()));
+                errors.push(format!("Failed to delete {}: {error}", artifact.display()));
             }
         }
     }
@@ -5300,24 +6107,73 @@ fn remove_hosted_request_artifacts(path: &std::path::Path) -> Result<(), String>
     }
 }
 
+fn remove_hosted_request_artifacts_for_session(session_id: &str) -> Result<(), String> {
+    let request_dir = paths::browser_host_requests_dir();
+    let entries = match std::fs::read_dir(&request_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "Failed to read browser host request directory {}: {error}",
+                request_dir.display()
+            ));
+        }
+    };
+    let prefix = format!("{}-", paths::browser_session_token(session_id));
+    let mut failures = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                failures.push(format!(
+                    "Failed to enumerate browser host artifacts: {error}"
+                ));
+                continue;
+            }
+        };
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !file_name.starts_with(&prefix)
+            || !matches!(
+                path.extension().and_then(|value| value.to_str()),
+                Some("json" | "response" | "cancelled")
+            )
+        {
+            continue;
+        }
+        if let Err(error) = std::fs::remove_file(&path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                failures.push(format!("Failed to delete {}: {error}", path.display()));
+            }
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
 fn native_lease_from_request(request: &HostedBrowserRequest) -> Result<NativeTabLease, String> {
     NativeTabLease::from_assertion(
         request.session_id.clone(),
         request
             .tab_token
             .clone()
-            .ok_or_else(|| "浏览器宿主 lease 缺少 tab_token".to_string())?,
+            .ok_or_else(|| "Browser host lease is missing tab_token".to_string())?,
         request
             .target_id
             .clone()
-            .ok_or_else(|| "浏览器宿主 lease 缺少 target_id".to_string())?,
+            .ok_or_else(|| "Browser host lease is missing target_id".to_string())?,
         request
             .revision
-            .ok_or_else(|| "浏览器宿主 lease 缺少 revision".to_string())?,
+            .ok_or_else(|| "Browser host lease is missing revision".to_string())?,
         request
             .lease
             .clone()
-            .ok_or_else(|| "浏览器宿主 lease 缺少能力令牌".to_string())?,
+            .ok_or_else(|| "Browser host lease is missing capability token".to_string())?,
     )
 }
 
@@ -5326,21 +6182,20 @@ fn native_mutation_lease_from_request(
 ) -> Result<NativeTabLease, String> {
     NativeTabLease::from_assertion(
         request.session_id.clone(),
-        request
-            .authorization_tab_token
-            .clone()
-            .ok_or_else(|| "浏览器宿主 mutation lease 缺少 authorization_tab_token".to_string())?,
+        request.authorization_tab_token.clone().ok_or_else(|| {
+            "Browser host mutation lease is missing authorization_tab_token".to_string()
+        })?,
         request
             .target_id
             .clone()
-            .ok_or_else(|| "浏览器宿主 mutation lease 缺少 target_id".to_string())?,
+            .ok_or_else(|| "Browser host mutation lease is missing target_id".to_string())?,
         request
             .revision
-            .ok_or_else(|| "浏览器宿主 mutation lease 缺少 revision".to_string())?,
+            .ok_or_else(|| "Browser host mutation lease is missing revision".to_string())?,
         request
             .lease
             .clone()
-            .ok_or_else(|| "浏览器宿主 mutation lease 缺少能力令牌".to_string())?,
+            .ok_or_else(|| "Browser host mutation lease is missing capability token".to_string())?,
     )
 }
 
@@ -5371,8 +6226,9 @@ fn native_lease_from_value(value: &Value) -> Result<NativeTabLease, String> {
 
 async fn probe_cdp(port: u16, timeout: Duration) -> bool {
     let url = format!("http://127.0.0.1:{port}/json/version");
-    // 回环探测不走系统代理：reqwest 默认 auto_sys_proxy，设了 HTTP_PROXY 且未配
-    // NO_PROXY 的用户会把 127.0.0.1 请求发往代理而失败。探测频次低，一次性 client 即可。
+    // Loopback probes bypass system proxies. reqwest defaults to auto_sys_proxy,
+    // so HTTP_PROXY without NO_PROXY would send 127.0.0.1 through the proxy and
+    // fail. Probes are infrequent, so a one-shot client is sufficient.
     let Ok(client) = reqwest::Client::builder().no_proxy().build() else {
         return false;
     };
@@ -5395,9 +6251,10 @@ async fn pick_free_port() -> Result<u16, String> {
             return Ok(port);
         }
     }
-    // 候选区间全占用：直接报错而不是回落到已知被占的 base。
+    // If every candidate is occupied, report failure instead of falling back to
+    // the known-occupied base.
     Err(format!(
-        "端口区间 {base}..{} 全部被占用，无法创建原生浏览器自动化端点",
+        "Port range {base}..{} is fully occupied; cannot create native browser automation endpoint",
         base + 200
     ))
 }
@@ -5412,8 +6269,9 @@ async fn wait_for_hosted_cancellation(path: &Path) {
     }
 }
 
-/// 解析端口文件内容。显式校验合法端口范围：损坏/他人写入的值（如 65536+k）经
-/// `as u16` 会静默回绕到任意端口，探测错误端点（多耗 ~10s 后才走 stale 清理）。
+/// Parse port-file contents with explicit valid-range checks. A corrupt or
+/// foreign value such as 65536+k would silently wrap through `as u16`, probing an
+/// unrelated endpoint and delaying stale cleanup by roughly 10 seconds.
 fn parse_port_json(raw: &str) -> Option<u16> {
     let v: Value = serde_json::from_str(raw).ok()?;
     v.get("port")
@@ -5422,9 +6280,10 @@ fn parse_port_json(raw: &str) -> Option<u16> {
         .map(|p| p as u16)
 }
 
-/// 只有当前应用原生宿主发布的端口才能进入自动化连接路径。旧 wrapper/外部 Chrome
-/// 写入的 `owner=mcp` 或带 `browser_pid` 文件即使端口存活也必须拒绝，避免原生页面
-/// 不可用时悄悄改变浏览器身份和交互语义。
+/// Only a port published by this app's native host may enter automation. Reject
+/// legacy wrapper/external Chrome files with `owner=mcp` or browser_pid even when
+/// their port is live, so native-page failure cannot silently change browser
+/// identity or interaction semantics.
 fn parse_host_owned_port_json(raw: &str) -> Option<u16> {
     let v: Value = serde_json::from_str(raw).ok()?;
     if v.get("owner").and_then(Value::as_str) != Some("app")
@@ -5448,20 +6307,52 @@ fn write_port_file(port: u16, owner: &str, browser_pid: Option<u32>) -> Result<(
         data["browser_pid"] = json!(browser_pid);
     }
     let encoded = serde_json::to_vec_pretty(&data).map_err(|e| e.to_string())?;
-    // CDP 无鉴权：临时文件创建即收紧 0600，并通过跨平台替换状态机覆盖旧文件。
-    // Windows 的普通 rename 不能覆盖崩溃残留的 cdp-port.json，会让重启恢复失败。
+    // CDP has no authentication. Restrict the temp file to 0600 on creation and
+    // replace old files through the cross-platform state machine. Ordinary Windows
+    // rename cannot overwrite a crash-left cdp-port.json and would break recovery.
     crate::platform::filesystem::atomic_write_private(&path, &encoded)
-        .map_err(|e| format!("写端口文件失败: {e}"))
+        .map_err(|e| format!("Failed to write port file: {e}"))
+}
+
+/// Remove a failed restore's endpoint publication only while the transaction
+/// still owns the last native workspace and the file still names its exact
+/// port. A concurrently staged workspace counts as a remaining consumer even
+/// before publication, so its adopted endpoint survives the failed restore.
+fn remove_failed_restore_port_if_unshared(
+    expected_port: u16,
+    has_remaining_sessions: bool,
+) -> Result<(), String> {
+    if has_remaining_sessions {
+        return Ok(());
+    }
+    let path = paths::browser_cdp_port_json();
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "Failed to verify failed browser restore endpoint {}: {error}",
+                path.display()
+            ))
+        }
+    };
+    if parse_host_owned_port_json(&raw) != Some(expected_port) {
+        return Ok(());
+    }
+    remove_file_and_verify_absent(&path, "remove failed browser restore endpoint")
 }
 
 fn remove_file_and_verify_absent(path: &Path, description: &str) -> Result<(), String> {
     match std::fs::remove_file(path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("{description} {} 失败: {error}", path.display())),
+        Err(error) => return Err(format!("{description} {} failed: {error}", path.display())),
     }
     if path.exists() {
-        return Err(format!("{description} {} 后文件仍可见", path.display()));
+        return Err(format!(
+            "File remains visible after {description} {}",
+            path.display()
+        ));
     }
     Ok(())
 }
@@ -5477,7 +6368,7 @@ fn recover_hosted_prepare_journals_for_process_start() -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
             return Err(format!(
-                "读取浏览器 Prepare 持久日志目录 {} 失败: {error}",
+                "Failed to read browser Prepare journal directory {}: {error}",
                 journal_dir.display()
             ))
         }
@@ -5485,7 +6376,7 @@ fn recover_hosted_prepare_journals_for_process_start() -> Result<(), String> {
     let mut journal_paths = Vec::new();
     for entry in entries {
         let path = entry
-            .map_err(|error| format!("枚举浏览器 Prepare 持久日志失败: {error}"))?
+            .map_err(|error| format!("Failed to enumerate browser Prepare journals: {error}"))?
             .path();
         if path.extension().and_then(|value| value.to_str()) == Some("json") {
             journal_paths.push(path);
@@ -5506,7 +6397,7 @@ fn recover_hosted_prepare_journals_for_process_start() -> Result<(), String> {
             // for a still-live wrapper's late cancellation.
             remove_file_and_verify_absent(
                 &paths::browser_workspace_state_json(&compensation.session_token),
-                "删除失效浏览器运行期映射",
+                "delete stale browser runtime mapping",
             )?;
             if committed_without_cancellation {
                 // The wrapper can still be alive and reach its timeout after
@@ -5520,7 +6411,7 @@ fn recover_hosted_prepare_journals_for_process_start() -> Result<(), String> {
             if compensation.rollback_kind == "prepared_session" {
                 remove_file_and_verify_absent(
                     &paths::browser_workspace_restore_json(&compensation.session_token),
-                    "删除未提交 Prepare 恢复清单",
+                    "delete uncommitted Prepare restore manifest",
                 )?;
             }
             // Re-read the CreatedBlank delete boundary before removing the WAL.
@@ -5529,7 +6420,7 @@ fn recover_hosted_prepare_journals_for_process_start() -> Result<(), String> {
             if compensation.rollback_kind == "prepared_session"
                 && paths::browser_workspace_restore_json(&compensation.session_token).exists()
             {
-                return Err("未提交 Prepare 恢复清单仍存在".to_string());
+                return Err("Uncommitted Prepare restore manifest still exists".to_string());
             }
             remove_hosted_prepare_journal(&path)
         })();
@@ -5544,17 +6435,19 @@ fn recover_hosted_prepare_journals_for_process_start() -> Result<(), String> {
     }
 }
 
-/// 为当前 app process 建立全新的 transient host-request 目录。整个旧目录先原子
-/// rename 到 watcher 永不监听的同级 quarantine，再创建空目录；因此旧进程遗留请求
-/// 不会与 watcher 注册窗口里的本进程新请求混在一起。
+/// Create a fresh transient host-request directory for this app process. First
+/// atomically rename the old directory to a sibling quarantine the watcher never
+/// observes, then create an empty directory. Requests left by an old process can
+/// therefore never mix with current-process requests during watcher registration.
 fn reset_host_request_directory_for_process_start(
     request_dir: &std::path::Path,
 ) -> Result<(), String> {
     let parent = request_dir
         .parent()
-        .ok_or_else(|| "浏览器宿主请求目录缺少父目录".to_string())?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| format!("创建浏览器宿主协调目录失败: {error}"))?;
+        .ok_or_else(|| "Browser host request directory has no parent".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        format!("Failed to create browser host coordination directory: {error}")
+    })?;
 
     let mut quarantined = None;
     if request_dir.exists() {
@@ -5586,13 +6479,16 @@ fn reset_host_request_directory_for_process_start(
                     last_error = Some(error);
                 }
                 Err(error) => {
-                    return Err(format!("原子隔离 {} 失败: {error}", request_dir.display()));
+                    return Err(format!(
+                        "Failed to atomically quarantine {}: {error}",
+                        request_dir.display()
+                    ));
                 }
             }
         }
         if let Some(error) = last_error {
             return Err(format!(
-                "无法为 {} 分配隔离目录: {error}",
+                "Could not allocate quarantine directory for {}: {error}",
                 request_dir.display()
             ));
         }
@@ -5606,7 +6502,9 @@ fn reset_host_request_directory_for_process_start(
                 Err(error)
             }
         })
-        .map_err(|error| format!("创建当前进程浏览器宿主请求目录失败: {error}"))?;
+        .map_err(|error| {
+            format!("Failed to create current-process browser host request directory: {error}")
+        })?;
 
     if let Some(quarantine) = quarantined {
         let cleanup = match std::fs::symlink_metadata(&quarantine) {
@@ -5616,10 +6514,12 @@ fn reset_host_request_directory_for_process_start(
             Err(error) => Err(error),
         };
         if let Err(error) = cleanup {
-            // 旧请求已经与 watcher 物理隔离，清理失败不能重新暴露或重放它；下次
-            // 启动仍只监听标准目录。保留诊断，避免牺牲当前进程浏览器可用性。
+            // Old requests are physically isolated from the watcher. Cleanup
+            // failure cannot expose or replay them; next startup still watches
+            // only the standard directory. Keep diagnostics without sacrificing
+            // current-process browser availability.
             eprintln!(
-                "[browser] 删除已隔离的旧宿主请求目录 {} 失败: {error}",
+                "[browser] Failed to delete quarantined old host request directory {}: {error}",
                 quarantine.display()
             );
         }
@@ -5642,6 +6542,220 @@ fn clear_host_request_files() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn hosted_admission_keeps_control_reads_concurrent_and_restart_exclusive() {
+        let manager = BrowserManager::new();
+        let data_guard = manager.hosted_request_gate.read().await;
+        let control_guard = tokio::time::timeout(
+            Duration::from_millis(20),
+            manager.hosted_request_gate.read(),
+        )
+        .await
+        .expect("control-plane reader must not wait behind a data request");
+
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(20),
+                manager.hosted_request_gate.write()
+            )
+            .await
+            .is_err(),
+            "restart writer must wait for every accepted hosted request"
+        );
+
+        drop(control_guard);
+        drop(data_guard);
+        let restart_guard = tokio::time::timeout(
+            Duration::from_millis(20),
+            manager.hosted_request_gate.write(),
+        )
+        .await
+        .expect("restart writer should proceed after hosted requests settle");
+        drop(restart_guard);
+    }
+
+    #[tokio::test]
+    async fn deleted_session_teardown_waits_for_an_active_request_scanner() {
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = PinvouHomeGuard::install(temp.path());
+        let manager = Arc::new(BrowserManager::new());
+        let scanner_guard = manager.hosted_request_gate.read().await;
+        let deletion = {
+            let manager = Arc::clone(&manager);
+            tokio::spawn(async move { manager.delete_for_session("session-a").await })
+        };
+        tokio::pin!(deletion);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), deletion.as_mut())
+                .await
+                .is_err(),
+            "task deletion must drain accepted request scanners before purging their ledger"
+        );
+        drop(scanner_guard);
+        deletion
+            .await
+            .expect("deletion task should join")
+            .expect("deletion should proceed after scanner drain");
+    }
+
+    #[test]
+    fn browser_watch_recovery_retry_is_capped_and_resets_only_when_consumer_is_ready() {
+        let manager = BrowserManager::new();
+        *manager.prepare_recovery_error.lock() =
+            Some("browser/host-consumer-unavailable: simulated directory failure".to_string());
+        for expected in [250, 500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000] {
+            assert_eq!(manager.next_watch_retry_delay().as_millis(), expected);
+        }
+        assert!(manager.prepare_recovery_error.lock().is_some());
+
+        manager.mark_watch_consumer_ready();
+        assert!(manager.prepare_recovery_error.lock().is_none());
+        assert_eq!(manager.next_watch_retry_delay().as_millis(), 250);
+    }
+
+    #[tokio::test]
+    async fn task_lifecycle_lock_does_not_block_an_unrelated_session() {
+        let manager = BrowserManager::new();
+        let session_a = manager.session_lifecycle_lock("session-a");
+        let same_session_a = manager.session_lifecycle_lock("session-a");
+        let session_b = manager.session_lifecycle_lock("session-b");
+        assert!(Arc::ptr_eq(&session_a, &same_session_a));
+
+        let _session_a_guard = session_a.lock().await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), same_session_a.lock())
+                .await
+                .is_err(),
+            "the same task must wait for its active lifecycle transaction"
+        );
+        let session_b_guard = tokio::time::timeout(Duration::from_millis(20), session_b.lock())
+            .await
+            .expect("an unrelated task must not wait behind session A");
+        drop(session_b_guard);
+    }
+
+    #[tokio::test]
+    async fn queued_lifecycle_commands_fail_closed_after_restart_admission_closes() {
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = PinvouHomeGuard::install(temp.path());
+
+        async fn queue_behind_start_lock(
+            manager: Arc<BrowserManager>,
+            operation: impl std::future::Future<Output = Result<(), String>> + Send + 'static,
+        ) -> Result<(), String> {
+            let start_guard = manager.start_mtx.lock().await;
+            let queued = tokio::spawn(operation);
+            tokio::task::yield_now().await;
+            manager
+                .shutting_down
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            drop(start_guard);
+            queued.await.expect("queued lifecycle command should join")
+        }
+
+        let stop_manager = Arc::new(BrowserManager::new());
+        let stop_result = queue_behind_start_lock(Arc::clone(&stop_manager), {
+            let manager = Arc::clone(&stop_manager);
+            async move { manager.stop().await }
+        })
+        .await;
+        assert_eq!(
+            stop_result,
+            Err(
+                "application is shutting down; browser operations are no longer accepted"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            stop_manager
+                .stop_gen
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "rejected stop must not mutate lifecycle generation"
+        );
+
+        let scoped_session = "queued-session";
+        let restore_path =
+            paths::browser_workspace_restore_json(&paths::browser_session_token(scoped_session));
+        std::fs::create_dir_all(restore_path.parent().unwrap()).unwrap();
+        std::fs::write(&restore_path, b"restore-sentinel").unwrap();
+        let scoped_manager = Arc::new(BrowserManager::new());
+        let scoped_result = queue_behind_start_lock(Arc::clone(&scoped_manager), {
+            let manager = Arc::clone(&scoped_manager);
+            async move { manager.stop_for_session(scoped_session).await }
+        })
+        .await;
+        assert_eq!(
+            scoped_result,
+            Err(
+                "application is shutting down; browser operations are no longer accepted"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            std::fs::read(&restore_path).unwrap(),
+            b"restore-sentinel",
+            "a queued scoped stop must not delete restart recovery state"
+        );
+
+        let restore_manager = BrowserManager::new();
+        restore_manager
+            .shutting_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            restore_manager
+                .restore_saved_workspace("queued-session")
+                .await,
+            Err(
+                "application is shutting down; browser operations are no longer accepted"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn failed_restore_preserves_an_endpoint_adopted_by_a_concurrent_workspace() {
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = PinvouHomeGuard::install(temp.path());
+        let shared_port = 19_222;
+
+        // Restore A publishes P and releases start_mtx while binding. Restore B
+        // then adopts P and stages its workspace before A's bind fails.
+        write_port_file(shared_port, "app", None).unwrap();
+        remove_failed_restore_port_if_unshared(shared_port, true).unwrap();
+
+        let still_published = std::fs::read_to_string(paths::browser_cdp_port_json()).unwrap();
+        assert_eq!(
+            parse_host_owned_port_json(&still_published),
+            Some(shared_port),
+            "B must still be able to use the endpoint it adopted from A"
+        );
+
+        // The same failed transaction may remove P once no native workspace
+        // remains. The expected-port comparison also prevents deleting a file
+        // that a different runtime replaced while start_mtx was released.
+        remove_failed_restore_port_if_unshared(shared_port, false).unwrap();
+        assert!(!paths::browser_cdp_port_json().exists());
+
+        write_port_file(shared_port + 1, "app", None).unwrap();
+        remove_failed_restore_port_if_unshared(shared_port, false).unwrap();
+        let replacement = std::fs::read_to_string(paths::browser_cdp_port_json()).unwrap();
+        assert_eq!(
+            parse_host_owned_port_json(&replacement),
+            Some(shared_port + 1)
+        );
+    }
 
     struct PinvouHomeGuard(Option<std::ffi::OsString>);
 
@@ -5687,6 +6801,7 @@ mod tests {
             tool_arguments: None,
             background: false,
             emits_trusted_input: false,
+            observational_only: false,
         }
     }
 
@@ -5715,6 +6830,7 @@ mod tests {
             tool_arguments: None,
             background: false,
             emits_trusted_input: false,
+            observational_only: false,
         }
     }
 
@@ -6265,6 +7381,9 @@ mod tests {
         std::fs::write(&journal_dir, b"not-a-directory").unwrap();
 
         assert!(recover_hosted_prepare_journals_for_process_start().is_err());
+        std::fs::remove_file(&journal_dir).unwrap();
+        recover_hosted_prepare_journals_for_process_start()
+            .expect("the re-armed startup recovery succeeds after the I/O fault is repaired");
     }
 
     #[test]
@@ -6448,7 +7567,7 @@ mod tests {
     }
 
     #[test]
-    fn session_validator_rejects_crash_orphans_and_delete_tombstone_wins() {
+    fn session_validator_rejects_crash_orphans_and_pending_delete_marker_wins() {
         let manager = BrowserManager::new();
         manager.bind_session_validator(Arc::new(|session_id| session_id == "active-session"));
         assert!(manager
@@ -6465,6 +7584,142 @@ mod tests {
     }
 
     #[test]
+    fn late_cancellation_for_absent_session_removes_artifacts_without_ledger_entry() {
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = PinvouHomeGuard::install(temp.path());
+        let manager = BrowserManager::new();
+        manager.bind_session_validator(Arc::new(|_| false));
+        let request = valid_hosted_prepare_request(100_000);
+        let cancellation_value = hosted_internal_cancellation_value(&request, 100_001, None);
+        let cancellation: HostedBrowserCancellation =
+            serde_json::from_value(cancellation_value.clone()).unwrap();
+        let cancellation_path = hosted_cancellation_path(&request);
+        std::fs::create_dir_all(cancellation_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cancellation_path,
+            serde_json::to_vec(&cancellation_value).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(cancellation_path.with_extension("json"), b"request").unwrap();
+        std::fs::write(cancellation_path.with_extension("response"), b"response").unwrap();
+        validate_hosted_cancellation(&cancellation, &cancellation_path).unwrap();
+
+        assert!(manager
+            .discard_absent_session_cancellation(&cancellation, &cancellation_path)
+            .unwrap());
+
+        assert_eq!(manager.native_surface.lock().request_record_count(), 0);
+        for extension in ["json", "response", "cancelled"] {
+            assert!(!cancellation_path.with_extension(extension).exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_deleted_session_cleanup_releases_pending_deny_marker() {
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = PinvouHomeGuard::install(temp.path());
+        let manager = BrowserManager::new();
+        manager.bind_session_validator(Arc::new(|session_id| session_id == "active-session"));
+        manager.mark_session_deleted("active-session");
+        assert!(manager
+            .ensure_browser_session_allowed("active-session")
+            .is_err());
+        let request_dir = paths::browser_host_requests_dir();
+        std::fs::create_dir_all(&request_dir).unwrap();
+        let active_prefix = paths::browser_session_token("active-session");
+        let other_prefix = paths::browser_session_token("other-session");
+        for extension in ["json", "response", "cancelled"] {
+            std::fs::write(
+                request_dir.join(format!("{active_prefix}-request-a.{extension}")),
+                b"active",
+            )
+            .unwrap();
+            std::fs::write(
+                request_dir.join(format!("{other_prefix}-request-b.{extension}")),
+                b"other",
+            )
+            .unwrap();
+        }
+
+        manager
+            .delete_for_session("active-session")
+            .await
+            .expect("idempotent browser artifact cleanup");
+
+        assert!(manager
+            .ensure_browser_session_allowed("active-session")
+            .is_ok());
+        assert!(manager.pending_deleted_session_ids.read().is_empty());
+        for extension in ["json", "response", "cancelled"] {
+            assert!(!request_dir
+                .join(format!("{active_prefix}-request-a.{extension}"))
+                .exists());
+            assert!(request_dir
+                .join(format!("{other_prefix}-request-b.{extension}"))
+                .exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_deleted_session_teardown_retains_rollback_until_retry_purges_it() {
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = PinvouHomeGuard::install(temp.path());
+        let manager = BrowserManager::new();
+        manager.bind_session_validator(Arc::new(|session_id| session_id == "active-session"));
+        manager.mark_session_deleted("active-session");
+        {
+            let mut surface = manager.native_surface.lock();
+            assert_eq!(
+                surface
+                    .claim_request("active-session", "request-retry")
+                    .unwrap(),
+                NativeRequestClaim::Execute
+            );
+            let record = json!({ "rollback": { "kind": "none" } });
+            assert!(surface
+                .complete_request("active-session", "request-retry", record.clone())
+                .unwrap());
+            assert_eq!(
+                surface
+                    .cancel_request("active-session", "request-retry")
+                    .unwrap(),
+                NativeRequestCancel::AlreadyCompleted(record)
+            );
+        }
+        let mcp_path = paths::browser_session_mcp_json("active-session");
+        std::fs::create_dir_all(&mcp_path).unwrap();
+
+        let error = manager
+            .delete_for_session("active-session")
+            .await
+            .expect_err("injected MCP path failure must keep teardown retryable");
+
+        assert!(error.contains("MCP configuration"));
+        assert_eq!(manager.native_surface.lock().request_record_count(), 1);
+        assert!(manager
+            .pending_deleted_session_ids
+            .read()
+            .contains("active-session"));
+
+        std::fs::remove_dir(&mcp_path).unwrap();
+        manager
+            .delete_for_session("active-session")
+            .await
+            .expect("successful retry purges request rollback state");
+        assert_eq!(manager.native_surface.lock().request_record_count(), 0);
+        assert!(manager.pending_deleted_session_ids.read().is_empty());
+    }
+
+    #[test]
     fn host_consumer_startup_failure_blocks_browser_entry_points_immediately() {
         let manager = BrowserManager::new();
         *manager.prepare_recovery_error.lock() = Some(
@@ -6478,7 +7733,7 @@ mod tests {
         assert!(error.contains("injected request-dir reset failure"));
     }
 
-    // --- 按对话停止的生命周期路由 ---
+    // --- Per-conversation stop lifecycle routing ---
 
     #[test]
     fn scoped_stop_closes_a_registered_native_session() {
@@ -6504,7 +7759,7 @@ mod tests {
         );
     }
 
-    // --- browser 级 Target 事件路由（targetDestroyed 的 params 只有 targetId） ---
+    // --- Browser-level Target event routing (targetDestroyed has only targetId) ---
 
     #[test]
     fn route_target_created_page_creates() {
@@ -6517,7 +7772,8 @@ mod tests {
 
     #[test]
     fn route_target_created_non_page_ignored() {
-        // iframe/worker 等非页面 target 不触发枚举/通知（事件风暴防护）。
+        // Non-page targets such as iframe/worker do not trigger enumeration or
+        // notification, protecting against event storms.
         for ty in ["worker", "service_worker", "iframe", "other"] {
             let params = json!({ "targetInfo": { "targetId": "T1", "type": ty } });
             assert_eq!(
@@ -6529,8 +7785,9 @@ mod tests {
 
     #[test]
     fn route_target_destroyed_uses_top_level_target_id() {
-        // 协议形状（此前漏掉的场景）：targetDestroyed 的 params 仅 { targetId }，
-        // 无 targetInfo——旧实现按 targetInfo.type 过滤会把销毁事件全部丢弃。
+        // Previously missed protocol shape: targetDestroyed params contain only
+        // { targetId }, not targetInfo. Filtering by targetInfo.type would discard
+        // every destruction event.
         let params = json!({ "targetId": "T9" });
         assert_eq!(
             route_target_event("Target.targetDestroyed", &params),
@@ -6544,7 +7801,8 @@ mod tests {
             route_target_event("Target.targetDestroyed", &json!({})),
             TargetEventRoute::Ignore
         );
-        // 损坏形状：targetId 出现在 targetInfo 里（旧实现的错误假设）不应路由。
+        // Malformed shape: targetId inside targetInfo, the old incorrect
+        // assumption, must not route.
         let params = json!({ "targetInfo": { "targetId": "T9", "type": "page" } });
         assert_eq!(
             route_target_event("Target.targetDestroyed", &params),
@@ -6552,7 +7810,98 @@ mod tests {
         );
     }
 
-    // --- 导航/新建标签页的 URL 协议白名单 ---
+    #[test]
+    fn lifecycle_resync_preserves_a_live_active_target() {
+        assert_eq!(
+            reconciled_active_target(Some("T2"), ["T1", "T2", "T3"]),
+            Some("T2".to_string())
+        );
+    }
+
+    #[test]
+    fn lifecycle_resync_replaces_a_dropped_destroy_with_a_live_target() {
+        assert_eq!(
+            reconciled_active_target(Some("destroyed"), ["T1", "T2"]),
+            Some("T1".to_string())
+        );
+        assert_eq!(
+            reconciled_active_target(Some("destroyed"), std::iter::empty()),
+            None
+        );
+    }
+
+    #[test]
+    fn lifecycle_resync_removes_only_stale_entries_from_its_captured_generation() {
+        let pages = Arc::new(parking_lot::Mutex::new(HashMap::from([
+            ("stale".to_string(), "old-stale-session".to_string()),
+            ("live".to_string(), "old-live-session".to_string()),
+            ("concurrent".to_string(), "new-session".to_string()),
+        ])));
+        let captured = HashSet::from(["stale".to_string(), "live".to_string()]);
+        let live = HashMap::from([("live".to_string(), "fresh-live-session".to_string())]);
+
+        merge_reconciled_page_sessions(&pages, &captured, &live);
+
+        assert_eq!(
+            *pages.lock(),
+            HashMap::from([
+                ("live".to_string(), "fresh-live-session".to_string()),
+                ("concurrent".to_string(), "new-session".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn lifecycle_resync_requires_every_live_page_attachment() {
+        assert_eq!(
+            accept_page_attachment(
+                PageTabAttachPolicy::BestEffort,
+                "temporarily-unattachable",
+                Err("target is busy".to_string()),
+            ),
+            Ok(false)
+        );
+
+        let error = accept_page_attachment(
+            PageTabAttachPolicy::Authoritative,
+            "temporarily-unattachable",
+            Err("target is busy".to_string()),
+        )
+        .expect_err("authoritative resync must reject a partial live-page snapshot");
+        assert!(error.contains("temporarily-unattachable"));
+        assert!(error.contains("target is busy"));
+        assert_eq!(
+            accept_page_attachment(
+                PageTabAttachPolicy::Authoritative,
+                "attached",
+                Ok("session-1".to_string()),
+            ),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn browser_core_observation_allowlist_is_explicit_and_unknown_tools_fail_closed() {
+        for tool in [
+            "take_snapshot",
+            "wait_for",
+            "list_console_messages",
+            "list_network_requests",
+        ] {
+            assert!(browser_core_tool_is_observational(tool), "tool={tool}");
+        }
+        for tool in [
+            "navigate_page",
+            "click",
+            "fill",
+            "evaluate_script",
+            "future_unknown_tool",
+        ] {
+            assert!(!browser_core_tool_is_observational(tool), "tool={tool}");
+        }
+    }
+
+    // --- URL-scheme allowlist for navigation/new tabs ---
 
     #[test]
     fn is_allowed_url_accepts_http_https_about_blank() {
@@ -6570,6 +7919,9 @@ mod tests {
         assert!(!is_allowed_url("javascript:alert(1)"));
         assert!(!is_allowed_url("data:text/html,<script></script>"));
         assert!(!is_allowed_url("chrome://settings"));
+        assert!(!is_allowed_url(
+            "pinvou-user-takeover://interaction/pointerdown"
+        ));
         assert!(!is_allowed_url("http://tauri.localhost/"));
         assert!(!is_allowed_url("https://TAURI.LOCALHOST/index.html"));
         assert!(is_allowed_url("https://tauri.localhost.example.com/"));
@@ -6578,14 +7930,15 @@ mod tests {
         assert!(!is_allowed_url("http://[::1]:1420/"));
         assert!(is_allowed_url("http://127.0.0.1:1421/"));
         assert!(!is_allowed_url(""));
-        // 超短串（get(..7)/get(..8) 为 None，不得 panic）
+        // Very short strings: get(..7)/get(..8) returns None and must not panic.
         assert!(!is_allowed_url("http:"));
         assert!(!is_allowed_url("ht"));
-        // 非 ASCII 前缀（get 切片遇非字符边界返回 None，不得 panic）
+        // Non-ASCII prefix: get slicing at a non-character boundary returns None
+        // and must not panic.
         assert!(!is_allowed_url("ｈｔｔｐ://example.com"));
     }
 
-    // --- 端口文件解析（范围校验防 as u16 回绕） ---
+    // --- Port-file parsing (range checks prevent as-u16 wrapping) ---
 
     #[test]
     fn parse_port_json_accepts_valid_ports() {
@@ -6599,7 +7952,7 @@ mod tests {
         assert_eq!(parse_port_json(r#"{"port": 0}"#), None);
         assert_eq!(parse_port_json(r#"{"port": 65536}"#), None);
         assert_eq!(parse_port_json(r#"{"port": 70000}"#), None);
-        // 非数字、负数、缺字段、非法 JSON
+        // Non-numeric, negative, missing field, and invalid JSON.
         assert_eq!(parse_port_json(r#"{"port": "9222"}"#), None);
         assert_eq!(parse_port_json(r#"{"port": -1}"#), None);
         assert_eq!(parse_port_json(r#"{"pid": 123}"#), None);

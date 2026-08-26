@@ -36,6 +36,59 @@ pub struct Pinvou3Bundle {
     pub shell_env_sh: PathBuf,
 }
 
+const BROWSER_LAST_ERROR_TTL_SECS: u64 = 24 * 60 * 60;
+const BROWSER_LAST_ERROR_MAX_FUTURE_SKEW_SECS: u64 = 5 * 60;
+
+/// Parse the wrapper's deliberately small persistence contract. The returned
+/// text is compiled into the app rather than copied from disk, so legacy
+/// `reason` values and crafted paths can never cross into model instructions.
+pub(super) fn browser_last_error_hint(raw: &str, now: u64) -> Option<(&'static str, &'static str)> {
+    let state = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+    let code = state.get("code")?.as_str()?;
+    let at = state.get("at")?.as_u64()?;
+    if at == 0
+        || at > now.saturating_add(BROWSER_LAST_ERROR_MAX_FUTURE_SKEW_SECS)
+        || now.saturating_sub(at) > BROWSER_LAST_ERROR_TTL_SECS
+    {
+        return None;
+    }
+    match code {
+        "browser/host-backend-unavailable" => Some((
+            "browser/host-backend-unavailable",
+            "The in-app browser host is not ready.",
+        )),
+        "unsupported/host-backend-unavailable" => Some((
+            "unsupported/host-backend-unavailable",
+            "No in-app native browser automation backend is available on this platform.",
+        )),
+        "browser/node-runtime-too-old" => Some((
+            "browser/node-runtime-too-old",
+            "The Node.js runtime required by Browser MCP is incompatible.",
+        )),
+        "browser/mcp-runtime-start-failed" => Some((
+            "browser/mcp-runtime-start-failed",
+            "The Browser MCP runtime failed to start.",
+        )),
+        "browser/core-backend-unavailable" => Some((
+            "browser/core-backend-unavailable",
+            "The in-app BrowserCore automation backend is not ready.",
+        )),
+        "browser/webkit-webdriver-not-found" => Some((
+            "browser/webkit-webdriver-not-found",
+            "WebKitWebDriver was not found on this system.",
+        )),
+        "browser/webkit-webdriver-unavailable" => Some((
+            "browser/webkit-webdriver-unavailable",
+            "WebKitWebDriver is currently unavailable.",
+        )),
+        "browser/webkit-webdriver-session-timeout" => Some((
+            "browser/webkit-webdriver-session-timeout",
+            "The WebKitWebDriver session timed out during startup.",
+        )),
+        _ => None,
+    }
+}
+
 impl Pinvou3Bundle {
     pub fn paths() -> Self {
         Self {
@@ -603,9 +656,10 @@ impl Pinvou3Bundle {
         let python_cmd = paths::python_command();
         {
             let servers = mcp["servers"].as_object_mut().unwrap();
-            // 迁移:旧版 server key 是 `pinvou`(与产品名 `pinvou3` 差一个 3,模型采样必漂成
-            // pinvou3 → `Failed to find MCP server: pinvou3`)。改用 `pinvou3` 对齐产品名,并删掉
-            // 旧 `pinvou` 条目——upsert 不会自动删旧名,不删会留两个指向同一脚本的 server。
+            // Migrate the legacy `pinvou` server key to the product-aligned `pinvou3` key.
+            // Models otherwise tend to request `pinvou3` and receive
+            // `Failed to find MCP server: pinvou3`. Upsert does not remove the old key, so
+            // delete it explicitly to avoid duplicate servers targeting the same script.
             servers.remove("pinvou");
             servers.insert(
                 "pinvou3".to_string(),
@@ -614,13 +668,13 @@ impl Pinvou3Bundle {
                     "args": [present_server.to_string_lossy()]
                 }),
             );
-            // 浏览器 MCP（工作模式 Agent 操作应用内原生 WebView）**不注册到全局 mcp.json**：
-            // 门控语义是「只有工作模式会话暴露 browser 工具」。仅清理本应用历史残留
-            // 的 browser 条目（command 指向 browser-wrapper.mjs）；用户自配的同名 MCP
-            // server（如 playwright-mcp）不属于本应用，必须保留——无条件删除会在每次
-            // 启动时静默摧毁用户配置。browser 条目由 `work_mode_mcp_config_path` 在
-            // assistant 引擎会话启动时注入会话专用 mcp 文件
-            // （`~/.pinvou3/browser/mcp.work.json`）。
+            // Browser MCP lets Work-mode Agents operate the in-app native WebView and is
+            // deliberately absent from global mcp.json. Only Work-mode sessions expose it.
+            // Remove only historical entries owned by this app (commands targeting
+            // browser-wrapper.mjs). Preserve user-defined servers with the same name, such
+            // as playwright-mcp, because unconditional removal would silently destroy user
+            // configuration on every startup. `work_mode_mcp_config_path` injects Browser
+            // MCP through the session-specific `~/.pinvou3/browser/mcp.work.json` file.
             let remove_browser_residue = servers
                 .get("browser")
                 .map(is_browser_wrapper_residue)
@@ -650,20 +704,23 @@ impl Pinvou3Bundle {
         serde_json::from_str(&existing).unwrap_or_else(|_| serde_json::json!({"servers": {}}))
     }
 
-    /// 在 Windows、Linux 与 macOS 生成统一的 `browser` MCP server 条目（不写盘，由
-    /// [`Self::work_mode_mcp_config_path`] 注入工作模式会话专用 mcp.json）。
-    /// macOS/Linux 使用应用自有 BrowserCore，不读取开发环境中的
-    /// `PINVOU3_CDMCP_BIN`，也不允许外部 Chrome 冒充内置页面。Windows 前置条件：
-    /// 1. vendor 的 chrome-devtools-mcp 入口存在（打包资源，或 `PINVOU3_CDMCP_BIN` 覆盖）；
-    /// 2. node 运行时可用（随包捆绑 node 优先，回退系统 PATH node）；
-    /// 3. wrapper 脚本已释放到 `~/.pinvou3/bundle/mcp-servers/`。
-    /// 任一不满足 → None（工作模式会话回退全局配置，模型拿不到浏览器工具）。
+    /// Builds a unified `browser` MCP server entry on Windows, Linux, and macOS. The entry
+    /// is not persisted here; [`Self::work_mode_mcp_config_path`] injects it into the
+    /// Work-mode session-specific mcp.json. macOS and Linux use the app-owned BrowserCore,
+    /// ignore `PINVOU3_CDMCP_BIN`, and never let an external Chrome instance impersonate an
+    /// embedded page. Windows requires:
+    /// 1. a vendored chrome-devtools-mcp entry point (packaged or overridden by
+    ///    `PINVOU3_CDMCP_BIN`);
+    /// 2. a Node.js runtime (prefer bundled Node.js, then fall back to PATH);
+    /// 3. an extracted wrapper under `~/.pinvou3/bundle/mcp-servers/`.
+    /// Returns `None` when any prerequisite is missing, so the Work-mode session falls back
+    /// to the global configuration and the model does not receive browser tools.
     pub fn browser_mcp_entry(&self) -> Option<serde_json::Value> {
         self.browser_mcp_entry_for_session(None)
     }
 
-    /// 未开放平台没有 Agent 自动化后端，环境变量和本地残留都不得
-    /// 绕过 capability 注册 browser MCP。
+    /// Unreleased platforms have no Agent automation backend. Environment variables and
+    /// stale local files must not bypass the capability gate and register Browser MCP.
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     fn browser_mcp_entry_for_session(
         &self,
@@ -706,9 +763,10 @@ impl Pinvou3Bundle {
         }))
     }
 
-    /// 生成绑定到单个工作会话的 browser MCP 条目。Windows wrapper 使用这里
-    /// 注入的会话身份请求对应 WebView2，并在连接 chrome-devtools-mcp 后锁定
-    /// 该页面；不同会话仍共享同一个 WebView2 Profile（Cookie/登录态）。
+    /// Builds a Browser MCP entry bound to one Work-mode session. The Windows wrapper uses
+    /// the injected session identity to request the corresponding WebView2 page, then pins
+    /// that page after connecting to chrome-devtools-mcp. Sessions still share one WebView2
+    /// profile, including cookies and sign-in state.
     #[cfg(target_os = "windows")]
     fn browser_mcp_entry_for_session(&self, session_id: Option<&str>) -> Option<serde_json::Value> {
         if !crate::platform::capabilities::browser_product_enabled() {
@@ -719,9 +777,10 @@ impl Pinvou3Bundle {
             .filter(|p| p.is_file())
             .or_else(paths::bundled_chrome_devtools_mcp_bin)?;
         let node = crate::platform::os::bundled_node().or_else(find_system_node)?;
-        // Windows 的 Tauri resource_dir 可能返回 `\\?\C:\...` verbatim 路径。
-        // Node 把这种形式作为入口脚本参数时会错误地只解析到盘符并以 EISDIR 退出；
-        // 所有交给外部进程的可执行文件/脚本路径统一降为平台兼容形式。
+        // Tauri's Windows resource_dir can return a `\\?\C:\...` verbatim path. Node may
+        // parse only the drive component when this form is supplied as an entry-script
+        // argument and exit with EISDIR. Normalize all executable and script paths passed
+        // to external processes into the platform-compatible form.
         let mcp_bin = crate::platform::os::platform_compat_path(&mcp_bin.to_string_lossy());
         let node = crate::platform::os::platform_compat_path(&node.to_string_lossy());
         let wrapper = paths::bundle_browser_wrapper();
@@ -733,7 +792,7 @@ impl Pinvou3Bundle {
             &paths::browser_cdp_port_json().to_string_lossy(),
         );
         let mut env = serde_json::json!({
-            // 离线双保险（wrapper 也自带这些参数/env）
+            // Defense in depth for offline operation; the wrapper also sets these values.
             "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS": "1",
             "CI": "1"
         });
@@ -753,16 +812,18 @@ impl Pinvou3Bundle {
         }))
     }
 
-    /// 浏览器能力不可用的静态原因（模型可见）。None = 前置条件齐备，不注入。
-    /// 只做静态判定：vendor chrome-devtools-mcp / node / wrapper
-    /// 存在性，以及 wrapper 记录的最近一次动态启动失败（`last-error.json`，
-    /// 24h 内新鲜）。动态失败（原生宿主/CDP 未就绪）发生在会话建立之后，
-    /// 当次会话读不到，由 instructions §浏览器能力 的通用兜底指引覆盖；重开会话
-    /// 时此处能读到上次原因，模型可据此精确引导用户。
+    /// Returns the static model-visible reason that browser capabilities are unavailable.
+    /// `None` means all prerequisites are present and no explanation should be injected.
+    /// This checks only the vendored chrome-devtools-mcp, Node.js, and wrapper files, plus a
+    /// fresh (within 24 hours) allowlisted dynamic failure code recorded by the wrapper in
+    /// `last-error.json`. Dynamic failures such as an unavailable native host or CDP occur
+    /// after session creation, so the current session relies on the general recovery advice
+    /// in the Browser capabilities instructions. A reopened session can read the recorded
+    /// failure and guide the user precisely.
     pub fn browser_unavailability_reason(&self) -> Option<String> {
         if !crate::platform::capabilities::browser_product_enabled() {
             return Some(
-                "浏览器工具(`mcp_browser_*`)在当前产品构建中尚未开放；不要改用外部浏览器或截图流。"
+                "Browser tools (`mcp_browser_*`) are not enabled in this product build; do not fall back to an external browser or screenshot stream."
                     .to_string(),
             );
         }
@@ -775,63 +836,62 @@ impl Pinvou3Bundle {
             && paths::bundled_chrome_devtools_mcp_bin().is_none()
         {
             missing.push(
-                "内置的 chrome-devtools-mcp 运行时未就绪(安装包自带,开发环境需先执行 vendor 构建)",
+                "The bundled chrome-devtools-mcp runtime is not ready (packaged builds include it; development requires running the vendor build first)",
             );
         }
         #[cfg(target_os = "linux")]
         if find_webkit_webdriver().is_none() {
-            missing.push("WebKitWebDriver 不可用（请安装 webkit2gtk-driver）");
+            missing.push("WebKitWebDriver is unavailable (install webkit2gtk-driver)");
         }
         if crate::platform::os::bundled_node().is_none() && find_system_node().is_none() {
-            missing.push("node 运行时不可用");
+            missing.push("The Node.js runtime is unavailable");
         }
         if !paths::bundle_browser_wrapper().is_file() {
-            missing.push("浏览器 wrapper 脚本未释放");
+            missing.push("The browser wrapper script was not extracted");
         }
-        // 内置浏览器只使用应用持有的系统 WebView；任何平台都不得静默回退到
-        // 外部 Chrome。尚未开放的平台明确不可用。
+        // The embedded browser uses only the system WebView owned by this application.
+        // No platform may silently fall back to external Chrome; unreleased platforms are
+        // explicitly unavailable.
         #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-        missing.push("当前平台的应用内原生浏览器自动化后端尚未就绪");
+        missing.push("The in-app native browser automation backend is not ready on this platform");
         if !missing.is_empty() {
             return Some(format!(
-                "浏览器工具(`mcp_browser_*`)当前不可用:{}。需要浏览器时,请按上述原因说明，不要改用外部浏览器或截图流。",
+                "Browser tools (`mcp_browser_*`) are currently unavailable: {}. When browser access is needed, explain the reason above; do not fall back to an external browser or screenshot stream.",
                 missing.join("; ")
             ));
         }
-        // 最近一次动态启动失败(原生宿主启动失败/CDP 未就绪等),24h 内新鲜才提示。
+        // Report the most recent dynamic startup failure (for example, native-host or CDP
+        // readiness) only while it remains fresh for 24 hours.
         let Ok(raw) = std::fs::read_to_string(paths::browser_last_error_json()) else {
             return None;
         };
-        let Ok(state) = serde_json::from_str::<serde_json::Value>(&raw) else {
-            return None;
-        };
-        let reason = state.get("reason").and_then(|r| r.as_str()).unwrap_or("");
-        let at = state.get("at").and_then(|t| t.as_i64()).unwrap_or(0);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
+            .map(|d| d.as_secs())
             .unwrap_or(0);
-        if reason.is_empty() || now.saturating_sub(at) > 24 * 3600 {
+        let Some((code, hint)) = browser_last_error_hint(&raw, now) else {
             return None;
-        }
+        };
         Some(format!(
-            "浏览器工具(`mcp_browser_*`)上次启动失败:{reason}。若用户需要浏览器,请引导其重开会话重试。"
+            "Browser tools (`mcp_browser_*`) failed during the previous startup ({code}): {hint} If browser access is needed, ask the user to open a new conversation and retry."
         ))
     }
 
-    /// 工作模式（assistant 引擎）会话的 mcp 配置路径：
-    /// 全局 mcp.json + browser 条目（条件满足时），原子写到
-    /// `~/.pinvou3/browser/mcp.work.json` 后返回该路径。条件不满足且用户占用了
-    /// 保留名 `browser` 时仍生成会话副本，将其改名为 `browser_user[_N]`，避免
-    /// 外部工具冒充应用内浏览器；全局配置保持原样。多工作模式会话并发重建同一
-    /// 文件，内容确定、tmp+rename 幂等。
+    /// Returns the MCP configuration path for a Work-mode assistant Engine session. The
+    /// global mcp.json plus Browser MCP (when available) is written atomically to
+    /// `~/.pinvou3/browser/mcp.work.json`. When Browser MCP is unavailable but a user owns
+    /// the reserved `browser` name, a session copy is still generated and the user server
+    /// is renamed to `browser_user[_N]` so it cannot impersonate the embedded browser. The
+    /// global configuration is unchanged. Concurrent Work-mode sessions rebuild the same
+    /// deterministic file using an idempotent temporary-file-and-rename sequence.
     pub fn work_mode_mcp_config_path(&self) -> PathBuf {
         self.write_work_mode_mcp_config(None)
     }
 
-    /// 对话级工作模式 MCP 配置：内容与全局工作模式配置相同，但 browser wrapper
-    /// 带有该对话身份。每个 Engine 因而拥有独立的工具路由上下文，不会因另一个
-    /// 对话切页而改操作对象。
+    /// Returns a conversation-scoped Work-mode MCP configuration. It matches the global
+    /// Work-mode configuration, but the browser wrapper carries this conversation's
+    /// identity. Each Engine therefore has an isolated tool-routing context that another
+    /// conversation cannot change by switching pages.
     pub fn work_mode_mcp_config_path_for_session(&self, session_id: &str) -> PathBuf {
         self.write_work_mode_mcp_config(Some(session_id))
     }
@@ -839,11 +899,12 @@ impl Pinvou3Bundle {
     fn write_work_mode_mcp_config(&self, session_id: Option<&str>) -> PathBuf {
         let base = self.mcp_json.clone();
         let browser_entry = self.browser_mcp_entry_for_session(session_id);
-        // 解析失败（用户手改坏 / 并发读到半截 JSON）或合法但非 object（如 `[]`）
-        // 都回落全局配置而不是捏造空配置继续：空配置会让本会话丢失全部
-        // marketplace 工具、只剩 browser，且完全静默；非 object 往下走
-        // `as_object_mut().unwrap()` 会直接 panic。回落只是少了 browser 工具，
-        // 全局侧口径不受影响。
+        // Fall back to the global configuration when parsing fails (for example, a manual
+        // edit or a concurrent partial read) or when valid JSON is not an object (such as
+        // `[]`). Fabricating an empty object would silently remove all marketplace tools
+        // from this session and leave only Browser MCP; continuing with a non-object would
+        // panic at `as_object_mut().unwrap()`. The fallback loses only browser tools and
+        // preserves the global behavior.
         let mcp: serde_json::Value = match std::fs::read_to_string(&base)
             .ok()
             .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
@@ -867,13 +928,14 @@ impl Pinvou3Bundle {
                 .unwrap()
                 .insert("servers".into(), serde_json::json!({}));
         }
-        // `browser` 是工作会话中 Pinvou 内嵌浏览器的保留名。用户自配的同名
-        // server（如 playwright-mcp）只在会话副本中确定性改名为 browser_user、
-        // browser_user_2...；全局 mcp.json 原样不动。这样 Agent 的
-        // `mcp_browser_*` 永远路由到同一套 Pinvou Browser MCP，同时用户工具仍以
-        // `mcp_browser_user[_N]_*` 保留。本应用历史 wrapper 残留则直接清理。即使
-        // 内置后端当前不可用也必须保留该命名边界，不能让用户 server 以
-        // `mcp_browser_*` 冒充应用内同页浏览器。
+        // `browser` is reserved for Pinvou's embedded browser in Work-mode sessions. A
+        // user-defined server with that name (for example, playwright-mcp) is renamed only
+        // in the session copy to browser_user, browser_user_2, and so on; global mcp.json is
+        // untouched. Agent calls to `mcp_browser_*` therefore always route to Pinvou
+        // Browser MCP, while user tools remain available as `mcp_browser_user[_N]_*`.
+        // Historical wrapper residue owned by this app is removed. Preserve this namespace
+        // boundary even when the built-in backend is unavailable, so a user server cannot
+        // impersonate the embedded same-page browser through `mcp_browser_*`.
         let servers = obj["servers"].as_object_mut().unwrap();
         if let Some(browser_entry) = browser_entry {
             install_work_mode_browser_server(servers, browser_entry);
@@ -882,33 +944,38 @@ impl Pinvou3Bundle {
         }
         if let Some(parent) = work_path.parent() {
             let _ = std::fs::create_dir_all(parent);
-            // 工作模式会话建立先于原生浏览器宿主启动（后者才收紧 0700）：常见路径下
-            // browser/ 会长期保持 umask 默认权限，创建后立刻收紧，与
-            // 原生宿主生命周期同口径（文件本身均 0600，这里是目录列表级卫生）。
+            // Work-mode session creation precedes native browser-host startup, which also
+            // tightens this directory to 0700. Apply the restriction immediately so
+            // browser/ does not retain default umask permissions. Files are already 0600;
+            // this protects directory listings consistently across the host lifecycle.
             crate::platform::os::make_private_dir(parent);
         }
         match serde_json::to_string_pretty(&obj) {
             Ok(json) => {
-                // 内容未变跳过重写：每次 spawn 会话（含随后回落全局的 code 会话）
-                // 都会走到这里，相同内容还做原子替换是纯无效磁盘写放。
+                // Skip an unchanged file. Every spawned session reaches this path, including
+                // Code-mode sessions that later fall back to the global configuration, so
+                // atomically replacing identical content would be needless disk I/O.
                 if std::fs::read_to_string(&work_path)
                     .map(|existing| existing == json)
                     .unwrap_or(false)
                 {
                     return work_path;
                 }
-                // 内容含全局 mcp.json 完整副本（可能带用户自配 server 的密钥
-                // env）：创建即收紧 0600，并允许 Windows 原子覆盖已有配置。
+                // The content includes a full global mcp.json copy and may contain secrets
+                // in user-defined server environments. Create it as 0600 immediately and
+                // permit atomic replacement of an existing configuration on Windows.
                 if crate::platform::filesystem::atomic_write_private(&work_path, json.as_bytes())
                     .is_ok()
                 {
                     return work_path;
                 }
-                // 写失败降级：仍返回专用路径会让引擎拉到旧文件或缺文件，
-                // 不如直接退回全局配置（无 browser 工具，功能侧降级而非报错）。
+                // On write failure, return the global configuration. Returning the
+                // session-specific path could make the Engine load stale or missing data;
+                // the global fallback degrades by omitting browser tools instead of failing.
                 base
             }
-            // 序列化失败（obj 为 Value 实际不会失败）按写失败同口径回落。
+            // Serialization of a Value should not fail, but use the same global fallback
+            // as a write failure if it does.
             Err(_) => base,
         }
     }
@@ -1055,8 +1122,9 @@ impl Pinvou3Bundle {
         for spec in crate::features::marketplace::mcp_catalog::MCP_PACKAGES {
             let _ = std::fs::remove_dir_all(dir.join(spec.id));
         }
-        // 浏览器 MCP wrapper(零依赖 node,stdin/stdout 是 MCP 协议;wrapper 由 node 直接执行,
-        // 不依赖可执行位；内容不变时不重写，实际写入后再补 Unix 可执行位)
+        // The zero-dependency Browser MCP wrapper speaks MCP over stdin/stdout. Node runs
+        // it directly, so it does not require an executable bit. Avoid rewriting unchanged
+        // content, and add the Unix executable bit only after an actual write.
         let wrapper = paths::bundle_browser_wrapper();
         let wrapper_written = self.write_if_changed(&wrapper, BROWSER_WRAPPER_MJS)?;
         #[cfg(not(unix))]

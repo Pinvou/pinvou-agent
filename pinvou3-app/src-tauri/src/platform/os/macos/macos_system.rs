@@ -12,8 +12,8 @@ pub fn current_system_locale() -> Option<String> {
         .filter(|locale| !locale.trim().is_empty())
 }
 
-// Unix 通用 helper 从 posix.rs 继承（与 linux 侧同一份实现，见 posix.rs）。
-pub use super::super::posix::process_alive;
+// Shared Unix helpers come from the same posix.rs implementation as Linux.
+pub use super::super::posix::{make_private_dir, process_alive};
 
 /// 校验路径存在且至少有一个可执行位(owner/group/other 任一有 x bit)。
 /// 与 Linux 侧 `which` 自带的可执行性校验对齐:`command_exists` 此前只调
@@ -150,8 +150,8 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
     Vec::new()
 }
 
-/// 随安装包捆绑的 node：macOS 复用 codex-bridge 运行时 node（无捆绑时 None，
-/// 消费方回退系统 PATH 探测）。
+/// Returns the bundled Node.js runtime reused from codex-bridge on macOS.
+/// Consumers fall back to PATH discovery when the runtime is absent.
 pub fn bundled_node() -> Option<PathBuf> {
     crate::platform::paths::bundled_connector_node()
 }

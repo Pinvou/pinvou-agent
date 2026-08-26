@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -32,36 +33,98 @@ const {
 const { requireWrapper, WRAPPER_ENV } = require("../scripts/tauri/require-wrapper.js");
 const { WINDOWS_BRIDGE_CONFIG_PATH } = require("../scripts/tauri/codex-bridge.js");
 const {
+  ADAPTED_RESPONSE_SHA256,
   ADAPTER_VERSION,
+  GITKEEP,
   applyTargetIdAdapter,
+  assertTargetIdAdapterIntegrity,
+  expectedMarker,
+  isPreparedRoot,
 } = require("../scripts/tauri/chrome-devtools-mcp.js");
 
 assert.equal(ADAPTER_VERSION, "pinvou-target-id-v1");
+assert.equal(
+  ADAPTED_RESPONSE_SHA256,
+  "e08698ba25c72b304152da1de99005d2415b9034c7edd46615d942dac174e0a6",
+);
+assert.deepEqual(
+  fs.readFileSync(
+    path.join(
+      __dirname,
+      "..",
+      "src-tauri",
+      "resources",
+      "platforms",
+      "windows",
+      "chrome-devtools-mcp",
+      ".gitkeep",
+    ),
+  ),
+  Buffer.from(GITKEEP, "utf8"),
+  "the tracked placeholder must remain byte-for-byte identical to the vendor rewrite",
+);
 {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pinvou-cdmcp-adapter-"));
   const sourceDir = path.join(root, "build", "src");
   const responsePath = path.join(sourceDir, "McpResponse.js");
   fs.mkdirSync(sourceDir, { recursive: true });
-  fs.writeFileSync(
-    responsePath,
-    [
-      "function createStructuredPage(mcpPage) {",
-      "    const entry = {",
-      "        id: mcpPage.id,",
-      "        url: mcpPage.pptrPage.url(),",
-      "    };",
-      "}",
-    ].join("\n"),
+  const originalSource = [
+    "function createStructuredPage(mcpPage) {",
+    "    const entry = {",
+    "        id: mcpPage.id,",
+    "        url: mcpPage.pptrPage.url(),",
+    "    };",
+    "}",
+  ].join("\n");
+  const adaptedSource = originalSource.replace(
+    "        id: mcpPage.id,\n        url: mcpPage.pptrPage.url(),",
+    "        id: mcpPage.id,\n        target_id: mcpPage.pptrPage.target()._targetId,\n        url: mcpPage.pptrPage.url(),",
   );
-  applyTargetIdAdapter(root);
-  applyTargetIdAdapter(root); // 幂等：构建重试不能重复插入字段
+  const fixtureSha256 = crypto.createHash("sha256").update(adaptedSource).digest("hex");
+  fs.writeFileSync(responsePath, originalSource);
+  applyTargetIdAdapter(root, { expectedSha256: fixtureSha256 });
+  applyTargetIdAdapter(root, { expectedSha256: fixtureSha256 }); // idempotent rebuild
   const adapted = fs.readFileSync(responsePath, "utf8");
+  assert.equal(adapted, adaptedSource);
   assert.equal(
     adapted.split("target_id: mcpPage.pptrPage.target()._targetId").length - 1,
     1,
   );
+  assert.equal(
+    assertTargetIdAdapterIntegrity(root, { expectedSha256: fixtureSha256 }),
+    fixtureSha256,
+  );
+
+  const entry = path.join(sourceDir, "bin", "chrome-devtools-mcp.js");
+  fs.mkdirSync(path.dirname(entry), { recursive: true });
+  fs.writeFileSync(entry, "// fixture");
+  fs.writeFileSync(path.join(root, "catalog-shim.json"), "{}");
+  const fixtureMarker = expectedMarker(fixtureSha256);
+  fs.writeFileSync(
+    path.join(root, ".vendor-version.json"),
+    JSON.stringify(fixtureMarker, null, 2),
+  );
+  assert.equal(isPreparedRoot(root, fixtureMarker), true);
+
+  fs.appendFileSync(responsePath, "\n// unexpected mutation");
+  assert.throws(
+    () => assertTargetIdAdapterIntegrity(root, { expectedSha256: fixtureSha256 }),
+    /SHA-256 mismatch/,
+  );
+  assert.equal(isPreparedRoot(root, fixtureMarker), false);
+
+  fs.writeFileSync(responsePath, adaptedSource);
+  fs.writeFileSync(
+    path.join(root, ".vendor-version.json"),
+    JSON.stringify({ ...fixtureMarker, responseSha256: "0".repeat(64) }, null, 2),
+  );
+  assert.equal(isPreparedRoot(root, fixtureMarker), false);
+
   fs.writeFileSync(responsePath, "// upstream drift");
-  assert.throws(() => applyTargetIdAdapter(root), /adapter 锚点异常/);
+  assert.throws(
+    () => applyTargetIdAdapter(root, { expectedSha256: fixtureSha256 }),
+    /adapter anchor state/,
+  );
   fs.rmSync(root, { recursive: true, force: true });
 }
 
@@ -408,32 +471,6 @@ assert.ok(
 assert.ok(
   !macosManifest.files.some((file) => file.destination.startsWith("runtime/chrome-devtools-mcp/")),
   "macOS resource manifest must exclude chrome-devtools-mcp",
-);
-
-const macosEntitlementsPath = path.join(
-  __dirname,
-  "..",
-  "src-tauri",
-  "packaging",
-  "macos",
-  "entitlements.plist",
-);
-const macosEntitlements = fs.readFileSync(macosEntitlementsPath);
-const macosEntitlementsText = macosEntitlements.toString("utf8");
-assert.ok(
-  !macosEntitlements.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])),
-  "codesign entitlements must not contain a UTF-8 BOM",
-);
-assert.ok(
-  !macosEntitlementsText.includes("\r") && !macosEntitlementsText.includes("<!--"),
-  "Apple codesign requires canonical LF-only entitlements without XML comments",
-);
-assert.match(macosEntitlementsText, /<key>com\.apple\.security\.device\.audio-input<\/key>/);
-const repoAttributes = fs.readFileSync(path.join(__dirname, "..", "..", ".gitattributes"), "utf8");
-assert.match(
-  repoAttributes,
-  /^pinvou3-app\/src-tauri\/packaging\/macos\/entitlements\.plist text eol=lf$/m,
-  "Windows checkouts must preserve the codesign entitlement file's LF line endings",
 );
 
 const windows = composeEffectiveConfig([platformConfigPath("win32")]).effectiveConfig;

@@ -1,3 +1,4 @@
+/* eslint-disable no-promise-executor-return -- Promise executors adapt callback APIs whose registration handles are intentionally ignored. */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import {
@@ -305,6 +306,7 @@ test('same Host Core wrapper recovers once after host stop without retrying comm
     for (const [index, terminalError] of [
       'browser/control-lease-lost',
       'browser/native-surface-missing',
+      'browser/wkwebview-javascript-callback-closed',
     ].entries()) {
       host.state.terminalError = terminalError;
       const beforeTerminalFailure = { ...host.state };
@@ -320,6 +322,11 @@ test('same Host Core wrapper recovers once after host stop without retrying comm
       assert.equal(host.state.coreCalls - beforeTerminalFailure.coreCalls, 1);
       assert.equal(host.state.committedEffects - beforeTerminalFailure.committedEffects, 1);
     }
+    assert.equal(
+      existsSync(join(root, 'last-error.json')),
+      false,
+      'action failures and pure transport termination must not become persistent availability errors',
+    );
   } finally {
     host.close();
     await stopWrapper(wrapper.child);
@@ -377,6 +384,12 @@ test('Host Core cancellation writes a durable tombstone for an in-flight native 
     assert.equal(tombstone.reason, 'client-cancelled');
     assert.equal(tombstone.request_id, host.state.lastCoreRequestId);
     assert.equal(host.state.committedEffects, 0);
+    await sleep(100);
+    assert.equal(
+      existsSync(join(root, 'last-error.json')),
+      false,
+      'ordinary MCP cancellation must not persist a browser availability error',
+    );
   } finally {
     host.close();
     await stopWrapper(wrapper.child);
@@ -425,6 +438,11 @@ test('Host Core stdin shutdown tombstones an in-flight native tool before exit',
     }
     assert.equal(JSON.parse(readFileSync(tombstonePath, 'utf8')).reason, 'client-cancelled');
     assert.equal(host.state.committedEffects, 0);
+    assert.equal(
+      existsSync(join(root, 'last-error.json')),
+      false,
+      'stdin closure must not persist a browser availability error',
+    );
   } finally {
     host.close();
     await stopWrapper(wrapper.child);
@@ -486,6 +504,11 @@ test('Host Core mutation timeout is a non-retryable commit-unknown result', asyn
       arguments: {},
     });
     assert.equal(followingRead.result.content[0].text, 'host core ok');
+    assert.equal(
+      existsSync(join(root, 'last-error.json')),
+      false,
+      'a transport timeout and its later recovery must not poison the next conversation',
+    );
   } finally {
     host.close();
     await stopWrapper(wrapper.child);

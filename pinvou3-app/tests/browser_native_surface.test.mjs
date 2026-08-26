@@ -98,7 +98,7 @@ const defaultCapability = JSON.parse(
   readFileSync(path.join(projectRoot, 'src-tauri', 'capabilities', 'default.json'), 'utf8'),
 );
 
-test('应用 IPC capability 精确授予命名 WebView，不向窗口内浏览器子表面继承', () => {
+test('IPC capability is granted only to named WebViews and not inherited by child surfaces', () => {
   assert.equal(defaultCapability.windows, undefined);
   assert.deepEqual(defaultCapability.webviews, [
     'main',
@@ -108,7 +108,7 @@ test('应用 IPC capability 精确授予命名 WebView，不向窗口内浏览�
   ]);
 });
 
-test('浏览器展示层只承载原生表面，不订阅连续截图流', () => {
+test('browser presentation renders only the native surface without screenshot streaming', () => {
   assert.match(browserView, /browser_show_native_surface/);
   assert.doesNotMatch(browserView, /listenTauri\(['"]browser:frame/);
   assert.doesNotMatch(browserView, /browser_set_streaming/);
@@ -119,32 +119,45 @@ test('浏览器展示层只承载原生表面，不订阅连续截图流', () =>
   assert.doesNotMatch(cdpClient, /Page\.screencastFrameAck/);
 });
 
-test('Linux 子 WebView 使用 fixed overlay 限定侧栏区域并在布局失败时保持隐藏', () => {
+test('Linux child WebView uses a fixed dock overlay and stays hidden on layout failure', () => {
   assert.match(nativePlatform, /#\[cfg\(target_os = "linux"\)\]\s*mod linux_surface;/);
   assert.match(nativePlatform, /linux_surface::attach\(webview\)/);
   assert.match(nativePlatform, /linux_surface::show\(webview, bounds\)/);
+  assert.match(nativePlatform, /linux_surface::hide\(webview\)/);
   assert.match(nativePlatform, /linux_surface::prepare\(&main_webview\)/);
   assert.match(nativeHost, /super::attach_native_surface\(&webview\)/);
   assert.match(nativeHost, /super::show_native_surface\(&webview, workspace\.bounds\)/);
+  assert.match(nativeHost, /super::hide_native_surface\(&webview\)/);
   assert.match(linuxSurface, /gtk::Overlay::new\(\)/);
   assert.match(linuxSurface, /gtk::Fixed::new\(\)/);
   assert.match(linuxSurface, /overlay\.add_overlay\(&fixed\)/);
+  assert.match(linuxSurface, /overlay\.set_overlay_pass_through\(&fixed, true\)/);
   assert.match(linuxSurface, /fixed\.put\(native, 0, 0\)/);
   assert.match(linuxSurface, /fixed\.move_\(native, logical\.x, logical\.y\)/);
   assert.match(linuxSurface, /native\.set_size_request\(logical\.width, logical\.height\)/);
   assert.match(linuxSurface, /let scale = f64::from\(native\.scale_factor\(\)\)/);
-  assert.match(linuxSurface, /native\.hide\(\);[\s\S]{0,180}Linux 原生浏览器表面显示失败/);
+  assert.match(
+    linuxSurface,
+    /native\.hide\(\);[\s\S]{0,360}hide_empty_overlay\(&fixed\);[\s\S]{0,160}Linux native browser surface show failed/,
+  );
+  assert.match(linuxSurface, /fn hide_empty_overlay\(fixed: &gtk::Fixed\)/);
+  assert.match(linuxSurface, /fixed\.show\(\);\s*native\.show\(\)/);
+  const installOverlay = linuxSurface.slice(
+    linuxSurface.indexOf('fn install_overlay('),
+    linuxSurface.indexOf('fn find_overlay_host('),
+  );
+  assert.doesNotMatch(installOverlay, /fixed\.show\(\)/);
   assert.doesNotMatch(linuxSurface, /\.show_all\(/);
 });
 
-test('Windows MCP 同时开启 pageId 路由与结构化 targetId 输出', () => {
+test('Windows MCP enables pageId routing and structured targetId output', () => {
   assert.match(
     browserWrapper,
     /\['--experimental-page-id-routing', '--experimental-structured-content'\]/,
   );
 });
 
-test('CDP 存活探测异步执行且所有消费点等待真实结果', () => {
+test('CDP liveness probing is asynchronous and every consumer awaits the result', () => {
   assert.match(browserWrapper, /import \{ execFile, spawn \} from 'node:child_process'/);
   assert.doesNotMatch(browserWrapper, /execFileSync/);
   assert.match(browserWrapper, /async function probeCdp\(port, timeoutMs\)/);
@@ -153,14 +166,14 @@ test('CDP 存活探测异步执行且所有消费点等待真实结果', () => {
   assert.match(browserWrapper, /void probeCdp\(port, 1000\)[\s\S]{0,100}\.then/);
 });
 
-test('原生表面不可用时显式报错并提供重试', () => {
+test('native surface failures are explicit and retryable', () => {
   assert.match(browserView, /nativeAvailable === false/);
   assert.match(browserView, /browserNativeUnavailable/);
   assert.match(browserView, /browserRetry/);
   assert.match(browserView, /setSurfaceEpoch/);
 });
 
-test('初始化空文档呈现为产品化新标签页并暂停原生空白表面', () => {
+test('initialized blank document renders as a product new-tab page with native surface paused', () => {
   assert.match(browserView, /const showingNewTab = running && isInternalBlankPageUrl\(url\)/);
   assert.match(browserView, /const \[initialStatusResolved, setInitialStatusResolved\] = useState\(false\)/);
   assert.match(browserView, /const nativeSurfaceReady = shouldShowNativeBrowserSurface\(\{[\s\S]*statusResolved: initialStatusResolved/);
@@ -169,15 +182,15 @@ test('初始化空文档呈现为产品化新标签页并暂停原生空白表�
   assert.match(browserView, /data-testid="browser-new-tab-page"/);
   assert.match(browserView, /browserStartBrowsing/);
   assert.match(browserView, /browserStartBrowsingHint/);
-  assert.match(browserView, /setUrlInput\(browserAddressValue\(st\.url\)\)/);
+  assert.match(browserView, /publishCommittedUrl\(st\.url, requestedSessionId\)/);
   assert.match(browserView, /browserTabLabel\(tab, t\.browserEmptyTab\)/);
   assert.ok(
-    browserView.indexOf('{/* 标签条在地址栏上方') < browserView.indexOf('{/* 工具条 */}'),
-    '新标签页栏必须位于导航地址栏上方',
+    browserView.indexOf('{/* Keep tabs above the address bar') < browserView.indexOf('{/* Toolbar */}'),
+    'the new-tab strip must be above the navigation address bar',
   );
 });
 
-test('普通模式用一个 Right Dock 切换器承载产物与浏览器入口', () => {
+test('normal mode uses one Right Dock switcher for artifact and browser entries', () => {
   assert.match(chatView, /data-testid="chat-right-dock-switcher"/);
   assert.match(chatView, /data-testid=\{`chat-right-dock-option-\$\{id\}`\}/);
   assert.match(chatView, /\{ id: 'artifact-preview', label: artifactsLabel/);
@@ -199,7 +212,7 @@ test('普通模式用一个 Right Dock 切换器承载产物与浏览器入口',
   assert.match(nativeHost, /pub fn prepare_unclaimed/);
 });
 
-test('内嵌下载与剪贴板读取使用安全默认值', () => {
+test('embedded downloads and clipboard reads use secure defaults', () => {
   assert.match(nativeHost, /\.on_download\(/);
   assert.match(nativeHost, /"browser:download-blocked"/);
   assert.doesNotMatch(nativeHost, /\.enable_clipboard_access\(\)/);
@@ -208,7 +221,7 @@ test('内嵌下载与剪贴板读取使用安全默认值', () => {
   assert.match(browserView, /t\.browserDownloadBlocked\(payload\.source \|\| ''\)/);
 });
 
-test('原生表面暂停由应用级状态集中派生并覆盖所有遮挡路径', () => {
+test('native surface suspension is centrally derived for every occlusion path', () => {
   assert.match(main, /const browserSurfaceSuspended = browserResizeActive/);
   assert.match(main, /rightDockState\.activePanelId !== 'browser'/);
   assert.match(main, /rightDockState\.occluded/);
@@ -243,7 +256,8 @@ test('原生表面暂停由应用级状态集中派生并覆盖所有遮挡路�
   assert.match(main, /window\.addEventListener\('pagehide', handlePageHide\)/);
   assert.match(main, /onResizeActiveChange=\{setBrowserResizeActive\}/);
   assert.match(main, /data-browser-control-slot="ownership"/);
-  assert.doesNotMatch(chatView, /useRightDockOcclusion\('artifact-fullscreen'/);
+  assert.match(chatView, /useRightDockOcclusion\(\s*'artifact-fullscreen'/);
+  assert.match(chatView, /artifactsFullscreen && artifactFullscreenPublicationReady && createPortal/);
   assert.match(chatView, /panelId="artifact-preview"[\s\S]*visible=\{rightDockActivePanelId !== 'browser'\}[\s\S]*onToggleFullscreen=\{\(\) => setArtifactsFullscreen\(true\)\}/);
   assert.match(chatView, /'voice-asr-setup',[\s\S]{0,120}voiceAsrSetup\.open && canInstallLocalAsr/);
   assert.match(chatView, /voiceAsrSetupPublicationReady && \(\(\) =>/);
@@ -264,7 +278,7 @@ test('原生表面暂停由应用级状态集中派生并覆盖所有遮挡路�
   assert.doesNotMatch(browserView, /visibilityEpoch|nextNativeSurfaceVisibilityEpoch/);
 });
 
-test('遮挡 UI、任务切换与 Right Dock 状态只在原生 hide ACK 后发布', () => {
+test('occluding UI, task switches, and Right Dock state publish only after native hide ACK', () => {
   assert.match(main, /createNativeSurfaceTransitionGate/);
   assert.match(main, /acquireHide: acquireNativeSurfaceTransitionHide/);
   assert.match(main, /channel: 'right-dock'[\s\S]{0,100}hideMode:/);
@@ -276,10 +290,27 @@ test('遮挡 UI、任务切换与 Right Dock 状态只在原生 hide ACK 后发�
   assert.match(main, /browserOverlayPublicationReady && createPortal/);
   assert.match(main, /closeBrowserDock\(selectedSessionId\)/);
   assert.match(browserView, /export async function acquireNativeSurfaceTransitionHide/);
-  assert.match(browserView, /if \(nativeSurfaceCoordinator\.transitionOwner\) return Promise\.resolve\(false\)/);
-  assert.match(browserView, /nativeSurfaceCoordinator\.transitionOwner = owner/);
+  assert.match(browserView, /nativeSurfaceCoordinator\.transitionOwners\.size > 0/);
+  assert.match(browserView, /nativeSurfaceCoordinator\.transitionOwners\.add\(owner\)/);
+  assert.match(browserView, /nativeSurfaceCoordinator\.transitionOwners\.delete\(owner\)/);
   assert.match(browserView, /await claimNativeSurfaceHide\(owner, sessionId\)/);
   assert.match(browserView, /resumeNativeSurfaceOwner\(owner, sessionId\)/);
+  assert.match(main, /requestBrowserUiCommitAck\(\)\.then/);
+  assert.match(main, /useLayoutEffect\(\(\) => \{[\s\S]*?browserUiCommitWaitersRef/);
+  assert.match(main, /if \(!browserUiCommitMountedRef\.current\) return Promise\.resolve\(false\)/);
+  assert.match(main, /gate\?\.dispose\(\);[\s\S]*?browserUiTransitionGateRef\.current = null/);
+  assert.match(
+    main,
+    /publish: async \(\) => \{[\s\S]*?await publish\(transition\)[\s\S]*?browserTransitionPublishingRef\.current -= 1[\s\S]*?waitForCommit: requestBrowserUiCommitAck/,
+  );
+  assert.doesNotMatch(main, /startTransition\(/);
+  assert.match(main, /browserBridgeSessionTransitionRef/);
+  assert.doesNotMatch(main, /browserSessionTransitionPublishingRef/);
+  assert.doesNotMatch(main, /browserActiveSessionTransitionIsCurrentRef/);
+  assert.match(
+    main,
+    /bridgeTransition\?\.sessionId !== nextSessionId[\s\S]*?serialize: true/,
+  );
   assert.match(nativeSurfaceTransition, /revisions\.get\(ticket\.channel\) !== ticket\.revision/);
   assert.match(
     nativeSurfaceTransition,
@@ -288,7 +319,7 @@ test('遮挡 UI、任务切换与 Right Dock 状态只在原生 hide ACK 后发�
   assert.match(nativeSurfaceTransition, /predecessor\.catch\(\(\) => false\)/);
 });
 
-test('切换任务时丢弃旧状态响应并以新实例承载浏览器', () => {
+test('task switches discard stale status and mount a fresh BrowserView instance', () => {
   assert.match(browserView, /const sessionIdRef = useRef\(sessionId\)/);
   assert.match(browserView, /const statusRequestEpochRef = useRef\(0\)/);
   assert.match(browserView, /const tabsRequestEpochRef = useRef\(0\)/);
@@ -298,7 +329,7 @@ test('切换任务时丢弃旧状态响应并以新实例承载浏览器', () =>
   assert.equal(keyedBrowserViews.length, 2, 'compact and dock BrowserView instances must both be keyed by session');
 });
 
-test('用户接管状态可见，空闲后自动恢复且支持立即交还', () => {
+test('user takeover is visible, recovers after idle, and supports immediate handoff', () => {
   assert.match(browserView, /listenTauri\('browser:control-changed'/);
   assert.match(browserView, /data-testid="browser-control-owner"/);
   assert.match(browserView, /data-testid="browser-hand-back"/);
@@ -312,11 +343,11 @@ test('用户接管状态可见，空闲后自动恢复且支持立即交还', ()
   assert.doesNotMatch(
     nativeHost,
     /lastSignalAt/,
-    '页面侧全局去重会吞掉 Agent 事件后紧随的真实用户接管',
+    'page-global deduplication would swallow a real user takeover after an Agent event',
   );
 });
 
-test('浏览器事件缺少任务归属时 fail-closed，不创建全局兼容工作区', () => {
+test('sessionless browser events fail closed without creating a global compatibility workspace', () => {
   assert.doesNotMatch(main, /__global__/);
   assert.match(main, /const sessionId = event\.payload\?\.sessionId;[\s\S]{0,80}if \(!sessionId\) return;/);
   assert.match(
@@ -340,7 +371,7 @@ test('浏览器事件缺少任务归属时 fail-closed，不创建全局兼容�
   assert.doesNotMatch(cdpEventLoop, /app\.emit\("browser:(?:navigation|tabs-changed)"/);
 });
 
-test('宿主请求由文件事件唤醒，空闲时不做高频目录轮询', () => {
+test('host requests wake through file events without high-frequency idle polling', () => {
   assert.match(browserManager, /notify::recommended_watcher/);
   const watcherStart = browserManager.indexOf('pub fn spawn_watch');
   const watcherEnd = browserManager.indexOf('async fn reattach_existing', watcherStart);
@@ -364,15 +395,17 @@ test('宿主请求由文件事件唤醒，空闲时不做高频目录轮询', ()
   );
 });
 
-test('应用自动化连接不会在宿主失败后自启外部 Chrome', () => {
+test('app automation never starts external Chrome after host failure', () => {
   assert.match(browserManager, /let port = live_port\(\)/);
   assert.doesNotMatch(browserManager, /self\.acquire_or_start_chrome\(\)\.await/);
   assert.match(browserManager, /parse_host_owned_port_json/);
   assert.match(browserManager, /native_surface\.lock\(\)\.owns_port\(port\)/);
 });
 
-test('指定对话的浏览器操作查找失败时关闭失败，不落到全局 CDP', () => {
-  const failures = browserManager.match(/指定对话(?:或标签页)?的原生浏览器工作区不存在/g) || [];
+test('session-scoped browser lookup fails closed without falling back to global CDP', () => {
+  const failures = browserManager.match(
+    /Native browser workspace for the specified conversation(?: or tab)? does not exist/g,
+  ) || [];
   assert.ok(failures.length >= 7, `expected fail-closed guards for scoped operations, got ${failures.length}`);
   assert.match(browserManager, /"restoreError": error/);
   assert.match(browserManager, /"missing": true/);
@@ -380,7 +413,7 @@ test('指定对话的浏览器操作查找失败时关闭失败，不落到全�
   assert.match(browserView, /setError\(st\.restoreError \|\| ''\)/);
 });
 
-test('prepare 后置失败只回滚本次新建工作区', () => {
+test('post-prepare failure rolls back only the newly created workspace', () => {
   assert.match(browserManager, /fn rollback_new_native_workspace/);
   assert.match(browserManager, /surface\.close_session\(Some\(app\), session_id\)/);
   assert.doesNotMatch(
@@ -389,7 +422,7 @@ test('prepare 后置失败只回滚本次新建工作区', () => {
   );
 });
 
-test('退出事件不等待浏览器锁且始终清理跨进程协调文件', () => {
+test('exit events do not wait on the browser lock and always clean coordination files', () => {
   const start = browserManager.indexOf('pub fn shutdown_on_exit');
   const end = browserManager.indexOf('pub async fn status', start);
   assert.ok(start >= 0 && end > start, 'shutdown_on_exit body must remain discoverable');
@@ -422,7 +455,12 @@ test('退出事件不等待浏览器锁且始终清理跨进程协调文件', ()
   const exitEnd = tauriApp.indexOf('tauri::RunEvent::Resumed', exitStart);
   assert.ok(exitStart >= 0 && exitEnd > exitStart, 'Tauri exit handler must remain discoverable');
   const exitHandler = tauriApp.slice(exitStart, exitEnd);
-  assert.match(exitHandler, /mgr\.shutdown_on_exit\(\)/);
+  assert.match(exitHandler, /shutdown_browser_before_process_end\(app\)/);
+  const shutdownHelper = tauriApp.slice(
+    tauriApp.indexOf('fn shutdown_browser_before_process_end'),
+    tauriApp.indexOf('pub(crate) async fn prepare_app_restart'),
+  );
+  assert.match(shutdownHelper, /browser\.shutdown_on_exit\(\)/);
   assert.doesNotMatch(
     exitHandler,
     /mgr\.stop\(\)\.await/,
@@ -430,7 +468,53 @@ test('退出事件不等待浏览器锁且始终清理跨进程协调文件', ()
   );
 });
 
-test('应用重启只按 URL 清单重建新页面身份并恢复侧栏入口', () => {
+test('navigation ACK confirms dispatch only and page state verifies loading', () => {
+  assert.doesNotMatch(browserManager, /Opened page:/);
+  assert.doesNotMatch(browserManager, /Navigation requested:/);
+  const acknowledgements = browserManager.match(/page load is not verified/g) || [];
+  assert.equal(acknowledgements.length, 3);
+  assert.match(browserManager, /"navigationDispatched": true/);
+  assert.match(browserManager, /"loadVerified": false/);
+  assert.match(browserManager, /Call take_snapshot or list_pages to verify/);
+});
+
+test('status and persistence prefer host-committed URL and recover only from valid live URL', () => {
+  assert.match(nativeState, /last_known_url: Arc<parking_lot::RwLock<String>>/);
+  assert.match(nativeState, /pub\(super\) fn remember_url/);
+  const sessionState = nativeHost.slice(
+    nativeHost.indexOf('pub fn session_state'),
+    nativeHost.indexOf('pub fn tab_token_for_page_id'),
+  );
+  const persistence = nativeHost.slice(
+    nativeHost.indexOf('pub fn persist_restore_workspace'),
+    nativeHost.indexOf('pub fn persist_all_restore'),
+  );
+  assert.match(sessionState, /resolve_surface_url\(entry, Some\(&webview\)\)/);
+  assert.match(persistence, /resolve_surface_url\(entry, Some\(&webview\)\)\?/);
+  assert.doesNotMatch(sessionState, /\.url\(\)\.ok\(\)\?/);
+  assert.match(nativeHost, /Browser tab has no recoverable top-level URL/);
+
+  const resolver = nativeHost.slice(
+    nativeHost.indexOf('fn resolve_surface_url_value'),
+    nativeHost.indexOf('fn has_internal_marker_for_token'),
+  );
+  assert.ok(
+    resolver.indexOf('if let Some(fallback) = fallback') <
+      resolver.lastIndexOf('if let Some(url) = live_url'),
+    'a valid host-owned Finished commit must win over every sampled WebView URL',
+  );
+  assert.match(resolver, /has_internal_marker/);
+  assert.match(resolver, /is_browser_core_binding_url/);
+  assert.match(resolver, /if url == "about:blank"/);
+  assert.match(resolver, /entry\.remember_url\(&url\)/);
+  assert.match(nativeHost, /pinvou-location-change/);
+  assert.match(nativeHost, /location_change_signal_nonce/);
+  assert.match(nativeHost, /signalLocationChange/);
+  assert.match(nativeState, /last_known_title/);
+  assert.match(nativeHost, /entry\.title_for_url\(&url\)/);
+});
+
+test('app restart rebuilds page identities from URL inventory and restores the dock entry', () => {
   assert.match(browserPaths, /browser_workspace_restore_json/);
   const pageIdAllocator = nativeHost.slice(
     nativeHost.indexOf('const MAX_SAFE_PAGE_ID'),
@@ -508,7 +592,7 @@ test('应用重启只按 URL 清单重建新页面身份并恢复侧栏入口', 
   );
 });
 
-test('Agent 新标签在 target 发现与宿主首航后才做 lease CAS 发布', () => {
+test('Agent new tab publishes lease CAS only after target discovery and initial navigation', () => {
   assert.match(nativeHost, /staged_tabs: HashMap/);
   assert.match(nativeHost, /webview[\s\S]{0,120}\.navigate\(requested_url\)/);
   assert.match(nativeHost, /commit_agent_mutation\([\s\S]{0,1000}workspace\.tabs\.insert/);
@@ -518,7 +602,7 @@ test('Agent 新标签在 target 发现与宿主首航后才做 lease CAS 发布'
   assert.doesNotMatch(browserManager, /create_tab_for_agent\([\s\S]{0,900}navigate_tab_after_bind/);
 });
 
-test('BrowserCore 标签按 marker、WebDriver bind、首航、发布顺序提交且不读取 CDP 端口', () => {
+test('BrowserCore tab commits marker, WebDriver bind, initial navigation, then publication', () => {
   const resolver = browserManager.slice(
     browserManager.indexOf('async fn bind_staged_native_target'),
     browserManager.indexOf('fn rollback_staged_agent_tab'),
@@ -539,7 +623,7 @@ test('BrowserCore 标签按 marker、WebDriver bind、首航、发布顺序提�
   const commitIndex = coreNewPage.indexOf('commit_created_tab_for_agent(', bindIndex);
   assert.ok(
     createIndex >= 0 && createIndex < bindIndex && bindIndex < commitIndex,
-    'BrowserCore 新标签必须按创建 marker、绑定原生 target、提交发布的顺序执行',
+    'BrowserCore new tab must create a marker, bind the native target, then publish',
   );
   assert.doesNotMatch(coreNewPage, /commit_created_tab_for_agent\([\s\S]{0,900}bind_browser_core_webview/);
 
@@ -556,11 +640,11 @@ test('BrowserCore 标签按 marker、WebDriver bind、首航、发布顺序提�
   assert.match(nativeHost, /candidate\.publish\(\)/);
 });
 
-test('Linux WebDriver 用宿主内部 marker 安全重绑，不向远程页注入身份', () => {
+test('Linux WebDriver safely rebinds with a host marker without injecting remote-page identity', () => {
   assert.match(nativePlatform, /register_browser_core_webview_binding/);
   assert.match(
     nativeHost,
-    /register_browser_core_webview_binding\(\s*&label,\s*tab_token,\s*&control,?\s*\)/,
+    /register_browser_core_webview_binding\(\s*&label,\s*tab_token,\s*&control,\s*&user_navigation\s*\)/,
   );
   const registration = linuxAutomation.slice(
     linuxAutomation.indexOf('pub(super) fn register_webview_binding'),
@@ -576,9 +660,26 @@ test('Linux WebDriver 用宿主内部 marker 安全重绑，不向远程页注�
   );
   assert.match(marker, /BINDING_MARKER_PREFIX/);
   assert.match(linuxAutomation, /BINDING_MARKER_PREFIX: &str = "about:blank#pinvou-webdriver-bind-"/);
-  assert.match(linuxAutomation, /webview[\s\S]{0,80}\.navigate\(marker_url\)/);
+  assert.match(
+    linuxAutomation,
+    /dispatch_guarded_binding_navigation\(\s*webview,\s*&label,\s*authorization,\s*None,\s*move \|webview\|[\s\S]{0,700}webview\.navigate\(marker_url\)/,
+  );
   assert.match(linuxAutomation, /locate_binding_marker_locked/);
-  assert.match(linuxAutomation, /request_locked\([\s\S]{0,100}Method::POST,[\s\S]{0,60}"url"/);
+  assert.match(
+    linuxAutomation,
+    /dispatch_guarded_binding_navigation\(\s*webview,\s*&label,\s*authorization,\s*Some\(&binding_generation\),\s*move \|webview\|[\s\S]{0,700}webview\.navigate\(restore_url\)/,
+  );
+  const guardedDispatch = linuxAutomation.slice(
+    linuxAutomation.indexOf('fn dispatch_guarded_binding_navigation'),
+    linuxAutomation.indexOf('fn ready_session_for_live_process'),
+  );
+  assert.match(linuxAutomation, /fn validate_binding_navigation_generation[\s\S]{0,900}navigation_state\.navigation_admission_busy\(\)/);
+  assert.match(guardedDispatch, /let mut navigation_state = navigation\.lock\(\)/);
+  assert.match(guardedDispatch, /binding_registration_matches\(label, &generation\)/);
+  assert.match(
+    guardedDispatch,
+    /control[\s\S]{0,160}\.dispatch_if_agent_authorized\(authorization, dispatch_with_navigation\)/,
+  );
   assert.match(linuxAutomation, /active_binding_nonce: Option<String>/);
   assert.match(linuxAutomation, /binding_marker_seen: bool/);
   assert.match(
@@ -604,12 +705,15 @@ test('Linux WebDriver 用宿主内部 marker 安全重绑，不向远程页注�
     linuxAutomation.indexOf('async fn active_element_locked'),
   );
   assert.doesNotMatch(pageScript, /session_id|session_token|tab_token|target_id|authorization|lease/);
-  assert.match(nativeHost, /browser_initialization_script\(cdp_tab_token\)/);
+  assert.match(
+    nativeHost,
+    /browser_initialization_script\(cdp_tab_token, &location_signal_nonce\)/,
+  );
   assert.doesNotMatch(nativeHost, /BINDING_NONCE_PROPERTY/);
   assert.match(nativeHost, /browser_core_page_script_contains_no_task_or_tab_identity/);
 });
 
-test('Linux WebDriver 每个原生 mutation 在 POST 紧前复核 exact tab 和 active lease', () => {
+test('each Linux WebDriver mutation revalidates exact tab and active lease before POST', () => {
   assert.match(
     linuxAutomation,
     /fn authorize_registered_mutation[\s\S]{0,900}binding\.tab_token != authorization\.tab_token[\s\S]{0,700}refresh_agent_input_window\(authorization\)[\s\S]{0,180}authorize_agent_dispatch\(authorization\)/,
@@ -636,7 +740,7 @@ test('Linux WebDriver 每个原生 mutation 在 POST 紧前复核 exact tab 和 
   );
 });
 
-test('BrowserCore 首航复用产品化空白页，最后一个工作区停止时关闭共享 driver', () => {
+test('BrowserCore reuses the product blank page and closes the shared driver at last stop', () => {
   assert.match(browserManager, /should_reuse_browser_core_initial_tab/);
   assert.match(browserManager, /fn should_reuse_browser_core_initial_tab[\s\S]{0,300}!background/);
   assert.match(browserManager, /"reusedInitialBlank": true/);
@@ -648,7 +752,7 @@ test('BrowserCore 首航复用产品化空白页，最后一个工作区停止�
   assert.match(browserManager, /platform::shutdown_browser_core_for_exit\(\)/);
 });
 
-test('BrowserCore pageId 稳定且所有页面工具对缺失或畸形身份关闭失败', () => {
+test('BrowserCore pageId is stable and page tools fail closed on missing or malformed identity', () => {
   const coreDispatch = browserManager.slice(
     browserManager.indexOf('async fn handle_browser_core_tool'),
     browserManager.indexOf('async fn rollback_staged_agent_tab'),
@@ -661,7 +765,7 @@ test('BrowserCore pageId 稳定且所有页面工具对缺失或畸形身份关�
   assert.doesNotMatch(coreDispatch, /tabs\s*\.get\(index\)/);
 });
 
-test('宿主协议 v3 回显身份字段，自动化失联事件按任务发送', () => {
+test('host protocol v3 echoes identity and scopes automation-loss events by session', () => {
   assert.match(browserManager, /if protocol_version != 3/);
   assert.match(browserManager, /"protocol_version": request\.protocol_version/);
   assert.match(browserManager, /"request_id": request\.request_id/);
@@ -678,7 +782,7 @@ test('宿主协议 v3 回显身份字段，自动化失联事件按任务发送'
   );
 });
 
-test('不可逆页面操作后的持久化失败按任务可见并持续退避重试', () => {
+test('persistence failures after irreversible operations are visible and retried with backoff', () => {
   assert.match(browserManager, /persistence_io: parking_lot::Mutex<\(\)>/);
   assert.match(browserManager, /persistence_warnings: parking_lot::Mutex<HashMap<String, String>>/);
   assert.match(browserManager, /persistence_retries: parking_lot::Mutex<HashSet<String>>/);
@@ -692,7 +796,7 @@ test('不可逆页面操作后的持久化失败按任务可见并持续退避�
   assert.match(browserView, /data-testid="browser-persistence-warning"/);
 });
 
-test('popup 仅复用已 begin 的完整 lease，其他页面弹窗转为 User', () => {
+test('popup reuses only a fully begun lease and other popups become User-controlled', () => {
   const popupHandler = nativeHost.slice(
     nativeHost.indexOf('.on_new_window'),
     nativeHost.indexOf('let webview = match window.add_child'),
@@ -714,7 +818,7 @@ test('popup 仅复用已 begin 的完整 lease，其他页面弹窗转为 User',
   assert.match(browserManager, /create_native_bound_tab\(&app, browser_session_id, url, false\)/);
 });
 
-test('恢复取消与孤儿清理不删除仍存在任务的数据', () => {
+test('restore cancellation and orphan cleanup preserve data for existing sessions', () => {
   assert.match(browserManager, /RestoredExisting => Some\("restored_session"\)/);
   assert.match(browserManager, /record_prepare_generation/);
   assert.match(browserManager, /prepare_generation_revision/);
@@ -732,10 +836,10 @@ test('恢复取消与孤儿清理不删除仍存在任务的数据', () => {
   assert.match(browserManager, /modified >= startup_cutoff/);
 });
 
-test('宿主瞬态请求不跨进程重放且取消补偿保留到 ACK', () => {
+test('transient host requests are not replayed across processes and cancellation waits for ACK', () => {
   const spawnWatch = browserManager.slice(
     browserManager.indexOf('pub fn spawn_watch'),
-    browserManager.indexOf('// -----------------------------------------------------------------------\n    // 生命周期'),
+    browserManager.indexOf('// -----------------------------------------------------------------------\n    // Lifecycle'),
   );
   assert.match(spawnWatch, /reset_host_request_directory_for_process_start/);
   assert.match(browserManager, /std::fs::rename\(request_dir, &candidate\)/);
@@ -752,7 +856,7 @@ test('宿主瞬态请求不跨进程重放且取消补偿保留到 ACK', () => {
   assert.doesNotMatch(scopedStop, /clear_host_request_files/);
 });
 
-test('一个取消补偿持续失败不会饿死其他对话的宿主请求', () => {
+test('one failing cancellation compensation does not starve other session requests', () => {
   const prepareRequests = browserManager.slice(
     browserManager.indexOf('async fn prepare_requested_native_surfaces'),
     browserManager.indexOf('async fn process_hosted_cancellation'),
@@ -763,12 +867,12 @@ test('一个取消补偿持续失败不会饿死其他对话的宿主请求', ()
   assert.match(prepareRequests, /if blocked_requests\.contains\(&request_path\)/);
   assert.match(prepareRequests, /errors\.push\(format!\("\{\}: \{error\}"/);
   assert.match(prepareRequests, /Err\(errors\.join\("; "\)\)/);
-  // 所有 artifact 错误都在本轮收集；不能再由 `?` 提前退出整个扫描。
+  // Collect every artifact error in this pass; `?` must not abort the scan early.
   assert.doesNotMatch(prepareRequests, /\.await\?/);
   assert.doesNotMatch(prepareRequests, /write_hosted_response\([^;]+\)\?/);
 });
 
-test('Host Core 取消持久化精确补偿并在 ACK 前撤销操作与 staging', () => {
+test('Host Core precisely compensates cancellation persistence before operation and staging ACK', () => {
   const prepareRequests = browserManager.slice(
     browserManager.indexOf('async fn prepare_requested_native_surfaces'),
     browserManager.indexOf('async fn process_hosted_cancellation'),
@@ -798,7 +902,7 @@ test('Host Core 取消持久化精确补偿并在 ACK 前撤销操作与 staging
   );
 });
 
-test('原生可见性使用宿主 generation + sequence，旧 renderer 迟到请求无副作用', () => {
+test('native visibility uses host generation and sequence so stale renderer requests are inert', () => {
   assert.match(browserManager, /surface_visibility: parking_lot::Mutex<SurfaceVisibilityClock>/);
   assert.match(browserManager, /pub fn begin_surface_generation/);
   assert.match(browserManager, /visibility\.claim\(visibility_generation, visibility_sequence\)/);
@@ -807,16 +911,17 @@ test('原生可见性使用宿主 generation + sequence，旧 renderer 迟到请
   assert.match(browserCommands, /visibility_sequence: u64/);
 });
 
-test('User create/activate/close 的显示失败有明确提交边界', () => {
-  assert.match(nativeHost, /回滚用户新建标签映射失败/);
+test('User create, activate, and close display failures have explicit commit boundaries', () => {
+  assert.match(nativeHost, /Failed to roll back user-created tab mapping/);
   assert.match(nativeHost, /workspace\.tabs\.remove_token\(tab_token\)/);
-  assert.match(nativeHost, /回滚用户标签激活映射失败/);
+  assert.match(nativeHost, /Failed to roll back user tab activation mapping/);
   assert.match(nativeHost, /workspace\.active_tab = previous_active/);
-  assert.match(nativeHost, /用户关闭标签后显示回退页失败/);
-  assert.match(nativeHost, /回滚新标签显示失败/);
+  assert.match(nativeHost, /Failed to show fallback page after Agent tab close/);
+  assert.match(nativeHost, /Failed to show fallback page after user tab close/);
+  assert.match(nativeHost, /Failed to roll back new-tab display/);
 });
 
-test('原生物理表面全局单一，后台 Agent 激活不会抢占前台工作区', () => {
+test('one global native surface prevents background Agent activation stealing the foreground', () => {
   assert.match(nativeHost, /set_exclusive_workspace_visibility\(&mut self\.workspaces, session_id\)/);
   assert.match(nativeHost, /workspace\.visible = workspace_session_id == session_id/);
   assert.match(
@@ -826,7 +931,7 @@ test('原生物理表面全局单一，后台 Agent 激活不会抢占前台工�
   assert.match(nativeHost, /session_owns_visible_surface && workspace_visible/);
 });
 
-test('远程页面无全局剪贴板授权，下载默认拒绝且事件不泄露本地路径', () => {
+test('remote pages lack global clipboard access and downloads fail closed without path leakage', () => {
   assert.doesNotMatch(nativeHost, /enable_clipboard_access/);
   assert.match(nativeHost, /\.on_download\(/);
   assert.match(nativeHost, /"browser:download-blocked"/);

@@ -8,8 +8,8 @@ import {
   shouldShowNativeBrowserSurface,
 } from '../src/features/browser/browser-display.mjs';
 
-test('初始化空文档在产品界面显示为新标签页而不是 about:blank', () => {
-  const label = '新标签页';
+test('an initialized blank document is presented as a new tab instead of about:blank', () => {
+  const label = 'New tab';
   for (const url of [
     'about:blank',
     'about:blank#pinvou-session-0123456789abcdef',
@@ -21,16 +21,16 @@ test('初始化空文档在产品界面显示为新标签页而不是 about:blan
   }
 });
 
-test('真实网页继续显示真实地址和标题', () => {
+test('real pages retain their actual address and title', () => {
   assert.equal(isInternalBlankPageUrl('https://example.com'), false);
   assert.equal(browserAddressValue('https://example.com'), 'https://example.com');
   assert.equal(
-    browserTabLabel({ url: 'https://example.com', title: 'Example' }, '新标签页'),
+    browserTabLabel({ url: 'https://example.com', title: 'Example' }, 'New tab'),
     'Example',
   );
 });
 
-test('原生页面只在首个状态确认真实网页后显示', () => {
+test('the native surface appears only after the first status confirms a real page', () => {
   const realPage = {
     statusResolved: true,
     running: true,

@@ -12,7 +12,7 @@ import {
 } from '../src/features/browser/browser-performance.mjs';
 import { runVisiblePageOperation } from '../src-tauri/resources/common/bundle/mcp-servers/browser-wrapper-protocol.mjs';
 
-test('浏览器性能采样有界并在样本充足后按 P95 判门禁', () => {
+test('browser performance samples are bounded and gate on P95 once enough samples exist', () => {
   resetBrowserPerformance();
   for (let i = 1; i <= 35; i += 1) recordBrowserPerformance('tab_switch_ms', i);
   const snapshot = browserPerformanceSnapshot();
@@ -24,7 +24,7 @@ test('浏览器性能采样有界并在样本充足后按 P95 判门禁', () => 
   assert.equal(percentile([], 0.95), null);
 });
 
-test('目标页对齐在 execute 开始前记录应用附加延迟', async () => {
+test('target-page alignment records app attachment latency before execute starts', async () => {
   const pageTokens = new Map([[7, '0123456789abcdef']]);
   const timeline = [];
   let now = 10;
@@ -45,7 +45,7 @@ test('目标页对齐在 execute 开始前记录应用附加延迟', async () =>
   assert.deepEqual(timeline[1], ['execute']);
 });
 
-test('JSONL 报告器以最小样本数和 P95 阈值返回可用于门禁的退出码', () => {
+test('the JSONL reporter returns a gate-ready exit code from minimum samples and P95', () => {
   const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const input = Array.from({ length: 30 }, (_, index) => (
     `[browser-perf] ${JSON.stringify({ metric: 'agent_target_alignment_ms', durationMs: 50 + index })}`

@@ -13,8 +13,9 @@ pub(crate) struct DesktopCapabilities {
     pub(crate) browser_cdp: bool,
 }
 
-/// macOS BrowserCore 的唯一正式发布开关。真机 E2E 完成前保持 `false`；验收构建
-/// 使用非默认 Cargo feature `browser-macos-preview`，不得改动生产默认值。
+/// Sole production-release switch for macOS BrowserCore. Keep it `false` until physical
+/// device E2E is complete. Acceptance builds use the non-default `browser-macos-preview`
+/// Cargo feature without changing production defaults.
 const MACOS_BROWSER_RELEASED: bool = false;
 
 fn browser_product_enabled_for(os: &str, macos_preview: bool) -> bool {
@@ -25,8 +26,9 @@ fn browser_product_enabled_for(os: &str, macos_preview: bool) -> bool {
     }
 }
 
-/// 内嵌浏览器产品能力的单一语义门控。Runtime MCP、原生工作区与公开 capability
-/// 必须共同消费此函数，避免出现 Agent 有工具但 UI 没有画板的半开放状态。
+/// Single semantic product gate for the embedded browser. Runtime MCP, the native workspace,
+/// and public capabilities must consume this function together, preventing a half-enabled
+/// state where the Agent has tools but the user has no visible surface.
 pub(crate) fn browser_product_enabled() -> bool {
     browser_product_enabled_for(
         std::env::consts::OS,
@@ -46,8 +48,9 @@ pub(crate) fn current() -> DesktopCapabilities {
         task_completion_notifications_default: !cfg!(target_os = "linux"),
         local_vllm_supported: cfg!(target_os = "linux"),
         codex_acp_supported: supports_codex_acp(std::env::consts::OS),
-        // 显示与 Agent 自动化原子开放：二者不能分别按平台 cfg 声明，否则模型可能
-        // 获得工具而用户看不到同一个页面。macOS 验收构建也走同一语义 helper。
+        // Enable display and Agent automation atomically. Separate platform cfg declarations
+        // could give the model tools while the user cannot see the same page. macOS
+        // acceptance builds use this same semantic helper.
         browser_native_display: browser_product_enabled(),
         browser_agent_automation: browser_product_enabled(),
         browser_cdp: cfg!(target_os = "windows"),

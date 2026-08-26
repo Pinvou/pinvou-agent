@@ -1,7 +1,7 @@
-//! Windows WebView2 的薄适配。
+//! Thin Windows WebView2 adapter.
 //!
-//! 页面、标签和布局生命周期由 `host` 共用；这里仅配置 WebView2 的用户数据目录、
-//! 本机 CDP 端口和 Windows 专属浏览器参数。
+//! `host` owns the shared page, tab, and layout lifecycle. This module configures only the
+//! WebView2 user-data directory, local CDP port, and Windows-specific browser arguments.
 
 use std::path::Path;
 

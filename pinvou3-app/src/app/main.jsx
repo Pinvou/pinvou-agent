@@ -1,4 +1,4 @@
-import { lazy, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, startTransition as scheduleViewTransition, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
@@ -26,7 +26,15 @@ import {
   acquireNativeSurfaceTransitionHide,
   BrowserView,
 } from '../features/browser/BrowserView.jsx';
-import { createNativeSurfaceTransitionGate } from '../features/browser/native-surface-transition.mjs';
+import {
+  createNativeSurfaceTransitionGate,
+  settleBrowserUiPublicationAfterCommit,
+} from '../features/browser/native-surface-transition.mjs';
+import {
+  awaitBrowserListenerReadiness,
+  createBrowserSessionCommandEchoGuard,
+  createBrowserSessionEpochTracker,
+} from '../features/browser/browser-state-sync.mjs';
 import {
   activateBrowserPane,
   beginBrowserOpen,
@@ -214,13 +222,23 @@ function workspaceDisplayName(path) {
       const [currentView, setCurrentViewState] = useState('chat');
       const [sessionSyncEpoch, setSessionSyncEpoch] = useState(0);
       const [activeTheme, setActiveTheme] = useState('dark');
-      // 浏览器状态按工作会话保存：切换对话时只显示该对话自己的 WebView2；登录
-      // Profile 仍由后端全局共享。缺少 sessionId 的旧事件必须 fail-closed，不能
-      // 降级为全局入口，否则会把一个任务的页面暴露到其他任务。
+      // Browser state is scoped to workspace sessions: switching chats only shows
+      // that chat's WebView2. The login profile remains globally shared by the
+      // backend. Legacy events without a sessionId must fail closed.
       const [browserSessions, setBrowserSessions] = useState({});
       const [browserPaneStates, setBrowserPaneStates] = useState({});
       const [browserOpenStates, setBrowserOpenStates] = useState({});
       const browserOpenAttemptsRef = useRef({});
+      const browserOpenAttemptSequenceRef = useRef(0);
+      const browserLifecycleListenersReadyRef = useRef(null);
+      const browserLifecycleEventEpochRef = useRef(null);
+      const browserLifecycleStatusRequestEpochRef = useRef(null);
+      if (!browserLifecycleEventEpochRef.current) {
+        browserLifecycleEventEpochRef.current = createBrowserSessionEpochTracker();
+      }
+      if (!browserLifecycleStatusRequestEpochRef.current) {
+        browserLifecycleStatusRequestEpochRef.current = createBrowserSessionEpochTracker();
+      }
       const [browserResizeActive, setBrowserResizeActive] = useState(false);
       const [browserOwnershipSlot, setBrowserOwnershipSlot] = useState(null);
       const [browserDocumentHidden, setBrowserDocumentHidden] = useState(() => (
@@ -245,19 +263,69 @@ function workspaceDisplayName(path) {
         scheduledRunChat: false,
       });
       const browserTransitionPublishingRef = useRef(0);
-      const browserActiveTransitionIsCurrentRef = useRef(() => true);
       const browserSessionTransitionPendingRef = useRef(0);
       const browserBridgeSessionTransitionRef = useRef(null);
+      const [browserSessionCommandEchoGuard] = useState(
+        () => createBrowserSessionCommandEchoGuard(),
+      );
+      const [browserUiCommitEpoch, setBrowserUiCommitEpoch] = useState(0);
+      const browserUiCommitSequenceRef = useRef(0);
+      const browserUiCommitWaitersRef = useRef(new Map());
+      const browserUiCommitMountedRef = useRef(true);
+      const requestBrowserUiCommitAck = useCallback(() => {
+        if (!browserUiCommitMountedRef.current) return Promise.resolve(false);
+        const epoch = browserUiCommitSequenceRef.current + 1;
+        browserUiCommitSequenceRef.current = epoch;
+        const committed = new Promise((resolve) => {
+          browserUiCommitWaitersRef.current.set(epoch, resolve);
+        });
+        // This marker is queued after the publication's state mutations. With
+        // no transition-priority update in the guarded path, its layout effect
+        // proves the target React tree has committed before native show resumes.
+        setBrowserUiCommitEpoch(epoch);
+        return committed;
+      }, []);
+      useLayoutEffect(() => {
+        for (const [epoch, resolve] of browserUiCommitWaitersRef.current) {
+          if (epoch > browserUiCommitEpoch) continue;
+          browserUiCommitWaitersRef.current.delete(epoch);
+          resolve(true);
+        }
+      }, [browserUiCommitEpoch]);
+      useEffect(() => {
+        const waiters = browserUiCommitWaitersRef.current;
+        browserUiCommitMountedRef.current = true;
+        return () => {
+          browserUiCommitMountedRef.current = false;
+          for (const resolve of waiters.values()) resolve(false);
+          waiters.clear();
+        };
+      }, []);
       const browserUiTransitionGateRef = useRef(null);
-      if (!browserUiTransitionGateRef.current) {
-        browserUiTransitionGateRef.current = createNativeSurfaceTransitionGate({
+      const createBrowserUiTransitionGate = () => (
+        createNativeSurfaceTransitionGate({
           acquireHide: acquireNativeSurfaceTransitionHide,
           getContext: () => browserSurfaceTransitionContextRef.current,
           onError: (error) => {
             console.error('[browser] native-surface transition failed', error);
           },
-        });
+        })
+      );
+      if (!browserUiTransitionGateRef.current) {
+        browserUiTransitionGateRef.current = createBrowserUiTransitionGate();
       }
+      useEffect(() => {
+        if (!browserUiTransitionGateRef.current) {
+          browserUiTransitionGateRef.current = createBrowserUiTransitionGate();
+        }
+        const gate = browserUiTransitionGateRef.current;
+        return () => {
+          gate?.dispose();
+          if (browserUiTransitionGateRef.current === gate) {
+            browserUiTransitionGateRef.current = null;
+          }
+        };
+      }, []);
       const handleRightDockStateChange = useCallback((next) => {
         setRightDockState((current) => (
           current.activePanelId === next.activePanelId
@@ -291,15 +359,28 @@ function workspaceDisplayName(path) {
       const browserWorkspaceError = browserOpenState.status === 'failed'
         ? browserOpenState.error
         : '';
-      function runBrowserUiTransition(publish, options) {
+      const runBrowserUiTransition = useCallback((publish, options) => {
         const tracksSession = options?.channel === 'session';
+        const tracksCommandEcho = tracksSession
+          && options?.sessionSource !== 'bridge'
+          && Object.keys(options).includes('sessionTarget');
+        const sessionCommandToken = tracksCommandEcho
+          ? browserSessionCommandEchoGuard.begin(
+            options.sessionTarget,
+            bridge.activeSessionId || null,
+          )
+          : null;
         if (tracksSession) browserSessionTransitionPendingRef.current += 1;
         const finishRequest = () => {
+          if (sessionCommandToken) {
+            browserSessionCommandEchoGuard.settle(sessionCommandToken);
+          }
           if (!tracksSession) return;
           browserSessionTransitionPendingRef.current -= 1;
           if (
             browserSessionTransitionPendingRef.current === 0
             && options?.reconcileSessionOnSettle !== false
+            && browserUiCommitMountedRef.current
           ) {
             setSessionSyncEpoch((epoch) => epoch + 1);
           }
@@ -307,26 +388,20 @@ function workspaceDisplayName(path) {
         let result;
         try {
           result = browserUiTransitionGateRef.current.run((transition) => {
-            const previousIsCurrent = browserActiveTransitionIsCurrentRef.current;
-            browserActiveTransitionIsCurrentRef.current = transition.isCurrent;
             browserTransitionPublishingRef.current += 1;
-            const finish = () => {
-              browserTransitionPublishingRef.current -= 1;
-              if (browserActiveTransitionIsCurrentRef.current === transition.isCurrent) {
-                browserActiveTransitionIsCurrentRef.current = previousIsCurrent;
-              }
-            };
-            try {
-              const publishResult = publish(transition);
-              if (publishResult && typeof publishResult.then === 'function') {
-                return Promise.resolve(publishResult).finally(finish);
-              }
-              finish();
-              return publishResult;
-            } catch (error) {
-              finish();
-              throw error;
-            }
+            return settleBrowserUiPublicationAfterCommit({
+              publish: async () => {
+                try {
+                  return await publish(transition);
+                } finally {
+                  // Nested updates may share this publication only until the
+                  // callback (including async work) has settled. Once the commit
+                  // marker is queued, later effects need their own hide barrier.
+                  browserTransitionPublishingRef.current -= 1;
+                }
+              },
+              waitForCommit: requestBrowserUiCommitAck,
+            });
           }, options);
         } catch (error) {
           finishRequest();
@@ -337,8 +412,8 @@ function workspaceDisplayName(path) {
         }
         finishRequest();
         return result;
-      }
-      function setCurrentView(nextView) {
+      }, [browserSessionCommandEchoGuard, requestBrowserUiCommitAck]);
+      const setCurrentView = useCallback((nextView) => {
         const resolvedView = typeof nextView === 'function'
           ? nextView(currentViewRef.current)
           : nextView;
@@ -358,7 +433,7 @@ function workspaceDisplayName(path) {
         const needsNativeHide = !!context.visible && !keepsDesktopBrowserVisible;
         if (!needsNativeHide) {
           browserUiTransitionGateRef.current.invalidate('view');
-          startTransition(() => setCurrentViewState(resolvedView));
+          scheduleViewTransition(() => setCurrentViewState(resolvedView));
           return true;
         }
         return runBrowserUiTransition(() => {
@@ -367,7 +442,7 @@ function workspaceDisplayName(path) {
           channel: 'view',
           hideMode: 'visible',
         });
-      }
+      }, [runBrowserUiTransition]);
       const publishRightDockOcclusion = useCallback((occlusionId, publish) => (
         browserUiTransitionGateRef.current.run(({ isCurrent }) => {
           if (!isCurrent()) return false;
@@ -376,12 +451,12 @@ function workspaceDisplayName(path) {
           setRightDockOcclusionPublications((current) => (
             current.includes(occlusionId) ? current : [...current, occlusionId]
           ));
-          return true;
+          return requestBrowserUiCommitAck().then(() => true);
         }, {
           channel: `right-dock-occlusion:${occlusionId}`,
           hideMode: 'visible',
         })
-      ), []);
+      ), [requestBrowserUiCommitAck]);
       const releaseRightDockOcclusion = useCallback((occlusionId) => {
         browserUiTransitionGateRef.current.invalidate(`right-dock-occlusion:${occlusionId}`);
         setRightDockOcclusionPublications((current) => (
@@ -390,24 +465,34 @@ function workspaceDisplayName(path) {
             : current
         ));
       }, []);
-      const selectRightDockPanel = useCallback((panelId, sessionId) => {
+      const selectRightDockPanel = useCallback((panelId, sessionId, publishSelection) => {
         const selectedSessionId = sessionId || browserSessionIdRef.current;
-        if (!selectedSessionId) return;
-        const publish = () => {
+        if (!selectedSessionId) return false;
+        const publish = ({ isCurrent }) => {
+          const selectionIsCurrent = () => (
+            isCurrent() && browserSessionIdRef.current === selectedSessionId
+          );
+          if (!selectionIsCurrent()) return false;
+          const childPublished = publishSelection?.({
+            isCurrent: selectionIsCurrent,
+            sessionId: selectedSessionId,
+          });
+          if (childPublished === false || !selectionIsCurrent()) return false;
           setBrowserPaneStates((current) => (
             panelId === 'browser'
               ? activateBrowserPane(current, selectedSessionId)
               : selectArtifactsPane(current, selectedSessionId)
           ));
+          return true;
         };
         const context = browserSurfaceTransitionContextRef.current;
-        void runBrowserUiTransition(publish, {
+        return runBrowserUiTransition(publish, {
           channel: 'right-dock',
           hideMode: panelId !== 'browser' && context.sessionId === selectedSessionId
             ? 'visible'
             : 'none',
         });
-      }, []);
+      }, [runBrowserUiTransition]);
       const closeBrowserDock = useCallback((sessionId) => {
         const selectedSessionId = sessionId || browserSessionIdRef.current;
         if (!selectedSessionId) return;
@@ -418,19 +503,24 @@ function workspaceDisplayName(path) {
           channel: 'right-dock',
           hideMode: context.sessionId === selectedSessionId ? 'visible' : 'none',
         });
-      }, []);
+      }, [runBrowserUiTransition]);
       const openBrowserDock = useCallback(async () => {
         const requestedSessionId = browserSessionId;
         if (!browserNativeDisplayAvailable || !requestedSessionId || !browserPaneAllowed) return;
         setBrowserPaneStates((current) => activateBrowserPane(current, requestedSessionId));
         if (browserActive) return;
-        const attempt = (browserOpenAttemptsRef.current[requestedSessionId] || 0) + 1;
+        const attempt = browserOpenAttemptSequenceRef.current + 1;
+        browserOpenAttemptSequenceRef.current = attempt;
         browserOpenAttemptsRef.current[requestedSessionId] = attempt;
         setBrowserOpenStates((current) => (
           beginBrowserOpen(current, requestedSessionId, attempt)
         ));
         try {
           const prepared = await invokeTauri('browser_prepare', { sessionId: requestedSessionId });
+          if (
+            !browserUiCommitMountedRef.current
+            || browserOpenAttemptsRef.current[requestedSessionId] !== attempt
+          ) return;
           if (!prepared || prepared.sessionId !== requestedSessionId) {
             throw new Error('browser_prepare returned an invalid session identity');
           }
@@ -439,6 +529,10 @@ function workspaceDisplayName(path) {
             settleBrowserOpen(current, requestedSessionId, attempt, 'idle')
           ));
         } catch (error) {
+          if (
+            !browserUiCommitMountedRef.current
+            || browserOpenAttemptsRef.current[requestedSessionId] !== attempt
+          ) return;
           setBrowserOpenStates((current) => settleBrowserOpen(
             current,
             requestedSessionId,
@@ -455,48 +549,143 @@ function workspaceDisplayName(path) {
       ]);
       useEffect(() => {
         if (!browserNativeDisplayAvailable) {
+          browserLifecycleListenersReadyRef.current = null;
           setBrowserSessions({});
           setBrowserPaneStates({});
           setBrowserOpenStates({});
           browserOpenAttemptsRef.current = {};
-          return undefined;
+          return;
         }
         let disposed = false;
+        let reconciliationTimer = 0;
+        let listenerRegistrationFailed = false;
         const unlisteners = [];
-        // 先注册监听、再查状态兜底：顺序反了会在「状态查询返回」与「监听生效」
-        // 之间的窗口错过 browser:activated（Rust 端 activated 标记阻止重发），
-        // 浏览器侧栏会一直不出现，直到下次主 WebView 重载。
-        tauriEvents.listen('browser:activated', (event) => {
+        // Register listeners before the fallback status query. Reversing this
+        // order can miss browser:activated between the query and registration;
+        // Rust will not resend it after setting the activated marker.
+        const registerActivated = tauriEvents.listen('browser:activated', (event) => {
           if (disposed) return;
           const sessionId = event.payload?.sessionId;
           if (!sessionId) return;
+          browserLifecycleEventEpochRef.current.advance(sessionId);
+          browserLifecycleStatusRequestEpochRef.current.advance(sessionId);
           setBrowserSessions((current) => ({ ...current, [sessionId]: true }));
           setBrowserPaneStates((current) => activateBrowserPane(current, sessionId));
+          const attempt = browserOpenAttemptsRef.current[sessionId] || 0;
+          setBrowserOpenStates((current) => (
+            settleBrowserOpen(current, sessionId, attempt, 'idle')
+          ));
         }).then(unlisten => {
           if (disposed) unlisten();
           else unlisteners.push(unlisten);
-        }).catch(() => {});
-        tauriEvents.listen('browser:stopped', (event) => {
+        }).catch((error) => {
+          if (disposed) return;
+          listenerRegistrationFailed = true;
+          console.error('[browser] failed to register browser:activated listener', error);
+        });
+        const registerStopped = tauriEvents.listen('browser:stopped', (event) => {
           if (disposed) return;
           const sessionId = event.payload?.sessionId;
+          browserLifecycleEventEpochRef.current.advance(sessionId || null);
+          browserLifecycleStatusRequestEpochRef.current.advance(sessionId || null);
           if (sessionId) {
+            browserOpenAttemptSequenceRef.current += 1;
+            browserOpenAttemptsRef.current[sessionId] = browserOpenAttemptSequenceRef.current;
             setBrowserSessions((current) => {
               const next = { ...current };
               delete next[sessionId];
               return next;
             });
             setBrowserPaneStates((current) => removeBrowserPaneState(current, sessionId));
+            setBrowserOpenStates((current) => {
+              const next = { ...current };
+              delete next[sessionId];
+              return next;
+            });
           } else {
+            browserOpenAttemptsRef.current = {};
             setBrowserSessions({});
             setBrowserPaneStates({});
+            setBrowserOpenStates({});
           }
         }).then(unlisten => {
           if (disposed) unlisten();
           else unlisteners.push(unlisten);
-        }).catch(() => {});
+        }).catch((error) => {
+          if (disposed) return;
+          listenerRegistrationFailed = true;
+          console.error('[browser] failed to register browser:stopped listener', error);
+        });
+        const readiness = awaitBrowserListenerReadiness(
+          [registerActivated, registerStopped],
+          {
+            schedule: window.setTimeout.bind(window),
+            cancel: window.clearTimeout.bind(window),
+          },
+        ).then((listenersReady) => {
+          if (disposed || browserLifecycleListenersReadyRef.current !== readiness) return false;
+          if (!listenersReady) {
+            listenerRegistrationFailed = true;
+            console.error('[browser] lifecycle listener registration timed out; enabling reconciliation');
+          }
+          if (listenerRegistrationFailed) {
+            const reconcileCurrentSession = () => {
+              const requestedSessionId = browserSessionIdRef.current;
+              if (!requestedSessionId) return;
+              const eventEpoch = browserLifecycleEventEpochRef.current.snapshot(requestedSessionId);
+              const requestEpoch = browserLifecycleStatusRequestEpochRef.current.advance(
+                requestedSessionId,
+              );
+              invokeTauri('browser_status', { sessionId: requestedSessionId }).then((st) => {
+                if (
+                  disposed
+                  || browserSessionIdRef.current !== requestedSessionId
+                  || !browserLifecycleEventEpochRef.current.isCurrent(
+                    requestedSessionId,
+                    eventEpoch,
+                  )
+                  || !browserLifecycleStatusRequestEpochRef.current.isCurrent(
+                    requestedSessionId,
+                    requestEpoch,
+                  )
+                  || !st
+                  || st.sessionId !== requestedSessionId
+                ) return;
+                if (!st.running && !st.restoreError) {
+                  setBrowserSessions((current) => {
+                    const next = { ...current };
+                    delete next[requestedSessionId];
+                    return next;
+                  });
+                  setBrowserPaneStates((current) => (
+                    removeBrowserPaneState(current, requestedSessionId)
+                  ));
+                  return;
+                }
+                setBrowserSessions((current) => ({ ...current, [requestedSessionId]: true }));
+                setBrowserPaneStates((current) => restoreBrowserPane(current, requestedSessionId));
+              }).catch((error) => {
+                console.error('[browser] lifecycle reconciliation failed', error);
+              });
+            };
+            reconcileCurrentSession();
+            reconciliationTimer = window.setInterval(reconcileCurrentSession, 2000);
+          }
+          return true;
+        });
+        // The session hydration effect below awaits this exact promise. Merely
+        // starting listen() first is insufficient because Tauri listener
+        // registration itself is asynchronous.
+        browserLifecycleListenersReadyRef.current = readiness;
         return () => {
           disposed = true;
-          unlisteners.forEach(u => u && u());
+          if (browserLifecycleListenersReadyRef.current === readiness) {
+            browserLifecycleListenersReadyRef.current = null;
+          }
+          if (reconciliationTimer) window.clearInterval(reconciliationTimer);
+          unlisteners.forEach((unlisten) => {
+            if (unlisten) unlisten();
+          });
         };
       }, [browserNativeDisplayAvailable]);
       useEffect(() => {
@@ -511,31 +700,71 @@ function workspaceDisplayName(path) {
           window.removeEventListener('pageshow', syncVisibility);
         };
       }, []);
-      // WebView 重载或切换对话后查询该会话状态兜底。存在页面就恢复入口；不存在
-      // 时不清除其他会话记录，它们切回后仍可各自恢复。
+      // Query the session after a WebView reload or chat switch. Restore its entry
+      // when pages exist, but retain other sessions so they recover when revisited.
       useEffect(() => {
-        if (!browserNativeDisplayAvailable || !browserSessionId) return undefined;
+        if (!browserNativeDisplayAvailable || !browserSessionId) return;
         let disposed = false;
-        invokeTauri('browser_status', { sessionId: browserSessionId }).then((st) => {
+        const requestedSessionId = browserSessionId;
+        const readiness = browserLifecycleListenersReadyRef.current;
+        if (!readiness) return () => { disposed = true; };
+        Promise.resolve(readiness).then(() => {
+          if (
+            disposed
+            || browserLifecycleListenersReadyRef.current !== readiness
+            || browserSessionIdRef.current !== requestedSessionId
+          ) return null;
+          const eventEpoch = browserLifecycleEventEpochRef.current.snapshot(requestedSessionId);
+          const requestEpoch = browserLifecycleStatusRequestEpochRef.current.advance(
+            requestedSessionId,
+          );
+          return invokeTauri('browser_status', { sessionId: requestedSessionId }).then((st) => ({
+            eventEpoch,
+            requestEpoch,
+            st,
+          }));
+        }).then((snapshot) => {
+          const st = snapshot?.st;
           if (
             disposed
             || !st
-            || st.sessionId !== browserSessionId
-            || (!st.running && !st.restoreError)
+            || browserSessionIdRef.current !== requestedSessionId
+            || !browserLifecycleEventEpochRef.current.isCurrent(
+              requestedSessionId,
+              snapshot.eventEpoch,
+            )
+            || !browserLifecycleStatusRequestEpochRef.current.isCurrent(
+              requestedSessionId,
+              snapshot.requestEpoch,
+            )
+            || st.sessionId !== requestedSessionId
           ) return;
-          setBrowserSessions((current) => ({ ...current, [browserSessionId]: true }));
-          // 首次发现已恢复的工作区时恢复展开；若用户已在本次窗口中明确
-          // 收起或选择产物，则保留该 session 自己的意图。
-          setBrowserPaneStates((current) => restoreBrowserPane(current, browserSessionId));
-        }).catch(() => {});
+          if (!st.running && !st.restoreError) {
+            setBrowserSessions((current) => {
+              const next = { ...current };
+              delete next[requestedSessionId];
+              return next;
+            });
+            setBrowserPaneStates((current) => (
+              removeBrowserPaneState(current, requestedSessionId)
+            ));
+            return;
+          }
+          setBrowserSessions((current) => ({ ...current, [requestedSessionId]: true }));
+          // Expand a restored workspace on first discovery. Preserve any explicit
+          // collapse or artifact selection made for this session in this window.
+          setBrowserPaneStates((current) => restoreBrowserPane(current, requestedSessionId));
+        }).catch((error) => {
+          if (!disposed) console.error('[browser] initial lifecycle hydration failed', error);
+        });
         return () => { disposed = true; };
       }, [browserNativeDisplayAvailable, browserSessionId]);
-      // 紧凑布局仍使用全屏 browser 视图；桌面布局改为对话右侧侧栏。
+      // Compact layouts keep the fullscreen browser view; desktop uses the chat dock.
       useEffect(() => {
         if (!browserActive && currentView === 'browser') {
           setCurrentView('chat');
         }
-      }, [browserActive, currentView]);
+      }, [browserActive, currentView, setCurrentView]);
       const showMegacubeSite = !!platformCapabilities.showMegacubeSite;
       const codexAcpSupported = usePlatformCapability('acpCodeMode') && (isWeb || !!platformCapabilities.codexAcpSupported);
       const [codexSessions, setCodexSessions] = useState([]);
@@ -582,7 +811,6 @@ function workspaceDisplayName(path) {
         if (!codexAcpSupported || !isTauriAvailable()) {
           // Clear the code-session mirror when bridge capabilities change to avoid stale unreachable sessions;
           // the synchronous setState guarantees it takes effect in this render pass.
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously clear the mirror when the capability is disabled, preventing renders of unreachable sessions
           setCodexSessions([]);
           return;
         }
@@ -789,10 +1017,10 @@ function workspaceDisplayName(path) {
       const isCompactShell = isWeb && compactViewport;
       const browserDockAvailable = !isCompactShell
         && browserNativeDisplayAvailable;
-      // 任一右侧面板展开后，窄窗口优先保留主内容与面板。自动收起只改变临时
-      // 布局，窗口恢复或面板关闭后还原用户原本展开的左导航。
+      // On narrow windows, an open right panel takes priority over the left sidebar.
+      // This is a temporary layout constraint; restore the user's sidebar choice later.
       useEffect(() => {
-        if (isCompactShell) return undefined;
+        if (isCompactShell) return;
         const fitWorkspace = () => {
           const constrained = openSidePanelCount > 0 && window.innerWidth < 1320;
           if (constrained) {
@@ -1025,9 +1253,13 @@ function workspaceDisplayName(path) {
         // monitor/settings 拽走。
         const nextSessionId = bs.activeSessionId;
         const bridgeTransition = browserBridgeSessionTransitionRef.current;
-        let bridgeSessionNeedsSync = bridgeTransition !== null
+        const bridgeObservation = browserSessionCommandEchoGuard.observe(nextSessionId);
+        const isCommandEcho = bridgeObservation.type === 'command-echo';
+        // Intentional nullish check: an HMR-restored ref may be either null or undefined.
+        let bridgeSessionNeedsSync = !isCommandEcho
+          && bridgeTransition != null
           && bridgeTransition.sessionId !== nextSessionId;
-        if (bs.activeSessionId !== activeChat) {
+        if (!isCommandEcho && bs.activeSessionId !== activeChat) {
           bridgeSessionNeedsSync = true;
         }
         if (bridgeSessionNeedsSync) {
@@ -1042,9 +1274,12 @@ function workspaceDisplayName(path) {
             }
             return true;
           };
-          // Every distinct bridge target receives a serialized latest-wins ticket.
-          // A token, rather than only the session id, prevents an old B -> C -> B
-          // completion from clearing the newest B transition.
+          // Every distinct bridge target must enter the serialized gate even
+          // while an older hide ACK is pending. Issuing the newer ticket makes
+          // the older publication stale, and its independently owned hide lease
+          // keeps the native surface hidden until the latest React commit. A
+          // token (not just the session id) avoids an old B→C→B completion from
+          // clearing the newest B request.
           if (bridgeTransition?.sessionId !== nextSessionId) {
             const transitionToken = { sessionId: nextSessionId };
             browserBridgeSessionTransitionRef.current = transitionToken;
@@ -1052,6 +1287,7 @@ function workspaceDisplayName(path) {
               channel: 'session',
               hideMode: 'workspace',
               serialize: true,
+              sessionSource: 'bridge',
             });
             void Promise.resolve(transitionResult).finally(() => {
               if (browserBridgeSessionTransitionRef.current === transitionToken) {
@@ -1086,13 +1322,13 @@ function workspaceDisplayName(path) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [bs, sessionSyncEpoch]);
 
-      // HMR/旧前端状态可能仍停在已下线入口；立即回到仍可访问的视图。
+      // HMR or legacy frontend state may retain a retired route; return to a valid view.
       useEffect(() => {
         if (!SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled') {
           setCodeModeOn(false);
           setCurrentView('chat');
         }
-      }, [currentView]);
+      }, [currentView, setCurrentView]);
 
       function searchCredentialForProvider(provider) {
         const saved = savedSearchConfigRef.current;
@@ -1310,7 +1546,6 @@ function workspaceDisplayName(path) {
       // Exiting code mode resets the primary-nav collapse bar, so the next entry starts
       // from the default collapsed form.
       useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the nav collapse state synchronously on exit, ensuring the next code-mode entry starts collapsed
         if (!codeModeOn) setCodeNavExpanded(false);
       }, [codeModeOn]);
       const [archiveConfirm, setArchiveConfirm] = useState(null);
@@ -1578,12 +1813,12 @@ function workspaceDisplayName(path) {
         return navigateFromScheduledRun('settings');
       }
 
-      function closeMobileSidebar() {
+      const closeMobileSidebar = useCallback(() => {
         if (!isWeb || typeof window === 'undefined') return;
         if (window.matchMedia && window.matchMedia('(max-width: 639px)').matches) {
           setIsSidebarOpen(false);
         }
-      }
+      }, []);
 
       function scheduledRunLabel(value) {
         return (t.uiScheduled.runStatus[value] || value || t.uiScheduled.unknown);
@@ -1618,6 +1853,7 @@ function workspaceDisplayName(path) {
           channel: 'session',
           hideMode: 'workspace',
           serialize: true,
+          sessionTarget: run.sessionId,
         });
       }
 
@@ -1665,6 +1901,7 @@ function workspaceDisplayName(path) {
           channel: 'session',
           hideMode: 'workspace',
           serialize: true,
+          sessionTarget: null,
         });
       }
 
@@ -1717,10 +1954,10 @@ function workspaceDisplayName(path) {
         if (card) bridge.personas.postCardCreatorIntro();                     // 加持成功才追加引导卡(持久化,切会话/重启不丢);失败则放弃后续,避免错投(二审补充)
       }
 
-      async function handleSwitchSession(id) {
+      const handleSwitchSession = useCallback(async (id) => {
         if (!bridge.available) return;
         return runBrowserUiTransition(async ({ isCurrent }) => {
-          // Web RPC 可能跨公网 Relay：先关闭抽屉并切入聊天路由，后台再加载会话。
+          // Web RPC can cross a public relay. Close the drawer and enter chat before loading.
           setCodeModeOn(false);
           setCurrentView('chat');
           closeMobileSidebar();
@@ -1732,8 +1969,9 @@ function workspaceDisplayName(path) {
           channel: 'session',
           hideMode: 'workspace',
           serialize: true,
+          sessionTarget: id,
         });
-      }
+      }, [closeMobileSidebar, runBrowserUiTransition, setCurrentView]);
 
       async function handleSearchSelect(id) {
         await handleSwitchSession(id);
@@ -1776,7 +2014,7 @@ function workspaceDisplayName(path) {
           disposed = true;
           unlisteners.forEach((fn) => { try { fn(); } catch { /* listener teardown failure is ignorable */ } });
         };
-      }, []);
+      }, [handleSwitchSession, runBrowserUiTransition, setCurrentView]);
 
       // 用户从侧栏切进一个已经完成的会话时，也立即收掉对应完成气泡。
       // 运行中的卡不会被 markSessionViewed 删除；等它完成时，上面的
@@ -1837,6 +2075,7 @@ function workspaceDisplayName(path) {
                   channel: 'session',
                   hideMode: 'workspace',
                   serialize: true,
+                  sessionTarget: sessionId,
                 });
                 if (!published) opened = false;
               } catch (error) {
@@ -1890,7 +2129,7 @@ function workspaceDisplayName(path) {
           window.removeEventListener('focus', consumePetNavigation);
           unlisteners.forEach(fn => { try { fn(); } catch { /* listener teardown failure is ignorable */ } });
         };
-      }, []);
+      }, [handleSwitchSession, runBrowserUiTransition, setCurrentView]);
 
       useEffect(() => {
         const ev = isTauriAvailable() ? tauriEvents : null;
@@ -2333,21 +2572,20 @@ function workspaceDisplayName(path) {
           && browserPaneOpen
           && browserPaneSelected
           && !browserSurfaceSuspended;
-      const browserSurfaceTransitionContext = {
-        sessionId: browserViewSessionId,
-        hasWorkspace: browserActive && !!browserViewSessionId,
-        visible: browserNativeSurfaceVisible,
-        compact: isCompactShell,
-        scheduledRunChat: !!(bs && bs.scheduledRunContext),
-      };
       useLayoutEffect(() => {
-        browserSurfaceTransitionContextRef.current = browserSurfaceTransitionContext;
+        browserSurfaceTransitionContextRef.current = {
+          sessionId: browserViewSessionId,
+          hasWorkspace: browserActive && !!browserViewSessionId,
+          visible: browserNativeSurfaceVisible,
+          compact: isCompactShell,
+          scheduledRunChat: !!(bs && bs.scheduledRunContext),
+        };
       }, [
-        browserSurfaceTransitionContext.sessionId,
-        browserSurfaceTransitionContext.hasWorkspace,
-        browserSurfaceTransitionContext.visible,
-        browserSurfaceTransitionContext.compact,
-        browserSurfaceTransitionContext.scheduledRunChat,
+        browserActive,
+        browserNativeSurfaceVisible,
+        browserViewSessionId,
+        bs,
+        isCompactShell,
       ]);
       useLayoutEffect(() => {
         let disposed = false;
@@ -2365,7 +2603,7 @@ function workspaceDisplayName(path) {
           hideMode: 'visible',
         });
         return () => { disposed = true; };
-      }, [browserOverlayIntent]);
+      }, [browserOverlayIntent, runBrowserUiTransition]);
 
       return (
         <div data-testid="app-root" data-current-view={currentView} data-platform={isWeb ? 'web' : 'desktop'}
@@ -3063,6 +3301,8 @@ function workspaceDisplayName(path) {
 
             {/* 存入成功 → iOS 确认窗:去查看我的卡牌 / 暂不 */}
             {savedConfirm && browserOverlayPublicationReady && (
+              // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard users close the dialog through its real buttons
+              // biome-ignore lint/a11y/noStaticElementInteractions: this is a pointer-only backdrop around an accessible dialog card
               <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,.4)' }} onClick={() => setSavedConfirm(null)}>
                 {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by real buttons inside the card */}
                 {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
@@ -3107,6 +3347,8 @@ function workspaceDisplayName(path) {
 
             {/* MegaCube(GB10) 本地大模型一键引导 —— 全局首屏弹窗;引导中禁止背景关窗 */}
             {vllmSetupModalOpen && browserOverlayPublicationReady && (
+              // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard users close the dialog through its real buttons
+              // biome-ignore lint/a11y/noStaticElementInteractions: this is a pointer-only backdrop around an accessible dialog card
               <div className="fixed inset-0 z-[56] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}
                    onClick={() => { if (!bs.vllmBootstrapping) bridge.vllm.dismissVllmSetup(); }}>
                 {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by real buttons inside the dialog */}
@@ -3169,6 +3411,8 @@ function workspaceDisplayName(path) {
 
             {/* Pinvou 检阅弹窗(品/悟) —— 居中弹窗 + 毛玻璃背景(虚化身后 app);全局,任何视图都能弹;点背景或卡内「跳过」关闭 */}
             {bs && bs.pinvouModal && browserOverlayPublicationReady && (
+              // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard users close the dialog through its real close button
+              // biome-ignore lint/a11y/noStaticElementInteractions: this is a pointer-only backdrop around an accessible dialog card
               <div className="fixed inset-0 z-[55] flex items-center justify-center p-6"
                    style={{ background: activeTheme === 'dark' ? 'rgba(0,0,0,.45)' : 'rgba(255,255,255,.35)', backdropFilter: 'blur(20px) saturate(140%)', WebkitBackdropFilter: 'blur(20px) saturate(140%)' }}
                    onClick={() => { if (!bs.pinvouModal.loading) bridge.interaction.dismissPinvouReview(); }}>

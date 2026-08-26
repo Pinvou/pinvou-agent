@@ -17,7 +17,8 @@ try {
   mkdirSync(path.join(dir, 'shared'), { recursive: true });
   copyFileSync(src, tmp);
   copyFileSync(i18nSrc, path.join(dir, 'shared', 'i18n.js'));
-  // i18n.js 现按语言拆分(zh 内嵌),临时副本需带上 zh 及其共享浏览器词典。
+  // i18n.js is split by locale with zh imported directly, so the temporary copy must include
+  // zh and its shared browser dictionary.
   mkdirSync(path.join(dir, 'shared', 'i18n'), { recursive: true });
   for (const f of ['zh.js', 'browser.js']) {
     copyFileSync(

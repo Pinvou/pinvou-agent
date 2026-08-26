@@ -1,5 +1,9 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
+import {
+  invokeObservedPanelSelection,
+  isSubagentPanelPublicationCurrent,
+} from './subagent-panel-publication.mjs';
 import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, Mic, Monitor, Package, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X } from '../../components/icons.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
@@ -54,6 +58,10 @@ const LazySubagentTranscriptPanel = React.lazy(() => CHAT_PANEL_LOADERS.subagent
 const prefetchChatPanel = (key) => {
   const loader = CHAT_PANEL_LOADERS[key];
   if (loader) loader().catch(() => {});
+};
+
+const reportRightDockSelectionFailure = (error) => {
+  console.error('[chat] Right Dock selection failed', error);
 };
 // 面板槽位级挂起 fallback:与 LazyCodexAcpView 同款容器,懒 chunk 解析的
 // 微任务窗口内占住面板位置,避免挂起冒泡到应用级边界把整视图闪断成 fallback。
@@ -486,7 +494,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const SelectedIcon = browserSelected ? Globe : Package;
 
       useEffect(() => {
-        if (!menuOpen) return undefined;
+        if (!menuOpen) return;
         const onPointerDown = (event) => {
           if (!rootRef.current?.contains(event.target)) setMenuOpen(false);
         };
@@ -503,8 +511,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
 
       const openPanel = (panelId) => {
         setMenuOpen(false);
-        if (panelId === 'browser') onOpenBrowser?.();
-        else onOpenArtifacts?.();
+        const select = panelId === 'browser' ? onOpenBrowser : onOpenArtifacts;
+        void invokeObservedPanelSelection(select, [], reportRightDockSelectionFailure);
       };
       const triggerClass = `pointer-events-auto flex h-10 shrink-0 items-center gap-2 rounded-full border px-3 text-[14px] font-medium shadow-sm transition-colors ${
         theme === 'dark'
@@ -658,7 +666,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           return merged;
         });
       }, []);
-      // ── 产物由应用级 Right Dock 承载；空间不足时宿主统一切成单栏 ──
+      // Artifacts live in the app-level Right Dock; its host owns narrow-layout fallback.
       const artColRef = useRef(null);
       const scrollRef = useRef(null);
       const conversationContentRef = useRef(null);
@@ -708,6 +716,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       }, []);
       const chatItems = bs ? bs.chatItems : [];
       const activeSessionId = bs ? bs.activeSessionId : null;
+      const activeSessionIdRef = useRef(activeSessionId);
+      activeSessionIdRef.current = activeSessionId;
       const busy = bs ? bs.busy : false;
       // 停止按钮 single-flight:busy 在首次 cancel_generation 返回前就复位,
       // 双击会发第二个并发取消请求。cancellingSessionIds 在 invoke 完成前禁用
@@ -1140,6 +1150,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const isMultiAgentReadOnly = !MULTI_AGENT_ENABLED
         && !!(bs && bs.modeState && bs.modeState.multiAgent);
       const artifactsVisible = Boolean(activeSessionId && artifactsOpen);
+      const artifactFullscreenPublicationReady = useRightDockOcclusion(
+        'artifact-fullscreen',
+        artifactsVisible && artifactsFullscreen,
+      );
       useEffect(() => {
         if (designAiSessionRef.current && designAiSessionRef.current !== activeSessionId) {
           updateDesignAiState({ text: '', status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0 });
@@ -1168,13 +1182,20 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const closeArtifactsPanel = useCallback(() => {
         setArtifactsFullscreen(false);
         setArtifactsOpen(false);
-        if (browserDockOpen) onRightDockPanelSelectionChange?.('browser', activeSessionId);
+        if (browserDockOpen) {
+          void invokeObservedPanelSelection(
+            onRightDockPanelSelectionChange,
+            ['browser', activeSessionId],
+            reportRightDockSelectionFailure,
+          );
+        }
       }, [activeSessionId, browserDockOpen, onRightDockPanelSelectionChange]);
-      // 子智能体只读执行记录面板（Codex 式右侧列，ADR-0006）。任何工作会话可开
-      // （裸 agent 在普通工作对话同样可用）；Right Dock 负责与产物互斥展示且保留状态。
-      // null=关闭；agentId 为空进列表页。selectionRequestId 让“详情→返回列表→
-      // 再点同一张主对话卡”也成为一次新选择，不能只靠相同 agentId 的 prop 变化。
+      // Read-only subagent transcript panel (Codex-style right column, ADR-0006).
+      // It is available in every work session, including bare agents in normal chats.
+      // null means closed; an empty agentId opens the list. selectionRequestId makes
+      // detail -> list -> same parent card a new selection even when agentId is unchanged.
       const [subagentPanel, setSubagentPanel] = useState(null);
+      const subagentPanelRequestRef = useRef(0);
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the sub-agent panel on session switch
       useEffect(() => { setSubagentPanel(null); }, [activeSessionId]);
       const rememberScrollBeforeSubagentPanelChange = useCallback(() => {
@@ -1184,9 +1205,37 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         );
       }, []);
       const closeSubagentPanel = useCallback(() => {
-        rememberScrollBeforeSubagentPanelChange();
-        setSubagentPanel(null);
-      }, [rememberScrollBeforeSubagentPanelChange]);
+        const requestId = subagentPanelRequestRef.current + 1;
+        subagentPanelRequestRef.current = requestId;
+        const requestedSessionId = activeSessionId;
+        const restorePanelId = subagentPanel?.restorePanelId || null;
+        const publishClose = ({ isCurrent = () => true } = {}) => {
+          if (!isSubagentPanelPublicationCurrent({
+            transitionCurrent: isCurrent(),
+            requestId,
+            currentRequestId: subagentPanelRequestRef.current,
+            sessionId: requestedSessionId,
+            currentSessionId: activeSessionIdRef.current,
+          })) return false;
+          rememberScrollBeforeSubagentPanelChange();
+          setSubagentPanel(null);
+          return true;
+        };
+        if (browserDockOpen && restorePanelId && onRightDockPanelSelectionChange) {
+          return invokeObservedPanelSelection(
+            onRightDockPanelSelectionChange,
+            [restorePanelId, requestedSessionId, publishClose],
+            reportRightDockSelectionFailure,
+          );
+        }
+        return publishClose();
+      }, [
+        activeSessionId,
+        browserDockOpen,
+        onRightDockPanelSelectionChange,
+        rememberScrollBeforeSubagentPanelChange,
+        subagentPanel,
+      ]);
       useLayoutEffect(() => {
         const snapshot = subagentPanelScrollRef.current;
         if (!snapshot) return;
@@ -1205,16 +1254,54 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         const onOpen = (event) => {
           const detail = event && event.detail;
           if (detail?.sessionId && detail.sessionId !== activeSessionId) return;
+          const requestedSessionId = activeSessionId;
+          if (!requestedSessionId) return;
+          const requestId = subagentPanelRequestRef.current + 1;
+          subagentPanelRequestRef.current = requestId;
           prefetchChatPanel('subagent');
-          rememberScrollBeforeSubagentPanelChange();
-          setSubagentPanel((current) => ({
-            agentId: (detail && detail.agentId) || null,
-            selectionRequestId: (current?.selectionRequestId || 0) + 1,
-          }));
+          const publishOpen = ({ isCurrent = () => true } = {}) => {
+            if (!isSubagentPanelPublicationCurrent({
+              transitionCurrent: isCurrent(),
+              requestId,
+              currentRequestId: subagentPanelRequestRef.current,
+              sessionId: requestedSessionId,
+              currentSessionId: activeSessionIdRef.current,
+            })) return false;
+            rememberScrollBeforeSubagentPanelChange();
+            setSubagentPanel((current) => ({
+              agentId: (detail && detail.agentId) || null,
+              selectionRequestId: (current?.selectionRequestId || 0) + 1,
+              // Re-selecting another agent while this panel is already active
+              // must retain the dock that preceded the first open. App has
+              // already moved browserPaneSelected away from `browser` by then.
+              restorePanelId: current
+                ? current.restorePanelId
+                : browserDockOpen ? rightDockActivePanelId : null,
+            }));
+            return true;
+          };
+          if (onRightDockPanelSelectionChange) {
+            void invokeObservedPanelSelection(
+              onRightDockPanelSelectionChange,
+              ['subagent-transcript', requestedSessionId, publishOpen],
+              reportRightDockSelectionFailure,
+            );
+          } else {
+            publishOpen();
+          }
         };
         window.addEventListener('pinvou:open-subagent', onOpen);
-        return () => window.removeEventListener('pinvou:open-subagent', onOpen);
-      }, [activeSessionId, rememberScrollBeforeSubagentPanelChange]);
+        return () => {
+          subagentPanelRequestRef.current += 1;
+          window.removeEventListener('pinvou:open-subagent', onOpen);
+        };
+      }, [
+        activeSessionId,
+        browserDockOpen,
+        onRightDockPanelSelectionChange,
+        rememberScrollBeforeSubagentPanelChange,
+        rightDockActivePanelId,
+      ]);
       const handlePreviewArtifact = useCallback((artifact) => {
         setActiveArtifactPath(artifact && artifact.path ? artifact.path : null);
         setArtifactDockActivation((value) => value + 1);
@@ -1224,7 +1311,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         if (latestArtifact && latestArtifact.path) setActiveArtifactPath(latestArtifact.path);
         setArtifactsOpen(true);
         setArtifactDockActivation((value) => value + 1);
-        onRightDockPanelSelectionChange?.('artifact-preview', activeSessionId);
+        void invokeObservedPanelSelection(
+          onRightDockPanelSelectionChange,
+          ['artifact-preview', activeSessionId],
+          reportRightDockSelectionFailure,
+        );
       }, [activeSessionId, latestArtifact, onRightDockPanelSelectionChange]);
       useEffect(() => {
         const previousCount = previousArtifactCountRef.current;
@@ -2255,7 +2346,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           </div>
           </div>{/* /对话列 */}
 
-          {artifactsVisible && artifactsFullscreen && createPortal(
+          {artifactsVisible && artifactsFullscreen && artifactFullscreenPublicationReady && createPortal(
             <div
               ref={artColRef}
               className="fixed left-0 right-0 bottom-0 z-[1000] pointer-events-auto"

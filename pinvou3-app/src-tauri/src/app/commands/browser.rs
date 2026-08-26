@@ -1,30 +1,33 @@
-//! 浏览器 Tauri 命令：前端经统一 invoke 驱动 BrowserManager；平台能力由
-//! `get_platform_capabilities` 声明，不在前端或命令层猜测操作系统。
+//! Browser Tauri commands. The frontend drives BrowserManager through unified invoke calls.
+//! `get_platform_capabilities` declares support, so neither layer guesses the operating system.
 //!
-//! 事件（后端 → 前端）：
-//! - `browser:navigation`  页面导航（url 变化）
-//! - `browser:tabs-changed` 标签页增删
-//! - `browser:activated`   对话浏览器工作区被（MCP wrapper 或本模块）准备完成
-//! - `browser:stopped`     浏览器停止/崩溃（前端隐藏工作区）
+//! Backend-to-frontend events:
+//! - `browser:navigation`: page URL changed
+//! - `browser:tabs-changed`: tabs were added or removed
+//! - `browser:activated`: MCP wrapper or this module prepared the conversation workspace
+//! - `browser:stopped`: browser stopped or crashed; the frontend hides the workspace
 
 use serde_json::Value;
 use tauri::State;
 
 use crate::features::browser::{BrowserManager, NativeSurfaceBounds, TabInfo};
 
-/// renderer/HMR 生命周期开始时由宿主签发全局递增 generation。前端在同一
-/// generation 内为每次 show/hide/cleanup 使用从 1 开始严格递增的 sequence。
+/// The host issues a globally increasing generation at renderer/HMR lifecycle start. Within
+/// one generation, the frontend assigns a strictly increasing sequence starting at 1 to
+/// each show, hide, and cleanup request.
 ///
-/// 保持 Tauri async execution context：macOS 的 blocking command 会直接运行在
-/// WKWebView 的 URL scheme 主线程回调栈中；这里随后会获取浏览器状态锁，可能与
-/// 后台持久化读取 WebView 状态形成主线程/worker 锁环。
+/// Retain Tauri's asynchronous execution context. On macOS, a blocking command would run
+/// directly on WKWebView's URL-scheme main-thread callback stack. This command later acquires
+/// the browser-state lock and could otherwise deadlock with a persistence worker reading
+/// WebView state through the main thread.
 #[tauri::command(async)]
 pub fn browser_begin_surface_generation(mgr: State<'_, BrowserManager>) -> u64 {
     mgr.begin_surface_generation()
 }
 
-/// 将当前对话的系统原生 WebView 表面承载到 Tauri 主窗口指定区域。
-/// 返回 false 表示原生工作区尚未创建；前端显示错误与重试，不切换截图流。
+/// Hosts the current conversation's system-native WebView surface in the specified main
+/// window region. `false` means the native workspace does not exist yet; the frontend shows
+/// an error and offers retry without switching to a screenshot stream.
 #[tauri::command]
 pub async fn browser_show_native_surface(
     session_id: String,
@@ -70,7 +73,8 @@ pub async fn browser_status(
     Ok(mgr.status(&session_id).await)
 }
 
-/// 普通模式中用户首次展开浏览器侧栏时按需创建当前任务的空白工作区。
+/// Lazily creates the current task's blank workspace when the user first expands the browser
+/// side panel in normal mode.
 #[tauri::command]
 pub async fn browser_prepare(
     session_id: String,
@@ -91,9 +95,10 @@ pub fn browser_hand_back_to_agent(
 pub async fn browser_navigate(
     session_id: String,
     url: String,
+    request_id: String,
     mgr: State<'_, BrowserManager>,
 ) -> Result<(), String> {
-    mgr.navigate(&session_id, url).await
+    mgr.navigate(&session_id, url, &request_id).await
 }
 
 #[tauri::command]

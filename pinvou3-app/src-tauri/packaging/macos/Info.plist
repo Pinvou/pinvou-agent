@@ -15,6 +15,16 @@
     <!-- macOS Sequoia 15+ 在应用访问局域网服务前请求用户授权。 -->
     <key>NSLocalNetworkUsageDescription</key>
     <string>pinvou3 需要访问本地网络，以连接局域网内的模型服务（如 vLLM、Ollama 等）。</string>
+    <!-- The native browser is a user-directed WKWebView. Permit HTTP only in
+         web content, plus loopback/LAN previews, without broadly exempting
+         application networking from App Transport Security. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoadsInWebContent</key>
+        <true/>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
     <!-- 不设 LSUIElement：主窗口要进 Dock（与 Linux/Windows 一致） -->
 </dict>
 </plist>

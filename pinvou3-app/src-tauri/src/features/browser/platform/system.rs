@@ -1,7 +1,7 @@
-//! macOS WKWebView 与 Linux WebKitGTK 的薄适配。
+//! Thin adapters for macOS WKWebView and Linux WebKitGTK.
 //!
-//! Linux 通过 BrowserCore + WebKitWebDriver 提供显示和 Agent 自动化；macOS
-//! 通过同一 BrowserCore 页面运行时和 WKWebView/AppKit 原生适配提供核心能力。
+//! Linux provides display and Agent automation through BrowserCore and WebKitWebDriver.
+//! macOS uses the same BrowserCore page runtime with native WKWebView/AppKit adaptation.
 
 use std::path::{Path, PathBuf};
 
@@ -45,9 +45,10 @@ impl PlatformWebviewConfig for SystemWebviewConfig {
         builder: WebviewBuilder<tauri::Wry>,
         data_directory: &Path,
     ) -> Result<WebviewBuilder<tauri::Wry>, String> {
-        // WebKitGTK 使用该目录保存 data/cache/cookie。WKWebView 不支持自定义路径，
-        // 但 Tauri 仍以此作为独立 WebContext 的键；底层继续使用系统默认的持久
-        // WKWebsiteDataStore，从而兼容项目支持的 macOS 11（自定义 identifier 要求 14+）。
+        // WebKitGTK stores data, cache, and cookies in this directory. WKWebView does not
+        // support a custom path, but Tauri still uses it as the key for an isolated
+        // WebContext. The implementation keeps the system-default persistent
+        // WKWebsiteDataStore for macOS 11 compatibility; custom identifiers require 14+.
         Ok(builder.data_directory(data_directory.to_path_buf()))
     }
 

@@ -1,4 +1,4 @@
-import React, {
+import {
   createContext,
   useCallback,
   useContext,
@@ -113,24 +113,29 @@ export function RightDockPanel({
   children,
 }) {
   const dock = useContext(RightDockContext);
+  const mountPanel = dock?.mountPanel;
+  const activatePanel = dock?.activatePanel;
+  const hidePanel = dock?.hidePanel;
+  const activePanelId = dock?.activePanelId;
+  const portalRoot = dock?.portalRoot;
 
   useLayoutEffect(() => {
-    if (!dock || !panelId) return undefined;
-    return dock.mountPanel(panelId);
-  }, [dock?.mountPanel, panelId]);
+    if (!mountPanel || !panelId) return;
+    return mountPanel(panelId);
+  }, [mountPanel, panelId]);
 
   useLayoutEffect(() => {
-    if (!dock || !panelId) return undefined;
-    if (visible) dock.activatePanel(panelId);
-    else dock.hidePanel(panelId);
-    return () => dock.hidePanel(panelId);
-  }, [dock?.activatePanel, dock?.hidePanel, panelId, visible]);
+    if (!activatePanel || !hidePanel || !panelId) return;
+    if (visible) activatePanel(panelId);
+    else hidePanel(panelId);
+    return () => hidePanel(panelId);
+  }, [activatePanel, hidePanel, panelId, visible]);
 
   useLayoutEffect(() => {
-    if (dock && visible && panelId) dock.activatePanel(panelId);
-  }, [activationKey, dock?.activatePanel, panelId, visible]);
+    if (activatePanel && visible && panelId) activatePanel(panelId);
+  }, [activationKey, activatePanel, panelId, visible]);
 
-  const active = visible && (!dock || dock.activePanelId === panelId);
+  const active = visible && (!dock || activePanelId === panelId);
   useLayoutEffect(() => {
     if (onActiveChange) onActiveChange(active);
   }, [active, onActiveChange]);
@@ -147,7 +152,7 @@ export function RightDockPanel({
   );
 
   if (!dock) return content;
-  return dock.portalRoot ? createPortal(content, dock.portalRoot) : null;
+  return portalRoot ? createPortal(content, portalRoot) : null;
 }
 
 /**
@@ -157,20 +162,25 @@ export function RightDockPanel({
  */
 export function useRightDockOcclusion(occlusionId, active) {
   const dock = useContext(RightDockContext);
+  const publishOcclusion = dock?.publishOcclusion;
+  const releaseOcclusion = dock?.releaseOcclusion;
   const [publicationReady, setPublicationReady] = useState(false);
   const attemptRef = useRef(0);
   useLayoutEffect(() => {
-    if (!dock || !occlusionId) return undefined;
+    if (!publishOcclusion || !releaseOcclusion || !occlusionId) return;
     const attempt = attemptRef.current + 1;
     attemptRef.current = attempt;
     let disposed = false;
 
     if (!active) {
+      // This is an intentional fail-closed reset at the active-state boundary.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- stale permits must be revoked before a later activation can publish
       setPublicationReady(false);
-      dock.releaseOcclusion(occlusionId);
-      return undefined;
+      releaseOcclusion(occlusionId);
+      return;
     }
 
+    // Hide the overlay until this activation owns a fresh native-surface ACK.
     setPublicationReady(false);
     const publish = () => {
       if (disposed || attemptRef.current !== attempt) return false;
@@ -178,7 +188,7 @@ export function useRightDockOcclusion(occlusionId, active) {
       return true;
     };
     try {
-      const result = dock.publishOcclusion(occlusionId, publish);
+      const result = publishOcclusion(occlusionId, publish);
       if (result && typeof result.then === 'function') {
         void Promise.resolve(result).catch(() => false);
       }
@@ -190,11 +200,11 @@ export function useRightDockOcclusion(occlusionId, active) {
     return () => {
       disposed = true;
       attemptRef.current += 1;
-      dock.releaseOcclusion(occlusionId);
+      releaseOcclusion(occlusionId);
     };
-  }, [active, dock?.publishOcclusion, dock?.releaseOcclusion, occlusionId]);
+  }, [active, occlusionId, publishOcclusion, releaseOcclusion]);
 
-  return !active ? false : (!dock || !occlusionId ? true : publicationReady);
+  return active ? (!dock || !occlusionId ? true : publicationReady) : false;
 }
 
 export function RightDockHost({
@@ -204,12 +214,16 @@ export function RightDockHost({
   className = '',
 }) {
   const dock = useContext(RightDockContext);
-  if (!dock || dock.mountedPanelCount === 0) return null;
+  const mountedPanelCount = dock?.mountedPanelCount || 0;
+  const openSidePanelCount = dock?.openSidePanelCount || 0;
+  const activePanelId = dock?.activePanelId || '';
+  const setPortalRoot = dock?.setPortalRoot;
+  if (!dock || mountedPanelCount === 0) return null;
 
   return (
     <ResizableSidePanel
       panelId="right-dock"
-      visible={dock.openSidePanelCount === 1}
+      visible={openSidePanelCount === 1}
       storageKey="pinvou_right_dock_ratio"
       legacyRatioStorageKeys={LEGACY_RIGHT_DOCK_RATIO_KEYS}
       legacyPixelStorageKeys={LEGACY_RIGHT_DOCK_WIDTH_KEYS}
@@ -224,9 +238,9 @@ export function RightDockHost({
       dataTestId="right-dock-host"
     >
       <div
-        ref={dock.setPortalRoot}
+        ref={setPortalRoot}
         className="h-full min-h-0 min-w-0 flex-1"
-        data-active-panel={dock.activePanelId || ''}
+        data-active-panel={activePanelId}
       />
     </ResizableSidePanel>
   );

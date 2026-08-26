@@ -127,6 +127,18 @@ for usage_key in NSSpeechRecognitionUsageDescription NSMicrophoneUsageDescriptio
     fi
 done
 
+# The user-directed WKWebView must support HTTP and local previews without
+# granting arbitrary insecure transport to the application's own networking.
+for ats_key in NSAllowsArbitraryLoadsInWebContent NSAllowsLocalNetworking; do
+    ats_value="$(/usr/libexec/PlistBuddy -c "Print :NSAppTransportSecurity:$ats_key" "$APP_SRC_TAURI/packaging/macos/Info.plist" 2>/dev/null || true)"
+    if [ "$ats_value" = "true" ]; then
+        echo "  ✓ Info.plist enables $ats_key"
+    else
+        echo "  ❌ Info.plist does not enable $ats_key" >&2
+        VERIFY_FAIL=1
+    fi
+done
+
 for locale in en zh-Hans ja; do
     strings_file="$APP_SRC_TAURI/resources/platforms/macos/infoplist/$locale.lproj/InfoPlist.strings"
     if [ -f "$strings_file" ] && plutil -lint "$strings_file" >/dev/null 2>&1; then
@@ -161,6 +173,15 @@ if [ -f "$APP_BIN" ]; then
         echo "  ❌ bundle Info.plist 缺 NSLocalNetworkUsageDescription" >&2
         VERIFY_FAIL=1
     fi
+    for ats_key in NSAllowsArbitraryLoadsInWebContent NSAllowsLocalNetworking; do
+        ats_value="$(/usr/libexec/PlistBuddy -c "Print :NSAppTransportSecurity:$ats_key" "$BUNDLED_INFO_PLIST" 2>/dev/null || true)"
+        if [ "$ats_value" = "true" ]; then
+            echo "  ✓ bundled Info.plist enables $ats_key"
+        else
+            echo "  ❌ bundled Info.plist does not enable $ats_key" >&2
+            VERIFY_FAIL=1
+        fi
+    done
     for locale in en zh-Hans ja; do
         bundled_strings="$APP_BUNDLE/Contents/Resources/$locale.lproj/InfoPlist.strings"
         if [ -f "$bundled_strings" ] && plutil -lint "$bundled_strings" >/dev/null 2>&1; then

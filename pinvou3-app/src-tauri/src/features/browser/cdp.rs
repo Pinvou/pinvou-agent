@@ -1,14 +1,16 @@
-//! 轻量 CDP（Chrome DevTools Protocol）WebSocket 客户端。
+//! Lightweight Chrome DevTools Protocol (CDP) WebSocket client.
 //!
-//! 连接 Chrome 的 **browser 级** WebSocket（`/json/version` 的 `webSocketDebuggerUrl`），
-//! 以 flatten 模式 attach 页面 target 后通过 `sessionId` 路由各域命令（Page/Input/Target 等）。
-//! 一条连接即可管理多个标签页；导航与 target 生命周期事件经 channel 上抛给
-//! BrowserManager。用户看到的页面由系统原生 WebView 直接呈现，CDP 不承担画面传输。
+//! Connects to Chrome's browser-level WebSocket from `/json/version`
+//! `webSocketDebuggerUrl`, attaches page targets in flattened mode, and routes
+//! Page/Input/Target domain commands by sessionId. One connection manages
+//! multiple tabs. Only target lifecycle events consumed by BrowserManager cross
+//! the channel. The task-owned native host publishes navigation/title changes;
+//! CDP does not transport rendered frames.
 //!
-//! 参考样板：`features/remote_control/relay_client.rs`（tokio-tungstenite 0.30 用法）。
+//! Reference: `features/remote_control/relay_client.rs` for tokio-tungstenite 0.30.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,18 +25,46 @@ use tokio_tungstenite::{connect_async_with_config, MaybeTlsStream, WebSocketStre
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// 上抛给管理器的 CDP 事件。
+static DROPPED_CDP_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// CDP events forwarded to the manager.
 #[derive(Debug, Clone)]
 pub enum CdpEvent {
-    /// 域事件（如 `Page.frameNavigated`、`Target.targetCreated`）。
+    /// Target lifecycle event consumed by BrowserManager.
     Event {
         session_id: Option<String>,
         method: String,
         params: Value,
     },
+    /// At least one page-target lifecycle event could not enter the bounded
+    /// channel. The consumer must rebuild its target/session cache from
+    /// `Target.getTargets` instead of trying to replay an incomplete delta
+    /// stream.
+    LifecycleResync { signal: Arc<LifecycleResyncSignal> },
 }
 
-/// CDP 会话：单条 browser 级 WebSocket，命令经 id 匹配、事件经 channel 分发。
+/// One coalesced wake-up per overflow burst. A task may wait for one bounded
+/// channel slot, but a target churn flood cannot create one task per dropped
+/// event. The consumer rearms the signal before it starts its authoritative
+/// snapshot so a later overflow schedules the next reconciliation.
+#[derive(Debug, Default)]
+pub struct LifecycleResyncSignal {
+    pending: AtomicBool,
+}
+
+impl LifecycleResyncSignal {
+    pub(super) fn begin_consume(&self) {
+        self.pending.store(false, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    fn is_pending(&self) -> bool {
+        self.pending.load(Ordering::Acquire)
+    }
+}
+
+/// CDP session over one browser-level WebSocket. Commands match by ID and events
+/// dispatch through a channel.
 pub struct CdpSession {
     port: u16,
     write: Mutex<futures_util::stream::SplitSink<Ws, WsMessage>>,
@@ -43,10 +73,11 @@ pub struct CdpSession {
 }
 
 impl CdpSession {
-    /// 向指定 session（或 browser 级）发送命令并等待响应。
+    /// Send a command to a session or the browser level and await its response.
     ///
-    /// 带超时兜底：WebSocket 断开后读循环会立即唤醒在途调用，但断连之后新发起的
-    /// 调用没有读循环消费响应，必须靠本超时返回错误，避免持有方永久挂起。
+    /// Timeout fallback: after WebSocket disconnect the read loop immediately
+    /// wakes in-flight calls, but calls started after disconnect have no reader
+    /// to consume a response and need this timeout to avoid hanging forever.
     pub async fn call(
         &self,
         session_id: Option<&str>,
@@ -65,31 +96,34 @@ impl CdpSession {
             msg["sessionId"] = json!(sid);
         }
         let frame = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
-        // 发送路径同样带超时：Chrome 进程存活但停止读取（wedged/半开 TCP）时，
-        // 写锁 + send 若无限等待会令所有后续 call 永久挂起（响应 30s 超时名存实亡）。
+        // Bound the send path too. If Chrome remains alive but stops reading due
+        // to a wedged or half-open TCP connection, an unbounded write lock/send
+        // would hang every later call and defeat the 30-second response timeout.
         let sent = tokio::time::timeout(std::time::Duration::from_secs(30), async {
             let mut write = self.write.lock().await;
             write.send(WsMessage::Text(frame.into())).await
         })
         .await;
         let send_result = match sent {
-            Err(_) => Err("CDP 发送超时（30s）".to_string()),
-            Ok(Err(e)) => Err(format!("CDP 发送失败: {e}")),
+            Err(_) => Err("CDP send timed out after 30 seconds".to_string()),
+            Ok(Err(e)) => Err(format!("CDP send failed: {e}")),
             Ok(Ok(())) => Ok(()),
         };
         if let Err(e) = send_result {
-            // 发送失败：摘除 pending 条目，避免条目泄漏（断连后 read 循环已退出，
-            // 不会再清理此后插入的条目）。
+            // Remove pending after send failure. The read loop has exited after
+            // disconnect and cannot clean entries inserted later.
             self.pending.lock().await.remove(&id);
             return Err(e);
         }
         let response = match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
             Err(_) => {
-                // 超时：从 pending 摘除，避免条目泄漏。
+                // Remove a timed-out entry from pending to avoid leaks.
                 self.pending.lock().await.remove(&id);
-                return Err("CDP 响应超时（30s）".to_string());
+                return Err("CDP response timed out after 30 seconds".to_string());
             }
-            Ok(Err(_)) => return Err("CDP 连接已关闭（响应通道被丢弃）".to_string()),
+            Ok(Err(_)) => {
+                return Err("CDP connection closed and response channel was dropped".to_string())
+            }
             Ok(Ok(r)) => r,
         };
         response
@@ -99,12 +133,14 @@ impl CdpSession {
         self.port
     }
 
-    /// 优雅关闭 WebSocket（close 握手后读循环 `read.next()` 返回 None 自行退出并
-    /// drain pending）。用于 stop()/崩溃重置的兜底：`Browser.close` 失败（wedged）
-    /// 且无子进程句柄可 kill 时，至少截断读循环，避免资源永久残留。
+    /// Gracefully close the WebSocket. After the close handshake, read.next()
+    /// returns None and the reader exits after draining pending. This is the
+    /// stop/crash-reset fallback: if Browser.close is wedged and there is no child
+    /// process handle to kill, at least terminate the read loop.
     pub async fn close(&self) {
-        // 无界 close 握手在 TCP 半开/wedged（写缓冲满）时会永久阻塞；调用方常持
-        // inner/start_mtx 锁，必须限时，否则冻结整个 BrowserManager。
+        // An unbounded close handshake can block forever on half-open/wedged TCP
+        // with a full write buffer. Callers often hold inner/start_mtx, so bound it
+        // to avoid freezing BrowserManager.
         let _ = tokio::time::timeout(Duration::from_secs(3), async {
             let mut write = self.write.lock().await;
             let _ = write.close().await;
@@ -113,29 +149,28 @@ impl CdpSession {
     }
 }
 
-/// 建立连接的结果：会话 + 事件接收端 + 读循环任务句柄（stop 时可中止）。
+/// Connection result: session, event receiver, and reader task handle abortable by stop.
 pub struct Connected {
     pub session: Arc<CdpSession>,
     pub events: mpsc::Receiver<CdpEvent>,
-    /// WebSocket 读循环任务：WS 关闭/Chrome 崩溃时自行退出；stop() 经 `close()`
-    /// 关闭 WS 后 join 或 abort 兜底，避免读循环残留。
+    /// WebSocket reader exits on WS close or Chrome crash. stop() closes the WS
+    /// and then joins or aborts as a fallback so no reader remains.
     pub reader_task: tokio::task::JoinHandle<()>,
 }
 
-/// 连接 Chrome 的 browser 级 CDP 端点，返回会话与事件接收端。
+/// Connect to Chrome's browser-level CDP endpoint and return session/events.
 pub async fn connect(port: u16) -> anyhow::Result<Connected> {
     let version_url = format!("http://127.0.0.1:{port}/json/version");
-    // 全路径带超时：Chrome 可能"接受 TCP 但永不响应"（wedged / SIGSTOP），
-    // 若此处无界等待，ensure_started 持 start_mtx 会把整个浏览器生命周期冻结
-    // （stop()/watch 自动接入/后续 ensure_started 全部被卡住）。reqwest 默认
-    // client 无超时，WS 握手同样无超时，必须显式包 timeout。
-    // 回环探测不走系统代理：reqwest 默认 auto_sys_proxy，设了 HTTP_PROXY 且未配
-    // NO_PROXY 的用户会把 127.0.0.1 请求发往代理而失败（每次启动仅探测一次，
-    // 一次性 client 即可）。
+    // Bound the entire path. Chrome may accept TCP and never respond when wedged
+    // or SIGSTOPed. An unbounded wait while ensure_started holds start_mtx freezes
+    // stop, watcher attachment, and later starts. reqwest clients and WebSocket
+    // handshakes otherwise have no relevant default timeout. Loopback probes also
+    // bypass system proxies: HTTP_PROXY without NO_PROXY would send 127.0.0.1 to
+    // the proxy and fail. Startup probes once, so a one-shot client is sufficient.
     let client = reqwest::Client::builder()
         .no_proxy()
         .build()
-        .context("构建 HTTP client")?;
+        .context("build HTTP client")?;
     let body = tokio::time::timeout(Duration::from_secs(10), async {
         client
             .get(&version_url)
@@ -143,24 +178,26 @@ pub async fn connect(port: u16) -> anyhow::Result<Connected> {
             .await
             .context("GET /json/version")?
             .error_for_status()
-            .context("CDP 版本端点非 2xx")?
+            .context("CDP version endpoint returned non-2xx")?
             .text()
             .await
-            .context("读取 /json/version")
+            .context("read /json/version")
     })
     .await
-    .map_err(|_| anyhow!("CDP 版本端点请求超时（10s）"))??;
-    let version: Value = serde_json::from_str(&body).context("解析 /json/version")?;
+    .map_err(|_| anyhow!("CDP version endpoint timed out after 10 seconds"))??;
+    let version: Value = serde_json::from_str(&body).context("parse /json/version")?;
     let ws_url = version
         .get("webSocketDebuggerUrl")
         .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("CDP 响应缺少 webSocketDebuggerUrl"))?;
-    // 纵深防御：端点响应由本地端口占有者控制（Chrome 崩溃后的短暂窗口内可能是
-    // 抢占端口的进程）。CDP 无鉴权，不校验会把命令发往任意地址——pin 到本次
-    // 连接的回环端口，拒绝响应中的其他 host。
+        .ok_or_else(|| anyhow!("CDP response is missing webSocketDebuggerUrl"))?;
+    // Defense in depth: the local port owner controls this response and may be a
+    // process that captured the port after Chrome crashed. CDP has no auth, so pin
+    // to the current loopback port and reject any other host in the response.
     let expected = format!("ws://127.0.0.1:{port}/");
     if !ws_url.starts_with(&expected) {
-        return Err(anyhow!("webSocketDebuggerUrl 非预期回环地址: {ws_url}"));
+        return Err(anyhow!(
+            "webSocketDebuggerUrl is not the expected loopback address: {ws_url}"
+        ));
     }
 
     let config = WebSocketConfig::default();
@@ -169,12 +206,13 @@ pub async fn connect(port: u16) -> anyhow::Result<Connected> {
         connect_async_with_config(ws_url, Some(config), false),
     )
     .await
-    .map_err(|_| anyhow!("CDP WebSocket 连接超时（10s）"))?
-    .context("连接 browser CDP WebSocket")?;
+    .map_err(|_| anyhow!("CDP WebSocket connection timed out after 10 seconds"))?
+    .context("connect browser CDP WebSocket")?;
     let (write, mut read) = ws.split();
 
-    // 有界事件通道：异常页面可能制造大量 CDP 事件，必须限制积压，避免无界内存增长。
+    // Bound event backlog so a hostile page cannot cause unbounded memory growth.
     let (events_tx, events_rx) = mpsc::channel(128);
+    let lifecycle_resync = Arc::new(LifecycleResyncSignal::default());
     let session = Arc::new(CdpSession {
         port,
         write: Mutex::new(write),
@@ -183,7 +221,12 @@ pub async fn connect(port: u16) -> anyhow::Result<Connected> {
     });
 
     let session_clone = Arc::clone(&session);
+    let reader_lifecycle_resync = Arc::clone(&lifecycle_resync);
     let reader_task = tokio::spawn(async move {
+        // Target.targetDestroyed does not carry targetInfo.type. Track only
+        // page targets observed from targetCreated so worker/OOPIF churn never
+        // enters the manager's bounded lifecycle channel.
+        let mut page_target_ids = HashSet::new();
         loop {
             match read.next().await {
                 Some(Ok(msg)) => {
@@ -198,22 +241,30 @@ pub async fn connect(port: u16) -> anyhow::Result<Connected> {
                     let Ok(v) = serde_json::from_str::<Value>(&text) else {
                         continue;
                     };
-                    handle_cdp_message(&session_clone, &events_tx, v).await;
+                    handle_cdp_message(
+                        &session_clone,
+                        &events_tx,
+                        &reader_lifecycle_resync,
+                        &mut page_target_ids,
+                        v,
+                    )
+                    .await;
                 }
-                // WS 协议错误/TCP reset：记录后退出循环（pending 由退出后的
-                // drain 唤醒，调用方感知"连接已关闭"），不得静默吞掉错误。
+                // Log WS protocol errors/TCP reset and exit. Draining pending after
+                // exit wakes callers with connection-closed; never swallow this.
                 Some(Err(e)) => {
-                    eprintln!("[browser] CDP 读循环错误退出: {e}");
+                    eprintln!("[browser] CDP reader exited after error: {e}");
                     break;
                 }
                 None => break,
             }
         }
-        // WebSocket 已关闭：唤醒所有在途请求，避免持有 inner 锁的调用永久挂起
-        // （Chrome 崩溃/被 kill 时 manager 靠这些错误感知并走恢复路径）。
+        // Wake every in-flight request after WebSocket close so a caller holding
+        // inner cannot hang forever. Manager uses these errors to recover after
+        // Chrome crash or kill.
         let mut pending = session_clone.pending.lock().await;
         for (_, tx) in pending.drain() {
-            let _ = tx.send(Err("CDP 连接已关闭".to_string()));
+            let _ = tx.send(Err("CDP connection closed".to_string()));
         }
     });
 
@@ -224,14 +275,16 @@ pub async fn connect(port: u16) -> anyhow::Result<Connected> {
     })
 }
 
-/// 处理一条已解析的 CDP 消息：按有无 `id` 分发为请求-响应或域事件。
+/// Dispatch a parsed CDP message as request/response or domain event by `id`.
 async fn handle_cdp_message(
     session: &Arc<CdpSession>,
     events_tx: &mpsc::Sender<CdpEvent>,
+    lifecycle_resync: &Arc<LifecycleResyncSignal>,
+    page_target_ids: &mut HashSet<String>,
     v: Value,
 ) {
     if let Some(id) = v.get("id").and_then(Value::as_u64) {
-        // 请求-响应
+        // Request/response.
         let result = if let Some(err) = v.get("error") {
             Err(err
                 .get("message")
@@ -245,21 +298,276 @@ async fn handle_cdp_message(
             let _ = tx.send(result);
         }
     } else if let Some(method) = v.get("method").and_then(Value::as_str) {
-        // 域事件
+        // Page/Runtime/Network events can be page-controlled and are not
+        // consumed by BrowserManager. Filter them before the bounded channel
+        // so an iframe/event flood cannot evict target lifecycle state.
+        let params = v.get("params").cloned().unwrap_or(Value::Null);
+        if !should_enqueue_manager_lifecycle_event(method, &params, page_target_ids) {
+            return;
+        }
         let ev = CdpEvent::Event {
             session_id: v.get("sessionId").and_then(Value::as_str).map(String::from),
             method: method.to_string(),
-            params: v.get("params").cloned().unwrap_or(Value::Null),
+            params,
         };
-        // try_send 不阻塞 WebSocket 读循环；通道暂满时把控制事件转入带限时的
-        // 异步 send。命令响应仍由读循环持续处理，target/导航事件也不会静默丢失。
-        if let Err(err) = events_tx.try_send(ev) {
-            let ev = err.into_inner();
-            eprintln!("[browser] 事件通道已满，控制事件 {method} 转入限时异步投递");
-            let tx = events_tx.clone();
-            tokio::spawn(async move {
-                let _ = tokio::time::timeout(Duration::from_secs(2), tx.send(ev)).await;
-            });
+        // Never spawn one fallback task per Full result: a target churn flood
+        // could otherwise turn the nominally bounded channel into unbounded
+        // queued futures and reorder later lifecycle events.
+        let _ = try_deliver_event(
+            events_tx,
+            ev,
+            method,
+            &DROPPED_CDP_EVENT_COUNT,
+            lifecycle_resync,
+        );
+    }
+}
+
+fn should_enqueue_manager_lifecycle_event(
+    method: &str,
+    params: &Value,
+    page_target_ids: &mut HashSet<String>,
+) -> bool {
+    match method {
+        "Target.targetCreated" => {
+            let Some(info) = params.get("targetInfo") else {
+                return false;
+            };
+            if info.get("type").and_then(Value::as_str) != Some("page") {
+                return false;
+            }
+            let Some(target_id) = info.get("targetId").and_then(Value::as_str) else {
+                return false;
+            };
+            page_target_ids.insert(target_id.to_string())
+        }
+        "Target.targetDestroyed" => params
+            .get("targetId")
+            .and_then(Value::as_str)
+            .is_some_and(|target_id| page_target_ids.remove(target_id)),
+        _ => false,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventDeliveryOutcome {
+    Delivered,
+    ChannelFull,
+    ReceiverClosed,
+}
+
+fn record_dropped_event(counter: &AtomicU64, method: &str, reason: &str) {
+    let total = counter.fetch_add(1, Ordering::Relaxed) + 1;
+    // A hostile page can produce events much faster than the manager drains
+    // them. Keep accounting exact but sample diagnostics logarithmically so a
+    // bounded channel overload cannot become a synchronous stderr flood.
+    if should_log_dropped_event(total) {
+        eprintln!(
+            "[browser] CDP events dropped: latest_method={method} reason={reason} total_dropped={total}"
+        );
+    }
+}
+
+fn should_log_dropped_event(total: u64) -> bool {
+    total.is_power_of_two()
+}
+
+fn try_deliver_event(
+    tx: &mpsc::Sender<CdpEvent>,
+    event: CdpEvent,
+    method: &str,
+    dropped: &AtomicU64,
+    lifecycle_resync: &Arc<LifecycleResyncSignal>,
+) -> EventDeliveryOutcome {
+    match tx.try_send(event) {
+        Ok(()) => EventDeliveryOutcome::Delivered,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            record_dropped_event(dropped, method, "channel-full");
+            schedule_lifecycle_resync(tx, lifecycle_resync);
+            EventDeliveryOutcome::ChannelFull
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            record_dropped_event(dropped, method, "receiver-closed");
+            EventDeliveryOutcome::ReceiverClosed
+        }
+    }
+}
+
+fn schedule_lifecycle_resync(tx: &mpsc::Sender<CdpEvent>, signal: &Arc<LifecycleResyncSignal>) {
+    if signal
+        .pending
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    let tx = tx.clone();
+    let signal = Arc::clone(signal);
+    tokio::spawn(async move {
+        let event = CdpEvent::LifecycleResync {
+            signal: Arc::clone(&signal),
+        };
+        if tx.send(event).await.is_err() {
+            signal.pending.store(false, Ordering::Release);
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(method: &str) -> CdpEvent {
+        CdpEvent::Event {
+            session_id: None,
+            method: method.to_string(),
+            params: Value::Null,
+        }
+    }
+
+    #[test]
+    fn bounded_delivery_records_closed_receiver_without_spawning_work() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let dropped = AtomicU64::new(0);
+        let lifecycle_resync = Arc::new(LifecycleResyncSignal::default());
+
+        let outcome = try_deliver_event(
+            &tx,
+            event("Target.targetDestroyed"),
+            "Target.targetDestroyed",
+            &dropped,
+            &lifecycle_resync,
+        );
+
+        assert_eq!(outcome, EventDeliveryOutcome::ReceiverClosed);
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+        assert!(!lifecycle_resync.is_pending());
+    }
+
+    #[tokio::test]
+    async fn bounded_delivery_coalesces_full_channel_into_one_rearmable_resync() {
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.try_send(event("Page.first")).unwrap();
+        let dropped = AtomicU64::new(0);
+        let lifecycle_resync = Arc::new(LifecycleResyncSignal::default());
+
+        let outcome = try_deliver_event(
+            &tx,
+            event("Page.frameNavigated"),
+            "Page.frameNavigated",
+            &dropped,
+            &lifecycle_resync,
+        );
+        let second_outcome = try_deliver_event(
+            &tx,
+            event("Target.targetDestroyed"),
+            "Target.targetDestroyed",
+            &dropped,
+            &lifecycle_resync,
+        );
+
+        assert_eq!(outcome, EventDeliveryOutcome::ChannelFull);
+        assert_eq!(second_outcome, EventDeliveryOutcome::ChannelFull);
+        assert_eq!(dropped.load(Ordering::Relaxed), 2);
+        assert!(lifecycle_resync.is_pending());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(CdpEvent::Event { method, .. }) if method == "Page.first"
+        ));
+
+        let first_signal = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("coalesced resync should acquire the released channel slot")
+            .expect("resync channel remains open");
+        let CdpEvent::LifecycleResync { signal } = first_signal else {
+            panic!("overflow must enqueue a lifecycle resync");
+        };
+        assert!(Arc::ptr_eq(&signal, &lifecycle_resync));
+        assert!(
+            rx.try_recv().is_err(),
+            "one overflow burst queues one wake-up"
+        );
+
+        signal.begin_consume();
+        assert!(!lifecycle_resync.is_pending());
+        tx.try_send(event("Page.second")).unwrap();
+        assert_eq!(
+            try_deliver_event(
+                &tx,
+                event("Target.targetCreated"),
+                "Target.targetCreated",
+                &dropped,
+                &lifecycle_resync,
+            ),
+            EventDeliveryOutcome::ChannelFull
+        );
+        assert!(lifecycle_resync.is_pending());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(CdpEvent::Event { method, .. }) if method == "Page.second"
+        ));
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .expect("rearmed resync should be delivered"),
+            Some(CdpEvent::LifecycleResync { .. })
+        ));
+    }
+
+    #[test]
+    fn dropped_event_diagnostics_are_logarithmically_sampled() {
+        for total in [1, 2, 4, 8, 16, 1 << 20] {
+            assert!(should_log_dropped_event(total), "total={total}");
+        }
+        for total in [0, 3, 5, 6, 7, 9, 15, 17, (1 << 20) - 1] {
+            assert!(!should_log_dropped_event(total), "total={total}");
+        }
+    }
+
+    #[test]
+    fn only_known_page_target_lifecycle_events_enter_the_bounded_channel() {
+        let mut pages = HashSet::new();
+        assert!(should_enqueue_manager_lifecycle_event(
+            "Target.targetCreated",
+            &json!({ "targetInfo": { "targetId": "page-1", "type": "page" } }),
+            &mut pages,
+        ));
+        assert!(should_enqueue_manager_lifecycle_event(
+            "Target.targetDestroyed",
+            &json!({ "targetId": "page-1" }),
+            &mut pages,
+        ));
+        assert!(!should_enqueue_manager_lifecycle_event(
+            "Target.targetDestroyed",
+            &json!({ "targetId": "unknown" }),
+            &mut pages,
+        ));
+        for ignored in [
+            "Page.frameNavigated",
+            "Page.loadEventFired",
+            "Runtime.consoleAPICalled",
+            "Network.requestWillBeSent",
+            "Target.targetInfoChanged",
+        ] {
+            assert!(
+                !should_enqueue_manager_lifecycle_event(ignored, &Value::Null, &mut pages,),
+                "method={ignored}"
+            );
+        }
+        for target_type in ["worker", "service_worker", "iframe", "other"] {
+            let target_id = format!("{target_type}-1");
+            assert!(!should_enqueue_manager_lifecycle_event(
+                "Target.targetCreated",
+                &json!({ "targetInfo": { "targetId": target_id, "type": target_type } }),
+                &mut pages,
+            ));
+            assert!(!should_enqueue_manager_lifecycle_event(
+                "Target.targetDestroyed",
+                &json!({ "targetId": target_id }),
+                &mut pages,
+            ));
         }
     }
 }

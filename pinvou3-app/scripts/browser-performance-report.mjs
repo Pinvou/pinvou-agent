@@ -10,7 +10,7 @@ const THRESHOLDS_MS = {
 
 function percentile(values, quantile) {
   if (!values.length) return null;
-  const ordered = values.slice().sort((a, b) => a - b);
+  const ordered = [...values].sort((a, b) => a - b);
   return ordered[Math.max(0, Math.ceil(ordered.length * quantile) - 1)];
 }
 
@@ -35,7 +35,7 @@ for (const line of input.split(/\r?\n/)) {
     values.push(sample.durationMs);
     grouped.set(sample.metric, values);
   } catch {
-    // 普通应用日志不是性能样本，直接忽略。
+    // Ordinary application logs are not performance samples; ignore them.
   }
 }
 

@@ -1,28 +1,30 @@
 #!/usr/bin/env node
-// browser-wrapper.mjs 懒启动代理的端到端测试（假 Chrome + 假 MCP bin，不碰真实浏览器）：
-//  1) initialize/tools/list 由 shim 直接应答，不准备浏览器、不写端口文件；
-//  2) 原生宿主不可用时，Windows 明确报 host-backend-unavailable，macOS/Linux
-//     明确报 unsupported；即使配置了假 Chrome/MCP，也不启动外部浏览器或代理。
+// End-to-end tests for the browser-wrapper.mjs lazy proxy, using fake Chrome
+// and MCP binaries without touching a real browser:
+//  1) the shim answers initialize/tools/list without preparing a browser or
+//     writing a port file;
+//  2) an unavailable native host reports host-backend-unavailable on Windows
+//     and unsupported on macOS/Linux, without starting external browser helpers.
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-// 该 fixture 专门验证 Windows 私有的 Chrome DevTools 后端不会回退外部
-// Chrome。Linux 已走 BrowserCore/WebKitWebDriver，由 browser_core_protocol 与
-// Linux 集成测试覆盖，不应再把假 Chrome 注入它的运行路径。
+// This fixture verifies that the Windows-only Chrome DevTools backend never
+// falls back to external Chrome. Linux uses BrowserCore/WebKitWebDriver and is
+// covered by browser_core_protocol plus Linux integration tests.
 if (process.platform !== 'win32') {
-  console.log('skip: Windows Chrome DevTools 后端的无宿主回退测试');
+  console.log('skip: Windows Chrome DevTools no-host fallback test');
   process.exit(0);
 }
 
-// Windows 成功路径需要真实 Tauri WebView2 宿主。默认跳过；CI/本地可设置下面的
-// 测试开关，仅验证“宿主缺失时明确失败且不回退外部 Chrome”。
+// The Windows success path needs a real Tauri WebView2 host. Opt in only to
+// verify that a missing host fails explicitly without falling back to Chrome.
 if (process.env.PINVOU3_TEST_BROWSER_NO_HOST !== '1') {
-  console.log('skip: Windows 原生宿主链路需要 Tauri 应用进程');
+  console.log('skip: Windows native-host path requires the Tauri app process');
   process.exit(0);
 }
 
@@ -31,7 +33,8 @@ const WRAPPER = fileURLToPath(new URL(
   import.meta.url
 ));
 
-// --- 假 MCP server：NDJSON stdio，initialize/tools/list 静态应答，其余请求 echo ---
+// Fake MCP server: NDJSON stdio, static initialize/tools/list responses, and
+// echo responses for other requests.
 const FAKE_MCP = `const fs=require('node:fs');
 const failBeforeHandshake=Number(process.env.FAKE_MCP_FAIL_BEFORE_HANDSHAKE||0);
 const attemptFile=process.env.FAKE_MCP_ATTEMPT_FILE||'';
@@ -51,7 +54,7 @@ process.stdin.on('data',d=>{
     if(msg.method==='initialize'){
       process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:msg.id,result:{protocolVersion:msg.params?.protocolVersion??'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'fake-mcp',version:'0'}}})+'\\n');
     }else if(msg.method==='tools/list'){
-      process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:msg.id,result:{tools:[{name:'fake_tool',description:'x',inputSchema:{type:'object'}}]}})+'\\n');
+      process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:msg.id,result:{tools:[{name:'list_pages',description:'x',inputSchema:{type:'object'}}]}})+'\\n');
     }else if(msg.id!=null){
       process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:msg.id,result:{echoed:msg.method}})+'\\n');
     }
@@ -59,7 +62,8 @@ process.stdin.on('data',d=>{
 });
 `;
 
-// --- 假 Chrome：按 --remote-debugging-port 起 /json/version 服务，写 marker 后常驻 ---
+// Fake Chrome: serve /json/version on --remote-debugging-port, write a marker,
+// and stay alive.
 const FAKE_CHROME = `#!/usr/bin/env node
 const http=require('node:http');
 const fs=require('node:fs');
@@ -82,7 +86,7 @@ const CATALOG = {
     capabilities: { tools: {} },
     serverInfo: { name: 'fake-mcp', version: '0' },
   },
-  toolsListResult: { tools: [{ name: 'fake_tool', description: 'x', inputSchema: { type: 'object' } }] },
+  toolsListResult: { tools: [{ name: 'list_pages', description: 'x', inputSchema: { type: 'object' } }] },
 };
 
 function makeFixture() {
@@ -91,7 +95,7 @@ function makeFixture() {
   mkdirSync(binDir, { recursive: true });
   const mcpBin = join(binDir, 'fake-mcp.mjs');
   writeFileSync(mcpBin, FAKE_MCP);
-  // wrapper 约定 catalog 在 MCP bin 上三级（包根）。
+  // The wrapper expects the catalog three levels above the MCP binary.
   writeFileSync(join(root, 'pkg', 'catalog-shim.json'), JSON.stringify(CATALOG));
   const chromeBin = join(root, 'fake-chrome.cjs');
   writeFileSync(chromeBin, FAKE_CHROME);
@@ -106,7 +110,7 @@ function makeFixture() {
   };
 }
 
-// 驱动 wrapper：NDJSON 请求/应答，id → resolver。
+// Drive the wrapper with NDJSON requests and map response ids to resolvers.
 function driveWrapper(fx, env = {}) {
   const child = spawn(process.execPath, [WRAPPER, fx.mcpBin, fx.portJson], {
     stdio: ['pipe', 'pipe', 'inherit'],
@@ -148,7 +152,7 @@ function driveWrapper(fx, env = {}) {
       return new Promise((resolve, reject) => {
         pending.set(id, resolve);
         setTimeout(() => {
-          if (pending.delete(id)) reject(new Error(`${method} 应答超时`));
+          if (pending.delete(id)) reject(new Error(`${method} response timed out`));
         }, 30000).unref();
         send({ jsonrpc: '2.0', id, method, params });
       });
@@ -158,7 +162,7 @@ function driveWrapper(fx, env = {}) {
 }
 
 async function cleanup(fx, child) {
-  // 先走 stdin 关闭的优雅退出路径，再 SIGKILL 兜底。
+  // Try the graceful stdin-close path before falling back to SIGKILL.
   try {
     child.stdin.end();
     await sleep(800);
@@ -170,17 +174,12 @@ async function cleanup(fx, child) {
   } catch {
     /* ignore */
   }
-  // SIGKILL 后按 fixture 路径名兜底清理测试子进程。
-  try {
-    spawnSync('pkill', ['-9', '-f', fx.root], { stdio: 'ignore' });
-  } catch {
-    /* ignore */
-  }
-  // 与 wrapper 的端口文件/last-error 写入存在竞态，加宽限重试。
+  // Port-file and last-error writes can race cleanup, so allow bounded retries.
   rmSync(fx.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
 
-// 1) 懒启动：握手与工具目录由 shim 应答，全程不启动 Chrome、不写端口文件。
+// 1) Lazy startup: the shim handles the handshake and catalog without starting
+// Chrome or writing a port file.
 {
   const fx = makeFixture();
   const { child, send, request } = driveWrapper(fx);
@@ -196,19 +195,20 @@ async function cleanup(fx, child) {
     const list = await request('tools/list');
     assert.deepEqual(
       list.result.tools.map((t) => t.name),
-      ['fake_tool']
+      ['list_pages']
     );
-    // 给 wrapper 充分时间（若它错误地 eager 启动，假 Chrome 会写 marker/端口文件）。
+    // Allow enough time for an incorrect eager startup to write its marker.
     await sleep(1500);
-    assert.equal(existsSync(fx.marker), false, '懒启动：tools/list 不得启动 Chrome');
-    assert.equal(existsSync(fx.portJson), false, '懒启动：不得写端口文件');
-    assert.equal(child.exitCode, null, 'wrapper 应保持存活');
+    assert.equal(existsSync(fx.marker), false, 'lazy tools/list must not start Chrome');
+    assert.equal(existsSync(fx.portJson), false, 'lazy startup must not write a port file');
+    assert.equal(child.exitCode, null, 'wrapper must remain alive');
   } finally {
     await cleanup(fx, child);
   }
 }
 
-// 2) 原生宿主/自动化后端不可用时明确失败，不启动已配置的外部 Chrome。
+// 2) An unavailable native host or automation backend fails explicitly without
+// starting the configured external Chrome binary.
 {
   const fx = makeFixture();
   const { child, send, request, responses } = driveWrapper(fx);
@@ -218,14 +218,15 @@ async function cleanup(fx, child) {
     await request('tools/list');
     assert.equal(existsSync(fx.marker), false);
 
-    // 请求与取消放进同一个 stdin chunk，稳定覆盖“启动失败 microtask 前已登记取消”。
+    // Put request and cancellation in one stdin chunk so cancellation is
+    // registered before the startup-failure microtask runs.
     const cancelledId = 9000;
     child.stdin.write([
       JSON.stringify({
         jsonrpc: '2.0',
         id: cancelledId,
         method: 'tools/call',
-        params: { name: 'fake_tool', arguments: {} },
+        params: { name: 'list_pages', arguments: {} },
       }),
       JSON.stringify({
         jsonrpc: '2.0',
@@ -238,19 +239,29 @@ async function cleanup(fx, child) {
     assert.equal(
       responses.some((message) => message.id === cancelledId),
       false,
-      '启动失败不得向已取消的 buffered 请求回错误',
+      'startup failure must not reply to a cancelled buffered request',
+    );
+    assert.equal(
+      existsSync(join(fx.root, 'home', 'last-error.json')),
+      false,
+      'a cancelled startup request must not pollute the next session last-error',
     );
 
-    const call = await request('tools/call', { name: 'fake_tool', arguments: {} });
-    assert.ok(call.error, '原生后端缺失时应应答 JSON-RPC error');
+    const call = await request('tools/call', { name: 'list_pages', arguments: {} });
+    assert.ok(call.error, 'a missing native backend must return a JSON-RPC error');
     assert.match(call.error.message, /host-backend-unavailable/);
-    assert.match(call.error.message, /不会启动外部 Chrome/);
-    assert.equal(existsSync(fx.marker), false, 'tools/call 不得启动已配置的外部 Chrome');
-    assert.equal(existsSync(fx.portJson), false, '不得为外部 Chrome 写入 CDP 端口文件');
-    assert.equal(existsSync(fx.mcpAttemptFile), false, '宿主失败时不得启动上游 MCP 子进程');
+    assert.match(call.error.message, /external Chrome will not be started/);
+    assert.equal(existsSync(fx.marker), false, 'tools/call must not start configured Chrome');
+    assert.equal(existsSync(fx.portJson), false, 'external Chrome must not get a CDP port file');
+    assert.equal(existsSync(fx.mcpAttemptFile), false, 'host failure must not start upstream MCP');
     const lastError = JSON.parse(readFileSync(join(fx.root, 'home', 'last-error.json'), 'utf8'));
-    assert.match(lastError.reason, /host-backend-unavailable/);
-    // wrapper 保持 shim 态，目录仍然可用，后续可在应用升级/宿主恢复后重试。
+    assert.deepEqual(
+      Object.keys(lastError).sort((a, b) => a.localeCompare(b)),
+      ['at', 'code'],
+    );
+    assert.equal(lastError.code, 'browser/host-backend-unavailable');
+    // The wrapper remains in shim mode with a usable catalog so a later host
+    // recovery or app upgrade can retry.
     const list = await request('tools/list');
     assert.equal(list.result.tools.length, 1);
     assert.equal(child.exitCode, null);

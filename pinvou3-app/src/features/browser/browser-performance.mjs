@@ -55,7 +55,8 @@ export function browserPerformanceSnapshot() {
       p95Ms,
       maxMs: values.length ? Math.max(...values) : null,
       thresholdMs,
-      // 少量手工点击不能冒充 P95 门禁通过；至少 30 个样本才给出布尔结论。
+      // A few manual clicks cannot satisfy a P95 gate. Report a boolean only
+      // after collecting at least 30 samples.
       passes: thresholdMs == null || values.length < MIN_GATE_SAMPLES
         ? null
         : p95Ms < thresholdMs,

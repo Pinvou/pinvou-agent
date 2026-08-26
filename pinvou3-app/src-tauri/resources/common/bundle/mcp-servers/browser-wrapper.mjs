@@ -1,31 +1,41 @@
 #!/usr/bin/env node
 /**
- * browser-wrapper.mjs —— 品悟浏览器 MCP server 的 stdio 协调包装（懒启动代理）。
+ * browser-wrapper.mjs -- stdio coordination wrapper for the Pinvou browser
+ * MCP server (lazy-start proxy).
  *
- * 职责：
- *  1. 懒启动：引擎在会话首个 turn 即 connect 全部 MCP server（CodeWhale
- *     `McpPool::connect_all`），若本包装在进程启动时就准备浏览器，则每个工作
- *     模式会话的首条消息都会常驻浏览器运行时。因此本包装先以
- *     shim 身份直接应答 MCP 握手（`initialize` / `ping` / `tools/list`，目录
- *     来自构建期捕获的 catalog-shim.json），**直到首个 `tools/call`（或其他真实
- *     请求）到达**才准备当前平台的应用内浏览器后端。Windows 随后代理官方
- *     chrome-devtools-mcp；Linux/macOS 则继续由本包装转发 BrowserCore 请求。
- *  2. 与品悟桌面端（Rust BrowserManager）协调任务自有原生页面的生命周期：
- *     - Windows 通过对话级 host-requests/*.json 创建 WebView2，并以 CDP 操作；
- *     - Linux 使用 WebKitGTK + WebKitWebDriver，macOS 使用 WKWebView + AppKit；
- *     - 任一平台的原生宿主不可用时明确报错，绝不启动或复用外部 Chrome；
- *     - 三端共享同一 Agent 工具契约、会话隔离、控制租约与宿主请求协议。
- *  3. 仅在 Windows 以 `--browser-url` 把官方 chrome-devtools-mcp 指向应用持有的
- *     WebView2 CDP 端口，并关闭其遥测、更新检查和 CrUX 上报。
+ * Responsibilities:
+ *  1. Lazy startup. CodeWhale connects every MCP server on a session's first
+ *     turn (`McpPool::connect_all`). Preparing the browser at process startup
+ *     would therefore keep a browser runtime alive after every first Work-mode
+ *     message. This wrapper initially acts as a shim and directly answers MCP
+ *     `initialize`, `ping`, and `tools/list` from the build-time
+ *     catalog-shim.json. It prepares the platform's in-app browser backend only
+ *     when the first `tools/call` or other real request arrives. Windows then
+ *     proxies the official chrome-devtools-mcp; Linux and macOS continue by
+ *     forwarding BrowserCore requests.
+ *  2. Coordinate task-owned native-page lifecycles with the Pinvou desktop
+ *     Rust BrowserManager:
+ *     - Windows creates conversation-scoped WebView2 instances through
+ *       host-requests/*.json and operates them over CDP;
+ *     - Linux uses WebKitGTK with WebKitWebDriver; macOS uses WKWebView/AppKit;
+ *     - unavailable native hosts fail explicitly and never start or reuse an
+ *       external Chrome instance;
+ *     - all three platforms share one Agent tool contract, session isolation,
+ *       control leases, and host-request protocol.
+ *  3. On Windows only, point the official chrome-devtools-mcp at the app-owned
+ *     WebView2 CDP port using `--browser-url`, with telemetry, update checks,
+ *     and CrUX reporting disabled.
  *
- * 协议约束：MCP 走 stdin/stdout（JSON-RPC over stdio，NDJSON 行分帧），本包装
- * 往 stdout 只写协议消息；日志一律走 stderr。
+ * Protocol constraint: MCP uses JSON-RPC over stdin/stdout with NDJSON line
+ * framing. The wrapper writes protocol messages only to stdout and logs only
+ * to stderr.
  *
- * 用法：
+ * Usage:
  *   node browser-wrapper.mjs <chrome-devtools-mcp-bin|@pinvou/browser-core> <host-state-json> [extra-args...]
  *
- * 退出：wrapper 自身生命周期即 MCP server 生命周期；Windows 启动后还负责托管
- * chrome-devtools-mcp 子进程，BrowserCore 平台不创建额外 MCP 子进程。
+ * Exit: the wrapper lifetime is the MCP server lifetime. On Windows it also
+ * owns the chrome-devtools-mcp child process; BrowserCore platforms create no
+ * additional MCP child process.
  */
 
 import { execFile, spawn } from 'node:child_process';
@@ -45,12 +55,16 @@ import {
   adaptBrowserCatalog,
   assertAllowedBrowserToolCall,
   assertAllowedHostedNavigation,
+  BROWSER_PROTOCOL_FRAME_MAX_BYTES,
   browserHostBackendPolicy,
   browserToolMayMutate,
   buildBijectivePageTokenMaps,
+  createBoundedLineBacklog,
+  createBoundedNdjsonDecoder,
   createHostCallerHeartbeat,
   createHostCancellationTombstone,
   createHostRequestEnvelope,
+  createOrderedWritableQueue,
   explicitOwnedPageId,
   filterPagesResult,
   findHostedTabPage,
@@ -92,6 +106,10 @@ const WINDOWS_AGENT_OPERATION_REFRESH_TIMEOUT_MS = Math.min(
   5_000,
   WINDOWS_AGENT_OPERATION_WINDOW_MS - WINDOWS_AGENT_OPERATION_HEARTBEAT_INTERVAL_MS,
 );
+const STARTUP_PENDING_REQUEST_MAX_COUNT = 1024;
+const STARTUP_PENDING_REQUEST_MAX_BYTES = BROWSER_PROTOCOL_FRAME_MAX_BYTES;
+const STARTUP_PENDING_OUTPUT_MAX_COUNT = 1024;
+const STARTUP_PENDING_OUTPUT_MAX_BYTES = BROWSER_PROTOCOL_FRAME_MAX_BYTES;
 function recordBrowserPerformance(metric, durationMs) {
   if (!BROWSER_PERF_LOG_ENABLED || !Number.isFinite(durationMs) || durationMs < 0) return;
   process.stderr.write(`[browser-perf] ${JSON.stringify({
@@ -103,7 +121,7 @@ function recordBrowserPerformance(metric, durationMs) {
 }
 
 // ---------------------------------------------------------------------------
-// 参数：node browser-wrapper.mjs <mcp-bin> <cdp-port-json> [extra...]
+// Arguments: node browser-wrapper.mjs <mcp-bin> <cdp-port-json> [extra...]
 // ---------------------------------------------------------------------------
 const [, , MCP_BIN_ARG, CDP_PORT_JSON, ...EXTRA_ARGS] = process.argv;
 if (!MCP_BIN_ARG || !CDP_PORT_JSON) {
@@ -128,9 +146,10 @@ const HOST_CORE_REQUEST_TIMEOUT_MS = Number.isSafeInteger(configuredHostCoreTime
   ? configuredHostCoreTimeout
   : 25_000;
 
-// Tauri 在 Windows 开发/安装目录上可能产出 `\\?\C:\...`。Node 的 fs API 能
-// 处理不少 verbatim 路径，但把它作为另一个 Node 进程的入口脚本参数时会误解析
-// 盘符并报 EISDIR。wrapper 自身再做一层兼容，旧会话配置也能在重启后恢复。
+// Tauri may produce `\\?\C:\...` paths in Windows development and install
+// directories. Node's fs APIs accept many verbatim paths, but another Node
+// process may misparse one used as its entry-script argument and report
+// EISDIR. Normalize here as well so older session configuration recovers.
 function nodeCompatibleEntryPath(value) {
   if (process.platform !== 'win32') return value;
   if (value.startsWith('\\\\?\\UNC\\')) return `\\\\${value.slice(8)}`;
@@ -140,17 +159,19 @@ function nodeCompatibleEntryPath(value) {
 
 const MCP_BIN = nodeCompatibleEntryPath(MCP_BIN_ARG);
 
-// chrome-devtools-mcp 的运行时要求（上游 package.json engines）：
-// ^20.19.0 || ^22.12.0 || >=23。系统 node 过旧时 shim 仍能应答握手/工具目录
-// （构建期捕获的 catalog 文件），但首个真实请求会失败并给出可读原因。
+// chrome-devtools-mcp runtime requirement (upstream package.json engines):
+// ^20.19.0 || ^22.12.0 || >=23. With an older system Node, the build-time
+// catalog still lets the shim answer handshakes and tools/list, but the first
+// real request fails with an actionable reason.
 function nodeTooOld() {
   const [major, minor] = process.versions.node.split('.').map(Number);
   return !(major >= 23 || (major === 22 && minor >= 12) || (major === 20 && minor >= 19));
 }
 
 // ---------------------------------------------------------------------------
-// CDP 存活探测（GET /json/version）。异步执行子进程并在重试间让出事件循环，
-// 避免同步忙循环压住 MCP 握手、超时与宿主请求等启动期异步逻辑。
+// CDP liveness probe (GET /json/version). Run the subprocess asynchronously and
+// yield between retries so a synchronous busy loop cannot starve MCP handshakes,
+// timeouts, or host requests during startup.
 // ---------------------------------------------------------------------------
 function probeCdpOnce(port) {
   return new Promise((resolve) => {
@@ -182,22 +203,34 @@ async function probeCdp(port, timeoutMs) {
 }
 
 // ---------------------------------------------------------------------------
-// 端口文件只读：只有应用宿主可发布 `{ port, owner: "app" }`。
+// The port file is read-only here. Only the app host can publish
+// `{ port, owner: "app" }`.
 // ---------------------------------------------------------------------------
 function readPortFile() {
   try {
     const data = JSON.parse(readFileSync(CDP_PORT_JSON, 'utf8'));
     if (typeof data.port === 'number' && data.port > 0 && data.port < 65536) return data;
   } catch {
-    /* 无文件/坏 json */
+    /* Missing file or invalid JSON. */
   }
   return null;
 }
 
-// 最近一次启动失败记录（{ reason, at }）：Rust 侧（browser_unavailability_reason）
-// 在下次会话把原因注入模型可见的 instructions，让模型能精确引导用户修复。
-// 成功启动（CDP 就绪）时清除。
+// Most recent startup failure ({ code, at }). Persist only allowlisted stable
+// codes, never host exception text, user paths, or transport details that would
+// reach the next session's model instructions. Rust maps these codes to static
+// messages. Clear the record after a successful connection.
 const LAST_ERROR_JSON = join(dirname(CDP_PORT_JSON), 'last-error.json');
+const PERSISTED_LAST_ERROR_CODES = new Set([
+  'browser/host-backend-unavailable',
+  'unsupported/host-backend-unavailable',
+  'browser/node-runtime-too-old',
+  'browser/mcp-runtime-start-failed',
+  'browser/core-backend-unavailable',
+  'browser/webkit-webdriver-not-found',
+  'browser/webkit-webdriver-unavailable',
+  'browser/webkit-webdriver-session-timeout',
+]);
 const HOST_REQUEST_DIR = join(dirname(CDP_PORT_JSON), 'host-requests');
 const SESSION_ID = process.env.PINVOU3_BROWSER_SESSION_ID || '';
 const SESSION_TOKEN = process.env.PINVOU3_BROWSER_SESSION_TOKEN || '';
@@ -234,7 +267,7 @@ function atomicWriteJson(path, value) {
 
 function writeHostCallerHeartbeat() {
   if (!SESSION_ID || !/^[0-9a-f]{16}$/.test(SESSION_TOKEN)) {
-    throw new Error('浏览器宿主调用方心跳缺少有效会话身份');
+    throw new Error('Browser host caller heartbeat is missing a valid session identity');
   }
   mkdirSync(HOST_REQUEST_DIR, { recursive: true });
   hostCallerHeartbeatPath ||= join(
@@ -259,7 +292,7 @@ function ensureHostCallerHeartbeat() {
       // A stale/missing heartbeat makes the Rust host reject authority-bearing
       // work. Keep the wrapper alive so a later request can repair a transient
       // filesystem failure by synchronously refreshing before publication.
-      log('刷新浏览器宿主调用方心跳失败:', error?.message || error);
+      log('Failed to refresh browser host caller heartbeat:', error?.message || error);
     }
   }, HOST_CALLER_HEARTBEAT_INTERVAL_MS);
   hostCallerHeartbeatTimer.unref?.();
@@ -277,9 +310,10 @@ function stopHostCallerHeartbeat() {
 
 function quarantineTimedOutHostResponse(responsePath, tombstonePath) {
   const sweep = () => {
-    try { unlinkSync(responsePath); } catch { /* 尚无晚响应 */ }
-    // 取消 tombstone 是宿主提交边界，不能由调用方按 TTL 撤销。宿主消费并
-    // 删除 tombstone 后才结束晚响应隔离；若宿主崩溃，它会留到下次启动屏障清理。
+    try { unlinkSync(responsePath); } catch { /* No late response yet. */ }
+    // A cancellation tombstone is a host commit boundary and cannot be revoked
+    // by caller-side TTL. Late-response isolation ends only after the host
+    // consumes and removes it. A host crash leaves it for the next startup gate.
     if (!existsSync(tombstonePath)) clearInterval(timer);
   };
   const timer = setInterval(sweep, 500);
@@ -294,8 +328,9 @@ function cancelTimedOutHostRequest({
   tombstonePath,
   reason,
 }) {
-  // 先提交 tombstone 再删除请求。配套宿主必须在执行操作和写响应前检查它，并按
-  // idempotency_key 去重；当前 wrapper 同时隔离任何晚响应，绝不让它进入后续请求。
+  // Publish the tombstone before deleting the request. The host must check it
+  // before execution and response publication and deduplicate by idempotency_key.
+  // This wrapper also quarantines every late response from later requests.
   try {
     atomicWriteJson(tombstonePath, createHostCancellationTombstone({
       requestId,
@@ -306,9 +341,9 @@ function cancelTimedOutHostRequest({
       reason,
     }));
   } catch (error) {
-    log('写入浏览器宿主取消 tombstone 失败:', error.message);
+    log('Failed to write browser host cancellation tombstone:', error.message);
   }
-  try { unlinkSync(requestPath); } catch { /* 宿主可能已经领取 */ }
+  try { unlinkSync(requestPath); } catch { /* The host may already own it. */ }
   quarantineTimedOutHostResponse(responsePath, tombstonePath);
 }
 
@@ -356,7 +391,7 @@ async function requestHost(
     !SESSION_ID ||
     !/^[0-9a-f]{16}$/.test(SESSION_TOKEN)
   ) {
-    throw new Error('当前不是受管 WebView2 浏览器会话');
+    throw new Error('The current session is not a managed WebView2 browser session');
   }
   const requestId = requestedId || createHostRequestId();
   const names = hostRequestArtifactNames(SESSION_TOKEN, requestId);
@@ -394,7 +429,7 @@ async function requestHost(
         reason: 'client-cancelled',
       });
       throw markHostRequestAcknowledgementUnknown(
-        new Error('浏览器工具调用已取消'),
+        new Error('Browser tool call was cancelled'),
         operation,
       );
     }
@@ -428,8 +463,8 @@ async function requestHost(
         throw markHostRequestAcknowledgementUnknown(error, operation);
       } finally {
         try { unlinkSync(responsePath); } catch { /* ignore */ }
-        try { unlinkSync(requestPath); } catch { /* 宿主通常已经删除 */ }
-        try { unlinkSync(tombstonePath); } catch { /* 不应存在 */ }
+        try { unlinkSync(requestPath); } catch { /* The host usually removed it. */ }
+        try { unlinkSync(tombstonePath); } catch { /* Expected to be absent. */ }
       }
     }
     await sleep(50);
@@ -446,19 +481,20 @@ async function requestHost(
 }
 
 /**
- * Windows 主应用负责创建真实嵌入的 WebView2。wrapper 只发按需请求并等待统一
- * CDP 端口；创建失败时明确报错，避免旧截图模式或第二个浏览器窗口混入界面。
+ * The Windows main application owns the real embedded WebView2. The wrapper
+ * only issues an on-demand request and waits for the shared CDP port. Creation
+ * fails explicitly so no legacy screenshot mode or second browser window can
+ * enter the interface.
  */
 async function requestHostedBrowser() {
   if (process.platform !== 'win32') return 0;
   if (!SESSION_ID || !/^[0-9a-f]{16}$/.test(SESSION_TOKEN)) {
-    writeLastError('浏览器会话身份缺失，无法创建对话级 WebView2');
     return 0;
   }
   try {
     await requestHost('prepare', { pid: process.pid }, 25_000, false);
   } catch (error) {
-    log('WebView2 按需启动请求失败:', error.message);
+    log('On-demand WebView2 startup request failed:', error.message);
     return 0;
   }
   const portFile = readPortFile();
@@ -471,11 +507,12 @@ function readWorkspaceState() {
   try {
     value = JSON.parse(readFileSync(WORKSPACE_STATE_JSON, 'utf8'));
   } catch {
-    /* 工作区可能正在原子替换或尚未创建，调用方按未就绪处理 */
+    /* The workspace may be atomically replaced or not yet created. */
     return null;
   }
-  // 只接受宿主发布的完整 v2 权威映射。旧 v1 页面 marker 没有 target 身份，若在
-  // 已导航页面或 MCP 重启后继续使用只能按 URL/顺序猜测，必须明确失败而非回落。
+  // Accept only the complete authoritative v2 mapping published by the host.
+  // Legacy v1 page markers lack target identity and would force URL/order
+  // guessing after navigation or an MCP restart, so fail instead of falling back.
   return parseAuthoritativeHostWorkspace(value, SESSION_TOKEN);
 }
 
@@ -496,23 +533,38 @@ async function requestHostedOperation(
   );
 }
 
-function writeLastError(reason) {
+function stableLastErrorCode(value) {
+  const message = value?.message || String(value || '');
+  for (const code of PERSISTED_LAST_ERROR_CODES) {
+    if (message === code || message.startsWith(`${code}:`)) return code;
+  }
+  return null;
+}
+
+function writeLastErrorCode(code) {
+  if (!PERSISTED_LAST_ERROR_CODES.has(code)) return;
   try {
     mkdirSync(dirname(LAST_ERROR_JSON), { recursive: true });
-    // at 用 **秒**（与 Rust 侧 `browser_unavailability_reason` 的
-    // `duration_since(UNIX_EPOCH).as_secs()` 同单位）：若写毫秒（Date.now()），
-    // Rust 侧 `now.saturating_sub(at)` 恒为 0，「24h 内新鲜才注入」门禁成死代码，
-    // 过期失败原因会无限期注入。
-    writeFileSync(LAST_ERROR_JSON, JSON.stringify({ reason, at: Math.floor(Date.now() / 1000) }));
+    // `at` uses seconds, matching Rust `browser_unavailability_reason` and its
+    // `duration_since(UNIX_EPOCH).as_secs()`. Milliseconds from Date.now() would
+    // make `now.saturating_sub(at)` always zero, defeating the 24-hour freshness
+    // gate and injecting expired failures indefinitely.
+    atomicWriteJson(LAST_ERROR_JSON, { code, at: Math.floor(Date.now() / 1000) });
   } catch {
-    /* 写失败不影响主流程 */
+    /* Persistence failure must not affect the main flow. */
   }
 }
+
+function persistKnownLastError(value) {
+  const code = stableLastErrorCode(value);
+  if (code) writeLastErrorCode(code);
+}
+
 function clearLastError() {
   try {
     unlinkSync(LAST_ERROR_JSON);
   } catch {
-    /* 不存在就算了 */
+    /* Absence is already the desired state. */
   }
 }
 
@@ -527,20 +579,21 @@ function isHostedWebView2Port(portFile) {
 }
 
 // ---------------------------------------------------------------------------
-// 原生浏览器宿主协调。成功返回应用拥有的 CDP 端口；失败抛出带稳定错误码的
-// 可读错误并留在 shim 态。这里不得读取、启动或复用外部 Chrome。
+// Native browser-host coordination. Success returns the app-owned CDP port;
+// failure throws a readable stable-code error and remains in shim state. This
+// path must never discover, start, or reuse external Chrome.
 // ---------------------------------------------------------------------------
 async function ensureBrowserRunning() {
   const policy = browserHostBackendPolicy(process.platform);
   if (policy.action !== 'request-native-host') {
     hostedWebView2 = false;
-    const reason = `${policy.code}: ${policy.message}；不会启动外部 Chrome`;
-    writeLastError(reason);
+    const reason = `${policy.code}: ${policy.message}; external Chrome will not be started`;
     throw new Error(reason);
   }
 
-  // Windows 每个任务对话都必须先向宿主登记并创建自己的子 WebView。不能仅因
-  // cdp-port.json 必须指向当前应用持有的存活 CDP 端点，否则会接入应用外页面或其他身份。
+  // Every Windows task conversation must register with the host and create its
+  // own child WebView first. cdp-port.json must name a live endpoint owned by
+  // this app; otherwise the wrapper could attach to external pages or identity.
   const hostedPort = await requestHostedBrowser();
   const portFile = readPortFile();
   if (hostedPort > 0 && isHostedWebView2Port(portFile)) {
@@ -550,18 +603,19 @@ async function ensureBrowserRunning() {
   }
 
   hostedWebView2 = false;
-  const reason = 'host-backend-unavailable: 应用内 WebView2 未就绪，请重新启动 PINVOU 后重试；不会启动外部 Chrome';
-  writeLastError(reason);
+  const reason = 'browser/host-backend-unavailable: in-app WebView2 is not ready; restart PINVOU and retry; external Chrome will not be started';
   throw new Error(reason);
 }
 
 // ---------------------------------------------------------------------------
-// MCP 目录（initialize / tools/list 应答来源）
+// MCP catalog (source for initialize and tools/list responses)
 //
-// 构建期 vendor 脚本捕获 `catalog-shim.json`（与 MCP bin 同级的包根目录）：
-// 官方 server 的工具目录是静态注册、无需浏览器连接，因此可以离线捕获并在 shim
-// 阶段原样应答。文件缺失（开发环境直接指向自编译 bin 等）时运行时探测一次
-// （不启动 Chrome：上游仅在 tools/call 时才经 getContext() 连接浏览器）。
+// The build-time vendor script captures `catalog-shim.json` beside the MCP bin.
+// The official server registers its catalog statically without a browser
+// connection, so the shim can capture and answer it offline. If the file is
+// absent (for example, development points at a custom bin), probe once at
+// runtime without starting Chrome; upstream only connects through getContext()
+// on tools/call.
 // ---------------------------------------------------------------------------
 const CATALOG_JSON = join(dirname(MCP_BIN), '..', '..', '..', 'catalog-shim.json');
 let catalog = null;
@@ -577,15 +631,16 @@ function validCatalog(value) {
   );
 }
 
-// Windows 原生模式保留完整目录；new/list/select/close 由下方工作区路由接管，
-// 每个页面级工具自动补当前对话的 pageId，不让 Agent 接触其他对话的 target。
+// Windows native mode keeps the complete catalog. Workspace routing below owns
+// new/list/select/close, and every page-scoped tool receives the current
+// conversation pageId so the Agent cannot access another conversation target.
 function loadCatalogFile() {
   try {
     const data = JSON.parse(readFileSync(CATALOG_JSON, 'utf8'));
     if (validCatalog(data)) return data;
-    log('catalog-shim.json 形状不符，回退运行时探测');
+    log('catalog-shim.json has an invalid shape; falling back to runtime probing');
   } catch {
-    /* 无文件/坏 json → 运行时探测 */
+    /* Missing file or invalid JSON: probe at runtime. */
   }
   return null;
 }
@@ -610,7 +665,9 @@ async function probeCatalog() {
       resolve(null);
       return;
     }
-    let buf = '';
+    const outputDecoder = createBoundedNdjsonDecoder({
+      source: 'browser catalog probe stdout',
+    });
     let initializeResult = null;
     const tools = [];
     let done = false;
@@ -636,11 +693,14 @@ async function probeCatalog() {
       )
     );
     child.stdout.on('data', (chunk) => {
-      buf += chunk;
-      let idx;
-      while ((idx = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, idx);
-        buf = buf.slice(idx + 1);
+      let lines;
+      try {
+        lines = outputDecoder.push(chunk);
+      } catch {
+        finish(null);
+        return;
+      }
+      for (const line of lines) {
         let msg;
         try {
           msg = JSON.parse(line);
@@ -680,18 +740,23 @@ async function probeCatalog() {
 }
 
 // ---------------------------------------------------------------------------
-// stdio shim / 透明代理状态机
+// stdio shim / transparent proxy state machine
 // ---------------------------------------------------------------------------
-// shim     ：wrapper 直接应答 initialize/ping/tools/list（不准备浏览器宿主）；
-//            其余一切请求触发启动。
-// starting ：原生浏览器宿主 + MCP 子进程准备中，到达的请求行缓冲、取消通知登记；
-//            启动失败 → 缓冲请求统一报错，回到 shim（可重试）。
-// proxy    ：双向透传（stdin 行 → 子进程 stdin；子进程 stdout → stdout）。
+// shim:     wrapper directly answers initialize/ping/tools/list without
+//           preparing the browser host; every other request triggers startup.
+// starting: native host and MCP child are being prepared. Buffer request lines
+//           and record cancellations. Startup failure answers buffered requests
+//           and returns to the retryable shim state.
+// proxy:    bidirectional passthrough (stdin to child, child stdout to stdout).
 let state = 'shim';
 let startPromise = null;
 let mcpChild = null;
 let clientInitializeParams = null;
-let bufferedLines = [];
+const bufferedLines = createBoundedLineBacklog({
+  maxLines: STARTUP_PENDING_REQUEST_MAX_COUNT,
+  maxBytes: STARTUP_PENDING_REQUEST_MAX_BYTES,
+  source: 'browser wrapper startup request backlog',
+});
 const cancelledIds = new Set();
 const hostCoreRequestIds = new Set();
 let hostCorePrepared = false;
@@ -701,12 +766,45 @@ let shutdownPromise = null;
 const WRAPPER_SHUTTING_DOWN_ERROR =
   'browser/wrapper-shutting-down: browser wrapper is shutting down';
 
+const protocolOutput = createOrderedWritableQueue(process.stdout, {
+  onError(error) {
+    console.error('[browser-wrapper] protocol stdout failed:', error);
+    void gracefulShutdown(1, `browser wrapper stdout failed: ${error.message}`, {
+      cancelAcceptedRequests: true,
+    });
+  },
+});
+
+function writeRawOut(value) {
+  void protocolOutput.write(value);
+}
+
 function writeOut(msg) {
-  process.stdout.write(JSON.stringify(msg) + '\n');
+  writeRawOut(JSON.stringify(msg) + '\n');
 }
 
 function respondError(id, message) {
   writeOut({ jsonrpc: '2.0', id, error: { code: -32000, message } });
+}
+
+function bufferStartupRequest(line) {
+  try {
+    bufferedLines.push(line);
+    return true;
+  } catch (error) {
+    let requestId = null;
+    try {
+      requestId = JSON.parse(line)?.id ?? null;
+    } catch {
+      // A malformed line has no response identity, but the bounded shutdown
+      // still protects every request already accepted during startup.
+    }
+    const reason = error?.message || String(error);
+    if (requestId != null) respondError(requestId, reason);
+    log('Browser wrapper startup backlog limit reached:', reason);
+    void gracefulShutdown(1, reason, { cancelAcceptedRequests: true });
+    return false;
+  }
 }
 
 async function ensureHostedBrowserCore(isCancelled = null) {
@@ -724,7 +822,7 @@ function resetHostedBrowserCorePreparation() {
 
 function assertHostCoreRequestActive(requestId) {
   if (shuttingDown || cancelledIds.has(requestId)) {
-    throw new Error('浏览器工具调用已取消');
+    throw new Error('Browser tool call was cancelled');
   }
 }
 
@@ -898,13 +996,22 @@ function queueHostedBrowserCoreCall(message) {
         throw new Error(`browser/core-tool-unavailable-on-${process.platform}: ${message.params.name}`);
       }
       const result = await requestHostedBrowserCoreTool(message);
+      // Any completed BrowserCore request proves the persistent backend is
+      // reachable again, even when the caller cancelled before consuming it.
+      clearLastError();
       if (!cancelledIds.delete(message.id)) {
         writeOut({ jsonrpc: '2.0', id: message.id, result });
       }
     } catch (error) {
       const reason = error?.message || String(error);
-      writeLastError(reason);
-      if (!cancelledIds.delete(message.id)) respondError(message.id, reason);
+      const wasCancelled = cancelledIds.delete(message.id);
+      // Cancellation, stdin closure and one-off transport/action errors must
+      // not poison the next conversation. Persist only explicit long-lived
+      // backend availability codes from an uncancelled request.
+      if (!wasCancelled && !shuttingDown) {
+        persistKnownLastError(error);
+        respondError(message.id, reason);
+      }
     } finally {
       hostCoreRequestIds.delete(message.id);
       cancelledIds.delete(message.id);
@@ -913,17 +1020,18 @@ function queueHostedBrowserCoreCall(message) {
 }
 
 function handleShimRequest(msg, raw) {
-  // 目录不可得（catalog 文件缺失且运行时探测失败）：握手/目录如实报错，
-  // 进程保持 shim 态存活，引擎下轮重连可恢复。
+  // If the catalog file is absent and runtime probing failed, answer handshake
+  // and catalog requests truthfully while keeping shim state alive for a later
+  // engine reconnect.
   if (!catalog && (msg.method === 'initialize' || msg.method === 'tools/list')) {
-    respondError(msg.id, 'browser MCP 工具目录不可用（catalog-shim.json 缺失且探测失败）');
+    respondError(msg.id, 'Browser MCP catalog is unavailable: catalog-shim.json is missing and probing failed');
     return;
   }
   switch (msg.method) {
     case 'initialize': {
       clientInitializeParams = msg.params ?? null;
-      // protocolVersion 回显客户端请求值（上游 SDK 同款协商行为；实测
-      // chrome-devtools-mcp 对 2024-11-05 请求应答 2024-11-05）。
+      // Echo the requested protocolVersion, matching upstream SDK negotiation.
+      // chrome-devtools-mcp returns 2024-11-05 for a 2024-11-05 request.
       const result = { ...catalog.initializeResult };
       if (typeof msg.params?.protocolVersion === 'string') {
         result.protocolVersion = msg.params.protocolVersion;
@@ -947,15 +1055,16 @@ function handleLine(line) {
   try {
     msg = JSON.parse(line);
   } catch {
-    /* 坏行丢弃（协议对端是引擎，正常不会发生） */
+    /* Drop malformed engine input; this should not occur in normal operation. */
   }
   if (shuttingDown) {
     if (msg?.id != null) respondError(msg.id, WRAPPER_SHUTTING_DOWN_ERROR);
     return;
   }
   try {
-    // 必须在触发宿主准备、进入启动缓冲或透传给上游前 fail-closed。
-    // 目录隐藏只是可发现性约束，不能代替直接 tools/call 的执行边界。
+    // Fail closed before preparing the host, buffering startup, or forwarding
+    // upstream. Catalog hiding is only a discovery constraint and cannot replace
+    // the execution boundary for a direct tools/call.
     assertAllowedBrowserToolCall(msg);
   } catch (error) {
     if (msg?.id != null) respondError(msg.id, error?.message || String(error));
@@ -979,22 +1088,23 @@ function handleLine(line) {
     return;
   }
   if (state === 'starting') {
-    // 启动期：取消通知登记（flush 时跳过该请求），其余请求缓冲，通知丢弃。
+    // During startup, record cancellations so flush skips those requests. Buffer
+    // other requests and discard notifications.
     if (msg && msg.method === 'notifications/cancelled' && msg.params?.requestId != null) {
       cancelledIds.add(msg.params.requestId);
     } else if (msg && msg.id != null) {
-      bufferedLines.push(line);
+      bufferStartupRequest(line);
     }
     return;
   }
-  // shim 态
+  // shim state
   if (!msg) return;
-  if (msg.id == null) return; // initialized 等通知：无需处理
+  if (msg.id == null) return; // Notifications such as initialized need no reply.
   handleShimRequest(msg, line);
 }
 
 function triggerStart(raw) {
-  bufferedLines.push(raw);
+  if (!bufferStartupRequest(raw)) return;
   if (startPromise) return;
   state = 'starting';
   startPromise = startProxy();
@@ -1005,14 +1115,14 @@ async function startProxy() {
   let startupChild = null;
   try {
     if (nodeTooOld()) {
-      const reason = `Node.js 版本过低（当前 ${process.versions.node}，chrome-devtools-mcp 要求 ^20.19 || ^22.12 || >=23）`;
-      writeLastError(reason);
+      const reason = `browser/node-runtime-too-old: current ${process.versions.node}; chrome-devtools-mcp requires ^20.19 || ^22.12 || >=23`;
       throw new Error(reason);
     }
     port = await ensureBrowserRunning();
-    // WebView2 的 /json/version 可能先于 DevTools WebSocket 完全就绪。官方 MCP
-    // 在这个很窄的启动窗口里会直接以 code=1 退出；把它当成瞬态启动失败，先确认
-    // CDP 仍存活再短退避重试，避免首个真实浏览器调用稳定失败、第二次却已就绪。
+    // WebView2 /json/version may become available before the DevTools WebSocket
+    // is fully ready. The official MCP exits with code 1 in this narrow window.
+    // Treat it as transient, confirm CDP remains alive, and retry after a short
+    // backoff so the first real browser call does not fail while the second works.
     startupChild = await spawnMcpChildWithRetry(port);
     startupChild.assertAlive();
     if (hostedWebView2) {
@@ -1031,16 +1141,17 @@ async function startProxy() {
   } catch (e) {
     await startupChild?.retireForReusableShim();
     const reason = e?.message || String(e);
-    log('浏览器启动失败:', reason);
-    writeLastError(reason);
-    const failed = uncancelledBufferedRequests(bufferedLines, cancelledIds);
-    bufferedLines = [];
+    log('Browser startup failed:', reason);
+    const failed = uncancelledBufferedRequests(bufferedLines.drain(), cancelledIds);
+    if (!shuttingDown && failed.length > 0) {
+      writeLastErrorCode(stableLastErrorCode(e) || 'browser/mcp-runtime-start-failed');
+    }
     state = 'shim';
     startPromise = null;
     for (const raw of failed) {
       try {
         const m = JSON.parse(raw);
-        if (m.id != null) respondError(m.id, `浏览器不可用: ${reason}`);
+        if (m.id != null) respondError(m.id, `Browser unavailable: ${reason}`);
       } catch {
         /* ignore */
       }
@@ -1050,8 +1161,7 @@ async function startProxy() {
   }
   state = 'proxy';
   startHostedBrowserWatchdog(port);
-  const pending = uncancelledBufferedRequests(bufferedLines, cancelledIds);
-  bufferedLines = [];
+  const pending = uncancelledBufferedRequests(bufferedLines.drain(), cancelledIds);
   startPromise = null;
   for (const raw of pending) {
     queueProxyLine(raw);
@@ -1063,12 +1173,14 @@ function writeChildRaw(line) {
   try {
     mcpChild?.stdin.write(line + '\n');
   } catch {
-    /* 子进程已死由 exit 处理器兜底 */
+    /* The exit handler owns an already-dead child. */
   }
 }
 
 let proxyQueue = Promise.resolve();
-let proxyChildBuffer = '';
+const proxyChildDecoder = createBoundedNdjsonDecoder({
+  source: 'chrome-devtools-mcp stdout',
+});
 let internalRequestSeq = 0;
 const internalRequests = new Map();
 const discardedInternalRequestIds = new Set();
@@ -1129,7 +1241,7 @@ function armManagedUpstreamSettlementDeadline(internalRequestId, pending, reason
   clearTimeout(pending.timer);
   pending.timer = setTimeout(() => {
     if (internalRequests.get(internalRequestId) !== pending) return;
-    log('受管浏览器工具在合作取消后仍未终止，关闭上游以收口原子操作:', reason);
+    log('Managed browser tool did not settle after cooperative cancellation; closing upstream:', reason);
     void gracefulShutdown(1, `${reason}; upstream did not settle`);
   }, MANAGED_UPSTREAM_SETTLEMENT_GRACE_MS);
 }
@@ -1181,8 +1293,9 @@ function queueProxyLine(line) {
     writeChildRaw(line);
     return;
   }
-  // 连接建立后的目录刷新也必须使用同一份适配目录；否则 shim 阶段隐藏的
-  // take_screenshot/upload_file 会在上游 tools/list 刷新后重新暴露给模型。
+  // Catalog refresh after connection must use the same adapted catalog;
+  // otherwise upstream tools/list would re-expose take_screenshot/upload_file
+  // that the shim hid from the model.
   if (msg?.method === 'tools/list' && msg.id != null && catalog) {
     writeOut({ jsonrpc: '2.0', id: msg.id, result: catalog.toolsListResult });
     return;
@@ -1193,11 +1306,12 @@ function queueProxyLine(line) {
       cancelledProxyRequestIds.add(requestId);
       cancelManagedUpstreamRequest(
         requestId,
-        msg.params?.reason || '浏览器工具调用已取消',
+        msg.params?.reason || 'Browser tool call was cancelled',
       );
       return;
     }
-    // 非受管工具仍以外部 id 原样透传，不能把它误映射到另一条内部调用。
+    // Unmanaged tools retain and forward their external IDs. Never remap one to
+    // another internal call.
     writeChildRaw(line);
     return;
   }
@@ -1217,7 +1331,7 @@ function queueProxyLine(line) {
         }
       } catch (error) {
         if (!cancelledProxyRequestIds.has(msg.id)) {
-          log('受管标签页路由失败:', error?.message || error);
+          log('Managed tab routing failed:', error?.message || error);
           respondError(msg.id, error?.message || String(error));
         }
       } finally {
@@ -1228,83 +1342,90 @@ function queueProxyLine(line) {
     });
 }
 
-function onProxyChildData(chunk) {
-  proxyChildBuffer += chunk;
-  let idx;
-  while ((idx = proxyChildBuffer.indexOf('\n')) >= 0) {
-    const line = proxyChildBuffer.slice(0, idx);
-    proxyChildBuffer = proxyChildBuffer.slice(idx + 1);
-    let msg;
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      process.stdout.write(line + '\n');
-      continue;
+function processProxyChildLine(line) {
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch {
+    writeRawOut(line + '\n');
+    return;
+  }
+  const pending = internalRequests.get(msg.id);
+  if (pending) {
+    internalRequests.delete(msg.id);
+    clearTimeout(pending.timer);
+    if (
+      pending.externalRequestId != null &&
+      externalToInternalRequestIds.get(pending.externalRequestId) === msg.id
+    ) {
+      externalToInternalRequestIds.delete(pending.externalRequestId);
     }
-    const pending = internalRequests.get(msg.id);
-    if (pending) {
-      internalRequests.delete(msg.id);
-      clearTimeout(pending.timer);
-      if (
-        pending.externalRequestId != null &&
-        externalToInternalRequestIds.get(pending.externalRequestId) === msg.id
-      ) {
-        externalToInternalRequestIds.delete(pending.externalRequestId);
-      }
-      if (msg.error) {
-        const upstreamError = msg.error.message || 'chrome-devtools-mcp 内部调用失败';
-        if (pending.awaitRealSettlement && pending.commitStateUnknown) {
-          pending.resolve(unknownManagedDispatchOutcome(
-            pending.settlementReason || 'upstream lifecycle interrupted',
-            upstreamError,
-          ));
-        } else if (pending.awaitRealSettlement && pending.mutationMayHaveCommitted) {
-          pending.resolve(unknownManagedDispatchOutcome(
-            `upstream ${pending.dispatchedToolName || 'browser mutation'} returned a JSON-RPC error after dispatch`,
-            upstreamError,
-            'browser/action-commit-unknown-after-upstream-error',
-          ));
-        } else {
-          pending.reject(new Error(upstreamError));
-        }
-      } else if (msg.result?.isError && pending.awaitRealSettlement && pending.commitStateUnknown) {
-        const upstreamError = Array.isArray(msg.result.content)
-          ? msg.result.content.map((item) => item?.text || '').filter(Boolean).join('\n')
-          : 'chrome-devtools-mcp returned a tool error';
+    if (msg.error) {
+      const upstreamError = msg.error.message || 'Internal chrome-devtools-mcp call failed';
+      if (pending.awaitRealSettlement && pending.commitStateUnknown) {
         pending.resolve(unknownManagedDispatchOutcome(
           pending.settlementReason || 'upstream lifecycle interrupted',
           upstreamError,
         ));
-      } else if (
-        msg.result?.isError &&
-        pending.awaitRealSettlement &&
-        pending.mutationMayHaveCommitted
-      ) {
-        const upstreamError = Array.isArray(msg.result.content)
-          ? msg.result.content.map((item) => item?.text || '').filter(Boolean).join('\n')
-          : 'chrome-devtools-mcp returned a tool error';
+      } else if (pending.awaitRealSettlement && pending.mutationMayHaveCommitted) {
         pending.resolve(unknownManagedDispatchOutcome(
-          `upstream ${pending.dispatchedToolName || 'browser mutation'} returned a tool error after dispatch`,
+          `upstream ${pending.dispatchedToolName || 'browser mutation'} returned a JSON-RPC error after dispatch`,
           upstreamError,
           'browser/action-commit-unknown-after-upstream-error',
         ));
-      } else if (msg.result?.isError && !pending.allowToolErrorResult) {
-        const message = Array.isArray(msg.result.content)
-          ? msg.result.content.map((item) => item?.text || '').filter(Boolean).join('\n')
-          : '';
-        pending.reject(new Error(message || 'chrome-devtools-mcp 内部工具调用失败'));
       } else {
-        pending.resolve(msg.result);
+        pending.reject(new Error(upstreamError));
       }
-      continue;
+    } else if (msg.result?.isError && pending.awaitRealSettlement && pending.commitStateUnknown) {
+      const upstreamError = Array.isArray(msg.result.content)
+        ? msg.result.content.map((item) => item?.text || '').filter(Boolean).join('\n')
+        : 'chrome-devtools-mcp returned a tool error';
+      pending.resolve(unknownManagedDispatchOutcome(
+        pending.settlementReason || 'upstream lifecycle interrupted',
+        upstreamError,
+      ));
+    } else if (
+      msg.result?.isError &&
+      pending.awaitRealSettlement &&
+      pending.mutationMayHaveCommitted
+    ) {
+      const upstreamError = Array.isArray(msg.result.content)
+        ? msg.result.content.map((item) => item?.text || '').filter(Boolean).join('\n')
+        : 'chrome-devtools-mcp returned a tool error';
+      pending.resolve(unknownManagedDispatchOutcome(
+        `upstream ${pending.dispatchedToolName || 'browser mutation'} returned a tool error after dispatch`,
+        upstreamError,
+        'browser/action-commit-unknown-after-upstream-error',
+      ));
+    } else if (msg.result?.isError && !pending.allowToolErrorResult) {
+      const message = Array.isArray(msg.result.content)
+        ? msg.result.content.map((item) => item?.text || '').filter(Boolean).join('\n')
+        : '';
+      pending.reject(new Error(message || 'Internal chrome-devtools-mcp tool call failed'));
+    } else {
+      pending.resolve(msg.result);
     }
-    // 已取消或超时的内部调用仍可能收到上游晚响应。内部 id 是 wrapper 的保留
-    // 命名空间，绝不能把晚响应当作外部 JSON-RPC 应答泄漏给引擎。
-    if (discardedInternalRequestIds.delete(msg.id)) {
-      continue;
-    }
-    process.stdout.write(line + '\n');
+    return;
   }
+  // Cancelled or timed-out internal calls can still receive late upstream
+  // responses. Internal IDs occupy the wrapper's reserved namespace and must
+  // never leak to the engine as external JSON-RPC responses.
+  if (discardedInternalRequestIds.delete(msg.id)) return;
+  writeRawOut(line + '\n');
+}
+
+function onProxyChildData(chunk) {
+  let lines;
+  try {
+    lines = proxyChildDecoder.push(chunk);
+  } catch (error) {
+    mcpChild?.stdout?.off('data', onProxyChildData);
+    const reason = error?.message || String(error);
+    log('chrome-devtools-mcp protocol output rejected:', reason);
+    void gracefulShutdown(1, reason, { cancelAcceptedRequests: true });
+    return;
+  }
+  for (const line of lines) processProxyChildLine(line);
 }
 
 function callUpstreamRequest(
@@ -1322,7 +1443,7 @@ function callUpstreamRequest(
     const timer = setTimeout(() => {
       const pending = internalRequests.get(id);
       if (pending?.awaitRealSettlement) {
-        const reason = `chrome-devtools-mcp 内部调用 ${method} 超时`;
+        const reason = `Internal chrome-devtools-mcp call ${method} timed out`;
         if (externalRequestId != null) {
           signalManagedUpstreamCancellation(externalRequestId, reason);
         } else {
@@ -1343,7 +1464,7 @@ function callUpstreamRequest(
       ) {
         externalToInternalRequestIds.delete(externalRequestId);
       }
-      reject(new Error(`chrome-devtools-mcp 内部调用 ${method} 超时`));
+      reject(new Error(`Internal chrome-devtools-mcp call ${method} timed out`));
     }, timeoutMs);
     internalRequests.set(id, {
       resolve,
@@ -1389,7 +1510,7 @@ function callUpstreamTool(
 
 function throwIfProxyRequestCancelled(requestId) {
   if (cancelledProxyRequestIds.has(requestId)) {
-    throw new Error('浏览器工具调用已取消');
+    throw new Error('Browser tool call was cancelled');
   }
 }
 
@@ -1411,7 +1532,7 @@ function removePageTokenMapping(pageId) {
 
 async function discoverWorkspacePages(listResult, state, externalRequestId = null) {
   if (state?.version !== 2 || state?.mapping_authority !== 'host') {
-    throw new Error('页面发现缺少宿主 v2 权威 target 映射');
+    throw new Error('Page discovery is missing the authoritative host v2 target mapping');
   }
   const pages = parseBrowserPages(listResult);
   const wanted = new Set((state.tabs || []).map((tab) => tab?.token).filter(Boolean));
@@ -1422,7 +1543,7 @@ async function discoverWorkspacePages(listResult, state, externalRequestId = nul
     if (authoritativeToken && wanted.has(authoritativeToken)) {
       const known = pageIdToTabToken.get(page.id);
       if (known != null && known !== authoritativeToken) {
-        throw new Error('MCP pageId 与宿主权威 target 映射发生冲突');
+        throw new Error('MCP pageId conflicts with the authoritative host target mapping');
       }
       next.push([page.id, authoritativeToken]);
       continue;
@@ -1433,11 +1554,12 @@ async function discoverWorkspacePages(listResult, state, externalRequestId = nul
     // URL fragment may turn it into an owned target.
     if (page.targetId) continue;
 
-    // 官方 chrome-devtools-mcp@1.7.0 暂未在 list_pages 输出 raw targetId。
-    // 同一 MCP 进程内仅保留已经由权威 target 或受控 about:blank marker 建立的
-    // pageId 绑定；wrapper/MCP 重启后既无 targetId 又无 marker 时会明确失败，
-    // 不按 URL/标题猜测，也不读取远程页面主世界。vendor adapter 接通 targetId
-    // 后该分支只承担首次 about:blank bootstrap。
+    // Official chrome-devtools-mcp@1.7.0 does not yet expose raw targetId in
+    // list_pages. Within one MCP process, retain only pageId bindings established
+    // by an authoritative target or a controlled about:blank marker. After a
+    // wrapper/MCP restart, fail when neither targetId nor marker exists; never
+    // guess by URL/title or inspect the remote page main world. Once the vendor
+    // adapter supplies targetId, this branch only handles first about:blank boot.
     const known = pageIdToTabToken.get(page.id);
     if (known && wanted.has(known)) {
       next.push([page.id, known]);
@@ -1461,7 +1583,7 @@ function pageIdForToken(token) {
 }
 
 async function selectUpstreamPage(pageId, externalRequestId = null, force = false) {
-  if (!Number.isInteger(pageId)) throw new Error('浏览器标签页尚未绑定到 MCP');
+  if (!Number.isInteger(pageId)) throw new Error('Browser tab is not yet bound to MCP');
   if (!force && selectedPageId === pageId) return null;
   const result = await callUpstreamTool(
     'select_page',
@@ -1476,7 +1598,7 @@ async function selectUpstreamPage(pageId, externalRequestId = null, force = fals
 async function syncWorkspacePages(force = false, externalRequestId = null) {
   const workspace = readWorkspaceState();
   if (!workspace) {
-    throw new Error('browser/workspace-missing: 当前对话的浏览器工作区状态尚未就绪');
+    throw new Error('browser/workspace-missing: browser workspace state for this conversation is not ready');
   }
   const activeKnown = pageIdForToken(workspace.active_tab);
   if (!force && workspace.revision === workspaceRevision && activeKnown != null) {
@@ -1488,7 +1610,7 @@ async function syncWorkspacePages(force = false, externalRequestId = null) {
   workspaceRevision = workspace.revision;
   const activePageId = pageIdForToken(workspace.active_tab);
   if (activePageId == null) {
-    throw new Error('未找到当前对话激活标签对应的 WebView2 页面');
+    throw new Error('No WebView2 page matches the active tab for this conversation');
   }
   await selectUpstreamPage(activePageId, externalRequestId);
   return { workspace, listResult };
@@ -1506,7 +1628,7 @@ async function prepareHostedWebView2WorkspaceForRetry(externalRequestId) {
   const port = await requestHostedBrowser();
   const portFile = readPortFile();
   if (!(port > 0 && isHostedWebView2Port(portFile))) {
-    throw new Error('browser/workspace-unavailable: 应用内 WebView2 工作区重新准备失败');
+    throw new Error('browser/workspace-unavailable: failed to prepare the in-app WebView2 workspace again');
   }
   hostedWebView2 = true;
   clearLastError();
@@ -1514,10 +1636,12 @@ async function prepareHostedWebView2WorkspaceForRetry(externalRequestId) {
 }
 
 /**
- * browser_stop 只销毁当前对话工作区；其他对话存活时，共享 CDP 端口仍然健康，
- * 因此长驻 Windows wrapper 不能把“CDP 存活”当成“本会话工作区存活”。仅在工具
- * 发生任何 lease/宿主操作/上游页面动作之前，对明确的工作区生命周期错误做一次
- * reset → prepare → sync 重试。重试仍失败时保持未准备状态，但本次调用绝不进入第三次。
+ * browser_stop destroys only the current conversation workspace. The shared
+ * CDP port remains healthy while other conversations live, so a long-running
+ * Windows wrapper cannot equate CDP liveness with this session's workspace
+ * liveness. Before any lease, host operation, or upstream page side effect,
+ * retry an explicit workspace-lifecycle failure once through reset -> prepare
+ * -> sync. A failed retry remains unprepared and never enters a third attempt.
  */
 async function syncWorkspacePagesBeforeDispatch(force = false, externalRequestId = null) {
   try {
@@ -1558,7 +1682,7 @@ async function verifyHostedPageAlignment(pageId, tabToken, externalRequestId) {
     beforeList.active_tab !== tabToken ||
     !(beforeList.tabs || []).some((tab) => tab?.token === tabToken)
   ) {
-    throw new Error('宿主当前可见标签与 Agent 目标页不一致');
+    throw new Error('The host-visible tab does not match the Agent target page');
   }
 
   const listResult = await callUpstreamTool('list_pages', {}, 15_000, externalRequestId);
@@ -1568,13 +1692,13 @@ async function verifyHostedPageAlignment(pageId, tabToken, externalRequestId) {
     workspace.active_tab !== tabToken ||
     !(workspace.tabs || []).some((tab) => tab?.token === tabToken)
   ) {
-    throw new Error('宿主当前可见标签在 Agent 选择 Target 后发生变化');
+    throw new Error('The host-visible tab changed after the Agent selected a Target');
   }
   await discoverWorkspacePages(listResult, workspace, externalRequestId);
   workspaceRevision = workspace.revision;
   const selected = parseBrowserPages(listResult).find((page) => page.id === pageId);
   if (pageIdToTabToken.get(pageId) !== tabToken || selected?.selected !== true) {
-    throw new Error('Agent 当前 Target 与宿主可见标签未能对齐');
+    throw new Error('The Agent Target could not be aligned with the host-visible tab');
   }
   selectedPageId = pageId;
   return { workspace, listResult };
@@ -1584,7 +1708,7 @@ async function runOnVisibleHostedPage(
   msg,
   pageId,
   execute = null,
-  { emitsTrustedInput = false } = {},
+  { emitsTrustedInput = false, observationalOnly = false } = {},
 ) {
   return runVisiblePageOperation({
     pageId,
@@ -1596,7 +1720,7 @@ async function runOnVisibleHostedPage(
         ?.find((tab) => tab?.token === tabToken)
         ?.target_id;
       if (typeof targetId !== 'string' || !targetId) {
-        throw new Error('目标标签缺少宿主权威 target 映射');
+        throw new Error('Target tab is missing the authoritative host target mapping');
       }
       const activation = await requestHostedOperation(
         'activate_tab',
@@ -1627,7 +1751,7 @@ async function runOnVisibleHostedPage(
             throwIfProxyRequestCancelled(msg.id);
             const workspace = readWorkspaceState();
             if (workspace?.active_tab !== target.tabToken) {
-              throw new Error('宿主当前可见标签在工具执行前发生变化');
+              throw new Error('The host-visible tab changed before tool execution');
             }
           };
           return runLeasedHostDispatch({
@@ -1638,6 +1762,7 @@ async function runOnVisibleHostedPage(
               requestHostedOperation('begin_agent_operation', {
                 ...hostLeaseAssertionPayload(lease),
                 emits_trusted_input: emitsInput,
+                observational_only: observationalOnly,
               }),
             refreshOperation: (lease) => requestHostedOperation(
               emitsTrustedInput ? 'refresh_agent_input' : 'refresh_agent_operation',
@@ -1677,23 +1802,25 @@ async function runOnVisibleHostedPage(
 async function routeHostedToolCall(msg, raw) {
   const name = msg.params?.name;
   const args = msg.params?.arguments ?? {};
-  // 必须在任何上游透传/页面对齐之前完成 URL 校验。旧客户端会省略 type 只传
-  // url；assertAllowedHostedNavigation 会把这种调用按 type=url 处理。
+  // Validate URLs before any upstream passthrough or page alignment. Legacy
+  // clients may supply url without type; assertAllowedHostedNavigation treats
+  // such a call as type=url.
   if (name === 'navigate_page') assertAllowedHostedNavigation(args);
   if (name === 'list_pages') {
     const { listResult } = await syncWorkspacePagesBeforeDispatch(true, msg.id);
     return filteredPagesResult(listResult);
   }
   if (name === 'select_page') {
-    // 显式 pageId 必须在任何 list/select/host 副作用前先通过当前对话归属校验。
+    // Explicit pageId must pass current-conversation ownership before any
+    // list/select/host side effect.
     const selectedPage = explicitOwnedPageId(args, pageIdToTabToken);
     if (selectedPage == null) {
-      throw new Error('标签页不存在或不属于当前对话');
+      throw new Error('Tab does not exist or does not belong to this conversation');
     }
     const selectedTabToken = pageIdToTabToken.get(selectedPage);
     await syncWorkspacePagesBeforeDispatch(false, msg.id);
     if (pageIdToTabToken.get(selectedPage) !== selectedTabToken) {
-      throw new Error('页面归属在同步过程中发生变化');
+      throw new Error('Page ownership changed during synchronization');
     }
     const aligned = await runOnVisibleHostedPage(msg, selectedPage);
     return filterPagesResult(
@@ -1703,10 +1830,10 @@ async function routeHostedToolCall(msg, raw) {
     );
   }
   if (name === 'new_page') {
-    if (typeof args.url !== 'string') throw new Error('new_page 缺少 url');
+    if (typeof args.url !== 'string') throw new Error('new_page is missing url');
     assertAllowedHostedNavigation({ url: args.url });
     if (args.isolatedContext) {
-      throw new Error('应用内浏览器暂不支持 isolatedContext；标签页默认共享当前登录状态');
+      throw new Error('The in-app browser does not support isolatedContext; tabs share the current sign-in state');
     }
     // new_page needs a fresh list result so the one-time bootstrap blank can
     // be distinguished from a real page without guessing from title/history.
@@ -1714,7 +1841,7 @@ async function routeHostedToolCall(msg, raw) {
     const previousActiveToken = previous.workspace.active_tab;
     const previousPageId = pageIdForToken(previousActiveToken);
     if (previousPageId == null) {
-      throw new Error('新建标签页前无法取得当前宿主页面授权');
+      throw new Error('Could not authorize the current host page before creating a tab');
     }
     const previousPage = parseBrowserPages(previous.listResult)
       .find((page) => page.id === previousPageId);
@@ -1752,8 +1879,9 @@ async function routeHostedToolCall(msg, raw) {
         });
       }
     }
-    // create_tab 是宿主状态 mutation：先在当前 active 页取得 CAS lease，宿主会
-    // 原子复核 authorization_tab_token/target/revision/lease 后才创建新标签。
+    // create_tab mutates host state. First acquire a CAS lease on the active
+    // page; the host atomically verifies authorization_tab_token, target,
+    // revision, and lease before creating the tab.
     const creationAuthorization = await runOnVisibleHostedPage(msg, previousPageId);
     const tabToken = randomBytes(8).toString('hex');
     const creationId = createHostRequestId();
@@ -1808,7 +1936,7 @@ async function routeHostedToolCall(msg, raw) {
       });
       createAcknowledged = true;
       if (createdTab.creationId !== creationId) {
-        throw new Error('create_tab 返回了不匹配的 creationId');
+        throw new Error('create_tab returned a mismatched creationId');
       }
       workspaceRevision = -1;
       throwIfProxyRequestCancelled(msg.id);
@@ -1822,23 +1950,25 @@ async function routeHostedToolCall(msg, raw) {
             .find((tab) => tab.token === tabToken)
             ?.target_id;
           if (authoritativeTarget && authoritativeTarget !== createdTab.targetId) {
-            throw new Error('create_tab 返回的 targetId 与宿主权威映射不一致');
+            throw new Error('create_tab targetId does not match the authoritative host mapping');
           }
           await discoverWorkspacePages(listResult, workspace, msg.id);
         }
         page = findHostedTabPage(listResult, tabToken, pageIdToTabToken);
         if (!page) await sleep(50);
       }
-      if (!page) throw new Error('新建的内嵌标签页未出现在 MCP 页面列表中');
+      if (!page) throw new Error('The newly embedded tab did not appear in the MCP page list');
       if (
         pageIdToTabToken.get(page.id) !== tabToken ||
         tabTokenToPageId.get(tabToken) !== page.id
       ) {
-        throw new Error('新建标签页未形成唯一的 pageId ↔ tabToken 映射');
+        throw new Error('The new tab did not produce a unique pageId-to-tabToken mapping');
       }
-      // URL 首航由宿主在未发布的 staging 标签内完成，并与 create CAS 一起提交。
-      // create 成功后 lease 已失效；wrapper 若再直接导航这个 target，会让后台标签
-      // 绕过用户接管，因此这里只发现权威 target，随后按宿主 active 状态同步选择。
+      // The host performs initial URL navigation inside an unpublished staging tab
+      // and commits it with the create CAS. The lease expires after create
+      // succeeds. Direct wrapper navigation would let a background tab bypass
+      // user takeover, so only discover the authoritative target here and then
+      // synchronize selection with the host active state.
       const { listResult } = await syncWorkspacePages(true, msg.id);
       return filteredPagesResult(listResult);
     } catch (error) {
@@ -1858,10 +1988,12 @@ async function routeHostedToolCall(msg, raw) {
       }
       let rollbackProved = false;
       if (createAttempted) {
-        // create 响应校验、target 发现或导航失败都只能按 creation_id 精确补偿；
-        // 普通 close_tab 会误关被并发替换/接管的同 token 标签，禁止用于回滚。
+        // A create-response validation, target discovery, or navigation failure
+        // must compensate precisely by creation_id. Ordinary close_tab could
+        // close a concurrently replaced or taken-over same-token tab and is
+        // forbidden for rollback.
         if (previousPageId != null) {
-          try { await selectUpstreamPage(previousPageId); } catch { /* 尽力恢复 */ }
+          try { await selectUpstreamPage(previousPageId); } catch { /* Best effort. */ }
         }
         try {
           await requestHostedOperation('rollback_created_tab', {
@@ -1870,7 +2002,7 @@ async function routeHostedToolCall(msg, raw) {
           });
           rollbackProved = true;
         } catch (rollbackError) {
-          log('回滚创建失败的内嵌标签页失败:', rollbackError.message);
+          log('Failed to roll back an embedded tab whose creation failed:', rollbackError.message);
         }
         const mappedPageId = pageIdForToken(tabToken);
         if (mappedPageId != null) removePageTokenMapping(mappedPageId);
@@ -1889,15 +2021,16 @@ async function routeHostedToolCall(msg, raw) {
     }
   }
   if (name === 'close_page') {
-    // 与普通页面工具保持同一 fail-closed 顺序：跨对话 pageId 不能先触发同步选择。
+    // Use the same fail-closed ordering as ordinary page tools: a
+    // cross-conversation pageId cannot trigger synchronization first.
     const closingPageId = explicitOwnedPageId(args, pageIdToTabToken);
     if (closingPageId == null) {
-      throw new Error('标签页不存在或不属于当前对话');
+      throw new Error('Tab does not exist or does not belong to this conversation');
     }
     const closingTabToken = pageIdToTabToken.get(closingPageId);
     const { workspace, listResult } = await syncWorkspacePagesBeforeDispatch(true, msg.id);
     if (pageIdToTabToken.get(closingPageId) !== closingTabToken) {
-      throw new Error('页面归属在同步过程中发生变化');
+      throw new Error('Page ownership changed during synchronization');
     }
     if ((workspace.tabs || []).length <= 1) {
       const result = filteredPagesResult(listResult);
@@ -1911,7 +2044,7 @@ async function routeHostedToolCall(msg, raw) {
       .find((token) => token && token !== closingToken);
     const fallbackPageId = pageIdForToken(fallbackToken);
     if (fallbackPageId == null) {
-      throw new Error('关闭标签页前无法找到可用的回退页面');
+      throw new Error('No fallback page is available before closing the tab');
     }
     let closeAcknowledged = false;
     try {
@@ -1946,8 +2079,9 @@ async function routeHostedToolCall(msg, raw) {
           error?.message || error,
         ),
         execute: async () => {
-          // chrome-devtools-mcp 的 list_pages 响应也会读取“当前选中页”。若先销毁
-          // 选中 WebView，后续 list_pages 会因 selected page is closed 无法恢复映射。
+          // chrome-devtools-mcp list_pages also reads the selected page. If the
+          // selected WebView is destroyed first, later list_pages cannot recover
+          // the mapping because the selected page is closed.
           await selectUpstreamPage(fallbackPageId, msg.id, true);
           throwIfProxyRequestCancelled(msg.id);
           await requestHostedOperation(
@@ -1992,10 +2126,12 @@ async function routeHostedToolCall(msg, raw) {
     }
   }
 
-  // 所有普通页面工具执行前都与用户当前激活标签对齐；因此用户点击标签后，Agent
-  // 的下一次页面读取、点击、输入或脚本操作会自然落在同一个页面。
+  // Before every ordinary page-scoped tool, align with the user's active tab.
+  // After the user clicks a tab, the Agent's next read, click, input, or script
+  // operation therefore lands on that same page.
   if (!runtimePageScopedTools.has(name)) {
-    // 这类调用保留外部 JSON-RPC id，由上游直接应答；后续取消通知也应原样透传。
+    // These calls retain their external JSON-RPC ID for direct upstream response;
+    // later cancellation notifications pass through unchanged as well.
     throwIfProxyRequestCancelled(msg.id);
     managedToolRequestIds.delete(msg.id);
     writeChildRaw(raw);
@@ -2010,11 +2146,11 @@ async function routeHostedToolCall(msg, raw) {
     requestedPageId != null &&
     pageIdToTabToken.get(requestedPageId) !== requestedTabToken
   ) {
-    throw new Error('页面归属在同步过程中发生变化');
+    throw new Error('Page ownership changed during synchronization');
   }
   const pageId = requestedPageId ?? pageIdForToken(workspace.active_tab);
   if (!Number.isInteger(pageId) || !pageIdToTabToken.has(pageId)) {
-    throw new Error('页面不存在或不属于当前对话');
+    throw new Error('Page does not exist or does not belong to this conversation');
   }
   const routed = routeToolCallToPage(msg, pageId);
   const timeoutMs = Number.isInteger(args.timeout)
@@ -2031,19 +2167,23 @@ async function routeHostedToolCall(msg, raw) {
       true,
       true,
     ),
-    { emitsTrustedInput: runtimeInputTools.has(name) },
+    {
+      emitsTrustedInput: runtimeInputTools.has(name),
+      observationalOnly: !browserToolMayMutate(name),
+    },
   );
   return aligned.executionResult;
 }
 
-// 与 MCP 子进程的握手 id：字符串形式，与引擎的数字 id 不会冲突。
+// Handshake IDs used with the MCP child process are strings and cannot collide
+// with the engine's numeric IDs.
 const HANDSHAKE_ID = 'pinvou-wrapper-handshake';
 const SESSION_LIST_ID_PREFIX = 'pinvou-wrapper-list-';
 const SESSION_SELECT_ID = 'pinvou-wrapper-select';
 
 function retryableMcpStartError(error) {
   const message = error?.message || String(error);
-  return /chrome-devtools-mcp 握手前退出 code=(?:1|null)/.test(message);
+  return /chrome-devtools-mcp exited before handshake code=(?:1|null)/.test(message);
 }
 
 async function spawnMcpChildWithRetry(port) {
@@ -2056,10 +2196,10 @@ async function spawnMcpChildWithRetry(port) {
       lastError = error;
       if (!retryableMcpStartError(error) || attempt === maxAttempts) throw error;
       const delayMs = 200 * attempt;
-      log(`chrome-devtools-mcp 启动过早，${delayMs}ms 后重试 (${attempt}/${maxAttempts})`);
+      log(`chrome-devtools-mcp started too early; retrying in ${delayMs}ms (${attempt}/${maxAttempts})`);
       await sleep(delayMs);
       if (!(await probeCdp(port, 2_000))) {
-        throw new Error('WebView2 CDP 在 MCP 重试前失去响应');
+        throw new Error('WebView2 CDP stopped responding before the MCP retry');
       }
     }
   }
@@ -2073,25 +2213,26 @@ function spawnMcpChild(port) {
     `http://127.0.0.1:${port}`,
     '--no-usage-statistics',
     '--no-performance-crux',
-    // 会话隔离依赖 vendor adapter 写入 structuredContent.pages[].target_id。
-    // 官方 server 只有显式开启 structured content 才会把该字段放进 tools/call
-    // 响应；仅开启 page-id routing 时虽然能看到页面，wrapper 却无法按宿主
-    // targetId 建立权威映射，最终会把已成功显示的新标签误报为创建失败。
+    // Session isolation depends on the vendor adapter adding
+    // structuredContent.pages[].target_id. The official server emits that field
+    // in tools/call responses only when structured content is enabled. Enabling
+    // page-id routing alone can list pages but cannot build an authoritative host
+    // targetId mapping, falsely reporting a successfully shown new tab as failed.
     ...(hostedWebView2
       ? ['--experimental-page-id-routing', '--experimental-structured-content']
       : []),
     ...EXTRA_ARGS,
   ];
-  log('启动 chrome-devtools-mcp:', process.execPath, mcpArgs.join(' '));
+  log('Starting chrome-devtools-mcp:', process.execPath, mcpArgs.join(' '));
   return new Promise((resolve, reject) => {
     let child;
     try {
       child = spawn(process.execPath, mcpArgs, {
-        stdio: ['pipe', 'pipe', 'inherit'], // stderr 日志透传
+        stdio: ['pipe', 'pipe', 'inherit'], // Pass stderr logs through.
         env: {
           ...process.env,
-          CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: '1', // 离线：禁用更新检查
-          CI: '1', // 离线：禁用 usage statistics
+          CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: '1', // Offline: disable update checks.
+          CI: '1', // Offline: disable usage statistics.
         },
       });
     } catch (e) {
@@ -2099,15 +2240,19 @@ function spawnMcpChild(port) {
       return;
     }
     mcpChild = child;
-    let stdoutBuf = '';
-    const pendingOutput = [];
+    proxyChildDecoder.reset();
+    const pendingOutput = createBoundedLineBacklog({
+      maxLines: STARTUP_PENDING_OUTPUT_MAX_COUNT,
+      maxBytes: STARTUP_PENDING_OUTPUT_MAX_BYTES,
+      source: 'chrome-devtools-mcp startup output backlog',
+    });
     let settled = false;
     let startupFailureCleanup = false;
     let activeProxyChild = false;
     let listAttempt = 0;
     const timer = setTimeout(() => {
       if (!settled) {
-        fail(new Error('chrome-devtools-mcp 握手或会话页面绑定超时'));
+        fail(new Error('chrome-devtools-mcp handshake or session page binding timed out'));
       }
     }, 25000);
 
@@ -2129,7 +2274,7 @@ function spawnMcpChild(port) {
     const childLifecycle = {
       assertAlive() {
         if (child.exitCode != null || child.signalCode != null || child.killed) {
-          throw new Error('chrome-devtools-mcp 在代理接管前退出');
+          throw new Error('chrome-devtools-mcp exited before proxy takeover');
         }
       },
       activate() {
@@ -2156,12 +2301,19 @@ function spawnMcpChild(port) {
       settled = true;
       clearTimeout(timer);
       child.stdout.off('data', onData);
-      if (pendingOutput.length) process.stdout.write(pendingOutput.join(''));
-      // 统一由多路复用器接管 stdout：内部 list/select/evaluate 响应不能泄漏给引擎。
-      proxyChildBuffer = stdoutBuf;
-      stdoutBuf = '';
+      const initializationOutput = pendingOutput.drain();
+      if (initializationOutput.length) writeRawOut(initializationOutput.join(''));
+      // The multiplexer now owns stdout so internal list/select/evaluate
+      // responses cannot leak to the engine.
       child.stdout.on('data', onProxyChildData);
       resolve(childLifecycle);
+    };
+
+    const finishAndForwardRemaining = (lines, currentIndex) => {
+      finish();
+      for (let index = currentIndex + 1; index < lines.length; index += 1) {
+        processProxyChildLine(lines[index]);
+      }
     };
 
     const requestSessionPage = () => {
@@ -2176,11 +2328,16 @@ function spawnMcpChild(port) {
     };
 
     const onData = (chunk) => {
-      stdoutBuf += chunk;
-      let idx;
-      while ((idx = stdoutBuf.indexOf('\n')) >= 0) {
-        const line = stdoutBuf.slice(0, idx);
-        stdoutBuf = stdoutBuf.slice(idx + 1);
+      let lines;
+      try {
+        lines = proxyChildDecoder.push(chunk);
+      } catch (error) {
+        fail(error);
+        return;
+      }
+      try {
+        for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+          const line = lines[lineIndex];
         let msg;
         try {
           msg = JSON.parse(line);
@@ -2191,21 +2348,21 @@ function spawnMcpChild(port) {
 
         if (msg.id === HANDSHAKE_ID) {
           if (msg.error) {
-            fail(new Error(`chrome-devtools-mcp 握手失败: ${msg.error.message}`));
+            fail(new Error(`chrome-devtools-mcp handshake failed: ${msg.error.message}`));
             return;
           }
           writeChildRaw(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }));
           if (hostedWebView2 && SESSION_TOKEN) {
             requestSessionPage();
           } else {
-            finish();
+            finishAndForwardRemaining(lines, lineIndex);
           }
           return;
         }
 
         if (typeof msg.id === 'string' && msg.id.startsWith(SESSION_LIST_ID_PREFIX)) {
           if (msg.error) {
-            fail(new Error(`枚举对话浏览器页面失败: ${msg.error.message}`));
+            fail(new Error(`Failed to enumerate conversation browser pages: ${msg.error.message}`));
             return;
           }
           let page = null;
@@ -2215,12 +2372,12 @@ function spawnMcpChild(port) {
               ? findHostedWorkspacePage(msg.result, workspace, SESSION_TOKEN)
               : null;
           } catch (error) {
-            fail(new Error(`绑定宿主权威页面失败: ${error?.message || error}`));
+            fail(new Error(`Failed to bind the authoritative host page: ${error?.message || error}`));
             return;
           }
           if (!page) {
             if (listAttempt >= 80) {
-              fail(new Error('未找到宿主当前激活标签对应的 WebView2 页面'));
+              fail(new Error('No WebView2 page matches the host active tab'));
             } else {
               setTimeout(requestSessionPage, 150);
             }
@@ -2240,28 +2397,32 @@ function spawnMcpChild(port) {
 
         if (msg.id === SESSION_SELECT_ID) {
           if (msg.error) {
-            fail(new Error(`绑定对话浏览器页面失败: ${msg.error.message}`));
+            fail(new Error(`Failed to bind the conversation browser page: ${msg.error.message}`));
           } else {
-            log('已绑定对话浏览器页面:', SESSION_TOKEN);
-            finish();
+            log('Bound conversation browser page:', SESSION_TOKEN);
+            finishAndForwardRemaining(lines, lineIndex);
           }
           return;
         }
 
-        // 初始化阶段收到的其他通知/响应在绑定完成后原样转发给引擎。
+        // Forward other initialization notifications and responses unchanged
+        // after binding completes.
         pendingOutput.push(line + '\n');
+        }
+      } catch (error) {
+        fail(error);
       }
     };
     child.stdout.on('data', onData);
     child.on('error', (err) => {
-      log('chrome-devtools-mcp 启动失败:', err.message);
+      log('chrome-devtools-mcp startup failed:', err.message);
       if (mcpChild === child) mcpChild = null;
       if (!settled) {
         fail(err);
       }
     });
     child.on('exit', (code, signal) => {
-      log('chrome-devtools-mcp 退出', { code, signal });
+      log('chrome-devtools-mcp exited', { code, signal });
       if (mcpChild === child) mcpChild = null;
       // `fail()` deliberately kills an attempt that never became the active
       // proxy. Its eventual exit belongs only to startup cleanup: treating it
@@ -2269,7 +2430,7 @@ function spawnMcpChild(port) {
       // also clobber a newer retry's `mcpChild` handle.
       if (startupFailureCleanup) return;
       if (!settled) {
-        fail(new Error(`chrome-devtools-mcp 握手前退出 code=${code}`));
+        fail(new Error(`chrome-devtools-mcp exited before handshake code=${code}`));
         return;
       }
       if (!activeProxyChild) {
@@ -2287,7 +2448,8 @@ function spawnMcpChild(port) {
         { upstreamAlreadyStopped: true },
       );
     });
-    // 与引擎一致的 initialize 参数（含 protocolVersion 协商与 clientInfo）。
+    // Match the engine initialize arguments, including protocolVersion
+    // negotiation and clientInfo.
     const params = clientInitializeParams ?? {
       protocolVersion: '2024-11-05',
       capabilities: {},
@@ -2304,8 +2466,8 @@ function spawnMcpChild(port) {
 }
 
 // ---------------------------------------------------------------------------
-// 子进程回收（SIGTERM → 3s 宽限 → SIGKILL 升级）。浏览器表面由应用宿主拥有，
-// wrapper 只负责回收自己启动的 MCP adapter。
+// Child cleanup (SIGTERM -> 3-second grace -> SIGKILL escalation). The app host
+// owns browser surfaces; the wrapper only reaps the MCP adapter it started.
 // ---------------------------------------------------------------------------
 function waitExit(child, timeoutMs) {
   return new Promise((resolve) => {
@@ -2380,7 +2542,7 @@ function gracefulShutdown(
     // Internal upstream crashes deliberately do not enter this branch: their
     // claimed request must still receive the structured commit-unknown result.
     for (const requestId of hostCoreRequestIds) cancelledIds.add(requestId);
-    for (const raw of bufferedLines) {
+    for (const raw of bufferedLines.snapshot()) {
       try {
         const message = JSON.parse(raw);
         if (message?.id != null) cancelledIds.add(message.id);
@@ -2405,18 +2567,23 @@ function gracefulShutdown(
     // End/rollback/tombstone requests need the same live epoch during cleanup.
     // Revoke the epoch only after both queues reached their real terminal state.
     stopHostCallerHeartbeat();
-    // Let the final JSON-RPC diagnostic/end host request flush before forcing
-    // process termination; watchdog/signal timers otherwise keep Node alive.
-    await new Promise((resolve) => setImmediate(resolve));
-    process.exit(exitCode);
+    // Do not exit ahead of queued JSON-RPC output. When the peer closes stdout,
+    // the queue fails instead of waiting forever and forces a non-zero exit.
+    try {
+      await protocolOutput.flush();
+    } catch (error) {
+      console.error('[browser-wrapper] failed to flush protocol stdout:', error);
+    }
+    process.exit(protocolOutput.failure ? 1 : exitCode);
   })();
   return shutdownPromise;
 }
 
 // ---------------------------------------------------------------------------
-// 应用宿主拥有浏览器运行时，wrapper 没有其进程退出事件。宿主关闭或崩溃后，
-// 本会话的 --browser-url 会永久失效；周期探测并在连续失败后退出，让引擎下次
-// 拉起 wrapper 时重新向原生宿主申请工作区。
+// The app host owns the browser runtime, so the wrapper has no process-exit
+// event for it. After host shutdown or crash, this session's --browser-url is
+// permanently stale. Probe periodically and exit after consecutive failures so
+// the engine's next wrapper requests a fresh workspace from the native host.
 // ---------------------------------------------------------------------------
 function startHostedBrowserWatchdog(port) {
   let misses = 0;
@@ -2433,12 +2600,12 @@ function startHostedBrowserWatchdog(port) {
         misses += 1;
         if (misses >= 2) {
           clearInterval(timer);
-          log('应用内浏览器 CDP 已失联，退出以待重新协调原生宿主');
-          void gracefulShutdown(1, '应用内浏览器 CDP 已失联');
+          log('In-app browser CDP is disconnected; exiting to renegotiate the native host');
+          void gracefulShutdown(1, 'In-app browser CDP is disconnected');
         }
       })
       .catch((error) => {
-        log('应用内浏览器 CDP 探测失败:', error?.message || error);
+        log('In-app browser CDP probe failed:', error?.message || error);
       })
       .finally(() => {
         probing = false;
@@ -2448,9 +2615,12 @@ function startHostedBrowserWatchdog(port) {
 }
 
 // ---------------------------------------------------------------------------
-// 主流程：加载目录 → shim 待命（首个真实请求才申请原生宿主并启动 MCP）
+// Main flow: load catalog -> wait in shim -> request native host and start MCP
+// only for the first real request.
 // ---------------------------------------------------------------------------
-let stdinBuf = '';
+const engineInputDecoder = createBoundedNdjsonDecoder({
+  source: 'browser wrapper engine stdin',
+});
 
 async function main() {
   if (HOST_CORE_MODE) {
@@ -2466,28 +2636,38 @@ async function main() {
   } else {
     catalog = loadCatalogFile();
     if (!catalog) {
-      log('catalog-shim.json 缺失，运行时探测工具目录（不启动浏览器）…');
+      log('catalog-shim.json is missing; probing the catalog without starting a browser');
       catalog = await probeCatalog();
     }
   }
   catalog = adaptBrowserCatalog(catalog);
   if (!catalog) {
-    // 目录不可得：tools/list 直接报错（引擎记录失败状态），进程保持存活。
-    // 不退出——懒启动语义下 connect 阶段的退出会让引擎每次重连都刷失败噪音。
-    log('工具目录不可用（catalog 文件缺失且运行时探测失败）');
+    // When the catalog is unavailable, tools/list reports the failure while the
+    // process stays alive. Exiting during lazy connect would make every engine
+    // reconnect emit another failure.
+    log('Tool catalog unavailable: catalog file is missing and runtime probing failed');
     catalog = null;
   }
 
-  process.stdin.on('data', (chunk) => {
-    stdinBuf += chunk;
-    let idx;
-    while ((idx = stdinBuf.indexOf('\n')) >= 0) {
-      const line = stdinBuf.slice(0, idx);
-      stdinBuf = stdinBuf.slice(idx + 1);
+  const onEngineInputData = (chunk) => {
+    let lines;
+    try {
+      lines = engineInputDecoder.push(chunk);
+    } catch (error) {
+      process.stdin.off('data', onEngineInputData);
+      process.stdin.pause();
+      const reason = error?.message || String(error);
+      log('Engine protocol input rejected:', reason);
+      void gracefulShutdown(1, reason, { cancelAcceptedRequests: true });
+      return;
+    }
+    for (const line of lines) {
       if (line.trim()) handleLine(line);
     }
-  });
-  // 引擎关闭 stdin（断开/会话结束）：无论处于哪一态都退出并回收子进程。
+  };
+  process.stdin.on('data', onEngineInputData);
+  // Engine stdin closure means disconnect/session end. Exit and reap children
+  // from every state.
   process.stdin.on('end', () => {
     void gracefulShutdown(0, 'browser wrapper stdin closed', { cancelAcceptedRequests: true });
   });
@@ -2500,9 +2680,24 @@ process.on('SIGINT', () => {
 process.on('SIGTERM', () => {
   void gracefulShutdown(143, 'browser wrapper received SIGTERM', { cancelAcceptedRequests: true });
 });
+process.on('SIGHUP', () => {
+  void gracefulShutdown(129, 'browser wrapper received SIGHUP', { cancelAcceptedRequests: true });
+});
+process.on('uncaughtException', (error) => {
+  console.error('[browser-wrapper] uncaught exception:', error);
+  void gracefulShutdown(1, `browser wrapper uncaught exception: ${error?.message || error}`, {
+    cancelAcceptedRequests: true,
+  });
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[browser-wrapper] unhandled rejection:', reason);
+  void gracefulShutdown(1, `browser wrapper unhandled rejection: ${reason?.message || reason}`, {
+    cancelAcceptedRequests: true,
+  });
+});
 
 main().catch((e) => {
-  console.error('[browser-wrapper] 致命错误:', e);
+  console.error('[browser-wrapper] fatal error:', e);
   void gracefulShutdown(1, `browser wrapper fatal error: ${e?.message || e}`, {
     cancelAcceptedRequests: true,
   });

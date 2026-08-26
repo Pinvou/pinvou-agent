@@ -4,8 +4,8 @@ use std::process::Command;
 
 use super::linux_path;
 
-// Unix 通用 helper 从 posix.rs 继承（与 linux_path.rs 的 Wave 3 去重同口径）。
-pub use super::super::posix::process_alive;
+// Shared Unix helpers come from posix.rs, matching the Wave 3 linux_path.rs deduplication.
+pub use super::super::posix::{make_private_dir, process_alive};
 
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     super::super::posix::spawn_detached_and_reap(Command::new("xdg-open").arg(target.as_ref()))
@@ -220,8 +220,8 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
     ]
 }
 
-/// 随安装包捆绑的 node：Linux 复用 codex-bridge 运行时 node（无捆绑时 None，
-/// 消费方回退系统 PATH 探测）。
+/// Returns the bundled Node.js runtime reused from codex-bridge on Linux.
+/// Consumers fall back to PATH discovery when the runtime is absent.
 pub fn bundled_node() -> Option<PathBuf> {
     crate::platform::paths::bundled_connector_node()
 }

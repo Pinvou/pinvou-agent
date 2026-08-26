@@ -45,13 +45,13 @@ pub fn current_system_locale() -> Option<String> {
     String::from_utf16(&locale_names[..first_len]).ok()
 }
 
-/// 进程存活探测：`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` 成功即存活；
-/// 权限不足（ERROR_ACCESS_DENIED）也视为存活（进程存在但属于其他用户/更高完整性
-/// 级别）。消费方：browser watch 删除 stale 端口文件前的持有者护栏。
+/// Probes process liveness with `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`.
+/// Access denied also means the process exists under another user or integrity level.
+/// Browser watch uses this before removing a stale port file.
 pub fn process_alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED};
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-    // SAFETY: 仅查询进程存在性；句柄非空时立即关闭，无泄漏。
+    // SAFETY: This only queries existence, and every non-null handle is closed immediately.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if !handle.is_null() {
         unsafe {
@@ -62,6 +62,9 @@ pub fn process_alive(pid: u32) -> bool {
     let err = unsafe { GetLastError() };
     err == ERROR_ACCESS_DENIED
 }
+
+/// Windows user-profile ACLs provide the directory privacy boundary.
+pub fn make_private_dir(_path: &Path) {}
 
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     HiddenCommand::new("cmd")
@@ -488,9 +491,8 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
     Vec::new()
 }
 
-/// 随安装包捆绑的 node：Windows 安装器释放 `runtime/node/node.exe`（连接器链路
-/// 同款解析，见 windows_path::bundled_node_dir）；无捆绑时 None，消费方回退
-/// 系统 PATH 探测。
+/// Returns the installer-provisioned `runtime/node/node.exe`, resolved through
+/// windows_path::bundled_node_dir. Consumers fall back to PATH when it is absent.
 pub fn bundled_node() -> Option<PathBuf> {
     windows_path::bundled_node_dir()
         .map(|dir| dir.join("node.exe"))

@@ -107,7 +107,14 @@ pub(super) async fn bind_webview(webview: &Webview) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + BIND_TIMEOUT;
     let script = format!("return {{ ready: globalThis.{CORE_GLOBAL}?.version === 1 }};");
     loop {
-        match evaluate_json(webview, script.clone(), BrowserCoreEvaluationMode::ReadOnly).await {
+        match evaluate_json(
+            webview,
+            script.clone(),
+            BrowserCoreEvaluationMode::ReadOnly,
+            None,
+        )
+        .await
+        {
             Ok(value) if value.get("ready").and_then(Value::as_bool) == Some(true) => {
                 return Ok(());
             }
@@ -126,7 +133,10 @@ pub(super) async fn evaluate_json(
     webview: &Webview,
     script: String,
     mode: BrowserCoreEvaluationMode,
+    authorization: Option<&NativeTabLease>,
 ) -> Result<Value, String> {
+    let authorization = super::evaluation_authorization(mode, authorization)?.cloned();
+    let label = webview.label().to_string();
     let function_body = wrap_json_evaluation(&script);
     let (tx, rx) = tokio::sync::oneshot::channel();
     let sender = Arc::new(Mutex::new(Some(tx)));
@@ -144,7 +154,7 @@ pub(super) async fn evaluate_json(
                         .take()
                         .expect("WKWebView completion sender consumed once")
                         .send(Err("browser/wkwebview-not-on-main-thread".to_string()));
-                    callback_state.finish();
+                    callback_state.cancel_pending();
                     return;
                 };
                 let body = NSString::from_str(&function_body);
@@ -160,26 +170,33 @@ pub(super) async fn evaluate_json(
                         completion_state.finish();
                     });
                 let view = unsafe { &*platform.inner().cast::<WKWebView>() };
-                if !callback_state.begin() {
-                    return;
+                let dispatch = || {
+                    if !callback_state.begin() {
+                        return Ok(());
+                    }
+                    unsafe {
+                        view.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
+                            &body,
+                            None,
+                            None,
+                            &world,
+                            Some(&block),
+                        );
+                    }
+                    Ok(())
+                };
+                if let Some(authorization) = authorization.as_ref() {
+                    dispatch_script_mutation_if_authorized(&label, authorization, dispatch)
+                } else {
+                    dispatch()
                 }
-                unsafe {
-                    view.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
-                        &body,
-                        None,
-                        None,
-                        &world,
-                        Some(&block),
-                    );
-                }
-                Ok(())
             };
 
             if let Err(error) = result {
                 if let Some(sender) = sender.lock().take() {
                     let _ = sender.send(Err(error));
                 }
-                callback_state.finish();
+                callback_state.cancel_pending();
             }
         })
         .map_err(|error| format!("browser/wkwebview-access-failed: {error}"))?;
@@ -368,6 +385,7 @@ async fn resolve_element_point(webview: &Webview, uid: &str) -> Result<(f64, f64
              return await core.point({uid});"
         ),
         BrowserCoreEvaluationMode::ReadOnly,
+        None,
     )
     .await?;
     let x = finite_coordinate(value.get("x"), "x")?;
@@ -875,17 +893,17 @@ async fn with_native_webview(
         webview,
         "return true;".to_string(),
         BrowserCoreEvaluationMode::ReadOnly,
+        None,
     )
     .await
     .map(|_| ())
     .map_err(|error| format!("{ACTION_COMMIT_UNKNOWN_INPUT_INTERRUPTION}: {error}"))
 }
 
-fn authorize_agent_input_for_label(
+fn registered_control_for_authorization(
     label: &str,
     authorization: &NativeTabLease,
-    emits_takeover_signal: bool,
-) -> Result<(), String> {
+) -> Result<Arc<WorkspaceControl>, String> {
     let control = {
         let bindings = registered_webviews().lock();
         let binding = bindings
@@ -897,6 +915,31 @@ fn authorize_agent_input_for_label(
         Weak::upgrade(&binding.control)
     }
     .ok_or_else(|| "browser/wkwebview-binding-stale".to_string())?;
+    Ok(control)
+}
+
+/// Keep the exact control lock held through WKWebView's asynchronous script
+/// enqueue. A user takeover therefore either revokes this operation first or
+/// is ordered after this native dispatch; there is no check/enqueue gap.
+fn dispatch_script_mutation_if_authorized<T, F>(
+    label: &str,
+    authorization: &NativeTabLease,
+    dispatch: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    registered_control_for_authorization(label, authorization)?
+        .dispatch_if_agent_authorized(authorization, dispatch)?
+        .ok_or_else(|| "browser/wkwebview-control-lease-lost".to_string())
+}
+
+fn authorize_agent_input_for_label(
+    label: &str,
+    authorization: &NativeTabLease,
+    emits_takeover_signal: bool,
+) -> Result<(), String> {
+    let control = registered_control_for_authorization(label, authorization)?;
     let authorized = if emits_takeover_signal {
         control.refresh_agent_input_window(authorization)
     } else {

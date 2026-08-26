@@ -1,7 +1,7 @@
+/* eslint-disable no-promise-executor-return -- Promise executors adapt event and server-close APIs whose registration handles are intentionally ignored. */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import {
-  appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,

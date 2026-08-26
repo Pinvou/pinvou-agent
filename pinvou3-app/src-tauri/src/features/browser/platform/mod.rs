@@ -1,7 +1,8 @@
-//! 浏览器原生显示层的平台边界。
+//! Platform boundary for native browser display.
 //!
-//! Windows、macOS 与 Linux 共用 `host` 中的工作区、标签、布局、导航和安全策略；
-//! 平台模块只负责系统 WebView 的构建参数，以及如实声明 Agent 自动化能力。
+//! Windows, macOS, and Linux share workspace, tab, layout, navigation, and security policy
+//! in `host`. Platform modules provide only system-WebView construction parameters and an
+//! accurate declaration of Agent automation capability.
 
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 mod host;
@@ -82,6 +83,22 @@ pub(crate) enum NativeInput {
 pub(crate) enum BrowserCoreEvaluationMode {
     ReadOnly,
     MayMutate,
+}
+
+/// Keep the mutating-evaluation authorization invariant at the common platform
+/// boundary. Read-only BrowserCore observations deliberately carry no control
+/// capability; page-mutating JavaScript must carry the exact begun tab lease
+/// all the way to the native UI-thread callback.
+fn evaluation_authorization<'a>(
+    mode: BrowserCoreEvaluationMode,
+    authorization: Option<&'a state::NativeTabLease>,
+) -> Result<Option<&'a state::NativeTabLease>, String> {
+    match mode {
+        BrowserCoreEvaluationMode::ReadOnly => Ok(None),
+        BrowserCoreEvaluationMode::MayMutate => authorization
+            .map(Some)
+            .ok_or_else(|| "browser/mutating-script-lease-required".to_string()),
+    }
 }
 
 pub(crate) const ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION: &str =
@@ -239,18 +256,22 @@ fn register_browser_core_webview_binding(
     label: &str,
     tab_token: &str,
     control: &std::sync::Arc<state::WorkspaceControl>,
+    navigation: &std::sync::Arc<parking_lot::Mutex<state::UserNavigationState>>,
 ) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        return linux_automation::register_webview_binding(label, tab_token, control);
+        return linux_automation::register_webview_binding_with_navigation(
+            label, tab_token, control, navigation,
+        );
     }
     #[cfg(target_os = "macos")]
     {
+        let _ = navigation;
         return macos::register_webview_binding(label, tab_token, control);
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        let _ = (label, tab_token, control);
+        let _ = (label, tab_token, control, navigation);
         Ok(())
     }
 }
@@ -323,11 +344,23 @@ fn show_native_surface(
                 position: tauri::PhysicalPosition::new(bounds.x, bounds.y).into(),
                 size: tauri::PhysicalSize::new(bounds.width as u32, bounds.height as u32).into(),
             })
-            .map_err(|error| format!("调整浏览器标签页位置失败: {error}"))?;
+            .map_err(|error| format!("Failed to reposition browser tab: {error}"))?;
     }
     webview
         .show()
-        .map_err(|error| format!("显示浏览器标签页失败: {error}"))
+        .map_err(|error| format!("Failed to show browser tab: {error}"))
+}
+
+#[cfg(target_os = "linux")]
+fn hide_native_surface(webview: &tauri::Webview) -> Result<(), String> {
+    linux_surface::hide(webview)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn hide_native_surface(webview: &tauri::Webview) -> Result<(), String> {
+    webview
+        .hide()
+        .map_err(|error| format!("Failed to hide browser tab: {error}"))
 }
 
 /// Prepare process-wide browser automation state before Tauri creates any
@@ -358,7 +391,9 @@ pub(crate) fn install_automation_context(_app: &mut tauri::App) {
         use tauri::Manager;
         if let Some(main_webview) = _app.get_webview("main") {
             if let Err(error) = linux_surface::prepare(&main_webview) {
-                eprintln!("[browser] Linux 原生浏览器 overlay 预初始化失败: {error}");
+                eprintln!(
+                    "[browser] Failed to preinitialize Linux native browser overlay: {error}"
+                );
             }
         }
     }
@@ -369,8 +404,9 @@ pub(crate) async fn evaluate_browser_core_json(
     webview: &tauri::Webview,
     script: String,
     mode: BrowserCoreEvaluationMode,
+    authorization: Option<&state::NativeTabLease>,
 ) -> Result<serde_json::Value, String> {
-    linux::evaluate_json(webview, script, mode).await
+    linux::evaluate_json(webview, script, mode, authorization).await
 }
 
 #[cfg(target_os = "macos")]
@@ -378,8 +414,9 @@ pub(crate) async fn evaluate_browser_core_json(
     webview: &tauri::Webview,
     script: String,
     mode: BrowserCoreEvaluationMode,
+    authorization: Option<&state::NativeTabLease>,
 ) -> Result<serde_json::Value, String> {
-    macos::evaluate_json(webview, script, mode).await
+    macos::evaluate_json(webview, script, mode, authorization).await
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -387,6 +424,7 @@ pub(crate) async fn evaluate_browser_core_json(
     _webview: &tauri::Webview,
     _script: String,
     _mode: BrowserCoreEvaluationMode,
+    _authorization: Option<&state::NativeTabLease>,
 ) -> Result<serde_json::Value, String> {
     Err("browser/core-backend-unavailable".to_string())
 }
@@ -595,8 +633,18 @@ pub(crate) async fn shutdown_browser_core_for_stop() {
     linux_automation::shutdown_for_stop().await;
 }
 
-/// Process-exit fallback. Exit cannot await the WebDriver operation gate, so
-/// this path only performs a synchronous best-effort reset.
+/// Permanently close process-level BrowserCore admission before an application
+/// restart. Linux checks this latch only after acquiring its operation gate, so
+/// even work queued before restart cannot spawn a driver after the final reset.
+pub(crate) fn begin_browser_core_process_shutdown() {
+    #[cfg(target_os = "linux")]
+    linux_automation::begin_process_shutdown();
+}
+
+/// Synchronous process-exit collector. Exit cannot await the WebDriver
+/// operation gate, so Linux first closes process admission and then takes the
+/// same child slot lock used by spawn publication. That transaction guarantees
+/// no WebKitWebDriver child can be published after the collector has run.
 pub(crate) fn shutdown_browser_core_for_exit() {
     #[cfg(target_os = "linux")]
     linux_automation::shutdown_for_exit();
@@ -631,7 +679,8 @@ pub(crate) type NativeBrowserSurface = host::DesktopBrowserSurface<windows::Wind
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) type NativeBrowserSurface = host::DesktopBrowserSurface<system::SystemWebviewConfig>;
 
-// Tauri 的移动端不属于本轮桌面浏览器范围，保持显式 unsupported，避免误用桌面 API。
+// Tauri mobile targets are outside this desktop-browser scope. Keep them explicitly
+// unsupported so desktop APIs cannot be used accidentally.
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 #[derive(Default)]
 pub(crate) struct NativeBrowserSurface;
@@ -663,7 +712,7 @@ impl NativeBrowserSurface {
         _session_id: &str,
         _restore: &NativeWorkspaceRestore,
     ) -> Result<(), String> {
-        Err("当前平台不支持原生浏览器页面".to_string())
+        Err("Native browser pages are not supported on this platform".to_string())
     }
 
     pub fn prepare_restored_surface(
@@ -675,7 +724,7 @@ impl NativeBrowserSurface {
         _data_directory: &std::path::Path,
         _restore: &NativeWorkspaceRestore,
     ) -> Result<Vec<String>, String> {
-        Err("当前平台不支持原生浏览器页面".to_string())
+        Err("Native browser pages are not supported on this platform".to_string())
     }
 
     pub fn show(
@@ -711,7 +760,7 @@ impl NativeBrowserSurface {
         _app: &tauri::AppHandle,
         _session_id: &str,
     ) -> Result<(), String> {
-        Err("当前平台不支持原生浏览器页面".to_string())
+        Err("Native browser pages are not supported on this platform".to_string())
     }
 
     pub fn persist_navigation_state(
@@ -719,7 +768,7 @@ impl NativeBrowserSurface {
         _app: &tauri::AppHandle,
         _session_id: &str,
     ) -> Result<(), String> {
-        Err("当前平台不支持原生浏览器页面".to_string())
+        Err("Native browser pages are not supported on this platform".to_string())
     }
 
     pub fn persist_all_restore(&self, _app: &tauri::AppHandle) -> Result<(), String> {
@@ -756,6 +805,38 @@ impl NativeBrowserSurface {
         _session_id: &str,
     ) -> Option<Vec<super::TabInfo>> {
         None
+    }
+
+    pub fn navigate_tab_for_agent(
+        &self,
+        _app: &tauri::AppHandle,
+        _session_id: &str,
+        _tab_token: &str,
+        _url: &str,
+        _authorization: &state::NativeTabLease,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    pub fn history_step_tab_for_agent(
+        &self,
+        _app: &tauri::AppHandle,
+        _session_id: &str,
+        _tab_token: &str,
+        _delta: i8,
+        _authorization: &state::NativeTabLease,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    pub fn reload_tab_for_agent(
+        &self,
+        _app: &tauri::AppHandle,
+        _session_id: &str,
+        _tab_token: &str,
+        _authorization: &state::NativeTabLease,
+    ) -> Result<bool, String> {
+        Ok(false)
     }
 
     pub fn create_tab(
@@ -856,6 +937,7 @@ impl NativeBrowserSurface {
         &self,
         _lease: &state::NativeTabLease,
         _emits_trusted_input: bool,
+        _observational_only: bool,
         _caller_pid: u32,
         _wrapper_instance_nonce: &str,
     ) -> Result<bool, String> {
@@ -915,7 +997,7 @@ impl NativeBrowserSurface {
         _session_id: &str,
         _request_id: &str,
     ) -> Result<state::NativeRequestClaim, String> {
-        Err("当前平台不支持 Agent 浏览器自动化".to_string())
+        Err("Agent browser automation is not supported on this platform".to_string())
     }
 
     pub fn complete_request(
@@ -941,6 +1023,10 @@ impl NativeBrowserSurface {
         _request_id: &str,
     ) -> Result<(), String> {
         Ok(())
+    }
+
+    pub fn purge_session_requests(&mut self, _session_id: &str) -> Result<usize, String> {
+        Ok(0)
     }
 
     pub fn activate_tab(
@@ -1029,6 +1115,36 @@ mod async_dispatch_tests {
 
     const TIMEOUT: &str = "browser/test-dispatch-timeout";
     const CLOSED: &str = "browser/test-dispatch-callback-closed";
+
+    #[test]
+    fn mutating_evaluation_requires_an_explicit_native_tab_lease() {
+        assert_eq!(
+            evaluation_authorization(BrowserCoreEvaluationMode::ReadOnly, None),
+            Ok(None)
+        );
+        assert_eq!(
+            evaluation_authorization(BrowserCoreEvaluationMode::MayMutate, None),
+            Err("browser/mutating-script-lease-required".to_string())
+        );
+
+        let lease = state::NativeTabLease::from_assertion(
+            "session-a",
+            "0123456789abcdef",
+            "target-a",
+            7,
+            "0123456789abcdeffedcba9876543210",
+        )
+        .unwrap();
+        assert_eq!(
+            evaluation_authorization(BrowserCoreEvaluationMode::MayMutate, Some(&lease)),
+            Ok(Some(&lease))
+        );
+        assert_eq!(
+            evaluation_authorization(BrowserCoreEvaluationMode::ReadOnly, Some(&lease)),
+            Ok(None),
+            "read-only observations must not retain a page-mutation capability"
+        );
+    }
 
     #[tokio::test]
     async fn queued_mutation_timeout_cancels_before_native_dispatch() {

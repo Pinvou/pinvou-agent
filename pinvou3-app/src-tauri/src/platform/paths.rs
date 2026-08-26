@@ -161,60 +161,67 @@ pub fn bundle_version_file() -> PathBuf {
     bundle_root().join("VERSION")
 }
 
-// --- 浏览器功能（features/browser）路径 ---
+// --- Browser feature paths (features/browser) ---
 
-/// `~/.pinvou3/browser/` —— 应用内原生浏览器的协调、运行期映射与恢复目录。
+/// Coordination, runtime-mapping, and restoration directory for the in-app native browser:
+/// `~/.pinvou3/browser/`.
 pub fn browser_home() -> PathBuf {
     pinvou3_home().join("browser")
 }
-/// CDP 端口协调文件：{ port, pid, owner: "app"|"mcp", started_at }。
-/// Rust BrowserManager 与 MCP wrapper（browser-wrapper.mjs）通过它幂等协调同一实例。
+/// CDP port coordination file: `{ port, pid, owner: "app"|"mcp", started_at }`.
+/// Rust BrowserManager and browser-wrapper.mjs use it to coordinate one instance
+/// idempotently.
 pub fn browser_cdp_port_json() -> PathBuf {
     browser_home().join("cdp-port.json")
 }
-/// Windows 原生浏览器表面（WebView2）的独立数据目录。
+/// Dedicated data directory for the native Windows WebView2 surface.
 ///
-/// 这是应用内 WebView2 的持久数据目录，登录态可在多个任务与应用重启之间保留；
-/// 不用于外部 Chrome，也不存在截图流兼容回退。
+/// It persists sign-in state across tasks and application restarts. It is never used for
+/// external Chrome and has no screenshot-stream compatibility fallback.
 pub fn browser_webview_profile_dir() -> PathBuf {
     browser_home().join("webview2-profile")
 }
-/// MCP wrapper 首次需要浏览器时写入的按需启动请求目录。每个 wrapper 使用独立
-/// 文件，避免两个对话同时首次调用浏览器时互相覆盖请求。
+/// Directory for on-demand startup requests written when an MCP wrapper first needs the
+/// browser. Each wrapper uses its own file so concurrent first calls in two conversations
+/// cannot overwrite one another.
 pub fn browser_host_requests_dir() -> PathBuf {
     browser_home().join("host-requests")
 }
-/// 原生浏览器运行期权威映射。文件仅供对应 MCP wrapper 同步宿主当前的
-/// tabToken -> automation target 双射；应用退出时必须删除，绝不能跨进程复用其中
-/// 的 targetId。
+/// Authoritative runtime mapping for the native browser. Only the corresponding MCP wrapper
+/// uses it to synchronize the host's tabToken-to-automation-target bijection. It must be
+/// deleted on application exit, and its target IDs must never be reused across processes.
 pub fn browser_workspaces_dir() -> PathBuf {
     browser_home().join("workspaces")
 }
 pub fn browser_workspace_state_json(session_token: &str) -> PathBuf {
     browser_workspaces_dir().join(format!("{session_token}.json"))
 }
-/// 对话浏览器的可恢复页面清单。路径使用稳定会话摘要，内容只保存 URL 顺序与
-/// active index，不保存原始 sessionId、session/tab token、targetId、lease 或 Cookie。
-/// 应用重启后宿主据此创建全新的 WebView/tab 身份与自动化 target。
+/// Restorable page manifest for a conversation browser. The path uses a stable session
+/// digest. The content stores only URL order and active index, never the raw session ID,
+/// session/tab tokens, target IDs, leases, or cookies. After restart, the host creates new
+/// WebView/tab identities and automation targets from this manifest.
 pub fn browser_workspace_restore_dir() -> PathBuf {
     browser_home().join("restore")
 }
 pub fn browser_workspace_restore_json(session_token: &str) -> PathBuf {
     browser_workspace_restore_dir().join(format!("{session_token}.json"))
 }
-/// 浏览器最近一次原生宿主/应用自有 CDP 接入失败记录：{ reason, at }。由 wrapper
-/// 写入，Rust 侧在 24h 新鲜度内注入模型可见 instructions；不表示外部 Chrome 状态。
+/// Most recent native-host or app-owned CDP connection failure: `{ reason, at }`. The
+/// wrapper writes it and Rust may inject an allowlisted model-visible explanation while it
+/// remains fresh for 24 hours. It never describes external Chrome state.
 pub fn browser_last_error_json() -> PathBuf {
     browser_home().join("last-error.json")
 }
-/// 工作模式会话专用 mcp.json（全局 mcp.json + browser 条目）。
-/// 门控语义：browser MCP 工具只对工作模式（assistant 引擎）会话暴露，全局
-/// mcp.json 永不注册 browser 条目；codex ACP 等外部 Agent 不读本文件。
+/// Work-mode session-specific mcp.json containing global mcp.json plus the browser entry.
+/// Browser MCP tools are exposed only to Work-mode assistant Engine sessions. Global
+/// mcp.json never registers the browser entry, and external Agents such as Codex ACP do not
+/// read this file.
 pub fn browser_work_mcp_json() -> PathBuf {
     browser_home().join("mcp.work.json")
 }
-/// 对话级浏览器 MCP 配置。文件名只使用稳定、无路径字符的 token，不把原始会话 ID
-/// 放进路径，避免路径字符与目录穿越问题。
+/// Conversation-scoped Browser MCP configuration. The filename uses only a stable token
+/// without path characters and never embeds the raw session ID, preventing invalid path
+/// characters and directory traversal.
 pub fn browser_session_mcp_dir() -> PathBuf {
     browser_home().join("mcp-sessions")
 }
@@ -222,8 +229,9 @@ pub fn browser_session_mcp_json(session_id: &str) -> PathBuf {
     browser_session_mcp_dir().join(format!("{}.json", browser_session_token(session_id)))
 }
 
-/// 会话 ID 的稳定 FNV-1a token。它只用于本机文件名、WebView label 与初始页标记，
-/// 不承担鉴权；完整 session_id 仍保留在请求内容中并由主应用重新计算校验。
+/// Stable FNV-1a token for a session ID. It is used only for local filenames, WebView labels,
+/// and initial-page markers, not authentication. Requests retain the complete session_id,
+/// which the main application recomputes and validates.
 pub fn browser_session_token(session_id: &str) -> String {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in session_id.as_bytes() {
@@ -232,11 +240,12 @@ pub fn browser_session_token(session_id: &str) -> String {
     }
     format!("{hash:016x}")
 }
-/// 浏览器 MCP wrapper 脚本（编译期内嵌，释放到 `~/.pinvou3/bundle/mcp-servers/`）。
+/// Browser MCP wrapper embedded at compile time and extracted to
+/// `~/.pinvou3/bundle/mcp-servers/`.
 pub fn bundle_browser_wrapper() -> PathBuf {
     bundle_mcp_servers_dir().join("browser-wrapper.mjs")
 }
-/// vendor 的 chrome-devtools-mcp 入口（随安装包 resource_dir 分发）。
+/// Vendored chrome-devtools-mcp entry point distributed through the package resource_dir.
 pub fn bundled_chrome_devtools_mcp_bin() -> Option<PathBuf> {
     let res = runtime_resource_dir()?;
     let bin = res.join("runtime/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js");

@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createNativeSurfaceTransitionGate } from '../src/features/browser/native-surface-transition.mjs';
+import {
+  createNativeSurfaceTransitionGate,
+  hideNativeSurfaceWithRetry,
+  settleBrowserUiPublicationAfterCommit,
+} from '../src/features/browser/native-surface-transition.mjs';
 
 function deferred() {
   let resolve;
@@ -132,4 +136,143 @@ test('serialized session transitions finish in order and only the latest publish
   assert.equal(await first, false);
   assert.equal(await second, true);
   assert.deepEqual(publications, ['session-c']);
+});
+
+test('a started false publication keeps its lease until the React commit ACK', async () => {
+  const commit = deferred();
+  let settled = 0;
+  let completed = false;
+  const result = settleBrowserUiPublicationAfterCommit({
+    publish: () => false,
+    waitForCommit: () => commit.promise,
+    onSettled: () => { settled += 1; },
+  }).then((value) => {
+    completed = true;
+    return value;
+  });
+
+  await Promise.resolve();
+  assert.equal(completed, false);
+  assert.equal(settled, 0);
+  commit.resolve();
+  assert.equal(await result, false);
+  assert.equal(settled, 1);
+});
+
+test('a started throwing publication keeps its lease until the React commit ACK', async () => {
+  const commit = deferred();
+  const publicationError = new Error('session switch failed');
+  let settled = 0;
+  let rejected = false;
+  const result = settleBrowserUiPublicationAfterCommit({
+    publish: () => { throw publicationError; },
+    waitForCommit: () => commit.promise,
+    onSettled: () => { settled += 1; },
+  }).catch((error) => {
+    rejected = true;
+    throw error;
+  });
+
+  await Promise.resolve();
+  assert.equal(rejected, false);
+  assert.equal(settled, 0);
+  commit.resolve();
+  await assert.rejects(result, (error) => error === publicationError);
+  assert.equal(settled, 1);
+});
+
+test('an async publication settles before its React commit ACK is requested', async () => {
+  const publication = deferred();
+  const commit = deferred();
+  const sequence = [];
+  let completed = false;
+  const result = settleBrowserUiPublicationAfterCommit({
+    publish: async () => {
+      sequence.push('publish-started');
+      await publication.promise;
+      sequence.push('publish-settled');
+      return true;
+    },
+    waitForCommit: () => {
+      sequence.push('commit-requested');
+      return commit.promise;
+    },
+  }).then((value) => {
+    completed = true;
+    return value;
+  });
+
+  await Promise.resolve();
+  assert.deepEqual(sequence, ['publish-started']);
+  publication.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(sequence, ['publish-started', 'publish-settled', 'commit-requested']);
+  assert.equal(completed, false);
+  commit.resolve();
+  assert.equal(await result, true);
+});
+
+test('native surface hide retries exactly once while its intent remains current', async () => {
+  const attempts = [];
+  const errors = [];
+  const result = await hideNativeSurfaceWithRetry({
+    hide: async ({ attempt }) => {
+      attempts.push(attempt);
+      if (attempt === 1) throw new Error('transient IPC failure');
+      return 'hidden';
+    },
+    isCurrent: () => true,
+    onError: (error, details) => errors.push([error.message, details]),
+  });
+
+  assert.equal(result, 'hidden');
+  assert.deepEqual(attempts, [1, 2]);
+  assert.deepEqual(errors, [[
+    'transient IPC failure',
+    { attempt: 1, willRetry: true },
+  ]]);
+});
+
+test('a newer visibility intent invalidates a pending hide retry', async () => {
+  const retryWait = deferred();
+  const attempts = [];
+  let current = true;
+  const result = hideNativeSurfaceWithRetry({
+    hide: async ({ attempt }) => {
+      attempts.push(attempt);
+      throw new Error('hide IPC failure');
+    },
+    isCurrent: () => current,
+    waitBeforeRetry: () => retryWait.promise,
+  });
+
+  await Promise.resolve();
+  current = false;
+  retryWait.resolve();
+
+  await assert.rejects(result, /hide IPC failure/);
+  assert.deepEqual(attempts, [1]);
+});
+
+test('native surface hide never retries more than once', async () => {
+  const attempts = [];
+  const errors = [];
+  await assert.rejects(
+    hideNativeSurfaceWithRetry({
+      hide: async ({ attempt }) => {
+        attempts.push(attempt);
+        throw new Error(`failure ${attempt}`);
+      },
+      isCurrent: () => true,
+      onError: (error, details) => errors.push([error.message, details]),
+    }),
+    /failure 2/,
+  );
+
+  assert.deepEqual(attempts, [1, 2]);
+  assert.deepEqual(errors, [
+    ['failure 1', { attempt: 1, willRetry: true }],
+    ['failure 2', { attempt: 2, willRetry: false }],
+  ]);
 });

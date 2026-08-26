@@ -117,10 +117,10 @@ assertGuard(
   /event\.key === ['"]Enter['"] && !event\.shiftKey\s*&&\s*!isImeComposing\(event\)[\s\S]*submitPetReply/,
 );
 
-// --- features/browser:地址栏导航 ----------------------------------------------
+// --- features/browser: address-bar navigation ----------------------------------
 const browserView = src('features', 'browser', 'BrowserView.jsx');
 assertGuard(
-  '浏览器地址栏 Enter 导航',
+  'browser address bar navigates on Enter',
   browserView,
   /e\.key === ['"]Enter['"] && isImeComposing\(e\)\) e\.preventDefault\(\)/,
 );

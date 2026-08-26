@@ -59,7 +59,7 @@ const FALLBACK_SCHEMAS = {
   new_page: {
     type: 'object',
     properties: {
-      url: { type: 'string', description: 'URL to load in a new page.' },
+      url: { type: 'string', description: 'URL whose navigation should be requested in a new page.' },
       background: { type: 'boolean' },
       timeout: { type: 'integer', minimum: 0 },
     },
@@ -161,7 +161,12 @@ const FALLBACK_SCHEMAS = {
     type: 'object',
     properties: {
       text: { type: 'array', items: { type: 'string' }, minItems: 1 },
-      timeout: { type: 'integer', minimum: 0 },
+      timeout: {
+        type: 'integer',
+        minimum: 0,
+        maximum: 12_000,
+        description: 'Maximum wait in milliseconds (up to 12000).',
+      },
     },
     required: ['text'],
     additionalProperties: true,
@@ -204,10 +209,10 @@ const FALLBACK_SCHEMAS = {
 
 const TOOL_DESCRIPTIONS = {
   list_pages: 'Get a list of pages open in the current task browser.',
-  new_page: 'Open a new task-owned browser tab and load a URL.',
+  new_page: 'Open a new task-owned browser tab and submit a URL navigation request. Success does not verify that the page loaded; use take_snapshot to verify it.',
   select_page: 'Select a task-owned page for future browser calls.',
   close_page: 'Close a task-owned page. The last page cannot be closed.',
-  navigate_page: 'Navigate the selected page by URL, history, or reload.',
+  navigate_page: 'Submit URL, history, or reload navigation for the selected page. Success does not verify that the page loaded; use take_snapshot to verify it.',
   take_snapshot: 'Take a text snapshot of the selected page with stable element uids.',
   click: 'Click an element using task-local native input.',
   drag: 'Drag one element onto another using task-local native input.',

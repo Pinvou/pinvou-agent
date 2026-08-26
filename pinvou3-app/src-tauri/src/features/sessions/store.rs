@@ -30,13 +30,11 @@ use super::scheduled::ChatEngineState;
 use super::transcript::{looks_like_truncating_overwrite, transcript_revision};
 use super::validators::{generate_session_id, persisted_system_prompt, validate_session_id};
 use super::{
-    session_roots_for, CodeSessionPredicate, ExecutionRootResolver, SessionKind, SessionPurgedHook,
-    SessionRoots, SessionStore,
+    session_roots_for, CodeSessionPredicate, ExecutionRootResolver, SessionDeletedHook,
+    SessionKind, SessionPurgedHook, SessionRoots, SessionStore,
 };
 use crate::core::mode_state::SerializableMode;
 use crate::platform::prefs::UserPrefs;
-
-const SESSION_DELETION_EVENT_CAPACITY: usize = 128;
 
 #[cfg(test)]
 static POST_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
@@ -164,8 +162,6 @@ impl SessionStore {
         let manager = SessionManager::new(sessions_dir.clone())
             .with_context(|| format!("SessionManager::new({}) failed", sessions_dir.display()))?;
         let prefs_snapshot = UserPrefs::load();
-        let (session_deletions, _) =
-            tokio::sync::broadcast::channel(SESSION_DELETION_EVENT_CAPACITY);
         let store = Self {
             manager: Arc::new(manager),
             scheduled_profiles: Arc::new(RwLock::new(HashMap::new())),
@@ -186,8 +182,7 @@ impl SessionStore {
             code_permission: Arc::new(RwLock::new(prefs_snapshot.code_permission)),
             mode_defaults: Arc::new(RwLock::new(prefs_snapshot.mode_defaults)),
             session_purged_hooks: Arc::new(RwLock::new(Vec::new())),
-            session_deletions,
-            deleted_session_ids: Arc::new(RwLock::new(HashSet::new())),
+            session_deleted_hooks: Arc::new(RwLock::new(Vec::new())),
         };
         store.load_scheduled_profiles()?;
         store.reconcile_scheduled_profiles_locked()?;
@@ -284,7 +279,14 @@ impl SessionStore {
         // 不在盘上但错误会向上传播——按「已发起删除即可能变更盘面」失效快照,
         // 不能等走到 match 之后的统一失效(Err 提前 return 会跳过它)。
         self.invalidate_list_cache();
-        let (_, delete_result) = self.delete_session_record(id);
+        let (committed, delete_result) = self.delete_session_record(id);
+        if committed {
+            // A later workspace/artifact cleanup error does not roll back the
+            // durable record removal. Purge store/process side maps now so an
+            // error return cannot strand an active id, model binding or turn
+            // state forever when the caller never retries.
+            self.purge_session_side_maps(&[id.to_string()]);
+        }
         match delete_result {
             Ok(()) => {}
             Err(err) if err.kind() == ErrorKind::NotFound => {
@@ -305,57 +307,6 @@ impl SessionStore {
             }
             Err(err) => return Err(err).with_context(|| format!("delete_session({id})")),
         }
-        // 删除已落盘,列表快照过期
-        self.invalidate_list_cache();
-        // 如果删的是 active session，清理 active 标记
-        let mut active = self.active.write();
-        if active.as_deref() == Some(id) {
-            *active = None;
-        }
-        drop(active);
-        let removed_multi_agent = self
-            .mode_states
-            .write()
-            .remove(id)
-            .is_some_and(|state| state.multi_agent);
-        if removed_multi_agent {
-            if let Err(error) = self.save_multi_agent_flags() {
-                eprintln!(
-                    "[sessions] update _multi_agent.json after delete({id}) failed: {error:#}"
-                );
-            }
-        }
-        if self.session_mode_states.write().remove(id).is_some() {
-            self.save_session_mode_states();
-        }
-        let removed_session_model = {
-            let mut session_models = self.session_models.write();
-            session_models.remove(id).is_some()
-        };
-        if removed_session_model {
-            self.save_session_models();
-        }
-        let removed_pin = {
-            let mut pinned_sessions = self.pinned_sessions.write();
-            pinned_sessions.remove(id).is_some()
-        };
-        if removed_pin {
-            self.save_pinned_sessions();
-        }
-        let removed_hidden = {
-            let mut hidden_sessions = self.hidden_sessions.write();
-            hidden_sessions.remove(id).is_some()
-        };
-        if removed_hidden {
-            self.save_hidden_sessions();
-        }
-        // The hook fires after all store-side map locks are released (same
-        // policy as the retention path in retention.rs): holding locks
-        // while calling process-level cleanup would introduce lock-ordering
-        // risk. Hook implementations only do idempotent keyed removal; when
-        // nobody registered (tests/early startup), deletion completes as
-        // usual.
-        self.notify_session_purged(id);
         Ok(())
     }
 
@@ -365,7 +316,7 @@ impl SessionStore {
     /// `SessionManager::delete_session` removes `<id>.json` before recursively
     /// deleting `<id>/`. It can therefore return an error after the durable
     /// record is already gone. In that partial-commit state we must publish the
-    /// deletion tombstone while preserving the original cleanup error for the
+    /// durable-deletion hook while preserving the original cleanup error for the
     /// caller. Validation plus a direct metadata lookup makes the check
     /// fail-closed: an invalid id or an unreadable path is never interpreted as
     /// a committed deletion.
@@ -378,7 +329,7 @@ impl SessionStore {
         (committed, result)
     }
 
-    fn durable_session_record_is_absent(&self, id: &str) -> bool {
+    pub(super) fn durable_session_record_is_absent(&self, id: &str) -> bool {
         if validate_session_id(id).is_err() {
             return false;
         }
@@ -413,41 +364,14 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Subscribe first, then snapshot tombstones. A deletion racing between
-    /// the two operations can be observed twice but cannot be missed; all
-    /// consumers must therefore treat lifecycle cleanup as idempotent.
-    pub(crate) fn subscribe_session_deletions(
-        &self,
-    ) -> (
-        tokio::sync::broadcast::Receiver<super::SessionDeleted>,
-        Vec<super::SessionDeleted>,
-    ) {
-        let receiver = self.session_deletions.subscribe();
-        let replay = self.session_deletion_tombstones();
-        (receiver, replay)
-    }
-
-    pub(crate) fn session_deletion_tombstones(&self) -> Vec<super::SessionDeleted> {
-        let mut ids = self
-            .deleted_session_ids
-            .read()
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
-        ids.sort();
-        ids.into_iter()
-            .map(|id| super::SessionDeleted { id })
-            .collect()
-    }
-
     pub(crate) fn notify_session_deleted(&self, id: &str) {
-        self.deleted_session_ids.write().insert(id.to_string());
-        // `send` returning `Err` only means there is currently no receiver.
-        // The tombstone above deliberately preserves the event for a later
-        // composition-root subscriber (notably boot-time retention).
-        let _ = self
-            .session_deletions
-            .send(super::SessionDeleted { id: id.to_string() });
+        // Never execute extension code while holding the registry lock. A hook
+        // may register another hook (or enter another lifecycle seam); cloning
+        // the Arc list first prevents lock-order inversions and self-deadlock.
+        let hooks = self.session_deleted_hooks.read().clone();
+        for hook in hooks {
+            hook(id);
+        }
     }
 
     pub fn session_kind(&self, id: &str) -> Result<SessionKind> {
@@ -475,6 +399,14 @@ impl SessionStore {
         self.session_purged_hooks.write().push(hook);
     }
 
+    /// Register a durable-session-deleted hook. Runtime hooks are intentionally
+    /// not backed by an ever-growing replay log: deletions that happen during
+    /// store boot are recovered by the composition root's on-disk orphan
+    /// reconciliation before normal producers start.
+    pub fn register_session_deleted_hook(&self, hook: SessionDeletedHook) {
+        self.session_deleted_hooks.write().push(hook);
+    }
+
     /// Notifies all registered parties after a session is deleted from the
     /// store ([`SessionStore::delete`] and deep paths without an app handle
     /// such as retention policy/scheduled cleanup). Failures are silent
@@ -482,7 +414,8 @@ impl SessionStore {
     /// deletion path; callers must fire this only after all store-side
     /// locks are released.
     pub(crate) fn notify_session_purged(&self, id: &str) {
-        for hook in self.session_purged_hooks.read().iter() {
+        let hooks = self.session_purged_hooks.read().clone();
+        for hook in hooks {
             hook(id);
         }
     }
