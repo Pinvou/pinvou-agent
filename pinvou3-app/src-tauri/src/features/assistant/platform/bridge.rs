@@ -3022,12 +3022,12 @@ mod tests {
                 "tmeet",
                 "tmeet.cmd",
                 "tmeet.exe",
-                "weibo-cli",
-                "weibo-cli.cmd",
-                "weibo-cli.exe",
                 "wecom-cli",
                 "wecom-cli.cmd",
-                "wecom-cli.exe"
+                "wecom-cli.exe",
+                "weibo-cli",
+                "weibo-cli.cmd",
+                "weibo-cli.exe"
             ]
         );
         assert!(rs

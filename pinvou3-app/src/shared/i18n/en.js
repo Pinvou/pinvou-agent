@@ -517,7 +517,6 @@ dictEn.uiToolDetails.flow = {
 dictEn.uiToolDetails.actions = { connectedTmeet:'Tencent Meeting connected', enabled:'Official skill enabled; start a new conversation to use it', disconnectedTmeet:'Tencent Meeting disconnected', connectingIma:'Connecting Tencent ima', validatingIma:'Validating OpenAPI credentials and enabling the Skill…', connectedIma:'Tencent ima connected', imaEnabled:'IMA OpenAPI Skill enabled; start a new conversation to use it.', imaFailed:'IMA connection failed', disconnectedIma:'Tencent ima disconnected', operationFailed:'Operation failed. Please retry' };
 
 dictEn.uiToolDetails.tmeetSteps = [{key:'runtime',label:'Prepare runtime',sub:'Use the app-provided Node runtime'},{key:'cli',label:'Install connector',sub:'tmeet · about 40 seconds on first use'},{key:'qr',label:'Sign in',sub:'Tencent Meeting authorization page'}];
-dictEn.uiToolDetails.weiboSteps = [{key:'runtime',label:'Prepare runtime',sub:'Use the app-provided Node runtime'},{key:'cli',label:'Install connector',sub:'weibo-cli · about 40 seconds on first use'},{key:'qr',label:'Authorize',sub:'Weibo authorization page'}];
 
 dictEn.uiToolDetails.showRawErrors = false;
 

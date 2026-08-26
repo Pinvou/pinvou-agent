@@ -517,7 +517,6 @@ dictZh.uiToolDetails.flow = {
 dictZh.uiToolDetails.actions = { connectedTmeet:'已连接腾讯会议', enabled:'官方技能已启用，可新建对话直接用', disconnectedTmeet:'已断开腾讯会议', connectingIma:'正在连接「腾讯 ima」', validatingIma:'正在校验 OpenAPI 凭证并启用 Skill…', connectedIma:'已连接「腾讯 ima」', imaEnabled:'IMA OpenAPI Skill 已启用，可新建对话直接使用。', imaFailed:'IMA 连接失败', disconnectedIma:'已断开「腾讯 ima」', operationFailed:'操作失败，请重试' };
 
 dictZh.uiToolDetails.tmeetSteps = [{key:'runtime',label:'准备运行时',sub:'使用应用自带 Node'},{key:'cli',label:'安装连接组件',sub:'tmeet · 首次约 40 秒'},{key:'qr',label:'扫码登录',sub:'腾讯会议授权页'}];
-dictZh.uiToolDetails.weiboSteps = [{key:'runtime',label:'准备运行时',sub:'使用应用自带 Node'},{key:'cli',label:'安装连接组件',sub:'weibo-cli · 首次约 40 秒'},{key:'qr',label:'授权登录',sub:'微博授权页'}];
 
 dictZh.uiToolDetails.showRawErrors = true;
 
