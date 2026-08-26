@@ -798,7 +798,7 @@ desktopHint:'Install Obsidian on the desktop and create a vault first, then chec
   updateSkillOverwriteHint:'This overwrites the skill with the latest store version. Your local changes to it will be lost.',
   notConnectedYet:name=>`"${name}" is not connected yet.`,
   loginFrameTitle:name=>`${name} sign-in`, loginPageLoadFailed:'Failed to load the sign-in page—use browser authorization below', waitingAuth:'Waiting for authorization…', openInBrowser:'Open in browser',
-  mini:{ scan:'Scan pending', install:pct=>`Installing ${pct}%`, extract:pct=>`Extracting ${pct}%`, connecting:'Connecting', title:'Tap to view progress' },
+  mini:{ scan:'Scan pending', authorize:'Authorizing', install:pct=>`Installing ${pct}%`, extract:pct=>`Extracting ${pct}%`, connecting:'Connecting', title:'Tap to view progress' },
   feishuSteps:[
 { key:'runtime', label:'Prepare runtime', sub:'Use the app-provided Node runtime' },
 { key:'cli', label:'Install connector', sub:'lark-cli · about 40 seconds on first use' },

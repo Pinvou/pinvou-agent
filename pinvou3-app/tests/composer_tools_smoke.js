@@ -65,6 +65,7 @@ function injectSource() {
         case 'set_disabled_connectors': state.disabled=(args&&args.connectorIds)||[]; return Promise.resolve(null);
         case 'get_disabled_skills': return Promise.resolve(state.disabledSkills);
         case 'set_disabled_skills': state.disabledSkills=(args&&args.skillIds)||[]; return Promise.resolve(null);
+        case 'weibo_skills_state': return Promise.resolve({connected:true,enabled:true});
         case 'feishu_skills_state': case 'wecom_skills_state': case 'dingtalk_skills_state': case 'tmeet_skills_state': return Promise.resolve({connected:false,enabled:true});
         default: return Promise.resolve(null);
       }
@@ -102,6 +103,7 @@ const sleep = ms => new Promise(r => { setTimeout(r, ms); });
   await sleep(300);
   const menu = await page.evaluate(() => document.body.innerText);
   rec('工具菜单包含内置视觉设计', menu.includes('视觉设计') && menu.includes('内置·自动'));
+  rec('工具菜单包含已连接微博服务', menu.includes('微博') && menu.includes('已连接'));
   rec('独立技能出现在工具菜单', menu.includes('数据分析可视化'));
   rec('companion 技能不重复展示', !menu.includes('党政机关公文写作'));
   rec('所属 MCP 工具仍展示', menu.includes('公文写作'));

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { BookOpen, Check, ChevronLeft, Copy, Download, ExternalLink, Globe, Package, Search, Server, Settings, Upload, User, XIcon, Zap } from '../../components/icons.jsx';
+import { BookOpen, Check, ChevronLeft, Copy, Download, ExternalLink, Globe, Package, Search, Server, Settings, Upload, XIcon, Zap } from '../../components/icons.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
 import { localizeTool, mergeConfigFields, TsActionBtn, tsCategories, tsSkillIconByName, tsSkillsData, tsToolsData, tsToolWelcomeData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
@@ -255,7 +255,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     };
     // 商店列表行内的迷你进度（详情弹窗关掉后，后台仍在跑）
     const FeishuMini = ({ flow, onClick, copy }) => {
-      const label = flow.phase === 'qr' ? copy.scan
+      const label = flow.phase === 'qr' ? (flow.browserAuth && flow.userCode ? (copy.authorize || copy.connecting) : copy.scan)
         : (flow.active === 'cli' ? copy.install(Math.round(flow.pct || 0))
         : (flow.active === 'runtime' ? copy.extract(Math.round(flow.pct || 0)) : copy.connecting));
       return (
@@ -468,7 +468,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         if (p.url) {
           invokeTauri('open_external_url', { url: p.url }).catch(err => {
             console.error('open tmeet auth url failed:', err);
-            tmeetConn.setFlow(f => ({ ...(f || {}), browserOpenFailed: true }));
+            tmeetConn.setFlow(f => f ? ({ ...f, browserOpenFailed: true }) : f);
           });
         }
         tmeetConn.setFlow(f => {
@@ -529,7 +529,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         if (p.url) {
           invokeTauri('open_external_url', { url: p.url }).catch(err => {
             console.error('open weibo auth url failed:', err);
-            weiboConn.setFlow(f => ({ ...(f || {}), browserOpenFailed: true }));
+            weiboConn.setFlow(f => f ? ({ ...f, browserOpenFailed: true }) : f);
           });
         }
         weiboConn.setFlow(f => {
@@ -2478,10 +2478,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                     <FeishuFlowCard flow={dingtalkFlow} steps={storeCopy.dingtalkSteps} name={storeCopy.toolNames.dingtalk} copy={detailCopy.flow} twoStep={false} onRetry={dingtalkRetry} onCancel={dingtalkResetFlow} />
                   )}
                   {externalAuthAvailable && selectedTool.tmeetCli && tmeetFlow && (
-                    <FeishuFlowCard flow={tmeetFlow.phase === 'error' && !detailCopy.showRawErrors ? { ...tmeetFlow, err: detailCopy.actions.operationFailed } : tmeetFlow} steps={detailCopy.tmeetSteps} name={detailCopy.tools.tmeet.title} copy={detailCopy.flow} twoStep={false} browserAuth={!!tmeetFlow.browserAuth} onRetry={tmeetRetry} onCancel={tmeetResetFlow} onBrowserOpenFailed={() => tmeetConn.setFlow(f => ({ ...(f || {}), browserOpenFailed: true }))} onBrowserOpened={() => tmeetConn.setFlow(f => ({ ...(f || {}), browserOpenFailed: false }))} />
+                    <FeishuFlowCard flow={tmeetFlow.phase === 'error' && !detailCopy.showRawErrors ? { ...tmeetFlow, err: detailCopy.actions.operationFailed } : tmeetFlow} steps={detailCopy.tmeetSteps} name={detailCopy.tools.tmeet.title} copy={detailCopy.flow} twoStep={false} browserAuth={!!tmeetFlow.browserAuth} onRetry={tmeetRetry} onCancel={tmeetResetFlow} onBrowserOpenFailed={() => tmeetConn.setFlow(f => f ? ({ ...f, browserOpenFailed: true }) : f)} onBrowserOpened={() => tmeetConn.setFlow(f => f ? ({ ...f, browserOpenFailed: false }) : f)} />
                   )}
                   {externalAuthAvailable && selectedTool.weiboCli && weiboFlow && (
-                    <FeishuFlowCard flow={weiboFlow.phase === 'error' && !detailCopy.showRawErrors ? { ...weiboFlow, err: detailCopy.actions.operationFailed } : weiboFlow} steps={storeCopy.weiboSteps} name={storeCopy.toolNames.weibo} copy={detailCopy.flow} twoStep={false} browserAuth={!!weiboFlow.browserAuth} onRetry={weiboRetry} onCancel={weiboResetFlow} onBrowserOpenFailed={() => weiboConn.setFlow(f => ({ ...(f || {}), browserOpenFailed: true }))} onBrowserOpened={() => weiboConn.setFlow(f => ({ ...(f || {}), browserOpenFailed: false }))} />
+                    <FeishuFlowCard flow={weiboFlow.phase === 'error' && !detailCopy.showRawErrors ? { ...weiboFlow, err: detailCopy.actions.operationFailed } : weiboFlow} steps={storeCopy.weiboSteps} name={storeCopy.toolNames.weibo} copy={detailCopy.flow} twoStep={false} browserAuth={!!weiboFlow.browserAuth} onRetry={weiboRetry} onCancel={weiboResetFlow} onBrowserOpenFailed={() => weiboConn.setFlow(f => f ? ({ ...f, browserOpenFailed: true }) : f)} onBrowserOpened={() => weiboConn.setFlow(f => f ? ({ ...f, browserOpenFailed: false }) : f)} />
                   )}
                   {selectedTool.feishuCli && feishuConnected && !feishuFlow && (
                     <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">

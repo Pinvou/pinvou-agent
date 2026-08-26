@@ -2849,7 +2849,7 @@ mod tests {
         with_temp_home(|| {
             // 模拟已装 2 个连接器。
             write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
-            // 未初始化:code 默认全禁——已装连接器 ∪ 内置 CLI 四连接器 ∪ 已装技能包
+            // 未初始化:code 默认全禁——已装连接器 ∪ 内置 CLI 连接器 ∪ 已装技能包
             // （scope.rs DenyAll 扩集是有意语义）;plain 仍按空处理。
             let deny_all_default = || {
                 vec![
@@ -2859,6 +2859,7 @@ mod tests {
                     "wecom".to_string(),
                     "dingtalk".to_string(),
                     "tmeet".to_string(),
+                    "weibo".to_string(),
                 ]
             };
             assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
@@ -2903,7 +2904,7 @@ mod tests {
                 load_disabled_connectors(),
                 vec!["weather".to_string(), "pptx".to_string()]
             );
-            // 旧格式不初始化 code scope → 仍默认全禁（已装连接器 ∪ 内置 CLI 四连接器，
+            // 旧格式不初始化 code scope → 仍默认全禁（已装连接器 ∪ 内置 CLI 连接器，
             // DenyAll 扩集是有意语义）。
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
@@ -2914,6 +2915,7 @@ mod tests {
                     "wecom".to_string(),
                     "dingtalk".to_string(),
                     "tmeet".to_string(),
+                    "weibo".to_string(),
                 ]
             );
             // 读到即迁移：迁移结果落盘到单一真相源 `disabled_bundles.json`（旧文件不回写）。
@@ -2990,8 +2992,9 @@ mod tests {
                     "wecom".to_string(),
                     "dingtalk".to_string(),
                     "tmeet".to_string(),
+                    "weibo".to_string(),
                 ],
-                "code 未初始化应按 DenyAll 默认全禁（已装连接器 ∪ 内置 CLI 四连接器）"
+                "code 未初始化应按 DenyAll 默认全禁（已装连接器 ∪ 内置 CLI 连接器）"
             );
         });
     }

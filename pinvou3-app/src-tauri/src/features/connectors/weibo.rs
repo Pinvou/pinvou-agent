@@ -233,6 +233,7 @@ pub async fn weibo_connect_begin(app: AppHandle) -> Result<Value, String> {
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))?;
     if already_logged_in {
+        cc::bundle_store_on_connected(ID);
         cc::emit(
             &app,
             "weibo:connected",
@@ -284,6 +285,7 @@ fn drain_for_auth_event<R: std::io::Read + Send + 'static>(
 
 fn phase_scan(app: &AppHandle) -> Result<(), String> {
     let mut cmd = weibo(&["auth", "login", "--device", "--name", "Pinvou"]);
+    crate::platform::process::std_process_group_leader(&mut cmd);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -334,6 +336,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
                     conn.set_pid(ID, None);
                     eprintln!("[weibo] auth login exited before auth url: exit={status}");
                     if wait_logged_in(Duration::from_secs(5)) {
+                        cc::bundle_store_on_connected(ID);
                         cc::emit(
                             app,
                             "weibo:connected",
@@ -374,6 +377,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             Ok(Some(status)) => {
                 conn.set_pid(ID, None);
                 if wait_logged_in(Duration::from_secs(5)) {
+                    cc::bundle_store_on_connected(ID);
                     cc::emit(app, "weibo:connected", json!({ "ok": true }));
                     return Ok(());
                 }
@@ -539,12 +543,14 @@ pub async fn weibo_cancel(app: AppHandle) -> Result<Value, String> {
 pub async fn weibo_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if weibo_cli_version().is_none() {
+            cc::bundle_store_on_disconnected(ID);
             return Ok::<Value, String>(json!({ "ok": true, "installed": false }));
         }
         let (ok, _, _) = run_capture_timeout(weibo(&["auth", "logout"]), SHORT_CMD_TIMEOUT_SECS)?;
         if !ok {
             return Err("微博 CLI 退出登录失败，请重试".to_string());
         }
+        cc::bundle_store_on_disconnected(ID);
         Ok::<Value, String>(json!({ "ok": true, "installed": true }))
     })
     .await
@@ -592,12 +598,16 @@ pub async fn weibo_apply_skills() -> Result<Value, String> {
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))??;
+    if show {
+        crate::features::marketplace::sync_deny_all_scopes_after_install("weibo");
+    }
     Ok(json!({ "visible": show }))
 }
 
 pub async fn set_weibo_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         set_weibo_disabled_flag(!enabled)?;
+        crate::features::marketplace::sync_disabled_bundles_for_connector_switch("weibo", enabled);
         let show = weibo_skills_should_show();
         GATE.apply_skills(show)?;
         Ok(show)

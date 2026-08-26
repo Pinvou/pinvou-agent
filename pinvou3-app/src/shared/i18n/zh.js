@@ -508,7 +508,7 @@ export const dictZh = {
 dictZh.uiToolDetails.flow = {
   incomplete:name=>`${name}接入未完成`, connected:name=>`已连接${name}`, connecting:name=>`正在接入${name}`,
   cancel:'取消', extracting:pct=>`解压中 ${pct}%`, elapsed:seconds=>`已 ${seconds}s`, installStarting:'在线安装：正在开始…', browserOpened:'已打开浏览器登录页',
-  browserHint:'请在浏览器中扫码确认。未弹出时可重新打开。', browserHintCode:'请在浏览器页面输入验证码并确认授权。未弹出时可重新打开。', reopen:'重新打开', qrAlt:name=>`${name}二维码`,
+  browserHint:'请在浏览器中扫码确认。未弹出时可重新打开。', browserHintCode:'请在浏览器中输入验证码并确认授权。未弹出时可重新打开。', reopen:'重新打开', qrAlt:name=>`${name}二维码`,
   authorizeStep:'第 2 步 / 共 2 步：扫码授权', registerStep:'第 1 步 / 共 2 步：扫码注册应用',
   scanLogin:name=>`扫码登录${name}`, scanHint:name=>`用${name} App 扫一扫 → 确认`, userCode:'页面验证码',
   openBrowser:'在浏览器打开 ↗', browserOpenFailed:'浏览器未打开，请手动点击重新打开。', copyCode:'复制验证码', copiedCode:'已复制', connectionIncomplete:'连接未完成', close:'关闭', retry:'重试',
@@ -828,7 +828,7 @@ desktopHint:'请先在桌面端安装 Obsidian 并创建笔记库，然后在这
   updateSkillOverwriteHint:'将覆盖为商店最新版本，你对该技能做的本地修改会丢失。',
   notConnectedYet:name=>`尚未连接「${name}」。`,
   loginFrameTitle:name=>`${name}登录`, loginPageLoadFailed:'登录页加载失败，请用下方浏览器授权', waitingAuth:'等待授权中…', openInBrowser:'在浏览器打开',
-  mini:{ scan:'待扫码', install:pct=>`装 ${pct}%`, extract:pct=>`解压 ${pct}%`, connecting:'接入中', title:'点开查看进度' },
+  mini:{ scan:'待扫码', authorize:'授权中', install:pct=>`装 ${pct}%`, extract:pct=>`解压 ${pct}%`, connecting:'接入中', title:'点开查看进度' },
   feishuSteps:[
 { key:'runtime', label:'准备运行时', sub:'使用应用自带 Node' },
 { key:'cli', label:'安装连接组件', sub:'lark-cli · 首次约 40 秒' },

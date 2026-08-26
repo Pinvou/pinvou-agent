@@ -97,7 +97,7 @@ if [[ "$TOOL" == "exec_shell"* ]]; then
     fi
 fi
 
-# 5) 技能型连接器被误当 MCP 自省：企微/飞书/钉钉/腾讯会议是「技能型连接器」
+# 5) 技能型连接器被误当 MCP 自省：企微/飞书/钉钉/腾讯会议/微博是「技能型连接器」
 #    （无 MCP schema），模型却可能对它们调 list_mcp_resources / list_mcp_resource_templates
 #    去自省能力 → 必然失败 → 误判「没连上」，甚至谎称缺技能。这里拦掉并把纠正回传：
 #    fold_tool_call_before_results 在 exit 2 时只从 stdout 的 JSON {"decision":"deny",
@@ -109,8 +109,8 @@ fi
 if [[ "$TOOL" == "list_mcp_resources" || "$TOOL" == "list_mcp_resource_templates" ]]; then
     # 关键词覆盖模型可能传的各种写法:英文 wecom/weixin/wework、中文全称「企业微信」
     # (注意「企微」子串不含在「企业微信」里,必须显式列全称)、feishu/lark/飞书、
-    # 以及 dingtalk/dingding/dws/钉钉、tmeet/tencent meeting/腾讯会议。
-    if [[ "$ARGS" =~ (wecom|weixin|wework|feishu|lark|dingtalk|dingding|dws|tmeet|tencent[[:space:]_-]?meeting|企微|企业微信|微信|飞书|钉钉|腾讯会议) ]]; then
+    # 以及 dingtalk/dingding/dws/钉钉、tmeet/tencent meeting/腾讯会议、weibo/微博。
+    if [[ "$ARGS" =~ (wecom|weixin|wework|feishu|lark|dingtalk|dingding|dws|tmeet|tencent[[:space:]_-]?meeting|weibo|企微|企业微信|微信|飞书|钉钉|腾讯会议|微博) ]]; then
         echo '{"decision":"deny","reason":"该名称不是 MCP server（无 MCP schema），无法用 list_mcp_resources 自省。若它是技能型连接器，请用 load_skill 加载其对应技能后按技能说明使用。连接状态以工具面板为准，自省失败不代表未连接。"}'
         exit 2
     fi

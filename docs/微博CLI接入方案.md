@@ -251,7 +251,8 @@ runtime bundle 增加：
 - `pinvou3-app/src/features/tools/tool-common.jsx`
 - `pinvou3-app/src/features/tools/ToolStoreView.jsx`
 - `pinvou3-app/src/shared/i18n.js`
-- `pinvou3-app/src/features/settings/SettingsView.jsx`
+- `pinvou3-app/src/shared/i18n/{zh,en,ja}.js`
+- `pinvou3-app/src/features/settings/composer-shared.jsx`
 - `pinvou3-app/src/platform/web/access-policy.json`
 
 前端连接流程直接复制 `tmeet`/`dingtalk` 的模式：
@@ -331,7 +332,7 @@ Windows 当前 npm shim 解析是通用路径，通常不需要同样的白名�
   - mock `weibo_ensure_cli` / `weibo_connect_begin` / `weibo_apply_skills`
   - emit `weibo:qr` / `weibo:connected`
 - `pinvou3-app/tests/web_access_contract.test.mjs`
-  - web 只允许 `weibo_skills_state`
+  - web 只允许微博只读状态查询：`weibo_skills_state` / `weibo_status`
   - 禁止 web 调用 `weibo_ensure_cli` / `weibo_connect_begin` / `weibo_apply_skills` / `set_weibo_enabled`
 - Rust 单测：
   - version parse
