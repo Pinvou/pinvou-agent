@@ -830,7 +830,7 @@ visualizer: { title:'データ分析の可視化', subtitle:'Chart.js ダッシ�
 'skill-author': { title:'スキル作成', subtitle:'一言の説明から、きちんとした SKILL.md スキルを生成', desc:'ユーザーの一言の説明を、使えるスキル（SKILL.md ディレクトリ）に変えます：name / description / 本文の指示を生成し、命名と構造を検証します。アップロード可能なパッケージとして納品したい場合は、続けて「プラグインパッケージ標準化」のルールで plugin.json とアイコンを補い、標準パッケージを書き出して、最後にユーザーへインストールするか尋ねます。', latency:'ローカル' },
 s5: { title:'ビジュアルデザイン', subtitle:'デザインシステム級の Web ページ / バナー / ポスター / レジュメを直接生成', desc:'内蔵の自動スキル：モデルが必要に応じて自動で読み込み、デザインシステム級の美観で Web ページ / バナー / ポスター / レジュメなどを直接生成します。インストール不要でいつでも利用できます。', version:'内蔵', latency:'ローカル' },
   },
-  categories: { all:'すべて', collab:'連携・コラボ', docs:'ドキュメント・ナレッジ', dev:'開発', finance:'金融データ', life:'生活・実用', skill:'スキル' },
+  categories: { all:'すべて', collab:'連携・コラボ', docs:'ドキュメント・ナレッジ', dev:'開発', finance:'金融データ', life:'生活・実用', other:'その他', skill:'スキル' },
 } });
 
 Object.assign(dictJa.uiToolStore, {
