@@ -709,8 +709,7 @@ const AcFmtIcon = FileTypeIcon;
       { id: 'dev', label: '研发' },
       { id: 'finance', label: '金融数据' },
       { id: 'life', label: '生活实用' },
-      { id: 'other', label: '其它' },
-      { id: 'skill', label: '技能' },
+      { id: 'other', label: '其他' },
     ];
 
     // ── 列表视图双维度分组(纯函数,ToolStoreView 消费;分支互斥、按优先级短路) ──
@@ -719,7 +718,8 @@ const AcFmtIcon = FileTypeIcon;
     const TOOL_TYPE_GROUPS = ['bundle', 'mcp', 'skill', 'cli', 'api', 'upcoming'];
     const getToolTypeGroup = (tool, bundleMcpIds) => {
       if (!tool) return 'upcoming';
-      // companion 合成卡优先判 bundle:卡面 category 恒为 skill,须先于 skill 规则短路
+      // companion 合成卡优先判 bundle:其 category 可为 'skill'(独立技能)或
+      // companion MCP 的业务类,不能靠 category 值判型,须按 companionBundle 标志短路
       if (tool.companionBundle) return 'bundle';
       // mcpServer/oauthMcp 显式标记位须先于 userUploaded/skill 分支（二轮评审：
       // 自定义上传的 MCP 卡同时带 userUploaded + mcpServer，旧顺序被错归为 Skill 组）。
@@ -735,8 +735,8 @@ const AcFmtIcon = FileTypeIcon;
     };
     // 业务分组:直接取条目 category(数据即业务类 id)。无明确业务归属的条目
     // (自定义上传 MCP、用户上传技能、内置视觉设计,以及 category 缺失/无法识别/
-    // 仅标 'skill' 的——'skill' 是类型而非业务类)一律落 'other' 单列「其它」,
-    // 不再兜底 'life'——未知条目错挂「生活实用」比单列「其它」更难发现。
+    // 仅标 'skill' 的——'skill' 是类型而非业务类)一律落 'other' 单列「其他」,
+    // 不再兜底 'life'——未知条目错挂「生活实用」比单列「其他」更难发现。
     // (初步设计:后续若给技能/插件补业务元数据,再把可识别者移出 'other'。)
     const TOOL_BUSINESS_GROUPS = ['collab', 'docs', 'dev', 'finance', 'life', 'other'];
     const getToolBusinessGroup = (tool) => {

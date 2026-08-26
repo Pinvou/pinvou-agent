@@ -1111,9 +1111,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           return localizeSkill({
             id: 'mcp-skill-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || '',
             // 有配套 MCP(companion)的卡 = 工具包:徽标与分组归 bundle,安装态跟随 MCP。
-            // category 'skill' 仅作类型维度标记(getToolTypeGroup 据此归 Skill 组);
-            // 业务维度由 getToolBusinessGroup 统一落「其它」——无 MCP 归属可跟随的
-            // 独立技能业务分类未知(初步设计,见 tool-common 注释)。
+            // 业务类 category 跟随 companion MCP(mcpEntry 查 tsToolsData/tsToolWelcomeData);
+            // 查不到 MCP 或其无 category 时标 'skill'——仅作类型维度标记
+            // (getToolTypeGroup 据此归 Skill 组),业务维度由 getToolBusinessGroup
+            // 落「其他」(初步设计,见 tool-common 注释)。
             category: mcpEntry ? (mcpEntry.category || 'skill') : 'skill',
             type: mcpId ? ((storeCopy.typeGroups || {}).bundle || 'Bundle') : 'Skill',
             companionBundle: !!mcpId,
@@ -1127,7 +1128,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         });
       const uploadedSkills = skillBackend.filter(x => x.user_uploaded).map(x => ({
         id: 'up-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || storeCopy.uploadedSkill,
-        // 用户上传技能无业务归属元数据,业务分组落「其它」;类型分组仍按 userUploaded 归 Skill。
+        // 用户上传技能无业务归属元数据,业务分组落「其他」;类型分组仍按 userUploaded 归 Skill。
         category: 'other', type: 'Skill', version: '—', latency: storeCopy.localLatency, desc: x.description || '',
         icon: Package, color: 'bg-gradient-to-b from-slate-400 to-slate-600', installed: true, userUploaded: true,
         actions: actionsOf(bundleStates[x.id]),

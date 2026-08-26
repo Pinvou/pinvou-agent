@@ -827,7 +827,7 @@ visualizer: { title:'Data Visualization', subtitle:'Chart.js dashboards / chart 
 'skill-author': { title:'Skill Creation', subtitle:'Turn a one-line description into a proper SKILL.md skill', desc:'Turn a user\'s one-line description into a usable skill (SKILL.md directory): generate the name/description/instructions, and validate naming and structure. When a deliverable uploadable package is wanted, it can continue with the "Plugin Package Standardization" rules to add plugin.json and an icon, export a standard package, then ask the user whether to install.', latency:'Local' },
 s5: { title:'Visual Design', subtitle:'Design-system-grade webpages / banners / posters / resumes', desc:'Built-in automatic skill: the model loads it on demand to produce webpages, banners, posters, resumes, and more with design-system-grade aesthetics. No installation needed—always available.', version:'Built-in', latency:'Local' },
   },
-  categories: { all:'All', collab:'Collaboration', docs:'Docs & Knowledge', dev:'Development', finance:'Financial Data', life:'Daily Life', other:'Other', skill:'Skills' },
+  categories: { all:'All', collab:'Collaboration', docs:'Docs & Knowledge', dev:'Development', finance:'Financial Data', life:'Daily Life', other:'Other' },
 } });
 
 Object.assign(dictEn.uiToolStore, {
