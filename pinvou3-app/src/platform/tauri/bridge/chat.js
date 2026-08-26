@@ -278,6 +278,10 @@
     emitPetEvent("pet:turn_start", sid);
     return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid, restrictTools: !!restrictTools })
       .then(function () {
+        // 新一轮已被后端受理：会话中未提交的「打开」（pending enable）自此进入
+        // 上下文并锁死（ComposerToolMenu 监听）。bridge 层不反向依赖 features，
+        // 与 chat-events.js 的 pinvou:tools-changed 一样内联派发。
+        try { window.dispatchEvent(new CustomEvent("pinvou:chat-round-committed", { detail: { scope: "plain" } })); } catch (_) {}
         recordAuthoritySyncDiagnostic("local_turn_admitted", Object.assign({
           operation: "send",
         }, authoritySyncBufferSnapshot(sid, turnOwnerBuffer)));

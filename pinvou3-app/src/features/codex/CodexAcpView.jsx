@@ -93,6 +93,7 @@ import {
 } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { PlanLayer, ToolCard, cardBoxCls, cardBtnCls } from '../tools/tool-renderers.jsx';
+import { notifyChatRoundCommitted } from '../tools/tool-events.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
@@ -2709,6 +2710,8 @@ export function CodexAcpView({
           // 按 SessionPolicy 逐轮驱动（docs/code-mode-解耦与权限持久化-改动说明.md）。
           restrictTools: false,
         });
+        // 发送成功 = 新一轮已受理：code scope 未提交的「打开」转正锁死。
+        notifyChatRoundCommitted('code');
       } catch (sendError) {
         removeLocalUserMessage(lane, optimisticId);
         setNativeLaneTick(tick => tick + 1);
@@ -2848,6 +2851,8 @@ export function CodexAcpView({
         planMarkdown: card.planMarkdown || '',
         displayMessage: echoText,
       });
+      // 接受方案 = 新一轮已受理：code scope 未提交的「打开」转正锁死。
+      notifyChatRoundCommitted('code');
     } catch (err) {
       const errorText = String(err && err.message ? err.message : err || '');
       const planNotActive = errorText.indexOf('plan_not_active') >= 0;

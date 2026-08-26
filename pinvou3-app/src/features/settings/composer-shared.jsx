@@ -3,7 +3,7 @@
 // 留在 SettingsView.jsx 里,SettingsView(3389 行)就永远进不了独立懒加载
 // chunk。抽到本模块后 SettingsView 可整体懒加载,共享件随主 chunk 常驻。
 // 组件实现与 SettingsView.jsx 原版逐字节一致。
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Cpu, Plus, Store, Users, Wrench, X, Zap } from '../../components/icons.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
@@ -21,6 +21,33 @@ import {
   groupModelsForSelector, selectorMainLabel, selectorSubLabel,
   reasoningEffortTiersForModel, normalizeStoredReasoningEffort,
 } from './model-catalog.js';
+
+// 会话中「打开」是未提交态：新一轮对话发出前允许改回（误开可撤销），发出后
+// 该工具/技能才真正进入上下文并按「只增不减」锁死。挂模块级按 scope 存，
+// 菜单组件随切页重建时不丢未提交态；发送方通过 pinvou:chat-round-committed
+// 事件提交（见 tool-events.js / bridge doSendFor、acceptPlan、editLastTurn）。
+const pendingToolEnables = new Map(); // scope -> { ids: Set<string>, projectSkills: boolean }
+function pendingEnablesFor(scope) {
+  const key = scope === 'code' ? 'code' : 'plain';
+  let entry = pendingToolEnables.get(key);
+  if (!entry) {
+    entry = { ids: new Set(), projectSkills: false };
+    pendingToolEnables.set(key, entry);
+  }
+  return entry;
+}
+// 转正（清空 pending）必须在模块级完成：受理事件可能在菜单组件已随切页卸载时
+// 到达（会话 busy 时排队的消息在用户切走后 flush、后台定向发送等），挂在组件
+// effect 里会漏清，重挂载后 pending 悬空、已进上下文的工具仍显示可关。本监听
+// 在模块加载时注册、先于任何组件监听执行；在场组件（ComposerToolMenu 内）另
+// 订阅同一事件 bump 重渲染，重渲染读到的必是已清空的 pending。
+window.addEventListener('pinvou:chat-round-committed', (event) => {
+  const committedScope = event && event.detail && event.detail.scope;
+  const pending = pendingToolEnables.get(committedScope === 'code' ? 'code' : 'plain');
+  if (!pending || (!pending.ids.size && !pending.projectSkills)) return;
+  pending.ids.clear();
+  pending.projectSkills = false;
+});
 
     // 输入框底栏:模型选择器(iOS 化;darkMode:'class' 故用 dark: 变体)。
     // 可选“显式会话态驱动”props（代码模块原生车道用）：sessionId/sessionModelId/
@@ -422,8 +449,9 @@ import {
       const [open, setOpen] = useState(false);
       const triggerRef = useRef(null);
       const canMutateToolStore = can('toolStoreMutations');
-      // 只增不减：有活动会话时只阻隔「关闭」——已进入上下文的工具撤不回，
-      // 关闭只能在会话开始前做；「打开」仍允许（后端热重载保留给「增」即时生效）。
+      // 只增不减：有活动会话时只阻隔「关闭」——已进入上下文的工具撤不回。
+      // 「打开」是未提交态：发送新一轮对话前可改回（误开可撤销），新一轮
+      // 被后端受理（pinvou:chat-round-committed）后才真正进入上下文并锁死。
       const sessionsState = useBridgeState(['sessions']);
       // scope='code'（原生代码车道）时由调用方传入该车道的活动会话 id——显式会话态
       // 驱动，绕开 bridge 聊天 active 绑定（二轮评审：code 门控不得读聊天域
@@ -496,6 +524,19 @@ import {
         window.addEventListener('pinvou:tools-changed', onChanged);
         return () => { alive = false; window.removeEventListener('pinvou:tools-changed', onChanged); };
       }, []);
+      // 新一轮对话已被后端受理 → 本 scope 未提交的「打开」已由文件头的模块级
+      // 监听清空（组件不在场也清）。此处仅 bump 版本号触发重渲染刷新开关禁用
+      // 态；模块级监听先注册先执行，保证先清后刷。
+      const [, bumpPendingVersion] = useReducer(c => c + 1, 0);
+      useEffect(() => {
+        const onCommitted = (event) => {
+          const committedScope = event && event.detail && event.detail.scope;
+          if ((committedScope === 'code' ? 'code' : 'plain') !== toolScope) return;
+          bumpPendingVersion();
+        };
+        window.addEventListener('pinvou:chat-round-committed', onCommitted);
+        return () => window.removeEventListener('pinvou:chat-round-committed', onCommitted);
+      }, [toolScope]);
       // 项目技能帮助弹窗 Esc 关闭（与项目其他 modal 惯例一致，仅弹窗打开时挂监听）
       useEffect(() => {
         if (!projectSkillsHelp) return undefined;
@@ -504,13 +545,17 @@ import {
         return () => window.removeEventListener('keydown', onKey);
       }, [projectSkillsHelp]);
       function toggleTool(id, enabled) {
-        // 只增不减：会话中允许「打开」（enabled=false），只阻隔「关闭」（enabled=true）。
-        if (toolSwitchDisabled || (hasActiveSession && enabled)) return;
+        // 只增不减：会话中允许「打开」（enabled=false），只阻隔「关闭」（enabled=true）；
+        // 但本会话内刚打开、尚未随新一轮对话进入上下文的（pending）允许改回。
+        const pending = pendingEnablesFor(toolScope);
+        if (toolSwitchDisabled || (hasActiveSession && enabled && !pending.ids.has(id))) return;
         // scope 收敛后：工具/技能/CLI 开关统一为包 id 单一禁用集（后端
         // disabled_bundles.json），技能行 id 即包 id，不再带 `skill:` 前缀。
         const next = new Set(disabled);
         next.has(id) ? next.delete(id) : next.add(id);
         setDisabled(next);
+        // 记录/撤销未提交的「打开」：发送新一轮后由 pinvou:chat-round-committed 转正锁死。
+        if (enabled) pending.ids.delete(id); else pending.ids.add(id);
         // 按 scope 持久:落盘 + 广播给所有在跑引擎,关一次该 scope 所有新对话/新窗口都继承。
         if (bridge.available) {
           invokeTauri('set_disabled_connectors',
@@ -518,9 +563,12 @@ import {
         }
       }
       function toggleProjectSkills() {
-        if (toolSwitchDisabled || (hasActiveSession && projectSkillsEnabled)) return;
+        // 与 toggleTool 同一规则：pending 的「打开」在发送新一轮前可改回。
+        const pending = pendingEnablesFor(toolScope);
+        if (toolSwitchDisabled || (hasActiveSession && projectSkillsEnabled && !pending.projectSkills)) return;
         const next = !projectSkillsEnabled;
         setProjectSkillsEnabled(next);
+        pending.projectSkills = next;
         if (bridge.available) {
           invokeTauri('set_project_skills_enabled', { enabled: next }).catch(() => {});
         }
@@ -551,7 +599,9 @@ import {
         return <span className={`shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold ${cls} px-2 py-0.5 rounded-full leading-none`}><span className={`w-1.5 h-1.5 rounded-full ${tone === 'blue' ? 'bg-[#007AFF] dark:bg-[#5AC8FA]' : 'bg-[#34C759]'}`} />{label}</span>;
       };
       const switchRow = (row) => {
-        const rowDisabled = toolSwitchDisabled || (hasActiveSession && row.enabled);
+        // 未提交的「打开」（pending）不锁：发送新一轮前允许改回。
+        const rowDisabled = toolSwitchDisabled
+          || (hasActiveSession && row.enabled && !pendingEnablesFor(toolScope).ids.has(row.id));
         return (
         <div key={row.id} className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
           <span className="min-w-0 flex items-center gap-1.5">
@@ -658,7 +708,7 @@ import {
                           </span>
                           <span className="block text-[10px] text-gray-400 dark:text-gray-500">{t.composerProjectSkillsDesc}</span>
                         </span>
-                        <Toggle checked={projectSkillsEnabled} onChange={toggleProjectSkills} aria-label="project-skills" disabled={toolSwitchDisabled || (hasActiveSession && projectSkillsEnabled)} size="sm" />
+                        <Toggle checked={projectSkillsEnabled} onChange={toggleProjectSkills} aria-label="project-skills" disabled={toolSwitchDisabled || (hasActiveSession && projectSkillsEnabled && !pendingEnablesFor(toolScope).projectSkills)} size="sm" />
                       </div>
                       {projectSkillsEnabled && (
                         <div className="mt-1.5 text-[11px] leading-snug text-amber-600 dark:text-amber-400">{t.composerProjectSkillsWarning}</div>
