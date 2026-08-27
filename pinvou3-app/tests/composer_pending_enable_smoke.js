@@ -173,7 +173,10 @@ const sleep = ms => new Promise(r => { setTimeout(r, ms); });
   await closeMenu();
 
   const committedBeforeFail = await page.evaluate(() => window.__PENDING_ENABLE_TEST__.committedEvents);
-  await page.evaluate(() => window.TauriBridge.chat.sendMessage('will-fail'));
+  await page.evaluate(() => window.TauriBridge.chat.sendMessage('will-fail').then(
+    () => { throw new Error('send should have failed'); },
+    () => 'failed-as-expected' // 主路径失败现在向调用方 reject（评审修复：失败透传，输入框由调用方恢复）
+  ));
   await sleep(600);
   const afterFail = await page.evaluate(() => window.__PENDING_ENABLE_TEST__.committedEvents);
   rec('发送失败不派发提交事件（failed sends never commit）', afterFail === committedBeforeFail, `before=${committedBeforeFail} after=${afterFail}`);

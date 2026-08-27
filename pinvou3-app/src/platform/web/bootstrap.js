@@ -12,6 +12,8 @@
     sessionModelSwitch: true,
     modelManagement: false,
     toolStoreMutations: false,
+    // ⚡ 打断发送需要桌面 EnginePool 命令通道，Web 端隐藏该按钮。
+    interruptSend: false,
     deviceFileUpload: true,
     acpCodeMode: true,
   };
