@@ -16,7 +16,7 @@ use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use reqwest::Method;
+use reqwest::{Method, Url};
 use serde_json::{json, Value};
 use tauri::Webview;
 use tauri_runtime_wry::tao::event::Event;
@@ -101,7 +101,7 @@ enum DriverSessionState {
     Starting,
     Ready {
         endpoint: String,
-        session_id: String,
+        driver_handle: String,
     },
     Failed(String),
 }
@@ -109,11 +109,43 @@ enum DriverSessionState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DriverSession {
     endpoint: String,
-    session_id: String,
+    /// Ephemeral W3C WebDriver routing handle. This is not a Pinvou session
+    /// identifier, credential, or bearer token, and it is sent only to the
+    /// loopback-only driver endpoint.
+    driver_handle: String,
+}
+
+#[derive(Debug, Clone)]
+enum WebDriverCommandPath<'a> {
+    Static(&'a str),
+    Segments(Vec<&'a str>),
+}
+
+impl<'a> WebDriverCommandPath<'a> {
+    fn segments<const N: usize>(segments: [&'a str; N]) -> Self {
+        Self::Segments(Vec::from(segments))
+    }
+
+    fn description(&self) -> String {
+        match self {
+            Self::Static(path) => path.trim_start_matches('/').to_string(),
+            Self::Segments(segments) => segments.join("/"),
+        }
+    }
+}
+
+impl<'a> From<&'a str> for WebDriverCommandPath<'a> {
+    fn from(path: &'a str) -> Self {
+        Self::Static(path)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum WebDriverRequestFailure {
+    /// Local endpoint or command construction failed before the HTTP client
+    /// could dispatch any bytes. An authorized mutation is therefore known not
+    /// to have reached WebKitWebDriver.
+    LocalValidation,
     /// `reqwest` could not produce a response. Once an authorized POST has been
     /// handed to the HTTP stack, this does not prove that the remote end did not
     /// receive and execute it.
@@ -814,7 +846,7 @@ pub(super) async fn click_element(
                         &authorization,
                         true,
                         Method::POST,
-                        &format!("element/{element}/click"),
+                        WebDriverCommandPath::segments(["element", element.as_str(), "click"]),
                         Some(json!({})),
                     )
                     .await
@@ -853,7 +885,7 @@ pub(super) async fn fill_element(
                     &authorization,
                     false,
                     Method::POST,
-                    &format!("element/{element}/clear"),
+                    WebDriverCommandPath::segments(["element", element.as_str(), "clear"]),
                     Some(json!({})),
                 )
                 .await?;
@@ -1097,6 +1129,54 @@ fn reserve_loopback_port() -> Result<u16, String> {
         .map_err(|error| format!("read loopback port: {error}"))
 }
 
+fn webdriver_command_url<'a>(
+    endpoint: &str,
+    driver_handle: &str,
+    path: impl Into<WebDriverCommandPath<'a>>,
+) -> Result<Url, String> {
+    let path = path.into();
+    let mut url = Url::parse(endpoint)
+        .map_err(|error| format!("browser/webkit-invalid-driver-endpoint: {error}"))?;
+    if url.scheme() != "http"
+        || url.host_str() != Some("127.0.0.1")
+        || url.port().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("browser/webkit-driver-endpoint-must-be-loopback".to_string());
+    }
+    if driver_handle.is_empty() {
+        return Err("browser/webkit-driver-handle-missing".to_string());
+    }
+    if matches!(driver_handle, "." | "..") {
+        return Err("browser/webkit-driver-handle-invalid".to_string());
+    }
+    let mut segments = url
+        .path_segments_mut()
+        .map_err(|_| "browser/webkit-invalid-driver-endpoint".to_string())?;
+    segments.clear().push("session").push(driver_handle);
+    match path {
+        WebDriverCommandPath::Static(path) => {
+            for segment in path.split('/').filter(|segment| !segment.is_empty()) {
+                segments.push(segment);
+            }
+        }
+        WebDriverCommandPath::Segments(path_segments) => {
+            for segment in path_segments {
+                if segment.is_empty() || matches!(segment, "." | "..") {
+                    return Err("browser/webkit-command-segment-invalid".to_string());
+                }
+                segments.push(segment);
+            }
+        }
+    }
+    drop(segments);
+    Ok(url)
+}
+
 fn find_driver_binary() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os(DRIVER_BIN_ENV).map(PathBuf::from) {
         if crate::platform::filesystem::is_executable_file(&path) {
@@ -1119,6 +1199,11 @@ impl WebDriverRuntime {
             handles: Mutex::new(HashMap::new()),
             operations: WebDriverOperationGate::default(),
             client: reqwest::Client::builder()
+                // This client is exclusively for the child WebDriver bound to
+                // 127.0.0.1. Never send its opaque routing handles through a
+                // system proxy or follow a driver response away from loopback.
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(2))
                 .timeout(REQUEST_TIMEOUT)
                 .build()
@@ -1282,18 +1367,18 @@ impl WebDriverRuntime {
                 return Err(error);
             }
             let last_error = match self.create_session_attempt(&endpoint).await {
-                Ok(session_id) => {
+                Ok(driver_handle) => {
                     if let Err(error) = ensure_process_active(&PROCESS_SHUTTING_DOWN) {
                         self.reset_driver(DriverSessionState::Idle);
                         return Err(error);
                     }
                     let ready = DriverSession {
                         endpoint: endpoint.clone(),
-                        session_id,
+                        driver_handle,
                     };
                     *self.session.lock() = DriverSessionState::Ready {
                         endpoint: ready.endpoint.clone(),
-                        session_id: ready.session_id.clone(),
+                        driver_handle: ready.driver_handle.clone(),
                     };
                     self.handles.lock().clear();
                     eprintln!("[browser] Linux WebKitWebDriver session ready");
@@ -1430,14 +1515,14 @@ impl WebDriverRuntime {
     /// WebDriver POST. Callers may perform slow selection/DOM resolution first,
     /// but cannot accidentally add a page mutation without the final exact
     /// host-lease check and trusted-input provenance refresh.
-    async fn request_authorized_locked(
+    async fn request_authorized_locked<'a>(
         &self,
         session: &DriverSession,
         label: &str,
         authorization: &NativeTabLease,
         emits_takeover_signal: bool,
         method: Method,
-        path: &str,
+        path: impl Into<WebDriverCommandPath<'a>>,
         body: Option<Value>,
     ) -> Result<Value, String> {
         if method != Method::POST {
@@ -1450,20 +1535,22 @@ impl WebDriverRuntime {
         self.finish_authorized_request(self.raw_request(session, method, path, body).await)
     }
 
-    async fn raw_request(
+    async fn raw_request<'a>(
         &self,
         session: &DriverSession,
         method: Method,
-        path: &str,
+        path: impl Into<WebDriverCommandPath<'a>>,
         body: Option<Value>,
     ) -> Result<Value, WebDriverRequestError> {
-        let request_description = format!("{} {}", method.as_str(), path.trim_start_matches('/'));
-        let url = format!(
-            "{}/session/{}/{}",
-            session.endpoint,
-            session.session_id,
-            path.trim_start_matches('/')
-        );
+        let path = path.into();
+        let request_description = format!("{} {}", method.as_str(), path.description());
+        let url = webdriver_command_url(&session.endpoint, &session.driver_handle, path).map_err(
+            |message| WebDriverRequestError {
+                message,
+                restart_session: true,
+                failure: WebDriverRequestFailure::LocalValidation,
+            },
+        )?;
         let mut request = self.client.request(method, url);
         if let Some(body) = body {
             request = request.json(&body);
@@ -1768,7 +1855,7 @@ impl WebDriverRuntime {
             authorization,
             true,
             Method::POST,
-            &format!("element/{element}/value"),
+            WebDriverCommandPath::segments(["element", element, "value"]),
             Some(json!({
                 "text": text,
                 "value": text.chars().map(|character| character.to_string()).collect::<Vec<_>>(),
@@ -1905,12 +1992,12 @@ fn ready_session_for_live_process(
         (
             DriverSessionState::Ready {
                 endpoint,
-                session_id,
+                driver_handle,
             },
             true,
         ) => Some(DriverSession {
             endpoint: endpoint.clone(),
-            session_id: session_id.clone(),
+            driver_handle: driver_handle.clone(),
         }),
         _ => None,
     }
@@ -1942,12 +2029,14 @@ fn webdriver_error_requires_restart(value: &Value) -> bool {
     )
 }
 
-/// Once an authorized mutation POST has entered `raw_request`, transport loss
-/// or an undecodable acknowledgement cannot establish that the page action did
-/// not run. A complete W3C response is retryable only for error codes whose
-/// specified checks reject the command before its intended page mutation.
+/// Local validation happens before dispatch and therefore proves non-commit.
+/// Once an authorized mutation POST reaches the HTTP stack, transport loss or
+/// an undecodable acknowledgement cannot establish that the page action did not
+/// run. A complete W3C response is retryable only for error codes whose specified
+/// checks reject the command before its intended page mutation.
 fn webdriver_mutation_commit_state(error: &WebDriverRequestError) -> WebDriverMutationCommitState {
     match &error.failure {
+        WebDriverRequestFailure::LocalValidation => WebDriverMutationCommitState::NotCommitted,
         WebDriverRequestFailure::Transport | WebDriverRequestFailure::ResponseDecode => {
             WebDriverMutationCommitState::Unknown
         }
@@ -2394,13 +2483,133 @@ mod tests {
         assert!(runtime.handles.lock().is_empty());
     }
 
+    #[test]
+    fn webdriver_command_url_is_loopback_only_and_encodes_the_driver_handle() {
+        let url = webdriver_command_url(
+            "http://127.0.0.1:4444",
+            "opaque/driver?handle",
+            "/window/handles",
+        )
+        .expect("construct loopback WebDriver URL");
+        assert_eq!(
+            url.as_str(),
+            "http://127.0.0.1:4444/session/opaque%2Fdriver%3Fhandle/window/handles"
+        );
+
+        for endpoint in [
+            "http://localhost:4444",
+            "http://192.0.2.1:4444",
+            "https://127.0.0.1:4444",
+            "http://user@127.0.0.1:4444",
+            "http://127.0.0.1:4444/proxy",
+            "http://127.0.0.1:4444?query=1",
+        ] {
+            assert_eq!(
+                webdriver_command_url(endpoint, "opaque-driver", "window/handles"),
+                Err("browser/webkit-driver-endpoint-must-be-loopback".to_string()),
+                "accepted non-canonical WebDriver endpoint {endpoint}"
+            );
+        }
+        assert_eq!(
+            webdriver_command_url("http://127.0.0.1:4444", "", "window/handles"),
+            Err("browser/webkit-driver-handle-missing".to_string())
+        );
+
+        let element_url = webdriver_command_url(
+            "http://127.0.0.1:4444",
+            "opaque-driver",
+            WebDriverCommandPath::segments(["element", "opaque/element?ref", "click"]),
+        )
+        .expect("construct WebDriver element URL");
+        assert_eq!(
+            element_url.as_str(),
+            "http://127.0.0.1:4444/session/opaque-driver/element/opaque%2Felement%3Fref/click"
+        );
+        assert_eq!(
+            webdriver_command_url(
+                "http://127.0.0.1:4444",
+                "opaque-driver",
+                WebDriverCommandPath::segments(["element", "..", "click"]),
+            ),
+            Err("browser/webkit-command-segment-invalid".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn webdriver_client_does_not_follow_loopback_redirects() {
+        let redirect_target =
+            std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind redirect target");
+        redirect_target
+            .set_nonblocking(true)
+            .expect("set redirect target nonblocking");
+        let redirect_address = redirect_target
+            .local_addr()
+            .expect("redirect target address");
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+        let redirect_received = std::thread::spawn(move || loop {
+            match redirect_target.accept() {
+                Ok((mut stream, _)) => {
+                    let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 14\r\nConnection: close\r\n\r\n{\"value\":null}";
+                    stream
+                        .write_all(response)
+                        .expect("write redirect target response");
+                    return true;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if stop_rx.try_recv().is_ok() {
+                        return false;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("accept redirect target request: {error}"),
+            }
+        });
+
+        let body = r#"{"value":{"error":"unknown error","message":"redirect refused"}}"#;
+        let response = format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{redirect_address}/capture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes();
+        let (endpoint, initial_request) =
+            spawn_one_shot_webdriver_with_responder(move |_| Some(response));
+        let runtime = WebDriverRuntime::new(31_338).expect("create runtime");
+        let session = DriverSession {
+            endpoint,
+            driver_handle: "opaque-driver".to_string(),
+        };
+
+        let result = runtime
+            .raw_request(
+                &session,
+                Method::POST,
+                "element/button/click",
+                Some(json!({})),
+            )
+            .await;
+        let _ = stop_tx.send(());
+        let initial_request = initial_request.join().expect("initial WebDriver request");
+        let redirect_received = redirect_received.join().expect("redirect target thread");
+
+        assert!(initial_request
+            .starts_with("POST /session/opaque-driver/element/button/click HTTP/1.1"));
+        assert!(matches!(
+            result,
+            Err(WebDriverRequestError {
+                failure: WebDriverRequestFailure::Protocol { .. },
+                ..
+            })
+        ));
+        assert!(!redirect_received, "WebDriver client followed a redirect");
+    }
+
     #[tokio::test]
     async fn authorized_post_disconnect_after_receive_is_commit_unknown() {
         let runtime = WebDriverRuntime::new(31_339).expect("create runtime");
         let (endpoint, request) = spawn_one_shot_webdriver(None);
         let session = DriverSession {
             endpoint,
-            session_id: "session-commit-unknown".to_string(),
+            driver_handle: "driver-commit-unknown".to_string(),
         };
 
         let result = runtime
@@ -2417,7 +2626,7 @@ mod tests {
         let received = request.join().expect("fake WebDriver request thread");
 
         assert!(received
-            .starts_with("POST /session/session-commit-unknown/element/button/click HTTP/1.1"));
+            .starts_with("POST /session/driver-commit-unknown/element/button/click HTTP/1.1"));
         assert!(error.starts_with(ACTION_COMMIT_UNKNOWN_WEBDRIVER));
         assert!(error.contains("request failed"));
     }
@@ -2430,7 +2639,7 @@ mod tests {
         ));
         let session = DriverSession {
             endpoint,
-            session_id: "session-malformed-ack".to_string(),
+            driver_handle: "driver-malformed-ack".to_string(),
         };
 
         let result = runtime
@@ -2447,7 +2656,7 @@ mod tests {
         let received = request.join().expect("fake WebDriver request thread");
 
         assert!(received
-            .starts_with("POST /session/session-malformed-ack/element/button/click HTTP/1.1"));
+            .starts_with("POST /session/driver-malformed-ack/element/button/click HTTP/1.1"));
         assert!(error.starts_with(ACTION_COMMIT_UNKNOWN_WEBDRIVER));
         assert!(error.contains("decode WebKitWebDriver"));
     }
@@ -2472,7 +2681,7 @@ mod tests {
                 .into_bytes(),
             )
         });
-        let session_id = "session-closed-current";
+        let driver_handle = "driver-closed-current";
         let child = Command::new("sleep")
             .arg("30")
             .spawn()
@@ -2480,7 +2689,7 @@ mod tests {
         *runtime.child.lock() = Some(child);
         *runtime.session.lock() = DriverSessionState::Ready {
             endpoint,
-            session_id: session_id.to_string(),
+            driver_handle: driver_handle.to_string(),
         };
 
         let result = runtime.ensure_current_locked("known-live-handle").await;
@@ -2489,7 +2698,7 @@ mod tests {
 
         assert_eq!(result, Ok(()));
         assert!(
-            received.starts_with(&format!("POST /session/{session_id}/window HTTP/1.1")),
+            received.starts_with(&format!("POST /session/{driver_handle}/window HTTP/1.1")),
             "selection consulted the possibly closed current handle first: {received}"
         );
         assert!(received.contains(r#""handle":"known-live-handle""#));
@@ -2497,6 +2706,13 @@ mod tests {
 
     #[test]
     fn w3c_mutation_errors_are_retryable_only_when_non_commit_is_proven() {
+        assert_eq!(
+            webdriver_mutation_commit_state(&request_error(
+                WebDriverRequestFailure::LocalValidation
+            )),
+            WebDriverMutationCommitState::NotCommitted
+        );
+
         for code in [
             "invalid argument",
             "invalid element state",
@@ -2542,14 +2758,14 @@ mod tests {
     fn only_a_ready_session_with_a_live_driver_is_reused() {
         let ready = DriverSessionState::Ready {
             endpoint: "http://127.0.0.1:4444".to_string(),
-            session_id: "session-1".to_string(),
+            driver_handle: "driver-1".to_string(),
         };
 
         assert_eq!(
             ready_session_for_live_process(&ready, true),
             Some(DriverSession {
                 endpoint: "http://127.0.0.1:4444".to_string(),
-                session_id: "session-1".to_string(),
+                driver_handle: "driver-1".to_string(),
             })
         );
         assert_eq!(ready_session_for_live_process(&ready, false), None);
@@ -3410,7 +3626,7 @@ mod tests {
                         release_action.notified().await;
                         *runtime.session.lock() = DriverSessionState::Ready {
                             endpoint: "http://127.0.0.1:4444".to_string(),
-                            session_id: "inflight-session".to_string(),
+                            driver_handle: "inflight-driver".to_string(),
                         };
                         runtime
                             .handles

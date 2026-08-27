@@ -309,6 +309,16 @@ fn next_session_browser_cleanup_retry(current: std::time::Duration) -> std::time
         .min(SESSION_BROWSER_CLEANUP_MAX_RETRY)
 }
 
+fn session_browser_cleanup_failure_kind(error: &str) -> &'static str {
+    if error == "browser manager is unavailable" {
+        "browser-manager-unavailable"
+    } else if error.starts_with("browser cleanup attempt timed out") {
+        "timeout"
+    } else {
+        "cleanup-error"
+    }
+}
+
 async fn cleanup_deleted_session_browser_once(
     app: tauri::AppHandle,
     claim: SessionBrowserCleanupClaim,
@@ -329,10 +339,10 @@ async fn cleanup_deleted_session_browser_once(
     };
     if let Err(error) = &result {
         let attempt = claim.failed_attempts.saturating_add(1);
+        let failure_kind = session_browser_cleanup_failure_kind(error);
         eprintln!(
-            "[sessions] browser cleanup failed for deleted session {} \
-             (attempt {attempt}); retrying in {} ms: {error}",
-            claim.session_id,
+            "[sessions] browser cleanup failed for a deleted session \
+             (reason {failure_kind}, attempt {attempt}); retrying in {} ms",
             claim.retry_delay.as_millis()
         );
     }
@@ -1557,10 +1567,30 @@ mod navigation_policy_tests {
 #[cfg(test)]
 mod session_browser_cleanup_retry_tests {
     use super::{
-        next_session_browser_cleanup_retry, SessionBrowserCleanupQueue,
-        SESSION_BROWSER_CLEANUP_INITIAL_RETRY, SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY,
-        SESSION_BROWSER_CLEANUP_MAX_RETRY,
+        next_session_browser_cleanup_retry, session_browser_cleanup_failure_kind,
+        SessionBrowserCleanupQueue, SESSION_BROWSER_CLEANUP_INITIAL_RETRY,
+        SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY, SESSION_BROWSER_CLEANUP_MAX_RETRY,
     };
+
+    #[test]
+    fn cleanup_failure_diagnostics_use_non_sensitive_categories() {
+        assert_eq!(
+            session_browser_cleanup_failure_kind("browser manager is unavailable"),
+            "browser-manager-unavailable"
+        );
+        assert_eq!(
+            session_browser_cleanup_failure_kind(
+                "browser cleanup attempt timed out after 10 seconds"
+            ),
+            "timeout"
+        );
+        let category = session_browser_cleanup_failure_kind(
+            "failed to delete session private-session-id from C:\\private\\path",
+        );
+        assert_eq!(category, "cleanup-error");
+        assert!(!category.contains("private-session-id"));
+        assert!(!category.contains("private\\path"));
+    }
 
     #[test]
     fn pending_queue_coalesces_repeated_ids_before_worker_take() {
