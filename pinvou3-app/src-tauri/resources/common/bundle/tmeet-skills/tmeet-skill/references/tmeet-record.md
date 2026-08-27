@@ -48,6 +48,7 @@
 > `record search --query-field subject` 搜的是录制标题字段（可能是自动生成的"转写_客户销售会"等），不一定匹配用户给的主题词；且 `record search` 命中的只是自己有权限的录制，拿不到无权限录制和 `permission_status`。
 
 > **"会议号 + 内容关键词"组合（如"683-872-007 那场会上说的预算"）**：
+> 注意：用户口语中的会议号常带短横线（如 `683-872-007`），而 `--meeting-code` 参数要求**仅数字、无短横线**（见 [meeting search](tmeet-meeting.md) 与上文 [search 参数表](#search--搜索录制)），入参前须去掉短横线（如 `683872007`）。
 > 不要直接走 `record search --meeting-code + --query`（只返回有权限的，没权限时搜不到、无法区分原因）。
 > 先走 `meeting get --meeting-code` 拿 `permission_status`，`can_view` 时再用 `record search --meeting-code + --query` 在该会议内有权限的录制中搜内容；
 > `can_apply` / `closed` 时直接走权限流程，不搜内容。
@@ -55,7 +56,7 @@
 
 > **`meeting get` 报"会议号无效 / 会议信息不存在"**：说明当前账号无该会议的会议级访问权（未参加 / 未获授权——会议级与录制级授权相互独立）。此时降级用 `record list --meeting-code` 查自己已有权限的录制，不要反复重试 `meeting get`。若 `meeting get` 成功但响应无 `records[]` 字段（该字段可能因环境差异缺失，**缺失不代表无录制**），同样降级 `record list --meeting-code`，且不要对用户断言"该会议没有录制"。
 
-> **进行中会议的录制**：`state` 为「录制中 / 转码中」时不可查看也不可申请（见文首「本文核心硬约束」第 2 条「录制状态门禁」），待会议结束转码完成后再查。
+> **进行中会议的录制**：`state` 为「录制中 / 转码中」时不可查看也不可申请（见文首「本文核心硬约束」第 1 条「录制状态门禁」），待会议结束转码完成后再查。
 
 ---
 
@@ -408,7 +409,7 @@ tmeet record permission-apply-commit \
 1. 获取 meeting_record_id
    → 参见文首 [录制查询路由总则](#录制查询路由总则)，根据用户线索类型选择入口命令
 
-2. 获取录制文件下载地址，获取 record_file_id
+2. 获取录制文件播放地址，获取 record_file_id
    tmeet record address --meeting-record-id <meeting_record_id>
 
 3. 获取智能纪要 / 转写内容

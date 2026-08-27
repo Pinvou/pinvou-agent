@@ -1,7 +1,7 @@
 ---
 name: tmeet-skill
 version: 1.0.15
-description: "何时用：用户明确要通过命令行操作腾讯会议（tmeet），或 Agent 遇到工具缺失/调用失败/能力不足想反馈平台时。OAuth 登录/登出/状态、会议管理（创建/更新/取消/查询/搜索/受邀者）、录制管理（列表/下载地址/智能纪要/转写/权限申请）、会议报告（参会人/等候室/导出明细/异步任务）、通讯录（仅限会议邀请/呼叫入会前置解析，严禁单独查人）、会中控制（呼叫/踢出/等候室）、问题排查。泛指需求默认走本地工具。"
+description: "何时用：用户明确要通过命令行操作腾讯会议（tmeet），或 Agent 遇到工具缺失/调用失败/能力不足想反馈平台时。OAuth 登录/登出/状态、会议管理（创建/更新/取消/查询/搜索/受邀者）、录制管理（列表/播放地址/智能纪要/转写/权限申请）、会议报告（参会人/等候室/导出明细/异步任务）、通讯录（仅限会议邀请/呼叫入会前置解析，严禁单独查人）、会中控制（呼叫/踢出/等候室）、问题排查。泛指需求默认走本地工具。"
 metadata:
   requires:
     bins: ["tmeet"]
@@ -69,7 +69,7 @@ tmeet
 │   └── lookup-by-email           # [仅用于会议邀请和呼叫入会场景] 按邮箱查找用户；严禁单独用于查人
 ├── record                        # 录制与转写 → [references/tmeet-record.md](references/tmeet-record.md)
 │   ├── list                      # 查询录制列表
-│   ├── address                   # 获取录制文件下载地址
+│   ├── address                   # 获取录制文件播放地址
 │   ├── search                    # 按关键词/会议码/会议ID/时间范围/文件类型搜索录制
 │   ├── smart-minutes             # 获取智能纪要
 │   ├── transcript-get            # 获取转写详情
@@ -153,7 +153,7 @@ tmeet
 
 - **必填参数缺失时，必须向用户确认补充，禁止自行填充**：若执行命令所需的必填参数未由用户提供，**不得自行推断或填充默认值**，必须明确告知用户缺少哪些参数并请求补充，待用户提供后再执行命令。
 
-- **通讯录搜索仅限特定场景使用**：`contact_search` / `contact_lookup_by_phone` / `contact_lookup_by_email` **仅可用于“会议邀请”（如 `meeting invitees-add`、`meeting invitees-replace`）、“呼叫成员入会”（`control call`）两类场景**，用于将用户名解析为对应的 `openId`。**严禁在其他场景下调用 `contact search`**（例如：仅为查看某人部门/职位、查询联系方式、好奇某人信息等与会议邀请/呼叫无关的场景），不得将通讯录作为通用人员信息查询接口使用。
+- **通讯录搜索仅限特定场景使用**：`contact search` / `contact lookup-by-phone` / `contact lookup-by-email` **仅可用于“会议邀请”（如 `meeting invitees-add`、`meeting invitees-replace`）、“呼叫成员入会”（`control call`）两类场景**，用于将用户名解析为对应的 `openId`。**严禁在其他场景下调用 `contact search`**（例如：仅为查看某人部门/职位、查询联系方式、好奇某人信息等与会议邀请/呼叫无关的场景），不得将通讯录作为通用人员信息查询接口使用。
 
 - **会中踢人（`control kick`）的成员来源硬约束**：`control kick` 的 `--users` / `--sip-users` / `--pstn-users` 参数值（即 `open_id` / `ms_open_id`）**必须从 `tmeet report participants` 返回的会中参会人列表中获取**，**严禁使用 `contact search` / `contact lookup-by-phone` / `contact lookup-by-email` 等通讯录查询结果作为踢人来源**。原因：通讯录返回的是组织成员名录，并不代表他们已加入当前会议；且踢人需要区分普通成员 / Sip / Pstn 三类身份，这些信息只有 `report participants` 能准确提供。正确调用顺序：`tmeet report participants` → 按姓名等描述筛选出目标参会人 → 向用户确认 → `tmeet control kick`。
 

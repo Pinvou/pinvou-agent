@@ -66,7 +66,10 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 已经上游 tag diff 逐文件复核。第六轮核验注 2026-08-16：上述「其余 references
 逐字节一致」经 /tmp 上游 v1.0.15 快照重验仍成立——tmeet-meeting/contact/
 tshoot/report/control 五篇与上游一致，record.md / auth.md 的差异即第 5、6 条
-所述内容）：
+所述内容。第七轮审查注 2026-08-27：本轮新增第 7-12 条文档缺陷修复，触及
+`SKILL.md` 与 `references/tmeet-contact.md` / `tmeet-meeting.md` /
+`tmeet-record.md` / `tmeet-tshoot.md` 四篇，此后上游同步的重放基线为第 1-12
+条，上一段「其余 references 逐字节一致」仅描述第 1-6 条完成时点的状态）：
 
 1. **frontmatter `description` 重写**：上游 description 长 327 字符，超过品悟
    SkillRegistry 的 280 字符截断上限，压缩为 211 字符，并按品悟契约改为
@@ -97,6 +100,40 @@ tshoot/report/control 五篇与上游一致，record.md / auth.md 的差异即�
    设置，仅品悟之外环境才自行写入」。两变量经 strings 实测存在于 1.0.15
    二进制、品悟注入值见
    `pinvou3-app/src-tauri/src/features/connectors/tmeet.rs`。
+
+以下第 7-12 条为 2026-08-27 第七轮文档审查（doc audit）修复，全部为确定性
+文档缺陷（矛盾/错误/遗漏），不改变命令与参数语义：
+
+7. **`tmeet-contact.md` 多结果确认条目下游命令清单去掉「踢人」**：该条曾将
+   「踢人」列为 `contact search` 多结果确认后的合法下游命令（与本文档首部
+   「定位与适用场景硬约束」、SKILL.md 安全规则「`control kick` 成员来源硬
+   约束」直接冲突——`kick` 成员必须来自 `report participants`）。现改为
+   「（如发起会议邀请、呼叫入会等）」。
+8. **SKILL.md 安全规则「通讯录搜索仅限特定场景使用」命令名修正**：`contact_search`
+   / `contact_lookup_by_phone` / `contact_lookup_by_email` 为不存在的下划线
+   形式，按命令树实际形式改为 `contact search` / `contact lookup-by-phone` /
+   `contact lookup-by-email`。
+9. **`tmeet-meeting.md` 常见错误表 `500273` / `500275` 两行「原因/解决方案」
+   列串行修正**：原 500273（会议已开始）两列误写「会议不存在」、500275（会议
+   不存在）两列误写「会议已取消」，现均与各自错误码文案一致（500274 本就
+   一致，未动）。
+10. **`tmeet-record.md` 「进行中会议的录制」条目内链修正**：文首「本文核心
+    硬约束」中「录制状态门禁」为第 1 条，该条目误引「第 2 条」，已改为
+    「第 1 条」（与同文 permission-apply-prepare 前置门禁的引用一致）。
+11. **`record address` 语义统一为「播放地址」**：SKILL.md frontmatter
+    description、SKILL.md 命令树 address 行、`tmeet-record.md` 典型工作流、
+    `tmeet-tshoot.md` feedback 示例 intent 原写「下载地址」，与
+    `tmeet-record.md` address 节（`records[].url` 等价、均为播放地址）矛盾，
+    统一改为「播放地址」（description 长度仍为 211 字符，与第 1 条登记一致）。
+12. **`tmeet-record.md` 「会议号 + 内容关键词」组合示例补会议号格式提醒**：
+    示例「683-872-007 那场会上说的预算」承接用户口语的带短横线形式，未提醒
+    `--meeting-code` 要求仅数字无短横线（同文件 search 参数表与
+    `tmeet-meeting.md` `--meeting-code` 均注明「仅数字，无短横线」），现于该
+    示例处补一句去短横线提醒（如 `683-872-007` → `683872007`）。
+
+本轮不改动 SKILL.md frontmatter `version: 1.0.15`：该版本号钉扎上游 tag
+v1.0.15 基线，与 `tmeet.rs` 的 `TMEET_NPM_SPEC`（`@tencentcloud/tmeet@1.0.15`）
+对应，此前第 1-6 轮本地修改均未 bump 该字段，纯文档修复同样不动。
 
 上游其余内容（含 `auth login` 交互式登录教学等）保持上游原样；品悟实际安装
 版本由 `tmeet.rs` 的 `TMEET_NPM_SPEC` 钉扎（`@tencentcloud/tmeet@1.0.15`），
