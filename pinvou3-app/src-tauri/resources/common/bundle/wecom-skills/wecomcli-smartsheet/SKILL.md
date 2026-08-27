@@ -1,6 +1,6 @@
 ---
 name: wecomcli-smartsheet
-description: 何时用:仅当用户明确指向企业微信『智能表格』(内容/结构/样式操作)或提供 doc.weixin.qq.com/smartsheet/ 链接时使用;用户未明确说明「在线表格」时默认用本技能,在线表格走 wecomcli-sheet。智能表格数据、结构与样式管理:读取表结构与记录,管理子表/字段/记录/视图/图表,修改行列样式;851003 时 Webhook 兜底写入。
+description: 何时用:仅当用户明确指向企业微信『智能表格』(内容/结构/样式操作)或提供 doc.weixin.qq.com/smartsheet/ 链接时使用;泛指做表格默认先按消歧确认,在线表格走 wecomcli-sheet。智能表格数据、结构与样式管理:读取表结构与记录,管理子表/字段/记录/视图/图表,修改行列样式;851003 时 Webhook 兜底写入。
 metadata:
   requires:
     bins: ["wecom-cli"]
@@ -35,6 +35,7 @@ metadata:
 ### 易混淆场景路由
 
 - 用户明确指定 `在线表格` 或链接含 `/sheet/` → 转交 `wecomcli-sheet` 技能
+- 用户泛指「做表格」、未明确在线表格还是智能表格 → 先用简洁自然语言消歧确认，不得默认任一类型；确认为在线表格后转交 `wecomcli-sheet` 技能
 
 ## 安全约束
 
@@ -90,11 +91,11 @@ metadata:
 | 新增、修改或删除图表 | `references/smart-sheet-edit.md` + `references/smart-sheet-read.md` + `references/smart-sheet-chart-types.md` | 操作仪表盘图表前后均需读取验证 |
 | 涉及公式字段 | `references/smart-sheet-read.md` + `references/smart-sheet-edit.md` + `references/smart-sheet-formula.md` | 先读取字段与现有值，再处理公式字段 |
 | 用户从零开始建表，需要参考模版结构和字段设计 | `assets/templates/README.md` | 常用智能表格模版 |
-| 文件级操作 | `references/common.md` | 如新建表格、导入表格、搜索表格、添加成员、设置加入规则等非内容级操作 |
+| 文件级操作 | `references/common.md` | 新建智能表格、导入表格等非内容级操作；搜索表格、添加成员、设置加入规则转交 `wecomcli-doc-manage` 技能 |
 
 ## 跨技能依赖
 
-- `wecomcli-doc-manage`：搜索文档、获取 docid、文件级操作（新建文档、添加成员、设置加入规则等）
+- `wecomcli-doc-manage`：搜索文档、获取 docid、文件级管理（重命名、添加成员、设置加入规则等）；新建/导入智能表格走本技能 `references/common.md`
 - `wecomcli-contact`：按姓名查询 userid，用于人员字段筛选与写入
 
 ## 如何获取文档 ID（docid）
@@ -104,6 +105,7 @@ metadata:
 1. **从文档链接提取（优先）**：用户提供企微文档 URL 时，从 `https://doc.weixin.qq.com/<type>/<docid>?...` 的 `/<type>/` 后、`?` 前提取；智能表格的 `<type>` 为 `smartsheet`。
 2. **通过文档搜索获取（备选）**：用户仅提供文档名称或关键词时，使用 `wecomcli-doc-manage` 技能的「搜索文档」接口，并建议传入 `doc_types: ["smartsheet"]` 限定类型。搜索接口的完整参数说明以该技能为准。
 3. **使用用户直接提供的值**：用户明确给出完整 `docid` 时，可直接使用。
+4. **智能文档内置数据表（委托豁免）**：用户要求操作智能文档（smartpage）的内置数据表时，`wecomcli-smartpage` 技能 `smartpage databases get` 返回的 `database_info.id` 可直接作为本技能的 `docid`（即 `file_id`）使用，无需再走链接提取或文档搜索；该 ID 形态以 `smartpage databases get` 回包为准，不要求 `s3_` 前缀。
 
 调用参数名必须使用全小写的 `docid`。若外部技能、搜索结果或上下文返回 `doc_id`，调用前先映射为 `docid`。
 
@@ -132,7 +134,7 @@ metadata:
 凭记忆猜测参数、试探性调用、根据接口名推断参数结构，均视为违反本协议。
 **前置阻断**：如果用户只说“那个表”、“上周那个表格”、“最近操作的表”、“之前的文档”等模糊指代，且当前消息没有给出明确 docid/链接/表名：
 - **禁止通过任何方式自行补全对象**：不得读取 `recent_focus.md`、`collaborators.md`、`works`、历史 session 或 `default` 目录，也不得通过 `smartdata recall`、语义搜索、`wecom-cli search`、`exec` 等工具推断或还原用户所指的表格。
-- **docid 的唯一合法来源**：用户在**当前消息**中直接给出 docid 或文档链接，或者通过 `wecomcli-doc-manage` 技能的搜索文档接口获取。任何经由工具间接推断出的 docid 均不满足此要求，不可作为后续操作的目标文档。
+- **docid 的唯一合法来源**：用户在**当前消息**中直接给出 docid 或文档链接，或者通过 `wecomcli-doc-manage` 技能的搜索文档接口获取。任何经由工具间接推断出的 docid 均不满足此要求，不可作为后续操作的目标文档。唯一例外：用户已明确指定智能文档、委托方 `wecomcli-smartpage` 经 `smartpage databases get` 取得 `database_info.id` 时，该 ID 即目标内置数据表的合法 docid，可直接使用。
 - **直接追问**：用普通文本请用户提供具体的表格链接或名称，不得先“找到”再操作，除非用户要求先搜索出来。
 
 ## Agent 行为约束（通读一次，全文适用）
@@ -149,6 +151,6 @@ metadata:
 1. **禁止暴露内部 ID**——除工具调用参数和思考过程外，任何输出的文本中严禁出现 `docid`、`sheet_id`、`field_id`、`record_id`、`view_id`、`chart_id`、`userid` 等内部标识符；若需指代某个对象，统一使用其名称（子表名、字段名、视图名等）；若需要对记录进行分析或说明，选用有业务含义的字段（如名称、编号、标题等）作为主键来指代具体记录，严禁使用 `record_id` 来指代具体记录
 2. **输出格式**——先用 1-2 句自然语言简要总结；单条记录用 `Key: Value` 格式（跳过空值）；多条记录用 Markdown 表格（过滤无关列）
 3. **执行前歧义消除（每轮必做）**——调用工具前，四要素必须全部唯一确定：**对象**（docid 或唯一标题）、**动作**、**范围**、**关键参数**；任一要素不唯一则用简洁自然语言仅追问缺失或有歧义的信息，有候选项时在文字中列出，不得猜测；用户每次回复后重新自检
-4. **确认机制**——四要素唯一确定时可直接执行，无需二次确认；大批量写操作（单次影响超过 100 条记录的新增或修改）为强制例外，必须用自然语言明确说明影响范围并取得用户确认后方可执行
+4. **确认机制**——四要素唯一确定时可直接执行，无需二次确认；大批量写操作（单次影响超过 100 条记录的新增、修改或删除）为强制例外，必须用自然语言明确说明影响范围并取得用户确认后方可执行
 5. **结果验证**——完成用户需求后，无论接口返回是否成功，都必须用 `references/smart-sheet-read.md` 中的读取工具进行最终结果验证。
 6. **不要机械执行 plan**——每次操作后都要用实际状态校准计划；如果产物已经存在（如目标子表、字段、视图、图表、记录），后续"创建/导出"步骤应视为已完成，不得再次创建。
