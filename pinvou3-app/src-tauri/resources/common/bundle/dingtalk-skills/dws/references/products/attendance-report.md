@@ -613,7 +613,7 @@ python3 scripts/attendance_report_checkin.py \
 
 | 脚本 | 报表类型 | 数据来源 | CLI 参数 |
 |------|---------|---------|---------|
-| [attendance_report_detail.py](../../scripts/attendance_report_detail.py) | 明细 | `check result` + `check record` | `--users --start --end [--out]` |
+| [attendance_report_detail.py](../../scripts/attendance_report_detail.py) | 明细 | `check result` + `check record` | `--users --start --end [--out] [--inspect] [--no-images] [--image-size WxH]`（默认嵌入打卡图片，`--no-images` 仅保留 URL 文本，`--image-size` 默认 80x120） |
 | [attendance_report_monthly.py](../../scripts/attendance_report_monthly.py) | 月度汇总（默认） | `report columns` + `report query-data` | `--users --start --end [--column-keywords] [--out]` |
 | [attendance_report_daily.py](../../scripts/attendance_report_daily.py) | 每日统计 | `report columns` + `report query-data` | `--users --start --end [--column-keywords] [--out]` |
 | [attendance_report_record.py](../../scripts/attendance_report_record.py) | 考勤记录 | `attendance approve list` + `oa approval detail` | `--type --users --start --end [--out]` |

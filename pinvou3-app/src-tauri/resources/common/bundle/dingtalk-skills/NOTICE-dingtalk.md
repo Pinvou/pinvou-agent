@@ -152,3 +152,22 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 协作者复审阻塞项收口，下次 sync 需重放：
 
 1. **`safe_file_name` 补 Windows 尾随点/全点名规整（aitable_export_via_task.py）**：Win32 剥离末组件尾随点/空格——`"report.xlsx."` 落盘被静默改名为 `report.xlsx`（与回显 savedPath 不一致）；`"..."` 等全点名是目录别名、`write_bytes` 抛 `PermissionError`；超长字节截断也可能切在点上留下新尾点。修复：字符替换后 `rstrip(". ")`、剥空后回退 `export_result.bin`（取代原先仅判 `"."`/`".."` 的分支）、设备名判断与字节截断之后各再规整一次。补可重放纯函数单测 `scripts/tests/test_dws_safe_file_name.py`（fast-gate `unittest discover` 自动执行）——第七轮登记注「第 3 条仅一次性实测」自此有持久化回归防护。
+
+## dws 文档审计修复（2026-08-27）
+
+钉钉 dws 技能包文档审计（11 项已核验发现）修复登记，下次 sync 需重放。全部为文档修复与孤儿登记，**不改任何 scripts 行为、不改发送类操作确认策略**（mail send/DING app 型无确认为产品决策，pending）：
+
+1. **`SKILL.md` 严格禁止 curl 条补唯一例外**：aitable 导入/导出链路返回的预签名 `uploadUrl`/`downloadUrl`（`import upload` 凭证、`export data` 下载地址）允许 curl 直传/直下并链接 aitable-export-import.md——消除与 aitable-export-import.md:123/:144、capability-limits.md:25 的矛盾。
+2. **`SKILL.md` 批量上限调和**：「单次批量操作不超过 30 条」改为「直接调用 dws 批量接口（如 `record update`）单次 ≤30 条；使用 `scripts/import_records.py` 时按脚本默认 50/批（DEFAULT_BATCH_SIZE=50，上限 100）」——与脚本实际及 06-data-analytics.md 推荐路径一致，未改脚本。
+3. **`SKILL.md`「详细参考」scripts 行删除「机器人消息」字样**：与 MUST DO「Chat 历史导出与机器人广播已完全下沉 Runtime，不再发布兼容脚本」对齐（上游 1.0.58 已删 5 个相关脚本）。
+4. **`SKILL.md` 产品总览表补 `dev` 行并入链 dev.md**；意图决策树 AI 应用行由「当前无稳定产品参考」改为「产品参考以 dev.md 为准（勿猜 aiapp 等未列出命令，命令以 `dws dev --help` 实测为准）」——消除 dev.md（212 行完整参考）零入链与「无稳定参考」断言的矛盾，保留防幻觉意图。
+5. **`references/best_practices/03-meeting.md` 两处 `--room-group-id` 删除改写**（两准则节 + schedule-meeting recipe 行）：`calendar_schedule_meeting.py` argparse 无该参数（仅 --title/--start/--end/--desc/--users/--book-room/--dry-run）；限范围订房改为「先 `room list-groups` 解析 group-id，再手工 `room search --group-id ... --available` 选定后 `room add`」，并在两处显式注明脚本不支持分组限定。
+6. **搜房失败退出码口径改文档（方案 a）**：03-meeting.md 表 1 行与 calendar.md 自动化脚本表的「返回非零退出码」改为「打印 `⚠ 该时段无空闲会议室` 警告并正常退出（exit 0），上层须检查输出中的 ⚠ 标记」——实现（calendar_schedule_meeting.py:157-159 无空房路径）本就告警后退出 0；改脚本为非零退出属行为变更影响面大（多处以退出 0 为正常完成契约），故选文档对齐实现。
+7. **`references/products/oa.md` oa_batch_approve.py 用法补确认语义**：无 `--yes` 且非 `--dry-run` 时脚本 `input()` 交互确认，Agent 非交互环境裸跑 EOFError；补「先向用户确认、同意后加 --yes；--dry-run 仅预览」，示例补 `--yes`。
+8. **oa 审批写命令 Flags 块补 `--yes`**（oa.md approve/reject/revoke 三处）：revoke/reject 属危险操作确认表（SKILL.md:168-169，即本 PR 补入 dev 行后的行号），Flags 漏列与示例不一致；同步在 simple.md 撤销审批示例补 `--yes` + CAUTION 块（消除与 oa.md/SKILL.md 冲突）。
+9. **`references/products/attendance-report.md` 配套脚本表 detail 行补参数**：`[--inspect] [--no-images] [--image-size WxH]`（脚本 argparse 实有，默认嵌入打卡图片 80x120）。
+10. **孤儿参考入链（保守，不删文件）**：simple.md 经 oa.md 自动化脚本节尾注入链（标注速查形态、完整口径以 oa.md 为准）；dev.md 经第 4 条入链。
+11. **孤儿脚本登记（保守，不删上游文件）**：mail.md 文末新增「自动化脚本」表登记 mail_send_with_cc.py / mail_unread_summary.py；report.md 原空「自动化脚本」表补登 report_inbox_today.py / report_received_today.py（后者标注为上游重复发布的等价脚本）。minutes_list_parse.py 为内部共享库不登记。
+12. **观察项（不合并）**：`report_inbox_today.py` 与 `report_received_today.py` 为近逐字节双胞胎（仅 docstring 文件名差异，diff 实测），上游文件不合并；后续 sync 关注上游是否收敛为单文件，若收敛则同步删除另一份并更新 report.md 登记表。
+
+版本登记：SKILL.md frontmatter `cli_version: ">=1.0.15"` → `">=1.0.58"`（与 NOTICE 头部登记的当前 dws CLI 版号 1.0.58 对齐；本次为纯文档修订，无运行时语义变更）。

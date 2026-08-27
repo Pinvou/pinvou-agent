@@ -1814,3 +1814,10 @@ dws mail thread get --email user@company.com --id <conversationId> --select mess
 - `thread update` / `thread batch-update` 仅支持 `markRead`、`markUnread`、`addTags`、`removeTags`；标签操作必须传 `--tag-ids`
 - `folder create --folder` 的值必须是父文件夹 ID，不是文件夹显示名称；不知道父文件夹 ID 时，先调用 `folder list` 查 `folders[].id`
 - `folder delete/update --id` 的值必须是目标文件夹 ID，不是文件夹显示名称；不知道目标文件夹 ID 时，先调用 `folder list` 查 `folders[].id`
+
+## 自动化脚本
+
+| 脚本 | 场景 | 用法 |
+|------|------|------|
+| [mail_send_with_cc.py](../../scripts/mail_send_with_cc.py) | 发送带抄送的邮件（自动获取发件地址、校验邮箱格式） | `python3 mail_send_with_cc.py --to <邮箱> [--cc <邮箱1,邮箱2>] --subject "<标题>" --body "<正文>" [--dry-run]` |
+| [mail_unread_summary.py](../../scripts/mail_unread_summary.py) | 查询今天未读邮件并汇总 | `python3 mail_unread_summary.py [--size 20] [--dry-run]` |

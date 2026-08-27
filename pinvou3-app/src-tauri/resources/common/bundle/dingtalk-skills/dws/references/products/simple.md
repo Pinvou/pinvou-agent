@@ -87,11 +87,14 @@ Example:
 ```
 
 ### 撤销审批
+
+> **CAUTION:** 撤销不可恢复 — 高危操作，执行前必须向用户确认，确认后加 `--yes`（详见 [oa.md](./oa.md) 危险操作确认）。
+
 ```
 Usage:
   dws oa approval revoke --instance-id <ID> [flags]
 Example:
-  dws oa approval revoke --instance-id <ID> --format json
+  dws oa approval revoke --instance-id <ID> --yes --format json
 ```
 
 ---
