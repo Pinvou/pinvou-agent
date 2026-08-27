@@ -427,11 +427,11 @@
         const tailCandidates = [];
         for (let i = newMessages.length - 1;
              i >= 0 && tailCandidates.length < Math.max(fallbackQueued.length, 1) && i >= newMessages.length - 16;
-             i++) {
+             i--) {
           if (newMessages[i] && newMessages[i].role === "user") tailCandidates.unshift(newMessages[i]);
         }
         const scanList = userAdditions.length > 0 ? [...userAdditions, ...tailCandidates.slice(userAdditions.length)] : tailCandidates;
-        for (let i = 0; i < scanList.length && state.queued.length > 0; i++) {
+        for (let i = 0; i < scanList.length && fallbackQueued.length > 0; i++) {
           const message = scanList[i];
           const item = fallbackQueued[0];
           // 只结算 legacy steer chip(steered 且无 steerId):带 id 的由

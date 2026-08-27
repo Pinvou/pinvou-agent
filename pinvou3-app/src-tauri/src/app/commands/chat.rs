@@ -377,9 +377,11 @@ pub(crate) async fn chat_with_reservation(
 /// 返回引擎生成的 opaque steer id,前端据此关联 chat:steer_committed /
 /// chat:steer_dropped 事件。
 ///
-/// 渲染用户气泡的 chat:user_message 由前端 bridge 在 invoke 成功时**主动** emit,
-/// 后端不重复发(避免与 turn_loop drain 的 SessionUpdated 重复 + 让前端能精确
-/// 控制在 state.queued chip → bubble 的视觉切换时机)。
+/// 渲染用户气泡不由后端发 chat:user_message：本地前端在
+/// chat:steer_committed 结算时把排队 chip 就地转为气泡（bridge/chat.js
+/// settleSteerCommitted，精确控制 chip → bubble 的视觉切换时机，也避免与
+/// turn_loop drain 的 SessionUpdated 重复）。已知限制：不经过 turn
+/// admission，远端/web 观察者在全量重载前看不到 steer 注入的消息。
 #[tauri::command]
 pub async fn steer_chat(
     session_id: Option<String>,
