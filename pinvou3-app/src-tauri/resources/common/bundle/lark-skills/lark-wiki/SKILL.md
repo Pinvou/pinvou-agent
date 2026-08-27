@@ -129,4 +129,4 @@ lark-cli wiki <resource> <method> [flags]  # 调用 API
 
 不要把 Wiki 的 `node_token` 当作文档 token / `base_token` / spreadsheet token 传给下游命令。
 
-上表只列主用的三种 `obj_type`；完整路由（含 `slides` / `file` / `mindnote` 等未收录域的「技能未随包收录 + CLI 命令直给」口径）见 [`../lark-shared/references/lark-wiki-token-routing.md`](../lark-shared/references/lark-wiki-token-routing.md)。
+上表只列主用的三种 `obj_type`；完整路由（含 `slides` / `mindnote` 的「技能未随包收录 + CLI 命令直给」与 `file` 走 `lark-drive` 等口径）见 [`../lark-shared/references/lark-wiki-token-routing.md`](../lark-shared/references/lark-wiki-token-routing.md)。

@@ -5,7 +5,7 @@
 将文件回滚到指定历史版本。该 shortcut 同时支持 `--as user` 和 `--as bot`；自动化场景推荐使用 `--as bot`。
 
 > [!CAUTION]
-> 回滚会用指定历史版本**覆盖当前内容**，属于高风险写操作；真实执行必须显式传 `--yes`，且先确认目标 `--file-token` 与 `--version` 就是用户要回滚到的版本。
+> 回滚会用指定历史版本**覆盖当前内容**。该命令在 CLI 中为 write 级，不设 `--yes` 审批门（同族仅 `+version-delete` 为 high-risk-write 需要 `--yes`）；真实执行前先确认目标 `--file-token` 与 `--version` 就是用户要回滚到的版本，并按 lark-drive SKILL.md 高风险写三条件取得用户对具体版本的确认。
 
 ## 命令
 
@@ -13,13 +13,11 @@
 lark-cli drive +version-revert \
   --file-token boxcnxxxxxxxx \
   --version 7633658129540910621 \
-  --yes \
   --as bot
 
 lark-cli drive +version-revert \
   --file-token boxcnxxxxxxxx \
   --version 7633658129540910621 \
-  --yes \
   --as user
 ```
 
@@ -29,7 +27,6 @@ lark-cli drive +version-revert \
 |------|------|------|
 | `--file-token` | 是 | 目标文件 token |
 | `--version` | 是 | `drive +version-history` 返回的长数字 `version` 字段，不是 `tag` |
-| `--yes` | 是 | 确认执行高风险回滚操作 |
 
 ## 返回值
 

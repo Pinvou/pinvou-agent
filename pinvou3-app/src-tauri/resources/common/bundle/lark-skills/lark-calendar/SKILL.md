@@ -165,7 +165,7 @@ lark-cli calendar events share_info --params '{"calendar_id":"<calendar_id>","ev
 lark-cli calendar events delete --params '{"calendar_id":"<calendar_id>","event_id":"<event_id>","need_notification":false}'
 ```
 
-> 原生 API 方法（`events` / `event.attendees` 等）不提供 `--calendar-id` / `--event-id` 这类 typed flags，结构化参数统一通过 `--params '<json>'`（查询/路径参数）与 `--data '<json>'`（请求体）传入；typed flags 只存在于 `+` shortcut 封装上。删除日程的 `need_notification`（是否通知参会人）也只能通过 `--params` JSON 表达，重复性日程删除全例外外的场景见 [lark-calendar-recurring.md](references/lark-calendar-recurring.md)。
+> 原生 API 方法（`events` / `event.attendees` 等）的路径/查询参数既可逐个以 typed flags 传入（是否提供以 `lark-cli calendar <resource> <method> --help` 实际输出为准），也可统一用 `--params '<json>'` 表达；请求体用 `--data '<json>'` 传入。删除日程的 `need_notification`（是否通知参会人）经 `--params` JSON 表达，重复性日程删除全例外外的场景见 [lark-calendar-recurring.md](references/lark-calendar-recurring.md)。
 
 > `calendar_id` 可以直接传 `primary`，代表当前调用身份的主日历 ID。
 

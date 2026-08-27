@@ -312,7 +312,7 @@ lark-task / lark-wiki / lark-shared 三域文档审计,以下修正下次 sync �
 - **lark-task/references 全部 17 篇的 lark-shared 前置引用路径错误**:
   前置条件行的 `` `../lark-shared/SKILL.md` `` (裸反引号非链接,且从
   references/ 目录解析指向不存在的 `lark-task/lark-shared/SKILL.md`)统一
-  改为可点击链接 [`../../lark-shared/SKILL.md`](../../lark-shared/SKILL.md)
+  改为可点击链接 `` `[../../lark-shared/SKILL.md](../../lark-shared/SKILL.md)` ``
   (对齐 lark-wiki/lark-doc/lark-base/lark-im/lark-drive 家族约定;
   lark-task-create.md 文末 Related 原已是 ../../ 形式,保持一致)。
 - **lark-wiki/references/lark-wiki-delete-space.md 错误名两说(2 处)**:
@@ -381,6 +381,7 @@ documented-behavior fixes only,不改确认门禁语义、不动有意冗余段�
 - **workflow-schema ChangeRecordTrigger 示例**:示例中的 `"condition": null`
   与字段表登记的 `condition_list` 不对应,示例补 `"condition_list": []`
   与字段表对齐。
+- **version bump**:lark-base 1.2.6→1.2.7(纯文档修正,patch +1)。
 
 ---
 
@@ -402,10 +403,11 @@ documented-behavior fixes only,不改确认门禁语义、不动有意冗余段�
 - **lark-sheets/references/lark-sheets-read-data.md** `+table-get` 截断口径
   统一:使用场景表(「truncated:true 与 truncation_warning」)与 Examples 段
   (「不返回分页/截断标志,range 是唯一信号」)互斥,且 `truncation_warning`
-  全仓库无第二处出现。CLI 源码不在仓库无法判定真值,统一为兼容口径:无
-  `has_more` 分页、各子表 `range` 是读全主信号、`--output-path` 回执看
-  `complete`、**见任何截断标志(如 truncated)必须先处理再用数据**(以参数表
-  与 `--output-path` 契约为依据)。
+  全仓库无第二处出现。经上游 v1.0.87 CLI 源码核验(lark_sheet_table_io.go /
+  read_output.go):输出确有 `truncated` 与 `truncation_warning`(顶层与每
+  子表,命中上限时同现)、无 `has_more` 分页、`--output-path` 回执以
+  `complete` 标记完整性——Examples 段旧断言为误。统一口径与源码一致:
+  **见任何截断标志必须先处理再用数据**。
 - **lark-sheets/references/lark-sheets-workbook.md**:`+workbook-info` 使用场景
   行去掉「冻结位置」(与同文件输出契约「无 frozen_* 字段,冻结用 +sheet-info
   读取」对齐);`--styles`「至少给其一」清单两处补 `freeze`(与 schema 块及
@@ -426,10 +428,11 @@ documented-behavior fixes only,不改确认门禁语义、不动有意冗余段�
 sync 需逐条重放。四域 SKILL.md frontmatter version 1.0.0 → 1.0.1
 (lark-doc 原无 version 字段,本次补齐为 1.0.1):
 
-- **lark-drive/references/lark-drive-version-revert.md**:补 `--yes`
-  (参数表必填行 + 两条示例命令)并加 CAUTION 块声明「回滚以指定历史版本
-  覆盖当前内容」——与 lark-drive-version-delete.md 及 SKILL.md 高风险
-  三条件清单(「版本删除/回滚」)对齐;原文无 `--yes` 属遗漏。
+- **lark-drive/references/lark-drive-version-revert.md**:加 CAUTION 块
+  声明「回滚以指定历史版本覆盖当前内容」。该命令在 CLI 中为 write 级、
+  不设 `--yes` 审批门(同族仅 +version-delete 为 high-risk-write 需要
+  `--yes`;SKILL.md 高风险三条件清单是工作流级用户确认要求,不是 CLI 旗标),
+  故不添加 `--yes`;原文无覆盖风险提示属遗漏。
 - **lark-doc 思维笔记新建路由改真**:SKILL.md「思维笔记」条与
   lark-doc-mindnote.md 的 IMPORTANT/推荐工作流/参考,原均指引「新建思维
   笔记走 lark-doc-whiteboard」,但该文件全文只讲画板、无 mindnote 内容
@@ -457,12 +460,12 @@ sync 需逐条重放。四域 SKILL.md frontmatter version 1.0.0 → 1.0.1
   lark-doc:Drive 二进制文件(type=file 附件等)历史版本走 lark-drive
   `+version-*`。消除 docx 双重身份下双方均未互斥声明的矛盾。
 - **lark-calendar/SKILL.md 原生方法调用写法统一**:`events share_info`
-  与 `events delete` 示例原用 `--calendar-id X --event-id Y` typed-flag
-  写法,与 recurring.md 的 `--params '{"calendar_id":...,"event_id":...,
-  "need_notification":...}'` 矛盾,且 need_notification 只有 JSON 形态能
-  表达。统一为 `--params` JSON 写法,并在代码块后补注「原生 API 方法不提
-  供 typed flags,结构化参数统一走 --params/--data;typed flags 只在 +
-  shortcut 上」(口径同 lark-im 侧声明)。
+  与 `events delete` 示例统一为 recurring.md 同款 `--params '{"calendar_id":...,
+  "event_id":...,"need_notification":...}'` 写法(need_notification 只有
+  JSON 形态能表达)。代码块后补注:路径/查询参数可逐个 typed flags 或统一
+  `--params` 传入(是否提供以 `--help` 实际输出为准),请求体走 `--data`
+  (原生方法的 path/query 参数由 paramflags 机制生成 typed flags,不得宣称
+  「原生方法无 typed flags、typed flags 只在 + shortcut 上」)。
 - **lark-im/references/lark-im-messages-mget.md 排障表 scope 修正**:
   「Permission denied」行原要求 `im:message:readonly` +
   `contact:user.base:readonly`,与 SKILL.md「sender 名由服务端返回,无需
