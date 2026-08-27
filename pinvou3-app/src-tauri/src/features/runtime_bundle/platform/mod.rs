@@ -91,7 +91,11 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.23: wecom-cli 升 1.1.0：技能树按上游服务模型重排为 14 个（msg→message、
 ///       schedule→calendar，新增 disk/doc-manage/email/media/shared/sheet/smartpage），
 ///       旧目录（wecomcli-msg/wecomcli-schedule）启动门控时清理。
-pub const BUNDLE_VERSION: &str = concat!("0.23-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.24: wecom sheet/smartsheet/smartpage 三技能文档审计修复（PR #358）。
+/// 0.25: wecom calendar/meeting/email/message 技能文档审计修复（14 条，见
+///       NOTICE-wecom.md 登记第 1-14 条）；连接器技能树不参与内容哈希，
+///       须 bump 语义版本让已连接用户启动即同步刷新。
+pub const BUNDLE_VERSION: &str = concat!("0.25-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// 骨架 = 身份/底线/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：

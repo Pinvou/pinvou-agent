@@ -215,4 +215,3 @@ metadata:
 
 - 单封邮件总大小（正文 + 附件）不超过 50MB
 - 带关键字搜索邮件最多返回 100 封
-- `mail search` 带 `begin_time`/`end_time`/`only_unread`/`only_reminder` 时，搜索范围不能超过最近 30 天，详见 [search-mail](./references/search-mail.md)

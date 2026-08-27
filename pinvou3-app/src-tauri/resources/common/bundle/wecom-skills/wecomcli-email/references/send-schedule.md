@@ -45,7 +45,7 @@
 - `repeat_month_of_year`: 每年哪几个月重复，取值 1~12，仅 `repeat_type=yearly` 时有效
 - `repeat_until`: 重复结束时刻（格式 `YYYY-MM-DD HH:mm:ss`），不填表示一直重复
 
-> **注意**：音视频会议（即同时填了 `meeting` 的场景）对重复规则有限制，某些重复组合不被支持。如果接口拒绝重复规则，按 SKILL.md「接口失败处理规范」展示 `error.message` 和 `error.instruction`，告知用户调整重复规则。
+> **注意**：音视频会议（即同时填了 `meeting` 的场景）对重复规则有限制，某些重复组合不被支持。如果接口拒绝重复规则，按 SKILL.md「接口失败处理」展示 `error.message` 和 `error.instruction`，告知用户调整重复规则。
 
 ---
 
@@ -80,4 +80,4 @@
 - **会议邮件必须同时带 `schedule`**：`meeting` 对象不能单独使用，必须同时填写 `schedule`。漏掉 `schedule` 会导致接口报错。日程邀约则可以不填 `meeting`
 - **`begin_time` 不能小于当前时间**：接口会校验 `begin_time`，过去的时间会被接口拒绝。若用户提供的开始时间早于当前系统时间，必须用自然语言询问用户重新选择时间，禁止自行调整或猜测
 - **会议持续时间不超过 24 小时**：`end_time` 减 `begin_time` 超过 24 小时会被接口拒绝
-- **会议对重复规则有限制**：音视频会议不是所有重复规则都支持，接口拒绝时按 SKILL.md「接口失败处理规范」展示 `error.message` 和 `error.instruction` 告知用户调整
+- **会议对重复规则有限制**：音视频会议不是所有重复规则都支持，接口拒绝时按 SKILL.md「接口失败处理」展示 `error.message` 和 `error.instruction` 告知用户调整
