@@ -911,10 +911,6 @@ export function BrowserView({
     publishCommittedUrl,
     sessionId,
     t,
-    t.browserAutomationUnavailable,
-    t.browserBlockedNavigation,
-    t.browserDownloadBlocked,
-    t.browserPersistenceWarning,
   ]);
 
   // ---- Navigation ----

@@ -916,16 +916,8 @@ impl NativeBrowserSurface {
         Ok(false)
     }
 
-    pub fn target_for_tab(&self, _session_id: &str, _tab_token: &str) -> Option<String> {
-        None
-    }
-
     pub fn unbound_tabs(&self, _session_id: &str) -> Vec<String> {
         Vec::new()
-    }
-
-    pub fn has_tab(&self, _session_id: &str, _tab_token: &str) -> bool {
-        false
     }
 
     pub fn generate_tab_token(&self) -> String {

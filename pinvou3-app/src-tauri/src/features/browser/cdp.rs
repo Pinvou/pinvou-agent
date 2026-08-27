@@ -31,11 +31,7 @@ static DROPPED_CDP_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone)]
 pub enum CdpEvent {
     /// Target lifecycle event consumed by BrowserManager.
-    Event {
-        session_id: Option<String>,
-        method: String,
-        params: Value,
-    },
+    Event { method: String, params: Value },
     /// At least one page-target lifecycle event could not enter the bounded
     /// channel. The consumer must rebuild its target/session cache from
     /// `Target.getTargets` instead of trying to replay an incomplete delta
@@ -365,7 +361,6 @@ async fn handle_cdp_message(
             return;
         }
         let ev = CdpEvent::Event {
-            session_id: v.get("sessionId").and_then(Value::as_str).map(String::from),
             method: method.to_string(),
             params,
         };
@@ -479,7 +474,6 @@ mod tests {
 
     fn event(method: &str) -> CdpEvent {
         CdpEvent::Event {
-            session_id: None,
             method: method.to_string(),
             params: Value::Null,
         }

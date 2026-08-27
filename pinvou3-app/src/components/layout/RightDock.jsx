@@ -52,9 +52,6 @@ export function RightDockProvider({
   const hidePanel = useCallback((panelId) => {
     dispatch({ type: 'hide', panelId });
   }, []);
-  const setOccluded = useCallback((occlusionId, active) => {
-    dispatch({ type: 'occlude', occlusionId, active });
-  }, []);
   const publishOcclusion = useCallback((occlusionId, publish) => {
     const commit = () => {
       const published = publish();
@@ -82,7 +79,6 @@ export function RightDockProvider({
     mountPanel,
     activatePanel,
     hidePanel,
-    setOccluded,
     publishOcclusion,
     releaseOcclusion,
   }), [
@@ -92,7 +88,6 @@ export function RightDockProvider({
     portalRoot,
     publishOcclusion,
     releaseOcclusion,
-    setOccluded,
     snapshot,
   ]);
 

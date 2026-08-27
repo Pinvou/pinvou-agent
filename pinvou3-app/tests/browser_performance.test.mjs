@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  BROWSER_PERFORMANCE_THRESHOLDS_MS,
   browserPerformanceSnapshot,
   percentile,
   recordBrowserPerformance,
@@ -58,5 +59,9 @@ test('the JSONL reporter returns a gate-ready exit code from minimum samples and
   assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(result.stdout);
   assert.equal(report.metrics.agent_target_alignment_ms.count, 30);
+  assert.equal(
+    report.metrics.agent_target_alignment_ms.thresholdMs,
+    BROWSER_PERFORMANCE_THRESHOLDS_MS.agent_target_alignment_ms,
+  );
   assert.equal(report.metrics.agent_target_alignment_ms.passes, true);
 });

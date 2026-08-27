@@ -1234,14 +1234,6 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         Ok(true)
     }
 
-    pub fn target_for_tab(&self, session_id: &str, tab_token: &str) -> Option<String> {
-        self.workspaces
-            .get(session_id)?
-            .tabs
-            .target_for_token(tab_token)
-            .map(ToOwned::to_owned)
-    }
-
     /// BrowserManager only needs initial CDP marker discovery for these tabs and
     /// never reads ownership from the page main world.
     pub fn unbound_tabs(&self, session_id: &str) -> Vec<String> {
@@ -1262,15 +1254,6 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         self.workspaces
             .get(session_id)
             .map(|workspace| workspace.control.snapshot())
-    }
-
-    pub fn tab_for_target(&self, automation_target: &str) -> Option<(String, String)> {
-        self.workspaces.iter().find_map(|(session_id, workspace)| {
-            workspace
-                .tabs
-                .token_for_target(automation_target)
-                .map(|tab_token| (session_id.clone(), tab_token.to_string()))
-        })
     }
 
     pub fn show(
@@ -2779,12 +2762,6 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             .is_some_and(|workspace| workspace.tabs.iter().any(SurfaceEntry::is_published))
     }
 
-    pub fn has_tab(&self, session_id: &str, tab_token: &str) -> bool {
-        self.workspaces
-            .get(session_id)
-            .is_some_and(|workspace| workspace.tabs.by_token(tab_token).is_some())
-    }
-
     /// Resolve a task-owned published or exact hidden-staging tab to its Tauri child-WebView
     /// label. BrowserManager holds the random tab token and uses this only after ownership/
     /// generation validation; page code never receives the label or a Tauri bridge.
@@ -2976,10 +2953,6 @@ fn persist_workspace_snapshot(workspace: &Workspace, revision: u64) -> Result<()
     let encoded = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
     crate::platform::filesystem::atomic_write_private_anchored(&path, &encoded)
         .map_err(|e| format!("Failed to write browser workspace state: {e}"))
-}
-
-fn workspace_state_value(workspace: &Workspace) -> serde_json::Value {
-    workspace_state_value_with_revision(workspace, workspace.control.snapshot().revision)
 }
 
 fn workspace_state_value_with_revision(workspace: &Workspace, revision: u64) -> serde_json::Value {
@@ -5624,10 +5597,6 @@ mod tests {
             },
         );
 
-        assert_eq!(
-            surface.tab_for_target("target-a"),
-            Some(("session-a".to_string(), "0123456789abcdef".to_string()))
-        );
         assert!(surface
             .bind_target("session-b", "fedcba9876543210", "target-a")
             .is_err());
@@ -5643,7 +5612,8 @@ mod tests {
             .unwrap();
         workspace.control.bump(Some(NativeControlOwner::Agent));
 
-        let value = workspace_state_value(workspace);
+        let value =
+            workspace_state_value_with_revision(workspace, workspace.control.snapshot().revision);
         assert_eq!(value["version"], 2);
         assert_eq!(value["mapping_authority"], "host");
         assert_eq!(value["revision"], 2);

@@ -9,10 +9,6 @@ const browserView = readFileSync(
   path.join(projectRoot, 'src', 'features', 'browser', 'BrowserView.jsx'),
   'utf8',
 );
-const nativeSurfaceTransition = readFileSync(
-  path.join(projectRoot, 'src', 'features', 'browser', 'native-surface-transition.mjs'),
-  'utf8',
-);
 const browserManager = readFileSync(
   path.join(projectRoot, 'src-tauri', 'src', 'features', 'browser', 'mod.rs'),
   'utf8',
@@ -212,15 +208,6 @@ test('normal mode uses one Right Dock switcher for artifact and browser entries'
   assert.match(nativeHost, /pub fn prepare_unclaimed/);
 });
 
-test('embedded downloads and clipboard reads use secure defaults', () => {
-  assert.match(nativeHost, /\.on_download\(/);
-  assert.match(nativeHost, /"browser:download-blocked"/);
-  assert.doesNotMatch(nativeHost, /\.enable_clipboard_access\(\)/);
-  assert.match(browserView, /listenTauri\('browser:download-blocked'/);
-  assert.match(browserView, /if \(payload\.sessionId !== sessionId\) return;/);
-  assert.match(browserView, /t\.browserDownloadBlocked\(payload\.source \|\| ''\)/);
-});
-
 test('native surface suspension is centrally derived for every occlusion path', () => {
   assert.match(main, /const browserSurfaceSuspended = browserResizeActive/);
   assert.match(main, /rightDockState\.activePanelId !== 'browser'/);
@@ -316,12 +303,6 @@ test('occluding UI, task switches, and Right Dock state publish only after nativ
     main,
     /bridgeTransition\?\.sessionId !== nextSessionId[\s\S]*?serialize: true/,
   );
-  assert.match(nativeSurfaceTransition, /revisions\.get\(ticket\.channel\) !== ticket\.revision/);
-  assert.match(
-    nativeSurfaceTransition,
-    /getContext\(\) \|\| \{\}\)\.sessionId === context\.sessionId/,
-  );
-  assert.match(nativeSurfaceTransition, /predecessor\.catch\(\(\) => false\)/);
 });
 
 test('task switches discard stale status and mount a fresh BrowserView instance', () => {
@@ -856,9 +837,6 @@ test('persistence failures after irreversible operations are visible and retried
   assert.match(browserManager, /"browser:persistence-restored"/);
   assert.match(browserManager, /delay = delay\.saturating_mul\(2\)\.min\(Duration::from_secs\(30\)\)/);
   assert.match(browserManager, /status\["persistenceWarning"\] = json!\(warning\)/);
-  assert.match(browserView, /listenTauri\('browser:persistence-warning'/);
-  assert.match(browserView, /listenTauri\('browser:persistence-restored'/);
-  assert.match(browserView, /data-testid="browser-persistence-warning"/);
 });
 
 test('popup reuses only a fully begun lease and other popups become User-controlled', () => {
@@ -1004,4 +982,7 @@ test('remote pages lack global clipboard access and downloads fail closed withou
   assert.match(nativeHost, /"tab": download_tab_token/);
   assert.match(nativeHost, /let source = match \(url\.scheme\(\), url\.host_str\(\)\)/);
   assert.doesNotMatch(nativeHost, /"destination"|"path": destination/);
+  assert.match(browserView, /listenTauri\('browser:download-blocked'/);
+  assert.match(browserView, /if \(payload\.sessionId !== sessionId\) return;/);
+  assert.match(browserView, /t\.browserDownloadBlocked\(payload\.source \|\| ''\)/);
 });

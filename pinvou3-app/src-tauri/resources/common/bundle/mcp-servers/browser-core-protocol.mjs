@@ -6,37 +6,6 @@
  * extensions and never replace the common core catalog.
  */
 
-export const PINVOU_BROWSER_CORE_TOOL_NAMES = new Set([
-  'list_pages',
-  'new_page',
-  'select_page',
-  'close_page',
-  'navigate_page',
-  'take_snapshot',
-  'click',
-  'drag',
-  'fill',
-  'fill_form',
-  'type_text',
-  'press_key',
-  'hover',
-  'wait_for',
-  'evaluate_script',
-  'resize_page',
-  'handle_dialog',
-]);
-
-export const PINVOU_BROWSER_INPUT_TOOL_NAMES = new Set([
-  'click',
-  'drag',
-  'fill',
-  'fill_form',
-  'type_text',
-  'press_key',
-  'hover',
-  'handle_dialog',
-]);
-
 export const PINVOU_BROWSER_CHROME_DIAGNOSTIC_TOOL_NAMES = new Set([
   'emulate',
   'get_console_message',
@@ -207,6 +176,8 @@ const FALLBACK_SCHEMAS = {
   },
 };
 
+export const PINVOU_BROWSER_CORE_TOOL_NAMES = new Set(Object.keys(FALLBACK_SCHEMAS));
+
 const TOOL_DESCRIPTIONS = {
   list_pages: 'Get a list of pages open in the current task browser.',
   new_page: 'Open a new task-owned browser tab and submit a URL navigation request. Success does not verify that the page loaded; use take_snapshot to verify it.',
@@ -253,10 +224,6 @@ export function createPinvouBrowserCoreCatalog({
 
 export function isPinvouBrowserCoreTool(name) {
   return PINVOU_BROWSER_CORE_TOOL_NAMES.has(name);
-}
-
-export function isPinvouBrowserInputTool(name) {
-  return PINVOU_BROWSER_INPUT_TOOL_NAMES.has(name);
 }
 
 export function isChromeDiagnosticTool(name) {

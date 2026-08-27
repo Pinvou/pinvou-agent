@@ -7,8 +7,8 @@ import {
   createPinvouBrowserCoreCatalog,
   isChromeDiagnosticTool,
   isPinvouBrowserCoreTool,
-  isPinvouBrowserInputTool,
   mergePinvouBrowserCatalog,
+  PINVOU_BROWSER_CORE_TOOL_NAMES,
 } from '../src-tauri/resources/common/bundle/mcp-servers/browser-core-protocol.mjs';
 
 test('BrowserCore keeps one platform-neutral core catalog', () => {
@@ -30,13 +30,6 @@ test('Chrome diagnostics are an optional extension, not a second browser MCP', (
   assert.equal(tools.some((tool) => tool.name === 'performance_start_trace'), true);
   assert.equal(isChromeDiagnosticTool('performance_start_trace'), true);
   assert.equal(isPinvouBrowserCoreTool('performance_start_trace'), false);
-});
-
-test('trusted-input classification belongs to BrowserCore', () => {
-  assert.equal(isPinvouBrowserCoreTool('click'), true);
-  assert.equal(isPinvouBrowserInputTool('click'), true);
-  assert.equal(isPinvouBrowserInputTool('handle_dialog'), true);
-  assert.equal(isPinvouBrowserInputTool('take_snapshot'), false);
 });
 
 test('BrowserCore catalog can hide platform-specific tools explicitly', () => {
@@ -66,6 +59,12 @@ test('BrowserCore fallback catalog matches the official dialog and resize schema
   assert.deepEqual(resize.inputSchema.required, ['width', 'height']);
   assert.equal(resize.inputSchema.properties.width.type, 'number');
   assert.equal(resize.inputSchema.properties.height.type, 'number');
+});
+
+test('BrowserCore tool-name order follows the fallback schema catalog', () => {
+  const catalogNames = createPinvouBrowserCoreCatalog().toolsListResult.tools
+    .map((tool) => tool.name);
+  assert.deepEqual([...PINVOU_BROWSER_CORE_TOOL_NAMES], catalogNames);
 });
 
 test('BrowserCore wait schema discloses the native timeout ceiling', () => {

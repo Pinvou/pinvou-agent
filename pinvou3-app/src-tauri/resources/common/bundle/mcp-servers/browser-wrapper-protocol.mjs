@@ -435,12 +435,6 @@ export function adaptBrowserCatalog(value) {
   };
 }
 
-// Compatibility export for older callers. Final multi-tab mode no longer
-// rewrites new_page or close_page into navigate_page.
-export function adaptHostedBrowserToolCall(line) {
-  return line;
-}
-
 export function browserHostBackendPolicy(platform) {
   if (platform === 'win32') {
     return {
@@ -479,7 +473,6 @@ const HOST_REQUEST_ID_PATTERN = /^[A-Za-z0-9._-]{1,160}$/;
 const WRAPPER_INSTANCE_NONCE_PATTERN = /^[0-9a-f]{32}$/;
 export const HOST_REQUEST_PROTOCOL_VERSION = 3;
 export const HOST_CALLER_HEARTBEAT_INTERVAL_MS = 1_000;
-export const HOST_CALLER_HEARTBEAT_TTL_MS = 5_000;
 
 export function effectiveNavigateType(args = {}) {
   if (typeof args?.type === 'string' && args.type.trim()) return args.type;
@@ -875,13 +868,6 @@ export function parseHostResponseEnvelope(value, {
     : result;
 }
 
-export function createHostLeaseAssertionRequest(activationLease) {
-  return {
-    operation: 'assert_host_lease',
-    ...hostLeaseAssertionPayload(activationLease),
-  };
-}
-
 export async function runLeasedHostDispatch({
   activationLease,
   emitsTrustedInput = false,
@@ -960,7 +946,6 @@ export async function runLeasedHostDispatch({
 
   let executionResult;
   let executionError = null;
-  let endError = null;
   try {
     await ensureActive();
     executionResult = await execute(lease);
@@ -973,7 +958,6 @@ export async function runLeasedHostDispatch({
     try {
       await endOperation(lease);
     } catch (error) {
-      endError = error;
       try {
         await onEndFailure(error, lease, {
           executionSucceeded: executionError == null,
@@ -1028,7 +1012,6 @@ export async function runLeasedHostDispatch({
   // could replay a click/type action. The heartbeat is already stopped and the
   // host's trusted-input window expires independently; report the cleanup via
   // onEndFailure while preserving the authoritative committed result.
-  void endError;
   return executionResult;
 }
 

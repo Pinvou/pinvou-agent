@@ -6,7 +6,6 @@ import test from 'node:test';
 
 import {
   adaptBrowserCatalog,
-  adaptHostedBrowserToolCall,
   assertAllowedBrowserToolCall,
   assertAllowedHostedNavigation,
   browserHostBackendPolicy,
@@ -19,7 +18,6 @@ import {
   createBoundedNdjsonDecoder,
   createHostCallerHeartbeat,
   createHostCancellationTombstone,
-  createHostLeaseAssertionRequest,
   createHostRequestEnvelope,
   createOrderedWritableQueue,
   effectiveNavigateType,
@@ -29,7 +27,6 @@ import {
   findHostedTabPage,
   findHostedWorkspacePage,
   HOST_CALLER_HEARTBEAT_INTERVAL_MS,
-  HOST_CALLER_HEARTBEAT_TTL_MS,
   HOST_REQUEST_PROTOCOL_VERSION,
   hostCallerHeartbeatArtifactName,
   hostLeaseAssertionPayload,
@@ -456,29 +453,6 @@ test('shim catalog exposes the upstream experimental pageId routing schema', () 
   assert.equal(catalog.toolsListResult.tools[0].inputSchema.properties.pageId, undefined);
 });
 
-test('final multi-tab mode no longer rewrites new_page as current-page navigation', () => {
-  const line = JSON.stringify({
-    jsonrpc: '2.0',
-    id: 7,
-    method: 'tools/call',
-    params: { name: 'new_page', arguments: { url: 'https://example.com' } },
-  });
-  assert.equal(adaptHostedBrowserToolCall(line), line);
-});
-
-test('background new_page preserves background precreation semantics', () => {
-  const line = JSON.stringify({
-    jsonrpc: '2.0',
-    id: 8,
-    method: 'tools/call',
-    params: {
-      name: 'new_page',
-      arguments: { url: 'https://example.com', background: true },
-    },
-  });
-  assert.equal(adaptHostedBrowserToolCall(line), line);
-});
-
 test('browser host policy contains no external Chrome fallback', () => {
   assert.deepEqual(browserHostBackendPolicy('win32'), {
     action: 'request-native-host',
@@ -566,7 +540,6 @@ test('host requests use unique response paths, idempotency keys, and timeout tom
   assert.equal(tombstone.wrapper_instance_nonce, request.wrapper_instance_nonce);
 
   assert.equal(HOST_CALLER_HEARTBEAT_INTERVAL_MS, 1_000);
-  assert.equal(HOST_CALLER_HEARTBEAT_TTL_MS, 5_000);
   assert.equal(
     hostCallerHeartbeatArtifactName(identity.sessionToken, identity.wrapperInstanceNonce),
     '0123456789abcdef-0123456789abcdef0123456789abcdef.heartbeat',
@@ -1194,13 +1167,6 @@ test('activate_tab lease schema strictly generates assert_host_lease arguments',
     targetId: 'target-a',
   });
   assert.deepEqual(hostLeaseAssertionPayload(lease), {
-    tab_token: '0123456789abcdef',
-    target_id: 'target-a',
-    revision: 12,
-    lease: '0123456789abcdef0123456789abcdef',
-  });
-  assert.deepEqual(createHostLeaseAssertionRequest(lease), {
-    operation: 'assert_host_lease',
     tab_token: '0123456789abcdef',
     target_id: 'target-a',
     revision: 12,

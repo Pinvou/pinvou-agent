@@ -466,22 +466,6 @@ impl PreparedWorkspaceDisposition {
     }
 }
 
-fn hosted_prepare_rollback_record(
-    disposition: PreparedWorkspaceDisposition,
-    session_id: &str,
-    request_id: &str,
-    revision: u64,
-) -> Option<Value> {
-    disposition.rollback_kind().map(|kind| {
-        json!({
-            "kind": kind,
-            "session_id": session_id,
-            "request_id": request_id,
-            "revision": revision,
-        })
-    })
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScopedStopAction {
     CloseNativeSession,
@@ -2228,18 +2212,6 @@ impl BrowserManager {
             )?;
         }
         Ok(())
-    }
-
-    async fn rollback_prepare_journal(
-        &self,
-        app: &AppHandle,
-        journal: &HostedPrepareJournal,
-    ) -> Result<(), String> {
-        let session_lock = self.session_lifecycle_lock(&journal.compensation.session_id);
-        let _session_guard = session_lock.lock().await;
-        let _start_guard = self.start_mtx.lock().await;
-        self.rollback_prepare_journal_with_start_lock(app, journal)
-            .await
     }
 
     async fn prepare_native_workspace(
@@ -4931,11 +4903,7 @@ async fn run_event_loop(app: AppHandle, mut events: tokio::sync::mpsc::Receiver<
     use cdp::CdpEvent;
     while let Some(ev) = events.recv().await {
         match ev {
-            CdpEvent::Event {
-                session_id: _,
-                method,
-                params,
-            } => match method.as_str() {
+            CdpEvent::Event { method, params } => match method.as_str() {
                 "Target.targetCreated" | "Target.targetDestroyed" => {
                     // See route_target_event for protocol-shape differences:
                     // created carries full targetInfo for filtering non-page targets,
@@ -7923,32 +7891,19 @@ mod tests {
     #[test]
     fn dead_prepare_failure_retains_exact_retryable_compensation_metadata() {
         let request = hosted_request_at(HostedBrowserOperation::Prepare, 100_000);
-        let created_blank = hosted_prepare_rollback_record(
-            PreparedWorkspaceDisposition::CreatedBlank,
-            &request.session_id,
-            &request.request_id,
-            7,
-        )
-        .unwrap();
+        let mut created_blank_compensation =
+            HostedPrepareCompensation::from_request(&request, "prepared_session");
+        created_blank_compensation.revision = Some(7);
+        let created_blank = created_blank_compensation.rollback_value().unwrap();
         assert_eq!(created_blank["kind"], "prepared_session");
         assert_eq!(created_blank["revision"], 7);
 
-        let restored = hosted_prepare_rollback_record(
-            PreparedWorkspaceDisposition::RestoredExisting,
-            &request.session_id,
-            &request.request_id,
-            8,
-        )
-        .unwrap();
+        let mut restored_compensation =
+            HostedPrepareCompensation::from_request(&request, "restored_session");
+        restored_compensation.revision = Some(8);
+        let restored = restored_compensation.rollback_value().unwrap();
         assert_eq!(restored["kind"], "restored_session");
         assert_eq!(restored["revision"], 8);
-        assert!(hosted_prepare_rollback_record(
-            PreparedWorkspaceDisposition::Existing,
-            &request.session_id,
-            &request.request_id,
-            9,
-        )
-        .is_none());
 
         let failed = HostedBrowserOutcome::failed_with_rollback(
             "browser/host-caller-not-live".to_string(),

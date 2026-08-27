@@ -246,9 +246,6 @@ function workspaceDisplayName(path) {
       ));
       const [rightDockState, setRightDockState] = useState({
         activePanelId: null,
-        mountedPanelCount: 0,
-        visiblePanelCount: 0,
-        openSidePanelCount: 0,
         occluded: false,
       });
       // Child overlays publish through RightDockProvider. Keep their reservation
@@ -329,12 +326,12 @@ function workspaceDisplayName(path) {
       const handleRightDockStateChange = useCallback((next) => {
         setRightDockState((current) => (
           current.activePanelId === next.activePanelId
-          && current.mountedPanelCount === next.mountedPanelCount
-          && current.visiblePanelCount === next.visiblePanelCount
-          && current.openSidePanelCount === next.openSidePanelCount
           && current.occluded === next.occluded
             ? current
-            : next
+            : {
+                activePanelId: next.activePanelId,
+                occluded: next.occluded,
+              }
         ));
       }, []);
       // Keep the currently published task identity stable while a bridge session

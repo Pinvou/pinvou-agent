@@ -1,18 +1,9 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
-
-const THRESHOLDS_MS = {
-  dock_surface_show_ms: 100,
-  workspace_restore_status_ms: 100,
-  tab_switch_ms: 100,
-  agent_target_alignment_ms: 200,
-};
-
-function percentile(values, quantile) {
-  if (!values.length) return null;
-  const ordered = [...values].sort((a, b) => a - b);
-  return ordered[Math.max(0, Math.ceil(ordered.length * quantile) - 1)];
-}
+import {
+  BROWSER_PERFORMANCE_THRESHOLDS_MS,
+  percentile,
+} from '../src/features/browser/browser-performance.mjs';
 
 const paths = process.argv.slice(2).filter((arg) => !arg.startsWith('--'));
 const minSamplesArg = process.argv.find((arg) => arg.startsWith('--min-samples='));
@@ -42,7 +33,7 @@ for (const line of input.split(/\r?\n/)) {
 let failed = grouped.size === 0;
 const report = {};
 for (const [metric, values] of grouped) {
-  const thresholdMs = THRESHOLDS_MS[metric] ?? null;
+  const thresholdMs = BROWSER_PERFORMANCE_THRESHOLDS_MS[metric] ?? null;
   const p95Ms = percentile(values, 0.95);
   const enoughSamples = values.length >= minSamples;
   const passes = enoughSamples && (thresholdMs == null || p95Ms < thresholdMs);

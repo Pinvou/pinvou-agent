@@ -1,6 +1,5 @@
 /* eslint-disable no-promise-executor-return -- Promise executors adapt callback APIs whose registration handles are intentionally ignored. */
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -16,6 +15,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import test from 'node:test';
+import { spawnNdjsonChild, stopNdjsonChild } from './helpers/ndjson-child-driver.mjs';
 
 const WRAPPER = fileURLToPath(new URL(
   '../src-tauri/resources/common/bundle/mcp-servers/browser-wrapper.mjs',
@@ -129,82 +129,36 @@ function createFakeHost(root) {
 }
 
 function driveWrapper(root, env = {}) {
-  const child = spawn(
-    process.execPath,
-    [WRAPPER, '@pinvou/browser-core', join(root, 'cdp-port.json')],
-    {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        PINVOU3_BROWSER_SESSION_ID: SESSION_ID,
-        PINVOU3_BROWSER_SESSION_TOKEN: SESSION_TOKEN,
-        ...env,
-      },
+  const driver = spawnNdjsonChild({
+    args: [WRAPPER, '@pinvou/browser-core', join(root, 'cdp-port.json')],
+    env: {
+      ...process.env,
+      PINVOU3_BROWSER_SESSION_ID: SESSION_ID,
+      PINVOU3_BROWSER_SESSION_TOKEN: SESSION_TOKEN,
+      ...env,
     },
-  );
-  let stdout = '';
-  let stderr = '';
-  let nextId = 1;
-  const pending = new Map();
-
-  child.stderr.on('data', (chunk) => { stderr += chunk; });
-  child.stdout.on('data', (chunk) => {
-    stdout += chunk;
-    let newline;
-    while ((newline = stdout.indexOf('\n')) >= 0) {
-      const line = stdout.slice(0, newline);
-      stdout = stdout.slice(newline + 1);
-      if (!line.trim()) continue;
-      const message = JSON.parse(line);
-      const waiter = pending.get(message.id);
-      if (!waiter) continue;
-      pending.delete(message.id);
-      clearTimeout(waiter.timeout);
-      waiter.resolve(message);
-    }
   });
-
-  const requestWithId = (method, params = {}) => {
-    const id = nextId++;
-    const response = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        if (!pending.delete(id)) return;
-        reject(new Error(`${method} timed out; wrapper stderr: ${stderr}`));
-      }, 10_000);
-      pending.set(id, { resolve, reject, timeout });
-    });
-    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
-    const stopWaiting = () => {
-      const waiter = pending.get(id);
-      if (!waiter) return;
-      pending.delete(id);
-      clearTimeout(waiter.timeout);
-    };
-    return { id, response, stopWaiting };
-  };
-
   return {
-    child,
-    stderr: () => stderr,
-    notify(method, params = {}) {
-      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`);
-    },
-    requestWithId,
-    request(method, params = {}) {
-      return requestWithId(method, params).response;
+    ...driver,
+    stderr: driver.stderrText,
+    requestWithId(method, params = {}) {
+      const request = driver.startRequest(method, params);
+      return {
+        ...request,
+        stopWaiting: () => driver.dropRequest(request.id),
+      };
     },
   };
 }
 
-async function stopWrapper(child) {
-  if (child.exitCode == null) child.stdin.end();
-  if (child.exitCode == null) {
-    await Promise.race([
-      new Promise((resolve) => child.once('exit', resolve)),
-      sleep(500),
-    ]);
-  }
-  if (child.exitCode == null) child.kill('SIGKILL');
+async function initializeWrapper(wrapper, clientName) {
+  const initialized = await wrapper.request('initialize', {
+    protocolVersion: '2024-11-05',
+    capabilities: {},
+    clientInfo: { name: clientName, version: '0' },
+  });
+  wrapper.notify('notifications/initialized');
+  return initialized;
 }
 
 test('same Host Core wrapper recovers once after host stop without retrying committed failures', async () => {
@@ -214,13 +168,8 @@ test('same Host Core wrapper recovers once after host stop without retrying comm
   const wrapper = driveWrapper(root);
 
   try {
-    const initialized = await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'host-core-lifecycle-test', version: '0' },
-    });
+    const initialized = await initializeWrapper(wrapper, 'host-core-lifecycle-test');
     assert.equal(initialized.result.serverInfo.name, 'pinvou-browser-core');
-    wrapper.notify('notifications/initialized');
 
     const first = await wrapper.request('tools/call', {
       name: 'list_pages',
@@ -329,7 +278,7 @@ test('same Host Core wrapper recovers once after host stop without retrying comm
     );
   } finally {
     host.close();
-    await stopWrapper(wrapper.child);
+    await stopNdjsonChild(wrapper.child);
     if (host.state.lastRequest?.wrapper_instance_nonce) {
       assert.equal(existsSync(join(
         root,
@@ -348,12 +297,7 @@ test('Host Core cancellation writes a durable tombstone for an in-flight native 
   const wrapper = driveWrapper(root);
 
   try {
-    await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'host-core-cancel-test', version: '0' },
-    });
-    wrapper.notify('notifications/initialized');
+    await initializeWrapper(wrapper, 'host-core-cancel-test');
     host.state.mode = 'blocked-core';
 
     const call = wrapper.requestWithId('tools/call', {
@@ -392,7 +336,7 @@ test('Host Core cancellation writes a durable tombstone for an in-flight native 
     );
   } finally {
     host.close();
-    await stopWrapper(wrapper.child);
+    await stopNdjsonChild(wrapper.child);
     rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
@@ -404,12 +348,7 @@ test('Host Core stdin shutdown tombstones an in-flight native tool before exit',
   const wrapper = driveWrapper(root);
 
   try {
-    await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'host-core-stdin-shutdown-test', version: '0' },
-    });
-    wrapper.notify('notifications/initialized');
+    await initializeWrapper(wrapper, 'host-core-stdin-shutdown-test');
     host.state.mode = 'blocked-core';
 
     const call = wrapper.requestWithId('tools/call', {
@@ -445,7 +384,7 @@ test('Host Core stdin shutdown tombstones an in-flight native tool before exit',
     );
   } finally {
     host.close();
-    await stopWrapper(wrapper.child);
+    await stopNdjsonChild(wrapper.child);
     rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
@@ -459,12 +398,7 @@ test('Host Core mutation timeout is a non-retryable commit-unknown result', asyn
   });
 
   try {
-    await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'host-core-timeout-test', version: '0' },
-    });
-    wrapper.notify('notifications/initialized');
+    await initializeWrapper(wrapper, 'host-core-timeout-test');
     host.state.mode = 'commit-without-response';
 
     const before = {
@@ -511,7 +445,7 @@ test('Host Core mutation timeout is a non-retryable commit-unknown result', asyn
     );
   } finally {
     host.close();
-    await stopWrapper(wrapper.child);
+    await stopNdjsonChild(wrapper.child);
     rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
@@ -523,12 +457,7 @@ test('Host Core tab-navigation uncertainty is a structured non-retryable outcome
   const wrapper = driveWrapper(root);
 
   try {
-    await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'host-core-navigation-unknown-test', version: '0' },
-    });
-    wrapper.notify('notifications/initialized');
+    await initializeWrapper(wrapper, 'host-core-navigation-unknown-test');
     host.state.mode = 'terminal-failure-after-effect';
     host.state.terminalError =
       'browser/action-commit-unknown-after-tab-navigation: final create CAS was rejected';
@@ -554,7 +483,7 @@ test('Host Core tab-navigation uncertainty is a structured non-retryable outcome
     assert.equal(host.state.committedEffects - before.committedEffects, 1);
   } finally {
     host.close();
-    await stopWrapper(wrapper.child);
+    await stopNdjsonChild(wrapper.child);
     rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

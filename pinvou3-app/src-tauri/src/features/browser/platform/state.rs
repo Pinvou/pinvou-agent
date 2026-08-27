@@ -709,6 +709,13 @@ struct ActiveAgentOperation {
 }
 
 impl ControlState {
+    fn revoke_authorization(&mut self) {
+        self.active_lease = None;
+        self.active_lease_expires_at = None;
+        self.active_agent_operation = None;
+        self.agent_input_until = None;
+    }
+
     fn clear_expired_authorization(&mut self, now: Instant) {
         if self
             .active_lease_expires_at
@@ -718,10 +725,7 @@ impl ControlState {
                 .as_ref()
                 .is_some_and(|operation| operation.expires_at <= now)
         {
-            self.active_lease = None;
-            self.active_lease_expires_at = None;
-            self.active_agent_operation = None;
-            self.agent_input_until = None;
+            self.revoke_authorization();
         }
     }
 
@@ -776,10 +780,7 @@ impl WorkspaceControl {
         if let Some(owner) = owner {
             state.snapshot.owner = owner;
         }
-        state.active_lease = None;
-        state.active_lease_expires_at = None;
-        state.active_agent_operation = None;
-        state.agent_input_until = None;
+        state.revoke_authorization();
         state.snapshot
     }
 
@@ -808,10 +809,7 @@ impl WorkspaceControl {
             return None;
         }
         state.snapshot.revision = state.snapshot.revision.saturating_add(1);
-        state.active_lease = None;
-        state.active_lease_expires_at = None;
-        state.active_agent_operation = None;
-        state.agent_input_until = None;
+        state.revoke_authorization();
         Some(state.snapshot)
     }
 
@@ -831,10 +829,7 @@ impl WorkspaceControl {
         }
         state.snapshot.revision = state.snapshot.revision.saturating_add(1);
         state.snapshot.owner = NativeControlOwner::Agent;
-        state.active_lease = None;
-        state.active_lease_expires_at = None;
-        state.active_agent_operation = None;
-        state.agent_input_until = None;
+        state.revoke_authorization();
         Some(state.snapshot)
     }
 
@@ -913,10 +908,7 @@ impl WorkspaceControl {
         }
         let output = mutation()?;
         state.snapshot.revision = state.snapshot.revision.saturating_add(1);
-        state.active_lease = None;
-        state.active_lease_expires_at = None;
-        state.active_agent_operation = None;
-        state.agent_input_until = None;
+        state.revoke_authorization();
         Ok(Some((state.snapshot, output)))
     }
 
@@ -937,10 +929,7 @@ impl WorkspaceControl {
         }
         let output = mutation()?;
         state.snapshot.revision = state.snapshot.revision.saturating_add(1);
-        state.active_lease = None;
-        state.active_lease_expires_at = None;
-        state.active_agent_operation = None;
-        state.agent_input_until = None;
+        state.revoke_authorization();
         Ok(Some((state.snapshot, output)))
     }
 
@@ -965,10 +954,7 @@ impl WorkspaceControl {
         let output = mutation(rollback_revision)?;
         state.snapshot.revision = rollback_revision;
         state.snapshot.owner = previous_owner;
-        state.active_lease = None;
-        state.active_lease_expires_at = None;
-        state.active_agent_operation = None;
-        state.agent_input_until = None;
+        state.revoke_authorization();
         Ok(Some((state.snapshot, output)))
     }
 
@@ -1257,31 +1243,6 @@ impl WorkspaceControl {
             state.agent_input_until = None;
         }
         matches_session
-    }
-
-    pub(super) fn begin_agent_input(&self, revision: u64, lease: &str) -> bool {
-        let mut state = self.state.lock();
-        state.clear_expired_authorization(Instant::now());
-        if state.snapshot.owner != NativeControlOwner::Agent
-            || state.snapshot.revision != revision
-            || state.active_lease.as_deref() != Some(lease)
-        {
-            return false;
-        }
-        // Prevent a wrapper crash from suppressing user takeover forever. The
-        // normal path clears the active operation after dispatch and leaves only
-        // brief callback grace after real native input. 750ms is a process-failure
-        // fuse, not ordinary user-takeover latency.
-        state.agent_input_until = Some(Instant::now() + AGENT_INPUT_WINDOW);
-        true
-    }
-
-    pub(super) fn end_agent_input(&self, revision: u64, lease: &str) {
-        let mut state = self.state.lock();
-        state.clear_expired_authorization(Instant::now());
-        if state.snapshot.revision == revision && state.active_lease.as_deref() == Some(lease) {
-            state.agent_input_until = None;
-        }
     }
 
     pub(super) fn agent_input_in_progress(&self) -> bool {
@@ -2196,18 +2157,6 @@ mod tests {
             .unwrap()
             .is_none());
         assert_eq!(control.snapshot().owner, NativeControlOwner::User);
-    }
-
-    #[test]
-    fn agent_input_window_is_bounded_and_explicitly_closed() {
-        let control = WorkspaceControl::new(7, NativeControlOwner::Agent);
-        let (snapshot, lease) = control.issue_agent_lease();
-        assert!(!control.begin_agent_input(snapshot.revision - 1, &lease));
-        assert!(!control.begin_agent_input(snapshot.revision, "forged"));
-        assert!(control.begin_agent_input(snapshot.revision, &lease));
-        assert!(control.agent_input_in_progress());
-        control.end_agent_input(snapshot.revision, &lease);
-        assert!(!control.agent_input_in_progress());
     }
 
     #[test]

@@ -1,6 +1,5 @@
 /* eslint-disable no-promise-executor-return -- Promise executors adapt event and server-close APIs whose registration handles are intentionally ignored. */
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -18,6 +17,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import test from 'node:test';
+import { spawnNdjsonChild, stopNdjsonChild } from './helpers/ndjson-child-driver.mjs';
 
 const WRAPPER = fileURLToPath(new URL(
   '../src-tauri/resources/common/bundle/mcp-servers/browser-wrapper.mjs',
@@ -590,8 +590,8 @@ function createFakeHost(fixture) {
 }
 
 function driveWrapper(fixture) {
-  const child = spawn(process.execPath, [WRAPPER, fixture.mcpBin, fixture.portPath], {
-    stdio: ['pipe', 'pipe', 'pipe'],
+  const driver = spawnNdjsonChild({
+    args: [WRAPPER, fixture.mcpBin, fixture.portPath],
     env: {
       ...process.env,
       PINVOU3_BROWSER_SESSION_ID: SESSION_ID,
@@ -600,73 +600,33 @@ function driveWrapper(fixture) {
       FAKE_BROWSER_MCP_MODE: fixture.modePath,
       FAKE_BROWSER_MCP_AUDIT: fixture.auditPath,
     },
+    timeoutMs: 15_000,
   });
-  let stdout = '';
-  let stderr = '';
-  let nextId = 1;
-  const pending = new Map();
-
-  child.stderr.on('data', (chunk) => { stderr += chunk; });
-  child.stdout.on('data', (chunk) => {
-    stdout += chunk;
-    let newline;
-    while ((newline = stdout.indexOf('\n')) >= 0) {
-      const line = stdout.slice(0, newline);
-      stdout = stdout.slice(newline + 1);
-      if (!line.trim()) continue;
-      const message = JSON.parse(line);
-      const waiter = pending.get(message.id);
-      if (!waiter) continue;
-      pending.delete(message.id);
-      clearTimeout(waiter.timeout);
-      waiter.resolve(message);
-    }
-  });
-
-  const startRequest = (method, params = {}) => {
-    const id = nextId++;
-    const response = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        if (!pending.delete(id)) return;
-        reject(new Error(`${method} timed out; wrapper stderr: ${stderr}`));
-      }, 15_000);
-      pending.set(id, { resolve, reject, timeout });
-    });
-    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
-    return { id, response };
-  };
-
   return {
-    child,
-    stderrText() {
-      return stderr;
-    },
-    notify(method, params = {}) {
-      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`);
-    },
-    startRequest,
+    ...driver,
     abandonRequest(id) {
-      const waiter = pending.get(id);
-      if (!waiter) return;
-      pending.delete(id);
-      clearTimeout(waiter.timeout);
-      waiter.resolve({ abandoned: true });
-    },
-    request(method, params = {}) {
-      return startRequest(method, params).response;
+      driver.dropRequest(id, { abandoned: true });
     },
   };
 }
 
-async function stopProcess(child) {
-  if (child.exitCode == null) child.stdin.end();
-  if (child.exitCode == null) {
-    await Promise.race([
-      new Promise((resolve) => child.once('exit', resolve)),
-      sleep(500),
-    ]);
+async function initializeWrapper(wrapper, clientName) {
+  const initialized = await wrapper.request('initialize', {
+    protocolVersion: '2024-11-05',
+    capabilities: {},
+    clientInfo: { name: clientName, version: '0' },
+  });
+  wrapper.notify('notifications/initialized');
+  return initialized;
+}
+
+async function cleanupFixture(fixture, host, ...wrappers) {
+  host.close();
+  for (const wrapper of wrappers.filter(Boolean)) {
+    await stopNdjsonChild(wrapper.child);
   }
-  if (child.exitCode == null) child.kill('SIGKILL');
+  await new Promise((resolve) => fixture.cdp.close(resolve));
+  rmSync(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
 function processIsAlive(pid) {
@@ -686,12 +646,7 @@ test('Windows proxy: a deliberately killed failed startup returns to reusable sh
   const wrapper = driveWrapper(fixture);
 
   try {
-    await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'windows-startup-retry-test', version: '0' },
-    });
-    wrapper.notify('notifications/initialized');
+    await initializeWrapper(wrapper, 'windows-startup-retry-test');
     writeFileSync(fixture.modePath, JSON.stringify({ handshakeError: true }));
 
     const failed = await wrapper.request('tools/call', {
@@ -719,10 +674,7 @@ test('Windows proxy: a deliberately killed failed startup returns to reusable sh
       'the next distinct request must launch exactly one fresh MCP child',
     );
   } finally {
-    host.close();
-    await stopProcess(wrapper.child);
-    await new Promise((resolve) => fixture.cdp.close(resolve));
-    rmSync(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await cleanupFixture(fixture, host, wrapper);
   }
 });
 
@@ -734,12 +686,7 @@ test('Windows proxy: post-handshake setup failure retires child before shim retr
   const wrapper = driveWrapper(fixture);
 
   try {
-    await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'windows-post-handshake-retry-test', version: '0' },
-    });
-    wrapper.notify('notifications/initialized');
+    await initializeWrapper(wrapper, 'windows-post-handshake-retry-test');
     writeFileSync(fixture.modePath, JSON.stringify({ toolsListError: true }));
 
     const failed = await wrapper.request('tools/call', {
@@ -769,10 +716,7 @@ test('Windows proxy: post-handshake setup failure retires child before shim retr
       'retry must launch one fresh child after retiring the failed setup child',
     );
   } finally {
-    host.close();
-    await stopProcess(wrapper.child);
-    await new Promise((resolve) => fixture.cdp.close(resolve));
-    rmSync(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await cleanupFixture(fixture, host, wrapper);
   }
 });
 
@@ -784,12 +728,7 @@ test('Windows proxy: stdin shutdown cannot release a request buffered during sta
   const wrapper = driveWrapper(fixture);
 
   try {
-    await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'windows-startup-shutdown-test', version: '0' },
-    });
-    wrapper.notify('notifications/initialized');
+    await initializeWrapper(wrapper, 'windows-startup-shutdown-test');
     writeFileSync(fixture.modePath, JSON.stringify({ handshakeDelayMs: 500 }));
 
     const buffered = wrapper.startRequest('tools/call', {
@@ -815,10 +754,7 @@ test('Windows proxy: stdin shutdown cannot release a request buffered during sta
       'a buffered page action must not dispatch after stdin has closed',
     );
   } finally {
-    host.close();
-    await stopProcess(wrapper.child);
-    await new Promise((resolve) => fixture.cdp.close(resolve));
-    rmSync(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await cleanupFixture(fixture, host, wrapper);
   }
 });
 
@@ -830,12 +766,7 @@ test('Windows proxy: committed close with unusable host acknowledgement is non-r
   const wrapper = driveWrapper(fixture);
 
   try {
-    await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'windows-close-ack-test', version: '0' },
-    });
-    wrapper.notify('notifications/initialized');
+    await initializeWrapper(wrapper, 'windows-close-ack-test');
     await wrapper.request('tools/call', { name: 'list_pages', arguments: {} });
 
     const workspace = JSON.parse(readFileSync(fixture.workspacePath, 'utf8'));
@@ -886,10 +817,7 @@ test('Windows proxy: committed close with unusable host acknowledgement is non-r
       'the wrapper remains usable and discovers the already-committed close',
     );
   } finally {
-    host.close();
-    await stopProcess(wrapper.child);
-    await new Promise((resolve) => fixture.cdp.close(resolve));
-    rmSync(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await cleanupFixture(fixture, host, wrapper);
   }
 });
 
@@ -901,12 +829,7 @@ test('Windows proxy: committed close stays non-retryable when post-commit page s
   const wrapper = driveWrapper(fixture);
 
   try {
-    await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'windows-close-post-sync-test', version: '0' },
-    });
-    wrapper.notify('notifications/initialized');
+    await initializeWrapper(wrapper, 'windows-close-post-sync-test');
     await wrapper.request('tools/call', { name: 'list_pages', arguments: {} });
 
     const workspace = JSON.parse(readFileSync(fixture.workspacePath, 'utf8'));
@@ -943,10 +866,7 @@ test('Windows proxy: committed close stays non-retryable when post-commit page s
       'the close was committed before the synthetic list failure',
     );
   } finally {
-    host.close();
-    await stopProcess(wrapper.child);
-    await new Promise((resolve) => fixture.cdp.close(resolve));
-    rmSync(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await cleanupFixture(fixture, host, wrapper);
   }
 });
 
@@ -958,12 +878,7 @@ test('Windows proxy: native tab-close uncertainty is structured and non-retryabl
   const wrapper = driveWrapper(fixture);
 
   try {
-    await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'windows-close-native-unknown-test', version: '0' },
-    });
-    wrapper.notify('notifications/initialized');
+    await initializeWrapper(wrapper, 'windows-close-native-unknown-test');
     await wrapper.request('tools/call', { name: 'list_pages', arguments: {} });
     const workspace = JSON.parse(readFileSync(fixture.workspacePath, 'utf8'));
     atomicWriteJson(fixture.workspacePath, {
@@ -993,10 +908,7 @@ test('Windows proxy: native tab-close uncertainty is structured and non-retryabl
     assert.equal(closed.result.structuredContent.retryable, false);
     assert.equal((host.state.operationCalls.get('close_tab') || 0) - beforeClose, 1);
   } finally {
-    host.close();
-    await stopProcess(wrapper.child);
-    await new Promise((resolve) => fixture.cdp.close(resolve));
-    rmSync(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await cleanupFixture(fixture, host, wrapper);
   }
 });
 
@@ -1008,12 +920,7 @@ test('Windows proxy: settled mutation errors are commit-unknown and never redisp
   const wrapper = driveWrapper(fixture);
 
   try {
-    await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'windows-upstream-mutation-error-test', version: '0' },
-    });
-    wrapper.notify('notifications/initialized');
+    await initializeWrapper(wrapper, 'windows-upstream-mutation-error-test');
     await wrapper.request('tools/call', { name: 'list_pages', arguments: {} });
 
     const assertMutationUnknown = async ({ name, arguments: args, mode, upstreamError }) => {
@@ -1099,10 +1006,7 @@ test('Windows proxy: settled mutation errors are commit-unknown and never redisp
       5,
     );
   } finally {
-    host.close();
-    await stopProcess(wrapper.child);
-    await new Promise((resolve) => fixture.cdp.close(resolve));
-    rmSync(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await cleanupFixture(fixture, host, wrapper);
   }
 });
 
@@ -1114,12 +1018,7 @@ test('Windows proxy: host tab-navigation uncertainty is never compensated into a
   const wrapper = driveWrapper(fixture);
 
   try {
-    await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'windows-create-navigation-unknown-test', version: '0' },
-    });
-    wrapper.notify('notifications/initialized');
+    await initializeWrapper(wrapper, 'windows-create-navigation-unknown-test');
     host.state.operationErrors.set(
       'create_tab',
       'browser/action-commit-unknown-after-tab-navigation: final CAS acknowledgement lost',
@@ -1142,10 +1041,7 @@ test('Windows proxy: host tab-navigation uncertainty is never compensated into a
       'network/script effects cannot be proven undone by closing a staging tab',
     );
   } finally {
-    host.close();
-    await stopProcess(wrapper.child);
-    await new Promise((resolve) => fixture.cdp.close(resolve));
-    rmSync(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await cleanupFixture(fixture, host, wrapper);
   }
 });
 
@@ -1161,12 +1057,7 @@ test('Windows proxy: bootstrap navigation remains committed when its post-sync f
       bootstrapBlank: true,
       listPagesErrorAfterNavigate: true,
     }));
-    await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'windows-bootstrap-navigation-commit-test', version: '0' },
-    });
-    wrapper.notify('notifications/initialized');
+    await initializeWrapper(wrapper, 'windows-bootstrap-navigation-commit-test');
 
     const created = await wrapper.request('tools/call', {
       name: 'new_page',
@@ -1186,10 +1077,7 @@ test('Windows proxy: bootstrap navigation remains committed when its post-sync f
       'the bootstrap navigation must be dispatched exactly once',
     );
   } finally {
-    host.close();
-    await stopProcess(wrapper.child);
-    await new Promise((resolve) => fixture.cdp.close(resolve));
-    rmSync(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await cleanupFixture(fixture, host, wrapper);
   }
 });
 
@@ -1201,12 +1089,7 @@ test('Windows proxy: external close cancellation reaches the host tombstone befo
   const wrapper = driveWrapper(fixture);
 
   try {
-    await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'windows-close-cancel-test', version: '0' },
-    });
-    wrapper.notify('notifications/initialized');
+    await initializeWrapper(wrapper, 'windows-close-cancel-test');
     await wrapper.request('tools/call', { name: 'list_pages', arguments: {} });
 
     const workspace = JSON.parse(readFileSync(fixture.workspacePath, 'utf8'));
@@ -1257,10 +1140,7 @@ test('Windows proxy: external close cancellation reaches the host tombstone befo
       'a host mutation cancelled before claim must not close a tab',
     );
   } finally {
-    host.close();
-    await stopProcess(wrapper.child);
-    await new Promise((resolve) => fixture.cdp.close(resolve));
-    rmSync(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await cleanupFixture(fixture, host, wrapper);
   }
 });
 
@@ -1272,12 +1152,7 @@ test('Windows proxy: external cancellation tombstones an in-flight tab activatio
   const wrapper = driveWrapper(fixture);
 
   try {
-    await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'windows-activation-cancel-test', version: '0' },
-    });
-    wrapper.notify('notifications/initialized');
+    await initializeWrapper(wrapper, 'windows-activation-cancel-test');
     await wrapper.request('tools/call', { name: 'list_pages', arguments: {} });
 
     host.state.deferredOperations.add('activate_tab');
@@ -1318,10 +1193,7 @@ test('Windows proxy: external cancellation tombstones an in-flight tab activatio
       'a cancelled activation must not dispatch the upstream page tool',
     );
   } finally {
-    host.close();
-    await stopProcess(wrapper.child);
-    await new Promise((resolve) => fixture.cdp.close(resolve));
-    rmSync(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await cleanupFixture(fixture, host, wrapper);
   }
 });
 
@@ -1333,12 +1205,7 @@ test('Windows proxy: stdin shutdown tombstones an in-flight close before exit', 
   const wrapper = driveWrapper(fixture);
 
   try {
-    await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'windows-close-stdin-shutdown-test', version: '0' },
-    });
-    wrapper.notify('notifications/initialized');
+    await initializeWrapper(wrapper, 'windows-close-stdin-shutdown-test');
     await wrapper.request('tools/call', { name: 'list_pages', arguments: {} });
     const workspace = JSON.parse(readFileSync(fixture.workspacePath, 'utf8'));
     atomicWriteJson(fixture.workspacePath, {
@@ -1387,10 +1254,7 @@ test('Windows proxy: stdin shutdown tombstones an in-flight close before exit', 
     assert.equal(host.state.operationCalls.get('close_tab') || 0, 0);
     assert.equal(JSON.parse(readFileSync(fixture.workspacePath, 'utf8')).tabs.length, 2);
   } finally {
-    host.close();
-    await stopProcess(wrapper.child);
-    await new Promise((resolve) => fixture.cdp.close(resolve));
-    rmSync(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await cleanupFixture(fixture, host, wrapper);
   }
 });
 
@@ -1402,13 +1266,8 @@ test('Windows proxy: same wrapper recovers A once after stop while B keeps share
   const wrapper = driveWrapper(fixture);
 
   try {
-    const initialized = await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'windows-lifecycle-test', version: '0' },
-    });
+    const initialized = await initializeWrapper(wrapper, 'windows-lifecycle-test');
     assert.equal(initialized.result.serverInfo.name, 'fake-windows-mcp');
-    wrapper.notify('notifications/initialized');
 
     const first = await wrapper.request('tools/call', {
       name: 'list_pages',
@@ -1770,10 +1629,7 @@ test('Windows proxy: same wrapper recovers A once after stop while B keeps share
       expectedMutationUnknown: true,
     });
   } finally {
-    host.close();
-    await stopProcess(wrapper.child);
-    await new Promise((resolve) => fixture.cdp.close(resolve));
-    rmSync(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await cleanupFixture(fixture, host, wrapper);
   }
 });
 
@@ -1785,12 +1641,7 @@ test('Windows proxy: upstream crash settles the claimed dispatch before wrapper 
   const wrapper = driveWrapper(fixture);
 
   try {
-    await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'windows-upstream-crash-test', version: '0' },
-    });
-    wrapper.notify('notifications/initialized');
+    await initializeWrapper(wrapper, 'windows-upstream-crash-test');
     await wrapper.request('tools/call', { name: 'list_pages', arguments: {} });
 
     writeFileSync(fixture.modePath, JSON.stringify({ clickDelayMs: 5_000 }));
@@ -1842,10 +1693,7 @@ test('Windows proxy: upstream crash settles the claimed dispatch before wrapper 
       ]);
     }
   } finally {
-    host.close();
-    await stopProcess(wrapper.child);
-    await new Promise((resolve) => fixture.cdp.close(resolve));
-    rmSync(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await cleanupFixture(fixture, host, wrapper);
   }
 });
 
@@ -1858,12 +1706,7 @@ test('Windows proxy: cancelled uncooperative dispatch shuts down on the first de
   let replacement = null;
 
   try {
-    await wrapper.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'windows-cancel-shutdown-test', version: '0' },
-    });
-    wrapper.notify('notifications/initialized');
+    await initializeWrapper(wrapper, 'windows-cancel-shutdown-test');
     await wrapper.request('tools/call', { name: 'list_pages', arguments: {} });
 
     writeFileSync(fixture.modePath, JSON.stringify({ clickDelayMs: 30_000 }));
@@ -1932,22 +1775,13 @@ test('Windows proxy: cancelled uncooperative dispatch shuts down on the first de
 
     writeFileSync(fixture.modePath, '{}');
     replacement = driveWrapper(fixture);
-    await replacement.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'windows-cancel-replacement-test', version: '0' },
-    });
-    replacement.notify('notifications/initialized');
+    await initializeWrapper(replacement, 'windows-cancel-replacement-test');
     const recovered = await replacement.request('tools/call', {
       name: 'list_pages',
       arguments: {},
     });
     assert.equal(recovered.result.structuredContent.pages.length, 1);
   } finally {
-    host.close();
-    await stopProcess(wrapper.child);
-    if (replacement) await stopProcess(replacement.child);
-    await new Promise((resolve) => fixture.cdp.close(resolve));
-    rmSync(fixture.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await cleanupFixture(fixture, host, wrapper, replacement);
   }
 });

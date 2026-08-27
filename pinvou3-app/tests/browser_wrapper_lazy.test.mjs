@@ -6,12 +6,12 @@
 //  2) an unavailable native host reports host-backend-unavailable on Windows
 //     and unsupported on macOS/Linux, without starting external browser helpers.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { spawnNdjsonChild, stopNdjsonChild } from './helpers/ndjson-child-driver.mjs';
 
 // This fixture verifies that the Windows-only Chrome DevTools backend never
 // falls back to external Chrome. Linux uses BrowserCore/WebKitWebDriver and is
@@ -112,65 +112,24 @@ function makeFixture() {
 
 // Drive the wrapper with NDJSON requests and map response ids to resolvers.
 function driveWrapper(fx, env = {}) {
-  const child = spawn(process.execPath, [WRAPPER, fx.mcpBin, fx.portJson], {
-    stdio: ['pipe', 'pipe', 'inherit'],
+  return spawnNdjsonChild({
+    args: [WRAPPER, fx.mcpBin, fx.portJson],
     env: {
       ...process.env,
       PINVOU_BROWSER_CHROME_PATH: fx.chromeBin,
       FAKE_CHROME_MARKER: fx.marker,
       ...env,
     },
+    stderr: 'inherit',
+    timeoutMs: 30_000,
+    collectResponses: true,
+    unrefTimeout: true,
   });
-  let buf = '';
-  const pending = new Map();
-  const responses = [];
-  child.stdout.on('data', (d) => {
-    buf += d;
-    let i;
-    while ((i = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, i);
-      buf = buf.slice(i + 1);
-      if (!line.trim()) continue;
-      const msg = JSON.parse(line);
-      responses.push(msg);
-      if (msg.id != null && pending.has(msg.id)) {
-        pending.get(msg.id)(msg);
-        pending.delete(msg.id);
-      }
-    }
-  });
-  let nextId = 1;
-  const send = (msg) => child.stdin.write(JSON.stringify(msg) + '\n');
-  const driver = {
-    child,
-    send,
-    responses,
-    lastId: 0,
-    request(method, params = {}) {
-      const id = nextId++;
-      driver.lastId = id;
-      return new Promise((resolve, reject) => {
-        pending.set(id, resolve);
-        setTimeout(() => {
-          if (pending.delete(id)) reject(new Error(`${method} response timed out`));
-        }, 30000).unref();
-        send({ jsonrpc: '2.0', id, method, params });
-      });
-    },
-  };
-  return driver;
 }
 
 async function cleanup(fx, child) {
-  // Try the graceful stdin-close path before falling back to SIGKILL.
   try {
-    child.stdin.end();
-    await sleep(800);
-  } catch {
-    /* ignore */
-  }
-  try {
-    child.kill('SIGKILL');
+    await stopNdjsonChild(child, 800);
   } catch {
     /* ignore */
   }
