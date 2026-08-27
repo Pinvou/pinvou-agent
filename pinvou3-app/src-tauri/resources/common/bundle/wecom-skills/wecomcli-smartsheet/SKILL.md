@@ -66,7 +66,7 @@ metadata:
 
 | ID | 说明 |
 | --- | --- |
-| `file_id` | 智能表格文件 ID，即文档的 `docid`（前缀为 `s3_`） |
+| `file_id` | 智能表格文件 ID，即文档的 `docid`（一般为 `s3_` 前缀；smartpage 委托的内置数据表 ID 例外，见下方「如何获取文档 ID（docid）」第 4 条） |
 | `sheet_id` | 子表 ID，一个智能表格可包含多个子表（数据表或仪表盘） |
 | `field_id` | 字段 ID，定义子表的列结构 |
 | `record_id` | 记录 ID，子表中的每一行数据 |

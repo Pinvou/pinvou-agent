@@ -4,7 +4,7 @@
 
 > **对应 doc_type 值**：`smartsheet`（智能表格）
 >
-> **适用 docid 前缀**：`s3_`
+> **适用 docid 前缀**：`s3_`（smartpage 委托的内置数据表 `database_info.id` 例外，见 `SKILL.md`「如何获取文档 ID（docid）」第 4 条）
 
 > `docid` 参数名全小写无下划线，其他行为约束见 `SKILL.md`。
 >

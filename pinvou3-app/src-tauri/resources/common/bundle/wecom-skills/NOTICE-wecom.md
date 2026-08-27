@@ -122,14 +122,8 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
 6. **smartsheet 路由表修正**:文件级操作行不再把搜索/成员/加入规则归
    common.md(实际转交 doc-manage);跨技能依赖不再把「新建文档」归
    doc-manage(新建/导入智能表格在本包 common.md)。
-7. **删除 smartpage 无参数表支撑的 open_vid/userid 等价句**:六接口无任何
-   userid 消费点,整句删除。
-
-### 各技能重放基线
-
-14 个技能全部 = 上游 `cd0480e0`(v1.1.0 发布提交,npm 1.1.0 同源),技能目录与
-上游同名同构;本地分叉为上文「本轮品悟适配清单」六类与「路由口径统一与
-文档缺陷修复(2026-08-27)」(仅涉及 sheet/smartsheet/smartpage 三技能)。
+7. **删除 smartpage 无参数表支撑的 open_vid/userid 等价句**:全部十个方法经
+   逐一核对无任何 userid/open_vid 消费点,整句删除。
 
 ### 文档缺陷修复(2026-08-27,calendar/meeting/email/message 四技能)
 
@@ -152,7 +146,8 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
 4. **合并展示判据字段漂移**:meeting SKILL.md 合并展示用 `meeting_link` 非空,
    calendar 包各处均用 `meeting_code`。统一为 `meeting_code`。
 5. **"明确是在线会议"信号清单不对称**:meeting SKILL.md 易混淆场景路由句缺
-   "腾讯会议"(calendar 同位句有)。补齐,两包对齐。
+   "腾讯会议"(calendar 同位句有)。补齐,两包对齐;meeting 包内同款清单
+   (SKILL.md 创建消歧句、模糊查询句与 meeting-list.md 前置句)一并补齐。
 6. **meeting-create.md 示例时间格式违规**:示例输出 `<明天日期> 14:00:00 -
    15:00:00` 违反本包 REQUIRED 相对日期标签格式。改为 `明天 6月12日 14:00-15:00`。
 7. **calendar-meeting-room.md 链接显示文字与目标不符**:参考区显示文字
@@ -167,11 +162,15 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
     begin_time/end_time/only_unread/only_reminder 时搜索范围不能超过最近 30 天,
     详见 search-mail.md",而 search-mail.md 全文无此限制、且明确"用户明确指定
     的时间范围以用户为准"。删除该虚构条目。
-11. **message SKILL.md 媒体上传 type 指导虚构**:技能依赖表称"上传时传入的
-    type 应和发送时的 msg_type 对齐",而 wecomcli-media upload 入参仅 file_path
-    (type 是上传后自动判定的返回字段)。改写为:上传无需传类型,按返回的 type
-    对齐 msg_type;四个消息类型的"以 type=X 上传获得"同步改为"上传后返回
-    type=X 的结果"。
+11. **message SKILL.md 媒体上传 type 指导修正**:技能依赖表原称"上传时传入的
+    type 应和发送时的 msg_type 对齐"(与上游 v1.1.0 同文,CLI 可证可行),本轮
+    曾按 wecomcli-media SKILL.md 入参表(仅 file_path)改写为"上传无需传类型、
+    自动判定并返回 type";经 CLI 实测(`media upload --help`/`--doc`:type 为
+    可选入参 image/voice/video/file,dry-run 证实透传为 form 字段,响应另返回
+    实际 type),最终定稿为:type 为可选入参,发送时以上传响应返回的 type 对齐
+    msg_type;四个消息类型的"以 type=X 上传获得"同步改为"上传后返回
+    type=X 的结果"。wecomcli-media SKILL.md 入参表漏 `--type` 属 main 既有
+    缺陷,不在本轮范围,另行跟进。
 12. **message SKILL.md 会话数自造硬数字**:"如实告知目标不在最近 10 个会话中"
     与返回表"数量以实际回包为准"矛盾。去掉具体数字,改为"不在本次返回的最近
     会话中"。
@@ -180,6 +179,13 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
 14. **email references 章节引用名漂移**:六个引用点(send-mail/reply-mail/
     forward-mail/get-mail/send-schedule×2)写「接口失败处理规范」,SKILL.md 实际
     标题为「接口失败处理」。统一引用文字。
+
+### 各技能重放基线
+
+14 个技能全部 = 上游 `cd0480e0`(v1.1.0 发布提交,npm 1.1.0 同源),技能目录与
+上游同名同构;本地分叉为上文「本轮品悟适配清单」六类,与同日两轮审计登记
+「路由口径统一与文档缺陷修复(2026-08-27)」(sheet/smartsheet/smartpage 三
+技能)及「文档缺陷修复(2026-08-27,calendar/meeting/email/message 四技能)」。
 
 > 对账命令(仓库根执行):
 > ```

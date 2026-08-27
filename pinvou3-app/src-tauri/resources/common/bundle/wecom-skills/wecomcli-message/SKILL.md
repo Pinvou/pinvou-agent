@@ -30,7 +30,7 @@ metadata:
 
 | 依赖技能 | 触发场景 | 数据流向 |
 |---|---|---|
-| `wecomcli-media` | 发送图片、文件、语音或视频时只有本地文件路径，没有可直接复用的 `media_id` | 包含媒体上传接口，如没有已有的 `media_id`，必须先阅读该技能获取 `media_id`。上传无需传类型，`media upload` 仅接收 `file_path`、上传后自动判定并返回 `type`；发送时按返回的 `type` 对齐 `msg_type` |
+| `wecomcli-media` | 发送图片、文件、语音或视频时只有本地文件路径，没有可直接复用的 `media_id` | 包含媒体上传接口，如没有已有的 `media_id`，必须先阅读该技能获取 `media_id`。`media upload` 以本地 `file_path` 上传，`type` 为可选入参（`image`/`voice`/`video`/`file`）；发送时以上传响应返回的 `type` 对齐 `msg_type` |
 
 ## 获取能发送消息的会话列表
 
