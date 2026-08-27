@@ -375,7 +375,9 @@ pub async fn get_session_model_id(
 
 /// 当前有效模型的图片输入能力(设计 §6.3/§9.2,阶段 G)。前端选图即时警告据此
 /// 提示;发送时 chat 命令仍按同一条解析路径(fresh bridge + 会话模型绑定)复核。
+/// wire 字段与 LlamaEngineStatus 同为 camelCase,前端按 camelCase 消费。
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ImageInputCapabilityInfo {
     /// `supported` / `unsupported` / `unknown`(EffectiveImageCapability::as_str)。
     pub capability: String,

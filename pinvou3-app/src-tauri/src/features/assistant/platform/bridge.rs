@@ -2578,6 +2578,20 @@ mod tests {
         (lock, EnvGuard::new(vars))
     }
 
+    // llama_engine 的全局 RUNTIME 同理:force_running_for_test/reset_runtime_for_test
+    // 的写测试与经 resolve_vision_model_config(规则 0/3 → vision_endpoint →
+    // RUNTIME)间接读它的测试必须串行,否则默认并行 cargo test 下写测试的
+    // 「运行中」窗口会把读测试的 is_none/Unsupported 断言翻掉(RAII reset 只能
+    // 保证收尾,挡不住并发读取)。锁源在 llama_engine::server(RUNTIME_TEST_LOCK,
+    // crate 级),本模块与 server.rs 自身的 RUNTIME 写测试共用同一把,口径与
+    // ENV_LOCK 一致。
+    /// 获取 RUNTIME_TEST_LOCK(毒化视为可恢复,与 locked_env 同一口径)。
+    /// 任何直接调 force_running_for_test/reset_runtime_for_test、或断言依赖
+    /// 引擎未运行态的测试,入口处先拿锁。
+    fn locked_runtime() -> std::sync::MutexGuard<'static, ()> {
+        crate::features::llama_engine::server::locked_runtime_for_test()
+    }
+
     fn fixture_bridge() -> Pinvou3Bridge {
         Pinvou3Bridge {
             prefs: UserPrefs::default(),
@@ -3523,6 +3537,8 @@ mod tests {
 
     #[test]
     fn vision_endpoint_locality_reflects_vision_model_base_url() {
+        // 未配置视觉模型时走规则 3 读全局 RUNTIME,须与写 RUNTIME 的测试串行。
+        let _runtime_lock = locked_runtime();
         // 未配置视觉模型 → None;云端视觉模型 → Some(false);loopback 视觉模型 → Some(true)。
         let mut bridge = fixture_bridge();
         set_active_model(
@@ -3644,6 +3660,8 @@ mod tests {
     #[test]
     fn vision_config_local_engine_rule0() {
         use crate::features::llama_engine::server;
+        // 写全局 RUNTIME 的测试须在 RUNTIME_TEST_LOCK 下运行,挡住并发的 RUNTIME 读测试。
+        let _runtime_lock = locked_runtime();
         // RAII 守卫：测试结束复位全局 RUNTIME，避免污染其他测试的引擎运行态。
         struct RuntimeGuard;
         impl Drop for RuntimeGuard {
@@ -3709,6 +3727,8 @@ mod tests {
     #[test]
     fn vision_config_retry_split_by_channel() {
         use crate::features::llama_engine::server;
+        // 写全局 RUNTIME 的测试须在 RUNTIME_TEST_LOCK 下运行,挡住并发的 RUNTIME 读测试。
+        let _runtime_lock = locked_runtime();
         // RAII 守卫：测试结束复位全局 RUNTIME，避免污染其他测试的引擎运行态。
         struct RuntimeGuard;
         impl Drop for RuntimeGuard {
@@ -3779,6 +3799,9 @@ mod tests {
     /// 不注册 image_analyze(vision_config=None 且不 enable Feature::VisionModel)。
     #[test]
     fn vision_config_absent_for_unknown_or_disabled_main_model() {
+        // Unknown/Disabled 断言 is_none 依赖引擎未运行态(规则 3 读全局 RUNTIME),
+        // 须与写 RUNTIME 的测试串行。
+        let _runtime_lock = locked_runtime();
         // Unknown:deepseek-v4-pro 不在内置已验证能力表。
         let mut unknown = fixture_bridge();
         set_active_model(
@@ -3815,6 +3838,9 @@ mod tests {
     /// 会让模型反复调用不存在的工具;Unsupported 仍不注册。
     #[test]
     fn vision_config_falls_back_for_unknown_main_model_when_image_analyze_always() {
+        // Unsupported 断言 is_none 依赖引擎未运行态(规则 3 读全局 RUNTIME),
+        // 须与写 RUNTIME 的测试串行。
+        let _runtime_lock = locked_runtime();
         let mut scheduled = fixture_bridge();
         set_active_model(
             &mut scheduled,
@@ -3942,6 +3968,10 @@ mod tests {
     #[test]
     fn image_input_mode_routes_by_capability_and_vision_model() {
         use crate::features::assistant::image_capability::ImageInputMode;
+
+        // Unknown 无视觉模型断言 Unsupported 依赖引擎未运行态(规则 3 读全局
+        // RUNTIME → has_vision_model),须与写 RUNTIME 的测试串行。
+        let _runtime_lock = locked_runtime();
 
         // Supported 主模型:无视觉模型也 Native。
         let mut native = fixture_bridge();

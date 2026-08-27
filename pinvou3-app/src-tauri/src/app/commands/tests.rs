@@ -1865,8 +1865,8 @@ fn image_input_unknown_error_offers_explicit_confirm_path() {
     assert!(super::chat::IMAGE_INPUT_UNKNOWN_ERROR.contains("支持图片"));
 }
 
-/// `get_image_input_capability` 返回体的 wire 形状:前端按字段名与字符串值匹配
-/// (选图即时警告),钉住防手滑改字段。
+/// `get_image_input_capability` 返回体的 wire 形状:与 LlamaEngineStatus 同为
+/// camelCase,前端按字段名与字符串值匹配(选图即时警告),钉住防手滑改字段。
 #[test]
 fn image_input_capability_info_serializes_stable_fields() {
     let info = super::settings::ImageInputCapabilityInfo {
@@ -1876,7 +1876,7 @@ fn image_input_capability_info_serializes_stable_fields() {
         is_local_endpoint: false,
         vision_is_local_endpoint: Some(false),
         local_engine_state: "unused".to_string(),
-        local_engine_model: "qwen3vl-2b-q3k-s".to_string(),
+        local_engine_model: "qwen3vl-2b-q4km".to_string(),
         local_engine_device: "gpu".to_string(),
     };
     let value = serde_json::to_value(&info).expect("serialize ImageInputCapabilityInfo");
@@ -1884,13 +1884,13 @@ fn image_input_capability_info_serializes_stable_fields() {
         value,
         serde_json::json!({
             "capability": "unknown",
-            "image_mode": "vision_tool_fallback",
-            "has_vision_model": true,
-            "is_local_endpoint": false,
-            "vision_is_local_endpoint": false,
-            "local_engine_state": "unused",
-            "local_engine_model": "qwen3vl-2b-q3k-s",
-            "local_engine_device": "gpu",
+            "imageMode": "vision_tool_fallback",
+            "hasVisionModel": true,
+            "isLocalEndpoint": false,
+            "visionIsLocalEndpoint": false,
+            "localEngineState": "unused",
+            "localEngineModel": "qwen3vl-2b-q4km",
+            "localEngineDevice": "gpu",
         })
     );
     // 未配置视觉模型时字段仍稳定出现(为 null),前端按 fail-open 处理。
@@ -1901,11 +1901,11 @@ fn image_input_capability_info_serializes_stable_fields() {
         is_local_endpoint: true,
         vision_is_local_endpoint: None,
         local_engine_state: "unused".to_string(),
-        local_engine_model: "qwen3vl-2b-q3k-s".to_string(),
+        local_engine_model: "qwen3vl-2b-q4km".to_string(),
         local_engine_device: "gpu".to_string(),
     };
     let value = serde_json::to_value(&no_vision).expect("serialize without vision model");
-    assert_eq!(value["vision_is_local_endpoint"], serde_json::Value::Null);
+    assert_eq!(value["visionIsLocalEndpoint"], serde_json::Value::Null);
 }
 
 /// 造一个指定 kind / token 估算的 IngestResult,markdown 是 `rows` 行可定位文本。
