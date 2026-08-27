@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use pinvou_protocol::RuntimeEventEnvelope;
+use pinvou_protocol::{RateClass, RuntimeEventEnvelope, RuntimeEventKind, StreamId};
 use pinvou_runtime_api::{
     AdapterError, AgentRuntimeAdapter, ApprovalProfile, AuthStatus, ControlStrength,
     LogicalSessionId, ModelCatalog, ModelDescriptor, ModelId, NegotiatedCapabilities,
@@ -38,6 +38,7 @@ struct CodexPolicy {
 #[derive(Clone, Debug)]
 struct CodexSessionSettings {
     model: Option<String>,
+    reasoning_level: Option<String>,
     policy: CodexPolicy,
 }
 
@@ -45,6 +46,7 @@ impl Default for CodexSessionSettings {
     fn default() -> Self {
         Self {
             model: None,
+            reasoning_level: None,
             policy: codex_policy_for_profile(ApprovalProfile::Request, false)
                 .expect("request profile is always valid"),
         }
@@ -101,8 +103,21 @@ fn parse_session_settings(
             details: "model is empty".into(),
         });
     }
+    let reasoning_level = options
+        .get("reasoning_level")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if reasoning_level
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err(AdapterError::InvalidRequest {
+            details: "reasoning level is empty".into(),
+        });
+    }
     Ok(CodexSessionSettings {
         model,
+        reasoning_level,
         policy: codex_policy_for_profile(
             profile,
             options
@@ -374,7 +389,7 @@ impl AgentRuntimeAdapter for CodexAdapter {
         self.negotiated.complete(RuntimeCapabilities {
             interactive_chat: true,
             native_resume: true,
-            history_import: false,
+            history_import: true,
             tool_approval: true,
             elicitation: false,
             steering: false,
@@ -456,7 +471,12 @@ impl AgentRuntimeAdapter for CodexAdapter {
         if options.keys().any(|key| {
             !matches!(
                 key.as_str(),
-                "cwd" | "model" | "model_id" | "approval_profile" | "full_access_confirmed"
+                "cwd"
+                    | "model"
+                    | "model_id"
+                    | "reasoning_level"
+                    | "approval_profile"
+                    | "full_access_confirmed"
             )
         }) {
             return Err(AdapterError::InvalidRequest {
@@ -599,7 +619,28 @@ impl AgentRuntimeAdapter for CodexAdapter {
                 break;
             }
         }
-        parse_model_catalog(&json!({"data":data}), current.as_deref())
+        let config_params = self
+            .config
+            .working_directory
+            .as_ref()
+            .map(|cwd| json!({"cwd":cwd,"includeLayers":false}))
+            .unwrap_or_else(|| json!({"includeLayers":false}));
+        let current_level = operation
+            .options
+            .get("current_reasoning_level")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| {
+                self.request("config/read", config_params)
+                    .ok()
+                    .and_then(|config| {
+                        config
+                            .pointer("/config/model_reasoning_effort")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    })
+            });
+        parse_model_catalog(&json!({"data":data}), current.as_deref(), current_level)
     }
 
     fn inspect_permissions(
@@ -660,6 +701,9 @@ impl AgentRuntimeAdapter for CodexAdapter {
         });
         if let Some(model) = settings.model {
             params["model"] = json!(model);
+        }
+        if let Some(level) = settings.reasoning_level {
+            params["effort"] = json!(level);
         }
         let result = self.request("turn/start", params)?;
         let turn = result
@@ -1298,30 +1342,29 @@ fn stdout_loop(
                     &json!({"id":request_id,"error":{"code":-32001,"message":"credential refresh is unavailable; Codex must reload its credential store"}}),
                 );
             }
+            Ok(ProjectedFrame::DynamicToolUnavailable { request_id, tool }) => {
+                let _ = write_shared(
+                    &writer,
+                    &dynamic_tool_unavailable_response(request_id, &tool),
+                );
+            }
             Ok(_) => {}
             Err(error) => {
-                let fatal = true;
-                if fatal {
-                    if let Some(request_id) = frame.get("id") {
-                        let _ = write_shared(
-                            &writer,
-                            &json!({"id":request_id,"error":{"code":-32002,"message":"unsupported_control_event"}}),
-                        );
-                    }
+                if let Some(request_id) = frame.get("id") {
+                    let _ = write_shared(
+                        &writer,
+                        &json!({"id":request_id,"error":{"code":-32002,"message":"unsupported_control_event"}}),
+                    );
                 }
-                let _ = events.try_send(Err(error));
-                if fatal {
-                    if let Ok(mut projector) = projector.lock() {
-                        if let Ok(event) =
-                            projector.attachment_failed("unsupported Codex protocol event")
-                        {
-                            let _ = events.try_send(Ok(event));
+                if let Ok(mut projector) = projector.lock()
+                    && let Ok(event) = projector.protocol_warning(&error.to_string())
+                {
+                    if events.try_send(Ok(event)).is_err() {
+                        if let Ok(mut process) = process.lock() {
+                            let _ = process.terminate_tree();
                         }
+                        break;
                     }
-                    if let Ok(mut process) = process.lock() {
-                        let _ = process.terminate_tree();
-                    }
-                    break;
                 }
             }
         }
@@ -1331,6 +1374,19 @@ fn stdout_loop(
             let _ = sender.send(Err(process_error("stdout reader stopped")));
         }
     }
+}
+
+fn dynamic_tool_unavailable_response(request_id: Value, tool: &str) -> Value {
+    let message = format!(
+        "The Pinvou Codex runtime host cannot execute the dynamic tool `{tool}`. Continue without this tool and clearly state when current information could not be verified."
+    );
+    json!({
+        "id": request_id,
+        "result": {
+            "contentItems": [{"type": "inputText", "text": message}],
+            "success": false
+        }
+    })
 }
 
 fn stderr_loop(
@@ -1582,6 +1638,7 @@ fn parse_default_model(models: &Value) -> Option<String> {
 fn parse_model_catalog(
     response: &Value,
     current_model: Option<&str>,
+    current_level: Option<String>,
 ) -> Result<ModelCatalog, AdapterError> {
     let data = response
         .get("data")
@@ -1600,6 +1657,22 @@ fn parse_model_catalog(
                 .and_then(Value::as_str)
                 .or_else(|| model.get("model").and_then(Value::as_str))
                 .unwrap_or(id);
+            let supported_levels = model
+                .get("supportedReasoningEfforts")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|option| {
+                    option
+                        .get("reasoningEffort")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .collect::<Vec<_>>();
+            let default_level = model
+                .get("defaultReasoningEffort")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             ModelDescriptor::new(
                 id,
                 display_name,
@@ -1611,11 +1684,19 @@ fn parse_model_catalog(
                     .get("isDefault")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
-            )
+            )?
+            .with_reasoning_levels(default_level, supported_levels)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let current_model = current_model.map(ModelId::new).transpose()?;
-    ModelCatalog::new("codex", current_model, models)
+    let fallback_level = current_model.as_ref().and_then(|current| {
+        models
+            .iter()
+            .find(|model| model.id == *current)
+            .and_then(|model| model.default_reasoning_level.clone())
+    });
+    ModelCatalog::new("codex", current_model, models)?
+        .with_current_reasoning_level(current_level.or(fallback_level))
 }
 
 fn parse_session_descriptors(
@@ -1683,37 +1764,163 @@ fn parse_session_descriptor(thread: &Value) -> Result<SessionDescriptor, Adapter
 fn parse_session_snapshot(response: &Value) -> Result<SessionSnapshot, AdapterError> {
     let thread = response.get("thread").unwrap_or(response);
     let descriptor = parse_session_descriptor(thread)?;
-    let normalized_events = thread
-        .get("turns")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .flat_map(|turn| {
-            let turn_id = turn.get("id").cloned().unwrap_or(Value::Null);
-            let turn_status = turn.get("status").cloned().unwrap_or(Value::Null);
-            turn.get("items")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .map(move |item| {
-                    json!({
-                        "turn_id": turn_id,
-                        "turn_status": turn_status,
-                        "type": item.get("type").cloned().unwrap_or(Value::Null),
-                        "id": item.get("id").cloned().unwrap_or(Value::Null),
-                        "status": item.get("status").cloned().unwrap_or(Value::Null),
-                        "content": item.get("content").cloned().unwrap_or(Value::Null),
-                        "text": item.get("text").cloned().unwrap_or(Value::Null),
-                        "output": item.get("aggregatedOutput").cloned().unwrap_or(Value::Null),
-                    })
-                })
-        })
-        .collect();
+    let normalized_events = normalize_codex_history(thread, descriptor.id.as_str())?;
     Ok(SessionSnapshot {
         descriptor,
         cursor: 0,
         normalized_events,
     })
+}
+
+fn normalize_codex_history(thread: &Value, session_id: &str) -> Result<Vec<Value>, AdapterError> {
+    let mut events = Vec::new();
+    let mut control_seq = 1_u64;
+    let mut main_seq = 1_u64;
+    for turn in thread
+        .get("turns")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let turn_id = turn
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("codex-history-turn");
+        events.push(history_event(
+            session_id,
+            turn_id,
+            RuntimeEventKind::TurnStarted,
+            RateClass::R0,
+            control_seq,
+            json!({"user_input_ref":"codex:thread/read"}),
+        )?);
+        control_seq = control_seq.saturating_add(1);
+        for item in turn
+            .get("items")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let item_type = item
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let item_id = item
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("codex-history-item");
+            let projected = match item_type {
+                "userMessage" | "agentMessage" => Some((
+                    RuntimeEventKind::MessageCompleted,
+                    json!({
+                        "role":if item_type == "userMessage" { "user" } else { "assistant" },
+                        "content":codex_history_text(item),
+                        "item_id":item_id
+                    }),
+                )),
+                "reasoning" => Some((
+                    RuntimeEventKind::ThinkingDelta,
+                    json!({"content":codex_history_text(item)}),
+                )),
+                "plan" => Some((
+                    RuntimeEventKind::PlanDelta,
+                    json!({"content":codex_history_text(item)}),
+                )),
+                "commandExecution" | "mcpToolCall" | "dynamicToolCall" => Some((
+                    RuntimeEventKind::ToolCallCompleted,
+                    json!({
+                        "tool_id":item_id,
+                        "name":item.get("name").and_then(Value::as_str).unwrap_or(item_type),
+                        "result":codex_history_text(item),
+                        "is_error":item.get("status").and_then(Value::as_str).is_some_and(|status| matches!(status,"failed"|"error"))
+                    }),
+                )),
+                _ => None,
+            };
+            if let Some((kind, payload)) = projected {
+                events.push(history_event(
+                    session_id,
+                    turn_id,
+                    kind,
+                    RateClass::R1,
+                    main_seq,
+                    payload,
+                )?);
+                main_seq = main_seq.saturating_add(1);
+            }
+        }
+        let status = turn
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        events.push(history_event(
+            session_id,
+            turn_id,
+            RuntimeEventKind::TurnEnded,
+            RateClass::R0,
+            control_seq,
+            json!({"end_reason":match status {
+                "completed" => "completed",
+                "interrupted" => "interrupted",
+                "cancelled" => "cancelled",
+                _ => "error"
+            }}),
+        )?);
+        control_seq = control_seq.saturating_add(1);
+    }
+    Ok(events)
+}
+
+fn codex_history_text(item: &Value) -> String {
+    if let Some(text) = item.get("text").and_then(Value::as_str) {
+        return text.to_owned();
+    }
+    if let Some(output) = item
+        .get("aggregatedOutput")
+        .or_else(|| item.get("output"))
+        .and_then(Value::as_str)
+    {
+        return output.to_owned();
+    }
+    match item.get("content") {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
+}
+
+fn history_event(
+    session_id: &str,
+    turn_id: &str,
+    kind: RuntimeEventKind,
+    rate: RateClass,
+    seq: u64,
+    payload: Value,
+) -> Result<Value, AdapterError> {
+    let value = json!({
+        "protocol_version":1,
+        "schema_version":1,
+        "node_id":"codex-history",
+        "logical_session_id":session_id,
+        "attachment_id":format!("codex-history-{session_id}"),
+        "work_id":null,
+        "collaborative_run_id":null,
+        "stream_id":if rate == RateClass::R0 { StreamId::Control } else { StreamId::Main },
+        "turn_id":turn_id,
+        "seq":seq,
+        "source_span":null,
+        "timestamp":"1970-01-01T00:00:00.000Z",
+        "rate_class":rate,
+        "kind":kind,
+        "payload":payload
+    });
+    RuntimeEventEnvelope::from_value(value.clone())
+        .map(|_| value)
+        .map_err(|error| protocol_shape("thread/read", &format!("invalid history event: {error}")))
 }
 
 fn next_cursor(response: &Value) -> Result<Option<String>, AdapterError> {
@@ -1902,19 +2109,18 @@ fn configure_child(command: &mut Command) -> Result<(), AdapterError> {
             }
             #[cfg(target_os = "linux")]
             {
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
                 if libc::getppid() != parent {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::Other,
                         "parent exited during spawn",
                     ));
                 }
-                // PDEATHSIG only kills the app-server leader. A tiny, detached
-                // watchdog also kills the leader's process group so tool/MCP
-                // descendants cannot survive an abnormal Node exit.
-                spawn_linux_group_watchdog()?;
+                // PR_SET_PDEATHSIG follows the spawning thread on Linux. The
+                // adapter can be initialized by a short-lived IPC worker, so
+                // using it would kill the app-server when that worker exits even
+                // though the Node process remains healthy. A detached watchdog
+                // instead monitors the Node process and the app-server leader.
+                spawn_linux_group_watchdog(parent)?;
             }
             Ok(())
         });
@@ -1923,7 +2129,7 @@ fn configure_child(command: &mut Command) -> Result<(), AdapterError> {
 }
 
 #[cfg(target_os = "linux")]
-unsafe fn spawn_linux_group_watchdog() -> std::io::Result<()> {
+unsafe fn spawn_linux_group_watchdog(node_pid: libc::pid_t) -> std::io::Result<()> {
     let runtime_pid = unsafe { libc::getpid() };
     let watcher = unsafe { libc::fork() };
     if watcher < 0 {
@@ -1946,7 +2152,10 @@ unsafe fn spawn_linux_group_watchdog() -> std::io::Result<()> {
             tv_sec: 0,
             tv_nsec: 50_000_000,
         };
-        while unsafe { libc::getppid() } == runtime_pid {
+        while unsafe { libc::getppid() } == runtime_pid
+            && (unsafe { libc::kill(node_pid, 0) } == 0
+                || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
+        {
             let _ = unsafe { libc::nanosleep(&raw const delay, std::ptr::null_mut()) };
         }
         let _ = unsafe { libc::kill(-runtime_pid, libc::SIGKILL) };
@@ -2059,19 +2268,92 @@ mod tests {
     }
 
     #[test]
+    fn native_session_history_is_normalized_to_runtime_event_envelopes() {
+        let snapshot = parse_session_snapshot(&json!({
+            "thread":{
+                "id":"thread-a",
+                "preview":"Saved task",
+                "updatedAt":1770000000,
+                "status":{"type":"idle"},
+                "turns":[{
+                    "id":"turn-a",
+                    "status":"interrupted",
+                    "items":[
+                        {"type":"userMessage","id":"item-1","content":[{"type":"text","text":"continue"}]},
+                        {"type":"agentMessage","id":"item-2","text":"working"}
+                    ]
+                }]
+            }
+        }))
+        .unwrap();
+
+        let events = snapshot
+            .normalized_events
+            .into_iter()
+            .map(RuntimeEventEnvelope::from_value)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].event_kind(), RuntimeEventKind::TurnStarted);
+        assert_eq!(events[1].event_kind(), RuntimeEventKind::MessageCompleted);
+        assert_eq!(events[2].event_kind(), RuntimeEventKind::MessageCompleted);
+        assert_eq!(events[3].event_kind(), RuntimeEventKind::TurnEnded);
+        assert!(events.iter().all(|event| event.turn_id() == Some("turn-a")));
+        let user: Value = serde_json::from_str(events[1].payload().get()).unwrap();
+        let assistant: Value = serde_json::from_str(events[2].payload().get()).unwrap();
+        assert_eq!(user["role"], "user");
+        assert_eq!(user["content"], "continue");
+        assert_eq!(assistant["role"], "assistant");
+        assert_eq!(assistant["content"], "working");
+    }
+
+    #[test]
+    fn unavailable_dynamic_tool_response_matches_the_codex_protocol_shape() {
+        let response = dynamic_tool_unavailable_response(json!(45), "exec");
+
+        assert_eq!(response["id"], 45);
+        assert_eq!(response["result"]["success"], false);
+        assert_eq!(response["result"]["contentItems"][0]["type"], "inputText");
+        assert!(
+            response["result"]["contentItems"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("cannot execute")
+        );
+    }
+
+    #[test]
     fn model_catalog_parser_preserves_runtime_models_and_current_selection() {
         let models = json!({
             "data": [
-                {"id": "gpt-5.5", "displayName": "GPT-5.5", "isDefault": false},
+                {
+                    "id": "gpt-5.5",
+                    "displayName": "GPT-5.5",
+                    "isDefault": false,
+                    "defaultReasoningEffort": "high",
+                    "supportedReasoningEfforts": [
+                        {"reasoningEffort": "medium"},
+                        {"reasoningEffort": "high"}
+                    ]
+                },
                 {"id": "gpt-5.6", "displayName": "GPT-5.6", "isDefault": true}
             ]
         });
 
-        let catalog = parse_model_catalog(&models, Some("gpt-5.5")).unwrap();
+        let catalog = parse_model_catalog(&models, Some("gpt-5.5"), Some("medium".into())).unwrap();
 
         assert_eq!(catalog.runtime_id, "codex");
         assert_eq!(catalog.current_model.unwrap().as_str(), "gpt-5.5");
+        assert_eq!(catalog.current_reasoning_level.as_deref(), Some("medium"));
         assert_eq!(catalog.models.len(), 2);
+        assert_eq!(
+            catalog.models[0].supported_reasoning_levels,
+            ["medium", "high"]
+        );
+        assert_eq!(
+            catalog.models[0].default_reasoning_level.as_deref(),
+            Some("high")
+        );
         assert_eq!(catalog.models[1].display_name, "GPT-5.6");
         assert!(catalog.models[1].is_default);
     }
@@ -2123,6 +2405,7 @@ mod tests {
             session.as_str().into(),
             CodexSessionSettings {
                 model: Some("gpt-5.6".into()),
+                reasoning_level: Some("high".into()),
                 policy: codex_policy_for_profile(ApprovalProfile::Request, false).unwrap(),
             },
         );
@@ -2207,6 +2490,71 @@ mod tests {
         run_diagnostic_doctor_probe(&config);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn dynamic_tool_rejection_keeps_the_transport_alive_until_turn_completion() {
+        let script = r#"
+read -r initialize
+printf '%s\n' '{"id":1,"result":{"userAgent":"fixture/0.149"}}'
+read -r initialized
+printf '%s\n' '{"method":"turn/started","params":{"threadId":"thread","turn":{"id":"turn"}}}'
+printf '%s\n' '{"id":44,"method":"future/requestPermission","params":{"threadId":"thread","turnId":"turn"}}'
+read -r unsupported_response
+case "$unsupported_response" in
+  *'"code":-32002'*) ;;
+  *) exit 8 ;;
+esac
+printf '%s\n' '{"method":"item/started","params":{"threadId":"thread","turnId":"turn","item":{"type":"dynamicToolCall","id":"call-1","callId":"call-1","name":"exec","arguments":"{}"}}}'
+printf '%s\n' '{"id":45,"method":"item/tool/call","params":{"threadId":"thread","turnId":"turn","callId":"call-1","tool":"exec","arguments":"{}"}}'
+read -r tool_response
+case "$tool_response" in
+  *'"success":false'*) ;;
+  *) exit 9 ;;
+esac
+printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread","turnId":"turn","item":{"type":"dynamicToolCall","id":"call-1","callId":"call-1","name":"exec","status":"failed"}}}'
+printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread","turn":{"id":"turn","status":"completed"}}}'
+while read -r ignored; do :; done
+"#;
+        let config = CodexAdapterConfig {
+            executable: PathBuf::from("/bin/sh"),
+            app_server_args: vec!["-c".into(), script.into()],
+            handshake_timeout: Duration::from_secs(5),
+            request_timeout: Duration::from_secs(5),
+            ..CodexAdapterConfig::default()
+        };
+        let (mut connection, events) = Connection::spawn(
+            &config,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(HashMap::new())),
+        )
+        .unwrap();
+
+        connection
+            .request_with_timeout("initialize", json!({}), Duration::from_secs(5), true)
+            .unwrap();
+        connection.notify("initialized", json!({})).unwrap();
+
+        let mut kinds = Vec::new();
+        while !kinds.contains(&RuntimeEventKind::TurnEnded) {
+            let event = events
+                .recv_timeout(Duration::from_secs(5))
+                .expect("fixture transport stayed alive")
+                .expect("fixture event projected");
+            kinds.push(event.event_kind());
+        }
+        assert_eq!(
+            kinds,
+            [
+                RuntimeEventKind::TurnStarted,
+                RuntimeEventKind::LogRecord,
+                RuntimeEventKind::ToolCallStarted,
+                RuntimeEventKind::ToolCallCompleted,
+                RuntimeEventKind::TurnEnded,
+            ]
+        );
+        connection.close().unwrap();
+    }
+
     #[cfg(windows)]
     #[test]
     fn long_lived_transport_serves_multiple_requests_and_closes_its_job() {
@@ -2275,7 +2623,9 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {{
   if ($frame.method -eq 'initialize') {{
     $result = @{{ userAgent = 'fixture/0.139' }}
   }} elseif ($frame.method -eq 'model/list') {{
-    $result = @{{ data = @(@{{ id='gpt-5.6'; model='gpt-5.6'; displayName='GPT-5.6'; hidden=$false; isDefault=$true }}); nextCursor=$null }}
+    $result = @{{ data = @(@{{ id='gpt-5.6'; model='gpt-5.6'; displayName='GPT-5.6'; hidden=$false; isDefault=$true; defaultReasoningEffort='high'; supportedReasoningEfforts=@(@{{reasoningEffort='medium'}},@{{reasoningEffort='high'}}) }}); nextCursor=$null }}
+  }} elseif ($frame.method -eq 'config/read') {{
+    $result = @{{ config = @{{ model_reasoning_effort = 'medium' }}; origins = @{{}} }}
   }} elseif ($frame.method -eq 'thread/list') {{
     $result = @{{ data = @(@{{ id='thread-1'; preview='Saved task'; updatedAt=1770000000; cwd=$cwd; status=@{{type='idle'}}; turns=@(); modelProvider='openai'; cliVersion='0.139.0'; createdAt=1760000000; ephemeral=$false; sessionId='session-tree'; source='cli' }}); nextCursor=$null }}
   }} elseif ($frame.method -eq 'thread/read') {{
@@ -2315,6 +2665,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {{
             )
             .unwrap();
         assert_eq!(models.models[0].id.as_str(), "gpt-5.6");
+        assert_eq!(models.current_reasoning_level.as_deref(), Some("medium"));
         let sessions = adapter
             .list_sessions(RuntimeOperation::new("sessions", json!({"cwd":root})).unwrap())
             .unwrap();
@@ -2322,7 +2673,20 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {{
         let snapshot = adapter
             .read_session(RuntimeOperation::new("thread-1", json!({})).unwrap())
             .unwrap();
-        assert_eq!(snapshot.normalized_events[0]["text"], "done");
+        assert_eq!(snapshot.normalized_events.len(), 3);
+        let history = snapshot
+            .normalized_events
+            .iter()
+            .cloned()
+            .map(RuntimeEventEnvelope::from_value)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(history[0].event_kind(), RuntimeEventKind::TurnStarted);
+        assert_eq!(history[1].event_kind(), RuntimeEventKind::MessageCompleted);
+        assert_eq!(history[1].turn_id(), Some("turn-1"));
+        let payload: Value = serde_json::from_str(history[1].payload().get()).unwrap();
+        assert_eq!(payload["content"], "done");
+        assert_eq!(history[2].event_kind(), RuntimeEventKind::TurnEnded);
         let permission = adapter
             .inspect_permissions(RuntimeOperation::new("permissions", json!({})).unwrap())
             .unwrap();

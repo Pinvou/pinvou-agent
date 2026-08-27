@@ -41,6 +41,7 @@ pub enum ApprovalResponse {
 pub enum ProjectedFrame {
     Event(RuntimeEventEnvelope),
     Control(PendingControl),
+    DynamicToolUnavailable { request_id: Value, tool: String },
     Ignored,
 }
 
@@ -48,6 +49,7 @@ pub struct CodexEventProjector {
     node_id: String,
     attachment_id: String,
     logical_session_id: String,
+    active_turn_id: Option<String>,
     next_control_seq: u64,
     next_main_seq: u64,
     pending_controls: VecDeque<PendingControl>,
@@ -59,6 +61,7 @@ impl CodexEventProjector {
             node_id: node_id.into(),
             attachment_id: attachment_id.into(),
             logical_session_id: "codex-pending".into(),
+            active_turn_id: None,
             next_control_seq: 1,
             next_main_seq: 1,
             pending_controls: VecDeque::new(),
@@ -110,6 +113,23 @@ impl CodexEventProjector {
         )
     }
 
+    pub(crate) fn protocol_warning(
+        &mut self,
+        detail: &str,
+    ) -> Result<RuntimeEventEnvelope, AdapterError> {
+        self.event(
+            RuntimeEventKind::LogRecord,
+            RateClass::R2,
+            None,
+            json!({
+                "source": "codex",
+                "level": "warning",
+                "message": redact_diagnostic(detail)
+            }),
+            None,
+        )
+    }
+
     pub fn project(&mut self, frame: &Value) -> Result<ProjectedFrame, AdapterError> {
         let Some(method) = frame.get("method").and_then(Value::as_str) else {
             return Ok(ProjectedFrame::Ignored);
@@ -131,6 +151,30 @@ impl CodexEventProjector {
         request_id: Value,
         params: &Value,
     ) -> Result<ProjectedFrame, AdapterError> {
+        if method == "item/tool/call" {
+            let tool = string_at(params, &["/tool"]).ok_or_else(|| AdapterError::Protocol {
+                code: None,
+                method: Some(method.into()),
+                details: "dynamic tool call has no tool name".into(),
+            })?;
+            for (path, description) in [
+                ("/callId", "call identity"),
+                ("/threadId", "thread identity"),
+                ("/turnId", "turn identity"),
+            ] {
+                if string_at(params, &[path]).is_none() {
+                    return Err(AdapterError::Protocol {
+                        code: None,
+                        method: Some(method.into()),
+                        details: format!("dynamic tool call has no {description}"),
+                    });
+                }
+            }
+            return Ok(ProjectedFrame::DynamicToolUnavailable {
+                request_id,
+                tool: redact_diagnostic(tool),
+            });
+        }
         if !matches!(
             method,
             "item/commandExecution/requestApproval"
@@ -232,7 +276,11 @@ impl CodexEventProjector {
             | "account/rateLimits/updated"
             | "rawResponseItem/completed"
             | "remoteControl/status/changed" => self.event(RuntimeEventKind::Vendor, RateClass::R1, turn, json!({}), Some(json!({"method":method,"params":sanitize_json(params)})))?,
-            _ => return Err(AdapterError::Protocol{code:None,method:Some(method.into()),details:format!("unsupported_notification: {method}")}),
+            // Notifications are one-way runtime telemetry. Preserve methods that a
+            // newer App Server adds as vendor events so protocol evolution cannot
+            // tear down an otherwise healthy connection. Unknown requests still
+            // fail closed in `project_control`, where a response is required.
+            _ => self.event(RuntimeEventKind::Vendor, RateClass::R1, turn, json!({}), Some(json!({"method":method,"params":sanitize_json(params)})))?,
         };
         Ok(ProjectedFrame::Event(event))
     }
@@ -251,13 +299,18 @@ impl CodexEventProjector {
         }
         if !matches!(
             item_type,
-            "commandExecution" | "mcpToolCall" | "dynamicToolCall"
+            "commandExecution" | "mcpToolCall" | "dynamicToolCall" | "webSearch"
         ) {
-            return Err(AdapterError::Protocol {
-                code: None,
-                method: Some("item/started".into()),
-                details: format!("unsupported_item: {item_type}"),
-            });
+            return Ok(ProjectedFrame::Event(self.event(
+                RuntimeEventKind::Vendor,
+                RateClass::R1,
+                turn_id(params),
+                json!({}),
+                Some(json!({
+                    "method": "item/started",
+                    "params": sanitize_json(params)
+                })),
+            )?));
         }
         Ok(ProjectedFrame::Event(self.event(RuntimeEventKind::ToolCallStarted, RateClass::R1, turn_id(params), json!({"tool_id":string_at(item, &["/id","/callId"]).unwrap_or("codex-tool"),"name":string_at(item, &["/name","/command"]).unwrap_or(item_type),"args_json":sanitize_json(item.get("arguments").unwrap_or(&Value::Null))}), None)?))
     }
@@ -275,7 +328,7 @@ impl CodexEventProjector {
             )
         } else if matches!(
             item_type,
-            "commandExecution" | "mcpToolCall" | "dynamicToolCall"
+            "commandExecution" | "mcpToolCall" | "dynamicToolCall" | "webSearch"
         ) {
             (
                 RuntimeEventKind::ToolCallCompleted,
@@ -287,11 +340,16 @@ impl CodexEventProjector {
         ) {
             return Ok(ProjectedFrame::Ignored);
         } else {
-            return Err(AdapterError::Protocol {
-                code: None,
-                method: Some("item/completed".into()),
-                details: format!("unsupported_item: {item_type}"),
-            });
+            return Ok(ProjectedFrame::Event(self.event(
+                RuntimeEventKind::Vendor,
+                RateClass::R1,
+                turn_id(params),
+                json!({}),
+                Some(json!({
+                    "method": "item/completed",
+                    "params": sanitize_json(params)
+                })),
+            )?));
         };
         Ok(ProjectedFrame::Event(self.event(
             kind,
@@ -310,6 +368,14 @@ impl CodexEventProjector {
         payload: Value,
         vendor_extension: Option<Value>,
     ) -> Result<RuntimeEventEnvelope, AdapterError> {
+        if kind == RuntimeEventKind::TurnStarted {
+            self.active_turn_id = turn_id.map(str::to_owned);
+        }
+        let resolved_turn_id = if is_turn_scoped(kind) {
+            turn_id.or(self.active_turn_id.as_deref())
+        } else {
+            turn_id
+        };
         let seq = if rate == RateClass::R0 {
             let seq = self.next_control_seq;
             self.next_control_seq = self.next_control_seq.saturating_add(1);
@@ -319,8 +385,23 @@ impl CodexEventProjector {
             self.next_main_seq = self.next_main_seq.saturating_add(1);
             seq
         };
-        RuntimeEventEnvelope::from_value(json!({"protocol_version":PROTOCOL_VERSION,"schema_version":SCHEMA_VERSION,"node_id":self.node_id,"logical_session_id":self.logical_session_id,"attachment_id":self.attachment_id,"work_id":null,"collaborative_run_id":null,"stream_id":if rate == RateClass::R0 { StreamId::Control } else { StreamId::Main },"turn_id":turn_id,"seq":seq,"source_span":null,"timestamp":rfc3339_now(),"rate_class":rate,"kind":kind,"payload":payload,"vendor_extension":vendor_extension})).map_err(|error| AdapterError::Protocol { code: None, method: Some("event/project".into()), details: error.to_string() })
+        let event = RuntimeEventEnvelope::from_value(json!({"protocol_version":PROTOCOL_VERSION,"schema_version":SCHEMA_VERSION,"node_id":self.node_id,"logical_session_id":self.logical_session_id,"attachment_id":self.attachment_id,"work_id":null,"collaborative_run_id":null,"stream_id":if rate == RateClass::R0 { StreamId::Control } else { StreamId::Main },"turn_id":resolved_turn_id,"seq":seq,"source_span":null,"timestamp":rfc3339_now(),"rate_class":rate,"kind":kind,"payload":payload,"vendor_extension":vendor_extension})).map_err(|error| AdapterError::Protocol { code: None, method: Some("event/project".into()), details: error.to_string() });
+        if kind == RuntimeEventKind::TurnEnded {
+            self.active_turn_id = None;
+        }
+        event
     }
+}
+
+fn is_turn_scoped(kind: RuntimeEventKind) -> bool {
+    !matches!(
+        kind,
+        RuntimeEventKind::AttachmentStarted
+            | RuntimeEventKind::AttachmentEnded
+            | RuntimeEventKind::LogRecord
+            | RuntimeEventKind::UsageReported
+            | RuntimeEventKind::Vendor
+    )
 }
 
 fn thread_id<'a>(method: &str, params: &'a Value) -> Option<&'a str> {
@@ -410,4 +491,42 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let m = mp + if mp < 10 { 3 } else { -9 };
     y += i64::from(m <= 2);
     (y, m, d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolved_control_event_inherits_the_active_turn() {
+        let mut projector = CodexEventProjector::new("node", "attachment");
+        let started = projector
+            .project(&json!({
+                "method":"turn/started",
+                "params":{"threadId":"thread","turn":{"id":"turn-a"}}
+            }))
+            .unwrap();
+        let ProjectedFrame::Event(started) = started else {
+            panic!("turn start must project an event");
+        };
+        assert_eq!(started.turn_id(), Some("turn-a"));
+
+        let resolved = projector
+            .approval_resolved("approval-a", "approved")
+            .unwrap();
+        assert_eq!(resolved.event_kind(), RuntimeEventKind::ApprovalResolved);
+        assert_eq!(resolved.turn_id(), Some("turn-a"));
+
+        let completed = projector
+            .project(&json!({
+                "method":"turn/completed",
+                "params":{"threadId":"thread","turn":{"id":"turn-a","status":"completed"}}
+            }))
+            .unwrap();
+        let ProjectedFrame::Event(completed) = completed else {
+            panic!("turn completion must project an event");
+        };
+        assert_eq!(completed.turn_id(), Some("turn-a"));
+        assert!(projector.active_turn_id.is_none());
+    }
 }

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     io::{Read, Write},
     sync::mpsc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -8,11 +9,13 @@ use std::{
 use std::path::PathBuf;
 
 use pinvou_controller::{
-    ControllerPaths, ControllerSession, HostPlatform, LocalEndpoint, LocalIpcListener, SessionStore,
+    ControllerPaths, ControllerSession, HostPlatform, LocalEndpoint, LocalIpcListener,
+    SessionStore, WorkspacePreferences, WorkspaceStore,
 };
 use pinvou_protocol::{
     HelloClient, HelloServer, IpcMessage, RuntimeEventEnvelope, encode_frame, read_frame,
 };
+use pinvou_runtime_api::ApprovalProfile;
 
 #[test]
 fn controller_stream_bound_forwards_the_complete_node_event_stream_in_order() {
@@ -65,6 +68,19 @@ fn persistent_controller_appends_each_event_before_exposing_it() {
     ));
     let workspace = root.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
+    WorkspaceStore::open(&root)
+        .unwrap()
+        .save(
+            &workspace,
+            &WorkspacePreferences {
+                runtime: Some("codex".into()),
+                model_by_runtime: BTreeMap::new(),
+                reasoning_level_by_runtime: BTreeMap::new(),
+                approval_profile: ApprovalProfile::FullAccess,
+                recent_session: None,
+            },
+        )
+        .unwrap();
     let events = scripted_runtime_events();
     let event_count = events.len();
     let (endpoint, server) = spawn_persistent_scripted_node(events);
@@ -93,7 +109,15 @@ fn persistent_controller_appends_each_event_before_exposing_it() {
             let store = SessionStore::open(&root).unwrap();
             let descriptor = store.list().into_iter().next().unwrap();
             let restored = store.restore(&descriptor.id).unwrap();
-            assert_eq!(restored.cursor, exposed);
+            assert_eq!(restored.cursor, exposed + 1);
+            assert_eq!(
+                restored.normalized_events[0]["payload"],
+                serde_json::json!({
+                    "role":"user",
+                    "content":"persist everything",
+                    "item_id":"controller-prompt-1"
+                })
+            );
             Ok(())
         })
         .unwrap();
@@ -102,10 +126,10 @@ fn persistent_controller_appends_each_event_before_exposing_it() {
     let store = SessionStore::open(&root).unwrap();
     let descriptor = store.list().into_iter().next().unwrap();
     let metadata = store.metadata(&descriptor.id).unwrap();
-    assert_eq!(metadata.snapshot_cursor as usize, event_count);
+    assert_eq!(metadata.snapshot_cursor as usize, event_count + 1);
     assert_eq!(
         store.restore(&descriptor.id).unwrap().cursor as usize,
-        event_count
+        event_count + 1
     );
     server.join().unwrap();
     std::fs::remove_dir_all(root).unwrap();
@@ -394,6 +418,7 @@ fn spawn_persistent_scripted_node(
         let request: IpcMessage = read_frame(&mut chat).unwrap();
         assert_eq!(request.method(), Some("chat.start"));
         assert_eq!(request.payload()["model_id"], "gpt-5.6");
+        assert_eq!(request.payload()["approval_profile"], "full_access");
         for event in events {
             send_runtime_event(&mut *chat, event);
         }

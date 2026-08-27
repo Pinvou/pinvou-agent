@@ -1,0 +1,11 @@
+[package]
+name = "pinvou-agent-adapter-codewhale"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+pinvou-protocol = { path = "../protocol" }
+pinvou-runtime-api = { path = "../runtime-api" }
+serde_json = "1"

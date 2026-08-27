@@ -1,10 +1,12 @@
+use pinvou_agent_adapter_codewhale::{CodeWhaleAdapter, CodeWhaleAdapterConfig};
 use pinvou_agent_adapter_codex::{CodexAdapter, CodexAdapterConfig};
 use pinvou_protocol::{
     HelloClient, HelloServer, IpcMessage, IpcMessageKind, RuntimeEventEnvelope, RuntimeEventKind,
 };
 use pinvou_runtime_api::{
-    AgentRuntimeAdapter, ModelCatalog, PermissionCapability, RuntimeCommand,
-    RuntimeEventSubscription, RuntimeOperation, RuntimeSession, SessionDescriptor, SessionSnapshot,
+    AgentRuntimeAdapter, ModelCatalog, ModelDescriptor, ModelId, PermissionCapability,
+    RuntimeCommand, RuntimeEventSubscription, RuntimeOperation, RuntimeSession, SessionDescriptor,
+    SessionSnapshot,
 };
 use serde_json::json;
 use std::{
@@ -88,6 +90,10 @@ pub trait NodeRuntimeHost: Send + Sync + std::fmt::Debug {
     }
 
     fn list_models(&self, _options: serde_json::Value) -> Result<ModelCatalog, NodeError> {
+        Err(NodeError::UnsupportedRequest)
+    }
+
+    fn configure_model_credential(&self, _options: serde_json::Value) -> Result<(), NodeError> {
         Err(NodeError::UnsupportedRequest)
     }
 
@@ -291,6 +297,15 @@ impl NodeRuntimeHost for AdapterRuntimeHost {
             .list_models(RuntimeOperation::new("model-list", options)?)?)
     }
 
+    fn configure_model_credential(&self, options: serde_json::Value) -> Result<(), NodeError> {
+        let mut inner = self.lock_available_state()?;
+        ensure_adapter_probe(&mut inner)?;
+        inner
+            .adapter
+            .configure_model_credential(RuntimeOperation::new("model-credential", options)?)
+            .map_err(NodeError::Runtime)
+    }
+
     fn inspect_permissions(
         &self,
         options: serde_json::Value,
@@ -399,6 +414,13 @@ impl AdapterRuntimeHost {
     ) -> Result<NodeRuntimeEventStream, NodeError> {
         let mut inner = self.lock_available_state()?;
         ensure_adapter_probe(&mut inner)?;
+        let history_items = payload
+            .get("history_items")
+            .and_then(serde_json::Value::as_array)
+            .filter(|items| !items.is_empty())
+            .cloned();
+        let mut imported_natively = false;
+        let mut created_attachment = false;
         let session = if let Some(session) = inner.session.clone() {
             validate_attachment_context(&inner, payload, false)?;
             session
@@ -408,6 +430,15 @@ impl AdapterRuntimeHost {
             let session = inner
                 .adapter
                 .create(RuntimeOperation::new("node-runtime", options)?)?;
+            if let Some(items) = history_items.as_ref()
+                && inner.adapter.capabilities()?.history_import
+            {
+                inner.adapter.import_context(
+                    &session,
+                    RuntimeOperation::new("runtime-switch-handoff", json!({"items":items}))?,
+                )?;
+                imported_natively = true;
+            }
             inner.session = Some(session.clone());
             inner.attachment_epoch = 1;
             inner.model_id = payload
@@ -419,11 +450,20 @@ impl AdapterRuntimeHost {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("request")
                 .to_owned();
+            created_attachment = true;
             session
+        };
+        let effective_prompt = if created_attachment && !imported_natively {
+            history_items
+                .as_deref()
+                .map(|items| text_handoff_prompt(items, prompt))
+                .unwrap_or_else(|| prompt.to_owned())
+        } else {
+            prompt.to_owned()
         };
         inner
             .adapter
-            .send(&session, RuntimeCommand::text(prompt)?)?;
+            .send(&session, RuntimeCommand::text(effective_prompt)?)?;
         let events = match inner.subscription.take() {
             Some(events) => events,
             None => inner.adapter.subscribe_events(&session)?,
@@ -439,11 +479,45 @@ impl AdapterRuntimeHost {
     }
 }
 
+fn text_handoff_prompt(items: &[serde_json::Value], prompt: &str) -> String {
+    let mut history = String::new();
+    for item in items {
+        let Some(role) = item.get("role").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let text = item
+            .get("content")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+            .collect::<Vec<_>>()
+            .join("");
+        if text.is_empty() {
+            continue;
+        }
+        history.push_str(if role == "assistant" {
+            "Assistant: "
+        } else {
+            "User: "
+        });
+        history.push_str(&text);
+        history.push('\n');
+    }
+    if history.is_empty() {
+        return prompt.to_owned();
+    }
+    format!(
+        "Continue the same conversation using the prior context below. Do not infer a new task from the working directory.\n\n<prior_conversation>\n{history}</prior_conversation>\n\nCurrent user message:\n{prompt}"
+    )
+}
+
 fn attachment_options(payload: &serde_json::Value) -> serde_json::Value {
     let mut options = serde_json::Map::new();
     for key in [
         "cwd",
         "model_id",
+        "reasoning_level",
         "approval_profile",
         "full_access_confirmed",
     ] {
@@ -696,10 +770,13 @@ struct RuntimeSlot {
     state_file: Option<PathBuf>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PreparedRuntimeSwitch {
     runtime: String,
     token: String,
+    current_runtime: String,
+    host: Arc<dyn NodeRuntimeHost>,
+    status: serde_json::Value,
 }
 
 impl NodeSession {
@@ -788,12 +865,20 @@ impl NodeSession {
                     .coordinator
                     .lock()
                     .map_err(|_| NodeError::InvalidMessage)?;
+                let mut runtimes = vec![
+                    json!({"id":"codewhale", "label":"Pinvou Agent", "available":true}),
+                    json!({"id":"codex", "label":"Codex App Server", "available":true}),
+                ];
+                #[cfg(debug_assertions)]
+                if std::env::var("PINVOU_DEFAULT_RUNTIME_FOR_TEST").as_deref() == Ok("echo") {
+                    runtimes.insert(
+                        0,
+                        json!({"id":"echo", "label":"Stage 1 Echo fixture", "available":true}),
+                    );
+                }
                 json!({
                     "current": coordinator.runtime.id,
-                    "runtimes": [
-                        {"id":"echo", "label":"Stage 1 Echo", "available":true},
-                        {"id":"codex", "label":"Codex App Server", "available":true}
-                    ]
+                    "runtimes": runtimes
                 })
             }
             Some("runtime.detect") => {
@@ -816,6 +901,7 @@ impl NodeSession {
                 };
                 let mut payload = host.detect()?;
                 payload["runtime"] = json!(runtime_id);
+                payload["label"] = json!(runtime_label(&runtime_id));
                 payload["protocol_version"] = json!(pinvou_protocol::IPC_VERSION);
                 payload
             }
@@ -836,16 +922,45 @@ impl NodeSession {
                     .and_then(|value| value.as_str())
                     .filter(|value| !value.is_empty())
                     .ok_or(NodeError::InvalidMessage)?;
-                let _host = create_runtime_host(runtime)?;
-                let coordinator = self
-                    .coordinator
-                    .lock()
-                    .map_err(|_| NodeError::InvalidMessage)?;
-                if coordinator.active_turn.is_some() {
-                    return Err(NodeError::RuntimeBusy);
+                let current_runtime = {
+                    let coordinator = self
+                        .coordinator
+                        .lock()
+                        .map_err(|_| NodeError::InvalidMessage)?;
+                    if coordinator.active_turn.is_some() {
+                        return Err(NodeError::RuntimeBusy);
+                    }
+                    coordinator.runtime.id.clone()
+                };
+                let host = create_runtime_host(runtime)?;
+                let mut target_status = host.detect()?;
+                target_status["runtime"] = json!(runtime);
+                target_status["label"] = json!(runtime_label(runtime));
+                target_status["protocol_version"] = json!(pinvou_protocol::IPC_VERSION);
+                if target_status.get("status").and_then(|value| value.as_str()) != Some("available")
+                {
+                    return Ok(IpcMessage::response(
+                        id,
+                        json!({
+                            "status": "unavailable",
+                            "runtime": runtime,
+                            "current_runtime": current_runtime,
+                            "target_status": target_status
+                        }),
+                    )
+                    .map_err(|_| NodeError::InvalidMessage)?);
                 }
-                let current_runtime = coordinator.runtime.id.clone();
-                drop(coordinator);
+                {
+                    let coordinator = self
+                        .coordinator
+                        .lock()
+                        .map_err(|_| NodeError::InvalidMessage)?;
+                    if coordinator.active_turn.is_some()
+                        || coordinator.runtime.id != current_runtime
+                    {
+                        return Err(NodeError::RuntimeBusy);
+                    }
+                }
                 let switch_token = format!(
                     "runtime-switch-{}",
                     self.next_seq.fetch_add(1, Ordering::Relaxed)
@@ -856,11 +971,15 @@ impl NodeSession {
                     .map_err(|_| NodeError::InvalidMessage)? = Some(PreparedRuntimeSwitch {
                     runtime: runtime.to_owned(),
                     token: switch_token.clone(),
+                    current_runtime: current_runtime.clone(),
+                    host,
+                    status: target_status.clone(),
                 });
                 json!({
                     "status": "ready",
                     "runtime": runtime,
                     "current_runtime": current_runtime,
+                    "target_status": target_status,
                     "switch_token": switch_token,
                     "requires_compression": false,
                     "context": {
@@ -888,7 +1007,7 @@ impl NodeSession {
                     .and_then(|value| value.as_str())
                     .filter(|value| !value.is_empty())
                     .ok_or(NodeError::InvalidMessage)?;
-                {
+                let prepared = {
                     let pending = self
                         .pending_switch
                         .lock()
@@ -899,8 +1018,9 @@ impl NodeSession {
                     if prepared.runtime != runtime || prepared.token != switch_token {
                         return Err(NodeError::InvalidMessage);
                     }
-                }
-                self.commit_runtime_switch(runtime)?;
+                    prepared.clone()
+                };
+                self.commit_prepared_runtime_switch(&prepared)?;
                 let mut pending = self
                     .pending_switch
                     .lock()
@@ -929,6 +1049,12 @@ impl NodeSession {
             Some("model.list") => {
                 let host = self.current_runtime_host()?;
                 json!({"catalog":host.list_models(request.payload().clone())?})
+            }
+            Some("model.credential.set") => {
+                self.ensure_idle()?;
+                let host = self.current_runtime_host()?;
+                host.configure_model_credential(request.payload().clone())?;
+                json!({"status":"ok"})
             }
             Some("permissions.inspect") => {
                 let host = self.current_runtime_host()?;
@@ -1128,6 +1254,34 @@ impl NodeSession {
         coordinator.runtime.host = host;
         Ok(())
     }
+
+    fn commit_prepared_runtime_switch(
+        &self,
+        prepared: &PreparedRuntimeSwitch,
+    ) -> Result<(), NodeError> {
+        let mut coordinator = self
+            .coordinator
+            .lock()
+            .map_err(|_| NodeError::InvalidMessage)?;
+        if coordinator.active_turn.is_some() {
+            return Err(NodeError::RuntimeBusy);
+        }
+        if coordinator.runtime.id != prepared.current_runtime
+            || prepared
+                .status
+                .get("status")
+                .and_then(|value| value.as_str())
+                != Some("available")
+        {
+            return Err(NodeError::InvalidMessage);
+        }
+        if let Some(state_file) = &coordinator.runtime.state_file {
+            persist_runtime_selection(state_file, &prepared.runtime)?;
+        }
+        coordinator.runtime.id = prepared.runtime.clone();
+        coordinator.runtime.host = Arc::clone(&prepared.host);
+        Ok(())
+    }
 }
 
 fn drain_runtime_stream(stream: &mut NodeRuntimeEventStream) -> Result<(), NodeError> {
@@ -1162,11 +1316,28 @@ fn load_runtime_selection(state_file: &Path) -> Result<String, NodeError> {
                 .and_then(|value| value.as_str())
                 .filter(|value| !value.is_empty())
                 .ok_or(NodeError::InvalidMessage)?;
-            Ok(runtime.to_owned())
+            Ok(if runtime == "echo" {
+                "codewhale".to_owned()
+            } else {
+                runtime.to_owned()
+            })
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok("codex".to_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(default_runtime_id()),
         Err(error) => Err(error.into()),
     }
+}
+
+#[cfg(debug_assertions)]
+fn default_runtime_id() -> String {
+    std::env::var("PINVOU_DEFAULT_RUNTIME_FOR_TEST")
+        .ok()
+        .filter(|runtime| matches!(runtime.as_str(), "echo" | "codewhale" | "codex"))
+        .unwrap_or_else(|| "codewhale".into())
+}
+
+#[cfg(not(debug_assertions))]
+fn default_runtime_id() -> String {
+    "codewhale".into()
 }
 
 fn persist_runtime_selection(state_file: &Path, runtime: &str) -> Result<(), NodeError> {
@@ -1184,11 +1355,67 @@ fn persist_runtime_selection(state_file: &Path, runtime: &str) -> Result<(), Nod
 fn create_runtime_host(runtime: &str) -> Result<Arc<dyn NodeRuntimeHost>, NodeError> {
     match runtime {
         "echo" => Ok(Arc::new(StageOneEchoRuntime)),
+        "codewhale" => Ok(Arc::new(AdapterRuntimeHost::new(Box::new(
+            CodeWhaleAdapter::new(codewhale_adapter_config()?),
+        )))),
         "codex" => Ok(Arc::new(AdapterRuntimeHost::new(Box::new(
             CodexAdapter::new(codex_adapter_config()?),
         )))),
         _ => Err(NodeError::UnsupportedRequest),
     }
+}
+
+fn runtime_label(runtime: &str) -> &str {
+    match runtime {
+        "echo" => "Stage 1 Echo",
+        "codewhale" => "Pinvou Agent",
+        "codex" => "Codex App Server",
+        other => other,
+    }
+}
+
+fn codewhale_adapter_config() -> Result<CodeWhaleAdapterConfig, NodeError> {
+    let mut config = CodeWhaleAdapterConfig::default();
+    if let Ok(current_executable) = std::env::current_exe()
+        && let Some(directory) = current_executable.parent()
+    {
+        let sibling = directory.join(if cfg!(windows) {
+            "codewhale.exe"
+        } else {
+            "codewhale"
+        });
+        if sibling.is_file() {
+            config.executable = sibling;
+        }
+    }
+    apply_debug_codewhale_adapter_overrides(&mut config)?;
+    Ok(config)
+}
+
+#[cfg(debug_assertions)]
+fn apply_debug_codewhale_adapter_overrides(
+    config: &mut CodeWhaleAdapterConfig,
+) -> Result<(), NodeError> {
+    if let Some(executable) = std::env::var_os("PINVOU_CODEWHALE_EXECUTABLE_FOR_TEST") {
+        config.executable = std::path::PathBuf::from(executable);
+    }
+    if let Some(args) = debug_json_args("PINVOU_CODEWHALE_DOCTOR_ARGS_JSON_FOR_TEST")? {
+        config.doctor_args = args;
+    }
+    if let Some(args) = debug_json_args("PINVOU_CODEWHALE_APP_SERVER_ARGS_JSON_FOR_TEST")? {
+        config.app_server_args = args;
+    }
+    if let Some(cwd) = std::env::var_os("PINVOU_CODEWHALE_WORKING_DIRECTORY_FOR_TEST") {
+        config.working_directory = Some(std::path::PathBuf::from(cwd));
+    }
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
+fn apply_debug_codewhale_adapter_overrides(
+    _: &mut CodeWhaleAdapterConfig,
+) -> Result<(), NodeError> {
+    Ok(())
 }
 
 fn codex_adapter_config() -> Result<CodexAdapterConfig, NodeError> {
@@ -1281,6 +1508,14 @@ impl NodeRuntimeHost for StageOneEchoRuntime {
         }))
         .map_err(|_| NodeError::InvalidMessage)?;
         Ok(Box::new([Ok(started), Ok(delta), Ok(ended)].into_iter()))
+    }
+
+    fn list_models(&self, _options: serde_json::Value) -> Result<ModelCatalog, NodeError> {
+        Ok(ModelCatalog::new(
+            "echo",
+            Some(ModelId::new("echo")?),
+            vec![ModelDescriptor::new("echo", "Echo fixture", true, true)?],
+        )?)
     }
 }
 

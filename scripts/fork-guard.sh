@@ -7,9 +7,9 @@ TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
 PUBLISHED_HEAD="a36e6cd533024cfe5724bae21875aea42b2ed87a"
-LOCAL_SECURITY_HEAD="21e5f661abc522ecf36bf2ee6d6aabe93b4bf365"
+LOCAL_SECURITY_HEAD="214d0881917070d0447eb2484597e01400256225"
 PUBLISHED_COMMITS=9
-LOCAL_COMMITS=13
+LOCAL_COMMITS=14
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -60,6 +60,8 @@ fingerprints=(
   "T1|只读 worker 不触发重启回收回归      |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_host_readonly_worker_projection_preserves_live_status"
   "T1|宿主显式 route limits               |CodeWhale/crates/tui/src/route_runtime.rs|pub fn resolve_runtime_route_with_limits("
   "T1|embedding route wire alias 回归      |CodeWhale/crates/tui/src/route_runtime.rs|fn forkguard_embedding_route_limits_preserve_wire_alias"
+  "T1|外部 runtime profile 凭据不进 argv |CodeWhale/crates/app-server/src/lib.rs|fn forkguard_external_runtime_profile_keeps_provider_secret_out_of_argv"
+  "T1|受控凭据管道拒绝空密钥              |CodeWhale/crates/app-server/src/lib.rs|fn forkguard_controlled_credential_pipe_rejects_empty_secret"
   "T1|运行时会话快照不推断工具崩溃        |CodeWhale/crates/tui/src/session_manager.rs|fn forkguard_runtime_session_snapshot_preserves_in_flight_tool_call"
   "T1|显式重启恢复可观测且幂等            |CodeWhale/crates/tui/src/session_manager.rs|fn forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save"
   "T1|宿主批量取消运行中子智能体          |CodeWhale/crates/tui/src/core/ops.rs|CancelSubAgents"

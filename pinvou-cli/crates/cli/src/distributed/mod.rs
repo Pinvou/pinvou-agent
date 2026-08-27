@@ -375,8 +375,26 @@ impl<S: Read + Write> ControllerWire<S> {
     pub fn model_list(&mut self) -> Result<IpcMessage, DistributedError> {
         self.request("model.list", json!({}))
     }
-    pub fn model_switch_prepare(&mut self, model_id: &str) -> Result<IpcMessage, DistributedError> {
-        self.request("model.switch.prepare", json!({"model_id":model_id}))
+    pub fn model_credential_set(
+        &mut self,
+        model_id: &str,
+        api_key: &str,
+    ) -> Result<IpcMessage, DistributedError> {
+        self.request(
+            "model.credential.set",
+            json!({"model_id":model_id,"api_key":api_key}),
+        )
+    }
+    pub fn model_switch_prepare(
+        &mut self,
+        model_id: &str,
+        reasoning_level: Option<&str>,
+    ) -> Result<IpcMessage, DistributedError> {
+        let mut payload = json!({"model_id":model_id});
+        if let Some(level) = reasoning_level {
+            payload["reasoning_level"] = json!(level);
+        }
+        self.request("model.switch.prepare", payload)
     }
     pub fn model_switch_commit(
         &mut self,

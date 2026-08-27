@@ -982,6 +982,36 @@ fn preinit_input_flood_is_bounded_and_ctrl_c_remains_urgent() {
     assert!(started_at.elapsed() < Duration::from_secs(2));
 }
 
+#[test]
+fn preinit_tick_flood_is_silent_and_cannot_starve_ctrl_c() {
+    let started_at = std::time::Instant::now();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let backend = FakeBackend::with_blocked_initialization(true, false);
+    let initialization = backend.clone();
+    let tick_at = std::time::Instant::now();
+    let mut steps = vec![wait_for(move || initialization.calls().workspace_started)];
+    steps.extend((0..PREINIT_MAX_EVENTS * 2).map(|_| Step::Input(InputEvent::Tick(tick_at))));
+    steps.push(Step::Input(InputEvent::Key(KeyInput::ctrl(Key::Char('c')))));
+
+    let result = runtime
+        .block_on(run_with_driver(
+            Arc::new(backend.clone()),
+            ScriptDriver::new(steps),
+        ))
+        .unwrap();
+    drop(runtime);
+
+    assert!(result.detached);
+    assert!(result.model.status_message.is_none());
+    assert!(result.model.diagnostic_message.is_none());
+    assert_eq!(backend.calls().control_detaches, 1);
+    assert!(backend.calls().interrupts.is_empty());
+    assert!(started_at.elapsed() < Duration::from_secs(2));
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn preinit_preview_and_bounded_replay_preserve_editor_order() {
     let backend = FakeBackend::with_workspace_delay(Duration::from_millis(50));

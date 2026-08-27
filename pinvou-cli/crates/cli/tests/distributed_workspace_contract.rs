@@ -80,12 +80,17 @@ fn distributed_crates_keep_the_minimal_internal_dependency_graph() {
             &["pinvou-protocol", "pinvou-runtime-api"][..],
         ),
         (
+            "pinvou-agent-adapter-codewhale",
+            &["pinvou-protocol", "pinvou-runtime-api"][..],
+        ),
+        (
             "pinvou-controller",
-            &["pinvou-protocol", "pinvou-seglog"][..],
+            &["pinvou-protocol", "pinvou-runtime-api", "pinvou-seglog"][..],
         ),
         (
             "pinvou-node",
             &[
+                "pinvou-agent-adapter-codewhale",
                 "pinvou-agent-adapter-codex",
                 "pinvou-protocol",
                 "pinvou-runtime-api",

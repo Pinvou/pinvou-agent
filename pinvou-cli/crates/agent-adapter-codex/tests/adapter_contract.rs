@@ -31,7 +31,7 @@ fn captured_fixture_maps_to_versioned_runtime_events() {
 #[test]
 fn unknown_notification_is_preserved_as_conservative_r1_vendor_event() {
     let mut projector = CodexEventProjector::new("node", "attachment");
-    let frame = serde_json::json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"thread","name":"fixture","status":"ready","error":null}});
+    let frame = serde_json::json!({"method":"thread/futureTelemetry/updated","params":{"threadId":"thread","value":"fixture"}});
     let ProjectedFrame::Event(event) = projector.project(&frame).unwrap() else {
         panic!("notification was not projected")
     };
@@ -39,7 +39,7 @@ fn unknown_notification_is_preserved_as_conservative_r1_vendor_event() {
     assert_eq!(event.rate_class(), RateClass::R1);
     assert_eq!(
         event.vendor_extension().unwrap()["method"],
-        "mcpServer/startupStatus/updated"
+        "thread/futureTelemetry/updated"
     );
 }
 
@@ -121,6 +121,85 @@ fn unknown_server_request_fails_closed() {
     let frame = serde_json::json!({"id":44,"method":"future/requestPermission","params":{}});
     let error = projector.project(&frame).unwrap_err();
     assert!(format!("{error}").contains("unsupported_control_event"));
+}
+
+#[test]
+fn dynamic_tool_request_is_rejected_without_terminating_the_attachment() {
+    let mut projector = CodexEventProjector::new("node", "attachment");
+    let frame = serde_json::json!({
+        "id": 45,
+        "method": "item/tool/call",
+        "params": {
+            "threadId": "thread",
+            "turnId": "turn",
+            "callId": "call-1",
+            "tool": "exec",
+            "arguments": "const result = await tools.web__run({});"
+        }
+    });
+
+    let ProjectedFrame::DynamicToolUnavailable { request_id, tool } =
+        projector.project(&frame).unwrap()
+    else {
+        panic!("dynamic tool request was not converted to a recoverable response")
+    };
+    assert_eq!(request_id, serde_json::json!(45));
+    assert_eq!(tool, "exec");
+    assert!(projector.take_pending_control().is_none());
+}
+
+#[test]
+fn web_search_lifecycle_is_projected_as_tool_activity() {
+    let mut projector = CodexEventProjector::new("node", "attachment");
+    let started = serde_json::json!({
+        "method": "item/started",
+        "params": {
+            "threadId": "thread",
+            "turnId": "turn",
+            "item": {"type": "webSearch", "id": "search-1", "query": "LiteRT Android"}
+        }
+    });
+    let completed = serde_json::json!({
+        "method": "item/completed",
+        "params": {
+            "threadId": "thread",
+            "turnId": "turn",
+            "item": {"type": "webSearch", "id": "search-1", "query": "LiteRT Android", "status": "completed"}
+        }
+    });
+
+    let ProjectedFrame::Event(started) = projector.project(&started).unwrap() else {
+        panic!("web search start was not projected")
+    };
+    let ProjectedFrame::Event(completed) = projector.project(&completed).unwrap() else {
+        panic!("web search completion was not projected")
+    };
+    assert_eq!(started.kind(), "tool.call.started");
+    assert_eq!(completed.kind(), "tool.call.completed");
+}
+
+#[test]
+fn unknown_item_lifecycle_is_preserved_without_terminating_the_attachment() {
+    let mut projector = CodexEventProjector::new("node", "attachment");
+    for method in ["item/started", "item/completed"] {
+        let frame = serde_json::json!({
+            "method": method,
+            "params": {
+                "threadId": "thread",
+                "turnId": "turn",
+                "item": {"type": "futureTool", "id": "future-1", "secret": "do-not-leak"}
+            }
+        });
+        let ProjectedFrame::Event(event) = projector.project(&frame).unwrap() else {
+            panic!("unknown item lifecycle was not preserved")
+        };
+        assert_eq!(event.kind(), "vendor");
+        assert_eq!(event.vendor_extension().unwrap()["method"], method);
+        assert_eq!(
+            event.vendor_extension().unwrap()["params"]["item"]["secret"],
+            "[REDACTED]"
+        );
+    }
 }
 
 #[test]

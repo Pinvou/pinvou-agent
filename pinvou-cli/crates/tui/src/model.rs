@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use crate::backend::{
     BackendError, ModelCandidate, PermissionMode, PermissionStatus, RuntimeStatus, SessionCandidate,
@@ -71,7 +74,9 @@ pub enum ToolState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TranscriptEntry {
     User(String),
+    Thinking(String),
     Assistant(String),
+    Error(String),
     Tool {
         tool_id: String,
         name: String,
@@ -113,6 +118,30 @@ impl Transcript {
         }
     }
 
+    pub(crate) fn push_assistant(&mut self, content: impl Into<String>) {
+        self.entries
+            .push(TranscriptEntry::Assistant(content.into()));
+    }
+
+    pub(crate) fn append_thinking(&mut self, content: &str) {
+        match self.entries.last_mut() {
+            Some(TranscriptEntry::Thinking(text)) => text.push_str(content),
+            _ => self
+                .entries
+                .push(TranscriptEntry::Thinking(content.to_owned())),
+        }
+    }
+
+    pub(crate) fn push_error(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        if message.is_empty()
+            || matches!(self.entries.last(), Some(TranscriptEntry::Error(current)) if current == &message)
+        {
+            return;
+        }
+        self.entries.push(TranscriptEntry::Error(message));
+    }
+
     pub(crate) fn start_tool(&mut self, tool_id: String, name: String) {
         self.entries.push(TranscriptEntry::Tool {
             tool_id,
@@ -146,6 +175,46 @@ impl Transcript {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Composer {
     pub input: String,
+}
+
+#[derive(Clone, Default, Eq, PartialEq)]
+pub struct SecretComposer {
+    value: String,
+}
+
+impl std::fmt::Debug for SecretComposer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SecretComposer")
+            .field("value", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl SecretComposer {
+    pub(crate) fn push(&mut self, character: char) {
+        self.value.push(character);
+    }
+
+    pub(crate) fn push_str(&mut self, value: &str) {
+        self.value.push_str(value);
+    }
+
+    pub(crate) fn pop(&mut self) {
+        self.value.pop();
+    }
+
+    pub(crate) fn take(&mut self) -> String {
+        std::mem::take(&mut self.value)
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.value.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.value.chars().count()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -188,6 +257,8 @@ pub enum Overlay {
     RuntimeList,
     ResumeList,
     ModelList,
+    ModelLevelList,
+    ApiKeyInput,
     PermissionList,
     FullAccessConfirmation,
 }
@@ -200,6 +271,8 @@ pub struct Model {
     pub turn: TurnState,
     pub transcript: Transcript,
     pub composer: Composer,
+    pub credential_composer: SecretComposer,
+    pub selected_command: usize,
     pub input_composer: Composer,
     pub interaction: Interaction,
     pub overlay: Overlay,
@@ -214,6 +287,7 @@ pub struct Model {
     pub active_session: Option<String>,
     pub session_cursor: u64,
     pub model_id: Option<String>,
+    pub model_level: Option<String>,
     pub permission_profile: PermissionMode,
     pub permission_status: Option<PermissionStatus>,
     pub session_candidates: Vec<SessionCandidate>,
@@ -223,8 +297,12 @@ pub struct Model {
     pub pending_resume: Option<PendingSelection>,
     pub model_candidates: Vec<ModelCandidate>,
     pub selected_model: usize,
+    pub selected_model_level: usize,
     pub pending_model_list: Option<OperationToken>,
+    pub model_list_background: bool,
     pub pending_model_switch: Option<PendingSelection>,
+    pub pending_model_credential: Option<PendingSelection>,
+    pub pending_model_level: Option<String>,
     pub selected_permission: usize,
     pub pending_permissions: Option<OperationToken>,
     pub pending_permission_switch: Option<PendingPermissionSwitch>,
@@ -232,6 +310,9 @@ pub struct Model {
     pub terminal_size: Option<(u16, u16)>,
     pub last_terminal_turn_token: Option<OperationToken>,
     pub should_quit: bool,
+    activity_started_at: Option<Instant>,
+    activity_elapsed: Duration,
+    activity_frame: u8,
     next_operation_token: u64,
 }
 
@@ -244,6 +325,8 @@ impl Model {
             turn: TurnState::Idle,
             transcript: Transcript::default(),
             composer: Composer::default(),
+            credential_composer: SecretComposer::default(),
+            selected_command: 0,
             input_composer: Composer::default(),
             interaction: Interaction::None,
             overlay: Overlay::None,
@@ -258,6 +341,7 @@ impl Model {
             active_session: None,
             session_cursor: 0,
             model_id: None,
+            model_level: None,
             permission_profile: PermissionMode::Request,
             permission_status: None,
             session_candidates: Vec::new(),
@@ -267,8 +351,12 @@ impl Model {
             pending_resume: None,
             model_candidates: Vec::new(),
             selected_model: 0,
+            selected_model_level: 0,
             pending_model_list: None,
+            model_list_background: false,
             pending_model_switch: None,
+            pending_model_credential: None,
+            pending_model_level: None,
             selected_permission: 0,
             pending_permissions: None,
             pending_permission_switch: None,
@@ -276,8 +364,35 @@ impl Model {
             terminal_size: None,
             last_terminal_turn_token: None,
             should_quit: false,
+            activity_started_at: None,
+            activity_elapsed: Duration::ZERO,
+            activity_frame: 0,
             next_operation_token: 1,
         }
+    }
+
+    pub(crate) fn reset_activity(&mut self) {
+        self.activity_started_at = None;
+        self.activity_elapsed = Duration::ZERO;
+        self.activity_frame = 0;
+    }
+
+    pub(crate) fn advance_activity(&mut self, now: Instant) {
+        if self.turn == TurnState::Idle {
+            self.reset_activity();
+            return;
+        }
+        let started_at = *self.activity_started_at.get_or_insert(now);
+        self.activity_elapsed = now.saturating_duration_since(started_at);
+        self.activity_frame = self.activity_frame.wrapping_add(1);
+    }
+
+    pub(crate) fn activity_elapsed(&self) -> Duration {
+        self.activity_elapsed
+    }
+
+    pub(crate) fn activity_frame(&self) -> u8 {
+        self.activity_frame
     }
 
     pub(crate) fn allocate_operation_token(&mut self) -> OperationToken {

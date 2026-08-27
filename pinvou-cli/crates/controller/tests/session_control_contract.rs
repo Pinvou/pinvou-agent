@@ -130,3 +130,92 @@ fn controller_returns_persisted_sessions_when_native_listing_is_unavailable() {
     assert_eq!(response.payload()["sessions"][0]["id"], "logical-offline");
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn controller_repairs_interrupted_runtime_switch_mapping_and_hides_native_mirror() {
+    let root = temp_root();
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace_store = WorkspaceStore::open(&root).unwrap();
+    let workspace_key = workspace_store.workspace_key(&workspace).unwrap();
+    let logical_id = LogicalSessionId::new("pinvou-logical").unwrap();
+    let native_id = LogicalSessionId::new("codex-native").unwrap();
+    let mut sessions = SessionStore::open(&root).unwrap();
+    sessions
+        .create_session(StoredSessionMetadata::for_workspace(
+            SessionDescriptor {
+                id: logical_id.clone(),
+                title: "Complete cross-runtime history".into(),
+                last_active_at: "2026-08-25T11:00:00Z".into(),
+                runtime_id: "codex".into(),
+                model_id: None,
+                status: SessionStatus::Active,
+                native_session_id: None,
+            },
+            1,
+            workspace_key.clone(),
+        ))
+        .unwrap();
+    sessions
+        .append_event(
+            &logical_id,
+            serde_json::json!({
+                "protocol_version":1,
+                "schema_version":1,
+                "node_id":"node",
+                "logical_session_id":"codex-native",
+                "attachment_id":"codex-attachment",
+                "work_id":null,
+                "collaborative_run_id":null,
+                "stream_id":"main",
+                "turn_id":"turn-a",
+                "seq":1,
+                "source_span":null,
+                "timestamp":"2026-08-25T11:00:00.000Z",
+                "rate_class":"R1",
+                "kind":"text.delta",
+                "payload":{"role":"assistant","content":"working"}
+            }),
+        )
+        .unwrap();
+    sessions
+        .create_session(StoredSessionMetadata::for_workspace(
+            SessionDescriptor {
+                id: native_id,
+                title: "Native mirror".into(),
+                last_active_at: "2026-08-25T11:01:00Z".into(),
+                runtime_id: "codex".into(),
+                model_id: None,
+                status: SessionStatus::Unknown,
+                native_session_id: Some("codex-native".into()),
+            },
+            1,
+            workspace_key,
+        ))
+        .unwrap();
+    drop(sessions);
+
+    let session = ControllerSession::with_storage("instance-a", &root, &workspace).unwrap();
+    let request = IpcMessage::request(
+        serde_json::json!(1),
+        "session.list",
+        serde_json::json!({"instance_id":"instance-a"}),
+    )
+    .unwrap();
+    let response = session.handle_bound(request).unwrap();
+    let listed = response.payload()["sessions"].as_array().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["id"], "pinvou-logical");
+    assert_eq!(listed[0]["native_session_id"], "codex-native");
+
+    drop(session);
+    let repaired = SessionStore::open(&root)
+        .unwrap()
+        .metadata(&logical_id)
+        .unwrap();
+    assert_eq!(
+        repaired.descriptor.native_session_id.as_deref(),
+        Some("codex-native")
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}

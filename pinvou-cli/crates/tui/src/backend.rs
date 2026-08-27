@@ -65,12 +65,19 @@ pub struct ModelCandidate {
     pub display_name: String,
     pub is_default: bool,
     pub available: bool,
+    pub provider_id: Option<String>,
+    pub provider_display_name: Option<String>,
+    pub configured: bool,
+    pub requires_api_key: bool,
+    pub supported_reasoning_levels: Vec<String>,
+    pub default_reasoning_level: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModelList {
     pub runtime_id: String,
     pub current_model: Option<String>,
+    pub current_reasoning_level: Option<String>,
     pub models: Vec<ModelCandidate>,
 }
 
@@ -195,8 +202,21 @@ pub trait Backend: Send + Sync + 'static {
     fn model_list(&self, _operation_token: u64) -> Result<ModelList, BackendError> {
         Err(unsupported_backend_operation("model listing"))
     }
-    fn switch_model(&self, _operation_token: u64, _model_id: String) -> Result<(), BackendError> {
+    fn switch_model(
+        &self,
+        _operation_token: u64,
+        _model_id: String,
+        _reasoning_level: Option<String>,
+    ) -> Result<(), BackendError> {
         Err(unsupported_backend_operation("model switching"))
+    }
+    fn save_model_credential(
+        &self,
+        _operation_token: u64,
+        _model_id: String,
+        _api_key: String,
+    ) -> Result<(), BackendError> {
+        Err(unsupported_backend_operation("model credential storage"))
     }
     fn permissions(&self, _operation_token: u64) -> Result<PermissionStatus, BackendError> {
         Err(unsupported_backend_operation("permission inspection"))

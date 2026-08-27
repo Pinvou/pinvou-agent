@@ -5,11 +5,12 @@ pub mod commands;
 pub mod model;
 pub mod renderer;
 pub mod terminal;
+mod theme;
 pub mod update;
 pub mod view;
 
 use std::{
-    io,
+    env, io,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::Arc,
 };
@@ -20,6 +21,24 @@ use pinvou_protocol::StableExitCode;
 use ratatui::backend::CrosstermBackend;
 use renderer::RatatuiRenderer;
 use terminal::{CrosstermOps, TerminalGuard, TerminalOps, TerminalRestoreError};
+
+struct ColorOutputGuard {
+    restore_enabled: bool,
+}
+
+impl ColorOutputGuard {
+    fn force() -> Self {
+        let restore_enabled = env::var("NO_COLOR").map_or(true, |value| value.is_empty());
+        crossterm::style::force_color_output(true);
+        Self { restore_enabled }
+    }
+}
+
+impl Drop for ColorOutputGuard {
+    fn drop(&mut self) {
+        crossterm::style::force_color_output(self.restore_enabled);
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum TuiRunError {
@@ -68,6 +87,8 @@ pub fn run<B: Backend>(backend: Arc<B>) -> Result<RunResult, TuiRunError> {
     if tokio::runtime::Handle::try_current().is_ok() {
         return Err(TuiRunError::NestedRuntime);
     }
+    // Pinvou uses color as semantic UI state, including role and risk boundaries.
+    let _color_output = ColorOutputGuard::force();
     let guard = TerminalGuard::enter(CrosstermOps::new(io::stdout()))
         .map_err(|error| TuiRunError::Terminal(error.to_string()))?;
     let renderer = RatatuiRenderer::new(CrosstermBackend::new(io::stdout()))?;
@@ -463,17 +484,25 @@ mod tests {
                 operation_token: model_token,
                 result: Ok(ModelList {
                     runtime_id: "codex".into(),
-                    current_model: Some("gpt-5.6".into()),
+                    current_model: None,
+                    current_reasoning_level: Some("high".into()),
                     models: vec![ModelCandidate {
                         id: "gpt-5.6".into(),
                         display_name: "GPT-5.6".into(),
                         is_default: true,
                         available: true,
+                        provider_id: None,
+                        provider_display_name: None,
+                        configured: true,
+                        requires_api_key: false,
+                        supported_reasoning_levels: vec!["medium".into(), "high".into()],
+                        default_reasoning_level: Some("high".into()),
                     }],
                 }),
             },
         );
         assert_eq!(model.model_id.as_deref(), Some("gpt-5.6"));
+        assert_eq!(model.model_level.as_deref(), Some("high"));
 
         model.overlay = Overlay::None;
         let permissions = update(&mut model, Action::Submit("/permissions".into()));
@@ -1142,6 +1171,26 @@ mod tests {
         assert_eq!(model.runtime.id, "claude");
         assert!(model.pending_runtime_switch.is_none());
         assert_eq!(model.overlay, Overlay::None);
+    }
+
+    #[test]
+    fn selecting_the_active_runtime_closes_the_overlay_without_reloading_model_state() {
+        let mut model = Model::new(PathBuf::from("workspace"), runtime("codex"));
+        model.model_id = Some("gpt-5.3-codex".into());
+        model.model_level = Some("high".into());
+        update(&mut model, Action::Submit("/runtime".into()));
+
+        let effects = update(&mut model, Action::RuntimeSwitch("codex".into()));
+
+        assert!(effects.is_empty());
+        assert!(model.pending_runtime_switch.is_none());
+        assert_eq!(model.overlay, Overlay::None);
+        assert_eq!(model.model_id.as_deref(), Some("gpt-5.3-codex"));
+        assert_eq!(model.model_level.as_deref(), Some("high"));
+        assert_eq!(
+            model.status_message.as_deref(),
+            Some("codex is already active")
+        );
     }
 
     #[test]

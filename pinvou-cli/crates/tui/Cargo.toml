@@ -12,3 +12,4 @@ ratatui = { version = "0.30.0", features = ["unstable-rendered-line-info"] }
 serde_json = "1"
 thiserror.workspace = true
 tokio = { version = "1.53.1", features = ["rt", "macros", "sync", "time"] }
+unicode-width = "0.2"

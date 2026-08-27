@@ -39,9 +39,9 @@
 
 ### 3.3 `/model`
 
-`/model` 只展示当前 Runtime 经统一接口实时返回的模型目录，不写死模型 ID。条目包含稳定 ID、显示名、默认/当前标记、可用状态和切换方式。
+`/model` 只展示当前 Runtime 经统一接口实时返回的模型目录，不写死模型 ID。条目包含稳定 ID、显示名、默认/当前标记、可用状态、支持/default reasoning level 和切换方式。常驻欢迎区与状态栏必须显示当前 Runtime、下一回合有效模型和有效 reasoning level；尚无 Session 级选择时，模型回退为 Runtime 的可用默认项，level 优先使用 Runtime 报告的当前配置，再回退为模型默认值，不能长期显示含糊的 `auto`。
 
-切换只允许在回合边界执行。Runtime 支持会话内切换时更新下一回合模型；只支持创建 Attachment 时指定模型时，执行同 Runtime checkpoint/handoff。提交失败必须保留原模型、Attachment 和 epoch。
+切换只允许在回合边界执行。支持 reasoning level 的模型按 Enter 后进入二级 level 选择器，只展示 Runtime 实时声明的 levels；不支持 level 的模型直接切换。模型与 level 作为一次原子选择提交，Controller 必须校验 level 属于目标模型，Codex Adapter 将其映射为下一回合及后续回合的 `turn/start.effort`。Runtime 支持会话内切换时更新下一回合模型；只支持创建 Attachment 时指定模型时，执行同 Runtime checkpoint/handoff。提交失败必须保留原模型、level、Attachment 和 epoch。
 
 ### 3.4 `/permissions`
 
@@ -61,13 +61,13 @@ Pinvou 暴露稳定的三种产品模式：
 SessionDescriptor / SessionSnapshot / ResumePlan / ResumeResult
 ModelDescriptor / ModelCatalog / ModelSelection
 ApprovalProfile / ApprovalCapability / PermissionSelection
-WorkspacePreferences { runtime, model_by_runtime, approval_profile }
+WorkspacePreferences { runtime, model_by_runtime, reasoning_level_by_runtime, approval_profile }
 
 session.list(workspace, query, cursor)
 session.resume_prepare(session_id)
 session.resume_commit(resume_token)
 model.list(runtime_id)
-model.switch_prepare(model_id)
+model.switch_prepare(model_id, reasoning_level?)
 model.switch_commit(switch_token)
 permissions.inspect()
 permissions.switch_prepare(profile)
@@ -94,6 +94,19 @@ workspaces/<workspace-hash>/preferences.json
 TUI 为 Session、Model、Permissions 增加独立 overlay state、请求 token、选择位置、搜索文本和错误状态。overlay 只在 idle 打开；流式回合、审批或输入请求期间拒绝切换。
 
 后台调用继续使用有界 channel 和可取消 control lease。Ctrl+C 只 detach 本地 TUI；Escape 取消 overlay 或中止当前回合，不隐式批准、提交切换或停止 Controller。
+
+### 6.1 已冻结的产品化视觉合同
+
+2026-08-25 用户确认继续采用 Ratatui，并按 Claude Code / Codex 风格的连续文本流重构，不切换框架。实现和终端快照按以下合同验收：
+
+- 欢迎态只出现一次，使用 Pinvou 品牌、当前 Workspace/Runtime/Model/权限上下文和少量可执行引导，不保留仪表盘式常驻标题。
+- 用户、Agent、工具、审批、输入请求与错误使用不同语义标记和层级；用户消息使用全宽独立背景和内边距形成稳定消息块，Agent 输出保持普通连续文本背景；常规工具活动留在连续聊天流，不堆叠重边框卡片。
+- `Starting`、`Streaming`、工具执行和取消等待必须在 transcript 内提供可见反馈，同时显示当前可执行的中断或 detach 操作。
+- composer 使用独立边界与稳定焦点；可编辑状态必须显式显示终端光标，并按 Unicode 显示宽度定位，长输入裁切后光标仍留在边框内；底部状态区分开运行上下文、暂态消息和当前键位，不宣传无效快捷键。
+- `/resume`、`/runtime`、`/model`、`/permissions` 使用统一 overlay 结构：来源/范围说明、当前选择、默认或 unsupported 标记、风险/剩余保护和底部键盘提示。
+- 空闲态普通 composer 输入 `/` 时，在聊天区底部显示由真实命令目录驱动的内联 command menu；每项包含命令和用途，按输入前缀实时过滤，支持 ↑/↓ 选择、Enter 执行、Esc 关闭。菜单不得在运行中、审批、输入请求或其他 overlay 上争抢键盘。
+- 60x16 为完整界面最小合同；更小尺寸只显示安全退出提示。overlay 在窄终端隐藏次要细节，但保留选择、当前状态和取消路径。
+- 错误必须说明旧会话/模型/权限是否保持不变，并给出重试或返回选择器的下一步；不得只显示原始后端诊断。
 
 ## 7. 错误与安全
 

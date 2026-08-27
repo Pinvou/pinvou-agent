@@ -38,6 +38,9 @@ pub trait AgentRuntimeAdapter: Send {
     fn list_models(&mut self, _: RuntimeOperation) -> Result<ModelCatalog, AdapterError> {
         Err(AdapterError::unsupported("list_models"))
     }
+    fn configure_model_credential(&mut self, _: RuntimeOperation) -> Result<(), AdapterError> {
+        Err(AdapterError::unsupported("configure_model_credential"))
+    }
     fn inspect_permissions(
         &mut self,
         _: RuntimeOperation,

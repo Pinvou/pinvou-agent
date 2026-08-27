@@ -90,6 +90,7 @@ fn workspace_preferences_round_trip_without_using_raw_path_as_directory_name() {
     let preferences = WorkspacePreferences {
         runtime: Some("codex".into()),
         model_by_runtime: BTreeMap::from([("codex".into(), "gpt-5.6".into())]),
+        reasoning_level_by_runtime: BTreeMap::new(),
         approval_profile: ApprovalProfile::Request,
         recent_session: Some(LogicalSessionId::new("logical-1").unwrap()),
     };

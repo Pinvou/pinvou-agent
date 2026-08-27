@@ -4,7 +4,7 @@ use serde_json::Value;
 use crate::{
     action::{Action, ApprovalDecision, Effect},
     backend::BackendError,
-    commands::{AVAILABLE_COMMANDS, SlashCommand, parse},
+    commands::{SlashCommand, available_commands, parse},
     model::{
         ApprovalRequest, InputRequest, Interaction, Model, Overlay, PendingInterrupt,
         PendingPermissionSwitch, PendingRuntimeSwitch, PendingSelection, Transcript, TurnState,
@@ -66,15 +66,26 @@ pub fn update(model: &mut Model, action: Action) -> Vec<Effect> {
             result,
         } => complete_resume(model, operation_token, result),
         Action::LoadModelList => load_model_list(model),
+        Action::RefreshModelStatus => refresh_model_status(model),
         Action::ModelListLoaded {
             operation_token,
             result,
         } => complete_model_list(model, operation_token, result),
-        Action::ModelSwitch(model_id) => switch_model(model, model_id),
+        Action::ModelSwitch {
+            model_id,
+            reasoning_level,
+        } => switch_model(model, model_id, reasoning_level),
         Action::ModelSwitched {
             operation_token,
             result,
         } => complete_model_switch(model, operation_token, result),
+        Action::ModelCredentialSubmitted { model_id, api_key } => {
+            save_model_credential(model, model_id, api_key)
+        }
+        Action::ModelCredentialSaved {
+            operation_token,
+            result,
+        } => complete_model_credential(model, operation_token, result),
         Action::LoadPermissions => load_permissions(model),
         Action::PermissionsLoaded {
             operation_token,
@@ -102,7 +113,7 @@ fn submit(model: &mut Model, input: String) -> Vec<Effect> {
             open_overlay(
                 model,
                 Overlay::Help {
-                    commands: AVAILABLE_COMMANDS.to_vec(),
+                    commands: available_commands(),
                 },
             );
             Vec::new()
@@ -121,6 +132,7 @@ fn submit(model: &mut Model, input: String) -> Vec<Effect> {
                 Overlay::RuntimeList
                     | Overlay::ResumeList
                     | Overlay::ModelList
+                    | Overlay::ModelLevelList
                     | Overlay::PermissionList
                     | Overlay::FullAccessConfirmation
             ) =>
@@ -172,6 +184,7 @@ fn submit_prompt(model: &mut Model, prompt: &str) -> Vec<Effect> {
     model.diagnostic_message = None;
     model.last_backend_error = None;
     model.pending_runtime_switch = None;
+    model.reset_activity();
     let operation_token = model.allocate_operation_token();
     model.turn = TurnState::Starting { operation_token };
     vec![Effect::StartTurn {
@@ -439,6 +452,13 @@ fn switch_runtime(model: &mut Model, runtime: String) -> Vec<Effect> {
         model.status_message = Some("runtime switch is already in progress".into());
         return Vec::new();
     }
+    if runtime == model.runtime.id {
+        model.overlay = Overlay::None;
+        model.status_message = Some(format!("{} is already active", model.runtime.display_name));
+        model.diagnostic_message = None;
+        model.last_backend_error = None;
+        return Vec::new();
+    }
 
     let operation_token = model.allocate_operation_token();
     model.pending_runtime_switch = Some(PendingRuntimeSwitch {
@@ -476,10 +496,14 @@ fn complete_runtime_switch(
     match result {
         Ok(runtime) if runtime.id == target => {
             model.runtime = runtime;
+            model.model_id = None;
+            model.model_level = None;
+            model.model_candidates.clear();
             model.overlay = Overlay::None;
             model.status_message = None;
             model.diagnostic_message = None;
             model.last_backend_error = None;
+            return refresh_model_status(model);
         }
         Ok(runtime) => {
             model.overlay = Overlay::RuntimeList;
@@ -606,10 +630,12 @@ fn complete_resume(
                 true,
             );
             model.model_id = resumed.model_id;
+            model.model_level = None;
             model.permission_profile = resumed.permission_profile;
             model.overlay = Overlay::None;
             model.status_message = None;
             model.last_backend_error = None;
+            return refresh_model_status(model);
         }
         Ok(_) => record_backend_error(
             model,
@@ -624,13 +650,28 @@ fn complete_resume(
 }
 
 fn load_model_list(model: &mut Model) -> Vec<Effect> {
-    if !selector_available(model, "model selector") || model.pending_model_list.is_some() {
+    if !selector_available(model, "model selector") {
+        return Vec::new();
+    }
+    model.overlay = Overlay::ModelList;
+    model.status_message = Some("loading models...".into());
+    if model.pending_model_list.is_some() {
+        model.model_list_background = false;
         return Vec::new();
     }
     let operation_token = model.allocate_operation_token();
-    model.overlay = Overlay::ModelList;
     model.pending_model_list = Some(operation_token);
-    model.status_message = Some("loading models...".into());
+    model.model_list_background = false;
+    vec![Effect::LoadModelList { operation_token }]
+}
+
+fn refresh_model_status(model: &mut Model) -> Vec<Effect> {
+    if model.pending_model_list.is_some() || model.turn != TurnState::Idle {
+        return Vec::new();
+    }
+    let operation_token = model.allocate_operation_token();
+    model.pending_model_list = Some(operation_token);
+    model.model_list_background = true;
     vec![Effect::LoadModelList { operation_token }]
 }
 
@@ -644,10 +685,30 @@ fn complete_model_list(
         return Vec::new();
     }
     model.pending_model_list = None;
+    let was_background = std::mem::take(&mut model.model_list_background);
     match result {
         Ok(list) => {
-            model.model_id = list.current_model;
             model.model_candidates = list.models;
+            model.model_id = list.current_model.or_else(|| {
+                model
+                    .model_candidates
+                    .iter()
+                    .find(|candidate| candidate.is_default && candidate.available)
+                    .or_else(|| {
+                        model
+                            .model_candidates
+                            .iter()
+                            .find(|candidate| candidate.available)
+                    })
+                    .map(|candidate| candidate.id.clone())
+            });
+            model.model_level = list.current_reasoning_level.or_else(|| {
+                model
+                    .model_candidates
+                    .iter()
+                    .find(|candidate| Some(candidate.id.as_str()) == model.model_id.as_deref())
+                    .and_then(|candidate| candidate.default_reasoning_level.clone())
+            });
             model.selected_model = model
                 .model_candidates
                 .iter()
@@ -656,12 +717,17 @@ fn complete_model_list(
             model.status_message = None;
             model.last_backend_error = None;
         }
+        Err(_) if was_background => {}
         Err(error) => record_backend_error(model, error),
     }
     Vec::new()
 }
 
-fn switch_model(model: &mut Model, model_id: String) -> Vec<Effect> {
+fn switch_model(
+    model: &mut Model,
+    model_id: String,
+    reasoning_level: Option<String>,
+) -> Vec<Effect> {
     if !selector_available(model, "model switch") {
         return Vec::new();
     }
@@ -670,10 +736,12 @@ fn switch_model(model: &mut Model, model_id: String) -> Vec<Effect> {
         target: model_id.clone(),
         operation_token,
     });
+    model.pending_model_level = reasoning_level.clone();
     model.status_message = Some("switching model...".into());
     vec![Effect::SwitchModel {
         operation_token,
         model_id,
+        reasoning_level,
     }]
 }
 
@@ -691,9 +759,17 @@ fn complete_model_switch(
         return Vec::new();
     }
     let target = pending.target.clone();
+    let target_level = model.pending_model_level.take();
     model.pending_model_switch = None;
     match result {
         Ok(()) => {
+            let candidate = model
+                .model_candidates
+                .iter()
+                .find(|candidate| candidate.id == target);
+            model.model_level = target_level.or_else(|| {
+                candidate.and_then(|candidate| candidate.default_reasoning_level.clone())
+            });
             model.model_id = Some(target);
             model.overlay = Overlay::None;
             model.status_message = None;
@@ -702,6 +778,56 @@ fn complete_model_switch(
         Err(error) => record_backend_error(model, error),
     }
     Vec::new()
+}
+
+fn save_model_credential(
+    model: &mut Model,
+    model_id: String,
+    api_key: crate::action::SecretInput,
+) -> Vec<Effect> {
+    let operation_token = model.allocate_operation_token();
+    model.pending_model_credential = Some(PendingSelection {
+        target: model_id.clone(),
+        operation_token,
+    });
+    model.status_message = Some("saving API key securely...".into());
+    vec![Effect::SaveModelCredential {
+        operation_token,
+        model_id,
+        api_key,
+    }]
+}
+
+fn complete_model_credential(
+    model: &mut Model,
+    operation_token: crate::model::OperationToken,
+    result: Result<(), BackendError>,
+) -> Vec<Effect> {
+    let Some(pending) = model.pending_model_credential.take() else {
+        record_ignored(
+            model,
+            "ignored model credential completion without pending operation".into(),
+        );
+        return Vec::new();
+    };
+    if pending.operation_token != operation_token {
+        model.pending_model_credential = Some(pending);
+        record_ignored(model, "ignored stale model credential completion".into());
+        return Vec::new();
+    }
+    match result {
+        Ok(()) => {
+            model.credential_composer.clear();
+            model.overlay = Overlay::ModelList;
+            model.status_message = None;
+            refresh_model_status(model)
+        }
+        Err(error) => {
+            model.overlay = Overlay::ApiKeyInput;
+            record_backend_error(model, error);
+            Vec::new()
+        }
+    }
 }
 
 fn load_permissions(model: &mut Model) -> Vec<Effect> {
@@ -797,16 +923,41 @@ fn complete_permission_switch(
 
 fn transcript_from_events(events: &[RuntimeEventEnvelope]) -> Transcript {
     let mut transcript = Transcript::default();
+    let mut assistant_streamed_in_turn = false;
     for event in events {
         let Ok(payload) = serde_json::from_str::<Value>(event.payload().get()) else {
             continue;
         };
         match event.event_kind() {
+            RuntimeEventKind::TurnStarted | RuntimeEventKind::TurnEnded => {
+                assistant_streamed_in_turn = false;
+            }
+            RuntimeEventKind::MessageCompleted => {
+                let content = payload.get("content").and_then(Value::as_str);
+                match (payload.get("role").and_then(Value::as_str), content) {
+                    (Some("user"), Some(content)) => transcript.push_user(content.to_owned()),
+                    (Some("assistant"), Some(content)) if !assistant_streamed_in_turn => {
+                        transcript.push_assistant(content.to_owned());
+                        assistant_streamed_in_turn = true;
+                    }
+                    _ => {}
+                }
+            }
             RuntimeEventKind::TextDelta
                 if payload.get("role").and_then(Value::as_str) == Some("assistant") =>
             {
                 if let Some(content) = payload.get("content").and_then(Value::as_str) {
-                    transcript.append_assistant(content);
+                    if assistant_streamed_in_turn {
+                        transcript.append_assistant(content);
+                    } else {
+                        transcript.push_assistant(content.to_owned());
+                        assistant_streamed_in_turn = true;
+                    }
+                }
+            }
+            RuntimeEventKind::ThinkingDelta => {
+                if let Some(content) = payload.get("content").and_then(Value::as_str) {
+                    transcript.append_thinking(content);
                 }
             }
             RuntimeEventKind::ToolCallStarted => {
@@ -834,6 +985,16 @@ fn transcript_from_events(events: &[RuntimeEventEnvelope]) -> Transcript {
                             .and_then(Value::as_bool)
                             .unwrap_or(false),
                     );
+                }
+            }
+            RuntimeEventKind::ErrorRaised => {
+                if let Some(message) = payload.get("message").and_then(Value::as_str) {
+                    transcript.push_error(message);
+                }
+            }
+            RuntimeEventKind::StreamAborted => {
+                if let Some(reason) = payload.get("reason").and_then(Value::as_str) {
+                    transcript.push_error(reason);
                 }
             }
             _ => {}
@@ -879,6 +1040,11 @@ fn project_runtime_event(
                 model.transcript.append_assistant(content);
             }
         }
+        RuntimeEventKind::ThinkingDelta => {
+            if let Some(content) = string(&payload, "content") {
+                model.transcript.append_thinking(&content);
+            }
+        }
         RuntimeEventKind::ApprovalRequested => request_approval(model, &payload),
         RuntimeEventKind::ApprovalResolved => resolve_approval_from_runtime(model, &payload),
         RuntimeEventKind::InputRequested => request_input(model, &payload),
@@ -909,6 +1075,7 @@ fn project_runtime_event(
         RuntimeEventKind::TurnEnded => finish_turn(model),
         RuntimeEventKind::ErrorRaised => {
             if let Some(message) = string(&payload, "message") {
+                model.transcript.push_error(message.clone());
                 model.status_message = Some(message);
             }
             if payload.get("fatal").and_then(Value::as_bool) == Some(true) {
@@ -918,6 +1085,9 @@ fn project_runtime_event(
         RuntimeEventKind::StreamAborted => {
             finish_turn(model);
             model.status_message = string(&payload, "reason");
+            if let Some(reason) = model.status_message.clone() {
+                model.transcript.push_error(reason);
+            }
         }
         _ => {}
     }
@@ -976,6 +1146,7 @@ fn is_projected_turn_event(kind: RuntimeEventKind) -> bool {
             | RuntimeEventKind::ErrorRaised
             | RuntimeEventKind::StreamAborted
             | RuntimeEventKind::TextDelta
+            | RuntimeEventKind::ThinkingDelta
             | RuntimeEventKind::ToolCallStarted
             | RuntimeEventKind::ToolCallOutputDelta
             | RuntimeEventKind::ToolCallCompleted
@@ -1089,17 +1260,22 @@ fn finish_turn(model: &mut Model) {
 
 fn recover_turn_without_terminal(model: &mut Model) {
     model.turn = TurnState::Idle;
+    model.reset_activity();
     model.interaction = Interaction::None;
     model.pending_runtime_switch = None;
     model.pending_interrupt = None;
 }
 
 fn record_backend_error(model: &mut Model, error: BackendError) {
+    let belongs_to_turn = model.turn != TurnState::Idle;
     if error.kind() == crate::backend::BackendErrorKind::WorkerPanic {
         model.connection = crate::model::ConnectionState::Failed(error.clone());
         recover_turn_without_terminal(model);
     }
     model.status_message = Some(error.safe_message().to_owned());
+    if belongs_to_turn {
+        model.transcript.push_error(error.safe_message());
+    }
     model.diagnostic_message = None;
     model.last_backend_error = Some(error);
 }
@@ -1143,4 +1319,98 @@ fn strings(payload: &Value, field: &str) -> Option<Vec<String>> {
             .map(str::to_owned)
             .collect()
     })
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+    use crate::model::TranscriptEntry;
+    use serde_json::json;
+
+    fn event(kind: &str, turn_id: &str, seq: u64, payload: Value) -> RuntimeEventEnvelope {
+        RuntimeEventEnvelope::from_value(json!({
+            "protocol_version":1,
+            "schema_version":1,
+            "node_id":"node",
+            "logical_session_id":"session",
+            "attachment_id":"attachment",
+            "work_id":null,
+            "collaborative_run_id":null,
+            "stream_id":if kind.starts_with("turn.") { "control" } else { "main" },
+            "turn_id":turn_id,
+            "seq":seq,
+            "source_span":null,
+            "timestamp":"2026-08-26T00:00:00.000Z",
+            "rate_class":if kind.starts_with("turn.") { "R0" } else { "R1" },
+            "kind":kind,
+            "payload":payload
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn replay_preserves_turn_boundaries_user_messages_and_deduplicates_completed_text() {
+        let transcript = transcript_from_events(&[
+            event(
+                "message.completed",
+                "prompt-1",
+                1,
+                json!({"role":"user","content":"first question","item_id":"prompt-1"}),
+            ),
+            event(
+                "turn.started",
+                "turn-1",
+                1,
+                json!({"user_input_ref":"test"}),
+            ),
+            event(
+                "text.delta",
+                "turn-1",
+                1,
+                json!({"role":"assistant","content":"first "}),
+            ),
+            event(
+                "text.delta",
+                "turn-1",
+                2,
+                json!({"role":"assistant","content":"answer"}),
+            ),
+            event(
+                "message.completed",
+                "turn-1",
+                3,
+                json!({"role":"assistant","content":"first answer","item_id":"answer-1"}),
+            ),
+            event("turn.ended", "turn-1", 2, json!({"end_reason":"completed"})),
+            event(
+                "message.completed",
+                "prompt-2",
+                4,
+                json!({"role":"user","content":"second question","item_id":"prompt-2"}),
+            ),
+            event(
+                "turn.started",
+                "turn-2",
+                3,
+                json!({"user_input_ref":"test"}),
+            ),
+            event(
+                "message.completed",
+                "turn-2",
+                5,
+                json!({"role":"assistant","content":"second answer","item_id":"answer-2"}),
+            ),
+            event("turn.ended", "turn-2", 4, json!({"end_reason":"completed"})),
+        ]);
+
+        assert_eq!(
+            transcript.entries(),
+            [
+                TranscriptEntry::User("first question".into()),
+                TranscriptEntry::Assistant("first answer".into()),
+                TranscriptEntry::User("second question".into()),
+                TranscriptEntry::Assistant("second answer".into()),
+            ]
+        );
+    }
 }

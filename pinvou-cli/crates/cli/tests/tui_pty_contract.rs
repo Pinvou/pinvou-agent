@@ -165,8 +165,8 @@ fn no_arguments_enter_and_restore_a_real_pseudoterminal() {
     }
     for (command, title) in [
         (b"/resume\r".as_slice(), b"Resume session".as_slice()),
-        (b"/model\r".as_slice(), b"Switch model".as_slice()),
-        (b"/permissions\r".as_slice(), b"Permissions".as_slice()),
+        (b"/model\r".as_slice(), b"Select model".as_slice()),
+        (b"/permissions\r".as_slice(), b"Permission mode".as_slice()),
     ] {
         writer.write_all(command).unwrap();
         writer.flush().unwrap();
@@ -187,6 +187,10 @@ fn no_arguments_enter_and_restore_a_real_pseudoterminal() {
         }
         writer.write_all(b"\x1b").unwrap();
         writer.flush().unwrap();
+        // A standalone Escape is intentionally disambiguated from an Alt-key
+        // sequence by terminal parsers. Give the reader one poll interval to
+        // observe it before the next slash command arrives.
+        std::thread::sleep(Duration::from_millis(75));
     }
     writer.write_all(&[3]).unwrap();
     writer.flush().unwrap();
@@ -232,7 +236,7 @@ fn no_arguments_enter_and_restore_a_real_pseudoterminal() {
             b"\x1b[?1049h",
             b"\x1b[?25l",
             b"\x1b[?2004h",
-            b"Pinvou Agent",
+            b"PINVOU",
             b"\x1b[?2004l",
             b"\x1b[?25h",
             b"\x1b[?1049l",
@@ -244,12 +248,7 @@ fn no_arguments_enter_and_restore_a_real_pseudoterminal() {
     #[cfg(windows)]
     assert_sequence(
         &output,
-        &[
-            b"\x1b[?2004h",
-            b"Pinvou Agent",
-            b"\x1b[?2004l",
-            b"\x1b[?25h",
-        ],
+        &[b"\x1b[?2004h", b"PINVOU", b"\x1b[?2004l", b"\x1b[?25h"],
     );
     #[cfg(windows)]
     {
@@ -277,6 +276,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
+#[cfg(windows)]
 fn find_from(haystack: &[u8], needle: &[u8], offset: usize) -> Option<usize> {
     haystack[offset..]
         .windows(needle.len())

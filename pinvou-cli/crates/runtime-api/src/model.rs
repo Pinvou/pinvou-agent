@@ -85,6 +85,18 @@ pub struct ModelDescriptor {
     pub display_name: String,
     pub available: bool,
     pub is_default: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_display_name: Option<String>,
+    #[serde(default)]
+    pub configured: bool,
+    #[serde(default)]
+    pub requires_api_key: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_reasoning_levels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_reasoning_level: Option<String>,
 }
 
 impl ModelDescriptor {
@@ -105,7 +117,49 @@ impl ModelDescriptor {
             display_name,
             available,
             is_default,
+            provider_id: None,
+            provider_display_name: None,
+            configured: true,
+            requires_api_key: false,
+            supported_reasoning_levels: Vec::new(),
+            default_reasoning_level: None,
         })
+    }
+
+    pub fn with_provider(
+        mut self,
+        provider_id: impl Into<String>,
+        provider_display_name: impl Into<String>,
+        configured: bool,
+        requires_api_key: bool,
+    ) -> Self {
+        self.provider_id = Some(provider_id.into());
+        self.provider_display_name = Some(provider_display_name.into());
+        self.configured = configured;
+        self.requires_api_key = requires_api_key;
+        self
+    }
+
+    pub fn with_reasoning_levels(
+        mut self,
+        default: Option<String>,
+        supported: Vec<String>,
+    ) -> Result<Self, AdapterError> {
+        if supported.iter().any(|level| level.trim().is_empty()) {
+            return Err(AdapterError::InvalidRequest {
+                details: "model reasoning level is empty".into(),
+            });
+        }
+        if let Some(default) = default.as_deref()
+            && !supported.iter().any(|level| level == default)
+        {
+            return Err(AdapterError::InvalidRequest {
+                details: "default reasoning level is not supported".into(),
+            });
+        }
+        self.default_reasoning_level = default;
+        self.supported_reasoning_levels = supported;
+        Ok(self)
     }
 }
 
@@ -113,6 +167,8 @@ impl ModelDescriptor {
 pub struct ModelCatalog {
     pub runtime_id: String,
     pub current_model: Option<ModelId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_reasoning_level: Option<String>,
     pub models: Vec<ModelDescriptor>,
 }
 
@@ -145,8 +201,45 @@ impl ModelCatalog {
         Ok(Self {
             runtime_id,
             current_model,
+            current_reasoning_level: None,
             models,
         })
+    }
+
+    pub fn with_current_reasoning_level(
+        mut self,
+        level: Option<String>,
+    ) -> Result<Self, AdapterError> {
+        if level
+            .as_deref()
+            .is_some_and(|level| level.trim().is_empty())
+        {
+            return Err(AdapterError::InvalidRequest {
+                details: "current reasoning level is empty".into(),
+            });
+        }
+        let effective_model = self
+            .current_model
+            .as_ref()
+            .and_then(|current| self.models.iter().find(|model| model.id == *current))
+            .or_else(|| {
+                self.models
+                    .iter()
+                    .find(|model| model.is_default && model.available)
+            });
+        if let (Some(level), Some(model)) = (level.as_deref(), effective_model)
+            && !model.supported_reasoning_levels.is_empty()
+            && !model
+                .supported_reasoning_levels
+                .iter()
+                .any(|supported| supported == level)
+        {
+            return Err(AdapterError::InvalidRequest {
+                details: "current reasoning level is not supported by the effective model".into(),
+            });
+        }
+        self.current_reasoning_level = level;
+        Ok(self)
     }
 }
 

@@ -1,14 +1,56 @@
 use thiserror::Error;
 
-pub const AVAILABLE_COMMANDS: [&str; 7] = [
-    "/help",
-    "/runtime",
-    "/resume",
-    "/model",
-    "/permissions",
-    "/exit",
-    "/quit",
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CommandSpec {
+    pub name: &'static str,
+    pub description: &'static str,
+}
+
+pub const COMMANDS: [CommandSpec; 7] = [
+    CommandSpec {
+        name: "/help",
+        description: "Show commands and keyboard help",
+    },
+    CommandSpec {
+        name: "/runtime",
+        description: "Select the active runtime",
+    },
+    CommandSpec {
+        name: "/resume",
+        description: "Resume a saved session",
+    },
+    CommandSpec {
+        name: "/model",
+        description: "Select the runtime model",
+    },
+    CommandSpec {
+        name: "/permissions",
+        description: "Change the permission mode",
+    },
+    CommandSpec {
+        name: "/exit",
+        description: "Exit Pinvou",
+    },
+    CommandSpec {
+        name: "/quit",
+        description: "Exit Pinvou",
+    },
 ];
+
+pub fn suggestions(input: &str) -> Vec<&'static CommandSpec> {
+    let query = input.trim();
+    if !query.starts_with('/') || query.contains(char::is_whitespace) {
+        return Vec::new();
+    }
+    COMMANDS
+        .iter()
+        .filter(|command| command.name.starts_with(query))
+        .collect()
+}
+
+pub fn available_commands() -> Vec<&'static str> {
+    COMMANDS.iter().map(|command| command.name).collect()
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SlashCommand {
@@ -36,5 +78,38 @@ pub fn parse(input: &str) -> Result<Option<SlashCommand>, CommandError> {
         "/permissions" => Ok(Some(SlashCommand::Permissions)),
         "/exit" | "/quit" => Ok(Some(SlashCommand::Exit)),
         value => Err(CommandError::Unknown(value.to_owned())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::suggestions;
+
+    #[test]
+    fn slash_suggestions_share_the_parser_command_vocabulary_and_filter_by_prefix() {
+        assert_eq!(
+            suggestions("/")
+                .into_iter()
+                .map(|command| command.name)
+                .collect::<Vec<_>>(),
+            [
+                "/help",
+                "/runtime",
+                "/resume",
+                "/model",
+                "/permissions",
+                "/exit",
+                "/quit"
+            ]
+        );
+        assert_eq!(
+            suggestions("/r")
+                .into_iter()
+                .map(|command| command.name)
+                .collect::<Vec<_>>(),
+            ["/runtime", "/resume"]
+        );
+        assert!(suggestions("hello").is_empty());
+        assert!(suggestions("/model extra").is_empty());
     }
 }

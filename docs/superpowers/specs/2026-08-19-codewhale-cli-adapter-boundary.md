@@ -1,9 +1,9 @@
 # CodeWhale CLI Adapter 解耦合同
 
-> 状态：设计冻结（仅文档；不授权修改代码）。
+> 状态：Stage 1 已授权并完成实现（2026-08-26）；后续能力继续遵守本合同。
 > 日期：2026-08-19
 > 上游：分布式 Node Runtime 蓝图 §6.5、§10、§20。
-> 目标：让 CodeWhale 与 Codex、Claude Code、CodeBuddy 等一样，作为独立 Agent CLI 接入 Pinvou CLI；不修改主工程或 CodeWhale。
+> 目标：让 CodeWhale 与 Codex、Claude Code、CodeBuddy 等一样，作为独立 Agent CLI 接入 Pinvou CLI；Adapter 保持黑盒依赖，并允许 CodeWhale 提供可独立复用的公开宿主协议。
 
 ## 1. 硬边界
 
@@ -22,8 +22,8 @@ pinvou CLI/TUI
 
 1. `agent-adapter-codewhale`、Controller、Node、protocol 和正式 `pinvou` binary 不得链接 `codewhale-*` crate、`pinvou3-app`、Tauri 或 `pinvou-product-backend`。
 2. Adapter 不读取 CodeWhale 内部数据库、Rust 类型、私有模块或 submodule 源码路径；只依赖公开 CLI/wire 行为。
-3. Adapter 不修改 `CodeWhale/`，也不要求增加 fork patch 才能完成 Pinvou 阶段验收。CodeWhale 新能力必须先在其自身版本中独立发布，再由 Adapter 通过能力协商使用。
-4. 本路线不修改 `pinvou3-app/`、现有 Desktop 配置/数据、主工程 lockfile、打包清单、默认 feature 或运行行为。
+3. Adapter 不导入或链接 `CodeWhale/`。缺失的宿主能力只能作为公开、可复用、带 capability 与行为测试的 CodeWhale 协议扩展实现，再由 Adapter 通过能力协商使用；禁止增加仅 Pinvou 私有类型可调用的旁路。
+4. 本路线不修改 `pinvou3-app/`、现有 Desktop 配置/数据、主工程 lockfile 或打包清单；distributed CLI 的默认 Runtime 可以独立选择 CodeWhale Adapter。Desktop 仍是 Provider 配置的数据所有者，Adapter 只读取原子 settings 快照并传递 credential reference，明文凭据由 CodeWhale 从同一安全存储解析。
 5. CodeWhale 的认证、Provider、Skills、MCP、Session、Compaction、工具循环和工作区副作用仍由 CodeWhale 进程所有；Pinvou 只拥有 Logical Session、Attachment、调度、事件账本、ResourceRef 和 Node 连接。
 
 ## 2. 可用的公开入口与选择规则
@@ -75,7 +75,7 @@ Adapter 选择顺序：
 3. stdout 高输出时注入审批/interrupt，证明 reader 持续 drain 且 `control` 无队头阻塞；
 4. CodeWhale 崩溃、协议半帧、终态缺失、认证失效和 workspace 不可用的统一错误映射；
 5. resolved Cargo dependency graph 断言不存在 `codewhale-*`、Tauri、`pinvou3-app`、`pinvou-product-backend`；
-6. `pinvou3-app/`、`CodeWhale/`、主工程 lockfile/打包清单零 diff，并验证既有 Desktop/benchmark 合同不变。
+6. `pinvou3-app/`、主工程 lockfile/打包清单零 diff；若使用已授权的公开 CodeWhale 协议扩展，须同时更新其 Runtime API 文档、fork 清单、指纹和行为测试，并验证既有 Desktop/benchmark 合同不变。
 
 ## 6. 阶段位置
 

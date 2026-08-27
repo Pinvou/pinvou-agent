@@ -241,18 +241,6 @@ impl ControllerTuiBackend {
         operation(&mut wire).map_err(|error| map_with_cancel(error, &*cancel))
     }
 
-    fn detect(
-        &self,
-        operation_token: u64,
-        connection_id: u64,
-        runtime: &str,
-    ) -> Result<Value, BackendError> {
-        let response = self.control(operation_token, connection_id, |wire| {
-            wire.runtime_detect(Some(runtime))
-        })?;
-        require_response(response, "runtime.detect")
-    }
-
     fn new_connection_id(&self) -> u64 {
         self.in_flight
             .next_connection_id
@@ -385,6 +373,7 @@ fn is_unscoped_event(kind: RuntimeEventKind) -> bool {
         RuntimeEventKind::AttachmentStarted
             | RuntimeEventKind::AttachmentEnded
             | RuntimeEventKind::LogRecord
+            | RuntimeEventKind::UsageReported
             | RuntimeEventKind::Vendor
     )
 }
@@ -466,16 +455,22 @@ impl Backend for ControllerTuiBackend {
         map_model_list(&require_response(response, "model.list")?)
     }
 
-    fn switch_model(&self, operation_token: u64, model_id: String) -> Result<(), BackendError> {
+    fn switch_model(
+        &self,
+        operation_token: u64,
+        model_id: String,
+        reasoning_level: Option<String>,
+    ) -> Result<(), BackendError> {
         let operation = self.control_operation(operation_token)?;
         let connection_id = operation.connection_id;
         let prepared = self
             .control(operation_token, connection_id, |wire| {
-                wire.model_switch_prepare(&model_id)
+                wire.model_switch_prepare(&model_id, reasoning_level.as_deref())
             })
             .and_then(|message| require_response(message, "model.switch.prepare"))?;
         if prepared.get("status").and_then(Value::as_str) != Some("ready")
             || prepared.get("model_id").and_then(Value::as_str) != Some(model_id.as_str())
+            || optional_string(&prepared, "reasoning_level")? != reasoning_level
         {
             return Err(protocol_error("model switch prepare response is invalid"));
         }
@@ -487,12 +482,32 @@ impl Backend for ControllerTuiBackend {
             .and_then(|message| require_response(message, "model.switch.commit"))?;
         if committed.get("status").and_then(Value::as_str) != Some("ok")
             || committed.get("model_id").and_then(Value::as_str) != Some(model_id.as_str())
+            || optional_string(&committed, "reasoning_level")? != reasoning_level
         {
             return Err(protocol_error(
                 "model switch commit response does not match prepare",
             ));
         }
         Ok(())
+    }
+
+    fn save_model_credential(
+        &self,
+        operation_token: u64,
+        model_id: String,
+        api_key: String,
+    ) -> Result<(), BackendError> {
+        let operation = self.control_operation(operation_token)?;
+        let response = self
+            .control(operation_token, operation.connection_id, |wire| {
+                wire.model_credential_set(&model_id, &api_key)
+            })
+            .and_then(|message| require_response(message, "model.credential.set"))?;
+        if response.get("status").and_then(Value::as_str) == Some("ok") {
+            Ok(())
+        } else {
+            Err(protocol_error("model credential storage failed"))
+        }
     }
 
     fn permissions(&self, operation_token: u64) -> Result<PermissionStatus, BackendError> {
@@ -558,28 +573,33 @@ impl Backend for ControllerTuiBackend {
             }
             let event = RuntimeEventEnvelope::from_value(message.payload().clone())
                 .map_err(|_| protocol_error("controller returned a malformed runtime event"))?;
-            match (active_turn.as_deref(), event.turn_id()) {
-                (None, Some(turn_id)) if event.event_kind() == RuntimeEventKind::TurnStarted => {
-                    active_turn = Some(turn_id.to_owned());
-                }
-                (None, None) if is_unscoped_event(event.event_kind()) => {}
-                (Some(expected), Some(actual)) if expected == actual => {
-                    if event.event_kind() == RuntimeEventKind::TurnStarted {
+            // Connection-level telemetry may carry the turn that caused it, including
+            // a resumed historical turn. It does not participate in the new turn's
+            // ordering or identity checks.
+            if !is_unscoped_event(event.event_kind()) {
+                match (active_turn.as_deref(), event.turn_id()) {
+                    (None, Some(turn_id))
+                        if event.event_kind() == RuntimeEventKind::TurnStarted =>
+                    {
+                        active_turn = Some(turn_id.to_owned());
+                    }
+                    (Some(expected), Some(actual)) if expected == actual => {
+                        if event.event_kind() == RuntimeEventKind::TurnStarted {
+                            return Err(protocol_error(
+                                "controller started another turn on the same stream",
+                            ));
+                        }
+                    }
+                    (None, _) => {
                         return Err(protocol_error(
-                            "controller started another turn on the same stream",
+                            "controller returned a turn event before turn.started",
                         ));
                     }
-                }
-                (Some(_), None) if is_unscoped_event(event.event_kind()) => {}
-                (None, _) => {
-                    return Err(protocol_error(
-                        "controller returned a turn event before turn.started",
-                    ));
-                }
-                (Some(_), _) => {
-                    return Err(protocol_error(
-                        "controller returned an event for another turn",
-                    ));
+                    (Some(_), _) => {
+                        return Err(protocol_error(
+                            "controller returned an event for another turn",
+                        ));
+                    }
                 }
             }
             let terminal = event.event_kind() == RuntimeEventKind::TurnEnded;
@@ -674,17 +694,18 @@ impl Backend for ControllerTuiBackend {
     ) -> Result<RuntimeStatus, BackendError> {
         let operation = self.control_operation(operation_token)?;
         let connection_id = operation.connection_id;
-        let initial = self.detect(operation_token, connection_id, &runtime)?;
-        let initial_status = map_runtime_status(&initial, Some(&runtime))?;
-        if !initial_status.available {
-            return Err(map_status_error(&initial));
-        }
-
         let prepared = self
             .control(operation_token, connection_id, |wire| {
                 wire.runtime_switch_prepare(&runtime)
             })
             .and_then(|message| require_response(message, "runtime.switch.prepare"))?;
+        let target = prepared.get("target_status").ok_or_else(|| {
+            protocol_error("runtime switch prepare response has no target status")
+        })?;
+        let target_status = map_runtime_status(target, Some(&runtime))?;
+        if !target_status.available {
+            return Err(map_status_error(target));
+        }
         validate_prepare(&prepared, &runtime)?;
         let token = prepared["switch_token"].as_str().unwrap().to_owned();
         let committed = self
@@ -700,17 +721,7 @@ impl Backend for ControllerTuiBackend {
                 "runtime switch commit response does not match prepare",
             ));
         }
-        let final_value = self.detect(operation_token, connection_id, &runtime)?;
-        let final_status = map_runtime_status(&final_value, Some(&runtime))?;
-        if final_status.id != runtime {
-            return Err(protocol_error(
-                "runtime switch verification returned another runtime",
-            ));
-        }
-        if !final_status.available {
-            return Err(map_status_error(&final_value));
-        }
-        Ok(final_status)
+        Ok(target_status)
     }
 }
 
@@ -780,6 +791,8 @@ fn map_session_list(payload: &Value) -> Result<SessionList, BackendError> {
 }
 
 fn map_resume_result(payload: &Value) -> Result<ResumeResult, BackendError> {
+    let session_id = required_string(payload, "session_id", "session resume has no id")?;
+    let runtime_id = required_string(payload, "runtime", "session resume has no runtime")?;
     let snapshot = payload
         .get("snapshot")
         .ok_or_else(|| protocol_error("session resume has no snapshot"))?;
@@ -789,14 +802,26 @@ fn map_resume_result(payload: &Value) -> Result<ResumeResult, BackendError> {
         .ok_or_else(|| protocol_error("session snapshot has no normalized events"))?
         .iter()
         .cloned()
-        .map(|event| {
-            RuntimeEventEnvelope::from_value(event)
-                .map_err(|_| protocol_error("session snapshot contains a malformed event"))
+        .enumerate()
+        .map(|(index, event)| {
+            RuntimeEventEnvelope::from_value(event.clone())
+                .or_else(|error| {
+                    if runtime_id == "codex" {
+                        legacy_codex_snapshot_event(&session_id, index as u64 + 1, &event)
+                    } else {
+                        Err(error)
+                    }
+                })
+                .map_err(|error| {
+                    protocol_error(format!(
+                        "session snapshot contains a malformed event: {error}"
+                    ))
+                })
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(ResumeResult {
-        session_id: required_string(payload, "session_id", "session resume has no id")?,
-        runtime_id: required_string(payload, "runtime", "session resume has no runtime")?,
+        session_id,
+        runtime_id,
         model_id: optional_string(payload, "model_id")?,
         permission_profile: parse_permission_mode(
             payload.get("approval_profile").and_then(Value::as_str),
@@ -811,6 +836,84 @@ fn map_resume_result(payload: &Value) -> Result<ResumeResult, BackendError> {
             .ok_or_else(|| protocol_error("session snapshot has no cursor"))?,
         events,
     })
+}
+
+fn legacy_codex_snapshot_event(
+    session_id: &str,
+    seq: u64,
+    legacy: &Value,
+) -> Result<RuntimeEventEnvelope, pinvou_protocol::EventSchemaError> {
+    let item_type = legacy
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let turn_id = legacy
+        .get("turn_id")
+        .and_then(Value::as_str)
+        .unwrap_or("codex-history-turn");
+    let item_id = legacy
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("codex-history-item");
+    let content = legacy_codex_content(legacy);
+    let (kind, payload) = match item_type {
+        "userMessage" | "agentMessage" => (
+            "message.completed",
+            json!({
+                "role":if item_type == "userMessage" { "user" } else { "assistant" },
+                "content":content,
+                "item_id":item_id
+            }),
+        ),
+        "reasoning" => ("thinking.delta", json!({"content":content})),
+        "plan" => ("plan.delta", json!({"content":content})),
+        "commandExecution" | "mcpToolCall" | "dynamicToolCall" => (
+            "tool.call.completed",
+            json!({
+                "tool_id":item_id,
+                "name":legacy.get("name").and_then(Value::as_str).unwrap_or(item_type),
+                "result":content,
+                "is_error":legacy.get("status").and_then(Value::as_str).is_some_and(|status| matches!(status,"failed"|"error"))
+            }),
+        ),
+        _ => ("vendor", json!({})),
+    };
+    RuntimeEventEnvelope::from_value(json!({
+        "protocol_version":1,
+        "schema_version":1,
+        "node_id":"codex-history",
+        "logical_session_id":session_id,
+        "attachment_id":format!("codex-history-{session_id}"),
+        "work_id":null,
+        "collaborative_run_id":null,
+        "stream_id":"main",
+        "turn_id":turn_id,
+        "seq":seq,
+        "source_span":null,
+        "timestamp":"1970-01-01T00:00:00.000Z",
+        "rate_class":"R1",
+        "kind":kind,
+        "payload":payload,
+        "vendor_extension":if kind == "vendor" { Some(json!({"legacy_type":item_type})) } else { None }
+    }))
+}
+
+fn legacy_codex_content(event: &Value) -> String {
+    if let Some(text) = event.get("text").and_then(Value::as_str) {
+        return text.to_owned();
+    }
+    if let Some(output) = event.get("output").and_then(Value::as_str) {
+        return output.to_owned();
+    }
+    match event.get("content") {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
 }
 
 fn map_model_list(payload: &Value) -> Result<ModelList, BackendError> {
@@ -834,12 +937,39 @@ fn map_model_list(payload: &Value) -> Result<ModelList, BackendError> {
                     .get("available")
                     .and_then(Value::as_bool)
                     .ok_or_else(|| protocol_error("model has no availability flag"))?,
+                provider_id: optional_string(model, "provider_id")?,
+                provider_display_name: optional_string(model, "provider_display_name")?,
+                configured: model
+                    .get("configured")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+                requires_api_key: model
+                    .get("requires_api_key")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                supported_reasoning_levels: model
+                    .get("supported_reasoning_levels")
+                    .and_then(Value::as_array)
+                    .map(|levels| {
+                        levels
+                            .iter()
+                            .map(|level| {
+                                level.as_str().map(str::to_owned).ok_or_else(|| {
+                                    protocol_error("model reasoning level is not a string")
+                                })
+                            })
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .transpose()?
+                    .unwrap_or_default(),
+                default_reasoning_level: optional_string(model, "default_reasoning_level")?,
             })
         })
         .collect::<Result<Vec<_>, BackendError>>()?;
     Ok(ModelList {
         runtime_id: required_string(catalog, "runtime_id", "model catalog has no runtime")?,
         current_model: optional_string(catalog, "current_model")?,
+        current_reasoning_level: optional_string(catalog, "current_reasoning_level")?,
         models,
     })
 }
@@ -964,8 +1094,17 @@ fn validate_prepare(value: &Value, runtime: &str) -> Result<(), BackendError> {
     let compression = value.get("requires_compression").and_then(Value::as_bool);
     let context = value.get("context");
     let tools = value.get("tools");
+    let target_status = value.get("target_status");
     if value.get("runtime").and_then(Value::as_str) != Some(runtime)
         || value.get("status").and_then(Value::as_str) != Some("ready")
+        || target_status
+            .and_then(|value| value.get("runtime"))
+            .and_then(Value::as_str)
+            != Some(runtime)
+        || target_status
+            .and_then(|value| value.get("status"))
+            .and_then(Value::as_str)
+            != Some("available")
         || value
             .get("switch_token")
             .and_then(Value::as_str)
@@ -1215,7 +1354,7 @@ fn connect_local(endpoint: &LocalEndpoint) -> Result<Connected, DistributedError
 
 #[cfg(target_os = "linux")]
 fn connect_local(endpoint: &LocalEndpoint) -> Result<Connected, DistributedError> {
-    use std::os::unix::net::{Shutdown, UnixStream};
+    use std::{net::Shutdown, os::unix::net::UnixStream};
     let LocalEndpoint::UnixSocket(path) = endpoint else {
         return Err(DistributedError::controller(
             "controller endpoint is invalid",
@@ -1469,7 +1608,7 @@ mod tests {
             }
             _ => ("main", "R1"),
         };
-        let event = RuntimeEventEnvelope::from_value(json!({
+        let mut value = json!({
             "protocol_version": pinvou_protocol::IPC_VERSION,
             "schema_version": 1,
             "node_id": "node-a",
@@ -1485,8 +1624,11 @@ mod tests {
             "rate_class": rate_class,
             "kind": kind,
             "payload": payload
-        }))
-        .unwrap();
+        });
+        if kind == "vendor" {
+            value["vendor_extension"] = json!({"method":"thread/futureTelemetry/updated"});
+        }
+        let event = RuntimeEventEnvelope::from_value(value).unwrap();
         IpcMessage::event("runtime.event", serde_json::to_value(event).unwrap()).unwrap()
     }
 
@@ -1633,6 +1775,31 @@ mod tests {
     }
 
     #[test]
+    fn stream_accepts_resumed_turn_telemetry_before_new_turn_started() {
+        let connector = FakeConnector::with([FakePlan::Frames(vec![
+            event_for_turn(
+                1,
+                "resumed-turn",
+                "usage.reported",
+                json!({"input_tokens":12,"output_tokens":3,"cached_tokens":4}),
+            ),
+            event_for_turn(
+                2,
+                "resumed-turn",
+                "vendor",
+                json!({"method":"thread/futureTelemetry/updated"}),
+            ),
+            event(3, "turn.started", json!({"user_input_ref":"prompt"})),
+            event(4, "turn.ended", json!({"end_reason":"completed"})),
+        ])]);
+        let subject = backend(connector);
+
+        subject
+            .stream_turn(9, "hello".into(), Box::new(|_| Ok(())))
+            .unwrap();
+    }
+
+    #[test]
     fn stream_rejects_a_terminal_event_for_another_turn() {
         let subject = backend(FakeConnector::with([FakePlan::Frames(vec![
             event(1, "turn.started", json!({"user_input_ref":"prompt"})),
@@ -1711,17 +1878,14 @@ mod tests {
     }
 
     #[test]
-    fn runtime_switch_is_detect_prepare_commit_detect_without_deprecated_method() {
+    fn runtime_switch_uses_preflighted_prepare_then_commit_without_deprecated_method() {
         let connector = FakeConnector::with([
-            FakePlan::Frames(vec![response(
-                1,
-                json!({"runtime":"codex","status":"available","capabilities":{"interactive_chat":true}}),
-            )]),
             FakePlan::Frames(vec![response(
                 1,
                 json!({
                     "runtime":"codex",
                     "status":"ready",
+                    "target_status":{"runtime":"codex","status":"available","capabilities":{"interactive_chat":true}},
                     "switch_token":"secret-token",
                     "requires_compression":false,
                     "context":{"strategy":"none","reason":"turn_boundary_clean","portable_checkpoint":false},
@@ -1732,10 +1896,6 @@ mod tests {
                 1,
                 json!({"runtime":"codex","status":"ok","switch_token":"secret-token"}),
             )]),
-            FakePlan::Frames(vec![response(
-                1,
-                json!({"runtime":"codex","status":"available","capabilities":{"interactive_chat":true}}),
-            )]),
         ]);
         let subject = backend(connector.clone());
         let status = subject.switch_runtime(4, "codex".into()).unwrap();
@@ -1743,12 +1903,7 @@ mod tests {
         assert!(status.available);
         assert_eq!(
             connector.methods(),
-            [
-                "runtime.detect",
-                "runtime.switch.prepare",
-                "runtime.switch.commit",
-                "runtime.detect"
-            ]
+            ["runtime.switch.prepare", "runtime.switch.commit"]
         );
         assert!(
             !connector
@@ -1915,7 +2070,7 @@ mod tests {
         assert_eq!(resumed.runtime_id, "codex");
         let models = subject.model_list(22).unwrap();
         assert_eq!(models.current_model.as_deref(), Some("gpt-5.6"));
-        subject.switch_model(23, "gpt-5.5".into()).unwrap();
+        subject.switch_model(23, "gpt-5.5".into(), None).unwrap();
         let permissions = subject.permissions(24).unwrap();
         assert_eq!(permissions.current_profile, PermissionMode::Request);
         subject
@@ -1952,13 +2107,42 @@ mod tests {
         ]);
         let subject = backend(connector.clone());
 
-        let error = subject.switch_model(26, "gpt-5.5".into()).unwrap_err();
+        let error = subject
+            .switch_model(26, "gpt-5.5".into(), None)
+            .unwrap_err();
 
         assert_eq!(error.kind(), BackendErrorKind::Protocol);
         assert_eq!(
             connector.methods(),
             ["model.switch.prepare", "model.switch.commit"]
         );
+    }
+
+    #[test]
+    fn model_switch_carries_and_confirms_reasoning_level() {
+        let connector = FakeConnector::with([
+            FakePlan::Frames(vec![response(
+                1,
+                json!({"status":"ready","model_id":"gpt-5.6-sol","reasoning_level":"high","switch_token":"controller:10"}),
+            )]),
+            FakePlan::Frames(vec![response(
+                1,
+                json!({"status":"ok","model_id":"gpt-5.6-sol","reasoning_level":"high","attachment_epoch":8}),
+            )]),
+        ]);
+        let subject = backend(connector.clone());
+
+        subject
+            .switch_model(27, "gpt-5.6-sol".into(), Some("high".into()))
+            .unwrap();
+
+        let requests = connector.requests.lock().unwrap();
+        let prepared = requests[0]
+            .iter()
+            .find(|request| request.method() == Some("model.switch.prepare"))
+            .unwrap();
+        assert_eq!(prepared.payload()["model_id"], "gpt-5.6-sol");
+        assert_eq!(prepared.payload()["reasoning_level"], "high");
     }
 
     #[test]
@@ -2139,10 +2323,14 @@ mod tests {
             1,
             json!({
                 "runtime":"codex",
-                "status":"blocked_auth",
-                "error_kind":"blocked_auth",
-                "exit_code":4,
-                "message":"sign in required"
+                "status":"unavailable",
+                "target_status":{
+                    "runtime":"codex",
+                    "status":"blocked_auth",
+                    "error_kind":"blocked_auth",
+                    "exit_code":4,
+                    "message":"sign in required"
+                }
             }),
         )])]));
         let error = subject.switch_runtime(9, "codex".into()).unwrap_err();
@@ -2153,48 +2341,37 @@ mod tests {
 
     #[test]
     fn runtime_switch_rejects_prepare_without_context_and_tool_handoff_semantics() {
-        let connector = FakeConnector::with([
-            FakePlan::Frames(vec![response(
-                1,
-                json!({"runtime":"codex","status":"available"}),
-            )]),
-            FakePlan::Frames(vec![response(
-                1,
-                json!({
-                    "runtime":"codex",
-                    "status":"ready",
-                    "switch_token":"secret-token",
-                    "requires_compression":false,
-                    "context":{"strategy":"none"},
-                    "tools":{"active_tool_calls":0}
-                }),
-            )]),
-        ]);
+        let connector = FakeConnector::with([FakePlan::Frames(vec![response(
+            1,
+            json!({
+                "runtime":"codex",
+                "status":"ready",
+                "target_status":{"runtime":"codex","status":"available"},
+                "switch_token":"secret-token",
+                "requires_compression":false,
+                "context":{"strategy":"none"},
+                "tools":{"active_tool_calls":0}
+            }),
+        )])]);
         let subject = backend(connector.clone());
         let error = subject.switch_runtime(10, "codex".into()).unwrap_err();
         assert_eq!(error.kind(), BackendErrorKind::Protocol);
-        assert_eq!(
-            connector.methods(),
-            ["runtime.detect", "runtime.switch.prepare"]
-        );
+        assert_eq!(connector.methods(), ["runtime.switch.prepare"]);
     }
 
     #[test]
-    fn runtime_switch_requires_successful_commit_and_available_final_detect() {
+    fn runtime_switch_requires_a_successful_matching_commit() {
         let prepare = || {
             response(
                 1,
                 json!({
-                    "runtime":"codex","status":"ready","switch_token":"switch-1","requires_compression":false,
+                    "runtime":"codex","status":"ready","target_status":{"runtime":"codex","status":"available"},"switch_token":"switch-1","requires_compression":false,
                     "context":{"strategy":"none","reason":"clean","portable_checkpoint":false},
                     "tools":{"policy":"portable_or_replay_only","active_tool_calls":0,"blocking_missing_tools":[]}
                 }),
             )
         };
-        let detect = || response(1, json!({"runtime":"codex","status":"available"}));
-
         let failed_commit = backend(FakeConnector::with([
-            FakePlan::Frames(vec![detect()]),
             FakePlan::Frames(vec![prepare()]),
             FakePlan::Frames(vec![response(
                 1,
@@ -2209,24 +2386,19 @@ mod tests {
             BackendErrorKind::Protocol
         );
 
-        let unavailable_final = backend(FakeConnector::with([
-            FakePlan::Frames(vec![detect()]),
+        let mismatched_commit = backend(FakeConnector::with([
             FakePlan::Frames(vec![prepare()]),
             FakePlan::Frames(vec![response(
                 1,
-                json!({"runtime":"codex","status":"ok","switch_token":"switch-1"}),
-            )]),
-            FakePlan::Frames(vec![response(
-                1,
-                json!({"runtime":"codex","status":"blocked_auth","exit_code":4}),
+                json!({"runtime":"echo","status":"ok","switch_token":"switch-1"}),
             )]),
         ]));
         assert_eq!(
-            unavailable_final
+            mismatched_commit
                 .switch_runtime(12, "codex".into())
                 .unwrap_err()
                 .kind(),
-            BackendErrorKind::AuthBlocked
+            BackendErrorKind::Protocol
         );
     }
 
@@ -2349,6 +2521,58 @@ mod tests {
             assert_eq!(error.exit_code(), Some(code));
             assert_eq!(error.safe_message(), expected_message);
         }
+    }
+
+    #[test]
+    fn resume_accepts_legacy_codex_history_items() {
+        let resumed = map_resume_result(&json!({
+            "status":"ok",
+            "session_id":"thread-legacy",
+            "runtime":"codex",
+            "model_id":"gpt-5.6",
+            "approval_profile":"request",
+            "attachment_epoch":2,
+            "snapshot":{
+                "cursor":0,
+                "normalized_events":[
+                    {
+                        "turn_id":"turn-a",
+                        "turn_status":"interrupted",
+                        "type":"userMessage",
+                        "id":"item-1",
+                        "content":[{"type":"text","text":"continue"}],
+                        "text":null,
+                        "output":null,
+                        "status":null
+                    },
+                    {
+                        "turn_id":"turn-a",
+                        "turn_status":"interrupted",
+                        "type":"agentMessage",
+                        "id":"item-2",
+                        "content":null,
+                        "text":"working",
+                        "output":null,
+                        "status":null
+                    }
+                ]
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(resumed.events.len(), 2);
+        assert!(
+            resumed
+                .events
+                .iter()
+                .all(|event| event.event_kind() == RuntimeEventKind::MessageCompleted)
+        );
+        let first: Value = serde_json::from_str(resumed.events[0].payload().get()).unwrap();
+        let second: Value = serde_json::from_str(resumed.events[1].payload().get()).unwrap();
+        assert_eq!(first["role"], "user");
+        assert_eq!(first["content"], "continue");
+        assert_eq!(second["role"], "assistant");
+        assert_eq!(second["content"], "working");
     }
 
     #[cfg(windows)]

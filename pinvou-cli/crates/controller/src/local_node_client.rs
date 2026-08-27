@@ -127,6 +127,7 @@ impl LocalNodeClient {
         &mut self,
         thread_id: &str,
         model_id: Option<&str>,
+        reasoning_level: Option<&str>,
         approval_profile: &str,
         full_access_confirmed: bool,
     ) -> Result<IpcMessage, ControllerError> {
@@ -141,18 +142,36 @@ impl LocalNodeClient {
         if let Some(model_id) = model_id {
             payload["model_id"] = serde_json::json!(model_id);
         }
+        if let Some(reasoning_level) = reasoning_level {
+            payload["reasoning_level"] = serde_json::json!(reasoning_level);
+        }
         self.request("session.resume", payload)
     }
 
     pub fn model_list(
         &mut self,
         current_model: Option<&str>,
+        current_reasoning_level: Option<&str>,
     ) -> Result<IpcMessage, ControllerError> {
         let mut payload = serde_json::json!({});
         if let Some(current_model) = current_model {
             payload["current_model"] = serde_json::json!(current_model);
         }
+        if let Some(level) = current_reasoning_level {
+            payload["current_reasoning_level"] = serde_json::json!(level);
+        }
         self.request("model.list", payload)
+    }
+
+    pub fn model_credential_set(
+        &mut self,
+        model_id: &str,
+        api_key: &str,
+    ) -> Result<IpcMessage, ControllerError> {
+        self.request(
+            "model.credential.set",
+            serde_json::json!({"model_id":model_id,"api_key":api_key}),
+        )
     }
 
     pub fn permissions_inspect(&mut self) -> Result<IpcMessage, ControllerError> {

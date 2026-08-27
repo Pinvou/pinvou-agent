@@ -1,14 +1,19 @@
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
+};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use crate::{
+    commands::{CommandSpec, suggestions},
+    model::{ConnectionState, Interaction, Model, Overlay, ToolState, TranscriptEntry, TurnState},
+    theme,
 };
 
-use crate::model::{
-    ConnectionState, Interaction, Model, Overlay, ToolState, TranscriptEntry, TurnState,
-};
+mod overlays;
 
 const MIN_WIDTH: u16 = 60;
 const MIN_HEIGHT: u16 = 16;
@@ -30,7 +35,9 @@ pub fn render(frame: &mut Frame<'_>, model: &Model) {
         return;
     }
 
-    let welcome_height = if model.transcript.entries().is_empty() {
+    let command_suggestions = visible_command_suggestions(model);
+    let welcome_height = if model.transcript.entries().is_empty() && command_suggestions.is_empty()
+    {
         6
     } else {
         0
@@ -40,7 +47,7 @@ pub fn render(frame: &mut Frame<'_>, model: &Model) {
         .constraints([
             Constraint::Length(welcome_height),
             Constraint::Min(5),
-            Constraint::Length(2),
+            Constraint::Length(3),
             Constraint::Length(2),
         ])
         .split(area);
@@ -49,20 +56,96 @@ pub fn render(frame: &mut Frame<'_>, model: &Model) {
         render_welcome(frame, regions[0], model);
     }
     render_transcript(frame, regions[1], model);
+    render_command_menu(frame, regions[1], model, &command_suggestions);
     render_composer(frame, regions[2], model);
     render_status(frame, regions[3], model);
 
     if matches!(model.interaction, Interaction::None) && matches!(model.turn, TurnState::Idle) {
         match &model.overlay {
             Overlay::None => {}
-            Overlay::Help { commands } => render_help_overlay(frame, area, model, commands),
-            Overlay::RuntimeList => render_runtime_overlay(frame, area, model),
-            Overlay::ResumeList => render_session_overlay(frame, area, model),
-            Overlay::ModelList => render_model_overlay(frame, area, model),
-            Overlay::PermissionList => render_permission_overlay(frame, area, model),
-            Overlay::FullAccessConfirmation => render_full_access_confirmation(frame, area),
+            Overlay::Help { commands } => overlays::render_help(frame, area, model, commands),
+            Overlay::RuntimeList => overlays::render_runtime(frame, area, model),
+            Overlay::ResumeList => overlays::render_session(frame, area, model),
+            Overlay::ModelList => overlays::render_model(frame, area, model),
+            Overlay::ModelLevelList => overlays::render_model_level(frame, area, model),
+            Overlay::ApiKeyInput => overlays::render_api_key(frame, area, model),
+            Overlay::PermissionList => overlays::render_permission(frame, area, model),
+            Overlay::FullAccessConfirmation => {
+                overlays::render_full_access_confirmation(frame, area)
+            }
         }
     }
+}
+
+fn visible_command_suggestions(model: &Model) -> Vec<&'static CommandSpec> {
+    if model.turn != TurnState::Idle
+        || model.interaction != Interaction::None
+        || model.overlay != Overlay::None
+    {
+        return Vec::new();
+    }
+    suggestions(&model.composer.input)
+}
+
+fn render_command_menu(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    model: &Model,
+    commands: &[&CommandSpec],
+) {
+    if commands.is_empty() || area.height < 3 {
+        return;
+    }
+    let height = (commands.len() as u16 + 2).min(area.height);
+    let popup = Rect::new(
+        area.x,
+        area.bottom().saturating_sub(height),
+        area.width,
+        height,
+    );
+    let capacity = height.saturating_sub(2) as usize;
+    let selected = model.selected_command.min(commands.len().saturating_sub(1));
+    let start = selected
+        .saturating_sub(capacity.saturating_sub(1))
+        .min(commands.len().saturating_sub(capacity));
+    let lines = commands
+        .iter()
+        .skip(start)
+        .take(capacity)
+        .enumerate()
+        .map(|(offset, command)| {
+            let is_selected = start + offset == selected;
+            Line::from(vec![
+                Span::styled(
+                    if is_selected { " › " } else { "   " },
+                    if is_selected {
+                        theme::accent_bold()
+                    } else {
+                        theme::muted()
+                    },
+                ),
+                Span::styled(
+                    format!("{:<14}", command.name),
+                    if is_selected {
+                        theme::accent_bold()
+                    } else {
+                        theme::text()
+                    },
+                ),
+                Span::styled(command.description, theme::muted()),
+            ])
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .title("Commands")
+                .borders(Borders::ALL)
+                .border_style(theme::border()),
+        ),
+        popup,
+    );
 }
 
 fn render_too_small(frame: &mut Frame<'_>, area: Rect) {
@@ -92,24 +175,34 @@ fn render_welcome(frame: &mut Frame<'_>, area: Rect, model: &Model) {
         ConnectionState::Failed(_) => "failed",
     };
     let title = Line::from(vec![
-        Span::styled(
-            "Pinvou Agent",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled("◆ PINVOU", theme::accent_bold()),
         Span::raw("  ·  multi-runtime coding agent"),
     ]);
-    let model_name = model.model_id.as_deref().unwrap_or("model: auto");
+    let model_name = model_label(model);
+    let model_level = model.model_level.as_deref().unwrap_or("discovering");
     let context = Line::from(format!("  {}", model.workspace.display()));
     let runtime = Line::from(format!(
-        "  {}  ·  {}  ·  {}  ·  {connection}",
+        "  {}  ·  model: {}  ·  level: {}  ·  {}  ·  {connection}",
         model.runtime.display_name,
         model_name,
+        model_level,
         model.permission_profile.as_str()
     ));
     frame.render_widget(
-        Paragraph::new(vec![title, Line::default(), context, runtime]),
+        Paragraph::new(vec![
+            title,
+            Line::default(),
+            Line::from(Span::styled(
+                "What would you like to build?",
+                theme::text().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Start with a task, or use /resume to restore context.",
+                theme::muted(),
+            )),
+            context,
+            runtime,
+        ]),
         area,
     );
 }
@@ -118,8 +211,14 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, model: &Model) {
     let mut lines = Vec::new();
     for entry in model.transcript.entries() {
         match entry {
-            TranscriptEntry::User(text) => push_flow(&mut lines, "❯", text, Color::Green),
-            TranscriptEntry::Assistant(text) => push_flow(&mut lines, "●", text, Color::Cyan),
+            TranscriptEntry::User(text) => push_user(&mut lines, text, area.width),
+            TranscriptEntry::Thinking(text) => push_thinking(&mut lines, text, area.width),
+            TranscriptEntry::Assistant(text) => {
+                push_flow(&mut lines, "●", text, theme::ACCENT_SOFT)
+            }
+            TranscriptEntry::Error(message) => {
+                push_notice(&mut lines, "Error", message, theme::ERROR)
+            }
             TranscriptEntry::Tool {
                 name,
                 output,
@@ -131,15 +230,12 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, model: &Model) {
                     ToolState::Completed => "done",
                     ToolState::Failed => "failed",
                 };
-                push_flow(
-                    &mut lines,
-                    "●",
-                    &format!("Tool · {name} · {state}\n{output}"),
-                    Color::Blue,
-                );
+                push_tool(&mut lines, name, state, output);
             }
         }
     }
+
+    render_activity(&mut lines, model);
 
     match &model.interaction {
         Interaction::ApprovalPending(request) => push_card(
@@ -172,8 +268,21 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, model: &Model) {
         Interaction::None => {}
     }
 
-    if let Some(error) = &model.last_backend_error {
-        push_card(&mut lines, "Error", error.safe_message(), Color::Red);
+    if let Some(error) = &model.last_backend_error
+        && !matches!(
+            model.transcript.entries().last(),
+            Some(TranscriptEntry::Error(message)) if message == error.safe_message()
+        )
+    {
+        push_notice(
+            &mut lines,
+            "Error",
+            &format!(
+                "{}\nThe current session is unchanged. Retry or reopen the relevant command.",
+                error.safe_message()
+            ),
+            theme::ERROR,
+        );
     }
 
     let visible_height = area.height as usize;
@@ -184,6 +293,137 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, model: &Model) {
         .min(u16::MAX as usize) as u16;
     let scroll = bottom.saturating_sub(model.transcript_scroll);
     frame.render_widget(paragraph.scroll((scroll, 0)), area);
+}
+
+fn render_activity(lines: &mut Vec<Line<'static>>, model: &Model) {
+    if !matches!(model.interaction, Interaction::None) {
+        return;
+    }
+    let (label, detail) = match model.turn {
+        TurnState::Idle => return,
+        TurnState::Starting { .. } => (
+            format!("Starting {} turn", model.runtime.display_name),
+            "waiting for runtime",
+        ),
+        TurnState::Streaming { .. } if model.pending_interrupt.is_some() => {
+            ("Cancelling turn".to_owned(), "waiting for runtime")
+        }
+        TurnState::Streaming { .. } => match model.transcript.entries().last() {
+            Some(TranscriptEntry::Tool {
+                name,
+                state: ToolState::Running,
+                ..
+            }) => (format!("Running {name}"), "Esc to interrupt"),
+            _ => ("Generating response".to_owned(), "Esc to interrupt"),
+        },
+    };
+    if !lines.is_empty() {
+        lines.push(Line::default());
+    }
+    const FRAMES: [&str; 4] = ["◒", "◐", "◓", "◑"];
+    let frame = FRAMES[usize::from(model.activity_frame()) % FRAMES.len()];
+    let elapsed = model.activity_elapsed().as_secs();
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {frame} "), theme::warning()),
+        Span::styled(label, theme::muted()),
+        Span::styled(format!("  ·  {elapsed}s  ·  {detail}"), theme::muted()),
+    ]));
+}
+
+fn push_tool(lines: &mut Vec<Line<'static>>, name: &str, state: &str, output: &str) {
+    if !lines.is_empty() {
+        lines.push(Line::default());
+    }
+    let state_style = match state {
+        "done" => Style::default().fg(theme::SUCCESS),
+        "failed" => theme::error(),
+        _ => theme::warning(),
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  ⌁ ", Style::default().fg(theme::TOOL)),
+        Span::styled(format!("Tool · {name}"), Style::default().fg(theme::TOOL)),
+        Span::styled(format!("  ·  {state}"), state_style),
+    ]));
+    for line in output.lines() {
+        lines.push(Line::from(vec![
+            Span::styled("    │ ", theme::border()),
+            Span::styled(line.to_owned(), theme::muted()),
+        ]));
+    }
+}
+
+fn push_user(lines: &mut Vec<Line<'static>>, text: &str, width: u16) {
+    if !lines.is_empty() {
+        lines.push(Line::default());
+    }
+    let width = usize::from(width);
+    let content_width = width.saturating_sub(4).max(1);
+    let background = Style::default().bg(theme::USER_MESSAGE_BG);
+    let marker = theme::accent_bold().bg(theme::USER_MESSAGE_BG);
+    let message = theme::text().bg(theme::USER_MESSAGE_BG);
+
+    lines.push(Line::from(Span::styled(" ".repeat(width), background)));
+    for (index, content) in wrap_visual(text, content_width).into_iter().enumerate() {
+        let content_width = UnicodeWidthStr::width(content.as_str());
+        lines.push(Line::from(vec![
+            Span::styled(if index == 0 { "  ❯ " } else { "    " }, marker),
+            Span::styled(content, message),
+            Span::styled(
+                " ".repeat(width.saturating_sub(4 + content_width)),
+                background,
+            ),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(" ".repeat(width), background)));
+}
+
+fn push_thinking(lines: &mut Vec<Line<'static>>, text: &str, width: u16) {
+    if !lines.is_empty() {
+        lines.push(Line::default());
+    }
+    let width = usize::from(width);
+    let content_width = width.saturating_sub(4).max(1);
+    let background = Style::default().bg(theme::THINKING_BG);
+    let marker = theme::warning().bg(theme::THINKING_BG);
+    let message = theme::muted().bg(theme::THINKING_BG);
+
+    lines.push(Line::from(Span::styled(" ".repeat(width), background)));
+    for (index, content) in wrap_visual(text, content_width).into_iter().enumerate() {
+        let rendered_width = UnicodeWidthStr::width(content.as_str());
+        lines.push(Line::from(vec![
+            Span::styled(if index == 0 { "  ◇ " } else { "    " }, marker),
+            Span::styled(content, message),
+            Span::styled(
+                " ".repeat(width.saturating_sub(4 + rendered_width)),
+                background,
+            ),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(" ".repeat(width), background)));
+}
+
+fn wrap_visual(text: &str, width: usize) -> Vec<String> {
+    let mut wrapped = Vec::new();
+    for source in text.split('\n') {
+        let mut line = String::new();
+        let mut line_width = 0;
+        for character in source.chars() {
+            let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+            if !line.is_empty() && line_width + character_width > width {
+                wrapped.push(std::mem::take(&mut line));
+                line_width = 0;
+            }
+            if character_width <= width {
+                line.push(character);
+                line_width += character_width;
+            }
+        }
+        wrapped.push(line);
+    }
+    if wrapped.is_empty() {
+        wrapped.push(String::new());
+    }
+    wrapped
 }
 
 fn push_flow(lines: &mut Vec<Line<'static>>, marker: &'static str, text: &str, color: Color) {
@@ -218,27 +458,106 @@ fn push_card(lines: &mut Vec<Line<'static>>, title: &str, content: &str, color: 
     lines.push(Line::from(Span::styled("  ╰─", Style::default().fg(color))));
 }
 
+fn push_notice(lines: &mut Vec<Line<'static>>, title: &str, content: &str, color: Color) {
+    if !lines.is_empty() {
+        lines.push(Line::default());
+    }
+    lines.push(Line::from(vec![
+        Span::styled("  │ ", Style::default().fg(color)),
+        Span::styled(
+            title.to_owned(),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    for line in content.lines() {
+        lines.push(Line::from(vec![
+            Span::styled("  │ ", Style::default().fg(color)),
+            Span::raw(line.to_owned()),
+        ]));
+    }
+}
+
 fn render_composer(frame: &mut Frame<'_>, area: Rect, model: &Model) {
     let composer = if matches!(model.interaction, Interaction::InputPending(_)) {
         &model.input_composer
     } else {
         &model.composer
     };
+    let input_width = usize::from(area.width.saturating_sub(7));
+    let visible_input = composer_tail(&composer.input, input_width);
     let input = if composer.input.is_empty() {
         Span::styled("Message Pinvou", Style::default().fg(Color::DarkGray))
     } else {
-        Span::raw(composer.input.as_str())
+        Span::raw(visible_input.as_str())
+    };
+    let border_style = if matches!(model.connection, ConnectionState::Connected) {
+        theme::border()
+    } else {
+        theme::warning()
     };
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::default(),
-            Line::from(vec![
-                Span::styled("❯ ", Style::default().fg(Color::Cyan)),
-                input,
-            ]),
-        ]),
+        Paragraph::new(Line::from(vec![
+            Span::styled("❯ ", theme::accent_bold()),
+            input,
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .padding(Padding::horizontal(1)),
+        ),
         area,
     );
+
+    let composer_is_focused = model.overlay == Overlay::None
+        && (matches!(model.interaction, Interaction::InputPending(_))
+            || (matches!(model.interaction, Interaction::None)
+                && matches!(model.turn, TurnState::Idle)));
+    if composer_is_focused {
+        let cursor_x = area
+            .x
+            .saturating_add(4)
+            .saturating_add(UnicodeWidthStr::width(visible_input.as_str()) as u16)
+            .min(area.right().saturating_sub(3));
+        frame.set_cursor_position((cursor_x, area.y.saturating_add(1)));
+    }
+}
+
+fn composer_tail(input: &str, max_width: usize) -> String {
+    let line = input.rsplit('\n').next().unwrap_or_default();
+    let mut width = 0;
+    let mut start = line.len();
+    for (index, character) in line.char_indices().rev() {
+        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if width + character_width > max_width {
+            break;
+        }
+        width += character_width;
+        start = index;
+    }
+    line[start..].to_owned()
+}
+
+fn left_elide(value: &str, max_width: usize) -> String {
+    if UnicodeWidthStr::width(value) <= max_width {
+        return value.to_owned();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+
+    let tail_width = max_width.saturating_sub(1);
+    let mut width = 0;
+    let mut start = value.len();
+    for (index, character) in value.char_indices().rev() {
+        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if width + character_width > tail_width {
+            break;
+        }
+        width += character_width;
+        start = index;
+    }
+    format!("…{}", &value[start..])
 }
 
 fn render_status(frame: &mut Frame<'_>, area: Rect, model: &Model) {
@@ -248,34 +567,74 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, model: &Model) {
         ConnectionState::Connected => "connected",
         ConnectionState::Failed(_) => "failed",
     };
-    let model_name = model.model_id.as_deref().unwrap_or("auto");
+    let model_name = model_label(model);
+    let model_level = model.model_level.as_deref().unwrap_or("discovering");
     let context = Line::from(Span::styled(
         format!(
-            "{}  ·  {}  ·  {}  ·  {connection}",
+            "{}  ·  model: {}  ·  level: {}  ·  {}  ·  {connection}",
             model.runtime.display_name,
             model_name,
+            model_level,
             model.permission_profile.as_str()
         ),
-        Style::default().fg(Color::DarkGray),
+        theme::muted(),
     ));
-    let mut spans = Vec::new();
-    if let Some(status) = model.status_message.as_deref() {
+    let keymap_text = keymap(model);
+    let workspace_budget = usize::from(area.width)
+        .saturating_sub(UnicodeWidthStr::width(keymap_text))
+        .saturating_sub(10)
+        .clamp(8, 72);
+    let workspace = left_elide(&model.workspace.display().to_string(), workspace_budget);
+    let mut spans = vec![
+        Span::styled(format!("cwd: {workspace}"), theme::muted()),
+        Span::raw("  ·  "),
+    ];
+    if let Some(status) =
+        model
+            .status_message
+            .as_deref()
+            .filter(|_| model.last_backend_error.is_none())
+            .filter(|status| {
+                !model.transcript.entries().iter().rev().any(
+                    |entry| matches!(entry, TranscriptEntry::Error(message) if message == *status),
+                )
+            })
+    {
         spans.push(Span::styled(
             status,
             Style::default().fg(if model.last_backend_error.is_some() {
-                Color::Red
+                theme::ERROR
             } else {
-                Color::DarkGray
+                theme::MUTED
             }),
         ));
         spans.push(Span::raw("  ·  "));
     }
-    spans.push(Span::styled(
-        keymap(model),
-        Style::default().fg(Color::DarkGray),
-    ));
+    spans.push(Span::styled(keymap_text, theme::muted()));
     let keymap = Line::from(spans);
     frame.render_widget(Paragraph::new(vec![context, keymap]), area);
+}
+
+fn model_label(model: &Model) -> String {
+    model
+        .model_id
+        .as_deref()
+        .and_then(|current| {
+            model
+                .model_candidates
+                .iter()
+                .find(|candidate| candidate.id == current)
+        })
+        .map(|candidate| {
+            candidate
+                .provider_display_name
+                .as_deref()
+                .or(candidate.provider_id.as_deref())
+                .map(|provider| format!("{provider} / {}", candidate.display_name))
+                .unwrap_or_else(|| candidate.display_name.clone())
+        })
+        .or_else(|| model.model_id.clone())
+        .unwrap_or_else(|| "discovering".into())
 }
 
 fn keymap(model: &Model) -> &'static str {
@@ -303,258 +662,10 @@ fn keymap(model: &Model) -> &'static str {
     if matches!(model.overlay, Overlay::RuntimeList) {
         return KEYMAP_RUNTIME;
     }
+    if !visible_command_suggestions(model).is_empty() {
+        return "↑/↓ select  ·  Enter run  ·  Esc close";
+    }
     KEYMAP_IDLE
-}
-
-fn render_help_overlay(frame: &mut Frame<'_>, area: Rect, model: &Model, commands: &[&str]) {
-    let width = area.width.saturating_sub(8).clamp(20, 60);
-    let desired_height = (commands.len() as u16).saturating_add(7);
-    let height = desired_height.min(area.height.saturating_sub(4)).max(5);
-    let popup = centered_rect(area, width, height);
-    let mut lines = vec![Line::from(Span::styled(
-        "Commands",
-        Style::default().add_modifier(Modifier::BOLD),
-    ))];
-    lines.extend(
-        commands
-            .iter()
-            .map(|command| Line::from(format!("  {command}"))),
-    );
-    lines.push(Line::default());
-    lines.push(Line::from(Span::styled(
-        keymap(model),
-        Style::default().fg(Color::DarkGray),
-    )));
-    frame.render_widget(Clear, popup);
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .title("Help · commands")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan)),
-        ),
-        popup,
-    );
-}
-
-fn render_runtime_overlay(frame: &mut Frame<'_>, area: Rect, model: &Model) {
-    let width = area.width.saturating_sub(8).clamp(20, 56);
-    let height = (model.runtime_candidates.len() as u16 + 6)
-        .min(area.height.saturating_sub(4))
-        .max(5);
-    let popup = centered_rect(area, width, height);
-    frame.render_widget(Clear, popup);
-    let pending = model
-        .pending_runtime_switch
-        .as_ref()
-        .map(|switch| format!("Switching to {}…", switch.target));
-    let mut lines = Vec::new();
-    if model.pending_runtime_list.is_some() {
-        lines.push(Line::from("Loading runtimes…"));
-    } else if model.runtime_candidates.is_empty() {
-        lines.push(Line::from(format!(
-            "● {} ({}) · {}",
-            model.runtime.display_name,
-            model.runtime.id,
-            if model.runtime.available {
-                "available"
-            } else {
-                "unavailable"
-            }
-        )));
-    } else {
-        for (index, runtime) in model.runtime_candidates.iter().enumerate() {
-            let selected = if index == model.selected_runtime {
-                ">"
-            } else {
-                " "
-            };
-            let active = if runtime.id == model.runtime.id {
-                "●"
-            } else {
-                " "
-            };
-            let availability = if runtime.available {
-                "available"
-            } else {
-                "unavailable"
-            };
-            let capabilities = runtime
-                .capability_summary
-                .as_deref()
-                .map(|summary| format!(" · {summary}"))
-                .unwrap_or_default();
-            lines.push(Line::from(format!(
-                "{selected} {active} {} ({}) · {availability}{capabilities}",
-                runtime.display_name, runtime.id,
-            )));
-        }
-    }
-    lines.push(Line::default());
-    if let Some(pending) = pending {
-        lines.push(Line::from(pending));
-    }
-    lines.push(Line::from(keymap(model)));
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .title("Switch runtime")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan)),
-        ),
-        popup,
-    );
-}
-
-fn render_session_overlay(frame: &mut Frame<'_>, area: Rect, model: &Model) {
-    let query = model.session_query.to_ascii_lowercase();
-    let candidates = model
-        .session_candidates
-        .iter()
-        .filter(|session| {
-            query.is_empty()
-                || session.title.to_ascii_lowercase().contains(&query)
-                || session.id.to_ascii_lowercase().contains(&query)
-        })
-        .collect::<Vec<_>>();
-    let mut lines = vec![Line::from(format!("Search: {}_", model.session_query))];
-    if model.pending_session_list.is_some() {
-        lines.push(Line::from("Loading sessions…"));
-    } else if candidates.is_empty() {
-        lines.push(Line::from("No matching sessions"));
-    } else {
-        lines.extend(candidates.iter().enumerate().map(|(index, session)| {
-            let selected = if index == model.selected_session {
-                ">"
-            } else {
-                " "
-            };
-            Line::from(format!(
-                "{selected} {} · {} · {} · {}",
-                session.title, session.runtime_id, session.status, session.last_active_at
-            ))
-        }));
-    }
-    lines.push(Line::default());
-    lines.push(Line::from(
-        "Type to filter · ↑/↓ select · Enter resume · Esc close",
-    ));
-    render_list_popup(frame, area, "Resume session", lines);
-}
-
-fn render_model_overlay(frame: &mut Frame<'_>, area: Rect, model: &Model) {
-    let mut lines = Vec::new();
-    if model.pending_model_list.is_some() {
-        lines.push(Line::from("Loading models…"));
-    } else {
-        lines.extend(
-            model
-                .model_candidates
-                .iter()
-                .enumerate()
-                .map(|(index, candidate)| {
-                    let selected = if index == model.selected_model {
-                        ">"
-                    } else {
-                        " "
-                    };
-                    let current = if Some(candidate.id.as_str()) == model.model_id.as_deref() {
-                        "current"
-                    } else if candidate.is_default {
-                        "default"
-                    } else {
-                        ""
-                    };
-                    let availability = if candidate.available {
-                        ""
-                    } else {
-                        "unsupported"
-                    };
-                    Line::from(format!(
-                        "{selected} {} ({}) · {} {}",
-                        candidate.display_name, candidate.id, current, availability
-                    ))
-                }),
-        );
-    }
-    lines.push(Line::default());
-    lines.push(Line::from("↑/↓ select · Enter switch · Esc close"));
-    render_list_popup(frame, area, "Switch model", lines);
-}
-
-fn render_permission_overlay(frame: &mut Frame<'_>, area: Rect, model: &Model) {
-    let mut lines = Vec::new();
-    if model.pending_permissions.is_some() {
-        lines.push(Line::from("Loading permission modes…"));
-    } else if let Some(status) = &model.permission_status {
-        lines.push(Line::from(format!(
-            "Control: {:?} · evidence {}",
-            status.control_strength, status.evidence_version
-        )));
-        for (index, profile) in status.supported_profiles.iter().enumerate() {
-            let selected = if index == model.selected_permission {
-                ">"
-            } else {
-                " "
-            };
-            let current = if *profile == model.permission_profile {
-                "current"
-            } else {
-                ""
-            };
-            lines.push(Line::from(format!(
-                "{selected} {} · {current}",
-                profile.as_str()
-            )));
-        }
-        for guard in &status.residual_guards {
-            lines.push(Line::from(format!("  residual guard: {guard}")));
-        }
-    }
-    lines.push(Line::default());
-    lines.push(Line::from("↑/↓ select · Enter switch · Esc close"));
-    render_list_popup(frame, area, "Permissions", lines);
-}
-
-fn render_full_access_confirmation(frame: &mut Frame<'_>, area: Rect) {
-    render_list_popup(
-        frame,
-        area,
-        "Confirm full access",
-        vec![
-            Line::from("Full access disables routine approval and sandbox restrictions."),
-            Line::from("Only continue in a workspace you trust."),
-            Line::default(),
-            Line::from("Enter confirm · Esc cancel"),
-        ],
-    );
-}
-
-fn render_list_popup(frame: &mut Frame<'_>, area: Rect, title: &str, lines: Vec<Line<'_>>) {
-    let width = area.width.saturating_sub(8).clamp(32, 76);
-    let height = (lines.len() as u16 + 2)
-        .min(area.height.saturating_sub(4))
-        .max(5);
-    let popup = centered_rect(area, width, height);
-    frame.render_widget(Clear, popup);
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .title(title)
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan)),
-        ),
-        popup,
-    );
-}
-
-fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
-    let horizontal = area.width.saturating_sub(width) / 2;
-    let vertical = area.height.saturating_sub(height) / 2;
-    area.inner(Margin {
-        horizontal,
-        vertical,
-    })
 }
 
 #[cfg(test)]
@@ -566,11 +677,15 @@ mod tests {
     use super::render;
     use crate::{
         action::ApprovalDecision,
-        backend::RuntimeStatus,
+        backend::{
+            ModelCandidate, PermissionControlStrength, PermissionMode, PermissionStatus,
+            RuntimeStatus,
+        },
         model::{
             ApprovalRequest, ConnectionState, InputRequest, Interaction, Model, OperationToken,
             Overlay, PendingInterrupt, PendingRuntimeSwitch, ToolState, TranscriptEntry, TurnState,
         },
+        theme,
     };
 
     fn model() -> Model {
@@ -594,7 +709,7 @@ mod tests {
     }
 
     #[test]
-    fn active_chat_is_a_continuous_claude_code_style_flow() {
+    fn active_chat_visually_separates_user_and_assistant_messages() {
         let output = screen(&model(), 100, 30);
         for expected in [
             "❯ Explain the change",
@@ -626,6 +741,84 @@ mod tests {
             !output.contains("multi-runtime coding agent"),
             "chat view must not keep a dashboard banner"
         );
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &model())).unwrap();
+        let buffer = terminal.backend().buffer();
+        let user_row = (0..buffer.area.height)
+            .find(|&y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains("❯ Explain the change")
+            })
+            .expect("rendered user message row");
+        assert!((0..buffer.area.width).all(|x| buffer[(x, user_row)].bg == theme::USER_MESSAGE_BG));
+        let assistant_row = (0..buffer.area.height)
+            .find(|&y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains("● I updated the runtime stream.")
+            })
+            .expect("rendered assistant message row");
+        assert!(
+            (0..buffer.area.width).all(|x| buffer[(x, assistant_row)].bg != theme::USER_MESSAGE_BG)
+        );
+    }
+
+    #[test]
+    fn thinking_and_errors_are_rendered_inside_the_session_flow() {
+        let mut thinking = model();
+        thinking
+            .transcript
+            .append_thinking("Checking the runtime route…");
+        thinking
+            .transcript
+            .push_error("Provider rejected the request");
+        let output = screen(&thinking, 100, 30);
+        assert!(output.contains("◇ Checking the runtime route…"), "{output}");
+        assert!(output.contains("Error"), "{output}");
+        assert!(output.contains("Provider rejected the request"), "{output}");
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &thinking)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let thinking_row = (0..buffer.area.height)
+            .find(|&y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains("◇ Checking the runtime route")
+            })
+            .expect("rendered thinking row");
+        assert!((0..buffer.area.width).all(|x| buffer[(x, thinking_row)].bg == theme::THINKING_BG));
+    }
+
+    #[test]
+    fn focused_composer_places_the_terminal_cursor_after_unicode_input() {
+        let mut focused = model();
+        focused.composer.input = "你好".into();
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| render(frame, &focused)).unwrap();
+
+        terminal.backend_mut().assert_cursor_position((8, 26));
+    }
+
+    #[test]
+    fn long_composer_input_keeps_the_cursor_inside_the_editor() {
+        let mut focused = model();
+        focused.composer.input = "界".repeat(40);
+        let backend = TestBackend::new(60, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| render(frame, &focused)).unwrap();
+
+        terminal.backend_mut().assert_cursor_position((56, 12));
     }
 
     #[test]
@@ -637,13 +830,209 @@ mod tests {
         empty.connection = ConnectionState::Connected;
         let output = screen(&empty, 100, 30);
         for expected in [
-            "Pinvou Agent",
+            "◆ PINVOU",
             "D:/work/pinvou",
             "OpenAI Codex",
             "connected",
             "Message Pinvou",
         ] {
             assert!(output.contains(expected), "missing {expected:?}\n{output}");
+        }
+    }
+
+    #[test]
+    fn connected_context_always_labels_current_runtime_model_and_level() {
+        let mut connected = model();
+        connected.model_id = Some("gpt-5.6-codex".into());
+        connected.model_level = Some("high".into());
+
+        let output = screen(&connected, 100, 30);
+
+        assert!(output.contains("OpenAI Codex"));
+        assert!(output.contains("model: gpt-5.6-codex"));
+        assert!(output.contains("level: high"));
+        assert!(output.contains("cwd: D:/work/pinvou"));
+    }
+
+    #[test]
+    fn active_chat_keeps_the_tail_of_a_long_working_directory_visible() {
+        let mut active = model();
+        active.workspace = PathBuf::from(
+            "/home/developer/Workspace/SourceCode/pinvou-agent-distributed-node-runtime-stage1",
+        );
+
+        let output = screen(&active, 60, 16);
+
+        assert!(
+            output.contains("cwd: …"),
+            "missing elided cwd label\n{output}"
+        );
+        assert!(output.contains("-stage1"), "missing cwd tail\n{output}");
+    }
+
+    #[test]
+    fn slash_input_shows_filterable_command_descriptions_and_navigation_help() {
+        let mut commands = model();
+        commands.transcript = crate::model::Transcript::default();
+        commands.composer.input = "/".into();
+
+        let output = screen(&commands, 60, 16);
+        for expected in [
+            "Commands",
+            "/help",
+            "/runtime",
+            "/resume",
+            "/model",
+            "/permissions",
+            "/exit",
+            "/quit",
+            "Enter run",
+            "Esc close",
+        ] {
+            assert!(output.contains(expected), "missing {expected:?}\n{output}");
+        }
+        assert!(output.contains("Show commands"));
+
+        commands.composer.input = "/mo".into();
+        let filtered = screen(&commands, 80, 24);
+        assert!(filtered.contains("/model"));
+        assert!(!filtered.contains("/runtime"));
+        assert!(!filtered.contains("/permissions"));
+    }
+
+    #[test]
+    fn active_turn_renders_a_visible_working_state_in_the_chat_flow() {
+        let mut starting = model();
+        starting.turn = TurnState::Starting {
+            operation_token: OperationToken::new(41),
+        };
+        let started = std::time::Instant::now();
+        starting.advance_activity(started);
+        starting.advance_activity(started + std::time::Duration::from_millis(2_250));
+        let starting_output = screen(&starting, 100, 30);
+        assert!(starting_output.contains("Starting OpenAI Codex turn"));
+        assert!(starting_output.contains("◓"));
+        assert!(starting_output.contains("2s"));
+        assert!(starting_output.contains("waiting for runtime"));
+
+        starting.turn = TurnState::Streaming {
+            operation_token: OperationToken::new(41),
+            turn_id: "turn-41".into(),
+        };
+        let streaming_output = screen(&starting, 100, 30);
+        assert!(streaming_output.contains("Generating response"));
+        assert!(streaming_output.contains("Esc to interrupt"));
+
+        starting.pending_interrupt = Some(PendingInterrupt {
+            turn_id: "turn-41".into(),
+            operation_token: OperationToken::new(42),
+        });
+        let cancelling_output = screen(&starting, 100, 30);
+        assert!(cancelling_output.contains("Cancelling turn"));
+        assert!(cancelling_output.contains("waiting for runtime"));
+    }
+
+    #[test]
+    fn product_overlays_explain_source_current_state_and_risk() {
+        let mut model = model();
+        model.model_id = Some("gpt-5.6-codex".into());
+        model.model_level = Some("medium".into());
+        model.model_candidates = vec![
+            ModelCandidate {
+                id: "gpt-5.6-codex".into(),
+                display_name: "GPT-5.6 Codex".into(),
+                is_default: false,
+                available: true,
+                provider_id: Some("openai".into()),
+                provider_display_name: Some("OpenAI".into()),
+                configured: true,
+                requires_api_key: true,
+                supported_reasoning_levels: vec!["medium".into(), "high".into()],
+                default_reasoning_level: Some("high".into()),
+            },
+            ModelCandidate {
+                id: "gpt-5.6-mini".into(),
+                display_name: "GPT-5.6 Mini".into(),
+                is_default: true,
+                available: false,
+                provider_id: Some("openai".into()),
+                provider_display_name: Some("OpenAI".into()),
+                configured: false,
+                requires_api_key: true,
+                supported_reasoning_levels: vec!["medium".into()],
+                default_reasoning_level: Some("medium".into()),
+            },
+        ];
+        model.overlay = Overlay::ModelList;
+        let model_output = screen(&model, 100, 30);
+        for expected in [
+            "Select model",
+            "Available from the active OpenAI Codex runtime",
+            "current",
+            "default",
+            "unsupported",
+            "level medium",
+        ] {
+            assert!(
+                model_output.contains(expected),
+                "missing {expected:?}\n{model_output}"
+            );
+        }
+        model.model_candidates = (0..12)
+            .map(|index| ModelCandidate {
+                id: format!("model-{index}"),
+                display_name: format!("Model {index}"),
+                is_default: false,
+                available: true,
+                provider_id: None,
+                provider_display_name: None,
+                configured: true,
+                requires_api_key: false,
+                supported_reasoning_levels: Vec::new(),
+                default_reasoning_level: None,
+            })
+            .collect();
+        model.selected_model = 11;
+        model.model_id = Some("model-11".into());
+        let narrow_model_output = screen(&model, 60, 16);
+        assert!(narrow_model_output.contains("Model 11"));
+        assert!(narrow_model_output.contains("current"));
+        assert!(narrow_model_output.contains("Esc close"));
+
+        model.overlay = Overlay::PermissionList;
+        model.permission_status = Some(PermissionStatus {
+            current_profile: PermissionMode::Request,
+            supported_profiles: vec![
+                PermissionMode::Request,
+                PermissionMode::Assisted,
+                PermissionMode::FullAccess,
+            ],
+            control_strength: PermissionControlStrength::Partial,
+            native_mode: Some("on-request".into()),
+            sandbox: Some("workspace-write".into()),
+            residual_guards: vec!["OS policy remains active".into()],
+            evidence_version: "codex-1".into(),
+        });
+        let permission_output = screen(&model, 100, 30);
+        for expected in [
+            "Permission mode",
+            "partial",
+            "Ask before side effects",
+            "Known low-risk work",
+            "Confirmation required",
+            "OS policy remains active",
+        ] {
+            assert!(
+                permission_output.contains(expected),
+                "missing {expected:?}\n{permission_output}"
+            );
+        }
+        let narrow_permission_output = screen(&model, 60, 16);
+        for expected in ["Permission mode", "request", "current", "Esc close"] {
+            assert!(
+                narrow_permission_output.contains(expected),
+                "missing {expected:?}\n{narrow_permission_output}"
+            );
         }
     }
 
@@ -706,12 +1095,21 @@ mod tests {
             crate::backend::BackendErrorKind::Operation,
             "runtime disconnected unexpectedly",
         ));
-        assert!(screen(&error, 100, 30).contains("Error"));
+        let error_output = screen(&error, 100, 30);
+        assert!(error_output.contains("Error"));
+        assert!(error_output.contains("current session is unchanged"));
+        assert!(error_output.contains("Retry or reopen"));
 
         let mut tool = model();
         tool.transcript.start_tool("tool-1".into(), "shell".into());
         tool.transcript
             .append_tool_output("tool-1", "cargo test: ok");
+        tool.turn = TurnState::Streaming {
+            operation_token: OperationToken::new(13),
+            turn_id: "turn-13".into(),
+        };
+        let running_tool_output = screen(&tool, 100, 30);
+        assert!(running_tool_output.contains("Running shell"));
         tool.transcript.complete_tool("tool-1", false);
         let tool_output = screen(&tool, 100, 30);
         assert!(tool_output.contains("Tool · shell"));

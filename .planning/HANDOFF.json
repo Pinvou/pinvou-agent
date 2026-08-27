@@ -1,13 +1,13 @@
 {
   "version": "1.0",
-  "timestamp": "2026-08-25T14:47:53+08:00",
+  "timestamp": "2026-08-26T19:13:00+08:00",
   "phase": null,
   "phase_name": "Pinvou CLI TUI 产品化重设计",
   "phase_dir": null,
   "plan": null,
-  "task": 2,
+  "task": 6,
   "total_tasks": 6,
-  "status": "paused",
+  "status": "in_progress",
   "completed_tasks": [
     {
       "id": 1,
@@ -24,34 +24,46 @@
     {
       "id": 3,
       "name": "确定产品级 TUI 视觉和交互方向",
-      "status": "in_progress",
-      "progress": "已确认当前差距与 Ratatui 技术可行性；尚待决定是否打开本地浏览器视觉稿，与实际 TUI 并排对比。"
+      "status": "done",
+      "progress": "用户已确认浏览器视觉稿方向并决定保留 Ratatui。"
+    },
+    {
+      "id": 4,
+      "name": "制作并评审浏览器视觉稿与实际 TUI 的并排对比",
+      "status": "done",
+      "progress": "视觉稿覆盖欢迎、等待、流式、工具、错误、模型和权限状态，用户已确认。"
+    },
+    {
+      "id": 5,
+      "name": "冻结等待状态、聊天流和 overlay 交互合同",
+      "status": "done",
+      "progress": "视觉合同已写入会话、模型与权限设计文档。"
     }
   ],
   "remaining_tasks": [
     {
-      "id": 4,
-      "name": "制作并评审浏览器视觉稿与实际 TUI 的并排对比",
-      "status": "not_started"
-    },
-    {
-      "id": 5,
-      "name": "冻结等待状态、聊天流和 /agent、/mode 等弹窗交互合同",
-      "status": "not_started"
-    },
-    {
       "id": 6,
-      "name": "形成实施计划并重构 TUI 组件体系",
-      "status": "not_started"
+      "name": "分批重构 TUI 组件体系并完成真实终端验收",
+      "status": "in_progress",
+      "progress": "第一批主题、overlay、等待/工具/错误、composer 和窄终端视窗已落地；第二批低频动画、elapsed time、当前 Runtime 模型/reasoning level、可切换 reasoning level 与 `/` command menu 已完成；对照 pi 补齐了 Unicode 感知的可见编辑光标和用户/模型消息视觉分界；状态区在聊天期间持续显示 cwd，窄终端保留目录尾部；`/runtime` 同 runtime 已短路，不同 runtime 复用单次预检 host；独立 CodeWhale Adapter 已作为默认 Pinvou Agent Runtime并自动共享 Desktop Provider/模型/凭据引用/route limits/reasoning，Linux 真实回复已通过，待组件继续拆分、多尺寸快照和 Windows Terminal 逐屏复核。"
     }
   ],
-  "blockers": [],
+  "blockers": [
+    {
+      "name": "Linux 三进程自动拉起合约失败",
+      "detail": "chat_binary_auto_starts_controller_and_real_node_for_one_turn 报 controller IPC stream closed；不在本批渲染路径。"
+    },
+    {
+      "name": "严格 distributed Clippy 既有债务",
+      "detail": "pinvou-seglog 既有 collapsible_if 告警在 -D warnings 下阻断；pinvou-tui 自身已通过。"
+    }
+  ],
   "async_jobs": [],
   "human_actions_pending": [
     {
-      "action": "确认是否使用浏览器视觉稿，并排对比实际 TUI 与目标方案（需要打开本地 URL）",
-      "context": "当前 TUI 与此前 HTML 视觉方向偏差明显；先用可视化对齐验收标准，避免继续凭文字微调。",
-      "blocking": true
+      "action": "在 Windows Terminal 运行真实 Pinvou/Codex 链路并逐屏对比已确认视觉稿",
+      "context": "核对颜色降级、宽字符、动画、重绘以及 60x16/80x24/120x36 表现。",
+      "blocking": false
     }
   ],
   "decisions": [
@@ -61,17 +73,64 @@
       "phase": null
     },
     {
-      "decision": "暂不因当前成品粗糙而替换 Ratatui",
-      "rationale": "OpenAI Codex CLI 同样使用 Ratatui/Crossterm，当前差距主要来自组件架构、状态表达、弹窗交互与视觉验收不足。",
+      "decision": "保留 Ratatui 并建立主题、组件、overlay、响应式和快照架构",
+      "rationale": "用户已确认视觉方向；当前差距来自产品组件与状态表达，不是框架能力。",
       "phase": null
     },
     {
-      "decision": "RuntimeEvent 在 turn.started 前允许无 turn_id 的 vendor、log.record 和 attachment 生命周期事件",
-      "rationale": "真实 Codex 会在首个回合前发出初始化事件，拒绝它们会导致 TUI 在答案到达前断开。",
+      "decision": "连接级 vendor、log、attachment 与 usage 遥测不参与新 turn 的身份和顺序校验",
+      "rationale": "真实 Codex 在启动及 resume 后会回放初始化通知和旧 turn usage；文本、工具、审批与终止事件仍严格校验当前 turn。",
+      "phase": null
+    },
+    {
+      "decision": "模型和 reasoning level 作为一次原子选择，并由 Runtime 目录约束可选 level",
+      "rationale": "避免展示 Runtime 不支持的 level；Codex 使用 turn/start.effort，Workspace 持久化模型与 level 的组合。",
+      "phase": null
+    },
+    {
+      "decision": "CodeWhale Adapter 作为 Pinvou Agent 默认 Runtime，Codex 作为第三方 Runtime，Echo 不进入产品列表",
+      "rationale": "Pinvou Desktop 自有 Agent Runtime 基于 CodeWhale；distributed CLI 通过公开 stdio 协议适配独立 CodeWhale 可执行文件，不链接其内部 crate。Desktop 保持配置所有权，Adapter 只传 credential reference，CodeWhale 从同一安全存储解析凭据。",
       "phase": null
     }
   ],
-  "uncommitted_files": [],
-  "next_action": "先询问用户：要使用浏览器视觉稿，并排对比实际 TUI 与目标方案吗？（需要打开本地 URL）",
-  "context_notes": "用户明确认为 TUI 质量决定 Pinvou CLI 成败，目标是接近 Claude Code / OpenAI Codex CLI 的成熟终端体验，而非 demo。当前测试进程已停止；tmp/ 是本机临时产物，不提交。"
+  "uncommitted_files": [
+    ".planning/.continue-here.md",
+    ".planning/HANDOFF.json",
+    "docs/superpowers/specs/2026-08-25-pinvou-tui-session-model-permissions-design.md",
+    "pinvou-cli/crates/agent-adapter-codex/src/process.rs",
+    "pinvou-cli/crates/agent-adapter-codex/src/projector.rs",
+    "pinvou-cli/crates/agent-adapter-codex/tests/adapter_contract.rs",
+    "pinvou-cli/crates/agent-adapter-codewhale/Cargo.toml",
+    "pinvou-cli/crates/agent-adapter-codewhale/src/lib.rs",
+    "pinvou-cli/crates/agent-adapter-codewhale/src/process.rs",
+    "pinvou-cli/crates/cli/src/distributed/tui_backend.rs",
+    "pinvou-cli/crates/cli/src/distributed/mod.rs",
+    "pinvou-cli/crates/cli/tests/tui_pty_contract.rs",
+    "pinvou-cli/crates/controller/src/local_node_supervisor.rs",
+    "pinvou-cli/crates/controller/src/local_node_client.rs",
+    "pinvou-cli/crates/controller/src/session.rs",
+    "pinvou-cli/crates/controller/src/workspace_store.rs",
+    "pinvou-cli/crates/controller/tests/session_store_contract.rs",
+    "pinvou-cli/crates/node/src/session.rs",
+    "pinvou-cli/crates/node/Cargo.toml",
+    "pinvou-cli/crates/node/tests/node_contract.rs",
+    "pinvou-cli/crates/runtime-api/src/model.rs",
+    "pinvou-cli/crates/runtime-api/tests/runtime_contract.rs",
+    "pinvou-cli/crates/tui/src/action.rs",
+    "pinvou-cli/crates/tui/src/app.rs",
+    "pinvou-cli/crates/tui/src/backend.rs",
+    "pinvou-cli/crates/tui/src/lib.rs",
+    "pinvou-cli/crates/tui/src/model.rs",
+    "pinvou-cli/crates/tui/src/theme.rs",
+    "pinvou-cli/crates/tui/src/update.rs",
+    "pinvou-cli/crates/tui/Cargo.toml",
+    "pinvou-cli/Cargo.lock",
+    "pinvou-cli/crates/tui/src/commands.rs",
+    "pinvou-cli/crates/tui/src/view.rs",
+    "pinvou-cli/crates/tui/src/view/overlays.rs",
+    "pinvou-cli/crates/tui/tests/app_contract.rs",
+    "pinvou-cli/crates/tui/tests/production_contract.rs"
+  ],
+  "next_action": "拆分 transcript、interaction、composer/status 组件并建立 60x16、80x24、120x36 稳定快照，同时在 Windows Terminal 做真实状态逐屏验收。",
+  "context_notes": "两批 TUI 产品化重构已通过 65 unit + 28 app + 2 production、Node contract 31、distributed TUI Backend 28、Runtime API 1+13、Codex Adapter 9+12、3 PTY、distributed CLI 定向合约、TUI/Runtime API Clippy、依赖边界和 architecture guard；200ms tick 有界可丢弃且不影响高优先级输入。独立 CodeWhale Adapter 当前 7 passed、1 live smoke ignored；CodeWhale app-server 79 passed，Node contract 31 与 distributed dependency boundary passed，fork guard fast 与 architecture guard passed。CodeWhale 是默认 Runtime，Codex 是第三方选择，Echo 仅保留为内部测试 fixture。Adapter 自动读取 Desktop 原子 settings 快照，向公开 app/runtime-profile/set 传递 Provider/model/base URL/route limits/reasoning/credential reference；CodeWhale 自行解析同一 Keychain/文件存储，明文不进入 argv/协议/持久化。Linux 真实 TUI 显示 /models/target · off，并通过 Desktop vLLM endpoint 回复 DESKTOP_PROVIDER_OK；64K output cap 与遗留 high reasoning 错误均已修复。macOS 签名身份不同导致的首次 Keychain 授权提示仍需实机验收。输入 / 可打开 7 项可过滤命令菜单。对照本机 pi 实际界面与组件源码，composer 已显式显示 Unicode 感知光标，用户消息使用全宽独立背景而 assistant 保持普通背景；中文与长输入光标、角色背景均有测试。stage1 zero-diff 仍被长期分支既有跨边界差异阻断。"
 }

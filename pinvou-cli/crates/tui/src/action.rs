@@ -5,6 +5,25 @@ use crate::backend::{
     RuntimeStatus, SessionList,
 };
 
+#[derive(Clone, Eq, PartialEq)]
+pub struct SecretInput(String);
+
+impl SecretInput {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn expose(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for SecretInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SecretInput([REDACTED])")
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApprovalDecision {
     AllowOnce,
@@ -65,12 +84,24 @@ pub enum Action {
         result: Result<ResumeResult, BackendError>,
     },
     LoadModelList,
+    RefreshModelStatus,
     ModelListLoaded {
         operation_token: crate::model::OperationToken,
         result: Result<ModelList, BackendError>,
     },
-    ModelSwitch(String),
+    ModelSwitch {
+        model_id: String,
+        reasoning_level: Option<String>,
+    },
     ModelSwitched {
+        operation_token: crate::model::OperationToken,
+        result: Result<(), BackendError>,
+    },
+    ModelCredentialSubmitted {
+        model_id: String,
+        api_key: SecretInput,
+    },
+    ModelCredentialSaved {
         operation_token: crate::model::OperationToken,
         result: Result<(), BackendError>,
     },
@@ -132,6 +163,12 @@ pub enum Effect {
     SwitchModel {
         operation_token: crate::model::OperationToken,
         model_id: String,
+        reasoning_level: Option<String>,
+    },
+    SaveModelCredential {
+        operation_token: crate::model::OperationToken,
+        model_id: String,
+        api_key: SecretInput,
     },
     LoadPermissions {
         operation_token: crate::model::OperationToken,

@@ -1,10 +1,13 @@
-use pinvou_protocol::{HelloClient, HelloServer, IpcMessage, IpcMessageKind, RuntimeEventEnvelope};
+use pinvou_protocol::{
+    HelloClient, HelloServer, IpcMessage, IpcMessageKind, RateClass, RuntimeEventEnvelope,
+    RuntimeEventKind, StreamId,
+};
 use pinvou_runtime_api::{
     ApprovalProfile, LogicalSessionId, ModelId, SessionDescriptor, SessionStatus,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -53,6 +56,7 @@ struct ActiveSession {
     attachment_epoch: u64,
     runtime_id: String,
     model_id: Option<String>,
+    reasoning_level: Option<String>,
     approval_profile: ApprovalProfile,
 }
 
@@ -63,12 +67,14 @@ enum PreparedOperation {
         native_session_id: String,
         attachment_epoch: u64,
         model_id: Option<String>,
+        reasoning_level: Option<String>,
     },
     Model {
         logical_id: Option<LogicalSessionId>,
         attachment_epoch: u64,
         runtime_id: String,
         model_id: String,
+        reasoning_level: Option<String>,
     },
     Permissions {
         logical_id: Option<LogicalSessionId>,
@@ -323,6 +329,14 @@ impl ControllerSession {
                     .ok_or(ControllerError::InvalidMessage)?;
                 let mut client = LocalNodeClient::connect(&route.endpoint, &route.instance_id)?;
                 let response = client.runtime_switch_commit(runtime, switch_token)?;
+                if response
+                    .payload()
+                    .get("status")
+                    .and_then(|value| value.as_str())
+                    == Some("ok")
+                {
+                    self.commit_runtime_attachment_switch(runtime)?;
+                }
                 Ok(vec![
                     IpcMessage::response(id, response.payload().clone())
                         .map_err(|_| ControllerError::InvalidMessage)?,
@@ -355,11 +369,23 @@ impl ControllerSession {
                     .model_id
                     .as_ref()
                     .map(|model| model.as_str().to_owned());
+                let reasoning_level = self
+                    .persistent
+                    .as_ref()
+                    .and_then(|persistent| persistent.lock().ok())
+                    .and_then(|state| {
+                        state
+                            .preferences
+                            .reasoning_level_by_runtime
+                            .get(&metadata.descriptor.runtime_id)
+                            .cloned()
+                    });
                 let token = self.prepare_token(PreparedOperation::Resume {
                     logical_id: logical_id.clone(),
                     native_session_id,
                     attachment_epoch: metadata.attachment_epoch,
                     model_id,
+                    reasoning_level,
                 })?;
                 Ok(vec![
                     IpcMessage::response(
@@ -394,6 +420,7 @@ impl ControllerSession {
                     native_session_id,
                     attachment_epoch,
                     model_id,
+                    reasoning_level,
                 } = prepared
                 else {
                     return Err(ControllerError::InvalidMessage);
@@ -430,6 +457,7 @@ impl ControllerSession {
                 let resumed = client.session_resume(
                     &native_session_id,
                     model_id.as_deref(),
+                    reasoning_level.as_deref(),
                     approval_profile_name(profile),
                     full_access_confirmed,
                 )?;
@@ -460,6 +488,7 @@ impl ControllerSession {
                         attachment_epoch: new_epoch,
                         runtime_id: runtime_id.clone(),
                         model_id: model_id.clone(),
+                        reasoning_level: reasoning_level.clone(),
                         approval_profile: profile,
                     });
                     state.preferences.recent_session = Some(logical_id.clone());
@@ -469,6 +498,12 @@ impl ControllerSession {
                             .preferences
                             .model_by_runtime
                             .insert(runtime_id.clone(), model_id.clone());
+                    }
+                    if let Some(reasoning_level) = reasoning_level.as_ref() {
+                        state
+                            .preferences
+                            .reasoning_level_by_runtime
+                            .insert(runtime_id.clone(), reasoning_level.clone());
                     }
                     state
                         .workspace_store
@@ -500,9 +535,59 @@ impl ControllerSession {
                     .local_node
                     .as_ref()
                     .ok_or(ControllerError::UnsupportedRequest)?;
-                let current_model = self.current_active()?.and_then(|active| active.model_id);
+                let active = self.current_active()?;
+                let remembered = self
+                    .persistent
+                    .as_ref()
+                    .and_then(|persistent| persistent.lock().ok())
+                    .and_then(|state| {
+                        let runtime = state.preferences.runtime.as_ref()?;
+                        Some((
+                            state.preferences.model_by_runtime.get(runtime).cloned(),
+                            state
+                                .preferences
+                                .reasoning_level_by_runtime
+                                .get(runtime)
+                                .cloned(),
+                        ))
+                    })
+                    .unwrap_or((None, None));
                 let mut client = LocalNodeClient::connect(&route.endpoint, &route.instance_id)?;
-                let response = client.model_list(current_model.as_deref())?;
+                let response = client.model_list(
+                    active
+                        .as_ref()
+                        .and_then(|active| active.model_id.as_deref())
+                        .or(remembered.0.as_deref()),
+                    active
+                        .as_ref()
+                        .and_then(|active| active.reasoning_level.as_deref())
+                        .or(remembered.1.as_deref()),
+                )?;
+                Ok(vec![
+                    IpcMessage::response(id, response.payload().clone())
+                        .map_err(|_| ControllerError::InvalidMessage)?,
+                ])
+            }
+            Some("model.credential.set") => {
+                self.ensure_turn_idle()?;
+                let route = self
+                    .local_node
+                    .as_ref()
+                    .ok_or(ControllerError::UnsupportedRequest)?;
+                let model_id = request
+                    .payload()
+                    .get("model_id")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or(ControllerError::InvalidMessage)?;
+                let api_key = request
+                    .payload()
+                    .get("api_key")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or(ControllerError::InvalidMessage)?;
+                let mut client = LocalNodeClient::connect(&route.endpoint, &route.instance_id)?;
+                let response = client.model_credential_set(model_id, api_key)?;
                 Ok(vec![
                     IpcMessage::response(id, response.payload().clone())
                         .map_err(|_| ControllerError::InvalidMessage)?,
@@ -517,6 +602,17 @@ impl ControllerSession {
                     .filter(|value| !value.is_empty())
                     .ok_or(ControllerError::InvalidMessage)?
                     .to_owned();
+                let reasoning_level = request
+                    .payload()
+                    .get("reasoning_level")
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .filter(|level| !level.is_empty())
+                            .map(str::to_owned)
+                            .ok_or(ControllerError::InvalidMessage)
+                    })
+                    .transpose()?;
                 let route = self
                     .local_node
                     .as_ref()
@@ -527,26 +623,37 @@ impl ControllerSession {
                     active
                         .as_ref()
                         .and_then(|active| active.model_id.as_deref()),
+                    active
+                        .as_ref()
+                        .and_then(|active| active.reasoning_level.as_deref()),
                 )?;
                 let models = response
                     .payload()
                     .pointer("/catalog/models")
                     .and_then(serde_json::Value::as_array)
                     .ok_or(ControllerError::InvalidMessage)?;
-                if !models.iter().any(|model| {
+                let selected_model = models.iter().find(|model| {
                     model.get("id").and_then(serde_json::Value::as_str) == Some(&model_id)
-                        && model
-                            .get("available")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false)
-                }) {
+                        && model.get("available").and_then(serde_json::Value::as_bool) == Some(true)
+                });
+                let Some(selected_model) = selected_model else {
+                    return Err(ControllerError::InvalidMessage);
+                };
+                if let Some(level) = reasoning_level.as_deref()
+                    && !selected_model
+                        .get("supported_reasoning_levels")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|levels| {
+                            levels.iter().any(|item| item.as_str() == Some(level))
+                        })
+                {
                     return Err(ControllerError::InvalidMessage);
                 }
                 let catalog_runtime_id = response
                     .payload()
                     .pointer("/catalog/runtime_id")
                     .and_then(serde_json::Value::as_str)
-                    .unwrap_or("codex")
+                    .unwrap_or("codewhale")
                     .to_owned();
                 let runtime_id = active
                     .as_ref()
@@ -557,11 +664,12 @@ impl ControllerSession {
                     attachment_epoch: active.as_ref().map_or(0, |active| active.attachment_epoch),
                     runtime_id,
                     model_id: model_id.clone(),
+                    reasoning_level: reasoning_level.clone(),
                 })?;
                 Ok(vec![
                     IpcMessage::response(
                         id,
-                        json!({"status":"ready","model_id":model_id,"switch_token":token}),
+                        json!({"status":"ready","model_id":model_id,"reasoning_level":reasoning_level,"switch_token":token}),
                     )
                     .map_err(|_| ControllerError::InvalidMessage)?,
                 ])
@@ -575,6 +683,7 @@ impl ControllerSession {
                     attachment_epoch,
                     runtime_id,
                     model_id,
+                    reasoning_level,
                 } = prepared
                 else {
                     return Err(ControllerError::InvalidMessage);
@@ -599,6 +708,7 @@ impl ControllerSession {
                     let response = client.session_resume(
                         &active.native_session_id,
                         Some(&model_id),
+                        reasoning_level.as_deref(),
                         approval_profile_name(active.approval_profile),
                         full_access_confirmed,
                     )?;
@@ -616,6 +726,7 @@ impl ControllerSession {
                     active,
                     &runtime_id,
                     &model_id,
+                    reasoning_level.as_deref(),
                     new_epoch,
                     request.payload(),
                 )?;
@@ -623,7 +734,7 @@ impl ControllerSession {
                 Ok(vec![
                     IpcMessage::response(
                         id,
-                        json!({"status":"ok","model_id":model_id,"attachment_epoch":new_epoch}),
+                        json!({"status":"ok","model_id":model_id,"reasoning_level":reasoning_level,"attachment_epoch":new_epoch}),
                     )
                     .map_err(|_| ControllerError::InvalidMessage)?,
                 ])
@@ -731,6 +842,7 @@ impl ControllerSession {
                     let response = client.session_resume(
                         &active.native_session_id,
                         active.model_id.as_deref(),
+                        active.reasoning_level.as_deref(),
                         approval_profile_name(profile),
                         full_access_confirmed,
                     )?;
@@ -892,11 +1004,45 @@ impl ControllerSession {
             .clone())
     }
 
+    fn commit_runtime_attachment_switch(&self, runtime_id: &str) -> Result<(), ControllerError> {
+        let Some(persistent) = &self.persistent else {
+            return Ok(());
+        };
+        let mut state = persistent
+            .lock()
+            .map_err(|_| ControllerError::InvalidMessage)?;
+        state.preferences.runtime = Some(runtime_id.to_owned());
+        if let Some(active) = state.active.as_mut() {
+            active.native_session_id.clear();
+            active.attachment_id = None;
+            active.attachment_epoch = 1;
+            active.runtime_id = runtime_id.to_owned();
+            active.model_id = None;
+            active.reasoning_level = None;
+
+            let logical_id = active.logical_id.clone();
+            let mut snapshot = state.session_store.restore(&logical_id)?;
+            snapshot.descriptor.runtime_id = runtime_id.to_owned();
+            snapshot.descriptor.model_id = None;
+            snapshot.descriptor.native_session_id = None;
+            snapshot.descriptor.status = SessionStatus::Active;
+            state.session_store.write_snapshot(&logical_id, snapshot)?;
+            let mut metadata = state.session_store.metadata(&logical_id)?;
+            metadata.attachment_epoch = 1;
+            state.session_store.update_metadata(metadata)?;
+        }
+        state
+            .workspace_store
+            .save(&state.workspace, &state.preferences)?;
+        Ok(())
+    }
+
     fn commit_model_selection(
         &self,
         active: Option<ActiveSession>,
         runtime_id: &str,
         model_id: &str,
+        reasoning_level: Option<&str>,
         new_epoch: Option<u64>,
         _: &serde_json::Value,
     ) -> Result<(), ControllerError> {
@@ -911,9 +1057,21 @@ impl ControllerSession {
             .preferences
             .model_by_runtime
             .insert(runtime_id.to_owned(), model_id.to_owned());
+        if let Some(reasoning_level) = reasoning_level {
+            state
+                .preferences
+                .reasoning_level_by_runtime
+                .insert(runtime_id.to_owned(), reasoning_level.to_owned());
+        } else {
+            state
+                .preferences
+                .reasoning_level_by_runtime
+                .remove(runtime_id);
+        }
         if let Some(mut active) = active {
             let new_epoch = new_epoch.ok_or(ControllerError::InvalidMessage)?;
             active.model_id = Some(model_id.to_owned());
+            active.reasoning_level = reasoning_level.map(str::to_owned);
             active.attachment_epoch = new_epoch;
             let mut metadata = state.session_store.metadata(&active.logical_id)?;
             metadata.attachment_epoch = new_epoch;
@@ -970,11 +1128,41 @@ impl ControllerSession {
             .to_ascii_lowercase();
         let mut sessions = BTreeMap::<String, SessionDescriptor>::new();
         let workspace = if let Some(persistent) = &self.persistent {
-            let state = persistent
+            let mut state = persistent
                 .lock()
                 .map_err(|_| ControllerError::InvalidMessage)?;
+            repair_missing_native_session_ids(&mut state)?;
             for descriptor in state.session_store.list_for_workspace(&state.workspace_key) {
                 sessions.insert(descriptor.id.as_str().to_owned(), descriptor);
+            }
+            let canonical_native_ids = sessions
+                .values()
+                .filter_map(|descriptor| {
+                    descriptor
+                        .native_session_id
+                        .as_deref()
+                        .filter(|native| descriptor.id.as_str() != *native)
+                        .map(|native| (native.to_owned(), descriptor.id.as_str().to_owned()))
+                })
+                .collect::<HashMap<_, _>>();
+            for (native_id, canonical_id) in &canonical_native_ids {
+                sessions.remove(native_id);
+                if state
+                    .preferences
+                    .recent_session
+                    .as_ref()
+                    .is_some_and(|recent| recent.as_str() == native_id)
+                {
+                    state.preferences.recent_session = Some(
+                        LogicalSessionId::new(canonical_id.clone())
+                            .map_err(|_| ControllerError::InvalidMessage)?,
+                    );
+                }
+            }
+            if !canonical_native_ids.is_empty() {
+                state
+                    .workspace_store
+                    .save(&state.workspace, &state.preferences)?;
             }
             state.workspace.clone()
         } else {
@@ -994,7 +1182,20 @@ impl ControllerSession {
             })();
             match native_result {
                 Ok(native) => {
+                    let persisted_native_ids = sessions
+                        .values()
+                        .filter_map(|descriptor| descriptor.native_session_id.as_deref())
+                        .map(str::to_owned)
+                        .collect::<HashSet<_>>();
                     for descriptor in native {
+                        if persisted_native_ids.contains(descriptor.id.as_str())
+                            || descriptor
+                                .native_session_id
+                                .as_deref()
+                                .is_some_and(|id| persisted_native_ids.contains(id))
+                        {
+                            continue;
+                        }
                         sessions
                             .entry(descriptor.id.as_str().to_owned())
                             .or_insert(descriptor);
@@ -1082,6 +1283,20 @@ impl ControllerSession {
             if let Some(model_id) = active.model_id.as_ref() {
                 context["model_id"] = json!(model_id);
             }
+            if let Some(reasoning_level) = active.reasoning_level.as_ref() {
+                context["reasoning_level"] = json!(reasoning_level);
+            }
+            if active.native_session_id.is_empty() && active.attachment_id.is_none() {
+                let snapshot = persistent
+                    .lock()
+                    .map_err(|_| ControllerError::InvalidMessage)?
+                    .session_store
+                    .restore(&active.logical_id)?;
+                let items = conversation_handoff_items(&snapshot.normalized_events);
+                if !items.is_empty() {
+                    context["history_items"] = Value::Array(items);
+                }
+            }
             return Ok(Some((active.logical_id, context)));
         }
         let route = self
@@ -1098,9 +1313,6 @@ impl ControllerSession {
                 state.preferences.clone(),
             )
         };
-        if preferences.approval_profile == ApprovalProfile::FullAccess {
-            return Err(ControllerError::InvalidMessage);
-        }
         let mut client = LocalNodeClient::connect(&route.endpoint, &route.instance_id)?;
         let runtime_response = client.runtime_list()?;
         let runtime_id = runtime_response
@@ -1110,30 +1322,40 @@ impl ControllerSession {
             .filter(|value| !value.is_empty() && *value != "none")
             .ok_or(ControllerError::InvalidMessage)?
             .to_owned();
-        let catalog = client.model_list(None)?;
+        let catalog = client.model_list(None, None)?;
         let models = catalog
             .payload()
             .pointer("/catalog/models")
             .and_then(serde_json::Value::as_array)
             .ok_or(ControllerError::InvalidMessage)?;
         let remembered = preferences.model_by_runtime.get(&runtime_id);
-        let model_id = remembered
-            .filter(|remembered| {
+        let model_id = catalog
+            .payload()
+            .pointer("/catalog/current_model")
+            .and_then(serde_json::Value::as_str)
+            .filter(|current| {
                 models.iter().any(|model| {
-                    model.get("id").and_then(serde_json::Value::as_str) == Some(remembered.as_str())
+                    model.get("id").and_then(serde_json::Value::as_str) == Some(*current)
                         && model
                             .get("available")
                             .and_then(serde_json::Value::as_bool)
                             .unwrap_or(false)
                 })
             })
-            .cloned()
+            .map(str::to_owned)
             .or_else(|| {
-                catalog
-                    .payload()
-                    .pointer("/catalog/current_model")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned)
+                remembered
+                    .filter(|remembered| {
+                        models.iter().any(|model| {
+                            model.get("id").and_then(serde_json::Value::as_str)
+                                == Some(remembered.as_str())
+                                && model
+                                    .get("available")
+                                    .and_then(serde_json::Value::as_bool)
+                                    .unwrap_or(false)
+                        })
+                    })
+                    .cloned()
             })
             .or_else(|| {
                 models
@@ -1153,6 +1375,29 @@ impl ControllerSession {
                     .map(str::to_owned)
             })
             .ok_or(ControllerError::InvalidMessage)?;
+        let model_supports_level = |level: &str| {
+            models
+                .iter()
+                .find(|model| {
+                    model.get("id").and_then(serde_json::Value::as_str) == Some(&model_id)
+                })
+                .and_then(|model| model.get("supported_reasoning_levels"))
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|levels| levels.iter().any(|item| item.as_str() == Some(level)))
+        };
+        let reasoning_level = catalog
+            .payload()
+            .pointer("/catalog/current_reasoning_level")
+            .and_then(serde_json::Value::as_str)
+            .filter(|level| model_supports_level(level))
+            .map(str::to_owned)
+            .or_else(|| {
+                preferences
+                    .reasoning_level_by_runtime
+                    .get(&runtime_id)
+                    .cloned()
+            })
+            .filter(|level| model_supports_level(level));
         let sequence = self.next_operation.fetch_add(1, Ordering::Relaxed);
         let logical_id = LogicalSessionId::new(format!("pinvou-{}-{sequence}", self.instance_id))
             .map_err(|_| ControllerError::InvalidMessage)?;
@@ -1185,6 +1430,7 @@ impl ControllerSession {
                 attachment_epoch: 1,
                 runtime_id: runtime_id.clone(),
                 model_id: Some(model_id.clone()),
+                reasoning_level: reasoning_level.clone(),
                 approval_profile: preferences.approval_profile,
             });
             state.preferences.runtime = Some(runtime_id.clone());
@@ -1194,15 +1440,18 @@ impl ControllerSession {
                 .insert(runtime_id, model_id.clone());
             state.workspace_store.save(&workspace, &state.preferences)?;
         }
-        Ok(Some((
-            logical_id,
-            json!({
-                "cwd":workspace,
-                "attachment_epoch":1,
-                "model_id":model_id,
-                "approval_profile":approval_profile_name(preferences.approval_profile)
-            }),
-        )))
+        Ok(Some((logical_id, {
+            let mut context = json!({
+            "cwd":workspace,
+            "attachment_epoch":1,
+            "model_id":model_id,
+            "approval_profile":approval_profile_name(preferences.approval_profile)
+            });
+            if let Some(reasoning_level) = reasoning_level {
+                context["reasoning_level"] = json!(reasoning_level);
+            }
+            context
+        })))
     }
 
     fn persist_runtime_event(
@@ -1219,15 +1468,24 @@ impl ControllerSession {
             .map_err(|_| ControllerError::InvalidMessage)?;
         let event = serde_json::to_value(envelope).map_err(|_| ControllerError::InvalidMessage)?;
         let cursor = state.session_store.append_event(logical_id, event)?;
-        let active = state
-            .active
-            .as_mut()
-            .filter(|active| &active.logical_id == logical_id)
-            .ok_or(ControllerError::InvalidMessage)?;
-        active.native_session_id = envelope.logical_session_id().to_owned();
-        active.attachment_id = Some(envelope.attachment_id().to_owned());
+        let native_session_id = envelope.logical_session_id().to_owned();
+        let attachment_id = envelope.attachment_id().to_owned();
+        let active = {
+            let active = state
+                .active
+                .as_mut()
+                .filter(|active| &active.logical_id == logical_id)
+                .ok_or(ControllerError::InvalidMessage)?;
+            active.native_session_id = native_session_id.clone();
+            active.attachment_id = Some(attachment_id);
+            active.clone()
+        };
+        let mut metadata = state.session_store.metadata(logical_id)?;
+        if metadata.descriptor.native_session_id.as_deref() != Some(&native_session_id) {
+            metadata.descriptor.native_session_id = Some(native_session_id);
+            state.session_store.update_metadata(metadata)?;
+        }
         if envelope.kind() == "turn.ended" {
-            let active = active.clone();
             let mut snapshot = state.session_store.restore(logical_id)?;
             snapshot.cursor = cursor;
             snapshot.descriptor.native_session_id = Some(active.native_session_id.clone());
@@ -1239,6 +1497,48 @@ impl ControllerSession {
                 .workspace_store
                 .save(&state.workspace, &state.preferences)?;
         }
+        Ok(())
+    }
+
+    fn persist_user_prompt(
+        &self,
+        logical_id: &LogicalSessionId,
+        prompt: &str,
+    ) -> Result<(), ControllerError> {
+        let persistent = self
+            .persistent
+            .as_ref()
+            .ok_or(ControllerError::UnsupportedRequest)?;
+        let mut state = persistent
+            .lock()
+            .map_err(|_| ControllerError::InvalidMessage)?;
+        let seq = state
+            .session_store
+            .restore(logical_id)?
+            .cursor
+            .saturating_add(1);
+        let event = RuntimeEventEnvelope::from_value(json!({
+            "protocol_version":1,
+            "schema_version":1,
+            "node_id":"controller",
+            "logical_session_id":logical_id,
+            "attachment_id":"controller-history",
+            "work_id":null,
+            "collaborative_run_id":null,
+            "stream_id":StreamId::Main,
+            "turn_id":format!("controller-prompt-{seq}"),
+            "seq":seq,
+            "source_span":null,
+            "timestamp":"1970-01-01T00:00:00.000Z",
+            "rate_class":RateClass::R1,
+            "kind":RuntimeEventKind::MessageCompleted,
+            "payload":{"role":"user","content":prompt,"item_id":format!("controller-prompt-{seq}")}
+        }))
+        .map_err(|_| ControllerError::InvalidMessage)?;
+        state.session_store.append_event(
+            logical_id,
+            serde_json::to_value(event).map_err(|_| ControllerError::InvalidMessage)?,
+        )?;
         Ok(())
     }
 
@@ -1296,6 +1596,7 @@ impl ControllerSession {
         let active = self.ensure_active_for_chat(prompt)?;
         let mut client = LocalNodeClient::connect(&route.endpoint, &route.instance_id)?;
         if let Some((logical_id, context)) = active {
+            self.persist_user_prompt(&logical_id, prompt)?;
             client.stream_chat_with_context(prompt, context, |message| {
                 let envelope = RuntimeEventEnvelope::from_value(message.payload().clone())
                     .map_err(|_| ControllerError::InvalidMessage)?;
@@ -1314,6 +1615,130 @@ impl Drop for TurnActivityGuard {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
     }
+}
+
+fn repair_missing_native_session_ids(
+    state: &mut PersistentControllerState,
+) -> Result<(), ControllerError> {
+    let descriptors = state.session_store.list_for_workspace(&state.workspace_key);
+    for descriptor in descriptors
+        .into_iter()
+        .filter(|descriptor| descriptor.native_session_id.is_none())
+    {
+        let attachment_prefix = match descriptor.runtime_id.as_str() {
+            "codex" => "codex-",
+            "codewhale" => "codewhale-",
+            _ => continue,
+        };
+        let snapshot = state.session_store.restore(&descriptor.id)?;
+        let native_session_id = snapshot
+            .normalized_events
+            .iter()
+            .rev()
+            .filter_map(|event| RuntimeEventEnvelope::from_value(event.clone()).ok())
+            .find(|event| {
+                event.attachment_id().starts_with(attachment_prefix)
+                    && !event.logical_session_id().ends_with("-pending")
+            })
+            .map(|event| event.logical_session_id().to_owned());
+        let Some(native_session_id) = native_session_id else {
+            continue;
+        };
+        let mut metadata = state.session_store.metadata(&descriptor.id)?;
+        metadata.descriptor.native_session_id = Some(native_session_id);
+        state.session_store.update_metadata(metadata)?;
+    }
+    Ok(())
+}
+
+fn conversation_handoff_items(events: &[Value]) -> Vec<Value> {
+    const MAX_MESSAGES: usize = 16;
+    const MAX_CHARS: usize = 24_000;
+
+    let mut messages = Vec::<(String, String)>::new();
+    let mut assistant = String::new();
+    let mut assistant_turn = None::<String>;
+    let flush_assistant = |messages: &mut Vec<(String, String)>, assistant: &mut String| {
+        if !assistant.trim().is_empty() {
+            messages.push(("assistant".into(), std::mem::take(assistant)));
+        }
+    };
+
+    for value in events {
+        let Ok(event) = RuntimeEventEnvelope::from_value(value.clone()) else {
+            continue;
+        };
+        let payload = serde_json::from_str::<Value>(event.payload().get()).unwrap_or(Value::Null);
+        match event.event_kind() {
+            RuntimeEventKind::TurnStarted => {
+                flush_assistant(&mut messages, &mut assistant);
+                assistant_turn = event.turn_id().map(str::to_owned);
+            }
+            RuntimeEventKind::TurnEnded => {
+                flush_assistant(&mut messages, &mut assistant);
+                assistant_turn = None;
+            }
+            RuntimeEventKind::TextDelta
+                if payload.get("role").and_then(Value::as_str) == Some("assistant") =>
+            {
+                let event_turn = event.turn_id().map(str::to_owned);
+                if assistant_turn.is_some() && assistant_turn != event_turn {
+                    flush_assistant(&mut messages, &mut assistant);
+                }
+                assistant_turn = event_turn;
+                if let Some(content) = payload.get("content").and_then(Value::as_str) {
+                    assistant.push_str(content);
+                }
+            }
+            RuntimeEventKind::MessageCompleted => {
+                let Some(role @ ("user" | "assistant")) =
+                    payload.get("role").and_then(Value::as_str)
+                else {
+                    continue;
+                };
+                let Some(content) = payload.get("content").and_then(Value::as_str) else {
+                    continue;
+                };
+                if role == "user" {
+                    flush_assistant(&mut messages, &mut assistant);
+                    messages.push((role.into(), content.into()));
+                } else if assistant.is_empty() {
+                    messages.push((role.into(), content.into()));
+                }
+            }
+            _ => {}
+        }
+    }
+    flush_assistant(&mut messages, &mut assistant);
+
+    let mut selected = Vec::new();
+    let mut chars = 0;
+    for (role, mut content) in messages.into_iter().rev().take(MAX_MESSAGES) {
+        let available = MAX_CHARS.saturating_sub(chars);
+        if available == 0 {
+            break;
+        }
+        let content_chars = content.chars().count();
+        if content_chars > available {
+            content = content
+                .chars()
+                .skip(content_chars.saturating_sub(available))
+                .collect();
+        }
+        chars += content.chars().count();
+        let content_type = if role == "user" {
+            "input_text"
+        } else {
+            "output_text"
+        };
+        selected.push(json!({
+            "type":"message",
+            "role":role,
+            "content":[{"type":content_type,"text":content}]
+        }));
+    }
+    selected.reverse();
+    selected
 }
 
 const fn approval_profile_name(profile: ApprovalProfile) -> &'static str {
@@ -1368,5 +1793,90 @@ fn terminal_session_status(envelope: &RuntimeEventEnvelope) -> SessionStatus {
         Some("interrupted" | "cancelled") => SessionStatus::Interrupted,
         Some("failed") => SessionStatus::Failed,
         _ => SessionStatus::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod handoff_tests {
+    use super::*;
+
+    fn event(kind: RuntimeEventKind, turn_id: &str, seq: u64, payload: Value) -> Value {
+        serde_json::to_value(
+            RuntimeEventEnvelope::from_value(json!({
+                "protocol_version":1,
+                "schema_version":1,
+                "node_id":"node",
+                "logical_session_id":"session",
+                "attachment_id":"attachment",
+                "work_id":null,
+                "collaborative_run_id":null,
+                "stream_id":if matches!(kind, RuntimeEventKind::TurnStarted | RuntimeEventKind::TurnEnded) { StreamId::Control } else { StreamId::Main },
+                "turn_id":turn_id,
+                "seq":seq,
+                "source_span":null,
+                "timestamp":"2026-08-26T00:00:00.000Z",
+                "rate_class":if matches!(kind, RuntimeEventKind::TurnStarted | RuntimeEventKind::TurnEnded) { RateClass::R0 } else { RateClass::R1 },
+                "kind":kind,
+                "payload":payload
+            }))
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn handoff_extracts_conversation_without_tools_or_duplicate_completed_text() {
+        let events = vec![
+            event(
+                RuntimeEventKind::MessageCompleted,
+                "prompt",
+                1,
+                json!({"role":"user","content":"How should I learn LLM engineering?","item_id":"prompt"}),
+            ),
+            event(
+                RuntimeEventKind::TurnStarted,
+                "turn",
+                1,
+                json!({"user_input_ref":"prompt"}),
+            ),
+            event(
+                RuntimeEventKind::TextDelta,
+                "turn",
+                2,
+                json!({"role":"assistant","content":"Start with inference and agents."}),
+            ),
+            event(
+                RuntimeEventKind::MessageCompleted,
+                "turn",
+                3,
+                json!({"role":"assistant","content":"Start with inference and agents.","item_id":"answer"}),
+            ),
+            event(
+                RuntimeEventKind::ToolCallCompleted,
+                "turn",
+                4,
+                json!({"tool_id":"tool","result":"secret output","is_error":false}),
+            ),
+            event(
+                RuntimeEventKind::TurnEnded,
+                "turn",
+                2,
+                json!({"end_reason":"completed"}),
+            ),
+        ];
+
+        let items = conversation_handoff_items(&events);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["role"], "user");
+        assert_eq!(items[1]["role"], "assistant");
+        assert_eq!(
+            items[1]["content"][0]["text"],
+            "Start with inference and agents."
+        );
+        assert!(
+            !items
+                .iter()
+                .any(|item| item.to_string().contains("secret output"))
+        );
     }
 }

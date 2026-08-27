@@ -29,7 +29,7 @@ fn ratatui_renderer_draws_the_real_view_and_tracks_backend_resize() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(text.contains("Pinvou Agent"));
+    assert!(text.contains("◆ PINVOU"));
 
     renderer.backend_mut().resize(100, 30);
     renderer.draw(&model).unwrap();

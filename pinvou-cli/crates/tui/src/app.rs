@@ -20,6 +20,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::{
     action::{Action, ApprovalDecision, Effect},
     backend::{Backend, BackendError, BackendErrorKind, RuntimeList, RuntimeStatus},
+    commands::suggestions,
     model::{ConnectionState, Interaction, Model, OperationToken, Overlay, TurnState},
     update::update,
 };
@@ -32,6 +33,7 @@ pub const PREINIT_MAX_TEXT_BYTES: usize = 16 * 1024;
 pub const DEFAULT_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(10);
 const DETACH_WAIT: Duration = Duration::from_millis(500);
 const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const UI_TICK_INTERVAL: Duration = Duration::from_millis(200);
 const INITIALIZATION_OPERATION_TOKEN: u64 = 0;
 
 trait ThreadSpawner: Clone + Send + Sync + 'static {
@@ -94,6 +96,7 @@ pub enum InputEvent {
     Key(KeyInput),
     Paste(String),
     Resize(u16, u16),
+    Tick(Instant),
     Eof,
 }
 
@@ -199,6 +202,9 @@ struct PreInitBuffer {
 
 impl PreInitBuffer {
     fn push(&mut self, input: InputEvent, model: &mut Model) {
+        if matches!(input, InputEvent::Tick(_)) {
+            return;
+        }
         if self.events.len() == PREINIT_MAX_EVENTS {
             self.note_dropped(1, model);
             return;
@@ -367,6 +373,12 @@ where
                         break;
                     }
                 }
+                Ok(Some(input @ InputEvent::Tick(_))) => {
+                    match input_sender.try_send(HighPriorityEvent::Input(Ok(Some(input)))) {
+                        Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
+                        Err(mpsc::error::TrySendError::Closed(_)) => break,
+                    }
+                }
                 Ok(Some(input)) => {
                     match input_sender.try_send(HighPriorityEvent::Input(Ok(Some(input)))) {
                         Ok(()) => {}
@@ -513,6 +525,7 @@ where
                     return Err(error.with_cleanup(cleanup_warnings));
                 }
             }
+            Some(HighPriorityEvent::Input(Ok(Some(InputEvent::Tick(_))))) => continue,
             Some(HighPriorityEvent::Input(Ok(Some(InputEvent::Eof))))
             | Some(HighPriorityEvent::Input(Ok(None)))
             | None => {
@@ -555,6 +568,16 @@ where
             Some(HighPriorityEvent::Control(_)) => {}
         }
     }
+
+    let model_status_effects = update(&mut model, Action::RefreshModelStatus);
+    dispatch_effects(
+        backend.clone(),
+        high_sender.clone(),
+        runtime_sender.clone(),
+        &mut model,
+        model_status_effects,
+        spawner.clone(),
+    );
 
     let mut detached = false;
     for input in buffered_inputs.into_events() {
@@ -625,6 +648,12 @@ where
                 return Err(error.with_cleanup(cleanup_warnings));
             }
             Selected::High(Some(HighPriorityEvent::Input(Ok(Some(input))))) => {
+                if matches!(input, InputEvent::Tick(_))
+                    && (model.turn == TurnState::Idle
+                        || !matches!(model.interaction, Interaction::None))
+                {
+                    continue;
+                }
                 let outcome = handle_input(&mut model, input);
                 detached = outcome.detached;
                 outcome.effects
@@ -735,6 +764,7 @@ fn mark_initialization_failed(model: &mut Model, error: &BackendError) {
     model.connection = ConnectionState::Failed(error.clone());
     model.status_message = Some(error.safe_message().to_owned());
     model.last_backend_error = Some(error.clone());
+    model.transcript.push_error(error.safe_message());
 }
 
 fn start_initialization_worker<B: Backend, S: ThreadSpawner>(
@@ -888,6 +918,10 @@ fn handle_input(model: &mut Model, input: InputEvent) -> InputOutcome {
             insert_text(model, &value);
             outcome(Vec::new())
         }
+        InputEvent::Tick(now) => {
+            model.advance_activity(now);
+            outcome(Vec::new())
+        }
         InputEvent::Key(key) => handle_key(model, key),
     }
 }
@@ -1032,8 +1066,115 @@ fn handle_key(model: &mut Model, input: KeyInput) -> InputOutcome {
                 .model_candidates
                 .get(model.selected_model)
                 .filter(|candidate| candidate.available)
-                .map(|candidate| candidate.id.clone())
-                .map_or_else(Vec::new, |id| update(model, Action::ModelSwitch(id))),
+                .map(|candidate| {
+                    (
+                        candidate.id.clone(),
+                        candidate.configured,
+                        candidate.supported_reasoning_levels.clone(),
+                        candidate.default_reasoning_level.clone(),
+                    )
+                })
+                .map_or_else(Vec::new, |(model_id, configured, levels, default_level)| {
+                    if !configured {
+                        model.credential_composer.clear();
+                        model.overlay = Overlay::ApiKeyInput;
+                        return Vec::new();
+                    }
+                    if levels.is_empty() {
+                        update(
+                            model,
+                            Action::ModelSwitch {
+                                model_id,
+                                reasoning_level: None,
+                            },
+                        )
+                    } else {
+                        let selected = model
+                            .model_level
+                            .as_ref()
+                            .filter(|_| Some(model_id.as_str()) == model.model_id.as_deref())
+                            .or(default_level.as_ref())
+                            .and_then(|level| levels.iter().position(|item| item == level))
+                            .unwrap_or(0);
+                        model.selected_model_level = selected;
+                        model.overlay = Overlay::ModelLevelList;
+                        Vec::new()
+                    }
+                }),
+            _ => Vec::new(),
+        };
+        return outcome(effects);
+    }
+    if model.overlay == Overlay::ApiKeyInput {
+        let effects = match input.key {
+            Key::Esc if model.pending_model_credential.is_none() => {
+                model.credential_composer.clear();
+                model.overlay = Overlay::ModelList;
+                Vec::new()
+            }
+            Key::Backspace if model.pending_model_credential.is_none() => {
+                model.credential_composer.pop();
+                Vec::new()
+            }
+            Key::Char(character) if !input.control && model.pending_model_credential.is_none() => {
+                model.credential_composer.push(character);
+                Vec::new()
+            }
+            Key::Enter
+                if model.pending_model_credential.is_none()
+                    && model.credential_composer.len() > 0 =>
+            {
+                let api_key = crate::action::SecretInput::new(model.credential_composer.take());
+                model
+                    .model_candidates
+                    .get(model.selected_model)
+                    .map(|candidate| candidate.id.clone())
+                    .map_or_else(Vec::new, |model_id| {
+                        update(
+                            model,
+                            Action::ModelCredentialSubmitted { model_id, api_key },
+                        )
+                    })
+            }
+            _ => Vec::new(),
+        };
+        return outcome(effects);
+    }
+    if model.overlay == Overlay::ModelLevelList {
+        let levels = model
+            .model_candidates
+            .get(model.selected_model)
+            .map(|candidate| candidate.supported_reasoning_levels.clone())
+            .unwrap_or_default();
+        let effects = match input.key {
+            Key::Esc => {
+                model.overlay = Overlay::ModelList;
+                Vec::new()
+            }
+            Key::Up => {
+                model.selected_model_level = model.selected_model_level.saturating_sub(1);
+                Vec::new()
+            }
+            Key::Down => {
+                if model.selected_model_level + 1 < levels.len() {
+                    model.selected_model_level += 1;
+                }
+                Vec::new()
+            }
+            Key::Enter => model
+                .model_candidates
+                .get(model.selected_model)
+                .zip(levels.get(model.selected_model_level))
+                .map(|(candidate, level)| (candidate.id.clone(), level.clone()))
+                .map_or_else(Vec::new, |(model_id, reasoning_level)| {
+                    update(
+                        model,
+                        Action::ModelSwitch {
+                            model_id,
+                            reasoning_level: Some(reasoning_level),
+                        },
+                    )
+                }),
             _ => Vec::new(),
         };
         return outcome(effects);
@@ -1104,17 +1245,54 @@ fn handle_key(model: &mut Model, input: KeyInput) -> InputOutcome {
         return outcome(Vec::new());
     }
 
+    let command_suggestions = suggestions(&model.composer.input);
+    if !command_suggestions.is_empty() {
+        let effects = match input.key {
+            Key::Esc => {
+                model.composer.input.clear();
+                model.selected_command = 0;
+                Vec::new()
+            }
+            Key::Up => {
+                model.selected_command = model.selected_command.saturating_sub(1);
+                Vec::new()
+            }
+            Key::Down => {
+                if model.selected_command + 1 < command_suggestions.len() {
+                    model.selected_command += 1;
+                }
+                Vec::new()
+            }
+            Key::Enter => {
+                let selected = model
+                    .selected_command
+                    .min(command_suggestions.len().saturating_sub(1));
+                let command = command_suggestions[selected].name.to_owned();
+                model.composer.input.clear();
+                model.selected_command = 0;
+                update(model, Action::Submit(command))
+            }
+            _ => Vec::new(),
+        };
+        if matches!(input.key, Key::Esc | Key::Up | Key::Down | Key::Enter) {
+            return outcome(effects);
+        }
+    }
+
     let effects = match input.key {
         Key::Enter => {
             let value = std::mem::take(&mut model.composer.input);
+            model.selected_command = 0;
             update(model, Action::Submit(value))
         }
         Key::Backspace => {
             model.composer.input.pop();
+            model.selected_command = 0;
             Vec::new()
         }
         Key::Char(ch) if !input.control => {
             model.composer.input.push(ch);
+            model.selected_command = 0;
             Vec::new()
         }
         Key::Up => {
@@ -1131,10 +1309,15 @@ fn handle_key(model: &mut Model, input: KeyInput) -> InputOutcome {
 }
 
 fn insert_text(model: &mut Model, value: &str) {
+    if model.overlay == Overlay::ApiKeyInput && model.pending_model_credential.is_none() {
+        model.credential_composer.push_str(value);
+        return;
+    }
     match model.interaction {
         Interaction::InputPending(_) => model.input_composer.input.push_str(value),
         Interaction::None if matches!(model.turn, TurnState::Idle) => {
-            model.composer.input.push_str(value)
+            model.composer.input.push_str(value);
+            model.selected_command = 0;
         }
         _ => {}
     }
@@ -1254,6 +1437,9 @@ fn start_control_effect_with_spawner<B: Backend, S: ThreadSpawner>(
         | Effect::SwitchModel {
             operation_token, ..
         }
+        | Effect::SaveModelCredential {
+            operation_token, ..
+        }
         | Effect::LoadPermissions { operation_token }
         | Effect::SwitchPermissions {
             operation_token, ..
@@ -1366,10 +1552,25 @@ fn start_control_effect_with_spawner<B: Backend, S: ThreadSpawner>(
             Effect::SwitchModel {
                 operation_token,
                 model_id,
+                reasoning_level,
             } => Action::ModelSwitched {
                 operation_token,
                 result: guarded_backend_call(|| {
-                    backend.switch_model(operation_token.as_u64(), model_id)
+                    backend.switch_model(operation_token.as_u64(), model_id, reasoning_level)
+                }),
+            },
+            Effect::SaveModelCredential {
+                operation_token,
+                model_id,
+                api_key,
+            } => Action::ModelCredentialSaved {
+                operation_token,
+                result: guarded_backend_call(|| {
+                    backend.save_model_credential(
+                        operation_token.as_u64(),
+                        model_id,
+                        api_key.expose(),
+                    )
                 }),
             },
             Effect::LoadPermissions { operation_token } => Action::PermissionsLoaded {
@@ -1458,6 +1659,12 @@ fn control_failure_action(effect: Effect, error: BackendError) -> Action {
         Effect::SwitchModel {
             operation_token, ..
         } => Action::ModelSwitched {
+            operation_token,
+            result: Err(error),
+        },
+        Effect::SaveModelCredential {
+            operation_token, ..
+        } => Action::ModelCredentialSaved {
             operation_token,
             result: Err(error),
         },
@@ -1596,8 +1803,12 @@ pub fn terminal_input_task_with_source<S: TerminalEventSource>(
     let thread_stop = stop.clone();
     let (finished_sender, finished) = std_mpsc::sync_channel(1);
     let thread = thread::spawn(move || {
+        let mut next_tick = Instant::now() + UI_TICK_INTERVAL;
         while !thread_stop.load(Ordering::Acquire) {
-            match source.poll(TERMINAL_POLL_INTERVAL) {
+            let now = Instant::now();
+            let poll_interval =
+                TERMINAL_POLL_INTERVAL.min(next_tick.saturating_duration_since(now));
+            match source.poll(poll_interval) {
                 Ok(true) => match source.read() {
                     Ok(raw) => {
                         if let Some(input) = map_terminal_event(raw)
@@ -1610,6 +1821,14 @@ pub fn terminal_input_task_with_source<S: TerminalEventSource>(
                 },
                 Ok(false) => {}
                 Err(_) => break,
+            }
+            let now = Instant::now();
+            if now >= next_tick {
+                match sender.try_send(InputEvent::Tick(now)) {
+                    Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
+                    Err(mpsc::error::TrySendError::Closed(_)) => break,
+                }
+                next_tick = now + UI_TICK_INTERVAL;
             }
         }
         let _ = finished_sender.send(());
@@ -1703,7 +1922,8 @@ mod tests {
     use crate::{
         action::Effect,
         backend::{
-            Backend, BackendError, BackendErrorKind, EventEmitter, RuntimeList, RuntimeStatus,
+            Backend, BackendError, BackendErrorKind, EventEmitter, ModelCandidate, RuntimeList,
+            RuntimeStatus,
         },
         model::{
             ApprovalRequest, ConnectionState, InputRequest, Interaction, Model, OperationToken,
@@ -1749,6 +1969,168 @@ mod tests {
     }
 
     #[test]
+    fn terminal_reader_emits_bounded_droppable_ticks() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let (sender, mut receiver) = mpsc::channel(1);
+        let task = terminal_input_task_with_source(
+            sender,
+            PollingSource {
+                polls: polls.clone(),
+            },
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let tick = loop {
+            if let Ok(input) = receiver.try_recv() {
+                break input;
+            }
+            assert!(Instant::now() < deadline, "reader did not emit a UI tick");
+            std::thread::yield_now();
+        };
+
+        assert!(matches!(tick, InputEvent::Tick(_)));
+        assert!(polls.load(Ordering::Relaxed) > 1);
+        drop(task);
+    }
+
+    #[test]
+    fn activity_ticks_advance_only_active_turns_and_reset_when_idle() {
+        let mut model = Model::new(
+            PathBuf::from("workspace"),
+            RuntimeStatus::new("codex", "Codex", true),
+        );
+        let started = Instant::now();
+
+        let _ = super::handle_input(&mut model, InputEvent::Tick(started));
+        assert_eq!(model.activity_frame(), 0);
+        assert_eq!(model.activity_elapsed(), Duration::ZERO);
+
+        model.turn = TurnState::Starting {
+            operation_token: OperationToken::new(1),
+        };
+        let _ = super::handle_input(&mut model, InputEvent::Tick(started));
+        let _ = super::handle_input(
+            &mut model,
+            InputEvent::Tick(started + Duration::from_millis(2_250)),
+        );
+        assert_eq!(model.activity_frame(), 2);
+        assert_eq!(model.activity_elapsed(), Duration::from_millis(2_250));
+
+        model.turn = TurnState::Idle;
+        let _ = super::handle_input(
+            &mut model,
+            InputEvent::Tick(started + Duration::from_secs(3)),
+        );
+        assert_eq!(model.activity_frame(), 0);
+        assert_eq!(model.activity_elapsed(), Duration::ZERO);
+    }
+
+    #[test]
+    fn slash_menu_navigates_executes_and_closes_without_submitting_unknown_text() {
+        let mut model = Model::new(
+            PathBuf::from("workspace"),
+            RuntimeStatus::new("codex", "Codex", true),
+        );
+        model.connection = ConnectionState::Connected;
+
+        let _ = super::handle_input(&mut model, InputEvent::Key(KeyInput::plain(Key::Char('/'))));
+        let _ = super::handle_input(&mut model, InputEvent::Key(KeyInput::plain(Key::Down)));
+        let selected =
+            super::handle_input(&mut model, InputEvent::Key(KeyInput::plain(Key::Enter)));
+
+        assert!(model.composer.input.is_empty());
+        assert_eq!(model.selected_command, 0);
+        assert_eq!(model.overlay, Overlay::RuntimeList);
+        assert!(matches!(
+            selected.effects.as_slice(),
+            [Effect::LoadRuntimeList { .. }]
+        ));
+
+        model.overlay = Overlay::None;
+        let _ = super::handle_input(&mut model, InputEvent::Key(KeyInput::plain(Key::Char('/'))));
+        let closed = super::handle_input(&mut model, InputEvent::Key(KeyInput::plain(Key::Esc)));
+        assert!(closed.effects.is_empty());
+        assert!(model.composer.input.is_empty());
+    }
+
+    #[test]
+    fn model_with_reasoning_levels_opens_level_selector_and_switches_selected_level() {
+        let mut model = Model::new(
+            PathBuf::from("workspace"),
+            RuntimeStatus::new("codex", "Codex", true),
+        );
+        model.connection = ConnectionState::Connected;
+        model.overlay = Overlay::ModelList;
+        model.model_candidates = vec![ModelCandidate {
+            id: "gpt-5.6-sol".into(),
+            display_name: "GPT-5.6 Sol".into(),
+            is_default: true,
+            available: true,
+            provider_id: None,
+            provider_display_name: None,
+            configured: true,
+            requires_api_key: false,
+            supported_reasoning_levels: vec!["medium".into(), "high".into()],
+            default_reasoning_level: Some("medium".into()),
+        }];
+        model.model_id = Some("gpt-5.6-sol".into());
+        model.model_level = Some("medium".into());
+
+        let opened = super::handle_input(&mut model, InputEvent::Key(KeyInput::plain(Key::Enter)));
+        assert!(opened.effects.is_empty());
+        assert_eq!(model.overlay, Overlay::ModelLevelList);
+
+        let _ = super::handle_input(&mut model, InputEvent::Key(KeyInput::plain(Key::Down)));
+        let switched =
+            super::handle_input(&mut model, InputEvent::Key(KeyInput::plain(Key::Enter)));
+        assert!(matches!(
+            switched.effects.as_slice(),
+            [Effect::SwitchModel {
+                model_id,
+                reasoning_level: Some(level),
+                ..
+            }] if model_id == "gpt-5.6-sol" && level == "high"
+        ));
+    }
+
+    #[test]
+    fn unconfigured_provider_opens_masked_api_key_flow() {
+        let mut model = Model::new(
+            PathBuf::from("workspace"),
+            RuntimeStatus::new("codewhale", "Pinvou Agent", true),
+        );
+        model.connection = ConnectionState::Connected;
+        model.overlay = Overlay::ModelList;
+        model.model_candidates = vec![ModelCandidate {
+            id: "deepseek-default".into(),
+            display_name: "DeepSeek V4 Pro".into(),
+            is_default: false,
+            available: true,
+            provider_id: Some("deepseek".into()),
+            provider_display_name: Some("DeepSeek".into()),
+            configured: false,
+            requires_api_key: true,
+            supported_reasoning_levels: Vec::new(),
+            default_reasoning_level: None,
+        }];
+
+        let opened = super::handle_input(&mut model, InputEvent::Key(KeyInput::plain(Key::Enter)));
+        assert!(opened.effects.is_empty());
+        assert_eq!(model.overlay, Overlay::ApiKeyInput);
+        let _ = super::handle_input(
+            &mut model,
+            InputEvent::Paste("sk-secret-must-not-appear".into()),
+        );
+        let submitted =
+            super::handle_input(&mut model, InputEvent::Key(KeyInput::plain(Key::Enter)));
+        assert!(matches!(
+            submitted.effects.as_slice(),
+            [Effect::SaveModelCredential { model_id, .. }] if model_id == "deepseek-default"
+        ));
+        assert!(!format!("{:?}", submitted.effects).contains("sk-secret-must-not-appear"));
+    }
+
+    #[test]
     fn preinit_buffer_caps_events_and_utf8_text_without_retaining_overflow() {
         let mut buffer = PreInitBuffer::default();
         let mut model = Model::new(
@@ -1778,6 +2160,21 @@ mod tests {
                 .unwrap()
                 .contains("dropped 2 inputs")
         );
+    }
+
+    #[test]
+    fn preinit_buffer_ignores_ui_ticks_without_reporting_input_loss() {
+        let mut buffer = PreInitBuffer::default();
+        let mut model = Model::new(
+            PathBuf::from("workspace"),
+            RuntimeStatus::new("codex", "Codex", true),
+        );
+
+        buffer.push(InputEvent::Tick(Instant::now()), &mut model);
+
+        assert!(buffer.events.is_empty());
+        assert_eq!(buffer.dropped, 0);
+        assert!(model.status_message.is_none());
     }
 
     #[derive(Clone, Default)]

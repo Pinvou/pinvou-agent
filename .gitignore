@@ -55,6 +55,11 @@ scripts/.builtin-secrets.env
 .codex-memory.md
 /pinvou-knowledge-data/
 
+# CodeWhale runtime state can be created at the repository root or inside a
+# crate working directory. Keep an explicitly maintained constitution trackable.
+**/.codewhale/*
+!**/.codewhale/constitution.json
+
 # 临时 PR worktree(submodule 的 git worktree,勿提交)
 /CodeWhale-*-env/
 

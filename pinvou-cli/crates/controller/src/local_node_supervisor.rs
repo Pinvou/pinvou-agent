@@ -325,9 +325,10 @@ struct ProcessChild {
 }
 unsafe impl Send for ProcessChild {}
 impl ProcessChild {
-    fn new(mut child: Child) -> std::io::Result<Self> {
+    fn new(child: Child) -> std::io::Result<Self> {
         #[cfg(windows)]
         {
+            let mut child = child;
             let job = match create_kill_on_close_job(&child) {
                 Ok(job) => job,
                 Err(error) => {

@@ -224,7 +224,7 @@ fn node_runtime_control_lists_detects_and_switches_runtime_profiles() {
     .unwrap();
     let response = session.handle(list).unwrap();
     assert_eq!(response.payload()["current"], "echo");
-    assert_eq!(response.payload()["runtimes"][0]["id"], "echo");
+    assert_eq!(response.payload()["runtimes"][0]["id"], "codewhale");
     assert_eq!(response.payload()["runtimes"][0]["available"], true);
 
     let switch = IpcMessage::request(
@@ -284,13 +284,16 @@ fn node_runtime_switch_persists_the_selected_runtime_for_restart() {
         serde_json::json!({"instance_id":"node-instance"}),
     )
     .unwrap();
-    assert_eq!(restarted.handle(list).unwrap().payload()["current"], "echo");
+    assert_eq!(
+        restarted.handle(list).unwrap().payload()["current"],
+        "codewhale"
+    );
 
     std::fs::remove_file(state_file).unwrap();
 }
 
 #[test]
-fn production_state_defaults_to_codex_when_no_runtime_was_selected() {
+fn production_state_defaults_to_codewhale_when_no_runtime_was_selected() {
     let state_file = temp_state_file("runtime-default");
     let session = NodeSession::with_state_file("node-instance", state_file.clone()).unwrap();
     let list = IpcMessage::request(
@@ -300,7 +303,10 @@ fn production_state_defaults_to_codex_when_no_runtime_was_selected() {
     )
     .unwrap();
 
-    assert_eq!(session.handle(list).unwrap().payload()["current"], "codex");
+    assert_eq!(
+        session.handle(list).unwrap().payload()["current"],
+        "codewhale"
+    );
     assert!(!state_file.exists());
 }
 
@@ -407,6 +413,8 @@ fn node_runtime_switch_prepare_and_commit_are_token_bound() {
     assert_eq!(prepared.payload()["status"], "ready");
     assert_eq!(prepared.payload()["runtime"], "echo");
     assert_eq!(prepared.payload()["current_runtime"], "echo");
+    assert_eq!(prepared.payload()["target_status"]["runtime"], "echo");
+    assert_eq!(prepared.payload()["target_status"]["status"], "available");
     assert_eq!(prepared.payload()["requires_compression"], false);
     assert_eq!(prepared.payload()["context"]["strategy"], "none");
     assert_eq!(
@@ -486,7 +494,9 @@ fn node_runtime_registry_exposes_and_selects_the_codex_profile() {
     .unwrap();
     let response = session.handle(list).unwrap();
     let runtimes = response.payload()["runtimes"].as_array().unwrap();
+    assert!(runtimes.iter().any(|runtime| runtime["id"] == "codewhale"));
     assert!(runtimes.iter().any(|runtime| runtime["id"] == "codex"));
+    assert!(!runtimes.iter().any(|runtime| runtime["id"] == "echo"));
 
     let switch = IpcMessage::request(
         serde_json::json!(18),
@@ -721,6 +731,7 @@ struct FakeAdapter {
     calls: Arc<Mutex<Vec<String>>>,
     events: Vec<RuntimeEventEnvelope>,
     probe_error: Option<AdapterError>,
+    history_import: bool,
 }
 
 impl FakeAdapter {
@@ -733,6 +744,7 @@ impl FakeAdapter {
             calls: Arc::new(Mutex::new(Vec::new())),
             events,
             probe_error: None,
+            history_import: false,
         }
     }
 
@@ -741,7 +753,13 @@ impl FakeAdapter {
             calls: Arc::new(Mutex::new(Vec::new())),
             events: Vec::new(),
             probe_error: Some(probe_error),
+            history_import: false,
         }
+    }
+
+    fn with_history_import(mut self) -> Self {
+        self.history_import = true;
+        self
     }
 }
 
@@ -758,6 +776,7 @@ impl AgentRuntimeAdapter for FakeAdapter {
         self.calls.lock().unwrap().push("capabilities".into());
         Ok(RuntimeCapabilities {
             interactive_chat: true,
+            history_import: self.history_import,
             tool_approval: true,
             elicitation: true,
             ..RuntimeCapabilities::default()
@@ -861,6 +880,19 @@ impl AgentRuntimeAdapter for FakeAdapter {
         Ok(())
     }
 
+    fn import_context(
+        &mut self,
+        session: &RuntimeSession,
+        operation: RuntimeOperation,
+    ) -> Result<(), AdapterError> {
+        self.calls.lock().unwrap().push(format!(
+            "import_context:{}:{}",
+            session.as_str(),
+            operation.options
+        ));
+        Ok(())
+    }
+
     fn approve(
         &mut self,
         session: &RuntimeSession,
@@ -936,6 +968,41 @@ impl AgentRuntimeAdapter for FakeAdapter {
             .push(format!("close:{}", session.as_str()));
         Ok(())
     }
+}
+
+#[test]
+fn new_attachment_imports_handoff_history_before_sending_current_prompt() {
+    let adapter = FakeAdapter::default().with_history_import();
+    let calls = adapter.calls();
+    let host = AdapterRuntimeHost::new(Box::new(adapter));
+    let stream = host
+        .start_turn_with_context(
+            "node-instance",
+            "continue",
+            1,
+            &serde_json::json!({
+                "attachment_epoch":1,
+                "approval_profile":"request",
+                "history_items":[
+                    {"type":"message","role":"assistant","content":[{"type":"output_text","text":"We were discussing how to learn LLM engineering."}]}
+                ]
+            }),
+        )
+        .unwrap();
+    let events = stream.collect::<Result<Vec<_>, _>>().unwrap();
+    assert_eq!(events.last().unwrap().kind(), "turn.ended");
+
+    let calls = calls.lock().unwrap();
+    let import_index = calls
+        .iter()
+        .position(|call| call.starts_with("import_context:adapter-session:"))
+        .unwrap();
+    let send_index = calls
+        .iter()
+        .position(|call| call == "send:adapter-session:continue")
+        .unwrap();
+    assert!(import_index < send_index);
+    assert!(calls[import_index].contains("LLM engineering"));
 }
 
 #[derive(Debug)]

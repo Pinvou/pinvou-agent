@@ -20,7 +20,7 @@
 
 ### r7 逐轮评测工具安全扩展（PR 候选）
 
-> CodeWhale PR #15 候选提交 `1eca6103a` + 安全修复 `169c24cc5` + 只读分发与受限面收口 `21e5f661a`：为嵌入宿主增加进程内逐轮工具安全策略、可信外部路径完全覆盖、最终执行前精确白名单门禁、只读 `File` action 投影与最终分发复检，并封闭排队控制操作、排队续轮/MCP reload、Hook 与日志旁路；受限审计保留非私有身份字段。快速 guard 仅额外接受这条登记的 PR 候选链（当前 head `21e5f661a`，v0.9.5 之上 13 个提交）。父仓 CI 的 gitlink 校验在 pull_request 阶段允许该登记候选，merge queue 一律严格对齐不可变标签：入队合并前须将本候选链合并、打不可变标签 `pinvou-v0.9.5-r8` 并把 gitlink 与 `PINVOU_CODEWHALE_TAG` 一并对齐 r8。
+> CodeWhale PR #15 候选提交 `1eca6103a` + 安全修复 `169c24cc5` + 只读分发与受限面收口 `21e5f661a` + 受控 Provider 配置注入 `214d08819`：为嵌入宿主增加进程内逐轮工具安全策略、可信外部路径完全覆盖、最终执行前精确白名单门禁、只读 `File` action 投影与最终分发复检，并封闭排队控制操作、排队续轮/MCP reload、Hook 与日志旁路；受限审计保留非私有身份字段；可信本地宿主可通过瞬时 stdio 管道注入 Provider 配置与凭据。快速 guard 仅额外接受这条登记的 PR 候选链（当前 head `214d08819`，v0.9.5 之上 14 个提交）。父仓 CI 的 gitlink 校验在 pull_request 阶段允许该登记候选，merge queue 一律严格对齐不可变标签：入队合并前须将本候选链合并、打不可变标签 `pinvou-v0.9.5-r8` 并把 gitlink 与 `PINVOU_CODEWHALE_TAG` 一并对齐 r8。
 
 ### 本次会话修复（已验证并发布）
 
@@ -60,11 +60,12 @@
   - 以根级窄重导出公开 `FleetRoster` 与工作区角色目录常量，供嵌入宿主在写入角色文件后装配和热刷新名册；不公开整个 `fleet` 模块。
   - 提供只读持久化 worker 投影，供 live 宿主结合自身进程纪元判断状态；恢复入口仍按 v0.9.5 原语把孤儿 worker 收敛为 interrupted。
   - 提供 opaque resolved route、显式 route limits 和 embedding host route override。
+  - app-server 提供进程内 `app/runtime-profile/set` 与受控 `app/credential/set`：可信本地宿主可提交 Provider、模型、base URL、route limits 与安全存储引用，并经瞬时 stdio 管道写入密钥；底座自行解析凭据，明文不进入 argv、配置持久化或响应，变更只在下一轮重建 runtime bridge。`agent_reasoning` 同时投影为 `thinking_delta`，供宿主保留思考消息。
   - 保留宿主需要的 runtime thread / Automation 接口和 `EngineConfig` 注入边界。
   - 将无副作用的运行时 session snapshot 与已知进程重启后的显式 tool history recovery 分开，避免嵌入宿主把仍在执行的工具调用误判为崩溃。
   - 提供通用的宿主批量取消操作和失败终态标记，供会话停止与 Engine 回收安全收敛后台子智能体。
 - **边界**：不实现 Pinvou 产品工具策略或专用编排完成语义。
-- **守护**：`forkguard_embedding_route_limits_preserve_wire_alias`、`forkguard_runtime_session_snapshot_preserves_in_flight_tool_call`、`forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save`、`forkguard_host_bulk_cancel_stops_all_running_children_idempotently`，以及父仓启动恢复、resolved-route、取消级联和 compaction 合约测试。
+- **守护**：`forkguard_embedding_route_limits_preserve_wire_alias`、`forkguard_external_runtime_profile_keeps_provider_secret_out_of_argv`、`forkguard_controlled_credential_pipe_rejects_empty_secret`、`forkguard_runtime_session_snapshot_preserves_in_flight_tool_call`、`forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save`、`forkguard_host_bulk_cancel_stops_all_running_children_idempotently`，以及父仓启动恢复、resolved-route、取消级联和 compaction 合约测试。
 
 ### T2：工具兼容与命令执行安全
 

@@ -196,6 +196,47 @@ fn model_catalog_rejects_invalid_default_or_current_model() {
 }
 
 #[test]
+fn model_catalog_preserves_optional_reasoning_levels_without_breaking_old_payloads() {
+    let model = ModelDescriptor::new("gpt-5.6", "GPT-5.6", true, true)
+        .unwrap()
+        .with_reasoning_levels(Some("high".into()), vec!["medium".into(), "high".into()])
+        .unwrap();
+    let catalog = ModelCatalog::new("codex", Some(ModelId::new("gpt-5.6").unwrap()), vec![model])
+        .unwrap()
+        .with_current_reasoning_level(Some("medium".into()))
+        .unwrap();
+
+    let encoded = serde_json::to_value(&catalog).unwrap();
+    assert_eq!(encoded["current_reasoning_level"], "medium");
+    assert_eq!(encoded["models"][0]["default_reasoning_level"], "high");
+
+    let legacy: ModelCatalog = serde_json::from_value(serde_json::json!({
+        "runtime_id": "codex",
+        "current_model": "gpt-5.6",
+        "models": [{
+            "id": "gpt-5.6",
+            "display_name": "GPT-5.6",
+            "available": true,
+            "is_default": true
+        }]
+    }))
+    .unwrap();
+    assert!(legacy.current_reasoning_level.is_none());
+    assert!(legacy.models[0].supported_reasoning_levels.is_empty());
+
+    let model = ModelDescriptor::new("gpt-5.6", "GPT-5.6", true, true)
+        .unwrap()
+        .with_reasoning_levels(Some("high".into()), vec!["high".into()])
+        .unwrap();
+    assert!(
+        ModelCatalog::new("codex", Some(ModelId::new("gpt-5.6").unwrap()), vec![model])
+            .unwrap()
+            .with_current_reasoning_level(Some("low".into()))
+            .is_err()
+    );
+}
+
+#[test]
 fn permission_capability_uses_stable_product_profiles() {
     let capability = PermissionCapability {
         supported_profiles: vec![ApprovalProfile::Request, ApprovalProfile::Assisted],

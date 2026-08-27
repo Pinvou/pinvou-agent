@@ -14,6 +14,8 @@ const WORKSPACE_SCHEMA_VERSION: u16 = 1;
 pub struct WorkspacePreferences {
     pub runtime: Option<String>,
     pub model_by_runtime: BTreeMap<String, String>,
+    #[serde(default)]
+    pub reasoning_level_by_runtime: BTreeMap<String, String>,
     pub approval_profile: ApprovalProfile,
     pub recent_session: Option<LogicalSessionId>,
 }
@@ -23,6 +25,7 @@ impl Default for WorkspacePreferences {
         Self {
             runtime: None,
             model_by_runtime: BTreeMap::new(),
+            reasoning_level_by_runtime: BTreeMap::new(),
             approval_profile: ApprovalProfile::Request,
             recent_session: None,
         }

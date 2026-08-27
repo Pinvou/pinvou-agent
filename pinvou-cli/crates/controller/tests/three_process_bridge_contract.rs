@@ -50,6 +50,7 @@ fn raw_client_reaches_node_chat_start_through_controller_daemon() {
     ));
     let mut command = Command::new(controller);
     configure_private_roots(&mut command, &root);
+    command.env("PINVOU_DEFAULT_RUNTIME_FOR_TEST", "echo");
     std::fs::create_dir_all(&root).unwrap();
     let stderr = root.join("controller.stderr");
     command
