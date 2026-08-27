@@ -98,6 +98,9 @@ mod tests {
                 model: "catalog-fixture".to_string(),
                 api_key: None,
                 base_url: None,
+                request_timeout_secs: None,
+                stream: None,
+                retry_on_transient_errors: None,
             })
             .build(ToolContext::new(
                 std::env::temp_dir().join("pinvou-gaia-catalog-fixture"),
