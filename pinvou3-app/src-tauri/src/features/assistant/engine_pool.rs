@@ -4116,4 +4116,176 @@ mod scheduled_model_tests {
             "pending_cancel must be armed before cancel_current so a TurnStarted can be replayed"
         );
     }
+
+    #[tokio::test]
+    async fn cancel_outcome_assembly_inputs_cover_every_terminal_branch() {
+        // 第六轮评审回归：`EnginePool::cancel` 的 CancelOutcome 组装
+        // （`terminal: claimed_unsubmitted || target.is_none() || reserve_gate_open`，
+        // 本文件 cancel() 末尾）任一为真 → terminal=true，全假 → false。
+        // EnginePool 构造依赖 AppHandle（tauri 未启用 test feature，仓库无
+        // mock_app 先例），cancel() 本体不可单测；这里用与 cancel() 完全相同
+        // 的输入源（cancel_turn_with_gates 返回值 + TurnLifecycle::
+        // is_reserve_gate_open_for）逐分支执行同一组装表达式，锁定真值表。
+
+        // 分支「target.is_none()」：会话空闲（无 lifecycle）→ 无事件可等，
+        // terminal=true（前端不得空等 chat:done）。
+        {
+            let locks = SessionTurnLocks::default();
+            let lifecycles = SessionTurnLifecycles::default();
+            let shell_tasks = SessionTurnShellTasks::default();
+            let sid = "session-outcome-idle";
+            let (target, claimed_unsubmitted) = cancel_turn_with_gates(
+                &locks,
+                &lifecycles,
+                &shell_tasks,
+                sid,
+                deepseek_tui::core::engine::CancelMode::StopDropInbox,
+                || async { None::<()> },
+                |_engine: &()| {},
+                |_engine: &()| async {},
+                |_lc, _target| false,
+            )
+            .await;
+            let reserve_gate_open = lifecycles
+                .get(sid)
+                .is_some_and(|lc| lc.is_reserve_gate_open_for(target));
+            assert_eq!(target, None, "idle session has no target generation");
+            assert!(!claimed_unsubmitted, "nothing to claim while idle");
+            assert!(
+                claimed_unsubmitted || target.is_none() || reserve_gate_open,
+                "idle session must assemble terminal=true (no chat:done to wait for)"
+            );
+        }
+
+        // 分支「claimed_unsubmitted」：未提交 reservation + engine 不在场 →
+        // claim 路径认领终态（其 chat:done 发在 cancel 返回前，前端监听器
+        // 必然错过）→ claimed_unsubmitted=true → terminal=true。
+        {
+            let locks = SessionTurnLocks::default();
+            let lifecycles = SessionTurnLifecycles::default();
+            let shell_tasks = SessionTurnShellTasks::default();
+            let sid = "session-outcome-claimed";
+            let lifecycle = lifecycles.for_session(sid);
+            let _reservation = lifecycle.reserve().expect("unsubmitted reservation");
+            let (target, claimed_unsubmitted) = cancel_turn_with_gates(
+                &locks,
+                &lifecycles,
+                &shell_tasks,
+                sid,
+                deepseek_tui::core::engine::CancelMode::InterruptKeepInbox,
+                || async { None::<()> },
+                |_engine: &()| {},
+                |_engine: &()| async {},
+                |_lc, _target| true,
+            )
+            .await;
+            let reserve_gate_open = lifecycles
+                .get(sid)
+                .is_some_and(|lc| lc.is_reserve_gate_open_for(target));
+            assert_eq!(target, Some(1));
+            assert!(
+                claimed_unsubmitted,
+                "the claim path must surface as claimed_unsubmitted"
+            );
+            assert!(
+                claimed_unsubmitted || target.is_none() || reserve_gate_open,
+                "claimed terminal must assemble terminal=true (its chat:done is unobservable)"
+            );
+        }
+
+        // 分支「reserve_gate_open」与全假对照：已 submitted 轮 cancel 后终态
+        // 仍在收口（claim 与 finish 之间的持久化窗口，闸门未开）→ 三输入
+        // 全假 → terminal=false（前端等 chat:done）；forwarder 完成收口
+        // （finish_once = claim + emit + finish，与权威路径同序）后闸门重开
+        // → terminal=true。
+        {
+            let locks = SessionTurnLocks::default();
+            let lifecycles = SessionTurnLifecycles::default();
+            let shell_tasks = SessionTurnShellTasks::default();
+            let sid = "session-outcome-gate";
+            let lifecycle = lifecycles.for_session(sid);
+            assert!(lifecycle.on_submitted());
+            let (target, claimed_unsubmitted) = cancel_turn_with_gates(
+                &locks,
+                &lifecycles,
+                &shell_tasks,
+                sid,
+                deepseek_tui::core::engine::CancelMode::StopDropInbox,
+                || async { Some(()) },
+                |_engine: &()| {},
+                |_engine: &()| async {},
+                |_lc, _target| false,
+            )
+            .await;
+            assert_eq!(target, Some(1));
+            assert!(
+                !claimed_unsubmitted,
+                "a submitted turn never takes the claim path"
+            );
+            let reserve_gate_open = lifecycles
+                .get(sid)
+                .is_some_and(|lc| lc.is_reserve_gate_open_for(target));
+            assert!(
+                !(claimed_unsubmitted || target.is_none() || reserve_gate_open),
+                "terminal closing in progress: all inputs false -> terminal=false (frontend waits for chat:done)"
+            );
+            // 终态收口完成（开闸先于 emit chat:done，同一同步块）→ 闸门重开。
+            assert!(lifecycle.finish_once(|| {}).is_some());
+            let reserve_gate_open = lifecycles
+                .get(sid)
+                .is_some_and(|lc| lc.is_reserve_gate_open_for(target));
+            assert!(
+                claimed_unsubmitted || target.is_none() || reserve_gate_open,
+                "reserve gate reopened: terminal=true is safe (chat:done already emitted)"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_gates_arm_pending_cancel_with_the_given_steering_mode() {
+        // keep_inbox → CancelMode 映射的下游半段锁定（第六轮评审）：
+        // EnginePool::cancel 按 keep_inbox 选出 InterruptKeepInbox（打断）/
+        // StopDropInbox（停止）传入本函数；这里锁定「传入哪个 mode，
+        // submit→TurnStarted 窗口 arm 的 pending_cancel 就带哪个 mode 供
+        // 转发器重放」——防 cancel_turn_with_gates 内部退化为硬编码
+        // StopDropInbox（⚡ 打断会错误清空未注入的排队 steer）。
+        // cancel() 的 if keep_inbox 字面映射与空闲补发 StopDropInbox 需要
+        // EnginePool（AppHandle）+ 在场引擎，现有 harness 不可测（与
+        // require_live_engine_for_steer 的注释口径一致）。
+        for mode in [
+            deepseek_tui::core::engine::CancelMode::InterruptKeepInbox,
+            deepseek_tui::core::engine::CancelMode::StopDropInbox,
+        ] {
+            let locks = SessionTurnLocks::default();
+            let lifecycles = SessionTurnLifecycles::default();
+            let shell_tasks = SessionTurnShellTasks::default();
+            let sid = if mode == deepseek_tui::core::engine::CancelMode::InterruptKeepInbox {
+                "session-mode-keep-inbox"
+            } else {
+                "session-mode-stop-drop"
+            };
+            let lifecycle = lifecycles.for_session(sid);
+            // submitted 且 TurnStarted 未到达（turn_id=None）→ arm 前置条件满足。
+            assert!(lifecycle.on_submitted());
+            let epoch = lifecycle.current_turn_generation().expect("active epoch");
+            cancel_turn_with_gates(
+                &locks,
+                &lifecycles,
+                &shell_tasks,
+                sid,
+                mode,
+                || async { Some(()) },
+                |_engine: &()| {},
+                |_engine: &()| async {},
+                |_lc, _target| false,
+            )
+            .await;
+            assert_eq!(
+                lifecycle.take_pending_cancel(epoch),
+                Some((epoch, mode)),
+                "armed pending_cancel must carry the CancelMode passed to cancel_turn_with_gates"
+            );
+            assert!(lifecycle.finish_once(|| {}).is_some());
+        }
+    }
 }
