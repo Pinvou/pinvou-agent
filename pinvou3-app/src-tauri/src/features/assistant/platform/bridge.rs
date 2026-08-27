@@ -4095,8 +4095,8 @@ mod tests {
             })
         );
         assert_eq!(
-            config.compaction.token_threshold, 56_570,
-            "未知远端 OpenAI-compatible alias 应沿用底座 8K 保守输出预留"
+            config.compaction.token_threshold, 45_648,
+            "the explicit 24K route output limit for an unknown remote OpenAI-compatible alias must participate in the compaction budget"
         );
     }
 
@@ -5205,6 +5205,45 @@ mod tests {
                 .and_then(|providers| providers.zai.reasoning_stream_style.as_deref()),
             Some(SEPARATE_REASONING_FIELD)
         );
+    }
+
+    #[test]
+    fn forkguard_zai_direct_route_survives_model_casing_mismatch() {
+        // The foundation zai catalog uses GLM-5.2, while Settings and existing
+        // configurations may store glm-5.2. Both spellings must resolve on the
+        // direct z.ai endpoint and converge to the catalog's canonical form
+        // (Pinvou/CodeWhale#18).
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        for model in ["glm-5.2", "GLM-5.2"] {
+            let mut bridge = fixture_bridge();
+            set_active_model(
+                &mut bridge,
+                ModelPreset::OpenaiCompatible,
+                model,
+                "https://api.z.ai/api/coding/paas/v4",
+                "sk-zai",
+            );
+            bridge.prefs.normalize_saved_model_metadata();
+            assert_eq!(
+                bridge.provider(),
+                "zai",
+                "vendor=glm must route to the zai provider"
+            );
+
+            let route = bridge
+                .resolve_runtime_route_for_model(model)
+                .unwrap_or_else(|error| panic!("failed to resolve route for {model}: {error}"));
+            assert_eq!(
+                route.model(),
+                "GLM-5.2",
+                "{model} must use the catalog's canonical spelling"
+            );
+        }
     }
 
     #[test]
