@@ -30,6 +30,11 @@
 - `withdraw_steer` returns `SteerWithdrawal` to distinguish withdrawn, committed, and missing input. Windows Shell output uses incremental UTF-8 decoding across polls, and dependency updates address the h2/lru advisories. r11 adds 15 `forkguard_*` regressions, raising the total from 41 to 56 without creating a new long-lived topic.
 - r11 adds 48 files and `+2242/-292` over r10. Provider projection, host MCP policy, steer lifecycle, and cross-platform Shell decoding remain generic upstream candidates.
 
+### r11 steer withdrawal outcome (published)
+
+- CodeWhale PR #30 landed as `e6bc34769` (maintainer follow-up `69ed3bfbd` sharpens the contract and brings the tests under the forkguard filter): `EngineHandle::withdraw_steer` now returns `SteerWithdrawal::Retired` (withdrawn, never to be injected, exactly one `SteerDropped`) or `NotPending` (already settled or unknown — **not proof of delivery**; hosts must reconcile the terminal event and preserve an indeterminate input rather than reporting success). pinvou-agent#308’s interrupt-and-send uses the outcome to decide whether re-sending is safe, closing the duplicate-delivery race. A `#[must_use]` marker prevents hosts from silently ignoring the outcome.
+- The same window also landed an MCP disabled-tool bypass closure (`e68a185c2`) and strict direct-model case matching (`0d89a31be`); both stay inside existing topics.
+
 ### r10 fixed-sampling and compaction-usage boundaries (published)
 
 - CodeWhale PR #19 was published as `feb8761aeda31749f3d54c6e1f8ef460540567a1`. The Kimi Code membership route strips non-default sampling only for the exact membership roster (`k3`, `k3-256k`, `kimi-for-coding`, and `kimi-for-coding-highspeed`). DeepSeek keeps a compatibility shim only for exact `deepseek-v4-flash` Responses calls, while the Chat dialect preserves the documented 0..=2 sampling contract.
@@ -63,6 +68,19 @@ CodeWhale PR #15 combined candidate `1eca6103a` with security follow-ups `169c24
 - Revision reconciliation remains fail-closed only for genuine cross-client turns. A local `chat:done` immediately releases the next send, readback failures cannot block ordinary local chat, and cross-client pending notices are deduplicated per session.
 - Two CodeWhale tests, two parent `forkguard_*` tests, and Tauri/Web frontend behavior coverage protect side-effect-free runtime reads, observable and idempotent explicit recovery, safe secondary Store opening, durable startup recovery, and consecutive sends after local completion.
 - The fix is included in the published head, drift figures, and immutable tag `pinvou-v0.9.5-r5`; CodeWhale required checks and parent automation pass.
+
+## In flight: session steer and deterministic cancel (CodeWhale#16 / pinvou-agent#308)
+
+- **Status**: review fixes (opaque steer id, stop semantics, teardown coverage, scoped kill) are complete, pending the CodeWhale#16 merge and release. Once published, this section folds into topics T1/T2, the public baseline head, and the drift figures.
+- **T1 (host embedding and routing boundary) additions**:
+  - Session steer (mid-turn injection) primitives: `SteerMessage { id, content }` travels the steer channel; `EngineHandle::steer` assigns and returns an opaque `steer_id` at enqueue time; `Event::SteerCommitted` / `Event::SteerDropped` carry `steer_id` so the host can correlate its queued placeholder message — no content hash (a cross-language hash over non-ASCII content cannot be made consistent).
+  - `EngineHandle::cancel_with_mode(reason, CancelMode)` (since r10): `InterruptKeepInbox` (⚡ interrupt) parks unconsumed steers for the next turn's step boundary; `StopDropInbox` (⏹ stop) settles at every Interrupted exit — both `pending_steers` and steer-channel residue emit one `SteerDropped` each. The disposition mode and the cancel token are published atomically by one handle call; there is no separate host-side switch set before cancel.
+  - `Op::SyncSession` and `Op::Shutdown` drain queued steers with per-message `SteerDropped` events, preventing cross-session injection; `Drop for Engine` is a best-effort `try_send` backstop for host evict/reclaim paths that drop the engine directly.
+  - Steer withdrawal: `EngineHandle::withdraw_steer` (fire-and-forget) records the id in a shared withdrawn set; every collection/injection point filters withdrawn ids and emits exactly one `SteerDropped`, so a withdrawn steer is never injected into the transcript. Marks survive across turns and are cleared on `SyncSession`/`Shutdown`. This makes the host UI's queued-placeholder ✕ effective until the moment of injection.
+- **T2 (tool compatibility and command-execution safety) addition**:
+  - Cancel-time process kills are scoped: `ShellManager::kill_running_turn_foreground` kills only this turn's foreground (`spawned_as_foreground`, no `owner_agent`) shell process groups; user-backgrounded tasks and sub-agent background shells survive any cancel source.
+- **Guards**: eight new behavior tests — `steer_lifecycle_rejects_idle_and_assigns_unique_ids`, `steer_lifecycle_capacity_wait_revalidates_target`, `steer_lifecycle_interrupt_keeps_input_for_next_turn`, `steer_lifecycle_stop_retires_reserved_late_send_once`, `steer_lifecycle_session_rejects_late_reserved_send`, `steer_lifecycle_withdrawal_is_bounded_and_prevents_commit`, `engine_drop_reports_unconsumed_steers_best_effort` (`core/engine/tests.rs`), and `kill_running_turn_foreground_scopes_to_this_turns_unowned_foreground_shells` (`tools/shell/tests.rs`); fingerprints are the T1/T2 steer entries in `scripts/fork-guard.sh`.
+- **Upstream policy**: the capability is implemented upstream-neutrally (English comments, no Pinvou-private context) and should later be contributed from a clean branch off upstream main per the standing rules; this register is authoritative until that lands.
 
 ## Topics
 
