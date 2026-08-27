@@ -1,6 +1,6 @@
 ---
 name: wecomcli-smartpage
-description: 何时用:仅当用户明确指向企业微信智能文档/智能主页/smartpage 或提供相关链接时使用;泛指「创建/写/整理文档」的企微诉求默认由本技能承接,纯本地文档默认走本地工具。创建智能文档、读取页面内容、调整页面树结构、获取内置智能表格信息。
+description: 何时用:企业微信智能文档/智能主页/smartpage 相关诉求,或泛指「创建/写/整理文档」的企微诉求时使用;纯本地文档默认走本地工具。创建智能文档、读取页面内容、调整页面树结构、获取内置智能表格信息。
 metadata:
   requires:
     bins: ["wecom-cli"]
@@ -142,14 +142,13 @@ metadata:
 本 skill 自身负责智能文档**内容级**的读写能力（具体接口入口见上方「接口路由表」）；以下场景需委托其他 skill：
 
 - **通用文档操作**（列出/搜索/重命名/成员/权限规则）：委托 `wecomcli-doc-manage` 技能，把文档类型限定为智能文档（smartpage）。
-- **智能表格数据操作**（内置数据表的记录增删改查、子表/字段管理）：先用 `smartpage databases get` 拿到绑定的数据表 ID 再委托 `wecomcli-smartsheet` 技能。注意：页面上的图表、视图、筛选控件等展示层操作均归本 skill，不委托 smartsheet。
+- **智能表格数据操作**（内置数据表的记录增删改查、子表/字段管理）：先用 `smartpage databases get` 拿到绑定的数据表 ID 再委托 `wecomcli-smartsheet` 技能；该数据表 ID 可直接作为 smartsheet 侧的 `docid`/`file_id` 传入，无需再提取链接或搜索。注意：页面上的图表、视图、筛选控件等展示层操作均归本 skill，不委托 smartsheet。
 
 ## 通用回答和接口约束
 
 - **结构操作互斥**：`smartpage pages update` 每次仅传一种操作（create_page / delete_page / rename_page / move_page / update_page_layout）；批量按「新建 → 移动/重命名/改布局 → 删除」顺序多次调用。
 - **结构变更后重取**：调 `smartpage pages update` 后须再调 `smartpage pages get` 获取最新结构再反馈。
 - **编辑前先读取**：`overwrite` / `append` 前先 `pages get` 拿最新内容，避免覆盖他人修改。
-- **`open_vid` 与 `userid` 等价**：接口互换使用，外部返回的 `open_vid` 可直接作 `userid` 传入。
 - 思考与回答中不出现 `docid` 等 ID 标识。
 
 ## `docid` 使用规则

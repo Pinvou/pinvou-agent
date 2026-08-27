@@ -42,13 +42,13 @@ metadata:
 | 预约日程、安排纯线下面对面会议（不含在线会议链接）、创建日程 | [calendar-create](references/calendar-create.md) |
 | 看日程、今天有什么安排、查本周日程 | [calendar-agenda](references/calendar-agenda.md) |
 | 找某个日程、项目评审是什么时候 | [calendar-search](references/calendar-search.md) |
-| 查日程详情、看周期规则、看会议链接 | [calendar-agenda](references/calendar-agenda.md) |
+| 查日程详情、看周期规则 | [calendar-agenda](references/calendar-agenda.md) |
 | 取消日程、不开了 | [calendar-cancel](references/calendar-cancel.md) |
 | 修改日程、更新日程、改时间、加人/移除人、换会议室 | [calendar-update](references/calendar-update.md) |
 | 查忙闲、某人什么时候有空、约多人共同空闲 | [calendar-freebusy](references/calendar-freebusy.md) |
 | 订会议室、查会议室空不空、查办公楼、约会议室 | [calendar-meeting-room](references/calendar-meeting-room.md) |
 
-> **浏览 vs 搜索的选择原则**：用户提到**日程主题关键词**时走搜索；**只给了时间/日期而无日程主题关键词时，必须走列表浏览（`list`）**。需要周期规则、会议链接等详情时再读取单条日程详情补充。
+> **浏览 vs 搜索的选择原则**：用户提到**日程主题关键词**时走搜索；**只给了时间/日期而无日程主题关键词时，必须走列表浏览（`list`）**。需要周期规则等详情时再读取单条日程详情补充。
 
 ## 技能边界：日程 vs 会议 [CRITICAL]
 
@@ -163,7 +163,7 @@ metadata:
 任何操作中，当必要参数不明确或需要用户做出选择时，**必须用文字直接向用户提问**，禁止自行猜测或使用默认值代替询问。提问时把可选项 / 候选值一并写进文字里，让用户直接回复。
 
 以下情况均适用此规则：
-- **必填参数及参与人缺失**：创建日程的必填参数（`subject` / `begin_time` / `end_time`）以及参与人 `attendees` 无法从上下文中推断时，必须用文字询问；其余非必填参数（如地点）用户未明确指定时不专门询问，直接走默认值
+- **必填参数及参与人缺失**：创建日程的必填参数（`subject` / `begin_time`）以及参与人 `attendees` 无法从上下文中推断时，必须用文字询问；`end_time`（时长）缺失时不追问，默认时长 1 小时（`begin_time + 1h`）；其余非必填参数（如地点）用户未明确指定时不专门询问，直接走默认值
 - **多候选项需用户选择**：搜索返回多个匹配日程、wecomcli-contact 技能搜索到多个同名候选人
 - **操作范围需确认**：如更换会议室时查到多个 bookable 候选，需用户选定具体一个
 - **冲突处理**：忙闲检查发现时间冲突，需用户决策

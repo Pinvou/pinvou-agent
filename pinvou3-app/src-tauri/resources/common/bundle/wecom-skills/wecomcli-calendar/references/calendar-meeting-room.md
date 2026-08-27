@@ -167,4 +167,4 @@ wecom-cli meeting rooms search --json '{
 
 - [calendar-create](calendar-create.md) — 日程创建（传 `meeting_room_id` 占用会议室）
 - [calendar-freebusy](calendar-freebusy.md) — 共同空闲查询
-- [wecomcli-calendar.md](../SKILL.md) — 日程技能主文档
+- [wecomcli-calendar](../SKILL.md) — 日程技能主文档

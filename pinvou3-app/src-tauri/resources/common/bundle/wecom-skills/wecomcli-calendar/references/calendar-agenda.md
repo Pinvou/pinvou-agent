@@ -201,7 +201,7 @@ wecom-cli calendar schedules get --json '{"schedule_ids": ["<schedule_id1>", "<s
 → 调用 list，按开始时间升序顺序输出每条日程（主题/时间/参与人）
 ```
 
-### 3. 查看详情（需要周期规则、会议链接等）
+### 3. 查看详情（需要周期规则等）
 
 ```
 用户：这个周会是每周开吗？

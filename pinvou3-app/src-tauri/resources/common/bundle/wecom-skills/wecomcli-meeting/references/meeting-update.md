@@ -45,6 +45,16 @@ wecom-cli meeting update --json '{...}'
 - **更换会议室**：用户要换会议室时，`meeting_room_id` 必须先经 `rooms search` 查询、确认新会议室 `status=bookable` 可用后才传入；禁止跳过查询凭记忆/猜测直接传，禁止把会议室名仅写进 `location`（那样不会真正占用会议室）。会议室查询接口须 `读取 wecomcli-calendar 技能` 的 [会议室查询参考](../../wecomcli-calendar/references/calendar-meeting-room.md)
 - userid（前缀为 `wo`）不接受姓名直接传入；用户提供的是姓名时通过 `读取 wecomcli-contact 技能` 解析为 userid，禁止把姓名当 userid 拼接，禁止凭记忆或猜测编造
 
+## 定位目标时的跨载体消歧（模糊更新）[REQUIRED]
+
+用户说"改那个会 / 改 xx 会 / 把那个会挪到……"等模糊表述、未明确是日程还是在线会议时，**不要只在会议里找**——「会」可能是含在线会议链接的会议，也可能是一条纯日程，只查一边会漏定位：
+
+- **明确是在线会议**（提到入会链接 / 会议号 / 视频会议 / 腾讯会议 / 远程参会等专属特征）→ 只在本技能 `meeting search`/`list` 定位，走 `meeting update`。
+- **明确是日程 / 安排**（说的是"日程 / 安排 / 我的日历"且不带在线会议特征）→ 改用 `读取 wecomcli-calendar 技能` 在日程里定位并走 `schedule update`；注意含会议链接的日程（`meeting` 非空）改时间须回到本技能 `meeting update`（见 wecomcli-calendar 技能「改约 / 重建日程前必须先识别会议关联」）。
+- **模糊无法判定** → 会议和日程**两边都查**：本技能 `meeting search`/`list` + `读取 wecomcli-calendar 技能` 用同样关键词 / 时间查日程，合并候选、按"主题 + 时间"去重（同一场两边都命中只保留一条），再用文字让用户**选定要修改的唯一一条**；选定后按其归属路由——是会议（或两边都命中的同一场）→ `meeting update`；是纯日程 → 改用 `读取 wecomcli-calendar 技能` 走 `schedule update`。
+
+> **与查询消歧的区别**：查询时可以两边都查、都展示；但更新是**写操作，绝不能两边都直接改**，模糊时必须先让用户确认唯一目标，再执行对应的 update。
+
 ## 工作流
 
 ```

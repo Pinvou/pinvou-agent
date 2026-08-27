@@ -254,7 +254,7 @@ wecom-cli smartpage pages overwrite --json '{"docid": "<docid>", "page_id": "<pa
 
 根据智能文档的 docid 或 url，获取智能文档关联的数据表 ID 及其子表列表。
 
-**后续操作数据表**：拿到数据表 ID 后，委托 `wecomcli-smartsheet` 技能进行记录查询、编辑等操作。
+**后续操作数据表**：拿到数据表 ID 后，委托 `wecomcli-smartsheet` 技能进行记录查询、编辑等操作；该数据表 ID（`database_info.id`）可直接作为 smartsheet 侧的 `docid`/`file_id` 传入，无需再提取链接或搜索。
 
 > `docid` 和 `url` 二选一传入即可，优先使用 `docid`。
 

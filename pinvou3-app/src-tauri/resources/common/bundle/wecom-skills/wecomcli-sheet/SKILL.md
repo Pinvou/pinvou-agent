@@ -25,6 +25,7 @@ metadata:
 - 搜索文档 / 修改文档权限 / 重命名 / 加成员 → 改用 `wecomcli-doc-manage`
 - 用户给的链接是 `https://doc.weixin.qq.com/smartsheet/...` → 改用 `wecomcli-smartsheet`
 - 若遇到的 `docid` 以 `s3` 开头（形如 `s3_xxxx`）→ 改用 `wecomcli-smartsheet`
+- 用户泛指「做表格」、未明确在线表格还是智能表格 → 先用简洁自然语言消歧确认，不得默认本技能
 
 
 ## 接口路由表

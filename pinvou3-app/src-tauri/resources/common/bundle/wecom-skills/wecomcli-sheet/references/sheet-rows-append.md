@@ -22,6 +22,7 @@ wecom-cli sheet rows append --json '<JSON 参数>'
 | 子字段 | 类型 | 说明 |
 |---|---|---|
 | `cell_value` | object | 单元格值，见下方「cell_value 类型选择」|
+| `data_type` | string | 与 `cell_value` 对应的数据类型 |
 | `cell_format` | object | 单元格样式；传空对象 `{}` 表示默认样式 |
 
 ### cell_value 类型选择

@@ -30,7 +30,7 @@ metadata:
 
 | 依赖技能 | 触发场景 | 数据流向 |
 |---|---|---|
-| `wecomcli-media` | 发送图片、文件、语音或视频时只有本地文件路径，没有可直接复用的 `media_id` | 包含媒体上传接口，如没有已有的 `media_id`，必须先阅读该技能获取 `media_id`，上传时传入的 `type` 应和发送时的`msg_type` 对齐|
+| `wecomcli-media` | 发送图片、文件、语音或视频时只有本地文件路径，没有可直接复用的 `media_id` | 包含媒体上传接口，如没有已有的 `media_id`，必须先阅读该技能获取 `media_id`。上传无需传类型，`media upload` 仅接收 `file_path`、上传后自动判定并返回 `type`；发送时按返回的 `type` 对齐 `msg_type` |
 
 ## 获取能发送消息的会话列表
 
@@ -75,7 +75,7 @@ wecom-cli message aibot sessions list
 - 唯一匹配时继续发送。
 - 多个聊天会话候选时，按返回顺序展示聊天名和最后消息时间，让用户选择。
 - 用户完成选择后，必须重新调用 `sessions list`，再用选定对象匹配当次返回值。
-- 无匹配时停止发送，如实告知目标不在最近 10 个会话中；不要接受外部 `chat_id` 绕过限制。
+- 无匹配时停止发送，如实告知目标不在本次返回的最近会话中；不要接受外部 `chat_id` 绕过限制。
 - `sessions_count=0` 时停止发送，告知当前没有可发送的最近会话。
 - 展示会话列表时保持接口原始顺序；展示名称和时间，不展示内部 `chat_id`。
 
@@ -128,7 +128,7 @@ wecom-cli message aibot send --json '{
 
 ### 图片消息
 
-`image.media_id` 必填，必须由媒体上传接口以 `type=image` 上传获得。
+`image.media_id` 必填，必须来自媒体上传接口上传后返回 `type=image` 的结果。
 
 ```bash
 wecom-cli message aibot send --json '{
@@ -142,7 +142,7 @@ wecom-cli message aibot send --json '{
 
 ### 文件消息
 
-`file.media_id` 必填，必须由媒体上传接口以 `type=file` 上传获得；文件名取上传时的原始文件名。
+`file.media_id` 必填，必须来自媒体上传接口上传后返回 `type=file` 的结果；文件名取上传时的原始文件名。
 
 ```bash
 wecom-cli message aibot send --json '{
@@ -156,7 +156,7 @@ wecom-cli message aibot send --json '{
 
 ### 语音消息
 
-`voice.media_id` 必填，必须由媒体上传接口以 `type=voice` 上传获得；源文件仅支持 AMR 格式，不能只改扩展名冒充 AMR。
+`voice.media_id` 必填，必须来自媒体上传接口上传后返回 `type=voice` 的结果；源文件仅支持 AMR 格式，不能只改扩展名冒充 AMR。
 
 ```bash
 wecom-cli message aibot send --json '{
@@ -172,7 +172,7 @@ wecom-cli message aibot send --json '{
 
 | 字段 | 必填 | 说明 |
 |---|:---:|---|
-| `video.media_id` | 是 | 由媒体上传接口以 `type=video` 上传获得 |
+| `video.media_id` | 是 | 来自媒体上传接口上传后返回 `type=video` 的结果 |
 | `video.title` | 否 | 最长 128 UTF-8 字节；省略时使用上传时的原始文件名 |
 | `video.description` | 否 | 最长 512 UTF-8 字节；省略时不展示描述 |
 
