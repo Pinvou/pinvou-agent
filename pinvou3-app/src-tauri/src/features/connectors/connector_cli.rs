@@ -379,10 +379,10 @@ pub fn bundle_store_on_connected(id: &str) {
     };
     let mut record = BundleRecord::installed_now(id, BundleSource::Builtin);
     if let Some(bin) = bundle::cli_bundle_bin(id) {
-        if let Some(pin) = crate::platform::connector_lock::artifact_pin(bin) {
+        if let Some(pin) = crate::platform::connector_lock::artifact_pin(&bin) {
             record.assets.push(AssetRef {
                 kind: ASSET_KIND_CLI.to_string(),
-                name: bin.to_string(),
+                name: bin.clone(),
                 version: pin.version,
                 sha256: pin.binary_sha256,
             });

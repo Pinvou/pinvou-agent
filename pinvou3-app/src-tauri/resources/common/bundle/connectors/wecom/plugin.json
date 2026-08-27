@@ -1,0 +1,22 @@
+{
+  "manifest_version": 1,
+  "id": "wecom",
+  "name": "企业微信",
+  "version": "1.1.0",
+  "description": "接入企业微信官方 CLI（@wecom/cli，MIT）+ 官方域技能：让 AI 以你本人身份收发消息、读写文档与智能表格、创建/查询会议与日程、管理待办、查询通讯录。点「连接」用企业微信 App 扫码授权，全程不填 key。数据经企业微信云（可选联网功能，opt-in）。",
+  "components": {
+    "cli_connectors": [
+      {
+        "id": "wecom",
+        "bin": "wecom-cli",
+        "version": "1.1.0",
+        "skills_dir": "skills",
+        "auth": {
+          "steps": [
+            { "id": "authorize", "kind": "qr", "label": "扫码授权" }
+          ]
+        }
+      }
+    ]
+  }
+}

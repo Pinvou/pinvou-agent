@@ -143,6 +143,8 @@ impl Pinvou3Bundle {
         // 飞书 / 企微 / 钉钉鉴权 CLI 不得阻塞 Tauri setup。启动阶段只沿用上次落盘的完整
         // 技能目录作为缓存；React 首屏提交后调用 refresh_connector_auth_gates 并行
         // 实时探测，再按真实状态修正目录。bundle 升级时仅刷新当前可见的缓存目录。
+        // 门控条件附 `!connector_plugin_json_present`：插件包标准化前的存量连接
+        // 缺包级 plugin.json，首个启动周期补写一次（此后条件恒假、零额外写盘）。
         crate::platform::startup::mark("bundle_extract:apply_skill_gates:start");
         let feishu_show = self.cached_feishu_skills_visible();
         crate::platform::startup::mark_with_detail(
@@ -150,7 +152,7 @@ impl Pinvou3Bundle {
             "bundle_extract:feishu_cached_gate",
             &format!("show={feishu_show}"),
         );
-        if bundle_changed || !feishu_show {
+        if bundle_changed || !feishu_show || !Self::connector_plugin_json_present("feishu") {
             self.apply_feishu_skills(feishu_show)?;
         }
         let wecom_show = self.cached_wecom_skills_visible();
@@ -159,7 +161,7 @@ impl Pinvou3Bundle {
             "bundle_extract:wecom_cached_gate",
             &format!("show={wecom_show}"),
         );
-        if bundle_changed || !wecom_show {
+        if bundle_changed || !wecom_show || !Self::connector_plugin_json_present("wecom") {
             self.apply_wecom_skills(wecom_show)?;
         }
         let dingtalk_show = self.cached_dingtalk_skills_visible();
@@ -168,7 +170,7 @@ impl Pinvou3Bundle {
             "bundle_extract:dingtalk_cached_gate",
             &format!("show={dingtalk_show}"),
         );
-        if bundle_changed || !dingtalk_show {
+        if bundle_changed || !dingtalk_show || !Self::connector_plugin_json_present("dingtalk") {
             self.apply_dingtalk_skills(dingtalk_show)?;
         }
         let tmeet_show = self.cached_tmeet_skills_visible();
@@ -177,7 +179,7 @@ impl Pinvou3Bundle {
             "bundle_extract:tmeet_cached_gate",
             &format!("show={tmeet_show}"),
         );
-        if bundle_changed || !tmeet_show {
+        if bundle_changed || !tmeet_show || !Self::connector_plugin_json_present("tmeet") {
             self.apply_tmeet_skills(tmeet_show)?;
         }
         crate::platform::startup::mark("bundle_extract:apply_skill_gates:done");
@@ -435,6 +437,34 @@ impl Pinvou3Bundle {
         paths::bundles_root().join(id).join("skills")
     }
 
+    /// 连接器包级 plugin.json 与技能目录同生命周期（插件包标准化 M1）：
+    /// show → 落盘 checked-in 声明（内容一致零写盘），hide → 删除。
+    /// 运行层不读其内容，落盘纯为包自描述/导出准备。
+    fn apply_connector_plugin_json(id: &str, show: bool) -> std::io::Result<()> {
+        let path = paths::bundles_root().join(id).join("plugin.json");
+        if !show {
+            let _ = std::fs::remove_file(&path);
+            return Ok(());
+        }
+        let Some(json) = crate::features::marketplace::bundle::cli_bundle_plugin_json(id) else {
+            return Ok(());
+        };
+        if std::fs::read(&path).is_ok_and(|bytes| bytes == json.as_bytes()) {
+            return Ok(());
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, json)
+    }
+
+    /// 升级补写判定：包级 plugin.json 是否已落盘。插件包标准化前已连接的存量
+    /// 用户缺它——启动门控条件带上本判定后，首个启动周期经 apply_*_skills
+    /// 补写一次，此后条件恒假、零额外写盘。
+    fn connector_plugin_json_present(id: &str) -> bool {
+        paths::bundles_root().join(id).join("plugin.json").is_file()
+    }
+
     pub fn apply_feishu_skills(&self, show: bool) -> std::io::Result<()> {
         let target = Self::connector_package_skills_dir("feishu");
         if show {
@@ -445,6 +475,7 @@ impl Pinvou3Bundle {
             }
             let _ = std::fs::remove_file(target.join("NOTICE.md"));
         }
+        Self::apply_connector_plugin_json("feishu", show)?;
         Ok(())
     }
     /// 启动缓存只在 9 个飞书域技能全部完整落盘时判 visible，避免上次异常中断留下
@@ -478,6 +509,7 @@ impl Pinvou3Bundle {
             }
             let _ = std::fs::remove_file(target.join("NOTICE-wecom.md"));
         }
+        Self::apply_connector_plugin_json("wecom", show)?;
         Ok(())
     }
     /// 同 [`cached_feishu_skills_visible`]，以完整的企微技能目录作为启动缓存。
@@ -501,6 +533,7 @@ impl Pinvou3Bundle {
             }
             let _ = std::fs::remove_file(target.join("NOTICE-dingtalk.md"));
         }
+        Self::apply_connector_plugin_json("dingtalk", show)?;
         Ok(())
     }
     /// 同 [`cached_feishu_skills_visible`]，以完整的钉钉技能目录作为启动缓存。
@@ -524,6 +557,7 @@ impl Pinvou3Bundle {
             }
             let _ = std::fs::remove_file(target.join("NOTICE-tmeet.md"));
         }
+        Self::apply_connector_plugin_json("tmeet", show)?;
         Ok(())
     }
     /// 同 [`cached_feishu_skills_visible`]，以完整的腾讯会议技能目录作为启动缓存。
@@ -799,6 +833,52 @@ fn should_ensure_embedded_release(
 
 #[cfg(test)]
 mod tests {
+    /// M1 落盘：连接器门控写/删技能目录时，包级 plugin.json 同生命周期
+    /// （show 落盘 checked-in 声明、hide 删除；升级补写判定同步翻转）。
+    #[test]
+    fn apply_feishu_skills_lands_and_removes_plugin_json() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-connector-pluginjson-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = super::Pinvou3Bundle::paths();
+
+        let plugin_path = crate::platform::paths::bundles_root()
+            .join("feishu")
+            .join("plugin.json");
+        assert!(!super::Pinvou3Bundle::connector_plugin_json_present(
+            "feishu"
+        ));
+
+        bundle.apply_feishu_skills(true).unwrap();
+        assert!(plugin_path.is_file(), "show 应落盘 plugin.json");
+        assert_eq!(
+            std::fs::read_to_string(&plugin_path).unwrap(),
+            crate::features::marketplace::bundle::cli_bundle_plugin_json("feishu").unwrap(),
+            "落盘内容应等于 checked-in 声明"
+        );
+        assert!(super::Pinvou3Bundle::connector_plugin_json_present(
+            "feishu"
+        ));
+
+        bundle.apply_feishu_skills(false).unwrap();
+        assert!(!plugin_path.exists(), "hide 应删除 plugin.json");
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// G1 回归：上传来源记录不得进入内嵌重释放（防用户内容被嵌入资源覆盖）。
     #[test]
     fn embedded_release_skips_non_preset_sources() {

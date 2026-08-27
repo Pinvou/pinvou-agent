@@ -26,12 +26,16 @@ use super::store;
 use super::MarketplaceManager;
 
 // 内置 CLI 连接器清单（修复方案 V2：ima 无 CLI 二进制，移出 CLI 包，归凭据型技能包）。
-// 条目 = (id, 展示名, CLI 二进制名, 配套技能目录, 功能描述)。本表是「连接器 → CLI 二进制 /
-// 配套技能」的单一真相源：能力包注册（下方 list_bundles）、companion 联动排除
+// 声明驱动（插件包标准化 M1）：4 份 checked-in plugin.json（编译期内嵌）是
+// 「连接器 → CLI 二进制 / 授权步骤 / 展示元数据」的单一真相源；技能目录名列表
+// （LARK_SKILL_DIRS 等）是包内容事实、不在 cli_connectors schema 内，仍为常量。
+// 两个来源共同供数：能力包注册（下方 list_bundles）、companion 联动排除
 // （MarketplaceManager::companion_skills）、execpolicy 硬拦截（engine_pool ruleset）
-// 与技能解包门控（runtime_bundle apply_*_skills）全部从这里取数。
-// 功能描述是功能事实（§3.1 下沉侧），取自前端 tsToolsData 既有文案；label/icon/
-// color/welcomeQueries 等 i18n 展示资产仍留前端 overlay。
+// 与技能解包门控（runtime_bundle apply_*_skills）。功能描述是功能事实（§3.1 下沉侧），
+// label/icon/color/welcomeQueries 等 i18n 展示资产仍留前端 overlay。
+// per-platform 下载 url/哈希不内联进 plugin.json——平台 lock JSON 仍是防伪 pin
+// 的唯一来源，声明 version 与 lock 的一致性由测试锁定（漂移即失败）。
+// tmeet 走 npm 安装、无 lock 条目，plugin.json version 写 npm 包版本（1.0.15）。
 /// 9 个 lark 域技能目录名（飞书配套技能，门控写/删与组合目录排除共用）。
 pub const LARK_SKILL_DIRS: &[&str] = &[
     "lark-shared",
@@ -54,65 +58,124 @@ pub const DINGTALK_SKILL_DIRS: &[&str] = &["dws"];
 /// 腾讯会议 mono skill 目录名。
 pub const TMEET_SKILL_DIRS: &[&str] = &["tmeet-skill"];
 
-const BUILTIN_CLI_BUNDLES: &[(&str, &str, &str, &[&str], &str)] = &[
-    (
-        "feishu",
-        "飞书（Lark）",
-        "lark-cli",
-        LARK_SKILL_DIRS,
-        "接入飞书官方 CLI + 官方域技能（MIT）：让 AI 以你本人身份读写云文档、查改日历、操作多维表格（Base）、收发消息、管理知识库与任务。点「连接飞书」浏览器一键授权，全程不填 key。数据经飞书云 OpenAPI（可选联网功能，opt-in）。",
-    ),
-    (
-        "wecom",
-        "企业微信",
-        "wecom-cli",
-        WECOM_SKILL_DIRS,
-        "接入企业微信官方 CLI（@wecom/cli，MIT）+ 官方域技能：让 AI 以你本人身份收发消息、读写文档与智能表格、创建/查询会议与日程、管理待办、查询通讯录。点「连接」用企业微信 App 扫码授权，全程不填 key。数据经企业微信云（可选联网功能，opt-in）。",
-    ),
-    (
-        "dingtalk",
-        "钉钉",
-        "dws",
-        DINGTALK_SKILL_DIRS,
-        "接入钉钉官方 DingTalk Workspace CLI（dws，Apache-2.0）+ 官方技能：让 AI 以你本人身份读写钉钉文档、查改日历、操作 AI 表格/在线表格、收发群聊消息、处理待办/审批/日志/邮箱等。点「连接」用钉钉 App 扫码授权，全程不填 key。",
-    ),
-    (
-        "tmeet",
-        "腾讯会议",
-        "tmeet",
-        TMEET_SKILL_DIRS,
-        "接入腾讯会议官方 CLI（@tencentcloud/tmeet）+ 官方技能：让 AI 以你本人身份创建、查询、修改和取消腾讯会议，查询受邀人、参会报告、录制、转写与智能纪要，并支持会中呼叫成员入会。点「连接」打开腾讯会议授权页扫码登录，全程不填 key。",
-    ),
-];
+const FEISHU_PLUGIN_JSON: &str =
+    include_str!("../../../resources/common/bundle/connectors/feishu/plugin.json");
+const WECOM_PLUGIN_JSON: &str =
+    include_str!("../../../resources/common/bundle/connectors/wecom/plugin.json");
+const DINGTALK_PLUGIN_JSON: &str =
+    include_str!("../../../resources/common/bundle/connectors/dingtalk/plugin.json");
+const TMEET_PLUGIN_JSON: &str =
+    include_str!("../../../resources/common/bundle/connectors/tmeet/plugin.json");
+
+/// 解析后的内置 CLI 连接器声明：checked-in plugin.json（元数据/bin/授权步骤）
+/// + 技能目录常量。经 [`builtin_cli_bundles`] 懒加载一次（解析失败即 panic——
+/// checked-in 内容损坏属构建缺陷，且有一致性测试在 CI 先行拦截）。
+struct BuiltinCliBundle {
+    plugin_json: &'static str,
+    plugin: super::plugin_import::PluginManifest,
+    skill_dirs: &'static [&'static str],
+}
+
+impl BuiltinCliBundle {
+    /// 唯一的 cli_connectors 组件（加载时已断言恰一个）。
+    fn connector(&self) -> &super::plugin_import::CliConnectorDecl {
+        &self
+            .plugin
+            .components
+            .as_ref()
+            .expect("内置连接器声明必有 components")
+            .cli_connectors[0]
+    }
+}
+
+fn builtin_cli_bundles() -> &'static [BuiltinCliBundle] {
+    static BUNDLES: std::sync::OnceLock<Vec<BuiltinCliBundle>> = std::sync::OnceLock::new();
+    BUNDLES.get_or_init(|| {
+        [
+            (FEISHU_PLUGIN_JSON, LARK_SKILL_DIRS),
+            (WECOM_PLUGIN_JSON, WECOM_SKILL_DIRS),
+            (DINGTALK_PLUGIN_JSON, DINGTALK_SKILL_DIRS),
+            (TMEET_PLUGIN_JSON, TMEET_SKILL_DIRS),
+        ]
+        .into_iter()
+        .map(|(json, skill_dirs)| {
+            let plugin: super::plugin_import::PluginManifest =
+                serde_json::from_str(json).expect("内置连接器 plugin.json 必须可解析");
+            let comps = plugin
+                .components
+                .as_ref()
+                .expect("内置连接器声明缺 components");
+            assert!(
+                comps.cli_connectors.len() == 1
+                    && comps.mcp_servers.is_empty()
+                    && comps.skills.is_empty(),
+                "内置连接器声明必须恰含一个 cli_connectors 组件"
+            );
+            assert_eq!(
+                comps.cli_connectors[0].id, plugin.id,
+                "连接器组件 id 必须与包 id 一致"
+            );
+            BuiltinCliBundle {
+                plugin_json: json,
+                plugin,
+                skill_dirs,
+            }
+        })
+        .collect()
+    })
+}
 
 /// 内置 CLI 连接器 id 列表（scope 默认全禁等门禁逻辑的覆盖来源）。
 pub fn builtin_cli_bundle_ids() -> impl Iterator<Item = &'static str> {
-    BUILTIN_CLI_BUNDLES.iter().map(|(id, ..)| *id)
+    builtin_cli_bundles().iter().map(|b| b.plugin.id.as_str())
 }
 
 /// CLI 连接器的配套技能目录名（非 CLI id 返回空切片）。
 pub fn cli_bundle_skill_dirs(id: &str) -> &'static [&'static str] {
-    BUILTIN_CLI_BUNDLES
+    builtin_cli_bundles()
         .iter()
-        .find(|(cid, ..)| *cid == id)
-        .map(|(.., dirs, _)| *dirs)
+        .find(|b| b.plugin.id == id)
+        .map(|b| b.skill_dirs)
         .unwrap_or(&[])
 }
 
 /// CLI 连接器的二进制名（execpolicy 硬拦截按它构造 deny 规则）。
-pub fn cli_bundle_bin(id: &str) -> Option<&'static str> {
-    BUILTIN_CLI_BUNDLES
+/// 内置连接器查 checked-in 声明；已装 Upload 包回退反查盘上
+/// `bundles/<id>/plugin.json` 的 cli_connectors 声明（为阶段 2 的 execpolicy
+/// 治理前置——当前导入管线尚不识别 cli 组件，此类包还不存在，反查先落地）。
+/// 返回 `Option<String>`：盘上反查值无法借用静态生命周期（签名随反查扩展由
+/// `&'static str` 调整为 `String`，三个调用点同步适配，行为不变）。
+pub fn cli_bundle_bin(id: &str) -> Option<String> {
+    if let Some(b) = builtin_cli_bundles().iter().find(|b| b.plugin.id == id) {
+        return Some(b.connector().bin.clone());
+    }
+    let path = crate::platform::paths::bundles_root()
+        .join(id)
+        .join("plugin.json");
+    let plugin: super::plugin_import::PluginManifest =
+        serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let comps = plugin.components?;
+    if comps.cli_connectors.len() == 1 {
+        Some(comps.cli_connectors.into_iter().next().unwrap().bin)
+    } else {
+        None
+    }
+}
+
+/// 内置连接器的 checked-in plugin.json 原文（门控落盘用；非内置 id → None）。
+pub(crate) fn cli_bundle_plugin_json(id: &str) -> Option<&'static str> {
+    builtin_cli_bundles()
         .iter()
-        .find(|(cid, ..)| *cid == id)
-        .map(|(.., bin, _, _)| *bin)
+        .find(|b| b.plugin.id == id)
+        .map(|b| b.plugin_json)
 }
 
 /// 技能目录名 → CLI 连接器 id（内置清单反查；非 CLI companion 返回 None）。
 pub(crate) fn cli_bundle_of_skill(skill_dir: &str) -> Option<&'static str> {
-    BUILTIN_CLI_BUNDLES
+    builtin_cli_bundles()
         .iter()
-        .find(|(.., dirs, _)| dirs.contains(&skill_dir))
-        .map(|(id, ..)| *id)
+        .find(|b| b.skill_dirs.contains(&skill_dir))
+        .map(|b| b.plugin.id.as_str())
 }
 
 /// 技能目录名 → 所属包 id（物理布局归属，§4「一个包 = 一个目录 = 一个属主」）。
@@ -435,13 +498,16 @@ impl BundleRegistry {
             });
         }
 
-        // 4) CLI 连接器源（内置常量表；V2 后不含 ima。元数据已随 Phase 2 第七刀
-        //    下沉：desc 取自常量表、version 取 lock 表钉住版本、auth_required 恒 true
-        //    ——CLI 连接器都要授权；i18n 展示资产留前端 overlay）
+        // 4) CLI 连接器源（checked-in plugin.json 声明驱动；V2 后不含 ima。
+        //    name/desc 取自声明，version 功能事实仍取 lock 表钉住版本——tmeet 走
+        //    npm 无 lock 条目 → 空，前端 overlay 保留自报版本展示；auth_required
+        //    恒 true——CLI 连接器都要授权；i18n 展示资产留前端 overlay）
         //    skills 登记配套官方技能目录（kind 仍由 cli 优先派生为 Cli）——注册表
         //    由此成为「连接器 → 配套技能」的单一真相源，供 companion 联动排除
         //    与技能解包门控取数。
-        for (id, name, bin, skill_dirs, desc) in BUILTIN_CLI_BUNDLES {
+        for b in builtin_cli_bundles() {
+            let id = b.plugin.id.as_str();
+            let bin = b.connector().bin.as_str();
             let (installed, degraded) =
                 store_state(id).unwrap_or((self.cli_bundle_installed(id), None));
             // version 功能事实：lock 表钉住版本（tmeet 走 npm 无 lock 条目 → 空，
@@ -450,14 +516,14 @@ impl BundleRegistry {
                 .map(|pin| pin.version)
                 .unwrap_or_default();
             out.push(BundleInfo {
-                id: (*id).to_string(),
-                name: (*name).to_string(),
+                id: id.to_string(),
+                name: b.plugin.name.clone(),
                 kind: BundleKind::Cli,
                 mcp_servers: Vec::new(),
-                skills: skill_dirs.iter().map(|s| (*s).to_string()).collect(),
-                cli: vec![(*id).to_string()],
+                skills: b.skill_dirs.iter().map(|s| (*s).to_string()).collect(),
+                cli: vec![id.to_string()],
                 credentials: Vec::new(),
-                description: (*desc).to_string(),
+                description: b.plugin.description.clone().unwrap_or_default(),
                 version,
                 auth_required: true,
                 config_fields: Vec::new(),
@@ -1106,11 +1172,12 @@ mod tests {
             assert_eq!(upload.kind, BundleKind::Skill);
             assert!(upload.user_uploaded);
             // CLI 包 id 覆盖内置清单（V2：ima 不在 CLI 包）
-            for (id, ..) in BUILTIN_CLI_BUNDLES {
+            for b in builtin_cli_bundles() {
+                let id = b.plugin.id.as_str();
                 assert!(
                     bundles
                         .iter()
-                        .any(|b| b.id == *id && b.kind == BundleKind::Cli),
+                        .any(|b| b.id == id && b.kind == BundleKind::Cli),
                     "CLI 包 {id} 应存在"
                 );
             }
@@ -1270,13 +1337,19 @@ mod tests {
 
     /// Phase 2 第七刀：CLI/ima 元数据下沉——desc/version/category/auth_required
     /// 是功能事实而非结构占位；version 与 lock 表钉住版本一致。
+    /// M1 起 name/desc/bin 来自 checked-in plugin.json 声明，此处同时锁定
+    /// 声明与 lock 表的一致性（漂移即失败）。
     #[test]
     fn cli_and_ima_bundles_carry_functional_metadata() {
         with_temp_home(|| {
             let bundles = BundleRegistry::new().list_bundles();
-            for (id, _, bin, _, desc) in BUILTIN_CLI_BUNDLES {
-                let b = bundles.iter().find(|b| b.id == *id).expect("CLI 包应存在");
-                assert_eq!(b.description, *desc, "{id} desc 应取自常量表");
+            for decl in builtin_cli_bundles() {
+                let id = decl.plugin.id.as_str();
+                let bin = decl.connector().bin.as_str();
+                let desc = decl.plugin.description.as_deref().unwrap_or_default();
+                let b = bundles.iter().find(|b| b.id == id).expect("CLI 包应存在");
+                assert_eq!(b.name, decl.plugin.name, "{id} name 应取自声明");
+                assert_eq!(b.description, desc, "{id} desc 应取自声明");
                 assert!(!b.description.is_empty());
                 assert!(b.auth_required, "{id} 应恒需授权");
                 assert_eq!(b.category, "collab", "{id} 业务分类");
@@ -1331,6 +1404,134 @@ mod tests {
             let ima = BundleRegistry::new().bundle("ima").unwrap();
             assert!(!ima.installed, "ima 记录存在时以其为准");
             assert_eq!(ima.degraded.as_deref(), Some("资源缺失"));
+        });
+    }
+
+    /// M1 一致性：4 份 checked-in 连接器声明与 lock JSON / 技能目录常量 /
+    /// 授权模型一致（声明漂移或 lock 升级未同步即失败）。
+    #[test]
+    fn builtin_cli_decls_match_lock_and_skill_constants() {
+        use super::super::plugin_import::CliAuthStepKind;
+        // (id, bin, 技能目录常量, 授权步数)
+        let expected: &[(&str, &str, &[&str], usize)] = &[
+            ("feishu", "lark-cli", LARK_SKILL_DIRS, 2),
+            ("wecom", "wecom-cli", WECOM_SKILL_DIRS, 1),
+            ("dingtalk", "dws", DINGTALK_SKILL_DIRS, 1),
+            ("tmeet", "tmeet", TMEET_SKILL_DIRS, 1),
+        ];
+        let decls = builtin_cli_bundles();
+        assert_eq!(decls.len(), expected.len(), "内置连接器数量");
+        for (id, bin, dirs, step_count) in expected {
+            let b = decls
+                .iter()
+                .find(|b| b.plugin.id == *id)
+                .unwrap_or_else(|| panic!("{id} 声明缺失"));
+            assert_eq!(b.plugin.manifest_version, 1, "{id} manifest_version");
+            assert!(
+                super::super::plugin_import::is_safe_component_id(&b.plugin.id),
+                "{id} 包 id 字符集"
+            );
+            assert!(!b.plugin.name.is_empty(), "{id} name 非空");
+            assert!(
+                b.plugin
+                    .description
+                    .as_deref()
+                    .is_some_and(|d| !d.is_empty()),
+                "{id} description 非空"
+            );
+            let c = b.connector();
+            assert_eq!(c.bin, *bin, "{id} bin");
+            assert_eq!(c.skills_dir.as_deref(), Some("skills"), "{id} skills_dir");
+            assert_eq!(b.skill_dirs, *dirs, "{id} 技能目录常量应保持");
+            assert!(c.platforms.is_none(), "{id} 内置连接器不内联 platforms");
+            // version 与 lock 钉住值交叉一致；tmeet 无 lock 条目 → npm 包版本
+            match crate::platform::connector_lock::artifact_pin(bin) {
+                Some(pin) => assert_eq!(
+                    c.version.as_deref(),
+                    Some(pin.version.as_str()),
+                    "{id} version 应与 lock 表钉住版本一致"
+                ),
+                None if *bin == "tmeet" => assert_eq!(
+                    c.version.as_deref(),
+                    Some("1.0.15"),
+                    "tmeet 无 lock 条目，version 应写 npm 包版本"
+                ),
+                None => {} // 不支持的平台无 lock，无法校验
+            }
+            // 授权步骤模型：feishu 双 qr 步（register→authorize），tmeet 单
+            // browser 步，wecom/dingtalk 单 qr 步
+            let steps = &c
+                .auth
+                .as_ref()
+                .unwrap_or_else(|| panic!("{id} 缺 auth"))
+                .steps;
+            assert_eq!(steps.len(), *step_count, "{id} 授权步数");
+            let expected_kind = if *id == "tmeet" {
+                CliAuthStepKind::Browser
+            } else {
+                CliAuthStepKind::Qr
+            };
+            assert!(
+                steps.iter().all(|s| s.kind == expected_kind),
+                "{id} 授权步骤类型"
+            );
+            assert!(steps.iter().all(|s| !s.label.is_empty()), "{id} 步骤 label");
+            if *id == "feishu" {
+                assert_eq!(steps[0].id, "register", "feishu 段①注册");
+                assert_eq!(steps[1].id, "authorize", "feishu 段②授权");
+            }
+        }
+    }
+
+    /// M1 行为不变回归：声明驱动后访问器输出与原常量表一致。
+    #[test]
+    fn cli_accessors_unchanged_behavior() {
+        let mut ids: Vec<&str> = builtin_cli_bundle_ids().collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["dingtalk", "feishu", "tmeet", "wecom"]);
+        assert_eq!(cli_bundle_skill_dirs("feishu"), LARK_SKILL_DIRS);
+        assert_eq!(cli_bundle_skill_dirs("wecom"), WECOM_SKILL_DIRS);
+        assert_eq!(cli_bundle_skill_dirs("dingtalk"), DINGTALK_SKILL_DIRS);
+        assert_eq!(cli_bundle_skill_dirs("tmeet"), TMEET_SKILL_DIRS);
+        assert_eq!(cli_bundle_skill_dirs("nope"), &[] as &[&str]);
+        assert_eq!(cli_bundle_bin("feishu").as_deref(), Some("lark-cli"));
+        assert_eq!(cli_bundle_bin("wecom").as_deref(), Some("wecom-cli"));
+        assert_eq!(cli_bundle_bin("dingtalk").as_deref(), Some("dws"));
+        assert_eq!(cli_bundle_bin("tmeet").as_deref(), Some("tmeet"));
+        assert_eq!(cli_bundle_of_skill("lark-doc"), Some("feishu"));
+        assert_eq!(cli_bundle_of_skill("dws"), Some("dingtalk"));
+        assert_eq!(cli_bundle_of_skill("tmeet-skill"), Some("tmeet"));
+        assert_eq!(cli_bundle_of_skill("nope"), None);
+        assert_eq!(cli_bundle_plugin_json("feishu"), Some(FEISHU_PLUGIN_JSON));
+        assert!(cli_bundle_plugin_json("nope").is_none());
+    }
+
+    /// M1 反查前置（阶段 2 execpolicy 治理）：已装 Upload 包盘上 plugin.json
+    /// 的 cli_connectors 声明可反查 bin；内置声明优先、无 cli 声明/无包 → None。
+    #[test]
+    fn cli_bundle_bin_reverse_lookup_upload_package() {
+        with_temp_home(|| {
+            let pkg = crate::platform::paths::bundles_root().join("up-cli");
+            std::fs::create_dir_all(&pkg).unwrap();
+            std::fs::write(
+                pkg.join("plugin.json"),
+                r#"{"manifest_version":1,"id":"up-cli","name":"Up","components":{"cli_connectors":[{"id":"up-cli","bin":"up-cli-bin","skills_dir":"skills"}]}}"#,
+            )
+            .unwrap();
+            assert_eq!(cli_bundle_bin("up-cli").as_deref(), Some("up-cli-bin"));
+            // 内置声明优先（上传 id 与内置撞名在导入侧本就拒收）
+            assert_eq!(cli_bundle_bin("feishu").as_deref(), Some("lark-cli"));
+            // 无 cli 声明的包 → None
+            let plain = crate::platform::paths::bundles_root().join("plain-pkg");
+            std::fs::create_dir_all(&plain).unwrap();
+            std::fs::write(
+                plain.join("plugin.json"),
+                r#"{"manifest_version":1,"id":"plain-pkg","name":"P","components":{"skills":[{"id":"s","dir":"skills/s"}]}}"#,
+            )
+            .unwrap();
+            assert_eq!(cli_bundle_bin("plain-pkg"), None);
+            // 无包 → None
+            assert_eq!(cli_bundle_bin("no-such-pkg"), None);
         });
     }
 }

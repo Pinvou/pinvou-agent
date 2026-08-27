@@ -514,7 +514,7 @@ fn legacy_cli_records() -> Vec<BundleRecord> {
         let mut assets = Vec::new();
         let mut degraded = None;
         if let Some(bin) = bundle::cli_bundle_bin(id) {
-            match cli_asset_state(bin) {
+            match cli_asset_state(&bin) {
                 CliAssetState::Verified(asset) => assets.push(asset),
                 CliAssetState::Mismatch(reason) => degraded = Some(reason),
                 CliAssetState::Absent => {}

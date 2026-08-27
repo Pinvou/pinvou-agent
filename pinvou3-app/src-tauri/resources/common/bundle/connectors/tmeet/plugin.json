@@ -1,0 +1,22 @@
+{
+  "manifest_version": 1,
+  "id": "tmeet",
+  "name": "腾讯会议",
+  "version": "1.0.15",
+  "description": "接入腾讯会议官方 CLI（@tencentcloud/tmeet）+ 官方技能：让 AI 以你本人身份创建、查询、修改和取消腾讯会议，查询受邀人、参会报告、录制、转写与智能纪要，并支持会中呼叫成员入会。点「连接」打开腾讯会议授权页扫码登录，全程不填 key。",
+  "components": {
+    "cli_connectors": [
+      {
+        "id": "tmeet",
+        "bin": "tmeet",
+        "version": "1.0.15",
+        "skills_dir": "skills",
+        "auth": {
+          "steps": [
+            { "id": "authorize", "kind": "browser", "label": "浏览器授权" }
+          ]
+        }
+      }
+    ]
+  }
+}

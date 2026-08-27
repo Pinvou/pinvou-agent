@@ -1,0 +1,23 @@
+{
+  "manifest_version": 1,
+  "id": "feishu",
+  "name": "飞书（Lark）",
+  "version": "1.0.87",
+  "description": "接入飞书官方 CLI + 官方域技能（MIT）：让 AI 以你本人身份读写云文档、查改日历、操作多维表格（Base）、收发消息、管理知识库与任务。点「连接飞书」浏览器一键授权，全程不填 key。数据经飞书云 OpenAPI（可选联网功能，opt-in）。",
+  "components": {
+    "cli_connectors": [
+      {
+        "id": "feishu",
+        "bin": "lark-cli",
+        "version": "1.0.87",
+        "skills_dir": "skills",
+        "auth": {
+          "steps": [
+            { "id": "register", "kind": "qr", "label": "注册应用" },
+            { "id": "authorize", "kind": "qr", "label": "授权登录" }
+          ]
+        }
+      }
+    ]
+  }
+}

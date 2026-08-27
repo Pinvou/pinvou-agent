@@ -1,0 +1,22 @@
+{
+  "manifest_version": 1,
+  "id": "dingtalk",
+  "name": "钉钉",
+  "version": "1.0.58",
+  "description": "接入钉钉官方 DingTalk Workspace CLI（dws，Apache-2.0）+ 官方技能：让 AI 以你本人身份读写钉钉文档、查改日历、操作 AI 表格/在线表格、收发群聊消息、处理待办/审批/日志/邮箱等。点「连接」用钉钉 App 扫码授权，全程不填 key。",
+  "components": {
+    "cli_connectors": [
+      {
+        "id": "dingtalk",
+        "bin": "dws",
+        "version": "1.0.58",
+        "skills_dir": "skills",
+        "auth": {
+          "steps": [
+            { "id": "authorize", "kind": "qr", "label": "扫码授权" }
+          ]
+        }
+      }
+    ]
+  }
+}

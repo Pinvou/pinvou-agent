@@ -1581,7 +1581,7 @@ impl Pinvou3Bridge {
                 // 二进制名会被绕过（六轮评审 R4）：每个规则同时发 `{bin}.exe` /
                 // `{bin}.cmd` 变体。无条件发、不加 cfg —— 非 Windows 平台上这些
                 // 规则惰性无害，避免引入平台条件编译。
-                [bin.to_string(), format!("{bin}.exe"), format!("{bin}.cmd")]
+                [bin.clone(), format!("{bin}.exe"), format!("{bin}.cmd")]
                     .into_iter()
                     .map(|cmd| {
                         let mut rule = codewhale_execpolicy::ToolAskRule::exec_shell(cmd);

@@ -50,8 +50,10 @@ pub struct PluginManifest {
     /// 可选图标，相对 zip 根（"icon.svg"/"icon.png"）。
     #[serde(default)]
     pub icon: Option<String>,
-    /// 多组件声明（mcp_servers / skills）。脚本可执行能力迁移到 skill 包内：
-    /// skill 根目录的 SKILL.md frontmatter `tools[]` + `runtime` 字段声明可执行入口。
+    /// 多组件声明（mcp_servers / skills / cli_connectors）。脚本可执行能力迁移到
+    /// skill 包内：skill 根目录的 SKILL.md frontmatter `tools[]` + `runtime` 字段
+    /// 声明可执行入口。cli_connectors 当前仅内置连接器 checked-in 清单携带
+    /// （M1），导入识别在阶段 2。
     #[serde(default)]
     pub components: Option<PluginComponents>,
     /// 未知字段原样保留（前向兼容旧 spanner 字段）。
@@ -60,12 +62,74 @@ pub struct PluginManifest {
 }
 
 /// plugin.json 的 `components` 声明（跨组件粘合到一个包 id）。
+/// 未知子键按 serde 默认行为忽略（无 deny_unknown_fields）——旧应用读到带
+/// `cli_connectors` 的清单不炸（前向兼容），新增组件类型不需 bump manifest_version。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginComponents {
     #[serde(default)]
     pub mcp_servers: Vec<ComponentRef>,
     #[serde(default)]
     pub skills: Vec<ComponentRef>,
+    /// CLI 连接器组件（plugin-protocol §14.3）。阶段 1 仅内置连接器经 checked-in
+    /// plugin.json 携带；导入管线对 cli_connectors 的识别/校验在阶段 2 实施，
+    /// 当前版本只定义 schema（不参与检测、不落盘、不影响 kind 现算）。
+    #[serde(default)]
+    pub cli_connectors: Vec<CliConnectorDecl>,
+}
+
+/// CLI 连接器组件声明（§14.3）。与 mcp/skills 的 `ComponentRef` 不同形：
+/// 连接器的能力本体是外部 CLI 二进制（版本化资产库），不是包内目录。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliConnectorDecl {
+    /// 连接器 id（= 包 id；execpolicy/技能门控/注册表共用命名空间）。
+    pub id: String,
+    /// CLI 二进制名（execpolicy deny 规则与资产库 `assets/cli/<bin>/` 目录名）。
+    pub bin: String,
+    /// 制品版本。内置连接器与平台 lock JSON 钉住值交叉校验（漂移即测试失败）；
+    /// tmeet 走 npm 无 lock 条目，写 npm 包版本。
+    #[serde(default)]
+    pub version: Option<String>,
+    /// 按平台的下载 pin（第三方包阶段 2 用；内置连接器不内联——平台 lock JSON
+    /// 仍是防伪 pin 的唯一来源）。键为平台目录名（windows-x64 等）。
+    #[serde(default)]
+    pub platforms: Option<std::collections::BTreeMap<String, CliPlatformArtifact>>,
+    /// 包内技能目录（相对 zip 根；内置连接器统一为 "skills"）。
+    #[serde(default)]
+    pub skills_dir: Option<String>,
+    /// 授权步骤序列；None = manual（CLI 自行交互，宿主无编排）。
+    #[serde(default)]
+    pub auth: Option<CliAuthDecl>,
+}
+
+/// 单个平台的 CLI 制品下载 pin（强制双 SHA-256，阶段 2 校验）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliPlatformArtifact {
+    pub url: String,
+    pub archive_sha256: String,
+    pub binary_sha256: String,
+}
+
+/// 授权 = 标准步骤的有序序列：每步语义为「拿 URL → 展示（二维码/跳浏览器）→
+/// 等完成」，步骤间依赖由顺序执行保证（如飞书段①写配置段②消费）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliAuthDecl {
+    pub steps: Vec<CliAuthStep>,
+}
+
+/// 单个授权步骤（内置连接器：feishu = register/authorize 两个 qr 步，
+/// wecom/dingtalk = 单 qr 步，tmeet = 单 browser 步）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliAuthStep {
+    pub id: String,
+    pub kind: CliAuthStepKind,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CliAuthStepKind {
+    Qr,
+    Browser,
 }
 
 /// 组件目录引用：`dir` 相对 zip 根，导入时校验存在。
@@ -1097,6 +1161,62 @@ mod tests {
         assert!(write_icon_bytes(&tmp, "icon.jpg", b"x").is_err());
         assert!(write_icon_bytes(&tmp, "a/icon.png", b"x").is_err());
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// cli_connectors schema（M1）：声明可解析、字段齐整；components 内未知子键
+    /// 按 serde 默认行为忽略（前向兼容——旧应用读带 cli_connectors 的清单不炸，
+    /// 新增组件类型无需 bump manifest_version）。
+    #[test]
+    fn cli_connector_decl_parses_and_unknown_component_keys_ignored() {
+        let json = r#"{
+            "manifest_version": 1,
+            "id": "feishu",
+            "name": "飞书（Lark）",
+            "components": {
+                "cli_connectors": [{
+                    "id": "feishu",
+                    "bin": "lark-cli",
+                    "version": "1.0.87",
+                    "skills_dir": "skills",
+                    "platforms": {
+                        "windows-x64": { "url": "https://example.com/a.zip", "archive_sha256": "aa", "binary_sha256": "bb" }
+                    },
+                    "auth": { "steps": [
+                        { "id": "register", "kind": "qr", "label": "注册应用" },
+                        { "id": "authorize", "kind": "browser", "label": "授权登录" }
+                    ] }
+                }],
+                "future_component": [{ "whatever": true }]
+            }
+        }"#;
+        let m: PluginManifest = serde_json::from_str(json).unwrap();
+        let comps = m.components.unwrap();
+        assert_eq!(comps.cli_connectors.len(), 1);
+        let c = &comps.cli_connectors[0];
+        assert_eq!(c.id, "feishu");
+        assert_eq!(c.bin, "lark-cli");
+        assert_eq!(c.version.as_deref(), Some("1.0.87"));
+        assert_eq!(c.skills_dir.as_deref(), Some("skills"));
+        let artifact = &c.platforms.as_ref().unwrap()["windows-x64"];
+        assert_eq!(artifact.archive_sha256, "aa");
+        let steps = &c.auth.as_ref().unwrap().steps;
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].kind, CliAuthStepKind::Qr);
+        assert_eq!(steps[1].kind, CliAuthStepKind::Browser);
+        // 未知子键被忽略（解析未失败即证明）；缺省字段为空
+        assert!(comps.mcp_servers.is_empty() && comps.skills.is_empty());
+        // 最小声明：只有 id/bin 也可解析（可选字段全部缺省）
+        let minimal: PluginManifest = serde_json::from_str(
+            r#"{"manifest_version":1,"id":"x","name":"x","components":{"cli_connectors":[{"id":"x","bin":"x-cli"}]}}"#,
+        )
+        .unwrap();
+        let c = &minimal.components.unwrap().cli_connectors[0];
+        assert!(
+            c.version.is_none()
+                && c.platforms.is_none()
+                && c.skills_dir.is_none()
+                && c.auth.is_none()
+        );
     }
 
     #[test]
