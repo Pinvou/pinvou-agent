@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { BookOpen, Check, ChevronLeft, Copy, Download, ExternalLink, Globe, Package, Search, Server, Settings, Upload, XIcon, Zap } from '../../components/icons.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
+import { copyClipboardText } from '../../shared/clipboard.js';
 import { localizeTool, mergeConfigFields, TsActionBtn, tsCategories, tsSkillIconByName, tsSkillsData, tsToolsData, tsToolWelcomeData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
 import { MAX_SKILL_ZIP_BYTES, pickSkillDrop, fileToBase64 } from './skill-import-logic.js';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
@@ -131,21 +132,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const copyUserCode = async () => {
         if (!flow.userCode) return;
         try {
-          if (navigator.clipboard?.writeText) {
-            await navigator.clipboard.writeText(flow.userCode);
-          } else {
-            const textarea = document.createElement('textarea');
-            textarea.value = flow.userCode;
-            textarea.setAttribute('readonly', '');
-            textarea.style.position = 'fixed';
-            textarea.style.opacity = '0';
-            document.body.appendChild(textarea);
-            textarea.select();
-            document.execCommand('copy');
-            textarea.remove();
-          }
-          setCopiedCode(true);
-          setTimeout(() => setCopiedCode(false), 1600);
+          const ok = await copyClipboardText(flow.userCode);
+          setCopiedCode(ok);
+          if (ok) setTimeout(() => setCopiedCode(false), 1600);
         } catch (err) {
           console.error('copy auth code failed:', err);
           setCopiedCode(false);
@@ -501,10 +490,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     }
 
     // ── 微博连接流程 · 跨视图持久 store(镜像腾讯会议;device-code 授权）──
+    /* eslint-disable unicorn/no-this-outside-of-class -- same as tmeetConn: module-level singleton whose methods reference itself via this */
     const weiboConn = {
       flow: null, tick: null, listenersReady: false, subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
-      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
+      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* silent: one failing subscriber must not affect the rest of the broadcast */ } }); },
       startTick() {
         this.stopTick();
         this.tick = setInterval(() => this.setFlow(f => {
@@ -516,6 +506,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
     };
+    /* eslint-enable unicorn/no-this-outside-of-class -- same as tmeetConn */
     function ensureWeiboListeners(copy = {}) {
       if (weiboConn.listenersReady) return;
       const connFailed = copy.connFailed;
@@ -534,7 +525,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }
         weiboConn.setFlow(f => {
           const prev = (f && f.steps) || {};
-          return { ...(f || {}), phase: 'qr', active: 'qr',
+          return { ...f, phase: 'qr', active: 'qr',
             steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), qr: 'active' },
             qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase, userCode: p.user_code, browserAuth: true, browserOpenFailed: false };
         });
@@ -542,21 +533,22 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       ev.listen('weibo:connected', async () => {
         weiboConn.stopTick();
         try {
-          const status = await invokeTauri('weibo_status');
-          if (!(status && status.connected)) {
+          // 二次确认真实登录态（统一 readiness；weibo_status 直调随之退役）
+          const status = await invokeTauri('bundle_readiness', { bundleId: 'weibo' });
+          if (!(status && status.ready)) {
             throw new Error(authIncomplete);
           }
           await invokeTauri('weibo_apply_skills');
-          weiboConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
+          weiboConn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
           setTimeout(() => weiboConn.setFlow(null), 1800);
         } catch (e) {
-          weiboConn.setFlow(f => ({ ...(f || { steps: {} }), phase: 'error', err: String(e && e.message ? e.message : e).slice(0, 220), errStep: 'qr', steps: { ...((f && f.steps) || {}), qr: 'error' } }));
+          weiboConn.setFlow(f => ({ ...(f || { steps: {} }), phase: 'error', err: String(e && e.message ? e.message : e).slice(0, 220), errStep: 'qr', steps: { ...(f && f.steps), qr: 'error' } }));
         }
       });
       ev.listen('weibo:error', (e) => {
         const p = e.payload || {};
         weiboConn.stopTick();
-        weiboConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
+        weiboConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } }; });
       });
     }
 
@@ -1065,7 +1057,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
       // 订阅微博 store(镜像腾讯会议):镜像进渲染 + 完成/失败收尾
       useEffect(() => {
-        if (!externalAuthAvailable) return undefined;
+        if (!externalAuthAvailable) return;
         ensureWeiboListeners(storeCopy);
         let prevPhase = weiboConn.flow && weiboConn.flow.phase;
         const unsub = weiboConn.subscribe((flow) => {
@@ -1084,6 +1076,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         });
         setWeiboFlow(weiboConn.flow);
         return unsub;
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- subscription mounts/unmounts only with externalAuthAvailable; the copy snapshot is read on demand by the callback, so resubscribing is unnecessary
       }, [externalAuthAvailable]);
 
       // 企微连接编排事件:后端推进度,前端驱动 UI。
@@ -1874,9 +1867,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         weiboConn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
         weiboConn.startTick();
         try {
-          weiboConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
+          weiboConn.setFlow(f => ({ ...f, active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...(f && f.steps), runtime: 'done', cli: 'active' } }));
           await invokeTauri('weibo_ensure_cli');
-          weiboConn.setFlow(f => ({ ...(f || {}), pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done' } }));
+          weiboConn.setFlow(f => ({ ...f, pct: 100, steps: { ...(f && f.steps), cli: 'done' } }));
           await invokeTauri('weibo_connect_begin');
         } catch (e) {
           console.error('weibo connect failed:', e);
@@ -1884,7 +1877,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           setBusyId(null);
           weiboConn.setFlow(f => {
             const step = (f && f.active) || 'cli';
-            return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
+            return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } };
           });
         }
       };

@@ -637,6 +637,43 @@ mod tests {
     use crate::platform::paths::tests::ENV_LOCK;
 
     #[test]
+    fn weibo_commands_strip_token_envs_keep_unrelated() {
+        // env 消毒契约:remove_weibo_token_envs 必须剥离全部 4 个 WEIBO 令牌环境变量
+        // (防用户环境里的 token 静默绕过 device-code 授权与技能门控),
+        // 同时不得波及无关变量(env_clear 式过度实现会让 CLI 丢 PATH/HOME)。
+        let mut c = WEIBO_CTX.cli(&["--version"]);
+        for k in [
+            "WEIBO_CLI_TOKEN",
+            "WEIBO_TOKEN",
+            "WEIBO_CLI_REFRESH_TOKEN",
+            "WEIBO_REFRESH_TOKEN",
+        ] {
+            c.env(k, "leak-me");
+        }
+        c.env("PINVOU_UNRELATED_ENV", "keep-me");
+        remove_weibo_token_envs(&mut c);
+        let envs: std::collections::HashMap<_, _> = c.get_envs().collect();
+        for k in [
+            "WEIBO_CLI_TOKEN",
+            "WEIBO_TOKEN",
+            "WEIBO_CLI_REFRESH_TOKEN",
+            "WEIBO_REFRESH_TOKEN",
+        ] {
+            // get_envs 的值是 Option:None = 已被 env_remove 挂起删除
+            let stripped = envs
+                .get(std::ffi::OsStr::new(k))
+                .is_none_or(|v| v.is_none());
+            assert!(stripped, "{k} must be stripped");
+        }
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new("PINVOU_UNRELATED_ENV"))
+                .and_then(|v| *v)
+                .map(|v| v.to_string_lossy()),
+            Some("keep-me".into())
+        );
+    }
+
+    #[test]
     fn parses_weibo_versions() {
         assert_eq!(parse_weibo_version("0.9.1"), Some((0, 9, 1)));
         assert_eq!(

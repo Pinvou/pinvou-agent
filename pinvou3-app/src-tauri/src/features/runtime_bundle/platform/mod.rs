@@ -461,6 +461,19 @@ mod tests {
         paths::bundles_root().join(id).join("skills")
     }
 
+    /// weibo 技能目录表双份常量互锁:本模块门控/提取用的表必须与 marketplace
+    /// `BUILTIN_CLI_BUNDLES` 引用的表一致(wecom 曾因两侧分叉出过迁移/反查与
+    /// 门控不一致的 bug)。方向说明:runtime_bundle 测试引用 marketplace 是
+    /// 既有合法方向(运行时本模块已依赖 marketplace),反向则会造成新的环。
+    #[test]
+    fn weibo_skill_dirs_match_marketplace_truth() {
+        assert_eq!(
+            WEIBO_SKILL_DIRS.as_slice(),
+            crate::features::marketplace::bundle::WEIBO_SKILL_DIRS,
+            "runtime_bundle 与 marketplace 的 weibo 技能目录表必须一致"
+        );
+    }
+
     #[test]
     fn work_mode_browser_server_reserves_name_and_preserves_user_conflicts() {
         let builtin = serde_json::json!({ "command": "pinvou-wrapper" });
