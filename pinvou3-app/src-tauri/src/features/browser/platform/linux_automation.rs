@@ -1253,17 +1253,17 @@ impl WebDriverRuntime {
             let expected_parent = unsafe { libc::getpid() };
             unsafe {
                 use std::os::unix::process::CommandExt;
+                // webdriver-pre-exec-async-signal-safe:start
                 command.pre_exec(move || {
                     if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
                         return Err(std::io::Error::last_os_error());
                     }
                     if libc::getppid() != expected_parent {
-                        return Err(std::io::Error::other(
-                            "spawning parent changed before PDEATHSIG was armed",
-                        ));
+                        return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
                     }
                     Ok(())
                 });
+                // webdriver-pre-exec-async-signal-safe:end
             }
             command
                 .spawn()
@@ -2254,6 +2254,33 @@ mod tests {
     use super::super::state::NativeControlOwner;
     use super::*;
     use std::io::{Read, Write};
+
+    #[test]
+    fn webdriver_pre_exec_hook_remains_async_signal_safe() {
+        let source = include_str!("linux_automation.rs");
+        let start = "// webdriver-pre-exec-async-signal-safe:start";
+        let end = "// webdriver-pre-exec-async-signal-safe:end";
+        let block = source
+            .split_once(start)
+            .and_then(|(_, rest)| rest.split_once(end).map(|(block, _)| block))
+            .expect("WebKitWebDriver pre-exec contract block");
+
+        assert!(block.contains("Error::from_raw_os_error(libc::ESRCH)"));
+        for allocator in [
+            "Error::other",
+            "Error::new",
+            "format!(",
+            ".to_string(",
+            "String::",
+            "Vec::",
+            "Box::",
+        ] {
+            assert!(
+                !block.contains(allocator),
+                "allocating operation in WebKitWebDriver pre-exec hook: {allocator}"
+            );
+        }
+    }
 
     #[test]
     fn proc_stat_starttime_parser_handles_spaces_and_closing_parentheses_in_comm() {
