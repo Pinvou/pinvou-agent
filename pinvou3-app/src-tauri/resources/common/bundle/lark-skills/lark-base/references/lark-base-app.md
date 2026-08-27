@@ -131,13 +131,13 @@ lark-cli base +app-block-get-data \
 ## 重命名应用
 
 ```bash
-lark-cli drive files patch \
-  --file-token <app_token> \
+lark-cli drive +update-title \
+  --token <app_token> \
   --type bitable \
-  --data '{"new_title":"新名称"}'
+  --title "新名称"
 ```
 
-BaseApp 与 Base 在 Drive 文件接口中都使用 `type=bitable`。`new_title` 只更新应用标题，不会重命名它引用的 Base，也不会修改 Page 或 Block。
+BaseApp 与 Base 在 Drive 重命名接口中都使用 `--type bitable`。`--title` 只更新应用标题，不会重命名它引用的 Base，也不会修改 Page 或 Block。
 
 ## 删除应用
 

@@ -1,6 +1,6 @@
 # wiki +delete-space
 
-> **前置条件：** 先阅读 [`../lark-shared/SKILL.md`](../../lark-shared/SKILL.md) 了解认证、全局参数和安全规则。
+> **前置条件：** 先阅读 [`../../lark-shared/SKILL.md`](../../lark-shared/SKILL.md) 了解认证、全局参数和安全规则。
 
 删除一个飞书知识空间（知识库）。OpenAPI 对应 `DELETE /open-apis/wiki/v2/spaces/:space_id`。
 
@@ -28,7 +28,7 @@ lark-cli wiki +delete-space \
 | 参数 | 必填 | 说明 |
 |------|------|------|
 | `--space-id` | 是 | 要删除的知识空间 ID |
-| `--yes` | 是（真删时） | 高风险写操作确认。不传则 CLI 直接返回 `unsafe_operation_blocked` 错误 |
+| `--yes` | 是（真删时） | 高风险写操作确认。不传则 CLI 直接返回 `confirmation_required` 错误 |
 
 ## 行为说明
 
@@ -196,7 +196,7 @@ lark-cli wiki +delete-space --space-id <RESOLVED_SPACE_ID> --yes
 ## 风险等级
 
 - Risk：**`high-risk-write`**
-- 框架会强制要求 `--yes` 确认；不传 `--yes` 时命令会直接返回 `unsafe_operation_blocked` 错误，不会真的发请求
+- 框架会强制要求 `--yes` 确认；不传 `--yes` 时命令会直接返回 `confirmation_required` 错误，不会真的发请求
 
 > [!CAUTION]
 > `wiki +delete-space` 是**不可逆的写入操作**。执行前务必与用户再次确认 `--space-id`，并清楚该空间下的所有节点都会一并被删除。

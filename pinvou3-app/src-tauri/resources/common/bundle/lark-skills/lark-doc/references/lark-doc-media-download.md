@@ -1,7 +1,7 @@
 
 # docs +media-download（下载文档素材/画板缩略图）
 
-> **前置条件：** 先阅读 [`../../lark-shared/SKILL.md`](../../lark-shared/SKILL.md) 了解认证、全局参数和安全规则。
+> **前置条件：** 按 [`../SKILL.md`](../SKILL.md) 的按需策略，执行本命令前**不预读** [`../../lark-shared/SKILL.md`](../../lark-shared/SKILL.md)；仅遇到认证、token / 身份或 scope 错误时再读取该 Skill，修复后重试。
 
 下载文档中的图片/文件素材（`file_token`），或下载画板缩略图（`whiteboard_id`）。当 `--output` 不带扩展名时，会根据响应的 `Content-Type` 自动补全扩展名。
 

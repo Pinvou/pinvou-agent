@@ -431,7 +431,7 @@ CLI 输出标准信封 `{ok, identity, data}`（失败时为 `{ok:false, identit
 1. 用 `+data-query` 在 Base 云端查询服务中完成全局筛选、分组、聚合、排序和 TopN，得到业务 key、分组值或候选字段组合。
 2. 如果已经拿到候选记录的 `record_id`，用 `+record-get` 读取逐条记录字段。
 3. 如果拿到的是结构化业务 key（例如编号、状态、日期、金额等），用 `+record-list --filter-json` 做精确过滤后读取；`+record-search` 用于文本展示值关键词。
-4. 只有候选条件本身是文本展示值关键词时，才使用 `+record-search`，并用 `search_fields` 限定范围、`select_fields` 做投影。
+4. 只有候选条件本身是文本展示值关键词时，才使用 `+record-search`，并用 `--search-field` 限定范围、`--field-id` 做投影。
 5. 若候选记录包含 link 字段，提取关联 `record_id` 后到关联表用 `+record-get` 批量读取展示字段。
 6. 最终回答展示真实业务字段；内部 `record_id` 用于连接或定位。
 

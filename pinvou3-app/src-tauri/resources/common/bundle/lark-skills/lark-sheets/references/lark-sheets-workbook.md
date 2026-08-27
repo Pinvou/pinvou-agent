@@ -14,7 +14,7 @@
 
 | 操作需求 | 使用工具 | 说明 |
 |---------|---------|------|
-| 查看工作簿结构 | `+workbook-info` | 获取子表列表、名称、行列数、冻结位置等元数据 |
+| 查看工作簿结构 | `+workbook-info` | 获取子表列表、名称、行列数等元数据（无 `frozen_*` 冻结信息——冻结用 `+sheet-info` 读取） |
 | 获取当前 revision | `+revision-get` | 获取当前文档 revision（版本号），可作为 recover / undo / changeset 复核的版本锚点 |
 | 新建工作簿（可预填数据） | `+workbook-create` | 从内存数据建一张新表（`--values` / `--sheets` typed） |
 | 导入本地文件为新表 | `+workbook-import` | 把本地 `.xlsx` / `.xls` / `.csv` 导入为新的飞书电子表格 |
@@ -153,7 +153,7 @@ _系统：`--dry-run`_
 | `--folder-token` | string | optional | 目标文件夹 token；省略时放在云空间根目录 |
 | `--values` | string + File + Stdin（简单 JSON） | optional | untyped 初始数据，一个 JSON 二维数组（表头并入第一行）：`[["列A","列B"],["alice",95]]`；值原样写入、类型由飞书自动识别（日期 / 数字会落成文本，需类型保真改用 --sheets），走与 --sheets 相同的分批 `+cells-set`；配 --styles 控制格式/颜色/合并/行列尺寸 |
 | `--sheets` | string + File + Stdin（复合 JSON） | optional | 建表后写入的 typed 表格协议 JSON（同 +table-put）：顶层 `{"sheets":[...]}`，每个数组项是一张子表 `{name, start_cell?, mode?, header?, allow_overwrite?, columns:["colA","colB",...], data:[[...]], dtypes?:{colA:pandasDtype, ...}, formats?:{colA:numberFormat, ...}}` —— `name` 与外层 `sheets` 数组都不可省。Agents 用 `scripts/sheets_df.py` 的 `df_to_sheet(df, name)` 把 DataFrame 转成一项再包 `{"sheets":[...]}`。与 --values 互斥；新表默认子表复用为第一个子表，日期/数字类型保真。 |
-| `--styles` | string + File + Stdin（复合 JSON） | optional | 建表时同时写入的视觉处理操作 JSON：顶层 `{styles:[...]}`，每项对应一个目标子表、含 `name`，并至少给 `cell_styles` / `row_sizes` / `col_sizes` / `cell_merges` 之一。`cell_styles` 用 A1 单元格 range + 扁平样式字段（字段同 +cells-set-style，含 number_format / 颜色 / 对齐 / border_styles）；row/col sizes 用行/列范围 + type/size；merges 用单元格 range + 可选 merge_type。与 --sheets 搭配时 styles 数组长度/顺序/name 必须与 --sheets.sheets 对应；与 --values 搭配时只给一个 styles 项（其 name 忽略）。完整 cell_styles 字段结构跑 `+workbook-create --print-schema --flag-name styles`。 |
+| `--styles` | string + File + Stdin（复合 JSON） | optional | 建表时同时写入的视觉处理操作 JSON：顶层 `{styles:[...]}`，每项对应一个目标子表、含 `name`，并至少给 `cell_styles` / `row_sizes` / `col_sizes` / `cell_merges` / `freeze` 之一。`cell_styles` 用 A1 单元格 range + 扁平样式字段（字段同 +cells-set-style，含 number_format / 颜色 / 对齐 / border_styles）；row/col sizes 用行/列范围 + type/size；merges 用单元格 range + 可选 merge_type。与 --sheets 搭配时 styles 数组长度/顺序/name 必须与 --sheets.sheets 对应；与 --values 搭配时只给一个 styles 项（其 name 忽略）。完整 cell_styles 字段结构跑 `+workbook-create --print-schema --flag-name styles`。 |
 
 ### `+workbook-export`
 
@@ -252,12 +252,13 @@ lark-cli sheets +workbook-create --title "交易" --sheets '{
 >                       df_to_sheet(cashflow, "Cash Flow")]}
 > ```
 
-`--styles` 可在建表写入时同时写视觉处理。它和 `--sheets` 一样只有一种外层写法：顶层对象里放 `styles` 数组；数组每项对应一个子表，含 `name`，并按能力拆成四类可选数组：
+`--styles` 可在建表写入时同时写视觉处理。它和 `--sheets` 一样只有一种外层写法：顶层对象里放 `styles` 数组；数组每项对应一个子表，含 `name`，并按能力拆成四类可选数组（外加可选的 `freeze` 冻结对象）：
 
 - `cell_styles`：像 `+cells-set-style`，用 A1 单元格 `range` 加扁平样式字段（`font_weight` / `background_color` / `horizontal_alignment` / `vertical_alignment` / `number_format` 等）和可选 `border_styles`；这些样式会随内容在同一次写入里一并应用。完整字段跑 `+workbook-create --print-schema --flag-name styles`。
 - `cell_merges`：用 A1 单元格 `range` 设置合并，`merge_type` 默认为 `all`，可选 `rows` / `columns`。
 - `row_sizes`：用行范围（如 `1:3`）设置行高，`type` 为 `pixel` / `standard` / `auto`；`pixel` 需要 `size`。
 - `col_sizes`：用列范围（如 `A:C`）设置列宽，`type` 为 `pixel` / `standard`；`pixel` 需要 `size`。
+- `freeze`：用 `{rows:N, cols:N}` 冻结前 N 行 / 列（0 或省略 = 该维度不冻结；建新表时全 0 无意义、会被校验拒绝）。
 
 同一单元格命中多个 `cell_styles` 项时，后面的操作继续合并覆盖已传字段。`cell_merges` / `row_sizes` / `col_sizes` 在内容写入后顺序执行。
 

@@ -1,6 +1,6 @@
 ---
 name: lark-base
-version: 1.2.6
+version: 1.2.7
 description: "【何时用:仅当用户明确指向飞书/Lark(发到飞书、飞书文档等)时使用;泛指做个文档或PPT或表格或方案默认走本地工具,不要误用飞书】飞书多维表格（Base）操作：建表、字段、记录、视图、统计、公式/lookup、表单、仪表盘、应用模式（BaseApp/AppMode 页面与组件）、Workspace 目录、workflow、角色权限；遇到 Base/多维表格/bitable、BaseApp/AppMode 或 /app/ 链接时使用。BaseApp 不走 lark-apps；文件导入转 lark-drive，认证/授权转 lark-shared。"
 metadata:
   requires:
@@ -34,7 +34,7 @@ metadata:
 - Base 业务操作只使用 `lark-cli base +...` shortcut，不使用旧聚合式 `+table / +field / +record / +view / +history / +workspace`。
 - 执行 update 前必须先查当前 shortcut 的 `--help` 或对应 reference。若命令要求完整配置，首次请求必须基于可信的当前配置执行 read-modify-write：只修改用户明确指定的内容，保留其他仍适用的可写配置，并按命令要求的结构提交。若命令支持局部／delta update，按其契约提交最小合法 payload；不得以不完整请求试错补参。
 - Base CLI/OpenAPI 当前不支持视图行高、冻结列、列宽等 UI-only 外观设置。遇到这类需求，说明能力边界并停止，不要猜测未文档化参数或改走 raw API。
-- **高频：数据分析。** 数据表记录用于查询、分析、解析或比较时，先读取 [Base 数据表查询与分析 SOP](references/lark-base-data-analysis-sop.md)；进入本地分析路径后，使用 `+record-list --format ndjson` 获取分析数据。
+- **高频：数据分析。** 数据表记录用于查询、分析、解析或比较时，先读取 [Base 数据表查询与分析 SOP](references/lark-base-data-analysis-sop.md)；进入本地分析路径后，使用 `+record-list --output <path>.ndjson` 导出分析数据（同时生成 `<path>.manifest.json`）。
 - **低频：在线复制。** 复制整个 Base 使用 `+base-copy`，复制 Base 内单张数据表使用 `+table-copy`。
 - **更低频：文件导入/导出。** 本地文件与 Base 之间的导入/导出转 `lark-drive`；具体格式、参数、路径限制和仅结构导出规则由 `lark-drive` 负责，导入完成后再回到 Base 命令。
 - 认证、初始化、scope、身份切换、权限不足恢复属于 `lark-shared`；Base 文档只保留会影响 Base 路径选择的权限规则。
@@ -101,7 +101,7 @@ metadata:
 - `+base-create` 不传 `--table-name` 和 `--fields` 时，会创建一个默认 schema 的初始数据表。
 - `+table-copy` 用于在线复制 Base 内的数据表，`--table-id` 可使用当前 Base 中的表 ID 或表名；复制范围等参数查看 `--help`。
 - 表、字段、视图、workflow、dashboard block 的名称和 ID 必须来自真实返回，不要凭用户口述猜。
-- `formula` 适合常规计算、条件判断、文本/日期处理和长期派生指标；`lookup` 适合明确的跨表查找、筛选后取值或聚合引用。
+- `formula` 适合常规计算、条件判断、文本/日期处理和长期派生指标；跨表引用、聚合和计算字段默认也用 `formula`（formula 是 lookup 的严格超集），仅当用户显式要求 lookup 字段时才用 `lookup` 做明确的跨表查找、筛选后取值或聚合引用。
 - 写入、公式、lookup、workflow、dashboard 前，先读取真实结构：表、字段、视图、关联表和 dashboard block 名称都以命令返回为准。
 
 ## 身份与权限降级

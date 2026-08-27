@@ -1,5 +1,6 @@
 ---
 name: lark-doc
+version: 1.0.1
 description: "【何时用:仅当用户明确指向飞书/Lark(发到飞书、飞书文档等)时使用;泛指做个文档或PPT或表格或方案默认走本地工具,不要误用飞书】飞书云文档(Docx/Wiki)与思维笔记内容操作:读取、创建、编辑文档,插入或下载图片附件,查询或回滚历史版本。用户给出文档 URL/token(含 doubao.com 的 /docx/、/wiki/)时使用,按 URL 路径/token 而非域名路由;内嵌表格、多维表格、画板先提取 token 再切对应 skill。文档评论走 lark-drive;表格或 Base 内部数据操作不在本 skill。"
 metadata:
   requires:
@@ -37,7 +38,7 @@ metadata:
 - **下载素材 — [`+media-download`](references/lark-doc-media-download.md)**：下载文档中的图片、附件、素材或画板缩略图。
 - **Docx 封面 — [`+resource-download` / `+resource-update` / `+resource-delete`](references/lark-doc-resource-cover.md)**：下载、更新或删除 Docx 封面。
 - **画板 — [`画板工作流`](references/lark-doc-whiteboard.md)**：创建或更新画板时先读取工作流；更新已有画板必须复用现有 token，禁止新建空白画板。lark-whiteboard skill 未随包收录，写入用 `lark-cli whiteboard +update`（用法以 `--help` 为准）。
-- **思维笔记 — `mindnotes`**：已有思维笔记走 [`思维笔记链路`](references/lark-doc-mindnote.md)；新建思维笔记走 [`lark-doc-whiteboard`](references/lark-doc-whiteboard.md)。
+- **思维笔记 — `mindnotes`**：已有思维笔记走 [`思维笔记链路`](references/lark-doc-mindnote.md)。新建思维笔记暂无专门的 docs/mindnotes 创建命令：要新建到知识库，用 `wiki +node-create --obj-type mindnote`（见 [`lark-wiki-node-create.md`](../lark-wiki/references/lark-wiki-node-create.md)），创建后按思维笔记链路维护节点；思维笔记不是画板（whiteboard），不要路由到画板工作流。
 
 ### 认证与 Scope
 
@@ -47,3 +48,4 @@ metadata:
 
 - **Drive 文件级操作**：找文档、导入导出、云空间文件上传 / 下载 / 权限管理 → [`lark-drive`](../lark-drive/SKILL.md)。复制文档、创建副本或另存为副本时，按其指引使用 `lark-cli drive +copy`（复制到知识库用 `wiki +node-copy`）；不要用 `docs +fetch` + `docs +create` 重建正文。
 - **文档评论**：添加、查看、回复评论或增删 reaction → [`lark-drive`](../lark-drive/SKILL.md)。
+- **Drive 原生文件的历史版本**：`docx` 等在线文档的历史版本走本 skill 的 `+history-*`；但 Drive 二进制文件（`type=file`，如上传的附件）的历史版本查询 / 下载 / 回滚 / 删除 → [`lark-drive`](../lark-drive/SKILL.md) 的 `+version-*`，不走本 skill。
