@@ -775,14 +775,20 @@ test('each Linux WebDriver mutation revalidates exact tab and active lease befor
     linuxAutomation.indexOf('pub(super) async fn shutdown_for_stop'),
   );
   assert.match(mutationDispatch, /"actions"/);
-  assert.match(mutationDispatch, /element\/\{element\}\/click/);
-  assert.match(mutationDispatch, /element\/\{element\}\/clear/);
+  assert.match(
+    mutationDispatch,
+    /WebDriverCommandPath::segments\(\[\s*"element",\s*element\.as_str\(\),\s*"click",?\s*\]\)/,
+  );
+  assert.match(
+    mutationDispatch,
+    /WebDriverCommandPath::segments\(\[\s*"element",\s*element\.as_str\(\),\s*"clear",?\s*\]\)/,
+  );
   assert.match(mutationDispatch, /send_keys_to_element_locked/);
   assert.match(mutationDispatch, /"alert\/text"/);
   assert.match(mutationDispatch, /request_authorized_locked/g);
   assert.doesNotMatch(
     mutationDispatch,
-    /request_locked\(\s*Method::POST,\s*(?:"actions"|&format!\("element\/\{element\}\/(?:click|clear)"\)|endpoint)/,
+    /request_locked\(\s*Method::POST,\s*(?:"actions"|WebDriverCommandPath::segments\(\[\s*"element"|endpoint)/,
   );
 });
 
