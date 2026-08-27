@@ -29,14 +29,14 @@ Flags:
 
 ### 同意审批
 
-> **CAUTION:** 审批决策不可撤回 — 执行前必须向用户确认。
+> **CAUTION:** 审批决策不可撤回 — 执行前必须向用户确认，确认后加 `--yes`。
 
 ```
 Usage:
   dws oa approval approve [flags]
 Example:
-  dws oa approval approve --instance-id <id> --task-id <taskId>
-  dws oa approval approve --instance-id <id> --task-id <taskId> --remark "同意"
+  dws oa approval approve --instance-id <id> --task-id <taskId> --yes
+  dws oa approval approve --instance-id <id> --task-id <taskId> --remark "同意" --yes
 Flags:
       --instance-id string   审批实例 ID (必填)
       --remark string        审批意见 (可选)
@@ -46,13 +46,13 @@ Flags:
 
 ### 拒绝审批
 
-> **CAUTION:** 审批决策不可撤回 — 执行前必须向用户确认。
+> **CAUTION:** 审批决策不可撤回 — 执行前必须向用户确认，确认后加 `--yes`。
 
 ```
 Usage:
   dws oa approval reject [flags]
 Example:
-  dws oa approval reject --instance-id <id> --task-id <taskId> --remark "不同意"
+  dws oa approval reject --instance-id <id> --task-id <taskId> --remark "不同意" --yes
 Flags:
       --instance-id string   审批实例 ID (必填)
       --remark string        审批意见 (可选)
@@ -711,14 +711,14 @@ dws oa approval detail --instance-id <processInstanceId> --format json
 # 3. 获取待审批任务 ID — 提取 taskId
 dws oa approval tasks --instance-id <processInstanceId> --format json
 
-# 4a. 同意审批
-dws oa approval approve --instance-id <id> --task-id <taskId> --remark "同意" --format json
+# 4a. 同意审批（先向用户确认，同意后加 --yes 执行）
+dws oa approval approve --instance-id <id> --task-id <taskId> --remark "同意" --yes --format json
 
-# 4b. 拒绝审批
-dws oa approval reject --instance-id <id> --task-id <taskId> --remark "不符合要求" --format json
+# 4b. 拒绝审批（先向用户确认，同意后加 --yes 执行）
+dws oa approval reject --instance-id <id> --task-id <taskId> --remark "不符合要求" --yes --format json
 
-# 5. 撤销自己发起的审批
-dws oa approval revoke --instance-id <id> --remark "误发起" --format json
+# 5. 撤销自己发起的审批（高危；非交互环境不带 --yes 会 confirmation_required 失败）
+dws oa approval revoke --instance-id <id> --remark "误发起" --yes --format json
 
 # 6. 查看审批操作记录
 dws oa approval records --instance-id <processInstanceId> --format json

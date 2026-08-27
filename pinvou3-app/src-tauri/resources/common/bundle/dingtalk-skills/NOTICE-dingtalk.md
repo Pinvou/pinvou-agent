@@ -171,3 +171,10 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 12. **观察项（不合并）**：`report_inbox_today.py` 与 `report_received_today.py` 为近逐字节双胞胎（仅 docstring 文件名差异，diff 实测），上游文件不合并；后续 sync 关注上游是否收敛为单文件，若收敛则同步删除另一份并更新 report.md 登记表。
 
 版本登记：SKILL.md frontmatter `cli_version: ">=1.0.15"` → `">=1.0.58"`（与 NOTICE 头部登记的当前 dws CLI 版号 1.0.58 对齐；本次为纯文档修订，无运行时语义变更）。
+
+## PR #359 评审修复（2026-08-28）
+
+协作者评审（JensenChen28 / zhuowp）阻塞项修复登记，下次 sync 需重放：
+
+1. **确认门禁命令示例统一补 `--yes`（oa.md 6 处、simple.md 2 处）**：approve/reject 的 Example 行与核心工作流 4a/4b/5 原裸跑，与本包既定契约（SKILL.md 危险操作确认表、oa.md 各节 CAUTION、Flags 表 `--yes  跳过确认（用户已同意后使用）`）矛盾，也与本 PR 第一批对 simple.md revoke 的修法不一致。CLI 实测（v1.0.58 darwin-arm64，lock SHA 校验一致）：`revoke` 非 TTY 不带 `--yes` 在触达 API 前即 `reason: confirmation_required` 失败；`approve`/`reject` CLI 侧不强制门禁（假 ID 直达 token 解析报错），但技能层「不可逆决策先确认、同意后加 `--yes`」的口径不变，示例必须示范合规形态。oa.md approve/reject 的 CAUTION 措辞同步补「确认后加 `--yes`」（对齐 revoke 节既有措辞）；Usage `[flags]` 简明行保持复刻 CLI help（root 持久 flag 不出现在 help），不补。
+2. **回归扫描**：`pinvou3-app/tests/connector_skills_contract.test.js` 新增规则 7——dingtalk-skills 代码块内 `dws oa approval approve|reject|revoke` 可执行行必须含 `--yes`（`[flags]` 结尾的 help 复刻行豁免），防上游 sync 回潮。

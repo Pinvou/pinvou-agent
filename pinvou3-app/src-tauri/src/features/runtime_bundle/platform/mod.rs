@@ -109,6 +109,15 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 ///       order and skipped numbers stay safe. Skill trees are excluded
 ///       from the content hash, so the semantic bump is required for
 ///       connected users to refresh at startup.
+/// 0.27: dws doc-audit fixes, 11 findings (PR #359, registered in
+///       NOTICE-dingtalk.md). The dws skill tree is excluded from the
+///       instructions content hash like the other connector trees, so
+///       connected installs skip re-extraction unless the semantic base
+///       changes. Lands after 0.28 (lark-skills #365), the 0.26
+///       re-take (tmeet #362), and the 0.25 re-take (wecom #366) are
+///       already on main; the extracted-VERSION gate is inequality-only,
+///       so 0.25 -> 0.27 still changes the build VERSION and triggers
+///       startup re-extraction.
 /// 0.28: lark-skills doc audit fixes, 31 findings across eight packs
 ///       (registered in lark-skills/NOTICE.md, including review fixes
 ///       aligned with CLI v1.0.87 ground truth). Version takes the next
@@ -121,7 +130,7 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 ///       connected users to refresh at startup (otherwise the refresh
 ///       waits for the post-first-frame refresh_connector_auth_gates
 ///       backfill).
-pub const BUNDLE_VERSION: &str = concat!("0.25-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+pub const BUNDLE_VERSION: &str = concat!("0.27-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// 骨架 = 身份/底线/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：
