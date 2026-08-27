@@ -83,7 +83,7 @@ lark-cli im +messages-mget --message-ids "om_aaa,om_bbb"
 |---------|---------|---------|
 | `--message-ids requires at least one message ID` | No message ID was provided | Provide at least one message ID |
 | `invalid message ID: must start with om_` | Invalid message ID format | Message IDs must start with `om_` |
-| Permission denied | Message read permission is missing | Ensure the app has `im:message:readonly` and `contact:user.base:readonly` enabled |
+| Permission denied | Message read permission is missing | Ensure the app has `im:message:readonly` enabled |
 | Empty result | Message IDs do not exist or are not accessible | Verify the IDs and access permissions |
 
 ## AI Usage Guidance

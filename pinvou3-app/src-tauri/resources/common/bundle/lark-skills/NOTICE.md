@@ -303,3 +303,64 @@ emit_error(JSON+exit 1)、无裸 except。修复 1 处,下次 sync 需重放:
 - **lark-task/SKILL.md 措辞分叉(1 处,品悟基线沿袭)**:「列取任务列表」
   (上游 v1.0.87 原文)在本地为「获取任务列表」,语义等价;下次 sync 跟随
   上游即可,无需重放(登记仅为对账完备)。
+
+### 文档缺陷审计修复(2026-08-27,lark-drive/doc/im/calendar 四域)
+
+审计核验后修复 11 项文档缺陷(仅文档行为口径,不改任何命令实现),下次
+sync 需逐条重放。四域 SKILL.md frontmatter version 1.0.0 → 1.0.1
+(lark-doc 原无 version 字段,本次补齐为 1.0.1):
+
+- **lark-drive/references/lark-drive-version-revert.md**:补 `--yes`
+  (参数表必填行 + 两条示例命令)并加 CAUTION 块声明「回滚以指定历史版本
+  覆盖当前内容」——与 lark-drive-version-delete.md 及 SKILL.md 高风险
+  三条件清单(「版本删除/回滚」)对齐;原文无 `--yes` 属遗漏。
+- **lark-doc 思维笔记新建路由改真**:SKILL.md「思维笔记」条与
+  lark-doc-mindnote.md 的 IMPORTANT/推荐工作流/参考,原均指引「新建思维
+  笔记走 lark-doc-whiteboard」,但该文件全文只讲画板、无 mindnote 内容
+  (死路)。改为如实表述:暂无专门 docs/mindnotes 新建命令;知识库内新建
+  用 `wiki +node-create --obj-type mindnote`(lark-wiki-node-create.md
+  参数表实测支持该 obj_type),建后回 mindnote 链路维护;并明示思维笔记
+  不是画板、不得路由到画板工作流。
+- **lark-doc 预读矛盾消除(5 文件)**:media-insert/media-preview/
+  media-download/resource-cover/mindnote 五篇 references 的前置块原要求
+  「先阅读 ../../lark-shared/SKILL.md」,与 lark-doc SKILL.md「执行
+  Shortcut 时不预读 lark-shared,仅认证/身份/scope 错误时读取」矛盾。
+  五处统一改写为按需口径(遇认证/token 身份/scope 错误再读)。
+- **lark-drive/SKILL.md 快速决策去重**:「检查/治理文档权限…进入
+  permission_governance workflow」bullet 原逐字出现两遍(L27 与 L30),
+  删除其一,保留 member-remove 与 secure-label 之间的一份。
+- **lark-drive/SKILL.md +sync 行重写**:唯一无 reference 的 shortcut,
+  表格描述原为一句长文。重写为:先讲双向语义(new_remote/new_local/
+  modified、只同步 type=file、不删除两端多余文件、镜像删除分别走
+  +pull --delete-local / +push --delete-remote),再分号分列
+  `--on-conflict`(只对 modified 生效)/`--on-duplicate-remote`(只对
+  远端同名冲突生效)/`--quick`(mtime 近似比较,默认 SHA-256),参数语义
+  对照 lark-drive-pull.md / lark-drive-push.md 提炼,未新建文件。
+- **lark-drive ↔ lark-doc 历史版本互斥声明**:两包「不在范围」节各补
+  一行——lark-drive:在线文档(docx 等)历史版本走 lark-doc `+history-*`;
+  lark-doc:Drive 二进制文件(type=file 附件等)历史版本走 lark-drive
+  `+version-*`。消除 docx 双重身份下双方均未互斥声明的矛盾。
+- **lark-calendar/SKILL.md 原生方法调用写法统一**:`events share_info`
+  与 `events delete` 示例原用 `--calendar-id X --event-id Y` typed-flag
+  写法,与 recurring.md 的 `--params '{"calendar_id":...,"event_id":...,
+  "need_notification":...}'` 矛盾,且 need_notification 只有 JSON 形态能
+  表达。统一为 `--params` JSON 写法,并在代码块后补注「原生 API 方法不提
+  供 typed flags,结构化参数统一走 --params/--data;typed flags 只在 +
+  shortcut 上」(口径同 lark-im 侧声明)。
+- **lark-im/references/lark-im-messages-mget.md 排障表 scope 修正**:
+  「Permission denied」行原要求 `im:message:readonly` +
+  `contact:user.base:readonly`,与 SKILL.md「sender 名由服务端返回,无需
+  contact scope、无通讯录回退」矛盾,且同族四命令(含同为读消息的
+  chat-messages-list)均无 contact 要求,全包仅此一处。判定为陈旧残留,
+  删除 contact scope 要求,保留 `im:message:readonly`。
+- **lark-im/SKILL.md description 去伪**:删除「(支持大文件分片下载)」
+  ——references 全文无分片/chunk/续传支撑,属无据声明;description 仍
+  在 280 字符上限内。
+- **lark-calendar/references/lark-calendar-create.md COUNT 禁令补齐**:
+  `--rrule` 行补「系统绝对不支持 COUNT,如需限制重复次数,必须转为
+  UNTIL」(update.md/suggestion.md/room-find.md 三处均有,唯 create.md
+  缺失;create 是 rrule 的首入口,缺失风险最高)。
+- **lark-calendar 他人日程边界补句**:lark-calendar-update.md「使用规则」
+  与 lark-calendar-recurring.md「注意事项」各补一句「仅组织者可改/删;
+  以参会者身份操作他人日程会被拒绝或降级(通知组织者),执行前先确认
+  当前身份是组织者」(句式参考 rsvp.md 的自我限制提示)。
