@@ -1,6 +1,6 @@
 ---
 name: lark-wiki
-version: 1.0.3
+version: 1.0.4
 description: "【何时用:仅当用户明确指向飞书/Lark 知识库;泛指做文档默认走本地工具】飞书知识库:创建/查询知识空间、管理空间成员、管理节点层级(移动/复制/删除)、组织文档与快捷方式。doubao.com 的 /wiki/ URL 也走本 skill。不负责:上传文件(走 lark-drive)、编辑文档/表格/Base 内容(走 lark-doc/lark-sheets/lark-base)。"
 metadata:
   requires:
@@ -128,3 +128,5 @@ lark-cli wiki <resource> <method> [flags]  # 调用 API
 | `sheet` | [`lark-sheets`](../lark-sheets/SKILL.md) | `obj_token` 即 spreadsheet token；`lark-sheets` 的 `--url` 也直接接受 `/wiki/` 链接 |
 
 不要把 Wiki 的 `node_token` 当作文档 token / `base_token` / spreadsheet token 传给下游命令。
+
+上表只列主用的三种 `obj_type`；完整路由（含 `slides` / `file` / `mindnote` 等未收录域的「技能未随包收录 + CLI 命令直给」口径）见 [`../lark-shared/references/lark-wiki-token-routing.md`](../lark-shared/references/lark-wiki-token-routing.md)。
