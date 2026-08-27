@@ -115,8 +115,12 @@ disconnect / uninstall / enable_in(scope)…），每个动作带可用性与原
 1. **一个包 = 一个目录 = 一个属主。** 安装 = staged 解包 + 原子 rename；
    卸载 = 删登记 + 删目录。`.installed-from` 标记文件取消，来源与指纹进 bundles.json。
 2. **包内容住包目录，外部依赖住资产库。** CLI 二进制是厂商 URL 下载的版本化外部依赖
-   （生命周期由 lock 表驱动，与包登记解耦，卸载时保留/清理可独立决策）；
-   技能内脚本是包内容（不可再下载、随包版本变化、属主唯一），不拆。
+   （内置连接器生命周期由 lock 表驱动；声明式 Upload 连接器包由 plugin.json
+   `cli_connectors` 声明驱动，同一 `assets/cli/<bin>/<version>/` 布局与双
+   SHA-256 校验管线 `platform/connector_installer.rs`，与包登记解耦，卸载时
+   保留/清理可独立决策）；技能内脚本是包内容（不可再下载、随包版本变化、
+   属主唯一），不拆。CLI 连接器包目录形态：`bundles/<id>/` = plugin.json +
+   `skills/`（可选配套技能），**无二进制**。
 3. **凭据永不落盘。** keyring 存取经 `bundle::keyring_target` 唯一映射点；
    bundles.json 只存引用（key + target）。
 4. **状态与资源分离。** 元数据查询不摸磁盘；磁盘遍历只在完整性校验（指纹比对）时发生。
@@ -152,8 +156,30 @@ disconnect / uninstall / enable_in(scope)…），每个动作带可用性与原
 | 纯技能包 | SKILL.md 目录（含脚本） | 可选 runtimes/pip 声明 | 凭据型按 credentials |
 
 CLI 无专属生命周期词汇："连接"= connect 动作，"断开"= 删授权；
-companion 声明与 MCP 的 `companion_skills` 同机制，`BUILTIN_CLI_BUNDLES`
-常量表 manifest 化后退役。检验标准：新增 CLI 连接器 = 加一个 manifest + lock 条目。
+companion 声明与 MCP 的 `companion_skills` 同机制。`BUILTIN_CLI_BUNDLES`
+常量表已 manifest 化退役（M1）：内置 4 连接器由 checked-in
+`resources/common/bundle/connectors/<id>/plugin.json` 声明驱动（id/name/
+description/bin/version/auth.steps 单一真相源；per-platform 下载 pin 仍由
+平台 lock JSON 钉住），检验标准达成：新增内置 CLI 连接器 = 一份 plugin.json
++ lock 条目。声明式 Upload 连接器包（§7 / plugin-package-spec §8.5）经
+plugin.json `cli_connectors` 声明进入同一模型。
+
+实施注记（M1-M3，CLI 连接器纳入统一包模型的落地态）：
+
+- **出卡**：内置 4 连接器由 checked-in 声明出卡（kind 现算 Cli）；声明式
+  Upload 包为 `list_bundles` 第 6 源（store Upload 记录 + 盘上 plugin.json 的
+  cli_connectors 声明；degraded 透传）。`list_cli_bundles` 命令按 kind=Cli
+  过滤导出给前端。
+- **readiness**：内置连接器 = 授权存在（注册表分派到各 status 实现）；
+  声明式 Upload 包 = 二进制在位且未 degraded（manual 无 auth status 可查；
+  有 auth.steps 时先试契约 `auth status --json`，CLI 无该能力回退同口径）。
+- **连接编排**：8 个通用命令按 id 分派（`connector_ensure_cli/status/
+  connect_begin/cancel/logout/apply_skills/set_enabled/skills_state`）——内置
+  到既有实现、声明式包到契约驱动通用编排器（`auth begin/poll/logout` 标准
+  步骤序列）；进度事件统一为 `connector:event`（qr/phase/connected/error），
+  旧 4 连接器 × 8 硬编码命令与 `<id>:qr` 等旧事件已原子下线。
+- **治理**：execpolicy deny 按 bin 名（`cli_bundle_bin` 反查：内置查声明、
+  Upload 包反查盘上 plugin.json），scope 禁用集与 Upload 包同步同构。
 
 ## 6. 统一安装管线
 

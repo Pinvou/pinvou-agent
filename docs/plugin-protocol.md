@@ -1,7 +1,8 @@
 # 插件协议（Plugin Protocol）设计
 
-> 状态：**v1 子集已实施**（MCP / 技能 / 组合包，落地版见 `plugin-package-spec.md`），
-> 其余仍为设计草案。本文定义「应用商店」用户上传 zip 插件包的
+> 状态：**v1 子集已实施**（MCP / 技能 / 组合包，落地版见 `plugin-package-spec.md`；
+> 声明式 CLI 连接器见 §14.3），其余仍为设计草案。本文定义「应用商店」用户上传
+> zip 插件包的
 > 包格式、自动识别、落盘与读取协议。落地基线为能力包统一模型
 > （`docs/marketplace-unification.md` §3/§4/§6，Phase 2 全部 12 刀已合入）。
 > 本文是 `marketplace-unification.md` §7「插件化路径」的首个落地切片：把
@@ -25,7 +26,7 @@
 | `spanner` | ⛔ 已移除 | 扳手插件独立组件模型已从 v1 移除，原声明式 one-shot 设计保留为历史记录（§15）；可执行能力的演进方向是 skill 包 `tools[]`/`runtime` + skill-run wrapper，**该方向为 RFC 草案，执行通路未实施** |
 | `skills` | ✅ | SKILL.md 目录（挂载给 LLM 的 markdown 指令），复用现有技能落盘与物化 |
 | `workflows` | ❌ v2 | harness loop 多智能体编排；识别/落盘可行，但治理通道需 harness 侧 scenario 过滤缝（§11/§12-B），v1 不做 |
-| `cli_connectors` | ⏳ 未实现（草案） | zip 只放「下载声明」（URL + SHA-256 + 版本 + 配套技能），安装时下载二进制到 `assets/cli/`（lock 表）；不内嵌原生二进制，详见 §14.3 |
+| `cli_connectors` | ✅ 已实施（M1-M3） | zip 只放「下载声明」（按平台分列 URL + 双 SHA-256 + 版本 + 配套技能 + 授权步骤），安装时下载二进制到 `assets/cli/<bin>/<version>/`；不内嵌原生二进制，详见 §14.3（含标准授权契约与统一事件/命令） |
 | `commands` / `hooks` | ⛔ 预留 | 见 §12，需新增执行点禁用通道与信任模型 |
 
 **不变量**（沿用 `capability-governance.md` §5.2 / `marketplace-unification.md` §5.2）：
@@ -90,9 +91,10 @@ my-plugin.zip
   "license": "MIT",
   "homepage": "https://…",
 
-  // 组件声明（目录引用，导入时校验存在；v1 已实施：mcp_servers 与 skills，
-  // 其中 MCP 组件 dir 必须精确为 "mcp"——一包一 server，见 §5.1 与
-  // plugin-package-spec.md §2；多 server 为本协议 v2 草案方向）
+  // 组件声明（目录引用，导入时校验存在；v1 已实施：mcp_servers、skills 与
+  // cli_connectors。其中 MCP 组件 dir 必须精确为 "mcp"——一包一 server，
+  // 见 §5.1 与 plugin-package-spec.md §2；多 server 为本协议 v2 草案方向。
+  // mcp+cli 组合首版拒收，cli+skills 允许）
   "components": {
     "mcp_servers": [
       { "id": "weather", "dir": "mcp" }
@@ -102,6 +104,24 @@ my-plugin.zip
     ],
     "workflows": [
       { "id": "weather-report", "dir": "workflows/weather-report" }
+    ],
+    // ✅ 已实施（M2）：声明式 CLI 连接器（字段终稿见 §14.3；
+    // 二进制不进 zip，按平台分列下载 pin）
+    "cli_connectors": [
+      {
+        "id": "weather-cli",
+        "bin": "weather-cli",
+        "version": "1.0.0",
+        "platforms": {
+          "windows-x64": {
+            "url": "https://…/weather-cli-1.0.0-windows-x64.zip",
+            "archive_sha256": "…",
+            "binary_sha256": "…"
+          }
+        },
+        "skills_dir": "skills",
+        "auth": { "steps": [ { "id": "authorize", "kind": "qr", "label": "扫码授权" } ] }
+      }
     ]
   },
 
@@ -133,6 +153,7 @@ my-plugin.zip
 | `components.mcp_servers[].id` | `BundleInfo.mcp_servers` | 对应 `ToolManifest.id`；其 `manifest.json` 仍是该 server 的启动真相源 |
 | `components.skills[].id` | `BundleInfo.skills` | = SKILL.md frontmatter `name`，导入时校验一致 |
 | `components.workflows[].id` | `BundleInfo.workflows`（新增） | = `workflow.json` 的 `id`，导入时校验一致；workflows 通道模块待建（v2，见 §8） |
+| `components.cli_connectors[]` | `BundleInfo.cli` + `assets/cli/<bin>/<version>/` 资产引用 | ✅ 已实施（M2）：声明字段终稿（platforms 分列/双哈希/授权步骤）见 §14.3 |
 | `credentials` / `config_fields` | `BundleInfo.credentials` / `config_fields` | ⏳ 设计去向；v1 落 `extra` 不消费，实际凭据收敛仍走 `bundle::tool_credentials` / `tool_config_fields`（ToolManifest 通道） |
 | `dependencies` | `BundleRecord.extra`（v1 只记录） | ⏳ 后续收编 `assets/pip/` 时进依赖阶段 |
 
@@ -349,6 +370,7 @@ workflows 非空                              → Workflow
 |---|---|---|
 | `mcp_servers` | `disallowed_tools` 按 `mcp_{server}_*` 排除 | ✅ 现状 |
 | `skills` | 物化排除 + execpolicy deny（带脚本时按脚本×解释器生成 typed Deny） | ✅ 现状 |
+| `cli_connectors` | execpolicy deny 按 `bin` 名 spawn 前硬拒（`cli_bundle_bin` 反查：内置连接器查 checked-in 声明，Upload 声明式包反查盘上 `bundles/<id>/plugin.json`；裸 bin + `.exe`/`.cmd` 变体同发） | ✅ 已实施（M1/M2） |
 | `workflows` | **新增**：`workflow_registry::discover` 按禁用包过滤 scenario 解析 | ⛔ 模块待建（v2），见 §12 D |
 | `commands`/`hooks` | execpolicy（预留） | ⛔ §12 |
 
@@ -371,7 +393,7 @@ workflows 非空                              → Workflow
   单一真相源）vs 导入时复制到 `bundle/workflow/`（双写，违背无投影漂移）。
 - **E. 体积上限策略**：5 MiB 是技能包的防御值；MCP/工作流包是否需要更大的
   独立上限或分级上限。
-- **F. CLI 连接器如何上传**：**v1 只走「声明式」**（§14.3）——zip 内**禁止**塞
+- **F. CLI 连接器如何上传**：**v1 只走「声明式」**（§14.3，✅ 已按此实施）——zip 内**禁止**塞
   原生二进制（等于无沙箱任意代码执行，需签名/权限/审计信任模型，留 §7 进程内
   插件档）。声明式 = zip 只放下载 URL + SHA-256 + 版本 + 配套技能，安装时下载到
   `assets/cli/<bin>/<version>/` 并验 SHA-256，信任面是「下载并执行第三方二进制」，
@@ -406,7 +428,7 @@ workflows 非空                              → Workflow
 | 层级 | 触发 | 通道 | v1 |
 |---|---|---|---|
 | 包级下载 | 商店输入 URL / 远程分发 | `import_plugin_package_from_url` → 下载 → 复用 §10 管线 | ⏳ 未实现（草案） |
-| 组件级远程资源 | `plugin.json` 声明 `source:"remote"` | 安装时 AssetManager 下载并验 SHA-256 | ⏳（仅内置 CLI 走该管线；plugin.json 声明式触发为草案）|
+| 组件级远程资源 | `plugin.json` 声明下载 pin | 安装时按声明下载并验双 SHA-256（`platform/connector_installer.rs`） | ✅ 已实施（声明式 CLI 连接器，见 §14.3） |
 | 依赖级下载 | `dependencies.pip` / `runtimes` | 现有 pip / runtime 管线（§4，软声明） | ⏳（pip 管线现仅消费 `mcp/manifest.json` 的 `pip_dependencies`；`plugin.json` 的 `dependencies` 键未消费，见 §10） |
 
 ### 14.2 包级下载（商店 URL 导入）
@@ -427,42 +449,105 @@ workflows 非空                              → Workflow
   内容」——因此远程导入的解包/脚本确认流与本地上传**完全一致**，不因来源是 URL
   而放松（`has_executables` 显式告知照常）。
 
-### 14.3 组件级远程资源（plugin.json 声明）——声明式 CLI 连接器
+### 14.3 组件级远程资源（plugin.json 声明）——声明式 CLI 连接器 ✅ 已实施
 
-`plugin.json` 的组件可声明为远程资源，包目录只放「下载声明」，不塞二进制：
+> 实施基线（M1-M3）：schema 与校验在 `features/marketplace/plugin_import.rs`
+> （`CliConnectorDecl`），下载/校验/落盘在 `platform/connector_installer.rs`
+> （与内置连接器共用 `install_artifact` 核心），授权编排与通用命令在
+> `features/connectors/{declared,registry}.rs`，内置 4 连接器（feishu/wecom/
+> dingtalk/tmeet）自 M1 起也由 checked-in `plugin.json` 声明驱动
+> （`resources/common/bundle/connectors/<id>/plugin.json`，原
+> `BUILTIN_CLI_BUNDLES` 常量表已退役）。
+
+`plugin.json` 的组件声明为远程资源，包目录只放「下载声明」，不塞二进制：
 
 ```jsonc
 "components": {
   "cli_connectors": [
     {
-      "id": "lark",                     // 连接器/包内组件 id（is_safe_component_id）
-      "bin": "lark-cli",                // lock 表 bin 名（execpolicy deny 与 spawn 解析用它）
-      "version": "1.0.65",
-      "url": "https://…/lark-cli-1.0.65-win-x64.zip",
-      "sha256": "…",                    // 强制；不匹配即安装失败
-      "skills_dir": "skills/lark"       // 可选：配套官方技能目录（解包进 bundles/<id>/skills/）
+      "id": "lark",                       // 连接器 id，必须 = 包 id（is_safe_component_id）
+      "bin": "lark-cli",                  // CLI 二进制名（execpolicy deny 与资产库目录名）
+      "version": "1.0.87",                // 必填：资产库按版本落目录
+      "platforms": {                      // 必填：按平台目录名分列下载 pin
+        "windows-x64": {                  // 键 = connector_platform_dir 口径（windows-x64 /
+          "url": "https://…/lark-cli-1.0.87-windows-amd64.zip",  // 必须 HTTPS
+          "archive_sha256": "…",          // 强制，64 位十六进制
+          "binary_sha256": "…"            // 强制，64 位十六进制
+        },
+        "darwin-arm64": { "url": "https://…", "archive_sha256": "…", "binary_sha256": "…" }
+      },
+      "skills_dir": "skills",             // 可选；有则必须为规范化值 "skills"
+      "license": "MIT",                   // 可选：许可证文本，随二进制落 licenses/
+      "auth": {                           // 可选；缺省/无 steps = manual（CLI 自行交互授权）
+        "steps": [                        // 标准授权步骤的有序序列（见下方契约）
+          { "id": "register",  "kind": "qr", "label": "注册应用" },
+          { "id": "authorize", "kind": "qr", "label": "授权登录" }
+        ]
+      }
     }
   ]
 }
 ```
 
-安装流程（复用内置 CLI 的 `connector_lock` 机制，来源从「内置常量表」换成
-「上传声明」）：
+授权 = **标准步骤序列**：每步 `kind: "qr"|"browser"`，语义统一为「拿 URL →
+展示（二维码/跳浏览器）→ 等完成」，步骤间依赖由顺序执行保证（飞书两段式
+即两个 qr 步链 `register → authorize`；企微/钉钉 = 单 qr 步；腾讯会议 =
+单 browser 步）。
+
+**标准授权契约**（`auth.steps` 非空的包，CLI 须实现的子命令；通用编排器
+`features/connectors/declared.rs` 驱动）：
 
 ```
-1. 下载   —— AssetManager.ensure(bin@version) 下载到 assets/cli/<bin>/<version>/
-2. 校验   —— SHA-256 强制匹配；失败 → Degraded（重新下载动作），不落半套
-3. 技能   —— skills_dir 解包到 bundles/<id>/skills/（复用 §7 技能落盘）
-4. 登记   —— BundleRecord { source: Upload, installed: true, assets:[<lock引用>], … }
-5. 治理   —— execpolicy deny 按 bin 名 spawn 前硬拒（复用现有 CLI 治理，§11）
+<bin> auth begin --step <step_id> --json  → {"qr_url"|"browser_url", "ticket"}
+<bin> auth poll  --ticket <t>      --json  → {"state":"pending|done|error", "message"?}
+<bin> auth logout                          → 退出码 0 即成功
 ```
 
-- **信任面**：声明式 CLI 仍是「下载并执行第三方二进制」，故安装前**显式告知**
-  用户（含第三方可执行文件 + 来源 URL），且 SHA-256 强制（不允许无校验和导入）。
-- **平台差异**：`url` 需按平台/架构分列（`url` 或 `platforms:{ "windows-x64":…, "darwin-arm64":… }`），
-  复用 `connector_lock` 的平台目录解析（`connector_platform_dir`）。
-- **不内嵌二进制**：zip 内出现 ELF/PE/Mach-O 等原生可执行文件 → 拒收（§9 扩展
-  检测），杜绝「绕过下载走内嵌」的任意代码执行面。
+每步流程：`begin` 拿 URL + ticket → 统一事件 qr（poll 间隔 2s，单步超时
+300s，支持取消）→ `state:done` 进入下一步；全部步完成 → 登记（source 保留
+Upload，清 degraded）+ 发射 connected。不满足契约（无 steps）= **manual**：
+`connector_connect_begin` 返回 `{started:false, mode:"manual"}`，前端提示用户
+自行在终端完成授权；`auth logout` 不存在/失败时降级为仅清本地登记（记日志）。
+
+**统一事件与通用命令**（M3，内置与声明式同一契约）：进度事件单名
+`connector:event`，payload 按 `kind` 区分——`{id, kind:"qr", step, url,
+qr_data_url, browser_auth?, user_code?}` / `{id, kind:"phase", step, state}` /
+`{id, kind:"connected", ok:true, already?}` / `{id, kind:"error", step, message}`。
+命令面 8 个通用命令按 id 分派（内置 4 → 既有实现；声明式包 → 通用编排器）：
+`connector_ensure_cli / connector_status / connector_connect_begin /
+connector_cancel / connector_logout / connector_apply_skills /
+connector_set_enabled / connector_skills_state`（旧 4 连接器 × 8 硬编码命令
+与 `feishu:qr` 等 16 个旧事件已原子下线）。
+
+安装流程（统一导入管线 `plugin_import::import_plugin_package` 的 cli 分支）：
+
+```
+1. 校验   —— 恰一个 cli 组件且组件 id = 包 id；id/bin 合法；version 必填；
+            platforms 含当前平台（connector_platform_dir）且 url 必须 HTTPS、
+            双 SHA-256 强制；skills_dir 恒为 "skills" 且包内存在；auth.steps
+            id/label 合法（kind 由 serde 枚举收口 qr/browser）；
+            与内置连接器 id 冲突拒收；mcp+cli 组合首版拒收（协议未设计，
+            报错明确）；cli+skills 允许
+2. 拒内嵌 —— zip 条目起始字节 magic 检测（ELF/PE/Mach-O），命中即拒收整包；
+            shebang（#!）按文本放行（只告警）
+3. 下载   —— ensure_declared_native_cli：暂存缓存命中跳过 → 验 archive SHA-256
+            → 防穿越解出根级 <bin>[.exe] → 验 binary SHA-256 → 原子落
+            assets/cli/<bin>/<version>/（license 声明随落 licenses/）
+4. 技能   —— skills/ 子树随包落盘 bundles/<id>/skills/（复用统一落盘）
+5. 登记   —— BundleRecord { source: Upload, installed: true,
+            assets:[{kind:"cli", name:bin, version, sha256}] }；
+            下载/校验失败 → Degraded（不翻盘：目录落盘保留、记录照常，
+            修复动作 = 重新导入重新获取）
+6. 治理   —— execpolicy deny 按 bin 名 spawn 前硬拒（含 Upload 包盘上
+            plugin.json 反查，§11）
+```
+
+- **信任面**：声明式 CLI 仍是「下载并执行第三方二进制」，SHA-256 强制
+  （不允许无校验和导入）；安装前显式告知用户（含第三方可执行文件 + 来源 URL）。
+- **出卡与就绪**：`list_bundles` 第 6 源（Upload + cli 组件，kind 现算 Cli；
+  新命令 `list_cli_bundles` 过滤导出）；readiness 对声明式包取通用语义——
+  ready = 二进制在位且未 degraded（manual 无 auth status 可查；有 steps 时
+  `connector_status` 先试契约 `auth status --json`，CLI 无该能力回退同口径）。
 - 其他大体积远程资源（如 MCP 的模型权重、工作流数据）同样走
   `source:"remote"` + 版本钉住，落 `assets/<kind>/<id>/<version>/`，包目录只留声明。
 

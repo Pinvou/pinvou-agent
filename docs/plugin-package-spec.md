@@ -5,8 +5,8 @@
 >
 > 本文是 `plugin-protocol.md`（协议设计草案）里 **v1 已实施子集**的权威落地版：
 > 以当前 `features/marketplace/plugin_import.rs`、`bundle.rs`、`mod.rs` 的实际实现为准。
-> 协议草案中标注 v2 / 未实施的 `workflows`、`cli_connectors`、`commands`/`hooks`
-> 不在本文范围内。
+> 协议草案中标注 v2 / 未实施的 `workflows`、`commands`/`hooks`
+> 不在本文范围内（`cli_connectors` 已实施，见 §8.5）。
 >
 > 配套工具：预置市场技能「插件包标准化」`package-author`
 > （`resources/common/skill-marketplace/package-author/`，工具商店「技能」区安装）
@@ -47,6 +47,8 @@ my-plugin.zip
    + 脚本），`plugin.json` 里 `components.mcp_servers[].dir` 写 `"mcp"`。运行层
    `available_tools`/`load_manifest` 只读 `bundles/<id>/mcp/manifest.json`。
 3. 裸包兼容：没有 `plugin.json` 的 zip 走结构回退（§5），导入时补生成规范化清单。
+4. CLI 连接器包形态同上但**无二进制**：zip 只放 `plugin.json`（§8.5 声明）+
+   `skills/`（可选配套技能），二进制安装时按声明下载校验落 `assets/cli/`。
 
 ---
 
@@ -87,11 +89,12 @@ my-plugin.zip
 | `icon` | 可选 | 图标文件，相对 zip 根，仅 `icon.svg`/`icon.png` |
 | `components` | 可选 | 多组件声明，见下 |
 
-`components` 两个子表（当前版本仅这两类）：
+`components` 三个子表（当前版本仅这三类）：
 
 - `components.mcp_servers[]`：`{ id, dir }`，`dir` 相对 zip 根、导入时校验目录存在。
 - `components.skills[]`：`{ id, dir }`，`dir` 相对 zip 根、导入时校验 `dir/SKILL.md` 存在，
   `id` 必须等于该 `SKILL.md` frontmatter 的 `name`。
+- `components.cli_connectors[]`：声明式 CLI 连接器（字段与校验见 §8.5）。
 
 前向兼容：解析**不用** `deny_unknown_fields`，未知字段原样保留（flatten），
 方便未来加 `credentials`/`config_fields`/`dependencies` 等不破坏旧包。
@@ -112,6 +115,7 @@ my-plugin.zip
 
 | 组件向量 | `kind` |
 |---|---|
+| cli 非空 | `Cli`（CLI 连接器包，优先级最高；声明式上传见 §8.5） |
 | mcp 非空 && skills 非空 | `Bundle`（组合包） |
 | 仅 mcp 非空 | `Mcp`（纯 MCP） |
 | 仅 skills 非空 | `Skill`（纯技能） |
@@ -120,7 +124,9 @@ my-plugin.zip
 （旧 `Spanner` 变体已移除；可执行能力方向是 SKILL.md frontmatter `tools[]` + `runtime`
 段声明 + skill-run wrapper——该方向为 **RFC 草案，执行通路未实施**，本文不展开。）
 
-（内置 `Cli` 连接器不走插件包上传，v1 不开放。）
+（内置 4 个 `Cli` 连接器（feishu/wecom/dingtalk/tmeet）不走插件包上传，由
+checked-in `plugin.json` 声明驱动；**声明式 CLI 连接器包 v1 已开放上传**（§8.5）。
+mcp+cli 组合首版拒收，cli+skills 允许。）
 
 ---
 
@@ -248,6 +254,76 @@ metadata:                       # 可选
 
 ---
 
+## 8.5 CLI 连接器组件：`components.cli_connectors`（声明式）
+
+> 面向包作者：把一个第三方 CLI（如厂商官方命令行工具）打包成可上传、可安装、
+> 可治理的连接器包。**二进制不进 zip**——zip 只放下载声明与配套技能，安装时
+> 按声明下载并强制双 SHA-256 校验（§14.3 信任模型：杜绝无沙箱任意代码执行）。
+
+一个包**恰一个** CLI 连接器组件，且组件 `id` 必须等于包 `id`（execpolicy、
+注册表、技能门控共用同一命名空间）：
+
+```jsonc
+"components": {
+  "cli_connectors": [
+    {
+      "id": "acme",                    // 必须 = 包 id（[a-z0-9-_]{1,64}）
+      "bin": "acme-cli",               // CLI 二进制名（execpolicy deny 与资产库目录名；
+                                       // 同字符集校验）
+      "version": "1.2.0",              // 必填：资产库按版本落目录
+      "platforms": {                   // 必填：按平台目录名分列下载 pin
+        "windows-x64": {               // 键 = connector_platform_dir 口径
+          "url": "https://…/acme-cli-1.2.0-windows-x64.zip",  // 必须 HTTPS
+          "archive_sha256": "…",       // 强制（64 位十六进制，归档整体哈希）
+          "binary_sha256": "…"         // 强制（归档内 <bin>[.exe] 的哈希）
+        },
+        "darwin-arm64": { "url": "https://…", "archive_sha256": "…", "binary_sha256": "…" }
+      },
+      "skills_dir": "skills",          // 可选；有则必须为 "skills"（配套技能随包落盘）
+      "license": "MIT",                // 可选：许可证文本，随二进制落 licenses/
+      "auth": {                        // 可选；缺省 = manual（见下）
+        "steps": [
+          { "id": "authorize", "kind": "qr", "label": "扫码授权" }
+        ]
+      }
+    }
+  ]
+}
+```
+
+约束与安装语义：
+
+- **平台覆盖**：`platforms` 必须包含**安装当时**的平台键（windows-x64 /
+  linux-x64 / linux-arm64 / darwin-x64 / darwin-arm64），缺失即拒装。
+- **归档约定**：归档（.zip 或 .tar.gz）内二进制位于**根级** `<bin>[.exe]`
+  （Windows 带 `.exe`），解出后验 `binary_sha256`，原子落
+  `assets/cli/<bin>/<version>/`。
+- **zip 禁二进制**：zip 条目起始字节命中 ELF/PE/Mach-O 魔数即拒收整包；
+  脚本 shebang（`#!`）按文本放行。
+- **组合限制**：`cli + skills` 是常态（配套技能用 `components.skills` 照常声明）；
+  `mcp + cli` 组合首版拒收。与内置连接器（feishu/wecom/dingtalk/tmeet）id
+  冲突拒收。
+- **失败语义**：下载/校验失败安装不翻盘——包目录与登记保留，记录 Degraded
+  （修复动作 = 重新导入重新获取）。
+- **治理**：禁用包按 `bin` 名 spawn 前硬拒（execpolicy），覆盖 Upload 包。
+
+**授权契约**（`auth.steps` 非空时 CLI 须实现；无 steps = manual）：
+
+```
+acme-cli auth begin --step authorize --json  → {"qr_url"|"browser_url","ticket"}
+acme-cli auth poll  --ticket <t>      --json  → {"state":"pending|done|error","message"?}
+acme-cli auth logout                          → 退出码 0 即成功
+```
+
+授权 = 标准步骤序列：每步 `kind: "qr"|"browser"`（二维码展示 / 跳浏览器），
+顺序执行；宿主按统一事件 `connector:event` 上报进度（qr/phase/connected/
+error）。不满足契约（无 `auth` 或空 steps）= **manual**：CLI 自行在终端交互
+授权，连接动作返回 `{started:false, mode:"manual"}`，宿主的就绪判定退化为
+「二进制在位且未 degraded」。有 steps 时 `auth status --json` 可选实现
+（`{"connected":true}` 或 `{"state":"done|authorized|ready"}` 视为已连接）。
+
+---
+
 ## 9. 图标规范
 
 - 可选：zip 根放 `icon.svg` 或 `icon.png`（仅这两种扩展名），`plugin.json.icon` 引用。
@@ -279,11 +355,17 @@ metadata:                       # 可选
 5. 组件声明与实际一致：
    - 声明的 `dir` 必须存在；skill 目录必须有 `SKILL.md`；
    - MCP 组件 `dir` 必须精确为 `mcp`（其他值拒收），且组件 `id` 与 `mcp/manifest.json` 的 `id` 交叉一致；
+   - CLI 连接器组件（§8.5）：恰一个且 `id` = 包 id；`bin` 合法、`version` 必填、
+     `platforms` 含当前平台且 url 必须 HTTPS、双 SHA-256 强制、`skills_dir` 恒为
+     `"skills"` 且包内存在、`auth.steps` id/label 合法；
    - 未声明或未被识别的 `skills/<other>/` 子树整体拒收（防止不可见孤儿技能）。
 6. 凭据不落盘（§6）。
 7. `manifest_version` 高于支持版本时拒装（§3）。
 8. 命名冲突：与预置 MCP（`mcp_catalog`）、内置 CLI 技能目录或已下线技能名冲突时拒收。
-9. **同 id 包更新语义**：已存在的包 id 仅允许同内容重导（视为原子替换）；内容不同的同名包拒收——更新包内容需更换包 id，或先手动删除 `~/.pinvou3/bundles/<id>/` 目录再导入（Upload 来源包卸载时保留该目录作为用户唯一副本，"先卸载再导入"清不掉同 id 冲突）。
+9. **zip 禁内嵌二进制**：条目起始字节命中 ELF/PE/Mach-O 魔数即拒收整包
+   （§8.5：CLI 一律经声明 url + 双哈希下载）；shebang（`#!`）按文本放行。
+10. **mcp+cli 组合首版拒收**（协议未设计，报错明确）；cli+skills 允许。
+11. **同 id 包更新语义**：已存在的包 id 仅允许同内容重导（视为原子替换）；内容不同的同名包拒收——更新包内容需更换包 id，或先手动删除 `~/.pinvou3/bundles/<id>/` 目录再导入（Upload 来源包卸载时保留该目录作为用户唯一副本，"先卸载再导入"清不掉同 id 冲突）。
 
 > 导入成功 ≠ 立即可用：出于安全默认，上传包安装后 code 模式默认禁用，需用户在能力开关中显式开启。
 
@@ -332,11 +414,25 @@ combo-demo.zip
 `plugin.json` 同时声明 `mcp_servers` 与 `skills`；`mcp/manifest.json` 的
 `companion_skills` 指向技能，让「引擎 + 使用引导」同卡、同开关、整体装卸。
 
+### 12.4 声明式 CLI 连接器包（cli + 技能）
+
+```
+acme.zip
+├── plugin.json
+└── skills/acme/
+    └── SKILL.md          # name: acme
+```
+
+`plugin.json`：`components.cli_connectors: [{ "id": "acme", "bin": "acme-cli",
+"version": "1.2.0", "platforms": { …按平台分列下载 pin… }, "skills_dir": "skills" }]`
++ `components.skills: [{ "id": "acme", "dir": "skills/acme" }]`。zip 内**无二进制**，
+安装时按声明下载校验落 `assets/cli/acme-cli/1.2.0/`（§8.5）。
+
 ---
 
 ## 13. 与其它文档的关系
 
-- `plugin-protocol.md`：协议**设计草案**，含 v2 预留（workflows / cli_connectors /
+- `plugin-protocol.md`：协议**设计草案**，含 v2 预留（workflows /
   commands / hooks / 远程下载等）。本文只落地其 v1 已实施子集。
 - `capability-governance.md` / `marketplace-unification.md`：能力包统一模型与治理
   （一个包 = 一张卡 = 一个开关；kind 现算；禁用保证在执行层）的上游依据。
