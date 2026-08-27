@@ -293,8 +293,13 @@ test('occluding UI, task switches, and Right Dock state publish only after nativ
   assert.match(browserView, /nativeSurfaceCoordinator\.transitionOwners\.size > 0/);
   assert.match(browserView, /nativeSurfaceCoordinator\.transitionOwners\.add\(owner\)/);
   assert.match(browserView, /nativeSurfaceCoordinator\.transitionOwners\.delete\(owner\)/);
-  assert.match(browserView, /await claimNativeSurfaceHide\(owner, sessionId\)/);
-  assert.match(browserView, /resumeNativeSurfaceOwner\(owner, sessionId\)/);
+  assert.match(browserView, /const hide = claimNativeSurfaceHide\(owner, sessionId\)/);
+  assert.match(browserView, /await hide/);
+  assert.match(browserView, /retainOnFailure = false/);
+  assert.match(browserView, /createDegradedNativeSurfaceHideLease\(\{/);
+  assert.match(browserView, /isFailedNativeSurfaceHideGenerationCurrent\(\{/);
+  assert.match(browserView, /retryHide: \(\) => claimNativeSurfaceHide\(owner, sessionId\)/);
+  assert.doesNotMatch(browserView, /failedIntentOwner === owner/);
   assert.match(main, /requestBrowserUiCommitAck\(\)\.then/);
   assert.match(main, /useLayoutEffect\(\(\) => \{[\s\S]*?browserUiCommitWaitersRef/);
   assert.match(main, /if \(!browserUiCommitMountedRef\.current\) return Promise\.resolve\(false\)/);
@@ -532,11 +537,12 @@ test('app restart rebuilds page identities from URL inventory and restores the d
   assert.match(browserManager, /persist_all_restore/);
   assert.match(browserManager, /close_preserving_restore/);
   assert.match(browserManager, /delete_restore_workspace\(browser_session_id\)/);
-  assert.match(nativeHost, /atomic_write_private\(path, &encoded\)/);
+  assert.match(nativeHost, /atomic_write_private_anchored\(path, &encoded\)/);
   const restoreWriter = nativeHost.slice(
     nativeHost.indexOf('fn write_restore_workspace_file'),
-    nativeHost.indexOf('fn remove_restore_file'),
+    nativeHost.indexOf('fn remove_workspace_state_file'),
   );
+  assert.doesNotMatch(restoreWriter, /create_dir_all|make_private_dir/);
   assert.doesNotMatch(restoreWriter, /target_id|lease|session_token|tab_token/);
   assert.match(nativeState, /NativeControlOwner \{[\s\S]{0,120}Unclaimed/);
   assert.match(nativeHost, /WorkspaceControl::new\(1, NativeControlOwner::Unclaimed\)/);
@@ -681,7 +687,9 @@ test('Linux WebDriver safely rebinds with a host marker without injecting remote
     /control[\s\S]{0,160}\.dispatch_if_agent_authorized\(authorization, dispatch_with_navigation\)/,
   );
   assert.match(linuxAutomation, /active_binding_nonce: Option<String>/);
-  assert.match(linuxAutomation, /binding_marker_seen: bool/);
+  // The marker-window semantics are enforced by active_binding_nonce (armed on
+  // rotation, cleared on restore/foreign navigation in classify_binding_navigation);
+  // no separate "marker seen" flag is tracked.
   assert.match(linuxAutomation, /registered_host_bootstrap: bool/);
   assert.match(linuxAutomation, /host_bootstrap_pending: bool/);
   assert.match(linuxAutomation, /host_bootstrap_settled: Arc<tokio::sync::Notify>/);

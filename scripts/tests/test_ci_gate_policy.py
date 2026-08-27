@@ -413,6 +413,50 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn('"$test_exe" "$filter" --test-threads=1', regression)
         self.assertNotIn("cargo test", regression)
 
+        required_gate = self.pr_workflow.split(
+            "\n  required-gate:", maxsplit=1
+        )[1]
+        self.assertIn("- windows-rust-test", required_gate)
+        self.assertIn("WINDOWS_RUST_RESULT", required_gate)
+        self.assertIn('"windows-rust-test:$WINDOWS_RUST_RESULT"', required_gate)
+
+    def test_windows_browser_wrapper_lifecycle_runs_in_required_native_job(self):
+        changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
+            "\n  fast-gate:", maxsplit=1
+        )[0]
+        windows_codex_filter = changes.split("windows_codex:", maxsplit=1)[1]
+        self.assertIn(
+            "resources/common/bundle/mcp-servers/browser-*",
+            windows_codex_filter,
+        )
+        self.assertIn(
+            "browser_wrapper_windows_lifecycle.test.mjs",
+            windows_codex_filter,
+        )
+        self.assertIn("browser_wrapper_lazy.test.mjs", windows_codex_filter)
+
+        windows_job = self.pr_workflow.split(
+            "\n  windows-codex-runtime-test:", maxsplit=1
+        )[1].split("\n  macos-codex-runtime-test:", maxsplit=1)[0]
+        self.assertIn("needs.changes.outputs.windows_codex == 'true'", windows_job)
+        self.assertIn("runs-on: windows-latest", windows_job)
+        self.assertIn("Windows browser wrapper lifecycle regression", windows_job)
+        self.assertIn(
+            "node --test pinvou3-app/tests/browser_wrapper_windows_lifecycle.test.mjs",
+            windows_job,
+        )
+        self.assertIn(
+            "node pinvou3-app/tests/browser_wrapper_lazy.test.mjs",
+            windows_job,
+        )
+        self.assertIn('PINVOU3_TEST_BROWSER_NO_HOST: "1"', windows_job)
+
+        required_gate = self.pr_workflow.split(
+            "\n  required-gate:", maxsplit=1
+        )[1]
+        self.assertIn("- windows-codex-runtime-test", required_gate)
+        self.assertIn("WINDOWS_CODEX_RESULT", required_gate)
+
     def test_release_contract_runs_for_ready_pr_queue_and_main(self):
         changes = _without_yaml_comments(
             self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(

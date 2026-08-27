@@ -79,6 +79,11 @@ pub fn filesystem_path_identity_key(path: &str) -> String {
 /// Success and EPERM both mean the process exists; ESRCH means it exited.
 /// Browser watch uses this through interface/system.rs before removing a stale port file.
 pub fn process_alive(pid: u32) -> bool {
+    // pid 0 would probe this process's own process group (always "alive");
+    // callers own non-zero pids, so guard the sentinel instead of reporting it.
+    if pid == 0 {
+        return false;
+    }
     // SAFETY: Signal 0 only queries process existence and is safe for any pid.
     if unsafe { libc::kill(pid as i32, 0) } == 0 {
         return true;

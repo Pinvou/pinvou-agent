@@ -387,6 +387,17 @@ function workspaceDisplayName(path) {
         };
         let result;
         try {
+          // Session and view channels are primary navigation (switch chat, new
+          // chat, main tab). When the native hide barrier fails after its
+          // retries they may publish without a successful hide ACK only while
+          // retaining a cleanup lease, rather than silently dropping the
+          // action; overlay/dock channels stay
+          // fail-closed so menus never open above a visible native page.
+          const transitionOptions = {
+            ...options,
+            degradeOnHideFailure: options?.degradeOnHideFailure
+              ?? (options?.channel === 'session' || options?.channel === 'view'),
+          };
           result = browserUiTransitionGateRef.current.run((transition) => {
             browserTransitionPublishingRef.current += 1;
             return settleBrowserUiPublicationAfterCommit({
@@ -402,7 +413,7 @@ function workspaceDisplayName(path) {
               },
               waitForCommit: requestBrowserUiCommitAck,
             });
-          }, options);
+          }, transitionOptions);
         } catch (error) {
           finishRequest();
           throw error;

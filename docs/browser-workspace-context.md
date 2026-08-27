@@ -1,6 +1,6 @@
-# Pinvou Agent
+# Browser workspace context
 
-Pinvou Agent is a desktop assistant organized around task conversations and work surfaces that open only when needed.
+Pinvou Agent is a desktop assistant organized around task conversations and work surfaces that open only when needed. This document fixes the shared vocabulary for the browser workspace; the decision record is in [`docs/adr/0023-native-three-platform-browser-workspace.md`](adr/0023-native-three-platform-browser-workspace.md) and the acceptance contract in [`docs/browser-workspace-acceptance.md`](browser-workspace-acceptance.md).
 
 ## Browser workspace
 

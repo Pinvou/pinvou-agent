@@ -260,6 +260,7 @@ export function ResizableSidePanel({
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
       document.removeEventListener('pointercancel', onCancel);
+      document.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('blur', onCancel);
       window.removeEventListener('resize', onCancel);
@@ -277,6 +278,15 @@ export function ResizableSidePanel({
       commitWidth(nextWidth, rootRect.width);
     };
     const onCancel = () => cleanup(true);
+    const onKeyDown = (event) => {
+      // WAI-ARIA splitter convention: Escape aborts the drag and restores the
+      // pre-drag width instead of committing the transient one.
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        onCancel();
+      }
+    };
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') onCancel();
     };
@@ -284,6 +294,7 @@ export function ResizableSidePanel({
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);
     document.addEventListener('pointercancel', onCancel);
+    document.addEventListener('keydown', onKeyDown);
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('blur', onCancel);
     window.addEventListener('resize', onCancel);

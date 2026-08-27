@@ -327,12 +327,10 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
     ) -> Result<Option<NativeWorkspaceRestore>, String> {
         let session_token = paths::browser_session_token(session_id);
         let path = paths::browser_workspace_restore_json(&session_token);
-        let encoded = match std::fs::read(&path) {
-            Ok(encoded) => encoded,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(format!("Failed to read browser restore manifest: {error}"));
-            }
+        let encoded = match crate::platform::filesystem::read_private_file_anchored(&path) {
+            Ok(Some(encoded)) => encoded,
+            Ok(None) => return Ok(None),
+            Err(error) => return Err(format!("Failed to read browser restore manifest: {error}")),
         };
         parse_restore_workspace(&encoded).map(Some)
     }
@@ -416,6 +414,13 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         let mut tab_tokens = Vec::with_capacity(restore.urls.len());
         let requires_automation_binding =
             automation_port.is_some() || self.platform.capabilities().agent_automation;
+        if requires_automation_binding {
+            // Old target mappings belong only to the previous process. Remove
+            // them before creating replacement WebViews, using the pinned
+            // workspace-state root so a hostile root swap cannot redirect the
+            // destructive operation.
+            remove_workspace_state_file(session_token)?;
+        }
         for url in &restore.urls {
             let tab_token = self.fresh_tab_token(&tab_tokens);
             let initial_url = if requires_automation_binding {
@@ -482,12 +487,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 prepare_generation: None,
             },
         );
-        if requires_automation_binding {
-            // Old target mappings belong only to the previous process. Do not
-            // write partial mappings or publish control/tabs events until every
-            // new WebView completes bind and navigation.
-            let _ = std::fs::remove_file(paths::browser_workspace_state_json(session_token));
-        } else {
+        if !requires_automation_binding {
             if let Err(error) = self.persist_workspace(session_id) {
                 if let Some(mut workspace) = self.workspaces.remove(session_id) {
                     if let Err(close_error) = close_workspace(app, &mut workspace) {
@@ -565,10 +565,11 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
     /// before retrying native close. The restore manifest remains authoritative;
     /// any close survivor is cleanup-only and cannot be mistaken for an
     /// `Existing` workspace by a later Prepare.
-    fn quarantine_workspace_for_failed_restore(&mut self, session_id: &str) {
+    fn quarantine_workspace_for_failed_restore(&mut self, session_id: &str) -> Result<(), String> {
         let Some(mut workspace) = self.workspaces.remove(session_id) else {
-            return;
+            return Ok(());
         };
+        let session_token = workspace.session_token.clone();
         let tokens = workspace
             .tabs
             .iter()
@@ -578,13 +579,14 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             .into_iter()
             .filter_map(|token| workspace.tabs.remove_token(&token).map(|(_, entry)| entry))
             .collect::<Vec<_>>();
-        let _ = std::fs::remove_file(paths::browser_workspace_state_json(
-            &workspace.session_token,
-        ));
         if self.active_session.as_deref() == Some(session_id) {
             self.active_session = None;
         }
         self.quarantine_entries(session_id, entries);
+        // Business visibility is revoked before the fallible durable cleanup.
+        // A failed delete therefore retains only cleanup-owned WebViews and can
+        // be retried without exposing the provisional restore as a workspace.
+        remove_workspace_state_file(&session_token)
     }
 
     fn reap_quarantined_for_session(
@@ -736,8 +738,12 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                     ));
                 }
             }
-            let _ = std::fs::remove_file(paths::browser_workspace_state_json(session_token));
-            return Err(error);
+            return match remove_workspace_state_file(session_token) {
+                Ok(()) => Err(error),
+                Err(cleanup_error) => Err(format!(
+                    "{error}; failed to remove browser workspace state after restore persistence failure: {cleanup_error}"
+                )),
+            };
         }
         if let Some(state) = self.control_state(session_id) {
             emit_control_changed(app, session_id, session_token, state);
@@ -2125,10 +2131,17 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         if !owns_workspace && !owns_quarantine {
             return Ok(self.has_sessions());
         }
+        if !owns_workspace {
+            // A prior attempt may already have moved every provisional WebView
+            // into cleanup-only quarantine before the durable runtime delete
+            // failed. Retry that exact deterministic state path before ACKing
+            // the compensation or reaping the remaining native children.
+            remove_workspace_state_file(&paths::browser_session_token(session_id))?;
+        }
         let app = app.ok_or_else(|| {
             "App handle is not ready; cannot reconcile failed browser restore".to_string()
         })?;
-        self.quarantine_workspace_for_failed_restore(session_id);
+        self.quarantine_workspace_for_failed_restore(session_id)?;
         self.reap_quarantined_for_session(app, session_id)?;
         Ok(self.has_sessions())
     }
@@ -2149,6 +2162,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             .keys()
             .any(|(owner_session, _)| owner_session == session_id);
         if !has_workspace && !has_staging && !has_quarantine {
+            remove_workspace_state_file(&paths::browser_session_token(session_id))?;
             if delete_restore {
                 remove_restore_file(&paths::browser_session_token(session_id))?;
             }
@@ -2180,9 +2194,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 .workspaces
                 .remove(session_id)
                 .expect("empty workspace remains protected by the same mutex during close");
-            let _ = std::fs::remove_file(paths::browser_workspace_state_json(
-                &workspace.session_token,
-            ));
+            if let Err(error) = remove_workspace_state_file(&workspace.session_token) {
+                errors.push(error);
+            }
             if delete_restore {
                 if let Err(error) = remove_restore_file(&workspace.session_token) {
                     errors.push(error);
@@ -2953,25 +2967,14 @@ fn persist_workspace_snapshot(workspace: &Workspace, revision: u64) -> Result<()
         .iter()
         .any(|tab| tab.automation_target.is_none())
     {
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(format!(
-                    "Failed to remove incomplete browser workspace state: {error}"
-                ));
-            }
-        }
+        remove_workspace_state_file(&workspace.session_token).map_err(|error| {
+            format!("Failed to remove incomplete browser workspace state: {error}")
+        })?;
         return Ok(());
     }
-    std::fs::create_dir_all(
-        path.parent()
-            .expect("workspace state file has a parent directory"),
-    )
-    .map_err(|e| format!("Failed to create browser workspace state directory: {e}"))?;
     let value = workspace_state_value_with_revision(workspace, revision);
     let encoded = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
-    crate::platform::filesystem::atomic_write(&path, &encoded)
+    crate::platform::filesystem::atomic_write_private_anchored(&path, &encoded)
         .map_err(|e| format!("Failed to write browser workspace state: {e}"))
 }
 
@@ -3039,12 +3042,6 @@ fn write_restore_workspace_file(
     {
         return Err("Browser restore manifest is invalid".to_string());
     }
-    let parent = path
-        .parent()
-        .expect("browser restore manifest has a parent directory");
-    std::fs::create_dir_all(parent)
-        .map_err(|error| format!("Failed to create browser restore directory: {error}"))?;
-    crate::platform::os::make_private_dir(parent);
     let tabs = restore
         .urls
         .iter()
@@ -3056,18 +3053,24 @@ fn write_restore_workspace_file(
         "tabs": tabs,
     }))
     .map_err(|error| format!("Failed to encode browser restore manifest: {error}"))?;
-    crate::platform::filesystem::atomic_write_private(path, &encoded)
+    crate::platform::filesystem::atomic_write_private_anchored(path, &encoded)
         .map_err(|error| format!("Failed to write browser restore manifest: {error}"))
 }
 
+fn remove_workspace_state_file(session_token: &str) -> Result<(), String> {
+    crate::platform::filesystem::remove_private_file_anchored(&paths::browser_workspace_state_json(
+        session_token,
+    ))
+    .map(|_| ())
+    .map_err(|error| format!("Failed to delete browser workspace state: {error}"))
+}
+
 fn remove_restore_file(session_token: &str) -> Result<(), String> {
-    match std::fs::remove_file(paths::browser_workspace_restore_json(session_token)) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!(
-            "Failed to delete browser restore manifest: {error}"
-        )),
-    }
+    crate::platform::filesystem::remove_private_file_anchored(
+        &paths::browser_workspace_restore_json(session_token),
+    )
+    .map(|_| ())
+    .map_err(|error| format!("Failed to delete browser restore manifest: {error}"))
 }
 
 /// Finish a Prepare compensation after its process-local workspace is already
@@ -4201,6 +4204,27 @@ mod tests {
         initialized: bool,
     }
 
+    struct TestHomeGuard {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl TestHomeGuard {
+        fn install(path: &Path) -> Self {
+            let previous = std::env::var_os("PINVOU3_HOME");
+            std::env::set_var("PINVOU3_HOME", path);
+            Self { previous }
+        }
+    }
+
+    impl Drop for TestHomeGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("PINVOU3_HOME", value),
+                None => std::env::remove_var("PINVOU3_HOME"),
+            }
+        }
+    }
+
     impl PlatformWebviewConfig for TestPlatform {
         const ACTIVATION_READY: bool = true;
 
@@ -4724,6 +4748,11 @@ mod tests {
 
     #[test]
     fn post_build_restore_close_failure_moves_survivors_out_of_business_state() {
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = TestHomeGuard::install(temp.path());
         let mut surface = surface_with_workspace("session-a");
         surface
             .workspaces
@@ -4741,7 +4770,9 @@ mod tests {
 
         // Model a bind/navigation/persist failure after all restore WebViews
         // were built (and possibly tentatively published).
-        surface.quarantine_workspace_for_failed_restore("session-a");
+        surface
+            .quarantine_workspace_for_failed_restore("session-a")
+            .unwrap();
         assert!(!surface.has_session("session-a"));
         assert!(surface.owns_session_resources("session-a"));
         assert!(surface
@@ -4773,6 +4804,110 @@ mod tests {
             Ok(())
         );
         assert!(!surface.owns_session_resources("session-a"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn durable_workspace_operations_reject_replaced_roots_without_touching_targets() {
+        use std::os::unix::fs::symlink;
+
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = TestHomeGuard::install(temp.path());
+
+        let mut surface = surface_with_workspace("session-a");
+        let runtime_path = paths::browser_workspace_state_json("0123456789abcdef");
+        let runtime_root = runtime_path.parent().unwrap();
+        std::fs::create_dir_all(runtime_root.parent().unwrap()).unwrap();
+        let external_runtime = temp.path().join("external-runtime");
+        std::fs::create_dir_all(&external_runtime).unwrap();
+        let runtime_sentinel = external_runtime.join(runtime_path.file_name().unwrap());
+        std::fs::write(&runtime_sentinel, b"outside-runtime-must-remain").unwrap();
+        symlink(&external_runtime, runtime_root).unwrap();
+
+        let workspace = surface.workspaces.get_mut("session-a").unwrap();
+        assert!(persist_workspace_snapshot(workspace, 1).is_err());
+        workspace
+            .tabs
+            .by_token_mut("0123456789abcdef")
+            .unwrap()
+            .automation_target = Some("target-a".to_string());
+        assert!(persist_workspace_snapshot(workspace, 1).is_err());
+        let error = surface
+            .quarantine_workspace_for_failed_restore("session-a")
+            .unwrap_err();
+        assert!(error.contains("workspace state"));
+        assert!(!surface.has_session("session-a"));
+        assert!(surface.owns_session_resources("session-a"));
+        assert_eq!(
+            std::fs::read(&runtime_sentinel).unwrap(),
+            b"outside-runtime-must-remain"
+        );
+        std::fs::remove_file(runtime_root).unwrap();
+
+        let restore_token = paths::browser_session_token("session-a");
+        let restore_path = paths::browser_workspace_restore_json(&restore_token);
+        let restore_root = restore_path.parent().unwrap();
+        std::fs::create_dir_all(restore_root.parent().unwrap()).unwrap();
+        let external_restore = temp.path().join("external-restore");
+        std::fs::create_dir_all(&external_restore).unwrap();
+        let restore_sentinel = external_restore.join(restore_path.file_name().unwrap());
+        std::fs::write(&restore_sentinel, b"outside-restore-must-remain").unwrap();
+        symlink(&external_restore, restore_root).unwrap();
+        let restore = NativeWorkspaceRestore {
+            urls: vec!["https://example.com/".to_string()],
+            active_index: 0,
+        };
+
+        assert!(
+            DesktopBrowserSurface::<TestPlatform>::read_restore_workspace("session-a").is_err()
+        );
+        assert!(
+            DesktopBrowserSurface::<TestPlatform>::write_restore_workspace("session-a", &restore)
+                .is_err()
+        );
+        assert!(remove_restore_file(&restore_token).is_err());
+        assert_eq!(
+            std::fs::read(&restore_sentinel).unwrap(),
+            b"outside-restore-must-remain"
+        );
+    }
+
+    #[test]
+    fn quarantined_restore_retry_repeats_durable_runtime_delete_before_ack() {
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = TestHomeGuard::install(temp.path());
+        let session_id = "retry-quarantined-restore";
+        let session_token = paths::browser_session_token(session_id);
+        let runtime_path = paths::browser_workspace_state_json(&session_token);
+        let mut surface = surface_with_workspace(session_id);
+        surface
+            .workspaces
+            .get_mut(session_id)
+            .unwrap()
+            .session_token = session_token;
+
+        surface
+            .quarantine_workspace_for_failed_restore(session_id)
+            .unwrap();
+        crate::platform::filesystem::atomic_write_private_anchored(
+            &runtime_path,
+            b"stale-after-first-delete-failure",
+        )
+        .unwrap();
+
+        let error = surface
+            .quarantine_failed_restore(None, session_id)
+            .unwrap_err();
+        assert!(error.contains("App handle is not ready"));
+        assert!(!runtime_path.exists());
+        assert!(!surface.has_session(session_id));
+        assert!(surface.owns_session_resources(session_id));
     }
 
     #[test]

@@ -83,6 +83,7 @@ export function createNativeSurfaceTransitionGate({
       hideMode = 'visible',
       guardSession = true,
       serialize = false,
+      degradeOnHideFailure = false,
     } = {}) {
       if (typeof publish !== 'function') throw new TypeError('publish must be a function');
       const ticket = issue(channel);
@@ -96,7 +97,23 @@ export function createNativeSurfaceTransitionGate({
       }
 
       const hideReady = shouldHide
-        ? Promise.resolve().then(() => acquireHide(context.sessionId))
+        ? Promise.resolve()
+          .then(() => acquireHide(context.sessionId, {
+            retainOnFailure: degradeOnHideFailure,
+          }))
+          .then((lease) => {
+            if (!lease?.degraded) return lease;
+            if (!degradeOnHideFailure || typeof lease.release !== 'function') {
+              release(lease);
+              throw lease.error || new Error('native surface hide failed without cleanup lease');
+            }
+            // Primary navigation may publish only when the native coordinator
+            // retains an owner that blocks every show until React commit and
+            // whose release performs a fresh hide attempt. A bare rejection or
+            // null lease remains fail-closed.
+            onError(lease.error || new Error('native surface hide failed'), { degraded: true });
+            return lease;
+          })
         : Promise.resolve(null);
       const predecessor = serialize
         ? (channelTails.get(channel) || Promise.resolve())
@@ -161,6 +178,76 @@ export async function settleBrowserUiPublicationAfterCommit({
 
   if (publicationRejected) throw publicationError;
   return value;
+}
+
+export function isFailedNativeSurfaceHideGenerationCurrent({
+  transitionOwnerPresent,
+  capturedSessionId,
+  currentSessionId,
+  desired,
+  phase,
+  pending,
+}) {
+  return transitionOwnerPresent
+    && capturedSessionId === currentSessionId
+    && desired === 'hide'
+    && phase === 'unknown'
+    && !pending;
+}
+
+// Preserve the transition owner after a primary navigation's first hide budget
+// is exhausted. React publication can proceed, but no BrowserView may show
+// until the commit releases this lease and its fresh cleanup attempt settles.
+export function createDegradedNativeSurfaceHideLease({
+  error,
+  isRetryCurrent,
+  retryHide,
+  releaseOwner,
+  onRetryError = () => {},
+}) {
+  if (typeof isRetryCurrent !== 'function') {
+    throw new TypeError('isRetryCurrent must be a function');
+  }
+  if (typeof retryHide !== 'function') throw new TypeError('retryHide must be a function');
+  if (typeof releaseOwner !== 'function') {
+    throw new TypeError('releaseOwner must be a function');
+  }
+  if (typeof onRetryError !== 'function') throw new TypeError('onRetryError must be a function');
+
+  let cleanupPromise = null;
+  const notifyRetryError = (retryError) => {
+    try {
+      onRetryError(retryError);
+    } catch {
+      // Diagnostics must not turn best-effort cleanup into an unhandled rejection.
+    }
+  };
+  return {
+    degraded: true,
+    error,
+    release() {
+      if (cleanupPromise) return cleanupPromise;
+      cleanupPromise = Promise.resolve()
+        .then(async () => {
+          if (!isRetryCurrent()) return false;
+          try {
+            await retryHide();
+            return true;
+          } catch (retryError) {
+            notifyRetryError(retryError);
+            return false;
+          }
+        })
+        .finally(() => {
+          try {
+            releaseOwner();
+          } catch (releaseError) {
+            notifyRetryError(releaseError);
+          }
+        });
+      return cleanupPromise;
+    },
+  };
 }
 
 // Native hide IPC can fail transiently while the platform host is being

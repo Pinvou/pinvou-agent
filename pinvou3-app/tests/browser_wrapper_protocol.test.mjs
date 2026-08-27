@@ -299,6 +299,14 @@ const EXTRACTION_URL = new URL(
   '../src-tauri/src/features/runtime_bundle/platform/extraction.rs',
   import.meta.url,
 );
+const WRAPPER_PROTOCOL_URL = new URL(
+  '../src-tauri/resources/common/bundle/mcp-servers/browser-wrapper-protocol.mjs',
+  import.meta.url,
+);
+const BROWSER_MOD_URL = new URL(
+  '../src-tauri/src/features/browser/mod.rs',
+  import.meta.url,
+);
 
 test('persisted browser last-error codes stay synchronized across JavaScript and Rust', () => {
   assert.equal(Object.isFrozen(PERSISTED_BROWSER_LAST_ERROR_CODES), true);
@@ -1820,6 +1828,51 @@ test('in-app navigation rejects local-file and script schemes', () => {
   assert.equal(isAllowedBrowserUrl('javascript:alert(1)'), false);
   assert.equal(isAllowedBrowserUrl('data:text/html,unsafe'), false);
   assert.equal(isAllowedBrowserUrl('example.com'), false);
+});
+
+test('in-app navigation mirrors the Rust reserved-origin gate', () => {
+  // The privileged release origin must never be reachable as a tab URL.
+  assert.equal(isAllowedBrowserUrl('http://tauri.localhost/index.html'), false);
+  assert.equal(isAllowedBrowserUrl('https://Tauri.LocalHost/app'), false);
+  // The Vite dev origin is reserved; other loopback ports stay allowed for
+  // local previews.
+  assert.equal(isAllowedBrowserUrl('http://localhost:1420/'), false);
+  assert.equal(isAllowedBrowserUrl('http://127.0.0.1:1420/'), false);
+  assert.equal(isAllowedBrowserUrl('http://[::1]:1420/'), false);
+  assert.equal(isAllowedBrowserUrl('http://localhost:1421/'), true);
+  assert.equal(isAllowedBrowserUrl('http://localhost:5173/'), true);
+  // A public site coincidentally named like the release origin is fine.
+  assert.equal(isAllowedBrowserUrl('https://tauri.localhost.example.com/'), true);
+});
+
+test('observational browser tool allowlist stays synchronized across JavaScript and Rust', () => {
+  // Rust treats exactly these tools as observational (no user-navigation
+  // suppression); the wrapper classifies mutation for the same purpose. The
+  // lists live in two languages, so pin them textually the same way the
+  // last-error contract does.
+  const wrapperSource = readFileSync(WRAPPER_PROTOCOL_URL, 'utf8');
+  const jsSetStart = wrapperSource.indexOf('const NON_MUTATING_BROWSER_TOOLS = new Set([');
+  const jsSetEnd = wrapperSource.indexOf(']);', jsSetStart);
+  assert.ok(jsSetStart >= 0 && jsSetEnd > jsSetStart, 'JS allowlist must be enumerable');
+  const jsTools = [...wrapperSource
+    .slice(jsSetStart, jsSetEnd)
+    .matchAll(/'([^']+)'/g)]
+    .map((match) => match[1]);
+
+  const rustSource = readFileSync(BROWSER_MOD_URL, 'utf8');
+  const rustFnStart = rustSource.indexOf('fn browser_core_tool_is_observational');
+  const rustLastTool = rustSource.indexOf('"performance_analyze_insight"', rustFnStart);
+  const rustFnEnd = rustSource.indexOf('}', rustLastTool);
+  assert.ok(rustFnStart >= 0 && rustFnEnd > rustFnStart, 'Rust allowlist must be enumerable');
+  const rustTools = [...rustSource
+    .slice(rustFnStart, rustFnEnd)
+    .matchAll(/"([^"]+)"/g)]
+    .map((match) => match[1]);
+
+  const byCodePoint = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  assert.deepEqual(jsTools.sort(byCodePoint), rustTools.sort(byCodePoint));
+  assert.equal(new Set(jsTools).size, jsTools.length);
+  assert.ok(jsTools.length >= 8, 'allowlist unexpectedly shrank');
 });
 
 test('navigate_page with url and omitted type still uses the strict URL allowlist', () => {

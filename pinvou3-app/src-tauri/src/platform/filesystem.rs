@@ -2,6 +2,12 @@ use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+extern crate libc as platform_libc;
+
 // The anchored directory ABI below is intentionally limited to the Unix
 // targets shipped by the desktop app. Other targets are rejected explicitly
 // instead of guessing their libc `dirent` layout or using unsafe path fallback.
@@ -50,36 +56,53 @@ mod libc {
         assert!(std::mem::size_of::<Dirent>() == 280);
     };
 
-    pub(crate) const O_RDONLY: c_int = 0;
-    pub(crate) const O_RDWR: c_int = 2;
+    // Use the target libc's values rather than transcribing one architecture's
+    // ABI. In particular, Linux/aarch64 assigns O_DIRECTORY and O_NOFOLLOW
+    // different bits than Linux/x86_64.
+    pub(crate) const O_RDONLY: c_int = super::platform_libc::O_RDONLY;
+    pub(crate) const O_RDWR: c_int = super::platform_libc::O_RDWR;
+    pub(crate) const O_CREAT: c_int = super::platform_libc::O_CREAT;
+    pub(crate) const O_EXCL: c_int = super::platform_libc::O_EXCL;
+    pub(crate) const O_CLOEXEC: c_int = super::platform_libc::O_CLOEXEC;
+    pub(crate) const O_NOFOLLOW: c_int = super::platform_libc::O_NOFOLLOW;
+    pub(crate) const O_DIRECTORY: c_int = super::platform_libc::O_DIRECTORY;
+    pub(crate) const O_NONBLOCK: c_int = super::platform_libc::O_NONBLOCK;
+    pub(crate) const AT_REMOVEDIR: c_int = super::platform_libc::AT_REMOVEDIR;
     #[cfg(target_os = "macos")]
-    pub(crate) const O_CREAT: c_int = 0x0200;
+    pub(crate) const RENAME_EXCL: u32 = 0x0000_0004;
     #[cfg(not(target_os = "macos"))]
-    pub(crate) const O_CREAT: c_int = 0x0040;
+    pub(crate) const RENAME_NOREPLACE: u32 = 0x0000_0001;
     #[cfg(target_os = "macos")]
-    pub(crate) const O_EXCL: c_int = 0x0800;
+    pub(crate) type ModeT = u16;
     #[cfg(not(target_os = "macos"))]
-    pub(crate) const O_EXCL: c_int = 0x0080;
-    #[cfg(target_os = "macos")]
-    pub(crate) const O_CLOEXEC: c_int = 0x0100_0000;
-    #[cfg(not(target_os = "macos"))]
-    pub(crate) const O_CLOEXEC: c_int = 0x0008_0000;
-    #[cfg(target_os = "macos")]
-    pub(crate) const O_NOFOLLOW: c_int = 0x0100;
-    #[cfg(not(target_os = "macos"))]
-    pub(crate) const O_NOFOLLOW: c_int = 0x0002_0000;
-    #[cfg(target_os = "macos")]
-    pub(crate) const O_DIRECTORY: c_int = 0x0010_0000;
-    #[cfg(not(target_os = "macos"))]
-    pub(crate) const O_DIRECTORY: c_int = 0x0001_0000;
-    #[cfg(target_os = "macos")]
-    pub(crate) const O_NONBLOCK: c_int = 0x0004;
-    #[cfg(not(target_os = "macos"))]
-    pub(crate) const O_NONBLOCK: c_int = 0x0800;
+    pub(crate) type ModeT = u32;
 
     unsafe extern "C" {
         pub(crate) fn open(path: *const c_char, flags: c_int, ...) -> c_int;
         pub(crate) fn openat(directory: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
+        pub(crate) fn mkdirat(directory: c_int, path: *const c_char, mode: ModeT) -> c_int;
+        pub(crate) fn renameat(
+            source_directory: c_int,
+            source: *const c_char,
+            destination_directory: c_int,
+            destination: *const c_char,
+        ) -> c_int;
+        #[cfg(target_os = "linux")]
+        pub(crate) fn renameat2(
+            source_directory: c_int,
+            source: *const c_char,
+            destination_directory: c_int,
+            destination: *const c_char,
+            flags: u32,
+        ) -> c_int;
+        #[cfg(target_os = "macos")]
+        pub(crate) fn renameatx_np(
+            source_directory: c_int,
+            source: *const c_char,
+            destination_directory: c_int,
+            destination: *const c_char,
+            flags: u32,
+        ) -> c_int;
         pub(crate) fn unlinkat(directory: c_int, path: *const c_char, flags: c_int) -> c_int;
         pub(crate) fn close(fd: c_int) -> c_int;
         #[cfg_attr(
@@ -375,7 +398,72 @@ pub(crate) struct PrivateFileDirectory {
 ))]
 pub(crate) fn open_private_file_directory(path: &Path) -> io::Result<PrivateFileDirectory> {
     let expected = ensure_private_real_directory(path)?;
-    open_private_file_directory_impl(expected)
+    let directory = open_private_file_directory_impl(expected)?;
+    directory.enforce_private_permissions()?;
+    Ok(directory)
+}
+
+#[cfg(any(
+    windows,
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+pub(crate) fn open_existing_private_file_directory(
+    path: &Path,
+) -> io::Result<Option<PrivateFileDirectory>> {
+    let expected = match real_directory_identity(path) {
+        Ok(expected) => expected,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let directory = open_private_file_directory_impl(expected)?;
+    directory.enforce_private_permissions()?;
+    Ok(Some(directory))
+}
+
+fn private_file_parent_and_name(path: &Path) -> io::Result<(&Path, &std::ffi::OsStr)> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "private file has no parent"))?;
+    let name = path.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "private file has no filename")
+    })?;
+    Ok((parent, name))
+}
+
+/// Read a regular private file without following the final component or a
+/// replaced parent directory. The directory handle remains pinned until the
+/// complete file body has been read.
+pub(crate) fn read_private_file_anchored(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    use std::io::Read as _;
+
+    let (parent, name) = private_file_parent_and_name(path)?;
+    let Some(directory) = open_existing_private_file_directory(parent)? else {
+        return Ok(None);
+    };
+    let Some(mut file) = directory.open_plain_file(name)? else {
+        return Ok(None);
+    };
+    let mut content = Vec::new();
+    file.read_to_end(&mut content)?;
+    Ok(Some(content))
+}
+
+/// Atomically replace a private file relative to a pinned directory object.
+/// Creating or renaming the visible parent path cannot redirect this write.
+pub(crate) fn atomic_write_private_anchored(path: &Path, content: &[u8]) -> io::Result<()> {
+    let (parent, name) = private_file_parent_and_name(path)?;
+    open_private_file_directory(parent)?.atomic_write_private_file(name, content)
+}
+
+/// Remove a regular private file relative to a pinned directory object. A
+/// missing directory or file is idempotent success (`false`).
+pub(crate) fn remove_private_file_anchored(path: &Path) -> io::Result<bool> {
+    let (parent, name) = private_file_parent_and_name(path)?;
+    let Some(directory) = open_existing_private_file_directory(parent)? else {
+        return Ok(false);
+    };
+    directory.remove_plain_file(name)
 }
 
 // unsupported-private-file-directory:start
@@ -405,6 +493,17 @@ pub(crate) fn open_private_file_directory(_path: &Path) -> io::Result<PrivateFil
     target_os = "macos",
     all(target_os = "linux", target_pointer_width = "64")
 )))]
+pub(crate) fn open_existing_private_file_directory(
+    _path: &Path,
+) -> io::Result<Option<PrivateFileDirectory>> {
+    private_file_directory_unsupported()
+}
+
+#[cfg(not(any(
+    windows,
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+)))]
 pub(crate) fn ensure_private_real_directory(_path: &Path) -> io::Result<RealDirectoryIdentity> {
     private_file_directory_unsupported()
 }
@@ -424,6 +523,49 @@ impl PrivateFileDirectory {
     }
 
     pub(crate) fn remove_plain_file(&self, _name: &std::ffi::OsStr) -> io::Result<bool> {
+        private_file_directory_unsupported()
+    }
+
+    pub(crate) fn metadata(&self) -> io::Result<std::fs::Metadata> {
+        private_file_directory_unsupported()
+    }
+
+    pub(crate) fn open_child_directory(
+        &self,
+        _name: &std::ffi::OsStr,
+    ) -> io::Result<PrivateFileDirectory> {
+        private_file_directory_unsupported()
+    }
+
+    pub(crate) fn create_private_child_directory(
+        &self,
+        _name: &std::ffi::OsStr,
+    ) -> io::Result<PrivateFileDirectory> {
+        private_file_directory_unsupported()
+    }
+
+    pub(crate) fn open_plain_file(&self, _name: &std::ffi::OsStr) -> io::Result<Option<File>> {
+        private_file_directory_unsupported()
+    }
+
+    pub(crate) fn atomic_write_private_file(
+        &self,
+        _name: &std::ffi::OsStr,
+        _content: &[u8],
+    ) -> io::Result<()> {
+        private_file_directory_unsupported()
+    }
+
+    pub(crate) fn move_plain_file_to(
+        &self,
+        _source_name: &std::ffi::OsStr,
+        _destination: &PrivateFileDirectory,
+        _destination_name: &std::ffi::OsStr,
+    ) -> io::Result<MovePlainFileOutcome> {
+        private_file_directory_unsupported()
+    }
+
+    pub(crate) fn remove_empty_child_directory(&self, _name: &std::ffi::OsStr) -> io::Result<bool> {
         private_file_directory_unsupported()
     }
 }
@@ -533,6 +675,23 @@ fn open_private_file_directory_impl(
     all(target_os = "linux", target_pointer_width = "64")
 ))]
 impl PrivateFileDirectory {
+    fn enforce_private_permissions(&self) -> io::Result<()> {
+        #[cfg(any(
+            target_os = "macos",
+            all(target_os = "linux", target_pointer_width = "64")
+        ))]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let metadata = self.directory_handle.metadata()?;
+            if metadata.permissions().mode() & 0o777 != 0o700 {
+                self.directory_handle
+                    .set_permissions(std::fs::Permissions::from_mode(0o700))?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn entry_names(&self) -> io::Result<Vec<std::ffi::OsString>> {
         entry_names_impl(self)
     }
@@ -549,6 +708,66 @@ impl PrivateFileDirectory {
         validate_private_file_name(name)?;
         remove_plain_file_impl(self, name)
     }
+
+    pub(crate) fn metadata(&self) -> io::Result<std::fs::Metadata> {
+        directory_metadata_impl(self)
+    }
+
+    pub(crate) fn open_child_directory(
+        &self,
+        name: &std::ffi::OsStr,
+    ) -> io::Result<PrivateFileDirectory> {
+        validate_private_file_name(name)?;
+        open_child_directory_impl(self, name)
+    }
+
+    pub(crate) fn create_private_child_directory(
+        &self,
+        name: &std::ffi::OsStr,
+    ) -> io::Result<PrivateFileDirectory> {
+        validate_private_file_name(name)?;
+        create_private_child_directory_impl(self, name)
+    }
+
+    pub(crate) fn open_plain_file(&self, name: &std::ffi::OsStr) -> io::Result<Option<File>> {
+        validate_private_file_name(name)?;
+        open_plain_file_impl(self, name)
+    }
+
+    /// Atomically replace one private regular file relative to this pinned
+    /// directory. The temporary file and final rename never re-resolve the
+    /// directory path, so replacing the visible root cannot redirect the write.
+    pub(crate) fn atomic_write_private_file(
+        &self,
+        name: &std::ffi::OsStr,
+        content: &[u8],
+    ) -> io::Result<()> {
+        validate_private_file_name(name)?;
+        atomic_write_private_file_impl(self, name, content)
+    }
+
+    pub(crate) fn move_plain_file_to(
+        &self,
+        source_name: &std::ffi::OsStr,
+        destination: &PrivateFileDirectory,
+        destination_name: &std::ffi::OsStr,
+    ) -> io::Result<MovePlainFileOutcome> {
+        validate_private_file_name(source_name)?;
+        validate_private_file_name(destination_name)?;
+        move_plain_file_to_impl(self, source_name, destination, destination_name)
+    }
+
+    pub(crate) fn remove_empty_child_directory(&self, name: &std::ffi::OsStr) -> io::Result<bool> {
+        validate_private_file_name(name)?;
+        remove_empty_child_directory_impl(self, name)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MovePlainFileOutcome {
+    Missing,
+    AlreadyMoved,
+    Moved,
 }
 
 #[cfg(any(
@@ -571,6 +790,573 @@ fn validate_private_file_name(name: &std::ffi::OsStr) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn directory_metadata_impl(directory: &PrivateFileDirectory) -> io::Result<std::fs::Metadata> {
+    directory.directory_handle.metadata()
+}
+
+#[cfg(windows)]
+fn directory_metadata_impl(directory: &PrivateFileDirectory) -> io::Result<std::fs::Metadata> {
+    directory
+        ._component_handles
+        .last()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "directory has no handle"))?
+        .metadata()
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn open_child_directory_impl(
+    directory: &PrivateFileDirectory,
+    name: &std::ffi::OsStr,
+) -> io::Result<PrivateFileDirectory> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+
+    let name = unix_name(name)?;
+    let fd = unsafe {
+        libc::openat(
+            directory.directory_handle.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let child = PrivateFileDirectory {
+        directory_handle: unsafe { File::from_raw_fd(fd) },
+    };
+    child.enforce_private_permissions()?;
+    Ok(child)
+}
+
+#[cfg(windows)]
+fn open_child_directory_impl(
+    directory: &PrivateFileDirectory,
+    name: &std::ffi::OsStr,
+) -> io::Result<PrivateFileDirectory> {
+    let path = directory.canonical_path.join(name);
+    open_existing_private_file_directory(&path)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("private child directory is missing: {}", path.display()),
+        )
+    })
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn create_private_child_directory_impl(
+    directory: &PrivateFileDirectory,
+    name: &std::ffi::OsStr,
+) -> io::Result<PrivateFileDirectory> {
+    use std::os::fd::AsRawFd as _;
+
+    let name_c = unix_name(name)?;
+    if unsafe {
+        libc::mkdirat(
+            directory.directory_handle.as_raw_fd(),
+            name_c.as_ptr(),
+            0o700 as libc::ModeT,
+        )
+    } != 0
+    {
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::AlreadyExists {
+            return Err(error);
+        }
+    }
+    open_child_directory_impl(directory, name)
+}
+
+#[cfg(windows)]
+fn create_private_child_directory_impl(
+    directory: &PrivateFileDirectory,
+    name: &std::ffi::OsStr,
+) -> io::Result<PrivateFileDirectory> {
+    let path = directory.canonical_path.join(name);
+    match std::fs::create_dir(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    open_child_directory_impl(directory, name)
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn open_plain_file_impl(
+    directory: &PrivateFileDirectory,
+    name: &std::ffi::OsStr,
+) -> io::Result<Option<File>> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+
+    let name = unix_name(name)?;
+    let fd = unsafe {
+        libc::openat(
+            directory.directory_handle.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if fd < 0 {
+        let error = io::Error::last_os_error();
+        return if error.kind() == io::ErrorKind::NotFound {
+            Ok(None)
+        } else {
+            Err(error)
+        };
+    }
+    let file = unsafe { File::from_raw_fd(fd) };
+    if !unix_named_file_matches(directory, &name, &file)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "private entry is not one stable regular file",
+        ));
+    }
+    Ok(Some(file))
+}
+
+#[cfg(windows)]
+fn open_plain_file_impl(
+    directory: &PrivateFileDirectory,
+    name: &std::ffi::OsStr,
+) -> io::Result<Option<File>> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE,
+    };
+
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .access_mode(FILE_GENERIC_READ)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let file = match options.open(directory.canonical_path.join(name)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !metadata_is_plain_file(&file.metadata()?) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "private entry is a reparse point or non-file",
+        ));
+    }
+    Ok(Some(file))
+}
+
+fn private_atomic_temp_name() -> std::ffi::OsString {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!(
+        ".pinvou-private-write-{}-{timestamp}-{sequence}.tmp",
+        std::process::id()
+    )
+    .into()
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn atomic_write_private_file_impl(
+    directory: &PrivateFileDirectory,
+    name: &std::ffi::OsStr,
+    content: &[u8],
+) -> io::Result<()> {
+    use std::io::Write as _;
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+
+    let destination = unix_name(name)?;
+    let (temporary_name, mut temporary_file) = loop {
+        let temporary_name = private_atomic_temp_name();
+        let temporary_name_c = unix_name(&temporary_name)?;
+        let fd = unsafe {
+            libc::openat(
+                directory.directory_handle.as_raw_fd(),
+                temporary_name_c.as_ptr(),
+                libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                // C variadic arguments apply integer promotion. On macOS,
+                // mode_t is u16, so pass the promoted unsigned-int value.
+                0o600 as std::os::raw::c_uint,
+            )
+        };
+        if fd >= 0 {
+            break (temporary_name, unsafe { File::from_raw_fd(fd) });
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::AlreadyExists {
+            return Err(error);
+        }
+    };
+    let temporary_name_c = unix_name(&temporary_name)?;
+    let cleanup_temporary = || unsafe {
+        libc::unlinkat(
+            directory.directory_handle.as_raw_fd(),
+            temporary_name_c.as_ptr(),
+            0,
+        )
+    };
+    if let Err(error) = temporary_file
+        .write_all(content)
+        .and_then(|()| temporary_file.sync_all())
+    {
+        drop(temporary_file);
+        cleanup_temporary();
+        return Err(error);
+    }
+    if unsafe {
+        libc::renameat(
+            directory.directory_handle.as_raw_fd(),
+            temporary_name_c.as_ptr(),
+            directory.directory_handle.as_raw_fd(),
+            destination.as_ptr(),
+        )
+    } != 0
+    {
+        let error = io::Error::last_os_error();
+        drop(temporary_file);
+        cleanup_temporary();
+        return Err(error);
+    }
+    directory.directory_handle.sync_all()
+}
+
+#[cfg(windows)]
+fn atomic_write_private_file_impl(
+    directory: &PrivateFileDirectory,
+    name: &std::ffi::OsStr,
+    content: &[u8],
+) -> io::Result<()> {
+    use std::io::Write as _;
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileRenameInfo, SetFileInformationByHandle, DELETE, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let (temporary_name, mut temporary_file) = loop {
+        let temporary_name = private_atomic_temp_name();
+        let mut options = std::fs::OpenOptions::new();
+        options
+            .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE)
+            .create_new(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        match options.open(directory.canonical_path.join(&temporary_name)) {
+            Ok(file) => break (temporary_name, file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    };
+    if !metadata_is_plain_file(&temporary_file.metadata()?) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "created private temporary file is a reparse point or non-file",
+        ));
+    }
+    if let Err(error) = temporary_file
+        .write_all(content)
+        .and_then(|()| temporary_file.sync_all())
+    {
+        let _ = mark_windows_file_handle_for_deletion(&temporary_file);
+        return Err(error);
+    }
+
+    let expected = windows_file_identity(&temporary_file)?;
+    let destination_handle = directory
+        ._component_handles
+        .last()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "directory has no handle"))?;
+    let destination_name_wide = name.encode_wide().collect::<Vec<_>>();
+    let header_size = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+    let buffer_size = header_size
+        .checked_add(
+            destination_name_wide
+                .len()
+                .saturating_mul(std::mem::size_of::<u16>()),
+        )
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "filename is too long"))?;
+    let mut rename_buffer = vec![0_usize; buffer_size.div_ceil(std::mem::size_of::<usize>())];
+    let rename_info = rename_buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    unsafe {
+        (*rename_info).Anonymous.ReplaceIfExists = true;
+        (*rename_info).RootDirectory = destination_handle.as_raw_handle();
+        (*rename_info).FileNameLength =
+            u32::try_from(destination_name_wide.len().saturating_mul(2))
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "filename is too long"))?;
+        std::ptr::copy_nonoverlapping(
+            destination_name_wide.as_ptr(),
+            (*rename_info).FileName.as_mut_ptr(),
+            destination_name_wide.len(),
+        );
+        if SetFileInformationByHandle(
+            temporary_file.as_raw_handle(),
+            FileRenameInfo,
+            rename_info.cast(),
+            u32::try_from(buffer_size).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "rename buffer is too large")
+            })?,
+        ) == 0
+        {
+            let error = io::Error::last_os_error();
+            let _ = mark_windows_file_handle_for_deletion(&temporary_file);
+            return Err(error);
+        }
+    }
+    let moved = directory
+        .open_plain_file(name)?
+        .ok_or_else(|| io::Error::other("atomically written private file is not visible"))?;
+    if expected != windows_file_identity(&moved)? {
+        return Err(io::Error::other(
+            "private file identity changed during anchored atomic write",
+        ));
+    }
+    drop(temporary_name);
+    Ok(())
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn move_plain_file_to_impl(
+    source: &PrivateFileDirectory,
+    source_name: &std::ffi::OsStr,
+    destination: &PrivateFileDirectory,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<MovePlainFileOutcome> {
+    use std::os::fd::AsRawFd as _;
+
+    let source_file = source.open_plain_file(source_name)?;
+    let destination_file = destination.open_plain_file(destination_name)?;
+    match (source_file.as_ref(), destination_file.as_ref()) {
+        (None, None) => return Ok(MovePlainFileOutcome::Missing),
+        (None, Some(_)) => return Ok(MovePlainFileOutcome::AlreadyMoved),
+        (Some(_), Some(_)) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "both source and destination private files exist",
+            ))
+        }
+        (Some(_), None) => {}
+    }
+    let source_name_c = unix_name(source_name)?;
+    let destination_name_c = unix_name(destination_name)?;
+    #[cfg(target_os = "linux")]
+    let rename_result = unsafe {
+        libc::renameat2(
+            source.directory_handle.as_raw_fd(),
+            source_name_c.as_ptr(),
+            destination.directory_handle.as_raw_fd(),
+            destination_name_c.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    #[cfg(target_os = "macos")]
+    let rename_result = unsafe {
+        libc::renameatx_np(
+            source.directory_handle.as_raw_fd(),
+            source_name_c.as_ptr(),
+            destination.directory_handle.as_raw_fd(),
+            destination_name_c.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    if rename_result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let moved = destination
+        .open_plain_file(destination_name)?
+        .ok_or_else(|| io::Error::other("moved private file is not visible"))?;
+    let source_file = source_file.expect("source file checked above");
+    use std::os::unix::fs::MetadataExt as _;
+    let expected = source_file.metadata()?;
+    let actual = moved.metadata()?;
+    if expected.dev() != actual.dev() || expected.ino() != actual.ino() {
+        return Err(io::Error::other(
+            "private file identity changed during anchored rename",
+        ));
+    }
+    Ok(MovePlainFileOutcome::Moved)
+}
+
+#[cfg(windows)]
+fn move_plain_file_to_impl(
+    source: &PrivateFileDirectory,
+    source_name: &std::ffi::OsStr,
+    destination: &PrivateFileDirectory,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<MovePlainFileOutcome> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileRenameInfo, SetFileInformationByHandle, DELETE, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_GENERIC_READ, FILE_RENAME_INFO, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let mut source_options = std::fs::OpenOptions::new();
+    source_options
+        .access_mode(FILE_GENERIC_READ | DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let source_file = match source_options.open(source.canonical_path.join(source_name)) {
+        Ok(file) if metadata_is_plain_file(&file.metadata()?) => Some(file),
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "private source is a reparse point or non-file",
+            ))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let destination_file = destination.open_plain_file(destination_name)?;
+    match (source_file.as_ref(), destination_file.as_ref()) {
+        (None, None) => return Ok(MovePlainFileOutcome::Missing),
+        (None, Some(_)) => return Ok(MovePlainFileOutcome::AlreadyMoved),
+        (Some(_), Some(_)) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "both source and destination private files exist",
+            ))
+        }
+        (Some(_), None) => {}
+    }
+    let source_file = source_file.as_ref().expect("source checked above");
+    let expected = windows_file_identity(source_file)?;
+    let destination_handle = destination
+        ._component_handles
+        .last()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no handle"))?;
+    let destination_name_wide = destination_name.encode_wide().collect::<Vec<_>>();
+    let header_size = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+    let buffer_size = header_size
+        .checked_add(
+            destination_name_wide
+                .len()
+                .saturating_mul(std::mem::size_of::<u16>()),
+        )
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "destination name is too long")
+        })?;
+    let mut rename_buffer = vec![0_usize; buffer_size.div_ceil(std::mem::size_of::<usize>())];
+    let rename_info = rename_buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    unsafe {
+        (*rename_info).Anonymous.ReplaceIfExists = false;
+        (*rename_info).RootDirectory = destination_handle.as_raw_handle();
+        (*rename_info).FileNameLength =
+            u32::try_from(destination_name_wide.len().saturating_mul(2)).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "destination name is too long")
+            })?;
+        std::ptr::copy_nonoverlapping(
+            destination_name_wide.as_ptr(),
+            (*rename_info).FileName.as_mut_ptr(),
+            destination_name_wide.len(),
+        );
+        if SetFileInformationByHandle(
+            source_file.as_raw_handle(),
+            FileRenameInfo,
+            rename_info.cast(),
+            u32::try_from(buffer_size).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "rename buffer is too large")
+            })?,
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    let moved = destination
+        .open_plain_file(destination_name)?
+        .ok_or_else(|| io::Error::other("moved private file is not visible"))?;
+    if expected != windows_file_identity(&moved)? {
+        return Err(io::Error::other(
+            "private file identity changed during anchored rename",
+        ));
+    }
+    Ok(MovePlainFileOutcome::Moved)
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn remove_empty_child_directory_impl(
+    directory: &PrivateFileDirectory,
+    name: &std::ffi::OsStr,
+) -> io::Result<bool> {
+    use std::os::fd::AsRawFd as _;
+
+    let name = unix_name(name)?;
+    if unsafe {
+        libc::unlinkat(
+            directory.directory_handle.as_raw_fd(),
+            name.as_ptr(),
+            libc::AT_REMOVEDIR,
+        )
+    } != 0
+    {
+        let error = io::Error::last_os_error();
+        return if error.kind() == io::ErrorKind::NotFound {
+            Ok(false)
+        } else {
+            Err(error)
+        };
+    }
+    Ok(true)
+}
+
+#[cfg(windows)]
+fn remove_empty_child_directory_impl(
+    directory: &PrivateFileDirectory,
+    name: &std::ffi::OsStr,
+) -> io::Result<bool> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .access_mode(FILE_GENERIC_READ | DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+    let file = match options.open(directory.canonical_path.join(name)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if !metadata_is_real_directory(&file.metadata()?) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "private child is a reparse point or non-directory",
+        ));
+    }
+    mark_windows_file_handle_for_deletion(&file)?;
+    drop(file);
+    Ok(true)
 }
 
 #[cfg(any(
@@ -816,7 +1602,10 @@ fn remove_plain_file_impl(
     }
     let file = unsafe { File::from_raw_fd(fd) };
     if !unix_named_file_matches(directory, &name, &file)? {
-        return Ok(false);
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "private entry is non-regular, multiply linked, or changed during removal",
+        ));
     }
     if unsafe { libc::unlinkat(directory.directory_handle.as_raw_fd(), name.as_ptr(), 0) } != 0 {
         let error = io::Error::last_os_error();
@@ -836,14 +1625,13 @@ fn remove_plain_file_impl(
 ) -> io::Result<bool> {
     use std::os::windows::fs::OpenOptionsExt as _;
     use windows_sys::Win32::Storage::FileSystem::{
-        DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE,
+        DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
 
     let mut options = std::fs::OpenOptions::new();
     options
         .access_mode(FILE_GENERIC_READ | DELETE)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     let file = match options.open(directory.canonical_path.join(name)) {
         Ok(file) => file,
@@ -851,7 +1639,10 @@ fn remove_plain_file_impl(
         Err(error) => return Err(error),
     };
     if !metadata_is_plain_file(&file.metadata()?) {
-        return Ok(false);
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "private entry is a reparse point or non-file",
+        ));
     }
     mark_windows_file_handle_for_deletion(&file)?;
     drop(file);
@@ -917,18 +1708,6 @@ pub(crate) fn ensure_private_real_directory(path: &Path) -> io::Result<RealDirec
             ));
         }
     }
-    #[cfg(any(
-        target_os = "macos",
-        all(target_os = "linux", target_pointer_width = "64")
-    ))]
-    {
-        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-
-        let metadata = std::fs::symlink_metadata(path)?;
-        if metadata.mode() & 0o777 != 0o700 {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
-        }
-    }
     Ok(identity)
 }
 
@@ -962,9 +1741,13 @@ fn real_directory_identity(path: &Path) -> io::Result<RealDirectoryIdentity> {
             format!("path is not a real directory: {}", path.display()),
         ));
     }
-    let canonical_path = std::fs::canonicalize(path)?;
     #[cfg(windows)]
-    let (volume_serial_number, file_index) = windows_directory_identity(&canonical_path)?;
+    // Capture the identity from the original, non-following path before
+    // canonicalization. If the root is exchanged for a junction between these
+    // steps, the identity cannot accidentally describe the junction target and
+    // the stable component-chain acquisition below rejects the mismatch.
+    let (volume_serial_number, file_index) = windows_directory_identity(path)?;
+    let canonical_path = std::fs::canonicalize(path)?;
     Ok(RealDirectoryIdentity {
         canonical_path,
         #[cfg(any(
@@ -1263,7 +2046,7 @@ pub(crate) mod tests {
             block
                 .matches("private_file_directory_unsupported()")
                 .count(),
-            5
+            13
         );
         for forbidden in [
             "std::fs::",
@@ -1278,6 +2061,128 @@ pub(crate) mod tests {
                 "forbidden fallback: {forbidden}"
             );
         }
+    }
+
+    #[cfg(any(
+        windows,
+        target_os = "macos",
+        all(target_os = "linux", target_pointer_width = "64")
+    ))]
+    #[test]
+    fn windows_and_posix_private_directory_moves_and_removes_files_through_stable_handles() {
+        use std::ffi::OsStr;
+        use std::io::Read as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root_path = temp.path().join("root");
+        let root = open_private_file_directory(&root_path).unwrap();
+        root.atomic_write_private_file(OsStr::new("state.json"), b"old")
+            .unwrap();
+        root.atomic_write_private_file(OsStr::new("state.json"), b"new")
+            .unwrap();
+        let mut state = root
+            .open_plain_file(OsStr::new("state.json"))
+            .unwrap()
+            .unwrap();
+        let mut state_raw = Vec::new();
+        state.read_to_end(&mut state_raw).unwrap();
+        assert_eq!(state_raw, b"new");
+        drop(state);
+        assert!(root.remove_plain_file(OsStr::new("state.json")).unwrap());
+        std::fs::create_dir(root_path.join("non-file-entry")).unwrap();
+        assert!(root
+            .remove_plain_file(OsStr::new("non-file-entry"))
+            .is_err());
+        assert!(root_path.join("non-file-entry").is_dir());
+        std::fs::remove_dir(root_path.join("non-file-entry")).unwrap();
+        #[cfg(unix)]
+        {
+            std::fs::write(root_path.join("linked-source"), b"linked").unwrap();
+            std::fs::hard_link(
+                root_path.join("linked-source"),
+                root_path.join("linked-entry"),
+            )
+            .unwrap();
+            assert!(root.remove_plain_file(OsStr::new("linked-entry")).is_err());
+            assert!(root_path.join("linked-source").is_file());
+            assert!(root_path.join("linked-entry").is_file());
+            std::fs::remove_file(root_path.join("linked-entry")).unwrap();
+            std::fs::remove_file(root_path.join("linked-source")).unwrap();
+        }
+        std::fs::write(root_path.join("source"), b"anchored").unwrap();
+        let child = root
+            .create_private_child_directory(OsStr::new("child"))
+            .unwrap();
+
+        assert_eq!(
+            root.move_plain_file_to(OsStr::new("source"), &child, OsStr::new("destination"))
+                .unwrap(),
+            super::MovePlainFileOutcome::Moved
+        );
+        assert!(root
+            .open_plain_file(OsStr::new("source"))
+            .unwrap()
+            .is_none());
+        let mut moved = child
+            .open_plain_file(OsStr::new("destination"))
+            .unwrap()
+            .unwrap();
+        let mut raw = Vec::new();
+        moved.read_to_end(&mut raw).unwrap();
+        assert_eq!(raw, b"anchored");
+        drop(moved);
+        assert!(child.remove_plain_file(OsStr::new("destination")).unwrap());
+        drop(child);
+        assert!(root
+            .remove_empty_child_directory(OsStr::new("child"))
+            .unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn anchored_directory_does_not_follow_replacement_root() {
+        use std::ffi::OsStr;
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root_path = temp.path().join("root");
+        let parked_path = temp.path().join("parked");
+        let outside_path = temp.path().join("outside");
+        std::fs::create_dir_all(&root_path).unwrap();
+        std::fs::create_dir_all(&outside_path).unwrap();
+        std::fs::write(root_path.join("victim"), b"inside").unwrap();
+        std::fs::write(outside_path.join("victim"), b"outside").unwrap();
+        let root = open_private_file_directory(&root_path).unwrap();
+
+        std::fs::rename(&root_path, &parked_path).unwrap();
+        symlink(&outside_path, &root_path).unwrap();
+        assert!(root.remove_plain_file(OsStr::new("victim")).unwrap());
+        root.atomic_write_private_file(OsStr::new("state.json"), b"anchored-write")
+            .unwrap();
+
+        assert!(!parked_path.join("victim").exists());
+        assert_eq!(
+            std::fs::read(parked_path.join("state.json")).unwrap(),
+            b"anchored-write"
+        );
+        assert!(!outside_path.join("state.json").exists());
+        assert_eq!(
+            std::fs::read(outside_path.join("victim")).unwrap(),
+            b"outside"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_private_directory_handle_blocks_root_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let root_path = temp.path().join("root");
+        let parked_path = temp.path().join("parked");
+        let root = open_private_file_directory(&root_path).unwrap();
+
+        assert!(std::fs::rename(&root_path, &parked_path).is_err());
+        drop(root);
+        std::fs::rename(&root_path, &parked_path).unwrap();
     }
 
     #[cfg(any(

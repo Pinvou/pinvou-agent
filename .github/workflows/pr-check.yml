@@ -20,7 +20,8 @@ name: PR Check
 #   欠账由清理 PR(#35 及后续)消化后逐个升 deny。
 # - windows-rust-test:Windows 专属原语在原生 runner 执行;Ready PR/Merge Queue
 #   按 Rust 路径触发;main 每次保留下来的 push 无条件累计验证(防 pending 替换盲区)。
-# - windows-codex-runtime-test:相关 PR 在 Windows 原生准备 Node + ACP Bridge，并核对安装包资源。
+# - windows-codex-runtime-test:Relevant PRs exercise the browser-wrapper lifecycle,
+#   prepare Node + ACP Bridge, and verify packaged resources on native Windows.
 # - benchmark-contract / benchmark-test:评测代码保持 CI 隔离，仓库工作流中硬关闭；
 #   不得通过 PR 标签、路径或 Merge Queue 事件启用，避免影响主工程门禁与运行资源。
 # - required-gate:PR 阶段汇总所有适用检查，作为唯一 required check。
@@ -300,7 +301,10 @@ jobs:
               - 'pinvou3-app/src-tauri/packaging/windows/runtime/**'
               - 'pinvou3-app/src-tauri/src/features/codex_acp/**'
               - 'pinvou3-app/src-tauri/src/platform/capabilities.rs'
+              - 'pinvou3-app/src-tauri/resources/common/bundle/mcp-servers/browser-*'
               - 'pinvou3-app/tests/codex_acp_*'
+              - 'pinvou3-app/tests/browser_wrapper_windows_lifecycle.test.mjs'
+              - 'pinvou3-app/tests/browser_wrapper_lazy.test.mjs'
               - 'pinvou3-app/tests/windows_runtime_packaging_contract.test.js'
               - 'pinvou3-app/package.json'
               - 'pinvou3-app/package-lock.json'
@@ -1025,6 +1029,16 @@ jobs:
           cache: npm
           cache-dependency-path: pinvou3-app/package-lock.json
 
+      # Ubuntu npm tests skip these suites outside win32. They use only Node
+      # built-ins and fake MCP/host fixtures to exercise the real wrapper
+      # subprocess, protocol, heartbeat, tombstone, and commit-unknown paths.
+      - name: Windows browser wrapper lifecycle regression
+        env:
+          PINVOU3_TEST_BROWSER_NO_HOST: "1"
+        run: |
+          node --test pinvou3-app/tests/browser_wrapper_windows_lifecycle.test.mjs
+          node pinvou3-app/tests/browser_wrapper_lazy.test.mjs
+
       - name: 安装构建依赖
         run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
 
@@ -1210,6 +1224,7 @@ jobs:
       - knowledge-rust
       - rust-lint
       - rust-test
+      - windows-rust-test
       - macos-codex-runtime-test
       - windows-codex-runtime-test
       - benchmark-contract
@@ -1229,6 +1244,7 @@ jobs:
           KNOWLEDGE_RUST_RESULT: ${{ needs.knowledge-rust.result }}
           RUST_LINT_RESULT: ${{ needs.rust-lint.result }}
           RUST_RESULT: ${{ needs.rust-test.result }}
+          WINDOWS_RUST_RESULT: ${{ needs.windows-rust-test.result }}
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
           WINDOWS_CODEX_RESULT: ${{ needs.windows-codex-runtime-test.result }}
           BENCHMARK_CONTRACT_RESULT: ${{ needs.benchmark-contract.result }}
@@ -1253,6 +1269,7 @@ jobs:
             "knowledge-rust:$KNOWLEDGE_RUST_RESULT" \
             "rust-lint:$RUST_LINT_RESULT" \
             "rust-test:$RUST_RESULT" \
+            "windows-rust-test:$WINDOWS_RUST_RESULT" \
             "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \
             "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT" \
             "benchmark-contract:$BENCHMARK_CONTRACT_RESULT"; do

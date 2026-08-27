@@ -1,3 +1,4 @@
+// architecture-guard: allow-target-cfg -- Unix-only symlink regressions verify browser recovery never follows hostile journal or quarantine roots; no platform implementation detail leaves platform::filesystem.
 //! Browser feature: manages native browser sessions, navigation, and tabs shared by
 //! the Agent and user. The user-visible path uses only system WebView child views in
 //! the main window. An unavailable native surface is reported explicitly; continuous
@@ -19,6 +20,8 @@ mod core;
 mod platform;
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
@@ -27,6 +30,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::platform::filesystem::{MovePlainFileOutcome, PrivateFileDirectory};
 use crate::platform::paths;
 use platform::state::{
     NativeRequestCancel, NativeRequestClaim, NativeTabLease, RetainedAgentOperation,
@@ -157,6 +161,12 @@ pub struct BrowserManager {
     persistence_io: parking_lot::Mutex<()>,
     persistence_warnings: parking_lot::Mutex<HashMap<String, String>>,
     persistence_retries: parking_lot::Mutex<HashSet<String>>,
+    /// Single-flight coalescing for native-restore persistence per task. A page
+    /// can fire reserved takeover/location signals in a tight loop; while one
+    /// write is in flight a later signal only marks the session dirty, and the
+    /// finishing flight performs exactly one follow-up write. The map holds an
+    /// entry only while a flight is running, so it cannot grow with history.
+    persistence_inflight: parking_lot::Mutex<HashMap<String, bool>>,
     /// A durable Prepare journal is recovered synchronously before transient
     /// host requests are reset. Any recovery failure blocks every browser
     /// entry point so a stale restore manifest cannot be published first.
@@ -345,6 +355,16 @@ struct HostedPrepareJournal {
     response: Option<Value>,
 }
 
+enum HostedPrepareJournalMatch {
+    Absent,
+    Matching(HostedPrepareJournal),
+    Superseded,
+}
+
+fn should_remove_prepare_restore(rollback_kind: &str, rollback_applied: bool) -> bool {
+    rollback_kind == "prepared_session" && rollback_applied
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct HostedCallerHeartbeat {
     protocol_version: u8,
@@ -526,6 +546,7 @@ impl BrowserManager {
             persistence_io: parking_lot::Mutex::new(()),
             persistence_warnings: parking_lot::Mutex::new(HashMap::new()),
             persistence_retries: parking_lot::Mutex::new(HashSet::new()),
+            persistence_inflight: parking_lot::Mutex::new(HashMap::new()),
             prepare_recovery_error: parking_lot::Mutex::new(None),
             watch_retry_delay_ms: std::sync::atomic::AtomicU64::new(BROWSER_WATCH_RETRY_INITIAL_MS),
             locally_committed_prepares: parking_lot::Mutex::new(HashSet::new()),
@@ -1035,7 +1056,10 @@ impl BrowserManager {
         let cancellation: HostedBrowserCancellation = serde_json::from_str(&raw)
             .map_err(|error| format!("invalid browser host cancellation record: {error}"))?;
         validate_hosted_cancellation(&cancellation, cancellation_path)?;
-        if self.discard_absent_session_cancellation(&cancellation, cancellation_path)? {
+        if self
+            .discard_absent_session_cancellation(&cancellation, cancellation_path)
+            .await?
+        {
             return Ok(());
         }
         let disposition = self
@@ -1051,7 +1075,8 @@ impl BrowserManager {
                         &cancellation.session_id,
                         &cancellation.request_id,
                     )?;
-                remove_matching_hosted_prepare_journal(&cancellation)?;
+                self.remove_matching_hosted_prepare_journal_serialized(&cancellation)
+                    .await?;
                 self.locally_committed_prepares.lock().remove(&(
                     cancellation.session_token.clone(),
                     cancellation.request_id.clone(),
@@ -1063,16 +1088,13 @@ impl BrowserManager {
             // the `!committed` branch above compensates and acknowledges it.
             NativeRequestCancel::AwaitingCompletion => {}
             NativeRequestCancel::Tombstoned | NativeRequestCancel::AlreadyCanceled => {
-                let journal = matching_hosted_prepare_journal_for_cancellation(&cancellation)?;
-                if let Some(journal) = journal.as_ref() {
-                    self.rollback_prepare_journal(app, journal).await?;
-                } else if let Some(compensation) = cancellation.prepare_compensation.as_ref() {
-                    if let Some(rollback) = compensation.rollback_value() {
-                        self.rollback_hosted_record(app, &json!({ "rollback": rollback }))
-                            .await?;
-                    }
-                }
-                remove_matching_hosted_prepare_journal(&cancellation)?;
+                let _journal_match = self
+                    .rollback_and_remove_matching_hosted_prepare_journal(app, &cancellation)
+                    .await?;
+                // An embedded compensation without the matching durable WAL is
+                // not authority to mutate current task state. The WAL may have
+                // been quarantined or superseded by a fresh generation; treat
+                // that late cancellation as an acknowledged no-op.
                 self.locally_committed_prepares.lock().remove(&(
                     cancellation.session_token.clone(),
                     cancellation.request_id.clone(),
@@ -1083,7 +1105,7 @@ impl BrowserManager {
         Ok(())
     }
 
-    fn discard_absent_session_cancellation(
+    async fn discard_absent_session_cancellation(
         &self,
         cancellation: &HostedBrowserCancellation,
         cancellation_path: &std::path::Path,
@@ -1096,13 +1118,42 @@ impl BrowserManager {
         // a late wrapper cancellation; remove only its process-local protocol
         // artifacts. The same rule drops artifacts orphaned across startup when
         // the durable task validator reports no owner.
-        remove_matching_hosted_prepare_journal(cancellation)?;
+        self.remove_matching_hosted_prepare_journal_serialized(cancellation)
+            .await?;
         self.locally_committed_prepares.lock().remove(&(
             cancellation.session_token.clone(),
             cancellation.request_id.clone(),
         ));
         remove_hosted_request_artifacts(cancellation_path)?;
         Ok(true)
+    }
+
+    async fn remove_matching_hosted_prepare_journal_serialized(
+        &self,
+        cancellation: &HostedBrowserCancellation,
+    ) -> Result<(), String> {
+        let session_lock = self.session_lifecycle_lock(&cancellation.session_id);
+        let _session_guard = session_lock.lock().await;
+        let _start_guard = self.start_mtx.lock().await;
+        remove_matching_hosted_prepare_journal(cancellation)
+    }
+
+    async fn rollback_and_remove_matching_hosted_prepare_journal(
+        &self,
+        app: &AppHandle,
+        cancellation: &HostedBrowserCancellation,
+    ) -> Result<HostedPrepareJournalMatch, String> {
+        let session_lock = self.session_lifecycle_lock(&cancellation.session_id);
+        let _session_guard = session_lock.lock().await;
+        let _start_guard = self.start_mtx.lock().await;
+        let journal_match = classify_hosted_prepare_journal_for_cancellation(cancellation)?;
+        let HostedPrepareJournalMatch::Matching(journal) = journal_match else {
+            return Ok(journal_match);
+        };
+        self.rollback_prepare_journal_with_start_lock(app, &journal)
+            .await?;
+        remove_matching_hosted_prepare_journal(cancellation)?;
+        Ok(HostedPrepareJournalMatch::Matching(journal))
     }
 
     async fn rollback_hosted_record(&self, app: &AppHandle, record: &Value) -> Result<(), String> {
@@ -2043,8 +2094,7 @@ impl BrowserManager {
 
         let journal_path = hosted_prepare_journal_path_for(session_token);
         let mut superseded_commit = None;
-        if journal_path.exists() {
-            let journal = read_hosted_prepare_journal(&journal_path)?;
+        if let Some(journal) = read_hosted_prepare_journal_if_present(&journal_path)? {
             if journal.compensation.session_id != session_id {
                 return Err(
                     "browser Prepare journal does not belong to the current task"
@@ -2124,24 +2174,27 @@ impl BrowserManager {
         journal: &HostedPrepareJournal,
     ) -> Result<(), String> {
         let compensation = &journal.compensation;
+        let mut rollback_applied = true;
         match (compensation.rollback_kind.as_str(), compensation.revision) {
             ("prepared_session", Some(revision)) => {
-                self.rollback_prepared_session_with_start_lock(
-                    &compensation.session_id,
-                    &compensation.request_id,
-                    revision,
-                    false,
-                )
-                .await?;
+                rollback_applied = self
+                    .rollback_prepared_session_with_start_lock(
+                        &compensation.session_id,
+                        &compensation.request_id,
+                        revision,
+                        false,
+                    )
+                    .await?;
             }
             ("restored_session", Some(revision)) => {
-                self.rollback_prepared_session_with_start_lock(
-                    &compensation.session_id,
-                    &compensation.request_id,
-                    revision,
-                    true,
-                )
-                .await?;
+                rollback_applied = self
+                    .rollback_prepared_session_with_start_lock(
+                        &compensation.session_id,
+                        &compensation.request_id,
+                        revision,
+                        true,
+                    )
+                    .await?;
             }
             ("prepared_session", None) => {
                 let has_remaining = self
@@ -2166,8 +2219,10 @@ impl BrowserManager {
                 return Err("browser Prepare journal compensation generation is invalid".to_string())
             }
         }
-        if compensation.rollback_kind == "prepared_session" {
-            remove_file_and_verify_absent(
+        // A revision mismatch means newer task state superseded this Prepare.
+        // Retire the old WAL but preserve the newer durable manifest.
+        if should_remove_prepare_restore(&compensation.rollback_kind, rollback_applied) {
+            remove_private_plain_file_and_verify_absent(
                 &paths::browser_workspace_restore_json(&compensation.session_token),
                 "remove uncommitted Prepare restore manifest",
             )?;
@@ -2359,29 +2414,28 @@ impl BrowserManager {
                 let _cleanup_start_guard = self.start_mtx.lock().await;
                 if hosted_request.is_some() {
                     let journal_path = hosted_prepare_journal_path_for(session_token);
-                    if journal_path.exists() {
-                        match read_hosted_prepare_journal(&journal_path) {
-                            Ok(journal) => {
-                                if let Err(cleanup_error) = self
-                                    .rollback_prepare_journal_with_start_lock(app, &journal)
-                                    .await
-                                    .and_then(|()| remove_hosted_prepare_journal(&journal_path))
-                                {
-                                    error.message = format!(
+                    match read_hosted_prepare_journal_if_present(&journal_path) {
+                        Ok(Some(journal)) => {
+                            if let Err(cleanup_error) = self
+                                .rollback_prepare_journal_with_start_lock(app, &journal)
+                                .await
+                                .and_then(|()| remove_hosted_prepare_journal(&journal_path))
+                            {
+                                error.message = format!(
                                         "{}; durable compensation after Prepare failure is incomplete: {cleanup_error}",
                                         error.message
                                     );
-                                    if error.rollback.is_none() {
-                                        error.rollback = journal.compensation.rollback_value();
-                                    }
+                                if error.rollback.is_none() {
+                                    error.rollback = journal.compensation.rollback_value();
                                 }
                             }
-                            Err(cleanup_error) => {
-                                error.message = format!(
+                        }
+                        Ok(None) => {}
+                        Err(cleanup_error) => {
+                            error.message = format!(
                                     "{}; durable journal after Prepare failure is unreadable: {cleanup_error}",
                                     error.message
                                 );
-                            }
                         }
                     }
                 }
@@ -2666,7 +2720,7 @@ impl BrowserManager {
         request_id: &str,
         expected_revision: u64,
         preserve_restore: bool,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let session_lock = self.session_lifecycle_lock(browser_session_id);
         let _session_guard = session_lock.lock().await;
         let _start_guard = self.start_mtx.lock().await;
@@ -2685,7 +2739,7 @@ impl BrowserManager {
         request_id: &str,
         expected_revision: u64,
         preserve_restore: bool,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let app = self.app.lock().clone();
         let rollback = self.native_surface.lock().rollback_prepare_generation(
             app.as_ref(),
@@ -2695,7 +2749,7 @@ impl BrowserManager {
             preserve_restore,
         )?;
         let Some(has_remaining) = rollback else {
-            return Ok(());
+            return Ok(false);
         };
         if !has_remaining {
             self.stop_with_start_lock().await?;
@@ -2705,7 +2759,7 @@ impl BrowserManager {
                 json!({ "sessionId": browser_session_id }),
             );
         }
-        Ok(())
+        Ok(true)
     }
 
     /// If post-Prepare probing or coordination-file commit fails, roll back only
@@ -2741,21 +2795,59 @@ impl BrowserManager {
     /// Called after the WebView navigation callback unwinds to avoid reentering
     /// the native_surface lock.
     pub(crate) fn persist_native_restore(&self, browser_session_id: &str) -> Result<(), String> {
-        let app = self
-            .app
-            .lock()
-            .clone()
-            .ok_or_else(|| "application handle is not ready".to_string())?;
-        let _persistence_guard = self.persistence_io.lock();
-        match self.persist_native_restore_once(&app, browser_session_id) {
-            Ok(()) => {
-                self.clear_persistence_warning(&app, browser_session_id);
-                Ok(())
+        // Signals such as repeated takeover navigation bumps can arrive far
+        // faster than one atomic snapshot write. Coalesce: while a write for
+        // this session is in flight, a concurrent caller only marks the state
+        // dirty and the finishing flight performs exactly one follow-up write,
+        // so the persisted state still converges to the latest revision with
+        // bounded I/O instead of one spawn+write per signal.
+        {
+            let mut inflight = self.persistence_inflight.lock();
+            if let Some(dirty) = inflight.get_mut(browser_session_id) {
+                *dirty = true;
+                return Ok(());
             }
-            Err(error) => {
-                self.record_persistence_warning(&app, browser_session_id, &error);
-                self.schedule_persistence_retry(&app, browser_session_id);
-                Err(error)
+            inflight.insert(browser_session_id.to_string(), false);
+        }
+        let app = match self.app.lock().clone() {
+            Some(app) => app,
+            None => {
+                self.persistence_inflight.lock().remove(browser_session_id);
+                return Err("application handle is not ready".to_string());
+            }
+        };
+        self.run_persistence_flight(&app, browser_session_id)
+    }
+
+    fn run_persistence_flight(
+        &self,
+        app: &AppHandle,
+        browser_session_id: &str,
+    ) -> Result<(), String> {
+        loop {
+            let result = {
+                let _persistence_guard = self.persistence_io.lock();
+                self.persist_native_restore_once(app, browser_session_id)
+            };
+            match &result {
+                Ok(()) => self.clear_persistence_warning(app, browser_session_id),
+                Err(error) => {
+                    self.record_persistence_warning(app, browser_session_id, error);
+                    self.schedule_persistence_retry(app, browser_session_id);
+                }
+            }
+            let follow_up = {
+                let mut inflight = self.persistence_inflight.lock();
+                match inflight.remove(browser_session_id) {
+                    Some(dirty) if dirty => {
+                        inflight.insert(browser_session_id.to_string(), false);
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            if !follow_up {
+                return result;
             }
         }
     }
@@ -2912,8 +3004,8 @@ impl BrowserManager {
         }
         let session_token = paths::browser_session_token(browser_session_id);
         let journal_path = hosted_prepare_journal_path_for(&session_token);
-        if journal_path.exists()
-            && read_hosted_prepare_journal(&journal_path)?.phase == HostedPreparePhase::Committed
+        if read_hosted_prepare_journal_if_present(&journal_path)?
+            .is_some_and(|journal| journal.phase == HostedPreparePhase::Committed)
         {
             return Err(
                 "browser/prepare-acknowledgement-pending: recovered Prepare is awaiting caller settlement"
@@ -3793,6 +3885,11 @@ impl BrowserManager {
             }
         }
         if result.is_ok() {
+            if let Err(error) = remove_hosted_prepare_quarantine_for_session(browser_session_id) {
+                result = Err(error);
+            }
+        }
+        if result.is_ok() {
             self.clear_persistence_state(browser_session_id);
         }
         result
@@ -3809,15 +3906,10 @@ impl BrowserManager {
         let _admission_guard = self.hosted_request_gate.write().await;
         self.stop_for_session_with_hosted_gate_held(browser_session_id)
             .await?;
-        match std::fs::remove_file(paths::browser_session_mcp_json(browser_session_id)) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(format!(
-                    "Failed to delete task browser MCP configuration: {error}"
-                ));
-            }
-        }
+        remove_private_plain_file_and_verify_absent(
+            &paths::browser_session_mcp_json(browser_session_id),
+            "task browser MCP configuration",
+        )?;
         remove_hosted_prepare_journal_for_session(browser_session_id)?;
         remove_hosted_request_artifacts_for_session(browser_session_id)?;
 
@@ -3853,7 +3945,8 @@ impl BrowserManager {
                 hosted_prepare_journal_dir(),
             ],
             self.startup_reconcile_cutoff,
-        )
+        )?;
+        reconcile_hosted_prepare_quarantine_files(&active_tokens, self.startup_reconcile_cutoff)
     }
 
     /// `Target.targetCreated` activation repair, called by the event loop. When
@@ -4898,26 +4991,30 @@ fn reconcile_browser_session_file_dirs(
 ) -> Result<(), String> {
     let mut errors = Vec::new();
     for directory in directories {
-        let entries = match std::fs::read_dir(directory) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                errors.push(format!("Failed to read {}: {error}", directory.display()));
-                continue;
-            }
-        };
-        for entry in entries {
-            let entry = match entry {
-                Ok(entry) => entry,
+        let anchored =
+            match crate::platform::filesystem::open_existing_private_file_directory(directory) {
+                Ok(Some(directory)) => directory,
+                Ok(None) => continue,
                 Err(error) => {
                     errors.push(format!(
-                        "Failed to enumerate {}: {error}",
+                        "Failed to open browser session directory {}: {error}",
                         directory.display()
                     ));
                     continue;
                 }
             };
-            let path = entry.path();
+        let entries = match anchored.entry_names() {
+            Ok(entries) => entries,
+            Err(error) => {
+                errors.push(format!(
+                    "Failed to enumerate browser session directory {}: {error}",
+                    directory.display()
+                ));
+                continue;
+            }
+        };
+        for entry_name in entries {
+            let path = directory.join(&entry_name);
             if path.extension().and_then(|value| value.to_str()) != Some("json") {
                 continue;
             }
@@ -4931,40 +5028,202 @@ fn reconcile_browser_session_file_dirs(
             if active_tokens.contains(token) {
                 continue;
             }
-            let is_removable_file = entry
-                .file_type()
-                .map(|kind| kind.is_file() || kind.is_symlink())
-                .unwrap_or(false);
-            if !is_removable_file {
-                continue;
-            }
-            let modified =
-                match std::fs::symlink_metadata(&path).and_then(|metadata| metadata.modified()) {
-                    Ok(modified) => modified,
-                    Err(error) => {
-                        // Retain fail-safely when previous-process ownership cannot
-                        // be proven and retry on the next startup.
-                        errors.push(format!(
-                            "Failed to read browser file timestamp {}: {error}",
-                            path.display()
-                        ));
-                        continue;
-                    }
-                };
+            let file = match anchored.open_plain_file(&entry_name) {
+                Ok(Some(file)) => file,
+                Ok(None) => continue,
+                Err(error) => {
+                    errors.push(format!(
+                        "Failed to open stable orphaned browser file {}: {error}",
+                        path.display()
+                    ));
+                    continue;
+                }
+            };
+            let modified = match file.metadata().and_then(|metadata| metadata.modified()) {
+                Ok(modified) => modified,
+                Err(error) => {
+                    // Retain fail-safely when previous-process ownership cannot
+                    // be proven and retry on the next startup.
+                    errors.push(format!(
+                        "Failed to read browser file timestamp {}: {error}",
+                        path.display()
+                    ));
+                    continue;
+                }
+            };
             if modified >= startup_cutoff {
                 // The current process may have created this file after the static
                 // active-session snapshot. Background reconciliation must never
                 // use a stale token set to delete new task state.
                 continue;
             }
-            if let Err(error) = std::fs::remove_file(&path) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    errors.push(format!(
-                        "Failed to delete orphaned browser file {}: {error}",
-                        path.display()
-                    ));
+            drop(file);
+            if let Err(error) = anchored.remove_plain_file(&entry_name) {
+                errors.push(format!(
+                    "Failed to delete orphaned browser file {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+fn private_directory_modified_at_or_after(
+    directory: &PrivateFileDirectory,
+    startup_cutoff: SystemTime,
+    child_depth: usize,
+) -> Result<bool, String> {
+    if directory
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .map_err(|error| {
+            format!("Failed to inspect browser Prepare quarantine timestamp: {error}")
+        })?
+        >= startup_cutoff
+    {
+        return Ok(true);
+    }
+    for name in directory.entry_names().map_err(|error| {
+        format!("Failed to enumerate browser Prepare quarantine directory: {error}")
+    })? {
+        match directory.open_child_directory(&name) {
+            Ok(child) if child_depth > 0 => {
+                if private_directory_modified_at_or_after(&child, startup_cutoff, child_depth - 1)?
+                {
+                    return Ok(true);
                 }
             }
+            Ok(_) => {
+                return Err("Browser Prepare quarantine nesting is deeper than expected".to_string())
+            }
+            Err(_) => {
+                let file = directory.open_plain_file(&name).map_err(|error| {
+                    format!("Browser Prepare quarantine entry is not a stable file: {error}")
+                })?;
+                let Some(file) = file else {
+                    return Err(
+                        "Browser Prepare quarantine entry changed during inspection".to_string()
+                    );
+                };
+                if file
+                    .metadata()
+                    .and_then(|metadata| metadata.modified())
+                    .map_err(|error| {
+                        format!("Failed to inspect browser Prepare quarantine timestamp: {error}")
+                    })?
+                    >= startup_cutoff
+                {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn reconcile_unassigned_hosted_prepare_quarantine(
+    root: &PrivateFileDirectory,
+    startup_cutoff: SystemTime,
+) -> Result<(), String> {
+    let directory = match root.open_child_directory(OsStr::new("unassigned")) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "Failed to open unassigned browser Prepare quarantine: {error}"
+            ))
+        }
+    };
+    let mut slots = directory.entry_names().map_err(|error| {
+        format!("Failed to enumerate unassigned browser Prepare quarantine: {error}")
+    })?;
+    slots.sort();
+    let mut errors = Vec::new();
+    for slot_name in slots {
+        let Some(name) = slot_name.to_str() else {
+            errors.push("Browser Prepare quarantine slot name is not valid UTF-8".to_string());
+            continue;
+        };
+        if !valid_prepare_quarantine_token(name) {
+            continue;
+        }
+        let result = (|| {
+            let slot = directory
+                .open_child_directory(&slot_name)
+                .map_err(|error| {
+                    format!("Failed to open browser Prepare quarantine slot {name}: {error}")
+                })?;
+            if private_directory_modified_at_or_after(&slot, startup_cutoff, 0)? {
+                return Ok(());
+            }
+            drop(slot);
+            remove_hosted_prepare_quarantine_slot(&directory, &slot_name, true)
+        })();
+        if let Err(error) = result {
+            errors.push(error);
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+fn reconcile_hosted_prepare_quarantine_files(
+    active_tokens: &HashSet<String>,
+    startup_cutoff: SystemTime,
+) -> Result<(), String> {
+    let Some(root) = crate::platform::filesystem::open_existing_private_file_directory(
+        &hosted_prepare_quarantine_dir(),
+    )
+    .map_err(|error| {
+        format!(
+            "Failed to open browser Prepare quarantine directory {}: {error}",
+            hosted_prepare_quarantine_dir().display()
+        )
+    })?
+    else {
+        return Ok(());
+    };
+    let mut errors = Vec::new();
+    for name in root.entry_names().map_err(|error| {
+        format!("Failed to enumerate browser Prepare quarantine directory: {error}")
+    })? {
+        let Some(name_text) = name.to_str() else {
+            continue;
+        };
+        let result = if name_text == "unassigned" {
+            reconcile_unassigned_hosted_prepare_quarantine(&root, startup_cutoff)
+        } else if valid_prepare_quarantine_token(name_text) {
+            if active_tokens.contains(name_text) {
+                Ok(())
+            } else {
+                (|| {
+                    let token_directory = root.open_child_directory(&name).map_err(|error| {
+                        format!(
+                            "Failed to open browser Prepare token quarantine {name_text}: {error}"
+                        )
+                    })?;
+                    if private_directory_modified_at_or_after(&token_directory, startup_cutoff, 1)?
+                    {
+                        return Ok(());
+                    }
+                    drop(token_directory);
+                    remove_hosted_prepare_quarantine_for_token_from_root(&root, name_text)
+                })()
+            }
+        } else {
+            // Unexpected names never grant task identity or deletion authority.
+            Ok(())
+        };
+        if let Err(error) = result {
+            errors.push(error);
         }
     }
     if errors.is_empty() {
@@ -5494,6 +5753,50 @@ fn hosted_prepare_journal_path_for(session_token: &str) -> PathBuf {
     hosted_prepare_journal_dir().join(format!("{session_token}.json"))
 }
 
+fn hosted_prepare_quarantine_dir() -> PathBuf {
+    paths::browser_home().join("prepare-quarantine")
+}
+
+fn hosted_prepare_quarantine_token_dir(session_token: &str) -> PathBuf {
+    hosted_prepare_quarantine_dir().join(session_token)
+}
+
+fn hosted_prepare_unassigned_quarantine_dir() -> PathBuf {
+    hosted_prepare_quarantine_dir().join("unassigned")
+}
+
+fn hosted_prepare_quarantine_slot_dir(parent: &Path, sequence: u64) -> PathBuf {
+    parent.join(format!("{sequence:016x}"))
+}
+
+fn hosted_prepare_quarantine_state_path(slot: &Path, state_kind: &str) -> PathBuf {
+    slot.join(state_kind)
+}
+
+fn valid_prepare_quarantine_token(value: &str) -> bool {
+    value.len() == 16
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn prepare_journal_token_from_path(path: &Path) -> Result<Option<String>, String> {
+    if path.parent() != Some(hosted_prepare_journal_dir().as_path()) {
+        return Err("Browser Prepare journal path is outside the journal directory".to_string());
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .and_then(|file_name| file_name.strip_suffix(".json"));
+    let Some(token) = file_name.filter(|value| valid_prepare_quarantine_token(value)) else {
+        return Ok(None);
+    };
+    if path != hosted_prepare_journal_path_for(token) {
+        return Err("Browser Prepare journal path is outside its canonical token slot".to_string());
+    }
+    Ok(Some(token.to_string()))
+}
+
 fn hosted_prepare_journal_path(request: &HostedBrowserRequest) -> PathBuf {
     hosted_prepare_journal_path_for(&request.session_token)
 }
@@ -5553,66 +5856,439 @@ fn write_hosted_prepare_journal(journal: &HostedPrepareJournal) -> Result<(), St
         &hosted_prepare_journal_path_for(&journal.compensation.session_token),
     )?;
     let path = hosted_prepare_journal_path_for(&journal.compensation.session_token);
-    let parent = path
-        .parent()
-        .ok_or_else(|| "Browser Prepare journal has no parent directory".to_string())?;
-    std::fs::create_dir_all(parent).map_err(|error| {
-        format!(
-            "Failed to create browser Prepare journal directory {}: {error}",
-            parent.display()
-        )
-    })?;
-    crate::platform::os::make_private_dir(parent);
+    let name = path
+        .file_name()
+        .ok_or_else(|| "Browser Prepare journal has no filename".to_string())?;
+    let directory =
+        crate::platform::filesystem::open_private_file_directory(&hosted_prepare_journal_dir())
+            .map_err(|error| {
+                format!(
+                    "Failed to open browser Prepare journal directory {}: {error}",
+                    hosted_prepare_journal_dir().display()
+                )
+            })?;
     let encoded = serde_json::to_vec(journal)
         .map_err(|error| format!("Failed to encode browser Prepare journal: {error}"))?;
-    crate::platform::filesystem::atomic_write_private(&path, &encoded).map_err(|error| {
-        format!(
-            "Failed to write browser Prepare journal {}: {error}",
-            path.display()
-        )
-    })
+    directory
+        .atomic_write_private_file(name, &encoded)
+        .map_err(|error| {
+            format!(
+                "Failed to write browser Prepare journal {}: {error}",
+                path.display()
+            )
+        })
 }
 
 fn read_hosted_prepare_journal(path: &Path) -> Result<HostedPrepareJournal, String> {
-    let raw = std::fs::read_to_string(path).map_err(|error| {
+    if path.parent() != Some(hosted_prepare_journal_dir().as_path()) {
+        return Err("Browser Prepare journal path is outside the journal directory".to_string());
+    }
+    let name = path
+        .file_name()
+        .ok_or_else(|| "Browser Prepare journal has no filename".to_string())?;
+    let directory = crate::platform::filesystem::open_existing_private_file_directory(
+        &hosted_prepare_journal_dir(),
+    )
+    .map_err(|error| {
+        format!(
+            "Failed to open browser Prepare journal directory {}: {error}",
+            hosted_prepare_journal_dir().display()
+        )
+    })?
+    .ok_or_else(|| {
+        format!(
+            "Browser Prepare journal directory is missing: {}",
+            hosted_prepare_journal_dir().display()
+        )
+    })?;
+    read_hosted_prepare_journal_from_directory(&directory, name, path)
+}
+
+fn read_hosted_prepare_journal_if_present(
+    path: &Path,
+) -> Result<Option<HostedPrepareJournal>, String> {
+    if path.parent() != Some(hosted_prepare_journal_dir().as_path()) {
+        return Err("Browser Prepare journal path is outside the journal directory".to_string());
+    }
+    let name = path
+        .file_name()
+        .ok_or_else(|| "Browser Prepare journal has no filename".to_string())?;
+    let Some(directory) = crate::platform::filesystem::open_existing_private_file_directory(
+        &hosted_prepare_journal_dir(),
+    )
+    .map_err(|error| {
+        format!(
+            "Failed to open browser Prepare journal directory {}: {error}",
+            hosted_prepare_journal_dir().display()
+        )
+    })?
+    else {
+        return Ok(None);
+    };
+    let Some(file) = directory.open_plain_file(name).map_err(|error| {
+        format!(
+            "Failed to open browser Prepare journal {}: {error}",
+            path.display()
+        )
+    })?
+    else {
+        return Ok(None);
+    };
+    decode_hosted_prepare_journal(file, path).map(Some)
+}
+
+fn read_hosted_prepare_journal_from_directory(
+    directory: &PrivateFileDirectory,
+    name: &OsStr,
+    validation_path: &Path,
+) -> Result<HostedPrepareJournal, String> {
+    let file = directory
+        .open_plain_file(name)
+        .map_err(|error| {
+            format!(
+                "Failed to open browser Prepare journal {}: {error}",
+                validation_path.display()
+            )
+        })?
+        .ok_or_else(|| {
+            format!(
+                "Browser Prepare journal is missing: {}",
+                validation_path.display()
+            )
+        })?;
+    decode_hosted_prepare_journal(file, validation_path)
+}
+
+fn decode_hosted_prepare_journal(
+    mut file: std::fs::File,
+    validation_path: &Path,
+) -> Result<HostedPrepareJournal, String> {
+    let mut raw = String::new();
+    file.read_to_string(&mut raw).map_err(|error| {
         format!(
             "Failed to read browser Prepare journal {}: {error}",
-            path.display()
+            validation_path.display()
         )
     })?;
     let journal: HostedPrepareJournal = serde_json::from_str(&raw)
         .map_err(|error| format!("Browser Prepare journal has an invalid format: {error}"))?;
-    validate_hosted_prepare_journal(&journal, path)?;
+    validate_hosted_prepare_journal(&journal, validation_path)?;
     Ok(journal)
 }
 
 fn remove_hosted_prepare_journal(path: &Path) -> Result<(), String> {
-    match std::fs::remove_file(path) {
-        Ok(()) => {}
+    if path.parent() != Some(hosted_prepare_journal_dir().as_path()) {
+        return Err("Browser Prepare journal path is outside the journal directory".to_string());
+    }
+    let Some(name) = path.file_name() else {
+        return Err("Browser Prepare journal has no filename".to_string());
+    };
+    let Some(directory) = crate::platform::filesystem::open_existing_private_file_directory(
+        &hosted_prepare_journal_dir(),
+    )
+    .map_err(|error| {
+        format!(
+            "Failed to open browser Prepare journal directory {}: {error}",
+            hosted_prepare_journal_dir().display()
+        )
+    })?
+    else {
+        return Ok(());
+    };
+    directory.remove_plain_file(name).map_err(|error| {
+        format!(
+            "Failed to delete browser Prepare journal {}: {error}",
+            path.display()
+        )
+    })?;
+    if directory
+        .open_plain_file(name)
+        .map_err(|error| {
+            format!(
+                "Failed to verify browser Prepare journal deletion {}: {error}",
+                path.display()
+            )
+        })?
+        .is_some()
+    {
+        Err(format!(
+            "Browser Prepare journal {} remains visible after deletion",
+            path.display()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn quarantine_regular_file_anchored(
+    source: &Path,
+    destination: &PrivateFileDirectory,
+    destination_name: &OsStr,
+    description: &str,
+    required: bool,
+) -> Result<(), String> {
+    let destination_exists = destination
+        .open_plain_file(destination_name)
+        .map_err(|error| format!("Failed to inspect quarantined {description}: {error}"))?
+        .is_some();
+    let parent = source
+        .parent()
+        .ok_or_else(|| format!("{description} has no parent directory"))?;
+    let Some(source_name) = source.file_name() else {
+        return Err(format!("{description} has no filename"));
+    };
+    let source_directory = crate::platform::filesystem::open_existing_private_file_directory(
+        parent,
+    )
+    .map_err(|error| {
+        format!(
+            "Failed to open active {description} directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let Some(source_directory) = source_directory else {
+        return match (required, destination_exists) {
+            (_, true) => Ok(()),
+            (true, false) => Err(format!(
+                "Required {description} disappeared before quarantine: {}",
+                source.display()
+            )),
+            (false, false) => Ok(()),
+        };
+    };
+    match source_directory
+        .move_plain_file_to(source_name, destination, destination_name)
+        .map_err(|error| {
+            format!(
+                "Failed to quarantine {description} {}: {error}",
+                source.display()
+            )
+        })? {
+        MovePlainFileOutcome::Moved | MovePlainFileOutcome::AlreadyMoved => Ok(()),
+        MovePlainFileOutcome::Missing if required => Err(format!(
+            "Required {description} disappeared before quarantine: {}",
+            source.display()
+        )),
+        MovePlainFileOutcome::Missing => Ok(()),
+    }
+}
+
+fn hosted_prepare_quarantine_parent(
+    session_token: Option<&str>,
+) -> Result<PrivateFileDirectory, String> {
+    let root =
+        crate::platform::filesystem::open_private_file_directory(&hosted_prepare_quarantine_dir())
+            .map_err(|error| {
+                format!(
+                    "Failed to create or open browser Prepare quarantine root {}: {error}",
+                    hosted_prepare_quarantine_dir().display()
+                )
+            })?;
+    let name = session_token.unwrap_or("unassigned");
+    root.create_private_child_directory(OsStr::new(name))
+        .map_err(|error| {
+            format!("Failed to create or open browser Prepare quarantine parent {name}: {error}")
+        })
+}
+
+fn next_hosted_prepare_quarantine_slot(
+    parent: &PrivateFileDirectory,
+) -> Result<(OsString, PrivateFileDirectory), String> {
+    let mut max_sequence = None::<u64>;
+    let mut incomplete_slot = None::<(OsString, PrivateFileDirectory)>;
+    for name in parent
+        .entry_names()
+        .map_err(|error| format!("Failed to enumerate browser Prepare quarantine slots: {error}"))?
+    {
+        let Some(name_text) = name.to_str() else {
+            continue;
+        };
+        if !valid_prepare_quarantine_token(name_text) {
+            continue;
+        }
+        let sequence = u64::from_str_radix(name_text, 16).map_err(|error| {
+            format!("Invalid browser Prepare quarantine slot {name_text}: {error}")
+        })?;
+        max_sequence = Some(max_sequence.map_or(sequence, |current| current.max(sequence)));
+        let slot = parent.open_child_directory(&name).map_err(|error| {
+            format!("Failed to open browser Prepare quarantine slot {name_text}: {error}")
+        })?;
+        match slot.open_plain_file(OsStr::new("journal")) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                if incomplete_slot.replace((name, slot)).is_some() {
+                    return Err(
+                        "Multiple incomplete browser Prepare quarantine slots are ambiguous"
+                            .to_string(),
+                    );
+                }
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Browser Prepare quarantine marker is not a stable regular file: {error}"
+                ))
+            }
+        }
+    }
+    if let Some(slot) = incomplete_slot {
+        return Ok(slot);
+    }
+    let sequence = match max_sequence {
+        Some(sequence) => sequence
+            .checked_add(1)
+            .ok_or_else(|| "Browser Prepare quarantine slot sequence is exhausted".to_string())?,
+        None => 0,
+    };
+    let name = OsString::from(format!("{sequence:016x}"));
+    let slot = parent
+        .create_private_child_directory(&name)
+        .map_err(|error| format!("Failed to create browser Prepare quarantine slot: {error}"))?;
+    Ok((name, slot))
+}
+
+/// Isolate one unreadable transaction by the only identity that is still
+/// trustworthy: its canonical filename token. Runtime and restore state move
+/// first; the unreadable journal moves last and is the durable completion marker.
+/// A crash or I/O error before that final rename leaves the active journal in
+/// place, so the next startup reuses the incomplete slot and remains fail-closed.
+/// A completed slot is historical evidence only: active paths are empty and a
+/// fresh Prepare generation for the same task is safe.
+fn quarantine_unreadable_hosted_prepare_state(
+    journal_directory: &PrivateFileDirectory,
+    journal_name: &OsStr,
+) -> Result<Option<String>, String> {
+    let path = hosted_prepare_journal_dir().join(journal_name);
+    journal_directory
+        .open_plain_file(journal_name)
+        .map_err(|error| {
+            format!("Unreadable browser Prepare journal is not a stable file: {error}")
+        })?
+        .ok_or_else(|| "Unreadable browser Prepare journal disappeared".to_string())?;
+    let session_token = prepare_journal_token_from_path(&path)?;
+    let parent = hosted_prepare_quarantine_parent(session_token.as_deref())?;
+    let (_slot_name, slot) = next_hosted_prepare_quarantine_slot(&parent)?;
+    if let Some(session_token) = session_token.as_deref() {
+        quarantine_regular_file_anchored(
+            &paths::browser_workspace_state_json(session_token),
+            &slot,
+            OsStr::new("runtime"),
+            "browser runtime mapping",
+            false,
+        )?;
+        quarantine_regular_file_anchored(
+            &paths::browser_workspace_restore_json(session_token),
+            &slot,
+            OsStr::new("restore"),
+            "browser restore manifest",
+            false,
+        )?;
+    }
+    match journal_directory
+        .move_plain_file_to(journal_name, &slot, OsStr::new("journal"))
+        .map_err(|error| format!("Failed to quarantine browser Prepare journal: {error}"))?
+    {
+        MovePlainFileOutcome::Moved | MovePlainFileOutcome::AlreadyMoved => {}
+        MovePlainFileOutcome::Missing => {
+            return Err("Unreadable browser Prepare journal disappeared".to_string())
+        }
+    }
+    Ok(session_token)
+}
+
+fn remove_hosted_prepare_quarantine_slot(
+    parent: &PrivateFileDirectory,
+    slot_name: &OsStr,
+    unassigned: bool,
+) -> Result<(), String> {
+    let slot = match parent.open_child_directory(slot_name) {
+        Ok(slot) => slot,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
             return Err(format!(
-                "Failed to delete browser Prepare journal {}: {error}",
-                path.display()
+                "Failed to open browser Prepare quarantine slot: {error}"
             ))
         }
+    };
+    if !unassigned {
+        slot.remove_plain_file(OsStr::new("runtime"))
+            .map_err(|error| format!("Failed to remove quarantined runtime mapping: {error}"))?;
+        slot.remove_plain_file(OsStr::new("restore"))
+            .map_err(|error| format!("Failed to remove quarantined restore manifest: {error}"))?;
     }
-    if path.exists() {
-        return Err(format!(
-            "Browser Prepare journal {} remains visible after deletion",
-            path.display()
-        ));
-    }
+    slot.remove_plain_file(OsStr::new("journal"))
+        .map_err(|error| format!("Failed to remove quarantined Prepare journal: {error}"))?;
+    drop(slot);
+    parent
+        .remove_empty_child_directory(slot_name)
+        .map_err(|error| format!("Failed to remove browser Prepare quarantine slot: {error}"))?;
     Ok(())
+}
+
+fn remove_hosted_prepare_quarantine_for_token_from_root(
+    root: &PrivateFileDirectory,
+    session_token: &str,
+) -> Result<(), String> {
+    let name = OsStr::new(session_token);
+    let directory = match root.open_child_directory(name) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "Failed to open browser Prepare token quarantine {session_token}: {error}"
+            ))
+        }
+    };
+    let mut slots = directory.entry_names().map_err(|error| {
+        format!("Failed to enumerate browser Prepare token quarantine: {error}")
+    })?;
+    slots.sort();
+    for slot_name in slots {
+        let Some(slot_text) = slot_name.to_str() else {
+            return Err("Browser Prepare quarantine slot name is not valid UTF-8".to_string());
+        };
+        if !valid_prepare_quarantine_token(slot_text) {
+            return Err(format!(
+                "Refusing to remove unexpected browser Prepare quarantine entry: {slot_text}"
+            ));
+        }
+        remove_hosted_prepare_quarantine_slot(&directory, &slot_name, false)?;
+    }
+    drop(directory);
+    root.remove_empty_child_directory(name).map_err(|error| {
+        format!("Failed to remove browser Prepare token quarantine {session_token}: {error}")
+    })?;
+    Ok(())
+}
+
+fn remove_hosted_prepare_quarantine_for_token(session_token: &str) -> Result<(), String> {
+    if !valid_prepare_quarantine_token(session_token) {
+        return Err("Refusing to remove an invalid browser Prepare quarantine token".to_string());
+    }
+    let Some(root) = crate::platform::filesystem::open_existing_private_file_directory(
+        &hosted_prepare_quarantine_dir(),
+    )
+    .map_err(|error| {
+        format!(
+            "Failed to open browser Prepare quarantine root {}: {error}",
+            hosted_prepare_quarantine_dir().display()
+        )
+    })?
+    else {
+        return Ok(());
+    };
+    remove_hosted_prepare_quarantine_for_token_from_root(&root, session_token)
+}
+
+fn remove_hosted_prepare_quarantine_for_session(session_id: &str) -> Result<(), String> {
+    remove_hosted_prepare_quarantine_for_token(&paths::browser_session_token(session_id))
 }
 
 fn remove_hosted_prepare_journal_for_session(session_id: &str) -> Result<(), String> {
     let session_token = paths::browser_session_token(session_id);
     let path = hosted_prepare_journal_path_for(&session_token);
-    if !path.exists() {
+    let Some(journal) = read_hosted_prepare_journal_if_present(&path)? else {
         return Ok(());
-    }
-    let journal = read_hosted_prepare_journal(&path)?;
+    };
     if journal.compensation.session_id != session_id
         || journal.compensation.session_token != session_token
     {
@@ -5635,11 +6311,19 @@ fn remove_matching_hosted_prepare_journal(
 fn matching_hosted_prepare_journal_for_cancellation(
     cancellation: &HostedBrowserCancellation,
 ) -> Result<Option<HostedPrepareJournal>, String> {
-    let path = hosted_prepare_journal_path_for(&cancellation.session_token);
-    if !path.exists() {
-        return Ok(None);
+    match classify_hosted_prepare_journal_for_cancellation(cancellation)? {
+        HostedPrepareJournalMatch::Matching(journal) => Ok(Some(journal)),
+        HostedPrepareJournalMatch::Absent | HostedPrepareJournalMatch::Superseded => Ok(None),
     }
-    let journal = read_hosted_prepare_journal(&path)?;
+}
+
+fn classify_hosted_prepare_journal_for_cancellation(
+    cancellation: &HostedBrowserCancellation,
+) -> Result<HostedPrepareJournalMatch, String> {
+    let path = hosted_prepare_journal_path_for(&cancellation.session_token);
+    let Some(journal) = read_hosted_prepare_journal_if_present(&path)? else {
+        return Ok(HostedPrepareJournalMatch::Absent);
+    };
     let compensation = &journal.compensation;
     if compensation.request_id != cancellation.request_id
         || compensation.idempotency_key != cancellation.idempotency_key
@@ -5651,9 +6335,9 @@ fn matching_hosted_prepare_journal_for_cancellation(
         // A distinct newer Prepare atomically supersedes the old per-session
         // WAL. Its generation must remain untouched, while the validated late
         // cancellation is an idempotent no-op that can still be acknowledged.
-        return Ok(None);
+        return Ok(HostedPrepareJournalMatch::Superseded);
     }
-    Ok(Some(journal))
+    Ok(HostedPrepareJournalMatch::Matching(journal))
 }
 
 /// Read the cancellation path reserved for one durable Prepare generation and
@@ -5694,10 +6378,9 @@ fn remove_matching_hosted_prepare_journal_for_request(
     request: &HostedBrowserRequest,
 ) -> Result<(), String> {
     let path = hosted_prepare_journal_path(request);
-    if !path.exists() {
+    let Some(journal) = read_hosted_prepare_journal_if_present(&path)? else {
         return Ok(());
-    }
-    let journal = read_hosted_prepare_journal(&path)?;
+    };
     let compensation = &journal.compensation;
     if compensation.request_id != request.request_id
         || compensation.idempotency_key != request.idempotency_key
@@ -6235,12 +6918,61 @@ async fn probe_cdp(port: u16, timeout: Duration) -> bool {
     let Ok(client) = reqwest::Client::builder().no_proxy().build() else {
         return false;
     };
-    tokio::time::timeout(timeout, client.get(&url).send())
-        .await
-        .ok()
-        .and_then(|r| r.ok())
-        .map(|r| r.status().is_success())
-        .unwrap_or(false)
+    // `pick_free_port` chooses by connect-failure, so another local process can
+    // still claim the port before WebView2 binds it. Require CDP-shaped JSON so
+    // a foreign 2xx server is rejected here instead of at webSocketDebuggerUrl
+    // pinning; at worst prepare fails once and retries on a fresh port.
+    let request = async {
+        let response = client.get(&url).send().await.ok()?;
+        response.status().is_success().then_some(())?;
+        response.json::<serde_json::Value>().await.ok()
+    };
+    let Ok(Some(version)) = tokio::time::timeout(timeout, request).await else {
+        return false;
+    };
+    cdp_version_matches_loopback_endpoint(&version, port)
+}
+
+fn cdp_version_matches_loopback_endpoint(version: &Value, expected_port: u16) -> bool {
+    let product_matches = version
+        .get("Browser")
+        .and_then(Value::as_str)
+        .is_some_and(|browser| {
+            ["Edg/", "Chrome/", "HeadlessChrome/"]
+                .iter()
+                .any(|prefix| browser.starts_with(prefix))
+        });
+    let protocol_matches = version
+        .get("Protocol-Version")
+        .and_then(Value::as_str)
+        .is_some_and(|protocol| {
+            let mut segments = protocol.split('.');
+            matches!(segments.next(), Some("1"))
+                && segments.next().is_some_and(|minor| {
+                    !minor.is_empty() && minor.bytes().all(|byte| byte.is_ascii_digit())
+                })
+                && segments.next().is_none()
+        });
+    let websocket_matches = version
+        .get("webSocketDebuggerUrl")
+        .and_then(Value::as_str)
+        .and_then(|raw| tauri::Url::parse(raw).ok())
+        .is_some_and(|url| {
+            url.scheme() == "ws"
+                && url.port() == Some(expected_port)
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none()
+                && url.path().starts_with("/devtools/browser/")
+                && url.host_str().is_some_and(|host| {
+                    host.eq_ignore_ascii_case("localhost")
+                        || host
+                            .parse::<std::net::IpAddr>()
+                            .is_ok_and(|address| address.is_loopback())
+                })
+        });
+    product_matches && protocol_matches && websocket_matches
 }
 
 async fn pick_free_port() -> Result<u16, String> {
@@ -6360,48 +7092,187 @@ fn remove_file_and_verify_absent(path: &Path, description: &str) -> Result<(), S
     Ok(())
 }
 
+fn remove_private_plain_file_and_verify_absent(
+    path: &Path,
+    description: &str,
+) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{description} has no parent directory"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("{description} has no filename"))?;
+    let Some(directory) = crate::platform::filesystem::open_existing_private_file_directory(parent)
+        .map_err(|error| format!("Failed to open {description} directory: {error}"))?
+    else {
+        return Ok(());
+    };
+    directory
+        .remove_plain_file(name)
+        .map_err(|error| format!("Failed to remove {description} {}: {error}", path.display()))?;
+    if directory
+        .open_plain_file(name)
+        .map_err(|error| format!("Failed to verify {description} deletion: {error}"))?
+        .is_some()
+    {
+        Err(format!(
+            "File remains visible after removing {description}: {}",
+            path.display()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn private_plain_file_exists(path: &Path, description: &str) -> Result<bool, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{description} has no parent directory"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("{description} has no filename"))?;
+    let Some(directory) = crate::platform::filesystem::open_existing_private_file_directory(parent)
+        .map_err(|error| format!("Failed to open {description} directory: {error}"))?
+    else {
+        return Ok(false);
+    };
+    directory
+        .open_plain_file(name)
+        .map(|file| file.is_some())
+        .map_err(|error| format!("Failed to inspect {description}: {error}"))
+}
+
+fn parse_host_runtime_revision(value: &Value, expected_session_token: &str) -> Option<u64> {
+    (value.get("version").and_then(Value::as_u64) == Some(2)
+        && value.get("mapping_authority").and_then(Value::as_str) == Some("host")
+        && value.get("session_token").and_then(Value::as_str) == Some(expected_session_token))
+    .then(|| value.get("revision").and_then(Value::as_u64))
+    .flatten()
+    .filter(|revision| *revision > 0)
+}
+
+fn read_host_runtime_revision(
+    path: &Path,
+    expected_session_token: &str,
+) -> Result<Option<u64>, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Browser runtime mapping has no parent directory".to_string())?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| "Browser runtime mapping has no filename".to_string())?;
+    let Some(directory) = crate::platform::filesystem::open_existing_private_file_directory(parent)
+        .map_err(|error| format!("Failed to open browser runtime mapping directory: {error}"))?
+    else {
+        return Ok(None);
+    };
+    let Some(mut file) = directory
+        .open_plain_file(name)
+        .map_err(|error| format!("Failed to open browser runtime mapping: {error}"))?
+    else {
+        return Ok(None);
+    };
+    let mut raw = Vec::new();
+    file.read_to_end(&mut raw)
+        .map_err(|error| format!("Failed to read browser runtime mapping: {error}"))?;
+    let Ok(value) = serde_json::from_slice::<Value>(&raw) else {
+        return Ok(None);
+    };
+    Ok(parse_host_runtime_revision(&value, expected_session_token))
+}
+
 /// Recover host-owned Prepare journals before the transient request directory
 /// is reset and before any status/restore path can publish a stale manifest.
 /// Native WebViews cannot survive an application-process restart, so recovery
 /// only has to reconcile the durable restore/runtime mapping files.
 fn recover_hosted_prepare_journals_for_process_start() -> Result<(), String> {
     let journal_dir = hosted_prepare_journal_dir();
-    let entries = match std::fs::read_dir(&journal_dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(format!(
-                "Failed to read browser Prepare journal directory {}: {error}",
-                journal_dir.display()
-            ))
-        }
+    let Some(journal_directory) =
+        crate::platform::filesystem::open_existing_private_file_directory(&journal_dir).map_err(
+            |error| {
+                format!(
+                    "Failed to open browser Prepare journal directory {}: {error}",
+                    journal_dir.display()
+                )
+            },
+        )?
+    else {
+        return Ok(());
     };
-    let mut journal_paths = Vec::new();
-    for entry in entries {
-        let path = entry
-            .map_err(|error| format!("Failed to enumerate browser Prepare journals: {error}"))?
-            .path();
-        if path.extension().and_then(|value| value.to_str()) == Some("json") {
-            journal_paths.push(path);
-        }
-    }
-    journal_paths.sort();
+    let mut journal_names = journal_directory
+        .entry_names()
+        .map_err(|error| format!("Failed to enumerate browser Prepare journals: {error}"))?
+        .into_iter()
+        .filter(|name| Path::new(name).extension().and_then(|value| value.to_str()) == Some("json"))
+        .collect::<Vec<_>>();
+    journal_names.sort();
     let mut errors = Vec::new();
-    for path in journal_paths {
+    for name in journal_names {
+        let path = journal_dir.join(&name);
         let result = (|| {
-            let journal = read_hosted_prepare_journal(&path)?;
+            let journal = match read_hosted_prepare_journal_from_directory(
+                &journal_directory,
+                &name,
+                &path,
+            ) {
+                Ok(journal) => journal,
+                Err(read_error) => {
+                    let session_token =
+                        quarantine_unreadable_hosted_prepare_state(&journal_directory, &name)?;
+                    if let Some(session_token) = session_token {
+                        eprintln!(
+                            "[browser] quarantined unreadable Prepare state for token {session_token}: {read_error}"
+                        );
+                    } else {
+                        eprintln!(
+                            "[browser] quarantined unreadable Prepare journal with an untrusted filename: {read_error}"
+                        );
+                    }
+                    return Ok(());
+                }
+            };
             let compensation = &journal.compensation;
             let matching_cancellation =
                 matching_hosted_cancellation_for_compensation(compensation)?;
             let committed_without_cancellation =
                 journal.phase == HostedPreparePhase::Committed && !matching_cancellation;
+            let runtime_path = paths::browser_workspace_state_json(&compensation.session_token);
+            let runtime_revision =
+                read_host_runtime_revision(&runtime_path, &compensation.session_token)?;
+            let superseded_committed_prepare = journal.phase == HostedPreparePhase::Committed
+                && compensation.rollback_kind == "prepared_session"
+                && compensation
+                    .revision
+                    .zip(runtime_revision)
+                    .is_some_and(|(expected, actual)| actual > expected);
+            if superseded_committed_prepare {
+                // Persist the no-op compensation state before discarding the
+                // newer runtime-revision witness. Every crash point is safe:
+                // before this write the revision proves supersession; after it
+                // a late cancellation cannot remove the current restore file.
+                let mut neutralized = journal.clone();
+                neutralized.phase = HostedPreparePhase::Cancelled;
+                neutralized.compensation.rollback_kind = "none".to_string();
+                neutralized.compensation.revision = None;
+                neutralized.response = None;
+                write_hosted_prepare_journal(&neutralized)?;
+            }
             // Runtime labels/targets are process-local in every phase. Remove
             // them even when the committed manifest/WAL must remain available
             // for a still-live wrapper's late cancellation.
-            remove_file_and_verify_absent(
-                &paths::browser_workspace_state_json(&compensation.session_token),
+            remove_private_plain_file_and_verify_absent(
+                &runtime_path,
                 "delete stale browser runtime mapping",
             )?;
+            if superseded_committed_prepare {
+                // A newer host-authoritative revision permanently superseded
+                // this committed Prepare, or a prior crash already persisted
+                // that terminal decision. Retire the old WAL after cleanup.
+                journal_directory
+                    .remove_plain_file(&name)
+                    .map_err(|error| format!("Failed to retire superseded Prepare WAL: {error}"))?;
+                return Ok(());
+            }
             if committed_without_cancellation {
                 // The wrapper can still be alive and reach its timeout after
                 // this process starts. Keep the host-owned compensation record
@@ -6412,7 +7283,7 @@ fn recover_hosted_prepare_journals_for_process_start() -> Result<(), String> {
                 return Ok(());
             }
             if compensation.rollback_kind == "prepared_session" {
-                remove_file_and_verify_absent(
+                remove_private_plain_file_and_verify_absent(
                     &paths::browser_workspace_restore_json(&compensation.session_token),
                     "delete uncommitted Prepare restore manifest",
                 )?;
@@ -6421,11 +7292,17 @@ fn recover_hosted_prepare_journals_for_process_start() -> Result<(), String> {
             // A SIGKILL after the manifest deletion therefore leaves the WAL
             // behind and the next process repeats the idempotent verification.
             if compensation.rollback_kind == "prepared_session"
-                && paths::browser_workspace_restore_json(&compensation.session_token).exists()
+                && private_plain_file_exists(
+                    &paths::browser_workspace_restore_json(&compensation.session_token),
+                    "uncommitted Prepare restore manifest",
+                )?
             {
                 return Err("Uncommitted Prepare restore manifest still exists".to_string());
             }
-            remove_hosted_prepare_journal(&path)
+            journal_directory
+                .remove_plain_file(&name)
+                .map_err(|error| format!("Failed to remove browser Prepare journal: {error}"))?;
+            Ok(())
         })();
         if let Err(error) = result {
             errors.push(format!("{}: {error}", path.display()));
@@ -6622,6 +7499,40 @@ mod tests {
         manager.mark_watch_consumer_ready();
         assert!(manager.prepare_recovery_error.lock().is_none());
         assert_eq!(manager.next_watch_retry_delay().as_millis(), 250);
+    }
+
+    #[test]
+    fn persistence_coalescing_without_app_handle_fails_closed_and_clears_inflight() {
+        // No app handle is bound: the direct call must fail, and — critically —
+        // must remove its own inflight marker so a later call (once an app
+        // exists) starts a fresh flight instead of being coalesced forever.
+        let manager = BrowserManager::new();
+        assert!(manager.persist_native_restore("session-x").is_err());
+        assert!(
+            !manager
+                .persistence_inflight
+                .lock()
+                .contains_key("session-x"),
+            "early failure must clear the inflight marker"
+        );
+    }
+
+    #[test]
+    fn persistence_coalescing_marks_dirty_only_while_a_flight_is_registered() {
+        let manager = BrowserManager::new();
+        // Simulate an in-flight write: a concurrent caller is coalesced into
+        // dirty and reported Ok; the state converges via the follow-up write
+        // the finishing flight performs.
+        manager
+            .persistence_inflight
+            .lock()
+            .insert("session-y".to_string(), false);
+        assert!(manager.persist_native_restore("session-y").is_ok());
+        assert_eq!(
+            manager.persistence_inflight.lock().get("session-y"),
+            Some(&true),
+            "coalesced call must mark the session dirty"
+        );
     }
 
     #[tokio::test]
@@ -7238,8 +8149,23 @@ mod tests {
             Ok(json!({ "sessionId": request.session_id })),
         ));
         let restore_path = paths::browser_workspace_restore_json(&request.session_token);
+        let runtime_path = paths::browser_workspace_state_json(&request.session_token);
         std::fs::create_dir_all(restore_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(runtime_path.parent().unwrap()).unwrap();
         std::fs::write(&restore_path, b"must-be-rolled-back").unwrap();
+        std::fs::write(
+            &runtime_path,
+            serde_json::to_vec(&json!({
+                "version": 2,
+                "mapping_authority": "host",
+                "revision": 7,
+                "session_token": request.session_token,
+                "active_tab": "tab-a",
+                "tabs": [{ "token": "tab-a", "target_id": "target-a" }],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         write_hosted_prepare_journal(&journal).unwrap();
         let cancellation_path = hosted_cancellation_path(&request);
         std::fs::create_dir_all(cancellation_path.parent().unwrap()).unwrap();
@@ -7261,6 +8187,7 @@ mod tests {
             .unwrap();
 
         assert!(!restore_path.exists());
+        assert!(!runtime_path.exists());
         assert!(!hosted_prepare_journal_path(&request).exists());
         assert_eq!(
             std::fs::read_dir(paths::browser_host_requests_dir())
@@ -7268,6 +8195,148 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn startup_superseded_committed_prepare_preserves_newer_restore_without_cancel() {
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = PinvouHomeGuard::install(temp.path());
+        let request = valid_hosted_prepare_request(100_000);
+        let mut journal = new_hosted_prepare_journal(&request, "prepared_session", 100_001);
+        journal.phase = HostedPreparePhase::Committed;
+        journal.compensation.revision = Some(7);
+        journal.response = Some(hosted_response(
+            &request,
+            Ok(json!({ "sessionId": request.session_id })),
+        ));
+        let restore_path = paths::browser_workspace_restore_json(&request.session_token);
+        let runtime_path = paths::browser_workspace_state_json(&request.session_token);
+        std::fs::create_dir_all(restore_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(runtime_path.parent().unwrap()).unwrap();
+        std::fs::write(&restore_path, b"newer-user-visible-restore").unwrap();
+        std::fs::write(
+            &runtime_path,
+            serde_json::to_vec(&json!({
+                "version": 2,
+                "mapping_authority": "host",
+                "revision": 8,
+                "session_token": request.session_token,
+                "active_tab": "tab-b",
+                "tabs": [{ "token": "tab-b", "target_id": "target-b" }],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        write_hosted_prepare_journal(&journal).unwrap();
+
+        recover_hosted_prepare_journals_for_process_start().unwrap();
+
+        assert_eq!(
+            std::fs::read(&restore_path).unwrap(),
+            b"newer-user-visible-restore"
+        );
+        assert!(!runtime_path.exists());
+        assert!(!hosted_prepare_journal_path(&request).exists());
+
+        let cancellation_path = hosted_cancellation_path(&request);
+        std::fs::create_dir_all(cancellation_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cancellation_path,
+            serde_json::to_vec(&hosted_internal_cancellation_value(
+                &request,
+                100_002,
+                Some(&journal.compensation),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        recover_hosted_prepare_journals_for_process_start().unwrap();
+        assert_eq!(
+            std::fs::read(&restore_path).unwrap(),
+            b"newer-user-visible-restore"
+        );
+    }
+
+    #[test]
+    fn startup_finishes_crash_safe_supersession_neutralization() {
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = PinvouHomeGuard::install(temp.path());
+        let request = valid_hosted_prepare_request(100_000);
+        let mut original = new_hosted_prepare_journal(&request, "prepared_session", 100_001);
+        original.compensation.revision = Some(7);
+        let old_compensation = original.compensation.clone();
+        let mut journal = new_hosted_prepare_journal(&request, "none", 100_001);
+        journal.phase = HostedPreparePhase::Cancelled;
+        let restore_path = paths::browser_workspace_restore_json(&request.session_token);
+        let runtime_path = paths::browser_workspace_state_json(&request.session_token);
+        std::fs::create_dir_all(restore_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(runtime_path.parent().unwrap()).unwrap();
+        std::fs::write(&restore_path, b"newer-user-visible-restore").unwrap();
+        std::fs::write(
+            &runtime_path,
+            serde_json::to_vec(&json!({
+                "version": 2,
+                "mapping_authority": "host",
+                "revision": 8,
+                "session_token": request.session_token,
+                "active_tab": "tab-b",
+                "tabs": [{ "token": "tab-b", "target_id": "target-b" }],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        write_hosted_prepare_journal(&journal).unwrap();
+        let cancellation_path = hosted_cancellation_path(&request);
+        std::fs::create_dir_all(cancellation_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cancellation_path,
+            serde_json::to_vec(&hosted_internal_cancellation_value(
+                &request,
+                100_002,
+                Some(&old_compensation),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+
+        recover_hosted_prepare_journals_for_process_start().unwrap();
+
+        assert_eq!(
+            std::fs::read(&restore_path).unwrap(),
+            b"newer-user-visible-restore"
+        );
+        assert!(!runtime_path.exists());
+        assert!(!hosted_prepare_journal_path(&request).exists());
+    }
+
+    #[test]
+    fn host_runtime_revision_requires_exact_authoritative_identity() {
+        let token = "0123456789abcdef";
+        let valid = json!({
+            "version": 2,
+            "mapping_authority": "host",
+            "revision": 8,
+            "session_token": token,
+        });
+        assert_eq!(parse_host_runtime_revision(&valid, token), Some(8));
+        assert_eq!(
+            parse_host_runtime_revision(&valid, "fedcba9876543210"),
+            None
+        );
+        for invalid in [
+            json!({ "version": 1, "mapping_authority": "host", "revision": 8, "session_token": token }),
+            json!({ "version": 2, "mapping_authority": "frontend", "revision": 8, "session_token": token }),
+            json!({ "version": 2, "mapping_authority": "host", "revision": 0, "session_token": token }),
+            json!({ "version": 2, "mapping_authority": "host", "revision": "8", "session_token": token }),
+        ] {
+            assert_eq!(parse_host_runtime_revision(&invalid, token), None);
+        }
     }
 
     #[test]
@@ -7341,10 +8410,59 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        assert!(matches!(
+            classify_hosted_prepare_journal_for_cancellation(&cancellation).unwrap(),
+            HostedPrepareJournalMatch::Superseded
+        ));
         remove_matching_hosted_prepare_journal(&cancellation).unwrap();
         remove_hosted_request_artifacts(&old_cancellation_path).unwrap();
 
         assert!(!old_cancellation_path.exists());
+        let retained =
+            read_hosted_prepare_journal(&hosted_prepare_journal_path(&new_request)).unwrap();
+        assert_eq!(retained.compensation.request_id, new_request.request_id);
+        assert_eq!(
+            retained.compensation.wrapper_instance_nonce,
+            new_request.wrapper_instance_nonce
+        );
+    }
+
+    #[tokio::test]
+    async fn late_cancel_rechecks_wal_identity_after_waiting_for_session_lifecycle() {
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = PinvouHomeGuard::install(temp.path());
+        let old_request = valid_hosted_prepare_request(100_000);
+        let old_journal = new_hosted_prepare_journal(&old_request, "prepared_session", 100_001);
+        write_hosted_prepare_journal(&old_journal).unwrap();
+        let cancellation_value = hosted_internal_cancellation_value(&old_request, 100_002, None);
+        let cancellation: HostedBrowserCancellation =
+            serde_json::from_value(cancellation_value).unwrap();
+
+        let manager = Arc::new(BrowserManager::new());
+        let lifecycle = manager.session_lifecycle_lock(&old_request.session_id);
+        let lifecycle_guard = lifecycle.lock().await;
+        let remover = {
+            let manager = Arc::clone(&manager);
+            tokio::spawn(async move {
+                manager
+                    .remove_matching_hosted_prepare_journal_serialized(&cancellation)
+                    .await
+            })
+        };
+        tokio::task::yield_now().await;
+
+        let mut new_request = valid_hosted_prepare_request(100_010);
+        new_request.request_id = "request-b".to_string();
+        new_request.idempotency_key = format!("{}/request-b", new_request.session_token);
+        new_request.wrapper_instance_nonce = "fedcba9876543210fedcba9876543210".to_string();
+        let new_journal = new_hosted_prepare_journal(&new_request, "restored_session", 100_011);
+        write_hosted_prepare_journal(&new_journal).unwrap();
+        drop(lifecycle_guard);
+
+        remover.await.unwrap().unwrap();
         let retained =
             read_hosted_prepare_journal(&hosted_prepare_journal_path(&new_request)).unwrap();
         assert_eq!(retained.compensation.request_id, new_request.request_id);
@@ -7376,6 +8494,157 @@ mod tests {
     }
 
     #[test]
+    fn startup_corrupt_prepare_journal_isolated_per_token_allows_fresh_generation() {
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = PinvouHomeGuard::install(temp.path());
+        let request = valid_hosted_prepare_request(100_000);
+        let journal_path = hosted_prepare_journal_path(&request);
+        let restore_path = paths::browser_workspace_restore_json(&request.session_token);
+        let runtime_path = paths::browser_workspace_state_json(&request.session_token);
+        std::fs::create_dir_all(journal_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(restore_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(runtime_path.parent().unwrap()).unwrap();
+        std::fs::write(&journal_path, b"{truncated").unwrap();
+        std::fs::write(&restore_path, b"unknown-restore-phase").unwrap();
+        std::fs::write(&runtime_path, b"unknown-runtime-generation").unwrap();
+
+        recover_hosted_prepare_journals_for_process_start().unwrap();
+        assert!(!journal_path.exists());
+        assert!(!restore_path.exists());
+        assert!(!runtime_path.exists());
+        let first_slot = hosted_prepare_quarantine_slot_dir(
+            &hosted_prepare_quarantine_token_dir(&request.session_token),
+            0,
+        );
+        assert_eq!(
+            std::fs::read(hosted_prepare_quarantine_state_path(&first_slot, "restore")).unwrap(),
+            b"unknown-restore-phase"
+        );
+        assert_eq!(
+            std::fs::read(hosted_prepare_quarantine_state_path(&first_slot, "runtime")).unwrap(),
+            b"unknown-runtime-generation"
+        );
+        assert_eq!(
+            std::fs::read(hosted_prepare_quarantine_state_path(&first_slot, "journal")).unwrap(),
+            b"{truncated"
+        );
+
+        let manager = BrowserManager::new();
+        manager.bind_session_validator(Arc::new(|_| true));
+        assert!(manager
+            .ensure_browser_session_allowed(&request.session_id)
+            .is_ok());
+        assert!(manager
+            .ensure_browser_session_allowed("brand-new-session")
+            .is_ok());
+
+        // A second damaged generation for the same task gets a new slot. The
+        // first slot is never mistaken for active restore/runtime state.
+        std::fs::write(&journal_path, b"{truncated-again").unwrap();
+        std::fs::write(&restore_path, b"second-restore").unwrap();
+        std::fs::write(&runtime_path, b"second-runtime").unwrap();
+        recover_hosted_prepare_journals_for_process_start().unwrap();
+        assert!(!journal_path.exists());
+        assert!(!restore_path.exists());
+        assert!(!runtime_path.exists());
+        let second_slot = hosted_prepare_quarantine_slot_dir(
+            &hosted_prepare_quarantine_token_dir(&request.session_token),
+            1,
+        );
+        assert_eq!(
+            std::fs::read(hosted_prepare_quarantine_state_path(
+                &second_slot,
+                "journal"
+            ))
+            .unwrap(),
+            b"{truncated-again"
+        );
+
+        remove_hosted_prepare_quarantine_for_session(&request.session_id).unwrap();
+        assert!(!hosted_prepare_quarantine_token_dir(&request.session_token).exists());
+    }
+
+    #[test]
+    fn startup_corrupt_prepare_journal_with_untrusted_name_isolated_without_task_mutation() {
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = PinvouHomeGuard::install(temp.path());
+        let request = valid_hosted_prepare_request(100_000);
+        let journal_path = hosted_prepare_journal_dir().join("NOT-A-SESSION-TOKEN.json");
+        let restore_path = paths::browser_workspace_restore_json(&request.session_token);
+        let runtime_path = paths::browser_workspace_state_json(&request.session_token);
+        std::fs::create_dir_all(journal_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(restore_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(runtime_path.parent().unwrap()).unwrap();
+        std::fs::write(&journal_path, b"{untrusted-name").unwrap();
+        std::fs::write(&restore_path, b"unrelated-restore").unwrap();
+        std::fs::write(&runtime_path, b"unrelated-runtime").unwrap();
+
+        recover_hosted_prepare_journals_for_process_start().unwrap();
+
+        assert!(!journal_path.exists());
+        assert_eq!(std::fs::read(&restore_path).unwrap(), b"unrelated-restore");
+        assert_eq!(std::fs::read(&runtime_path).unwrap(), b"unrelated-runtime");
+        let slot =
+            hosted_prepare_quarantine_slot_dir(&hosted_prepare_unassigned_quarantine_dir(), 0);
+        assert_eq!(
+            std::fs::read(hosted_prepare_quarantine_state_path(&slot, "journal")).unwrap(),
+            b"{untrusted-name"
+        );
+        let manager = BrowserManager::new();
+        manager.bind_session_validator(Arc::new(|_| true));
+        assert!(manager
+            .ensure_browser_session_allowed("brand-new-session")
+            .is_ok());
+    }
+
+    #[test]
+    fn startup_corrupt_prepare_quarantine_failure_keeps_journal_last_and_retries() {
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = PinvouHomeGuard::install(temp.path());
+        let request = valid_hosted_prepare_request(100_000);
+        let journal_path = hosted_prepare_journal_path(&request);
+        let restore_path = paths::browser_workspace_restore_json(&request.session_token);
+        let runtime_path = paths::browser_workspace_state_json(&request.session_token);
+        std::fs::create_dir_all(journal_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(restore_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(runtime_path.parent().unwrap()).unwrap();
+        std::fs::write(&journal_path, b"{truncated").unwrap();
+        std::fs::write(&restore_path, b"restore").unwrap();
+        std::fs::write(&runtime_path, b"runtime").unwrap();
+        let slot = hosted_prepare_quarantine_slot_dir(
+            &hosted_prepare_quarantine_token_dir(&request.session_token),
+            0,
+        );
+        std::fs::create_dir_all(&slot).unwrap();
+        let restore_destination = hosted_prepare_quarantine_state_path(&slot, "restore");
+        std::fs::create_dir(&restore_destination).unwrap();
+
+        let error = recover_hosted_prepare_journals_for_process_start()
+            .expect_err("a partial coordinated move must remain fail-closed");
+        assert!(error.contains("Failed to inspect quarantined browser restore manifest"));
+        assert!(journal_path.is_file(), "the journal marker must move last");
+        assert!(restore_path.is_file());
+        assert!(!runtime_path.exists());
+        assert!(hosted_prepare_quarantine_state_path(&slot, "runtime").is_file());
+
+        std::fs::remove_dir(restore_destination).unwrap();
+        recover_hosted_prepare_journals_for_process_start().unwrap();
+        assert!(!journal_path.exists());
+        assert!(!restore_path.exists());
+        assert!(hosted_prepare_quarantine_state_path(&slot, "restore").is_file());
+        assert!(hosted_prepare_quarantine_state_path(&slot, "journal").is_file());
+    }
+
+    #[test]
     fn startup_journal_directory_io_error_fails_closed() {
         let _env_lock = crate::platform::paths::tests::ENV_LOCK
             .lock()
@@ -7390,6 +8659,194 @@ mod tests {
         std::fs::remove_file(&journal_dir).unwrap();
         recover_hosted_prepare_journals_for_process_start()
             .expect("the re-armed startup recovery succeeds after the I/O fault is repaired");
+    }
+
+    #[test]
+    fn prepare_quarantine_reconciliation_removes_only_old_orphan_slots() {
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = PinvouHomeGuard::install(temp.path());
+        let active_token = paths::browser_session_token("active-session");
+        let orphan_token = paths::browser_session_token("orphan-session");
+        let fresh_token = paths::browser_session_token("fresh-session");
+        let write_complete_slot = |parent: PathBuf| {
+            let slot = hosted_prepare_quarantine_slot_dir(&parent, 0);
+            std::fs::create_dir_all(&slot).unwrap();
+            std::fs::write(
+                hosted_prepare_quarantine_state_path(&slot, "journal"),
+                b"quarantined",
+            )
+            .unwrap();
+            slot
+        };
+        let active_slot = write_complete_slot(hosted_prepare_quarantine_token_dir(&active_token));
+        let orphan_slot = write_complete_slot(hosted_prepare_quarantine_token_dir(&orphan_token));
+        let unassigned_slot = write_complete_slot(hosted_prepare_unassigned_quarantine_dir());
+
+        reconcile_hosted_prepare_quarantine_files(
+            &HashSet::from([active_token.clone()]),
+            SystemTime::now() + Duration::from_secs(1),
+        )
+        .unwrap();
+        assert!(active_slot.exists());
+        assert!(!orphan_slot.exists());
+        assert!(!unassigned_slot.exists());
+
+        let fresh_slot = write_complete_slot(hosted_prepare_quarantine_token_dir(&fresh_token));
+        reconcile_hosted_prepare_quarantine_files(&HashSet::new(), SystemTime::UNIX_EPOCH).unwrap();
+        assert!(fresh_slot.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_recovery_and_cleanup_reject_symlink_roots_without_touching_targets() {
+        use std::os::unix::fs::symlink;
+
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = PinvouHomeGuard::install(temp.path());
+        let request = valid_hosted_prepare_request(100_000);
+
+        let external_journal_dir = temp.path().join("external-journal");
+        std::fs::create_dir_all(&external_journal_dir).unwrap();
+        let external_journal = external_journal_dir.join(format!("{}.json", request.session_token));
+        let journal = new_hosted_prepare_journal(&request, "prepared_session", 100_001);
+        let external_journal_bytes = serde_json::to_vec(&journal).unwrap();
+        std::fs::write(&external_journal, &external_journal_bytes).unwrap();
+        std::fs::create_dir_all(paths::browser_home()).unwrap();
+        symlink(&external_journal_dir, hosted_prepare_journal_dir()).unwrap();
+
+        assert!(write_hosted_prepare_journal(&journal).is_err());
+        assert_eq!(
+            std::fs::read(&external_journal).unwrap(),
+            external_journal_bytes
+        );
+        assert!(recover_hosted_prepare_journals_for_process_start().is_err());
+        assert!(external_journal.is_file());
+        std::fs::remove_file(hosted_prepare_journal_dir()).unwrap();
+
+        std::fs::create_dir_all(hosted_prepare_journal_dir()).unwrap();
+        let linked_journal = hosted_prepare_journal_path(&request);
+        symlink(&external_journal, &linked_journal).unwrap();
+        let restore_path = paths::browser_workspace_restore_json(&request.session_token);
+        let runtime_path = paths::browser_workspace_state_json(&request.session_token);
+        std::fs::create_dir_all(restore_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(runtime_path.parent().unwrap()).unwrap();
+        std::fs::write(&restore_path, b"restore-must-remain").unwrap();
+        std::fs::write(&runtime_path, b"runtime-must-remain").unwrap();
+        assert!(recover_hosted_prepare_journals_for_process_start().is_err());
+        assert_eq!(
+            std::fs::read(&restore_path).unwrap(),
+            b"restore-must-remain"
+        );
+        assert_eq!(
+            std::fs::read(&runtime_path).unwrap(),
+            b"runtime-must-remain"
+        );
+        std::fs::remove_file(linked_journal).unwrap();
+
+        let dangling_target = temp.path().join("missing-prepare-journal");
+        let dangling_journal = hosted_prepare_journal_path(&request);
+        symlink(&dangling_target, &dangling_journal).unwrap();
+        assert!(remove_hosted_prepare_journal_for_session(&request.session_id).is_err());
+        assert!(std::fs::symlink_metadata(&dangling_journal).is_ok());
+        std::fs::remove_file(dangling_journal).unwrap();
+
+        let external_quarantine = temp.path().join("external-quarantine");
+        let external_slot = hosted_prepare_quarantine_slot_dir(
+            &external_quarantine.join(&request.session_token),
+            0,
+        );
+        std::fs::create_dir_all(&external_slot).unwrap();
+        let external_marker = hosted_prepare_quarantine_state_path(&external_slot, "journal");
+        std::fs::write(&external_marker, b"must-remain").unwrap();
+        symlink(&external_quarantine, hosted_prepare_quarantine_dir()).unwrap();
+
+        assert!(remove_hosted_prepare_quarantine_for_token(&request.session_token).is_err());
+        assert!(reconcile_hosted_prepare_quarantine_files(
+            &HashSet::new(),
+            SystemTime::now() + Duration::from_secs(1),
+        )
+        .is_err());
+        assert_eq!(std::fs::read(&external_marker).unwrap(), b"must-remain");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_file_reconciliation_rejects_symlink_roots_without_touching_targets() {
+        use std::os::unix::fs::symlink;
+
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = PinvouHomeGuard::install(temp.path());
+        let external = temp.path().join("external-session-files");
+        std::fs::create_dir_all(&external).unwrap();
+        let sentinel = external.join("0123456789abcdef.json");
+        std::fs::write(&sentinel, b"outside-must-remain").unwrap();
+        let manager = BrowserManager::new();
+
+        for root in [
+            paths::browser_workspace_restore_dir(),
+            paths::browser_workspaces_dir(),
+            paths::browser_session_mcp_dir(),
+            hosted_prepare_journal_dir(),
+        ] {
+            std::fs::create_dir_all(root.parent().unwrap()).unwrap();
+            symlink(&external, &root).unwrap();
+            let error = manager.reconcile_session_files(&[]).unwrap_err();
+            assert!(
+                error.contains("Failed to open browser session directory"),
+                "unexpected reconciliation error for {}: {error}",
+                root.display()
+            );
+            assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside-must-remain");
+            std::fs::remove_file(root).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn destructive_session_cleanup_rejects_replaced_restore_and_mcp_roots() {
+        use std::os::unix::fs::symlink;
+
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home = PinvouHomeGuard::install(temp.path());
+        let cleanup_paths = [
+            paths::browser_workspace_restore_json("restore-session-token"),
+            paths::browser_session_mcp_json("mcp-session"),
+        ];
+
+        for (index, cleanup_path) in cleanup_paths.into_iter().enumerate() {
+            let root = cleanup_path.parent().unwrap();
+            std::fs::create_dir_all(root.parent().unwrap()).unwrap();
+            let external = temp.path().join(format!("external-cleanup-{index}"));
+            std::fs::create_dir_all(&external).unwrap();
+            let sentinel = external.join(cleanup_path.file_name().unwrap());
+            std::fs::write(&sentinel, b"outside-must-remain").unwrap();
+            symlink(&external, root).unwrap();
+
+            let error = remove_private_plain_file_and_verify_absent(
+                &cleanup_path,
+                "destructive browser cleanup",
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("Failed to open destructive browser cleanup directory"),
+                "unexpected cleanup error for {}: {error}",
+                root.display()
+            );
+            assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside-must-remain");
+            std::fs::remove_file(root).unwrap();
+        }
     }
 
     #[test]
@@ -7485,6 +8942,9 @@ mod tests {
             Some("prepared_session")
         );
         assert_eq!(PreparedWorkspaceDisposition::Existing.rollback_kind(), None);
+        assert!(should_remove_prepare_restore("prepared_session", true));
+        assert!(!should_remove_prepare_restore("prepared_session", false));
+        assert!(!should_remove_prepare_restore("restored_session", true));
     }
 
     #[test]
@@ -7589,8 +9049,8 @@ mod tests {
             .is_err());
     }
 
-    #[test]
-    fn late_cancellation_for_absent_session_removes_artifacts_without_ledger_entry() {
+    #[tokio::test]
+    async fn late_cancellation_for_absent_session_removes_artifacts_without_ledger_entry() {
         let _env_lock = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -7615,6 +9075,7 @@ mod tests {
 
         assert!(manager
             .discard_absent_session_cancellation(&cancellation, &cancellation_path)
+            .await
             .unwrap());
 
         assert_eq!(manager.native_surface.lock().request_record_count(), 0);
@@ -7951,6 +9412,62 @@ mod tests {
         assert_eq!(parse_port_json(r#"{"port": 9222}"#), Some(9222));
         assert_eq!(parse_port_json(r#"{"port": 1}"#), Some(1));
         assert_eq!(parse_port_json(r#"{"port": 65535}"#), Some(65535));
+    }
+
+    #[test]
+    fn cdp_version_accepts_edge_webview2_and_chrome_loopback_endpoints() {
+        for browser in [
+            "Edg/140.0.0.0",
+            "Chrome/140.0.0.0",
+            "HeadlessChrome/140.0.0.0",
+        ] {
+            let version = json!({
+                "Browser": browser,
+                "Protocol-Version": "1.3",
+                "webSocketDebuggerUrl": "ws://localhost:9222/devtools/browser/01234567-89ab-cdef"
+            });
+            assert!(cdp_version_matches_loopback_endpoint(&version, 9222));
+        }
+    }
+
+    #[test]
+    fn cdp_version_rejects_foreign_or_misdirected_endpoints() {
+        let valid = json!({
+            "Browser": "Edg/140.0.0.0",
+            "Protocol-Version": "1.3",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/01234567-89ab-cdef"
+        });
+        assert!(cdp_version_matches_loopback_endpoint(&valid, 9222));
+
+        for invalid in [
+            json!({
+                "Browser": "Firefox/140.0",
+                "Protocol-Version": "1.3",
+                "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/id"
+            }),
+            json!({
+                "Browser": "Edg/140.0.0.0",
+                "Protocol-Version": "2.0",
+                "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/id"
+            }),
+            json!({
+                "Browser": "Edg/140.0.0.0",
+                "Protocol-Version": "1.3",
+                "webSocketDebuggerUrl": "ws://example.com:9222/devtools/browser/id"
+            }),
+            json!({
+                "Browser": "Edg/140.0.0.0",
+                "Protocol-Version": "1.3",
+                "webSocketDebuggerUrl": "ws://127.0.0.1:9333/devtools/browser/id"
+            }),
+            json!({
+                "Browser": "Edg/140.0.0.0",
+                "Protocol-Version": "1.3",
+                "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/id"
+            }),
+        ] {
+            assert!(!cdp_version_matches_loopback_endpoint(&invalid, 9222));
+        }
     }
 
     #[test]

@@ -169,6 +169,9 @@ pub(super) async fn evaluate_json(
                         }
                         completion_state.finish();
                     });
+                // SAFETY: on macOS, wry's WebviewInner is exactly a WKWebView
+                // and with_webview guarantees main-thread access while the
+                // closure runs, keeping the reference alive for this scope.
                 let view = unsafe { &*platform.inner().cast::<WKWebView>() };
                 let dispatch = || {
                     if !callback_state.begin() {
@@ -853,6 +856,9 @@ async fn with_native_webview(
             } else if MainThreadMarker::new().is_none() {
                 Err("browser/wkwebview-not-on-main-thread".to_string())
             } else {
+                // SAFETY: on macOS, wry's WebviewInner is exactly a WKWebView
+                // and ns_window() an NSWindow; with_webview guarantees
+                // main-thread access and keeps both alive for this closure.
                 let view = unsafe { &*platform.inner().cast::<WKWebView>() };
                 let window = unsafe { &*platform.ns_window().cast::<NSWindow>() };
                 // DOM resolution can be delayed by the page. Revalidate the

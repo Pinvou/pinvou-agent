@@ -36,7 +36,11 @@ import {
   RefreshCw,
   XIcon,
 } from '../../components/icons.jsx';
-import { hideNativeSurfaceWithRetry } from './native-surface-transition.mjs';
+import {
+  createDegradedNativeSurfaceHideLease,
+  hideNativeSurfaceWithRetry,
+  isFailedNativeSurfaceHideGenerationCurrent,
+} from './native-surface-transition.mjs';
 import {
   EMPTY_PERSISTENCE_WARNING,
   isPersistenceStatusCurrent,
@@ -247,16 +251,42 @@ function resumeNativeSurfaceOwner(owner, sessionId) {
 
 // React layers cannot cover a native child WebView. Callers acquire this lease
 // before publishing an overlay/view/session switch, then release it after the
-// guarded React tree has committed. A failed hide never yields a lease.
-export async function acquireNativeSurfaceTransitionHide(fallbackSessionId) {
+// guarded React tree has committed. Only primary navigation may retain a
+// degraded cleanup lease after both initial hide attempts fail.
+export async function acquireNativeSurfaceTransitionHide(
+  fallbackSessionId,
+  { retainOnFailure = false } = {},
+) {
   const owner = Symbol('browser-native-surface-transition');
   const sessionId = nativeSurfaceCoordinator.sessionId || fallbackSessionId;
   if (!sessionId) return { release() {} };
 
   nativeSurfaceCoordinator.transitionOwners.add(owner);
   try {
-    await claimNativeSurfaceHide(owner, sessionId);
+    const hide = claimNativeSurfaceHide(owner, sessionId);
+    await hide;
   } catch (error) {
+    if (retainOnFailure) {
+      return createDegradedNativeSurfaceHideLease({
+        error,
+        isRetryCurrent: () => isFailedNativeSurfaceHideGenerationCurrent({
+          transitionOwnerPresent: nativeSurfaceCoordinator.transitionOwners.has(owner),
+          capturedSessionId: sessionId,
+          currentSessionId: nativeSurfaceCoordinator.sessionId,
+          desired: nativeSurfaceCoordinator.desired,
+          phase: nativeSurfaceCoordinator.phase,
+          pending: nativeSurfaceCoordinator.pending,
+        }),
+        retryHide: () => claimNativeSurfaceHide(owner, sessionId),
+        releaseOwner: () => resumeNativeSurfaceOwner(owner, sessionId),
+        onRetryError: (retryError) => {
+          console.error(
+            `[browser] degraded navigation cleanup hide failed (session=${sessionId})`,
+            retryError,
+          );
+        },
+      });
+    }
     resumeNativeSurfaceOwner(owner, sessionId);
     throw error;
   }

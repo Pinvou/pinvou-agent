@@ -63,7 +63,6 @@ struct WebviewBinding {
     /// It remains active until the WebView returns to its real URL, so only
     /// that process-local transition can be hidden from UI and persistence.
     active_binding_nonce: Option<String>,
-    binding_marker_seen: bool,
     /// Immutable construction provenance. Keep this separate from the
     /// one-shot pending state so idempotent re-registration cannot re-arm a
     /// bootstrap that has already settled.
@@ -194,15 +193,136 @@ pub(super) fn prepare_process_environment() -> Result<(), String> {
     Ok(())
 }
 
+/// Pidfile recording the WebKitWebDriver child of this profile, next to the
+/// profile directory it serves. Used by the next process start to sweep a
+/// driver orphaned by a hard crash of the previous run.
+fn driver_pidfile_path() -> std::path::PathBuf {
+    crate::platform::paths::browser_webview_profile_dir()
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("/tmp"))
+        .join("webkit-webdriver.pid")
+}
+
+/// Kill a driver left behind by a previous process that died without its
+/// graceful kill path (SIGKILL, OOM, power loss). PDEATHSIG covers children
+/// spawned since that mechanism existed; this sweep also covers survivors of
+/// older runs. The pidfile includes Linux's immutable process starttime; the
+/// pid, starttime, uid, and comm must all still match immediately before each
+/// signal so PID reuse cannot target another WebKitWebDriver process.
+fn sweep_orphaned_driver() {
+    let path = driver_pidfile_path();
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let _ = std::fs::remove_file(&path);
+    let mut fields = raw.split_whitespace();
+    let (Some(pid), Some(starttime), None) = (fields.next(), fields.next(), fields.next()) else {
+        return;
+    };
+    let (Ok(pid), Ok(starttime)) = (pid.parse::<i32>(), starttime.parse::<u64>()) else {
+        return;
+    };
+    if pid <= 0 {
+        return;
+    }
+    if !driver_process_identity_matches(pid, starttime) {
+        return;
+    }
+    // SAFETY: the exact process identity was revalidated immediately above.
+    if unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
+        eprintln!("[browser] swept orphaned WebKitWebDriver pid {pid} from a previous run");
+        // Best-effort wait: SIGKILL follows if the driver ignores SIGTERM.
+        for _ in 0..20 {
+            if !driver_process_identity_matches(pid, starttime) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if driver_process_identity_matches(pid, starttime) {
+            // SAFETY: the exact process identity was revalidated immediately above.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+    }
+}
+
+fn record_driver_pid(child: &Child) {
+    let path = driver_pidfile_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let pid = child.id() as i32;
+    let Some(starttime) = linux_process_starttime(pid) else {
+        return;
+    };
+    let encoded = format!("{pid} {starttime}\n");
+    let _ = crate::platform::filesystem::atomic_write_private(&path, encoded.as_bytes());
+}
+
+fn parse_linux_process_starttime(stat: &str) -> Option<u64> {
+    // /proc/<pid>/stat field 2 is parenthesized and may contain spaces or ')'.
+    // Split after its final closing parenthesis; index 19 is then field 22,
+    // the process starttime in clock ticks since boot.
+    stat.rsplit_once(") ")?
+        .1
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()
+}
+
+fn linux_process_starttime(pid: i32) -> Option<u64> {
+    let stat = std::fs::read_to_string(
+        std::path::Path::new("/proc")
+            .join(pid.to_string())
+            .join("stat"),
+    )
+    .ok()?;
+    parse_linux_process_starttime(&stat)
+}
+
+fn driver_process_identity_matches(pid: i32, expected_starttime: u64) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let process_dir = std::path::Path::new("/proc").join(pid.to_string());
+    std::fs::metadata(&process_dir)
+        .is_ok_and(|metadata| metadata.uid() == unsafe { libc::geteuid() })
+        && linux_process_starttime(pid) == Some(expected_starttime)
+        && std::fs::read_to_string(process_dir.join("comm"))
+            .is_ok_and(|comm| comm.trim().eq_ignore_ascii_case("WebKitWebDriver"))
+}
+
+fn clear_driver_pid() {
+    let _ = std::fs::remove_file(driver_pidfile_path());
+}
+
 pub(super) fn install_automation_context(app: &mut tauri::App) -> Result<(), String> {
     let inspector_port = INSPECTOR_PORT
         .get()
         .copied()
         .ok_or_else(|| "inspector endpoint was not prepared".to_string())?;
+    sweep_orphaned_driver();
     let profile = crate::platform::paths::browser_webview_profile_dir();
     std::fs::create_dir_all(&profile)
         .map_err(|error| format!("create browser profile {}: {error}", profile.display()))?;
+    // The profile stores WebKit cookies/cache for task pages. `make_private_dir`
+    // only warns on chmod failure; under a permissive umask the directory would
+    // stay group/world-readable, so verify the final mode and fail closed
+    // instead of automating pages with a readable profile on multi-user hosts.
     crate::platform::os::make_private_dir(&profile);
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&profile)
+            .map_err(|error| format!("read browser profile {}: {error}", profile.display()))?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "browser profile {} is group/world-accessible (mode {:o}); refusing browser automation",
+                profile.display(),
+                mode & 0o777
+            ));
+        }
+    }
 
     app.wry_plugin(BrowserAutomationContextPlugin { profile });
     if !AUTOMATION_CONTEXT_READY.load(Ordering::SeqCst) {
@@ -294,7 +414,6 @@ fn register_webview_binding_inner(
                 WebviewBinding {
                     nonce,
                     active_binding_nonce: None,
-                    binding_marker_seen: false,
                     registered_host_bootstrap: host_bootstrap_pending,
                     host_bootstrap_pending,
                     host_bootstrap_settled: Arc::new(tokio::sync::Notify::new()),
@@ -478,7 +597,6 @@ fn rotate_binding_nonce_locked(
     }
     binding.nonce = nonce.clone();
     binding.active_binding_nonce = Some(nonce.clone());
-    binding.binding_marker_seen = false;
     binding.active_binding_restore_url = None;
     Ok(nonce)
 }
@@ -503,12 +621,10 @@ pub(super) fn classify_binding_navigation(label: &str, url: &str) -> bool {
         .strip_prefix(BINDING_MARKER_PREFIX)
         .is_some_and(|candidate| candidate == nonce);
     if marker_matches {
-        binding.binding_marker_seen = true;
         return true;
     }
     if binding.active_binding_restore_url.as_deref() == Some(url) {
         binding.active_binding_nonce = None;
-        binding.binding_marker_seen = false;
         binding.active_binding_restore_url = None;
         return true;
     }
@@ -516,7 +632,6 @@ pub(super) fn classify_binding_navigation(label: &str, url: &str) -> bool {
     // callback is therefore a real navigation and closes the private binding
     // window, even if it precedes the marker policy callback.
     binding.active_binding_nonce = None;
-    binding.binding_marker_seen = false;
     binding.active_binding_restore_url = None;
     false
 }
@@ -542,7 +657,6 @@ fn cancel_binding_navigation(label: &str, nonce: &str) {
         if let Some(binding) = registry.get_mut(label) {
             if binding.active_binding_nonce.as_deref() == Some(nonce) {
                 binding.active_binding_nonce = None;
-                binding.binding_marker_seen = false;
                 binding.active_binding_restore_url = None;
             }
         }
@@ -1066,6 +1180,7 @@ impl WebDriverRuntime {
         if let Some(mut child) = self.child.lock().take() {
             let _ = child.kill();
             let _ = child.wait();
+            clear_driver_pid();
         }
     }
 
@@ -1123,14 +1238,40 @@ impl WebDriverRuntime {
         let driver_port = reserve_loopback_port()?;
         let endpoint = format!("http://127.0.0.1:{driver_port}");
         publish_process_child_if_active(&PROCESS_SHUTTING_DOWN, &self.child, || {
-            Command::new(&binary)
+            let mut command = Command::new(&binary);
+            command
                 .arg(format!("--port={driver_port}"))
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::null());
+            // Graceful stop/exit already kill+wait the driver through the child
+            // slot, but a hard crash (SIGKILL/OOM) of this process would leave
+            // the driver listening forever. Ask the kernel to reap it with us:
+            // PDEATHSIG is armed pre-exec so the child cannot race past it, and
+            // re-checked post-fork because the spawning thread could itself die
+            // between fork and prctl.
+            let expected_parent = unsafe { libc::getpid() };
+            unsafe {
+                use std::os::unix::process::CommandExt;
+                command.pre_exec(move || {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::getppid() != expected_parent {
+                        return Err(std::io::Error::other(
+                            "spawning parent changed before PDEATHSIG was armed",
+                        ));
+                    }
+                    Ok(())
+                });
+            }
+            command
                 .spawn()
                 .map_err(|error| format!("start {}: {error}", binary.display()))
         })?;
+        if let Some(child) = self.child.lock().as_ref() {
+            record_driver_pid(child);
+        }
         *self.session.lock() = DriverSessionState::Starting;
 
         let deadline = tokio::time::Instant::now() + SESSION_READY_TIMEOUT;
@@ -2113,6 +2254,20 @@ mod tests {
     use super::super::state::NativeControlOwner;
     use super::*;
     use std::io::{Read, Write};
+
+    #[test]
+    fn proc_stat_starttime_parser_handles_spaces_and_closing_parentheses_in_comm() {
+        let stat =
+            "123 (WebKit) Web Driver) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 424242 20";
+        assert_eq!(parse_linux_process_starttime(stat), Some(424242));
+        assert_eq!(parse_linux_process_starttime("123 (short) S 1 2"), None);
+        assert_eq!(
+            parse_linux_process_starttime(
+                "123 (driver) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 invalid"
+            ),
+            None
+        );
+    }
 
     fn spawn_one_shot_webdriver_with_responder<F>(
         responder: F,

@@ -1,5 +1,7 @@
 # Browser workspace acceptance
 
+Domain terms used by this contract are defined in [`docs/browser-workspace-context.md`](browser-workspace-context.md).
+
 ## Product boundary
 
 - The browser is a right-side work surface for the current task conversation, not a global feature page in the left sidebar.
@@ -46,6 +48,8 @@ Linux provides a reachable native-page and Agent-automation loop: the system Web
 
 Neither Linux nor the macOS preview currently exposes screenshots to the Agent, and neither provides a standalone scroll tool. Their current verification contract covers DOM or accessibility structure and supported interactions only. It does not let the model inspect colors, spacing, animation quality, sharpness, or other visual styling. The visible native page is for the user; a successful DOM snapshot is not visual confirmation. Normal macOS releases keep both browser capabilities disabled and must not treat a display-only surface, external Chrome, screenshot stream, or synthetic JavaScript interaction as completion.
 
+BrowserCore element resolution runs its uid registry per frame but resolves interaction coordinates from the main frame only, so elements inside any iframe — including same-origin ones — fail with `browser/stale-ref` on Linux and the macOS preview. This is fail-closed by design; the Windows CDP backend can act inside frames. Acceptance must not expect cross-frame interaction parity until the BrowserCore backends gain per-frame resolution.
+
 After a Linux WebDriver session crash, the host may briefly navigate the page to a random internal marker while safely rebuilding the handle mapping, then reload the original URL. Acceptance must not expect form values, Canvas contents, or JavaScript memory to survive. It must verify that the remote page's main world never receives a stable binding identity and that the recovered page still belongs to the original task and tab.
 
 ## Future complete three-platform automation target (not delivered by this PR)
@@ -73,6 +77,7 @@ This table is a future product target, not a statement of what the current PR ex
 - After minimize, DPI change, or shrink-and-restore: no more than `1` physical pixel of bounds error.
 - Before a blocking dialog, full-screen preview, non-browser Dock panel, or hidden main window appears, the native page must hide. Restoration must not flicker, black-screen, or paint through the overlay.
 - Closing a task must leave no orphan WebView, CDP endpoint, task MCP configuration, or restoration manifest. A normal application restart preserves only the minimal URL/order/active-index manifest with user-private permissions; old tab tokens, target IDs, leases, and runtime mappings must be deleted.
+- An unreadable durable Prepare journal with a canonical lowercase session-token filename must be isolated together with that exact token's process-local runtime mapping and restore manifest, moving runtime then restore and the journal last into a private, per-token generation slot. Directory roots and children must remain pinned for enumeration, move, and cleanup; symlinks, junctions, reparse points, and unstable regular-file identities must fail closed. A partial move must keep the active journal visible, block browser admission globally, and retry the same slot with bounded backoff. Once the journal marker moves successfully, no quarantined state may be restored or treated as active, unrelated tasks and a fresh generation for the same task must remain usable, and repeated corruption must use a new slot. A regular `.json` journal with an untrusted filename must be isolated in an unassigned journal-only slot without mutating any task state. Task cleanup and startup orphan reconciliation must remove eligible completed slots only through anchored handles and must not derive authority from unexpected names. A committed WAL whose exact token-scoped host runtime has a higher revision must be durably changed to non-compensating before that revision witness is removed; after any crash point, the newer restore manifest must survive and a late old cancellation must be an acknowledged no-op.
 
 ### Performance collection and evaluation
 

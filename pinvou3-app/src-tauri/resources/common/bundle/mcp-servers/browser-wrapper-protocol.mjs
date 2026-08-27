@@ -1161,8 +1161,21 @@ export function isAllowedBrowserUrl(value) {
   if (value === 'about:blank') return true;
   if (typeof value !== 'string') return false;
   try {
-    const protocol = new URL(value).protocol;
-    return protocol === 'http:' || protocol === 'https:';
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    // Mirror the Rust host gate (is_allowed_url in features/browser/mod.rs):
+    // never let a tab turn itself into a second application UI origin. The
+    // host re-validates, but rejecting here fails the call before any page
+    // dispatch on every platform.
+    if (!parsed.hostname) return false;
+    const host = parsed.hostname.toLowerCase();
+    const reservedReleaseOrigin = host === 'tauri.localhost';
+    const reservedDevHost = host === 'localhost'
+      || host === '127.0.0.1'
+      || host === '[::1]'
+      || host === '::1';
+    const reservedDevOrigin = reservedDevHost && parsed.port === '1420';
+    return !reservedReleaseOrigin && !reservedDevOrigin;
   } catch {
     return false;
   }
