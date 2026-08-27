@@ -218,25 +218,17 @@ pub(crate) fn llama_engine_stop() {
     server::stop();
 }
 
-/// 删除模型：运行/启动中的引擎先停止（Windows 下模型文件被进程占用
-/// 无法删除），再删权重文件；安装状态由下次 `llama_engine_status`
-/// 按文件存在性重算。
+/// 删除模型：delete_model_files 内部先停运行/启动中的引擎并等收口
+/// （Windows 下模型文件被进程占用无法删除，超时返回明确错误），再删权重
+/// 文件；安装状态由下次 `llama_engine_status` 按文件存在性重算。
 pub(crate) fn llama_engine_delete_model(model: String) -> Result<(), String> {
     let spec = download::model_spec(&model)?;
-    let phase = server::runtime_snapshot().phase;
-    if phase == "running" || phase == "starting" {
-        server::stop();
-    }
     download::delete_model_files(spec).map(|_| ())
 }
 
-/// 卸载引擎：运行/启动中先停止，再删引擎二进制与共享库；模型文件保留，
-/// 重装引擎后即可直接使用。
+/// 卸载引擎：delete_engine_files 内部先停运行/启动中的引擎并等收口，再删
+/// 引擎二进制与共享库；模型文件保留，重装引擎后即可直接使用。
 pub(crate) fn llama_engine_delete_engine() -> Result<(), String> {
-    let phase = server::runtime_snapshot().phase;
-    if phase == "running" || phase == "starting" {
-        server::stop();
-    }
     download::delete_engine_files().map(|_| ())
 }
 

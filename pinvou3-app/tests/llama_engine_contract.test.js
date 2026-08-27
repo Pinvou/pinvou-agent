@@ -21,7 +21,7 @@ function readRoot(rel) {
 //    条件覆盖为 llama_engine::vision_endpoint()（引擎运行中优先），
 //    且不引入 --alias（单模型模式忽略请求体 model 字段）。
 const bridge = read("features/assistant/platform/bridge.rs");
-const visionResolveMatch = bridge.match(/fn resolve_vision_model_config\(&self\)[\s\S]*?\n    \}/);
+const visionResolveMatch = bridge.match(/fn resolve_vision_model_config\(&self\)[\s\S]*?\n {4}\}/);
 assert(visionResolveMatch, "bridge.rs 必须保留 resolve_vision_model_config（视觉工具配置解析）");
 const visionResolve = visionResolveMatch[0];
 // 规则 0：模型显式选择「本地识图引擎」且引擎运行中 → 本地端点（最高优先级）。
@@ -118,15 +118,26 @@ assert(
   "windows 平台资产名必须使用 win-vulkan 包（CPU+Vulkan 一体）"
 );
 
-// 4. 下载安全：模型/引擎 URL 全部 https；环境变量覆盖存在（测试/镜像用）。
+// 4. 下载安全：模型/引擎 URL 全部 https；开发用 env 覆盖仅 debug 构建生效
+//    （release 忽略并 warn，不固化暴露面——契约钉“release 下覆盖不生效”的
+//    语义，而不是强制这些覆盖存在）。
 const download = read("features/llama_engine/download.rs");
 const urlConsts = download.match(/primary_url:\s*"[^"]+"/g) || [];
 for (const line of urlConsts) {
   assert(/https:\/\//.test(line), `模型下载 URL 必须为 https: ${line}`);
 }
+assert(
+  /fn dev_env_override\(name: &str\)[\s\S]{0,400}?cfg!\(debug_assertions\)/.test(download),
+  "download.rs 必须经 dev_env_override 把 env 开发覆盖限制在 debug_assertions 下"
+);
 for (const envName of ["PINVOU3_LLAMA_MODEL_URL", "PINVOU3_LLAMA_ENGINE_TAG", "PINVOU3_LLAMA_MODEL_SHA256"]) {
-  assert(download.includes(envName), `download.rs 必须支持 ${envName} 覆盖`);
+  assert(download.includes(envName), `download.rs 必须保留 ${envName} 开发覆盖入口（debug 限定）`);
 }
+// URL 覆盖在 debug 下也强制 https scheme。
+assert(
+  /PINVOU3_LLAMA_MODEL_URL[\s\S]{0,300}?starts_with\("https:\/\/"\)/.test(download),
+  "PINVOU3_LLAMA_MODEL_URL 覆盖必须通过 https scheme 校验"
+);
 
 // 5. 引擎只下载到用户目录（~/.pinvou3/llama-engine/），不引用 resources/common。
 const modFile = read("features/llama_engine/mod.rs");

@@ -5,7 +5,9 @@
 //! 校验，fail closed（不匹配即删除报错）；模型校验结果带缓存，状态热路径只消费
 //! 缓存不重复全量 hash。引擎 tag 默认锁定 PINNED_ENGINE_TAG，记入
 //! engine-meta.json；`PINVOU3_LLAMA_ENGINE_TAG` 显式覆盖时为开发通道，跳过
-//! digest 校验。GitHub 资产不支持断点续传，失败整文件重下。
+//! digest 校验。所有 env 开发覆盖（tag/URL/sha256）仅 debug 构建生效，release
+//! 忽略并 warn 一次（见 `dev_env_override`）。GitHub 资产不支持断点续传，
+//! 失败整文件重下。
 //!
 //! 进度事件 `llama-engine:progress` payload：
 //! `{ stage: engine_download|engine_extract|model_download|model_verify|done|cancelled,
@@ -162,19 +164,43 @@ fn engine_installed_with_tag(tag: &str) -> bool {
     engine_installed() && engine_tag().as_deref() == Some(tag)
 }
 
+/// 开发用 env 覆盖统一入口：仅 debug 构建生效，release 下忽略并 log::warn
+/// 一次。这些覆盖（`PINVOU3_LLAMA_ENGINE_TAG` / `PINVOU3_LLAMA_MODEL_URL` /
+/// per-asset sha env）可替换下载源、选任意引擎 tag、绕过 sha256 校验，release
+/// 生效会把开发通道暴露给最终用户。
+fn dev_env_override(name: &str) -> Option<String> {
+    let value = std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    if cfg!(debug_assertions) {
+        value
+    } else {
+        if value.is_some() {
+            static WARNED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+            let mut warned = WARNED
+                .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if warned.insert(name.to_string()) {
+                log::warn!("[pinvou3][llama-engine] release 构建忽略开发用 env 覆盖 {name}");
+            }
+        }
+        None
+    }
+}
+
 /// 解析引擎版本：默认锁定 PINNED_ENGINE_TAG（资产有钉死的 sha256 校验）。
 /// env `PINVOU3_LLAMA_ENGINE_TAG` 显式设置时才覆盖：值为 "latest" 时查询
 /// GitHub latest API，其它非空值直接作为 tag 使用。env 覆盖属开发通道，
-/// 对应资产没有钉版 digest，安装时跳过完整性校验（日志提示）。
+/// 仅 debug 构建生效（release 忽略，见 `dev_env_override`）；对应资产没有
+/// 钉版 digest，安装时跳过完整性校验（日志提示）。
 pub(crate) async fn resolve_engine_tag() -> Result<String, String> {
-    if let Ok(tag) = std::env::var("PINVOU3_LLAMA_ENGINE_TAG") {
-        let tag = tag.trim();
-        if !tag.is_empty() {
-            if tag == "latest" {
-                return query_latest_engine_tag().await;
-            }
-            return Ok(tag.to_string());
+    if let Some(tag) = dev_env_override("PINVOU3_LLAMA_ENGINE_TAG") {
+        if tag == "latest" {
+            return query_latest_engine_tag().await;
         }
+        return Ok(tag);
     }
     Ok(PINNED_ENGINE_TAG.to_string())
 }
@@ -280,7 +306,7 @@ pub(crate) async fn install_engine(app: &tauri::AppHandle) -> Result<(), String>
         let server_dir = locate_engine_server_dir(&extract_for_task)?;
         // rename 替换前先停运行中的引擎：Windows 下运行中的 llama-server
         // 占用 bin 目录文件，rename 会失败。
-        stop_engine_if_running()?;
+        stop_engine_if_running("替换引擎文件")?;
         swap_engine_files(&server_dir, &dest_bin)
     })
     .await
@@ -321,9 +347,11 @@ fn locate_engine_server_dir(extract_dir: &Path) -> Result<PathBuf, String> {
     Err(format!("压缩包内未找到 {name}"))
 }
 
-/// 引擎运行/启动中则停止并等待 watcher 收口（rename 替换的前置条件，
-/// 见 `swap_engine_files`）。仅停引擎，不影响后续手动/自动再启动。
-fn stop_engine_if_running() -> Result<(), String> {
+/// 引擎运行/启动中则停止并等待 watcher 收口（rename 替换/删除文件的前置
+/// 条件：Windows 下运行中的 llama-server 占用 bin/模型文件，见
+/// `swap_engine_files`）。仅停引擎，不影响后续手动/自动再启动；超时返回
+/// 明确错误。
+fn stop_engine_if_running(action: &str) -> Result<(), String> {
     let phase = super::server::runtime_snapshot().phase;
     if phase != "running" && phase != "starting" {
         return Ok(());
@@ -336,7 +364,7 @@ fn stop_engine_if_running() -> Result<(), String> {
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
-            return Err("停止运行中的引擎超时，无法替换引擎文件".to_string());
+            return Err(format!("停止运行中的引擎超时，无法{action}"));
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -494,10 +522,14 @@ async fn install_asset(
 }
 
 fn asset_urls(asset: &ModelAsset) -> Vec<String> {
-    if let Ok(url) = std::env::var("PINVOU3_LLAMA_MODEL_URL") {
-        if !url.trim().is_empty() {
+    // env 覆盖属开发通道，仅 debug 构建生效（release 忽略，见
+    // `dev_env_override`）；debug 下同样强制 https，防开发时误填
+    // http 地址后被当成可用配置残留。
+    if let Some(url) = dev_env_override("PINVOU3_LLAMA_MODEL_URL") {
+        if url.starts_with("https://") {
             return vec![url];
         }
+        log::warn!("[pinvou3][llama-engine] 忽略非 https 的 PINVOU3_LLAMA_MODEL_URL 覆盖");
     }
     let mut urls = vec![asset.primary_url.to_string()];
     if !asset.mirror_url.is_empty() {
@@ -716,11 +748,12 @@ fn ensure_disk_space(dir: &Path, expected_size: u64) -> Result<(), String> {
     Ok(())
 }
 
-/// 资产 sha256：内置钉版值，dev 可用 env 覆盖——per-asset
+/// 资产 sha256：内置钉版值，dev 可用 env 覆盖（仅 debug 构建生效，release
+/// 忽略，见 `dev_env_override`）——per-asset
 /// `PINVOU3_LLAMA_GGUF_SHA256` / `PINVOU3_LLAMA_MMPROJ_SHA256` 优先；
 /// 旧版 `PINVOU3_LLAMA_MODEL_SHA256`（一 hash 两用）保留为开发兜底。
 fn asset_sha256(asset: &ModelAsset) -> String {
-    asset_sha256_with(asset, |name| std::env::var(name).ok())
+    asset_sha256_with(asset, dev_env_override)
 }
 
 /// env 读取抽成参数，便于单测不依赖进程级 env（避免并行测试互相干扰）。
@@ -802,8 +835,11 @@ pub(crate) fn model_files_verified(spec: &LlamaModelSpec) -> bool {
 /// 删除引擎二进制与同目录共享库（保留 bin 目录本身），返回删除的文件数。
 /// 一并清理 swap_engine_files 中途失败可能残留的 bin.old/bin.staged 临时
 /// 目录（与 bin 同级），否则重装时 staged 目录会带脏残留起步。
+/// 运行/启动中的引擎先停止并等收口（Windows 下文件被进程占用无法删除）。
+/// 用户可见错误只含资产名，本地路径细节进日志（不泄露用户目录结构）。
 /// 引擎可经「下载引擎」随时重装。
 pub(crate) fn delete_engine_files() -> Result<u32, String> {
+    stop_engine_if_running("删除引擎文件")?;
     let mut removed = 0u32;
     let dir = bin_dir();
     if !dir.is_dir() {
@@ -813,16 +849,27 @@ pub(crate) fn delete_engine_files() -> Result<u32, String> {
         let entry = entry.map_err(|e| format!("读取引擎目录项失败: {e}"))?;
         let path = entry.path();
         if path.is_file() {
-            std::fs::remove_file(&path)
-                .map_err(|e| format!("删除引擎文件失败 {}: {e}", path.display()))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            std::fs::remove_file(&path).map_err(|e| {
+                log::warn!(
+                    "[pinvou3][llama-engine] 删除引擎文件失败 {}: {e}",
+                    path.display()
+                );
+                format!("删除引擎文件 {name} 失败")
+            })?;
             removed += 1;
         }
     }
     if let Some(parent) = dir.parent() {
         for leftover in [parent.join("bin.old"), parent.join("bin.staged")] {
             if leftover.exists() {
-                std::fs::remove_dir_all(&leftover)
-                    .map_err(|e| format!("删除引擎临时目录失败 {}: {e}", leftover.display()))?;
+                std::fs::remove_dir_all(&leftover).map_err(|e| {
+                    log::warn!(
+                        "[pinvou3][llama-engine] 删除引擎临时目录失败 {}: {e}",
+                        leftover.display()
+                    );
+                    "删除引擎临时目录失败".to_string()
+                })?;
             }
         }
     }
@@ -830,14 +877,22 @@ pub(crate) fn delete_engine_files() -> Result<u32, String> {
 }
 
 /// 删除已安装模型的权重文件，返回实际删除的文件数（0 = 本就没装）。
+/// 运行/启动中的引擎先停止并等收口（Windows 下模型文件被进程占用无法删除）。
+/// 用户可见错误只含资产名/模型 id，本地路径细节进日志。
 /// mmproj 仅在无其他已安装档位共用同一文件时一并删除（历史上 2B 两档
 /// 共享 Q8_0 mmproj；当前只余 Q4_K_M 一档使用，逻辑保留以防后续加档）。
 pub(crate) fn delete_model_files(spec: &LlamaModelSpec) -> Result<u32, String> {
+    stop_engine_if_running("删除模型文件")?;
     let mut removed = 0u32;
     let gguf = model_gguf_path(spec);
     if gguf.exists() {
-        std::fs::remove_file(&gguf)
-            .map_err(|e| format!("删除模型文件失败 {}: {e}", gguf.display()))?;
+        std::fs::remove_file(&gguf).map_err(|e| {
+            log::warn!(
+                "[pinvou3][llama-engine] 删除模型文件失败 {}: {e}",
+                gguf.display()
+            );
+            format!("删除模型 {} 的权重文件失败", spec.id)
+        })?;
         removed += 1;
     }
     let mmproj_in_use = model_specs().iter().any(|other| {
@@ -848,8 +903,13 @@ pub(crate) fn delete_model_files(spec: &LlamaModelSpec) -> Result<u32, String> {
     if !mmproj_in_use {
         let mmproj = mmproj_path(spec);
         if mmproj.exists() {
-            std::fs::remove_file(&mmproj)
-                .map_err(|e| format!("删除视觉投影器失败 {}: {e}", mmproj.display()))?;
+            std::fs::remove_file(&mmproj).map_err(|e| {
+                log::warn!(
+                    "[pinvou3][llama-engine] 删除视觉投影器失败 {}: {e}",
+                    mmproj.display()
+                );
+                format!("删除模型 {} 的视觉投影器失败", spec.id)
+            })?;
             removed += 1;
         }
     }
@@ -960,7 +1020,14 @@ mod tests {
         assert!(safe_join(base, "a/b/c.gguf").is_ok());
         assert!(safe_join(base, "../escape").is_err());
         assert!(safe_join(base, "/abs/path").is_err());
-        assert!(safe_join(base, "C:/evil").is_err());
+        // 绝对路径用例按平台构造："C:/evil" 只在 Windows 上是绝对路径
+        // （Unix 上是相对路径），Unix 用根路径用例，断言意图不变。
+        // 运行时 is_absolute 探测，避免在 adapter 层外引入条件编译。
+        let abs = ["C:/evil", "/abs/evil"]
+            .into_iter()
+            .find(|candidate| Path::new(candidate).is_absolute())
+            .expect("当前平台必有一个绝对路径用例");
+        assert!(safe_join(base, abs).is_err());
     }
 
     #[test]

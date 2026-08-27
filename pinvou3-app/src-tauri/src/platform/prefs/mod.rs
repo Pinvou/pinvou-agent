@@ -207,7 +207,12 @@ impl<'de> Deserialize<'de> for ImageCapabilityOverride {
 }
 
 /// 本地多模态引擎的自动启动策略(设置页「自动启动引擎」三档)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+///
+/// 反序列化手写兜底:未知档位值落 `FirstImage`(默认档)而非报错——没有这
+/// 一层,单个垃圾值(未来版本新增枚举后降级运行/手工编辑)会让整份
+/// `UserPrefs` 反序列化失败,`load` 整体回退默认值,会话跑在全默认上
+/// (与 `ImageCapabilityOverride` 同款容忍模式)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LlamaEngineAutoStart {
     /// 第一次发送图片时启动(默认;旧 settings.json 无该字段反序列化即落这里)。
@@ -217,6 +222,34 @@ pub enum LlamaEngineAutoStart {
     Launch,
     /// 从不自动启动,仅手动。
     Never,
+}
+
+impl<'de> Deserialize<'de> for LlamaEngineAutoStart {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = LlamaEngineAutoStart;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("llama engine auto start (first_image/launch/never)")
+            }
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match value {
+                    "first_image" => Ok(LlamaEngineAutoStart::FirstImage),
+                    "launch" => Ok(LlamaEngineAutoStart::Launch),
+                    "never" => Ok(LlamaEngineAutoStart::Never),
+                    // 未知值兜底:落默认档,见枚举头注释。
+                    _ => Ok(LlamaEngineAutoStart::FirstImage),
+                }
+            }
+        }
+        deserializer.deserialize_str(Visitor)
+    }
 }
 
 /// 一条用户保存的模型配置:GUI「模型列表」的一项,也是热切换的最小单位。
@@ -1564,6 +1597,19 @@ mod tests {
             );
             assert_eq!(back.llama_engine_default_device.as_deref(), Some("cpu"));
         }
+    }
+
+    #[test]
+    fn llama_engine_auto_start_unknown_value_falls_back_to_default() {
+        // 未知档位值(未来版本新增枚举后降级运行/手工编辑)必须落默认档
+        // FirstImage,而不是让整份 UserPrefs 反序列化失败跑在全默认上
+        // (与 ImageCapabilityOverride 同款容忍模式)。
+        let json = r#"{"allow_shell": null, "llama_engine_auto_start": "garbage"}"#;
+        let prefs: AdvancedPrefs = serde_json::from_str(json).expect("unknown auto start value");
+        assert_eq!(
+            prefs.llama_engine_auto_start,
+            Some(LlamaEngineAutoStart::FirstImage)
+        );
     }
 
     #[test]

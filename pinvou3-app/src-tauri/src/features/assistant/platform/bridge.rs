@@ -265,15 +265,22 @@ impl crate::features::memory::MemoryReviewModel for Pinvou3Bridge {
 /// 本地引擎视觉接管门：该模型显式选择「本地识图引擎」
 /// （`vision_prefer_local_engine`，模型设置页选项），或全局兜底开关开启
 /// （默认开）**且该模型未配置视觉模型**——兜底只接管没有出路的纯文本
-/// 模型，不覆盖用户的显式视觉模型配置。命中后引擎运行中即接管
-/// `image_analyze` 端点；未运行则回落后续规则。
+/// 模型，不覆盖用户的显式视觉模型配置。`vision_model_id` 悬空（指向的
+/// 模型已删除/不存在）按未配置处理，与 `resolve_vision_model_config`
+/// 规则 1 同口径，否则悬空引用会让兜底与安装引导同时静默失效。
+/// 命中后引擎运行中即接管 `image_analyze` 端点；未运行则回落后续规则。
 fn vision_local_gate(
     prefs: &crate::platform::prefs::AdvancedPrefs,
     model: Option<&crate::platform::prefs::SavedModel>,
 ) -> bool {
+    let vision_model_configured = |m: &crate::platform::prefs::SavedModel| {
+        m.vision_model_id
+            .as_deref()
+            .is_some_and(|id| prefs.saved_models.iter().any(|saved| saved.id == id))
+    };
     model.is_some_and(|m| m.vision_prefer_local_engine)
         || (prefs.llama_engine_vision_fallback.unwrap_or(true)
-            && model.is_none_or(|m| m.vision_model_id.is_none()))
+            && model.is_none_or(|m| !vision_model_configured(m)))
 }
 
 impl Pinvou3Bridge {
@@ -1014,7 +1021,10 @@ impl Pinvou3Bridge {
     /// 0. 该模型显式选择「本地识图引擎」且引擎运行中 → 本地端点(视为该
     ///    模型的视觉模型配置,最高优先级);引擎未运行回落后续规则。
     /// 1. 主模型设置了 `vision_model_id` → 用该 SavedModel 的 endpoint + 凭据;
-    ///    id 失效、凭据缺失 → 记 warning 并优雅降级为不注册,不硬错。视觉模型
+    ///    id 悬空(指向的模型已删除/不存在)按「未配置」处理,落到规则 2/3——
+    ///    否则与 `vision_local_gate` 的 `vision_model_id.is_none()` 要求叠加,
+    ///    两条兜底静默失效,只剩硬 image_input_unsupported 且无安装引导。
+    ///    凭据缺失 → 记 warning 并优雅降级为不注册,不硬错。视觉模型
     ///    **自身**的图片能力不在此处拒绝——选择器已用识图探测闸门验证(supported
     ///    才允许选中),override 标记(disabled)可能是历史探测误判残留,运行时
     ///    按实际被选中的事实使用(见函数体内注释)。
@@ -1044,35 +1054,36 @@ impl Pinvou3Bridge {
             }
         }
         if let Some(vision_id) = effective.and_then(|model| model.vision_model_id.as_deref()) {
-            let Some(vision) = self.prefs.model_by_id(vision_id) else {
-                eprintln!(
-                    "[pinvou3-app] vision_model_id {vision_id} not found in saved_models; \
-                     image_analyze disabled"
-                );
-                return None;
-            };
-            // 视觉模型自身能力不在此处拒绝:选择器已用识图探测验证(supported
-            // 才允许选中)。override 标记(disabled)可能是历史探测误判残留
-            // (如 kimi-for-coding 曾因探测链路 400 被回填),运行时按实际被
-            // 选中的事实使用;文本模型配成视觉模型由前端探测闸门挡住。
-            let api_key = Self::api_key_for_saved_model(vision);
-            if api_key.trim().is_empty() {
-                eprintln!(
-                    "[pinvou3-app] vision model {} has no usable credential; \
-                     image_analyze disabled",
-                    vision.id
-                );
-                return None;
+            // vision_model_id 悬空(指向的模型已删除/不存在)按「未配置」处理:
+            // 不提前 return,落到规则 2/3 兜底(见函数头规则 1 注释)。
+            if let Some(vision) = self.prefs.model_by_id(vision_id) {
+                // 视觉模型自身能力不在此处拒绝:选择器已用识图探测验证(supported
+                // 才允许选中)。override 标记(disabled)可能是历史探测误判残留
+                // (如 kimi-for-coding 曾因探测链路 400 被回填),运行时按实际被
+                // 选中的事实使用;文本模型配成视觉模型由前端探测闸门挡住。
+                let api_key = Self::api_key_for_saved_model(vision);
+                if api_key.trim().is_empty() {
+                    eprintln!(
+                        "[pinvou3-app] vision model {} has no usable credential; \
+                         image_analyze disabled",
+                        vision.id
+                    );
+                    return None;
+                }
+                // 用户配置的视觉模型(vLLM / 云端 / Ollama 等)→ 默认重试
+                // transient 5xx;1-2s 退避对这些有 SRE 实践的服务可能命中
+                // 已 ready 的实例。
+                return Some(vision_model_config(
+                    vision.model.clone(),
+                    api_key,
+                    vision.base_url.clone(),
+                    false,
+                ));
             }
-            // 用户配置的视觉模型(vLLM / 云端 / Ollama 等)→ 默认重试
-            // transient 5xx;1-2s 退避对这些有 SRE 实践的服务可能命中
-            // 已 ready 的实例。
-            return Some(vision_model_config(
-                vision.model.clone(),
-                api_key,
-                vision.base_url.clone(),
-                false,
-            ));
+            eprintln!(
+                "[pinvou3-app] vision_model_id {vision_id} not found in saved_models; \
+                 treating as unconfigured"
+            );
         }
         if effective.map(effective_image_capability) == Some(EffectiveImageCapability::Supported) {
             // 主模型自带视觉能力(云端多模态 / vLLM 跑 Qwen2-VL 等)→
@@ -3593,12 +3604,9 @@ mod tests {
 
     /// 本地识图引擎门：全局兜底默认开但只接管未配置视觉模型的模型；
     /// 该模型显式选「本地识图引擎」时无条件命中（视为显式配置）。
+    /// vision_model_id 悬空（指向已删除模型）按未配置处理。
     #[test]
     fn vision_local_gate_combinations() {
-        let prefs = |fallback: Option<bool>| crate::platform::prefs::AdvancedPrefs {
-            llama_engine_vision_fallback: fallback,
-            ..Default::default()
-        };
         let model = |prefer_local: bool, vision_model_id: Option<&str>| {
             Some(crate::platform::prefs::SavedModel {
                 id: "test".into(),
@@ -3621,6 +3629,18 @@ mod tests {
                 has_secret: false,
                 credential_action: None,
             })
+        };
+        // 「已配置」按 saved_models 实际存在性判断：fixture 里放一条 id=v1
+        // 的视觉模型供「已配置」用例引用。
+        let prefs = |fallback: Option<bool>| {
+            let mut prefs = crate::platform::prefs::AdvancedPrefs {
+                llama_engine_vision_fallback: fallback,
+                ..Default::default()
+            };
+            let mut vision = model(false, None).expect("vision fixture");
+            vision.id = "v1".into();
+            prefs.saved_models.push(vision);
+            prefs
         };
         // 全局兜底默认开 + 未配置视觉模型 → 命中（即便模型未显式选本地）
         assert!(vision_local_gate(&prefs(None), model(false, None).as_ref()));
@@ -3652,6 +3672,12 @@ mod tests {
         assert!(vision_local_gate(
             &prefs(Some(false)),
             model(true, Some("v1")).as_ref()
+        ));
+        // vision_model_id 悬空（saved_models 中不存在）→ 按未配置处理，
+        // 兜底正常命中（与 resolve_vision_model_config 规则 1 同口径）
+        assert!(vision_local_gate(
+            &prefs(None),
+            model(false, Some("ghost")).as_ref()
         ));
     }
 
@@ -3873,22 +3899,10 @@ mod tests {
         assert!(unsupported.resolve_vision_model_config().is_none());
     }
 
-    /// §9.3 规则 1 的优雅降级:vision_model_id 失效(指向不存在/已删除的模型)
-    /// 或目标模型凭据缺失 → 不注册并记 warning,不硬错、不回落主模型。
+    /// §9.3 规则 1 的优雅降级:vision_model_id 目标模型凭据缺失 →
+    /// 不注册并记 warning,不硬错、不回落主模型。
     #[test]
-    fn vision_config_degrades_gracefully_on_missing_id_or_credential() {
-        // id 指向不存在的模型。
-        let mut ghost = fixture_bridge();
-        set_active_model(
-            &mut ghost,
-            ModelPreset::Deepseek,
-            "deepseek-v4-pro",
-            "https://api.deepseek.com",
-            "sk-main",
-        );
-        ghost.prefs.advanced.saved_models[0].vision_model_id = Some("ghost".to_string());
-        assert!(ghost.resolve_vision_model_config().is_none());
-
+    fn vision_config_degrades_gracefully_on_missing_credential() {
         // 目标模型无凭据(云端 base_url + 空 key + 无 credential_ref)。
         let mut no_key = fixture_bridge();
         set_active_model(
@@ -3901,6 +3915,60 @@ mod tests {
         push_vision_model(&mut no_key, "vision-no-key", "gpt-4o", "");
         no_key.prefs.advanced.saved_models[0].vision_model_id = Some("vision-no-key".to_string());
         assert!(no_key.resolve_vision_model_config().is_none());
+    }
+
+    /// §9.3 规则 1 的悬空 id:vision_model_id 指向已删除/不存在的模型 →
+    /// 按「未配置」处理落到规则 2/3,而不是让两条兜底静默失效(否则硬
+    /// image_input_unsupported 且无安装引导)。
+    #[test]
+    fn vision_config_dangling_vision_model_id_falls_through() {
+        use crate::features::llama_engine::server;
+        // 规则 3 用例写全局 RUNTIME,须在 RUNTIME_TEST_LOCK 下运行。
+        let _runtime_lock = locked_runtime();
+        // RAII 守卫:测试结束复位全局 RUNTIME,避免污染其他测试的引擎运行态。
+        struct RuntimeGuard;
+        impl Drop for RuntimeGuard {
+            fn drop(&mut self) {
+                server::reset_runtime_for_test();
+            }
+        }
+        let _guard = RuntimeGuard;
+
+        // 主模型能力非 Supported(Unknown)+ 引擎未运行 → 规则 2/3 均不
+        // 命中,仍不注册(与未配置视觉模型的行为一致)。
+        let mut ghost = fixture_bridge();
+        set_active_model(
+            &mut ghost,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        ghost.prefs.advanced.saved_models[0].vision_model_id = Some("ghost".to_string());
+        assert!(ghost.resolve_vision_model_config().is_none());
+
+        // 悬空 id + 引擎运行 → 落到规则 3 本地兜底端点。
+        server::force_running_for_test(8765);
+        let config = ghost
+            .resolve_vision_model_config()
+            .expect("dangling vision_model_id must fall through to local fallback");
+        assert_eq!(config.base_url.as_deref(), Some("http://127.0.0.1:8765/v1"));
+        server::reset_runtime_for_test();
+
+        // 悬空 id + Supported 主模型 → 落到规则 2 复用主模型。
+        let mut supported = fixture_bridge();
+        set_active_model(
+            &mut supported,
+            ModelPreset::OpenaiCompatible,
+            "gpt-5.6-terra",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+        supported.prefs.advanced.saved_models[0].vision_model_id = Some("ghost".to_string());
+        let config = supported
+            .resolve_vision_model_config()
+            .expect("dangling vision_model_id must fall through to rule 2");
+        assert_eq!(config.model, "gpt-5.6-terra");
     }
 
     /// §9.3 规则 1 的视觉候选能力口径:视觉模型**自身**的 override 不在运行时
@@ -4764,7 +4832,9 @@ mod tests {
             let t = b.build_engine_config().compaction.token_threshold;
             let e = win - output - 1_024;
             let conservative = (t + R) * K_NUM / K_DEN + S + FRAMING;
-            eprintln!("[云端 {model}] window={win} output={output} → T={t}  E={e}  conservative={conservative}");
+            eprintln!(
+                "[云端 {model}] window={win} output={output} → T={t}  E={e}  conservative={conservative}"
+            );
             assert!(
                 conservative <= e,
                 "{model}: T={t} 换算 conservative={conservative} 必须 ≤ E={e}(不倒置)"

@@ -558,7 +558,9 @@ async fn watch_running(
             CrashVerdict::TotalExceeded => {
                 transition_stopped(
                     &app,
-                    format!("引擎反复崩溃已达自愈上限（{MAX_CRASH_REBOOTS_TOTAL} 次），已停止：{reason}"),
+                    format!(
+                        "引擎反复崩溃已达自愈上限（{MAX_CRASH_REBOOTS_TOTAL} 次），已停止：{reason}"
+                    ),
                 );
                 return;
             }
@@ -830,9 +832,12 @@ async fn spawn_server(bin: &Path, args: &[OsString]) -> Result<tokio::process::C
 
 /// stderr 单行截断：按 UTF-8 字符边界截断——`String::truncate` 若切在多
 /// 字节字符中间会 panic，杀死 drain 任务后管道写满会堵死引擎进程。
+/// 复用 `platform::strings::truncate_utf8`（字节上限 + char 边界向下取整，
+/// 语义与本地实现一致）。
 fn truncate_at_line_cap(text: &mut String) {
     if text.len() > STDERR_LINE_CAP {
-        text.truncate(text.floor_char_boundary(STDERR_LINE_CAP));
+        let clipped = crate::platform::strings::truncate_utf8(text, STDERR_LINE_CAP).len();
+        text.truncate(clipped);
     }
 }
 
