@@ -173,6 +173,10 @@ pub(crate) fn disabled_skill_names_for(scope: ConnectorScope) -> HashSet<String>
             }
         }
     }
+    // 未安装连接器的 companion 即使因文件占用/异常退出残留在 bundle/skills，也不能
+    // 进入组合目录。若多个连接器共享同一技能，只要任一仍安装，marketplace 会保留它。
+    let market = crate::features::marketplace::MarketplaceManager::new();
+    names.extend(market.unavailable_companion_skills());
     names
 }
 
@@ -350,6 +354,30 @@ mod tests {
         std::fs::write(dir.join("manifest.json"), manifest).unwrap();
     }
 
+    /// Seed both sources consulted by companion ownership and liveness checks.
+    fn seed_installed_connector(tool_id: &str) {
+        crate::features::marketplace::store::BundleStore::new()
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    tool_id.to_string(),
+                    crate::features::marketplace::store::BundleSource::Preset,
+                ),
+            )
+            .unwrap();
+        let installed_file = paths::pinvou3_home()
+            .join("marketplace")
+            .join("installed.json");
+        std::fs::create_dir_all(installed_file.parent().unwrap()).unwrap();
+        let mut installed = std::fs::read_to_string(&installed_file)
+            .ok()
+            .and_then(|content| serde_json::from_str::<Vec<String>>(&content).ok())
+            .unwrap_or_default();
+        if !installed.iter().any(|id| id == tool_id) {
+            installed.push(tool_id.to_string());
+        }
+        std::fs::write(installed_file, serde_json::to_vec(&installed).unwrap()).unwrap();
+    }
+
     // ---- 组合目录 ----
 
     /// 连接器禁用联动技能：禁用声明了 companion_skills 的连接器 → 该技能从组合
@@ -369,16 +397,8 @@ mod tests {
                 "---\nname: government-writing\n---\n# GW\n",
             )
             .unwrap();
-            // V5「随包」认领：包本体已装才把 companion 技能归属到包。本场景是
-            // 「禁用已装连接器」，先登记 gongwen 安装态，物化排除才按包映射。
-            crate::features::marketplace::store::BundleStore::new()
-                .upsert(
-                    crate::features::marketplace::store::BundleRecord::installed_now(
-                        "gongwen".to_string(),
-                        crate::features::marketplace::store::BundleSource::Preset,
-                    ),
-                )
-                .unwrap();
+            // V5 ownership uses BundleStore while companion liveness uses installed.json.
+            seed_installed_connector("gongwen");
 
             // 禁用公文 MCP → 组合目录计算排除关联技能
             crate::features::marketplace::save_disabled_connectors(&["gongwen".to_string()]);
@@ -533,6 +553,7 @@ mod tests {
             "pinvou3-marketplace:government-writing",
         )
         .unwrap();
+        seed_installed_connector("gongwen");
     }
 
     #[test]

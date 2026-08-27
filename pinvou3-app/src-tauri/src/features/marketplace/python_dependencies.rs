@@ -1,0 +1,1103 @@
+//! MCP Python 依赖的按需安装器。
+//!
+//! manifest 为每个目标平台提供完整 wheel 锁（URL + SHA-256）。安装器不调用系统 pip，
+//! 而是把已校验 wheel 解包到 `~/.pinvou3/marketplace/python-envs/<lock-hash>`；相同锁
+//! 复用环境，不同锁彼此隔离。下载缓存按 wheel 内容哈希共享。
+
+use std::collections::HashSet;
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::sync::Mutex;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+const MAX_WHEEL_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_ENVIRONMENT_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_WHEEL_ENTRIES: usize = 50_000;
+const PYTHON_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+const COMPLETE_MARKER: &str = "environment.json";
+static INSTALL_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(test)]
+static FAIL_NEXT_DOWNLOAD: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static FAIL_NEXT_PRUNE_REMOVAL: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn fail_next_download_for_test() {
+    FAIL_NEXT_DOWNLOAD.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn take_pending_download_failure_for_test() -> bool {
+    FAIL_NEXT_DOWNLOAD.swap(false, std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_prune_removal_for_test(path: PathBuf) {
+    *FAIL_NEXT_PRUNE_REMOVAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(path);
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct PythonDependencyLock {
+    pub schema_version: u32,
+    pub targets: Vec<PythonDependencyTarget>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct PythonDependencyTarget {
+    /// 与 `paths::connector_platform_dir` 一致，例如 `windows-x64`。
+    pub platform: String,
+    /// 必须匹配运行解释器的 major.minor，例如 `3.13`。
+    pub python: String,
+    #[serde(default)]
+    pub imports: Vec<String>,
+    pub wheels: Vec<PythonWheel>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct PythonWheel {
+    pub name: String,
+    pub version: String,
+    pub filename: String,
+    pub url: String,
+    pub sha256: String,
+}
+
+#[derive(Debug)]
+pub(super) struct InstalledPythonEnvironment {
+    pub site_packages: PathBuf,
+    pub python_command: String,
+    /// 从依赖环境就绪一直持有到 Marketplace 完成 mcp.json/installed.json 注册，
+    /// 防止并发卸载把尚未登记引用的新环境清理掉。
+    _install_guard: std::sync::MutexGuard<'static, ()>,
+}
+
+/// 当前平台存在锁定目标时完成安装并返回隔离环境；没有目标时返回 `None`，由调用方走
+/// 旧平台兼容路径。锁存在但无效或安装失败时必须报错，不能静默降级到未校验 pip。
+pub(super) fn ensure_installed(
+    lock: &PythonDependencyLock,
+    python_command: &str,
+) -> Result<Option<InstalledPythonEnvironment>, String> {
+    validate_lock(lock)?;
+    let Some(target) = target_for_current_platform(lock) else {
+        return Ok(None);
+    };
+
+    let install_guard = INSTALL_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let environment_key = environment_key(target)?;
+    let environment_root = environments_root();
+    if let Err(error) = cleanup_stale_install_artifacts(&environment_root, &wheel_cache_root()) {
+        eprintln!("[marketplace] recover stale Python dependency artifacts failed: {error}");
+    }
+    let destination = environment_root.join(&environment_key);
+    let site_packages = destination.join("site-packages");
+
+    if marker_matches(&destination, &environment_key)
+        && verify_environment(python_command, target, &site_packages).is_ok()
+    {
+        return Ok(Some(InstalledPythonEnvironment {
+            site_packages,
+            python_command: python_command.to_string(),
+            _install_guard: install_guard,
+        }));
+    }
+
+    fs::create_dir_all(&environment_root)
+        .map_err(|e| format!("创建 MCP Python 环境目录失败: {e}"))?;
+    let cache_root = wheel_cache_root();
+    fs::create_dir_all(&cache_root).map_err(|e| format!("创建 Python wheel 缓存失败: {e}"))?;
+
+    let staging = environment_root.join(format!(
+        ".installing-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let _ = safe_remove_dir(&staging, &environment_root);
+    fs::create_dir_all(staging.join("site-packages"))
+        .map_err(|e| format!("创建 Python 依赖暂存目录失败: {e}"))?;
+
+    let result: Result<(), String> = (|| {
+        let mut extracted_bytes = 0_u64;
+        for wheel in &target.wheels {
+            validate_wheel(wheel)?;
+            let cached = cache_root.join(format!("{}.whl", wheel.sha256));
+            ensure_cached(wheel, &cached)?;
+            extract_wheel(&cached, &staging, &mut extracted_bytes)?;
+        }
+        verify_environment(python_command, target, &staging.join("site-packages"))?;
+        write_marker(&staging, &environment_key, target)?;
+
+        if destination.exists() {
+            safe_remove_dir(&destination, &environment_root)?;
+        }
+        fs::rename(&staging, &destination)
+            .map_err(|e| format!("完成 MCP Python 依赖安装失败: {e}"))?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = safe_remove_dir(&staging, &environment_root);
+    }
+    result?;
+    Ok(Some(InstalledPythonEnvironment {
+        site_packages: destination.join("site-packages"),
+        python_command: python_command.to_string(),
+        _install_guard: install_guard,
+    }))
+}
+
+/// 删除没有被已安装 MCP 引用的隔离环境与 wheel 缓存。文件被运行中的 MCP 占用时，
+/// 调用方会记录错误并在下次卸载时重试。
+pub(super) fn prune_unused(active_locks: &[PythonDependencyLock]) -> Result<(), String> {
+    let _guard = INSTALL_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut environment_keys = HashSet::new();
+    let mut wheel_hashes = HashSet::new();
+    for lock in active_locks {
+        validate_lock(lock)?;
+        let Some(target) = target_for_current_platform(lock) else {
+            continue;
+        };
+        environment_keys.insert(environment_key(target)?);
+        wheel_hashes.extend(target.wheels.iter().map(|wheel| wheel.sha256.clone()));
+    }
+
+    let environment_root = environments_root();
+    let cache_root = wheel_cache_root();
+    let mut cleanup_errors = Vec::new();
+    if let Err(error) = cleanup_stale_install_artifacts(&environment_root, &cache_root) {
+        cleanup_errors.push(error);
+    }
+    if let Ok(entries) = fs::read_dir(&environment_root) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.path().is_dir() && is_sha256(&name) && !environment_keys.contains(&name) {
+                if let Err(error) = remove_prunable_dir(&entry.path(), &environment_root) {
+                    cleanup_errors.push(error);
+                }
+            }
+        }
+    }
+
+    if let Ok(entries) = fs::read_dir(&cache_root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if path.extension().and_then(|value| value.to_str()) == Some("whl")
+                && is_sha256(stem)
+                && !wheel_hashes.contains(stem)
+            {
+                if let Err(error) = remove_prunable_file(&path) {
+                    cleanup_errors.push(error);
+                }
+            }
+        }
+    }
+    if cleanup_errors.is_empty() {
+        Ok(())
+    } else {
+        Err(cleanup_errors.join("; "))
+    }
+}
+
+pub(super) fn validate_lock(lock: &PythonDependencyLock) -> Result<(), String> {
+    if lock.schema_version != 1 {
+        return Err(format!(
+            "不支持的 MCP Python 依赖锁版本: {}",
+            lock.schema_version
+        ));
+    }
+    let mut platforms = HashSet::new();
+    for target in &lock.targets {
+        if target.platform.trim().is_empty() || target.python.trim().is_empty() {
+            return Err("MCP Python 依赖锁缺少 platform 或 python".to_string());
+        }
+        if !platforms.insert(&target.platform) {
+            return Err(format!(
+                "MCP Python 依赖锁包含重复平台: {}",
+                target.platform
+            ));
+        }
+        if target.wheels.is_empty() {
+            return Err(format!(
+                "MCP Python 依赖锁的平台 {} 没有 wheel",
+                target.platform
+            ));
+        }
+        for wheel in &target.wheels {
+            validate_wheel(wheel)?;
+        }
+    }
+    Ok(())
+}
+
+fn target_for_current_platform(lock: &PythonDependencyLock) -> Option<&PythonDependencyTarget> {
+    let platform = crate::platform::paths::connector_platform_dir(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )?;
+    target_for_platform(lock, platform)
+}
+
+fn target_for_platform<'a>(
+    lock: &'a PythonDependencyLock,
+    platform: &str,
+) -> Option<&'a PythonDependencyTarget> {
+    lock.targets
+        .iter()
+        .find(|target| target.platform == platform)
+}
+
+fn validate_wheel(wheel: &PythonWheel) -> Result<(), String> {
+    if wheel.name.trim().is_empty() || wheel.version.trim().is_empty() {
+        return Err("Python wheel 缺少 name 或 version".to_string());
+    }
+    if !wheel.filename.ends_with(".whl")
+        || wheel.filename.contains('/')
+        || wheel.filename.contains('\\')
+    {
+        return Err(format!("Python wheel 文件名无效: {}", wheel.filename));
+    }
+    if !is_sha256(&wheel.sha256) {
+        return Err(format!("Python wheel SHA-256 无效: {}", wheel.name));
+    }
+    let url =
+        reqwest::Url::parse(&wheel.url).map_err(|e| format!("Python wheel 下载地址无效: {e}"))?;
+    if url.scheme() != "https" || !is_allowed_wheel_host(&url) {
+        return Err(format!(
+            "Python wheel '{}' 必须来自受信任的 HTTPS 仓库",
+            wheel.name
+        ));
+    }
+    if url.path_segments().and_then(Iterator::last) != Some(wheel.filename.as_str()) {
+        return Err(format!(
+            "Python wheel '{}' 的文件名与下载地址不一致",
+            wheel.name
+        ));
+    }
+    Ok(())
+}
+
+fn is_allowed_wheel_host(url: &reqwest::Url) -> bool {
+    matches!(url.host_str(), Some("files.pythonhosted.org"))
+}
+
+fn environment_key(target: &PythonDependencyTarget) -> Result<String, String> {
+    let serialized =
+        serde_json::to_vec(target).map_err(|e| format!("序列化 MCP Python 依赖锁失败: {e}"))?;
+    Ok(crate::platform::encoding::hex_lower(&Sha256::digest(
+        serialized,
+    )))
+}
+
+fn environments_root() -> PathBuf {
+    crate::platform::paths::pinvou3_home()
+        .join("marketplace")
+        .join("python-envs")
+}
+
+fn wheel_cache_root() -> PathBuf {
+    crate::platform::paths::pinvou3_home()
+        .join("cache")
+        .join("python-wheels")
+}
+
+fn marker_matches(environment: &Path, expected_key: &str) -> bool {
+    let Ok(content) = fs::read_to_string(environment.join(COMPLETE_MARKER)) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return false;
+    };
+    value
+        .get("environment_key")
+        .and_then(|value| value.as_str())
+        == Some(expected_key)
+        && environment.join("site-packages").is_dir()
+}
+
+fn write_marker(
+    environment: &Path,
+    environment_key: &str,
+    target: &PythonDependencyTarget,
+) -> Result<(), String> {
+    let marker = serde_json::json!({
+        "schema_version": 1,
+        "environment_key": environment_key,
+        "platform": target.platform,
+        "python": target.python,
+        "wheels": target.wheels,
+    });
+    let json = serde_json::to_vec_pretty(&marker)
+        .map_err(|e| format!("序列化 Python 环境记录失败: {e}"))?;
+    let mut file = File::create(environment.join(COMPLETE_MARKER))
+        .map_err(|e| format!("创建 Python 环境记录失败: {e}"))?;
+    file.write_all(&json)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| format!("写入 Python 环境记录失败: {e}"))
+}
+
+fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    if FAIL_NEXT_DOWNLOAD.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        return Err(format!("测试注入：下载 Python 依赖 {} 失败", wheel.name));
+    }
+    if sha256_file(destination).is_ok_and(|actual| actual == wheel.sha256) {
+        return Ok(());
+    }
+
+    let url =
+        reqwest::Url::parse(&wheel.url).map_err(|e| format!("Python wheel 下载地址无效: {e}"))?;
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(180))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10
+                || attempt.url().scheme() != "https"
+                || !is_allowed_wheel_host(attempt.url())
+            {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
+        .user_agent("Pinvou-Agent python-dependency-installer")
+        .build()
+        .map_err(|e| format!("创建 Python 依赖下载客户端失败: {e}"))?;
+    let response = client
+        .get(url)
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|e| format!("下载 Python 依赖 {} 失败: {e}", wheel.name))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_WHEEL_BYTES)
+    {
+        return Err(format!("Python 依赖 {} 超过 64 MiB 安全上限", wheel.name));
+    }
+
+    let mut reader = response.take(MAX_WHEEL_BYTES + 1);
+    persist_wheel_download(&mut reader, destination, wheel)
+}
+
+fn persist_wheel_download<R: Read>(
+    reader: &mut R,
+    destination: &Path,
+    wheel: &PythonWheel,
+) -> Result<(), String> {
+    persist_wheel_download_with_sync(reader, destination, wheel, File::sync_all)
+}
+
+fn persist_wheel_download_with_sync<R, S>(
+    reader: &mut R,
+    destination: &Path,
+    wheel: &PythonWheel,
+    sync: S,
+) -> Result<(), String>
+where
+    R: Read,
+    S: FnOnce(&File) -> io::Result<()>,
+{
+    let partial = destination.with_extension(format!("part-{}", std::process::id()));
+    let _ = fs::remove_file(&partial);
+    let mut cleanup = PartialFileCleanup::new(partial.clone());
+    let mut file = File::create(&partial).map_err(|e| format!("创建 wheel 暂存文件失败: {e}"))?;
+    let copied = io::copy(reader, &mut file).map_err(|e| format!("保存 wheel 失败: {e}"))?;
+    sync(&file).map_err(|e| format!("同步 wheel 暂存文件失败: {e}"))?;
+    drop(file);
+    if copied > MAX_WHEEL_BYTES {
+        return Err(format!("Python 依赖 {} 超过 64 MiB 安全上限", wheel.name));
+    }
+    let actual = sha256_file(&partial).map_err(|e| format!("读取 wheel 失败: {e}"))?;
+    if actual != wheel.sha256 {
+        return Err(format!(
+            "Python 依赖 {} 校验失败（expected {}, got {}）",
+            wheel.name, wheel.sha256, actual
+        ));
+    }
+    if destination.exists() {
+        fs::remove_file(destination).map_err(|e| format!("替换 wheel 缓存失败: {e}"))?;
+    }
+    fs::rename(&partial, destination).map_err(|e| format!("保存 wheel 缓存失败: {e}"))?;
+    cleanup.disarm();
+    Ok(())
+}
+
+fn extract_wheel(
+    wheel_path: &Path,
+    environment: &Path,
+    extracted_bytes: &mut u64,
+) -> Result<(), String> {
+    let file = File::open(wheel_path).map_err(|e| format!("打开 wheel 失败: {e}"))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("读取 wheel 失败: {e}"))?;
+    if archive.len() > MAX_WHEEL_ENTRIES {
+        return Err("Python wheel 文件数量超过安全上限".to_string());
+    }
+    let site_packages = environment.join("site-packages");
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|e| format!("读取 wheel 条目失败: {e}"))?;
+        if entry
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170000 == 0o120000)
+        {
+            return Err(format!(
+                "Python wheel 包含不允许的符号链接: {}",
+                entry.name()
+            ));
+        }
+        let Some(enclosed) = entry.enclosed_name() else {
+            return Err(format!("Python wheel 包含不安全路径: {}", entry.name()));
+        };
+        let Some(relative) = wheel_install_relative_path(&enclosed) else {
+            continue;
+        };
+        *extracted_bytes = extracted_bytes
+            .checked_add(entry.size())
+            .ok_or_else(|| "Python wheel 解压大小溢出".to_string())?;
+        if *extracted_bytes > MAX_ENVIRONMENT_BYTES {
+            return Err("MCP Python 依赖解压后超过 512 MiB 安全上限".to_string());
+        }
+        let output = site_packages.join(relative);
+        if entry.is_dir() {
+            fs::create_dir_all(&output).map_err(|e| format!("创建 wheel 目录失败: {e}"))?;
+            continue;
+        }
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("创建 wheel 目录失败: {e}"))?;
+        }
+        let mut output_file = File::create(&output)
+            .map_err(|e| format!("创建 wheel 安装文件失败 {}: {e}", output.display()))?;
+        io::copy(&mut entry, &mut output_file)
+            .map_err(|e| format!("解压 wheel 文件失败 {}: {e}", output.display()))?;
+    }
+    Ok(())
+}
+
+fn wheel_install_relative_path(path: &Path) -> Option<PathBuf> {
+    let mut components = path.components();
+    let first = components.next()?.as_os_str().to_string_lossy();
+    if first.ends_with(".data") {
+        let kind = components.next()?.as_os_str().to_string_lossy();
+        if kind != "purelib" && kind != "platlib" {
+            return None;
+        }
+        let rest = components.collect::<PathBuf>();
+        (!rest.as_os_str().is_empty()).then_some(rest)
+    } else {
+        Some(path.to_path_buf())
+    }
+}
+
+fn verify_environment(
+    python_command: &str,
+    target: &PythonDependencyTarget,
+    site_packages: &Path,
+) -> Result<(), String> {
+    let (major, minor) = parse_python_version(&target.python)?;
+    let code = "import importlib,sys; expected=(int(sys.argv[1]),int(sys.argv[2])); assert sys.version_info[:2] == expected, f'expected Python {expected[0]}.{expected[1]}, got {sys.version_info[0]}.{sys.version_info[1]}'; sys.path.insert(0,sys.argv[3]); [importlib.import_module(name) for name in sys.argv[4:]]";
+    let mut command = Command::new(python_command);
+    command
+        .args(["-I", "-S", "-B"])
+        .arg("-c")
+        .arg(code)
+        .arg(major.to_string())
+        .arg(minor.to_string())
+        .arg(site_packages)
+        .args(&target.imports);
+    let output = run_python_probe(command, "Pinvou Python dependency verification")?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let detail = String::from_utf8_lossy(&output.stderr);
+    let detail = detail.trim();
+    let detail = utf8_tail(detail, 4096);
+    Err(if detail.is_empty() {
+        format!("MCP Python 依赖校验失败（exit={}）", output.status)
+    } else {
+        format!("MCP Python 依赖校验失败: {detail}")
+    })
+}
+
+fn run_python_probe(command: Command, operation: &str) -> Result<Output, String> {
+    crate::platform::process::output_with_timeout_and_kill_tree(command, PYTHON_PROBE_TIMEOUT)
+        .map_err(|error| format!("{operation} failed: {error}"))
+}
+
+fn parse_python_version(value: &str) -> Result<(u8, u8), String> {
+    let mut parts = value.split('.');
+    let major = parts
+        .next()
+        .and_then(|value| value.parse::<u8>().ok())
+        .ok_or_else(|| format!("Python 版本无效: {value}"))?;
+    let minor = parts
+        .next()
+        .and_then(|value| value.parse::<u8>().ok())
+        .ok_or_else(|| format!("Python 版本无效: {value}"))?;
+    if parts.next().is_some() {
+        return Err(format!("Python 版本无效: {value}"));
+    }
+    Ok((major, minor))
+}
+
+fn utf8_tail(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut start = value.len() - max_bytes;
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    &value[start..]
+}
+
+fn safe_remove_dir(path: &Path, root: &Path) -> Result<(), String> {
+    if !path.starts_with(root) || path == root {
+        return Err(format!("拒绝清理 Python 依赖目录: {}", path.display()));
+    }
+    if path.exists() {
+        fs::remove_dir_all(path).map_err(|e| format!("清理 Python 依赖目录失败: {e}"))?;
+    }
+    Ok(())
+}
+
+fn cleanup_stale_install_artifacts(
+    environment_root: &Path,
+    cache_root: &Path,
+) -> Result<(), String> {
+    let mut cleanup_errors = Vec::new();
+    if let Ok(entries) = fs::read_dir(environment_root) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let is_directory = entry.file_type().is_ok_and(|kind| kind.is_dir());
+            if is_directory && is_staging_environment_name(&name) {
+                if let Err(error) = remove_prunable_dir(&entry.path(), environment_root) {
+                    cleanup_errors.push(error);
+                }
+            }
+        }
+    }
+    if let Ok(entries) = fs::read_dir(cache_root) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let is_file = entry.file_type().is_ok_and(|kind| kind.is_file());
+            if is_file && is_partial_wheel_name(&name) {
+                if let Err(error) = remove_prunable_file(&entry.path()) {
+                    cleanup_errors.push(error);
+                }
+            }
+        }
+    }
+    if cleanup_errors.is_empty() {
+        Ok(())
+    } else {
+        Err(cleanup_errors.join("; "))
+    }
+}
+
+fn is_staging_environment_name(name: &str) -> bool {
+    let Some(suffix) = name.strip_prefix(".installing-") else {
+        return false;
+    };
+    let Some((process_id, unique_id)) = suffix.split_once('-') else {
+        return false;
+    };
+    !process_id.is_empty()
+        && process_id.bytes().all(|byte| byte.is_ascii_digit())
+        && !unique_id.is_empty()
+        && unique_id.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn is_partial_wheel_name(name: &str) -> bool {
+    let Some((hash, process_id)) = name.split_once(".part-") else {
+        return false;
+    };
+    is_sha256(hash)
+        && !process_id.is_empty()
+        && process_id.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn remove_prunable_dir(path: &Path, root: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    {
+        let mut fail_path = FAIL_NEXT_PRUNE_REMOVAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if fail_path.as_deref() == Some(path) {
+            *fail_path = None;
+            return Err("测试注入：清理 Python 依赖目录失败".to_string());
+        }
+    }
+    safe_remove_dir(path, root)
+}
+
+fn remove_prunable_file(path: &Path) -> Result<(), String> {
+    fs::remove_file(path).map_err(|e| format!("清理未使用的 Python wheel 失败: {e}"))
+}
+
+struct PartialFileCleanup {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl PartialFileCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PartialFileCleanup {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn sha256_file(path: &Path) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(crate::platform::encoding::hex_lower(&digest.finalize()))
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn unique_suffix() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use zip::write::SimpleFileOptions;
+
+    struct FailingReader;
+
+    impl Read for FailingReader {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("injected copy failure"))
+        }
+    }
+
+    fn with_temp_home<F: FnOnce()>(test: F) {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = std::env::var_os("PINVOU3_HOME");
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-python-cleanup-test-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        std::env::set_var("PINVOU3_HOME", &root);
+        test();
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn sample_lock() -> PythonDependencyLock {
+        PythonDependencyLock {
+            schema_version: 1,
+            targets: vec![PythonDependencyTarget {
+                platform: "windows-x64".to_string(),
+                python: "3.13".to_string(),
+                imports: vec!["example".to_string()],
+                wheels: vec![PythonWheel {
+                    name: "example".to_string(),
+                    version: "1.0.0".to_string(),
+                    filename: "example-1.0.0-py3-none-any.whl".to_string(),
+                    url: "https://files.pythonhosted.org/packages/example-1.0.0-py3-none-any.whl"
+                        .to_string(),
+                    sha256: "a".repeat(64),
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn platform_target_is_explicit_and_environment_key_is_stable() {
+        let lock = sample_lock();
+        let target = target_for_platform(&lock, "windows-x64").unwrap();
+        assert!(target_for_platform(&lock, "linux-x64").is_none());
+        assert_eq!(
+            environment_key(target).unwrap(),
+            environment_key(target).unwrap()
+        );
+        assert_eq!(environment_key(target).unwrap().len(), 64);
+    }
+
+    #[test]
+    fn lock_rejects_untrusted_or_unpinned_wheels() {
+        let mut lock = sample_lock();
+        lock.targets[0].wheels[0].url = "http://example.com/example.whl".to_string();
+        assert!(validate_lock(&lock).unwrap_err().contains("受信任"));
+
+        let mut lock = sample_lock();
+        lock.targets[0].wheels[0].sha256 = "not-a-hash".to_string();
+        assert!(validate_lock(&lock).unwrap_err().contains("SHA-256"));
+    }
+
+    #[test]
+    fn wheel_extraction_installs_root_and_data_purelib_only() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-python-wheel-test-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let wheel = root.join("example.whl");
+        let mut bytes = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut bytes);
+            writer
+                .start_file("example/__init__.py", SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(b"VALUE = 1\n").unwrap();
+            writer
+                .start_file(
+                    "example-1.0.data/purelib/shared.py",
+                    SimpleFileOptions::default(),
+                )
+                .unwrap();
+            writer.write_all(b"SHARED = True\n").unwrap();
+            writer
+                .start_file(
+                    "example-1.0.data/scripts/ignored.exe",
+                    SimpleFileOptions::default(),
+                )
+                .unwrap();
+            writer.write_all(b"ignored").unwrap();
+            writer.finish().unwrap();
+        }
+        fs::write(&wheel, bytes.into_inner()).unwrap();
+        let environment = root.join("environment");
+        fs::create_dir_all(environment.join("site-packages")).unwrap();
+        let mut extracted_bytes = 0;
+        extract_wheel(&wheel, &environment, &mut extracted_bytes).unwrap();
+
+        assert!(environment
+            .join("site-packages/example/__init__.py")
+            .is_file());
+        assert!(environment.join("site-packages/shared.py").is_file());
+        assert!(!environment.join("site-packages/ignored.exe").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn python_version_requires_major_minor() {
+        assert_eq!(parse_python_version("3.13").unwrap(), (3, 13));
+        assert!(parse_python_version("3").is_err());
+        assert!(parse_python_version("3.13.1").is_err());
+    }
+
+    #[test]
+    fn stderr_tail_preserves_utf8_boundaries() {
+        let value = format!("{}结尾", "a".repeat(4095));
+        let tail = utf8_tail(&value, 4096);
+        assert!(tail.ends_with("结尾"));
+        assert!(tail.len() <= 4096);
+    }
+
+    #[test]
+    fn prune_recovers_strictly_named_staging_and_partial_artifacts_only() {
+        with_temp_home(|| {
+            let mut active_lock = sample_lock();
+            active_lock.targets[0].platform = crate::platform::paths::connector_platform_dir(
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+            )
+            .unwrap()
+            .to_string();
+            let active_key = environment_key(&active_lock.targets[0]).unwrap();
+            let environment_root = environments_root();
+            let cache_root = wheel_cache_root();
+            fs::create_dir_all(environment_root.join(&active_key)).unwrap();
+            fs::create_dir_all(environment_root.join(".installing-123-456")).unwrap();
+            fs::create_dir_all(environment_root.join(".installing-current")).unwrap();
+            fs::create_dir_all(environment_root.join("notes")).unwrap();
+            fs::create_dir_all(environment_root.join("b".repeat(64))).unwrap();
+            fs::create_dir_all(&cache_root).unwrap();
+            fs::write(
+                cache_root.join(format!("{}.whl", "a".repeat(64))),
+                b"active",
+            )
+            .unwrap();
+            fs::write(
+                cache_root.join(format!("{}.part-789", "c".repeat(64))),
+                b"partial",
+            )
+            .unwrap();
+            fs::write(
+                cache_root.join(format!("{}.part-worker", "d".repeat(64))),
+                b"unrelated",
+            )
+            .unwrap();
+            fs::write(cache_root.join("README.txt"), b"user file").unwrap();
+
+            prune_unused(&[active_lock]).unwrap();
+
+            assert!(environment_root.join(&active_key).is_dir());
+            assert!(!environment_root.join(".installing-123-456").exists());
+            assert!(environment_root.join(".installing-current").is_dir());
+            assert!(environment_root.join("notes").is_dir());
+            assert!(!environment_root.join("b".repeat(64)).exists());
+            assert!(cache_root.join(format!("{}.whl", "a".repeat(64))).is_file());
+            assert!(!cache_root
+                .join(format!("{}.part-789", "c".repeat(64)))
+                .exists());
+            assert!(cache_root
+                .join(format!("{}.part-worker", "d".repeat(64)))
+                .is_file());
+            assert!(cache_root.join("README.txt").is_file());
+        });
+    }
+
+    #[test]
+    fn partial_file_guard_cleans_copy_and_sync_failures() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-python-partial-test-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let bytes = b"wheel fixture";
+        let hash = crate::platform::encoding::hex_lower(&Sha256::digest(bytes));
+        let destination = root.join(format!("{hash}.whl"));
+        let partial = destination.with_extension(format!("part-{}", std::process::id()));
+        let mut wheel = sample_lock().targets.remove(0).wheels.remove(0);
+        wheel.sha256 = hash;
+
+        assert!(persist_wheel_download(&mut FailingReader, &destination, &wheel).is_err());
+        assert!(!partial.exists());
+        assert!(!destination.exists());
+
+        assert!(persist_wheel_download_with_sync(
+            &mut Cursor::new(bytes),
+            &destination,
+            &wheel,
+            |_| Err(io::Error::other("injected sync failure")),
+        )
+        .is_err());
+        assert!(!partial.exists());
+        assert!(!destination.exists());
+
+        persist_wheel_download(&mut Cursor::new(bytes), &destination, &wheel).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), bytes);
+        assert!(!partial.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bundled_document_mcp_manifests_have_complete_windows_locks() {
+        let cases = [
+            (
+                include_str!("../../../../resources/mcp-servers/gongwen/manifest.json"),
+                3,
+                "docx",
+            ),
+            (
+                include_str!("../../../../resources/mcp-servers/pptx/manifest.json"),
+                5,
+                "pptx",
+            ),
+        ];
+        for (json, wheel_count, expected_import) in cases {
+            let manifest: super::super::ToolManifest = serde_json::from_str(json).unwrap();
+            let lock = manifest.python_dependencies.unwrap();
+            validate_lock(&lock).unwrap();
+            let target = target_for_platform(&lock, "windows-x64").unwrap();
+            assert_eq!(target.python, "3.13");
+            assert_eq!(target.wheels.len(), wheel_count);
+            assert!(target.imports.iter().any(|name| name == expected_import));
+        }
+    }
+
+    /// 手动发布前验证：使用实际 Pinvou 内置 Python 和真实 PyPI wheel 完成安装、复用与清理。
+    /// 默认忽略，避免普通单测依赖网络；运行时显式提供 `PINVOU3_TEST_PYTHON`。
+    #[test]
+    #[ignore = "requires network and PINVOU3_TEST_PYTHON"]
+    fn installs_document_locks_with_real_bundled_python() {
+        if std::env::consts::OS != "windows" || std::env::consts::ARCH != "x86_64" {
+            return;
+        }
+        let python = std::env::var("PINVOU3_TEST_PYTHON")
+            .expect("PINVOU3_TEST_PYTHON must point to bundled python.exe");
+        let gongwen_manifest_json =
+            include_str!("../../../../resources/mcp-servers/gongwen/manifest.json");
+        let manifest: super::super::ToolManifest =
+            serde_json::from_str(gongwen_manifest_json).unwrap();
+        let lock = manifest.python_dependencies.unwrap();
+        let _environment_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-python-dependency-e2e-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let previous_home = std::env::var_os("PINVOU3_HOME");
+        std::env::set_var("PINVOU3_HOME", &root);
+
+        let first = ensure_installed(&lock, &python).unwrap().unwrap();
+        let gongwen_site_packages = first.site_packages.clone();
+        assert!(gongwen_site_packages.join("docx/__init__.py").is_file());
+        drop(first);
+        let second = ensure_installed(&lock, &python).unwrap().unwrap();
+        assert_eq!(gongwen_site_packages, second.site_packages);
+        drop(second);
+
+        let app_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let gongwen_dir = crate::platform::paths::bundle_mcp_servers_dir().join("gongwen");
+        fs::create_dir_all(&gongwen_dir).unwrap();
+        fs::write(gongwen_dir.join("manifest.json"), gongwen_manifest_json).unwrap();
+        fs::write(
+            gongwen_dir.join("server.py"),
+            fs::read(app_root.join("resources/mcp-servers/gongwen/server.py")).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            gongwen_dir.join("gbt9704_styles.py"),
+            fs::read(app_root.join("resources/mcp-servers/gongwen/gbt9704_styles.py")).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            crate::platform::paths::bundle_mcp_python_runner(),
+            include_str!(
+                "../../../resources/common/bundle/mcp-servers/python_dependency_runner.py"
+            ),
+        )
+        .unwrap();
+
+        let manager = super::super::MarketplaceManager::with_store(
+            crate::platform::credential_store::MemoryCredentialStore::default(),
+        );
+        manager
+            .install_with_python("gongwen", &std::collections::HashMap::new(), &python)
+            .unwrap();
+        let mcp: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(crate::platform::paths::mcp_config_path()).unwrap(),
+        )
+        .unwrap();
+        let entry = &mcp["servers"]["gongwen"];
+        let command = entry["command"].as_str().unwrap();
+        assert_eq!(Path::new(command), Path::new(&python));
+        let args = entry["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(args[0], "-I");
+        assert_eq!(args[1], "-S");
+        assert_eq!(args[2], "-B");
+        assert_eq!(
+            Path::new(args[3]),
+            crate::platform::paths::bundle_mcp_python_runner()
+        );
+        assert_eq!(Path::new(args[4]), gongwen_site_packages);
+
+        let mut child = Command::new(command)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(
+                concat!(
+                    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n",
+                    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}\n"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "gongwen MCP failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("make_gongwen"),
+            "gongwen MCP tools/list did not expose make_gongwen"
+        );
+
+        let pptx_manifest: super::super::ToolManifest = serde_json::from_str(include_str!(
+            "../../../../resources/mcp-servers/pptx/manifest.json"
+        ))
+        .unwrap();
+        let pptx_lock = pptx_manifest.python_dependencies.unwrap();
+        let pptx_environment = ensure_installed(&pptx_lock, &python).unwrap().unwrap();
+        let pptx_site_packages = pptx_environment.site_packages.clone();
+        assert!(pptx_site_packages.join("pptx/__init__.py").is_file());
+        assert_ne!(gongwen_site_packages, pptx_site_packages);
+        drop(pptx_environment);
+
+        let wheel_count = fs::read_dir(wheel_cache_root())
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry.path().extension().and_then(|value| value.to_str()) == Some("whl")
+            })
+            .count();
+        assert_eq!(
+            wheel_count, 6,
+            "shared lxml/typing wheels must not be downloaded twice"
+        );
+
+        prune_unused(std::slice::from_ref(&pptx_lock)).unwrap();
+        assert!(!gongwen_site_packages.exists());
+        assert!(pptx_site_packages.exists());
+        prune_unused(&[]).unwrap();
+        assert!(!pptx_site_packages.exists());
+
+        match previous_home {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+}

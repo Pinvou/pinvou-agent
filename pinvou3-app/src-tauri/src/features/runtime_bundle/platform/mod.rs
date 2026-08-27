@@ -298,6 +298,8 @@ pub fn install_prompt_overrides() {
 /// `~/.pinvou3/bundle/mcp-servers/`。底座按 mcp.json 用 `python3 <path>` 拉起它。
 pub const PRESENT_ARTIFACT_SERVER_PY: &str =
     include_str!("../../../../resources/common/bundle/mcp-servers/present_artifact_server.py");
+pub const MCP_PYTHON_DEPENDENCY_RUNNER_PY: &str =
+    include_str!("../../../../resources/common/bundle/mcp-servers/python_dependency_runner.py");
 
 /// Zero-dependency Node.js stdio wrapper for Browser MCP. It coordinates the app-owned
 /// native WebView with Rust BrowserManager, then hosts vendored chrome-devtools-mcp through
@@ -412,6 +414,30 @@ fn install_work_mode_browser_server(
 mod tests {
     use super::*;
     use crate::bridge::paths::tests::ENV_LOCK;
+    use crate::platform::credential_store::{
+        CredentialError, CredentialReference, CredentialStore,
+    };
+
+    #[derive(Clone, Default)]
+    struct RejectingCredentialStore;
+
+    impl CredentialStore for RejectingCredentialStore {
+        fn get(&self, _reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
+            Err(CredentialError::new("test credential store unavailable"))
+        }
+
+        fn set(
+            &self,
+            _reference: &CredentialReference,
+            _value: &str,
+        ) -> Result<(), CredentialError> {
+            Err(CredentialError::new("test credential store unavailable"))
+        }
+
+        fn delete(&self, _reference: &CredentialReference) -> Result<(), CredentialError> {
+            Err(CredentialError::new("test credential store unavailable"))
+        }
+    }
 
     #[test]
     fn work_mode_browser_server_reserves_name_and_preserves_user_conflicts() {
@@ -756,6 +782,10 @@ mod tests {
             paths::bundle_present_artifact_server().is_file(),
             "present_artifact server 脚本应被解包"
         );
+        assert!(
+            paths::bundle_mcp_python_runner().is_file(),
+            "Python MCP 依赖启动器应被解包"
+        );
         let mcp = std::fs::read_to_string(&bundle.mcp_json).unwrap();
         assert!(
             mcp.contains("present_artifact_server.py"),
@@ -863,6 +893,135 @@ mod tests {
             content, "USER TOUCHED",
             "VERSION 匹配时不应覆写已存在的 bundle 文件"
         );
+
+        cleanup(&tmp);
+    }
+
+    #[test]
+    fn secret_migration_failure_still_releases_runner_and_preserves_retryable_legacy_python_tool() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        paths::ensure_dirs().unwrap();
+        let bundle = Pinvou3Bundle::paths();
+        let server_root = paths::bundle_mcp_servers_dir();
+
+        let weather_dir = server_root.join("weather");
+        std::fs::create_dir_all(&weather_dir).unwrap();
+        let legacy_weather = br#"{"id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"],"env":{"AMAP_KEY":"legacy-fixture-value"}}"#;
+        std::fs::write(weather_dir.join("manifest.json"), legacy_weather).unwrap();
+
+        let gongwen_dir = server_root.join("gongwen");
+        std::fs::create_dir_all(&gongwen_dir).unwrap();
+        std::fs::write(gongwen_dir.join("server.py"), "print('legacy')\n").unwrap();
+        std::fs::write(
+            gongwen_dir.join("manifest.json"),
+            r#"{"id":"gongwen","name":"Gongwen","description":"d","version":"0","icon":"x","category":"c","mcp_tools":["mcp_gongwen_make_gongwen"],"command":"python","args":["server.py"],"companion_skills":["government-writing"]}"#,
+        )
+        .unwrap();
+        let marketplace_dir = paths::pinvou3_home().join("marketplace");
+        std::fs::create_dir_all(&marketplace_dir).unwrap();
+        std::fs::write(marketplace_dir.join("installed.json"), r#"["gongwen"]"#).unwrap();
+        let expected_gongwen = serde_json::json!({
+            "command": "python",
+            "args": [gongwen_dir.join("server.py")],
+            "env": {"KEEP": "configured"},
+            "enabled": false,
+            "timeout_ms": 12345,
+            "future_field": {"preserve": true}
+        });
+        std::fs::write(
+            paths::mcp_config_path(),
+            serde_json::to_vec(&serde_json::json!({
+                "servers": {
+                    "gongwen": expected_gongwen.clone()
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+            .install("government-writing")
+            .unwrap();
+
+        let manager =
+            crate::features::marketplace::MarketplaceManager::with_store(RejectingCredentialStore);
+        bundle
+            .ensure_extracted_with_marketplace(&manager, |manager| {
+                let installed_before =
+                    std::fs::read(marketplace_dir.join("installed.json")).unwrap();
+                let mcp_before: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(paths::mcp_config_path()).unwrap())
+                        .unwrap();
+                let gongwen_before = mcp_before["servers"]["gongwen"].clone();
+                let failpoint =
+                    crate::features::marketplace::fail_next_managed_dependency_install_for_test();
+                let errors = manager.repair_installed_python_tools()?;
+                assert!(
+                    !crate::features::marketplace::
+                        managed_dependency_install_failure_pending_for_test(),
+                    "the high-level transient dependency failure must be consumed"
+                );
+                drop(failpoint);
+                assert_eq!(
+                    errors,
+                    vec![concat!(
+                        "tool 'gongwen' dependency repair will retry: ",
+                        "test-injected transient managed dependency install failure"
+                    )
+                    .to_string()]
+                );
+                assert_eq!(
+                    std::fs::read(marketplace_dir.join("installed.json")).unwrap(),
+                    installed_before
+                );
+                let mcp_after: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(paths::mcp_config_path()).unwrap())
+                        .unwrap();
+                assert_eq!(mcp_after["servers"]["gongwen"], gongwen_before);
+                assert!(!marketplace_dir.join("state-transaction.json").exists());
+                Ok(errors)
+            })
+            .unwrap();
+
+        assert!(paths::bundle_mcp_python_runner().is_file());
+        let released_manifest: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                crate::features::marketplace::mcp_catalog::package_mcp_dir("gongwen")
+                    .join("manifest.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(released_manifest.get("python_dependencies").is_some());
+        assert_eq!(
+            std::fs::read(weather_dir.join("manifest.json")).unwrap(),
+            legacy_weather.to_vec(),
+            "credential failure must preserve the legacy plaintext source"
+        );
+        let installed: Vec<String> = serde_json::from_str(
+            &std::fs::read_to_string(marketplace_dir.join("installed.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(installed.contains(&"gongwen".to_string()));
+        let mcp: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(paths::mcp_config_path()).unwrap())
+                .unwrap();
+        let gongwen = &mcp["servers"]["gongwen"];
+        assert!(gongwen.is_object());
+        assert_eq!(
+            gongwen["command"],
+            serde_json::Value::String(paths::python_command())
+        );
+        for field in ["args", "env", "enabled", "timeout_ms", "future_field"] {
+            assert_eq!(gongwen[field], expected_gongwen[field], "field: {field}");
+        }
+        assert!(!marketplace_dir.join("state-transaction.json").exists());
+        assert!(paths::bundles_root()
+            .join("gongwen")
+            .join("skills")
+            .join("government-writing")
+            .exists());
 
         cleanup(&tmp);
     }

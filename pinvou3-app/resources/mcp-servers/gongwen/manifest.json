@@ -11,5 +11,38 @@
   "env": {},
   "config_fields": [],
   "pip_dependencies": ["python-docx"],
+  "python_dependencies": {
+    "schema_version": 1,
+    "targets": [
+      {
+        "platform": "windows-x64",
+        "python": "3.13",
+        "imports": ["docx", "lxml"],
+        "wheels": [
+          {
+            "name": "python-docx",
+            "version": "1.2.0",
+            "filename": "python_docx-1.2.0-py3-none-any.whl",
+            "url": "https://files.pythonhosted.org/packages/d0/00/1e03a4989fa5795da308cd774f05b704ace555a70f9bf9d3be057b680bcf/python_docx-1.2.0-py3-none-any.whl",
+            "sha256": "3fd478f3250fbbbfd3b94fe1e985955737c145627498896a8a6bf81f4baf66c7"
+          },
+          {
+            "name": "lxml",
+            "version": "6.1.2",
+            "filename": "lxml-6.1.2-cp313-cp313-win_amd64.whl",
+            "url": "https://files.pythonhosted.org/packages/1b/7a/96bac167538748cae2544335855f812fa33e49a9a67bc8b8520dcbd592bd/lxml-6.1.2-cp313-cp313-win_amd64.whl",
+            "sha256": "6cb0c87421946030b92b558be416852780a912454e3dcba0998e4497c9c588d5"
+          },
+          {
+            "name": "typing-extensions",
+            "version": "4.16.0",
+            "filename": "typing_extensions-4.16.0-py3-none-any.whl",
+            "url": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+            "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"
+          }
+        ]
+      }
+    ]
+  },
   "companion_skills": ["government-writing"]
 }

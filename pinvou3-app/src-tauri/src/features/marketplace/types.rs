@@ -35,6 +35,10 @@ pub struct ToolManifest {
     pub tool_table_entries: Vec<String>,
     #[serde(default)]
     pub pip_dependencies: Vec<String>,
+    /// Platform-specific, hash-locked Python wheels. A matching target is installed into an
+    /// isolated user environment; only non-Windows targets may use the legacy pip fallback.
+    #[serde(default)]
+    pub(crate) python_dependencies: Option<super::python_dependencies::PythonDependencyLock>,
     #[serde(default)]
     pub servers: Vec<RemoteServer>,
     /// 配套技能 id:装该 MCP 时一并装、卸时一并删(让"一个能力"=引擎+引导整体装卸)。

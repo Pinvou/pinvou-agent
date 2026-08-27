@@ -52,6 +52,10 @@ const runtimeManifestContract = readApp(
   "scripts",
   "runtime-manifest-contract.ps1",
 );
+const pythonDependencyRuntimeTest = readApp(
+  "tests",
+  "windows_python_dependency_contract.ps1",
+);
 const onnxRuntimeScript = readApp(
   "src-tauri",
   "packaging",
@@ -131,9 +135,38 @@ for (const contract of [
   "Get-RuntimeDescriptorContent",
   "onnxRuntimeDylib",
   'delivery = "download-on-first-use"',
+  "Test-PythonDependencyTarget",
+  "Test-PythonDependencyTargets",
+  "Test-PythonWheelTarget",
+  "python_dependencies",
+  "windows-x64",
+  "files.pythonhosted.org",
 ]) {
   assert.ok(runtimeScript.includes(contract), `runtime staging must retain ${contract}`);
 }
+const reusableStageStart = runtimeScript.indexOf("function Test-VerifiedStageReusable");
+const freshStageStart = runtimeScript.indexOf("function Stage-Submodule", reusableStageStart);
+const onnxDescriptorStart = runtimeScript.indexOf(
+  "function Get-OnnxDevDescriptorContent",
+  freshStageStart,
+);
+assert.ok(reusableStageStart >= 0 && freshStageStart > reusableStageStart);
+assert.ok(onnxDescriptorStart > freshStageStart);
+assert.match(
+  runtimeScript.slice(reusableStageStart, freshStageStart),
+  /Test-PythonDependencyTargets/,
+  "verified stage reuse must revalidate bundled Python ABI and wheel locks",
+);
+assert.match(
+  runtimeScript.slice(freshStageStart, onnxDescriptorStart),
+  /Assert-FreshStagePythonDependencies/,
+  "fresh runtime staging must validate bundled Python ABI and wheel locks",
+);
+assert.match(
+  pythonDependencyRuntimeTest,
+  /ABI mismatch must fail closed/,
+  "PowerShell contract must exercise fail-closed ABI validation",
+);
 assert.match(runtimeScript, /Get-Sha256 -Path \$sourcePath/u);
 assert.match(runtimeScript, /schemaVersion -notin @\(1, 2\)/u);
 assert.match(runtimeManifestContract, /Manifest\.stagedFiles/u);

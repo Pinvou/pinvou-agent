@@ -15,6 +15,7 @@
 
 mod connectors;
 mod migration;
+mod python_dependencies;
 mod secrets;
 mod types;
 mod validation;
@@ -29,10 +30,214 @@ pub mod skill_marketplace;
 pub mod skill_scope;
 pub mod store;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use serde::{Deserialize, Serialize};
 
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 use crate::platform::paths;
+
+/// installed.json, mcp.json, and managed Python environment liveness share one transaction
+/// domain. Install, uninstall, and startup repair must take this lock before reading committed
+/// state so cleanup never acts on a stale snapshot.
+static MARKETPLACE_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+static FAIL_NEXT_INSTALLED_WRITE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+static FAIL_NEXT_MANAGED_DEPENDENCY_INSTALL: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+pub(crate) struct ManagedDependencyInstallFailureGuard;
+
+#[cfg(test)]
+impl Drop for ManagedDependencyInstallFailureGuard {
+    fn drop(&mut self) {
+        FAIL_NEXT_MANAGED_DEPENDENCY_INSTALL.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_managed_dependency_install_for_test() -> ManagedDependencyInstallFailureGuard
+{
+    FAIL_NEXT_MANAGED_DEPENDENCY_INSTALL.store(true, std::sync::atomic::Ordering::SeqCst);
+    ManagedDependencyInstallFailureGuard
+}
+
+#[cfg(test)]
+pub(crate) fn managed_dependency_install_failure_pending_for_test() -> bool {
+    FAIL_NEXT_MANAGED_DEPENDENCY_INSTALL.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(test)]
+static TEST_TRUSTED_DEPENDENCY_MANIFESTS: std::sync::LazyLock<
+    Mutex<std::collections::HashMap<String, ToolManifest>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+#[cfg(test)]
+#[derive(Clone)]
+struct InstallPause {
+    entered: std::sync::Arc<std::sync::Barrier>,
+    release: std::sync::Arc<std::sync::Barrier>,
+}
+
+#[cfg(test)]
+static INSTALL_PAUSE: Mutex<Option<InstallPause>> = Mutex::new(None);
+
+#[cfg(test)]
+fn pause_install_after_environment_for_test() {
+    let pause = INSTALL_PAUSE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some(pause) = pause {
+        pause.entered.wait();
+        pause.release.wait();
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct MarketplaceStateSnapshot {
+    installed: Option<Vec<u8>>,
+    mcp: Option<Vec<u8>>,
+}
+
+fn marketplace_transaction_journal() -> PathBuf {
+    paths::pinvou3_home()
+        .join("marketplace")
+        .join("state-transaction.json")
+}
+
+fn read_optional_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("Failed to read {}: {error}", path.display())),
+    }
+}
+
+fn write_atomic_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create {}: {error}", parent.display()))?;
+    }
+    deepseek_tui::utils::write_atomic(path, bytes)
+        .map_err(|error| format!("Failed to write {}: {error}", path.display()))
+}
+
+fn restore_optional_file(path: &Path, content: &Option<Vec<u8>>) -> Result<(), String> {
+    if let Some(bytes) = content {
+        write_atomic_file(path, bytes)
+    } else {
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("Failed to remove {}: {error}", path.display())),
+        }
+    }
+}
+
+fn restore_marketplace_snapshot(snapshot: &MarketplaceStateSnapshot) -> Result<(), String> {
+    restore_optional_file(&paths::mcp_config_path(), &snapshot.mcp)?;
+    restore_optional_file(
+        &paths::pinvou3_home()
+            .join("marketplace")
+            .join("installed.json"),
+        &snapshot.installed,
+    )
+}
+
+fn recover_marketplace_transaction() -> Result<(), String> {
+    let journal = marketplace_transaction_journal();
+    let Some(bytes) = read_optional_file(&journal)? else {
+        return Ok(());
+    };
+    let snapshot: MarketplaceStateSnapshot = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Marketplace transaction journal is invalid: {error}"))?;
+    restore_marketplace_snapshot(&snapshot)?;
+    std::fs::remove_file(&journal)
+        .map_err(|error| format!("Failed to remove Marketplace transaction journal: {error}"))
+}
+
+struct MarketplaceStateTransaction {
+    snapshot: MarketplaceStateSnapshot,
+    finished: bool,
+}
+
+#[derive(Debug)]
+enum ManagedDependencyError {
+    /// Network, interpreter, download, extraction, and probe failures may recover on restart.
+    Transient(String),
+    /// A trusted embedded declaration is structurally unusable on this application build.
+    Permanent(String),
+    /// Provenance could not be established, so dependency declarations must not execute.
+    Untrusted(String),
+    /// Transaction journal/rollback/commit failure leaves persistent-state integrity uncertain.
+    Integrity(String),
+}
+
+impl ManagedDependencyError {
+    fn message(&self) -> &str {
+        match self {
+            Self::Transient(message)
+            | Self::Permanent(message)
+            | Self::Untrusted(message)
+            | Self::Integrity(message) => message,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum DowngradeError {
+    /// The downgrade failed, but the transaction restored the exact committed state.
+    StatePreserved(String),
+    /// Journal, commit, or rollback failure means persistent-state integrity is uncertain.
+    Integrity(String),
+}
+
+impl MarketplaceStateTransaction {
+    fn begin(installed_file: &Path) -> Result<Self, String> {
+        recover_marketplace_transaction()?;
+        let snapshot = MarketplaceStateSnapshot {
+            installed: read_optional_file(installed_file)?,
+            mcp: read_optional_file(&paths::mcp_config_path())?,
+        };
+        let journal = serde_json::to_vec(&snapshot)
+            .map_err(|error| format!("Failed to serialize Marketplace transaction: {error}"))?;
+        write_atomic_file(&marketplace_transaction_journal(), &journal)?;
+        Ok(Self {
+            snapshot,
+            finished: false,
+        })
+    }
+
+    fn commit(mut self) -> Result<(), String> {
+        std::fs::remove_file(marketplace_transaction_journal())
+            .map_err(|error| format!("Failed to commit Marketplace transaction: {error}"))?;
+        self.finished = true;
+        Ok(())
+    }
+
+    fn rollback(mut self) -> Result<(), String> {
+        restore_marketplace_snapshot(&self.snapshot)?;
+        std::fs::remove_file(marketplace_transaction_journal())
+            .map_err(|error| format!("Failed to remove Marketplace rollback journal: {error}"))?;
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl Drop for MarketplaceStateTransaction {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = restore_marketplace_snapshot(&self.snapshot);
+        }
+    }
+}
 
 // 对外 pub 面保持不变:类型从 types 子模块 re-export。
 pub use types::{
@@ -348,7 +553,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         tool_id: &str,
         user_config: &std::collections::HashMap<String, String>,
     ) -> Result<(), String> {
-        self.install_inner(tool_id, user_config, true, store::BundleSource::Preset)
+        self.install_inner(tool_id, user_config, store::BundleSource::Preset, None)
     }
 
     /// 上传/导入包的 MCP 供给（plugin_import 统一上传路径）：与 `install` 同一管线，
@@ -362,31 +567,42 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         tool_id: &str,
         source: store::BundleSource,
     ) -> Result<(), String> {
-        self.install_inner(tool_id, &std::collections::HashMap::new(), false, source)
+        self.install_inner(tool_id, &std::collections::HashMap::new(), source, None)
     }
 
     fn install_inner(
         &self,
         tool_id: &str,
         user_config: &std::collections::HashMap<String, String>,
-        pip_auto_install: bool,
         source: store::BundleSource,
+        python_override: Option<&str>,
     ) -> Result<(), String> {
+        let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recover_marketplace_transaction()?;
         self.migrate_mcp_plaintext_secrets()?;
         let manifest = self
             .load_manifest(tool_id)
             .ok_or_else(|| format!("工具 '{tool_id}' 不存在"))?;
 
-        // 先装 Python 依赖（跨平台 pip）；失败就不注册，让用户可重试。零依赖工具会直接跳过。
-        // 上传/导入包禁用 pip 自动安装（供应链安全）：非空依赖只提示，不执行。
-        if pip_auto_install {
-            self.pip_install_deps(&manifest)?;
-        } else if !manifest.pip_dependencies.is_empty() {
-            log::warn!(
-                "[marketplace] 上传包 '{tool_id}' 声明 pip 依赖 {:?}：已跳过自动安装（供应链安全），请自行执行 pip install 后再使用该工具",
-                manifest.pip_dependencies
-            );
-        }
+        // Only the embedded catalog may authorize automatic dependency execution. The connector
+        // manifest loaded from disk remains the source for ordinary metadata and user config,
+        // but its dependency fields are never executed.
+        let dependency_manifest = self
+            .trusted_dependency_manifest(tool_id, Some(&source))
+            .map_err(|error| error.message().to_string())?;
+        let python_environment = if let Some(dependency_manifest) = dependency_manifest {
+            self.install_python_deps(&dependency_manifest, python_override)
+                .map_err(|error| error.message().to_string())?
+        } else if !manifest.pip_dependencies.is_empty() || manifest.python_dependencies.is_some() {
+            log::warn!("[marketplace] skipped untrusted dependency declarations for '{tool_id}'");
+            None
+        } else {
+            None
+        };
+        #[cfg(test)]
+        pause_install_after_environment_for_test();
 
         // 按需释放包资源到 bundles/<id>/mcp/（§4：安装时释放，非启动全量）。
         // 自定义工具（无内嵌 spec）已由强制迁移 `migrate_custom_mcp_layout` 搬到
@@ -394,15 +610,33 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         let fingerprint = mcp_catalog::release_package(tool_id)?;
         let server_dir = mcp_catalog::package_mcp_dir(tool_id);
 
-        // 先写 mcp.json(含 resolve_secret_placeholder,缺密钥会失败);成功后才落
-        // installed.json —— 避免「installed 已写、mcp 没注册」的半安装状态。
-        self.add_to_mcp_json(&manifest, user_config, &server_dir)?;
-
-        let mut installed = self.installed_ids();
-        if !installed.contains(&tool_id.to_string()) {
-            installed.push(tool_id.to_string());
+        // mcp.json and installed.json form one recoverable transaction. A crash between their
+        // atomic writes is rolled back on the next marketplace operation or application start.
+        let transaction = MarketplaceStateTransaction::begin(&self.installed_file)?;
+        let result = (|| {
+            self.add_to_mcp_json(
+                &manifest,
+                user_config,
+                &server_dir,
+                python_environment.as_ref(),
+            )?;
+            let mut installed = self.installed_ids();
+            if !installed.contains(&tool_id.to_string()) {
+                installed.push(tool_id.to_string());
+            }
+            self.save_installed(&installed)
+        })();
+        match result {
+            Ok(()) => transaction.commit()?,
+            Err(error) => {
+                transaction
+                    .rollback()
+                    .map_err(|rollback| format!("{error}; Marketplace 状态回滚失败: {rollback}"))?;
+                drop(python_environment);
+                let _ = self.prune_from_committed_state();
+                return Err(error);
+            }
         }
-        self.save_installed(&installed)?;
 
         // 镜像写入统一真相源 bundles.json（Phase 2 过渡期：installed.json / mcp.json
         // 仍是权威，bundles.json 只镜像安装态；镜像写失败不翻盘主操作，fail loud 到日志）。
@@ -447,22 +681,42 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
     /// 卸载工具：从 installed.json + mcp.json 中移除
     pub fn uninstall(&self, tool_id: &str) -> Result<(), String> {
-        // 删该工具在 keyring 的 secret(防孤儿;此时 manifest 未删、仍可读声明)。
-        // 删不掉不阻断卸载；若用户重新安装并重新填 key，会写入新的系统凭据。
-        if let Some(manifest) = self.load_manifest(tool_id) {
-            for (target, key) in secrets::manifest_secret_targets(&manifest) {
-                let reference = secrets::mcp_secret_reference(tool_id, &target, &key);
-                let _ = self.credential_store.delete(&reference);
-                std::env::remove_var(secrets::mcp_secret_env_var(&key));
+        let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recover_marketplace_transaction()?;
+        let secret_targets = self
+            .load_manifest(tool_id)
+            .map(|manifest| secrets::manifest_secret_targets(&manifest))
+            .unwrap_or_default();
+        let transaction = MarketplaceStateTransaction::begin(&self.installed_file)?;
+        let result = (|| {
+            self.remove_from_mcp_json(tool_id)?;
+            let mut installed = self.installed_ids();
+            installed.retain(|id| id != tool_id);
+            self.save_installed(&installed)
+        })();
+        match result {
+            Ok(()) => transaction.commit()?,
+            Err(error) => {
+                transaction
+                    .rollback()
+                    .map_err(|rollback| format!("{error}; Marketplace 状态回滚失败: {rollback}"))?;
+                return Err(error);
             }
         }
-        // 更新 installed.json
-        let mut installed = self.installed_ids();
-        installed.retain(|id| id != tool_id);
-        self.save_installed(&installed)?;
 
-        // 更新 mcp.json
-        self.remove_from_mcp_json(tool_id)?;
+        // Only clean credentials, scope state, and companion skills after the persistent
+        // registration transaction commits. A failed transaction therefore leaves the old tool
+        // fully usable instead of producing a half-uninstalled state.
+        self.cleanup_uninstalled_tool_state(tool_id, &secret_targets);
+
+        // 依赖环境与 wheel 缓存按仍安装的 MCP 做引用清理。清理失败不回滚已完成的卸载，
+        // 下次卸载仍会重试，避免文件占用导致工具处于“配置已删但卸载报错”的半状态。
+        // 必须在事务锁内从刚提交的 installed.json 重读，不能使用进入锁前的过期快照。
+        if let Err(error) = self.prune_from_committed_state() {
+            eprintln!("[marketplace] prune Python dependencies failed: {error}");
+        }
 
         // 镜像删除（与 install 对称：失败只记日志。命令层 OAuth token 前置删除的
         // 中止语义在 uninstall_marketplace_tool_sync，先于本函数，不受影响）。
@@ -502,12 +756,289 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         Ok(())
     }
 
+    fn active_python_locks_from_committed_state(
+        &self,
+    ) -> Result<Vec<python_dependencies::PythonDependencyLock>, String> {
+        let mut locks = Vec::new();
+        for installed_id in self.installed_ids() {
+            let manifest = self
+                .trusted_dependency_manifest(&installed_id, None)
+                .map_err(|error| error.message().to_string())?;
+            if let Some(lock) = manifest.and_then(|manifest| manifest.python_dependencies) {
+                locks.push(lock);
+            }
+        }
+        Ok(locks)
+    }
+
+    fn prune_from_committed_state(&self) -> Result<(), String> {
+        python_dependencies::prune_unused(&self.active_python_locks_from_committed_state()?)
+    }
+
+    fn install_python_deps(
+        &self,
+        manifest: &ToolManifest,
+        python_override: Option<&str>,
+    ) -> Result<Option<python_dependencies::InstalledPythonEnvironment>, ManagedDependencyError>
+    {
+        #[cfg(test)]
+        if FAIL_NEXT_MANAGED_DEPENDENCY_INSTALL.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(ManagedDependencyError::Transient(
+                "test-injected transient managed dependency install failure".to_string(),
+            ));
+        }
+        if let Some(lock) = &manifest.python_dependencies {
+            python_dependencies::validate_lock(lock).map_err(ManagedDependencyError::Permanent)?;
+            let python_command = match python_override {
+                Some(command) => command.to_string(),
+                None => {
+                    paths::managed_python_command().map_err(ManagedDependencyError::Transient)?
+                }
+            };
+            if let Some(environment) = python_dependencies::ensure_installed(lock, &python_command)
+                .map_err(ManagedDependencyError::Transient)?
+            {
+                return Ok(Some(environment));
+            }
+            if crate::platform::capabilities::is_windows() {
+                return Err(ManagedDependencyError::Permanent(format!(
+                    "工具 '{}' 没有适用于当前 Windows 平台的 Python 依赖锁",
+                    manifest.id
+                )));
+            }
+        }
+
+        self.pip_install_deps(manifest)
+            .map_err(ManagedDependencyError::Transient)?;
+        Ok(None)
+    }
+
+    /// 完成工具注册移除后的领域清理。普通卸载与启动修复失败必须共用同一语义，
+    /// 否则 companion skill 会在 MCP 已不可用时继续进入会话提示。
+    fn cleanup_uninstalled_tool_state(&self, tool_id: &str, secret_targets: &[(String, String)]) {
+        for (target, key) in secret_targets {
+            let reference = secrets::mcp_secret_reference(tool_id, target, key);
+            let _ = self.credential_store.delete(&reference);
+            std::env::remove_var(secrets::mcp_secret_env_var(key));
+        }
+        remove_connector_from_disabled_scopes(tool_id);
+        let unavailable: std::collections::HashSet<String> =
+            self.unavailable_companion_skills().into_iter().collect();
+        for skill_id in self.companion_skills(tool_id) {
+            if !unavailable.contains(&skill_id) {
+                continue;
+            }
+            let _ = skill_marketplace::SkillMarketplaceManager::new().uninstall(&skill_id);
+            skill_scope::remove_skill_from_disabled_scopes(&skill_id);
+        }
+    }
+
+    fn mark_tool_uninstalled_locked(&self, tool_id: &str) -> Result<(), DowngradeError> {
+        let secret_targets = self
+            .load_manifest(tool_id)
+            .map(|manifest| secrets::manifest_secret_targets(&manifest))
+            .unwrap_or_default();
+        let transaction = MarketplaceStateTransaction::begin(&self.installed_file)
+            .map_err(DowngradeError::Integrity)?;
+        let result = (|| {
+            self.remove_from_mcp_json(tool_id)?;
+            let mut installed = self.installed_ids();
+            installed.retain(|id| id != tool_id);
+            self.save_installed(&installed)
+        })();
+        match result {
+            Ok(()) => {
+                transaction.commit().map_err(DowngradeError::Integrity)?;
+                self.cleanup_uninstalled_tool_state(tool_id, &secret_targets);
+                if let Err(error) = store::BundleStore::new().remove(tool_id) {
+                    log::warn!(
+                        "[marketplace] bundles.json mirror cleanup failed during Python repair ({tool_id}): {error}"
+                    );
+                }
+                Ok(())
+            }
+            Err(error) => match transaction.rollback() {
+                Ok(()) => Err(DowngradeError::StatePreserved(error)),
+                Err(rollback) => Err(DowngradeError::Integrity(format!(
+                    "{error}; marketplace state rollback failed: {rollback}"
+                ))),
+            },
+        }
+    }
+
+    fn downgrade_permanently_invalid_dependency(
+        &self,
+        tool_id: &str,
+        message: &str,
+        repair_errors: &mut Vec<String>,
+    ) -> Result<(), String> {
+        let diagnostic = format!(
+            "tool '{tool_id}' has a permanently invalid embedded dependency declaration: {message}"
+        );
+        match self.mark_tool_uninstalled_locked(tool_id) {
+            Ok(()) => repair_errors.push(format!("{diagnostic}; registration was downgraded")),
+            Err(DowngradeError::StatePreserved(state_error)) => repair_errors.push(format!(
+                "{diagnostic}; downgrade failed and was rolled back: {state_error}"
+            )),
+            Err(DowngradeError::Integrity(integrity_error)) => {
+                return Err(format!(
+                    "{diagnostic}; downgrade integrity failure: {integrity_error}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Repair legacy Python registrations before the engine reads mcp.json.
+    /// Transient failures preserve the committed registration for automatic startup retry. Only a
+    /// permanently invalid trusted lock is downgraded, and every state transition is transactional.
+    pub fn repair_installed_python_tools(&self) -> Result<Vec<String>, String> {
+        let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recover_marketplace_transaction()?;
+        self.repair_installed_python_tools_locked(None)
+    }
+
+    fn repair_installed_python_tools_locked(
+        &self,
+        python_override: Option<&str>,
+    ) -> Result<Vec<String>, String> {
+        let installed = self.installed_ids();
+        let mut repair_errors = Vec::new();
+        for tool_id in installed {
+            let manifest = match self.trusted_dependency_manifest(&tool_id, None) {
+                Ok(Some(manifest)) => manifest,
+                Ok(None) => continue,
+                Err(ManagedDependencyError::Permanent(message)) => {
+                    self.downgrade_permanently_invalid_dependency(
+                        &tool_id,
+                        &message,
+                        &mut repair_errors,
+                    )?;
+                    continue;
+                }
+                Err(error) => {
+                    repair_errors.push(format!(
+                        "tool '{tool_id}' dependency repair skipped: {}",
+                        error.message()
+                    ));
+                    continue;
+                }
+            };
+            if manifest.python_dependencies.is_none() || !manifest.servers.is_empty() {
+                continue;
+            }
+
+            let repair: Result<(), ManagedDependencyError> = (|| {
+                let environment = self.install_python_deps(&manifest, python_override)?;
+                let Some(environment) = environment else {
+                    return Ok(());
+                };
+                mcp_catalog::ensure_package_released(&tool_id)
+                    .map_err(ManagedDependencyError::Transient)?;
+                let server_dir = mcp_catalog::package_mcp_dir(&tool_id);
+                let transaction = MarketplaceStateTransaction::begin(&self.installed_file)
+                    .map_err(ManagedDependencyError::Integrity)?;
+                let result =
+                    self.patch_managed_python_runtime(&manifest, &server_dir, &environment);
+                match result {
+                    Ok(()) => transaction
+                        .commit()
+                        .map_err(ManagedDependencyError::Integrity),
+                    Err(error) => {
+                        transaction.rollback().map_err(|rollback| {
+                            ManagedDependencyError::Integrity(format!(
+                                "{error}; marketplace state rollback failed: {rollback}"
+                            ))
+                        })?;
+                        Err(ManagedDependencyError::Transient(error))
+                    }
+                }
+            })();
+
+            if let Err(error) = repair {
+                match error {
+                    ManagedDependencyError::Transient(message)
+                    | ManagedDependencyError::Untrusted(message) => {
+                        repair_errors.push(format!(
+                            "tool '{tool_id}' dependency repair will retry: {message}"
+                        ));
+                    }
+                    ManagedDependencyError::Permanent(message) => {
+                        self.downgrade_permanently_invalid_dependency(
+                            &tool_id,
+                            &message,
+                            &mut repair_errors,
+                        )?;
+                    }
+                    ManagedDependencyError::Integrity(message) => {
+                        return Err(format!(
+                            "tool '{tool_id}' dependency repair integrity failure: {message}"
+                        ));
+                    }
+                }
+            }
+        }
+        // repair/downgrade 的持久状态已提交后，未引用缓存的物理清理属于可重试维护任务。
+        // Windows 上孤儿进程、杀毒或索引器可能短暂占用 .pyd，不能因此阻断全部助手启动。
+        if let Err(error) = self.prune_from_committed_state() {
+            eprintln!("[marketplace] prune Python dependencies after repair failed: {error}");
+        }
+        Ok(repair_errors)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn repair_installed_python_tools_with_python(
+        &self,
+        python_command: &str,
+    ) -> Result<Vec<String>, String> {
+        let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recover_marketplace_transaction()?;
+        self.repair_installed_python_tools_locked(Some(python_command))
+    }
+
+    #[cfg(test)]
+    fn install_with_python(
+        &self,
+        tool_id: &str,
+        user_config: &std::collections::HashMap<String, String>,
+        python_command: &str,
+    ) -> Result<(), String> {
+        self.install_inner(
+            tool_id,
+            user_config,
+            store::BundleSource::Preset,
+            Some(python_command),
+        )
+    }
+
     /// manifest 声明的配套技能 id(装该 MCP 时一并装、卸时一并删)。
     /// uninstall 不删 manifest 文件,故卸载后仍可读到。
     pub fn companion_skills(&self, tool_id: &str) -> Vec<String> {
         self.load_manifest(tool_id)
             .map(|m| m.companion_skills)
             .unwrap_or_default()
+    }
+
+    /// 仅由未安装连接器声明的 companion skills。物化层以此防御物理目录清理失败或
+    /// 异常退出留下的残留；若多个连接器共享技能，只要任一已安装就仍可使用。
+    pub fn unavailable_companion_skills(&self) -> Vec<String> {
+        let installed: std::collections::HashSet<String> =
+            self.installed_ids().into_iter().collect();
+        let mut declared = std::collections::HashSet::new();
+        let mut active = std::collections::HashSet::new();
+        for manifest in self.available_tools() {
+            for skill_id in manifest.companion_skills {
+                declared.insert(skill_id.clone());
+                if installed.contains(&manifest.id) {
+                    active.insert(skill_id);
+                }
+            }
+        }
+        declared.difference(&active).cloned().collect()
     }
 
     pub fn oauth_remote_server_name(&self, tool_id: &str) -> Option<String> {
@@ -578,6 +1109,86 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         serde_json::from_str(spec.manifest_json).ok()
     }
 
+    /// Resolve the only manifest allowed to authorize automatic dependency execution.
+    /// Disk manifests remain valid connector metadata, but never establish dependency trust.
+    fn embedded_dependency_manifest(
+        &self,
+        tool_id: &str,
+    ) -> Result<Option<ToolManifest>, ManagedDependencyError> {
+        if let Some(spec) = mcp_catalog::spec_for(tool_id) {
+            return serde_json::from_str(spec.manifest_json)
+                .map(Some)
+                .map_err(|error| {
+                    ManagedDependencyError::Permanent(format!(
+                        "embedded dependency manifest for '{tool_id}' is invalid: {error}"
+                    ))
+                });
+        }
+        #[cfg(test)]
+        if let Some(manifest) = TEST_TRUSTED_DEPENDENCY_MANIFESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(tool_id)
+            .cloned()
+        {
+            return Ok(Some(manifest));
+        }
+        Ok(None)
+    }
+
+    /// Initial preset installation is anchored directly by the embedded catalog because its
+    /// mirror record does not exist yet. Every later installed-state operation additionally
+    /// requires an intact Preset mirror and fails closed for Upload or unknown provenance.
+    fn trusted_dependency_manifest(
+        &self,
+        tool_id: &str,
+        install_source: Option<&store::BundleSource>,
+    ) -> Result<Option<ToolManifest>, ManagedDependencyError> {
+        let Some(manifest) = self.embedded_dependency_manifest(tool_id)? else {
+            return Ok(None);
+        };
+        if manifest.pip_dependencies.is_empty() && manifest.python_dependencies.is_none() {
+            return Ok(Some(manifest));
+        }
+
+        if install_source.is_some_and(|source| !matches!(source, store::BundleSource::Preset)) {
+            return Ok(None);
+        }
+
+        let record = store::BundleStore::new().get(tool_id).map_err(|error| {
+            ManagedDependencyError::Untrusted(format!(
+                "dependency provenance for '{tool_id}' is unavailable: {error}"
+            ))
+        })?;
+        match record {
+            Some(record)
+                if record.installed && matches!(record.source, store::BundleSource::Preset) =>
+            {
+                Ok(Some(manifest))
+            }
+            Some(record) => Err(ManagedDependencyError::Untrusted(format!(
+                "dependency provenance for '{tool_id}' is not a live preset ({})",
+                record.source
+            ))),
+            None if install_source.is_some()
+                && !self.installed_ids().iter().any(|id| id == tool_id) =>
+            {
+                Ok(Some(manifest))
+            }
+            None => Err(ManagedDependencyError::Untrusted(format!(
+                "dependency provenance for installed preset '{tool_id}' is missing"
+            ))),
+        }
+    }
+
+    #[cfg(test)]
+    fn trust_dependency_manifest_for_test(manifest: ToolManifest) {
+        TEST_TRUSTED_DEPENDENCY_MANIFESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(manifest.id.clone(), manifest);
+    }
+
     /// pinvou3 工具开关:把"连接器 id 列表"映射成"模型可见工具全名"
     /// (`mcp_{server}_{tool}`,小写 —— 引擎 `command_denies_tool` 按小写精确匹配)。
     /// 关一个连接器要把它名下所有工具都列出来。
@@ -604,10 +1215,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     }
 
     fn save_installed(&self, ids: &[String]) -> Result<(), String> {
-        let dir = self.installed_file.parent().unwrap();
-        std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {e}"))?;
+        #[cfg(test)]
+        if FAIL_NEXT_INSTALLED_WRITE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err("测试注入：installed.json 写入失败".to_string());
+        }
         let json = serde_json::to_string_pretty(ids).map_err(|e| e.to_string())?;
-        std::fs::write(&self.installed_file, json).map_err(|e| format!("写入失败: {e}"))
+        write_atomic_file(&self.installed_file, json.as_bytes())
     }
 
     fn backup_corrupt_installed(&self, content: &str) {
@@ -664,7 +1277,9 @@ mod tests {
     use crate::platform::credential_store::{CredentialStore, MemoryCredentialStore};
     use crate::platform::paths::tests::ENV_LOCK;
     use secrets::mcp_secret_reference;
+    use sha2::{Digest, Sha256};
     use std::future::Future;
+    use std::io::{Cursor, Write as _};
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -938,6 +1553,715 @@ mod tests {
         let dir = mcp_catalog::package_mcp_dir(tool_id);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+    }
+
+    fn test_python() -> (String, String) {
+        let python = std::env::var("PINVOU3_TEST_PYTHON").unwrap_or_else(|_| "python".to_string());
+        let output = std::process::Command::new(&python)
+            .args([
+                "-I",
+                "-S",
+                "-c",
+                "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')",
+            ])
+            .output()
+            .expect("test Python must start");
+        assert!(output.status.success());
+        (
+            python,
+            String::from_utf8(output.stdout).unwrap().trim().to_string(),
+        )
+    }
+
+    struct LockedPythonToolFixture {
+        wheel_bytes: Vec<u8>,
+        sha256: String,
+        cache_path: PathBuf,
+    }
+
+    impl LockedPythonToolFixture {
+        fn seed_validated_cache(&self) {
+            assert_eq!(
+                crate::platform::encoding::hex_lower(&Sha256::digest(&self.wheel_bytes)),
+                self.sha256
+            );
+            std::fs::create_dir_all(self.cache_path.parent().unwrap()).unwrap();
+            std::fs::write(&self.cache_path, &self.wheel_bytes).unwrap();
+        }
+    }
+
+    fn write_locked_python_tool(
+        tool_id: &str,
+        module: &str,
+        python_version: &str,
+    ) -> LockedPythonToolFixture {
+        write_locked_python_tool_with_trust(tool_id, module, python_version, true)
+    }
+
+    fn write_locked_python_tool_with_trust(
+        tool_id: &str,
+        module: &str,
+        python_version: &str,
+        trusted: bool,
+    ) -> LockedPythonToolFixture {
+        let filename = format!("{module}-1.0.0-py3-none-any.whl");
+        let mut wheel = Cursor::new(Vec::new());
+        {
+            let mut archive = zip::ZipWriter::new(&mut wheel);
+            archive
+                .start_file(
+                    format!("{module}/__init__.py"),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+            archive.write_all(b"VALUE = 'managed'\n").unwrap();
+            archive.finish().unwrap();
+        }
+        let wheel = wheel.into_inner();
+        let sha256 = crate::platform::encoding::hex_lower(&Sha256::digest(&wheel));
+        let cache = crate::platform::paths::pinvou3_home()
+            .join("cache")
+            .join("python-wheels");
+        let fixture = LockedPythonToolFixture {
+            cache_path: cache.join(format!("{sha256}.whl")),
+            wheel_bytes: wheel,
+            sha256: sha256.clone(),
+        };
+        fixture.seed_validated_cache();
+
+        let platform = crate::platform::paths::connector_platform_dir(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        )
+        .unwrap();
+        let manifest = serde_json::json!({
+            "id": tool_id,
+            "name": tool_id,
+            "description": "fixture",
+            "version": "1.0.0",
+            "icon": "fixture",
+            "category": "fixture",
+            "mcp_tools": [format!("mcp_{tool_id}_run")],
+            "command": "python",
+            "args": ["server.py"],
+            "python_dependencies": {
+                "schema_version": 1,
+                "targets": [{
+                    "platform": platform,
+                    "python": python_version,
+                    "imports": [module],
+                    "wheels": [{
+                        "name": module,
+                        "version": "1.0.0",
+                        "filename": filename,
+                        "url": format!("https://files.pythonhosted.org/packages/{filename}"),
+                        "sha256": sha256
+                    }]
+                }]
+            }
+        });
+        let manifest = serde_json::to_string_pretty(&manifest).unwrap();
+        write_tool_manifest(tool_id, &manifest);
+        if trusted {
+            MarketplaceManager::<MemoryCredentialStore>::trust_dependency_manifest_for_test(
+                serde_json::from_str(&manifest).unwrap(),
+            );
+        }
+        let server_dir = mcp_catalog::package_mcp_dir(tool_id);
+        std::fs::write(
+            server_dir.join("server.py"),
+            format!("from {module} import VALUE\nprint(VALUE)\n"),
+        )
+        .unwrap();
+        let runner = crate::platform::paths::bundle_mcp_python_runner();
+        std::fs::create_dir_all(runner.parent().unwrap()).unwrap();
+        std::fs::write(
+            runner,
+            include_str!(
+                "../../../resources/common/bundle/mcp-servers/python_dependency_runner.py"
+            ),
+        )
+        .unwrap();
+        fixture
+    }
+
+    fn write_pip_python_tool(tool_id: &str, trusted: bool) {
+        let manifest = serde_json::json!({
+            "id": tool_id,
+            "name": tool_id,
+            "description": "fixture",
+            "version": "1.0.0",
+            "icon": "fixture",
+            "category": "fixture",
+            "mcp_tools": [format!("mcp_{tool_id}_run")],
+            "command": "python",
+            "args": ["server.py"],
+            "pip_dependencies": ["pinvou3-test-only-dependency"]
+        });
+        let manifest = serde_json::to_string_pretty(&manifest).unwrap();
+        write_tool_manifest(tool_id, &manifest);
+        std::fs::write(
+            mcp_catalog::package_mcp_dir(tool_id).join("server.py"),
+            "print('pip fixture')\n",
+        )
+        .unwrap();
+        if trusted {
+            MarketplaceManager::<MemoryCredentialStore>::trust_dependency_manifest_for_test(
+                serde_json::from_str(&manifest).unwrap(),
+            );
+        }
+    }
+
+    fn write_legacy_python_state(tool_id: &str) {
+        write_installed_ids(&[tool_id.to_string()]);
+        store::BundleStore::new()
+            .upsert(store::BundleRecord::installed_now(
+                tool_id,
+                store::BundleSource::Preset,
+            ))
+            .unwrap();
+        let server = mcp_catalog::package_mcp_dir(tool_id).join("server.py");
+        let mut servers = serde_json::Map::new();
+        servers.insert(
+            tool_id.to_string(),
+            serde_json::json!({ "command": "python", "args": [server] }),
+        );
+        connectors::write_json_pretty(
+            &crate::platform::paths::mcp_config_path(),
+            &serde_json::json!({ "servers": servers }),
+        )
+        .unwrap();
+    }
+
+    fn manager_installed_bytes() -> Vec<u8> {
+        std::fs::read(
+            crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("installed.json"),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn installed_write_failure_rolls_back_mcp_and_survives_reopen() {
+        with_temp_home(|| {
+            write_installed_ids(&["existing".to_string()]);
+            let old_mcp = serde_json::json!({
+                "servers": { "existing": { "command": "node", "args": ["existing.js"] } }
+            });
+            connectors::write_json_pretty(&crate::platform::paths::mcp_config_path(), &old_mcp)
+                .unwrap();
+            write_tool_manifest(
+                "half-install",
+                r#"{
+                    "id":"half-install","name":"Half","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"node","args":["server.js"]
+                }"#,
+            );
+
+            FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let error = manager
+                .install("half-install", &std::collections::HashMap::new())
+                .unwrap_err();
+            assert!(error.contains("installed.json"));
+
+            let reopened = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            assert_eq!(reopened.installed_ids(), vec!["existing".to_string()]);
+            assert_eq!(read_mcp_json(), old_mcp);
+            assert!(!marketplace_transaction_journal().exists());
+        });
+    }
+
+    #[test]
+    fn startup_recovers_interrupted_cross_file_transaction() {
+        with_temp_home(|| {
+            write_installed_ids(&["old-tool".to_string()]);
+            let old_mcp = serde_json::json!({
+                "servers": { "old-tool": { "command": "node", "args": ["old.js"] } }
+            });
+            connectors::write_json_pretty(&crate::platform::paths::mcp_config_path(), &old_mcp)
+                .unwrap();
+            let snapshot = MarketplaceStateSnapshot {
+                installed: read_optional_file(
+                    &crate::platform::paths::pinvou3_home()
+                        .join("marketplace")
+                        .join("installed.json"),
+                )
+                .unwrap(),
+                mcp: read_optional_file(&crate::platform::paths::mcp_config_path()).unwrap(),
+            };
+            write_atomic_file(
+                &marketplace_transaction_journal(),
+                &serde_json::to_vec(&snapshot).unwrap(),
+            )
+            .unwrap();
+
+            write_installed_ids(&["new-tool".to_string()]);
+            connectors::write_json_pretty(
+                &crate::platform::paths::mcp_config_path(),
+                &serde_json::json!({
+                    "servers": { "new-tool": { "command": "node", "args": ["new.js"] } }
+                }),
+            )
+            .unwrap();
+
+            let reopened = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            assert!(reopened.repair_installed_python_tools().unwrap().is_empty());
+            assert_eq!(reopened.installed_ids(), vec!["old-tool".to_string()]);
+            assert_eq!(read_mcp_json(), old_mcp);
+            assert!(!marketplace_transaction_journal().exists());
+        });
+    }
+
+    #[test]
+    fn startup_repair_does_not_fail_when_unused_environment_cleanup_is_blocked() {
+        with_temp_home(|| {
+            let unused_environment = crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("python-envs")
+                .join("f".repeat(64));
+            let other_unused_environment =
+                unused_environment.parent().unwrap().join("e".repeat(64));
+            std::fs::create_dir_all(&unused_environment).unwrap();
+            std::fs::create_dir_all(&other_unused_environment).unwrap();
+            python_dependencies::fail_next_prune_removal_for_test(unused_environment.clone());
+
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            assert!(manager.repair_installed_python_tools().unwrap().is_empty());
+            assert!(unused_environment.is_dir());
+            assert!(!other_unused_environment.exists());
+
+            assert!(manager.repair_installed_python_tools().unwrap().is_empty());
+            assert!(!unused_environment.exists());
+        });
+    }
+
+    #[test]
+    fn legacy_python_install_is_repaired_before_engine_use() {
+        with_temp_home(|| {
+            let (python, version) = test_python();
+            write_locked_python_tool("legacy-doc", "legacy_fixture", &version);
+            write_legacy_python_state("legacy-doc");
+            let mut configured = read_mcp_json();
+            let configured_entry = configured["servers"]["legacy-doc"].as_object_mut().unwrap();
+            configured_entry.insert(
+                "env".to_string(),
+                serde_json::json!({"API_KEY": "${PINVOU3_MCP_API_KEY}"}),
+            );
+            configured_entry.insert("enabled".to_string(), serde_json::json!(false));
+            configured_entry.insert("timeout_ms".to_string(), serde_json::json!(12345));
+            configured_entry.insert(
+                "future_field".to_string(),
+                serde_json::json!({"nested": [1, 2, 3]}),
+            );
+            connectors::write_json_pretty(&paths::mcp_config_path(), &configured).unwrap();
+
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            assert!(manager
+                .repair_installed_python_tools_with_python(&python)
+                .unwrap()
+                .is_empty());
+
+            let mcp = read_mcp_json();
+            let entry = &mcp["servers"]["legacy-doc"];
+            let args = entry["args"].as_array().unwrap();
+            assert_eq!(entry["command"], python);
+            assert_eq!(args[0], "-I");
+            assert_eq!(args[1], "-S");
+            assert_eq!(args[2], "-B");
+            assert_eq!(
+                Path::new(args[3].as_str().unwrap()),
+                crate::platform::paths::bundle_mcp_python_runner()
+            );
+            assert!(Path::new(args[4].as_str().unwrap()).is_dir());
+            let output = std::process::Command::new(entry["command"].as_str().unwrap())
+                .args(args.iter().map(|value| value.as_str().unwrap()))
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "managed");
+            assert_eq!(entry["env"], configured["servers"]["legacy-doc"]["env"]);
+            assert_eq!(entry["enabled"], false);
+            assert_eq!(entry["timeout_ms"], 12345);
+            assert_eq!(
+                entry["future_field"],
+                configured["servers"]["legacy-doc"]["future_field"]
+            );
+
+            let repaired_entry = entry.clone();
+            assert!(manager
+                .repair_installed_python_tools_with_python(&python)
+                .unwrap()
+                .is_empty());
+            assert_eq!(
+                read_mcp_json()["servers"]["legacy-doc"],
+                repaired_entry,
+                "repeated repair must be idempotent"
+            );
+        });
+    }
+
+    #[test]
+    fn transient_legacy_python_repair_failure_preserves_state_for_startup_retry() {
+        with_temp_home(|| {
+            let (python, version) = test_python();
+            let fixture = write_locked_python_tool("legacy-retry", "retry_fixture", &version);
+            write_legacy_python_state("legacy-retry");
+            let installed_before = manager_installed_bytes();
+            let mcp_before = std::fs::read(paths::mcp_config_path()).unwrap();
+            python_dependencies::fail_next_download_for_test();
+
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let errors = manager
+                .repair_installed_python_tools_with_python(&python)
+                .unwrap();
+            assert_eq!(errors.len(), 1);
+            assert!(errors[0].contains("will retry"));
+            assert!(manager
+                .installed_ids()
+                .contains(&"legacy-retry".to_string()));
+            assert_eq!(std::fs::read(paths::mcp_config_path()).unwrap(), mcp_before);
+            assert_eq!(manager_installed_bytes(), installed_before);
+            assert!(!marketplace_transaction_journal().exists());
+            assert!(
+                fixture.cache_path.is_file(),
+                "live lock must retain its cache"
+            );
+
+            assert!(manager
+                .repair_installed_python_tools_with_python(&python)
+                .unwrap()
+                .is_empty());
+            assert_eq!(read_mcp_json()["servers"]["legacy-retry"]["args"][0], "-I");
+        });
+    }
+
+    #[test]
+    fn untrusted_upload_dependencies_never_execute_during_install_repair_or_reinstall() {
+        with_temp_home(|| {
+            let (python, version) = test_python();
+            write_locked_python_tool_with_trust(
+                "upload-lock",
+                "upload_lock_fixture",
+                &version,
+                false,
+            );
+            python_dependencies::fail_next_download_for_test();
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            manager
+                .install_upload(
+                    "upload-lock",
+                    store::BundleSource::Upload("upload-lock.zip".to_string()),
+                )
+                .unwrap();
+            assert!(manager
+                .repair_installed_python_tools_with_python(&python)
+                .unwrap()
+                .is_empty());
+            manager.uninstall("upload-lock").unwrap();
+            manager
+                .install_with_python("upload-lock", &std::collections::HashMap::new(), &python)
+                .unwrap();
+            assert!(
+                python_dependencies::take_pending_download_failure_for_test(),
+                "untrusted wheel lock must never reach the downloader"
+            );
+
+            write_pip_python_tool("upload-pip", false);
+            connectors::set_next_pip_install_result_for_test(1);
+            manager
+                .install_upload(
+                    "upload-pip",
+                    store::BundleSource::Upload("upload-pip.zip".to_string()),
+                )
+                .unwrap();
+            assert!(manager
+                .repair_installed_python_tools_with_python(&python)
+                .unwrap()
+                .is_empty());
+            manager.uninstall("upload-pip").unwrap();
+            manager
+                .install("upload-pip", &std::collections::HashMap::new())
+                .unwrap();
+            assert_eq!(
+                connectors::take_pending_pip_install_result_for_test(),
+                1,
+                "untrusted pip declaration must never reach pip"
+            );
+        });
+    }
+
+    #[test]
+    fn trusted_catalog_dependencies_execute_for_initial_install() {
+        with_temp_home(|| {
+            let (python, version) = test_python();
+            write_locked_python_tool("trusted-lock", "trusted_lock_fixture", &version);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            manager
+                .install_with_python("trusted-lock", &std::collections::HashMap::new(), &python)
+                .unwrap();
+            assert_eq!(read_mcp_json()["servers"]["trusted-lock"]["args"][0], "-I");
+
+            write_pip_python_tool("trusted-pip", true);
+            connectors::set_next_pip_install_result_for_test(2);
+            manager
+                .install("trusted-pip", &std::collections::HashMap::new())
+                .unwrap();
+            assert_eq!(connectors::take_pending_pip_install_result_for_test(), 0);
+            assert!(read_mcp_json()["servers"].get("trusted-pip").is_some());
+        });
+    }
+
+    #[test]
+    fn upload_source_and_corrupt_mirror_block_trusted_dependency_execution() {
+        with_temp_home(|| {
+            let (python, version) = test_python();
+            write_locked_python_tool("trusted-upload-lock", "trusted_upload_fixture", &version);
+            python_dependencies::fail_next_download_for_test();
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            manager
+                .install_upload(
+                    "trusted-upload-lock",
+                    store::BundleSource::Upload("trusted-upload-lock.zip".to_string()),
+                )
+                .unwrap();
+            let errors = manager
+                .repair_installed_python_tools_with_python(&python)
+                .unwrap();
+            assert_eq!(errors.len(), 1);
+            assert!(errors[0].contains("provenance"));
+            assert!(python_dependencies::take_pending_download_failure_for_test());
+
+            write_pip_python_tool("trusted-upload-pip", true);
+            connectors::set_next_pip_install_result_for_test(1);
+            manager
+                .install_upload(
+                    "trusted-upload-pip",
+                    store::BundleSource::Upload("trusted-upload-pip.zip".to_string()),
+                )
+                .unwrap();
+            assert_eq!(connectors::take_pending_pip_install_result_for_test(), 1);
+
+            write_pip_python_tool("trusted-corrupt-pip", true);
+            std::fs::write(store::BundleStore::new().file_path(), b"{not-json").unwrap();
+            connectors::set_next_pip_install_result_for_test(1);
+            let error = manager
+                .install("trusted-corrupt-pip", &std::collections::HashMap::new())
+                .unwrap_err();
+            assert!(error.contains("provenance"));
+            assert_eq!(connectors::take_pending_pip_install_result_for_test(), 1);
+        });
+    }
+
+    #[test]
+    fn startup_repair_fails_closed_when_preset_mirror_is_missing() {
+        with_temp_home(|| {
+            let (python, version) = test_python();
+            write_locked_python_tool("missing-mirror", "missing_mirror_fixture", &version);
+            write_legacy_python_state("missing-mirror");
+            store::BundleStore::new().remove("missing-mirror").unwrap();
+            let installed_before = manager_installed_bytes();
+            let mcp_before = std::fs::read(paths::mcp_config_path()).unwrap();
+            python_dependencies::fail_next_download_for_test();
+
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let errors = manager
+                .repair_installed_python_tools_with_python(&python)
+                .unwrap();
+            assert_eq!(errors.len(), 1);
+            assert!(errors[0].contains("provenance"));
+            assert!(python_dependencies::take_pending_download_failure_for_test());
+            assert_eq!(manager_installed_bytes(), installed_before);
+            assert_eq!(std::fs::read(paths::mcp_config_path()).unwrap(), mcp_before);
+            assert!(!marketplace_transaction_journal().exists());
+        });
+    }
+
+    #[test]
+    fn startup_repair_fails_closed_when_preset_mirror_is_corrupt() {
+        with_temp_home(|| {
+            let (python, version) = test_python();
+            write_locked_python_tool("corrupt-mirror", "corrupt_mirror_fixture", &version);
+            write_legacy_python_state("corrupt-mirror");
+            std::fs::write(store::BundleStore::new().file_path(), b"{not-json").unwrap();
+            let installed_before = manager_installed_bytes();
+            let mcp_before = std::fs::read(paths::mcp_config_path()).unwrap();
+            python_dependencies::fail_next_download_for_test();
+
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let errors = manager
+                .repair_installed_python_tools_with_python(&python)
+                .unwrap();
+            assert_eq!(errors.len(), 1);
+            assert!(errors[0].contains("provenance"));
+            assert!(python_dependencies::take_pending_download_failure_for_test());
+            assert_eq!(manager_installed_bytes(), installed_before);
+            assert_eq!(std::fs::read(paths::mcp_config_path()).unwrap(), mcp_before);
+            assert!(!marketplace_transaction_journal().exists());
+        });
+    }
+
+    #[test]
+    fn permanent_repair_downgrade_write_failure_rolls_back_and_continues() {
+        with_temp_home(|| {
+            let (python, version) = test_python();
+            write_locked_python_tool("invalid-lock", "invalid_lock_fixture", &version);
+            write_locked_python_tool("repair-next", "repair_next_fixture", &version);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let mut invalid = manager.load_manifest("invalid-lock").unwrap();
+            invalid.python_dependencies.as_mut().unwrap().schema_version = 999;
+            MarketplaceManager::<MemoryCredentialStore>::trust_dependency_manifest_for_test(
+                invalid,
+            );
+            write_installed_ids(&["invalid-lock".to_string(), "repair-next".to_string()]);
+            for tool_id in ["invalid-lock", "repair-next"] {
+                store::BundleStore::new()
+                    .upsert(store::BundleRecord::installed_now(
+                        tool_id,
+                        store::BundleSource::Preset,
+                    ))
+                    .unwrap();
+            }
+            let invalid_entry = serde_json::json!({
+                "command": "python",
+                "args": [mcp_catalog::package_mcp_dir("invalid-lock").join("server.py")],
+                "env": {"KEEP": "exact"}
+            });
+            connectors::write_json_pretty(
+                &paths::mcp_config_path(),
+                &serde_json::json!({
+                    "servers": {
+                        "invalid-lock": invalid_entry.clone(),
+                        "repair-next": {
+                            "command": "python",
+                            "args": [mcp_catalog::package_mcp_dir("repair-next").join("server.py")]
+                        }
+                    }
+                }),
+            )
+            .unwrap();
+            let installed_before = manager_installed_bytes();
+            FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+
+            let errors = manager
+                .repair_installed_python_tools_with_python(&python)
+                .unwrap();
+            assert!(errors
+                .iter()
+                .any(|error| error.contains("downgrade failed and was rolled back")));
+            assert_eq!(manager_installed_bytes(), installed_before);
+            let mcp = read_mcp_json();
+            assert_eq!(mcp["servers"]["invalid-lock"], invalid_entry);
+            assert_eq!(mcp["servers"]["repair-next"]["args"][0], "-I");
+            assert!(!marketplace_transaction_journal().exists());
+        });
+    }
+
+    #[test]
+    fn shared_companion_remains_available_while_any_connector_is_installed() {
+        with_temp_home(|| {
+            for tool_id in ["connector-a", "connector-b"] {
+                write_tool_manifest(
+                    tool_id,
+                    &serde_json::json!({
+                        "id": tool_id,
+                        "name": tool_id,
+                        "description": "fixture",
+                        "version": "1",
+                        "icon": "x",
+                        "category": "c",
+                        "mcp_tools": [],
+                        "command": "node",
+                        "args": ["server.js"],
+                        "companion_skills": ["shared-skill"]
+                    })
+                    .to_string(),
+                );
+            }
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            write_installed_ids(&["connector-a".to_string()]);
+            assert!(!manager
+                .unavailable_companion_skills()
+                .contains(&"shared-skill".to_string()));
+
+            write_installed_ids(&["connector-b".to_string()]);
+            assert!(!manager
+                .unavailable_companion_skills()
+                .contains(&"shared-skill".to_string()));
+
+            write_installed_ids(&[]);
+            assert!(manager
+                .unavailable_companion_skills()
+                .contains(&"shared-skill".to_string()));
+        });
+    }
+
+    #[test]
+    fn concurrent_uninstall_reloads_liveness_after_install_commit() {
+        with_temp_home(|| {
+            let (python, version) = test_python();
+            write_locked_python_tool("old-doc", "old_fixture", &version);
+            write_locked_python_tool("new-doc", "new_fixture", &version);
+            MarketplaceManager::with_store(MemoryCredentialStore::default())
+                .install_with_python("old-doc", &std::collections::HashMap::new(), &python)
+                .unwrap();
+            let old_mcp = read_mcp_json();
+            let old_environment =
+                PathBuf::from(old_mcp["servers"]["old-doc"]["args"][4].as_str().unwrap());
+            assert!(old_environment.is_dir());
+
+            let entered = Arc::new(std::sync::Barrier::new(2));
+            let release = Arc::new(std::sync::Barrier::new(2));
+            *INSTALL_PAUSE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(InstallPause {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            });
+
+            let install_python = python.clone();
+            let install = std::thread::spawn(move || {
+                MarketplaceManager::with_store(MemoryCredentialStore::default())
+                    .install_with_python(
+                        "new-doc",
+                        &std::collections::HashMap::new(),
+                        &install_python,
+                    )
+            });
+            entered.wait();
+            let uninstall = std::thread::spawn(|| {
+                MarketplaceManager::with_store(MemoryCredentialStore::default())
+                    .uninstall("old-doc")
+            });
+            release.wait();
+            install.join().unwrap().unwrap();
+            uninstall.join().unwrap().unwrap();
+            *INSTALL_PAUSE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            assert_eq!(manager.installed_ids(), vec!["new-doc".to_string()]);
+            let mcp = read_mcp_json();
+            assert!(mcp["servers"].get("old-doc").is_none());
+            let new_server = &mcp["servers"]["new-doc"];
+            assert!(new_server.is_object());
+            let args = new_server["args"].as_array().unwrap();
+            assert_eq!(
+                Path::new(args[3].as_str().unwrap()),
+                crate::platform::paths::bundle_mcp_python_runner()
+            );
+            let new_environment = Path::new(args[4].as_str().unwrap());
+            assert!(
+                !old_environment.exists(),
+                "uninstall should collect the old unreferenced environment"
+            );
+            assert!(
+                new_environment.is_dir(),
+                "the concurrently installed environment must remain live"
+            );
+        });
     }
 
     fn read_mcp_json() -> serde_json::Value {

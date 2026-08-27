@@ -11,5 +11,52 @@
   "env": {},
   "config_fields": [],
   "pip_dependencies": ["python-pptx"],
+  "python_dependencies": {
+    "schema_version": 1,
+    "targets": [
+      {
+        "platform": "windows-x64",
+        "python": "3.13",
+        "imports": ["pptx", "lxml", "PIL", "xlsxwriter"],
+        "wheels": [
+          {
+            "name": "python-pptx",
+            "version": "1.0.2",
+            "filename": "python_pptx-1.0.2-py3-none-any.whl",
+            "url": "https://files.pythonhosted.org/packages/d9/4f/00be2196329ebbff56ce564aa94efb0fbc828d00de250b1980de1a34ab49/python_pptx-1.0.2-py3-none-any.whl",
+            "sha256": "160838e0b8565a8b1f67947675886e9fea18aa5e795db7ae531606d68e785cba"
+          },
+          {
+            "name": "lxml",
+            "version": "6.1.2",
+            "filename": "lxml-6.1.2-cp313-cp313-win_amd64.whl",
+            "url": "https://files.pythonhosted.org/packages/1b/7a/96bac167538748cae2544335855f812fa33e49a9a67bc8b8520dcbd592bd/lxml-6.1.2-cp313-cp313-win_amd64.whl",
+            "sha256": "6cb0c87421946030b92b558be416852780a912454e3dcba0998e4497c9c588d5"
+          },
+          {
+            "name": "typing-extensions",
+            "version": "4.16.0",
+            "filename": "typing_extensions-4.16.0-py3-none-any.whl",
+            "url": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+            "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"
+          },
+          {
+            "name": "Pillow",
+            "version": "12.3.0",
+            "filename": "pillow-12.3.0-cp313-cp313-win_amd64.whl",
+            "url": "https://files.pythonhosted.org/packages/a6/9b/7a58e61d62be561da3a356fe2384d4059a6345fc130e23ef1c36a5b81d24/pillow-12.3.0-cp313-cp313-win_amd64.whl",
+            "sha256": "1cca606cd25738df4ed873d5ad46bbdb3d83b5cbca291f6b4ff13a4df6b0bbe8"
+          },
+          {
+            "name": "XlsxWriter",
+            "version": "3.2.9",
+            "filename": "xlsxwriter-3.2.9-py3-none-any.whl",
+            "url": "https://files.pythonhosted.org/packages/3a/0c/3662f4a66880196a590b202f0db82d919dd2f89e99a27fadef91c4a33d41/xlsxwriter-3.2.9-py3-none-any.whl",
+            "sha256": "9a5db42bc5dff014806c58a20b9eae7322a134abb6fce3c92c181bfb275ec5b3"
+          }
+        ]
+      }
+    ]
+  },
   "companion_skills": ["pptx"]
 }

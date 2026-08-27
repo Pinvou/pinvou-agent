@@ -117,6 +117,23 @@ impl Pinvou3Bundle {
     /// 替换成 `~/.pinvou3/workspace/` 的实际绝对路径——让 AI 直接拿到完整路径
     /// 给 write_file 用，避免先 exec_shell 探一遍 env var。
     pub fn ensure_extracted(&self) -> std::io::Result<()> {
+        let marketplace = crate::features::marketplace::MarketplaceManager::new();
+        self.ensure_extracted_with_marketplace(&marketplace, |manager| {
+            manager.repair_installed_python_tools()
+        })
+    }
+
+    pub(super) fn ensure_extracted_with_marketplace<S, F>(
+        &self,
+        marketplace: &crate::features::marketplace::MarketplaceManager<S>,
+        repair_python_tools: F,
+    ) -> std::io::Result<()>
+    where
+        S: crate::platform::credential_store::CredentialStore,
+        F: FnOnce(
+            &crate::features::marketplace::MarketplaceManager<S>,
+        ) -> Result<Vec<String>, String>,
+    {
         paths::ensure_dirs()?;
         let version_file = paths::bundle_version_file();
         let current = std::fs::read_to_string(&version_file).unwrap_or_default();
@@ -140,9 +157,7 @@ impl Pinvou3Bundle {
         // fails, keep the old files as a recoverable source instead of overwriting the only
         // remaining plaintext copy.
         crate::platform::startup::mark("bundle_extract:migrate_mcp_secrets:start");
-        let mcp_secret_migration_ok = match crate::features::marketplace::MarketplaceManager::new()
-            .migrate_mcp_plaintext_secrets()
-        {
+        let mcp_secret_migration_ok = match marketplace.migrate_mcp_plaintext_secrets() {
             Ok(_) => true,
             Err(err) => {
                 eprintln!("[pinvou3-app] MCP secret migration skipped: {err}");
@@ -258,8 +273,13 @@ impl Pinvou3Bundle {
         // MCP server scripts are immutable as well, but wait for secret migration to avoid
         // deleting legacy plaintext before it has been copied into the credential store.
         crate::platform::startup::mark("bundle_extract:write_mcp_servers:start");
-        if mcp_secret_migration_ok {
-            self.write_mcp_servers()?;
+        self.write_mcp_servers(mcp_secret_migration_ok)?;
+        // Existing Python MCP entries may still launch server.py directly without the managed
+        // dependency environment. Repair or atomically downgrade them before any engine reads
+        // mcp.json, leaving a stable install target for the UI to retry.
+        let repair_errors = repair_python_tools(marketplace).map_err(std::io::Error::other)?;
+        for error in repair_errors {
+            eprintln!("[pinvou3-app] {error}");
         }
         // mcp.json merge:每次启动 upsert 内置 pinvou server,保留 marketplace 条目。
         // 不受 VERSION gate 限制——marketplace 安装可能在任何时候发生。启动自愈(刷新
@@ -1065,11 +1085,15 @@ impl Pinvou3Bundle {
             }
         }
     }
-    fn write_mcp_servers(&self) -> std::io::Result<()> {
+    fn write_mcp_servers(&self, can_cleanup_legacy_manifests: bool) -> std::io::Result<()> {
         let dir = paths::bundle_mcp_servers_dir();
         // pinvou 内置 present_artifact server
         let server = paths::bundle_present_artifact_server();
         let server_written = self.write_if_changed(&server, PRESENT_ARTIFACT_SERVER_PY)?;
+        self.write_if_changed(
+            &paths::bundle_mcp_python_runner(),
+            MCP_PYTHON_DEPENDENCY_RUNNER_PY,
+        )?;
         if server_written {
             // 可执行位只在本次实际写出时补;内容未变时也不丢——上次写出后已设过。
             #[cfg(unix)]
@@ -1118,14 +1142,15 @@ impl Pinvou3Bundle {
         // import_legacy 之后、技能迁移之前（ensure_extracted 内，M-7 排序），此处不再
         // 重复；旧布局随后只保留 present_artifact_server.py。
         // 存量 mcp.json 条目路径迁移：旧布局前缀 → 新包目录（幂等，只改本 app 写的文件）
-        if let Err(e) = crate::features::marketplace::migrate_mcp_json_paths() {
-            log::warn!("[runtime-bundle] mcp.json 路径迁移失败: {e}");
-        }
-        // 旧布局工具目录清理：只删内嵌清单内的 id（present_artifact_server.py 与
-        // 未知/自定义目录保留）。调用方已保证明文密钥迁移完成（mcp_secret_migration_ok），
-        // 旧 manifest 不再是唯一明文救援副本，可删。
-        for spec in crate::features::marketplace::mcp_catalog::MCP_PACKAGES {
-            let _ = std::fs::remove_dir_all(dir.join(spec.id));
+        if can_cleanup_legacy_manifests {
+            if let Err(e) = crate::features::marketplace::migrate_mcp_json_paths() {
+                log::warn!("[runtime-bundle] mcp.json 路径迁移失败: {e}");
+            }
+            // Only remove embedded legacy directories after plaintext credential migration has
+            // succeeded; otherwise an old manifest may still be the sole recoverable copy.
+            for spec in crate::features::marketplace::mcp_catalog::MCP_PACKAGES {
+                let _ = std::fs::remove_dir_all(dir.join(spec.id));
+            }
         }
         // The zero-dependency Browser MCP wrapper speaks MCP over stdin/stdout. Node runs
         // it directly, so it does not require an executable bit. Avoid rewriting unchanged
@@ -1238,7 +1263,7 @@ mod tests {
         std::fs::write(pkg_mcp.join("server.py"), "USER CODE").unwrap();
         std::fs::write(pkg_mcp.join("manifest.json"), "{}").unwrap();
 
-        bundle.write_mcp_servers().unwrap();
+        bundle.write_mcp_servers(false).unwrap();
 
         assert_eq!(
             std::fs::read_to_string(pkg_mcp.join("server.py")).unwrap(),

@@ -1914,6 +1914,60 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn import_rejects_embedded_preset_mcp_id_collision() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-preset-mcp-collision-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let previous_home = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        let zip_path = dir.join("gongwen.zip");
+        {
+            let file = std::fs::File::create(&zip_path).unwrap();
+            let mut archive = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default();
+            archive.start_file("plugin.json", options).unwrap();
+            archive
+                .write_all(
+                    br#"{"manifest_version":1,"id":"gongwen","name":"collision","components":{"mcp_servers":[{"id":"gongwen","dir":"mcp"}]}}"#,
+                )
+                .unwrap();
+            archive.start_file("mcp/manifest.json", options).unwrap();
+            archive
+                .write_all(
+                    br#"{"id":"gongwen","name":"collision","description":"fixture","version":"1","icon":"x","category":"fixture","mcp_tools":[],"command":"python","args":["server.py"]}"#,
+                )
+                .unwrap();
+            archive.start_file("mcp/server.py", options).unwrap();
+            archive.write_all(b"print('collision')\n").unwrap();
+            archive.finish().unwrap();
+        }
+
+        let error = import_plugin_package(&zip_path.to_string_lossy(), "gongwen.zip").unwrap_err();
+        assert!(error.contains("市场预置 MCP"), "unexpected error: {error}");
+        assert!(
+            !crate::platform::paths::bundles_root()
+                .join("gongwen")
+                .exists(),
+            "a rejected preset collision must not leave package data"
+        );
+
+        match previous_home {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Upload-side collision guard (review MINOR): a skill component whose
     /// name is already on disk under another package is rejected up front —
     /// this pipeline never sweeps, and the other package's copy must survive.
