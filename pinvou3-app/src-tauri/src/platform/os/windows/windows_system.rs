@@ -567,30 +567,139 @@ fn vulkan_runtime_present() -> bool {
 
 fn enum_gpu_class() -> Option<crate::platform::os::GpuClass> {
     use crate::platform::os::GpuClass;
-    use windows::Win32::Graphics::Dxgi::{
-        CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
-    };
+    use dxgi::*;
     unsafe {
-        let factory: IDXGIFactory1 = CreateDXGIFactory1().ok()?;
+        let mut factory: *mut IDXGIFactory1 = std::ptr::null_mut();
+        if CreateDXGIFactory1(&IID_IDXGIFactory1, &mut factory as *mut _ as *mut _) != 0
+            || factory.is_null()
+        {
+            return None;
+        }
         let mut index = 0u32;
         let mut best = GpuClass::None;
-        while let Ok(adapter) = factory.EnumAdapters1(index) {
+        loop {
+            let mut adapter: *mut IDXGIAdapter1 = std::ptr::null_mut();
+            // S_OK(0) 表示还有适配器;DXGI_ERROR_NOT_FOUND 即枚举完毕。
+            let hr = ((*(*factory).lpVtbl).EnumAdapters1)(factory, index, &mut adapter);
             index += 1;
-            let Ok(desc) = adapter.GetDesc1() else {
+            if hr != 0 || adapter.is_null() {
+                break;
+            }
+            let mut desc: DXGI_ADAPTER_DESC1 = std::mem::zeroed();
+            let hr_desc = ((*(*adapter).lpVtbl).GetDesc1)(adapter, &mut desc);
+            com_release(adapter);
+            if hr_desc != 0 {
                 continue;
-            };
+            }
             // 跳过 Basic Render 等软件适配器。
-            if desc.Flags & (DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0 {
+            if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE != 0 {
                 continue;
             }
             if desc.DedicatedVideoMemory as u64 >= DEDICATED_VRAM_MIN_BYTES {
+                com_release(factory);
                 return Some(GpuClass::Dedicated);
             }
             if is_strong_igpu(&adapter_name(&desc.Description)) {
                 best = GpuClass::StrongIgpu;
             }
         }
+        com_release(factory);
         Some(best)
+    }
+}
+
+/// IUnknown::Release(vtable 第三槽),任何 DXGI 对象头都是 IUnknown 布局。
+unsafe fn com_release<T>(obj: *mut T) {
+    use windows_sys::core::IUnknown_Vtbl;
+    if obj.is_null() {
+        return;
+    }
+    let unknown = obj.cast::<core::ffi::c_void>();
+    unsafe {
+        let vtbl = unknown.cast::<*const IUnknown_Vtbl>().read();
+        ((*vtbl).Release)(unknown);
+    }
+}
+
+/// DXGI 最小手写绑定:windows-sys 0.61 未导出 Win32_Graphics_Dxgi(该版本收窄了
+/// API 面),而完整 windows crate 仅为 GPU 枚举过重(见 Cargo.toml 依赖注释)。
+/// vtable 槽序与 GUID/布局沿用 windows-sys::core 的同代 ABI,只保留
+/// EnumAdapters1/GetDesc1 必需的完整槽位,未调用的槽仅作占位(槽位计数必须正确)。
+#[allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
+mod dxgi {
+    use core::ffi::c_void;
+    use windows_sys::core::{IUnknown_Vtbl, GUID, HRESULT};
+    use windows_sys::Win32::Foundation::LUID;
+
+    pub const IID_IDXGIFactory1: GUID = GUID::from_u128(0x770aae78_f26f_4dba_a829_253c83d1b387);
+
+    pub const DXGI_ADAPTER_FLAG_SOFTWARE: u32 = 2;
+
+    #[link(name = "dxgi")]
+    extern "system" {
+        pub fn CreateDXGIFactory1(riid: *const GUID, pfactory: *mut *mut c_void) -> HRESULT;
+    }
+
+    #[repr(C)]
+    pub struct DXGI_ADAPTER_DESC1 {
+        pub Description: [u16; 128],
+        pub VendorId: u32,
+        pub DeviceId: u32,
+        pub SubSysId: u32,
+        pub Revision: u32,
+        pub DedicatedVideoMemory: usize,
+        pub DedicatedSystemMemory: usize,
+        pub SharedSystemMemory: usize,
+        pub AdapterLuid: LUID,
+        pub Flags: u32,
+    }
+
+    #[repr(C)]
+    pub struct IDXGIFactory1 {
+        pub lpVtbl: *const IDXGIFactory1_Vtbl,
+    }
+
+    #[repr(C)]
+    pub struct IDXGIAdapter1 {
+        pub lpVtbl: *const IDXGIAdapter1_Vtbl,
+    }
+
+    /// IUnknown → IDXGIObject(4)→ IDXGIFactory(5)→ IDXGIFactory1(2)。
+    #[repr(C)]
+    pub struct IDXGIFactory1_Vtbl {
+        pub base: IUnknown_Vtbl,
+        pub SetPrivateData: usize,
+        pub SetPrivateDataInterface: usize,
+        pub GetPrivateData: usize,
+        pub GetParent: usize,
+        pub EnumAdapters: usize,
+        pub MakeWindowAssociation: usize,
+        pub GetWindowAssociation: usize,
+        pub CreateSwapChain: usize,
+        pub CreateSoftwareAdapter: usize,
+        pub EnumAdapters1: unsafe extern "system" fn(
+            this: *mut IDXGIFactory1,
+            adapter: u32,
+            ppadapter: *mut *mut IDXGIAdapter1,
+        ) -> HRESULT,
+        pub IsCurrent: usize,
+    }
+
+    /// IUnknown → IDXGIObject(4)→ IDXGIAdapter(3)→ IDXGIAdapter1(1)。
+    #[repr(C)]
+    pub struct IDXGIAdapter1_Vtbl {
+        pub base: IUnknown_Vtbl,
+        pub SetPrivateData: usize,
+        pub SetPrivateDataInterface: usize,
+        pub GetPrivateData: usize,
+        pub GetParent: usize,
+        pub EnumOutputs: usize,
+        pub GetDesc: usize,
+        pub CheckInterfaceSupport: usize,
+        pub GetDesc1: unsafe extern "system" fn(
+            this: *mut IDXGIAdapter1,
+            pdesc: *mut DXGI_ADAPTER_DESC1,
+        ) -> HRESULT,
     }
 }
 

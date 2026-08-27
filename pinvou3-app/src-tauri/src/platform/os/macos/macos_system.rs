@@ -245,9 +245,16 @@ mod tests {
     }
 }
 
-/// GPU 分级（本地引擎设备自动选择）：macOS 引擎走 Metal，恒按独显档。
+/// GPU 分级:Apple Silicon 为统一内存架构且支持 Metal,恒按独显档。
+#[cfg(target_arch = "aarch64")]
 pub fn gpu_class() -> crate::platform::os::GpuClass {
     crate::platform::os::GpuClass::Dedicated
+}
+
+/// GPU 分级:Intel Mac 为内置核显(无独显专用显存,Metal 支持亦无保证),按核显档。
+#[cfg(target_arch = "x86_64")]
+pub fn gpu_class() -> crate::platform::os::GpuClass {
+    crate::platform::os::GpuClass::Integrated
 }
 
 /// 物理核数（llama-server `-t` 用）：sysctl hw.physicalcpu，失败回落逻辑核数。
