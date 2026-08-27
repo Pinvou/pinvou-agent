@@ -1981,10 +1981,11 @@ impl EnginePool {
         }
     }
 
-    /// execpolicy 硬拦截热刷（scope 门禁通道③）：连接器/技能开关落盘后按各会话
-    /// 自己的 scope 重算 deny 规则集（CLI 二进制名 + 禁用技能脚本路径）并广播给
-    /// 所有在跑 engine，下一轮即硬拒。新 spawn / 重建的引擎由
-    /// build_engine_config_for_session_roots 注入初值——两处共用 `bridge.scope_deny_ruleset`。
+    /// execpolicy 硬拦截热刷（scope 门禁通道③ + 安全兜底）：连接器/技能开关落盘
+    /// 或超级权限开关切换后，按各会话自己的 scope 重算 deny 规则集（CLI 二进制名
+    /// + 禁用技能脚本路径 + 敏感数据/提权规则）并广播给所有在跑 engine，下一轮即
+    /// 硬拒。新 spawn / 重建的引擎由 build_engine_config_for_session_roots 注入
+    /// 初值——两处共用 `bridge.scope_deny_ruleset`。
     pub async fn refresh_permission_rulesets(&self) {
         let targets = self
             .entries

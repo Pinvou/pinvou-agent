@@ -1625,7 +1625,9 @@ impl Pinvou3Bridge {
         cfg.skills_dir = crate::platform::paths::session_skills_dir(session_id);
         // CLI 硬拦截（scope 门禁的 execpolicy 通道）：spawn 注入初值；开关切换
         // 后的热刷走 EnginePool::refresh_permission_rulesets，两处同一份计算。
-        // 规则集 = CLI 二进制名 deny + 禁用技能脚本路径 deny（§5.1 通道③）。
+        // 规则集 = CLI 二进制名 deny + 禁用技能脚本路径 deny（§5.1 通道③）
+        // + 敏感数据/提权安全 deny（原 bundle hook deny_sensitive_paths 第 1-4
+        // 段迁移，见 safety_deny_rules 模块注释）。
         cfg.exec_policy_engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
             self.scope_deny_ruleset(session_id),
         ]);
@@ -1694,12 +1696,17 @@ impl Pinvou3Bridge {
             .collect::<Vec<_>>()
     }
 
-    /// scope 门禁的完整 execpolicy 硬拦截规则集 = CLI 二进制名 deny + 禁用技能的
-    /// 脚本路径 deny（§5.1 通道③）。spawn 注入初值与开关热刷共用这一份计算。
+    /// scope 门禁 + 安全兜底的完整 execpolicy 硬拦截规则集 = CLI 二进制名 deny
+    /// + 禁用技能的脚本路径 deny（§5.1 通道③）+ 敏感数据/提权 deny（原 bundle
+    /// hook deny_sensitive_paths 第 1-4 段迁移，v1）。spawn 注入初值与开关热刷
+    /// 共用这一份计算。command 型 deny 同时提升进 denied_prefixes（底座
+    /// config 加载器同语义），激活 flag 感知 / basename 折叠 / wrapper 剥离的
+    /// deny-always-wins 通道。
     pub(crate) fn scope_deny_ruleset(&self, session_id: &str) -> codewhale_execpolicy::Ruleset {
         let mut rules = self.cli_deny_rules(session_id);
         rules.extend(self.skill_script_deny_rules(session_id));
-        codewhale_execpolicy::Ruleset::user(vec![], vec![]).with_ask_rules(rules)
+        rules.extend(crate::features::assistant::safety_deny_rules::safety_deny_rules());
+        crate::features::assistant::safety_deny_rules::ruleset_with_denied_prefix_promotion(rules)
     }
 
     /// 带脚本技能的执行点硬拦截（marketplace-unification §5.1 通道③）。
@@ -3251,8 +3258,22 @@ mod tests {
         }));
         use crate::features::marketplace::ConnectorScope;
 
-        // plain 无禁用 → 无脚本规则
-        assert!(bridge.scope_deny_ruleset("sess-plain").ask_rules.is_empty());
+        // scope 无禁用时：无 CLI 二进制规则、无技能脚本规则（`run.py` 类）。
+        // 安全兜底规则（路径型 + 命令型）常驻，由 safety_deny_rules 测试覆盖。
+        assert!(bridge
+            .scope_deny_ruleset("sess-plain")
+            .ask_rules
+            .iter()
+            .all(|r| !r.command.as_deref().is_some_and(|c| c.contains("run.py"))));
+        assert!(
+            bridge
+                .scope_deny_ruleset("sess-plain")
+                .ask_rules
+                .iter()
+                .any(|r| r.path.is_some()
+                    && r.action == codewhale_execpolicy::PermissionAction::Deny),
+            "安全兜底的 File 路径规则应常驻"
+        );
 
         // plain 禁 my-skill → 含指向该脚本的 deny 规则
         crate::features::marketplace::skill_scope::save_disabled_skills_for(
@@ -3270,12 +3291,16 @@ mod tests {
             rs.ask_rules
         );
 
-        // 开回 → 规则消失（热刷重算的同一口径）
+        // 开回 → 脚本规则消失（热刷重算的同一口径；安全兜底规则仍在）
         crate::features::marketplace::skill_scope::save_disabled_skills_for(
             ConnectorScope::Plain,
             &[],
         );
-        assert!(bridge.scope_deny_ruleset("sess-plain").ask_rules.is_empty());
+        assert!(bridge
+            .scope_deny_ruleset("sess-plain")
+            .ask_rules
+            .iter()
+            .all(|r| !r.command.as_deref().is_some_and(|c| c.contains("run.py"))));
 
         // code 未初始化 → 默认全禁已装技能 → 同样生成脚本规则
         let rs = bridge.scope_deny_ruleset("sess-code");
@@ -3314,6 +3339,49 @@ mod tests {
                 "non-Windows sensitive firewall hook must use bash script, got: {command}"
             );
         }
+    }
+
+    /// 原失效路径的证伪回归（hook → execpolicy 迁移）：底座 v0.9.3 起模型只调
+    /// `Bash`（hook 收到 `Bash`，其 exec_shell* 门控段静默放行）。构造的会话
+    /// 引擎规则集必须对 `sudo rm` / `cat /etc/shadow`（原 hook 第 3/4 段的实测
+    /// 失效样本）在 Never/YOLO 语义下判 deny。
+    #[test]
+    fn session_exec_policy_denies_migrated_hook_targets_under_bash_tool() {
+        let bridge = fixture_bridge();
+        let engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
+            bridge.scope_deny_ruleset("sess-plain")
+        ]);
+        // Never 是最严口径（deny-always-wins 才放行不通过）；Bypass/Auto 的
+        // AskForApproval 映射为 OnFailure，deny 同样短路。
+        let check = |command: &str| {
+            engine
+                .check(codewhale_execpolicy::ExecPolicyContext {
+                    command,
+                    cwd: ".",
+                    // 引擎把 Bash(action=run) 经 canonical_action_alias 解析为
+                    // exec_shell 再查规则（engine.rs exec_shell_ask_rule_decision）。
+                    tool: Some("exec_shell"),
+                    path: None,
+                    ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
+                    sandbox_mode: None,
+                })
+                .unwrap()
+        };
+        for cmd in ["sudo rm -rf /tmp/x", "cat /etc/shadow"] {
+            let d = check(cmd);
+            assert!(!d.allow, "原失效路径应已修复（{cmd} deny）: {}", d.reason());
+            assert!(
+                matches!(
+                    d.requirement,
+                    codewhale_execpolicy::ExecApprovalRequirement::Forbidden { .. }
+                ),
+                "{cmd}: {:?}",
+                d.requirement
+            );
+        }
+        // 普通命令不受影响。
+        assert!(check("cat README.md").allow);
+        assert!(check("git status").allow);
     }
 
     #[test]
