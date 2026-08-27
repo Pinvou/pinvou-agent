@@ -1050,7 +1050,7 @@ fn atomic_write_private_file_impl(
 // windows-private-handle-relative-rename:start
 /// Rename an already-open file relative to an already-open directory.
 ///
-/// `SetFileInformationByHandle(FileRenameInfo)` rejects a non-null
+/// `SetFileInformationByHandle` with `FileRenameInfo` rejects a non-null
 /// `RootDirectory` with `ERROR_INVALID_PARAMETER` on supported Windows hosts.
 /// Its absolute-path form would re-resolve the directory chain, so use the
 /// native file-information class that preserves the pinned-root contract.
