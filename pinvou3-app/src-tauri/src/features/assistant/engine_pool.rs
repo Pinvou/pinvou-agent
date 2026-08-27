@@ -35,6 +35,7 @@ use deepseek_tui::tools::spec::ToolSpec;
 use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
 use parking_lot::Mutex as SyncMutex;
+use serde::Serialize;
 use tauri::AppHandle;
 use tauri::async_runtime::JoinHandle;
 use tokio::sync::Mutex;
@@ -449,16 +450,43 @@ fn should_retry_cascade(lifecycle: Option<&TurnLifecycle>) -> bool {
 /// 是 no-op（简化③）。
 ///
 /// [`should_retry_cascade`]: fn@should_retry_cascade
+/// `cancel_generation` 命令的返回：轮次取消结果，供前端 `interruptAndSend`
+/// 决定「是否需要等待 `chat:done` 事件」。
+///
+/// - `generation`：被取消的目标轮 epoch；**None** 覆盖两种二义情形——会话
+///   空闲（无轮可取消）与目标会话不存在，调用方应统一按「无特定轮被取消」
+///   处理（此时 `terminal` 恒为 true，无需等待事件）。
+/// - `terminal`：**true** = 目标轮终态已确认、reserve 闸门已重开，前端无需
+///   等待事件即可发送新消息——三种情形：cancel 经未提交认领路径自行完成终态
+///   （claim 路径的 chat:done 在 cancel 命令返回前发出，前端监听器必然错过，
+///   必须由命令返回值确认）；目标轮的 reserve 闸门已重开（终态收口完成，
+///   含目标轮已结束、新轮已 reserve 的 mismatch 情形）；会话空闲。
+///   **false** = 取消已生效但目标轮终态仍在收口（reserve 闸门未开），前端
+///   应等待携带该 `generation` 的 `chat:done` 事件。
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelOutcome {
+    pub generation: Option<u64>,
+    pub terminal: bool,
+}
+
+/// 返回 `(target_generation, claimed_unsubmitted)`：
+/// - `target_generation`：发起取消时快照的目标轮 epoch（空闲为 None）。
+/// - `claimed_unsubmitted`：cancel 是否通过未提交认领路径**自行完成**了终态
+///   （claim 路径的 chat:done 在 cancel 命令返回前已发出，前端监听器必然错过，
+///   因此调用方必须据此把结果标记为 terminal=true，让前端无需等待事件）。
 async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
     turn_locks: &SessionTurnLocks,
     turn_lifecycles: &SessionTurnLifecycles,
     turn_shell_tasks: &SessionTurnShellTasks,
     session_id: &str,
+    steer_mode: deepseek_tui::core::engine::CancelMode,
     mut get_engine: E,
     mut cancel_current: X,
     mut cascade_cancel: F,
     claim_unsubmitted: C,
-) where
+) -> (Option<u64>, bool)
+where
     E: FnMut() -> EFut,
     EFut: Future<Output = Option<G>>,
     X: FnMut(&G),
@@ -491,8 +519,9 @@ async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
             // （reviewer 点 8）。epoch 不匹配时返回 false 且不执行取消闭包，
             // 阶段二持锁复查 generation 会整体 no-op（reviewer 点 6）。
             if let Some(lifecycle) = turn_lifecycles.get(session_id) {
-                lifecycle
-                    .arm_pending_cancel_and_cancel(target.unwrap_or(0), || cancel_current(&engine));
+                lifecycle.arm_pending_cancel_and_cancel(target.unwrap_or(0), steer_mode, || {
+                    cancel_current(&engine)
+                });
             } else {
                 cancel_current(&engine);
             }
@@ -523,7 +552,9 @@ async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
                 cascade_cancel(&engine).await;
             }
         }
-        return;
+        // 目标轮已结束（终态已由别处发出）：调用方据 target 与 current 的
+        // 比对自行判定 terminal=true（无需前端等待事件）。
+        return (target, false);
     }
 
     // generation 匹配，目标轮仍是发起时刻那一轮：清理它的 shell 任务。
@@ -554,10 +585,11 @@ async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
                     // 需要同一把 state 锁，无法在「校验/arm」与「取消」之间插入
                     // 轮次切换。返回 false = 复查通过后轮次已切换：跳过 cancel
                     // 及级联副作用，避免命中新轮活跃 token（reviewer 点 6）。
-                    let armed = lifecycle
-                        .arm_pending_cancel_and_cancel(target.unwrap_or(0), || {
-                            cancel_current(&engine)
-                        });
+                    let armed = lifecycle.arm_pending_cancel_and_cancel(
+                        target.unwrap_or(0),
+                        steer_mode,
+                        || cancel_current(&engine),
+                    );
                     if armed {
                         // 级联取消必须在释放 turn gate 前完成入队（reviewer 点 4）：
                         // 下一轮 SendMessage 需等同一把 turn_lock，级联取消必先入队，
@@ -590,6 +622,7 @@ async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
     if let Some(cancellation) = shell_cancellation {
         cancellation.cleanup().await;
     }
+    (target, claimed_unsubmitted)
 }
 
 /// 池里一个 session 的常驻条目:engine + 它专属的 event forwarder task。
@@ -705,6 +738,14 @@ impl Drop for IdleReaperGuard {
         self.cancel.cancel();
         self.handle.abort();
     }
+}
+
+/// M-7：steer 必须有在场 engine 作为投递对象。engine 不在场（session 没在
+/// 跑）时返回 Err——否则永远不会有 steer_committed/steer_dropped 事件，
+/// 前端排队 chip 永久悬挂。独立成函数以便在无 AppHandle 的单测中覆盖
+/// 「不在场 → Err」契约（EnginePool 构造依赖 AppHandle 与 bridge boot）。
+fn require_live_engine_for_steer(engine: Option<AppEngine>, session_id: &str) -> Result<AppEngine> {
+    engine.with_context(|| format!("no live engine for session '{session_id}' to steer"))
 }
 
 impl EnginePool {
@@ -1902,16 +1943,32 @@ impl EnginePool {
     ///
     /// 「停止」按钮是子智能体唯一的确定性停止入口（卡片上没有取消按钮，
     /// 自然语言指令只是建议）；只取消宿主轮会留下继续烧钱的后台子智能体。
-    pub async fn cancel(&self, session_id: &str) {
+    ///
+    /// `keep_inbox`（P0-A）：打断（true）时未注入的 steer 保留给下一轮；
+    /// 停止（false）时清空并发 SteerDropped，前端移除 chip 并提示——
+    /// 防止「UI 里消息消失、引擎里还活着」的悬挂。
+    pub async fn cancel(&self, session_id: &str, keep_inbox: bool) -> CancelOutcome {
+        // r10 底座：steer 处置（InterruptKeepInbox/StopDropInbox）与 cancel
+        // token 由 cancel_with_mode 原子发布，不再需要先于 cancel 单独设置
+        // keepInbox 开关（旧两步写法在并发 cancel 下有处置串扰窗口）。
+        let steer_mode = if keep_inbox {
+            deepseek_tui::core::engine::CancelMode::InterruptKeepInbox
+        } else {
+            deepseek_tui::core::engine::CancelMode::StopDropInbox
+        };
         // 两阶段 generation 守护见 cancel_turn_with_gates：cancel 请求绑定发起
         // 时刻的轮次 epoch，并发请求中排队较晚的 C2 在 turn_lock 释放后若发现
         // 目标轮已结束（新轮已 reserve），整体 no-op，不误取消新轮。
         let app = &self.app;
-        cancel_turn_with_gates(
+        let (target, claimed_unsubmitted) = cancel_turn_with_gates(
             &self.turn_locks,
             &self.turn_lifecycles,
             &self.turn_shell_tasks,
             session_id,
+            // steer_mode 一并传给 cancel_turn_with_gates：submit→TurnStarted
+            // 窗口 arm 的 pending_cancel 必须携带同一处置模式，转发器重放时
+            // 才不会退化为无 mode 的 StopDropInbox。
+            steer_mode,
             // get_engine：取在场 engine 句柄（不取消，epoch 校验由
             // cancel_turn_with_gates 在 await 之后、cancel 之前执行，消除
             // handle_for 取 entries 锁期间的 TOCTOU 窗口）。
@@ -1926,7 +1983,7 @@ impl EnginePool {
             // （早于下一轮 SendMessage）；通道满（容量 32）时放弃，由阶段二
             // 及 mismatch 补发路径持锁 await 保证送达（reviewer 点 9 + G1）。
             |engine| {
-                engine.cancel_current();
+                engine.cancel_current_with_mode(steer_mode);
                 let _ = engine.handle.try_send(Op::CancelSubAgents);
             },
             // cascade_cancel：阶段二持 turn_lock 时 await 发送级联取消，保证在
@@ -1951,7 +2008,68 @@ impl EnginePool {
                 lifecycle.emit_unsubmitted_interrupted_terminal_for_epoch(app, session_id, target)
             },
         )
-        .await
+        .await;
+        // 「停止=清空」契约的空闲窗口兜底（第三轮评审点 2）：turn 自然结束、
+        // lifecycle 已空闲（target=None）但前端 busy 未复位时按 ⏹，闸门函数
+        // 阶段一的 idle 守卫不会执行 cancel 闭包，上一轮 keepInbox park 的
+        // steer 会逃过 StopDropInbox、下一轮照常注入且无 chat:steer_dropped。
+        // 此时对在场 engine 补发一次 StopDropInbox——底座只抬高
+        // drop_through_generation 屏障 retire parked steer（无 parked 时
+        // no-op），对已空闲 token 无副作用。仅停止路径做（打断的 keepInbox
+        // 本就要保留 parked steer）；即便与刚 reserve 的新轮竞速，⏹ 语义
+        // 本就是停止该会话一切生成，方向一致。
+        if !keep_inbox && target.is_none() {
+            let still_idle = self
+                .turn_lifecycles
+                .get(session_id)
+                .and_then(|lc| lc.current_turn_generation())
+                .is_none();
+            if still_idle {
+                if let Some(engine) = self.handle_for(session_id).await {
+                    // handle_for 的 await 后再复查一次，缩小区间。
+                    let idle_recheck = self
+                        .turn_lifecycles
+                        .get(session_id)
+                        .and_then(|lc| lc.current_turn_generation())
+                        .is_none();
+                    if idle_recheck {
+                        engine.cancel_current_with_mode(
+                            deepseek_tui::core::engine::CancelMode::StopDropInbox,
+                        );
+                    }
+                }
+            }
+        }
+        // 组装轮次结果。`terminal=true` 只允许三种情况：
+        //   1) claim 路径——终态由 cancel 自身完成（其 chat:done 发在 cancel
+        //      返回前、前端监听器注册前，必然错过，必须由命令返回值确认）；
+        //   2) 空闲（target=None）——没有事件可等；
+        //   3) 目标轮的 reserve 闸门已重开（is_reserve_gate_open_for）——
+        //      终态已完成收口：要么 lifecycle 已空闲（权威终态路径中开闸与
+        //      emit chat:done 在同一同步块内，finish 先于 emit、中间无
+        //      await，观察到开闸 ⇒ chat:done 已发出），要么新轮已 active
+        //      且 epoch != target（reserve 只有在旧轮开闸后才可能成功，
+        //      旧轮终态必然已收口——此时 terminal=true 是必须的，否则前端
+        //      等一个已经发过、错过的 chat:done 直到超时，再撞新轮的
+        //      reserve）。
+        // 其余一律 terminal=false（前端等携带 target generation 的 chat:done）：
+        // **引擎 turn loop 退出 ≠ lifecycle 已释放**——forwarder 处理
+        // TurnComplete 并 claim 之前，lifecycle 仍 active，此时 chat 的
+        // reserve_turn 会撞 session_turn_in_progress。前端唯一可靠的
+        // 「槽位已释放」信号是 chat:done（开闸之后才 emit）。
+        // （M-6：曾用 is_terminal_emitted 判 terminal=true，但 claim 置位
+        // terminal_emitted 与 finish_terminal_emission 开闸之间 forwarder
+        // 有多个 spawn_blocking 持久化 await，该窗口内闸门未开，前端跳过
+        // 等待直接 doSendFor 会撞 session_turn_in_progress → ⚡ 间歇性
+        // 投递失败。判据必须是「闸门已开」而非「终态已认领」。）
+        let reserve_gate_open = self
+            .turn_lifecycles
+            .get(session_id)
+            .is_some_and(|lc| lc.is_reserve_gate_open_for(target));
+        CancelOutcome {
+            generation: target,
+            terminal: claimed_unsubmitted || target.is_none() || reserve_gate_open,
+        }
     }
 
     /// pinvou3 工具开关(全局持久):把"被禁用的工具全名"(模型可见全名,小写)广播给
@@ -2088,6 +2206,44 @@ impl EnginePool {
             engine.cancel_user_input(tool_call_id).await?;
         }
         Ok(())
+    }
+
+    /// Mid-turn inject: 把用户消息投递到当前 turn 的下个 step 边界。
+    /// 底座 `EngineHandle::steer` 已有完整实现 —— turn loop 在每次 tool result
+    /// 处理完、下次 model call 之前 drain `rx_steer` channel 并自动追加到
+    /// session.messages（见底座 turn_loop.rs:493-510）。模型下一次思考时
+    /// 会看到这条消息,与 Claude Code 的"主 agent 空闲时插入"语义对齐。
+    ///
+    /// 返回引擎入队时生成的 opaque steer id（`steer-{n}`），前端用它把排队
+    /// chip 与 `chat:steer_committed` / `chat:steer_dropped` 事件关联。
+    ///
+    /// engine 不在场（session 没在跑）→ 返回 Err（M-7）：steer 没有投递
+    /// 对象，也永远不会有 committed/dropped 事件；静默 Ok 会让前端 chip
+    /// 永久悬挂。前端据 Err 走失败恢复路径。
+    pub async fn steer(&self, session_id: &str, content: String) -> Result<String> {
+        let engine = require_live_engine_for_steer(self.handle_for(session_id).await, session_id)?;
+        engine.handle.steer(content).await
+    }
+
+    /// 撤回一条尚未注入的 steer（前端排队 chip 的 ✕）。
+    ///
+    /// 底座语义：被撤回的 steer_id 永不注入 transcript；引擎在任一收集/注入
+    /// 点遇到它时跳过并 emit 一条 `SteerDropped`（幂等），已 committed 的 id
+    /// 无副作用、无事件——前端乐观移除 chip，晚到的 committed 仍能补气泡。
+    ///
+    /// engine 不在场 → 返回 Err：消息根本没进引擎，前端纯本地移除即可，
+    /// 不需要等任何事件。
+    /// 撤回一条尚未注入的 steer，返回明确 outcome（评审 P1-1）：
+    /// `"retired"` = 引擎副本已标记撤回、永不注入（宿主可安全改走其他
+    /// 路径重发同一条消息）；`"not_pending"` = 已 committed/已结算/未知
+    /// （注入可能已完成，宿主不得重发，等 steer_committed 补气泡）。
+    pub async fn withdraw_steer(&self, session_id: &str, steer_id: String) -> Result<&'static str> {
+        let engine = require_live_engine_for_steer(self.handle_for(session_id).await, session_id)?;
+        let outcome = engine.handle.withdraw_steer(&steer_id);
+        Ok(match outcome {
+            deepseek_tui::core::engine::SteerWithdrawal::Retired => "retired",
+            deepseek_tui::core::engine::SteerWithdrawal::NotPending => "not_pending",
+        })
     }
 
     /// super permission 改动后调用。**无需热刷静态 prompt**——sudo 的开/关状态
@@ -2988,6 +3144,18 @@ mod scheduled_model_tests {
         assert!(lifecycles.get("session-1").is_none());
     }
 
+    #[test]
+    fn steer_without_live_engine_is_an_error() {
+        // M-7：engine 不在场（session 没在跑）时 steer 必须返回 Err——静默
+        // Ok 会让前端排队 chip 永远等不到 steer_committed/steer_dropped。
+        // EnginePool 构造依赖 AppHandle 与 bridge boot，无法单测实例化，
+        // 故契约落在 require_live_engine_for_steer 上覆盖。
+        let err = super::require_live_engine_for_steer(None::<super::AppEngine>, "session-1")
+            .err()
+            .expect("steer without a live engine must fail");
+        assert!(format!("{err:#}").contains("no live engine"));
+    }
+
     #[tokio::test]
     async fn scheduled_close_and_concurrent_followup_share_one_session_gate() {
         let locks = SessionTurnLocks::default();
@@ -3350,6 +3518,7 @@ mod scheduled_model_tests {
                 &lifecycles,
                 &shell_tasks,
                 sid,
+                deepseek_tui::core::engine::CancelMode::StopDropInbox,
                 // get_engine：engine 在场（阶段一与阶段二复查都返回 Some）。
                 || async { Some(()) },
                 // cancel_current：阶段一与阶段二复查都走这里：用计数区分。
@@ -3433,6 +3602,7 @@ mod scheduled_model_tests {
             &lifecycles,
             &shell_tasks,
             sid,
+            deepseek_tui::core::engine::CancelMode::StopDropInbox,
             // get_engine：engine 在场。
             || async { Some(()) },
             // cancel_current：记录触发。
@@ -3495,6 +3665,7 @@ mod scheduled_model_tests {
                 &lifecycles,
                 &shell_tasks,
                 sid,
+                deepseek_tui::core::engine::CancelMode::StopDropInbox,
                 // get_engine：engine 在场（阶段一与补发复查都返回 Some）。
                 || async { Some(()) },
                 // cancel_current：阶段一执行一次（取消旧轮）。
@@ -3569,6 +3740,7 @@ mod scheduled_model_tests {
                 &lifecycles,
                 &shell_tasks,
                 sid,
+                deepseek_tui::core::engine::CancelMode::StopDropInbox,
                 || async { Some(()) },
                 move |_engine: &()| {
                     probe_cancel.store(true, Ordering::Release);
@@ -3649,6 +3821,7 @@ mod scheduled_model_tests {
                 &lifecycles,
                 &shell_tasks,
                 sid,
+                deepseek_tui::core::engine::CancelMode::StopDropInbox,
                 move || {
                     let entered = entered.clone();
                     let release = release.clone();
@@ -3736,6 +3909,7 @@ mod scheduled_model_tests {
                 &lifecycles,
                 &shell_tasks,
                 sid,
+                deepseek_tui::core::engine::CancelMode::StopDropInbox,
                 // engine 不在场 → get_engine 返回 None → 不取消，走 claim_unsubmitted 分支。
                 || async { None::<()> },
                 // cancel_current：engine 不在场时不应被调用。
@@ -3797,6 +3971,7 @@ mod scheduled_model_tests {
             &lifecycles,
             &shell_tasks,
             sid,
+            deepseek_tui::core::engine::CancelMode::StopDropInbox,
             // engine 不在场 → get_engine 返回 None → 不 cancel，走 claim_unsubmitted。
             || async { None::<()> },
             // cancel_current：engine 不在场，不应被调用。
@@ -3871,6 +4046,7 @@ mod scheduled_model_tests {
                 &lifecycles,
                 &shell_tasks,
                 sid,
+                deepseek_tui::core::engine::CancelMode::StopDropInbox,
                 // get_engine：第一次调用（阶段一）通知已进入后挂起（模拟
                 // handle_for 取 entries 锁的 await），放行后返回「engine 在场」。
                 // 若实现退化（阶段二缺 generation 守护，即 #205 原始 bug），
@@ -3959,6 +4135,7 @@ mod scheduled_model_tests {
             &lifecycles,
             &shell_tasks,
             sid,
+            deepseek_tui::core::engine::CancelMode::StopDropInbox,
             // get_engine：engine 在场。
             || async { Some(()) },
             // cancel_current 探针：仅计数。cancel 在 state 锁内执行，探针不能
