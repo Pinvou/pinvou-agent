@@ -17,7 +17,7 @@ import {
   groupModelsForSelector,
   selectorMainLabel,
   reasoningEffortTiersForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort,
-  localProbeTiersForKind, baseUrlUsesLocalOrPrivate,
+  localProbeTiersForKind, reasoningEffortDisplayForTiers, baseUrlUsesLocalOrPrivate,
 } from './model-catalog.js';
 import { CommunityPanel } from './CommunityPanel.jsx';
 import { COMMUNITY_DISCUSSIONS_URL, COMMUNITY_QQ_GROUP_NAME, COMMUNITY_QQ_GROUP_NUMBER, COMMUNITY_QQ_QR_IMAGE_SRC } from './community-config.js';
@@ -757,6 +757,10 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const reasoningEffortTiers = isLocalCompatible
         ? (probePending ? [] : (localProbeTiersForKind(probedKind) || []))
         : (reasoningEffortTiersForModel({ preset, model, vendor, base_url: baseUrl, provider_kind: providerKind }) || []);
+      // 高亮兜底：表单值按静态四档归一（旧存 low/medium 保留原值），但探测出
+      // ollama 后实际渲染 off/high 两档，两值会不落在任何按钮上；展示就近映射，
+      // 保存仍用原始表单值，切回四档端点后已存档位不丢。
+      const reasoningEffortDisplay = reasoningEffortDisplayForTiers(reasoningEffort, reasoningEffortTiers);
       // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
       function normalizeConnectionTestResult(value, isCodingPlanProvider) {
         if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -1638,7 +1642,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                               type="button"
                               onClick={() => setReasoningEffort(tier)}
                               className={`h-7 min-w-[52px] px-3 rounded-full text-[13px] font-medium transition-colors ${
-                                reasoningEffort === tier
+                                reasoningEffortDisplay === tier
                                   ? 'bg-[#007AFF] text-white dark:bg-[#0A84FF]'
                                   : 'bg-[#E5E5EA] text-[#636366] hover:bg-[#D9D9DE] dark:bg-white/[0.07] dark:text-[#C7C7CC] dark:hover:bg-white/[0.12]'
                               }`}

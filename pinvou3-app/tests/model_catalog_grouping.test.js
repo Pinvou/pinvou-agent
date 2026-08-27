@@ -35,12 +35,13 @@ vm.runInContext(
   `this.baseUrlUsesLoopback = baseUrlUsesLoopback;\n` +
   `this.baseUrlUsesLocalOrPrivate = baseUrlUsesLocalOrPrivate;\n` +
   `this.localProbeTiersForKind = localProbeTiersForKind;\n` +
+  `this.reasoningEffortDisplayForTiers = reasoningEffortDisplayForTiers;\n` +
   `this.catalogImageCapableForModel = catalogImageCapableForModel;\n`,
   ctx,
   { filename: srcPath },
 );
 
-const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, baseUrlUsesLoopback, baseUrlUsesLocalOrPrivate, localProbeTiersForKind, catalogImageCapableForModel } = ctx;
+const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, baseUrlUsesLoopback, baseUrlUsesLocalOrPrivate, localProbeTiersForKind, catalogImageCapableForModel, reasoningEffortDisplayForTiers } = ctx;
 
 // i18n 测试替身:复刻实际字典里会用到的字段
 const t = {
@@ -462,6 +463,25 @@ test('localProbeTiersForKind 按探测结果映射真实档位', () => {
   // 未探测/未知 → 默认四档（前端探测完成前不误报不支持）
   assert.deepStrictEqual([...localProbeTiersForKind(null)], ['off', 'low', 'medium', 'high']);
   assert.deepStrictEqual([...localProbeTiersForKind('unknown')], ['off', 'low', 'medium', 'high']);
+});
+
+test('reasoningEffortDisplayForTiers：存量档位对探测档位表的视觉兜底', () => {
+  // ollama 两档表：旧值 low/medium 与 high 在 wire 层等价（think:true），高亮就近落 high
+  assert.strictEqual(reasoningEffortDisplayForTiers('low', ['off', 'high']), 'high');
+  assert.strictEqual(reasoningEffortDisplayForTiers('medium', ['off', 'high']), 'high');
+  // 表内值原样返回
+  assert.strictEqual(reasoningEffortDisplayForTiers('off', ['off', 'high']), 'off');
+  assert.strictEqual(reasoningEffortDisplayForTiers('high', ['off', 'high']), 'high');
+  // 四档表：任何表内档位都不重映射
+  assert.strictEqual(reasoningEffortDisplayForTiers('low', ['off', 'low', 'medium', 'high']), 'low');
+  // max 不在四档表内：底座口径 max 归一为 high，高亮就近落 high
+  assert.strictEqual(reasoningEffortDisplayForTiers('max', ['off', 'low', 'medium', 'high']), 'high');
+  // 无 high 可落（只剩 off 的表 / 空表 / 非数组表）→ null（不显示高亮）
+  assert.strictEqual(reasoningEffortDisplayForTiers('low', ['off']), null);
+  assert.strictEqual(reasoningEffortDisplayForTiers('low', []), null);
+  assert.strictEqual(reasoningEffortDisplayForTiers('low', 42), null);
+  // 未选过档位 → null
+  assert.strictEqual(reasoningEffortDisplayForTiers(null, ['off', 'high']), null);
 });
 
 test('defaultReasoningEffortForModel：vllm→off，其余支持档位的模型→high，不支持→null', () => {

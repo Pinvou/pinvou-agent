@@ -1079,6 +1079,18 @@ function localProbeTiersForKind(kind) {
   }
 }
 
+// 存量档位对探测档位表的视觉兜底：归一走的是静态四档表（local），但探测出
+// ollama 后实际渲染 off/high 两档，旧存的 low/medium 会不落在任何按钮上。
+// ollama 的 think 布尔把所有非 off 档位归一为同一条 wire 值（think:true），
+// 与 high 语义相同，故高亮就近映射到 high（max 同理，底座口径归一为 high）。
+// 只影响展示比较，不改已存值（切回四档端点后原值仍在）。未选过档位、
+// 表不存在/为空、或表内确无 high 可落时返回 null（不显示高亮）。
+function reasoningEffortDisplayForTiers(effort, tiers) {
+  if (!effort || !Array.isArray(tiers) || !tiers.length) return null;
+  if (tiers.includes(effort)) return effort;
+  return tiers.includes('high') ? 'high' : null;
+}
+
 export {
   MODEL_PRESET_DEFS,
   PROVIDER_KIND_CODING_PLAN,
@@ -1107,5 +1119,6 @@ export {
   reasoningEffortForModelSwitch,
   normalizeStoredReasoningEffort,
   localProbeTiersForKind,
+  reasoningEffortDisplayForTiers,
   baseUrlUsesLocalOrPrivate,
 };

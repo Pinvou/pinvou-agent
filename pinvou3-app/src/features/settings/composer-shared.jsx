@@ -20,7 +20,7 @@ import {
 import {
   groupModelsForSelector, selectorMainLabel, selectorSubLabel,
   reasoningEffortTiersForModel, normalizeStoredReasoningEffort,
-  localProbeTiersForKind, baseUrlUsesLocalOrPrivate,
+  localProbeTiersForKind, reasoningEffortDisplayForTiers, baseUrlUsesLocalOrPrivate,
 } from './model-catalog.js';
 
 // 会话中「打开」是未提交态：新一轮对话发出前允许改回（误开可撤销），发出后
@@ -150,6 +150,10 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       // 存量档位（可能保存过底座归一前的旧值，如 deepseek 的 medium）先归一到
       // 档位表内等价档位再高亮，避免「档位表不含该值 → 下拉无高亮」。
       const reasoningEffortValue = current ? normalizeStoredReasoningEffort(current, current.reasoning_effort) : null;
+      // 高亮兜底：归一走静态四档表，探测出 ollama 后渲染 off/high 两档，旧存
+      // low/medium 会不落在任何按钮上；展示就近映射（think:true 与 high 等价），
+      // 点击比较仍用归一原值，已保存的 low 在换回四档端点后不丢。
+      const reasoningEffortDisplay = reasoningEffortDisplayForTiers(reasoningEffortValue, reasoningEffortTiers);
       const [effortSaveError, setEffortSaveError] = useState('');
       function setReasoningEffortForCurrent(tier) {
         if (!current) return;
@@ -234,7 +238,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
                           {reasoningEffortTiers.map(tier => (
                             <button type="button" key={tier} onClick={() => setReasoningEffortForCurrent(tier)}
                               className={`h-7 min-w-[48px] px-2.5 rounded-full text-[12px] font-medium transition-colors ${
-                                reasoningEffortValue === tier
+                                reasoningEffortDisplay === tier
                                   ? 'bg-[#007AFF] text-white'
                                   : 'bg-black/[0.05] dark:bg-white/[0.08] text-gray-600 dark:text-gray-300 hover:bg-black/[0.09] dark:hover:bg-white/[0.13]'
                             }`}>
