@@ -335,6 +335,30 @@
     applyRemoteUserMessageEvent(e, false);
   });
 
+  // P0-A：steer 投递确认（steer_id 版）。引擎把 steer 追加进 transcript 后发
+  // committed（带 opaque steer_id），前端把对应排队 chip 转气泡——不再靠
+  // content_hash 内容指纹（UTF-16/UTF-8 编码差异会让中英文内容两侧哈希
+  // 不一致）。结算逻辑在 chat.js（chip 归属方），含"事件早于 invoke 返回"
+  // 的未决暂存和"× 撤回"的乐观移除；旧后端（事件无 steer_id）走
+  // transcript_committed 计数兜底。steer_dropped 同时承载引擎主动丢弃和
+  // 用户 × 撤回（withdraw_steer）两种来源。
+  const settleSteerCommitted = context.settleSteerCommitted;
+  const settleSteerDropped = context.settleSteerDropped;
+  listen("chat:steer_committed", function (e) {
+    const p = e && e.payload || {};
+    const sid = p.session_id || state.activeSessionId;
+    const steerId = String(p.steer_id || "");
+    if (!sid || !steerId) return;
+    settleSteerCommitted(sid, steerId);
+  });
+  listen("chat:steer_dropped", function (e) {
+    const p = e && e.payload || {};
+    const sid = p.session_id || state.activeSessionId;
+    const steerId = String(p.steer_id || "");
+    if (!sid || !steerId) return;
+    settleSteerDropped(sid, steerId);
+  });
+
   listen("chat:transcript_committed", function (e) {
     const payload = e && e.payload || {};
     const sid = payload.session_id || state.activeSessionId;
@@ -355,6 +379,87 @@
         if (ready) flushQueued(sid);
       }).catch(function () {});
     }
+    // mid-turn inject 投递完成兜底信号:turn_loop 把 steer 追加到
+    // session.messages 后,forwarder 持久化完 emit chat:transcript_committed。
+    // 权威结算走 chat:steer_committed(steer_id 匹配);这里只兜底旧后端
+    // (chip 没有 steerId)的场景:此时 state.queued 里仍在等的 legacy steer
+    // chip 应该转 user bubble + 同步 state.messages。
+    //
+    // 计数差 = 新增的 message 数,精确消耗 state.queued 队首对应条数。
+    // 只有在增长 > 0 且包含 user-role 新消息时才 drain,避免对其他 commit
+    // (subagent 完成、runtime 续轮等)误触发。
+    // 守卫必须按事件 sid 路由(后台会话的 chip 在 sessionStates[sid].queued,
+    // 不在活跃工作集):若读活跃会话队列,steer 后切走会话的 legacy chip 会在
+    // 活跃队列为空时整体跳过兜底,后台 chip 悬挂并阻塞 flushQueued 队头。
+    const fallbackQueued = sid === state.activeSessionId
+      ? state.queued
+      : (sessionStates[sid] && sessionStates[sid].queued);
+    if (!fallbackQueued || fallbackQueued.length === 0) return;
+    invoke("load_session", { id: sid, setActive: false }).then(function (saved) {
+      if (!saved || !Array.isArray(saved.messages)) return;
+      // 懒初始化基线=快照长度(无更早可信用数)。配对不用 slice(preCount)
+      // 从头数新增,而是「尾部对齐」:从快照尾部向前匹配队首 legacy chip
+      // 的同文 user 消息——历史中的同文旧消息永远排在新注入之前,不会
+      // 被误配对(修复懒初始化首事件 slice(0) 全历史的误 drain)。
+      const lazyBaseline = committedBuffer.lastSeenMessageCount == null;
+      const preCount = lazyBaseline
+        ? saved.messages.length
+        : committedBuffer.lastSeenMessageCount;
+      const newMessages = saved.messages;
+      // compaction 等会让 transcript 收缩:基线跟着重置,否则
+      // newMessages.length <= preCount 恒成立,兜底永久失效。
+      if (newMessages.length < preCount) {
+        committedBuffer.lastSeenMessageCount = newMessages.length;
+        return;
+      }
+      // 懒初始化(首次兜底)没有"上一帧"可比,长度相等也要继续——注入刚
+      // 发生时本帧快照的尾部就是注入结果,交给下方尾部对齐校验。
+      if (!lazyBaseline && newMessages.length === preCount) return;
+      committedBuffer.lastSeenMessageCount = newMessages.length;
+      runSyncOnSession(sid, function () {
+        state.messages = newMessages;
+        // 尾部对齐:可 drain 的候选 = 快照里 preCount 之后的新增 user 消息;
+        // 懒初始化(preCount === length)时候选为空,但注入刚发生的场景下
+        // 尾部消息本身就是注入结果——用尾部回溯与队首 chip 逐条同文校验,
+        // 只在「尾部连续匹配」时 drain,历史同文旧消息不会误配对。
+        const additions = newMessages.slice(Math.min(preCount, newMessages.length));
+        const userAdditions = additions.filter(function (m) { return m && m.role === "user"; });
+        const tailCandidates = [];
+        for (let i = newMessages.length - 1;
+             i >= 0 && tailCandidates.length < Math.max(fallbackQueued.length, 1) && i >= newMessages.length - 16;
+             i++) {
+          if (newMessages[i] && newMessages[i].role === "user") tailCandidates.unshift(newMessages[i]);
+        }
+        const scanList = userAdditions.length > 0 ? [...userAdditions, ...tailCandidates.slice(userAdditions.length)] : tailCandidates;
+        for (let i = 0; i < scanList.length && state.queued.length > 0; i++) {
+          const message = scanList[i];
+          const item = fallbackQueued[0];
+          // 只结算 legacy steer chip(steered 且无 steerId):带 id 的由
+          // chat:steer_committed 权威结算,普通排队 chip 归 flushQueued,
+          // 兜底都不碰,避免误配对。
+          if (!item.steered || item.steerId) break;
+          // 提取真实 user 输入,跳过 turn_meta / system-reminder metadata 块
+          const content = Array.isArray(message.content) ? message.content : [];
+          const firstText = content
+            .filter(function (block) { return block && block.type === "text"; })
+            .map(function (block) { return String(block.text || ""); })
+            .filter(function (text) {
+              const t = text.trim();
+              return !(t.indexOf("<turn_meta>") === 0 && t.endsWith("</turn_meta>")) &&
+                !(t.indexOf("<system-reminder>") === 0 && t.endsWith("</system-reminder>"));
+            })
+            .join("");
+          const itemText = String(item.text || "");
+          // 精确匹配:旧的双向 indexOf 包含会把前缀相似的不同消息误配对。
+          // 不匹配则继续扫描后续新增(基线为 0 时历史 user 消息排在新增前面)。
+          if (firstText && firstText === itemText) {
+            fallbackQueued.shift();
+            addChatItem({ type: "user", text: itemText, time: timeStr() });
+          }
+        }
+      });
+      notify();
+    }).catch(function () { /* silent:fall back to existing behavior */ });
   });
 
   listen("chat:turn_started", function (e) { onSessionEvent(e, function () {

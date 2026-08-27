@@ -439,6 +439,9 @@
       imageUnsupported: "The current model does not support images. Switch to an image-capable model, or configure a vision model in model settings.",
       imageUnknown: "Image input capability of the current model is unknown. If it supports images, set image input to “Supports images” in model settings; you can also configure a vision model.",
       turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
+      steerDropped: "Queued message was not delivered (turn interrupted), cancelled",
+      steerFailed: "Interrupt failed (session unavailable or engine not running); your text was restored to the input",
+      interruptQueuedFailed: "Interrupt & send failed; the message was restored to the queue",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       compactInactive: "The session engine is not running yet. Send a message before compacting the context",
@@ -514,6 +517,9 @@
       imageUnsupported: "現在のモデルは画像に対応していません。画像対応モデルに切り替えるか、モデル設定でビジョンモデルを構成してください。",
       imageUnknown: "現在のモデルの画像入力能力は不明です。画像に対応している場合は、モデル設定で画像入力能力を「画像対応」に設定してください。ビジョンモデルを構成することもできます。",
       turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
+      steerDropped: "キューしたメッセージが未達（ターン中断）のため取り消しました",
+      steerFailed: "割り込みに失敗しました（セッション無効またはエンジン未起動）。内容は入力欄に復元しました",
+      interruptQueuedFailed: "割り込み送信に失敗しました。メッセージはキューに復元しました",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       compactInactive: "セッション Engine はまだ起動していません。メッセージを送信してからコンテキストを圧縮してください",
@@ -589,6 +595,9 @@
       imageUnsupported: "当前模型不支持图片。请切换到支持图片的模型，或在模型设置中配置视觉模型。",
       imageUnknown: "当前模型的图片输入能力未知。如果它支持图片，请在模型设置中将图片输入能力设为“支持图片”后重试；也可以配置视觉模型。",
       turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
+      steerDropped: "排队消息未送达（回合中断），已取消",
+      steerFailed: "插队失败（会话不可用或引擎未运行），内容已恢复到输入框",
+      interruptQueuedFailed: "插队发送失败，消息已恢复到排队区",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       compactInactive: "会话引擎尚未运行。请先发送一条消息，再压缩上下文",
@@ -857,6 +866,11 @@
   const retryFirstTurn = chatFeature.retryFirstTurn;
   const prefillComposer = chatFeature.prefillComposer;
   const removeQueued = chatFeature.removeQueued;
+  const steer = chatFeature.steer;
+  const interruptAndSend = chatFeature.interruptAndSend;
+  const interruptAndSendQueued = chatFeature.interruptAndSendQueued;
+  const settleSteerCommitted = chatFeature.settleSteerCommitted;
+  const settleSteerDropped = chatFeature.settleSteerDropped;
   const summonPinvou = chatFeature.summonPinvou;
   const inspectPinvou = chatFeature.inspectPinvou;
   const resolvePinvouReview = chatFeature.resolvePinvouReview;
@@ -885,6 +899,12 @@
       // quota).
       if (id && reason === "delete" && window.localStorage) {
         try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch { /* localStorage may be unavailable or full; the key is a cache and its loss is non-fatal */ }
+      }
+      // Steer 中间状态(暂存事件/撤回文本/打断在途标记)随会话一起清:
+      // 删除时引擎侧由 SyncSession 的 SteerDropped 兜底;LRU 驱逐(reason ===
+      // "evict")也清——chip 已随 buffer 离开工作集,事件不会再有消费者。
+      if (id && typeof chatFeature.purgeSteerState === "function") {
+        chatFeature.purgeSteerState(id);
       }
     },
     runSyncOnSession, persistMessagesFor,
@@ -1979,6 +1999,8 @@
     flushAssistantMessageToHistory,
     resetPendingAssistant, flushQueued,
     isBusyFor, doSendFor,
+    settleSteerCommitted,
+    settleSteerDropped,
     ensureSessionBufferLoaded,
     getBuffer, markRemoteTurn,
     reconcileRemoteTurn, saveWorkingSetTo,
@@ -2334,6 +2356,9 @@
       retryFirstTurn,
       prefillComposer,
       removeQueued,
+      steer,
+      interruptAndSend,
+      interruptAndSendQueued,
       cancelGeneration,
       cancelShellTask,
     },
