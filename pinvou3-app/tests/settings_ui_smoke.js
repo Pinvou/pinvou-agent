@@ -1142,7 +1142,12 @@ async function modalWidth(page, headingText) {
   });
   rec('⑦.llama.0 模型页胶囊含「本地识图」且无残留弹窗', llamaTabDebug.hasTab && !llamaTabDebug.dialogOpen, JSON.stringify(llamaTabDebug));
   await page.click('[data-testid="settings-model-tab-llama"]');
-  await sleep(400);
+  try {
+    await page.waitForSelector('[data-testid="llama-autostart-select"]', { timeout: 3000 });
+  } catch (waitErr) {
+    const bodyText = await page.evaluate(() => document.body.innerText.slice(-1200));
+    throw new Error(`本地识图子页未完成渲染；runtime errors=${errors.slice(-3).join(' | ')}；body=${bodyText}`, { cause: waitErr });
+  }
   await page.click('[data-testid="llama-autostart-select"]');
   await sleep(250);
   const llamaSection = await page.evaluate(() => {

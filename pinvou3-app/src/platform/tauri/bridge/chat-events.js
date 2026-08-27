@@ -1104,7 +1104,7 @@
   // 本地多模态引擎下载进度（engine_download → engine_extract → model_download →
   // model_verify → done / cancelled）
   listen("llama-engine:progress", function (e) {
-    var p = e && e.payload;
+    const p = e && e.payload;
     if (!p) return;
     if (p.stage === "done" || p.stage === "cancelled") {
       state.llamaEngineSetup = Object.assign({}, state.llamaEngineSetup, {
@@ -1124,7 +1124,7 @@
 
   // 本地多模态引擎生命周期状态（starting / running / stopped，含崩溃自愈）
   listen("llama-engine:state", function (e) {
-    var p = e && e.payload;
+    const p = e && e.payload;
     if (!p) return;
     state.llamaEngineSetup = Object.assign({}, state.llamaEngineSetup, {
       starting: p.phase === "starting",

@@ -1573,6 +1573,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // 据此丢弃，不得关掉新流程的对话框或偷 resolve 新 promise。
       const pendingLocalEngineSendRef = useRef(null);
       const localEngineTokenRef = useRef(0);
+      // 记录触发引擎启动的流程 token：发送门取消时只停自己拉起的引擎，
+      // 用户在设置页手动启动的引擎不受发送门取消影响（0 = 非本流程发起）。
+      const localEngineStartedByTokenRef = useRef(0);
       // 组件卸载：作废旧 token 并 resolve 挂起中的发送（按取消处理），
       // 进行中的启动轮询在 1s 内停止，不再 setState。
       useEffect(() => () => {
@@ -1632,11 +1635,19 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // 先于引擎放弃(并发下载会数倍拖慢冷加载,见该常量注释)。token 是本次
       // 流程 id:用户取消/组件卸载/新流程顶替都会作废它,轮询立即停。
       async function startEngineAndWait(modelId, device, token, timeoutMs = 300000) {
+        // 已在启动中/运行中（如用户刚在设置页手动点了启动）时，本流程不算
+        // 发起方：取消发送门不得停掉别人拉起的引擎。bs 快照略有延迟可接受。
+        const leSetup = (bs && bs.llamaEngineSetup) || {};
+        const lePhase = (leSetup.status && leSetup.status.phase) || '';
+        const alreadyStarting = !!leSetup.starting || lePhase === 'starting' || lePhase === 'running';
         try {
           if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.startEngine) {
+            if (!alreadyStarting) localEngineStartedByTokenRef.current = token;
             await bridge.llamaEngine.startEngine(modelId, device);
           }
-        } catch (_) {}
+        } catch {
+          // 启动请求失败交给下方轮询/超时兜底，不直接判死。
+        }
         // refreshStatus 直接返回最新状态（非 React 快照），轮询不依赖 stale bs。
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
@@ -1649,8 +1660,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               // 启动即失败/自愈超限落终态：带着错误立即返回，不等满超时。
               if (st && st.phase === 'stopped' && st.error) return false;
             }
-          } catch (_) {}
-          await new Promise(r => setTimeout(r, 1000));
+          } catch {
+            // 单次状态查询失败跳过本轮，继续轮询。
+          }
+          await new Promise(r => { setTimeout(r, 1000); });
         }
         return false;
       }
@@ -1675,10 +1688,18 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       }
       // 取消 starting/downloading：先按当前 token resolve（取消发送），再
       // 作废 token 停掉进行中的轮询；旧流程后续回调全部因 token 失配被丢弃。
+      // 本流程拉起的引擎随取消一并停掉（fire-and-forget），不在后台白占
+      // 最多 300s 的加载；非本流程发起的引擎（设置页手动启动）不受影响。
       function cancelLocalEngineFlow(token) {
         resolvePendingSend(false, token);
         localEngineTokenRef.current += 1;
         setLocalEnginePrompt(null);
+        if (localEngineStartedByTokenRef.current === token) {
+          localEngineStartedByTokenRef.current = 0;
+          if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.stopEngine) {
+            bridge.llamaEngine.stopEngine().catch(() => {});
+          }
+        }
       }
       async function startThenResolve(info, token) {
         if (localEngineFlowAlive(token)) setLocalEnginePrompt({ kind: 'starting', token });
@@ -1708,7 +1729,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         let info;
         try {
           info = await bridge.models.getImageInputCapability(activeSessionId);
-        } catch (_) { return true; } // 查询失败 fail-open，绝不误拦
+        } catch { return true; } // 查询失败 fail-open，绝不误拦
         const state = info && info.localEngineState;
         if (!info || state === 'unused' || state === 'running') return true;
         const token = ++localEngineTokenRef.current;
@@ -2399,7 +2420,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               const llmEngineCopy = (t.uiSettingsDetail && t.uiSettingsDetail.llamaEngine) || {};
               const btnPrimary = `text-[13px] font-medium px-4 py-2 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'}`;
               const btnGhost = `text-[13px] px-4 py-2 rounded-full ${isDark ? 'bg-[#333537] hover:bg-[#444746]' : 'bg-[#E1E5EA] hover:bg-[#D3D9E0]'}`;
-              const goSettingsAndCancel = () => { if (onGotoLlamaEngine) onGotoLlamaEngine(); resolvePendingSend(false); };
+              const goSettingsAndCancel = () => { if (onGotoLlamaEngine) { onGotoLlamaEngine(); } resolvePendingSend(false); };
               // 下载进度与设置页同口径:订阅 llamaEngineSetup.progress(pct+filename)。
               const leSetup = (bs && bs.llamaEngineSetup) || {};
               const leProg = leSetup.progress || {};
@@ -2409,9 +2430,14 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               if (p.kind === 'install') {
                 title = llmEngineCopy.title || ua.localEngineNotRunning;
                 body = ua.localEngineInstallPrompt;
+                // 暂不安装 = 放弃安装：后台可能还挂着上一次流程未取消的下载，一并取消。
+                const cancelInstallAndResolve = () => {
+                  if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.cancelDownload) bridge.llamaEngine.cancelDownload();
+                  resolvePendingSend(!!(info && info.hasVisionModel));
+                };
                 buttons = (
                   <>
-                    <button className={btnGhost} onClick={() => resolvePendingSend(!!(info && info.hasVisionModel))}>{ua.localEngineInstallCancel}</button>
+                    <button className={btnGhost} onClick={cancelInstallAndResolve}>{ua.localEngineInstallCancel}</button>
                     <button className={btnPrimary} onClick={() => installThenResolve(info, p.token)}>{ua.localEngineInstallConfirm}</button>
                   </>
                 );
@@ -2445,9 +2471,14 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               } else if (p.kind === 'timeout') {
                 title = ua.localEngineStartingTimeout;
                 body = '';
+                // 取消发送走 cancelLocalEngineFlow：本流程拉起的引擎一并停掉；
+                // 「云端发送」与 notRunning 弹窗同语义（复用 localEngineSendFallback）。
                 buttons = (
                   <>
-                    <button className={btnGhost} onClick={() => resolvePendingSend(false)}>{ua.localEngineCancelSend}</button>
+                    <button className={btnGhost} onClick={() => cancelLocalEngineFlow(p.token)}>{ua.localEngineCancelSend}</button>
+                    {info && info.hasVisionModel && (
+                      <button className={btnGhost} onClick={() => resolvePendingSend(true)}>{ua.localEngineSendFallback}</button>
+                    )}
                     <button className={btnGhost} onClick={goSettingsAndCancel}>{ua.localEngineGoSettings}</button>
                     <button className={btnPrimary} onClick={() => startThenResolve(info, p.token)}>{ua.localEngineRetry}</button>
                   </>
@@ -2455,8 +2486,13 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               } else {
                 title = ua.localEngineInstallError;
                 body = p.message || '';
+                // 关闭 = 放弃安装：取消可能残留的后台下载后再 resolve。
+                const closeInstallError = () => {
+                  if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.cancelDownload) bridge.llamaEngine.cancelDownload();
+                  resolvePendingSend(false);
+                };
                 buttons = (
-                  <button className={btnPrimary} onClick={() => resolvePendingSend(false)}>{ua.localEngineClose}</button>
+                  <button className={btnPrimary} onClick={closeInstallError}>{ua.localEngineClose}</button>
                 );
               }
               return (
@@ -2476,10 +2512,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                           {(leProg.stage === 'engine_download' || leProg.stage === 'engine_extract'
                             ? llmEngineCopy.downloadingEngine
                             : llmEngineCopy.downloadingModel) || ua.localEngineDownloading}
-                          {lePct !== null ? ` ${lePct}%` : ''}
+                          {lePct === null ? '' : ` ${lePct}%`}
                         </div>
                         <div className={`h-2 rounded-full overflow-hidden ${isDark ? 'bg-white/10' : 'bg-black/10'}`}>
-                          <div className="h-full bg-[#0B57D0] transition-all" style={{ width: (lePct !== null ? lePct : 5) + '%' }} />
+                          <div className="h-full bg-[#0B57D0] transition-all" style={{ width: (lePct === null ? 5 : lePct) + '%' }} />
                         </div>
                         {leProg.filename && <div className="mt-1 text-[11px] truncate opacity-60">{leProg.filename}</div>}
                       </div>

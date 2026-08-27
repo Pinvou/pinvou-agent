@@ -8,6 +8,8 @@ const DEFAULT_DESKTOP_CAPABILITIES = Object.freeze({
   appUpdate: true,
   dependencyInstall: true,
   localModelSetup: true,
+  // 本地识图引擎（llama.cpp 多模态）：desktopOnly，web 端设置子页整页隐藏。
+  localVisionEngine: true,
   externalSystemOpen: true,
   webAccessAdmin: true,
   desktopNotifications: true,

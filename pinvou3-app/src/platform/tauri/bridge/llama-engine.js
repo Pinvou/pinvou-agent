@@ -9,11 +9,11 @@
  */
 (function (root) {
   "use strict";
-  var registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
+  const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["llama-engine"] = function (context) {
-    var state = context.state;
-    var notify = context.notify;
-    var invoke = context.invoke;
+    const state = context.state;
+    const notify = context.notify;
+    const invoke = context.invoke;
 
     function merge(extra) {
       state.llamaEngineSetup = Object.assign({}, state.llamaEngineSetup, extra);
@@ -47,7 +47,7 @@
 
     async function installModel(modelId) {
       if (state.llamaEngineSetup.downloading) return;
-      merge({ downloading: true, downloadingItem: "model", error: null, progress: { stage: "start", item: "model", modelId: modelId } });
+      merge({ downloading: true, downloadingItem: "model", error: null, progress: { stage: "start", item: "model", modelId } });
       notify();
       try {
         await invoke("llama_engine_install_model", { model: modelId });
@@ -70,7 +70,7 @@
       merge({ starting: true, error: null });
       notify();
       try {
-        await invoke("llama_engine_start", { model: modelId, device: device });
+        await invoke("llama_engine_start", { model: modelId, device });
         await refreshStatus();
       } catch (e) {
         merge({ starting: false, error: String(e) });
@@ -113,14 +113,14 @@
     }
 
     return {
-      refreshStatus: refreshStatus,
-      installEngine: installEngine,
-      installModel: installModel,
-      cancelDownload: cancelDownload,
-      startEngine: startEngine,
-      stopEngine: stopEngine,
-      deleteModel: deleteModel,
-      deleteEngine: deleteEngine
+      refreshStatus,
+      installEngine,
+      installModel,
+      cancelDownload,
+      startEngine,
+      stopEngine,
+      deleteModel,
+      deleteEngine
     };
   };
 })(window);

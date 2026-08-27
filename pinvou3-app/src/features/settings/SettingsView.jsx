@@ -1720,8 +1720,11 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       // 设置页：activeSection 用 'model'，modelTab 区分子页；深链
       // initialSection='providers'（代码页错误横幅入口）映射 ACP 子页，
       // initialSection='llama'（发送兜底安装引导入口）映射本地识图子页。
+      // 本地识图是 desktopOnly 能力（localVisionEngine）：web 宿主 allowlist
+      // 不含此项，子页所有操作（启停/下载/开关落盘）都是 no-op，整页隐藏。
+      const canUseLocalVisionEngine = can('localVisionEngine');
       const [activeSection, setActiveSection] = useState((initialSection === 'providers' || initialSection === 'llama') ? 'model' : (initialSection || 'general'));
-      const [modelTab, setModelTab] = useState(initialSection === 'providers' ? 'acp' : (initialSection === 'llama' ? 'llama' : 'models'));
+      const [modelTab, setModelTab] = useState(initialSection === 'providers' ? 'acp' : (initialSection === 'llama' && canUseLocalVisionEngine ? 'llama' : 'models'));
       const canUsePet = can('pet');
       const canUseSuperPermission = can('superPermission');
       const canUpdateApp = can('appUpdate');
@@ -1757,17 +1760,22 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         try {
           const current = (bs && bs.settings && bs.settings.advanced) || {};
           await bridge.settings.saveSettings({ advanced: Object.assign({}, current, patch) });
-        } catch (_) {}
+        } catch {
+          // 偏好落盘失败保持本地选择，下次外部刷新时再同步。
+        }
       };
       const applyLlamaModel = (modelId) => { setLlamaModel(modelId); saveAdvancedPatch({ llama_engine_default_model: modelId }); };
       const applyLlamaDevice = (device) => { setLlamaDevice(device); saveAdvancedPatch({ llama_engine_default_device: device }); };
       // prefs 外部刷新(如其他端保存)时同步显示
       useEffect(() => {
         const adv = (bs && bs.settings && bs.settings.advanced) || {};
+        /* eslint-disable react-hooks/set-state-in-effect -- prefs 由外部系统(其他端保存)刷新,属于把外部状态同步进本地 state 的正当 effect */
         if (adv.llama_engine_default_model) setLlamaModel(adv.llama_engine_default_model);
         if (adv.llama_engine_default_device) setLlamaDevice(adv.llama_engine_default_device);
         if (adv.llama_engine_auto_start) setLlamaAutoStart(adv.llama_engine_auto_start);
         setLlamaVisionFallback(adv.llama_engine_vision_fallback !== false);
+        /* eslint-enable react-hooks/set-state-in-effect */
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: 仅在 advanced prefs 整体变化时同步一次
       }, [bs && bs.settings && bs.settings.advanced]);
       useEffect(() => {
         // 首次进入设置页拉一次引擎状态（下载进度/运行状态以事件驱动，这里是兜底）
@@ -1779,13 +1787,14 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         // 启动中（事件可能延迟）每 2s 轮询状态兜底，避免 UI 卡在 starting
         const le = (bs && bs.llamaEngineSetup) || {};
         const phase = (le.status && le.status.phase) || 'idle';
-        if (phase !== 'starting') return undefined;
+        if (phase !== 'starting') return;
         const timer = setInterval(() => {
           if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.refreshStatus) {
             bridge.llamaEngine.refreshStatus().catch(() => {});
           }
         }, 2000);
         return () => clearInterval(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: 仅在引擎 phase 变化时重建轮询
       }, [bs && bs.llamaEngineSetup && bs.llamaEngineSetup.status && bs.llamaEngineSetup.status.phase]);
       const modelEnvLocked = (bs && bs.effectiveModelConfig && bs.effectiveModelConfig.env_overrides) || [];
       const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -2196,12 +2205,13 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         <>
           {/* 左上角小胶囊切换：模型 / ACP 管理 / 本地识图（替代原列表上方「模型」
               小字标题；原侧栏「Provider 管理」「本地多模态引擎」分节并入为子页。
-              本地识图与原侧栏分节一致不做平台门控，web 宿主下按钮动作为空操作）*/}
+              本地识图是 desktopOnly 能力：web 宿主下该胶囊与子页整页隐藏，
+              与 ACP 胶囊的 codexAcpSupported 门控同模式）*/}
           <div data-testid="settings-model-tabs" className="mb-3 inline-flex items-center gap-0.5 p-0.5 rounded-full bg-black/[0.05] dark:bg-white/[0.07]">
             {[
               { key: 'models', label: t.uiSettings.model },
               ...(acpProvidersTabVisible ? [{ key: 'acp', label: t.uiSettings.providers }] : []),
-              { key: 'llama', label: t.uiSettings.localVision },
+              ...(canUseLocalVisionEngine ? [{ key: 'llama', label: t.uiSettings.localVision }] : []),
             ].map(tab => (
               <button key={tab.key} type="button" data-testid={`settings-model-tab-${tab.key}`} onClick={() => setModelTab(tab.key)}
                 className={`h-7 px-3 rounded-full text-[12px] font-semibold transition-colors ${modelTab === tab.key ? ('bg-white text-[#007AFF] shadow-sm dark:bg-[#3A3A3C] dark:text-[#F2F2F7]') : ('text-[#8A8A8E] hover:text-[#636366] dark:text-[#8E8E93] dark:hover:text-[#C7C7CC]')}`}>
@@ -2211,7 +2221,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           </div>
           {modelTab === 'acp' && acpProvidersTabVisible ? (
             <ProvidersSection t={t} />
-          ) : modelTab === 'llama' ? (
+          ) : modelTab === 'llama' && canUseLocalVisionEngine ? (
             renderLocalEngine()
           ) : (
           <section className="mb-6">
@@ -2461,6 +2471,113 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           </IOSRow>
         </IOSSection>
       );
+      // 单个视觉模型行（选择/安装/删除）：从 renderLocalEngine 抽出以控制其认知复杂度。
+      const renderLlamaModelRow = (m, { st, downloading, running, starting }) => (
+        <div key={m.id} className="flex items-center gap-2.5 w-full py-1.5 pr-4">
+          <button onClick={() => applyLlamaModel(m.id)}
+            className="flex items-center gap-2.5 flex-1 min-w-0 text-left">
+            <RadioDot active={llamaModel === m.id} />
+            <span className="text-[13px] leading-4 text-[#1C1C1E] dark:text-[#F2F2F7]">
+              {m.displayName}
+              {st.recommendedModel === m.id && st.recommendedModel !== st.defaultModel && (
+                <span className="ml-1.5 text-[11px] px-1.5 py-0.5 rounded-full bg-[#007AFF]/10 text-[#007AFF]">{settingsCopy.llamaEngine.recommended}</span>
+              )}
+              {st.defaultModel === m.id && (
+                <span className="ml-1.5 text-[11px] px-1.5 py-0.5 rounded-full bg-black/[0.06] text-[#636366] dark:bg-white/[0.10] dark:text-[#C7C7CC]">{settingsCopy.llamaEngine.default}</span>
+              )}
+              {m.installed && <span className="ml-1.5 text-[12px] text-[#34C759]">✓</span>}
+            </span>
+          </button>
+          {!downloading && (m.installed ? (
+            <button data-testid={`llama-delete-model-${m.id}`} disabled={running || starting}
+              title={(running || starting) ? settingsCopy.llamaEngine.deleteRequiresStop : undefined} onClick={() => {
+              if (!bridge.available || !bridge.llamaEngine || !bridge.llamaEngine.deleteModel) return;
+              if (!window.confirm(settingsCopy.llamaEngine.deleteModelConfirm(m.displayName))) return;
+              bridge.llamaEngine.deleteModel(m.id).catch(() => {});
+            }}
+              className="shrink-0 min-h-7 px-3 rounded-full text-[11px] font-semibold text-[#FF3B30] bg-[#FF3B30]/10 disabled:opacity-50">{settingsCopy.llamaEngine.deleteModel}</button>
+          ) : (
+            <button data-testid={`llama-install-model-${m.id}`} onClick={() => {
+              if (!bridge.available || !bridge.llamaEngine) return;
+              applyLlamaModel(m.id);
+              bridge.llamaEngine.installModel(m.id).catch(() => {});
+            }}
+              className="shrink-0 min-h-7 px-3 rounded-full text-[11px] font-semibold text-white" style={{ background: '#007AFF' }}>{settingsCopy.llamaEngine.installModel}</button>
+          ))}
+        </div>
+      );
+      // 「服务」区块（状态 + 启停 + 下载进度 + 日志）：从 renderLocalEngine
+      // 抽出以控制其认知复杂度。pct 两处用正向三元（pct === null 在前）满足
+      // unicorn/no-negated-condition。
+      const renderLlamaServiceSection = ({ st, running, starting, stopped, downloading, engineReady, modelReady, errText, serviceLine, statusLine, modelLine, busyPhase, pct, progress }) => (
+        <section className="mb-6">
+          <SectionTitle>{settingsCopy.llamaEngine.serviceLabel}</SectionTitle>
+          <Group>
+            <div className="px-4 py-3 flex items-center justify-between gap-3 border-b border-black/[0.12] dark:border-white/[0.10]">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className={`w-2 h-2 shrink-0 rounded-full ${running ? 'bg-[#34C759]' : (starting || downloading ? 'bg-[#FF9F0A]' : 'bg-[#AEAEB2] dark:bg-[#636366]')}`} />
+                  <span className="text-[14px] font-medium text-[#1C1C1E] dark:text-[#F2F2F7]">{serviceLine}</span>
+                </div>
+                <div className="mt-1 text-[12px] leading-[17px] text-[#8A8A8E] dark:text-[#98989D]">
+                  {statusLine} · {modelLine}
+                </div>
+              </div>
+              {engineReady && modelReady && (
+                <button
+                  onClick={() => {
+                    if (!bridge.available || !bridge.llamaEngine) return;
+                    if (running || starting) bridge.llamaEngine.stopEngine().catch(() => {});
+                    // auto 档传给后端已解析的检测值（llama_engine_start 只认 cpu/gpu）
+                    else bridge.llamaEngine.startEngine(llamaModel, llamaDevice === 'auto' ? (st.detectedDevice || 'cpu') : llamaDevice).catch(() => {});
+                  }}
+                  disabled={starting}
+                  className={`shrink-0 h-9 px-4 rounded-full text-[14px] font-semibold ${starting ? 'opacity-50' : ''} ${running ? 'bg-[#FF3B30] text-white' : 'bg-[#007AFF] text-white'}`}>
+                  {starting ? settingsCopy.llamaEngine.starting : (running ? settingsCopy.llamaEngine.stop : settingsCopy.llamaEngine.start)}
+                </button>
+              )}
+            </div>
+            {errText && (
+              <div className="px-4 py-3 text-[13px] leading-5 border-b whitespace-pre-wrap border-black/[0.12] text-[#FF3B30] dark:border-white/[0.10] dark:text-[#FF453A]">
+                {errText}
+              </div>
+            )}
+            {downloading && (
+              <div className="px-4 py-3 border-b border-black/[0.12] dark:border-white/[0.10]">
+                <div className="flex items-center justify-between text-[13px] mb-1.5">
+                  <span className="text-[#1C1C1E] dark:text-[#F2F2F7]">
+                    {busyPhase === 'engine_download' || busyPhase === 'engine_extract'
+                      ? settingsCopy.llamaEngine.downloadingEngine
+                      : settingsCopy.llamaEngine.downloadingModel}
+                    {pct === null ? '' : ` ${pct}%`}
+                  </span>
+                  <button onClick={() => bridge.available && bridge.llamaEngine && bridge.llamaEngine.cancelDownload()}
+                    className={`min-h-7 px-3 rounded-full text-[13px] font-medium ${actionButton('red')}`}>{settingsCopy.llamaEngine.cancelDownload}</button>
+                </div>
+                <div className="h-1.5 rounded-full overflow-hidden bg-[#E9E9EB] dark:bg-[#3A3A3C]">
+                  <div className="h-full rounded-full bg-[#007AFF]" style={{ width: `${pct === null ? (busyPhase ? 5 : 0) : pct}%`, transition: 'width .3s' }} />
+                </div>
+                {progress.filename && (
+                  <div className="mt-1 text-[11px] truncate text-[#8A8A8E] dark:text-[#636366]">{progress.filename}</div>
+                )}
+              </div>
+            )}
+            {(running || stopped || st.stderrTail) && (
+              <div className="px-4 py-2.5 border-b last:border-b-0 border-black/[0.12] dark:border-white/[0.10]">
+                <button onClick={() => setShowLlamaLogs(v => !v)}
+                  className={`min-h-7 px-3 rounded-full text-[13px] font-medium ${actionButton('blue')}`}>
+                  {settingsCopy.llamaEngine.viewLogs}
+                </button>
+              </div>
+            )}
+            {showLlamaLogs && (st.stderrTail || []).length > 0 && (
+              <pre className="px-4 py-3 text-[11px] leading-4 overflow-x-auto max-h-56 overflow-y-auto bg-[#F8F9FB] text-[#6E6E73] dark:bg-[#1C1C1E] dark:text-[#98989D]">
+                {(st.stderrTail || []).join('\n')}
+              </pre>
+            )}
+          </Group>
+        </section>
+      );
       const renderLocalEngine = () => {
         const le = (bs && bs.llamaEngineSetup) || {};
         const st = le.status || {};
@@ -2509,73 +2626,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             </section>
 
             {/* 服务：状态 + 启停 + 下载进度 + 日志 */}
-            <section className="mb-6">
-              <SectionTitle>{settingsCopy.llamaEngine.serviceLabel}</SectionTitle>
-              <Group>
-                <div className="px-4 py-3 flex items-center justify-between gap-3 border-b border-black/[0.12] dark:border-white/[0.10]">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className={`w-2 h-2 shrink-0 rounded-full ${running ? 'bg-[#34C759]' : (starting || downloading ? 'bg-[#FF9F0A]' : 'bg-[#AEAEB2] dark:bg-[#636366]')}`} />
-                      <span className="text-[14px] font-medium text-[#1C1C1E] dark:text-[#F2F2F7]">{serviceLine}</span>
-                    </div>
-                    <div className="mt-1 text-[12px] leading-[17px] text-[#8A8A8E] dark:text-[#98989D]">
-                      {statusLine} · {modelLine}
-                    </div>
-                  </div>
-                  {engineReady && modelReady && (
-                    <button
-                      onClick={() => {
-                        if (!bridge.available || !bridge.llamaEngine) return;
-                        if (running || starting) bridge.llamaEngine.stopEngine().catch(() => {});
-                        // auto 档传给后端已解析的检测值（llama_engine_start 只认 cpu/gpu）
-                        else bridge.llamaEngine.startEngine(llamaModel, llamaDevice === 'auto' ? (st.detectedDevice || 'cpu') : llamaDevice).catch(() => {});
-                      }}
-                      disabled={starting}
-                      className={`shrink-0 h-9 px-4 rounded-full text-[14px] font-semibold ${starting ? 'opacity-50' : ''} ${running ? 'bg-[#FF3B30] text-white' : 'bg-[#007AFF] text-white'}`}>
-                      {starting ? settingsCopy.llamaEngine.starting : (running ? settingsCopy.llamaEngine.stop : settingsCopy.llamaEngine.start)}
-                    </button>
-                  )}
-                </div>
-                {errText && (
-                  <div className="px-4 py-3 text-[13px] leading-5 border-b whitespace-pre-wrap border-black/[0.12] text-[#FF3B30] dark:border-white/[0.10] dark:text-[#FF453A]">
-                    {errText}
-                  </div>
-                )}
-                {downloading && (
-                  <div className="px-4 py-3 border-b border-black/[0.12] dark:border-white/[0.10]">
-                    <div className="flex items-center justify-between text-[13px] mb-1.5">
-                      <span className="text-[#1C1C1E] dark:text-[#F2F2F7]">
-                        {busyPhase === 'engine_download' || busyPhase === 'engine_extract'
-                          ? settingsCopy.llamaEngine.downloadingEngine
-                          : settingsCopy.llamaEngine.downloadingModel}
-                        {pct !== null ? ` ${pct}%` : ''}
-                      </span>
-                      <button onClick={() => bridge.available && bridge.llamaEngine && bridge.llamaEngine.cancelDownload()}
-                        className={`min-h-7 px-3 rounded-full text-[13px] font-medium ${actionButton('red')}`}>{settingsCopy.llamaEngine.cancelDownload}</button>
-                    </div>
-                    <div className="h-1.5 rounded-full overflow-hidden bg-[#E9E9EB] dark:bg-[#3A3A3C]">
-                      <div className="h-full rounded-full bg-[#007AFF]" style={{ width: `${pct !== null ? pct : (busyPhase ? 5 : 0)}%`, transition: 'width .3s' }} />
-                    </div>
-                    {progress.filename && (
-                      <div className="mt-1 text-[11px] truncate text-[#8A8A8E] dark:text-[#636366]">{progress.filename}</div>
-                    )}
-                  </div>
-                )}
-                {(running || stopped || st.stderrTail) && (
-                  <div className="px-4 py-2.5 border-b last:border-b-0 border-black/[0.12] dark:border-white/[0.10]">
-                    <button onClick={() => setShowLlamaLogs(v => !v)}
-                      className={`min-h-7 px-3 rounded-full text-[13px] font-medium ${actionButton('blue')}`}>
-                      {settingsCopy.llamaEngine.viewLogs}
-                    </button>
-                  </div>
-                )}
-                {showLlamaLogs && (st.stderrTail || []).length > 0 && (
-                  <pre className="px-4 py-3 text-[11px] leading-4 overflow-x-auto max-h-56 overflow-y-auto bg-[#F8F9FB] text-[#6E6E73] dark:bg-[#1C1C1E] dark:text-[#98989D]">
-                    {(st.stderrTail || []).join('\n')}
-                  </pre>
-                )}
-              </Group>
-            </section>
+            {renderLlamaServiceSection({ st, running, starting, stopped, downloading, engineReady, modelReady, errText, serviceLine, statusLine, modelLine, busyPhase, pct, progress })}
 
             {/* 安装与模型：引擎 / 视觉模型 / 设备 */}
             <section className="mb-6">
@@ -2603,40 +2654,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                     {settingsCopy.llamaEngine.modelLabel}
                     <span className="ml-2 text-[12px] font-normal text-[#8A8A8E] dark:text-[#98989D]">{modelLine}</span>
                   </div>
-                  {models.map(m => (
-                    <div key={m.id} className="flex items-center gap-2.5 w-full py-1.5 pr-4">
-                      <button onClick={() => applyLlamaModel(m.id)}
-                        className="flex items-center gap-2.5 flex-1 min-w-0 text-left">
-                        <RadioDot active={llamaModel === m.id} />
-                        <span className="text-[13px] leading-4 text-[#1C1C1E] dark:text-[#F2F2F7]">
-                          {m.displayName}
-                          {st.recommendedModel === m.id && st.recommendedModel !== st.defaultModel && (
-                            <span className="ml-1.5 text-[11px] px-1.5 py-0.5 rounded-full bg-[#007AFF]/10 text-[#007AFF]">{settingsCopy.llamaEngine.recommended}</span>
-                          )}
-                          {st.defaultModel === m.id && (
-                            <span className="ml-1.5 text-[11px] px-1.5 py-0.5 rounded-full bg-black/[0.06] text-[#636366] dark:bg-white/[0.10] dark:text-[#C7C7CC]">{settingsCopy.llamaEngine.default}</span>
-                          )}
-                          {m.installed && <span className="ml-1.5 text-[12px] text-[#34C759]">✓</span>}
-                        </span>
-                      </button>
-                      {!downloading && (m.installed ? (
-                        <button data-testid={`llama-delete-model-${m.id}`} disabled={running || starting}
-                          title={(running || starting) ? settingsCopy.llamaEngine.deleteRequiresStop : undefined} onClick={() => {
-                          if (!bridge.available || !bridge.llamaEngine || !bridge.llamaEngine.deleteModel) return;
-                          if (!window.confirm(settingsCopy.llamaEngine.deleteModelConfirm(m.displayName))) return;
-                          bridge.llamaEngine.deleteModel(m.id).catch(() => {});
-                        }}
-                          className="shrink-0 min-h-7 px-3 rounded-full text-[11px] font-semibold text-[#FF3B30] bg-[#FF3B30]/10 disabled:opacity-50">{settingsCopy.llamaEngine.deleteModel}</button>
-                      ) : (
-                        <button data-testid={`llama-install-model-${m.id}`} onClick={() => {
-                          if (!bridge.available || !bridge.llamaEngine) return;
-                          applyLlamaModel(m.id);
-                          bridge.llamaEngine.installModel(m.id).catch(() => {});
-                        }}
-                          className="shrink-0 min-h-7 px-3 rounded-full text-[11px] font-semibold text-white" style={{ background: '#007AFF' }}>{settingsCopy.llamaEngine.installModel}</button>
-                      ))}
-                    </div>
-                  ))}
+                  {models.map(m => renderLlamaModelRow(m, { st, downloading, running, starting }))}
                   {running && st.activeModel && st.activeModel !== llamaModel && (
                     <div className="mt-2 flex items-center gap-2">
                       <button data-testid="llama-restart-apply" onClick={() => {
@@ -2693,7 +2711,9 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                               advanced: Object.assign({}, current, { llama_engine_vision_fallback: v }),
                             });
                           }
-                        } catch (_) {}
+                        } catch {
+                          // 兜底开关落盘失败保持本地显示，外部刷新时再对齐。
+                        }
                       }} />
                   </IOSRow>
                 </div>
