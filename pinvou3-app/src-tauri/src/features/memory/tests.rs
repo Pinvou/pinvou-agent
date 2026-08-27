@@ -1080,6 +1080,41 @@ fn llm_review_prompt_matches_supported_actions() {
     assert!(!LLM_REVIEW_PROMPT.contains("must_create_recent_activity"));
 }
 
+/// 记忆复盘提示词本体无语言约束，非中文 locale 必须追加输出语言指令（content /
+/// reason 跟 UI 语言，枚举值保持 ASCII）；zh-Hans/未知 → no-op。缺失时英文 UI
+/// 用户的记忆会被写成中文，注入会话后拽偏回复语言（review 侧同款先例）。
+#[test]
+fn memory_review_output_language_directive_follows_locale() {
+    use super::llm_review::memory_output_language_directive;
+
+    let en = memory_output_language_directive("en").expect("en 应有指令");
+    assert!(
+        en.contains("Write EVERY natural-language value")
+            && en.contains("`content`")
+            && en.contains("`reason`")
+            && en.contains("English"),
+        "en 指令必须覆盖 content/reason 且点名 English: {en}"
+    );
+    assert!(
+        en.contains("Keep") && en.contains("JSON keys") && en.contains("exactly as"),
+        "en 指令必须保住 JSON key/枚举值 ASCII: {en}"
+    );
+    let ja = memory_output_language_directive("ja").expect("ja 应有指令");
+    assert!(ja.contains("Japanese"), "ja 指令点名 Japanese: {ja}");
+    let zh = memory_output_language_directive("zh-Hans").expect("zh-Hans 应有指令");
+    assert!(
+        zh.contains("必须用简体中文") && zh.contains("枚举值"),
+        "zh-Hans 强制中文且保枚举 ASCII: {zh}"
+    );
+    assert!(
+        memory_output_language_directive("fr").is_none(),
+        "未知 locale 回退 no-op"
+    );
+    // 提示词本体不得自带输出语言约束（语言由 locale 指令层负责）。
+    assert!(!LLM_REVIEW_PROMPT.contains("输出语言"));
+    assert!(!LLM_REVIEW_PROMPT.contains("Output Language"));
+}
+
 #[test]
 fn scenario_review_writes_long_and_recent_memories() {
     let _home = IsolatedPinvouHome::new("long-recent");

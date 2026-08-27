@@ -115,6 +115,40 @@ ttl_days 规则：
 如果没有值得记的内容，输出 {"items":[]}。
 "#;
 
+/// 记忆复盘提示词的输出语言指令，按 UI locale 追加到 system prompt 末尾。
+///
+/// 同 review 侧 output_language_directive（features/review/mod.rs）的等价物：
+/// 提示词本体留中文（按收敛性精调过，逐句翻译会引入行为漂移），只让模型把
+/// **自然语言字段值**（content / reason）切到目标语言——JSON key、kind / topic /
+/// action 枚举值保持 ASCII。zh-Hans 及未知 locale → None（no-op，提示词原样）。
+/// 没有这条指令时，英文/日文 UI 用户的记忆 content 会被写成中文，注入会话后
+/// 拽偏回复语言。
+pub(super) fn memory_output_language_directive(locale_tag: &str) -> Option<String> {
+    // zh-Hans：即使本轮对话是英文，content 也强制简体中文——中文 prompt 本体
+    // 不够硬，英文上下文下会漂成英文 content（review 侧实测同款问题）。
+    if locale_tag == "zh-Hans" {
+        return Some(
+            "\n\n## 输出语言(强制)\n\
+             JSON 里所有自然语言字段值(content / reason)必须用简体中文,即使本轮\
+             对话是英文/日文也别跟着写。JSON 的 key、action / kind / topic 枚举值\
+             保持原样 ASCII。"
+                .to_string(),
+        );
+    }
+    let lang = match locale_tag {
+        "en" => "English",
+        "ja" => "Japanese (日本語)",
+        _ => return None, // 未知 locale → 提示词原样中文
+    };
+    Some(format!(
+        "\n\n## Output Language (HARD override)\n\
+         Write EVERY natural-language value in your JSON output in {lang}: `content` \
+         and `reason`. This OVERRIDES any wording above that asks for Chinese. Keep \
+         all JSON keys and enum values (`action`, `kind`, `topic`) exactly as \
+         specified — those stay ASCII/English."
+    ))
+}
+
 fn memory_review_log_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -443,6 +477,12 @@ async fn request_llm_memory_review(
         "never_memory": never,
     })
     .to_string();
+    // 非中文 locale 追加输出语言指令(否则记忆 content 被写成中文,注入英文 UI
+    // 会话后拽偏回复语言;同 review 侧 output_language_directive 先例)。
+    let prompt = match memory_output_language_directive(&bridge.memory_locale_tag()) {
+        Some(suffix) => format!("{LLM_REVIEW_PROMPT}{suffix}"),
+        None => LLM_REVIEW_PROMPT.to_string(),
+    };
     // Anthropic 官方端点是 Messages 协议（x-api-key 鉴权，system 独立字段，
     // 无 response_format），走原生直连；其余 preset 仍走 OpenAI chat/completions。
     if preset == ModelPreset::Anthropic {
@@ -451,7 +491,7 @@ async fn request_llm_memory_review(
             &base_url,
             &bridge.memory_api_key(),
             &model_name,
-            LLM_REVIEW_PROMPT,
+            &prompt,
             &user_content,
             900,
         )
@@ -461,7 +501,7 @@ async fn request_llm_memory_review(
     let mut body = json!({
         "model": model_name,
         "messages": [
-            { "role": "system", "content": LLM_REVIEW_PROMPT },
+            { "role": "system", "content": prompt },
             { "role": "user", "content": user_content }
         ],
         "temperature": 0,

@@ -19,6 +19,10 @@ pub trait MemoryReviewModel {
     fn memory_base_url(&self) -> String;
     fn memory_api_key(&self) -> String;
     fn memory_model_preset(&self) -> ModelPreset;
+    /// UI locale（BCP 47 tag，如 "zh-Hans"/"en"/"ja"）。记忆复盘提示词本体是中文，
+    /// 非中文 locale 需要追加输出语言指令，否则记忆 content 会被写成中文、
+    /// 注入英文 UI 会话后拽偏回复语言（同 review 侧 output_language_directive 先例）。
+    fn memory_locale_tag(&self) -> String;
 }
 
 pub const PROFILE_VERSION: u32 = 1;

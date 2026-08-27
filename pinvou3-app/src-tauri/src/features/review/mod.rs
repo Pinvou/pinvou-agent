@@ -738,6 +738,26 @@ fn full_transcript(messages: &[Message]) -> String {
     lines.join("\n")
 }
 
+/// B1 转交消息(resolvePinvouReview,品悟检阅弹窗勾选「让 AI 改」等动作后由前端
+/// 双桥同文组装、以 Boss 身份发回主会话)的段头前缀。按勾选动作分五段拼一条消息,
+/// **任意段都可能打头**(只勾 verify 时消息以"以下几条涉及外部事实"开头),故须
+/// 全量前缀匹配而非单一 starts_with。与 `pinvou3-app/src/platform/tauri/bridge/chat.js`
+/// 及 `pinvou3-app/src/platform/web/bridge.js` 的 resolvePinvouReview 保持同步。
+/// 历史注释里的旧前缀「请参考下面 Pinvou 的检阅意见」在开源基线(e34024e6)起就
+/// 从未被任何前端发送过(双桥自始使用「请按下面的检阅意见」),无需保留兼容分支。
+const B1_TRANSFER_PREFIXES: &[&str] = &[
+    // fix 段头
+    "请按下面的检阅意见",
+    // verify 段头
+    "以下几条涉及外部事实",
+    // adopt 段头
+    "以下事项我已拍板",
+    // ask 段头
+    "以下待定项请用 request_user_input 正式问我",
+    // fill 段头
+    "以下维度产物还缺",
+];
+
 /// 确定性投影（§4.2，超长降级用）：Boss 原话全留 / request_user_input 决策 /
 /// Web(action=search) 事实截断；丢 checklist、thinking、tool 细节。**产物不在这里**——由
 /// build_context 读 workspace 文件真实内容（修 edit_file bug，§10.10）。
@@ -750,11 +770,15 @@ fn project(messages: &[Message]) -> String {
         let is_user = m.role == "user";
         for b in &m.content {
             match b {
-                // B1 转交消息(applyPinvouReview 固定前缀)是 pinvou 上轮审阅回传,不是 Boss
-                // 原始需求——投影排除,否则其中引用的旧数字会被当成"AI 当前状态"误导;采纳的
-                // 决策已落在产物文件里(产物才是真相)。
+                // B1 转交消息(resolvePinvouReview 组装的固定段头)是 pinvou 上轮审阅回传,不是
+                // Boss 原始需求——投影排除,否则其中引用的旧数字会被当成"AI 当前状态"误导;采纳的
+                // 决策已落在产物文件里(产物才是真相)。前端(tauri/web 双桥同文)按勾选动作拼段,
+                // 段头五种皆可能打头,须全量识别;详见 B1_TRANSFER_PREFIXES 注释。
                 ContentBlock::Text { text, .. }
-                    if is_user && !text.starts_with("请参考下面 Pinvou 的检阅意见") =>
+                    if is_user
+                        && !B1_TRANSFER_PREFIXES
+                            .iter()
+                            .any(|prefix| text.starts_with(prefix)) =>
                 {
                     boss_says.push(text.clone())
                 }
@@ -1227,13 +1251,41 @@ mod tests {
 
     #[test]
     fn project_excludes_b1_transfer_messages() {
-        let messages = vec![
-            user_text("帮我规划欧洲游，预算 2 万"),
-            user_text("请参考下面 Pinvou 的检阅意见，修改前面的内容：\n- 【预算】采纳 8.5w（国庆 5-7w 难实现）"),
+        // 前端双桥(tauri/chat.js、web/bridge.js)的 resolvePinvouReview 按勾选动作
+        // 拼段,五种段头皆可能打头——逐一构造真实前缀用例(源串取自桥端原文)。
+        let real_prefixes = [
+            (
+                "fix",
+                "请按下面的检阅意见，**只定向修改对应段落，不要全文重写**：",
+            ),
+            (
+                "verify",
+                "以下几条涉及外部事实，**先查证再改、标明依据，别凭记忆直接改**：",
+            ),
+            ("adopt", "以下事项我已拍板，按此更新产物："),
+            (
+                "ask",
+                "以下待定项请用 request_user_input 正式问我，别自己猜：",
+            ),
+            (
+                "fill",
+                "以下维度产物还缺，请补充进去（保留其余、只增不改）：",
+            ),
         ];
-        let p = project(&messages);
-        assert!(p.contains("帮我规划欧洲游"), "Boss 原话保留: {p}");
-        assert!(!p.contains("5-7w"), "转交消息(含上轮旧数字)要排除: {p}");
+        for (kind, prefix) in real_prefixes {
+            let messages = vec![
+                user_text("帮我规划欧洲游，预算 2 万"),
+                user_text(&format!(
+                    "{prefix}\n- 【预算】采纳 8.5w（国庆 5-7w 难实现）"
+                )),
+            ];
+            let p = project(&messages);
+            assert!(p.contains("帮我规划欧洲游"), "Boss 原话保留({kind}): {p}");
+            assert!(
+                !p.contains("5-7w"),
+                "{kind} 段头的转交消息(含上轮旧数字)要排除: {p}"
+            );
+        }
     }
 
     #[test]

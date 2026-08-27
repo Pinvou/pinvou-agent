@@ -57,12 +57,13 @@ const SEPARATE_REASONING_FIELD: &str = "separate_field";
 
 // 多智能体是“主会话总协调、复杂任务最多再拆一层”的 agent 集群，不是
 // 无界递归树。普通对话继续沿用 CodeWhale 原始上限；仅开启多智能体的
-// 会话收紧资源预算。
+// 会话收紧资源预算。pub(crate)：每轮委派提醒（app/commands/multiagent.rs）
+// 的数字与之共用，避免提醒文案与 engine 实际上限漂移。
 const MULTI_AGENT_MAX_SPAWN_DEPTH: u32 = 2;
-const MULTI_AGENT_WORK_MAX_CONCURRENT: usize = 4;
-const MULTI_AGENT_WORK_MAX_ADMITTED: usize = 8;
-const MULTI_AGENT_CODE_MAX_CONCURRENT: usize = 6;
-const MULTI_AGENT_CODE_MAX_ADMITTED: usize = 12;
+pub(crate) const MULTI_AGENT_WORK_MAX_CONCURRENT: usize = 4;
+pub(crate) const MULTI_AGENT_WORK_MAX_ADMITTED: usize = 8;
+pub(crate) const MULTI_AGENT_CODE_MAX_CONCURRENT: usize = 6;
+pub(crate) const MULTI_AGENT_CODE_MAX_ADMITTED: usize = 12;
 
 fn configure_provider(
     config: &mut ProviderConfig,
@@ -205,6 +206,10 @@ impl crate::features::memory::MemoryReviewModel for Pinvou3Bridge {
         self.effective_model_owned()
             .map(|model| model.preset)
             .unwrap_or_else(|| self.prefs.advanced.model_preset.unwrap_or_default())
+    }
+
+    fn memory_locale_tag(&self) -> String {
+        self.locale_tag().to_string()
     }
 }
 
