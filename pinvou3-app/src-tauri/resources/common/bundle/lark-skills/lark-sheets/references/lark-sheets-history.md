@@ -21,7 +21,7 @@
 典型工作流：`+history-list` 拿到目标版本的 `history_version_id`（必要时翻页拉取更早历史）→ `+history-revert` 发起回滚并取回 `transaction_id` → `+history-revert-status --transaction-id <transaction_id>` 轮询直到成功或失败。
 
 **注意事项（必须了解）**：
-- **回滚是高风险写入操作**：会用历史版本内容覆盖当前表格，执行前应明确告知用户影响。
+- **回滚是高风险写入操作**：会用历史版本内容覆盖当前表格，执行前应明确告知用户影响。按 SKILL.md 高风险审批协议：先 `--dry-run` 预览、获用户明确同意后再带 `--yes` 执行（high-risk-write 不带 `--yes` 以 exit 10 拒绝）。
 - **回滚是异步的**：`+history-revert` 返回的是 `transaction_id`（受理标识），不代表回滚已完成；必须用 `+history-revert-status --transaction-id <transaction_id>` 确认最终结果。
 - **`history_version_id` 与 `transaction_id` 不是同一个**：`history_version_id` 用于 `+history-revert`（取自 `+history-list`）；`transaction_id` 用于 `+history-revert-status`（取自 `+history-revert` 的输出）。
 - **历史是工作簿级**：定位只需 `--url` / `--spreadsheet-token`（XOR），不需要子表选择器。
@@ -47,7 +47,7 @@ _公共：URL/token（无 sheet 定位） · 系统：`--dry-run`_
 
 ### `+history-revert`
 
-_公共：URL/token（无 sheet 定位） · 系统：`--dry-run`_
+_公共：URL/token（无 sheet 定位） · 系统：`--yes`、`--dry-run`_
 
 | Flag | Type | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -81,8 +81,8 @@ lark-cli sheets +history-list --url "https://sample.feishu.cn/sheets/SHTxxxxxx" 
 ### `+history-revert`
 
 ```bash
-# 回滚到指定历史版本（异步受理）
-lark-cli sheets +history-revert --url "https://sample.feishu.cn/sheets/SHTxxxxxx" --history-version-id "<id-from-history-list>"
+# 回滚到指定历史版本（异步受理）。high-risk-write：先 --dry-run 预览并获用户同意，再带 --yes 执行（不带 --yes 以 exit 10 拒绝）
+lark-cli sheets +history-revert --url "https://sample.feishu.cn/sheets/SHTxxxxxx" --history-version-id "<id-from-history-list>" --yes
 ```
 
 ### `+history-revert-status`

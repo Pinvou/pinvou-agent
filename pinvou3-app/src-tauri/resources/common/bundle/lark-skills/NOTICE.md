@@ -303,3 +303,37 @@ emit_error(JSON+exit 1)、无裸 except。修复 1 处,下次 sync 需重放:
 - **lark-task/SKILL.md 措辞分叉(1 处,品悟基线沿袭)**:「列取任务列表」
   (上游 v1.0.87 原文)在本地为「获取任务列表」,语义等价;下次 sync 跟随
   上游即可,无需重放(登记仅为对账完备)。
+
+### lark-sheets 文档一致性审计修正(2026-08-27)
+
+模型向文档审计发现的 lark-sheets 包内互斥断言/口径分叉,均为 documented-behavior
+修正(不改确认策略语义),下次 sync 逐条重放:
+
+- **lark-sheets/SKILL.md「high-risk-write 命令清单」补 `+history-revert`**:
+  history.md 的 Shortcuts 表早标 high-risk-write(且全包其余 high-risk-write
+  徽章/示例均带 `--yes`),清单漏列会让门禁清单与 reference 打架。
+- **lark-sheets/SKILL.md「无 sheet 定位」例外**:由穷举式清单(漏 7 个且与
+  read-data.md 的 `+table-get` 可选 `--sheet-id`/`--sheet-name` 冲突)改为
+  规则式「以各 reference 徽章为准」,并单注 `+table-get` 的 sheet flag 是
+  可选过滤而非公共四件套必填定位。
+- **lark-sheets/references/lark-sheets-history.md**:`+history-revert` 徽章补
+  `系统:--yes`、示例命令补 `--yes`、注意事项补审批协议句——与全包
+  high-risk-write 口径对齐(SKILL.md 明文「仅 high-risk-write 需要 --yes」)。
+- **lark-sheets/references/lark-sheets-read-data.md** `+table-get` 截断口径
+  统一:使用场景表(「truncated:true 与 truncation_warning」)与 Examples 段
+  (「不返回分页/截断标志,range 是唯一信号」)互斥,且 `truncation_warning`
+  全仓库无第二处出现。CLI 源码不在仓库无法判定真值,统一为兼容口径:无
+  `has_more` 分页、各子表 `range` 是读全主信号、`--output-path` 回执看
+  `complete`、**见任何截断标志(如 truncated)必须先处理再用数据**(以参数表
+  与 `--output-path` 契约为依据)。
+- **lark-sheets/references/lark-sheets-workbook.md**:`+workbook-info` 使用场景
+  行去掉「冻结位置」(与同文件输出契约「无 frozen_* 字段,冻结用 +sheet-info
+  读取」对齐);`--styles`「至少给其一」清单两处补 `freeze`(与 schema 块及
+  styles-put.md 一致)。
+- **lark-sheets/references/lark-sheets-write-cells.md**:`+table-put --styles`
+  的「至少给其一」清单与 Examples 枚举补 `freeze`(同上,与 schema 块一致)。
+- **lark-sheets/references/lark-sheets-search-replace.md**:补 `+find` 是
+  `+cells-search` 隐藏别名、正式名直给的说明(SKILL.md 速查表有此断言但
+  reference 此前无支撑;`+cells-find`/`--query` 才是真不存在)。
+- frontmatter `version` 未 bump:历轮纯文档修正(2026-07-25/07-26/08-16 等)
+  均不动 version(3.1.2 由 #302 能力包迁移引入),本次沿用惯例。

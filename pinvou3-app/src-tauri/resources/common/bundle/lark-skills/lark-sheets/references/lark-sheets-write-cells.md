@@ -340,7 +340,7 @@ _公共：URL/token（无 sheet 定位） · 系统：`--dry-run`_
 | Flag | Type | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `--sheets` | string + File + Stdin（复合 JSON） | required | Typed 表格协议（pandas-DataFrame-shaped）JSON：顶层 `{"sheets":[...]}`，每个数组项是一张子表 `{name, start_cell?, mode?, header?, allow_overwrite?, columns:["colA","colB",...], data:[[...]], dtypes?:{colA:pandasDtype, ...}, formats?:{colA:numberFormat, ...}}` —— `name` 与外层 `sheets` 数组都不可省。Agents 用 `scripts/sheets_df.py` 的 `df_to_sheet(df, name)` 一行把 DataFrame 转成一项（多子表就 list 拼起来再包 `{"sheets":[...]}`）。`dtypes` 值是 pandas dtype 字符串（`int64`、`float64`、`Int64`、`bool`、`boolean`、`datetime64[ns]`、`object`、...），CLI 端映射成内部 string/number/date/bool —— 省略 `dtypes` 时该列按文本写入（适合原始 CSV-shaped 数据）。`formats[col]` 是 Excel number_format 字符串（如 `#,##0.00`、`0.0%`、`yyyy-mm`）；缺省时 date 列用 `yyyy-mm-dd`，string 列用文本格式 `@`。 |
-| `--styles` | string + File + Stdin（复合 JSON） | optional | 类型保真写入后再应用的视觉处理操作 JSON：顶层 `{styles:[...]}`，每项对应一个被写入的子表、含 `name`，并至少给 `cell_styles` / `row_sizes` / `col_sizes` / `cell_merges` 之一。`cell_styles` 用 A1 单元格 range + 扁平样式字段（字段同 +cells-set-style，含 number_format / 颜色 / 对齐 / border_styles）；row/col sizes 用行/列范围 + type/size；merges 用单元格 range + 可选 merge_type。styles 数组的长度/顺序/name 必须与被写入的子表对应（与 --sheets.sheets 一一对应）。完整 cell_styles 字段结构跑 `+table-put --print-schema --flag-name styles`。 |
+| `--styles` | string + File + Stdin（复合 JSON） | optional | 类型保真写入后再应用的视觉处理操作 JSON：顶层 `{styles:[...]}`，每项对应一个被写入的子表、含 `name`，并至少给 `cell_styles` / `row_sizes` / `col_sizes` / `cell_merges` / `freeze` 之一。`cell_styles` 用 A1 单元格 range + 扁平样式字段（字段同 +cells-set-style，含 number_format / 颜色 / 对齐 / border_styles）；row/col sizes 用行/列范围 + type/size；merges 用单元格 range + 可选 merge_type。styles 数组的长度/顺序/name 必须与被写入的子表对应（与 --sheets.sheets 一一对应）。完整 cell_styles 字段结构跑 `+table-put --print-schema --flag-name styles`。 |
 
 ## Schemas
 
@@ -583,7 +583,7 @@ payload = {"sheets": [{
 
 #### `--styles`（写入时同时套样式）
 
-`--styles` 在 typed 写入后顺带应用视觉处理，省掉一次 `+cells-set-style` 往返。协议与 `+workbook-create --styles` **完全同构**（详见 workbook reference）：顶层 `{styles:[...]}`，数组每项对应一个被写入的子表、含 `name`，并按能力拆成四类可选数组——`cell_styles`（A1 单元格 range + 扁平样式字段，含 `number_format` / 颜色 / 对齐 / `border_styles`，随内容在同一次写入里一并应用）、`cell_merges`、`row_sizes`、`col_sizes`。styles 数组的长度 / 顺序 / name 必须与被写入的子表对应（与 `--sheets.sheets` 一一对应）。
+`--styles` 在 typed 写入后顺带应用视觉处理，省掉一次 `+cells-set-style` 往返。协议与 `+workbook-create --styles` **完全同构**（详见 workbook reference）：顶层 `{styles:[...]}`，数组每项对应一个被写入的子表、含 `name`，并按能力拆成四类可选数组——`cell_styles`（A1 单元格 range + 扁平样式字段，含 `number_format` / 颜色 / 对齐 / `border_styles`，随内容在同一次写入里一并应用）、`cell_merges`、`row_sizes`、`col_sizes`——外加可选的 `freeze` 冻结对象（`{rows:N, cols:N}`，词汇与 `+styles-put` 一致）。styles 数组的长度 / 顺序 / name 必须与被写入的子表对应（与 `--sheets.sheets` 一一对应）。
 
 ```bash
 lark-cli sheets +table-put --url "<表URL>" \
