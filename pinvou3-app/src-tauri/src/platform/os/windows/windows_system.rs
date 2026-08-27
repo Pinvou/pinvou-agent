@@ -569,27 +569,31 @@ fn enum_gpu_class() -> Option<crate::platform::os::GpuClass> {
     use crate::platform::os::GpuClass;
     use dxgi::*;
     unsafe {
-        let mut factory: *mut IDXGIFactory1 = std::ptr::null_mut();
-        if CreateDXGIFactory1(&IID_IDXGIFactory1, &mut factory as *mut _ as *mut _) != 0 {
+        // out-param 用 MaybeUninit 接收,不以 null_mut() 占位:静态分析把
+        // null_mut 建模为「失效指针」污染源,且可变变量上的 is_null 守卫
+        // 不被识别为豁免(CodeQL rust/access-invalid-pointer,见该查询
+        // 测试集对 mut 重赋值变量的标注);MaybeUninit 从数据流源头消除。
+        let mut factory = std::mem::MaybeUninit::<*mut IDXGIFactory1>::uninit();
+        if CreateDXGIFactory1(&IID_IDXGIFactory1, factory.as_mut_ptr().cast()) != 0 {
             return None;
         }
-        // 空指针检查保持独立语句(勿与 HRESULT 判断合并成复合条件):单独
-        // `is_null()` 守卫才能被静态分析识别为非空检查,合并后下方解引用
-        // 会被判为可能悬空的指针访问(CodeQL rust/access-invalid-pointer)。
+        // SAFETY: HRESULT 成功时 out-param 已被写入;仍按防御性校验非空。
+        let factory = factory.assume_init();
         if factory.is_null() {
             return None;
         }
         let mut index = 0u32;
         let mut best = GpuClass::None;
         loop {
-            let mut adapter: *mut IDXGIAdapter1 = std::ptr::null_mut();
+            let mut adapter = std::mem::MaybeUninit::<*mut IDXGIAdapter1>::uninit();
             // S_OK(0) 表示还有适配器;DXGI_ERROR_NOT_FOUND 即枚举完毕。
-            let hr = ((*(*factory).lpVtbl).EnumAdapters1)(factory, index, &mut adapter);
+            let hr = ((*(*factory).lpVtbl).EnumAdapters1)(factory, index, adapter.as_mut_ptr());
             index += 1;
             if hr != 0 {
                 break;
             }
-            // 同上的独立空指针守卫。
+            // SAFETY: 同上,成功后 out-param 已写入。
+            let adapter = adapter.assume_init();
             if adapter.is_null() {
                 break;
             }
