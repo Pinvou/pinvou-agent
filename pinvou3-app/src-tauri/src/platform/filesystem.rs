@@ -1047,18 +1047,84 @@ fn atomic_write_private_file_impl(
 }
 
 #[cfg(windows)]
+// windows-private-handle-relative-rename:start
+/// Rename an already-open file relative to an already-open directory.
+///
+/// `SetFileInformationByHandle(FileRenameInfo)` rejects a non-null
+/// `RootDirectory` with `ERROR_INVALID_PARAMETER` on supported Windows hosts.
+/// Its absolute-path form would re-resolve the directory chain, so use the
+/// native file-information class that preserves the pinned-root contract.
+fn rename_windows_file_to_directory(
+    source_file: &File,
+    destination_handle: &File,
+    destination_name: &std::ffi::OsStr,
+    replace_if_exists: bool,
+) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FileRenameInformation, NtSetInformationFile, FILE_RENAME_INFORMATION,
+    };
+    use windows_sys::Win32::Foundation::RtlNtStatusToDosError;
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+
+    let destination_name_wide = destination_name.encode_wide().collect::<Vec<_>>();
+    let header_size = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
+    let name_size = destination_name_wide
+        .len()
+        .checked_mul(std::mem::size_of::<u16>())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "filename is too long"))?;
+    let buffer_size = header_size
+        .checked_add(name_size)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "filename is too long"))?
+        .max(std::mem::size_of::<FILE_RENAME_INFORMATION>());
+    let mut rename_buffer = vec![0_usize; buffer_size.div_ceil(std::mem::size_of::<usize>())];
+    let rename_info = rename_buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    let mut io_status = IO_STATUS_BLOCK::default();
+    let status = unsafe {
+        (*rename_info).Anonymous.ReplaceIfExists = replace_if_exists;
+        (*rename_info).RootDirectory = destination_handle.as_raw_handle();
+        (*rename_info).FileNameLength = u32::try_from(name_size)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "filename is too long"))?;
+        std::ptr::copy_nonoverlapping(
+            destination_name_wide.as_ptr(),
+            (*rename_info).FileName.as_mut_ptr(),
+            destination_name_wide.len(),
+        );
+        NtSetInformationFile(
+            source_file.as_raw_handle(),
+            &mut io_status,
+            rename_info.cast(),
+            u32::try_from(buffer_size).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "rename buffer is too large")
+            })?,
+            FileRenameInformation,
+        )
+    };
+    if status < 0 {
+        let windows_error = unsafe { RtlNtStatusToDosError(status) };
+        if let Ok(raw_error) = i32::try_from(windows_error) {
+            return Err(io::Error::from_raw_os_error(raw_error));
+        }
+        return Err(io::Error::other(format!(
+            "NtSetInformationFile failed with NTSTATUS {status:#010x}"
+        )));
+    }
+    Ok(())
+}
+// windows-private-handle-relative-rename:end
+
+#[cfg(windows)]
 fn atomic_write_private_file_impl(
     directory: &PrivateFileDirectory,
     name: &std::ffi::OsStr,
     content: &[u8],
 ) -> io::Result<()> {
     use std::io::Write as _;
-    use std::os::windows::ffi::OsStrExt as _;
     use std::os::windows::fs::OpenOptionsExt as _;
-    use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::Storage::FileSystem::{
-        FileRenameInfo, SetFileInformationByHandle, DELETE, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
 
     let (temporary_name, mut temporary_file) = loop {
@@ -1095,41 +1161,11 @@ fn atomic_write_private_file_impl(
         ._component_handles
         .last()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "directory has no handle"))?;
-    let destination_name_wide = name.encode_wide().collect::<Vec<_>>();
-    let header_size = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
-    let buffer_size = header_size
-        .checked_add(
-            destination_name_wide
-                .len()
-                .saturating_mul(std::mem::size_of::<u16>()),
-        )
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "filename is too long"))?;
-    let mut rename_buffer = vec![0_usize; buffer_size.div_ceil(std::mem::size_of::<usize>())];
-    let rename_info = rename_buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-    unsafe {
-        (*rename_info).Anonymous.ReplaceIfExists = true;
-        (*rename_info).RootDirectory = destination_handle.as_raw_handle();
-        (*rename_info).FileNameLength =
-            u32::try_from(destination_name_wide.len().saturating_mul(2))
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "filename is too long"))?;
-        std::ptr::copy_nonoverlapping(
-            destination_name_wide.as_ptr(),
-            (*rename_info).FileName.as_mut_ptr(),
-            destination_name_wide.len(),
-        );
-        if SetFileInformationByHandle(
-            temporary_file.as_raw_handle(),
-            FileRenameInfo,
-            rename_info.cast(),
-            u32::try_from(buffer_size).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidInput, "rename buffer is too large")
-            })?,
-        ) == 0
-        {
-            let error = io::Error::last_os_error();
-            let _ = mark_windows_file_handle_for_deletion(&temporary_file);
-            return Err(error);
-        }
+    if let Err(error) =
+        rename_windows_file_to_directory(&temporary_file, destination_handle, name, true)
+    {
+        let _ = mark_windows_file_handle_for_deletion(&temporary_file);
+        return Err(error);
     }
     let moved = directory
         .open_plain_file(name)?
@@ -1215,12 +1251,9 @@ fn move_plain_file_to_impl(
     destination: &PrivateFileDirectory,
     destination_name: &std::ffi::OsStr,
 ) -> io::Result<MovePlainFileOutcome> {
-    use std::os::windows::ffi::OsStrExt as _;
     use std::os::windows::fs::OpenOptionsExt as _;
-    use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::Storage::FileSystem::{
-        FileRenameInfo, SetFileInformationByHandle, DELETE, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_GENERIC_READ, FILE_RENAME_INFO, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
 
     let mut source_options = std::fs::OpenOptions::new();
@@ -1257,43 +1290,7 @@ fn move_plain_file_to_impl(
         ._component_handles
         .last()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no handle"))?;
-    let destination_name_wide = destination_name.encode_wide().collect::<Vec<_>>();
-    let header_size = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
-    let buffer_size = header_size
-        .checked_add(
-            destination_name_wide
-                .len()
-                .saturating_mul(std::mem::size_of::<u16>()),
-        )
-        .ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "destination name is too long")
-        })?;
-    let mut rename_buffer = vec![0_usize; buffer_size.div_ceil(std::mem::size_of::<usize>())];
-    let rename_info = rename_buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-    unsafe {
-        (*rename_info).Anonymous.ReplaceIfExists = false;
-        (*rename_info).RootDirectory = destination_handle.as_raw_handle();
-        (*rename_info).FileNameLength =
-            u32::try_from(destination_name_wide.len().saturating_mul(2)).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidInput, "destination name is too long")
-            })?;
-        std::ptr::copy_nonoverlapping(
-            destination_name_wide.as_ptr(),
-            (*rename_info).FileName.as_mut_ptr(),
-            destination_name_wide.len(),
-        );
-        if SetFileInformationByHandle(
-            source_file.as_raw_handle(),
-            FileRenameInfo,
-            rename_info.cast(),
-            u32::try_from(buffer_size).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidInput, "rename buffer is too large")
-            })?,
-        ) == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-    }
+    rename_windows_file_to_directory(source_file, destination_handle, destination_name, false)?;
     let moved = destination
         .open_plain_file(destination_name)?
         .ok_or_else(|| io::Error::other("moved private file is not visible"))?;
@@ -2067,6 +2064,36 @@ pub(crate) mod tests {
                 !block.contains(forbidden),
                 "forbidden fallback: {forbidden}"
             );
+        }
+    }
+
+    #[test]
+    fn windows_private_directory_rename_remains_root_handle_relative() {
+        let source = include_str!("filesystem.rs");
+        let block = source
+            .split_once("// windows-private-handle-relative-rename:start")
+            .and_then(|(_, rest)| {
+                rest.split_once("// windows-private-handle-relative-rename:end")
+                    .map(|(block, _)| block)
+            })
+            .expect("Windows handle-relative rename contract block");
+
+        for required in [
+            "NtSetInformationFile(",
+            "FileRenameInformation",
+            "RootDirectory = destination_handle.as_raw_handle()",
+            ".max(std::mem::size_of::<FILE_RENAME_INFORMATION>())",
+            "RtlNtStatusToDosError(status)",
+        ] {
+            assert!(block.contains(required), "missing contract: {required}");
+        }
+        for forbidden in [
+            "SetFileInformationByHandle(",
+            ".canonical_path",
+            "std::fs::rename(",
+            "RootDirectory = std::ptr::null",
+        ] {
+            assert!(!block.contains(forbidden), "unsafe fallback: {forbidden}");
         }
     }
 
