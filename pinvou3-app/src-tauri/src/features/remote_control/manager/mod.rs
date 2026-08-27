@@ -188,6 +188,8 @@ const RUST_FORWARDED_EVENTS: &[&str] = &[
     "chat:reasoning_delta",
     "chat:reasoning_done",
     "chat:done",
+    "chat:steer_committed",
+    "chat:steer_dropped",
     "chat:plan_ready",
     "chat:plan_resolved",
     "chat:plan_snapshot",
