@@ -17,13 +17,35 @@ function readRoot(rel) {
   return fs.readFileSync(path.join(ROOT, rel), "utf8");
 }
 
-// 1. bridge.rs 接线：vision_config 必须条件覆盖到本地端点（引擎运行中优先），
+// 1. bridge.rs 接线：resolve_vision_model_config 的规则 0/3 必须把视觉端点
+//    条件覆盖为 llama_engine::vision_endpoint()（引擎运行中优先），
 //    且不引入 --alias（单模型模式忽略请求体 model 字段）。
 const bridge = read("features/assistant/platform/bridge.rs");
+const visionResolveMatch = bridge.match(/fn resolve_vision_model_config\(&self\)[\s\S]*?\n    \}/);
+assert(visionResolveMatch, "bridge.rs 必须保留 resolve_vision_model_config（视觉工具配置解析）");
+const visionResolve = visionResolveMatch[0];
+// 规则 0：模型显式选择「本地识图引擎」且引擎运行中 → 本地端点（最高优先级）。
+// 有界窗口锚定 if 块内部，避免跨数百行的 [/s\S]* 偶然命中其它规则。
 assert(
-  /llama_engine::vision_endpoint\(\s*\)/.test(bridge) &&
-    /unwrap_or_else\(.+self\.base_url\(\)\)/s.test(bridge),
-  "bridge.rs 必须把 vision_config.base_url 条件覆盖为 llama_engine::vision_endpoint()（引擎运行中优先，否则回退主模型端点）"
+  /vision_prefer_local_engine\)\s*\{\s*if let Some\(endpoint\) = crate::features::llama_engine::vision_endpoint\(\)/.test(visionResolve),
+  "规则 0：vision_prefer_local_engine 命中时必须用 llama_engine::vision_endpoint() 覆盖为本地端点"
+);
+// 规则 3：全局兜底开关开（默认开）且引擎运行中 → 本地端点。
+assert(
+  /llama_engine_vision_fallback[\s\S]{0,80}?unwrap_or\(true\)[\s\S]{0,60}?crate::features::llama_engine::vision_endpoint\(\)/.test(visionResolve),
+  "规则 3：llama_engine_vision_fallback 兜底（默认开）必须回落到 llama_engine::vision_endpoint()"
+);
+const visionEndpointCalls = visionResolve.match(/llama_engine::vision_endpoint\(\)/g) || [];
+assert.strictEqual(
+  visionEndpointCalls.length,
+  2,
+  "规则 0 与规则 3 应各调用一次 llama_engine::vision_endpoint()"
+);
+// 本地端点只在引擎运行中返回（Some），否则 None 走后续规则。
+const llamaModVision = read("features/llama_engine/mod.rs");
+assert(
+  /fn vision_endpoint\(\) -> Option<String>\s*\{[\s\S]{0,120}?server::running_endpoint\(\)/.test(llamaModVision),
+  "llama_engine::vision_endpoint() 必须仅在引擎运行中返回端点（server::running_endpoint）"
 );
 assert(
   bridge.includes("llama_engine_vision_fallback"),
@@ -143,7 +165,7 @@ assert(settingsView.includes('data-testid={`settings-model-tab-${tab.key}`}'), "
 
 // 8. 本地识图引擎选项 + 自动启动/关闭契约：
 //    SavedModel.vision_prefer_local_engine（is_false 序列化省略）、
-//    AdvancedPrefs 自动启动三字段、capability local_engine_state、
+//    AdvancedPrefs 自动启动三字段、capability localEngineState（camelCase wire）、
 //    RunEvent::Exit 停引擎、前端哨兵/文案/发送门。
 const prefsMod = read("platform/prefs/mod.rs");
 assert(
@@ -154,6 +176,11 @@ for (const field of ["llama_engine_auto_start", "llama_engine_default_model", "l
   assert(prefsMod.includes(field), `AdvancedPrefs 必须含 ${field}`);
 }
 const settingsCmd = read("app/commands/settings.rs");
+// wire 形状与 LlamaEngineStatus 同为 camelCase：serde rename + 字段名都要钉住。
+assert(
+  /#\[serde\(rename_all = "camelCase"\)\]\s*pub struct ImageInputCapabilityInfo/.test(settingsCmd),
+  "ImageInputCapabilityInfo 必须按 camelCase 序列化（与 LlamaEngineStatus 一致）"
+);
 assert(settingsCmd.includes("local_engine_state"), "get_image_input_capability 必须返回 local_engine_state");
 assert(
   /RunEvent::Exit[\s\S]*?llama_engine::server::stop\(\)/.test(lib),
@@ -171,7 +198,7 @@ for (const label of [
 }
 const chatView = readRoot("src/features/chat/ChatView.jsx");
 assert(chatView.includes("ensureLocalEngineForSend"), "ChatView 必须实现本地识图引擎发送门");
-assert(chatView.includes("local_engine_state"), "ChatView 发送门必须消费 capability.local_engine_state");
+assert(chatView.includes("localEngineState"), "ChatView 发送门必须消费 capability.localEngineState（camelCase wire）");
 
 // 9. 模型表：默认 2B q4km + 独显 4B q4km 两档 + Q8_0 mmproj。
 // （IQ2_M / Q3_K_S 量化过低已下线，不得再回到可选列表。）

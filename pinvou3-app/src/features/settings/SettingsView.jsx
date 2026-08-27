@@ -1745,7 +1745,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const [llamaModel, setLlamaModel] = useState(llamaAdvanced.llama_engine_default_model || 'qwen3vl-2b-q4km');
       const [llamaDevice, setLlamaDevice] = useState(llamaAdvanced.llama_engine_default_device || 'auto');
       const [showLlamaLogs, setShowLlamaLogs] = useState(false);
-      // 本地引擎视觉兜底开关：默认开（prefs.advanced.llamaEngineVisionFallback !== false）
+      // 本地引擎视觉兜底开关：默认开（prefs.advanced.llama_engine_vision_fallback !== false）
       const [llamaVisionFallback, setLlamaVisionFallback] = useState(
         (llamaAdvanced.llama_engine_vision_fallback) !== false
       );
@@ -1767,6 +1767,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         if (adv.llama_engine_default_model) setLlamaModel(adv.llama_engine_default_model);
         if (adv.llama_engine_default_device) setLlamaDevice(adv.llama_engine_default_device);
         if (adv.llama_engine_auto_start) setLlamaAutoStart(adv.llama_engine_auto_start);
+        setLlamaVisionFallback(adv.llama_engine_vision_fallback !== false);
       }, [bs && bs.settings && bs.settings.advanced]);
       useEffect(() => {
         // 首次进入设置页拉一次引擎状态（下载进度/运行状态以事件驱动，这里是兜底）
@@ -2485,7 +2486,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           ? (modelReady ? settingsCopy.llamaEngine.modelReady : settingsCopy.llamaEngine.modelMissing)
           : '';
         const serviceLine = running
-          ? `${settingsCopy.llamaEngine.running}${st.port ? `（127.0.0.1:${st.port}）` : ''}`
+          ? (st.port ? settingsCopy.llamaEngine.runningWithPort(st.port) : settingsCopy.llamaEngine.running)
           : (starting ? settingsCopy.llamaEngine.starting : settingsCopy.llamaEngine.stopped);
         return (
           <>
@@ -2587,12 +2588,13 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                         className={`h-9 px-4 rounded-full text-[14px] font-semibold text-white ${downloadingItem === 'engine' ? 'opacity-50' : ''}`} style={{ background: '#007AFF' }}>{settingsCopy.llamaEngine.installEngine}</button>
                     )}
                     {engineReady && !downloading && (
-                      <button data-testid="llama-delete-engine" onClick={() => {
+                      <button data-testid="llama-delete-engine" disabled={running || starting}
+                        title={(running || starting) ? settingsCopy.llamaEngine.deleteRequiresStop : undefined} onClick={() => {
                         if (!bridge.available || !bridge.llamaEngine || !bridge.llamaEngine.deleteEngine) return;
                         if (!window.confirm(settingsCopy.llamaEngine.deleteEngineConfirm(st.engineTag || ''))) return;
                         bridge.llamaEngine.deleteEngine().catch(() => {});
                       }}
-                        className="shrink-0 min-h-7 px-3 rounded-full text-[11px] font-semibold text-[#FF3B30] bg-[#FF3B30]/10">{settingsCopy.llamaEngine.deleteEngine}</button>
+                        className="shrink-0 min-h-7 px-3 rounded-full text-[11px] font-semibold text-[#FF3B30] bg-[#FF3B30]/10 disabled:opacity-50">{settingsCopy.llamaEngine.deleteEngine}</button>
                     )}
                   </IOSRow>
                 </div>
@@ -2618,12 +2620,13 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                         </span>
                       </button>
                       {!downloading && (m.installed ? (
-                        <button data-testid={`llama-delete-model-${m.id}`} onClick={() => {
+                        <button data-testid={`llama-delete-model-${m.id}`} disabled={running || starting}
+                          title={(running || starting) ? settingsCopy.llamaEngine.deleteRequiresStop : undefined} onClick={() => {
                           if (!bridge.available || !bridge.llamaEngine || !bridge.llamaEngine.deleteModel) return;
                           if (!window.confirm(settingsCopy.llamaEngine.deleteModelConfirm(m.displayName))) return;
                           bridge.llamaEngine.deleteModel(m.id).catch(() => {});
                         }}
-                          className="shrink-0 min-h-7 px-3 rounded-full text-[11px] font-semibold text-[#FF3B30] bg-[#FF3B30]/10">{settingsCopy.llamaEngine.deleteModel}</button>
+                          className="shrink-0 min-h-7 px-3 rounded-full text-[11px] font-semibold text-[#FF3B30] bg-[#FF3B30]/10 disabled:opacity-50">{settingsCopy.llamaEngine.deleteModel}</button>
                       ) : (
                         <button data-testid={`llama-install-model-${m.id}`} onClick={() => {
                           if (!bridge.available || !bridge.llamaEngine) return;

@@ -10,6 +10,11 @@
 # 对 CPU(-ngl 0)/GPU(-ngl 99) × 默认参数/PR3 调优参数 四组分别启动 llama-server，
 # 对同一张测试图发请求，打印 加载 / 首 token / 总耗时 三段，组间杀干净再起。
 # 每组结束打印一行结果，最后给汇总表。
+#
+# 注意：参数组不传 --mlock（与 src-tauri/src/features/llama_engine/server.rs 口径一致）：
+# b10362 起 --mlock 与 -ngl 0（纯 CPU 加载）组合会在模型 mmap 阶段触发
+# llama-mmap.cpp GGML_ASSERT(addr) 崩溃（两参单独均正常，组合必崩），属引擎侧回归；
+# mlock 只是常驻内存优化，移除代价可接受。
 
 param(
   [Parameter(Mandatory = $true)][string]$ServerBin,
@@ -97,8 +102,8 @@ $configs = @(
   @{ Name = 'cpu-default'; Ngl = '0';  Extra = @() },
   @{ Name = 'gpu-default'; Ngl = '99'; Extra = @() },
   # PR3 调优参数组。
-  @{ Name = 'cpu-tuned';   Ngl = '0';  Extra = @('--batch-size','1024','--ubatch-size','1024','--flash-attn','--cache-type-k','q8_0','--cache-type-v','q8_0','--mlock') },
-  @{ Name = 'gpu-tuned';   Ngl = '99'; Extra = @('--batch-size','1024','--ubatch-size','1024','--flash-attn','--cache-type-k','q8_0','--cache-type-v','q8_0','--mlock') }
+  @{ Name = 'cpu-tuned';   Ngl = '0';  Extra = @('--batch-size','1024','--ubatch-size','1024','--flash-attn','on','--cache-type-k','q8_0','--cache-type-v','q8_0') },
+  @{ Name = 'gpu-tuned';   Ngl = '99'; Extra = @('--batch-size','1024','--ubatch-size','1024','--flash-attn','on','--cache-type-k','q8_0','--cache-type-v','q8_0') }
 )
 
 $results = @()

@@ -17,6 +17,13 @@
     return { file: file, compressed: false };
   }
 
+  // JPEG 无透明通道：透明 PNG 直接转 JPEG 后透明区变黑，先白色铺底再绘制。
+  function drawImageOnWhite(ctx, img, w, h) {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+  }
+
   /**
    * @param {File|Blob} file 原始图片
    * @returns {Promise<{file: File|Blob, compressed: boolean}>}
@@ -54,7 +61,7 @@
             canvas.height = th;
             var ctx = canvas.getContext("2d");
             if (!ctx) return finish(passthrough(file));
-            ctx.drawImage(img, 0, 0, tw, th);
+            drawImageOnWhite(ctx, img, tw, th);
             canvas.toBlob(function (blob) {
               if (!blob) return finish(passthrough(file));
               finish({ file: blob, compressed: true });
@@ -73,6 +80,7 @@
 
   root.PinvouImagePrescale = {
     prescaleImageFile: prescaleImageFile,
+    drawImageOnWhite: drawImageOnWhite,
     MAX_EDGE: MAX_EDGE,
     JPEG_QUALITY: JPEG_QUALITY,
   };

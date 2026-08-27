@@ -1568,7 +1568,19 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // 本地识图引擎发送门：弹窗引导安装/启动。prompt.kind ∈
       // install | notRunning | starting | downloading | timeout | installError。
       const [localEnginePrompt, setLocalEnginePrompt] = useState(null);
-      const pendingLocalEngineSendRef = useRef(null); // { resolve(boolean), info } 挂起中的发送
+      // { token, resolve(boolean), info } 挂起中的发送。token 是自增 id：
+      // 取消/组件卸载/新流程都会作废旧 token，install/start 的迟到回调
+      // 据此丢弃，不得关掉新流程的对话框或偷 resolve 新 promise。
+      const pendingLocalEngineSendRef = useRef(null);
+      const localEngineTokenRef = useRef(0);
+      // 组件卸载：作废旧 token 并 resolve 挂起中的发送（按取消处理），
+      // 进行中的启动轮询在 1s 内停止，不再 setState。
+      useEffect(() => () => {
+        localEngineTokenRef.current += 1;
+        const pending = pendingLocalEngineSendRef.current;
+        pendingLocalEngineSendRef.current = null;
+        if (pending) pending.resolve(false);
+      }, []);
       // 发送前预缩放命中时的轻提示（超大图已压缩），数秒后自动消失。
       const [imageCompressedNotice, setImageCompressedNotice] = useState(false);
       const imageCompressedTimerRef = useRef(null);
@@ -1593,8 +1605,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: precisely depend on the saved model list via a complex expression
       }, [hasImageAttachment, isScheduledSession, activeSessionId, sessionModelKey, bs && bs.savedModels]);
       // 选了本地识图引擎但引擎未就绪时也提示（发送门会在发送时介入）
-      const localEngineState = imageInputInfo && imageInputInfo.local_engine_state;
-      const imageInputWarning = imageInputInfo && imageInputInfo.image_mode === 'unsupported'
+      const localEngineState = imageInputInfo && imageInputInfo.localEngineState;
+      const imageInputWarning = imageInputInfo && imageInputInfo.imageMode === 'unsupported'
         ? (imageInputInfo.capability === 'unknown' ? t.uiAttachments.imageUnknown : t.uiAttachments.imageUnsupported)
         : (localEngineState === 'not_running' || localEngineState === 'not_installed'
           ? t.uiAttachments.localEngineNotRunning
@@ -1603,20 +1615,23 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // 端点,fallback 看兜底视觉模型端点(图片实际发给视觉模型);本机 loopback 不显示
       // 任何云上传字样;查询失败或旧后端无对应字段时 fail-open 不显示。
       const imagePrivacyHint = imageInputInfo && (
-        (imageInputInfo.image_mode === 'native' && imageInputInfo.is_local_endpoint === false)
-        || (imageInputInfo.image_mode === 'vision_tool_fallback' && imageInputInfo.vision_is_local_endpoint === false)
+        (imageInputInfo.imageMode === 'native' && imageInputInfo.isLocalEndpoint === false)
+        || (imageInputInfo.imageMode === 'vision_tool_fallback' && imageInputInfo.visionIsLocalEndpoint === false)
       )
-        ? (imageInputInfo.image_mode === 'vision_tool_fallback'
+        ? (imageInputInfo.imageMode === 'vision_tool_fallback'
           ? t.uiAttachments.imageCloudUploadVision
           : t.uiAttachments.imageCloudUpload)
         : '';
 
       // ── 本地识图引擎发送门 ────────────────────────────────────────────
-      // getImageInputCapability 的 local_engine_state 决定是否介入：
+      // getImageInputCapability 的 localEngineState 决定是否介入：
       // unused/running 直接放行；not_installed 弹安装引导；not_running 按
       // auto_start 自动启动（弹 starting 进度）或「从不」时弹三选一。
       const llamaAutoStartSetting = (bs && bs.settings && bs.settings.advanced && bs.settings.advanced.llama_engine_auto_start) || 'first_image';
-      async function startEngineAndWait(modelId, device, timeoutMs = 60000) {
+      // 默认超时与后端 server.rs HEALTH_TIMEOUT(300s) 对齐:发送门控不得
+      // 先于引擎放弃(并发下载会数倍拖慢冷加载,见该常量注释)。token 是本次
+      // 流程 id:用户取消/组件卸载/新流程顶替都会作废它,轮询立即停。
+      async function startEngineAndWait(modelId, device, token, timeoutMs = 300000) {
         try {
           if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.startEngine) {
             await bridge.llamaEngine.startEngine(modelId, device);
@@ -1625,69 +1640,103 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         // refreshStatus 直接返回最新状态（非 React 快照），轮询不依赖 stale bs。
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
+          if (localEngineTokenRef.current !== token) return false;
           try {
             if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.refreshStatus) {
               const st = await bridge.llamaEngine.refreshStatus();
+              if (localEngineTokenRef.current !== token) return false;
               if (st && st.phase === 'running') return true;
+              // 启动即失败/自愈超限落终态：带着错误立即返回，不等满超时。
+              if (st && st.phase === 'stopped' && st.error) return false;
             }
           } catch (_) {}
           await new Promise(r => setTimeout(r, 1000));
         }
         return false;
       }
-      function resolvePendingSend(send) {
+      function localEngineFlowAlive(token) {
+        return localEngineTokenRef.current === token;
+      }
+      // 挂起新的发送前，被顶替的旧挂起按取消 resolve，避免 promise 永久悬挂
+      // （发送门 await 期间输入框未禁用，用户可连续触发两次发送）。
+      function replacePendingSend(entry) {
+        const prev = pendingLocalEngineSendRef.current;
+        if (prev) prev.resolve(false);
+        pendingLocalEngineSendRef.current = entry;
+      }
+      function resolvePendingSend(send, token) {
         const pending = pendingLocalEngineSendRef.current;
+        // token 不匹配的迟到回调（旧 install/start 流程）直接丢弃：
+        // 不得关掉新流程的对话框，也不得偷 resolve 新 promise。
+        if (token !== undefined && (!pending || pending.token !== token)) return;
         pendingLocalEngineSendRef.current = null;
         setLocalEnginePrompt(null);
         if (pending) pending.resolve(send);
       }
-      async function startThenResolve(info) {
-        const ok = await startEngineAndWait(info.local_engine_model, info.local_engine_device);
-        resolvePendingSend(ok);
+      // 取消 starting/downloading：先按当前 token resolve（取消发送），再
+      // 作废 token 停掉进行中的轮询；旧流程后续回调全部因 token 失配被丢弃。
+      function cancelLocalEngineFlow(token) {
+        resolvePendingSend(false, token);
+        localEngineTokenRef.current += 1;
+        setLocalEnginePrompt(null);
       }
-      async function installThenResolve(info) {
+      async function startThenResolve(info, token) {
+        if (localEngineFlowAlive(token)) setLocalEnginePrompt({ kind: 'starting', token });
+        const ok = await startEngineAndWait(info.localEngineModel, info.localEngineDevice, token);
+        if (!localEngineFlowAlive(token)) return; // 迟到：取消/卸载/新流程已接管
+        resolvePendingSend(ok, token);
+      }
+      async function installThenResolve(info, token) {
+        setLocalEnginePrompt({ kind: 'downloading', token });
         try {
-          if (bridge.available && bridge.llamaEngine) {
-            if (bridge.llamaEngine.installEngine) await bridge.llamaEngine.installEngine();
-            if (bridge.llamaEngine.installModel) await bridge.llamaEngine.installModel(info.local_engine_model);
-          }
+          if (bridge.llamaEngine.installEngine) await bridge.llamaEngine.installEngine();
+          if (bridge.llamaEngine.installModel) await bridge.llamaEngine.installModel(info.localEngineModel);
         } catch (e) {
-          setLocalEnginePrompt({ kind: 'installError', message: String((e && e.message) || e) });
+          // 取消下载的 reject 与新流程顶替后的迟到 reject 都不弹错误。
+          if (!localEngineFlowAlive(token)) return;
+          setLocalEnginePrompt({ kind: 'installError', token, message: String((e && e.message) || e) });
           return;
         }
-        await startThenResolve(info);
+        await startThenResolve(info, token);
       }
       async function ensureLocalEngineForSend() {
         if (!bridge.available || !bridge.models || typeof bridge.models.getImageInputCapability !== 'function') return true;
+        // Web 端重建的桥(src/platform/web/bridge/domain-adapter.js)有
+        // models.getImageInputCapability 但没有 llamaEngine 域(desktopOnly):
+        // 不放行会让「安装并继续」静默装不上、轮询空转到超时,这里 fail open。
+        if (!bridge.llamaEngine) return true;
         let info;
         try {
           info = await bridge.models.getImageInputCapability(activeSessionId);
         } catch (_) { return true; } // 查询失败 fail-open，绝不误拦
-        const state = info && info.local_engine_state;
+        const state = info && info.localEngineState;
         if (!info || state === 'unused' || state === 'running') return true;
+        const token = ++localEngineTokenRef.current;
         if (state === 'not_installed') {
           return new Promise(resolve => {
-            pendingLocalEngineSendRef.current = { resolve, info };
-            setLocalEnginePrompt({ kind: 'install' });
+            replacePendingSend({ token, resolve, info });
+            setLocalEnginePrompt({ kind: 'install', token });
           });
         }
         // not_running
         if (llamaAutoStartSetting === 'never') {
           return new Promise(resolve => {
-            pendingLocalEngineSendRef.current = { resolve, info };
-            setLocalEnginePrompt({ kind: 'notRunning' });
+            replacePendingSend({ token, resolve, info });
+            setLocalEnginePrompt({ kind: 'notRunning', token });
           });
         }
         // 自动启动：先显示进度，成功放行、超时弹三选一
-        setLocalEnginePrompt({ kind: 'starting' });
-        const ok = await startEngineAndWait(info.local_engine_model, info.local_engine_device);
+        setLocalEnginePrompt({ kind: 'starting', token });
+        const ok = await startEngineAndWait(info.localEngineModel, info.localEngineDevice, token);
+        // 用户取消/新流程顶替：旧流程静默退出，不动新对话框。
+        if (!localEngineFlowAlive(token)) return false;
         if (ok) {
           resolvePendingSend(true);
           return true;
         }
         return new Promise(resolve => {
-          pendingLocalEngineSendRef.current = { resolve, info };
-          setLocalEnginePrompt({ kind: 'timeout' });
+          replacePendingSend({ token, resolve, info });
+          setLocalEnginePrompt({ kind: 'timeout', token });
         });
       }
 
@@ -2351,14 +2400,19 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               const btnPrimary = `text-[13px] font-medium px-4 py-2 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'}`;
               const btnGhost = `text-[13px] px-4 py-2 rounded-full ${isDark ? 'bg-[#333537] hover:bg-[#444746]' : 'bg-[#E1E5EA] hover:bg-[#D3D9E0]'}`;
               const goSettingsAndCancel = () => { if (onGotoLlamaEngine) onGotoLlamaEngine(); resolvePendingSend(false); };
+              // 下载进度与设置页同口径:订阅 llamaEngineSetup.progress(pct+filename)。
+              const leSetup = (bs && bs.llamaEngineSetup) || {};
+              const leProg = leSetup.progress || {};
+              const lePct = (leProg.total > 0 && typeof leProg.downloaded === 'number')
+                ? Math.min(100, Math.round((leProg.downloaded / leProg.total) * 100)) : null;
               let title, body, buttons;
               if (p.kind === 'install') {
                 title = llmEngineCopy.title || ua.localEngineNotRunning;
                 body = ua.localEngineInstallPrompt;
                 buttons = (
                   <>
-                    <button className={btnGhost} onClick={() => resolvePendingSend(!!(info && info.has_vision_model))}>{ua.localEngineInstallCancel}</button>
-                    <button className={btnPrimary} onClick={() => installThenResolve(info)}>{ua.localEngineInstallConfirm}</button>
+                    <button className={btnGhost} onClick={() => resolvePendingSend(!!(info && info.hasVisionModel))}>{ua.localEngineInstallCancel}</button>
+                    <button className={btnPrimary} onClick={() => installThenResolve(info, p.token)}>{ua.localEngineInstallConfirm}</button>
                   </>
                 );
               } else if (p.kind === 'notRunning') {
@@ -2367,7 +2421,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 buttons = (
                   <>
                     <button className={btnGhost} onClick={() => resolvePendingSend(false)}>{ua.localEngineCancelSend}</button>
-                    {info && info.has_vision_model && (
+                    {info && info.hasVisionModel && (
                       <button className={btnGhost} onClick={() => resolvePendingSend(true)}>{ua.localEngineSendFallback}</button>
                     )}
                     <button className={btnPrimary} onClick={goSettingsAndCancel}>{ua.localEngineGoSettings}</button>
@@ -2376,7 +2430,18 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               } else if (p.kind === 'starting') {
                 title = ua.localEngineNotRunning;
                 body = llmEngineCopy.starting || ua.localEngineDownloading;
-                buttons = null;
+                buttons = (
+                  <button className={btnGhost} onClick={() => cancelLocalEngineFlow(p.token)}>{ua.localEngineCancelSend}</button>
+                );
+              } else if (p.kind === 'downloading') {
+                title = llmEngineCopy.title || ua.localEngineNotRunning;
+                body = '';
+                buttons = (
+                  <button className={btnGhost} onClick={() => {
+                    if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.cancelDownload) bridge.llamaEngine.cancelDownload();
+                    cancelLocalEngineFlow(p.token);
+                  }}>{llmEngineCopy.cancelDownload || ua.localEngineCancelSend}</button>
+                );
               } else if (p.kind === 'timeout') {
                 title = ua.localEngineStartingTimeout;
                 body = '';
@@ -2384,7 +2449,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   <>
                     <button className={btnGhost} onClick={() => resolvePendingSend(false)}>{ua.localEngineCancelSend}</button>
                     <button className={btnGhost} onClick={goSettingsAndCancel}>{ua.localEngineGoSettings}</button>
-                    <button className={btnPrimary} onClick={() => { setLocalEnginePrompt({ kind: 'starting' }); startThenResolve(info); }}>{ua.localEngineRetry}</button>
+                    <button className={btnPrimary} onClick={() => startThenResolve(info, p.token)}>{ua.localEngineRetry}</button>
                   </>
                 );
               } else {
@@ -2403,6 +2468,20 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                       <div className="mb-4 flex items-center gap-2 text-[12px] opacity-70">
                         <span className={`inline-block h-3 w-3 rounded-full border-2 border-t-transparent animate-spin ${isDark ? 'border-[#A8C7FA]' : 'border-[#0B57D0]'}`} />
                         {body}
+                      </div>
+                    )}
+                    {p.kind === 'downloading' && (
+                      <div className="mb-4">
+                        <div className="text-[12px] opacity-70 mb-1">
+                          {(leProg.stage === 'engine_download' || leProg.stage === 'engine_extract'
+                            ? llmEngineCopy.downloadingEngine
+                            : llmEngineCopy.downloadingModel) || ua.localEngineDownloading}
+                          {lePct !== null ? ` ${lePct}%` : ''}
+                        </div>
+                        <div className={`h-2 rounded-full overflow-hidden ${isDark ? 'bg-white/10' : 'bg-black/10'}`}>
+                          <div className="h-full bg-[#0B57D0] transition-all" style={{ width: (lePct !== null ? lePct : 5) + '%' }} />
+                        </div>
+                        {leProg.filename && <div className="mt-1 text-[11px] truncate opacity-60">{leProg.filename}</div>}
                       </div>
                     )}
                     {buttons && (
