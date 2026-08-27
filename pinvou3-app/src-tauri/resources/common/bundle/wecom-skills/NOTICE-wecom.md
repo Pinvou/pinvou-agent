@@ -125,9 +125,9 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
 7. **删除 smartpage 无参数表支撑的 open_vid/userid 等价句**:全部十个方法经
    逐一核对无任何 userid/open_vid 消费点,整句删除。
 
-### 文档缺陷修复(2026-08-27,calendar/meeting/email/message 四技能)
+### 文档缺陷修复(2026-08-27,calendar/meeting/email/message/media 五技能)
 
-审计驱动的 14 条文档缺陷修复(sheet/smartsheet/smartpage 三技能由同日另一轮
+审计驱动的 15 条文档缺陷修复(sheet/smartsheet/smartpage 三技能由同日另一轮
 登记覆盖)。修复原则:仅消除矛盾/虚构/漂移,不新增展示能力、不改任何发送类
 确认策略(email「预览后直接发送」、message 无预览不对称等产品决策项一律不动)。
 
@@ -169,8 +169,8 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
     可选入参 image/voice/video/file,dry-run 证实透传为 form 字段,响应另返回
     实际 type),最终定稿为:type 为可选入参,发送时以上传响应返回的 type 对齐
     msg_type;四个消息类型的"以 type=X 上传获得"同步改为"上传后返回
-    type=X 的结果"。wecomcli-media SKILL.md 入参表漏 `--type` 属 main 既有
-    缺陷,不在本轮范围,另行跟进。
+    type=X 的结果"。wecomcli-media SKILL.md upload 入参表(仅 file_path)是
+    本次误判源头,已同步补 `type` 可选入参行。
 12. **message SKILL.md 会话数自造硬数字**:"如实告知目标不在最近 10 个会话中"
     与返回表"数量以实际回包为准"矛盾。去掉具体数字,改为"不在本次返回的最近
     会话中"。
@@ -179,13 +179,18 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
 14. **email references 章节引用名漂移**:六个引用点(send-mail/reply-mail/
     forward-mail/get-mail/send-schedule×2)写「接口失败处理规范」,SKILL.md 实际
     标题为「接口失败处理」。统一引用文字。
+15. **meeting-search.md 缺时区标注指引(镜像缺口)**:calendar-search.md 已有
+    "时区标注"指引且字段表列 `schedules[].timezone`,meeting-search.md 两者
+    皆无;而 `meeting search` 回包含 `timezone`(`ScheduleTimezone`,--doc 坐实)。
+    补返回字段 `meetings[].timezone` 行与"时区标注"约束条,与 calendar 侧镜像。
 
 ### 各技能重放基线
 
 14 个技能全部 = 上游 `cd0480e0`(v1.1.0 发布提交,npm 1.1.0 同源),技能目录与
 上游同名同构;本地分叉为上文「本轮品悟适配清单」六类,与同日两轮审计登记
 「路由口径统一与文档缺陷修复(2026-08-27)」(sheet/smartsheet/smartpage 三
-技能)及「文档缺陷修复(2026-08-27,calendar/meeting/email/message 四技能)」。
+技能)及「文档缺陷修复(2026-08-27,calendar/meeting/email/message/media 五
+技能)」。
 
 > 对账命令(仓库根执行):
 > ```

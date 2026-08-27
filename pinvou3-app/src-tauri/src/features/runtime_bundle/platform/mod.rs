@@ -92,7 +92,7 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 ///       schedule→calendar，新增 disk/doc-manage/email/media/shared/sheet/smartpage），
 ///       旧目录（wecomcli-msg/wecomcli-schedule）启动门控时清理。
 /// 0.25: wecom sheet/smartsheet/smartpage 路由口径统一与缺陷修复，以及
-///       calendar/meeting/email/message 文档审计修复（14 条，见
+///       calendar/meeting/email/message/media 文档审计修复（15 条，见
 ///       NOTICE-wecom.md 登记）。取 0.28 条目为 #366 预留的槽位；抽取
 ///       VERSION 门控仅判不等，落地顺序与跳号均安全。技能树不参与内容
 ///       哈希，须 bump 语义版本让已连接用户启动即同步刷新。
