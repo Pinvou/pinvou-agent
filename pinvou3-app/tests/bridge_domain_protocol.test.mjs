@@ -76,6 +76,7 @@ const protocolSources = {
   updater: ['bridge/updater.js'],
   voice: ['bridge/voice.js'],
   multiAgent: ['bridge/multiagent.js'],
+  llamaEngine: ['bridge/llama-engine.js'],
 };
 
 const expectedProtocolHashes = {

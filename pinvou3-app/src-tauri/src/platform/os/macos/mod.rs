@@ -12,12 +12,17 @@ mod macos_permission;
 mod macos_system;
 
 pub use macos_path::{
-    apply_user_npm_prefix, connector_cli_command, filesystem_path_identity_key,
-    platform_compat_path, user_home_dir,
+apply_user_npm_prefix,
+connector_cli_command,
+filesystem_path_identity_key,
+platform_compat_path,
+user_home_dir,
 };
 pub use macos_permission::{
-    disable_super_permission, enable_super_permission, super_permission_is_enabled,
-    super_permission_turn_reminder,
+disable_super_permission,
+enable_super_permission,
+super_permission_is_enabled,
+super_permission_turn_reminder,
 };
 pub use macos_system::{
 archive_dependency_packages,

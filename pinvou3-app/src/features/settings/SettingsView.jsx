@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, Globe, Lightbulb, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Sparkles, Trash2, User, Users, Wrench, X } from '../../components/icons.jsx';
+import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { Toggle } from '../../components/Toggle.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
@@ -2924,6 +2925,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                 <SectionButton id="model" icon={<Cpu size={17} />} label={t.uiSettings.model} />
                 {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
                 <SectionButton id="search" icon={<Search size={17} />} label={t.uiSettings.search} />
+                {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
                 {memorySettingsVisible && <SectionButton id="memory" icon={<Database size={17} />} label={t.uiSettings.memory} />}
               </div>
               <div className={`mt-7 mb-4 px-1 text-[12px] font-semibold max-sm:hidden text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.system}</div>

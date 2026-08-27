@@ -491,7 +491,14 @@ fn shutdown_browser_before_process_end(app: &tauri::AppHandle) {
 /// so explicitly stop ACP/connector children to prevent orphans. Each closure is
 /// idempotent; even shutdown(), the highest timeout risk, only sends a oneshot and
 /// kills without a long wait.
+
+/// Shared asynchronous child-process harvesting before exit and restart. Managed
+/// state is not guaranteed to be dropped (kill_on_drop runs only when Child drops),
+/// so explicitly stop the local vision engine and ACP/connector children to prevent
+/// orphans. Each closure is idempotent; even shutdown(), the highest timeout risk,
+/// only sends a oneshot and kills without a long wait.
 pub(crate) async fn harvest_child_processes(app: &tauri::AppHandle) {
+    crate::features::llama_engine::server::stop();
     if let Some(acp_pool) = app.try_state::<crate::features::codex_acp::AcpPool>() {
         acp_pool.shutdown_all().await;
     }
@@ -1530,9 +1537,6 @@ pub fn run() {
             startup::mark("exit:cleanup:start");
             tauri::async_runtime::block_on(harvest_child_processes(app));
             startup::mark("exit:cleanup:done");
-            // 退出 pinvou 时自动关闭本地多模态引擎（固定行为，同步 kill 整树，
-            // 无需 async；不挂主窗口 Destroyed——macOS 关主窗桌宠存活时 app 未退出）。
-            crate::features::llama_engine::server::stop();
         }
         tauri::RunEvent::Resumed if !resumed_reported => {
             resumed_reported = true;

@@ -55,28 +55,12 @@ fn shared_credential_store() -> &'static SystemCredentialStore {
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
 const SEPARATE_REASONING_FIELD: &str = "separate_field";
 
-// 视觉工具（image_analyze）提示词与采样参数：底座 PR2 起提示词/temperature
-// 移出底座，由应用层注入；system prompt 在三要素转写纪律上追加长文本软约束，
-// 避免小模型面对密集文字图时逐字硬转写撑爆输出。
-const VISION_SYSTEM_PROMPT: &str =
-    "You are an image content analyst. Describe the image accurately: \
-     1) the image type (screenshot / photo / document / chart); \
-     2) all visible text, transcribed verbatim in its original language; \
-     3) key visual elements and layout. Never fabricate details you cannot see. \
-     If the visible text is very long, transcribe the most important parts and \
-     explicitly note that the rest is omitted.";
-const VISION_DEFAULT_PROMPT: &str = "Describe this image accurately: the image type \
-     (screenshot / photo / document / chart), all visible text transcribed verbatim, \
-     and the key visual elements and layout.";
-const VISION_TEMPERATURE: f32 = 0.2;
-
-/// 构造视觉工具配置（设计 §9.3）：统一注入应用层提示词与 temperature;
-/// max_output_tokens / request_timeout_secs / stream 传 None 回落底座默认。
+/// Builds the foundation vision configuration for the route selected by §9.3.
 ///
-/// `is_local_process_engine`:true = llama-server 等用户终端机的进程级本地
-/// 引擎,1-2s 退避远小于其加载窗口,设 retry_on_transient_errors=false 避免
-/// 启动期 / 崩溃期重发加剧资源争抢。false = 云端 provider / vLLM 等强
-/// 设备本地服务,保持默认重试。
+/// A local llama-server benefits from streaming progress and needs a longer
+/// request budget on slower hardware. Retrying its startup or crash-window 5xx
+/// responses only increases local resource contention. Cloud and managed local
+/// services retain the foundation defaults for compatibility.
 fn vision_model_config(
     model: String,
     api_key: String,
@@ -87,12 +71,8 @@ fn vision_model_config(
         model,
         api_key: Some(api_key),
         base_url: Some(base_url),
-        system_prompt: Some(VISION_SYSTEM_PROMPT.to_string()),
-        default_prompt: Some(VISION_DEFAULT_PROMPT.to_string()),
-        max_output_tokens: None,
-        temperature: Some(VISION_TEMPERATURE),
-        request_timeout_secs: None,
-        stream: None,
+        request_timeout_secs: is_local_process_engine.then_some(300),
+        stream: is_local_process_engine.then_some(true),
         retry_on_transient_errors: if is_local_process_engine {
             Some(false)
         } else {
@@ -3615,6 +3595,7 @@ mod tests {
                 context_window_tokens: None,
                 max_output_tokens: None,
                 reasoning_effort: None,
+                alias: None,
                 model: "deepseek-v4-pro".into(),
                 base_url: "https://api.deepseek.com".into(),
                 provider_kind: None,
@@ -3745,11 +3726,9 @@ mod tests {
         assert_eq!(config.base_url.as_deref(), Some("http://127.0.0.1:8765/v1"));
     }
 
-    /// 通道拆分(§9.3 + retry_on_transient_errors 契约):本地进程引擎
-    /// (llama-server)→ Some(false) 禁 transient 5xx 重试;服务级通道
-    /// (规则 1 用户配置视觉模型 / 规则 2 Supported 主模型,vLLM/云端/
-    /// Ollama)→ None 保持默认重试。锁定 vision_model_config 的
-    /// is_local_process_engine 决策不被后续重构悄悄翻转。
+    /// Locks the route-specific foundation options: local llama-server uses a
+    /// 300-second streaming request with retries disabled, while configured
+    /// vision services and native multimodal models retain foundation defaults.
     #[test]
     fn vision_config_retry_split_by_channel() {
         use crate::features::llama_engine::server;
@@ -3782,6 +3761,8 @@ mod tests {
             Some(false),
             "本地进程引擎必须禁 transient 5xx 重试(启动/崩溃窗口 1-2s 退避无意义)"
         );
+        assert_eq!(config.request_timeout_secs, Some(300));
+        assert_eq!(config.stream, Some(true));
 
         // 规则 1：用户配置视觉模型(vLLM/云端等)→ None 默认重试。
         server::reset_runtime_for_test();
@@ -3802,6 +3783,8 @@ mod tests {
             config.retry_on_transient_errors, None,
             "服务级视觉模型(vLLM/云端)必须保持默认重试"
         );
+        assert_eq!(config.request_timeout_secs, None);
+        assert_eq!(config.stream, None);
 
         // 规则 2：Supported 主模型复用 → None 默认重试。
         let mut native = fixture_bridge();
@@ -3819,6 +3802,8 @@ mod tests {
             config.retry_on_transient_errors, None,
             "Supported 主模型复用必须保持默认重试"
         );
+        assert_eq!(config.request_timeout_secs, None);
+        assert_eq!(config.stream, None);
     }
 
     /// §9.3 规则 3:主模型 Unknown/Unsupported 且未设置视觉模型 →

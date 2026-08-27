@@ -158,17 +158,24 @@ const mainJsx = readRoot("src/app/main.jsx");
 assert(/'llamaEngine'/.test(mainJsx), "main.jsx useBridgeState 域列表必须含 llamaEngine");
 
 // 7. 三语 i18n 齐平（zh/en/ja 都要有 llamaEngine 文案组）。
-const settingsI18n = readRoot("src/features/settings/settings-i18n.js");
+// #341 后设置详情文案并入 shared/i18n/{zh,en,ja}.js（zh 内嵌 + en/ja 惰性 chunk），
+// 原 settings-i18n.js 已删除；聚合串供下方 includes 类断言跨三语检查。
+const DICT_NAME = { zh: "dictZh", en: "dictEn", ja: "dictJa" };
+const langDicts = {
+  zh: readRoot("src/shared/i18n/zh.js"),
+  en: readRoot("src/shared/i18n/en.js"),
+  ja: readRoot("src/shared/i18n/ja.js"),
+};
+const settingsI18n = Object.values(langDicts).join("\n");
 for (const lang of ["zh", "en", "ja"]) {
   assert(
-    new RegExp(`dict\\.${lang}\\.uiSettingsDetail\\.llamaEngine`).test(settingsI18n),
-    `settings-i18n.js 必须为 ${lang} 提供 llamaEngine 文案`
+    new RegExp(`${DICT_NAME[lang]}\\.uiSettingsDetail\\.llamaEngine`).test(langDicts[lang]),
+    `shared/i18n/${lang}.js 必须为 ${lang} 提供 llamaEngine 文案`
   );
 }
-const i18n = readRoot("src/shared/i18n.js");
 // 「本地识图」已并入模型页胶囊（对齐 ACP 管理分页），导航文案为三语 localVision。
-for (const label of ["本地识图", "Local Vision", "ローカル画像認識"]) {
-  assert(i18n.includes(label), `i18n.js 必须包含导航文案: ${label}`);
+for (const [lang, label] of [["zh", "本地识图"], ["en", "Local Vision"], ["ja", "ローカル画像認識"]]) {
+  assert(langDicts[lang].includes(label), `shared/i18n/${lang}.js 必须包含导航文案: ${label}`);
 }
 const settingsView = readRoot("src/features/settings/SettingsView.jsx");
 assert(settingsView.includes("modelTab === 'llama'"), "SettingsView 必须以模型页胶囊分发本地识图子页");
@@ -259,10 +266,10 @@ const llamaMod = read("features/llama_engine/mod.rs");
 assert(llamaMod.includes("auto_detect_device"), "llama_engine 必须实现设备自动检测");
 assert(llamaMod.includes("recommended_model"), "引擎状态必须带推荐模型档");
 for (const lang of ["zh", "en", "ja"]) {
-  const block = new RegExp(`dict\\.${lang}\\.uiSettingsDetail\\.llamaEngine[\\s\\S]*?deviceAuto`);
-  assert(block.test(settingsI18n), `settings-i18n.js ${lang} llamaEngine 必须含 deviceAuto 文案`);
-  assert(block.test(settingsI18n) && new RegExp(`dict\\.${lang}[\\s\\S]*?recommended`).test(settingsI18n),
-    `settings-i18n.js ${lang} 必须含推荐标文案`);
+  const block = new RegExp(`${DICT_NAME[lang]}\\.uiSettingsDetail\\.llamaEngine[\\s\\S]*?deviceAuto`);
+  assert(block.test(langDicts[lang]), `shared/i18n/${lang}.js llamaEngine 必须含 deviceAuto 文案`);
+  assert(new RegExp(`${DICT_NAME[lang]}[\\s\\S]*?recommended`).test(langDicts[lang]),
+    `shared/i18n/${lang}.js 必须含推荐标文案`);
 }
 
 // 12. PR3 发送前预缩放：classic script 注册 + 粘贴/拖放两链路消费 + 三语提示。
