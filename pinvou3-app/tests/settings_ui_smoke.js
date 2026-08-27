@@ -5,7 +5,7 @@
  * - 模型列表默认单选、删除二次确认、本地/云端模型删除、添加模型保存条件、编辑模型回显凭据和同厂商切换
  * - 搜索源交互与模型页一致，添加源未点保存不得持久化，确认重启后才写设置
  * - 高级执行权限失败时回滚并 toast 提示
- * - 用户交流使用独立设置 Tab，顶层直接提供 QQ 群信息与 GitHub Discussions 兜底
+ * - Community uses a dedicated Settings tab that exposes the QQ group and GitHub Discussions at the top level
  * - 反馈弹窗保持与模型/搜索一致的 iOS 规格，提交成功不使用原生 alert
  */
 const fs = require('fs');
@@ -1496,7 +1496,7 @@ async function modalWidth(page, headingText) {
       noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1 && (!panel || panel.scrollWidth <= panel.clientWidth + 1),
     };
   });
-  rec('⑮ 用户交流位于帮助反馈之后并直接展示官方群信息', communityPanel.exists && communityPanel.separateTab && communityPanel.immediatelyAfterHelp && communityPanel.directTopLevel && communityPanel.width >= 500 && communityPanel.width <= 700 && communityPanel.insideViewport && communityPanel.hasQrImage && communityPanel.correctGroupName && communityPanel.correctGroupNumber && communityPanel.copyEnabled && communityPanel.copyWorks && communityPanel.hasDiscussionsFallback && communityPanel.hasSupportBoundary && communityPanel.noHorizontalOverflow, JSON.stringify(communityPanel));
+  rec('⑮ Community follows Help & Feedback and directly exposes the official group', communityPanel.exists && communityPanel.separateTab && communityPanel.immediatelyAfterHelp && communityPanel.directTopLevel && communityPanel.width >= 500 && communityPanel.width <= 700 && communityPanel.insideViewport && communityPanel.hasQrImage && communityPanel.correctGroupName && communityPanel.correctGroupNumber && communityPanel.copyEnabled && communityPanel.copyWorks && communityPanel.hasDiscussionsFallback && communityPanel.hasSupportBoundary && communityPanel.noHorizontalOverflow, JSON.stringify(communityPanel));
   await clickSettingsSection(page, '帮助反馈');
   await clickExact(page, '提交反馈');
   await sleep(250);
