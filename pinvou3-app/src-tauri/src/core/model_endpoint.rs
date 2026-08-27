@@ -65,10 +65,7 @@ pub(crate) fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<Ope
 /// 不存在的地址永远 404。本地候选（vLLM/Ollama/LM Studio）由 discover 统一
 /// 归一成 `/v1` 结尾后传入，行为不变。
 pub async fn probe_openai_models(base_url: &str) -> Option<OpenAiModelsProbe> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .ok()?;
+    let client = shared_probe_client()?;
     let url = models_probe_url(base_url);
     let resp = client.get(url).send().await.ok()?;
     if !resp.status().is_success() {
@@ -153,6 +150,26 @@ fn apply_bearer(req: reqwest::RequestBuilder, bearer: Option<&str>) -> reqwest::
     }
 }
 
+/// 探测共用的进程级 HTTP 客户端：各特征端点探测复用同一连接池，不再每次调用
+/// 新建客户端（monitor 的 vLLM served-name 探测经 [`fetch_v1_models`] 共享此池）。
+/// 与 `features::monitor` 的探测单例同口径的两条语义：
+/// 1. 连接池与代理配置在首次构建时快照，进程内不跟随系统代理变化；
+/// 2. 构建失败按 `None` 进程级缓存、不做逐次重试，保持调用方
+///    "探测失败→回落 Generic/配置值"的降级语义
+///    （`Client::default()` 同类失败会 panic，不能作回退）。
+/// 单请求超时仍是各探测原有的 3 秒；请求级错误不受影响，仍由调用方处理。
+fn shared_probe_client() -> Option<&'static reqwest::Client> {
+    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(3))
+                .build()
+                .ok()
+        })
+        .as_ref()
+}
+
 /// 探测 Ollama：区分"已加载"（/api/ps）与"仅下载未加载"（/api/tags）。
 /// 两个接口都是只读列表，不会触发加载；绝不能用推理请求探测。
 /// `bearer` 语义见 [`apply_bearer`]。
@@ -161,10 +178,7 @@ pub async fn probe_ollama_models(
     bearer: Option<&str>,
 ) -> Option<OpenAiModelsProbe> {
     let host = strip_v1_suffix(base_url)?;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .ok()?;
+    let client = shared_probe_client()?;
     // 已加载集合：失败按空集（全部未加载），不影响已下载列表。
     let loaded_names = match apply_bearer(client.get(format!("{host}/api/ps")), bearer)
         .send()
@@ -466,10 +480,7 @@ async fn probe_local_server_kind_uncached(base_url: &str, bearer: Option<&str>) 
 /// `bearer` 语义见 [`apply_bearer`]。
 async fn probe_lmstudio_v0_only(base_url: &str, bearer: Option<&str>) -> Option<OpenAiModelsProbe> {
     let host = strip_v1_suffix(base_url)?;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .ok()?;
+    let client = shared_probe_client()?;
     let resp = apply_bearer(client.get(format!("{host}/api/v0/models")), bearer)
         .send()
         .await
@@ -491,10 +502,7 @@ pub(crate) async fn fetch_v1_models(
     base_url: &str,
     bearer: Option<&str>,
 ) -> Option<serde_json::Value> {
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-    else {
+    let Some(client) = shared_probe_client() else {
         return None;
     };
     let url = if base_url.trim_end_matches('/').ends_with("/v1") {
