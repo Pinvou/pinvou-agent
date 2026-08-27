@@ -9,6 +9,7 @@
  * 无 canvas 环境（web 宿主/异常 webview）静默回落原图，绝不拦截添加。
  */
 (function (root) {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim classic-script artifact; strict mode is part of the payload
   "use strict";
 
   // 长边上限：对齐 Qwen-VL grounding 建议下限对应的分辨率区间。
