@@ -35,6 +35,26 @@ impl EnginePhase {
     }
 }
 
+/// start() 的结构化错误：把「已在运行/启动中」的幂等守卫冲突与其他启动
+/// 失败区分开，start_if_needed 按类型归一（不做中文字符串匹配控制流）。
+#[derive(Debug)]
+pub(crate) enum StartError {
+    /// 引擎已在运行或启动中（幂等守卫拒绝重复启动，非真失败）。
+    AlreadyRunning,
+    /// 其他启动失败（值为用户可见文案）。
+    Failed(String),
+}
+
+impl StartError {
+    /// 转为用户可见文案（tauri 命令边界用；AlreadyRunning 的文案保持不变）。
+    pub(crate) fn into_message(self) -> String {
+        match self {
+            StartError::AlreadyRunning => "引擎已在运行或启动中".to_string(),
+            StartError::Failed(message) => message,
+        }
+    }
+}
+
 /// 运行期可变状态（进程句柄不落 static，由 watcher 任务持有）。
 #[derive(Default)]
 pub(crate) struct EngineRuntime {
@@ -46,6 +66,10 @@ pub(crate) struct EngineRuntime {
     pub stderr_tail: VecDeque<String>,
     pub last_error: Option<String>,
     crash_reboot_count: u32,
+    /// 单次启动会话内的累计自愈次数（不随崩溃窗口清零，start() 重置）：
+    /// 兜底低速崩溃（间隔恰好大于 CRASH_REBOOT_WINDOW 时窗口计数每次被
+    /// 清零，无累计上限可无限自愈）。
+    crash_reboot_total: u32,
     last_crash_at: Option<Instant>,
 }
 
@@ -75,6 +99,14 @@ pub(crate) const HEALTH_TIMEOUT: Duration = Duration::from_secs(300);
 const CRASH_REBOOT_WINDOW: Duration = Duration::from_secs(60);
 /// 窗口内允许的自愈次数（超过则停等用户手动）。
 const MAX_CRASH_REBOOTS: u32 = 2;
+/// 单次启动会话内的累计自愈上限：窗口计数只拦密集崩溃，低速崩溃（间隔
+/// 恰好大于 CRASH_REBOOT_WINDOW）每次都会清零窗口计数、可无限自愈；
+/// 累计超限即放弃自愈转 Stopped（带 stderr 尾），等用户手动处理。
+const MAX_CRASH_REBOOTS_TOTAL: u32 = 5;
+/// stop() 遇到 pid 未写入的启动/spawn 窗口时，后台轮询等 pid 出现的上限。
+const STOP_ORPHAN_PID_WAIT: Duration = Duration::from_secs(5);
+/// 上述轮询的间隔。
+const STOP_ORPHAN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const STDERR_TAIL_CAP: usize = 20;
 const STDERR_LINE_CAP: usize = 2000;
 
@@ -191,25 +223,30 @@ pub(crate) fn build_args(
     args
 }
 
-/// 启动引擎（幂等守卫：Running/Starting 时拒绝重复启动）。
+/// 启动引擎（幂等守卫：Running/Starting 时返回 StartError::AlreadyRunning
+/// 拒绝重复启动，由调用方按类型归一）。
 pub(crate) async fn start(
     app: &tauri::AppHandle,
     model_id: &str,
     device: EngineDevice,
-) -> Result<(), String> {
-    let spec = download::model_spec(model_id)?;
+) -> Result<(), StartError> {
+    let spec = download::model_spec(model_id).map_err(StartError::Failed)?;
     let bin = download::engine_binary_path();
     if !bin.is_file() {
-        return Err("引擎未安装，请先在设置中下载引擎".to_string());
+        return Err(StartError::Failed(
+            "引擎未安装，请先在设置中下载引擎".to_string(),
+        ));
     }
     if !download::model_files_verified(spec) {
-        return Err(format!("模型 {model_id} 未就绪，请先在设置中下载模型"));
+        return Err(StartError::Failed(format!(
+            "模型 {model_id} 未就绪，请先在设置中下载模型"
+        )));
     }
-    let port = pick_free_port()?;
+    let port = pick_free_port().map_err(StartError::Failed)?;
     {
         let mut guard = lock_runtime();
         if matches!(guard.phase, EnginePhase::Starting | EnginePhase::Running) {
-            return Err("引擎已在运行或启动中".to_string());
+            return Err(StartError::AlreadyRunning);
         }
         guard.phase = EnginePhase::Starting;
         guard.port = Some(port);
@@ -217,13 +254,18 @@ pub(crate) async fn start(
         guard.active_model = Some(model_id.to_string());
         guard.last_error = None;
         guard.crash_reboot_count = 0;
+        guard.crash_reboot_total = 0;
         guard.last_crash_at = None;
         guard.stderr_tail.clear();
+        // 清停止标志必须与置 Starting 同临界区：若在锁外清空，stop() 会在
+        // 「已置 Starting、标志未清」的窗口内置位并读到 Starting（走孤儿
+        // pid 等待路径），随后被这次清空覆盖，停止请求整个丢失。
+        STOP_REQUESTED.store(false, Ordering::SeqCst);
     }
-    STOP_REQUESTED.store(false, Ordering::SeqCst);
     emit_state(app, "starting", None);
 
-    std::fs::create_dir_all(llama_engine_dir()).map_err(|e| format!("创建引擎目录失败: {e}"))?;
+    std::fs::create_dir_all(llama_engine_dir())
+        .map_err(|e| StartError::Failed(format!("创建引擎目录失败: {e}")))?;
     let mut child = match spawn_server(&bin, &build_args(&bin, spec, port, device)).await {
         Ok(child) => child,
         Err(error) => {
@@ -233,12 +275,25 @@ pub(crate) async fn start(
             guard.last_error = Some(error.clone());
             drop(guard);
             emit_state(app, "stopped", Some(error.clone()));
-            return Err(error);
+            return Err(StartError::Failed(error));
         }
     };
     {
         let mut guard = lock_runtime();
         guard.pid = child.id().filter(|id| *id > 0);
+    }
+    // spawn 窗口竞态补查：phase=Starting 到 pid 写入之间收到的 stop()
+    // 读不到 pid、kill 无从下手；写入 pid 后立即复查停止标志，命中即
+    // 自杀该子进程，防 llama-server（多 GB 内存）成孤儿。
+    if STOP_REQUESTED.swap(false, Ordering::SeqCst) {
+        if let Err(error) = kill_child(&mut child, "启动窗口停止").await {
+            log::warn!("[llama-engine] {error}");
+            transition_stopped(app, error);
+            return Ok(());
+        }
+        let _ = child.wait().await;
+        transition_stopped(app, "已停止".to_string());
+        return Ok(());
     }
 
     let app = app.clone();
@@ -256,7 +311,13 @@ pub(crate) async fn start(
                     // spawn/加载期间用户点了停止：此时 pid 尚未写入 guard、
                     // 停止标志无人消费会残留——必须在这里终结进程并落 Stopped，
                     // 否则引擎带病进入 Running、标志留到下次退出被误消费。
-                    let _ = child.kill().await;
+                    if let Err(error) = kill_child(&mut child, "停止引擎").await {
+                        // kill 失败不能报"已停止"：记警告并把失败原因落进状态。
+                        log::warn!("[llama-engine] {error}");
+                        let _ = stderr_task.await;
+                        transition_stopped(&app, error);
+                        return;
+                    }
                     let _ = child.wait().await;
                     let _ = stderr_task.await;
                     transition_stopped(&app, "已停止".to_string());
@@ -282,7 +343,9 @@ pub(crate) async fn start(
                     transition_stopped(&app, "已停止".to_string());
                     return;
                 }
-                let _ = child.kill().await;
+                if let Err(kill_error) = kill_child(&mut child, "启动超时收口").await {
+                    log::warn!("[llama-engine] {kill_error}");
+                }
                 let _ = child.wait().await;
                 let _ = stderr_task.await;
                 let reason = if error.is_empty() {
@@ -300,14 +363,72 @@ pub(crate) async fn start(
 /// 停止引擎：置位停止标志 + 整树终结（watcher 收口为 Stopped）。
 pub(crate) fn stop() {
     STOP_REQUESTED.store(true, Ordering::SeqCst);
-    let pid = lock_runtime().pid;
+    let (pid, phase) = {
+        let guard = lock_runtime();
+        (guard.pid, guard.phase)
+    };
     if let Some(pid) = pid {
+        // kill_pid_tree 无返回值（签名归 platform/os 所有，此处不改）：
+        // kill 失败时 watcher 不见退出、phase 不落 Stopped，UI 如实保持
+        // 运行中；再次 stop() 可重试。
         crate::platform::os::kill_pid_tree(pid);
+        return;
+    }
+    if phase == EnginePhase::Starting {
+        // 启动/自愈 spawn 窗口：pid 尚未写入，直接 kill 无从下手，llama-server
+        // （多 GB 内存）会成孤儿。后台有界轮询等 pid 出现再补杀；spawn 侧
+        // 写入 pid 后也会复查 STOP_REQUESTED 立即自杀（start()/watch_running
+        // 内的补查），双保险。
+        std::thread::spawn(|| {
+            if let Some(pid) = wait_orphan_pid(STOP_ORPHAN_PID_WAIT) {
+                crate::platform::os::kill_pid_tree(pid);
+            } else if STOP_REQUESTED.load(Ordering::SeqCst)
+                && lock_runtime().phase == EnginePhase::Starting
+            {
+                log::warn!(
+                    "[llama-engine] stop() 等待引擎 pid 超时（{}s），启动窗口内的子进程可能未被终结",
+                    STOP_ORPHAN_PID_WAIT.as_secs()
+                );
+            }
+        });
     }
 }
 
+/// stop() 时 pid 尚未写入（启动/自愈 spawn 窗口）的兜底：轮询等 pid 出现，
+/// 上限 wait。提前放弃的情形：停止标志已被消费（spawn 侧自查已自杀）、
+/// 相位离开 Starting（启动失败等已被其他路径收口）——均无杀的对象。
+fn wait_orphan_pid(wait: Duration) -> Option<u32> {
+    let deadline = Instant::now() + wait;
+    while Instant::now() < deadline {
+        if !STOP_REQUESTED.load(Ordering::SeqCst) {
+            return None;
+        }
+        let (pid, phase) = {
+            let guard = lock_runtime();
+            (guard.pid, guard.phase)
+        };
+        if pid.is_some() {
+            return pid;
+        }
+        if phase != EnginePhase::Starting {
+            return None;
+        }
+        std::thread::sleep(STOP_ORPHAN_POLL_INTERVAL);
+    }
+    None
+}
+
+/// 停止/收口路径杀子进程：kill 失败返回带上下文的错误（调用方记警告并
+/// 如实落进状态，不把已知失败的停止报成"已停止"）。
+async fn kill_child(child: &mut tokio::process::Child, context: &str) -> Result<(), String> {
+    child
+        .kill()
+        .await
+        .map_err(|e| format!("{context}：结束引擎进程失败: {e}"))
+}
+
 /// 幂等启动：Running/Starting 时直接 Ok(false)（并发防护，绝不把
-/// "引擎已在运行或启动中" 当失败上报）；真正发起启动返回 Ok(true)。
+/// StartError::AlreadyRunning 当失败上报）；真正发起启动返回 Ok(true)。
 /// 自动启动（发送门 / launch 后台）与手动启动共用，避免并发双启动。
 pub(crate) async fn start_if_needed(
     app: &tauri::AppHandle,
@@ -323,8 +444,8 @@ pub(crate) async fn start_if_needed(
     match start(app, model_id, device).await {
         Ok(()) => Ok(true),
         // 锁外检查与 start 内部守卫之间的竞态窗口：已有人启动，归一为 Ok(false)。
-        Err(error) if error.contains("引擎已在运行或启动中") => Ok(false),
-        Err(error) => Err(error),
+        Err(StartError::AlreadyRunning) => Ok(false),
+        Err(error) => Err(error.into_message()),
     }
 }
 
@@ -351,7 +472,7 @@ pub(crate) async fn wait_until_running(timeout: Duration) -> Result<(), String> 
 }
 
 /// 测试钩子：强制置 Running（bridge.rs 规则 0 单测用；改全局 RUNTIME，
-/// 使用方需保证测试串行）。
+/// 调用方须在 locked_runtime_for_test() 锁下使用）。
 #[cfg(test)]
 pub(crate) fn force_running_for_test(port: u16) {
     let mut guard = lock_runtime();
@@ -360,11 +481,30 @@ pub(crate) fn force_running_for_test(port: u16) {
 }
 
 /// 测试钩子：复位 RUNTIME 到默认（配合 force_running_for_test 的收尾，
-/// 避免污染后续测试的引擎运行态）。
+/// 避免污染后续测试的引擎运行态）。同样须在 locked_runtime_for_test()
+/// 锁下使用。
 #[cfg(test)]
 pub(crate) fn reset_runtime_for_test() {
     let mut guard = lock_runtime();
     *guard = EngineRuntime::default();
+}
+
+// 全局 RUNTIME/STOP_REQUESTED 是进程级共享状态：写它的测试（经
+// force_running_for_test/reset_runtime_for_test 或本文件直接读写）与经
+// bridge.rs resolve_vision_model_config（规则 0/3 → vision_endpoint →
+// RUNTIME）间接读它的测试必须串行，否则默认并行 cargo test 下写测试的
+// 「运行中」窗口会把读测试的断言翻掉（RAII reset 只能保证收尾，挡不住
+// 并发读取）。锁源统一在本模块、crate 级共享（bridge.rs 测试复用同一
+// 把），口径与 ENV_LOCK 一致：毒化经 into_inner 恢复，不绕过互斥。
+#[cfg(test)]
+pub(crate) static RUNTIME_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// 获取 RUNTIME_TEST_LOCK（毒化视为可恢复）。任何直接调
+/// force_running_for_test/reset_runtime_for_test、直接读写
+/// RUNTIME/STOP_REQUESTED、或断言依赖引擎未运行态的测试，入口处先拿锁。
+#[cfg(test)]
+pub(crate) fn locked_runtime_for_test() -> std::sync::MutexGuard<'static, ()> {
+    RUNTIME_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 enum HealthOutcome {
@@ -389,7 +529,8 @@ async fn wait_until_healthy_or_exit(child: &mut tokio::process::Child, port: u16
     HealthOutcome::Timeout(last_error)
 }
 
-/// 运行中监视：崩溃自愈（60s 窗口内 <MAX_CRASH_REBOOTS 次则自动重启）。
+/// 运行中监视：崩溃自愈（60s 窗口内 <MAX_CRASH_REBOOTS 次且累计
+/// <=MAX_CRASH_REBOOTS_TOTAL 次则自动重启，双上限任一超限即停）。
 async fn watch_running(
     app: tauri::AppHandle,
     mut child: tokio::process::Child,
@@ -404,23 +545,23 @@ async fn watch_running(
             return;
         }
         let reason = diagnose_exit(status, "引擎进程异常退出");
-        let should_reboot = {
+        let verdict = {
             let mut guard = lock_runtime();
-            let now = Instant::now();
-            if guard
-                .last_crash_at
-                .map(|t| now.duration_since(t) > CRASH_REBOOT_WINDOW)
-                .unwrap_or(true)
-            {
-                guard.crash_reboot_count = 0;
-            }
-            guard.crash_reboot_count += 1;
-            guard.last_crash_at = Some(now);
-            guard.crash_reboot_count < MAX_CRASH_REBOOTS
+            record_crash(&mut guard, Instant::now())
         };
-        if !should_reboot {
-            transition_stopped(&app, format!("引擎连续崩溃已停止：{reason}"));
-            return;
+        match verdict {
+            CrashVerdict::Reboot => {}
+            CrashVerdict::WindowExceeded => {
+                transition_stopped(&app, format!("引擎连续崩溃已停止：{reason}"));
+                return;
+            }
+            CrashVerdict::TotalExceeded => {
+                transition_stopped(
+                    &app,
+                    format!("引擎反复崩溃已达自愈上限（{MAX_CRASH_REBOOTS_TOTAL} 次），已停止：{reason}"),
+                );
+                return;
+            }
         }
 
         // 自动重启（复用同一模型与设备）。
@@ -474,6 +615,19 @@ async fn watch_running(
             guard.port = Some(new_port);
             guard.pid = new_child.id().filter(|id| *id > 0);
         }
+        // spawn 窗口竞态补查（同 start()）：自愈重启 spawn 期间收到的
+        // stop() 读不到 pid；写入后立即复查停止标志，命中即终结刚 spawn
+        // 的进程，防孤儿。
+        if STOP_REQUESTED.swap(false, Ordering::SeqCst) {
+            if let Err(error) = kill_child(&mut new_child, "重启窗口停止").await {
+                log::warn!("[llama-engine] {error}");
+                transition_stopped(&app, error);
+                return;
+            }
+            let _ = new_child.wait().await;
+            transition_stopped(&app, "已停止".to_string());
+            return;
+        }
         let stderr = new_child.stderr.take();
         stderr_task = tokio::spawn(async move {
             if let Some(stderr) = stderr {
@@ -484,7 +638,13 @@ async fn watch_running(
             HealthOutcome::Healthy => {
                 if STOP_REQUESTED.swap(false, Ordering::SeqCst) {
                     // 就绪期间收到了停止请求（重启窗口边界）：杀掉刚就绪的进程。
-                    let _ = new_child.kill().await;
+                    if let Err(error) = kill_child(&mut new_child, "停止引擎").await {
+                        // kill 失败不能报"已停止"：记警告并把失败原因落进状态。
+                        log::warn!("[llama-engine] {error}");
+                        let _ = stderr_task.await;
+                        transition_stopped(&app, error);
+                        return;
+                    }
                     let _ = new_child.wait().await;
                     let _ = stderr_task.await;
                     transition_stopped(&app, "已停止".to_string());
@@ -497,12 +657,21 @@ async fn watch_running(
             }
             HealthOutcome::Exited(status) => {
                 let _ = stderr_task.await;
-                let reason = diagnose_exit(status, "自动重启后启动失败");
+                // 与初次启动分支同口径：就绪等待期间收到 stop() 时进程退出属
+                // 预期停止，报「已停止」并消费标志，不走崩溃诊断文案。
+                let reason = if STOP_REQUESTED.swap(false, Ordering::SeqCst) {
+                    "已停止".to_string()
+                } else {
+                    diagnose_exit(status, "自动重启后启动失败")
+                };
                 transition_stopped(&app, reason);
                 return;
             }
             HealthOutcome::Timeout(error) => {
-                let _ = new_child.kill().await;
+                if let Err(kill_error) = kill_child(&mut new_child, "重启就绪超时收口").await
+                {
+                    log::warn!("[llama-engine] {kill_error}");
+                }
                 let _ = new_child.wait().await;
                 let _ = stderr_task.await;
                 let reason = if error.is_empty() {
@@ -515,6 +684,41 @@ async fn watch_running(
             }
         }
         child = new_child;
+    }
+}
+
+/// record_crash 的判定结果（区分窗口上限与累计上限，停止文案如实区分）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CrashVerdict {
+    /// 允许自动重启。
+    Reboot,
+    /// CRASH_REBOOT_WINDOW 窗口内密集崩溃达 MAX_CRASH_REBOOTS。
+    WindowExceeded,
+    /// 累计自愈达 MAX_CRASH_REBOOTS_TOTAL（低速崩溃无限自愈的兜底）。
+    TotalExceeded,
+}
+
+/// 崩溃计数与自愈判定（watch_running 锁内调用）：窗口内计数保留原逻辑——
+/// 距上次崩溃超过 CRASH_REBOOT_WINDOW 则清零重计；累计计数（start() 才
+/// 重置）另加 MAX_CRASH_REBOOTS_TOTAL 上限，兜底间隔恰好大于窗口的低速
+/// 崩溃（窗口计数每次被清零，无累计上限可无限自愈）。
+fn record_crash(guard: &mut EngineRuntime, now: Instant) -> CrashVerdict {
+    if guard
+        .last_crash_at
+        .map(|t| now.duration_since(t) > CRASH_REBOOT_WINDOW)
+        .unwrap_or(true)
+    {
+        guard.crash_reboot_count = 0;
+    }
+    guard.crash_reboot_count += 1;
+    guard.crash_reboot_total += 1;
+    guard.last_crash_at = Some(now);
+    if guard.crash_reboot_total > MAX_CRASH_REBOOTS_TOTAL {
+        CrashVerdict::TotalExceeded
+    } else if guard.crash_reboot_count >= MAX_CRASH_REBOOTS {
+        CrashVerdict::WindowExceeded
+    } else {
+        CrashVerdict::Reboot
     }
 }
 
@@ -624,6 +828,14 @@ async fn spawn_server(bin: &Path, args: &[OsString]) -> Result<tokio::process::C
         .map_err(|e| format!("启动 llama-server 失败: {e}"))
 }
 
+/// stderr 单行截断：按 UTF-8 字符边界截断——`String::truncate` 若切在多
+/// 字节字符中间会 panic，杀死 drain 任务后管道写满会堵死引擎进程。
+fn truncate_at_line_cap(text: &mut String) {
+    if text.len() > STDERR_LINE_CAP {
+        text.truncate(text.floor_char_boundary(STDERR_LINE_CAP));
+    }
+}
+
 /// 常驻排空 stderr（防管道写满阻塞子进程），保留尾部供诊断。
 async fn drain_stderr(stderr: tokio::process::ChildStderr) {
     let mut reader = tokio::io::BufReader::new(stderr);
@@ -634,9 +846,7 @@ async fn drain_stderr(stderr: tokio::process::ChildStderr) {
             Ok(0) | Err(_) => break,
             Ok(_) => {
                 let mut text = line.trim_end().to_string();
-                if text.len() > STDERR_LINE_CAP {
-                    text.truncate(STDERR_LINE_CAP);
-                }
+                truncate_at_line_cap(&mut text);
                 let mut guard = lock_runtime();
                 if guard.stderr_tail.len() >= STDERR_TAIL_CAP {
                     guard.stderr_tail.pop_front();
@@ -800,5 +1010,112 @@ mod tests {
         assert_eq!(EnginePhase::Starting.name(), "starting");
         assert_eq!(EnginePhase::Running.name(), "running");
         assert_eq!(EnginePhase::Stopped.name(), "stopped");
+    }
+
+    #[test]
+    fn truncate_at_line_cap_respects_utf8_boundaries() {
+        // 中文（3 字节/字）：2000 落在第 667 字中间（1998..2001），截断
+        // 必须退回字符边界 1998，而不是 panic 杀死 drain 任务。
+        let mut text = "汉".repeat(700);
+        assert_eq!(text.len(), 2100);
+        truncate_at_line_cap(&mut text);
+        assert_eq!(text.len(), 1998);
+        assert!(text.is_char_boundary(text.len()));
+
+        // 中文 + emoji（4 字节/字）混排：截断点落在 emoji 中间也不 panic。
+        let mut mixed = "汉🦀".repeat(400); // 每单元 7 字节，共 2800
+        truncate_at_line_cap(&mut mixed);
+        assert!(mixed.len() <= STDERR_LINE_CAP);
+        assert!(mixed.is_char_boundary(mixed.len()));
+
+        // 未超上限：原样保留。
+        let mut short = "短行".to_string();
+        truncate_at_line_cap(&mut short);
+        assert_eq!(short, "短行");
+    }
+
+    #[test]
+    fn start_error_into_message_keeps_user_facing_text() {
+        // 用户可见文案不变（前端/既有测试按该文案断言），结构仅供
+        // start_if_needed 做控制流区分。
+        assert_eq!(
+            StartError::AlreadyRunning.into_message(),
+            "引擎已在运行或启动中"
+        );
+        assert_eq!(
+            StartError::Failed("其他失败".to_string()).into_message(),
+            "其他失败"
+        );
+    }
+
+    #[test]
+    fn record_crash_keeps_window_limit() {
+        // 窗口内密集崩溃：第 MAX_CRASH_REBOOTS 次即 WindowExceeded
+        // （既有 60s 窗口语义不回退）。
+        let mut runtime = EngineRuntime::default();
+        let now = Instant::now();
+        assert_eq!(record_crash(&mut runtime, now), CrashVerdict::Reboot);
+        assert_eq!(
+            record_crash(&mut runtime, now + Duration::from_secs(1)),
+            CrashVerdict::WindowExceeded
+        );
+    }
+
+    #[test]
+    fn record_crash_caps_slow_loop_reboots() {
+        // 低速崩溃（间隔 > CRASH_REBOOT_WINDOW）：窗口计数每次被清零，
+        // 累计上限必须兜底——第 MAX_CRASH_REBOOTS_TOTAL+1 次判 TotalExceeded，
+        // 不再无限自愈。
+        let mut runtime = EngineRuntime::default();
+        let start_at = Instant::now();
+        let step = CRASH_REBOOT_WINDOW + Duration::from_secs(1);
+        for i in 0..MAX_CRASH_REBOOTS_TOTAL {
+            assert_eq!(
+                record_crash(&mut runtime, start_at + step * i),
+                CrashVerdict::Reboot,
+                "第 {} 次低速崩溃应仍自愈",
+                i + 1
+            );
+        }
+        assert_eq!(
+            record_crash(&mut runtime, start_at + step * MAX_CRASH_REBOOTS_TOTAL),
+            CrashVerdict::TotalExceeded
+        );
+    }
+
+    #[test]
+    fn wait_orphan_pid_covers_spawn_window() {
+        // 直接读写全局 RUNTIME/STOP_REQUESTED，须与 bridge.rs 等同样碰
+        // RUNTIME 的测试串行（锁源见 RUNTIME_TEST_LOCK）；结束后复位。
+        let _runtime_lock = locked_runtime_for_test();
+        reset_runtime_for_test();
+        STOP_REQUESTED.store(false, Ordering::SeqCst);
+
+        // 场景 1：stop() 时 pid 未写入（spawn 窗口）、pid 晚到 → 轮询等到并返回。
+        lock_runtime().phase = EnginePhase::Starting;
+        STOP_REQUESTED.store(true, Ordering::SeqCst);
+        let delayed = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(100));
+            lock_runtime().pid = Some(424_242);
+        });
+        assert_eq!(wait_orphan_pid(Duration::from_secs(2)), Some(424_242));
+        delayed.join().expect("delayed pid writer must finish");
+
+        // 场景 2：停止标志已被 spawn 侧自查消费 → 立即放弃（不再补杀）。
+        {
+            let mut guard = lock_runtime();
+            guard.phase = EnginePhase::Starting;
+            guard.pid = None;
+        }
+        STOP_REQUESTED.store(false, Ordering::SeqCst);
+        assert_eq!(wait_orphan_pid(Duration::from_secs(2)), None);
+
+        // 场景 3：相位已离开 Starting（启动失败等已被收口）→ 立即放弃。
+        STOP_REQUESTED.store(true, Ordering::SeqCst);
+        lock_runtime().phase = EnginePhase::Idle;
+        assert_eq!(wait_orphan_pid(Duration::from_secs(2)), None);
+
+        STOP_REQUESTED.store(false, Ordering::SeqCst);
+        reset_runtime_for_test();
     }
 }

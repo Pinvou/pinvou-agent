@@ -93,7 +93,9 @@ pub(crate) fn auto_detect_device() -> EngineDevice {
         crate::platform::os::GpuClass::Dedicated | crate::platform::os::GpuClass::StrongIgpu => {
             EngineDevice::Gpu
         }
-        crate::platform::os::GpuClass::None => EngineDevice::Cpu,
+        crate::platform::os::GpuClass::Integrated | crate::platform::os::GpuClass::None => {
+            EngineDevice::Cpu
+        }
     })
 }
 
@@ -205,7 +207,11 @@ pub(crate) async fn llama_engine_start(
     device: String,
 ) -> Result<(), String> {
     let device = EngineDevice::parse(&device)?;
-    server::start(&app, &model, device).await
+    // 结构化错误在 tauri 命令边界转回文案（AlreadyRunning 的用户可见
+    // 文案保持"引擎已在运行或启动中"不变）。
+    server::start(&app, &model, device)
+        .await
+        .map_err(server::StartError::into_message)
 }
 
 pub(crate) fn llama_engine_stop() {
