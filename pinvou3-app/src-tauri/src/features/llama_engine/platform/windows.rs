@@ -3,8 +3,6 @@
 
 use std::path::Path;
 
-use super::super::EngineDevice;
-
 pub fn engine_binary_name() -> &'static str {
     "llama-server.exe"
 }
@@ -20,13 +18,37 @@ pub fn engine_url(tag: &str) -> String {
     )
 }
 
+/// 钉版引擎资产（PINNED_ENGINE_TAG = b10299）的尺寸 + sha256
+/// （来源：GitHub release asset digest）。非钉版 tag 由调用方按开发通道处理。
+pub fn pinned_engine_asset() -> Option<(u64, &'static str)> {
+    Some((
+        34_108_404,
+        "c5cdc4f4394f8cc828c6dae2dbc602b84a7c81674ca97d032518cff74cf36e1c",
+    ))
+}
+
 pub fn engine_archive_is_zip() -> bool {
     true
 }
 
-pub fn default_device() -> EngineDevice {
-    // Vulkan 包同时覆盖 CPU 与 GPU（-ngl 0 / 99 切换），默认 GPU 加速。
-    EngineDevice::Gpu
+/// 目录所在卷的可用字节数（GetDiskFreeSpaceExW）；查询失败返回 None。
+pub fn available_disk_space(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut free_bytes: u64 = 0;
+    if unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free_bytes,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return None;
+    }
+    Some(free_bytes)
 }
 
 pub fn make_executable(_path: &Path) -> Result<(), String> {

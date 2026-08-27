@@ -2,8 +2,6 @@
 
 use std::path::Path;
 
-use super::super::EngineDevice;
-
 pub fn engine_binary_name() -> &'static str {
     "llama-server"
 }
@@ -16,12 +14,18 @@ pub fn engine_url(_tag: &str) -> String {
     String::new()
 }
 
+/// 不支持平台无钉版资产（engine_asset_name 为空会先于校验触发明确错误）。
+pub fn pinned_engine_asset() -> Option<(u64, &'static str)> {
+    None
+}
+
 pub fn engine_archive_is_zip() -> bool {
     true
 }
 
-pub fn default_device() -> EngineDevice {
-    EngineDevice::Cpu
+/// 不支持平台无法查询可用空间（调用方按跳过检查处理）。
+pub fn available_disk_space(_path: &Path) -> Option<u64> {
+    None
 }
 
 pub fn make_executable(_path: &Path) -> Result<(), String> {

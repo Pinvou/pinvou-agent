@@ -1,22 +1,23 @@
 //! 引擎与视觉模型按需下载、校验与部署。
 //!
 //! 范式照搬 voice_asr.rs / model_download.rs：流式 reqwest + `.part` 临时文件 +
-//! 进度事件 + 取消标志；模型用 sha256（env 可覆盖）+ 尺寸校验，带结果缓存；
-//! 引擎（GitHub release）无固定 sha，用尺寸 + 解压结构校验，tag 记入
-//! engine-meta.json。GitHub 资产不支持断点续传，失败整文件重下。
+//! 进度事件 + 取消标志；模型与钉版引擎（PINNED_ENGINE_TAG）均强制尺寸 + sha256
+//! 校验，fail closed（不匹配即删除报错）；模型校验结果带缓存，状态热路径只消费
+//! 缓存不重复全量 hash。引擎 tag 默认锁定 PINNED_ENGINE_TAG，记入
+//! engine-meta.json；`PINVOU3_LLAMA_ENGINE_TAG` 显式覆盖时为开发通道，跳过
+//! digest 校验。GitHub 资产不支持断点续传，失败整文件重下。
 //!
 //! 进度事件 `llama-engine:progress` payload：
 //! `{ stage: engine_download|engine_extract|model_download|model_verify|done|cancelled,
 //!    item: engine|model|mmproj, modelId, filename, downloaded, total }`
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use sha2::{Digest, Sha256};
 use tauri::Emitter;
 
 use super::platform;
@@ -39,13 +40,14 @@ pub(crate) struct LlamaModelSpec {
 pub(crate) struct ModelAsset {
     pub filename: &'static str,
     pub expected_size: u64,
-    /// 空串 = 跳过 sha256 校验（发布后回填实测值；dev 本地包用 env 覆盖）。
+    /// 发布资产的 sha256（强制校验，fail closed；dev 覆盖见 `asset_sha256`）。
     pub sha256: &'static str,
-    /// 首个尝试源：ModelScope（中国大陆网络最快，参考示例同源）。
+    /// 首个尝试源：ModelScope（中国大陆网络最快，与 HuggingFace 官方仓同源同内容）。
     pub primary_url: &'static str,
     /// 备用源 1：HuggingFace 官方。
     pub mirror_url: &'static str,
-    /// 备用源 2：HuggingFace 国内镜像（仅中国大陆网络生效）。
+    /// 备用源 2：HuggingFace 国内镜像（回退顺序的最后一环；镜像内容完整性
+    /// 由 sha256 强制校验钉死，任一源返回篡改/损坏内容都会被拒绝）。
     pub fallback_url: &'static str,
 }
 
@@ -54,7 +56,7 @@ pub(crate) struct ModelAsset {
 const MMPROJ_2B_Q8_0: ModelAsset = ModelAsset {
     filename: "mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
     expected_size: 445_053_216,
-    sha256: "",
+    sha256: "f9a68fabba69c3b81e153367b2c7521030b0fa8bb0de400c9599c8e6725f9c82",
     primary_url: "https://modelscope.cn/models/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/master/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
     mirror_url: "https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
     fallback_url: "https://hf-mirror.com/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
@@ -69,7 +71,7 @@ pub(crate) const MODEL_Q4_K_M: LlamaModelSpec = LlamaModelSpec {
     gguf: ModelAsset {
         filename: "Qwen3VL-2B-Instruct-Q4_K_M.gguf",
         expected_size: 1_107_409_952,
-        sha256: "",
+        sha256: "089d75c52f4b7ffc56ba998ffc50aae89fcafc755f9e7208aacca281dca6c2ae",
         primary_url: "https://modelscope.cn/models/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/master/Qwen3VL-2B-Instruct-Q4_K_M.gguf",
         mirror_url: "https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/main/Qwen3VL-2B-Instruct-Q4_K_M.gguf",
         fallback_url: "https://hf-mirror.com/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/main/Qwen3VL-2B-Instruct-Q4_K_M.gguf",
@@ -86,7 +88,7 @@ pub(crate) const MODEL_4B_Q4_K_M: LlamaModelSpec = LlamaModelSpec {
     gguf: ModelAsset {
         filename: "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
         expected_size: 2_497_281_664,
-        sha256: "",
+        sha256: "66358cb18bb6b3b1b6675aa412c7a88ef01d228f481184d13668e5201c730a0a",
         primary_url: "https://modelscope.cn/models/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/master/Qwen3VL-4B-Instruct-Q4_K_M.gguf",
         mirror_url: "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf",
         fallback_url: "https://hf-mirror.com/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf",
@@ -94,7 +96,7 @@ pub(crate) const MODEL_4B_Q4_K_M: LlamaModelSpec = LlamaModelSpec {
     mmproj: ModelAsset {
         filename: "mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf",
         expected_size: 453_974_304,
-        sha256: "",
+        sha256: "30ba2c7dd3127a4561b6cba9d13d0f711c91bdb38742e2f56d73c8cb596bd06d",
         primary_url: "https://modelscope.cn/models/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/master/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf",
         mirror_url: "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf",
         fallback_url: "https://hf-mirror.com/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf",
@@ -133,8 +135,9 @@ pub(crate) fn mmproj_path(spec: &LlamaModelSpec) -> PathBuf {
 // ---------------- 引擎 ----------------
 
 const LLAMA_REPO: &str = "ggml-org/llama.cpp";
-/// GitHub latest API 不可达时的兜底 tag（资产 404 时安装会给出明确错误，
-/// 可用 `PINVOU3_LLAMA_ENGINE_TAG` 指定其它版本）。
+/// 默认锁定的引擎 tag（该 tag 各平台资产的尺寸 + sha256 已在
+/// `platform::pinned_engine_asset` 钉死；`PINVOU3_LLAMA_ENGINE_TAG`
+/// 显式设置时可覆盖为其它版本或 "latest"，属开发通道，跳过 digest 校验）。
 const PINNED_ENGINE_TAG: &str = "b10299";
 
 pub(crate) fn engine_binary_path() -> PathBuf {
@@ -159,13 +162,25 @@ fn engine_installed_with_tag(tag: &str) -> bool {
     engine_installed() && engine_tag().as_deref() == Some(tag)
 }
 
-/// 解析引擎版本：env `PINVOU3_LLAMA_ENGINE_TAG` > GitHub latest API > PINNED_ENGINE_TAG。
+/// 解析引擎版本：默认锁定 PINNED_ENGINE_TAG（资产有钉死的 sha256 校验）。
+/// env `PINVOU3_LLAMA_ENGINE_TAG` 显式设置时才覆盖：值为 "latest" 时查询
+/// GitHub latest API，其它非空值直接作为 tag 使用。env 覆盖属开发通道，
+/// 对应资产没有钉版 digest，安装时跳过完整性校验（日志提示）。
 pub(crate) async fn resolve_engine_tag() -> Result<String, String> {
     if let Ok(tag) = std::env::var("PINVOU3_LLAMA_ENGINE_TAG") {
-        if !tag.trim().is_empty() {
-            return Ok(tag.trim().to_string());
+        let tag = tag.trim();
+        if !tag.is_empty() {
+            if tag == "latest" {
+                return query_latest_engine_tag().await;
+            }
+            return Ok(tag.to_string());
         }
     }
+    Ok(PINNED_ENGINE_TAG.to_string())
+}
+
+/// 查询 GitHub latest release tag（仅 env 显式指定 "latest" 的开发通道调用）。
+async fn query_latest_engine_tag() -> Result<String, String> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .user_agent("pinvou3-llama-engine/1.0")
@@ -207,6 +222,19 @@ pub(crate) async fn install_engine(app: &tauri::AppHandle) -> Result<(), String>
     }
     let asset_name = platform::engine_asset_name(&tag);
     let url = platform::engine_url(&tag);
+    // 钉版 tag：尺寸 + sha256 强制校验；env 覆盖的开发通道无钉版 digest，
+    // 跳过校验并打日志（fail closed 只针对钉版资产）。
+    let pinned = if tag == PINNED_ENGINE_TAG {
+        match platform::pinned_engine_asset() {
+            Some(pinned) => Some(pinned),
+            None => return Err("当前平台缺少钉版引擎的完整性校验信息".to_string()),
+        }
+    } else {
+        log::warn!(
+            "[pinvou3][llama-engine] 引擎 tag {tag} 为 env 覆盖的开发通道，跳过 sha256 校验"
+        );
+        None
+    };
     for dir in [llama_engine_dir(), bin_dir(), tmp_dir()] {
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
     }
@@ -215,7 +243,22 @@ pub(crate) async fn install_engine(app: &tauri::AppHandle) -> Result<(), String>
     let part = tmp_dir().join(format!("{asset_name}.part"));
     let _ = std::fs::remove_file(&part);
     let _ = std::fs::remove_file(&archive);
-    download_file(app, &url, &part, "engine_download", "engine", None, None, 0).await?;
+    let expected_size = pinned.map(|(size, _)| size).unwrap_or(0);
+    ensure_disk_space(&tmp_dir(), expected_size)?;
+    download_file(
+        app,
+        &url,
+        &part,
+        "engine_download",
+        "engine",
+        None,
+        None,
+        expected_size,
+    )
+    .await?;
+    if let Some((size, sha256)) = pinned {
+        verify_engine_archive(&part, size, sha256)?;
+    }
 
     let _ = app.emit(
         "llama-engine:progress",
@@ -235,6 +278,9 @@ pub(crate) async fn install_engine(app: &tauri::AppHandle) -> Result<(), String>
         }
         // Linux/macOS 压缩包带顶层 `llama-*/bin/`，定位 llama-server 所在目录。
         let server_dir = locate_engine_server_dir(&extract_for_task)?;
+        // rename 替换前先停运行中的引擎：Windows 下运行中的 llama-server
+        // 占用 bin 目录文件，rename 会失败。
+        stop_engine_if_running()?;
         swap_engine_files(&server_dir, &dest_bin)
     })
     .await
@@ -275,28 +321,80 @@ fn locate_engine_server_dir(extract_dir: &Path) -> Result<PathBuf, String> {
     Err(format!("压缩包内未找到 {name}"))
 }
 
-/// 只搬 llama-server + 同目录共享库（不拷贝其它平台目录）。
+/// 引擎运行/启动中则停止并等待 watcher 收口（rename 替换的前置条件，
+/// 见 `swap_engine_files`）。仅停引擎，不影响后续手动/自动再启动。
+fn stop_engine_if_running() -> Result<(), String> {
+    let phase = super::server::runtime_snapshot().phase;
+    if phase != "running" && phase != "starting" {
+        return Ok(());
+    }
+    super::server::stop();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let phase = super::server::runtime_snapshot().phase;
+        if phase != "running" && phase != "starting" {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("停止运行中的引擎超时，无法替换引擎文件".to_string());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// 原子替换引擎文件：先把 llama-server + 同目录共享库复制到同级 staged
+/// 目录（与 bin 同分区），再 rename 整体交换——同分区 rename 原子，旧目录
+/// 先改名备份，成功后删除。任一步失败时清理 staged 并尽力恢复旧引擎目录，
+/// 保证旧引擎仍可用。
 fn swap_engine_files(src_dir: &Path, dest_dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dest_dir).map_err(|e| format!("创建引擎目录失败: {e}"))?;
+    let Some(parent) = dest_dir.parent() else {
+        return Err("引擎目录无父目录".to_string());
+    };
+    let staged = parent.join("bin.staged");
+    let backup = parent.join("bin.old");
+    let _ = std::fs::remove_dir_all(&staged);
+    std::fs::create_dir_all(&staged).map_err(|e| format!("创建引擎暂存目录失败: {e}"))?;
     let mut copied = 0usize;
-    for entry in std::fs::read_dir(src_dir).map_err(|e| format!("读取引擎目录失败: {e}"))? {
-        let entry = entry.map_err(|e| format!("读取引擎目录条目失败: {e}"))?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
+    let stage_result = (|| -> Result<(), String> {
+        for entry in std::fs::read_dir(src_dir).map_err(|e| format!("读取引擎目录失败: {e}"))?
+        {
+            let entry = entry.map_err(|e| format!("读取引擎目录条目失败: {e}"))?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let dest = staged.join(&name);
+            std::fs::copy(&path, &dest)
+                .map_err(|e| format!("复制引擎文件 {} 失败: {e}", name.to_string_lossy()))?;
+            if name == platform::engine_binary_name() {
+                platform::make_executable(&dest)?;
+            }
+            copied += 1;
         }
-        let name = entry.file_name();
-        let dest = dest_dir.join(&name);
-        std::fs::copy(&path, &dest)
-            .map_err(|e| format!("复制引擎文件 {} 失败: {e}", name.to_string_lossy()))?;
-        if name == platform::engine_binary_name() {
-            platform::make_executable(&dest)?;
+        if copied == 0 {
+            return Err("压缩包内未找到引擎文件".to_string());
         }
-        copied += 1;
+        Ok(())
+    })();
+    if let Err(error) = stage_result {
+        let _ = std::fs::remove_dir_all(&staged);
+        return Err(error);
     }
-    if copied == 0 {
-        return Err("压缩包内未找到引擎文件".to_string());
+    let _ = std::fs::remove_dir_all(&backup);
+    if dest_dir.exists() {
+        if let Err(e) = std::fs::rename(dest_dir, &backup) {
+            let _ = std::fs::remove_dir_all(&staged);
+            return Err(format!("备份旧引擎目录失败: {e}"));
+        }
     }
+    if let Err(e) = std::fs::rename(&staged, dest_dir) {
+        // 新目录落位失败：尽力恢复旧引擎目录，保证引擎仍可运行。
+        let _ = std::fs::rename(&backup, dest_dir);
+        let _ = std::fs::remove_dir_all(&staged);
+        return Err(format!("替换引擎目录失败: {e}"));
+    }
+    let _ = std::fs::remove_dir_all(&backup);
     Ok(())
 }
 
@@ -330,9 +428,12 @@ async fn install_asset(
     model_id: &str,
 ) -> Result<(), String> {
     let dest = models_dir().join(asset.filename);
-    if model_file_verified(&dest, asset) {
+    // 安装前检查走完整校验（size + 全量 sha256），与状态热路径的轻量
+    // 检查区分开：已验证过的资产命中 VERIFY_CACHE，不会重复 hash。
+    if model_file_verified_fully(&dest, asset) {
         return Ok(());
     }
+    ensure_disk_space(&models_dir(), asset.expected_size)?;
     let tmp = dest.with_extension("part");
     let _ = std::fs::remove_file(&tmp);
     let mut last_err = None;
@@ -370,7 +471,14 @@ async fn install_asset(
                         let _ = std::fs::remove_file(&tmp);
                         return Err("已取消".to_string());
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        // size/sha256 校验失败不再直接放弃：删掉 .part、记录
+                        // 原因、换下一个候选源（镜像内容错配/被劫持时可经其他
+                        // 源恢复）；所有源都失败才由循环尾汇总报错。fail closed
+                        // 不变：校验失败绝不落盘，任何源都绕不过校验。
+                        let _ = std::fs::remove_file(&tmp);
+                        last_err = Some(error);
+                    }
                 }
             }
             Err(error) => {
@@ -534,7 +642,8 @@ fn emit_progress(
     );
 }
 
-/// 尺寸 + sha256 校验后原子改名落盘。
+/// 尺寸 + sha256 校验后原子改名落盘（fail closed：不匹配即删除 `.part` 报错）。
+/// 校验通过后把结果写入 VERIFY_CACHE，状态热路径不再重复全量 hash。
 fn verify_and_promote(tmp: &Path, dest: &Path, asset: &ModelAsset) -> Result<(), String> {
     let meta = std::fs::metadata(tmp).map_err(|e| format!("读取下载文件信息失败: {e}"))?;
     if asset.expected_size > 0 && meta.len() != asset.expected_size {
@@ -545,30 +654,114 @@ fn verify_and_promote(tmp: &Path, dest: &Path, asset: &ModelAsset) -> Result<(),
             meta.len()
         ));
     }
-    if let Some(expected) = asset_sha256(asset) {
-        let got = sha256_file(tmp)?;
-        if !got.eq_ignore_ascii_case(&expected) {
-            let _ = std::fs::remove_file(tmp);
-            return Err(format!(
-                "模型校验失败(sha256 不匹配): 期望 {expected:.12} 实际 {got:.12}"
-            ));
-        }
+    let expected = asset_sha256(asset);
+    let got =
+        crate::platform::hashing::sha256_file(tmp).map_err(|e| format!("读取下载文件失败: {e}"))?;
+    if !got.eq_ignore_ascii_case(&expected) {
+        let _ = std::fs::remove_file(tmp);
+        return Err(format!(
+            "模型校验失败(sha256 不匹配): 期望 {expected:.12} 实际 {got:.12}"
+        ));
     }
     std::fs::rename(tmp, dest).map_err(|e| format!("落盘模型文件失败: {e}"))?;
+    // 安装完成的文件已强制通过完整性校验，回填缓存供状态路径直接消费。
+    if let Ok(meta) = std::fs::metadata(dest) {
+        remember_verified(dest, meta.len(), meta.modified().ok(), true);
+    }
     Ok(())
 }
 
-fn asset_sha256(asset: &ModelAsset) -> Option<String> {
-    std::env::var("PINVOU3_LLAMA_MODEL_SHA256")
-        .ok()
+/// 钉版引擎包的尺寸 + sha256 强制校验（fail closed：不匹配即删除 `.part` 报错）。
+fn verify_engine_archive(
+    path: &Path,
+    expected_size: u64,
+    expected_sha256: &str,
+) -> Result<(), String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("读取下载文件信息失败: {e}"))?;
+    if meta.len() != expected_size {
+        let _ = std::fs::remove_file(path);
+        return Err(format!(
+            "引擎包尺寸不符：期望 {expected_size} 实际 {}",
+            meta.len()
+        ));
+    }
+    let got = crate::platform::hashing::sha256_file(path)
+        .map_err(|e| format!("读取下载文件失败: {e}"))?;
+    if !got.eq_ignore_ascii_case(expected_sha256) {
+        let _ = std::fs::remove_file(path);
+        return Err(format!(
+            "引擎包校验失败(sha256 不匹配): 期望 {expected_sha256:.12} 实际 {got:.12}"
+        ));
+    }
+    Ok(())
+}
+
+/// 下载前检查目标目录所在卷的可用空间（要求 expected_size 的 1.2 倍余量）。
+/// 平台不支持查询或 expected_size 未知（0）时跳过。
+fn ensure_disk_space(dir: &Path, expected_size: u64) -> Result<(), String> {
+    if expected_size == 0 {
+        return Ok(());
+    }
+    let required = expected_size.saturating_mul(6) / 5;
+    let Some(available) = platform::available_disk_space(dir) else {
+        return Ok(());
+    };
+    if available < required {
+        return Err(format!(
+            "磁盘可用空间不足：下载约需 {:.1}GB（含 20% 余量），当前可用 {:.1}GB",
+            required as f64 / 1024.0 / 1024.0 / 1024.0,
+            available as f64 / 1024.0 / 1024.0 / 1024.0
+        ));
+    }
+    Ok(())
+}
+
+/// 资产 sha256：内置钉版值，dev 可用 env 覆盖——per-asset
+/// `PINVOU3_LLAMA_GGUF_SHA256` / `PINVOU3_LLAMA_MMPROJ_SHA256` 优先；
+/// 旧版 `PINVOU3_LLAMA_MODEL_SHA256`（一 hash 两用）保留为开发兜底。
+fn asset_sha256(asset: &ModelAsset) -> String {
+    asset_sha256_with(asset, |name| std::env::var(name).ok())
+}
+
+/// env 读取抽成参数，便于单测不依赖进程级 env（避免并行测试互相干扰）。
+fn asset_sha256_with(asset: &ModelAsset, env: impl Fn(&str) -> Option<String>) -> String {
+    let per_asset = if asset.filename.starts_with("mmproj") {
+        env("PINVOU3_LLAMA_MMPROJ_SHA256")
+    } else {
+        env("PINVOU3_LLAMA_GGUF_SHA256")
+    };
+    per_asset
         .filter(|s| !s.trim().is_empty())
-        .or_else(|| (!asset.sha256.is_empty()).then(|| asset.sha256.to_string()))
+        .or_else(|| env("PINVOU3_LLAMA_MODEL_SHA256").filter(|s| !s.trim().is_empty()))
+        .unwrap_or_else(|| asset.sha256.to_string())
 }
 
 /// 校验缓存（按 path + len + modified 失效；下载后替换文件会自然失效）。
 type VerifyKey = (PathBuf, u64, Option<std::time::SystemTime>);
 static VERIFY_CACHE: OnceLock<Mutex<HashMap<VerifyKey, bool>>> = OnceLock::new();
 
+fn verify_cache() -> &'static Mutex<HashMap<VerifyKey, bool>> {
+    VERIFY_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached_verified(key: &VerifyKey) -> Option<bool> {
+    verify_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(key)
+        .copied()
+}
+
+fn remember_verified(path: &Path, len: u64, modified: Option<std::time::SystemTime>, ok: bool) {
+    verify_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert((path.to_path_buf(), len, modified), ok);
+}
+
+/// 状态查询路径的轻量校验：只消费 VERIFY_CACHE，缓存未命中退化为
+/// size + mtime 存在性检查——文件完整性在安装/下载完成时已强制 sha256
+/// 校验（见 `verify_and_promote`），此处不对 GB 级文件重复全量 hash。
 pub(crate) fn model_file_verified(path: &Path, asset: &ModelAsset) -> bool {
     let Ok(meta) = std::fs::metadata(path) else {
         return false;
@@ -576,28 +769,28 @@ pub(crate) fn model_file_verified(path: &Path, asset: &ModelAsset) -> bool {
     if asset.expected_size > 0 && meta.len() != asset.expected_size {
         return false;
     }
-    let Some(expected) = asset_sha256(asset) else {
-        return true;
-    };
     let key = (path.to_path_buf(), meta.len(), meta.modified().ok());
-    if let Some(cached) = VERIFY_CACHE
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&key)
-        .copied()
-    {
-        return cached;
-    }
-    let Ok(got) = sha256_file(path) else {
+    cached_verified(&key).unwrap_or(true)
+}
+
+/// 安装路径的完整校验：size + 全量 sha256 比对（fail closed：hash 不匹配
+/// 即视为未安装，触发重新下载），结果写入 VERIFY_CACHE 供状态路径消费。
+fn model_file_verified_fully(path: &Path, asset: &ModelAsset) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
         return false;
     };
-    let ok = got.eq_ignore_ascii_case(&expected);
-    VERIFY_CACHE
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(key, ok);
+    if asset.expected_size > 0 && meta.len() != asset.expected_size {
+        return false;
+    }
+    let key = (path.to_path_buf(), meta.len(), meta.modified().ok());
+    if let Some(cached) = cached_verified(&key) {
+        return cached;
+    }
+    let expected = asset_sha256(asset);
+    let ok = crate::platform::hashing::sha256_file(path)
+        .map(|got| got.eq_ignore_ascii_case(&expected))
+        .unwrap_or(false);
+    remember_verified(path, meta.len(), meta.modified().ok(), ok);
     ok
 }
 
@@ -607,6 +800,8 @@ pub(crate) fn model_files_verified(spec: &LlamaModelSpec) -> bool {
 }
 
 /// 删除引擎二进制与同目录共享库（保留 bin 目录本身），返回删除的文件数。
+/// 一并清理 swap_engine_files 中途失败可能残留的 bin.old/bin.staged 临时
+/// 目录（与 bin 同级），否则重装时 staged 目录会带脏残留起步。
 /// 引擎可经「下载引擎」随时重装。
 pub(crate) fn delete_engine_files() -> Result<u32, String> {
     let mut removed = 0u32;
@@ -621,6 +816,14 @@ pub(crate) fn delete_engine_files() -> Result<u32, String> {
             std::fs::remove_file(&path)
                 .map_err(|e| format!("删除引擎文件失败 {}: {e}", path.display()))?;
             removed += 1;
+        }
+    }
+    if let Some(parent) = dir.parent() {
+        for leftover in [parent.join("bin.old"), parent.join("bin.staged")] {
+            if leftover.exists() {
+                std::fs::remove_dir_all(&leftover)
+                    .map_err(|e| format!("删除引擎临时目录失败 {}: {e}", leftover.display()))?;
+            }
         }
     }
     Ok(removed)
@@ -714,22 +917,6 @@ fn safe_join(base: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(base.join(path))
 }
 
-fn sha256_file(path: &Path) -> Result<String, String> {
-    let mut file = std::fs::File::open(path).map_err(|e| format!("打开文件失败: {e}"))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|e| format!("读取文件失败: {e}"))?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(crate::platform::encoding::hex_lower(&hasher.finalize()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -741,6 +928,9 @@ mod tests {
             assert!(ids.insert(spec.id), "duplicate model id {}", spec.id);
             assert!(!spec.gguf.filename.is_empty());
             assert!(!spec.mmproj.filename.is_empty());
+            // 完整性强制校验依赖内置钉版 digest，不允许回退为空
+            assert!(!spec.gguf.sha256.is_empty());
+            assert!(!spec.mmproj.sha256.is_empty());
             assert!(spec.gguf.primary_url.starts_with("https://"));
             assert!(spec.gguf.mirror_url.starts_with("https://"));
             assert!(spec.mmproj.primary_url.starts_with("https://"));
@@ -792,33 +982,103 @@ mod tests {
     }
 
     #[test]
-    fn model_file_verified_skips_sha_when_empty_and_checks_size() {
-        let tmp = temporary_dir("verify");
+    fn model_file_verified_fully_rejects_hash_mismatch() {
+        let tmp = temporary_dir("verify-full");
+        std::fs::create_dir_all(&tmp).expect("mkdir");
+        let content = vec![0u8; 16];
+        // 每条断言用独立文件，避免同 key 命中 VERIFY_CACHE 干扰。
+        let bad = tmp.join("bad.bin");
+        std::fs::write(&bad, &content).expect("write");
+        let good = tmp.join("good.bin");
+        std::fs::write(&good, &content).expect("write");
+        let real_sha = crate::platform::hashing::sha256_file(&good).expect("sha256");
+        let asset = ModelAsset {
+            filename: "model.bin",
+            expected_size: 16,
+            sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+            primary_url: "",
+            mirror_url: "",
+            fallback_url: "",
+        };
+        // fail closed：hash 不匹配即视为未安装
+        assert!(!model_file_verified_fully(&bad, &asset));
+        let correct = ModelAsset {
+            sha256: Box::leak(real_sha.into_boxed_str()),
+            ..asset
+        };
+        assert!(model_file_verified_fully(&good, &correct));
+        // 尺寸不符同样拒绝
+        let wrong_size = ModelAsset {
+            expected_size: 17,
+            ..correct
+        };
+        assert!(!model_file_verified_fully(&good, &wrong_size));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn model_file_verified_status_path_uses_cache_or_size_only() {
+        let tmp = temporary_dir("verify-status");
+        std::fs::create_dir_all(&tmp).expect("mkdir");
         let path = tmp.join("model.bin");
         std::fs::write(&path, vec![0u8; 16]).expect("write");
         let asset = ModelAsset {
             filename: "model.bin",
             expected_size: 16,
-            sha256: "",
+            sha256: "0000000000000000000000000000000000000000000000000000000000000000",
             primary_url: "",
             mirror_url: "",
             fallback_url: "",
         };
+        // 状态热路径：缓存未命中退化为 size 检查（完整性在安装时已强制校验），
+        // 即使此处 sha256 故意填错也不做全量 hash。
         assert!(model_file_verified(&path, &asset));
-        let wrong = ModelAsset {
+        // 缓存里的否定结果被消费（模拟安装时校验失败已写入缓存的场景）
+        let meta = std::fs::metadata(&path).expect("meta");
+        remember_verified(&path, meta.len(), meta.modified().ok(), false);
+        assert!(!model_file_verified(&path, &asset));
+        // 尺寸不符恒拒绝
+        let wrong_size = ModelAsset {
             expected_size: 17,
             ..asset
         };
-        assert!(!model_file_verified(&path, &wrong));
+        assert!(!model_file_verified(&path, &wrong_size));
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn asset_sha256_prefers_per_asset_env_then_legacy_then_builtin() {
+        let gguf = &MODEL_Q4_K_M.gguf;
+        let mmproj = &MODEL_Q4_K_M.mmproj;
+        let env = |name: &str| match name {
+            "PINVOU3_LLAMA_GGUF_SHA256" => Some("gguf-override".to_string()),
+            "PINVOU3_LLAMA_MMPROJ_SHA256" => Some("mmproj-override".to_string()),
+            "PINVOU3_LLAMA_MODEL_SHA256" => Some("legacy-override".to_string()),
+            _ => None,
+        };
+        // per-asset env 按资产类型分流，互不串用
+        assert_eq!(asset_sha256_with(gguf, env), "gguf-override");
+        assert_eq!(asset_sha256_with(mmproj, env), "mmproj-override");
+        // 仅旧版通用 env 时兜底生效
+        let legacy_only = |name: &str| {
+            (name == "PINVOU3_LLAMA_MODEL_SHA256").then(|| "legacy-override".to_string())
+        };
+        assert_eq!(asset_sha256_with(gguf, legacy_only), "legacy-override");
+        assert_eq!(asset_sha256_with(mmproj, legacy_only), "legacy-override");
+        // 无 env 时用内置钉版值
+        let no_env = |_: &str| Option::<String>::None;
+        assert_eq!(asset_sha256_with(gguf, no_env), gguf.sha256);
+        assert!(!asset_sha256_with(gguf, no_env).is_empty());
     }
 
     fn temporary_dir(label: &str) -> PathBuf {
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        std::env::temp_dir().join(format!(
+        let dir = std::env::temp_dir().join(format!(
             "pinvou-llama-{label}-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
-        ))
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
     }
 }
