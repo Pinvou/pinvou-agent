@@ -1912,9 +1912,11 @@ impl Pinvou3Bridge {
         config
     }
 
-    /// 注入硬拦截 hook：ToolCallBefore 时 spawn 一个 shell 脚本检查 tool args
-    /// 是否触碰敏感目录（~/.ssh / ~/.gnupg / ~/.aws / 等），命中 exit 1
-    /// 让上游拒绝该 tool 调用。脚本本体在 bundle 中,首次启动解包到
+    /// 注入连接器自省纠正 hook：ToolCallBefore 时 spawn bundle 脚本，把技能型
+    /// 连接器被误当 MCP 自省的调用纠正回模型（exit 2 + stdout JSON reason，
+    /// Hooks v2 契约）。原脚本承担的敏感目录/危险命令/sudo 硬拦截段已迁移至
+    /// execpolicy 规则引擎（`safety_deny_rules`），脚本不再做硬拦截。
+    /// 脚本本体在 bundle 中,首次启动解包到
     /// `~/.pinvou3/bundle/deny_sensitive_paths.sh`。
     fn build_hooks_config(&self) -> HooksConfig {
         #[cfg(windows)]
@@ -3348,9 +3350,17 @@ mod tests {
     #[test]
     fn session_exec_policy_denies_migrated_hook_targets_under_bash_tool() {
         let bridge = fixture_bridge();
-        let engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
-            bridge.scope_deny_ruleset("sess-plain")
-        ]);
+        // 组成与 scope_deny_ruleset 完全一致，唯 sudo 段注入「关闭态」而非读
+        // 宿主盘：/etc/sudoers.d/pinvou3 存在的 Linux 真机（超级权限已开）会让
+        // 读盘快照漏掉 sudo 规则，回归测试必须与宿主状态解耦才可重复。
+        let mut rules = bridge.cli_deny_rules("sess-plain");
+        rules.extend(bridge.skill_script_deny_rules("sess-plain"));
+        rules.extend(crate::features::assistant::safety_deny_rules::safety_deny_rules_for(false));
+        let ruleset =
+            crate::features::assistant::safety_deny_rules::ruleset_with_denied_prefix_promotion(
+                rules,
+            );
+        let engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![ruleset]);
         // Never 是最严口径（deny-always-wins 才放行不通过）；Bypass/Auto 的
         // AskForApproval 映射为 OnFailure，deny 同样短路。
         let check = |command: &str| {

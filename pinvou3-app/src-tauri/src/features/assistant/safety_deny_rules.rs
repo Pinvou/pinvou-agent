@@ -11,15 +11,18 @@
 //!
 //! ## 为什么选 EngineConfig.exec_policy_engine（程序化注入）
 //!
-//! 底座 embedder 通道 `EngineConfig.exec_policy_engine` 是原生注入点：引擎在
-//! 每次工具调用前（先于审批、先于 hook）做 token 级 + shell 展开匹配，typed
-//! `Deny` 短路于一切审批模式（含 YOLO/Never），且天然覆盖 hook 够不着的嵌套
-//! 子代理。本会话已有先例：`scope_deny_ruleset`（连接器/技能门禁）走同一通道。
+//! 底座 embedder 通道 `EngineConfig.exec_policy_engine` 是原生注入点：引擎对
+//! 主线会话的每次工具调用做 token 级 + shell 展开/剥壳匹配，typed `Deny`
+//! 短路于一切审批模式（含 YOLO/Never）。求值点在 ToolCallBefore hook 之后、
+//! 审批之前（两道防线任一命中都会拦，互不依赖）。注意覆盖面以主线会话为界：
+//! 嵌套子代理的工具调用不经过本检查（底座子代理执行器未接 execpolicy，见
+//! 已知差异）。本会话已有先例：`scope_deny_ruleset`（连接器/技能门禁）走
+//! 同一通道。
 //!
 //! 匹配语义（`crates/execpolicy`）：
 //! - `command` 型 deny 规则被提升进 `denied_prefixes`（deny-always-wins）；
 //! - `deny_scan_targets` 对命令做 shell 展开（剥 sudo/doas/env/nohup/timeout/
-//!   xargs 等 16 种 wrapper、引号/命令替换/链式分段），所以 `command = "sudo"`
+//!   xargs 等 18 种 wrapper、引号/命令替换/链式分段），所以 `command = "sudo"`
 //!   一条规则即覆盖 `sudo rm`、`/usr/bin/sudo`、`sudo -u root …`、链式段等
 //!   全部变体；
 //! - 规则工具名 `exec_shell` 经 `canonical_action_alias` 匹配 `Bash` 家族
@@ -29,27 +32,47 @@
 //!
 //! | 原段 | 迁移形态 |
 //! |---|---|
-//! | 1. SENSITIVE_DIRS 路径子串（全工具 ARGS） | `read`/`grep`/`list` × 目录变体 + `find` `-path`/`-ipath` 遍历守卫 |
+//! | 1. SENSITIVE_DIRS 路径子串（全工具 ARGS） | `read`/`grep`/`list` × 目录变体 + `find <敏感目录>` `-path`/`-ipath` 遍历守卫 |
 //! | 2. SENSITIVE_NAMES 文件名子串 | `read`/`grep` × 文件名变体 |
 //! | 3. DANGEROUS_CMDS（原已失效） | `cat`/`less`/`more`/`head`/`tail` × 敏感文件 + `ssh-keygen`/`gpg --export-secret-keys` 命令词 |
 //! | 4. 超级权限关闭态拦 sudo（原已失效） | `sudo`（+`sudoedit`）命令词 deny，规则集按 `super_permission::is_enabled()` 快照状态增删 |
 //!
 //! 两个细节：
-//! - 只发只读查看器（`cat`/`less`/…）。原 hook 是全 ARGS 子串匹配（写也会被
-//!   误伤），但命令前缀通道做子串/`find`/tee 守卫的误拦面太大（模型经常把
-//!   `~/.aws` 目录整体传给构建工具），v1 收敛到「密钥/凭证的读取泄露」。
-//! - 规则 1/2/4 集合固定、规则 3 补齐原 hook 漏掉的 `/etc/sudoers.d/`，面不
-//!   小于原 hook（deny 面宁可保守不可放宽）。
+//! - 只发只读查看器（`cat`/`less`/…）。原 hook 是全 ARGS 子串匹配，活着的
+//!   第 1/2 段连写/转写向量（`cp`/`tar`/`rsync` 触碰敏感目录）也一并拦；命令
+//!   前缀通道做这类守卫的误拦面太大（模型经常把 `~/.aws` 目录整体传给构建
+//!   工具），v1 有意收敛到「密钥/凭证的读取泄露」——整体 deny 面由此小于
+//!   原 hook，收窄项全部登记在下一节，不做无披露的静默放宽。
+//! - 复活面：规则 3（含补齐原 hook 漏掉的 `/etc/sudoers.d/`）与规则 4 原本
+//!   已静默失效，迁移后重新生效；规则 1/2 在「查看器读取」子面上不小于
+//!   原 hook 的同形态命中。
 //!
 //! ## v1 已知语义差异（详见 PR 描述）
 //!
 //! - Bash 命令体按 token 前缀匹配，覆盖不了 `xxd /etc/shadow` 这类冷门查看器
 //!   /非查看器转写（原 hook 的宽子串反之会误拦一切含 `credentials` 的命令）；
-//! - `File` 工具路径规则受工作区归一化限制，家目录绝对路径不生成规则（原 hook
-//!   曾以子串形态覆盖 File 调用）；
+//! - 写/转写/外传向量不覆盖：`cp`/`tar`/`rsync`/`scp` 触碰敏感目录原被第
+//!   1/2 段子串拦，v1 无对应规则；
+//! - 非 `~`/`$HOME` 前缀的绝对路径不覆盖：`cat /root/.ssh/id_rsa`、其他用户
+//!   家目录形态（原 hook 子串 `/.ssh/` 可拦）；
+//! - 敏感目录的子路径文件仅部分覆盖：文件级规则只发 `~/.ssh` 五个键名与
+//!   `~/.aws/credentials`，`cat ~/.kube/config`、`~/.docker/config.json`、
+//!   Chrome Cookies 等不再拦（原 hook 子串可拦）；
+//! - 非 Bash 工具面不覆盖：原第 1/2 段对所有工具的 ARGS 子串生效（fetch/
+//!   rlm/tasks/Git/MCP 等），v1 只键到 `exec_shell` 与 File 读族；
+//! - Windows 面未迁移：原 `.ps1` 第 1/2 段的 `%appdata%\microsoft\credentials`
+//!   /`protect` 等路径拼写与凭证命令词（`cmdkey`/`vaultcmd`/`get-credential`
+//!   等）无对应规则。Windows 上 Bash 工具默认经 pwsh/cmd 等系统登录 shell
+//!   执行，模型写
+//!   Windows 原生拼写时不命中（POSIX 拼写的规则仍是纯文本命中）；
+//! - 嵌套子代理的工具调用不经过 execpolicy（见上），YOLO 下子代理不受本
+//!   规则约束——待底座在子代理执行器接入检查后闭合；
+//! - `File` 工具路径规则受工作区归一化限制，家目录绝对路径不生成规则（原
+//!   hook 曾以子串形态覆盖 File 调用）；
 //! - 规则 4 是规则集构建时的状态快照：中途切换超级权限开关的会话内热刷依赖
 //!   `set_super_permission` 触发 `refresh_permission_rulesets`，与既有
-//!   scope 规则同口径。
+//!   scope 规则同口径。开关命令未串行化，并发连打存在窄窗口的陈旧快照，
+//!   以最终一次写盘后的任一次重算/引擎重启为准。
 
 use codewhale_execpolicy::{PermissionAction, ToolAskRule};
 
@@ -94,8 +117,9 @@ const SENSITIVE_ABS_FILES: &[&str] = &[
     "/etc/sudoers.d/",    // 补齐：原 hook 漏掉的 sudoers.d 目录
 ];
 
-/// 只读文本查看器：第 1/2/3 段共用。原 hook 事实上只拦得住查看泄露
-/// （DANGEROUS_CMDS 全是 cat/gpg 读取形态），这里显式化并扩到常用变体。
+/// 只读文本查看器：第 1/2/3 段共用。原第 3 段全是 cat/gpg 读取形态；活着的
+/// 第 1/2 段子串拦得更宽（含写/转写向量，见模块注释已知差异），这里显式化
+/// 只读查看器并扩到常用变体。
 /// 不含 `grep`：其路径在参数位（`grep PATTERN path`），命令前缀通道无法
 /// 表达（已知差异，PR 登记）。
 const READ_VIEWERS: &[&str] = &["cat", "less", "more", "head", "tail"];
@@ -137,7 +161,10 @@ fn home_sensitive_path(dir_or_file: &str) -> Vec<String> {
 ///
 /// 底座参数位是**精确 token 匹配**：`cat ~/.ssh` 不匹配 `cat ~/.ssh/`（带尾
 /// 斜杠的目录拼写），也不匹配 `cat ~/.ssh/id_rsa`（子路径）。因此目录规则要
-/// 同时发两种拼写，子路径命中由 `sensitive_name_read_rules` 的文件级规则补。
+/// 同时发两种拼写；子路径（`cat ~/.ssh/id_rsa`）仅当文件名在
+/// `sensitive_name_read_rules` 清单内才命中（目前 `~/.ssh` 五个键名 +
+/// `~/.aws/credentials`），其余敏感目录的子路径文件（`~/.kube/config` 等）
+/// 是已知缺口（模块注释已登记）。
 fn viewer_rules_for(path_variants: &[String]) -> Vec<ToolAskRule> {
     let mut rules = Vec::new();
     for path in path_variants {
@@ -236,12 +263,10 @@ fn dangerous_command_rules() -> Vec<ToolAskRule> {
 /// 实时读盘，macOS/Windows 恒 false）。规则集构建时快照状态。`sudo` 单命令词
 /// 经底座 deny-scan 覆盖 `/usr/bin/sudo`、`sudo -u root …`、`sudo bash -c …`、
 /// 链式段等全部变体；sudoedit 同理。开启态不生成（sudo 免密直跑，不拦）。
-fn sudo_block_rules() -> Vec<ToolAskRule> {
-    sudo_block_rules_for(crate::platform::super_permission::is_enabled())
-}
-
-/// [`sudo_block_rules`] 的两态可注入形态（测试用）：关闭态生成 sudo/sudoedit
-/// deny，开启态（NOPASSWD 免密，sudo 不阻塞）不生成。
+///
+/// [`sudo_block_rules_for`] 是其两态可注入形态（测试/桥接回归注入固定状态，
+/// 不读宿主盘）：关闭态生成 sudo/sudoedit deny，开启态（NOPASSWD 免密，sudo
+/// 不阻塞）不生成。
 fn sudo_block_rules_for(enabled: bool) -> Vec<ToolAskRule> {
     if enabled {
         return Vec::new();
@@ -252,18 +277,17 @@ fn sudo_block_rules_for(enabled: bool) -> Vec<ToolAskRule> {
     ]
 }
 
-/// `find` 目录遍历守卫：规则 1/2 覆盖「查看器直接读路径」形态，但
-/// `find -path` 把敏感目录整个吐出来是同级别的泄露。`find` 的常规用法
-/// （`-name`/`-type` 等）不受影响——`-path`/`-ipath` 是必须显式传的谓词。
-/// 覆盖常见搜索根（~/$HOME/./..//）与敏感目录本体两种形态。
+/// `find` 目录遍历守卫：只守「敏感目录本身作为搜索根 + `-path`/`-ipath`」
+/// 形态（原 hook 以尾斜杠子串拦同形态，本规则面只增不减）。
+///
+/// 刻意不发「通用搜索根 + `-path`」前缀规则（`find . -path`、`find / -path`
+/// 等）：denied_prefixes 是 token 前缀匹配，`find . -path ./x -prune` 与
+/// `find . -not -path '…'` 这类 find 标准排除惯用法会被确定性硬拒，且 typed
+/// Deny 无审批出路，误拦面远大于泄露面。通用搜索根下的名字发现（
+/// `find ~ -name id_rsa`）与 grep 参数位同属 token 通道表达边界，登记为
+/// future work。
 fn find_traversal_rules() -> Vec<ToolAskRule> {
-    const SEARCH_ROOTS: &[&str] = &["~", "$HOME", ".", "..", "/"];
     let mut rules = Vec::new();
-    for root in SEARCH_ROOTS {
-        for flag in ["-path", "-ipath"] {
-            rules.push(deny_cmd(format!("find {root} {flag}")));
-        }
-    }
     for dir in SENSITIVE_DIR_NAMES {
         let rel = dir.strip_prefix("~/").unwrap_or(dir);
         for base in home_dir_variants() {
@@ -280,10 +304,11 @@ fn find_traversal_rules() -> Vec<ToolAskRule> {
 /// 规则。
 ///
 /// 工作区归一化只接受工作区内路径：家目录绝对路径（`~/.ssh` 的真实展开）
-/// 生成不了可匹配规则，v1 只对「敏感目录名 + `/`」的相对路径形态发规则——
-/// 会话工作区里的 `.ssh/`、`credentials` 等同名文件仍被硬拒。Bash 命令体里
-/// 的家目录路径由上面的命令规则覆盖。这是 v1 的已知语义差异（原 hook 以
-/// ARGS 子串覆盖 File 调用），登记在 PR 描述。
+/// 生成不了可匹配规则，v1 只对敏感目录/文件名的**工作区根相对路径**发规则
+/// （path 匹配是归一化后的精确相等）——工作区根下的同名文件/目录（
+/// `id_rsa`、`.ssh/`）仍被硬拒；嵌套相对路径（`docs/secrets/`）按精确相等
+/// 不命中。Bash 命令体里的家目录路径由上面的命令规则覆盖。这是 v1 的已知
+/// 语义差异（原 hook 以 ARGS 子串覆盖 File 调用），登记在 PR 描述。
 fn file_tool_path_rules() -> Vec<ToolAskRule> {
     let mut rules = Vec::new();
     for name in SENSITIVE_FILE_NAMES {
@@ -307,12 +332,19 @@ fn file_tool_path_rules() -> Vec<ToolAskRule> {
 /// 调用方（bridge）把它并入 scope 门禁规则集的同一 `Ruleset`。
 #[must_use]
 pub fn safety_deny_rules() -> Vec<ToolAskRule> {
+    safety_deny_rules_for(crate::platform::super_permission::is_enabled())
+}
+
+/// [`safety_deny_rules`] 的超级权限两态可注入形态：`enabled=true`（NOPASSWD
+/// 免密直跑）不生成 sudo 规则。生产路径读盘快照；测试注入固定状态，避免
+/// 宿主机 `/etc/sudoers.d/pinvou3` 的真实状态影响可重复性。
+pub(crate) fn safety_deny_rules_for(super_permission_enabled: bool) -> Vec<ToolAskRule> {
     let mut rules = sensitive_dir_read_rules();
     rules.extend(sensitive_name_read_rules());
     rules.extend(dangerous_command_rules());
     rules.extend(find_traversal_rules());
     rules.extend(file_tool_path_rules());
-    rules.extend(sudo_block_rules());
+    rules.extend(sudo_block_rules_for(super_permission_enabled));
     rules
 }
 
@@ -336,10 +368,12 @@ pub(crate) fn ruleset_with_denied_prefix_promotion(
     codewhale_execpolicy::Ruleset::user(vec![], denied).with_ask_rules(rules)
 }
 
-/// 仅供测试/调试：规则集的 `Ruleset` 形态。
+/// 仅供调试：规则集的 `Ruleset` 形态。
 #[cfg(test)]
-pub(crate) fn safety_deny_ruleset() -> codewhale_execpolicy::Ruleset {
-    ruleset_with_denied_prefix_promotion(safety_deny_rules())
+pub(crate) fn safety_deny_ruleset_with_state(
+    super_permission_enabled: bool,
+) -> codewhale_execpolicy::Ruleset {
+    ruleset_with_denied_prefix_promotion(safety_deny_rules_for(super_permission_enabled))
 }
 
 #[cfg(test)]
@@ -348,7 +382,9 @@ mod tests {
     use codewhale_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
 
     fn engine() -> ExecPolicyEngine {
-        ExecPolicyEngine::with_rulesets(vec![safety_deny_ruleset()])
+        // 注入「关闭态」而非读宿主盘：真机开了免密（/etc/sudoers.d/pinvou3
+        // 存在）时 sudo 规则不生成，测试必须与宿主状态解耦才可重复。
+        ExecPolicyEngine::with_rulesets(vec![safety_deny_ruleset_with_state(false)])
     }
 
     fn check(engine: &ExecPolicyEngine, command: &str) -> codewhale_execpolicy::ExecPolicyDecision {
@@ -362,12 +398,6 @@ mod tests {
                 sandbox_mode: None,
             })
             .unwrap()
-    }
-
-    fn sudo_rules_present() -> bool {
-        // macOS/Windows 测试机上超级权限恒为关闭态 → sudo 规则必然存在。
-        // （CI 只有 mac/linux runner；linux 上 /etc/sudoers.d/pinvou3 不存在。）
-        sudo_block_rules().len() == 2
     }
 
     /// sudo 两态规则快照：关闭态生成 sudo/sudoedit deny；开启态（NOPASSWD）
@@ -397,9 +427,11 @@ mod tests {
 
     #[test]
     fn rule_snapshot_is_stable() {
-        let rules = safety_deny_rules();
-        // 规则总数按段核对：目录 10×2 家拼写×5 查看器 + find 10×2×2 + 文件名 8×2×5
-        // + 绝对路径(5-1 家)… 快照断言用总量 + 关键成员，避免脆断言到逐条。
+        let rules = safety_deny_rules_for(false);
+        // 规则总数按段核对（关闭态）：目录 10×4 拼写×5 查看器=200 + 文件名
+        // 11×2×5=110 + 绝对路径 10 拼写×5+3 命令=53 + find 敏感目录根 10×2×2=40
+        // + File 11×4+10=54 + sudo 2 = 459。快照断言用总量 + 关键成员，避免
+        // 脆断言到逐条。
         let expected_min = 100;
         assert!(
             rules.len() >= expected_min,
@@ -424,13 +456,26 @@ mod tests {
             "cat ~/.password-store/",
             "cat ~/.dws/",
             "cat ~/.tmeet/",
-            "find ~ -path",
-            "find . -ipath",
+            "find ~/.ssh -path",
+            "find ~/.ssh -ipath",
             "find $HOME/.ssh -path",
         ] {
             // 前缀规则核对：`head -n 5 ~/.gnupg/x` 类带 flag/参数形态由
             // 目录前缀规则覆盖（flag 感知 + 参数位 token 匹配）。
             assert!(commands.contains(&must), "缺少关键规则前缀: {must}");
+        }
+        // 通用搜索根的 find -path 前缀规则必须不存在：会确定性硬拒 find 的
+        // 标准排除惯用法（-path X -prune / -not -path）。
+        for must_not in [
+            "find ~ -path",
+            "find . -path",
+            "find . -ipath",
+            "find / -path",
+        ] {
+            assert!(
+                !commands.iter().any(|c| c.starts_with(must_not)),
+                "不应有通用根 find 规则: {must_not}"
+            );
         }
         // File 工具路径规则存在（工具名 = canonical read/grep/list）。
         let file_rules = rules
@@ -448,18 +493,13 @@ mod tests {
                 "缺少 File 路径规则 {tool} {path}"
             );
         }
-        // sudo 两态。
-        if sudo_rules_present() {
-            assert!(commands.contains(&"sudo"));
-            assert!(commands.contains(&"sudoedit"));
-        }
+        // 关闭态 sudo 两规则常驻（注入态，不依赖宿主盘）。
+        assert!(commands.contains(&"sudo"));
+        assert!(commands.contains(&"sudoedit"));
     }
 
     #[test]
     fn sudo_deny_covers_wrapper_and_path_spellings() {
-        if !sudo_rules_present() {
-            return; // 超级权限开启态（linux 真机开了免密）不生成 sudo 规则。
-        }
         let engine = engine();
         for cmd in [
             "sudo rm -rf /tmp/x",
@@ -467,6 +507,8 @@ mod tests {
             "sudo -u root cat /etc/passwd",
             "echo hi && sudo apt install x",
             "sudo bash -c 'whoami'",
+            // 自省形态同样被拦（与原 hook 第 4 段词边界正则同口径）。
+            "sudo -l",
             "sudoedit /etc/hosts",
         ] {
             let d = check(&engine, cmd);
@@ -475,6 +517,17 @@ mod tests {
         // 词边界：不含 sudo 的命令不误伤。
         assert!(check(&engine, "ls -la").allow);
         assert!(check(&engine, "echo sudoers-lecture").allow);
+    }
+
+    /// 开启态（NOPASSWD 免密）完整规则集不含 sudo 拦截：`sudo`/`sudoedit`
+    /// 引擎级放行。锁定规则 4 的两态快照语义在引擎层的表现。
+    #[test]
+    fn super_permission_enabled_ruleset_allows_sudo() {
+        let engine = ExecPolicyEngine::with_rulesets(vec![safety_deny_ruleset_with_state(true)]);
+        for cmd in ["sudo -l", "sudo apt update", "sudoedit /etc/hosts"] {
+            let d = check(&engine, cmd);
+            assert!(d.allow, "开启态不应拦: {cmd} -> {:?}", d.reason());
+        }
     }
 
     #[test]
@@ -500,8 +553,8 @@ mod tests {
             "gpg --export-secret-keys me",
             "gpg --armor --export-secret-keys me",
             "gpg --export-secret-subkeys me",
-            // find 遍历泄露。
-            "find ~ -path '*.ssh*' -print",
+            // find 遍历泄露（敏感目录作为搜索根）。
+            "find ~/.ssh -path '*id_rsa*' -print",
             "find $HOME/.ssh -ipath '*id_rsa*'",
             // 家目录下的 SENSITIVE_NAMES（原第 2 段）。
             "cat ~/.netrc",
@@ -528,6 +581,10 @@ mod tests {
             "head Cargo.toml",
             "find . -name '*.rs'",
             "find . -type f",
+            // find 的标准排除惯用法（-path 前缀规则的已知误拦形态）必须放行。
+            "find . -path ./node_modules -prune -o -type f -print",
+            "find / -path /proc -prune -o -name '*.log' -print",
+            "find . -not -path './node_modules/*' -type f",
             "ssh user@host",
             "git status",
             "echo credentials-rotation-guide",

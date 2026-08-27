@@ -344,8 +344,9 @@ pub const BROWSER_CORE_PROTOCOL_MJS: &str =
 // 编译期内嵌资源已收编到 `marketplace::mcp_catalog`（单一真相源：清单、释放、
 // 校验同一份数据）；未安装包不再每启动全量释放到 bundle/mcp-servers/（§4）。
 
-/// 内嵌的敏感目录拦截 shell 脚本——配合 bridge 注入的 hook 在 ToolCallBefore
-/// 时阻止 LLM 触碰 ~/.ssh/ ~/.gnupg/ 等。
+/// 内嵌的 bundle hook 脚本——配合 bridge 注入的 ToolCallBefore hook 做
+/// 技能型连接器 MCP 自省纠正。原脚本承担的敏感目录/危险命令/sudo 硬拦截
+/// 段已迁移至 execpolicy 规则引擎（features/assistant/safety_deny_rules）。
 pub const DENY_SENSITIVE_PATHS_SH: &str =
     include_str!("../../../../resources/common/bundle/deny_sensitive_paths.sh");
 pub const DENY_SENSITIVE_PATHS_PS1: &str =

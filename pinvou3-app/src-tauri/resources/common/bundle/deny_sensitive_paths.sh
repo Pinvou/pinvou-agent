@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pinvou3 抸能型连接器 MCP 自省纠正 hook
+# pinvou3 技能型连接器 MCP 自省纠正 hook
 #
 # 历史说明：本脚本曾是「敏感目录/危险命令/sudo」硬拦截防火墙（5 段规则）。
 # 自底座 v0.9.3 起模型/执行面只暴露 Bash 工具，第 3 段（DANGEROUS_CMDS）与
