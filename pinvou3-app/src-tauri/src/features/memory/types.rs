@@ -19,10 +19,13 @@ pub trait MemoryReviewModel {
     fn memory_base_url(&self) -> String;
     fn memory_api_key(&self) -> String;
     fn memory_model_preset(&self) -> ModelPreset;
-    /// UI locale（BCP 47 tag，如 "zh-Hans"/"en"/"ja"）。记忆复盘提示词本体是中文，
-    /// 按 locale 追加输出语言指令，与 review 侧 output_language_directive 先例
-    /// 对齐；zh-Hans 分支是每轮复盘的实际路径，en/ja 是换语言「稍后重启」后旧
-    /// 引擎快照窄窗口的防御纵深（可达性详见 memory_output_language_directive）。
+    /// UI locale (BCP 47 tag, e.g. "zh-Hans"/"en"/"ja"). The memory review prompt
+    /// body is Chinese, so an output-language directive is appended per locale,
+    /// mirroring the review-side `output_language_directive` precedent; the
+    /// zh-Hans branch is the live per-review path, while en/ja are
+    /// defense-in-depth for the narrow pre-switch engine-snapshot window after a
+    /// "restart later" locale switch (see memory_output_language_directive for
+    /// reachability).
     fn memory_locale_tag(&self) -> String;
 }
 

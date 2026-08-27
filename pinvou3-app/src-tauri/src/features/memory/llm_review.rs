@@ -115,22 +115,32 @@ ttl_days 规则：
 如果没有值得记的内容，输出 {"items":[]}。
 "#;
 
-/// 记忆复盘提示词的输出语言指令，按 UI locale 追加到 system prompt 末尾。
+/// Output-language directive for the memory review prompt, appended to the
+/// system prompt according to the UI locale.
 ///
-/// 同 review 侧 output_language_directive（features/review/mod.rs）的等价物：
-/// 提示词本体留中文（按收敛性精调过，逐句翻译会引入行为漂移），只让模型把
-/// **自然语言字段值**（content / reason）切到目标语言——JSON key、kind / topic /
-/// action 枚举值保持 ASCII。zh-Hans 及未知 locale → None（no-op，提示词原样）。
+/// Equivalent of the review-side `output_language_directive`
+/// (features/review/mod.rs): the prompt body stays Chinese (tuned for
+/// convergence; translating it line by line would introduce behavioral drift)
+/// and only the **natural-language field values** (`content` / `reason`) switch
+/// to the target language — JSON keys and `kind` / `topic` / `action` enum
+/// values stay ASCII. zh-Hans and unknown locales → None (no-op, prompt
+/// unchanged).
 ///
-/// 可达性说明：enforce_memory_locale_policy（platform/prefs/mod.rs）在每次
-/// load/save 都把非 zh-Hans UI 的 memory_enabled 压回 false，正常流程下 en/ja
-/// 用户不跑记忆复盘，本指令是防御纵深而非修复可达故障——zh-Hans 分支是每轮
-/// 复盘的实际路径（英文对话也强制中文 content，防漂移同 review 侧实测）；
-/// en/ja 分支只兜住「切到中文选稍后重启 → 重开记忆 → 旧引擎快照仍带旧
-/// locale」的窄窗口。
+/// Reachability: `enforce_memory_locale_policy` (platform/prefs/mod.rs) forces
+/// `memory_enabled` back to false for non-zh-Hans UI on every load/save, so in
+/// the normal flow en/ja users never run memory review. This directive is
+/// defense-in-depth mirroring the review-side precedent, not a fix for a
+/// reachable failure — the zh-Hans branch is the live per-review path (it
+/// hard-forces Chinese `content` even in English conversations, the same
+/// measured drift the review side hit); the en/ja branches only cover the
+/// narrow window where the locale was switched to Chinese with "restart later",
+/// memory was re-enabled, and a pre-switch engine snapshot still carries the
+/// old locale.
 pub(super) fn memory_output_language_directive(locale_tag: &str) -> Option<String> {
-    // zh-Hans：即使本轮对话是英文，content 也强制简体中文——中文 prompt 本体
-    // 不够硬，英文上下文下会漂成英文 content（review 侧实测同款问题）。
+    // zh-Hans: force `content` to Simplified Chinese even when the conversation
+    // is in English — the Chinese prompt body alone is not hard enough, and the
+    // values drift to English in English contexts (same issue measured on the
+    // review side).
     if locale_tag == "zh-Hans" {
         return Some(
             "\n\n## 输出语言(强制)\n\
@@ -143,7 +153,7 @@ pub(super) fn memory_output_language_directive(locale_tag: &str) -> Option<Strin
     let lang = match locale_tag {
         "en" => "English",
         "ja" => "Japanese (日本語)",
-        _ => return None, // 未知 locale → 提示词原样中文
+        _ => return None, // unknown locale → keep the prompt as-is (Chinese)
     };
     Some(format!(
         "\n\n## Output Language (HARD override)\n\
@@ -482,9 +492,10 @@ async fn request_llm_memory_review(
         "never_memory": never,
     })
     .to_string();
-    // 按 locale 追加输出语言指令,与 review 侧 output_language_directive 先例
-    // 对齐(防御纵深:非中文 UI 的记忆已被 enforce_memory_locale_policy 关闭,
-    // 可达性详见 memory_output_language_directive 文档)。
+    // Append the output-language directive per locale, mirroring the review-side
+    // output_language_directive precedent (defense-in-depth: memory is disabled
+    // for non-Chinese UIs by enforce_memory_locale_policy; see the
+    // memory_output_language_directive docs for reachability).
     let prompt = match memory_output_language_directive(&bridge.memory_locale_tag()) {
         Some(suffix) => format!("{LLM_REVIEW_PROMPT}{suffix}"),
         None => LLM_REVIEW_PROMPT.to_string(),

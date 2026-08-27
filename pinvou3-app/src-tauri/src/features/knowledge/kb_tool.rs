@@ -776,9 +776,11 @@ mod tests {
         assert!(parse_remote_source_ref("kbremote:bad:7:42:chunk:-1").is_none());
     }
 
-    /// kb_search(生产统一检索)结果头也必须带二进制来源禁令:模型看到片段不足时
-    /// 会试图用 File/Bash 全量展开 XLSX/DOCX/PPTX,该禁令此前只在 kb_open_source
-    /// 描述与 system reminder 里(回归:生产结果头漏了)。
+    /// The kb_search (production unified search) result header must also carry
+    /// the binary-source prohibition: when the snippets look insufficient the
+    /// model tries to fully expand XLSX/DOCX/PPTX via File/Bash. The rule used to
+    /// exist only in the kb_open_source description and the system reminder
+    /// (regression: the production result header missed it).
     #[test]
     fn unified_context_block_forbids_binary_source_expansion() {
         let unified = vec![UnifiedHit {
@@ -796,9 +798,10 @@ mod tests {
             block.contains("XLSX/DOCX/PPTX 等二进制来源")
                 && block.contains("禁止调用 `File(action=\"read\")`")
                 && block.contains("`Bash(action=\"run\")` 全量展开"),
-            "统一检索结果头必须带二进制来源禁令: {block}"
+            "unified search result header must carry the binary-source prohibition: {block}"
         );
-        // 带告警时禁令仍在:禁令位于固定头段文本内,告警只追加在其后,不会挤掉禁令。
+        // The prohibition survives warnings: it lives inside the fixed header
+        // text and warnings are appended after it, so they cannot displace it.
         let with_warnings = build_unified_context_block(&unified, &["远程服务离线".to_string()]);
         assert!(with_warnings.contains("部分来源暂时不可用"));
         assert!(with_warnings.contains("禁止调用 `File(action=\"read\")`"));

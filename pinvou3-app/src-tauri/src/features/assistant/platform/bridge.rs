@@ -55,10 +55,13 @@ fn shared_credential_store() -> &'static SystemCredentialStore {
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
 const SEPARATE_REASONING_FIELD: &str = "separate_field";
 
-// 多智能体是“主会话总协调、复杂任务最多再拆一层”的 agent 集群，不是
-// 无界递归树。普通对话继续沿用 CodeWhale 原始上限；仅开启多智能体的
-// 会话收紧资源预算。pub(crate)：每轮委派提醒（app/commands/multiagent.rs）
-// 的数字与之共用，避免提醒文案与 engine 实际上限漂移。
+// Multi-agent is an agent cluster where the main session stays the overall
+// coordinator and complex tasks nest at most one extra level — not an unbounded
+// recursive tree. Plain conversations keep the original CodeWhale caps; only
+// sessions with multi-agent enabled get a tighter resource budget. The tier
+// constants are pub(crate) so the per-turn delegation reminder
+// (app/commands/multiagent.rs) reads the same numbers and cannot drift from the
+// engine's actual caps.
 const MULTI_AGENT_MAX_SPAWN_DEPTH: u32 = 2;
 pub(crate) const MULTI_AGENT_WORK_MAX_CONCURRENT: usize = 4;
 pub(crate) const MULTI_AGENT_WORK_MAX_ADMITTED: usize = 8;

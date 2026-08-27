@@ -11,20 +11,24 @@ use super::prelude::*;
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::multiagent;
 
-/// 多智能体资源上限的每轮提醒数字（与 bridge.rs 的 MULTI_AGENT_* 常量一致）。
+/// Per-turn reminder numbers for the multi-agent resource caps (must match the
+/// MULTI_AGENT_* constants in bridge.rs).
 ///
-/// 会话分两档：Work 会话直属并行 4 / 全树准入 8；原生 Code 会话直属并行 6 /
-/// 全树准入 12（`build_engine_config_for_multi_agent` 按 `is_code_session` 取值，
-/// 提醒对两类会话都注入——数字必须跟档位走，否则模型按错误上限自我节流）。
+/// Sessions split into two tiers: Work sessions run 4 direct-child concurrent /
+/// 8 tree-wide admitted; native Code sessions run 6 / 12
+/// (`build_engine_config_for_multi_agent` picks the tier via `is_code_session`,
+/// and the reminder is injected into both — the numbers must follow the tier or
+/// the model self-throttles against the wrong cap).
 pub(crate) struct DelegationLimits {
-    /// 直属子智能体同时执行上限（launch_concurrency）。
+    /// Max direct children running at the same time (launch_concurrency).
     pub max_concurrent: usize,
-    /// 整棵树排队与执行合计上限（max_subagents）。
+    /// Max queued + running across the whole tree (max_subagents).
     pub max_admitted: usize,
 }
 
-/// 会话类型推导提醒数字：Code 会话 6/12，Work 会话 4/8。
-/// 数字取自调用点而非本模块再定义一份常量，避免与 engine 配置漂移。
+/// Derive reminder numbers from the session tier: Code sessions 6/12, Work 4/8.
+/// The numbers come from the bridge constants instead of a second copy here, so
+/// the reminder cannot drift from the engine config.
 pub(crate) fn delegation_limits_for(pool: &EnginePool, session_id: &str) -> DelegationLimits {
     if pool.is_code_session(session_id) {
         DelegationLimits {
@@ -53,7 +57,7 @@ pub(crate) fn delegation_limits_for(pool: &EnginePool, session_id: &str) -> Dele
 ///   开启模式后积极寻找有实际收益的委派，不按任务“简单/复杂”一刀切，也不机械凑数；
 ///   **不提 `workflow`**：底座把 read_only 子任务钳成四个
 ///   本地文件工具、结构化阶段默认不传递上游结果（`depends_on_results` 留空）
-///   两处基线行为未修，正是真机”调研断网、汇总烧穿预算”事故的根因——在
+///   两处基线行为未修，正是真机"调研断网、汇总烧穿预算"事故的根因——在
 ///   底座修复前不向模型开放或推荐该路径；
 /// - 专家池内置卡与用户自创卡都可作为 `profile`，用户卡优先；本地算法按当前任务筛到
 ///   最多 20 位，只把 profile id、名称和短能力说明列给主 agent，完整人设仅在派中后进入
@@ -63,10 +67,11 @@ pub(crate) fn delegation_limits_for(pool: &EnginePool, session_id: &str) -> Dele
 /// - 资源护栏：主会话是总协调者，普通委派使用 `max_depth=0` 成为叶子；只有
 ///   任务本身足够复杂时，第一层调用省略深度参数以继承会话上限并允许再拆
 ///   一层。第二层不得继续派生；每个子智能体显式使用底座允许的最高执行预算，
-///   避免角色默认步数截断有效工作；并发/准入数字按会话档位传入
-///   （`DelegationLimits`，Work 4/8、Code 6/12）。
+///   avoid role-default step caps cutting real work short; the concurrency /
+///   admission numbers follow the session tier (`DelegationLimits`, Work 4/8,
+///   Code 6/12).
 /// - Git 与子智能体工作区策略沿用普通对话语义，由父模型按任务自主决定；App
-///   不把每个会话强制 git 化，也不禁用底座已有的 worktree 能力；
+///   不把每个会话强制 git 化，也不封禁底座已有的 worktree 能力。
 fn delegation_reminder_with_roles(roles: Vec<String>, limits: &DelegationLimits) -> String {
     let roster_block = if roles.is_empty() {
         "（本轮未匹配到合适专家，可不带 `profile` 裸派）".to_string()
@@ -161,8 +166,8 @@ pub(crate) fn prepare_delegation_turn(
         };
     }
     let snapshot = ExpertRosterSnapshot::capture();
-    // 并发/准入数字按会话档位取值（Code 6/12、Work 4/8），与
-    // build_engine_config_for_multi_agent 装进 engine 的实际上限同源。
+    // Concurrency/admission numbers follow the session tier (Code 6/12, Work
+    // 4/8) — the same caps build_engine_config_for_multi_agent installs.
     let limits = delegation_limits_for(pool, session_id);
     let reminder = delegation_reminder_with_roles(snapshot.available_role_lines(task), &limits);
     PreparedDelegationTurn {
@@ -183,7 +188,8 @@ pub(crate) fn prepend_delegation_replay_reminder(
     if !enabled || !pool.multi_agent_mode_available(session_id) {
         return content;
     }
-    // EditLastTurn 不带新 route,同样按会话档位取数字（与 engine 实际上限同源）。
+    // EditLastTurn carries no new route; pull tier numbers the same way (same
+    // source as the engine's actual caps).
     let limits = delegation_limits_for(pool, session_id);
     let reminder = delegation_reminder_with_roles(Vec::new(), &limits);
     format!("{reminder}\n\n---\n\n{content}")
@@ -250,7 +256,8 @@ mod tests {
         MULTI_AGENT_WORK_MAX_ADMITTED, MULTI_AGENT_WORK_MAX_CONCURRENT,
     };
 
-    /// Work 档位（4/8）与 Code 档位（6/12）的提醒数字,单测两档都钉。
+    /// Reminder numbers for the Work tier (4/8) and Code tier (6/12); tests pin
+    /// both tiers.
     fn work_limits() -> DelegationLimits {
         DelegationLimits {
             max_concurrent: MULTI_AGENT_WORK_MAX_CONCURRENT,
@@ -303,7 +310,7 @@ mod tests {
                 && msg.contains("不要传任何正数深度覆盖值")
                 && msg.contains("同时执行最多 4 个")
                 && msg.contains("合计最多 8 个"),
-            "多智能体必须明确两层委派和并发/准入资源边界(Work 档): {msg}"
+            "multi-agent reminder must state the two-level delegation and the concurrency/admission caps (Work tier): {msg}"
         );
         assert!(
             msg.contains("Git 与工作区策略由你按任务自主完成")
@@ -438,9 +445,10 @@ mod tests {
         assert!(msg.contains("第二层子智能体不得继续派生"));
     }
 
-    /// 并发/准入数字必须跟会话档位走（回归：曾写死 Work 档 4/8，Code 会话
-    /// 实际上限 6/12，模型会按错误上限自我节流）。数字与 bridge.rs 的
-    /// MULTI_AGENT_* 常量同源，两边不得漂移。
+    /// The concurrency/admission numbers must follow the session tier (regression:
+    /// they used to be hardcoded to the Work tier 4/8, so Code sessions — whose
+    /// real caps are 6/12 — made the model self-throttle against the wrong limit).
+    /// The numbers share the MULTI_AGENT_* constants in bridge.rs and must not drift.
     #[test]
     fn delegation_reminder_resource_limits_follow_session_tier() {
         let work = delegation_reminder("审查 React 前端代码", &work_limits());
@@ -448,31 +456,31 @@ mod tests {
 
         assert!(
             work.contains("同时执行最多 4 个") && work.contains("合计最多 8 个"),
-            "Work 档提醒必须是 4/8: {work}"
+            "Work-tier reminder must state 4/8: {work}"
         );
         assert!(
             code.contains("同时执行最多 6 个") && code.contains("合计最多 12 个"),
-            "Code 档提醒必须是 6/12: {code}"
+            "Code-tier reminder must state 6/12: {code}"
         );
         assert!(
             !code.contains("同时执行最多 4 个") && !code.contains("合计最多 8 个"),
-            "Code 档提醒不得残留 Work 档数字: {code}"
+            "Code-tier reminder must not leak Work-tier numbers: {code}"
         );
         assert_eq!(
             MULTI_AGENT_WORK_MAX_CONCURRENT, 4,
-            "Work 并发常量漂移会同时改坏 engine 配置与提醒,需人工复核档位语义"
+            "Work concurrency constant drifted; this breaks both the engine config and the reminder — re-check the tier semantics"
         );
         assert_eq!(
             MULTI_AGENT_WORK_MAX_ADMITTED, 8,
-            "Work 准入常量漂移需人工复核档位语义"
+            "Work admission constant drifted; re-check the tier semantics"
         );
         assert_eq!(
             MULTI_AGENT_CODE_MAX_CONCURRENT, 6,
-            "Code 并发常量漂移需人工复核档位语义"
+            "Code concurrency constant drifted; re-check the tier semantics"
         );
         assert_eq!(
             MULTI_AGENT_CODE_MAX_ADMITTED, 12,
-            "Code 准入常量漂移需人工复核档位语义"
+            "Code admission constant drifted; re-check the tier semantics"
         );
     }
 

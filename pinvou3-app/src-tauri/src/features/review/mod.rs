@@ -738,23 +738,28 @@ fn full_transcript(messages: &[Message]) -> String {
     lines.join("\n")
 }
 
-/// B1 转交消息(resolvePinvouReview,品悟检阅弹窗勾选「让 AI 改」等动作后由前端
-/// 双桥同文组装、以 Boss 身份发回主会话)的段头前缀。按勾选动作分五段拼一条消息,
-/// **任意段都可能打头**(只勾 verify 时消息以"以下几条涉及外部事实"开头),故须
-/// 全量前缀匹配而非单一 starts_with。与 `pinvou3-app/src/platform/tauri/bridge/chat.js`
-/// 及 `pinvou3-app/src/platform/web/bridge.js` 的 resolvePinvouReview 保持同步。
-/// 历史注释里的旧前缀「请参考下面 Pinvou 的检阅意见」在开源基线(e34024e6)起就
-/// 从未被任何前端发送过(双桥自始使用「请按下面的检阅意见」),无需保留兼容分支。
+/// Section-header prefixes of B1 transfer messages (resolvePinvouReview: after
+/// the Pinvou review dialog checks "let AI fix" and similar actions, both
+/// frontend bridges assemble the message identically and send it back to the
+/// main session as the Boss). The message is composed of up to five sections,
+/// one per checked action, and **any of them can lead** (checking only verify
+/// makes the message start with "以下几条涉及外部事实"), so matching must cover
+/// all prefixes instead of a single starts_with. Keep in sync with
+/// resolvePinvouReview in `pinvou3-app/src/platform/tauri/bridge/chat.js` and
+/// `pinvou3-app/src/platform/web/bridge.js`. The old prefix found in historical
+/// comments ("请参考下面 Pinvou 的检阅意见") has never been sent by any frontend
+/// since the open-source baseline (e34024e6) — both bridges always used
+/// "请按下面的检阅意见" — so no compatibility branch is needed.
 const B1_TRANSFER_PREFIXES: &[&str] = &[
-    // fix 段头
+    // fix section header
     "请按下面的检阅意见",
-    // verify 段头
+    // verify section header
     "以下几条涉及外部事实",
-    // adopt 段头
+    // adopt section header
     "以下事项我已拍板",
-    // ask 段头
+    // ask section header
     "以下待定项请用 request_user_input 正式问我",
-    // fill 段头
+    // fill section header
     "以下维度产物还缺",
 ];
 
@@ -770,10 +775,15 @@ fn project(messages: &[Message]) -> String {
         let is_user = m.role == "user";
         for b in &m.content {
             match b {
-                // B1 转交消息(resolvePinvouReview 组装的固定段头)是 pinvou 上轮审阅回传,不是
-                // Boss 原始需求——投影排除,否则其中引用的旧数字会被当成"AI 当前状态"误导;采纳的
-                // 决策已落在产物文件里(产物才是真相)。前端(tauri/web 双桥同文)按勾选动作拼段,
-                // 段头五种皆可能打头,须全量识别;详见 B1_TRANSFER_PREFIXES 注释。
+                // B1 transfer messages (fixed section headers assembled by
+                // resolvePinvouReview) are the Pinvou review feedback from the
+                // previous round, not the Boss's original request — project them
+                // out, otherwise stale numbers quoted there get read as "the AI's
+                // current state"; adopted decisions already live in the artifact
+                // files (the artifacts are the truth). The frontend (identical in
+                // the tauri/web bridges) composes one section per checked action
+                // and any of the five headers can lead, so all must be recognized;
+                // see the B1_TRANSFER_PREFIXES docs.
                 ContentBlock::Text { text, .. }
                     if is_user
                         && !B1_TRANSFER_PREFIXES
@@ -1251,8 +1261,10 @@ mod tests {
 
     #[test]
     fn project_excludes_b1_transfer_messages() {
-        // 前端双桥(tauri/chat.js、web/bridge.js)的 resolvePinvouReview 按勾选动作
-        // 拼段,五种段头皆可能打头——逐一构造真实前缀用例(源串取自桥端原文)。
+        // Both frontend bridges (tauri/chat.js, web/bridge.js) compose
+        // resolvePinvouReview sections per checked action and any of the five
+        // headers can lead — build one case per real prefix (strings taken
+        // verbatim from the bridge sources).
         let real_prefixes = [
             (
                 "fix",
@@ -1280,10 +1292,13 @@ mod tests {
                 )),
             ];
             let p = project(&messages);
-            assert!(p.contains("帮我规划欧洲游"), "Boss 原话保留({kind}): {p}");
+            assert!(
+                p.contains("帮我规划欧洲游"),
+                "Boss's own words kept ({kind}): {p}"
+            );
             assert!(
                 !p.contains("5-7w"),
-                "{kind} 段头的转交消息(含上轮旧数字)要排除: {p}"
+                "transfer message led by the {kind} header (with last round's stale numbers) must be excluded: {p}"
             );
         }
     }

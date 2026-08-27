@@ -1080,38 +1080,43 @@ fn llm_review_prompt_matches_supported_actions() {
     assert!(!LLM_REVIEW_PROMPT.contains("must_create_recent_activity"));
 }
 
-/// 记忆复盘提示词本体无语言约束，输出语言指令按 locale 追加（content /
-/// reason 跟 UI 语言，枚举值保持 ASCII）；zh-Hans/未知 → no-op。en/ja 分支是
-/// 防御纵深（非中文 UI 的记忆已被 enforce_memory_locale_policy 关闭），与
-/// review 侧先例对齐。
+/// The memory review prompt body carries no language constraint of its own; the
+/// output-language directive is appended per locale (`content` / `reason` follow
+/// the UI language, enum values stay ASCII); zh-Hans/unknown → no-op. The en/ja
+/// branches are defense-in-depth (memory is disabled for non-Chinese UIs by
+/// enforce_memory_locale_policy), mirroring the review-side precedent.
 #[test]
 fn memory_review_output_language_directive_follows_locale() {
     use super::llm_review::memory_output_language_directive;
 
-    let en = memory_output_language_directive("en").expect("en 应有指令");
+    let en = memory_output_language_directive("en").expect("en must have a directive");
     assert!(
         en.contains("Write EVERY natural-language value")
             && en.contains("`content`")
             && en.contains("`reason`")
             && en.contains("English"),
-        "en 指令必须覆盖 content/reason 且点名 English: {en}"
+        "en directive must cover content/reason and name English: {en}"
     );
     assert!(
         en.contains("Keep") && en.contains("JSON keys") && en.contains("exactly as"),
-        "en 指令必须保住 JSON key/枚举值 ASCII: {en}"
+        "en directive must keep JSON keys/enum values ASCII: {en}"
     );
-    let ja = memory_output_language_directive("ja").expect("ja 应有指令");
-    assert!(ja.contains("Japanese"), "ja 指令点名 Japanese: {ja}");
-    let zh = memory_output_language_directive("zh-Hans").expect("zh-Hans 应有指令");
+    let ja = memory_output_language_directive("ja").expect("ja must have a directive");
+    assert!(
+        ja.contains("Japanese"),
+        "ja directive must name Japanese: {ja}"
+    );
+    let zh = memory_output_language_directive("zh-Hans").expect("zh-Hans must have a directive");
     assert!(
         zh.contains("必须用简体中文") && zh.contains("枚举值"),
-        "zh-Hans 强制中文且保枚举 ASCII: {zh}"
+        "zh-Hans directive must force Chinese and keep enums ASCII: {zh}"
     );
     assert!(
         memory_output_language_directive("fr").is_none(),
-        "未知 locale 回退 no-op"
+        "unknown locale must fall back to a no-op"
     );
-    // 提示词本体不得自带输出语言约束（语言由 locale 指令层负责）。
+    // The prompt body must not carry its own output-language constraint (the
+    // locale directive layer owns language).
     assert!(!LLM_REVIEW_PROMPT.contains("输出语言"));
     assert!(!LLM_REVIEW_PROMPT.contains("Output Language"));
 }

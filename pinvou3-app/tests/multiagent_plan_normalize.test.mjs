@@ -299,7 +299,20 @@ test('停止按钮与引擎回收都级联取消子智能体', () => {
 // ── 会话级开关 + 每轮委派提醒（Rust 源结构契约） ─────────────────────────────
 
 test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委派提醒', () => {
-  assert.match(commandSource, /fn delegation_reminder_with_roles\(roles: Vec<String>\)/, 'Work 与原生 Code 多智能体按同轮候选生成委派提醒');
+  assert.match(commandSource, /fn delegation_reminder_with_roles\(roles: Vec<String>, limits: &DelegationLimits\)/, 'Work 与原生 Code 多智能体按同轮候选生成委派提醒');
+  // Per-turn reminder numbers must come from the session tier (DelegationLimits),
+  // not from hardcoded literals: Work sessions run 4 concurrent / 8 admitted,
+  // native Code sessions 6 / 12 (same constants the engine config installs).
+  assert.match(
+    commandSource,
+    /pub\(crate\) struct DelegationLimits \{[\s\S]{0,160}pub max_concurrent: usize,[\s\S]{0,160}pub max_admitted: usize,[\s\S]{0,160}\}/,
+    'reminder numbers are carried by DelegationLimits so both tiers can be asserted',
+  );
+  assert.match(
+    commandSource,
+    /pub\(crate\) fn delegation_limits_for\(pool: &EnginePool, session_id: &str\) -> DelegationLimits \{[\s\S]{0,400}pool\.is_code_session\(session_id\)/,
+    'tier selection must reuse the same is_code_session predicate as the engine config',
+  );
   assert.match(commandSource, /pub\(crate\) fn prepare_delegation_turn\(/, '普通发送与方案接受必须复用同一轮提醒/名册快照组装');
   assert.match(commandSource, /snapshot\.available_role_lines\(task\)/, '候选提醒必须从本轮名册快照筛选，避免提示与实际派工错位');
   assert.match(rosterSource, /EXPERT_CANDIDATE_LIMIT:\s*usize\s*=\s*20/, '父模型每轮最多看到 20 位专家短候选');
@@ -395,10 +408,13 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   const assistantBridgeSource = read('src-tauri', 'src', 'features', 'assistant', 'platform', 'bridge.rs');
   const engineSource = read('src-tauri', 'src', 'features', 'assistant', 'engine.rs');
   assert.match(assistantBridgeSource, /MULTI_AGENT_MAX_SPAWN_DEPTH:\s*u32\s*=\s*2/);
-  assert.match(assistantBridgeSource, /MULTI_AGENT_WORK_MAX_CONCURRENT:\s*usize\s*=\s*4/);
-  assert.match(assistantBridgeSource, /MULTI_AGENT_WORK_MAX_ADMITTED:\s*usize\s*=\s*8/);
-  assert.match(assistantBridgeSource, /MULTI_AGENT_CODE_MAX_CONCURRENT:\s*usize\s*=\s*6/);
-  assert.match(assistantBridgeSource, /MULTI_AGENT_CODE_MAX_ADMITTED:\s*usize\s*=\s*12/);
+  // Tier constants are pub(crate): the per-turn delegation reminder reads the
+  // same single source of truth as build_engine_config_for_multi_agent.
+  // Work tier runs 4 concurrent / 8 admitted; native Code tier 6 / 12.
+  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_WORK_MAX_CONCURRENT: usize = 4;/, 'Work tier direct-child concurrency is 4');
+  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_WORK_MAX_ADMITTED: usize = 8;/, 'Work tier tree-wide admission is 8');
+  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_CODE_MAX_CONCURRENT: usize = 6;/, 'Code tier direct-child concurrency is 6');
+  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_CODE_MAX_ADMITTED: usize = 12;/, 'Code tier tree-wide admission is 12');
   assert.match(
     assistantBridgeSource,
     /build_multi_agent_send_message_op[\s\S]{0,700}build_multi_agent_hook_executor/,
