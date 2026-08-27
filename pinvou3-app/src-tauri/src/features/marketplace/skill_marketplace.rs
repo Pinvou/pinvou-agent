@@ -3526,8 +3526,9 @@ mod tests {
     }
 
     /// companion 联动（recycle-aware）：Upload 组合包卸载 MCP 时整包已被搬入
-    /// 回收站，随后联动卸载 companion 技能时目录已不在包目录 —— 只清登记、
-    /// 返回 Ok，不报错不误删回收站内容。
+    /// 回收站，随后联动卸载 companion 技能时目录已不在 bundles_root —— 候选
+    /// 清扫只扫 bundles_root（不碰回收站），结尾「无目录也删登记」自然收尾：
+    /// 返回 Ok、不报错、不误删回收站内容。
     #[test]
     fn uninstall_companion_after_package_recycled_is_recycle_aware() {
         let tmp = fresh_dir("recycle_aware");
@@ -3546,12 +3547,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// 回收站外的未知技能（目录不在包目录、回收站也没有）仍按原语义拒绝删除。
+    /// 未知技能（无目录、无登记）：新语义（候选清扫 + 删记录不以目录存在为前提，
+    /// 见 uninstall_removes_record_when_dir_missing）下为 Ok no-op；保护对象
+    /// （无标记旧扁平目录）的拒绝语义由 uninstall_still_protects_unmarked_legacy_dir 覆盖。
     #[test]
-    fn uninstall_unknown_skill_still_refused() {
-        let tmp = fresh_dir("unknown_refused");
+    fn uninstall_unknown_skill_is_noop() {
+        let tmp = fresh_dir("unknown_noop");
         let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
-        assert!(mgr.uninstall("never-installed").is_err());
+        assert!(mgr.uninstall("never-installed").is_ok(), "无目录无登记应为 Ok no-op");
+        assert!(
+            mgr.recycle_bin.list().unwrap().is_empty(),
+            "no-op 卸载不得产生回收站条目"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

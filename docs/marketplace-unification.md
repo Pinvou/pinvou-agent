@@ -116,7 +116,9 @@ disconnect / uninstall / enable_in(scope)…），每个动作带可用性与原
    （`marketplace/recycle-bin/<id>/`，含 mcp/ 与 skills/；恢复 = 搬回 + 重走安装
    管线，凭据 secrets 卸载时已删需重填；彻底删除由用户手动触发；条目也可导出为
    符合插件包规范的 zip——plugin.json/mcp/skills 平铺在 zip 根，可经统一导入管线
-   重新导入），Preset/Builtin 可重释放仍物理删除。`.installed-from` 标记文件取消，
+   重新导入；已安装包（上传/预置/自定义 MCP）同样可导出为标准插件包 zip，
+   导出时 `mcp/manifest.json` args 中指向包内的绝对路径还原为相对形式），
+   Preset/Builtin 可重释放仍物理删除。`.installed-from` 标记文件取消，
    来源与指纹进 bundles.json。
 2. **包内容住包目录，外部依赖住资产库。** CLI 二进制是厂商 URL 下载的版本化外部依赖
    （生命周期由 lock 表驱动，与包登记解耦，卸载时保留/清理可独立决策）；

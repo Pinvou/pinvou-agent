@@ -252,6 +252,7 @@ command_protocol!(
         "restore_recycled_plugin",
         "purge_recycled_plugin",
         "export_recycled_plugin",
+        "export_installed_plugin",
         "bundle_readiness",
         "export_plugin_spec"
     ]

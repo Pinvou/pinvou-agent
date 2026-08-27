@@ -238,17 +238,6 @@ impl RecycleBin {
             .collect())
     }
 
-    /// companion 技能随包回收的判定：回收站里存在某个包，其 `skills/<skill_name>/`
-    /// 目录在（Upload 组合包卸载 MCP 时整包回收，companion 技能卸载据此跳过
-    /// 物理删除、只清登记）。
-    pub fn contains_recycled_skill(&self, skill_name: &str) -> bool {
-        let Ok(rd) = std::fs::read_dir(&self.root) else {
-            return false;
-        };
-        rd.flatten()
-            .any(|e| e.path().join("skills").join(skill_name).is_dir())
-    }
-
     /// 取回：fail-closed（不在清单 → Err）→ preflight → 搬回 `bundles/<id>/`
     /// → 失败回滚 → 从清单移除 → 返回记录快照（供恢复管线重建登记）。
     pub fn take_back(&self, pkg_id: &str) -> Result<BundleRecord, String> {
@@ -317,9 +306,9 @@ impl RecycleBin {
     /// 导出：fail-closed（不在清单 → Err，与 purge 同口径；package_missing → Err），
     /// 把回收站包目录 `recycle-bin/<id>/` 的内容打成 zip（plugin.json、mcp/、
     /// skills/ 等平铺在 zip 根，对齐 plugin-package-spec 的包结构，可经统一导入
-    /// 管线 `plugin_import::import_plugin_package` 重新导入）。只打包插件包本体，
-    /// 不含回收站清单等元数据；Python 运行缓存（__pycache__/、*.pyc）不打包
-    /// （与导入管线的磁盘比对豁免口径一致）。
+    /// 管线 `plugin_import::import_plugin_package` 重新导入）。写出逻辑复用
+    /// `package_export::write_package_zip`（回收的包未经安装期改写，传
+    /// sanitize_args=false 原样打包；只打包插件包本体，不含回收站清单等元数据）。
     pub fn export_package(&self, pkg_id: &str, dest_zip: &Path) -> Result<(), String> {
         if !super::skill_marketplace::is_safe_skill_name(pkg_id) {
             return Err(format!("非法包 id '{pkg_id}'"));
@@ -335,72 +324,13 @@ impl RecycleBin {
                 src.display()
             ));
         }
-        let mut files = Vec::new();
-        collect_export_files(&src, &src, &mut files)
-            .map_err(|e| format!("遍历 {} 失败: {e}", src.display()))?;
-        if files.is_empty() {
-            return Err(format!("包目录 {} 为空，无法导出", src.display()));
-        }
-        files.sort();
-        // 直接写用户选定的目标（保存对话框已确认覆盖）；中途失败清理半写文件，
-        // 不留损坏 zip。
-        let result = (|| -> Result<(), String> {
-            let out = std::fs::File::create(dest_zip)
-                .map_err(|e| format!("创建 {} 失败: {e}", dest_zip.display()))?;
-            let mut zw = zip::ZipWriter::new(out);
-            let opts = zip::write::SimpleFileOptions::default();
-            for (rel, path) in &files {
-                // 条目名即包内相对路径（盘上真实遍历产出，恒为 root 子孙，无穿越
-                // 风险）；统一 '/' 分隔，与导入管线的路径口径一致。
-                zw.start_file(rel, opts)
-                    .map_err(|e| format!("写 zip 条目 {rel}: {e}"))?;
-                let mut reader = std::fs::File::open(path)
-                    .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
-                std::io::copy(&mut reader, &mut zw)
-                    .map_err(|e| format!("写 zip 条目 {rel}: {e}"))?;
-            }
-            zw.finish().map_err(|e| format!("完成 zip 写入: {e}"))?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(dest_zip);
-        }
-        result?;
+        let written = super::package_export::write_package_zip(&src, dest_zip, false)?;
         log::info!(
-            "[recycle-bin] 已导出包 {pkg_id}（{} 个条目）→ {}",
-            files.len(),
+            "[recycle-bin] 已导出包 {pkg_id}（{written} 个条目）→ {}",
             dest_zip.display()
         );
         Ok(())
     }
-}
-
-/// 递归收集导出条目（相对路径用 '/' 分隔）：跳过 Python 运行缓存
-/// （`__pycache__/` 子树与 `*.pyc`，与 plugin_import 的磁盘比对豁免口径一致）。
-fn collect_export_files(
-    root: &Path,
-    dir: &Path,
-    out: &mut Vec<(String, PathBuf)>,
-) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_export_files(root, &path, out)?;
-            continue;
-        }
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        if rel.split('/').any(|c| c == "__pycache__") || rel.to_ascii_lowercase().ends_with(".pyc")
-        {
-            continue;
-        }
-        out.push((rel, path));
-    }
-    Ok(())
 }
 
 /// 按包目录内容推导回收站 kind：mcp/ + skills/ → bundle；仅 mcp/ → mcp；否则 skill。

@@ -24,6 +24,7 @@ mod validation;
 pub mod actions;
 pub mod bundle;
 pub mod mcp_catalog;
+pub mod package_export;
 pub mod plugin_import;
 pub mod recycle_bin;
 pub mod scope;

@@ -1027,6 +1027,42 @@ fn recycle_export_default_name(id: &str) -> String {
     format!("{id}.zip")
 }
 
+/// 导出已安装包为标准插件包 zip（变更操作；Web 只读不放行）：弹原生保存
+/// 对话框，zip 内容对齐插件包规范（可经统一导入管线重新导入；manifest args
+/// 的包内绝对路径导出时还原为相对形式）。
+/// 返回 Some(保存路径)；用户取消 → None；失败 Err。
+#[tauri::command]
+pub async fn export_installed_plugin(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let default_name = recycle_export_default_name(&id);
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_file_name(&default_name)
+        .add_filter("插件包 (zip)", &["zip"])
+        .blocking_save_file()
+    else {
+        return Ok(None); // 用户取消保存对话框
+    };
+    let path = picked
+        .into_path()
+        .map_err(|e| format!("解析文件路径: {e}"))?;
+    let dest = path.to_string_lossy().into_owned();
+    let export_id = id.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::package_export::export_installed_plugin(
+            &export_id,
+            std::path::Path::new(&dest),
+        )
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))??;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
 // ---------------------------------------------------------------------------
 // 能力包就绪态（修复方案 V1：统一 bundle_readiness，收敛五个连接器 status 命令）
 // ---------------------------------------------------------------------------

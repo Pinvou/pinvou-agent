@@ -41,7 +41,28 @@ const PlatformToolAction = ({ copy, t, ...props }) => {
       </span>
     );
   }
-  return <TsActionBtn {...props} t={t} />;
+  // 已安装插件（上传/预置/自定义 MCP）附「导出」按钮（Web 只读已在上方 return 掉）；
+  // 内置卡（builtin，非包）不导出。样式对齐 TsActionBtn 的次要按钮。
+  const showExport = !!(props.tool && props.tool.installed && !props.tool.builtin && props.tool.backendId && props.onExport);
+  const exportBtn = showExport && (
+    <button
+      data-testid="tool-store-export"
+      data-tool-id={props.tool.backendId}
+      disabled={!!props.busy}
+      title={copy.recycleExport}
+      onClick={(e) => { e.stopPropagation(); props.onExport(props.tool); }}
+      className={`${props.size === 'lg' ? 'px-6 py-2.5 text-[15px]' : 'px-4 py-1.5 text-[13px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-[#3A3A3C] whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed`}
+    >
+      {copy.recycleExport}
+    </button>
+  );
+  if (!exportBtn) return <TsActionBtn {...props} t={t} />;
+  return (
+    <div className="flex items-center gap-2">
+      <TsActionBtn {...props} t={t} />
+      {exportBtn}
+    </div>
+  );
 };
 
 const THIRD_PARTY_TOOL_LOGOS = {
@@ -929,6 +950,26 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           }
         } catch (e) {
           console.error('export recycled plugin failed:', e);
+          setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+      // 已安装卡片「导出」：companion 技能卡先经 skillToMcp 映射为所属包 id（与可见性
+      // 写入同口径，包 id 才是后端注册表主键）；提示复用回收站导出的同款模式
+      // （标题只放文件名，完整路径进副标题，TsAlert break-all 防溢出）。
+      const handleExportInstalled = async (tool) => {
+        if (!canMutateToolStore || !tool || !tool.installed || tool.builtin || !tool.backendId || busyRef.current) return;
+        const pkgId = skillToMcp[tool.backendId] || tool.backendId;
+        setBusyId(tool.backendId);
+        try {
+          const savedPath = await invokeTauri('export_installed_plugin', { id: pkgId });
+          if (savedPath) {
+            const fileName = String(savedPath).split(/[\\/]/).pop() || String(savedPath);
+            setAlert({ visible: true, loading: false, title: storeCopy.recycleExported(fileName), subtitle: String(savedPath), isInstall: false, isError: false });
+          }
+        } catch (e) {
+          console.error('export installed plugin failed:', e);
           setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
         } finally {
           setBusyId(null);
@@ -2577,7 +2618,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                         </div>
                                       );
                                     }
-                                    return <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} copy={storeCopy} t={t} />;
+                                    return <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} onExport={handleExportInstalled} copy={storeCopy} t={t} />;
                                   })()}
                                 </div>
                               </div>
@@ -2692,7 +2733,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       <div className="flex flex-col items-end gap-1.5">
                         {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : selectedTool.dingtalkCli ? dingtalkFlow : selectedTool.tmeetCli ? tmeetFlow : null; return (externalAuthAvailable && sf && (sf.phase === 'running' || sf.phase === 'qr'))
                           ? <FeishuMini flow={sf} onClick={() => {}} copy={storeCopy.mini} />
-                          : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} size="lg" copy={storeCopy} t={t} />; })()}
+                          : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} onExport={handleExportInstalled} size="lg" copy={storeCopy} t={t} />; })()}
                         {((selectedTool.feishuCli && !feishuConnected) || (selectedTool.wecomCli && !wecomConnected) || (selectedTool.dingtalkCli && !dingtalkConnected) || (selectedTool.tmeetCli && !tmeetConnected)) && <span className="text-[11px] text-slate-400">{storeCopy.firstUseOnlineInstall}</span>}
                       </div>
                     </div>
