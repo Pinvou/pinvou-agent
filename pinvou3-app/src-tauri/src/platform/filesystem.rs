@@ -1065,6 +1065,7 @@ fn atomic_write_private_file_impl(
         let temporary_name = private_atomic_temp_name();
         let mut options = std::fs::OpenOptions::new();
         options
+            .write(true)
             .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE)
             .create_new(true)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
