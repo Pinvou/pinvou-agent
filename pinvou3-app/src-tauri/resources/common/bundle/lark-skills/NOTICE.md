@@ -303,3 +303,45 @@ emit_error(JSON+exit 1)、无裸 except。修复 1 处,下次 sync 需重放:
 - **lark-task/SKILL.md 措辞分叉(1 处,品悟基线沿袭)**:「列取任务列表」
   (上游 v1.0.87 原文)在本地为「获取任务列表」,语义等价;下次 sync 跟随
   上游即可,无需重放(登记仅为对账完备)。
+
+### lark-base 文档审计代修(2026-08-27,第十一轮)
+
+对照上游 v1.0.87 文本与包内 SSOT 复核的 7 条文档缺陷(3 MAJOR / 4 MINOR,
+documented-behavior fixes only,不改确认门禁语义、不动有意冗余段落),全部
+落在 `lark-base/`,下次 sync 逐条重放:
+
+- **select 写入形状统一(5 处/4 文件)**:SSOT `references/lark-base-cell-value.md`
+  §2.3 规定「select 统一传选项名称数组,multiple=false 时数组只能含一个元素」,
+  但同文件 §4 完整示例、`lark-base-form-submit.md` --json 示例、
+  `lark-base-record-upsert.md` 推荐命令+--json 示例(2 处)、
+  `lark-base-record-batch-create.md` 推荐命令+对象形态示例(2 处)的单选字段
+  均为裸字符串。已全部统一为单元素数组形态(与 batch-update 原示例一致)。
+- **formula/lookup 默认选型口径对齐(2 处)**:guide 的 Default strategy 是
+  「跨表引用/聚合/计算字段默认 formula,仅用户显式要求才 lookup」,但
+  `SKILL.md` 心智模型行写成按需求特征二选一、`lookup-field-guide.md` §2
+  Selection decision tree 又把「Look up/reference/aggregate」指向 Lookup 且
+  末分支「Prefer Lookup」。已把 SKILL.md 该行改为「跨表默认 formula
+  (formula 是 lookup 的严格超集),仅用户显式要求才 lookup」,决策树相应
+  分支补「ONLY when the user explicitly requests a Lookup field」限定、
+  末分支改为「Formula chain access by default」。
+- **filter-condition 补日期操作符适用性**:`references/lark-base-filter-condition.md`
+  原 operator 清单把 >/>=/</<= 并列且 datetime 节无限制,与 data-analysis-sop
+  「日期不支持 >=」、data-query 日期仅五运算符、dashboard-block-data-config
+  禁 isGreaterEqual/isLessEqual 矛盾。已在 §2 operator 表按字段类型补适用性
+  (>=/<= 仅 number 类;datetime 类不支持),datetime 小节与易错点补
+  「> 前一天最后一毫秒 / < 次日零点」等价写法示例。
+- **+record-search 参数名口径**:`references/lark-base-data-query.md` 与记录
+  读取组合节的 `search_fields`/`select_fields` 改为 CLI 旗标写法
+  `--search-field`/`--field-id`(与全包其余位置一致)。
+- **SKILL.md 数据分析产物机制**:「使用 `+record-list --format ndjson` 获取
+  分析数据」改为「使用 `+record-list --output <path>.ndjson` 导出分析数据
+  (同时生成 `<path>.manifest.json`)」,与 data-analysis-sop 的 --output+manifest
+  机制一致(--format ndjson 是流式输出格式旗标,不是分析导出机制)。
+- **重命名应用命令风格**:`references/lark-base-app.md` 重命名示例由旧聚合式
+  `drive files patch --data '{"new_title":...}'` 改为现行 shortcut
+  `drive +update-title --token <app_token> --type bitable --title ...`
+  (与同文件删除节的 `drive +delete`、lark-drive SKILL.md 总则一致;
+  update-title 的 --type 枚举含 bitable,base 为兼容别名)。
+- **workflow-schema ChangeRecordTrigger 示例**:示例中的 `"condition": null`
+  与字段表登记的 `condition_list` 不对应,示例补 `"condition_list": []`
+  与字段表对齐。

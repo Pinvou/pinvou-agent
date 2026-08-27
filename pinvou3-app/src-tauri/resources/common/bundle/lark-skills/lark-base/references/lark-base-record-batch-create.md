@@ -13,7 +13,7 @@
 
 ```bash
 lark-cli base +record-batch-create --base-token <base_token> --table-id <table_id> \
-  --json '{"create_records":[{"标题":"任务 A","状态":"Open"},{"标题":"任务 B","状态":"Done"}]}'
+  --json '{"create_records":[{"标题":"任务 A","状态":["Open"]},{"标题":"任务 B","状态":["Done"]}]}'
 
 lark-cli base +record-batch-create --base-token <base_token> --table-id <table_id> --json @batch-create.json
 ```
@@ -37,7 +37,7 @@ lark-cli base +record-batch-create --base-token <base_token> --table-id <table_i
 对象形态：
 
 ```json
-{"create_records":[{"标题":"任务 A","状态":"Open"},{"标题":"任务 B","状态":"Done"}]}
+{"create_records":[{"标题":"任务 A","状态":["Open"]},{"标题":"任务 B","状态":["Done"]}]}
 ```
 
 | 字段 | 类型 | 必填 | 说明 |

@@ -170,7 +170,7 @@
 {
   "table_name": "任务表",
   "trigger_control_list": [],
-  "condition": null
+  "condition_list": []
 }
 ```
 

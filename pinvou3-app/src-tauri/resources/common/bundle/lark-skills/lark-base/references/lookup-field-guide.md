@@ -80,11 +80,11 @@ Lookup and Link serve **different purposes**. Creating a Lookup does NOT require
 ```
 What does the user need?
 ├─ "Link"/"associate"/"bind" records between tables → Link
-├─ "Look up"/"reference"/"aggregate"/"count" from another table → Lookup
+├─ "Look up"/"reference"/"aggregate"/"count" from another table → Lookup — ONLY when the user explicitly requests a Lookup field; otherwise use Formula by default (see Default strategy)
 │   ├─ Needs aggregation (sum/count/average)? → Lookup + aggregate
 │   └─ Just reference a value? → Lookup (aggregate = null)
 ├─ Calculations/text manipulation within current table → Formula
-└─ Access linked record's field → Prefer Lookup (more intuitive), or Formula chain access
+└─ Access linked record's field → Formula chain access by default; use Lookup only when the user explicitly requests it
 ```
 
 ---
