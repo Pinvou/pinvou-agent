@@ -4,8 +4,6 @@
 //! （marketplace 首启导入也要对照 lock 表验存量二进制）；此处保留委托，
 //! 既有调用方（native_installer）零改动。
 
-use std::path::Path;
-
 pub fn lock_json() -> &'static str {
     crate::platform::connector_lock::lock_json()
 }
@@ -39,15 +37,4 @@ pub fn archive_member(name: &str) -> &'static str {
         }
         _ => "",
     }
-}
-
-pub fn set_executable_permissions(path: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
-    }
-    #[cfg(not(unix))]
-    let _ = path;
-    Ok(())
 }

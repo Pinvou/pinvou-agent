@@ -99,6 +99,10 @@ pub struct CliConnectorDecl {
     /// 授权步骤序列；None = manual（CLI 自行交互，宿主无编排）。
     #[serde(default)]
     pub auth: Option<CliAuthDecl>,
+    /// 许可证文本（可选；携带时随二进制释放到 `assets/cli/<bin>/<version>/licenses/`，
+    /// 缺省跳过——第三方包自证合规义务）。
+    #[serde(default)]
+    pub license: Option<String>,
 }
 
 /// 单个平台的 CLI 制品下载 pin（强制双 SHA-256，阶段 2 校验）。
@@ -415,6 +419,9 @@ struct ComponentDetection {
     id: String,
     mcp_servers: Vec<String>,
     skills: Vec<String>,
+    /// CLI 连接器组件声明（§14.3，仅清单路径可识别；保留完整声明供安装供给取
+    /// 下载 pin / 授权步骤，不只是 id 向量）。
+    cli: Vec<CliConnectorDecl>,
     /// 裸技能回退：(skill_root, name)。`skill_root=""` 表示根级 SKILL.md。
     bare_skill: Option<(String, String)>,
     /// 裸 MCP 回退：(mcp_root, mcp_id)。`mcp_root=""` 表示根级 manifest.json。
@@ -446,6 +453,7 @@ fn detect_components(
         }
         let mut mcp = Vec::new();
         let mut skills = Vec::new();
+        let mut cli = Vec::new();
         if let Some(comps) = &m.components {
             for c in &comps.mcp_servers {
                 let dir = c.dir.trim_end_matches('/');
@@ -491,11 +499,89 @@ fn detect_components(
                 }
                 skills.push(c.id.clone());
             }
+            // CLI 连接器组件（§14.3，M2）：声明即供给契约——id/bin 合法、下载
+            // pin 齐（当前平台 + HTTPS + 双 SHA-256 + version）、skills_dir 规范、
+            // 授权步骤合法。二进制不进 zip（pass1 magic 拒收），一律按声明下载。
+            for c in &comps.cli_connectors {
+                if !cli.is_empty() {
+                    return Err("首版一个包仅支持一个 CLI 连接器组件".to_string());
+                }
+                if !is_safe_component_id(&c.id) {
+                    return Err(format!("非法 CLI 连接器 id '{}'", c.id));
+                }
+                // 与内置声明（M1）同约定：组件 id = 包 id（execpolicy/注册表/
+                // 技能门控共用同一命名空间，异名会在治理反查时错配）。
+                if c.id != id {
+                    return Err(format!(
+                        "CLI 连接器组件 id '{}' 与包 id '{id}' 不一致",
+                        c.id
+                    ));
+                }
+                if !is_safe_component_id(&c.bin) {
+                    return Err(format!("非法 CLI 二进制名 '{}'", c.bin));
+                }
+                if c.version.as_deref().unwrap_or("").is_empty() {
+                    return Err("CLI 连接器缺 version（资产库按版本落目录）".to_string());
+                }
+                let platforms = c
+                    .platforms
+                    .as_ref()
+                    .ok_or("CLI 连接器缺 platforms 下载声明（二进制禁止进 zip，必须按声明下载）")?;
+                let platform_key = crate::platform::paths::connector_platform_dir(
+                    std::env::consts::OS,
+                    std::env::consts::ARCH,
+                )
+                .ok_or("当前平台不支持声明式 CLI 连接器")?;
+                let artifact = platforms.get(platform_key).ok_or_else(|| {
+                    format!("CLI 连接器 platforms 缺当前平台 '{platform_key}' 的下载声明")
+                })?;
+                if !artifact.url.starts_with("https://") {
+                    return Err("CLI 下载 url 必须 HTTPS".to_string());
+                }
+                if !is_sha256_hex(&artifact.archive_sha256)
+                    || !is_sha256_hex(&artifact.binary_sha256)
+                {
+                    return Err(
+                        "CLI 下载声明缺有效 SHA-256（archive/binary 均须 64 位十六进制）"
+                            .to_string(),
+                    );
+                }
+                if let Some(dir) = &c.skills_dir {
+                    let dir = dir.trim_end_matches('/');
+                    if dir != "skills" {
+                        return Err(format!(
+                            "CLI 技能目录 '{dir}' 非规范：必须使用规范化目录 'skills'"
+                        ));
+                    }
+                    if !all_paths.iter().any(|p| p.starts_with("skills/")) {
+                        return Err("CLI 连接器声明的 skills_dir 'skills' 在包内不存在".to_string());
+                    }
+                }
+                if let Some(auth) = &c.auth {
+                    for step in &auth.steps {
+                        // kind 由 serde 枚举收口（qr/browser），此处校验 id/label
+                        if !is_safe_component_id(&step.id) {
+                            return Err(format!("非法授权步骤 id '{}'", step.id));
+                        }
+                        if step.label.is_empty() {
+                            return Err(format!("授权步骤 '{}' 缺 label", step.id));
+                        }
+                    }
+                }
+                cli.push(c.clone());
+            }
+        }
+        // mcp+cli 组合首版拒收（协议未设计，避免范围膨胀）；cli+skills 是常态，放行。
+        if !mcp.is_empty() && !cli.is_empty() {
+            return Err(
+                "首版不支持 MCP + CLI 连接器组合包（协议未设计），请拆分为两个包".to_string(),
+            );
         }
         return Ok(ComponentDetection {
             id,
             mcp_servers: mcp,
             skills,
+            cli,
             bare_skill: None,
             bare_mcp: None,
         });
@@ -578,9 +664,40 @@ fn detect_components(
         id,
         mcp_servers: mcp,
         skills,
+        // 裸包回退不识别 CLI 连接器（无 plugin.json 即无下载 pin/授权声明）
+        cli: Vec::new(),
         bare_skill,
         bare_mcp,
     })
+}
+
+/// SHA-256 十六进制（64 位）校验（CLI 下载 pin 强制双哈希，§14.3）。
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// zip 条目起始字节的内嵌可执行二进制检测（§14.3 信任模型：CLI 一律经声明
+/// url + 双哈希下载，禁止随包内嵌）。返回 Some(格式名) 命中拒收。
+/// 只查条目头 4 字节 magic——SKILL.md/references 里的代码片段是文本内容，
+//  不在条目起始，不会误伤。
+fn embedded_binary_magic(head: &[u8; 4]) -> Option<&'static str> {
+    if head == b"\x7fELF" {
+        return Some("ELF");
+    }
+    if head.starts_with(b"MZ") {
+        return Some("PE");
+    }
+    // Mach-O（含大小端两种字节序）
+    const MACHO: [[u8; 4]; 4] = [
+        [0xFE, 0xED, 0xFA, 0xCE],
+        [0xFE, 0xED, 0xFA, 0xCF],
+        [0xCE, 0xFA, 0xED, 0xFE],
+        [0xCF, 0xFA, 0xED, 0xFE],
+    ];
+    if MACHO.iter().any(|m| head == m) {
+        return Some("Mach-O");
+    }
+    None
 }
 
 /// 计算单个 zip 条目落盘的目标 `(subdir, rel)`（None = 跳过：plugin.json / 图标单独处理）。
@@ -715,6 +832,28 @@ pub fn import_plugin_package(
             continue;
         }
         let path_str = enclosed.to_string_lossy().replace('\\', "/");
+        // §14.3 信任模型：zip 内禁止内嵌可执行二进制（CLI 一律经声明 url +
+        // 双哈希下载）。按条目起始字节 magic 检测，命中即拒收整包；脚本
+        // shebang（#!）是文本（技能脚本常带），只告警不误伤。
+        {
+            let mut head = [0u8; 4];
+            if entry.read_exact(&mut head).is_ok() {
+                if let Some(format) = embedded_binary_magic(&head) {
+                    return Err(format!(
+                        "插件包含内嵌可执行二进制（条目 '{path_str}'，{format} 魔数）——§14.3 要求 CLI 经声明 url + 双哈希下载，拒收"
+                    ));
+                }
+                if head.starts_with(b"#!") {
+                    log::warn!("[plugin-import] 条目 '{path_str}' 带 shebang（脚本），按文本放行");
+                }
+            }
+        }
+        // zip 条目句柄是流式游标：magic 探测已消费起始字节，后续内容读取必须
+        // 重新 fetch（否则 plugin.json/icon/SKILL.md 等会缺头 4 字节）。
+        drop(entry);
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| format!("zip 条目 #{i}: {e}"))?;
         all_paths.push(path_str.clone());
         // 任一`read_to_end` 后同步累计 actual_total（zip 头声明可能与真实大小不符）
         if path_str == "plugin.json" {
@@ -814,8 +953,10 @@ pub fn import_plugin_package(
         &all_paths,
     )?;
     let (id, mcp_servers, skills) = (det.id.clone(), det.mcp_servers.clone(), det.skills.clone());
-    let kind = crate::features::marketplace::bundle::derive_bundle_kind(&mcp_servers, &skills, &[])
-        .map_err(|_| "插件包不含任何组件（空包）".to_string())?;
+    let cli_ids: Vec<String> = det.cli.iter().map(|c| c.id.clone()).collect();
+    let kind =
+        crate::features::marketplace::bundle::derive_bundle_kind(&mcp_servers, &skills, &cli_ids)
+            .map_err(|_| "插件包不含任何组件（空包）".to_string())?;
 
     // 未声明技能子树拒收（五轮评审）：detect 只登记声明/识别出的技能，而落盘的
     // `skills/` 前缀分支按路径无条件放行——zip 额外夹带的 `skills/<other>/` 会
@@ -1093,6 +1234,49 @@ pub fn import_plugin_package(
         }
     }
 
+    // 供给：声明式 CLI 连接器组件（§14.3，M2）——按声明下载/双哈希校验落版本化
+    // 资产库 `assets/cli/<bin>/<version>/`。失败记 Degraded 不翻盘：目录已落盘、
+    // 登记照常（修复动作 = 按来源重新获取，与 builtin CLI 的 degraded 语义同构），
+    // fail loud 到日志。
+    let mut cli_asset: Option<super::store::AssetRef> = None;
+    let mut cli_degraded: Option<String> = None;
+    if let Some(decl) = det.cli.first() {
+        let platform_key = crate::platform::paths::connector_platform_dir(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        )
+        .expect("检测段已校验当前平台支持");
+        let artifact = decl
+            .platforms
+            .as_ref()
+            .and_then(|p| p.get(platform_key))
+            .expect("检测段已校验 platforms 含当前平台");
+        let source = crate::platform::connector_installer::DeclaredCliArtifact {
+            bin: decl.bin.clone(),
+            version: decl.version.clone().expect("检测段已校验 version 非空"),
+            url: artifact.url.clone(),
+            archive_sha256: artifact.archive_sha256.clone(),
+            binary_sha256: artifact.binary_sha256.clone(),
+            license: decl.license.clone(),
+        };
+        match crate::platform::connector_installer::ensure_declared_native_cli(&source) {
+            Ok(_) => {
+                cli_asset = Some(super::store::AssetRef {
+                    kind: super::store::ASSET_KIND_CLI.to_string(),
+                    name: decl.bin.clone(),
+                    version: decl.version.clone().expect("检测段已校验 version 非空"),
+                    sha256: artifact.binary_sha256.clone(),
+                });
+            }
+            Err(e) => {
+                log::warn!("[plugin-import] CLI 连接器供给失败（{}）: {e}", decl.id);
+                cli_degraded = Some(format!(
+                    "CLI 下载/校验失败（修复动作：重新导入以重新获取）: {e}"
+                ));
+            }
+        }
+    }
+
     // 登记 BundleStore（上传 source=Upload(zip 展示名)，installed=true）。
     let icon_rel = if pkg_dir.join("icon.svg").is_file() {
         "icon.svg".to_string()
@@ -1120,6 +1304,14 @@ pub fn import_plugin_package(
             None
         }
     };
+    // CLI 连接器供给结果（§14.3）：成功登记版本化资产引用；失败记 Degraded
+    // （登记在、资源缺——卡片提示修复动作，目录与记录照常保留）。
+    if let Some(asset) = cli_asset {
+        record.assets.push(asset);
+    }
+    if cli_degraded.is_some() {
+        record.degraded = cli_degraded;
+    }
     if let Err(e) = super::store::BundleStore::new().upsert_preserving(record) {
         log::warn!("[plugin-import] bundles.json 镜像写入失败（import {id}）: {e}");
     }
@@ -2084,5 +2276,355 @@ mod tests {
             None => std::env::remove_var("PINVOU3_HOME"),
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ------------------------------------------------------------------
+    // M2：声明式 CLI 连接器包（§14.3）
+    // ------------------------------------------------------------------
+
+    /// 把 PINVOU3_HOME 指到干净临时目录跑闭包（借 ENV_LOCK 与其它 env 测试串行）。
+    fn with_cli_temp_home<F: FnOnce(&std::path::Path)>(tag: &str, f: F) {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-cli-import-{tag}-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &dir);
+        f(&dir);
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::Digest;
+        crate::platform::encoding::hex_lower(&sha2::Sha256::digest(bytes))
+    }
+
+    /// 把条目集合写成 zip，返回路径。
+    fn write_zip(
+        home: &std::path::Path,
+        name: &str,
+        entries: &[(&str, &[u8])],
+    ) -> std::path::PathBuf {
+        use std::io::Write;
+        let zip_path = home.join(name);
+        let f = std::fs::File::create(&zip_path).unwrap();
+        let mut zw = zip::ZipWriter::new(f);
+        let opts = zip::write::SimpleFileOptions::default();
+        for (path, bytes) in entries {
+            zw.start_file(path, opts).unwrap();
+            zw.write_all(bytes).unwrap();
+        }
+        zw.finish().unwrap();
+        zip_path
+    }
+
+    /// 当前平台目录键（不支持的平台 → None，相关测试早退）。
+    fn current_platform_key() -> Option<&'static str> {
+        crate::platform::paths::connector_platform_dir(std::env::consts::OS, std::env::consts::ARCH)
+    }
+
+    /// 构造一个 CLI 连接器的二进制归档（zip，根级 `<bin>[.exe]`），返回字节。
+    fn build_cli_archive(bin: &str, binary: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut zw = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default();
+        let member = crate::platform::connector_lock::executable_name(bin);
+        zw.start_file(member, opts).unwrap();
+        zw.write_all(binary).unwrap();
+        zw.finish().unwrap().into_inner()
+    }
+
+    /// 把归档预置到下载暂存目录（哈希命中后安装管线跳过真实下载）。
+    fn stage_archive(home: &std::path::Path, bin: &str, version: &str, archive: &[u8]) {
+        let platform = current_platform_key().expect("测试需当前平台受支持");
+        let dir = crate::platform::paths::assets_staging_dir().join(platform);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{bin}-{version}.zip")), archive).unwrap();
+        let _ = home; // 暂存路径由 PINVOU3_HOME 推导，home 仅语义占位
+    }
+
+    /// 合法 cli_connectors 声明 JSON（`extra` 片段可注入差异，如自定义 platforms）。
+    fn cli_decl_json(id: &str, bin: &str, archive_sha: &str, binary_sha: &str) -> String {
+        let platform = current_platform_key().expect("测试需当前平台受支持");
+        format!(
+            r#"{{"manifest_version":1,"id":"{id}","name":"Up Echo","version":"1.0.0","description":"d",
+            "components":{{"cli_connectors":[{{"id":"{id}","bin":"{bin}","version":"1.0.0","skills_dir":"skills","license":"MIT test license",
+            "platforms":{{"{platform}":{{"url":"https://downloads.example.com/{bin}-1.0.0.zip","archive_sha256":"{archive_sha}","binary_sha256":"{binary_sha}"}}}}}}],
+            "skills":[{{"id":"{id}","dir":"skills/{id}"}}]}}}}"#
+        )
+    }
+
+    /// 供给成功路径：归档预置（跳过真实下载）→ 安装 → 二进制落版本目录、
+    /// record.assets 登记、license 落盘、盘上包自描述（导出准备）、kind=Cli。
+    #[test]
+    fn import_declared_cli_package_installs_and_registers() {
+        let Some(_platform) = current_platform_key() else {
+            return; // 不支持的平台无从断言
+        };
+        with_cli_temp_home("ok", |home| {
+            let binary = b"declared-cli-binary-v1";
+            let archive = build_cli_archive("up-echo", binary);
+            stage_archive(home, "up-echo", "1.0.0", &archive);
+            let plugin_json = cli_decl_json(
+                "up-echo",
+                "up-echo",
+                &sha256_hex(&archive),
+                &sha256_hex(binary),
+            );
+            let zip_path = write_zip(
+                home,
+                "up-echo.zip",
+                &[
+                    ("plugin.json", plugin_json.as_bytes()),
+                    ("skills/up-echo/SKILL.md", b"---\nname: up-echo\n---\n# hi"),
+                    // shebang 脚本属文本，应放行（只告警）
+                    ("skills/up-echo/run.sh", b"#!/bin/sh\necho hi\n"),
+                ],
+            );
+
+            let report = import_plugin_package(&zip_path.to_string_lossy(), "up-echo.zip").unwrap();
+            assert_eq!(report.kind, BundleKind::Cli, "cli 组件应现算 kind=Cli");
+
+            // 二进制落版本化资产库（内容一致）
+            let exe = crate::platform::paths::assets_cli_dir("up-echo", "1.0.0")
+                .join(crate::platform::connector_lock::executable_name("up-echo"));
+            assert_eq!(std::fs::read(&exe).unwrap(), binary, "二进制应校验落盘");
+            // license 声明随二进制落盘
+            let license = crate::platform::paths::assets_cli_dir("up-echo", "1.0.0")
+                .parent()
+                .unwrap()
+                .join("licenses/LICENSE-up-echo");
+            assert_eq!(
+                std::fs::read_to_string(license).unwrap(),
+                "MIT test license"
+            );
+
+            // 登记：assets 引用（bin+version+哈希），无 degraded
+            let record = crate::features::marketplace::store::BundleStore::new()
+                .get("up-echo")
+                .unwrap()
+                .expect("import 应登记");
+            assert_eq!(record.assets.len(), 1);
+            assert_eq!(record.assets[0].name, "up-echo");
+            assert_eq!(record.assets[0].version, "1.0.0");
+            assert_eq!(record.assets[0].sha256, sha256_hex(binary));
+            assert!(record.degraded.is_none());
+
+            // 盘上包自描述（导出准备）：plugin.json 声明 + skills/ 同目录
+            let pkg = home.join("bundles/up-echo");
+            let on_disk: PluginManifest =
+                serde_json::from_str(&std::fs::read_to_string(pkg.join("plugin.json")).unwrap())
+                    .unwrap();
+            let comps = on_disk.components.unwrap();
+            assert_eq!(comps.cli_connectors.len(), 1);
+            assert_eq!(comps.cli_connectors[0].bin, "up-echo");
+            assert_eq!(comps.skills.len(), 1);
+            assert!(pkg.join("skills/up-echo/SKILL.md").is_file());
+            assert!(
+                pkg.join("skills/up-echo/run.sh").is_file(),
+                "shebang 脚本应放行落盘"
+            );
+        });
+    }
+
+    /// 供给失败 → Degraded（登记在、资源缺）：binary 哈希声明错误时导入不翻盘，
+    /// 目录/记录照常，degraded 记录修复语义。
+    #[test]
+    fn import_declared_cli_package_supply_failure_marks_degraded() {
+        let Some(_platform) = current_platform_key() else {
+            return;
+        };
+        with_cli_temp_home("degraded", |home| {
+            let binary = b"declared-cli-binary-v1";
+            let archive = build_cli_archive("up-echo2", binary);
+            stage_archive(home, "up-echo2", "1.0.0", &archive);
+            // binary 哈希故意声明错误（64 位合法十六进制）
+            let wrong_sha = "0".repeat(64);
+            let plugin_json =
+                cli_decl_json("up-echo2", "up-echo2", &sha256_hex(&archive), &wrong_sha);
+            let zip_path = write_zip(
+                home,
+                "up-echo2.zip",
+                &[
+                    ("plugin.json", plugin_json.as_bytes()),
+                    (
+                        "skills/up-echo2/SKILL.md",
+                        b"---\nname: up-echo2\n---\n# hi",
+                    ),
+                ],
+            );
+
+            import_plugin_package(&zip_path.to_string_lossy(), "up-echo2.zip")
+                .expect("供给失败不翻盘，导入应成功");
+            let record = crate::features::marketplace::store::BundleStore::new()
+                .get("up-echo2")
+                .unwrap()
+                .expect("import 应登记");
+            assert!(record.degraded.is_some(), "供给失败应记 degraded");
+            assert!(record.assets.is_empty(), "供给失败不登记资产引用");
+            assert!(
+                home.join("bundles/up-echo2/plugin.json").is_file(),
+                "包目录照常落盘"
+            );
+        });
+    }
+
+    /// 声明校验矩阵：缺哈希 / 非 HTTPS / 缺当前平台 / 内置 id 冲突 / mcp+cli
+    /// 组合 / 坏 step kind / 非规范 skills_dir——全部响亮拒收。
+    #[test]
+    fn import_declared_cli_validation_matrix() {
+        let Some(platform) = current_platform_key() else {
+            return;
+        };
+        with_cli_temp_home("matrix", |home| {
+            let sha = "a".repeat(64);
+            let base_entries = |plugin_json: String| -> Vec<(String, Vec<u8>)> {
+                vec![
+                    ("plugin.json".to_string(), plugin_json.into_bytes()),
+                    (
+                        "skills/up-x/SKILL.md".to_string(),
+                        b"---\nname: up-x\n---\n# hi".to_vec(),
+                    ),
+                ]
+            };
+            let decl = |inner: &str| -> String {
+                format!(
+                    r#"{{"manifest_version":1,"id":"up-x","name":"Up X","components":{{"cli_connectors":[{{"id":"up-x","bin":"up-x","version":"1.0.0","skills_dir":"skills",{inner}}}],"skills":[{{"id":"up-x","dir":"skills/up-x"}}]}}}}"#
+                )
+            };
+            let platforms = |url: &str, archive_sha: &str, binary_sha: &str| -> String {
+                format!(
+                    r#""platforms":{{"{platform}":{{"url":"{url}","archive_sha256":"{archive_sha}","binary_sha256":"{binary_sha}"}}}}"#
+                )
+            };
+            let expect_reject = |name: &str, plugin_json: String, keyword: &str| {
+                let zip_path = write_zip(home, name, &[]);
+                // base_entries 重新写（write_zip 需要内容）
+                let entries = base_entries(plugin_json);
+                let f = std::fs::File::create(&zip_path).unwrap();
+                let mut zw = zip::ZipWriter::new(f);
+                let opts = zip::write::SimpleFileOptions::default();
+                for (p, b) in &entries {
+                    use std::io::Write;
+                    zw.start_file(p, opts).unwrap();
+                    zw.write_all(b).unwrap();
+                }
+                zw.finish().unwrap();
+                let err = import_plugin_package(&zip_path.to_string_lossy(), name).unwrap_err();
+                assert!(
+                    err.contains(keyword),
+                    "[{name}] 应拒收（{keyword}），实际: {err}"
+                );
+            };
+
+            // 缺/坏哈希
+            expect_reject(
+                "badhash.zip",
+                decl(&platforms("https://x.com/a.zip", "abc", &sha)),
+                "SHA-256",
+            );
+            // 非 HTTPS
+            expect_reject(
+                "http.zip",
+                decl(&platforms("http://x.com/a.zip", &sha, &sha)),
+                "HTTPS",
+            );
+            // 缺当前平台
+            expect_reject(
+                "noplatform.zip",
+                decl(&format!(
+                    r#""platforms":{{"plan9-arm":{{"url":"https://x.com/a.zip","archive_sha256":"{sha}","binary_sha256":"{sha}"}}}}"#
+                )),
+                "缺当前平台",
+            );
+            // 坏 step kind（serde 枚举拒收，报解析错误）
+            expect_reject(
+                "badstep.zip",
+                decl(&format!(
+                    r#"{}, "auth":{{"steps":[{{"id":"s1","kind":"voice","label":"x"}}]}}"#,
+                    platforms("https://x.com/a.zip", &sha, &sha)
+                )),
+                "解析 plugin.json",
+            );
+            // 非规范 skills_dir
+            expect_reject(
+                "badskillsdir.zip",
+                decl(&platforms("https://x.com/a.zip", &sha, &sha))
+                    .replace(r#""skills_dir":"skills""#, r#""skills_dir":"lib/skills""#),
+                "非规范",
+            );
+
+            // 内置连接器 id 冲突（沿用 cli_bundle_skill_dirs 口径）——声明本身
+            // 合法（含配套技能文件），须走到冲突检查才被拒
+            let feishu_json = decl(&platforms("https://x.com/a.zip", &sha, &sha))
+                .replace(r#""id":"up-x""#, r#""id":"feishu""#)
+                .replace(r#""dir":"skills/up-x""#, r#""dir":"skills/feishu""#);
+            let feishu_zip = write_zip(
+                home,
+                "feishu.zip",
+                &[
+                    ("plugin.json", feishu_json.as_bytes()),
+                    (
+                        "skills/feishu/SKILL.md",
+                        b"---\nname: feishu\n---\n# hi" as &[u8],
+                    ),
+                ],
+            );
+            let err =
+                import_plugin_package(&feishu_zip.to_string_lossy(), "feishu.zip").unwrap_err();
+            assert!(err.contains("内置 CLI 连接器冲突"), "实际: {err}");
+
+            // mcp+cli 组合首版拒收
+            let combo = format!(
+                r#"{{"manifest_version":1,"id":"up-x","name":"Up X","components":{{"mcp_servers":[{{"id":"up-x","dir":"mcp"}}],"cli_connectors":[{{"id":"up-x","bin":"up-x","version":"1.0.0","skills_dir":"skills",{}}}]}}}}"#,
+                platforms("https://x.com/a.zip", &sha, &sha)
+            );
+            let combo_zip = write_zip(
+                home,
+                "combo.zip",
+                &[
+                    ("plugin.json", combo.as_bytes()),
+                    ("mcp/manifest.json", br#"{"id":"up-x","name":"x","description":"d","version":"1","icon":"","category":"c","mcp_tools":[],"command":"python","args":["server.py"]}"#),
+                    ("skills/up-x/SKILL.md", b"---\nname: up-x\n---\n# hi"),
+                ],
+            );
+            let err = import_plugin_package(&combo_zip.to_string_lossy(), "combo.zip").unwrap_err();
+            assert!(err.contains("不支持 MCP + CLI"), "实际: {err}");
+        });
+    }
+
+    /// 内嵌二进制拒收（§14.3）：zip 条目起始字节命中 PE 魔数即拒收整包。
+    #[test]
+    fn import_rejects_embedded_binary_magic() {
+        let Some(_platform) = current_platform_key() else {
+            return;
+        };
+        with_cli_temp_home("magic", |home| {
+            let sha = "a".repeat(64);
+            let plugin_json = cli_decl_json("up-bin", "up-bin", &sha, &sha);
+            let zip_path = write_zip(
+                home,
+                "embedded.zip",
+                &[
+                    ("plugin.json", plugin_json.as_bytes()),
+                    ("skills/up-bin/SKILL.md", b"---\nname: up-bin\n---\n# hi"),
+                    // PE 魔数头条目 → 拒收
+                    ("bin/up-bin.exe", b"MZ\x90\x00fake-pe"),
+                ],
+            );
+            let err =
+                import_plugin_package(&zip_path.to_string_lossy(), "embedded.zip").unwrap_err();
+            assert!(err.contains("内嵌可执行二进制"), "实际: {err}");
+        });
     }
 }

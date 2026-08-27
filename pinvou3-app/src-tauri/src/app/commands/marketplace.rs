@@ -963,6 +963,32 @@ where
     // CLI/ima 包的 installed 在注册表是保守占位（恒 false），此处用连接器 status
     // 的真实字段覆盖，避免对消费方产出 (installed=false, ready=true) 的矛盾组合。
     let (installed, ready, reason, detail) = match bundle.kind {
+        // 声明式 CLI 连接器包（Upload，M2）：manual 授权无 auth status 可查，
+        // 通用语义 ready = 二进制在位且未 degraded（内置 4 个走下面的硬编码
+        // match，阶段 3 才泛化编排）。
+        BundleKind::Cli if bundle.user_uploaded => {
+            let (_, decl) =
+                crate::features::marketplace::bundle::upload_cli_connector_decl(&bundle_id)
+                    .ok_or_else(|| format!("CLI 包 '{bundle_id}' 缺盘上 cli_connectors 声明"))?;
+            let version = decl.version.clone().unwrap_or_default();
+            let exe = crate::platform::paths::assets_cli_dir(&decl.bin, &version)
+                .join(crate::platform::connector_lock::executable_name(&decl.bin));
+            let binary_present = exe.is_file();
+            let degraded = bundle.degraded.is_some();
+            let ready = binary_present && !degraded;
+            (
+                bundle.installed,
+                ready,
+                if ready {
+                    None
+                } else if degraded {
+                    Some("degraded".to_string())
+                } else {
+                    Some("cli_not_installed".to_string())
+                },
+                None,
+            )
+        }
         BundleKind::Cli => {
             let (connected, detail) = match bundle_id.as_str() {
                 "feishu" => {
@@ -1200,6 +1226,95 @@ mod tests {
             ))
             .unwrap();
         assert!(result.ready, "必填凭据已注入内存库应就绪");
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// M2：声明式 CLI 连接器包（Upload）readiness 通用语义——manual 授权无
+    /// auth status，ready = 二进制在位且未 degraded；installed 读登记。
+    #[test]
+    fn bundle_readiness_declared_cli_upload_package() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-readiness-cli-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        // 盘上包 + Upload 登记
+        let pkg = crate::platform::paths::bundles_root().join("up-cli");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("plugin.json"),
+            r#"{"manifest_version":1,"id":"up-cli","name":"Up CLI","components":{"cli_connectors":[{"id":"up-cli","bin":"up-cli-bin","version":"2.0.0","skills_dir":"skills"}]}}"#,
+        )
+        .unwrap();
+        let store = crate::features::marketplace::store::BundleStore::new();
+        store
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    "up-cli",
+                    crate::features::marketplace::store::BundleSource::Upload("up.zip".to_string()),
+                ),
+            )
+            .unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let cred_store = crate::platform::credential_store::MemoryCredentialStore::default();
+        // 二进制缺失 → 已安装但未就绪（cli_not_installed）
+        let result = rt
+            .block_on(bundle_readiness_with_store(
+                "up-cli".to_string(),
+                cred_store.clone(),
+            ))
+            .unwrap();
+        assert!(result.installed, "登记在应已安装");
+        assert!(!result.ready, "二进制缺失应未就绪");
+        assert_eq!(result.reason.as_deref(), Some("cli_not_installed"));
+
+        // 二进制落位 → 就绪
+        let exe_dir = crate::platform::paths::assets_cli_dir("up-cli-bin", "2.0.0");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        std::fs::write(
+            exe_dir.join(crate::platform::connector_lock::executable_name(
+                "up-cli-bin",
+            )),
+            b"bin",
+        )
+        .unwrap();
+        let result = rt
+            .block_on(bundle_readiness_with_store(
+                "up-cli".to_string(),
+                cred_store.clone(),
+            ))
+            .unwrap();
+        assert!(result.ready, "二进制在位应就绪");
+
+        // degraded（供给失败残留）→ 未就绪（修复动作提示）
+        let mut record = store.get("up-cli").unwrap().unwrap();
+        record.degraded = Some("CLI 下载失败".to_string());
+        store.upsert(record).unwrap();
+        let result = rt
+            .block_on(bundle_readiness_with_store(
+                "up-cli".to_string(),
+                cred_store,
+            ))
+            .unwrap();
+        assert!(!result.ready, "degraded 应未就绪");
+        assert_eq!(result.reason.as_deref(), Some("degraded"));
 
         match prev {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),

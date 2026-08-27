@@ -2,21 +2,17 @@
 //!
 //! 版本、下载地址与两层 SHA-256 都来自随程序编译的目标平台 lock；运行时只在用户
 //! 首次启用连接器时联网，校验归档后只提取预期的单个可执行文件，避免路径穿越。
+//! 下载/校验/落盘核心已下沉 `crate::platform::connector_installer`（声明驱动的
+//! 第三方 CLI 连接器包也复用同一管线，避免 marketplace ↔ connectors 功能环）；
+//! 本模块只保留 lock 表驱动的内置包装与旧布局迁移。
 // architecture-guard: allow-target-cfg -- 平台专属 license 文本必须按目标平台各自内嵌(对齐 platform.rs LOCK_JSON 门控),数据选择而非适配逻辑,留在安装器内最内聚。
 
-use std::fs::{self, File};
-use std::io::{self, Read, Write};
-use std::path::{Component, Path};
-use std::sync::Mutex;
-use std::time::Duration;
+use std::fs;
 
-use flate2::read::GzDecoder;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
-const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_BINARY_BYTES: u64 = 128 * 1024 * 1024;
-static INSTALL_LOCK: Mutex<()> = Mutex::new(());
+use crate::platform::connector_installer::{self, Artifact};
+
 const DWS_LICENSE: &str =
     include_str!("../../../resources/common/bundle/dingtalk-skills/dws/LICENSE");
 // lark/wecom 是平台专属二进制,license 文本随平台包走——按目标平台 cfg 各自内嵌
@@ -88,16 +84,6 @@ struct ConnectorLock {
     artifacts: Vec<Artifact>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Artifact {
-    name: String,
-    version: String,
-    url: String,
-    archive_sha256: String,
-    binary_sha256: String,
-}
-
 /// 安装一个锁定版本的厂家原生 CLI。返回 `true` 表示本次实际写入了文件。
 ///
 /// 版本化布局（marketplace-unification §4）：二进制落
@@ -106,9 +92,7 @@ struct Artifact {
 /// 下载/解包暂存收编到 `assets/.staging/`（旧 `cache/connectors/` 退役，
 /// 残留不清理——内容只是缓存，重下自愈）。
 pub fn ensure_native_cli(name: &str) -> Result<bool, String> {
-    let _guard = INSTALL_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = connector_installer::install_lock();
     let lock = load_lock()?;
     let artifact = lock
         .artifacts
@@ -118,69 +102,22 @@ pub fn ensure_native_cli(name: &str) -> Result<bool, String> {
         .ok_or_else(|| format!("当前平台没有 {name} 的已审核安装记录"))?;
 
     // 连接时自愈：旧布局（connectors/<platform>/bin/）里已验证的存量二进制
-    // 先迁移到版本目录（幂等；已持 INSTALL_LOCK，走 locked 实现）。
+    // 先迁移到版本目录（幂等；已持安装锁，走 locked 实现）。
     migrate_legacy_binary(&artifact.name, &artifact.version, &artifact.binary_sha256);
 
-    let version_dir = crate::platform::paths::assets_cli_dir(&artifact.name, &artifact.version);
-    let filename = super::platform::executable_name(name);
-    let destination = version_dir.join(&filename);
-    if file_sha256_matches(&destination, &artifact.binary_sha256) {
-        // 二进制已就位(hash 比对通过)时 license 必然随上次释放落过盘,不再重写,
-        // 避免每次按需检查都白写一次 license 文件。
-        return Ok(false);
-    }
-    write_license(&version_dir, name)?;
-
-    fs::create_dir_all(&version_dir).map_err(|e| format!("创建连接器目录失败: {e}"))?;
-    let staging_dir = crate::platform::paths::assets_staging_dir().join(&lock.platform);
-    fs::create_dir_all(&staging_dir).map_err(|e| format!("创建连接器暂存目录失败: {e}"))?;
-    let archive_ext = if artifact.url.ends_with(".zip") {
-        "zip"
-    } else {
-        "tar.gz"
+    let license = match artifact.name.as_str() {
+        "dws" => Some(DWS_LICENSE),
+        "lark-cli" => Some(LARK_LICENSE),
+        "wecom-cli" => Some(WECOM_LICENSE),
+        _ => None,
     };
-    let archive = staging_dir.join(format!(
-        "{}-{}.{}",
-        artifact.name, artifact.version, archive_ext
-    ));
-    if !file_sha256_matches(&archive, &artifact.archive_sha256) {
-        download_verified(&artifact, &archive)?;
-    }
-
-    let binary = extract_expected_binary(&archive, &artifact)
-        .map_err(|e| format!("解压 {} 失败: {e}", artifact.name))?;
-    let actual = sha256_bytes(&binary);
-    if actual != artifact.binary_sha256 {
-        return Err(format!(
-            "{} 可执行文件校验失败(expected {}, got {})",
-            artifact.name, artifact.binary_sha256, actual
-        ));
-    }
-
-    let staging = version_dir.join(format!(".{filename}.installing-{}", std::process::id()));
-    let _ = fs::remove_file(&staging);
-    let mut file = File::create(&staging).map_err(|e| format!("创建安装暂存文件失败: {e}"))?;
-    file.write_all(&binary)
-        .and_then(|()| file.sync_all())
-        .map_err(|e| format!("写入安装暂存文件失败: {e}"))?;
-    super::platform::set_executable_permissions(&staging)
-        .map_err(|e| format!("设置连接器执行权限失败: {e}"))?;
-    if destination.exists() {
-        fs::remove_file(&destination).map_err(|e| format!("替换旧连接器失败: {e}"))?;
-    }
-    fs::rename(&staging, &destination).map_err(|e| format!("完成连接器安装失败: {e}"))?;
-    // GC 策略：同 name 的旧版本目录**保守保留暂不删**——资产按「包只引用不拥有」
-    // 共享（§4），删除需要引用计数支撑；CLI 二进制体积小，滞留成本低。
-    // 引用计数/GC 随存储布局迁移 PR 一并落地。
-    Ok(true)
+    connector_installer::install_artifact(&artifact, super::platform::archive_member(name), license)
 }
 
 /// 旧布局（`connectors/<platform>/bin/`，无版本）→ 版本化资产库的一次性迁移
 /// 入口（§9.3）。启动路径调用；幂等：迁移后旧文件不在即 no-op。
 pub fn migrate_legacy_cli_binaries() {
-    let _guard = INSTALL_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = connector_installer::install_lock();
     // 平台不支持/lock 缺失 → 无旧布局可迁
     let Ok(lock) = load_lock() else {
         return;
@@ -190,7 +127,7 @@ pub fn migrate_legacy_cli_binaries() {
     }
 }
 
-/// 单个 CLI 的旧布局迁移（调用前须已持 INSTALL_LOCK；参数显式传入便于测试）。
+/// 单个 CLI 的旧布局迁移（调用前须已持安装锁；参数显式传入便于测试）。
 /// 对照 lock 钉住的 SHA-256：匹配 → **移动**（非复制）到版本目录；不匹配 → 不动
 /// （store 侧已是 degraded 语义，重连会重下）。旧 bin 目录腾空后清理。
 fn migrate_legacy_binary(name: &str, version: &str, expected_sha256: &str) {
@@ -204,13 +141,13 @@ fn migrate_legacy_binary(name: &str, version: &str, expected_sha256: &str) {
     }
     let version_dir = crate::platform::paths::assets_cli_dir(name, version);
     let destination = version_dir.join(&exe);
-    if file_sha256_matches(&destination, expected_sha256) {
+    if connector_installer::file_sha256_matches(&destination, expected_sha256) {
         // 版本目录已有校验通过的二进制：旧文件是经校验相同的重复残留才删，
         // 内容不符则不动（不替用户删来历不明的文件）。
-        if file_sha256_matches(&legacy, expected_sha256) {
+        if connector_installer::file_sha256_matches(&legacy, expected_sha256) {
             let _ = fs::remove_file(&legacy);
         }
-    } else if file_sha256_matches(&legacy, expected_sha256) {
+    } else if connector_installer::file_sha256_matches(&legacy, expected_sha256) {
         if fs::create_dir_all(&version_dir).is_ok() && fs::rename(&legacy, &destination).is_ok() {
             log::info!("[connectors] 旧布局 CLI 迁移到版本目录: {name}@{version}");
         }
@@ -223,22 +160,6 @@ fn migrate_legacy_binary(name: &str, version: &str, expected_sha256: &str) {
             let _ = fs::remove_dir(&bin_dir);
         }
     }
-}
-
-fn write_license(bin_dir: &Path, name: &str) -> Result<(), String> {
-    let text = match name {
-        "dws" => DWS_LICENSE,
-        "lark-cli" => LARK_LICENSE,
-        "wecom-cli" => WECOM_LICENSE,
-        _ => return Err(format!("未知连接器: {name}")),
-    };
-    let platform_dir = bin_dir
-        .parent()
-        .ok_or_else(|| "连接器安装目录无效".to_string())?;
-    let licenses = platform_dir.join("licenses");
-    fs::create_dir_all(&licenses).map_err(|e| format!("创建连接器许可证目录失败: {e}"))?;
-    fs::write(licenses.join(format!("LICENSE-{name}")), text)
-        .map_err(|e| format!("写入连接器许可证失败: {e}"))
 }
 
 fn load_lock() -> Result<ConnectorLock, String> {
@@ -265,133 +186,6 @@ fn load_lock() -> Result<ConnectorLock, String> {
     Ok(lock)
 }
 
-fn download_verified(artifact: &Artifact, destination: &Path) -> Result<(), String> {
-    let url = reqwest::Url::parse(&artifact.url).map_err(|e| format!("下载地址无效: {e}"))?;
-    if url.scheme() != "https" {
-        return Err("连接器下载仅允许 HTTPS".to_string());
-    }
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(180))
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= 10 || attempt.url().scheme() != "https" {
-                attempt.stop()
-            } else {
-                attempt.follow()
-            }
-        }))
-        .user_agent("Pinvou-Agent connector-installer")
-        .build()
-        .map_err(|e| format!("创建下载客户端失败: {e}"))?;
-    let response = client
-        .get(url)
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .map_err(|e| format!("下载 {} 失败: {e}", artifact.name))?;
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_ARCHIVE_BYTES)
-    {
-        return Err("连接器归档超过 128 MiB 安全上限".to_string());
-    }
-
-    let partial = destination.with_extension("part");
-    let _ = fs::remove_file(&partial);
-    let mut reader = response.take(MAX_ARCHIVE_BYTES + 1);
-    let mut file = File::create(&partial).map_err(|e| format!("创建下载暂存文件失败: {e}"))?;
-    let copied = io::copy(&mut reader, &mut file).map_err(|e| format!("保存下载失败: {e}"))?;
-    file.sync_all()
-        .map_err(|e| format!("同步下载文件失败: {e}"))?;
-    if copied > MAX_ARCHIVE_BYTES {
-        let _ = fs::remove_file(&partial);
-        return Err("连接器归档超过 128 MiB 安全上限".to_string());
-    }
-    let actual = crate::platform::hashing::sha256_file(&partial)
-        .map_err(|e| format!("读取下载文件失败: {e}"))?;
-    if actual != artifact.archive_sha256 {
-        let _ = fs::remove_file(&partial);
-        return Err(format!(
-            "{} 下载校验失败(expected {}, got {})",
-            artifact.name, artifact.archive_sha256, actual
-        ));
-    }
-    if destination.exists() {
-        fs::remove_file(destination).map_err(|e| format!("替换连接器缓存失败: {e}"))?;
-    }
-    fs::rename(&partial, destination).map_err(|e| format!("保存连接器缓存失败: {e}"))
-}
-
-fn extract_expected_binary(archive: &Path, artifact: &Artifact) -> io::Result<Vec<u8>> {
-    let expected = super::platform::archive_member(&artifact.name);
-    let file = File::open(archive)?;
-    if artifact.url.ends_with(".zip") {
-        extract_zip_member(file, expected)
-    } else {
-        extract_tar_member(GzDecoder::new(file), expected)
-    }
-}
-
-fn extract_tar_member<R: Read>(reader: R, expected: &str) -> io::Result<Vec<u8>> {
-    let mut archive = tar::Archive::new(reader);
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        if normalized_path_eq(&entry.path()?, expected) {
-            return read_limited(&mut entry, MAX_BINARY_BYTES);
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        format!("归档中缺少 {expected}"),
-    ))
-}
-
-fn extract_zip_member<R: Read + io::Seek>(reader: R, expected: &str) -> io::Result<Vec<u8>> {
-    let mut archive = zip::ZipArchive::new(reader)?;
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index)?;
-        if normalized_path_eq(Path::new(entry.name()), expected) {
-            return read_limited(&mut entry, MAX_BINARY_BYTES);
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        format!("归档中缺少 {expected}"),
-    ))
-}
-
-fn normalized_path_eq(path: &Path, expected: &str) -> bool {
-    let actual = path
-        .components()
-        .filter_map(|component| match component {
-            Component::Normal(value) => Some(value.to_string_lossy()),
-            Component::CurDir => None,
-            _ => Some("<unsafe>".into()),
-        })
-        .collect::<Vec<_>>()
-        .join("/");
-    actual == expected
-}
-
-fn read_limited(reader: &mut impl Read, max: u64) -> io::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    reader.take(max + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > max {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "连接器可执行文件超过 128 MiB 安全上限",
-        ));
-    }
-    Ok(bytes)
-}
-
-fn file_sha256_matches(path: &Path, expected: &str) -> bool {
-    crate::platform::hashing::sha256_file(path).is_ok_and(|actual| actual == expected)
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    crate::platform::encoding::hex_lower(&Sha256::digest(bytes))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,6 +209,8 @@ mod tests {
 
     #[test]
     fn archive_path_matching_rejects_parent_and_absolute_paths() {
+        use crate::platform::connector_installer::normalized_path_eq;
+        use std::path::Path;
         assert!(normalized_path_eq(
             Path::new("./package/bin/wecom-cli"),
             "package/bin/wecom-cli"

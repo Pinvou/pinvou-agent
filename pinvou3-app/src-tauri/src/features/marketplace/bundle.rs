@@ -141,22 +141,38 @@ pub fn cli_bundle_skill_dirs(id: &str) -> &'static [&'static str] {
 
 /// CLI 连接器的二进制名（execpolicy 硬拦截按它构造 deny 规则）。
 /// 内置连接器查 checked-in 声明；已装 Upload 包回退反查盘上
-/// `bundles/<id>/plugin.json` 的 cli_connectors 声明（为阶段 2 的 execpolicy
-/// 治理前置——当前导入管线尚不识别 cli 组件，此类包还不存在，反查先落地）。
+/// `bundles/<id>/plugin.json` 的 cli_connectors 声明（M2 起导入管线接受
+/// cli 组件，execpolicy 治理经此反查覆盖声明式包）。
 /// 返回 `Option<String>`：盘上反查值无法借用静态生命周期（签名随反查扩展由
 /// `&'static str` 调整为 `String`，三个调用点同步适配，行为不变）。
 pub fn cli_bundle_bin(id: &str) -> Option<String> {
     if let Some(b) = builtin_cli_bundles().iter().find(|b| b.plugin.id == id) {
         return Some(b.connector().bin.clone());
     }
+    upload_cli_connector_decl(id).map(|(_, decl)| decl.bin)
+}
+
+/// 已装 Upload 包盘上 `bundles/<id>/plugin.json` 的 cli_connectors 声明
+/// （恰一个组件时返回完整清单 + 组件声明；M2 出卡/readiness/治理反查共用）。
+/// 内置连接器不走盘上反查（返回 None——内置由 checked-in 声明覆盖）。
+pub(crate) fn upload_cli_connector_decl(
+    id: &str,
+) -> Option<(
+    super::plugin_import::PluginManifest,
+    super::plugin_import::CliConnectorDecl,
+)> {
+    if builtin_cli_bundles().iter().any(|b| b.plugin.id == id) {
+        return None;
+    }
     let path = crate::platform::paths::bundles_root()
         .join(id)
         .join("plugin.json");
     let plugin: super::plugin_import::PluginManifest =
         serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-    let comps = plugin.components?;
+    let comps = plugin.components.clone()?;
     if comps.cli_connectors.len() == 1 {
-        Some(comps.cli_connectors.into_iter().next().unwrap().bin)
+        let decl = comps.cli_connectors.into_iter().next().unwrap();
+        Some((plugin, decl))
     } else {
         None
     }
@@ -475,6 +491,10 @@ impl BundleRegistry {
             if !skill.user_uploaded {
                 continue;
             }
+            // 声明式 CLI 连接器包（含同名技能时）由源 6 出卡，不在此重复
+            if upload_cli_connector_decl(&skill.id).is_some() {
+                continue;
+            }
             let (installed, degraded) = store_state(&skill.id).unwrap_or((true, None));
             out.push(BundleInfo {
                 id: skill.id.clone(),
@@ -598,6 +618,47 @@ impl BundleRegistry {
             category: "docs".to_string(),
             icon: bundle_icon_path("ima"),
         });
+
+        // 6) 声明式 CLI 连接器包（Upload，M2）：store 记录驱动，盘上 plugin.json
+        //    的 cli_connectors 声明出卡（kind 现算 Cli）。installed/degraded 读
+        //    记录（供给失败即 degraded，修复动作 = 重新导入重新获取）；name/desc/
+        //    version/授权模型取自声明。skills 取声明的技能组件（ cli+skills 常态）。
+        if let Ok(records) = store::BundleStore::new().records() {
+            for record in records
+                .iter()
+                .filter(|r| r.installed && matches!(r.source, store::BundleSource::Upload(_)))
+            {
+                let Some((plugin, decl)) = upload_cli_connector_decl(&record.id) else {
+                    continue;
+                };
+                let skills = plugin
+                    .components
+                    .as_ref()
+                    .map(|c| c.skills.iter().map(|s| s.id.clone()).collect())
+                    .unwrap_or_default();
+                out.push(BundleInfo {
+                    id: record.id.clone(),
+                    name: plugin.name.clone(),
+                    kind: BundleKind::Cli,
+                    mcp_servers: Vec::new(),
+                    skills,
+                    cli: vec![record.id.clone()],
+                    credentials: Vec::new(),
+                    description: plugin.description.clone().unwrap_or_default(),
+                    version: decl.version.clone().unwrap_or_default(),
+                    // manual（无授权步骤）= CLI 自行交互授权，宿主侧无授权动作
+                    auth_required: decl.auth.is_some(),
+                    config_fields: Vec::new(),
+                    installed: true,
+                    user_uploaded: true,
+                    degraded: record.degraded.clone(),
+                    update_available: false,
+                    oauth: false,
+                    category: "collab".to_string(),
+                    icon: bundle_icon_path(&record.id),
+                });
+            }
+        }
 
         out
     }
@@ -1532,6 +1593,48 @@ mod tests {
             assert_eq!(cli_bundle_bin("plain-pkg"), None);
             // 无包 → None
             assert_eq!(cli_bundle_bin("no-such-pkg"), None);
+        });
+    }
+
+    /// M2 出卡：带 cli 组件的 Upload 包经 list_bundles 出卡（kind=Cli、声明元数据、
+    /// degraded 透传），含同名技能时不与上传技能源重复出卡。
+    #[test]
+    fn declared_cli_upload_package_listed_as_cli_card() {
+        with_temp_home(|| {
+            // 盘上包：cli+skills 声明（技能与包同名，验证源 3 去重）
+            let pkg = crate::platform::paths::bundles_root().join("up-cli");
+            std::fs::create_dir_all(pkg.join("skills/up-cli")).unwrap();
+            std::fs::write(
+                pkg.join("skills/up-cli/SKILL.md"),
+                "---\nname: up-cli\n---\n# hi",
+            )
+            .unwrap();
+            std::fs::write(
+                pkg.join("plugin.json"),
+                r#"{"manifest_version":1,"id":"up-cli","name":"Up CLI","description":"d","components":{"cli_connectors":[{"id":"up-cli","bin":"up-cli-bin","version":"2.0.0","skills_dir":"skills"}],"skills":[{"id":"up-cli","dir":"skills/up-cli"}]}}"#,
+            )
+            .unwrap();
+            let store = store::BundleStore::new();
+            let mut record = store::BundleRecord::installed_now(
+                "up-cli",
+                store::BundleSource::Upload("up.zip".to_string()),
+            );
+            record.degraded = Some("CLI 下载失败".to_string());
+            store.upsert(record).unwrap();
+
+            let bundles = BundleRegistry::new().list_bundles();
+            let cards: Vec<_> = bundles.iter().filter(|b| b.id == "up-cli").collect();
+            assert_eq!(cards.len(), 1, "同 id 不得重复出卡（源 3 应跳过 cli 包）");
+            let card = cards[0];
+            assert_eq!(card.kind, BundleKind::Cli);
+            assert!(card.user_uploaded);
+            assert_eq!(card.name, "Up CLI");
+            assert_eq!(card.version, "2.0.0");
+            assert_eq!(card.skills, vec!["up-cli".to_string()]);
+            assert_eq!(card.cli, vec!["up-cli".to_string()]);
+            assert!(card.installed);
+            assert_eq!(card.degraded.as_deref(), Some("CLI 下载失败"));
+            assert!(!card.auth_required, "无授权步骤（manual）不应要求宿主授权");
         });
     }
 }
