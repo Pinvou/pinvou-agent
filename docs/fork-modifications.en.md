@@ -56,9 +56,9 @@ CodeWhale PR #15 combined candidate `1eca6103a` with security follow-ups `169c24
 - Two CodeWhale tests, two parent `forkguard_*` tests, and Tauri/Web frontend behavior coverage protect side-effect-free runtime reads, observable and idempotent explicit recovery, safe secondary Store opening, durable startup recovery, and consecutive sends after local completion.
 - The fix is included in the published head, drift figures, and immutable tag `pinvou-v0.9.5-r5`; CodeWhale required checks and parent automation pass.
 
-## In flight: session steer and deterministic cancel (CodeWhale#16 / pinvou-agent#308)
+## Session steer and deterministic cancel (CodeWhale#16 / pinvou-agent#308, published)
 
-- **Status**: review fixes (opaque steer id, stop semantics, teardown coverage, scoped kill) are complete, pending the CodeWhale#16 merge and release. Once published, this section folds into topics T1/T2, the public baseline head, and the drift figures.
+- **Status**: CodeWhale#16 is merged and `#30` (`withdraw_steer` returning the `SteerWithdrawal` outcome) landed as a follow-up; the public baseline is `pinvou-v0.9.5-r11` (`0d89a31be`). Per this section's own convention its content has folded into the T1/T2 topic registers, the public baseline head, and the drift figures above; the section remains as the release record.
 - **T1 (host embedding and routing boundary) additions**:
   - Session steer (mid-turn injection) primitives: `SteerMessage { id, content }` travels the steer channel; `EngineHandle::steer` assigns and returns an opaque `steer_id` at enqueue time; `Event::SteerCommitted` / `Event::SteerDropped` carry `steer_id` so the host can correlate its queued placeholder message — no content hash (a cross-language hash over non-ASCII content cannot be made consistent).
   - `EngineHandle::cancel_with_mode(reason, CancelMode)` (since r10): `InterruptKeepInbox` (⚡ interrupt) parks unconsumed steers for the next turn's step boundary; `StopDropInbox` (⏹ stop) settles at every Interrupted exit — both `pending_steers` and steer-channel residue emit one `SteerDropped` each. The disposition mode and the cancel token are published atomically by one handle call; there is no separate host-side switch set before cancel.

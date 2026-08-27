@@ -514,6 +514,10 @@
       addSystemItem("⚠️ " + bt("steerFailed"));
     });
     notify();
+    // turn 可能在 25s 等待窗口内已结束:其 chat:done 的 flush 被当时的
+    // steered 队头让路(chat.js flushQueued 的 q[0].steered 判定),chip 降级/
+    // 移除后不会再有触发——空闲时补一次,否则 chip 永久悬挂(第六轮评审)。
+    if (!isBusyFor(sid)) flushQueued(sid);
   }
 
   async function sendMessage(text, meta) {
@@ -906,9 +910,10 @@
   // 若引擎被回收（30min 空闲/切模型/多智能体开关，forwarder 先 abort 导致
   // SteerDropped 丢失）或卡在「最后一次 drain 之后、finish 之前」的窗口，
   // committed/dropped 永远不到达，steered 队头会让 flushQueued 永久让路——
-  // 该会话再也发不出消息。看门狗到时后先 best-effort 撤回（引擎活着则撤回
-  // 生效、后续不会再注入，不重复投递；已回收则 Err/no-op），再把 chip 降级
-  // 为普通排队消息由 flushQueued 消费——消息不丢、不悬挂。
+  // 该会话再也发不出消息。看门狗到时后先撤回并 await outcome：retired/
+  // 已回收 = 不会再注入，chip 降级为普通排队由 flushQueued 消费；
+  // not_pending = 已 committed 但事件丢失，降级重发会重复投递，改为移除
+  // chip + 恢复草稿（第六轮评审，对齐 ⚡ 路径的 outcome 语义）。
   // 60s 而非对称 25s：长工具调用（分钟级 shell）期间 steer 合法地等待下个
   // step 边界，过短的看门狗会把健康引擎的 steer 误降级为下轮独立发送。
   const STEER_SETTLE_WATCHDOG_MS = 60000;
@@ -931,14 +936,34 @@
       delete byId[steerId];
       const q = steeredQueueFor(sid);
       if (!q || !q.includes(item) || !item.steered || item.steerId !== steerId) return;
-      // best-effort 撤回（底座幂等；已回收时 Err），随后降级为纯本地排队。
+      // best-effort 撤回并 await outcome（第六轮评审 P2，对齐 ⚡ 路径）：
+      // retired/Err（已回收）= 不会再注入，按原计划降级为纯本地排队；
+      // not_pending = steer 恰在此刻已 committed 但事件丢失——降级后
+      // flushQueued 重发会重复投递，改为移除 chip、恢复草稿并提示，
+      // 不把不确定的消息当作投递成功；迟到的 committed 仍经 withdrawn
+      // 登记补气泡（与用户重发同文时去重已有处理）。
       rememberWithdrawn(sid, steerId, item.text);
       invoke("withdraw_steer", { sessionId: sid, steerId })
-        .catch(function () { /* 引擎已回收 = 不会再注入 */ });
-      item.steered = false;
-      item.steerId = null;
-      notify();
-      if (!isBusyFor(sid)) flushQueued(sid);
+        .catch(function () { return "retired"; /* 引擎已回收 = 不会再注入 */ })
+        .then(function (outcome) {
+          // await 期间 chip 可能已被 ×/⚡ 接走:文本由那条路径处置,这里再
+          // 回填/降级会复活已放弃的文字(同 onSteerFailure 的接管守卫)。
+          if (!q.includes(item)) return;
+          if (outcome === "not_pending") {
+            q.splice(q.indexOf(item), 1);
+            runSyncOnSession(sid, function () {
+              if (String(state.composerDraft || "").trim() === "") setComposerDraft(item.text);
+              else prefillComposer(item.text);
+              addSystemItem("⚠️ " + bt("steerFailed"));
+            });
+            notify();
+            return;
+          }
+          item.steered = false;
+          item.steerId = null;
+          notify();
+          if (!isBusyFor(sid)) flushQueued(sid);
+        });
     }, STEER_SETTLE_WATCHDOG_MS);
   }
 
@@ -981,6 +1006,10 @@
   // chip 回填 id 时立即结算(sendMessage 的 steer().then)。
   // chip 在回填前被用户 × 移除时暂存项会残留,量极小且 steer_id 唯一,可接受。
   const pendingSteerEvents = {};
+  // 上限保护(第六轮评审 P2):远端注入的 steer 事件可能永远没有本地 chip
+  // 来消费,暂存不得无限累积;超限按插入序淘汰最旧(steer_id 为字符串
+  // key,Object 保持插入序)。
+  const PENDING_STEER_EVENT_CAP = 64;
   function stashSteerEvent(sid, steerId, kind) {
     let byId = pendingSteerEvents[sid];
     if (!byId) {
@@ -988,6 +1017,8 @@
       pendingSteerEvents[sid] = byId;
     }
     byId[steerId] = kind;
+    const keys = Object.keys(byId);
+    if (keys.length > PENDING_STEER_EVENT_CAP) delete byId[keys[0]];
   }
   function takeSteerEvent(sid, steerId) {
     const byId = pendingSteerEvents[sid];
@@ -1125,7 +1156,13 @@
       const q = steeredQueueFor(sid);
       const index = findSteerChipIndex(sid, steerId);
       if (!q || index < 0) return;
+      const item = q[index];
       q.splice(index, 1);
+      // 文本回灌草稿(第六轮评审 P2):其他失败路径(steer 失败/看门狗/⚡
+      // 降级)都会把文字还给用户,引擎主动丢弃(含 ⏹ 停止清空)不该是唯一
+      // 让用户重打的分支。输入框已有内容时追加而非覆盖。
+      if (String(state.composerDraft || "").trim() === "") setComposerDraft(item.text);
+      else prefillComposer(item.text);
       addSystemItem("⚠️ " + bt("steerDropped"));
     });
     notify();
@@ -1286,13 +1323,37 @@
         const watcher = createChatDoneWatcher(sid);
         if (watcher) await watcher.ready;
         let outcome = null;
+        // cancel invoke 与 steer 同样补传输层超时(第六轮评审 P1):引擎 wedged
+        // (turn_lock 被占、不 drain)时 invoke 永不结算——本函数 finally 永远
+        // 跑不到,interruptInFlight[sid] 永不清除、flushQueued 永久阻塞;且 ⚡
+        // 路径的 chip 在调用前已摘出队列,恢复 catch 也永远跑不到,消息静默
+        // 丢失。25s 超时显式失败,由调用方恢复 chip/消息;invoke 晚到 resolve
+        // 无害(cancel 最终生效),晚到 reject 吞掉防 unhandledrejection。
+        const cancelPromise = invoke("cancel_generation", { sessionId: sid, keepInbox: true });
+        let cancelTimeoutId = null;
+        let cancelTimedOut = false;
+        const cancelTimeout = new Promise(function (_, reject) {
+          cancelTimeoutId = setTimeout(function () {
+            cancelTimedOut = true;
+            reject(new Error("cancel_generation timed out"));
+          }, STEER_INVOKE_TIMEOUT_MS);
+        });
+        cancelPromise.catch(function () { /* 超时后晚到 reject 吞掉 */ });
         try {
           // keepInbox=true（打断语义）：未注入的 steer 保留给下一轮，排队
           // chip 不被静默取消；停止按钮（cancelGeneration）不传此参数，
           // 后端按 false 清空未注入 steer 并发 chat:steer_dropped。
-          outcome = await invoke("cancel_generation", { sessionId: sid, keepInbox: true });
+          outcome = await Promise.race([cancelPromise, cancelTimeout]);
         } catch (e) {
+          if (cancelTimedOut) {
+            // 超时 throw 在下方 terminal/非 terminal 分支之前传播,watcher
+            // 不会经过那两个 watcher.cancel()——这里显式释放,防监听器泄漏。
+            if (watcher) watcher.cancel();
+            throw e;
+          }
           console.warn("[pinvou3][chat-ui] cancel failed before interrupt", e);
+        } finally {
+          clearTimeout(cancelTimeoutId);
         }
         const terminal = !!(outcome && outcome.terminal);
         const generation = outcome && outcome.generation;
@@ -1342,12 +1403,7 @@
   // 结算,保持 steered 会让 flushQueued 让路且下一轮永远不来(排队区卡死);
   // 引擎侧残留由迟到的 steer_committed 补气泡,去重已有处理。
   async function interruptAndSendQueued(sid, queuedId) {
-    const queueOf = function () {
-      return sid === state.activeSessionId
-        ? state.queued
-        : (sessionStates[sid] && sessionStates[sid].queued);
-    };
-    const q = queueOf();
+    const q = steeredQueueFor(sid);
     if (!q) return false;
     let index = -1;
     for (let i = 0; i < q.length; i++) {
@@ -1403,12 +1459,16 @@
         item.steerId = null;
         item.cancelled = false;
       }
-      const retryQueue = queueOf();
+      const retryQueue = steeredQueueFor(sid);
       if (retryQueue) retryQueue.splice(Math.min(index, retryQueue.length), 0, item);
       runSyncOnSession(sid, function () {
         addSystemItem("⚠️ " + bt("interruptQueuedFailed"));
       });
       notify();
+      // 等待窗口内 turn 已结束时,其 chat:done 的 flush 已被让路,补一次防悬挂。
+      // 提示不挂条件:补偿 flush 的重试是异步的,结果此刻未知——若重试也失败,
+      // flush 内部 catch 只会静默把 chip 放回队列,条件化提示会让用户零反馈。
+      if (!isBusyFor(sid)) flushQueued(sid);
       return false;
     }
   }

@@ -74,9 +74,9 @@
 - 新增 `forkguard_host_bulk_cancel_stops_all_running_children_idempotently`，锁定批量取消和重复取消行为。
 - 修复退役后两处通用兼容回归：MCP registry 提示恢复 canonical `Bash(action="run")` / `Web(action="fetch")`，Custom SubAgent allowlist 的旧 action alias 继续解析到已注册的 canonical family。
 
-### 进行中：会话 steer 与确定性取消（CodeWhale#16 / pinvou-agent#308）
+### 会话 steer 与确定性取消（CodeWhale#16 / pinvou-agent#308，已发布）
 
-- **状态**：评审修复（opaque steer_id、停止语义、清场覆盖、kill 收敛）已完成，待 CodeWhale#16 合并发布；发布后本节并入 T1/T2 主题、公开基线 head 与 drift。
+- **状态**：CodeWhale#16 已合并、`#30`（`withdraw_steer` 返回 `SteerWithdrawal` outcome）随后续修复合入，公开基线为 `pinvou-v0.9.5-r11`（`0d89a31be`）；本节内容已按约定并入 T1/T2 主题的 commits、公开基线 head 与 drift 登记，本节保留为发布记录。
 - **T1（宿主嵌入与路由边界）新增**：
   - 会话 steer（mid-turn 注入）底座原语：`SteerMessage { id, content }` 经 steer channel 入队，`EngineHandle::steer` 入队时生成并返回 opaque `steer_id`；`Event::SteerCommitted` / `Event::SteerDropped` 携带 `steer_id` 供宿主关联排队占位消息，不使用内容哈希（非 ASCII 内容跨语言哈希无法实现一致）。
   - `EngineHandle::cancel_with_mode(reason, CancelMode)`（r10 起）：`InterruptKeepInbox`（⚡ 打断）把未注入 steer 跨轮 park，由下一轮 step 边界注入；`StopDropInbox`（⏹ 停止）在全部 Interrupted 出口统一 settle——`pending_steers` 与 steer channel 残留逐条发 `SteerDropped`。处置模式与 cancel token 在同一次句柄调用内原子发布，宿主没有独立的 cancel 前开关。
