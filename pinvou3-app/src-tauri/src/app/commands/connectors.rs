@@ -168,8 +168,7 @@ fn parse_connector_scope(
 }
 
 use crate::features::connectors::{
-    connector_cli as connector_cli_domain, dingtalk as dingtalk_domain, feishu as feishu_domain,
-    ima as ima_domain, tmeet as tmeet_domain, wecom as wecom_domain,
+    connector_cli as connector_cli_domain, ima as ima_domain, registry as connectors_registry,
 };
 use connector_cli_domain::*;
 use serde_json::Value;
@@ -202,137 +201,81 @@ fn was_new_cli_install(result: &Value) -> bool {
         .is_some_and(|already| !already)
 }
 
+// ---------------------------------------------------------------------------
+// 通用连接器命令（阶段 3a：4 连接器 × 8 硬编码命令原子替换为按 id 分派——
+// 内置 4 连接器到既有实现、声明式 Upload 包到契约驱动通用编排器，分派见
+// `features/connectors/registry`。事件契约统一为 `connector:event`）。
+// ---------------------------------------------------------------------------
+
+/// 引导：确保连接器 CLI 就位（内置 = lock 表下载校验；声明式包 = 声明下载校验；
+/// tmeet 的 npm 路径保留在其 ensure 实现内）。
 #[tauri::command]
-pub async fn feishu_ensure_cli(app: AppHandle) -> Result<Value, String> {
-    let result = feishu_domain::feishu_ensure_cli().await?;
+pub async fn connector_ensure_cli(id: String, app: AppHandle) -> Result<Value, String> {
+    let result = connectors_registry::ensure_cli(&id).await?;
     if was_new_cli_install(&result) {
-        track_cli_install(&app, "feishu", "飞书");
+        let name = connectors_registry::display_name(&id);
+        track_cli_install(&app, &id, &name);
     }
     Ok(result)
 }
-async_command_passthrough!(feishu_domain, feishu_status() -> Result<Value, String>);
-async_command_passthrough!(feishu_domain, feishu_connect_begin(app: AppHandle) -> Result<Value, String>);
-async_command_passthrough!(feishu_domain, feishu_cancel(app: AppHandle) -> Result<Value, String>);
-async_command_passthrough!(feishu_domain, feishu_logout() -> Result<Value, String>);
+
+/// 查询连接器连接状态（只回布尔/结构化态，不带身份信息）。
+#[tauri::command]
+pub async fn connector_status(id: String) -> Result<Value, String> {
+    connectors_registry::status(&id).await
+}
+
+/// 开始连接：立即返回 `{started:true}`（manual 包返回 `{started:false, mode:"manual"}`），
+/// 进度经统一事件 `connector:event` 上报。
+#[tauri::command]
+pub async fn connector_connect_begin(id: String, app: AppHandle) -> Result<Value, String> {
+    connectors_registry::connect_begin(&app, &id).await
+}
+
+/// 取消连接：置取消标志 + tree-kill 当前长驻子进程。
+#[tauri::command]
+pub async fn connector_cancel(id: String, app: AppHandle) -> Result<Value, String> {
+    connectors_registry::cancel(&app, &id).await
+}
+
+/// 断开连接器（清授权；声明式包 CLI 无 logout 能力时降级为仅清本地登记）。
+#[tauri::command]
+pub async fn connector_logout(id: String) -> Result<Value, String> {
+    connectors_registry::logout(&id).await
+}
+
 /// 连接成功/断开后的技能门控收口：domain 层按 show 增删技能落盘、show=true 时
 /// 同步各 scope 禁用集 → 热刷 execpolicy 规则集（五轮评审 M-6：纯转发不刷
-/// ruleset，在跑引擎 CLI 硬拦截过期 = fail-open）。对照 `ima_connect` 与
-/// `set_feishu_enabled`（M-6a）的热刷做法。
+/// ruleset，在跑引擎 CLI 硬拦截过期 = fail-open）。声明式包仅回报在盘状态
+/// （包内容不做门控写删）。
 #[tauri::command]
-pub async fn feishu_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
-    let result = feishu_domain::feishu_apply_skills().await?;
+pub async fn connector_apply_skills(
+    id: String,
+    pool: State<'_, EnginePool>,
+) -> Result<Value, String> {
+    let result = connectors_registry::apply_skills(&id).await?;
     pool.refresh_permission_rulesets().await;
     Ok(result)
 }
+
 /// 连接器开关：domain 层写停用标志并同步各 scope 禁用集 → 热刷 execpolicy 规则集
 /// （四轮评审 M-6a：纯转发不刷 ruleset，在跑引擎 CLI 硬拦截过期 = fail-open）。
-/// 对照 `set_disabled_connectors` 的热刷做法。
 #[tauri::command]
-pub async fn set_feishu_enabled(
+pub async fn connector_set_enabled(
+    id: String,
     enabled: bool,
     pool: State<'_, EnginePool>,
 ) -> Result<Value, String> {
-    let result = feishu_domain::set_feishu_enabled(enabled).await?;
+    let result = connectors_registry::set_enabled(&id, enabled).await?;
     pool.refresh_permission_rulesets().await;
     Ok(result)
 }
-async_command_passthrough!(feishu_domain, feishu_skills_state() -> Result<Value, String>);
 
+/// 给前端渲染开关态：`{connected, enabled, visible}`。
 #[tauri::command]
-pub async fn wecom_ensure_cli(app: AppHandle) -> Result<Value, String> {
-    let result = wecom_domain::wecom_ensure_cli().await?;
-    if was_new_cli_install(&result) {
-        track_cli_install(&app, "wecom", "企业微信");
-    }
-    Ok(result)
+pub async fn connector_skills_state(id: String) -> Result<Value, String> {
+    connectors_registry::skills_state(&id).await
 }
-async_command_passthrough!(wecom_domain, wecom_status() -> Result<Value, String>);
-async_command_passthrough!(wecom_domain, wecom_connect_begin(app: AppHandle) -> Result<Value, String>);
-async_command_passthrough!(wecom_domain, wecom_cancel(app: AppHandle) -> Result<Value, String>);
-async_command_passthrough!(wecom_domain, wecom_logout() -> Result<Value, String>);
-/// 同 `feishu_apply_skills`（五轮评审 M-6）：技能落盘/禁用集同步后热刷
-/// execpolicy 规则集。
-#[tauri::command]
-pub async fn wecom_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
-    let result = wecom_domain::wecom_apply_skills().await?;
-    pool.refresh_permission_rulesets().await;
-    Ok(result)
-}
-/// 同 `set_feishu_enabled`（M-6a）：开关落盘后热刷 execpolicy 规则集。
-#[tauri::command]
-pub async fn set_wecom_enabled(
-    enabled: bool,
-    pool: State<'_, EnginePool>,
-) -> Result<Value, String> {
-    let result = wecom_domain::set_wecom_enabled(enabled).await?;
-    pool.refresh_permission_rulesets().await;
-    Ok(result)
-}
-async_command_passthrough!(wecom_domain, wecom_skills_state() -> Result<Value, String>);
-
-#[tauri::command]
-pub async fn dingtalk_ensure_cli(app: AppHandle) -> Result<Value, String> {
-    let result = dingtalk_domain::dingtalk_ensure_cli().await?;
-    if was_new_cli_install(&result) {
-        track_cli_install(&app, "dingtalk", "钉钉");
-    }
-    Ok(result)
-}
-async_command_passthrough!(dingtalk_domain, dingtalk_status() -> Result<Value, String>);
-async_command_passthrough!(dingtalk_domain, dingtalk_connect_begin(app: AppHandle) -> Result<Value, String>);
-async_command_passthrough!(dingtalk_domain, dingtalk_cancel(app: AppHandle) -> Result<Value, String>);
-async_command_passthrough!(dingtalk_domain, dingtalk_logout() -> Result<Value, String>);
-/// 同 `feishu_apply_skills`（五轮评审 M-6）：技能落盘/禁用集同步后热刷
-/// execpolicy 规则集。
-#[tauri::command]
-pub async fn dingtalk_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
-    let result = dingtalk_domain::dingtalk_apply_skills().await?;
-    pool.refresh_permission_rulesets().await;
-    Ok(result)
-}
-/// 同 `set_feishu_enabled`（M-6a）：开关落盘后热刷 execpolicy 规则集。
-#[tauri::command]
-pub async fn set_dingtalk_enabled(
-    enabled: bool,
-    pool: State<'_, EnginePool>,
-) -> Result<Value, String> {
-    let result = dingtalk_domain::set_dingtalk_enabled(enabled).await?;
-    pool.refresh_permission_rulesets().await;
-    Ok(result)
-}
-async_command_passthrough!(dingtalk_domain, dingtalk_skills_state() -> Result<Value, String>);
-
-#[tauri::command]
-pub async fn tmeet_ensure_cli(app: AppHandle) -> Result<Value, String> {
-    let result = tmeet_domain::tmeet_ensure_cli().await?;
-    if was_new_cli_install(&result) {
-        track_cli_install(&app, "tmeet", "腾讯会议");
-    }
-    Ok(result)
-}
-async_command_passthrough!(tmeet_domain, tmeet_status() -> Result<Value, String>);
-async_command_passthrough!(tmeet_domain, tmeet_connect_begin(app: AppHandle) -> Result<Value, String>);
-async_command_passthrough!(tmeet_domain, tmeet_cancel(app: AppHandle) -> Result<Value, String>);
-async_command_passthrough!(tmeet_domain, tmeet_logout() -> Result<Value, String>);
-/// 同 `feishu_apply_skills`（五轮评审 M-6）：技能落盘/禁用集同步后热刷
-/// execpolicy 规则集。
-#[tauri::command]
-pub async fn tmeet_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
-    let result = tmeet_domain::tmeet_apply_skills().await?;
-    pool.refresh_permission_rulesets().await;
-    Ok(result)
-}
-/// 同 `set_feishu_enabled`（M-6a）：开关落盘后热刷 execpolicy 规则集。
-#[tauri::command]
-pub async fn set_tmeet_enabled(
-    enabled: bool,
-    pool: State<'_, EnginePool>,
-) -> Result<Value, String> {
-    let result = tmeet_domain::set_tmeet_enabled(enabled).await?;
-    pool.refresh_permission_rulesets().await;
-    Ok(result)
-}
-async_command_passthrough!(tmeet_domain, tmeet_skills_state() -> Result<Value, String>);
 
 async_command_passthrough!(ima_domain, ima_status() -> Result<Value, String>);
 

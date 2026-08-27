@@ -124,9 +124,9 @@ pub async fn feishu_status() -> Result<Value, String> {
 }
 
 /// 开始连接飞书(`config init --new` 自建 app,两段扫码):
-/// 段① `config init --new` 长驻 → 抓二维码 URL(emit `feishu:qr` phase=register)→ 用户扫码注册 app。
-/// 段② `auth login --recommend` → 二维码(emit phase=authorize)→ 轮询 device-code → user:ready。
-/// 进度全程走事件:`feishu:qr` / `feishu:phase` / `feishu:connected` / `feishu:error`。
+/// 段① `config init --new` 长驻 → 抓二维码 URL(emit qr step=register)→ 用户扫码注册 app。
+/// 段② `auth login --recommend` → 二维码(step=authorize)→ 轮询 device-code → user:ready。
+/// 进度全程走统一事件 `connector:event`（qr/phase/connected/error，阶段 3a 契约）。
 /// 立即返回 `{started:true}`;前端 listen 事件驱动 UI。
 pub async fn feishu_connect_begin(app: AppHandle) -> Result<Value, String> {
     app.state::<ConnectorConn>().reset(ID);
@@ -141,20 +141,12 @@ fn run_connect_flow(app: &AppHandle) {
         Ok(true) => {}
         Ok(false) => return, // 取消,静默
         Err(e) => {
-            cc::emit(
-                app,
-                "feishu:error",
-                json!({ "phase": "register", "message": e }),
-            );
+            cc::emit_error(app, ID, "register", &e);
             return;
         }
     }
     if let Err(e) = phase_authorize(app) {
-        cc::emit(
-            app,
-            "feishu:error",
-            json!({ "phase": "authorize", "message": e }),
-        );
+        cc::emit_error(app, ID, "authorize", &e);
     }
 }
 
@@ -194,11 +186,7 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
         }
     };
     let qr = cc::make_qr(&url);
-    cc::emit(
-        app,
-        "feishu:qr",
-        json!({ "phase": "register", "url": url, "qr_data_url": qr }),
-    );
+    cc::emit_qr(app, ID, "register", &url, &qr, None, None);
 
     // 等进程退出(用户扫码完成);期间轮询取消标志。
     loop {
@@ -213,7 +201,7 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
                 if !status.success() {
                     return Err("注册应用未完成(可能已取消或超时)".into());
                 }
-                cc::emit(app, "feishu:phase", json!({ "phase": "registered" }));
+                cc::emit_phase(app, ID, "register", "done");
                 return Ok(true);
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(400)),
@@ -254,11 +242,7 @@ fn phase_authorize(app: &AppHandle) -> Result<(), String> {
         .map(String::from)
         .ok_or("auth login 未返回 device_code")?;
     let qr = cc::make_qr(&url);
-    cc::emit(
-        app,
-        "feishu:qr",
-        json!({ "phase": "authorize", "url": url, "qr_data_url": qr }),
-    );
+    cc::emit_qr(app, ID, "authorize", &url, &qr, None, None);
 
     let start = Instant::now();
     let conn = app.state::<ConnectorConn>();
@@ -280,7 +264,7 @@ fn phase_authorize(app: &AppHandle) -> Result<(), String> {
         ]));
         if is_user_ready() {
             cc::bundle_store_on_connected(ID);
-            cc::emit(app, "feishu:connected", json!({ "ok": true }));
+            cc::emit_connected(app, ID, false);
             return Ok(());
         }
     }

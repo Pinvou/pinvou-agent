@@ -178,39 +178,33 @@ for (const command of [
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (KB import controls)`);
 }
 
-// 已授权连接器的只读状态查询属于 WebUI 业务面（ToolStoreView 挂载即调用 *_status，
-// SettingsView 的 composer 工具菜单调用 *_skills_state）。任一遗漏会让对应连接器在
-// Web 端永远显示未连接：卡片因 externalAuth 不可用而依赖 installed 徽标展示。
-// 连接器开关/装卸（set_*_enabled、*_ensure_cli、*_apply_skills 等）仍保持桌面专用。
+// 已授权连接器的只读状态查询属于 WebUI 业务面（阶段 3b 起统一为 connector_status /
+// connector_skills_state 按 id 分派；ToolStoreView 挂载即经 readiness 取数，
+// SettingsView 的 composer 工具菜单调用 connector_skills_state）。任一遗漏会让对应
+// 连接器在 Web 端永远显示未连接：卡片因 externalAuth 不可用而依赖 installed 徽标展示。
+// 连接器开关/装卸（connector_set_enabled、connector_ensure_cli、connector_apply_skills 等）
+// 仍保持桌面专用。
 for (const command of [
-  'feishu_status',
-  'feishu_skills_state',
-  'wecom_status',
-  'wecom_skills_state',
-  'dingtalk_status',
-  'dingtalk_skills_state',
-  'tmeet_status',
-  'tmeet_skills_state',
+  'connector_status',
+  'connector_skills_state',
   'ima_status',
 ]) {
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (authorized connector status queries)`);
 }
-// 连接器变更面保持桌面专用：连接/断开（*_connect_begin/*_logout、ima_connect/ima_logout）、
-// 逐连接器开关（set_*_enabled）与全局清单写入（set_disabled_connectors）、原生 CLI 安装
-// （*_ensure_cli 触发下载物化）、技能装卸（*_apply_skills 向 ~/.pinvou3 物化技能包）、
-// OAuth 中断（*_cancel）、授权门重算（refresh_connector_auth_gates）。
+// 连接器变更面保持桌面专用：连接/断开（connector_connect_begin/connector_logout、
+// ima_connect/ima_logout）、逐连接器开关（connector_set_enabled）与全局清单写入
+// （set_disabled_connectors）、原生 CLI 安装（connector_ensure_cli 触发下载物化）、
+// 技能装卸（connector_apply_skills 向 ~/.pinvou3 物化技能包）、OAuth 中断
+// （connector_cancel）、授权门重算（refresh_connector_auth_gates）。
 // 清单须与 lib.rs 连接器注册面保持同步。
-const deniedConnectorMutations = [];
-for (const connector of ["feishu", "wecom", "dingtalk", "tmeet"]) {
-  deniedConnectorMutations.push(
-    `${connector}_connect_begin`,
-    `${connector}_logout`,
-    `${connector}_ensure_cli`,
-    `${connector}_cancel`,
-    `${connector}_apply_skills`,
-    `set_${connector}_enabled`,
-  );
-}
+const deniedConnectorMutations = [
+  "connector_connect_begin",
+  "connector_logout",
+  "connector_ensure_cli",
+  "connector_cancel",
+  "connector_apply_skills",
+  "connector_set_enabled",
+];
 deniedConnectorMutations.push(
   "ima_connect", "ima_logout", "set_disabled_connectors", "refresh_connector_auth_gates",
   // 技能级停用清单与项目技能开关（settings 管理面，读写均桌面专用；

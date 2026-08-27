@@ -65,7 +65,7 @@ function injectSource() {
         case 'set_disabled_connectors': state.disabled=(args&&args.connectorIds)||[]; return Promise.resolve(null);
         case 'get_disabled_skills': return Promise.resolve(state.disabledSkills);
         case 'set_disabled_skills': state.disabledSkills=(args&&args.skillIds)||[]; return Promise.resolve(null);
-        case 'feishu_skills_state': case 'wecom_skills_state': case 'dingtalk_skills_state': case 'tmeet_skills_state': return Promise.resolve({connected:false,enabled:true});
+        case 'connector_skills_state': return Promise.resolve({connected:false,enabled:true});
         default: return Promise.resolve(null);
       }
     }

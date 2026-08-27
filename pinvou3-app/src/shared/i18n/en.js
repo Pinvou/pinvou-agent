@@ -768,6 +768,7 @@ vault_missing:{ title:'Vault folder missing', body:'The previous vault folder co
 desktopHint:'Install Obsidian on the desktop and create a vault first, then check again here.',
   },
   connectedTool:name=>`${name} connected`, disconnectedTool:name=>`${name} disconnected`,
+  connectorManualAuthHint:'This connector requires running its CLI in a terminal to finish authorization. Come back and retry when done.', connectorAuthorizeStep:'Authorize',
   connectedQuoted:name=>`${name} connected`, installedQuoted:name=>`${name} installed`, uninstalledQuoted:name=>`${name} uninstalled`,
   connectFailed:name=>`${name} connection failed`, connectTitle:name=>`Connect ${name}`,
   connectedBanner:name=>`${name} connected · official skill enabled; you can give it instructions right away`,

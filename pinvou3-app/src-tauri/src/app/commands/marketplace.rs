@@ -498,6 +498,19 @@ pub fn list_marketplace_skills(
     )
 }
 
+/// CLI 能力包列表（统一注册表 `list_bundles` 过滤 kind=Cli）：内置 4 连接器 +
+/// 已装 Upload 声明式 CLI 连接器包（M2 出卡）都在内，前端按 `user_uploaded`
+/// 区分。卡片数据源（id/name/description/version/installed/degraded/cli 向量
+/// 等 `BundleInfo` 全量功能事实）。只读。
+#[tauri::command]
+pub fn list_cli_bundles() -> Result<Vec<crate::features::marketplace::bundle::BundleInfo>, String> {
+    Ok(crate::features::marketplace::bundle::BundleRegistry::new()
+        .list_bundles()
+        .into_iter()
+        .filter(|b| b.kind == crate::features::marketplace::bundle::BundleKind::Cli)
+        .collect())
+}
+
 #[tauri::command]
 pub async fn install_marketplace_skill(
     skill_id: String,
@@ -990,34 +1003,16 @@ where
             )
         }
         BundleKind::Cli => {
-            let (connected, detail) = match bundle_id.as_str() {
-                "feishu" => {
-                    let v = crate::features::connectors::feishu::feishu_status().await?;
-                    (connected_of(&v), Some(v))
-                }
-                "wecom" => {
-                    let v = crate::features::connectors::wecom::wecom_status().await?;
-                    (connected_of(&v), Some(v))
-                }
-                "dingtalk" => {
-                    let v = crate::features::connectors::dingtalk::dingtalk_status().await?;
-                    (connected_of(&v), Some(v))
-                }
-                "tmeet" => {
-                    let v = crate::features::connectors::tmeet::tmeet_status().await?;
-                    (connected_of(&v), Some(v))
-                }
-                other => return Err(format!("未知 CLI 包 '{other}'")),
-            };
+            // 内置 4 连接器走注册表分派到各自 status 实现（阶段 3a 泛化：
+            // 硬编码 match 下线；声明式 Upload 包由上面的 user_uploaded 臂处理）。
+            let v = crate::features::connectors::registry::status(&bundle_id).await?;
+            let connected = connected_of(&v);
             // wecom/dingtalk/tmeet 返回 installed（CLI 二进制在位），
             // feishu 返回 configured（已配置）；都没有则退化为 connected。
-            let installed = detail
-                .as_ref()
-                .and_then(|v| {
-                    v.get("installed")
-                        .or_else(|| v.get("configured"))
-                        .and_then(|x| x.as_bool())
-                })
+            let installed = v
+                .get("installed")
+                .or_else(|| v.get("configured"))
+                .and_then(|x| x.as_bool())
                 .unwrap_or(connected);
             (
                 installed,
@@ -1027,7 +1022,7 @@ where
                 } else {
                     Some("not_connected".to_string())
                 },
-                detail,
+                Some(v),
             )
         }
         BundleKind::Skill if bundle.id == "ima" => {
@@ -1315,6 +1310,71 @@ mod tests {
             .unwrap();
         assert!(!result.ready, "degraded 应未就绪");
         assert_eq!(result.reason.as_deref(), Some("degraded"));
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `list_cli_bundles` 出口：返回内置 4 连接器 + 已装 Upload 声明式 CLI 包，
+    /// 不含 mcp/skill 类包（kind=Cli 过滤语义锁定）。
+    #[test]
+    fn list_cli_bundles_returns_builtin_and_upload_cli_only() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-list-cli-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        // 已装 Upload 声明式 CLI 包（cli+skills 声明）
+        let pkg = crate::platform::paths::bundles_root().join("up-cli");
+        std::fs::create_dir_all(pkg.join("skills/up-cli")).unwrap();
+        std::fs::write(
+            pkg.join("skills/up-cli/SKILL.md"),
+            "---\nname: up-cli\n---\n# hi",
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join("plugin.json"),
+            r#"{"manifest_version":1,"id":"up-cli","name":"Up CLI","description":"d","components":{"cli_connectors":[{"id":"up-cli","bin":"up-cli-bin","version":"2.0.0","skills_dir":"skills"}],"skills":[{"id":"up-cli","dir":"skills/up-cli"}]}}"#,
+        )
+        .unwrap();
+        crate::features::marketplace::store::BundleStore::new()
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    "up-cli",
+                    crate::features::marketplace::store::BundleSource::Upload("up.zip".to_string()),
+                ),
+            )
+            .unwrap();
+
+        let bundles = list_cli_bundles().unwrap();
+        let ids: Vec<&str> = bundles.iter().map(|b| b.id.as_str()).collect();
+        for id in ["feishu", "wecom", "dingtalk", "tmeet", "up-cli"] {
+            assert!(ids.contains(&id), "应含 {id}，实际: {ids:?}");
+        }
+        assert!(
+            !ids.contains(&"ima") && !ids.contains(&"weather") && !ids.contains(&"visualizer"),
+            "不得含 mcp/skill 类包，实际: {ids:?}"
+        );
+        let up = bundles.iter().find(|b| b.id == "up-cli").unwrap();
+        assert!(up.user_uploaded);
+        assert_eq!(up.version, "2.0.0");
+        assert_eq!(up.cli, vec!["up-cli".to_string()]);
+        assert!(up.installed);
+        // 全部条目 kind=Cli（过滤语义）
+        assert!(bundles
+            .iter()
+            .all(|b| b.kind == crate::features::marketplace::bundle::BundleKind::Cli));
 
         match prev {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),

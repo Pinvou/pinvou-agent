@@ -4,8 +4,8 @@
 //! 不要求用户填写 client_id/client_secret。公共管道见 [`crate::features::connectors::connector_cli`]。
 //!
 //! 连接:`dws auth login --device` 长驻 → 抓二维码 URL → 用户扫码 → 进程退出后
-//! `dws auth status --format json` 判 ready。进度走事件
-//! `dingtalk:qr` / `dingtalk:connected` / `dingtalk:error`。
+//! `dws auth status --format json` 判 ready。进度走统一事件 `connector:event`
+//! （qr/connected/error，阶段 3a 契约；user_code 归入 qr 可选字段）。
 
 use std::collections::VecDeque;
 use std::process::Stdio;
@@ -244,11 +244,7 @@ pub async fn dingtalk_connect_begin(app: AppHandle) -> Result<Value, String> {
 
 fn run_connect_flow(app: &AppHandle) {
     if let Err(e) = phase_scan(app) {
-        cc::emit(
-            app,
-            "dingtalk:error",
-            json!({ "phase": "authorize", "message": e }),
-        );
+        cc::emit_error(app, ID, "authorize", &e);
     }
 }
 
@@ -332,11 +328,8 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         url.contains("user_code="),
         user_code.is_some()
     );
-    cc::emit(
-        app,
-        "dingtalk:qr",
-        json!({ "phase": "authorize", "url": url, "user_code": user_code, "qr_data_url": cc::make_qr(&url) }),
-    );
+    let qr = cc::make_qr(&url);
+    cc::emit_qr(app, ID, "authorize", &url, &qr, None, user_code.as_deref());
 
     loop {
         if conn.is_cancelled(ID) {
@@ -360,7 +353,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
                 conn.set_pid(ID, None);
                 if is_authenticated() {
                     cc::bundle_store_on_connected(ID);
-                    cc::emit(app, "dingtalk:connected", json!({ "ok": true }));
+                    cc::emit_connected(app, ID, false);
                     return Ok(());
                 }
                 eprintln!(

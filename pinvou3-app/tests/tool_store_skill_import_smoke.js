@@ -53,8 +53,8 @@ function injectSource() {
       open_external_url:function(){return null;},
       // 启动期只读命令:null 即走既有回退分支(与旧 default resolve(null) 行为一致)。
       bundle_readiness:function(){return null;},
-      dingtalk_skills_state:function(){return null;},
-      feishu_skills_state:function(){return null;},
+      connector_skills_state:function(){return null;},
+      connector_status:function(){return null;},
       get_bundle_visibility:function(){return null;},
       get_disabled_connectors:function(){return null;},
       get_mode_defaults:function(){return null;},
@@ -74,10 +74,8 @@ function injectSource() {
       report_pending_update_result:function(){return null;},
       take_pet_navigation:function(){return null;},
       take_pet_reply:function(){return null;},
-      tmeet_skills_state:function(){return null;},
       web_access_bridge_ready:function(){return null;},
       web_access_status:function(){return null;},
-      wecom_skills_state:function(){return null;},
     };
     function invoke(cmd, args){
       window.__PINVOU_MOCK_CALLS__.push({cmd: cmd, args: args || {}});

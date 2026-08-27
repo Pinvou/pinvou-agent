@@ -724,6 +724,9 @@ const AcFmtIcon = FileTypeIcon;
       // mcpServer/oauthMcp 显式标记位须先于 userUploaded/skill 分支（二轮评审：
       // 自定义上传的 MCP 卡同时带 userUploaded + mcpServer，旧顺序被错归为 Skill 组）。
       if (tool.mcpServer || tool.oauthMcp) return 'mcp';
+      // 声明式 CLI 连接器卡(Upload 包,cliConnector 标记)先于 userUploaded 判定——
+      // 否则与自定义上传 MCP 同款问题:被短路进 Skill 组(类型应为 CLI 集成)。
+      if (tool.cliConnector) return 'cli';
       if (tool.userUploaded || tool.builtin || tool.category === 'skill') return 'skill';
       if (!tool.backendId) return 'upcoming';
       if (tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli) return 'cli';

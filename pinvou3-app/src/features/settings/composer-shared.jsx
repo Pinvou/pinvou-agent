@@ -505,19 +505,19 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
           if (isAlive()) setProjectSkillsEnabled(!!proj);
         } catch { /* ignore */ }
         try {
-          const fs = await invokeTauri('feishu_skills_state');
+          const fs = await invokeTauri('connector_skills_state', { id: 'feishu' });
           if (isAlive()) { setFeishuOn(!!(fs && fs.connected)); setFeishuEnabled(!fs || fs.enabled !== false); }
         } catch { /* ignore */ }
         try {
-          const ws = await invokeTauri('wecom_skills_state');
+          const ws = await invokeTauri('connector_skills_state', { id: 'wecom' });
           if (isAlive()) { setWecomOn(!!(ws && ws.connected)); setWecomEnabled(!ws || ws.enabled !== false); }
         } catch { /* ignore */ }
         try {
-          const ds = await invokeTauri('dingtalk_skills_state');
+          const ds = await invokeTauri('connector_skills_state', { id: 'dingtalk' });
           if (isAlive()) { setDingtalkOn(!!(ds && ds.connected)); setDingtalkEnabled(!ds || ds.enabled !== false); }
         } catch { /* ignore */ }
         try {
-          const ts = await invokeTauri('tmeet_skills_state');
+          const ts = await invokeTauri('connector_skills_state', { id: 'tmeet' });
           if (isAlive()) { setTmeetOn(!!(ts && ts.connected)); setTmeetEnabled(!ts || ts.enabled !== false); }
         } catch { /* ignore */ }
       }

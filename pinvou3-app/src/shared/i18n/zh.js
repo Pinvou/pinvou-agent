@@ -798,6 +798,7 @@ vault_missing:{ title:'库文件夹不存在', body:'上次的笔记库文件夹
 desktopHint:'请先在桌面端安装 Obsidian 并创建笔记库，然后在这里重新检测。',
   },
   connectedTool:name=>`已连接${name}`, disconnectedTool:name=>`已断开${name}`,
+  connectorManualAuthHint:'该连接器需要在终端运行其 CLI 完成授权，完成后请回到这里重试。', connectorAuthorizeStep:'授权',
   connectedQuoted:name=>`已连接「${name}」`, installedQuoted:name=>`已安装「${name}」`, uninstalledQuoted:name=>`已卸载「${name}」`,
   connectFailed:name=>`${name}连接失败`, connectTitle:name=>`连接${name}`,
   connectedBanner:name=>`已连接${name} · 官方技能已启用，可直接对它下指令`,

@@ -231,17 +231,100 @@ pub fn kill_pid_tree(pid: u32) {
     crate::platform::os::kill_pid_tree(pid);
 }
 
-/// 给前端发连接编排事件(`<id>:qr` / `<id>:phase` / `<id>:connected` / `<id>:error`)。
+/// 给前端发连接编排事件（统一契约，阶段 3a）：单事件名 [`CONNECTOR_EVENT`]，
+/// payload 按 `kind` 区分（qr/phase/connected/error），前端单监听器按 `id` 分派。
+/// 4 套 `<id>:qr` / `<id>:phase` / `<id>:connected` / `<id>:error` 旧事件已原子下线。
 pub fn emit(app: &AppHandle, event: &str, payload: Value) {
     let _ = app.emit(event, payload);
 }
 
+/// 统一连接事件名。
+pub const CONNECTOR_EVENT: &str = "connector:event";
+
+/// qr 事件载荷：`{id, kind:"qr", step, url, qr_data_url, browser_auth?, user_code?}`。
+/// `browser_auth` 仅 browser 类步骤携带（tmeet 跳浏览器授权）；`user_code` 仅
+/// device-flow 需要手输验证码的步骤携带（dingtalk）。
+pub fn qr_payload(
+    id: &str,
+    step: &str,
+    url: &str,
+    qr_data_url: &Option<String>,
+    browser_auth: Option<bool>,
+    user_code: Option<&str>,
+) -> Value {
+    let mut payload = serde_json::json!({
+        "id": id,
+        "kind": "qr",
+        "step": step,
+        "url": url,
+        "qr_data_url": qr_data_url,
+    });
+    if let Some(browser_auth) = browser_auth {
+        payload["browser_auth"] = Value::from(browser_auth);
+    }
+    if let Some(user_code) = user_code {
+        payload["user_code"] = Value::from(user_code);
+    }
+    payload
+}
+
+/// phase 事件载荷：`{id, kind:"phase", step, state}`（如 feishu 段间
+/// registered → step:"register", state:"done"）。
+pub fn phase_payload(id: &str, step: &str, state: &str) -> Value {
+    serde_json::json!({ "id": id, "kind": "phase", "step": step, "state": state })
+}
+
+/// connected 事件载荷：`{id, kind:"connected", ok: true, already?}`。
+/// `already` 仅「本已登录」场景携带（tmeet 复连/提前退出检测）。
+pub fn connected_payload(id: &str, already: bool) -> Value {
+    let mut payload = serde_json::json!({ "id": id, "kind": "connected", "ok": true });
+    if already {
+        payload["already"] = Value::from(true);
+    }
+    payload
+}
+
+/// error 事件载荷：`{id, kind:"error", step, message}`。
+pub fn error_payload(id: &str, step: &str, message: &str) -> Value {
+    serde_json::json!({ "id": id, "kind": "error", "step": step, "message": message })
+}
+
+/// 统一发射：qr / phase / connected / error 四个便捷出口（载荷构造与发射一步）。
+pub fn emit_qr(
+    app: &AppHandle,
+    id: &str,
+    step: &str,
+    url: &str,
+    qr_data_url: &Option<String>,
+    browser_auth: Option<bool>,
+    user_code: Option<&str>,
+) {
+    emit(
+        app,
+        CONNECTOR_EVENT,
+        qr_payload(id, step, url, qr_data_url, browser_auth, user_code),
+    );
+}
+
+pub fn emit_phase(app: &AppHandle, id: &str, step: &str, state: &str) {
+    emit(app, CONNECTOR_EVENT, phase_payload(id, step, state));
+}
+
+pub fn emit_connected(app: &AppHandle, id: &str, already: bool) {
+    emit(app, CONNECTOR_EVENT, connected_payload(id, already));
+}
+
+pub fn emit_error(app: &AppHandle, id: &str, step: &str, message: &str) {
+    emit(app, CONNECTOR_EVENT, error_payload(id, step, message));
+}
+
 // ──────────────────────── 多连接器共享的连接编排状态 ────────────────────────
 
-/// 按连接器 id 存当前长驻子进程 PID + 取消标志。`lib.rs` 注册一次,飞书 / 企微共用。
+/// 按连接器 id 存当前长驻子进程 PID + 取消标志。`lib.rs` 注册一次,全连接器共用
+/// （键为 String：内置常量 id 与声明式包的运行时 id 统一入槽，阶段 3a）。
 #[derive(Default)]
 pub struct ConnectorConn {
-    slots: Mutex<HashMap<&'static str, Slot>>,
+    slots: Mutex<HashMap<String, Slot>>,
 }
 
 #[derive(Default)]
@@ -252,16 +335,16 @@ struct Slot {
 
 impl ConnectorConn {
     /// 开始一轮连接前清掉该连接器的取消标志。
-    pub fn reset(&self, id: &'static str) {
+    pub fn reset(&self, id: &str) {
         if let Ok(mut m) = self.slots.lock() {
-            m.entry(id).or_default().cancelled = false;
+            m.entry(id.to_string()).or_default().cancelled = false;
         }
     }
 
     /// 置取消标志,返回当前长驻 PID(供 tree-kill)。
-    pub fn cancel(&self, id: &'static str) -> Option<u32> {
+    pub fn cancel(&self, id: &str) -> Option<u32> {
         if let Ok(mut m) = self.slots.lock() {
-            let s = m.entry(id).or_default();
+            let s = m.entry(id.to_string()).or_default();
             s.cancelled = true;
             return s.pid;
         }
@@ -276,9 +359,9 @@ impl ConnectorConn {
             .unwrap_or(false)
     }
 
-    pub fn set_pid(&self, id: &'static str, pid: Option<u32>) {
+    pub fn set_pid(&self, id: &str, pid: Option<u32>) {
         if let Ok(mut m) = self.slots.lock() {
-            m.entry(id).or_default().pid = pid;
+            m.entry(id.to_string()).or_default().pid = pid;
         }
     }
 
@@ -406,6 +489,24 @@ pub fn bundle_store_on_disconnected(id: &str) {
     }
 }
 
+/// 声明式包（Upload）连接成功：清 `degraded`（重连即修复，§3.2），source 保留
+/// Upload——不得经 [`bundle_store_on_connected`] 覆盖成 Builtin（卸载时 Upload 包
+/// 目录是用户唯一副本，来源语义不同）。记录不存在（导入登记丢失）时不重建。
+pub fn bundle_store_on_connected_upload(id: &str) {
+    use crate::features::marketplace::store::BundleStore;
+    match BundleStore::new().get(id) {
+        Ok(Some(mut record)) => {
+            record.installed = true;
+            record.degraded = None;
+            if let Err(e) = BundleStore::new().upsert_preserving(record) {
+                log::warn!("[connectors] bundles.json 镜像写入失败（connect {id}）: {e}");
+            }
+        }
+        Ok(None) => log::warn!("[connectors] 声明式包连接成功但无登记记录（{id}）"),
+        Err(e) => log::warn!("[connectors] bundles.json 读取失败（connect {id}）: {e}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,6 +517,64 @@ mod tests {
         envs: &[],
         auth_domains: &["work.weixin.qq.com", "weixin.qq.com"],
     };
+
+    /// 统一事件载荷契约（阶段 3a 终稿）：kind/step/可选字段的精确形状——
+    /// 旧事件到新事件的语义映射（`feishu:qr{phase:register}` ↔
+    /// `{id:"feishu",kind:"qr",step:"register"}`，dingtalk user_code 与
+    /// tmeet browserAuth 归可选字段）由本测试锁定。
+    #[test]
+    fn unified_event_payloads_match_contract() {
+        let qr = qr_payload(
+            "feishu",
+            "register",
+            "https://x",
+            &Some("data:qr".into()),
+            None,
+            None,
+        );
+        assert_eq!(qr["id"], "feishu");
+        assert_eq!(qr["kind"], "qr");
+        assert_eq!(qr["step"], "register");
+        assert_eq!(qr["url"], "https://x");
+        assert_eq!(qr["qr_data_url"], "data:qr");
+        assert!(qr.get("browser_auth").is_none(), "qr 步不带 browser_auth");
+        assert!(qr.get("user_code").is_none());
+
+        let qr_ding = qr_payload(
+            "dingtalk",
+            "authorize",
+            "https://x",
+            &None,
+            None,
+            Some("ABCD-1234"),
+        );
+        assert_eq!(qr_ding["user_code"], "ABCD-1234");
+        assert!(qr_ding.get("browser_auth").is_none());
+
+        let qr_tmeet = qr_payload("tmeet", "authorize", "https://x", &None, Some(true), None);
+        assert_eq!(qr_tmeet["browser_auth"], true, "tmeet 步带 browser_auth");
+
+        let phase = phase_payload("feishu", "register", "done");
+        assert_eq!(
+            phase,
+            serde_json::json!({"id":"feishu","kind":"phase","step":"register","state":"done"})
+        );
+
+        let connected = connected_payload("feishu", false);
+        assert_eq!(connected["kind"], "connected");
+        assert_eq!(connected["ok"], true);
+        assert!(connected.get("already").is_none(), "非复连不带 already");
+        let already = connected_payload("tmeet", true);
+        assert_eq!(already["already"], true);
+
+        let error = error_payload("feishu", "authorize", "授权超时");
+        assert_eq!(
+            error,
+            serde_json::json!({"id":"feishu","kind":"error","step":"authorize","message":"授权超时"})
+        );
+
+        assert_eq!(CONNECTOR_EVENT, "connector:event");
+    }
 
     /// extract_url three-branch matrix: whitelisted domain hits truncate at
     /// whitespace (QR-scan URLs often carry `&` query strings that must not be

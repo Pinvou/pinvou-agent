@@ -771,6 +771,7 @@ vault_missing:{ title:'保管庫フォルダーが見つかりません', body:'
 desktopHint:'先にデスクトップで Obsidian をインストールして保管庫を作成し、ここで再検出してください。',
   },
   connectedTool:name=>`${name} に接続しました`, disconnectedTool:name=>`${name} から切断しました`,
+  connectorManualAuthHint:'このコネクターはターミナルで CLI を実行して認証を完了する必要があります。完了後にここで再試行してください。', connectorAuthorizeStep:'認証',
   connectedQuoted:name=>`「${name}」に接続しました`, installedQuoted:name=>`「${name}」をインストールしました`, uninstalledQuoted:name=>`「${name}」をアンインストールしました`,
   connectFailed:name=>`${name} の接続に失敗しました`, connectTitle:name=>`${name} に接続`,
   connectedBanner:name=>`${name} に接続済み · 公式スキルが有効です。そのまま指示できます`,

@@ -50,7 +50,7 @@ function injectSource() {
       // companion 卡动作须来自技能级 readiness(卸载),首个用例卸载后回到未装态。
       installed:{},skills:{visualizer:false,'government-writing':true},connected:{feishu:false,wecom:false,dingtalk:false,tmeet:false,ima:false},
       oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0,failVisibility:false,
-      hidden:{plain:[],code:[]}
+      hidden:{plain:[],code:[]},manualConnector:null
     };
     window.addEventListener('pinvou:tools-changed',()=>{state.composerChanged++;});
     window.__TAURI_EVENT_HANDLERS__={};
@@ -109,6 +109,12 @@ function injectSource() {
           });
         }
         case 'list_marketplace_skills': return Promise.resolve(skills());
+        // Upload 声明式 CLI 连接器包（阶段 3c）：upload-cli 需授权(未连接→connect 动作)、
+        // manual-cli 免授权(auth_required=false,已装即就绪→disconnect 动作,不出连接按钮)。
+        case 'list_cli_bundles': return Promise.resolve([
+          {id:'upload-cli',name:'上传 CLI 测试器',kind:'cli',description:'上传 CLI 包描述文案',version:'1.2.3',installed:true,user_uploaded:true,cli:['upload-cli'],skills:[],auth_required:true,category:'collab',credentials:[],config_fields:[]},
+          {id:'manual-cli',name:'手动 CLI 工具',kind:'cli',description:'手动授权 CLI 描述',version:'',installed:true,user_uploaded:true,cli:['manual-cli'],skills:[],auth_required:false,category:'collab',credentials:[],config_fields:[]},
+        ]);
         case 'install_marketplace_tool':
           if(BLOCKING_INSTALL_OAUTH_TOOLS.has(args.toolId)) return new Promise(resolve=>{state.finishOAuthInstall=()=>{state.installed[args.toolId]=true;state.finishOAuthInstall=null;resolve(null);};});
           state.installed[args.toolId]=true; return Promise.resolve(null);
@@ -122,10 +128,9 @@ function injectSource() {
         case 'install_marketplace_skill': state.skills[args.skillId]=true; return Promise.resolve(null);
         case 'uninstall_marketplace_skill': state.skills[args.skillId]=false; return Promise.resolve(null);
         case 'detect_obsidian': state.obsidianChecks++; return Promise.resolve(state.obsidianChecks===1?{state:'no_vault'}:{state:'ok',vault_path:'/tmp/test-vault'});
-        case 'feishu_status': return Promise.resolve({connected:state.connected.feishu});
-        case 'wecom_status': return Promise.resolve({connected:state.connected.wecom});
-        case 'dingtalk_status': return Promise.resolve({connected:state.connected.dingtalk});
-        case 'tmeet_status': return Promise.resolve({connected:state.connected.tmeet});
+        // 阶段 3b：逐连接器命令（feishu_status 等）下线，统一 connector_* 按 id 分派。
+        case 'connector_status': return Promise.resolve({ok:true,connected:!!state.connected[args.id],installed:true});
+        case 'connector_skills_state': return Promise.resolve({connected:!!state.connected[args.id],enabled:true,visible:!!state.connected[args.id]});
         case 'ima_status': return Promise.resolve({connected:state.connected.ima,credentials_present:state.connected.ima,skill_installed:state.connected.ima});
         case 'ima_connect': state.connected.ima=true;state.skills['ima-skills']=true;state.lastImaConnect=args; return Promise.resolve({ok:true,connected:true});
         case 'ima_logout': state.connected.ima=false;state.skills['ima-skills']=false; return Promise.resolve({ok:true,connected:false});
@@ -151,6 +156,13 @@ function injectSource() {
                 {key:'IMA_API_KEY',required:true,target:'credential',secret:true},
               ]})));
           }
+          // Upload 声明式 CLI 包（阶段 3c）：upload-cli 授权态读 connected;
+          // manual-cli 免授权,已装即就绪。kind=cli 让卡片路由进通用 CLI 连接流程。
+          if(id==='upload-cli'||id==='manual-cli'){
+            const c=id==='manual-cli'?true:!!state.connected[id];
+            return Promise.resolve(mk(true,c,c?null:'not_connected',c?[act('disconnect')]:[act('connect',{kind:'cli_connect'})],
+              bnd({kind:'cli',installed:true,user_uploaded:true,auth_required:id==='upload-cli'})));
+          }
           if(id==='visualizer'){
             const c=!!state.skills.visualizer;
             return Promise.resolve(mk(c,true,null,c?[act('uninstall')]:[act('install')]));
@@ -167,13 +179,20 @@ function injectSource() {
           }
           return Promise.reject(new Error('未知能力包 '+id));
         }
-        case 'feishu_ensure_cli': case 'wecom_ensure_cli': case 'dingtalk_ensure_cli': case 'tmeet_ensure_cli': case 'feishu_connect_begin': case 'wecom_connect_begin': case 'dingtalk_connect_begin': case 'tmeet_connect_begin': return Promise.resolve(null);
+        case 'connector_ensure_cli': return Promise.resolve({ok:true,already:true});
+        // manualConnector 模拟 connect_begin 返回 manual（CLI 自行交互授权）；
+        // already_connected 复连路径返回 already_connected:true。
+        case 'connector_connect_begin': return state.manualConnector===args.id
+          ? Promise.resolve({started:false,mode:'manual'})
+          : Promise.resolve({started:true});
         // 按会话模式的可见性读写：failVisibility 模拟读取失败（四轮评审冒烟）；
         // 写入复刻后端 save_hidden_bundles_for 归一为包 id、读回原样返回（五轮评审：
         // mock 不再 no-op，勾选往返才可测）。
         case 'get_bundle_visibility': return state.failVisibility ? Promise.reject(new Error('mock visibility read failure')) : Promise.resolve(state.hidden[args.scope]||[]);
         case 'set_bundle_visibility': state.hidden[args.scope]=(args.bundleIds||[]).map(toPackageId); return Promise.resolve(null);
-        case 'feishu_apply_skills': case 'wecom_apply_skills': case 'dingtalk_apply_skills': case 'tmeet_apply_skills': case 'open_external_url': return Promise.resolve(null);
+        case 'connector_cancel': return Promise.resolve({ok:true});
+        case 'connector_logout': state.connected[args.id]=false; return Promise.resolve({ok:true});
+        case 'connector_apply_skills': case 'open_external_url': return Promise.resolve(null);
         default: return Promise.resolve(null);
       }
     }
@@ -467,13 +486,30 @@ async function visibilityBox(page, cardText, modeLabel, click) {
   rec('Canva 未授权不通知 composer 刷新',await page.evaluate(before=>window.__TOOL_STORE_TEST__.composerChanged===before, composerChangedBeforeCanva));
   await dismiss(page);
 
+  // manual 模式（阶段 3b）：connect_begin 返回 {started:false,mode:'manual'} 时
+  // 提示终端完成授权，不进入扫码流程。
+  await page.evaluate(()=>{window.__TOOL_STORE_TEST__.manualConnector='feishu';});
+  await action(page,'飞书（Lark）','连接','feishu');
+  await sleep(250);
+  rec('manual 模式提示终端完成授权',await page.evaluate(()=>document.body.innerText.includes('需要在终端运行其 CLI 完成授权')));
+  await dismiss(page);
+  await closeDetail(page,'飞书（Lark）');
+  await page.evaluate(()=>{window.__TOOL_STORE_TEST__.manualConnector=null;});
+
+  // 统一事件总线（阶段 3b）：旧 16 个逐连接器事件不再注册，只有 connector:event。
+  rec('统一事件总线仅注册 connector:event',await page.evaluate(()=>{
+    const hs=window.__TAURI_EVENT_HANDLERS__;
+    const legacy=Object.keys(hs).filter(k=>/^(feishu|wecom|dingtalk|tmeet):/.test(k));
+    return legacy.length===0&&(hs['connector:event']||[]).length===1;
+  }));
+
   const connectors=[
-    ['飞书（Lark）','feishu','feishu:connected',['feishu_ensure_cli','feishu_connect_begin']],
-    ['企业微信','wecom','wecom:connected',['wecom_ensure_cli','wecom_connect_begin']],
-    ['钉钉','dingtalk','dingtalk:connected',['dingtalk_ensure_cli','dingtalk_connect_begin','dingtalk_apply_skills']],
-    ['腾讯会议','tmeet','tmeet:connected',['tmeet_ensure_cli','tmeet_connect_begin','tmeet_apply_skills']],
+    ['飞书（Lark）','feishu',['connector_ensure_cli','connector_connect_begin']],
+    ['企业微信','wecom',['connector_ensure_cli','connector_connect_begin']],
+    ['钉钉','dingtalk',['connector_ensure_cli','connector_connect_begin','connector_apply_skills']],
+    ['腾讯会议','tmeet',['connector_ensure_cli','connector_connect_begin','connector_apply_skills']],
   ];
-  for(const [query,id,event,commands] of connectors){
+  for(const [query,id,commands] of connectors){
     await action(page,query,'连接',id);
     if(id==='feishu'){
       // 刀9：版本号切后端源（mock 的 9.9.9-lock 与 tsToolsData 任何版本都不同,
@@ -481,10 +517,11 @@ async function visibilityBox(page, cardText, modeLabel, click) {
       rec('飞书详情版本号以后端 lock 表为准',await page.evaluate(()=>document.body.innerText.includes('v9.9.9-lock')));
     }
     if(id==='tmeet'){
-      await page.evaluate(() => window.__emitTauri('tmeet:qr', {
-        phase: 'authorize',
+      await page.evaluate(() => window.__emitTauri('connector:event', {
+        id: 'tmeet', kind: 'qr', step: 'authorize',
         url: 'https://meeting.tencent.com/test-auth',
         qr_data_url: 'data:image/svg+xml;base64,PHN2Zy8+',
+        browser_auth: true,
       }));
       await sleep(120);
       rec('腾讯会议收到授权 URL 后自动打开浏览器', await page.evaluate(() => {
@@ -494,23 +531,66 @@ async function visibilityBox(page, cardText, modeLabel, click) {
           && document.body.innerText.includes('已打开浏览器登录页');
       }));
       const beforeApply = await page.evaluate(() => window.__TOOL_STORE_TEST__.calls
-        .filter(x => x.cmd === 'tmeet_apply_skills').length);
-      await page.evaluate(() => window.__emitTauri('tmeet:connected', {}));
+        .filter(x => x.cmd === 'connector_apply_skills' && x.args.id === 'tmeet').length);
+      await page.evaluate(() => window.__emitTauri('connector:event', { id: 'tmeet', kind: 'connected', ok: true }));
       await sleep(180);
       rec('腾讯会议成功事件必须二次确认真实登录态', await page.evaluate((beforeApply) => {
         const afterApply = window.__TOOL_STORE_TEST__.calls
-          .filter(x => x.cmd === 'tmeet_apply_skills').length;
+          .filter(x => x.cmd === 'connector_apply_skills' && x.args.id === 'tmeet').length;
         return afterApply === beforeApply
           && !document.body.innerText.includes('已连接腾讯会议')
           && document.body.innerText.includes('腾讯会议授权未完成');
       }, beforeApply));
     }
-    await page.evaluate((id,event)=>{window.__TOOL_STORE_TEST__.connected[id]=true;return window.__emitTauri(event,{});},id,event);
+    await page.evaluate((id)=>{window.__TOOL_STORE_TEST__.connected[id]=true;return window.__emitTauri('connector:event',{id,kind:'connected',ok:true});},id);
     await sleep(180); await dismiss(page);
-    const info=await page.evaluate(({commands})=>({calls:commands.every(c=>window.__TOOL_STORE_TEST__.calls.some(x=>x.cmd===c)),seen:window.__TOOL_STORE_TEST__.calls.map(x=>x.cmd)}),{commands});
+    const info=await page.evaluate(({commands,id})=>({calls:commands.every(c=>window.__TOOL_STORE_TEST__.calls.some(x=>x.cmd===c&&x.args.id===id)),seen:window.__TOOL_STORE_TEST__.calls.map(x=>x.cmd)}),{commands,id});
     rec(`${query} 授权编排命令与成功事件`,info.calls,info.calls?'':JSON.stringify(info.seen.slice(-12)));
     await closeDetail(page,query);
   }
+
+  // Upload 声明式 CLI 连接器包（阶段 3c）：出卡、readiness 批量取数、通用连接流程。
+  //  connectors 循环的搜索词有残留,先清空恢复全量列表。
+  await page.evaluate(() => { const s = document.querySelector('[data-testid="tool-store-search"]'); const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; setter.call(s, ''); s.dispatchEvent(new Event('input', { bubbles: true })); });
+  await sleep(300);
+  rec('Upload CLI 包卡片渲染(名称)',await page.evaluate(()=>document.body.innerText.includes('上传 CLI 测试器')));
+  // 描述只在详情弹窗渲染(列表卡无 desc 位),点开卡片验证
+  await page.evaluate(()=>{
+    const els=[...document.querySelectorAll('div')].filter(el=>(el.textContent||'').includes('上传 CLI 测试器'));
+    const el=els[els.length-1];
+    if(el)el.click();
+  });
+  await sleep(300);
+  rec('Upload CLI 包详情渲染描述',await page.evaluate(()=>document.body.innerText.includes('上传 CLI 包描述文案')));
+  await closeDetail(page,'上传 CLI 测试器');
+  rec('Upload CLI 包 id 纳入 readiness 批量取数',await page.evaluate(()=>{
+    const ids=window.__TOOL_STORE_TEST__.calls.filter(x=>x.cmd==='bundle_readiness').map(x=>x.args.bundleId);
+    return ids.includes('upload-cli')&&ids.includes('manual-cli');
+  }));
+  // 连接按钮走通用流程:connector_ensure_cli/connector_connect_begin 带包 id
+  const cliListCallsBefore=await page.evaluate(()=>window.__TOOL_STORE_TEST__.calls.filter(x=>x.cmd==='list_cli_bundles').length);
+  await action(page,'上传 CLI 测试器','连接','upload-cli');
+  await sleep(250);
+  rec('Upload CLI 连接走通用命令(按包 id)',await page.evaluate(()=>{
+    const calls=window.__TOOL_STORE_TEST__.calls;
+    return calls.some(x=>x.cmd==='connector_ensure_cli'&&x.args.id==='upload-cli')
+      &&calls.some(x=>x.cmd==='connector_connect_begin'&&x.args.id==='upload-cli');
+  }));
+  // 连接成功事件 → done 收尾刷新(loadBackendState 重跑,list_cli_bundles 再次调用)
+  await page.evaluate(()=>{window.__TOOL_STORE_TEST__.connected['upload-cli']=true;return window.__emitTauri('connector:event',{id:'upload-cli',kind:'connected',ok:true});});
+  await sleep(300); await dismiss(page);
+  rec('Upload CLI 连接成功后刷新列表并转为断开',await page.evaluate((before)=>{
+    const after=window.__TOOL_STORE_TEST__.calls.filter(x=>x.cmd==='list_cli_bundles').length;
+    return after>before&&document.body.innerText.includes('断开');
+  }, cliListCallsBefore));
+  await closeDetail(page,'上传 CLI 测试器');
+  // manual 包(auth_required=false):已装即就绪,只出「断开」不出「连接」
+  await search(page,'手动 CLI 工具');
+  rec('manual CLI 包已装即就绪(断开,无连接按钮)',await page.evaluate(()=>{
+    const btns=[...document.querySelectorAll('button')].filter(b=>b.getAttribute('data-tool-id')==='manual-cli');
+    const labels=btns.map(b=>(b.textContent||'').trim());
+    return labels.includes('断开')&&!labels.includes('连接');
+  }));
 
   // 管理可见性（四轮评审）：加载成功时勾选框可用；读取失败时勾选框禁用、
   // 有错误提示且不产生静默写入。

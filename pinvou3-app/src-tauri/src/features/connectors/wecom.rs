@@ -6,7 +6,7 @@
 //!
 //! 连接(wecom-cli ≥1.1.0):`wecom-cli auth init --noninteractive --no-browser` 长驻 →
 //! 抓二维码 URL → 用户扫码 → 进程退出后 `auth show --status` 判 ready。
-//! 进度走事件 `wecom:qr` / `wecom:connected` / `wecom:error`。
+//! 进度走统一事件 `connector:event`（qr/connected/error，阶段 3a 契约）。
 //! 凭证落 `~/.config/wecom`(Win:`%USERPROFILE%\.config\wecom`),断开即删该目录。
 //! 1.1.0 起命令模型重构(`msg`→`message`、`schedule`→`calendar`、入参改 flags),
 //! 技能与判定都以 1.1.0 为基线,故 [`WECOM_MIN_VERSION`] 以下的旧安装会被替换升级。
@@ -138,11 +138,7 @@ pub async fn wecom_connect_begin(app: AppHandle) -> Result<Value, String> {
 
 fn run_connect_flow(app: &AppHandle) {
     if let Err(e) = phase_scan(app) {
-        cc::emit(
-            app,
-            "wecom:error",
-            json!({ "phase": "authorize", "message": e }),
-        );
+        cc::emit_error(app, ID, "authorize", &e);
     }
 }
 
@@ -180,11 +176,8 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             return Err("40s 内未拿到二维码链接(检查网络 / 代理)".into());
         }
     };
-    cc::emit(
-        app,
-        "wecom:qr",
-        json!({ "phase": "authorize", "url": url, "qr_data_url": cc::make_qr(&url) }),
-    );
+    let qr = cc::make_qr(&url);
+    cc::emit_qr(app, ID, "authorize", &url, &qr, None, None);
 
     // 等进程退出(用户扫码完成);期间轮询取消标志。退出后查 ready 收尾。
     loop {
@@ -198,7 +191,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
                 conn.set_pid(ID, None);
                 if is_ready() {
                     cc::bundle_store_on_connected(ID);
-                    cc::emit(app, "wecom:connected", json!({ "ok": true }));
+                    cc::emit_connected(app, ID, false);
                     return Ok(());
                 }
                 return Err("授权未完成(可能已取消或超时)".into());

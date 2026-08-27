@@ -111,18 +111,18 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
   });
 };
 
-    const FeishuStepIcon = ({ st }) => {
+    const ConnectorStepIcon = ({ st }) => {
       if (st === 'done') return <span className="w-5 h-5 rounded-full bg-emerald-500 grid place-items-center text-white text-[11px]">✓</span>;
       if (st === 'active') return <span className="w-5 h-5 rounded-full bg-blue-600 grid place-items-center text-white text-[10px] animate-pulse">●</span>;
       if (st === 'error') return <span className="w-5 h-5 rounded-full bg-rose-500 grid place-items-center text-white text-[11px]">✕</span>;
       return <span className="w-5 h-5 rounded-full border-2 border-slate-300 dark:border-white/20 inline-block" />;
     };
-    const FeishuBar = ({ pct, creep }) => (
+    const ConnectorBar = ({ pct, creep }) => (
       <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-200 dark:bg-white/10 overflow-hidden">
         <div className={`h-full rounded-full transition-all ${creep ? 'bg-blue-500' : 'bg-emerald-500'}`} style={{ width: (pct || 0) + '%' }} />
       </div>
     );
-    const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '', twoStep = true, browserAuth = false, steps = [], copy = {} }) => {
+    const ConnectorFlowCard = ({ flow, onRetry, onCancel, name = '', twoStep = true, browserAuth = false, steps = [], copy = {} }) => {
       if (!flow) return null;
       const isErr = flow.phase === 'error';
       return (
@@ -139,11 +139,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               const active = st === 'active';
               return (
                 <div key={s.key} className={`flex gap-3 py-1.5 ${st === 'wait' ? 'opacity-45' : ''}`}>
-                  <div className="pt-0.5"><FeishuStepIcon st={st} /></div>
+                  <div className="pt-0.5"><ConnectorStepIcon st={st} /></div>
                   <div className="flex-1 min-w-0">
                     <div className={`text-[13.5px] font-medium ${st === 'done' ? 'text-slate-400 line-through decoration-slate-300' : 'text-slate-900 dark:text-slate-100'}`}>{s.label}</div>
-                    {active && s.key === 'runtime' && (<><FeishuBar pct={flow.pct} /><div className="text-[11px] text-slate-400 mt-1">{copy.extracting(Math.round(flow.pct || 0))}</div></>)}
-                    {active && s.key === 'cli' && (<><FeishuBar pct={flow.pct} creep /><div className="flex items-center justify-between mt-1"><div className="text-[11px] text-slate-400 truncate max-w-[260px] font-mono">{flow.log || copy.installStarting}</div><div className="text-[11px] text-slate-400 tabular-nums">{copy.elapsed(flow.sec || 0)}</div></div></>)}
+                    {active && s.key === 'runtime' && (<><ConnectorBar pct={flow.pct} /><div className="text-[11px] text-slate-400 mt-1">{copy.extracting(Math.round(flow.pct || 0))}</div></>)}
+                    {active && s.key === 'cli' && (<><ConnectorBar pct={flow.pct} creep /><div className="flex items-center justify-between mt-1"><div className="text-[11px] text-slate-400 truncate max-w-[260px] font-mono">{flow.log || copy.installStarting}</div><div className="text-[11px] text-slate-400 tabular-nums">{copy.elapsed(flow.sec || 0)}</div></div></>)}
                     {!active && <div className="text-[11.5px] text-slate-400">{s.sub}</div>}
                   </div>
                 </div>
@@ -203,7 +203,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       );
     };
     // 商店列表行内的迷你进度（详情弹窗关掉后，后台仍在跑）
-    const FeishuMini = ({ flow, onClick, copy }) => {
+    const ConnectorMini = ({ flow, onClick, copy }) => {
       const label = flow.phase === 'qr' ? copy.scan
         : (flow.active === 'cli' ? copy.install(Math.round(flow.pct || 0))
         : (flow.active === 'runtime' ? copy.extract(Math.round(flow.pct || 0)) : copy.connecting));
@@ -214,6 +214,34 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         </button>
       );
     };
+
+    // ── 连接器统一事件总线（connector:event，阶段 3b）──
+    // 后端单事件出口，payload {id, kind:"qr"|"phase"|"connected"|"error", step, ...}；
+    // 旧 16 个逐连接器事件（feishu:qr/wecom:connected/...）已下线。这里注册一次、
+    // 按 payload.id 分发；同一 id 支持多个订阅者（模块级 store + 组件级弹窗）。
+    const connectorEventSubs = new Map(); // id -> Set<fn>
+    let connectorEventBusReady = false;
+    function ensureConnectorEventBus() {
+      if (connectorEventBusReady) return;
+      const ev = isTauriAvailable() ? tauriEvents : null;
+      if (!ev) return;
+      connectorEventBusReady = true;
+      ev.listen('connector:event', (e) => {
+        const p = e.payload || {};
+        const subs = connectorEventSubs.get(p.id);
+        if (!subs) return;
+        subs.forEach(fn => { try { fn(p); } catch { /* silent: one failing subscriber must not affect the rest of the broadcast */ } });
+      });
+    }
+    function onConnectorEvent(id, fn) {
+      const ev = isTauriAvailable() ? tauriEvents : null;
+      if (!ev) return () => {};
+      ensureConnectorEventBus();
+      let subs = connectorEventSubs.get(id);
+      if (!subs) { subs = new Set(); connectorEventSubs.set(id, subs); }
+      subs.add(fn);
+      return () => { subs.delete(fn); };
+    }
 
     // ── 飞书连接流程 · 跨视图持久 store ──
     // ToolStoreView 随左栏切换会卸载；连接是长流程（装 CLI ~40s + 扫码），进度/监听/秒表
@@ -240,50 +268,47 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     };
     /* eslint-enable unicorn/no-this-outside-of-class -- module-level connection store singleton */
     // 后端连接事件只注册一次（幂等，跨 ToolStoreView 多次挂载不重复注册）。
+    // 统一事件 kind/字段映射：qr→qrUrl/qr（step 即旧 payload.phase）、
+    // phase→steps 推进（register 段完成 = UI connect 步）、connected→done、error→err。
+    // 旧 feishu:progress 监听已随事件下线删除（客户端秒表/爬行条兜底不变）。
+    const FEISHU_PHASE_UI_STEP = { register: 'connect', authorize: 'qr' };
     function ensureFeishuListeners(copy = {}) {
       if (feishuConn.listenersReady) return;
       const connFailed = copy.connFailed;
       const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       feishuConn.listenersReady = true;
-      ev.listen('feishu:progress', (e) => {
-        const p = e.payload || {};
-        feishuConn.setFlow(f => {
-          const nf = f ? { ...f, steps: { ...f.steps } } : { phase: 'running', steps: {}, active: null, pct: 0, sec: 0, log: '' };
-          if (p.step) { nf.active = p.step; nf.steps[p.step] = p.status === 'done' ? 'done' : 'active'; }
-          if (typeof p.pct === 'number') nf.pct = p.pct;
-          if (p.log) nf.log = p.log;
-          if (nf.phase !== 'error') nf.phase = 'running';
-          return nf;
-        });
-      });
-      ev.listen('feishu:qr', (e) => {
-        const p = e.payload || {};
-        feishuConn.stopTick();
-        feishuConn.setFlow(f => {
-          const prev = (f && f.steps) || {};
-          return {
-            ...f, phase: 'qr', active: 'qr',
-            steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), connect: 'done', qr: 'active' },
-            qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase,
-          };
-        });
-      });
-      ev.listen('feishu:connected', () => {
-        feishuConn.stopTick();
-        feishuConn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
-        // 连上 → 按规则写技能（默认启用）+ 广播刷新；跟视图无关，放全局做。
-        invokeTauri('feishu_apply_skills').catch(() => {});
-        // 稍后自动收起流程卡（详情里的“已连接”态改由 feishuConnected 驱动）
-        setTimeout(() => feishuConn.setFlow(null), 1800);
-      });
-      ev.listen('feishu:error', (e) => {
-        const p = e.payload || {};
-        feishuConn.stopTick();
-        feishuConn.setFlow(f => {
-          const step = (f && f.active) || 'cli';
-          return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } };
-        });
+      onConnectorEvent('feishu', (p) => {
+        if (p.kind === 'qr') {
+          feishuConn.stopTick();
+          feishuConn.setFlow(f => {
+            const prev = (f && f.steps) || {};
+            return {
+              ...f, phase: 'qr', active: 'qr',
+              steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), connect: 'done', qr: 'active' },
+              qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.step,
+            };
+          });
+        } else if (p.kind === 'phase') {
+          // 段间推进（feishu：{step:"register", state:"done"} → UI connect 步完成）
+          const uiStep = FEISHU_PHASE_UI_STEP[p.step] || p.step;
+          if (p.state === 'done' && uiStep) {
+            feishuConn.setFlow(f => (f ? { ...f, steps: { ...f.steps, [uiStep]: 'done' } } : f));
+          }
+        } else if (p.kind === 'connected') {
+          feishuConn.stopTick();
+          feishuConn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
+          // 连上 → 按规则写技能（默认启用）+ 广播刷新；跟视图无关，放全局做。
+          invokeTauri('connector_apply_skills', { id: 'feishu' }).catch(() => {});
+          // 稍后自动收起流程卡（详情里的“已连接”态改由 feishuConnected 驱动）
+          setTimeout(() => feishuConn.setFlow(null), 1800);
+        } else if (p.kind === 'error') {
+          feishuConn.stopTick();
+          feishuConn.setFlow(f => {
+            const step = (f && f.active) || 'cli';
+            return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } };
+          });
+        }
       });
     }
 
@@ -311,26 +336,24 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       wecomConn.listenersReady = true;
-      ev.listen('wecom:qr', (e) => {
-        const p = e.payload || {};
-        wecomConn.stopTick();
-        wecomConn.setFlow(f => {
-          const prev = (f && f.steps) || {};
-          return { ...f, phase: 'qr', active: 'qr',
-            steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), qr: 'active' },
-            qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase };
-        });
-      });
-      ev.listen('wecom:connected', () => {
-        wecomConn.stopTick();
-        wecomConn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
-        invokeTauri('wecom_apply_skills').catch(() => {});
-        setTimeout(() => wecomConn.setFlow(null), 1800);
-      });
-      ev.listen('wecom:error', (e) => {
-        const p = e.payload || {};
-        wecomConn.stopTick();
-        wecomConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } }; });
+      onConnectorEvent('wecom', (p) => {
+        if (p.kind === 'qr') {
+          wecomConn.stopTick();
+          wecomConn.setFlow(f => {
+            const prev = (f && f.steps) || {};
+            return { ...f, phase: 'qr', active: 'qr',
+              steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), qr: 'active' },
+              qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.step };
+          });
+        } else if (p.kind === 'connected') {
+          wecomConn.stopTick();
+          wecomConn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
+          invokeTauri('connector_apply_skills', { id: 'wecom' }).catch(() => {});
+          setTimeout(() => wecomConn.setFlow(null), 1800);
+        } else if (p.kind === 'error') {
+          wecomConn.stopTick();
+          wecomConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } }; });
+        }
       });
     }
 
@@ -359,30 +382,30 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       dingtalkConn.listenersReady = true;
-      ev.listen('dingtalk:qr', (e) => {
-        const p = e.payload || {};
-        dingtalkConn.stopTick();
-        dingtalkConn.setFlow(f => {
-          const prev = (f && f.steps) || {};
-          return { ...f, phase: 'qr', active: 'qr',
-            steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), qr: 'active' },
-            qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase, userCode: p.user_code };
-        });
-      });
-      ev.listen('dingtalk:connected', async () => {
-        dingtalkConn.stopTick();
-        try {
-          await invokeTauri('dingtalk_apply_skills');
-          dingtalkConn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
-          setTimeout(() => dingtalkConn.setFlow(null), 1800);
-        } catch (e) {
-          dingtalkConn.setFlow(f => ({ ...f, phase: 'error', err: skillsFailed(String(e).slice(0, 220)), errStep: 'qr', steps: { ...(f && f.steps), qr: 'error' } }));
+      onConnectorEvent('dingtalk', (p) => {
+        if (p.kind === 'qr') {
+          dingtalkConn.stopTick();
+          dingtalkConn.setFlow(f => {
+            const prev = (f && f.steps) || {};
+            return { ...f, phase: 'qr', active: 'qr',
+              steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), qr: 'active' },
+              qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.step, userCode: p.user_code };
+          });
+        } else if (p.kind === 'connected') {
+          (async () => {
+            dingtalkConn.stopTick();
+            try {
+              await invokeTauri('connector_apply_skills', { id: 'dingtalk' });
+              dingtalkConn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
+              setTimeout(() => dingtalkConn.setFlow(null), 1800);
+            } catch (e) {
+              dingtalkConn.setFlow(f => ({ ...f, phase: 'error', err: skillsFailed(String(e).slice(0, 220)), errStep: 'qr', steps: { ...(f && f.steps), qr: 'error' } }));
+            }
+          })();
+        } else if (p.kind === 'error') {
+          dingtalkConn.stopTick();
+          dingtalkConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } }; });
         }
-      });
-      ev.listen('dingtalk:error', (e) => {
-        const p = e.payload || {};
-        dingtalkConn.stopTick();
-        dingtalkConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } }; });
       });
     }
 
@@ -411,40 +434,94 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       tmeetConn.listenersReady = true;
-      ev.listen('tmeet:qr', (e) => {
-        const p = e.payload || {};
-        tmeetConn.stopTick();
-        if (p.url) {
-          invokeTauri('open_external_url', { url: p.url }).catch(err => {
-            console.error('open tmeet auth url failed:', err);
-          });
-        }
-        tmeetConn.setFlow(f => {
-          const prev = (f && f.steps) || {};
-          return { ...f, phase: 'qr', active: 'qr',
-            steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), qr: 'active' },
-            qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase, browserAuth: true };
-        });
-      });
-      ev.listen('tmeet:connected', async () => {
-        tmeetConn.stopTick();
-        try {
-          // 二次确认真实登录态（统一 readiness；原 tmeet_status 调用已退役）
-          const status = await invokeTauri('bundle_readiness', { bundleId: 'tmeet' });
-          if (!(status && status.ready)) {
-            throw new Error(authIncomplete);
+      onConnectorEvent('tmeet', (p) => {
+        if (p.kind === 'qr') {
+          tmeetConn.stopTick();
+          if (p.url) {
+            invokeTauri('open_external_url', { url: p.url }).catch(err => {
+              console.error('open tmeet auth url failed:', err);
+            });
           }
-          await invokeTauri('tmeet_apply_skills');
-          tmeetConn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
-          setTimeout(() => tmeetConn.setFlow(null), 1800);
-        } catch (e) {
-          tmeetConn.setFlow(f => ({ ...f, phase: 'error', err: String(e && e.message ? e.message : e).slice(0, 220), errStep: 'qr', steps: { ...(f && f.steps), qr: 'error' } }));
+          tmeetConn.setFlow(f => {
+            const prev = (f && f.steps) || {};
+            return { ...f, phase: 'qr', active: 'qr',
+              steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), qr: 'active' },
+              qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.step, browserAuth: p.browser_auth !== false };
+          });
+        } else if (p.kind === 'connected') {
+          (async () => {
+            tmeetConn.stopTick();
+            try {
+              // 二次确认真实登录态（统一 readiness；already 复连同样过这道闸）
+              const status = await invokeTauri('bundle_readiness', { bundleId: 'tmeet' });
+              if (!(status && status.ready)) {
+                throw new Error(authIncomplete);
+              }
+              await invokeTauri('connector_apply_skills', { id: 'tmeet' });
+              tmeetConn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
+              setTimeout(() => tmeetConn.setFlow(null), 1800);
+            } catch (e) {
+              tmeetConn.setFlow(f => ({ ...f, phase: 'error', err: String(e && e.message ? e.message : e).slice(0, 220), errStep: 'qr', steps: { ...(f && f.steps), qr: 'error' } }));
+            }
+          })();
+        } else if (p.kind === 'error') {
+          tmeetConn.stopTick();
+          tmeetConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } }; });
         }
       });
-      ev.listen('tmeet:error', (e) => {
-        const p = e.payload || {};
-        tmeetConn.stopTick();
-        tmeetConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } }; });
+    }
+
+    // ── 声明式 CLI 连接器（Upload 包）通用连接流程 ──
+    // 内置 4 连接器各有专用 store 与三语步骤文案；Upload 包的授权步骤定义在其
+    // plugin.json（BundleInfo 不下发 auth steps），首版 UI 用通用单步「授权」。
+    // 事件同样走统一 connector:event（payload.step = 包 manifest 的步骤 id，UI 归一到
+    // authorize 单步）；store 形状与内置连接器一致（跨视图持久，按 id 惰性创建）。
+    const genericCliConns = new Map(); // connectorId → conn store
+    /* eslint-disable unicorn/no-this-outside-of-class -- same as feishuConn: module-level singleton whose methods reference itself via this */
+    function makeConnStore() {
+      return {
+        flow: null, tick: null, listenersReady: false, subs: new Set(),
+        subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
+        setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* silent: one failing subscriber must not affect the rest of the broadcast */ } }); },
+        startTick() {
+          this.stopTick();
+          this.tick = setInterval(() => this.setFlow(f => {
+            if (!f || f.phase !== 'running') return f;
+            return { ...f, sec: (f.sec || 0) + 1 };
+          }), 1000);
+        },
+        stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
+      };
+    }
+    /* eslint-enable unicorn/no-this-outside-of-class -- same as feishuConn */
+    function getGenericCliConn(id) {
+      let conn = genericCliConns.get(id);
+      if (!conn) { conn = makeConnStore(); genericCliConns.set(id, conn); }
+      return conn;
+    }
+    function ensureGenericCliListeners(id, copy = {}) {
+      const conn = getGenericCliConn(id);
+      if (conn.listenersReady) return;
+      const ev = isTauriAvailable() ? tauriEvents : null;
+      if (!ev) return;
+      conn.listenersReady = true;
+      onConnectorEvent(id, (p) => {
+        if (p.kind === 'qr') {
+          conn.stopTick();
+          conn.setFlow(f => ({ ...f, phase: 'qr', active: 'authorize',
+            steps: { ...(f && f.steps), authorize: 'active' },
+            qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.step, userCode: p.user_code, browserAuth: p.browser_auth === true }));
+          // browser_auth（跳浏览器授权，对齐 tmeet）：收到授权 URL 自动打开浏览器
+          if (p.browser_auth === true && p.url) invokeTauri('open_external_url', { url: p.url }).catch(() => {});
+        } else if (p.kind === 'connected') {
+          conn.stopTick();
+          conn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), authorize: 'done' } }));
+          invokeTauri('connector_apply_skills', { id }).catch(() => {});
+          setTimeout(() => conn.setFlow(null), 1800);
+        } else if (p.kind === 'error') {
+          conn.stopTick();
+          conn.setFlow(f => ({ ...(f || { steps: {} }), phase: 'error', err: String(p.message || copy.connFailed || ''), errStep: 'authorize', steps: { ...(f && f.steps), authorize: 'error' } }));
+        }
       });
     }
 
@@ -689,6 +766,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const [groupBy, setGroupBy] = useState('type'); // 列表视图主维度:'type'(按类型) | 'business'(按业务)
       const [installedOnly, setInstalledOnly] = useState(false); // 头像入口:只看已安装
       const [skillBackend, setSkillBackend] = useState([]); // list_marketplace_skills 原始返回
+      const [cliBundles, setCliBundles] = useState([]); // list_cli_bundles 原始返回（内置 4 + Upload 声明式 CLI 包）
       // 按会话模式配置工具可见性（预过滤，与开关正交）：managingVisibility = 编辑态；
       // hiddenByMode = { plain: Set, code: Set }——每个模式被设为「不可见」的包 id。
       const [managingVisibility, setManagingVisibility] = useState(false);
@@ -823,12 +901,22 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         } catch (e) {
           console.error('list_marketplace_skills failed:', e);
         }
+        // 声明式 CLI 连接器包（内置 4 + Upload）：Upload 条目据此合成卡片。
+        let cliBundleList = [];
+        try {
+          const bundles = await invokeTauri('list_cli_bundles');
+          cliBundleList = Array.isArray(bundles) ? bundles : [];
+          setCliBundles(cliBundleList);
+        } catch (e) {
+          console.error('list_cli_bundles failed:', e);
+        }
         // 统一 readiness 批量取数：未知包（companion 被认领后不再独立成包等）
         // 单条失败只记日志、该包回退旧来源（list_marketplace_* 的状态位）。
         try {
           const ids = [
             ...tsToolsData.map(x => x.backendId).filter(Boolean),
             ...skillList.map(x => x.id),
+            ...cliBundleList.filter(x => x.user_uploaded).map(x => x.id),
           ];
           const entries = await Promise.all(ids.map(async (id) => {
             try {
@@ -947,31 +1035,27 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // eslint-disable-next-line react-hooks/exhaustive-deps -- subscription mounts/unmounts only with externalAuthAvailable; the copy snapshot is read on demand by the callback, so resubscribing is unnecessary
       }, [externalAuthAvailable]);
 
-      // 企微连接编排事件:后端推进度,前端驱动 UI。
+      // 企微连接编排事件:后端经统一 connector:event 推进度,前端驱动 UI（模块级
+      // 事件总线按 id 分发；组件级订阅二维码弹窗/告警，卸载即退订）。
       useEffect(() => {
-        const ev = isTauriAvailable() ? tauriEvents : null;
-        if (!ev) return;
-        const unlisten = [];
-        ev.listen('wecom:qr', (e) => {
-          const p = e.payload || {};
-          // 二维码到了 → 清掉一直显示的"正在生成…"loading,再弹出二维码弹窗。
-          setAlert(a => ({ ...a, visible: false, loading: false }));
-          setWecomQr({ qr: p.qr_data_url, url: p.url, phase: p.phase });
-        }).then(u => { unlisten.push(u); });
-        ev.listen('wecom:connected', () => {
-          setWecomQr(null); setBusyId(null);
-          // 连上 → 按规则写技能(默认启用),企微技能即刻对模型可见;连接态经 readiness 重取。
-          invokeTauri('wecom_apply_skills').catch(() => {});
-          loadBackendState();
-          setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(storeCopy.toolNames.wecom), subtitle: '', isInstall: true, isError: false, toolId: 'wecom' });
-          notifyComposerToolsChanged();
-        }).then(u => { unlisten.push(u); });
-        ev.listen('wecom:error', (e) => {
-          const p = e.payload || {};
-          setWecomQr(null); setBusyId(null);
-          setAlert({ visible: true, loading: false, title: storeCopy.connectFailed(storeCopy.toolNames.wecom), subtitle: String(p.message || '').slice(0, 240), isError: true });
-        }).then(u => { unlisten.push(u); });
-        return () => { unlisten.forEach(u => { try { u(); } catch { /* silent: listeners may already be stale at unmount */ } }); };
+        const off = onConnectorEvent('wecom', (p) => {
+          if (p.kind === 'qr') {
+            // 二维码到了 → 清掉一直显示的"正在生成…"loading,再弹出二维码弹窗。
+            setAlert(a => ({ ...a, visible: false, loading: false }));
+            setWecomQr({ qr: p.qr_data_url, url: p.url, phase: p.step });
+          } else if (p.kind === 'connected') {
+            setWecomQr(null); setBusyId(null);
+            // 连上 → 按规则写技能(默认启用),企微技能即刻对模型可见;连接态经 readiness 重取。
+            invokeTauri('connector_apply_skills', { id: 'wecom' }).catch(() => {});
+            loadBackendState();
+            setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(storeCopy.toolNames.wecom), subtitle: '', isInstall: true, isError: false, toolId: 'wecom' });
+            notifyComposerToolsChanged();
+          } else if (p.kind === 'error') {
+            setWecomQr(null); setBusyId(null);
+            setAlert({ visible: true, loading: false, title: storeCopy.connectFailed(storeCopy.toolNames.wecom), subtitle: String(p.message || '').slice(0, 240), isError: true });
+          }
+        });
+        return off;
       // eslint-disable-next-line react-hooks/exhaustive-deps -- subscription mounts/unmounts only with externalAuthAvailable; the copy snapshot is read on demand by the callback, so resubscribing is unnecessary
       }, [externalAuthAvailable]);
 
@@ -1039,7 +1123,28 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           };
           return localizeTool(base, t);
         });
-      const tools = [...builtinTools, ...customMcpTools];
+      // Upload 声明式 CLI 连接器包（list_cli_bundles 的 user_uploaded 条目；内置 4 有
+      // 静态卡，跳过）动态合成卡片：名称/描述/icon 回退默认，安装/降级态读统一
+      // readiness（缺失回退 BundleInfo 状态位），连接/断开走通用 CLI 流程
+      // （handleAction 的 bundle.kind==='cli' 路由）。
+      const uploadedCliTools = cliBundles
+        .filter(x => x.user_uploaded && tsToolsData.every(t => t.backendId !== x.id))
+        .map(x => {
+          const bs = bundleStates[x.id] || null;
+          const base = {
+            id: 'cli-' + x.id, backendId: x.id, title: x.name || x.id, subtitle: '',
+            category: x.category || 'collab', type: (storeCopy.typeGroups || {}).cli || 'CLI',
+            version: x.version ? `v${String(x.version).replace(/^v/i, '')}` : '—',
+            latency: storeCopy.localLatency, desc: x.description || '',
+            icon: Server, color: 'bg-gradient-to-b from-slate-400 to-slate-600',
+            installed: bs ? bs.installed : !!x.installed,
+            authRequired: false, userUploaded: true, cliConnector: true,
+            degraded: x.degraded || (bs && bs.bundle ? bs.bundle.degraded : null) || null,
+            actions: actionsOf(bs),
+          };
+          return localizeTool(base, t);
+        });
+      const tools = [...builtinTools, ...customMcpTools, ...uploadedCliTools];
       // 按 backendId 取已 localize 的工具卡;兜底分支也走 localizeTool,避免 en/ja 下漏出中文原文。
       const findLocalizedTool = (backendId) =>
         tools.find(x => x.backendId === backendId) || localizeTool(tsToolsData.find(x => x.backendId === backendId), t);
@@ -1542,22 +1647,29 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       };
 
       // 连接飞书(config init --new 自建 app,两段扫码):事件驱动。
-      // 进度走后端事件 feishu:qr / feishu:phase / feishu:connected / feishu:error
-      //(监听见下方 useEffect);这里只 ensure cli + 触发 begin。busyId 在事件里清。
+      // 进度走统一 connector:event（kind=qr/phase/connected/error，监听见上方
+      // ensureFeishuListeners);这里只 ensure cli + 触发 begin。busyId 在事件里清。
       const connectFeishu = async () => {
         setBusyId('feishu');
         ensureFeishuListeners(storeCopy);
         // 开流程卡（无阻塞弹窗）：先起“准备运行时”步。写进跨视图 store，切走不丢。
         feishuConn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
-        // 客户端秒表 + 爬行条：后端 feishu:progress 有真实 pct 时会覆盖；没有也不至于像卡死。
+        // 客户端秒表 + 爬行条：后端不下发真实 pct，爬行条兜底不至于像卡死。
         feishuConn.startTick();
         try {
           // ① 确保 CLI（首次使用在线安装）
           feishuConn.setFlow(f => ({ ...f, active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...(f && f.steps), runtime: 'done', cli: 'active' } }));
-          await invokeTauri('feishu_ensure_cli');
+          await invokeTauri('connector_ensure_cli', { id: 'feishu' });
           feishuConn.setFlow(f => ({ ...f, active: 'connect', pct: 100, steps: { ...(f && f.steps), cli: 'done', connect: 'active' } }));
-          // ② 连接编排（后端 emit feishu:qr / connected / error）
-          await invokeTauri('feishu_connect_begin');
+          // ② 连接编排（后端经 connector:event emit qr / connected / error）
+          const begin = await invokeTauri('connector_connect_begin', { id: 'feishu' });
+          if (begin && begin.started === false && begin.mode === 'manual') {
+            // manual：CLI 自行交互授权，宿主无编排 → 收起流程卡并提示终端完成授权
+            feishuConn.stopTick();
+            feishuConn.setFlow(null);
+            setBusyId(null);
+            setAlert({ visible: true, loading: false, title: storeCopy.connectorManualAuthHint, isInstall: false, isError: false });
+          }
         } catch (e) {
           console.error('feishu connect failed:', e);
           feishuConn.stopTick();
@@ -1571,7 +1683,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 取消/关闭流程卡：置取消 + kill 子进程 + 清状态。
       const feishuResetFlow = () => {
         feishuConn.stopTick();
-        invokeTauri('feishu_cancel').catch(() => {});
+        invokeTauri('connector_cancel', { id: 'feishu' }).catch(() => {});
         feishuConn.setFlow(null); setBusyId(null);
       };
       // 重试：ensure_cli 幂等，直接重跑整个连接流程。
@@ -1579,9 +1691,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const disconnectFeishu = async () => {
         setBusyId('feishu');
         try {
-          await invokeTauri('feishu_logout');
+          await invokeTauri('connector_logout', { id: 'feishu' });
           // 断开 → 撤掉技能(should_show 变 false)+ 广播刷新；连接态经 readiness 重取。
-          await invokeTauri('feishu_apply_skills').catch(() => {});
+          await invokeTauri('connector_apply_skills', { id: 'feishu' }).catch(() => {});
           await loadBackendState();
           setAlert({ visible: true, loading: false, title: storeCopy.disconnectedTool(storeCopy.toolNames.feishu), isInstall: false, isError: false });
           notifyComposerToolsChanged();
@@ -1593,7 +1705,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }
       };
 
-      // 连接企业微信(单段扫码):流程卡驱动(镜像飞书),进度走 wecom:* 事件。
+      // 连接企业微信(单段扫码):流程卡驱动(镜像飞书),进度走统一 connector:event。
       const connectWecom = async () => {
         setBusyId('wecom');
         ensureWecomListeners(storeCopy);
@@ -1603,10 +1715,16 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         try {
           // ① 确保 CLI(首次联网装 wecom-cli ~40s)
           wecomConn.setFlow(f => ({ ...f, active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...(f && f.steps), runtime: 'done', cli: 'active' } }));
-          await invokeTauri('wecom_ensure_cli');
+          await invokeTauri('connector_ensure_cli', { id: 'wecom' });
           wecomConn.setFlow(f => ({ ...f, pct: 100, steps: { ...(f && f.steps), cli: 'done' } }));
-          // ② 连接编排(后端 emit wecom:qr / connected / error)
-          await invokeTauri('wecom_connect_begin');
+          // ② 连接编排(后端经 connector:event emit qr / connected / error)
+          const begin = await invokeTauri('connector_connect_begin', { id: 'wecom' });
+          if (begin && begin.started === false && begin.mode === 'manual') {
+            wecomConn.stopTick();
+            wecomConn.setFlow(null);
+            setBusyId(null);
+            setAlert({ visible: true, loading: false, title: storeCopy.connectorManualAuthHint, isInstall: false, isError: false });
+          }
         } catch (e) {
           console.error('wecom connect failed:', e);
           wecomConn.stopTick();
@@ -1619,16 +1737,16 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       };
       const wecomResetFlow = () => {
         wecomConn.stopTick();
-        invokeTauri('wecom_cancel').catch(() => {});
+        invokeTauri('connector_cancel', { id: 'wecom' }).catch(() => {});
         wecomConn.setFlow(null); setBusyId(null);
       };
       const wecomRetry = () => { connectWecom(); };
       const disconnectWecom = async () => {
         setBusyId('wecom');
         try {
-          await invokeTauri('wecom_logout');
+          await invokeTauri('connector_logout', { id: 'wecom' });
           // 断开 → 撤掉技能(should_show 变 false)；连接态经 readiness 重取。
-          await invokeTauri('wecom_apply_skills').catch(() => {});
+          await invokeTauri('connector_apply_skills', { id: 'wecom' }).catch(() => {});
           await loadBackendState();
           setAlert({ visible: true, loading: false, title: storeCopy.disconnectedTool(storeCopy.toolNames.wecom), isInstall: false, isError: false });
           notifyComposerToolsChanged();
@@ -1640,7 +1758,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }
       };
 
-      // 连接钉钉(单段扫码):流程卡驱动(镜像企微),进度走 dingtalk:* 事件。
+      // 连接钉钉(单段扫码):流程卡驱动(镜像企微),进度走统一 connector:event。
       const connectDingtalk = async () => {
         setBusyId('dingtalk');
         ensureDingtalkListeners(storeCopy);
@@ -1648,9 +1766,15 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         dingtalkConn.startTick();
         try {
           dingtalkConn.setFlow(f => ({ ...f, active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...(f && f.steps), runtime: 'done', cli: 'active' } }));
-          await invokeTauri('dingtalk_ensure_cli');
+          await invokeTauri('connector_ensure_cli', { id: 'dingtalk' });
           dingtalkConn.setFlow(f => ({ ...f, pct: 100, steps: { ...(f && f.steps), cli: 'done' } }));
-          await invokeTauri('dingtalk_connect_begin');
+          const begin = await invokeTauri('connector_connect_begin', { id: 'dingtalk' });
+          if (begin && begin.started === false && begin.mode === 'manual') {
+            dingtalkConn.stopTick();
+            dingtalkConn.setFlow(null);
+            setBusyId(null);
+            setAlert({ visible: true, loading: false, title: storeCopy.connectorManualAuthHint, isInstall: false, isError: false });
+          }
         } catch (e) {
           console.error('dingtalk connect failed:', e);
           dingtalkConn.stopTick();
@@ -1663,15 +1787,15 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       };
       const dingtalkResetFlow = () => {
         dingtalkConn.stopTick();
-        invokeTauri('dingtalk_cancel').catch(() => {});
+        invokeTauri('connector_cancel', { id: 'dingtalk' }).catch(() => {});
         dingtalkConn.setFlow(null); setBusyId(null);
       };
       const dingtalkRetry = () => { connectDingtalk(); };
       const disconnectDingtalk = async () => {
         setBusyId('dingtalk');
         try {
-          await invokeTauri('dingtalk_logout');
-          await invokeTauri('dingtalk_apply_skills').catch(() => {});
+          await invokeTauri('connector_logout', { id: 'dingtalk' });
+          await invokeTauri('connector_apply_skills', { id: 'dingtalk' }).catch(() => {});
           await loadBackendState();
           setAlert({ visible: true, loading: false, title: storeCopy.disconnectedTool(storeCopy.toolNames.dingtalk), isInstall: false, isError: false });
           notifyComposerToolsChanged();
@@ -1683,7 +1807,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }
       };
 
-      // 连接腾讯会议(单段 OAuth 授权):流程卡驱动(镜像钉钉),进度走 tmeet:* 事件。
+      // 连接腾讯会议(单段 OAuth 授权):流程卡驱动(镜像钉钉),进度走统一 connector:event。
       const connectTmeet = async () => {
         setBusyId('tmeet');
         ensureTmeetListeners(storeCopy);
@@ -1691,9 +1815,15 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         tmeetConn.startTick();
         try {
           tmeetConn.setFlow(f => ({ ...f, active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...(f && f.steps), runtime: 'done', cli: 'active' } }));
-          await invokeTauri('tmeet_ensure_cli');
+          await invokeTauri('connector_ensure_cli', { id: 'tmeet' });
           tmeetConn.setFlow(f => ({ ...f, pct: 100, steps: { ...(f && f.steps), cli: 'done' } }));
-          await invokeTauri('tmeet_connect_begin');
+          const begin = await invokeTauri('connector_connect_begin', { id: 'tmeet' });
+          if (begin && begin.started === false && begin.mode === 'manual') {
+            tmeetConn.stopTick();
+            tmeetConn.setFlow(null);
+            setBusyId(null);
+            setAlert({ visible: true, loading: false, title: storeCopy.connectorManualAuthHint, isInstall: false, isError: false });
+          }
         } catch (e) {
           console.error('tmeet connect failed:', e);
           tmeetConn.stopTick();
@@ -1706,20 +1836,93 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       };
       const tmeetResetFlow = () => {
         tmeetConn.stopTick();
-        invokeTauri('tmeet_cancel').catch(() => {});
+        invokeTauri('connector_cancel', { id: 'tmeet' }).catch(() => {});
         tmeetConn.setFlow(null); setBusyId(null);
       };
       const tmeetRetry = () => { connectTmeet(); };
       const disconnectTmeet = async () => {
         setBusyId('tmeet');
         try {
-          await invokeTauri('tmeet_logout');
-          await invokeTauri('tmeet_apply_skills').catch(() => {});
+          await invokeTauri('connector_logout', { id: 'tmeet' });
+          await invokeTauri('connector_apply_skills', { id: 'tmeet' }).catch(() => {});
           await loadBackendState();
           setAlert({ visible: true, loading: false, title: detailCopy.actions.disconnectedTmeet, isInstall: false, isError: false });
           notifyComposerToolsChanged();
         } catch (e) {
           console.error('tmeet logout failed:', e);
+          setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
+      // ── Upload 声明式 CLI 包：通用连接流程（流程卡 UI 状态形状与内置连接器一致）──
+      const [genericCliFlows, setGenericCliFlows] = useState({}); // connectorId → flow
+      const genericCliSubRef = useRef(new Set()); // 已建立 store 订阅的 id（防重复订阅）
+      const ensureGenericCliSub = (backendId, name) => {
+        if (genericCliSubRef.current.has(backendId)) return;
+        genericCliSubRef.current.add(backendId);
+        let prevPhase = null;
+        getGenericCliConn(backendId).subscribe((flow) => {
+          setGenericCliFlows(prev => ({ ...prev, [backendId]: flow }));
+          const ph = flow && flow.phase;
+          if (ph !== prevPhase) {
+            if (ph === 'done') {
+              setBusyId(null);
+              loadBackendState();
+              setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(name), subtitle: detailCopy.actions.enabled, isInstall: true, isError: false });
+              notifyComposerToolsChanged();
+            } else if (ph === 'error') {
+              setBusyId(null);
+            }
+            prevPhase = ph;
+          }
+        });
+      };
+      const connectGenericCli = async (tool) => {
+        const backendId = tool.backendId;
+        const name = tool.title || backendId;
+        setBusyId(backendId);
+        ensureGenericCliSub(backendId, name);
+        ensureGenericCliListeners(backendId, storeCopy);
+        const conn = getGenericCliConn(backendId);
+        conn.setFlow({ phase: 'running', steps: { authorize: 'active' }, active: 'authorize', pct: 0, sec: 0, log: '' });
+        conn.startTick();
+        try {
+          await invokeTauri('connector_ensure_cli', { id: backendId });
+          const begin = await invokeTauri('connector_connect_begin', { id: backendId });
+          if (begin && begin.started === false && begin.mode === 'manual') {
+            // manual：CLI 自行交互授权，宿主无编排 → 收起流程卡并提示终端完成授权
+            conn.stopTick();
+            conn.setFlow(null);
+            setBusyId(null);
+            setAlert({ visible: true, loading: false, title: storeCopy.connectorManualAuthHint, isInstall: false, isError: false });
+          }
+        } catch (e) {
+          console.error('generic cli connect failed:', backendId, e);
+          conn.stopTick();
+          setBusyId(null);
+          conn.setFlow(f => ({ ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: 'authorize', steps: { ...(f && f.steps), authorize: 'error' } }));
+        }
+      };
+      const genericCliResetFlow = (backendId) => {
+        const conn = getGenericCliConn(backendId);
+        conn.stopTick();
+        invokeTauri('connector_cancel', { id: backendId }).catch(() => {});
+        conn.setFlow(null); setBusyId(null);
+      };
+      const disconnectGenericCli = async (tool) => {
+        const backendId = tool.backendId;
+        const name = tool.title || backendId;
+        setBusyId(backendId);
+        try {
+          await invokeTauri('connector_logout', { id: backendId });
+          await invokeTauri('connector_apply_skills', { id: backendId }).catch(() => {});
+          await loadBackendState();
+          setAlert({ visible: true, loading: false, title: storeCopy.disconnectedTool(name), isInstall: false, isError: false });
+          notifyComposerToolsChanged();
+        } catch (e) {
+          console.error('generic cli logout failed:', backendId, e);
           setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, isError: true });
         } finally {
           setBusyId(null);
@@ -1795,6 +1998,15 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         const tool = findLocalizedTool(backendId);
         // 组合包化的本地能力(pptx)只有 companion 技能卡、无连接器卡,名称回退到技能卡
         const name = tool ? tool.title : ((skillCards.find(x => x.backendId === backendId) || {}).title || backendId);
+
+        // 声明式 CLI 连接器（Upload 包）：readiness bundle.kind==='cli'（内置 4 连接器
+        // 已在上方按 id 分支返回）→ 通用连接/断开流程，步骤用通用单步「授权」文案。
+        const cliBundle = (bundleStates[backendId] && bundleStates[backendId].bundle) || null;
+        if (cliBundle && cliBundle.kind === 'cli') {
+          const cliTool = tool || { backendId, title: name };
+          if (isInstalled) return disconnectGenericCli(cliTool);
+          return connectGenericCli(cliTool);
+        }
 
         // 安装：有 configFields 的工具先弹配置弹窗
         if (!isInstalled) {
@@ -1914,9 +2126,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               </div>
             </div>
           ), document.body)}
-          {/* 飞书扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
+          {/* 飞书扫码二维码已内联进 ConnectorFlowCard（详情弹窗内），不再单独浮层 */}
           {wecomQr && (() => {
-            const cancel = () => { invokeTauri('wecom_cancel').catch(() => {}); setWecomQr(null); setBusyId(null); };
+            const cancel = () => { invokeTauri('connector_cancel', { id: 'wecom' }).catch(() => {}); setWecomQr(null); setBusyId(null); };
             return createPortal((
             // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is covered by the dialog's cancel control
             // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
@@ -2100,9 +2312,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                 </div>
                                 <div className="flex flex-col items-center justify-center gap-1.5 pl-2">
                                   {(() => {
-                                    const cf = tool.feishuCli ? feishuFlow : tool.wecomCli ? wecomFlow : tool.dingtalkCli ? dingtalkFlow : tool.tmeetCli ? tmeetFlow : null;
+                                    const cf = tool.feishuCli ? feishuFlow : tool.wecomCli ? wecomFlow : tool.dingtalkCli ? dingtalkFlow : tool.tmeetCli ? tmeetFlow : (genericCliFlows[tool.backendId] || null);
                                     if (externalAuthAvailable && cf && (cf.phase === 'running' || cf.phase === 'qr')) {
-                                      return <FeishuMini flow={cf} onClick={() => setSelectedTool(tool)} copy={storeCopy.mini} />;
+                                      return <ConnectorMini flow={cf} onClick={() => setSelectedTool(tool)} copy={storeCopy.mini} />;
                                     }
                                     // 管理可见性编辑态：卡片出现每个模式的勾选框，勾选 = 可见。
                                     if (managingVisibility) {
@@ -2249,8 +2461,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-2 tracking-tight">{selectedTool.title}</h2>
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
                       <div className="flex flex-col items-end gap-1.5">
-                        {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : selectedTool.dingtalkCli ? dingtalkFlow : selectedTool.tmeetCli ? tmeetFlow : null; return (externalAuthAvailable && sf && (sf.phase === 'running' || sf.phase === 'qr'))
-                          ? <FeishuMini flow={sf} onClick={() => {}} copy={storeCopy.mini} />
+                        {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : selectedTool.dingtalkCli ? dingtalkFlow : selectedTool.tmeetCli ? tmeetFlow : (genericCliFlows[selectedTool.backendId] || null); return (externalAuthAvailable && sf && (sf.phase === 'running' || sf.phase === 'qr'))
+                          ? <ConnectorMini flow={sf} onClick={() => {}} copy={storeCopy.mini} />
                           : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} size="lg" copy={storeCopy} t={t} />; })()}
                         {((selectedTool.feishuCli && !feishuConnected) || (selectedTool.wecomCli && !wecomConnected) || (selectedTool.dingtalkCli && !dingtalkConnected) || (selectedTool.tmeetCli && !tmeetConnected)) && <span className="text-[11px] text-slate-400">{storeCopy.firstUseOnlineInstall}</span>}
                       </div>
@@ -2278,16 +2490,21 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   </div>
 
                   {externalAuthAvailable && selectedTool.feishuCli && feishuFlow && (
-                    <FeishuFlowCard flow={feishuFlow} steps={storeCopy.feishuSteps} name={storeCopy.toolNames.feishu} copy={detailCopy.flow} onRetry={feishuRetry} onCancel={feishuResetFlow} />
+                    <ConnectorFlowCard flow={feishuFlow} steps={storeCopy.feishuSteps} name={storeCopy.toolNames.feishu} copy={detailCopy.flow} onRetry={feishuRetry} onCancel={feishuResetFlow} />
                   )}
                   {externalAuthAvailable && selectedTool.wecomCli && wecomFlow && (
-                    <FeishuFlowCard flow={wecomFlow} steps={storeCopy.wecomSteps} name={storeCopy.toolNames.wecom} copy={detailCopy.flow} twoStep={false} onRetry={wecomRetry} onCancel={wecomResetFlow} />
+                    <ConnectorFlowCard flow={wecomFlow} steps={storeCopy.wecomSteps} name={storeCopy.toolNames.wecom} copy={detailCopy.flow} twoStep={false} onRetry={wecomRetry} onCancel={wecomResetFlow} />
                   )}
                   {externalAuthAvailable && selectedTool.dingtalkCli && dingtalkFlow && (
-                    <FeishuFlowCard flow={dingtalkFlow} steps={storeCopy.dingtalkSteps} name={storeCopy.toolNames.dingtalk} copy={detailCopy.flow} twoStep={false} onRetry={dingtalkRetry} onCancel={dingtalkResetFlow} />
+                    <ConnectorFlowCard flow={dingtalkFlow} steps={storeCopy.dingtalkSteps} name={storeCopy.toolNames.dingtalk} copy={detailCopy.flow} twoStep={false} onRetry={dingtalkRetry} onCancel={dingtalkResetFlow} />
                   )}
                   {externalAuthAvailable && selectedTool.tmeetCli && tmeetFlow && (
-                    <FeishuFlowCard flow={tmeetFlow.phase === 'error' && !detailCopy.showRawErrors ? { ...tmeetFlow, err: detailCopy.actions.operationFailed } : tmeetFlow} steps={detailCopy.tmeetSteps} name={detailCopy.tools.tmeet.title} copy={detailCopy.flow} twoStep={false} browserAuth={!!tmeetFlow.browserAuth} onRetry={tmeetRetry} onCancel={tmeetResetFlow} />
+                    <ConnectorFlowCard flow={tmeetFlow.phase === 'error' && !detailCopy.showRawErrors ? { ...tmeetFlow, err: detailCopy.actions.operationFailed } : tmeetFlow} steps={detailCopy.tmeetSteps} name={detailCopy.tools.tmeet.title} copy={detailCopy.flow} twoStep={false} browserAuth={!!tmeetFlow.browserAuth} onRetry={tmeetRetry} onCancel={tmeetResetFlow} />
+                  )}
+                  {/* Upload 声明式 CLI 包：通用单步「授权」流程卡（步骤定义在包 manifest，
+                      BundleInfo 不下发 auth steps，首版用通用文案） */}
+                  {externalAuthAvailable && !selectedTool.feishuCli && !selectedTool.wecomCli && !selectedTool.dingtalkCli && !selectedTool.tmeetCli && genericCliFlows[selectedTool.backendId] && (
+                    <ConnectorFlowCard flow={genericCliFlows[selectedTool.backendId]} steps={[{ key: 'authorize', label: storeCopy.connectorAuthorizeStep, sub: '' }]} name={selectedTool.title} copy={detailCopy.flow} twoStep={false} browserAuth={!!genericCliFlows[selectedTool.backendId].browserAuth} onRetry={() => connectGenericCli(selectedTool)} onCancel={() => genericCliResetFlow(selectedTool.backendId)} />
                   )}
                   {selectedTool.feishuCli && feishuConnected && !feishuFlow && (
                     <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
@@ -2338,5 +2555,5 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // Shared Components
     // ==========================================
 
-export { FeishuStepIcon, FeishuBar, FeishuFlowCard, FeishuMini, feishuConn, ensureFeishuListeners, wecomConn, ensureWecomListeners, dingtalkConn, ensureDingtalkListeners, tmeetConn, ensureTmeetListeners, TsAlert, TsConfigDialog, TsObsidianGuide, ToolStoreView };
+export { ConnectorStepIcon, ConnectorBar, ConnectorFlowCard, ConnectorMini, feishuConn, ensureFeishuListeners, wecomConn, ensureWecomListeners, dingtalkConn, ensureDingtalkListeners, tmeetConn, ensureTmeetListeners, getGenericCliConn, TsAlert, TsConfigDialog, TsObsidianGuide, ToolStoreView };
 /* eslint-enable sonarjs/cognitive-complexity -- tool store main view;legacy view */

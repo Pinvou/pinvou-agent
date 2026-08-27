@@ -186,11 +186,7 @@ pub async fn tmeet_connect_begin(app: AppHandle) -> Result<Value, String> {
         .map_err(|e| format!("spawn_blocking: {e}"))?;
     if already_logged_in {
         cc::bundle_store_on_connected(ID);
-        cc::emit(
-            &app,
-            "tmeet:connected",
-            json!({ "ok": true, "already": true }),
-        );
+        cc::emit_connected(&app, ID, true);
         return Ok(json!({ "started": true, "already_connected": true }));
     }
     let app2 = app.clone();
@@ -200,11 +196,7 @@ pub async fn tmeet_connect_begin(app: AppHandle) -> Result<Value, String> {
 
 fn run_connect_flow(app: &AppHandle) {
     if let Err(e) = phase_scan(app) {
-        cc::emit(
-            app,
-            "tmeet:error",
-            json!({ "phase": "authorize", "message": e }),
-        );
+        cc::emit_error(app, ID, "authorize", &e);
     }
 }
 
@@ -281,11 +273,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
                         && wait_logged_in(Duration::from_secs(5))
                     {
                         cc::bundle_store_on_connected(ID);
-                        cc::emit(
-                            app,
-                            "tmeet:connected",
-                            json!({ "ok": true, "already": true }),
-                        );
+                        cc::emit_connected(app, ID, true);
                         return Ok(());
                     }
                     return Err(auth_failure_message(
@@ -297,11 +285,8 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         }
     };
 
-    cc::emit(
-        app,
-        "tmeet:qr",
-        json!({ "phase": "authorize", "url": url, "qr_data_url": cc::make_qr(&url) }),
-    );
+    let qr = cc::make_qr(&url);
+    cc::emit_qr(app, ID, "authorize", &url, &qr, Some(true), None);
 
     loop {
         if conn.is_cancelled(ID) {
@@ -317,18 +302,14 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
                 conn.set_pid(ID, None);
                 if wait_logged_in(Duration::from_secs(5)) {
                     cc::bundle_store_on_connected(ID);
-                    cc::emit(app, "tmeet:connected", json!({ "ok": true }));
+                    cc::emit_connected(app, ID, false);
                     return Ok(());
                 }
                 if auth_lines_say_already_logged_in(&auth_lines)
                     && wait_logged_in(Duration::from_secs(5))
                 {
                     cc::bundle_store_on_connected(ID);
-                    cc::emit(
-                        app,
-                        "tmeet:connected",
-                        json!({ "ok": true, "already": true }),
-                    );
+                    cc::emit_connected(app, ID, true);
                     return Ok(());
                 }
                 eprintln!("[tmeet] auth login exited without logged-in status: exit={status}");
