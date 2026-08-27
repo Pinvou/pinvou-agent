@@ -1,0 +1,10 @@
+{
+  "manifest_version": 1,
+  "id": "obsidian",
+  "name": "Obsidian 知识库",
+  "version": "1.1.0",
+  "description": "检索并管理本机 Obsidian 笔记库（vault）：搜索、读取、新建、编辑、改名（自动修双链）、删除。让大模型引用并维护你的个人知识。笔记不出本机。",
+  "components": {
+    "mcp_servers": [{ "id": "obsidian", "dir": "mcp" }]
+  }
+}

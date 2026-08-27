@@ -1,0 +1,9 @@
+{
+  "manifest_version": 1,
+  "id": "government-writing",
+  "name": "党政机关公文写作",
+  "description": "撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合工具商店的「公文写作」工具即可直出 GB/T 9704 合规 .docx。",
+  "components": {
+    "skills": [{ "id": "government-writing", "dir": "skills/government-writing" }]
+  }
+}

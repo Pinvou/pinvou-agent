@@ -1,0 +1,10 @@
+{
+  "manifest_version": 1,
+  "id": "yuandian-mcp",
+  "name": "华宇元典法律数据",
+  "version": "1.0.0",
+  "description": "法律法规、案例文书、企业司法风险与法律检索数据查询",
+  "components": {
+    "mcp_servers": [{ "id": "yuandian-mcp", "dir": "mcp" }]
+  }
+}

@@ -408,10 +408,14 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 仍是权威，bundles.json 只镜像安装态；镜像写失败不翻盘主操作，fail loud 到日志）。
         // 来源订正（四轮评审 BLOCKER 1）：卸载 Upload 包只清登记、保留目录（用户唯一
         // 副本），卡片重现后用户经普通 `install` 重装时 store 已无旧记录可依（既有
-        // 记录的保护由 upsert_preserving 承担）。预置包 release 只写 mcp/ 子目录，
-        // `bundles/<id>/plugin.json` 仅由统一上传管线落盘 —— 据此把盘上上传包的
-        // 来源订正为 Upload，避免误标 Preset 导致下次卸载删除目录。
+        // 记录的保护由 upsert_preserving 承担）。注意：内嵌预置包自插件包标准化起
+        // 也携带并落盘 `bundles/<id>/plugin.json`（mcp_catalog::release_package），
+        // 「盘上有 plugin.json」不再是 Upload 的充分判据——只有**非内嵌包**（无
+        // spec，上传包 id 与预置目录撞名在导入侧已被拒收）盘上的 plugin.json 才是
+        // 统一上传管线落盘的，据此把来源订正为 Upload，避免误标 Preset 导致下次
+        // 卸载删除目录。
         let source = if matches!(source, store::BundleSource::Preset)
+            && mcp_catalog::spec_for(tool_id).is_none()
             && paths::bundles_root()
                 .join(tool_id)
                 .join("plugin.json")
@@ -494,6 +498,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             let pkg_dir = paths::bundles_root().join(tool_id);
             if pkg_dir.exists() {
                 let _ = std::fs::remove_dir_all(pkg_dir.join("mcp"));
+                let _ = std::fs::remove_file(pkg_dir.join("plugin.json")); // 预置包自描述清单
                 let _ = std::fs::remove_dir(pkg_dir.join("skills")); // 仅空目录能删掉
                 let _ = std::fs::remove_dir(&pkg_dir);
             }
@@ -2067,8 +2072,9 @@ mod tests {
     /// 回归（四轮评审 BLOCKER 1，完整数据丢失链）：上传 MCP 包 → 卸载（Upload
     /// 保护生效、目录保留）→ 卡片重现 → 用户经普通 install 重装 → 再卸载，
     /// 目录仍必须保留。修复分两层：install_upload 镜像写直接带 Upload 来源；
-    /// 卸载清登记后重装无旧记录可依，install 按盘上 plugin.json 标记（仅统一
-    /// 上传管线落盘，预置 release 只写 mcp/ 子目录）订正为 Upload。此前任一层
+    /// 卸载清登记后重装无旧记录可依，install 按盘上 plugin.json 标记（非内嵌包
+    /// 的 plugin.json 仅统一上传管线落盘；内嵌预置包自插件包标准化起也落盘
+    /// plugin.json，判据已加 spec 收窄，见下条测试）订正为 Upload。此前任一层
     /// 失守都会把 source 停在 Preset，再卸载时整目录被删（用户上传内容无其他
     /// 副本）。
     #[test]
@@ -2127,6 +2133,33 @@ mod tests {
 
             mgr.uninstall("up-re").unwrap();
             assert!(manifest_path.is_file(), "Upload 包重装后再卸载仍应保留目录");
+        });
+    }
+
+    /// 回归（插件包标准化）：内嵌预置包自标准化起也携带并落盘 plugin.json
+    /// （mcp_catalog::release_package）——install 的来源订正不得据此把预置包
+    /// 误标为 Upload（误标会让卸载错误保留目录、来源真相源错乱）。订正判据
+    /// 已收窄为「非内嵌包（无 spec）盘上的 plugin.json」。
+    #[test]
+    fn install_embedded_preset_with_plugin_json_stays_preset_source() {
+        with_temp_home(|| {
+            let mgr = MarketplaceManager::new();
+            mgr.install("obsidian", &std::collections::HashMap::new())
+                .unwrap();
+            let pkg_dir = crate::platform::paths::bundles_root().join("obsidian");
+            assert!(
+                pkg_dir.join("plugin.json").is_file(),
+                "内嵌预置安装应落盘包级 plugin.json"
+            );
+            assert_eq!(
+                store::BundleStore::new()
+                    .get("obsidian")
+                    .unwrap()
+                    .unwrap()
+                    .source,
+                store::BundleSource::Preset,
+                "内嵌预置包来源不得被盘上 plugin.json 订正为 Upload"
+            );
         });
     }
 

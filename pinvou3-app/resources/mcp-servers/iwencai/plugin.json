@@ -1,0 +1,10 @@
+{
+  "manifest_version": 1,
+  "id": "iwencai",
+  "name": "同花顺问财",
+  "version": "1.0.0",
+  "description": "A股行情、财务、选股、宏观、新闻 — 12个金融查询工具",
+  "components": {
+    "mcp_servers": [{ "id": "iwencai", "dir": "mcp" }]
+  }
+}

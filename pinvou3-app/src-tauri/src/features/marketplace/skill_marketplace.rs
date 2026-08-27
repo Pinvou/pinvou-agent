@@ -6,6 +6,8 @@
 //! 目录 = 一个属主，包 id 推导复用 `bundle::skill_owner_package`）；内置释放
 //! 技能（visual-design 等，非市场包）仍住 `~/.pinvou3/bundle/skills/`。
 //! `.installed-from` 标记已退役——来源与内容指纹进 BundleStore（bundles.json）。
+//! 安装/更新时同时把 checked-in 的包级 plugin.json 落盘到包根
+//! `bundles/<owner>/plugin.json`（插件包标准化 §3；运行层不读其内容，纯自描述）。
 //!
 //! 预置技能(government-writing/pptx/visualizer/ima-skills)随 app 编译进二进制(`include_dir`),从嵌入资源复制到包目录——这是底座聊天**唯一加载**的 pinvou3 私有
 //! skill 目录(fork patch #41 砍掉了其余扫描路径)。安装入口为 MCP 工具的配套技能
@@ -424,6 +426,29 @@ impl SkillMarketplaceManager {
         // （F2：独立安装后又装 companion MCP；F3：迁移 kept 留下的双份）。
         self.sweep_duplicate_skill_dirs(m.skill_name, &dest);
 
+        // 包级 plugin.json 落盘（插件包标准化：与上传导入管线同布局，盘上包
+        // 自描述；运行层不读其内容，落盘纯为自描述/导出准备）。属主为内嵌 MCP
+        // 包（companion 联动/同名包，如 gongwen/pptx/tencent-docs）时只在缺失
+        // 时补写——组合包清单由 MCP 释放管线（mcp_catalog::release_package）
+        // 权威写入并声明全量组件，本管线不得覆盖；独立技能包（含 ima）由本
+        // 管线权威维护，覆盖写以跟随资源更新。写失败不翻盘主操作（与登记一致）。
+        if let Some(plugin_json) = embedded_plugin_json(m) {
+            let owner = super::bundle::skill_owner_package(m.skill_name);
+            let plugin_path = self.packages_root.join(&owner).join("plugin.json");
+            let should_write = if super::mcp_catalog::spec_for(&owner).is_some() {
+                !plugin_path.is_file()
+            } else {
+                std::fs::read(&plugin_path)
+                    .map(|bytes| bytes != plugin_json.as_bytes())
+                    .unwrap_or(true)
+            };
+            if should_write {
+                if let Err(e) = std::fs::write(&plugin_path, plugin_json) {
+                    log::warn!("[skill-marketplace] plugin.json 落盘失败（{}）: {e}", m.id);
+                }
+            }
+        }
+
         // 登记（预置 source=Preset + 内容指纹；更新走同一 install 管线，
         // upsert_preserving 保留首次安装时间）。失败只记日志，目录落盘仍是权威。
         let mut record =
@@ -476,6 +501,7 @@ impl SkillMarketplaceManager {
             if let Some(skills_parent) = dir.parent() {
                 let _ = std::fs::remove_dir(skills_parent); // 仅空目录能删掉
                 if let Some(pkg_dir) = skills_parent.parent() {
+                    self.remove_pkg_husk_if_preset_only(pkg_dir);
                     let _ = std::fs::remove_dir(pkg_dir);
                 }
             }
@@ -488,6 +514,31 @@ impl SkillMarketplaceManager {
                     legacy.display()
                 );
             }
+        }
+    }
+
+    /// 预置残壳清理（带 Upload 保护）：包目录只剩 plugin.json 时整目录删除，
+    /// 但 Upload 来源登记的包目录是用户唯一副本（卸载只清登记、保留目录的
+    /// 保护语义）——不动；登记文件缺失/读不出时同样不做删除（fail-closed：
+    /// 无法判定 Upload 保护对象，缺失的 bundles.json 按空记录返回）。
+    fn remove_pkg_husk_if_preset_only(&self, pkg_dir: &Path) {
+        let Some(pkg_name) = pkg_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+        else {
+            return;
+        };
+        if !self.bundle_store.file_path().is_file() {
+            return;
+        }
+        let Ok(records) = self.bundle_store.records() else {
+            return;
+        };
+        let is_upload = records
+            .iter()
+            .any(|r| r.id == pkg_name && matches!(r.source, super::store::BundleSource::Upload(_)));
+        if !is_upload {
+            remove_pkg_husk_if_only_plugin_json(pkg_dir);
         }
     }
 
@@ -515,12 +566,18 @@ impl SkillMarketplaceManager {
     ///    hand-placed user skills belong in `~/.pinvou3/user/skills/`.
     ///
     /// **Package-layout ownership guard** (applies to steps 1-3): a package dir
-    /// carrying `plugin.json` (always landed by `plugin_import`) or an `mcp/`
-    /// sibling owns its whole `skills/` subtree — plugin packages may contain
-    /// multiple skills whose names differ from the single registered package
-    /// id, and pure-MCP uploads have no skill dir at all. Name-based
+    /// carrying `plugin.json` (landed by `plugin_import` on upload, and by the
+    /// preset release/install pipelines since plugin-package standardization)
+    /// or an `mcp/` sibling owns its whole `skills/` subtree — plugin packages
+    /// may contain multiple skills whose names differ from the single registered
+    /// package id, and pure-MCP uploads have no skill dir at all. Name-based
     /// rehome/orphan/stale-record heuristics must never touch package-owned
     /// content, otherwise user uploads are destroyed within two launches.
+    /// **Exception**: a *preset* skill whose live owner is a different package is
+    /// always a stranded market copy — uploads can never contain preset-named
+    /// skills (import rejects the collision) — so it follows its owner even when
+    /// the carrying dir bears a layout marker (e.g. a preset standalone install's
+    /// own plugin.json after a failed companion relink).
     pub fn self_heal_skills(&self, builtin_released: &[&str]) -> SkillSelfHealReport {
         let mut report = SkillSelfHealReport::default();
         // Fail-closed when the store is unreadable OR missing: a missing
@@ -553,15 +610,8 @@ impl SkillMarketplaceManager {
             for pkg_entry in pkgs.flatten() {
                 let pkg = pkg_entry.file_name().to_string_lossy().into_owned();
                 let pkg_path = pkg_entry.path();
-                // Package-layout ownership guard: plugin-import packages
-                // (plugin.json) and MCP-bearing packages (mcp/ sibling) own
-                // their skills/ subtree regardless of skill dir names —
-                // multi-skill packages and plugin.json id != skill name layouts
-                // register only one record (the package id), so the name-based
-                // heuristics below would rehome/delete user content.
-                if pkg_path.join("plugin.json").is_file() || pkg_path.join("mcp").is_dir() {
-                    continue;
-                }
+                let has_layout_marker =
+                    pkg_path.join("plugin.json").is_file() || pkg_path.join("mcp").is_dir();
                 let skills_dir = pkg_path.join("skills");
                 let Ok(rd) = std::fs::read_dir(&skills_dir) else {
                     continue;
@@ -576,6 +626,22 @@ impl SkillMarketplaceManager {
                         continue;
                     }
                     let owner = super::bundle::skill_owner_package(&name);
+                    // Package-layout ownership guard: plugin-import packages
+                    // (plugin.json — 上传管线与预置释放/安装管线都会落盘) and
+                    // MCP-bearing packages (mcp/ sibling) own their skills/
+                    // subtree regardless of skill dir names — multi-skill
+                    // packages and plugin.json id != skill name layouts register
+                    // only one record (the package id), so the name-based
+                    // heuristics below would rehome/delete user content.
+                    // 例外（见 doc comment）：预置技能的活认领在别包时必为滞留
+                    // 市场副本（上传包不可能含预置同名技能），须随属主归位/去重，
+                    // 不被守卫拦下——否则预置独立安装自带的 plugin.json 会让
+                    // companion 联动失败留下的错位副本永驻。
+                    if has_layout_marker
+                        && (self.preset_by_skill_name(&name).is_none() || owner == pkg)
+                    {
+                        continue;
+                    }
                     if owner != pkg {
                         // 1. 错位归位/去重
                         let dest = self.packages_root.join(&owner).join("skills").join(&name);
@@ -616,8 +682,11 @@ impl SkillMarketplaceManager {
                         }
                     }
                 }
-                // 清理腾空的 skills/ 与包目录（仅空目录能删掉）
+                // 清理腾空的 skills/ 与包目录（仅空目录能删掉；只剩 plugin.json
+                // 的预置残壳整目录删除，Upload 包目录不动——归位/去重搬空后不应
+                // 滞留空清单目录）
                 let _ = std::fs::remove_dir(&skills_dir);
+                self.remove_pkg_husk_if_preset_only(&pkg_path);
                 let _ = std::fs::remove_dir(pkg_entry.path());
             }
         }
@@ -662,6 +731,35 @@ impl SkillMarketplaceManager {
                         report.converged_builtin_dirs.push(name);
                     }
                 }
+            }
+        }
+
+        // 5. 预置包 plugin.json 补齐（插件包标准化的升级路径）：已装预置技能的
+        //    包根缺/旧 plugin.json 时按 install 同一口径落盘——MCP 属主的组合
+        //    清单由 mcp_catalog::ensure_package_released 权威维护，此处只在缺失
+        //    时补；独立技能包（含 ima）按内嵌内容收敛。上传包不经此路径（非预置
+        //    技能不处理）。写失败不翻盘，下个启动周期重试。
+        for m in preset_manifests() {
+            let Some(plugin_json) = embedded_plugin_json(m) else {
+                continue;
+            };
+            let Some(skill_dir) = self.find_skill_dir(m.skill_name) else {
+                continue; // 未安装
+            };
+            if !skill_dir.starts_with(&self.packages_root) {
+                continue; // 旧扁平布局残留：由布局迁移/重装收敛，此处不补
+            }
+            let owner = super::bundle::skill_owner_package(m.skill_name);
+            let plugin_path = self.packages_root.join(&owner).join("plugin.json");
+            let should_write = if super::mcp_catalog::spec_for(&owner).is_some() {
+                !plugin_path.is_file()
+            } else {
+                std::fs::read(&plugin_path)
+                    .map(|bytes| bytes != plugin_json.as_bytes())
+                    .unwrap_or(true)
+            };
+            if should_write && std::fs::write(&plugin_path, plugin_json).is_ok() {
+                report.plugin_json_backfilled.push(owner);
             }
         }
 
@@ -711,10 +809,12 @@ impl SkillMarketplaceManager {
             std::fs::remove_dir_all(&dir).map_err(|e| format!("删除失败: {e}"))?;
             deleted_any = true;
             // 清理腾空的父目录（skills/ 空 → 删；独立包的 bundles/<id>/ 空 → 删；
-            // companion 的包目录还装着 MCP 资源，非空自然保留）
+            // companion 的包目录还装着 MCP 资源，非空自然保留；只剩 plugin.json
+            // 的预置残壳整目录删除，Upload 包目录不动）
             if let Some(skills_parent) = dir.parent() {
                 let _ = std::fs::remove_dir(skills_parent); // 仅空目录能删掉
                 if let Some(pkg_dir) = skills_parent.parent() {
+                    self.remove_pkg_husk_if_preset_only(pkg_dir);
                     let _ = std::fs::remove_dir(pkg_dir);
                 }
             }
@@ -1126,6 +1226,8 @@ pub struct SkillSelfHealReport {
     pub removed_stale_records: Vec<String>,
     /// 内置释放目录收敛删除的残旧目录名
     pub converged_builtin_dirs: Vec<String>,
+    /// 插件包标准化升级路径：补齐包级 plugin.json 的预置包 id
+    pub plugin_json_backfilled: Vec<String>,
 }
 
 // 辅助 ------------------------------------------------------------------------
@@ -1184,13 +1286,17 @@ impl std::ops::Deref for LockedSkillManager {
 /// 收集嵌入资源子树的 `(相对路径, 内容)` 列表,供更新检测比对。
 /// 口径与 [`extract_embedded_subdir`] 一致:strip `source_dir` 前缀、跳过 SOURCE.md、
 /// 跳过 `__pycache__`/`*.pyc`——否则构建期混入的 pyc 会让内嵌指纹永远 ≠ 落盘
-/// 指纹，`update_available` 幽灵常亮（G6）。
+/// 指纹，`update_available` 幽灵常亮（G6）。根级 plugin.json 是包级清单（落盘在
+/// 包根，非技能内容），同样不进指纹——两侧口径一致，既有安装记录指纹不受其引入影响。
 fn collect_embedded_files(dir: &Dir<'_>, source_dir: &str, out: &mut Vec<(String, Vec<u8>)>) {
     let prefix = format!("{source_dir}/");
     for file in dir.files() {
         let p = file.path().to_string_lossy();
         let rel = p.strip_prefix(&prefix).unwrap_or(&p);
         if Path::new(rel).file_name().and_then(|s| s.to_str()) == Some("SOURCE.md") {
+            continue;
+        }
+        if rel == "plugin.json" {
             continue;
         }
         if is_python_cache_path(Path::new(rel)) {
@@ -1235,9 +1341,33 @@ fn collect_disk_files_under(
     Ok(())
 }
 
+/// 预置技能的包级 plugin.json（checked-in 于技能资源目录根部，plugin-package-spec
+/// §3）。落盘目标是包根 `bundles/<owner>/plugin.json`，不进技能目录副本本身。
+fn embedded_plugin_json(m: &SkillManifest) -> Option<&'static str> {
+    let file = MARKETPLACE_DIR.get_file(format!("{}/plugin.json", m.source_dir))?;
+    std::str::from_utf8(file.contents()).ok()
+}
+
+/// 残壳清理：独立安装的技能被 companion MCP 认领（或卸载）后物理副本被清扫，
+/// 包目录可能只剩本管线落盘的 plugin.json——残壳整目录删除，避免空清单目录滞留。
+/// 安全性：上传导入管线拒收与预置技能同名的技能组件（plugin_import），故曾含
+/// `skills/<预置技能名>` 副本的包目录不可能是上传包；清扫后只剩 plugin.json 的
+/// 目录必为预置残壳。调用方负责 Upload 保护（见
+/// [`SkillMarketplaceManager::remove_pkg_husk_if_preset_only`]）。
+fn remove_pkg_husk_if_only_plugin_json(pkg_dir: &Path) {
+    let Ok(rd) = std::fs::read_dir(pkg_dir) else {
+        return;
+    };
+    let names: Vec<std::ffi::OsString> = rd.flatten().map(|e| e.file_name()).collect();
+    if names.len() == 1 && names[0] == "plugin.json" {
+        let _ = std::fs::remove_dir_all(pkg_dir);
+    }
+}
+
 /// 递归写出 `include_dir` 子目录到 `dest`,strip 掉 `source_dir` 前缀
 /// (`file.path()` 是相对最外层 include_dir 根的完整路径,如 "pua/SKILL.md")。
 /// 跳过 vendored 来源标注文件 SOURCE.md(非 skill 运行内容)。
+/// 根级 plugin.json 是包级清单（由 install 单独落盘到包根），不进技能目录副本。
 /// 同样排除 `__pycache__/` 与 `*.pyc`:include_dir! 按文件系统内嵌(不受
 /// .gitignore 约束),在仓库里直接运行技能脚本产生的 Python 编译缓存若不
 /// 排除,会在用户安装预置技能时物化到运行时目录(跨平台 cpython 版本耦合)。
@@ -1252,6 +1382,9 @@ fn extract_embedded_subdir(dir: &Dir<'_>, source_dir: &str, dest: &Path) -> std:
         let p = p.to_string_lossy();
         let rel = p.strip_prefix(&prefix).unwrap_or(&p);
         if Path::new(rel).file_name().and_then(|s| s.to_str()) == Some("SOURCE.md") {
+            continue;
+        }
+        if rel == "plugin.json" {
             continue;
         }
         let target = dest.join(rel);
@@ -2216,6 +2349,253 @@ mod tests {
         mgr.uninstall("visualizer").unwrap();
         assert!(!skill_dir.exists(), "卸载应删目录");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// checked-in 的包级 plugin.json 与预置技能清单一一对应且内容一致
+    /// （plugin-package-spec §3）：manifest_version=1、id = 包属主 id（ima 技能
+    /// 属 ima 包，其余独立包 = 技能名/同名 MCP 包）、name/description 与市场
+    /// 清单同源、components 恰声明本技能且 dir 规范化、无 mcp 组件。
+    #[test]
+    fn preset_plugin_json_matches_package_content() {
+        with_temp_home(|| {
+            for m in preset_manifests() {
+                let raw = embedded_plugin_json(m)
+                    .unwrap_or_else(|| panic!("{} 缺 checked-in plugin.json", m.id));
+                let plugin: crate::features::marketplace::plugin_import::PluginManifest =
+                    serde_json::from_str(raw)
+                        .unwrap_or_else(|e| panic!("{} plugin.json 解析失败: {e}", m.id));
+                assert_eq!(plugin.manifest_version, 1, "{} manifest_version", m.id);
+                // 包 id = 属主包 id（临时 home 无任何安装 → companion 不认领，
+                // 独立包属主即技能名自身/ima 硬编码，与落盘目录名一致）
+                let owner = crate::features::marketplace::bundle::skill_owner_package(m.skill_name);
+                assert_eq!(plugin.id, owner, "{} plugin id 应等于属主包 id", m.id);
+                assert!(
+                    crate::features::marketplace::plugin_import::is_safe_component_id(&plugin.id),
+                    "{} 包 id 字符集",
+                    m.id
+                );
+                assert_eq!(plugin.name, m.title, "{} name 应与市场清单一致", m.id);
+                assert_eq!(
+                    plugin.description.as_deref(),
+                    Some(m.description),
+                    "{} description 应与市场清单一致",
+                    m.id
+                );
+                let comps = plugin
+                    .components
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("{} 缺 components", m.id));
+                assert!(
+                    comps.mcp_servers.is_empty(),
+                    "{} 纯技能包不应声明 mcp 组件",
+                    m.id
+                );
+                assert_eq!(comps.skills.len(), 1, "{} skills 数量", m.id);
+                assert_eq!(comps.skills[0].id, m.skill_name, "{} 技能组件 id", m.id);
+                assert_eq!(
+                    comps.skills[0].dir,
+                    format!("skills/{}", m.skill_name),
+                    "{} 技能组件 dir 非规范",
+                    m.id
+                );
+            }
+        });
+    }
+
+    /// 安装路径：独立技能包（visualizer / ima）落盘包级 plugin.json 到包根，
+    /// 不进技能目录副本；指纹不受其引入影响（无幽灵更新提示）；重装幂等。
+    #[test]
+    fn install_lands_plugin_json_at_package_root() {
+        with_temp_home(|| {
+            let mgr = SkillMarketplaceManager::new();
+            // 独立技能包 visualizer
+            mgr.install("visualizer").unwrap();
+            let pkg = paths::bundles_root().join("visualizer");
+            let on_disk = std::fs::read_to_string(pkg.join("plugin.json")).unwrap();
+            let plugin: crate::features::marketplace::plugin_import::PluginManifest =
+                serde_json::from_str(&on_disk).unwrap();
+            assert_eq!(plugin.id, "visualizer");
+            assert!(
+                !pkg.join("skills/visualizer/plugin.json").exists(),
+                "plugin.json 不应进入技能目录副本"
+            );
+            // 指纹口径一致：刚装即无更新提示（plugin.json 不参与指纹）
+            let v = mgr
+                .list_skills()
+                .into_iter()
+                .find(|s| s.id == "visualizer")
+                .unwrap();
+            assert!(v.installed && !v.update_available, "装后不应出现幽灵更新");
+            // 重装（升级路径）幂等
+            mgr.install("visualizer").unwrap();
+            assert_eq!(
+                std::fs::read_to_string(pkg.join("plugin.json")).unwrap(),
+                on_disk
+            );
+
+            // 凭据型技能包 ima：属主包 id 为 ima（非技能名）
+            mgr.install("ima-skills").unwrap();
+            let ima_pkg = paths::bundles_root().join("ima");
+            let ima_plugin: crate::features::marketplace::plugin_import::PluginManifest =
+                serde_json::from_str(
+                    &std::fs::read_to_string(ima_pkg.join("plugin.json")).unwrap(),
+                )
+                .unwrap();
+            assert_eq!(ima_plugin.id, "ima");
+            assert_eq!(
+                ima_plugin.components.as_ref().unwrap().skills[0].id,
+                "ima-skills"
+            );
+        });
+    }
+
+    /// 组合包一致性：companion 技能联动安装不得覆盖 MCP 释放管线写入的组合
+    /// plugin.json（声明 mcp + skills 全量组件）。
+    #[test]
+    fn companion_install_preserves_combo_plugin_json() {
+        with_temp_home(|| {
+            // 模拟 MCP 安装完成：释放 gongwen（写入组合 plugin.json）+ 登记安装态
+            crate::features::marketplace::mcp_catalog::release_package("gongwen").unwrap();
+            crate::features::marketplace::store::BundleStore::new()
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "gongwen",
+                        crate::features::marketplace::store::BundleSource::Preset,
+                    ),
+                )
+                .unwrap();
+            let mgr = SkillMarketplaceManager::new();
+            mgr.install("government-writing").unwrap();
+            let pkg = paths::bundles_root().join("gongwen");
+            assert!(
+                pkg.join("skills/government-writing/SKILL.md").is_file(),
+                "companion 技能应落入 MCP 包目录"
+            );
+            assert_eq!(
+                std::fs::read_to_string(pkg.join("plugin.json")).unwrap(),
+                crate::features::marketplace::mcp_catalog::spec_for("gongwen")
+                    .unwrap()
+                    .plugin_json,
+                "组合 plugin.json 不得被技能管线覆盖"
+            );
+        });
+    }
+
+    /// 认领翻转清扫：技能先独立安装（自带 plugin.json），后装 companion MCP
+    /// 并重装技能 → 副本归入 MCP 包目录，原独立包残壳（仅剩 plugin.json）
+    /// 整目录清除，组合 plugin.json 保持完好。
+    #[test]
+    fn reclaim_by_mcp_cleans_standalone_husk() {
+        with_temp_home(|| {
+            let mgr = SkillMarketplaceManager::new();
+            mgr.install("government-writing").unwrap();
+            let standalone = paths::bundles_root().join("government-writing");
+            assert!(standalone.join("plugin.json").is_file());
+
+            // 后装 companion MCP
+            crate::features::marketplace::mcp_catalog::release_package("gongwen").unwrap();
+            crate::features::marketplace::store::BundleStore::new()
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "gongwen",
+                        crate::features::marketplace::store::BundleSource::Preset,
+                    ),
+                )
+                .unwrap();
+            mgr.install("government-writing").unwrap();
+
+            let gongwen_pkg = paths::bundles_root().join("gongwen");
+            assert!(gongwen_pkg
+                .join("skills/government-writing/SKILL.md")
+                .is_file());
+            assert!(
+                !standalone.exists(),
+                "独立包残壳（仅剩 plugin.json）应被整目录清除"
+            );
+            assert_eq!(
+                std::fs::read_to_string(gongwen_pkg.join("plugin.json")).unwrap(),
+                crate::features::marketplace::mcp_catalog::spec_for("gongwen")
+                    .unwrap()
+                    .plugin_json
+            );
+        });
+    }
+
+    /// 卸载路径：独立技能包卸载后，包级 plugin.json 残壳一并清除。
+    #[test]
+    fn uninstall_removes_plugin_json_husk() {
+        with_temp_home(|| {
+            let mgr = SkillMarketplaceManager::new();
+            mgr.install("ima-skills").unwrap();
+            let pkg = paths::bundles_root().join("ima");
+            assert!(pkg.join("plugin.json").is_file());
+            mgr.uninstall("ima-skills").unwrap();
+            assert!(!pkg.exists(), "卸载后包目录（含 plugin.json）应整体清除");
+        });
+    }
+
+    /// 升级路径（自愈步骤 5）：旧版安装的预置技能（无 plugin.json）在启动自愈时
+    /// 补齐包级 plugin.json。
+    #[test]
+    fn self_heal_backfills_preset_plugin_json() {
+        with_temp_home(|| {
+            // 模拟旧版安装：只有技能目录，无 plugin.json、无登记（登记缺失时
+            // 自愈 fail-closed 跳过孤儿判定，但补齐不依赖登记）
+            let skill_dir = paths::bundles_root().join("visualizer/skills/visualizer");
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            std::fs::write(skill_dir.join("SKILL.md"), "---\nname: visualizer\n---\n").unwrap();
+            let mgr = SkillMarketplaceManager::new();
+            let report = mgr.self_heal_skills(&[]);
+            let pkg = paths::bundles_root().join("visualizer");
+            let on_disk = std::fs::read_to_string(pkg.join("plugin.json")).unwrap();
+            let m = mgr.preset("visualizer").unwrap();
+            assert_eq!(on_disk, embedded_plugin_json(m).unwrap());
+            assert!(report
+                .plugin_json_backfilled
+                .iter()
+                .any(|id| id == "visualizer"));
+        });
+    }
+
+    /// 守卫例外（自愈步骤 1）：预置技能独立安装后 companion MCP 登记为已装
+    /// （联动重装失败留下的错位副本），自带 plugin.json 的包目录不得把错位
+    /// 副本拦在守卫后——预置技能必为市场副本，随属主归位并清残壳。
+    #[test]
+    fn self_heal_rehomes_stranded_preset_copy_past_plugin_json_guard() {
+        with_temp_home(|| {
+            let mgr = SkillMarketplaceManager::new();
+            mgr.install("government-writing").unwrap();
+            let standalone = paths::bundles_root().join("government-writing");
+            assert!(standalone.join("plugin.json").is_file());
+
+            // companion MCP 登记为已装，但联动技能重装未发生（模拟失败遗留）
+            crate::features::marketplace::mcp_catalog::release_package("gongwen").unwrap();
+            crate::features::marketplace::store::BundleStore::new()
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "gongwen",
+                        crate::features::marketplace::store::BundleSource::Preset,
+                    ),
+                )
+                .unwrap();
+
+            let report = mgr.self_heal_skills(&[]);
+            let gongwen_pkg = paths::bundles_root().join("gongwen");
+            assert!(
+                gongwen_pkg
+                    .join("skills/government-writing/SKILL.md")
+                    .is_file(),
+                "错位预置副本应越过 plugin.json 守卫归位到属主包"
+            );
+            assert!(!standalone.exists(), "归位后独立包残壳应清除");
+            assert!(!report.rehomed.is_empty());
+            assert_eq!(
+                std::fs::read_to_string(gongwen_pkg.join("plugin.json")).unwrap(),
+                crate::features::marketplace::mcp_catalog::spec_for("gongwen")
+                    .unwrap()
+                    .plugin_json
+            );
+        });
     }
 
     #[test]

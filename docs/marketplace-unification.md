@@ -97,6 +97,9 @@ disconnect / uninstall / enable_in(scope)…），每个动作带可用性与原
 ├── marketplace/bundles.json        ← 真相源（BundleRecord 集合）
 ├── bundles/                        ← 每包一个目录，唯一属主
 │   └── <id>/
+│       ├── plugin.json             ← 包级清单（plugin-package-spec §3；上传管线与
+│       │                             预置释放/安装管线都落盘，运行层不读其内容，
+│       │                             纯自描述/导出准备）
 │       ├── mcp/                    ← server 脚本（安装时释放，非启动全量释放）
 │       ├── skills/<name>/          ← 包内技能（含脚本；预置/上传/companion 同构）
 │       └── archive.zip             ← 上传包原件存档（支持重装）⏳ 终态设计，未实施

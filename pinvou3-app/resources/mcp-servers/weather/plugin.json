@@ -1,0 +1,10 @@
+{
+  "manifest_version": 1,
+  "id": "weather",
+  "name": "高德天气",
+  "version": "1.0.0",
+  "description": "查询国内城市实时天气与未来预报，支持天气卡片渲染",
+  "components": {
+    "mcp_servers": [{ "id": "weather", "dir": "mcp" }]
+  }
+}

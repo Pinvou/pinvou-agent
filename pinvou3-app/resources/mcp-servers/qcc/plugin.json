@@ -1,0 +1,10 @@
+{
+  "manifest_version": 1,
+  "id": "qcc",
+  "name": "企查查",
+  "version": "1.0.0",
+  "description": "企业工商数据查询 — 企查查账号 OAuth 授权",
+  "components": {
+    "mcp_servers": [{ "id": "qcc", "dir": "mcp" }]
+  }
+}

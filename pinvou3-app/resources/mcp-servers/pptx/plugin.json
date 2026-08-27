@@ -1,0 +1,11 @@
+{
+  "manifest_version": 1,
+  "id": "pptx",
+  "name": "PPT 生成",
+  "version": "1.0.0",
+  "description": "本地直出可编辑 PowerPoint（.pptx）：模型产结构化大纲，渲染器套主题模板生成，真·可编辑图表，自带封面缩略图，数据不出机。",
+  "components": {
+    "mcp_servers": [{ "id": "pptx", "dir": "mcp" }],
+    "skills": [{ "id": "pptx", "dir": "skills/pptx" }]
+  }
+}

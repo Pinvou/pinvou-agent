@@ -96,6 +96,14 @@ my-plugin.zip
 前向兼容：解析**不用** `deny_unknown_fields`，未知字段原样保留（flatten），
 方便未来加 `credentials`/`config_fields`/`dependencies` 等不破坏旧包。
 
+> **预置包同构**：内嵌 MCP 包（`resources/mcp-servers/<id>/`）与预置技能包
+> （`resources/common/skill-marketplace/<dir>/`）也各自携带 checked-in 的
+> `plugin.json`（schema 同本文），安装/释放管线将其落盘到
+> `bundles/<id>/plugin.json`（与 `mcp/`、`skills/` 同级）——组合包（如
+> gongwen/pptx/tencent-docs）由 MCP 释放管线写入声明全量组件的清单，companion
+> 技能管线不覆盖。运行层不读盘上 `plugin.json` 的内容（安装态/来源真相源仍是
+> `bundles.json`），落盘纯为包自描述与导出准备。
+
 ---
 
 ## 4. 组件类型与 `kind` 推导

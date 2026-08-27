@@ -1,0 +1,9 @@
+{
+  "manifest_version": 1,
+  "id": "visualizer",
+  "name": "数据分析可视化",
+  "description": "将结构化数据、表格汇总和业务指标转成符合 Pinvou 宿主体验的 HTML 可视化仪表盘。默认使用 Chart.js、无障碍 canvas、自定义图例、扁平配色，并通过 .html 产物卡交付。",
+  "components": {
+    "skills": [{ "id": "visualizer", "dir": "skills/visualizer" }]
+  }
+}

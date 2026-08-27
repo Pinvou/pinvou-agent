@@ -1,0 +1,9 @@
+{
+  "manifest_version": 1,
+  "id": "skill-author",
+  "name": "技能创建",
+  "description": "把用户的一句话描述变成一个可用的技能（SKILL.md 目录）：生成 name/description/正文指令，校验命名与结构；需要交付成可上传插件包时，可继续按「插件包标准化」规则补 plugin.json、图标并导出标准包，最后询问用户是否安装。",
+  "components": {
+    "skills": [{ "id": "skill-author", "dir": "skills/skill-author" }]
+  }
+}

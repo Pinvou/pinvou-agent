@@ -1,0 +1,9 @@
+{
+  "manifest_version": 1,
+  "id": "ima",
+  "name": "腾讯 ima",
+  "description": "接入腾讯 ima OpenAPI，用本机凭据调用官方接口管理 IMA 笔记与知识库。凭据由 Pinvou 工具市场写入本机系统凭据，不需要在对话里粘贴 Token。",
+  "components": {
+    "skills": [{ "id": "ima-skills", "dir": "skills/ima-skills" }]
+  }
+}

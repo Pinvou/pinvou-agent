@@ -1,0 +1,10 @@
+{
+  "manifest_version": 1,
+  "id": "canva-mcp",
+  "name": "Canva 可画",
+  "version": "1.0.0",
+  "description": "通过 Canva 可画远程 MCP 生成和编辑海报、演示文稿、小红书封面、品牌模板等设计内容。",
+  "components": {
+    "mcp_servers": [{ "id": "canva-mcp", "dir": "mcp" }]
+  }
+}

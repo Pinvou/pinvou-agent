@@ -1,0 +1,11 @@
+{
+  "manifest_version": 1,
+  "id": "gongwen",
+  "name": "公文写作",
+  "version": "1.0.0",
+  "description": "本地直出合规党政机关公文（.docx）：模型按文种写结构化公文内容，渲染器套 GB/T 9704-2012 格式（方正小标宋标题、仿宋_GB2312 正文、国标页边距、红头与红色分隔线），数据不出机。配合「党政机关公文写作」技能效果最佳。",
+  "components": {
+    "mcp_servers": [{ "id": "gongwen", "dir": "mcp" }],
+    "skills": [{ "id": "government-writing", "dir": "skills/government-writing" }]
+  }
+}

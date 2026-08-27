@@ -1,0 +1,10 @@
+{
+  "manifest_version": 1,
+  "id": "wecom-bot",
+  "name": "企微群机器人",
+  "version": "1.0.0",
+  "description": "通过企业微信官方群机器人 webhook 向绑定的群推送文本、Markdown、图文、图片与文件消息",
+  "components": {
+    "mcp_servers": [{ "id": "wecom-bot", "dir": "mcp" }]
+  }
+}

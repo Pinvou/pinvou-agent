@@ -1,0 +1,9 @@
+{
+  "manifest_version": 1,
+  "id": "tencent-docs",
+  "name": "腾讯文档",
+  "description": "腾讯文档官方 MCP Skill（v1.0.41 适配版）：配合工具商店「腾讯文档 MCP」连接器使用，内置官方品类路由（智能文档/Word/Excel/PPT/思维导图/流程图/智能表格）与完整工具 API 参考。Token 由连接器写入本机系统凭据。",
+  "components": {
+    "skills": [{ "id": "tencent-docs", "dir": "skills/tencent-docs" }]
+  }
+}

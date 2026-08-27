@@ -1,0 +1,9 @@
+{
+  "manifest_version": 1,
+  "id": "package-author",
+  "name": "插件包标准化",
+  "description": "把散乱的技能（SKILL.md）、MCP 服务或它们的组合整理成 Pinvou 商店可导入的标准插件包：补 plugin.json、补 mcp/manifest.json、补 SKILL.md frontmatter、生成图标、校验命名与布局，最后产出目录或 zip。",
+  "components": {
+    "skills": [{ "id": "package-author", "dir": "skills/package-author" }]
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "manifest_version": 1,
+  "id": "tencent-docs",
+  "name": "腾讯文档 MCP",
+  "version": "1.0.0",
+  "description": "接入腾讯文档官方远程 MCP，读写在线文档/表格/幻灯片/智能表格，管理知识库空间与文件。需要腾讯文档个人 Token（官方页面 QQ/微信扫码获取），密钥只写入本机系统凭据。",
+  "components": {
+    "mcp_servers": [{ "id": "tencent-docs", "dir": "mcp" }],
+    "skills": [{ "id": "tencent-docs", "dir": "skills/tencent-docs" }]
+  }
+}
