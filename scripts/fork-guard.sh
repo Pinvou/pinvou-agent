@@ -6,8 +6,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-PUBLISHED_HEAD="feb8761aeda31749f3d54c6e1f8ef460540567a1"
-PUBLISHED_COMMITS=14
+PUBLISHED_HEAD="0d89a31be016457c180501417dd2c0f34ce844a6"
+PUBLISHED_COMMITS=29
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -17,21 +17,21 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 r10 公开四主题基线拓扑 ──"
+bold "── 第 0 层：v0.9.5 r11 公开四主题基线拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
   expected_commits="$PUBLISHED_COMMITS"
-  green "  ✓ CodeWhale gitlink 指向 r10 四主题公开基线 $PUBLISHED_HEAD"
+  green "  ✓ CodeWhale gitlink 指向 r11 四主题公开基线 $PUBLISHED_HEAD"
 else
   expected_commits=""
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r10 公开 head $PUBLISHED_HEAD"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r11 公开 head $PUBLISHED_HEAD"
   fail=1
 fi
 
 if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null; then
-  green "  ✓ r10 公开基线继承官方 v0.9.5"
+  green "  ✓ r11 公开基线继承官方 v0.9.5"
 else
-  red "  ✗ r10 公开基线未继承官方 v0.9.5 $EXPECTED_UPSTREAM"
+  red "  ✗ r11 公开基线未继承官方 v0.9.5 $EXPECTED_UPSTREAM"
   fail=1
 fi
 
@@ -39,7 +39,7 @@ commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev
 if [[ -n "$expected_commits" && "$commit_count" == "$expected_commits" ]]; then
   green "  ✓ v0.9.5 之上 $expected_commits 个登记提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r10 合法拓扑应为 ${expected_commits:-14}"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r11 合法拓扑应为 ${expected_commits:-29}"
   fail=1
 fi
 
@@ -74,6 +74,11 @@ fingerprints=(
   "T1|deepseek-v4-flash Responses 采样回归 |CodeWhale/crates/tui/src/client/responses/tests.rs|fn forkguard_deepseek_v4_flash_responses_drops_non_one_temperature"
   "T1|压缩完成事件携带新上下文估算        |CodeWhale/crates/tui/src/core/events.rs|post_input_tokens: Option<u64>"
   "T1|压缩后估算覆盖完整请求输入          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_compaction_completed_reports_complete_post_input_tokens"
+  "T1|显式 route 输出上限参与请求预算      |CodeWhale/crates/tui/src/route_budget.rs|pub(crate) fn effective_max_output_tokens_for_route("
+  "T1|steer 撤回结果具有明确状态          |CodeWhale/crates/tui/src/core/engine.rs|pub enum SteerWithdrawal"
+  "T1|steer 撤回竞态边界回归              |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_steer_lifecycle_withdrawal_is_bounded_and_prevents_commit"
+  "T1|严格直连模型大小写仅限明确自有行    |CodeWhale/crates/config/src/route/resolver.rs|let allow_casefold_wire_match = class == ProviderClass::StrictDirect"
+  "T1|严格直连大小写回退行为回归          |CodeWhale/crates/config/src/route/tests.rs|fn resolver_direct_owned_row_match_survives_casing_mismatch"
 
   "T2|宿主额外工具入口                    |CodeWhale/crates/tui/src/core/engine.rs|pub struct ExtraTools("
   "T2|动态禁用工具操作                    |CodeWhale/crates/tui/src/core/ops.rs|SetDisallowedTools { tools: Vec<String> }"
@@ -89,6 +94,13 @@ fingerprints=(
   "T2|错误降级提示保持 provider 角色合法  |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_tool_error_degradation_preserves_provider_role_sequence"
   "T2|Registry 提示使用 canonical 工具面 |CodeWhale/crates/tui/src/core/engine/tests.rs|fn registry_first_policy_is_in_the_initial_prompt_only_when_mcp_is_enabled"
   "T2|旧 action alias 解析为 canonical   |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn custom_child_allowlist_omitting_load_skill_fails_closed"
+  "T2|Moonshot 工具降级产生用户可见诊断   |CodeWhale/crates/tui/src/core/events.rs|pub fn tool_projection_warning_message("
+  "T2|具名 tool_choice 不得指向省略工具  |CodeWhale/crates/tui/src/client.rs|async fn forkguard_moonshot_rejects_named_choice_for_omitted_tool"
+  "T2|Moonshot 每轮只发一次投影诊断       |CodeWhale/crates/tui/src/client.rs|async fn forkguard_moonshot_stream_emits_one_projection_warning"
+  "T2|宿主 MCP 密钥解析不写进程环境       |CodeWhale/crates/tui/src/mcp.rs|pub fn install_mcp_secret_resolver("
+  "T2|禁用 MCP server 从全部 pool 面消失 |CodeWhale/crates/tui/src/mcp/tests.rs|fn forkguard_mcp_pool_denied_server_disappears_from_every_surface"
+  "T2|子智能体不得绕过 MCP 禁用继承       |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_spawn_request_inherit_disallowed_tools_opt_out_not_honored"
+  "T2|Shell 跨 poll 保持 UTF-8 解码状态  |CodeWhale/crates/tui/src/tools/shell/output.rs|fn forkguard_shell_output_decoder_preserves_utf8_across_poll_boundaries"
 
   "T3|ambient project authority 密封       |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_runtime_loader_ignores_ambient_project_authority"
   "T3|Permissions 100 KiB 窄例外回归      |CodeWhale/crates/tui/src/prompts.rs|fn forkguard_instruction_fragment_preserves_content_beyond_default_cap"
@@ -121,6 +133,7 @@ fingerprints=(
   "APP|v0.9.5 subagent state root 透传     |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|cfg.subagent_state_root = Some(roots.ledger);"
   "APP|停止与回收级联取消子智能体          |pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs|Op::CancelSubAgents"
   "APP|resolved route 由宿主统一解析        |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn resolve_runtime_route_for_model("
+  "APP|GLM 小写存量配置解析到规范直连模型  |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn forkguard_zai_direct_route_survives_model_casing_mismatch"
   "APP|128K/256K compaction 合约            |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn forkguard_compaction_128k_scenarios"
   "APP|定时任务复用 shared run API          |pinvou3-app/src-tauri/src/features/scheduled/tasks.rs|run_now_shared(&self.automations"
   "APP|多智能体面板只读 live worker         |pinvou3-app/src-tauri/src/features/multiagent/transcripts.rs|read_persisted_agent_worker_records(workspace)"

@@ -4,19 +4,26 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-25 · v0.9.5 r10 四主题公开基线）
+## 0. 当前状态（2026-08-27 · v0.9.5 r11 四主题公开基线）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `feb8761ae` |
-| 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13`、`#15`、`#16`、`#17`、`#19` 已合并；公开维护分支固定于 `pinvou-v0.9.5-r10` |
-| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r10` 与父仓 gitlink 均指向 `feb8761aeda31749f3d54c6e1f8ef460540567a1`；`r1` 至 `r10` 保持不可变 |
+| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `0d89a31be` |
+| 已合并修复 | 既有 `#9`、`#11`、`#12`、`#13`、`#15`、`#16`、`#17`、`#19`，以及 r11 的 `#18`、`#21`、`#22`、`#25`、`#26`、`#27`、`#29`、`#30` 均已合并；公开维护分支固定于 `pinvou-v0.9.5-r11` |
+| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r11` 与父仓 gitlink 均指向 `0d89a31be016457c180501417dd2c0f34ce844a6`；`r1` 至 `r11` 保持不可变 |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
-| drift | r10 公开基线 `64 files changed, +5612/-702`；净增 4910 行 |
-| 守护 | r10 为 41 条 CodeWhale `forkguard_*` 行为测试 + 2 条通用工具兼容回归 + 父仓指纹/行为测试 |
-| 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配、拒绝编辑的终态/权威历史对账，以及压缩后用量即时刷新与持久化回填 |
+| drift | r11 公开基线 `96 files changed, +7840/-980`；净增 6860 行；r10→r11 为 `48 files changed, +2242/-292` |
+| 守护 | r11 为 56 条 CodeWhale `forkguard_*` 行为测试 + 通用工具/路由兼容回归 + 父仓指纹/行为测试 |
+| 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配、拒绝编辑的终态/权威历史对账、压缩后用量即时刷新与持久化回填，以及严格直连模型大小写桥接回归 |
+
+### r11 Provider、MCP、steer 与平台边界（已发布）
+
+- CodeWhale PR #18、#21、#22、#25、#26、#27、#29 与 #30 以 `0d89a31be016457c180501417dd2c0f34ce844a6` 汇入公开 r11。严格直连 provider 仅在唯一自有模型行可确认时容忍 wire model 大小写差异；父仓补充 GLM 小写保存值到 canonical `GLM-5.2` 路由的桥接回归。
+- 显式 route 输出上限在请求预算层生效；Moonshot 对不兼容工具逐个省略，并对用户发出每轮一次的可见诊断，具名 `tool_choice` 指向被省略工具时明确拒绝。MCP 密钥由宿主 resolver 提供且不写进进程环境；被禁用 server 在 pool、catalog、直接调用、reload、子智能体继承等入口统一表现为不可见。
+- `withdraw_steer` 返回 `SteerWithdrawal`，区分撤回、已提交和不存在；Windows Shell 输出使用跨 poll 的增量 UTF-8 解码，依赖更新修复 h2/lru 公告。r11 新增 15 条 `forkguard_*`，总数从 41 增至 56，未增加长期 fork 主题。
+- r11 相对 r10 为 `48 files changed, +2242/-292`。其中 provider projection、MCP host policy、steer lifecycle 和跨平台 shell 解码均是可复用底座能力，后续继续以通用设计优先回馈上游。
 
 ### r10 固定采样与压缩用量边界（已发布）
 
@@ -76,18 +83,20 @@
 
 ### T1：宿主嵌入与路由边界
 
-- **commits**：`331cb1594688c723d98499d9ca11f05af291b599`、`2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`（`Pinvou/CodeWhale#11`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`Pinvou/CodeWhale#13`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`Pinvou/CodeWhale#16`）、`07d183e350ce4a1ed4f91bdfa1875c996e710d2b`（`Pinvou/CodeWhale#17`）、`feb8761aeda31749f3d54c6e1f8ef460540567a1`（`Pinvou/CodeWhale#19`）。
-- **公开规模**：r8 前置规模为 10 文件、`+394/-31`；r9 的可靠插入与编辑边界、r10 的固定采样与压缩用量边界增量按上节整体登记。
+- **commits**：`331cb1594688c723d98499d9ca11f05af291b599`、`2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`（`#11`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`#13`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`#16`）、`07d183e350ce4a1ed4f91bdfa1875c996e710d2b`（`#17`）、`feb8761aeda31749f3d54c6e1f8ef460540567a1`（`#19`）、`485884913308cdf7564bc60da2e416be637083b5`（`#21`）、`04e109af4b4786a0d49fbbeefdd77af15a9f495e`（`#22`）、`69ed3bfbdb314f901d4cf4120f1caaaf0b6aa529`（`#30`）、`0d89a31be016457c180501417dd2c0f34ce844a6`（`#18`）。
+- **公开规模**：r8 前置规模为 10 文件、`+394/-31`；r9 至 r11 的增量按上节整体登记。
 - **核心文件**：`crates/tui/src/lib.rs`、`core/{engine,events,ops}.rs`、`core/engine/{handle,turn_loop}.rs`、`runtime_handoff.rs`、`route_runtime.rs`、`runtime_threads.rs`、`automation_manager.rs`、`session_manager.rs`。
 - **内容**：
   - 在 v0.9.5 原生 library target 上只公开 Pinvou 实际使用的模块和宿主类型，不恢复旧的全量 bin facade。
   - 以根级窄重导出公开 `FleetRoster` 与工作区角色目录常量，供嵌入宿主在写入角色文件后装配和热刷新名册；不公开整个 `fleet` 模块。
   - 提供只读持久化 worker 投影，供 live 宿主结合自身进程纪元判断状态；恢复入口仍按 v0.9.5 原语把孤儿 worker 收敛为 interrupted。
   - 提供 opaque resolved route、显式 route limits 和 embedding host route override。
+  - 显式 route 输出上限参与请求预算；严格直连 provider 只在唯一自有模型行匹配时允许 wire model 大小写归一，避免把网关或歧义模型静默改写。
   - 保留宿主需要的 runtime thread / Automation 接口和 `EngineConfig` 注入边界。
   - 将无副作用的运行时 session snapshot 与已知进程重启后的显式 tool history recovery 分开，避免嵌入宿主把仍在执行的工具调用误判为崩溃。
   - 提供通用的宿主批量取消操作和失败终态标记，供会话停止与 Engine 回收安全收敛后台子智能体。
   - 为 steer 提供可关联 id、提交/丢弃事件和跨中断 keep-inbox 所有权，停止路径显式丢弃未提交输入，避免消息在 UI 与 Engine 之间静默消失或跨会话泄漏。
+  - `withdraw_steer` 返回可区分撤回、已提交和不存在的 `SteerWithdrawal`，宿主无需从竞态错误文本推断结果。
   - `Op::EditLastTurn` 与宿主落盘兜底共用 `edit_last_turn_target`：工具结果与内部运行时信封同样以 `role = "user"` 持久化，裸 role 扫描会把截断落在 tool result 上；真实但不支持的最新用户内容必须拒绝，不能跳到更早文本。拒绝路径发送类型化错误与失败终态，不调用 provider，也不改变历史。
   - 固定采样路由剥离显式非 1 的 `temperature`（否则 400 "only 1 is allowed"）：Kimi Code 会员路由按会员模型名单精确匹配（`k3` / `k3-256k` / `kimi-for-coding` / `kimi-for-coding-highspeed`，Chat 方言 seam）；DeepSeek 侧仅在 Responses 方言对精确 `deepseek-v4-flash` 保留兼容 shim，Chat 方言按官方文档的 0..=2 契约透传（v4-pro 走 Chat 线，实测不受限）。网关与其他模型契约不动。修复 code 页手动压缩在 Kimi Code 路由必现 400。
   - `CompactionCompleted` 事件新增 `post_input_tokens`：压缩完成后完整请求的输入 token 保守估算（复用引擎 canonical 估算，含 system prompt 与压缩摘要），供宿主在压缩完成后立即刷新用量展示；TUI 与 runtime thread 持久化路径不消费。
@@ -96,7 +105,7 @@
 
 ### T2：工具兼容与命令执行安全
 
-- **commits**：`595adce47e2d1bcf895d7bfd6426c074eb969324`、`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`（`Pinvou/CodeWhale#12`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`Pinvou/CodeWhale#13`）、`d127aed113529dc93754d044b9f352e9746f6b83`（`Pinvou/CodeWhale#15`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`Pinvou/CodeWhale#16` 的 Shell 取消边界）。
+- **commits**：`595adce47e2d1bcf895d7bfd6426c074eb969324`、`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`（`#12`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`#13`）、`d127aed113529dc93754d044b9f352e9746f6b83`（`#15`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`#16` 的 Shell 取消边界）、`44730dfe596b70f86ae2f928959877a3e3f494e4`（`#27`）、`665b46cd9e67326459223aa662931bd36d726004`（`#29`）、`04e109af4b4786a0d49fbbeefdd77af15a9f495e`（`#22`）、`4831c3797b76485a912b056c76a4cff22f0a2863`（`#25`）、`e68a185c2ba07f327bd8b63bbfea6a70a96f33ea`（`#26`）。
 - **核心文件**：`core/engine.rs`、`core/engine/tool_setup.rs`、`core/ops.rs`、`tools/file.rs`、`command_safety.rs`、`tools/shell.rs`、`docs/TOOL_SURFACE.md`。
 - **内容**：
   - `EngineConfig.extra_tools` 让宿主工具在 Plan、Agent、Yolo 等 turn registry 中一致注册。
@@ -106,6 +115,8 @@
   - 多行 Shell 按 segment 检查；破坏性命令在自动批准模式下仍被阻断。
   - Engine 取消路径按 turn id 终止当前轮未被宿主接管的前台 Shell，不依赖工具 future drop；后台/宿主管理的任务保持原有所有权边界。
   - schema 约束的 JSON 容器兼容、工具续轮 provider 角色顺序和已知内部 runtime suffix 展示清理继续沿用 r6 行为。
+  - Moonshot 工具 schema 按单个不兼容工具降级并发出一次用户可见诊断；具名选择不得指向已省略工具。宿主 MCP 密钥 resolver 不写进程环境，禁用 server 在 pool、catalog、直接调用、reload 与子智能体继承入口统一不可见。
+  - Windows Shell 跨 poll 保留增量解码状态，避免拆分 UTF-8 序列被替换；h2/lru 安全更新不改变公开接口。
   - registry-first 提示只引用 canonical action；Custom SubAgent 的显式旧 action allowlist 通过 alias 映射解析到 canonical family，不扩大实际工具权限。
   - 当前工具面不恢复已退役的独立追加文件工具，也没有改动 `request_user_input`。
   - r8 在 catalog 与最终 dispatch 共用 exact allowlist；显式受限轮次可清空 trusted roots，并禁止 MCP 初始化、控制面 shell、动态工具和子 Agent。控制面限制保持到下一条消息出队，受限排队续轮（goal self-continuation）、编辑重放与 MCP reload 同样拒绝；轮后子智能体完成和后台 Shell 唤醒延迟到显式新消息安装替代权限。Hook 默认关闭；受限审计保留 event 与 tool_name 等非私有身份字段，输入/输出/路径固定脱敏；`None` 保持现有 GUI 行为。
@@ -178,7 +189,7 @@ CodeWhale 当前已通过：
 cargo fmt --all -- --check
 cargo check / Pinvou fork CI
 cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
-41 passed / 0 failed
+56 passed / 0 failed
 ```
 
 父仓当前已通过：
@@ -186,17 +197,17 @@ cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
 ```text
 cargo fmt --all -- --check
 ./scripts/fork-guard.sh
-CodeWhale 41 passed；pinvou3-app 21 passed
+CodeWhale 56 passed；pinvou3-app 22 passed
 cargo test --lib --locked forkguard_admitted_display_fallback -- --test-threads=1
 2 passed / 0 failed
 node --test pinvou3-app/tests/scheduled_tasks_unit.test.js
 PASS
 python3 scripts/architecture-guard.py
 ./scripts/verify-public-submodule.sh
-pinvou-v0.9.5-r10 -> feb8761aeda31749f3d54c6e1f8ef460540567a1
+pinvou-v0.9.5-r11 -> 0d89a31be016457c180501417dd2c0f34ce844a6
 ```
 
-完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。环境相关忽略/基线失败按实际验证披露；`scripts/verify-public-submodule.sh` 已锁定不可变标签 `pinvou-v0.9.5-r10` 与父仓 gitlink 一致。
+完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。环境相关忽略/基线失败按实际验证披露；`scripts/verify-public-submodule.sh` 已锁定不可变标签 `pinvou-v0.9.5-r11` 与父仓 gitlink 一致。
 
 ## 5. 后续修改规则
 

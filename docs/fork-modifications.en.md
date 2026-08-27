@@ -1,6 +1,6 @@
 # CodeWhale Fork Modification Register
 
-> Updated: 2026-08-25. Public maintenance baseline: upstream `v0.9.5` r10. Canonical Chinese register: [`docs/fork-modifications.md`](fork-modifications.md). This English page is a condensed summary; the Chinese version is the complete, authoritative register.
+> Updated: 2026-08-27. Public maintenance baseline: upstream `v0.9.5` r11. Canonical Chinese register: [`docs/fork-modifications.md`](fork-modifications.md). This English page is a condensed summary; the Chinese version is the complete, authoritative register.
 >
 > 2026-08-22 corrections: (1) the parent gitlink bump from r6 (`3bbf8421`) to r7 happened in parent PR #285 (`95502ac8`), not in PR #302 — PR #302 started from a pre-#285 main and merged without touching the gitlink; PR #305 later advanced the published baseline to r8. (2) PR #302 (capability-bundle unification, parent commit `c75f2fb2`) updated the parent-side scope model — the single `disabled_bundles.json` (package id × mode, plus `hidden_scopes`) replaced the separate `disabled_connectors.json` / `disabled_skills.json` files.
 
@@ -9,13 +9,20 @@
 | Item | Value |
 |---|---|
 | Upstream | `v0.9.5` at `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `feb8761ae` (`pinvou-v0.9.5-r10`) |
-| Merged fixes | `Pinvou/CodeWhale#9`, `#11`, `#12`, `#13`, `#15`, `#16`, `#17`, and `#19` are merged |
-| Published status | `pinvou3-clean`, `pinvou-v0.9.5-r10`, and the parent gitlink resolve to `feb8761aeda31749f3d54c6e1f8ef460540567a1`; `r1` through `r10` remain immutable historical tags |
+| Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `0d89a31be` (`pinvou-v0.9.5-r11`) |
+| Merged fixes | Existing `#9`, `#11`, `#12`, `#13`, `#15`, `#16`, `#17`, and `#19`, plus r11 PRs `#18`, `#21`, `#22`, `#25`, `#26`, `#27`, `#29`, and `#30`, are merged |
+| Published status | `pinvou3-clean`, `pinvou-v0.9.5-r11`, and the parent gitlink resolve to `0d89a31be016457c180501417dd2c0f34ce844a6`; `r1` through `r11` remain immutable historical tags |
 | Previous baseline backup | Tag `pinvou-v0.9.0-r4` and branch `backup/pinvou3-clean-v0.9.0-r4`, both at `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| Drift | Published r10 baseline: 64 files, `+5612/-702` |
+| Drift | Published r11 baseline: 96 files, `+7840/-980`; r10→r11 is 48 files, `+2242/-292` |
 | Organization | Four current long-lived topics; PR #13 removes the product-specific orchestration topic |
-| Guard inventory | Published r10 has 41 CodeWhale `forkguard_*` tests, plus two generic tool-compatibility regressions and parent fingerprints/behavior tests |
+| Guard inventory | Published r11 has 56 CodeWhale `forkguard_*` tests, plus generic tool/route compatibility regressions and parent fingerprints/behavior tests |
+
+### r11 provider, MCP, steer, and platform boundaries (published)
+
+- CodeWhale PRs #18, #21, #22, #25, #26, #27, #29, and #30 are published at `0d89a31be016457c180501417dd2c0f34ce844a6`. Strict-direct providers accept a wire-model casing difference only when exactly one owned model row proves the match; the parent adds a GLM bridge regression from a lowercase saved value to canonical `GLM-5.2`.
+- Explicit route output ceilings now constrain request budgets. Moonshot omits only incompatible tools, emits one user-visible diagnostic per turn, and rejects a named `tool_choice` when its target was omitted. Host MCP secret resolution avoids process-environment writes, while denied servers disappear consistently from the pool, catalog, direct calls, reloads, and subagent inheritance.
+- `withdraw_steer` returns `SteerWithdrawal` to distinguish withdrawn, committed, and missing input. Windows Shell output uses incremental UTF-8 decoding across polls, and dependency updates address the h2/lru advisories. r11 adds 15 `forkguard_*` regressions, raising the total from 41 to 56 without creating a new long-lived topic.
+- r11 adds 48 files and `+2242/-292` over r10. Provider projection, host MCP policy, steer lifecycle, and cross-platform Shell decoding remain generic upstream candidates.
 
 ### r10 fixed-sampling and compaction-usage boundaries (published)
 
@@ -48,8 +55,8 @@ CodeWhale PR #15 combined candidate `1eca6103a` with security follow-ups `169c24
 
 PR #13 was squash-merged as `a36e6cd533024cfe5724bae21875aea42b2ed87a` and published as immutable tag `pinvou-v0.9.5-r7`. It removes product-specific orchestration while preserving canonical registry prompt text and alias-aware Custom SubAgent allowlist resolution.
 
-1. **Host embedding and routing boundary** — `331cb1594688c723d98499d9ca11f05af291b599`, `2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd` (`Pinvou/CodeWhale#11`), `a36e6cd533024cfe5724bae21875aea42b2ed87a` (`Pinvou/CodeWhale#13`), `8aa5f77d35ac1d00d1f444193543307a7e9b391c` (`Pinvou/CodeWhale#16`), `07d183e350ce4a1ed4f91bdfa1875c996e710d2b` (`Pinvou/CodeWhale#17`), and `feb8761aeda31749f3d54c6e1f8ef460540567a1` (`Pinvou/CodeWhale#19`). Exposes only the library modules and narrow host seams needed for Fleet roster loading, live-worker projection, resolved routes, runtime snapshots/recovery, bulk cancellation, terminal facts, reliable steer ownership, authoritative edit-target classification, exact provider sampling compatibility, and complete post-compaction usage estimation. Edit rejection cannot call the provider or mutate history, and the app reconciles an optimistic edit from the durable transcript. Fixed-sampling compatibility is limited to the exact Kimi Code membership model roster and exact `deepseek-v4-flash` Responses route; the Chat dialect preserves its documented contract, and gateways plus other models remain untouched. `CompactionCompleted` carries the canonical complete post-compaction input estimate so hosts can refresh and persist usage without duplicating engine token accounting.
-2. **Tool compatibility and command-execution safety** — `595adce47e2d1bcf895d7bfd6426c074eb969324`, `3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02` (`Pinvou/CodeWhale#12`), `a36e6cd533024cfe5724bae21875aea42b2ed87a` (`Pinvou/CodeWhale#13`), `d127aed113529dc93754d044b9f352e9746f6b83` (`Pinvou/CodeWhale#15`), and the Shell-cancellation boundary in `8aa5f77d35ac1d00d1f444193543307a7e9b391c` (`Pinvou/CodeWhale#16`). Adds host `extra_tools`, dynamic `SetDisallowedTools`, file-size enforcement, fail-closed multiline command safety, schema-bound JSON-container repair, provider-role-safe continuations, canonical registry instructions, and alias-aware Custom SubAgent allowlists while reusing upstream `allowed_tools`. Cancellation terminates only foreground Shell work owned by the current turn instead of relying on dropped futures. The r8 extension layers an exact catalog/final-dispatch policy, trusted-root replacement, latched control-plane denial, hook opt-in, restricted log/audit redaction, and deferral of idle child/Shell continuations until an explicit replacement-authority message, while preserving the legacy `None` path. The parent GAIA integration explicitly requires read-only dispatch, projects the model-visible `File` schema to read/list/search actions, repeats the read-only check before final execution, and projects `Bash` into the hardened read-only Shell context. These generic seams remain prioritized for upstreaming; Pinvou's GAIA profiles stay app-owned.
+1. **Host embedding and routing boundary** — the established T1 commits through `feb8761aeda31749f3d54c6e1f8ef460540567a1` (`#19`), plus `485884913308cdf7564bc60da2e416be637083b5` (`#21`), `04e109af4b4786a0d49fbbeefdd77af15a9f495e` (`#22`), `69ed3bfbdb314f901d4cf4120f1caaaf0b6aa529` (`#30`), and `0d89a31be016457c180501417dd2c0f34ce844a6` (`#18`). Exposes narrow host seams for routing, runtime snapshots/recovery, reliable steer ownership and withdrawal, edit-target classification, provider compatibility, and post-compaction usage estimation. Explicit route ceilings constrain request budgets; strict-direct casing recovery requires one unambiguous owned model row. Edit rejection cannot call the provider or mutate history, and gateways plus ambiguous models remain untouched.
+2. **Tool compatibility and command-execution safety** — the established T2 commits through the Shell-cancellation boundary in `8aa5f77d35ac1d00d1f444193543307a7e9b391c` (`#16`), plus `44730dfe596b70f86ae2f928959877a3e3f494e4` (`#27`), `665b46cd9e67326459223aa662931bd36d726004` (`#29`), `04e109af4b4786a0d49fbbeefdd77af15a9f495e` (`#22`), `4831c3797b76485a912b056c76a4cff22f0a2863` (`#25`), and `e68a185c2ba07f327bd8b63bbfea6a70a96f33ea` (`#26`). Adds exact catalog/final-dispatch policy, read-only projections, per-tool Moonshot schema degradation with a visible diagnostic, process-local MCP secret resolution, pool-side denied-server sealing, and incremental Windows Shell decoding. These generic seams remain prioritized for upstreaming; Pinvou's GAIA profiles stay app-owned.
 3. **Embedded context and Skill sources** — `5a9f52941b83452c1e8b76c2d679bac315edcf70`. Seals ambient project authority, scans only the explicit Skill root, filters disabled Skills, preserves up to 100 KiB only for the Permissions fragment, and excludes internal reminders from Working Set extraction.
 4. **Automation and runtime lifecycle** — `fc84f7d3e5dca0e3db404d43e218597764129f9b`. Preserves stable conversation/thread identity, v4 task compatibility, anchored schedules, no-backfill/no-overlap behavior, and terminal-only cleanup.
 
@@ -65,8 +72,8 @@ Pinvou's product tool allowlist, connector state, UI, workspace selection, bundl
 ## Verification
 
 - CodeWhale format and locked library check pass.
-- All 41 CodeWhale `forkguard_*` tests pass for the published r10 baseline, including the four fixed-sampling and compaction-estimate regressions from `Pinvou/CodeWhale#19`.
-- Parent `./scripts/fork-guard.sh` passes with 21 app forkguard tests; both admitted-display edit-target regressions pass separately.
+- All 56 CodeWhale `forkguard_*` tests pass for the published r11 baseline, including the 15 route, Moonshot, MCP, steer, and Shell regressions added after r10.
+- Parent `./scripts/fork-guard.sh` passes with the app forkguard suite, including the strict-direct GLM casing bridge regression; both admitted-display edit-target regressions pass separately.
 - The Tauri/Web scheduled-task unit harness, architecture guard, version check, CI-policy tests, and strict public-submodule verifier pass.
 - Full product results are recorded in `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`.
 
