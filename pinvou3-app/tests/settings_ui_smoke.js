@@ -5,6 +5,7 @@
  * - 模型列表默认单选、删除二次确认、本地/云端模型删除、添加模型保存条件、编辑模型回显凭据和同厂商切换
  * - 搜索源交互与模型页一致，添加源未点保存不得持久化，确认重启后才写设置
  * - 高级执行权限失败时回滚并 toast 提示
+ * - Community uses a dedicated Settings tab that exposes the QQ group and GitHub Discussions at the top level
  * - 反馈弹窗保持与模型/搜索一致的 iOS 规格，提交成功不使用原生 alert
  */
 const fs = require('fs');
@@ -1454,6 +1455,48 @@ async function modalWidth(page, headingText) {
     : !permToast.advancedPermissionVisible && permToast.dependencyCheckVisible && !permToast.setCall;
   rec('⑭ 权限与环境按平台展示并保持失败回滚', permissionPass, JSON.stringify(permToast));
 
+  await clickSettingsSection(page, '用户交流');
+  await sleep(250);
+  await page.evaluate(() => {
+    window.__COMMUNITY_CLIPBOARD_TEXT__ = null;
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (value) => { window.__COMMUNITY_CLIPBOARD_TEXT__ = value; },
+      },
+    });
+  });
+  await page.click('[data-testid="community-copy-group"]');
+  await sleep(50);
+  const communityPanel = await page.evaluate(() => {
+    const panel = document.querySelector('[data-community-panel="true"]');
+    const navIds = [...document.querySelectorAll('[data-testid="settings-nav"] [data-testid^="settings-section-"]')]
+      .map(node => node.getAttribute('data-testid'));
+    const rect = panel && panel.getBoundingClientRect();
+    const qr = panel && panel.querySelector('[data-testid="community-qr-image"]');
+    const groupName = panel && panel.querySelector('[data-testid="community-group-name"]');
+    const groupNumber = panel && panel.querySelector('[data-testid="community-group-number"]');
+    const copyButton = panel && panel.querySelector('[data-testid="community-copy-group"]');
+    const text = panel ? panel.innerText : '';
+    return {
+      exists: !!panel,
+      separateTab: !!document.querySelector('[data-testid="settings-section-community"]')
+        && (document.querySelector('[data-testid="settings-content"] h1')?.textContent || '').trim() === '用户交流',
+      immediatelyAfterHelp: navIds.indexOf('settings-section-community') === navIds.indexOf('settings-section-help') + 1,
+      directTopLevel: !document.querySelector('[data-community-dialog="true"]') && !document.querySelector('[data-testid="community-entry-open"]'),
+      width: rect ? Math.round(rect.width) : 0,
+      insideViewport: !!rect && rect.left >= -1 && rect.right <= window.innerWidth + 1 && rect.top >= -1 && rect.bottom <= window.innerHeight + 1,
+      hasQrImage: !!qr && qr.complete && qr.naturalWidth === 824 && qr.naturalHeight === 824 && qr.getBoundingClientRect().width >= 220,
+      correctGroupName: (groupName?.textContent || '').trim() === 'pinvou-agent官方交流群',
+      correctGroupNumber: (groupNumber?.textContent || '').trim() === '1108909346',
+      copyEnabled: !!copyButton && !copyButton.disabled,
+      copyWorks: window.__COMMUNITY_CLIPBOARD_TEXT__ === '1108909346' && text.includes('群号已复制'),
+      hasDiscussionsFallback: text.includes('GitHub Discussions'),
+      hasSupportBoundary: text.includes('不等同于官方支持或工单') && text.includes('安全漏洞'),
+      noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1 && (!panel || panel.scrollWidth <= panel.clientWidth + 1),
+    };
+  });
+  rec('⑮ Community follows Help & Feedback and directly exposes the official group', communityPanel.exists && communityPanel.separateTab && communityPanel.immediatelyAfterHelp && communityPanel.directTopLevel && communityPanel.width >= 500 && communityPanel.width <= 700 && communityPanel.insideViewport && communityPanel.hasQrImage && communityPanel.correctGroupName && communityPanel.correctGroupNumber && communityPanel.copyEnabled && communityPanel.copyWorks && communityPanel.hasDiscussionsFallback && communityPanel.hasSupportBoundary && communityPanel.noHorizontalOverflow, JSON.stringify(communityPanel));
   await clickSettingsSection(page, '帮助反馈');
   await clickExact(page, '提交反馈');
   await sleep(250);
@@ -1481,7 +1524,7 @@ async function modalWidth(page, headingText) {
       modalNoHorizontalOverflow: scrollWidth <= clientWidth + 1,
     };
   });
-  rec('⑮ 反馈弹窗符合模型/搜索一致的 iOS 规格', feedbackModal.exists && feedbackModal.width >= 420 && feedbackModal.width <= 455 && feedbackModal.insideViewport && feedbackModal.compactTitle && feedbackModal.hasBottomActions && feedbackModal.hasGroupedInputs && feedbackModal.singleLayerGroups && feedbackModal.noNativeAlertBeforeSubmit && feedbackModal.noHorizontalOverflow && feedbackModal.modalNoHorizontalOverflow, JSON.stringify(feedbackModal));
+  rec('⑯ 反馈弹窗符合模型/搜索一致的 iOS 规格', feedbackModal.exists && feedbackModal.width >= 420 && feedbackModal.width <= 455 && feedbackModal.insideViewport && feedbackModal.compactTitle && feedbackModal.hasBottomActions && feedbackModal.hasGroupedInputs && feedbackModal.singleLayerGroups && feedbackModal.noNativeAlertBeforeSubmit && feedbackModal.noHorizontalOverflow && feedbackModal.modalNoHorizontalOverflow, JSON.stringify(feedbackModal));
   await page.evaluate(() => {
     const textarea = document.querySelector('[data-feedback-dialog="true"] textarea[placeholder*="请描述"]');
     if (!textarea) return;
@@ -1503,7 +1546,7 @@ async function modalWidth(page, headingText) {
     toast: document.body.innerText.includes('反馈已提交，感谢你的帮助。'),
     dialogClosed: !document.querySelector('[data-feedback-dialog="true"]'),
   }));
-  rec('⑯ 提交反馈成功使用应用内 toast，不弹系统 alert', feedbackTyped === '反馈弹窗测试' && feedbackSubmit.nativeAlertCalls === 0 && feedbackSubmit.submitCalls === 1 && feedbackSubmit.toast && feedbackSubmit.dialogClosed, JSON.stringify({ feedbackTyped, ...feedbackSubmit }));
+  rec('⑰ 提交反馈成功使用应用内 toast，不弹系统 alert', feedbackTyped === '反馈弹窗测试' && feedbackSubmit.nativeAlertCalls === 0 && feedbackSubmit.submitCalls === 1 && feedbackSubmit.toast && feedbackSubmit.dialogClosed, JSON.stringify({ feedbackTyped, ...feedbackSubmit }));
   await sleep(200);
 
   await page.setViewport({ width: 760, height: 620 });
@@ -1521,7 +1564,7 @@ async function modalWidth(page, headingText) {
       noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1,
     };
   });
-  rec('⑰ 小窗口设置弹窗随窗口收缩且标签不竖排', Object.values(responsiveSettings).every(Boolean), JSON.stringify(responsiveSettings));
+  rec('⑱ 小窗口设置弹窗随窗口收缩且标签不竖排', Object.values(responsiveSettings).every(Boolean), JSON.stringify(responsiveSettings));
 
   await page.mouse.click(8, 8);
   await page.waitForFunction(() => document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') === 'chat', { timeout: 8000 });
@@ -1542,9 +1585,9 @@ async function modalWidth(page, headingText) {
       noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1,
     };
   });
-  rec('⑱ 小窗口欢迎文案不溢出', Object.values(responsiveGreeting).every(Boolean), JSON.stringify(responsiveGreeting));
+  rec('⑲ 小窗口欢迎文案不溢出', Object.values(responsiveGreeting).every(Boolean), JSON.stringify(responsiveGreeting));
 
-  rec('⑲ 全程无运行时报错', errors.length === 0, errors.slice(0, 3).join(' | '));
+  rec('⑳ 全程无运行时报错', errors.length === 0, errors.slice(0, 3).join(' | '));
   await browser.close();
 
   const failed = results.filter(result => !result.pass).length;

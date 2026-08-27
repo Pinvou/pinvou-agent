@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, Globe, Lightbulb, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Sparkles, Trash2, User, Wrench, X } from '../../components/icons.jsx';
+import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, Globe, Lightbulb, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Sparkles, Trash2, User, Users, Wrench, X } from '../../components/icons.jsx';
 import { Toggle } from '../../components/Toggle.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
@@ -18,6 +18,8 @@ import {
   selectorMainLabel,
   reasoningEffortTiersForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort,
 } from './model-catalog.js';
+import { CommunityPanel } from './CommunityPanel.jsx';
+import { COMMUNITY_DISCUSSIONS_URL, COMMUNITY_QQ_GROUP_NAME, COMMUNITY_QQ_GROUP_NUMBER, COMMUNITY_QQ_QR_IMAGE_SRC } from './community-config.js';
 import { ProvidersSection } from './ProvidersSection.jsx';
 
 function isReadonlyModel(model) {
@@ -2381,6 +2383,18 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           </>
         );
       };
+      const renderCommunity = () => (
+        <CommunityPanel
+          copy={t}
+          groupName={COMMUNITY_QQ_GROUP_NAME}
+          groupNumber={COMMUNITY_QQ_GROUP_NUMBER}
+          qrImageSrc={COMMUNITY_QQ_QR_IMAGE_SRC}
+          onOpenDiscussions={() => {
+            if (!bridge.available || !bridge.artifacts?.openUserExternalUrl) return;
+            bridge.artifacts.openUserExternalUrl(COMMUNITY_DISCUSSIONS_URL).catch(() => {});
+          }}
+        />
+      );
       const renderHelp = () => (
         <IOSSection>
           <IOSRow label={settingsCopy.feedbackTitle} desc={settingsCopy.feedbackDesc}>
@@ -2392,6 +2406,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         if (activeSection === 'model') return renderModels();
         if (activeSection === 'search') return renderSearch();
         if (activeSection === 'memory') return renderMemory();
+        if (activeSection === 'community') return renderCommunity();
         if (activeSection === 'permissions') return renderPermissions();
         if (activeSection === 'update') return renderUpdate();
         if (activeSection === 'help') return renderHelp();
@@ -2404,6 +2419,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             model: t.uiSettings.model,
             search: t.uiSettings.search,
             memory: t.uiSettings.memory,
+            community: t.uiSettings.community,
             permissions: t.uiSettings.permissions,
             update: t.uiSettings.update,
             help: t.uiSettings.help,
@@ -2557,6 +2573,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                 {canUpdateApp && <SectionButton id="update" icon={<RefreshCw size={17} />} label={t.uiSettings.update} dot={hasUpdate} />}
                 {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
                 <SectionButton id="help" icon={<MessageSquare size={17} />} label={t.uiSettings.help} />
+                {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
+                <SectionButton id="community" icon={<Users size={17} />} label={t.uiSettings.community} />
               </div>
             </aside>
             {onCloseSettings && (

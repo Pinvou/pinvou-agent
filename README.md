@@ -14,7 +14,7 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#-quick-start)
 [![GitHub Stars](https://img.shields.io/github/stars/Pinvou/pinvou-agent?style=flat)](https://github.com/Pinvou/pinvou-agent/stargazers)
 
-[Download Preview](https://github.com/Pinvou/pinvou-agent/releases) · [Website](https://pinvou.com/) · [Issues](https://github.com/Pinvou/pinvou-agent/issues) · [Discussions](https://github.com/Pinvou/pinvou-agent/discussions) · [Security](SECURITY.md)
+[Download Preview](https://github.com/Pinvou/pinvou-agent/releases) · [Website](https://pinvou.com/) · [QQ Group](#-community--security) · [Issues](https://github.com/Pinvou/pinvou-agent/issues) · [Discussions](https://github.com/Pinvou/pinvou-agent/discussions) · [Security](SECURITY.md)
 
 <p align="center">
   <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4">
@@ -203,9 +203,14 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for th
 
 ## 💬 Community & Security
 
+- 🐧 **QQ user group (Chinese): 1108909346** — scan the QR code below or search for the group number in QQ
 - 🐛 [GitHub Issues](https://github.com/Pinvou/pinvou-agent/issues) — reproducible bugs and focused feature requests
 - 💡 [GitHub Discussions](https://github.com/Pinvou/pinvou-agent/discussions) — questions and ideas (community support is best-effort, see [SUPPORT.md](SUPPORT.md))
 - 🔒 **Do not report security vulnerabilities in public issues** — use the private channel in [SECURITY.md](SECURITY.md) or email `security@pinvou.com`
+
+<p align="center">
+  <img src="pinvou3-app/src/assets/community/qq-group-1108909346.png" alt="QR code for the Pinvou Agent official QQ user group, group number 1108909346" width="260" />
+</p>
 
 Licensing, third-party attribution, SBOM, brand-use boundaries, and the extension marketplace overview are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), [docs/sbom.md](docs/sbom.md), [TRADEMARKS.md](TRADEMARKS.md), and [docs/工具市场.md](docs/工具市场.md).
 

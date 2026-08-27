@@ -14,7 +14,7 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#-快速开始)
 [![GitHub Stars](https://img.shields.io/github/stars/Pinvou/pinvou-agent?style=flat)](https://github.com/Pinvou/pinvou-agent/stargazers)
 
-[下载预览版](https://github.com/Pinvou/pinvou-agent/releases) · [官网](https://pinvou.com/) · [问题反馈](https://github.com/Pinvou/pinvou-agent/issues) · [讨论区](https://github.com/Pinvou/pinvou-agent/discussions) · [安全政策](SECURITY.md)
+[下载预览版](https://github.com/Pinvou/pinvou-agent/releases) · [官网](https://pinvou.com/) · [QQ 用户群](#-社区与安全) · [问题反馈](https://github.com/Pinvou/pinvou-agent/issues) · [讨论区](https://github.com/Pinvou/pinvou-agent/discussions) · [安全政策](SECURITY.md)
 
 <p align="center">
   <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4">
@@ -204,9 +204,14 @@ docs/                 架构设计、验证报告与维护文档
 
 ## 💬 社区与安全
 
+- 🐧 **QQ 用户交流群：1108909346** — 扫描下方二维码，或在 QQ 中搜索群号加入
 - 🐛 [GitHub Issues](https://github.com/Pinvou/pinvou-agent/issues) — 可复现的 bug 与聚焦的功能建议
 - 💡 [GitHub Discussions](https://github.com/Pinvou/pinvou-agent/discussions) — 问题与想法交流（社区支持为尽力而为，见 [SUPPORT.md](SUPPORT.md)）
 - 🔒 **请勿在公开 Issue 中报告安全漏洞** — 请使用 [SECURITY.md](SECURITY.md) 中的私有渠道，或发送邮件至 `security@pinvou.com`
+
+<p align="center">
+  <img src="pinvou3-app/src/assets/community/qq-group-1108909346.png" alt="Pinvou Agent 官方 QQ 用户交流群二维码，群号 1108909346" width="260" />
+</p>
 
 ## 📖 进一步阅读
 
