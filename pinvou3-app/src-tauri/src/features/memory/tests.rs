@@ -1080,9 +1080,10 @@ fn llm_review_prompt_matches_supported_actions() {
     assert!(!LLM_REVIEW_PROMPT.contains("must_create_recent_activity"));
 }
 
-/// 记忆复盘提示词本体无语言约束，非中文 locale 必须追加输出语言指令（content /
-/// reason 跟 UI 语言，枚举值保持 ASCII）；zh-Hans/未知 → no-op。缺失时英文 UI
-/// 用户的记忆会被写成中文，注入会话后拽偏回复语言（review 侧同款先例）。
+/// 记忆复盘提示词本体无语言约束，输出语言指令按 locale 追加（content /
+/// reason 跟 UI 语言，枚举值保持 ASCII）；zh-Hans/未知 → no-op。en/ja 分支是
+/// 防御纵深（非中文 UI 的记忆已被 enforce_memory_locale_policy 关闭），与
+/// review 侧先例对齐。
 #[test]
 fn memory_review_output_language_directive_follows_locale() {
     use super::llm_review::memory_output_language_directive;

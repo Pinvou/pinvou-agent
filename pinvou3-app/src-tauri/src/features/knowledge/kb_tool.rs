@@ -798,7 +798,7 @@ mod tests {
                 && block.contains("`Bash(action=\"run\")` 全量展开"),
             "统一检索结果头必须带二进制来源禁令: {block}"
         );
-        // 带告警时禁令仍在(头部追加在告警之前不成立——两者都在头段)。
+        // 带告警时禁令仍在:禁令位于固定头段文本内,告警只追加在其后,不会挤掉禁令。
         let with_warnings = build_unified_context_block(&unified, &["远程服务离线".to_string()]);
         assert!(with_warnings.contains("部分来源暂时不可用"));
         assert!(with_warnings.contains("禁止调用 `File(action=\"read\")`"));
