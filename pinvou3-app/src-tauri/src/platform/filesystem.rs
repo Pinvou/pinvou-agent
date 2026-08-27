@@ -1,4 +1,10 @@
 use std::fs::File;
+#[cfg(not(any(
+    windows,
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+)))]
+use std::fs::Metadata;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -526,7 +532,7 @@ impl PrivateFileDirectory {
         private_file_directory_unsupported()
     }
 
-    pub(crate) fn metadata(&self) -> io::Result<std::fs::Metadata> {
+    pub(crate) fn metadata(&self) -> io::Result<Metadata> {
         private_file_directory_unsupported()
     }
 
