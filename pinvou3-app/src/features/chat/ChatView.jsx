@@ -2437,8 +2437,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 };
                 buttons = (
                   <>
-                    <button className={btnGhost} onClick={cancelInstallAndResolve}>{ua.localEngineInstallCancel}</button>
-                    <button className={btnPrimary} onClick={() => installThenResolve(info, p.token)}>{ua.localEngineInstallConfirm}</button>
+                    <button type="button" className={btnGhost} onClick={cancelInstallAndResolve}>{ua.localEngineInstallCancel}</button>
+                    <button type="button" className={btnPrimary} onClick={() => installThenResolve(info, p.token)}>{ua.localEngineInstallConfirm}</button>
                   </>
                 );
               } else if (p.kind === 'notRunning') {
@@ -2446,24 +2446,24 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 body = ua.localEngineNotRunningPrompt;
                 buttons = (
                   <>
-                    <button className={btnGhost} onClick={() => resolvePendingSend(false)}>{ua.localEngineCancelSend}</button>
+                    <button type="button" className={btnGhost} onClick={() => resolvePendingSend(false)}>{ua.localEngineCancelSend}</button>
                     {info && info.hasVisionModel && (
-                      <button className={btnGhost} onClick={() => resolvePendingSend(true)}>{ua.localEngineSendFallback}</button>
+                      <button type="button" className={btnGhost} onClick={() => resolvePendingSend(true)}>{ua.localEngineSendFallback}</button>
                     )}
-                    <button className={btnPrimary} onClick={goSettingsAndCancel}>{ua.localEngineGoSettings}</button>
+                    <button type="button" className={btnPrimary} onClick={goSettingsAndCancel}>{ua.localEngineGoSettings}</button>
                   </>
                 );
               } else if (p.kind === 'starting') {
                 title = ua.localEngineNotRunning;
                 body = llmEngineCopy.starting || ua.localEngineDownloading;
                 buttons = (
-                  <button className={btnGhost} onClick={() => cancelLocalEngineFlow(p.token)}>{ua.localEngineCancelSend}</button>
+                  <button type="button" className={btnGhost} onClick={() => cancelLocalEngineFlow(p.token)}>{ua.localEngineCancelSend}</button>
                 );
               } else if (p.kind === 'downloading') {
                 title = llmEngineCopy.title || ua.localEngineNotRunning;
                 body = '';
                 buttons = (
-                  <button className={btnGhost} onClick={() => {
+                  <button type="button" className={btnGhost} onClick={() => {
                     if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.cancelDownload) bridge.llamaEngine.cancelDownload();
                     cancelLocalEngineFlow(p.token);
                   }}>{llmEngineCopy.cancelDownload || ua.localEngineCancelSend}</button>
@@ -2475,12 +2475,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 // 「云端发送」与 notRunning 弹窗同语义（复用 localEngineSendFallback）。
                 buttons = (
                   <>
-                    <button className={btnGhost} onClick={() => cancelLocalEngineFlow(p.token)}>{ua.localEngineCancelSend}</button>
+                    <button type="button" className={btnGhost} onClick={() => cancelLocalEngineFlow(p.token)}>{ua.localEngineCancelSend}</button>
                     {info && info.hasVisionModel && (
-                      <button className={btnGhost} onClick={() => resolvePendingSend(true)}>{ua.localEngineSendFallback}</button>
+                      <button type="button" className={btnGhost} onClick={() => resolvePendingSend(true)}>{ua.localEngineSendFallback}</button>
                     )}
-                    <button className={btnGhost} onClick={goSettingsAndCancel}>{ua.localEngineGoSettings}</button>
-                    <button className={btnPrimary} onClick={() => startThenResolve(info, p.token)}>{ua.localEngineRetry}</button>
+                    <button type="button" className={btnGhost} onClick={goSettingsAndCancel}>{ua.localEngineGoSettings}</button>
+                    <button type="button" className={btnPrimary} onClick={() => startThenResolve(info, p.token)}>{ua.localEngineRetry}</button>
                   </>
                 );
               } else {
@@ -2492,7 +2492,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   resolvePendingSend(false);
                 };
                 buttons = (
-                  <button className={btnPrimary} onClick={closeInstallError}>{ua.localEngineClose}</button>
+                  <button type="button" className={btnPrimary} onClick={closeInstallError}>{ua.localEngineClose}</button>
                 );
               }
               return (

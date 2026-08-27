@@ -570,9 +570,13 @@ fn enum_gpu_class() -> Option<crate::platform::os::GpuClass> {
     use dxgi::*;
     unsafe {
         let mut factory: *mut IDXGIFactory1 = std::ptr::null_mut();
-        if CreateDXGIFactory1(&IID_IDXGIFactory1, &mut factory as *mut _ as *mut _) != 0
-            || factory.is_null()
-        {
+        if CreateDXGIFactory1(&IID_IDXGIFactory1, &mut factory as *mut _ as *mut _) != 0 {
+            return None;
+        }
+        // 空指针检查保持独立语句(勿与 HRESULT 判断合并成复合条件):单独
+        // `is_null()` 守卫才能被静态分析识别为非空检查,合并后下方解引用
+        // 会被判为可能悬空的指针访问(CodeQL rust/access-invalid-pointer)。
+        if factory.is_null() {
             return None;
         }
         let mut index = 0u32;
@@ -582,7 +586,11 @@ fn enum_gpu_class() -> Option<crate::platform::os::GpuClass> {
             // S_OK(0) 表示还有适配器;DXGI_ERROR_NOT_FOUND 即枚举完毕。
             let hr = ((*(*factory).lpVtbl).EnumAdapters1)(factory, index, &mut adapter);
             index += 1;
-            if hr != 0 || adapter.is_null() {
+            if hr != 0 {
+                break;
+            }
+            // 同上的独立空指针守卫。
+            if adapter.is_null() {
                 break;
             }
             let mut desc: DXGI_ADAPTER_DESC1 = std::mem::zeroed();

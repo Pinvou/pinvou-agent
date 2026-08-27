@@ -8,7 +8,9 @@
  * llama-engine:state（启动/停止/崩溃/自愈时推送）。
  */
 (function (root) {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim classic-script artifact; strict mode is part of the payload
   "use strict";
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting statements would diverge from the artifact
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["llama-engine"] = function (context) {
     const state = context.state;

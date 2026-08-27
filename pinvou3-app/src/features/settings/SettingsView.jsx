@@ -2474,7 +2474,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       // 单个视觉模型行（选择/安装/删除）：从 renderLocalEngine 抽出以控制其认知复杂度。
       const renderLlamaModelRow = (m, { st, downloading, running, starting }) => (
         <div key={m.id} className="flex items-center gap-2.5 w-full py-1.5 pr-4">
-          <button onClick={() => applyLlamaModel(m.id)}
+          <button type="button" onClick={() => applyLlamaModel(m.id)}
             className="flex items-center gap-2.5 flex-1 min-w-0 text-left">
             <RadioDot active={llamaModel === m.id} />
             <span className="text-[13px] leading-4 text-[#1C1C1E] dark:text-[#F2F2F7]">
@@ -2489,7 +2489,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             </span>
           </button>
           {!downloading && (m.installed ? (
-            <button data-testid={`llama-delete-model-${m.id}`} disabled={running || starting}
+            <button type="button" data-testid={`llama-delete-model-${m.id}`} disabled={running || starting}
               title={(running || starting) ? settingsCopy.llamaEngine.deleteRequiresStop : undefined} onClick={() => {
               if (!bridge.available || !bridge.llamaEngine || !bridge.llamaEngine.deleteModel) return;
               if (!window.confirm(settingsCopy.llamaEngine.deleteModelConfirm(m.displayName))) return;
@@ -2497,7 +2497,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             }}
               className="shrink-0 min-h-7 px-3 rounded-full text-[11px] font-semibold text-[#FF3B30] bg-[#FF3B30]/10 disabled:opacity-50">{settingsCopy.llamaEngine.deleteModel}</button>
           ) : (
-            <button data-testid={`llama-install-model-${m.id}`} onClick={() => {
+            <button type="button" data-testid={`llama-install-model-${m.id}`} onClick={() => {
               if (!bridge.available || !bridge.llamaEngine) return;
               applyLlamaModel(m.id);
               bridge.llamaEngine.installModel(m.id).catch(() => {});
@@ -2524,7 +2524,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                 </div>
               </div>
               {engineReady && modelReady && (
-                <button
+                <button type="button"
                   onClick={() => {
                     if (!bridge.available || !bridge.llamaEngine) return;
                     if (running || starting) bridge.llamaEngine.stopEngine().catch(() => {});
@@ -2551,7 +2551,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                       : settingsCopy.llamaEngine.downloadingModel}
                     {pct === null ? '' : ` ${pct}%`}
                   </span>
-                  <button onClick={() => bridge.available && bridge.llamaEngine && bridge.llamaEngine.cancelDownload()}
+                  <button type="button" onClick={() => bridge.available && bridge.llamaEngine && bridge.llamaEngine.cancelDownload()}
                     className={`min-h-7 px-3 rounded-full text-[13px] font-medium ${actionButton('red')}`}>{settingsCopy.llamaEngine.cancelDownload}</button>
                 </div>
                 <div className="h-1.5 rounded-full overflow-hidden bg-[#E9E9EB] dark:bg-[#3A3A3C]">
@@ -2564,7 +2564,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             )}
             {(running || stopped || st.stderrTail) && (
               <div className="px-4 py-2.5 border-b last:border-b-0 border-black/[0.12] dark:border-white/[0.10]">
-                <button onClick={() => setShowLlamaLogs(v => !v)}
+                <button type="button" onClick={() => setShowLlamaLogs(v => !v)}
                   className={`min-h-7 px-3 rounded-full text-[13px] font-medium ${actionButton('blue')}`}>
                   {settingsCopy.llamaEngine.viewLogs}
                 </button>
@@ -2635,11 +2635,11 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                 <div className="px-4 py-3 border-b border-black/[0.12] dark:border-white/[0.10]">
                   <IOSRow label={settingsCopy.llamaEngine.engineLabel} desc={statusLine}>
                     {!engineReady && !downloading && (
-                      <button onClick={() => bridge.available && bridge.llamaEngine && bridge.llamaEngine.installEngine().catch(() => {})}
+                      <button type="button" onClick={() => bridge.available && bridge.llamaEngine && bridge.llamaEngine.installEngine().catch(() => {})}
                         className={`h-9 px-4 rounded-full text-[14px] font-semibold text-white ${downloadingItem === 'engine' ? 'opacity-50' : ''}`} style={{ background: '#007AFF' }}>{settingsCopy.llamaEngine.installEngine}</button>
                     )}
                     {engineReady && !downloading && (
-                      <button data-testid="llama-delete-engine" disabled={running || starting}
+                      <button type="button" data-testid="llama-delete-engine" disabled={running || starting}
                         title={(running || starting) ? settingsCopy.llamaEngine.deleteRequiresStop : undefined} onClick={() => {
                         if (!bridge.available || !bridge.llamaEngine || !bridge.llamaEngine.deleteEngine) return;
                         if (!window.confirm(settingsCopy.llamaEngine.deleteEngineConfirm(st.engineTag || ''))) return;
@@ -2657,7 +2657,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                   {models.map(m => renderLlamaModelRow(m, { st, downloading, running, starting }))}
                   {running && st.activeModel && st.activeModel !== llamaModel && (
                     <div className="mt-2 flex items-center gap-2">
-                      <button data-testid="llama-restart-apply" onClick={() => {
+                      <button type="button" data-testid="llama-restart-apply" onClick={() => {
                         if (!bridge.available || !bridge.llamaEngine) return;
                         const dev = llamaDevice === 'auto' ? (st.detectedDevice || 'cpu') : llamaDevice;
                         bridge.llamaEngine.stopEngine().catch(() => {})
@@ -2672,15 +2672,15 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                 <div className="px-4 py-3">
                   <div className="text-[13px] font-medium mb-2 text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.deviceLabel}</div>
                   <div className="flex items-center gap-4">
-                    <button onClick={() => applyLlamaDevice('auto')} className="flex items-center gap-2 py-1.5 text-left">
+                    <button type="button" onClick={() => applyLlamaDevice('auto')} className="flex items-center gap-2 py-1.5 text-left">
                       <RadioDot active={llamaDevice === 'auto'} />
                       <span className="text-[13px] text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.deviceAuto}</span>
                     </button>
-                    <button onClick={() => applyLlamaDevice('gpu')} className="flex items-center gap-2 py-1.5 text-left">
+                    <button type="button" onClick={() => applyLlamaDevice('gpu')} className="flex items-center gap-2 py-1.5 text-left">
                       <RadioDot active={llamaDevice === 'gpu'} />
                       <span className="text-[13px] text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.gpu}</span>
                     </button>
-                    <button onClick={() => applyLlamaDevice('cpu')} className="flex items-center gap-2 py-1.5 text-left">
+                    <button type="button" onClick={() => applyLlamaDevice('cpu')} className="flex items-center gap-2 py-1.5 text-left">
                       <RadioDot active={llamaDevice === 'cpu'} />
                       <span className="text-[13px] text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.cpu}</span>
                     </button>
@@ -2730,7 +2730,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                         <div className="flex items-start justify-between gap-3">
                           <div className="text-[15px] leading-5 font-normal text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.autoStartLabel}</div>
                           <div className="relative shrink-0">
-                            <button ref={llamaAutoStartBtnRef} data-testid="llama-autostart-select" onClick={() => setLlamaAutoStartOpen(v => !v)}
+                            <button type="button" ref={llamaAutoStartBtnRef} data-testid="llama-autostart-select" onClick={() => setLlamaAutoStartOpen(v => !v)}
                               className="h-8 pl-3 pr-2 rounded-full text-[13px] font-medium flex items-center gap-1 bg-[#E1E5EA] text-[#1C1C1E] hover:bg-[#D3D9E0] dark:bg-white/[0.08] dark:text-[#F2F2F7] dark:hover:bg-white/[0.12]">
                               {current.label}
                               <ChevronDown size={13} className="opacity-50 shrink-0" />
@@ -2738,7 +2738,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                             <ComposerPopover open={llamaAutoStartOpen} onClose={() => setLlamaAutoStartOpen(false)} triggerRef={llamaAutoStartBtnRef}
                               desktopClassName="absolute bottom-full right-0 mb-1 z-50 min-w-[190px] bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
                               {options.map(o => (
-                                <button key={o.key} data-testid={`llama-autostart-${o.key}`} onClick={() => { setLlamaAutoStart(o.key); saveAdvancedPatch({ llama_engine_auto_start: o.key }); setLlamaAutoStartOpen(false); }}
+                                <button type="button" key={o.key} data-testid={`llama-autostart-${o.key}`} onClick={() => { setLlamaAutoStart(o.key); saveAdvancedPatch({ llama_engine_auto_start: o.key }); setLlamaAutoStartOpen(false); }}
                                   className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left rounded-xl text-[13px] text-[#1C1C1E] hover:bg-[#007AFF] hover:text-white dark:text-[#F2F2F7]">
                                   <span>{o.label}</span>
                                   {llamaAutoStart === o.key && <Check size={14} className="shrink-0" />}
