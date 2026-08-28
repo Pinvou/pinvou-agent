@@ -1,6 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
 
-# 历史说明：本脚本曾是「敏感目录/危险命令/sudo」硬拦截防火墙。自底座 v0.9.3 起
+# 历史说明：本脚本曾是「敏感目录/危险命令」硬拦截防火墙（sudo 段只在 .sh 侧）。
+# 自底座 v0.9.3 起
 # 模型/执行面只暴露 Bash 工具，第 3 段（DANGEROUS_CMDS）按 exec_shell* 门控已静默
 # 失效；这些安全段已整体迁移至底座 execpolicy 规则引擎（typed Deny 规则）：
 # pinvou3-app/src-tauri/src/features/assistant/safety_deny_rules.rs。

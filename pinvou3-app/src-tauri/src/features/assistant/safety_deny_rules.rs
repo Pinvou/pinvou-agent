@@ -69,6 +69,15 @@
 //!   规则约束——待底座在子代理执行器接入检查后闭合；
 //! - `File` 工具路径规则受工作区归一化限制，家目录绝对路径不生成规则（原
 //!   hook 曾以子串形态覆盖 File 调用）；
+//! - 目录列举/元数据命令不覆盖：`ls`/`stat`/`tree`/`du`/`file` 触碰敏感目录
+//!   放行——原第 1 段尾斜杠子串（`/.ssh/`）拦 `ls ~/.ssh/` 等列举形态，文件名
+//!   枚举本身可泄露密钥存在性（future work：列举类查看器）；
+//! - 敏感目录作搜索根的非 `-path` find 形态不覆盖：`find ~/.ssh/ -name id_rsa`
+//!   原被尾斜杠子串拦，v1 只守 `-path`/`-ipath`（无尾斜杠拼写 `find ~/.ssh
+//!   -name` 原 hook 本就不拦——子串要求尾斜杠，两版一致）；
+//! - heredoc/多行命令体可能过拦：底座段级扫描按真实换行切段（宁可过拦取向），
+//!   写有 `cat /etc/shadow` 字面行的脚本/文档会被硬拒（底座 deny_scan 固有
+//!   行为，规则 3 复活后开始命中）；
 //! - 规则 4 是规则集构建时的状态快照：中途切换超级权限开关的会话内热刷依赖
 //!   `set_super_permission` 触发 `refresh_permission_rulesets`，与既有
 //!   scope 规则同口径。开关命令未串行化，并发连打存在窄窗口的陈旧快照，
@@ -264,6 +273,11 @@ fn dangerous_command_rules() -> Vec<ToolAskRule> {
 /// 经底座 deny-scan 覆盖 `/usr/bin/sudo`、`sudo -u root …`、`sudo bash -c …`、
 /// 链式段等全部变体；sudoedit 同理。开启态不生成（sudo 免密直跑，不拦）。
 ///
+/// macOS/Windows 恒关闭态即恒拦：平台本不支持开关（turn_reminder 引导用户在
+/// 终端手跑 root 命令），自配 NOPASSWD sudoers 的 macOS 用户同样被拦——与
+/// 「平台不支持超级权限」的产品口径一致，属有意的口径收敛。deny 理由是底座
+/// 通用文案（丢失原 hook 的开关引导文案），由每 turn 的 turn_reminder 补偿。
+///
 /// [`sudo_block_rules_for`] 是其两态可注入形态（测试/桥接回归注入固定状态，
 /// 不读宿主盘）：关闭态生成 sudo/sudoedit deny，开启态（NOPASSWD 免密，sudo
 /// 不阻塞）不生成。
@@ -278,7 +292,10 @@ fn sudo_block_rules_for(enabled: bool) -> Vec<ToolAskRule> {
 }
 
 /// `find` 目录遍历守卫：只守「敏感目录本身作为搜索根 + `-path`/`-ipath`」
-/// 形态（原 hook 以尾斜杠子串拦同形态，本规则面只增不减）。
+/// 形态。相对原 hook 的同形态（尾斜杠子串拦 `find ~/.ssh/ -path …`）只增不减；
+/// 但原尾斜杠子串还拦 `-name` 等其他 find 形态与尾斜杠目录列举（`ls ~/.ssh/`），
+/// v1 不覆盖——无尾斜杠拼写（`find ~/.ssh -name`）原 hook 本就不拦。收窄项
+/// 登记在模块注释已知差异。
 ///
 /// 刻意不发「通用搜索根 + `-path`」前缀规则（`find . -path`、`find / -path`
 /// 等）：denied_prefixes 是 token 前缀匹配，`find . -path ./x -prune` 与
@@ -356,6 +373,12 @@ pub(crate) fn safety_deny_rules_for(super_permission_enabled: bool) -> Vec<ToolA
 /// 拦不住 `head -n 5 /etc/shadow`。`denied_prefixes` 通道（deny-always-wins）
 /// 才有 flag 感知 + basename 折叠 + wrapper 剥离（`deny_scan_targets`）。
 /// 提升 = deny 面不小于原 hook 的词边界正则，两条通道并存取并集。
+///
+/// 与底座 config 加载器（`PermissionsToml::ruleset()`）的唯一不对称：这里
+/// trusted 恒空、只提升 Deny。当前输入全为 typed Deny，产物与加载器逐字段
+/// 等价；若未来混入 Allow 规则，会静默丢失加载器给 Allow 的 trusted_prefix
+/// 提升（Passive 方向，偏保守不放大 deny 面）——届时应对齐加载器把 Allow
+/// 也提进 trusted。
 pub(crate) fn ruleset_with_denied_prefix_promotion(
     rules: Vec<ToolAskRule>,
 ) -> codewhale_execpolicy::Ruleset {
@@ -430,14 +453,12 @@ mod tests {
         let rules = safety_deny_rules_for(false);
         // 规则总数按段核对（关闭态）：目录 10×4 拼写×5 查看器=200 + 文件名
         // 11×2×5=110 + 绝对路径 10 拼写×5+3 命令=53 + find 敏感目录根 10×2×2=40
-        // + File 11×4+10=54 + sudo 2 = 459。快照断言用总量 + 关键成员，避免
-        // 脆断言到逐条。
-        let expected_min = 100;
-        assert!(
-            rules.len() >= expected_min,
-            "规则集明显小于迁移面: {}",
-            rules.len()
-        );
+        // + File 11×4+10=54 + sudo 2 = 459。精确计数：整段被删/被旁路时立刻红
+        // （>=100 类弱断言允许静默丢 ~78%）。注意 459 含 20 条跨段重复——规则 1
+        // 的 `.ssh` 目录 4 变体与规则 3 的 `~/.ssh/` 绝对路径条目展开出完全相同
+        // 的 20 条命令（`cat ~/.ssh` 等 ×5 查看器），dedup 只在段内做；若未来加
+        // 跨段去重，计数降到 439 属预期，需同步更新本断言。
+        assert_eq!(rules.len(), 459, "规则集总量漂移：确认是有意增删后更新计数");
         let commands: Vec<&str> = rules.iter().filter_map(|r| r.command.as_deref()).collect();
         for must in [
             "cat ~/.ssh/",
@@ -589,6 +610,12 @@ mod tests {
             "git status",
             "echo credentials-rotation-guide",
             "cat docs/id_rsa-rotation.md",
+            // 已登记收窄的 allow 留痕（模块注释「v1 已知语义差异」）：这些形态
+            // 原 hook 宽子串会拦、v1 有意放行，锁定防止未来被无意识拦回而不红。
+            "cp ~/.ssh/id_rsa /tmp/x", // 写/外传向量
+            "cat /root/.ssh/id_rsa",   // 非 ~/$HOME 前缀绝对路径
+            "cat ~/.kube/config",      // 敏感目录子路径文件
+            "ls ~/.aws/",              // 目录列举/元数据命令
         ] {
             let d = check(&engine, cmd);
             assert!(d.allow, "不应误拦: {cmd} -> {:?}", d.reason());

@@ -5,8 +5,9 @@
 # 自底座 v0.9.3 起模型/执行面只暴露 Bash 工具，第 3 段（DANGEROUS_CMDS）与
 # 第 4 段（sudo 拦截）按 `$TOOL == "exec_shell"*` 门控已静默失效；第 1/2 段
 # （路径/文件名子串）虽仍生效但按 ARGS 子串匹配误伤面大。这四段已整体迁移至
-# 底座 execpolicy 规则引擎（typed Deny 规则，先于审批/hook 执行，覆盖嵌套
-# 子代理）：pinvou3-app/src-tauri/src/features/assistant/safety_deny_rules.rs。
+# 底座 execpolicy 规则引擎（typed Deny 规则；求值在 ToolCallBefore hook 之后、
+# 审批之前，嵌套子代理暂不经过，详见 safety_deny_rules 模块注释）：
+# pinvou3-app/src-tauri/src/features/assistant/safety_deny_rules.rs。
 # 本脚本只保留第 5 段——连接器自省纠正，其工具名（list_mcp_resources*）未变
 # 且属于引导性反馈，不是危险命令策略。
 #

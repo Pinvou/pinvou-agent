@@ -1341,7 +1341,7 @@ impl Pinvou3Bridge {
             tools,
             // —— v0.8.51 上游新增字段 ——
             speech_output_dir,
-            hook_executor: _, // pinvou3 注入敏感目录防火墙 + CLI 环境 hook
+            hook_executor: _, // pinvou3 注入 bundle hook（连接器自省纠正）+ CLI 环境 hook
             // —— v0.8.53 上游新增字段,透传 default(subagent 心跳超时;配 subagent
             //    lifecycle hooks feat)。⚠️ 本地慢 vLLM 下或需像 subagent_api_timeout
             //    一样调大,先透传 default,验证后再评估。——
@@ -1703,9 +1703,24 @@ impl Pinvou3Bridge {
     /// config 加载器同语义），激活 flag 感知 / basename 折叠 / wrapper 剥离的
     /// deny-always-wins 通道。
     pub(crate) fn scope_deny_ruleset(&self, session_id: &str) -> codewhale_execpolicy::Ruleset {
+        self.scope_deny_ruleset_with(
+            session_id,
+            crate::features::assistant::safety_deny_rules::safety_deny_rules(),
+        )
+    }
+
+    /// [`scope_deny_ruleset`] 的安全段可注入形态：生产传实时读盘快照
+    /// [`safety_deny_rules::safety_deny_rules`]，测试注入固定 sudo 态（与宿主机
+    /// `/etc/sudoers.d/pinvou3` 真实状态解耦）。回归测试必须走这个入口——规则集
+    /// 组成与生产天然同源，生产增删规则源时测试同步生效，不会假绿。
+    pub(crate) fn scope_deny_ruleset_with(
+        &self,
+        session_id: &str,
+        safety_rules: Vec<codewhale_execpolicy::ToolAskRule>,
+    ) -> codewhale_execpolicy::Ruleset {
         let mut rules = self.cli_deny_rules(session_id);
         rules.extend(self.skill_script_deny_rules(session_id));
-        rules.extend(crate::features::assistant::safety_deny_rules::safety_deny_rules());
+        rules.extend(safety_rules);
         crate::features::assistant::safety_deny_rules::ruleset_with_denied_prefix_promotion(rules)
     }
 
@@ -3350,16 +3365,14 @@ mod tests {
     #[test]
     fn session_exec_policy_denies_migrated_hook_targets_under_bash_tool() {
         let bridge = fixture_bridge();
-        // 组成与 scope_deny_ruleset 完全一致，唯 sudo 段注入「关闭态」而非读
-        // 宿主盘：/etc/sudoers.d/pinvou3 存在的 Linux 真机（超级权限已开）会让
-        // 读盘快照漏掉 sudo 规则，回归测试必须与宿主状态解耦才可重复。
-        let mut rules = bridge.cli_deny_rules("sess-plain");
-        rules.extend(bridge.skill_script_deny_rules("sess-plain"));
-        rules.extend(crate::features::assistant::safety_deny_rules::safety_deny_rules_for(false));
-        let ruleset =
-            crate::features::assistant::safety_deny_rules::ruleset_with_denied_prefix_promotion(
-                rules,
-            );
+        // 走生产的可注入入口，规则集组成与 scope_deny_ruleset 天然同源（唯
+        // sudo 段注入「关闭态」而非读宿主盘：/etc/sudoers.d/pinvou3 存在的
+        // Linux 真机（超级权限已开）会让读盘快照漏掉 sudo 规则，回归测试必须
+        // 与宿主状态解耦才可重复）。
+        let ruleset = bridge.scope_deny_ruleset_with(
+            "sess-plain",
+            crate::features::assistant::safety_deny_rules::safety_deny_rules_for(false),
+        );
         let engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![ruleset]);
         // Never 是最严口径（deny-always-wins 才放行不通过）；Bypass/Auto 的
         // AskForApproval 映射为 OnFailure，deny 同样短路。
@@ -5173,7 +5186,7 @@ mod tests {
                 hook.event == HookEvent::ToolCallBefore
                     && hook.name.as_deref() == Some("pinvou3-sensitive-firewall")
             }),
-            "敏感目录硬拦截 hook 必须保留"
+            "连接器自省纠正 hook（pinvou3-sensitive-firewall，安全段已迁 execpolicy）必须保留"
         );
         // 平台脚本命令契约(原 sensitive_firewall_hook_uses_platform_script 的断言):
         // Windows 用 PowerShell 脚本,其余平台用 bash 脚本。
@@ -5220,7 +5233,7 @@ mod tests {
                 .hooks
                 .iter()
                 .any(|hook| hook.event == HookEvent::ToolCallBefore),
-            "每轮消息不得清掉敏感目录防火墙"
+            "每轮消息不得清掉 ToolCallBefore hook（连接器自省纠正）"
         );
     }
 
