@@ -90,26 +90,41 @@ Tests requiring a live model, network service, credential, or large model asset 
 Pull requests use a staged, path-aware gate. Draft pull requests run fast feedback
 (lint, build, deterministic logic tests, and Rust formatting where applicable).
 Ready pull requests add browser smokes selected from the actual diff, platform
-runtime contracts, and other affected checks. Release-chain changes run lightweight
-contract tests only; full deb, dmg, and nsis packages are built only after a
+runtime contracts, and other affected checks. Ready Rust pull requests run fast
+formatting, lint, dependency-policy, and compile feedback by default. All unknown
+Rust paths fail closed to full regression; only documented isolated leaf-feature
+boundaries use the lightweight route. Dependency, CodeWhale gitlink, app-command,
+platform, permission, credential, session, remote-control, and other high-blast-
+radius paths automatically add full Linux and Windows Rust regression before
+queueing. Maintainers can apply `ci:full-rust` to force the same full regression
+for another ready Rust pull request; the label has no effect on a draft.
+The current lightweight Rust boundaries are internal-only changes under `feedback`,
+`personas`, and `pet`. Changing their registration, app commands, shared platform
+surface, Cargo metadata, or any unclassified Rust path still runs full regression.
+Release-chain changes run lightweight contract tests only; full deb, dmg, and nsis
+packages are built only after a
 `VERSION` change reaches `main`, or through an explicit `workflow_dispatch`.
 
 The merge queue runs the applicable product gates against the actual combined tree
-of the queued pull request and the latest `main`. Rust changes run full Rust tests
-there; frontend changes run the complete browser-smoke set there. Add the
-`ci:full-rust` label to a **ready**, high-risk Rust pull request only when early full
-feedback is worth the extra run; the label does not start full Rust tests on a
-draft. During review, maintainers should inspect only required checks:
+of the queued pull request and the latest `main`. Rust changes run formatting,
+Clippy, compile, and dependency-policy checks there. High-blast-radius Rust changes
+also run the full Linux behavior regression on the combined tree; Windows coverage
+already ran on the ready PR and is not repeated. Frontend changes run browser smokes
+selected from the merge group's actual base/head diff; shared, unknown, or test-
+infrastructure paths fall back to the complete smoke set. Full Linux and Windows
+Rust regressions run on every retained `main` push and continue to warm the shared
+caches. A red main regression is a stop signal for further queueing until it is
+fixed or reverted. During review, maintainers should inspect only required checks:
 
 ```bash
 gh pr checks <number> --required
 ```
 
-Do not wait for non-required post-merge platform or release builds. Queue independent
-ready pull requests without routine rebases; resolve actual conflicts, and let the
-queue validate freshness. Maintainers may queue at most two low-risk, independent
-pull requests in one merge group. Dependency-lock, CI, release, permission, session,
-CodeWhale gitlink, and other high-risk changes enter alone.
+Do not wait for non-required post-merge platform or release builds when `main` is
+green. Queue independent ready pull requests without routine rebases; resolve actual
+conflicts, and let the queue validate freshness. Maintainers may queue at most two
+low-risk, independent pull requests in one merge group. Dependency-lock, CI, release,
+permission, session, CodeWhale gitlink, and other high-risk changes enter alone.
 
 ## Pull requests
 

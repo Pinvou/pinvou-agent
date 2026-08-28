@@ -360,8 +360,9 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 1. 渐进重构：`codex_acp` / `CodexAcpView` 同时承载 ACP 与 Native 两种运行时，
    建议逐步上提为 `code_sessions` / `CodeView`，两条链路分别做 adapter/hook。
-2. CI 增强：正式 `rust-test` 目前 skipped（Windows 只 `--no-run`），建议加
-   `ci:full-rust` 让完整测试成为该 head 的正式 check。
+2. CI hardening: high-blast-radius paths automatically run full Linux/Windows
+   `rust-test`; maintainers can add `ci:full-rust` to another ready Rust PR, and
+   high-risk merge groups retain the full Linux regression on the combined tree.
 3. 代码会话工具/技能分化（审阅建议②，已定论）：代码会话当前继承全集
    工具，已落地的隔离有——连接器工具按 scope 整形（§8.3）、隐藏
    `present_artifact`、skill 双 scope 治理（§8.6：组合目录过滤 catalogue +

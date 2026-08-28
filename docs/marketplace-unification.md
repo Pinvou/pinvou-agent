@@ -216,16 +216,18 @@ install_bundle(id):
 5. **审计成对**：授权/拦截/迁移决策落事件日志。
 6. **fork 边界**：底座只进三条通用缝；每次 gitlink 更新跑 `fork-guard.sh --fast`
    + 契约测试；fork-distinct 行为同步登记 `docs/fork-modifications.md`。
-7. **验证基线**：`cargo test --lib -- --test-threads=1` 串行全量（CI Merge Queue
-   同款），bundle 测试共享 `platform::paths::tests::ENV_LOCK` 消除环境竞争；
-   `cargo fmt --check`、`architecture-guard.py` 通过。
+7. **Validation baseline**: high-risk ready PRs and main run
+   `cargo test --lib -- --test-threads=1`; high-risk merge groups repeat the Linux
+   behavior regression on the combined tree. Bundle tests share
+   `platform::paths::tests::ENV_LOCK`; `cargo fmt --check` and
+   `architecture-guard.py` must pass.
 
 ## 11. 风险与对策
 
 | 风险 | 对策 |
 |---|---|
 | 上游不接受 ToolingSource | fork 短期沉淀可接受（用户少 = 同步冲突面小）；缝按可上游化标准设计，不掺 Pinvou 语义 |
-| Phase 3 切换爆炸半径 | 切换前新旧数据源逐字段对照测试；串行全量 + Merge Queue 为准 |
+| Phase 3 cutover blast radius | Compare old/new data sources field by field; require full serial PR regression plus the combined-tree Merge Queue gate |
 | 存量用户迁移失败 | 迁移幂等 + 失败回滚 FileSource + 重装自愈逃生门 |
 | 技能不落盘损失可调试性 | dump_session_tooling + 审计日志补上，列入 Phase 1 验收 |
 | 过渡形态沉淀为永久复杂度 | V5 条件认领等过渡设计登记退出条件（本文 §8 Phase 4），capability-governance.md 跟踪 |
