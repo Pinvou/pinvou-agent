@@ -809,12 +809,12 @@ fn extract_final_answer(output: &str) -> Option<String> {
 
 fn project_private_output(
     task: &AgentTaskInput,
-    assistant_text: String,
+    assistant_text: &str,
 ) -> Result<String, AgentBackendError> {
     match task.output_contract().map(|contract| contract.as_str()) {
-        Some("gaia-final/v1") => extract_final_answer(&assistant_text)
+        Some("gaia-final/v1") => extract_final_answer(assistant_text)
             .ok_or_else(|| backend_error("missing_final_answer")),
-        _ => Ok(assistant_text),
+        _ => Ok(assistant_text.to_owned()),
     }
 }
 
@@ -1158,8 +1158,13 @@ impl HeadlessAgentBackend for ProductHeadlessBackend {
         } else {
             SafeRunStatus::Failed
         };
-        emit_finished(observer.as_ref(), task.task_id(), status, started);
         if status != SafeRunStatus::Completed {
+            emit_finished(
+                observer.as_ref(),
+                task.task_id(),
+                SafeRunStatus::Failed,
+                started,
+            );
             let failure_code = validated_product_failure_code(turn.failure_code.as_deref());
             return self
                 .finish_failed_run_locked(
@@ -1172,22 +1177,54 @@ impl HeadlessAgentBackend for ProductHeadlessBackend {
                 )
                 .await;
         }
-        let private_output = match project_private_output(&task, turn.assistant_text) {
+        let private_output = match project_private_output(&task, &turn.assistant_text) {
             Ok(output) => output,
-            Err(error) => {
+            Err(_) => {
+                emit_finished(
+                    observer.as_ref(),
+                    task.task_id(),
+                    SafeRunStatus::Failed,
+                    started,
+                );
                 return self
-                    .fail_run_locked(session_id, &runtime_session, runtime_state, error)
+                    .finish_failed_run_locked(
+                        session_id,
+                        &runtime_session,
+                        runtime_state,
+                        turn,
+                        "missing_final_answer",
+                        elapsed,
+                    )
                     .await;
             }
         };
         let output = match self.store_private_output(session_id, private_output) {
             Ok(output) => output,
-            Err(error) => {
+            Err(_) => {
+                emit_finished(
+                    observer.as_ref(),
+                    task.task_id(),
+                    SafeRunStatus::Failed,
+                    started,
+                );
                 return self
-                    .fail_run_locked(session_id, &runtime_session, runtime_state, error)
+                    .finish_failed_run_locked(
+                        session_id,
+                        &runtime_session,
+                        runtime_state,
+                        turn,
+                        "private_output_store_failed",
+                        elapsed,
+                    )
                     .await;
             }
         };
+        emit_finished(
+            observer.as_ref(),
+            task.task_id(),
+            SafeRunStatus::Completed,
+            started,
+        );
         let mut outcome = AgentTaskOutcome::completed(elapsed).with_private_output(output);
         if let Some(usage) = turn.usage {
             outcome = outcome.with_usage(usage);
@@ -1646,6 +1683,192 @@ mod tests {
             SafeAgentEvent::ToolFinished { tool_name, .. } if tool_name == "File"
         )));
         backend.close(session).await.unwrap();
+    }
+
+    #[derive(Default)]
+    struct RecoveryMissingMarkerRuntime {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ProductRuntimePort for RecoveryMissingMarkerRuntime {
+        async fn prepare(&self, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn run(
+            &self,
+            _session_id: &str,
+            _prompt: &str,
+        ) -> anyhow::Result<ProductTurnOutcome> {
+            anyhow::bail!("legacy_run_must_not_execute")
+        }
+
+        async fn run_with_policy(
+            &self,
+            _session_id: &str,
+            _prompt: &str,
+            _policy: ProductToolPolicy,
+        ) -> anyhow::Result<ProductTurnOutcome> {
+            let call = self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(ProductTurnOutcome {
+                status: "completed".to_owned(),
+                failure_code: None,
+                assistant_text: format!("analysis without marker on turn {call}"),
+                usage: Some(if call == 0 {
+                    SafeUsageMetrics::new(100, 20, 70, 30)
+                } else {
+                    SafeUsageMetrics::new(40, 10, 25, 15)
+                }),
+                tools: vec![SafeToolOutcome {
+                    name: format!("tool-{call}"),
+                    failed: false,
+                    failure_code: None,
+                    elapsed_ms: Some(7),
+                }],
+                model_requests: vec![SafeModelRequestMetric::new(50, Some(10), 100, 20)],
+            })
+        }
+
+        async fn cancel(&self, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn close(&self, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn gaia_recovery_missing_marker_preserves_merged_diagnostics_and_failed_event() {
+        let runtime = Arc::new(RecoveryMissingMarkerRuntime::default());
+        let backend = ProductHeadlessBackend::from_runtime(runtime.clone());
+        let session = backend
+            .prepare(request("recovery-missing-marker"))
+            .await
+            .unwrap();
+        let observer = Arc::new(CollectingObserver::default());
+        let task =
+            AgentTaskInput::new("recovery-missing-marker", PrivateInputHandle::new("opaque"))
+                .with_output_contract(AgentOutputContractId::new("gaia-final/v1").unwrap());
+
+        let outcome = backend
+            .run(&session, task, Arc::new(Resolver), observer.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(runtime.calls.load(Ordering::Relaxed), 2);
+        assert_eq!(outcome.status(), SafeRunStatus::Failed);
+        assert_eq!(outcome.failure_code(), Some("missing_final_answer"));
+        assert_eq!(
+            outcome.usage(),
+            Some(SafeUsageMetrics::new(140, 30, 95, 45))
+        );
+        assert_eq!(outcome.model_request_metrics().len(), 2);
+        let events = observer.0.lock().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, SafeAgentEvent::ToolFinished { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    SafeAgentEvent::RunFinished { status, .. } => Some(*status),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            [SafeRunStatus::Failed]
+        );
+    }
+
+    #[derive(Default)]
+    struct CompletedDiagnosticRuntime;
+
+    #[async_trait]
+    impl ProductRuntimePort for CompletedDiagnosticRuntime {
+        async fn prepare(&self, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn run(
+            &self,
+            _session_id: &str,
+            _prompt: &str,
+        ) -> anyhow::Result<ProductTurnOutcome> {
+            anyhow::bail!("legacy_run_must_not_execute")
+        }
+
+        async fn run_with_policy(
+            &self,
+            _session_id: &str,
+            _prompt: &str,
+            _policy: ProductToolPolicy,
+        ) -> anyhow::Result<ProductTurnOutcome> {
+            Ok(ProductTurnOutcome {
+                status: "completed".to_owned(),
+                failure_code: None,
+                assistant_text: "FINAL ANSWER: 42".to_owned(),
+                usage: Some(SafeUsageMetrics::new(12, 3, 7, 5)),
+                tools: vec![],
+                model_requests: vec![SafeModelRequestMetric::new(25, Some(5), 12, 3)],
+            })
+        }
+
+        async fn cancel(&self, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn close(&self, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn private_output_store_failure_preserves_diagnostics_and_failed_event() {
+        let backend = ProductHeadlessBackend::from_runtime(Arc::new(CompletedDiagnosticRuntime));
+        let session = backend
+            .prepare(request("output-store-failure"))
+            .await
+            .unwrap();
+        let outputs = backend.private_outputs.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = outputs.lock().unwrap();
+                panic!("poison private output store for the failure-path test");
+            })
+            .join()
+            .is_err()
+        );
+        let observer = Arc::new(CollectingObserver::default());
+        let task = AgentTaskInput::new("output-store-failure", PrivateInputHandle::new("opaque"))
+            .with_output_contract(AgentOutputContractId::new("gaia-final/v1").unwrap());
+
+        let outcome = backend
+            .run(&session, task, Arc::new(Resolver), observer.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.status(), SafeRunStatus::Failed);
+        assert_eq!(outcome.failure_code(), Some("private_output_store_failed"));
+        assert_eq!(outcome.usage(), Some(SafeUsageMetrics::new(12, 3, 7, 5)));
+        assert_eq!(outcome.model_request_metrics().len(), 1);
+        assert_eq!(
+            observer
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|event| match event {
+                    SafeAgentEvent::RunFinished { status, .. } => Some(*status),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            [SafeRunStatus::Failed]
+        );
     }
 
     #[derive(Default)]

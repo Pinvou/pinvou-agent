@@ -51,10 +51,10 @@
 
 ### GAIA 评测隔离扩展（本地候选，未发布）
 
-- 本地候选 commit 为 `83e2d72aec63ac01caa7287b10f16a02478f9d28`，建立在不可变 r11 head 之上；它不是公开维护分支或发布标签。
+- 本地候选 commit 为 `c0e5c9f7b113929593ea1bdde72b1a2b34327394`，建立在不可变 r11 head 之上；它不是公开维护分支或发布标签。
 - 新增 `benchmark-observability` 与 `benchmark-eval-controls` 两个空的、默认关闭 feature。首字延迟/请求耗时、工具预算后 final-only 以及无歧义只读参数修复仅在父仓 `benchmark-hooks` 显式启用时编译。
 - Desktop 默认 feature 仍为 `local-embed`，不会编译上述评测分支；默认构建已单独通过。代理通配符信任、IPv6 fake-IP 特判和其他全局网络策略不在该候选中。
-- 新增 3 条 `forkguard_benchmark_*` 行为测试并登记精确候选指纹；公开子模块校验以 r12 为发布基线（见第 0 节），该候选是 fork-guard 候选分支识别的唯一未发布例外。
+- 新增 6 条 `forkguard_benchmark_*` 行为测试并登记精确候选指纹；公开子模块校验以 r12 为发布基线（见第 0 节），该候选是 fork-guard 候选分支识别的唯一未发布例外。
 
 ### 父仓 gitlink 同步勘误（2026-08-22 更正）
 

@@ -50,10 +50,10 @@ CodeWhale PR #15 combined candidate `1eca6103a` with security follow-ups `169c24
 
 ### GAIA benchmark isolation extension (local candidate, unpublished)
 
-- Local candidate `83e2d72aec63ac01caa7287b10f16a02478f9d28` is based directly on immutable r11. It is not a public maintenance-branch or release-tag head.
+- Local candidate `c0e5c9f7b113929593ea1bdde72b1a2b34327394` is based directly on immutable r11. It is not a public maintenance-branch or release-tag head.
 - Two empty, default-off features, `benchmark-observability` and `benchmark-eval-controls`, contain request/TTFT metrics, the post-budget final-only fuse, and deterministic repair of unambiguous read-only calls. The parent enables them only through `benchmark-hooks`.
 - Desktop keeps `local-embed` as its default feature and does not compile these paths. The default build passes independently. This candidate contains no wildcard proxy trust, IPv6 fake-IP exception, or other global network-policy change.
-- Three `forkguard_benchmark_*` behavior tests and an exact local-candidate guard protect the boundary. Public-submodule verification recognizes r12 as the published baseline (see section 0); this candidate is the sole unpublished exception, matched only by the fork-guard candidate branch.
+- Six `forkguard_benchmark_*` behavior tests and an exact local-candidate guard protect the boundary. Public-submodule verification recognizes r12 as the published baseline (see section 0); this candidate is the sole unpublished exception, matched only by the fork-guard candidate branch.
 
 ### Published session fix
 
