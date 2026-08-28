@@ -1015,6 +1015,23 @@ pub fn import_plugin_package(
         let _ = std::fs::remove_dir_all(&backup);
     }
 
+    // 导入即重基线：包内容整体替换后，旧包的 SKILL.md 说明备份（存于 extra，
+    // upsert_preserving 原样保留）随之失效——不清掉会让「清覆盖恢复」把**旧包**
+    // 的原描述写进新包（口径同 skill_marketplace::import_package_named）。三条
+    // UI 上传通道（选文件/拖 zip/拖 .md）都汇聚在这条统一导入路径上；首装无
+    // 备份时不写，避免无谓 churn。
+    // 位置契约：必须在 rename 成功之后**立即**执行、早于任何可能失败的供给
+    // 步骤（install_upload / upsert_preserving）。重基线与否取决于「内容已整
+    // 体替换」而非「整个导入成功」——若供给在重基线前失败早退（如 MCP 凭据缺
+    // 失），磁盘已是新包而备份仍指旧包，后续「清覆盖恢复」会把旧描述写进新
+    // SKILL.md（正是本块要防的损坏类）。
+    let store = super::store::BundleStore::new();
+    if matches!(store.skill_desc_backup(&id), Ok(Some(_))) {
+        if let Err(e) = store.set_skill_desc_backup(&id, None) {
+            log::warn!("[plugin-import] 清理说明备份失败（import {id}）: {e}");
+        }
+    }
+
     // 供给：MCP 组件走 install 管线写 mcp.json + installed.json（底座据此拉起 server，
     // 工具才能注册可用）。纯 skill 包无 mcp/ 目录，跳过（技能走物化通道）。
     // 注：旧 spanner 供给路径已删除；skill 包无可执行供给（tools[]/runtime 协议
@@ -1063,17 +1080,9 @@ pub fn import_plugin_package(
     if let Err(e) = super::store::BundleStore::new().upsert_preserving(record) {
         log::warn!("[plugin-import] bundles.json 镜像写入失败（import {id}）: {e}");
     }
-    // 导入即重基线：包内容整体替换后，旧包的 SKILL.md 说明备份（存于 extra，
-    // upsert_preserving 原样保留）随之失效——不清掉会让「清覆盖恢复」把**旧包**
-    // 的原描述写进新包（口径同 skill_marketplace::import_package_named）。三条
-    // UI 上传通道（选文件/拖 zip/拖 .md）都汇聚在这条统一导入路径上；首装无
-    // 备份时不写，避免无谓 churn。
-    let store = super::store::BundleStore::new();
-    if matches!(store.skill_desc_backup(&id), Ok(Some(_))) {
-        if let Err(e) = store.set_skill_desc_backup(&id, None) {
-            log::warn!("[plugin-import] 清理说明备份失败（import {id}）: {e}");
-        }
-    }
+    // （导入即重基线：包内容整体替换后旧包的说明备份随之失效，必须在 rename
+    // 成功后立即清理、早于任何可能失败的供给步骤——见上方 rename 成功后的
+    // 重基线块，勿移回此处。）
 
     Ok(PluginImportReport {
         id,
