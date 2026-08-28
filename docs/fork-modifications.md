@@ -4,19 +4,25 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-27 · v0.9.5 r11 四主题公开基线）
+## 0. 当前状态（2026-08-28 · v0.9.5 r12 基线，父仓 gitlink 由 PR #375 接入）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `0d89a31be` |
-| 已合并修复 | 既有 `#9`、`#11`、`#12`、`#13`、`#15`、`#16`、`#17`、`#19`，以及 r11 的 `#18`、`#21`、`#22`、`#25`、`#26`、`#27`、`#29`、`#30` 均已合并；公开维护分支固定于 `pinvou-v0.9.5-r11` |
-| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r11` 与父仓 gitlink 均指向 `0d89a31be016457c180501417dd2c0f34ce844a6`；`r1` 至 `r11` 保持不可变 |
+| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，r12 head `9c5f4f19`（#33 六提交 + #35 已 rebase 合入） |
+| 已合并修复 | 既有 `#9`、`#11`、`#12`、`#13`、`#15`、`#16`、`#17`、`#19`，以及 r11 的 `#18`、`#21`、`#22`、`#25`、`#26`、`#27`、`#29`、`#30`，r12 的 `#33`、`#35` 均已合并 |
+| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r11` 与 r11 父仓 gitlink 均指向 `0d89a31be016457c180501417dd2c0f34ce844a6`；`r1` 至 `r11` 保持不可变；r12 底座侧已落地（`pinvou3-clean` 与 tag `pinvou-v0.9.5-r12` 指向 `9c5f4f19`），父仓 gitlink 由 PR #375 接入 |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
-| drift | r11 公开基线 `96 files changed, +7840/-980`；净增 6860 行；r10→r11 为 `48 files changed, +2242/-292` |
-| 守护 | r11 为 56 条 CodeWhale `forkguard_*` 行为测试 + 通用工具/路由兼容回归 + 父仓指纹/行为测试 |
-| 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配、拒绝编辑的终态/权威历史对账、压缩后用量即时刷新与持久化回填，以及严格直连模型大小写桥接回归 |
+| drift | r12 基线合计 `110 files, +9781/-1168`（净增 8613 行）；r11→r12 为 `17 files, +1941/-188` |
+| 守护 | r12 为 57 条 CodeWhale `forkguard_*` 行为测试 + 通用工具/路由兼容回归 + 父仓指纹/行为测试 |
+| 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配、拒绝编辑的终态/权威历史对账、压缩后用量即时刷新与持久化回填、严格直连模型大小写桥接回归，以及搜索源设置页引导文案 |
+
+### r12 厂商原生搜索与免 key 兜底 Bing 化（已合入底座）
+
+- CodeWhale PR #33（六提交 rebase 后以 `4f612e548` 汇入）：新增 DeepSeek Responses、Model Studio Token Plan（Qwen）、Moonshot/Kimi（K2.6 内建 `$web_search`、K3 官方 Formula 协议、Kimi Code `/search`）、Z.AI/智谱（全球 `search-prime` / 中国 `search_std`）、Xiaomi MiMo 的厂商原生搜索适配。能力按"厂商+模型+官方端点+产品面"四重精确匹配 fail-closed，K3 Formula 独立 180 秒预算与 8 次调用上限；评审发现的端点匹配宽松（整 URL 小写、无限剥尾斜杠）由收官提交 `4f612e548` 引入 `is_exact_url_route` 收紧。指纹锚点：`documented_server_side_web_search_for_route`、`WEB_SEARCH_FORMULA_URI`。
+- CodeWhale PR #35（`9c5f4f19` 汇入）：API 后端（Tavily/Bocha/Metaso/Baidu/SearXNG/Volcengine/Sofya）失败后的免 key 链尾由 DuckDuckGo 换成 Bing（实测 DDG 在中国大陆 DNS 污染 + SNI 重置不可达，Bing 全球与国内端点均免 key 可达）；全链失败错误追加 API 后端配置建议；新增 `forkguard_api_provider_chain_tail_is_bing`（forkguard 总数 56→57）。
+- 父仓配套（本 PR）：gitlink → `9c5f4f19`、设置页搜索源引导文案（i18n 三语）、`prefs/search.rs` 注释勘误与 `bridge.rs` 注入点注释/测试 docstring 同步勘误（底座默认仍为 DuckDuckGo，应用侧默认 Bing 由 bridge 构造 `EngineConfig` 时显式注入）。
 
 ### r11 Provider、MCP、steer 与平台边界（已发布）
 
@@ -105,7 +111,7 @@
 
 ### T2：工具兼容与命令执行安全
 
-- **commits**：`595adce47e2d1bcf895d7bfd6426c074eb969324`、`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`（`#12`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`#13`）、`d127aed113529dc93754d044b9f352e9746f6b83`（`#15`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`#16` 的 Shell 取消边界）、`44730dfe596b70f86ae2f928959877a3e3f494e4`（`#27`）、`665b46cd9e67326459223aa662931bd36d726004`（`#29`）、`04e109af4b4786a0d49fbbeefdd77af15a9f495e`（`#22`）、`4831c3797b76485a912b056c76a4cff22f0a2863`（`#25`）、`e68a185c2ba07f327bd8b63bbfea6a70a96f33ea`（`#26`）。
+- **commits**：`595adce47e2d1bcf895d7bfd6426c074eb969324`、`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`（`#12`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`#13`）、`d127aed113529dc93754d044b9f352e9746f6b83`（`#15`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`#16` 的 Shell 取消边界）、`44730dfe596b70f86ae2f928959877a3e3f494e4`（`#27`）、`665b46cd9e67326459223aa662931bd36d726004`（`#29`）、`04e109af4b4786a0d49fbbeefdd77af15a9f495e`（`#22`）、`4831c3797b76485a912b056c76a4cff22f0a2863`（`#25`）、`e68a185c2ba07f327bd8b63bbfea6a70a96f33ea`（`#26`）、`ecfd68acc056b95b06d98312753a712e4c0755db`、`603eeadcdab65d71d62a5ac32b6700207433fe5c`、`eb25a255a92f7385a3fde74f1f44626cdd068125`、`8c243e7ea7094fff189ab12582aea0460b655d06`、`8111f8150bc6b103da685f6abc3f26143b3bb207`、`4f612e548090616f8206154e37c9895404a8998b`（以上六项为 `#33` 厂商原生搜索）、`9c5f4f19b0acbc960889778a5873c7fb038b1378`（`#35` 免 key 链尾 Bing 化）。
 - **核心文件**：`core/engine.rs`、`core/engine/tool_setup.rs`、`core/ops.rs`、`tools/file.rs`、`command_safety.rs`、`tools/shell.rs`、`docs/TOOL_SURFACE.md`。
 - **内容**：
   - `EngineConfig.extra_tools` 让宿主工具在 Plan、Agent、Yolo 等 turn registry 中一致注册。
@@ -189,7 +195,7 @@ CodeWhale 当前已通过：
 cargo fmt --all -- --check
 cargo check / Pinvou fork CI
 cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
-56 passed / 0 failed
+57 passed / 0 failed
 ```
 
 父仓当前已通过：
@@ -197,17 +203,17 @@ cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
 ```text
 cargo fmt --all -- --check
 ./scripts/fork-guard.sh
-CodeWhale 56 passed；pinvou3-app 22 passed
+CodeWhale 57 passed；pinvou3-app 22 passed
 cargo test --lib --locked forkguard_admitted_display_fallback -- --test-threads=1
 2 passed / 0 failed
 node --test pinvou3-app/tests/scheduled_tasks_unit.test.js
 PASS
 python3 scripts/architecture-guard.py
 ./scripts/verify-public-submodule.sh
-pinvou-v0.9.5-r11 -> 0d89a31be016457c180501417dd2c0f34ce844a6
+pinvou-v0.9.5-r12 -> 9c5f4f19b0acbc960889778a5873c7fb038b1378
 ```
 
-完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。环境相关忽略/基线失败按实际验证披露；`scripts/verify-public-submodule.sh` 已锁定不可变标签 `pinvou-v0.9.5-r11` 与父仓 gitlink 一致。
+完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。环境相关忽略/基线失败按实际验证披露；`scripts/verify-public-submodule.sh` 已锁定不可变标签 `pinvou-v0.9.5-r12` 与父仓 gitlink 一致。
 
 ## 5. 后续修改规则
 

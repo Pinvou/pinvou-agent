@@ -1459,9 +1459,10 @@ impl Pinvou3Bridge {
             workshop,
             snapshots_max_workspace_bytes,
             // pinvou3 search 后端: prefs 翻译。
-            // Bing 是默认 (fork patch #42 在底座 SearchProvider::default());Metaso/Bocha/Baidu
-            // 是 GUI 切换项。底座 web_search 对 Metaso 留空 key 用内置共享 key
-            // (~100 次/天),对 Bocha/Baidu 留空 key 直接报 ToolError "requires API key"。
+            // 底座默认仍是 DuckDuckGo;这里构造 EngineConfig 时丢弃底座默认、显式注入
+            // prefs 默认 Bing (forkguard_search_provider_translates_from_prefs 锁定)。
+            // Metaso/Bocha/Baidu 是 GUI 切换项。底座 web_search 对 Metaso 留空 key 用
+            // 内置共享 key (~100 次/天),对 Bocha/Baidu 留空 key 直接报 ToolError "requires API key"。
             search_provider: match self.prefs.search.provider {
                 prefs::SearchProvider::Bing => deepseek_tui::config::SearchProvider::Bing,
                 prefs::SearchProvider::Metaso => deepseek_tui::config::SearchProvider::Metaso,
@@ -4589,7 +4590,8 @@ mod tests {
     }
 
     /// EngineConfig.search_provider 必须由 prefs.search 翻译,不能透传上游 default。
-    /// 默认 prefs 是 Bing(国情:DDG 被 GFW + 代理 datacenter IP 反爬,基本不可用)。
+    /// 默认 prefs 是 Bing(国情:DDG 在大陆被 DNS 污染 + SNI 重置,完全不可达;
+    /// 底座自身默认仍是 DuckDuckGo,应用侧默认 Bing 由本桥接显式注入)。
     /// 切到 Metaso/Bocha 时 prefs.search.api_key 必须透传到 EngineConfig.search_api_key
     /// (Bocha 必填,Metaso 留空可走底座内置共享 key)。
     /// 下次 sync 若 destructure 块把 search_provider/search_api_key 改回透传 default,
