@@ -414,43 +414,9 @@ pub fn transcribe(wav: &Path) -> Result<String, String> {
     Ok(text)
 }
 
-/// 剥 `[start-end]` 时间戳前缀，拼接多段，再去掉 `<|zh|><|NEUTRAL|>` 等控制标记。
+/// Parse engine output through the shared voice transcript protocol handler.
 fn clean_engine_output(stdout: &str) -> String {
-    let mut parts = Vec::new();
-    for line in stdout.lines() {
-        let line = line.trim();
-        // 形如 "[1.22-1.86] 文字"
-        if let Some(rest) = line.strip_prefix('[') {
-            if let Some(idx) = rest.find(']') {
-                let text = rest[idx + 1..].trim();
-                if !text.is_empty() {
-                    parts.push(text.to_string());
-                }
-            }
-        }
-    }
-    strip_control_markers(&parts.join(""))
-}
-
-/// 去掉所有 `<|...|>` 控制标记（SenseVoice 偶发泄漏的语言/情感/事件标记）。
-fn strip_control_markers(s: &str) -> String {
-    let mut out = String::new();
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '<' && chars.peek() == Some(&'|') {
-            chars.next(); // 吃掉 '|'
-                          // 跳到 "|>"
-            while let Some(n) = chars.next() {
-                if n == '|' && chars.peek() == Some(&'>') {
-                    chars.next();
-                    break;
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out.trim().to_string()
+    super::parse_asr_transcript(stdout, "").unwrap_or_default()
 }
 
 /// 前端查询本地语音识别各组件就绪状态。

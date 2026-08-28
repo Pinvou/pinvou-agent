@@ -1057,6 +1057,55 @@ fn agentic_guide_mentions_collection_and_kb_search() {
 fn parses_local_asr_plain_text_output() {
     let text = parse_local_asr_text("hello from voice\n", "").expect("plain text");
     assert_eq!(text, "hello from voice");
+    assert_eq!(
+        parse_local_asr_text("[0-.5] Hello\n[.5-1] .\n[1-1.5] World\n", ""),
+        Some("Hello. World".to_string())
+    );
+}
+
+#[test]
+fn parses_local_asr_numeric_only_output() {
+    let text = parse_local_asr_text("123\n", "").expect("numeric transcript");
+    assert_eq!(text, "123");
+    assert_eq!(
+        parse_local_asr_text("123\n100%\n", "100/100%\n12:34:56\n"),
+        Some("123".to_string())
+    );
+    assert_eq!(parse_local_asr_text("100%\n", ""), None);
+    assert_eq!(
+        parse_local_asr_text("１２３\n", ""),
+        Some("１２３".to_string())
+    );
+    assert_eq!(
+        parse_local_asr_text(r#"{"text":"123"}"#, ""),
+        Some("123".to_string())
+    );
+    assert_eq!(parse_local_asr_text("", "100/100%\n100\n12:34:56\n"), None);
+    assert_eq!(
+        parse_local_asr_text(
+            "{\"timestamp\":0,\"text\":\"hello\"}\n{\"timestamp\":1,\"text\":\"world\"}\n",
+            ""
+        ),
+        Some("hello world".to_string())
+    );
+    assert_eq!(
+        parse_local_asr_text("1\n00:00:03,000 --> 00:00:04,000\n", ""),
+        None
+    );
+    assert_eq!(
+        parse_local_asr_text("hello world\n", "4\n"),
+        Some("hello world".to_string()),
+        "a lone numeric stderr line must not shadow a plain stdout result"
+    );
+    assert_eq!(
+        parse_local_asr_text("", "4\n"),
+        Some("4".to_string()),
+        "numeric-only speech on a clean stderr stream remains valid"
+    );
+    assert!(
+        parse_local_asr_text("...\n", "[INFO] loading\n").is_none(),
+        "punctuation and log output must not become a transcript"
+    );
 }
 
 #[test]
