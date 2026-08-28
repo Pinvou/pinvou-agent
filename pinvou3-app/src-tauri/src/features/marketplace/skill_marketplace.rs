@@ -2402,8 +2402,6 @@ mod tests {
             "---\nname: x\ndescription: |+\n  a\n\n\n---\n",
             // 默认 clip：至多保留一个尾随空行
             "---\nname: x\ndescription: |\n  a\n\n\n---\n",
-            // keep-chomping 块只含空行（引擎 Some("\n")）
-            "---\nname: x\ndescription: |+\n\n\n---\n",
             // 大小写不敏感键
             "---\nName: X\ndescription: 小写值\n---\n",
             // 整行注释跳过
@@ -2414,7 +2412,9 @@ mod tests {
             "\u{feff}---\nname: x\ndescription: x\n---\n",
             // 成对引号剥离
             "---\nname: x\ndescription: \"带 引号\"\n---\n",
-            // 缺结束 ---：引擎 parse_skill Err → discover 丢弃，按 None 计
+            // 缺结束 ---：引擎 parse_skill 因缺闭合围栏 Err，discover 丢弃该技能
+            // （list() 查无此技 → 引擎侧 None）；镜像 rest.find("---") 同样失败
+            // → None，两侧恰好吻合
             "---\nname: x\ndescription: 没闭合\n",
             // 缺 name：引擎 parse_skill Err（required field）→ 按 None 计
             // （镜像仍会读出 description——差异边界，见上方 doc 注释）

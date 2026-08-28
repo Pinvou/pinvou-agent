@@ -1025,6 +1025,10 @@ pub fn import_plugin_package(
     // 体替换」而非「整个导入成功」——若供给在重基线前失败早退（如 MCP 凭据缺
     // 失），磁盘已是新包而备份仍指旧包，后续「清覆盖恢复」会把旧描述写进新
     // SKILL.md（正是本块要防的损坏类）。
+    // 锁边界（MINOR 1 口径）：本块全程持有 import_lock（guard 至函数尾），且
+    // skill_desc_backup / set_skill_desc_backup 各持 store 的 file_lock（
+    // BundleStore 所有读写路径同一把），同 id 的导入与展示说明回写/恢复因此
+    // 互斥，无「读备份 → 写 SKILL.md」窗口被重导入插队的竞态。
     let store = super::store::BundleStore::new();
     if matches!(store.skill_desc_backup(&id), Ok(Some(_))) {
         if let Err(e) = store.set_skill_desc_backup(&id, None) {
