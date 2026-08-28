@@ -764,8 +764,8 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   const chatBridgeSource2 = read('src', 'platform', 'tauri', 'bridge', 'chat.js');
   assert.match(
     chatBridgeSource2,
-    /prefillComposer\(text\);\s*return;/,
-    '物化中止时输入必须回填输入框，不得静默丢字（复核 P1）',
+    /prefillComposer\(text(?:,\s*true)?\);\s*return;/,
+    '物化中止时输入必须回填输入框，不得静默丢字（复核 P1；复审 #4 起恢复类 prefill 带 append=true）',
   );
   assert.match(
     toolRenderersSource,

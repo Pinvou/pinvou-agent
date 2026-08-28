@@ -34,8 +34,9 @@ export const desktopOnlyBridgeApi = {
   knowledge: ['loadKnowledgeEmbedderAfterFirstFrame', 'mountRemoteCollection', 'removeRemoteCollection', 'setRemoteCollectionEnabled'],
   // 多智能体开关是桌面专属操作（ADR-0006）：Web 端只读呈现。
   interaction: ['setMultiAgentMode'],
-  // steer 通道(远控/其他宿主用)与排队 chip 的 ⚡ 瞬发走底座 EnginePool,
-  // 需要 Tauri 命令通道;Web 端无 backend
+  // The steer channel (remote control / other hosts) and the queued chip's
+  // zap-send go through the foundation EnginePool and need the Tauri command
+  // channel; web has no such backend.
   chat: ['steer', 'interruptAndSend', 'interruptAndSendQueued'],
 };
 

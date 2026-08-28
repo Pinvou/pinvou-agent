@@ -609,6 +609,23 @@ function tick() {
   return new Promise(function (resolve) { setImmediate(resolve); });
 }
 
+// Stalled-promise guard (self-review P1-5 / re-review #5): event-driven tests
+// that await a guarded race (pre-registered chat:done listener / generation
+// matching) hang forever once that regression fires — the harness's fake
+// timers never drive the 25s fallback, and node --test then exits 0 with the
+// regression live (verified with a minimal repro). Race the await against a
+// REAL 5s timer so the "matching event must unlock" direction also fails
+// loudly instead of stalling silently.
+function withStallGuard(promise, label) {
+  let timerId = null;
+  const guard = new Promise(function (_, reject) {
+    timerId = setTimeout(function () {
+      reject(new Error("test stalled: " + label));
+    }, 5000);
+  });
+  return Promise.race([promise, guard]).finally(function () { clearTimeout(timerId); });
+}
+
 function createBridgeHarness(sharedStorage, runtimeOptions) {
   runtimeOptions = runtimeOptions || {};
   const bridgeKind = runtimeOptions.bridgeKind === "web" ? "web" : "tauri";
@@ -2236,8 +2253,9 @@ async function followupQueuedUntilScheduledInitialTurnTerminal() {
     unread: false,
   }, { id: "automation-followup", name: "Follow-up task" }), true);
   harness.emit("chat:delta", { session_id: "sched-followup", text: "initial scheduled output" });
-  // load_session mock 必须按 args.id 返回对应 id:固定 id 会把其他会话的
-  // 切换目标错标,退出时把工作集交叉写进错的 buffer。
+  // The load_session mock must return the id from args.id: a fixed id
+  // mislabels switch targets for other sessions and cross-writes the working
+  // set into the wrong buffer on exit.
   harness.handlers.load_session = function (args) {
     if (args.id !== "sched-followup") {
       return { metadata: { id: args.id, title: "Origin" }, messages: [], artifacts: [] };
@@ -2256,7 +2274,8 @@ async function followupQueuedUntilScheduledInitialTurnTerminal() {
 
   await bridge.chat.sendMessage("follow up after the scheduled run");
   let queued = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  // busy 发送 = steer 注入:chip 立即显示并等 steer_committed 结算
+  // Busy send = steer injection: the chip shows immediately and waits for
+  // steer_committed settlement.
   assert.strictEqual(queued.queued.length, 1, "follow-up chip should linger above input after click");
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "steer_chat"; }).length,
@@ -2271,7 +2290,8 @@ async function followupQueuedUntilScheduledInitialTurnTerminal() {
   await tick();
   await tick();
 
-  // 引擎真正投递:steer_committed 按 steer_id 结算 chip → 气泡
+  // Real engine delivery: steer_committed settles the chip by steer_id →
+  // bubble.
   await harness.emit("chat:steer_committed", { session_id: "sched-followup", steer_id: "steer-f1" });
   await tick();
   queued = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
@@ -2350,7 +2370,7 @@ async function webFollowupQueuedUntilScheduledInitialTurnTerminal() {
   assert.strictEqual(flushed.busy, true, "web: the flushed follow-up should own the next busy turn");
 }
 
-// ── 排队区语义（busy steer 注入 / chip × 撤回 / chip ⚡ 瞬发）─────────
+// ── Queue semantics (busy steer inject / chip × withdraw / chip ⚡ zap-send) ─────────
 async function busySendSteersIntoEngineAndSettlesChip() {
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
@@ -2361,20 +2381,21 @@ async function busySendSteersIntoEngineAndSettlesChip() {
 
   await bridge.chat.sendMessage("生成中注入的一句");
   let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 1, "busy 发送立即进排队浮层");
+  assert.strictEqual(view.queued.length, 1, "busy send enters the queue overlay immediately");
   const steerCalls = harness.calls.filter(function (call) { return call.cmd === "steer_chat"; });
-  assert.strictEqual(steerCalls.length, 1, "busy 发送立即 steer 注入引擎(步骤间隙自动插入)");
+  assert.strictEqual(steerCalls.length, 1, "busy send steers into the engine immediately (auto-inserted at step gaps)");
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
     0,
-    "busy 发送不直接起新 turn"
+    "busy send does not start a new turn directly"
   );
   await tick();
   await tick();
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued[0].steerId, "steer-1", "invoke 返回后回填 opaque steer_id");
+  assert.strictEqual(view.queued[0].steerId, "steer-1", "opaque steer_id backfilled after the invoke resolves");
 
-  // 中文内容也必须按 steer_id 命中（旧 content_hash 方案两侧编码不同必然失配）
+  // CJK content must also match by steer_id (the old content_hash scheme
+  // necessarily mismatched across the two encodings).
   await harness.emit("chat:steer_committed", { session_id: "chat-queue-local", steer_id: "steer-1" });
   await tick();
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
@@ -2386,8 +2407,8 @@ async function busySendSteersIntoEngineAndSettlesChip() {
 }
 
 async function removeQueuedSteeredChipWithdrawsFromEngine() {
-  // × on steered chip:乐观移除 + withdraw_steer 真撤回;引擎随后的
-  // steer_dropped 幂等,不得重复提示。
+  // × on a steered chip: optimistic removal + a real withdraw_steer; the
+  // engine's subsequent steer_dropped is idempotent and must not re-notify.
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-queue-cancel"), true);
@@ -2404,13 +2425,14 @@ async function removeQueuedSteeredChipWithdrawsFromEngine() {
 
   bridge.chat.removeQueued(queuedId);
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 0, "× 乐观移除 chip");
+  assert.strictEqual(view.queued.length, 0, "× removes the chip optimistically");
   const withdrawCalls = harness.calls.filter(function (call) { return call.cmd === "withdraw_steer"; });
-  assert.strictEqual(withdrawCalls.length, 1, "× 触发 withdraw_steer 真撤回");
+  assert.strictEqual(withdrawCalls.length, 1, "× triggers a real withdraw_steer");
   assert.strictEqual(withdrawCalls[0].args.sessionId, "chat-queue-cancel");
   assert.strictEqual(withdrawCalls[0].args.steerId, "steer-w1");
 
-  // 引擎确认丢弃:幂等,chip 已不在则不得重复提示
+  // Engine confirms the drop: idempotent — the chip is already gone, so
+  // no duplicate notice.
   await harness.emit("chat:steer_dropped", { session_id: "chat-queue-cancel", steer_id: "steer-w1" });
   await tick();
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
@@ -2419,12 +2441,13 @@ async function removeQueuedSteeredChipWithdrawsFromEngine() {
     !view.chatItems.some(function (item) {
       return item.type === "system" && String(item.text || "").includes("未送达");
     }),
-    "撤回后的 steer_dropped 静默结算,不重复提示"
+    "steer_dropped after a withdrawal settles silently, no duplicate notice"
   );
 }
 
 async function removeQueuedBeforeSteerIdBackfillWithdrawsOnBackfill() {
-  // × 早于 invoke 返回(id 未回填):本地标记 cancelled,回填后立即补发撤回。
+  // × before the invoke resolves (id not backfilled): mark cancelled
+  // locally; the withdrawal fires right after backfill.
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-cancel-early"), true);
@@ -2440,7 +2463,7 @@ async function removeQueuedBeforeSteerIdBackfillWithdrawsOnBackfill() {
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "withdraw_steer"; }).length,
     0,
-    "id 未回填时无法撤回,只能等回填"
+    "cannot withdraw before the id is backfilled — wait for backfill"
   );
 
   steerCall.resolve("steer-w2");
@@ -2448,13 +2471,14 @@ async function removeQueuedBeforeSteerIdBackfillWithdrawsOnBackfill() {
   await tick();
   await tick();
   const withdrawCalls = harness.calls.filter(function (call) { return call.cmd === "withdraw_steer"; });
-  assert.strictEqual(withdrawCalls.length, 1, "steer_id 回填后立即补发撤回");
+  assert.strictEqual(withdrawCalls.length, 1, "withdrawal fires immediately once steer_id is backfilled");
   assert.strictEqual(withdrawCalls[0].args.steerId, "steer-w2");
 }
 
 async function attachmentQueuedChipCancelNeverTouchesEngine() {
-  // 回归(原 bug 的残留面):带附件 chip 是纯本地排队(不 steer),× 取消必须
-  // 零引擎调用。
+  // Regression (leftover surface of the original bug): attachment chips
+  // are plain local queue entries (no steer), so × cancel must make zero
+  // engine calls.
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-attach-cancel"), true);
@@ -2467,17 +2491,17 @@ async function attachmentQueuedChipCancelNeverTouchesEngine() {
 
   await bridge.chat.sendMessage("");
   let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 1, "带附件 busy 发送进纯本地排队");
+  assert.strictEqual(view.queued.length, 1, "busy send with attachments goes to plain local queuing");
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "steer_chat"; }).length,
     0,
-    "带附件 chip 不 steer(steer 通道只载文本)"
+    "attachment chips are not steered (the steer channel carries text only)"
   );
   const queuedId = view.queued[0].id;
 
   bridge.chat.removeQueued(queuedId);
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 0, "× 移除附件 chip");
+  assert.strictEqual(view.queued.length, 0, "× removes the attachment chip");
 
   harness.emit("chat:done", { session_id: "chat-attach-cancel" });
   await tick();
@@ -2487,20 +2511,20 @@ async function attachmentQueuedChipCancelNeverTouchesEngine() {
       return call.cmd === "chat" || call.cmd === "steer_chat" || call.cmd === "withdraw_steer";
     }).length,
     0,
-    "纯排队 chip 的 × 取消全程零引擎调用"
+    "× cancel on a plain queued chip makes zero engine calls"
   );
 }
 
 async function interruptQueuedSteeredChipWithdrawsBeforeSending() {
-  // ⚡ on steered chip:先 withdraw_steer(防引擎残留后续注入重复),
-  // 再 cancel + chat。
+  // ⚡ on a steered chip: withdraw_steer first (prevent a leftover engine
+  // copy injecting later as a duplicate), then cancel + chat.
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-queue-zap"), true);
   harness.emit("chat:turn_started", { session_id: "chat-queue-zap" });
   await tick();
   harness.handlers.steer_chat = function () { return "steer-z1"; };
-  // cancel 立即确认终态,避免走 chat:done 事件等待
+  // cancel confirms the terminal immediately, skipping the chat:done event wait.
   harness.handlers.cancel_generation = function () { return { terminal: true, generation: 1 }; };
 
   await bridge.chat.sendMessage("要瞬发的一句");
@@ -2511,26 +2535,26 @@ async function interruptQueuedSteeredChipWithdrawsBeforeSending() {
   const queuedId = view.queued[0].id;
 
   const result = await bridge.chat.interruptAndSendQueued("chat-queue-zap", queuedId);
-  assert.strictEqual(result, true, "⚡ 瞬发成功");
+  assert.strictEqual(result, true, "zap-send succeeds");
   await tick();
   await tick();
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 0, "⚡ 瞬发后 chip 移除");
+  assert.strictEqual(view.queued.length, 0, "chip removed after the zap-send");
   const indexOf = function (cmd) {
     return harness.calls.findIndex(function (call) { return call.cmd === cmd; });
   };
   const withdrawIndex = indexOf("withdraw_steer");
   const cancelIndex = indexOf("cancel_generation");
   const chatIndex = indexOf("chat");
-  assert.ok(withdrawIndex >= 0, "⚡ 先撤回引擎里的 steer 副本");
-  assert.ok(cancelIndex > withdrawIndex, "withdraw 先于 cancel");
-  assert.ok(chatIndex > cancelIndex, "cancel 先于 chat");
+  assert.ok(withdrawIndex >= 0, "⚡ first withdraws the engine-side steer copy");
+  assert.ok(cancelIndex > withdrawIndex, "withdraw precedes cancel");
+  assert.ok(chatIndex > cancelIndex, "cancel precedes chat");
   assert.strictEqual(harness.calls[withdrawIndex].args.steerId, "steer-z1");
-  assert.strictEqual(harness.calls[cancelIndex].args.keepInbox, true, "打断语义保留引擎侧未注入 steer");
+  assert.strictEqual(harness.calls[cancelIndex].args.keepInbox, true, "interrupt semantics keep engine-side un-injected steers");
   assert.strictEqual(harness.calls[chatIndex].args.message, "要瞬发的一句");
   assert.ok(
     view.chatItems.some(function (item) { return item.type === "user" && item.text === "要瞬发的一句"; }),
-    "⚡ 瞬发渲染用户气泡"
+    "zap-send renders the user bubble"
   );
 }
 
@@ -2550,42 +2574,44 @@ async function interruptQueuedFailureRestoresChipToQueue() {
   const queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
 
   const result = await bridge.chat.interruptAndSendQueued("chat-queue-zap-fail", queuedId);
-  assert.strictEqual(result, false, "⚡ 失败返回 false");
+  assert.strictEqual(result, false, "zap failure returns false");
   await tick();
   await tick();
   const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 1, "⚡ 失败把消息恢复到排队区(不是输入框)");
+  assert.strictEqual(view.queued.length, 1, "zap failure restores the message to the queue (not the composer)");
   assert.strictEqual(view.queued[0].text, "瞬发失败要回排队区");
-  assert.strictEqual(view.queued[0].steered, false, "恢复的 chip 降级为非 steered:撤回已发出,保持 steered 会阻塞 flushQueued 且下一轮永远不来");
-  assert.strictEqual(view.queued[0].steerId, null, "降级后 steerId 清空,chip 由 flushQueued 正常消费");
+  assert.strictEqual(view.queued[0].steered, false, "the restored chip is degraded to non-steered: the withdrawal is out, staying steered would block flushQueued and the next round never comes");
+  assert.strictEqual(view.queued[0].steerId, null, "steerId cleared after degradation; the chip is consumed normally by flushQueued");
   assert.ok(
     view.chatItems.some(function (item) {
       return item.type === "system" && String(item.text || "").includes("插队发送失败");
     }),
-    "⚡ 失败给出本地化提示"
+    "zap failure gives a localized notice"
   );
 }
 
 async function interruptQueuedWhileIdleSendsWithoutCancel() {
-  // 非 busy 时队列残留(legacy 后端的 steered chip 等不到事件)→ ⚡ 直接发送,
-  // 不 cancel;chip 无 steerId 可撤回,只打取消标记。
+  // Queue leftover while not busy (a legacy backend's steered chip never
+  // gets events) → ⚡ sends directly without cancelling; the chip has no
+  // steerId to withdraw, so just set the cancelled flag.
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-queue-zap-idle"), true);
   harness.emit("chat:turn_started", { session_id: "chat-queue-zap-idle" });
   await tick();
-  // legacy 后端:steer_chat 无返回值 → chip 无 steerId
+  // Legacy backend: steer_chat returns nothing → chip has no steerId.
   harness.handlers.steer_chat = function () { return null; };
 
   await bridge.chat.sendMessage("残留后瞬发");
   const queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
-  // 本轮结束:steered chip 不被 flushQueued 消费(等引擎事件),session 不再 busy
+  // Turn over: the steered chip is not consumed by flushQueued (waiting
+  // for engine events) and the session is no longer busy.
   harness.emit("chat:done", { session_id: "chat-queue-zap-idle" });
   await tick();
   await tick();
   let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 1, "steered chip 残留(flushQueued 让路)");
-  assert.strictEqual(view.busy, false, "本轮已结束");
+  assert.strictEqual(view.queued.length, 1, "steered chip left over (flushQueued yields)");
+  assert.strictEqual(view.busy, false, "the turn has ended");
 
   const result = await bridge.chat.interruptAndSendQueued("chat-queue-zap-idle", queuedId);
   assert.strictEqual(result, true);
@@ -2594,20 +2620,20 @@ async function interruptQueuedWhileIdleSendsWithoutCancel() {
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "cancel_generation"; }).length,
     0,
-    "非 busy 时 ⚡ 直接发送,不 cancel"
+    "while not busy, ⚡ sends directly without cancelling"
   );
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "withdraw_steer"; }).length,
     0,
-    "chip 无 steerId 时不发撤回"
+    "no withdrawal when the chip has no steerId"
   );
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 0, "⚡ 直接发送后 chip 移除");
+  assert.strictEqual(view.queued.length, 0, "chip removed after the direct ⚡ send");
 }
 
 async function withdrawTooLateCommittedStillBubbles() {
-  // 撤回太迟:× 已发 withdraw_steer,但引擎先 committed → 以引擎为准,
-  // 气泡照常出现。
+  // Withdrawal too late: × already fired withdraw_steer but the engine
+  // committed first → the engine wins and the bubble appears anyway.
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-withdraw-late"), true);
@@ -2623,7 +2649,7 @@ async function withdrawTooLateCommittedStillBubbles() {
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "withdraw_steer"; }).length,
     1,
-    "× 已发撤回"
+    "× fired the withdrawal"
   );
 
   await harness.emit("chat:steer_committed", { session_id: "chat-withdraw-late", steer_id: "steer-late" });
@@ -2632,19 +2658,20 @@ async function withdrawTooLateCommittedStillBubbles() {
   assert.strictEqual(view.queued.length, 0);
   assert.ok(
     view.chatItems.some(function (item) { return item.type === "user" && item.text === "撤回太迟的一句"; }),
-    "撤回太迟(committed 先到)时气泡照常出现"
+    "when the withdrawal is too late (committed first), the bubble still appears"
   );
 }
 
 async function steerInvokeHangTimesOutAndRestoresInput() {
-  // MAJOR-1 回归:steer_chat invoke 挂起(不 reject 不 resolve,模拟引擎
-  // 任务卡死)→ 25s 兜底超时后走失败恢复:chip 移除、输入框文字恢复,
-  // 不允许队头悬挂阻塞 flushQueued。
+  // MAJOR-1 regression: the steer_chat invoke hangs (neither rejects nor
+  // resolves, simulating a wedged engine task) → after the 25s fallback
+  // timeout the failure recovery runs: chip removed, composer text restored,
+  // and no hanging queue head may block flushQueued.
   const timeouts = [];
   const harness = createBridgeHarness(null, {
     setTimeout: function (fn, ms) {
       timeouts.push({ fn, ms });
-      return timeouts.length; // 不真跑,由测试手动触发模拟超时
+      return timeouts.length; // never runs for real; the test fires it manually to simulate the timeout
     },
     clearTimeout: function () {},
   });
@@ -2653,41 +2680,45 @@ async function steerInvokeHangTimesOutAndRestoresInput() {
   harness.emit("chat:turn_started", { session_id: "chat-steer-hang" });
   await tick();
   harness.handlers.steer_chat = function () {
-    return new Promise(function () {}); // 永不结算
+    return new Promise(function () {}); // never settles
   };
 
   await bridge.chat.sendMessage("卡死也要拿回的一句");
   await tick();
   await tick();
   let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 1, "chip 在 steer invoke 在途时显示");
+  assert.strictEqual(view.queued.length, 1, "the chip shows while the steer invoke is in flight");
 
-  // 触发 steer 的兜底超时(25s):手动 fire 挂起的 setTimeout。
+  // Fire the steer fallback timeout (25s) manually.
   const steerTimer = timeouts.find(function (t) { return t.ms === 25000; });
-  assert.ok(steerTimer, "steer invoke 必须有 25s 兜底超时");
+  assert.ok(steerTimer, "the steer invoke must have a 25s fallback timeout");
   steerTimer.fn();
   await tick();
   await tick();
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 0, "超时后悬挂 chip 被移除");
-  assert.strictEqual(bridge.state.getMany(['chat']).composerDraft, "卡死也要拿回的一句", "超时后文字恢复到输入框");
+  assert.strictEqual(view.queued.length, 0, "the hanging chip is removed after the timeout");
+  assert.strictEqual(bridge.state.getMany(['chat']).composerDraft, "卡死也要拿回的一句", "text restored to the composer after the timeout");
   assert.ok(
     view.chatItems.some(function (item) {
       return item.type === "system" && String(item.text || "").includes("插队失败");
     }),
-    "超时给出本地化提示"
+    "the timeout gives a localized notice"
   );
 }
 
 async function interruptQueuedFailureLeavesFlushableChip() {
-  // MAJOR-2 回归:⚡ 失败恢复的 chip 必须降级为非 steered——撤回已发出,
-  // 引擎只在下一轮 drain 时才结算;保持 steered 会让 flushQueued 让路且
-  // 下一轮永远不来(排队区卡死)。
-  // 第六轮评审更新预期:doSendFor 失败会复位 busy(见其失败路径),
-  // cancel 又是 terminal=true(目标轮终态已确认,不会再有 chat:done)——
-  // 恢复分支空闲补偿 flush(chat.js interruptAndSendQueued catch 末尾)
-  // 立即重试,降级 chip 不等下一轮 done。旧预期「留在队列等 chat:done」
-  // 在本场景正是被修复的悬挂(terminal=true 后没有 chat:done 可等)。
+  // MAJOR-2 regression: the zap failure recovery must degrade the chip to
+  // non-steered — the withdrawal is already out and the engine only settles
+  // at the next drain; staying steered would make flushQueued yield and the
+  // next round never come (queue deadlock).
+  // Sixth review round updated expectation: a doSendFor failure resets busy
+  // (see its failure path) and cancel already returned terminal=true (target
+  // terminal confirmed, no further chat:done) — the recovery branch's
+  // idle-compensation flush (end of interruptAndSendQueued's catch) retries
+  // immediately, so the degraded chip does not wait for the next done. The
+  // old expectation "stay queued waiting for chat:done" is exactly the hang
+  // being fixed here (after terminal=true there is no chat:done to wait
+  // for).
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-zap-degrade"), true);
@@ -2706,20 +2737,22 @@ async function interruptQueuedFailureLeavesFlushableChip() {
   await tick();
   await tick();
   const queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
-  assert.strictEqual(await bridge.chat.interruptAndSendQueued("chat-zap-degrade", queuedId), false, "⚡ 首次失败");
+  assert.strictEqual(await bridge.chat.interruptAndSendQueued("chat-zap-degrade", queuedId), false, "first zap attempt fails");
   await tick();
   await tick();
 
   const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(chatAttempts, 2, "空闲补偿 flush 立即重试降级 chip(doSendFor 失败已复位 busy)");
-  assert.strictEqual(view.queued.length, 0, "重试成功,chip 不再悬挂等一个不会来的 chat:done");
+  assert.strictEqual(chatAttempts, 2, "the idle-compensation flush immediately retries the degraded chip (doSendFor failure already reset busy)");
+  assert.strictEqual(view.queued.length, 0, "retry succeeds; the chip no longer hangs waiting for a chat:done that never comes");
   const chatCalls = harness.calls.filter(function (call) { return call.cmd === "chat"; });
-  assert.strictEqual(chatCalls[1].args.message, "降级后要能重发的一句", "重试发送的是同一条消息(不丢不重)");
+  assert.strictEqual(chatCalls[1].args.message, "降级后要能重发的一句", "the retry sends the same message (not lost, not duplicated)");
 }
 
-async function interruptAndSendTimeoutWhileBusyFailsWithoutSending() {  // P2 回归(公开 API 超时语义):cancel 返回 terminal=false 后等不到 chat:done,
-  // 25s 兜底超时且会话仍 busy —— interruptAndSend 必须显式 reject 且不调用
-  // chat(此时发送会稳定撞 session_turn_in_progress,调用方不接异常就丢消息)。
+async function interruptAndSendTimeoutWhileBusyFailsWithoutSending() {  // P2 regression (public-API timeout semantics): after cancel returns
+  // terminal=false and no chat:done arrives, the 25s fallback fires with the
+  // session still busy — interruptAndSend must reject explicitly without
+  // calling chat (sending now would reliably hit session_turn_in_progress;
+  // a caller that ignores the rejection loses the message).
   const timeouts = [];
   const harness = createBridgeHarness(null, {
     setTimeout: function (fn, ms) {
@@ -2743,43 +2776,48 @@ async function interruptAndSendTimeoutWhileBusyFailsWithoutSending() {  // P2 �
   await tick();
   await tick();
 
-  // 第六轮评审后 timeouts 里有两个 25000 计时器:cancel invoke 的传输层
-  // 超时(先注册,race 已结算、harness 的 no-op clearTimeout 让它留在列表,
-  // 触发无副作用)与 waitForChatDone 的兜底(后注册)——要触发的是后者。
+  // After the sixth review round there are two 25000ms timers: the cancel
+  // invoke's transport timeout (registered first; the race settled and the
+  // harness's no-op clearTimeout leaves it in the list, firing is harmless)
+  // and waitForChatDone's fallback (registered later) — the latter is the
+  // one to fire.
   const waitTimers = timeouts.filter(function (t) { return t.ms === 25000; });
   const waitTimer = waitTimers[waitTimers.length - 1];
-  assert.ok(waitTimer, "waitForChatDone 必须有 25s 兜底超时");
+  assert.ok(waitTimer, "waitForChatDone must have a 25s fallback timeout");
   waitTimer.fn();
   await p;
-  // 注意:bridge 跑在 vm 上下文里,抛出的 Error 是另一个 realm 的实例,
-  // 不能用 instanceof 判定。
+  // Note: the bridge runs inside a vm context; the thrown Error is an
+  // instance from another realm and cannot be checked with instanceof.
   assert.ok(
     outcome && typeof outcome.message === "string",
-    "超时仍 busy 必须显式失败,不能静默发送"
+    "timeout while still busy must fail explicitly, never send silently"
   );
   assert.ok(
     /still busy|not sent/.test(String(outcome && outcome.message)),
-    "错误信息说明取消未完结、消息未发送"
+    "the error explains the cancel is unfinished and the message was not sent"
   );
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
     0,
-    "超时仍 busy 时不得尝试 doSendFor(会撞 session_turn_in_progress)"
+    "doSendFor must not be attempted while busy after timeout (would hit session_turn_in_progress)"
   );
 
-  // 会话最终结束(取消 unwind 完成)后,调用方可以安全重试同一条消息。
+  // Once the session finally ends (the cancel unwind completes), the
+  // caller can safely retry the same message.
   harness.emit("chat:done", { session_id: "chat-interrupt-timeout", generation: 7 });
   await tick();
   await tick();
   const retry = await bridge.chat.interruptAndSend("chat-interrupt-timeout", "超时也要保住的一句", null, [], null, false);
-  assert.strictEqual(retry, true, "turn 终态后重试同一条消息成功(消息未丢失)");
+  assert.strictEqual(retry, true, "retrying the same message after the turn terminal succeeds (message not lost)");
 }
 
 async function interruptAndSendWaitsForMatchingGenerationDone() {
-  // P0-B 成功路径 + generation 过滤:cancel 返回 terminal=false 后,
-  // 迟到的旧轮 chat:done(generation 不匹配)不得提前解锁;收到匹配
-  // generation 的 chat:done 才继续发送。用 scheduled 会话(sched- 前缀)
-  // 豁免跨端权威对账闸,聚焦 wait 监听器自身的 generation 匹配语义。
+  // P0-B happy path + generation filtering: after cancel returns
+  // terminal=false, a late old-turn chat:done (mismatched generation) must
+  // not unlock early; sending continues only on the chat:done carrying the
+  // matching generation. A scheduled session (sched- prefix) exempts the
+  // cross-host authoritative reconciliation gate, focusing on the wait
+  // listener's own generation matching.
   const timeouts = [];
   const harness = createBridgeHarness(null, {
     setTimeout: function (fn, ms) {
@@ -2803,30 +2841,37 @@ async function interruptAndSendWaitsForMatchingGenerationDone() {
   await tick();
   await tick();
 
-  // 迟到的旧轮终态(generation 6):不得解锁等待。
+  // Late old-turn terminal (generation 6): must not unlock the wait.
   harness.emit("chat:done", { session_id: "sched-interrupt-gen", generation: 6 });
   await tick();
   await tick();
-  assert.strictEqual(sent, null, "generation 不匹配的旧轮 chat:done 不得解锁");
+  assert.strictEqual(sent, null, "an old-turn chat:done with mismatched generation must not unlock");
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
     0,
-    "generation 不匹配时不得发送"
+    "no send while the generation mismatches"
   );
 
-  // 目标轮终态(generation 7):解锁并成功发送。
+  // Target turn terminal (generation 7): unlock and send. Stall guard:
+  // if a wait regression (lost listener / broken matching) keeps the
+  // matching event from unlocking, a bare `await p` hangs forever, the fake
+  // timers never fire the fallback and node --test exits 0 silently
+  // (self-review P1-5). Race against a real timer so both directions
+  // (wrong unlock / no unlock) fail loudly.
   harness.emit("chat:done", { session_id: "sched-interrupt-gen", generation: 7 });
-  await p;
-  assert.strictEqual(sent, true, "匹配 generation 的 chat:done 后继续发送");
+  await withStallGuard(p, "matching-generation chat:done failed to unlock the interrupt wait");
+  assert.strictEqual(sent, true, "sending continues after the chat:done with the matching generation");
   const chatCalls = harness.calls.filter(function (call) { return call.cmd === "chat"; });
-  assert.strictEqual(chatCalls.length, 1, "恰好发送一次");
+  assert.strictEqual(chatCalls.length, 1, "sent exactly once");
   assert.strictEqual(chatCalls[0].args.message, "按轮解锁的一句");
 }
 
 async function steerCommittedBeforeBackfillSettlesViaStash() {
-  // pendingSteerEvents 暂存竞态:引擎极快 committed,chat:steer_committed
-  // 早于 steer_chat invoke 返回到达——chip 尚未回填 steerId,事件按
-  // session 暂存;invoke 返回回填后立即结算(chip 转气泡,不悬挂)。
+  // pendingSteerEvents stash race: the engine commits extremely fast and
+  // chat:steer_committed arrives before the steer_chat invoke resolves —
+  // the chip has no backfilled steerId yet, so the event is stashed per
+  // session; once the invoke resolves and backfills, settlement is immediate
+  // (chip becomes a bubble, no hang).
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-steer-race"), true);
@@ -2841,32 +2886,34 @@ async function steerCommittedBeforeBackfillSettlesViaStash() {
   await tick();
   await tick();
   let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 1, "invoke 在途时 chip 在排队区");
-  assert.strictEqual(view.queued[0].steerId, null, "steerId 尚未回填");
+  assert.strictEqual(view.queued.length, 1, "the chip is queued while the invoke is in flight");
+  assert.strictEqual(view.queued[0].steerId, null, "steerId not yet backfilled");
 
-  // 事件先到:无 id 可匹配 → 暂存,chip 不动。
+  // Event first: no id to match → stash it, chip untouched.
   harness.emit("chat:steer_committed", { session_id: "chat-steer-race", steer_id: "steer-early" });
   await tick();
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 1, "事件先到时暂存,chip 不提前结算");
+  assert.strictEqual(view.queued.length, 1, "event arriving first is stashed; the chip does not settle early");
 
-  // invoke 返回回填 id:立即消费暂存并结算 → chip 转用户气泡。
+  // The invoke resolves and backfills the id: consume the stash
+  // immediately → the chip becomes a user bubble.
   resolveSteer("steer-early");
   await tick();
   await tick();
   await tick();
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 0, "回填后立即结算暂存事件,chip 移除");
+  assert.strictEqual(view.queued.length, 0, "the stashed event settles immediately after backfill; chip removed");
   assert.ok(
     view.chatItems.some(function (item) { return item.type === "user" && item.text === "事件比 id 先到的一句"; }),
-    "结算后渲染用户气泡"
+    "the user bubble renders after settlement"
   );
 }
 
 async function interruptAndSendPreRegistersDoneListener() {
-  // 评审 P2 回归:chat:done 在 cancel invoke 返回**之前**到达（引擎在命令
-  // 处理期间就发了终态）。监听在 cancel 前已注册并缓冲,事件不丢失——
-  // 不会假等 25s 兜底,直接解锁发送。
+  // Review P2 regression: chat:done arrives **before** the cancel invoke
+  // returns (the engine emits the terminal while the command is being
+  // processed). The listener registered before cancel buffers it, the event
+  // is not lost — no fake 25s wait, the send unlocks directly.
   const timeouts = [];
   const harness = createBridgeHarness(null, {
     setTimeout: function (fn, ms) {
@@ -2880,27 +2927,37 @@ async function interruptAndSendPreRegistersDoneListener() {
   harness.emit("chat:turn_started", { session_id: "sched-pre-reg" });
   await tick();
   harness.handlers.cancel_generation = function () {
-    // 终态事件在 cancel 命令返回之前发出（缝隙场景）。
+    // The terminal is emitted before the cancel command returns (gap scenario).
     harness.emit("chat:done", { session_id: "sched-pre-reg", generation: 3 });
     return { terminal: false, generation: 3 };
   };
   harness.handlers.chat = function () { return "ok"; };
 
-  const sent = await bridge.chat.interruptAndSend("sched-pre-reg", "缝隙里的一句", null, [], null, false);
-  assert.strictEqual(sent, true, "缝隙里到达的 chat:done 被预注册监听缓冲,正常发送");
+  // Stall guard (self-review P1-5): if the pre-registration regresses, the
+  // done lands in the gap, the wait never settles, a bare await hangs forever
+  // and the fake timers never fire — race against a real timer so the
+  // regression fails loudly.
+  const sent = await withStallGuard(
+    bridge.chat.interruptAndSend("sched-pre-reg", "缝隙里的一句", null, [], null, false),
+    "pre-registered chat:done failed to unlock the interrupt wait"
+  );
+  assert.strictEqual(sent, true, "the chat:done arriving inside the gap is buffered by the pre-registered listener; sends normally");
   const chatCalls = harness.calls.filter(function (call) { return call.cmd === "chat"; });
-  assert.strictEqual(chatCalls.length, 1, "恰好发送一次");
+  assert.strictEqual(chatCalls.length, 1, "sent exactly once");
   assert.strictEqual(chatCalls[0].args.message, "缝隙里的一句");
   assert.ok(
     !timeouts.some(function (t) { return t.fired; }),
-    "不依赖 25s 兜底(无任何超时计时器被触发)"
+    "no reliance on the 25s fallback (no timeout timer fired)"
   );
 }
 
 async function steerLateSuccessAfterTimeoutWithdraws() {
-  // 评审 P1-2 回归:steer_chat 25s 超时后 invoke 晚到成功——引擎已接受
-  // 原消息,若注入会与用户基于恢复文字的重发重复投递。晚到成功必须
-  // 补偿撤回(withdraw_steer),已 committed 时撤回 no-op、事件补气泡。
+  // Review P1-2 regression: a late steer_chat success after the 25s
+  // timeout — the engine accepted the original message, and injecting it
+  // would duplicate delivery against the user's resend of the restored text.
+  // The late success must trigger a compensating withdrawal (withdraw_steer);
+  // if already committed the withdrawal is a no-op and the event renders the
+  // bubble.
   const timeouts = [];
   const harness = createBridgeHarness(null, {
     setTimeout: function (fn, ms) {
@@ -2922,37 +2979,41 @@ async function steerLateSuccessAfterTimeoutWithdraws() {
   await tick();
   await tick();
   const steerTimer = timeouts.find(function (t) { return t.ms === 25000; });
-  assert.ok(steerTimer, "steer invoke 有 25s 兜底");
+  assert.ok(steerTimer, "the steer invoke has a 25s fallback");
   steerTimer.fn();
   steerTimer.fired = true;
   await tick();
   await tick();
   let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 0, "超时恢复:chip 移除");
+  assert.strictEqual(view.queued.length, 0, "timeout recovery: chip removed");
 
-  // invoke 晚到成功:必须立即补偿撤回,防止引擎后续注入造成重复投递。
+  // The invoke succeeds late: a compensating withdrawal must fire
+  // immediately so a later engine injection cannot duplicate delivery.
   resolveSteer("steer-late-1");
   await tick();
   await tick();
   const withdrawCalls = harness.calls.filter(function (call) { return call.cmd === "withdraw_steer"; });
-  assert.strictEqual(withdrawCalls.length, 1, "晚到成功触发补偿撤回");
+  assert.strictEqual(withdrawCalls.length, 1, "the late success triggers the compensating withdrawal");
   assert.strictEqual(withdrawCalls[0].args.steerId, "steer-late-1");
 
-  // 撤回太迟(引擎已注入):committed 事件经 withdrawn 登记补气泡。
+  // Withdrawal too late (already injected): the committed event renders
+  // the bubble through the withdrawn registration.
   harness.emit("chat:steer_committed", { session_id: "chat-steer-late", steer_id: "steer-late-1" });
   await tick();
   await tick();
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.ok(
     view.chatItems.some(function (item) { return item.type === "user" && item.text === "晚到成功的一句"; }),
-    "撤回太迟时 committed 补气泡"
+    "committed renders the bubble when the withdrawal is too late"
   );
 }
 
 async function steerSettleWatchdogDegradesStuckChip() {
-  // 第五轮评审回归:steerId 回填后引擎被回收(committed/dropped 永不到达),
-  // steered 队头会让 flushQueued 永久让路。结算看门狗(60s)到时后先
-  // best-effort 撤回再降级为普通排队,chip 由 chat:done 的 flush 正常消费。
+  // Fifth review round regression: the engine is reclaimed after the
+  // steerId backfill (committed/dropped never arrive) and the steered queue
+  // head would make flushQueued yield forever. When the settle watchdog
+  // (60s) fires it first withdraws best-effort, then degrades the chip to a
+  // plain queue entry that the chat:done flush consumes normally.
   const timeouts = [];
   const harness = createBridgeHarness(null, {
     setTimeout: function (fn, ms) {
@@ -2973,37 +3034,38 @@ async function steerSettleWatchdogDegradesStuckChip() {
   await tick();
   let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.strictEqual(view.queued.length, 1);
-  assert.strictEqual(view.queued[0].steered, true, "回填后 chip 保持 steered");
+  assert.strictEqual(view.queued[0].steered, true, "the chip stays steered after backfill");
   assert.strictEqual(view.queued[0].steerId, "steer-wd1");
 
-  // 引擎被回收,结算事件永不到达 → 看门狗到时:撤回 + 降级。
+  // Engine reclaimed, settle events never arrive → watchdog fires: withdraw + degrade.
   const watchdog = timeouts.find(function (t) { return t.ms === 60000; });
-  assert.ok(watchdog, "steerId 回填后有 60s 结算看门狗");
+  assert.ok(watchdog, "60s settle watchdog armed after steerId backfill");
   watchdog.fn();
   await tick();
   await tick();
   const withdrawCalls = harness.calls.filter(function (call) { return call.cmd === "withdraw_steer"; });
-  assert.strictEqual(withdrawCalls.length, 1, "看门狗先 best-effort 撤回(防引擎复活后重复注入)");
+  assert.strictEqual(withdrawCalls.length, 1, "the watchdog withdraws best-effort first (prevents duplicate injection after an engine revival)");
   assert.strictEqual(withdrawCalls[0].args.steerId, "steer-wd1");
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 1, "chip 留在队列");
-  assert.strictEqual(view.queued[0].steered, false, "降级为非 steered,不再阻塞 flushQueued");
+  assert.strictEqual(view.queued.length, 1, "the chip stays in the queue");
+  assert.strictEqual(view.queued[0].steered, false, "degraded to non-steered, no longer blocking flushQueued");
 
-  // 本轮结束:降级 chip 被 flush 消费,消息不丢。
+  // Turn over: the degraded chip is consumed by the flush; the message is not lost.
   harness.emit("chat:done", { session_id: "chat-steer-watchdog", generation: 2 });
   await tick();
   await tick();
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 0, "chat:done 后 flush 消费降级 chip");
+  assert.strictEqual(view.queued.length, 0, "chat:done flush consumes the degraded chip");
   const chatCalls = harness.calls.filter(function (call) { return call.cmd === "chat"; });
   assert.strictEqual(chatCalls.length, 1);
   assert.strictEqual(chatCalls[0].args.message, "看门狗兜底的一句");
 }
 
 async function interruptQueuedCommittedSteerDoesNotResend() {
-  // 评审 P1-1 回归:⚡ 撤回 await 到底座明确 outcome。not_pending =
-  // 引擎已 committed(注入完成/进行中)——不得 cancel+重发,气泡由
-  // 迟到/暂存的 steer_committed 渲染(同文不重复)。
+  // Review P1-1 regression: ⚡ awaits an explicit foundation outcome for
+  // the withdrawal. not_pending = the engine already committed (injection
+  // done/in flight) — cancel+resend is forbidden; the bubble comes from the
+  // late/stashed steer_committed (same text, not duplicated).
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-zap-committed"), true);
@@ -3020,35 +3082,37 @@ async function interruptQueuedCommittedSteerDoesNotResend() {
   const queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
 
   const result = await bridge.chat.interruptAndSendQueued("chat-zap-committed", queuedId);
-  assert.strictEqual(result, true, "⚡ 视为成功(消息已在引擎)");
+  assert.strictEqual(result, true, "⚡ counts as success (the message is already in the engine)");
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
     0,
-    "not_pending 时不得重发 chat(否则同一条消息进两次 transcript)"
+    "no chat resend on not_pending (the same message would enter the transcript twice)"
   );
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "cancel_generation"; }).length,
     0,
-    "not_pending 时无需打断当前轮"
+    "no need to interrupt the current turn on not_pending"
   );
   let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 0, "chip 已移除");
+  assert.strictEqual(view.queued.length, 0, "the chip is removed");
 
-  // 迟到的 committed:经 withdrawn 登记渲染气泡(消息不丢)。
+  // Late committed: renders the bubble through the withdrawn
+  // registration (message not lost).
   harness.emit("chat:steer_committed", { session_id: "chat-zap-committed", steer_id: "steer-c1" });
   await tick();
   await tick();
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.ok(
     view.chatItems.some(function (item) { return item.type === "user" && item.text === "已经进引擎的一句"; }),
-    "迟到 committed 补气泡"
+    "the late committed renders the bubble"
   );
 }
 
 async function interruptQueuedNotPendingExpiryRestoresInput() {
-  // 底座契约回归:NotPending 不是已投递证明——⚡ 后 committed/dropped
-  // 对账事件因引擎回收丢失时,60s 看门狗把文字恢复到输入框并提示,
-  // 不把不确定的消息当作投递成功。
+  // Foundation contract regression: NotPending is not proof of delivery —
+  // when the committed/dropped reconciliation event is lost to an engine
+  // reclaim after ⚡, the 60s watchdog restores the text to the composer with
+  // a notice instead of treating an uncertain message as delivered.
   const timeouts = [];
   const harness = createBridgeHarness(null, {
     setTimeout: function (fn, ms) {
@@ -3075,32 +3139,34 @@ async function interruptQueuedNotPendingExpiryRestoresInput() {
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
     0,
-    "not_pending 不重发"
+    "no resend on not_pending"
   );
 
-  // 对账事件永不到达(引擎回收吞掉)→ 看门狗恢复文字 + 提示。
-  // 注:harness 的 clearTimeout 是 no-op,队列里可能同时躺着已取消的
-  // steer 结算看门狗(chip 已出队,触发为 no-op)——触发全部 60s 计时器。
+  // The reconciliation event never arrives (swallowed by the engine
+  // reclaim) → the watchdog restores the text + notice. Note: the harness's
+  // clearTimeout is a no-op, so already-cancelled settle watchdogs (their
+  // chip left the queue; firing is a no-op) may still sit in the list — fire
+  // every 60s timer.
   const watchdogs = timeouts.filter(function (t) { return t.ms === 60000; });
-  assert.ok(watchdogs.length > 0, "not_pending 后有 60s 对账看门狗");
+  assert.ok(watchdogs.length > 0, "a 60s reconciliation watchdog follows not_pending");
   watchdogs.forEach(function (t) { t.fn(); });
   await tick();
   await tick();
   assert.strictEqual(
     bridge.state.getMany(['chat']).composerDraft,
     "状态不确定的一句",
-    "事件丢失时文字恢复到输入框(不丢消息)"
+    "with the event lost, the text is restored to the composer (message not lost)"
   );
   const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.ok(
     view.chatItems.some(function (item) { return item.type === "system"; }),
-    "事件丢失时给出系统提示"
+    "with the event lost, a system notice is given"
   );
 }
 
 async function interruptQueuedRetiredSteerResends() {
-  // 对照组:outcome=retired(撤回生效、引擎副本永不注入)时 ⚡ 照常
-  // cancel + 重发。
+  // Control group: with outcome=retired (withdrawal effective, the engine
+  // copy never injects), ⚡ proceeds with cancel + resend as usual.
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-zap-retired"), true);
@@ -3117,22 +3183,25 @@ async function interruptQueuedRetiredSteerResends() {
   const queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
 
   const result = await bridge.chat.interruptAndSendQueued("chat-zap-retired", queuedId);
-  assert.strictEqual(result, true, "retired 时 ⚡ 重发成功");
+  assert.strictEqual(result, true, "zap resend succeeds on retired");
   const chatCalls = harness.calls.filter(function (call) { return call.cmd === "chat"; });
-  assert.strictEqual(chatCalls.length, 1, "retired 时正常重发");
+  assert.strictEqual(chatCalls.length, 1, "normal resend on retired");
   assert.strictEqual(chatCalls[0].args.message, "撤回后重发的一句");
 }
 
 async function transcriptFallbackTailScanTerminatesWithoutEnoughUserTail() {
-  // P0 死循环回归(第六轮评审):legacy 兜底(chat-events.js transcript_committed)
-  // 的尾部回溯循环曾是 i++(应为 i--)——快照尾部 16 条内 user 消息条数少于
-  // 队列长度时,循环向上扫入 undefined 永远凑不够 tailCandidates,webview
-  // 主线程永久冻结。构造两条 legacy steered chip + 尾部仅 1 条历史 user
-  // 消息的快照:修复前此场景必死循环(本测试能跑完即证明修复),且队首
-  // chip 与历史消息同文校验不通过,不得误 drain。
+  // P0 infinite-loop regression (sixth review round): the legacy fallback
+  // (chat-events.js transcript_committed) tail-scan loop used i++ (should be
+  // i--) — when the last 16 snapshot entries hold fewer user messages than
+  // the queue length, the loop scans up into undefined forever, never filling
+  // tailCandidates and freezing the webview main thread permanently. Build
+  // two legacy steered chips + a snapshot whose tail has only one historical
+  // user message: before the fix this scenario always dead-looped (this test
+  // finishing proves the fix), and the queue-head chip fails the same-text
+  // check against the history, so it must not be drained by mistake.
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
-  harness.handlers.steer_chat = function () { return null; }; // legacy: 无 steerId
+  harness.handlers.steer_chat = function () { return null; }; // legacy: no steerId
   const disk = [
     { role: "user", content: [{ type: "text", text: "原问题" }] },
     { role: "assistant", content: [{ type: "text", text: "旧回答" }] },
@@ -3154,32 +3223,37 @@ async function transcriptFallbackTailScanTerminatesWithoutEnoughUserTail() {
   await tick();
   await tick();
   let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 2, "两条 legacy steered chip 在排队区");
+  assert.strictEqual(view.queued.length, 2, "two legacy steered chips in the queue overlay");
   assert.strictEqual(view.queued[0].steered, true);
-  assert.strictEqual(view.queued[0].steerId, null, "legacy 后端不回填 steerId");
+  assert.strictEqual(view.queued[0].steerId, null, "legacy backends do not backfill steerId");
 
-  // transcript 增长但新增的是 assistant 消息(注入尚未落盘):尾部 16 条内仅
-  // 1 条 user(历史"原问题")< 队列长度 2——i++ 实现向上扫 undefined 永不
-  // 终止;修复后回溯正常终止,且"排队甲" ≠ "原问题",同文校验不通过。
+  // The transcript grows but the addition is an assistant message (the
+  // injection is not persisted yet): the last 16 entries hold only 1 user
+  // (the historical one) < queue length 2 — the i++ implementation scans
+  // into undefined and never terminates; after the fix the backwards scan
+  // terminates normally, and since the head chip text differs from the
+  // historical one, the same-text check fails.
   disk.push({ role: "assistant", content: [{ type: "text", text: "另一句模型输出" }] });
   await harness.emit("chat:transcript_committed", { session_id: "chat-tail-scan", transcript_revision: "rev-t1" });
   await tick();
   await tick();
 
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 2, "同文校验不通过:chip 不得被误 drain");
-  assert.strictEqual(view.queued[0].steered, true, "chip 保持 steered 等权威结算");
+  assert.strictEqual(view.queued.length, 2, "same-text check fails: the chip must not be drained by mistake");
+  assert.strictEqual(view.queued[0].steered, true, "the chip stays steered awaiting authoritative settlement");
   assert.ok(
     !view.chatItems.some(function (item) { return item.type === "user" && item.text === "排队甲"; }),
-    "误 drain 会渲染用户气泡,此处不得出现"
+    "a mistaken drain would render a user bubble — none may appear here"
   );
 }
 
 async function steerDroppedByEngineRestoresDraftText() {
-  // 引擎主动丢弃(第六轮评审):chip 仍在队列时收到 chat:steer_dropped(含
-  // ⏹ 停止清空未注入 steer)——除移除 chip + steerDropped 提示外,文本必须
-  // 回灌输入框草稿;其他失败路径(steer 失败/看门狗/⚡ 降级)都会还字,
-  // 引擎丢弃不该是唯一让用户重打的分支。
+  // Engine-initiated drop (sixth review round): the chip is still queued
+  // when chat:steer_dropped arrives (including ⏹ stop clearing un-injected
+  // steers) — besides removing the chip + the steerDropped notice, the text
+  // must be restored to the composer draft; every other failure path (steer
+  // failure / watchdog / zap degrade) hands the text back, and an engine drop
+  // must not be the only branch that makes the user retype.
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-steer-dropped"), true);
@@ -3192,37 +3266,41 @@ async function steerDroppedByEngineRestoresDraftText() {
   await tick();
   let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.strictEqual(view.queued.length, 1);
-  assert.strictEqual(view.queued[0].steerId, "steer-d1", "steerId 已回填");
+  assert.strictEqual(view.queued[0].steerId, "steer-d1", "steerId backfilled");
   assert.strictEqual(
     bridge.state.getMany(['chat']).composerDraft,
     "",
-    "busy steer 发送后输入框已清空"
+    "the composer is cleared after the busy steer send"
   );
 
   await harness.emit("chat:steer_dropped", { session_id: "chat-steer-dropped", steer_id: "steer-d1" });
   await tick();
   await tick();
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 0, "丢弃结算移除 chip");
+  assert.strictEqual(view.queued.length, 0, "the drop settlement removes the chip");
   assert.strictEqual(
     bridge.state.getMany(['chat']).composerDraft,
     "被引擎丢弃的一句",
-    "空输入框时文本回灌草稿(不让用户重打)"
+    "with an empty composer the text is restored to the draft (no retyping)"
   );
   assert.ok(
     view.chatItems.some(function (item) {
       return item.type === "system" && String(item.text || "").includes("排队消息未送达");
     }),
-    "给出 steerDropped 系统提示"
+    "a steerDropped system notice is given"
   );
 }
 
 async function steerSettleWatchdogNotPendingRemovesChipWithoutResend() {
-  // 看门狗 not_pending(第六轮评审):60s 结算看门狗到时后 withdraw_steer
-  // await 返回 not_pending = steer 恰已 committed 但事件丢失——旧实现一律
-  // 降级 chip,flushQueued 重发会重复投递。改为移除 chip + 恢复草稿 +
-  // steerFailed 提示,绝不 invoke("chat") 重发;retired/Err 维持原降级
-  // 语义(由 steerSettleWatchdogDegradesStuckChip 覆盖)。
+  // Watchdog not_pending (sixth review round): the settle watchdog fires
+  // after 60s and the withdraw_steer await returns not_pending = the steer
+  // had just committed but the event was lost — the old implementation always
+  // degraded the chip and the flushQueued resend would duplicate delivery.
+  // Now the chip is removed + the draft restored + a steerFailed notice, and
+  // invoke("chat") resend never happens; retired keeps the degrade semantics
+  // (covered by steerSettleWatchdogDegradesStuckChip), and since re-review #3
+  // Err (engine reclaimed) likewise restores the draft without auto-resend
+  // (steerSettleWatchdogEngineErrRestores).
   const timeouts = [];
   const harness = createBridgeHarness(null, {
     setTimeout: function (fn, ms) {
@@ -3246,40 +3324,333 @@ async function steerSettleWatchdogNotPendingRemovesChipWithoutResend() {
   assert.strictEqual(view.queued.length, 1);
   assert.strictEqual(view.queued[0].steerId, "steer-np1");
 
-  // 结算事件永不到达 → 看门狗到时:withdraw 报 not_pending → 移除 chip。
+  // Settle events never arrive → the watchdog fires: withdraw reports
+  // not_pending → remove the chip.
   const watchdog = timeouts.find(function (t) { return t.ms === 60000; });
-  assert.ok(watchdog, "steerId 回填后有 60s 结算看门狗");
+  assert.ok(watchdog, "60s settle watchdog armed after steerId backfill");
   watchdog.fn();
   await tick();
   await tick();
   await tick();
 
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 0, "not_pending:chip 移除(不是降级留在队列)");
+  assert.strictEqual(view.queued.length, 0, "not_pending: chip removed (not degraded in the queue)");
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
     0,
-    "not_pending 不得降级重发(已 committed,重发即重复投递)"
+    "not_pending must not degrade and resend (already committed; a resend duplicates delivery)"
   );
   assert.strictEqual(
     bridge.state.getMany(['chat']).composerDraft,
     "看门狗不确定的一句",
-    "文本恢复草稿,不把不确定的消息当作投递成功"
+    "text restored to the draft; an uncertain message is not treated as delivered"
   );
   assert.ok(
     view.chatItems.some(function (item) {
       return item.type === "system" && String(item.text || "").includes("插队失败");
     }),
-    "给出 steerFailed 系统提示"
+    "a steerFailed system notice is given"
   );
 }
 
+async function steerSettleWatchdogEngineErrRestoresWithoutResend() {
+  // Re-review #3 / self-review P1-3: when the settle watchdog fires and
+  // withdraw_steer REJECTS (engine reclaimed — forwarder aborted, session
+  // evicted), the old mapping degraded the chip and flushed it, silently
+  // resending a ~minute-old message into a cold-started engine (possibly in
+  // an unwatched background session). Err must restore the text to the owning
+  // session instead — no automatic resend.
+  const timeouts = [];
+  const harness = createBridgeHarness(null, {
+    setTimeout: function (fn, ms) {
+      timeouts.push({ fn, ms });
+      return timeouts.length;
+    },
+    clearTimeout: function () {},
+  });
+  const bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-wd-err"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-wd-err" });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-err1"; };
+  harness.handlers.withdraw_steer = function () {
+    return Promise.reject(new Error("engine reclaimed"));
+  };
+  harness.handlers.chat = function () { return "ok"; };
+
+  await bridge.chat.sendMessage("回收前排队的一句");
+  await tick();
+  await tick();
+  const epochBefore = bridge.state.getMany(['sessions']).draftEpoch;
+
+  const watchdog = timeouts.find(function (t) { return t.ms === 60000; });
+  assert.ok(watchdog, "60s settle watchdog armed after steerId backfill");
+  watchdog.fn();
+  await tick();
+  await tick();
+  await tick();
+
+  const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 0, "Err (engine reclaimed): chip removed, not degraded in the queue");
+  assert.strictEqual(
+    bridge.state.getMany(['chat']).composerDraft,
+    "回收前排队的一句",
+    "text restored to the owning session's draft"
+  );
+  assert.ok(
+    bridge.state.getMany(['sessions']).draftEpoch > epochBefore,
+    "the restore takes the observable path (draftEpoch bump), not a store-only silent write"
+  );
+  assert.ok(
+    view.chatItems.some(function (item) {
+      return item.type === "system" && String(item.text || "").includes("插队失败");
+    }),
+    "a steerFailed system notice is given"
+  );
+  // Turn settles later: the restored chip must NOT be auto-resent.
+  harness.emit("chat:done", { session_id: "chat-wd-err", generation: 2 });
+  await tick();
+  await tick();
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
+    0,
+    "the Err path never auto-resends a stale message (resending is the user's call)"
+  );
+}
+
+async function steerSettleWatchdogWithdrawTimeoutDegradesChip() {
+  // Self-review P1-2 / re-review #2: the watchdog's withdraw_steer await must
+  // carry the same 25s transport timeout as steer/cancel — a live-but-wedged
+  // engine would otherwise leave the chip `steered` forever, permanently
+  // blocking the session queue head. Timeout resolves as "retired" semantics:
+  // degrade the chip so flushQueued delivers it once the turn settles.
+  const timeouts = [];
+  const harness = createBridgeHarness(null, {
+    setTimeout: function (fn, ms) {
+      timeouts.push({ fn, ms });
+      return timeouts.length;
+    },
+    clearTimeout: function () {},
+  });
+  const bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-wd-hang"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-wd-hang" });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-hang1"; };
+  harness.handlers.withdraw_steer = function () {
+    return new Promise(function () {}); // wedged: never settles
+  };
+  harness.handlers.chat = function () { return "ok"; };
+
+  await bridge.chat.sendMessage("卡死看门狗里的一句");
+  await tick();
+  await tick();
+
+  const watchdog = timeouts.find(function (t) { return t.ms === 60000; });
+  assert.ok(watchdog, "60s settle watchdog armed after steerId backfill");
+  watchdog.fn();
+  await tick();
+  await tick();
+
+  // Withdraw race armed by the watchdog; drive its 25s transport timeout
+  // (the LAST 25000ms timer — earlier ones belong to the settled steer race).
+  const withdrawTimers = timeouts.filter(function (t) { return t.ms === 25000; });
+  const withdrawTimer = withdrawTimers[withdrawTimers.length - 1];
+  assert.ok(withdrawTimer, "the watchdog withdraw await has a 25s transport timeout");
+  withdrawTimer.fn();
+  await tick();
+  await tick();
+
+  let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 1, "timeout follows retired semantics: the chip stays in the queue");
+  assert.strictEqual(view.queued[0].steered, false, "degraded to non-steered, no longer blocking flushQueued");
+
+  // Turn settles → degraded chip is delivered, queue no longer stuck.
+  harness.emit("chat:done", { session_id: "chat-wd-hang", generation: 2 });
+  await tick();
+  await tick();
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 0, "chat:done flush consumes the degraded chip");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
+    1,
+    "the degraded chip is sent normally by flushQueued"
+  );
+}
+
+async function interruptQueuedWithdrawTimeoutResendsAsRetired() {
+  // Self-review P1-2 / re-review #2 (zap path): ⚡ removes the chip from the
+  // queue BEFORE awaiting withdraw_steer — a bare await on a wedged engine
+  // leaves the message silently undeliverable. The 25s race must time out
+  // into "retired" semantics and proceed with the cancel + resend chain.
+  const timeouts = [];
+  const harness = createBridgeHarness(null, {
+    setTimeout: function (fn, ms) {
+      timeouts.push({ fn, ms });
+      return timeouts.length;
+    },
+    clearTimeout: function () {},
+  });
+  const bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-zap-wd-hang"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-zap-wd-hang" });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-zap-h1"; };
+  harness.handlers.withdraw_steer = function () {
+    return new Promise(function () {}); // wedged: never settles
+  };
+  harness.handlers.cancel_generation = function () { return { terminal: true, generation: 1 }; };
+  harness.handlers.chat = function () { return "ok"; };
+
+  await bridge.chat.sendMessage("⚡ 撤回卡死也要发出的一句");
+  await tick();
+  await tick();
+  const queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
+
+  let result = null;
+  const p = bridge.chat
+    .interruptAndSendQueued("chat-zap-wd-hang", queuedId)
+    .then(function (r) { result = r; }, function (e) { result = e; });
+  await tick();
+  await tick();
+
+  // Drive the withdraw transport timeout (the LAST 25000ms timer — the settled
+  // steer race timer lingers because the harness clearTimeout is a no-op).
+  const withdrawTimers = timeouts.filter(function (t) { return t.ms === 25000; });
+  const withdrawTimer = withdrawTimers[withdrawTimers.length - 1];
+  assert.ok(withdrawTimer, "the zap withdraw await has a 25s transport timeout");
+  withdrawTimer.fn();
+  await withStallGuard(p, "zap withdraw timeout failed to settle into the retired resend path");
+  assert.strictEqual(result, true, "withdrawal timeout continues with retired semantics");
+  const chatCalls = harness.calls.filter(function (call) { return call.cmd === "chat"; });
+  assert.strictEqual(chatCalls.length, 1, "cancel + resend proceed normally after the timeout");
+  assert.strictEqual(chatCalls[0].args.message, "⚡ 撤回卡死也要发出的一句");
+}
+
+async function steerDropRestoresAccumulateAcrossChips() {
+  // Self-review P0 / re-review #1: two steered chips dropped in the same tick
+  // (⏹ clears the un-injected inbox) must BOTH survive. The old empty-check
+  // restore wrote the first text store-only (invisible — the composer only
+  // re-reads on [activeSessionId, draftEpoch]) and the second chip's prefill
+  // write-through then destroyed it. restoreSteerText appends with a "\n"
+  // separator at the store level and bumps draftEpoch once per restore.
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-drop-acc"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-drop-acc" });
+  await tick();
+  let steerSeq = 0;
+  harness.handlers.steer_chat = function () {
+    steerSeq += 1;
+    return "steer-acc-" + steerSeq;
+  };
+
+  await bridge.chat.sendMessage("第一条被丢弃的");
+  await bridge.chat.sendMessage("第二条被丢弃的");
+  await tick();
+  await tick();
+  let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 2, "two steered chips in the queue overlay");
+  const epochBefore = view.draftEpoch;
+
+  // Both drops arrive in the same tick (⏹ clears the whole pending inbox).
+  harness.emit("chat:steer_dropped", { session_id: "chat-drop-acc", steer_id: "steer-acc-1" });
+  harness.emit("chat:steer_dropped", { session_id: "chat-drop-acc", steer_id: "steer-acc-2" });
+  await tick();
+  await tick();
+
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 0, "both chips are removed");
+  assert.strictEqual(
+    bridge.state.getMany(['chat']).composerDraft,
+    "第一条被丢弃的\n第二条被丢弃的",
+    "both texts are restored and accumulate newline-separated (the first must not be clobbered by the second)"
+  );
+  assert.ok(
+    view.draftEpoch >= epochBefore + 1,
+    "the restore takes the observable path: the draftEpoch bump makes ChatView re-read the draft"
+  );
+  assert.strictEqual(
+    bridge.state.getMany(['chat']).composerPrefill.text,
+    "",
+    "the restore must not use the global prefill channel (its write-through would clobber the first text in the store)"
+  );
+}
+
+async function steerDropRestoresToOwningBackgroundSession() {
+  // Self-review P0 / re-review #1 (background isolation): a steer dropped
+  // while its owning session is in the background must restore into THAT
+  // session's buffer only. The old path went through the global composer
+  // draft/prefill channel and could leak background text into the active
+  // session's composer.
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-bg-drop"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-bg-drop" });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-bg-1"; };
+
+  await bridge.chat.sendMessage("后台被丢弃的一句");
+  await tick();
+  await tick();
+  assert.strictEqual(bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued.length, 1);
+
+  // Switch away, then the engine drops the background session's steer.
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-bg-drop-other"), true);
+  await tick();
+  await bridge.chat.setComposerDraft("前台正在打的字");
+  harness.emit("chat:steer_dropped", { session_id: "chat-bg-drop", steer_id: "steer-bg-1" });
+  await tick();
+  await tick();
+
+  assert.strictEqual(
+    bridge.state.getMany(['chat']).composerDraft,
+    "前台正在打的字",
+    "a background session's restore must not write into the active session's composer"
+  );
+  assert.strictEqual(
+    bridge.state.getMany(['chat']).composerPrefill.text,
+    "",
+    "a background restore must not use the global prefill channel"
+  );
+
+  // Switch back: the owning session's draft carries the restored text.
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-bg-drop"), true);
+  await tick();
+  assert.strictEqual(
+    bridge.state.getMany(['chat']).composerDraft,
+    "后台被丢弃的一句",
+    "after switching back to the owning session the restored text is still there (session-buffer restore)"
+  );
+}
+
+async function prefillRecoveryAppendFlagContract() {
+  // Re-review #4: prefillComposer keeps REPLACE semantics for template /
+  // navigation entries (no flag) and exposes an explicit append mode for
+  // failure recovery (flag=true, separator-joined by ChatView). Locks the
+  // bridge-level contract so the modes cannot silently merge again.
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-prefill-flag"), true);
+  bridge.chat.prefillComposer("模板整体替换");
+  let prefill = bridge.state.getMany(['chat']).composerPrefill;
+  assert.strictEqual(prefill.text, "模板整体替换");
+  assert.strictEqual(prefill.append, false, "default (template/navigation entries) keeps whole-draft replacement semantics");
+
+  bridge.chat.prefillComposer("失败恢复追加", true);
+  prefill = bridge.state.getMany(['chat']).composerPrefill;
+  assert.strictEqual(prefill.text, "失败恢复追加");
+  assert.strictEqual(prefill.append, true, "the failure-recovery entry carries explicit append semantics");
+}
+
 async function interruptQueuedCancelInvokeHangRestoresChip() {
-  // cancel invoke 传输层超时(第六轮评审)⚡ 路径:引擎 wedged(turn_lock
-  // 被占、不 drain)时 cancel_generation 永不结算——旧实现 await 永久挂起:
-  // interruptInFlight 永不清除(flushQueued 让路),且 chip 已在调用前摘出
-  // 队列,恢复 catch 永远跑不到 → 消息静默丢失。25s 超时必须显式失败、
-  // 恢复 chip 回队列,并在 finally 清理 interruptInFlight。
+  // Cancel invoke transport timeout (sixth review round), zap path: a
+  // wedged engine (turn_lock held, not draining) never settles
+  // cancel_generation — the old implementation's await hung forever:
+  // interruptInFlight never cleared (flushQueued yields) and the chip was
+  // already taken out of the queue before the call, so the recovery catch
+  // never ran → silent message loss. The 25s timeout must fail explicitly,
+  // restore the chip to the queue, and clean interruptInFlight in finally.
   const timeouts = [];
   const harness = createBridgeHarness(null, {
     setTimeout: function (fn, ms) {
@@ -3295,7 +3666,7 @@ async function interruptQueuedCancelInvokeHangRestoresChip() {
   harness.handlers.steer_chat = function () { return "steer-h1"; };
   harness.handlers.withdraw_steer = function () { return "retired"; };
   harness.handlers.cancel_generation = function () {
-    return new Promise(function () { /* 引擎 wedged:永不结算 */ });
+    return new Promise(function () { /* engine wedged: never settles */ });
   };
   harness.handlers.chat = function () { return "ok"; };
 
@@ -3314,51 +3685,55 @@ async function interruptQueuedCancelInvokeHangRestoresChip() {
   assert.strictEqual(
     bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued.length,
     0,
-    "⚡ 调用时 chip 已摘出队列(等 cancel)"
+    "the chip is already out of the queue when ⚡ is called (waiting on cancel)"
   );
 
-  // 25s 传输层超时(steer 的 25s 计时器早已结算,重触发无副作用):cancel
-  // 视为失败 → interruptAndSend throw → ⚡ catch 恢复 chip 回队列。
+  // 25s transport timeout (the steer 25s timer settled long ago,
+  // re-firing is harmless): cancel counts as failed → interruptAndSend
+  // throws → the ⚡ catch restores the chip to the queue.
   const cancelTimers = timeouts.filter(function (t) { return t.ms === 25000; });
-  assert.ok(cancelTimers.length > 0, "cancel invoke 有 25s 传输层兜底");
+  assert.ok(cancelTimers.length > 0, "the cancel invoke has a 25s transport fallback");
   cancelTimers.forEach(function (t) { t.fn(); });
   await p;
   await tick();
   await tick();
-  assert.strictEqual(outcome, false, "⚡ 显式失败(不假装成功)");
+  assert.strictEqual(outcome, false, "⚡ fails explicitly (no fake success)");
   const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 1, "chip 恢复回队列(消息不丢)");
-  assert.strictEqual(view.queued[0].steered, false, "恢复的 chip 降级为纯本地排队");
+  assert.strictEqual(view.queued.length, 1, "the chip is restored to the queue (message not lost)");
+  assert.strictEqual(view.queued[0].steered, false, "the restored chip is degraded to plain local queuing");
   assert.strictEqual(view.queued[0].text, "卡在 cancel 的一句");
   assert.ok(
     view.chatItems.some(function (item) {
       return item.type === "system" && String(item.text || "").includes("插队发送失败");
     }),
-    "给出 interruptQueuedFailed 系统提示"
+    "an interruptQueuedFailed system notice is given"
   );
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
     0,
-    "会话仍 busy:恢复后不得抢发"
+    "session still busy: no premature send after recovery"
   );
 
-  // turn 结束后 chat:done 的 flush 必须能消费恢复的 chip——同时证明
-  // interruptInFlight 已清(flushQueued 对 interruptInFlight 让路),即
-  // interruptAndSend 的 finally 在超时 throw 后确实执行。
+  // After the turn ends, the chat:done flush must consume the restored
+  // chip — which also proves interruptInFlight is cleared (flushQueued
+  // yields to interruptInFlight), i.e. interruptAndSend's finally really ran
+  // after the timeout throw.
   harness.emit("chat:done", { session_id: "chat-zap-cancel-hang", generation: 1 });
   await tick();
   await tick();
   await tick();
   const chatCalls = harness.calls.filter(function (call) { return call.cmd === "chat"; });
-  assert.strictEqual(chatCalls.length, 1, "interruptInFlight 清理后 flush 消费恢复的 chip");
+  assert.strictEqual(chatCalls.length, 1, "with interruptInFlight cleared, the flush consumes the restored chip");
   assert.strictEqual(chatCalls[0].args.message, "卡在 cancel 的一句");
 }
 
 async function interruptAndSendCancelInvokeTimeoutRejects() {
-  // cancel invoke 传输层超时(第六轮评审)公开 API 语义:
-  // bridge.chat.interruptAndSend 在 cancel_generation 永不结算时必须于 25s
-  // 显式 reject(而非永久挂起),且不尝试发送。普通 cancel 错误维持旧行为
-  // (warn + outcome=null 继续),由既有 interrupt 测试覆盖。
+  // Cancel invoke transport timeout (sixth review round), public-API
+  // semantics: bridge.chat.interruptAndSend must reject explicitly at 25s
+  // (rather than hang forever) when cancel_generation never settles, and
+  // must not attempt to send. Ordinary cancel errors keep the old behavior
+  // (warn + outcome=null, continue), covered by the existing interrupt
+  // tests.
   const timeouts = [];
   const harness = createBridgeHarness(null, {
     setTimeout: function (fn, ms) {
@@ -3372,7 +3747,7 @@ async function interruptAndSendCancelInvokeTimeoutRejects() {
   harness.emit("chat:turn_started", { session_id: "chat-interrupt-cancel-hang" });
   await tick();
   harness.handlers.cancel_generation = function () {
-    return new Promise(function () { /* 永不结算 */ });
+    return new Promise(function () { /* never settles */ });
   };
   harness.handlers.chat = function () { return "ok"; };
 
@@ -3384,23 +3759,25 @@ async function interruptAndSendCancelInvokeTimeoutRejects() {
   await tick();
   await tick();
   const cancelTimer = timeouts.find(function (t) { return t.ms === 25000; });
-  assert.ok(cancelTimer, "cancel invoke 有 25s 传输层兜底");
+  assert.ok(cancelTimer, "the cancel invoke has a 25s transport fallback");
   cancelTimer.fn();
   await p;
   assert.ok(
     outcome && typeof outcome.message === "string" && outcome.message.includes("cancel_generation timed out"),
-    "cancel 传输层超时必须显式 reject(调用方据此恢复消息)"
+    "a cancel transport timeout must reject explicitly (the caller recovers the message from it)"
   );
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
     0,
-    "cancel 未完结时不得尝试发送"
+    "no send attempt while the cancel is unfinished"
   );
 }
 
 async function mainPathSendFailureRejectsToCaller() {
-  // 第五轮遗留回归:非 busy 主路径 doSendFor 失败必须 reject 给调用方
-  // (ChatView 已清空输入框,靠 rejection 恢复文字),不得吞错假装成功。
+  // Fifth review round leftover regression: a non-busy main-path doSendFor
+  // failure must reject to the caller (ChatView has cleared the composer and
+  // recovers the text from the rejection); the error must not be swallowed
+  // into a fake success.
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-main-fail"), true);
@@ -3413,16 +3790,19 @@ async function mainPathSendFailureRejectsToCaller() {
   );
   assert.ok(
     outcome && typeof outcome.message === "string" && outcome.message.includes("reserve boom"),
-    "主路径失败必须 reject(调用方据此恢复输入框)"
+    "a main-path failure must reject (the caller restores the composer from it)"
   );
   const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 0, "失败不留排队残留");
-  assert.strictEqual(view.busy, false, "失败后 busy 复位");
+  assert.strictEqual(view.queued.length, 0, "a failure leaves no queue leftover");
+  assert.strictEqual(view.busy, false, "busy resets after the failure");
 }
 
 async function steerTimeoutDoesNotClobberFreshInput() {
-  // 回归:steer 失败恢复不得无条件覆盖输入框——invoke 最长 25s 才超时,
-  // 期间用户重新打的字必须保住。输入框非空时恢复退化为 prefill 追加。
+  // Regression: the steer failure recovery must not unconditionally
+  // overwrite the composer — the invoke can take up to 25s to time out and
+  // anything the user retyped meanwhile must survive. With a non-empty
+  // composer the recovery degrades the chip to a plain queued entry (the
+  // text rides the queue instead of the composer).
   const timeouts = [];
   const harness = createBridgeHarness(null, {
     setTimeout: function (fn, ms) {
@@ -3436,17 +3816,17 @@ async function steerTimeoutDoesNotClobberFreshInput() {
   harness.emit("chat:turn_started", { session_id: "chat-steer-clobber" });
   await tick();
   harness.handlers.steer_chat = function () {
-    return new Promise(function () {}); // 永不结算
+    return new Promise(function () {}); // never settles
   };
 
   await bridge.chat.sendMessage("超时前已发出去的一句");
   await tick();
   await tick();
-  // 等待期间用户开始重新打字。
+  // The user starts retyping during the wait.
   bridge.chat.setComposerDraft("等待时新打的半句");
 
   const steerTimer = timeouts.find(function (t) { return t.ms === 25000; });
-  assert.ok(steerTimer, "steer invoke 必须有 25s 兜底超时");
+  assert.ok(steerTimer, "the steer invoke must have a 25s fallback timeout");
   steerTimer.fn();
   await tick();
   await tick();
@@ -3454,21 +3834,24 @@ async function steerTimeoutDoesNotClobberFreshInput() {
   assert.strictEqual(
     bridge.state.getMany(['chat']).composerDraft,
     "等待时新打的半句",
-    "超时恢复不得覆盖等待期间的新输入"
+    "timeout recovery must not overwrite fresh input typed during the wait"
   );
   let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 1, "输入框非空时 chip 降级保留在排队区(文字不丢)");
-  assert.strictEqual(view.queued[0].steered, false, "降级为非 steered,不再阻塞 flushQueued");
-  // chip 已降级为纯本地排队,仍可被撤回(× 出口保持可用)。
+  assert.strictEqual(view.queued.length, 1, "with a non-empty composer the chip is degraded and kept in the queue (text not lost)");
+  assert.strictEqual(view.queued[0].steered, false, "degraded to non-steered, no longer blocking flushQueued");
+  // The chip is degraded to plain local queuing and can still be
+  // withdrawn (the × exit stays available).
   bridge.chat.removeQueued(view.queued[0].id);
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 0, "× 撤回降级 chip 正常移除");
+  assert.strictEqual(view.queued.length, 0, "× removes the degraded chip normally");
 }
 
 async function steerTimeoutWhileSwitchedAwayUnblocksBackgroundQueue() {
-  // 回归:steer 在途时用户切走会话 → 超时恢复必须按 sid 路由到原会话队列,
-  // 降级悬挂 chip;否则 chip(steered:true) 永久卡在后台会话队头,flushQueued
-  // 让路,该会话排队消息全部饿死。
+  // Regression: the user switches sessions while the steer is in flight →
+  // the timeout recovery must route by sid to the original session's queue
+  // and degrade the hanging chip; otherwise the chip (steered:true) sticks
+  // at the background session's queue head forever, flushQueued yields, and
+  // every queued message in that session starves.
   const timeouts = [];
   const harness = createBridgeHarness(null, {
     setTimeout: function (fn, ms) {
@@ -3482,7 +3865,7 @@ async function steerTimeoutWhileSwitchedAwayUnblocksBackgroundQueue() {
   harness.emit("chat:turn_started", { session_id: "chat-bg-steer" });
   await tick();
   harness.handlers.steer_chat = function () {
-    return new Promise(function () {}); // 永不结算
+    return new Promise(function () {}); // never settles
   };
   harness.handlers.cancel_generation = function () { return { terminal: true, generation: 1 }; };
   harness.handlers.chat = function () { return "ok"; };
@@ -3490,43 +3873,46 @@ async function steerTimeoutWhileSwitchedAwayUnblocksBackgroundQueue() {
   await bridge.chat.sendMessage("切走前注入的一句");
   await tick();
   await tick();
-  // steer 在途:切到另一个会话(load_session 建新 buffer)。
+  // Steer in flight: switch to another session (load_session builds a new buffer).
   assert.strictEqual(await bridge.sessions.switchToSession("chat-bg-other"), true);
   await tick();
   assert.strictEqual(bridge.state.get("sessions").activeSessionId, "chat-bg-other");
 
   const steerTimer = timeouts.find(function (t) { return t.ms === 25000; });
-  assert.ok(steerTimer, "steer invoke 必须有 25s 兜底超时");
+  assert.ok(steerTimer, "the steer invoke must have a 25s fallback timeout");
   steerTimer.fn();
   await tick();
   await tick();
 
-  // 原会话的后台队列:chip 必须已降级(非 steered),输入框(新会话)不被碰。
+  // The original session's background queue: the chip must be degraded
+  // (non-steered) and the (new session's) composer untouched.
   const other = bridge.state.getMany(['chat']);
-  assert.strictEqual(other.composerDraft, "", "恢复不得把旧会话文字写进当前活跃会话输入框");
+  assert.strictEqual(other.composerDraft, "", "recovery must not write the old session's text into the active session's composer");
   assert.strictEqual(await bridge.sessions.switchToSession("chat-bg-steer"), true);
   await tick();
   let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 1, "chip 保留在原会话队列");
-  assert.strictEqual(view.queued[0].steered, false, "超时恢复后 chip 降级为非 steered");
+  assert.strictEqual(view.queued.length, 1, "the chip stays in the original session's queue");
+  assert.strictEqual(view.queued[0].steered, false, "after the timeout recovery the chip is degraded to non-steered");
 
-  // 降级 chip 不再挡 flushQueued:turn 终态后被正常发送,后台队列解除卡死。
+  // The degraded chip no longer blocks flushQueued: it is sent normally
+  // after the turn terminal, un-sticking the background queue.
   harness.emit("chat:done", { session_id: "chat-bg-steer", generation: 1 });
   await tick();
   await tick();
   view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 0, "chat:done 后 flush 消费降级 chip(后台队列不再被悬挂 chip 卡死)");
+  assert.strictEqual(view.queued.length, 0, "after chat:done the flush consumes the degraded chip (the background queue is no longer stuck)");
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
     1,
-    "降级 chip 由 flushQueued 正常发送"
+    "the degraded chip is sent normally by flushQueued"
   );
 }
 
 async function transcriptFallbackRecoversAfterCompactionShrink() {
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
-  // legacy 后端:steer_chat 无返回值 → chip 无 steerId,走 transcript 计数兜底
+  // Legacy backend: steer_chat returns nothing → chip has no steerId;
+  // falls back to transcript counting.
   harness.handlers.steer_chat = function () { return null; };
   let disk = [
     { role: "user", content: [{ type: "text", text: "原问题" }] },
@@ -3555,7 +3941,8 @@ async function transcriptFallbackRecoversAfterCompactionShrink() {
     "legacy fallback drains the first chip"
   );
 
-  // compaction:磁盘 transcript 收缩(3 → 1),基线必须跟着重置
+  // Compaction: the on-disk transcript shrinks (3 → 1); the baseline must
+  // reset with it.
   await bridge.chat.sendMessage("兜底恢复乙");
   disk = [{ role: "user", content: [{ type: "text", text: "[compaction summary]" }] }];
   harness.emit("chat:transcript_committed", { session_id: "chat-compact-fallback", transcript_revision: "rev-c2" });
@@ -3567,13 +3954,14 @@ async function transcriptFallbackRecoversAfterCompactionShrink() {
     "shrink commit only resets the baseline, no false drain"
   );
 
-  // 收缩后引擎继续投递:兜底必须恢复工作(lastSeenMessageCount 单调不减会永久死亡)
+  // The engine keeps delivering after the shrink: the fallback must
+  // resume (a monotonic lastSeenMessageCount would stay dead forever).
   disk.push({ role: "user", content: [{ type: "text", text: "兜底恢复乙" }] });
   harness.emit("chat:transcript_committed", { session_id: "chat-compact-fallback", transcript_revision: "rev-c3" });
   await tick();
   await tick();
   const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 0, "compaction 收缩后兜底恢复 drain");
+  assert.strictEqual(view.queued.length, 0, "the fallback resumes draining after the compaction shrink");
   assert.ok(
     view.chatItems.some(function (item) { return item.type === "user" && item.text === "兜底恢复乙"; }),
     "post-compaction fallback turns the chip into a user bubble"
@@ -3581,12 +3969,15 @@ async function transcriptFallbackRecoversAfterCompactionShrink() {
 }
 
 async function transcriptFallbackRoutesByEventSessionNotActiveQueue() {
-  // R4 回归(PR #308 五轮复审):legacy 后端兜底的入口守卫必须按事件 sid 路由
-  // ——旧实现读活跃会话 state.queued,steer 后切走会话时(活跃队列空)整体
-  // return,后台会话的 legacy chip 悬挂并阻塞 flushQueued 队头。
+  // R4 regression (PR #308 fifth review round): the legacy fallback's
+  // entry guard must route by the event's sid — the old implementation read
+  // the active session's state.queued and returned wholesale when the user
+  // had switched away after the steer (active queue empty), leaving the
+  // background session's legacy chip hanging and blocking flushQueued's
+  // queue head.
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
-  harness.handlers.steer_chat = function () { return null; }; // legacy: 无 steerId
+  harness.handlers.steer_chat = function () { return null; }; // legacy: no steerId
   const disk = [
     { role: "user", content: [{ type: "text", text: "背景问题" }] },
   ];
@@ -3603,8 +3994,10 @@ async function transcriptFallbackRoutesByEventSessionNotActiveQueue() {
   await tick();
 
   await bridge.chat.sendMessage("后台兜底消息");
-  // 切走到别的会话:chip 随工作集进 sessionStates["chat-bg-fallback"].queued,
-  // 活跃会话队列变空——旧守卫在此直接 return,兜底永不执行。
+  // Switch to another session: the chip goes into
+  // sessionStates["chat-bg-fallback"].queued with the working set and the
+  // active queue becomes empty — the old guard returned right here and the
+  // fallback never ran.
   assert.strictEqual(await bridge.sessions.switchToSession("other-session"), true);
 
   disk.push({ role: "user", content: [{ type: "text", text: "后台兜底消息" }] });
@@ -3612,14 +4005,17 @@ async function transcriptFallbackRoutesByEventSessionNotActiveQueue() {
   await tick();
   await tick();
 
-  // 切回原会话观察(后台工作集快照不进 getMany 域):chip 必须已被事件路由的
-  // 兜底 drain,并出现用户气泡。
+  // Switch back to the original session to observe (background working-set
+  // snapshots are not in the getMany domain): the chip must have been drained
+  // by the event-routed fallback and a user bubble must be present.
   assert.strictEqual(await bridge.sessions.switchToSession("chat-bg-fallback"), true);
   await tick();
   const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.strictEqual(view.queued.length, 0, "background legacy chip settles via event-sid-routed fallback");
-  // 气泡已写入后台会话的 chatItems(切回后可见);switchToSession 走缓存
-  // 快路径不重建 items,兜底新增的 item 在切回后仍在。
+  // The bubble was written into the background session's chatItems
+  // (visible after switching back); switchToSession takes the cached fast
+  // path and does not rebuild items, so the fallback-added item survives the
+  // switch back.
   const bubble = view.chatItems.some(function (item) { return item.type === "user" && item.text === "后台兜底消息"; });
   const inMessages = view.messages.some(function (m) { return m && m.role === "user" && JSON.stringify(m.content).includes("后台兜底消息"); });
   assert.ok(bubble || inMessages,
@@ -5163,7 +5559,8 @@ async function scheduledBufferLruNeverEvictsLive() {
     };
   };
   await bridge.chat.sendMessage("queued live follow-up");
-  // busy 发送 = steer 注入:chip 立即显示并等待引擎事件结算
+  // Busy send = steer injection: the chip shows immediately and waits for
+  // engine-event settlement.
   assert.strictEqual(bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued.length, 1);
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "steer_chat"; }).length,
@@ -5204,7 +5601,8 @@ async function scheduledBufferLruNeverEvictsLive() {
     JSON.stringify(live.chatItems).includes("live buffer must survive"),
     "LRU must never evict a busy scheduled buffer"
   );
-  // steered chip(等引擎事件结算)留在 live buffer 的队列里,随 buffer 一起被 LRU 保护
+  // The steered chip (awaiting engine-event settlement) stays in the live
+  // buffer's queue and is LRU-protected together with the buffer.
   assert.strictEqual(live.queued.length, 1, "queued steer chip survives with the protected live buffer");
   assert.strictEqual(live.queued[0].text, "queued live follow-up");
   assert.strictEqual(
@@ -6773,6 +7171,12 @@ Promise.resolve()
   .then(transcriptFallbackTailScanTerminatesWithoutEnoughUserTail)
   .then(steerDroppedByEngineRestoresDraftText)
   .then(steerSettleWatchdogNotPendingRemovesChipWithoutResend)
+  .then(steerSettleWatchdogEngineErrRestoresWithoutResend)
+  .then(steerSettleWatchdogWithdrawTimeoutDegradesChip)
+  .then(interruptQueuedWithdrawTimeoutResendsAsRetired)
+  .then(steerDropRestoresAccumulateAcrossChips)
+  .then(steerDropRestoresToOwningBackgroundSession)
+  .then(prefillRecoveryAppendFlagContract)
   .then(interruptQueuedCancelInvokeHangRestoresChip)
   .then(interruptAndSendCancelInvokeTimeoutRejects)
   .then(steerTimeoutDoesNotClobberFreshInput)

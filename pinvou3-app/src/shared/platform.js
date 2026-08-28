@@ -19,7 +19,7 @@ const DEFAULT_DESKTOP_CAPABILITIES = Object.freeze({
   toolStoreMutations: true,
   multiAgent: true,
   acpCodeMode: true,
-  // ⚡ 打断发送走底座 EnginePool 的 Tauri 命令通道，Web 端无此后端。
+  // Zap-send goes through the foundation EnginePool's Tauri command channel; web has no such backend.
   interruptSend: true,
   // 桌面端的系统选择器本就选择"本机"文件,无需浏览器上传通道;显式关闭
   // 让附件按钮在桌面保持原有单入口行为。

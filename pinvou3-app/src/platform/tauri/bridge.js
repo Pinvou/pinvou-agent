@@ -897,9 +897,11 @@
       if (id && reason === "delete" && window.localStorage) {
         try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch { /* localStorage may be unavailable or full; the key is a cache and its loss is non-fatal */ }
       }
-      // Steer 中间状态(暂存事件/撤回文本/打断在途标记)随会话一起清:
-      // 删除时引擎侧由 SyncSession 的 SteerDropped 兜底;LRU 驱逐(reason ===
-      // "evict")也清——chip 已随 buffer 离开工作集,事件不会再有消费者。
+      // Steer intermediates (stashed events / withdrawn texts / the
+      // in-flight interrupt flag) are cleared together with the session: on
+      // delete, the engine side is covered by SyncSession's SteerDropped; LRU
+      // eviction (reason === "evict") also clears — the chip left the working
+      // set with the buffer and no consumer remains for its events.
       if (id && typeof chatFeature.purgeSteerState === "function") {
         chatFeature.purgeSteerState(id);
       }

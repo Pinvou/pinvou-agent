@@ -5210,8 +5210,10 @@
       const materialized = await ensureSession();
       // 物化中止（await 期间切走）→ 把输入放回输入框，不静默丢字
       // （与 tauri 版对齐，二审 F3；错误提示由 ensureSession 内如实给出）。
+      // append=true: failure-recovery semantics — the user may have started
+      // the next message during the await.
       if (!materialized) {
-        prefillComposer(text);
+        prefillComposer(text, true);
         return;
       }
     }
@@ -5321,8 +5323,15 @@
     if (activeBuffer) activeBuffer.composerDraft = text;
     return text;
   }
-  function prefillComposer(text) {
-    state.composerPrefill = { id: (state.composerPrefill.id || 0) + 1, text: String(text || "") };
+  // Mirrors the tauri bridge: template/navigation prefills replace the draft;
+  // failure recovery passes append=true for separator-joined appending
+  // (re-review #4 parity).
+  function prefillComposer(text, append) {
+    state.composerPrefill = {
+      id: (state.composerPrefill.id || 0) + 1,
+      text: String(text || ""),
+      append: !!append,
+    };
     notify();
   }
   // 撤销一条待发消息(点 chip 的 ✕)。

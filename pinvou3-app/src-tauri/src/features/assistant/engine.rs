@@ -110,11 +110,13 @@ struct TurnLifecycleState {
     ///
     /// 此标记由 [`arm_pending_cancel`] 在 cancel 路径设置（仅当 turn 尚未
     /// started），由事件转发器在收到 `TurnStarted` 后通过
-    /// [`take_pending_cancel`] 原子取出并按存储的 mode 重放
-    /// `cancel_with_mode`——此时 `reset_cancel_token()` 已经执行过，cancel
-    /// 命中的是当前轮次的活跃 token。mode 必须随标记一起保存：重放若改用
-    /// 无 mode 的 `cancel()`（硬编码 StopDropInbox），⚡（InterruptKeepInbox）
-    /// 在 submit→TurnStarted 窗口的打断会错误清空未注入的排队 steer。
+    /// [`take_pending_cancel`] atomically takes it and replays
+    /// `cancel_with_mode` with the stored mode — by then
+    /// `reset_cancel_token()` has already run, so the cancel hits the current
+    /// turn's active token. The mode must be saved together with the flag: a
+    /// replay that falls back to the mode-less `cancel()` (hard-coded
+    /// StopDropInbox) would make a ⚡ (InterruptKeepInbox) interrupt in the
+    /// submit→TurnStarted window wrongly clear un-injected queued steers.
     ///
     /// 携带 arming 时的 [`turn_epoch`]：并发取消请求（C1/C2）中，排队较晚的
     /// C2 在恢复后读到的是「当前 lifecycle」（可能已是新轮）。`take_pending_cancel`
@@ -390,8 +392,10 @@ pub(crate) fn emit_chat_terminal(
     crate::features::assistant::pending_user_input::clear_session(session_id);
     let payload = json!({
         "session_id": session_id,
-        // 轮次身份：终态事件必须带 generation，供前端 waitForChatDone 精确
-        // 匹配「被取消的那一轮」，杜绝迟到/错配的 chat:done 提前解锁等待。
+        // Turn identity: terminal events must carry the generation so the
+        // frontend's waitForChatDone matches exactly "the turn that was
+        // cancelled", preventing late/mismatched chat:done events from
+        // unlocking the wait early.
         "generation": generation,
         "status": format!("{status:?}"),
         "error": error,
@@ -482,26 +486,36 @@ impl TurnLifecycle {
         state.active && state.submitted
     }
 
-    /// 「target 轮」的 reserve 闸门是否已重开（终态已收口、槽位已释放）。
-    /// 供 `cancel` 组装 `CancelOutcome.terminal` 使用（M-6）。
+    /// Whether the reserve gate for the "target turn" has reopened (terminal
+    /// closed, slot released). Used by `cancel` to assemble
+    /// `CancelOutcome.terminal` (M-6).
     ///
-    /// 判据：
-    /// - 当前空闲（`!active && !terminal_closing`）⇒ 闸门开着。权威终态
-    ///   路径中开闸（`finish_terminal_emission`）与 emit `chat:done` 在同一
-    ///   同步块内完成（finish 先于 emit、中间无 await），观察到闸门开 ⇒
-    ///   `chat:done` 已发出；唯一的例外是 `invalidate_unsubmitted_reservation`
-    ///   的静默回收（该轮本无终态事件可等）。两种情形前端都无需等待事件。
-    /// - 仍占闸但 `turn_epoch != target` ⇒ 新轮已 reserve。`reserve` 只有
-    ///   在旧轮 `finish_terminal_emission` 重开闸门后才可能成功，故 target
-    ///   轮终态同样已完成收口。此时判定开闸是必须的：否则前端会等一个
-    ///   已经发过、必然错过的 `chat:done` 直到超时，再撞上新轮的 reserve。
-    /// - 仍占闸且 `turn_epoch == target` ⇒ target 轮仍在运行，或终态正在
-    ///   收口（claim 与 finish 之间的临界区），闸门未开，返回 false。
+    /// Criteria:
+    /// - Currently idle (`!active && !terminal_closing`) ⇒ gate open. In the
+    ///   authoritative terminal path, reopening (`finish_terminal_emission`)
+    ///   and emitting `chat:done` complete inside the same synchronous block
+    ///   (finish before emit, no await in between), so observing an open gate
+    ///   ⇒ `chat:done` was already emitted; the sole exception is the silent
+    ///   reclaim of `invalidate_unsubmitted_reservation` (that turn has no
+    ///   terminal event to wait for anyway). In both cases the frontend need
+    ///   not wait for an event.
+    /// - Gate still held but `turn_epoch != target` ⇒ a new turn has been
+    ///   reserved. A `reserve` can only succeed after the old turn's
+    ///   `finish_terminal_emission` reopened the gate, so the target turn's
+    ///   terminal has likewise finished closing. Treating this as open is
+    ///   mandatory: otherwise the frontend waits for an already
+    ///   emitted-and-certainly-missed `chat:done` until timeout, then hits
+    ///   the new turn's reserve.
+    /// - Gate still held and `turn_epoch == target` ⇒ the target turn is
+    ///   still running, or its terminal is closing (the critical section
+    ///   between claim and finish); the gate is not open, return false.
     ///
-    /// 不能用 `terminal_emitted` 替代本判据：claim 置位 `terminal_emitted`
-    /// 与 `finish_terminal_emission` 开闸之间，forwarder 有多个
-    /// `spawn_blocking` 持久化 await；该窗口内闸门仍关，cancel 若据此报
-    /// terminal=true，前端跳过等待直接 reserve 会撞 `session_turn_in_progress`。
+    /// `terminal_emitted` cannot replace this criterion: between the claim
+    /// setting `terminal_emitted` and `finish_terminal_emission` reopening
+    /// the gate, the forwarder has several `spawn_blocking` persistence
+    /// awaits; inside that window the gate is still closed, and a cancel
+    /// reporting terminal=true from it would let the frontend skip the wait
+    /// and hit `session_turn_in_progress` on a direct reserve.
     pub(crate) fn is_reserve_gate_open_for(&self, target: Option<u64>) -> bool {
         let state = self.state.lock();
         if !state.active && !state.terminal_closing {
@@ -1017,14 +1031,17 @@ impl TurnLifecycle {
     /// 认领一个未提交 turn 的终态并补发 `chat:done`，最后重置闸门。
     ///
     /// 给 cancel 在 engine 尚未 spawn（reservation 处于 reserved 未 submitted 阶段）
-    /// 时使用：原子认领（关闸防重入）→ 重开闸门 → 发 `Interrupted` 终态。封装成一
+    /// Atomic claim (closing the gate against re-entry) → reopen the gate →
+    /// emit the `Interrupted` terminal. Wrapped into one
     /// 个方法是为了让调用方（`EnginePool::cancel`，跨模块）不必直接触碰私有的
     /// 终态收尾逻辑，与权威终态路径一样自包含「发完即重置」。
     ///
-    /// **emit 后置**：`finish_terminal_emission` 必须在 emit 之前执行，使
-    /// `chat:done` 到达时 reserve 闸门已重开（P0-B 契约：chat:done ⇒ 槽位已释放）。
-    /// 前端 interruptAndSend 不再需要固定 sleep 补窗口。generation 在 finish 前
-    /// 读取（finish 后 `current_turn_generation` 回到 None），随 payload 发出。
+    /// **Emit-last**: `finish_terminal_emission` must run before the emit so
+    /// that when `chat:done` arrives the reserve gate is already reopened
+    /// (P0-B contract: chat:done ⇒ slot released). The frontend's
+    /// interruptAndSend no longer needs a fixed sleep to cover the window.
+    /// The generation is read before finish (afterwards
+    /// `current_turn_generation` returns to None) and sent in the payload.
     pub(crate) fn emit_unsubmitted_interrupted_terminal(
         &self,
         app: &AppHandle,
@@ -1051,9 +1068,11 @@ impl TurnLifecycle {
     /// `turn_epoch == target` 校验原子完成，目标轮已结束（新轮已 reserve）时
     /// 返回 `false` 且无副作用，避免把新轮 reservation 误认领为 Interrupted。
     ///
-    /// 与 [`emit_unsubmitted_interrupted_terminal`] 同构：先重开闸门再发终态
-    /// （P0-B：chat:done ⇒ 槽位已释放），generation 用 target（= 发起取消的
-    /// 那一轮 epoch，claim 校验已保证二者一致）。
+    /// Structurally identical to [`emit_unsubmitted_interrupted_terminal`]:
+    /// reopen the gate before emitting the terminal (P0-B: chat:done ⇒ slot
+    /// released); the generation is the target (= the epoch of the turn the
+    /// cancel was initiated against, the claim check already guarantees they
+    /// match).
     pub(crate) fn emit_unsubmitted_interrupted_terminal_for_epoch(
         &self,
         app: &AppHandle,
@@ -1145,10 +1164,11 @@ impl TurnLifecycle {
     /// 满足时）并执行 `cancel` 后返回 `true`；epoch 不匹配返回 `false` 且
     /// **不执行** `cancel`，调用方必须整体 no-op。
     ///
-    /// pending 记录 `(epoch, mode)`：转发器重放时按 arming 时调用方传入的
-    /// steer 处置模式（`InterruptKeepInbox`/`StopDropInbox`）重新
-    /// `cancel_with_mode`，而不是无 mode 的 `cancel()`（硬编码
-    /// StopDropInbox）——否则 ⚡ 的 keepInbox 语义在重放路径丢失。
+    /// pending records `(epoch, mode)`: on replay the forwarder re-runs
+    /// `cancel_with_mode` with the steer disposition mode
+    /// (`InterruptKeepInbox`/`StopDropInbox`) the caller passed at arming
+    /// time, not the mode-less `cancel()` (hard-coded StopDropInbox) —
+    /// otherwise ⚡'s keepInbox semantics would be lost on the replay path.
     ///
     /// [`arm_pending_cancel`]: Self::arm_pending_cancel_and_cancel
     pub(crate) fn arm_pending_cancel_and_cancel<F>(
@@ -1186,7 +1206,8 @@ impl TurnLifecycle {
     ///
     /// 由事件转发器在收到 `TurnStarted` 后调用：此时 CodeWhale 的
     /// `reset_cancel_token()` 已执行完毕（它在 `TurnStarted` 之前），
-    /// 按取出的 mode 重新 `cancel_with_mode` 命中的正是本轮的活跃 token。
+    /// Re-running `cancel_with_mode` with the taken mode hits exactly this
+    /// turn's active token.
     ///
     /// 仅当记录的 epoch 仍是 `current_epoch`（仍是 arming 时的那一轮）时才取出
     /// 并返回 `Some`，否则清空并返回 `None`：跨轮泄漏的 stale pending（cancel
@@ -1269,9 +1290,12 @@ async fn finish_reclaimed_lifecycle_turn(
         &status_text,
         terminal_error.as_deref(),
     );
-    // P0-B：先重开闸门再发终态——chat:done 到达时槽位已释放，前端 interruptAndSend
-    // 不再需要固定 sleep 补窗口。generation 必须在 finish 前读取（finish 后
-    // current_turn_generation 回到 None），随 payload 发出供前端按轮匹配。
+    // P0-B: reopen the gate before emitting the terminal — by the time
+    // chat:done arrives the slot is released and the frontend's
+    // interruptAndSend no longer needs a fixed sleep to cover the window. The
+    // generation must be read before finish (afterwards
+    // current_turn_generation returns to None) and is sent in the payload for
+    // the frontend's per-turn matching.
     let generation = lifecycle.current_turn_generation().unwrap_or(0);
     lifecycle.finish_terminal_emission();
     emit_chat_terminal(
@@ -1608,10 +1632,13 @@ impl AppEngine {
         self.handle.cancel();
     }
 
-    /// 取消当前轮并原子发布未注入 steer 的处置（r10 底座 `cancel_with_mode`）：
-    /// `InterruptKeepInbox` = 打断（⚡），未注入 steer 保留给下一轮；
-    /// `StopDropInbox` = 停止（⏹），未注入 steer 清空并逐条发 `SteerDropped`。
-    /// 处置与 cancel token 在同一句柄操作内发布，不存在旧两步写法的竞态窗口。
+    /// Cancel the current turn and atomically publish the disposition of
+    /// un-injected steers (r10 foundation `cancel_with_mode`):
+    /// `InterruptKeepInbox` = interrupt (⚡), un-injected steers are kept for
+    /// the next turn; `StopDropInbox` = stop (⏹), un-injected steers are
+    /// cleared with one `SteerDropped` each. The disposition and the cancel
+    /// token are published within a single handle operation — no race window
+    /// like the old two-step write.
     pub fn cancel_current_with_mode(&self, mode: deepseek_tui::core::engine::CancelMode) {
         self.handle
             .cancel_with_mode(deepseek_tui::core::engine::CancelReason::User, mode);
@@ -2002,51 +2029,59 @@ mod turn_lifecycle_tests {
 
     #[test]
     fn reserve_gate_stays_closed_between_claim_and_finish() {
-        // M-6 核心窗口：claim（terminal_emitted 置位、terminal_closing 关闸）
-        // 与 finish_terminal_emission（开闸）之间，forwarder 有多个
-        // spawn_blocking 持久化 await。此窗口内闸门对 target epoch 必须仍判
-        // 关闭（terminal=false，前端等 chat:done），否则前端跳过等待直接
-        // reserve 会撞 session_turn_in_progress。
+        // M-6 core window: between the claim (terminal_emitted set,
+        // terminal_closing closing the gate) and finish_terminal_emission
+        // (reopening), the forwarder has several spawn_blocking persistence
+        // awaits. Inside this window the gate must still read closed for the
+        // target epoch (terminal=false, frontend waits for chat:done);
+        // otherwise the frontend would skip the wait and hit
+        // session_turn_in_progress on a direct reserve.
         let lifecycle = Arc::new(TurnLifecycle::default());
         let reservation = lifecycle.reserve().expect("reserve");
         let epoch = lifecycle.current_turn_generation().expect("active epoch");
         lifecycle.mark_reservation_submitted(reservation.reservation_id);
         reservation.mark_submitted();
 
-        // 运行中的轮次：闸门关闭。
+        // Running turn: gate closed.
         assert!(!lifecycle.is_reserve_gate_open_for(Some(epoch)));
 
-        // claim 已置位但 finish 未执行（模拟持久化 await 窗口）：闸门仍关闭。
+        // Claim set but finish not yet run (simulating the persistence
+        // await window): gate still closed.
         assert!(lifecycle.claim_terminal().is_some());
         assert!(
             !lifecycle.is_reserve_gate_open_for(Some(epoch)),
             "claimed but not finished: gate must still be closed for the target epoch"
         );
 
-        // finish 开闸（权威路径中 chat:done 与开闸在同一同步块内、finish 先于
-        // emit）⇒ 观察到开闸时 chat:done 已发出，terminal=true 安全。
+        // finish reopens the gate (in the authoritative path chat:done and
+        // the reopening share one synchronous block, finish before emit) ⇒
+        // observing an open gate means chat:done was already emitted;
+        // terminal=true is safe.
         lifecycle.finish_terminal_emission();
         assert!(lifecycle.is_reserve_gate_open_for(Some(epoch)));
     }
 
     #[test]
     fn reserve_gate_open_for_superseded_epoch_once_new_turn_reserved() {
-        // M-6 epoch mismatch 情形：新轮 reserve 成功的前提是旧轮
-        // finish_terminal_emission 已开闸，因此「新轮 active 且 epoch !=
-        // target」意味着 target 轮终态已完成收口，terminal=true 是安全且
-        // 必须的（否则前端等一个已经发过、错过的 chat:done 直到超时，再撞
-        // 新轮的 reserve）。
+        // M-6 epoch-mismatch case: a new turn's reserve can only succeed
+        // after the old turn's finish_terminal_emission reopened the gate, so
+        // "new turn active with epoch != target" implies the target turn's
+        // terminal finished closing; terminal=true is both safe and mandatory
+        // (otherwise the frontend waits for an already emitted-and-missed
+        // chat:done until timeout, then hits the new turn's reserve).
         let lifecycle = Arc::new(TurnLifecycle::default());
         let reservation = lifecycle.reserve().expect("reserve");
         let old_epoch = lifecycle.current_turn_generation().expect("active epoch");
         lifecycle.mark_reservation_submitted(reservation.reservation_id);
         reservation.mark_submitted();
 
-        // 旧轮终态完整收口（claim → finish，即 chat:done 已发出）。
+        // Old turn's terminal fully closed (claim → finish, i.e. chat:done
+        // already emitted).
         assert!(lifecycle.claim_terminal().is_some());
         lifecycle.finish_terminal_emission();
 
-        // 新轮 reserve 成功（只有旧轮开闸后才可能）。
+        // New turn reserved successfully (only possible after the old turn
+        // reopened the gate).
         let reservation2 = lifecycle.reserve().expect("new reserve");
         let new_epoch = lifecycle.current_turn_generation().expect("new epoch");
         assert_ne!(new_epoch, old_epoch);
@@ -2054,16 +2089,18 @@ mod turn_lifecycle_tests {
             lifecycle.is_reserve_gate_open_for(Some(old_epoch)),
             "new epoch active implies the old turn terminal fully closed"
         );
-        // 新轮自己的 epoch 闸门仍关（新轮在跑，终态未收口）。
+        // The gate for the new turn's own epoch is still closed (the new
+        // turn is running, terminal not yet closed).
         assert!(!lifecycle.is_reserve_gate_open_for(Some(new_epoch)));
         reservation2.mark_submitted();
     }
 
     #[test]
     fn reserve_gate_is_open_when_idle() {
-        // 空闲（无进行中轮次、无终态收口临界区）⇒ 闸门开：要么旧轮 chat:done
-        // 已发出，要么该轮本无终态事件可等（invalidate 静默回收路径），前端
-        // 都无需等待。
+        // Idle (no running turn, no terminal-closing critical section) ⇒
+        // gate open: either the old turn's chat:done was already emitted, or
+        // that turn never had a terminal event to wait for (the invalidate
+        // silent-reclaim path); the frontend need not wait in either case.
         let lifecycle = TurnLifecycle::default();
         assert!(lifecycle.is_reserve_gate_open_for(None));
         assert!(lifecycle.is_reserve_gate_open_for(Some(1)));
@@ -2462,10 +2499,12 @@ mod turn_lifecycle_tests {
 
     #[test]
     fn pending_cancel_round_trips_steering_mode_for_replay() {
-        // 重放路径的处置模式回归：⚡ 以 InterruptKeepInbox arm 的 pending_cancel，
-        // 转发器 take 出来必须原样带回该 mode——重放若退化为无 mode 的
-        // cancel()（硬编码 StopDropInbox），submit→TurnStarted 窗口的打断
-        // 会错误清空未注入的排队 steer（PR #308 五轮复审 MAJOR）。
+        // Disposition-mode regression for the replay path: a pending_cancel
+        // armed by ⚡ with InterruptKeepInbox must take the same mode back out
+        // on the forwarder — a replay degrading into the mode-less cancel()
+        // (hard-coded StopDropInbox) would make an interrupt in the
+        // submit→TurnStarted window wrongly clear un-injected queued steers
+        // (PR #308 fifth review round MAJOR).
         let lifecycle = Arc::new(TurnLifecycle::default());
         lifecycle.on_submitted();
         let epoch = lifecycle.current_turn_generation().expect("active epoch");

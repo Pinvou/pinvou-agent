@@ -91,11 +91,13 @@ pub(crate) fn spawn_event_forwarder(
                     // 消费 pending_cancel（无论 admitted 与否，防止跨轮泄漏）。
                     // reset_cancel_token() 在 TurnStarted 之前已执行，若 cancel
                     // 在此之前 arm 了标记，现在重新 cancel 命中的是本轮活跃 token。
-                    // pending_cancel 携带 arming 时的 turn_epoch 与 steer 处置
-                    // mode：只有匹配当前轮的 arm 才在此重放 cancel（跨轮的
-                    // stale arm 被丢弃，#207），且重放必须按 arming 时的 mode
-                    // 调 cancel_with_mode——无 mode 的 cancel() 硬编码
-                    // StopDropInbox，会把 ⚡ 的 keepInbox 语义在重放路径丢失。
+                    // pending_cancel carries the turn_epoch and steer
+                    // disposition mode from arming time: only an arm matching
+                    // the current turn replays the cancel here (stale arms
+                    // from other turns are dropped, #207), and the replay must
+                    // call cancel_with_mode with the arming-time mode — the
+                    // mode-less cancel() hard-codes StopDropInbox and would
+                    // lose ⚡'s keepInbox semantics on the replay path.
                     let epoch = turn_lifecycle.current_turn_generation().unwrap_or(0);
                     let pending_cancel = turn_lifecycle.take_pending_cancel(epoch);
                     if !admitted {
@@ -523,13 +525,18 @@ pub(crate) fn spawn_event_forwarder(
                     // 已先于 ApprovalRequired fire，前端已收到正确的 args。
                     // 之前在此 emit 会用 args=null 覆盖前端 toolMeta，导致产物路径丢失。
                 }
-                // main 侧清理：CodeWhale 原生 workflow 事件由底座自行管理，
-                // 应用只消费通用子智能体事件（AgentSpawned 不再登记 role）。
+                // Main-side cleanup: CodeWhale-native workflow events are
+                // managed by the foundation itself; the app only consumes the
+                // generic subagent events (AgentSpawned no longer registers a
+                // role).
                 Event::AgentSpawned { .. } => {}
-                // mid-turn inject 投递确认（P0-A）：引擎把 steer 消息追加进
-                // transcript 后发 SteerCommitted（带回入队时的 steer_id），前端
-                // 据此把对应排队 chip 转气泡；引擎丢弃时才发 SteerDropped。前端
-                // 不再靠 chat:transcript_committed + load_session 比对消息数来猜。
+                // Mid-turn inject delivery confirmation (P0-A): after the
+                // engine appends the steer message to the transcript it emits
+                // SteerCommitted (carrying the enqueue-time steer_id), which
+                // the frontend uses to turn the matching queued chip into a
+                // bubble; SteerDropped is only emitted when the engine drops
+                // it. The frontend no longer guesses via
+                // chat:transcript_committed + load_session message counting.
                 Event::SteerCommitted { steer_id } => {
                     let payload = json!({
                         "session_id": session_id,
@@ -953,12 +960,16 @@ pub(crate) fn spawn_event_forwarder(
                         // busy. Reclaim now observes the lifecycle as terminal and
                         // cannot publish a conflicting Interrupted outcome.
                         //
-                        // P0-B：finish_terminal_emission 必须先于 emit 执行，使
-                        // chat:done 到达时 reserve 闸门已重开（契约：chat:done ⇒
-                        // 槽位已释放），前端 interruptAndSend 不再需要固定 sleep。
-                        // generation 在 finish 前读取（finish 后回到 None）。
-                        // emit 保持在 harness await 之前：harness 段可能被引擎
-                        // eviction 中断，终态必须先发出去，前端才不会永久 busy。
+                        // P0-B: finish_terminal_emission must run before the
+                        // emit so that when chat:done arrives the reserve gate
+                        // is already reopened (contract: chat:done ⇒ slot
+                        // released) and the frontend's interruptAndSend needs
+                        // no fixed sleep. The generation is read before finish
+                        // (it returns to None afterwards). The emit stays
+                        // before the harness await: the harness section can be
+                        // interrupted by engine eviction, and the terminal
+                        // must go out first or the frontend stays busy
+                        // forever.
                         let generation = turn_lifecycle.current_turn_generation().unwrap_or(0);
                         turn_lifecycle.finish_terminal_emission();
                         emit_chat_terminal(
