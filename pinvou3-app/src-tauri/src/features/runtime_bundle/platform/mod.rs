@@ -91,13 +91,18 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.23: wecom-cli 升 1.1.0：技能树按上游服务模型重排为 14 个（msg→message、
 ///       schedule→calendar，新增 disk/doc-manage/email/media/shared/sheet/smartpage），
 ///       旧目录（wecomcli-msg/wecomcli-schedule）启动门控时清理。
-/// 0.28: lark-skills 八包 31 条文档审计修复（见 lark-skills/NOTICE.md 登记，
-///       含 review fixes 对齐 CLI v1.0.87 真值）。版本号取 0.24（weibo #333）、
-///       0.25（wecom #366）、0.26（tmeet #362）、0.27（dws #359）之后的下一
-///       空位；0.27 已被 #359 先行认领，重号会让两 PR 间的升级构建 VERSION
-///       不变而跳过启动重解包。技能树不参与内容哈希，须 bump 语义版本让
-///       已连接用户启动即同步刷新（否则要等首帧后
-///       refresh_connector_auth_gates 补刷）。
+/// 0.28: lark-skills doc audit fixes, 31 findings across eight packs
+///       (registered in lark-skills/NOTICE.md, including review fixes
+///       aligned with CLI v1.0.87 ground truth). Version takes the next
+///       free slot after 0.24 (weibo #333), 0.25 (wecom #366),
+///       0.26 (tmeet #362), and 0.27 (dws #359); 0.27 was already
+///       claimed by #359, and a duplicate number would leave the
+///       upgraded build VERSION unchanged between the two PRs and skip
+///       startup re-extraction. Skill trees are excluded from the
+///       content hash, so the semantic version must be bumped for
+///       connected users to refresh at startup (otherwise the refresh
+///       waits for the post-first-frame refresh_connector_auth_gates
+///       backfill).
 pub const BUNDLE_VERSION: &str = concat!("0.28-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
