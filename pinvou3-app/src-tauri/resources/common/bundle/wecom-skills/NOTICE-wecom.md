@@ -115,7 +115,10 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
 4. **smartpage→smartsheet 委托契约**:smartsheet SKILL.md 的 docid 合法
    来源清单与前置阻断各补一条豁免——`smartpage databases get` 返回的
    `database_info.id` 可直接作 smartsheet 侧 `docid`/`file_id`;smartpage
-   侧(SKILL.md 委托关系、smartpage-edit.md databases get)同步说明。
+   侧(SKILL.md 委托关系、smartpage-edit.md databases get)同步说明;
+   `file_id` 参数表与 smart-sheet-edit.md「适用 docid 前缀」的原 `s3_`
+   绝对化声明同步加例外指注(该契约已固化为 connector_skills_contract
+   .test.js 门禁,防两侧文档漂移)。
 5. **sheet-rows-append.md 结构表补 `data_type` 行**:与
    sheet-contents-update.md 同语义结构对齐(SKILL.md 硬规则要求
    cell_value 必须同时设 data_type)。

@@ -156,7 +156,46 @@ for (const f of files.filter((f) => path.basename(f) === "SKILL.md")) {
   assert.equal(name, path.basename(path.dirname(f)), `${rel(f)}: name 与目录名不一致`);
 }
 
-// 7) 语义扫描豁免登记：以上规则若在上游 sync 后出现合理新豁免，必须在本清单登记文件+理由。
+// 7) wecom smartpage→smartsheet 委托豁免契约（#366 评审）：smartpage
+// `databases get` 返回的 `database_info.id` 可直接作 smartsheet 侧
+// `docid`/`file_id`、不要求 `s3_` 前缀，是 s3_ 前缀声明的唯一例外。
+// 接收侧两份 + 委托侧两份文档必须同步在位：任一侧删豁免、或
+// smart-sheet-edit.md 前缀声明回潮为无条件 `s3_`，均在此失败
+// （登记见 NOTICE-wecom.md「路由口径统一与文档缺陷修复(2026-08-27)」第 4 条）。
+const wecomRel = (...p) => rel(bundle("wecom-skills", ...p));
+const smartsheetSkill = read(bundle("wecom-skills", "wecomcli-smartsheet", "SKILL.md"));
+const smartsheetEdit = read(bundle("wecom-skills", "wecomcli-smartsheet", "references", "smart-sheet-edit.md"));
+const smartpageSkill = read(bundle("wecom-skills", "wecomcli-smartpage", "SKILL.md"));
+const smartpageEdit = read(bundle("wecom-skills", "wecomcli-smartpage", "references", "smartpage-edit.md"));
+// 接收侧权威豁免：docid 来源第 4 条 + 前置阻断「唯一合法来源」的唯一例外行
+// （普通 docid 仍受来源清单其余条目与阻断规则约束，豁免不得扩大）。
+const exemptionLine = smartsheetSkill.split("\n").find((l) => l.includes("委托豁免"));
+assert.ok(
+  exemptionLine && exemptionLine.includes("`database_info.id`") && exemptionLine.includes("不要求 `s3_` 前缀"),
+  `${wecomRel("wecomcli-smartsheet", "SKILL.md")}: 缺 docid 来源第 4 条委托豁免（database_info.id 直作 docid、不要求 s3_ 前缀）`,
+);
+assert.ok(
+  smartsheetSkill.split("\n").some((l) => l.includes("唯一例外") && l.includes("`database_info.id`")),
+  `${wecomRel("wecomcli-smartsheet", "SKILL.md")}: 前置阻断「唯一合法来源」缺 smartpage 委托唯一例外`,
+);
+// 接收侧参考：`s3_` 前缀声明必须带 smartpage 例外限定，防回潮为绝对前缀。
+const prefixLine = smartsheetEdit.split("\n").find((l) => l.includes("适用 docid 前缀"));
+assert.ok(
+  prefixLine && prefixLine.includes("`s3_`") && prefixLine.includes("`database_info.id`") && prefixLine.includes("例外"),
+  `${wecomRel("wecomcli-smartsheet", "references", "smart-sheet-edit.md")}: 「适用 docid 前缀」须为 s3_ + smartpage database_info.id 例外限定`,
+);
+// 委托侧：委托句点名 `database_info.id` 并保留「可直接作 docid/file_id」契约。
+const delegationLine = smartpageEdit.split("\n").find((l) => l.includes("后续操作数据表"));
+assert.ok(
+  delegationLine && delegationLine.includes("`database_info.id`") && delegationLine.includes("可直接作为"),
+  `${wecomRel("wecomcli-smartpage", "references", "smartpage-edit.md")}: databases get 委托句缺 database_info.id 直作 docid/file_id 契约`,
+);
+assert.ok(
+  smartpageSkill.split("\n").some((l) => l.includes("databases get") && l.includes("可直接作为")),
+  `${wecomRel("wecomcli-smartpage", "SKILL.md")}: 委托关系缺 databases get → 可直接作为 smartsheet docid 契约句`,
+);
+
+// 8) 语义扫描豁免登记：以上规则若在上游 sync 后出现合理新豁免，必须在本清单登记文件+理由。
 // EXEMPT_FILES 当前为空：OPENCLAW_WORKSPACE 为 dws scripts 的路径护栏 env（未设时回退
 // cwd），非宿主断言（负向断言见上）；历史审查记录（NOTICE*.md）整体豁免由 docs 过滤实现。
 const EXEMPT_FILES = [];
