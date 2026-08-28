@@ -2903,12 +2903,14 @@ mod tests {
 
     #[test]
     fn code_session_tool_shaping_hides_present_artifact_only_for_code_sessions() {
-        // 隔离 PINVOU3_HOME:load_skill 的空目录判定读磁盘组合目录
-        // (~/.pinvou3/sessions/<sid>/skills,见 skill_materialization::
-        // session_skills_is_empty)——开发机真实 home 下的同名会话残留会让
-        // is_empty 判 false、load_skill 不被隐藏(2026-08-27 定位为本地
-        // 环境污染,非 r11 行为变化;同模块 code_session_tool_shaping_uses_
-        // code_scope_for_connectors 已有同款隔离)。
+        // Isolate PINVOU3_HOME: load_skill's empty-directory check reads the
+        // on-disk combined directory (~/.pinvou3/sessions/<sid>/skills, see
+        // skill_materialization::session_skills_is_empty) — same-named session
+        // leftovers under the dev machine's real home would flip is_empty to
+        // false and keep load_skill visible (diagnosed 2026-08-27 as local
+        // environment contamination, not an r11 behavior change; the sibling
+        // code_session_tool_shaping_uses_code_scope_for_connectors in this
+        // module already has the same isolation).
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
         let dir = std::env::temp_dir().join(format!(
             "pinvou3-bridge-shape-code-only-{}",

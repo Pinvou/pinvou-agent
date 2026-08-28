@@ -359,29 +359,40 @@ pub(crate) async fn chat_with_reservation(
     }
 }
 
-/// Mid-turn inject: 当前 turn 仍在跑时,把用户消息投递到下个 step 边界。
-/// 底座 `EngineHandle::steer` 在 turn loop 每个 tool result 处理完后、
-/// 下次 model call 之前自动追加到 session.messages,模型下次思考时看到。
+/// Mid-turn inject: while the current turn is still running, deliver a
+/// user message to the next step boundary. The foundation's
+/// `EngineHandle::steer` appends to session.messages automatically after
+/// each tool result and before the next model call; the model sees it on
+/// its next thinking pass.
 ///
-/// 与 `chat()` 的区别:
-/// - `chat()` 触发新 turn(reserve_turn → SendMessage),turn_in_progress 时拒绝
-/// - `steer_chat()` 只往 steer channel 入队,不触发新 turn,turn_in_progress 也能调用
+/// Difference from `chat()`:
+/// - `chat()` starts a new turn (reserve_turn → SendMessage) and is rejected
+///   while turn_in_progress
+/// - `steer_chat()` only enqueues into the steer channel, starts no new
+///   turn, and is callable during turn_in_progress
 ///
-/// 失败模式:
-/// - session 不存在 / engine 没起 → 返回 Err,前端走失败恢复路径
-/// - 引擎空闲(无 active turn 可接 steer) → 返回 Err,前端走失败恢复路径
-/// - steer channel 满 → 底座 `reserve_owned().await` 挂起等容量(不是立即
-///   报错);等待期间目标轮切换则报 "steer target changed"。引擎任务卡死
-///   不 drain 时本命令会长期不结算,前端 invoke 已有 25s 兜底超时。
+/// Failure modes:
+/// - session missing / engine not running → Err; the frontend takes its
+///   failure-recovery path
+/// - engine idle (no active turn to accept the steer) → Err; the frontend
+///   takes its failure-recovery path
+/// - steer channel full → the foundation's `reserve_owned().await` suspends
+///   waiting for capacity (it does not error immediately); if the target
+///   turn changes while waiting, it reports "steer target changed". A wedged
+///   engine task that never drains leaves this command unsettled for a long
+///   time — the frontend invoke already has a 25s fallback timeout.
 ///
-/// 返回引擎生成的 opaque steer id,前端据此关联 chat:steer_committed /
-/// chat:steer_dropped 事件。
+/// Returns the engine-generated opaque steer id; the frontend uses it to
+/// correlate chat:steer_committed / chat:steer_dropped events.
 ///
-/// 渲染用户气泡不由后端发 chat:user_message：本地前端在
-/// chat:steer_committed 结算时把排队 chip 就地转为气泡（bridge/chat.js
-/// settleSteerCommitted，精确控制 chip → bubble 的视觉切换时机，也避免与
-/// turn_loop drain 的 SessionUpdated 重复）。已知限制：不经过 turn
-/// admission，远端/web 观察者在全量重载前看不到 steer 注入的消息。
+/// Rendering the user bubble does NOT go through a backend
+/// chat:user_message: the local frontend converts the queued chip into a
+/// bubble in place when chat:steer_committed settles (bridge/chat.js
+/// settleSteerCommitted — precise control over the chip → bubble visual
+/// switch, also avoiding duplication with the turn_loop drain's
+/// SessionUpdated). Known limitation: it bypasses turn admission, so
+/// remote/web observers do not see the steer-injected message until a full
+/// reload.
 #[tauri::command]
 pub async fn steer_chat(
     session_id: Option<String>,
@@ -389,9 +400,10 @@ pub async fn steer_chat(
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<String, String> {
-    // 空内容前置校验对齐 chat():否则空 steer 会完整走一轮引擎 round-trip
-    // (分配 permit → 底座 trim 后判空 Drop),前端先建 chip 再收到误导性的
-    // steer_dropped 提示。
+    // Empty-content pre-check aligned with chat(): an empty steer would
+    // otherwise do a full engine round-trip (allocate a permit → foundation
+    // trims and drops it as empty) while the frontend has already created a
+    // chip and then receives a misleading steer_dropped notice.
     if content.trim().is_empty() {
         return Err("empty steer content".to_string());
     }
@@ -401,18 +413,21 @@ pub async fn steer_chat(
         .map_err(|e| format!("steer_chat: {e:#}"))
 }
 
-/// 撤回一条尚未注入的 steer（前端排队 chip 的 ✕ / ⚡ 瞬发前置）。
+/// Withdraw a not-yet-injected steer (the ✕ on a frontend queued chip /
+/// precondition of the ⚡ zap-send).
 ///
-/// 引擎保证被撤回的 steer_id 永不注入 transcript，并在丢弃时补发一条
-/// `chat:steer_dropped`（幂等）。
+/// The engine guarantees a withdrawn steer_id never enters the transcript
+/// and emits one `chat:steer_dropped` when it drops it (idempotent).
 ///
-/// 返回明确 outcome（评审 P1-1）：`"retired"` = 撤回生效、永不注入，
-/// 前端可安全经其他路径重发；`"not_pending"` = 已 committed/已结算/
-/// 未知 id——注入可能已完成，前端不得重发（气泡由 steer_committed 渲染）。
-/// 底座 `EngineHandle::withdraw_steer` 的 `SteerWithdrawal` 枚举的字符串投影。
+/// Returns an explicit outcome (review P1-1): `"retired"` = the withdrawal
+/// took effect and it will never inject, the frontend may safely resend
+/// through another path; `"not_pending"` = committed/settled/unknown id —
+/// the injection may already be done and the frontend must not resend (the
+/// bubble is rendered by steer_committed). String projection of the
+/// foundation's `EngineHandle::withdraw_steer` `SteerWithdrawal` enum.
 ///
-/// 失败模式：session 不存在 / engine 没起 → 返回 Err（消息未进引擎，
-/// 前端纯本地移除排队 chip 即可）。
+/// Failure modes: session missing / engine not running → Err (the message
+/// never entered the engine; a purely local chip removal suffices).
 #[tauri::command]
 pub async fn withdraw_steer(
     session_id: Option<String>,

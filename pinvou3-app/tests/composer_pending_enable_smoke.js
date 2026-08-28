@@ -175,7 +175,7 @@ const sleep = ms => new Promise(r => { setTimeout(r, ms); });
   const committedBeforeFail = await page.evaluate(() => window.__PENDING_ENABLE_TEST__.committedEvents);
   await page.evaluate(() => window.TauriBridge.chat.sendMessage('will-fail').then(
     () => { throw new Error('send should have failed'); },
-    () => 'failed-as-expected' // 主路径失败现在向调用方 reject（评审修复：失败透传，输入框由调用方恢复）
+    () => 'failed-as-expected' // main-path failures now reject to the caller (review fix: failures propagate; the caller restores the composer)
   ));
   await sleep(600);
   const afterFail = await page.evaluate(() => window.__PENDING_ENABLE_TEST__.committedEvents);

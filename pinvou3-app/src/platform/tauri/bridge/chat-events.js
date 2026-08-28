@@ -335,13 +335,16 @@
     applyRemoteUserMessageEvent(e, false);
   });
 
-  // P0-A：steer 投递确认（steer_id 版）。引擎把 steer 追加进 transcript 后发
-  // committed（带 opaque steer_id），前端把对应排队 chip 转气泡——不再靠
-  // content_hash 内容指纹（UTF-16/UTF-8 编码差异会让中英文内容两侧哈希
-  // 不一致）。结算逻辑在 chat.js（chip 归属方），含"事件早于 invoke 返回"
-  // 的未决暂存和"× 撤回"的乐观移除；旧后端（事件无 steer_id）走
-  // transcript_committed 计数兜底。steer_dropped 同时承载引擎主动丢弃和
-  // 用户 × 撤回（withdraw_steer）两种来源。
+  // P0-A: steer delivery confirmation (steer_id edition). The engine
+  // appends the steer to the transcript and emits committed (with the opaque
+  // steer_id); the frontend turns the matching queued chip into a bubble — no
+  // more content_hash fingerprinting (UTF-16/UTF-8 encoding differences made
+  // the two sides disagree for CJK and non-CJK content alike). Settlement
+  // lives in chat.js (the chip owner), including the pending stash for
+  // "event before the invoke returns" and the optimistic removal for "×
+  // withdrawal"; legacy backends (events without steer_id) fall back to
+  // transcript_committed counting. steer_dropped carries both engine-initiated
+  // drops and user × withdrawals (withdraw_steer).
   const settleSteerCommitted = context.settleSteerCommitted;
   const settleSteerDropped = context.settleSteerDropped;
   listen("chat:steer_committed", function (e) {
@@ -379,49 +382,63 @@
         if (ready) flushQueued(sid);
       }).catch(function () {});
     }
-    // mid-turn inject 投递完成兜底信号:turn_loop 把 steer 追加到
-    // session.messages 后,forwarder 持久化完 emit chat:transcript_committed。
-    // 权威结算走 chat:steer_committed(steer_id 匹配);这里只兜底旧后端
-    // (chip 没有 steerId)的场景:此时 state.queued 里仍在等的 legacy steer
-    // chip 应该转 user bubble + 同步 state.messages。
+    // Mid-turn inject delivery-completion fallback signal: after turn_loop
+    // appends the steer to session.messages and the forwarder finishes
+    // persisting, it emits chat:transcript_committed.
+    // Authoritative settlement is chat:steer_committed (steer_id matching);
+    // this only covers legacy backends (chip without steerId): the legacy
+    // steer chip still waiting in state.queued should become a user bubble
+    // and sync state.messages.
     //
-    // 计数差 = 新增的 message 数,精确消耗 state.queued 队首对应条数。
-    // 只有在增长 > 0 且包含 user-role 新消息时才 drain,避免对其他 commit
-    // (subagent 完成、runtime 续轮等)误触发。
-    // 守卫必须按事件 sid 路由(后台会话的 chip 在 sessionStates[sid].queued,
-    // 不在活跃工作集):若读活跃会话队列,steer 后切走会话的 legacy chip 会在
-    // 活跃队列为空时整体跳过兜底,后台 chip 悬挂并阻塞 flushQueued 队头。
+    // The count delta = the number of new messages; consume exactly that
+    // many entries from the head of state.queued. Drain only when the growth
+    // is > 0 and includes new user-role messages, to avoid false triggers on
+    // other commits (subagent completion, runtime follow-up turns).
+    // The guard must route by the event's sid (a background session's chip
+    // lives in sessionStates[sid].queued, not the active working set): reading
+    // the active queue would skip the fallback wholesale for a legacy chip
+    // whose session was switched away after the steer, leaving the background
+    // chip hanging and blocking flushQueued's queue head.
     const fallbackQueued = sid === state.activeSessionId
       ? state.queued
       : (sessionStates[sid] && sessionStates[sid].queued);
     if (!fallbackQueued || fallbackQueued.length === 0) return;
     invoke("load_session", { id: sid, setActive: false }).then(function (saved) {
       if (!saved || !Array.isArray(saved.messages)) return;
-      // 懒初始化基线=快照长度(无更早可信用数)。配对不用 slice(preCount)
-      // 从头数新增,而是「尾部对齐」:从快照尾部向前匹配队首 legacy chip
-      // 的同文 user 消息——历史中的同文旧消息永远排在新注入之前,不会
-      // 被误配对(修复懒初始化首事件 slice(0) 全历史的误 drain)。
+      // Lazy-initialized baseline = snapshot length (no earlier trustworthy
+      // count). Pairing does not slice(preCount) to count from the head but
+      // "tail-aligns": match the queue-head legacy chip's same-text user
+      // message backwards from the snapshot tail — same-text old messages in
+      // history always precede the new injection and can never mispair
+      // (fixes the lazy-init first event draining all of history via
+      // slice(0)).
       const lazyBaseline = committedBuffer.lastSeenMessageCount == null;
       const preCount = lazyBaseline
         ? saved.messages.length
         : committedBuffer.lastSeenMessageCount;
       const newMessages = saved.messages;
-      // compaction 等会让 transcript 收缩:基线跟着重置,否则
-      // newMessages.length <= preCount 恒成立,兜底永久失效。
+      // Compaction etc. shrink the transcript: reset the baseline with it,
+      // otherwise newMessages.length <= preCount holds forever and the
+      // fallback never fires again.
       if (newMessages.length < preCount) {
         committedBuffer.lastSeenMessageCount = newMessages.length;
         return;
       }
-      // 懒初始化(首次兜底)没有"上一帧"可比,长度相等也要继续——注入刚
-      // 发生时本帧快照的尾部就是注入结果,交给下方尾部对齐校验。
+      // Lazy initialization (first fallback) has no "previous frame" to
+      // compare against; continue even when the length is unchanged — right
+      // after an injection, this frame's snapshot tail IS the injection
+      // result, and the tail alignment below validates it.
       if (!lazyBaseline && newMessages.length === preCount) return;
       committedBuffer.lastSeenMessageCount = newMessages.length;
       runSyncOnSession(sid, function () {
         state.messages = newMessages;
-        // 尾部对齐:可 drain 的候选 = 快照里 preCount 之后的新增 user 消息;
-        // 懒初始化(preCount === length)时候选为空,但注入刚发生的场景下
-        // 尾部消息本身就是注入结果——用尾部回溯与队首 chip 逐条同文校验,
-        // 只在「尾部连续匹配」时 drain,历史同文旧消息不会误配对。
+        // Tail alignment: drainable candidates = the new user messages after
+        // preCount in the snapshot; for lazy init (preCount === length) the
+        // candidate list is empty, but right after an injection the tail
+        // message itself is the injection result — walk backwards from the
+        // tail checking same-text against the queue-head chips and drain only
+        // on a contiguous tail match, so same-text old history never
+        // mispairs.
         const additions = newMessages.slice(Math.min(preCount, newMessages.length));
         const userAdditions = additions.filter(function (m) { return m && m.role === "user"; });
         const tailCandidates = [];
@@ -434,11 +451,13 @@
         for (let i = 0; i < scanList.length && fallbackQueued.length > 0; i++) {
           const message = scanList[i];
           const item = fallbackQueued[0];
-          // 只结算 legacy steer chip(steered 且无 steerId):带 id 的由
-          // chat:steer_committed 权威结算,普通排队 chip 归 flushQueued,
-          // 兜底都不碰,避免误配对。
+          // Only settle legacy steer chips (steered without a steerId):
+          // id-carrying ones are settled authoritatively by
+          // chat:steer_committed, plain queued chips belong to flushQueued —
+          // the fallback touches neither, avoiding mispairing.
           if (!item.steered || item.steerId) break;
-          // 提取真实 user 输入,跳过 turn_meta / system-reminder metadata 块
+          // Extract the real user input, skipping turn_meta /
+          // system-reminder metadata blocks.
           const content = Array.isArray(message.content) ? message.content : [];
           const firstText = content
             .filter(function (block) { return block && block.type === "text"; })
@@ -450,8 +469,10 @@
             })
             .join("");
           const itemText = String(item.text || "");
-          // 精确匹配:旧的双向 indexOf 包含会把前缀相似的不同消息误配对。
-          // 不匹配则继续扫描后续新增(基线为 0 时历史 user 消息排在新增前面)。
+          // Exact match: the old two-way indexOf containment mispaired
+          // different messages with similar prefixes. On mismatch, keep
+          // scanning the later additions (with a zero baseline, historical
+          // user messages precede the additions).
           if (firstText && firstText === itemText) {
             fallbackQueued.shift();
             addChatItem({ type: "user", text: itemText, time: timeStr() });

@@ -609,7 +609,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
     };
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy main view: session/mode/artifact/browser state is highly cohesive; split refactor tracked separately
-    const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, browserDockAvailable = false, browserDockOpen = false, rightDockActivePanelId = null, onRightDockPanelSelectionChange, onOpenBrowserDock }) => {
+    const ChatView = ({ theme, t, bs, prefill, prefillAppend = false, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, browserDockAvailable = false, browserDockOpen = false, rightDockActivePanelId = null, onRightDockPanelSelectionChange, onOpenBrowserDock }) => {
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
       const sceneCopy = chatCopy.sceneModes;
@@ -1027,13 +1027,19 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: restart the per-second ticker only when the thinking-phase start (startedAt) changes
       }, [busy, useUnifiedConversationUi, bs && bs.thinking && bs.thinking.startedAt]);
 
-      // 外部入口可预填输入框并把焦点移到末尾。
-      // 非空时追加到现有草稿末尾(prefill 现存消费者 handleSend 的失败恢复
-      // 依赖此语义:await 期间用户可能已开始打下一条,整体替换会砸掉新输入
-      // ——与「不打断打字」的恢复注释承诺一致)。
+      // External entries can prefill the composer and focus its end.
+      // Template/navigation entries (KnowledgeView "continue in chat",
+      // scheduled-task guide, markdown preview, ...) use whole-draft
+      // replacement semantics; failure recovery uses append semantics
+      // (prefillAppend=true, joined with a newline) — the user may have
+      // started the next message during the await and replacement would
+      // clobber it (re-review #4: the two consumer classes stay separate;
+      // recovery must not leak back into template entries).
       useEffect(() => {
         if (prefill) {
-          const merged = inputTextRef.current ? inputTextRef.current + prefill : prefill;
+          const merged = (prefillAppend && inputTextRef.current)
+            ? inputTextRef.current + '\n' + prefill
+            : prefill;
           setInputText(merged);
           setTimeout(() => {
             if (composerRef.current) {
@@ -1043,8 +1049,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           }, 80);
           if (onPrefillConsumed) onPrefillConsumed();
         }
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: prefill only when prefill changes; setInputText is a stable callback, adding onPrefillConsumed would retrigger consumption
-      }, [prefill]);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: prefill/prefillAppend only when they change; setInputText is a stable callback, adding onPrefillConsumed would retrigger consumption
+      }, [prefill, prefillAppend]);
 
       // 用户向上翻历史时暂停流式自动贴底；回到底部或发送新消息后恢复。
       useEffect(() => {
@@ -1618,31 +1624,38 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           return;
         }
         const text = constrained.text;
-        // 点击瞬间即清空输入框（不等 await 返回）；失败（reserve 冲突等）时
-        // 恢复文字，消息绝不静默丢失。busy 时 bridge 侧 steer 注入当前回合
-        //（带附件则本地排队），见 sendMessage。回填仅在输入框为空时整体恢复:
-        // sendChatMessage 内含能力安装等 await,期间用户可能已开始打下一条,
-        // 无条件覆盖会砸掉新输入——非空时退化为 prefill 追加,不打断打字。
+        // Clear the composer the moment the button is clicked (before the
+        // await returns); on failure (reserve conflict etc.) restore the text —
+        // a message is never silently lost. While busy the bridge steers into
+        // the current turn (with attachments it queues locally), see
+        // sendMessage. The restore replaces wholesale only when the composer is
+        // empty: sendChatMessage awaits capability installs etc. and the user
+        // may have started the next message meanwhile — an unconditional
+        // overwrite would clobber it, so a non-empty composer degrades to an
+        // append-style prefill (newline separator, re-review #4) that does not
+        // interrupt typing.
         setInputText('');
         try {
           const accepted = await sendChatMessage(text);
           if (!accepted) {
             if (inputTextRef.current === '') setInputText(text);
-            else if (text) bridge.chat.prefillComposer(text);
+            else if (text) bridge.chat.prefillComposer(text, true);
           }
         } catch (error) {
           if (inputTextRef.current === '') setInputText(text);
-          else if (text) bridge.chat.prefillComposer(text);
+          else if (text) bridge.chat.prefillComposer(text, true);
           throw error;
         }
         personalWorkbenchTemplateIdRef.current = null;
         setPersonalWorkbenchTemplateId(null);
       }
 
-      // 排队 chip 的 ⚡ 瞬发:打断当前生成并立即发送该条排队消息
-      // (cancel + chat 路径,放弃当前 AI 进度)。失败时 bridge 会把消息
-      // 恢复到排队区并提示,这里无需处理。无需本地 single-flight:
-      // bridge 先移除 chip,重复点击自然找不到目标。
+      // Zap-send a queued chip: interrupt the current generation and send
+      // that queued message immediately (cancel + chat path, abandoning the
+      // current AI progress). On failure the bridge restores the message to
+      // the queue with a notice — nothing to do here. No local single-flight
+      // needed: the bridge removes the chip first, so a double click simply
+      // finds no target.
       async function handleInterruptQueued(queuedId) {
         if (isMultiAgentReadOnly) return;
         if (!bridge.chat || typeof bridge.chat.interruptAndSendQueued !== "function") return;
@@ -1913,8 +1926,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   t={t}
                   onSend={(q) => {
                     setWelcomeToolId(null);
-                    // sendChatMessage 失败路径会 re-throw(当前实现无 reject,
-                    // 但与 handleSend 的防御保持一致,避免未来变成悬浮异常)。
+                    // sendChatMessage's failure path re-throws (the current
+                    // implementation never rejects, but stay consistent with
+                    // handleSend's defense so it cannot become a floating
+                    // rejection later).
                     Promise.resolve(sendChatMessage(q)).catch((err) => {
                       console.warn("[pinvou3][chat-ui] welcome-card send failed", err);
                     });
@@ -2134,10 +2149,14 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   comingSoonLabel={chatViewCopy.comingSoon}
                 />
               )}
-            {/* 排队待发消息浮层:盖住发送框上方的整体卡片(busy 时发送=steer
-                注入引擎当前回合;带附件=纯本地排队)。每条右侧 ⚡=瞬发(撤回引擎
-                副本+打断当前轮立即发这条),×=取消(steered chip 走 withdraw_steer
-                真撤回;纯排队 chip 纯本地移除)。⚡ 按 interruptSend 能力门控(web 端隐藏)。 */}
+            {/* Queued-message overlay: a full card covering the area above the
+                composer (sending while busy = steer into the engine's current
+                turn; with attachments = plain local queuing). The ⚡ on each
+                entry = zap-send (withdraw the engine copy + interrupt the
+                current turn and send this one immediately); × = cancel
+                (steered chips do a real withdraw_steer; plain chips are
+                removed locally). ⚡ is gated by the interruptSend capability
+                (hidden on web). */}
             {queued.length > 0 && (
               <div className={`mb-2 rounded-2xl border shadow-lg backdrop-blur-xl overflow-hidden max-h-[40vh] overflow-y-auto ${'border-black/[0.06] bg-white/90 dark:border-white/10 dark:bg-[#161618]/90'}`}>
                 {queued.map((q, index) => (
@@ -2359,9 +2378,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>
                 {(() => {
-                  // busy 恒显 Stop（生成中打了字也要能「停止但保留草稿」）。
-                  // 发送按钮 busy 时 = steer 注入当前回合（带附件则本地排队）；
-                  // ⚡ 瞬发挪到排队 chip 上（每条一个），不在发送区。
+                  // While busy, Stop is always shown (typing mid-generation
+                  // must still allow "stop but keep the draft").
+                  // The send button while busy = steer into the current turn
+                  // (with attachments, local queuing); zap-send moved onto the
+                  // queued chips (one per entry), not the send area.
                   const ready = canSend && !sceneCapabilityPreparing;
                   const isQueue = busy && ready;
                   return (

@@ -3,19 +3,25 @@ use crate::features::assistant::engine_pool::CancelOutcome;
 
 // ===================== 阶段 C: 取消生成 + 编辑/重发 =====================
 
-/// 取消当前生成（生成中按⏹️停止按钮；打断插队也走这里）。
+/// Cancel the current generation (the ⏹ stop button during generation;
+/// interrupt-and-jump-the-queue goes through here as well).
 /// engine 立即 cancel_token.cancel()，turn loop 跳出后会发 TurnComplete 事件，
 /// 前端通过 chat:done 解锁 busy 状态；若 engine 已不存在但池仍记录活动 turn，
 /// EnginePool 会补发 Interrupted 终态。空闲会话取消保持 no-op。
 ///
-/// 返回 [`CancelOutcome`]：`generation` = 被取消轮 epoch，`terminal` = 目标轮
-/// 终态是否已确认。前端 interruptAndSend 依据它决定是否等待 chat:done——
-/// 解决「claim 路径的终态事件发在 cancel 命令返回之前、前端监听器必然错过」
-/// 的确定性竞态，以及「turn 刚自然结束时 cancel no-op、不再有事件」的窗口。
+/// Returns [`CancelOutcome`]: `generation` = the cancelled turn's epoch,
+/// `terminal` = whether the target turn's terminal is confirmed. The
+/// frontend's interruptAndSend uses it to decide whether to wait for
+/// chat:done — closing the deterministic race where "the claim path emits
+/// the terminal before the cancel command returns and the frontend listener
+/// always misses it", plus the window where "the turn just ended naturally,
+/// the cancel is a no-op and no event follows".
 ///
-/// `keep_inbox`（P0-A）：打断（⚡）传 true——未注入的 steer 保留给下一轮；
-/// 停止（⏹）缺省 false——未注入的 steer 清空并发 `chat:steer_dropped`，
-/// 前端移除排队 chip 并提示，消息不会「UI 消失但引擎里还活着」地悬挂。
+/// `keep_inbox` (P0-A): interrupts (⚡) pass true — un-injected steers are
+/// kept for the next turn; stop (⏹) defaults to false — un-injected steers
+/// are cleared with `chat:steer_dropped` emitted, the frontend removes the
+/// queued chip with a notice, and the message cannot hang in a "gone from
+/// the UI but alive in the engine" state.
 #[tauri::command]
 pub async fn cancel_generation(
     session_id: Option<String>,

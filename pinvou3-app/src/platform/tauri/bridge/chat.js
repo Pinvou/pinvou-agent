@@ -47,16 +47,49 @@
     return text;
   }
 
-  // 打断（interrupt）在途标记（按 session）：打断期间禁止 flushQueued 抢先发
-  // 排队消息——chat:done handler 在打断消息 doSendFor 之前触发 flushQueued，
-  // 若不挡，排队消息会先 reserve 成功、打断消息反而撞 session_turn_in_progress。
-  // 打断消息发出（或其失败路径收尾）后清除，排队消息由打断轮的 chat:done 继续。
+  // Single observable, session-scoped path for restoring dropped/failed steer
+  // text (self-review P0 + re-review #1). A bare setComposerDraft is invisible
+  // (the composer is React-local state that only re-reads the store on
+  // [activeSessionId, draftEpoch]), so with two dropped chips the first text
+  // went store-only and the second chip's prefill write-through destroyed it.
+  // Active session: append at the store level with a "\n" separator (immune to
+  // same-tick batching) and bump draftEpoch so the existing draft-restore
+  // effect re-reads the accumulated draft; ChatView itself stays unchanged.
+  // Background session: write the session buffer only — setComposerDraft
+  // targets the active working set and would leak background text into the
+  // active draft. Must be called outside runSyncOnSession(sid): inside it,
+  // state.activeSessionId is temporarily sid even for background sessions.
+  function restoreSteerText(sid, text) {
+    const value = String(text || "");
+    if (!sid || !value) return;
+    if (sid === state.activeSessionId) {
+      const current = String(state.composerDraft || "");
+      setComposerDraft(current ? current + "\n" + value : value);
+      state.draftEpoch = (state.draftEpoch || 0) + 1;
+      notify();
+      return;
+    }
+    const buffer = sessionStates[sid];
+    if (!buffer) return;
+    const current = String(buffer.composerDraft || "");
+    buffer.composerDraft = current ? current + "\n" + value : value;
+  }
+
+  // Per-session in-flight interrupt flag: while an interrupt is in flight,
+  // flushQueued must not race queued messages ahead — the chat:done handler
+  // triggers flushQueued before the interrupt message's doSendFor, and without
+  // this gate a queued message would reserve the turn first while the
+  // interrupt itself hits session_turn_in_progress. Cleared once the interrupt
+  // message is sent (or its failure path finishes); the remaining queue is
+  // then served by the interrupt round's chat:done.
   const interruptInFlight = {};
 
-  // steer_chat invoke 的兜底超时。Rust 侧 steer() await 底座 mpsc send,
-  // 引擎任务卡住(不死、不 drain channel)时 invoke 永不结算——输入框已清空、
-  // chip 无 steerId 回填,排队区会被这个悬挂 chip 阻塞。25s 与
-  // waitForChatDone 的兜底对齐:正常引擎入队是同步量级,25s 只兜真实卡死。
+  // Transport-layer timeout for steer_chat invokes. The Rust steer() awaits
+  // a foundation mpsc send; if the engine task is stuck (alive but not
+  // draining its channel) the invoke never settles — the composer is already
+  // cleared and the chip has no steerId backfilled, so the queue would be
+  // blocked by that hanging chip. 25s matches the waitForChatDone fallback: a
+  // healthy engine enqueues synchronously, so 25s only catches a real wedge.
   const STEER_INVOKE_TIMEOUT_MS = 25000;
 
   // ── Chat Items (display format for React) ────────────────────────
@@ -343,8 +376,9 @@
   // 只发送队首一条。剩余消息留给后续 turn 的 done 继续逐条触发，避免把用户
   // 连续输入的多个独立任务合并成一个模型请求。
   function flushQueued(sid) {
-    // 打断在途：排队消息让路，打断消息优先（否则 flush 先 reserve，
-    // 打断消息反而撞 turn_in_progress 丢失）。
+    // Interrupt in flight: queued messages yield — the interrupt message goes
+    // first (otherwise flush would reserve the turn and the interrupt itself
+    // would be lost to turn_in_progress).
     if (interruptInFlight[sid]) return;
     const pendingBuffer = sessionStates[sid];
     if (pendingBuffer && pendingBuffer.remoteTurnActive) {
@@ -356,8 +390,9 @@
     if (isBusyFor(sid)) return;            // doFinal 等又起了新 turn → 留给那轮的 done 再 flush
     const q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
     if (!q || q.length === 0) return;
-    // 队首是已投递引擎的 steer chip（等 chat:steer_committed 转气泡 / dropped
-    // 移除）→ 让路不发送。它已在引擎侧排队，重复 doSendFor 会变两条消息。
+    // The queue head is a steer chip already delivered to the engine (waiting
+    // for chat:steer_committed → bubble / dropped → removal) → yield. It is
+    // already queued engine-side; a duplicate doSendFor would send it twice.
     if (q[0].steered) return;
     const item = q.shift();
     const attachments = item.attachments || [];
@@ -432,11 +467,13 @@
     return { accepted: true, queued: false, completion };
   }
 
-  // steer invoke 返回 steer_id 后的回填:结算早到的 committed/dropped 事件;
-  // chip 在回填前被 ×/⚡ 接走(cancelled)时补发撤回。
+  // Backfill once the steer invoke resolves with a steer_id: settle any
+  // committed/dropped events that arrived early; if the chip was taken by
+  // ×/zap before backfill (cancelled), fire the compensating withdrawal.
   function onSteerBackfill(queuedItem, sid, steerId) {
-    // 旧后端(无返回值)时 chip 保持无 id,由 transcript_committed
-    // 计数兜底结算;新后端回填 id 后立即结算可能早到的 committed/dropped。
+    // Legacy backends (no return value) leave the chip id-less; settlement
+    // falls back to transcript_committed counting. New backends backfill the
+    // id and immediately settle any committed/dropped that arrived early.
     queuedItem.steerId = steerId || null;
     if (!queuedItem.steerId) return;
     if (queuedItem.cancelled) {
@@ -444,28 +481,33 @@
       return;
     }
     settlePendingSteerEvent(sid, queuedItem);
-    // 未被暂存事件立即结算的 chip 挂结算看门狗（引擎回收/悬挂兜底）。
+    // Chips not settled immediately by a stashed event get the settle
+    // watchdog (engine reclaim / wedge fallback).
     if (findSteerChipIndex(sid, queuedItem.steerId) >= 0) {
       armSteerSettleWatchdog(sid, queuedItem);
     }
   }
 
-  // steer 失败(invoke reject/25s 超时;session 不存在/引擎没起):绝不静默
-  // 降级 invoke("chat") —— busy 下必撞 session_turn_in_progress,文本会
-  // 无痕蒸发。移除 chip、把文本恢复到输入框/草稿并提示,处置权还给用户。
-  // 队列按 sid 路由:steer 最长 25s 才结算,期间用户可能已切走会话,
-  // state.queued 已指向别会话工作集,必须按引用从目标会话队列取 chip
-  // (同 steeredQueueFor 语义),否则 chip(steered:true, steerId:null)
-  // 永久卡在后台会话队头,flushQueued 让路、该会话排队消息全部饿死。
+  // Steer failure (invoke rejection / 25s timeout; session missing / engine
+  // not started): never silently fall back to invoke("chat") — while busy it
+  // would hit session_turn_in_progress and the text would evaporate without a
+  // trace. Remove the chip, restore the text to the composer/draft and notify,
+  // handing the decision back to the user.
+  // Queue routing is per-sid: a steer can take up to 25s to settle and the
+  // user may have switched sessions meanwhile, so state.queued may already
+  // point at another session's working set — take the chip from the target
+  // session's queue by reference (steeredQueueFor semantics), otherwise the
+  // chip (steered:true, steerId:null) sticks at the background queue head,
+  // flushQueued yields forever and that session's queued messages starve.
   function onSteerFailure(queuedItem, sid, steerPreparation, steerInputText, err) {
     console.warn("[pinvou3][chat-ui] steer failed, restoring draft", {
       sid, error: err && err.toString ? err.toString() : err,
     });
     const failureQueue = steeredQueueFor(sid);
     const failureIndex = failureQueue ? failureQueue.indexOf(queuedItem) : -1;
-    // 快照恢复带 sid 守卫(会话已切走时不覆盖新会话的 UI turn 状态)——
-    // 与 sendMessage 内 restoreUiTurnState 同口径,这里显式展开(嵌套函数
-    // 不可达)。
+    // Snapshot restore is sid-guarded (do not clobber the new session's UI
+    // turn state after a switch) — same policy as restoreUiTurnState inside
+    // sendMessage, expanded here because the nested function is unreachable.
     const snap = steerPreparation.snapshot;
     if (snap && state.activeSessionId === sid) {
       state.scheduledTaskPendingGuide = snap.scheduledTaskPendingGuide;
@@ -475,27 +517,33 @@
     }
     if (failureIndex >= 0 && state.activeSessionId === sid &&
         String(state.composerDraft || "").trim() === "") {
-      // 仅在本回调真正接管 chip 且输入框为空时回填:chip 已被 ×/⚡ 接走
-      // 时文本由那条路径处置,再回填会复活已放弃的文字或与 ⚡ 发送中的
-      // 同文重复;输入框已有新内容时覆盖会砸掉用户等待期间打的字。
+      // Refill only when this callback actually took over the chip and the
+      // composer is empty: a chip taken by ×/⚡ is owned by that path, and
+      // refilling here would resurrect abandoned text or duplicate a zap
+      // resend already in flight. restoreSteerText makes the restore visible
+      // (draftEpoch bump) without a prefill write-through.
       failureQueue.splice(failureIndex, 1);
-      setComposerDraft(steerInputText);
-      prefillComposer(steerInputText);
+      restoreSteerText(sid, steerInputText);
     } else if (failureIndex >= 0) {
-      // 输入框被占用或会话已切走:chip 原地降级为纯本地排队(同 ⚡ 失败
-      // 降级语义),文本保留、由 flushQueued 在轮末发送,×/⚡ 仍可用。
+      // Composer occupied or session switched away: degrade the chip in place
+      // to a plain local queue entry (same semantics as the zap failure
+      // degrade) — the text is kept and sent by flushQueued at turn end;
+      // ×/zap remain available.
       queuedItem.steered = false;
       queuedItem.steerId = null;
     }
-    // 提示按 sid 路由:steer 最长 25s 才结算,期间用户可能已切走会话,
-    // 无条件 addSystemItem 会把警告写进当前活跃会话的时间线。
+    // Route the notice by sid: a steer can take up to 25s to settle and the
+    // user may have switched sessions — an unconditional addSystemItem would
+    // write the warning into the currently active session's timeline.
     runSyncOnSession(sid, function () {
       addSystemItem("⚠️ " + bt("steerFailed"));
     });
     notify();
-    // turn 可能在 25s 等待窗口内已结束:其 chat:done 的 flush 被当时的
-    // steered 队头让路(chat.js flushQueued 的 q[0].steered 判定),chip 降级/
-    // 移除后不会再有触发——空闲时补一次,否则 chip 永久悬挂(第六轮评审)。
+    // The turn may have ended inside the 25s wait window: its chat:done flush
+    // was yielded by the then-steered queue head (flushQueued's q[0].steered
+    // check) and nothing will retrigger after the chip is degraded/removed —
+    // compensate with one flush when idle, or the chip hangs forever (sixth
+    // review round).
     if (!isBusyFor(sid)) flushQueued(sid);
   }
 
@@ -518,7 +566,9 @@
       if (!materialized) {
         // 物化中止（如草稿态多智能体开关落盘失败 / await 期间切走）：把输入放回
         // 输入框，不静默丢字；错误提示由 ensureSession 内如实给出（复核 P1）。
-        prefillComposer(text);
+        // append=true: failure-recovery semantics — the user may have started
+        // the next message during the await; replacing would clobber it.
+        prefillComposer(text, true);
         return;
       }
     }
@@ -595,14 +645,17 @@
       notify();
     }
 
-    // Mid-turn inject(steer):busy 时发送文本 → chip 进排队浮层 + 立即
-    // steer_chat 注入引擎,turn loop 在下次 step 边界自动嵌入(步骤间隙插入)。
-    // chip 由 chat:steer_committed(转气泡)/ chat:steer_dropped(移除+提示)
-    // 按 steer_id 结算;× 取消走 withdraw_steer 真撤回(见 removeQueued)。
-    // 附件:steer 通道只载文本,带附件退回纯本地排队(queuePrepared,
-    // 本轮 chat:done 后由 flushQueued 发送)。
-    // busy 分支整体提取为嵌套函数(闭包可达 consumeUiTurnState 等局部
-    // helper),把 sendMessage 认知复杂度压回 lint 阈值内。
+    // Mid-turn inject (steer): sending text while busy → the chip enters the
+    // queue overlay and steer_chat injects into the engine immediately; the
+    // turn loop embeds it at the next step boundary. Chips settle by steer_id
+    // via chat:steer_committed (→ bubble) / chat:steer_dropped (→ removal +
+    // notice); × cancels through a real withdraw_steer (see removeQueued).
+    // Attachments: the steer channel carries text only, so sends with
+    // attachments fall back to plain local queuing (queuePrepared, delivered
+    // by flushQueued after this turn's chat:done).
+    // The busy branch is extracted into a nested function (closures reach the
+    // local helpers like consumeUiTurnState) to keep sendMessage's cognitive
+    // complexity under the lint threshold.
     const busySteerBranch = function () {
       if (isBusyFor(sid)) {
         if (readyAttachments.length > 0) {
@@ -613,22 +666,27 @@
         const steerPreparation = consumeUiTurnState();
         const steerText = steerPreparation.payloadText;
         const steerInputText = text;
-        // 清空 composer draft(对齐 sendMessage 成功路径)。走 setComposerDraft
-        // 同步会话 buffer,切走再切回不会复活已发送文字;后台会话的 steer
-        // (远控等)不得清掉当前活跃会话的输入框。
+        // Clear the composer draft (mirrors sendMessage's success path).
+        // setComposerDraft syncs the session buffer so switching away and back
+        // does not resurrect the sent text; a background session's steer
+        // (remote control etc.) must not clear the active session's composer.
         if (state.activeSessionId === sid) setComposerDraft("");
-        // 排队 chip 立即显示。steered=true 标记已投递引擎：flushQueued 跳过它
-        // （防重复发送）。steerId 在 invoke 返回后回填;事件可能早于 invoke
-        // 返回,未决事件按 session 暂存(见下方 pendingSteerEvents)。
+        // Show the queue chip immediately. steered=true marks it as delivered
+        // to the engine: flushQueued skips it (prevents double sends). The
+        // steerId is backfilled when the invoke resolves; events may arrive
+        // before that, so unsettled events are stashed per session (see
+        // pendingSteerEvents below).
         const queuedItem = {
           id: ++context.itemIdSeq,
           text: steerText,
           displayText: steerText,
           attachments: [],
           meta: null,
-          // steer 通道无 restrictTools 形参(steer_chat 仅携带文本),恒 false 是
-          // 有意取舍:busy 下 scheduled-task guide 等受限场景降级为普通注入,
-          // 不携带工具限制;非 busy 的排队路径仍保留 prepared.restrictTools。
+          // The steer channel has no restrictTools parameter (steer_chat
+          // carries text only); hard-coding false is a deliberate trade-off:
+          // restricted scenes like the scheduled-task guide degrade to a plain
+          // injection while busy, without tool restrictions. The non-busy
+          // queueing path still keeps prepared.restrictTools.
           restrictTools: false,
           queuedAt: Date.now(),
           steered: true,
@@ -637,8 +695,9 @@
         };
         state.queued.push(queuedItem);
         notify();
-        // 回填/失败恢复提取为模块级函数(显式传参),也把 sendMessage 的
-        // 认知复杂度压回 lint 阈值内。
+        // Backfill/failure recovery are extracted into module-level functions
+        // (explicit parameters), also keeping sendMessage's cognitive
+        // complexity under the lint threshold.
         steer(sid, steerText)
           .then(function (steerId) { onSteerBackfill(queuedItem, sid, steerId); })
           .catch(function (err) { onSteerFailure(queuedItem, sid, steerPreparation, steerInputText, err); });
@@ -649,7 +708,8 @@
       busySteerBranch();
       return;
     }
-    // 兼容旧行为:state.queued 非空时仍走 flushQueued(跨 session 远控等边缘场景)
+    // Legacy behavior: with state.queued non-empty, still go through
+    // flushQueued (cross-session remote-control edge cases).
     if (state.queued.length > 0) {
       const queuedPreparation = consumeUiTurnState();
       queuePrepared(queuedPreparation);
@@ -680,10 +740,12 @@
     }
 
     const preparation = consumeUiTurnState();
-    // surfaceFailure=true：主路径失败（reserve 冲突/命令拒绝等）必须抛给
-    // ChatView——它已清空输入框并负责恢复文字/prefill 追加；bridge 吞错
-    // 返回会让「消息绝不静默丢失」的承诺落空（第五轮评审遗留项）。
-    // surfaceFailure 下 doSendFor 只会 resolve(true) 或 throw，无 false 分支。
+    // surfaceFailure=true: a main-path failure (reserve conflict / command
+    // rejection) must reject up to ChatView — it has already cleared the
+    // composer and owns restoring the text; swallowing the error in the
+    // bridge would hollow out the "never silently lose a message" promise
+    // (fifth review round follow-up). With surfaceFailure, doSendFor either
+    // resolves(true) or throws — there is no false branch.
     try {
       await doSendFor(
         sid,
@@ -711,14 +773,25 @@
   // WebUI 草稿首条消息失败时的专用重试入口。桌面端没有远程草稿，
   // 保留同名空实现以维持跨宿主 Bridge API 的稳定形状。
   function retryFirstTurn() {}
-  function prefillComposer(text) {
-    state.composerPrefill = { id: (state.composerPrefill.id || 0) + 1, text: String(text || "") };
+  // prefillComposer: template/navigation entries REPLACE the composer draft
+  // (restored semantics, re-review #4 — KnowledgeView/scheduled/markdown
+  // preview entries are designed for whole-draft replacement). Failure
+  // recovery passes append=true to APPEND with a "\n" separator so a draft
+  // the user started typing during the await window is not clobbered.
+  // ChatView consumes the flag through the prefillAppend prop.
+  function prefillComposer(text, append) {
+    state.composerPrefill = {
+      id: (state.composerPrefill.id || 0) + 1,
+      text: String(text || ""),
+      append: !!append,
+    };
     notify();
   }
-  // 撤销一条待发消息(点 chip 的 ×)。纯排队 chip(含附件)= 纯本地移除 +
-  // discard 附件,零引擎调用;steered chip = 乐观移除 + withdraw_steer 真撤回
-  // (撤回结果由 chat:steer_dropped 确认,撤回太迟则 committed 补气泡,
-  // 见 settleSteerCommitted 的竞态注释)。
+  // Undo a pending message (chip ×). A plain queued chip (with attachments)
+  // = local removal + discard attachments, zero engine calls; a steered chip
+  // = optimistic removal + a real withdraw_steer (the withdrawal is confirmed
+  // by chat:steer_dropped; if it lands too late, committed renders the
+  // bubble — see the race notes on settleSteerCommitted).
   function removeQueued(id) {
     const removed = state.queued.find(function (q) { return q.id === id; });
     if (removed && removed.attachments) {
@@ -844,15 +917,18 @@
     return invoke("save_session_pinvou_reviews", { sessionId: state.activeSessionId, reviews: snapshot }).catch(function () {});
   }
 
-  // Mid-turn inject 通道(steer_chat 命令的薄封装)。steer_id 契约:
-  // steer_chat 成功 resolve opaque steer_id(如 "steer-3"),session 不存在/
-  // 引擎没起时 reject。busy 时的 plain send 走这里(见 sendMessage);
-  // 远控/其他宿主也可用。
+  // Mid-turn inject channel (thin wrapper over the steer_chat command).
+  // steer_id contract: steer_chat resolves with an opaque steer_id (e.g.
+  // "steer-3") on success and rejects when the session does not exist or the
+  // engine is not running. Plain sends while busy go through here (see
+  // sendMessage); remote control and other hosts may use it too.
   async function steer(sid, content) {
     safeConsoleInfo("[pinvou3][chat-ui] steer start", { sid, len: (content || "").length });
-    // invoke 无传输层超时:引擎卡住(不死不 drain)时 steer_chat 永不结算,
-    // chip(steered:true, steerId:null)会卡住队头并阻塞 flushQueued。超时
-    // 走 catch 的失败恢复(移除 chip、恢复输入框)。
+    // The invoke has no transport timeout: a stuck engine (alive, not
+    // draining) would leave steer_chat unsettled forever and the chip
+    // (steered:true, steerId:null) would block the queue head and flushQueued.
+    // The timeout goes to the catch-side failure recovery (remove chip,
+    // restore composer).
     const invokePromise = invoke("steer_chat", { sessionId: sid, content: String(content || "") });
     let timeoutId = null;
     let timedOut = false;
@@ -863,38 +939,55 @@
       }, STEER_INVOKE_TIMEOUT_MS);
     });
     let steerId;
-    // 评审 P1-2：超时后 invoke 晚到成功——引擎已接受原消息并可能在后续
-    // step 边界注入，与用户基于恢复文字的重发形成重复投递。晚到成功一律
-    // 补偿撤回：未注入则永不注入（底座 withdrawn 标记幂等、恰好一条
-    // SteerDropped）；已 committed 时撤回 no-op，迟到的 committed 事件经
-    // withdrawn 登记补气泡（与重发同文时去重已有处理）。必须在 race 之前
-    // 注册——race 因超时 reject 后本函数已 throw，之后的代码不会执行。
+    // Review P1-2: a late invoke success after the timeout — the engine has
+    // accepted the original message and may inject it at a later step
+    // boundary, duplicating delivery against the user's resend of the
+    // restored text. Every late success triggers a compensating withdrawal:
+    // if not yet injected it will never inject (the foundation's withdrawn
+    // marker is idempotent, exactly one SteerDropped); if already committed
+    // the withdrawal is a no-op and the late committed event renders the
+    // bubble through the withdrawn registration (same-text dedup with the
+    // resend is already handled). Must be registered BEFORE the race — once
+    // the race rejects on timeout this function has thrown and no later code
+    // runs.
     invokePromise.then(function (lateId) {
       if (!timedOut || lateId == null) return;
       rememberWithdrawn(sid, String(lateId), String(content || ""));
       invoke("withdraw_steer", { sessionId: sid, steerId: String(lateId) })
-        .catch(function () { /* 引擎不在场 = 不会再注入 */ });
+        .catch(function () { /* engine absent = will never inject */ });
     });
     try {
       steerId = await Promise.race([invokePromise, timeout]);
     } finally {
       clearTimeout(timeoutId);
     }
-    invokePromise.catch(function () { /* 超时后正常 reject 吞掉,避免 unhandledrejection */ });
+    invokePromise.catch(function () { /* swallow the late rejection after a timeout to avoid unhandledrejection */ });
     safeConsoleInfo("[pinvou3][chat-ui] steer accepted", { sid, steerId });
     return steerId == null ? null : String(steerId);
   }
 
-  // steer chip 结算看门狗（引擎回收/悬挂兜底，第五轮评审）：steerId 回填后
-  // 若引擎被回收（30min 空闲/切模型/多智能体开关，forwarder 先 abort 导致
-  // SteerDropped 丢失）或卡在「最后一次 drain 之后、finish 之前」的窗口，
-  // committed/dropped 永远不到达，steered 队头会让 flushQueued 永久让路——
-  // 该会话再也发不出消息。看门狗到时后先撤回并 await outcome：retired/
-  // 已回收 = 不会再注入，chip 降级为普通排队由 flushQueued 消费；
-  // not_pending = 已 committed 但事件丢失，降级重发会重复投递，改为移除
-  // chip + 恢复草稿（第六轮评审，对齐 ⚡ 路径的 outcome 语义）。
-  // 60s 而非对称 25s：长工具调用（分钟级 shell）期间 steer 合法地等待下个
-  // step 边界，过短的看门狗会把健康引擎的 steer 误降级为下轮独立发送。
+  // Steer chip settle watchdog (engine reclaim / wedge fallback, fifth
+  // review round): once the steerId is backfilled, an engine reclaim (30min
+  // idle / model switch / multi-agent toggle — the forwarder aborts first and
+  // the SteerDropped is lost) or a wedge inside the "after the last drain,
+  // before finish" window means committed/dropped never arrive, and the
+  // steered queue head makes flushQueued yield forever — the session can
+  // never send again. When the watchdog fires it withdraws (25s transport
+  // timeout, aligned with steer/cancel) and awaits the outcome:
+  //   retired, or timeout treated as retired = the engine will never inject;
+  //     degrade the chip to a plain queue entry consumed by flushQueued;
+  //   not_pending = already committed with the event lost; a degrade+resend
+  //     would duplicate delivery — remove the chip and restore the draft
+  //     (sixth review round, aligned with the zap path's outcome semantics);
+  //   Err (invoke rejection, typically a reclaimed engine) = do not
+  //     auto-resend (minutes-old background messages replayed into a
+  //     cold-started engine would surprise the user, self-review P1-3 /
+  //     re-review #3) — remove the chip and restore the text to the owning
+  //     session; resending is the user's call.
+  // 60s rather than a symmetric 25s: during long tool calls (minute-scale
+  // shells) a steer legitimately waits for the next step boundary, and a
+  // shorter watchdog would falsely degrade a healthy engine's steer into an
+  // independent next-round send.
   const STEER_SETTLE_WATCHDOG_MS = 60000;
   const steerSettleWatchdogs = {}; // sid -> { steerId: timerId }
   function clearSteerSettleWatchdog(sid, steerId) {
@@ -915,42 +1008,64 @@
       delete byId[steerId];
       const q = steeredQueueFor(sid);
       if (!q || !q.includes(item) || !item.steered || item.steerId !== steerId) return;
-      // best-effort 撤回并 await outcome（第六轮评审 P2，对齐 ⚡ 路径）：
-      // retired/Err（已回收）= 不会再注入，按原计划降级为纯本地排队；
-      // not_pending = steer 恰在此刻已 committed 但事件丢失——降级后
-      // flushQueued 重发会重复投递，改为移除 chip、恢复草稿并提示，
-      // 不把不确定的消息当作投递成功；迟到的 committed 仍经 withdrawn
-      // 登记补气泡（与用户重发同文时去重已有处理）。
+      // Withdraw with a bounded await (self-review P1-2): without the 25s race
+      // a live-but-wedged engine leaves the chip `steered` forever, blocking
+      // the session queue head. Outcome semantics (aligned with the ⚡ path):
+      //   "retired" (resolved) or timeout → engine copy will never inject,
+      //     degrade the chip so flushQueued delivers it as a plain message;
+      //   "not_pending" → committed with the event lost; a resend would
+      //     duplicate, so remove the chip and restore the text;
+      //   Err (rejected, engine reclaimed) → do NOT auto-resend a stale
+      //     message into a cold-started engine; restore the text instead
+      //     (self-review P1-3 / re-review #3).
+      // The late commit is still rendered through the withdrawn registration
+      // (same-text dedup against a user resend is already handled).
       rememberWithdrawn(sid, steerId, item.text);
-      invoke("withdraw_steer", { sessionId: sid, steerId })
-        .catch(function () { return "retired"; /* 引擎已回收 = 不会再注入 */ })
-        .then(function (outcome) {
-          // await 期间 chip 可能已被 ×/⚡ 接走:文本由那条路径处置,这里再
-          // 回填/降级会复活已放弃的文字(同 onSteerFailure 的接管守卫)。
-          if (!q.includes(item)) return;
-          if (outcome === "not_pending") {
-            q.splice(q.indexOf(item), 1);
-            runSyncOnSession(sid, function () {
-              if (String(state.composerDraft || "").trim() === "") setComposerDraft(item.text);
-              else prefillComposer(item.text);
-              addSystemItem("⚠️ " + bt("steerFailed"));
-            });
-            notify();
-            return;
-          }
-          item.steered = false;
-          item.steerId = null;
+      const withdrawPromise = invoke("withdraw_steer", { sessionId: sid, steerId });
+      withdrawPromise.catch(function () { /* late rejection after the race settled is expected */ });
+      // Err sentinel keeps a rejected invoke distinct from junk resolves
+      // (harness/legacy backends may resolve null/undefined) — only a real
+      // rejection means "engine not present".
+      const WITHDRAW_ERR = "engine_err";
+      const withdrawOutcome = new Promise(function (resolve) {
+        const timerId = setTimeout(function () {
+          resolve("retired");
+        }, STEER_INVOKE_TIMEOUT_MS);
+        withdrawPromise.then(
+          function (outcome) { clearTimeout(timerId); resolve(outcome); },
+          function () { clearTimeout(timerId); resolve(WITHDRAW_ERR); }
+        );
+      });
+      withdrawOutcome.then(function (outcome) {
+        // The chip may have been taken by ×/zap while awaiting: that path owns
+        // the text now; restoring/degrading here would resurrect abandoned
+        // text (same takeover guard as onSteerFailure).
+        if (!q.includes(item)) return;
+        if (outcome === "not_pending" || outcome === WITHDRAW_ERR) {
+          q.splice(q.indexOf(item), 1);
           notify();
-          if (!isBusyFor(sid)) flushQueued(sid);
-        });
+          runSyncOnSession(sid, function () {
+            addSystemItem("⚠️ " + bt("steerFailed"));
+          });
+          restoreSteerText(sid, item.text);
+          notify();
+          return;
+        }
+        item.steered = false;
+        item.steerId = null;
+        notify();
+        if (!isBusyFor(sid)) flushQueued(sid);
+      });
     }, STEER_SETTLE_WATCHDOG_MS);
   }
 
-  // ⚡ not_pending 对账看门狗（底座契约：NotPending 不是已投递证明——宿主
-  // 必须等对账终态事件）。committed/dropped 因引擎回收丢失时，60s 后把
-  // 文字恢复到输入框并提示，不把不确定的消息当作投递成功。事件正常到达
-  // 时 settle 函数清掉看门狗（committed 渲染气泡 / dropped 静默），
-  // 看门狗随后空转 no-op。
+  // Zap-path not_pending reconciliation watchdog (foundation contract:
+  // NotPending is not proof of delivery — the host must wait for a
+  // reconciling terminal event). If committed/dropped is lost to an engine
+  // reclaim, restore the text to the composer with a notice after 60s instead
+  // of treating an uncertain message as delivered. When the event arrives
+  // normally, the settle function clears the watchdog (committed renders the
+  // bubble / dropped is silent) and the watchdog later no-ops.
   const outcomeReconcileWatchdogs = {}; // sid -> { steerId: timerId }
   function clearOutcomeReconcileWatchdog(sid, steerId) {
     const byId = outcomeReconcileWatchdogs[sid];
@@ -969,25 +1084,29 @@
     byId[steerId] = setTimeout(function () {
       delete byId[steerId];
       const text = takeWithdrawn(sid, steerId);
-      if (text === undefined) return; // 已对账（settle 消费过登记）
+      if (text === undefined) return; // already reconciled (a settle consumed the registration)
       runSyncOnSession(sid, function () {
-        if (String(state.composerDraft || "").trim() === "") setComposerDraft(text);
-        else prefillComposer(text);
         addSystemItem("⚠️ " + bt("steerFailed"));
       });
+      // Session-scoped restore (draftEpoch bump for the owning session when
+      // active) instead of a global prefill that overwrites other restores.
+      restoreSteerText(sid, text);
       notify();
     }, STEER_SETTLE_WATCHDOG_MS);
   }
 
-  // steer 事件未决暂存:chat:steer_committed / chat:steer_dropped 可能早于
-  // invoke("steer_chat") 返回到达(引擎极快 committed 时事件先派发),此时
-  // chip 还没回填 steerId,无法匹配。按 session 暂存 steer_id → 结果,
-  // chip 回填 id 时立即结算(sendMessage 的 steer().then)。
-  // chip 在回填前被用户 × 移除时暂存项会残留,量极小且 steer_id 唯一,可接受。
+  // Pending steer-event stash: chat:steer_committed / chat:steer_dropped can
+  // arrive before invoke("steer_chat") resolves (an extremely fast engine
+  // commits and the event is dispatched first); the chip has no backfilled
+  // steerId yet and cannot match. Stash steer_id → outcome per session and
+  // settle immediately when the chip's id is backfilled (sendMessage's
+  // steer().then). If the user removes the chip via × before backfill, the
+  // stash entry lingers — negligible volume, unique steer_ids, acceptable.
   const pendingSteerEvents = {};
-  // 上限保护(第六轮评审 P2):远端注入的 steer 事件可能永远没有本地 chip
-  // 来消费,暂存不得无限累积;超限按插入序淘汰最旧(steer_id 为字符串
-  // key,Object 保持插入序)。
+  // Cap (sixth review round P2): remotely injected steer events may never
+  // have a local chip to consume them; the stash must not grow unbounded —
+  // evict the oldest by insertion order past the cap (steer_id string keys,
+  // Objects preserve insertion order).
   const PENDING_STEER_EVENT_CAP = 64;
   function stashSteerEvent(sid, steerId, kind) {
     let byId = pendingSteerEvents[sid];
@@ -1006,13 +1125,17 @@
     delete byId[steerId];
     return kind;
   }
-  // 已主动撤回的 steer(chip 已乐观移除):此后 dropped 到达 = 撤回生效,
-  // 静默(不重复提示);committed 到达 = 撤回太迟(引擎已注入),以引擎为准
-  // 用暂存文本补气泡。key = steer_id,值 = 消息文本。
+  // Steers we withdrew ourselves (chip optimistically removed): a later
+  // dropped = withdrawal effective, stay silent (no duplicate notice); a
+  // later committed = withdrawal too late (already injected), the engine wins
+  // and the stashed text renders a bubble. Key = steer_id, value = message
+  // text.
   const withdrawnSteers = {};
-  // 会话删除/驱逐时清掉本会话的 steer 中间状态:暂存事件/撤回文本(含用户
-  // 消息文本,不应驻留已删会话)/打断在途标记。引擎侧残留由底座
-  // SyncSession/Shutdown 的 SteerDropped 兜底,前端无需等事件。
+  // On session delete/eviction, clear that session's steer intermediates:
+  // stashed events / withdrawn texts (they contain user message text that
+  // must not outlive the deleted session) / the in-flight interrupt flag.
+  // Engine-side leftovers are covered by the foundation's
+  // SyncSession/Shutdown SteerDropped; the frontend need not wait for events.
   function purgeSteerState(sid) {
     delete pendingSteerEvents[sid];
     delete withdrawnSteers[sid];
@@ -1057,9 +1180,11 @@
     }
     return -1;
   }
-  // 撤回一条 steered chip:有 id → 立即 invoke withdraw_steer 并登记
-  // (引擎不在场时 Err = 消息根本没进引擎,纯本地移除即可);id 未回填
-  // (invoke 在途)→ 打取消标记,sendMessage 的回填回调里补发撤回。
+  // Withdraw a steered chip: with an id → invoke withdraw_steer immediately
+  // and register (an Err means the engine is absent — the message never
+  // entered it, local removal suffices); without a backfilled id (invoke in
+  // flight) → set the cancelled flag; the backfill callback in sendMessage
+  // fires the withdrawal later.
   function withdrawSteerChip(sid, item) {
     if (!item || !item.steered) return;
     if (!item.steerId) {
@@ -1070,21 +1195,24 @@
     clearSteerSettleWatchdog(sid, item.steerId);
     rememberWithdrawn(sid, item.steerId, item.text);
     invoke("withdraw_steer", { sessionId: sid, steerId: item.steerId })
-      .catch(function () { /* 引擎不在场 = 消息未进引擎,无需后续动作 */ });
+      .catch(function () { /* engine absent = message never entered the engine, nothing to do */ });
   }
-  // 事件先到、chip 后到(回填 steerId)时的立即结算。
+  // Immediate settlement when the event arrives before the chip's steerId
+  // backfill.
   function settlePendingSteerEvent(sid, item) {
     if (!item || !item.steerId) return;
     const kind = takeSteerEvent(sid, item.steerId);
     if (!kind) return;
-    // chip 可能已被用户 × 移除:队列里找不到就丢弃该事件结果。
+    // The chip may already be removed by the user's ×: drop the event result
+    // if it is no longer queued.
     if (findSteerChipIndex(sid, item.steerId) < 0) return;
     if (kind === "committed") settleSteerCommitted(sid, item.steerId);
     else settleSteerDropped(sid, item.steerId);
   }
-  // chat:steer_committed 结算:chip 转用户气泡。找不到 chip 时:若是我们
-  // 主动撤回的(撤回太迟,引擎已注入)→ 以引擎为准补气泡;否则暂存,
-  // 等回填 id 后由 settlePendingSteerEvent 结算。
+  // chat:steer_committed settlement: the chip becomes a user bubble. When
+  // no chip is found: if we withdrew it ourselves (too late, already
+  // injected) → the engine wins, render the bubble; otherwise stash and
+  // settle after the id backfill via settlePendingSteerEvent.
   function settleSteerCommitted(sid, steerId) {
     clearSteerSettleWatchdog(sid, steerId);
     clearOutcomeReconcileWatchdog(sid, steerId);
@@ -1092,7 +1220,8 @@
       const withdrawnText = takeWithdrawn(sid, steerId);
       if (withdrawnText !== undefined) {
         runSyncOnSession(sid, function () {
-          // ⚡ 成功路径的 doSendFor 已渲染同文气泡 → 跳过防重(竞态窗口极小)。
+          // The zap success path's doSendFor already rendered the same-text
+          // bubble → skip to avoid duplication (tiny race window).
           let lastUser = null;
           for (let i = state.chatItems.length - 1; i >= 0; i--) {
             if (state.chatItems[i] && state.chatItems[i].type === "user") { lastUser = state.chatItems[i]; break; }
@@ -1112,8 +1241,9 @@
       if (!q || index < 0) return;
       const item = q[index];
       q.splice(index, 1);
-      // 消息已进引擎 transcript；气泡用 chip 文本渲染，transcript_committed
-      // 稍后会把 state.messages 同步为权威版本。
+      // The message is already in the engine transcript; the bubble renders
+      // the chip text and transcript_committed later syncs state.messages to
+      // the authoritative version.
       state.chatItems = state.chatItems.filter(function (ci) {
         return !ci.turnErrorNotice && !ci.authoritySyncNotice;
       });
@@ -1121,8 +1251,9 @@
     });
     notify();
   }
-  // chat:steer_dropped 结算:移除 chip + 提示。我们主动撤回的(chip 已乐观
-  // 移除)静默,不重复提示。
+  // chat:steer_dropped settlement: remove the chip + notice. Our own
+  // withdrawals (chip optimistically removed) stay silent — no duplicate
+  // notice.
   function settleSteerDropped(sid, steerId) {
     clearSteerSettleWatchdog(sid, steerId);
     clearOutcomeReconcileWatchdog(sid, steerId);
@@ -1131,49 +1262,61 @@
       stashSteerEvent(sid, steerId, "dropped");
       return;
     }
+    let restoredText = null;
     runSyncOnSession(sid, function () {
       const q = steeredQueueFor(sid);
       const index = findSteerChipIndex(sid, steerId);
       if (!q || index < 0) return;
       const item = q[index];
       q.splice(index, 1);
-      // 文本回灌草稿(第六轮评审 P2):其他失败路径(steer 失败/看门狗/⚡
-      // 降级)都会把文字还给用户,引擎主动丢弃(含 ⏹ 停止清空)不该是唯一
-      // 让用户重打的分支。输入框已有内容时追加而非覆盖。
-      if (String(state.composerDraft || "").trim() === "") setComposerDraft(item.text);
-      else prefillComposer(item.text);
       addSystemItem("⚠️ " + bt("steerDropped"));
+      restoredText = item.text;
     });
+    // Restore the text to the draft (sixth review round P2): every other
+    // failure path (steer failure / watchdog / zap degrade) hands the text
+    // back; an engine-side drop (including ⏹ stop clearing) must not be the
+    // only branch that makes the user retype. Session-scoped restore (append
+    // + draftEpoch), not a global prefill.
+    if (restoredText !== null) restoreSteerText(sid, restoredText);
     notify();
   }
-  // Mid-turn INTERRUPT: 打断当前 AI 步骤,立刻起新 turn 发送。
-  // 与 steer 区别:steer 等下次 step 边界自然嵌入(不打断 tool 调用),
-  // interrupt 立刻 cancel 当前 turn,起新 turn,消息进 chat 命令路径。
+  // Mid-turn INTERRUPT: break the current AI step and start a new turn
+  // immediately. Unlike steer (which waits for the next step boundary without
+  // interrupting tool calls), interrupt cancels the current turn right away,
+  // starts a new one, and the message goes through the chat command path.
   //
-  // 事件驱动同步:不轮询 state.busy,而是 await chat:done 事件本身。
-  // state.busy 在 chat:done handler 内同步置 false,事件触发即代表
-  // turn lifecycle 已完成 cancel + cleanup,可以安全 reserve 新 turn。
-  // 长 tool chain 场景下 25s 兜底超时(避免 cancel 永久挂起;5s 对长
-  // 工具链收尾偏短,会过早走失败恢复路径)。
+  // Event-driven synchronization: instead of polling state.busy we await the
+  // chat:done event itself. state.busy is set to false synchronously inside
+  // the chat:done handler, so the event firing means the turn lifecycle has
+  // finished cancel + cleanup and a new turn can be reserved safely. A 25s
+  // fallback timeout covers long tool chains (avoids a hanging cancel; 5s is
+  // too short for long tool-chain teardown and would trip the failure
+  // recovery path too early).
   //
-  // generation 匹配(P0-B):chat:done payload 带后端轮次身份(generation),
-  // 只对目标轮 resolve —— 迟到的旧轮终态、其他轮的终态都不会提前解锁等待。
-  // 旧后端(无 generation 字段)时退化为按 sid 匹配的旧行为。
-  // 返回值：true = 确实观察到目标轮终态（chat:done / busy 清除）；false =
-  // 兜底超时。调用方据此前置区分「可以安全 reserve」与「取消 unwind 未完结」。
-  // chat:done 观察器（评审 P2）：打断时在 cancel **之前**注册监听并缓冲
-  // 事件——旧实现在 cancel 返回后才 listen，事件落在「cancel 返回 →
-  // 注册生效」缝隙里会被错过，terminal=false 时假等 25s 兜底。watcher
-  // 缓冲该会话全部 done（含 generation），waitFor 先查缓冲再等未来事件；
-  // cancel() 退订并清场。无事件通道（测试/web 模式）时返回 null，调用方
-  // 退回 waitForChatDone 的 busy 轮询。
+  // Generation matching (P0-B): the chat:done payload carries the backend
+  // turn identity (generation); only the target turn resolves the wait —
+  // late terminal events from old turns or other turns' terminals cannot
+  // unlock it early. Legacy backends (no generation field) degrade to the
+  // old sid-only matching.
+  // Return value: true = the target turn's terminal was actually observed
+  // (chat:done / busy cleared); false = fallback timeout. Callers use this to
+  // distinguish "safe to reserve" from "cancel unwind still in progress".
+  // chat:done watcher (review P2): on interrupt, register and buffer BEFORE
+  // cancel — the old implementation listened only after cancel returned, so
+  // events landing in the "cancel returned → listener registered" gap were
+  // missed and terminal=false caused a pointless 25s wait. The watcher
+  // buffers every done for the session (with generation); waitFor checks the
+  // buffer first, then waits for future events; cancel() unsubscribes and
+  // clears. Without an event channel (tests / web mode) it returns null and
+  // the caller falls back to waitForChatDone's busy polling.
   function createChatDoneWatcher(sid) {
     if (!TAURI || !TAURI.event || typeof TAURI.event.listen !== "function") return null;
     const buffered = [];
     const waiters = [];
     let unlisten = null;
     let closed = false;
-    // 与 waitForChatDone 同口径：任一端无 generation（旧后端）退化为按 sid 匹配。
+    // Same policy as waitForChatDone: if either side lacks a generation
+    // (legacy backend), degrade to sid-only matching.
     function matches(generation, observed) {
       if (generation == null || observed == null) return true;
       return Number(observed) === Number(generation);
@@ -1196,7 +1339,8 @@
       }).catch(function () {});
     }
     return {
-      // 监听就绪（注册 Promise 结算）后才算真正闭合缝隙；调用方在 cancel 前 await。
+      // The gap is only truly closed once the registration promise settles;
+      // callers await this before cancel.
       ready: listenPromise && typeof listenPromise.then === "function"
         ? listenPromise.then(function () {}).catch(function () {})
         : Promise.resolve(),
@@ -1245,8 +1389,9 @@
         }
         resolve(observed === true);
       }
-      // 通过 TAURI.event.listen 直接订阅 webview 事件,匹配 sid 后 resolve。
-      // Tauri 2 的 listen 返回 Promise<UnlistenFn>,on 收到事件即回调。
+      // Subscribe to webview events directly via TAURI.event.listen; resolve
+      // after matching the sid. Tauri 2's listen returns
+      // Promise<UnlistenFn> and invokes the callback as events arrive.
       if (TAURI && TAURI.event && typeof TAURI.event.listen === "function") {
         const p = TAURI.event.listen("chat:done", function (e) {
           if (!e || !e.payload || e.payload.session_id !== sid) {
@@ -1261,14 +1406,16 @@
         });
         if (p && typeof p.then === "function") {
           p.then(function (un) {
-            // listen 的 Promise 可能晚于超时/事件 resolve:此时立即退订,
-            // 否则监听器泄漏一个(有 resolved 守卫无功能危害,但会累积)。
+            // The listen promise may resolve after the timeout/event:
+            // unsubscribe immediately in that case, otherwise one listener
+            // leaks each time (the resolved guard makes it harmless but they
+            // accumulate).
             if (resolved) { try { un(); } catch { /* already unlistened */ } return; }
             unlisten = un;
           }).catch(function () {});
         }
       } else {
-        // 兜底:轮询 busy(for 测试环境或 web 模式)
+        // Fallback: poll busy (test environments or web mode).
         const deadline = Date.now() + timeoutMs;
         const poll = function () {
           if (resolved) return;
@@ -1288,26 +1435,36 @@
     safeConsoleInfo("[pinvou3][chat-ui] interrupt-and-send start", { sid });
     interruptInFlight[sid] = true;
     try {
-      // 1) cancel 当前 turn。cancel_generation 返回 CancelOutcome { generation, terminal }：
-      //    terminal=true（claim 路径终态已由 cancel 自身确认 / 目标轮已结束 / 空闲）
-      //    → 无需等待事件；false → 等待携带目标 generation 的 chat:done（事件驱动）。
-      //    这消除了两处确定性竞态：claim 路径的 chat:done 发在 cancel 返回之前
-      //    （监听器必然错过）、turn 刚自然结束时 cancel no-op 不再有事件——二者
-      //    前端都无法靠等事件收敛，只能由命令返回值确认终态。
-      // 按 sid 判断 busy(await 期间用户可能切换会话,state.busy 会张冠李戴)。
+      // 1) Cancel the current turn. cancel_generation returns CancelOutcome
+      //    { generation, terminal }: terminal=true (the claim path's terminal
+      //    already confirmed by cancel itself / target turn already over /
+      //    idle) → no event wait needed; false → wait for the chat:done
+      //    carrying the target generation (event-driven).
+      //    This closes two deterministic races: the claim path emits chat:done
+      //    before cancel returns (a listener would always miss it), and a
+      //    cancel no-op right after natural turn end produces no event — in
+      //    both cases the frontend cannot converge by waiting for events and
+      //    only the command's return value confirms the terminal.
+      // Busy is judged per sid (the user may switch sessions during the
+      // await; state.busy would be misleading).
       if (isBusyFor(sid)) {
-        // 评审 P2：先注册并等监听就绪再 cancel，闭合「cancel 返回 → listen
-        // 注册」缝隙里 chat:done 丢失导致的 25s 假等待；watcher 为 null
-        // （无事件通道）时退回 busy 轮询。
+        // Review P2: register and wait for the listener before cancel,
+        // closing the "cancel returns → listen registers" gap where a lost
+        // chat:done caused a pointless 25s wait; with a null watcher (no
+        // event channel) fall back to busy polling.
         const watcher = createChatDoneWatcher(sid);
         if (watcher) await watcher.ready;
         let outcome = null;
-        // cancel invoke 与 steer 同样补传输层超时(第六轮评审 P1):引擎 wedged
-        // (turn_lock 被占、不 drain)时 invoke 永不结算——本函数 finally 永远
-        // 跑不到,interruptInFlight[sid] 永不清除、flushQueued 永久阻塞;且 ⚡
-        // 路径的 chip 在调用前已摘出队列,恢复 catch 也永远跑不到,消息静默
-        // 丢失。25s 超时显式失败,由调用方恢复 chip/消息;invoke 晚到 resolve
-        // 无害(cancel 最终生效),晚到 reject 吞掉防 unhandledrejection。
+        // The cancel invoke gets the same transport timeout as steer (sixth
+        // review round P1): a wedged engine (turn_lock held, not draining)
+        // never settles the invoke — this function's finally would never run,
+        // interruptInFlight[sid] would never clear and flushQueued would
+        // block forever; the zap path's chip is already out of the queue
+        // before the call, so its recovery catch would never run either —
+        // silent message loss. The 25s timeout fails explicitly and the
+        // caller restores the chip/message; a late resolve is harmless (the
+        // cancel eventually lands) and a late rejection is swallowed to avoid
+        // unhandledrejection.
         const cancelPromise = invoke("cancel_generation", { sessionId: sid, keepInbox: true });
         let cancelTimeoutId = null;
         let cancelTimedOut = false;
@@ -1317,16 +1474,19 @@
             reject(new Error("cancel_generation timed out"));
           }, STEER_INVOKE_TIMEOUT_MS);
         });
-        cancelPromise.catch(function () { /* 超时后晚到 reject 吞掉 */ });
+        cancelPromise.catch(function () { /* swallow the late rejection after a timeout */ });
         try {
-          // keepInbox=true（打断语义）：未注入的 steer 保留给下一轮，排队
-          // chip 不被静默取消；停止按钮（cancelGeneration）不传此参数，
-          // 后端按 false 清空未注入 steer 并发 chat:steer_dropped。
+          // keepInbox=true (interrupt semantics): un-injected steers are kept
+          // for the next turn and queued chips are not silently cancelled;
+          // the stop button (cancelGeneration) omits the flag, and the
+          // backend treats it as false — clearing un-injected steers and
+          // emitting chat:steer_dropped.
           outcome = await Promise.race([cancelPromise, cancelTimeout]);
         } catch (e) {
           if (cancelTimedOut) {
-            // 超时 throw 在下方 terminal/非 terminal 分支之前传播,watcher
-            // 不会经过那两个 watcher.cancel()——这里显式释放,防监听器泄漏。
+            // The timeout throw propagates before the terminal/non-terminal
+            // branches below, so it never reaches their watcher.cancel() —
+            // release explicitly here to avoid a listener leak.
             if (watcher) watcher.cancel();
             throw e;
           }
@@ -1339,30 +1499,38 @@
         if (terminal) {
           if (watcher) watcher.cancel();
         } else {
-          // 事件驱动等待（P0-B）：后端保证 chat:done 到达时 reserve 闸门已重开，
-          // 不再需要固定 sleep 补窗口。超时仅作最后兜底。
+          // Event-driven wait (P0-B): the backend guarantees the reserve gate
+          // is reopened by the time chat:done arrives — no fixed sleep is
+          // needed to cover the window. The timeout is only a last resort.
           const observed = watcher
             ? await watcher.waitFor(generation, 25000)
             : await waitForChatDone(sid, generation, 25000);
           if (watcher) watcher.cancel();
           if (!observed && isBusyFor(sid)) {
-            // 25s 兜底超时且会话仍 busy：取消 unwind 未完结，此时 doSendFor
-            // 会稳定撞 session_turn_in_progress。bridge.chat.interruptAndSend
-            // 是公开 API（远控/其他宿主），调用方可能不接异常——这里显式
-            // 失败、不尝试发送，消息由调用方恢复（UI 的 ⚡/chip 路径均有
-            // catch 恢复），绝不静默丢消息。会话已不 busy（监听器错过事件
-            // 但 turn 实际结束）时继续走发送。
+            // 25s fallback timeout with the session still busy: the cancel
+            // unwind is unfinished and doSendFor would reliably hit
+            // session_turn_in_progress. bridge.chat.interruptAndSend is a
+            // public API (remote control / other hosts) whose callers may not
+            // handle rejections — fail explicitly without sending; the caller
+            // restore the message (the UI's zap/chip paths all have recovery
+            // catches). Never silently drop a message. If the session is no
+            // longer busy (the listener missed the event but the turn
+            // actually ended), proceed with the send.
             throw new Error(
               "interrupt-and-send: cancel did not reach terminal within 25s and session is still busy; message not sent"
             );
           }
         }
       }
-      // 2) 不整体清空 queue：打断只放弃当前轮进度，保留用户排队中的其他消息
-      //    （远控注入的 steer 由引擎侧 keepInbox 语义保留给下一轮）。
-      // 3) 附件由调用方随消息传入（排队 chip 的 attachments 已是 payload 形态）。
+      // 2) Do not clear the queue wholesale: interrupting only abandons the
+      //    current turn's progress and keeps the user's other queued messages
+      //    (remotely injected steers are kept for the next turn by the
+      //    engine-side keepInbox semantics).
+      // 3) Attachments are passed along by the caller (a queued chip's
+      //    attachments are already in payload form).
       const attachmentPayload = attachments || [];
-      // 4) 真正发新消息；失败时由调用方负责恢复（chip ⚡ 恢复回排队区）。
+      // 4) Actually send the new message; on failure the caller owns
+      //    recovery (chip zap restores back into the queue overlay).
       const result = await doSendFor(sid, text, displayText, attachmentPayload, meta, restrictTools, true);
       return result;
     } finally {
@@ -1370,17 +1538,23 @@
     }
   }
 
-  // 排队 chip 的 ⚡ 瞬发:把该 chip 从队列移除(其附件随消息发出,不 discard),
-  // 走 interruptAndSend 的 cancel + doSendFor 链路。busy 时打断当前生成;
-  // 非 busy(队列残留未被 flushQueued 消费)时直接发送、不 cancel。
-  // steered chip 先撤回引擎里那份并 await 明确 outcome(评审 P1-1):
-  // retired = 引擎副本已标记撤回、永不注入,安全重发;not_pending =
-  // 已 committed(注入完成/进行中),不得重发——气泡由迟到或暂存的
-  // steer_committed 渲染(以引擎为准,同文去重已有处理)。
-  // 失败时把消息按原位恢复到排队区(不是输入框)并提示
-  // ——恢复的 chip 降级为非 steered:撤回已发出,引擎只在下一轮 drain 时才
-  // 结算,保持 steered 会让 flushQueued 让路且下一轮永远不来(排队区卡死);
-  // 引擎侧残留由迟到的 steer_committed 补气泡,去重已有处理。
+  // Zap-send a queued chip: remove it from the queue (its attachments go
+  // out with the message, no discard) and run the interruptAndSend cancel +
+  // doSendFor chain. While busy this interrupts the current generation; when
+  // not busy (queue leftover not yet consumed by flushQueued) it sends
+  // directly without cancelling.
+  // A steered chip first withdraws the engine-side copy and awaits an
+  // explicit outcome (review P1-1): retired = the engine copy is marked
+  // withdrawn and will never inject, safe to resend; not_pending = already
+  // committed (injection done/in flight), must not resend — the bubble comes
+  // from the late or stashed steer_committed (the engine wins; same-text
+  // dedup already handled).
+  // On failure the message is restored to its original queue position (not
+  // the composer) with a notice — the restored chip is degraded to
+  // non-steered: the withdrawal was already sent and the engine only settles
+  // it at the next drain; keeping steered would make flushQueued yield and
+  // the next round would never come (queue deadlock). Engine-side leftovers
+  // are bubbled by a late steer_committed, dedup already handled.
   async function interruptAndSendQueued(sid, queuedId) {
     const q = steeredQueueFor(sid);
     if (!q) return false;
@@ -1388,7 +1562,7 @@
     for (let i = 0; i < q.length; i++) {
       if (q[i] && q[i].id === queuedId) { index = i; break; }
     }
-    if (index < 0) return false; // chip 已不在(重复点击/已取消)——天然 single-flight
+    if (index < 0) return false; // chip already gone (double click / cancelled) — naturally single-flight
     const item = q[index];
     q.splice(index, 1);
     let skipResend = false;
@@ -1396,23 +1570,47 @@
       clearSteerSettleWatchdog(sid, item.steerId);
       rememberWithdrawn(sid, item.steerId, item.text);
       let outcome;
+      // 25s transport timeout (self-review P1-2 / re-review #2): a wedged
+      // engine would hang the zap forever on a bare await — the chip is
+      // already out of the queue and the message silently undeliverable. The
+      // timeout continues with retired semantics: if the subsequent cancel
+      // also times out it fails explicitly and the recovery catch puts the
+      // chip back into the queue; a late real outcome cannot undo a resend
+      // that already happened — the committed bubble renders through the
+      // withdrawn registration and dedups against the resend bubble by text
+      // (residual duplicate-delivery risk, accepted).
+      // Err (engine absent) = the message never entered the engine (or was
+      // destroyed with the reclaim) — resend normally.
+      const withdrawPromise = invoke("withdraw_steer", { sessionId: sid, steerId: item.steerId });
+      withdrawPromise.catch(function () { /* late rejection after the race settled is expected */ });
+      let withdrawTimerId = null;
+      const withdrawTimeout = new Promise(function (_, reject) {
+        withdrawTimerId = setTimeout(function () {
+          reject(new Error("withdraw_steer timed out"));
+        }, STEER_INVOKE_TIMEOUT_MS);
+      });
       try {
-        outcome = await invoke("withdraw_steer", { sessionId: sid, steerId: item.steerId });
+        outcome = await Promise.race([withdrawPromise, withdrawTimeout]);
       } catch {
-        // 引擎不在场 = 消息根本没进引擎(或已随回收销毁),正常重发。
         outcome = "retired";
+      } finally {
+        clearTimeout(withdrawTimerId);
       }
       skipResend = outcome === "not_pending";
     } else {
-      // steerId 未回填(invoke 在途)或非 steered:打取消标记,回填回调补撤回。
+      // steerId not backfilled (invoke in flight) or not steered: set the
+      // cancelled flag; the backfill callback fires the withdrawal.
       withdrawSteerChip(sid, item);
     }
     notify();
     if (skipResend) {
-      // 已注入,不重复发送。事件早于回填到达而被暂存的 committed 立即补气泡;
-      // 迟到的 committed 由 withdrawn 登记路径渲染。NotPending 不是已投递
-      // 证明（底座契约）：等对账事件，事件丢失（引擎回收）时看门狗把文字
-      // 恢复到输入框并提示，不把不确定的消息当作投递成功。
+      // Already injected — do not resend. A committed stashed before the
+      // backfill renders the bubble immediately; a late committed renders
+      // through the withdrawn registration. NotPending is not proof of
+      // delivery (foundation contract): wait for the reconciling event; if it
+      // is lost (engine reclaim) the watchdog restores the text to the
+      // composer with a notice instead of treating an uncertain message as
+      // delivered.
       if (takeSteerEvent(sid, item.steerId) === "committed") {
         settleSteerCommitted(sid, item.steerId);
       } else {
@@ -1428,11 +1626,14 @@
       console.warn("[pinvou3][chat-ui] interrupt-queued failed, restoring chip", {
         sid, error: e && e.toString ? e.toString() : e,
       });
-      // 恢复的 chip 降级为非 steered(纯本地排队):撤回已发给引擎,引擎只在
-      // 下一轮 drain 时才发 steer_dropped 结算;而 chat 发送已失败,若保留
-      // steered 标记,flushQueued 会因 steered 队头让路且下一轮永远不来,
-      // 排队区卡死。降级后该 chip 由 flushQueued 正常消费;引擎侧残留(若
-      // 撤回未及生效)由迟到的 steer_committed 补气泡,去重已有处理。
+      // The restored chip is degraded to non-steered (plain local queue
+      // entry): the withdrawal was already sent and the engine only settles
+      // it with a steer_dropped at the next drain; the chat send has failed,
+      // so keeping the steered flag would make flushQueued yield to a steered
+      // queue head whose next round never comes — queue deadlock. Degraded,
+      // the chip is consumed normally by flushQueued; engine-side leftovers
+      // (if the withdrawal lands too late) are bubbled by a late
+      // steer_committed, dedup already handled.
       if (item.steered) {
         item.steered = false;
         item.steerId = null;
@@ -1444,9 +1645,12 @@
         addSystemItem("⚠️ " + bt("interruptQueuedFailed"));
       });
       notify();
-      // 等待窗口内 turn 已结束时,其 chat:done 的 flush 已被让路,补一次防悬挂。
-      // 提示不挂条件:补偿 flush 的重试是异步的,结果此刻未知——若重试也失败,
-      // flush 内部 catch 只会静默把 chip 放回队列,条件化提示会让用户零反馈。
+      // If the turn ended inside the wait window, its chat:done flush
+      // already yielded — compensate once to prevent a hanging chip. The
+      // notice is unconditional: the compensating flush retries
+      // asynchronously and its outcome is unknown now — if the retry also
+      // fails, flush's internal catch silently re-queues the chip, and a
+      // conditional notice would leave the user with zero feedback.
       if (!isBusyFor(sid)) flushQueued(sid);
       return false;
     }

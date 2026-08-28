@@ -415,7 +415,8 @@ impl ProductChatRuntime for EnginePoolRuntime {
     }
 
     async fn cancel(&self, session_id: &str) {
-        // 评测/headless 的取消即停止语义：不保留未注入 steer（StopDropInbox）。
+        // Evaluation/headless cancel means stop: un-injected steers are not
+        // kept (StopDropInbox).
         self.pool.cancel(session_id, false).await;
     }
 
