@@ -7,7 +7,7 @@ use std::io::{Read, copy};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use agent_backend_api::{
     AgentBackendError, AgentRunObserver, AgentSessionHandle, AgentTaskInput, AgentTaskOutcome,
@@ -180,10 +180,7 @@ impl EnginePoolPort {
                         "[unexpected-tool]".to_owned()
                     };
                     if let Some(code) = tool.failure_code.as_deref() {
-                        eprintln!(
-                            "[eval] tool_failed name={name} code={code} argument_keys={}",
-                            tool.argument_keys.join(",")
-                        );
+                        eprintln!("[eval] tool_failed name={name} code={code}");
                     }
                     SafeToolOutcome {
                         name,
@@ -590,6 +587,37 @@ impl ProductHeadlessBackend {
         Err(error)
     }
 
+    async fn finish_failed_run_locked(
+        &self,
+        session_id: &str,
+        runtime_session: &RuntimeSession,
+        mut state: tokio::sync::OwnedMutexGuard<RuntimeSessionState>,
+        turn: ProductTurnOutcome,
+        failure_code: &str,
+        elapsed: Duration,
+    ) -> Result<AgentTaskOutcome, AgentBackendError> {
+        let _workspace = self.take_private_session_state(session_id);
+        let _ = self.close_runtime_locked(session_id, &mut state).await;
+        let closed = *state == RuntimeSessionState::Closed;
+        drop(state);
+        if closed {
+            if let Ok(mut sessions) = self.runtime_sessions.lock() {
+                if sessions
+                    .get(session_id)
+                    .is_some_and(|current| Arc::ptr_eq(current, runtime_session))
+                {
+                    sessions.remove(session_id);
+                }
+            }
+        }
+        let mut outcome = AgentTaskOutcome::failed(elapsed, failure_code)
+            .with_model_request_metrics(turn.model_requests);
+        if let Some(usage) = turn.usage {
+            outcome = outcome.with_usage(usage);
+        }
+        Ok(outcome)
+    }
+
     fn take_staged_workspace(
         &self,
         session_id: &str,
@@ -847,6 +875,21 @@ fn emit_finished(
     );
 }
 
+fn emit_tool_outcomes(observer: &dyn AgentRunObserver, task_id: &str, tools: &[SafeToolOutcome]) {
+    for tool in tools {
+        let _ = notify_observer(
+            observer,
+            &SafeAgentEvent::tool_finished_with_code(
+                task_id,
+                tool.name.clone(),
+                !tool.failed,
+                std::time::Duration::from_millis(tool.elapsed_ms.unwrap_or(0)),
+                tool.failure_code.clone(),
+            ),
+        );
+    }
+}
+
 fn session_id(task_id: &str) -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let safe = task_id
@@ -1086,6 +1129,7 @@ impl HeadlessAgentBackend for ProductHeadlessBackend {
             {
                 Ok(recovery) => recovery,
                 Err(error) => {
+                    emit_tool_outcomes(observer.as_ref(), task.task_id(), &turn.tools);
                     emit_finished(
                         observer.as_ref(),
                         task.task_id(),
@@ -1094,29 +1138,20 @@ impl HeadlessAgentBackend for ProductHeadlessBackend {
                     );
                     let failure_code = classify_product_failure(&error.to_string());
                     return self
-                        .fail_run_locked(
+                        .finish_failed_run_locked(
                             session_id,
                             &runtime_session,
                             runtime_state,
-                            backend_error(failure_code),
+                            turn,
+                            failure_code,
+                            started.elapsed(),
                         )
                         .await;
                 }
             };
             turn.merge_recovery(recovery);
         }
-        for tool in &turn.tools {
-            let _ = notify_observer(
-                observer.as_ref(),
-                &SafeAgentEvent::tool_finished_with_code(
-                    task.task_id(),
-                    tool.name.clone(),
-                    !tool.failed,
-                    std::time::Duration::from_millis(tool.elapsed_ms.unwrap_or(0)),
-                    tool.failure_code.clone(),
-                ),
-            );
-        }
+        emit_tool_outcomes(observer.as_ref(), task.task_id(), &turn.tools);
         let elapsed = started.elapsed();
         let status = if turn.status.eq_ignore_ascii_case("completed") {
             SafeRunStatus::Completed
@@ -1127,11 +1162,13 @@ impl HeadlessAgentBackend for ProductHeadlessBackend {
         if status != SafeRunStatus::Completed {
             let failure_code = validated_product_failure_code(turn.failure_code.as_deref());
             return self
-                .fail_run_locked(
+                .finish_failed_run_locked(
                     session_id,
                     &runtime_session,
                     runtime_state,
-                    backend_error(failure_code),
+                    turn,
+                    failure_code,
+                    elapsed,
                 )
                 .await;
         }
@@ -1309,14 +1346,16 @@ fn build_pool(app: tauri::AppHandle, store: SessionStore) -> Result<EnginePool> 
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_product_failure, should_attempt_gaia_final_recovery,
-        validated_product_failure_code, validated_tool_failure_code, EvalToolPolicy,
-        ProductHeadlessBackend, ProductRuntimePort, ProductToolPolicy, ProductTurnOutcome,
+        EvalToolPolicy, ProductHeadlessBackend, ProductRuntimePort, ProductToolPolicy,
+        ProductTurnOutcome, SafeToolOutcome, classify_product_failure,
+        should_attempt_gaia_final_recovery, validated_product_failure_code,
+        validated_tool_failure_code,
     };
     use agent_backend_api::{
         AgentOutputContractId, AgentRunObserver, AgentSessionHandle, AgentTaskInput,
         AgentToolPolicyId, HeadlessAgentBackend, PrepareRequest, PrivateInputHandle,
-        PrivateInputResolver, ResolvedPrivateInput, SafeAgentEvent, SecretText,
+        PrivateInputResolver, ResolvedPrivateInput, SafeAgentEvent, SafeModelRequestMetric,
+        SafeRunStatus, SafeUsageMetrics, SecretText,
     };
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1517,6 +1556,95 @@ mod tests {
                 EvalToolPolicy::GaiaFinalAnswerOnlyV1
             ]
         );
+        backend.close(session).await.unwrap();
+    }
+
+    #[derive(Default)]
+    struct RecoveryFailureRuntime {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ProductRuntimePort for RecoveryFailureRuntime {
+        async fn prepare(&self, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn run(
+            &self,
+            _session_id: &str,
+            _prompt: &str,
+        ) -> anyhow::Result<ProductTurnOutcome> {
+            anyhow::bail!("legacy_run_must_not_execute")
+        }
+
+        async fn run_with_policy(
+            &self,
+            _session_id: &str,
+            _prompt: &str,
+            _policy: ProductToolPolicy,
+        ) -> anyhow::Result<ProductTurnOutcome> {
+            if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                return Ok(ProductTurnOutcome {
+                    status: "completed".to_owned(),
+                    failure_code: None,
+                    assistant_text: "analysis without marker".to_owned(),
+                    usage: Some(SafeUsageMetrics::new(100, 20, 70, 30)),
+                    tools: vec![SafeToolOutcome {
+                        name: "File".to_owned(),
+                        failed: false,
+                        failure_code: None,
+                        elapsed_ms: Some(7),
+                    }],
+                    model_requests: vec![SafeModelRequestMetric::new(50, Some(10), 100, 20)],
+                });
+            }
+            anyhow::bail!("provider_failed")
+        }
+
+        async fn cancel(&self, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn close(&self, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct CollectingObserver(Mutex<Vec<SafeAgentEvent>>);
+
+    impl AgentRunObserver for CollectingObserver {
+        fn on_event(&self, event: &SafeAgentEvent) {
+            self.0.lock().unwrap().push(event.clone());
+        }
+    }
+
+    #[tokio::test]
+    async fn gaia_recovery_failure_preserves_first_turn_diagnostics() {
+        let runtime = Arc::new(RecoveryFailureRuntime::default());
+        let backend = ProductHeadlessBackend::from_runtime(runtime);
+        let session = backend.prepare(request("recovery-failure")).await.unwrap();
+        let observer = Arc::new(CollectingObserver::default());
+        let task = AgentTaskInput::new("recovery-failure", PrivateInputHandle::new("opaque"))
+            .with_output_contract(AgentOutputContractId::new("gaia-final/v1").unwrap());
+
+        let outcome = backend
+            .run(&session, task, Arc::new(Resolver), observer.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.status(), SafeRunStatus::Failed);
+        assert_eq!(outcome.failure_code(), Some("agent_turn_failed"));
+        assert_eq!(
+            outcome.usage(),
+            Some(SafeUsageMetrics::new(100, 20, 70, 30))
+        );
+        assert_eq!(outcome.model_request_metrics().len(), 1);
+        assert!(observer.0.lock().unwrap().iter().any(|event| matches!(
+            event,
+            SafeAgentEvent::ToolFinished { tool_name, .. } if tool_name == "File"
+        )));
         backend.close(session).await.unwrap();
     }
 

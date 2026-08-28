@@ -244,7 +244,9 @@ where
                     } else {
                         SafeFailureCategory::Backend
                     });
-                    if error.code() == "missing_final_answer" {
+                    if error.code() == "task_timeout" {
+                        outcome.with_failure_reason(crate::SafeFailureReason::TaskTimeout)
+                    } else if error.code() == "missing_final_answer" {
                         outcome.with_failure_reason(crate::SafeFailureReason::MissingFinalAnswer)
                     } else if error.code() == "private_output_resolution_failed" {
                         outcome.with_failure_reason(
@@ -262,6 +264,10 @@ where
                         outcome.with_failure_reason(crate::SafeFailureReason::BackendCloseFailed)
                     } else {
                         outcome
+                            .with_failure_category(SafeFailureCategory::Infrastructure)
+                            .with_failure_reason(
+                                crate::SafeFailureReason::IntegrationLifecycleFailed,
+                            )
                     }
                 }
             };

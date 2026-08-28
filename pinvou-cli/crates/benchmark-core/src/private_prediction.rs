@@ -282,29 +282,14 @@ impl ScorerView {
             prediction_type,
             handle.expose_to_adapter(),
         )?;
-        let (version, content_type, binding, integrity, protected) = decode_envelope(&envelope)?;
+        let (_version, content_type, binding, integrity, protected) = decode_envelope(&envelope)?;
         if binding != expected_binding {
             return Err(corrupt());
         }
-        let plaintext = unprotect(protected, &expected_binding)?;
-        let valid_integrity = match version {
-            EnvelopeVersion::CurrentV3 => {
-                integrity == integrity_digest(content_type, &expected_binding, protected).as_slice()
-            }
-            EnvelopeVersion::LegacyV2 => {
-                integrity == integrity_digest(content_type, &expected_binding, protected).as_slice()
-                    || integrity
-                        == legacy_integrity_digest(
-                            content_type,
-                            &expected_binding,
-                            plaintext.as_slice(),
-                        )
-                        .as_slice()
-            }
-        };
-        if !valid_integrity {
+        if integrity != integrity_digest(content_type, &expected_binding, protected).as_slice() {
             return Err(corrupt());
         }
+        let plaintext = unprotect(protected, &expected_binding)?;
         PrivatePredictionPayload::new_zeroizing(content_type, plaintext).map_err(|_| corrupt())
     }
 }
@@ -416,21 +401,6 @@ fn integrity_digest(
     hasher.update(binding);
     hasher.update((protected.len() as u64).to_le_bytes());
     hasher.update(protected);
-    hasher.finalize().into()
-}
-
-fn legacy_integrity_digest(
-    content_type: PrivatePredictionContentType,
-    binding: &[u8],
-    plaintext: &[u8],
-) -> [u8; INTEGRITY_BYTES] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"pinvou-private-prediction-integrity/v1");
-    hasher.update([content_type.tag()]);
-    hasher.update((binding.len() as u64).to_le_bytes());
-    hasher.update(binding);
-    hasher.update((plaintext.len() as u64).to_le_bytes());
-    hasher.update(plaintext);
     hasher.finalize().into()
 }
 
@@ -797,60 +767,40 @@ mod tests {
     }
 
     #[test]
-    fn reader_accepts_both_strictly_verified_v2_integrity_variants() {
+    fn reader_accepts_strictly_verified_v2_envelopes() {
         let run = TestRun::new("run-v2-compat");
         let store = PrivatePredictionStore::create(run.path(), "run-v2-compat").unwrap();
         let plaintext = b"answer-sentinel";
+        let handle = PredictionHandle::new(random_hex::<32>());
+        let binding = binding_bytes(
+            "run-v2-compat",
+            "task-v2-digest",
+            "gaia-final/v1",
+            handle.expose_to_adapter(),
+        )
+        .unwrap();
+        let protected = protect(plaintext, &binding).unwrap();
+        let integrity = integrity_digest(
+            PrivatePredictionContentType::Utf8TextV1,
+            &binding,
+            &protected,
+        );
+        let mut envelope = encode_envelope(
+            PrivatePredictionContentType::Utf8TextV1,
+            &binding,
+            &integrity,
+            &protected,
+        )
+        .unwrap();
+        envelope[..4].copy_from_slice(LEGACY_MAGIC);
+        envelope[4] = LEGACY_SCHEMA_VERSION;
+        store.publish_blob(&handle, &envelope).unwrap();
 
-        for legacy_plaintext_digest in [false, true] {
-            let handle = PredictionHandle::new(random_hex::<32>());
-            let binding = binding_bytes(
-                "run-v2-compat",
-                if legacy_plaintext_digest {
-                    "task-v1-digest"
-                } else {
-                    "task-v2-digest"
-                },
-                "gaia-final/v1",
-                handle.expose_to_adapter(),
-            )
+        let payload = store
+            .scorer_view()
+            .resolve_bound("task-v2-digest", "gaia-final/v1", &handle)
             .unwrap();
-            let protected = protect(plaintext, &binding).unwrap();
-            let integrity = if legacy_plaintext_digest {
-                legacy_integrity_digest(
-                    PrivatePredictionContentType::Utf8TextV1,
-                    &binding,
-                    plaintext,
-                )
-            } else {
-                integrity_digest(
-                    PrivatePredictionContentType::Utf8TextV1,
-                    &binding,
-                    &protected,
-                )
-            };
-            let mut envelope = encode_envelope(
-                PrivatePredictionContentType::Utf8TextV1,
-                &binding,
-                &integrity,
-                &protected,
-            )
-            .unwrap();
-            envelope[..4].copy_from_slice(LEGACY_MAGIC);
-            envelope[4] = LEGACY_SCHEMA_VERSION;
-            store.publish_blob(&handle, &envelope).unwrap();
-
-            let task_id = if legacy_plaintext_digest {
-                "task-v1-digest"
-            } else {
-                "task-v2-digest"
-            };
-            let payload = store
-                .scorer_view()
-                .resolve_bound(task_id, "gaia-final/v1", &handle)
-                .unwrap();
-            assert_eq!(payload.expose_to_scorer(), plaintext);
-        }
+        assert_eq!(payload.expose_to_scorer(), plaintext);
     }
 
     #[test]

@@ -112,6 +112,7 @@ enum PersistedFailure {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum PersistedFailureReason {
+    TaskTimeout,
     MissingFinalAnswer,
     AgentTurnFailed,
     AgentToolFailed,
@@ -125,6 +126,7 @@ enum PersistedFailureReason {
     BackendPrepareFailed,
     BackendCloseFailed,
     PrivateOutputResolutionFailed,
+    IntegrationLifecycleFailed,
 }
 
 impl PersistedOutcome {
@@ -196,6 +198,7 @@ impl PersistedOutcome {
         }
         if let Some(reason) = self.failure_reason {
             outcome = outcome.with_failure_reason(match reason {
+                PersistedFailureReason::TaskTimeout => crate::SafeFailureReason::TaskTimeout,
                 PersistedFailureReason::MissingFinalAnswer => {
                     crate::SafeFailureReason::MissingFinalAnswer
                 }
@@ -234,6 +237,9 @@ impl PersistedOutcome {
                 }
                 PersistedFailureReason::PrivateOutputResolutionFailed => {
                     crate::SafeFailureReason::PrivateOutputResolutionFailed
+                }
+                PersistedFailureReason::IntegrationLifecycleFailed => {
+                    crate::SafeFailureReason::IntegrationLifecycleFailed
                 }
             });
         }
@@ -290,6 +296,7 @@ impl From<&TaskOutcome> for PersistedOutcome {
                 SafeFailureCategory::Cancelled => PersistedFailure::Cancelled,
             }),
             failure_reason: outcome.failure_reason().map(|reason| match reason {
+                crate::SafeFailureReason::TaskTimeout => PersistedFailureReason::TaskTimeout,
                 crate::SafeFailureReason::MissingFinalAnswer => {
                     PersistedFailureReason::MissingFinalAnswer
                 }
@@ -328,6 +335,9 @@ impl From<&TaskOutcome> for PersistedOutcome {
                 }
                 crate::SafeFailureReason::PrivateOutputResolutionFailed => {
                     PersistedFailureReason::PrivateOutputResolutionFailed
+                }
+                crate::SafeFailureReason::IntegrationLifecycleFailed => {
+                    PersistedFailureReason::IntegrationLifecycleFailed
                 }
             }),
             tool_observations: outcome

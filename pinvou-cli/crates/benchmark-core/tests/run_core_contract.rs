@@ -691,6 +691,18 @@ async fn native_timeout_cancels_and_closes_exactly_once_with_safe_error() {
         summary.outcomes()[0].failure_category(),
         Some(&benchmark_core::SafeFailureCategory::Timeout)
     );
+    assert_eq!(
+        summary.outcomes()[0].failure_reason(),
+        Some(benchmark_core::SafeFailureReason::TaskTimeout)
+    );
+    let reopened = RunStore::open(&base, "run-timeout")
+        .unwrap()
+        .read_outcomes()
+        .unwrap();
+    assert_eq!(
+        reopened[0].failure_reason(),
+        Some(benchmark_core::SafeFailureReason::TaskTimeout)
+    );
     let state = backend.state.lock().unwrap();
     assert_eq!(state.cancelled, 1);
     assert_eq!(state.closed, 1);
@@ -723,6 +735,11 @@ async fn single_deadline_covers_prepare_output_resolution_and_normal_close() {
             summary.outcomes()[0].failure_category(),
             Some(&benchmark_core::SafeFailureCategory::Timeout)
         );
+        assert_eq!(
+            summary.outcomes()[0].failure_reason(),
+            Some(benchmark_core::SafeFailureReason::TaskTimeout),
+            "{name}"
+        );
         let state = backend.state.lock().unwrap();
         assert_eq!(state.cancelled, expected_cancel, "{name}");
         assert!(state.closed >= minimum_close, "{name}");
@@ -747,11 +764,11 @@ async fn native_run_error_still_closes_once_without_leaking_backend_error() {
     assert_eq!(summary.outcomes()[0].status(), TaskStatus::Failed);
     assert_eq!(
         summary.outcomes()[0].failure_category(),
-        Some(&benchmark_core::SafeFailureCategory::Backend)
+        Some(&benchmark_core::SafeFailureCategory::Infrastructure)
     );
     assert_eq!(
         summary.outcomes()[0].failure_reason(),
-        Some(benchmark_core::SafeFailureReason::AgentTurnFailed)
+        Some(benchmark_core::SafeFailureReason::IntegrationLifecycleFailed)
     );
     assert_eq!(summary.outcomes()[0].tool_observations().len(), 2);
     assert_eq!(

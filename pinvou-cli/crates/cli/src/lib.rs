@@ -1202,6 +1202,7 @@ fn failure_category_key(category: &SafeFailureCategory) -> &'static str {
 
 fn failure_reason_key(reason: SafeFailureReason) -> &'static str {
     match reason {
+        SafeFailureReason::TaskTimeout => "task_timeout",
         SafeFailureReason::MissingFinalAnswer => "missing_final_answer",
         SafeFailureReason::AgentTurnFailed => "agent_turn_failed",
         SafeFailureReason::AgentToolFailed => "agent_tool_failed",
@@ -1215,11 +1216,13 @@ fn failure_reason_key(reason: SafeFailureReason) -> &'static str {
         SafeFailureReason::BackendPrepareFailed => "backend_prepare_failed",
         SafeFailureReason::BackendCloseFailed => "backend_close_failed",
         SafeFailureReason::PrivateOutputResolutionFailed => "private_output_resolution_failed",
+        SafeFailureReason::IntegrationLifecycleFailed => "integration_lifecycle_failed",
     }
 }
 
 fn integration_layer(outcome: &TaskOutcome) -> &'static str {
     match outcome.failure_reason() {
+        Some(SafeFailureReason::TaskTimeout) => "agent_or_model_bridge",
         Some(
             SafeFailureReason::ModelContextLimit
             | SafeFailureReason::ModelRateLimited
@@ -1237,7 +1240,8 @@ fn integration_layer(outcome: &TaskOutcome) -> &'static str {
             | SafeFailureReason::AttachmentStagingFailed
             | SafeFailureReason::BackendPrepareFailed
             | SafeFailureReason::BackendCloseFailed
-            | SafeFailureReason::PrivateOutputResolutionFailed,
+            | SafeFailureReason::PrivateOutputResolutionFailed
+            | SafeFailureReason::IntegrationLifecycleFailed,
         ) => "gaia_integration",
         None => match outcome.failure_category() {
             Some(SafeFailureCategory::Infrastructure) => "gaia_integration",

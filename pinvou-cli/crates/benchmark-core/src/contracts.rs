@@ -290,6 +290,7 @@ pub enum SafeFailureCategory {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SafeFailureReason {
+    TaskTimeout,
     MissingFinalAnswer,
     AgentTurnFailed,
     AgentToolFailed,
@@ -303,6 +304,7 @@ pub enum SafeFailureReason {
     BackendPrepareFailed,
     BackendCloseFailed,
     PrivateOutputResolutionFailed,
+    IntegrationLifecycleFailed,
 }
 
 #[derive(Clone, Debug)]

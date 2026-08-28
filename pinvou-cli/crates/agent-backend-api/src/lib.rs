@@ -578,6 +578,7 @@ pub enum SafeRunStatus {
 #[derive(Clone, Debug)]
 pub struct AgentTaskOutcome {
     status: SafeRunStatus,
+    failure_code: Option<String>,
     output: Option<PrivateOutputHandle>,
     elapsed: Duration,
     usage: Option<SafeUsageMetrics>,
@@ -588,6 +589,18 @@ impl AgentTaskOutcome {
     pub fn completed(elapsed: Duration) -> Self {
         Self {
             status: SafeRunStatus::Completed,
+            failure_code: None,
+            output: None,
+            elapsed,
+            usage: None,
+            model_request_metrics: Vec::new(),
+        }
+    }
+
+    pub fn failed(elapsed: Duration, failure_code: impl Into<String>) -> Self {
+        Self {
+            status: SafeRunStatus::Failed,
+            failure_code: Some(failure_code.into()),
             output: None,
             elapsed,
             usage: None,
@@ -602,6 +615,10 @@ impl AgentTaskOutcome {
 
     pub fn status(&self) -> SafeRunStatus {
         self.status
+    }
+
+    pub fn failure_code(&self) -> Option<&str> {
+        self.failure_code.as_deref()
     }
 
     pub fn output_handle(&self) -> Option<&PrivateOutputHandle> {

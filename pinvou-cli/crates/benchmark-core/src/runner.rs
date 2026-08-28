@@ -78,7 +78,12 @@ fn failed_task_outcome(
     tools: Vec<ToolObservation>,
 ) -> TaskOutcome {
     let (status, category, reason) = match code {
-        "task_timeout" | "model_request_timeout" => (
+        "task_timeout" => (
+            TaskStatus::Timeout,
+            SafeFailureCategory::Timeout,
+            Some(SafeFailureReason::TaskTimeout),
+        ),
+        "model_request_timeout" => (
             TaskStatus::Timeout,
             SafeFailureCategory::Timeout,
             Some(SafeFailureReason::ModelRequestTimeout),
@@ -133,10 +138,25 @@ fn failed_task_outcome(
             SafeFailureCategory::Backend,
             Some(SafeFailureReason::BackendCloseFailed),
         ),
-        _ => (
+        "agent_turn_failed" => (
             TaskStatus::Failed,
             SafeFailureCategory::Backend,
             Some(SafeFailureReason::AgentTurnFailed),
+        ),
+        "session_closed"
+        | "private_session_state_failed"
+        | "private_output_store_failed"
+        | "private_output_not_found"
+        | "gaia_private_input_unknown"
+        | "unsupported_tool_policy" => (
+            TaskStatus::Failed,
+            SafeFailureCategory::Infrastructure,
+            Some(SafeFailureReason::IntegrationLifecycleFailed),
+        ),
+        _ => (
+            TaskStatus::Failed,
+            SafeFailureCategory::Infrastructure,
+            Some(SafeFailureReason::IntegrationLifecycleFailed),
         ),
     };
     let mut outcome = TaskOutcome::new(task_id, status, None, Vec::new(), elapsed_ms)
@@ -367,15 +387,27 @@ where
                 output_tokens: metric.output_tokens(),
             })
             .collect();
-        let mut result = TaskOutcome::new(
-            task.task_id(),
-            status,
-            prediction,
-            Vec::new(),
-            outcome.elapsed().as_millis() as u64,
-        )
-        .with_tool_observations(tools)
-        .with_model_request_observations(model_requests);
+        let mut result = if status == TaskStatus::Failed {
+            failed_task_outcome(
+                task.task_id(),
+                outcome
+                    .failure_code()
+                    .unwrap_or("integration_lifecycle_failed"),
+                outcome.elapsed().as_millis() as u64,
+                tools,
+            )
+            .with_model_request_observations(model_requests)
+        } else {
+            TaskOutcome::new(
+                task.task_id(),
+                status,
+                prediction,
+                Vec::new(),
+                outcome.elapsed().as_millis() as u64,
+            )
+            .with_tool_observations(tools)
+            .with_model_request_observations(model_requests)
+        };
         if let Some(usage) = usage {
             result = result.with_usage(usage);
         }

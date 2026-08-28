@@ -8,9 +8,9 @@ APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
 PUBLISHED_HEAD="9c5f4f19b0acbc960889778a5873c7fb038b1378"
 PUBLISHED_COMMITS=36
-# 未发布本地评测候选：建立在不可变 r11（29 个登记提交）之上 +1 候选提交
-LOCAL_BENCHMARK_CANDIDATE="83e2d72aec63ac01caa7287b10f16a02478f9d28"
-LOCAL_BENCHMARK_COMMITS=30
+# 未发布本地评测候选：建立在不可变 r11（29 个登记提交）之上 +2 候选提交
+LOCAL_BENCHMARK_CANDIDATE="c0e5c9f7b113929593ea1bdde72b1a2b34327394"
+LOCAL_BENCHMARK_COMMITS=31
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -27,7 +27,7 @@ if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
   green "  ✓ CodeWhale gitlink 指向 r12 四主题公开基线 $PUBLISHED_HEAD"
 elif [[ "$actual_head" == "$LOCAL_BENCHMARK_CANDIDATE" ]]; then
   expected_commits="$LOCAL_BENCHMARK_COMMITS"
-  green "  ✓ CodeWhale gitlink 指向已登记的本地评测候选 $LOCAL_BENCHMARK_CANDIDATE（未发布）"
+  green "  ✓ CodeWhale gitlink 指向已登记的本地评测候选 ${LOCAL_BENCHMARK_CANDIDATE}（未发布）"
 else
   expected_commits=""
   red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r12 公开 head $PUBLISHED_HEAD"
@@ -137,10 +137,6 @@ fingerprints=(
   "T2|受限轮后子智能体完成等待新消息      |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_turn_defers_idle_subagent_completion_until_new_message"
   "T2|只读轮次启用 Shell 加固上下文       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_agent_uses_hardened_read_only_shell_context"
   "T2|受限轮后 Shell 唤醒等待新消息       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_turn_defers_idle_shell_wake_until_new_message"
-  "T2|评测控制默认关闭且显式启用          |CodeWhale/crates/tui/src/core/ops.rs|fn forkguard_benchmark_controls_are_explicit_and_default_off"
-  "T2|评测只修复无歧义只读调用            |CodeWhale/crates/tui/src/core/engine/turn_loop.rs|fn forkguard_benchmark_repairs_only_unambiguous_read_actions"
-  "T2|评测兼容修复受行为测试约束          |CodeWhale/crates/tui/src/core/engine/turn_loop.rs|fn forkguard_benchmark_repairs_read_schema_and_attachments"
-
   "APP|产品白名单复用原生 allowed_tools   |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names())"
   "APP|会话工具开关走动态禁用整形          |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn shape_disallowed_tools("
   "APP|v0.9.5 subagent state root 透传     |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|cfg.subagent_state_root = Some(roots.ledger);"
@@ -162,6 +158,17 @@ fingerprints=(
   "APP|拒绝编辑终态触发权威历史回滚        |pinvou3-app/src-tauri/src/features/assistant/engine.rs|\"operation_rejected\": operation_rejected"
 )
 
+if [[ "$actual_head" == "$LOCAL_BENCHMARK_CANDIDATE" ]]; then
+  fingerprints+=(
+    "T2|评测控制默认关闭且显式启用          |CodeWhale/crates/tui/src/core/ops.rs|fn forkguard_benchmark_controls_are_explicit_and_default_off"
+    "T2|评测只修复无歧义只读调用            |CodeWhale/crates/tui/src/core/engine/turn_loop.rs|fn forkguard_benchmark_repairs_only_unambiguous_read_actions"
+    "T2|评测兼容修复受行为测试约束          |CodeWhale/crates/tui/src/core/engine/turn_loop.rs|fn forkguard_benchmark_repairs_read_schema_and_attachments"
+    "T2|评测工具预算截断受轮次测试约束      |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_benchmark_budget_truncates_batch_and_clears_followup_tool_surface"
+    "T2|评测 final-only 熔断有界            |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_benchmark_final_only_rejects_repeated_tool_only_responses"
+    "T2|评测参数修复经真实轮次执行          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_benchmark_turn_repairs_file_aliases_before_execution"
+  )
+fi
+
 for fp in "${fingerprints[@]}"; do
   IFS='|' read -r theme desc file pat <<<"$fp"
   if grep -qF -- "$pat" "$REPO/$file" 2>/dev/null; then
@@ -181,10 +188,17 @@ fi
 echo
 bold "── 第 2 层：CodeWhale forkguard 回归 ──"
 ( cd "$TUI" && cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1 ) || fail=1
+if [[ "$actual_head" == "$LOCAL_BENCHMARK_CANDIDATE" ]]; then
+  ( cd "$TUI" && cargo test -p codewhale-tui --lib --locked --features benchmark-eval-controls forkguard_benchmark_ -- --test-threads=1 ) || fail=1
+fi
 
 echo
 bold "── 第 3 层：pinvou3-app forkguard 回归 ──"
 ( cd "$APP" && cargo test --lib --locked forkguard_ -- --test-threads=1 ) || fail=1
+if [[ "$actual_head" == "$LOCAL_BENCHMARK_CANDIDATE" ]]; then
+  ( cd "$APP" && cargo test --lib --locked --features benchmark-hooks eval_send_message_op_isolated_from_gui_authority_and_installs_exact_policy -- --test-threads=1 ) || fail=1
+  ( cd "$APP" && cargo test --lib --locked --features benchmark-hooks features::assistant::product_runtime::headless_bridge::tests -- --test-threads=1 ) || fail=1
+fi
 
 echo
 if [[ $fail -eq 0 ]]; then

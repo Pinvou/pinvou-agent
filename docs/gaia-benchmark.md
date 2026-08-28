@@ -89,6 +89,7 @@ pinvou benchmark run gaia --split validation --level 1
   区域注释。评测附件提示只声明 profile 实际允许的只读能力。
 - 输出契约为 `gaia-final/v1`：题目 prompt 会注入最终答案格式指令
   （`FINAL ANSWER: <answer>`）。解析按行、大小写不敏感，并容忍常见 Markdown 强调；只提取最后一个已识别标记所在行的内容。最后一个标记为空时任务以 `missing_final_answer` 终态计为失败，不回退到更早标记或正文。
+  如果首轮已完成但缺少该标记，或首轮以 Agent 工具失败结束，评测后端会追加一次禁用全部工具的最终答案恢复轮；该轮只允许模型按同一格式给出答案，不会再次执行工具。两轮的模型用量、请求性能和工具观测会合并进入同一道题的诊断。恢复轮仍失败时保留首轮诊断，并将该题记为失败。
   预测以 `utf8-text/v1` 持久化在该 run 的私有目录中。当前 CLI 尚未提供 purge 子命令；需要清理时必须在确认 run 已停止后删除对应的 `~/.pinvou3/eval/runs/<run-id>/`，不要删除整个运行时根目录。
 - **验证集污染警告**：validation split 的参考答案用于评分。在运行期间不要向代理泄露参考答案、不要用 validation 题目做 prompt 调试，否则评分无效且不可复现。
 - 未启用 product-backend 时返回 `product_backend_not_enabled`。
@@ -155,7 +156,7 @@ pinvou benchmark submission gaia --run-id <run-id> --destination ./output.jsonl
 - **参考答案隔离**：参考答案仅存在于适配器内部，评分时通过 run-bound scorer view 解析私有预测，不暴露给代理、不写入日志、不出现在提交文件中。
 - **附件隔离**：附件通过 `AttachmentHandle` 挂载到沙盒，代理只能访问附件内容，不能访问参考答案或元数据中的私有字段。
 - **Token 隔离**：HF token 仅在 fetch 阶段用于 HTTPS 认证，不持久化、不回显、不出现在任何输出中。
-- **预测句柄隔离**：公开预测句柄（`PrivateInputHandle`）无法解码候选答案；只有 run-bound scorer view 能解析。Windows 预测正文使用 DPAPI 保护，完整性摘要绑定受保护密文和运行元数据而不直接散列明文；预测目录和 blob 使用与数据集相同的受保护私有 DACL。
+- **预测句柄隔离**：公开预测句柄（`PrivateInputHandle`）无法解码候选答案；只有 run-bound scorer view 能解析。新写入的私有预测使用 `PVP3` envelope；reader 继续兼容已发布的 `PVP2` envelope，但两种格式都必须先用绑定运行元数据和受保护正文的摘要完成完整性校验，再解密正文。Windows 预测正文使用 DPAPI 保护；预测目录和 blob 使用与数据集相同的受保护私有 DACL。
 - **测试边界**：测试代码不硬编码真实参考答案或真实 token；测试用的私有预测通过 `test-support` feature 下的辅助方法注入，不泄露到默认构建。
 
 ## Not a leaderboard score
