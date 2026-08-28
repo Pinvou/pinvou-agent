@@ -91,11 +91,14 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.23: wecom-cli 升 1.1.0：技能树按上游服务模型重排为 14 个（msg→message、
 ///       schedule→calendar，新增 disk/doc-manage/email/media/shared/sheet/smartpage），
 ///       旧目录（wecomcli-msg/wecomcli-schedule）启动门控时清理。
-/// 0.25: wecom sheet/smartsheet/smartpage 路由口径统一与缺陷修复，以及
-///       calendar/meeting/email/message/media 文档审计修复（15 条，见
-///       NOTICE-wecom.md 登记）。取 0.28 条目为 #366 预留的槽位；抽取
-///       VERSION 门控仅判不等，落地顺序与跳号均安全。技能树不参与内容
-///       哈希，须 bump 语义版本让已连接用户启动即同步刷新。
+/// 0.25: wecom sheet/smartsheet/smartpage routing-rule unification and
+///       fixes, plus calendar/meeting/email/message/media doc-audit
+///       fixes (15 findings; all registered in NOTICE-wecom.md). Takes
+///       the slot reserved for #366 by the 0.28 entry; the
+///       extracted-VERSION gate is inequality-only, so landing order
+///       and skipped numbers stay safe. Skill trees are excluded from
+///       the content hash, so the semantic bump is required for
+///       connected users to refresh at startup.
 /// 0.26: tmeet-skill doc-audit fixes (seventh review round), registered
 ///       as entries 7-12 in NOTICE-tmeet.md: contact downstream command
 ///       list, underscore command names, crossed cause/solution columns
