@@ -313,6 +313,7 @@ fn push_large_attachment_section(
     attachment_dir: &str,
     stage_original_text: bool,
     reference_absolute: bool,
+    read_only_tools: bool,
 ) {
     let read_path = if a.kind == "text" && !stage_original_text {
         a.path.clone()
@@ -340,11 +341,21 @@ fn push_large_attachment_section(
          **绝不能**只凭预览回答涉及全文/全表的问题。\n\
          完整内容已是纯文本,共 {} 行,路径: `{}`\n\
          预览(仅开头几行):\n```\n{}```\n\
-         需要完整内容时:\n\
-         - 统计/筛选/聚合(尤其表格数据):优先用 `Bash(action=\"run\")` 写 awk 或 python 一次算出结果,不要逐页通读\n\
-         - 通读/定位:用 `File(action=\"read\")` 分页(start_line/max_lines;返回 truncated=\"true\" 时按 next_start_line 续读)\n",
+         需要完整内容时:\n",
         a.token_estimate, total_lines, read_path, preview
     ));
+    if read_only_tools {
+        out.push_str(
+            "- 通读/定位:用 `File(action=\"read\")` 分页(start_line/max_lines;返回 \
+             truncated=\"true\" 时按 next_start_line 续读)\n\
+             - 当前会话只有只读工具;不要请求 Bash、代码执行或 File 写入动作\n",
+        );
+    } else {
+        out.push_str(
+            "- 统计/筛选/聚合(尤其表格数据):优先用 `Bash(action=\"run\")` 写 awk 或 python一次算出结果,不要逐页通读\n\
+             - 通读/定位:用 `File(action=\"read\")` 分页(start_line/max_lines;返回 truncated=\"true\" 时按 next_start_line 续读)\n",
+        );
+    }
 }
 
 /// 落盘附件在消息里的引用形式：默认 workspace 相对路径（引擎 cwd 即落盘根）；
@@ -365,12 +376,13 @@ fn staged_reference(
 /// 图片拷进 workspace 后引导 LLM 调 image_analyze 读图(Qwen3.6 有视觉能力);
 /// 文本类附件按 token 预算分流:小→全量内联,大→落盘+路径+预览(见常量注释)。
 /// `reference_absolute` 见 `staged_reference`；普通对话与 scheduled 传 false。
-pub(crate) fn build_message_with_attachments_in_dir(
+fn build_message_with_attachments_in_dir_with_access(
     text: String,
     attachments: Vec<crate::features::files::file_ingest::IngestResult>,
     workspace: &std::path::Path,
     attachment_dir: &str,
     reference_absolute: bool,
+    read_only_tools: bool,
 ) -> String {
     if attachments.is_empty() {
         return text;
@@ -428,11 +440,19 @@ pub(crate) fn build_message_with_attachments_in_dir(
                 && inline_spent.saturating_add(a.token_estimate) <= ATTACH_TOTAL_BUDGET_TOKENS;
             if fits {
                 inline_spent = inline_spent.saturating_add(a.token_estimate);
-                out.push_str(
-                    "**以下代码块是文件完整内容,可直接使用,不需要再调 `File(action=\"read\")` / \
-                     `File(action=\"search_name\")` 重新读取。**如需保存修改版本,用 `File(action=\"write\")` 写到 \
-                     PINVOU3_WORKSPACE 下;单个文件过大时拆分为多个有明确用途的文件。\n",
-                );
+                if read_only_tools {
+                    out.push_str(
+                        "**以下代码块是文件完整内容,可直接使用,不需要再调 `File(action=\"read\")` / \
+                         `File(action=\"search_name\")` 重新读取。**当前会话只有只读工具;不要请求 File 写入、\
+                         Bash 或代码执行动作。\n",
+                    );
+                } else {
+                    out.push_str(
+                        "**以下代码块是文件完整内容,可直接使用,不需要再调 `File(action=\"read\")` / \
+                         `File(action=\"search_name\")` 重新读取。**如需保存修改版本,用 `File(action=\"write\")` 写到 \
+                         PINVOU3_WORKSPACE 下;单个文件过大时拆分为多个有明确用途的文件。\n",
+                    );
+                }
                 out.push_str("```\n");
                 out.push_str(md);
                 if !md.ends_with('\n') {
@@ -448,6 +468,7 @@ pub(crate) fn build_message_with_attachments_in_dir(
                     attachment_dir,
                     attachment_dir != "attachments",
                     reference_absolute,
+                    read_only_tools,
                 );
             }
         } else if let Some(warning) = &a.warning {
@@ -459,6 +480,23 @@ pub(crate) fn build_message_with_attachments_in_dir(
     out
 }
 
+pub(crate) fn build_message_with_attachments_in_dir(
+    text: String,
+    attachments: Vec<crate::features::files::file_ingest::IngestResult>,
+    workspace: &std::path::Path,
+    attachment_dir: &str,
+    reference_absolute: bool,
+) -> String {
+    build_message_with_attachments_in_dir_with_access(
+        text,
+        attachments,
+        workspace,
+        attachment_dir,
+        reference_absolute,
+        false,
+    )
+}
+
 /// 普通对话附件入口。pub 仅为 L1 dialog harness 复用(lib.rs re-export)，
 /// 不是对外 API；scheduled chat 走上面的 run 专属目录入口。
 pub fn build_message_with_attachments(
@@ -467,6 +505,24 @@ pub fn build_message_with_attachments(
     workspace: &std::path::Path,
 ) -> String {
     build_message_with_attachments_in_dir(text, attachments, workspace, "attachments", false)
+}
+
+/// Restricted evaluation entry point. Attachment evidence is identical to the
+/// product path, but tool guidance never advertises write, shell, or code
+/// execution capabilities that the evaluation policy forbids.
+pub(crate) fn build_read_only_message_with_attachments(
+    text: String,
+    attachments: Vec<crate::features::files::file_ingest::IngestResult>,
+    workspace: &std::path::Path,
+) -> String {
+    build_message_with_attachments_in_dir_with_access(
+        text,
+        attachments,
+        workspace,
+        "attachments",
+        false,
+        true,
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -556,6 +612,7 @@ pub(crate) fn prepare_native_user_message_in_dir(
                     attachment_dir != "attachments",
                     // Native 分支图片/文件都暂存到执行根,落盘根与引擎 cwd 一致,相对引用。
                     false,
+                    false,
                 );
             }
         } else if let Some(warning) = &a.warning {
@@ -567,4 +624,51 @@ pub(crate) fn prepare_native_user_message_in_dir(
         segment.push_str("---\n");
     }
     Ok(segment)
+}
+
+#[cfg(test)]
+mod read_only_prompt_tests {
+    use super::build_read_only_message_with_attachments;
+    use crate::features::files::file_ingest::IngestResult;
+
+    fn attachment(markdown: String, token_estimate: u32) -> IngestResult {
+        IngestResult {
+            kind: "xlsx".into(),
+            basename: "report.xlsx".into(),
+            path: "attachments/report.xlsx".into(),
+            markdown: Some(markdown),
+            token_estimate,
+            byte_size: 128,
+            warning: None,
+        }
+    }
+
+    #[test]
+    fn inline_evaluation_attachment_never_advertises_mutating_tools() {
+        let workspace = tempfile::tempdir().unwrap();
+        let prompt = build_read_only_message_with_attachments(
+            "inspect".into(),
+            vec![attachment("A | B\n1 | 2".into(), 10)],
+            workspace.path(),
+        );
+
+        assert!(prompt.contains("当前会话只有只读工具"));
+        assert!(!prompt.contains("File(action=\"write\")"));
+        assert!(!prompt.contains("Bash(action=\"run\")"));
+    }
+
+    #[test]
+    fn large_evaluation_attachment_only_advertises_paged_reads() {
+        let workspace = tempfile::tempdir().unwrap();
+        let prompt = build_read_only_message_with_attachments(
+            "inspect".into(),
+            vec![attachment("row\n".repeat(20_000), 50_000)],
+            workspace.path(),
+        );
+
+        assert!(prompt.contains("File(action=\"read\")"));
+        assert!(prompt.contains("不要请求 Bash、代码执行或 File 写入动作"));
+        assert!(!prompt.contains("Bash(action=\"run\")"));
+        assert!(!prompt.contains("File(action=\"write\")"));
+    }
 }

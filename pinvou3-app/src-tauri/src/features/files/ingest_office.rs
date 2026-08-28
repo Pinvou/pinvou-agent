@@ -171,11 +171,11 @@ pub(super) fn ingest_spreadsheet(
 /// 单元格内换行折成空格，避免破坏「一行 = 一条记录」的语义（利于切块/检索）。
 fn spreadsheet_all_sheets_text(path: &Path) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("读取文件失败: {e}"))?;
-    spreadsheet_text_from_bytes(bytes)
+    spreadsheet_text_from_bytes(&bytes)
 }
 
 /// 抽取核心（接收字节，便于单测喂 fixture）。见 [`spreadsheet_all_sheets_text`]。
-fn spreadsheet_text_from_bytes(bytes: Vec<u8>) -> Result<String, String> {
+fn spreadsheet_text_from_bytes(bytes: &[u8]) -> Result<String, String> {
     // DataType trait 提供 Data::is_empty()（calamine 0.26 是 trait 方法，非固有）。
     use calamine::{Data, DataType, Reader, open_workbook_auto_from_rs};
 
@@ -216,6 +216,9 @@ fn spreadsheet_text_from_bytes(bytes: Vec<u8>) -> Result<String, String> {
             out.push('\n');
         }
         out.push('\n');
+    }
+    if let Ok(Some(structure)) = super::spreadsheet_structure::xlsx_structure_annotations(bytes) {
+        out.push_str(&structure);
     }
     Ok(out)
 }
@@ -310,7 +313,7 @@ mod tests {
         // 防回归：旧实现走 LibreOffice CSV 只导「活动工作表」，多 sheet 文件丢 90% 内容
         // （实测 4-sheet 散热报告只抽到首页、CPU/温升数据全失）。calamine 必须把
         // 全部工作表逐行抽出。fixture 是 3-sheet 合成表（Cover/配置表/温升表）。
-        let bytes = include_bytes!("../../../test-fixtures/multi_sheet.xlsx").to_vec();
+        let bytes = include_bytes!("../../../test-fixtures/multi_sheet.xlsx");
         let txt = spreadsheet_text_from_bytes(bytes).expect("calamine 应能解析 fixture");
         // 三个工作表标题都要在
         assert!(txt.contains("## 工作表：Cover"), "缺 Cover sheet");

@@ -85,6 +85,8 @@ pinvou benchmark run gaia --split validation --level 1
 
 - 每道题有 600 秒超时限制。
 - 代理使用 `pinvou-gaia-public-web/v1` 工具策略，可访问公开 web 资源。
+- Office/PDF 附件在 host 侧预解析；XLSX 会同时提供工作表值以及有界的填充色、公式和合并
+  区域注释。评测附件提示只声明 profile 实际允许的只读能力。
 - 输出契约为 `gaia-final/v1`：题目 prompt 会注入最终答案格式指令
   （`FINAL ANSWER: <answer>`）。解析按行、大小写不敏感，并容忍常见 Markdown 强调；只提取最后一个已识别标记所在行的内容。最后一个标记为空时任务以 `missing_final_answer` 终态计为失败，不回退到更早标记或正文。
   预测以 `utf8-text/v1` 持久化在该 run 的私有目录中。当前 CLI 尚未提供 purge 子命令；需要清理时必须在确认 run 已停止后删除对应的 `~/.pinvou3/eval/runs/<run-id>/`，不要删除整个运行时根目录。

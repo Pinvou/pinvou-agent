@@ -34,6 +34,8 @@ mod ingest_email;
 mod ingest_office;
 #[path = "ingest_pdf.rs"]
 mod ingest_pdf;
+#[path = "spreadsheet_structure.rs"]
+mod spreadsheet_structure;
 #[path = "text_decode.rs"]
 mod text_decode;
 #[path = "visual_preview.rs"]
