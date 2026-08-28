@@ -10,8 +10,12 @@ pub(crate) fn parse_asr_transcript(stdout: &str, stderr: &str) -> Option<String>
         // command variables may emit their final plain-text result on stderr.
         // The bundled runtime uses an explicit/timed stdout protocol, so keep
         // those higher-confidence forms ahead of this compatibility fallback.
-        .or_else(|| parse_plain_fallback(stderr, true))
-        .or_else(|| parse_plain_fallback(stdout, false))
+        // A lone number on stderr is weaker evidence than a plain stdout line
+        // (counters and exit codes land there too), so it is only trusted
+        // after stdout had the chance to provide a plain result.
+        .or_else(|| parse_plain_fallback(stderr, true, Some(false)))
+        .or_else(|| parse_plain_fallback(stdout, false, None))
+        .or_else(|| parse_plain_fallback(stderr, true, Some(true)))
 }
 
 fn parse_explicit_asr_result(stream: &str) -> Option<String> {
@@ -68,7 +72,14 @@ fn parse_timed_fallback(stream: &str) -> Option<String> {
     None
 }
 
-fn parse_plain_fallback(stream: &str, reject_numeric_progress: bool) -> Option<String> {
+/// `numeric_candidate` steers bare-number results: `None` keeps every
+/// candidate, `Some(true)` keeps only numbers, `Some(false)` defers numbers
+/// to a later stdout fallback instead of returning them from this pass.
+fn parse_plain_fallback(
+    stream: &str,
+    reject_numeric_progress: bool,
+    numeric_candidate: Option<bool>,
+) -> Option<String> {
     let lines = stream
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -79,9 +90,23 @@ fn parse_plain_fallback(stream: &str, reject_numeric_progress: bool) -> Option<S
     let has_subtitle_timing = lines.iter().any(|line| looks_like_subtitle_timing(line));
     for line in lines.iter().rev().copied() {
         if let Some(text) = parse_plain_transcript_line(line) {
-            if (has_subtitle_timing || (reject_numeric_progress && has_progress_context))
-                && looks_like_number(&text)
-            {
+            let numeric = looks_like_number(&text);
+            let progress_shaped =
+                has_subtitle_timing || (reject_numeric_progress && has_progress_context);
+            if numeric && numeric_candidate == Some(false) {
+                if progress_shaped {
+                    // Classified as progress output, not a deferred result.
+                    continue;
+                }
+                // Defer to the stdout fallback instead of masking it with a
+                // bare number; the numeric-only retry restores it when stdout
+                // has no plain result to offer.
+                return None;
+            }
+            if numeric_candidate == Some(true) && !numeric {
+                continue;
+            }
+            if progress_shaped && numeric {
                 continue;
             }
             return Some(text);
@@ -464,6 +489,16 @@ mod tests {
             parse_asr_transcript("final spoken sentence here\n", "Using 4 threads\n"),
             Some("final spoken sentence here".to_string()),
             "stderr diagnostics must not mask a usable stdout fallback"
+        );
+        assert_eq!(
+            parse_asr_transcript("hello world\n", "4\n"),
+            Some("hello world".to_string()),
+            "a lone numeric stderr line must not shadow a plain stdout result"
+        );
+        assert_eq!(
+            parse_asr_transcript("", "4\n"),
+            Some("4".to_string()),
+            "numeric-only speech on a clean stderr stream remains valid"
         );
         assert_eq!(parse_asr_transcript("", "[0-.5] timed stderr text\n"), None);
     }

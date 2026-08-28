@@ -1092,6 +1092,16 @@ fn parses_local_asr_numeric_only_output() {
         parse_local_asr_text("1\n00:00:03,000 --> 00:00:04,000\n", ""),
         None
     );
+    assert_eq!(
+        parse_local_asr_text("hello world\n", "4\n"),
+        Some("hello world".to_string()),
+        "a lone numeric stderr line must not shadow a plain stdout result"
+    );
+    assert_eq!(
+        parse_local_asr_text("", "4\n"),
+        Some("4".to_string()),
+        "numeric-only speech on a clean stderr stream remains valid"
+    );
     assert!(
         parse_local_asr_text("...\n", "[INFO] loading\n").is_none(),
         "punctuation and log output must not become a transcript"
