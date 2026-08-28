@@ -25,6 +25,7 @@
   // Failed to call ... Chat API)。这些前缀只由模型请求链路产生,出现即可接管。
   const MODEL_CALL_PREFIXES = [
     "sse stream",
+    "sse buffer",
     "stream read error",
     "chat api",
   ];
@@ -94,7 +95,7 @@
         serverTitle: p + "服务暂时不可用",
         serverMessage: "当前模型服务暂时不可用，{stop}请稍后重试，或切换到其他可用模型。",
         networkTitle: "网络连接失败",
-        networkMessage: "无法连接到当前模型服务。请检查网络、代理或服务地址后重试。",
+        networkMessage: "无法连接到当前模型服务。{stop}请检查网络、代理或服务地址后重试。",
         contextTitle: "上下文太长",
         contextMessage: "当前对话内容超过模型可处理范围。请压缩上下文、减少输入内容，或开启新会话后重试。",
         unknownTitle: "当前模型服务不可用",
@@ -106,19 +107,19 @@
         quotaTitle: p + " API quota is insufficient",
         quotaMessage: "The " + p + " API quota is insufficient, {stop}Check quota or switch to another model in settings.",
         rateTitle: p + " is rate-limiting requests",
-        rateMessage: "The current model service is receiving too many requests. Try again later or switch to another model.",
+        rateMessage: "The current model service is receiving too many requests, {stop}Try again later or switch to another model.",
         authTitle: p + " API key is invalid",
         authMessage: "The API key for the current model service is invalid or expired. Check it in model settings.",
         permissionTitle: p + " access is not allowed",
         permissionMessage: "The current API key does not have access to this model service. Check account permissions or switch models.",
         serverTitle: p + " is temporarily unavailable",
-        serverMessage: "The current model service is temporarily unavailable. Try again later or switch to another model.",
+        serverMessage: "The current model service is temporarily unavailable, {stop}Try again later or switch to another model.",
         networkTitle: "Network connection failed",
-        networkMessage: "Pinvou could not connect to the current model service. Check network, proxy, or endpoint settings and retry.",
+        networkMessage: "Pinvou could not connect to the current model service. {stop}Check network, proxy, or endpoint settings and retry.",
         contextTitle: "Context is too long",
         contextMessage: "This conversation is longer than the model can handle. Compact context, reduce input, or start a new session.",
         unknownTitle: "Current model service is unavailable",
-        unknownMessage: "The current model service returned an error. Try again later or switch to another model in settings.",
+        unknownMessage: "The current model service returned an error, {stop}Try again later or switch to another model in settings.",
       },
       ja: {
         billingTitle: p + " のアカウント残高が不足しています",
@@ -126,27 +127,28 @@
         quotaTitle: p + " API の割り当てが不足しています",
         quotaMessage: "現在使用している " + p + " API の割り当てが不足しているため、{stop}割り当てを確認するか、別のモデルに切り替えてください。",
         rateTitle: p + " のリクエストが多すぎます",
-        rateMessage: "現在のモデルサービスへのリクエストが多すぎます。しばらくしてから再試行するか、別のモデルに切り替えてください。",
+        rateMessage: "現在のモデルサービスへのリクエストが多すぎます。{stop}しばらくしてから再試行するか、別のモデルに切り替えてください。",
         authTitle: p + " API Key が無効です",
         authMessage: "現在のモデルサービスの API Key が無効、または期限切れです。モデル設定で確認して再入力してください。",
         permissionTitle: p + " にアクセスできません",
         permissionMessage: "現在の API Key にはこのモデルサービスへのアクセス権がありません。アカウント権限を確認するか、別のモデルに切り替えてください。",
         serverTitle: p + " は一時的に利用できません",
-        serverMessage: "現在のモデルサービスは一時的に利用できません。しばらくしてから再試行するか、別のモデルに切り替えてください。",
+        serverMessage: "現在のモデルサービスは一時的に利用できません。{stop}しばらくしてから再試行するか、別のモデルに切り替えてください。",
         networkTitle: "ネットワーク接続に失敗しました",
-        networkMessage: "現在のモデルサービスに接続できません。ネットワーク、プロキシ、またはエンドポイント設定を確認して再試行してください。",
+        networkMessage: "現在のモデルサービスに接続できません。{stop}ネットワーク、プロキシ、またはエンドポイント設定を確認して再試行してください。",
         contextTitle: "コンテキストが長すぎます",
         contextMessage: "この会話はモデルが処理できる範囲を超えています。コンテキストを圧縮する、入力を減らす、または新しい会話で再試行してください。",
         unknownTitle: "現在のモデルサービスを利用できません",
-        unknownMessage: "現在のモデルサービスでエラーが発生しました。しばらくしてから再試行するか、別のモデルに切り替えてください。",
+        unknownMessage: "現在のモデルサービスでエラーが発生しました。{stop}しばらくしてから再試行するか、別のモデルに切り替えてください。",
       },
     };
     return copy[lang][key];
   }
 
   function extractHttpStatus(text) {
-    const match = String(text || "").match(/\bHTTP\s*(\d{3})\b/i)
-      || String(text || "").match(/\bstatus[=:\s]+(\d{3})\b/i);
+    // HTTP/1.1 429、HTTP/2 503(带版本段)与 "status code 429"(axios)同属常见形态。
+    const match = String(text || "").match(/\bHTTP\/?[\d.]*\s*(\d{3})\b/i)
+      || String(text || "").match(/\bstatus(?:\s+code)?[=:\s]+(\d{3})\b/i);
     return match ? Number(match[1]) : null;
   }
 
@@ -245,7 +247,9 @@
     const keepPrefix = (prefix) => prefix + SENSITIVE_VALUE;
     text = text.replaceAll(/((?:authorization|proxy-authorization)\s*[:=]\s*(?:bearer|basic|digest|token)\s+)[^\s,;"}]+/ig, (m, p1) => keepPrefix(p1));
     text = text.replaceAll(/(Authorization\s*[:=]\s*)[^\s,;"}]+/ig, (m, p1) => keepPrefix(p1));
-    text = text.replaceAll(/\b(Bearer\s+)[A-Za-z0-9._~+=/-]{12,}/g, (m, p1) => keepPrefix(p1));
+    text = text.replaceAll(/\b(Bearer\s+)[a-z0-9._~+=/-]{12,}/gi, (m, p1) => keepPrefix(p1));
+    // 裸 Basic/Digest <base64>(无 Authorization 头名,代理/排错日志常见形态)。
+    text = text.replaceAll(/\b((?:Basic|Digest)\s+)[a-z0-9+/=]{16,}/gi, (m, p1) => keepPrefix(p1));
     // kv 形态的 key 名要求左侧词边界,且值必须像凭证(字母开头的非纯数字串):
     // "monkey:bar"(词尾含 key)与 "token: 15000"/"total_token: 15000"(用量
     // 计数)不能被当凭证脱敏,否则恰好毁掉 context 错误的排查信息。

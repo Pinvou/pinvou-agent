@@ -2,7 +2,7 @@
 // code-native-lane.js 的纯逻辑回归：chat:* 事件推进、SavedSession hydration、投影。
 // 风格对齐 deepseek_conversation_timeline.test.mjs：把模块复制到临时 type:module 目录再导入。
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -704,6 +704,58 @@ try {
   assert.equal(applyNativeChatEvent(lane13, 'chat:plan_resolved', {
     session_id: 's13', plan_id: 'plan-r',
   }), false);
+
+  // ── lane14: 模型服务错误的统一气泡（分类/脱敏/终态升级/语言）─────────
+  // helper 以 classic script 形式挂 globalThis,与浏览器 index.html 加载形态一致。
+  const vm = await import('node:vm');
+  const helperSandbox = { window: {}, Date };
+  vm.runInNewContext(
+    readFileSync(path.join(root, 'src', 'shared', 'model-service-errors.js'), 'utf8'),
+    helperSandbox,
+    { filename: 'model-service-errors.js' },
+  );
+  globalThis.PinvouModelServiceErrors = helperSandbox.window.PinvouModelServiceErrors;
+  const lane14 = createNativeLane();
+  appendLocalUserMessage(lane14, '帮我总结这份报告');
+  // transient:模型服务错误接管,气泡为友好措辞(可恢复),非裸串。
+  applyNativeChatEvent(lane14, 'chat:transient_error', {
+    session_id: 's14',
+    error: 'SSE stream request failed: HTTP 402 insufficient balance',
+  }, { language: 'en', modelServiceState: null });
+  const transientItem = lane14.items.find(item => item.type === 'system');
+  assert.ok(transientItem, 'model service transient error must surface a notice');
+  assert.match(transientItem.text, /keep retrying/);
+  assert.equal(transientItem.userError.kind, 'billing');
+  assert.equal(transientItem.legacyConversationOnly, undefined);
+  assert.doesNotMatch(transientItem.text, /SSE stream request failed/, 'raw protocol error must not leak into the bubble');
+  // done:同身份气泡原地升级为终态措辞并转 legacyConversationOnly(时间线卡接管)。
+  applyNativeChatEvent(lane14, 'chat:done', {
+    session_id: 's14',
+    status: 'Failed',
+    error: 'SSE stream request failed: HTTP 402 insufficient balance',
+  }, { language: 'en', modelServiceState: null });
+  const systemItems14 = lane14.items.filter(item => item.type === 'system');
+  assert.equal(systemItems14.length, 1, 'terminal must upgrade the transient bubble, not add a second one');
+  assert.match(systemItems14[0].text, /so this reply stopped/);
+  assert.equal(systemItems14[0].legacyConversationOnly, true);
+  // 非模型错误保持裸串回退。
+  const lane15 = createNativeLane();
+  applyNativeChatEvent(lane15, 'chat:done', {
+    session_id: 's15',
+    status: 'Failed',
+    error: 'ssh: connect to host github.com port 22: Connection refused',
+  }, { language: 'en', modelServiceState: null });
+  const fallbackItem = lane15.items.find(item => item.type === 'system');
+  assert.match(fallbackItem.text, /ssh: connect to host github\.com port 22/, 'local tool errors keep the raw fallback');
+  assert.equal(fallbackItem.userError, undefined);
+  // helper 缺失(classic script 未加载)时回退裸串,不抛错。
+  delete globalThis.PinvouModelServiceErrors;
+  const lane16 = createNativeLane();
+  applyNativeChatEvent(lane16, 'chat:transient_error', {
+    session_id: 's16',
+    error: 'SSE stream request failed: HTTP 402 insufficient balance',
+  }, { language: 'en', modelServiceState: null });
+  assert.match(lane16.items.find(item => item.type === 'system').text, /SSE stream request failed/);
 
   console.log('code_native_lane.test.mjs: all assertions passed');
 } finally {

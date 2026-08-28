@@ -121,6 +121,44 @@ export function appendNativeSystemItem(lane, text) {
   lane.items.push({ id: nextId(lane), type: 'system', text: String(text || ''), time: timeStr() });
 }
 
+/// 原生泳道的模型服务错误气泡，与 bridge-messages.addModelServiceErrorNotice 同语义：
+/// 门控（isModelServiceError）通过才接管；去重按错误身份（kind+技术详情）而非文本，
+/// 同回合 transient→done 措辞升级原地生效；终态标记 legacyConversationOnly，投影层
+/// （projectDeepSeekConversation）据此隐藏气泡，只留时间线错误卡。非模型错误返回
+/// false 由调用方走裸串回退。helper 缺失（classic script 未加载）时同样回退。
+function upsertNativeModelServiceNotice(lane, payload, terminal, options) {
+  const helper = globalThis.PinvouModelServiceErrors;
+  const error = payload && payload.error;
+  if (!error || !helper || typeof helper.build !== 'function'
+      || typeof helper.isModelServiceError !== 'function') return false;
+  if (!helper.isModelServiceError(error)) return false;
+  const language = options && options.language;
+  const userError = helper.build(error, {
+    language,
+    terminal,
+    providerLabel: typeof helper.providerLabelFromState === 'function'
+      ? helper.providerLabelFromState(options && options.modelServiceState, null, language)
+      : '',
+  });
+  const notice = helper.noticeText(userError);
+  const nextDetail = userError.technicalDetail;
+  const existing = lane.items.find(item => item && item.userError
+    && item.userError.kind === userError.kind
+    && ((item.userError.technicalDetail || nextDetail)
+      ? item.userError.technicalDetail === nextDetail
+      : true));
+  if (existing) {
+    existing.text = notice;
+    existing.userError = userError;
+    if (terminal) existing.legacyConversationOnly = true;
+  } else {
+    const item = { id: nextId(lane), type: 'system', text: notice, time: timeStr(), userError };
+    if (terminal) item.legacyConversationOnly = true;
+    lane.items.push(item);
+  }
+  return true;
+}
+
 /// plan_card 状态迁移（批准/放弃/新方案覆盖），供事件与视图动作共用。
 function resolvePlanCard(card, cardState, statusKey) {
   card.cardState = cardState;
@@ -208,7 +246,7 @@ export function removeLocalUserMessage(lane, id) {
 /// chat:* 事件 → lane 状态。payload 一律带 session_id（后端 forwarder 打 tag）。
 /// 返回是否有可视变化；无变化时 React 侧不必 bump 渲染。
 // eslint-disable-next-line sonarjs/cognitive-complexity -- chat:* event dispatch: each event maps to one lane state transition; the switch branches are the event contract
-export function applyNativeChatEvent(lane, name, payload) {
+export function applyNativeChatEvent(lane, name, payload, options = {}) {
   const p = payload || {};
   switch (name) {
     case 'chat:user_message': {
@@ -408,6 +446,8 @@ export function applyNativeChatEvent(lane, name, payload) {
     }
     case 'chat:transient_error': {
       if (!p.error) return false;
+      // 模型服务错误走统一分类/脱敏/三语气泡；本地工具错误保持裸串回退。
+      if (upsertNativeModelServiceNotice(lane, p, false, options)) return true;
       const notice = `⚠️ ${p.error}`;
       if (lane.items.some(item => item && item.type === 'system' && item.text === notice)) return false;
       lane.items.push({ id: nextId(lane), type: 'system', text: notice, time: timeStr() });
@@ -504,7 +544,9 @@ export function applyNativeChatEvent(lane, name, payload) {
       recordTurnCompleted(lane, p);
       lane.busy = false;
       lane.thinking = null;
-      if (p.error) {
+      if (p.error && !upsertNativeModelServiceNotice(lane, p, true, options)) {
+        // 终态：同身份 transient 气泡原地升级为终态措辞并转 legacyConversationOnly
+        //（时间线错误卡接管）；非模型错误保持裸串。
         lane.items.push({ id: nextId(lane), type: 'system', text: `⚠️ ${p.error}`, time: timeStr() });
       }
       return true;
