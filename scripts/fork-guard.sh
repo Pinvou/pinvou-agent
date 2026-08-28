@@ -6,8 +6,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-PUBLISHED_HEAD="0d89a31be016457c180501417dd2c0f34ce844a6"
-PUBLISHED_COMMITS=29
+PUBLISHED_HEAD="2e429c37817ac193cdce63533d9b10aa7b1b6fe3"
+PUBLISHED_COMMITS=30
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -17,21 +17,21 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 r11 公开四主题基线拓扑 ──"
+bold "── 第 0 层：v0.9.5 r12 公开四主题基线拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
   expected_commits="$PUBLISHED_COMMITS"
-  green "  ✓ CodeWhale gitlink 指向 r11 四主题公开基线 $PUBLISHED_HEAD"
+  green "  ✓ CodeWhale gitlink 指向 r12 四主题公开基线 $PUBLISHED_HEAD"
 else
   expected_commits=""
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r11 公开 head $PUBLISHED_HEAD"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r12 公开 head $PUBLISHED_HEAD"
   fail=1
 fi
 
 if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null; then
-  green "  ✓ r11 公开基线继承官方 v0.9.5"
+  green "  ✓ r12 公开基线继承官方 v0.9.5"
 else
-  red "  ✗ r11 公开基线未继承官方 v0.9.5 $EXPECTED_UPSTREAM"
+  red "  ✗ r12 公开基线未继承官方 v0.9.5 $EXPECTED_UPSTREAM"
   fail=1
 fi
 
@@ -39,7 +39,7 @@ commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev
 if [[ -n "$expected_commits" && "$commit_count" == "$expected_commits" ]]; then
   green "  ✓ v0.9.5 之上 $expected_commits 个登记提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r11 合法拓扑应为 ${expected_commits:-29}"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r12 合法拓扑应为 ${expected_commits:-29}"
   fail=1
 fi
 
@@ -101,6 +101,8 @@ fingerprints=(
   "T2|禁用 MCP server 从全部 pool 面消失 |CodeWhale/crates/tui/src/mcp/tests.rs|fn forkguard_mcp_pool_denied_server_disappears_from_every_surface"
   "T2|子智能体不得绕过 MCP 禁用继承       |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_spawn_request_inherit_disallowed_tools_opt_out_not_honored"
   "T2|Shell 跨 poll 保持 UTF-8 解码状态  |CodeWhale/crates/tui/src/tools/shell/output.rs|fn forkguard_shell_output_decoder_preserves_utf8_across_poll_boundaries"
+  "T2|API 后端链尾兜底为 Bing            |CodeWhale/crates/tui/src/tools/web/backend.rs|fn forkguard_api_provider_chain_tail_is_bing"
+  "T2|全链失败建议配置 API 搜索后端      |CodeWhale/crates/tui/src/tools/web/backend.rs|configure an API-backed [search] provider"
 
   "T3|ambient project authority 密封       |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_runtime_loader_ignores_ambient_project_authority"
   "T3|Permissions 100 KiB 窄例外回归      |CodeWhale/crates/tui/src/prompts.rs|fn forkguard_instruction_fragment_preserves_content_beyond_default_cap"

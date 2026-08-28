@@ -1,6 +1,6 @@
 # CodeWhale Fork Modification Register
 
-> Updated: 2026-08-27. Public maintenance baseline: upstream `v0.9.5` r11. Canonical Chinese register: [`docs/fork-modifications.md`](fork-modifications.md). This English page is a condensed summary; the Chinese version is the complete, authoritative register.
+> Updated: 2026-08-28. Public maintenance baseline: upstream `v0.9.5` r11, with the r12 candidate pending. Canonical Chinese register: [`docs/fork-modifications.md`](fork-modifications.md). This English page is a condensed summary; the Chinese version is the complete, authoritative register.
 >
 > 2026-08-22 corrections: (1) the parent gitlink bump from r6 (`3bbf8421`) to r7 happened in parent PR #285 (`95502ac8`), not in PR #302 — PR #302 started from a pre-#285 main and merged without touching the gitlink; PR #305 later advanced the published baseline to r8. (2) PR #302 (capability-bundle unification, parent commit `c75f2fb2`) updated the parent-side scope model — the single `disabled_bundles.json` (package id × mode, plus `hidden_scopes`) replaced the separate `disabled_connectors.json` / `disabled_skills.json` files.
 
@@ -9,13 +9,19 @@
 | Item | Value |
 |---|---|
 | Upstream | `v0.9.5` at `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `0d89a31be` (`pinvou-v0.9.5-r11`) |
+| Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `0d89a31be` (`pinvou-v0.9.5-r11`); r12 candidate `feat/search-keyless-tail-bing` at `2e429c378` pending merge |
 | Merged fixes | Existing `#9`, `#11`, `#12`, `#13`, `#15`, `#16`, `#17`, and `#19`, plus r11 PRs `#18`, `#21`, `#22`, `#25`, `#26`, `#27`, `#29`, and `#30`, are merged |
-| Published status | `pinvou3-clean`, `pinvou-v0.9.5-r11`, and the parent gitlink resolve to `0d89a31be016457c180501417dd2c0f34ce844a6`; `r1` through `r11` remain immutable historical tags |
+| Published status | `pinvou3-clean`, `pinvou-v0.9.5-r11`, and the r11 parent gitlink resolve to `0d89a31be016457c180501417dd2c0f34ce844a6`; `r1` through `r11` remain immutable historical tags; r12 pending |
 | Previous baseline backup | Tag `pinvou-v0.9.0-r4` and branch `backup/pinvou3-clean-v0.9.0-r4`, both at `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| Drift | Published r11 baseline: 96 files, `+7840/-980`; r10→r11 is 48 files, `+2242/-292` |
+| Drift | r12 candidate baseline: 98 files, `+7899/-987`; r11→r12 is 3 files, `+59/-7` |
 | Organization | Four current long-lived topics; PR #13 removes the product-specific orchestration topic |
-| Guard inventory | Published r11 has 56 CodeWhale `forkguard_*` tests, plus generic tool/route compatibility regressions and parent fingerprints/behavior tests |
+| Guard inventory | r12 has 57 CodeWhale `forkguard_*` tests, plus generic tool/route compatibility regressions and parent fingerprints/behavior tests |
+
+### r12 keyless search tail switches to Bing (pending)
+
+- CodeWhale `2e429c378` (branch `feat/search-keyless-tail-bing`, PR #35): the keyless chain tail after API-backed providers (Tavily/Bocha/Metaso/Baidu/SearXNG/Volcengine/Sofya) fails switches from DuckDuckGo to Bing. Live measurements show DuckDuckGo is fully unreachable from mainland-China networks (DNS poisoning plus SNI reset), so a DDG tail turned every API outage into a guaranteed total failure there; Bing serves both its global and China endpoints without a key (`www.bing.com` lands on `cn.bing.com` by egress IP). The tail is picked by reachability, never geo detection; Bing and DuckDuckGo stay single-backend chains (DDG keeps its internal Bing fallback, so private DDG-compatible search services are unaffected).
+- The all-backends-down `not_available` error now appends a suggestion to configure an API-backed `[search] provider`; it still contains backend ids only and never provider-private response bodies.
+- Adds `forkguard_api_provider_chain_tail_is_bing` (forkguard total 56→57); CONFIGURATION.md and `config/search.rs` docs updated. Parent-side: settings-page search-source guidance copy (i18n zh/en/ja) and a comment correction in `platform/prefs/search.rs` — the old "fork patch #42 flipped the engine default" claim did not match the engine (its default is still DuckDuckGo); the real mechanism is the bridge explicitly injecting the app-side default when building `EngineConfig`.
 
 ### r11 provider, MCP, steer, and platform boundaries (published)
 
