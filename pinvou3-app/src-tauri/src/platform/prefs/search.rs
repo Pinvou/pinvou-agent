@@ -13,8 +13,10 @@ use crate::platform::credential_store::CredentialReference;
 
 /// Search 后端选择。
 /// - `Bing`(默认): HTML scrape,无需 key,但对中文长复合查询相关性差。
-///   DDG 在 GFW + 代理 datacenter IP 段下基本恒返 anomaly-modal,
-///   所以底座 fork patch #42 已把默认翻成 Bing,这里前端默认对齐。
+///   DDG 在 GFW 下 DNS 污染 + SNI 重置,完全不可达。底座默认仍是
+///   DuckDuckGo,但 bridge 构造 EngineConfig 时丢弃底座默认、显式注入
+///   本枚举(forkguard_search_provider_translates_from_prefs 锁定),
+///   对应用用户等效于默认 Bing;底座侧 API 后端失败兜底同为 Bing。
 /// - `Metaso` / `Bocha` / `Baidu`: 国内 AI 搜索 API,中文场景相关性远好于 Bing scrape。
 ///   Metaso 留空 key 走底座内置共享 key(~100 次/天);Bocha/Baidu 必须填 key。
 /// - `Tavily`: 海外 agent 搜索 API(<https://app.tavily.com/> 拿 `tvly-` key,API 实际打

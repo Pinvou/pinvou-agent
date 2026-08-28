@@ -1,15 +1,15 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-08-27（公开维护基线：上游 `v0.9.5` r11；PR #18、#21、#22、#25、#26、#27、#29 与 #30 已发布到现有 4 个 Pinvou 主题）
+> 最后更新：2026-08-28（公开维护基线：上游 `v0.9.5` r12；r11 的 PR #18、#21、#22、#25、#26、#27、#29、#30 与 r12 的 PR #33、#35 已发布到现有 4 个 Pinvou 主题，父仓 gitlink 由父仓 PR #375 接入）
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
 ## 0. 当前基线
 
 - 上游：`Hmbown/CodeWhale` tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c`。
-- 公开维护分支：`Pinvou/CodeWhale:pinvou3-clean`，head `0d89a31be`（`pinvou-v0.9.5-r11`）。
+- 公开维护分支：`Pinvou/CodeWhale:pinvou3-clean`，head `9c5f4f19`（`pinvou-v0.9.5-r12`）。
 - 升级前基线 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` 同时保留在 tag `pinvou-v0.9.0-r4` 和 branch `backup/pinvou3-clean-v0.9.0-r4`。
-- `Pinvou/CodeWhale#18`、`#21`、`#22`、`#25`、`#26`、`#27`、`#29` 与 `#30` 已发布进 r11；`pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r11` 均公开可达并指向 `0d89a31be016457c180501417dd2c0f34ce844a6`，`r1` 至 `r11` 保持不可变。
+- `Pinvou/CodeWhale#18`、`#21`、`#22`、`#25`、`#26`、`#27`、`#29` 与 `#30` 已发布进 r11，`#33` 与 `#35` 已发布进 r12；`pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r12` 均公开可达并指向 `9c5f4f19`，`r1` 至 `r12` 保持不可变。
 - `.gitmodules` 不配置浮动 `branch`；发布后父仓 gitlink、维护分支和不可变标签必须指向同一 commit。
 - 当前只维护 4 个长期主题：
 
@@ -39,7 +39,7 @@ Pinvou 的产品工具白名单、UI、工作区选择和业务策略留在 app�
 - 总 drift 软上限：净增 1500 行（净增 = 新增 − 删除行数，与下方基线表述同口径）。
 - 单文件 fork-distinct 改动软上限：200 行。
 - 超过不是自动拒绝，但必须记录保留原因和减量顺序。
-- r11 公开基线相对 `v0.9.5` 为 `+7840/-980，96 文件`，净增 6860 行；相对 r10 为 `+2242/-292，48 文件`。本轮增加严格直连模型大小写兼容、route 输出上限、Moonshot 按工具降级与可见诊断、MCP 密钥解析/禁用面封闭、可观测 steer 撤回、Windows Shell 解码和依赖安全修复；均归入现有主题。后续优先上游化通用逐轮权限、宿主插入/编辑接口、会话快照/恢复 API、provider 兼容、MCP 宿主策略和 Automation 生命周期修复。
+- r12 公开基线相对 `v0.9.5` 为 `+9781/-1168，110 文件`，净增 8613 行；相对 r11 为 `+1941/-188，17 文件`，新增厂商原生搜索适配（#33，按厂商+模型+官方端点+产品面精确门控）与 API 后端免 key 链尾 Bing 化（#35），均归入 T2。既有 r11 基线相对 `v0.9.5` 为 `+7840/-980，96 文件`，净增 6860 行。保留原因见 `docs/fork-modifications.md` 软上限评估；后续优先上游化通用逐轮权限、宿主插入/编辑接口、会话快照/恢复 API、provider 兼容、MCP 宿主策略和 Automation 生命周期修复。
 
 ### 1.3 主题提交
 

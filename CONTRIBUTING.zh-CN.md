@@ -87,20 +87,30 @@ cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-thre
 
 PR 使用分层、按路径选择的门禁。Draft 跑 lint、build、确定性逻辑测试和
 适用的 Rust fmt 快检；Ready PR 追加由实际 diff 选定的浏览器 smoke、平台
-Runtime 契约和其他受影响检查。发布链路改动只跑轻量契约测试；完整
+Runtime 契约和其他受影响检查。Ready Rust PR 默认运行快速的格式、lint、
+依赖策略和编译反馈；未知 Rust 路径默认进入完整回归，只有明确登记的孤立叶子
+功能边界走轻量路径。依赖、CodeWhale gitlink、应用命令、平台、权限、凭据、
+Session、远控及其他高爆炸半径路径会在入队前自动追加完整 Linux/Windows Rust 回归。
+其他 Ready Rust PR 可用 `ci:full-rust` 强制追加同款全量回归；Draft 不响应该
+标签。目前轻量 Rust 边界仅限 `feedback`、`personas`、`pet` 模块内部改动；它们的
+注册、应用命令、共享平台接口、Cargo 元数据或任何未分类 Rust 路径仍进入完整回归。
+发布链路改动只跑轻量契约测试；完整
 deb、dmg、nsis 安装包仅在 `VERSION` 改动进入 `main` 后，或人工明确触发
 `workflow_dispatch` 时构建。
 
 Merge Queue 在入队 PR 与最新 `main` 的实际组合树上运行适用门禁：Rust 改动
-执行完整 Rust 测试，前端改动执行完整浏览器 smoke。仅 Ready 且高风险的
-Rust PR 需要提前完整反馈时添加 `ci:full-rust`；该标签不会在 Draft 上启动
-完整 Rust 测试。评审阶段只查看 required checks：
+运行格式、Clippy、编译和依赖策略检查；高爆炸半径 Rust 改动还会在组合树上执行
+完整 Linux 行为回归，Windows 已在 Ready PR 验证，不在队列重复。前端改动按
+merge group 的真实 base/head diff 选择浏览器 smoke，共享、未知或测试设施路径
+fail-closed 回退全套。每个保留下来的 `main` push 都执行完整 Linux / Windows
+Rust 回归并持续写暖缓存；main 回归变红后应停止继续入队，直至修复或回滚。
+评审阶段只查看 required checks：
 
 ```bash
 gh pr checks <编号> --required
 ```
 
-不要等待非 required 的合入后平台构建或发布构建。无真实冲突的独立 Ready PR
+main 绿色时不要等待非 required 的合入后平台构建或发布构建。无真实冲突的独立 Ready PR
 可直接入队，由队列验证新鲜度。每个 merge group 最多放两个低风险、相互独立的
 PR；依赖锁、CI、发布、权限、Session、CodeWhale gitlink 及其他高风险改动单独入队。
 

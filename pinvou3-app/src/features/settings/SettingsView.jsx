@@ -2194,6 +2194,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         <>
           <section className="mb-6">
             <SectionTitle>{settingsCopy.searchList}</SectionTitle>
+            <div className={`px-3 mb-2 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]`}>{settingsCopy.searchSourceHint}</div>
             <Group>
             {enabledSearchList.map(item => {
               return (

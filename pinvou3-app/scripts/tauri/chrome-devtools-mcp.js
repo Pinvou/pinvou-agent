@@ -140,6 +140,16 @@ function applyTargetIdAdapter(
   return assertTargetIdAdapterIntegrity(root, { expectedSha256 });
 }
 
+// Windows PATH order may resolve `tar` to Git for Windows' GNU tar, which reads the
+// drive letter of `D:\...` as an rsh remote host and fails with "Cannot connect to D:
+// resolve failed". Windows 10 1803+ ships a bsdtar at System32 that handles local
+// drive paths natively, so resolve it explicitly instead of relying on PATH.
+function systemTarCommand({ platform = process.platform, systemRoot = process.env.SystemRoot } = {}) {
+  if (platform !== "win32") return "tar";
+  const bsdtar = path.join(systemRoot || "C:\\Windows", "System32", "tar.exe");
+  return fs.existsSync(bsdtar) ? bsdtar : "tar";
+}
+
 function isPreparedRoot(root, marker = expectedMarker()) {
   try {
     const actual = JSON.parse(fs.readFileSync(path.join(root, MARKER_NAME), "utf8"));
@@ -253,8 +263,9 @@ function prepareChromeDevtoolsMcp({ platform = process.platform } = {}) {
         `chrome-devtools-mcp@${VERSION} SHA-512 mismatch (expected ${INTEGRITY_SHA512.slice(0, 16)}…, actual ${hash.slice(0, 16)}…)`,
       );
     }
-    // 3) Extract with tar (bsdtar on macOS/Linux and tar.exe on Windows 10+).
-    run("tar", ["-xzf", tarball, "-C", stagingRoot], { cwd: stagingRoot });
+    // 3) Extract with tar (bsdtar on macOS/Linux and the System32 bsdtar on Windows;
+    //    see systemTarCommand for why PATH order must not decide on Windows).
+    run(systemTarCommand(), ["-xzf", tarball, "-C", stagingRoot], { cwd: stagingRoot });
     const unpacked = path.join(stagingRoot, "package");
     if (!fs.existsSync(unpacked)) {
       throw new Error("Extracted tarball is missing package/; the upstream layout changed");
@@ -295,6 +306,7 @@ module.exports = {
   isPrepared,
   isPreparedRoot,
   outputRoot,
+  systemTarCommand,
 };
 
 if (require.main === module) {
