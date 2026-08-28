@@ -825,6 +825,10 @@ async fn spawn_server(bin: &Path, args: &[OsString]) -> Result<tokio::process::C
     command.stdout(std::process::Stdio::null());
     command.stderr(std::process::Stdio::piped());
     command.kill_on_drop(true);
+    // Unix 上设为独立进程组组长：kill_pid_tree 的组杀(kill -9 -pgid)才能连
+    // llama-server 派生的子进程一起终结，否则组杀恒 ESRCH、静默退化成单 pid。
+    // Windows no-op（taskkill /T 已按树杀）。
+    crate::platform::process::tokio_process_group_leader(&mut command);
     command
         .spawn()
         .map_err(|e| format!("启动 llama-server 失败: {e}"))
