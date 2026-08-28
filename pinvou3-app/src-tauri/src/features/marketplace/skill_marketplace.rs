@@ -2366,6 +2366,95 @@ mod tests {
         );
     }
 
+    /// 机械差异测试（differential guard）：上面的
+    /// `skill_description_mirrors_engine_flat_parser` 只钉住手写期望，
+    /// 引擎侧 `parse_skill` 改动时不会让 CI 变红；本测试把同一份 fixture
+    /// 矩阵写成临时目录的真实 SKILL.md，让引擎
+    /// [`deepseek_tui::skills::SkillRegistry::discover`] 走真实解析器，
+    /// 与镜像 [`read_skill_description_from_str`] 逐条比对——引擎口径漂移
+    /// （含 chomping/折叠/块边界/嵌套等任何语义变化）直接变成 CI 失败，
+    /// 写侧互洽校验不再自洽于过期镜像。
+    ///
+    /// 注意差异边界：引擎 `parse_skill` 缺 `name` 时整体 Err（discover 丢弃
+    /// 该技能 → 引擎侧按 None 计）；镜像对无 name 的 frontmatter 仍照读
+    /// description（展示/备份语义不依赖 name）。矩阵里凡引擎会 Err 的
+    /// fixture 都在期望侧显式标 None 并注明原因。
+    #[test]
+    fn skill_description_mirror_differs_from_engine_discover_nowhere() {
+        let fixtures: &[&str] = &[
+            // 基础：嵌套缩进也算（引擎平摊解析）
+            "---\nname: x\nmetadata:\n  description: 嵌套说明\n---\n",
+            // 其他键的 literal 块内 description 行不算
+            "---\nname: x\ninstructions: |\n  description: fake\n---\nbody\n",
+            // 其他键的 folded 块内 description 行不算
+            "---\nname: x\nnotes: >\n  description: folded-fake\n---\n",
+            // 块消费结束后顶层 description 仍可读（last-wins）
+            "---\nname: x\ninstructions: |\n  任意内容\ndescription: 真说明\n---\n",
+            // 重复键 last-wins
+            "---\nname: x\ndescription: 第一\ndescription: 第二\n---\n",
+            // 后出现的空值覆盖
+            "---\nname: x\ndescription: 第一\nname: x\ndescription: ''\n---\n",
+            // chomping：strip
+            "---\nname: x\ndescription: |-\n  a\n  b\n---\n",
+            // chomping：folded + strip
+            "---\nname: x\ndescription: >-\n  fold\n  ed\n---\n",
+            // keep：尾随空行保留
+            "---\nname: x\ndescription: |+\n  a\n\n\n---\n",
+            // 默认 clip：至多保留一个尾随空行
+            "---\nname: x\ndescription: |\n  a\n\n\n---\n",
+            // keep-chomping 块只含空行（引擎 Some("\n")）
+            "---\nname: x\ndescription: |+\n\n\n---\n",
+            // 大小写不敏感键
+            "---\nName: X\ndescription: 小写值\n---\n",
+            // 整行注释跳过
+            "---\nname: x\n# 注释\ndescription: 值\n---\n",
+            // 首 --- 前容忍空白
+            "\n---\nname: x\ndescription: 前置空白\n---\n",
+            // BOM：引擎 starts_with("---") 不成立 → 降级路径，description 空
+            "\u{feff}---\nname: x\ndescription: x\n---\n",
+            // 成对引号剥离
+            "---\nname: x\ndescription: \"带 引号\"\n---\n",
+            // 缺结束 ---：引擎 parse_skill Err → discover 丢弃，按 None 计
+            "---\nname: x\ndescription: 没闭合\n",
+            // 缺 name：引擎 parse_skill Err（required field）→ 按 None 计
+            // （镜像仍会读出 description——差异边界，见上方 doc 注释）
+            "---\ndescription: 无名说明\n---\n",
+        ];
+
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-mirror-diff-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        for (i, fixture) in fixtures.iter().enumerate() {
+            let skill_dir = dir.join(format!("skill-{i:02}"));
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            let md = skill_dir.join("SKILL.md");
+            std::fs::write(&md, fixture).unwrap();
+
+            // 引擎侧：真实解析器（缺 name / 缺闭合围栏 → parse Err →
+            // discover 丢弃该技能并只记 warning，list() 里查无此技 → None）
+            let registry = deepseek_tui::skills::SkillRegistry::discover(&skill_dir);
+            let engine_desc = registry
+                .list()
+                .first()
+                .map(|s| s.description.clone())
+                .filter(|d| !d.is_empty());
+            // 镜像侧
+            let mirror_desc = read_skill_description_from_str(fixture);
+
+            assert_eq!(
+                engine_desc, mirror_desc,
+                "fixture #{i} 引擎/镜像分歧：\n{fixture:?}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn ranks_skill_md_layouts() {
         assert_eq!(skill_md_rank("SKILL.md"), Some(0));
