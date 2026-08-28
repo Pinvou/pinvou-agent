@@ -1565,7 +1565,16 @@ impl Pinvou3Bridge {
                 let n = crate::features::marketplace::disabled_tool_names();
                 if n.is_empty() { None } else { Some(n) }
             },
-            max_tool_calls,
+            max_tool_calls: {
+                #[cfg(feature = "benchmark-hooks")]
+                {
+                    Some(max_tool_calls.unwrap_or(8).min(8))
+                }
+                #[cfg(not(feature = "benchmark-hooks"))]
+                {
+                    max_tool_calls
+                }
+            },
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true（通用多智能体委派需要 SpawnSubAgent）。
@@ -2143,7 +2152,7 @@ impl Pinvou3Bridge {
         )
     }
 
-    #[cfg(any(feature = "benchmark-hooks", test))]
+    #[cfg(feature = "benchmark-hooks")]
     pub(crate) fn build_eval_send_message_op(
         &self,
         session_id: &str,
@@ -2151,6 +2160,7 @@ impl Pinvou3Bridge {
         policy: &crate::features::assistant::product_runtime::eval_tool_policy::EvalTurnPolicy,
     ) -> Result<Op> {
         self.ensure_session_skills_for_send(session_id);
+        let content = format!("{}\n\n{content}", policy.id.model_reminder());
         let allowed_tools = policy
             .allowed_tools
             .iter()
@@ -2183,7 +2193,9 @@ impl Pinvou3Bridge {
             provenance: deepseek_tui::core::ops::UserInputProvenance::ImportedTranscript,
             turn_tool_security: Some(Arc::new(
                 deepseek_tui::core::ops::TurnToolSecurityPolicy::new(Some(Vec::new()), Some(exact))
-                    .with_read_only_dispatch(),
+                    .with_read_only_dispatch()
+                    .with_final_only_after_tool_budget()
+                    .with_missing_read_action_repair(),
             )),
         })
     }
@@ -4762,6 +4774,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "benchmark-hooks")]
     #[test]
     fn eval_send_message_op_isolated_from_gui_authority_and_installs_exact_policy() {
         let bridge = fixture_bridge();
@@ -4774,6 +4787,7 @@ mod tests {
             .build_eval_send_message_op("eval-session", "question".into(), policy)
             .unwrap();
         let Op::SendMessage {
+            content,
             mode,
             allow_shell,
             trust_mode,
@@ -4790,6 +4804,8 @@ mod tests {
             panic!("expected SendMessage")
         };
         assert_eq!(mode, AppMode::Agent);
+        assert!(content.contains("only callable tool is exactly `File`"));
+        assert!(content.ends_with("question"));
         assert!(!allow_shell);
         assert!(!trust_mode);
         assert!(!auto_approve);

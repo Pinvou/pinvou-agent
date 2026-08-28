@@ -59,8 +59,84 @@ pub struct TurnResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeToolEvent {
+    pub id: String,
     pub name: String,
     pub failed: bool,
+    pub failure_code: Option<String>,
+    pub argument_keys: Vec<String>,
+    pub elapsed_ms: Option<u64>,
+}
+
+fn classify_tool_failure(content: &str) -> &'static str {
+    let normalized = content.to_ascii_lowercase();
+    if normalized.contains("per-turn tool-call budget")
+        || normalized.contains("tool-call budget") && normalized.contains("exhausted")
+    {
+        "tool_call_budget_exhausted"
+    } else if normalized.contains("host read-only turn policy") {
+        "host_read_only_blocked"
+    } else if normalized.contains("host turn policy") {
+        "host_tool_blocked"
+    } else if normalized.contains("blocked by network policy") {
+        "network_policy_blocked"
+    } else if normalized.contains("restricted address")
+        || normalized.contains("private/loopback/link-local")
+    {
+        "restricted_address"
+    } else if normalized.contains("requires approval") {
+        "approval_required"
+    } else if normalized.contains("missing `action`")
+        || normalized.contains("missing action")
+        || normalized.contains("requires an `action` parameter")
+        || normalized.contains("requires `action` to be")
+    {
+        "missing_action"
+    } else if normalized.contains("invalid input")
+        || normalized.contains("invalid argument")
+        || normalized.contains("validation")
+        || normalized.contains("must be")
+    {
+        "invalid_arguments"
+    } else if normalized.contains("api key") || normalized.contains("configuration") {
+        "search_provider_config"
+    } else if normalized.contains("no readable page content")
+        || normalized.contains("requires javascript")
+    {
+        "dynamic_page_unreadable"
+    } else if normalized.contains("no content could be extracted")
+        || normalized.contains("content extraction failed")
+        || normalized.contains("extracted content was empty")
+    {
+        "content_extraction_failed"
+    } else if normalized.contains("cloudflare challenge")
+        || normalized.contains("access denied")
+        || normalized.contains("http status 401")
+        || normalized.contains("http status 403")
+        || normalized.contains("http status 429")
+    {
+        "remote_access_denied"
+    } else if normalized.contains("http status") || normalized.contains("http response status") {
+        "http_status_failed"
+    } else if normalized.contains("no such file")
+        || normalized.contains("does not exist")
+        || normalized.contains("resource not found")
+    {
+        "resource_not_found"
+    } else if normalized.contains("timeout") || normalized.contains("timed out") {
+        "network_timeout"
+    } else if normalized.contains("connection")
+        || normalized.contains("network")
+        || normalized.contains("request failed")
+    {
+        "network_failed"
+    } else if normalized.contains("permission")
+        || normalized.contains("denied")
+        || normalized.contains("policy")
+    {
+        "policy_denied"
+    } else {
+        "tool_execution_failed"
+    }
 }
 
 fn extract_turn_analysis(messages: &[Message]) -> (String, Vec<RuntimeToolEvent>) {
@@ -87,8 +163,18 @@ fn extract_turn_analysis(messages: &[Message]) -> (String, Vec<RuntimeToolEvent>
             ContentBlock::ToolResult {
                 tool_use_id,
                 is_error,
+                content,
                 ..
-            } => Some((tool_use_id.as_str(), is_error.unwrap_or(false))),
+            } => {
+                let failed = is_error.unwrap_or(false);
+                Some((
+                    tool_use_id.as_str(),
+                    (
+                        failed,
+                        failed.then(|| classify_tool_failure(content).to_owned()),
+                    ),
+                ))
+            }
             _ => None,
         })
         .collect::<HashMap<_, _>>();
@@ -96,10 +182,26 @@ fn extract_turn_analysis(messages: &[Message]) -> (String, Vec<RuntimeToolEvent>
         .iter()
         .flat_map(|message| &message.content)
         .filter_map(|block| match block {
-            ContentBlock::ToolUse { id, name, .. } => Some(RuntimeToolEvent {
-                name: name.clone(),
-                failed: failures.get(id.as_str()).copied().unwrap_or(false),
-            }),
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => {
+                let mut argument_keys = input
+                    .as_object()
+                    .map(|object| object.keys().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                argument_keys.sort();
+                Some(RuntimeToolEvent {
+                    id: id.clone(),
+                    name: name.clone(),
+                    failed: failures
+                        .get(id.as_str())
+                        .map(|(failed, _)| *failed)
+                        .unwrap_or(false),
+                    failure_code: failures.get(id.as_str()).and_then(|(_, code)| code.clone()),
+                    argument_keys,
+                    elapsed_ms: None,
+                })
+            }
             _ => None,
         })
         .collect();
@@ -238,6 +340,9 @@ impl ProductChatRuntime for EnginePoolRuntime {
                 eval_tool_policy::EvalToolPolicy::GaiaOfflineV1 => {
                     eval_tool_policy::resolve_eval_policy("pinvou-gaia-offline/v1")?
                 }
+                eval_tool_policy::EvalToolPolicy::GaiaFinalAnswerOnlyV1 => {
+                    eval_tool_policy::resolve_eval_policy("pinvou-gaia-final-answer-only/v1")?
+                }
             };
             self.pool
                 .send_eval_user_message(&input.session_id, input.content.clone(), policy)
@@ -273,7 +378,7 @@ impl ProductChatRuntime for EnginePoolRuntime {
             .iter()
             .rev()
             .find(|e| e.turn_id == handle.turn_id && e.event == "assistant_done");
-        let milestones = timeline
+        let milestones: Vec<timing::TimelineEvent> = timeline
             .iter()
             .filter(|event| {
                 event.turn_id == handle.turn_id
@@ -282,7 +387,20 @@ impl ProductChatRuntime for EnginePoolRuntime {
             .cloned()
             .collect();
         let transcript = self.pool.load_eval_transcript(session_id)?;
-        let (assistant_text, tool_events) = extract_turn_analysis(&transcript);
+        let (assistant_text, mut tool_events) = extract_turn_analysis(&transcript);
+        let turn_tool_ids = milestones
+            .iter()
+            .filter_map(|event| event.tool_id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        tool_events.retain(|tool| turn_tool_ids.contains(&tool.id));
+        let tool_elapsed = milestones
+            .iter()
+            .filter(|event| event.event == "tool_call_completed")
+            .filter_map(|event| Some((event.tool_id.as_ref()?.clone(), event.elapsed_ms?)))
+            .collect::<HashMap<_, _>>();
+        for tool in &mut tool_events {
+            tool.elapsed_ms = tool_elapsed.get(&tool.id).copied();
+        }
         Ok(TurnResult {
             turn_id: handle.turn_id.clone(),
             status: entry
@@ -309,7 +427,7 @@ impl ProductChatRuntime for EnginePoolRuntime {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_turn_analysis;
+    use super::{classify_tool_failure, extract_turn_analysis};
     use deepseek_tui::models::{ContentBlock, Message};
     use serde_json::json;
 
@@ -362,8 +480,59 @@ mod tests {
         assert_eq!(tool_events.len(), 1);
         assert_eq!(tool_events[0].name, "weather");
         assert!(tool_events[0].failed);
+        assert_eq!(
+            tool_events[0].failure_code.as_deref(),
+            Some("tool_execution_failed")
+        );
+        assert_eq!(tool_events[0].argument_keys, ["query"]);
         let debug = format!("{tool_events:?}");
         assert!(!debug.contains("secret tool input"));
         assert!(!debug.contains("secret tool output"));
+    }
+
+    #[test]
+    fn tool_failure_classification_separates_safe_policy_causes() {
+        assert_eq!(
+            classify_tool_failure("Tool action blocked by host read-only turn policy"),
+            "host_read_only_blocked"
+        );
+        assert_eq!(
+            classify_tool_failure("network call to 'redacted' blocked by network policy"),
+            "network_policy_blocked"
+        );
+        assert_eq!(
+            classify_tool_failure("resolved IP redacted is a restricted address"),
+            "restricted_address"
+        );
+        assert_eq!(
+            classify_tool_failure("Tool 'Web' rejected: per-turn tool-call budget of 12 exhausted"),
+            "tool_call_budget_exhausted"
+        );
+        assert_eq!(
+            classify_tool_failure(
+                "Invalid input: Unknown Web action \"open\". Input schema summary: Required: action"
+            ),
+            "invalid_arguments"
+        );
+        assert_eq!(
+            classify_tool_failure(
+                "Web requires an `action` parameter; nothing was run. Pass one of: search, fetch, wait."
+            ),
+            "missing_action"
+        );
+        assert_eq!(
+            classify_tool_failure(
+                "No readable page content was found at redacted; the page may require JavaScript."
+            ),
+            "dynamic_page_unreadable"
+        );
+        assert_eq!(
+            classify_tool_failure("request timed out while fetching redacted"),
+            "network_timeout"
+        );
+        assert_eq!(
+            classify_tool_failure("resource does not exist in the staged workspace"),
+            "resource_not_found"
+        );
     }
 }

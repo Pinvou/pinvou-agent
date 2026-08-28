@@ -254,13 +254,12 @@ fn submission_rejects_partial_or_existing_destination_without_overwrite() {
             1,
         )],
     );
+    adapter.write_submission(&failed, &destination).unwrap();
     assert_eq!(
-        adapter
-            .write_submission(&failed, &destination)
-            .unwrap_err()
-            .code(),
-        "gaia_submission_not_completed"
+        fs::read_to_string(&destination).unwrap(),
+        "{\"task_id\":\"safe-task-1\",\"model_answer\":\"\"}\n"
     );
+    fs::remove_file(&destination).unwrap();
 
     let prediction_dir = runtime.join("eval/runs/gaia-submission-run/private/predictions");
     let blob = fs::read_dir(prediction_dir)

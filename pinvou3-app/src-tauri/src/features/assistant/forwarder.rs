@@ -78,6 +78,11 @@ pub(crate) fn spawn_event_forwarder(
         #[cfg(feature = "benchmark-hooks")]
         let mut first_delta_done: std::collections::HashSet<String> =
             std::collections::HashSet::new();
+        #[cfg(feature = "benchmark-hooks")]
+        let mut benchmark_tool_started_at: std::collections::HashMap<
+            String,
+            std::time::Instant,
+        > = std::collections::HashMap::new();
         let mut rx = handle.rx_event.write().await;
         while let Some(event) = rx.recv().await {
             match event {
@@ -188,6 +193,7 @@ pub(crate) fn spawn_event_forwarder(
                 Event::ToolCallStarted { id, name, input } => {
                     #[cfg(feature = "benchmark-hooks")]
                     if crate::features::assistant::timing::eval_observation_enabled(&session_id) {
+                        benchmark_tool_started_at.insert(id.clone(), std::time::Instant::now());
                         crate::features::assistant::timing::record_tool_started(&session_id, &name);
                         crate::features::assistant::timing::record_milestone_meta(
                             &session_id,
@@ -213,10 +219,17 @@ pub(crate) fn spawn_event_forwarder(
                 Event::ToolCallComplete { id, name, result } => {
                     #[cfg(feature = "benchmark-hooks")]
                     if crate::features::assistant::timing::eval_observation_enabled(&session_id) {
+                        let elapsed_ms = benchmark_tool_started_at.remove(&id).map(|started| {
+                            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+                        });
                         crate::features::assistant::timing::record_milestone_meta(
                             &session_id,
                             "tool_call_completed",
-                            json!({ "tool_name": &name, "tool_id": &id }),
+                            json!({
+                                "tool_name": &name,
+                                "tool_id": &id,
+                                "elapsed_ms": elapsed_ms,
+                            }),
                         );
                     }
                     // 携带 metadata 让前端识别 careful hook 拦截 (safety_level=="dangerous")
@@ -1110,6 +1123,28 @@ pub(crate) fn spawn_event_forwarder(
                         // 底座在致命 Error 后仍会发权威 TurnComplete(Failed)。这里只缓存
                         // 文本；完成、持久化和 chat:done 全部由 TurnComplete 单点处理。
                         turn_tracker.on_fatal_error(envelope.message);
+                    }
+                }
+                #[cfg(feature = "benchmark-hooks")]
+                Event::TurnUsage {
+                    usage,
+                    request_duration_ms,
+                    ttft_ms,
+                    ..
+                } => {
+                    if crate::features::assistant::timing::eval_observation_enabled(&session_id) {
+                        crate::features::assistant::timing::record_milestone_meta(
+                            &session_id,
+                            "model_request_metric",
+                            json!({
+                                "request_duration_ms": request_duration_ms,
+                                "ttft_ms": ttft_ms,
+                                "input_tokens": usage.input_tokens,
+                                "output_tokens": usage.output_tokens,
+                                "cache_hit_tokens": usage.prompt_cache_hit_tokens,
+                                "cache_miss_tokens": usage.prompt_cache_miss_tokens,
+                            }),
+                        );
                     }
                 }
                 _ => {}

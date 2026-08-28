@@ -344,11 +344,12 @@ impl HeadlessAgentBackend for MockBackend {
             true,
             Duration::from_millis(3),
         ));
-        observer.on_event(&SafeAgentEvent::tool_finished(
+        observer.on_event(&SafeAgentEvent::tool_finished_with_code(
             task.task_id(),
             "api_key=PRIVATE_TOOL",
             false,
             Duration::from_millis(4),
+            Some("missing_action"),
         ));
         match self.behavior {
             BackendBehavior::Completed
@@ -528,6 +529,14 @@ async fn attachment_resolution_happens_before_prepare_and_failure_is_safe() {
         .unwrap();
 
     assert_eq!(summary.outcomes()[0].status(), TaskStatus::Failed);
+    assert_eq!(
+        summary.outcomes()[0].failure_category(),
+        Some(&benchmark_core::SafeFailureCategory::Infrastructure)
+    );
+    assert_eq!(
+        summary.outcomes()[0].failure_reason(),
+        Some(benchmark_core::SafeFailureReason::AttachmentResolutionFailed)
+    );
     assert!(backend.state.lock().unwrap().prepared.is_empty());
     let persisted =
         fs::read_to_string(base.join("eval/runs/attachment-failed/predictions.jsonl")).unwrap();
@@ -739,6 +748,21 @@ async fn native_run_error_still_closes_once_without_leaking_backend_error() {
     assert_eq!(
         summary.outcomes()[0].failure_category(),
         Some(&benchmark_core::SafeFailureCategory::Backend)
+    );
+    assert_eq!(
+        summary.outcomes()[0].failure_reason(),
+        Some(benchmark_core::SafeFailureReason::AgentTurnFailed)
+    );
+    assert_eq!(summary.outcomes()[0].tool_observations().len(), 2);
+    assert_eq!(
+        summary.outcomes()[0].tool_observations()[1].canonical_name,
+        "[redacted-tool]"
+    );
+    assert_eq!(
+        summary.outcomes()[0].tool_observations()[1]
+            .failure_code
+            .as_deref(),
+        Some("missing_action")
     );
     let state = backend.state.lock().unwrap();
     assert_eq!(state.cancelled, 0);

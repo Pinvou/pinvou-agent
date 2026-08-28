@@ -47,12 +47,16 @@ impl ProductRuntimePort for RecordingRuntime {
             .push(format!("run:{session_id}:{prompt}"));
         Ok(pinvou3_lib::headless_bridge::ProductTurnOutcome {
             status: "completed".into(),
+            failure_code: None,
             assistant_text: "private answer".into(),
             usage: Some(agent_backend_api::SafeUsageMetrics::new(10, 4, 3, 7)),
             tools: vec![pinvou3_lib::headless_bridge::SafeToolOutcome {
                 name: "weather".into(),
                 failed: false,
+                failure_code: None,
+                elapsed_ms: None,
             }],
+            model_requests: vec![],
         })
     }
 
@@ -251,7 +255,7 @@ async fn runtime_failure_emits_a_safe_failed_terminal_event() {
 
     assert_eq!(
         error.to_string(),
-        "agent backend operation failed: run_failed"
+        "agent backend operation failed: agent_turn_failed"
     );
     let events = observer.0.lock().unwrap();
     assert_eq!(events.len(), 2);
@@ -578,9 +582,11 @@ impl ProductRuntimePort for BlockingCleanupRuntime {
     ) -> anyhow::Result<pinvou3_lib::headless_bridge::ProductTurnOutcome> {
         Ok(pinvou3_lib::headless_bridge::ProductTurnOutcome {
             status: "completed".into(),
+            failure_code: None,
             assistant_text: "private answer".into(),
             usage: None,
             tools: vec![],
+            model_requests: vec![],
         })
     }
 
@@ -739,9 +745,11 @@ impl ProductRuntimePort for AttachmentAwareRuntime {
         );
         Ok(pinvou3_lib::headless_bridge::ProductTurnOutcome {
             status: "completed".into(),
+            failure_code: None,
             assistant_text: "attachment answer".into(),
             usage: None,
             tools: vec![],
+            model_requests: vec![],
         })
     }
 

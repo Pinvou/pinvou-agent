@@ -8,6 +8,9 @@ APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
 PUBLISHED_HEAD="9c5f4f19b0acbc960889778a5873c7fb038b1378"
 PUBLISHED_COMMITS=36
+# 未发布本地评测候选：建立在不可变 r11（29 个登记提交）之上 +1 候选提交
+LOCAL_BENCHMARK_CANDIDATE="83e2d72aec63ac01caa7287b10f16a02478f9d28"
+LOCAL_BENCHMARK_COMMITS=30
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -22,6 +25,9 @@ actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
   expected_commits="$PUBLISHED_COMMITS"
   green "  ✓ CodeWhale gitlink 指向 r12 四主题公开基线 $PUBLISHED_HEAD"
+elif [[ "$actual_head" == "$LOCAL_BENCHMARK_CANDIDATE" ]]; then
+  expected_commits="$LOCAL_BENCHMARK_COMMITS"
+  green "  ✓ CodeWhale gitlink 指向已登记的本地评测候选 $LOCAL_BENCHMARK_CANDIDATE（未发布）"
 else
   expected_commits=""
   red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r12 公开 head $PUBLISHED_HEAD"
@@ -29,9 +35,9 @@ else
 fi
 
 if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null; then
-  green "  ✓ r12 公开基线继承官方 v0.9.5"
+  green "  ✓ 当前 gitlink（公开基线或已登记候选）继承官方 v0.9.5"
 else
-  red "  ✗ r12 公开基线未继承官方 v0.9.5 $EXPECTED_UPSTREAM"
+  red "  ✗ 当前 gitlink 未继承官方 v0.9.5 $EXPECTED_UPSTREAM"
   fail=1
 fi
 
@@ -39,7 +45,7 @@ commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev
 if [[ -n "$expected_commits" && "$commit_count" == "$expected_commits" ]]; then
   green "  ✓ v0.9.5 之上 $expected_commits 个登记提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r12 合法拓扑应为 ${expected_commits:-29}"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，登记拓扑应为 ${expected_commits:-36}"
   fail=1
 fi
 
@@ -131,6 +137,9 @@ fingerprints=(
   "T2|受限轮后子智能体完成等待新消息      |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_turn_defers_idle_subagent_completion_until_new_message"
   "T2|只读轮次启用 Shell 加固上下文       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_agent_uses_hardened_read_only_shell_context"
   "T2|受限轮后 Shell 唤醒等待新消息       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_turn_defers_idle_shell_wake_until_new_message"
+  "T2|评测控制默认关闭且显式启用          |CodeWhale/crates/tui/src/core/ops.rs|fn forkguard_benchmark_controls_are_explicit_and_default_off"
+  "T2|评测只修复无歧义只读调用            |CodeWhale/crates/tui/src/core/engine/turn_loop.rs|fn forkguard_benchmark_repairs_only_unambiguous_read_actions"
+  "T2|评测兼容修复受行为测试约束          |CodeWhale/crates/tui/src/core/engine/turn_loop.rs|fn forkguard_benchmark_repairs_read_schema_and_attachments"
 
   "APP|产品白名单复用原生 allowed_tools   |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names())"
   "APP|会话工具开关走动态禁用整形          |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn shape_disallowed_tools("

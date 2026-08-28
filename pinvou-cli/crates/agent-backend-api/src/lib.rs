@@ -339,6 +339,42 @@ impl SafeUsageMetrics {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct SafeModelRequestMetric {
+    request_duration_ms: u64,
+    ttft_ms: Option<u64>,
+    input_tokens: u64,
+    output_tokens: u64,
+}
+
+impl SafeModelRequestMetric {
+    pub fn new(
+        request_duration_ms: u64,
+        ttft_ms: Option<u64>,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Self {
+        Self {
+            request_duration_ms,
+            ttft_ms,
+            input_tokens,
+            output_tokens,
+        }
+    }
+    pub fn request_duration_ms(self) -> u64 {
+        self.request_duration_ms
+    }
+    pub fn ttft_ms(self) -> Option<u64> {
+        self.ttft_ms
+    }
+    pub fn input_tokens(self) -> u64 {
+        self.input_tokens
+    }
+    pub fn output_tokens(self) -> u64 {
+        self.output_tokens
+    }
+}
+
 #[derive(Clone)]
 pub struct SecretText(String);
 
@@ -545,6 +581,7 @@ pub struct AgentTaskOutcome {
     output: Option<PrivateOutputHandle>,
     elapsed: Duration,
     usage: Option<SafeUsageMetrics>,
+    model_request_metrics: Vec<SafeModelRequestMetric>,
 }
 
 impl AgentTaskOutcome {
@@ -554,6 +591,7 @@ impl AgentTaskOutcome {
             output: None,
             elapsed,
             usage: None,
+            model_request_metrics: Vec::new(),
         }
     }
 
@@ -582,6 +620,15 @@ impl AgentTaskOutcome {
     pub fn usage(&self) -> Option<SafeUsageMetrics> {
         self.usage
     }
+
+    pub fn with_model_request_metrics(mut self, metrics: Vec<SafeModelRequestMetric>) -> Self {
+        self.model_request_metrics = metrics;
+        self
+    }
+
+    pub fn model_request_metrics(&self) -> &[SafeModelRequestMetric] {
+        &self.model_request_metrics
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -599,6 +646,7 @@ pub enum SafeAgentEvent {
         tool_name: String,
         status: SafeRunStatus,
         elapsed: Duration,
+        failure_code: Option<String>,
     },
 }
 
@@ -624,6 +672,27 @@ impl SafeAgentEvent {
                 SafeRunStatus::Failed
             },
             elapsed,
+            failure_code: None,
+        }
+    }
+
+    pub fn tool_finished_with_code(
+        task_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        succeeded: bool,
+        elapsed: Duration,
+        failure_code: Option<impl Into<String>>,
+    ) -> Self {
+        Self::ToolFinished {
+            task_id: task_id.into(),
+            tool_name: tool_name.into(),
+            status: if succeeded {
+                SafeRunStatus::Completed
+            } else {
+                SafeRunStatus::Failed
+            },
+            elapsed,
+            failure_code: failure_code.map(Into::into),
         }
     }
 
@@ -646,6 +715,13 @@ impl SafeAgentEvent {
         match self {
             Self::RunStarted { .. } => None,
             Self::RunFinished { status, .. } | Self::ToolFinished { status, .. } => Some(*status),
+        }
+    }
+
+    pub fn failure_code(&self) -> Option<&str> {
+        match self {
+            Self::ToolFinished { failure_code, .. } => failure_code.as_deref(),
+            _ => None,
         }
     }
 }

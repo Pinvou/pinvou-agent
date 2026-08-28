@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use agent_backend_api::{
     AgentBackendError, AgentOutputContractId, AgentRunObserver, AgentTaskInput, AgentToolPolicyId,
@@ -8,8 +9,8 @@ use agent_backend_api::{
 use async_trait::async_trait;
 
 use crate::{
-    BenchmarkError, BenchmarkTask, ExecutionRequest, Prediction, Result, RunContext, TaskOutcome,
-    TaskStatus, ToolObservation,
+    BenchmarkError, BenchmarkTask, ExecutionRequest, ModelRequestObservation, Prediction, Result,
+    RunContext, SafeFailureCategory, SafeFailureReason, TaskOutcome, TaskStatus, ToolObservation,
 };
 
 #[derive(Default)]
@@ -20,6 +21,7 @@ impl AgentRunObserver for CollectingObserver {
             tool_name,
             status,
             elapsed,
+            failure_code,
             ..
         } = event
             && let Ok(mut tools) = self.0.lock()
@@ -28,6 +30,7 @@ impl AgentRunObserver for CollectingObserver {
                 canonical_name: safe_tool_name(tool_name),
                 failed: *status != SafeRunStatus::Completed,
                 elapsed_ms: elapsed.as_millis() as u64,
+                failure_code: failure_code.clone(),
             });
         }
     }
@@ -51,12 +54,98 @@ fn safe_tool_name(name: &str) -> String {
         "web_fetch",
         "apply_patch",
         "list_files",
+        "[unexpected-tool]",
     ];
     if ALLOWED.contains(&name) {
         name.to_owned()
     } else {
         "[redacted-tool]".to_owned()
     }
+}
+
+fn collected_tools(observer: &CollectingObserver) -> Vec<ToolObservation> {
+    observer
+        .0
+        .lock()
+        .map(|value| value.clone())
+        .unwrap_or_default()
+}
+
+fn failed_task_outcome(
+    task_id: &str,
+    code: &str,
+    elapsed_ms: u64,
+    tools: Vec<ToolObservation>,
+) -> TaskOutcome {
+    let (status, category, reason) = match code {
+        "task_timeout" | "model_request_timeout" => (
+            TaskStatus::Timeout,
+            SafeFailureCategory::Timeout,
+            Some(SafeFailureReason::ModelRequestTimeout),
+        ),
+        "missing_final_answer" => (
+            TaskStatus::Failed,
+            SafeFailureCategory::InvalidOutput,
+            Some(SafeFailureReason::MissingFinalAnswer),
+        ),
+        "private_output_resolution_failed" => (
+            TaskStatus::Failed,
+            SafeFailureCategory::InvalidOutput,
+            Some(SafeFailureReason::PrivateOutputResolutionFailed),
+        ),
+        "model_context_limit" => (
+            TaskStatus::Failed,
+            SafeFailureCategory::Backend,
+            Some(SafeFailureReason::ModelContextLimit),
+        ),
+        "model_rate_limited" => (
+            TaskStatus::Failed,
+            SafeFailureCategory::Backend,
+            Some(SafeFailureReason::ModelRateLimited),
+        ),
+        "model_transport_failed" => (
+            TaskStatus::Failed,
+            SafeFailureCategory::Backend,
+            Some(SafeFailureReason::ModelTransportFailed),
+        ),
+        "model_protocol_failed" => (
+            TaskStatus::Failed,
+            SafeFailureCategory::Backend,
+            Some(SafeFailureReason::ModelProtocolFailed),
+        ),
+        "agent_tool_failed" => (
+            TaskStatus::Failed,
+            SafeFailureCategory::Backend,
+            Some(SafeFailureReason::AgentToolFailed),
+        ),
+        "attachment_staging_failed" | "attachments_runtime_unsupported" => (
+            TaskStatus::Failed,
+            SafeFailureCategory::Infrastructure,
+            Some(SafeFailureReason::AttachmentStagingFailed),
+        ),
+        "backend_prepare_failed" => (
+            TaskStatus::Failed,
+            SafeFailureCategory::Backend,
+            Some(SafeFailureReason::BackendPrepareFailed),
+        ),
+        "backend_close_failed" => (
+            TaskStatus::Failed,
+            SafeFailureCategory::Backend,
+            Some(SafeFailureReason::BackendCloseFailed),
+        ),
+        _ => (
+            TaskStatus::Failed,
+            SafeFailureCategory::Backend,
+            Some(SafeFailureReason::AgentTurnFailed),
+        ),
+    };
+    let mut outcome = TaskOutcome::new(task_id, status, None, Vec::new(), elapsed_ms)
+        .with_failure_category(category)
+        .with_tool_observations(tools);
+    if let Some(reason) = reason {
+        outcome = outcome.with_failure_reason(reason);
+    }
+    outcome
 }
 
 #[async_trait]
@@ -166,6 +255,7 @@ where
         .map_err(|_| BenchmarkError::coded("task_timeout"))?
         .map_err(|_| BenchmarkError::coded("backend_prepare_failed"))?;
         let observer = Arc::new(CollectingObserver::default());
+        let run_started = Instant::now();
         let result = tokio::time::timeout_at(
             deadline,
             self.backend.run(
@@ -178,7 +268,12 @@ where
         .await;
         if result.is_err() {
             self.cleanup_timed_out_session(&session).await;
-            return Err(BenchmarkError::coded("task_timeout"));
+            return Ok(failed_task_outcome(
+                task.task_id(),
+                "task_timeout",
+                run_started.elapsed().as_millis() as u64,
+                collected_tools(observer.as_ref()),
+            ));
         }
         let result = result.expect("timeout branch returned above");
         let private_output = match &result {
@@ -190,7 +285,12 @@ where
                         Ok(resolved) => Some(resolved),
                         Err(_) => {
                             self.cleanup_timed_out_session(&session).await;
-                            return Err(BenchmarkError::coded("task_timeout"));
+                            return Ok(failed_task_outcome(
+                                task.task_id(),
+                                "task_timeout",
+                                run_started.elapsed().as_millis() as u64,
+                                collected_tools(observer.as_ref()),
+                            ));
                         }
                     }
                 }
@@ -203,21 +303,43 @@ where
                 Ok(result) => result,
                 Err(_) => {
                     self.cleanup_timed_out_session(&session).await;
-                    return Err(BenchmarkError::coded("task_timeout"));
+                    return Ok(failed_task_outcome(
+                        task.task_id(),
+                        "task_timeout",
+                        run_started.elapsed().as_millis() as u64,
+                        collected_tools(observer.as_ref()),
+                    ));
                 }
             };
         if close_result.is_err() {
-            return Err(BenchmarkError::coded("backend_close_failed"));
+            return Ok(failed_task_outcome(
+                task.task_id(),
+                "backend_close_failed",
+                run_started.elapsed().as_millis() as u64,
+                collected_tools(observer.as_ref()),
+            ));
         }
-        let outcome = result.map_err(|error| match error {
-            AgentBackendError::Operation(code) if code == "missing_final_answer" => {
-                BenchmarkError::coded("missing_final_answer")
+        let outcome = match result {
+            Ok(outcome) => outcome,
+            Err(AgentBackendError::Operation(code)) => {
+                return Ok(failed_task_outcome(
+                    task.task_id(),
+                    &code,
+                    run_started.elapsed().as_millis() as u64,
+                    collected_tools(observer.as_ref()),
+                ));
             }
-            _ => BenchmarkError::coded("backend_run_failed"),
-        })?;
+        };
         let private_output = match private_output {
             Some(Ok(output)) => Some(output),
-            Some(Err(_)) => return Err(BenchmarkError::coded("private_output_resolution_failed")),
+            Some(Err(_)) => {
+                return Ok(failed_task_outcome(
+                    task.task_id(),
+                    "private_output_resolution_failed",
+                    run_started.elapsed().as_millis() as u64,
+                    collected_tools(observer.as_ref()),
+                ));
+            }
             None => None,
         };
         let status = match outcome.status() {
@@ -228,17 +350,23 @@ where
         let prediction = outcome
             .output_handle()
             .map(|handle| Prediction::backend(handle.expose_to_backend()));
-        let tools = observer
-            .0
-            .lock()
-            .map(|value| value.clone())
-            .unwrap_or_default();
+        let tools = collected_tools(observer.as_ref());
         let usage = outcome.usage().map(|usage| crate::UsageMetrics {
             input_tokens: usage.input_tokens(),
             output_tokens: usage.output_tokens(),
             cache_hit_tokens: usage.cache_hit_tokens(),
             cache_miss_tokens: usage.cache_miss_tokens(),
         });
+        let model_requests = outcome
+            .model_request_metrics()
+            .iter()
+            .map(|metric| ModelRequestObservation {
+                request_duration_ms: metric.request_duration_ms(),
+                ttft_ms: metric.ttft_ms(),
+                input_tokens: metric.input_tokens(),
+                output_tokens: metric.output_tokens(),
+            })
+            .collect();
         let mut result = TaskOutcome::new(
             task.task_id(),
             status,
@@ -246,7 +374,8 @@ where
             Vec::new(),
             outcome.elapsed().as_millis() as u64,
         )
-        .with_tool_observations(tools);
+        .with_tool_observations(tools)
+        .with_model_request_observations(model_requests);
         if let Some(usage) = usage {
             result = result.with_usage(usage);
         }
@@ -266,6 +395,7 @@ mod tests {
         for name in ["File", "Web", "image_analyze"] {
             assert_eq!(safe_tool_name(name), name);
         }
+        assert_eq!(safe_tool_name("[unexpected-tool]"), "[unexpected-tool]");
         assert_eq!(safe_tool_name("private-tool-sentinel"), "[redacted-tool]");
     }
 }

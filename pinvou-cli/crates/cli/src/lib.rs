@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -6,10 +7,9 @@ use adapter_gaia::{
     GAIA_DATASET_REVISION, GAIA_LEVEL, GAIA_SPLIT, GaiaAdapter, GaiaDataset, GaiaSnapshotManager,
     GaiaSource, HfSnapshotDownloader,
 };
-#[cfg(any(test, feature = "product-backend"))]
-use benchmark_core::TaskOutcome;
 use benchmark_core::{
-    BenchmarkAdapter, OfficialScoreReport, RunStore, publish_markdown_report, publish_score_json,
+    BenchmarkAdapter, OfficialScoreReport, RunStore, SafeFailureCategory, SafeFailureReason,
+    TaskOutcome, TaskStatus, publish_markdown_report, publish_score_json,
 };
 
 #[cfg(any(test, feature = "product-backend"))]
@@ -579,18 +579,22 @@ fn status(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
         .iter()
         .filter(|outcome| outcome.status() != benchmark_core::TaskStatus::Completed)
         .count();
+    let diagnostics = GaiaDiagnostics::from_outcomes(&terminal);
     let text = match output {
         OutputMode::Human => format!(
-            "Run: {run_id}\nCompleted: {}\nFailed: {failed}\nRemaining: {}",
+            "Run: {run_id}\nCompleted: {}\nFailed: {failed}\nRemaining: {}\n{}",
             recovered.completed_task_ids().len(),
-            recovered.runnable_task_ids().len()
+            recovered.runnable_task_ids().len(),
+            diagnostics.render_human(),
         ),
-        OutputMode::Json => format!(
-            "{{\"run_id\":\"{}\",\"completed\":{},\"failed\":{failed},\"remaining\":{}}}",
-            json_escape(run_id),
-            recovered.completed_task_ids().len(),
-            recovered.runnable_task_ids().len()
-        ),
+        OutputMode::Json => serde_json::json!({
+            "run_id": run_id,
+            "completed": recovered.completed_task_ids().len(),
+            "failed": failed,
+            "remaining": recovered.runnable_task_ids().len(),
+            "diagnostics": diagnostics.to_json(),
+        })
+        .to_string(),
     };
     Ok(success(text))
 }
@@ -802,6 +806,9 @@ fn publish_gaia_score_artifacts(
         Some(accuracy) => ("official_compatible_local", Some(accuracy)),
         None => ("unofficial_partial", None),
     };
+    let outcomes = store.read_outcomes().map_err(core_error)?;
+    let diagnostics = GaiaDiagnostics::from_outcomes(&outcomes);
+    let agent_evaluation_eligible = diagnostics.agent_evaluation_eligible();
     let mut score = serde_json::json!({
         "run_id": run_id,
         "status": status,
@@ -811,6 +818,8 @@ fn publish_gaia_score_artifacts(
         "correct": report.correct(),
         "complete": report.is_complete(),
         "official_dataset_compatible": report.is_official_dataset_compatible(),
+        "agent_evaluation_eligible": agent_evaluation_eligible,
+        "diagnostics": diagnostics.to_json(),
     });
     if let Some(accuracy) = comparable_accuracy {
         score["comparable_accuracy"] = serde_json::json!(accuracy);
@@ -824,14 +833,16 @@ fn publish_gaia_score_artifacts(
         .map(|value| format!("{value:.6}"))
         .unwrap_or_else(|| "不可比较".to_owned());
     let markdown = format!(
-        "# GAIA Level 1 评测报告\n\n- Run ID: `{run_id}`\n- 状态: `{status}`\n- Complete: {}\n- Official dataset compatible: {}\n- Split: `{}`\n- Level: `{}`\n- 完成评分: {}\n- 正确: {} / {}\n- Comparable accuracy: {accuracy}\n",
+        "# GAIA Level 1 评测报告\n\n- Run ID: `{run_id}`\n- 状态: `{status}`\n- Complete: {}\n- Official dataset compatible: {}\n- 可用于 Agent 趋势比较: {}\n- Split: `{}`\n- Level: `{}`\n- 完成评分: {}\n- 正确: {} / {}\n- Comparable accuracy: {accuracy}\n\n## 接入诊断\n\n{}\n",
         report.is_complete(),
         report.is_official_dataset_compatible(),
+        agent_evaluation_eligible,
         report.split(),
         report.level(),
         report.evaluated(),
         report.correct(),
         report.evaluated(),
+        diagnostics.render_markdown(),
     );
     let report_path = store.run_dir().join("report.md");
     if report_path.exists() {
@@ -844,6 +855,395 @@ fn publish_gaia_score_artifacts(
         publish_markdown_report(store, &markdown).map_err(core_error)?;
     }
     Ok(())
+}
+
+#[derive(Default)]
+struct GaiaDiagnostics {
+    statuses: BTreeMap<&'static str, u64>,
+    failure_categories: BTreeMap<&'static str, u64>,
+    failure_reasons: BTreeMap<&'static str, u64>,
+    integration_layers: BTreeMap<&'static str, u64>,
+    observed_issue_layers: BTreeMap<&'static str, u64>,
+    tool_proposals: u64,
+    tool_calls: u64,
+    tool_failures: u64,
+    tool_failure_reasons: BTreeMap<&'static str, u64>,
+    agent_control_events: BTreeMap<&'static str, u64>,
+    elapsed_ms: u64,
+    model_request_durations_ms: Vec<u64>,
+    model_request_ttft_ms: Vec<u64>,
+    effective_decode_tps: Vec<f64>,
+    tool_elapsed_ms: Vec<u64>,
+}
+
+impl GaiaDiagnostics {
+    fn from_outcomes(outcomes: &[TaskOutcome]) -> Self {
+        let mut diagnostics = Self::default();
+        for outcome in outcomes {
+            *diagnostics
+                .statuses
+                .entry(status_key(outcome.status()))
+                .or_default() += 1;
+            diagnostics.elapsed_ms = diagnostics.elapsed_ms.saturating_add(outcome.elapsed_ms());
+            diagnostics.tool_proposals = diagnostics
+                .tool_proposals
+                .saturating_add(outcome.tool_observations().len() as u64);
+            let executed_tools = outcome
+                .tool_observations()
+                .iter()
+                .filter(|tool| !is_agent_control_event(tool.failure_code.as_deref()));
+            diagnostics.tool_calls = diagnostics
+                .tool_calls
+                .saturating_add(executed_tools.clone().count() as u64);
+            diagnostics.tool_failures = diagnostics
+                .tool_failures
+                .saturating_add(executed_tools.clone().filter(|tool| tool.failed).count() as u64);
+            diagnostics.tool_elapsed_ms.extend(
+                executed_tools
+                    .map(|tool| tool.elapsed_ms)
+                    .filter(|elapsed| *elapsed > 0),
+            );
+            for request in outcome.model_request_observations() {
+                diagnostics
+                    .model_request_durations_ms
+                    .push(request.request_duration_ms);
+                if let Some(ttft_ms) = request.ttft_ms {
+                    diagnostics.model_request_ttft_ms.push(ttft_ms);
+                    let decode_ms = request.request_duration_ms.saturating_sub(ttft_ms);
+                    if decode_ms > 0 && request.output_tokens > 0 {
+                        diagnostics
+                            .effective_decode_tps
+                            .push(request.output_tokens as f64 * 1_000.0 / decode_ms as f64);
+                    }
+                }
+            }
+            for tool in outcome
+                .tool_observations()
+                .iter()
+                .filter(|tool| tool.failed)
+            {
+                let reason = tool_failure_reason_key(tool.failure_code.as_deref());
+                *diagnostics
+                    .observed_issue_layers
+                    .entry(tool_observation_issue_layer(tool.failure_code.as_deref()))
+                    .or_default() += 1;
+                if is_agent_control_event(tool.failure_code.as_deref()) {
+                    *diagnostics.agent_control_events.entry(reason).or_default() += 1;
+                } else {
+                    *diagnostics.tool_failure_reasons.entry(reason).or_default() += 1;
+                }
+            }
+            if let Some(category) = outcome.failure_category() {
+                *diagnostics
+                    .failure_categories
+                    .entry(failure_category_key(category))
+                    .or_default() += 1;
+            }
+            if let Some(reason) = outcome.failure_reason() {
+                *diagnostics
+                    .failure_reasons
+                    .entry(failure_reason_key(reason))
+                    .or_default() += 1;
+            }
+            if outcome.status() != TaskStatus::Completed {
+                *diagnostics
+                    .integration_layers
+                    .entry(integration_layer(outcome))
+                    .or_default() += 1;
+            }
+        }
+        diagnostics
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        let blockers = self.integration_blockers();
+        let eligible = blockers.is_empty();
+        serde_json::json!({
+            "statuses": self.statuses,
+            "failure_categories": self.failure_categories,
+            "failure_reasons": self.failure_reasons,
+            "integration_layers": self.integration_layers,
+            "observed_issue_layers": self.observed_issue_layers,
+            "tool_proposals": self.tool_proposals,
+            "tool_calls": self.tool_calls,
+            "tool_failures": self.tool_failures,
+            "tool_failure_reasons": self.tool_failure_reasons,
+            "agent_control_events": self.agent_control_events,
+            "integration_stability": {
+                "status": if eligible { "pass" } else { "fail" },
+                "agent_evaluation_eligible": eligible,
+                "blockers": blockers,
+                "policy": "no model/bridge/GAIA lifecycle failures and no ambiguous tool failures",
+            },
+            "elapsed_ms": self.elapsed_ms,
+            "performance": self.performance_json(),
+        })
+    }
+
+    fn integration_blockers(&self) -> BTreeMap<&'static str, u64> {
+        let mut blockers = BTreeMap::new();
+        for key in ["model", "gaia_integration", "agent_or_model_bridge"] {
+            if let Some(count) = self
+                .integration_layers
+                .get(key)
+                .copied()
+                .filter(|count| *count > 0)
+            {
+                blockers.insert(key, count);
+            }
+        }
+        for key in [
+            "search_provider_config",
+            "tool_execution_failed",
+            "unclassified",
+        ] {
+            if let Some(count) = self
+                .tool_failure_reasons
+                .get(key)
+                .copied()
+                .filter(|count| *count > 0)
+            {
+                blockers.insert(key, count);
+            }
+        }
+        blockers
+    }
+
+    fn agent_evaluation_eligible(&self) -> bool {
+        self.integration_blockers().is_empty()
+    }
+
+    fn performance_json(&self) -> serde_json::Value {
+        let model_count = self.model_request_durations_ms.len();
+        let ttft_count = self.model_request_ttft_ms.len();
+        serde_json::json!({
+            "model_requests": {
+                "count": model_count,
+                "request_duration_ms": distribution_json_u64(&self.model_request_durations_ms),
+                "ttft_ms": {
+                    "samples": ttft_count,
+                    "coverage_ratio": ratio(ttft_count, model_count),
+                    "distribution": distribution_json_u64(&self.model_request_ttft_ms),
+                },
+                "effective_decode_tokens_per_second": {
+                    "samples": self.effective_decode_tps.len(),
+                    "distribution": distribution_json_f64(&self.effective_decode_tps),
+                    "definition": "output_tokens / (request_duration - ttft)",
+                },
+            },
+            "tools": {
+                "calls": self.tool_calls,
+                "elapsed_samples": self.tool_elapsed_ms.len(),
+                "elapsed_coverage_ratio": ratio(self.tool_elapsed_ms.len(), self.tool_calls as usize),
+                "elapsed_ms": distribution_json_u64(&self.tool_elapsed_ms),
+            },
+            "scope": "benchmark-only successful model requests; not a server-side hardware throughput benchmark",
+        })
+    }
+
+    fn render_human(&self) -> String {
+        let blockers = self.integration_blockers();
+        format!(
+            "Integration stability: {} (Agent comparison eligible: {})\nIntegration blockers: {}\nTask-level integration failures: {}\nObserved issue attribution: {}\nFailure reasons: {}\nTool proposals: {}\nExecuted tool calls: {} (failed: {})\nTool failure reasons: {}\nAgent control events: {}\nRecorded elapsed: {} ms\nPerformance: {}",
+            if blockers.is_empty() { "PASS" } else { "FAIL" },
+            self.agent_evaluation_eligible(),
+            render_counts(&blockers),
+            render_counts(&self.integration_layers),
+            render_counts(&self.observed_issue_layers),
+            render_counts(&self.failure_reasons),
+            self.tool_proposals,
+            self.tool_calls,
+            self.tool_failures,
+            render_counts(&self.tool_failure_reasons),
+            render_counts(&self.agent_control_events),
+            self.elapsed_ms,
+            self.performance_json(),
+        )
+    }
+
+    fn render_markdown(&self) -> String {
+        let performance = serde_json::to_string_pretty(&self.performance_json())
+            .unwrap_or_else(|_| "{}".to_owned());
+        let blockers = self.integration_blockers();
+        format!(
+            "### 接入稳定性门禁\n\n- 状态: **{}**\n- 可用于 Agent 能力趋势比较: **{}**\n- 阻断项: {}\n- 规则: 模型/桥接/GAIA 生命周期必须零失败，且不能残留 `tool_execution_failed` 或未知工具错误。\n\n- 任务级接入失败归属: {}\n- 观测问题归属: {}\n- 安全失败原因: {}\n- 失败类别: {}\n- 模型工具提议: {}\n- 实际执行工具: {}（失败 {}）\n- 工具执行失败原因: {}\n- Agent 控制事件: {}\n- 已记录总耗时: {} ms\n\n### Benchmark 性能观测\n\n```json\n{}\n```\n\n- `agent`：Agent 循环或最终输出契约问题。\n- `model`：模型请求或协议问题。\n- `gaia_integration`：GAIA 输入、附件、backend 生命周期或私有输出接入问题。\n- `agent_or_model_bridge`：旧记录只有通用 backend 失败，现有安全数据不足以继续细分。\n- `model_tool_call`：模型选择了禁止动作、生成错误参数或请求不存在的资源。\n- `agent_recovery_policy`：工具失败后重复调用直至预算拒绝，属于 Agent/模型恢复策略问题。\n- `external_network`：目标网络连接或超时，不等同于桥接失败。\n- `external_web_source`：目标站点拒绝、动态页面或正文提取失败，不等同于 Desktop/CLI 接入失败。\n- `gaia_integration_or_unknown`：评测配置失败，或错误码仍过于宽泛；存在时本轮禁止用于 Agent 趋势比较。\n- 性能范围：仅覆盖 benchmark 中成功返回 usage 的模型请求。\n- 有效解码吞吐：`output_tokens / (请求耗时 - TTFT)`，不能替代推理服务器侧的纯硬件吞吐测试。\n- 工具诊断：预算耗尽是未执行提议的 Agent 控制事件，不计入工具调用或工具执行失败；失败原因只记录固定白名单错误码，不包含参数或返回内容。",
+            if blockers.is_empty() { "PASS" } else { "FAIL" },
+            self.agent_evaluation_eligible(),
+            render_counts(&blockers),
+            render_counts(&self.integration_layers),
+            render_counts(&self.observed_issue_layers),
+            render_counts(&self.failure_reasons),
+            render_counts(&self.failure_categories),
+            self.tool_proposals,
+            self.tool_calls,
+            self.tool_failures,
+            render_counts(&self.tool_failure_reasons),
+            render_counts(&self.agent_control_events),
+            self.elapsed_ms,
+            performance,
+        )
+    }
+}
+
+fn ratio(numerator: usize, denominator: usize) -> f64 {
+    if denominator == 0 {
+        0.0
+    } else {
+        numerator as f64 / denominator as f64
+    }
+}
+
+fn distribution_json_u64(values: &[u64]) -> serde_json::Value {
+    let values = values.iter().map(|value| *value as f64).collect::<Vec<_>>();
+    distribution_json_f64(&values)
+}
+
+fn distribution_json_f64(values: &[f64]) -> serde_json::Value {
+    if values.is_empty() {
+        return serde_json::json!({"p50": null, "p95": null, "max": null});
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let percentile = |fraction: f64| {
+        let index = ((sorted.len() - 1) as f64 * fraction).ceil() as usize;
+        sorted[index]
+    };
+    serde_json::json!({
+        "p50": percentile(0.50),
+        "p95": percentile(0.95),
+        "max": sorted[sorted.len() - 1],
+    })
+}
+
+fn tool_failure_reason_key(code: Option<&str>) -> &'static str {
+    match code {
+        Some("tool_call_budget_exhausted") => "tool_call_budget_exhausted",
+        Some("missing_action") => "missing_action",
+        Some("invalid_arguments") => "invalid_arguments",
+        Some("tool_execution_failed") => "tool_execution_failed",
+        Some("network_failed") => "network_failed",
+        Some("network_timeout") => "network_timeout",
+        Some("dynamic_page_unreadable") => "dynamic_page_unreadable",
+        Some("content_extraction_failed") => "content_extraction_failed",
+        Some("remote_access_denied") => "remote_access_denied",
+        Some("http_status_failed") => "http_status_failed",
+        Some("resource_not_found") => "resource_not_found",
+        Some("network_policy_blocked") => "network_policy_blocked",
+        Some("restricted_address") => "restricted_address",
+        Some("policy_denied") => "policy_denied",
+        Some("search_provider_config") => "search_provider_config",
+        Some("host_read_only_blocked") => "host_read_only_blocked",
+        Some("host_tool_blocked") => "host_tool_blocked",
+        Some("approval_required") => "approval_required",
+        _ => "unclassified",
+    }
+}
+
+fn is_agent_control_event(code: Option<&str>) -> bool {
+    code == Some("tool_call_budget_exhausted")
+}
+
+fn tool_observation_issue_layer(code: Option<&str>) -> &'static str {
+    match code {
+        Some("tool_call_budget_exhausted") => "agent_recovery_policy",
+        Some(
+            "missing_action"
+            | "invalid_arguments"
+            | "host_read_only_blocked"
+            | "host_tool_blocked"
+            | "network_policy_blocked"
+            | "restricted_address"
+            | "policy_denied",
+        ) => "model_tool_call",
+        Some("search_provider_config" | "tool_execution_failed") => "gaia_integration_or_unknown",
+        Some("network_failed" | "network_timeout") => "external_network",
+        Some(
+            "dynamic_page_unreadable"
+            | "content_extraction_failed"
+            | "remote_access_denied"
+            | "http_status_failed",
+        ) => "external_web_source",
+        Some("resource_not_found") => "model_tool_call",
+        _ => "unclassified_tool_observation",
+    }
+}
+
+fn render_counts(counts: &BTreeMap<&'static str, u64>) -> String {
+    if counts.is_empty() {
+        return "none".to_owned();
+    }
+    counts
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn status_key(status: TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Planned => "planned",
+        TaskStatus::Running => "running",
+        TaskStatus::Completed => "completed",
+        TaskStatus::Failed => "failed",
+        TaskStatus::Timeout => "timeout",
+        TaskStatus::Cancelled => "cancelled",
+    }
+}
+
+fn failure_category_key(category: &SafeFailureCategory) -> &'static str {
+    match category {
+        SafeFailureCategory::Backend => "backend",
+        SafeFailureCategory::Timeout => "timeout",
+        SafeFailureCategory::InvalidOutput => "invalid_output",
+        SafeFailureCategory::Infrastructure => "infrastructure",
+        SafeFailureCategory::Cancelled => "cancelled",
+    }
+}
+
+fn failure_reason_key(reason: SafeFailureReason) -> &'static str {
+    match reason {
+        SafeFailureReason::MissingFinalAnswer => "missing_final_answer",
+        SafeFailureReason::AgentTurnFailed => "agent_turn_failed",
+        SafeFailureReason::AgentToolFailed => "agent_tool_failed",
+        SafeFailureReason::ModelContextLimit => "model_context_limit",
+        SafeFailureReason::ModelRateLimited => "model_rate_limited",
+        SafeFailureReason::ModelRequestTimeout => "model_request_timeout",
+        SafeFailureReason::ModelTransportFailed => "model_transport_failed",
+        SafeFailureReason::ModelProtocolFailed => "model_protocol_failed",
+        SafeFailureReason::AttachmentResolutionFailed => "attachment_resolution_failed",
+        SafeFailureReason::AttachmentStagingFailed => "attachment_staging_failed",
+        SafeFailureReason::BackendPrepareFailed => "backend_prepare_failed",
+        SafeFailureReason::BackendCloseFailed => "backend_close_failed",
+        SafeFailureReason::PrivateOutputResolutionFailed => "private_output_resolution_failed",
+    }
+}
+
+fn integration_layer(outcome: &TaskOutcome) -> &'static str {
+    match outcome.failure_reason() {
+        Some(
+            SafeFailureReason::ModelContextLimit
+            | SafeFailureReason::ModelRateLimited
+            | SafeFailureReason::ModelRequestTimeout
+            | SafeFailureReason::ModelTransportFailed
+            | SafeFailureReason::ModelProtocolFailed,
+        ) => "model",
+        Some(
+            SafeFailureReason::AgentTurnFailed
+            | SafeFailureReason::AgentToolFailed
+            | SafeFailureReason::MissingFinalAnswer,
+        ) => "agent",
+        Some(
+            SafeFailureReason::AttachmentResolutionFailed
+            | SafeFailureReason::AttachmentStagingFailed
+            | SafeFailureReason::BackendPrepareFailed
+            | SafeFailureReason::BackendCloseFailed
+            | SafeFailureReason::PrivateOutputResolutionFailed,
+        ) => "gaia_integration",
+        None => match outcome.failure_category() {
+            Some(SafeFailureCategory::Infrastructure) => "gaia_integration",
+            _ => "agent_or_model_bridge",
+        },
+    }
 }
 
 fn publish_or_verify_bytes(store: &RunStore, name: &str, expected: &[u8]) -> Result<(), CliError> {
@@ -1333,13 +1733,148 @@ mod tests {
         assert_eq!(score["status"], "official_compatible_local");
         assert_eq!(score["complete"], true);
         assert_eq!(score["official_dataset_compatible"], true);
+        assert_eq!(score["agent_evaluation_eligible"], true);
+        assert_eq!(
+            score["diagnostics"]["integration_stability"]["status"],
+            "pass"
+        );
+        assert_eq!(
+            score["diagnostics"]["integration_layers"],
+            serde_json::json!({})
+        );
+        assert_eq!(
+            score["diagnostics"]["observed_issue_layers"],
+            serde_json::json!({})
+        );
         let markdown = std::fs::read_to_string(store.run_dir().join("report.md")).unwrap();
         assert!(markdown.contains("# GAIA Level 1 评测报告"));
         assert!(markdown.contains("Complete: true"));
         assert!(markdown.contains("Official dataset compatible: true"));
+        assert!(markdown.contains("可用于 Agent 趋势比较: true"));
+        assert!(markdown.contains("状态: **PASS**"));
         assert!(markdown.contains("31 / 53"));
+        assert!(markdown.contains("## 接入诊断"));
 
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn gaia_diagnostics_attribute_only_fixed_safe_failure_reasons() {
+        let outcomes = vec![
+            TaskOutcome::new("agent", TaskStatus::Failed, None, vec![], 11)
+                .with_failure_category(SafeFailureCategory::InvalidOutput)
+                .with_failure_reason(SafeFailureReason::MissingFinalAnswer),
+            TaskOutcome::new("model", TaskStatus::Failed, None, vec![], 13)
+                .with_failure_category(SafeFailureCategory::Backend)
+                .with_failure_reason(SafeFailureReason::ModelProtocolFailed),
+            TaskOutcome::new("gaia", TaskStatus::Failed, None, vec![], 17)
+                .with_failure_category(SafeFailureCategory::Infrastructure)
+                .with_failure_reason(SafeFailureReason::AttachmentStagingFailed),
+            TaskOutcome::new("legacy", TaskStatus::Failed, None, vec![], 19)
+                .with_failure_category(SafeFailureCategory::Backend)
+                .with_tool_observations(vec![benchmark_core::ToolObservation {
+                    canonical_name: "Web".to_owned(),
+                    failed: true,
+                    elapsed_ms: 25,
+                    failure_code: Some("tool_call_budget_exhausted".to_owned()),
+                }])
+                .with_model_request_observations(vec![benchmark_core::ModelRequestObservation {
+                    request_duration_ms: 1_000,
+                    ttft_ms: Some(200),
+                    input_tokens: 100,
+                    output_tokens: 40,
+                }]),
+        ];
+
+        let diagnostics = GaiaDiagnostics::from_outcomes(&outcomes).to_json();
+        assert_eq!(diagnostics["integration_layers"]["agent"], 1);
+        assert_eq!(diagnostics["integration_layers"]["model"], 1);
+        assert_eq!(diagnostics["integration_layers"]["gaia_integration"], 1);
+        assert_eq!(
+            diagnostics["integration_layers"]["agent_or_model_bridge"],
+            1
+        );
+        assert_eq!(diagnostics["elapsed_ms"], 60);
+        assert_eq!(diagnostics["tool_proposals"], 1);
+        assert_eq!(diagnostics["tool_calls"], 0);
+        assert_eq!(diagnostics["tool_failures"], 0);
+        assert_eq!(
+            diagnostics["agent_control_events"]["tool_call_budget_exhausted"],
+            1
+        );
+        assert_eq!(
+            diagnostics["observed_issue_layers"]["agent_recovery_policy"],
+            1
+        );
+        assert_eq!(diagnostics["performance"]["model_requests"]["count"], 1);
+        assert_eq!(
+            diagnostics["performance"]["model_requests"]["ttft_ms"]["distribution"]["p50"],
+            200.0
+        );
+        assert_eq!(
+            diagnostics["performance"]["model_requests"]["effective_decode_tokens_per_second"]["distribution"]
+                ["p50"],
+            50.0
+        );
+        assert_eq!(diagnostics["performance"]["tools"]["elapsed_samples"], 0);
+        assert_eq!(diagnostics["integration_stability"]["status"], "fail");
+        assert_eq!(
+            diagnostics["integration_stability"]["agent_evaluation_eligible"],
+            false
+        );
+    }
+
+    #[test]
+    fn gaia_tool_observations_have_explicit_issue_attribution() {
+        assert_eq!(
+            tool_observation_issue_layer(Some("invalid_arguments")),
+            "model_tool_call"
+        );
+        assert_eq!(
+            tool_observation_issue_layer(Some("host_read_only_blocked")),
+            "model_tool_call"
+        );
+        assert_eq!(
+            tool_observation_issue_layer(Some("policy_denied")),
+            "model_tool_call"
+        );
+        assert_eq!(
+            tool_observation_issue_layer(Some("tool_call_budget_exhausted")),
+            "agent_recovery_policy"
+        );
+        assert_eq!(
+            tool_observation_issue_layer(Some("network_failed")),
+            "external_network"
+        );
+        assert_eq!(
+            tool_observation_issue_layer(Some("tool_execution_failed")),
+            "gaia_integration_or_unknown"
+        );
+        assert_eq!(
+            tool_observation_issue_layer(Some("dynamic_page_unreadable")),
+            "external_web_source"
+        );
+        assert_eq!(
+            tool_observation_issue_layer(Some("resource_not_found")),
+            "model_tool_call"
+        );
+    }
+
+    #[test]
+    fn gaia_integration_gate_rejects_ambiguous_tool_failures() {
+        let outcome = TaskOutcome::new("case", TaskStatus::Completed, None, vec![], 1)
+            .with_tool_observations(vec![benchmark_core::ToolObservation {
+                canonical_name: "Web".to_owned(),
+                failed: true,
+                elapsed_ms: 1,
+                failure_code: Some("tool_execution_failed".to_owned()),
+            }]);
+        let diagnostics = GaiaDiagnostics::from_outcomes(&[outcome]);
+        assert!(!diagnostics.agent_evaluation_eligible());
+        assert_eq!(
+            diagnostics.integration_blockers()["tool_execution_failed"],
+            1
+        );
     }
 
     #[test]

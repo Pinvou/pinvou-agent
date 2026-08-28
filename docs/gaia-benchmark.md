@@ -177,4 +177,4 @@ pinvou benchmark submission gaia --run-id <run-id> --destination ./output.jsonl
 - **磁盘占用**：完整数据集快照约 40 KB Parquet + 附件（附件大小取决于题目）；下载阶段有流式大小限制，超限中止。
 - **评分等价性边界**：Rust 评分器固定实现和 golden contract 不是逐题等价证明；真实 Python scorer cross-check 未完成，Python/Unicode 运行时差异也可能导致结果不同。以固定 revision 的官方 Python scorer 为最终真相。
 - **清理入口**：当前 CLI 尚未提供 purge 子命令；私有预测和运行产物会持续保留，直到操作者显式删除对应 run 目录。
-- **安全诊断**：`benchmark status` 和 GAIA run 摘要提供按状态、失败类别、缺失答案原因及工具调用/失败数聚合的 `diagnostics`。这些字段不包含题目、答案、工具参数、原始工具名或本地路径。
+- **安全诊断**：`benchmark status`、`score.json` 和 `report.md` 提供按状态、失败类别、固定失败原因、工具调用/失败数及累计耗时聚合的 `diagnostics`。报告把失败归到 `agent`、`model`、`gaia_integration` 或 `agent_or_model_bridge`；最后一类表示旧记录只有通用 backend 失败，不能安全地进一步细分。新运行只持久化白名单原因码（例如上下文超限、模型协议失败、Agent 工具失败、附件接入失败），不会持久化原始 provider 错误。这些字段不包含题目、答案、工具参数、原始工具名或本地路径。

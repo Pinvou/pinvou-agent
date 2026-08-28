@@ -12,8 +12,8 @@ use std::time::Instant;
 use agent_backend_api::{
     AgentBackendError, AgentRunObserver, AgentSessionHandle, AgentTaskInput, AgentTaskOutcome,
     HeadlessAgentBackend, PrepareRequest, PrivateInputResolver, PrivateOutputHandle,
-    PrivateOutputResolver, ResolvedAttachmentSource, SafeAgentEvent, SafeRunStatus,
-    SafeUsageMetrics, SecretOutput, SecretText, SuiteModelIdentity, notify_observer,
+    PrivateOutputResolver, ResolvedAttachmentSource, SafeAgentEvent, SafeModelRequestMetric,
+    SafeRunStatus, SafeUsageMetrics, SecretOutput, SecretText, SuiteModelIdentity, notify_observer,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -38,14 +38,18 @@ use crate::features::{knowledge, sessions::SessionStore};
 pub struct SafeToolOutcome {
     pub name: String,
     pub failed: bool,
+    pub failure_code: Option<String>,
+    pub elapsed_ms: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct ProductTurnOutcome {
     pub status: String,
+    pub failure_code: Option<String>,
     pub assistant_text: String,
     pub usage: Option<SafeUsageMetrics>,
     pub tools: Vec<SafeToolOutcome>,
+    pub model_requests: Vec<SafeModelRequestMetric>,
 }
 
 #[derive(Clone, Copy)]
@@ -56,10 +60,36 @@ impl std::fmt::Debug for ProductTurnOutcome {
         formatter
             .debug_struct("ProductTurnOutcome")
             .field("status", &self.status)
+            .field("failure_code", &self.failure_code)
             .field("assistant_text", &"[redacted]")
             .field("usage", &self.usage)
             .field("tools", &self.tools)
+            .field("model_requests", &self.model_requests)
             .finish()
+    }
+}
+
+impl ProductTurnOutcome {
+    fn merge_recovery(&mut self, mut recovery: Self) {
+        self.status = recovery.status;
+        self.failure_code = recovery.failure_code;
+        self.assistant_text = recovery.assistant_text;
+        self.usage = match (self.usage, recovery.usage) {
+            (Some(first), Some(second)) => Some(SafeUsageMetrics::new(
+                first.input_tokens().saturating_add(second.input_tokens()),
+                first.output_tokens().saturating_add(second.output_tokens()),
+                first
+                    .cache_hit_tokens()
+                    .saturating_add(second.cache_hit_tokens()),
+                first
+                    .cache_miss_tokens()
+                    .saturating_add(second.cache_miss_tokens()),
+            )),
+            (usage @ Some(_), None) | (None, usage @ Some(_)) => usage,
+            (None, None) => None,
+        };
+        self.tools.append(&mut recovery.tools);
+        self.model_requests.append(&mut recovery.model_requests);
     }
 }
 
@@ -111,8 +141,26 @@ impl EnginePoolPort {
             })
             .await?;
         let turn = self.runtime.wait_for_completion(&handle).await?;
+        let model_requests = turn
+            .milestones
+            .iter()
+            .filter(|event| event.event == "model_request_metric")
+            .filter_map(|event| {
+                Some(SafeModelRequestMetric::new(
+                    event.request_duration_ms?,
+                    event.ttft_ms,
+                    event.input_tokens?,
+                    event.output_tokens?,
+                ))
+            })
+            .collect();
         Ok(ProductTurnOutcome {
             status: turn.status,
+            failure_code: turn
+                .error
+                .as_deref()
+                .map(classify_product_failure)
+                .map(str::to_owned),
             assistant_text: turn.assistant_text,
             usage: turn.usage.map(|usage| {
                 SafeUsageMetrics::new(
@@ -125,12 +173,108 @@ impl EnginePoolPort {
             tools: turn
                 .tool_events
                 .into_iter()
-                .map(|tool| SafeToolOutcome {
-                    name: tool.name,
-                    failed: tool.failed,
+                .map(|tool| {
+                    let name = if eval_tool_policy.allows(&tool.name) {
+                        tool.name
+                    } else {
+                        "[unexpected-tool]".to_owned()
+                    };
+                    if let Some(code) = tool.failure_code.as_deref() {
+                        eprintln!(
+                            "[eval] tool_failed name={name} code={code} argument_keys={}",
+                            tool.argument_keys.join(",")
+                        );
+                    }
+                    SafeToolOutcome {
+                        name,
+                        failed: tool.failed,
+                        failure_code: tool
+                            .failure_code
+                            .as_deref()
+                            .and_then(validated_tool_failure_code)
+                            .map(str::to_owned),
+                        elapsed_ms: tool.elapsed_ms,
+                    }
                 })
                 .collect(),
+            model_requests,
         })
+    }
+}
+
+fn classify_product_failure(error: &str) -> &'static str {
+    let normalized = error.to_ascii_lowercase();
+    let code = if normalized.contains("context length")
+        || normalized.contains("context window")
+        || normalized.contains("maximum context")
+        || normalized.contains("too many tokens")
+    {
+        "model_context_limit"
+    } else if normalized.contains("rate limit") || normalized.contains("429") {
+        "model_rate_limited"
+    } else if normalized.contains("timed out") || normalized.contains("timeout") {
+        "model_request_timeout"
+    } else if normalized.contains("connection")
+        || normalized.contains("connect error")
+        || normalized.contains("transport")
+        || normalized.contains("network")
+    {
+        "model_transport_failed"
+    } else if normalized.contains("invalid response")
+        || normalized.contains("protocol")
+        || normalized.contains("deserialize")
+        || normalized.contains("decode")
+    {
+        "model_protocol_failed"
+    } else if normalized.contains("tool") || normalized.contains("mcp") {
+        "agent_tool_failed"
+    } else {
+        "agent_turn_failed"
+    };
+    code
+}
+
+fn validated_product_failure_code(code: Option<&str>) -> &'static str {
+    match code {
+        Some("model_context_limit") => "model_context_limit",
+        Some("model_rate_limited") => "model_rate_limited",
+        Some("model_request_timeout") => "model_request_timeout",
+        Some("model_transport_failed") => "model_transport_failed",
+        Some("model_protocol_failed") => "model_protocol_failed",
+        Some("agent_tool_failed") => "agent_tool_failed",
+        _ => "agent_turn_failed",
+    }
+}
+
+fn should_attempt_gaia_final_recovery(turn: &ProductTurnOutcome) -> bool {
+    if extract_final_answer(&turn.assistant_text).is_some() {
+        return false;
+    }
+    turn.status.eq_ignore_ascii_case("completed")
+        || turn.failure_code.as_deref() == Some("agent_tool_failed")
+}
+
+fn validated_tool_failure_code(code: &str) -> Option<&'static str> {
+    match code {
+        "tool_call_budget_exhausted" => Some("tool_call_budget_exhausted"),
+        "missing_action" => Some("missing_action"),
+        "invalid_arguments" => Some("invalid_arguments"),
+        "tool_execution_failed" => Some("tool_execution_failed"),
+        "network_failed" => Some("network_failed"),
+        "network_timeout" => Some("network_timeout"),
+        "dynamic_page_unreadable" => Some("dynamic_page_unreadable"),
+        "content_extraction_failed" => Some("content_extraction_failed"),
+        "remote_access_denied" => Some("remote_access_denied"),
+        "http_status_failed" => Some("http_status_failed"),
+        "resource_not_found" => Some("resource_not_found"),
+        "network_policy_blocked" => Some("network_policy_blocked"),
+        "restricted_address" => Some("restricted_address"),
+        "policy_denied" => Some("policy_denied"),
+        "search_provider_config" => Some("search_provider_config"),
+        "host_read_only_blocked" => Some("host_read_only_blocked"),
+        "host_tool_blocked" => Some("host_tool_blocked"),
+        "approval_required" => Some("approval_required"),
+        _ => None,
     }
 }
 
@@ -882,7 +1026,7 @@ impl HeadlessAgentBackend for ProductHeadlessBackend {
                     .await
             }
         };
-        let turn = match turn {
+        let mut turn = match turn {
             Ok(turn) => turn,
             Err(error) => {
                 emit_finished(
@@ -891,6 +1035,16 @@ impl HeadlessAgentBackend for ProductHeadlessBackend {
                     SafeRunStatus::Failed,
                     started,
                 );
+                if staged_workspace.is_some() && error.to_string() == "unsupported_tool_policy" {
+                    return self
+                        .fail_run_locked(
+                            session_id,
+                            &runtime_session,
+                            runtime_state,
+                            backend_error("attachments_runtime_unsupported"),
+                        )
+                        .await;
+                }
                 for code in [
                     "attachments_runtime_unsupported",
                     "attachment_staging_failed",
@@ -906,24 +1060,60 @@ impl HeadlessAgentBackend for ProductHeadlessBackend {
                             .await;
                     }
                 }
+                let failure_code = classify_product_failure(&error.to_string());
                 return self
                     .fail_run_locked(
                         session_id,
                         &runtime_session,
                         runtime_state,
-                        backend_error("run_failed"),
+                        backend_error(failure_code),
                     )
                     .await;
             }
         };
+        let requires_gaia_answer = task
+            .output_contract()
+            .is_some_and(|contract| contract.as_str() == "gaia-final/v1");
+        if requires_gaia_answer && should_attempt_gaia_final_recovery(&turn) {
+            let recovery = match self
+                .runtime
+                .run_with_policy(
+                    session.expose_to_backend(),
+                    "Provide the required final answer now.",
+                    ProductToolPolicy(EvalToolPolicy::GaiaFinalAnswerOnlyV1),
+                )
+                .await
+            {
+                Ok(recovery) => recovery,
+                Err(error) => {
+                    emit_finished(
+                        observer.as_ref(),
+                        task.task_id(),
+                        SafeRunStatus::Failed,
+                        started,
+                    );
+                    let failure_code = classify_product_failure(&error.to_string());
+                    return self
+                        .fail_run_locked(
+                            session_id,
+                            &runtime_session,
+                            runtime_state,
+                            backend_error(failure_code),
+                        )
+                        .await;
+                }
+            };
+            turn.merge_recovery(recovery);
+        }
         for tool in &turn.tools {
             let _ = notify_observer(
                 observer.as_ref(),
-                &SafeAgentEvent::tool_finished(
+                &SafeAgentEvent::tool_finished_with_code(
                     task.task_id(),
                     tool.name.clone(),
                     !tool.failed,
-                    started.elapsed(),
+                    std::time::Duration::from_millis(tool.elapsed_ms.unwrap_or(0)),
+                    tool.failure_code.clone(),
                 ),
             );
         }
@@ -935,12 +1125,13 @@ impl HeadlessAgentBackend for ProductHeadlessBackend {
         };
         emit_finished(observer.as_ref(), task.task_id(), status, started);
         if status != SafeRunStatus::Completed {
+            let failure_code = validated_product_failure_code(turn.failure_code.as_deref());
             return self
                 .fail_run_locked(
                     session_id,
                     &runtime_session,
                     runtime_state,
-                    backend_error("turn_not_completed"),
+                    backend_error(failure_code),
                 )
                 .await;
         }
@@ -964,6 +1155,7 @@ impl HeadlessAgentBackend for ProductHeadlessBackend {
         if let Some(usage) = turn.usage {
             outcome = outcome.with_usage(usage);
         }
+        outcome = outcome.with_model_request_metrics(turn.model_requests);
         Ok(outcome)
     }
 
@@ -1117,18 +1309,79 @@ fn build_pool(app: tauri::AppHandle, store: SessionStore) -> Result<EnginePool> 
 #[cfg(test)]
 mod tests {
     use super::{
-        EvalToolPolicy, ProductHeadlessBackend, ProductRuntimePort, ProductToolPolicy,
-        ProductTurnOutcome,
+        classify_product_failure, should_attempt_gaia_final_recovery,
+        validated_product_failure_code, validated_tool_failure_code, EvalToolPolicy,
+        ProductHeadlessBackend, ProductRuntimePort, ProductToolPolicy, ProductTurnOutcome,
     };
     use agent_backend_api::{
-        AgentRunObserver, AgentSessionHandle, AgentTaskInput, AgentToolPolicyId,
-        HeadlessAgentBackend, PrepareRequest, PrivateInputHandle, PrivateInputResolver,
-        ResolvedPrivateInput, SafeAgentEvent, SecretText,
+        AgentOutputContractId, AgentRunObserver, AgentSessionHandle, AgentTaskInput,
+        AgentToolPolicyId, HeadlessAgentBackend, PrepareRequest, PrivateInputHandle,
+        PrivateInputResolver, ResolvedPrivateInput, SafeAgentEvent, SecretText,
     };
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use tokio::sync::Notify;
+
+    #[test]
+    fn product_failures_are_reduced_to_fixed_safe_codes() {
+        assert_eq!(
+            classify_product_failure("maximum context length exceeded: PRIVATE_PROMPT"),
+            "model_context_limit"
+        );
+        assert_eq!(
+            classify_product_failure("provider secret must not escape"),
+            "agent_turn_failed"
+        );
+        assert_eq!(
+            validated_product_failure_code(Some("PRIVATE_FAILURE_SENTINEL")),
+            "agent_turn_failed"
+        );
+        assert_eq!(
+            validated_tool_failure_code("policy_denied"),
+            Some("policy_denied")
+        );
+        assert_eq!(
+            validated_tool_failure_code("dynamic_page_unreadable"),
+            Some("dynamic_page_unreadable")
+        );
+        assert_eq!(
+            validated_tool_failure_code("PRIVATE_FAILURE_SENTINEL"),
+            None
+        );
+    }
+
+    #[test]
+    fn gaia_final_recovery_is_limited_to_contract_and_tool_failures() {
+        let outcome = |status: &str, failure_code: Option<&str>, text: &str| ProductTurnOutcome {
+            status: status.to_owned(),
+            failure_code: failure_code.map(str::to_owned),
+            assistant_text: text.to_owned(),
+            usage: None,
+            tools: vec![],
+            model_requests: vec![],
+        };
+        assert!(should_attempt_gaia_final_recovery(&outcome(
+            "completed",
+            None,
+            "analysis only"
+        )));
+        assert!(should_attempt_gaia_final_recovery(&outcome(
+            "failed",
+            Some("agent_tool_failed"),
+            "partial evidence"
+        )));
+        assert!(!should_attempt_gaia_final_recovery(&outcome(
+            "failed",
+            Some("model_transport_failed"),
+            "partial"
+        )));
+        assert!(!should_attempt_gaia_final_recovery(&outcome(
+            "completed",
+            None,
+            "FINAL ANSWER: 42"
+        )));
+    }
 
     #[derive(Default)]
     struct LegacyRuntime {
@@ -1186,6 +1439,85 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.to_string(), "unsupported_tool_policy");
         assert_eq!(runtime.run_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[derive(Default)]
+    struct FinalAnswerRecoveryRuntime {
+        policies: Mutex<Vec<EvalToolPolicy>>,
+    }
+
+    #[async_trait]
+    impl ProductRuntimePort for FinalAnswerRecoveryRuntime {
+        async fn prepare(&self, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn run(
+            &self,
+            _session_id: &str,
+            _prompt: &str,
+        ) -> anyhow::Result<ProductTurnOutcome> {
+            anyhow::bail!("legacy_run_must_not_execute")
+        }
+
+        async fn run_with_policy(
+            &self,
+            _session_id: &str,
+            _prompt: &str,
+            policy: ProductToolPolicy,
+        ) -> anyhow::Result<ProductTurnOutcome> {
+            let mut policies = self.policies.lock().unwrap();
+            policies.push(policy.0);
+            let assistant_text = if policy.0 == EvalToolPolicy::GaiaFinalAnswerOnlyV1 {
+                "FINAL ANSWER: 42"
+            } else {
+                "analysis ended without the required marker"
+            };
+            Ok(ProductTurnOutcome {
+                status: "completed".to_owned(),
+                failure_code: None,
+                assistant_text: assistant_text.to_owned(),
+                usage: None,
+                tools: vec![],
+                model_requests: vec![],
+            })
+        }
+
+        async fn cancel(&self, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn close(&self, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn gaia_missing_marker_gets_one_tool_free_recovery_turn() {
+        let runtime = Arc::new(FinalAnswerRecoveryRuntime::default());
+        let backend = ProductHeadlessBackend::from_runtime(runtime.clone());
+        let session = backend.prepare(request("final-recovery")).await.unwrap();
+        let task = AgentTaskInput::new("final-recovery", PrivateInputHandle::new("opaque"))
+            .with_output_contract(AgentOutputContractId::new("gaia-final/v1").unwrap());
+
+        let outcome = backend
+            .run(&session, task, Arc::new(Resolver), Arc::new(Observer))
+            .await
+            .unwrap();
+        let output = backend
+            .resolve_output(outcome.output_handle().unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(output.text().expose_to_backend(), "42");
+        assert_eq!(
+            *runtime.policies.lock().unwrap(),
+            [
+                EvalToolPolicy::GaiaOfflineV1,
+                EvalToolPolicy::GaiaFinalAnswerOnlyV1
+            ]
+        );
+        backend.close(session).await.unwrap();
     }
 
     #[derive(Default)]
@@ -1307,7 +1639,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "agent backend operation failed: run_failed"
+            "agent backend operation failed: agent_turn_failed"
         );
         assert!(
             !backend
@@ -1497,9 +1829,11 @@ mod tests {
             self.release_run.notified().await;
             Ok(ProductTurnOutcome {
                 status: "completed".to_owned(),
+                failure_code: None,
                 assistant_text: "private answer".to_owned(),
                 usage: None,
                 tools: vec![],
+                model_requests: vec![],
             })
         }
 

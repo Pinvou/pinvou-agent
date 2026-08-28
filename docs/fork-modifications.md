@@ -49,6 +49,13 @@
 
 > CodeWhale PR #15 的候选链 `1eca6103a` + 安全修复 `169c24cc5` + 只读分发与受限面收口 `21e5f661a` + 续轮/Shell 边界修复 `a647ed866` 已 squash 合并为 `d127aed113529dc93754d044b9f352e9746f6b83`；合并提交与已验证候选 head tree 完全一致，并已发布为不可变标签 `pinvou-v0.9.5-r8`。该扩展为嵌入宿主增加进程内逐轮工具安全策略、可信外部路径完全覆盖、最终执行前精确白名单门禁、只读 `File` action 投影与最终分发复检，并封闭排队控制操作、排队续轮/MCP reload、Hook 与日志旁路。受限轮结束后的子智能体完成、后台 Shell 唤醒和编辑重放会锁存到显式新消息安装替代权限；只读 `Bash` 使用 `ShellPolicy::ReadOnly` 的直接 argv 加固路径；受限审计只保留非私有身份字段。r8 发布时父仓 gitlink 与公开校验严格对齐该标签；当前公开基线以上方第 0 节为准，r8 标签保持不可变。
 
+### GAIA 评测隔离扩展（本地候选，未发布）
+
+- 本地候选 commit 为 `83e2d72aec63ac01caa7287b10f16a02478f9d28`，建立在不可变 r11 head 之上；它不是公开维护分支或发布标签。
+- 新增 `benchmark-observability` 与 `benchmark-eval-controls` 两个空的、默认关闭 feature。首字延迟/请求耗时、工具预算后 final-only 以及无歧义只读参数修复仅在父仓 `benchmark-hooks` 显式启用时编译。
+- Desktop 默认 feature 仍为 `local-embed`，不会编译上述评测分支；默认构建已单独通过。代理通配符信任、IPv6 fake-IP 特判和其他全局网络策略不在该候选中。
+- 新增 3 条 `forkguard_benchmark_*` 行为测试并登记精确候选指纹；公开子模块校验以 r12 为发布基线（见第 0 节），该候选是 fork-guard 候选分支识别的唯一未发布例外。
+
 ### 父仓 gitlink 同步勘误（2026-08-22 更正）
 
 - 早期版本此处曾记载"PR #302 把父仓 gitlink 从 r6 (`3bbf8421`) 一次性 bump 到 r7"。

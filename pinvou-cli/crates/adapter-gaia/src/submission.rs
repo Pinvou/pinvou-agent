@@ -24,10 +24,12 @@ const MAX_SUBMISSION_BYTES: u64 = 16 * 1024 * 1024;
 /// Exports the official-format GAIA submission JSONL.
 ///
 /// Only complete GAIA runs reopened from the durable private store are
-/// accepted: every dataset row must have exactly one completed outcome whose
-/// durable `utf8-text/v1` prediction resolves through the run-bound scorer
-/// view. Each line is a compact JSON object with exactly two keys, `task_id`
-/// and `model_answer`, emitted in deterministic dataset row order. The public
+/// accepted: every dataset row must have exactly one terminal outcome. A
+/// completed outcome must have a durable `utf8-text/v1` prediction resolvable
+/// through the run-bound scorer view; failed, timed-out, and cancelled outcomes
+/// are exported with an empty answer and therefore score as incorrect. Each line
+/// is a compact JSON object with exactly two keys, `task_id` and `model_answer`,
+/// emitted in deterministic dataset row order. The public
 /// prediction handle cannot decode the answer. Publication is atomic and
 /// no-clobber: a sibling temporary file with private permissions is written,
 /// synced, then hard-linked into place, which fails if the destination already
@@ -132,7 +134,7 @@ fn collect_entries(dataset: &GaiaDataset, run: &CompletedRun) -> Result<Vec<Subm
         ));
     }
     let dataset_ids = rows.iter().map(|row| row.task_id()).collect::<HashSet<_>>();
-    // Index outcomes by task id, rejecting unknown, duplicate, and incomplete
+    // Index outcomes by task id, rejecting unknown, duplicate, and non-terminal
     // statuses with fixed safe codes.
     let mut by_task: HashMap<&str, &benchmark_core::TaskOutcome> =
         HashMap::with_capacity(outcomes.len());
@@ -147,7 +149,7 @@ fn collect_entries(dataset: &GaiaDataset, run: &CompletedRun) -> Result<Vec<Subm
                 "gaia_submission_duplicate_task".into(),
             ));
         }
-        if outcome.status() != TaskStatus::Completed {
+        if matches!(outcome.status(), TaskStatus::Planned | TaskStatus::Running) {
             return Err(BenchmarkError::Contract(
                 "gaia_submission_not_completed".into(),
             ));
@@ -167,6 +169,16 @@ fn collect_entries(dataset: &GaiaDataset, run: &CompletedRun) -> Result<Vec<Subm
         let outcome = by_task
             .get(row.task_id())
             .ok_or_else(|| BenchmarkError::Contract("gaia_submission_incomplete".into()))?;
+        if matches!(
+            outcome.status(),
+            TaskStatus::Failed | TaskStatus::Timeout | TaskStatus::Cancelled
+        ) {
+            entries.push(SubmissionEntry {
+                task_id: outcome.task_id().to_owned(),
+                answer: String::new(),
+            });
+            continue;
+        }
         let prediction = outcome.prediction().ok_or_else(|| {
             BenchmarkError::Contract("gaia_submission_prediction_unavailable".into())
         })?;

@@ -48,6 +48,13 @@
 
 CodeWhale PR #15 combined candidate `1eca6103a` with security follow-ups `169c24cc5`, `21e5f661a`, and `a647ed866`, then squash-merged them as `d127aed113529dc93754d044b9f352e9746f6b83`. The merge commit has the same tree as the verified candidate head and is published as immutable tag `pinvou-v0.9.5-r8`. It adds a process-local per-turn tool policy, complete trusted-path replacement, an exact final dispatch gate, read-only `File` action schema projection with a repeated read-only check before final execution, and denial of queued goal continuation, edit replay, and MCP reload while restricted. Restricted turns also block queued control-plane operations, hooks, MCP initialization, dynamic tools, and child agents. After a restricted turn, idle child-agent completion and background-Shell wake remain deferred until an explicit message installs replacement authority; read-only `Bash` uses the hardened `ShellPolicy::ReadOnly` direct-argv path. Tool logs and audits retain only non-private identity fields. At r8 publication, the parent gitlink and verifier aligned strictly to that immutable tag; the Current baseline section above is authoritative for the active public baseline.
 
+### GAIA benchmark isolation extension (local candidate, unpublished)
+
+- Local candidate `83e2d72aec63ac01caa7287b10f16a02478f9d28` is based directly on immutable r11. It is not a public maintenance-branch or release-tag head.
+- Two empty, default-off features, `benchmark-observability` and `benchmark-eval-controls`, contain request/TTFT metrics, the post-budget final-only fuse, and deterministic repair of unambiguous read-only calls. The parent enables them only through `benchmark-hooks`.
+- Desktop keeps `local-embed` as its default feature and does not compile these paths. The default build passes independently. This candidate contains no wildcard proxy trust, IPv6 fake-IP exception, or other global network-policy change.
+- Three `forkguard_benchmark_*` behavior tests and an exact local-candidate guard protect the boundary. Public-submodule verification recognizes r12 as the published baseline (see section 0); this candidate is the sole unpublished exception, matched only by the fork-guard candidate branch.
+
 ### Published session fix
 
 - v0.9.5 `load_session` treats an unmatched `tool_use` as evidence of a crashed process. That assumption is invalid when Pinvou persists a live tool call and reads the same session again during the turn.

@@ -43,7 +43,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 default = ["local-embed"]
 local-embed = ["pinvou-knowledge/local-embed"]
 dev-tools = []
-benchmark-hooks = ["dep:agent-backend-api"]
+benchmark-hooks = ["dep:agent-backend-api", "deepseek-tui/benchmark-observability", "deepseek-tui/benchmark-eval-controls"]
 # Isolated macOS BrowserCore build for physical-device acceptance. Production release is
 # controlled only by `platform::capabilities::MACOS_BROWSER_RELEASED`; this feature is never
 # included in the default feature set.
