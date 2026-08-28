@@ -182,8 +182,6 @@ pub fn process_alive(pid: u32) -> bool {
 /// Restricts a sensitive directory through the active OS adapter.
 pub fn make_private_dir(path: &Path) {
     super::super::platform::make_private_dir(path)
-
-/// GPU 能力分级（本地引擎设备自动选择与模型档位推荐共用口径）。
 }
 
 /// 本机 GPU 能力分级（统一硬件口径，供设备选择、档位推荐等消费方共用）。
