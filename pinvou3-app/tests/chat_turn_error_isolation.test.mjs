@@ -62,6 +62,13 @@ assert.equal(modelErrors.isModelServiceError('Stripe API error: HTTP 402 payment
 // 第三方平台限流保持原始错误展示。
 assert.equal(modelErrors.isModelServiceError('GitHub API: HTTP 403 rate limit exceeded'), false);
 assert.equal(modelErrors.isModelServiceError('billing service rejected the request'), false);
+// apiSignal 裸放行会劫持无错误语义的本地错误:含 "api key"/"model service"
+// 字样但无歧义错误词、无 model-like 状态码的文本不得接管;强语义的
+// "invalid api key"(STRONG 词表)与 "api key + 状态码" 组合仍必须接管。
+assert.equal(modelErrors.isModelServiceError('failed to save api key to config: disk full'), false);
+assert.equal(modelErrors.isModelServiceError('wrote model service name to settings.json'), false);
+assert.equal(modelErrors.isModelServiceError('invalid api key'), true);
+assert.equal(modelErrors.isModelServiceError('api key rejected: HTTP 401'), true);
 // 底座固定前缀与 API 上下文仍必须命中。
 assert.equal(modelErrors.isModelServiceError('SSE stream request failed: HTTP 402'), true);
 assert.equal(modelErrors.isModelServiceError('SSE stream idle timeout after 30s — no data received'), true);
@@ -86,6 +93,30 @@ assert.match(
   modelErrors.build('SSE stream request failed: connect to api.deepseek.com: HTTP 402', { language: 'zh-Hans' }).title,
   /DeepSeek/,
 );
+// provider 标签按界面语言:中文品牌名不得混进 en 文案;短键(zai/xai/glm/
+// kimi)走词边界匹配,不得被无关子串(如 "xaio")误命中。
+assert.match(
+  modelErrors.build('SSE stream request failed: connect to dashscope.aliyuncs.com: HTTP 402', { language: 'en' }).title,
+  /Qwen/,
+);
+assert.doesNotMatch(
+  modelErrors.build('SSE stream request failed: connect to dashscope.aliyuncs.com: HTTP 402', { language: 'en' }).title,
+  /通义千问/,
+);
+assert.notEqual(
+  modelErrors.build('SSE stream request failed: connect to xaio.internal: HTTP 500', { language: 'en' }).providerLabel,
+  'xAI',
+  'short provider keys must use word-boundary matching',
+);
+// 模糊匹配链(vendor 字段):google_gemini / xai 系也要能推导出标签。
+assert.equal(
+  modelErrors.build('SSE stream request failed: HTTP 500', { language: 'en', provider: { vendor: 'google_gemini' } }).providerLabel,
+  'Gemini',
+);
+assert.equal(
+  modelErrors.build('SSE stream request failed: HTTP 500', { language: 'en', provider: { vendor: 'xai' } }).providerLabel,
+  'xAI',
+);
 // 分类顺序:OOM(内存耗尽)不再落到 quota;403+rate limit 共存按频控分。
 assert.equal(modelErrors.classify('HTTP 500: worker killed 内存耗尽 (OOM)').kind, 'server');
 assert.equal(modelErrors.classify('HTTP 403 forbidden: rate limit exceeded').kind, 'rate_limit');
@@ -100,6 +131,10 @@ assert.equal(modelErrors.isModelServiceError('SSE buffer exceeded 10485760 bytes
 assert.equal(modelErrors.classify('HTTP/1.1 429 Too Many Requests').httpStatus, 429);
 assert.equal(modelErrors.classify('Request failed with status code 429').kind, 'rate_limit');
 assert.equal(modelErrors.classify('HTTP/2 503').httpStatus, 503);
+// HTTPS 形态(带 S)的状态码同样要提出。
+assert.equal(modelErrors.classify('HTTPS 502 Bad Gateway').httpStatus, 502);
+// permission 分类的直接断言:403/forbidden 无频控词时按权限分。
+assert.equal(modelErrors.classify('SSE stream request failed: HTTP 403 forbidden').kind, 'permission');
 // LlmError Display 引导词(传输层立即失败,DNS/连接拒绝/TLS,不带 SSE 前缀
 // 直接上抛)必须接管;冒号/括号锚定形态与本地工具文案无碰撞——gh CLI 的
 // "API rate limit exceeded for ..." 无冒号,不得命中。
@@ -197,6 +232,41 @@ assert.doesNotMatch(
   /horse/,
   'space-separated passwords must be fully redacted',
 );
+// 未加引号的多词口令同样整段吞掉(吞到行尾或首个 ,/;&),不得只吞首词。
+const unquotedPasswordRedacted = modelErrors.redactTechnicalDetail('password: correct horse battery staple');
+assert.doesNotMatch(unquotedPasswordRedacted, /horse/, 'unquoted multi-word passwords must be fully redacted');
+assert.match(unquotedPasswordRedacted, /\[敏感信息已隐藏\]/);
+// 数字开头/带连字符的 UUID 形态会话凭证必须脱敏。
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('session_id: "8f3k9d2l-4abc-def0-1234-567890abcdef"'),
+  /8f3k9d2l/,
+  'digit-starting hyphenated session ids must be redacted',
+);
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('api_key=1234-5678-abcd-ef01'),
+  /1234-5678/,
+  'digit-starting hyphenated api keys must be redacted',
+);
+// 裸 Gemini API Key(AIza 前缀)必须脱敏。
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('request failed, key=AIzaSyB3dEfGhIjKlMnOpQrStUvWxYz012345'),
+  /AIzaSy/,
+  'bare Gemini API keys must be redacted',
+);
+// 通用 Cookie/Set-Cookie 头必须脱敏。
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('Cookie: sessionid=abc123def456; theme=light'),
+  /abc123def456/,
+  'Cookie header values must be redacted',
+);
+// 脱敏占位符按界面语言选择:en/ja 界面的技术详情不得混入中文。
+const enRedacted = modelErrors.redactTechnicalDetail('Authorization: Bearer sk-deepseek-secret-token-123', 'en');
+assert.match(enRedacted, /\[redacted\]/);
+assert.doesNotMatch(enRedacted, /敏感信息/);
+assert.match(
+  modelErrors.redactTechnicalDetail('Authorization: Bearer sk-deepseek-secret-token-123', 'ja'),
+  /\[秘匿済み\]/,
+);
 // 非凭证值不被误吞:裸 "key" 的无数字短值(model-name)保留。
 assert.doesNotMatch(
   modelErrors.redactTechnicalDetail('{"key": "model-name"}'),
@@ -243,6 +313,9 @@ const billingAdded = messageSandbox.window.PinvouBridgeMessages.addModelServiceE
   modelErrorState,
   addModelErrorItem,
   true,
+  // 模拟 recordTurnCompleted 已写入的带 error 时间线终态记录:只有它存在时
+  // 终态气泡才隐藏(时间线错误卡接管)。
+  { error: rawBillingError },
 );
 assert.equal(billingAdded, true);
 assert.equal(modelErrorState.chatItems.length, 1);
@@ -256,6 +329,7 @@ messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
   modelErrorState,
   addModelErrorItem,
   true,
+  { error: rawBillingError },
 );
 assert.equal(modelErrorState.chatItems.length, 1, 'model service notices must be deduplicated');
 messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
@@ -313,12 +387,57 @@ messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
   transientThenDoneState,
   pushToSeqState,
   true,
+  { error: 'SSE stream request failed: HTTP 402 insufficient balance' },
 );
 assert.equal(transientThenDoneState.chatItems.length, 1, 'terminal notice must upgrade the transient item, not add a second bubble');
 const upgraded = transientThenDoneState.chatItems[0];
 assert.match(upgraded.text, /本次回复已停止/, 'upgraded item switches to terminal wording');
 assert.equal(upgraded.legacyConversationOnly, true, 'upgraded item is hidden from the unified timeline');
 assert.equal(upgraded.userError.kind, 'billing');
+// 身份不同的 transient/done 序列:transient(network)与 done(billing)文本、
+// kind、技术详情均不同,身份去重必然落空;终态到达且时间线记录带 error 时,
+// 同回合所有模型服务 transient 气泡必须一并隐藏,否则残留"系统会继续重试"
+// 的瞬态气泡与终态"已停止"错误卡措辞矛盾。
+const sweepState = { settings: { language: 'zh-Hans' }, chatItems: [] };
+const pushToSweepState = (text, metadata) => sweepState.chatItems.push({ text, ...metadata });
+messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
+  { error: 'SSE stream idle timeout after 30s — no data received' },
+  sweepState,
+  pushToSweepState,
+  false,
+);
+assert.equal(sweepState.chatItems.length, 1);
+assert.equal(sweepState.chatItems[0].userError.kind, 'network');
+assert.equal(sweepState.chatItems[0].legacyConversationOnly, false);
+messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
+  { error: 'SSE stream request failed: HTTP 402 insufficient balance' },
+  sweepState,
+  pushToSweepState,
+  true,
+  { error: 'SSE stream request failed: HTTP 402 insufficient balance' },
+);
+assert.equal(sweepState.chatItems.length, 2, 'different-identity terminal error adds its own notice');
+assert.ok(
+  sweepState.chatItems.every(item => item.legacyConversationOnly === true),
+  'terminal takeover must hide all same-turn model-service transient bubbles',
+);
+assert.match(sweepState.chatItems[1].text, /本次回复已停止/);
+// 静默吞错回归:终态到达但 recordTurnCompleted 未写入时间线记录
+// (openStart/turnId 缺失,以 null 传入)时,气泡必须保留可见。
+const noTimelineState = { settings: { language: 'zh-Hans' }, chatItems: [] };
+messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
+  { error: 'SSE stream request failed: HTTP 402 insufficient balance' },
+  noTimelineState,
+  (text, metadata) => noTimelineState.chatItems.push({ text, ...metadata }),
+  true,
+  null,
+);
+assert.equal(noTimelineState.chatItems.length, 1);
+assert.equal(
+  noTimelineState.chatItems[0].legacyConversationOnly,
+  false,
+  'terminal notice must stay visible when no timeline record was written',
+);
 // en/ja 的 transient/terminal 措辞区分:所有 retryable 类别(rate_limit/server/
 // network/unknown)的 {stop} 占位符必须在三语模板齐全,瞬态与终态措辞不得相同。
 for (const language of ['en', 'ja', 'zh-Hans']) {
@@ -459,7 +578,7 @@ const doneSection = chatEventsSource.slice(
   chatEventsSource.indexOf('listen("chat:done"'),
   chatEventsSource.indexOf('listen("chat:usage"'),
 );
-assert.match(doneSection, /legacyConversationOnly: true/);
+assert.match(doneSection, /legacyConversationOnly: timelineTakesOver/);
 assert.match(bridgeMessagesSource, /payload\.shell_cleanup_failed/);
 assert.match(doneSection, /messages\.addModelServiceErrorNotice/);
 assert.match(doneSection, /typeof messages\.addModelServiceErrorNotice === "function"/);
@@ -493,7 +612,7 @@ assert.match(
     webBridgeSource.indexOf('listen("chat:done"'),
     webBridgeSource.indexOf('listen("chat:usage"'),
   ),
-  /legacyConversationOnly: true/,
+  /legacyConversationOnly: timelineTakesOver/,
 );
 assert.match(bridgeMessagesSource, /payload\.shell_cleanup_failed/);
 assert.match(webBridgeSource, /function bridgeMessages\(\)/);

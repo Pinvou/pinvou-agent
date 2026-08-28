@@ -104,7 +104,7 @@
       });
     },
 
-    addModelServiceErrorNotice: function (payload, state, addSystemItem, legacyConversationOnly) {
+    addModelServiceErrorNotice: function (payload, state, addSystemItem, legacyConversationOnly, terminalRecord) {
       payload = payload || {};
       state = state || {};
       const helper = window.PinvouModelServiceErrors;
@@ -124,15 +124,29 @@
         if (existingDetail || nextDetail) return existingDetail === nextDetail;
         return true;
       });
-      if (existing) {
-        existing.text = notice;
-        existing.userError = userError;
-        if (legacyConversationOnly) existing.legacyConversationOnly = true;
+      // 终态隐藏气泡的前提:时间线终态记录确实写入且带 error(错误卡接管)。
+      // recordTurnCompleted 在 openStart/turnId 缺失时不写记录,此时若仍隐藏,
+      // 错误将完全不可见(静默吞错回归)。
+      const timelineTakesOver = !!legacyConversationOnly
+        && !!(terminalRecord && terminalRecord.error);
+      let target = existing || null;
+      if (target) {
+        target.text = notice;
+        target.userError = userError;
+        if (timelineTakesOver) target.legacyConversationOnly = true;
       } else {
-        addSystemItem(notice, {
-          turnErrorNotice: true,
-          legacyConversationOnly: !!legacyConversationOnly,
-          userError,
+        target = { turnErrorNotice: true, legacyConversationOnly: timelineTakesOver, userError };
+        addSystemItem(notice, target);
+      }
+      // 终态接管时,同回合其余模型服务 transient 气泡(身份与终态不同,如先
+      // network idle timeout 后 billing done)一并隐藏:它们的"系统会继续重试"
+      // 措辞与终态"已停止"矛盾。bridge 在每次发送时清空 turnErrorNotice 项,
+      // 现存项均属于当前回合,不会误伤上一回合。
+      if (timelineTakesOver) {
+        chatItems.forEach(function (item) {
+          if (item && item !== target && item.turnErrorNotice && item.userError && !item.legacyConversationOnly) {
+            item.legacyConversationOnly = true;
+          }
         });
       }
       payload.user_error = userError;
