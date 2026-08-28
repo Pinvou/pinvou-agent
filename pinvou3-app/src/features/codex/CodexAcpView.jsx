@@ -1151,6 +1151,13 @@ export function CodexAcpView({
   const activeIdRef = useRef(activeId);
   const lastActiveSessionIdRef = useRef(activeId);
   if (activeId) lastActiveSessionIdRef.current = activeId;
+  // 原生泳道事件订阅 mount 一次，错误提示的友好文案需要当前界面语言与模型配置；
+  // 经 ref 透传最新值，避免闭包捕获过期 bridge state（与 activeIdRef 同款模式）。
+  const nativeEventContextRef = useRef({ language: null, modelServiceState: null });
+  nativeEventContextRef.current = {
+    language: bs && bs.settings && bs.settings.language,
+    modelServiceState: bs,
+  };
   useLayoutEffect(() => {
     // loadSession may optimistically point this ref at a just-created session before
     // the parent commits activeId. Do not overwrite that handoff from an intermediate
@@ -2632,7 +2639,7 @@ export function CodexAcpView({
       const sessionId = payload.session_id;
       if (!sessionId || !nativeSessionIdsRef.current.has(sessionId)) return;
       const lane = getNativeLane(sessionId);
-      const changed = applyNativeChatEvent(lane, name, payload);
+      const changed = applyNativeChatEvent(lane, name, payload, nativeEventContextRef.current);
       if (name === 'chat:turn_started' || name === 'chat:done') {
         refreshSessions().catch(() => {});
       }

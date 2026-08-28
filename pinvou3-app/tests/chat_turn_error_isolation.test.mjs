@@ -89,6 +89,17 @@ assert.match(
 // 分类顺序:OOM(内存耗尽)不再落到 quota;403+rate limit 共存按频控分。
 assert.equal(modelErrors.classify('HTTP 500: worker killed 内存耗尽 (OOM)').kind, 'server');
 assert.equal(modelErrors.classify('HTTP 403 forbidden: rate limit exceeded').kind, 'rate_limit');
+// 计费强词(余额不足/quota 等)是门控的独立通道,必须无条件接管——
+// 防止只走底座前缀路径的测试让强词表静默失效。
+assert.equal(modelErrors.isModelServiceError('insufficient balance'), true);
+assert.equal(modelErrors.isModelServiceError('账户余额不足，请充值'), true);
+assert.equal(modelErrors.isModelServiceError('quota has been exceeded'), true);
+// 底座大响应 abort 的真实错误串(chat.rs:SSE buffer exceeded)必须被固定前缀接管。
+assert.equal(modelErrors.isModelServiceError('SSE buffer exceeded 10485760 bytes — aborting stream'), true);
+// 带版本段与 axios 措辞的状态码也能提出状态:429 → rate_limit。
+assert.equal(modelErrors.classify('HTTP/1.1 429 Too Many Requests').httpStatus, 429);
+assert.equal(modelErrors.classify('Request failed with status code 429').kind, 'rate_limit');
+assert.equal(modelErrors.classify('HTTP/2 503').httpStatus, 503);
 // 脱敏:除占位符存在外,原始凭证实文必须消失。
 const basicRedacted = modelErrors.redactTechnicalDetail('Authorization: Basic dXNlcjpwYXNzd29yZA==');
 assert.match(basicRedacted, /\[敏感信息已隐藏\]/);
@@ -109,6 +120,11 @@ assert.match(
   modelErrors.redactTechnicalDetail('Authorization: Bearer sk-deepseek-secret-token-123 api_key=sk-abc12345&token=demo'),
   /\[敏感信息已隐藏\]/,
 );
+// 无 Authorization 头名的裸 Basic/Digest base64 与小写裸 bearer 同样必须脱敏。
+const bareBasicRedacted = modelErrors.redactTechnicalDetail('proxy replied: Basic dXNlcjpwYXNzd29yZA==');
+assert.doesNotMatch(bareBasicRedacted, /dXNlcjpwYXNzd29yZA==/, 'bare Basic credentials must be redacted');
+const lowercaseBearerRedacted = modelErrors.redactTechnicalDetail('error with bearer eyJhbGciOiJIUzI1NiJ9.abc123def456');
+assert.doesNotMatch(lowercaseBearerRedacted, /eyJhbGciOiJIUzI1NiJ9/, 'lowercase bare bearer tokens must be redacted');
 const cleanupState = { settings: { language: 'ja' }, chatItems: [] };
 const addCleanupItem = (text, metadata) => cleanupState.chatItems.push({ text, ...metadata });
 messageSandbox.window.PinvouBridgeMessages.showShellCleanupFailure(
@@ -215,6 +231,26 @@ const upgraded = transientThenDoneState.chatItems[0];
 assert.match(upgraded.text, /本次回复已停止/, 'upgraded item switches to terminal wording');
 assert.equal(upgraded.legacyConversationOnly, true, 'upgraded item is hidden from the unified timeline');
 assert.equal(upgraded.userError.kind, 'billing');
+// en/ja 的 transient/terminal 措辞区分:所有 retryable 类别(rate_limit/server/
+// network/unknown)的 {stop} 占位符必须在三语模板齐全,瞬态与终态措辞不得相同。
+for (const language of ['en', 'ja', 'zh-Hans']) {
+  for (const kind of [
+    'HTTP 429 too many requests',
+    'SSE stream request failed: HTTP 500 internal error',
+    'SSE stream request failed: connection reset by peer',
+    'Chat API call failed with an unexpected error',
+  ]) {
+    const transientMessage = modelErrors.build(kind, { language, terminal: false }).message;
+    const terminalMessage = modelErrors.build(kind, { language, terminal: true }).message;
+    assert.notEqual(
+      transientMessage,
+      terminalMessage,
+      `${language} transient and terminal wording must differ for: ${kind}`,
+    );
+  }
+}
+assert.doesNotMatch(modelErrors.build('HTTP 429 too many requests', { language: 'en', terminal: false }).message, /\{stop\}/);
+assert.doesNotMatch(modelErrors.build('HTTP 429 too many requests', { language: 'ja', terminal: true }).message, /\{stop\}/);
 
 const terminalSandbox = { window: {}, Date };
 vm.runInNewContext(modelServiceErrorsSource, terminalSandbox, { filename: 'model-service-errors.js' });
