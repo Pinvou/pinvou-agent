@@ -46,6 +46,30 @@ const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-smoke-'));
 // exec_shell 诊断结果，验证只有真实 producer 触发 artifact。
 function injectSource() {
   return `(function(){
+    // Poll a UI predicate instead of sleeping a fixed duration: fast environments
+    // resolve in one tick, slow CI runners wait up to the timeout instead of
+    // sampling an unfinished render (the root cause of the browser-pane flakes).
+    window.__uiWait__ = (predicate, timeout) => new Promise((resolve) => {
+      const deadline = Date.now() + (timeout || 2500);
+      const tick = () => {
+        let ok = false;
+        try { ok = !!predicate(); } catch { ok = false; }
+        if (ok || Date.now() >= deadline) { resolve(ok); return; }
+        setTimeout(tick, 25);
+      };
+      tick();
+    });
+    // Wait until a sampled value stops changing (layout/transition settled).
+    window.__uiStable__ = (getter, timeout) => {
+      let prev;
+      return window.__uiWait__(() => {
+        let v;
+        try { v = JSON.stringify(getter()); } catch { return false; }
+        if (v !== undefined && v === prev) return true;
+        prev = v;
+        return false;
+      }, timeout || 1500);
+    };
     window.__TAURI_EVENT_HANDLERS__={};
     window.__TAURI_INVOKES__=[];
     window.__BROWSER_RUNNING__=false;
@@ -335,24 +359,25 @@ async function expand(page) {
   await page.setViewport({ width: 1228, height: 1000, deviceScaleFactor: 1 });
   await sleep(120);
   const browserPane = await page.evaluate(async () => {
+    const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     document.querySelector('[data-sidebar-toggle]')?.click();
-    await new Promise(resolve => setTimeout(resolve, 320));
+    await window.__uiWait__(() => (document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width || 0) > 200);
     const task = [...document.querySelectorAll('[data-testid="regular-sidebar-item"]')]
       .find(node => (node.textContent || '').includes('第三季度财报分析'));
     task?.click();
-    await new Promise(resolve => setTimeout(resolve, 320));
+    await window.__uiWait__(() => !!document.querySelector('[data-testid="chat-scroll"]'));
     const sidebarOpenBeforeBrowser = (document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width || 0) > 200;
     localStorage.removeItem('pinvou_right_dock_ratio');
     localStorage.removeItem('pinvou_browser_panel_ratio');
     localStorage.setItem('pinvou_browser_panel_width', '520');
     const handlers = window.__TAURI_EVENT_HANDLERS__['browser:activated'] || [];
     for (const handler of handlers) await handler({ payload: {} });
-    await new Promise(resolve => setTimeout(resolve, 60));
+    await wait(60);
     const unscopedIgnored = !document.querySelector('[data-testid="browser-side-pane"]');
     const defaultDockSwitcher = document.querySelector('[data-testid="chat-right-dock-switcher"]');
     const defaultDockTrigger = document.querySelector('[data-testid="chat-right-dock-switcher-trigger"]');
     defaultDockTrigger?.click();
-    await new Promise(resolve => setTimeout(resolve, 40));
+    await window.__uiWait__(() => !!document.querySelector('[data-testid="chat-right-dock-option-browser"]'));
     const defaultBrowserOption = document.querySelector('[data-testid="chat-right-dock-option-browser"]');
     const defaultBrowserEntryVisible = !!defaultDockSwitcher && !!defaultBrowserOption;
     window.__FAIL_BROWSER_SURFACE_SHOW__ = true;
@@ -360,16 +385,17 @@ async function expand(page) {
     const nativeShowsBeforeInitialStatus = window.__TAURI_INVOKES__
       .filter(call => call.cmd === 'browser_show_native_surface').length;
     defaultBrowserOption?.click();
-    await new Promise(resolve => setTimeout(resolve, 120));
+    await wait(120);
     const initialStatusGated = window.__TAURI_INVOKES__
       .filter(call => call.cmd === 'browser_show_native_surface').length === nativeShowsBeforeInitialStatus;
     window.__RESOLVE_BROWSER_STATUS__?.();
-    await new Promise(resolve => setTimeout(resolve, 300));
+    await window.__uiWait__(() => [...window.__TAURI_INVOKES__].some(call => call.cmd === 'browser_prepare'));
     const prepareCall = [...window.__TAURI_INVOKES__].reverse().find(call => call.cmd === 'browser_prepare');
     const dockSwitcher = document.querySelector('[data-testid="chat-right-dock-switcher"]');
     const dockSwitcherTrigger = document.querySelector('[data-testid="chat-right-dock-switcher-trigger"]');
     dockSwitcherTrigger?.click();
-    await new Promise(resolve => setTimeout(resolve, 40));
+    await window.__uiWait__(() => !!document.querySelector('[data-testid="chat-right-dock-option-artifact-preview"]')
+      && !!document.querySelector('[data-testid="chat-right-dock-option-browser"]'));
     const unifiedDockEntry = !!dockSwitcher
       && !document.querySelector('[data-testid="browser-pane-toggle"]')
       && !!document.querySelector('[data-testid="chat-right-dock-option-artifact-preview"]')
@@ -379,10 +405,12 @@ async function expand(page) {
     const dockHost = document.querySelector('[data-testid="right-dock-host"]');
     const close = pane?.querySelector('button[title="收起浏览器侧栏"]');
     const newTab = pane?.querySelector('button[title="新标签页"]');
+    await window.__uiWait__(() => !!pane?.querySelector('[data-testid="browser-native-unavailable"]'));
     const generationFailureVisible = !!pane?.querySelector('[data-testid="browser-native-unavailable"]');
     window.__FAIL_BROWSER_SURFACE_SHOW__ = false;
     pane?.querySelector('[data-testid="browser-native-unavailable"] button')?.click();
-    await new Promise(resolve => setTimeout(resolve, 120));
+    await window.__uiWait__(() => window.__TAURI_INVOKES__
+      .filter(call => call.cmd === 'browser_show_native_surface').length >= 2);
     const generationRecovered = window.__TAURI_INVOKES__
       .filter(call => call.cmd === 'browser_show_native_surface').length >= 2;
     const separator = dockHost?.querySelector('[role="separator"]');
@@ -417,25 +445,28 @@ async function expand(page) {
         pointerType: 'mouse',
         isPrimary: true,
       }));
-      await new Promise(resolve => setTimeout(resolve, 80));
+      await window.__uiWait__(() => {
+        const widthNow = dockHost?.getBoundingClientRect().width || 0;
+        return Math.abs(widthBeforeResize - widthNow) > 50;
+      });
     }
     const widthAfterResize = dockHost?.getBoundingClientRect().width || 0;
     const storedRatio = Number.parseFloat(localStorage.getItem('pinvou_right_dock_ratio') || '0');
     const renderedRatio = Number.parseFloat(dockHost?.dataset.preferredRatio || '0');
     newTab?.click();
-    await new Promise(resolve => setTimeout(resolve, 120));
+    await window.__uiWait__(() => !!pane?.querySelector('[data-testid="browser-new-tab-page"]'));
     const createCall = [...window.__TAURI_INVOKES__].reverse().find(call => call.cmd === 'browser_create_tab');
     const newTabProductState = !!pane?.querySelector('[data-testid="browser-new-tab-page"]')
       && pane?.querySelector('[data-testid="browser-url-input"]')?.value === '';
     for (const handler of (window.__TAURI_EVENT_HANDLERS__['browser:control-changed'] || [])) {
       await handler({ payload: { sessionId: 's1', owner: 'user', revision: 2 } });
     }
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await window.__uiWait__(() => document.querySelector('[data-testid="browser-control-owner"]')?.dataset.owner === 'user');
     const ownershipBeforeHandBack = document.querySelector('[data-testid="browser-control-owner"]');
     const handBack = document.querySelector('[data-testid="browser-hand-back"]');
     const userTakeoverVisible = ownershipBeforeHandBack?.dataset.owner === 'user' && !!handBack;
     handBack?.click();
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await window.__uiWait__(() => [...window.__TAURI_INVOKES__].some(call => call.cmd === 'browser_hand_back_to_agent'));
     const handBackCall = [...window.__TAURI_INVOKES__].reverse().find(call => call.cmd === 'browser_hand_back_to_agent');
     const beforeClose = {
       pane: !!pane,
@@ -467,7 +498,7 @@ async function expand(page) {
     const realTab = [...(pane?.querySelectorAll('[role="button"][aria-pressed]') || [])]
       .find(node => (node.textContent || '').includes('Example Domain'));
     realTab?.click();
-    await new Promise(resolve => setTimeout(resolve, 120));
+    await window.__uiWait__(() => (realTab?.getAttribute('aria-pressed') === 'true'));
     // After the first successful show, repeated same-size ResizeObserver/window resize
     // callbacks must not keep hiding and showing the native child WebView, which would cause
     // IPC churn and visible flicker.
@@ -500,33 +531,39 @@ async function expand(page) {
     }
     const dockBarrierTrigger = document.querySelector('[data-testid="chat-right-dock-switcher-trigger"]');
     dockBarrierTrigger?.click();
-    await new Promise(resolve => setTimeout(resolve, 40));
+    await window.__uiWait__(() => !!document.querySelector('[data-testid="chat-right-dock-option-artifact-preview"]'));
     window.__DELAY_BROWSER_HIDE__ = true;
     document.querySelector('[data-testid="chat-right-dock-option-artifact-preview"]')?.click();
-    await new Promise(resolve => setTimeout(resolve, 80));
+    await wait(80);
     const dockSwitchWithheldUntilHideAck = pane?.getAttribute('aria-hidden') === 'false'
       && document.querySelector('[data-testid="artifact-side-panel"]')
         ?.getAttribute('aria-hidden') !== 'false';
     const dockHidePending = typeof window.__RESOLVE_BROWSER_HIDE__ === 'function';
     window.__RESOLVE_BROWSER_HIDE__?.();
-    await new Promise(resolve => setTimeout(resolve, 120));
+    await window.__uiWait__(() => pane?.getAttribute('aria-hidden') === 'true'
+      && document.querySelector('[data-testid="artifact-side-panel"]')?.getAttribute('aria-hidden') === 'false');
     const dockSwitchPublishedAfterHideAck = pane?.getAttribute('aria-hidden') === 'true'
       && document.querySelector('[data-testid="artifact-side-panel"]')
         ?.getAttribute('aria-hidden') === 'false';
+    // Baseline the hide count only once the previous dock switch stopped emitting:
+    // the fullscreen assertion below is negative (no new hide calls), so a baseline
+    // taken mid-flight would blame the fullscreen toggle for an in-flight call.
+    await window.__uiStable__(() => window.__TAURI_INVOKES__
+      .filter(call => call.cmd === 'browser_hide_native_surface').length);
     const hideCallsBeforeArtifactFullscreen = window.__TAURI_INVOKES__
       .filter(call => call.cmd === 'browser_hide_native_surface').length;
     document.querySelector('[data-testid="artifact-fullscreen-toggle"]')?.click();
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await window.__uiWait__(() => !!document.querySelector('[data-testid="artifact-fullscreen-panel"]'));
     const artifactFullscreenAfterDockHide = pane?.getAttribute('aria-hidden') === 'true'
       && !!document.querySelector('[data-testid="artifact-fullscreen-panel"]')
       && window.__TAURI_INVOKES__
         .filter(call => call.cmd === 'browser_hide_native_surface').length === hideCallsBeforeArtifactFullscreen;
     document.querySelector('[data-testid="artifact-fullscreen-toggle"]')?.click();
-    await new Promise(resolve => setTimeout(resolve, 80));
+    await wait(80);
     document.querySelector('[data-testid="chat-right-dock-switcher-trigger"]')?.click();
-    await new Promise(resolve => setTimeout(resolve, 40));
+    await window.__uiWait__(() => !!document.querySelector('[data-testid="chat-right-dock-option-browser"]'));
     document.querySelector('[data-testid="chat-right-dock-option-browser"]')?.click();
-    await new Promise(resolve => setTimeout(resolve, 120));
+    await window.__uiWait__(() => pane?.getAttribute('aria-hidden') === 'false');
     const dockBrowserRestored = pane?.getAttribute('aria-hidden') === 'false';
 
     // A child occlusion layer in RightDock must receive the native hide ACK before
@@ -548,34 +585,34 @@ async function expand(page) {
     const composerHidePending = typeof window.__RESOLVE_BROWSER_HIDE__ === 'function';
     toolMenuTrigger?.click();
     window.__RESOLVE_BROWSER_HIDE__?.();
-    await new Promise(resolve => setTimeout(resolve, 120));
+    await wait(120);
     const composerLateAckIgnored = !document.querySelector('[data-testid="composer-tool-menu"]')
       && pane?.getAttribute('aria-hidden') === 'false';
     window.__DELAY_BROWSER_HIDE__ = true;
     toolMenuTrigger?.click();
-    await new Promise(resolve => setTimeout(resolve, 80));
+    await wait(80);
     window.__RESOLVE_BROWSER_HIDE__?.();
-    await new Promise(resolve => setTimeout(resolve, 120));
+    await window.__uiWait__(() => !!document.querySelector('[data-testid="composer-tool-menu"]'));
     const composerPublishedAfterHideAck = !!document.querySelector('[data-testid="composer-tool-menu"]');
     // Desktop ComposerPopover closes on document-capture pointerdown; only mobile WebUI uses
     // a portal backdrop. Click a real desktop outside target so this test does not leave the
     // menu and its native-surface occlusion lease active for later cases.
     document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-    await new Promise(resolve => setTimeout(resolve, 120));
+    await window.__uiWait__(() => pane?.getAttribute('aria-hidden') === 'false');
     const browserRestoredAfterComposer = pane?.getAttribute('aria-hidden') === 'false';
 
     window.__VOICE_ASR_MISSING__ = true;
     window.__DELAY_BROWSER_HIDE__ = true;
     document.querySelector('[data-testid="composer-voice-button"]')?.click();
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await wait(100);
     const voiceSetupWithheldUntilHideAck = !document.querySelector('[data-testid="voice-asr-setup-dialog"]');
     const voiceSetupHidePending = typeof window.__RESOLVE_BROWSER_HIDE__ === 'function';
     window.__RESOLVE_BROWSER_HIDE__?.();
-    await new Promise(resolve => setTimeout(resolve, 120));
+    await window.__uiWait__(() => !!document.querySelector('[data-testid="voice-asr-setup-dialog"]'));
     const voiceSetupPublishedAfterHideAck = !!document.querySelector('[data-testid="voice-asr-setup-dialog"]');
     window.TauriBridge.voice.closeVoiceAsrSetup();
     window.__VOICE_ASR_MISSING__ = false;
-    await new Promise(resolve => setTimeout(resolve, 120));
+    await window.__uiWait__(() => pane?.getAttribute('aria-hidden') === 'false');
     const browserRestoredAfterVoiceSetup = pane?.getAttribute('aria-hidden') === 'false';
 
     const dragData = new DataTransfer();
@@ -590,7 +627,8 @@ async function expand(page) {
     const attachmentDropWithheldUntilHideAck = !document.querySelector('[data-testid="attachment-drop-overlay"]');
     const attachmentDropHidePending = typeof window.__RESOLVE_BROWSER_HIDE__ === 'function';
     window.__RESOLVE_BROWSER_HIDE__?.();
-    await new Promise(resolve => setTimeout(resolve, 120));
+    await window.__uiWait__(() => document.querySelector('[data-testid="attachment-drop-overlay"]')
+      ?.getAttribute('aria-hidden') === 'false');
     const attachmentDropPublishedAfterHideAck = document.querySelector('[data-testid="attachment-drop-overlay"]')
       ?.getAttribute('aria-hidden') === 'false';
     document.dispatchEvent(new DragEvent('dragleave', {
@@ -598,9 +636,13 @@ async function expand(page) {
       cancelable: true,
       dataTransfer: dragData,
     }));
-    await new Promise(resolve => setTimeout(resolve, 120));
+    await window.__uiWait__(() => pane?.getAttribute('aria-hidden') === 'false');
     const browserRestoredAfterAttachmentDrop = pane?.getAttribute('aria-hidden') === 'false';
 
+    await window.__uiStable__(() => window.__TAURI_INVOKES__
+      .filter(call => call.cmd === 'browser_hide_native_surface').length);
+    await window.__uiStable__(() => window.__TAURI_INVOKES__
+      .filter(call => call.cmd === 'browser_show_native_surface').length);
     const hideCallsBeforeSettings = window.__TAURI_INVOKES__
       .filter(call => call.cmd === 'browser_hide_native_surface').length;
     const showCallsBeforeSettings = window.__TAURI_INVOKES__
@@ -610,7 +652,7 @@ async function expand(page) {
     const nativeHost = document.querySelector('[data-testid="browser-native-host"]');
     if (nativeHost) nativeHost.style.transform = 'translateX(1px)';
     window.dispatchEvent(new Event('resize'));
-    await new Promise(resolve => setTimeout(resolve, 60));
+    await window.__uiWait__(() => typeof window.__RESOLVE_BROWSER_SHOW__ === 'function');
     const delayedShowPending = typeof window.__RESOLVE_BROWSER_SHOW__ === 'function';
     window.__DELAY_BROWSER_HIDE__ = true;
     document.querySelector('[data-testid="nav-settings"]')?.click();
@@ -626,7 +668,11 @@ async function expand(page) {
     const resizeShowBlockedWhileHidePending = window.__TAURI_INVOKES__
       .filter(call => call.cmd === 'browser_show_native_surface').length === showsWhileHidePending;
     window.__RESOLVE_BROWSER_HIDE__?.();
-    await new Promise(resolve => setTimeout(resolve, 120));
+    await window.__uiWait__(() => {
+      const host = document.querySelector('[data-testid="right-dock-host"]');
+      return !!document.querySelector('[data-testid="settings-dialog"]') && !!host
+        && getComputedStyle(host).display === 'none';
+    });
     const settingsDockHost = document.querySelector('[data-testid="right-dock-host"]');
     const settingsIsolated = !!document.querySelector('[data-testid="settings-dialog"]')
       && !!settingsDockHost
@@ -642,14 +688,14 @@ async function expand(page) {
       && visibilityRaceCalls.some(call => call.cmd === 'browser_show_native_surface')
       && visibilityRaceCalls.at(-1)?.cmd === 'browser_hide_native_surface';
     document.querySelector('[data-testid="settings-close"]')?.click();
-    await new Promise(resolve => setTimeout(resolve, 120));
+    await window.__uiWait__(() => !document.querySelector('[data-testid="settings-dialog"]'));
     const restoredAfterSettings = !!document.querySelector('[data-testid="browser-side-pane"]');
     const nativeRestoredAfterSettings = window.__TAURI_INVOKES__
       .filter(call => call.cmd === 'browser_show_native_surface').length > showCallsBeforeSettings;
     const restoredPane = document.querySelector('[data-testid="browser-side-pane"]');
     const restoredClose = restoredPane?.querySelector('button[title="收起浏览器侧栏"]');
     (restoredClose || close)?.click();
-    await new Promise(resolve => setTimeout(resolve, 80));
+    await window.__uiWait__(() => !document.querySelector('[data-testid="browser-side-pane"]'));
     if (nativeHost) nativeHost.style.transform = '';
     for (const handler of (window.__TAURI_EVENT_HANDLERS__['browser:stopped'] || [])) {
       await handler({ payload: { sessionId: 's1' } });
@@ -723,14 +769,9 @@ async function expand(page) {
   );
 
   const browserSessionUiIsolation = await page.evaluate(async () => {
-    const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-    const switchSession = async (sessionId) => {
-      await window.TauriBridge.sessions.switchToSession(sessionId);
-      await wait(360);
-    };
     const selectedDockOption = async () => {
       document.querySelector('[data-testid="chat-right-dock-switcher-trigger"]')?.click();
-      await wait(50);
+      await window.__uiWait__(() => !!document.querySelector('[data-testid="chat-right-dock-option-browser"]'));
       const browser = document.querySelector('[data-testid="chat-right-dock-option-browser"]');
       const artifacts = document.querySelector('[data-testid="chat-right-dock-option-artifact-preview"]');
       const result = browser?.getAttribute('aria-checked') === 'true'
@@ -745,47 +786,61 @@ async function expand(page) {
       const pane = document.querySelector('[data-testid="browser-side-pane"]');
       return !!pane && pane.getAttribute('aria-hidden') === 'false';
     };
+    const artifactPanelVisible = () => document.querySelector('[data-testid="artifact-side-panel"]')
+      ?.getAttribute('aria-hidden') === 'false';
+    // Switching sessions swaps the right-dock selection asynchronously; wait for the
+    // expected dock state instead of sampling after a fixed delay.
+    const switchSession = async (sessionId, expect) => {
+      await window.TauriBridge.sessions.switchToSession(sessionId);
+      if (expect) {
+        await window.__uiWait__(() => {
+          if (expect.browser !== undefined && browserPaneVisible() !== expect.browser) return false;
+          if (expect.artifact !== undefined && artifactPanelVisible() !== expect.artifact) return false;
+          return true;
+        });
+      }
+    };
 
     window.__BROWSER_RUNNING__ = true;
     for (const handler of (window.__TAURI_EVENT_HANDLERS__['browser:activated'] || [])) {
       await handler({ payload: { sessionId: 's1' } });
     }
-    await wait(240);
+    await window.__uiWait__(() => browserPaneVisible());
     const sessionAInitial = {
       selected: await selectedDockOption(),
       browserVisible: browserPaneVisible(),
     };
 
-    await switchSession('s-browser-b');
+    await switchSession('s-browser-b', { browser: false, artifact: true });
     document.querySelector('[data-testid="chat-right-dock-switcher-trigger"]')?.click();
-    await wait(50);
+    await window.__uiWait__(() => !!document.querySelector('[data-testid="chat-right-dock-option-artifact-preview"]'));
     document.querySelector('[data-testid="chat-right-dock-option-artifact-preview"]')?.click();
-    await wait(160);
+    await window.__uiWait__(() => artifactPanelVisible());
     const sessionBArtifact = {
       selected: await selectedDockOption(),
       browserVisible: browserPaneVisible(),
-      artifactVisible: document.querySelector('[data-testid="artifact-side-panel"]')
-        ?.getAttribute('aria-hidden') === 'false',
+      artifactVisible: artifactPanelVisible(),
     };
 
-    await switchSession('s1');
+    await switchSession('s1', { browser: true });
     const sessionARestored = {
       selected: await selectedDockOption(),
       browserVisible: browserPaneVisible(),
     };
     document.querySelector('[data-testid="browser-side-pane"] button[title="收起浏览器侧栏"]')?.click();
-    await wait(120);
+    await window.__uiWait__(() => !browserPaneVisible());
 
-    await switchSession('s-browser-b');
+    await switchSession('s-browser-b', { browser: false, artifact: true });
     const sessionBRestored = {
       selected: await selectedDockOption(),
       browserVisible: browserPaneVisible(),
-      artifactVisible: document.querySelector('[data-testid="artifact-side-panel"]')
-        ?.getAttribute('aria-hidden') === 'false',
+      artifactVisible: artifactPanelVisible(),
     };
 
-    await switchSession('s1');
-    const sessionAStayedClosed = !document.querySelector('[data-testid="browser-side-pane"]');
+    await switchSession('s1', { browser: false });
+    const sessionAStayedClosed = await window.__uiWait__(
+      () => !document.querySelector('[data-testid="browser-side-pane"]'),
+    );
     return {
       sessionAInitial,
       sessionBArtifact,
@@ -819,9 +874,17 @@ async function expand(page) {
     for (const handler of (window.__TAURI_EVENT_HANDLERS__['browser:activated'] || [])) {
       await handler({ payload: { sessionId: 's1' } });
     }
-    await new Promise(resolve => setTimeout(resolve, 420));
+    const settled = await window.__uiWait__(() => {
+      const pane = document.querySelector('[data-testid="right-dock-host"]');
+      return !!pane && pane.getBoundingClientRect().width > 0 && pane.dataset.layoutMode === 'split';
+    }) && await window.__uiStable__(() => {
+      const pane = document.querySelector('[data-testid="right-dock-host"]');
+      return pane ? [pane.getBoundingClientRect().width, pane.dataset.layoutMode,
+        document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width] : null;
+    });
     const pane = document.querySelector('[data-testid="right-dock-host"]');
     return {
+      settled,
       width: pane?.getBoundingClientRect().width || 0,
       ratio: pane?.dataset.preferredRatio || '',
       mode: pane?.dataset.layoutMode || '',
@@ -829,20 +892,39 @@ async function expand(page) {
     };
   });
   await page.setViewport({ width: 880, height: 800, deviceScaleFactor: 1 });
-  await sleep(520);
-  const sidePanelCycleNarrow = await page.evaluate(() => {
+  const sidePanelCycleNarrow = await page.evaluate(async () => {
+    const settled = await window.__uiWait__(() => {
+      const pane = document.querySelector('[data-testid="right-dock-host"]');
+      return pane?.dataset.layoutMode === 'single'
+        && (document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width || 0) < 100;
+    }) && await window.__uiStable__(() => {
+      const pane = document.querySelector('[data-testid="right-dock-host"]');
+      return [pane?.dataset.layoutMode, pane?.dataset.preferredRatio,
+        document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width];
+    });
     const pane = document.querySelector('[data-testid="right-dock-host"]');
     return {
+      settled,
       mode: pane?.dataset.layoutMode || '',
       ratio: pane?.dataset.preferredRatio || '',
       sidebarWidth: document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width || 0,
     };
   });
   await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
-  await sleep(520);
   const sidePanelCycleAfter = await page.evaluate(async () => {
+    const settled = await window.__uiWait__(() => {
+      const pane = document.querySelector('[data-testid="right-dock-host"]');
+      return !!pane && pane.dataset.layoutMode === 'split'
+        && pane.getBoundingClientRect().width > 0
+        && (document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width || 0) > 200;
+    }) && await window.__uiStable__(() => {
+      const pane = document.querySelector('[data-testid="right-dock-host"]');
+      return pane ? [pane.getBoundingClientRect().width, pane.dataset.layoutMode,
+        document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width] : null;
+    });
     const pane = document.querySelector('[data-testid="right-dock-host"]');
     const result = {
+      settled,
       width: pane?.getBoundingClientRect().width || 0,
       ratio: pane?.dataset.preferredRatio || '',
       mode: pane?.dataset.layoutMode || '',
@@ -861,11 +943,14 @@ async function expand(page) {
   };
   rec(
     '⓪④ side panel restores its ratio after narrow single-pane mode',
-    sidePanelCycleBefore.mode === 'split'
+    sidePanelCycleBefore.settled
+      && sidePanelCycleBefore.mode === 'split'
       && sidePanelCycleBefore.width > 0
+      && sidePanelCycleNarrow.settled
       && sidePanelCycleNarrow.mode === 'single'
       && sidePanelCycleNarrow.ratio === sidePanelCycleBefore.ratio
       && sidePanelCycleNarrow.sidebarWidth < 100
+      && sidePanelCycleAfter.settled
       && sidePanelCycleAfter.mode === 'split'
       && sidePanelCycleAfter.ratio === sidePanelCycleBefore.ratio
       && Math.abs(sidePanelCycleAfter.width - sidePanelCycleBefore.width) <= 2
