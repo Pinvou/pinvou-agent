@@ -173,10 +173,6 @@ pub(crate) fn disabled_skill_names_for(scope: ConnectorScope) -> HashSet<String>
             }
         }
     }
-    // 未安装连接器的 companion 即使因文件占用/异常退出残留在 bundle/skills，也不能
-    // 进入组合目录。若多个连接器共享同一技能，只要任一仍安装，marketplace 会保留它。
-    let market = crate::features::marketplace::MarketplaceManager::new();
-    names.extend(market.unavailable_companion_skills());
     names
 }
 
@@ -354,30 +350,6 @@ mod tests {
         std::fs::write(dir.join("manifest.json"), manifest).unwrap();
     }
 
-    /// Seed both sources consulted by companion ownership and liveness checks.
-    fn seed_installed_connector(tool_id: &str) {
-        crate::features::marketplace::store::BundleStore::new()
-            .upsert(
-                crate::features::marketplace::store::BundleRecord::installed_now(
-                    tool_id.to_string(),
-                    crate::features::marketplace::store::BundleSource::Preset,
-                ),
-            )
-            .unwrap();
-        let installed_file = paths::pinvou3_home()
-            .join("marketplace")
-            .join("installed.json");
-        std::fs::create_dir_all(installed_file.parent().unwrap()).unwrap();
-        let mut installed = std::fs::read_to_string(&installed_file)
-            .ok()
-            .and_then(|content| serde_json::from_str::<Vec<String>>(&content).ok())
-            .unwrap_or_default();
-        if !installed.iter().any(|id| id == tool_id) {
-            installed.push(tool_id.to_string());
-        }
-        std::fs::write(installed_file, serde_json::to_vec(&installed).unwrap()).unwrap();
-    }
-
     // ---- 组合目录 ----
 
     /// 连接器禁用联动技能：禁用声明了 companion_skills 的连接器 → 该技能从组合
@@ -397,8 +369,16 @@ mod tests {
                 "---\nname: government-writing\n---\n# GW\n",
             )
             .unwrap();
-            // V5 ownership uses BundleStore while companion liveness uses installed.json.
-            seed_installed_connector("gongwen");
+            // V5「随包」认领：包本体已装才把 companion 技能归属到包。本场景是
+            // 「禁用已装连接器」，先登记 gongwen 安装态，物化排除才按包映射。
+            crate::features::marketplace::store::BundleStore::new()
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "gongwen".to_string(),
+                        crate::features::marketplace::store::BundleSource::Preset,
+                    ),
+                )
+                .unwrap();
 
             // 禁用公文 MCP → 组合目录计算排除关联技能
             crate::features::marketplace::save_disabled_connectors(&["gongwen".to_string()]);
@@ -414,6 +394,40 @@ mod tests {
             assert!(
                 enabled.iter().any(|(n, _)| n == "government-writing"),
                 "启用公文 MCP 后关联技能应恢复"
+            );
+        });
+    }
+
+    /// 独立安装的技能（市场单装/手放）即使目录名与未安装连接器声明的 companion
+    /// 重合，也不得被物化排除：V5 条件认领规定「未装包的 companion 保留独立纯
+    /// 技能包形态」（bundle.rs `skill_owner_package`），物化层不存在按 companion
+    /// 名单旁路排除的口径。钉住该约束——任何把 `unavailable_companion_skills()`
+    /// 直接并入排除集的回归都会让本测试变红。
+    #[test]
+    fn standalone_companion_named_skill_survives_uninstalled_connector() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "gongwen",
+                r#"{"id":"gongwen","name":"公文写作","description":"d","version":"1.0.0","icon":"file-text","category":"办公","mcp_tools":["mcp_gongwen_make_gongwen"],"command":"python","args":["server.py"],"companion_skills":["government-writing"]}"#,
+            );
+            let skill_dir = paths::bundle_skills_dir().join("government-writing");
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            std::fs::write(
+                skill_dir.join("SKILL.md"),
+                "---\nname: government-writing\n---\n# GW\n",
+            )
+            .unwrap();
+            // 关键前提：gongwen 连接器未安装（无 BundleStore/installed.json 记录）。
+            // 此时 gongwen 仍在清单里声明 government-writing companion，
+            // unavailable_companion_skills() 非空，但技能必须保持可用。
+            assert!(crate::features::marketplace::MarketplaceManager::new()
+                .unavailable_companion_skills()
+                .contains(&"government-writing".to_string()));
+
+            let enabled = enabled_skills_for(ConnectorScope::Plain, None);
+            assert!(
+                enabled.iter().any(|(n, _)| n == "government-writing"),
+                "未装连接器时，同名独立技能必须保留独立纯技能包形态"
             );
         });
     }
@@ -553,7 +567,6 @@ mod tests {
             "pinvou3-marketplace:government-writing",
         )
         .unwrap();
-        seed_installed_connector("gongwen");
     }
 
     #[test]
