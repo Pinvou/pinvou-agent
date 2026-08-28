@@ -2152,7 +2152,7 @@ impl Pinvou3Bridge {
         )
     }
 
-    #[cfg(feature = "benchmark-hooks")]
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) fn build_eval_send_message_op(
         &self,
         session_id: &str,
@@ -2170,6 +2170,13 @@ impl Pinvou3Bridge {
             deepseek_tui::core::ops::ExactToolDispatchPolicy::try_new(allowed_tools.clone())
                 .map_err(anyhow::Error::msg)?;
         let model = self.model();
+        let turn_tool_security =
+            deepseek_tui::core::ops::TurnToolSecurityPolicy::new(Some(Vec::new()), Some(exact))
+                .with_read_only_dispatch();
+        #[cfg(feature = "benchmark-hooks")]
+        let turn_tool_security = turn_tool_security
+            .with_final_only_after_tool_budget()
+            .with_missing_read_action_repair();
         Ok(Op::SendMessage {
             content,
             mode: AppMode::Agent,
@@ -2191,12 +2198,7 @@ impl Pinvou3Bridge {
             verbosity: None,
             dynamic_tools: Vec::new(),
             provenance: deepseek_tui::core::ops::UserInputProvenance::ImportedTranscript,
-            turn_tool_security: Some(Arc::new(
-                deepseek_tui::core::ops::TurnToolSecurityPolicy::new(Some(Vec::new()), Some(exact))
-                    .with_read_only_dispatch()
-                    .with_final_only_after_tool_budget()
-                    .with_missing_read_action_repair(),
-            )),
+            turn_tool_security: Some(Arc::new(turn_tool_security)),
         })
     }
 
