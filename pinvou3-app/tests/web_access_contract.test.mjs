@@ -717,7 +717,7 @@ for (const source of [settingsView, connectionStatus]) {
 }
 assert.match(chatView, /data-testid="chat-bottom-spacer"[\s\S]{0,180}className="w-full shrink-0"/,
   'all chat surfaces must use a real flex item because WebKit may omit trailing overflow padding');
-assert.match(chatView, /style=\{hasMessages \? undefined : \{ paddingBottom:/,
+assert.match(chatView, /\.\.\.\(hasMessages \? \{\} : \{ paddingBottom:/,
   'message lists must use the real spacer while the non-scrolling empty state retains centering clearance');
 assert.match(chatView, /composerH \? composerH \+ 64 : 176/,
   'the bottom spacer must clear both the floating composer and its fade mask');

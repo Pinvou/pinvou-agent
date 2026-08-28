@@ -1,8 +1,11 @@
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::linux_path;
+
+// Shared Unix helpers come from posix.rs, matching the Wave 3 linux_path.rs deduplication.
+pub use super::super::posix::{make_private_dir, process_alive};
 
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     super::super::posix::spawn_detached_and_reap(Command::new("xdg-open").arg(target.as_ref()))
@@ -215,4 +218,10 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
         "/usr/bin/nvidia-smi",
         "/usr/local/bin/nvidia-smi",
     ]
+}
+
+/// Returns the bundled Node.js runtime reused from codex-bridge on Linux.
+/// Consumers fall back to PATH discovery when the runtime is absent.
+pub fn bundled_node() -> Option<PathBuf> {
+    crate::platform::paths::bundled_connector_node()
 }

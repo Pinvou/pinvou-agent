@@ -12,7 +12,7 @@
 //! `validate_upload_location` 不提取：其 body 调用 `user_home_dir()`，后者按平台不同。
 
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Spawn a short-lived fire-and-forget external process and reap it, avoiding Unix zombies.
 ///
@@ -73,6 +73,34 @@ pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
 /// Unix 文件系统路径的稳定标识 key(大小写敏感,直接用原串)。
 pub fn filesystem_path_identity_key(path: &str) -> String {
     path.to_string()
+}
+
+/// Probes process liveness with `kill(pid, 0)` without sending a signal.
+/// Success and EPERM both mean the process exists; ESRCH means it exited.
+/// Browser watch uses this through interface/system.rs before removing a stale port file.
+pub fn process_alive(pid: u32) -> bool {
+    // pid 0 would probe this process's own process group (always "alive");
+    // callers own non-zero pids, so guard the sentinel instead of reporting it.
+    if pid == 0 {
+        return false;
+    }
+    // SAFETY: Signal 0 only queries process existence and is safe for any pid.
+    if unsafe { libc::kill(pid as i32, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Restricts a sensitive directory to the current user on POSIX systems.
+pub fn make_private_dir(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)) {
+        eprintln!(
+            "[platform] failed to restrict directory permissions for {}: {error}",
+            path.display()
+        );
+    }
 }
 /// 探测 PATH 中第一个可用的 python 解释器名。
 /// 优先 `python3`，回退 `python`，最终默认 `python3`。

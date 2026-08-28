@@ -5,6 +5,17 @@ mod core;
 pub mod features;
 pub mod platform;
 
+// The Windows unit-test harness imports TaskDialogIndirect. Link the same
+// Common Controls v6 manifest resource as the Tauri executable so the loader
+// can start the harness before any Rust test code runs.
+#[cfg(all(test, target_os = "windows", target_env = "msvc"))]
+#[link(
+    name = "pinvou3_lib_test_resource",
+    kind = "static",
+    modifiers = "+whole-archive"
+)]
+extern "C" {}
+
 pub use features::assistant::attachments::{
     build_message_with_attachments, stage_file_in_workspace,
 };
@@ -107,6 +118,357 @@ fn install_rustls_provider() {
     drop(rustls::crypto::aws_lc_rs::default_provider().install_default());
 }
 
+const SESSION_BROWSER_CLEANUP_INITIAL_RETRY: std::time::Duration =
+    std::time::Duration::from_millis(250);
+const SESSION_BROWSER_CLEANUP_MAX_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
+const SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY: usize = 8;
+const SESSION_BROWSER_CLEANUP_ATTEMPT_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
+#[derive(Debug)]
+struct SessionBrowserCleanupSchedule {
+    ready_at: std::time::Instant,
+    retry_delay: std::time::Duration,
+    failed_attempts: u64,
+    sequence: u64,
+}
+
+#[derive(Debug)]
+struct SessionBrowserCleanupClaim {
+    session_id: String,
+    retry_delay: std::time::Duration,
+    failed_attempts: u64,
+}
+
+#[derive(Default)]
+struct SessionBrowserCleanupQueueState {
+    pending: std::collections::HashMap<String, SessionBrowserCleanupSchedule>,
+    in_flight: std::collections::HashSet<String>,
+    rerun_requested: std::collections::HashSet<String>,
+    next_sequence: u64,
+}
+
+#[derive(Default)]
+struct SessionBrowserCleanupQueue {
+    state: std::sync::Mutex<SessionBrowserCleanupQueueState>,
+    notify: tokio::sync::Notify,
+}
+
+impl SessionBrowserCleanupQueue {
+    fn enqueue(&self, session_id: &str) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.pending.contains_key(session_id) {
+            return;
+        }
+        if state.in_flight.contains(session_id) {
+            // A durable deletion notification can race with a successful
+            // cleanup attempt just before it clears the browser deny marker.
+            // Preserve one rerun without creating another concurrent attempt.
+            state.rerun_requested.insert(session_id.to_string());
+            return;
+        }
+        let sequence = state.next_sequence;
+        state.next_sequence = state.next_sequence.saturating_add(1);
+        let inserted = state
+            .pending
+            .insert(
+                session_id.to_string(),
+                SessionBrowserCleanupSchedule {
+                    ready_at: std::time::Instant::now(),
+                    retry_delay: SESSION_BROWSER_CLEANUP_INITIAL_RETRY,
+                    failed_attempts: 0,
+                    sequence,
+                },
+            )
+            .is_none();
+        drop(state);
+        if inserted {
+            self.notify.notify_one();
+        }
+    }
+
+    fn claim_ready_up_to(
+        &self,
+        now: std::time::Instant,
+        limit: usize,
+    ) -> Vec<SessionBrowserCleanupClaim> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut claimed = Vec::new();
+        while claimed.len() < limit {
+            // Prefer never-attempted obligations over retries, then preserve
+            // FIFO order within the same retry generation. A continuously
+            // failing task therefore cannot starve a later unique deletion.
+            let selected = state
+                .pending
+                .iter()
+                .filter(|(_, schedule)| schedule.ready_at <= now)
+                .min_by(|(left_id, left), (right_id, right)| {
+                    left.failed_attempts
+                        .cmp(&right.failed_attempts)
+                        .then_with(|| left.ready_at.cmp(&right.ready_at))
+                        .then_with(|| left.sequence.cmp(&right.sequence))
+                        .then_with(|| left_id.cmp(right_id))
+                })
+                .map(|(session_id, _)| session_id.clone());
+            let Some(session_id) = selected else {
+                break;
+            };
+            let schedule = state
+                .pending
+                .remove(&session_id)
+                .expect("selected cleanup schedule must remain pending");
+            let inserted = state.in_flight.insert(session_id.clone());
+            debug_assert!(inserted, "cleanup queue must claim each id only once");
+            claimed.push(SessionBrowserCleanupClaim {
+                session_id,
+                retry_delay: schedule.retry_delay,
+                failed_attempts: schedule.failed_attempts,
+            });
+        }
+        claimed
+    }
+
+    fn complete_attempt(
+        &self,
+        claim: SessionBrowserCleanupClaim,
+        succeeded: bool,
+        now: std::time::Instant,
+    ) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let removed = state.in_flight.remove(&claim.session_id);
+        debug_assert!(removed, "completed cleanup must own an active claim");
+        let rerun_requested = state.rerun_requested.remove(&claim.session_id);
+        if succeeded && !rerun_requested {
+            return;
+        }
+
+        let sequence = state.next_sequence;
+        state.next_sequence = state.next_sequence.saturating_add(1);
+        let schedule = if succeeded {
+            SessionBrowserCleanupSchedule {
+                ready_at: now,
+                retry_delay: SESSION_BROWSER_CLEANUP_INITIAL_RETRY,
+                failed_attempts: 0,
+                sequence,
+            }
+        } else {
+            SessionBrowserCleanupSchedule {
+                ready_at: now + claim.retry_delay,
+                retry_delay: next_session_browser_cleanup_retry(claim.retry_delay),
+                failed_attempts: claim.failed_attempts.saturating_add(1),
+                sequence,
+            }
+        };
+        state.pending.insert(claim.session_id, schedule);
+    }
+
+    fn next_ready_delay(&self, now: std::time::Instant) -> Option<std::time::Duration> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending
+            .values()
+            .map(|schedule| schedule.ready_at.saturating_duration_since(now))
+            .min()
+    }
+
+    #[cfg(test)]
+    fn pending_len(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending
+            .len()
+    }
+
+    #[cfg(test)]
+    fn in_flight_len(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .in_flight
+            .len()
+    }
+}
+
+fn next_session_browser_cleanup_retry(current: std::time::Duration) -> std::time::Duration {
+    current
+        .saturating_mul(2)
+        .min(SESSION_BROWSER_CLEANUP_MAX_RETRY)
+}
+
+fn session_browser_cleanup_failure_kind(error: &str) -> &'static str {
+    if error == "browser manager is unavailable" {
+        "browser-manager-unavailable"
+    } else if error.starts_with("browser cleanup attempt timed out") {
+        "timeout"
+    } else {
+        "cleanup-error"
+    }
+}
+
+async fn cleanup_deleted_session_browser_once(
+    app: tauri::AppHandle,
+    claim: SessionBrowserCleanupClaim,
+) -> (SessionBrowserCleanupClaim, bool) {
+    let result = match tokio::time::timeout(SESSION_BROWSER_CLEANUP_ATTEMPT_TIMEOUT, async {
+        match app.try_state::<features::browser::BrowserManager>() {
+            Some(browser) => browser.delete_for_session(&claim.session_id).await,
+            None => Err("browser manager is unavailable".to_string()),
+        }
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "browser cleanup attempt timed out after {} seconds",
+            SESSION_BROWSER_CLEANUP_ATTEMPT_TIMEOUT.as_secs()
+        )),
+    };
+    if let Err(error) = &result {
+        let attempt = claim.failed_attempts.saturating_add(1);
+        let failure_kind = session_browser_cleanup_failure_kind(error);
+        eprintln!(
+            "[sessions] browser cleanup failed for a deleted session \
+             (reason {failure_kind}, attempt {attempt}); retrying in {} ms",
+            claim.retry_delay.as_millis()
+        );
+    }
+    (claim, result.is_ok())
+}
+
+async fn reconcile_orphaned_session_browser_files_until_success(
+    app: tauri::AppHandle,
+    store: SessionStore,
+) {
+    let mut retry_delay = SESSION_BROWSER_CLEANUP_INITIAL_RETRY;
+    let mut attempt = 1_u64;
+
+    loop {
+        let result = store
+            .list()
+            .and_then(|mut sessions| {
+                sessions.extend(store.list_scheduled()?);
+                Ok(sessions)
+            })
+            .map(|sessions| {
+                sessions
+                    .into_iter()
+                    .map(|session| session.id)
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            })
+            .map_err(|error| format!("failed to read all existing task records: {error}"))
+            .and_then(|active_session_ids| {
+                app.try_state::<features::browser::BrowserManager>()
+                    .ok_or_else(|| "browser manager is unavailable".to_string())?
+                    .reconcile_session_files(&active_session_ids)
+            });
+
+        match result {
+            Ok(()) => return,
+            Err(error) => {
+                eprintln!(
+                    "[sessions] startup browser orphan reconciliation failed \
+                     (attempt {attempt}); retrying in {} ms: {error}",
+                    retry_delay.as_millis()
+                );
+                tokio::time::sleep(retry_delay).await;
+                retry_delay = next_session_browser_cleanup_retry(retry_delay);
+                attempt = attempt.saturating_add(1);
+            }
+        }
+    }
+}
+
+/// Wire the feature-neutral SessionStore lifecycle seam to browser teardown at
+/// the application composition root. Sessions never depend on browser code;
+/// other per-session resources can subscribe to the same seam later.
+///
+/// There is deliberately no process-lifetime deletion replay. Store boot can
+/// prune sessions before this hook is registered, but no WebView from a prior
+/// process survives; `spawn_orphaned_session_browser_reconciliation` scans and
+/// retries removal of their durable browser artifacts immediately afterwards.
+fn spawn_deleted_session_browser_cleanup(app: tauri::AppHandle, store: SessionStore) {
+    let deletion_queue = std::sync::Arc::new(SessionBrowserCleanupQueue::default());
+    let app_for_hook = app.clone();
+    let queue_for_hook = deletion_queue.clone();
+    store.register_session_deleted_hook(std::sync::Arc::new(move |session_id: &str| {
+        // Deny late wrapper work synchronously at the durable deletion commit
+        // point. WebView/file teardown is fallible and stays in the async retry
+        // worker below so the session deletion path never blocks on browser I/O.
+        if let Some(browser) = app_for_hook.try_state::<features::browser::BrowserManager>() {
+            browser.mark_session_deleted(session_id);
+        }
+        // The obligation map coalesces repeated idempotent notifications.
+        // Notify retains a permit across the claim-to-wait race, so no durable
+        // cleanup request can be lost.
+        queue_for_hook.enqueue(session_id);
+    }));
+
+    tauri::async_runtime::spawn(async move {
+        use futures_util::{stream::FuturesUnordered, StreamExt};
+
+        let mut cleanups = FuturesUnordered::new();
+
+        loop {
+            let available = SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY.saturating_sub(cleanups.len());
+            for claim in deletion_queue.claim_ready_up_to(std::time::Instant::now(), available) {
+                cleanups.push(cleanup_deleted_session_browser_once(app.clone(), claim));
+            }
+
+            // At capacity, notifications cannot open another slot. Await one
+            // bounded attempt directly so a hot producer cannot starve
+            // completions by repeatedly waking the select branch.
+            if cleanups.len() >= SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY {
+                if let Some((claim, succeeded)) = cleanups.next().await {
+                    deletion_queue.complete_attempt(claim, succeeded, std::time::Instant::now());
+                }
+                continue;
+            }
+
+            let retry_delay = deletion_queue.next_ready_delay(std::time::Instant::now());
+            let retry_ready = async move {
+                match retry_delay {
+                    Some(delay) => tokio::time::sleep(delay).await,
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            tokio::pin!(retry_ready);
+            tokio::select! {
+                _ = deletion_queue.notify.notified() => {}
+                _ = &mut retry_ready => {}
+                Some((claim, succeeded)) = cleanups.next(), if !cleanups.is_empty() => {
+                    deletion_queue.complete_attempt(
+                        claim,
+                        succeeded,
+                        std::time::Instant::now(),
+                    );
+                }
+            }
+        }
+    });
+}
+
+fn spawn_orphaned_session_browser_reconciliation(app: tauri::AppHandle, store: SessionStore) {
+    tauri::async_runtime::spawn(reconcile_orphaned_session_browser_files_until_success(
+        app, store,
+    ));
+}
+
 /// `iframe[srcdoc]` 在 WebKitGTK 中会作为宿主 WebView 的 `about:srcdoc` 导航
 /// 进入 Wry 的 navigation handler。这里只放行浏览器内部的两个空文档地址；
 /// 主窗口和 iframe 的任意外部来源仍走初始 origin 限制。
@@ -115,10 +477,20 @@ fn allow_embedded_document_navigation(url: &tauri::Url, main_origin_initialized:
     main_origin_initialized && matches!(url.as_str(), "about:blank" | "about:srcdoc")
 }
 
-/// 子进程收割：退出(RunEvent::Exit)与重启(`app.restart()`,Tauri 2 中跳过 Exit
-/// 事件)前共用的收口。managed state 不保证被 drop(kill_on_drop 只在 Child drop
-/// 时生效),显式关停 ACP/连接器子进程防孤儿。各收口内部幂等,超时风险最大的
-/// shutdown() 也只发 oneshot + kill,不做长等待。
+/// Non-blocking synchronous fallback for `RunEvent::Exit`. Explicit `app.restart()`
+/// bypasses this event and uses `prepare_app_restart()` to await the complete
+/// `shutdown_before_restart()` barrier.
+fn shutdown_browser_before_process_end(app: &tauri::AppHandle) {
+    if let Some(browser) = app.try_state::<features::browser::BrowserManager>() {
+        browser.shutdown_on_exit();
+    }
+}
+
+/// Shared asynchronous child-process harvesting before exit and restart. Managed
+/// state is not guaranteed to be dropped (kill_on_drop runs only when Child drops),
+/// so explicitly stop ACP/connector children to prevent orphans. Each closure is
+/// idempotent; even shutdown(), the highest timeout risk, only sends a oneshot and
+/// kills without a long wait.
 pub(crate) async fn harvest_child_processes(app: &tauri::AppHandle) {
     if let Some(acp_pool) = app.try_state::<crate::features::codex_acp::AcpPool>() {
         acp_pool.shutdown_all().await;
@@ -128,6 +500,16 @@ pub(crate) async fn harvest_child_processes(app: &tauri::AppHandle) {
     {
         connector_conn.kill_all_pids();
     }
+}
+
+/// Every `app.restart()` call must pass through this funnel. The browser first saves
+/// restore manifests and destroys native surfaces, then asynchronous children are
+/// harvested. The caller invokes the non-returning restart immediately afterward.
+pub(crate) async fn prepare_app_restart(app: &tauri::AppHandle) {
+    if let Some(browser) = app.try_state::<features::browser::BrowserManager>() {
+        browser.shutdown_before_restart().await;
+    }
+    harvest_child_processes(app).await;
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -141,6 +523,9 @@ pub fn build_tauri_context() -> tauri::Context {
 }
 
 pub fn run() {
+    // WebKitGTK reads its RemoteInspector endpoint while constructing the first
+    // WebContext, so the browser feature must reserve it before Tauri starts.
+    features::browser::prepare_process_environment();
     // 必须最先执行:进程级选定 rustls CryptoProvider。
     // 见 Cargo.toml 的 rustls/reqwest 注释——reqwest 0.13 自带 aws-lc-rs 但只「借用」
     // provider,不写入默认槽;而 oauth2(经 reqwest 0.12)把 rustls 0.23 的 `ring` feature
@@ -282,6 +667,7 @@ pub fn run() {
                 .spawn(|| {
                     features::files::attachment_upload::sweep_stale_draft_attachments();
                 });
+            features::browser::install_automation_context(app);
             #[cfg(target_os = "macos")]
             features::updater::cleanup_stale_backup();
             if cfg!(debug_assertions) {
@@ -364,6 +750,29 @@ pub fn run() {
                 // 实际使用 session 相关命令会失败,但聊天能跑
                 SessionStore::boot_for_process_startup().expect("session store boot fallback")
             });
+            // Install the browser transient-protocol startup barrier before any Engine,
+            // scheduler, or remote producer. spawn_watch synchronously isolates the
+            // previous process's host-request directory before accepting current requests.
+            // Installing it after engine_pool could misclassify a boot-time scheduled
+            // task's valid request as a crash artifact and remove it.
+            {
+                let mgr = features::browser::BrowserManager::new();
+                mgr.bind_app(app.handle().clone());
+                let browser_session_store = store_for_engine.clone();
+                mgr.bind_session_validator(std::sync::Arc::new(move |session_id| {
+                    browser_session_store.load(session_id).is_ok()
+                }));
+                app.manage(mgr);
+                features::browser::BrowserManager::spawn_watch(app.handle().clone());
+                spawn_deleted_session_browser_cleanup(
+                    app.handle().clone(),
+                    store_for_engine.clone(),
+                );
+                spawn_orphaned_session_browser_reconciliation(
+                    app.handle().clone(),
+                    store_for_engine.clone(),
+                );
+            }
             // 原生代码会话的执行根解析需要共享 AcpPool 持有的 SessionAgentStore
             // （多实例各自读盘，只有这份 clone 与 AcpPool 同一份 Arc）。
             let (code_session_agents, acp_pool_for_capabilities) =
@@ -610,6 +1019,21 @@ pub fn run() {
             commands::behavior_telemetry::track_behavior_event,
             commands::assistant_response::export_assistant_response,
             commands::assistant_response::open_assistant_share_target,
+            commands::browser::browser_stop,
+            commands::browser::browser_status,
+            commands::browser::browser_prepare,
+            commands::browser::browser_hand_back_to_agent,
+            commands::browser::browser_show_native_surface,
+            commands::browser::browser_hide_native_surface,
+            commands::browser::browser_begin_surface_generation,
+            commands::browser::browser_navigate,
+            commands::browser::browser_back,
+            commands::browser::browser_forward,
+            commands::browser::browser_reload,
+            commands::browser::browser_list_tabs,
+            commands::browser::browser_create_tab,
+            commands::browser::browser_close_tab,
+            commands::browser::browser_activate_tab,
             commands::startup::report_frontend_startup,
             commands::diagnostics::record_authority_sync_diagnostics,
             commands::startup::reveal_startup_window,
@@ -1033,16 +1457,26 @@ pub fn run() {
     let mut resumed_reported = false;
     app.run(move |app, event| match event {
         tauri::RunEvent::Ready => startup::mark("tauri:event_loop:ready"),
-        tauri::RunEvent::Resumed if !resumed_reported => {
-            resumed_reported = true;
-            startup::mark("tauri:event_loop:first_resumed");
-        }
         tauri::RunEvent::Exit => {
+            startup::mark("tauri:event_loop:exit");
+            // On main-process exit, refresh browser URL restore manifests, destroy
+            // in-app native WebViews, and clean runtime targets/endpoints. Preserve
+            // restore manifests; there is no external Chrome process.
+            shutdown_browser_before_process_end(app);
+            // Exit semantics preserve the latest restore manifest. Do not asynchronously
+            // call ordinary stop() here: if shutdown_on_exit skips explicit close because
+            // of lock contention, a late stop could acquire the lock and delete restore
+            // state with user-stop semantics. Process exit destroys remaining WebViews,
+            // and shutdown_on_exit always removes coordination files.
             // 退出收割:同步执行——Exit 后进程即将结束,这是最后的清理窗口。
             // 重启(app.restart())跳过本事件,调用点在 restart 前主动调同一辅助函数。
             startup::mark("exit:cleanup:start");
             tauri::async_runtime::block_on(harvest_child_processes(app));
             startup::mark("exit:cleanup:done");
+        }
+        tauri::RunEvent::Resumed if !resumed_reported => {
+            resumed_reported = true;
+            startup::mark("tauri:event_loop:first_resumed");
         }
         _ => {}
     });
@@ -1127,6 +1561,174 @@ mod navigation_policy_tests {
                 "must not classify as embedded document: {blocked}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod session_browser_cleanup_retry_tests {
+    use super::{
+        next_session_browser_cleanup_retry, session_browser_cleanup_failure_kind,
+        SessionBrowserCleanupQueue, SESSION_BROWSER_CLEANUP_INITIAL_RETRY,
+        SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY, SESSION_BROWSER_CLEANUP_MAX_RETRY,
+    };
+
+    #[test]
+    fn cleanup_failure_diagnostics_use_non_sensitive_categories() {
+        assert_eq!(
+            session_browser_cleanup_failure_kind("browser manager is unavailable"),
+            "browser-manager-unavailable"
+        );
+        assert_eq!(
+            session_browser_cleanup_failure_kind(
+                "browser cleanup attempt timed out after 10 seconds"
+            ),
+            "timeout"
+        );
+        let category = session_browser_cleanup_failure_kind(
+            "failed to delete session private-session-id from C:\\private\\path",
+        );
+        assert_eq!(category, "cleanup-error");
+        assert!(!category.contains("private-session-id"));
+        assert!(!category.contains("private\\path"));
+    }
+
+    #[test]
+    fn pending_queue_coalesces_repeated_ids_before_worker_take() {
+        let queue = SessionBrowserCleanupQueue::default();
+
+        for _ in 0..10_000 {
+            queue.enqueue("session-a");
+        }
+        queue.enqueue("session-b");
+
+        assert_eq!(queue.pending_len(), 2);
+        let now = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let mut claimed = queue.claim_ready_up_to(now, SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
+        claimed.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+        assert_eq!(
+            claimed
+                .iter()
+                .map(|claim| claim.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["session-a", "session-b"]
+        );
+        assert_eq!(queue.pending_len(), 0);
+        assert_eq!(queue.in_flight_len(), 2);
+        for claim in claimed {
+            queue.complete_attempt(claim, true, now);
+        }
+        assert_eq!(queue.in_flight_len(), 0);
+    }
+
+    #[test]
+    fn unique_pending_ids_are_concurrency_bounded_without_loss() {
+        let queue = SessionBrowserCleanupQueue::default();
+        let expected = (0..10_000)
+            .map(|index| format!("session-{index}"))
+            .collect::<std::collections::HashSet<_>>();
+        for session_id in &expected {
+            queue.enqueue(session_id);
+        }
+
+        let mut observed = std::collections::HashSet::new();
+        let now = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while queue.in_flight_len() > 0 || queue.pending_len() > 0 {
+            let batch = queue.claim_ready_up_to(now, SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
+            assert!(batch.len() <= SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
+            assert!(queue.in_flight_len() <= SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
+            for claim in batch {
+                assert!(observed.insert(claim.session_id.clone()));
+                queue.complete_attempt(claim, true, now);
+            }
+        }
+
+        assert_eq!(observed, expected);
+        assert_eq!(queue.pending_len(), 0);
+        assert_eq!(queue.in_flight_len(), 0);
+    }
+
+    #[test]
+    fn repeated_events_are_coalesced_and_success_releases_cleanup_bookkeeping() {
+        let queue = SessionBrowserCleanupQueue::default();
+        queue.enqueue("session-a");
+        queue.enqueue("session-b");
+        let now = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let mut first = queue.claim_ready_up_to(now, SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
+        let session_a = first
+            .iter()
+            .position(|claim| claim.session_id == "session-a")
+            .map(|index| first.swap_remove(index))
+            .expect("session A claim");
+        let session_b = first.pop().expect("session B claim");
+
+        queue.enqueue("session-a");
+        queue.enqueue("session-a");
+        queue.complete_attempt(session_a, true, now);
+        queue.complete_attempt(session_b, true, now);
+
+        let rerun = queue.claim_ready_up_to(now, SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
+        assert_eq!(rerun.len(), 1);
+        assert_eq!(rerun[0].session_id, "session-a");
+        queue.complete_attempt(rerun.into_iter().next().unwrap(), true, now);
+        assert_eq!(queue.pending_len(), 0);
+        assert_eq!(queue.in_flight_len(), 0);
+
+        queue.enqueue("session-a");
+        assert_eq!(queue.claim_ready_up_to(now, 1).len(), 1);
+    }
+
+    #[test]
+    fn persistent_failures_do_not_starve_a_later_unique_cleanup() {
+        let queue = SessionBrowserCleanupQueue::default();
+        let failure_ids = (0..SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY)
+            .map(|index| format!("failure-{index}"))
+            .collect::<std::collections::HashSet<_>>();
+        for index in 0..SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY {
+            queue.enqueue(&format!("failure-{index}"));
+        }
+        queue.enqueue("eventual-success");
+        let mut now = std::time::Instant::now() + std::time::Duration::from_secs(1);
+
+        let first = queue.claim_ready_up_to(now, SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
+        assert_eq!(first.len(), SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
+        assert!(first
+            .iter()
+            .all(|claim| failure_ids.contains(&claim.session_id)));
+        for claim in first {
+            queue.complete_attempt(claim, false, now);
+        }
+
+        let success = queue.claim_ready_up_to(now, SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
+        assert_eq!(success.len(), 1);
+        assert_eq!(success[0].session_id, "eventual-success");
+        queue.complete_attempt(success.into_iter().next().unwrap(), true, now);
+
+        for _ in 0..3 {
+            now += SESSION_BROWSER_CLEANUP_MAX_RETRY;
+            let retry = queue.claim_ready_up_to(now, SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
+            assert_eq!(retry.len(), SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
+            assert!(retry
+                .iter()
+                .all(|claim| failure_ids.contains(&claim.session_id)));
+            for claim in retry {
+                queue.complete_attempt(claim, false, now);
+            }
+        }
+        assert_eq!(queue.in_flight_len(), 0);
+        assert_eq!(queue.pending_len(), SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
+    }
+
+    #[test]
+    fn cleanup_retry_uses_exponential_backoff_with_a_fixed_cap() {
+        let mut delay = SESSION_BROWSER_CLEANUP_INITIAL_RETRY;
+        for expected_millis in [500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000] {
+            delay = next_session_browser_cleanup_retry(delay);
+            assert_eq!(delay.as_millis(), expected_millis);
+        }
+        assert_eq!(
+            next_session_browser_cleanup_retry(SESSION_BROWSER_CLEANUP_MAX_RETRY),
+            SESSION_BROWSER_CLEANUP_MAX_RETRY
+        );
     }
 }
 

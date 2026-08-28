@@ -161,6 +161,97 @@ pub fn bundle_version_file() -> PathBuf {
     bundle_root().join("VERSION")
 }
 
+// --- Browser feature paths (features/browser) ---
+
+/// Coordination, runtime-mapping, and restoration directory for the in-app native browser:
+/// `~/.pinvou3/browser/`.
+pub fn browser_home() -> PathBuf {
+    pinvou3_home().join("browser")
+}
+/// CDP port coordination file: `{ port, pid, owner: "app"|"mcp", started_at }`.
+/// Rust BrowserManager and browser-wrapper.mjs use it to coordinate one instance
+/// idempotently.
+pub fn browser_cdp_port_json() -> PathBuf {
+    browser_home().join("cdp-port.json")
+}
+/// Dedicated data directory for the native Windows WebView2 surface.
+///
+/// It persists sign-in state across tasks and application restarts. It is never used for
+/// external Chrome and has no screenshot-stream compatibility fallback.
+pub fn browser_webview_profile_dir() -> PathBuf {
+    browser_home().join("webview2-profile")
+}
+/// Directory for on-demand startup requests written when an MCP wrapper first needs the
+/// browser. Each wrapper uses its own file so concurrent first calls in two conversations
+/// cannot overwrite one another.
+pub fn browser_host_requests_dir() -> PathBuf {
+    browser_home().join("host-requests")
+}
+/// Authoritative runtime mapping for the native browser. Only the corresponding MCP wrapper
+/// uses it to synchronize the host's tabToken-to-automation-target bijection. It must be
+/// deleted on application exit, and its target IDs must never be reused across processes.
+pub fn browser_workspaces_dir() -> PathBuf {
+    browser_home().join("workspaces")
+}
+pub fn browser_workspace_state_json(session_token: &str) -> PathBuf {
+    browser_workspaces_dir().join(format!("{session_token}.json"))
+}
+/// Restorable page manifest for a conversation browser. The path uses a stable session
+/// digest. The content stores only URL order and active index, never the raw session ID,
+/// session/tab tokens, target IDs, leases, or cookies. After restart, the host creates new
+/// WebView/tab identities and automation targets from this manifest.
+pub fn browser_workspace_restore_dir() -> PathBuf {
+    browser_home().join("restore")
+}
+pub fn browser_workspace_restore_json(session_token: &str) -> PathBuf {
+    browser_workspace_restore_dir().join(format!("{session_token}.json"))
+}
+/// Most recent native-host or app-owned CDP connection failure: `{ reason, at }`. The
+/// wrapper writes it and Rust may inject an allowlisted model-visible explanation while it
+/// remains fresh for 24 hours. It never describes external Chrome state.
+pub fn browser_last_error_json() -> PathBuf {
+    browser_home().join("last-error.json")
+}
+/// Work-mode session-specific mcp.json containing global mcp.json plus the browser entry.
+/// Browser MCP tools are exposed only to Work-mode assistant Engine sessions. Global
+/// mcp.json never registers the browser entry, and external Agents such as Codex ACP do not
+/// read this file.
+pub fn browser_work_mcp_json() -> PathBuf {
+    browser_home().join("mcp.work.json")
+}
+/// Conversation-scoped Browser MCP configuration. The filename uses only a stable token
+/// without path characters and never embeds the raw session ID, preventing invalid path
+/// characters and directory traversal.
+pub fn browser_session_mcp_dir() -> PathBuf {
+    browser_home().join("mcp-sessions")
+}
+pub fn browser_session_mcp_json(session_id: &str) -> PathBuf {
+    browser_session_mcp_dir().join(format!("{}.json", browser_session_token(session_id)))
+}
+
+/// Stable FNV-1a token for a session ID. It is used only for local filenames, WebView labels,
+/// and initial-page markers, not authentication. Requests retain the complete session_id,
+/// which the main application recomputes and validates.
+pub fn browser_session_token(session_id: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in session_id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+/// Browser MCP wrapper embedded at compile time and extracted to
+/// `~/.pinvou3/bundle/mcp-servers/`.
+pub fn bundle_browser_wrapper() -> PathBuf {
+    bundle_mcp_servers_dir().join("browser-wrapper.mjs")
+}
+/// Vendored chrome-devtools-mcp entry point distributed through the package resource_dir.
+pub fn bundled_chrome_devtools_mcp_bin() -> Option<PathBuf> {
+    let res = runtime_resource_dir()?;
+    let bin = res.join("runtime/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js");
+    bin.is_file().then_some(bin)
+}
+
 /// 拉起 python MCP server(present_artifact / pptx 等)用的解释器命令。
 ///
 /// - **Windows**:优先用安装器写入的 `PINVOU3_PYTHON`,其次用随安装包内置的

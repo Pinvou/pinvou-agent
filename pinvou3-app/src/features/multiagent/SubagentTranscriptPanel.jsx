@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ChevronDown, ChevronRight, X } from '../../components/icons.jsx';
+import { RightDockPanel } from '../../components/layout/RightDock.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { ConversationTimeline } from '../conversation/ConversationTimeline.jsx';
 import { commandExecutionDetails, terminalStatus } from '../conversation/conversation-model.js';
@@ -30,38 +31,7 @@ import {
  * 轮询刷新；App 不维护任何运行状态机。
  */
 
-const PANEL_WIDTH_KEY = 'pinvou_subagent_panel_width';
-const PANEL_MIN_WIDTH = 360;
-const CHAT_MIN_WIDTH = 360;
-const PANEL_MAX_RATIO = 0.65;
-const PANEL_DEFAULT_WIDTH = 420;
 const TRANSCRIPT_WINDOW_STEP = 120;
-
-function clampPanelWidth(width, rootWidth) {
-  const maximum = Math.max(
-    PANEL_MIN_WIDTH,
-    Math.min(Math.round(rootWidth * PANEL_MAX_RATIO), rootWidth - CHAT_MIN_WIDTH),
-  );
-  return Math.max(PANEL_MIN_WIDTH, Math.min(Math.round(width), maximum));
-}
-
-function savedPanelWidth() {
-  try {
-    // eslint-disable-next-line unicorn/prefer-number-coercion -- integer semantics required: parse failure or non-integer width must fall back to the default; Number() would accept decimals
-    const value = Number.parseInt(localStorage.getItem(PANEL_WIDTH_KEY) || '', 10);
-    return Number.isFinite(value) && value >= PANEL_MIN_WIDTH ? value : PANEL_DEFAULT_WIDTH;
-  } catch {
-    return PANEL_DEFAULT_WIDTH;
-  }
-}
-
-function rememberPanelWidth(width) {
-  try {
-    localStorage.setItem(PANEL_WIDTH_KEY, String(Math.round(width)));
-  } catch {
-    // localStorage 不可用时只保留当前窗口内的宽度。
-  }
-}
 
 /** Codex 式紧凑工具行：图标底 + 标题 + 一行 meta，点开看原始入出参。 */
 function CompactToolRow({ item, conversationCopy }) {
@@ -306,78 +276,6 @@ export function SubagentTranscriptPanel({
     [projected, visibleTranscriptItems],
   );
 
-  const [panelWidth, setPanelWidth] = useState(savedPanelWidth);
-  const panelRef = useRef(null);
-  const resizeCleanupRef = useRef(null);
-
-  useEffect(() => {
-    const clampToViewport = () => {
-      const panel = panelRef.current;
-      const rootWidth = panel?.parentElement?.getBoundingClientRect().width || window.innerWidth;
-      setPanelWidth((current) => clampPanelWidth(current, rootWidth));
-    };
-    clampToViewport();
-    window.addEventListener('resize', clampToViewport);
-    return () => window.removeEventListener('resize', clampToViewport);
-  }, []);
-
-  useEffect(() => () => {
-    if (resizeCleanupRef.current) resizeCleanupRef.current();
-  }, []);
-
-  function startPanelResize(event) {
-    event.preventDefault();
-    const panel = panelRef.current;
-    const rootRect = panel?.parentElement?.getBoundingClientRect();
-    if (!panel || !rootRect) return;
-    if (resizeCleanupRef.current) resizeCleanupRef.current();
-    const maximum = Math.max(
-      PANEL_MIN_WIDTH,
-      Math.min(Math.round(rootRect.width * PANEL_MAX_RATIO), rootRect.width - CHAT_MIN_WIDTH),
-    );
-    let nextWidth = panelWidth;
-    let frame = 0;
-    const onMove = (moveEvent) => {
-      nextWidth = Math.max(
-        PANEL_MIN_WIDTH,
-        Math.min(rootRect.right - moveEvent.clientX, maximum),
-      );
-      if (frame) return;
-      frame = window.requestAnimationFrame(() => {
-        frame = 0;
-        panel.style.width = `${nextWidth}px`;
-      });
-    };
-    const cleanup = () => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      window.removeEventListener('blur', onUp);
-      if (frame) window.cancelAnimationFrame(frame);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      resizeCleanupRef.current = null;
-    };
-    const onUp = () => {
-      cleanup();
-      setPanelWidth(nextWidth);
-      rememberPanelWidth(nextWidth);
-    };
-    resizeCleanupRef.current = cleanup;
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-    window.addEventListener('blur', onUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-  }
-
-  function resetPanelWidth() {
-    const panel = panelRef.current;
-    const rootWidth = panel?.parentElement?.getBoundingClientRect().width || window.innerWidth;
-    const nextWidth = clampPanelWidth(PANEL_DEFAULT_WIDTH, rootWidth);
-    setPanelWidth(nextWidth);
-    rememberPanelWidth(nextWidth);
-  }
-
   const detailPresentation = agent
     ? resolveSubagentPresentation({
       role: agent.role,
@@ -395,24 +293,12 @@ export function SubagentTranscriptPanel({
   const detailSubtitle = detailPresentation ? detailPresentation.subtitle : null;
 
   return (
-    <aside
-      ref={panelRef}
-      style={{ width: `${panelWidth}px` }}
-      className="flex relative max-w-[88vw] min-w-0 shrink-0 border-l border-black/[0.06] dark:border-white/[0.07] bg-white/92 dark:bg-[#17181A]/96 backdrop-blur-xl flex-col"
-      data-testid="subagent-transcript-panel"
+    <RightDockPanel
+      panelId="subagent-transcript"
+      activationKey={selectionRequestId}
+      className="border-l border-black/[0.06] bg-white/92 backdrop-blur-xl dark:border-white/[0.07] dark:bg-[#17181A]/96"
+      dataTestId="subagent-transcript-panel"
     >
-      {/* biome-ignore lint/a11y/useFocusableInteractive: drag divider relies on mouse dragging; div semantics */}
-      {/* biome-ignore lint/a11y/useSemanticElements: drag divider requires div semantics */}
-      <div
-        // biome-ignore lint/a11y/useAriaPropsForRole: drag divider is not a focusable control; valuenow semantics do not apply
-        role="separator"
-        aria-label={copy.panelResize}
-        aria-orientation="vertical"
-        onMouseDown={startPanelResize}
-        onDoubleClick={resetPanelWidth}
-        className="absolute inset-y-0 left-0 z-20 w-1.5 -translate-x-1/2 cursor-col-resize bg-black/10 hover:bg-[#0B57D0]/50 dark:bg-white/10 dark:hover:bg-[#A8C7FA]/60 transition-colors"
-        title={copy.panelResizeHint}
-      />
       <div className="h-14 shrink-0 px-3 flex items-center gap-2 border-b border-black/[0.05] dark:border-white/[0.06]">
         {selectedAgentId ? (
           <>
@@ -618,6 +504,6 @@ export function SubagentTranscriptPanel({
           })}
         </div>
       )}
-    </aside>
+    </RightDockPanel>
   );
 }

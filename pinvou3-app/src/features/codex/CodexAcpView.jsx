@@ -1016,6 +1016,8 @@ export function CodexAcpView({
   attachmentDraftsRef.current = attachmentDrafts;
   const [workspaceReferenceDrafts, setWorkspaceReferenceDrafts] = useState({});
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [workspaceDockActive, setWorkspaceDockActive] = useState(false);
+  const [workspaceDockActivation, setWorkspaceDockActivation] = useState(0);
   const [subagentPanel, setSubagentPanel] = useState(null);
   const [workspaceChangeCount, setWorkspaceChangeCount] = useState(0);
   const [now, setNow] = useState(Date.now());
@@ -1297,9 +1299,13 @@ export function CodexAcpView({
   }, [rememberScrollBeforeRightPanelChange]);
   const toggleWorkspacePanel = useCallback(() => {
     rememberScrollBeforeRightPanelChange();
-    setSubagentPanel(null);
-    setWorkspaceOpen(value => !value);
-  }, [rememberScrollBeforeRightPanelChange]);
+    if (workspaceOpen && workspaceDockActive) {
+      setWorkspaceOpen(false);
+      return;
+    }
+    setWorkspaceOpen(true);
+    setWorkspaceDockActivation(value => value + 1);
+  }, [rememberScrollBeforeRightPanelChange, workspaceDockActive, workspaceOpen]);
   const closeWorkspacePanel = useCallback(() => {
     rememberScrollBeforeRightPanelChange();
     setWorkspaceOpen(false);
@@ -1316,7 +1322,7 @@ export function CodexAcpView({
       autoScrollRef.current = true;
       setShowScrollBottom(false);
     }
-  }, [subagentPanel, workspaceOpen]);
+  }, [subagentPanel, workspaceDockActivation, workspaceOpen]);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously collapse the subagent panel on session switch; one-shot mirror
     setSubagentPanel(null);
@@ -1329,7 +1335,6 @@ export function CodexAcpView({
       if (!detail?.agentId || !activeIdRef.current) return;
       if (sessionId && sessionId !== activeIdRef.current) return;
       rememberScrollBeforeRightPanelChange();
-      setWorkspaceOpen(false);
       setSubagentPanel(current => ({
         agentId: detail.agentId,
         selectionRequestId: (current?.selectionRequestId || 0) + 1,
@@ -3138,7 +3143,7 @@ export function CodexAcpView({
             type="button"
             onClick={toggleWorkspacePanel}
             className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
-              workspaceOpen
+              workspaceOpen && workspaceDockActive
                 ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
                 : 'text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
             }`}
@@ -3161,7 +3166,7 @@ export function CodexAcpView({
             data-testid="codex-workspace-toggle"
             onClick={toggleWorkspacePanel}
             className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
-              workspaceOpen
+              workspaceOpen && workspaceDockActive
                 ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
                 : 'text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
             }`}
@@ -3863,11 +3868,13 @@ export function CodexAcpView({
             onCancel={() => setPendingYoloSwitch(null)}
           />
         )}
-        {!subagentPanel && (activeSession || (!isWeb && draftWorkspacePath)) && (
+        {(activeSession || (!isWeb && draftWorkspacePath)) && (
           <CodexWorkspacePanel
             session={activeSession}
             workspacePath={activeSession ? '' : (draftWorkspacePath || '')}
             visible={workspaceOpen}
+            activationKey={workspaceDockActivation}
+            onActiveChange={setWorkspaceDockActive}
             onClose={closeWorkspacePanel}
             references={workspaceReferences}
             onAddReference={addWorkspaceReference}

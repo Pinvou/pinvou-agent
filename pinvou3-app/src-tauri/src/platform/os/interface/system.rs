@@ -165,6 +165,25 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
     super::super::platform::nvidia_smi_candidates()
 }
 
+/// Returns the Node.js executable bundled with the application for Browser MCP and other
+/// runtimes, or `None` when no bundled runtime exists. Linux and macOS reuse the codex-bridge
+/// runtime; Windows uses installer-provisioned `runtime/node/node.exe`, shared with connector
+/// execution. See `windows_path::bundled_node_dir`.
+pub fn bundled_node() -> Option<std::path::PathBuf> {
+    super::super::platform::bundled_node()
+}
+
+/// Probes process liveness before browser watch removes a stale port file. Platform details
+/// belong in adapters; feature consumers must not inline `#[cfg(unix)]` behavior.
+pub fn process_alive(pid: u32) -> bool {
+    super::super::platform::process_alive(pid)
+}
+
+/// Restricts a sensitive directory through the active OS adapter.
+pub fn make_private_dir(path: &Path) {
+    super::super::platform::make_private_dir(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

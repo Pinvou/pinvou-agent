@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BrowserCore trusted input probe</title>
+    <style>
+      :root { color-scheme: light; font-family: system-ui, sans-serif; }
+      body { max-width: 720px; margin: 48px auto; padding: 0 24px; }
+      button, input { box-sizing: border-box; min-height: 44px; margin: 8px 0; padding: 10px 14px; }
+      input { display: block; width: 100%; }
+      pre { min-height: 160px; padding: 16px; overflow: auto; background: #f4f4f5; }
+    </style>
+  </head>
+  <body>
+    <h1>BrowserCore trusted input probe</h1>
+    <button id="probe-button" type="button">Increment</button>
+    <input id="probe-input" aria-label="Probe text" placeholder="Type here" />
+    <p id="counter">Count: 0</p>
+    <pre id="result">[]</pre>
+    <script>
+      const events = [];
+      const counter = document.querySelector('#counter');
+      const result = document.querySelector('#result');
+      let count = 0;
+
+      function record(event) {
+        events.push({
+          type: event.type,
+          isTrusted: event.isTrusted,
+          target: event.target.id,
+          value: event.target.value ?? null,
+        });
+        result.textContent = JSON.stringify(events, null, 2);
+      }
+
+      for (const type of [
+        'pointerdown',
+        'pointerup',
+        'mousedown',
+        'mouseup',
+        'click',
+        'keydown',
+        'keyup',
+        'beforeinput',
+        'input',
+      ]) {
+        document.addEventListener(type, record, true);
+      }
+      document.querySelector('#probe-button').addEventListener('click', () => {
+        count += 1;
+        counter.textContent = `Count: ${count}`;
+      });
+      window.__pinvouBrowserCoreProbe = {
+        read: () => ({ count, input: document.querySelector('#probe-input').value, events }),
+      };
+    </script>
+  </body>
+</html>

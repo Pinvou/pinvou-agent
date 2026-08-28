@@ -82,6 +82,16 @@ assert.match(
   "privacy prompt must disclose possible Apple Speech service processing",
 );
 assert.match(
+  infoPlist,
+  /<key>NSAppTransportSecurity<\/key>\s*<dict>[\s\S]*?<key>NSAllowsArbitraryLoadsInWebContent<\/key>\s*<true\/>[\s\S]*?<key>NSAllowsLocalNetworking<\/key>\s*<true\/>[\s\S]*?<\/dict>/,
+  "macOS browser web content must allow HTTP and local-network previews",
+);
+assert.doesNotMatch(
+  infoPlist,
+  /<key>NSAllowsArbitraryLoads<\/key>\s*<true\/>/,
+  "ATS must not be disabled for application networking",
+);
+assert.match(
   verifyScript,
   /for usage_key in[^\n]*NSLocalNetworkUsageDescription/,
   "macOS verification must require the local network privacy purpose",
@@ -91,6 +101,16 @@ assert.match(
   /BUNDLED_INFO_PLIST[\s\S]*?NSLocalNetworkUsageDescription/,
   "macOS verification must inspect the bundled local network privacy purpose",
 );
+for (const atsKey of [
+  "NSAllowsArbitraryLoadsInWebContent",
+  "NSAllowsLocalNetworking",
+]) {
+  assert.match(
+    verifyScript,
+    new RegExp(`BUNDLED_INFO_PLIST[\\s\\S]*?${atsKey}`),
+    `macOS verification must inspect bundled ${atsKey}`,
+  );
+}
 
 const requiredPrivacyKeys = [
   "NSMicrophoneUsageDescription",

@@ -1,5 +1,7 @@
+import { useId } from 'react';
 import { createPortal } from 'react-dom';
 import { Code, FileText, ImageIcon } from '../../components/icons.jsx';
+import { useRightDockOcclusion } from '../../components/layout/RightDock.jsx';
 
 export function AttachmentDropOverlay({
   active,
@@ -9,14 +11,20 @@ export function AttachmentDropOverlay({
   webTitle = '',
   webHint = '',
 }) {
+  const overlayId = useId();
+  // The drop overlay must cover the entire canvas. Raising React z-index alone cannot cover
+  // a native WebView.
+  const publicationReady = useRightDockOcclusion(`attachment-drop-${overlayId}`, active);
+  if (active && !publicationReady) return null;
+  const publishedActive = active && publicationReady;
   if (variant === 'web') {
     const overlay = (
       <div
         data-testid="attachment-drop-overlay"
         data-variant="web"
-        aria-hidden={!active}
+        aria-hidden={!publishedActive}
         className={`pointer-events-none fixed inset-0 z-[2147483646] flex items-center justify-center transition-opacity duration-150 ${
-          active ? 'visible opacity-100' : 'invisible opacity-0'
+          publishedActive ? 'visible opacity-100' : 'invisible opacity-0'
         }`}
       >
         <div
@@ -49,9 +57,9 @@ export function AttachmentDropOverlay({
     <div
       data-testid="attachment-drop-overlay"
       data-variant="desktop"
-      aria-hidden={!active}
+      aria-hidden={!publishedActive}
       className={`pointer-events-none absolute inset-0 z-[60] flex items-center justify-center transition-opacity duration-150 ${
-        active ? 'visible opacity-100' : 'invisible opacity-0'
+        publishedActive ? 'visible opacity-100' : 'invisible opacity-0'
       }`}
     >
       <div

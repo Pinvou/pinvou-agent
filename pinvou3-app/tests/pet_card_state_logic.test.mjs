@@ -17,9 +17,15 @@ try {
   mkdirSync(path.join(dir, 'shared'), { recursive: true });
   copyFileSync(src, tmp);
   copyFileSync(i18nSrc, path.join(dir, 'shared', 'i18n.js'));
-// i18n.js 现按语言拆分(zh 内嵌),临时副本需带上 i18n/ 目录才能解析
-mkdirSync(path.join(dir, 'shared', 'i18n'), { recursive: true });
-for (const f of ['zh.js']) copyFileSync(path.join(here, '..', 'src', 'shared', 'i18n', f), path.join(dir, 'shared', 'i18n', f));
+  // i18n.js is split by locale with zh imported directly, so the temporary copy must include
+  // zh and its shared browser dictionary.
+  mkdirSync(path.join(dir, 'shared', 'i18n'), { recursive: true });
+  for (const f of ['zh.js', 'browser.js']) {
+    copyFileSync(
+      path.join(here, '..', 'src', 'shared', 'i18n', f),
+      path.join(dir, 'shared', 'i18n', f),
+    );
+  }
   const cards = await import(`${pathToFileURL(tmp).href}?t=${Date.now()}`);
 
   const initial = cards.createPetCardUiState();

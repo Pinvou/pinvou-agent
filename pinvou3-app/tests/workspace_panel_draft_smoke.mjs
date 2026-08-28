@@ -69,7 +69,9 @@ try {
   );
 
   // 面板头部显示工作区路径。
-  const headerText = await page.evaluate(() => document.querySelector('aside')?.innerText || '');
+  const headerText = await page.evaluate(() => (
+    document.querySelector('[data-testid="codex-workspace-panel"]')?.innerText || ''
+  ));
   assert(headerText.includes('D:/proj/demo'), '面板头部未显示工作区路径', headerText);
 
   // 点击文件 → 预览同样只带 workspacePath，弹窗打开。

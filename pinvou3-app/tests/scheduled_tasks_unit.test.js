@@ -146,12 +146,12 @@ assert.ok(
   'the three-second fallback must refresh tasks, selected detail, and runs through one bridge transaction'
 );
 assert.ok(
-  /async function handleSwitchSession\(id\)[\s\S]{0,260}setCurrentView\('chat'\)[\s\S]{0,180}closeMobileSidebar\(\)[\s\S]{0,180}await bridge\.sessions\.switchToSession\(id\)[\s\S]{0,180}if \(!switched\) return;/.test(indexHtml),
-  'ordinary session navigation should enter the chat route immediately while the remote session loads'
+  /const handleSwitchSession = useCallback\(async \(id\) => \{[\s\S]{0,220}runBrowserUiTransition[\s\S]{0,260}setCurrentView\('chat'\)[\s\S]{0,180}await bridge\.sessions\.switchToSession\(id\)[\s\S]{0,180}!switched \|\| !isCurrent\(\)[\s\S]{0,260}channel: 'session'[\s\S]{0,100}hideMode: 'workspace'[\s\S]{0,80}serialize: true/.test(indexHtml),
+  'ordinary session navigation must hide the native browser before publishing the chat route and loading the remote session'
 );
 assert.ok(
-  /async function navigateFromScheduledRun\(nextView[\s\S]{0,480}await bridge\.scheduled\.exitScheduledRunChat\(\)[\s\S]{0,160}if \(!exited\) return false;[\s\S]{0,200}setCurrentView\(nextView\)/.test(indexHtml),
-  'leaving a scheduled run through other navigation must restore its return session first'
+  /async function navigateFromScheduledRun\(nextView[\s\S]{0,520}runBrowserUiTransition[\s\S]{0,260}await bridge\.scheduled\.exitScheduledRunChat\(\)[\s\S]{0,160}!exited \|\| !isCurrent\(\)[\s\S]{0,200}setCurrentView\(nextView\)[\s\S]{0,360}hideMode: bs && bs\.scheduledRunContext[\s\S]{0,80}'workspace'/.test(indexHtml),
+  'leaving a scheduled run must hide the native browser before restoring its return session and publishing the next route'
 );
 assert.ok(
   /onBackScheduledRun=\{\(\) => navigateFromScheduledRun\('scheduled'\)\}/.test(indexHtml),

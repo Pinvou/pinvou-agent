@@ -1,6 +1,8 @@
-# Tauri 后端构建产物
+# Tauri backend build output
 src-tauri/target/
-# Note: src-tauri/Cargo.lock 是 binary crate 应该 commit 的（锁依赖版本）
+# Temporary vendor staging (normally removed in finally; SIGKILL or power loss may leave it behind)
+target/
+# Note: src-tauri/Cargo.lock belongs to this binary crate and must be committed.
 
 # 前端依赖（@tauri-apps/cli native binary 等）
 node_modules/
@@ -13,6 +15,13 @@ src-tauri/resources/platforms/macos/codex-bridge/node/
 src-tauri/resources/platforms/macos/codex-bridge/acp/
 src-tauri/resources/platforms/macos/codex-bridge/manifest.json
 src-tauri/resources/platforms/macos/.codex-bridge-build.*/
+
+# chrome-devtools-mcp is vendored at build time by scripts/tauri/chrome-devtools-mcp.js
+# from the official npm registry package (Apache-2.0, pinned sha512, ~13 MB self-contained build).
+# Ignore every generated file, including the package README and license, while tracking .gitkeep
+# so Tauri resource-layout tests can assert that the overlay directory exists in a clean checkout.
+src-tauri/resources/platforms/*/chrome-devtools-mcp/*
+!src-tauri/resources/platforms/*/chrome-devtools-mcp/.gitkeep
 
 # OS
 .DS_Store

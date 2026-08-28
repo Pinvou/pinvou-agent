@@ -5,6 +5,7 @@
 
 /* eslint-disable sonarjs/no-nested-template-literals, sonarjs/no-unenclosed-multiline-block, sonarjs/no-hardcoded-secrets -- compact i18n dictionary: nested templates mirror the copy structure one-to-one; credential field names are false-positive secrets */
 import { dictEn } from './en.js';
+import { browserJa } from './browser.js';
 
 const conversationJa = {
   completed:'完了', failed:'失敗', interrupted:'中断', limitReached:'上限に到達', processing:'処理中', processingActive:'処理中',
@@ -134,6 +135,7 @@ const acpProvidersJa = {
 };
 
 const jaBase = {
+  ...browserJa,
         langTag: 'ja',
         acpAgent: 'ACP Agent',
         newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', scheduledPlans: '定時タスク', monitor: '稼働状態', workflow: 'ワークフロー', multiAgent: 'マルチエージェント', multiAgentDesktopOnly: 'このマルチエージェント会話は現在デスクトップアプリでのみ利用できます。', toolStore: 'プラグインセンター', cardPool: 'カードプール', recent: '履歴', pinnedTasks: '固定タスク', regularTasks: 'タスク', sidebarTaskList: 'タスク一覧', sidebarTaskFilter: 'フィルター', sidebarTaskFilterAll: 'すべて', sidebarTaskFilterPinned: '固定', sidebarTaskFilterCode: 'コード', sidebarTaskFilterScheduled: '定時タスク', sidebarTaskSort: '並び替え', sidebarTaskSortPinnedFirst: '固定を優先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: 'タスクはありません', sidebarViewAll: 'すべて表示', sidebarSection: 'タスクリスト', sidebarDateGrouping: '日付でグループ化', sidebarDateGroupingDesc: 'タスクを日付ごとにまとめ、今日分を既定で展開', sidebarCodeStyleOn: 'コードスタイルのサイドバーに切り替え（フォルダー別）', sidebarCodeStyleOff: '標準サイドバーに切り替え', sidebarNavExpand: 'ナビゲーションを展開', sidebarNavCollapse: 'ナビゲーションを折りたたむ', sidebarResize: 'ドラッグでサイドバーの幅を調整、ダブルクリックでリセット', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す', mobileMore: 'その他',

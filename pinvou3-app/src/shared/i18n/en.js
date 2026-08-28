@@ -5,6 +5,8 @@
 // the split only affects browser chunks.
 
 /* eslint-disable sonarjs/no-nested-template-literals, sonarjs/no-unenclosed-multiline-block -- compact i18n dictionary: nested templates mirror the copy structure one-to-one; credential field names are false-positive secrets */
+import { browserEn } from './browser.js';
+
 const conversationEn = {
   completed:'Completed', failed:'Failed', interrupted:'Interrupted', limitReached:'Limit reached', processing:'Processing', processingActive:'Processing',
   waitingPermission:'Waiting for permission', waitingInput:'Waiting for your input', waitingInputShort:'Waiting for input',
@@ -133,6 +135,7 @@ const acpProvidersEn = {
 };
 
 export const dictEn = {
+  ...browserEn,
         langTag: 'en',
         acpAgent: 'ACP Agent',
         newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', scheduledPlans: 'Scheduled tasks', monitor: 'Runtime', workflow: 'Workflow', multiAgent: 'Multi-agent', multiAgentDesktopOnly: 'This multi-agent conversation is currently available only in the desktop app.', toolStore: 'Plugin Center', cardPool: 'Card Deck', recent: 'History', pinnedTasks: 'Pinned tasks', regularTasks: 'Tasks', sidebarTaskList: 'Tasks', sidebarTaskFilter: 'Filter', sidebarTaskFilterAll: 'All', sidebarTaskFilterPinned: 'Pinned', sidebarTaskFilterCode: 'Code', sidebarTaskFilterScheduled: 'Scheduled tasks', sidebarTaskSort: 'Sort', sidebarTaskSortPinnedFirst: 'Pinned first', sidebarTaskSortRecent: 'Recent', sidebarTaskEmpty: 'No tasks', sidebarViewAll: 'View all', sidebarSection: 'Task list', sidebarDateGrouping: 'Group by date', sidebarDateGroupingDesc: 'Group tasks by date; today stays expanded', sidebarCodeStyleOn: 'Switch to code-style sidebar (grouped by folder)', sidebarCodeStyleOff: 'Switch to standard sidebar', sidebarNavExpand: 'Expand navigation', sidebarNavCollapse: 'Collapse navigation', sidebarResize: 'Drag to resize the sidebar; double-click to reset', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site', tearoffTitle: 'Detached', tearoffHint: 'Pop out to its own window', mobileMore: 'More',

@@ -159,6 +159,14 @@ impl SessionPolicy {
         matches!(self.mode, SessionMode::Code)
     }
 
+    /// Returns whether this mode exposes Browser MCP tools (`mcp_browser_*`) for the headed
+    /// Work-mode browser. Bridge configuration-path selection and injection of the browser-
+    /// unavailable system message must use the same decision so registration and capability
+    /// declarations remain aligned. This is their sole branch point.
+    pub fn exposes_browser_mcp(&self) -> bool {
+        matches!(self.mode, SessionMode::Plain)
+    }
+
     /// Plan 模式 per-turn reminder。两模式同文：R-1 已为 code 页接上方案审批卡，
     /// reminder 描述的卡片交互对两模式都成立，无需分化。
     pub fn plan_reminder(&self) -> Option<&'static str> {

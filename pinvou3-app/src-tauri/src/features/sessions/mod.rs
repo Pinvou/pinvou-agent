@@ -49,11 +49,10 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
-use parking_lot::{Mutex, RwLock};
-
 pub use crate::core::mode_state::{ModeLane, SerializableMode};
 use crate::platform::paths;
 use crate::platform::prefs::{CodePermissionPrefs, ModeDefaultPrefs};
+use parking_lot::{Mutex, RwLock};
 
 /// Re-export the session-domain mode-state types so they are owned by the
 /// sessions feature. These were historically re-exported through a `core`
@@ -168,6 +167,11 @@ pub struct SessionStore {
     /// startup); deletion proceeds and only the process-level state goes
     /// unnotified.
     session_purged_hooks: Arc<RwLock<Vec<SessionPurgedHook>>>,
+    /// Durable-session-deleted hook registry. This lifecycle point is separate
+    /// from `session_purged_hooks`: the durable JSON can be committed as absent
+    /// before workspace/side-map cleanup succeeds, while a side-map purge does
+    /// not itself prove that the durable session record is absent.
+    session_deleted_hooks: Arc<RwLock<Vec<SessionDeletedHook>>>,
 }
 
 /// 原生代码会话(品悟 Engine)的执行根解析器:绑定了项目目录的原生代码会话
@@ -192,6 +196,12 @@ pub type CodeSessionPredicate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 /// guard's feature dependency direction); the app composition root
 /// registers it.
 pub type SessionPurgedHook = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Durable-session-deleted hook: fired as soon as `<id>.json` is confirmed
+/// absent, including partial commits where later workspace cleanup reports an
+/// error. Hooks must be synchronous, non-blocking wakeups; asynchronous cleanup
+/// is owned by the composition root.
+pub type SessionDeletedHook = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// 一个会话的两个根:
 /// - `execution`:Engine cwd / shell 执行目录。绑了项目目录的原生代码会话 = 项目

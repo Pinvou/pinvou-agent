@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, ImageIcon, Mic, Monitor, Package, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X } from '../../components/icons.jsx';
+import {
+  invokeObservedPanelSelection,
+  isSubagentPanelPublicationCurrent,
+} from './subagent-panel-publication.mjs';
+import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, Mic, Monitor, Package, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X } from '../../components/icons.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -12,6 +16,7 @@ import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { ViewErrorBoundary } from '../../shared/ViewErrorBoundary.jsx';
 import { ArtifactCard, localizeTool, tsToolsData, tsToolWelcomeData } from '../tools/tool-common.jsx';
+import { RightDockPanel, useRightDockOcclusion } from '../../components/layout/RightDock.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
 import {
   ConversationActivityIndicator,
@@ -53,6 +58,10 @@ const LazySubagentTranscriptPanel = React.lazy(() => CHAT_PANEL_LOADERS.subagent
 const prefetchChatPanel = (key) => {
   const loader = CHAT_PANEL_LOADERS[key];
   if (loader) loader().catch(() => {});
+};
+
+const reportRightDockSelectionFailure = (error) => {
+  console.error('[chat] Right Dock selection failed', error);
 };
 // 面板槽位级挂起 fallback:与 LazyCodexAcpView 同款容器,懒 chunk 解析的
 // 微任务窗口内占住面板位置,避免挂起冒泡到应用级边界把整视图闪断成 fallback。
@@ -463,8 +472,142 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       );
     };
 
-    // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy main view: session/mode/artifact state is highly cohesive; split refactor tracked separately
-    const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode }) => {
+    const ChatRightDockSwitcher = ({
+      theme,
+      artifactsLabel,
+      browserLabel,
+      artifactCount,
+      browserAvailable,
+      browserOpen,
+      activePanelId,
+      onOpenArtifacts,
+      onOpenBrowser,
+    }) => {
+      const [menuOpen, setMenuOpen] = useState(false);
+      const rootRef = useRef(null);
+      const browserSelected = browserAvailable && (
+        activePanelId === 'browser'
+        || (activePanelId !== 'artifact-preview' && browserOpen)
+      );
+      const selectedId = browserSelected ? 'browser' : 'artifact-preview';
+      const selectedLabel = browserSelected ? browserLabel : artifactsLabel;
+      const SelectedIcon = browserSelected ? Globe : Package;
+
+      useEffect(() => {
+        if (!menuOpen) return;
+        const onPointerDown = (event) => {
+          if (!rootRef.current?.contains(event.target)) setMenuOpen(false);
+        };
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') setMenuOpen(false);
+        };
+        document.addEventListener('pointerdown', onPointerDown);
+        document.addEventListener('keydown', onKeyDown);
+        return () => {
+          document.removeEventListener('pointerdown', onPointerDown);
+          document.removeEventListener('keydown', onKeyDown);
+        };
+      }, [menuOpen]);
+
+      const openPanel = (panelId) => {
+        setMenuOpen(false);
+        const select = panelId === 'browser' ? onOpenBrowser : onOpenArtifacts;
+        void invokeObservedPanelSelection(select, [], reportRightDockSelectionFailure);
+      };
+      const triggerClass = `pointer-events-auto flex h-10 shrink-0 items-center gap-2 rounded-full border px-3 text-[14px] font-medium shadow-sm transition-colors ${
+        theme === 'dark'
+          ? 'border-white/10 bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]'
+          : 'border-black/10 bg-white text-[#1F1F1F] hover:bg-[#F0F4F9]'
+      }`;
+
+      if (!browserAvailable) {
+        return (
+          <button
+            type="button"
+            data-testid="chat-artifacts-entry"
+            onMouseEnter={() => prefetchChatPanel('artifacts')}
+            onFocus={() => prefetchChatPanel('artifacts')}
+            onClick={onOpenArtifacts}
+            className={triggerClass}
+          >
+            <Package size={16} />
+            <span className="max-sm:hidden">{artifactsLabel}</span>
+            {artifactCount > 0 && (
+              <span className="rounded-full bg-[#0B57D0] px-1.5 text-[11px] text-white dark:bg-[#A8C7FA] dark:text-[#062E6F]">
+                {artifactCount}
+              </span>
+            )}
+          </button>
+        );
+      }
+
+      return (
+        <div ref={rootRef} className="pointer-events-auto relative" data-testid="chat-right-dock-switcher">
+          <button
+            type="button"
+            data-testid="chat-right-dock-switcher-trigger"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            title={`${artifactsLabel} / ${browserLabel}`}
+            onMouseEnter={() => prefetchChatPanel('artifacts')}
+            onFocus={() => prefetchChatPanel('artifacts')}
+            onClick={() => setMenuOpen((open) => !open)}
+            className={triggerClass}
+          >
+            <SelectedIcon size={16} />
+            <span className="max-sm:hidden">{selectedLabel}</span>
+            {!browserSelected && artifactCount > 0 && (
+              <span className="rounded-full bg-[#0B57D0] px-1.5 text-[11px] text-white dark:bg-[#A8C7FA] dark:text-[#062E6F]">
+                {artifactCount}
+              </span>
+            )}
+            <ChevronDown
+              size={14}
+              className={`transition-transform ${menuOpen ? 'rotate-180' : ''}`}
+            />
+          </button>
+          {menuOpen && (
+            <div
+              role="menu"
+              className={`absolute right-0 top-full mt-2 w-44 overflow-hidden rounded-xl border p-1 shadow-xl ${
+                theme === 'dark'
+                  ? 'border-white/10 bg-[#252628] text-[#E8EAED]'
+                  : 'border-black/10 bg-white text-[#202124]'
+              }`}
+            >
+              {[
+                { id: 'artifact-preview', label: artifactsLabel, Icon: Package, count: artifactCount },
+                { id: 'browser', label: browserLabel, Icon: Globe, count: 0 },
+              ].map(({ id, label, Icon, count }) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={selectedId === id}
+                  data-testid={`chat-right-dock-option-${id}`}
+                  onClick={() => openPanel(id)}
+                  className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${
+                    theme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/5'
+                  }`}
+                >
+                  <Icon size={16} className="shrink-0" />
+                  <span className="min-w-0 flex-1 truncate">{label}</span>
+                  {count > 0 && (
+                    <span className="rounded-full bg-[#0B57D0] px-1.5 text-[10px] text-white dark:bg-[#A8C7FA] dark:text-[#062E6F]">
+                      {count}
+                    </span>
+                  )}
+                  {selectedId === id && <Check size={14} className="shrink-0" />}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy main view: session/mode/artifact/browser state is highly cohesive; split refactor tracked separately
+    const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, browserDockAvailable = false, browserDockOpen = false, rightDockActivePanelId = null, onRightDockPanelSelectionChange, onOpenBrowserDock }) => {
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
       const sceneCopy = chatCopy.sceneModes;
@@ -494,6 +637,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const [artifactsOpen, setArtifactsOpen] = useState(false);
       const [artifactsFullscreen, setArtifactsFullscreen] = useState(false);
       const [activeArtifactPath, setActiveArtifactPath] = useState(null);
+      const [artifactDockActivation, setArtifactDockActivation] = useState(0);
       const initialPinvouModeScope = createPinvouModeScopeKey(bs && bs.activeSessionId);
       const [pinvouModeState, setPinvouModeState] = useState(() => loadPinvouModeState(undefined, initialPinvouModeScope));
       const pinvouModeScopeRef = useRef(initialPinvouModeScope);
@@ -522,65 +666,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           return merged;
         });
       }, []);
-      // ── 产物分栏:宽屏(≥900)并排可拖、窄屏回退覆盖抽屉 ──
-      const ART_MIN = 360, CHAT_MIN = 360, ART_MAX_RATIO = 0.65, ART_DEFAULT_RATIO = 0.45, ART_NARROW = 900;
-      const clampArtifactWidth = (w, rootW) => {
-        const max = Math.max(ART_MIN, Math.min(Math.round(rootW * ART_MAX_RATIO), rootW - CHAT_MIN));
-        return Math.max(ART_MIN, Math.min(Math.round(w), max));
-      };
-      const rootRef = useRef(null);
+      // Artifacts live in the app-level Right Dock; its host owns narrow-layout fallback.
       const artColRef = useRef(null);
-      const [isWide, setIsWide] = useState(() => (typeof window === 'undefined' ? 1200 : window.innerWidth) >= ART_NARROW);
-      const [artifactW, setArtifactW] = useState(() => {
-        const s = Number(localStorage.getItem('pinvou_artifactW') || '');
-        const w = (typeof window === 'undefined' ? 1200 : window.innerWidth);
-        const next = Number.isFinite(s) && s >= ART_MIN ? s : Math.round(w * ART_DEFAULT_RATIO);
-        return clampArtifactWidth(next, w);
-      });
-      useEffect(() => {
-        const onResize = () => {
-          const rootW = rootRef.current ? rootRef.current.getBoundingClientRect().width : window.innerWidth;
-          setIsWide(window.innerWidth >= ART_NARROW);
-          setArtifactW(w => clampArtifactWidth(w, rootW));
-        };
-        onResize();                 // 挂载即测一次(maximized 启动时 init 可能读到小值,这里校正)
-        const t = setTimeout(onResize, 300);  // 再补一发,防 webview 首帧尺寸未定
-        window.addEventListener('resize', onResize);
-        return () => { clearTimeout(t); window.removeEventListener('resize', onResize); };
-      }, []);
-      const startArtifactDrag = (e) => {
-        e.preventDefault();
-        const rect = rootRef.current ? rootRef.current.getBoundingClientRect() : { right: window.innerWidth, width: window.innerWidth };
-        const max = Math.max(ART_MIN, Math.min(Math.round(rect.width * ART_MAX_RATIO), rect.width - CHAT_MIN));
-        const col = artColRef.current;
-        let last = artifactW, raf = 0;
-        if (col) col.style.pointerEvents = 'none';   // 拖动时让产物 iframe 不吃 mousemove(否则往右拖发涩)
-        const onMove = (ev) => {
-          last = Math.max(ART_MIN, Math.min(rect.right - ev.clientX, max));
-          if (raf) return;                            // rAF 合帧:每帧最多改一次
-          raf = requestAnimationFrame(() => {
-            raf = 0;
-            if (col) col.style.width = last + 'px';    // 直接改 DOM 宽度,拖动期间不触发 React 重渲染
-          });
-        };
-        const onUp = () => {
-          document.removeEventListener('mousemove', onMove);
-          document.removeEventListener('mouseup', onUp);
-          if (raf) cancelAnimationFrame(raf);
-          if (col) col.style.pointerEvents = '';
-          document.body.style.cursor = ''; document.body.style.userSelect = '';
-          setArtifactW(last);                          // 仅松手时提交一次 state + 落盘
-          localStorage.setItem('pinvou_artifactW', String(Math.round(last)));
-        };
-        document.addEventListener('mousemove', onMove);
-        document.addEventListener('mouseup', onUp);
-        document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
-      };
-      const resetArtifactW = () => {
-        const rootW = rootRef.current ? rootRef.current.getBoundingClientRect().width : window.innerWidth;
-        const w = clampArtifactWidth(Math.round(rootW * ART_DEFAULT_RATIO), rootW);
-        setArtifactW(w); localStorage.setItem('pinvou_artifactW', String(w));
-      };
       const scrollRef = useRef(null);
       const conversationContentRef = useRef(null);
       const autoScrollRef = useRef(true);
@@ -629,6 +716,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       }, []);
       const chatItems = bs ? bs.chatItems : [];
       const activeSessionId = bs ? bs.activeSessionId : null;
+      const activeSessionIdRef = useRef(activeSessionId);
+      activeSessionIdRef.current = activeSessionId;
       const busy = bs ? bs.busy : false;
       // 停止按钮 single-flight:busy 在首次 cancel_generation 返回前就复位,
       // 双击会发第二个并发取消请求。cancellingSessionIds 在 invoke 完成前禁用
@@ -1061,6 +1150,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const isMultiAgentReadOnly = !MULTI_AGENT_ENABLED
         && !!(bs && bs.modeState && bs.modeState.multiAgent);
       const artifactsVisible = Boolean(activeSessionId && artifactsOpen);
+      const artifactFullscreenPublicationReady = useRightDockOcclusion(
+        'artifact-fullscreen',
+        artifactsVisible && artifactsFullscreen,
+      );
       useEffect(() => {
         if (designAiSessionRef.current && designAiSessionRef.current !== activeSessionId) {
           updateDesignAiState({ text: '', status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0 });
@@ -1089,12 +1182,20 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const closeArtifactsPanel = useCallback(() => {
         setArtifactsFullscreen(false);
         setArtifactsOpen(false);
-      }, []);
-      // 子智能体只读执行记录面板（Codex 式右侧列，ADR-0006）。任何工作会话可开
-      // （裸 agent 在普通工作对话同样可用）；与产物面板互斥，否则窄窗下聊天列被挤没。
-      // null=关闭；agentId 为空进列表页。selectionRequestId 让“详情→返回列表→
-      // 再点同一张主对话卡”也成为一次新选择，不能只靠相同 agentId 的 prop 变化。
+        if (browserDockOpen) {
+          void invokeObservedPanelSelection(
+            onRightDockPanelSelectionChange,
+            ['browser', activeSessionId],
+            reportRightDockSelectionFailure,
+          );
+        }
+      }, [activeSessionId, browserDockOpen, onRightDockPanelSelectionChange]);
+      // Read-only subagent transcript panel (Codex-style right column, ADR-0006).
+      // It is available in every work session, including bare agents in normal chats.
+      // null means closed; an empty agentId opens the list. selectionRequestId makes
+      // detail -> list -> same parent card a new selection even when agentId is unchanged.
       const [subagentPanel, setSubagentPanel] = useState(null);
+      const subagentPanelRequestRef = useRef(0);
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the sub-agent panel on session switch
       useEffect(() => { setSubagentPanel(null); }, [activeSessionId]);
       const rememberScrollBeforeSubagentPanelChange = useCallback(() => {
@@ -1104,9 +1205,37 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         );
       }, []);
       const closeSubagentPanel = useCallback(() => {
-        rememberScrollBeforeSubagentPanelChange();
-        setSubagentPanel(null);
-      }, [rememberScrollBeforeSubagentPanelChange]);
+        const requestId = subagentPanelRequestRef.current + 1;
+        subagentPanelRequestRef.current = requestId;
+        const requestedSessionId = activeSessionId;
+        const restorePanelId = subagentPanel?.restorePanelId || null;
+        const publishClose = ({ isCurrent = () => true } = {}) => {
+          if (!isSubagentPanelPublicationCurrent({
+            transitionCurrent: isCurrent(),
+            requestId,
+            currentRequestId: subagentPanelRequestRef.current,
+            sessionId: requestedSessionId,
+            currentSessionId: activeSessionIdRef.current,
+          })) return false;
+          rememberScrollBeforeSubagentPanelChange();
+          setSubagentPanel(null);
+          return true;
+        };
+        if (browserDockOpen && restorePanelId && onRightDockPanelSelectionChange) {
+          return invokeObservedPanelSelection(
+            onRightDockPanelSelectionChange,
+            [restorePanelId, requestedSessionId, publishClose],
+            reportRightDockSelectionFailure,
+          );
+        }
+        return publishClose();
+      }, [
+        activeSessionId,
+        browserDockOpen,
+        onRightDockPanelSelectionChange,
+        rememberScrollBeforeSubagentPanelChange,
+        subagentPanel,
+      ]);
       useLayoutEffect(() => {
         const snapshot = subagentPanelScrollRef.current;
         if (!snapshot) return;
@@ -1125,29 +1254,69 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         const onOpen = (event) => {
           const detail = event && event.detail;
           if (detail?.sessionId && detail.sessionId !== activeSessionId) return;
+          const requestedSessionId = activeSessionId;
+          if (!requestedSessionId) return;
+          const requestId = subagentPanelRequestRef.current + 1;
+          subagentPanelRequestRef.current = requestId;
           prefetchChatPanel('subagent');
-          rememberScrollBeforeSubagentPanelChange();
-          setSubagentPanel((current) => ({
-            agentId: (detail && detail.agentId) || null,
-            selectionRequestId: (current?.selectionRequestId || 0) + 1,
-          }));
-          closeArtifactsPanel();
+          const publishOpen = ({ isCurrent = () => true } = {}) => {
+            if (!isSubagentPanelPublicationCurrent({
+              transitionCurrent: isCurrent(),
+              requestId,
+              currentRequestId: subagentPanelRequestRef.current,
+              sessionId: requestedSessionId,
+              currentSessionId: activeSessionIdRef.current,
+            })) return false;
+            rememberScrollBeforeSubagentPanelChange();
+            setSubagentPanel((current) => ({
+              agentId: (detail && detail.agentId) || null,
+              selectionRequestId: (current?.selectionRequestId || 0) + 1,
+              // Re-selecting another agent while this panel is already active
+              // must retain the dock that preceded the first open. App has
+              // already moved browserPaneSelected away from `browser` by then.
+              restorePanelId: current
+                ? current.restorePanelId
+                : browserDockOpen ? rightDockActivePanelId : null,
+            }));
+            return true;
+          };
+          if (onRightDockPanelSelectionChange) {
+            void invokeObservedPanelSelection(
+              onRightDockPanelSelectionChange,
+              ['subagent-transcript', requestedSessionId, publishOpen],
+              reportRightDockSelectionFailure,
+            );
+          } else {
+            publishOpen();
+          }
         };
         window.addEventListener('pinvou:open-subagent', onOpen);
-        return () => window.removeEventListener('pinvou:open-subagent', onOpen);
-      }, [activeSessionId, closeArtifactsPanel, rememberScrollBeforeSubagentPanelChange]);
-      useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- artifact panel and sub-agent panel are mutually exclusive; opening one synchronously closes the other
-        if (artifactsVisible) setSubagentPanel(null);
-      }, [artifactsVisible]);
+        return () => {
+          subagentPanelRequestRef.current += 1;
+          window.removeEventListener('pinvou:open-subagent', onOpen);
+        };
+      }, [
+        activeSessionId,
+        browserDockOpen,
+        onRightDockPanelSelectionChange,
+        rememberScrollBeforeSubagentPanelChange,
+        rightDockActivePanelId,
+      ]);
       const handlePreviewArtifact = useCallback((artifact) => {
         setActiveArtifactPath(artifact && artifact.path ? artifact.path : null);
+        setArtifactDockActivation((value) => value + 1);
       }, []);
       const openArtifactsPreview = useCallback(() => {
         prefetchChatPanel('artifacts');
         if (latestArtifact && latestArtifact.path) setActiveArtifactPath(latestArtifact.path);
         setArtifactsOpen(true);
-      }, [latestArtifact]);
+        setArtifactDockActivation((value) => value + 1);
+        void invokeObservedPanelSelection(
+          onRightDockPanelSelectionChange,
+          ['artifact-preview', activeSessionId],
+          reportRightDockSelectionFailure,
+        );
+      }, [activeSessionId, latestArtifact, onRightDockPanelSelectionChange]);
       useEffect(() => {
         const previousCount = previousArtifactCountRef.current;
         previousArtifactCountRef.current = artifactCount;
@@ -1156,6 +1325,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         prefetchChatPanel('artifacts');
         setActiveArtifactPath(latestArtifact.path);
         setArtifactsOpen(true);
+        setArtifactDockActivation((value) => value + 1);
       }, [artifactCount, latestArtifact, pinvouMode]);
       const draftEpoch = bs ? bs.draftEpoch : 0;
       // 切换 session / 新建草稿会话时读取各自 working set 里的未发送内容。
@@ -1303,6 +1473,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         ? { left: floatingVoicePos.x + 'px', top: floatingVoicePos.y + 'px' }
         : { left: 'calc(100% - 220px)', top: '50%', transform: 'translateY(-50%)' };
       const voiceAsrSetup = (bs && bs.voiceAsrSetup) || { open: false };
+      const voiceAsrSetupPublicationReady = useRightDockOcclusion(
+        'voice-asr-setup',
+        !!voiceAsrSetup.open && canInstallLocalAsr
+      );
       useEffect(() => {
         const sessionKey = `${activeSessionId || 'draft'}:${draftEpoch}`;
         if (justInstalledTool) {
@@ -1625,8 +1799,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         }
       }
 
+      const responsiveGutterStyle = {
+        paddingInline: 'clamp(16px, calc((100% - 800px) / 2), 160px)',
+      };
+
       return (
-        <div ref={rootRef} className="flex-1 flex flex-row w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
+        <div className="flex-1 flex flex-row w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
           <div ref={chatRootRef} className="flex-1 flex flex-col min-w-0 relative h-full">
             <ComposerAttachmentDropOverlay
               enabled={bridge.available && (!isWeb || can('deviceFileUpload'))}
@@ -1652,17 +1830,18 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               )}
             </div>
             <div className="flex items-center gap-2">
-              {/* 窄屏：只留图标+计数（避免被左侧返回按钮挤到换行），文字标签 ≥sm 才显示 */}
               {activeSessionId && (
-                <button type="button"
-                  data-testid="chat-artifacts-entry"
-                  onMouseEnter={() => prefetchChatPanel('artifacts')}
-                  onFocus={() => prefetchChatPanel('artifacts')}
-                  onClick={openArtifactsPreview}
-                  className={`pointer-events-auto px-4 max-sm:px-3 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 whitespace-nowrap shrink-0 ${'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm dark:bg-[#1E1F20] dark:text-[#E3E3E3] dark:hover:bg-[#333537]'}`}>
-                  <Package size={16} /> <span className="max-sm:hidden">{t.artifacts}</span>
-                  {artifactCount > 0 && <span className={`text-[11px] px-1.5 rounded-full ${'bg-[#0B57D0] text-white dark:bg-[#A8C7FA] dark:text-[#062E6F]'}`}>{artifactCount}</span>}
-                </button>
+                <ChatRightDockSwitcher
+                  theme={theme}
+                  artifactsLabel={t.artifacts}
+                  browserLabel={t.browser}
+                  artifactCount={artifactCount}
+                  browserAvailable={browserDockAvailable}
+                  browserOpen={browserDockOpen}
+                  activePanelId={rightDockActivePanelId}
+                  onOpenArtifacts={openArtifactsPreview}
+                  onOpenBrowser={onOpenBrowserDock}
+                />
               )}
             </div>
           </div>
@@ -1673,8 +1852,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               不把 overflow flex 容器的尾部 padding 完整计入 scrollHeight。
               空态不滚动，仍需 paddingBottom 让欢迎语在悬浮输入框上方居中。 */}
           <div ref={scrollRef} data-testid="chat-scroll"
-            style={hasMessages ? undefined : { paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }}
-            className={`flex-1 min-h-0 min-w-0 overflow-y-auto ${(artifactsVisible && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'} custom-scrollbar flex flex-col pt-20 max-sm:pt-16 ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
+            style={{
+              ...responsiveGutterStyle,
+              ...(hasMessages ? {} : { paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }),
+            }}
+            className={`flex-1 min-h-0 min-w-0 overflow-y-auto custom-scrollbar flex flex-col pt-20 max-sm:pt-16 ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
 
             {!hasMessages && !welcomeToolId && (
               /* Gemini Style Centered Empty State */
@@ -1807,8 +1989,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             </div>
           )}
           {hasMessages && chatItems.some((item) => item.type === 'memory_candidate' && !item.resolved) && (
-            <div className={`pointer-events-none absolute inset-x-0 z-[24] ${(artifactsVisible && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}
-              style={{ bottom: (composerH ? composerH + 28 : 148) + 'px' }}>
+            <div className="pointer-events-none absolute inset-x-0 z-[24]"
+              style={{ ...responsiveGutterStyle, bottom: (composerH ? composerH + 28 : 148) + 'px' }}>
               <div className="max-w-[800px] w-full mx-auto flex flex-col items-end gap-3">
                 {chatItems
                   .filter((item) => item.type === 'memory_candidate' && !item.resolved)
@@ -1869,7 +2051,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             </div>
           )}
           {/* Floating Input Area */}
-          <div ref={composerWrapRef} data-testid="chat-composer-wrap" className={`absolute ${isWeb ? 'bottom-2 sm:bottom-8' : 'bottom-8'} inset-x-0 z-20 ${(artifactsVisible && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}>
+          <div
+            ref={composerWrapRef}
+            data-testid="chat-composer-wrap"
+            className={`absolute ${isWeb ? 'bottom-2 sm:bottom-8' : 'bottom-8'} inset-x-0 z-20`}
+            style={responsiveGutterStyle}
+          >
             <div className="max-w-[800px] w-full mx-auto">
               {!scheduledRunContext && !conversationStarted && (
                 <HomeModeSwitcher
@@ -1978,7 +2165,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 <button type="button" onClick={() => bridge.voice.closeVoiceAsrSetup()} className={`shrink-0 px-2 py-1 rounded-full font-medium ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>{chatCopy.gotIt}</button>
               </div>
             )}
-            {voiceAsrSetup.open && canInstallLocalAsr && (() => {
+            {voiceAsrSetup.open && canInstallLocalAsr && voiceAsrSetupPublicationReady && (() => {
               const su = voiceAsrSetup;
               const prog = su.progress || {};
               const pct = (prog.stage === 'model' && prog.total) ? Math.floor(prog.downloaded / prog.total * 100) : null;
@@ -1990,7 +2177,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               return (
                 // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the dialog's cancel button
                 // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
-                <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/45"
+                <div data-testid="voice-asr-setup-dialog" className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/45"
                   onClick={() => { if (!su.installing) bridge.voice.closeVoiceAsrSetup(); }}>
                   {/* biome-ignore lint/a11y/useKeyWithClickEvents: click bubble-stop layer; keyboard events need no bubbling handling */}
                   {/* biome-ignore lint/a11y/noStaticElementInteractions: click bubble-stop layer; non-interactive container */}
@@ -2159,7 +2346,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           </div>
           </div>{/* /对话列 */}
 
-          {artifactsVisible && artifactsFullscreen && createPortal(
+          {artifactsVisible && artifactsFullscreen && artifactFullscreenPublicationReady && createPortal(
             <div
               ref={artColRef}
               className="fixed left-0 right-0 bottom-0 z-[1000] pointer-events-auto"
@@ -2197,19 +2384,15 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             document.body
           )}
 
-          {artifactsVisible && isWide && !artifactsFullscreen && (
-            <>
-              {/* biome-ignore lint/a11y/useSemanticElements: drag splitter requires div semantics */}
-              {/* biome-ignore lint/a11y/useFocusableInteractive: drag splitter relies on mouse dragging; div semantics as above */}
-              {/* biome-ignore lint/a11y/useAriaPropsForRole: aria-orientation is the established semantic annotation for a draggable div splitter */}
-              <div onMouseDown={startArtifactDrag} onDoubleClick={resetArtifactW} role="separator" aria-orientation="vertical"
-                className={`shrink-0 w-1.5 h-full cursor-col-resize transition-colors ${'bg-black/10 hover:bg-[#0B57D0]/50 dark:bg-white/10 dark:hover:bg-[#A8C7FA]/60'}`} />
-              <div
-                ref={artColRef}
-                className="shrink-0 h-full relative"
-                style={{ width: artifactW + 'px' }}>
-                <ViewErrorBoundary t={t} variant="panel">
-                <PanelSuspense>
+          {artifactsVisible && !artifactsFullscreen && (
+            <RightDockPanel
+              panelId="artifact-preview"
+              visible={rightDockActivePanelId !== 'browser'}
+              activationKey={artifactDockActivation}
+              dataTestId="artifact-side-panel"
+            >
+              <ViewErrorBoundary t={t} variant="panel">
+              <PanelSuspense>
                 <LazyArtifactsPanel
                   bs={bs}
                   t={t}
@@ -2234,40 +2417,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   designAiState={designAiState}
                   onDesignAiStateChange={updateDesignAiState}
                 />
-                </PanelSuspense>
-                </ViewErrorBoundary>
-              </div>
-            </>
-          )}
-          {artifactsVisible && !isWide && !artifactsFullscreen && (
-            <ViewErrorBoundary t={t} variant="panel">
-            <PanelSuspense>
-            <LazyArtifactsPanel
-              bs={bs}
-              t={t}
-              onClose={closeArtifactsPanel}
-              isWide={false}
-              isFullscreen={false}
-              onToggleFullscreen={() => setArtifactsFullscreen(true)}
-              preferredArtifactPath={activeArtifactPath}
-              onPreviewArtifact={handlePreviewArtifact}
-              onGotoSettings={onGotoSettings}
-              designMode={pinvouMode === 'design'}
-              designCommand={designCommand}
-              selectedDesignElement={selectedDesignElement}
-              designChanges={visibleDesignChanges}
-              onDesignRuntimeStatus={handleDesignRuntimeStatus}
-              onDesignElementSelected={handleDesignElementSelected}
-              onDesignChangeApplied={handleDesignChangeApplied}
-              onDesignMutation={handleDesignMutation}
-              onDesignApplyChange={handleApplyDesignChange}
-              onDesignClearChanges={handleClearDesignChanges}
-              onDesignAiSubmit={handleDesignAiSubmit}
-              designAiState={designAiState}
-              onDesignAiStateChange={updateDesignAiState}
-            />
-            </PanelSuspense>
-            </ViewErrorBoundary>
+              </PanelSuspense>
+              </ViewErrorBoundary>
+            </RightDockPanel>
           )}
           {subagentPanel && (
             <ViewErrorBoundary t={t} variant="panel">

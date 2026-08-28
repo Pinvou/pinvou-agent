@@ -4,6 +4,8 @@
 // i18n.js 聚合 shim 与 Node 契约测试(ui_language_coverage)静态 import 全部三语,拆分仅影响浏览器 chunk。
 
 /* eslint-disable sonarjs/no-nested-template-literals, sonarjs/no-unenclosed-multiline-block -- compact i18n dictionary: nested templates mirror the copy structure one-to-one; credential field names are false-positive secrets */
+import { browserZh } from './browser.js';
+
 const conversationZh = {
   completed:'已完成', failed:'失败', interrupted:'已中断', limitReached:'达到限制', processing:'处理中', processingActive:'正在处理',
   waitingPermission:'等待授权', waitingInput:'等待你的输入', waitingInputShort:'等待输入',
@@ -132,6 +134,7 @@ const acpProvidersZh = {
 };
 
 export const dictZh = {
+  ...browserZh,
         langTag: 'zh',
         acpAgent: 'ACP Agent',
         newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', scheduledPlans: '定时任务', monitor: '运行状态', workflow: '工作流', multiAgent: '多智能体', multiAgentDesktopOnly: '此多智能体对话当前仅在桌面端可用。', toolStore: '插件中心', cardPool: '专家池', recent: '历史对话', pinnedTasks: '置顶任务', regularTasks: '任务', sidebarTaskList: '任务列表', sidebarTaskFilter: '筛选', sidebarTaskFilterAll: '全部', sidebarTaskFilterPinned: '置顶', sidebarTaskFilterCode: '代码', sidebarTaskFilterScheduled: '定时任务', sidebarTaskSort: '排序', sidebarTaskSortPinnedFirst: '置顶优先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: '暂无任务', sidebarViewAll: '查看全部', sidebarSection: '任务列表', sidebarDateGrouping: '按日期折叠', sidebarDateGroupingDesc: '任务列表按日期分组，今天默认展开', sidebarCodeStyleOn: '切换到 code 样式边栏（按文件夹分组）', sidebarCodeStyleOff: '切换到普通样式边栏', sidebarNavExpand: '展开导航', sidebarNavCollapse: '收起导航', sidebarResize: '拖拽调整边栏宽度，双击复位', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口', mobileMore: '更多',

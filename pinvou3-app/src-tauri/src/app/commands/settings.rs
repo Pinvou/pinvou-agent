@@ -1329,8 +1329,9 @@ pub async fn save_settings_and_restart(
 ) -> Result<(), String> {
     persist_general_settings(patch)?;
     eprintln!("[pinvou3-app] settings saved, restarting app...");
-    // restart 跳过 RunEvent::Exit,先同步收割 ACP/连接器子进程防孤儿。
-    crate::harvest_child_processes(&app).await;
+    // Restart bypasses RunEvent::Exit, so persist and close the browser host and reap child
+    // processes first.
+    crate::prepare_app_restart(&app).await;
     app.restart();
 }
 
@@ -1342,8 +1343,9 @@ pub async fn save_search_settings_and_restart(
 ) -> Result<(), String> {
     persist_search_settings(search)?;
     eprintln!("[pinvou3-app] search settings saved, restarting app...");
-    // restart 跳过 RunEvent::Exit,先同步收割 ACP/连接器子进程防孤儿。
-    crate::harvest_child_processes(&app).await;
+    // Restart bypasses RunEvent::Exit, so persist and close the browser host and reap child
+    // processes first.
+    crate::prepare_app_restart(&app).await;
     app.restart();
 }
 use super::prelude::*;

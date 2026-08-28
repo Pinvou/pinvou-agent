@@ -7,11 +7,13 @@
 //! persistence entry points. Retention, mode state, sidecars, and the
 //! scheduled-profile registry are split into their own sibling modules.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::LazyLock;
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
@@ -27,13 +29,16 @@ use crate::platform::paths;
 use super::scheduled::ChatEngineState;
 use super::transcript::{looks_like_truncating_overwrite, transcript_revision};
 use super::validators::{generate_session_id, persisted_system_prompt, validate_session_id};
-use super::CodeSessionPredicate;
-use super::SessionPurgedHook;
+use super::{
+    session_roots_for, CodeSessionPredicate, ExecutionRootResolver, SessionDeletedHook,
+    SessionKind, SessionPurgedHook, SessionRoots, SessionStore,
+};
 use crate::core::mode_state::SerializableMode;
 use crate::platform::prefs::UserPrefs;
-use std::collections::HashSet;
 
-use super::{session_roots_for, ExecutionRootResolver, SessionKind, SessionRoots, SessionStore};
+#[cfg(test)]
+static POST_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Cap on the number of ordinary chat sessions retained on disk before the
 /// oldest is evicted by [`super::retention::SessionStore::enforce_session_retention_locked`].
@@ -177,6 +182,7 @@ impl SessionStore {
             code_permission: Arc::new(RwLock::new(prefs_snapshot.code_permission)),
             mode_defaults: Arc::new(RwLock::new(prefs_snapshot.mode_defaults)),
             session_purged_hooks: Arc::new(RwLock::new(Vec::new())),
+            session_deleted_hooks: Arc::new(RwLock::new(Vec::new())),
         };
         store.load_scheduled_profiles()?;
         store.reconcile_scheduled_profiles_locked()?;
@@ -273,7 +279,15 @@ impl SessionStore {
         // 不在盘上但错误会向上传播——按「已发起删除即可能变更盘面」失效快照,
         // 不能等走到 match 之后的统一失效(Err 提前 return 会跳过它)。
         self.invalidate_list_cache();
-        match self.manager.delete_session(id) {
+        let (committed, delete_result) = self.delete_session_record(id);
+        if committed {
+            // A later workspace/artifact cleanup error does not roll back the
+            // durable record removal. Purge store/process side maps now so an
+            // error return cannot strand an active id, model binding or turn
+            // state forever when the caller never retries.
+            self.purge_session_side_maps(&[id.to_string()]);
+        }
+        match delete_result {
             Ok(()) => {}
             Err(err) if err.kind() == ErrorKind::NotFound => {
                 // The session JSON may already have been removed by an earlier
@@ -293,58 +307,71 @@ impl SessionStore {
             }
             Err(err) => return Err(err).with_context(|| format!("delete_session({id})")),
         }
-        // 删除已落盘,列表快照过期
-        self.invalidate_list_cache();
-        // 如果删的是 active session，清理 active 标记
-        let mut active = self.active.write();
-        if active.as_deref() == Some(id) {
-            *active = None;
-        }
-        drop(active);
-        let removed_multi_agent = self
-            .mode_states
-            .write()
-            .remove(id)
-            .is_some_and(|state| state.multi_agent);
-        if removed_multi_agent {
-            if let Err(error) = self.save_multi_agent_flags() {
-                eprintln!(
-                    "[sessions] update _multi_agent.json after delete({id}) failed: {error:#}"
-                );
-            }
-        }
-        if self.session_mode_states.write().remove(id).is_some() {
-            self.save_session_mode_states();
-        }
-        let removed_session_model = {
-            let mut session_models = self.session_models.write();
-            session_models.remove(id).is_some()
-        };
-        if removed_session_model {
-            self.save_session_models();
-        }
-        let removed_pin = {
-            let mut pinned_sessions = self.pinned_sessions.write();
-            pinned_sessions.remove(id).is_some()
-        };
-        if removed_pin {
-            self.save_pinned_sessions();
-        }
-        let removed_hidden = {
-            let mut hidden_sessions = self.hidden_sessions.write();
-            hidden_sessions.remove(id).is_some()
-        };
-        if removed_hidden {
-            self.save_hidden_sessions();
-        }
-        // The hook fires after all store-side map locks are released (same
-        // policy as the retention path in retention.rs): holding locks
-        // while calling process-level cleanup would introduce lock-ordering
-        // risk. Hook implementations only do idempotent keyed removal; when
-        // nobody registered (tests/early startup), deletion completes as
-        // usual.
-        self.notify_session_purged(id);
         Ok(())
+    }
+
+    /// Delete the durable session record and report whether that deletion
+    /// committed, independently from later workspace/artifact cleanup.
+    ///
+    /// `SessionManager::delete_session` removes `<id>.json` before recursively
+    /// deleting `<id>/`. It can therefore return an error after the durable
+    /// record is already gone. In that partial-commit state we must publish the
+    /// durable-deletion hook while preserving the original cleanup error for the
+    /// caller. Validation plus a direct metadata lookup makes the check
+    /// fail-closed: an invalid id or an unreadable path is never interpreted as
+    /// a committed deletion.
+    pub(crate) fn delete_session_record(&self, id: &str) -> (bool, std::io::Result<()>) {
+        let result = self.invoke_session_manager_delete(id);
+        let committed = result.is_ok() || self.durable_session_record_is_absent(id);
+        if committed {
+            self.notify_session_deleted(id);
+        }
+        (committed, result)
+    }
+
+    pub(super) fn durable_session_record_is_absent(&self, id: &str) -> bool {
+        if validate_session_id(id).is_err() {
+            return false;
+        }
+        let record = self.manager.sessions_dir().join(format!("{id}.json"));
+        matches!(
+            std::fs::metadata(record),
+            Err(error) if error.kind() == ErrorKind::NotFound
+        )
+    }
+
+    fn invoke_session_manager_delete(&self, id: &str) -> std::io::Result<()> {
+        #[cfg(test)]
+        if let Some(kind) = POST_RECORD_DELETE_FAULTS.lock().remove(id) {
+            validate_session_id(id).map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
+            })?;
+            std::fs::remove_file(self.manager.sessions_dir().join(format!("{id}.json")))?;
+            return Err(std::io::Error::new(
+                kind,
+                "injected cleanup failure after durable session deletion",
+            ));
+        }
+        self.manager.delete_session(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_post_record_delete_fault(&self, id: &str, kind: ErrorKind) -> Result<()> {
+        validate_session_id(id)?;
+        POST_RECORD_DELETE_FAULTS
+            .lock()
+            .insert(id.to_string(), kind);
+        Ok(())
+    }
+
+    pub(crate) fn notify_session_deleted(&self, id: &str) {
+        // Never execute extension code while holding the registry lock. A hook
+        // may register another hook (or enter another lifecycle seam); cloning
+        // the Arc list first prevents lock-order inversions and self-deadlock.
+        let hooks = self.session_deleted_hooks.read().clone();
+        for hook in hooks {
+            hook(id);
+        }
     }
 
     pub fn session_kind(&self, id: &str) -> Result<SessionKind> {
@@ -372,6 +399,14 @@ impl SessionStore {
         self.session_purged_hooks.write().push(hook);
     }
 
+    /// Register a durable-session-deleted hook. Runtime hooks are intentionally
+    /// not backed by an ever-growing replay log: deletions that happen during
+    /// store boot are recovered by the composition root's on-disk orphan
+    /// reconciliation before normal producers start.
+    pub fn register_session_deleted_hook(&self, hook: SessionDeletedHook) {
+        self.session_deleted_hooks.write().push(hook);
+    }
+
     /// Notifies all registered parties after a session is deleted from the
     /// store ([`SessionStore::delete`] and deep paths without an app handle
     /// such as retention policy/scheduled cleanup). Failures are silent
@@ -379,7 +414,8 @@ impl SessionStore {
     /// deletion path; callers must fire this only after all store-side
     /// locks are released.
     pub(crate) fn notify_session_purged(&self, id: &str) {
-        for hook in self.session_purged_hooks.read().iter() {
+        let hooks = self.session_purged_hooks.read().clone();
+        for hook in hooks {
             hook(id);
         }
     }

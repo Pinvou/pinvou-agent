@@ -7,7 +7,6 @@
 // Node 下该模块可直接解析,失败分支通过临时注册的 loader 注入(见各用例)。
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { pathToFileURL } from 'node:url';
 
 const i18nUrl = new URL('../src/shared/i18n.js', import.meta.url).href;
 
@@ -62,7 +61,7 @@ test('失败分支:源码注入桩 loader 验证 false + 清挂起 + 可重试',
   let source = fs.readFileSync(new URL('../src/shared/i18n.js', import.meta.url), 'utf8');
   assert.match(source, /const LAZY_DICT_LOADERS/, 'i18n.js 结构变化,注入点失效需更新本测试');
   // 把 en 的 loader 替换为受控桩:两次失败后成功;import 路径改为相对 data: URL 可达的绝对路径。
-  const enUrl = pathToFileURL(new URL('../src/shared/i18n/en.js', import.meta.url).pathname).href;
+  const enUrl = new URL('../src/shared/i18n/en.js', import.meta.url).href;
   source = source.replace(
     "en: () => import('./i18n/en.js'),",
     `en: () => globalThis.__stubEn(),`,

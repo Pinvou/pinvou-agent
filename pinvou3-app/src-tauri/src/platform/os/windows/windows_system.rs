@@ -45,6 +45,27 @@ pub fn current_system_locale() -> Option<String> {
     String::from_utf16(&locale_names[..first_len]).ok()
 }
 
+/// Probes process liveness with `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`.
+/// Access denied also means the process exists under another user or integrity level.
+/// Browser watch uses this before removing a stale port file.
+pub fn process_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: This only queries existence, and every non-null handle is closed immediately.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if !handle.is_null() {
+        unsafe {
+            CloseHandle(handle);
+        }
+        return true;
+    }
+    let err = unsafe { GetLastError() };
+    err == ERROR_ACCESS_DENIED
+}
+
+/// Windows user-profile ACLs provide the directory privacy boundary.
+pub fn make_private_dir(_path: &Path) {}
+
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     HiddenCommand::new("cmd")
         .args(["/C", "start", ""])
@@ -468,6 +489,14 @@ fn is_libreoffice_command(command: &str) -> bool {
 
 pub fn nvidia_smi_candidates() -> Vec<&'static str> {
     Vec::new()
+}
+
+/// Returns the installer-provisioned `runtime/node/node.exe`, resolved through
+/// windows_path::bundled_node_dir. Consumers fall back to PATH when it is absent.
+pub fn bundled_node() -> Option<PathBuf> {
+    windows_path::bundled_node_dir()
+        .map(|dir| dir.join("node.exe"))
+        .filter(|p| p.is_file())
 }
 
 #[cfg(test)]
