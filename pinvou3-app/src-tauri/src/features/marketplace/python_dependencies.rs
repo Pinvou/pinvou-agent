@@ -20,6 +20,9 @@ const MAX_ENVIRONMENT_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_WHEEL_ENTRIES: usize = 50_000;
 const PYTHON_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 const COMPLETE_MARKER: &str = "environment.json";
+/// 启动修复下载失败后的自动重试冷却。没有它，离线/被墙的机器每次启动都会在
+/// setup 路径同步重放整轮串行下载超时，阻塞引擎池初始化。
+const REPAIR_RETRY_COOLDOWN_SECS: u64 = 600;
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(test)]
 static FAIL_NEXT_DOWNLOAD: std::sync::atomic::AtomicBool =
@@ -42,6 +45,16 @@ pub(crate) fn fail_next_prune_removal_for_test(path: PathBuf) {
     *FAIL_NEXT_PRUNE_REMOVAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(path);
+}
+
+#[cfg(test)]
+pub(crate) fn repair_cooldown_path_for_test() -> PathBuf {
+    repair_cooldown_path()
+}
+
+#[cfg(test)]
+pub(crate) fn environments_root_for_test() -> PathBuf {
+    environments_root()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -81,9 +94,14 @@ pub(super) struct InstalledPythonEnvironment {
 
 /// 当前平台存在锁定目标时完成安装并返回隔离环境；没有目标时返回 `None`，由调用方走
 /// 旧平台兼容路径。锁存在但无效或安装失败时必须报错，不能静默降级到未校验 pip。
+///
+/// `respect_retry_cooldown`：启动修复的自动重试传 `true`——下载失败后进入冷却期，
+/// 避免离线/被墙机器每次启动都重放下载超时；UI 显式安装传 `false`，用户主动重试
+/// 不受限。环境就绪后两条路径都走 marker 快路径，冷却不再生效。
 pub(super) fn ensure_installed(
     lock: &PythonDependencyLock,
     python_command: &str,
+    respect_retry_cooldown: bool,
 ) -> Result<Option<InstalledPythonEnvironment>, String> {
     validate_lock(lock)?;
     let Some(target) = target_for_current_platform(lock) else {
@@ -109,6 +127,14 @@ pub(super) fn ensure_installed(
             python_command: python_command.to_string(),
             _install_guard: install_guard,
         }));
+    }
+
+    if respect_retry_cooldown {
+        if let Some(remaining) = repair_cooldown_remaining(&environment_key) {
+            return Err(format!(
+                "MCP Python 依赖下载处于自动重试冷却期（上次启动修复失败），剩余约 {remaining} 秒"
+            ));
+        }
     }
 
     fs::create_dir_all(&environment_root)
@@ -144,10 +170,12 @@ pub(super) fn ensure_installed(
         Ok(())
     })();
 
-    if result.is_err() {
+    if let Err(error) = result {
         let _ = safe_remove_dir(&staging, &environment_root);
+        record_repair_cooldown(&environment_key);
+        return Err(error);
     }
-    result?;
+    clear_repair_cooldown(&environment_key);
     Ok(Some(InstalledPythonEnvironment {
         site_packages: destination.join("site-packages"),
         python_command: python_command.to_string(),
@@ -312,6 +340,83 @@ fn wheel_cache_root() -> PathBuf {
     crate::platform::paths::pinvou3_home()
         .join("cache")
         .join("python-wheels")
+}
+
+fn repair_cooldown_path() -> PathBuf {
+    crate::platform::paths::pinvou3_home()
+        .join("marketplace")
+        .join("python-repair-cooldown.json")
+}
+
+/// 重试冷却标记：环境键 -> 上次自动修复失败时刻（Unix 秒）。损坏/不可读按空
+/// 处理——冷却只影响"何时自动重试"，绝不放大成安装失败。
+fn read_repair_cooldown() -> std::collections::HashMap<String, u64> {
+    match fs::read_to_string(repair_cooldown_path()) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|error| {
+            log::warn!("[marketplace] ignoring invalid Python repair cooldown state: {error}");
+            std::collections::HashMap::new()
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::collections::HashMap::new()
+        }
+        Err(error) => {
+            log::warn!("[marketplace] failed to read Python repair cooldown state: {error}");
+            std::collections::HashMap::new()
+        }
+    }
+}
+
+fn write_repair_cooldown(entries: &std::collections::HashMap<String, u64>) {
+    let path = repair_cooldown_path();
+    if entries.is_empty() {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                log::warn!("[marketplace] failed to clear Python repair cooldown state: {error}")
+            }
+        }
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    match serde_json::to_vec(entries) {
+        Ok(bytes) => {
+            if let Err(error) = deepseek_tui::utils::write_atomic(&path, &bytes) {
+                log::warn!("[marketplace] failed to persist Python repair cooldown state: {error}");
+            }
+        }
+        Err(error) => {
+            log::warn!("[marketplace] failed to serialize Python repair cooldown state: {error}")
+        }
+    }
+}
+
+fn repair_cooldown_remaining(environment_key: &str) -> Option<u64> {
+    let failed_at = *read_repair_cooldown().get(environment_key)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    (failed_at + REPAIR_RETRY_COOLDOWN_SECS).checked_sub(now)
+}
+
+fn record_repair_cooldown(environment_key: &str) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let mut entries = read_repair_cooldown();
+    entries.insert(environment_key.to_string(), now);
+    write_repair_cooldown(&entries);
+}
+
+fn clear_repair_cooldown(environment_key: &str) {
+    let mut entries = read_repair_cooldown();
+    if entries.remove(environment_key).is_some() {
+        write_repair_cooldown(&entries);
+    }
 }
 
 fn marker_matches(environment: &Path, expected_key: &str) -> bool {
@@ -776,6 +881,45 @@ mod tests {
         assert!(validate_lock(&lock).unwrap_err().contains("SHA-256"));
     }
 
+    /// 重试冷却只约束启动修复的自动重试（`respect_retry_cooldown=true`），
+    /// UI 显式安装不受限；被延期的自动修复不得触达下载器。
+    #[test]
+    fn repair_cooldown_defers_auto_retry_but_not_explicit_install() {
+        with_temp_home(|| {
+            let mut lock = sample_lock();
+            lock.targets[0].platform = crate::platform::paths::connector_platform_dir(
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+            )
+            .unwrap()
+            .to_string();
+            let environment_key = environment_key(&lock.targets[0]).unwrap();
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0);
+            write_repair_cooldown(&[(environment_key.clone(), now)].into_iter().collect());
+
+            fail_next_download_for_test();
+            let deferred = ensure_installed(&lock, "python3", true).unwrap_err();
+            assert!(deferred.contains("冷却"));
+            assert!(
+                take_pending_download_failure_for_test(),
+                "deferred repair must not reach the downloader"
+            );
+
+            let explicit = ensure_installed(&lock, "python3", false).unwrap_err();
+            assert!(!explicit.contains("冷却"));
+            assert!(
+                !take_pending_download_failure_for_test(),
+                "explicit install consumed the injected download failure"
+            );
+
+            clear_repair_cooldown(&environment_key);
+            assert!(!repair_cooldown_path().exists());
+        });
+    }
+
     #[test]
     fn wheel_extraction_installs_root_and_data_purelib_only() {
         let root = std::env::temp_dir().join(format!(
@@ -977,11 +1121,11 @@ mod tests {
         let previous_home = std::env::var_os("PINVOU3_HOME");
         std::env::set_var("PINVOU3_HOME", &root);
 
-        let first = ensure_installed(&lock, &python).unwrap().unwrap();
+        let first = ensure_installed(&lock, &python, false).unwrap().unwrap();
         let gongwen_site_packages = first.site_packages.clone();
         assert!(gongwen_site_packages.join("docx/__init__.py").is_file());
         drop(first);
-        let second = ensure_installed(&lock, &python).unwrap().unwrap();
+        let second = ensure_installed(&lock, &python, false).unwrap().unwrap();
         assert_eq!(gongwen_site_packages, second.site_packages);
         drop(second);
 
@@ -1070,7 +1214,9 @@ mod tests {
         ))
         .unwrap();
         let pptx_lock = pptx_manifest.python_dependencies.unwrap();
-        let pptx_environment = ensure_installed(&pptx_lock, &python).unwrap().unwrap();
+        let pptx_environment = ensure_installed(&pptx_lock, &python, false)
+            .unwrap()
+            .unwrap();
         let pptx_site_packages = pptx_environment.site_packages.clone();
         assert!(pptx_site_packages.join("pptx/__init__.py").is_file());
         assert_ne!(gongwen_site_packages, pptx_site_packages);

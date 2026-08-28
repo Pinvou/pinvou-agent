@@ -32,6 +32,7 @@ pub mod store;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -43,9 +44,24 @@ use crate::platform::paths;
 /// state so cleanup never acts on a stale snapshot.
 static MARKETPLACE_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
 
+/// Windows 上刚落盘的 journal 可能被杀毒软件/索引器短暂占用，commit 的删除
+/// 先重试再判失败——把可自愈的瞬时占用升级成 Integrity（阻断全部助手启动）
+/// 不成比例（review 2026-08-28）。
+const JOURNAL_REMOVE_ATTEMPTS: usize = 3;
+const JOURNAL_REMOVE_RETRY_DELAY: Duration = Duration::from_millis(120);
+
 #[cfg(test)]
 static FAIL_NEXT_INSTALLED_WRITE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+static FAIL_NEXT_JOURNAL_REMOVAL: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+pub(crate) fn fail_next_journal_removal_for_test() {
+    FAIL_NEXT_JOURNAL_REMOVAL.store(true, std::sync::atomic::Ordering::SeqCst);
+}
 
 #[cfg(test)]
 static FAIL_NEXT_MANAGED_DEPENDENCY_INSTALL: std::sync::atomic::AtomicBool =
@@ -151,16 +167,75 @@ fn restore_marketplace_snapshot(snapshot: &MarketplaceStateSnapshot) -> Result<(
     )
 }
 
+fn remove_file_with_retry(path: &Path) -> Result<(), String> {
+    let mut last_error: Option<std::io::Error> = None;
+    for attempt in 0..JOURNAL_REMOVE_ATTEMPTS {
+        #[cfg(test)]
+        if attempt == 0
+            && FAIL_NEXT_JOURNAL_REMOVAL.swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            last_error = Some(std::io::Error::other(
+                "test-injected journal removal failure",
+            ));
+            std::thread::sleep(JOURNAL_REMOVE_RETRY_DELAY);
+            continue;
+        }
+        match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                std::thread::sleep(JOURNAL_REMOVE_RETRY_DELAY);
+            }
+        }
+    }
+    Err(format!(
+        "Failed to remove {} after {JOURNAL_REMOVE_ATTEMPTS} attempts: {}",
+        path.display(),
+        last_error
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "unknown error".to_string())
+    ))
+}
+
+/// journal 只在事务存活毫秒级，两个状态文件本身都是原子写。journal 损坏或恢复
+/// 失败时隔离而非向外传播：保留的 on-disk 状态至多多半个事务，工具可经 UI 重装
+/// 自愈；让它阻断全部助手引擎启动不成比例（review 2026-08-28）。
+fn quarantine_marketplace_journal(journal: &Path, reason: &str) -> Result<(), String> {
+    let quarantine = journal.with_file_name(format!(
+        "state-transaction.corrupt-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::rename(journal, &quarantine).map_err(|error| {
+        format!("Failed to quarantine Marketplace transaction journal ({reason}): {error}")
+    })?;
+    log::warn!(
+        "[marketplace] quarantined marketplace transaction journal ({reason}) to {}",
+        quarantine.display()
+    );
+    Ok(())
+}
+
 fn recover_marketplace_transaction() -> Result<(), String> {
     let journal = marketplace_transaction_journal();
     let Some(bytes) = read_optional_file(&journal)? else {
         return Ok(());
     };
-    let snapshot: MarketplaceStateSnapshot = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("Marketplace transaction journal is invalid: {error}"))?;
-    restore_marketplace_snapshot(&snapshot)?;
-    std::fs::remove_file(&journal)
-        .map_err(|error| format!("Failed to remove Marketplace transaction journal: {error}"))
+    let snapshot = match serde_json::from_slice::<MarketplaceStateSnapshot>(&bytes) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            quarantine_marketplace_journal(&journal, &format!("invalid journal: {error}"))?;
+            return Ok(());
+        }
+    };
+    if let Err(error) = restore_marketplace_snapshot(&snapshot) {
+        quarantine_marketplace_journal(&journal, &format!("restore failed: {error}"))?;
+        return Ok(());
+    }
+    remove_file_with_retry(&journal)
 }
 
 struct MarketplaceStateTransaction {
@@ -216,16 +291,14 @@ impl MarketplaceStateTransaction {
     }
 
     fn commit(mut self) -> Result<(), String> {
-        std::fs::remove_file(marketplace_transaction_journal())
-            .map_err(|error| format!("Failed to commit Marketplace transaction: {error}"))?;
+        remove_file_with_retry(&marketplace_transaction_journal())?;
         self.finished = true;
         Ok(())
     }
 
     fn rollback(mut self) -> Result<(), String> {
         restore_marketplace_snapshot(&self.snapshot)?;
-        std::fs::remove_file(marketplace_transaction_journal())
-            .map_err(|error| format!("Failed to remove Marketplace rollback journal: {error}"))?;
+        remove_file_with_retry(&marketplace_transaction_journal())?;
         self.finished = true;
         Ok(())
     }
@@ -593,7 +666,8 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             .trusted_dependency_manifest(tool_id, Some(&source))
             .map_err(|error| error.message().to_string())?;
         let python_environment = if let Some(dependency_manifest) = dependency_manifest {
-            self.install_python_deps(&dependency_manifest, python_override)
+            // UI 安装是用户的显式动作，不受启动修复的重试冷却限制。
+            self.install_python_deps(&dependency_manifest, python_override, false)
                 .map_err(|error| error.message().to_string())?
         } else if !manifest.pip_dependencies.is_empty() || manifest.python_dependencies.is_some() {
             log::warn!("[marketplace] skipped untrusted dependency declarations for '{tool_id}'");
@@ -779,6 +853,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         &self,
         manifest: &ToolManifest,
         python_override: Option<&str>,
+        respect_retry_cooldown: bool,
     ) -> Result<Option<python_dependencies::InstalledPythonEnvironment>, ManagedDependencyError>
     {
         #[cfg(test)]
@@ -795,8 +870,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     paths::managed_python_command().map_err(ManagedDependencyError::Transient)?
                 }
             };
-            if let Some(environment) = python_dependencies::ensure_installed(lock, &python_command)
-                .map_err(ManagedDependencyError::Transient)?
+            if let Some(environment) =
+                python_dependencies::ensure_installed(lock, &python_command, respect_retry_cooldown)
+                    .map_err(ManagedDependencyError::Transient)?
             {
                 return Ok(Some(environment));
             }
@@ -931,7 +1007,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             }
 
             let repair: Result<(), ManagedDependencyError> = (|| {
-                let environment = self.install_python_deps(&manifest, python_override)?;
+                let environment = self.install_python_deps(&manifest, python_override, true)?;
                 let Some(environment) = environment else {
                     return Ok(());
                 };
@@ -982,8 +1058,17 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         }
         // repair/downgrade 的持久状态已提交后，未引用缓存的物理清理属于可重试维护任务。
         // Windows 上孤儿进程、杀毒或索引器可能短暂占用 .pyd，不能因此阻断全部助手启动。
-        if let Err(error) = self.prune_from_committed_state() {
-            eprintln!("[marketplace] prune Python dependencies after repair failed: {error}");
+        // 存在临时失败时跳过清理：本轮的活跃锁集合可能已随清单升级变化，而 mcp.json
+        // 现有条目仍指向旧环境——此时清理会把原本可用的工具变成必坏（review 2026-08-28）。
+        if repair_errors.is_empty() {
+            if let Err(error) = self.prune_from_committed_state() {
+                log::warn!("[marketplace] prune Python dependencies after repair failed: {error}");
+            }
+        } else {
+            log::warn!(
+                "[marketplace] {} python tool(s) await dependency repair retry; environment prune deferred to a clean startup",
+                repair_errors.len()
+            );
         }
         Ok(repair_errors)
     }
@@ -1910,6 +1995,9 @@ mod tests {
             write_legacy_python_state("legacy-retry");
             let installed_before = manager_installed_bytes();
             let mcp_before = std::fs::read(paths::mcp_config_path()).unwrap();
+            // 无主孤儿环境：活跃锁集合不含它，只有干净启动的 prune 才允许清掉。
+            let stale_env = python_dependencies::environments_root_for_test().join("a".repeat(64));
+            std::fs::create_dir_all(&stale_env).unwrap();
             python_dependencies::fail_next_download_for_test();
 
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
@@ -1928,12 +2016,93 @@ mod tests {
                 fixture.cache_path.is_file(),
                 "live lock must retain its cache"
             );
+            assert!(stale_env.is_dir(), "transient failure must defer env prune");
+            let cooldown_path = python_dependencies::repair_cooldown_path_for_test();
+            assert!(
+                cooldown_path.is_file(),
+                "failed download must arm the cooldown"
+            );
 
+            // 冷却期内不再触达下载器，只上报延期；下个冷却窗口外的启动重试。
+            python_dependencies::fail_next_download_for_test();
+            let deferred = manager
+                .repair_installed_python_tools_with_python(&python)
+                .unwrap();
+            assert_eq!(deferred.len(), 1);
+            assert!(deferred[0].contains("冷却"));
+            assert!(
+                python_dependencies::take_pending_download_failure_for_test(),
+                "deferred repair must not reach the downloader"
+            );
+            assert!(stale_env.is_dir());
+
+            // 冷却过期（回拨时间戳）→ 重试成功，冷却标记清空，prune 恢复执行。
+            let entries: std::collections::HashMap<String, u64> =
+                serde_json::from_str(&std::fs::read_to_string(&cooldown_path).unwrap()).unwrap();
+            assert!(!entries.is_empty());
+            std::fs::write(
+                &cooldown_path,
+                serde_json::to_vec(
+                    &entries
+                        .into_iter()
+                        .map(|(key, _)| (key, 0_u64))
+                        .collect::<std::collections::HashMap<String, u64>>(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
             assert!(manager
                 .repair_installed_python_tools_with_python(&python)
                 .unwrap()
                 .is_empty());
+            assert!(
+                !cooldown_path.exists(),
+                "successful repair must clear the cooldown"
+            );
+            assert!(!stale_env.exists(), "clean repair must run the env prune");
             assert_eq!(read_mcp_json()["servers"]["legacy-retry"]["args"][0], "-I");
+        });
+    }
+
+    /// 损坏的 state-transaction.json 不得让启动修复失败（会把整个引擎池拖成
+    /// 不可用且每次启动复现）：必须被隔离，on-disk 状态保持原样，后续事务照常。
+    #[test]
+    fn corrupt_transaction_journal_is_quarantined_instead_of_blocking_startup() {
+        with_temp_home(|| {
+            let journal = marketplace_transaction_journal();
+            std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+            std::fs::write(&journal, b"{not valid json").unwrap();
+
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let errors = manager.repair_installed_python_tools().unwrap();
+            assert!(errors.is_empty());
+            assert!(!journal.exists(), "quarantined journal must leave its path");
+            let quarantined: Vec<String> = std::fs::read_dir(journal.parent().unwrap())
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().to_string())
+                .filter(|name| name.starts_with("state-transaction.corrupt-"))
+                .collect();
+            assert_eq!(
+                quarantined.len(),
+                1,
+                "corrupt journal must be quarantined, not blocking startup"
+            );
+        });
+    }
+
+    /// commit 对 journal 的删除遇到瞬时占用（Windows 杀毒/索引器）必须重试成功，
+    /// 而不是把一次可自愈的占用升级成 Integrity 失败。
+    #[test]
+    fn transaction_commit_retries_transient_journal_removal_failure() {
+        with_temp_home(|| {
+            fail_next_journal_removal_for_test();
+            let installed_file = paths::pinvou3_home()
+                .join("marketplace")
+                .join("installed.json");
+            let transaction = MarketplaceStateTransaction::begin(&installed_file).unwrap();
+            transaction.commit().expect("retry must absorb one failure");
+            assert!(!marketplace_transaction_journal().exists());
         });
     }
 
