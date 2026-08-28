@@ -490,7 +490,7 @@ const AcFmtIcon = FileTypeIcon;
     // 旧实现待更新:7 个 MCP manifest 仍内嵌 routing_rules/tool_table_entries
     // (weather/iwencai/obsidian/patsnap-search/qcc/canva-mcp/yuandian-mcp)——
     // 非组合包无双写问题,新增组合包时勿模仿,知识一律进 SKILL.md。
-    // 版本号:feishu/wecom/dingtalk/tmeet 卡片 version 与 connectors.lock.json /
+    // 版本号:feishu/wecom/dingtalk/tmeet/weibo 卡片 version 与 connectors.lock.json /
     // npm pin 强一致，由 connector_online_install_contract 测试钉住防腐化；运行时
     // 仍以后端 bundle_readiness 的 bundle.version 为准，卡片值作 overlay 回退。
     // ════════════════════════════════════════════════════════════════════════

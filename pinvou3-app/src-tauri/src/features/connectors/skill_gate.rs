@@ -1,4 +1,4 @@
-//! 技能门控 trait —— 4 连接器(tmeet/dingtalk/feishu/wecom)共享的
+//! 技能门控 trait —— 5 连接器(tmeet/dingtalk/feishu/wecom/weibo)共享的
 //! 「停用标志文件 + 应用技能」机制。
 //!
 //! 收敛前,四个连接器各自复制了一份几乎相同的四元组:

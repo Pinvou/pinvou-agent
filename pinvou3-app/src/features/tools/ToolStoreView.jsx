@@ -856,7 +856,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           });
       };
       // bundle_readiness 统一取数（Phase 2 第八刀，§3.3）：逐连接器 status 命令
-      // （feishu/wecom/dingtalk/tmeet/ima_status）的前端调用全部移除，installed /
+      // （feishu/wecom/dingtalk/tmeet/weibo/ima_status）的前端调用全部移除，installed /
       // ready / actions 均来自统一命令。CLI/ima 的「已连接」= ready（授权现算）。
       const [bundleStates, setBundleStates] = useState({}); // bundleId → BundleReadinessResult
       // 空 actions 视为「无动作数据」回退旧分支（后端实现对每个状态至少下发一个

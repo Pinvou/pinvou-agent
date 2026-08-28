@@ -1282,6 +1282,8 @@ mod tests {
             .env("HTTPS_PROXY", "http://127.0.0.1:7890")
             .env("OPENAI_API_KEY", "must-not-leak")
             .env("WEIBO_CLI_TOKEN", "must-not-leak")
+            .env("WEIBO_TOKEN", "must-not-leak")
+            .env("WEIBO_CLI_REFRESH_TOKEN", "must-not-leak")
             .env("WEIBO_REFRESH_TOKEN", "must-not-leak")
             .env("PINVOU3_MCP_SECRET_AMAP_KEY", "must-not-leak")
             .env("SSH_AUTH_SOCK", "/run/user/1000/ssh-agent")
@@ -1330,6 +1332,8 @@ mod tests {
         for key in [
             "OPENAI_API_KEY",
             "WEIBO_CLI_TOKEN",
+            "WEIBO_TOKEN",
+            "WEIBO_CLI_REFRESH_TOKEN",
             "WEIBO_REFRESH_TOKEN",
             "PINVOU3_MCP_SECRET_AMAP_KEY",
             "SSH_AUTH_SOCK",

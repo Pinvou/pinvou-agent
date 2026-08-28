@@ -144,16 +144,20 @@ fn whoami_is_logged_in(stdout: &str, stderr: &str) -> bool {
     false
 }
 
-fn is_logged_in() -> bool {
-    if !weibo_cli_present() {
-        return false;
-    }
+fn whoami_logged_in() -> bool {
     match run_capture_timeout(
         weibo(&["auth", "whoami", "--output", "json"]),
         SHORT_CMD_TIMEOUT_SECS,
     ) {
         Ok((ok, so, se)) => ok && whoami_is_logged_in(&so, &se),
         Err(_) => false,
+    }
+}
+
+fn is_logged_in() -> bool {
+    match weibo_cli_version() {
+        Some(v) if version_at_least(v, WEIBO_MIN_VERSION) => whoami_logged_in(),
+        _ => false,
     }
 }
 
@@ -199,18 +203,19 @@ pub async fn weibo_ensure_cli() -> Result<Value, String> {
 /// 查询当前微博连接状态。只返回布尔，不把身份 / token 信息带进 webview。
 pub async fn weibo_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
-        if weibo_cli_version().is_none() {
+        // 一次 --version 同时回答「装没装」和「版本够不够」;每个探测都有 8s
+        // 超时预算,重复探测会让一次状态查询最坏串行 4 个子进程。
+        let Some(version) = weibo_cli_version() else {
             return Ok::<Value, String>(json!({
                 "ok": false, "connected": false, "installed": false
             }));
-        }
-        let supported = weibo_cli_present();
-        if !supported {
+        };
+        if !version_at_least(version, WEIBO_MIN_VERSION) {
             return Ok::<Value, String>(json!({
                 "ok": false, "connected": false, "installed": true, "upgrade_required": true
             }));
         }
-        let connected = is_logged_in();
+        let connected = whoami_logged_in();
         Ok::<Value, String>(json!({
             "ok": connected,
             "connected": connected,
@@ -306,6 +311,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
 
     let mut auth_lines = VecDeque::with_capacity(32);
     let mut user_code: Option<String> = None;
+    let mut plain_url: Option<String> = None;
     let deadline = Instant::now() + Duration::from_secs(60);
     let url = loop {
         let now = Instant::now();
@@ -321,16 +327,12 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             Duration::from_millis(400),
             deadline.saturating_duration_since(now),
         )) {
-            Ok(AuthEvent::Url(u)) => {
-                break match &user_code {
-                    Some(code) => with_user_code_param(&u, code),
-                    None => u,
-                };
-            }
-            Ok(AuthEvent::UserCode(code)) => {
-                user_code = Some(code);
-            }
             Ok(AuthEvent::Line(line)) => remember_auth_line(&mut auth_lines, line),
+            Ok(event) => {
+                if let Some(url) = pair_auth_url(&mut plain_url, &mut user_code, event) {
+                    break url;
+                }
+            }
             Err(_) => {
                 if let Ok(Some(status)) = child.try_wait() {
                     conn.set_pid(ID, None);
@@ -405,6 +407,39 @@ fn with_user_code_param(url: &str, user_code: &str) -> String {
     };
     let sep = if url.contains('?') { '&' } else { '?' };
     format!("{url}{sep}user_code={user_code}")
+}
+
+/// device-code 输出的 URL 与验证码配对单步:返回 `Some(url)` 表示已可拼接出
+/// 最终授权链接。两种输出顺序都必须支持——URL 先行(含单行「打开链接并输入
+/// XXXX-XXXX」,排空线程对同一行先发 Url 后发 UserCode)与验证码先行;镜像
+/// 钉钉的双向配对,在首个 URL 就 break 会把后到的验证码留在通道里无人消费。
+fn pair_auth_url(
+    plain_url: &mut Option<String>,
+    user_code: &mut Option<String>,
+    event: AuthEvent,
+) -> Option<String> {
+    match event {
+        AuthEvent::Url(u) => {
+            if u.contains("user_code=") {
+                return Some(u);
+            }
+            if let Some(code) = user_code.as_deref() {
+                return Some(with_user_code_param(&u, code));
+            }
+            *plain_url = Some(u);
+            None
+        }
+        AuthEvent::UserCode(code) => {
+            if let Some(u) = plain_url.as_deref() {
+                let full = with_user_code_param(u, &code);
+                *user_code = Some(code);
+                return Some(full);
+            }
+            *user_code = Some(code);
+            None
+        }
+        AuthEvent::Line(_) => None,
+    }
 }
 
 fn user_code_from_url(url: &str) -> Option<String> {
@@ -725,6 +760,60 @@ mod tests {
     }
 
     #[test]
+    fn pairs_auth_url_and_code_in_either_order() {
+        // 回归:URL 先于验证码行输出时(含单行「打开链接并输入 XXXX」形态,
+        // 排空线程对同一行先发 Url 再发 UserCode),在首个 URL 就 break 会把
+        // 验证码留在通道里无人消费 → user_code=null,前端无码可显示。
+        let mut plain_url: Option<String> = None;
+        let mut user_code: Option<String> = None;
+        assert!(pair_auth_url(
+            &mut plain_url,
+            &mut user_code,
+            AuthEvent::Url("https://open.weibo.com/cli/device".into())
+        )
+        .is_none());
+        assert_eq!(
+            pair_auth_url(
+                &mut plain_url,
+                &mut user_code,
+                AuthEvent::UserCode("1B66-F7C7".into())
+            )
+            .as_deref(),
+            Some("https://open.weibo.com/cli/device?user_code=1B66-F7C7")
+        );
+
+        // 验证码先行:URL 到达时立即拼上。
+        let mut plain_url: Option<String> = None;
+        let mut user_code: Option<String> = None;
+        assert!(pair_auth_url(
+            &mut plain_url,
+            &mut user_code,
+            AuthEvent::UserCode("AB12-CD34".into())
+        )
+        .is_none());
+        assert_eq!(
+            pair_auth_url(
+                &mut plain_url,
+                &mut user_code,
+                AuthEvent::Url("https://open.weibo.com/cli/device".into())
+            )
+            .as_deref(),
+            Some("https://open.weibo.com/cli/device?user_code=AB12-CD34")
+        );
+
+        // URL 自带 user_code:无需配对直接可用。
+        assert_eq!(
+            pair_auth_url(
+                &mut None,
+                &mut None,
+                AuthEvent::Url("https://open.weibo.com/cli/device?user_code=ABCD".into())
+            )
+            .as_deref(),
+            Some("https://open.weibo.com/cli/device?user_code=ABCD")
+        );
+    }
+
+    #[test]
     fn whoami_detects_login_without_identity_leak() {
         assert!(whoami_is_logged_in(r#"{"ok":true,"screen_name":"u"}"#, ""));
         assert!(whoami_is_logged_in(r#"{"user":{"id":"1"}}"#, ""));
@@ -795,7 +884,9 @@ mod tests {
         // 都必然超过 1s 超时(macOS/Linux 无限,Windows 默认 4 次 ≈3s),无需平台分支。
         let mut cmd = std::process::Command::new("ping");
         cmd.arg("127.0.0.1");
-        let result = run_capture_timeout(cmd, 1);
-        assert!(result.is_err(), "hung probe must time out, got {result:?}");
+        // 断言错误文案而非仅 is_err:若环境缺 ping 走「启动失败」分支也能 is_err,
+        // 那样测不到超时路径本身。
+        let err = run_capture_timeout(cmd, 1).expect_err("hung probe must time out");
+        assert!(err.contains("超时"), "must surface the timeout, got {err}");
     }
 }

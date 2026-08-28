@@ -66,7 +66,7 @@ Use **Codex, Claude Code, or Kimi** through [ACP](docs/multi-agent-acp.md) in th
 
 - **Unified tool store** for local MCP servers, remote MCP servers, CLI tools, and API connectors
 - **OAuth / SSO authorization** where supported — no manual key pasting
-- Ready-made connectors for **Feishu (Lark), DingTalk, WeCom, Tencent Meeting, Tencent ima, Obsidian**, enterprise knowledge bases, and legal / enterprise data services
+- Ready-made connectors for **Feishu (Lark), DingTalk, WeCom, Tencent Meeting, Weibo, Tencent ima, Obsidian**, enterprise knowledge bases, and legal / enterprise data services
 - **Remote control** — scan a QR code from your phone to view and steer the running workspace
 
 ### 🖥️ Built for daily operation
