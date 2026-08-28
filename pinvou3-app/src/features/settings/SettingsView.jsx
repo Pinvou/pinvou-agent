@@ -1736,6 +1736,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const canPickHostFiles = can('hostFilePicker');
       const [editingModel, setEditingModel] = useState(null);
       const [modelDeleteConfirm, setModelDeleteConfirm] = useState(null);
+      const [llamaDeleteConfirm, setLlamaDeleteConfirm] = useState(null);
       const [editingSearch, setEditingSearch] = useState(null);
       const [pendingSearchProvider, setPendingSearchProvider] = useState(null);
       const [searchDeleteConfirm, setSearchDeleteConfirm] = useState(null);
@@ -2493,8 +2494,9 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             <button type="button" data-testid={`llama-delete-model-${m.id}`} disabled={running || starting}
               title={(running || starting) ? settingsCopy.llamaEngine.deleteRequiresStop : undefined} onClick={() => {
               if (!bridge.available || !bridge.llamaEngine || !bridge.llamaEngine.deleteModel) return;
-              if (!window.confirm(settingsCopy.llamaEngine.deleteModelConfirm(m.displayName))) return;
-              bridge.llamaEngine.deleteModel(m.id).catch(() => {});
+              // window.confirm 在 Tauri Windows WebView2 静默失效（ProviderFormModal
+              // 同款教训），危险操作走应用内自绘确认弹窗。
+              setLlamaDeleteConfirm({ kind: 'model', id: m.id, name: m.displayName });
             }}
               className="shrink-0 min-h-7 px-3 rounded-full text-[11px] font-semibold text-[#FF3B30] bg-[#FF3B30]/10 disabled:opacity-50">{settingsCopy.llamaEngine.deleteModel}</button>
           ) : (
@@ -2643,8 +2645,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                       <button type="button" data-testid="llama-delete-engine" disabled={running || starting}
                         title={(running || starting) ? settingsCopy.llamaEngine.deleteRequiresStop : undefined} onClick={() => {
                         if (!bridge.available || !bridge.llamaEngine || !bridge.llamaEngine.deleteEngine) return;
-                        if (!window.confirm(settingsCopy.llamaEngine.deleteEngineConfirm(st.engineTag || ''))) return;
-                        bridge.llamaEngine.deleteEngine().catch(() => {});
+                        setLlamaDeleteConfirm({ kind: 'engine', tag: st.engineTag || '' });
                       }}
                         className="shrink-0 min-h-7 px-3 rounded-full text-[11px] font-semibold text-[#FF3B30] bg-[#FF3B30]/10 disabled:opacity-50">{settingsCopy.llamaEngine.deleteEngine}</button>
                     )}
@@ -2877,6 +2878,36 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           </div>
         </div>
       );
+      // 本地识图引擎删除模型/卸载引擎的确认弹窗：与 ModelDeleteDialog 同款
+      // iOS 规格。window.confirm 在 Tauri Windows WebView2 下静默失效，危险
+      // 操作必须走应用内自绘弹窗。
+      const LlamaDeleteDialog = ({ confirm }) => (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
+          <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
+            <div className="px-5 pt-5 pb-4 text-center">
+              <h3 className="text-[17px] leading-6 font-semibold">{confirm.kind === 'engine' ? settingsCopy.llamaEngine.deleteEngine : settingsCopy.llamaEngine.deleteModel}</h3>
+              <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>
+                {confirm.kind === 'engine'
+                  ? settingsCopy.llamaEngine.deleteEngineConfirm(confirm.tag)
+                  : settingsCopy.llamaEngine.deleteModelConfirm(confirm.name)}
+              </p>
+            </div>
+            <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
+              <button type="button" onClick={() => {
+                if (bridge.available && bridge.llamaEngine) {
+                  if (confirm.kind === 'engine' && bridge.llamaEngine.deleteEngine) {
+                    bridge.llamaEngine.deleteEngine().catch(() => {});
+                  } else if (confirm.kind === 'model' && bridge.llamaEngine.deleteModel) {
+                    bridge.llamaEngine.deleteModel(confirm.id).catch(() => {});
+                  }
+                }
+                setLlamaDeleteConfirm(null);
+              }} data-testid="llama-delete-confirm" className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{confirm.kind === 'engine' ? settingsCopy.llamaEngine.deleteEngine : settingsCopy.llamaEngine.deleteModel}</button>
+              <button type="button" data-testid="llama-delete-cancel" onClick={() => setLlamaDeleteConfirm(null)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{settingsCopy.cancel}</button>
+            </div>
+          </div>
+        </div>
+      );
       const SearchDeleteDialog = ({ source }) => (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
           <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
@@ -2963,6 +2994,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           )}
           {/* eslint-disable-next-line react-hooks/static-components -- in-place-defined confirm modal is the existing structure */}
           {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} />}
+          {llamaDeleteConfirm && <LlamaDeleteDialog confirm={llamaDeleteConfirm} />}
           {/* eslint-disable-next-line react-hooks/static-components -- in-place-defined confirm modal is the existing structure */}
           {searchDeleteConfirm && <SearchDeleteDialog source={searchDeleteConfirm} />}
           {searchPickerOpen && (

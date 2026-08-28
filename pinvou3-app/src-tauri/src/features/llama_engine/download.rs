@@ -281,9 +281,20 @@ pub(crate) async fn install_engine(app: &tauri::AppHandle) -> Result<(), String>
         None,
         expected_size,
     )
-    .await?;
+    .await
+    .map_err(|e| {
+        // 引擎路径与模型路径同契约：网络/写盘失败不遗留孤儿 .part。
+        let _ = std::fs::remove_file(&part);
+        e
+    })?;
     if let Some((size, sha256)) = pinned {
         verify_engine_archive(&part, size, sha256)?;
+        // 校验期间取消：取消优先——GB 级包的 sha256 耗时数秒，期间取消
+        // 不应继续解压替换（commit 点在解压替换，此刻退出完全不落盘）。
+        if CANCEL.load(Ordering::Acquire) {
+            let _ = std::fs::remove_file(&part);
+            return Err("已取消".to_string());
+        }
     }
 
     let _ = app.emit(
@@ -694,6 +705,11 @@ fn verify_and_promote(tmp: &Path, dest: &Path, asset: &ModelAsset) -> Result<(),
         return Err(format!(
             "模型校验失败(sha256 不匹配): 期望 {expected:.12} 实际 {got:.12}"
         ));
+    }
+    // 校验期间用户取消：与 platform::download 契约同口径——取消优先，
+    // 已通过校验的文件也不提升安装；.part 由调用方按取消路径清理。
+    if CANCEL.load(Ordering::Acquire) {
+        return Err("已取消".to_string());
     }
     std::fs::rename(tmp, dest).map_err(|e| format!("落盘模型文件失败: {e}"))?;
     // 安装完成的文件已强制通过完整性校验，回填缓存供状态路径直接消费。
