@@ -1110,22 +1110,34 @@ impl KnowledgeService {
         Ok(())
     }
 
+    /// Remove managed source files whose relative paths were read back from
+    /// document storage. The stored path is untrusted input: every deletion
+    /// target is canonicalized first and must still resolve inside
+    /// `documents_dir`, so a managed directory replaced by a symlink cannot
+    /// redirect the deletion outside it (canonicalize + starts_with is also
+    /// the remediation shape CodeQL rust/path-injection recognizes). A target
+    /// that no longer exists fails canonicalization and is already gone.
     fn remove_managed_sources(&self, paths: impl IntoIterator<Item = String>) {
+        let Ok(root) = std::fs::canonicalize(&self.documents_dir) else {
+            return;
+        };
         for storage_path in paths {
-            let relative = Path::new(&storage_path);
-            if relative.is_absolute()
-                || relative
-                    .components()
-                    .any(|part| !matches!(part, std::path::Component::Normal(_)))
-            {
+            let Some(relative) = crate::managed_relative_path(&storage_path) else {
                 continue;
-            }
+            };
             let absolute = self.documents_dir.join(relative);
-            let _ = std::fs::remove_file(&absolute);
+            if let Ok(canonical) = absolute.canonicalize()
+                && canonical.starts_with(&root)
+            {
+                let _ = std::fs::remove_file(&canonical);
+            }
             if let Some(parent) = absolute.parent()
                 && parent != self.documents_dir
+                && let Ok(canonical_parent) = parent.canonicalize()
+                && canonical_parent != root
+                && canonical_parent.starts_with(&root)
             {
-                let _ = std::fs::remove_dir(parent);
+                let _ = std::fs::remove_dir(&canonical_parent);
             }
         }
     }
@@ -2016,6 +2028,55 @@ mod tests {
                 .is_none()
         );
         assert!(service.store.document(recent.id, true).unwrap().is_some());
+    }
+
+    // The regression for a managed directory replaced by a symlink is Unix-only:
+    // creating a directory symlink on Windows requires privileges the test
+    // runner does not have.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn permanent_delete_does_not_descend_through_a_replaced_managed_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let collection = service
+            .create_collection(CreateCollectionRequest {
+                name: "shared".to_string(),
+                description: None,
+            })
+            .unwrap();
+        let document = service
+            .upload_document(collection.id, "target.md", b"managed bytes".to_vec())
+            .await
+            .unwrap();
+        let source = service
+            .store
+            .document(document.id, false)
+            .unwrap()
+            .map(|stored| service.documents_dir.join(stored.storage_path))
+            .unwrap();
+        let managed_dir = source.parent().unwrap().to_path_buf();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("target.md");
+        std::fs::write(&outside_file, b"outside bytes").unwrap();
+        service.trash_document(document.id).unwrap();
+        // Replace the managed directory with a symlink to an outside directory
+        // holding a same-named file; cleanup must refuse to follow it.
+        std::fs::remove_file(&source).unwrap();
+        std::fs::remove_dir(&managed_dir).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &managed_dir).unwrap();
+
+        service.permanently_delete_document(document.id).unwrap();
+
+        assert_eq!(std::fs::read(&outside_file).unwrap(), b"outside bytes");
+        assert!(
+            std::fs::symlink_metadata(&managed_dir)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(service.store.document(document.id, true).unwrap().is_none());
     }
 
     #[tokio::test]
