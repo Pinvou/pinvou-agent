@@ -304,42 +304,6 @@ emit_error(JSON+exit 1)、无裸 except。修复 1 处,下次 sync 需重放:
   (上游 v1.0.87 原文)在本地为「获取任务列表」,语义等价;下次 sync 跟随
   上游即可,无需重放(登记仅为对账完备)。
 
-### 第十二轮文档审计补登记(2026-08-27)
-
-lark-task / lark-wiki / lark-shared 三域文档审计,以下修正下次 sync 需逐条
-重放(lark-shared 本轮仅作 SSOT 对照,未改动):
-
-- **lark-task/references 全部 17 篇的 lark-shared 前置引用路径错误**:
-  前置条件行的 `` `../lark-shared/SKILL.md` `` (裸反引号非链接,且从
-  references/ 目录解析指向不存在的 `lark-task/lark-shared/SKILL.md`)统一
-  改为可点击链接 `` `[../../lark-shared/SKILL.md](../../lark-shared/SKILL.md)` ``
-  (对齐 lark-wiki/lark-doc/lark-base/lark-im/lark-drive 家族约定;
-  lark-task-create.md 文末 Related 原已是 ../../ 形式,保持一致)。
-- **lark-wiki/references/lark-wiki-delete-space.md 错误名两说(2 处)**:
-  参数表 L31 与风险等级 L199 的「缺 `--yes` 返回 `unsafe_operation_blocked`」
-  改为 `confirmation_required`——与 lark-shared/SKILL.md 的 exit-10 审批协议
-  (`error.subtype == "confirmation_required"`)及 node-copy/node-delete 文档
-  统一。
-- **lark-wiki/references 四篇前置链接显示文本与目标不一致**:
-  delete-space/node-create/move/move-to-drive 的 L3 行,显示文本由
-  `../lark-shared/SKILL.md` 对齐为 `../../lark-shared/SKILL.md`(链接目标
-  本就是 ../../,仅改显示文本)。
-- **lark-task/SKILL.md 获取 open_id 口径(1 处)**:「可用 `lark-cli whoami`
-  获取」改为 `lark-cli auth status` 并从输出 JSON 的 `identities.user.openId`
-  提取(对齐 lark-task-create.md:58 与 lark-shared 速查表;whoami 行未承诺
-  输出 open_id)。
-- **lark-task/SKILL.md description 删除「注销」表述(2 处)**:「注册或注销
-  任务智能体」「注册注销任务智能体」删去注销侧——正文与 17 篇 references 均无
-  注销/unregister 对应命令(API 清单只有 register/update/append),宣称注销
-  会让模型猜测命令。
-- **lark-wiki/SKILL.md obj_type 分流表补链接(1 处)**:3 行主用分流表后
-  补一句,链接 lark-shared/references/lark-wiki-token-routing.md 作为完整
-  6 行路由(含 slides/file/mindnote)的 SSOT(保留 3 行主用表,最小改动)。
-- **version bump**:lark-task 1.0.0→1.0.1、lark-wiki 1.0.3→1.0.4(纯文档
-  修正,patch +1)。
-
----
-
 ### lark-base 文档审计代修(2026-08-27,第十一轮)
 
 对照上游 v1.0.87 文本与包内 SSOT 复核的 7 条文档缺陷(3 MAJOR / 4 MINOR,
@@ -382,6 +346,42 @@ documented-behavior fixes only,不改确认门禁语义、不动有意冗余段�
   与字段表登记的 `condition_list` 不对应,示例补 `"condition_list": []`
   与字段表对齐。
 - **version bump**:lark-base 1.2.6→1.2.7(纯文档修正,patch +1)。
+
+---
+
+### 第十二轮文档审计补登记(2026-08-27)
+
+lark-task / lark-wiki / lark-shared 三域文档审计,以下修正下次 sync 需逐条
+重放(lark-shared 本轮仅作 SSOT 对照,未改动):
+
+- **lark-task/references 全部 17 篇的 lark-shared 前置引用路径错误**:
+  前置条件行的 `` `../lark-shared/SKILL.md` `` (裸反引号非链接,且从
+  references/ 目录解析指向不存在的 `lark-task/lark-shared/SKILL.md`)统一
+  改为可点击链接 `` `[../../lark-shared/SKILL.md](../../lark-shared/SKILL.md)` ``
+  (对齐 lark-wiki/lark-doc/lark-base/lark-im/lark-drive 家族约定;
+  lark-task-create.md 文末 Related 原已是 ../../ 形式,保持一致)。
+- **lark-wiki/references/lark-wiki-delete-space.md 错误名两说(2 处)**:
+  参数表 L31 与风险等级 L199 的「缺 `--yes` 返回 `unsafe_operation_blocked`」
+  改为 `confirmation_required`——与 lark-shared/SKILL.md 的 exit-10 审批协议
+  (`error.subtype == "confirmation_required"`)及 node-copy/node-delete 文档
+  统一。
+- **lark-wiki/references 四篇前置链接显示文本与目标不一致**:
+  delete-space/node-create/move/move-to-drive 的 L3 行,显示文本由
+  `../lark-shared/SKILL.md` 对齐为 `../../lark-shared/SKILL.md`(链接目标
+  本就是 ../../,仅改显示文本)。
+- **lark-task/SKILL.md 获取 open_id 口径(1 处)**:「可用 `lark-cli whoami`
+  获取」改为 `lark-cli auth status` 并从输出 JSON 的 `identities.user.openId`
+  提取(对齐 lark-task-create.md:58 与 lark-shared 速查表;whoami 行未承诺
+  输出 open_id)。
+- **lark-task/SKILL.md description 删除「注销」表述(2 处)**:「注册或注销
+  任务智能体」「注册注销任务智能体」删去注销侧——正文与 17 篇 references 均无
+  注销/unregister 对应命令(API 清单只有 register/update/append),宣称注销
+  会让模型猜测命令。
+- **lark-wiki/SKILL.md obj_type 分流表补链接(1 处)**:3 行主用分流表后
+  补一句,链接 lark-shared/references/lark-wiki-token-routing.md 作为完整
+  6 行路由(含 slides/file/mindnote)的 SSOT(保留 3 行主用表,最小改动)。
+- **version bump**:lark-task 1.0.0→1.0.1、lark-wiki 1.0.3→1.0.4(纯文档
+  修正,patch +1)。
 
 ---
 
@@ -479,7 +479,3 @@ sync 需逐条重放。四域 SKILL.md frontmatter version 1.0.0 → 1.0.1
   `--rrule` 行补「系统绝对不支持 COUNT,如需限制重复次数,必须转为
   UNTIL」(update.md/suggestion.md/room-find.md 三处均有,唯 create.md
   缺失;create 是 rrule 的首入口,缺失风险最高)。
-- **lark-calendar 他人日程边界补句**:lark-calendar-update.md「使用规则」
-  与 lark-calendar-recurring.md「注意事项」各补一句「仅组织者可改/删;
-  以参会者身份操作他人日程会被拒绝或降级(通知组织者),执行前先确认
-  当前身份是组织者」(句式参考 rsvp.md 的自我限制提示)。
