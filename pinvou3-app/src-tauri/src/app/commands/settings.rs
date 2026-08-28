@@ -1417,6 +1417,32 @@ mod tests {
     use crate::platform::paths::tests::ENV_LOCK;
 
     #[test]
+    fn model_connection_http_result_maps_actionable_categories() {
+        // 402 → billing:欠费分类的 code 必须与前端 connectionMessages.billing 键
+        // 精确对齐,拼写漂移会静默降级 unknown 文案;其余可行动类别一并钉死。
+        let billing = model_connection_http_result(reqwest::StatusCode::PAYMENT_REQUIRED);
+        assert!(!billing.ok);
+        assert_eq!(billing.code, "billing");
+        assert_eq!(billing.http_status, Some(402));
+        assert_eq!(
+            model_connection_http_result(reqwest::StatusCode::UNAUTHORIZED).code,
+            "auth_invalid"
+        );
+        assert_eq!(
+            model_connection_http_result(reqwest::StatusCode::FORBIDDEN).code,
+            "auth_forbidden"
+        );
+        assert_eq!(
+            model_connection_http_result(reqwest::StatusCode::TOO_MANY_REQUESTS).code,
+            "rate_limited"
+        );
+        assert_eq!(
+            model_connection_http_result(reqwest::StatusCode::BAD_GATEWAY).code,
+            "server_unavailable"
+        );
+    }
+
+    #[test]
     fn image_probe_base_url_feeds_anthropic_messages_url_without_suffix() {
         // 含 /chat/completions 后缀的 Anthropic base_url:协议判定与 Messages
         // URL 拼接都必须基于 strip 后的基准,否则拼出 404 路径误判 error。

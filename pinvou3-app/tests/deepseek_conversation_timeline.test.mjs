@@ -280,6 +280,37 @@ try {
   assert.equal(billingHistory.turns[2].userError.kind, 'billing');
   assert.match(billingHistory.turns[2].userError.title, /DeepSeek account balance is insufficient/);
 
+  // providerLabelFromState 的 language 实参必须透传:openai_compatible 的默认
+  // 标签随界面语言构建,漏传时 en 界面会回落中文"当前模型服务"。
+  const genericProviderHistory = projectDeepSeekConversation({
+    chatItems,
+    busy: false,
+    sessionId: 'session-1',
+    language: 'en',
+    modelServiceState: {
+      currentSessionModelId: 'generic-main',
+      savedModels: [{ id: 'generic-main', preset: 'openai_compatible', model: 'gpt-4o' }],
+    },
+    timelineEvents: [
+      { turn_id: 'turn-live', event: 'user_start', timestamp: 123456, ts: '1970-01-01T00:02:03Z' },
+      {
+        turn_id: 'turn-live',
+        event: 'assistant_done',
+        timestamp: 125456,
+        ts: '1970-01-01T00:02:05Z',
+        status: 'Failed',
+        error: 'SSE stream request failed: HTTP 402 insufficient balance',
+      },
+    ],
+  });
+  assert.equal(genericProviderHistory.turns[2].userError.kind, 'billing');
+  assert.doesNotMatch(
+    genericProviderHistory.turns[2].userError.title,
+    /当前模型服务/,
+    'en cards must not fall back to the Chinese default provider label',
+  );
+  assert.match(genericProviderHistory.turns[2].userError.title, /current model service account balance is insufficient/);
+
   const localPermissionHistory = projectDeepSeekConversation({
     chatItems,
     busy: false,

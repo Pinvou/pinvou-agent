@@ -297,20 +297,26 @@ assert.deepEqual(memoryState.work_context.map(item => item.id), ['web-ctx-new'])
 assert.equal(memoryState.warnings[0].code, 'memory_topic_cleanup_required');
 
 const indexSource = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
+// indexOf 需同时断言存在:-1 < 任意值恒真,script 标签被删时排序断言会静默通过。
+const indexScriptIndex = (name) => {
+  const index = indexSource.indexOf(name);
+  assert.notEqual(index, -1, `${name} must be present in index.html`);
+  return index;
+};
 assert.ok(
-  indexSource.indexOf('shared/model-service-errors.js') < indexSource.indexOf('shared/bridge-messages.js'),
+  indexScriptIndex('shared/model-service-errors.js') < indexScriptIndex('shared/bridge-messages.js'),
   'model service error classifier must load before shared bridge messages',
 );
 assert.ok(
-  indexSource.indexOf('shared/bridge-messages.js') < indexSource.indexOf('platform/web/bridge.js'),
+  indexScriptIndex('shared/bridge-messages.js') < indexScriptIndex('platform/web/bridge.js'),
   'shared bridge messages must load before the web bridge',
 );
 assert.ok(
-  indexSource.indexOf('shared/chunked-file-upload.js') < indexSource.indexOf('platform/web/bridge.js'),
+  indexScriptIndex('shared/chunked-file-upload.js') < indexScriptIndex('platform/web/bridge.js'),
   'the shared chunk uploader must load before platform bridges',
 );
 assert.ok(
-  indexSource.indexOf('platform/web/bridge/turn-terminal.js') < indexSource.indexOf('platform/web/bridge.js'),
+  indexScriptIndex('platform/web/bridge/turn-terminal.js') < indexScriptIndex('platform/web/bridge.js'),
   'web turn terminal support must load before the web bridge',
 );
 assert.ok(

@@ -748,6 +748,47 @@ try {
   const fallbackItem = lane15.items.find(item => item.type === 'system');
   assert.match(fallbackItem.text, /ssh: connect to host github\.com port 22/, 'local tool errors keep the raw fallback');
   assert.equal(fallbackItem.userError, undefined);
+  // 投影层过滤(B2):终态升级项标记 legacyConversationOnly 后,projectNativeLane
+  // 必须经 conversationItemsForMode 隐藏气泡,只留时间线错误卡——否则同一错误
+  // 双显示(live 气泡+卡片),重启后却又只剩卡片。
+  const nativeProjection14 = projectNativeLane(lane14, 's14', { language: 'en' });
+  const projectedErrorTurns = nativeProjection14.turns.filter(turn => turn.userError);
+  assert.equal(projectedErrorTurns.length, 1, 'timeline error card must survive projection');
+  let projectedSystemNotices = 0;
+  for (const turn of nativeProjection14.turns) {
+    for (const item of turn.items || []) {
+      if (item.type === 'system_notice') projectedSystemNotices += 1;
+    }
+  }
+  assert.equal(projectedSystemNotices, 0, 'terminal-upgraded bubble must be hidden from the projection');
+  // 回合作用域(M3):新回合同身份错误必须新建条目,不得并进上一回合的旧项
+  // (bridge 在发送时清 turnErrorNotice 项,原生 lane 保留历史,去重必须限回合)。
+  const lane17 = createNativeLane();
+  applyNativeChatEvent(lane17, 'chat:user_message', { session_id: 's17', content: '第一问' });
+  applyNativeChatEvent(lane17, 'chat:done', {
+    session_id: 's17', status: 'Failed', error: 'SSE stream request failed: HTTP 402 detail-one',
+  }, { language: 'en', modelServiceState: null });
+  assert.equal(lane17.items.filter(item => item.userError).length, 1);
+  applyNativeChatEvent(lane17, 'chat:user_message', { session_id: 's17', content: '第二问' });
+  applyNativeChatEvent(lane17, 'chat:transient_error', {
+    session_id: 's17', error: 'SSE stream request failed: HTTP 402 detail-two',
+  }, { language: 'en', modelServiceState: null });
+  const crossTurnItems = lane17.items.filter(item => item.userError);
+  assert.equal(crossTurnItems.length, 2, 'same-kind error in a new turn must create its own item');
+  assert.equal(crossTurnItems[1].legacyConversationOnly, undefined, 'new turn transient item must stay visible');
+  // 非模型错误的裸串回退:done 与同文本 transient 只落一条并原地转终态隐藏
+  // (对齐 bridge chat:done 回退),不得出现两条同文本气泡(M4)。
+  const lane18 = createNativeLane();
+  appendLocalUserMessage(lane18, '跑一下脚本');
+  applyNativeChatEvent(lane18, 'chat:transient_error', {
+    session_id: 's18', error: 'idle timeout after 120s',
+  }, { language: 'en', modelServiceState: null });
+  applyNativeChatEvent(lane18, 'chat:done', {
+    session_id: 's18', status: 'Failed', error: 'idle timeout after 120s',
+  }, { language: 'en', modelServiceState: null });
+  const bareItems18 = lane18.items.filter(item => item.type === 'system');
+  assert.equal(bareItems18.length, 1, 'same-text transient+done bare fallback must collapse into one item');
+  assert.equal(bareItems18[0].legacyConversationOnly, true, 'collapsed bare fallback must hide the bubble');
   // helper 缺失(classic script 未加载)时回退裸串,不抛错。
   delete globalThis.PinvouModelServiceErrors;
   const lane16 = createNativeLane();
