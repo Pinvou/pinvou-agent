@@ -5,32 +5,32 @@ name: PR Check
 # - version-consistency:强制校验 VERSION 单一事实来源与 SemVer 规则。
 # - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python 确定性测试。
 # - changes:检测本 PR 有没有 Rust 代码、发布契约、L1 harness 或前端改动,给后续 job 做 paths filter。
-# - frontend-test:Draft 跑 lint/build/逻辑测试；Ready PR 跑定向浏览器 smoke；
-#   Merge Queue 对最新组合提交跑完整受影响前端门禁。
+# - frontend-test: Draft runs lint/build/logic tests. Ready PRs and Merge Queue
+#   select browser smokes from their actual base/head diff and fail closed for
+#   unknown or shared paths.
 # - release-contract-test:发布链路改动只跑配置/脚本契约,不在 PR 构建安装包。
 # - knowledge-rust:独立 pinvou-knowledge crate/部署入口改动跑 fmt/clippy/test 与 shell
 #   语法检查；依赖或策略改动时追加 cargo-deny，不依赖 Tauri workspace 间接覆盖。
-# - rust-test(编译类):Draft/普通 PR 默认不跑;Ready 高风险 PR 可加 ci:full-rust
-#   标签提前跑；Merge Queue 对最新组合提交运行；main push 无条件累计验证并写暖
-#   cache(防 concurrency pending 替换盲区)。
+# - rust-test: Draft and explicitly low-risk Rust changes skip the large test
+#   binary. Ready high-risk PRs and their combined Merge Queue tree run Linux
+#   regressions; Windows runs once on the ready PR. Main always runs both.
 # - rust-lint:Draft 只跑 fmt；Ready/Queue/main 跑 clippy；cargo-deny 仅在依赖
 #   或策略路径变化时追加，三项均无 continue-on-error。
 #   与 rust-test 并行,各自独立 cache。clippy 规则见 Cargo.toml [lints] 表:
 #   只启用实测零欠账的 lint(deny),有欠账的 lint/group 显式 allow,
 #   欠账由清理 PR(#35 及后续)消化后逐个升 deny。
-# - windows-rust-test:Windows 专属原语在原生 runner 执行;Ready PR/Merge Queue
-#   按 Rust 路径触发;main 每次保留下来的 push 无条件累计验证(防 pending 替换盲区)。
+# - windows-rust-test: Native Windows coverage runs for ready high-risk paths or
+#   ci:full-rust. Merge Queue does not repeat it; main retains cumulative coverage.
 # - windows-codex-runtime-test:Relevant PRs exercise the browser-wrapper lifecycle,
 #   prepare Node + ACP Bridge, and verify packaged resources on native Windows.
-# - benchmark-contract / benchmark-test:评测代码保持 CI 隔离，仓库工作流中硬关闭；
-#   不得通过 PR 标签、路径或 Merge Queue 事件启用，避免影响主工程门禁与运行资源。
+# - Benchmarks stay outside product PR/MQ gates and run manually in an isolated environment.
 # - required-gate:PR 阶段汇总所有适用检查，作为唯一 required check。
 # - merge_group:按 base/head 的真实组合 diff 运行适用门禁，保证验证对象就是
 #   最新 main + 入队 PR；因此无冲突 PR 不需要为主线日常前进反复人工 rebase。
 #
 # Cache 策略(2026-07 诊断:PR cache 挂 refs/pull/N/merge 作用域互不可见 + 1.3GB/份
 # 顶死 10GB 限额被 LRU 秒驱逐 → 每轮全冷编译 ~9min):
-# - Rust 相关 push main 跑 rust-test:cache 存 main 作用域,供 Merge Queue/显式 PR 复用。
+# - Main runs full rust-test and stores a main-scoped cache for high-risk/explicit PRs.
 # - save-if 仅 main:PR 侧只读不写,不再刷爆限额挤掉暖 cache。
 # - rust-cache 的 restore 有前缀回退(restoreKey 不含 lockfile hash),PR 改 Cargo.lock
 #   也能从 main cache 增量编译,不再全冷。
@@ -126,12 +126,9 @@ jobs:
     outputs:
       rust_code: ${{ steps.filter.outputs.rust_code }}
       rust_dependencies: ${{ steps.filter.outputs.rust_dependencies }}
+      rust_full: ${{ steps.filter.outputs.rust_full }}
       knowledge_rust: ${{ steps.filter.outputs.knowledge_rust }}
       knowledge_dependencies: ${{ steps.filter.outputs.knowledge_dependencies }}
-      benchmark: ${{ steps.filter.outputs.benchmark }}
-      benchmark_cli: ${{ steps.filter.outputs.benchmark_cli }}
-      benchmark_headless: ${{ steps.filter.outputs.benchmark_headless }}
-      benchmark_codewhale: ${{ steps.filter.outputs.benchmark_codewhale }}
       release_contract: ${{ steps.filter.outputs.release_contract }}
       pet: ${{ steps.filter.outputs.pet }}
       frontend: ${{ steps.filter.outputs.frontend }}
@@ -145,6 +142,7 @@ jobs:
       - uses: dorny/paths-filter@v4
         id: filter
         with:
+          predicate-quantifier: some-with-excludes
           filters: |
             rust_code:
               - '**/*.rs'
@@ -163,6 +161,22 @@ jobs:
               - '.gitmodules'
               - '.github/workflows/pr-check.yml'
               - '.github/workflows/mac-build.yml'
+            # All unclassified Rust paths fail closed to full regression. Only
+            # isolated leaf-feature boundaries are explicitly low risk; changes
+            # to their registration or app command surface still run full tests.
+            rust_full:
+              - '**/Cargo.toml'
+              - '**/Cargo.lock'
+              - '**/deny.toml'
+              - '**/build.rs'
+              - '.cargo/**'
+              - '.gitmodules'
+              - 'CodeWhale'
+              - 'pinvou3-app/src-tauri/rust-toolchain.toml'
+              - 'pinvou3-app/src-tauri/**/*.rs'
+              - '!pinvou3-app/src-tauri/src/features/feedback/**'
+              - '!pinvou3-app/src-tauri/src/features/personas/**'
+              - '!pinvou3-app/src-tauri/src/features/pet/**'
             knowledge_rust:
               - 'pinvou-knowledge/**/*.rs'
               - 'pinvou-knowledge/Cargo.toml'
@@ -174,26 +188,6 @@ jobs:
               - 'pinvou-knowledge/Cargo.lock'
               - 'pinvou3-app/src-tauri/deny.toml'
               - '.github/workflows/pr-check.yml'
-            benchmark:
-              - 'pinvou-cli/**'
-              - 'pinvou3-app/src-tauri/src/features/assistant/product_runtime/headless_bridge.rs'
-              - 'pinvou3-app/src-tauri/tests/headless_bridge_contract.rs'
-              - 'pinvou3-app/src-tauri/src/features/assistant/product_runtime/**'
-              - 'pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs'
-              - 'pinvou3-app/src-tauri/Cargo.toml'
-              - 'pinvou3-app/src-tauri/Cargo.lock'
-              - 'CodeWhale'
-            benchmark_cli:
-              - 'pinvou-cli/**'
-            benchmark_headless:
-              - 'pinvou3-app/src-tauri/src/features/assistant/product_runtime/headless_bridge.rs'
-              - 'pinvou3-app/src-tauri/tests/headless_bridge_contract.rs'
-              - 'pinvou3-app/src-tauri/src/features/assistant/product_runtime/**'
-              - 'pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs'
-              - 'pinvou3-app/src-tauri/Cargo.toml'
-              - 'pinvou3-app/src-tauri/Cargo.lock'
-            benchmark_codewhale:
-              - 'CodeWhale'
             release_contract:
               - 'VERSION'
               - 'scripts/sync-version.mjs'
@@ -373,8 +367,9 @@ jobs:
     # 合并原 diff-viewer-test + pet-frontend-test:两者各自 npm ci + build:ui 纯重复,
     # pet 跑 npm test(链尾含 test:diff-parser)与 diff-viewer 的 test:diff-parser 也重复,
     # 且 pet 缺 lint:ui。统一为一个 job 后:依赖/build 各装一次、lint 全覆盖。
-    # Draft 仅跑 lint/build/逻辑测试；Ready PR 按 diff 选定 browser smoke；
-    # merge_group 对最新组合提交跑完整 browser smoke。
+    # Draft runs lint/build/logic tests. Ready PRs and merge groups select browser
+    # smokes from their actual base/head diff. Shared, unknown, test-infrastructure,
+    # and empty diffs fail closed to the complete smoke set.
     if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.pet == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -456,9 +451,22 @@ jobs:
             esac
           done < "$RUNNER_TEMP/frontend-smokes.tsv"
 
-      - name: Merge Queue 完整浏览器 smoke
+      - name: Merge Queue diff-selected browser smoke
         if: ${{ github.event_name == 'merge_group' }}
-        run: npm run test:browser-smoke
+        env:
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: |
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" \
+            | node ../scripts/select-frontend-smokes.mjs \
+            > "$RUNNER_TEMP/frontend-smokes.tsv"
+          while IFS="$(printf '\t')" read -r kind target; do
+            case "$kind" in
+              npm) npm run "$target" ;;
+              node) node "$target" ;;
+              *) echo "Unknown smoke kind: $kind" >&2; exit 1 ;;
+            esac
+          done < "$RUNNER_TEMP/frontend-smokes.tsv"
 
   relay-test:
     name: relay-test
@@ -658,9 +666,9 @@ jobs:
   rust-test:
     name: rust-test
     needs: changes
-    # Draft/普通 PR 默认跳过；可信高风险场景按路径/标签触发；Ready 高风险 PR
-    # 可用标签提前跑。main push 无条件执行累计状态验证,避免 concurrency 用后续
-    # 非 Rust pending 替换含 Rust 变更的 pending 后,只看相邻 diff 而漏检。
+    # Ready high-risk PRs and matching merge groups run the full Linux regression.
+    # Explicitly low-risk leaf changes stay on compile/lint feedback; unknown Rust
+    # paths fail closed through rust_full. Main always runs the cumulative regression.
     if: >-
       ${{
         !cancelled() &&
@@ -668,12 +676,16 @@ jobs:
         (
           github.event_name == 'push' ||
           (
-            needs.changes.outputs.rust_code == 'true' &&
+            github.event_name == 'merge_group' &&
+            needs.changes.outputs.rust_full == 'true'
+          ) ||
+          (
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.draft == false &&
             (
-              github.event_name == 'merge_group' ||
+              needs.changes.outputs.rust_full == 'true' ||
               (
-                github.event_name == 'pull_request' &&
-                github.event.pull_request.draft == false &&
+                needs.changes.outputs.rust_code == 'true' &&
                 contains(github.event.pull_request.labels.*.name, 'ci:full-rust')
               )
             )
@@ -682,8 +694,7 @@ jobs:
       }}
     runs-on: ubuntu-latest
     # Tauri + fastembed + aws-lc-sys 全冷编译耗时长;设上限避免卡死 runner 占用。
-    # 知识库依赖进入主测试二进制后,Merge Queue 两次在 ThinLTO 链接期令 16GB
-    # hosted runner 失联。限制 backend 并行会延长链接,故同步放宽到 120min。
+    # High-risk PR, combined-tree, and main runs retain a 120-minute safety limit.
     timeout-minutes: 120
     env:
       # 经 rustc-stack-wrapper 直接注入 RUST_MIN_STACK=16MiB 到编译期 rustc 进程
@@ -753,10 +764,9 @@ jobs:
         run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
 
       # remote_control 的真实 relay 下载 e2e 需要 node + relay 依赖,缺 node_modules/ws 时
-      # 该 e2e 会自动 skip —— 装上依赖让 CI 真正执行它,而不是绿灯假过。
-      # push(main) 只编译不执行测试(见下方 --no-run),不需要 relay/Chrome 运行时依赖。
+      # Install relay dependencies so high-risk PR, combined-tree, and main runs
+      # execute the real e2e instead of silently skipping it.
       - name: Node.js (relay e2e)
-        if: ${{ github.event_name != 'push' }}
         uses: actions/setup-node@v7
         with:
           node-version: "22"
@@ -764,11 +774,9 @@ jobs:
           cache-dependency-path: remote-control-relay/package-lock.json
 
       - name: relay 依赖 (真实 relay e2e)
-        if: ${{ github.event_name != 'push' }}
         run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
 
       - name: 浏览器驱动依赖 (真实 Chrome 下载 e2e)
-        if: ${{ github.event_name != 'push' }}
         # real-browser driver 从 pinvou3-app/node_modules 加载 puppeteer-core。
         # npm --prefix pinvou3-app install 即使指定单包也会解析并安装项目完整依赖树，
         # 因此直接用 package-lock 驱动的 npm ci，避免额外维护一份硬编码版本并保证可复现。
@@ -783,7 +791,7 @@ jobs:
           # 只在 main 保存(暖 cache 唯一来源);PR 侧只读,不占 10GB 限额。
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # MQ/PR(ci:full-rust) 跑完整 lib 测试(含真实 relay/Chrome e2e)。
+      # High-risk/explicit PRs, matching merge groups, and main run all lib tests.
       # 保留 --test-threads=1:虽已把 env 写测试收敛到 crate 级唯一锁
       # (bridge::paths::tests::ENV_LOCK),但进程级 env 对未持锁的读取者仍全局可见，
       # 多线程测试仍可能观察到其他测试的临时值。Mutex poison 后通过 into_inner()
@@ -792,41 +800,30 @@ jobs:
       # strict_mode 的三个确定性回归已并入 pinvou3_lib 单测，和全量 lib tests
       # 共用一次编译与链接，避免第二个 integration test 目标重复链接全依赖树。
       - name: cargo test --lib（含 strict_mode 回归；真 bge-m3/vLLM 测试已 #[ignore]）
-        if: ${{ github.event_name != 'push' }}
         run: |
           chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           export CHROME="$chrome"
           export PINVOU_REQUIRE_REMOTE_E2E=1
           cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
 
-      # push(main) 唯一目的是暖 cache(Swatinem/rust-cache save-if main)。
-      # MQ 已对同一代码跑过完整 lib 测试,squash 合并后的 push 不再重复执行测试;
-      # --no-run 编译含 test harness 的全部 target 产物(与完整 test 的编译腿一致),
-      # 供热 MQ restore 后增量复用,省去测试执行时间。
-      # 不需要 relay/Chrome 运行时依赖(上方 setup-node/relay/浏览器 step 已按 !=push 跳过)。
-      - name: cargo test --lib --no-run (push main 仅编译暖 cache)
-        if: ${{ github.event_name == 'push' }}
-        run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
-
   windows-rust-test:
     name: windows-rust-test
     needs: changes
-    # Windows 专属原语必须在原生 runner 执行；Draft 保持快速反馈，Ready PR 与
-    # Merge Queue 按 Rust 路径触发。main 每次保留下来的 push 都执行 Windows 原生
-    # 累计验证，避免 concurrency 用后续非 Rust pending 替换含 Rust 变更的 pending
-    # 后，按相邻 diff 路由导致中间提交永远未经过 Windows 编译。
+    # Native Windows coverage runs once on ready high-risk/explicit PRs and on main.
+    # Merge Queue does not repeat this 20+ minute leg; Linux validates the combined tree.
     if: >-
       ${{
         !cancelled() &&
         (
           github.event_name == 'push' ||
           (
-            needs.changes.outputs.rust_code == 'true' &&
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.draft == false &&
             (
-              github.event_name == 'merge_group' ||
+              needs.changes.outputs.rust_full == 'true' ||
               (
-                github.event_name == 'pull_request' &&
-                github.event.pull_request.draft == false
+                needs.changes.outputs.rust_code == 'true' &&
+                contains(github.event.pull_request.labels.*.name, 'ci:full-rust')
               )
             )
           )
@@ -1069,149 +1066,6 @@ jobs:
       - name: macOS Codex 与 Claude Runtime 原生打包冒烟
         run: npm --prefix pinvou3-app run test:codex-acp-macos-runtime
 
-  benchmark-contract:
-    name: benchmark-contract
-    needs: changes
-    # Benchmark CI 在本 PR 中必须保持硬关闭：不接受 label/path/event 开启。
-    # 如需验证，由维护者在隔离环境本地执行，不得占用主工程 PR/MQ 门禁。
-    if: ${{ false }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
-    steps:
-      - name: Checkout (含 submodule)
-        uses: actions/checkout@v7
-        with:
-          submodules: false
-
-      - name: 初始化公共底座 submodule
-        run: git submodule update --init --recursive -- CodeWhale
-
-      - name: 装 Tauri + pinvou3 Linux 系统依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
-            librsvg2-dev libssl-dev \
-            libx11-dev libxi-dev libxtst-dev \
-            libayatana-appindicator3-dev \
-            build-essential pkg-config cmake
-
-      - name: bge-m3 占位 (骗过 tauri-build 资源校验)
-        run: |
-          d=pinvou3-app/src-tauri/resources/bge-m3
-          mkdir -p "$d"
-          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
-            : > "$d/$f"
-          done
-
-      - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: 对齐 rust-toolchain.toml 锁定的工具链
-        working-directory: pinvou3-app/src-tauri
-        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
-
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            pinvou-cli
-            pinvou3-app/src-tauri
-            CodeWhale
-          shared-key: benchmark-contract
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: benchmark 核心与适配器契约测试
-        run: >-
-          cargo test --manifest-path pinvou-cli/Cargo.toml --all-features
-          -p agent-backend-api -p benchmark-core -p adapter-smoke -p adapter-gaia
-
-      - name: benchmark CLI 无 product-backend 契约测试
-        run: >-
-          cargo test --manifest-path pinvou-cli/Cargo.toml
-          -p pinvou-cli --no-default-features
-
-      # cargo check --test 会编译集成测试本身，能捕获 cfg(not(windows)) 下的 trait
-      # 签名漂移；行为回归由同 job 的 core tests 与 Merge Queue 的 Rust lib tests 覆盖。
-      - name: Linux headless benchmark 契约编译
-        run: |
-          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml \
-            --features benchmark-hooks --lib \
-            features::assistant::product_runtime::headless_bridge:: \
-            -- --test-threads=1
-          cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml \
-            --features benchmark-hooks --test headless_bridge_contract
-
-      - name: CodeWhale 受限工具安全回归
-        if: ${{ needs.changes.outputs.benchmark_codewhale == 'true' }}
-        run: >-
-          cargo test --manifest-path CodeWhale/Cargo.toml
-          -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
-
-  benchmark-test:
-    name: benchmark-test
-    needs: changes
-    # 完整 Benchmark 矩阵同样硬关闭；PR 标签不得绕过隔离边界。
-    if: ${{ false }}
-    runs-on: windows-latest
-    timeout-minutes: 90
-    env:
-      # 同 windows-rust-test:经 RUSTC_WRAPPER 注入 rustc-stack-wrapper.exe,
-      # 只在编译期 rustc 注入 RUST_MIN_STACK=16MiB。app 工作区 dev profile 对
-      # 依赖开 O2 后,codewhale-tui 的 codegen 线程在默认栈下溢出
-      # (STATUS_STACK_OVERFLOW,CI 实证)。.exe 经 CreateProcess 直启,规避
-      # cmd 8191 字符命令行上限;必须用 ${{ github.workspace }} 绝对路径。
-      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
-    steps:
-      - name: Checkout (含 submodule)
-        uses: actions/checkout@v7
-        with:
-          submodules: false
-
-      - name: 初始化公共底座 submodule
-        shell: bash
-        run: git submodule update --init --recursive -- CodeWhale
-
-      - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      # 编译 Windows 专用 .exe 栈 wrapper(源码 scripts/rustc-stack-wrapper.rs)。
-      # 直接调 rustc 编译、不经 cargo,故不受本 job 的 RUSTC_WRAPPER 影响。
-      - name: 编译 Windows 栈 wrapper(.exe)
-        shell: bash
-        run: rustc -O pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs -o pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
-
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            pinvou-cli
-            pinvou3-app/src-tauri
-            CodeWhale
-          shared-key: benchmark-test
-
-      - name: benchmark workspace 全特性测试
-        shell: bash
-        run: cargo test --manifest-path pinvou-cli/Cargo.toml --all-features
-
-      - name: benchmark workspace 无 product-backend 测试
-        shell: bash
-        run: cargo test --manifest-path pinvou-cli/Cargo.toml --no-default-features
-
-      - name: headless benchmark 契约测试
-        shell: bash
-        run: >-
-          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml
-          --features benchmark-hooks --test headless_bridge_contract
-
-      - name: CodeWhale 受限工具安全回归
-        shell: bash
-        run: >-
-          cargo test --manifest-path CodeWhale/Cargo.toml
-          -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
-
   required-gate:
     name: required-gate
     needs:
@@ -1228,7 +1082,6 @@ jobs:
       - windows-rust-test
       - macos-codex-runtime-test
       - windows-codex-runtime-test
-      - benchmark-contract
     if: ${{ always() && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1248,7 +1101,6 @@ jobs:
           WINDOWS_RUST_RESULT: ${{ needs.windows-rust-test.result }}
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
           WINDOWS_CODEX_RESULT: ${{ needs.windows-codex-runtime-test.result }}
-          BENCHMARK_CONTRACT_RESULT: ${{ needs.benchmark-contract.result }}
         run: |
           if [[ "$GITHUB_EVENT_NAME" == "merge_group" ]]; then
             # 队列提交由 GitHub 生成，不重复校验人工 commit message；
@@ -1272,8 +1124,7 @@ jobs:
             "rust-test:$RUST_RESULT" \
             "windows-rust-test:$WINDOWS_RUST_RESULT" \
             "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \
-            "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT" \
-            "benchmark-contract:$BENCHMARK_CONTRACT_RESULT"; do
+            "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT"; do
             name="${item%%:*}"
             result="${item#*:}"
             case "$result" in
