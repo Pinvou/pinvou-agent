@@ -2347,6 +2347,14 @@ mod tests {
         );
         // BOM：Rust trim 不剥 U+FEFF，引擎 starts_with("---") 不成立 → 降级路径
         assert!(read_skill_description_from_str("\u{feff}---\ndescription: x\n---\n").is_none());
+        // 缺 name：镜像仍照读 description（展示/备份语义不依赖 name）——
+        // 引擎 parse_skill 对缺 name 整包 Err、discover 丢弃（读不到），
+        // 这是与引擎的既定差异边界而非镜像缺陷，故不进引擎等价比对矩阵。
+        assert_eq!(
+            read_skill_description_from_str("---\ndescription: 无名说明\n---\n").as_deref(),
+            Some("无名说明"),
+            "无 name 的 frontmatter 镜像仍应读出 description"
+        );
         // keep-chomping 块只含空行：引擎无条件采用连接结果（Some("\n")），
         // 镜像不得 trim 归一成 None——否则备份会误打「原本没有」空串哨兵，
         // 清覆盖时把该删行恢复（评审发现的分歧）。
@@ -2375,10 +2383,16 @@ mod tests {
     /// （含 chomping/折叠/块边界/嵌套等任何语义变化）直接变成 CI 失败，
     /// 写侧互洽校验不再自洽于过期镜像。
     ///
+    /// 发现布局契约：引擎 `discover_recursive` 只把**子目录**里的 SKILL.md
+    /// 当技能（`<dir>/<subdir>/SKILL.md`），根目录直接放一份 SKILL.md 文件
+    /// 会被按普通文件跳过——所以每个 fixture 包一层 `skill/` 子目录，
+    /// discover 指向包装目录（此前指向叶子目录导致引擎侧恒空、矩阵整体失真）。
+    ///
     /// 注意差异边界：引擎 `parse_skill` 缺 `name` 时整体 Err（discover 丢弃
     /// 该技能 → 引擎侧按 None 计）；镜像对无 name 的 frontmatter 仍照读
-    /// description（展示/备份语义不依赖 name）。矩阵里凡引擎会 Err 的
-    /// fixture 都在期望侧显式标 None 并注明原因。
+    /// description（展示/备份语义不依赖 name）。这类 fixture 放进等价比对
+    /// 恒不成立，已移出手写矩阵、边界改由
+    /// [`skill_description_mirrors_engine_flat_parser`] 钉住。
     #[test]
     fn skill_description_mirror_differs_from_engine_discover_nowhere() {
         let fixtures: &[&str] = &[
@@ -2402,6 +2416,9 @@ mod tests {
             "---\nname: x\ndescription: |+\n  a\n\n\n---\n",
             // 默认 clip：至多保留一个尾随空行
             "---\nname: x\ndescription: |\n  a\n\n\n---\n",
+            // keep 块只含空行：两侧块内空行都无条件入块、keep 全保，
+            // 字面量连接为 "\\n"（引擎 metadata 无条件采用，非空即保留）
+            "---\nname: x\ndescription: |+\n\n\n---\n",
             // 大小写不敏感键
             "---\nName: X\ndescription: 小写值\n---\n",
             // 整行注释跳过
@@ -2416,9 +2433,6 @@ mod tests {
             // （list() 查无此技 → 引擎侧 None）；镜像 rest.find("---") 同样失败
             // → None，两侧恰好吻合
             "---\nname: x\ndescription: 没闭合\n",
-            // 缺 name：引擎 parse_skill Err（required field）→ 按 None 计
-            // （镜像仍会读出 description——差异边界，见上方 doc 注释）
-            "---\ndescription: 无名说明\n---\n",
         ];
 
         let dir = std::env::temp_dir().join(format!(
@@ -2430,14 +2444,17 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         for (i, fixture) in fixtures.iter().enumerate() {
-            let skill_dir = dir.join(format!("skill-{i:02}"));
+            // 发现布局契约（见 doc 注释）：SKILL.md 必须在 discover 根的
+            // 子目录里，包一层 `skill/`，discover 指向 case 目录。
+            let case_dir = dir.join(format!("case-{i:02}"));
+            let skill_dir = case_dir.join("skill");
             std::fs::create_dir_all(&skill_dir).unwrap();
             let md = skill_dir.join("SKILL.md");
             std::fs::write(&md, fixture).unwrap();
 
-            // 引擎侧：真实解析器（缺 name / 缺闭合围栏 → parse Err →
+            // 引擎侧：真实解析器（缺闭合围栏 / 缺 name → parse Err →
             // discover 丢弃该技能并只记 warning，list() 里查无此技 → None）
-            let registry = deepseek_tui::skills::SkillRegistry::discover(&skill_dir);
+            let registry = deepseek_tui::skills::SkillRegistry::discover(&case_dir);
             let engine_desc = registry
                 .list()
                 .first()
