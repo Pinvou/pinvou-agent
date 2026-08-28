@@ -133,11 +133,12 @@ function currentTurnStart(lane) {
 
 /// 原生泳道的模型服务错误气泡，与 bridge-messages.addModelServiceErrorNotice 同语义：
 /// 门控（isModelServiceError）通过才接管；去重按错误身份（kind+技术详情）而非文本，
-/// 同回合 transient→done 措辞升级原地生效；终态标记 legacyConversationOnly，投影层
-/// （projectNativeLane 经 conversationItemsForMode 过滤）据此隐藏气泡，只留时间线
-/// 错误卡。非模型错误返回 false 由调用方走裸串回退。helper 缺失（classic script
-/// 未加载）时同样回退。
-function upsertNativeModelServiceNotice(lane, payload, terminal, options) {
+/// 同回合 transient→done 措辞升级原地生效；终态且时间线终态记录确实带 error 时
+/// （terminalRecord），本回合所有模型服务错误气泡一并标记 legacyConversationOnly，
+/// 投影层（projectNativeLane 经 conversationItemsForMode 过滤）据此隐藏气泡，只留
+/// 时间线错误卡；无时间线记录时气泡保留可见（否则静默吞错）。非模型错误返回 false
+/// 由调用方走裸串回退。helper 缺失（classic script 未加载）时同样回退。
+function upsertNativeModelServiceNotice(lane, payload, terminal, options, terminalRecord) {
   const helper = globalThis.PinvouModelServiceErrors;
   const error = payload && payload.error;
   if (!error || !helper || typeof helper.build !== 'function'
@@ -164,14 +165,27 @@ function upsertNativeModelServiceNotice(lane, payload, terminal, options) {
       break;
     }
   }
-  if (existing) {
-    existing.text = notice;
-    existing.userError = userError;
-    if (terminal) existing.legacyConversationOnly = true;
+  const hideForTimeline = Boolean(terminal && terminalRecord && terminalRecord.error);
+  let target = existing;
+  if (target) {
+    target.text = notice;
+    target.userError = userError;
+    if (hideForTimeline) target.legacyConversationOnly = true;
   } else {
-    const item = { id: nextId(lane), type: 'system', text: notice, time: timeStr(), userError };
-    if (terminal) item.legacyConversationOnly = true;
-    lane.items.push(item);
+    target = { id: nextId(lane), type: 'system', text: notice, time: timeStr(), userError };
+    if (hideForTimeline) target.legacyConversationOnly = true;
+    lane.items.push(target);
+  }
+  // 终态接管时,当前回合其余模型服务 transient 气泡(身份与终态不同,如先
+  // idle timeout 后 HTTP 402)一并隐藏:它们的"会继续重试"措辞与终态矛盾。
+  // 去重循环从 currentTurnStart 起,上一回合的气泡不在作用域内。
+  if (hideForTimeline) {
+    for (let i = start; i < lane.items.length; i += 1) {
+      const item = lane.items[i];
+      if (item && item !== target && item.userError && !item.legacyConversationOnly) {
+        item.legacyConversationOnly = true;
+      }
+    }
   }
   return true;
 }
@@ -209,15 +223,19 @@ function recordTurnStarted(lane, turnId) {
 
 function recordTurnCompleted(lane, payload) {
   const open = openTimelineStart(lane);
-  if (!open) return;
-  lane.timeline.push({
+  if (!open) return null;
+  const record = {
     turn_id: open.turn_id,
     event: 'assistant_done',
     timestamp: Date.now(),
     status: payload && payload.status || (payload && payload.error ? 'Failed' : 'Completed'),
     error: payload && payload.error || null,
     ui_turn_index: open.ui_turn_index,
-  });
+  };
+  lane.timeline.push(record);
+  // 返回值供终态错误气泡的隐藏决策使用:只有确实写入了带 error 的时间线
+  // 终态记录,气泡才能交给时间线错误卡接管(否则隐藏=静默吞错)。
+  return record;
 }
 
 function finalizeStream(lane) {
@@ -565,13 +583,15 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
     case 'chat:done': {
       finalizeReasoning(lane);
       finalizeStream(lane);
-      recordTurnCompleted(lane, p);
+      const terminalRecord = recordTurnCompleted(lane, p);
       lane.busy = false;
       lane.thinking = null;
-      if (p.error && !upsertNativeModelServiceNotice(lane, p, true, options)) {
+      if (p.error && !upsertNativeModelServiceNotice(lane, p, true, options, terminalRecord)) {
         // 终态：同身份 transient 气泡原地升级为终态措辞并转 legacyConversationOnly
         //（时间线错误卡接管）；非模型错误与 bridge chat:done 回退同语义——
         // 同文本瞬态项原地隐藏（时间线以裸 error 小字展示），不追加第二条。
+        // 隐藏的前提同样是时间线终态记录确实写入且带 error,否则保留气泡可见。
+        const timelineTakesOver = Boolean(terminalRecord && terminalRecord.error);
         const notice = `⚠️ ${p.error}`;
         const start = currentTurnStart(lane);
         let existing = null;
@@ -580,9 +600,11 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
           if (item && item.type === 'system' && item.text === notice) { existing = item; break; }
         }
         if (existing) {
-          existing.legacyConversationOnly = true;
+          if (timelineTakesOver) existing.legacyConversationOnly = true;
         } else {
-          lane.items.push({ id: nextId(lane), type: 'system', text: notice, time: timeStr(), legacyConversationOnly: true });
+          const item = { id: nextId(lane), type: 'system', text: notice, time: timeStr() };
+          if (timelineTakesOver) item.legacyConversationOnly = true;
+          lane.items.push(item);
         }
       }
       return true;

@@ -6308,8 +6308,9 @@
       if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
       const error = e.payload && e.payload.error;
       const terminal = webTurnTerminal();
+      let terminalRecord = null;
       if (typeof terminal.recordCompleted === "function") {
-        terminal.recordCompleted(
+        terminalRecord = terminal.recordCompleted(
           state,
           latestOpenTimelineStart(),
           e.payload || {}
@@ -6320,17 +6321,20 @@
       if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
       if (error) {
         const messages = bridgeMessages();
-        if (!(typeof messages.addModelServiceErrorNotice === "function" && messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, true))) {
+        if (!(typeof messages.addModelServiceErrorNotice === "function" && messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, true, terminalRecord))) {
+          // 与 addModelServiceErrorNotice 同一前提:只有时间线终态记录确实带
+          // error 时才隐藏气泡(时间线以裸 error 小字接管),否则保留可见。
+          const timelineTakesOver = !!(terminalRecord && terminalRecord.error);
           const finalNotice = "⚠️ " + error;
           const finalNoticeItem = state.chatItems.find(function (item) {
             return item && item.turnErrorNotice && item.text === finalNotice;
           });
           if (finalNoticeItem) {
-            finalNoticeItem.legacyConversationOnly = true;
+            if (timelineTakesOver) finalNoticeItem.legacyConversationOnly = true;
           } else {
             addSystemItem(finalNotice, {
               turnErrorNotice: true,
-              legacyConversationOnly: true,
+              legacyConversationOnly: timelineTakesOver,
             });
           }
         }

@@ -1,24 +1,72 @@
 (function () {
   "use strict";
 
-  const SENSITIVE_VALUE = "[敏感信息已隐藏]";
-  const PROVIDER_LABELS = {
-    deepseek: "DeepSeek",
-    openai: "OpenAI",
-    moonshot: "Kimi",
-    kimi: "Kimi",
-    qwen: "通义千问",
-    dashscope: "通义千问",
-    doubao: "豆包",
-    volcengine: "豆包",
-    minimax: "MiniMax",
-    glm: "智谱",
-    zai: "智谱",
-    zhipu: "智谱",
-    anthropic: "Claude",
-    xai: "xAI",
-    gemini: "Gemini",
+  // 脱敏占位符按界面语言选择:技术详情在 en/ja 界面不得混入中文。
+  const SENSITIVE_PLACEHOLDERS = {
+    zh: "[敏感信息已隐藏]",
+    en: "[redacted]",
+    ja: "[秘匿済み]",
   };
+  // 品牌标签按界面语言提供:中文品牌名(通义千问/智谱/豆包)只用于 zh,
+  // en/ja 用拉丁名,避免 "The 通义千问 API quota ..." 这类中英混排。
+  const PROVIDER_LABELS = {
+    zh: {
+      deepseek: "DeepSeek",
+      openai: "OpenAI",
+      moonshot: "Kimi",
+      kimi: "Kimi",
+      qwen: "通义千问",
+      dashscope: "通义千问",
+      doubao: "豆包",
+      volcengine: "豆包",
+      minimax: "MiniMax",
+      glm: "智谱",
+      zai: "智谱",
+      zhipu: "智谱",
+      anthropic: "Claude",
+      xai: "xAI",
+      gemini: "Gemini",
+    },
+    en: {
+      deepseek: "DeepSeek",
+      openai: "OpenAI",
+      moonshot: "Kimi",
+      kimi: "Kimi",
+      qwen: "Qwen",
+      dashscope: "Qwen",
+      doubao: "Doubao",
+      volcengine: "Doubao",
+      minimax: "MiniMax",
+      glm: "Zhipu",
+      zai: "Zhipu",
+      zhipu: "Zhipu",
+      anthropic: "Claude",
+      xai: "xAI",
+      gemini: "Gemini",
+    },
+    ja: {
+      deepseek: "DeepSeek",
+      openai: "OpenAI",
+      moonshot: "Kimi",
+      kimi: "Kimi",
+      qwen: "Qwen",
+      dashscope: "Qwen",
+      doubao: "Doubao",
+      volcengine: "Doubao",
+      minimax: "MiniMax",
+      glm: "Zhipu",
+      zai: "Zhipu",
+      zhipu: "Zhipu",
+      anthropic: "Claude",
+      xai: "xAI",
+      gemini: "Gemini",
+    },
+  };
+
+  function providerLabel(key, language) {
+    const table = PROVIDER_LABELS[languageTag(language)] || PROVIDER_LABELS.zh;
+    return table[key] || PROVIDER_LABELS.zh[key] || "";
+  }
 
   // 底座(CodeWhale)模型调用失败的固定错误前缀,出现即可接管,分两组:
   // ①SSE 流式链路(chat.rs/stream_entry.rs):SSE stream request failed /
@@ -73,7 +121,9 @@
   ];
 
   const AMBIGUOUS_MODEL_ERROR_KEYWORDS = [
-    "api key",
+    // 注意:"api key" 不在此列——它是 hasApiSignal 的上下文名词而非错误语义,
+    // 留在词表里会让门控形同虚设("failed to save api key to config: disk full"
+    // 这类本地错误被劫持)。强语义的 "invalid api key" 由 STRONG 词表接管。
     "invalid token",
     "rate limit",
     "too many requests",
@@ -166,7 +216,7 @@
 
   function extractHttpStatus(text) {
     // HTTP/1.1 429、HTTP/2 503(带版本段)与 "status code 429"(axios)同属常见形态。
-    const match = String(text || "").match(/\bHTTP\/?[\d.]*\s*(\d{3})\b/i)
+    const match = String(text || "").match(/\bHTTPS?\/?[\d.]*\s*(\d{3})\b/i)
       || String(text || "").match(/\bstatus(?:\s+code)?[=:\s]+(\d{3})\b/i);
     return match ? Number(match[1]) : null;
   }
@@ -236,12 +286,16 @@
     const apiSignal = hasApiSignal(lower, normalized);
     const providerSignal = hasProviderNameSignal(lower, normalized);
     const status = extractHttpStatus(text);
+    // extractHttpStatus 只在文本含 HTTP/status 字样时才返回非空,无需再验上下文词。
     const statusIsModelLike = status !== null
-      && (status === 401 || status === 402 || status === 403 || status === 429 || (status >= 500 && status <= 599))
-      && /http|status|请求|响应/i.test(text);
-    if (statusIsModelLike && (apiSignal || providerSignal)) return true;
-    if (apiSignal) return true;
-    if (providerSignal && hasAny(lower, normalized, AMBIGUOUS_MODEL_ERROR_KEYWORDS)) return true;
+      && (status === 401 || status === 402 || status === 403 || status === 429 || (status >= 500 && status <= 599));
+    // apiSignal 与 providerSignal 走同一规则:必须叠加歧义错误词或 model-like
+    // 状态码。裸的 "api key"/"model service" 字样只是上下文名词而非错误语义,
+    // 无叠加条件时接管会把 "failed to save api key to config: disk full" 这类
+    // 本地错误劫持成模型服务错误卡;取舍是错过 "api key 配置有误" 这类无错误
+    // 动词的文本,但 STRONG 词表("invalid api key" 等)仍保证强语义接管。
+    if ((apiSignal || providerSignal)
+        && (statusIsModelLike || hasAny(lower, normalized, AMBIGUOUS_MODEL_ERROR_KEYWORDS))) return true;
     return false;
   }
 
@@ -280,9 +334,10 @@
     return { kind: "unknown", httpStatus: status };
   }
 
-  function redactTechnicalDetail(raw) {
+  function redactTechnicalDetail(raw, language) {
+    const sensitive = SENSITIVE_PLACEHOLDERS[languageTag(language)];
     let text = String(raw || "");
-    const keepPrefix = (prefix) => prefix + SENSITIVE_VALUE;
+    const keepPrefix = (prefix) => prefix + sensitive;
     // Authorization/Proxy-Authorization 整段吞值:任意 scheme(scheme 词表
     // 枚举追不完,API-Key/HMAC 等非标 scheme 曾整体漏掉凭证段)、可选 JSON
     // 引号;值一段吞到首个分隔符(引号/逗号/分号/括号/&/换行),允许值内
@@ -295,19 +350,26 @@
     text = text.replaceAll(/\b(Bearer\s+)[a-z0-9._~+=/-]{12,}/gi, (m, p1) => keepPrefix(p1));
     // 裸 Basic/Digest <base64>(同上);阈值 16 换取 "basic <普通词>" 不误吞。
     text = text.replaceAll(/\b((?:Basic|Digest)\s+)[a-z0-9+/=]{16,}/gi, (m, p1) => keepPrefix(p1));
-    // 强凭证键(password/passphrase/secret)的引号值允许空格,整段吞掉
-    // ("correct horse battery staple" 这类口令此前只吞首词)。
+    // 强凭证键(password/passphrase/secret)两种形态都整段吞值:
+    // ①引号值允许空格("correct horse battery staple" 这类多词口令);
+    // ②未加引号时吞到行尾或首个 ,/;/&,否则多词口令只吞首词、其余词泄漏。
     text = text.replaceAll(
       /(["']?\b(?:password|passphrase|secret)\b["']?\s*[:=]\s*["'])([^"']{2,})(["'])/gi,
-      (m, p1, p2, p3) => p1 + SENSITIVE_VALUE + p3,
+      (m, p1, p2, p3) => p1 + sensitive + p3,
+    );
+    text = text.replaceAll(
+      /(["']?\b(?:password|passphrase|secret)\b["']?\s*[:=]\s*)([^"'\r\n,;&]{2,})/gi,
+      (m, p1) => keepPrefix(p1),
     );
     // kv 形态的凭证键:左侧词边界 + 键名白名单(含 refresh_token/client_secret
-    // 等复合名——\b 在下划线旁不成立,必须整体枚举)。值取「字母开头」或
-    // 「≥10 位字母数字」(数字开头的会话凭证 8f3k9d2l… 形态);"token: 15000"
-    // 用量计数是纯数字且不足 10 位,不命中,context 错误的排查信息得以保留。
+    // 等复合名——\b 在下划线旁不成立,必须整体枚举;cookie/set-cookie 头整段
+    // 按凭证处理)。值取「字母开头」或「≥10 位、可含 -/_/./~ 的字母数字」
+    // (数字开头或带连字符的会话凭证,如 8f3k9d2l-4abc-… / 1234-5678-…);
+    // "token: 15000" 用量计数是纯数字且不足 10 位,不命中,context 错误的
+    // 排查信息得以保留。
     /* eslint-disable sonarjs/regex-complexity, sonarjs/duplicates-in-character-class -- the credential-key whitelist is deliberately exhaustive; splitting it would reduce auditability */
     text = text.replaceAll(
-      /(["']?\b(?:api[_-]?key|api[_-]?secret|authorization|token|password|secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|secret[_-]?key|ssh[_-]?key|private[_-]?key|session[_-]?id|session[_-]?token|sessionid|jsessionid)\b["']?\s*[:=]\s*["']?)(?:[A-Za-z][^"',\s&}]*|[A-Za-z0-9]{10,})/gi,
+      /(["']?\b(?:api[_-]?key|api[_-]?secret|authorization|token|password|secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|secret[_-]?key|ssh[_-]?key|private[_-]?key|session[_-]?id|session[_-]?token|sessionid|jsessionid|cookie|set[_-]?cookie)\b["']?\s*[:=]\s*["']?)(?:[A-Za-z][^"',\s&}]*|[A-Za-z0-9][A-Za-z0-9._~-]{9,})/gi,
       (m, p1) => keepPrefix(p1),
     );
     /* eslint-enable sonarjs/regex-complexity, sonarjs/duplicates-in-character-class */
@@ -324,9 +386,11 @@
       (m, p1) => keepPrefix(p1),
     );
     /* eslint-enable sonarjs/regex-complexity */
-    text = text.replaceAll(/\bsk-[A-Za-z0-9][A-Za-z0-9._-]{10,}\b/g, () => SENSITIVE_VALUE);
+    text = text.replaceAll(/\bsk-[A-Za-z0-9][A-Za-z0-9._-]{10,}\b/g, () => sensitive);
+    // 裸 Gemini API Key(AIza 前缀 + 35 位左右,无键名/配置回显常见形态)。
+    text = text.replaceAll(/\bAIza[0-9A-Za-z_-]{30,}/g, () => sensitive);
     // 裸 JWT/JWS(eyJ 开头三段式,无键名/无 Bearer 前缀的形态)。
-    text = text.replaceAll(/\b(eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*)/g, () => SENSITIVE_VALUE);
+    text = text.replaceAll(/\b(eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*)/g, () => sensitive);
     if (text.length > 2000) text = [...text].slice(0, 2000).join("") + "...";
     return text;
   }
@@ -341,15 +405,18 @@
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i].replaceAll(/\s+/g, "_");
       if (key === "openai_compatible") return defaultProviderLabel(language);
-      if (PROVIDER_LABELS[key]) return PROVIDER_LABELS[key];
-      if (key.includes("deepseek")) return "DeepSeek";
-      if (key.includes("openai")) return "OpenAI";
-      if (key.includes("kimi") || key.includes("moonshot")) return "Kimi";
-      if (key.includes("qwen") || key.includes("dashscope")) return "通义千问";
-      if (key.includes("doubao") || key.includes("volc")) return "豆包";
-      if (key.includes("minimax")) return "MiniMax";
-      if (key.includes("glm") || key.includes("zai") || key.includes("zhipu")) return "智谱";
-      if (key.includes("anthropic") || key.includes("claude")) return "Claude";
+      const direct = providerLabel(key, language);
+      if (direct) return direct;
+      if (key.includes("deepseek")) return providerLabel("deepseek", language);
+      if (key.includes("openai")) return providerLabel("openai", language);
+      if (key.includes("kimi") || key.includes("moonshot")) return providerLabel("kimi", language);
+      if (key.includes("qwen") || key.includes("dashscope")) return providerLabel("qwen", language);
+      if (key.includes("doubao") || key.includes("volc")) return providerLabel("doubao", language);
+      if (key.includes("minimax")) return providerLabel("minimax", language);
+      if (key.includes("glm") || key.includes("zai") || key.includes("zhipu")) return providerLabel("zhipu", language);
+      if (key.includes("anthropic") || key.includes("claude")) return providerLabel("anthropic", language);
+      if (key.includes("gemini")) return providerLabel("gemini", language);
+      if (key.includes("xai")) return providerLabel("xai", language);
     }
     return "";
   }
@@ -381,11 +448,16 @@
     "doubao", "volcengine", "zhipu", "zai", "glm", "minimax", "xai",
     "openai", "gemini",
   ];
-  function providerLabelFromErrorText(raw) {
-    const lower = String(raw || "").toLowerCase();
+  function providerLabelFromErrorText(raw, language) {
+    const text = String(raw || "");
+    const lower = text.toLowerCase();
+    const normalized = normalizeForMatch(text);
+    // 与 hasProviderNameSignal 同款词边界匹配:裸 includes 会让 zai/xai/glm/
+    // kimi 这类短键被无关子串(如 "exhibit"/"kaiming")误命中。
     for (let i = 0; i < PROVIDER_SIGNAL_ORDER.length; i++) {
       const key = PROVIDER_SIGNAL_ORDER[i];
-      if (lower.includes(key)) return PROVIDER_LABELS[key] || key;
+      const re = keywordRegex(key);
+      if (re.test(lower) || re.test(normalized)) return providerLabel(key, language) || key;
     }
     return "";
   }
@@ -408,17 +480,17 @@
       const kind = allowedKind[raw.kind] ? raw.kind : "unknown";
       return Object.assign({}, raw, {
         kind,
-        title: redactTechnicalDetail(raw.title),
-        message: redactTechnicalDetail(raw.message),
+        title: redactTechnicalDetail(raw.title, language),
+        message: redactTechnicalDetail(raw.message, language),
         retryable: raw.retryable === true,
-        technicalDetail: redactTechnicalDetail(raw.technicalDetail || raw.technical_detail || raw.detail || ""),
+        technicalDetail: redactTechnicalDetail(raw.technicalDetail || raw.technical_detail || raw.detail || "", language),
       });
     }
-    const technicalDetail = redactTechnicalDetail(raw);
+    const technicalDetail = redactTechnicalDetail(raw, language);
     const classified = classify(raw);
     // 错误文本里的 provider 信号优先于调用方从"当前"模型配置推导的标签
     // (历史回合重建时当前模型≠出错回合的模型)。
-    const provider = providerLabelFromErrorText(raw)
+    const provider = providerLabelFromErrorText(raw, language)
       || options.providerLabel
       || providerLabelFrom(options.provider, language)
       || defaultProviderLabel(language);
@@ -459,7 +531,9 @@
 
   function noticeText(userError) {
     if (!userError) return "";
-    return "⚠️ " + userError.title + "\n" + userError.message;
+    // 聊天气泡是 pill 样式、无 whitespace-pre-wrap,"\n" 会被 HTML 折叠成
+    // 空格,标题与消息连成一行;改用单行分隔符。
+    return "⚠️ " + userError.title + " — " + userError.message;
   }
 
   const api = {

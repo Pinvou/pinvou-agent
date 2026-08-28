@@ -748,6 +748,11 @@ try {
   const fallbackItem = lane15.items.find(item => item.type === 'system');
   assert.match(fallbackItem.text, /ssh: connect to host github\.com port 22/, 'local tool errors keep the raw fallback');
   assert.equal(fallbackItem.userError, undefined);
+  assert.equal(
+    fallbackItem.legacyConversationOnly,
+    undefined,
+    '无 open user_start 时 recordTurnCompleted 不写时间线记录,裸串终态气泡必须保留可见',
+  );
   // 投影层过滤(B2):终态升级项标记 legacyConversationOnly 后,projectNativeLane
   // 必须经 conversationItemsForMode 隐藏气泡,只留时间线错误卡——否则同一错误
   // 双显示(live 气泡+卡片),重启后却又只剩卡片。
@@ -789,6 +794,51 @@ try {
   const bareItems18 = lane18.items.filter(item => item.type === 'system');
   assert.equal(bareItems18.length, 1, 'same-text transient+done bare fallback must collapse into one item');
   assert.equal(bareItems18[0].legacyConversationOnly, true, 'collapsed bare fallback must hide the bubble');
+  // 静默吞错回归:done 到达但没有 open user_start(recordTurnCompleted 不写
+  // 时间线记录)时,模型服务终态气泡必须保留可见,不能交给不存在的时间线卡。
+  const lane19 = createNativeLane();
+  applyNativeChatEvent(lane19, 'chat:done', {
+    session_id: 's19',
+    status: 'Failed',
+    error: 'SSE stream request failed: HTTP 402 insufficient balance',
+  }, { language: 'en', modelServiceState: null });
+  const orphanTerminal = lane19.items.find(item => item.userError);
+  assert.ok(orphanTerminal, 'terminal model-service error must still surface a notice');
+  assert.equal(
+    orphanTerminal.legacyConversationOnly,
+    undefined,
+    'terminal bubble must stay visible when no timeline record was written',
+  );
+  // 身份不同的 transient/done 序列:transient(network)与 done(billing)
+  // 文本/技术详情均不同,终态到达且时间线记录带 error 时,同回合所有模型
+  // 服务 transient 气泡一并隐藏;上一回合的可见气泡不得误伤(回合作用域)。
+  const lane20 = createNativeLane();
+  applyNativeChatEvent(lane20, 'chat:user_message', { session_id: 's20', content: '第一问' });
+  applyNativeChatEvent(lane20, 'chat:transient_error', {
+    session_id: 's20', error: 'SSE stream idle timeout after 30s — no data received',
+  }, { language: 'en', modelServiceState: null });
+  applyNativeChatEvent(lane20, 'chat:done', { session_id: 's20', status: 'Completed' });
+  // 上一回合的 transient 无终态错误接管,保持可见。
+  const prevTurnNotice = lane20.items.find(item => item.userError);
+  assert.equal(prevTurnNotice.legacyConversationOnly, undefined, 'previous turn transient must stay visible');
+  applyNativeChatEvent(lane20, 'chat:user_message', { session_id: 's20', content: '第二问' });
+  applyNativeChatEvent(lane20, 'chat:transient_error', {
+    session_id: 's20', error: 'SSE stream idle timeout after 30s — no data received',
+  }, { language: 'en', modelServiceState: null });
+  applyNativeChatEvent(lane20, 'chat:done', {
+    session_id: 's20', status: 'Failed', error: 'SSE stream request failed: HTTP 402 insufficient balance',
+  }, { language: 'en', modelServiceState: null });
+  const turn2Notices = lane20.items.filter(item => item.userError && item !== prevTurnNotice);
+  assert.equal(turn2Notices.length, 2, 'different-identity terminal error adds its own notice');
+  assert.ok(
+    turn2Notices.every(item => item.legacyConversationOnly === true),
+    'terminal takeover must hide all same-turn model-service transient bubbles',
+  );
+  assert.equal(
+    prevTurnNotice.legacyConversationOnly,
+    undefined,
+    'terminal takeover must not touch previous-turn bubbles',
+  );
   // helper 缺失(classic script 未加载)时回退裸串,不抛错。
   delete globalThis.PinvouModelServiceErrors;
   const lane16 = createNativeLane();
