@@ -299,7 +299,7 @@ test('停止按钮与引擎回收都级联取消子智能体', () => {
 // ── 会话级开关 + 每轮委派提醒（Rust 源结构契约） ─────────────────────────────
 
 test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委派提醒', () => {
-  assert.match(commandSource, /fn delegation_reminder_with_roles\(roles: Vec<String>, limits: &DelegationLimits\)/, 'Work 与原生 Code 多智能体按同轮候选生成委派提醒');
+  assert.match(commandSource, /fn delegation_reminder_with_roles\(roles: Vec<String>, limits: &DelegationLimits\)/, 'Work and native Code multi-agent sessions generate the delegation reminder from the same per-turn candidate roster');
   // Per-turn reminder numbers must come from the session tier (DelegationLimits),
   // not from hardcoded literals: Work sessions run 4 concurrent / 8 admitted,
   // native Code sessions 6 / 12 (same constants the engine config installs).
