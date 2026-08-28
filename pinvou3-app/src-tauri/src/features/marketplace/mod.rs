@@ -789,7 +789,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 下次卸载仍会重试，避免文件占用导致工具处于“配置已删但卸载报错”的半状态。
         // 必须在事务锁内从刚提交的 installed.json 重读，不能使用进入锁前的过期快照。
         if let Err(error) = self.prune_from_committed_state() {
-            eprintln!("[marketplace] prune Python dependencies failed: {error}");
+            log::warn!("[marketplace] prune Python dependencies failed: {error}");
         }
 
         // 镜像删除（与 install 对称：失败只记日志。命令层 OAuth token 前置删除的

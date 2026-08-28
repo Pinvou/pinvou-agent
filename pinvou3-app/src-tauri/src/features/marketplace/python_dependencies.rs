@@ -15,6 +15,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::platform::hashing::sha256_file;
+
 const MAX_WHEEL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ENVIRONMENT_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_WHEEL_ENTRIES: usize = 50_000;
@@ -114,7 +116,7 @@ pub(super) fn ensure_installed(
     let environment_key = environment_key(target)?;
     let environment_root = environments_root();
     if let Err(error) = cleanup_stale_install_artifacts(&environment_root, &wheel_cache_root()) {
-        eprintln!("[marketplace] recover stale Python dependency artifacts failed: {error}");
+        log::warn!("[marketplace] recover stale Python dependency artifacts failed: {error}");
     }
     let destination = environment_root.join(&environment_key);
     let site_packages = destination.join("site-packages");
@@ -774,20 +776,6 @@ impl Drop for PartialFileCleanup {
             let _ = fs::remove_file(&self.path);
         }
     }
-}
-
-fn sha256_file(path: &Path) -> io::Result<String> {
-    let mut file = File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    Ok(crate::platform::encoding::hex_lower(&digest.finalize()))
 }
 
 fn is_sha256(value: &str) -> bool {

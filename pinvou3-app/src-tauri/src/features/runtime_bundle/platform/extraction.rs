@@ -279,7 +279,8 @@ impl Pinvou3Bundle {
         // mcp.json, leaving a stable install target for the UI to retry.
         let repair_errors = repair_python_tools(marketplace).map_err(std::io::Error::other)?;
         for error in repair_errors {
-            eprintln!("[pinvou3-app] {error}");
+            // 打包后的 Windows GUI 没有 stderr，走日志用户才能看到"已降级/待重试"。
+            log::warn!("[pinvou3-app] {error}");
         }
         // mcp.json merge:每次启动 upsert 内置 pinvou server,保留 marketplace 条目。
         // 不受 VERSION gate 限制——marketplace 安装可能在任何时候发生。启动自愈(刷新
