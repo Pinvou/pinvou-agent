@@ -304,7 +304,8 @@ metadata:                       # 可选
   `mcp + cli` 组合首版拒收。与内置连接器（feishu/wecom/dingtalk/tmeet）id
   冲突拒收。
 - **失败语义**：下载/校验失败安装不翻盘——包目录与登记保留，记录 Degraded
-  （修复动作 = 重新导入重新获取）。
+  （修复动作 = 重新导入重新获取，或经连接入口触发 `ensure_cli`——重下成功
+  即自愈清 Degraded）。
 - **治理**：禁用包按 `bin` 名 spawn 前硬拒（execpolicy），覆盖 Upload 包。
 
 **授权契约**（`auth.steps` 非空时 CLI 须实现；无 steps = manual）：
@@ -317,10 +318,14 @@ acme-cli auth logout                          → 退出码 0 即成功
 
 授权 = 标准步骤序列：每步 `kind: "qr"|"browser"`（二维码展示 / 跳浏览器），
 顺序执行；宿主按统一事件 `connector:event` 上报进度（qr/phase/connected/
-error）。不满足契约（无 `auth` 或空 steps）= **manual**：CLI 自行在终端交互
-授权，连接动作返回 `{started:false, mode:"manual"}`，宿主的就绪判定退化为
-「二进制在位且未 degraded」。有 steps 时 `auth status --json` 可选实现
-（`{"connected":true}` 或 `{"state":"done|authorized|ready"}` 视为已连接）。
+error）。`poll` 非零退出且无 JSON = 契约违反（如票据失效），宿主立即报错
+而非空转到超时；带 JSON 时退出码不作信号，一律按 `state` 判定。不满足契约
+（无 `auth` 或空 steps）= **manual**：CLI 自行在终端交互授权，连接动作返回
+`{started:false, mode:"manual"}`，宿主的就绪判定退化为「二进制在位且未
+degraded」；manual 无 host 可验证的授权态，点击「连接」即重申连接意图
+（清除断开标记）。有 steps 时 `auth status --json` 可选实现——有输出 JSON
+一律按 JSON 判定（`{"connected":true}` 或 `{"state":"done|authorized|ready"}`
+视为已连接，退出码不作信号），无 JSON 回退「二进制在位且未 degraded」。
 
 ---
 

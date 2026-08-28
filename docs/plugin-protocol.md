@@ -504,10 +504,15 @@ workflows 非空                              → Workflow
 ```
 
 每步流程：`begin` 拿 URL + ticket → 统一事件 qr（poll 间隔 2s，单步超时
-300s，支持取消）→ `state:done` 进入下一步；全部步完成 → 登记（source 保留
-Upload，清 degraded）+ 发射 connected。不满足契约（无 steps）= **manual**：
-`connector_connect_begin` 返回 `{started:false, mode:"manual"}`，前端提示用户
-自行在终端完成授权；`auth logout` 不存在/失败时降级为仅清本地登记（记日志）。
+300s，支持取消）→ `state:done` 进入下一步；`poll` 非零退出且无 JSON = 契约
+违反（如票据失效），宿主立即报错而非空转到超时（带 JSON 时退出码不作信号，
+一律按 `state` 判定）；全部步完成 → 登记（source 保留 Upload，清 degraded）
++ 发射 connected。不满足契约（无 steps）= **manual**：
+`connector_connect_begin` 返回 `{started:false, mode:"manual"}` 并把该点击
+视为重申连接意图（清除 logout 写下的断开标记——manual 无 host 可验证的
+授权态，这是唯一的重连信号通道），前端提示用户自行在终端完成授权；
+`auth logout` 不存在/失败时降级为仅清本地登记（记日志）。供给失败的
+degraded 由 `connector_ensure_cli` 重下成功时自愈清除。
 
 **统一事件与通用命令**（M3，内置与声明式同一契约）：进度事件单名
 `connector:event`，payload 按 `kind` 区分——`{id, kind:"qr", step, url,

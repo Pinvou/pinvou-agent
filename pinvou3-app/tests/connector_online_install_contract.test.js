@@ -5,6 +5,9 @@ const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const read = (...parts) => fs.readFileSync(path.join(root, ...parts), "utf8");
 const installer = read("src-tauri", "src", "features", "connectors", "native_installer.rs");
+// 下载/校验/落盘核心已下沉 platform/connector_installer.rs（声明式 CLI 连接器包
+// 共用同一管线）；安全守卫断言跟随迁移后的实际位置。
+const installerCore = read("src-tauri", "src", "platform", "connector_installer.rs");
 const paths = read("src-tauri", "src", "platform", "paths.rs");
 const build = read("scripts", "tauri", "build.js");
 const tmeet = read("src-tauri", "src", "features", "connectors", "tmeet.rs");
@@ -27,12 +30,14 @@ for (const connector of ["lark-cli", "wecom-cli", "dws"]) {
   assert.match(feature, new RegExp(`ensure_native_cli\\("${connector}"\\)`));
 }
 
-assert.match(installer, /archive_sha256/);
-assert.match(installer, /binary_sha256/);
-assert.match(installer, /url\.scheme\(\) != "https"/);
-assert.match(installer, /MAX_ARCHIVE_BYTES/);
-assert.match(installer, /normalized_path_eq/);
-assert.match(installer, /\.installing-/);
+assert.match(installerCore, /archive_sha256/);
+assert.match(installerCore, /binary_sha256/);
+assert.match(installerCore, /url\.scheme\(\) != "https"/);
+assert.match(installerCore, /MAX_ARCHIVE_BYTES/);
+assert.match(installerCore, /normalized_path_eq/);
+assert.match(installerCore, /\.installing-/);
+// 内置安装器必须复用同一核心（下沉后不得复制一份并行实现）
+assert.match(installer, /connector_installer::install_artifact/);
 
 assert.match(tmeet, /@tencentcloud\/tmeet@1\.0\.15/);
 for (const platformSource of [linux, macos]) {

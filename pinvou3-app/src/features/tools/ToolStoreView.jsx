@@ -1892,11 +1892,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           await invokeTauri('connector_ensure_cli', { id: backendId });
           const begin = await invokeTauri('connector_connect_begin', { id: backendId });
           if (begin && begin.started === false && begin.mode === 'manual') {
-            // manual：CLI 自行交互授权，宿主无编排 → 收起流程卡并提示终端完成授权
+            // manual：CLI 自行交互授权，宿主无编排 → 收起流程卡并提示终端完成授权。
+            // 点击连接已被后端视为重连声明（清断开标记），刷新让卡片状态跟上。
             conn.stopTick();
             conn.setFlow(null);
             setBusyId(null);
             setAlert({ visible: true, loading: false, title: storeCopy.connectorManualAuthHint, isInstall: false, isError: false });
+            loadBackendState();
           }
         } catch (e) {
           console.error('generic cli connect failed:', backendId, e);

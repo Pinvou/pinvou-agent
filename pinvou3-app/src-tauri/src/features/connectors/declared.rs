@@ -125,8 +125,17 @@ pub(crate) fn run_declared_connect_flow(p: &DeclaredConnectParams) {
                 return;
             }
             match (p.run)(&["auth", "poll", "--ticket", &ticket, "--json"]) {
-                Ok((_, so, se)) => {
+                Ok((ok, so, se)) => {
                     let parsed = cc::parse_json(&so).or_else(|| cc::parse_json(&se));
+                    if !ok && parsed.is_none() {
+                        // 非零退出且无 JSON = 契约违反（如票据失效），立即报错——
+                        // 否则每 2s 重拉进程空转到 300s 超时（~150 次无谓 spawn）。
+                        (p.emit)(DeclaredEvent::Error {
+                            step: step.id.clone(),
+                            message: format!("auth poll 失败（步骤 '{}'）: {se}", step.id),
+                        });
+                        return;
+                    }
                     let state = parsed
                         .as_ref()
                         .and_then(|v| v.get("state"))
@@ -172,14 +181,39 @@ pub(crate) fn run_declared_connect_flow(p: &DeclaredConnectParams) {
     (p.emit)(DeclaredEvent::Connected);
 }
 
-/// 声明式包 `<bin> <args>` 子进程构造（抑黑窗，与内置连接器同一平台入口）。
-fn declared_cli_cmd(bin: &str, args: &[&str]) -> std::process::Command {
-    let mut c = crate::platform::os::connector_cli_command(bin, bin);
+/// 声明式包 `<bin> <args>` 子进程构造：解析到版本化资产库的实际二进制路径后，
+/// 以显式程序路径经 OS 层统一装饰（Windows 抑黑窗 + PATH 前置；`("", program)`
+/// 与 linux_path.rs `connector_cli_command("", "kill")` 同约定，program 原样透传）。
+/// 不能 `connector_cli_command(bin, bin)`——OS 层按裸 bin 解析只查 lock 表
+/// （仅内置连接器）/旧布局/npm shim，声明式包不在任何来源里，spawn 必失败。
+/// 二进制缺失（未安装/版本缺失）回退裸 bin 名，spawn 报错 fail loud（与
+/// 「未完成在线安装」的既有口径一致）。
+fn declared_cli_cmd(bin: &str, version: &str, args: &[&str]) -> std::process::Command {
+    let exe = crate::platform::paths::assets_cli_dir(bin, version)
+        .join(crate::platform::connector_lock::executable_name(bin));
+    let program = if exe.is_file() {
+        exe.to_string_lossy().into_owned()
+    } else {
+        bin.to_string()
+    };
+    let mut c = crate::platform::os::connector_cli_command("", &program);
     c.args(args);
     c
 }
 
-/// 开始连接（通用命令分派入口）：manual（无 steps）返回结构化告知；
+/// manual 包连接重申：无 host 可验证的授权态，用户点击「连接」即声明连接意图，
+/// 清掉 [`declared_logout`] 写下的「已断开授权」degraded——否则 manual 包断开后
+/// 没有任何路径翻回 connected（host 无从感知终端里的重新授权），唯一逃逸是
+/// 重新导入。供给失败的 degraded 一并放行无碍：readiness/status 都以二进制
+/// 在位为前置，且 ensure_cli 实际写入时才会真正修复供给。
+pub(crate) fn manual_connect_reassert(id: &str) {
+    if let Err(e) = crate::features::marketplace::store::BundleStore::new().clear_degraded(id) {
+        log::warn!("[connectors] bundles.json 镜像写入失败（manual connect {id}）: {e}");
+    }
+}
+
+/// 开始连接（通用命令分派入口）：manual（无 steps）返回结构化告知并把用户点击
+/// 视为重申连接意图（清 logout 写下的断开标记，[`manual_connect_reassert`]）；
 /// 否则立即返回 `{started:true}`，进度经统一事件 `connector:event` 上报。
 pub async fn declared_connect_begin(
     app: &AppHandle,
@@ -192,16 +226,24 @@ pub async fn declared_connect_begin(
         .map(|a| a.steps.clone())
         .unwrap_or_default();
     if steps.is_empty() {
-        // manual：CLI 自行交互授权，宿主无编排（提示前端引导用户去终端）
+        // manual：CLI 自行交互授权，宿主无编排（提示前端引导用户去终端）。
+        // 点击「连接」是 manual 包唯一的重连信号通道——不清标记则断开后永远
+        // 无路径翻回 connected（唯一逃逸是重新导入）。
+        let id2 = id.to_string();
+        match tokio::task::spawn_blocking(move || manual_connect_reassert(&id2)).await {
+            Ok(()) => {}
+            Err(e) => log::warn!("[connectors] manual connect 登记更新失败: {e}"),
+        }
         return Ok(json!({ "started": false, "mode": "manual" }));
     }
     app.state::<ConnectorConn>().reset(id);
     let app2 = app.clone();
     let id_owned = id.to_string();
     let bin = decl.bin.clone();
+    let version = decl.version.clone().unwrap_or_default();
     tokio::task::spawn_blocking(move || {
         let conn = app2.state::<ConnectorConn>();
-        let run = |args: &[&str]| cc::run(declared_cli_cmd(&bin, args));
+        let run = |args: &[&str]| cc::run(declared_cli_cmd(&bin, &version, args));
         let emit = |event: DeclaredEvent| match event {
             DeclaredEvent::Qr {
                 step,
@@ -269,6 +311,17 @@ pub async fn declared_ensure_cli(id: &str, decl: &CliConnectorDecl) -> Result<Va
             license: decl.license.clone(),
         };
         let written = crate::platform::connector_installer::ensure_declared_native_cli(&source)?;
+        if written {
+            // 供给修复清 degraded：实际重下成功即修复导入期供给失败残留（否则
+            // manual 包永远显示未就绪，唯一修复路径被迫是重新导入）。`already`
+            // 命中（二进制在位）不清——degraded 可能是 logout 写下的
+            // 「已断开授权」标记，语义不同，不得误清。
+            if let Err(e) =
+                crate::features::marketplace::store::BundleStore::new().clear_degraded(&id)
+            {
+                log::warn!("[connectors] bundles.json 镜像写入失败（ensure_cli 修复 {id}）: {e}");
+            }
+        }
         Ok::<Value, String>(json!({ "ok": true, "already": !written }))
     })
     .await
@@ -276,9 +329,11 @@ pub async fn declared_ensure_cli(id: &str, decl: &CliConnectorDecl) -> Result<Va
 }
 
 /// 声明式包连接状态：二进制不在位 → `installed:false`；auth.steps 非空时先走
-/// 契约 `auth status --json`（容忍 `state: done/authorized/ready` 或
-/// `connected: true`）；CLI 无 status 能力（退出非零/无 JSON）或 manual →
-/// 回退「二进制在位 + 登记态（非 degraded）」（注释即契约：M2 readiness 同口径）。
+/// 契约 `auth status --json`——**有 JSON 一律按 JSON 判定**（`connected` 布尔或
+/// `state: done/authorized/ready`，退出码不作信号：CLI 可能以非零退出报告
+/// 「未登录」+ JSON，按退出码忽略 JSON 会误报已连接）；无 JSON（未实现该
+/// 子命令/启动失败）或 manual → 回退「二进制在位 + 登记态（非 degraded）」
+/// （注释即契约：M2 readiness 同口径）。
 pub async fn declared_status(id: &str, decl: &CliConnectorDecl) -> Result<Value, String> {
     let decl = decl.clone();
     let id = id.to_string();
@@ -299,9 +354,11 @@ pub async fn declared_status(id: &str, decl: &CliConnectorDecl) -> Result<Value,
             .is_some();
         let mut connected = !degraded;
         if decl.auth.as_ref().is_some_and(|a| !a.steps.is_empty()) {
-            if let Ok((true, so, se)) =
-                cc::run(declared_cli_cmd(&decl.bin, &["auth", "status", "--json"]))
-            {
+            if let Ok((_, so, se)) = cc::run(declared_cli_cmd(
+                &decl.bin,
+                &version,
+                &["auth", "status", "--json"],
+            )) {
                 let parsed = cc::parse_json(&so).or_else(|| cc::parse_json(&se));
                 if let Some(v) = parsed {
                     connected = v
@@ -331,7 +388,8 @@ pub async fn declared_logout(id: &str, decl: &CliConnectorDecl) -> Result<Value,
     let decl = decl.clone();
     let id = id.to_string();
     tokio::task::spawn_blocking(move || {
-        match cc::run(declared_cli_cmd(&decl.bin, &["auth", "logout"])) {
+        let version = decl.version.clone().unwrap_or_default();
+        match cc::run(declared_cli_cmd(&decl.bin, &version, &["auth", "logout"])) {
             Ok((true, _, _)) => {}
             Ok((false, _, se)) => {
                 log::warn!(
@@ -662,6 +720,225 @@ mod tests {
             assert_eq!(result["ok"], true);
             let record = store.get("up-test").unwrap().unwrap();
             assert!(record.degraded.is_some(), "断开后应记 degraded");
+        });
+    }
+
+    /// 子进程解析（P0 回归锁）：声明式包的二进制按版本化资产库实际路径解析——
+    /// lock 表不含声明式条目，裸 bin 名经 OS 层（lock 表/旧布局/npm shim）解析
+    /// 不到，spawn 必失败；二进制缺失时回退裸 bin（fail loud 口径不变）。
+    #[test]
+    fn declared_cli_cmd_resolves_versioned_asset_path() {
+        with_temp_home(|| {
+            let exe_dir = crate::platform::paths::assets_cli_dir("up-bin", "1.2.3");
+            std::fs::create_dir_all(&exe_dir).unwrap();
+            let exe = exe_dir.join(crate::platform::connector_lock::executable_name("up-bin"));
+            std::fs::write(&exe, b"bin").unwrap();
+            let cmd = declared_cli_cmd("up-bin", "1.2.3", &["auth", "status"]);
+            let debug = format!("{cmd:?}");
+            let exe_str = exe.to_string_lossy();
+            assert!(
+                debug.contains(exe_str.as_ref()),
+                "应解析到版本化资产路径: {debug}"
+            );
+            // 二进制缺失 → 回退裸 bin 名（spawn 报错）
+            let fallback = declared_cli_cmd("no-such-bin", "9.9.9", &["auth", "status"]);
+            let fallback_debug = format!("{fallback:?}");
+            assert!(
+                fallback_debug.contains("no-such-bin") && !fallback_debug.contains("assets"),
+                "缺失时应回退裸 bin 名: {fallback_debug}"
+            );
+        });
+    }
+
+    /// poll 非零退出且无 JSON（契约违反，如票据失效）→ 立即 Error 中止，
+    /// 不空转到 300s 超时；非零退出但带 JSON 仍按 JSON（state）判定。
+    /// （第二段会走到 Connected → 写 bundles.json，须 with_temp_home 隔离。）
+    #[test]
+    fn declared_flow_poll_nonzero_without_json_errors_fast() {
+        with_temp_home(|| {
+            let conn = ConnectorConn::default();
+            let events = StdMutex::new(Vec::new());
+            let run = |args: &[&str]| {
+                match args {
+                    ["auth", "begin", ..] => Ok((
+                        true,
+                        r#"{"qr_url":"https://example.com/a","ticket":"t1"}"#.to_string(),
+                        String::new(),
+                    )),
+                    // 非零退出 + 无 JSON：立即报错
+                    ["auth", "poll", "--ticket", "t1", "--json"] => {
+                        Ok((false, String::new(), "invalid ticket".to_string()))
+                    }
+                    _ => Ok((false, String::new(), String::new())),
+                }
+            };
+            let emit = |ev: DeclaredEvent| events.lock().unwrap().push(ev);
+            let steps = [step("authorize", CliAuthStepKind::Qr)];
+            run_declared_connect_flow(&DeclaredConnectParams {
+                id: "up-test",
+                steps: &steps,
+                conn: &conn,
+                run: &run,
+                emit: &emit,
+                poll_interval: Duration::from_millis(1),
+                poll_timeout: Duration::from_secs(5),
+            });
+            let events = events.lock().unwrap();
+            assert_eq!(events.len(), 2, "Qr 后应立即 Error: {events:?}");
+            assert!(
+                matches!(&events[1], DeclaredEvent::Error { message, .. } if message.contains("invalid ticket")),
+                "非零退出无 JSON 应报 stderr: {events:?}"
+            );
+            drop(events);
+
+            // 非零退出 + 带 JSON pending：不报错，继续按 state 推进
+            let conn2 = ConnectorConn::default();
+            let events2 = StdMutex::new(Vec::new());
+            let poll_count = StdMutex::new(0u32);
+            let run2 = |args: &[&str]| match args {
+                ["auth", "begin", ..] => Ok((
+                    true,
+                    r#"{"qr_url":"https://example.com/a","ticket":"t1"}"#.to_string(),
+                    String::new(),
+                )),
+                ["auth", "poll", ..] => {
+                    let mut c = poll_count.lock().unwrap();
+                    *c += 1;
+                    if *c >= 2 {
+                        Ok((false, r#"{"state":"done"}"#.to_string(), String::new()))
+                    } else {
+                        Ok((false, r#"{"state":"pending"}"#.to_string(), String::new()))
+                    }
+                }
+                _ => Ok((false, String::new(), String::new())),
+            };
+            let emit2 = |ev: DeclaredEvent| events2.lock().unwrap().push(ev);
+            run_declared_connect_flow(&DeclaredConnectParams {
+                id: "up-test",
+                steps: &steps,
+                conn: &conn2,
+                run: &run2,
+                emit: &emit2,
+                poll_interval: Duration::from_millis(1),
+                poll_timeout: Duration::from_secs(5),
+            });
+            let events2 = events2.lock().unwrap();
+            assert!(
+                matches!(events2.last(), Some(DeclaredEvent::Connected)),
+                "带 JSON 的非零退出应按 state 推进到 connected: {events2:?}"
+            );
+        });
+    }
+
+    /// ensure_cli 供给修复清 degraded：实际写入（重下成功）清供给失败残留；
+    /// already 命中（二进制在位）不清——保护 logout 写下的「已断开授权」标记。
+    #[test]
+    fn declared_ensure_cli_clears_supply_degraded_on_write() {
+        let Some(platform) = crate::platform::paths::connector_platform_dir(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        ) else {
+            return; // 不支持的平台无从断言
+        };
+        with_temp_home(|| {
+            use std::collections::BTreeMap;
+            use std::io::Write;
+
+            fn sha256_hex(bytes: &[u8]) -> String {
+                use sha2::Digest;
+                crate::platform::encoding::hex_lower(&sha2::Sha256::digest(bytes))
+            }
+
+            let bin = "up-fix-bin";
+            let binary = b"declared-cli-binary-v1";
+            let mut zw = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file(crate::platform::connector_lock::executable_name(bin), opts)
+                .unwrap();
+            zw.write_all(binary).unwrap();
+            let archive = zw.finish().unwrap().into_inner();
+            // 归档预置到下载暂存目录（哈希命中后安装管线跳过真实下载）
+            let staging = crate::platform::paths::assets_staging_dir().join(platform);
+            std::fs::create_dir_all(&staging).unwrap();
+            std::fs::write(staging.join(format!("{bin}-1.0.0.zip")), &archive).unwrap();
+
+            let decl = CliConnectorDecl {
+                id: "up-fix".to_string(),
+                bin: bin.to_string(),
+                version: Some("1.0.0".to_string()),
+                platforms: Some(BTreeMap::from([(
+                    platform.to_string(),
+                    crate::features::marketplace::plugin_import::CliPlatformArtifact {
+                        url: format!("https://downloads.example.com/{bin}-1.0.0.zip"),
+                        archive_sha256: sha256_hex(&archive),
+                        binary_sha256: sha256_hex(binary),
+                    },
+                )])),
+                skills_dir: None,
+                auth: None,
+                license: None,
+            };
+
+            let store = crate::features::marketplace::store::BundleStore::new();
+            let mut record = crate::features::marketplace::store::BundleRecord::installed_now(
+                "up-fix",
+                crate::features::marketplace::store::BundleSource::Upload("up.zip".to_string()),
+            );
+            record.degraded = Some("CLI 下载/校验失败（修复动作：重新导入以重新获取）".to_string());
+            store.upsert(record).unwrap();
+
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let result = rt.block_on(declared_ensure_cli("up-fix", &decl)).unwrap();
+            assert_eq!(result["already"], false, "暂存命中应实际写入");
+            let record = store.get("up-fix").unwrap().unwrap();
+            assert!(record.degraded.is_none(), "供给修复应清 degraded");
+
+            // 二进制已就位 → already 命中，logout 式 degraded 不得被误清
+            let mut record = store.get("up-fix").unwrap().unwrap();
+            record.degraded = Some("已断开授权：重新连接即可恢复".to_string());
+            store.upsert(record).unwrap();
+            let result = rt.block_on(declared_ensure_cli("up-fix", &decl)).unwrap();
+            assert_eq!(result["already"], true, "二进制在位应 already");
+            let record = store.get("up-fix").unwrap().unwrap();
+            assert!(
+                record.degraded.is_some(),
+                "already 命中不得清 logout 的 degraded 标记"
+            );
+        });
+    }
+
+    /// manual 重连信号：`manual_connect_reassert` 清 logout 写下的「已断开授权」
+    /// degraded（manual 包点击「连接」是唯一的重连声明通道）；无登记记录时
+    /// no-op 不报错。
+    #[test]
+    fn manual_connect_reassert_clears_logout_degraded() {
+        with_temp_home(|| {
+            let store = crate::features::marketplace::store::BundleStore::new();
+            store
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "up-manual",
+                        crate::features::marketplace::store::BundleSource::Upload(
+                            "up.zip".to_string(),
+                        ),
+                    ),
+                )
+                .unwrap();
+            store
+                .mark_degraded("up-manual", "已断开授权：重新连接即可恢复")
+                .unwrap();
+
+            manual_connect_reassert("up-manual");
+            assert!(
+                store.get("up-manual").unwrap().unwrap().degraded.is_none(),
+                "manual 重连应清断开标记"
+            );
+
+            // 无登记记录：no-op（clear_degraded 对缺失记录返回 Ok(false)）
+            manual_connect_reassert("no-such-record");
         });
     }
 }
