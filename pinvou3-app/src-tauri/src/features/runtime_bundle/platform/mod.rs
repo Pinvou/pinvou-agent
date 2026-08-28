@@ -91,12 +91,14 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.23: wecom-cli 升 1.1.0：技能树按上游服务模型重排为 14 个（msg→message、
 ///       schedule→calendar，新增 disk/doc-manage/email/media/shared/sheet/smartpage），
 ///       旧目录（wecomcli-msg/wecomcli-schedule）启动门控时清理。
-/// 0.27: lark-skills 八包 31 条文档审计修复（见 lark-skills/NOTICE.md 登记，
-///       含 review fixes 对齐 CLI v1.0.87 真值）。版本号沿用 0.24/0.25（wecom
-///       #366）、0.26（tmeet #362）之后的下一空位。技能树不参与内容哈希，
-///       须 bump 语义版本让已连接用户启动即同步刷新（否则要等首帧后
+/// 0.28: lark-skills 八包 31 条文档审计修复（见 lark-skills/NOTICE.md 登记，
+///       含 review fixes 对齐 CLI v1.0.87 真值）。版本号取 0.24（weibo #333）、
+///       0.25（wecom #366）、0.26（tmeet #362）、0.27（dws #359）之后的下一
+///       空位；0.27 已被 #359 先行认领，重号会让两 PR 间的升级构建 VERSION
+///       不变而跳过启动重解包。技能树不参与内容哈希，须 bump 语义版本让
+///       已连接用户启动即同步刷新（否则要等首帧后
 ///       refresh_connector_auth_gates 补刷）。
-pub const BUNDLE_VERSION: &str = concat!("0.27-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+pub const BUNDLE_VERSION: &str = concat!("0.28-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// 骨架 = 身份/底线/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：
