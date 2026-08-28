@@ -27,7 +27,7 @@ ONNX Runtime 组件到 `target/windows-runtime/<commit>-<manifest-sha>-onnx-dev/
 脚本会检查受 LFS 管理的实际文件，只有仍存在 pointer 时才按路径执行 `git lfs pull`，并输出
 `pinvou3-windows-runtime-<commit>` 形式的 Jenkins 缓存键。
 
-Validation covers the submodule commit, gitlink, origin URL, worktree status, manifest SHA-256, file sizes and SHA-256 hashes, and the per-file inventory extracted from managed ZIP archives. The resolver supports schemas 1 and 2. In schema 2, `stagedFiles` describes the lifecycle snapshot after payload files have been copied and components expanded, but before derived files are generated or payload files are removed. Validation rejects both missing and extra files.
+校验内容包括 submodule commit、gitlink、origin URL、工作树状态、manifest SHA-256、文件大小与 SHA-256，以及受管理 ZIP 解压后的逐文件清单。解析器支持 schema 1 与 schema 2：schema 2 的 `stagedFiles` 记录生命周期快照，取自 payload 复制、各组件解压、按需分发的 ASR 主模型移除之后，派生文件生成与 payload 清理之前；校验会同时拒绝缺失与多余的暂存文件。
 
 每次构建都会按 runtime manifest 复核源文件的大小和 SHA-256。staging 内的 `.verified-lock` 绑定 runtime commit、manifest
 SHA-256、lock 文件 SHA-256 和目标平台，`.verified-stage.json` 则记录全部展开文件的路径、大小和 SHA-256；任一暂存产物变化
