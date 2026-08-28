@@ -3418,12 +3418,14 @@ async function steerSettleWatchdogEngineErrRestoresWithoutResend() {
   );
 }
 
-async function steerSettleWatchdogWithdrawTimeoutDegradesChip() {
-  // Self-review P1-2 / re-review #2: the watchdog's withdraw_steer await must
-  // carry the same 25s transport timeout as steer/cancel — a live-but-wedged
-  // engine would otherwise leave the chip `steered` forever, permanently
-  // blocking the session queue head. Timeout resolves as "retired" semantics:
-  // degrade the chip so flushQueued delivers it once the turn settles.
+async function steerSettleWatchdogWithdrawTimeoutRestoresWithoutResend() {
+  // JensenChen28 review #2: a timed-out withdraw_steer is NOT "retired" — an
+  // unresolved withdrawal proves nothing (the steer may already be committed
+  // while only the response path is wedged), so degrading + flushing would
+  // risk double delivery. The watchdog's 25s transport race must keep the
+  // timeout distinct: remove the chip, restore the text, never auto-resend.
+  // A late committed still renders the bubble through the withdrawn
+  // registration.
   const timeouts = [];
   const harness = createBridgeHarness(null, {
     setTimeout: function (fn, ms) {
@@ -3445,6 +3447,7 @@ async function steerSettleWatchdogWithdrawTimeoutDegradesChip() {
   await bridge.chat.sendMessage("卡死看门狗里的一句");
   await tick();
   await tick();
+  const epochBefore = bridge.state.getMany(['sessions']).draftEpoch;
 
   const watchdog = timeouts.find(function (t) { return t.ms === 60000; });
   assert.ok(watchdog, "60s settle watchdog armed after steerId backfill");
@@ -3460,29 +3463,51 @@ async function steerSettleWatchdogWithdrawTimeoutDegradesChip() {
   withdrawTimer.fn();
   await tick();
   await tick();
+  await tick();
 
   let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 1, "timeout follows retired semantics: the chip stays in the queue");
-  assert.strictEqual(view.queued[0].steered, false, "degraded to non-steered, no longer blocking flushQueued");
+  assert.strictEqual(view.queued.length, 0, "withdrawal timeout removes the chip (uncertain state must not auto-send)");
+  assert.strictEqual(
+    bridge.state.getMany(['chat']).composerDraft,
+    "卡死看门狗里的一句",
+    "withdrawal timeout restores the text to the owning session"
+  );
+  assert.ok(
+    bridge.state.getMany(['sessions']).draftEpoch > epochBefore,
+    "the restore takes the observable path (draftEpoch bump)"
+  );
 
-  // Turn settles → degraded chip is delivered, queue no longer stuck.
+  // The turn settles later: nothing may be auto-resent on an unresolved withdrawal.
   harness.emit("chat:done", { session_id: "chat-wd-hang", generation: 2 });
   await tick();
   await tick();
-  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(view.queued.length, 0, "chat:done flush consumes the degraded chip");
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
-    1,
-    "the degraded chip is sent normally by flushQueued"
+    0,
+    "withdrawal timeout never auto-resends (the steer may already be committed)"
+  );
+
+  // Unresolved withdrawal followed by a LATE committed: the engine wins, the
+  // withdrawn registration renders the bubble — no resend, no second notice.
+  harness.emit("chat:steer_committed", { session_id: "chat-wd-hang", steer_id: "steer-hang1" });
+  await tick();
+  await tick();
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.ok(
+    view.chatItems.some(function (item) {
+      return item.type === "user" && item.text === "卡死看门狗里的一句";
+    }),
+    "late committed after an unresolved withdrawal renders the bubble"
   );
 }
 
-async function interruptQueuedWithdrawTimeoutResendsAsRetired() {
-  // Self-review P1-2 / re-review #2 (zap path): ⚡ removes the chip from the
-  // queue BEFORE awaiting withdraw_steer — a bare await on a wedged engine
-  // leaves the message silently undeliverable. The 25s race must time out
-  // into "retired" semantics and proceed with the cancel + resend chain.
+async function interruptQueuedWithdrawTimeoutWaitsForReconcile() {
+  // JensenChen28 review #2 (zap path): ⚡ pulls the chip out of the queue
+  // BEFORE awaiting withdraw_steer; when the withdrawal times out, its state
+  // is unproven — the steer may already be committed while only the response
+  // path is wedged. The zap must NOT proceed to cancel + resend; it defers to
+  // the reconcile watchdog (committed → bubble / dropped → silent / event
+  // lost → restore the text with a notice after 60s).
   const timeouts = [];
   const harness = createBridgeHarness(null, {
     setTimeout: function (fn, ms) {
@@ -3520,11 +3545,31 @@ async function interruptQueuedWithdrawTimeoutResendsAsRetired() {
   const withdrawTimer = withdrawTimers[withdrawTimers.length - 1];
   assert.ok(withdrawTimer, "the zap withdraw await has a 25s transport timeout");
   withdrawTimer.fn();
-  await withStallGuard(p, "zap withdraw timeout failed to settle into the retired resend path");
-  assert.strictEqual(result, true, "withdrawal timeout continues with retired semantics");
-  const chatCalls = harness.calls.filter(function (call) { return call.cmd === "chat"; });
-  assert.strictEqual(chatCalls.length, 1, "cancel + resend proceed normally after the timeout");
-  assert.strictEqual(chatCalls[0].args.message, "⚡ 撤回卡死也要发出的一句");
+  await withStallGuard(p, "zap withdraw timeout failed to settle into the reconcile path");
+  assert.strictEqual(result, true, "the zap is handled without a resend (uncertain withdrawal)");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "cancel_generation"; }).length,
+    0,
+    "withdrawal timeout must not interrupt the running turn"
+  );
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
+    0,
+    "withdrawal timeout must not resend (the steer may already be committed)"
+  );
+
+  // Reconcile watchdog armed; the reconciling event never arrives (engine
+  // reclaim) → 60s later the text is restored with a notice.
+  const reconcileTimers = timeouts.filter(function (t) { return t.ms === 60000; });
+  assert.ok(reconcileTimers.length > 0, "a 60s reconcile watchdog follows the unresolved withdrawal");
+  reconcileTimers.forEach(function (t) { t.fn(); });
+  await tick();
+  await tick();
+  assert.strictEqual(
+    bridge.state.getMany(['chat']).composerDraft,
+    "⚡ 撤回卡死也要发出的一句",
+    "with the reconciling event lost, the text is restored to the composer"
+  );
 }
 
 async function steerDropRestoresAccumulateAcrossChips() {
@@ -7172,8 +7217,8 @@ Promise.resolve()
   .then(steerDroppedByEngineRestoresDraftText)
   .then(steerSettleWatchdogNotPendingRemovesChipWithoutResend)
   .then(steerSettleWatchdogEngineErrRestoresWithoutResend)
-  .then(steerSettleWatchdogWithdrawTimeoutDegradesChip)
-  .then(interruptQueuedWithdrawTimeoutResendsAsRetired)
+  .then(steerSettleWatchdogWithdrawTimeoutRestoresWithoutResend)
+  .then(interruptQueuedWithdrawTimeoutWaitsForReconcile)
   .then(steerDropRestoresAccumulateAcrossChips)
   .then(steerDropRestoresToOwningBackgroundSession)
   .then(prefillRecoveryAppendFlagContract)
