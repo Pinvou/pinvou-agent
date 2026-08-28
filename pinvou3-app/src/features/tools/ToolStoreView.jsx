@@ -641,11 +641,17 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }
       };
       return (
+        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
         <div
           className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm"
           onClick={onCancel}
-          onKeyDown={e => { if (e.key === 'Escape') onCancel(); }}
+          // IME 合成中的 Escape 是「取消候选词」，不能连带关闭整个弹窗丢弃输入
+          //（同 textarea 的 Enter 守卫，isImeComposing 为合成中标志）。
+          // 这是合成期守卫而非键盘快捷键，useKeyWithClickEvents 只认 key handler，不在此报。
+          onKeyDown={e => { if (e.key === 'Escape' && !isImeComposing(e)) onCancel(); }}
         >
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-propagation stop layer; keyboard events need no bubbling here */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-propagation stop layer, non-interactive container */}
           <div
             data-testid="edit-display-dialog"
             className={`w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`}
@@ -657,12 +663,14 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                 {copy.editDisplayTitle(dialog.cardTitle || dialog.backendId)}
               </div>
               <div className="text-left mb-3">
+                {/* biome-ignore lint/a11y/noLabelWithoutControl: label and input are siblings; adding htmlFor would require a generated id and diverge from the existing dialog structure */}
                 <label className={`text-[13px] font-medium mb-1.5 block text-slate-600 dark:text-slate-300`}>
                   {copy.displayNameLabel}
                 </label>
                 <input
                   data-testid="edit-display-name"
                   type="text"
+                  // biome-ignore lint/a11y/noAutofocus: opening the dialog focuses the name input; focus is the rename intent
                   autoFocus
                   maxLength={MAX_DISPLAY_NAME_CHARS}
                   placeholder={copy.displayNamePlaceholder}
@@ -672,6 +680,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                 />
               </div>
               <div className="text-left mb-3">
+                {/* biome-ignore lint/a11y/noLabelWithoutControl: label and input are siblings; adding htmlFor would require a generated id and diverge from the existing dialog structure */}
                 <label className={`text-[13px] font-medium mb-1.5 block text-slate-600 dark:text-slate-300`}>
                   {copy.displayDescriptionLabel}
                 </label>
@@ -681,7 +690,19 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   maxLength={MAX_DISPLAY_DESCRIPTION_CHARS}
                   placeholder={copy.displayDescriptionPlaceholder}
                   value={desc}
-                  onChange={e => setDesc(e.target.value)}
+                  onChange={e => setDesc(e.target.value.replaceAll(/[\r\n]/g, ''))}
+                  // 粘贴多行文本会绕过 Enter 拦截（paste 不派发 keydown），留进
+                  // 值里就是必败保存——在粘贴处同样剥离换行（与 onChange 同口径，
+                  // 顺带兜住任何残留换行来源）。
+                  onPaste={e => {
+                    const text = (e.clipboardData || window.clipboardData)?.getData('text/plain');
+                    if (text == null) return;
+                    e.preventDefault();
+                    const pos = e.target.selectionStart ?? e.target.value.length;
+                    const clean = text.replaceAll(/[\r\n]/g, '');
+                    const next = e.target.value.slice(0, pos) + clean + e.target.value.slice(e.target.selectionEnd ?? pos);
+                    setDesc(next.replaceAll(/[\r\n]/g, '').slice(0, MAX_DISPLAY_DESCRIPTION_CHARS));
+                  }}
                   // 后端展示说明只接受单行（控制字符校验拒换行），Enter 在此
                   // 只会换来一次必败的保存——直接拦截，避免用户按回车后困惑。
                   // IME 合成中的 Enter 是确认候选词（中/日文输入法），不得拦截。
@@ -700,6 +721,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             </div>
             <div className={`border-t border-slate-200 dark:border-white/10`}>
               <button
+                type="button"
                 onClick={onCancel}
                 className={`w-full py-3 text-[17px] font-normal text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5`}
               >
@@ -708,6 +730,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             </div>
             <div className={`border-t border-slate-200 dark:border-white/10`}>
               <button
+                type="button"
                 data-testid="edit-display-save"
                 onClick={handleConfirm}
                 disabled={saving}
@@ -946,7 +969,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // 渲染时快照，首挂载/刚上传后为空 → 上传 MCP 卡漏批直到下次无关刷新。
           const customToolIds = (Array.isArray(list) ? list : [])
             .map(x => x.id)
-            .filter(id => id && !tsToolsData.some(t => t.backendId === id));
+            .filter(id => id && tsToolsData.every(t => t.backendId !== id));
           // 三源并集去重（组合包 mcpId 可能同时进 tool/skill 列表）
           const ids = [...new Set([
             ...tsToolsData.map(x => x.backendId).filter(Boolean),
@@ -1629,7 +1652,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             try {
               const bs = await invokeTauri('bundle_readiness', { bundleId: dlg.backendId });
               const b = (bs && bs.bundle) || null;
-              if (b) setSelectedTool(prev => ({ ...prev, title: b.name || prev.title, desc: b.description != null ? b.description : prev.desc }));
+              if (b) setSelectedTool(prev => ({ ...prev, title: b.name || prev.title, desc: b.description == null ? prev.desc : b.description }));
             } catch (err) {
               console.error('bundle_readiness refresh failed:', dlg.backendId, err);
             }
