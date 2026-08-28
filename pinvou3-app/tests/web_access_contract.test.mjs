@@ -3,47 +3,53 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// Source-regex assertions use bounded character gaps (e.g. [\s\S]{0,200});
+// a Windows checkout with core.autocrlf=true inflates those gaps with \r
+// characters, so normalize line endings before matching.
+const readSource = (filePath, encoding) =>
+  fs.readFileSync(filePath, encoding).replace(/\r\n/g, '\n');
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bridgeRoot = path.join(root, 'src', 'platform', 'tauri');
-const chunkedUpload = fs.readFileSync(
+const chunkedUpload = readSource(
   path.join(root, 'src', 'shared', 'chunked-file-upload.js'),
   'utf8',
 );
-const webBridge = fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bridge.js'), 'utf8');
-const webDomainAdapter = fs.readFileSync(
+const webBridge = readSource(path.join(root, 'src', 'platform', 'web', 'bridge.js'), 'utf8');
+const webDomainAdapter = readSource(
   path.join(root, 'src', 'platform', 'web', 'bridge', 'domain-adapter.js'),
   'utf8',
 );
-const attachmentDropController = fs.readFileSync(
+const attachmentDropController = readSource(
   path.join(root, 'src', 'features', 'attachments', 'attachment-drop-controller.js'),
   'utf8',
 );
-const attachmentDropHook = fs.readFileSync(
+const attachmentDropHook = readSource(
   path.join(root, 'src', 'features', 'attachments', 'useAttachmentDrop.js'),
   'utf8',
 );
-const desktopRemoteControlBridge = fs.readFileSync(
+const desktopRemoteControlBridge = readSource(
   path.join(bridgeRoot, 'bridge', 'remote-control.js'),
   'utf8',
 );
-const desktopSessionsBridge = fs.readFileSync(
+const desktopSessionsBridge = readSource(
   path.join(bridgeRoot, 'bridge', 'sessions.js'),
   'utf8',
 );
 const desktopBridgeSources = [
-  fs.readFileSync(path.join(bridgeRoot, 'bridge.js'), 'utf8'),
+  readSource(path.join(bridgeRoot, 'bridge.js'), 'utf8'),
   ...fs.readdirSync(path.join(bridgeRoot, 'bridge'))
     .filter(name => name.endsWith('.js'))
     .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
-    .map(name => fs.readFileSync(path.join(bridgeRoot, 'bridge', name), 'utf8')),
+    .map(name => readSource(path.join(bridgeRoot, 'bridge', name), 'utf8')),
 ];
 const bridge = [
   webBridge,
   webDomainAdapter,
   ...desktopBridgeSources,
 ].join('\n');
-const bootstrap = fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bootstrap.js'), 'utf8');
-const hostFilePicker = fs.readFileSync(
+const bootstrap = readSource(path.join(root, 'src', 'platform', 'web', 'bootstrap.js'), 'utf8');
+const hostFilePicker = readSource(
   path.join(root, 'src', 'platform', 'web', 'host-file-picker.js'),
   'utf8',
 );
@@ -51,9 +57,9 @@ const commandsRoot = path.join(root, 'src-tauri', 'src', 'app', 'commands');
 const commands = fs.readdirSync(commandsRoot)
   .filter(name => name.endsWith('.rs'))
   .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
-  .map(name => fs.readFileSync(path.join(commandsRoot, name), 'utf8'))
+  .map(name => readSource(path.join(commandsRoot, name), 'utf8'))
   .join('\n');
-const remoteControlCommands = fs.readFileSync(path.join(commandsRoot, 'remote_control.rs'), 'utf8');
+const remoteControlCommands = readSource(path.join(commandsRoot, 'remote_control.rs'), 'utf8');
 const remoteControlManagerRoot = path.join(
   root,
   'src-tauri',
@@ -65,7 +71,7 @@ const remoteControlManagerRoot = path.join(
 const remoteControlManager = fs.readdirSync(remoteControlManagerRoot)
   .filter(name => name.endsWith('.rs'))
   .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
-  .map(name => fs.readFileSync(path.join(remoteControlManagerRoot, name), 'utf8'))
+  .map(name => readSource(path.join(remoteControlManagerRoot, name), 'utf8'))
   .join('\n');
 const remoteControlPlatformRoot = path.join(
   root,
@@ -78,34 +84,34 @@ const remoteControlPlatformRoot = path.join(
 const remoteControlPlatform = fs.readdirSync(remoteControlPlatformRoot)
   .filter(name => name.endsWith('.rs'))
   .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
-  .map(name => fs.readFileSync(path.join(remoteControlPlatformRoot, name), 'utf8'))
+  .map(name => readSource(path.join(remoteControlPlatformRoot, name), 'utf8'))
   .join('\n');
-const settingsView = fs.readFileSync(path.join(root, 'src', 'features', 'settings', 'SettingsView.jsx'), 'utf8');
-const artifactsPanel = fs.readFileSync(path.join(root, 'src', 'features', 'artifacts', 'ArtifactsPanel.jsx'), 'utf8');
-const toolStoreView = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'ToolStoreView.jsx'), 'utf8');
-const toolRenderers = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-renderers.jsx'), 'utf8');
-const knowledgeView = fs.readFileSync(path.join(root, 'src', 'features', 'knowledge', 'KnowledgeView.jsx'), 'utf8');
-const toolCommon = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-common.jsx'), 'utf8');
-const connectionStatus = fs.readFileSync(path.join(root, 'src', 'features', 'web', 'WebConnectionStatus.jsx'), 'utf8');
-const chatView = fs.readFileSync(path.join(root, 'src', 'features', 'chat', 'ChatView.jsx'), 'utf8');
-const codexView = fs.readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
-const acpRuntimeNotices = fs.readFileSync(
+const settingsView = readSource(path.join(root, 'src', 'features', 'settings', 'SettingsView.jsx'), 'utf8');
+const artifactsPanel = readSource(path.join(root, 'src', 'features', 'artifacts', 'ArtifactsPanel.jsx'), 'utf8');
+const toolStoreView = readSource(path.join(root, 'src', 'features', 'tools', 'ToolStoreView.jsx'), 'utf8');
+const toolRenderers = readSource(path.join(root, 'src', 'features', 'tools', 'tool-renderers.jsx'), 'utf8');
+const knowledgeView = readSource(path.join(root, 'src', 'features', 'knowledge', 'KnowledgeView.jsx'), 'utf8');
+const toolCommon = readSource(path.join(root, 'src', 'features', 'tools', 'tool-common.jsx'), 'utf8');
+const connectionStatus = readSource(path.join(root, 'src', 'features', 'web', 'WebConnectionStatus.jsx'), 'utf8');
+const chatView = readSource(path.join(root, 'src', 'features', 'chat', 'ChatView.jsx'), 'utf8');
+const codexView = readSource(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
+const acpRuntimeNotices = readSource(
   path.join(root, 'src', 'features', 'codex', 'AcpRuntimeNotices.jsx'),
   'utf8',
 );
-const codexWorkspacePanel = fs.readFileSync(
+const codexWorkspacePanel = readSource(
   path.join(root, 'src', 'features', 'codex', 'CodexWorkspacePanel.jsx'),
   'utf8',
 );
-const codeViewerModal = fs.readFileSync(
+const codeViewerModal = readSource(
   path.join(root, 'src', 'features', 'codex', 'CodeViewerModal.jsx'),
   'utf8',
 );
-const acpPlatformClient = fs.readFileSync(path.join(root, 'src', 'features', 'codex', 'acpClient.js'), 'utf8');
-const acpErrors = fs.readFileSync(path.join(root, 'src', 'features', 'codex', 'acpErrors.js'), 'utf8');
-const i18n = ['zh', 'en', 'ja'].map((l) => fs.readFileSync(path.join(root, 'src', 'shared', 'i18n', `${l}.js`), 'utf8')).join('\n'); // 拆分后三语在 i18n/ 目录
-const appMain = fs.readFileSync(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
-const policy = JSON.parse(fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'access-policy.json'), 'utf8'));
+const acpPlatformClient = readSource(path.join(root, 'src', 'features', 'codex', 'acpClient.js'), 'utf8');
+const acpErrors = readSource(path.join(root, 'src', 'features', 'codex', 'acpErrors.js'), 'utf8');
+const i18n = ['zh', 'en', 'ja'].map((l) => readSource(path.join(root, 'src', 'shared', 'i18n', `${l}.js`), 'utf8')).join('\n'); // 拆分后三语在 i18n/ 目录
+const appMain = readSource(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
+const policy = JSON.parse(readSource(path.join(root, 'src', 'platform', 'web', 'access-policy.json'), 'utf8'));
 const allowed = new Set(policy.allowed_commands);
 const allowedEvents = new Set(policy.allowed_events);
 
@@ -535,7 +541,7 @@ assert.match(bootstrap, /state_ready: stateReady/);
 assert.match(bootstrap, /markStateReady\(\)/);
 assert.match(bootstrap, /if \(!this\.frontendReady \|\| !this\.stateReady\)/);
 assert.match(bootstrap, /if \(!this\.frontendReady \|\| !this\.stateReady\)/);
-const main = fs.readFileSync(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
+const main = readSource(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
 const webSearchRestartBody = webBridge.slice(
   webBridge.indexOf('async function saveSearchSettingsAndRestart'),
   webBridge.indexOf('async function submitFeedback'),
@@ -690,7 +696,7 @@ assert.match(bridge, /if \(client && !client\.stateReady\) \{[\s\S]{0,120}initPr
 // UI mutation affordances must follow the browser capability allowlist while
 // leaving desktop defaults and per-session model switching intact.
 assert.match(settingsView, /const canManageModels = can\('modelManagement'\);/);
-const composerShared = fs.readFileSync(path.join(root, 'src', 'features', 'settings', 'composer-shared.jsx'), 'utf8');
+const composerShared = readSource(path.join(root, 'src', 'features', 'settings', 'composer-shared.jsx'), 'utf8');
 assert.match(composerShared, /const canSwitchModels = can\('sessionModelSwitch'\);/);
 assert.match(composerShared, /const canMutateToolStore = can\('toolStoreMutations'\);/);
 assert.match(composerShared, /const toolSwitchDisabled = !canMutateToolStore;/);
@@ -724,7 +730,7 @@ assert.ok(
   (codexView.match(/notifyChatRoundCommitted\('code'\);/g) || []).length >= 2,
   'native code lane send and accept-plan must each commit pending enables',
 );
-const toolEvents = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-events.js'), 'utf8');
+const toolEvents = readSource(path.join(root, 'src', 'features', 'tools', 'tool-events.js'), 'utf8');
 assert.match(toolEvents, /export \{ notifyComposerToolsChanged, notifyChatRoundCommitted \};/);
 assert.match(composerShared, /bridge\.models\.switchModel\(activeSessionId, id\)/);
 assert.match(settingsView, /\{canManageModels && editingModel && \(/);
@@ -773,7 +779,7 @@ assert.match(desktopRemoteControlBridge, /listen\("web_access:status"/,
   'desktop bridge must consume live browser connection status events');
 assert.match(desktopRemoteControlBridge, /web_client_connected: false, host_workspace_authorized: false, status: "stopped"/,
   'stopping remote access must clear any stale connected state');
-const desktopBridge = fs.readFileSync(path.join(bridgeRoot, 'bridge.js'), 'utf8');
+const desktopBridge = readSource(path.join(bridgeRoot, 'bridge.js'), 'utf8');
 assert.match(desktopBridge, /web_client_connected: false/,
   'desktop bridge state must start with an explicit disconnected browser state');
 for (const source of [settingsView, connectionStatus]) {
