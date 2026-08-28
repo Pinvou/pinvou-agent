@@ -235,8 +235,10 @@ pub async fn set_super_permission(
     // engine 下个 turn rehydrate 时从 disk 重读 → 「下次 turn 生效」。低频操作,不为即时
     // 生效去 SyncSession 打断在跑的 turn。未起的 session 首次 spawn 时自然带上新引导。
     pool.refresh_all_instructions().await;
-    // sudo 硬拒规则随开关状态增删(关闭态 deny sudo / 开启态放行):重算并热刷所有
-    // 在跑 engine 的 execpolicy 规则集,下一轮即生效。与连接器/技能开关共用同一通道。
+    // sudo hard-deny rules are added/removed with the toggle state (deny sudo
+    // while off / allow while on): recompute and hot-refresh the execpolicy
+    // ruleset of every running engine so it applies from the next turn. Same
+    // channel as the connector/skill toggles.
     pool.refresh_permission_rulesets().await;
     Ok(crate::platform::super_permission::is_enabled())
 }

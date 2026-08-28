@@ -1,19 +1,26 @@
 ﻿$ErrorActionPreference = "Stop"
 
-# 历史说明：本脚本曾是「敏感目录/危险命令」硬拦截防火墙（sudo 段只在 .sh 侧）。
-# 自底座 v0.9.3 起
-# 模型/执行面只暴露 Bash 工具，第 3 段（DANGEROUS_CMDS）按 exec_shell* 门控已静默
-# 失效；这些安全段已整体迁移至底座 execpolicy 规则引擎（typed Deny 规则）：
-# pinvou3-app/src-tauri/src/features/assistant/safety_deny_rules.rs。
-# 本脚本只保留与 deny_sensitive_paths.sh 规则 5 对等的连接器自省纠正段。
+# Historical note: this script used to be the "sensitive dirs / dangerous
+# commands" hard-deny firewall (the sudo segment existed only on the .sh
+# side). Since foundation v0.9.3
+# the model/execution surface only exposes the Bash tool, so segment 3
+# (DANGEROUS_CMDS), gated on exec_shell*, silently stopped firing; those
+# security segments have moved wholesale into the foundation execpolicy rule
+# engine (typed Deny rules):
+# pinvou3-app/src-tauri/src/features/assistant/safety_deny_rules.rs.
+# This script keeps only the connector introspection-correction segment
+# equivalent to deny_sensitive_paths.sh segment 5.
 $toolName = if ($env:DEEPSEEK_TOOL_NAME) { $env:DEEPSEEK_TOOL_NAME } else { "unknown" }
 $argsText = if ($env:DEEPSEEK_TOOL_ARGS) { $env:DEEPSEEK_TOOL_ARGS } else { "" }
 
-# 技能型连接器（企微/飞书/钉钉/腾讯会议）无 MCP schema，模型调 list_mcp_resources*
-# 自省必然失败并误判「没连上」。拦掉并把纠正回传：上游 fold_tool_call_before_results
-# 在 exit 2 时只从 stdout 的单行 JSON {"decision":"deny","reason":...} 取 reason 喂回
-# 模型（非 JSON = 通用文案），文案刻意不回显连接器名、不列举技能/CLI 名（disable
-# 感知审计，泄漏面 2）。
+# Skill-based connectors (WeCom/Feishu/DingTalk/Tencent Meeting) have no MCP
+# schema, so a model calling list_mcp_resources* to introspect them is doomed
+# to fail and misread it as "not connected". Deny the call and send the
+# correction back: the upstream fold_tool_call_before_results takes the
+# reason for an exit 2 only from the single-line stdout JSON
+# {"decision":"deny","reason":...} (non-JSON stdout = generic copy). The copy
+# deliberately never echoes the connector name nor enumerates skill/CLI names
+# (disable-awareness audit, leak surface 2).
 if ($toolName -eq "list_mcp_resources" -or $toolName -eq "list_mcp_resource_templates") {
     if ($argsText -match "wecom|weixin|wework|feishu|lark|dingtalk|dingding|dws|tmeet|tencent[\s_\-]?meeting|企微|企业微信|微信|飞书|钉钉|腾讯会议") {
         $denyJson = '{"decision":"deny","reason":"该名称不是 MCP server（无 MCP schema），无法用 list_mcp_resources 自省。若它是技能型连接器，请用 load_skill 加载其对应技能后按技能说明使用。连接状态以工具面板为准，自省失败不代表未连接。"}'

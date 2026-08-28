@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
-# pinvou3 技能型连接器 MCP 自省纠正 hook
+# pinvou3 skill-based-connector MCP introspection-correction hook
 #
-# 历史说明：本脚本曾是「敏感目录/危险命令/sudo」硬拦截防火墙（5 段规则）。
-# 自底座 v0.9.3 起模型/执行面只暴露 Bash 工具，第 3 段（DANGEROUS_CMDS）与
-# 第 4 段（sudo 拦截）按 `$TOOL == "exec_shell"*` 门控已静默失效；第 1/2 段
-# （路径/文件名子串）虽仍生效但按 ARGS 子串匹配误伤面大。这四段已整体迁移至
-# 底座 execpolicy 规则引擎（typed Deny 规则；求值在 ToolCallBefore hook 之后、
-# 审批之前，嵌套子代理暂不经过，详见 safety_deny_rules 模块注释）：
-# pinvou3-app/src-tauri/src/features/assistant/safety_deny_rules.rs。
-# 本脚本只保留第 5 段——连接器自省纠正，其工具名（list_mcp_resources*）未变
-# 且属于引导性反馈，不是危险命令策略。
+# Historical note: this script used to be the "sensitive dirs / dangerous
+# commands / sudo" hard-deny firewall (5 rule segments). Since foundation
+# v0.9.3 the model/execution surface only exposes the Bash tool, so segments
+# 3 (DANGEROUS_CMDS) and 4 (sudo block), gated on `$TOOL == "exec_shell"*`,
+# silently stopped firing; segments 1/2 (path/filename substrings) still fired
+# but their full-ARGS substring matching had a large false-positive surface.
+# Those four segments have moved wholesale into the foundation execpolicy rule
+# engine (typed Deny rules; evaluated after the ToolCallBefore hook and before
+# approval; nested subagents do not pass through it yet — see the
+# safety_deny_rules module docs):
+# pinvou3-app/src-tauri/src/features/assistant/safety_deny_rules.rs.
+# This script keeps only segment 5 — the connector introspection correction.
+# Its tool names (list_mcp_resources*) are unchanged and it is advisory
+# feedback, not dangerous-command policy.
 #
-# CodeWhale 在 ToolCallBefore 事件 spawn 这个脚本，通过环境变量传入工具
-# 调用参数。需要 hard-deny 时必须 **exit 2**（v0.8.60 Hooks v2 契约，
-# #3026/#3049）：turn_loop.rs fold_tool_call_before_results 只认 exit_code==2
-# 或 stdout JSON {"decision":"deny"}；exit 1 会被当作 passthrough(ALLOW)。
+# CodeWhale spawns this script on the ToolCallBefore event and passes the tool
+# call arguments via environment variables. A hard-deny must **exit 2** (the
+# v0.8.60 Hooks v2 contract, #3026/#3049): turn_loop.rs
+# fold_tool_call_before_results only accepts exit_code==2 or the stdout JSON
+# {"decision":"deny"}; exit 1 is treated as passthrough (ALLOW).
 
 set -uo pipefail
 
