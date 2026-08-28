@@ -9,21 +9,20 @@
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，r11 head `0d89a31be`；r12 候选 `feat/search-keyless-tail-bing` head `2e429c378` 待合入 |
-| 已合并修复 | 既有 `#9`、`#11`、`#12`、`#13`、`#15`、`#16`、`#17`、`#19`，以及 r11 的 `#18`、`#21`、`#22`、`#25`、`#26`、`#27`、`#29`、`#30` 均已合并；公开维护分支固定于 `pinvou-v0.9.5-r11` |
-| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r11` 与 r11 父仓 gitlink 均指向 `0d89a31be016457c180501417dd2c0f34ce844a6`；`r1` 至 `r11` 保持不可变；r12 待发布 |
+| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，r12 head `9c5f4f19`（#33 六提交 + #35 已 rebase 合入） |
+| 已合并修复 | 既有 `#9`、`#11`、`#12`、`#13`、`#15`、`#16`、`#17`、`#19`，以及 r11 的 `#18`、`#21`、`#22`、`#25`、`#26`、`#27`、`#29`、`#30`，r12 的 `#33`、`#35` 均已合并 |
+| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r11` 与 r11 父仓 gitlink 均指向 `0d89a31be016457c180501417dd2c0f34ce844a6`；`r1` 至 `r11` 保持不可变；r12 底座侧已落地（`pinvou3-clean` 与 tag `pinvou-v0.9.5-r12` 指向 `9c5f4f19`），父仓 gitlink 由 PR #375 接入 |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
-| drift | r12 候选基线 `98 files changed, +7899/-987`，净增 6912 行；r11→r12 为 `3 files changed, +59/-7` |
+| drift | r12 基线合计 `110 files`；r11→r12 为 `17 files, +1941/-188` |
 | 守护 | r12 为 57 条 CodeWhale `forkguard_*` 行为测试 + 通用工具/路由兼容回归 + 父仓指纹/行为测试 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配、拒绝编辑的终态/权威历史对账、压缩后用量即时刷新与持久化回填、严格直连模型大小写桥接回归，以及搜索源设置页引导文案 |
 
-### r12 搜索免 key 兜底 Bing 化（待发布）
+### r12 厂商原生搜索与免 key 兜底 Bing 化（已合入底座）
 
-- CodeWhale `2e429c378`（分支 `feat/search-keyless-tail-bing`，PR #35）：`SearchBackendChain` 对 API 后端（Tavily/Bocha/Metaso/Baidu/SearXNG/Volcengine/Sofya）失败后的免 key 链尾由 DuckDuckGo 换成 Bing。实测 DDG 在中国大陆网络下被 DNS 污染 + SNI 重置、完全不可达，DDG 链尾会把 API 故障放大为必然整体失败；Bing 全球与国内端点均免 key 可达（`www.bing.com` 按出口 IP 自动落地 `cn.bing.com`）。链尾按可达性选择，引擎不做地理探测；Bing/DuckDuckGo 自身仍为单后端链（DDG 保留其内部 Bing 回退，私有 DDG 兼容搜索服务不受影响）。
-- 全链失败的 `not_available` 错误追加 API 后端配置建议（`configure an API-backed [search] provider`）；错误信息仍只含 backend id，不泄 provider 私有响应。
-- 新增 `forkguard_api_provider_chain_tail_is_bing` 行为测试（forkguard 总数 56→57）；CONFIGURATION.md 与 `config/search.rs` 文档同步。
-- 父仓配套：设置页搜索源新增引导文案（i18n 三语）；`platform/prefs/search.rs` 注释勘误——旧注释"底座 fork patch #42 已把默认翻成 Bing"与底座现实不符（底座默认仍为 DuckDuckGo），实际机制是 bridge 构造 `EngineConfig` 时显式注入应用侧默认。
+- CodeWhale PR #33（六提交 rebase 后以 `4f612e548` 汇入）：新增 DeepSeek Responses、Model Studio Token Plan（Qwen）、Moonshot/Kimi（K2.6 内建 `$web_search`、K3 官方 Formula 协议、Kimi Code `/search`）、Z.AI/智谱（全球 `search-prime` / 中国 `search_std`）、Xiaomi MiMo 的厂商原生搜索适配。能力按"厂商+模型+官方端点+产品面"四重精确匹配 fail-closed，K3 Formula 独立 180 秒预算与 8 次调用上限；评审发现的端点匹配宽松（整 URL 小写、无限剥尾斜杠）由 `24a17335` 引入 `is_exact_url_route` 收紧。指纹锚点：`documented_server_side_web_search_for_route`、`WEB_SEARCH_FORMULA_URI`。
+- CodeWhale PR #35（`9c5f4f19` 汇入）：API 后端（Tavily/Bocha/Metaso/Baidu/SearXNG/Volcengine/Sofya）失败后的免 key 链尾由 DuckDuckGo 换成 Bing（实测 DDG 在中国大陆 DNS 污染 + SNI 重置不可达，Bing 全球与国内端点均免 key 可达）；全链失败错误追加 API 后端配置建议；新增 `forkguard_api_provider_chain_tail_is_bing`（forkguard 总数 56→57）。
+- 父仓配套（本 PR）：gitlink → `9c5f4f19`、设置页搜索源引导文案（i18n 三语）、`prefs/search.rs` 注释勘误（底座默认仍为 DuckDuckGo，应用侧由 bridge 显式注入）。
 
 ### r11 Provider、MCP、steer 与平台边界（已发布）
 

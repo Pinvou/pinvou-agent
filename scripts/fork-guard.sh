@@ -6,8 +6,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-PUBLISHED_HEAD="2e429c37817ac193cdce63533d9b10aa7b1b6fe3"
-PUBLISHED_COMMITS=30
+PUBLISHED_HEAD="9c5f4f19b0acbc960889778a5873c7fb038b1378"
+PUBLISHED_COMMITS=36
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -102,6 +102,8 @@ fingerprints=(
   "T2|子智能体不得绕过 MCP 禁用继承       |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_spawn_request_inherit_disallowed_tools_opt_out_not_honored"
   "T2|Shell 跨 poll 保持 UTF-8 解码状态  |CodeWhale/crates/tui/src/tools/shell/output.rs|fn forkguard_shell_output_decoder_preserves_utf8_across_poll_boundaries"
   "T2|API 后端链尾兜底为 Bing            |CodeWhale/crates/tui/src/tools/web/backend.rs|fn forkguard_api_provider_chain_tail_is_bing"
+  "T2|厂商原生搜索精确路由门控          |CodeWhale/crates/config/src/route/capabilities.rs|documented_server_side_web_search_for_route"
+  "T2|Kimi K3 Formula 搜索适配          |CodeWhale/crates/tui/src/client/provider_native_search/kimi.rs|WEB_SEARCH_FORMULA_URI"
   "T2|全链失败建议配置 API 搜索后端      |CodeWhale/crates/tui/src/tools/web/backend.rs|configure an API-backed [search] provider"
 
   "T3|ambient project authority 密封       |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_runtime_loader_ignores_ambient_project_authority"

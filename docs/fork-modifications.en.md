@@ -9,19 +9,19 @@
 | Item | Value |
 |---|---|
 | Upstream | `v0.9.5` at `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `0d89a31be` (`pinvou-v0.9.5-r11`); r12 candidate `feat/search-keyless-tail-bing` at `2e429c378` pending merge |
-| Merged fixes | Existing `#9`, `#11`, `#12`, `#13`, `#15`, `#16`, `#17`, and `#19`, plus r11 PRs `#18`, `#21`, `#22`, `#25`, `#26`, `#27`, `#29`, and `#30`, are merged |
-| Published status | `pinvou3-clean`, `pinvou-v0.9.5-r11`, and the r11 parent gitlink resolve to `0d89a31be016457c180501417dd2c0f34ce844a6`; `r1` through `r11` remain immutable historical tags; r12 pending |
+| Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `9c5f4f19` (r12: PR #33 six commits + PR #35 merged via rebase) |
+| Merged fixes | Existing `#9`, `#11`, `#12`, `#13`, `#15`, `#16`, `#17`, and `#19`, plus r11 PRs `#18`, `#21`, `#22`, `#25`, `#26`, `#27`, `#29`, `#30` and r12 PRs `#33`, `#35`, are merged |
+| Published status | `pinvou3-clean`, `pinvou-v0.9.5-r11`, and the r11 parent gitlink resolve to `0d89a31be016457c180501417dd2c0f34ce844a6`; `r1` through `r11` remain immutable historical tags; r12 landed on the engine side (`pinvou3-clean` and tag `pinvou-v0.9.5-r12` at `9c5f4f19`), parent gitlink lands via PR #375 |
 | Previous baseline backup | Tag `pinvou-v0.9.0-r4` and branch `backup/pinvou3-clean-v0.9.0-r4`, both at `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| Drift | r12 candidate baseline: 98 files, `+7899/-987`; r11→r12 is 3 files, `+59/-7` |
+| Drift | r12 baseline totals 110 files; r11→r12 is 17 files, `+1941/-188` |
 | Organization | Four current long-lived topics; PR #13 removes the product-specific orchestration topic |
 | Guard inventory | r12 has 57 CodeWhale `forkguard_*` tests, plus generic tool/route compatibility regressions and parent fingerprints/behavior tests |
 
-### r12 keyless search tail switches to Bing (pending)
+### r12 provider-native search and keyless Bing tail (engine side merged)
 
-- CodeWhale `2e429c378` (branch `feat/search-keyless-tail-bing`, PR #35): the keyless chain tail after API-backed providers (Tavily/Bocha/Metaso/Baidu/SearXNG/Volcengine/Sofya) fails switches from DuckDuckGo to Bing. Live measurements show DuckDuckGo is fully unreachable from mainland-China networks (DNS poisoning plus SNI reset), so a DDG tail turned every API outage into a guaranteed total failure there; Bing serves both its global and China endpoints without a key (`www.bing.com` lands on `cn.bing.com` by egress IP). The tail is picked by reachability, never geo detection; Bing and DuckDuckGo stay single-backend chains (DDG keeps its internal Bing fallback, so private DDG-compatible search services are unaffected).
-- The all-backends-down `not_available` error now appends a suggestion to configure an API-backed `[search] provider`; it still contains backend ids only and never provider-private response bodies.
-- Adds `forkguard_api_provider_chain_tail_is_bing` (forkguard total 56→57); CONFIGURATION.md and `config/search.rs` docs updated. Parent-side: settings-page search-source guidance copy (i18n zh/en/ja) and a comment correction in `platform/prefs/search.rs` — the old "fork patch #42 flipped the engine default" claim did not match the engine (its default is still DuckDuckGo); the real mechanism is the bridge explicitly injecting the app-side default when building `EngineConfig`.
+- CodeWhale PR #33 (six commits merged at `4f612e548`): adds provider-native search adapters for DeepSeek Responses, Model Studio Token Plan (Qwen), Moonshot/Kimi (K2.6 builtin `$web_search`, K3 official Formula protocol, Kimi Code `/search`), Z.AI/Zhipu (global `search-prime` / China `search_std`), and Xiaomi MiMo. Capability gating is exact to provider+model+official endpoint+product surface and fails closed; K3 Formula gets a dedicated 180-second budget and an 8-call limit. The reviewer-found loose endpoint matching (whole-URL lowercasing, unlimited trailing slashes) was tightened in `24a17335` via `is_exact_url_route`. Fingerprint anchors: `documented_server_side_web_search_for_route`, `WEB_SEARCH_FORMULA_URI`.
+- CodeWhale PR #35 (merged at `9c5f4f19`): the keyless chain tail after API-backed providers switches from DuckDuckGo to Bing (live measurements show DDG is DNS-poisoned and SNI-reset in mainland China while Bing serves both global and China endpoints keyless); the all-backends-down error now suggests API-backed `[search]` providers; adds `forkguard_api_provider_chain_tail_is_bing` (forkguard total 56→57).
+- Parent-side (this PR): gitlink → `9c5f4f19`, settings-page search-source guidance copy (i18n zh/en/ja), and the `prefs/search.rs` comment correction.
 
 ### r11 provider, MCP, steer, and platform boundaries (published)
 
