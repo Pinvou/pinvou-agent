@@ -974,16 +974,17 @@
   // steered queue head makes flushQueued yield forever — the session can
   // never send again. When the watchdog fires it withdraws (25s transport
   // timeout, aligned with steer/cancel) and awaits the outcome:
-  //   retired, or timeout treated as retired = the engine will never inject;
-  //     degrade the chip to a plain queue entry consumed by flushQueued;
+  //   retired = the engine confirms the copy will never inject; degrade the
+  //     chip to a plain queue entry consumed by flushQueued;
   //   not_pending = already committed with the event lost; a degrade+resend
   //     would duplicate delivery — remove the chip and restore the draft
   //     (sixth review round, aligned with the zap path's outcome semantics);
-  //   Err (invoke rejection, typically a reclaimed engine) = do not
-  //     auto-resend (minutes-old background messages replayed into a
-  //     cold-started engine would surprise the user, self-review P1-3 /
-  //     re-review #3) — remove the chip and restore the text to the owning
-  //     session; resending is the user's call.
+  //   timeout or Err (invoke rejection, typically a reclaimed engine) = the
+  //     withdrawal state is unproven (the steer may already be committed
+  //     while only the response path is wedged — JensenChen28 review #2 —
+  //     and a reclaimed engine must not replay minutes-old background
+  //     messages, self-review P1-3) — remove the chip and restore the text
+  //     to the owning session; resending is the user's call.
   // 60s rather than a symmetric 25s: during long tool calls (minute-scale
   // shells) a steer legitimately waits for the next step boundary, and a
   // shorter watchdog would falsely degrade a healthy engine's steer into an
@@ -1011,25 +1012,29 @@
       // Withdraw with a bounded await (self-review P1-2): without the 25s race
       // a live-but-wedged engine leaves the chip `steered` forever, blocking
       // the session queue head. Outcome semantics (aligned with the ⚡ path):
-      //   "retired" (resolved) or timeout → engine copy will never inject,
-      //     degrade the chip so flushQueued delivers it as a plain message;
-      //   "not_pending" → committed with the event lost; a resend would
+      //   "retired" (resolved) = engine copy will never inject, degrade the
+      //     chip so flushQueued delivers it as a plain message;
+      //   "not_pending" = committed with the event lost; a resend would
       //     duplicate, so remove the chip and restore the text;
-      //   Err (rejected, engine reclaimed) → do NOT auto-resend a stale
-      //     message into a cold-started engine; restore the text instead
-      //     (self-review P1-3 / re-review #3).
+      //   timeout or Err (rejected, typically a reclaimed engine) = the
+      //     withdrawal state is UNPROVEN — the steer may already be committed
+      //     while only the response path is wedged, so auto-resending could
+      //     double-deliver (JensenChen28 review #2). Remove the chip and
+      //     restore the text; resending is the user's call.
       // The late commit is still rendered through the withdrawn registration
       // (same-text dedup against a user resend is already handled).
       rememberWithdrawn(sid, steerId, item.text);
       const withdrawPromise = invoke("withdraw_steer", { sessionId: sid, steerId });
       withdrawPromise.catch(function () { /* late rejection after the race settled is expected */ });
-      // Err sentinel keeps a rejected invoke distinct from junk resolves
-      // (harness/legacy backends may resolve null/undefined) — only a real
-      // rejection means "engine not present".
+      // Sentinels keep a rejected invoke and a transport timeout distinct from
+      // junk resolves (harness/legacy backends may resolve null/undefined) —
+      // only a real rejection means "engine not present", and only the timeout
+      // means "withdrawal state unknown".
       const WITHDRAW_ERR = "engine_err";
+      const WITHDRAW_TIMEOUT = "withdraw_timeout";
       const withdrawOutcome = new Promise(function (resolve) {
         const timerId = setTimeout(function () {
-          resolve("retired");
+          resolve(WITHDRAW_TIMEOUT);
         }, STEER_INVOKE_TIMEOUT_MS);
         withdrawPromise.then(
           function (outcome) { clearTimeout(timerId); resolve(outcome); },
@@ -1041,7 +1046,7 @@
         // the text now; restoring/degrading here would resurrect abandoned
         // text (same takeover guard as onSteerFailure).
         if (!q.includes(item)) return;
-        if (outcome === "not_pending" || outcome === WITHDRAW_ERR) {
+        if ([WITHDRAW_TIMEOUT, WITHDRAW_ERR, "not_pending"].includes(outcome)) {
           q.splice(q.indexOf(item), 1);
           notify();
           runSyncOnSession(sid, function () {
@@ -1572,31 +1577,33 @@
       let outcome;
       // 25s transport timeout (self-review P1-2 / re-review #2): a wedged
       // engine would hang the zap forever on a bare await — the chip is
-      // already out of the queue and the message silently undeliverable. The
-      // timeout continues with retired semantics: if the subsequent cancel
-      // also times out it fails explicitly and the recovery catch puts the
-      // chip back into the queue; a late real outcome cannot undo a resend
-      // that already happened — the committed bubble renders through the
-      // withdrawn registration and dedups against the resend bubble by text
-      // (residual duplicate-delivery risk, accepted).
+      // already out of the queue and the message silently undeliverable.
+      // Timeout ≠ retired (JensenChen28 review #2): an unresolved withdrawal
+      // proves nothing — the steer may already be committed while only the
+      // response path is wedged, so proceeding to cancel+resend could send
+      // the same instruction twice. The timeout skips the resend and defers
+      // to the reconcile watchdog below (committed → bubble; dropped →
+      // silent; nothing → restore the text after 60s).
       // Err (engine absent) = the message never entered the engine (or was
       // destroyed with the reclaim) — resend normally.
       const withdrawPromise = invoke("withdraw_steer", { sessionId: sid, steerId: item.steerId });
       withdrawPromise.catch(function () { /* late rejection after the race settled is expected */ });
       let withdrawTimerId = null;
+      let withdrawTimedOut = false;
       const withdrawTimeout = new Promise(function (_, reject) {
         withdrawTimerId = setTimeout(function () {
+          withdrawTimedOut = true;
           reject(new Error("withdraw_steer timed out"));
         }, STEER_INVOKE_TIMEOUT_MS);
       });
       try {
         outcome = await Promise.race([withdrawPromise, withdrawTimeout]);
       } catch {
-        outcome = "retired";
+        outcome = withdrawTimedOut ? "withdraw_timeout" : "retired";
       } finally {
         clearTimeout(withdrawTimerId);
       }
-      skipResend = outcome === "not_pending";
+      skipResend = outcome === "not_pending" || outcome === "withdraw_timeout";
     } else {
       // steerId not backfilled (invoke in flight) or not steered: set the
       // cancelled flag; the backfill callback fires the withdrawal.
@@ -1604,13 +1611,14 @@
     }
     notify();
     if (skipResend) {
-      // Already injected — do not resend. A committed stashed before the
-      // backfill renders the bubble immediately; a late committed renders
-      // through the withdrawn registration. NotPending is not proof of
-      // delivery (foundation contract): wait for the reconciling event; if it
-      // is lost (engine reclaim) the watchdog restores the text to the
-      // composer with a notice instead of treating an uncertain message as
-      // delivered.
+      // Already injected (not_pending) or withdrawal unresolved (timeout) —
+      // do not resend either way. A committed stashed before the backfill
+      // renders the bubble immediately; a late committed renders through the
+      // withdrawn registration. Neither NotPending nor a timeout is proof of
+      // delivery (foundation contract / JensenChen28 review #2): wait for the
+      // reconciling event; if it is lost (engine reclaim) the watchdog
+      // restores the text to the composer with a notice instead of treating
+      // an uncertain message as delivered.
       if (takeSteerEvent(sid, item.steerId) === "committed") {
         settleSteerCommitted(sid, item.steerId);
       } else {
