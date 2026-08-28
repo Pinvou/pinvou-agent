@@ -100,6 +100,32 @@ assert.equal(modelErrors.isModelServiceError('SSE buffer exceeded 10485760 bytes
 assert.equal(modelErrors.classify('HTTP/1.1 429 Too Many Requests').httpStatus, 429);
 assert.equal(modelErrors.classify('Request failed with status code 429').kind, 'rate_limit');
 assert.equal(modelErrors.classify('HTTP/2 503').httpStatus, 503);
+// LlmError Display 引导词(传输层立即失败,DNS/连接拒绝/TLS,不带 SSE 前缀
+// 直接上抛)必须接管;冒号/括号锚定形态与本地工具文案无碰撞——gh CLI 的
+// "API rate limit exceeded for ..." 无冒号,不得命中。
+assert.equal(modelErrors.isModelServiceError('Rate limit exceeded: Too many requests'), true);
+assert.equal(modelErrors.isModelServiceError('Network error: error sending request for url (https://api.deepseek.com/chat/completions)'), true);
+assert.equal(modelErrors.isModelServiceError('Request timed out after 30s'), true);
+assert.equal(modelErrors.isModelServiceError('Authentication failed: invalid credentials'), true);
+assert.equal(modelErrors.isModelServiceError('Server error (500): Internal Server Error'), true);
+assert.equal(modelErrors.isModelServiceError('Context length exceeded: maximum context is 8192 tokens'), true);
+assert.equal(modelErrors.isModelServiceError('API rate limit exceeded for 1.2.3.4'), false);
+assert.equal(modelErrors.classify('Rate limit exceeded: Too many requests').kind, 'rate_limit');
+assert.equal(modelErrors.classify('Context length exceeded: maximum context is 8192 tokens').kind, 'context');
+assert.equal(modelErrors.classify('Authorization failed: model access denied').kind, 'auth');
+// 门控厂商名单与标签名单对齐:GLM/MiniMax 等自家厂商此前漏标。
+assert.equal(modelErrors.isModelServiceError('GLM-4 API timeout'), true);
+assert.equal(modelErrors.isModelServiceError('MiniMax server error'), true);
+// Gemini 资源耗尽按额度语义分类。
+assert.equal(modelErrors.isModelServiceError('Gemini API Error: RESOURCE_EXHAUSTED'), true);
+assert.equal(modelErrors.classify('Gemini API Error: RESOURCE_EXHAUSTED').kind, 'quota');
+// POSIX 磁盘配额满(EDQUOT 的标准 strerror 即 "Disk quota exceeded")先于
+// 计费强词排除,不得提示"请充值"。
+assert.equal(modelErrors.isModelServiceError('cp: cannot create regular file: Disk quota exceeded'), false);
+// 词边界匹配:"chat api" 不得命中 "chat apiary","api key" 不得命中
+// "api-keys.yaml"(归一化后 "api keys")。
+assert.equal(modelErrors.isModelServiceError('chat apiary server down'), false);
+assert.equal(modelErrors.isModelServiceError('Error reading /etc/app/api-keys.yaml: connection refused'), false);
 // 脱敏:除占位符存在外,原始凭证实文必须消失。
 const basicRedacted = modelErrors.redactTechnicalDetail('Authorization: Basic dXNlcjpwYXNzd29yZA==');
 assert.match(basicRedacted, /\[敏感信息已隐藏\]/);
@@ -125,6 +151,68 @@ const bareBasicRedacted = modelErrors.redactTechnicalDetail('proxy replied: Basi
 assert.doesNotMatch(bareBasicRedacted, /dXNlcjpwYXNzd29yZA==/, 'bare Basic credentials must be redacted');
 const lowercaseBearerRedacted = modelErrors.redactTechnicalDetail('error with bearer eyJhbGciOiJIUzI1NiJ9.abc123def456');
 assert.doesNotMatch(lowercaseBearerRedacted, /eyJhbGciOiJIUzI1NiJ9/, 'lowercase bare bearer tokens must be redacted');
+// 非标 scheme 的两段式 Authorization(含 JSON 引号形态)必须整段吞值:
+// 按 scheme 词表枚举时,API-Key/Token 等非标 scheme 的凭证段整体存活。
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('Authorization: API-Key abc123def456xyz'),
+  /abc123def456/,
+  'non-standard scheme credentials must be redacted',
+);
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('{"headers":{"Authorization":"Token abc123def456xyz"}}'),
+  /abc123def456/,
+  'quoted non-standard scheme credentials must be redacted',
+);
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('Proxy-Authorization: HMAC-SPA256 abcdef123456abcdef'),
+  /abcdef123456/,
+  'proxy-authorization non-standard scheme credentials must be redacted',
+);
+// 下划线复合凭证键(\b 在下划线旁不成立,必须整体枚举)必须脱敏。
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('refresh_token: rt_live_abc123def456ghi789'),
+  /rt_live_abc123/,
+  'compound credential keys must be redacted',
+);
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('client_secret: GOCSPX-abcdef1234567890'),
+  /GOCSPX/,
+  'client_secret values must be redacted',
+);
+// 裸 JWT(无键名、无 Bearer 前缀的三段式)必须脱敏。
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('upstream replied eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c before dying'),
+  /eyJhbGciOiJIUzI1NiJ9/,
+  'bare JWTs must be redacted',
+);
+// 数字开头的会话凭证(Cookie sessionid)必须脱敏。
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('Set-Cookie: sessionid=8f3k9d2l1a4b7c6e5f9a; Path=/'),
+  /8f3k9d2l/,
+  'session cookie values must be redacted',
+);
+// 强凭证键的引号值允许空格,整段吞掉。
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('"password": "correct horse battery staple"'),
+  /horse/,
+  'space-separated passwords must be fully redacted',
+);
+// 非凭证值不被误吞:裸 "key" 的无数字短值(model-name)保留。
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('{"key": "model-name"}'),
+  /\[敏感信息已隐藏\]/,
+  'non-credential bare "key" values must not be redacted',
+);
+// structured payload(kind/title/message 对象直通):合法 kind 保留、非法 kind
+// 兜底 unknown、字段再次脱敏。
+const structuredNotice = modelErrors.build(
+  { kind: 'billing', title: '余额不足', message: '请充值', technicalDetail: 'Bearer sk-zzz-abc123def456' },
+  { language: 'zh-Hans' },
+);
+assert.equal(structuredNotice.kind, 'billing');
+assert.doesNotMatch(structuredNotice.technicalDetail, /sk-zzz-abc123def456/, 'structured passthrough must redact technical detail');
+assert.match(structuredNotice.technicalDetail, /\[敏感信息已隐藏\]/);
+assert.equal(modelErrors.build({ kind: 'nope', title: 't', message: 'm' }, { language: 'zh-Hans' }).kind, 'unknown', 'unknown structured kinds must fall back to unknown');
 const cleanupState = { settings: { language: 'ja' }, chatItems: [] };
 const addCleanupItem = (text, metadata) => cleanupState.chatItems.push({ text, ...metadata });
 messageSandbox.window.PinvouBridgeMessages.showShellCleanupFailure(

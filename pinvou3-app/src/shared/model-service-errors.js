@@ -20,14 +20,32 @@
     gemini: "Gemini",
   };
 
-  // 底座(CodeWhale)模型调用失败的固定错误前缀(SSE stream request failed /
-  // idle timeout / headers timed out / buffer exceeded、Stream read error、
-  // Failed to call ... Chat API)。这些前缀只由模型请求链路产生,出现即可接管。
+  // 底座(CodeWhale)模型调用失败的固定错误前缀,出现即可接管,分两组:
+  // ①SSE 流式链路(chat.rs/stream_entry.rs):SSE stream request failed /
+  //   idle timeout / headers timed out / buffer exceeded、Stream read error、
+  //   Failed to call ... Chat API;
+  // ②LlmError Display 引导词(llm_client/mod.rs,传输层立即失败——DNS/连接
+  //   拒绝/TLS——不带 SSE 前缀直接上抛):经 llm_client 独产、与本地工具
+  //   错误文案无碰撞,且冒号/括号锚定("rate limit exceeded:" 不会命中
+  //   gh CLI 的 "API rate limit exceeded for ...")。
   const MODEL_CALL_PREFIXES = [
     "sse stream",
     "sse buffer",
     "stream read error",
     "chat api",
+    "rate limit exceeded:",
+    "authentication failed:",
+    "authorization failed:",
+    "context length exceeded:",
+    "network error:",
+    "server error (",
+    "request timed out after ",
+    "invalid request (",
+    "llm error:",
+    "model error:",
+    "response parsing error:",
+    "content policy violation:",
+    "provider stream connection dropped",
   ];
 
   // 泛化信号词分两档:计费/额度/频控词(余额不足、quota exceeded、请求过于
@@ -51,6 +69,7 @@
     "额度用尽",
     "额度耗尽",
     "用量超出",
+    "resource exhausted",
   ];
 
   const AMBIGUOUS_MODEL_ERROR_KEYWORDS = [
@@ -160,11 +179,28 @@
       .trim();
   }
 
+  // 关键词匹配带词边界:裸 includes 会让 "chat api" 命中 "chat apiary"、
+  // "api key" 命中 "api-keys.yaml"(归一化后 "api keys"),把本地工具错误
+  // 误判成模型服务故障。正则按词编译并缓存(分类在每条错误上高频调用)。
+  const KEYWORD_REGEX_CACHE = new Map();
+  function keywordRegex(word) {
+    let re = KEYWORD_REGEX_CACHE.get(word);
+    if (!re) {
+      const escaped = String(word).replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+      // 尾部词边界只对字母/数字结尾的关键词有意义:以 "(" 或空格收尾的
+      // 锚定形态(如 "server error ("/"request timed out after ")本身已
+      // 与后续字符隔离,加前瞻反而会拒绝紧随的数字(状态码/时长)。
+      const tail = /[a-z0-9]$/i.test(word) ? "(?![a-z0-9])" : "";
+      re = new RegExp("(?:^|[^a-z0-9])" + escaped + tail, "i");
+      KEYWORD_REGEX_CACHE.set(word, re);
+    }
+    return re;
+  }
+
   function hasAny(lower, normalized, words) {
     return words.some(function (word) {
-      const normalizedWord = normalizeForMatch(word);
-      return lower.includes(String(word).toLowerCase())
-        || normalized.includes(normalizedWord);
+      const re = keywordRegex(word);
+      return re.test(lower) || re.test(normalized);
     });
   }
 
@@ -179,6 +215,7 @@
     return hasAny(lower, normalized, [
       "openai", "deepseek", "anthropic", "moonshot", "kimi", "dashscope",
       "qwen", "doubao", "volcengine", "zhipu", "gemini",
+      "glm", "zai", "minimax", "xai",
     ]);
   }
 
@@ -192,6 +229,9 @@
     const lower = text.toLowerCase();
     const normalized = normalizeForMatch(text);
     if (hasAny(lower, normalized, MODEL_CALL_PREFIXES)) return true;
+    // POSIX 磁盘配额满(EDQUOT 的标准 strerror 就是 "Disk quota exceeded")
+    // 先于计费强词排除,否则本地写盘失败会被提示"请充值或切换模型"。
+    if (/(?:^|[^a-z0-9])(?:disk|nfs|inode|filesystem|storage)\s+quota(?![a-z0-9])/i.test(normalized)) return false;
     if (hasAny(lower, normalized, STRONG_MODEL_ERROR_KEYWORDS)) return true;
     const apiSignal = hasApiSignal(lower, normalized);
     const providerSignal = hasProviderNameSignal(lower, normalized);
@@ -214,13 +254,13 @@
     if (hasAny(lower, normalized, ["context length", "maximum context", "prompt is too long", "context window"])) {
       return { kind: "context", httpStatus: status };
     }
-    if (status === 401 || hasAny(lower, normalized, ["unauthorized", "authentication", "invalid api key", "invalid key", "invalid token", "bearer token"])) {
+    if (status === 401 || hasAny(lower, normalized, ["unauthorized", "authentication", "authorization failed", "invalid api key", "invalid key", "invalid token", "bearer token"])) {
       return { kind: "auth", httpStatus: status };
     }
     if (status === 402 || hasAny(lower, normalized, ["payment required", "insufficient balance", "余额不足", "欠费", "账户余额"])) {
       return { kind: "billing", httpStatus: status };
     }
-    if (hasAny(lower, normalized, ["quota exceeded", "insufficient quota", "quota exhausted", "quota has been exceeded", "exceeded your current quota", "额度不足", "额度用尽", "额度耗尽", "用量超出"])) {
+    if (hasAny(lower, normalized, ["quota exceeded", "insufficient quota", "quota exhausted", "quota has been exceeded", "exceeded your current quota", "resource exhausted", "额度不足", "额度用尽", "额度耗尽", "用量超出"])) {
       return { kind: "quota", httpStatus: status };
     }
     // 403 与频控词共存时按频控分(GitHub/OpenAI 风格 "403 forbidden: rate limit exceeded")
@@ -242,21 +282,51 @@
 
   function redactTechnicalDetail(raw) {
     let text = String(raw || "");
-    // Bearer/Basic 及任意 Authorization scheme 的凭证统一吞掉值本身
-    // (Basic <base64> 以前只吞掉 scheme 词,凭证明文保留)。
     const keepPrefix = (prefix) => prefix + SENSITIVE_VALUE;
-    text = text.replaceAll(/((?:authorization|proxy-authorization)\s*[:=]\s*(?:bearer|basic|digest|token)\s+)[^\s,;"}]+/ig, (m, p1) => keepPrefix(p1));
-    text = text.replaceAll(/(Authorization\s*[:=]\s*)[^\s,;"}]+/ig, (m, p1) => keepPrefix(p1));
+    // Authorization/Proxy-Authorization 整段吞值:任意 scheme(scheme 词表
+    // 枚举追不完,API-Key/HMAC 等非标 scheme 曾整体漏掉凭证段)、可选 JSON
+    // 引号;值一段吞到首个分隔符(引号/逗号/分号/括号/&/换行),允许值内
+    // 空格以覆盖 "Digest username=x, ..." 之外的两段式凭证。
+    text = text.replaceAll(
+      /((?:proxy-)?authorization[\s"']*[:=][\s"']*)([^"'),;}&\]\r\n]+)/gi,
+      (m, p1) => keepPrefix(p1),
+    );
+    // 裸 Bearer <token>(无 Authorization 头名,配置回显/排错日志常见形态)。
     text = text.replaceAll(/\b(Bearer\s+)[a-z0-9._~+=/-]{12,}/gi, (m, p1) => keepPrefix(p1));
-    // 裸 Basic/Digest <base64>(无 Authorization 头名,代理/排错日志常见形态)。
+    // 裸 Basic/Digest <base64>(同上);阈值 16 换取 "basic <普通词>" 不误吞。
     text = text.replaceAll(/\b((?:Basic|Digest)\s+)[a-z0-9+/=]{16,}/gi, (m, p1) => keepPrefix(p1));
-    // kv 形态的 key 名要求左侧词边界,且值必须像凭证(字母开头的非纯数字串):
-    // "monkey:bar"(词尾含 key)与 "token: 15000"/"total_token: 15000"(用量
-    // 计数)不能被当凭证脱敏,否则恰好毁掉 context 错误的排查信息。
-    // eslint-disable-next-line sonarjs/regex-complexity, sonarjs/duplicates-in-character-class -- the credential-key whitelist is deliberately exhaustive; splitting it would reduce auditability
-    text = text.replaceAll(/(["']?\b(?:api[_-]?key|key|authorization|token|password|secret|access[_-]?token)\b["']?\s*[:=]\s*["']?)[A-Za-z][^"',\s&}]*/ig, (m, p1) => keepPrefix(p1));
-    text = text.replaceAll(/([?&](?:api[_-]?key|key|authorization|token|password|secret|access[_-]?token)=)[^&#\s]+/ig, (m, p1) => keepPrefix(p1));
+    // 强凭证键(password/passphrase/secret)的引号值允许空格,整段吞掉
+    // ("correct horse battery staple" 这类口令此前只吞首词)。
+    text = text.replaceAll(
+      /(["']?\b(?:password|passphrase|secret)\b["']?\s*[:=]\s*["'])([^"']{2,})(["'])/gi,
+      (m, p1, p2, p3) => p1 + SENSITIVE_VALUE + p3,
+    );
+    // kv 形态的凭证键:左侧词边界 + 键名白名单(含 refresh_token/client_secret
+    // 等复合名——\b 在下划线旁不成立,必须整体枚举)。值取「字母开头」或
+    // 「≥10 位字母数字」(数字开头的会话凭证 8f3k9d2l… 形态);"token: 15000"
+    // 用量计数是纯数字且不足 10 位,不命中,context 错误的排查信息得以保留。
+    /* eslint-disable sonarjs/regex-complexity, sonarjs/duplicates-in-character-class -- the credential-key whitelist is deliberately exhaustive; splitting it would reduce auditability */
+    text = text.replaceAll(
+      /(["']?\b(?:api[_-]?key|api[_-]?secret|authorization|token|password|secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|secret[_-]?key|ssh[_-]?key|private[_-]?key|session[_-]?id|session[_-]?token|sessionid|jsessionid)\b["']?\s*[:=]\s*["']?)(?:[A-Za-z][^"',\s&}]*|[A-Za-z0-9]{10,})/gi,
+      (m, p1) => keepPrefix(p1),
+    );
+    /* eslint-enable sonarjs/regex-complexity, sonarjs/duplicates-in-character-class */
+    // 裸 key 键另行收紧(值要求字母开头且含数字):"key": "model-name"
+    // 这类非凭证值不再被误吞,而 "key": "abc123def456" 仍被吞掉。
+    text = text.replaceAll(
+      /(["']?\bkey\b["']?\s*[:=]\s*["']?)(?=[a-z][^"',\s&}]*\d)[a-z][^"',\s&}]+/gi,
+      (m, p1) => keepPrefix(p1),
+    );
+    // URL 查询参数形态(query 里的值几乎必然是凭证,不加形态条件)。
+    /* eslint-disable sonarjs/regex-complexity -- same whitelist rationale as above */
+    text = text.replaceAll(
+      /([?&](?:api[_-]?key|api[_-]?secret|key|authorization|token|password|secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|ssh[_-]?key|session[_-]?id|sessionid)=)[^&#\s]+/gi,
+      (m, p1) => keepPrefix(p1),
+    );
+    /* eslint-enable sonarjs/regex-complexity */
     text = text.replaceAll(/\bsk-[A-Za-z0-9][A-Za-z0-9._-]{10,}\b/g, () => SENSITIVE_VALUE);
+    // 裸 JWT/JWS(eyJ 开头三段式,无键名/无 Bearer 前缀的形态)。
+    text = text.replaceAll(/\b(eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*)/g, () => SENSITIVE_VALUE);
     if (text.length > 2000) text = [...text].slice(0, 2000).join("") + "...";
     return text;
   }
@@ -308,7 +378,8 @@
   // 因此它优先于 providerLabelFromState 的推导。
   const PROVIDER_SIGNAL_ORDER = [
     "deepseek", "anthropic", "moonshot", "kimi", "dashscope", "qwen",
-    "doubao", "volcengine", "zhipu", "glm", "minimax", "openai", "gemini",
+    "doubao", "volcengine", "zhipu", "zai", "glm", "minimax", "xai",
+    "openai", "gemini",
   ];
   function providerLabelFromErrorText(raw) {
     const lower = String(raw || "").toLowerCase();
