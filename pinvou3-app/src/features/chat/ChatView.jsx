@@ -1746,18 +1746,23 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             setLocalEnginePrompt({ kind: 'notRunning', token });
           });
         }
-        // 自动启动：先显示进度，成功放行、超时弹三选一
-        setLocalEnginePrompt({ kind: 'starting', token });
-        const ok = await startEngineAndWait(info.localEngineModel, info.localEngineDevice, token);
-        // 用户取消/新流程顶替：旧流程静默退出，不动新对话框。
-        if (!localEngineFlowAlive(token)) return false;
-        if (ok) {
-          resolvePendingSend(true);
-          return true;
-        }
+        // 自动启动：先显示进度，成功放行、超时弹三选一。pending 先行挂起
+        // （顶替旧流程遗留），成功路径带 token resolve——若不带 token，会把
+        // 旧流程遗留的挂起误放行（已放弃的第一条消息也被发出），还会清掉
+        // 本流程自己的 starting 对话框。
         return new Promise(resolve => {
           replacePendingSend({ token, resolve, info });
-          setLocalEnginePrompt({ kind: 'timeout', token });
+          setLocalEnginePrompt({ kind: 'starting', token });
+          void (async () => {
+            const ok = await startEngineAndWait(info.localEngineModel, info.localEngineDevice, token);
+            // 用户取消/新流程顶替：旧流程静默退出，不动新对话框。
+            if (!localEngineFlowAlive(token)) return;
+            if (ok) {
+              resolvePendingSend(true, token);
+              return;
+            }
+            setLocalEnginePrompt({ kind: 'timeout', token });
+          })().catch(() => {});
         });
       }
 
@@ -2420,7 +2425,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               const llmEngineCopy = (t.uiSettingsDetail && t.uiSettingsDetail.llamaEngine) || {};
               const btnPrimary = `text-[13px] font-medium px-4 py-2 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'}`;
               const btnGhost = `text-[13px] px-4 py-2 rounded-full ${isDark ? 'bg-[#333537] hover:bg-[#444746]' : 'bg-[#E1E5EA] hover:bg-[#D3D9E0]'}`;
-              const goSettingsAndCancel = () => { if (onGotoLlamaEngine) { onGotoLlamaEngine(); } resolvePendingSend(false); };
+              const goSettingsAndCancel = () => { if (onGotoLlamaEngine) { onGotoLlamaEngine(); } resolvePendingSend(false, p.token); };
               // 下载进度与设置页同口径:订阅 llamaEngineSetup.progress(pct+filename)。
               const leSetup = (bs && bs.llamaEngineSetup) || {};
               const leProg = leSetup.progress || {};
@@ -2433,7 +2438,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 // 暂不安装 = 放弃安装：后台可能还挂着上一次流程未取消的下载，一并取消。
                 const cancelInstallAndResolve = () => {
                   if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.cancelDownload) bridge.llamaEngine.cancelDownload();
-                  resolvePendingSend(!!(info && info.hasVisionModel));
+                  resolvePendingSend(!!(info && info.hasVisionModel), p.token);
                 };
                 buttons = (
                   <>
@@ -2446,9 +2451,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 body = ua.localEngineNotRunningPrompt;
                 buttons = (
                   <>
-                    <button type="button" className={btnGhost} onClick={() => resolvePendingSend(false)}>{ua.localEngineCancelSend}</button>
+                    <button type="button" className={btnGhost} onClick={() => resolvePendingSend(false, p.token)}>{ua.localEngineCancelSend}</button>
                     {info && info.hasVisionModel && (
-                      <button type="button" className={btnGhost} onClick={() => resolvePendingSend(true)}>{ua.localEngineSendFallback}</button>
+                      <button type="button" className={btnGhost} onClick={() => resolvePendingSend(true, p.token)}>{ua.localEngineSendFallback}</button>
                     )}
                     <button type="button" className={btnPrimary} onClick={goSettingsAndCancel}>{ua.localEngineGoSettings}</button>
                   </>
@@ -2477,7 +2482,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   <>
                     <button type="button" className={btnGhost} onClick={() => cancelLocalEngineFlow(p.token)}>{ua.localEngineCancelSend}</button>
                     {info && info.hasVisionModel && (
-                      <button type="button" className={btnGhost} onClick={() => resolvePendingSend(true)}>{ua.localEngineSendFallback}</button>
+                      <button type="button" className={btnGhost} onClick={() => resolvePendingSend(true, p.token)}>{ua.localEngineSendFallback}</button>
                     )}
                     <button type="button" className={btnGhost} onClick={goSettingsAndCancel}>{ua.localEngineGoSettings}</button>
                     <button type="button" className={btnPrimary} onClick={() => startThenResolve(info, p.token)}>{ua.localEngineRetry}</button>
@@ -2489,7 +2494,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 // 关闭 = 放弃安装：取消可能残留的后台下载后再 resolve。
                 const closeInstallError = () => {
                   if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.cancelDownload) bridge.llamaEngine.cancelDownload();
-                  resolvePendingSend(false);
+                  resolvePendingSend(false, p.token);
                 };
                 buttons = (
                   <button type="button" className={btnPrimary} onClick={closeInstallError}>{ua.localEngineClose}</button>
