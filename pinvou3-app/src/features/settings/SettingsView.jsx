@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, Globe, Lightbulb, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Sparkles, Trash2, User, Users, Wrench, X } from '../../components/icons.jsx';
-import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { Toggle } from '../../components/Toggle.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
@@ -1757,7 +1756,6 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       // 自动启动引擎三档：first_image(默认) / launch / never
       const [llamaAutoStart, setLlamaAutoStart] = useState(llamaAdvanced.llama_engine_auto_start || 'first_image');
       const [llamaAutoStartOpen, setLlamaAutoStartOpen] = useState(false);
-      const llamaAutoStartBtnRef = useRef(null);
       const saveAdvancedPatch = async (patch) => {
         try {
           const current = (bs && bs.settings && bs.settings.advanced) || {};
@@ -2732,21 +2730,25 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                         <div className="flex items-start justify-between gap-3">
                           <div className="text-[15px] leading-5 font-normal text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.autoStartLabel}</div>
                           <div className="relative shrink-0">
-                            <button type="button" ref={llamaAutoStartBtnRef} data-testid="llama-autostart-select" onClick={() => setLlamaAutoStartOpen(v => !v)}
+                            <button type="button" data-testid="llama-autostart-select" onClick={() => setLlamaAutoStartOpen(v => !v)}
                               className="h-8 pl-3 pr-2 rounded-full text-[13px] font-medium flex items-center gap-1 bg-[#E1E5EA] text-[#1C1C1E] hover:bg-[#D3D9E0] dark:bg-white/[0.08] dark:text-[#F2F2F7] dark:hover:bg-white/[0.12]">
                               {current.label}
                               <ChevronDown size={13} className="opacity-50 shrink-0" />
                             </button>
-                            <ComposerPopover open={llamaAutoStartOpen} onClose={() => setLlamaAutoStartOpen(false)} triggerRef={llamaAutoStartBtnRef}
-                              desktopClassName="absolute bottom-full right-0 mb-1 z-50 min-w-[190px] bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
-                              {options.map(o => (
-                                <button type="button" key={o.key} data-testid={`llama-autostart-${o.key}`} onClick={() => { setLlamaAutoStart(o.key); saveAdvancedPatch({ llama_engine_auto_start: o.key }); setLlamaAutoStartOpen(false); }}
-                                  className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left rounded-xl text-[13px] text-[#1C1C1E] hover:bg-[#007AFF] hover:text-white dark:text-[#F2F2F7]">
-                                  <span>{o.label}</span>
-                                  {llamaAutoStart === o.key && <Check size={14} className="shrink-0" />}
-                                </button>
-                              ))}
-                            </ComposerPopover>
+                            {/* 设置窗口没有 RightDock 上下文：ComposerPopover 的右坞遮挡
+                                协议门在此永久 fail-closed（菜单无法弹出）。设置页无原生
+                                表面需要遮挡，按页内既有下拉模式内联渲染选项。 */}
+                            {llamaAutoStartOpen && (
+                              <div className="absolute bottom-full right-0 mb-1 z-50 min-w-[190px] bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+                                {options.map(o => (
+                                  <button type="button" key={o.key} data-testid={`llama-autostart-${o.key}`} onClick={() => { setLlamaAutoStart(o.key); saveAdvancedPatch({ llama_engine_auto_start: o.key }); setLlamaAutoStartOpen(false); }}
+                                    className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left rounded-xl text-[13px] text-[#1C1C1E] hover:bg-[#007AFF] hover:text-white dark:text-[#F2F2F7]">
+                                    <span>{o.label}</span>
+                                    {llamaAutoStart === o.key && <Check size={14} className="shrink-0" />}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         </div>
                         <div className="mt-1 text-[12px] leading-4 text-[#9AA0A6] dark:text-[#636366]">
