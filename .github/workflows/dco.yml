@@ -10,10 +10,16 @@ permissions:
   contents: read
   pull-requests: read
 
+# Cancel superseded runs for the same ref to avoid queueing and wasted runner minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   signoff:
     name: Signed-off commits
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       # 进入 Merge Queue 前，每个 PR 已通过本 required check。merge_group 中只包含
       # GitHub 生成的组合提交，此处复用同名 check 上报成功，避免队列等待缺失上下文。

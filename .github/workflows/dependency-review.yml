@@ -8,10 +8,16 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded runs for the same ref to avoid queueing and wasted runner minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   dependency-review:
     name: dependency-review
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: 确认队列中的 PR 已通过依赖审查
         if: github.event_name == 'merge_group'

@@ -28,6 +28,11 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded runs for the same ref to avoid queueing and wasted runner minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify-connectors:
     strategy:
