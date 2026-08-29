@@ -3,7 +3,7 @@
 //! 职责：
 //! 1. 加载/持久化 [`UserPrefs`]（GUI 可调的视觉/语言偏好，序列化在
 //!    `~/.pinvou3/settings.json`）
-//! 2. 维护 `~/.pinvou3/` 目录布局并把内嵌 [`bundle`] 首启解包到 `bundle/`
+//! 2. 维护 `~/.pinvou3/` 目录布局并把内嵌 `bundle` 首启解包到 `bundle/`
 //! 3. **把 prefs + bundle 翻译成 [`EngineConfig`] / [`DtConfig`]**——所有
 //!    字段都显式列出，禁用 spread `..Default::default()`，让上游加字段时
 //!    `cargo build` 报"missing field"，强制 review 是否对 pinvou3 安全。
@@ -400,7 +400,7 @@ impl Pinvou3Bridge {
         }
     }
 
-    /// 测试入口(L1 harness 用):同 [`boot`] 但 workspace 用传入的 `ws`
+    /// 测试入口(L1 harness 用):同 [`Self::boot`] 但 workspace 用传入的 `ws`
     /// (通常是 scenario 自己的 tempdir),而不是 `paths::user_home_dir()`。
     /// 让 L1 真 vLLM dialog harness 能给每个 scenario 一个隔离的产出目录,
     /// 避免污染用户 $HOME 也避免 scenario 之间互相干扰。
@@ -1123,7 +1123,7 @@ impl Pinvou3Bridge {
     /// 当前有效模型 endpoint 是否指向本机(设计 §11.8/§11.9):前端据此决定是否在
     /// 附件区提示"图片将发送给模型服务商"——本机 loopback 场景图片字节不离开本机,
     /// 不得显示云上传字样。判定与 `api_key_for_saved_model` 同一口径:preset 为
-    /// local_vllm,或有效 base_url host 为 loopback(127.0.0.1/localhost/[::1])。
+    /// local_vllm,或有效 base_url host 为 loopback(127.0.0.1/localhost/`[::1]`)。
     pub fn is_local_endpoint(&self) -> bool {
         let preset_is_local = match self.effective_model() {
             Some(model) => model.preset == ModelPreset::LocalVllm,
@@ -1340,7 +1340,7 @@ impl Pinvou3Bridge {
     }
 
     /// legacy 单引擎路径(headless harness 用):走 instructions inline + 用户自定义。
-    /// 跟 [`session_instructions`] 区别仅在不带 session_id —— 直接用 work 渲染原文
+    /// 跟 [`Self::session_instructions`] 区别仅在不带 session_id —— 直接用 work 渲染原文
     /// (不替换 `{{PINVOU3_WORKSPACE}}`)。
     pub fn instructions(&self) -> Vec<InstructionSource> {
         let mut out: Vec<InstructionSource> = vec![InstructionSource::Inline {
@@ -2951,7 +2951,7 @@ mod tests {
             .iter()
             .filter_map(|s| match s {
                 InstructionSource::File(p) => Some(p.clone()),
-                _ => None,
+                InstructionSource::Inline { .. } => None,
             })
             .collect();
         assert!(
@@ -2968,7 +2968,7 @@ mod tests {
             .iter()
             .filter_map(|s| match s {
                 InstructionSource::File(p) => Some(p.clone()),
-                _ => None,
+                InstructionSource::Inline { .. } => None,
             })
             .collect();
         assert!(

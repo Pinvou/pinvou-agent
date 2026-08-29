@@ -243,7 +243,7 @@ mod tests {
                 profile.len(),
                 profile.iter().copied().collect::<HashSet<_>>().len()
             );
-            for &name in profile.iter() {
+            for &name in profile {
                 assert_eq!(
                     catalog
                         .iter()

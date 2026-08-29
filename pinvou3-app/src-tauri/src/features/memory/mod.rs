@@ -8,11 +8,11 @@
 //! 2 目录 store + LLM review + 渲染六类职责。Wave 2 任务 2c 把它拆成
 //! facade（本文件，集中 pub 面与 re-export）+ 子模块：
 //!
-//! - [`types`] —— 9 实体 struct/enum、`MemoryReviewModel` trait、常量、字段归一化
-//! - [`util`] —— 文本清洗 / stable id / 原子写盘等跨模块底层原语
-//! - [`io`] —— profile 单文件 + 4 JSONL store + 2 目录 store 的读写
-//! - [`llm_review`] —— LLM 后台记忆复盘（提示词、调用、清洗、自动落库）+ 启发式兜底
-//! - [`render`] —— 注入块 / 设备快照文档 / runtime prompt 文件管理
+//! - `types` —— 9 实体 struct/enum、`MemoryReviewModel` trait、常量、字段归一化
+//! - `util` —— 文本清洗 / stable id / 原子写盘等跨模块底层原语
+//! - `io` —— profile 单文件 + 4 JSONL store + 2 目录 store 的读写
+//! - `llm_review` —— LLM 后台记忆复盘（提示词、调用、清洗、自动落库）+ 启发式兜底
+//! - `render` —— 注入块 / 设备快照文档 / runtime prompt 文件管理
 //!
 //! pub 面在本文件集中 re-export，外部 `crate::features::memory::X` 调用路径不变。
 

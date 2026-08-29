@@ -7,11 +7,11 @@
 //! 本模块是 facade:把原本 2600+ 行的 god-module 按职责拆成子模块,
 //! 对外 pub 面通过 `pub use` 保持不变。
 //!
-//! - [`types`]      — manifest/info/迁移结果等数据类型
-//! - [`secrets`]    — 密钥/凭证助手 + MarketplaceManager 的 secret 读写方法
-//! - [`validation`] — 远程 MCP 连接校验
-//! - [`migration`]  — mcp.json 旧版明文密钥迁移
-//! - [`connectors`] — connector 注册/注销(含拆分后的 add_to_mcp_json remote/local 分支)
+//! - `types`      — manifest/info/迁移结果等数据类型
+//! - `secrets`    — 密钥/凭证助手 + MarketplaceManager 的 secret 读写方法
+//! - `validation` — 远程 MCP 连接校验
+//! - `migration`  — mcp.json 旧版明文密钥迁移
+//! - `connectors` — connector 注册/注销(含拆分后的 add_to_mcp_json remote/local 分支)
 
 mod connectors;
 mod migration;

@@ -84,7 +84,7 @@ mod tests {
             crate::platform::capabilities::browser_product_enabled()
         );
         assert!(!capabilities.chrome_devtools_protocol);
-        assert!(!SystemWebviewConfig::ACTIVATION_READY);
+        const { assert!(!SystemWebviewConfig::ACTIVATION_READY) };
         assert!(config.is_initialized());
         assert!(!config.owns_port(9222));
     }

@@ -175,7 +175,7 @@ fn list_cache_stale_generation_snapshot_is_never_served() {
         .list_cache_generation
         .load(std::sync::atomic::Ordering::Acquire);
     let mut poisoned = Vec::clone(&post_write);
-    for m in poisoned.iter_mut() {
+    for m in &mut poisoned {
         if m.id == s1.metadata.id {
             m.title = "OLD-STALE".into();
         }
@@ -1137,7 +1137,7 @@ fn checked_scheduled_delete_removes_profile_json_and_runtime_directory() {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_slice(),
-        &[id.clone()]
+        std::slice::from_ref(&id)
     );
     assert!(store.scheduled_profile(&id).is_none());
     assert!(store.active_id().is_none());
@@ -1194,7 +1194,7 @@ fn scheduled_delete_notifies_hook_when_record_commit_precedes_cleanup_error() {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_slice(),
-        &[id.clone()]
+        std::slice::from_ref(&id)
     );
     assert!(store.scheduled_profile(&id).is_none());
     assert!(store.active_id().is_none());
@@ -2094,14 +2094,14 @@ fn delete_notifies_hook_when_record_commit_precedes_cleanup_error() {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_slice(),
-        &[id.clone()]
+        std::slice::from_ref(&id)
     );
     assert_eq!(
         purged
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_slice(),
-        &[id.clone()],
+        std::slice::from_ref(&id),
         "a committed ordinary deletion purges process state even when directory cleanup fails"
     );
     assert!(runtime_dir.exists(), "failed cleanup remains retryable");
@@ -2900,7 +2900,7 @@ fn retention_purge_also_updates_multi_agent_flags() {
     let file = paths::sessions_root().join("_multi_agent.json");
     assert!(file.is_file());
 
-    store.purge_session_side_maps(&[id.clone()]);
+    store.purge_session_side_maps(std::slice::from_ref(&id));
 
     assert!(!store.mode_state(&id).multi_agent, "内存状态已清");
     assert!(
@@ -2927,7 +2927,7 @@ fn retention_purge_notifies_session_purged_hooks() {
         recorder.lock().unwrap().push(sid.to_string());
     }));
 
-    store.purge_session_side_maps(&[id.clone()]);
+    store.purge_session_side_maps(std::slice::from_ref(&id));
 
     let notified = seen.lock().unwrap().clone();
     assert_eq!(

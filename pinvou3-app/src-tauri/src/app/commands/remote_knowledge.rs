@@ -327,7 +327,7 @@ pub(crate) fn remove_connection_with_mounts(
     let changed = {
         // Only the final local commit is serialized with mounting. Network validation happens
         // outside this lock, so disconnecting an offline server remains immediate.
-        let coordinator = remote_server_mutation_coordinator(&server_id);
+        let coordinator = remote_server_mutation_coordinator(server_id);
         let _mutation = coordinator
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());

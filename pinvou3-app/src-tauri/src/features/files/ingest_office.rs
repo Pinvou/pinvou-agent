@@ -208,7 +208,7 @@ fn spreadsheet_text_from_bytes(
     };
 
     let mut out = String::new();
-    let names: Vec<String> = wb.sheet_names().to_owned();
+    let names: Vec<String> = wb.sheet_names().clone();
     for name in names {
         let range = match wb.worksheet_range(&name) {
             Ok(r) => r,

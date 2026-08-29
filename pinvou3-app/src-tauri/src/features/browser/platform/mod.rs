@@ -89,10 +89,10 @@ pub(crate) enum BrowserCoreEvaluationMode {
 /// boundary. Read-only BrowserCore observations deliberately carry no control
 /// capability; page-mutating JavaScript must carry the exact begun tab lease
 /// all the way to the native UI-thread callback.
-fn evaluation_authorization<'a>(
+fn evaluation_authorization(
     mode: BrowserCoreEvaluationMode,
-    authorization: Option<&'a state::NativeTabLease>,
-) -> Result<Option<&'a state::NativeTabLease>, String> {
+    authorization: Option<&state::NativeTabLease>,
+) -> Result<Option<&state::NativeTabLease>, String> {
     match mode {
         BrowserCoreEvaluationMode::ReadOnly => Ok(None),
         BrowserCoreEvaluationMode::MayMutate => authorization

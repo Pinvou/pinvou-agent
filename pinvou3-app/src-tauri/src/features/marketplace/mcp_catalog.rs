@@ -113,7 +113,7 @@ pub fn spec_for(id: &str) -> Option<&'static McpPackageSpec> {
     MCP_PACKAGES.iter().find(|spec| spec.id == id)
 }
 
-/// 包的 mcp/ 目录（bundles/<id>/mcp/）。
+/// 包的 mcp/ 目录（`bundles/<id>/mcp/`）。
 pub fn package_mcp_dir(id: &str) -> PathBuf {
     paths::bundles_root().join(id).join("mcp")
 }

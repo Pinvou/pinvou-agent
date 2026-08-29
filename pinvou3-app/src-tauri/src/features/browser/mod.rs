@@ -1005,11 +1005,9 @@ impl BrowserManager {
                     errors.push(format!("{}: {error}", request_path.display()));
                     continue;
                 }
-            } else {
-                if let Err(error) = write_hosted_response(&request_path, &record["response"]) {
-                    errors.push(format!("{}: {error}", request_path.display()));
-                    continue;
-                }
+            } else if let Err(error) = write_hosted_response(&request_path, &record["response"]) {
+                errors.push(format!("{}: {error}", request_path.display()));
+                continue;
             }
             let _ = std::fs::remove_file(&request_path);
             handled = true;
@@ -1590,11 +1588,7 @@ impl BrowserManager {
             .tool_name
             .as_deref()
             .ok_or_else(|| "browser/missing-tool-name".to_string())?;
-        let arguments = request
-            .tool_arguments
-            .as_ref()
-            .cloned()
-            .unwrap_or_else(|| json!({}));
+        let arguments = request.tool_arguments.clone().unwrap_or_else(|| json!({}));
         let arguments = arguments
             .as_object()
             .ok_or_else(|| "browser/tool-arguments-must-be-object".to_string())?;
@@ -1861,7 +1855,7 @@ impl BrowserManager {
             .ok_or_else(|| "browser/missing-argument: pageId".to_string())?;
         let page_id = page_id_value
             .as_u64()
-            .filter(|page_id| *page_id <= (1_u64 << 53) - 1)
+            .filter(|page_id| *page_id < (1_u64 << 53))
             .ok_or_else(|| "browser/invalid-argument: pageId".to_string())?;
         let tab_token = tab_token_for_page(page_id)?;
 
@@ -3561,7 +3555,7 @@ impl BrowserManager {
 
         // start_mtx makes startup single-flight. Concurrent callers wait and reuse
         // committed state instead of starting duplicate loops and losing handles.
-        let _start_guard = self.start_mtx.lock().await;
+        let start_guard = self.start_mtx.lock().await;
         // The initial check may have passed before restart closed admission.
         // Recheck after the lifecycle lock so a queued watch iteration cannot
         // reconnect automation after restart cleanup releases the lock.
@@ -3582,7 +3576,7 @@ impl BrowserManager {
                     return Ok(());
                 }
                 drop(inner);
-                drop(_start_guard);
+                drop(start_guard);
                 return self.reattach_existing(session, gen_at_start).await;
             }
         }
@@ -4929,7 +4923,7 @@ async fn run_event_loop(app: AppHandle, mut events: tokio::sync::mpsc::Receiver<
                     // created carries full targetInfo for filtering non-page targets,
                     // while destroyed carries only { targetId }.
                     match route_target_event(&method, &params) {
-                        TargetEventRoute::Ignore => continue,
+                        TargetEventRoute::Ignore => {}
                         // When MCP or page script destroys the active page, repair
                         // selection before notifying the frontend.
                         TargetEventRoute::Destroy(tid) => {

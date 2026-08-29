@@ -23,7 +23,7 @@ fn normalized_export_name(default_name: &str, extension: &str) -> String {
     let stem = name
         .trim()
         .trim_end_matches(&format!(".{extension}"))
-        .trim_end_matches(|ch| ch == '.' || ch == ' ');
+        .trim_end_matches(['.', ' ']);
     if stem.is_empty()
         || stem.len() > 120
         || stem

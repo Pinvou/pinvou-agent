@@ -198,13 +198,8 @@ pub async fn kb_model_load_after_first_frame(
     crate::platform::startup::mark("knowledge_embedder_async:start");
     let ready = load_installed_embedder(&service, &pool)
         .await
-        .map_err(|e| {
-            crate::platform::startup::mark_with_detail(
-                "rust",
-                "knowledge_embedder_async:error",
-                &e,
-            );
-            e
+        .inspect_err(|e| {
+            crate::platform::startup::mark_with_detail("rust", "knowledge_embedder_async:error", e);
         })?;
     crate::platform::startup::mark_with_detail(
         "rust",
@@ -263,7 +258,7 @@ pub async fn kb_model_download(
     }
     CANCEL.store(false, Ordering::Relaxed);
     // 守卫：任何提前 return（含 ?、取消）退出时都复位 DOWNLOADING。
-    let _guard = DownloadGuard;
+    let guard = DownloadGuard;
 
     let parent = dir
         .parent()
@@ -366,7 +361,7 @@ pub async fn kb_model_download(
         serde_json::json!({ "stage": "done", "ready": ready }),
     );
     drop(load_lease);
-    drop(_guard);
+    drop(guard);
     Ok(current_status(&service))
 }
 

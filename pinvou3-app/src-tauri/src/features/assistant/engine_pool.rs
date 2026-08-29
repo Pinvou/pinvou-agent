@@ -2569,7 +2569,7 @@ where
                 }
                 Ok(EngineTurnSignal::Terminal { .. }) => {}
                 Ok(EngineTurnSignal::ForwarderStopped { error }) => bail!(error),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                     bail!("Engine event stream closed before the scheduled turn completed")
                 }
