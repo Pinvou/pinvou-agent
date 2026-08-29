@@ -14,7 +14,7 @@ pub mod platform;
     kind = "static",
     modifiers = "+whole-archive"
 )]
-extern "C" {}
+unsafe extern "C" {}
 
 pub use features::assistant::attachments::{
     build_message_with_attachments, stage_file_in_workspace,
