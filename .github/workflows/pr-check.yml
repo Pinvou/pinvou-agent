@@ -1001,15 +1001,10 @@ jobs:
         shell: bash
         run: rustc -O pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs -o pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
 
-      - name: Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: pinvou3-app/package-lock.json
-
-      - name: 安装前端构建依赖
-        run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
+      # 本 job 的 cargo 步骤不需要前端依赖:debug profile 下 tauri 的
+      # generate_context! 走 devUrl,dist/ 不会被打包,build.rs 也只依赖
+      # tauri-build/cc(2026-08 在 macOS 实测:移走 node_modules 后
+      # cargo check --all-targets 通过)。故不再安装 node/npm,省每轮 3-5 分钟。
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
