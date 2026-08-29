@@ -22,7 +22,7 @@
 | 读取目的 | 用这个 shortcut | 数据去向 | 说明 |
 |---------|----------------|---------|------|
 | 快速查看纯值数据、批量处理 | `+csv-get` | 对话上下文 | 返回 CSV 文本（每行带 `[row=N]` 前缀）；大表请按 `--range` 行窗口分批读（截断时看 `has_more`） |
-| 按列类型结构化读出（喂 DataFrame / round-trip 回 `+table-put`） | `+table-get` | 对话上下文 | 返回 typed 协议（`columns:[列名]` + `data` + `dtypes`/`formats` + `range`），输出形状对齐 pandas split；可一行 `pd.DataFrame(sheet["data"], columns=sheet["columns"]).astype(sheet["dtypes"])` 还原 DataFrame，或直接 round-trip 回 `+table-put`。不带 `--range` 时读**完整 used range**（跨过表中部空行 / 空列），每个子表回传实际读取范围 `range` 供完整性校验；被 `max_chars` 裁掉时该子表还会带 `truncated: true` 与 `truncation_warning`，**先看这两个字段再用数据**。注意这与下文 `current_region` "遇表中部空行截断"不矛盾：`+table-get` 读的是子表物理 used range（飞书记录的已用矩形，含中间空行），`current_region` 是从锚点连通扩展、遇整行空行就断 |
+| 按列类型结构化读出（喂 DataFrame / round-trip 回 `+table-put`） | `+table-get` | 对话上下文 | 返回 typed 协议（`columns:[列名]` + `data` + `dtypes`/`formats` + `range`），输出形状对齐 pandas split；可一行 `pd.DataFrame(sheet["data"], columns=sheet["columns"]).astype(sheet["dtypes"])` 还原 DataFrame，或直接 round-trip 回 `+table-put`。不带 `--range` 时读**完整 used range**（跨过表中部空行 / 空列），每个子表回传实际读取范围 `range` 供完整性校验；截断判断以实际返回为准——`--output-path` 落盘先看回执 `complete`（命中上限另有 `truncated` 与提示），直读 stdout 拿 `range` 与源表行列数交叉核对，**见任何截断标志（如 `truncated`）必须先处理再用数据**。注意这与下文 `current_region` "遇表中部空行截断"不矛盾：`+table-get` 读的是子表物理 used range（飞书记录的已用矩形，含中间空行），`current_region` 是从锚点连通扩展、遇整行空行就断 |
 | 查看公式、样式、批注、数据验证 | `+cells-get` | 对话上下文 | 返回单元格完整信息，token 开销较大 |
 | 查看某区域的下拉框（数据验证）选项 | `+dropdown-get` | 对话上下文 | 返回该 A1 范围已配置的下拉列表选项 |
 
@@ -249,7 +249,7 @@ lark-cli sheets +cells-get --url "https://example.feishu.cn/sheets/shtXXX" --she
 
 `+table-put`（写入侧，见 write-cells reference）的镜像：把表格读回与 `--sheets` 完全同构的 typed 协议（`sheets[]` + `columns:[列名]` + `data:[[行]]` + `dtypes:{列名:pandas_dtype}` + `formats?:{列名:number_format}` + `range`），可直接喂回 `+table-put` 或一行还原 DataFrame。
 
-**默认（不带 `--range`）读取整张子表的完整 used range**：会跨过表中部的整行空行 / 整列空列，覆盖到真实数据边界。每个子表都回传实际读取的 `range`（如 `A1:F10`）——`+table-get` 不返回分页 / 截断标志，这个 `range` 是判断是否读全的唯一信号：拿它和源 xlsx 行列数、关键末行 / 末日期交叉核对，确认读取完整。仍要精确控制范围时显式传 `--range`。
+**默认（不带 `--range`）读取整张子表的完整 used range**：会跨过表中部的整行空行 / 整列空列，覆盖到真实数据边界。每个子表都回传实际读取的 `range`（如 `A1:F10`）——`+table-get` 无分页标志（无 `has_more`），截断判断以实际返回为准：各子表的 `range` 是判断是否读全的主信号，拿它和源 xlsx 行列数、关键末行 / 末日期交叉核对，确认读取完整；`--output-path` 落盘时先看回执 `complete` 字段（命中上限另有 `truncated` 与提示）；若返回中出现任何截断标志（如 `truncated`），必须先处理（缩小范围 / 落盘重读）再用数据。仍要精确控制范围时显式传 `--range`。
 
 列类型从每列 `number_format` 推断（日期格式→`date`/`datetime64[ns]`、数值→`number`/`float64`、bool→`bool`），`date` 列的序列号转回 ISO `yyyy-mm-dd`——日期、数字往返不丢类型。**列类型只在该列所有非空值一致时才定（`number` / `date` / `bool`）；一列混了类型（如数字列混入「暂无」、日期列混入裸数字）会降为 `string`（dtypes 输出 `object`），让 `dtypes` 与 `data` 里每个值自洽——能 round-trip 回 `+table-put`、不让 pandas `astype` 崩。降级是无损的（脏值原样保留为文本）；若要把零星脏值转成数值列，交给调用方在 pandas 侧做（`to_numeric(errors='coerce')`），那里原始值仍在、可追溯。** 默认读所有子表、第一行当表头（`--no-header` 把首行当数据、列名取 `col1` / `col2` …）。
 

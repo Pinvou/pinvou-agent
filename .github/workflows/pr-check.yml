@@ -13,7 +13,8 @@ name: PR Check
 #   语法检查；依赖或策略改动时追加 cargo-deny，不依赖 Tauri workspace 间接覆盖。
 # - rust-test: Draft and explicitly low-risk Rust changes skip the large test
 #   binary. Ready high-risk PRs and their combined Merge Queue tree run Linux
-#   regressions; Windows runs once on the ready PR. Main always runs both.
+#   regressions; Windows runs once on the ready PR. main push 无条件累计编译
+#   验证并写暖 cache(--no-run,不执行测试;MQ 已对同一组合树跑过全量测试)。
 # - rust-lint:Draft 只跑 fmt；Ready/Queue/main 跑 clippy；cargo-deny 仅在依赖
 #   或策略路径变化时追加，三项均无 continue-on-error。
 #   与 rust-test 并行,各自独立 cache。clippy 规则见 Cargo.toml [lints] 表:
@@ -30,7 +31,8 @@ name: PR Check
 #
 # Cache 策略(2026-07 诊断:PR cache 挂 refs/pull/N/merge 作用域互不可见 + 1.3GB/份
 # 顶死 10GB 限额被 LRU 秒驱逐 → 每轮全冷编译 ~9min):
-# - Main runs full rust-test and stores a main-scoped cache for high-risk/explicit PRs.
+# - Main compiles rust-test targets (--no-run) and stores a main-scoped cache for
+#   high-risk/explicit PRs; full test execution stays on the Merge Queue/PR leg.
 # - save-if 仅 main:PR 侧只读不写,不再刷爆限额挤掉暖 cache。
 # - rust-cache 的 restore 有前缀回退(restoreKey 不含 lockfile hash),PR 改 Cargo.lock
 #   也能从 main cache 增量编译,不再全冷。
@@ -324,7 +326,7 @@ jobs:
           python3 scripts/architecture-guard.py --base-ref "origin/$base_ref"
 
       - name: 公开底座 gitlink 可达性
-        # r8 已发布；PR 与 merge queue 均严格要求 gitlink 对齐不可变标签。
+        # Fail closed: PRs and merge-queue commits must match the current immutable public tag.
         run: ./scripts/verify-public-submodule.sh
 
       - name: 初始化公共底座 submodule
@@ -668,7 +670,8 @@ jobs:
     needs: changes
     # Ready high-risk PRs and matching merge groups run the full Linux regression.
     # Explicitly low-risk leaf changes stay on compile/lint feedback; unknown Rust
-    # paths fail closed through rust_full. Main always runs the cumulative regression.
+    # paths fail closed through rust_full. main push 无条件执行累计编译验证并写暖
+    # cache(防 concurrency pending 替换盲区),但只编译不执行测试(见下方 --no-run)。
     if: >-
       ${{
         !cancelled() &&
@@ -717,8 +720,11 @@ jobs:
       # 不设 codegen-units:dev 默认 256,对 test 改动最小(不影响 release 的 codegen=1)。
       CARGO_PROFILE_DEV_LTO: "thin"
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1"
-    # dev profile 的 line-tables-only 已固化进 Cargo.toml [profile.dev],不再需要
-    # CARGO_PROFILE_DEV_DEBUG 环境变量。
+      # Cargo.toml [profile.dev] 固化 line-tables-only(本地调试体验);CI 改为完全
+      # 关闭 DWARF:panic 的 file:line 由 Location(rodata)提供,不依赖 debuginfo。
+      # 关掉后缩小目标文件与测试二进制体积,降低 ThinLTO link 内存峰值和 target
+      # 目录磁盘占用(16GB runner 上 rust-test 链接期多次把 runner 打到失联)。
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -740,7 +746,8 @@ jobs:
             librsvg2-dev libssl-dev \
             libx11-dev libxi-dev libxtst-dev \
             libayatana-appindicator3-dev \
-            build-essential pkg-config cmake lld
+            build-essential pkg-config cmake lld \
+            time
 
       # bge-m3 是 gitignored 大资源(559M),CI 干净 checkout 没有它,而 tauri_build::build()
       # 会校验 tauri.conf resources 路径存在。单测用 mem()=embedder None、不加载真模型,真
@@ -764,9 +771,10 @@ jobs:
         run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
 
       # remote_control 的真实 relay 下载 e2e 需要 node + relay 依赖,缺 node_modules/ws 时
-      # Install relay dependencies so high-risk PR, combined-tree, and main runs
-      # execute the real e2e instead of silently skipping it.
+      # 该 e2e 会自动 skip —— 装上依赖让 CI 真正执行它,而不是绿灯假过。
+      # push(main) 只编译不执行测试(见下方 --no-run),不需要 relay/Chrome 运行时依赖。
       - name: Node.js (relay e2e)
+        if: ${{ github.event_name != 'push' }}
         uses: actions/setup-node@v7
         with:
           node-version: "22"
@@ -774,9 +782,11 @@ jobs:
           cache-dependency-path: remote-control-relay/package-lock.json
 
       - name: relay 依赖 (真实 relay e2e)
+        if: ${{ github.event_name != 'push' }}
         run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
 
       - name: 浏览器驱动依赖 (真实 Chrome 下载 e2e)
+        if: ${{ github.event_name != 'push' }}
         # real-browser driver 从 pinvou3-app/node_modules 加载 puppeteer-core。
         # npm --prefix pinvou3-app install 即使指定单包也会解析并安装项目完整依赖树，
         # 因此直接用 package-lock 驱动的 npm ci，避免额外维护一份硬编码版本并保证可复现。
@@ -791,7 +801,13 @@ jobs:
           # 只在 main 保存(暖 cache 唯一来源);PR 侧只读,不占 10GB 限额。
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # High-risk/explicit PRs, matching merge groups, and main run all lib tests.
+      # High-risk/explicit PRs and matching merge groups run all lib tests
+      # (含真实 relay/Chrome e2e)。
+      # 编译链接与测试执行拆成两个 step:该 job 在 16GB hosted runner 上多次在
+      # 本环节被打到 runner 失联(日志全丢,只剩 step 状态可查),拆开后失联时
+      # 能定位是编译/链接期还是测试执行期。ci-memguard.sh 每 5s 输出内存/磁盘
+      # 时间序列,并在可用内存跌破阈值时抢先杀掉 cargo/rustc/lld,把 runner
+      # 失联转化为带完整日志的 step 失败。
       # 保留 --test-threads=1:虽已把 env 写测试收敛到 crate 级唯一锁
       # (bridge::paths::tests::ENV_LOCK),但进程级 env 对未持锁的读取者仍全局可见，
       # 多线程测试仍可能观察到其他测试的临时值。Mutex poison 后通过 into_inner()
@@ -799,12 +815,52 @@ jobs:
       # 或让所有读写都通过同一隔离层，超出本 PR 范围。
       # strict_mode 的三个确定性回归已并入 pinvou3_lib 单测，和全量 lib tests
       # 共用一次编译与链接，避免第二个 integration test 目标重复链接全依赖树。
+      - name: cargo test --lib --no-run（编译链接测试二进制）
+        if: ${{ github.event_name != 'push' }}
+        run: |
+          bash scripts/ci-memguard.sh &
+          guard_pid=$!
+          set +e
+          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
+          status=$?
+          set -e
+          kill "$guard_pid" 2>/dev/null || true
+          exit "$status"
+
       - name: cargo test --lib（含 strict_mode 回归；真 bge-m3/vLLM 测试已 #[ignore]）
+        if: ${{ github.event_name != 'push' }}
         run: |
           chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           export CHROME="$chrome"
           export PINVOU_REQUIRE_REMOTE_E2E=1
+          bash scripts/ci-memguard.sh &
+          guard_pid=$!
+          set +e
           cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
+          status=$?
+          set -e
+          kill "$guard_pid" 2>/dev/null || true
+          exit "$status"
+
+      # push(main) 唯一目的是暖 cache(Swatinem/rust-cache save-if main)。
+      # MQ 已对同一代码跑过完整 lib 测试,squash 合并后的 push 不再重复执行测试;
+      # --no-run 编译含 test harness 的全部 target 产物(与完整 test 的编译腿一致),
+      # 供热 MQ restore 后增量复用,省去测试执行时间。
+      # 不需要 relay/Chrome 运行时依赖(上方 setup-node/relay/浏览器 step 已按 !=push 跳过)。
+      # 2026-08-28 #372 曾让 push 改跑全量测试:main push 恢复暖 cache 后连续 5 次
+      # "hosted runner lost communication"(MQ 自身也间歇性失联,push 100% 触发),
+      # 故恢复只编译设计;不要在 push 上重新打开测试执行。
+      - name: cargo test --lib --no-run (push main 仅编译暖 cache)
+        if: ${{ github.event_name == 'push' }}
+        run: |
+          bash scripts/ci-memguard.sh &
+          guard_pid=$!
+          set +e
+          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
+          status=$?
+          set -e
+          kill "$guard_pid" 2>/dev/null || true
+          exit "$status"
 
   windows-rust-test:
     name: windows-rust-test

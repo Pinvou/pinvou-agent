@@ -52,7 +52,7 @@
 
 ### r8 逐轮评测工具安全扩展（已发布）
 
-> CodeWhale PR #15 的候选链 `1eca6103a` + 安全修复 `169c24cc5` + 只读分发与受限面收口 `21e5f661a` + 续轮/Shell 边界修复 `a647ed866` 已 squash 合并为 `d127aed113529dc93754d044b9f352e9746f6b83`；合并提交与已验证候选 head tree 完全一致，并已发布为不可变标签 `pinvou-v0.9.5-r8`。该扩展为嵌入宿主增加进程内逐轮工具安全策略、可信外部路径完全覆盖、最终执行前精确白名单门禁、只读 `File` action 投影与最终分发复检，并封闭排队控制操作、排队续轮/MCP reload、Hook 与日志旁路。受限轮结束后的子智能体完成、后台 Shell 唤醒和编辑重放会锁存到显式新消息安装替代权限；只读 `Bash` 使用 `ShellPolicy::ReadOnly` 的直接 argv 加固路径；受限审计只保留非私有身份字段。r8 发布时父仓 gitlink 与公开校验严格对齐该标签；当前公开基线由上方 r9 取代，r8 标签保持不可变。
+> CodeWhale PR #15 的候选链 `1eca6103a` + 安全修复 `169c24cc5` + 只读分发与受限面收口 `21e5f661a` + 续轮/Shell 边界修复 `a647ed866` 已 squash 合并为 `d127aed113529dc93754d044b9f352e9746f6b83`；合并提交与已验证候选 head tree 完全一致，并已发布为不可变标签 `pinvou-v0.9.5-r8`。该扩展为嵌入宿主增加进程内逐轮工具安全策略、可信外部路径完全覆盖、最终执行前精确白名单门禁、只读 `File` action 投影与最终分发复检，并封闭排队控制操作、排队续轮/MCP reload、Hook 与日志旁路。受限轮结束后的子智能体完成、后台 Shell 唤醒和编辑重放会锁存到显式新消息安装替代权限；只读 `Bash` 使用 `ShellPolicy::ReadOnly` 的直接 argv 加固路径；受限审计只保留非私有身份字段。r8 发布时父仓 gitlink 与公开校验严格对齐该标签；当前公开基线以上方第 0 节为准，r8 标签保持不可变。
 
 ### 父仓 gitlink 同步勘误（2026-08-22 更正）
 
@@ -60,7 +60,7 @@
   事后按 git 历史勘误：该 bump 实际发生在 **PR #285**（commit `95502ac8`，`git ls-tree` 可证：`95502ac8^` 为 `3bbf8421`，`95502ac8` 起即为 `a36e6cd533…`）。
 - PR #302 (`feat/plugin-protocol`) 起步于 #285 合并前的旧 main（起步时父仓 gitlink 停在 r6，与当时 `发布状态` 不一致，曾触发 `scripts/verify-public-submodule.sh` 与 `scripts/ci-fork-link-check.sh` 在 PR fast-gate 持续失败），合并时 gitlink 已在 main 上对齐 r7，因此 **#302 未改动 gitlink**（`git diff c75f2fb2^..c75f2fb2 -- CodeWhale` 为空）。
 - 后续推进：PR #305 把公开基线推进到已发布的 r8；r7→r8 同步不改 `.gitmodules` 或底座主题组织方式。
-- 现状：父仓 gitlink、`Pinvou/CodeWhale:pinvou3-clean` HEAD 与 `pinvou-v0.9.5-r8` 标签均指向 `d127aed113529dc93754d044b9f352e9746f6b83`。
+- 勘误时点（2026-08-22）现状：父仓 gitlink、`Pinvou/CodeWhale:pinvou3-clean` HEAD 与 `pinvou-v0.9.5-r8` 标签均指向 `d127aed113529dc93754d044b9f352e9746f6b83`；当前基线以上方第 0 节为准。
 - 另勘误 #302 的父仓侧改动范围：能力包统一模型（父仓 commit `c75f2fb2`）把开关存储收敛为单一 `disabled_bundles.json`（包 id × 模式禁用集 + `hidden_scopes`），取代原先分开的 `disabled_connectors.json` / `disabled_skills.json` 双文件（读到旧双文件即迁移不删）。
 
 ### 本次会话修复（已验证并发布）

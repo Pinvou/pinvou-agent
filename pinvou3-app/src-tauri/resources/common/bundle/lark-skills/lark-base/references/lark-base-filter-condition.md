@@ -54,6 +54,15 @@ Filter 是一组「字段/操作符/值」条件的组合，用 `logic`（`and` 
 - `empty`
 - `non_empty`
 
+比较类 operator 的适用性按字段类型区分：
+
+| operator | 适用字段类型 |
+|---|---|
+| `>` / `<` | `number` / `auto_number`，以及 `datetime` / `created_at` / `updated_at` |
+| `>=` / `<=` | 仅 `number` / `auto_number`；**datetime 类字段不支持** |
+
+> **datetime 类字段不支持 `>=` 与 `<=`**（与 [lark-base-data-query.md](lark-base-data-query.md) 日期仅五种运算符、[dashboard-block-data-config.md](dashboard-block-data-config.md) 禁用 `isGreaterEqual` / `isLessEqual` 同口径）。日期范围的含当天下界用 `>` 前一天最后一毫秒表达，上界用 `<` 次日零点表达，写法示例见第 3 节 datetime 小节。
+
 ## 3. value 写法
 
 value 类型取决于条件引用对象（字段 / 题目）的类型。
@@ -160,6 +169,16 @@ location 筛选只按 `full_address` 字符串匹配，不能直接按经纬度�
 ["截止时间", "==", "Today"]
 ```
 
+日期范围只用 `>` / `<`（datetime 类不支持 `>=` / `<=`）：含当天的下界用 `>` 前一天最后一毫秒，上界用 `<` 次日零点。例如「2024 年 2 月及之后」（含 2024-02-01 当天）与「2024 年 2 月以内」：
+
+```json
+["发生时间", ">", "ExactDate(2024-01-31 23:59:59.999)"]
+```
+
+```json
+["发生时间", "<", "ExactDate(2024-03-01 00:00:00)"]
+```
+
 可用关键字：
 - `Today`
 - `Yesterday`
@@ -189,6 +208,7 @@ location 筛选只按 `full_address` 字符串匹配，不能直接按经纬度�
 - `user` / `group_chat` / `link` 不要写成单个标量。
 - `empty` / `non_empty` 统一表示格子为空 / 非空，不要传 value；标量空格子和多值字段没有任何元素都属于空。
 - 日期条件稳定写法用 `ExactDate(...)` 或 `Today` / `Yesterday` / `Tomorrow`。
+- datetime 类字段不支持 `>=` 与 `<=`；范围下界用 `>` 前一天最后一毫秒（如 `ExactDate(2024-01-31 23:59:59.999)`），上界用 `<` 次日零点（如 `ExactDate(2024-03-01 00:00:00)`）。
 - `formula` / `lookup` 的 value 形状不固定；拿不准时先读当前配置或字段定义，或根据错误提示修正类型。
 
 ## 5. 参考

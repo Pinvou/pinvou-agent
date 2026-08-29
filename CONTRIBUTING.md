@@ -111,10 +111,11 @@ Clippy, compile, and dependency-policy checks there. High-blast-radius Rust chan
 also run the full Linux behavior regression on the combined tree; Windows coverage
 already ran on the ready PR and is not repeated. Frontend changes run browser smokes
 selected from the merge group's actual base/head diff; shared, unknown, or test-
-infrastructure paths fall back to the complete smoke set. Full Linux and Windows
-Rust regressions run on every retained `main` push and continue to warm the shared
-caches. A red main regression is a stop signal for further queueing until it is
-fixed or reverted. During review, maintainers should inspect only required checks:
+infrastructure paths fall back to the complete smoke set. Every retained `main` push
+runs cumulative Linux compile verification (full test execution stays on the
+merge-queue leg, which already validates the same combined tree) and native Windows
+checks, and continues to warm the shared caches. A red main regression is a stop
+signal for further queueing until it is fixed or reverted. During review, maintainers should inspect only required checks:
 
 ```bash
 gh pr checks <number> --required

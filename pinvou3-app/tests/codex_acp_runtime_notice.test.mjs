@@ -129,18 +129,18 @@ const runtimeStatus = await readFile(
   'utf8',
 );
 const draftStatusEffect = view.match(
-  /useEffect\(\(\) => \{\s+\/\/ 草稿态按需读取([\s\S]*?)\n {2}\}, \[activeAgentId, activeId\]\);/,
+  /useEffect\(\(\) => \{\s+\/\/ In draft, read the selected agent's status([\s\S]*?)\n {2}\}, \[activeAgentId, activeId\]\);/,
 );
 assert.ok(draftStatusEffect, 'draft Agent status effect must remain explicit');
 assert.match(
   draftStatusEffect[1],
-  /if \(activeId\) return;[\s\S]*refreshStatus\(activeAgentId\)\.catch\(showError\)/,
-  'draft Agent switches must use the cached probe while session loading owns active-session status',
+  /if \(activeId\) return;[\s\S]*refreshStatus\(activeAgentId, true\)\.catch\(showError\)/,
+  'draft Agent switches must force a fresh CLI probe (installs outside the app) while session loading owns active-session status',
 );
 assert.doesNotMatch(
   draftStatusEffect[1],
-  /refreshStatus\(activeAgentId, true\)/,
-  'ordinary Agent switches must not force a duplicate CLI probe',
+  /refreshStatus\(activeAgentId\)\.catch\(showError\)/,
+  'draft Agent switches must not silently read a stale probe cache',
 );
 assert.match(
   view,

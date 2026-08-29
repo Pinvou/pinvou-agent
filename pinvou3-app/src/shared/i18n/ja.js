@@ -59,6 +59,7 @@ const codexJa = {
   connectedSuffix:'接続済み', notReadySuffix:'は準備できていません',
   notSet:'未設定', choiceTitle:'Agent が選択を求めています', submit:'送信', cancel:'キャンセル', submitted:'送信済み', canceled:'キャンセル済み', inputExpired:'この入力リクエストは期限切れです',
   checking:'ACP Agent を確認中…', bridgeUnavailable:'Codex ACP Bridge を利用できません',
+  viewLoading:'コードモードを読み込み中…', viewLoadFailed:'コードモードの読み込みに失敗しました。ネットワーク接続が不安定な可能性があります。', viewRetry:'再試行',
   bridgeRepair:'Pinvou を修復または再インストールしてください。開発環境では npm run prepare:codex-bridge を実行できます。',
   cliMissing:agent=>`${agent} CLI が見つかりません`, cliOutdated:(version,minVersion)=>`古いバージョン ${version} を検出しました（${minVersion} 以上が必要です）`,
   cliUpdateAvailable:(agent,version,latest)=>`${agent} の現在のバージョンは ${version || '不明'}、公式最新版は ${latest || '不明'} です。アップグレードを推奨します`,
@@ -765,7 +766,7 @@ dictJa.uiArtifacts = {
 
 dictJa.uiCodexView = { ended:'終了', stepsFailed:'失敗を含む実行手順', processing:'処理中', codexTool:'Codex ツール' };
 
-Object.assign(dictJa.uiAttachments, { uploading:pct=>`アップロード中 ${pct}%`, deviceUploadTooLarge:name=>`${name} は添付ファイル上限の 20 MB を超えています`, deviceUploadEmpty:name=>`${name} は空のため添付できません`, deviceUploadUnavailable:'現在、このデバイスから添付ファイルをアップロードできません', deviceUploadInvalid:name=>`${name} は有効な添付ファイルではありません`, deviceUploadFailed:name=>`${name} をアップロードできませんでした。もう一度お試しください。` });
+Object.assign(dictJa.uiAttachments, { uploading:pct=>`アップロード中 ${pct}%`, deviceUploadTooLarge:name=>`${name} は添付ファイル上限の 20 MB を超えています`, deviceUploadEmpty:name=>`${name} は空のため添付できません`, deviceUploadUnavailable:'現在、このデバイスから添付ファイルをアップロードできません', deviceUploadInvalid:name=>`${name} は有効な添付ファイルではありません`, deviceUploadFailed:name=>`${name} をアップロードできませんでした。もう一度お試しください。`, deviceUploadDigestInvalid:'添付ファイルの整合性ダイジェストが無効です。もう一度お試しください', deviceUploadIntegrityMismatch:'添付ファイルの内容が転送中に破損しました。再度アップロードしてください' });
 
 Object.assign(dictJa.uiToolStore, {
   toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', ima:'Tencent ima' },

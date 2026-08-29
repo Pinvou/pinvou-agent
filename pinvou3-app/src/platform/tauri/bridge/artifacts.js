@@ -145,6 +145,7 @@
             total: chunk.total,
             dataBase64: chunk.dataBase64,
             commit: chunk.commit,
+            ...(chunk.sha256 ? { sha256: chunk.sha256 } : {}),
           });
         },
         validateResult: function (result) { return Boolean(result && result.basename); },

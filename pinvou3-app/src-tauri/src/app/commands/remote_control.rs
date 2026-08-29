@@ -39,23 +39,133 @@ fn web_acp_agent_id(agent_id: Option<String>) -> Result<String, String> {
         .ok_or_else(|| "Web code sessions support ACP agents only".to_string())
 }
 
-fn web_workspace_result<T, E: std::fmt::Display>(
-    operation: &str,
+/// Stable error-code operations for `web_access_*` ACP commands. The wire
+/// format `web_acp_{operation}_failed` is consumed by `acpErrors.js`;
+/// `stable_web_error_codes_are_locked` pins the full list in Rust so a
+/// rename fails on the Rust side instead of only in source-text regexes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebAcpOperation {
+    SessionCreate,
+    Cancel,
+    Prompt,
+    Timeline,
+    SessionInfo,
+    SetModel,
+    SetMode,
+    SetConfigOption,
+    PendingPermissions,
+    RespondPermission,
+    PendingElicitations,
+    RespondElicitation,
+    ListSessions,
+    ListAgents,
+    AgentStatus,
+}
+
+impl WebAcpOperation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SessionCreate => "session_create",
+            Self::Cancel => "cancel",
+            Self::Prompt => "prompt",
+            Self::Timeline => "timeline",
+            Self::SessionInfo => "session_info",
+            Self::SetModel => "set_model",
+            Self::SetMode => "set_mode",
+            Self::SetConfigOption => "set_config_option",
+            Self::PendingPermissions => "pending_permissions",
+            Self::RespondPermission => "respond_permission",
+            Self::PendingElicitations => "pending_elicitations",
+            Self::RespondElicitation => "respond_elicitation",
+            Self::ListSessions => "list_sessions",
+            Self::ListAgents => "list_agents",
+            Self::AgentStatus => "agent_status",
+        }
+    }
+}
+
+/// Stable error-code operations for `web_access_*` workspace commands, wire
+/// format `web_workspace_{operation}_failed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebWorkspaceOperation {
+    Listing,
+    Search,
+    Preview,
+    Changes,
+    Diff,
+}
+
+impl WebWorkspaceOperation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Listing => "listing",
+            Self::Search => "search",
+            Self::Preview => "preview",
+            Self::Changes => "changes",
+            Self::Diff => "diff",
+        }
+    }
+}
+
+/// Stable error-code operations for generic `web_access_*` session commands,
+/// wire format `web_session_{operation}_failed`. Native errors from the
+/// session store may embed host paths; folding them keeps Relay responses
+/// controlled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebSessionOperation {
+    ListSessions,
+    ListArchivedSessions,
+    CreateSession,
+    LoadSessionChunk,
+}
+
+impl WebSessionOperation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ListSessions => "list_sessions",
+            Self::ListArchivedSessions => "list_archived_sessions",
+            Self::CreateSession => "create_session",
+            Self::LoadSessionChunk => "load_session_chunk",
+        }
+    }
+}
+
+fn web_session_result<T, E: std::fmt::Display>(
+    operation: WebSessionOperation,
     result: Result<T, E>,
 ) -> Result<T, String> {
     result.map_err(|error| {
-        log::warn!("[remote_control] Web code workspace {operation} failed: {error}");
-        format!("web_workspace_{operation}_failed")
+        log::warn!(
+            "[remote_control] Web session {} failed: {error}",
+            operation.as_str()
+        );
+        format!("web_session_{}_failed", operation.as_str())
+    })
+}
+
+fn web_workspace_result<T, E: std::fmt::Display>(
+    operation: WebWorkspaceOperation,
+    result: Result<T, E>,
+) -> Result<T, String> {
+    result.map_err(|error| {
+        log::warn!(
+            "[remote_control] Web code workspace {} failed: {error}",
+            operation.as_str()
+        );
+        format!("web_workspace_{}_failed", operation.as_str())
     })
 }
 
 fn web_acp_result<T, E: std::fmt::Display>(
-    operation: &str,
+    operation: WebAcpOperation,
     result: Result<T, E>,
 ) -> Result<T, String> {
     result.map_err(|error| {
-        log::warn!("[remote_control] Web ACP {operation} failed: {error:#}");
-        format!("web_acp_{operation}_failed")
+        log::warn!(
+            "[remote_control] Web ACP {} failed: {error:#}",
+            operation.as_str()
+        );
+        format!("web_acp_{}_failed", operation.as_str())
     })
 }
 
@@ -207,7 +317,10 @@ pub async fn web_access_list_sessions(
     store: State<'_, SessionStore>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<Vec<super::sessions::SessionListItem>, String> {
-    let mut sessions = super::sessions::list_sessions(store, acp_pool).await?;
+    let mut sessions = web_session_result(
+        WebSessionOperation::ListSessions,
+        super::sessions::list_sessions(store, acp_pool).await,
+    )?;
     for session in &mut sessions {
         session.metadata = super::codex::redact_session_metadata_for_web(session.metadata.clone());
     }
@@ -218,7 +331,10 @@ pub async fn web_access_list_sessions(
 pub async fn web_access_list_archived_sessions(
     store: State<'_, SessionStore>,
 ) -> Result<Vec<super::sessions::HiddenSessionListItem>, String> {
-    let mut sessions = super::sessions::list_archived_sessions(store).await?;
+    let mut sessions = web_session_result(
+        WebSessionOperation::ListArchivedSessions,
+        super::sessions::list_archived_sessions(store).await,
+    )?;
     for session in &mut sessions {
         session.metadata = super::codex::redact_session_metadata_for_web(session.metadata.clone());
     }
@@ -234,7 +350,10 @@ pub async fn web_access_create_session(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<WebSessionMetadata, String> {
-    let metadata = super::sessions::create_session(Some(false), app, store, pool).await?;
+    let metadata = web_session_result(
+        WebSessionOperation::CreateSession,
+        super::sessions::create_session(Some(false), app, store, pool).await,
+    )?;
     let transcript_revision = crate::features::sessions::transcript_revision(&[])
         .map_err(|error| format!("create empty transcript revision: {error:#}"))?;
     Ok(WebSessionMetadata::project(metadata, transcript_revision))
@@ -399,8 +518,36 @@ pub struct SessionDataChunk {
 
 /// Serialize a Session on the desktop and transfer it in bounded chunks. A
 /// full SavedSession can exceed Relay's frame ceiling after a long history.
+///
+/// Every error path folds into the stable `web_session_load_session_chunk_failed`
+/// code: the native chain (store errors embed host paths, e.g. the sessions
+/// directory) goes to the desktop log only.
 #[tauri::command]
 pub async fn web_access_load_session_chunk(
+    id: String,
+    download_id: Option<String>,
+    requested_download_id: Option<String>,
+    offset: u64,
+    limit: Option<usize>,
+    manager: State<'_, RemoteControlManager>,
+    store: State<'_, SessionStore>,
+) -> Result<SessionDataChunk, String> {
+    web_session_result(
+        WebSessionOperation::LoadSessionChunk,
+        load_session_chunk_inner(
+            id,
+            download_id,
+            requested_download_id,
+            offset,
+            limit,
+            manager,
+            store,
+        )
+        .await,
+    )
+}
+
+async fn load_session_chunk_inner(
     id: String,
     download_id: Option<String>,
     requested_download_id: Option<String>,
@@ -451,9 +598,9 @@ pub async fn web_access_load_session_chunk(
                         format!("compute Session {session_id} transcript revision: {error:#}")
                     })?;
                 let artifact_roots = [
-                    store.ledger_root(&session_id).map_err(|error| {
-                        format!("resolve Session {session_id} workspace: {error:#}")
-                    })?,
+                    store
+                        .ledger_root(&session_id)
+                        .map_err(|error| format!("resolve Session workspace ledger: {error:#}"))?,
                     crate::platform::paths::session_artifacts_dir(&session_id),
                 ];
                 let mut writer = BufWriter::new(output_file);
@@ -545,6 +692,7 @@ pub async fn web_access_upload_attachment_chunk(
     total: usize,
     data_base64: String,
     commit: bool,
+    sha256: Option<String>,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<Option<manager::WebAttachmentSummary>, String> {
     let data = base64::engine::general_purpose::STANDARD
@@ -553,8 +701,15 @@ pub async fn web_access_upload_attachment_chunk(
     if data.len() > MAX_TRANSFER_CHUNK_BYTES {
         return Err("attachment upload chunk exceeds 256 KiB".into());
     }
-    let Some((file_name, bytes)) = manager
-        .append_web_attachment_upload(&upload_id, &file_name, offset, total, &data, commit)?
+    let Some((file_name, bytes)) = manager.append_web_attachment_upload(
+        &upload_id,
+        &file_name,
+        offset,
+        total,
+        &data,
+        commit,
+        sha256.as_deref(),
+    )?
     else {
         return Ok(None);
     };
@@ -770,7 +925,7 @@ pub async fn web_access_create_codex_acp_session(
         Ok(super::codex::redact_session_metadata_for_web(metadata))
     }
     .await;
-    web_acp_result("session_create", outcome)
+    web_acp_result(WebAcpOperation::SessionCreate, outcome)
 }
 
 /// Session-bound Web workspace reads. Draft browsing is intentionally owned
@@ -784,7 +939,7 @@ pub async fn web_access_list_codex_workspace(
 ) -> Result<WorkspaceListing, String> {
     let result =
         super::codex::list_codex_workspace(Some(session_id), relative_path, None, acp_pool).await;
-    web_workspace_result("listing", result)
+    web_workspace_result(WebWorkspaceOperation::Listing, result)
 }
 
 #[tauri::command]
@@ -795,7 +950,7 @@ pub async fn web_access_search_codex_workspace(
 ) -> Result<Vec<WorkspaceEntry>, String> {
     let result =
         super::codex::search_codex_workspace(Some(session_id), query, None, acp_pool).await;
-    web_workspace_result("search", result)
+    web_workspace_result(WebWorkspaceOperation::Search, result)
 }
 
 #[tauri::command]
@@ -807,7 +962,7 @@ pub async fn web_access_preview_codex_workspace_file(
     let result =
         super::codex::preview_codex_workspace_file(Some(session_id), relative_path, None, acp_pool)
             .await;
-    web_workspace_result("preview", result)
+    web_workspace_result(WebWorkspaceOperation::Preview, result)
 }
 
 #[tauri::command]
@@ -816,7 +971,7 @@ pub async fn web_access_get_codex_workspace_changes(
     acp_pool: State<'_, AcpPool>,
 ) -> Result<WorkspaceChanges, String> {
     let result = super::codex::get_codex_workspace_changes(session_id, acp_pool).await;
-    web_workspace_result("changes", result)
+    web_workspace_result(WebWorkspaceOperation::Changes, result)
 }
 
 #[tauri::command]
@@ -826,7 +981,7 @@ pub async fn web_access_get_codex_workspace_diff(
     acp_pool: State<'_, AcpPool>,
 ) -> Result<WorkspaceDiff, String> {
     let result = super::codex::get_codex_workspace_diff(session_id, relative_path, acp_pool).await;
-    web_workspace_result("diff", result)
+    web_workspace_result(WebWorkspaceOperation::Diff, result)
 }
 
 #[tauri::command]
@@ -835,7 +990,7 @@ pub async fn web_access_cancel_codex_acp(
     acp_pool: State<'_, AcpPool>,
 ) -> Result<(), String> {
     let result = super::codex::cancel_codex_acp(session_id, acp_pool).await;
-    web_acp_result("cancel", result)
+    web_acp_result(WebAcpOperation::Cancel, result)
 }
 
 /// Web-safe ACP prompt entry point. Browser and host-picked attachments are
@@ -915,7 +1070,7 @@ pub async fn web_access_codex_acp_prompt(
         result
     }
     .await;
-    web_acp_result("prompt", outcome)
+    web_acp_result(WebAcpOperation::Prompt, outcome)
 }
 
 #[derive(Debug, Serialize)]
@@ -961,7 +1116,7 @@ pub fn web_access_get_codex_acp_timeline(
             events: page.events,
         })
     })();
-    web_acp_result("timeline", outcome)
+    web_acp_result(WebAcpOperation::Timeline, outcome)
 }
 
 fn project_acp_pending_permission_for_web(
@@ -1001,7 +1156,7 @@ pub async fn web_access_get_codex_acp_session_info(
         .session_info(&session_id)
         .await
         .and_then(project_acp_session_info_for_web);
-    web_acp_result("session_info", outcome)
+    web_acp_result(WebAcpOperation::SessionInfo, outcome)
 }
 
 #[tauri::command]
@@ -1014,7 +1169,7 @@ pub async fn web_access_set_codex_acp_model(
         .set_model(&session_id, &model_id)
         .await
         .and_then(project_acp_session_info_for_web);
-    web_acp_result("set_model", outcome)
+    web_acp_result(WebAcpOperation::SetModel, outcome)
 }
 
 #[tauri::command]
@@ -1027,7 +1182,7 @@ pub async fn web_access_set_codex_acp_mode(
         .set_mode(&session_id, &mode_id)
         .await
         .and_then(project_acp_session_info_for_web);
-    web_acp_result("set_mode", outcome)
+    web_acp_result(WebAcpOperation::SetMode, outcome)
 }
 
 #[tauri::command]
@@ -1041,7 +1196,7 @@ pub async fn web_access_set_codex_acp_config_option(
         .set_config_option(&session_id, &config_id, &value_id)
         .await
         .and_then(project_acp_session_info_for_web);
-    web_acp_result("set_config_option", outcome)
+    web_acp_result(WebAcpOperation::SetConfigOption, outcome)
 }
 
 #[tauri::command]
@@ -1061,7 +1216,7 @@ pub async fn web_access_get_codex_acp_pending_permissions(
             .collect())
     }
     .await;
-    web_acp_result("pending_permissions", outcome)
+    web_acp_result(WebAcpOperation::PendingPermissions, outcome)
 }
 
 #[tauri::command]
@@ -1074,7 +1229,7 @@ pub async fn web_access_respond_codex_acp_permission(
     let outcome = acp_pool
         .respond_permission(&session_id, &tool_call_id, &option_id)
         .await;
-    web_acp_result("respond_permission", outcome)
+    web_acp_result(WebAcpOperation::RespondPermission, outcome)
 }
 
 #[tauri::command]
@@ -1094,7 +1249,7 @@ pub async fn web_access_get_codex_acp_pending_elicitations(
             .collect())
     }
     .await;
-    web_acp_result("pending_elicitations", outcome)
+    web_acp_result(WebAcpOperation::PendingElicitations, outcome)
 }
 
 #[tauri::command]
@@ -1108,7 +1263,7 @@ pub async fn web_access_respond_codex_acp_elicitation(
     let outcome = acp_pool
         .respond_elicitation(&session_id, &elicitation_id, &action, content)
         .await;
-    web_acp_result("respond_elicitation", outcome)
+    web_acp_result(WebAcpOperation::RespondElicitation, outcome)
 }
 
 fn project_acp_status_for_web(
@@ -1131,7 +1286,7 @@ pub async fn web_access_list_codex_acp_sessions(
     acp_pool: State<'_, AcpPool>,
 ) -> Result<Vec<crate::app::commands::codex::CodexAcpSessionListItem>, String> {
     let outcome = super::codex::list_codex_acp_sessions_for_web(&store, &acp_pool).await;
-    web_acp_result("list_sessions", outcome)
+    web_acp_result(WebAcpOperation::ListSessions, outcome)
 }
 
 #[tauri::command]
@@ -1139,7 +1294,7 @@ pub async fn web_access_list_acp_agents(
     acp_pool: State<'_, AcpPool>,
 ) -> Result<Vec<crate::features::codex_acp::AcpAgentDescriptor>, String> {
     let outcome = super::codex::list_acp_agents_for_pool(&acp_pool).await;
-    web_acp_result("list_agents", outcome)
+    web_acp_result(WebAcpOperation::ListAgents, outcome)
 }
 
 #[tauri::command]
@@ -1151,7 +1306,7 @@ pub async fn web_access_get_acp_agent_status(
     let outcome = super::codex::get_acp_agent_status_for_pool(agent_id, recheck, &acp_pool)
         .await
         .map(project_acp_status_for_web);
-    web_acp_result("agent_status", outcome)
+    web_acp_result(WebAcpOperation::AgentStatus, outcome)
 }
 
 async fn web_access_chat_for_session(
@@ -1515,11 +1670,109 @@ pub async fn web_access_render_artifact_visual(
 mod tests {
     use super::{
         ensure_web_chat_session_supported, web_acp_agent_id, web_acp_result,
-        web_artifact_storage_path, web_workspace_result, WebSavedSession, WebSessionMetadata,
+        web_artifact_storage_path, web_session_result, web_workspace_result, WebAcpOperation,
+        WebSavedSession, WebSessionMetadata, WebSessionOperation, WebWorkspaceOperation,
     };
     use deepseek_tui::session_manager::{create_saved_session, SavedSession};
     use serde_json::{json, Value};
     use std::path::Path;
+
+    #[test]
+    fn stable_web_error_codes_are_locked() {
+        // `acpErrors.js` treats every code below as a controlled Web failure;
+        // `web_access_contract.test.mjs` additionally pins the mapping from
+        // each web_access_* command to its operation. Renaming an operation
+        // must change this list and the JS regex in the same PR.
+        let acp_codes: Vec<String> = [
+            WebAcpOperation::SessionCreate,
+            WebAcpOperation::Cancel,
+            WebAcpOperation::Prompt,
+            WebAcpOperation::Timeline,
+            WebAcpOperation::SessionInfo,
+            WebAcpOperation::SetModel,
+            WebAcpOperation::SetMode,
+            WebAcpOperation::SetConfigOption,
+            WebAcpOperation::PendingPermissions,
+            WebAcpOperation::RespondPermission,
+            WebAcpOperation::PendingElicitations,
+            WebAcpOperation::RespondElicitation,
+            WebAcpOperation::ListSessions,
+            WebAcpOperation::ListAgents,
+            WebAcpOperation::AgentStatus,
+        ]
+        .iter()
+        .map(|operation| format!("web_acp_{}_failed", operation.as_str()))
+        .collect();
+        let expected_acp = [
+            "web_acp_session_create_failed",
+            "web_acp_cancel_failed",
+            "web_acp_prompt_failed",
+            "web_acp_timeline_failed",
+            "web_acp_session_info_failed",
+            "web_acp_set_model_failed",
+            "web_acp_set_mode_failed",
+            "web_acp_set_config_option_failed",
+            "web_acp_pending_permissions_failed",
+            "web_acp_respond_permission_failed",
+            "web_acp_pending_elicitations_failed",
+            "web_acp_respond_elicitation_failed",
+            "web_acp_list_sessions_failed",
+            "web_acp_list_agents_failed",
+            "web_acp_agent_status_failed",
+        ];
+        assert_eq!(acp_codes, expected_acp);
+
+        let workspace_codes: Vec<String> = [
+            WebWorkspaceOperation::Listing,
+            WebWorkspaceOperation::Search,
+            WebWorkspaceOperation::Preview,
+            WebWorkspaceOperation::Changes,
+            WebWorkspaceOperation::Diff,
+        ]
+        .iter()
+        .map(|operation| format!("web_workspace_{}_failed", operation.as_str()))
+        .collect();
+        assert_eq!(
+            workspace_codes,
+            [
+                "web_workspace_listing_failed",
+                "web_workspace_search_failed",
+                "web_workspace_preview_failed",
+                "web_workspace_changes_failed",
+                "web_workspace_diff_failed",
+            ]
+        );
+
+        // The mapping helper itself must keep the wire format stable and must
+        // never leak host details from the underlying native error.
+        let error: Result<(), &str> = Err("host detail /Users/alice/.pinvou3 must not cross");
+        assert_eq!(
+            web_acp_result(WebAcpOperation::Timeline, error).unwrap_err(),
+            "web_acp_timeline_failed"
+        );
+        let error: Result<(), &str> = Err("host detail C:\\Users\\alice must not cross");
+        assert_eq!(
+            web_workspace_result(WebWorkspaceOperation::Diff, error).unwrap_err(),
+            "web_workspace_diff_failed"
+        );
+        assert_eq!(
+            web_session_result(WebSessionOperation::ListSessions, error.clone()).unwrap_err(),
+            "web_session_list_sessions_failed"
+        );
+        assert_eq!(
+            web_session_result(WebSessionOperation::ListArchivedSessions, error.clone())
+                .unwrap_err(),
+            "web_session_list_archived_sessions_failed"
+        );
+        assert_eq!(
+            web_session_result(WebSessionOperation::CreateSession, error.clone()).unwrap_err(),
+            "web_session_create_session_failed"
+        );
+        assert_eq!(
+            web_session_result(WebSessionOperation::LoadSessionChunk, error).unwrap_err(),
+            "web_session_load_session_chunk_failed"
+        );
+    }
 
     fn saved_session_with_private_paths(
         workspace: &str,
@@ -1603,36 +1856,36 @@ mod tests {
             "/home/alice/secret-project",
         ] {
             let error = web_workspace_result::<(), _>(
-                "preview",
+                WebWorkspaceOperation::Preview,
                 Err(format!("workspace unavailable: {private_path}")),
             )
             .unwrap_err();
             assert_eq!(error, "web_workspace_preview_failed");
             assert!(!error.contains(private_path));
 
-            for operation in [
-                "timeline",
-                "session_create",
-                "prompt",
-                "session_info",
-                "set_model",
-                "set_mode",
-                "set_config_option",
-                "pending_permissions",
-                "pending_elicitations",
-                "respond_permission",
-                "respond_elicitation",
-                "list_sessions",
-                "list_agents",
-                "agent_status",
-                "cancel",
+            for (operation, code) in [
+                (WebAcpOperation::Timeline, "timeline"),
+                (WebAcpOperation::SessionCreate, "session_create"),
+                (WebAcpOperation::Prompt, "prompt"),
+                (WebAcpOperation::SessionInfo, "session_info"),
+                (WebAcpOperation::SetModel, "set_model"),
+                (WebAcpOperation::SetMode, "set_mode"),
+                (WebAcpOperation::SetConfigOption, "set_config_option"),
+                (WebAcpOperation::PendingPermissions, "pending_permissions"),
+                (WebAcpOperation::PendingElicitations, "pending_elicitations"),
+                (WebAcpOperation::RespondPermission, "respond_permission"),
+                (WebAcpOperation::RespondElicitation, "respond_elicitation"),
+                (WebAcpOperation::ListSessions, "list_sessions"),
+                (WebAcpOperation::ListAgents, "list_agents"),
+                (WebAcpOperation::AgentStatus, "agent_status"),
+                (WebAcpOperation::Cancel, "cancel"),
             ] {
                 let acp_error = web_acp_result::<(), _>(
                     operation,
                     Err(format!("ACP unavailable: {private_path}")),
                 )
                 .unwrap_err();
-                assert_eq!(acp_error, format!("web_acp_{operation}_failed"));
+                assert_eq!(acp_error, format!("web_acp_{code}_failed"));
                 assert!(!acp_error.contains(private_path));
             }
         }

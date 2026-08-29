@@ -39,6 +39,8 @@ import { ComposerPopover, useOutsidePointerClose } from '../../components/Compos
 import {
   appendAcpEvent,
   buildElicitationContent,
+  createAcpEventSeqTracker,
+  createAcpGapResyncScheduler,
   mergeAcpTimelineSnapshot,
   updateAcpAttachmentDraft,
   commandExecutionDetails,
@@ -115,6 +117,8 @@ import {
   listAcpSessions,
   openAcpExternalUrl,
   pickAcpWorkspace,
+  respondAcpElicitation,
+  respondAcpPermission,
   setAcpConfigOption,
   setAcpMode,
   setAcpModel,
@@ -1095,6 +1099,27 @@ export function CodexAcpView({
   const cancelledAttachmentIdsRef = useRef(new Set());
   const skipNextActiveLoadRef = useRef(null);
   const sessionLoadRequestRef = useRef(0);
+  const acpEventSeqTrackerRef = useRef(null);
+  if (!acpEventSeqTrackerRef.current) acpEventSeqTrackerRef.current = createAcpEventSeqTracker();
+  const acpGapResyncRef = useRef(null);
+  if (!acpGapResyncRef.current) {
+    acpGapResyncRef.current = createAcpGapResyncScheduler(sessionId => {
+      if (activeIdRef.current !== sessionId) return;
+      return resyncAcpSessionAfterGap(sessionId);
+    }, {
+      onAttempt: (sessionId, attempt) => console.warn(
+        `[acp] live event sequence gap detected for ${sessionId}; resyncing from the authoritative timeline (attempt ${attempt})`,
+      ),
+      onRetry: (sessionId, attempt, error) => console.warn(
+        `[acp] timeline resync after event sequence gap failed (attempt ${attempt}); retrying with backoff`,
+        error,
+      ),
+      onGiveUp: (sessionId, attempt, error) => console.warn(
+        `[acp] timeline resync after event sequence gap gave up after ${attempt} attempts; the gap stays unhealed until reconnect or session reopen`,
+        error,
+      ),
+    });
+  }
   const preserveDraftWorkspaceRef = useRef(false);
   const draftEpochRef = useRef(draftEpoch);
   const activeIdRef = useRef(activeId);
@@ -1866,6 +1891,7 @@ export function CodexAcpView({
       ]);
       if (sessionLoadRequestRef.current !== requestId) return null;
       setEvents(current => mergeAcpTimelineSnapshot(timeline, current, id));
+      rebaseAcpEventSeqTracker(id, timeline);
       setPending(permissions || []);
       setPendingElicitations(elicitations || []);
       const runtime = await refreshStatus(activeAgentIdRef.current);
@@ -1883,6 +1909,39 @@ export function CodexAcpView({
     } finally {
       if (sessionLoadRequestRef.current === requestId) setSessionLoading(false);
     }
+  }
+
+  // After merging a snapshot, advance the live-seq baseline to the snapshot's
+  // max seq (never regress) so refetches do not misjudge in-order live events
+  // as gaps.
+  function rebaseAcpEventSeqTracker(sessionId, timeline) {
+    const maxSeq = (timeline || []).reduce((max, event) => Math.max(max, Number(event?.seq) || 0), 0);
+    acpEventSeqTrackerRef.current.rebase(sessionId, maxSeq);
+  }
+
+  // Self-healing for envelope-seq gaps in the web live stream: after the
+  // watchdog skips a stalled predecessor, the missing permission/terminal
+  // envelopes are not re-delivered within the connection. On a detected gap,
+  // debounce-refetch the authoritative timeline and pending state and merge
+  // (merge is idempotent for out-of-order/duplicate arrivals), without
+  // touching the loading spinner or cancelling an in-flight session-switch
+  // load. A failed refetch retries with bounded exponential backoff so a
+  // single transient failure cannot permanently disable healing for that gap.
+  async function resyncAcpSessionAfterGap(sessionId) {
+    const [timeline, permissions, elicitations] = await Promise.all([
+      loadAcpTimeline(sessionId),
+      loadAcpPendingPermissions(sessionId),
+      loadAcpPendingElicitations(sessionId),
+    ]);
+    if (activeIdRef.current !== sessionId) return;
+    setEvents(current => mergeAcpTimelineSnapshot(timeline, current, sessionId));
+    rebaseAcpEventSeqTracker(sessionId, timeline);
+    setPending(permissions || []);
+    setPendingElicitations(elicitations || []);
+  }
+
+  function scheduleAcpGapResync(sessionId) {
+    acpGapResyncRef.current.schedule(sessionId);
   }
 
   async function createSession({ shouldActivate = () => true, prepareSession = null } = {}) {
@@ -2097,6 +2156,10 @@ export function CodexAcpView({
         )),
         onError: err => {
           if (err?.code === 'device_upload_cancelled') return;
+          // Desktop integrity failures arrive as a stable wire code in
+          // message (transfer.rs); map to the current-language copy instead
+          // of passing the raw error through.
+          const uploadErrorText = String(err?.message || '');
           const displayError = err?.code === 'device_upload_too_large'
             ? t.uiAttachments.deviceUploadTooLarge(file.name)
             : err?.code === 'device_upload_empty'
@@ -2105,7 +2168,11 @@ export function CodexAcpView({
                 ? t.uiAttachments.deviceUploadUnavailable
                 : err?.code === 'device_upload_invalid'
                   ? t.uiAttachments.deviceUploadInvalid(file.name)
-                  : t.uiAttachments.deviceUploadFailed(file.name);
+                  : uploadErrorText === 'web_attachment_digest_invalid'
+                    ? t.uiAttachments.deviceUploadDigestInvalid
+                    : uploadErrorText === 'web_attachment_integrity_mismatch'
+                      ? t.uiAttachments.deviceUploadIntegrityMismatch
+                      : t.uiAttachments.deviceUploadFailed(file.name);
           setAttachmentDrafts(current => updateAcpAttachmentDraft(current, id, attachment => ({
             ...attachment, status: 'error', error: displayError,
           })));
@@ -2233,6 +2300,14 @@ export function CodexAcpView({
     listenTauri('acp:event', message => {
       if (disposed) return;
       const incoming = message.payload;
+      // Live seq continuity check runs before merging: after the watchdog
+      // skips a stalled predecessor, later events still arrive in order, and
+      // appendAcpEvent alone would silently keep the hole; on a detected gap,
+      // debounce-refetch the authoritative timeline to self-heal.
+      if (incoming && acpEventSeqTrackerRef.current.note(incoming.sessionId, incoming.seq) === 'gap'
+          && incoming.sessionId === activeIdRef.current) {
+        scheduleAcpGapResync(incoming.sessionId);
+      }
       setEvents(current => incoming && incoming.sessionId === activeIdRef.current ? appendAcpEvent(current, incoming) : current);
       if (incoming && incoming.sessionId === activeIdRef.current) {
         const type = incoming.event && incoming.event.type;
@@ -2271,6 +2346,7 @@ export function CodexAcpView({
     });
     return () => {
       disposed = true;
+      acpGapResyncRef.current.cancel();
       if (unlisten) unlisten();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- ACP event subscription mounts once; depending on refresh functions would repeatedly unbind/resubscribe
@@ -2327,16 +2403,20 @@ export function CodexAcpView({
   }, []);
 
   useEffect(() => {
-    // 草稿态按需读取选中 Agent 的缓存状态；已有会话由 loadSession 读取，
-    // 避免切换时并发执行两次 CLI/认证探测。外部安装变化由“重新检测”强制刷新。
-    // 原生（品悟）会话没有 ACP 状态机，跳过 get_acp_agent_status（后端会拒绝非 ACP agent）。
+    // In draft, read the selected agent's status on demand: switching agents
+    // forces a fresh probe (the CLI may have been installed/upgraded outside
+    // the app, and the cache would keep a stale not-installed verdict).
+    // Sessions with an id are covered by loadSession; skip here to avoid
+    // running the CLI/auth probes twice concurrently. Native (pinvou)
+    // sessions have no ACP state machine; skip get_acp_agent_status (the
+    // backend rejects non-ACP agents).
     if (activeAgentId === 'pinvou') {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- native sessions have no ACP state machine; synchronously clear the status display
       setStatus(null);
       return;
     }
     if (activeId) return;
-    refreshStatus(activeAgentId).catch(showError);
+    refreshStatus(activeAgentId, true).catch(showError);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- probe only on agent/session switch edges; refreshStatus/showError reference changes must not retrigger probing
   }, [activeAgentId, activeId]);
 
@@ -2659,6 +2739,11 @@ export function CodexAcpView({
       if (canApplyAcpSendOperation(operation)) {
         showError(err);
         setDraft(message);
+      } else {
+        // The user switched sessions before this send failed. The draft
+        // belongs to the original session, so keep the new session's UI
+        // untouched, but never swallow the failure silently.
+        console.error('[codex] background ACP send failed', err);
       }
     } finally {
       finishAcpSendOperation(operation);
@@ -2768,6 +2853,11 @@ export function CodexAcpView({
       if (canApplyAcpSendOperation(operation)) {
         showError(err);
         setDraft(message);
+      } else {
+        // The user switched sessions before this send failed. The draft
+        // belongs to the original session, so keep the new session's UI
+        // untouched, but never swallow the failure silently.
+        console.error('[codex] background native send failed', err);
       }
     } finally {
       finishAcpSendOperation(operation);
@@ -3026,11 +3116,7 @@ export function CodexAcpView({
     if (!targetId || targetId !== activeIdRef.current) return;
     setRespondingSessionId(targetId); setError('');
     try {
-      await invoke(isWeb ? 'web_access_respond_codex_acp_permission' : 'respond_codex_acp_permission', {
-        sessionId: targetId,
-        toolCallId,
-        optionId,
-      });
+      await respondAcpPermission({ sessionId: targetId, toolCallId, optionId });
       setPending(current => current.filter(item => (
         item.sessionId !== targetId || item.toolCallId !== toolCallId
       )));
@@ -3048,12 +3134,7 @@ export function CodexAcpView({
     if (!targetId || targetId !== activeIdRef.current) return;
     setRespondingSessionId(targetId); setError('');
     try {
-      await invoke(isWeb ? 'web_access_respond_codex_acp_elicitation' : 'respond_codex_acp_elicitation', {
-        sessionId: targetId,
-        elicitationId,
-        action,
-        content,
-      });
+      await respondAcpElicitation({ sessionId: targetId, elicitationId, action, content });
       setPendingElicitations(current => current.filter(
         item => item.sessionId !== targetId || item.elicitationId !== elicitationId,
       ));

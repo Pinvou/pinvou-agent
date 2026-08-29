@@ -1,6 +1,6 @@
 ---
 name: lark-calendar
-version: 1.0.0
+version: 1.0.1
 description: "【何时用:仅当用户明确指向飞书/Lark(发到飞书、飞书文档等)时使用;泛指做个文档或PPT或表格或方案默认走本地工具,不要误用飞书】飞书日历:管理日程和会议室。查看/搜索日程、创建/更新日程、管理参会人、查询忙闲和推荐时段、预定会议室。不负责:查询视频会议记录(本 skill 只覆盖日程;lark-vc 技能未随包收录,可 CLI 直连,见意图路由)、待办任务(走 lark-task)。"
 metadata:
   requires:
@@ -159,11 +159,13 @@ lark-cli calendar <resource> <method> [flags]
 lark-cli calendar calendars primary
 
 # 获取日程分享链接
-lark-cli calendar events share_info --calendar-id <calendar_id> --event-id <event_id>
+lark-cli calendar events share_info --params '{"calendar_id":"<calendar_id>","event_id":"<event_id>"}'
 
 # 删除日程
-lark-cli calendar events delete --calendar-id <calendar_id> --event-id <event_id>
+lark-cli calendar events delete --params '{"calendar_id":"<calendar_id>","event_id":"<event_id>","need_notification":false}'
 ```
+
+> 原生 API 方法（`events` / `event.attendees` 等）的路径/查询参数既可逐个以 typed flags 传入（是否提供以 `lark-cli calendar <resource> <method> --help` 实际输出为准），也可统一用 `--params '<json>'` 表达；请求体用 `--data '<json>'` 传入。删除日程的 `need_notification`（是否通知参会人）经 `--params` JSON 表达，重复性日程删除全例外外的场景见 [lark-calendar-recurring.md](references/lark-calendar-recurring.md)。
 
 > `calendar_id` 可以直接传 `primary`，代表当前调用身份的主日历 ID。
 

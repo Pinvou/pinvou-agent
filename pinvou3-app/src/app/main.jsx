@@ -11,6 +11,7 @@ import {
   RightDockProvider,
 } from '../components/layout/RightDock.jsx';
 import { AcpAgentLogo } from '../features/codex/AcpAgentLogo.jsx';
+import { CodexAcpView } from '../features/codex/LazyCodexAcpView.jsx';
 import { PinvouLogo } from '../components/PinvouLogo.jsx';
 import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layout/MobileShell.jsx';
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
@@ -87,11 +88,14 @@ import { SearchOverlay } from '../features/search/SearchOverlay.jsx';
 import { UpdateNoticeButton } from '../features/updater/UpdateNoticeButton.jsx';
 import { Lanyard } from '../features/personas/persona-shared.jsx';
 import { VIEW_LOADERS, prefetchView } from './view-loaders.js';
-// 低频视图懒加载:VIEW_LOADERS(见 view-loaders.js)是唯一的动态 import 出口,
-// React.lazy 与 NavItem 悬停/聚焦预取共用同一工厂,保证命中同一模块缓存。
-// ChatView 与 Lanyard 启动即渲染,保持静态 import。
+// Low-traffic views are lazy-loaded: VIEW_LOADERS (see view-loaders.js) is the
+// single dynamic-import outlet; React.lazy and the NavItem hover/focus
+// prefetch share the same factory so they hit the same module cache.
+// codex is the exception: it renders through the LazyCodexAcpView wrapper,
+// which imports the same CodexAcpView module (sharing the prefetch cache) and
+// adds an in-place retry boundary for chunk fetch failures.
+// ChatView and Lanyard render at startup and stay statically imported.
 const LazySettingsView = lazy(() => VIEW_LOADERS.settings().then(m => ({ default: m.SettingsView })));
-const LazyCodexAcpView = lazy(() => VIEW_LOADERS.codex().then(m => ({ default: m.CodexAcpView })));
 const LazyToolStoreView = lazy(() => VIEW_LOADERS.toolStore().then(m => ({ default: m.ToolStoreView })));
 const LazyCardPoolView = lazy(() => VIEW_LOADERS.cardpool().then(m => ({ default: m.CardPoolView })));
 const LazyScheduledTasksView = lazy(() => VIEW_LOADERS.scheduled().then(m => ({ default: m.ScheduledTasksView })));
@@ -3235,7 +3239,7 @@ function workspaceDisplayName(path) {
             {currentView === 'cardpool' && <LazyCardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => { setCodeModeOn(false); setCurrentView('chat'); }} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} prefillAppend={chatPrefillAppend} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => { setChatPrefill(''); setChatPrefillAppend(false); }} onOpenEditor={handleOpenPersonaEditor} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} browserDockAvailable={browserDockAvailable} browserDockOpen={browserPaneOpen} rightDockActivePanelId={browserDockSelectedPanelId} onRightDockPanelSelectionChange={selectRightDockPanel} onOpenBrowserDock={openBrowserDock} />}
             {codexAcpSupported && currentView === 'codex' && (
-              <LazyCodexAcpView
+              <CodexAcpView
                 theme={activeTheme}
                 t={t}
                 sessions={codexSessions}

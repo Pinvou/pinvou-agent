@@ -382,6 +382,105 @@ export function appendAcpEvent(events, incoming) {
   return [...(events || []), incoming].sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
 }
 
+// The server-side OrderedWebDelivery watchdog skips a hole after a stalled
+// predecessor times out, so the web live stream can show envelope-seq jumps
+// (the desktop native path persists and broadcasts within the same ordered
+// unit and is unaffected). The tracker records the max live seq per session
+// and reports 'gap' on a jump so the view layer can refetch the authoritative
+// timeline and restore the missing permission/terminal events; reconnect
+// replays and duplicate deliveries return 'duplicate' and are ignored.
+export function createAcpEventSeqTracker() {
+  const lastSeqBySession = new Map();
+  return {
+    note(sessionId, seq) {
+      const value = Number(seq) || 0;
+      if (!sessionId || value <= 0) return 'ignored';
+      const last = lastSeqBySession.get(sessionId) || 0;
+      if (value <= last) return 'duplicate';
+      lastSeqBySession.set(sessionId, value);
+      return last > 0 && value > last + 1 ? 'gap' : 'ok';
+    },
+    // After a snapshot merge, baseline on the known max seq; a higher seq the
+    // live stream already advanced to never regresses.
+    rebase(sessionId, seq) {
+      const value = Number(seq) || 0;
+      if (!sessionId || value <= 0) return;
+      if (value > (lastSeqBySession.get(sessionId) || 0)) lastSeqBySession.set(sessionId, value);
+    },
+  };
+}
+
+// Bounded backoff driver for gap resyncs. note() advances its baseline before
+// reporting 'gap', so after a failed resync the following live envelopes look
+// continuous and never retrigger on their own; without retries a single
+// transient failure would permanently disable healing for that gap. schedule()
+// debounces a burst of gap reports into one attempt; each failure reschedules
+// with exponential backoff until an attempt succeeds or the attempt budget is
+// exhausted. Retry state is scoped to the cycle: schedule() starts a fresh
+// cycle for its session (a burst of gap reports still debounces into one
+// attempt), and cancel() drops any pending attempt (unmount). Both also start
+// a new generation, invalidating any attempt still in flight: its late
+// completion can no longer reset the failure count, cancel the superseding
+// pending attempt, or schedule a retry after cancel().
+export function createAcpGapResyncScheduler(resync, {
+  maxAttempts = 5,
+  baseDelayMs = 800,
+  maxDelayMs = 12800,
+  setTimeout = null,
+  clearTimeout = null,
+  onAttempt = null,
+  onRetry = null,
+  onGiveUp = null,
+} = {}) {
+  const attemptBudget = Math.max(1, Number(maxAttempts) || 1);
+  const firstDelayMs = Math.max(0, Number(baseDelayMs) || 0);
+  const ceilingMs = Math.max(firstDelayMs, Number(maxDelayMs) || 0);
+  const scheduleTimer = setTimeout || globalThis.setTimeout.bind(globalThis);
+  const cancelTimer = clearTimeout || globalThis.clearTimeout.bind(globalThis);
+  let timer = null;
+  let failures = 0;
+  let generation = 0;
+  const delayAfterFailures = count => Math.min(firstDelayMs * 2 ** count, ceilingMs);
+  const clearTimer = () => {
+    if (timer !== null) {
+      cancelTimer(timer);
+      timer = null;
+    }
+  };
+  const fire = async (sessionId, cycle) => {
+    if (cycle !== generation) return;
+    timer = null;
+    if (onAttempt) onAttempt(sessionId, failures + 1);
+    try {
+      await resync(sessionId);
+      if (cycle !== generation) return;
+      failures = 0;
+    } catch (error) {
+      if (cycle !== generation) return;
+      failures += 1;
+      if (failures >= attemptBudget) {
+        if (onGiveUp) onGiveUp(sessionId, failures, error);
+        return;
+      }
+      if (onRetry) onRetry(sessionId, failures, error);
+      timer = scheduleTimer(() => { fire(sessionId, cycle); }, delayAfterFailures(failures));
+    }
+  };
+  return {
+    schedule(sessionId) {
+      generation += 1;
+      failures = 0;
+      clearTimer();
+      const cycle = generation;
+      timer = scheduleTimer(() => { fire(sessionId, cycle); }, firstDelayMs);
+    },
+    cancel() {
+      generation += 1;
+      clearTimer();
+    },
+  };
+}
+
 export function mergeAcpTimelineSnapshot(snapshot, current, sessionId) {
   return (current || [])
     .filter(event => event?.sessionId === sessionId)

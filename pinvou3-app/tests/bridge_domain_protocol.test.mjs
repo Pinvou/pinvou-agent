@@ -81,7 +81,7 @@ const protocolSources = {
 const expectedProtocolHashes = {
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
   orchestration: '493f46eef80e6ded5243d2c75ca1c8dbcc06097051d949d4ef656267c1bbada9',
-  artifacts: 'f6174eb62922bc222338e12049ce28dc9fae81db37998086dfa6d159d2dc7422',
+  artifacts: '37ca694534c7e6cf44b6d262c40e388999c3ba136faca0d6f57821d5b9b3df53',
   // Recomputed for #308 follow-ups: prefillComposer(text, append) recovery
   // entry + comment translations touching `invoke(` mentions (the extractor
   // scans raw source, so comment wording is part of the digest).
