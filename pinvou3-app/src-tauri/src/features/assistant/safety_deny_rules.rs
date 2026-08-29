@@ -116,7 +116,12 @@
 //!   revived segment-3 credential command words. Remaining Windows residues:
 //!   children of the Microsoft credential directories (generated file
 //!   names), doubled-backslash JSON-escaped spellings (the hook matched the
-//!   raw escaped ARGS; the engine sees the decoded command), `cmd /c`-style
+//!   raw escaped ARGS; the engine sees the decoded command), mixed- or
+//!   forward-separator spellings under the Windows prefixes
+//!   (`%userprofile%/.ssh/id_rsa` — the hook's substring matched these
+//!   incidentally; enumerating every separator variant would multiply the
+//!   Windows families and stays with the ruleset re-review future work),
+//!   `cmd /c`-style
 //!   nested invocations, other users' profiles (`C:\Users\<other>\…`),
 //!   `findstr`/`Invoke-WebRequest`-style argument-position readers, and
 //!   double-quoted backslash paths (the foundation deny-scan dequotes with
@@ -146,7 +151,11 @@
 //!   final disk write is authoritative.
 //! - Nested subagent tool calls do not pass through execpolicy (see above);
 //!   under YOLO subagents are not bound by these rules — to be closed when
-//!   the foundation wires the subagent executor to execpolicy.
+//!   the foundation wires the subagent executor to execpolicy. The former
+//!   ToolCallBefore hook did not fire for nested subagent tool calls either
+//!   (hooks execute on the main-line turn loop only; the subagent registry
+//!   dispatches tools directly), so this is a pre-existing coverage boundary
+//!   shared with main, not a regression introduced by this migration.
 
 use codewhale_execpolicy::{PermissionAction, ToolAskRule};
 
