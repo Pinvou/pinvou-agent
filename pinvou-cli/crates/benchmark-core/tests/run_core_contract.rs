@@ -7,7 +7,7 @@ use agent_backend_api::{
     AgentBackendError, AgentRunObserver, AgentSessionHandle, AgentTaskInput, AgentTaskOutcome,
     AttachmentHandle, HeadlessAgentBackend, PrepareRequest, PrivateInputHandle,
     PrivateInputResolver, PrivateOutputHandle, ResolvedAttachmentSource, ResolvedPrivateInput,
-    SafeAgentEvent, SafeUsageMetrics, SecretOutput, SecretText,
+    SafeAgentEvent, SafeModelRequestMetric, SafeUsageMetrics, SecretOutput, SecretText,
 };
 use async_trait::async_trait;
 use benchmark_core::{
@@ -207,6 +207,7 @@ struct MockState {
 enum BackendBehavior {
     Completed,
     Failed,
+    FailedModelRequestTimeout,
     FailFirst,
     Pending,
     PendingPrepare,
@@ -366,6 +367,12 @@ impl HeadlessAgentBackend for MockBackend {
             BackendBehavior::Failed => Err(AgentBackendError::Operation(
                 "provider secret must not escape".into(),
             )),
+            BackendBehavior::FailedModelRequestTimeout => Ok(AgentTaskOutcome::failed(
+                Duration::from_millis(7),
+                "model_request_timeout",
+            )
+            .with_usage(SafeUsageMetrics::new(11, 22, 33, 44))
+            .with_model_request_metrics(vec![SafeModelRequestMetric::new(900, Some(120), 11, 22)])),
             BackendBehavior::FailFirst if task.task_id() == "first" => {
                 Err(AgentBackendError::Operation("private failure".into()))
             }
@@ -853,6 +860,53 @@ async fn missing_final_answer_reason_survives_store_reopen() {
         reopened[0].failure_reason(),
         Some(benchmark_core::SafeFailureReason::MissingFinalAnswer)
     );
+    fs::remove_dir_all(base).unwrap();
+}
+
+#[tokio::test]
+async fn backend_failed_outcome_with_model_request_timeout_keeps_usage_and_timeout_status() {
+    let base = temp_base("model-request-timeout-outcome");
+    let backend = Arc::new(MockBackend::with_behavior(
+        BackendBehavior::FailedModelRequestTimeout,
+    ));
+    let service = BenchmarkService::native(&base, backend).unwrap();
+    let summary = service
+        .run(
+            manifest("run-model-request-timeout"),
+            &BenchmarkPlan::new(vec![task("one")]),
+        )
+        .await
+        .unwrap();
+    let outcome = &summary.outcomes()[0];
+    assert_eq!(outcome.status(), TaskStatus::Timeout);
+    assert_eq!(
+        outcome.failure_reason(),
+        Some(benchmark_core::SafeFailureReason::ModelRequestTimeout)
+    );
+    assert_eq!(
+        outcome.failure_category(),
+        Some(&benchmark_core::SafeFailureCategory::Timeout)
+    );
+    let usage = outcome.usage().expect("usage preserved on failed outcome");
+    assert_eq!((usage.input_tokens, usage.output_tokens), (11, 22));
+    assert_eq!((usage.cache_hit_tokens, usage.cache_miss_tokens), (33, 44));
+    assert_eq!(outcome.model_request_observations().len(), 1);
+    assert_eq!(
+        outcome.model_request_observations()[0].request_duration_ms,
+        900
+    );
+    assert_eq!(outcome.model_request_observations()[0].ttft_ms, Some(120));
+
+    let reopened = RunStore::open(&base, "run-model-request-timeout")
+        .unwrap()
+        .read_outcomes()
+        .unwrap();
+    assert_eq!(reopened[0].status(), TaskStatus::Timeout);
+    assert_eq!(
+        reopened[0].failure_reason(),
+        Some(benchmark_core::SafeFailureReason::ModelRequestTimeout)
+    );
+    assert!(reopened[0].usage().is_some());
     fs::remove_dir_all(base).unwrap();
 }
 
