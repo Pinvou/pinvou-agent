@@ -5529,7 +5529,8 @@ mod tests {
             crate::bridge::paths::tests::unique_suffix()
         ));
         let _ = std::fs::remove_dir_all(&root);
-        std::env::set_var("PINVOU3_HOME", &root);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
 
         // Sessions matching the predicate use Code mode.
         let mut bridge = fixture_bridge();
@@ -5587,7 +5588,8 @@ mod tests {
             crate::bridge::paths::tests::unique_suffix()
         ));
         let _ = std::fs::remove_dir_all(&root);
-        std::env::set_var("PINVOU3_HOME", &root);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
 
         let mut bridge = fixture_bridge();
         bridge

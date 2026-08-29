@@ -7,8 +7,8 @@ use std::path::Path;
 
 use tauri::WebviewBuilder;
 
-use super::host::PlatformWebviewConfig;
 use super::NativeSurfaceCapabilities;
+use super::host::PlatformWebviewConfig;
 
 #[derive(Default)]
 pub(crate) struct WindowsWebviewConfig {

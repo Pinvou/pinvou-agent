@@ -1672,9 +1672,9 @@ pub async fn web_access_render_artifact_visual(
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_web_chat_session_supported, web_acp_agent_id, web_acp_result,
-        web_artifact_storage_path, web_session_result, web_workspace_result, WebAcpOperation,
-        WebSavedSession, WebSessionMetadata, WebSessionOperation, WebWorkspaceOperation,
+        WebAcpOperation, WebSavedSession, WebSessionMetadata, WebSessionOperation,
+        WebWorkspaceOperation, ensure_web_chat_session_supported, web_acp_agent_id, web_acp_result,
+        web_artifact_storage_path, web_session_result, web_workspace_result,
     };
     use deepseek_tui::session_manager::{SavedSession, create_saved_session};
     use serde_json::{Value, json};

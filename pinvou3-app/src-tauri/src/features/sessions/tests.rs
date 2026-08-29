@@ -1121,10 +1121,12 @@ fn checked_scheduled_delete_removes_profile_json_and_runtime_directory() {
         .delete_scheduled_run(&id, "another-task")
         .expect_err("wrong owner must fail");
     assert!(err.to_string().contains("task ownership"));
-    assert!(deletions
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .is_empty());
+    assert!(
+        deletions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty()
+    );
     assert!(runtime_dir.exists());
 
     store
@@ -1231,11 +1233,13 @@ fn scheduled_delete_retry_finishes_runtime_cleanup_after_profile_removal() {
         .expect_err("the first runtime cleanup failure must remain visible");
 
     assert!(error.to_string().contains("runtime cleanup"));
-    assert!(!store
-        .manager
-        .sessions_dir()
-        .join(format!("{id}.json"))
-        .exists());
+    assert!(
+        !store
+            .manager
+            .sessions_dir()
+            .join(format!("{id}.json"))
+            .exists()
+    );
     assert!(store.scheduled_profile(&id).is_none());
     assert!(runtime_dir.exists(), "failed cleanup must remain retryable");
     assert!(store.active_id().is_none());
@@ -1580,11 +1584,13 @@ fn retention_notifies_hook_when_record_commit_precedes_cleanup_error() {
             .kind(),
         ErrorKind::PermissionDenied
     );
-    assert!(!store
-        .manager
-        .sessions_dir()
-        .join(format!("{oldest_id}.json"))
-        .exists());
+    assert!(
+        !store
+            .manager
+            .sessions_dir()
+            .join(format!("{oldest_id}.json"))
+            .exists()
+    );
     assert_eq!(
         deletions
             .lock()
@@ -2117,10 +2123,12 @@ fn deletion_hooks_are_runtime_only_and_do_not_retain_process_history() {
     store.delete(&id).expect("delete before hook exists");
 
     let deletions = record_session_deletions(&store);
-    assert!(deletions
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .is_empty());
+    assert!(
+        deletions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty()
+    );
     store
         .delete(&id)
         .expect("idempotent runtime delete notifies the registered hook");
@@ -2186,10 +2194,12 @@ fn invalid_precommit_delete_does_not_emit_durable_deletion_hook() {
 
     assert!(!committed);
     assert!(result.is_err());
-    assert!(deletions
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .is_empty());
+    assert!(
+        deletions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty()
+    );
 }
 
 #[test]

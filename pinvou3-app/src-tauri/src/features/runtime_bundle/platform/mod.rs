@@ -391,6 +391,10 @@ fn is_browser_wrapper_residue(entry: &serde_json::Value) -> bool {
 /// The first alias is `browser_user`; occupied aliases advance from
 /// `browser_user_2`. The global config is never passed to this helper directly:
 /// callers operate on the parsed per-session copy.
+// Renaming is bounded by the number of user-defined servers, so a u64 suffix
+// cannot overflow in practice; the expect documents that invariant instead of
+// silently wrapping.
+#[allow(clippy::expect_used)]
 fn reserve_work_mode_browser_server_name(
     servers: &mut serde_json::Map<String, serde_json::Value>,
 ) -> Option<String> {
@@ -595,8 +599,10 @@ mod tests {
         // hiding browser capability and leaving the model unable to discover it.
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
-        std::env::remove_var("PINVOU3_CDMCP_BIN");
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::remove_var("PINVOU3_CDMCP_BIN") };
         let bundle = Pinvou3Bundle::paths();
         let msg = bundle
             .browser_unavailability_reason()
@@ -1880,8 +1886,10 @@ mod tests {
     fn browser_mcp_entry_is_gated_to_work_mode_config() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
-        std::env::remove_var("PINVOU3_CDMCP_BIN");
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::remove_var("PINVOU3_CDMCP_BIN") };
         paths::ensure_dirs().unwrap();
         let bundle = Pinvou3Bundle::paths();
         std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
@@ -1915,10 +1923,12 @@ mod tests {
             assert_ne!(reserved_path, bundle.mcp_json);
             let reserved: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&reserved_path).unwrap()).unwrap();
-            assert!(!reserved["servers"]
-                .as_object()
-                .unwrap()
-                .contains_key("browser"));
+            assert!(
+                !reserved["servers"]
+                    .as_object()
+                    .unwrap()
+                    .contains_key("browser")
+            );
             assert_eq!(
                 reserved["servers"]["browser_user"]["command"],
                 "/old/browser"
@@ -1986,9 +1996,11 @@ mod tests {
                 bundle.mcp_json,
                 "an unreleased build without a reserved-name conflict needs no session copy"
             );
-            assert!(bundle
-                .browser_unavailability_reason()
-                .is_some_and(|reason| reason.contains("not enabled in this product build")));
+            assert!(
+                bundle
+                    .browser_unavailability_reason()
+                    .is_some_and(|reason| reason.contains("not enabled in this product build"))
+            );
         } else {
             assert_ne!(
                 work_path, bundle.mcp_json,
@@ -2107,8 +2119,10 @@ mod tests {
             );
         }
 
-        std::env::remove_var("PINVOU3_CDMCP_BIN");
-        std::env::remove_var("PINVOU3_WEBKIT_WEBDRIVER_BIN");
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::remove_var("PINVOU3_CDMCP_BIN") };
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::remove_var("PINVOU3_WEBKIT_WEBDRIVER_BIN") };
         cleanup(&tmp);
     }
 }

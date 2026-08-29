@@ -6,8 +6,8 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
 
@@ -69,6 +69,9 @@ pub(super) struct UserNavigationState {
 }
 
 impl UserNavigationState {
+    // A u128 epoch cannot be exhausted by any realistic navigation count;
+    // the expect documents that invariant instead of silently wrapping.
+    #[allow(clippy::expect_used)]
     fn advance_admission_epoch(&mut self) {
         self.admission_epoch = self
             .admission_epoch
@@ -833,6 +836,9 @@ impl WorkspaceControl {
         Some(state.snapshot)
     }
 
+    // Passing true means the None branch of issue_agent_lease_if_allowed
+    // (User owner without explicit handback) cannot trigger.
+    #[allow(clippy::expect_used)]
     pub(super) fn issue_agent_lease(&self) -> (ControlSnapshot, String) {
         self.issue_agent_lease_if_allowed(true)
             .expect("explicit authorization path must issue an Agent lease")
@@ -841,6 +847,9 @@ impl WorkspaceControl {
     /// Check User ownership and issue the new lease under the same control lock,
     /// eliminating takeover-overwrite TOCTOU between checking owner and issuing.
     /// Only explicit UI handback may pass true.
+    // The mutation closure is `|_| Ok(())`, so the Err branch of
+    // issue_agent_lease_with cannot be reached here.
+    #[allow(clippy::expect_used)]
     pub(super) fn issue_agent_lease_if_allowed(
         &self,
         explicit_user_handback: bool,
@@ -1481,6 +1490,9 @@ impl RequestLedger {
     /// Callers must first drain hosted request scanners and finish all native
     /// teardown; otherwise removing a pending compensation record would make a
     /// retry unable to close the resource it created.
+    // request_key(session_id, "purge") always ends with the fixed suffix just
+    // passed to it, so strip_suffix always succeeds.
+    #[allow(clippy::expect_used)]
     pub(super) fn purge_session(&mut self, session_id: &str) -> Result<usize, String> {
         // Reuse the request-key validator so purge cannot turn an invalid,
         // attacker-controlled prefix into a cross-session deletion.
@@ -2068,22 +2080,28 @@ mod tests {
     fn user_control_auto_release_is_revision_guarded() {
         let control = WorkspaceControl::new(4, NativeControlOwner::Agent);
         let first_takeover = control.bump(Some(NativeControlOwner::User));
-        assert!(control
-            .release_user_control_if_unchanged(first_takeover.revision.saturating_sub(1))
-            .is_none());
+        assert!(
+            control
+                .release_user_control_if_unchanged(first_takeover.revision.saturating_sub(1))
+                .is_none()
+        );
 
         let renewed_takeover = control.bump(Some(NativeControlOwner::User));
-        assert!(control
-            .release_user_control_if_unchanged(first_takeover.revision)
-            .is_none());
+        assert!(
+            control
+                .release_user_control_if_unchanged(first_takeover.revision)
+                .is_none()
+        );
         let released = control
             .release_user_control_if_unchanged(renewed_takeover.revision)
             .expect("control returns automatically after the latest user-action idle window");
         assert_eq!(released.owner, NativeControlOwner::Agent);
         assert_eq!(released.revision, renewed_takeover.revision + 1);
-        assert!(control
-            .release_user_control_if_unchanged(renewed_takeover.revision)
-            .is_none());
+        assert!(
+            control
+                .release_user_control_if_unchanged(renewed_takeover.revision)
+                .is_none()
+        );
     }
 
     #[test]
@@ -2152,10 +2170,12 @@ mod tests {
 
         let (next, _) = control.issue_agent_lease();
         control.bump(Some(NativeControlOwner::User));
-        assert!(control
-            .rollback_agent_activation(next.revision, NativeControlOwner::Unclaimed, |_| Ok(()))
-            .unwrap()
-            .is_none());
+        assert!(
+            control
+                .rollback_agent_activation(next.revision, NativeControlOwner::Unclaimed, |_| Ok(()))
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(control.snapshot().owner, NativeControlOwner::User);
     }
 
@@ -2235,10 +2255,12 @@ mod tests {
                 <= Instant::now() + POST_DISPATCH_CALLBACK_GRACE,
             "a retained popup must not prolong the parent's 750ms trusted-input window"
         );
-        assert!(control
-            .commit_agent_mutation(popup.authorization(), || Ok(()))
-            .unwrap()
-            .is_some());
+        assert!(
+            control
+                .commit_agent_mutation(popup.authorization(), || Ok(()))
+                .unwrap()
+                .is_some()
+        );
         control.release_retained_agent_operation(&popup);
         assert!(control.active_agent_operation().is_none());
 
@@ -2257,10 +2279,12 @@ mod tests {
             .unwrap();
         control.end_agent_operation(&next);
         control.bump(Some(NativeControlOwner::User));
-        assert!(control
-            .commit_agent_mutation(retained.authorization(), || Ok(()))
-            .unwrap()
-            .is_none());
+        assert!(
+            control
+                .commit_agent_mutation(retained.authorization(), || Ok(()))
+                .unwrap()
+                .is_none()
+        );
         control.release_retained_agent_operation(&retained);
     }
 
@@ -2388,9 +2412,11 @@ mod tests {
         .unwrap();
 
         assert!(control.begin_agent_operation(&authorization, true));
-        assert!(control
-            .bump_for_navigation_if_no_active_agent_operation()
-            .is_none());
+        assert!(
+            control
+                .bump_for_navigation_if_no_active_agent_operation()
+                .is_none()
+        );
         assert_eq!(control.snapshot(), snapshot);
         assert_eq!(
             control.active_agent_operation(),
@@ -2461,13 +2487,15 @@ mod tests {
         );
         let mutation_ran = Arc::new(AtomicBool::new(false));
         let mutation_flag = Arc::clone(&mutation_ran);
-        assert!(control
-            .commit_agent_mutation(&authorization, move || {
-                mutation_flag.store(true, Ordering::SeqCst);
-                Ok(())
-            })
-            .unwrap()
-            .is_none());
+        assert!(
+            control
+                .commit_agent_mutation(&authorization, move || {
+                    mutation_flag.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
+                .unwrap()
+                .is_none()
+        );
         assert!(!mutation_ran.load(Ordering::SeqCst));
 
         let advanced = control
@@ -2677,14 +2705,16 @@ mod tests {
         assert_eq!(value["revision"], 9);
         assert_eq!(value["owner"], "agent");
         assert_eq!(value["lease"], "0123456789abcdeffedcba9876543210");
-        assert!(NativeTabLease::from_assertion(
-            "session-a",
-            "0123456789abcdef",
-            "target-a",
-            9,
-            "forged"
-        )
-        .is_err());
+        assert!(
+            NativeTabLease::from_assertion(
+                "session-a",
+                "0123456789abcdef",
+                "target-a",
+                9,
+                "forged"
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -2698,9 +2728,11 @@ mod tests {
             ledger.claim("session-a", "request-1").unwrap(),
             NativeRequestClaim::InFlight
         );
-        assert!(ledger
-            .complete("session-a", "request-1", json!({ "tabToken": "tab-a" }))
-            .unwrap());
+        assert!(
+            ledger
+                .complete("session-a", "request-1", json!({ "tabToken": "tab-a" }))
+                .unwrap()
+        );
         assert_eq!(
             ledger.claim("session-a", "request-1").unwrap(),
             NativeRequestClaim::Replay(json!({ "tabToken": "tab-a" }))
@@ -2722,9 +2754,11 @@ mod tests {
             ledger.claim("session-a", "request-2").unwrap(),
             NativeRequestClaim::Canceled
         );
-        assert!(!ledger
-            .complete("session-a", "request-2", json!({}))
-            .unwrap());
+        assert!(
+            !ledger
+                .complete("session-a", "request-2", json!({}))
+                .unwrap()
+        );
     }
 
     #[test]
@@ -2735,9 +2769,11 @@ mod tests {
             NativeRequestClaim::Execute
         );
         let result = json!({ "tabToken": "tab-c" });
-        assert!(ledger
-            .complete("session-a", "request-3", result.clone())
-            .unwrap());
+        assert!(
+            ledger
+                .complete("session-a", "request-3", result.clone())
+                .unwrap()
+        );
         assert_eq!(
             ledger.cancel("session-a", "request-3").unwrap(),
             NativeRequestCancel::AlreadyCompleted(result)
@@ -2772,14 +2808,18 @@ mod tests {
             ledger.cancel("session-a", "request-4").unwrap(),
             NativeRequestCancel::AwaitingCompletion
         );
-        assert!(ledger
-            .acknowledge_cancellation("session-a", "request-4")
-            .is_err());
+        assert!(
+            ledger
+                .acknowledge_cancellation("session-a", "request-4")
+                .is_err()
+        );
 
         let record = json!({ "rollback": { "kind": "prepared_session" } });
-        assert!(!ledger
-            .complete("session-a", "request-4", record.clone())
-            .unwrap());
+        assert!(
+            !ledger
+                .complete("session-a", "request-4", record.clone())
+                .unwrap()
+        );
         assert_eq!(
             ledger.cancel("session-a", "request-4").unwrap(),
             NativeRequestCancel::AlreadyCompleted(record)
@@ -2798,9 +2838,11 @@ mod tests {
                 ledger.claim("session-a", &request_id).unwrap(),
                 NativeRequestClaim::Execute
             );
-            assert!(ledger
-                .complete("session-a", &request_id, json!({ "requestIndex": index }))
-                .unwrap());
+            assert!(
+                ledger
+                    .complete("session-a", &request_id, json!({ "requestIndex": index }))
+                    .unwrap()
+            );
         }
 
         assert_eq!(
@@ -2838,9 +2880,11 @@ mod tests {
             ledger.claim("session-a", "completed").unwrap(),
             NativeRequestClaim::Execute
         );
-        assert!(ledger
-            .complete("session-a", "completed", json!({ "kind": "complete" }))
-            .unwrap());
+        assert!(
+            ledger
+                .complete("session-a", "completed", json!({ "kind": "complete" }))
+                .unwrap()
+        );
         assert_eq!(
             ledger.claim("session-a", "awaiting").unwrap(),
             NativeRequestClaim::Execute
@@ -2853,9 +2897,11 @@ mod tests {
             ledger.claim("session-a", "rollback").unwrap(),
             NativeRequestClaim::Execute
         );
-        assert!(ledger
-            .complete("session-a", "rollback", json!({ "kind": "rollback" }))
-            .unwrap());
+        assert!(
+            ledger
+                .complete("session-a", "rollback", json!({ "kind": "rollback" }))
+                .unwrap()
+        );
         assert_eq!(
             ledger.cancel("session-a", "rollback").unwrap(),
             NativeRequestCancel::AlreadyCompleted(json!({ "kind": "rollback" }))
@@ -2869,9 +2915,11 @@ mod tests {
             ledger.claim("session-b", "completed").unwrap(),
             NativeRequestClaim::Execute
         );
-        assert!(ledger
-            .complete("session-b", "completed", json!({ "keep": true }))
-            .unwrap());
+        assert!(
+            ledger
+                .complete("session-b", "completed", json!({ "keep": true }))
+                .unwrap()
+        );
         assert_eq!(ledger.len(), 6);
 
         assert_eq!(ledger.purge_session("session-a").unwrap(), 5);
@@ -2890,9 +2938,11 @@ mod tests {
             NativeRequestClaim::Execute
         );
         let rollback = json!({ "rollback": { "kind": "created_tab" } });
-        assert!(ledger
-            .complete("session-a", "request-retry", rollback.clone())
-            .unwrap());
+        assert!(
+            ledger
+                .complete("session-a", "request-retry", rollback.clone())
+                .unwrap()
+        );
         assert_eq!(
             ledger.cancel("session-a", "request-retry").unwrap(),
             NativeRequestCancel::AlreadyCompleted(rollback.clone())

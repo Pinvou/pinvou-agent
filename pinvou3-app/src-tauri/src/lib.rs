@@ -230,6 +230,9 @@ impl SessionBrowserCleanupQueue {
             let Some(session_id) = selected else {
                 break;
             };
+            // session_id was selected from state.pending above under the same
+            // lock, so the entry must still be present.
+            #[allow(clippy::expect_used)]
             let schedule = state
                 .pending
                 .remove(&session_id)
@@ -428,7 +431,7 @@ fn spawn_deleted_session_browser_cleanup(app: tauri::AppHandle, store: SessionSt
     }));
 
     tauri::async_runtime::spawn(async move {
-        use futures_util::{stream::FuturesUnordered, StreamExt};
+        use futures_util::{StreamExt, stream::FuturesUnordered};
 
         let mut cleanups = FuturesUnordered::new();
 
@@ -1627,9 +1630,9 @@ mod navigation_policy_tests {
 #[cfg(test)]
 mod session_browser_cleanup_retry_tests {
     use super::{
+        SESSION_BROWSER_CLEANUP_INITIAL_RETRY, SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY,
+        SESSION_BROWSER_CLEANUP_MAX_RETRY, SessionBrowserCleanupQueue,
         next_session_browser_cleanup_retry, session_browser_cleanup_failure_kind,
-        SessionBrowserCleanupQueue, SESSION_BROWSER_CLEANUP_INITIAL_RETRY,
-        SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY, SESSION_BROWSER_CLEANUP_MAX_RETRY,
     };
 
     #[test]
@@ -1751,9 +1754,11 @@ mod session_browser_cleanup_retry_tests {
 
         let first = queue.claim_ready_up_to(now, SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
         assert_eq!(first.len(), SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
-        assert!(first
-            .iter()
-            .all(|claim| failure_ids.contains(&claim.session_id)));
+        assert!(
+            first
+                .iter()
+                .all(|claim| failure_ids.contains(&claim.session_id))
+        );
         for claim in first {
             queue.complete_attempt(claim, false, now);
         }
@@ -1767,9 +1772,11 @@ mod session_browser_cleanup_retry_tests {
             now += SESSION_BROWSER_CLEANUP_MAX_RETRY;
             let retry = queue.claim_ready_up_to(now, SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
             assert_eq!(retry.len(), SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
-            assert!(retry
-                .iter()
-                .all(|claim| failure_ids.contains(&claim.session_id)));
+            assert!(
+                retry
+                    .iter()
+                    .all(|claim| failure_ids.contains(&claim.session_id))
+            );
             for claim in retry {
                 queue.complete_attempt(claim, false, now);
             }

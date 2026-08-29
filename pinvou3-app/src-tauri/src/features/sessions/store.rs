@@ -30,8 +30,8 @@ use super::scheduled::ChatEngineState;
 use super::transcript::{looks_like_truncating_overwrite, transcript_revision};
 use super::validators::{generate_session_id, persisted_system_prompt, validate_session_id};
 use super::{
-    session_roots_for, CodeSessionPredicate, ExecutionRootResolver, SessionDeletedHook,
-    SessionKind, SessionPurgedHook, SessionRoots, SessionStore,
+    CodeSessionPredicate, ExecutionRootResolver, SessionDeletedHook, SessionKind,
+    SessionPurgedHook, SessionRoots, SessionStore, session_roots_for,
 };
 use crate::core::mode_state::SerializableMode;
 use crate::platform::prefs::UserPrefs;

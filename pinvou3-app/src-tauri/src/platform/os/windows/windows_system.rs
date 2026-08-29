@@ -49,7 +49,7 @@ pub fn current_system_locale() -> Option<String> {
 /// Access denied also means the process exists under another user or integrity level.
 /// Browser watch uses this before removing a stale port file.
 pub fn process_alive(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED};
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, GetLastError};
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     // SAFETY: This only queries existence, and every non-null handle is closed immediately.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };

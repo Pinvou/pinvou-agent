@@ -10,18 +10,18 @@
 //! Reference: `features/remote_control/relay_client.rs` for tokio-tungstenite 0.30.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot, Mutex};
-use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
-use tokio_tungstenite::{connect_async_with_config, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async_with_config};
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -119,7 +119,7 @@ impl CdpSession {
                 return Err("CDP response timed out after 30 seconds".to_string());
             }
             Ok(Err(_)) => {
-                return Err("CDP connection closed and response channel was dropped".to_string())
+                return Err("CDP connection closed and response channel was dropped".to_string());
             }
             Ok(Ok(r)) => r,
         };

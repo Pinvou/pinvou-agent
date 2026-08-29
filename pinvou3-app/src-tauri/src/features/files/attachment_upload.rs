@@ -895,36 +895,42 @@ mod tests {
 
         // A digest that does not match the assembled staging file must abort
         // the commit and leave no completed upload behind.
-        assert!(append_chunk(
-            &workspace,
-            "desktop_attach_sha256_bad",
-            "notes.txt",
-            0,
-            bytes.len(),
-            bytes,
-            true,
-            Some(&"a".repeat(64)),
-        )
-        .await
-        .is_err());
-        assert!(!workspace
-            .join("attachments")
-            .join("desktop_attach_sha256_bad")
-            .exists());
+        assert!(
+            append_chunk(
+                &workspace,
+                "desktop_attach_sha256_bad",
+                "notes.txt",
+                0,
+                bytes.len(),
+                bytes,
+                true,
+                Some(&"a".repeat(64)),
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            !workspace
+                .join("attachments")
+                .join("desktop_attach_sha256_bad")
+                .exists()
+        );
 
         // Malformed digests are rejected before hashing.
-        assert!(append_chunk(
-            &workspace,
-            "desktop_attach_sha256_invalid",
-            "notes.txt",
-            0,
-            bytes.len(),
-            bytes,
-            true,
-            Some("not-hex"),
-        )
-        .await
-        .is_err());
+        assert!(
+            append_chunk(
+                &workspace,
+                "desktop_attach_sha256_invalid",
+                "notes.txt",
+                0,
+                bytes.len(),
+                bytes,
+                true,
+                Some("not-hex"),
+            )
+            .await
+            .is_err()
+        );
 
         std::fs::remove_dir_all(workspace).unwrap();
     }

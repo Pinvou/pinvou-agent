@@ -26,15 +26,18 @@ fn main() {
         && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
     {
         let out_dir = std::path::PathBuf::from(
-            std::env::var_os("OUT_DIR").expect("Cargo must provide OUT_DIR to build.rs"),
+            std::env::var_os("OUT_DIR")
+                .unwrap_or_else(|| panic!("Cargo must provide OUT_DIR to build.rs")),
         );
         let generated_resource = out_dir.join("resource.lib");
         let test_resource_archive = out_dir.join("pinvou3_lib_test_resource.lib");
         let _ = std::fs::remove_file(&test_resource_archive);
 
-        let target = std::env::var("TARGET").expect("Cargo must provide TARGET to build.rs");
-        let librarian = cc::windows_registry::find_tool(&target, "lib.exe")
-            .expect("MSVC lib.exe is required to archive the Windows test manifest resource");
+        let target = std::env::var("TARGET")
+            .unwrap_or_else(|_| panic!("Cargo must provide TARGET to build.rs"));
+        let librarian = cc::windows_registry::find_tool(&target, "lib.exe").unwrap_or_else(|| {
+            panic!("MSVC lib.exe is required to archive the Windows test manifest resource")
+        });
         let machine = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
             Ok("x86_64") => "X64",
             Ok("x86") => "X86",
@@ -49,7 +52,9 @@ fn main() {
             .arg(format!("/OUT:{}", test_resource_archive.display()))
             .arg(&generated_resource)
             .output()
-            .expect("Failed to run MSVC lib.exe for the Windows test resource");
+            .unwrap_or_else(|error| {
+                panic!("Failed to run MSVC lib.exe for the Windows test resource: {error}")
+            });
         if !output.status.success() {
             panic!(
                 "Failed to archive the Windows test manifest resource: {}{}",

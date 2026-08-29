@@ -7,7 +7,7 @@
 //! behind the private CDP adapter. macOS uses the same BrowserCore contract
 //! with a WKWebView/AppKit platform driver.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tauri::Webview;
 
 use super::platform::{self, state::NativeTabLease};
@@ -595,10 +595,12 @@ mod tests {
             result["structuredContent"]["observationWarning"],
             json!("browser/post-action-observation-failed: snapshot unavailable")
         );
-        assert!(result["content"][0]["text"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("Do not retry the action"));
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Do not retry the action")
+        );
     }
 
     #[test]
@@ -622,10 +624,12 @@ mod tests {
             result["structuredContent"]["focusRestoreFailed"],
             json!(true)
         );
-        assert!(result["content"][0]["text"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("Do not repeat the whole action"));
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Do not repeat the whole action")
+        );
     }
 
     #[test]
@@ -833,9 +837,11 @@ mod tests {
         assert_eq!(result["structuredContent"]["completedCount"], json!(2));
         assert_eq!(result["structuredContent"]["failedIndex"], json!(2));
         assert_eq!(result["structuredContent"]["totalCount"], json!(4));
-        assert!(result["content"][0]["text"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("Do not retry the whole form"));
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Do not retry the whole form")
+        );
     }
 }

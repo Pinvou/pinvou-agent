@@ -6,7 +6,7 @@
 //! loopback inspector. W3C Actions produce page-local trusted input without
 //! moving the user's desktop-wide pointer or injecting JavaScript events.
 
-use std::collections::{hash_map::Entry, HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::path::PathBuf;
@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use reqwest::{Method, Url};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tauri::Webview;
 use tauri_runtime_wry::tao::event::Event;
 use tauri_runtime_wry::tao::event_loop::{ControlFlow, EventLoopProxy, EventLoopWindowTarget};
@@ -25,8 +25,8 @@ use tauri_runtime_wry::{
     Context, EventLoopIterationContext, Message, Plugin, PluginBuilder, WebContext, WebContextStore,
 };
 
-use super::state::{NativeTabLease, UserNavigationState, WorkspaceControl};
 use super::NativeInput;
+use super::state::{NativeTabLease, UserNavigationState, WorkspaceControl};
 
 const DRIVER_BIN_ENV: &str = "PINVOU3_WEBKIT_WEBDRIVER_BIN";
 const SESSION_READY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -2546,22 +2546,24 @@ mod tests {
             .local_addr()
             .expect("redirect target address");
         let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-        let redirect_received = std::thread::spawn(move || loop {
-            match redirect_target.accept() {
-                Ok((mut stream, _)) => {
-                    let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 14\r\nConnection: close\r\n\r\n{\"value\":null}";
-                    stream
-                        .write_all(response)
-                        .expect("write redirect target response");
-                    return true;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if stop_rx.try_recv().is_ok() {
-                        return false;
+        let redirect_received = std::thread::spawn(move || {
+            loop {
+                match redirect_target.accept() {
+                    Ok((mut stream, _)) => {
+                        let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 14\r\nConnection: close\r\n\r\n{\"value\":null}";
+                        stream
+                            .write_all(response)
+                            .expect("write redirect target response");
+                        return true;
                     }
-                    std::thread::sleep(Duration::from_millis(5));
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if stop_rx.try_recv().is_ok() {
+                            return false;
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("accept redirect target request: {error}"),
                 }
-                Err(error) => panic!("accept redirect target request: {error}"),
             }
         });
 
@@ -2591,8 +2593,10 @@ mod tests {
         let initial_request = initial_request.join().expect("initial WebDriver request");
         let redirect_received = redirect_received.join().expect("redirect target thread");
 
-        assert!(initial_request
-            .starts_with("POST /session/opaque-driver/element/button/click HTTP/1.1"));
+        assert!(
+            initial_request
+                .starts_with("POST /session/opaque-driver/element/button/click HTTP/1.1")
+        );
         assert!(matches!(
             result,
             Err(WebDriverRequestError {
@@ -2625,8 +2629,10 @@ mod tests {
             .expect_err("dropped acknowledgement must fail");
         let received = request.join().expect("fake WebDriver request thread");
 
-        assert!(received
-            .starts_with("POST /session/driver-commit-unknown/element/button/click HTTP/1.1"));
+        assert!(
+            received
+                .starts_with("POST /session/driver-commit-unknown/element/button/click HTTP/1.1")
+        );
         assert!(error.starts_with(ACTION_COMMIT_UNKNOWN_WEBDRIVER));
         assert!(error.contains("request failed"));
     }
@@ -2655,8 +2661,10 @@ mod tests {
             .expect_err("malformed acknowledgement must fail");
         let received = request.join().expect("fake WebDriver request thread");
 
-        assert!(received
-            .starts_with("POST /session/driver-malformed-ack/element/button/click HTTP/1.1"));
+        assert!(
+            received
+                .starts_with("POST /session/driver-malformed-ack/element/button/click HTTP/1.1")
+        );
         assert!(error.starts_with(ACTION_COMMIT_UNKNOWN_WEBDRIVER));
         assert!(error.contains("decode WebKitWebDriver"));
     }

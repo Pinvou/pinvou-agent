@@ -13,8 +13,8 @@ use webkit2gtk::WebViewExt;
 
 use super::state::NativeTabLease;
 use super::{
-    linux_automation, AsyncDispatchState, BrowserCoreEvaluationMode, NativeInput,
-    ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION,
+    ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION, AsyncDispatchState, BrowserCoreEvaluationMode,
+    NativeInput, linux_automation,
 };
 
 const EVALUATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);

@@ -963,6 +963,9 @@ impl Pinvou3Bundle {
         });
         let mut obj = mcp;
         if obj.get("servers").and_then(|s| s.as_object()).is_none() {
+            // mcp was validated as a JSON object in the match above, so
+            // as_object_mut always yields Some here.
+            #[allow(clippy::unwrap_used)]
             obj.as_object_mut()
                 .unwrap()
                 .insert("servers".into(), serde_json::json!({}));
@@ -975,6 +978,9 @@ impl Pinvou3Bundle {
         // Historical wrapper residue owned by this app is removed. Preserve this namespace
         // boundary even when the built-in backend is unavailable, so a user server cannot
         // impersonate the embedded same-page browser through `mcp_browser_*`.
+        // The block above guarantees `servers` exists and is an object, so
+        // both indexing and as_object_mut always succeed here.
+        #[allow(clippy::unwrap_used)]
         let servers = obj["servers"].as_object_mut().unwrap();
         if let Some(browser_entry) = browser_entry {
             install_work_mode_browser_server(servers, browser_entry);

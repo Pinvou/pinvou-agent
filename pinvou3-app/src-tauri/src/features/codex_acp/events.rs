@@ -3,8 +3,8 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use agent_client_protocol::schema::v1::{
     SessionNotification, SessionUpdate, ToolCall, ToolCallStatus, ToolCallUpdate,

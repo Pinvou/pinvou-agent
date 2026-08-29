@@ -10,8 +10,8 @@ use std::ptr::NonNull;
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
-use objc2::runtime::AnyObject;
 use objc2::MainThreadMarker;
+use objc2::runtime::AnyObject;
 use objc2_app_kit::{
     NSDeleteFunctionKey, NSDownArrowFunctionKey, NSEndFunctionKey, NSEvent, NSEventModifierFlags,
     NSEventType, NSHomeFunctionKey, NSLeftArrowFunctionKey, NSPageDownFunctionKey,
@@ -26,8 +26,8 @@ use tauri::Webview;
 
 use super::state::{NativeTabLease, WorkspaceControl};
 use super::{
-    AsyncDispatchState, BrowserCoreEvaluationMode, NativeInput,
-    ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION,
+    ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION, AsyncDispatchState, BrowserCoreEvaluationMode,
+    NativeInput,
 };
 
 const EVALUATION_TIMEOUT: Duration = Duration::from_secs(15);
@@ -149,15 +149,17 @@ pub(super) async fn evaluate_json(
                 Err("browser/wkwebview-native-handle-null".to_string())
             } else {
                 let Some(main_thread) = MainThreadMarker::new() else {
-                    let _ = sender
-                        .lock()
-                        .take()
-                        .expect("WKWebView completion sender consumed once")
-                        .send(Err("browser/wkwebview-not-on-main-thread".to_string()));
+                    if let Some(sender) = sender.lock().take() {
+                        let _ =
+                            sender.send(Err("browser/wkwebview-not-on-main-thread".to_string()));
+                    }
                     callback_state.cancel_pending();
                     return;
                 };
                 let body = NSString::from_str(&function_body);
+                // SAFETY: MainThreadMarker::new() above proves this code runs
+                // on the main thread, which pageWorld requires; it returns the
+                // shared process-wide page world.
                 let world = unsafe { WKContentWorld::pageWorld(main_thread) };
                 let callback_sender = Arc::clone(&sender);
                 let completion_state = callback_state.clone();
@@ -177,6 +179,12 @@ pub(super) async fn evaluate_json(
                     if !callback_state.begin() {
                         return Ok(());
                     }
+                    // SAFETY: view is a valid &WKWebView obtained above under
+                    // with_webview's main-thread guarantee; body and world are
+                    // valid objects alive for the call; block is an RcBlock
+                    // matching the completion-handler signature, borrowed for
+                    // the call, and the handler copies its result out before
+                    // returning.
                     unsafe {
                         view.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
                             &body,
@@ -227,6 +235,9 @@ fn wrap_json_evaluation(script: &str) -> String {
 
 fn copy_json_callback(value: *mut AnyObject, error: *mut NSError) -> Result<Value, String> {
     if let Some(error) = NonNull::new(error) {
+        // SAFETY: error is non-null (checked above) and points to an NSError
+        // owned by the WKWebView completion callback, valid for the duration
+        // of this callback; the description is copied out as a String.
         let description = unsafe { error.as_ref() }.localizedDescription().to_string();
         return Err(format!(
             "browser/wkwebview-javascript-failed: {description}"
@@ -234,6 +245,9 @@ fn copy_json_callback(value: *mut AnyObject, error: *mut NSError) -> Result<Valu
     }
     let value = NonNull::new(value)
         .ok_or_else(|| "browser/wkwebview-javascript-result-null".to_string())?;
+    // SAFETY: value is non-null (checked above) and points to the result
+    // object owned by the WKWebView completion callback, valid for the
+    // duration of this callback; the string is copied out below.
     let value = unsafe { value.as_ref() };
     let json_string = value
         .downcast_ref::<NSString>()
@@ -508,6 +522,9 @@ async fn insert_text(
         with_temporary_browser_focus(view, window, focus_target, |responder| {
             let text = NSString::from_str(&text);
             let object: &AnyObject = &text;
+            // SAFETY: responder is the WKContentView-derived NSResponder made
+            // first responder by with_temporary_browser_focus and is alive for
+            // this call; object is a valid &NSString alive for the call.
             unsafe { responder.insertText(object) };
             Ok(())
         })
@@ -525,6 +542,9 @@ async fn select_all(webview: &Webview, authorization: &NativeTabLease) -> Result
             // a non-key Pinvou window. Invoke AppKit's native editing command
             // on the exact WKContentView responder so background fill keeps
             // the user's frontmost application unchanged.
+            // SAFETY: responder is the WKContentView-derived NSResponder made
+            // first responder by with_temporary_browser_focus and is alive for
+            // this call; a nil sender is accepted by AppKit's selectAll:.
             unsafe { responder.selectAll(None) };
             Ok(())
         })
@@ -860,6 +880,9 @@ async fn with_native_webview(
                 // and ns_window() an NSWindow; with_webview guarantees
                 // main-thread access and keeps both alive for this closure.
                 let view = unsafe { &*platform.inner().cast::<WKWebView>() };
+                // SAFETY: same wry identity, null-check, and lifetime
+                // guarantees as the WKWebView cast directly above;
+                // ns_window() is exactly an NSWindow on macOS.
                 let window = unsafe { &*platform.ns_window().cast::<NSWindow>() };
                 // DOM resolution can be delayed by the page. Revalidate the
                 // full host lease on the main thread immediately before AppKit
