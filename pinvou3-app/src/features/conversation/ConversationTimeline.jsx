@@ -1,7 +1,8 @@
-import React, { useId, useMemo, useState, useSyncExternalStore } from 'react';
+import React, { useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
+import { useThrottledValue } from './useThrottledValue.js';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -105,8 +106,45 @@ const DEFAULT_COPY = {
   copyReplyFailed: '复制失败',
 };
 
+// conversationCopy(copy) merges the ~70-key default copy table with the caller's
+// overrides; it used to run once per component per render, so long transcripts
+// rebuilt that object for every turn on every keystroke/stream chunk. The merged
+// table is immutable and `copy` identities are stable (i18n dict tables), so cache
+// the merge per source table (same WeakMap trick as ChatView's legacyMarkdownCache).
+const conversationCopyCache = new WeakMap();
 function conversationCopy(copy) {
-  return { ...DEFAULT_COPY, ...copy };
+  if (!copy) return DEFAULT_COPY;
+  const cached = conversationCopyCache.get(copy);
+  if (cached) return cached;
+  const merged = { ...DEFAULT_COPY, ...copy };
+  conversationCopyCache.set(copy, merged);
+  return merged;
+}
+
+// 流式 markdown 限流窗口：每 200ms 至少重跑一次 marked+DOMPurify+hljs，
+// 而不是每个流式 delta 全量重跑一遍（O(n²)）。结束时由 useThrottledValue
+// 保证回放逐字的最终全文。
+const STREAMING_MARKDOWN_THROTTLE_MS = 200;
+
+// 1s 时钟收口到最小显示子树：此前秒级 tick 挂在 ChatView 顶层状态上，
+// busy 期间整个转录每秒全量重渲染；现在只有显示已用时间的组件自己持有
+// tick。挂载/激活时先同步一次基线，再启动 interval（与原 ChatView/CodexAcpView
+// 顶层 ticker 同语义）；非激活时不创建定时器，卸载时清理。
+// 导出给 ChatView 的 composer 活动指示器包装组件复用。
+/**
+ * @param {boolean} active - whether the displayed duration is currently advancing
+ * @returns {number} a timestamp that advances once per second while active
+ */
+export function useConversationSecondClock(active) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- sync the clock baseline once on activation so elapsed time is correct immediately, before the first interval tick
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return now;
 }
 
 function localizedSemanticLabel(value, copy) {
@@ -122,12 +160,17 @@ function localizedSemanticLabel(value, copy) {
   }[value] || value;
 }
 
-export function ConversationMarkdown({ text, className = '', onOpenExternal, onOpenResource }) {
+export function ConversationMarkdown({ text, className = '', onOpenExternal, onOpenResource, streaming = false }) {
   // lazy language registration bumps the version when it completes; the version must stay in the useMemo deps
   // (syntax-highlighter.js contract), otherwise already-rendered code stays plain text after registration completes.
   const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
+  // While the message is still streaming, parse the throttled snapshot instead of
+  // every chunk (marked+DOMPurify+hljs over the full growing text is O(n²) per
+  // chunk). The hook flushes the exact final text when `streaming` drops, so the
+  // completed message always renders verbatim.
+  const renderText = useThrottledValue(text, STREAMING_MARKDOWN_THROTTLE_MS, streaming);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- syntaxVersion is a version counter; any change requires recomputing to restore highlighting
-  const html = useMemo(() => renderMarkdown(text), [text, syntaxVersion]);
+  const html = useMemo(() => renderMarkdown(renderText), [renderText, syntaxVersion]);
   const openLink = (event) => {
     const anchor = event.target && event.target.closest && event.target.closest('a[href]');
     if (!anchor) return;
@@ -552,10 +595,20 @@ function runningToolLabel(item, copy) {
 function ToolGroup({ group, now, renderToolItem, onOpenExternal, onOpenResource, copy }) {
   const c = conversationCopy(copy);
   const items = group.items || [];
-  const running = items.some(item => terminalStatus(item.status) === 'running');
-  const failedCount = items.filter(countsAsFailedOperation).length;
+  // Single pass instead of `.some` + `.filter` + reverse().`find` (three scans
+  // per group per render): `runningItem` ends at the LAST running item, matching
+  // the previous reverse().find.
+  let running = false;
+  let failedCount = 0;
+  let runningItem = null;
+  for (const item of items) {
+    if (terminalStatus(item.status) === 'running') {
+      running = true;
+      runningItem = item;
+    }
+    if (countsAsFailedOperation(item)) failedCount += 1;
+  }
   const failed = failedCount > 0;
-  const runningItem = [...items].reverse().find(item => terminalStatus(item.status) === 'running');
   const runningLabel = runningToolLabel(runningItem, c);
   const runningSuffix = runningLabel ? ` · ${runningLabel}` : '';
   const leadLabel = running ? `${c.executing}${runningSuffix}` : c.executionSteps;
@@ -742,19 +795,86 @@ function DefaultItem({
   }
   if (item.type === 'agent_message') {
     const commentary = item.phase === 'commentary';
+    // streaming = 投影约定的 in_progress（deepseek/ACP 两条投影一致）：
+    // 文本仍会增长时走限流渲染，结束时回放逐字全文。
     return commentary
       ? <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
+          streaming={item.status === 'in_progress'}
           className="text-[13px] leading-6 text-gray-500 dark:text-gray-400" />
-      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource} />;
+      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
+          streaming={item.status === 'in_progress'} />;
   }
   return null;
 }
 
-export function ConversationTurn({
+// Default props must keep stable identities or React.memo below would see fresh
+// objects/functions on every parent render and never skip work.
+const EMPTY_PENDING_BY_TOOL = Object.freeze({});
+const noopOnRespond = () => {};
+/** @type {{ id: string, status: string }[]} */
+const EMPTY_TURNS = [];
+
+// 时间线投影（deepseek-conversation.js / acp-state.js）每次都会重建全部 turn
+// 对象：容器引用恒新，但未变化的 turn 的叶子内容完全相同（bridge 快照对未变化
+// 的值按引用共享）。因此对 `turn` 做结构化比较（bridge 订阅状态只允许 JSON 值，
+// 不会出现函数/循环），让内容未变的 turn 跳过重渲染；其余 props（父级稳定化的
+// 回调、memo 化的 copy/头像）按引用比较。
+
+/**
+ * Structural equality for JSON-like conversation data (bridge subscription state
+ * admits no functions or cycles, so recursion is safe).
+ * @param {unknown} left - previous value
+ * @param {unknown} right - next value
+ * @returns {boolean} true when both values are structurally equal
+ */
+function isEqualConversationValue(left, right) {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left)) {
+    if (!Array.isArray(right) || left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+      if (!isEqualConversationValue(left[index], right[index])) return false;
+    }
+    return true;
+  }
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  const leftObject = /** @type {Record<string, unknown>} */ (left);
+  const rightObject = /** @type {Record<string, unknown>} */ (right);
+  const leftKeys = Object.keys(leftObject);
+  const rightKeys = Object.keys(rightObject);
+  if (leftKeys.length !== rightKeys.length) return false;
+  for (let index = 0; index < leftKeys.length; index += 1) {
+    const key = leftKeys[index];
+    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor; Object.hasOwn is unavailable and this call is already the safe form
+    if (!Object.prototype.hasOwnProperty.call(rightObject, key)) return false;
+    if (!isEqualConversationValue(leftObject[key], rightObject[key])) return false;
+  }
+  return true;
+}
+
+/**
+ * @param {Record<string, unknown>} prev - previous props
+ * @param {Record<string, unknown>} next - next props
+ * @returns {boolean} true when the turn subtree should skip re-rendering
+ */
+function areConversationTurnPropsEqual(prev, next) {
+  const keys = Object.keys(next);
+  if (keys.length !== Object.keys(prev).length) return false;
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index];
+    if (key === 'turn') {
+      if (!isEqualConversationValue(prev.turn, next.turn)) return false;
+      continue;
+    }
+    if (!Object.is(prev[key], next[key])) return false;
+  }
+  return true;
+}
+
+function ConversationTurnView({
   turn,
   now,
-  pendingByTool = {},
-  onRespond = () => {},
+  pendingByTool = EMPTY_PENDING_BY_TOOL,
+  onRespond = noopOnRespond,
   responding = false,
   renderUser,
   renderItem,
@@ -766,13 +886,18 @@ export function ConversationTurn({
   copy,
 }) {
   const c = conversationCopy(copy);
+  const running = turn.status === 'running';
+  // 秒级 tick 收口在 running turn 自身：父级仍可传入 ticking `now`（CodexAcpView
+  // 保持原行为，走 `now || tickNow` 的 prop 优先）；不传时由内部时钟驱动已用时间，
+  // 每秒只重渲染这一个 turn 子树。
+  const tickNow = useConversationSecondClock(running);
+  const effectiveNow = now || tickNow;
   const waitingPermission = turn.waitingPermission
     || (turn.permissions || []).some(permission => !permission.resolved);
   const waitingInput = turn.waitingInput
     || (turn.elicitations || []).some(elicitation => !elicitation.resolved);
   const waitingAttention = waitingPermission || waitingInput;
-  const running = turn.status === 'running';
-  const duration = c.elapsed(elapsedMs(turn.startedAt, turn.completedAt, now));
+  const duration = c.elapsed(elapsedMs(turn.startedAt, turn.completedAt, effectiveNow));
   const showTerminalDuration = Boolean(turn.startedAt && turn.completedAt);
   const presentation = turn.presentation || turn.items || [];
   const operationCount = Number(turn.operationCount || 0);
@@ -837,7 +962,7 @@ export function ConversationTurn({
             </div>
           )}
           {presentation.map((item, index) => {
-            const context = { turn, now, pendingByTool, onRespond, responding };
+            const context = { turn, now: effectiveNow, pendingByTool, onRespond, responding };
             const custom = renderItem && renderItem(item, context);
             if (custom !== undefined) {
               return <React.Fragment key={item.id || `${item.type}-${index}`}>{custom}</React.Fragment>;
@@ -846,7 +971,7 @@ export function ConversationTurn({
               <DefaultItem
                 key={item.id || `${item.type}-${index}`}
                 item={item}
-                now={now}
+                now={effectiveNow}
                 pendingByTool={pendingByTool}
                 onRespond={onRespond}
                 responding={responding}
@@ -881,7 +1006,11 @@ export function ConversationTurn({
   );
 }
 
-export function ConversationTimeline({ turns = [], ...props }) {
+// 单独声明组件再包 memo：props 类型由组件自身参数推断，comparator 的
+// Record<string, unknown> 参数不会反向污染推断。
+export const ConversationTurn = React.memo(ConversationTurnView, areConversationTurnPropsEqual);
+
+export function ConversationTimeline({ turns = EMPTY_TURNS, ...props }) {
   return (
     <>
       {turns.map(turn => <ConversationTurn key={turn.id} turn={turn} {...props} />)}

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import {
   invokeObservedPanelSelection,
@@ -21,6 +21,7 @@ import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, c
 import {
   ConversationActivityIndicator,
   ConversationTimeline,
+  useConversationSecondClock,
 } from '../conversation/ConversationTimeline.jsx';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import {
@@ -141,6 +142,31 @@ function unifiedConversationUiEnabled() {
   } catch {
     return true;
   }
+}
+
+// Composer 活动指示器的秒级时钟包装：此前 tick 挂在 ChatView 顶层状态上，
+// busy 期间整个 ChatView（含整条转录的协调）每秒重渲染一次；指示器是唯一
+// 显示已用时间的地方，现在 tick 只重渲染这个小子树。
+/**
+ * @param {object} props - component props
+ * @param {{ status: string } | null} props.turn - active conversation turn, if any
+ * @param {() => void} props.onRequestAttention - scroll-to-bottom request handler
+ * @param {string} props.className - extra class for the indicator
+ * @param {object} props.copy - conversation copy table
+ * @returns {React.ReactElement | null} the ticking activity indicator
+ */
+function LiveConversationActivityIndicator({ turn, onRequestAttention, className, copy }) {
+  const running = !!turn && turn.status === 'running';
+  const now = useConversationSecondClock(running);
+  return (
+    <ConversationActivityIndicator
+      turn={turn}
+      now={now}
+      onRequestAttention={onRequestAttention}
+      className={className}
+      copy={copy}
+    />
+  );
 }
 
 const WORK_MODE_SUBTABS = [
@@ -718,7 +744,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         ro.observe(el);
         return () => ro.disconnect();
       }, []);
-      const chatItems = bs ? bs.chatItems : [];
+      // memo 化保持引用稳定：bs 快照任一 domain 变化都会换新对象，但未变化的
+      // chatItems 按引用共享；没有这层时下游投影 useMemo 会在空态([] 字面量)
+      // 每渲染失效。
+      const chatItems = useMemo(() => (bs ? bs.chatItems : []), [bs]);
       const activeSessionId = bs ? bs.activeSessionId : null;
       const activeSessionIdRef = useRef(activeSessionId);
       activeSessionIdRef.current = activeSessionId;
@@ -998,36 +1027,50 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const scheduledRunContext = bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === bs.activeSessionId
         ? bs.scheduledRunContext
         : null;
-      let lastUserId = null;
-      for (let i = chatItems.length - 1; i >= 0; i--) { if (chatItems[i].type === 'user') { lastUserId = chatItems[i].id; break; } }
-      const useUnifiedConversationUi = unifiedConversationUiEnabled();
-      const visibleChatItems = chatItems.filter((item) => !(item.type === 'memory_candidate' && !item.resolved));
-      const latestArtIdByPath = {};
-      chatItems.forEach((item) => {
-        if (item.type === 'artifact_card' && item.path) latestArtIdByPath[item.path] = item.id;
-      });
-      const latestArtifactIds = new Set(Object.values(latestArtIdByPath));
-      const conversationProjection = projectDeepSeekConversation({
-        chatItems: conversationItemsForMode(visibleChatItems, useUnifiedConversationUi),
-        busy,
-        thinking: bs && bs.thinking,
-        tokens: ctxTokens,
-        sessionId: bs && bs.activeSessionId,
-        timelineEvents: bs && bs.turnTimeline,
-        allowScheduledTaskDraft: isScheduledTaskCreationChat,
-      });
-      const activeConversationTurn = [...conversationProjection.turns]
-        .reverse()
-        .find(turn => turn.status === 'running') || null;
-      const [conversationNow, setConversationNow] = useState(Date.now());
-      useEffect(() => {
-        if (!busy || !useUnifiedConversationUi) return;
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- sync the clock baseline once before creating the ticker so elapsed time shows as soon as busy starts
-        setConversationNow(Date.now());
-        const timer = window.setInterval(() => setConversationNow(Date.now()), 1000);
-        return () => window.clearInterval(timer);
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: restart the per-second ticker only when the thinking-phase start (startedAt) changes
-      }, [busy, useUnifiedConversationUi, bs && bs.thinking && bs.thinking.startedAt]);
+      // 回滚开关只在挂载时读取一次：应用内没有该 key 的写入口（只有冒烟测试在
+      // 页面加载前写入 localStorage 后整页刷新），逐渲染同步读 localStorage 只是
+      // 纯开销；挂载时读进 state 保持可观察行为不变。
+      const [useUnifiedConversationUi] = useState(unifiedConversationUiEnabled);
+      // 会话投影与派生集合。ChatView 每次按键（composer state）、每个流式 chunk、
+      // 每次时钟 tick 都会重渲染，此前这组 O(messages) 的投影/过滤/扫描在渲染体里
+      // 每次全量重跑。bridge 订阅快照对未变化的值按引用共享
+      // (platform/tauri/bridge.js subscriptionStateValue)，因此按输入引用 memo 化
+      // 后，只在底层会话数据真正变化时重算；投影本身是只读纯函数（不原地修改）。
+      const chatThinking = bs ? bs.thinking : undefined;
+      const turnTimeline = bs ? bs.turnTimeline : undefined;
+      const derivedConversation = useMemo(() => {
+        const visibleChatItems = chatItems.filter((item) => !(item.type === 'memory_candidate' && !item.resolved));
+        const latestArtIdByPath = {};
+        chatItems.forEach((item) => {
+          if (item.type === 'artifact_card' && item.path) latestArtIdByPath[item.path] = item.id;
+        });
+        const latestArtifactIds = new Set(Object.values(latestArtIdByPath));
+        // Set 每次重算都是新引用；这里额外给出按值比较的 key（字符串），供下方
+        // renderItem 稳定化做 dep：集合内容不变时回调身份保持稳定。
+        const latestArtifactIdsKey = Object.values(latestArtIdByPath).sort((left, right) => (
+          left < right ? -1 : left > right ? 1 : 0
+        )).join('\u0000');
+        let lastUserId = null;
+        for (let i = chatItems.length - 1; i >= 0; i--) { if (chatItems[i].type === 'user') { lastUserId = chatItems[i].id; break; } }
+        const conversationProjection = projectDeepSeekConversation({
+          chatItems: conversationItemsForMode(visibleChatItems, useUnifiedConversationUi),
+          busy,
+          thinking: chatThinking,
+          tokens: ctxTokens,
+          sessionId: activeSessionId,
+          timelineEvents: turnTimeline,
+          allowScheduledTaskDraft: isScheduledTaskCreationChat,
+        });
+        // 等价于 [...turns].reverse().find(turn => turn.status === 'running')：
+        // 反向扫描取最后一个 running turn，免去整段倒序拷贝。
+        let activeConversationTurn = null;
+        const turns = conversationProjection.turns;
+        for (let i = turns.length - 1; i >= 0; i--) {
+          if (turns[i].status === 'running') { activeConversationTurn = turns[i]; break; }
+        }
+        return { visibleChatItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
+      }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, useUnifiedConversationUi, chatThinking, turnTimeline, activeSessionId]);
+      const { visibleChatItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
 
       // External entries can prefill the composer and focus its end.
       // Template/navigation entries (KnowledgeView "continue in chat",
@@ -1474,6 +1517,54 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         }
         return true;
       }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, t, visualPosterSceneActive]);
+      // ConversationTimeline 渲染回调稳定化：ConversationTurn 已 React.memo 化，
+      // 回调身份逐渲染变化会让所有 turn 每次全量重渲染。回调按输入变化重建身份；
+      // latestArtifactIds 的 Set 每次投影重算都是新引用，故 dep 用按值稳定的
+      // latestArtifactIdsKey、渲染时经 ref 读取最新集合（回调只在实际渲染期间
+      // 被调用，彼时 ref 已指向当次提交的投影结果）。
+      const latestArtifactIdsRef = useRef(latestArtifactIds);
+      latestArtifactIdsRef.current = latestArtifactIds;
+      const handleTimelineRenderUser = useCallback((item) => (
+        <ChatBubble
+          item={item}
+          sessionId={activeSessionId}
+          theme={theme}
+          t={t}
+          editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
+          conversationVariant="unified"
+        />
+      ), [activeSessionId, busy, isMultiAgentReadOnly, lastUserId, t, theme]);
+      const handleTimelineRenderItem = useCallback((item) => {
+        // reasoning 由 ConversationTimeline 的 ReasoningItem 负责，
+        // 不能交给旧 ChatBubble；后者不认识该类型，会返回 null，
+        // 导致后端已收到的实时 thinking 被静默吞掉。
+        if (item.type === 'reasoning') return;
+        if (!item.legacyItem) return;
+        return (
+          <ChatBubble
+            item={item.legacyItem}
+            sessionId={activeSessionId}
+            theme={theme}
+            t={t}
+            onPrefill={setInputText}
+            onSend={sendChatMessage}
+            onOpenEditor={onOpenEditor}
+            isLatestArtifact={latestArtifactIdsRef.current.has(item.legacyItem.id)}
+            allowScheduledTaskDraft={isScheduledTaskCreationChat} showAssistantActions={false}
+          />
+        );
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- latestArtifactIdsKey is an intentional extra dep: a content-keyed proxy for the artifact-id Set (read fresh via latestArtifactIdsRef) so the callback identity only changes when the set contents change
+      }, [activeSessionId, isScheduledTaskCreationChat, latestArtifactIdsKey, onOpenEditor, sendChatMessage, setInputText, t, theme]);
+      const handleTimelineRenderToolItem = useCallback((item) => (item.legacyItem
+        && !isSearchTool(item.tool)
+        && !isFetchTool(item.tool)
+        ? <ToolCard item={item.legacyItem} sessionId={activeSessionId} t={t} variant="timeline" />
+        : undefined), [activeSessionId, t]);
+      const timelineAssistantAvatar = useMemo(() => (
+        <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center">
+          <PinvouLogo className="h-5 w-5" title={chatViewCopy.agentName} />
+        </div>
+      ), [chatViewCopy.agentName]);
       const handleDesignAiSubmit = useCallback((text) => {
         const raw = String(text || '').trim();
         if (!raw) return;
@@ -1987,49 +2078,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 {useUnifiedConversationUi ? (
                   <ConversationTimeline
                     turns={conversationProjection.turns}
-                    now={conversationNow}
                     copy={t.uiConversation}
                     agentLabel={chatViewCopy.agentName}
-                    assistantAvatar={(
-                      <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center">
-                        <PinvouLogo className="h-5 w-5" title={chatViewCopy.agentName} />
-                      </div>
-                    )}
-                    renderUser={(item) => (
-                      <ChatBubble
-                        item={item}
-                        sessionId={activeSessionId}
-                        theme={theme}
-                        t={t}
-                        editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
-                        conversationVariant="unified"
-                      />
-                    )}
-                    renderItem={(item) => {
-                      // reasoning 由 ConversationTimeline 的 ReasoningItem 负责，
-                      // 不能交给旧 ChatBubble；后者不认识该类型，会返回 null，
-                      // 导致后端已收到的实时 thinking 被静默吞掉。
-                      if (item.type === 'reasoning') return;
-                      if (!item.legacyItem) return;
-                      return (
-                        <ChatBubble
-                          item={item.legacyItem}
-                          sessionId={activeSessionId}
-                          theme={theme}
-                          t={t}
-                          onPrefill={(text) => setInputText(text)}
-                          onSend={sendChatMessage}
-                          onOpenEditor={onOpenEditor}
-                          isLatestArtifact={latestArtifactIds.has(item.legacyItem.id)}
-                          allowScheduledTaskDraft={isScheduledTaskCreationChat} showAssistantActions={false}
-                        />
-                      );
-                    }}
-                    renderToolItem={(item) => item.legacyItem
-                      && !isSearchTool(item.tool)
-                      && !isFetchTool(item.tool)
-                      ? <ToolCard item={item.legacyItem} sessionId={activeSessionId} t={t} variant="timeline" />
-                      : undefined}
+                    assistantAvatar={(timelineAssistantAvatar)}
+                    renderUser={handleTimelineRenderUser}
+                    renderItem={handleTimelineRenderItem}
+                    renderToolItem={handleTimelineRenderToolItem}
                     onOpenExternal={openChatExternalUrl}
                   />
                 ) : (
@@ -2369,9 +2423,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   clearLabel={sceneCopy.clear(activeScene.label)}
                 />
               )}
-              <ConversationActivityIndicator
+              <LiveConversationActivityIndicator
                 turn={activeConversationTurn}
-                now={conversationNow}
                 onRequestAttention={scrollChatToBottom}
                 className="mb-0.5"
                 copy={t.uiConversation}

@@ -142,7 +142,13 @@ import {
   rememberDraftControls,
 } from './acp-draft-controls.js';
 const AGENT_SELECTION_KEY = 'pinvou_codex_agent_selection';
-const CODE_AGENT_IDS = ['pinvou', 'codex', 'claude', 'kimi'];
+// 仅做成员判断的常量集合：Set.has 替代数组 .includes（biome prefer-set-has）。
+const CODE_AGENT_IDS = new Set(['pinvou', 'codex', 'claude', 'kimi']);
+// 草稿空态的稳定空 turns：内联 [] 会让依赖其引用的 useMemo 每次渲染都失效。
+/** @type {{ id: string, status: string }[]} */
+const EMPTY_CONVERSATION_TURNS = [];
+// 同理：sessions 默认值必须是稳定引用，内联 [] 每次渲染都是新数组。
+const EMPTY_SESSIONS = [];
 
 function workspaceName(path, unknownDirectory) {
   // eslint-disable-next-line sonarjs/super-linear-regex -- trailing [\\/]+ strips path separators; single char class, so backtracking is linear
@@ -185,7 +191,7 @@ function forgetWorkspace(path) {
 function loadAgentSelection() {
   try {
     const value = localStorage.getItem(AGENT_SELECTION_KEY);
-    return value && CODE_AGENT_IDS.includes(value) ? value : null;
+    return value && CODE_AGENT_IDS.has(value) ? value : null;
   } catch {
     return null;
   }
@@ -908,10 +914,14 @@ function TurnItem({
   }
   if (item.type === 'agent_message') {
     const commentary = item.phase === 'commentary';
+    // streaming = 投影约定的 in_progress（ACP/deepseek 投影一致）：文本仍会增长时
+    // 走限流渲染，结束后由 useThrottledValue 回放逐字全文。
     return commentary
       ? <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
+          streaming={item.status === 'in_progress'}
           className="text-[13px] leading-6 text-gray-500 dark:text-gray-400" />
-      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource} />;
+      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
+          streaming={item.status === 'in_progress'} />;
   }
   return null;
 }
@@ -995,7 +1005,7 @@ function Turn({
 export function CodexAcpView({
   theme,
   t,
-  sessions = [],
+  sessions = EMPTY_SESSIONS,
   activeId = null,
   draftEpoch = 0,
   onActiveSessionChange,
@@ -1116,11 +1126,11 @@ export function CodexAcpView({
       onAttempt: (sessionId, attempt) => console.warn(
         `[acp] live event sequence gap detected for ${sessionId}; resyncing from the authoritative timeline (attempt ${attempt})`,
       ),
-      onRetry: (sessionId, attempt, error) => console.warn(
+      onRetry: (_sessionId, attempt, error) => console.warn(
         `[acp] timeline resync after event sequence gap failed (attempt ${attempt}); retrying with backoff`,
         error,
       ),
-      onGiveUp: (sessionId, attempt, error) => console.warn(
+      onGiveUp: (_sessionId, attempt, error) => console.warn(
         `[acp] timeline resync after event sequence gap gave up after ${attempt} attempts; the gap stays unhealed until reconnect or session reopen`,
         error,
       ),
@@ -1266,14 +1276,20 @@ export function CodexAcpView({
     [isNativeAgent, activeNativeLane, activeId, nativeLaneTick],
   );
   const visibleTurns = isNativeAgent
-    ? (nativeProjection ? nativeProjection.turns : [])
+    ? (nativeProjection ? nativeProjection.turns : EMPTY_CONVERSATION_TURNS)
     : projection.turns;
   const busy = isNativeAgent
     ? Boolean(activeNativeLane && activeNativeLane.busy)
     : projection.turns.some(turn => turn.status === 'running');
-  const activeConversationTurn = [...visibleTurns]
-    .reverse()
-    .find(turn => turn.status === 'running') || null;
+  // 等价于 [...visibleTurns].reverse().find(status === 'running')：反向扫描取最后
+  // 一个 running turn，且按 turns 引用 memo 化（turns 两条分支都来自 memo 化投影，
+  // 草稿空态走模块级常量数组），避免每次渲染都重建倒序拷贝。
+  const activeConversationTurn = useMemo(() => {
+    for (let index = visibleTurns.length - 1; index >= 0; index -= 1) {
+      if (visibleTurns[index].status === 'running') return visibleTurns[index];
+    }
+    return null;
+  }, [visibleTurns]);
   // 原生车道底栏控件的展示值（归属保护：refresh 返回前按默认/暂存显示；
   // 默认 = 全局 code_last_mode，从未用过 code 模式 → Plan 只读）。
   const nativeDraftControlsHandoff = nativeDraftControlsHandoffRef.current?.sessionId === activeId
@@ -3079,6 +3095,7 @@ export function CodexAcpView({
       return (
         <ConversationMarkdown
           text={item.legacyItem.text}
+          streaming={item.status === 'in_progress'}
           onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
           onOpenResource={isWeb ? undefined : openWorkspaceResource}
         />
