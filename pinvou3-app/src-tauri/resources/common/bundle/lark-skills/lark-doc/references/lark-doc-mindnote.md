@@ -1,13 +1,13 @@
 # 飞书思维笔记（Mindnote）
 
-> **前置条件：** 先阅读 [`../SKILL.md`](../SKILL.md) 和 [`../../lark-shared/SKILL.md`](../../lark-shared/SKILL.md) 了解认证、全局参数和路由规则。
+> **前置条件：** 本文件由 [`../SKILL.md`](../SKILL.md) 的思维笔记场景路由进入；执行命令前**不预读** [`../../lark-shared/SKILL.md`](../../lark-shared/SKILL.md)，仅遇到认证、token / 身份或 scope 错误时再读取该 Skill，修复后重试。
 
 当用户要操作思维笔记时，入口属于 `lark-doc`，但实际执行命令使用 `lark-cli mindnotes nodes list/create`，不是 `docs +...`。
 
 > [!IMPORTANT]
 > 当前这条链路只支持**读取已有思维笔记**，以及在**已有思维笔记**里读取节点、创建子节点。
 > `mindnotes nodes create` 是新增/更新节点命令，**不是**新建一个新的思维笔记。
-> 如果用户要**新建思维笔记**，不要走本链路，改走 [lark-doc-whiteboard](lark-doc-whiteboard.md)。
+> 如果用户要**新建思维笔记**，暂无专门的 docs/mindnotes 创建命令：要新建到知识库，使用 `wiki +node-create --obj-type mindnote`（见 [lark-wiki-node-create](../../lark-wiki/references/lark-wiki-node-create.md)）；创建后回到本链路维护节点。不要把思维笔记路由到 [lark-doc-whiteboard](lark-doc-whiteboard.md) 画板链路，两者是不同资源。
 
 ## 获取 `mindnote_id`
 
@@ -109,7 +109,7 @@ lark-cli mindnotes nodes create \
 ## 推荐工作流
 
 1. 先判断用户目标是不是“新建一个思维笔记”。
-2. 如果是新建思维笔记，切到 [lark-doc-whiteboard](lark-doc-whiteboard.md)。
+2. 如果是新建思维笔记，按上方 IMPORTANT 块走 `wiki +node-create --obj-type mindnote`（知识库内新建），拿到 mindnote token 后回到本链路。
 3. 如果是操作已有思维笔记，先按上方「获取 `mindnote_id`」确认已拿到 Mindnote 文档 token。
 4. 确认目标类型是 **Mindnote** 后，把真实 Mindnote token 作为 `--mindnote-id`。
 5. 先执行 `mindnotes nodes list`，确认目标 `parent_id`。
@@ -123,6 +123,6 @@ lark-cli mindnotes nodes create \
 ## 参考
 
 - [lark-doc-fetch](lark-doc-fetch.md) — 获取文档内容
-- [lark-doc-whiteboard](lark-doc-whiteboard.md) — 新建思维笔记走画板链路
+- [lark-wiki-node-create](../../lark-wiki/references/lark-wiki-node-create.md) — 在知识库中新建思维笔记节点（`--obj-type mindnote`）
 - [lark-drive](../../lark-drive/SKILL.md) — 解析 Mindnote / Wiki 等云空间资源
 - [lark-shared](../../lark-shared/SKILL.md) — 认证和全局参数

@@ -9,11 +9,11 @@
 ```bash
 # 创建记录
 lark-cli base +record-upsert --base-token <base_token> --table-id <table_id> \
-  --json '{"项目名称":"Apollo","状态":"进行中"}'
+  --json '{"项目名称":"Apollo","状态":["进行中"]}'
 
 # 更新记录
 lark-cli base +record-upsert --base-token <base_token> --table-id <table_id> --record-id <record_id> \
-  --json '{"项目名称":"Apollo","状态":"完成","完成时间":"2026-03-24 10:00"}'
+  --json '{"项目名称":"Apollo","状态":["完成"],"完成时间":"2026-03-24 10:00"}'
 ```
 
 ## 参数
@@ -41,7 +41,7 @@ lark-cli base +record-upsert --base-token <base_token> --table-id <table_id> --r
 ```json
 {
   "项目名称": "Apollo",
-  "状态": "进行中",
+  "状态": ["进行中"],
   "完成时间": "2026-03-24 10:00"
 }
 ```
