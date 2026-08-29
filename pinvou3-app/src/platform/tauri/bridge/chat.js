@@ -1267,9 +1267,31 @@
   // notice.
   function settleSteerDropped(sid, steerId) {
     clearSteerSettleWatchdog(sid, steerId);
+    // Probe the zap reconcile watchdog BEFORE clearing it: a dropped event
+    // landing while it is armed is the authoritative "never delivered"
+    // terminal for a ⚡ zap whose withdraw answered not_pending or timed out
+    // (the foundation reports NotPending for ids that already settled, and
+    // the async dropped event routinely lands after the invoke response).
+    // The silent path below is only correct for a × removal, where silence
+    // means "the user deleted the text"; for a zap it would dismantle both
+    // safety nets and silently lose the message.
+    const zapReconciling = !!(outcomeReconcileWatchdogs[sid] && outcomeReconcileWatchdogs[sid][steerId]);
     clearOutcomeReconcileWatchdog(sid, steerId);
     if (findSteerChipIndex(sid, steerId) < 0) {
-      if (takeWithdrawn(sid, steerId) !== undefined) return;
+      const withdrawnText = takeWithdrawn(sid, steerId);
+      if (withdrawnText !== undefined) {
+        if (zapReconciling) {
+          // Same recovery as the reconcile watchdog expiry: the dropped
+          // event just made the expiry unnecessary by proving
+          // non-delivery.
+          runSyncOnSession(sid, function () {
+            addSystemItem("⚠️ " + bt("steerFailed"));
+          });
+          restoreSteerText(sid, withdrawnText);
+          notify();
+        }
+        return;
+      }
       stashSteerEvent(sid, steerId, "dropped");
       return;
     }
