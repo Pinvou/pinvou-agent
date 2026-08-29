@@ -892,6 +892,7 @@ jobs:
         # runner 失联后仍可从 Check Run 读取死亡瞬间现场。
         env:
           TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           export CHROME="$chrome"
