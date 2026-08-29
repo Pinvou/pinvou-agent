@@ -81,6 +81,13 @@ assert.match(
   /TsEditDisplayDialog/,
   'the edit dialog must be rendered',
 );
+// 3-. 弹窗按 backendId 强制重挂载：弹窗开着时拖放导入会原位替换 editDisplay，
+// 无 key 则输入框保留旧包的 useState 初值、保存却写进新包 id（串台）。
+assert.match(
+  toolStoreSource,
+  /<TsEditDisplayDialog\s+key=\{editDisplay\.backendId\}/,
+  'the dialog must remount per target (key={editDisplay.backendId}) or inputs leak across packages',
+);
 // 3a. 保存失败保留弹窗与输入：doEditDisplaySave 返回错误文案（而非先卸载弹窗），
 // 对话框内联展示；成功路径通知 composer 菜单刷新（覆盖名进了它的数据源）。
 assert.match(
@@ -88,22 +95,53 @@ assert.match(
   /const err = await onConfirm\(\{ name, description: desc \}\);/,
   'dialog confirm must surface the save error inline (keep dialog open, inputs retained)',
 );
-assert.match(
-  toolStoreSource,
-  /notifyComposerToolsChanged\(\);/,
-  'successful save must notify the composer tool menu (name override feeds its data source)',
-);
-// 3b. 输入框长度上限与后端校验一致（64/240 字符）。
-assert.match(
-  toolStoreSource,
-  /maxLength=\{MAX_DISPLAY_NAME_CHARS\}/,
-  'name input must cap at MAX_DISPLAY_NAME_CHARS',
-);
-assert.match(
-  toolStoreSource,
-  /maxLength=\{MAX_DISPLAY_DESCRIPTION_CHARS\}/,
-  'description input must cap at MAX_DISPLAY_DESCRIPTION_CHARS',
-);
+// notify 必须钉在保存流程内（全文件共有 18 处 notifyComposerToolsChanged，
+// 泛匹配不构成「保存后通知」的契约）：从 update 调用起向后取一个窗口断言。
+{
+  const idx = toolStoreSource.indexOf("invokeTauri('update_bundle_display_meta'");
+  assert.ok(idx >= 0, 'update_bundle_display_meta invoke must exist');
+  const saveFlowWindow = toolStoreSource.slice(idx, idx + 600);
+  assert.match(
+    saveFlowWindow,
+    /notifyComposerToolsChanged\(\);/,
+    'successful save must notify the composer tool menu (name override feeds its data source)',
+  );
+}
+// 3b. 输入框长度上限与后端校验一致（64/240 字符）：前端常量逐字对齐 Rust 侧
+// MAX_DISPLAY_NAME_CHARS / MAX_DISPLAY_DESCRIPTION_CHARS（跨端单点真源防漂移）。
+{
+  const storeRs = await readFile(
+    new URL('../src-tauri/src/features/marketplace/store.rs', import.meta.url),
+    'utf8',
+  );
+  const rustMax = (name) => {
+    const m = storeRs.match(new RegExp(`pub const ${name}: usize = (\\d+);`));
+    assert.ok(m, `${name} must exist in store.rs`);
+    return Number(m[1]);
+  };
+  assert.match(
+    toolStoreSource,
+    new RegExp(`const MAX_DISPLAY_NAME_CHARS = ${rustMax('MAX_DISPLAY_NAME_CHARS')};`),
+    'frontend name cap must equal the Rust MAX_DISPLAY_NAME_CHARS',
+  );
+  assert.match(
+    toolStoreSource,
+    new RegExp(
+      `const MAX_DISPLAY_DESCRIPTION_CHARS = ${rustMax('MAX_DISPLAY_DESCRIPTION_CHARS')};`,
+    ),
+    'frontend description cap must equal the Rust MAX_DISPLAY_DESCRIPTION_CHARS',
+  );
+  assert.match(
+    toolStoreSource,
+    /maxLength=\{MAX_DISPLAY_NAME_CHARS\}/,
+    'name input must cap at MAX_DISPLAY_NAME_CHARS',
+  );
+  assert.match(
+    toolStoreSource,
+    /maxLength=\{MAX_DISPLAY_DESCRIPTION_CHARS\}/,
+    'description input must cap at MAX_DISPLAY_DESCRIPTION_CHARS',
+  );
+}
 
 // 4. 预填当前覆盖值：读 bundle 事实的 display_name / display_description 原值。
 assert.match(
@@ -138,7 +176,9 @@ for (const lang of ['zh', 'en', 'ja']) {
 for (const key of [
   'editDisplayTitle',
   'displayNameLabel',
+  'displayNamePlaceholder',
   'displayDescriptionLabel',
+  'displayDescriptionPlaceholder',
   'editDisplayHint',
   'editDisplaySave',
   'editDisplaySaved',

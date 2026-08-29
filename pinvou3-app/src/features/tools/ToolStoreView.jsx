@@ -698,10 +698,16 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                     const text = (e.clipboardData || window.clipboardData)?.getData('text/plain');
                     if (text == null) return;
                     e.preventDefault();
+                    // 按码点（Array.from 按 code point 切分）拼接与截断：直接
+                    // slice 按 UTF-16 单元会把粘贴位置上的代理对劈成两半（后端
+                    // chars() 校验对半个代理报错，报错文案不可读）；长度上限也
+                    // 按码点计，与后端 chars().count() 同口径（maxLength 的
+                    // UTF-16 计数只影响可输入上限的松紧，不会超后端限）。
+                    const clamp = s => [...s.replaceAll(/[\r\n]/g, '')].slice(0, MAX_DISPLAY_DESCRIPTION_CHARS).join('');
                     const pos = e.target.selectionStart ?? e.target.value.length;
-                    const clean = text.replaceAll(/[\r\n]/g, '');
-                    const next = e.target.value.slice(0, pos) + clean + e.target.value.slice(e.target.selectionEnd ?? pos);
-                    setDesc(next.replaceAll(/[\r\n]/g, '').slice(0, MAX_DISPLAY_DESCRIPTION_CHARS));
+                    const head = clamp(e.target.value.slice(0, pos));
+                    const tail = e.target.value.slice(e.target.selectionEnd ?? pos);
+                    setDesc(clamp(head + clamp(text) + tail));
                   }}
                   // 后端展示说明只接受单行（控制字符校验拒换行），Enter 在此
                   // 只会换来一次必败的保存——直接拦截，避免用户按回车后困惑。
@@ -1618,6 +1624,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // display_description 原值），留空 = 清覆盖回退默认。保存调
       // update_bundle_display_meta 后按现有模式 loadBackendState 刷新。
       const [editDisplay, setEditDisplay] = useState(null); // { backendId, cardTitle, name, description }
+      // 预填口径（与导入弹窗不同，是有意的）：编辑入口预填 extra 覆盖**原值**
+      // （未设 = 空，留空保存即清覆盖回退默认）；导入入口预填**生效默认名**
+      // （回退链取值），让用户直接保存固定默认或改名——见 doImportSkillZip。
       const handleEditDisplay = (backendId) => {
         if (!canMutateToolStore) return;
         const bf = (bundleStates[backendId] || {}).bundle || null;
@@ -2135,8 +2144,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               </div>
             </div>
           ), document.body)}
-          {/* 上传包展示名/说明编辑弹窗（edit_display 动作触发；条件挂载，state 初值即当前覆盖值） */}
+          {/* 上传包展示名/说明编辑弹窗（edit_display 动作触发；条件挂载，state 初值即当前覆盖值）。
+              key 按 backendId 强制重挂载：弹窗开着时拖放导入新包会原位替换 editDisplay，
+              无 key 则输入框保留旧包的 useState 初值、保存却写进新包 id（串台）。 */}
           {editDisplay && createPortal(<TsEditDisplayDialog
+            key={editDisplay.backendId}
             dialog={editDisplay}
             copy={storeCopy}
             onCancel={() => setEditDisplay(null)}
