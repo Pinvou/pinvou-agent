@@ -19,6 +19,11 @@ declare global {
     __PINVOU_SHARED_I18N__: any;
     PinvouMarkdownRenderer: any;
     PinvouWebClient: any;
+    // i18n string/function dictionary injected by src/app/main.jsx (uiPlatformMisc.webClientErrors),
+    // read as `(window.PinvouWebClientStrings || {})[key]` in src/platform/web/bootstrap.js.
+    PinvouWebClientStrings: any;
+    // Safari 14 legacy constructor, used as `window.AudioContext || window.webkitAudioContext`.
+    webkitAudioContext: typeof AudioContext | undefined;
   }
 }
 

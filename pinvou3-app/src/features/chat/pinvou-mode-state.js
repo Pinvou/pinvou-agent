@@ -146,7 +146,13 @@ function loadPinvouModeState(storage, scopeKey = DEFAULT_PINVOU_MODE_SCOPE) {
   return createPinvouModeState({ mode: 'work', workSubtab: UNROUTED_WORK_SUBTAB });
 }
 
-function hasPinvouModeState(storage, scopeKey) {
+/**
+ * 没有静态导入方:tests/pinvou_mode_state.test.js 以文本方式读取本文件、剥掉
+ * export 后在 Node vm 沙箱中按名求值,这条消费通道 knip 无法建边,故用
+ * public 标记防止被当作死导出删除。
+ * @public
+ */
+export function hasPinvouModeState(storage, scopeKey) {
   if (!scopeKey || scopeKey === DEFAULT_PINVOU_MODE_SCOPE) return false;
   const target = storage || (typeof window === 'undefined' ? null : window.localStorage);
   const store = readModeStore(target);
@@ -225,7 +231,6 @@ export {
   WORK_SUBTABS,
   createPinvouModeScopeKey,
   createPinvouModeState,
-  hasPinvouModeState,
   loadPinvouModeState,
   normalizeDesignSubtab,
   normalizePinvouMode,

@@ -1,7 +1,6 @@
 import {
   commandExecutionDetails,
   presentConversationItems,
-  stripTerminalControlSequences,
 } from '../conversation/conversation-model.js';
 
 export function unifiedConversationUiEnabled() {
@@ -533,6 +532,15 @@ export {
   commandExecutionDetails,
   contentText,
   mergeTool,
-  stripTerminalControlSequences,
   toolItemType,
 };
+
+/**
+ * 本文件内部不使用该函数,仅转发给消费方;tests/codex_acp_timeline.test.mjs
+ * 把本文件复制到临时目录后以计算型 URL 动态 import 该再导出,knip 无法为该
+ * 通道建边,故用 public 标记防止被当作死导出删除。
+ * @public
+ */
+export {
+  stripTerminalControlSequences,
+} from '../conversation/conversation-model.js';

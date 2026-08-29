@@ -419,6 +419,9 @@ jobs:
       - name: knip (unused files/exports)
         run: npm run lint:knip
 
+      - name: madge (circular imports)
+        run: npm run lint:cycles
+
       - name: Vite build
         run: npm run build:ui
 

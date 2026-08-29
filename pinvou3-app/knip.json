@@ -36,8 +36,5 @@
   "ignore": [
     "src/vendor/**"
   ],
-  "ignoreExportsUsedInFile": true,
-  "rules": {
-    "exports": "warn"
-  }
+  "ignoreExportsUsedInFile": true
 }

@@ -77,7 +77,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       const [sel, setSel] = useState(initialSelectedArtifact ? { ...initialSelectedArtifact, sessionId: initialSelectedArtifact.sessionId || activeSessionId } : null);        // 选中的 artifact { path, basename }
       const [pv, setPv] = useState(initialSelectedArtifact ? { loading: true } : {});            // 预览态
       const [infos, setInfos] = useState({});      // path → { size, kind, modified }(列表行元信息)
-      const [externalUpdateBlocked, setExternalUpdateBlocked] = useState(false);
+      const [externalUpdateBlocked, setExternalUpdateBlocked] = useState(/** @type {false|'removed'|'modified'} */ (false));
       const [htmlZoomMode, setHtmlZoomMode] = useState('fit');
       const [htmlScale, setHtmlScale] = useState(1);
       const [htmlCustomScale, setHtmlCustomScale] = useState(1);

@@ -351,6 +351,12 @@ export function openAcpExternalUrl(value) {
   return Promise.resolve(Boolean(opened));
 }
 
+/**
+ * tests/acp_platform_client.test.mjs 通过带查询串的计算型动态 import
+ * (`import(\`../src/features/codex/acpClient.js?test=${Date.now()}\`)`)消费本导出,
+ * knip 无法为该通道建边,故用 public 标记防止被当作死导出删除。
+ * @public
+ */
 export const acpAttachmentLimits = Object.freeze({
   get chunkBytes() { return chunkedUploader().CHUNK_BYTES; },
   get maxBytes() { return chunkedUploader().MAX_FILE_BYTES; },

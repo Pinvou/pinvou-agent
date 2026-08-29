@@ -247,6 +247,11 @@ export function deriveActivities(state, now = Date.now(), copy = DEFAULT_ACTIVIT
     ));
 }
 
+/**
+ * tests/pet_state_logic.test.mjs 把本文件复制到临时目录后以计算型 URL 动态
+ * import 消费本导出,knip 无法为该通道建边,故用 public 标记防止被当作死导出删除。
+ * @public
+ */
 export function deriveAnimation(state, now = Date.now()) {
   const first = deriveActivities(state, now)[0];
   return first ? first.status : null;

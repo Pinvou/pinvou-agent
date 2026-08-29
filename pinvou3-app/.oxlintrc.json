@@ -29,6 +29,10 @@
     "unicorn/prefer-at": "off",
     "unicorn/no-array-sort": "off",
     "unicorn/no-array-reverse": "off",
+    "eqeqeq": [
+      "warn",
+      "smart"
+    ],
     "no-unused-vars": [
       "warn",
       {
