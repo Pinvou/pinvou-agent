@@ -8,10 +8,14 @@ on:
 permissions:
   contents: read
 
-# Cancel superseded runs for the same ref to avoid queueing and wasted runner minutes.
+# Cancel superseded runs for the same ref to avoid queueing and wasted runner
+# minutes. Only PR runs may cancel each other: on merge_group and main pushes
+# github.ref is refs/heads/main, so an unconditional cancel would let
+# concurrent merge-queue entries kill each other's required-check context
+# (same failure class pr-check guards against).
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   dependency-review:

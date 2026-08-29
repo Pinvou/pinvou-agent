@@ -464,7 +464,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       </div>
     );
     // 工厂：绑定「我的任务」列表所需的共享状态与渲染回调，返回仅剩 className 入参的
-    // 渲染函数（模块作用域定义，保证类型跨渲染稳定，避免每次渲染重建导致子树重挂载）。
+    // 渲染函数。调用处按普通函数调用（非 JSX 元素），不涉及组件类型与重挂载语义。
     /**
      * @param {{
      *   scheduledCopy: ScheduledCopy, taskFilter: string, setTaskFilter: (value: string) => void, error?: string,
@@ -1356,7 +1356,8 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         );
       };
 
-      // 绑定共享状态后，调用处仅需 className 入参（模块作用域工厂保证类型稳定）。
+      // 绑定共享状态后，调用处仅需 className 入参（此处按普通函数调用，勿改为 JSX
+      // 元素使用——工厂在渲染期调用，JSX 用法会每次渲染生成新组件类型导致子树重挂载）。
       const MyTasksSection = makeMyTasksSection({ scheduledCopy, taskFilter, setTaskFilter, error, filtered, loading, renderTaskRow });
 
       const DetailTaskDialog = () => (selected && detailForm) ? renderModal(

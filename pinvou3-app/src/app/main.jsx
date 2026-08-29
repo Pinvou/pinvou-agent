@@ -1184,10 +1184,12 @@ function workspaceDisplayName(path) {
 
       // 冷路径预取:该 modal 唯一入口在聊天「存入卡牌池」,此前 cardpool chunk
       // 可能从未加载;提前发起 import 避免打开动作撞上 chunk 冷启动/失败。
-      function handleOpenPersonaEditor(initial) {
+      // 引用须跨渲染稳定:它透传给按结构比较 memo 的 ConversationTurn,
+      // 每渲染新 identity 会在流式期间把整条时间线的 memo 全量击穿。
+      const handleOpenPersonaEditor = useCallback((initial) => {
         prefetchView('cardpool');
         setPersonaEditor({ initial });
-      }
+      }, []);
 
       // Sync from bridge state
       // One-shot bootstrap: backfill the search-config draft baseline when bridge settings first arrive, then use draft mode

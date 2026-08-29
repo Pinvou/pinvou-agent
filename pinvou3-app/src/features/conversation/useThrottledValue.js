@@ -6,12 +6,14 @@ import { useEffect, useRef, useState } from 'react';
  * marked.parse + DOMPurify + hljs over the full growing text on every chunk is
  * O(n²) over the message, so the render must follow a time budget instead of
  * the chunk rate. While `active`, the returned value trails `value` and is
- * refreshed at most once per `delayMs`; when `active` turns false the latest
- * raw value is adopted immediately, so a finished message always renders
- * verbatim (never stale). The interval samples the value through a ref that is
- * re-synced after every commit, so bursts of chunks arriving faster than
- * `delayMs` can never starve the trailing update, and equal string samples are
- * a free no-op re-render.
+ * refreshed at most once per `delayMs`; when `active` is false the raw value
+ * passes straight through, so the very commit that ends the stream renders the
+ * finished message verbatim — including coalesced snapshots where the final
+ * text and the streaming flag change together, which a flush driven by a
+ * timer or an effect could never guarantee. The interval samples the value
+ * through a ref that is re-synced after every commit, so bursts of chunks
+ * arriving faster than `delayMs` can never starve the trailing update, and
+ * equal string samples are a free no-op re-render.
  * @template T
  * @param {T} value - the fast-changing raw value (typically streaming markdown text)
  * @param {number} delayMs - minimum interval between throttled updates while active
@@ -27,17 +29,17 @@ export function useThrottledValue(value, delayMs = 200, active = true) {
     // Re-sync after every commit that carries a new value: the interval fires
     // between commits, so this keeps samples current.
     valueRef.current = value;
-    if (!active) return;
-    // Passthrough while inactive doubles as the guaranteed final flush: the
-    // render that flips `active` already carries the final text in the same
-    // snapshot, so this flush is driven by the flag transition itself and can
-    // never go stale (a lost-timer flush could).
+  }, [value]);
+  useEffect(() => {
+    if (active) return;
+    // Converge the stored state with the raw value once the stream ends, so a
+    // later re-activation can never resurface a pre-end sample.
     setThrottled(valueRef.current);
-  }, [active, value]);
+  }, [active]);
   useEffect(() => {
     if (!active) return;
     const timer = window.setInterval(() => setThrottled(valueRef.current), Math.max(0, delayMs));
     return () => window.clearInterval(timer);
   }, [active, delayMs]);
-  return throttled;
+  return active ? throttled : value;
 }

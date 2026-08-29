@@ -165,7 +165,7 @@ export default defineConfig(({ mode }) => {
             // multi-entry UI build already gets an equivalent separate shared
             // chunk from rolldown's automatic splitting, so this only applies
             // to the web mode.
-            advancedChunks: {
+            codeSplitting: {
               groups: [{
                 name: 'vendor',
                 test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/,
