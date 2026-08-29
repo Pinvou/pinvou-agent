@@ -674,6 +674,17 @@ jobs:
           cargo clippy --lib --bins --no-deps --features server -- -D warnings
           cargo clippy --lib --bins --tests --no-deps --features server
 
+      # rustdoc 硬门禁:模块级文档地图曾积累 46 条 rustdoc 告警(private_intra_doc_links
+      # /broken_intra_doc_links/invalid_html_tags,2026-08 收口清零),此前无任何门禁
+      # 可见。RUSTDOCFLAGS 只作用于 rustdoc 本身,不会把 CodeWhale 子模块的 rustc
+      # 告警升级为错误(那属上游欠账,见 clippy 步骤注释)。
+      - name: cargo doc --no-deps (硬门禁,rustdoc 告警清零)
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
+        working-directory: pinvou3-app/src-tauri
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps
+
       # cargo-shear (unused deps / unlinked source files): static parse, no
       # compile cost, rust-analyzer-grade precision (same tool as uv/oxc);
       # exemptions are registered in Cargo.toml [package.metadata.cargo-shear].
