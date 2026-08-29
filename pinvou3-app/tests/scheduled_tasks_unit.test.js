@@ -3164,6 +3164,77 @@ async function interruptQueuedNotPendingExpiryRestoresInput() {
   );
 }
 
+async function interruptQueuedNotPendingDroppedSettlesAsRestore() {
+  // Audit P1 regression: after ⚡ with withdraw=not_pending, the reconcile
+  // watchdog keeps the text hostage until a terminal event. A LATE
+  // chat:steer_dropped (engine dropped the steer at turn end; the async event
+  // lands after the invoke response — the foundation answers NotPending for
+  // ids that already settled) is the authoritative "never delivered" answer:
+  // it must restore the text like the watchdog expiry does, not silently
+  // consume the withdrawn registration (which dismantled both safety nets
+  // and lost the message).
+  const timeouts = [];
+  const harness = createBridgeHarness(null, {
+    setTimeout: function (fn, ms) {
+      timeouts.push({ fn, ms });
+      return timeouts.length;
+    },
+    clearTimeout: function () {},
+  });
+  const bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-zap-drop"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-zap-drop" });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-d1"; };
+  harness.handlers.withdraw_steer = function () { return "not_pending"; };
+  harness.handlers.chat = function () { return "ok"; };
+
+  await bridge.chat.sendMessage("迟到 dropped 也要回来的一句");
+  await tick();
+  await tick();
+  const queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
+
+  const result = await bridge.chat.interruptAndSendQueued("chat-zap-drop", queuedId);
+  assert.strictEqual(result, true);
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
+    0,
+    "no resend on not_pending"
+  );
+  assert.ok(
+    timeouts.some(function (t) { return t.ms === 60000; }),
+    "reconcile watchdog armed after not_pending"
+  );
+
+  // The dropped event arrives late — before the watchdog fires. It is the
+  // reconcile terminal proving non-delivery: text restored + notice, no
+  // resend, no bubble.
+  harness.emit("chat:steer_dropped", { session_id: "chat-zap-drop", steer_id: "steer-d1" });
+  await tick();
+  await tick();
+  assert.strictEqual(
+    bridge.state.getMany(['chat']).composerDraft,
+    "迟到 dropped 也要回来的一句",
+    "late dropped after not_pending restores the text (message not lost)"
+  );
+  const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.ok(
+    view.chatItems.some(function (item) { return item.type === "system"; }),
+    "a system notice is given"
+  );
+
+  // The registration was consumed by the dropped settle: firing the (already
+  // cleared) watchdog must not restore a second copy.
+  timeouts.filter(function (t) { return t.ms === 60000; }).forEach(function (t) { t.fn(); });
+  await tick();
+  await tick();
+  assert.strictEqual(
+    bridge.state.getMany(['chat']).composerDraft,
+    "迟到 dropped 也要回来的一句",
+    "no duplicate restore after the registration was consumed"
+  );
+}
+
 async function interruptQueuedRetiredSteerResends() {
   // Control group: with outcome=retired (withdrawal effective, the engine
   // copy never injects), ⚡ proceeds with cancel + resend as usual.
@@ -7212,6 +7283,7 @@ Promise.resolve()
   .then(mainPathSendFailureRejectsToCaller)
   .then(interruptQueuedCommittedSteerDoesNotResend)
   .then(interruptQueuedNotPendingExpiryRestoresInput)
+  .then(interruptQueuedNotPendingDroppedSettlesAsRestore)
   .then(interruptQueuedRetiredSteerResends)
   .then(transcriptFallbackTailScanTerminatesWithoutEnoughUserTail)
   .then(steerDroppedByEngineRestoresDraftText)
