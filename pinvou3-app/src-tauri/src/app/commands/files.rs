@@ -45,13 +45,20 @@ pub async fn ingest_draft_file_chunk(
     total: usize,
     data_base64: String,
     commit: bool,
+    sha256: Option<String>,
 ) -> Result<Option<crate::features::files::file_ingest::IngestResult>, String> {
     let result = async {
         let data = base64::engine::general_purpose::STANDARD
             .decode(data_base64)
             .map_err(|error| format!("解码附件分块失败：{error}"))?;
         crate::features::files::attachment_upload::append_draft_chunk(
-            &upload_id, &filename, offset, total, &data, commit,
+            &upload_id,
+            &filename,
+            offset,
+            total,
+            &data,
+            commit,
+            sha256.as_deref(),
         )
         .await
     }
@@ -89,6 +96,7 @@ pub async fn ingest_dropped_file_chunk(
     total: usize,
     data_base64: String,
     commit: bool,
+    sha256: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<Option<crate::features::files::file_ingest::IngestResult>, String> {
     let (workspace, _) = conversation_attachment_context(&store, &session_id)?;
@@ -97,7 +105,14 @@ pub async fn ingest_dropped_file_chunk(
             .decode(data_base64)
             .map_err(|error| format!("解码附件分块失败：{error}"))?;
         crate::features::files::attachment_upload::append_chunk(
-            &workspace, &upload_id, &filename, offset, total, &data, commit,
+            &workspace,
+            &upload_id,
+            &filename,
+            offset,
+            total,
+            &data,
+            commit,
+            sha256.as_deref(),
         )
         .await
     }

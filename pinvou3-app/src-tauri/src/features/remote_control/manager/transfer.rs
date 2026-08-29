@@ -92,6 +92,12 @@ pub(super) fn finish_web_attachment_reservation_inner(
     Ok(())
 }
 
+/// Stable wire codes for the upload integrity failures. The Web clients map
+/// them to localized zh/en/ja copy (pinned by web_access_contract.test.mjs);
+/// they must stay machine-stable, not translated.
+pub(crate) const WEB_ATTACHMENT_DIGEST_INVALID: &str = "web_attachment_digest_invalid";
+pub(crate) const WEB_ATTACHMENT_INTEGRITY_MISMATCH: &str = "web_attachment_integrity_mismatch";
+
 pub(super) fn append_web_attachment_upload_chunk(
     inner: &mut Inner,
     upload_id: &str,
@@ -100,6 +106,7 @@ pub(super) fn append_web_attachment_upload_chunk(
     total: usize,
     data: &[u8],
     commit: bool,
+    sha256: Option<&str>,
 ) -> Result<Option<(String, Vec<u8>)>, String> {
     if upload_id.len() < 8
         || upload_id.len() > 128
@@ -183,6 +190,33 @@ pub(super) fn append_web_attachment_upload_chunk(
             "远程控制附件上传不完整：已上传 {} / {total} 字节",
             upload.data.len()
         ));
+    }
+    if let Some(expected) = sha256 {
+        // In-memory assembled bytes (bounded by MAX_FILE_BYTES), hashed under
+        // the manager lock at commit only; the desktop staging stack reuses
+        // the same digest-format rule via platform::encoding. Both failures
+        // return stable wire codes (pinned by web_access_contract.test.mjs)
+        // that the Web clients map to localized zh/en/ja copy; raw,
+        // single-language text must never cross the Relay.
+        let Some(expected) = crate::platform::encoding::normalize_sha256_hex(expected) else {
+            return Err(WEB_ATTACHMENT_DIGEST_INVALID.to_string());
+        };
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&upload.data);
+        let actual = crate::platform::encoding::hex_lower(&hasher.finalize());
+        if actual != expected {
+            return Err(WEB_ATTACHMENT_INTEGRITY_MISMATCH.to_string());
+        }
+    } else if commit {
+        // None can mean an older WebUI (acceptable), but also a modern one on
+        // an insecure origin where Web Crypto is unavailable — exactly the
+        // remote scenario the digest protects. Surface the downgrade in the
+        // desktop log instead of silently skipping verification.
+        log::warn!(
+            "[remote_control] web attachment upload {} committed without an integrity digest (older WebUI or Web Crypto unavailable)",
+            upload.file_name
+        );
     }
     let completed = inner
         .web_attachment_uploads

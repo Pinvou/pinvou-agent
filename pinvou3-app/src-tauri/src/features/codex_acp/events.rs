@@ -4,6 +4,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use agent_client_protocol::schema::v1::{
     SessionNotification, SessionUpdate, ToolCall, ToolCallStatus, ToolCallUpdate,
@@ -23,6 +24,9 @@ const STATE_FILE: &str = "acp-state.json";
 /// Leaves headroom for the remote event/RPC envelope below the 2 MiB Relay cap.
 const MAX_WEB_ACP_EVENT_BYTES: usize = 1_750_000;
 const HOST_PATH_REDACTION: &str = "[host path omitted]";
+/// Upper bound for waiting on a missing predecessor sequence before ordered
+/// Web delivery skips the gap and keeps the session pipeline responsive.
+const WEB_DELIVERY_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Codex ACP 页面唯一消费的事件合同。
 ///
@@ -687,20 +691,41 @@ pub struct EventBridge {
 struct OrderedWebDelivery {
     last_seq: Arc<Mutex<u64>>,
     ready: Arc<Condvar>,
+    wait_timeout: Arc<Duration>,
 }
 
 impl OrderedWebDelivery {
     fn new(last_seq: u64) -> Self {
+        Self::with_wait_timeout(last_seq, WEB_DELIVERY_WAIT_TIMEOUT)
+    }
+
+    fn with_wait_timeout(last_seq: u64, wait_timeout: Duration) -> Self {
         Self {
             last_seq: Arc::new(Mutex::new(last_seq)),
             ready: Arc::new(Condvar::new()),
+            wait_timeout: Arc::new(wait_timeout),
         }
     }
 
     fn deliver(&self, seq: u64, delivery: impl FnOnce()) {
         let mut last_seq = self.last_seq.lock();
+        let deadline = Instant::now() + *self.wait_timeout;
         while seq > last_seq.saturating_add(1) {
-            self.ready.wait(&mut last_seq);
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                // A producer that dies between sequence allocation and
+                // delivery must not block the session pipeline forever.
+                // The skipped envelope leaves a seq hole in the live stream;
+                // the Web client's envelope-seq gap detection heals it with a
+                // debounced authoritative timeline resync, and the next
+                // reconnect or session reopen refetches it as well.
+                eprintln!(
+                    "[acp] Web event delivery for sequence {seq} timed out waiting for sequence {}; skipping the gap",
+                    last_seq.saturating_add(1)
+                );
+                break;
+            }
+            self.ready.wait_for(&mut last_seq, remaining);
         }
         if seq <= *last_seq {
             return;
@@ -908,8 +933,12 @@ impl EventBridge {
         event_type: &str,
         data: Value,
     ) -> AcpEventEnvelope {
-        let has_web_subscriber =
-            crate::platform::app_events::has_active_app_event_subscriber(&self.app, "acp:event");
+        // While the remote endpoint is active the projection must be built
+        // even if the browser is momentarily disconnected: the journal
+        // replays disconnect-window events on reconnect. Without an endpoint
+        // at all, both projection cost and journal are skipped.
+        let web_transport_active =
+            crate::platform::app_events::has_active_app_event_transport(&self.app);
         let envelope = {
             // Sequence allocation, persistence, and native publication remain
             // one ordered unit. Potentially large Web projection and Relay
@@ -960,7 +989,7 @@ impl EventBridge {
             envelope
         };
 
-        let web_payload = has_web_subscriber.then(|| {
+        let web_payload = web_transport_active.then(|| {
             serde_json::to_value(project_acp_event_for_web_bounded(
                 &envelope,
                 MAX_WEB_ACP_EVENT_BYTES,
@@ -1496,6 +1525,42 @@ mod tests {
             thread.join().unwrap();
         }
 
+        assert_eq!(*seen.lock(), vec![1, 2]);
+    }
+
+    #[test]
+    fn ordered_web_delivery_skips_gap_after_bounded_wait() {
+        let delivery = OrderedWebDelivery::with_wait_timeout(0, Duration::from_millis(20));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+
+        // Sequence 1 never arrives (its producer died before delivering).
+        delivery.deliver(2, || seen.lock().push(2));
+
+        assert_eq!(*seen.lock(), vec![2], "delivery must skip the dead gap");
+
+        // A late predecessor must not double-deliver or regress the cursor.
+        delivery.deliver(1, || seen.lock().push(1));
+        assert_eq!(*seen.lock(), vec![2]);
+
+        // Later sequences continue in order without re-blocking.
+        delivery.deliver(3, || seen.lock().push(3));
+        assert_eq!(*seen.lock(), vec![2, 3]);
+    }
+
+    #[test]
+    fn ordered_web_delivery_timeout_does_not_lose_arriving_predecessor() {
+        let delivery = OrderedWebDelivery::with_wait_timeout(0, Duration::from_secs(30));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let later = {
+            let delivery = delivery.clone();
+            let seen = Arc::clone(&seen);
+            std::thread::spawn(move || delivery.deliver(2, || seen.lock().push(2)))
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        delivery.deliver(1, || seen.lock().push(1));
+        later.join().unwrap();
+
+        // The predecessor arrived inside the wait window, so strict order holds.
         assert_eq!(*seen.lock(), vec![1, 2]);
     }
 

@@ -58,6 +58,7 @@ const codexZh = {
   connectedSuffix:'已连接', notReadySuffix:'未就绪',
   notSet:'未设置', choiceTitle:'Agent 需要你的选择', submit:'提交', cancel:'取消', submitted:'已提交', canceled:'已取消', inputExpired:'该输入请求已过期',
   checking:'正在检查 ACP Agent…', bridgeUnavailable:'Codex ACP Bridge 不可用',
+  viewLoading:'正在加载代码模式…', viewLoadFailed:'代码模式加载失败，可能是网络连接不稳定。', viewRetry:'重试',
   bridgeRepair:'请修复或重新安装 Pinvou。开发环境可运行 npm run prepare:codex-bridge。',
   cliMissing:agent=>`未检测到 ${agent} CLI`, cliOutdated:(version,minVersion)=>`检测到旧版本 ${version}（需要 ≥ ${minVersion}）`,
   cliUpdateAvailable:(agent,version,latest)=>`${agent} 当前版本 ${version || '未知'}，官方最新版 ${latest || '未知'}，建议升级`,
@@ -789,7 +790,7 @@ dictZh.uiArtifacts = {
 
 dictZh.uiCodexView = { ended:'已结束', stepsFailed:'执行步骤包含失败', processing:'正在处理', codexTool:'Codex 工具' };
 
-Object.assign(dictZh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`, deviceUploadTooLarge:name=>`${name} 超过 20 MB 附件上限`, deviceUploadEmpty:name=>`${name} 是空文件，无法添加`, deviceUploadUnavailable:'当前无法从此设备上传附件', deviceUploadInvalid:name=>`${name} 不是有效附件`, deviceUploadFailed:name=>`${name} 上传失败，请重试` });
+Object.assign(dictZh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`, deviceUploadTooLarge:name=>`${name} 超过 20 MB 附件上限`, deviceUploadEmpty:name=>`${name} 是空文件，无法添加`, deviceUploadUnavailable:'当前无法从此设备上传附件', deviceUploadInvalid:name=>`${name} 不是有效附件`, deviceUploadFailed:name=>`${name} 上传失败，请重试`, deviceUploadDigestInvalid:'附件完整性校验值无效，请重试', deviceUploadIntegrityMismatch:'附件内容在传输中损坏，请重新上传' });
 
 
 // uiToolStore 词条补充（ToolStoreView / oauth-marketplace-logic）：命名空间已在 dict 主体定义，这里增量合并。

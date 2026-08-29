@@ -153,6 +153,7 @@ export async function uploadAcpDeviceAttachment(file, options = {}) {
       total: chunk.total,
       dataBase64: chunk.dataBase64,
       commit: chunk.commit,
+      ...(chunk.sha256 ? { sha256: chunk.sha256 } : {}),
     }),
     validateResult: result => isWeb ? Boolean(acpAttachmentHandle(result)) : Boolean(result?.basename),
     cleanup: async upload => {
@@ -249,6 +250,16 @@ export function loadAcpPendingPermissions(sessionId) {
 export function loadAcpPendingElicitations(sessionId) {
   return invokeAcp('get_codex_acp_pending_elicitations',
     'web_access_get_codex_acp_pending_elicitations', { sessionId });
+}
+
+export function respondAcpPermission({ sessionId, toolCallId, optionId }) {
+  return invokeAcp('respond_codex_acp_permission',
+    'web_access_respond_codex_acp_permission', { sessionId, toolCallId, optionId });
+}
+
+export function respondAcpElicitation({ sessionId, elicitationId, action, content }) {
+  return invokeAcp('respond_codex_acp_elicitation',
+    'web_access_respond_codex_acp_elicitation', { sessionId, elicitationId, action, content });
 }
 
 export function setAcpModel(sessionId, modelId) {

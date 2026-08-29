@@ -3,47 +3,53 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// Source-regex assertions use bounded character gaps (e.g. [\s\S]{0,200});
+// a Windows checkout with core.autocrlf=true inflates those gaps with \r
+// characters, so normalize line endings before matching.
+const readSource = (filePath, encoding) =>
+  fs.readFileSync(filePath, encoding).replace(/\r\n/g, '\n');
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bridgeRoot = path.join(root, 'src', 'platform', 'tauri');
-const chunkedUpload = fs.readFileSync(
+const chunkedUpload = readSource(
   path.join(root, 'src', 'shared', 'chunked-file-upload.js'),
   'utf8',
 );
-const webBridge = fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bridge.js'), 'utf8');
-const webDomainAdapter = fs.readFileSync(
+const webBridge = readSource(path.join(root, 'src', 'platform', 'web', 'bridge.js'), 'utf8');
+const webDomainAdapter = readSource(
   path.join(root, 'src', 'platform', 'web', 'bridge', 'domain-adapter.js'),
   'utf8',
 );
-const attachmentDropController = fs.readFileSync(
+const attachmentDropController = readSource(
   path.join(root, 'src', 'features', 'attachments', 'attachment-drop-controller.js'),
   'utf8',
 );
-const attachmentDropHook = fs.readFileSync(
+const attachmentDropHook = readSource(
   path.join(root, 'src', 'features', 'attachments', 'useAttachmentDrop.js'),
   'utf8',
 );
-const desktopRemoteControlBridge = fs.readFileSync(
+const desktopRemoteControlBridge = readSource(
   path.join(bridgeRoot, 'bridge', 'remote-control.js'),
   'utf8',
 );
-const desktopSessionsBridge = fs.readFileSync(
+const desktopSessionsBridge = readSource(
   path.join(bridgeRoot, 'bridge', 'sessions.js'),
   'utf8',
 );
 const desktopBridgeSources = [
-  fs.readFileSync(path.join(bridgeRoot, 'bridge.js'), 'utf8'),
+  readSource(path.join(bridgeRoot, 'bridge.js'), 'utf8'),
   ...fs.readdirSync(path.join(bridgeRoot, 'bridge'))
     .filter(name => name.endsWith('.js'))
     .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
-    .map(name => fs.readFileSync(path.join(bridgeRoot, 'bridge', name), 'utf8')),
+    .map(name => readSource(path.join(bridgeRoot, 'bridge', name), 'utf8')),
 ];
 const bridge = [
   webBridge,
   webDomainAdapter,
   ...desktopBridgeSources,
 ].join('\n');
-const bootstrap = fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bootstrap.js'), 'utf8');
-const hostFilePicker = fs.readFileSync(
+const bootstrap = readSource(path.join(root, 'src', 'platform', 'web', 'bootstrap.js'), 'utf8');
+const hostFilePicker = readSource(
   path.join(root, 'src', 'platform', 'web', 'host-file-picker.js'),
   'utf8',
 );
@@ -51,9 +57,9 @@ const commandsRoot = path.join(root, 'src-tauri', 'src', 'app', 'commands');
 const commands = fs.readdirSync(commandsRoot)
   .filter(name => name.endsWith('.rs'))
   .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
-  .map(name => fs.readFileSync(path.join(commandsRoot, name), 'utf8'))
+  .map(name => readSource(path.join(commandsRoot, name), 'utf8'))
   .join('\n');
-const remoteControlCommands = fs.readFileSync(path.join(commandsRoot, 'remote_control.rs'), 'utf8');
+const remoteControlCommands = readSource(path.join(commandsRoot, 'remote_control.rs'), 'utf8');
 const remoteControlManagerRoot = path.join(
   root,
   'src-tauri',
@@ -65,7 +71,7 @@ const remoteControlManagerRoot = path.join(
 const remoteControlManager = fs.readdirSync(remoteControlManagerRoot)
   .filter(name => name.endsWith('.rs'))
   .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
-  .map(name => fs.readFileSync(path.join(remoteControlManagerRoot, name), 'utf8'))
+  .map(name => readSource(path.join(remoteControlManagerRoot, name), 'utf8'))
   .join('\n');
 const remoteControlPlatformRoot = path.join(
   root,
@@ -78,34 +84,34 @@ const remoteControlPlatformRoot = path.join(
 const remoteControlPlatform = fs.readdirSync(remoteControlPlatformRoot)
   .filter(name => name.endsWith('.rs'))
   .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
-  .map(name => fs.readFileSync(path.join(remoteControlPlatformRoot, name), 'utf8'))
+  .map(name => readSource(path.join(remoteControlPlatformRoot, name), 'utf8'))
   .join('\n');
-const settingsView = fs.readFileSync(path.join(root, 'src', 'features', 'settings', 'SettingsView.jsx'), 'utf8');
-const artifactsPanel = fs.readFileSync(path.join(root, 'src', 'features', 'artifacts', 'ArtifactsPanel.jsx'), 'utf8');
-const toolStoreView = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'ToolStoreView.jsx'), 'utf8');
-const toolRenderers = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-renderers.jsx'), 'utf8');
-const knowledgeView = fs.readFileSync(path.join(root, 'src', 'features', 'knowledge', 'KnowledgeView.jsx'), 'utf8');
-const toolCommon = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-common.jsx'), 'utf8');
-const connectionStatus = fs.readFileSync(path.join(root, 'src', 'features', 'web', 'WebConnectionStatus.jsx'), 'utf8');
-const chatView = fs.readFileSync(path.join(root, 'src', 'features', 'chat', 'ChatView.jsx'), 'utf8');
-const codexView = fs.readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
-const acpRuntimeNotices = fs.readFileSync(
+const settingsView = readSource(path.join(root, 'src', 'features', 'settings', 'SettingsView.jsx'), 'utf8');
+const artifactsPanel = readSource(path.join(root, 'src', 'features', 'artifacts', 'ArtifactsPanel.jsx'), 'utf8');
+const toolStoreView = readSource(path.join(root, 'src', 'features', 'tools', 'ToolStoreView.jsx'), 'utf8');
+const toolRenderers = readSource(path.join(root, 'src', 'features', 'tools', 'tool-renderers.jsx'), 'utf8');
+const knowledgeView = readSource(path.join(root, 'src', 'features', 'knowledge', 'KnowledgeView.jsx'), 'utf8');
+const toolCommon = readSource(path.join(root, 'src', 'features', 'tools', 'tool-common.jsx'), 'utf8');
+const connectionStatus = readSource(path.join(root, 'src', 'features', 'web', 'WebConnectionStatus.jsx'), 'utf8');
+const chatView = readSource(path.join(root, 'src', 'features', 'chat', 'ChatView.jsx'), 'utf8');
+const codexView = readSource(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
+const acpRuntimeNotices = readSource(
   path.join(root, 'src', 'features', 'codex', 'AcpRuntimeNotices.jsx'),
   'utf8',
 );
-const codexWorkspacePanel = fs.readFileSync(
+const codexWorkspacePanel = readSource(
   path.join(root, 'src', 'features', 'codex', 'CodexWorkspacePanel.jsx'),
   'utf8',
 );
-const codeViewerModal = fs.readFileSync(
+const codeViewerModal = readSource(
   path.join(root, 'src', 'features', 'codex', 'CodeViewerModal.jsx'),
   'utf8',
 );
-const acpPlatformClient = fs.readFileSync(path.join(root, 'src', 'features', 'codex', 'acpClient.js'), 'utf8');
-const acpErrors = fs.readFileSync(path.join(root, 'src', 'features', 'codex', 'acpErrors.js'), 'utf8');
-const i18n = ['zh', 'en', 'ja'].map((l) => fs.readFileSync(path.join(root, 'src', 'shared', 'i18n', `${l}.js`), 'utf8')).join('\n'); // 拆分后三语在 i18n/ 目录
-const appMain = fs.readFileSync(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
-const policy = JSON.parse(fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'access-policy.json'), 'utf8'));
+const acpPlatformClient = readSource(path.join(root, 'src', 'features', 'codex', 'acpClient.js'), 'utf8');
+const acpErrors = readSource(path.join(root, 'src', 'features', 'codex', 'acpErrors.js'), 'utf8');
+const i18n = ['zh', 'en', 'ja'].map((l) => readSource(path.join(root, 'src', 'shared', 'i18n', `${l}.js`), 'utf8')).join('\n'); // 拆分后三语在 i18n/ 目录
+const appMain = readSource(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
+const policy = JSON.parse(readSource(path.join(root, 'src', 'platform', 'web', 'access-policy.json'), 'utf8'));
 const allowed = new Set(policy.allowed_commands);
 const allowedEvents = new Set(policy.allowed_events);
 
@@ -348,31 +354,33 @@ assert.match(webBridge,
   /IS_WEB \? "web_access_list_sessions" : "list_sessions"[\s\S]*?IS_WEB \? "web_access_list_archived_sessions" : "list_archived_sessions"/,
   'Web history refreshes must use path-redacted session list commands');
 assert.match(remoteControlCommands,
-  /fn web_workspace_result[\s\S]*?web_workspace_\{operation\}_failed[\s\S]*?web_access_list_codex_workspace[\s\S]*?web_workspace_result\("listing", result\)[\s\S]*?web_access_search_codex_workspace[\s\S]*?web_workspace_result\("search", result\)[\s\S]*?web_access_preview_codex_workspace_file[\s\S]*?web_workspace_result\("preview", result\)[\s\S]*?web_access_get_codex_workspace_changes[\s\S]*?web_workspace_result\("changes", result\)[\s\S]*?web_access_get_codex_workspace_diff[\s\S]*?web_workspace_result\("diff", result\)/,
+  /fn web_workspace_result[\s\S]*?web_workspace_\{\}_failed", operation\.as_str\(\)[\s\S]*?web_access_list_codex_workspace[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Listing, result\)[\s\S]*?web_access_search_codex_workspace[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Search, result\)[\s\S]*?web_access_preview_codex_workspace_file[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Preview, result\)[\s\S]*?web_access_get_codex_workspace_changes[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Changes, result\)[\s\S]*?web_access_get_codex_workspace_diff[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Diff, result\)/,
   'Web workspace RPC failures must not return host paths embedded in native errors');
 assert.match(remoteControlCommands,
-  /web_access_get_codex_acp_timeline[\s\S]*?web_acp_result\([\s\S]*?"timeline"/,
+  /web_access_get_codex_acp_timeline[\s\S]*?web_acp_result\(WebAcpOperation::Timeline/,
   'Web ACP timeline failures must cross Relay as a controlled error code');
-for (const [command, operation] of Object.entries({
-  web_access_create_codex_acp_session: 'session_create',
-  web_access_cancel_codex_acp: 'cancel',
-  web_access_codex_acp_prompt: 'prompt',
-  web_access_get_codex_acp_timeline: 'timeline',
-  web_access_get_codex_acp_session_info: 'session_info',
-  web_access_set_codex_acp_model: 'set_model',
-  web_access_set_codex_acp_mode: 'set_mode',
-  web_access_set_codex_acp_config_option: 'set_config_option',
-  web_access_get_codex_acp_pending_permissions: 'pending_permissions',
-  web_access_respond_codex_acp_permission: 'respond_permission',
-  web_access_get_codex_acp_pending_elicitations: 'pending_elicitations',
-  web_access_respond_codex_acp_elicitation: 'respond_elicitation',
-  web_access_list_codex_acp_sessions: 'list_sessions',
-  web_access_list_acp_agents: 'list_agents',
-  web_access_get_acp_agent_status: 'agent_status',
+// Every web_access_* ACP command maps failures through a WebAcpOperation enum
+// variant; the Rust test stable_web_error_codes_are_locked pins the wire codes.
+for (const [command, variant] of Object.entries({
+  web_access_create_codex_acp_session: 'SessionCreate',
+  web_access_cancel_codex_acp: 'Cancel',
+  web_access_codex_acp_prompt: 'Prompt',
+  web_access_get_codex_acp_timeline: 'Timeline',
+  web_access_get_codex_acp_session_info: 'SessionInfo',
+  web_access_set_codex_acp_model: 'SetModel',
+  web_access_set_codex_acp_mode: 'SetMode',
+  web_access_set_codex_acp_config_option: 'SetConfigOption',
+  web_access_get_codex_acp_pending_permissions: 'PendingPermissions',
+  web_access_respond_codex_acp_permission: 'RespondPermission',
+  web_access_get_codex_acp_pending_elicitations: 'PendingElicitations',
+  web_access_respond_codex_acp_elicitation: 'RespondElicitation',
+  web_access_list_codex_acp_sessions: 'ListSessions',
+  web_access_list_acp_agents: 'ListAgents',
+  web_access_get_acp_agent_status: 'AgentStatus',
 })) {
   assert.match(
     rustCommandBlock(remoteControlCommands, command),
-    new RegExp(`web_acp_result\\("${operation}"`),
+    new RegExp(`web_acp_result\\(WebAcpOperation::${variant}`),
     `${command} must map every failure to its stable Web ACP error code`,
   );
 }
@@ -397,14 +405,60 @@ assert.equal(allowed.has('respond_codex_acp_elicitation'), false,
   'Web must not call the native ACP elicitation response command');
 assert.equal(allowed.has('web_access_respond_codex_acp_permission'), true);
 assert.equal(allowed.has('web_access_respond_codex_acp_elicitation'), true);
-assert.match(codexView,
-  /isWeb \? 'web_access_respond_codex_acp_permission' : 'respond_codex_acp_permission'/,
+assert.match(acpPlatformClient,
+  /respond_codex_acp_permission',[\s\S]*?'web_access_respond_codex_acp_permission'/,
   'permission responses must preserve the native command and use a stable Web wrapper');
-assert.match(codexView,
-  /isWeb \? 'web_access_respond_codex_acp_elicitation' : 'respond_codex_acp_elicitation'/,
+assert.match(acpPlatformClient,
+  /respond_codex_acp_elicitation',[\s\S]*?'web_access_respond_codex_acp_elicitation'/,
   'elicitation responses must preserve the native command and use a stable Web wrapper');
+assert.doesNotMatch(codexView,
+  /isWeb \? 'web_access_respond_/,
+  'the view must route permission/elicitation responses through the acp client');
 assert.match(acpErrors, /CONTROLLED_WEB_ERROR[\s\S]*?copy\.operationFailed/,
   'controlled Web error codes must become localized UI copy instead of raw browser text');
+
+// Upload integrity failures must surface a stable wire code that the web
+// client maps to trilingual copy; the Chinese raw text must no longer pass
+// through the Relay to en/ja users (review P2).
+// web_access_upload_attachment_chunk serves both plain sessions and the ACP
+// code mode, so both display paths must recognize these two codes.
+assert.match(remoteControlManager, /WEB_ATTACHMENT_DIGEST_INVALID: &str = "web_attachment_digest_invalid"/,
+  'the malformed-digest failure must be a stable wire code');
+assert.match(remoteControlManager, /WEB_ATTACHMENT_INTEGRITY_MISMATCH: &str = "web_attachment_integrity_mismatch"/,
+  'the digest-mismatch failure must be a stable wire code');
+assert.doesNotMatch(remoteControlManager, /远程控制附件完整性校验/,
+  'single-language integrity errors must not cross the Relay');
+assert.match(acpErrors, /'web_attachment_digest_invalid'[\s\S]*?'web_attachment_integrity_mismatch'/,
+  'the session-level fallback must fold both codes into localized copy');
+assert.match(webBridge, /rawUploadError === "web_attachment_digest_invalid"[\s\S]*?bt\("deviceUploadDigestInvalid"\)/,
+  'the Web chat upload path must localize the malformed-digest code');
+assert.match(webBridge, /rawUploadError === "web_attachment_integrity_mismatch"[\s\S]*?bt\("deviceUploadIntegrityMismatch"\)/,
+  'the Web chat upload path must localize the mismatch code');
+assert.equal((webBridge.match(/deviceUploadDigestInvalid:/g) || []).length, 3,
+  'the malformed-digest copy must exist in all three BT_TABLE language blocks');
+assert.equal((webBridge.match(/deviceUploadIntegrityMismatch:/g) || []).length, 3,
+  'the mismatch copy must exist in all three BT_TABLE language blocks');
+assert.match(codexView, /uploadErrorText === 'web_attachment_digest_invalid'[\s\S]*?uiAttachments\.deviceUploadDigestInvalid/,
+  'the ACP attachment path must localize the malformed-digest code');
+assert.match(codexView, /uploadErrorText === 'web_attachment_integrity_mismatch'[\s\S]*?uiAttachments\.deviceUploadIntegrityMismatch/,
+  'the ACP attachment path must localize the mismatch code');
+assert.equal((i18n.match(/deviceUploadDigestInvalid:/g) || []).length, 3,
+  'the ACP malformed-digest copy must exist in all three i18n dictionaries');
+assert.equal((i18n.match(/deviceUploadIntegrityMismatch:/g) || []).length, 3,
+  'the ACP mismatch copy must exist in all three i18n dictionaries');
+
+// After the watchdog skips a stalled predecessor, the web live stream shows
+// an envelope-seq hole; the listener must detect the jump and debounce-refetch
+// the authoritative timeline to self-heal (instead of waiting for a
+// reconnect/session reopen), merging the snapshot and rebasing the tracker.
+assert.match(codexView, /acpEventSeqTrackerRef\.current\.note\(incoming\.sessionId, incoming\.seq\) === 'gap'[\s\S]*?scheduleAcpGapResync\(incoming\.sessionId\)/,
+  'the live acp:event listener must detect envelope-seq gaps and schedule a resync');
+assert.match(codexView, /createAcpGapResyncScheduler\(sessionId => \{[\s\S]*?resyncAcpSessionAfterGap\(sessionId\);[\s\S]*?\}, \{/,
+  'the gap resync must go through the bounded-retry scheduler wrapping resyncAcpSessionAfterGap');
+assert.match(codexView, /mergeAcpTimelineSnapshot\(timeline, current, sessionId\)[\s\S]*?rebaseAcpEventSeqTracker\(sessionId, timeline\)/,
+  'the gap resync must merge the authoritative snapshot and rebase the tracker');
+assert.match(codexView, /acpGapResyncRef\.current\.cancel\(\)/,
+  'the pending gap resync must be cancelled on unmount');
 
 assert.match(bootstrap, /sendRaw\(\{ \.\.\.value, v: protocolVersion, lease_id: this\.leaseId \}\)/);
 assert.match(bootstrap, /desktopCapabilitiesReady/);
@@ -429,12 +483,29 @@ assert.doesNotMatch(hostFilePicker, /Array\.isArray\(listing\.roots\) && !parent
   'filesystem roots must not be mixed into a drive directory listing');
 assert.match(hostFilePicker, /openWorkspace:/,
   'the host picker must expose a dedicated code-workspace selection flow');
-assert.match(hostFilePicker, /issueWorkspaceHandle:\s*options\.workspaceGrant === true/,
-  'only workspace selection should request a one-shot host capability');
-assert.match(hostFilePicker, /workspaceHandle:\s*currentWorkspaceHandle/,
-  'workspace selection must return the host-issued handle with its display path');
-assert.match(hostFilePicker, /message === "host_workspace_not_authorized"[\s\S]{0,120}workspaceNotAuthorized/,
-  'an unapproved legacy endpoint must receive a localized desktop-authorization prompt');
+assert.match(hostFilePicker, /issueWorkspaceHandle:\s*true/,
+  'the one-shot host capability must be minted on confirm');
+assert.match(hostFilePicker, /issueWorkspaceHandle:\s*false/,
+  'directory browsing must not mint one-shot workspace handles');
+assert.match(hostFilePicker, /(?:var|const|let) confirmedPath = currentPath;[\s\S]{0,1000}finish\(\{ path: confirmedPath, workspaceHandle: handle \}\);/,
+  'workspace selection must finish with the click-time path and the handle minted for it');
+assert.doesNotMatch(hostFilePicker, /currentWorkspaceHandle/,
+  'browsing never carries a workspace handle, so no stale-handle fallback path may remain');
+assert.match(hostFilePicker, /localizedPickerError/,
+  'both the listing and confirm-mint failures must map stable authorization codes to localized copy');
+assert.match(hostFilePicker,
+  /(?:var|const|let) confirmedGeneration = loadGeneration;[\s\S]{0,900}if \(disposed \|\| confirmedGeneration !== loadGeneration\) return;/,
+  'a late confirm-mint failure must not touch the UI after the picker closed or a newer listing rendered');
+assert.match(hostFilePicker,
+  /\.then\(function \(listing\) \{[\s\S]{0,600}if \(disposed \|\| confirmedGeneration !== loadGeneration\) return;[\s\S]{0,200}finish\(\{ path: confirmedPath, workspaceHandle: handle \}\);/,
+  'a late confirm-mint success must not close the picker on a directory the user already navigated away from');
+assert.match(hostFilePicker, /mintInFlight = true;/,
+  'the confirm handler must mark the mint as in flight before its RPC');
+assert.match(hostFilePicker,
+  /confirm\.disabled = mintInFlight \|\| \(directoryMode \? !currentPath : count === 0\);/,
+  'navigation must not re-enable the confirm button while a mint is still in flight');
+assert.match(hostFilePicker, /(?:var|const|let) generation = \+\+loadGeneration;\s*\n\s*mintInFlight = false;/,
+  'navigation must supersede any in-flight mint instead of racing a second one');
 assert.match(remoteControlManager,
   /HOST_WORKSPACE_NOT_AUTHORIZED:\s*&str\s*=\s*"host_workspace_not_authorized"[\s\S]*?Err\(HOST_WORKSPACE_NOT_AUTHORIZED\.to_string\(\)\)/,
   'the desktop and browser must share the stable host-workspace authorization error code');
@@ -470,7 +541,7 @@ assert.match(bootstrap, /state_ready: stateReady/);
 assert.match(bootstrap, /markStateReady\(\)/);
 assert.match(bootstrap, /if \(!this\.frontendReady \|\| !this\.stateReady\)/);
 assert.match(bootstrap, /if \(!this\.frontendReady \|\| !this\.stateReady\)/);
-const main = fs.readFileSync(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
+const main = readSource(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
 const webSearchRestartBody = webBridge.slice(
   webBridge.indexOf('async function saveSearchSettingsAndRestart'),
   webBridge.indexOf('async function submitFeedback'),
@@ -625,7 +696,7 @@ assert.match(bridge, /if \(client && !client\.stateReady\) \{[\s\S]{0,120}initPr
 // UI mutation affordances must follow the browser capability allowlist while
 // leaving desktop defaults and per-session model switching intact.
 assert.match(settingsView, /const canManageModels = can\('modelManagement'\);/);
-const composerShared = fs.readFileSync(path.join(root, 'src', 'features', 'settings', 'composer-shared.jsx'), 'utf8');
+const composerShared = readSource(path.join(root, 'src', 'features', 'settings', 'composer-shared.jsx'), 'utf8');
 assert.match(composerShared, /const canSwitchModels = can\('sessionModelSwitch'\);/);
 assert.match(composerShared, /const canMutateToolStore = can\('toolStoreMutations'\);/);
 assert.match(composerShared, /const toolSwitchDisabled = !canMutateToolStore;/);
@@ -659,7 +730,7 @@ assert.ok(
   (codexView.match(/notifyChatRoundCommitted\('code'\);/g) || []).length >= 2,
   'native code lane send and accept-plan must each commit pending enables',
 );
-const toolEvents = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-events.js'), 'utf8');
+const toolEvents = readSource(path.join(root, 'src', 'features', 'tools', 'tool-events.js'), 'utf8');
 assert.match(toolEvents, /export \{ notifyComposerToolsChanged, notifyChatRoundCommitted \};/);
 assert.match(composerShared, /bridge\.models\.switchModel\(activeSessionId, id\)/);
 assert.match(settingsView, /\{canManageModels && editingModel && \(/);
@@ -708,7 +779,7 @@ assert.match(desktopRemoteControlBridge, /listen\("web_access:status"/,
   'desktop bridge must consume live browser connection status events');
 assert.match(desktopRemoteControlBridge, /web_client_connected: false, host_workspace_authorized: false, status: "stopped"/,
   'stopping remote access must clear any stale connected state');
-const desktopBridge = fs.readFileSync(path.join(bridgeRoot, 'bridge.js'), 'utf8');
+const desktopBridge = readSource(path.join(bridgeRoot, 'bridge.js'), 'utf8');
 assert.match(desktopBridge, /web_client_connected: false/,
   'desktop bridge state must start with an explicit disconnected browser state');
 for (const source of [settingsView, connectionStatus]) {

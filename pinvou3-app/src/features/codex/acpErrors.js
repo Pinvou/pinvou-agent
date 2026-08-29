@@ -1,4 +1,4 @@
-const CONTROLLED_WEB_ERROR = /^(?:web_workspace_(?:listing|search|preview|changes|diff)_failed|web_acp_[a-z0-9_]+_failed|invalid_web_session_id|web_session_unavailable)$/;
+const CONTROLLED_WEB_ERROR = /^(?:web_workspace_(?:listing|search|preview|changes|diff)_failed|web_acp_[a-z0-9_]+_failed|web_session_[a-z0-9_]+_failed|invalid_web_session_id|web_session_unavailable)$/;
 const CONTROLLED_CLIENT_ERRORS = new Set([
   'acp_external_url_invalid',
   'device_upload_unavailable',
@@ -6,6 +6,8 @@ const CONTROLLED_CLIENT_ERRORS = new Set([
   'web_acp_command_unavailable',
   'web_acp_session_required',
   'web_acp_timeline_response_invalid',
+  'web_attachment_digest_invalid',
+  'web_attachment_integrity_mismatch',
   'web_workspace_authorization_invalid',
   'web_workspace_authorization_required',
   'web_workspace_picker_unavailable',
