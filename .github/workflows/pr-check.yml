@@ -745,6 +745,9 @@ jobs:
     # Tauri + fastembed + aws-lc-sys 全冷编译耗时长;设上限避免卡死 runner 占用。
     # High-risk PR, combined-tree, and main runs retain a 120-minute safety limit.
     timeout-minutes: 120
+    permissions:
+      contents: read
+      checks: write # 诊断分支专用:ci-live-telemetry.sh 需创建/PATCH 临时 Check Run
     env:
       # 经 rustc-stack-wrapper 直接注入 RUST_MIN_STACK=16MiB 到编译期 rustc 进程
       # (规避 codewhale-tui O2 编译的栈溢出/SIGBUS)。不链式接 sccache:sccache 的
@@ -884,17 +887,24 @@ jobs:
 
       - name: cargo test --lib（含 strict_mode 回归；真 bge-m3/vLLM 测试已 #[ignore]）
         if: ${{ github.event_name != 'push' }}
+        # 诊断(本分支专用,勿合入 main):tee cargo 输出到 /tmp 并启动
+        # ci-live-telemetry.sh,把机器状态+输出尾部持续 PATCH 到临时 Check Run,
+        # runner 失联后仍可从 Check Run 读取死亡瞬间现场。
+        env:
+          TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           export CHROME="$chrome"
           export PINVOU_REQUIRE_REMOTE_E2E=1
           bash scripts/ci-memguard.sh &
           guard_pid=$!
+          bash scripts/ci-live-telemetry.sh &
+          tele_pid=$!
           set +e
-          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
-          status=$?
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | tee /tmp/rust-test-output.log
+          status=${PIPESTATUS[0]}
           set -e
-          kill "$guard_pid" 2>/dev/null || true
+          kill "$guard_pid" "$tele_pid" 2>/dev/null || true
           exit "$status"
 
       # push(main) 唯一目的是暖 cache(Swatinem/rust-cache save-if main)。
