@@ -179,9 +179,6 @@ impl EnginePoolPort {
                     } else {
                         "[unexpected-tool]".to_owned()
                     };
-                    if let Some(code) = tool.failure_code.as_deref() {
-                        eprintln!("[eval] tool_failed name={name} code={code}");
-                    }
                     SafeToolOutcome {
                         name,
                         failed: tool.failed,
@@ -223,6 +220,8 @@ fn classify_product_failure(error: &str) -> &'static str {
         || normalized.contains("decode")
     {
         "model_protocol_failed"
+    } else if normalized == "unsupported_tool_policy" {
+        "unsupported_tool_policy"
     } else if normalized.contains("tool") || normalized.contains("mcp") {
         "agent_tool_failed"
     } else {
@@ -239,6 +238,7 @@ fn validated_product_failure_code(code: Option<&str>) -> &'static str {
         Some("model_transport_failed") => "model_transport_failed",
         Some("model_protocol_failed") => "model_protocol_failed",
         Some("agent_tool_failed") => "agent_tool_failed",
+        Some("unsupported_tool_policy") => "unsupported_tool_policy",
         _ => "agent_turn_failed",
     }
 }
@@ -1410,8 +1410,16 @@ mod tests {
             "agent_turn_failed"
         );
         assert_eq!(
+            classify_product_failure("unsupported_tool_policy"),
+            "unsupported_tool_policy"
+        );
+        assert_eq!(
             validated_product_failure_code(Some("PRIVATE_FAILURE_SENTINEL")),
             "agent_turn_failed"
+        );
+        assert_eq!(
+            validated_product_failure_code(Some("unsupported_tool_policy")),
+            "unsupported_tool_policy"
         );
         assert_eq!(
             validated_tool_failure_code("policy_denied"),
@@ -1682,6 +1690,76 @@ mod tests {
             event,
             SafeAgentEvent::ToolFinished { tool_name, .. } if tool_name == "File"
         )));
+        backend.close(session).await.unwrap();
+    }
+
+    #[derive(Default)]
+    struct RecoveryPolicyRejectionRuntime {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ProductRuntimePort for RecoveryPolicyRejectionRuntime {
+        async fn prepare(&self, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn run(
+            &self,
+            _session_id: &str,
+            _prompt: &str,
+        ) -> anyhow::Result<ProductTurnOutcome> {
+            anyhow::bail!("legacy_run_must_not_execute")
+        }
+
+        async fn run_with_policy(
+            &self,
+            _session_id: &str,
+            _prompt: &str,
+            _policy: ProductToolPolicy,
+        ) -> anyhow::Result<ProductTurnOutcome> {
+            if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                return Ok(ProductTurnOutcome {
+                    status: "completed".to_owned(),
+                    failure_code: None,
+                    assistant_text: "analysis without marker".to_owned(),
+                    usage: Some(SafeUsageMetrics::new(100, 20, 70, 30)),
+                    tools: vec![],
+                    model_requests: vec![],
+                });
+            }
+            anyhow::bail!("unsupported_tool_policy")
+        }
+
+        async fn cancel(&self, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn close(&self, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn gaia_recovery_policy_rejection_keeps_lifecycle_code() {
+        let runtime = Arc::new(RecoveryPolicyRejectionRuntime::default());
+        let backend = ProductHeadlessBackend::from_runtime(runtime);
+        let session = backend.prepare(request("recovery-policy")).await.unwrap();
+        let observer = Arc::new(CollectingObserver::default());
+        let task = AgentTaskInput::new("recovery-policy", PrivateInputHandle::new("opaque"))
+            .with_output_contract(AgentOutputContractId::new("gaia-final/v1").unwrap());
+
+        let outcome = backend
+            .run(&session, task, Arc::new(Resolver), observer.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.status(), SafeRunStatus::Failed);
+        assert_eq!(outcome.failure_code(), Some("unsupported_tool_policy"));
+        assert_eq!(
+            outcome.usage(),
+            Some(SafeUsageMetrics::new(100, 20, 70, 30))
+        );
         backend.close(session).await.unwrap();
     }
 

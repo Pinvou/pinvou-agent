@@ -143,16 +143,10 @@ fn failed_task_outcome(
             SafeFailureCategory::Backend,
             Some(SafeFailureReason::AgentTurnFailed),
         ),
-        "session_closed"
-        | "private_session_state_failed"
-        | "private_output_store_failed"
-        | "private_output_not_found"
-        | "gaia_private_input_unknown"
-        | "unsupported_tool_policy" => (
-            TaskStatus::Failed,
-            SafeFailureCategory::Infrastructure,
-            Some(SafeFailureReason::IntegrationLifecycleFailed),
-        ),
+        // 已知生命周期码（session_closed、private_session_state_failed、
+        // private_output_store_failed、private_output_not_found、
+        // gaia_private_input_unknown、unsupported_tool_policy）与未知码
+        // 有意共用同一安全三元组，新增生命周期码无需在此扩充。
         _ => (
             TaskStatus::Failed,
             SafeFailureCategory::Infrastructure,
