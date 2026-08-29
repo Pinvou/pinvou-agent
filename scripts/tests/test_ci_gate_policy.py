@@ -371,7 +371,8 @@ class CiGatePolicyTests(unittest.TestCase):
             "contains(github.event.pull_request.labels.*.name, 'ci:full-rust')",
             rust_test,
         )
-        # Main is a cumulative regression and must not depend on adjacent diff paths.
+        # Main is a cumulative compile verification and must not depend on
+        # adjacent diff paths.
         self.assertIn(
             "github.event_name == 'push' ||",
             rust_test,
@@ -380,7 +381,18 @@ class CiGatePolicyTests(unittest.TestCase):
             "cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1",
             rust_test,
         )
-        self.assertNotIn("cargo test --lib --no-run", rust_test)
+        # push(main) 只编译暖 cache,不执行测试:MQ 已对同一组合树跑过全量测试;
+        # push 恢复暖 cache 后跑全量测试曾连续触发 hosted runner 失联(见 workflow 注释)。
+        self.assertIn(
+            "- name: cargo test --lib（含 strict_mode 回归；真 bge-m3/vLLM 测试已 #[ignore]）\n"
+            "        if: ${{ github.event_name != 'push' }}",
+            rust_test,
+        )
+        self.assertIn(
+            "- name: cargo test --lib --no-run (push main 仅编译暖 cache)\n"
+            "        if: ${{ github.event_name == 'push' }}",
+            rust_test,
+        )
         self.assertIn("timeout-minutes: 120", rust_test)
         self.assertIn(
             'RUSTFLAGS: "-C link-arg=-fuse-ld=lld '

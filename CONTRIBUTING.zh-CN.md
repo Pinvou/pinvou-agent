@@ -102,8 +102,9 @@ Merge Queue 在入队 PR 与最新 `main` 的实际组合树上运行适用门�
 运行格式、Clippy、编译和依赖策略检查；高爆炸半径 Rust 改动还会在组合树上执行
 完整 Linux 行为回归，Windows 已在 Ready PR 验证，不在队列重复。前端改动按
 merge group 的真实 base/head diff 选择浏览器 smoke，共享、未知或测试设施路径
-fail-closed 回退全套。每个保留下来的 `main` push 都执行完整 Linux / Windows
-Rust 回归并持续写暖缓存；main 回归变红后应停止继续入队，直至修复或回滚。
+fail-closed 回退全套。每个保留下来的 `main` push 都执行 Linux 累计编译验证
+（全量测试由 Merge Queue 在同一组合树上完成，push 不重复执行）与 Windows
+原生检查，并持续写暖缓存；main 回归变红后应停止继续入队，直至修复或回滚。
 评审阶段只查看 required checks：
 
 ```bash
