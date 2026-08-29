@@ -48,7 +48,7 @@ function timeStr() {
 // ── Plan 审批（语义镜像 bridge chat-events.js 的 plan_snapshot/plan_ready）─────
 // plan 类工具：hydrate 时不还原工具卡，改在本条 assistant 消息末尾还原只读方案卡
 // （对齐 bridge rerenderFromMessages 的 PLAN_TOOLS 处理）。
-const PLAN_TOOLS = ['update_plan', 'checklist_write', 'todo_write'];
+const PLAN_TOOLS = new Set(['update_plan', 'checklist_write', 'todo_write']);
 
 /// plan 类工具结果格式："...updated:\n{json}"——切第一个换行后 parse（对齐 bridge
 /// parsePlanSnapshot / engine.rs）。content 可能是 string 或 Anthropic blocks 数组。
@@ -648,7 +648,7 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
         }
         // update_plan / checklist_write / todo_write → 收集快照，本条消息末尾还原
         // 只读方案卡（对齐 work hydration：plan 工具不还原工具卡）。
-        if (PLAN_TOOLS.includes(block.name)) {
+        if (PLAN_TOOLS.has(block.name)) {
           const snap = parseNativePlanSnapshot(resultById[block.id] && resultById[block.id].content);
           if (snap) {
             if (block.name === 'update_plan') planSnap = snap;
