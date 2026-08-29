@@ -839,6 +839,56 @@ try {
     undefined,
     'terminal takeover must not touch previous-turn bubbles',
   );
+  // 假 key 用拼接构造,避免触发 GitHub push protection 密钥形态扫描(合成值)。
+  const FAKE_PROJ_KEY = 'sk-proj-' + 'abcdefghijklmnop1234567890';
+  const FAKE_ANTHROPIC_KEY = 'sk-ant-api03-T3Blbk' + 'FJ1234567890abcdef';
+  // "Incorrect API key provided"(OpenAI 真实措辞)必须被强词表接管为友好卡,
+  // 密钥不得出现在任何展示面。
+  const lane21 = createNativeLane();
+  applyNativeChatEvent(lane21, 'chat:done', {
+    session_id: 's21',
+    status: 'Failed',
+    error: 'Incorrect API key provided: ' + FAKE_PROJ_KEY + '.',
+  }, { language: 'en', modelServiceState: null });
+  const incorrectKeyItem = lane21.items.find(item => item.type === 'system');
+  assert.ok(incorrectKeyItem, 'incorrect-api-key error must surface a notice');
+  assert.equal(incorrectKeyItem.userError.kind, 'auth');
+  assert.doesNotMatch(
+    lane21.items.map(item => item.text || '').join('\n'),
+    new RegExp(FAKE_PROJ_KEY),
+    'the key must not leak into any displayed text',
+  );
+  // 回退裸串也必须先脱敏:门控漏判的网关/provider 报文不得带凭证上屏。
+  // transient 与 done 回退用同一脱敏文本:done 的同文本去重必须命中 transient 项。
+  const lane22 = createNativeLane();
+  const leaked = 'request failed: {"api_key":"' + FAKE_ANTHROPIC_KEY + '"}';
+  applyNativeChatEvent(lane22, 'chat:transient_error', { session_id: 's22', error: leaked }, { language: 'en' });
+  applyNativeChatEvent(lane22, 'chat:done', { session_id: 's22', status: 'Failed', error: leaked }, { language: 'en' });
+  const lane22Notices = lane22.items.filter(item => item.type === 'system');
+  assert.equal(lane22Notices.length, 1, 'same redacted text must deduplicate between transient and done fallbacks');
+  assert.doesNotMatch(lane22Notices[0].text, /sk-ant-api03/, 'proxy JSON echoes must not leak keys');
+  // 同毫秒两回合:turn_id 须含回合序号保持唯一,否则第二条 user_start 被误判
+  // 为已完结,终态记录与错误卡整体失效(A6 轮实测缺陷)。
+  const lane23 = createNativeLane();
+  const frozenNow = 1788022152694;
+  const originalNow = Date.now;
+  Date.now = () => frozenNow;
+  try {
+    appendLocalUserMessage(lane23, '回合一');
+    appendLocalUserMessage(lane23, '回合二');
+  } finally {
+    Date.now = originalNow;
+  }
+  const starts23 = lane23.timeline.filter(event => event.event === 'user_start');
+  assert.equal(starts23.length, 2);
+  assert.notEqual(starts23[0].turn_id, starts23[1].turn_id, 'same-millisecond turns must get distinct ids');
+  applyNativeChatEvent(lane23, 'chat:done', {
+    session_id: 's23', status: 'Failed', error: 'SSE stream request failed: HTTP 402 insufficient balance',
+  }, { language: 'en', modelServiceState: null });
+  const done23 = lane23.timeline.filter(event => event.event === 'assistant_done');
+  assert.equal(done23.length, 1, 'terminal record must pair with the second (open) turn');
+  assert.equal(done23[0].turn_id, starts23[1].turn_id);
+
   // helper 缺失(classic script 未加载)时回退裸串,不抛错。
   delete globalThis.PinvouModelServiceErrors;
   const lane16 = createNativeLane();

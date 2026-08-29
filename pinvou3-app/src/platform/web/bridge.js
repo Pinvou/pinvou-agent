@@ -6325,7 +6325,12 @@
           // 与 addModelServiceErrorNotice 同一前提:只有时间线终态记录确实带
           // error 时才隐藏气泡(时间线以裸 error 小字接管),否则保留可见。
           const timelineTakesOver = !!(terminalRecord && terminalRecord.error);
-          const finalNotice = "⚠️ " + error;
+          // 回退气泡与 transient 回退必须用同一脱敏文本,find 去重才不会因
+          // 措辞不同而漏匹配、产生双气泡。
+          const displayError = typeof messages.redactRawError === "function"
+            ? messages.redactRawError(error, state)
+            : error;
+          const finalNotice = "⚠️ " + displayError;
           const finalNoticeItem = state.chatItems.find(function (item) {
             return item && item.turnErrorNotice && item.text === finalNotice;
           });
@@ -6515,7 +6520,10 @@
     if (error) {
       const messages = bridgeMessages();
       if (!(typeof messages.addModelServiceErrorNotice === "function" && messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, false))) {
-        const notice = "⚠️ " + error;
+        const displayError = typeof messages.redactRawError === "function"
+          ? messages.redactRawError(error, state)
+          : error;
+        const notice = "⚠️ " + displayError;
         const duplicate = state.chatItems.some(function (item) {
           return item && item.turnErrorNotice && item.text === notice;
         });
