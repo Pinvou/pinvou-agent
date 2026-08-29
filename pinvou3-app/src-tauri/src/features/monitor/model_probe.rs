@@ -593,9 +593,10 @@ fn vllm_target_kind(upstream: &str) -> &'static str {
 /// (上下文窗口)。名字用于发请求(免写死名字与 `--served-model-name` 不一致的
 /// model_not_found);窗口用于填 `active_route_limits.context_tokens`,让压缩阈值按真实
 /// 窗口推导(见 docs/context-compaction-设计.md)。探测失败(vLLM 没起/超时)返回
-/// `(None, None)`,调用方 fallback 配置值 + 名字 hint 老路。`bearer` 语义见
-/// `core::model_endpoint::apply_bearer`:鉴权 vLLM(`--api-key`)的 `/v1/models`
-/// 不带凭据会 401,应传与真实推理同源的 key。
+/// `(None, None)`, and the caller falls back to the configured values plus the
+/// name hint. See `core::model_endpoint::apply_bearer` for `bearer` semantics:
+/// authenticated vLLM (`--api-key`) 401s on `/v1/models` without credentials,
+/// so pass a key from the same origin as real inference.
 pub async fn probe_vllm_model_info(
     base_url: &str,
     bearer: Option<&str>,

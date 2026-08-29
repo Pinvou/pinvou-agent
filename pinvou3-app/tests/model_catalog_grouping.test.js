@@ -465,22 +465,23 @@ test('localProbeTiersForKind 按探测结果映射真实档位', () => {
   assert.deepStrictEqual([...localProbeTiersForKind('unknown')], ['off', 'low', 'medium', 'high']);
 });
 
-test('reasoningEffortDisplayForTiers：存量档位对探测档位表的视觉兜底', () => {
-  // ollama 两档表：旧值 low/medium 与 high 在 wire 层等价（think:true），高亮就近落 high
+test('reasoningEffortDisplayForTiers: display fallback of stored tiers against probed tiers', () => {
+  // ollama two-tier table: stored low/medium are wire-equivalent to high
+  // (think:true); the highlight maps to the nearest tier, high
   assert.strictEqual(reasoningEffortDisplayForTiers('low', ['off', 'high']), 'high');
   assert.strictEqual(reasoningEffortDisplayForTiers('medium', ['off', 'high']), 'high');
-  // 表内值原样返回
+  // in-table values return unchanged
   assert.strictEqual(reasoningEffortDisplayForTiers('off', ['off', 'high']), 'off');
   assert.strictEqual(reasoningEffortDisplayForTiers('high', ['off', 'high']), 'high');
-  // 四档表：任何表内档位都不重映射
+  // four-tier table: no in-table tier is remapped
   assert.strictEqual(reasoningEffortDisplayForTiers('low', ['off', 'low', 'medium', 'high']), 'low');
-  // max 不在四档表内：底座口径 max 归一为 high，高亮就近落 high
+  // max is not in the four-tier table: the core normalizes max to high; the highlight lands on high
   assert.strictEqual(reasoningEffortDisplayForTiers('max', ['off', 'low', 'medium', 'high']), 'high');
-  // 无 high 可落（只剩 off 的表 / 空表 / 非数组表）→ null（不显示高亮）
+  // no high to land on (off-only table / empty table / non-array) → null (no highlight)
   assert.strictEqual(reasoningEffortDisplayForTiers('low', ['off']), null);
   assert.strictEqual(reasoningEffortDisplayForTiers('low', []), null);
   assert.strictEqual(reasoningEffortDisplayForTiers('low', 42), null);
-  // 未选过档位 → null
+  // no tier ever picked → null
   assert.strictEqual(reasoningEffortDisplayForTiers(null, ['off', 'high']), null);
 });
 

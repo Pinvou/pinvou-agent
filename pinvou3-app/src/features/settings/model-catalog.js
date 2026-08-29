@@ -831,7 +831,8 @@ function isExactMinimaxChatBaseUrl(baseUrl) {
 // vendor 在已知列表 → 返回其 provider（可能为 null = 底座无档位）；
 // vendor 未知（如用户给本地服务填了自定义 vendor）→ 返回 undefined，落到 preset 兜底
 // （与 Rust provider() 的 vendor→preset 回退一致）。
-// 哨兵：未知 vendor（调用方以此区分「已知但无档位(null)」与「未知→preset 兜底」）。
+// Sentinel: unknown vendor (callers use it to distinguish "known but no tiers
+// (null)" from "unknown → preset fallback").
 const VENDOR_UNHANDLED = Symbol('vendor-unhandled');
 function vendorReasoningProvider(vendor, model) {
   if (vendor === 'deepseek') return 'deepseek';
@@ -846,7 +847,7 @@ function vendorReasoningProvider(vendor, model) {
   if (['qwen', 'tencent', 'gemini', 'google'].includes(vendor)) {
     return null; // 底座无档位
   }
-  return VENDOR_UNHANDLED; // 未知 vendor → preset 兜底
+  return VENDOR_UNHANDLED; // unknown vendor → preset fallback
 }
 
 // 对齐 Rust bridge.rs `base_url_uses_loopback`：localhost / 127.0.0.0/8 /
@@ -1079,12 +1080,16 @@ function localProbeTiersForKind(kind) {
   }
 }
 
-// 存量档位对探测档位表的视觉兜底：归一走的是静态四档表（local），但探测出
-// ollama 后实际渲染 off/high 两档，旧存的 low/medium 会不落在任何按钮上。
-// ollama 的 think 布尔把所有非 off 档位归一为同一条 wire 值（think:true），
-// 与 high 语义相同，故高亮就近映射到 high（max 同理，底座口径归一为 high）。
-// 只影响展示比较，不改已存值（切回四档端点后原值仍在）。未选过档位、
-// 表不存在/为空、或表内确无 high 可落时返回 null（不显示高亮）。
+// Visual fallback of stored tiers against the probed tier table: normalization
+// uses the static four-tier table (local), but once ollama is probed only the
+// off/high tiers render, so a stored low/medium would land on no button.
+// Ollama's think boolean normalizes every non-off tier to the same wire value
+// (think:true), semantically equal to high, so the highlight maps to the
+// nearest tier, high (same for max; the core normalizes max to high).
+// This only affects display comparison and never changes stored values (the
+// original value survives switching back to a four-tier endpoint). Returns
+// null when no tier was ever picked, the table is missing/empty, or the table
+// truly has no high to land on (no highlight shown).
 function reasoningEffortDisplayForTiers(effort, tiers) {
   if (!effort || !Array.isArray(tiers) || !tiers.length) return null;
   if (tiers.includes(effort)) return effort;

@@ -725,11 +725,14 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           return;
         }
         let cancelled = false;
-        // debounce 窗口期内即进入 pending（六审 P2）：从调度探测起就不提供
-        // 档位（localProbeTiersForKind(null) 的默认四档是探测不可达时的兜底，
-        // 不能在「探测即将到来」的窗口期暴露，否则用户可能在结果未知前选/
-        // 存一个误导档位）。探测不可达（桥不支持/失败）由 then/catch 置回
-        // null + pending=false 落默认四档。
+        // Enter pending during the debounce window (round-6 P2): no tiers are
+        // offered from the moment the probe is scheduled (the default four
+        // tiers from localProbeTiersForKind(null) are only the fallback for an
+        // unreachable probe; they must not be exposed during the "probe
+        // incoming" window, or the user could pick/save a misleading tier
+        // before the result is known). An unreachable probe (bridge
+        // unsupported/failed) is reset by then/catch to null + pending=false,
+        // landing on the default four tiers.
         setProbePending(true);
         setProbedKind(null);
         // debounce：base_url 是原始输入 state，不 debounce 时逐键触发探测
@@ -737,9 +740,11 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         // 探测最坏 ~12s）。停键 400ms 后才发起一次。
         const timer = setTimeout(() => {
           if (probeSupported) {
-            // 凭据与 handleTest 同源：表单新填 key 优先，否则用已存模型 id 让
-            // Rust 读已保存凭据——鉴权 vLLM（--api-key）探测不带 key 会 401
-            // 误判 generic，误报「不支持思考档位调节」。
+            // Credentials share the same source as handleTest: a freshly typed
+            // form key wins, otherwise the saved model id lets Rust read the
+            // stored credential — probing an authenticated vLLM (--api-key)
+            // without a key 401s into generic and falsely reports "thinking
+            // tiers are not supported".
             bridge.models.probeLocalServerKind(baseUrl.trim(), apiKey.trim(), initial.__new ? null : initial.id)
               .then((kind) => { if (!cancelled) setProbedKind(kind); })
               // 探测调用本身失败（命令被拒/版本不支持）≠ 探测出 generic：
@@ -757,9 +762,12 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const reasoningEffortTiers = isLocalCompatible
         ? (probePending ? [] : (localProbeTiersForKind(probedKind) || []))
         : (reasoningEffortTiersForModel({ preset, model, vendor, base_url: baseUrl, provider_kind: providerKind }) || []);
-      // 高亮兜底：表单值按静态四档归一（旧存 low/medium 保留原值），但探测出
-      // ollama 后实际渲染 off/high 两档，两值会不落在任何按钮上；展示就近映射，
-      // 保存仍用原始表单值，切回四档端点后已存档位不丢。
+      // Highlight fallback: the form value is normalized against the static
+      // four tiers (stored low/medium keep their values), but once ollama is
+      // probed only the off/high tiers render, so those values would land on
+      // no button; the display maps to the nearest tier while saving still
+      // uses the original form value, so a stored tier survives switching back
+      // to a four-tier endpoint.
       const reasoningEffortDisplay = reasoningEffortDisplayForTiers(reasoningEffort, reasoningEffortTiers);
       // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
       function normalizeConnectionTestResult(value, isCodingPlanProvider) {

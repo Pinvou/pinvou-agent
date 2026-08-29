@@ -128,9 +128,11 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         setCurrentProbePending(true);
         setCurrentProbedKind(null);
         if (bridge.available && bridge.models && bridge.models.probeLocalServerKind) {
-          // 凭据来源：已保存模型的凭据引用（Rust 按 model_id 读取）——鉴权
-          // vLLM（--api-key）的 /v1/models 会 401，不带凭据探测会把鉴权端点
-          // 误判成 generic，误报「不支持思考档位调节」。
+          // Credential source: the saved model's credential reference (Rust
+          // reads it by model_id) — authenticated vLLM (--api-key) 401s on
+          // /v1/models, so probing without credentials misclassifies the
+          // authenticated endpoint as generic and falsely reports "thinking
+          // tiers are not supported".
           bridge.models.probeLocalServerKind(currentBaseUrl, '', currentModelId)
             .then((kind) => { if (!cancelled) setCurrentProbedKind(kind); })
             // 探测调用本身失败（命令被拒/版本不支持）≠ 探测出 generic：
@@ -150,9 +152,12 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       // 存量档位（可能保存过底座归一前的旧值，如 deepseek 的 medium）先归一到
       // 档位表内等价档位再高亮，避免「档位表不含该值 → 下拉无高亮」。
       const reasoningEffortValue = current ? normalizeStoredReasoningEffort(current, current.reasoning_effort) : null;
-      // 高亮兜底：归一走静态四档表，探测出 ollama 后渲染 off/high 两档，旧存
-      // low/medium 会不落在任何按钮上；展示就近映射（think:true 与 high 等价），
-      // 点击比较仍用归一原值，已保存的 low 在换回四档端点后不丢。
+      // Highlight fallback: normalization uses the static four-tier table, but
+      // once ollama is probed only the off/high tiers render, so a stored
+      // low/medium would land on no button; the display maps to the nearest
+      // tier (think:true is equivalent to high), while click comparison still
+      // uses the normalized original value, so a saved low survives switching
+      // back to a four-tier endpoint.
       const reasoningEffortDisplay = reasoningEffortDisplayForTiers(reasoningEffortValue, reasoningEffortTiers);
       const [effortSaveError, setEffortSaveError] = useState('');
       function setReasoningEffortForCurrent(tier) {

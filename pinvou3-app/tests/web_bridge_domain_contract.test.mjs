@@ -334,8 +334,10 @@ await assert.rejects(api.attachments.addAttachmentByPath('/tmp/cyclic.txt'), /mu
 // generic——命令失败（web 白名单不含该命令/老版本桌面）必须 reject，由消费方
 // （SettingsView）catch 后置 null 走 localProbeTiersForKind 默认四档；否则本地
 // vLLM/Ollama 会被误报成「该端点不支持思考档位调节」。
-// 鉴权透传契约（PR #218 六审 P1）：apiKey/modelId 必须随命令透传——鉴权 vLLM
-// （--api-key）的 /v1/models 不带凭据会 401，探测会把鉴权端点误判成 generic。
+// Authenticated pass-through contract (PR #218 round-6 P1): apiKey/modelId
+// must travel with the command — authenticated vLLM (--api-key) 401s on
+// /v1/models without credentials, and probing would misclassify the
+// authenticated endpoint as generic.
 invokeResponse = async command => {
   if (command !== 'probe_local_server_kind') return null;
   throw new Error('probe_local_server_kind is not allowed');

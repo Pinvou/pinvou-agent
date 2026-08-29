@@ -6986,9 +6986,10 @@
     // Rust 侧按 base_url TTL 缓存；命令失败（web 白名单不含该命令/老版本桌面）
     // 在这里 reject，由消费方 catch 降级为「未知」——吞错伪造成 generic 会让 UI
     // 误报「该端点不支持思考档位调节」（localProbeTiersForKind('generic') 为 null）。
-    // apiKey/modelId 与 testModelConnection 同口径：表单新填 key 优先，否则读
-    // 已保存凭据——鉴权 vLLM（--api-key）的 /v1/models 会 401，不带凭据探测
-    // 会把鉴权端点误判成 generic。
+    // apiKey/modelId follow testModelConnection: a freshly typed form key
+    // wins, otherwise the saved credential is read — authenticated vLLM
+    // (--api-key) 401s on /v1/models, so probing without credentials
+    // misclassifies the authenticated endpoint as generic.
     return invoke("probe_local_server_kind", {
       baseUrl,
       apiKey: apiKey || null,

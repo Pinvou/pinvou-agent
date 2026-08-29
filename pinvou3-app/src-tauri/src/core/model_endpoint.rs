@@ -139,10 +139,12 @@ fn parse_lmstudio_v0_models(v: &serde_json::Value) -> Option<Vec<OpenAiModelInfo
     (!models.is_empty()).then_some(models)
 }
 
-/// 探测请求的鉴权头：与真实推理请求同源的 Bearer key（本地 vLLM `--api-key`
-/// 等鉴权端点的 `/v1/models` 也会 401，不带凭据探测会把鉴权端点误判成
-/// Generic）。`None`/空白不带鉴权头（默认无鉴权的 Ollama/LM Studio 不受影响，
-/// 无鉴权服务会忽略 Bearer 头）。
+/// Auth header for probe requests: a Bearer key from the same origin as the
+/// real inference requests (authenticated endpoints such as local vLLM with
+/// `--api-key` return 401 on `/v1/models`, so probing without credentials
+/// misclassifies the endpoint as Generic). `None`/blank sends no auth header
+/// (Ollama/LM Studio are auth-free by default and unaffected; services
+/// without auth ignore the Bearer header).
 fn apply_bearer(req: reqwest::RequestBuilder, bearer: Option<&str>) -> reqwest::RequestBuilder {
     match bearer.map(str::trim).filter(|key| !key.is_empty()) {
         Some(key) => req.bearer_auth(key),
@@ -150,14 +152,19 @@ fn apply_bearer(req: reqwest::RequestBuilder, bearer: Option<&str>) -> reqwest::
     }
 }
 
-/// 探测共用的进程级 HTTP 客户端：各特征端点探测复用同一连接池，不再每次调用
-/// 新建客户端（monitor 的 vLLM served-name 探测经 [`fetch_v1_models`] 共享此池）。
-/// 与 `features::monitor` 的探测单例同口径的两条语义：
-/// 1. 连接池与代理配置在首次构建时快照，进程内不跟随系统代理变化；
-/// 2. 构建失败按 `None` 进程级缓存、不做逐次重试，保持调用方
-///    "探测失败→回落 Generic/配置值"的降级语义
-///    （`Client::default()` 同类失败会 panic，不能作回退）。
-/// 单请求超时仍是各探测原有的 3 秒；请求级错误不受影响，仍由调用方处理。
+/// Process-wide HTTP client shared by probes: feature-endpoint probes reuse
+/// one connection pool instead of building a client per call (monitor's vLLM
+/// served-name probe shares this pool via [`fetch_v1_models`]). Two
+/// semantics aligned with the `features::monitor` probe singleton:
+/// 1. The connection pool and proxy config are snapshotted at first build
+///    and do not follow system proxy changes within the process;
+/// 2. A build failure is cached process-wide as `None` with no per-call
+///    retries, preserving the caller-side degradation semantics of
+///    "probe failure → fall back to Generic/configured value"
+///    (`Client::default()` panics on the same failure and cannot serve as
+///    the fallback).
+/// The per-request timeout stays at each probe's original 3 seconds;
+/// request-level errors are unaffected and still handled by callers.
 fn shared_probe_client() -> Option<&'static reqwest::Client> {
     static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
     CLIENT
@@ -172,7 +179,7 @@ fn shared_probe_client() -> Option<&'static reqwest::Client> {
 
 /// 探测 Ollama：区分"已加载"（/api/ps）与"仅下载未加载"（/api/tags）。
 /// 两个接口都是只读列表，不会触发加载；绝不能用推理请求探测。
-/// `bearer` 语义见 [`apply_bearer`]。
+/// See [`apply_bearer`] for `bearer` semantics.
 pub async fn probe_ollama_models(
     base_url: &str,
     bearer: Option<&str>,
@@ -276,20 +283,27 @@ pub enum LocalServerKind {
 /// 探测本地推理服务类型。只应在本地端点（`base_url_uses_local_or_private`）上
 /// 调用；判定顺序按特征端点互斥性排列：Ollama（`/api/tags`）→ LM Studio
 /// （`/api/v0/models`）→ vLLM（`/v1/models` 的 `owned_by`）→ 通用。探测失败
-/// （服务未启动/超时/鉴权 401）返回 `Generic`，调用方保持既有 openai wire
-/// route，不因探测失败改变行为。
+/// (service not started/timeout/auth 401) returns `Generic`; callers keep the
+/// existing openai wire route and do not change behavior on probe failure.
 ///
-/// `bearer` 是与该端点真实推理请求同源的凭据（见 [`apply_bearer`]）：鉴权端点
-/// （vLLM `--api-key`）不带凭据探测必然 401 误判 Generic，丢失默认关思考与
-/// 真实档位。无鉴权端点传 `None` 即可。
+/// `bearer` is a credential from the same origin as the endpoint's real
+/// inference requests (see [`apply_bearer`]): probing an authenticated
+/// endpoint (vLLM `--api-key`) without credentials always 401s into a
+/// Generic misclassification, losing default-off thinking and the real
+/// effort tiers. Pass `None` for endpoints without auth.
 ///
 /// 结果按 base_url 缓存 `PROBE_CACHE_TTL`：探测最坏 ~12-15s 串行（挂起端点），
-/// 多会话/多入口重复探测会放大开销；TTL 内命中直接返回缓存值。缓存/in-flight
-/// 的 key 只含 base_url、绝不包含凭据：正识别（Ollama/vLLM/LM Studio）必然以
-/// 鉴权成功为前提，结果与具体凭据无关，按 URL 合并即安全；失败结果（Generic）
-/// 不写入长缓存——服务可能只是未启动（或换了 key），下次调用应立即重探，避免
-/// 60s 内仍被钉死在 Generic 错路由。并发未命中经 in-flight 注册表共享同一次
-/// 探测（首个调用执行、其余等待广播），不再各自串行重付。
+/// repeated probes across sessions/entry points amplify the cost; a hit
+/// within the TTL returns the cached value directly. The cache/in-flight key
+/// contains only base_url, never credentials: a positive identification
+/// (Ollama/vLLM/LM Studio) presupposes successful auth and is a statement
+/// about the server type itself, independent of the caller's credential, so
+/// merging by URL is safe; a failure result (Generic) is not written to the
+/// long cache — the service may simply be down (or the key changed), so the
+/// next call should re-probe immediately instead of staying pinned to the
+/// wrong Generic route for 60s. Concurrent misses share one probe through
+/// the in-flight registry (first caller executes, the rest wait for the
+/// broadcast) instead of each paying a serial probe.
 pub async fn probe_local_server_kind(base_url: &str, bearer: Option<&str>) -> LocalServerKind {
     let key = base_url.trim_end_matches('/').to_string();
     if let Some(kind) = probe_kind_cache_get(&key) {
@@ -302,12 +316,16 @@ pub async fn probe_local_server_kind(base_url: &str, bearer: Option<&str>) -> Lo
     kind
 }
 
-/// 并发去重注册表：key → 完成信号（Weak，首个调用方持有唯一强引用）。
-/// 首个调用方执行探测、完成后发送结果并注销；并发调用方订阅等待，探测只
-/// 跑一次。首个调用方被取消（任务 abort / 外层 select 丢弃）时其强引用随
-/// future 一起 drop，注册表不延残生命周期：等待方观察到通道关闭（`changed()`
-/// 返回 Err）降级为自行直探，后续调用方 upgrade 失败后重新发起探测，总能
-/// 得到结果，也不存在永久毒化的注册条目。
+/// Concurrent dedupe registry: key → completion signal (Weak; the first
+/// caller holds the only strong reference). The first caller runs the probe,
+/// sends the result on completion and deregisters; concurrent callers
+/// subscribe and wait so the probe runs once. When the first caller is
+/// cancelled (task abort / dropped by an outer select), its strong reference
+/// drops together with the future and the registry does not extend that
+/// lifetime: waiters observe the channel closing (`changed()` returning Err)
+/// and degrade to probing themselves, while later callers whose upgrade
+/// fails start a fresh probe — a result is always obtained and no permanently
+/// poisoned registry entry can exist.
 static PROBE_KIND_INFLIGHT: std::sync::OnceLock<
     std::sync::Mutex<
         std::collections::HashMap<
@@ -317,10 +335,12 @@ static PROBE_KIND_INFLIGHT: std::sync::OnceLock<
     >,
 > = std::sync::OnceLock::new();
 
-/// in-flight 注册守卫：持有首个调用方 sender 的唯一强引用。future 在 await
-/// 探测期间被取消时完成块不会运行，守卫在 Drop 时顺带清掉注册表中仍指向
-/// 自己的陈旧 Weak（cleanup 成功与否都不影响正确性——sender 的 drop 本身
-/// 就会关闭通道唤醒等待方）。
+/// In-flight registration guard: holds the first caller's only strong
+/// reference to the sender. If the future is cancelled while awaiting the
+/// probe, the completion block never runs; on Drop the guard additionally
+/// clears the stale Weak in the registry that still points at itself
+/// (whether the cleanup succeeds does not affect correctness — dropping the
+/// sender itself closes the channel and wakes the waiters).
 struct InflightRegistration {
     key: String,
     sender: Option<Arc<tokio::sync::watch::Sender<Option<LocalServerKind>>>>,
@@ -333,8 +353,9 @@ impl Drop for InflightRegistration {
         };
         if let Some(registry) = PROBE_KIND_INFLIGHT.get() {
             if let Ok(mut guard) = registry.lock() {
-                // 只清理仍指向自己（同指针）的注册，不误删后续调用方重新
-                // 发起的新探测。
+                // Only clean up the registration that still points at ourselves
+                // (same pointer); do not remove a fresh probe started later by
+                // another caller.
                 if guard
                     .get(&self.key)
                     .is_some_and(|weak| weak.as_ptr() == Arc::as_ptr(&sender))
@@ -343,7 +364,8 @@ impl Drop for InflightRegistration {
                 }
             }
         }
-        // drop 唯一强引用 → 通道关闭 → 等待方 changed() 得 Err 降级直探。
+        // Drop the only strong reference → channel closes → waiters see
+        // changed() Err and degrade to probing themselves.
     }
 }
 
@@ -360,8 +382,9 @@ async fn probe_kind_inflight(base_url: &str, bearer: Option<&str>) -> LocalServe
             // 注册表锁不可用（中毒）：降级为无合并直探。
             return probe_local_server_kind_uncached(base_url, bearer).await;
         };
-        // upgrade 失败 = 陈旧 Weak（此前被取消的探测残留）：按无在途处理，
-        // 用新注册覆盖。
+        // upgrade failure = stale Weak (leftover from a previously cancelled
+        // probe): treat as no in-flight probe and overwrite with a new
+        // registration.
         if let Some(rx) = guard.get(base_url).and_then(|weak| weak.upgrade()) {
             Inflight::Wait(rx.subscribe())
         } else {
@@ -372,15 +395,17 @@ async fn probe_kind_inflight(base_url: &str, bearer: Option<&str>) -> LocalServe
         }
     };
     match entry {
-        // 首个调用方：执行探测，完成后广播结果并注销注册。await 期间被取消
-        // 时由守卫 drop 强引用关闭通道（见 InflightRegistration）。
+        // First caller: run the probe, broadcast the result on completion and
+        // deregister. If cancelled while awaiting, the guard drops the strong
+        // reference and closes the channel (see InflightRegistration).
         Inflight::First(sender) => {
             let mut registration = InflightRegistration {
                 key: base_url.to_string(),
                 sender: Some(Arc::clone(&sender)),
             };
             let kind = probe_local_server_kind_uncached(base_url, bearer).await;
-            // 正常完成：交出 sender，守卫 Drop 不再重复清理。
+            // Normal completion: hand over the sender so the guard's Drop
+            // does not clean up twice.
             registration.sender = None;
             let _ = sender.send(Some(kind));
             if let Ok(mut guard) = registry.lock() {
@@ -393,16 +418,24 @@ async fn probe_kind_inflight(base_url: &str, bearer: Option<&str>) -> LocalServe
             }
             kind
         }
-        // 并发调用方：等待首个调用方广播结果。共享结果有凭据边界：正识别
-        // （Vllm/Ollama/LmStudio）以探测请求鉴权成功为前提，是关于服务端
-        // 类型本身的结论，与调用方凭据无关，可直接复用；Generic 只说明
-        // 首个调用方的凭据上下文内各特征端点均不可达（如鉴权 vLLM 对无/
-        // 错凭据一律 401），对持不同凭据的等待方不成立——必须用自身凭据
-        // 重新直探，避免「无凭据 First 广播 Generic、正确凭据 Waiter 被
-        // 误分类」的串扰（见混合凭据并发回归测试）。
+        // Concurrent caller: wait for the first caller to broadcast the
+        // result. Sharing has a credential boundary: a positive
+        // identification (Vllm/Ollama/LmStudio) presupposes that the probe
+        // request authenticated successfully and is a statement about the
+        // server type itself, independent of the caller's credential — reuse
+        // it directly. Generic only means the feature endpoints were
+        // unreachable within the first caller's credential context (e.g. an
+        // authenticated vLLM 401s on missing/wrong credentials), which does
+        // not hold for a waiter with different credentials — it must re-probe
+        // directly with its own credentials to avoid the cross-talk of "a
+        // credential-less First broadcasting Generic while a correctly
+        // authenticated Waiter gets misclassified" (see the mixed-credential
+        // concurrency regression test).
         Inflight::Wait(mut rx) => loop {
-            // 订阅时结果可能已广播（send 先于 subscribe）：先查当前值。
-            // 先拷贝再匹配，避免 borrow 守卫的临时值跨 await 违反 Send。
+            // The result may already have been broadcast at subscribe time
+            // (send happens before subscribe): check the current value first.
+            // Copy before matching so the borrow guard's temporary does not
+            // live across await (Send bound).
             let current = *rx.borrow_and_update();
             if let Some(kind) = current {
                 return match kind {
@@ -413,7 +446,8 @@ async fn probe_kind_inflight(base_url: &str, bearer: Option<&str>) -> LocalServe
                 };
             }
             if rx.changed().await.is_err() {
-                // 广播方被取消/异常丢弃：通道关闭（changed() Err），降级直探兜底。
+                // Broadcaster cancelled/dropped: channel closed (changed()
+                // Err); degrade to a direct probe as the fallback.
                 return probe_local_server_kind_uncached(base_url, bearer).await;
             }
         },
@@ -453,7 +487,7 @@ pub(crate) fn clear_probe_kind_cache() {
 }
 
 /// 无缓存的实际探测（TTL 缓存命中时直接返回，见 `probe_local_server_kind`）。
-/// `bearer` 语义见 [`apply_bearer`]。
+/// See [`apply_bearer`] for `bearer` semantics.
 async fn probe_local_server_kind_uncached(base_url: &str, bearer: Option<&str>) -> LocalServerKind {
     // Ollama 特征端点 /api/tags 存在且模型列表非空（probe_ollama_models 内部要求）。
     if probe_ollama_models(base_url, bearer).await.is_some() {
@@ -477,7 +511,7 @@ async fn probe_local_server_kind_uncached(base_url: &str, bearer: Option<&str>) 
 /// 既是 `probe_lmstudio_models` 的 v0 前置，也是本地服务判别探测的前置：
 /// 判别场景必须用它而非 `probe_lmstudio_models`（后者回退 `/v1/models`，而
 /// `/v1/models` 是通用端点，Ollama/通用服务也有，会把非 LM Studio 误判）。
-/// `bearer` 语义见 [`apply_bearer`]。
+/// See [`apply_bearer`] for `bearer` semantics.
 async fn probe_lmstudio_v0_only(base_url: &str, bearer: Option<&str>) -> Option<OpenAiModelsProbe> {
     let host = strip_v1_suffix(base_url)?;
     let client = shared_probe_client()?;
@@ -496,8 +530,9 @@ async fn probe_lmstudio_v0_only(base_url: &str, bearer: Option<&str>) -> Option<
 /// `features::monitor::probe_vllm_model_info` 一致：upstream 带 `/v1` 直接拼
 /// `/models`，不带则补 `/v1/models`。失败/非 2xx/解析失败返回 `None`，调用方
 /// 按探测失败处理。共享给 `probe_vllm_owned` 与 monitor 的 vLLM served-name
-/// 探测，避免 `/v1/models` 的 URL 拼装口径在两处漂移。`bearer` 语义见
-/// [`apply_bearer`]：鉴权 vLLM 的 `/v1/models` 不带凭据会 401。
+/// probe, so the `/v1/models` URL assembly stays consistent in both places.
+/// See [`apply_bearer`] for `bearer` semantics: an authenticated vLLM
+/// returns 401 on `/v1/models` without credentials.
 pub(crate) async fn fetch_v1_models(
     base_url: &str,
     bearer: Option<&str>,
@@ -792,9 +827,11 @@ mod tests {
 
     // —— 本地服务类型探测（本地 HTTP mock，无外部依赖）——
 
-    /// 探测用例共享进程级全局状态（PROBE_KIND_CACHE / PROBE_KIND_INFLIGHT），
-    /// 且各自 clear_probe_kind_cache() 重置：并行时会拆掉对方在途注册
-    /// （合并测试出现双探、abort 测试注册限期轮空）。这些用例必须串行。
+    /// Probe tests share process-level global state (PROBE_KIND_CACHE /
+    /// PROBE_KIND_INFLIGHT) and each resets it via clear_probe_kind_cache():
+    /// in parallel they would tear down each other's in-flight registrations
+    /// (the merged run double-probes and the abort test's registration misses
+    /// its window). These tests must run serially.
     static PROBE_STATE_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// 极简本地 HTTP server：按请求路径前缀返回固定 JSON，未注册路径返回 404。
@@ -815,9 +852,9 @@ mod tests {
         spawn_auth_probe_server(routes, None).await
     }
 
-    /// 同 [`spawn_probe_server`]，但 `required_bearer` 存在时所有 200 路由都
-    /// 要求 `Authorization: Bearer <required_bearer>`（否则 401），模拟
-    /// vLLM `--api-key` 鉴权端点。
+    /// Same as [`spawn_probe_server`], but when `required_bearer` is present
+    /// every 200 route requires `Authorization: Bearer <required_bearer>`
+    /// (401 otherwise), simulating a vLLM `--api-key` authenticated endpoint.
     async fn spawn_auth_probe_server(
         routes: Vec<(&'static str, &'static str)>,
         required_bearer: Option<&'static str>,
@@ -845,7 +882,8 @@ mod tests {
                     .next()
                     .and_then(|l| l.split_whitespace().nth(1))
                     .unwrap_or("/");
-                // 头名大小写不敏感解析（hyper HTTP/1.1 序列化为小写 authorization）。
+                // Header name parsed case-insensitively (hyper HTTP/1.1
+                // serializes it as lowercase authorization).
                 let authorization = req.lines().find_map(|l| {
                     let (name, value) = l.split_once(':')?;
                     if !name.trim().eq_ignore_ascii_case("authorization") {
@@ -935,10 +973,13 @@ mod tests {
         );
     }
 
-    /// 鉴权端点探测（六审 P1 回归）：vLLM `--api-key` 的 `/v1/models` 不带凭据
-    /// 401。带与推理同源的 key 探测 → 正确识别 vllm；不带 key → 401 落
-    /// generic。正识别结果按 base_url 缓存且凭据不进缓存 key（正识别必然以
-    /// 鉴权成功为前提，结果与具体凭据无关；缓存/日志不落密钥）。
+    /// Authenticated-endpoint probing (round-6 P1 regression): vLLM
+    /// `--api-key` returns 401 on `/v1/models` without credentials. Probing
+    /// with an inference-same-origin key → vllm identified correctly; no key
+    /// → 401 falls to generic. Positive results are cached by base_url and
+    /// credentials never enter the cache key (a positive identification
+    /// presupposes successful auth, so the result is credential-independent;
+    /// no secrets in cache or logs).
     #[tokio::test]
     async fn probe_local_kind_sends_bearer_for_authenticated_vllm() {
         let _state = PROBE_STATE_TEST_MUTEX.lock().await;
@@ -951,25 +992,30 @@ mod tests {
             Some("sk-local-secret"),
         )
         .await;
-        // 带正确 key：识别 vllm。
+        // With the correct key: vllm identified.
         assert_eq!(
             probe_local_server_kind(&server.url, Some("sk-local-secret")).await,
             LocalServerKind::Vllm
         );
-        // 无 key（修复前的行为）：401 → generic，鉴权端点被误判。
+        // No key (pre-fix behavior): 401 → generic; the authenticated endpoint
+        // gets misclassified.
         clear_probe_kind_cache();
         assert_eq!(
             probe_local_server_kind(&server.url, None).await,
             LocalServerKind::Generic
         );
-        // 错误 key 同样 401 → generic（探测失败语义，不误识别）。
+        // A wrong key also 401s → generic (probe-failure semantics, no false
+        // identification).
         clear_probe_kind_cache();
         assert_eq!(
             probe_local_server_kind(&server.url, Some("sk-wrong-key")).await,
             LocalServerKind::Generic
         );
-        // 凭据不进缓存 key：正识别后同 URL 的无 key 调用命中 TTL 缓存直接
-        // 返回 vllm，不再发请求（正识别以鉴权成功为前提，结果与凭据无关）。
+        // Credentials never enter the cache key: after a positive
+        // identification, a key-less call for the same URL hits the TTL cache
+        // and returns vllm directly without another request (a positive
+        // identification presupposes successful auth, so the result is
+        // credential-independent).
         clear_probe_kind_cache();
         assert_eq!(
             probe_local_server_kind(&server.url, Some("sk-local-secret")).await,
@@ -982,13 +1028,15 @@ mod tests {
         clear_probe_kind_cache();
     }
 
-    /// 空白 bearer 视同无凭据（apply_bearer trim 后过滤）：无鉴权服务不受
-    /// 空白 key 影响，正常识别 Ollama。
+    /// A blank bearer counts as credential-less (apply_bearer trims then
+    /// filters): an auth-free service is unaffected by a blank key and the
+    /// Ollama identification still works.
     #[tokio::test]
     async fn probe_local_kind_blank_bearer_is_treated_as_unauthenticated() {
         let _state = PROBE_STATE_TEST_MUTEX.lock().await;
         clear_probe_kind_cache();
-        // 无鉴权 Ollama：空白 key 与 None 等价，正常识别。
+        // Auth-free Ollama: a blank key is equivalent to None; identification
+        // works normally.
         let open_server =
             spawn_probe_server(vec![("/api/tags", r#"{"models":[{"name":"qwen3:8b"}]}"#)]).await;
         assert_eq!(
@@ -1132,12 +1180,17 @@ mod tests {
         clear_probe_kind_cache();
     }
 
-    /// 取消安全回归：首个 in-flight 探测被 abort 后注册表不能残留毒化条目——
-    /// 已订阅的等待方须降级直探限期返回，后续调用方须重新发起探测，均不得
-    /// 永久挂起（修复前等待方 changed() 既等不到 send 也等不到通道关闭）。
+    /// Cancellation-safety regression: after the first in-flight probe is
+    /// aborted, the registry must not keep a poisoned entry — the already
+    /// subscribed waiter must degrade to a direct probe and return within a
+    /// deadline, and the next caller must start a fresh probe; neither may
+    /// hang forever (before the fix the waiter's changed() saw neither the
+    /// send nor the channel closing).
     ///
-    /// mock server 用 watch 门闩控制：放行前挂起所有请求（让首探停在 HTTP
-    /// await 上以便 abort），放行后对所有端点回 404（直探/重探落 Generic）。
+    /// The mock server uses a watch gate: before the gate opens all requests
+    /// hang (so the first probe parks on HTTP await, ready to be aborted);
+    /// after it opens every endpoint returns 404 (direct/re-probes fall to
+    /// Generic).
     #[tokio::test]
     async fn probe_kind_inflight_abort_first_caller_unblocks_waiter_and_next_caller() {
         let _state = PROBE_STATE_TEST_MUTEX.lock().await;
@@ -1162,7 +1215,8 @@ mod tests {
                     if n == 0 {
                         return;
                     }
-                    // 门闩未放行：请求挂起，模拟慢端点让首探停在 HTTP await。
+                    // Gate closed: park the request, simulating a slow endpoint
+                    // so the first probe stops on HTTP await.
                     if !*gate.borrow_and_update() {
                         let _ = gate.changed().await;
                     }
@@ -1180,7 +1234,8 @@ mod tests {
         let url = format!("http://{addr}/v1");
         let key = url.trim_end_matches('/').to_string();
 
-        // 1. 首个探测进入 in-flight 注册（注册后停在 HTTP await 上）。
+        // 1. The first probe enters the in-flight registry (then parks on
+        // HTTP await).
         let first_url = url.clone();
         let first = tokio::spawn(async move { probe_local_server_kind(&first_url, None).await });
         let registry = PROBE_KIND_INFLIGHT.get_or_init(Default::default);
@@ -1188,58 +1243,70 @@ mod tests {
         while !registry.lock().unwrap().contains_key(&key) {
             assert!(
                 std::time::Instant::now() < deadline,
-                "首个探测应在限期内完成 in-flight 注册"
+                "first probe should complete in-flight registration within the deadline"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        // 2. 并发等待方订阅在途探测。
+        // 2. A concurrent waiter subscribes to the in-flight probe.
         let waiter_url = key.clone();
         let waiter = tokio::spawn(async move { probe_local_server_kind(&waiter_url, None).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // 3. abort 首个探测（模拟 spawn 任务被取消）；await 句柄确保 future
-        //    已被丢弃（注销守卫已运行）再继续。
+        // 3. Abort the first probe (simulating a cancelled spawned task); the
+        //    awaited handle guarantees the future was dropped (the
+        //    deregistration guard has run) before continuing.
         first.abort();
-        assert!(first.await.is_err(), "被 abort 的首探任务应以取消告终");
+        assert!(
+            first.await.is_err(),
+            "aborted first-probe task should end as cancelled"
+        );
 
-        // 4. 放行 mock：之后的直探/重探请求立即 404。
+        // 4. Open the mock gate: subsequent direct/re-probe requests 404
+        // immediately.
         gate_tx.send(true).unwrap();
 
-        // 5. 等待方不得永久挂起：观察到通道关闭后降级直探，限期返回 Generic。
+        // 5. The waiter must not hang forever: it observes the channel
+        // closing, degrades to a direct probe, and returns Generic within the
+        // deadline.
         let waiter_kind = tokio::time::timeout(Duration::from_secs(5), waiter)
             .await
-            .expect("abort 首探后，已订阅的等待方应在限期内降级直探返回")
+            .expect("after aborting the first probe, the subscribed waiter should degrade to a direct probe and return within the deadline")
             .unwrap();
         assert_eq!(waiter_kind, LocalServerKind::Generic);
 
-        // 6. 后续调用方不得命中毒化条目：重新发起探测并限期返回。
+        // 6. The next caller must not hit the poisoned entry: it starts a
+        // fresh probe and returns within the deadline.
         let next_url = key.clone();
         let next_kind = tokio::time::timeout(
             Duration::from_secs(5),
             tokio::spawn(async move { probe_local_server_kind(&next_url, None).await }),
         )
         .await
-        .expect("abort 首探后，后续调用方应在限期内完成（注册表无残留）")
+        .expect("after aborting the first probe, the next caller should finish within the deadline (no registry leftover)")
         .unwrap();
         assert_eq!(next_kind, LocalServerKind::Generic);
 
-        // 7. 注册表最终不残留该 key。
+        // 7. The registry must not keep the key in the end.
         assert!(
             !registry.lock().unwrap().contains_key(&key),
-            "abort 后注册表不应残留毒化条目"
+            "registry must not keep a poisoned entry after abort"
         );
         task.abort();
         clear_probe_kind_cache();
     }
 
-    /// 混合凭据并发回归：无凭据的 First 广播 Generic 后，持正确凭据、订阅
-    /// 同一在途探测的等待方不得原样接收（修复前直接复用广播值被误判
-    /// Generic——鉴权端点对正确 key 本可识别），必须用自身凭据重新直探。
+    /// Mixed-credential concurrency regression: after a credential-less First
+    /// broadcasts Generic, a waiter holding the correct credentials that
+    /// subscribed to the same in-flight probe must not accept it as-is
+    /// (before the fix the broadcast value was reused and misclassified as
+    /// Generic — the authenticated endpoint would have identified the correct
+    /// key); it must re-probe directly with its own credentials.
     ///
-    /// mock server 行为：未持正确凭据的 /api/* 请求先挂起（保证 First 停留
-    /// 在途、等待方先完成订阅），放行后按未授权回落；持正确凭据的
-    /// /api/tags 立即返回 Ollama 模型列表。
+    /// Mock server behavior: /api/* requests without the correct credentials
+    /// hang first (keeping the First in-flight so the waiter can subscribe),
+    /// then fall back as unauthorized once the gate opens; /api/tags with the
+    /// correct credentials returns the Ollama model list immediately.
     #[tokio::test]
     async fn probe_kind_inflight_waiter_reprobes_generic_broadcast_from_other_credentials() {
         let _state = PROBE_STATE_TEST_MUTEX.lock().await;
@@ -1273,7 +1340,8 @@ mod tests {
                         .next()
                         .and_then(|l| l.split_whitespace().nth(1))
                         .unwrap_or("/");
-                    // 头名大小写不敏感解析（hyper HTTP/1.1 序列化为小写 authorization）。
+                    // Header name parsed case-insensitively (hyper HTTP/1.1
+                    // serializes it as lowercase authorization).
                     let authorized = req.lines().find_map(|l| {
                         let (name, value) = l.split_once(':')?;
                         if !name.trim().eq_ignore_ascii_case("authorization") {
@@ -1282,8 +1350,10 @@ mod tests {
                         value.trim().strip_prefix("Bearer ").map(str::trim)
                     }) == Some(good_key.as_str());
                     if !authorized {
-                        // 无/错凭据：挂起等待放行，让 First 停留在在途探测上；
-                        // 放行后仍按未授权处理 → First 走完全部端点落 Generic。
+                        // Missing/wrong credentials: hang until the gate opens,
+                        // keeping the First on the in-flight probe; after the
+                        // gate opens still treat as unauthorized → the First
+                        // walks every endpoint and lands on Generic.
                         if !*gate.borrow_and_update() {
                             let _ = gate.changed().await;
                         }
@@ -1312,7 +1382,8 @@ mod tests {
         let url = format!("http://{addr}/v1");
         let key = url.trim_end_matches('/').to_string();
 
-        // 1. 无凭据调用方成为 First 并停在挂起的 HTTP 请求上。
+        // 1. The credential-less caller becomes the First and parks on the
+        // hanging HTTP request.
         let first_url = url.clone();
         let first = tokio::spawn(async move { probe_local_server_kind(&first_url, None).await });
         let registry = PROBE_KIND_INFLIGHT.get_or_init(Default::default);
@@ -1320,12 +1391,13 @@ mod tests {
         while !registry.lock().unwrap().contains_key(&key) {
             assert!(
                 std::time::Instant::now() < deadline,
-                "首个探测应在限期内完成 in-flight 注册"
+                "first probe should complete in-flight registration within the deadline"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        // 2. 正确凭据调用方订阅同一在途探测。
+        // 2. The caller with correct credentials subscribes to the same
+        // in-flight probe.
         let waiter_url = key.clone();
         let waiter_key = GOOD_KEY.to_string();
         let waiter =
@@ -1334,27 +1406,29 @@ mod tests {
             );
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // 3. 放行：First 的请求解除挂起并以未授权身份全端点失败。
+        // 3. Open the gate: the First's request un-hangs and fails on every
+        // endpoint as unauthorized.
         gate_tx.send(true).unwrap();
         let first_kind = tokio::time::timeout(Duration::from_secs(5), first)
             .await
-            .expect("First 应在放行后限期完成")
+            .expect("First should finish within the deadline after the gate opens")
             .unwrap();
         assert_eq!(
             first_kind,
             LocalServerKind::Generic,
-            "无凭据 First 应全端点失败回落 Generic"
+            "credential-less First should fail on every endpoint and fall back to Generic"
         );
 
-        // 4. 回归点：等待方不得照单全收 First 的 Generic，应用自身凭据重探。
+        // 4. Regression point: the waiter must not swallow the First's Generic
+        // as-is; it must re-probe with its own credentials.
         let waiter_kind = tokio::time::timeout(Duration::from_secs(5), waiter)
             .await
-            .expect("等待方应在限期内完成重探")
+            .expect("waiter should finish the re-probe within the deadline")
             .unwrap();
         assert_eq!(
             waiter_kind,
             LocalServerKind::Ollama,
-            "持正确凭据的等待方应用自身凭据重探出真实类型，而不是接收无凭据 First 广播的 Generic"
+            "waiter with correct credentials should re-probe its real type with its own credentials, not accept the Generic broadcast by the credential-less First"
         );
 
         task.abort();

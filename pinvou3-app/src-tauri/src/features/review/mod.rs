@@ -512,7 +512,8 @@ async fn model_review(
     let provider = bridge.provider();
     let preset = review_model_preset(bridge);
     let model_name = if provider == "vllm" {
-        // served-name 探测带与推理同源的 key：鉴权 vLLM 的 /v1/models 会 401。
+        // The served-name probe uses an inference-same-origin key:
+        // authenticated vLLM 401s on /v1/models.
         crate::features::monitor::probe_vllm_model_info(&base_url, Some(bridge.api_key().as_str()))
             .await
             .0

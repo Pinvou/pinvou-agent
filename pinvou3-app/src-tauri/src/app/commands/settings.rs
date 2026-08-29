@@ -269,10 +269,12 @@ pub async fn list_models() -> Result<ModelsView, String> {
 /// - lmstudio / generic → 提示「该端点暂不支持思考档位调节」，避免用户
 ///   调了个寂寞（底座 openai wire route 对 reasoning_effort 是空操作）。
 ///
-/// 入参与凭据解析和 test_model_connection 一致：表单新填 key（api_key）优先，
-/// 否则读已保存凭据（model_id）。探测请求必须带凭据——鉴权 vLLM
-/// （`--api-key`）的 `/v1/models` 会 401，不带凭据探测会把鉴权端点误判成
-/// generic，UI 误报「不支持思考档位调节」。
+/// Inputs and credential resolution match test_model_connection: a freshly
+/// typed form key (api_key) wins, otherwise the saved credential (model_id)
+/// is read. The probe request must carry credentials — authenticated vLLM
+/// (`--api-key`) returns 401 on `/v1/models`, so probing without credentials
+/// misclassifies the authenticated endpoint as generic and the UI falsely
+/// reports "thinking tiers are not supported on this endpoint".
 ///
 /// 该命令经 web domain-adapter 暴露给前端，此处必须守住
 /// `probe_local_server_kind` 的文档契约「只对本地/私网端点探测」：
@@ -287,9 +289,11 @@ pub async fn probe_local_server_kind(
     if !crate::features::assistant::platform::bridge::base_url_uses_local_or_private(&base_url) {
         return Ok("generic".to_string());
     }
-    // 与 test_model_connection 同口径：表单新填 key 优先，否则读已保存凭据。
-    // 读凭据失败不阻断探测（按无凭据继续）——凭据缺失时探测仍能识别无鉴权
-    // 端点，鉴权端点会 401 落 generic，与探测不可达同语义。
+    // Same resolution as test_model_connection: a freshly typed form key wins,
+    // otherwise the saved credential is read. A credential-read failure does
+    // not block the probe (continue as credential-less) — with credentials
+    // missing the probe still identifies auth-free endpoints; authenticated
+    // endpoints 401 into generic, the same semantics as an unreachable probe.
     let bearer = match api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
         Some(key) => Some(key.to_string()),
         None => resolve_saved_model_key(model_id.as_deref())
