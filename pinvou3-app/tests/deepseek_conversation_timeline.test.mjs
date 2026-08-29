@@ -337,6 +337,27 @@ try {
   assert.equal(paired.length, 1, 'send_error timing records must not shift visible user turns');
   assert.equal(paired[0].status, 'incomplete');
 
+  // 时间线裸 error 是红字兜底展示:门控漏判的网关/provider 报文也要在投影
+  // 层脱敏(分类可以漏,凭证不能漏);userError 卡走 build() 自带脱敏。
+  // 假 key 用拼接构造,避免触发 GitHub push protection 密钥形态扫描(合成值)。
+  const FAKE_PROJ_KEY = 'sk-proj-' + 'abcdefghijklmnop1234567890';
+  const leaky = pairDeepSeekTimeline([
+    { turn_id: 'leak-1', event: 'user_start', timestamp: 1 },
+    {
+      turn_id: 'leak-1', event: 'assistant_done', timestamp: 2, status: 'Failed',
+      error: 'Incorrect API key provided: ' + FAKE_PROJ_KEY + '.',
+    },
+  ], { language: 'en' });
+  assert.equal(leaky[0].status, 'Failed');
+  assert.doesNotMatch(
+    leaky[0].error,
+    new RegExp(FAKE_PROJ_KEY),
+    'projected raw error must be redacted',
+  );
+  assert.match(leaky[0].error, /\[redacted\]/);
+  assert.ok(leaky[0].userError, 'gated model-service errors must still build the friendly card');
+  assert.equal(leaky[0].userError.kind, 'auth');
+
   const emptyHistory = projectDeepSeekConversation({
     chatItems: [],
     sessionId: 'empty-session',

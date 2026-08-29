@@ -85,6 +85,17 @@
     isInternalRuntimeUserMessage,
     isInternalUserMessageProvenance,
     userMessageInputProvenance,
+    // 门控漏判的错误文本(网关/代理自定义 body、provider 原始报文)不走
+    // model-service notice,但还会以裸串/红字展示。展示面前无条件脱敏:
+    // 分类允许漏判,凭证不允许漏。helper 缺失时原样返回(降级为既有行为)。
+    redactRawError: function (error, state) {
+      const text = String(error == null ? "" : error);
+      if (!text) return text;
+      const helper = window.PinvouModelServiceErrors;
+      if (!helper || typeof helper.redactTechnicalDetail !== "function") return text;
+      return helper.redactTechnicalDetail(text, state && state.settings && state.settings.language);
+    },
+
     modelServiceUserError: function (payload, state) {
       payload = payload || {};
       state = state || {};

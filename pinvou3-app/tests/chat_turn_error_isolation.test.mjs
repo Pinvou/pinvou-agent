@@ -120,11 +120,32 @@ assert.equal(
 // 分类顺序:OOM(内存耗尽)不再落到 quota;403+rate limit 共存按频控分。
 assert.equal(modelErrors.classify('HTTP 500: worker killed 内存耗尽 (OOM)').kind, 'server');
 assert.equal(modelErrors.classify('HTTP 403 forbidden: rate limit exceeded').kind, 'rate_limit');
-// 计费强词(余额不足/quota 等)是门控的独立通道,必须无条件接管——
+// 计费强词(quota/insufficient balance 等)是门控的独立通道,必须无条件接管——
 // 防止只走底座前缀路径的测试让强词表静默失效。
 assert.equal(modelErrors.isModelServiceError('insufficient balance'), true);
-assert.equal(modelErrors.isModelServiceError('账户余额不足，请充值'), true);
 assert.equal(modelErrors.isModelServiceError('quota has been exceeded'), true);
+// 泛中文支付语("账户余额/余额不足/欠费")在本地支付/转账错误里同样常见:
+// 裸措辞不再劫持,叠加 API/厂商上下文后仍是强计费信号。
+assert.equal(modelErrors.isModelServiceError('支付失败:账户余额不足'), false);
+assert.equal(modelErrors.isModelServiceError('转账出错:余额不足'), false);
+assert.equal(modelErrors.isModelServiceError('GLM 400 1113 "余额不足"'), true);
+// 本地 CLI 工具形态先于词表排除:remote URL/主机名带厂商名时不得劫持。
+assert.equal(modelErrors.isModelServiceError("fatal: unable to access 'https://github.com/openai/whisper.git/': Failed to connect to github.com port 443: Connection refused"), false);
+assert.equal(modelErrors.isModelServiceError('ssh: connect to host git.openai.com port 22: Connection refused'), false);
+assert.equal(modelErrors.isModelServiceError('error: failed to push some refs to https://github.com/deepseek-ai/models.git: read timed out'), false);
+assert.equal(modelErrors.isModelServiceError('collect2: fatal error: ld terminated with signal 11'), false);
+assert.equal(modelErrors.isModelServiceError('user quota exceeded on /home volume'), false);
+// 漏接管修复:provider 名/裸 401 + unauthorized、"Incorrect API key"(OpenAI
+// 真实措辞)、gemini-cli 的 "[API Error: …]" 外壳、claude 厂商名。
+assert.equal(modelErrors.isModelServiceError('OpenAI API error: 401 Unauthorized'), true);
+assert.equal(modelErrors.isModelServiceError('deepseek: 401 unauthorized'), true);
+// 假 key 用拼接构造:完整字面量会触发 GitHub push protection 的密钥形态
+// 扫描(测试语料均为合成值,非真实凭证)。
+const FAKE_PROJ_KEY = 'sk-proj-' + 'abcdefghijklmnop1234567890';
+assert.equal(modelErrors.isModelServiceError('Incorrect API key provided: ' + FAKE_PROJ_KEY), true);
+assert.equal(modelErrors.isModelServiceError('[API Error: 429 Too Many Requests]'), true);
+assert.equal(modelErrors.isModelServiceError('claude API timeout after 30s'), true);
+assert.equal(modelErrors.classify('OpenAI API error: 401 Unauthorized').kind, 'auth');
 // 底座大响应 abort 的真实错误串(chat.rs:SSE buffer exceeded)必须被固定前缀接管。
 assert.equal(modelErrors.isModelServiceError('SSE buffer exceeded 10485760 bytes — aborting stream'), true);
 // 带版本段与 axios 措辞的状态码也能提出状态:429 → rate_limit。
@@ -253,11 +274,17 @@ assert.doesNotMatch(
   /AIzaSy/,
   'bare Gemini API keys must be redacted',
 );
-// 通用 Cookie/Set-Cookie 头必须脱敏。
+// 通用 Cookie/Set-Cookie 头必须脱敏:多对凭证以 "; " 分隔,第二对起
+// (csrftoken 等)同样不得泄漏——早先语料第二对用 theme=light,掩盖了该缺陷。
 assert.doesNotMatch(
-  modelErrors.redactTechnicalDetail('Cookie: sessionid=abc123def456; theme=light'),
-  /abc123def456/,
-  'Cookie header values must be redacted',
+  modelErrors.redactTechnicalDetail('Cookie: sessionid=abc123def456; csrftoken=zyx987wv654'),
+  /abc123def456|zyx987wv654/,
+  'multi-pair Cookie header values must all be redacted',
+);
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('Set-Cookie: SID=AbCdEf123456; HSID=Xy987612345; SSID=Qw5432167890'),
+  /AbCdEf123456|Xy987612345|Qw5432167890/,
+  'multi-pair Set-Cookie header values must all be redacted',
 );
 // 脱敏占位符按界面语言选择:en/ja 界面的技术详情不得混入中文。
 const enRedacted = modelErrors.redactTechnicalDetail('Authorization: Bearer sk-deepseek-secret-token-123', 'en');
@@ -281,6 +308,13 @@ const structuredNotice = modelErrors.build(
 );
 assert.equal(structuredNotice.kind, 'billing');
 assert.doesNotMatch(structuredNotice.technicalDetail, /sk-zzz-abc123def456/, 'structured passthrough must redact technical detail');
+// structured 直通的 title/message 同样要脱敏(AIza 由裸规则兜住)。
+const structuredKeyed = modelErrors.build(
+  { kind: 'auth', title: 'invalid key AIzaSyB3dEfGhIjKlMnOpQrStUvWxYz012345', message: 'check key Bearer sk-zzz-abc123def456' },
+  { language: 'zh-Hans' },
+);
+assert.doesNotMatch(structuredKeyed.title, /AIzaSy/, 'structured passthrough must redact title');
+assert.doesNotMatch(structuredKeyed.message, /sk-zzz-abc123def456/, 'structured passthrough must redact message');
 assert.match(structuredNotice.technicalDetail, /\[敏感信息已隐藏\]/);
 assert.equal(modelErrors.build({ kind: 'nope', title: 't', message: 'm' }, { language: 'zh-Hans' }).kind, 'unknown', 'unknown structured kinds must fall back to unknown');
 const cleanupState = { settings: { language: 'ja' }, chatItems: [] };
@@ -298,6 +332,26 @@ messageSandbox.window.PinvouBridgeMessages.showShellCleanupFailure(
   addCleanupItem,
 );
 assert.equal(cleanupState.chatItems.length, 1, 'cleanup warning must be deduplicated');
+// redactRawError 门面:门控漏判的错误文本在展示面前无条件脱敏;
+// 凭证值被吞,但错误语义词("unauthorized"/状态码)保留供 401 刷新等逻辑使用。
+const zhState = { settings: { language: 'zh-Hans' } };
+const rawLeak = 'Incorrect API key provided: ' + FAKE_PROJ_KEY;
+const redacted = messageSandbox.window.PinvouBridgeMessages.redactRawError(rawLeak, zhState);
+assert.doesNotMatch(redacted, new RegExp(FAKE_PROJ_KEY), 'gate-missed raw fallback must be redacted');
+assert.match(redacted, /\[敏感信息已隐藏\]/);
+assert.doesNotMatch(
+  messageSandbox.window.PinvouBridgeMessages.redactRawError('Incorrect API key provided', zhState),
+  /\[敏感信息已隐藏\]/,
+  'plain text without credentials must pass through redaction unchanged',
+);
+// helper 缺失时降级原样返回(不抛错)。
+const noHelperSandbox = { window: {} };
+vm.runInNewContext(bridgeMessagesSource, noHelperSandbox, { filename: 'bridge-messages.js' });
+assert.equal(
+  noHelperSandbox.window.PinvouBridgeMessages.redactRawError(rawLeak, zhState),
+  rawLeak,
+  'redactRawError must degrade to identity when the helper is missing',
+);
 assert.equal(cleanupState.chatItems[0].legacyConversationOnly, true);
 
 const modelErrorState = {
@@ -446,6 +500,8 @@ for (const language of ['en', 'ja', 'zh-Hans']) {
     'SSE stream request failed: HTTP 500 internal error',
     'SSE stream request failed: connection reset by peer',
     'Chat API call failed with an unexpected error',
+    'HTTP 402 insufficient balance',
+    'HTTP 429 quota exceeded',
   ]) {
     const transientMessage = modelErrors.build(kind, { language, terminal: false }).message;
     const terminalMessage = modelErrors.build(kind, { language, terminal: true }).message;

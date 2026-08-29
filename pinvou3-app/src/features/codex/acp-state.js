@@ -3,6 +3,15 @@ import {
   presentConversationItems,
 } from '../conversation/conversation-model.js';
 
+/// ACP 泳道错误文本(红字兜底)展示前的无条件脱敏:agent CLI 的原始报文
+/// 可能带网关自定义 body 或凭证,门控没接管的不建友好卡,但仍不得带密上屏。
+function redactDisplayError(error) {
+  if (!error) return error || null;
+  const helper = typeof globalThis !== 'undefined' && globalThis.PinvouModelServiceErrors;
+  if (!helper || typeof helper.redactTechnicalDetail !== 'function') return error;
+  return helper.redactTechnicalDetail(String(error));
+}
+
 export function unifiedConversationUiEnabled() {
   try {
     return localStorage.getItem('pinvou_conversation_ui_v2') !== 'false';
@@ -341,7 +350,10 @@ export function projectAcpTimeline(input) {
       turn.startedAt = envelope.timestamp;
     } else if (type === 'turn_completed') {
       turn.status = data.status || 'completed';
-      turn.error = data.error || null;
+      // ACP 泳道的错误文本来自 agent CLI(codex/claude/gemini),可能原样携带
+      // 网关报文或凭证;红字展示前无条件脱敏(分类可以漏,凭证不能漏)。
+      // helper(classic script)缺失时原样保留,降级为既有行为。
+      turn.error = redactDisplayError(data.error || null);
       turn.completedAt = envelope.timestamp;
     }
   }

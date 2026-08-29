@@ -24,6 +24,7 @@
       zai: "智谱",
       zhipu: "智谱",
       anthropic: "Claude",
+      claude: "Claude",
       xai: "xAI",
       gemini: "Gemini",
     },
@@ -41,6 +42,7 @@
       zai: "Zhipu",
       zhipu: "Zhipu",
       anthropic: "Claude",
+      claude: "Claude",
       xai: "xAI",
       gemini: "Gemini",
     },
@@ -58,6 +60,7 @@
       zai: "Zhipu",
       zhipu: "Zhipu",
       anthropic: "Claude",
+      claude: "Claude",
       xai: "xAI",
       gemini: "Gemini",
     },
@@ -96,13 +99,16 @@
     "provider stream connection dropped",
   ];
 
-  // 泛化信号词分两档:计费/额度/频控词(余额不足、quota exceeded、请求过于
-  // 频繁等)强指向模型 API 计费语义,本地工具错误几乎不会出现,可无条件接管;
-  // 网络/服务/超时词(timeout、connection refused、server error 等)在本地
+  // 泛化信号词分三档:①无条件词——模型 API 计费/额度词与 "invalid api key"
+  // ("incorrect api key" 是 OpenAI 真实措辞)等,本地工具错误几乎不会出现;
+  // ②带上下文词——泛中文支付语("账户余额/余额不足/欠费"在本地支付/转账
+  // 错误里同样常见,须叠加 API/厂商上下文才接管);
+  // ③网络/服务/超时词(timeout、connection refused、server error 等)在本地
   // 工具错误(git、ssh、npm、docker、脚本退出码)里同样常见,必须叠加
   // API/厂商上下文(hasApiSignal/hasProviderNameSignal)才允许接管。
   const STRONG_MODEL_ERROR_KEYWORDS = [
     "invalid api key",
+    "incorrect api key",
     "insufficient balance",
     "insufficient quota",
     "quota exceeded",
@@ -110,9 +116,6 @@
     "quota has been exceeded",
     "exceeded your current quota",
     "payment required",
-    "账户余额",
-    "余额不足",
-    "欠费",
     "额度不足",
     "额度用尽",
     "额度耗尽",
@@ -120,11 +123,20 @@
     "resource exhausted",
   ];
 
+  // 泛中文支付语:语义不足以单独接管(本地支付/转账错误同款措辞),
+  // 但叠加 API/厂商上下文后是强计费信号(如 "GLM 400 余额不足")。
+  const STRONG_WITH_CONTEXT_KEYWORDS = [
+    "账户余额",
+    "余额不足",
+    "欠费",
+  ];
+
   const AMBIGUOUS_MODEL_ERROR_KEYWORDS = [
     // 注意:"api key" 不在此列——它是 hasApiSignal 的上下文名词而非错误语义,
     // 留在词表里会让门控形同虚设("failed to save api key to config: disk full"
     // 这类本地错误被劫持)。强语义的 "invalid api key" 由 STRONG 词表接管。
     "invalid token",
+    "unauthorized",
     "rate limit",
     "too many requests",
     "请求过于频繁",
@@ -256,18 +268,29 @@
 
   function hasApiSignal(lower, normalized) {
     return hasAny(lower, normalized, [
-      "api key", "api account", "api quota", "model service",
+      "api key", "api account", "api quota", "api error", "model service",
       "model endpoint", "provider endpoint", "sse stream",
     ]);
   }
 
   function hasProviderNameSignal(lower, normalized) {
     return hasAny(lower, normalized, [
-      "openai", "deepseek", "anthropic", "moonshot", "kimi", "dashscope",
+      "openai", "deepseek", "anthropic", "claude", "moonshot", "kimi", "dashscope",
       "qwen", "doubao", "volcengine", "zhipu", "gemini",
       "glm", "zai", "minimax", "xai",
     ]);
   }
+
+  // 本地 CLI 工具的固定错误形态,先于语义词表排除:git 的 "fatal:" 行与
+  // ssh/curl 的 "connect to host … port N" 在 remote URL/主机名里带厂商名时
+  // (github.com/openai、git.openai.com)叠加网络歧义词,会被误判成模型服务
+  // 故障并劫持成"请重试"卡。底座模型错误恒带 MODEL_CALL_PREFIXES 并已在
+  // 上方接管,不会落到这里,故排除不伤及真实模型服务错误。
+  const LOCAL_TOOL_SHAPES = [
+    /(?:^|[\s(@])fatal(?: error)?:/i,
+    /(?:connect to host|failed to connect to)\s+\S+\s+port\s+\d+/i,
+    /failed to push some refs/i,
+  ];
 
   // 分类器只接管两类错误:①底座模型调用的固定前缀(见 MODEL_CALL_PREFIXES);
   // ②模型服务语义词,且必须叠加 API/厂商上下文——裸的 timeout/connection
@@ -279,12 +302,19 @@
     const lower = text.toLowerCase();
     const normalized = normalizeForMatch(text);
     if (hasAny(lower, normalized, MODEL_CALL_PREFIXES)) return true;
-    // POSIX 磁盘配额满(EDQUOT 的标准 strerror 就是 "Disk quota exceeded")
-    // 先于计费强词排除,否则本地写盘失败会被提示"请充值或切换模型"。
-    if (/(?:^|[^a-z0-9])(?:disk|nfs|inode|filesystem|storage)\s+quota(?![a-z0-9])/i.test(normalized)) return false;
+    // 本地 CLI 工具形态(见 LOCAL_TOOL_SHAPES)先于全部语义词表排除。
+    if (LOCAL_TOOL_SHAPES.some(function (re) { return re.test(text); })) return false;
+    // POSIX 磁盘/卷配额满(EDQUOT 的标准 strerror 就是 "Disk quota exceeded",
+    // 卷挂载报 "user quota exceeded")先于计费强词排除,否则本地写盘失败会被
+    // 提示"请充值或切换模型"。
+    if (/(?:^|[^a-z0-9])(?:disk|nfs|inode|filesystem|storage|user)\s+quota(?![a-z0-9])/i.test(normalized)) return false;
     if (hasAny(lower, normalized, STRONG_MODEL_ERROR_KEYWORDS)) return true;
     const apiSignal = hasApiSignal(lower, normalized);
     const providerSignal = hasProviderNameSignal(lower, normalized);
+    // 泛中文支付语须叠加 API/厂商上下文:"支付失败:账户余额不足"这类本地
+    // 支付错误不得引导用户去充值模型 API;带上下文的("GLM 400 余额不足")
+    // 仍是强计费信号。
+    if ((apiSignal || providerSignal) && hasAny(lower, normalized, STRONG_WITH_CONTEXT_KEYWORDS)) return true;
     const status = extractHttpStatus(text);
     // extractHttpStatus 只在文本含 HTTP/status 字样时才返回非空,无需再验上下文词。
     const statusIsModelLike = status !== null
@@ -308,7 +338,7 @@
     if (hasAny(lower, normalized, ["context length", "maximum context", "prompt is too long", "context window"])) {
       return { kind: "context", httpStatus: status };
     }
-    if (status === 401 || hasAny(lower, normalized, ["unauthorized", "authentication", "authorization failed", "invalid api key", "invalid key", "invalid token", "bearer token"])) {
+    if (status === 401 || hasAny(lower, normalized, ["unauthorized", "authentication", "authorization failed", "invalid api key", "incorrect api key", "invalid key", "invalid token", "bearer token"])) {
       return { kind: "auth", httpStatus: status };
     }
     if (status === 402 || hasAny(lower, normalized, ["payment required", "insufficient balance", "余额不足", "欠费", "账户余额"])) {
@@ -344,6 +374,14 @@
     // 空格以覆盖 "Digest username=x, ..." 之外的两段式凭证。
     text = text.replaceAll(
       /((?:proxy-)?authorization[\s"']*[:=][\s"']*)([^"'),;}&\]\r\n]+)/gi,
+      (m, p1) => keepPrefix(p1),
+    );
+    // Cookie/Set-Cookie 头整段吞值:多对凭证以 "; " 分隔,下方 kv 规则的值
+    // 字符类在首个空格处截断,只能吞第一对(SID 吞掉、HSID/SSID 原样泄漏)。
+    // HTTP 头一行一对,按头名吞到行尾不越界;前缀限 [空格/引号/行首/JSON
+    // 分隔符],把 "document.cookie = …" 之外的普通说明词挡在外面。
+    text = text.replaceAll(
+      /((?:^|[\s"',;[])(?:set[\s_-]?cookie|cookie)[\s"']*[:=][\s"']*)[^\r\n]*/gi,
       (m, p1) => keepPrefix(p1),
     );
     // 裸 Bearer <token>(无 Authorization 头名,配置回显/排错日志常见形态)。
@@ -444,7 +482,7 @@
   // 模型;provider 信号(如 URL 里的 api.deepseek.com)比当前模型配置更可信,
   // 因此它优先于 providerLabelFromState 的推导。
   const PROVIDER_SIGNAL_ORDER = [
-    "deepseek", "anthropic", "moonshot", "kimi", "dashscope", "qwen",
+    "deepseek", "anthropic", "claude", "moonshot", "kimi", "dashscope", "qwen",
     "doubao", "volcengine", "zhipu", "zai", "glm", "minimax", "xai",
     "openai", "gemini",
   ];

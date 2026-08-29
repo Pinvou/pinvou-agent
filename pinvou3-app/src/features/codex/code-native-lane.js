@@ -131,6 +131,16 @@ function currentTurnStart(lane) {
   return 0;
 }
 
+/// 回退裸串展示前的无条件脱敏:门控漏判的网关/代理自定义 body、provider
+/// 原始报文仍会以系统项/红字上屏,分类允许漏判,凭证不允许漏。
+/// helper 缺失(classic script 未加载)时原样返回,降级为既有行为。
+function redactDisplayError(error, options = {}) {
+  if (!error) return error;
+  const helper = globalThis.PinvouModelServiceErrors;
+  if (!helper || typeof helper.redactTechnicalDetail !== 'function') return error;
+  return helper.redactTechnicalDetail(String(error), options.language);
+}
+
 /// 原生泳道的模型服务错误气泡，与 bridge-messages.addModelServiceErrorNotice 同语义：
 /// 门控（isModelServiceError）通过才接管；去重按错误身份（kind+技术详情）而非文本，
 /// 同回合 transient→done 措辞升级原地生效；终态且时间线终态记录确实带 error 时
@@ -213,8 +223,12 @@ function openTimelineStart(lane, withinMs = 0) {
 }
 
 function recordTurnStarted(lane, turnId) {
+  // 同毫秒连续两回合(自动化/快速连发)Date.now() 会生成相同 id:第二条
+  // user_start 会被 openTimelineStart 误判为已完结回合,终态记录与错误卡
+  // 整体失效。补回合序号保证 id 唯一(与 bridge 侧 turnIndex 同思路)。
+  lane.turnSeq = (lane.turnSeq || 0) + 1;
   lane.timeline.push({
-    turn_id: turnId || `ui_native_${Date.now()}`,
+    turn_id: turnId || `ui_native_${Date.now()}_${lane.turnSeq}`,
     event: 'user_start',
     timestamp: Date.now(),
     ui_turn_index: visibleUserTurnIndex(lane),
@@ -481,9 +495,11 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
     }
     case 'chat:transient_error': {
       if (!p.error) return false;
+      // 回退裸串也先脱敏(门控漏判的网关/provider 报文不得带凭证上屏)。
+      const displayError = redactDisplayError(p.error, options);
       // 模型服务错误走统一分类/脱敏/三语气泡；本地工具错误保持裸串回退。
       if (upsertNativeModelServiceNotice(lane, p, false, options)) return true;
-      const notice = `⚠️ ${p.error}`;
+      const notice = `⚠️ ${displayError}`;
       // 同文本去重限定当前回合(与上方身份去重同作用域)。
       const start = currentTurnStart(lane);
       let duplicate = false;
@@ -591,8 +607,9 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
         //（时间线错误卡接管）；非模型错误与 bridge chat:done 回退同语义——
         // 同文本瞬态项原地隐藏（时间线以裸 error 小字展示），不追加第二条。
         // 隐藏的前提同样是时间线终态记录确实写入且带 error,否则保留气泡可见。
+        // 回退裸串与 transient 回退用同一脱敏文本,同文本去重才能命中。
         const timelineTakesOver = Boolean(terminalRecord && terminalRecord.error);
-        const notice = `⚠️ ${p.error}`;
+        const notice = `⚠️ ${redactDisplayError(p.error, options)}`;
         const start = currentTurnStart(lane);
         let existing = null;
         for (let i = start; i < lane.items.length; i += 1) {
