@@ -306,6 +306,25 @@ impl BundleStore {
         save_locked(&self.file, &file)
     }
 
+    /// 仅当记录仍存在时更新内容指纹（单锁 RMW，原子落盘）。id 不存在 →
+    /// Ok(false) 不写盘——「读记录 → upsert_preserving 补写」的两段式在并发
+    /// 卸载下会把已删除记录按 stale 快照复活（upsert_preserving 对不存在的
+    /// id 直接插入），指纹补写必须走本方法而非两段式。
+    pub fn update_content_fingerprint_if_exists(
+        &self,
+        id: &str,
+        fingerprint: &str,
+    ) -> Result<bool, String> {
+        let _guard = file_lock();
+        let mut file = load_locked(&self.file)?;
+        let Some(record) = file.records.iter_mut().find(|r| r.id == id) else {
+            return Ok(false);
+        };
+        record.content_fingerprint = Some(fingerprint.to_string());
+        save_locked(&self.file, &file)?;
+        Ok(true)
+    }
+
     /// 按 id 删除记录（读-改-写全程持锁，原子落盘）。id 不存在 → Ok(false)，不写盘。
     pub fn remove(&self, id: &str) -> Result<bool, String> {
         let _guard = file_lock();
@@ -489,17 +508,40 @@ fn apply_display_meta(
     Ok(())
 }
 
-/// 展示字段值的统一校验（写入与预检共用同一口径）：控制字符/换行一律拒绝
-/// （单行 UI 展示与 SKILL.md 单行回写都无法表达，此条各包形态行为一致），
-/// 超过字符上限 → Err。`field_label` 用人类可读字段名，不外泄内部 key。
+/// 展示字段值的统一校验（写入与预检共用同一口径）：控制字符/换行/不可见字符
+/// （bidi 控制、零宽、BOM、行/段分隔符等，见 [`is_display_unsafe_char`]）一律
+/// 拒绝（单行 UI 展示与 SKILL.md 单行回写都无法表达，或可视觉欺骗，此条各包
+/// 形态行为一致），超过字符上限 → Err。`field_label` 用人类可读字段名，不外泄
+/// 内部 key。
 ///
 /// 注意：单技能包的 SKILL.md 同步在回写时另有更严的单行互洽限制（拒双引号/
 /// 反斜杠/首尾单引号，见 `rewrite_frontmatter_description`）——同一值在非
 /// 单技能包可存、在单技能包会被整体拒绝，这是同步能力差异使然，不是本函数的
 /// 口径不一致。
+/// 展示字段值的不可见字符拒绝集：`Cc`（控制字符/换行）之外，补充对卡片标题/
+/// composer 菜单/SKILL.md 回写都有实际危害或显示异常的不可见字符——
+/// - 双向控制（U+202A–202E、U+2066–2069）：可视觉重排/隐藏文本（bidi 欺骗）；
+/// - 零宽（U+200B–200D）、BOM（U+FEFF）、软连字符（U+00AD）：不可见但参与
+///   比较/搜索/指纹，还会被原样写进 SKILL.md；
+/// - 行/段分隔符（U+2028/2029，`Zl`/`Zp`）：单行 UI 与单行 frontmatter 都
+///   无法表达，效果等同换行。
+/// std 无通用 Unicode 类别 API，此处按具名范围精确拒绝；未列出的 Cf 变体
+/// （如变体选择符）不拦——宁可少拦可见字符，不误伤正常文案。
+fn is_display_unsafe_char(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{00AD}' // SOFT HYPHEN
+            | '\u{200B}'..='\u{200D}' // ZERO WIDTH SPACE..JOINER
+            | '\u{2028}'..='\u{2029}' // LINE/PARAGRAPH SEPARATOR
+            | '\u{202A}'..='\u{202E}' // bidi embedding/override controls
+            | '\u{2066}'..='\u{2069}' // bidi isolate controls
+            | '\u{FEFF}' // BOM / ZERO WIDTH NO-BREAK SPACE
+        )
+}
+
 fn check_display_value(field_label: &str, v: &str, max_chars: usize) -> Result<(), String> {
-    if v.chars().any(|c| c.is_control()) {
-        return Err(format!("{field_label}含控制字符/换行，不支持"));
+    if v.chars().any(is_display_unsafe_char) {
+        return Err(format!("{field_label}含控制字符/不可见字符/换行，不支持"));
     }
     if v.chars().count() > max_chars {
         return Err(format!("{field_label}超过 {max_chars} 字符上限"));
@@ -1358,18 +1400,32 @@ mod tests {
             assert!(store
                 .set_display_meta("up", None, Some(&long_desc))
                 .is_err());
-            // 控制字符/换行：展示名与展示说明一律拒绝（单行 UI 展示与单行
-            // SKILL.md 回写都无法表达；也消除各包形态校验口径不一致）
-            for bad in ["含\n换行", "含\t制表", "含\u{7}控制符"] {
+            // 控制字符/换行/不可见字符：展示名与展示说明一律拒绝（单行 UI 展示
+            // 与单行 SKILL.md 回写都无法表达；bidi/零宽类可视觉欺骗或污染比较）
+            for bad in [
+                "含\n换行",
+                "含\t制表",
+                "含\u{7}控制符",
+                "bidi\u{202E}逆转",
+                "bidi\u{2066}隔离",
+                "零宽\u{200B}字符",
+                "\u{FEFF}BOM开头",
+                "软\u{00AD}连字符",
+                "行分隔\u{2028}符",
+            ] {
                 assert!(
                     store.set_display_meta("up", Some(bad), None).is_err(),
-                    "展示名含控制字符应拒绝: {bad:?}"
+                    "展示名含控制/不可见字符应拒绝: {bad:?}"
                 );
                 assert!(
                     store.set_display_meta("up", None, Some(bad)).is_err(),
-                    "展示说明含控制字符应拒绝: {bad:?}"
+                    "展示说明含控制/不可见字符应拒绝: {bad:?}"
                 );
             }
+            // 对照：emoji / 中文 / 空格等可见字符正常放行
+            store
+                .set_display_meta("up", Some("天气 ⛅ v2"), None)
+                .unwrap();
             // 边界：恰好上限可写
             let ok_name = "名".repeat(MAX_DISPLAY_NAME_CHARS);
             let ok_desc = "述".repeat(MAX_DISPLAY_DESCRIPTION_CHARS);

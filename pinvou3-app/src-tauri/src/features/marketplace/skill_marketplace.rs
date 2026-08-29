@@ -957,6 +957,12 @@ impl SkillMarketplaceManager {
             }
         };
 
+        // 落盘改写段持同 id import_lock：与 update_display_meta 的 SKILL.md
+        // 读改写段互斥（锁序一致：import_lock → store file_lock），防重导入的
+        // rename/重基线插进「读备份 → 写 SKILL.md」窗口（plugin_import 统一路径
+        // 全程持锁；本路径目标 id 在 pass1 后才可知，从改写段起持锁）。
+        let import_lock = super::plugin_import::import_lock_for(&name);
+        let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
         // 与 preset install 同一纪律：删旧目录失败即中止，不留"删一半"残缺目录。
         if dest.exists() {
             std::fs::remove_dir_all(&dest).map_err(|e| {
@@ -998,8 +1004,11 @@ impl SkillMarketplaceManager {
     /// 2. 展示说明非空 → 单技能包回写 SKILL.md（含互洽校验、原值备份、指纹
     ///    重算）；空（清覆盖）→ 单技能包从备份恢复原值。非单技能包两向都跳过；
     /// 3. 最后 `set_display_meta` 写 extra（与门禁同口径兜底）。
-    /// 步骤 2 与 3 之间仍存在窄窗口（并发卸载时 SKILL.md 已改而命令 Err），
-    /// 展示回退链读 SKILL.md 所以状态自洽；可接受，注释如实记录。
+    /// 并发契约：全程持有同 id 的 `import_lock_for`（锁序与导入路径一致：
+    /// import_lock → store file_lock，无死锁面），SKILL.md 读改写段与同 id
+    /// 重导入（rename + 备份重基线）真正互斥。步骤 2 与 3 之间仍存在窄窗口
+    /// （并发卸载时 SKILL.md 已改而命令 Err），展示回退链读 SKILL.md 所以状态
+    /// 自洽；可接受，注释如实记录。
     pub fn update_display_meta(
         &self,
         bundle_id: &str,
@@ -1007,6 +1016,10 @@ impl SkillMarketplaceManager {
         display_description: Option<&str>,
     ) -> Result<(), String> {
         use super::store::BundleSource;
+        // 与同 id 导入互斥（含重基线段），guard 持有至函数尾；必须在门禁之前
+        // 取，避免「门禁读到的旧记录在同步段被重导入整体替换」的插队。
+        let import_lock = super::plugin_import::import_lock_for(bundle_id);
+        let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
         // 门禁必须在回写之前：先挡住预置/内置包与未登记 id，避免改写非上传包
         // 的技能内容；set_display_meta 内同口径兜底（防 TOCTOU）。
         let record = self
@@ -1048,7 +1061,14 @@ impl SkillMarketplaceManager {
             .filter(|p| p.is_dir())
             .collect();
         if dirs.len() != 1 {
-            return Ok(false); // 多技能包/空包 → 跳过
+            // 多技能包是既定跳过形态；但 0 个目录或残留杂目录（如 .tmp 暂存）
+            // 往往意味着包布局异常，静默跳过会让「说明不同步」无从排查。
+            log::warn!(
+                "[skill-marketplace] {} 下技能目录数为 {}（期望 1），跳过说明同步",
+                skills_dir.display(),
+                dirs.len()
+            );
+            return Ok(false); // 多技能包/空包/杂目录 → 跳过
         }
         let md_path = dirs[0].join("SKILL.md");
         if !md_path.is_file() {
@@ -1122,18 +1142,16 @@ impl SkillMarketplaceManager {
         self.refresh_package_fingerprint(bundle_id)
     }
 
-    /// 重算 `bundles/<id>/` 整包目录内容指纹并经 upsert_preserving 补写登记
-    /// （**整包口径**，与 plugin_import 的登记基线一致——算技能子目录会把上传
-    /// 包的整包指纹静默缩窄，未来任何按整包口径重算比对的完整性校验都会对
-    /// 编辑过的包永久误报）；登记已不在（并发卸载）则跳过。
+    /// 重算 `bundles/<id>/` 整包目录内容指纹并补写登记（**整包口径**，与
+    /// plugin_import 的登记基线一致——算技能子目录会把上传包的整包指纹静默
+    /// 缩窄，未来任何按整包口径重算比对的完整性校验都会对编辑过的包永久误报）。
+    /// 走 `update_content_fingerprint_if_exists` 单锁 RMW：登记已不在（并发
+    /// 卸载）则跳过，且不会把已删记录按 stale 快照复活。
     fn refresh_package_fingerprint(&self, bundle_id: &str) -> Result<(), String> {
         let fingerprint = dir_fingerprint(&self.packages_root.join(bundle_id))?;
-        if let Some(mut record) = self.bundle_store.get(bundle_id)? {
-            record.content_fingerprint = Some(fingerprint);
-            self.bundle_store
-                .upsert_preserving(record)
-                .map_err(|e| format!("更新 {bundle_id} 内容指纹失败: {e}"))?;
-        }
+        self.bundle_store
+            .update_content_fingerprint_if_exists(bundle_id, &fingerprint)
+            .map_err(|e| format!("更新 {bundle_id} 内容指纹失败: {e}"))?;
         Ok(())
     }
 
@@ -1774,23 +1792,32 @@ fn rewrite_frontmatter_description(content: &str, description: &str) -> Result<S
 ///
 /// - 单行值能以 plain 形无损回读（无换行/引号/反斜杠/首尾空白、plain 安全）→
 ///   写单行（与常见原文件形态一致，字节最省）；
+/// - 单行但不便 plain（首尾空白会被读端 trim 掉、或 plain 指示符形态）且不含
+///   引号/反斜杠/换行 → 写**成对单引号**行：两侧读端（引擎/镜像）都只剥引号、
+///   不动引号内空白，`description: '  x'` 逐字读回 `  x`——这是带前导/尾随
+///   空白的单行备份（如原文件 `description: "  x"`）唯一能无损落盘的形态
+///   （块状渲染会把首行空白当基准缩进剥掉，回写即丢字符、清空从此卡死）；
 /// - 其余值写块状字面量 `|-`（无尾换行）/`|+`（有尾换行，chomping 保尾部空行），
 ///   续行按 2 空格缩进**逐字**保留——块内容只剥一层基准缩进，引号、行内空白、
 ///   多行结构都原样回读，互洽校验（[`replace_top_level_description`]）兜底。
 ///
-/// 限制：首个非空行不得带前导空格（引擎块读取以它定基准缩进，剥掉后无法还原）。
-/// 生产读取器产出的备份天然满足（单行值被 trim、块值首行剥尽缩进）；手改
-/// bundles.json 塞入的畸形备份由互洽校验 Err 拒绝（fail-closed，不动文件）。
+/// 限制：多行值的首个非空行不得带前导空格（引擎块读取以它定基准缩进，剥掉后
+/// 无法还原）。生产读取器产出的备份天然满足（单行值被 trim、块值首行剥尽
+/// 缩进）；其余表达不了的畸形备份由互洽校验 Err 拒绝（fail-closed，不动文件）。
 fn render_description_lines_lossless(v: &str) -> Result<Vec<String>, String> {
     if v.is_empty() {
         return Err("恢复说明为空（空哨兵走删行恢复，不进块状渲染）".to_string());
     }
-    if v.chars().any(|c| c.is_control() && c != '\n') {
-        return Err("备份说明含除换行外的控制字符，拒绝恢复".to_string());
+    // \t 在单引号行与块内容里都能逐字回读（读端只 trim 行首尾、tab 不触发
+    // 行边界），放行；其余控制字符仍拒绝。
+    if v.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+        return Err("备份说明含换行/制表符之外的控制字符，拒绝恢复".to_string());
     }
-    let plain_safe = !v.contains('\n')
-        && !v.starts_with(' ')
-        && !v.ends_with(' ')
+    let has_newline = v.contains('\n');
+    // plain 形只剥行首尾空白（读端 value.trim()），首尾带空白（含 tab）的值
+    // 一律走单引号/块状，不走 plain。
+    let plain_safe = !has_newline
+        && v.trim() == v
         && !v.contains('"')
         && !v.contains('\\')
         && !v.starts_with('\'')
@@ -1798,6 +1825,12 @@ fn render_description_lines_lossless(v: &str) -> Result<Vec<String>, String> {
         && !yaml_plain_needs_quotes(v);
     if plain_safe {
         return Ok(vec![format!("description: {v}")]);
+    }
+    // 单行单引号兜底：值内不能有引号/反斜杠（会破坏成对剥引号），tab 放行。
+    let single_quotable =
+        !has_newline && !v.contains('\'') && !v.contains('"') && !v.contains('\\');
+    if single_quotable {
+        return Ok(vec![format!("description: '{v}'")]);
     }
     let marker = if v.ends_with('\n') { "|+" } else { "|-" };
     let mut out = vec![format!("description: {marker}")];
@@ -4301,6 +4334,14 @@ mod tests {
                 "---\nname: mq-skill\ndescription: 说\"你好\"，含\\反斜杠\n---\n",
                 "说\"你好\"，含\\反斜杠",
             ),
+            // 回归（评审发现）：双引号内的前导/尾随空白——读端剥引号后空白原样
+            // 进备份；块状渲染会把首行空白当基准缩进剥掉（回写即丢字符、清空
+            // 从此卡死），必须走单引号行逐字回读。
+            (
+                "quoted_leading_spaces",
+                "---\nname: ml-skill\ndescription: \"  前导空白  \"\n---\n",
+                "  前导空白  ",
+            ),
         ];
         for (tag, original_md, expected_backup) in cases {
             let tmp = fresh_dir(tag);
@@ -4405,6 +4446,12 @@ mod tests {
         // 单行 plain 安全 → 单行写法
         let md = roundtrip("单行说明");
         assert!(md.contains("description: 单行说明"), "{md}");
+        // 首尾空白（含 tab）→ 成对单引号行：读端剥引号不动引号内空白，逐字回读
+        // （回归：块状渲染把首行空白当基准缩进剥掉，带前导空白的备份清空即卡死）
+        let md = roundtrip("  前导空白  ");
+        assert!(md.contains("description: '  前导空白  '"), "{md}");
+        let md = roundtrip("\t制表符开头");
+        assert!(md.contains("description: '\t制表符开头'"), "{md}");
         // 多行（含空行与缩进保留）→ 块状字面量 |-
         let md = roundtrip("第一行\n\n  缩进行\n第二行");
         assert!(md.contains("description: |-\n"), "{md}");
@@ -4414,9 +4461,51 @@ mod tests {
         // 尾换行 → |+ 保形 chomping
         let md = roundtrip("值\n\n");
         assert!(md.contains("description: |+\n"), "{md}");
-        // 除换行外的控制字符 → 拒绝（fail-closed，不动文件）
+        // 除换行/制表符外的控制字符 → 拒绝（fail-closed，不动文件）
         assert!(render_description_lines_lossless("带\u{7}控制符").is_err());
         assert!(render_description_lines_lossless("").is_err());
+    }
+
+    /// CRLF 文件回写/恢复都保持 CRLF 行尾（写端口径按文件现有行尾 join，见
+    /// replace_top_level_description）；顺带钉住 set→clear 全链路字节形态。
+    #[test]
+    fn writeback_and_restore_preserve_crlf_line_endings() {
+        let tmp = fresh_dir("crlf_roundtrip");
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        let skill_dir = tmp.join("bundles/cl-skill/skills/cl-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let original = "---\r\nname: cl-skill\r\ndescription: 原描述\r\n---\r\n# hi\r\n";
+        std::fs::write(skill_dir.join("SKILL.md"), original).unwrap();
+        let store =
+            crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
+        store
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    "cl-skill",
+                    crate::features::marketplace::store::BundleSource::Upload(
+                        "pkg.zip".to_string(),
+                    ),
+                ),
+            )
+            .unwrap();
+
+        mgr.update_display_meta("cl-skill", None, Some("覆盖描述"))
+            .unwrap();
+        let md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(md.contains("description: 覆盖描述"), "{md}");
+        assert!(
+            !md.contains('\n') || md.matches("\r\n").count() >= md.matches('\n').count(),
+            "回写后不得混入裸 LF 行尾: {md:?}"
+        );
+
+        mgr.update_display_meta("cl-skill", None, Some("  "))
+            .unwrap();
+        let md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(
+            md.contains("description: 原描述") && md.ends_with("# hi\r\n"),
+            "恢复后应保持原 CRLF 形态: {md:?}"
+        );
+        assert!(store.skill_desc_backup("cl-skill").unwrap().is_none());
     }
 
     /// 编排门禁：未登记 / 预置来源拒绝；超长说明在回写**之前**被拒（SKILL.md
@@ -4523,15 +4612,18 @@ mod tests {
             .unwrap();
 
         mgr.update_display_meta("multi", None, Some("x")).unwrap();
+        // 纯 MCP 包必须真实走一遍编排（无 skills 目录 → 同步跳过、不留备份、
+        // 覆盖仍落 extra），否则下面的断言是空转。
+        mgr.update_display_meta("pure-mcp", None, Some("x"))
+            .unwrap();
         assert_eq!(
             std::fs::read_to_string(tmp.join("bundles/multi/skills/s1/SKILL.md")).unwrap(),
             "---\nname: s1\n---\n",
             "多技能包不得改写"
         );
         assert!(store.skill_desc_backup("multi").unwrap().is_none());
-        assert_eq!(
+        assert!(
             store.skill_desc_backup("pure-mcp").unwrap().is_none(),
-            true,
             "纯 MCP 包不留备份"
         );
         // 覆盖本身仍写入 extra

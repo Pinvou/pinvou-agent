@@ -324,7 +324,12 @@ pub(crate) fn read_zip_entry_bounded(
 /// staged 路径 `bundles/<id>.tmp` 与 `.old` 备份（线程 B 可删线程 A 的在建目录），
 /// 且 same_package_content 冲突检查与原子 rename 之间无锁即 TOCTOU——必须由调用方
 /// 持锁覆盖「冲突检查 → 原子 rename 完成」整段临界区。不同包 id 持不同锁，互不阻塞。
-fn import_lock_for(id: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+///
+/// `pub(crate)`：展示名/说明编辑（skill_marketplace::update_display_meta）的
+/// SKILL.md 读改写段也持同一把锁——导入的「rename → 重基线备份」与编辑的
+/// 「读 SKILL.md/备份 → 写回」因此真正互斥（锁序一致：本锁 → store file_lock，
+/// 无死锁面），不再是仅靠注释声明的弱约定。
+pub(crate) fn import_lock_for(id: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
     static LOCKS: std::sync::OnceLock<
         std::sync::Mutex<std::collections::BTreeMap<String, std::sync::Arc<std::sync::Mutex<()>>>>,
     > = std::sync::OnceLock::new();
@@ -1025,10 +1030,11 @@ pub fn import_plugin_package(
     // 体替换」而非「整个导入成功」——若供给在重基线前失败早退（如 MCP 凭据缺
     // 失），磁盘已是新包而备份仍指旧包，后续「清覆盖恢复」会把旧描述写进新
     // SKILL.md（正是本块要防的损坏类）。
-    // 锁边界（MINOR 1 口径）：本块全程持有 import_lock（guard 至函数尾），且
-    // skill_desc_backup / set_skill_desc_backup 各持 store 的 file_lock（
-    // BundleStore 所有读写路径同一把），同 id 的导入与展示说明回写/恢复因此
-    // 互斥，无「读备份 → 写 SKILL.md」窗口被重导入插队的竞态。
+    // 锁边界（MINOR 1 口径）：本块全程持有 import_lock（guard 至函数尾）；
+    // 展示说明的回写/恢复（update_display_meta → sync_display_description）在
+    // SKILL.md 读改写段**同样持有同 id 的 import_lock**（锁序一致：import_lock
+    // → store file_lock），同 id 的导入与编辑因此真正互斥，无「读备份 → 写
+    // SKILL.md」窗口被重导入插队的竞态。
     let store = super::store::BundleStore::new();
     if matches!(store.skill_desc_backup(&id), Ok(Some(_))) {
         if let Err(e) = store.set_skill_desc_backup(&id, None) {
