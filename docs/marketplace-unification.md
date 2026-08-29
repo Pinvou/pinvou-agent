@@ -216,9 +216,9 @@ install_bundle(id):
 5. **审计成对**：授权/拦截/迁移决策落事件日志。
 6. **fork 边界**：底座只进三条通用缝；每次 gitlink 更新跑 `fork-guard.sh --fast`
    + 契约测试；fork-distinct 行为同步登记 `docs/fork-modifications.md`。
-7. **Validation baseline**: high-risk ready PRs and main run
-   `cargo test --lib -- --test-threads=1`; high-risk merge groups repeat the Linux
-   behavior regression on the combined tree. Bundle tests share
+7. **Validation baseline**: high-risk ready PRs and high-risk merge groups run
+   `cargo test --lib -- --test-threads=1` on the combined tree; main push keeps
+   cumulative compile verification (`--no-run`) and cache warming. Bundle tests share
    `platform::paths::tests::ENV_LOCK`; `cargo fmt --check` and
    `architecture-guard.py` must pass.
 
