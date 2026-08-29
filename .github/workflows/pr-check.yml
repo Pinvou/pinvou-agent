@@ -887,9 +887,10 @@ jobs:
 
       - name: cargo test --lib（含 strict_mode 回归；真 bge-m3/vLLM 测试已 #[ignore]）
         if: ${{ github.event_name != 'push' }}
-        # 诊断(本分支专用,勿合入 main):tee cargo 输出到 /tmp 并启动
-        # ci-live-telemetry.sh,把机器状态+输出尾部持续 PATCH 到临时 Check Run,
-        # runner 失联后仍可从 Check Run 读取死亡瞬间现场。
+        # 诊断(本分支专用,勿合入 main):cargo 输出经 ci-tee-unbuffered.py
+        # chunk 级无缓冲落盘(tee 的 4KB 块缓冲会让日志落后真实进度 ~40 行),
+        # ci-live-telemetry.sh 以 1s 采样内存/PSI/dmesg 并每 10s PATCH 到
+        # 临时 Check Run,runner 失联后仍可还原死亡前逐秒现场。
         env:
           TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -902,7 +903,7 @@ jobs:
           bash scripts/ci-live-telemetry.sh &
           tele_pid=$!
           set +e
-          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | tee /tmp/rust-test-output.log
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | python3 scripts/ci-tee-unbuffered.py
           status=${PIPESTATUS[0]}
           set -e
           kill "$guard_pid" "$tele_pid" 2>/dev/null || true
