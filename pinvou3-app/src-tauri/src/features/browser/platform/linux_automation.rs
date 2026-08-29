@@ -217,7 +217,10 @@ pub(super) fn prepare_process_environment() -> Result<(), String> {
     }
 
     let port = reserve_loopback_port()?;
-    std::env::set_var("WEBKIT_INSPECTOR_SERVER", format!("127.0.0.1:{port}"));
+    // SAFETY: called only from the single-threaded process startup path
+    // (`run()` before Tauri spawns WebView threads), so there are no
+    // concurrent env readers.
+    unsafe { std::env::set_var("WEBKIT_INSPECTOR_SERVER", format!("127.0.0.1:{port}")) };
     INSPECTOR_PORT
         .set(port)
         .map_err(|_| "inspector endpoint initialized concurrently".to_string())?;

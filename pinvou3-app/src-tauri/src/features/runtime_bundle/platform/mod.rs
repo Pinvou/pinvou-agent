@@ -1969,7 +1969,8 @@ mod tests {
         #[cfg(windows)]
         {
             let fake_bin_for_env = std::path::PathBuf::from(format!(r"\\?\{}", fake_bin.display()));
-            std::env::set_var("PINVOU3_CDMCP_BIN", &fake_bin_for_env);
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            unsafe { std::env::set_var("PINVOU3_CDMCP_BIN", &fake_bin_for_env) };
         }
         #[cfg(target_os = "linux")]
         {
@@ -1978,10 +1979,14 @@ mod tests {
             let fake_driver = std::path::PathBuf::from(&tmp).join("WebKitWebDriver");
             std::fs::write(&fake_driver, "#!/bin/sh\n").unwrap();
             std::fs::set_permissions(&fake_driver, std::fs::Permissions::from_mode(0o755)).unwrap();
-            std::env::set_var("PINVOU3_WEBKIT_WEBDRIVER_BIN", fake_driver);
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            unsafe { std::env::set_var("PINVOU3_WEBKIT_WEBDRIVER_BIN", fake_driver) };
         }
         #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-        std::env::set_var("PINVOU3_CDMCP_BIN", &fake_bin);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe {
+            std::env::set_var("PINVOU3_CDMCP_BIN", &fake_bin)
+        };
         let wrapper = paths::bundle_browser_wrapper();
         std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
         std::fs::write(&wrapper, "#!/usr/bin/env node\n").unwrap();
