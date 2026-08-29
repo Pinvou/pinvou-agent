@@ -28,6 +28,7 @@ import jsdoc from 'eslint-plugin-jsdoc';
 import unicorn from 'eslint-plugin-unicorn';
 import sonarjs from 'eslint-plugin-sonarjs';
 import nPlugin from 'eslint-plugin-n';
+import eslintReact from '@eslint-react/eslint-plugin';
 
 const srcFiles = [
   'src/app/**/*.{js,jsx}',
@@ -195,6 +196,24 @@ export default defineConfig([
     rules: {
       ...reactHooks.configs.flat['recommended-latest'].rules,
       'react-hooks/exhaustive-deps': 'error',
+    },
+  },
+  // React render-performance subset from @eslint-react. Only the three rules
+  // below are adopted: the plugin's remaining rule set overlaps the react-hooks
+  // compiler rules already at error in the block above. The rules are AST-based
+  // and parse identically under the default espree JSX parsing from the first
+  // block (verified 1:1 against @typescript-eslint/parser across all of src);
+  // the TS parser additionally obsoleted the import-x/namespace disable in
+  // pet-markdown.js, so it stays unwired until a type-aware rule from this
+  // plugin (e.g. no-implicit-key) is actually adopted. The ES2021 webview floor
+  // and globals carry over unchanged from the first block.
+  {
+    files: srcFiles,
+    plugins: { '@eslint-react': eslintReact },
+    rules: {
+      '@eslint-react/no-nested-component-definitions': 'error',
+      '@eslint-react/no-unstable-default-props': 'error',
+      '@eslint-react/no-unstable-context-value': 'error',
     },
   },
   // Node-side code (tests, build scripts) runs on Node 22 in CI, so its

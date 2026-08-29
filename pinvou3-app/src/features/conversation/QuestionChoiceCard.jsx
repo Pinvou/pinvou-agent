@@ -1,6 +1,10 @@
 import { useId, useState } from 'react';
 import { MessageCircle } from '../../components/icons.jsx';
 
+// 稳定空数组默认值：内联 [] 每次渲染都是新引用，会让 memo 化子组件反复重渲染。
+const EMPTY_QUESTIONS = [];
+const EMPTY_ANSWERS = [];
+
 function normalizedOptions(question) {
   return (question.options || []).map(option => ({
     value: option.value == null ? option.label : option.value,
@@ -75,8 +79,8 @@ function copyState(state) {
 export function QuestionChoiceCard({
   title,
   description = '',
-  questions = [],
-  initialAnswers = [],
+  questions = EMPTY_QUESTIONS,
+  initialAnswers = EMPTY_ANSWERS,
   resolved = false,
   submitting = false,
   statusText = '',

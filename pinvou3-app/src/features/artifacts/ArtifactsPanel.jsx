@@ -61,8 +61,11 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       + 'img{max-width:100%;height:auto;}'
       + '</style>';
 
+    // 稳定空数组默认值：内联 [] 每次渲染都是新引用，会让 memo 化子组件反复重渲染。
+    const EMPTY_DESIGN_CHANGES = [];
+
     // eslint-disable-next-line sonarjs/cognitive-complexity -- unified preview/design workbench panel: every state-machine branch maps to a preview kind or a design runtime event; splitting would sever the pv/sel linkage
-    const ArtifactsPanel = ({ bs, t, onClose, isWide, onGotoSettings, isFullscreen = false, onToggleFullscreen, preferredArtifactPath, onPreviewArtifact, designMode = false, designCommand, selectedDesignElement, designChanges = [], onDesignRuntimeStatus, onDesignElementSelected, onDesignChangeApplied, onDesignMutation, onDesignApplyChange, onDesignClearChanges, onDesignAiSubmit, designAiState, onDesignAiStateChange }) => {
+    const ArtifactsPanel = ({ bs, t, onClose, isWide, onGotoSettings, isFullscreen = false, onToggleFullscreen, preferredArtifactPath, onPreviewArtifact, designMode = false, designCommand, selectedDesignElement, designChanges = EMPTY_DESIGN_CHANGES, onDesignRuntimeStatus, onDesignElementSelected, onDesignChangeApplied, onDesignMutation, onDesignApplyChange, onDesignClearChanges, onDesignAiSubmit, designAiState, onDesignAiStateChange }) => {
       const uiA = t.uiArtifacts;
       const showDesignWorkbench = isFullscreen && designMode;
       const canOpenContainingFolder = can('externalSystemOpen');

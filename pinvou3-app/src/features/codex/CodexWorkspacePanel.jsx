@@ -158,6 +158,9 @@ function WorkspaceTree({
   });
 }
 
+// 稳定空数组默认值：内联 [] 每次渲染都是新引用，会让 memo 化子组件反复重渲染。
+const EMPTY_REFERENCES = [];
+
 export function CodexWorkspacePanel({
   session,
   workspacePath = '',
@@ -165,7 +168,7 @@ export function CodexWorkspacePanel({
   activationKey,
   onActiveChange,
   onClose,
-  references = [],
+  references = EMPTY_REFERENCES,
   onAddReference,
   refreshToken = 0,
   onChangeCount,

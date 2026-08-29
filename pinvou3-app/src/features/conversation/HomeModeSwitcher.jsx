@@ -30,6 +30,9 @@ function normalizeCodeAgents(codeAgents, selectedAgentId) {
   return normalized;
 }
 
+// 稳定空对象默认值：内联 {} 每次渲染都是新引用，会让 memo 化子组件反复重渲染。
+const EMPTY_COPY = {};
+
 export function HomeModeSwitcher({
   mode,
   onChange,
@@ -40,7 +43,7 @@ export function HomeModeSwitcher({
   onCodeAgentChange,
   onManageProviders,
   isDark = false,
-  copy = {},
+  copy = EMPTY_COPY,
 }) {
   const visibleModes = HOME_MODE_OPTIONS
     .filter(option => option.enabled !== false && (option.key !== 'code' || codeSupported))
