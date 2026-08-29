@@ -393,6 +393,17 @@ class CiGatePolicyTests(unittest.TestCase):
             "        if: ${{ github.event_name == 'push' }}",
             rust_test,
         )
+        # 16GB runner 失联防护:编译与执行拆成独立 step(失联后日志全丢,按 step
+        # 状态定位阶段),内存看门狗把 runner 失联转化为带日志的 step 失败,CI 关
+        # DWARF 缩小测试二进制降低链接内存峰值。三条腿(push/MQ 编译/MQ 执行)
+        # 都必须挂看门狗。
+        self.assertIn(
+            "- name: cargo test --lib --no-run（编译链接测试二进制）\n"
+            "        if: ${{ github.event_name != 'push' }}",
+            rust_test,
+        )
+        self.assertEqual(rust_test.count("bash scripts/ci-memguard.sh &"), 3)
+        self.assertIn('CARGO_PROFILE_DEV_DEBUG: "0"', rust_test)
         self.assertIn("timeout-minutes: 120", rust_test)
         self.assertIn(
             'RUSTFLAGS: "-C link-arg=-fuse-ld=lld '

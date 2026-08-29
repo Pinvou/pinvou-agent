@@ -720,8 +720,11 @@ jobs:
       # 不设 codegen-units:dev 默认 256,对 test 改动最小(不影响 release 的 codegen=1)。
       CARGO_PROFILE_DEV_LTO: "thin"
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1"
-    # dev profile 的 line-tables-only 已固化进 Cargo.toml [profile.dev],不再需要
-    # CARGO_PROFILE_DEV_DEBUG 环境变量。
+      # Cargo.toml [profile.dev] 固化 line-tables-only(本地调试体验);CI 改为完全
+      # 关闭 DWARF:panic 的 file:line 由 Location(rodata)提供,不依赖 debuginfo。
+      # 关掉后缩小目标文件与测试二进制体积,降低 ThinLTO link 内存峰值和 target
+      # 目录磁盘占用(16GB runner 上 rust-test 链接期多次把 runner 打到失联)。
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -743,7 +746,8 @@ jobs:
             librsvg2-dev libssl-dev \
             libx11-dev libxi-dev libxtst-dev \
             libayatana-appindicator3-dev \
-            build-essential pkg-config cmake lld
+            build-essential pkg-config cmake lld \
+            time
 
       # bge-m3 是 gitignored 大资源(559M),CI 干净 checkout 没有它,而 tauri_build::build()
       # 会校验 tauri.conf resources 路径存在。单测用 mem()=embedder None、不加载真模型,真
@@ -799,6 +803,11 @@ jobs:
 
       # High-risk/explicit PRs and matching merge groups run all lib tests
       # (含真实 relay/Chrome e2e)。
+      # 编译链接与测试执行拆成两个 step:该 job 在 16GB hosted runner 上多次在
+      # 本环节被打到 runner 失联(日志全丢,只剩 step 状态可查),拆开后失联时
+      # 能定位是编译/链接期还是测试执行期。ci-memguard.sh 每 5s 输出内存/磁盘
+      # 时间序列,并在可用内存跌破阈值时抢先杀掉 cargo/rustc/lld,把 runner
+      # 失联转化为带完整日志的 step 失败。
       # 保留 --test-threads=1:虽已把 env 写测试收敛到 crate 级唯一锁
       # (bridge::paths::tests::ENV_LOCK),但进程级 env 对未持锁的读取者仍全局可见，
       # 多线程测试仍可能观察到其他测试的临时值。Mutex poison 后通过 into_inner()
@@ -806,13 +815,32 @@ jobs:
       # 或让所有读写都通过同一隔离层，超出本 PR 范围。
       # strict_mode 的三个确定性回归已并入 pinvou3_lib 单测，和全量 lib tests
       # 共用一次编译与链接，避免第二个 integration test 目标重复链接全依赖树。
+      - name: cargo test --lib --no-run（编译链接测试二进制）
+        if: ${{ github.event_name != 'push' }}
+        run: |
+          bash scripts/ci-memguard.sh &
+          guard_pid=$!
+          set +e
+          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
+          status=$?
+          set -e
+          kill "$guard_pid" 2>/dev/null || true
+          exit "$status"
+
       - name: cargo test --lib（含 strict_mode 回归；真 bge-m3/vLLM 测试已 #[ignore]）
         if: ${{ github.event_name != 'push' }}
         run: |
           chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           export CHROME="$chrome"
           export PINVOU_REQUIRE_REMOTE_E2E=1
+          bash scripts/ci-memguard.sh &
+          guard_pid=$!
+          set +e
           cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
+          status=$?
+          set -e
+          kill "$guard_pid" 2>/dev/null || true
+          exit "$status"
 
       # push(main) 唯一目的是暖 cache(Swatinem/rust-cache save-if main)。
       # MQ 已对同一代码跑过完整 lib 测试,squash 合并后的 push 不再重复执行测试;
@@ -820,11 +848,19 @@ jobs:
       # 供热 MQ restore 后增量复用,省去测试执行时间。
       # 不需要 relay/Chrome 运行时依赖(上方 setup-node/relay/浏览器 step 已按 !=push 跳过)。
       # 2026-08-28 #372 曾让 push 改跑全量测试:main push 恢复暖 cache 后连续 5 次
-      # "hosted runner lost communication"(16GB runner 资源耗尽,MQ 同代码冷编译反而
-      # 全绿),故恢复只编译设计;不要在 push 上重新打开测试执行。
+      # "hosted runner lost communication"(MQ 自身也间歇性失联,push 100% 触发),
+      # 故恢复只编译设计;不要在 push 上重新打开测试执行。
       - name: cargo test --lib --no-run (push main 仅编译暖 cache)
         if: ${{ github.event_name == 'push' }}
-        run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
+        run: |
+          bash scripts/ci-memguard.sh &
+          guard_pid=$!
+          set +e
+          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
+          status=$?
+          set -e
+          kill "$guard_pid" 2>/dev/null || true
+          exit "$status"
 
   windows-rust-test:
     name: windows-rust-test
