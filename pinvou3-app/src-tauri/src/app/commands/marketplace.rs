@@ -908,7 +908,7 @@ pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), Str
 }
 
 // ---------------------------------------------------------------------------
-// 能力包就绪态（修复方案 V1：统一 bundle_readiness，收敛五个连接器 status 命令）
+// 能力包就绪态（修复方案 V1：统一 bundle_readiness，收敛六个连接器 status 命令）
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize)]
@@ -931,7 +931,7 @@ pub struct BundleReadinessResult {
 }
 
 /// 统一就绪态查询：
-/// - CLI 包（feishu/wecom/dingtalk/tmeet）→ 分派到各连接器 status，connected 即 ready；
+/// - CLI 包（feishu/wecom/dingtalk/tmeet/weibo）→ 分派到各连接器 status，connected 即 ready；
 ///   installed 取 status 的 installed/configured 真实字段
 /// - ima（凭据型技能包）→ ima_status：ready = connected（凭据齐且 companion 技能已装），
 ///   installed = 凭据或技能任一已配置
@@ -981,9 +981,13 @@ where
                     let v = crate::features::connectors::tmeet::tmeet_status().await?;
                     (connected_of(&v), Some(v))
                 }
+                "weibo" => {
+                    let v = crate::features::connectors::weibo::weibo_status().await?;
+                    (connected_of(&v), Some(v))
+                }
                 other => return Err(format!("未知 CLI 包 '{other}'")),
             };
-            // wecom/dingtalk/tmeet 返回 installed（CLI 二进制在位），
+            // wecom/dingtalk/tmeet/weibo 返回 installed（CLI 二进制在位），
             // feishu 返回 configured（已配置）；都没有则退化为 connected。
             let installed = detail
                 .as_ref()

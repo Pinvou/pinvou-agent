@@ -299,6 +299,7 @@ export const dictEn = {
         uiToolDetails: { tools:{
           ima:{ title:'Tencent ima', subtitle:'Manage ima notes and knowledge bases through OpenAPI', latency:'Cloud', desc:'Connect the Tencent ima OpenAPI Skill to search, read, create, and append notes, or search and browse knowledge bases and import web pages or content. Credentials stay on this device.', configTitle:'Connect Tencent ima', configDescription:'Credentials stay on this device and are used only to enable the IMA OpenAPI Skill.', configDocLabel:'Get Client ID / API Key', welcomeQueries:['Search my ima knowledge bases','List my ima notes','Create an ima note from this content','Find the product plan in my ima knowledge base'] },
           tmeet:{ title:'Tencent Meeting', subtitle:'Manage meetings, recordings, minutes, and attendance reports as yourself', type:'CLI + Official Skill', latency:'Cloud', desc:'Connect the official Tencent Meeting CLI and skill to create, query, update, and cancel meetings, and access attendance reports, recordings, transcripts, and AI minutes. Connecting opens the authorization page for QR-code sign-in.', welcomeQueries:['Create a Tencent Meeting for me','Show my Tencent Meeting recordings','Show the latest AI meeting minutes','List the attendees of this Tencent Meeting'] },
+          weibo:{ title:'Weibo', subtitle:'Post, interact, search, and inspect trends as yourself', type:'CLI + Pinvou-adapted Skill', latency:'Cloud', desc:'Connect the official Weibo CLI with a Pinvou-adapted skill to search Weibo, inspect users and relationships, handle comment interactions, and perform publishing actions only after confirmation. Connecting opens the Weibo authorization page.', welcomeQueries:['Show Weibo trending topics','Search Weibo for a keyword','Look up this Weibo user','Draft a Weibo post and publish after confirmation'] },
         } },
         uiPet: { waiting:'Input needed', failed:'Needs attention', review:'Ready to review', running:'Working', sendFailed:'Send failed', noMain:'Cannot connect to the main window', scheduledDone:'Scheduled task complete', done:'Completed', reply:'Reply', collapseReply:'Collapse reply', expandReply:'Expand reply', collapse:'Collapse', expand:'Expand', replyPlaceholder:'Type a reply…', sendReply:'Send reply', back:'Back to PINVOU', ready:n=>`${n} is ready`, backHint:'Click to return to PINVOU', drag:n=>`Click to return to PINVOU; drag ${n} to move`, openScheduled:n=>`Open the latest run of scheduled task ${n}`, closeScheduled:'Dismiss scheduled task completion', openChat:n=>`Open ${n} chat`, closeNotice:n=>`Dismiss ${n} notification`, replyTo:n=>`Reply to ${n}`, expandActivities:n=>`Expand ${n} activities`, collapseActivities:'Collapse activity cards', expandActivity:'Expand activities', collapseActivity:'Collapse activities', loadFailed:'Companion failed to load', retry:'Click to retry', resize:'Drag to resize companion', resizeTitle:'Drag to resize', hide:'Hide Companion' },
         uiWebConnection: { idle:['Preparing remote control','Initializing browser connection…'], connecting:['Connecting to desktop','Interrupted connections retry automatically; unconfirmed actions are not repeated.'], desktop_offline:['Desktop is offline','Keep this page open; it will reconnect when the desktop returns.'], credentials_missing:['Incomplete link','Enable remote control on the desktop and paste the complete link.'], denied:['Access denied','The link is invalid or was refreshed. Copy a new link from the desktop.'], revoked:['Access stopped','The desktop stopped this remote control link.'], replaced:['Taken over by another browser','Only one active browser is allowed. Refresh this page to take over again.'], incompatible_desktop:['Desktop version incompatible','Update the desktop app, then reopen this link.'], error:['Connection error','Remote control will keep trying to reconnect.'] },
@@ -506,10 +507,10 @@ export const dictEn = {
 dictEn.uiToolDetails.flow = {
   incomplete:name=>`${name} connection incomplete`, connected:name=>`${name} connected`, connecting:name=>`Connecting ${name}`,
   cancel:'Cancel', extracting:pct=>`Extracting ${pct}%`, elapsed:seconds=>`${seconds}s elapsed`, installStarting:'Online install: starting…', browserOpened:'Browser sign-in page opened',
-  browserHint:'Confirm the sign-in in your browser. Reopen the page if it did not appear.', reopen:'Reopen', qrAlt:name=>`${name} QR code`,
+  browserHint:'Confirm the sign-in in your browser. Reopen the page if it did not appear.', browserHintCode:'Enter the verification code in the browser and confirm authorization. Reopen the page if it did not appear.', reopen:'Reopen', qrAlt:name=>`${name} QR code`,
   authorizeStep:'Step 2 of 2: scan to authorize', registerStep:'Step 1 of 2: scan to register the app',
   scanLogin:name=>`Sign in to ${name}`, scanHint:name=>`Scan with the ${name} app and confirm`, userCode:'Verification code',
-  openBrowser:'Open in browser ↗', connectionIncomplete:'Connection incomplete', close:'Close', retry:'Retry',
+  openBrowser:'Open in browser ↗', browserOpenFailed:'The browser did not open. Reopen it manually.', copyCode:'Copy code', copiedCode:'Copied', connectionIncomplete:'Connection incomplete', close:'Close', retry:'Retry',
 };
 
 dictEn.uiToolDetails.actions = { connectedTmeet:'Tencent Meeting connected', enabled:'Official skill enabled; start a new conversation to use it', disconnectedTmeet:'Tencent Meeting disconnected', connectingIma:'Connecting Tencent ima', validatingIma:'Validating OpenAPI credentials and enabling the Skill…', connectedIma:'Tencent ima connected', imaEnabled:'IMA OpenAPI Skill enabled; start a new conversation to use it.', imaFailed:'IMA connection failed', disconnectedIma:'Tencent ima disconnected', operationFailed:'Operation failed. Please retry' };
@@ -711,6 +712,7 @@ dictEn.uiSettingsView = {
   serviceWecom: 'WeCom',
   serviceDingtalk: 'DingTalk',
   serviceTmeet: 'Tencent Meeting',
+  serviceWeibo: 'Weibo',
   detectFailed: 'Detection failed',
   modelLabel: 'Model',
   codingPlanModelIdPlaceholder: 'e.g. glm-5',
@@ -764,7 +766,7 @@ dictEn.uiCodexView = { ended:'Finished', stepsFailed:'Steps include failures', p
 Object.assign(dictEn.uiAttachments, { uploading:pct=>`Uploading ${pct}%`, deviceUploadTooLarge:name=>`${name} exceeds the 20 MB attachment limit`, deviceUploadEmpty:name=>`${name} is empty and cannot be attached`, deviceUploadUnavailable:'Uploading from this device is currently unavailable', deviceUploadInvalid:name=>`${name} is not a valid attachment`, deviceUploadFailed:name=>`${name} could not be uploaded. Try again.` });
 
 Object.assign(dictEn.uiToolStore, {
-  toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', ima:'Tencent ima' },
+  toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', weibo:'Weibo', ima:'Tencent ima' },
   connected:'Connected', installed:'Installed', builtin:'Built-in', internalDirect:'Direct intranet', keyRequired:'Key required', localLatency:'Local',
   cancel:'Cancel', ok:'Got it', newChat:'New Chat',
   installHint:'New tools take effect in a new conversation', removeHint:'Removed; new conversations will no longer load this tool', firstUseOnlineInstall:'The first connection downloads and verifies the official CLI',
@@ -794,7 +796,7 @@ desktopHint:'Install Obsidian on the desktop and create a vault first, then chec
   updateSkillOverwriteHint:'This overwrites the skill with the latest store version. Your local changes to it will be lost.',
   notConnectedYet:name=>`"${name}" is not connected yet.`,
   loginFrameTitle:name=>`${name} sign-in`, loginPageLoadFailed:'Failed to load the sign-in page—use browser authorization below', waitingAuth:'Waiting for authorization…', openInBrowser:'Open in browser',
-  mini:{ scan:'Scan pending', install:pct=>`Installing ${pct}%`, extract:pct=>`Extracting ${pct}%`, connecting:'Connecting', title:'Tap to view progress' },
+  mini:{ scan:'Scan pending', authorize:'Authorizing', install:pct=>`Installing ${pct}%`, extract:pct=>`Extracting ${pct}%`, connecting:'Connecting', title:'Tap to view progress' },
   feishuSteps:[
 { key:'runtime', label:'Prepare runtime', sub:'Use the app-provided Node runtime' },
 { key:'cli', label:'Install connector', sub:'lark-cli · about 40 seconds on first use' },
@@ -811,7 +813,12 @@ desktopHint:'Install Obsidian on the desktop and create a vault first, then chec
 { key:'cli', label:'Install connector', sub:'dws · about 40 seconds on first use' },
 { key:'qr', label:'Scan to sign in', sub:'Scan with the DingTalk app' },
   ],
-  connFailed:'Connection failed', dingtalkSkillsFailed:err=>`DingTalk authorized, but enabling the skill failed: ${err}`, tmeetAuthIncomplete:'Tencent Meeting authorization is incomplete—finish the browser sign-in and retry',
+  weiboSteps:[
+{ key:'runtime', label:'Prepare runtime', sub:'Use the app-provided Node runtime' },
+{ key:'cli', label:'Install connector', sub:'weibo-cli · about 40 seconds on first use' },
+{ key:'qr', label:'Authorize', sub:'Weibo authorization page' },
+  ],
+  connFailed:'Connection failed', dingtalkSkillsFailed:err=>`DingTalk authorized, but enabling the skill failed: ${err}`, tmeetAuthIncomplete:'Tencent Meeting authorization is incomplete—finish the browser sign-in and retry', weiboAuthIncomplete:'Weibo authorization is incomplete. Finish the browser sign-in and retry',
   emptyNoMatch:'No matching tools found', emptyNoInstalled:'No tools installed yet', emptyNoTools:'No tools found',
   emptyNoMatchHint:'Try a different keyword, or check the spelling.', emptyNoInstalledHint:'Install connectors or skills from the store and they will appear here.', emptyNoInstalledHintReadonly:'No tools or skills installed on the desktop yet.',
   emptyNoToolsHint:'Try another search term or check the API documentation.',

@@ -46,6 +46,9 @@ $sensitiveDirs = @(
     "/.tmeet/",
     "\.tmeet\",
     "\\.tmeet\\",
+    "/.weibo-cli/",
+    "\.weibo-cli\",
+    "\\.weibo-cli\\",
     "%appdata%\microsoft\credentials",
     "%appdata%\\microsoft\\credentials",
     "%localappdata%\microsoft\credentials",
@@ -75,6 +78,7 @@ $sensitiveNames = @(
     ".pgp",
     ".gpg",
     "credentials",
+    "credential-ref",
     "secrets",
     "/.netrc",
     "\.netrc",
@@ -121,13 +125,13 @@ if ($toolName -like "exec_shell*" -or $toolName -eq "code_execution") {
     }
 }
 
-# 与 deny_sensitive_paths.sh 规则 5 对等：技能型连接器（企微/飞书/钉钉/腾讯会议）
+# 与 deny_sensitive_paths.sh 规则 5 对等：技能型连接器（企微/飞书/钉钉/腾讯会议/微博）
 # 无 MCP schema，模型调 list_mcp_resources* 自省必然失败并误判「没连上」。
 # 拦掉并把纠正回传：上游 fold_tool_call_before_results 在 exit 2 时只从 stdout 的
 # 单行 JSON {"decision":"deny","reason":...} 取 reason 喂回模型（非 JSON = 通用文案），
 # 文案刻意不回显连接器名、不列举技能/CLI 名（disable 感知审计，泄漏面 2）。
 if ($toolName -eq "list_mcp_resources" -or $toolName -eq "list_mcp_resource_templates") {
-    if ($argsText -match "wecom|weixin|wework|feishu|lark|dingtalk|dingding|dws|tmeet|tencent[\s_\-]?meeting|企微|企业微信|微信|飞书|钉钉|腾讯会议") {
+    if ($argsText -match "wecom|weixin|wework|feishu|lark|dingtalk|dingding|dws|tmeet|tencent[\s_\-]?meeting|weibo|企微|企业微信|微信|飞书|钉钉|腾讯会议|微博") {
         $denyJson = '{"decision":"deny","reason":"该名称不是 MCP server（无 MCP schema），无法用 list_mcp_resources 自省。若它是技能型连接器，请用 load_skill 加载其对应技能后按技能说明使用。连接状态以工具面板为准，自省失败不代表未连接。"}'
         # 经标准输出流写 UTF-8 无 BOM：上游按 UTF-8 解码 stdout 且 serde_json 拒绝
         # BOM 前缀；PS 5.1 控制台默认 ANSI(GBK)，WriteLine 会把中文转成乱码。

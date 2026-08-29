@@ -298,6 +298,7 @@ const jaBase = {
         uiToolDetails: { tools:{
           ima:{ title:'Tencent ima', subtitle:'OpenAPI で ima のノートとナレッジベースを操作', latency:'クラウド', desc:'Tencent ima OpenAPI Skill に接続し、ノートの検索、閲覧、作成、追記や、ナレッジベースの検索、閲覧、Web ページとコンテンツの追加ができます。認証情報はこの端末だけに保存されます。', configTitle:'Tencent ima に接続', configDescription:'認証情報はこの端末だけに保存され、IMA OpenAPI Skill の有効化にのみ使用されます。', configDocLabel:'Client ID / API Key を取得', welcomeQueries:['ima のナレッジベースを検索','ima のノート一覧を表示','この内容から ima ノートを作成','ima のナレッジベースで製品案を検索'] },
           tmeet:{ title:'Tencent Meeting', subtitle:'本人として会議、録画、議事録、参加レポートを管理', type:'CLI + 公式 Skill', latency:'クラウド', desc:'Tencent Meeting 公式 CLI と Skill に接続し、会議の作成、検索、変更、キャンセルや、参加レポート、録画、文字起こし、AI 議事録の取得ができます。接続すると認証ページが開き、QR コードでログインします。', welcomeQueries:['Tencent Meeting を作成','Tencent Meeting の録画を検索','最近の会議の AI 議事録を表示','Tencent Meeting の参加者を確認'] },
+          weibo:{ title:'Weibo', subtitle:'本人として投稿、交流、検索、トレンド確認を行う', type:'CLI + Pinvou 適応 Skill', latency:'クラウド', desc:'Weibo 公式 CLI と Pinvou 適応 Skill に接続し、Weibo の検索、ユーザーや関係の確認、コメント対応、確認後の投稿操作を行えます。接続すると Weibo の認証ページが開きます。', welcomeQueries:['Weibo のトレンドを確認','キーワードで Weibo を検索','この Weibo ユーザーを調べる','Weibo 投稿を下書きし、確認後に投稿'] },
         } },
         uiPet: { waiting:'入力が必要', failed:'問題が発生', review:'確認できます', running:'処理中', sendFailed:'送信失敗', noMain:'メインウィンドウに接続できません', scheduledDone:'定期タスク完了', done:'完了', reply:'返信', collapseReply:'返信を閉じる', expandReply:'返信を展開', collapse:'閉じる', expand:'展開', replyPlaceholder:'返信を入力…', sendReply:'返信を送信', back:'PINVOU に戻る', ready:n=>`${n} の準備ができました`, backHint:'クリックして PINVOU に戻る', drag:n=>`クリックして PINVOU に戻る、${n} をドラッグして移動`, openScheduled:n=>`定期タスク「${n}」の今回の実行を開く`, closeScheduled:'定期タスク完了通知を閉じる', openChat:n=>`${n} の会話を開く`, closeNotice:n=>`${n} の通知を閉じる`, replyTo:n=>`${n} に返信`, expandActivities:n=>`${n} 件のアクティビティを展開`, collapseActivities:'アクティビティカードを閉じる', expandActivity:'アクティビティを展開', collapseActivity:'アクティビティを閉じる', loadFailed:'コンパニオンの読み込みに失敗', retry:'クリックして再試行', resize:'ドラッグしてコンパニオンのサイズを変更', resizeTitle:'ドラッグしてサイズ変更', hide:'コンパニオンを非表示' },
         uiWebConnection: { idle:['遠隔操作を準備中','ブラウザー接続を初期化中…'], connecting:['デスクトップに接続中','中断時は自動再接続し、未確認の操作は重複実行しません。'], desktop_offline:['デスクトップはオフラインです','このページを開いたままにすると、復帰後に自動再接続します。'], credentials_missing:['リンクが不完全です','デスクトップで遠隔操作を有効にし、完全なリンクを貼り付けてください。'], denied:['アクセスできません','リンクが無効または更新済みです。デスクトップから新しいリンクをコピーしてください。'], revoked:['アクセス停止','デスクトップがこの遠隔操作リンクを停止しました。'], replaced:['別のブラウザーが接続中','同時に利用できるブラウザーは 1 つです。再取得するにはページを更新してください。'], incompatible_desktop:['デスクトップのバージョンが非互換','デスクトップアプリを更新してからリンクを開き直してください。'], error:['接続エラー','遠隔操作は再接続を続けます。'] },
@@ -508,10 +509,10 @@ export const dictJa = { ...dictEn, ...jaBase };
 dictJa.uiToolDetails.flow = {
   incomplete:name=>`${name} の接続が未完了`, connected:name=>`${name} に接続済み`, connecting:name=>`${name} に接続中`,
   cancel:'キャンセル', extracting:pct=>`展開中 ${pct}%`, elapsed:seconds=>`${seconds}秒経過`, installStarting:'オンラインインストール：開始中…', browserOpened:'ブラウザーのログインページを開きました',
-  browserHint:'ブラウザーで QR コードを読み取り、確認してください。表示されない場合は再度開けます。', reopen:'再度開く', qrAlt:name=>`${name} QR コード`,
+  browserHint:'ブラウザーで QR コードを読み取り、確認してください。表示されない場合は再度開けます。', browserHintCode:'ブラウザーに確認コードを入力し、認証を確認してください。表示されない場合は再度開けます。', reopen:'再度開く', qrAlt:name=>`${name} QR コード`,
   authorizeStep:'2 / 2：QR コードで認証', registerStep:'1 / 2：QR コードでアプリを登録',
   scanLogin:name=>`${name} にログイン`, scanHint:name=>`${name} アプリで読み取り、確認`, userCode:'確認コード',
-  openBrowser:'ブラウザーで開く ↗', connectionIncomplete:'接続が完了していません', close:'閉じる', retry:'再試行',
+  openBrowser:'ブラウザーで開く ↗', browserOpenFailed:'ブラウザーを開けませんでした。手動で再度開いてください。', copyCode:'コードをコピー', copiedCode:'コピーしました', connectionIncomplete:'接続が完了していません', close:'閉じる', retry:'再試行',
 };
 
 dictJa.uiToolDetails.actions = { connectedTmeet:'Tencent Meeting に接続しました', enabled:'公式 Skill を有効化しました。新しい会話で利用できます', disconnectedTmeet:'Tencent Meeting から切断しました', connectingIma:'Tencent ima に接続中', validatingIma:'OpenAPI 認証情報を確認し、Skill を有効化しています…', connectedIma:'Tencent ima に接続しました', imaEnabled:'IMA OpenAPI Skill を有効化しました。新しい会話で利用できます。', imaFailed:'IMA の接続に失敗しました', disconnectedIma:'Tencent ima から切断しました', operationFailed:'操作に失敗しました。再試行してください' };
@@ -713,6 +714,7 @@ dictJa.uiSettingsView = {
   serviceWecom: 'WeCom',
   serviceDingtalk: 'DingTalk',
   serviceTmeet: 'Tencent Meeting',
+  serviceWeibo: 'Weibo',
   detectFailed: '検出に失敗しました',
   modelLabel: 'モデル',
   codingPlanModelIdPlaceholder: '例：glm-5',
@@ -766,7 +768,7 @@ dictJa.uiCodexView = { ended:'終了', stepsFailed:'失敗を含む実行手順'
 Object.assign(dictJa.uiAttachments, { uploading:pct=>`アップロード中 ${pct}%`, deviceUploadTooLarge:name=>`${name} は添付ファイル上限の 20 MB を超えています`, deviceUploadEmpty:name=>`${name} は空のため添付できません`, deviceUploadUnavailable:'現在、このデバイスから添付ファイルをアップロードできません', deviceUploadInvalid:name=>`${name} は有効な添付ファイルではありません`, deviceUploadFailed:name=>`${name} をアップロードできませんでした。もう一度お試しください。` });
 
 Object.assign(dictJa.uiToolStore, {
-  toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', ima:'Tencent ima' },
+  toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', weibo:'Weibo', ima:'Tencent ima' },
   connected:'接続済み', installed:'インストール済み', builtin:'内蔵', internalDirect:'社内ネットワーク直結', keyRequired:'キーが必要', localLatency:'ローカル',
   cancel:'キャンセル', ok:'了解', newChat:'新しいチャット',
   installHint:'新しいツールは新しい会話で有効になります', removeHint:'削除しました。新しい会話ではこのツールは読み込まれません', firstUseOnlineInstall:'初回接続時に公式 CLI をダウンロードして検証します',
@@ -796,7 +798,7 @@ desktopHint:'先にデスクトップで Obsidian をインストールして保
   updateSkillOverwriteHint:'ストアの最新バージョンで上書きします。このスキルへのローカルの変更は失われます。',
   notConnectedYet:name=>`「${name}」はまだ接続されていません。`,
   loginFrameTitle:name=>`${name} ログイン`, loginPageLoadFailed:'ログインページを読み込めませんでした。下のブラウザー認証をご利用ください', waitingAuth:'認証を待機中…', openInBrowser:'ブラウザーで開く',
-  mini:{ scan:'スキャン待ち', install:pct=>`インストール ${pct}%`, extract:pct=>`展開 ${pct}%`, connecting:'接続中', title:'タップして進捗を表示' },
+  mini:{ scan:'スキャン待ち', authorize:'認証中', install:pct=>`インストール ${pct}%`, extract:pct=>`展開 ${pct}%`, connecting:'接続中', title:'タップして進捗を表示' },
   feishuSteps:[
 { key:'runtime', label:'ランタイムを準備', sub:'アプリ同梱の Node を使用' },
 { key:'cli', label:'接続コンポーネントをインストール', sub:'lark-cli · 初回は約 40 秒' },
@@ -813,7 +815,12 @@ desktopHint:'先にデスクトップで Obsidian をインストールして保
 { key:'cli', label:'接続コンポーネントをインストール', sub:'dws · 初回は約 40 秒' },
 { key:'qr', label:'スキャンしてログイン', sub:'DingTalk アプリでスキャン' },
   ],
-  connFailed:'接続に失敗しました', dingtalkSkillsFailed:err=>`DingTalk は認証されましたが、スキルの有効化に失敗しました：${err}`, tmeetAuthIncomplete:'Tencent Meeting の認証が完了していません。ブラウザーでログインを完了してから再試行してください',
+  weiboSteps:[
+{ key:'runtime', label:'ランタイムを準備', sub:'アプリ同梱の Node を使用' },
+{ key:'cli', label:'接続コンポーネントをインストール', sub:'weibo-cli · 初回は約 40 秒' },
+{ key:'qr', label:'認証', sub:'Weibo 認証ページ' },
+  ],
+  connFailed:'接続に失敗しました', dingtalkSkillsFailed:err=>`DingTalk は認証されましたが、スキルの有効化に失敗しました：${err}`, tmeetAuthIncomplete:'Tencent Meeting の認証が完了していません。ブラウザーでログインを完了してから再試行してください', weiboAuthIncomplete:'Weibo の認証が完了していません。ブラウザーでログインを完了してから再試行してください',
   emptyNoMatch:'一致するツールが見つかりません', emptyNoInstalled:'インストール済みのツールはまだありません', emptyNoTools:'ツールが見つかりません',
   emptyNoMatchHint:'別のキーワードを試すか、綴りを確認してください。', emptyNoInstalledHint:'ストアでコネクターやスキルをインストールすると、ここに表示されます。', emptyNoInstalledHintReadonly:'デスクトップにツールやスキルはまだインストールされていません。',
   emptyNoToolsHint:'検索語を変更するか、API 開発ドキュメントをご確認ください。',

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { BookOpen, Check, ChevronLeft, Download, Globe, Package, Search, Server, Settings, Upload, XIcon, Zap } from '../../components/icons.jsx';
+import { BookOpen, Check, ChevronLeft, Copy, Download, ExternalLink, Globe, Package, Search, Server, Settings, Upload, XIcon, Zap } from '../../components/icons.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
+import { copyClipboardText } from '../../shared/clipboard.js';
 import { localizeTool, mergeConfigFields, TsActionBtn, tsCategories, tsSkillIconByName, tsSkillsData, tsToolsData, tsToolWelcomeData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
 import { MAX_SKILL_ZIP_BYTES, pickSkillDrop, fileToBase64 } from './skill-import-logic.js';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
@@ -19,6 +20,7 @@ const isRestrictedExternalAuthTool = (tool) => !!tool && !!(
   || tool.wecomCli
   || tool.dingtalkCli
   || tool.tmeetCli
+  || tool.weiboCli
   || tool.imaOpenapi
 );
 
@@ -51,6 +53,7 @@ const THIRD_PARTY_TOOL_LOGOS = {
   'wecom-bot': 'assets/tool-icons/wecom-user.png',
   dingtalk: 'assets/tool-icons/dingtalk-user-v2.png',
   tmeet: 'assets/tool-icons/wb-tencent-meeting.png',
+  weibo: 'assets/tool-icons/weibo.png',
   qcc: 'assets/tool-icons/qcc-user.png',
   'patsnap-search': 'assets/tool-icons/wb-patsnap-search.png',
   'tencent-docs': 'assets/tool-icons/wb-tencent-docs.png',
@@ -122,9 +125,47 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         <div className={`h-full rounded-full transition-all ${creep ? 'bg-blue-500' : 'bg-emerald-500'}`} style={{ width: (pct || 0) + '%' }} />
       </div>
     );
-    const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '', twoStep = true, browserAuth = false, steps = [], copy = {} }) => {
+    const FeishuFlowCard = ({ flow, onRetry, onCancel, onBrowserOpenFailed, onBrowserOpened, name = '', twoStep = true, browserAuth = false, steps = [], copy = {} }) => {
+      const [copiedCode, setCopiedCode] = useState(false);
       if (!flow) return null;
       const isErr = flow.phase === 'error';
+      const copyUserCode = async () => {
+        if (!flow.userCode) return;
+        try {
+          const ok = await copyClipboardText(flow.userCode);
+          setCopiedCode(ok);
+          if (ok) setTimeout(() => setCopiedCode(false), 1600);
+        } catch (err) {
+          console.error('copy auth code failed:', err);
+          setCopiedCode(false);
+        }
+      };
+      const reopenAuthUrl = async () => {
+        if (!flow.qrUrl) return;
+        try {
+          await invokeTauri('open_external_url', { url: flow.qrUrl });
+          onBrowserOpened?.();
+        } catch (err) {
+          console.error('open auth url failed:', err);
+          onBrowserOpenFailed?.(err);
+        }
+      };
+      const codeBlock = flow.userCode && (
+        <div className="mt-2 inline-flex items-stretch overflow-hidden rounded-lg bg-slate-100 dark:bg-white/10">
+          <div className="flex flex-col gap-1 px-3 py-2">
+            <span className="text-[11px] text-slate-500 dark:text-slate-400">{copy.userCode}</span>
+            <span className="font-mono text-[18px] font-bold tracking-wider text-slate-900 dark:text-white">{flow.userCode}</span>
+          </div>
+          <button
+            type="button"
+            onClick={copyUserCode}
+            title={copiedCode ? copy.copiedCode : copy.copyCode}
+            className="grid w-11 place-items-center border-l border-slate-200 text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-900 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
+          >
+            {copiedCode ? <Check size={16} /> : <Copy size={16} />}
+          </button>
+        </div>
+      );
       return (
         <div className="mb-8 rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 overflow-hidden">
           <div className="flex items-center gap-3 px-5 pt-4 pb-2">
@@ -156,13 +197,17 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                 <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse shrink-0" />
                 <div className="min-w-0 flex-1">
                   <div className="font-medium text-[14px] text-slate-900 dark:text-slate-100">{copy.browserOpened}</div>
-                  <div className="text-[12px] text-slate-500 dark:text-slate-400 mt-0.5">{copy.browserHint}</div>
+                  <div className={`text-[12px] mt-0.5 ${flow.browserOpenFailed ? 'text-amber-600 dark:text-amber-300' : 'text-slate-500 dark:text-slate-400'}`}>
+                    {flow.browserOpenFailed ? copy.browserOpenFailed : (flow.userCode ? copy.browserHintCode : copy.browserHint)}
+                  </div>
+                  {codeBlock}
                 </div>
                 {flow.qrUrl && (
                   <button type="button"
-                    onClick={() => invokeTauri('open_external_url', { url: flow.qrUrl })}
-                    className="shrink-0 text-[13px] text-blue-600 dark:text-blue-400 hover:underline"
+                    onClick={reopenAuthUrl}
+                    className="shrink-0 inline-flex items-center gap-1 text-[13px] text-blue-600 dark:text-blue-400 hover:underline"
                   >
+                    <ExternalLink size={14} />
                     {copy.reopen}
                   </button>
                 )}
@@ -176,13 +221,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                 <div>
                   <div className="font-medium text-[14px] mb-1 text-slate-900 dark:text-slate-100">{twoStep ? (flow.qrPhase === 'authorize' ? copy.authorizeStep : copy.registerStep) : copy.scanLogin(name)}</div>
                   <div className="text-[12px] text-slate-500 dark:text-slate-400 mb-3">{copy.scanHint(name)}</div>
-                  {flow.userCode && (
-                    <div className="mb-3 inline-flex flex-col gap-1 rounded-lg bg-slate-100 dark:bg-white/10 px-3 py-2">
-                      <span className="text-[11px] text-slate-500 dark:text-slate-400">{copy.userCode}</span>
-                      <span className="font-mono text-[18px] font-bold tracking-wider text-slate-900 dark:text-white">{flow.userCode}</span>
-                    </div>
-                  )}
-                  {flow.qrUrl && <button type="button" onClick={() => invokeTauri('open_external_url', { url: flow.qrUrl })} className="text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{copy.openBrowser}</button>}
+                  {codeBlock && <div className="mb-3">{codeBlock}</div>}
+                  {flow.qrUrl && <button type="button" onClick={reopenAuthUrl} className="inline-flex items-center gap-1 text-[13px] text-blue-600 dark:text-blue-400 hover:underline"><ExternalLink size={14} />{copy.openBrowser}</button>}
                 </div>
               </div>
             </div>
@@ -204,7 +244,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     };
     // 商店列表行内的迷你进度（详情弹窗关掉后，后台仍在跑）
     const FeishuMini = ({ flow, onClick, copy }) => {
-      const label = flow.phase === 'qr' ? copy.scan
+      const label = flow.phase === 'qr' ? (flow.browserAuth && flow.userCode ? (copy.authorize || copy.connecting) : copy.scan)
         : (flow.active === 'cli' ? copy.install(Math.round(flow.pct || 0))
         : (flow.active === 'runtime' ? copy.extract(Math.round(flow.pct || 0)) : copy.connecting));
       return (
@@ -417,13 +457,14 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         if (p.url) {
           invokeTauri('open_external_url', { url: p.url }).catch(err => {
             console.error('open tmeet auth url failed:', err);
+            tmeetConn.setFlow(f => f ? ({ ...f, browserOpenFailed: true }) : f);
           });
         }
         tmeetConn.setFlow(f => {
           const prev = (f && f.steps) || {};
           return { ...f, phase: 'qr', active: 'qr',
             steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), qr: 'active' },
-            qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase, browserAuth: true };
+            qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase, browserAuth: true, browserOpenFailed: false };
         });
       });
       ev.listen('tmeet:connected', async () => {
@@ -445,6 +486,69 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         const p = e.payload || {};
         tmeetConn.stopTick();
         tmeetConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } }; });
+      });
+    }
+
+    // ── 微博连接流程 · 跨视图持久 store(镜像腾讯会议;device-code 授权）──
+    /* eslint-disable unicorn/no-this-outside-of-class -- same as tmeetConn: module-level singleton whose methods reference itself via this */
+    const weiboConn = {
+      flow: null, tick: null, listenersReady: false, subs: new Set(),
+      subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
+      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* silent: one failing subscriber must not affect the rest of the broadcast */ } }); },
+      startTick() {
+        this.stopTick();
+        this.tick = setInterval(() => this.setFlow(f => {
+          if (!f || f.phase !== 'running') return f;
+          const nf = { ...f, sec: (f.sec || 0) + 1 };
+          if (f.active === 'cli') nf.pct = Math.min(90, (f.pct || 0) + (90 - (f.pct || 0)) * 0.06 + 1);
+          return nf;
+        }), 1000);
+      },
+      stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
+    };
+    /* eslint-enable unicorn/no-this-outside-of-class -- same as tmeetConn */
+    function ensureWeiboListeners(copy = {}) {
+      if (weiboConn.listenersReady) return;
+      const connFailed = copy.connFailed;
+      const authIncomplete = copy.weiboAuthIncomplete;
+      const ev = isTauriAvailable() ? tauriEvents : null;
+      if (!ev) return;
+      weiboConn.listenersReady = true;
+      ev.listen('weibo:qr', (e) => {
+        const p = e.payload || {};
+        weiboConn.stopTick();
+        if (p.url) {
+          invokeTauri('open_external_url', { url: p.url }).catch(err => {
+            console.error('open weibo auth url failed:', err);
+            weiboConn.setFlow(f => f ? ({ ...f, browserOpenFailed: true }) : f);
+          });
+        }
+        weiboConn.setFlow(f => {
+          const prev = (f && f.steps) || {};
+          return { ...f, phase: 'qr', active: 'qr',
+            steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), qr: 'active' },
+            qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase, userCode: p.user_code, browserAuth: true, browserOpenFailed: false };
+        });
+      });
+      ev.listen('weibo:connected', async () => {
+        weiboConn.stopTick();
+        try {
+          // 二次确认真实登录态（统一 readiness；weibo_status 直调随之退役）
+          const status = await invokeTauri('bundle_readiness', { bundleId: 'weibo' });
+          if (!(status && status.ready)) {
+            throw new Error(authIncomplete);
+          }
+          await invokeTauri('weibo_apply_skills');
+          weiboConn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
+          setTimeout(() => weiboConn.setFlow(null), 1800);
+        } catch (e) {
+          weiboConn.setFlow(f => ({ ...(f || { steps: {} }), phase: 'error', err: String(e && e.message ? e.message : e).slice(0, 220), errStep: 'qr', steps: { ...(f && f.steps), qr: 'error' } }));
+        }
+      });
+      ev.listen('weibo:error', (e) => {
+        const p = e.payload || {};
+        weiboConn.stopTick();
+        weiboConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } }; });
       });
     }
 
@@ -762,6 +866,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const wecomConnected = !!bundleStates.wecom?.ready;
       const dingtalkConnected = !!bundleStates.dingtalk?.ready;
       const tmeetConnected = !!bundleStates.tmeet?.ready;
+      const weiboConnected = !!bundleStates.weibo?.ready;
       const imaConnected = !!bundleStates.ima?.ready;
       // 飞书连接流程状态机（取代旧阻塞式扫码浮层）：null=idle
       // { phase:'running'|'qr'|'error'|'done', steps:{runtime,cli,connect,qr}, active, pct, sec, log, err, qr, qrUrl, qrPhase }
@@ -776,6 +881,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
       // 腾讯会议(CLI 路线)连接流程卡;连接态由 bundleStates 派生
       const [tmeetFlow, setTmeetFlow] = useState(tmeetConn.flow);
+
+      // 微博(CLI 路线)连接流程卡;连接态由 bundleStates 派生
+      const [weiboFlow, setWeiboFlow] = useState(weiboConn.flow);
 
       // 从后端加载已安装状态 + 统一 readiness（Phase 2 第八刀：逐连接器 status
       // 命令退役，installed/ready/actions 统一经 bundle_readiness 取数）。
@@ -947,6 +1055,30 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // eslint-disable-next-line react-hooks/exhaustive-deps -- subscription mounts/unmounts only with externalAuthAvailable; the copy snapshot is read on demand by the callback, so resubscribing is unnecessary
       }, [externalAuthAvailable]);
 
+      // 订阅微博 store(镜像腾讯会议):镜像进渲染 + 完成/失败收尾
+      useEffect(() => {
+        if (!externalAuthAvailable) return;
+        ensureWeiboListeners(storeCopy);
+        let prevPhase = weiboConn.flow && weiboConn.flow.phase;
+        const unsub = weiboConn.subscribe((flow) => {
+          setWeiboFlow(flow);
+          const ph = flow && flow.phase;
+          if (ph !== prevPhase) {
+            if (ph === 'done') {
+              loadBackendState(); setBusyId(null);
+              setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(storeCopy.toolNames.weibo), subtitle: detailCopy.actions.enabled, isInstall: true, isError: false, toolId: 'weibo' });
+              notifyComposerToolsChanged();
+            } else if (ph === 'error') {
+              setBusyId(null);
+            }
+            prevPhase = ph;
+          }
+        });
+        setWeiboFlow(weiboConn.flow);
+        return unsub;
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- subscription mounts/unmounts only with externalAuthAvailable; the copy snapshot is read on demand by the callback, so resubscribing is unnecessary
+      }, [externalAuthAvailable]);
+
       // 企微连接编排事件:后端推进度,前端驱动 UI。
       useEffect(() => {
         const ev = isTauriAvailable() ? tauriEvents : null;
@@ -1001,6 +1133,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             ? dingtalkConnected
             : t.tmeetCli
             ? tmeetConnected
+            : t.weiboCli
+            ? weiboConnected
             : t.imaOpenapi
             ? imaConnected
             : t.oauthMcp
@@ -1726,6 +1860,49 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }
       };
 
+      // 连接微博(device-code 授权):流程卡驱动(镜像腾讯会议),进度走 weibo:* 事件。
+      const connectWeibo = async () => {
+        setBusyId('weibo');
+        ensureWeiboListeners(storeCopy);
+        weiboConn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
+        weiboConn.startTick();
+        try {
+          weiboConn.setFlow(f => ({ ...f, active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...(f && f.steps), runtime: 'done', cli: 'active' } }));
+          await invokeTauri('weibo_ensure_cli');
+          weiboConn.setFlow(f => ({ ...f, pct: 100, steps: { ...(f && f.steps), cli: 'done' } }));
+          await invokeTauri('weibo_connect_begin');
+        } catch (e) {
+          console.error('weibo connect failed:', e);
+          weiboConn.stopTick();
+          setBusyId(null);
+          weiboConn.setFlow(f => {
+            const step = (f && f.active) || 'cli';
+            return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } };
+          });
+        }
+      };
+      const weiboResetFlow = () => {
+        weiboConn.stopTick();
+        invokeTauri('weibo_cancel').catch(() => {});
+        weiboConn.setFlow(null); setBusyId(null);
+      };
+      const weiboRetry = () => { connectWeibo(); };
+      const disconnectWeibo = async () => {
+        setBusyId('weibo');
+        try {
+          await invokeTauri('weibo_logout');
+          await invokeTauri('weibo_apply_skills').catch(() => {});
+          await loadBackendState();
+          setAlert({ visible: true, loading: false, title: storeCopy.disconnectedTool(storeCopy.toolNames.weibo), isInstall: false, isError: false });
+          notifyComposerToolsChanged();
+        } catch (e) {
+          console.error('weibo logout failed:', e);
+          setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
       // 安装/卸载入口
       const handleAction = async (backendId, isInstalled) => {
         if (!canMutateToolStore) return;
@@ -1775,6 +1952,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           const tt = tools.find(x => x.tmeetCli) || localizeTool(tsToolsData.find(x => x.backendId === 'tmeet'), t);
           if (tt) setSelectedTool(tt);
           return connectTmeet();
+        }
+        // 微博同走 CLI 连接流程(device-code 授权)
+        if (backendId === 'weibo') {
+          if (isInstalled) return disconnectWeibo();
+          const wb = tools.find(x => x.weiboCli) || localizeTool(tsToolsData.find(x => x.backendId === 'weibo'), t);
+          if (wb) setSelectedTool(wb);
+          return connectWeibo();
         }
         // IMA 是 OpenAPI Skill 连接器:校验凭据 + 安装 skill,不写 mcp.json。
         if (backendId === 'ima') {
@@ -2100,7 +2284,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                 </div>
                                 <div className="flex flex-col items-center justify-center gap-1.5 pl-2">
                                   {(() => {
-                                    const cf = tool.feishuCli ? feishuFlow : tool.wecomCli ? wecomFlow : tool.dingtalkCli ? dingtalkFlow : tool.tmeetCli ? tmeetFlow : null;
+                                    const cf = tool.feishuCli ? feishuFlow : tool.wecomCli ? wecomFlow : tool.dingtalkCli ? dingtalkFlow : tool.tmeetCli ? tmeetFlow : tool.weiboCli ? weiboFlow : null;
                                     if (externalAuthAvailable && cf && (cf.phase === 'running' || cf.phase === 'qr')) {
                                       return <FeishuMini flow={cf} onClick={() => setSelectedTool(tool)} copy={storeCopy.mini} />;
                                     }
@@ -2249,10 +2433,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-2 tracking-tight">{selectedTool.title}</h2>
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
                       <div className="flex flex-col items-end gap-1.5">
-                        {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : selectedTool.dingtalkCli ? dingtalkFlow : selectedTool.tmeetCli ? tmeetFlow : null; return (externalAuthAvailable && sf && (sf.phase === 'running' || sf.phase === 'qr'))
+                        {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : selectedTool.dingtalkCli ? dingtalkFlow : selectedTool.tmeetCli ? tmeetFlow : selectedTool.weiboCli ? weiboFlow : null; return (externalAuthAvailable && sf && (sf.phase === 'running' || sf.phase === 'qr'))
                           ? <FeishuMini flow={sf} onClick={() => {}} copy={storeCopy.mini} />
                           : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} size="lg" copy={storeCopy} t={t} />; })()}
-                        {((selectedTool.feishuCli && !feishuConnected) || (selectedTool.wecomCli && !wecomConnected) || (selectedTool.dingtalkCli && !dingtalkConnected) || (selectedTool.tmeetCli && !tmeetConnected)) && <span className="text-[11px] text-slate-400">{storeCopy.firstUseOnlineInstall}</span>}
+                        {((selectedTool.feishuCli && !feishuConnected) || (selectedTool.wecomCli && !wecomConnected) || (selectedTool.dingtalkCli && !dingtalkConnected) || (selectedTool.tmeetCli && !tmeetConnected) || (selectedTool.weiboCli && !weiboConnected)) && <span className="text-[11px] text-slate-400">{storeCopy.firstUseOnlineInstall}</span>}
                       </div>
                     </div>
                   </div>
@@ -2287,7 +2471,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                     <FeishuFlowCard flow={dingtalkFlow} steps={storeCopy.dingtalkSteps} name={storeCopy.toolNames.dingtalk} copy={detailCopy.flow} twoStep={false} onRetry={dingtalkRetry} onCancel={dingtalkResetFlow} />
                   )}
                   {externalAuthAvailable && selectedTool.tmeetCli && tmeetFlow && (
-                    <FeishuFlowCard flow={tmeetFlow.phase === 'error' && !detailCopy.showRawErrors ? { ...tmeetFlow, err: detailCopy.actions.operationFailed } : tmeetFlow} steps={detailCopy.tmeetSteps} name={detailCopy.tools.tmeet.title} copy={detailCopy.flow} twoStep={false} browserAuth={!!tmeetFlow.browserAuth} onRetry={tmeetRetry} onCancel={tmeetResetFlow} />
+                    <FeishuFlowCard flow={tmeetFlow.phase === 'error' && !detailCopy.showRawErrors ? { ...tmeetFlow, err: detailCopy.actions.operationFailed } : tmeetFlow} steps={detailCopy.tmeetSteps} name={detailCopy.tools.tmeet.title} copy={detailCopy.flow} twoStep={false} browserAuth={!!tmeetFlow.browserAuth} onRetry={tmeetRetry} onCancel={tmeetResetFlow} onBrowserOpenFailed={() => tmeetConn.setFlow(f => f ? ({ ...f, browserOpenFailed: true }) : f)} onBrowserOpened={() => tmeetConn.setFlow(f => f ? ({ ...f, browserOpenFailed: false }) : f)} />
+                  )}
+                  {externalAuthAvailable && selectedTool.weiboCli && weiboFlow && (
+                    <FeishuFlowCard flow={weiboFlow.phase === 'error' && !detailCopy.showRawErrors ? { ...weiboFlow, err: detailCopy.actions.operationFailed } : weiboFlow} steps={storeCopy.weiboSteps} name={storeCopy.toolNames.weibo} copy={detailCopy.flow} twoStep={false} browserAuth={!!weiboFlow.browserAuth} onRetry={weiboRetry} onCancel={weiboResetFlow} onBrowserOpenFailed={() => weiboConn.setFlow(f => f ? ({ ...f, browserOpenFailed: true }) : f)} onBrowserOpened={() => weiboConn.setFlow(f => f ? ({ ...f, browserOpenFailed: false }) : f)} />
                   )}
                   {selectedTool.feishuCli && feishuConnected && !feishuFlow && (
                     <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
@@ -2311,6 +2498,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                     <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
                       <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
                       <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">{storeCopy.connectedBanner(storeCopy.toolNames.tmeet)}</span>
+                    </div>
+                  )}
+                  {selectedTool.weiboCli && weiboConnected && !weiboFlow && (
+                    <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
+                      <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
+                      <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">{storeCopy.connectedBanner(storeCopy.toolNames.weibo)}</span>
                     </div>
                   )}
                   {selectedTool.imaOpenapi && imaConnected && (

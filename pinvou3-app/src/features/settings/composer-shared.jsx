@@ -482,6 +482,8 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       const [dingtalkEnabled, setDingtalkEnabled] = useState(true); // 钉钉技能是否启用(未手动停用)
       const [tmeetOn, setTmeetOn] = useState(false); // 腾讯会议是否已连接(CLI 路线)
       const [tmeetEnabled, setTmeetEnabled] = useState(true); // 腾讯会议技能是否启用(未手动停用)
+      const [weiboOn, setWeiboOn] = useState(false); // 微博是否已连接(CLI 路线)
+      const [weiboEnabled, setWeiboEnabled] = useState(true); // 微博技能是否启用(未手动停用)
       // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
       async function refreshToolsMenu(isAlive) {
         try {
@@ -519,6 +521,10 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         try {
           const ts = await invokeTauri('tmeet_skills_state');
           if (isAlive()) { setTmeetOn(!!(ts && ts.connected)); setTmeetEnabled(!ts || ts.enabled !== false); }
+        } catch { /* ignore */ }
+        try {
+          const wb = await invokeTauri('weibo_skills_state');
+          if (isAlive()) { setWeiboOn(!!(wb && wb.connected)); setWeiboEnabled(!wb || wb.enabled !== false); }
         } catch { /* ignore */ }
       }
       useEffect(() => {
@@ -591,6 +597,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
           { id: 'wecom', title: t.uiSettingsView.serviceWecom, connected: wecomOn, enabled: wecomEnabled },
           { id: 'dingtalk', title: t.uiSettingsView.serviceDingtalk, connected: dingtalkOn, enabled: dingtalkEnabled },
           { id: 'tmeet', title: t.uiSettingsView.serviceTmeet, connected: tmeetOn, enabled: tmeetEnabled },
+          { id: 'weibo', title: t.uiSettingsView.serviceWeibo, connected: weiboOn, enabled: weiboEnabled },
         ],
       });
       const { connectedServices, toolRows, skillRows, enabledCount, allSkillsDisabled } = menuState;

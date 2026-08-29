@@ -298,6 +298,7 @@ export const dictZh = {
         uiToolDetails: { tools:{
           ima:{ title:'腾讯 ima', subtitle:'用 OpenAPI 操作 ima 笔记与知识库', latency:'云端', desc:'接入腾讯 ima OpenAPI Skill，可搜索、读取、创建和追加笔记，也可搜索、浏览知识库并导入网页或内容。凭据只保存在本机。', configTitle:'连接腾讯 ima', configDescription:'凭据只保存在本机，用于启用 IMA OpenAPI Skill。', configDocLabel:'获取 Client ID / API Key', welcomeQueries:['搜索我的 ima 知识库','列出我有哪些 ima 笔记','把这段内容新建为 ima 笔记','在 ima 知识库里查产品方案'] },
           tmeet:{ title:'腾讯会议', subtitle:'以本人身份管理会议、录制、纪要和参会报告', type:'CLI + 官方技能', latency:'云端', desc:'接入腾讯会议官方 CLI 和技能，可创建、查询、修改和取消会议，查询参会报告、录制、转写与智能纪要。连接时会打开授权页扫码登录。', welcomeQueries:['帮我创建一个腾讯会议','查一下我的腾讯会议录制','看看最近会议的智能纪要','查询这场腾讯会议的参会人'] },
+          weibo:{ title:'微博', subtitle:'以本人身份操作微博发布、互动、检索和趋势', type:'CLI + Pinvou 适配技能', latency:'云端', desc:'接入微博官方 CLI 和 Pinvou 适配技能，可检索微博、查看用户和关系、处理评论互动，并在确认后执行发布类操作。连接时会打开微博授权页登录。', welcomeQueries:['查一下微博热搜趋势','搜索某个关键词的微博','查询这个微博用户的信息','帮我草拟一条微博，确认后发布'] },
         } },
         uiPet: { waiting:'需要输入', failed:'遇到问题', review:'可以查看', running:'处理中', sendFailed:'发送失败', noMain:'无法连接主窗口', scheduledDone:'定时任务已完成', done:'已完成', reply:'回复', collapseReply:'收起回复', expandReply:'展开回复', collapse:'收起', expand:'展开', replyPlaceholder:'输入回复…', sendReply:'发送回复', back:'回到品悟', ready:n=>`${n}已就绪`, backHint:'点击回到品悟', drag:n=>`点击回到品悟，拖动${n}`, openScheduled:n=>`打开定时任务${n}的本次运行`, closeScheduled:'关闭定时任务完成提醒', openChat:n=>`打开${n}对话`, closeNotice:n=>`关闭${n}提醒`, replyTo:n=>`回复${n}`, expandActivities:n=>`展开 ${n} 条活动`, collapseActivities:'收起活动卡片', expandActivity:'展开活动', collapseActivity:'收起活动', loadFailed:'公仔加载失败', retry:'点击重试', resize:'拖动调整公仔大小', resizeTitle:'拖动调整大小', hide:'隐藏公仔' },
         uiWebConnection: { idle:['正在准备远程控制','正在初始化浏览器连接…'], connecting:['正在连接桌面端','连接中断时会自动重试，尚未确认的操作不会重复执行。'], desktop_offline:['桌面端当前离线','保持此页面打开；桌面端恢复运行后会自动续接。'], credentials_missing:['链接不完整','请在桌面端启用远程控制，然后粘贴生成的完整链接。'], denied:['无法访问','链接无效或已被刷新，请从桌面端复制新链接。'], revoked:['访问已停止','桌面端已停止此远程控制链接。'], replaced:['已在另一浏览器接管','同一远程控制链接只保留一个活动浏览器；刷新本页可重新接管。'], incompatible_desktop:['桌面端版本不兼容','当前远程控制功能需要更新的桌面端，请先升级桌面端后再重新打开链接。'], error:['连接异常','远程控制会继续尝试恢复连接。'] },
@@ -506,10 +507,10 @@ export const dictZh = {
 dictZh.uiToolDetails.flow = {
   incomplete:name=>`${name}接入未完成`, connected:name=>`已连接${name}`, connecting:name=>`正在接入${name}`,
   cancel:'取消', extracting:pct=>`解压中 ${pct}%`, elapsed:seconds=>`已 ${seconds}s`, installStarting:'在线安装：正在开始…', browserOpened:'已打开浏览器登录页',
-  browserHint:'请在浏览器中扫码确认。未弹出时可重新打开。', reopen:'重新打开', qrAlt:name=>`${name}二维码`,
+  browserHint:'请在浏览器中扫码确认。未弹出时可重新打开。', browserHintCode:'请在浏览器中输入验证码并确认授权。未弹出时可重新打开。', reopen:'重新打开', qrAlt:name=>`${name}二维码`,
   authorizeStep:'第 2 步 / 共 2 步：扫码授权', registerStep:'第 1 步 / 共 2 步：扫码注册应用',
   scanLogin:name=>`扫码登录${name}`, scanHint:name=>`用${name} App 扫一扫 → 确认`, userCode:'页面验证码',
-  openBrowser:'在浏览器打开 ↗', connectionIncomplete:'连接未完成', close:'关闭', retry:'重试',
+  openBrowser:'在浏览器打开 ↗', browserOpenFailed:'浏览器未打开，请手动点击重新打开。', copyCode:'复制验证码', copiedCode:'已复制', connectionIncomplete:'连接未完成', close:'关闭', retry:'重试',
 };
 
 dictZh.uiToolDetails.actions = { connectedTmeet:'已连接腾讯会议', enabled:'官方技能已启用，可新建对话直接用', disconnectedTmeet:'已断开腾讯会议', connectingIma:'正在连接「腾讯 ima」', validatingIma:'正在校验 OpenAPI 凭证并启用 Skill…', connectedIma:'已连接「腾讯 ima」', imaEnabled:'IMA OpenAPI Skill 已启用，可新建对话直接使用。', imaFailed:'IMA 连接失败', disconnectedIma:'已断开「腾讯 ima」', operationFailed:'操作失败，请重试' };
@@ -738,6 +739,7 @@ dictZh.uiSettingsView = {
   serviceWecom: '企业微信',
   serviceDingtalk: '钉钉',
   serviceTmeet: '腾讯会议',
+  serviceWeibo: '微博',
   detectFailed: '检测失败',
   modelLabel: '模型',
   codingPlanModelIdPlaceholder: '例如 glm-5',
@@ -794,7 +796,7 @@ Object.assign(dictZh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`, device
 
 // uiToolStore 词条补充（ToolStoreView / oauth-marketplace-logic）：命名空间已在 dict 主体定义，这里增量合并。
 Object.assign(dictZh.uiToolStore, {
-  toolNames:{ feishu:'飞书', wecom:'企业微信', dingtalk:'钉钉', tmeet:'腾讯会议', ima:'腾讯 ima' },
+  toolNames:{ feishu:'飞书', wecom:'企业微信', dingtalk:'钉钉', tmeet:'腾讯会议', weibo:'微博', ima:'腾讯 ima' },
   connected:'已连接', installed:'已安装', builtin:'内置', internalDirect:'内网直连', keyRequired:'需密钥', localLatency:'本地',
   cancel:'取消', ok:'知道了', newChat:'新建会话',
   installHint:'新工具需要在新会话中生效', removeHint:'已移除，新会话将不再加载该工具', firstUseOnlineInstall:'首次连接会联网下载并校验官方 CLI',
@@ -824,7 +826,7 @@ desktopHint:'请先在桌面端安装 Obsidian 并创建笔记库，然后在这
   updateSkillOverwriteHint:'将覆盖为商店最新版本，你对该技能做的本地修改会丢失。',
   notConnectedYet:name=>`尚未连接「${name}」。`,
   loginFrameTitle:name=>`${name}登录`, loginPageLoadFailed:'登录页加载失败，请用下方浏览器授权', waitingAuth:'等待授权中…', openInBrowser:'在浏览器打开',
-  mini:{ scan:'待扫码', install:pct=>`装 ${pct}%`, extract:pct=>`解压 ${pct}%`, connecting:'接入中', title:'点开查看进度' },
+  mini:{ scan:'待扫码', authorize:'授权中', install:pct=>`装 ${pct}%`, extract:pct=>`解压 ${pct}%`, connecting:'接入中', title:'点开查看进度' },
   feishuSteps:[
 { key:'runtime', label:'准备运行时', sub:'使用应用自带 Node' },
 { key:'cli', label:'安装连接组件', sub:'lark-cli · 首次约 40 秒' },
@@ -841,7 +843,12 @@ desktopHint:'请先在桌面端安装 Obsidian 并创建笔记库，然后在这
 { key:'cli', label:'安装连接组件', sub:'dws · 首次约 40 秒' },
 { key:'qr', label:'扫码登录', sub:'钉钉 App 扫一扫' },
   ],
-  connFailed:'连接失败', dingtalkSkillsFailed:err=>`钉钉已授权，但技能启用失败：${err}`, tmeetAuthIncomplete:'腾讯会议授权未完成，请完成浏览器登录后重试',
+  weiboSteps:[
+{ key:'runtime', label:'准备运行时', sub:'使用应用自带 Node' },
+{ key:'cli', label:'安装连接组件', sub:'weibo-cli · 首次约 40 秒' },
+{ key:'qr', label:'授权登录', sub:'微博授权页' },
+  ],
+  connFailed:'连接失败', dingtalkSkillsFailed:err=>`钉钉已授权，但技能启用失败：${err}`, tmeetAuthIncomplete:'腾讯会议授权未完成，请完成浏览器登录后重试', weiboAuthIncomplete:'微博授权未完成，请完成浏览器登录后重试',
   emptyNoMatch:'未找到匹配的工具', emptyNoInstalled:'还没有已安装的工具', emptyNoTools:'未检索到工具',
   emptyNoMatchHint:'换个关键词试试，或检查一下拼写。', emptyNoInstalledHint:'去商店安装连接器或技能后，会出现在这里。', emptyNoInstalledHintReadonly:'桌面端尚未安装工具或技能。',
   emptyNoToolsHint:'请尝试修改搜索词或查阅 API 开发文档。',
