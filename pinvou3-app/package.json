@@ -13,7 +13,7 @@
     "audit:compat": "node scripts/audit-compat.mjs",
     "prepare:codex-bridge": "node scripts/tauri/codex-bridge.js",
     "lint:ui": "eslint src/app src/components src/features src/hooks src/platform src/shared",
-    "lint:node": "eslint tests scripts eslint.config.mjs vite.config.js",
+    "lint:node": "eslint tests scripts eslint.config.mjs vite.config.mjs",
     "lint": "npm run lint:ui && npm run lint:node",
     "lint:fix": "eslint src/app src/components src/features src/hooks src/platform src/shared tests scripts --fix",
     "lint:ox": "oxlint src",

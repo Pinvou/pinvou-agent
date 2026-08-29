@@ -12,8 +12,10 @@ export const VIEW_LOADERS = {
   knowledge: () => import('../features/knowledge/KnowledgeView.jsx'),
   monitor: () => import('../features/monitor/MonitorView.jsx'),
   search: () => import('../features/search/SearchView.jsx'),
-  // 仅供撕离窗(DetachedShell)按需加载;主窗口 ChatView 启动即渲染,在 main.jsx 静态 import
-  chat: () => import('../features/chat/ChatView.jsx'),
+  // chat 不在此处:主窗口 ChatView 启动即渲染、在 main.jsx 静态 import,动态
+  // import 不会产生独立 chunk(rolldown 会报 INEFFECTIVE_DYNAMIC_IMPORT)。
+  // 撕离窗(DetachedShell)与主窗加载同一 index.html(主 chunk 必然已就绪),
+  // 因此直接静态 import ChatView,不经过本表。
 };
 
 // 预取专用包装:挂 catch 吞掉加载失败(预取失败无害——真实切视图时 React.lazy

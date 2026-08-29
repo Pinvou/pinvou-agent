@@ -1,7 +1,7 @@
 // Static analysis baseline for the Pinvou frontend.
 //
 // Language floor: ES2021 (not "latest"). The binding webview is macOS 11's
-// Safari 14.0 WKWebView (see .browserslistrc and vite.config.js build.target);
+// Safari 14.0 WKWebView (see .browserslistrc and vite.config.mjs build.target);
 // ES2022 syntax (class fields, static blocks, top-level await) is a parse
 // error there and blanks the whole chunk. scripts/audit-compat.mjs enforces
 // the same floor on built output; this config enforces it at lint time so
@@ -200,7 +200,7 @@ export default defineConfig([
   // Node-side code (tests, build scripts) runs on Node 22 in CI, so its
   // language floor is the Node 22 feature set, not the webview ES2021 one.
   {
-    files: ['tests/**/*.{js,mjs}', 'scripts/**/*.{js,mjs}', 'vite.config.js', 'eslint.config.mjs'],
+    files: ['tests/**/*.{js,mjs}', 'scripts/**/*.{js,mjs}', 'vite.config.mjs', 'eslint.config.mjs'],
     languageOptions: {
       ecmaVersion: 2024,
       sourceType: 'module',

@@ -1,14 +1,17 @@
 import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { CodexAcpView as LazyCodexAcpView } from '../features/codex/LazyCodexAcpView.jsx';
+import { ChatView } from '../features/chat/ChatView.jsx';
 import { VIEW_LOADERS } from './view-loaders.js';
 // 撕离窗与主窗口共用同一批懒加载视图 chunk(rolldown 自动共享),工厂统一走
 // view-loaders.js 的 VIEW_LOADERS。静态 import 会让对应视图被钉回主 chunk,
-// 这里全部走 lazy;每个窗只实际加载自己 kind 的 chunk。codex 例外:复用 #159 的
-// LazyCodexAcpView 包装(web 能力门控 + checking 兜底,内部同样 lazy import
-// CodexAcpView,共享同一 chunk)。
+// 这里全部走 lazy;每个窗只实际加载自己 kind 的 chunk。两个例外:
+// - codex:复用 #159 的 LazyCodexAcpView 包装(web 能力门控 + checking 兜底,
+//   内部同样 lazy import CodexAcpView,共享同一 chunk);
+// - chat:主窗口在 main.jsx 静态 import ChatView(启动即渲染),撕离窗加载同一
+//   index.html,主 chunk 必然已就绪 —— 动态 import 不会产生独立 chunk,直接用
+//   静态 import 复用主 chunk 里的同一模块。
 const LazyKnowledgeView = lazy(() => VIEW_LOADERS.knowledge().then(m => ({ default: m.KnowledgeView })));
 const LazyMonitorView = lazy(() => VIEW_LOADERS.monitor().then(m => ({ default: m.MonitorView })));
-const LazyChatView = lazy(() => VIEW_LOADERS.chat().then(m => ({ default: m.ChatView })));
 const LazyToolStoreView = lazy(() => VIEW_LOADERS.toolStore().then(m => ({ default: m.ToolStoreView })));
 const LazyCardPoolView = lazy(() => VIEW_LOADERS.cardpool().then(m => ({ default: m.CardPoolView })));
 const DetachedViewFallback = () => <div className="p-6 text-sm opacity-60">…</div>;
@@ -141,7 +144,7 @@ function DetachedCodexSessionView({ id, theme, t, bs }) {
 // Reuse the same feature views as the main window. Cross-view navigation is a
 // no-op because a detached window intentionally owns one view only.
 const DETACHED_VIEWS = {
-  session: ({ theme, t, bs }) => <LazyChatView theme={theme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={() => {}} justInstalledTool={null} setJustInstalledTool={() => {}} onGotoSettings={() => {}} onGotoTools={() => {}} />,
+  session: ({ theme, t, bs }) => <ChatView theme={theme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={() => {}} justInstalledTool={null} setJustInstalledTool={() => {}} onGotoSettings={() => {}} onGotoTools={() => {}} />,
   'codex-session': ({ id, theme, t, bs }) => <DetachedCodexSessionView id={id} theme={theme} t={t} bs={bs} />,
   monitor: ({ theme, t, bs }) => <LazyMonitorView theme={theme} t={t} bs={bs} />,
   cardpool: ({ theme, t, bs }) => <LazyCardPoolView theme={theme} t={t} bs={bs} onEquipped={() => {}} onAICreate={() => {}} initialMyOnly={false} />,

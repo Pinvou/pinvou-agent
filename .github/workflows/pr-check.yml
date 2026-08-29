@@ -238,7 +238,7 @@ jobs:
               - 'pinvou3-app/src-tauri/packaging/**'
               - 'pinvou3-app/package.json'
               - 'pinvou3-app/package-lock.json'
-              - 'pinvou3-app/vite.config.js'
+              - 'pinvou3-app/vite.config.mjs'
               - 'pinvou3-app/eslint.config.mjs'
               - '.github/workflows/pr-check.yml'
             frontend:
@@ -257,7 +257,7 @@ jobs:
               - 'scripts/mcp-server-contract-smoke.py'
               - 'pinvou3-app/package.json'
               - 'pinvou3-app/package-lock.json'
-              - 'pinvou3-app/vite.config.js'
+              - 'pinvou3-app/vite.config.mjs'
               - 'pinvou3-app/eslint.config.mjs'
               # 静态门禁配置(oxlint/Biome/knip/jsconfig)与 Safari 14 兼容审计脚本
               # 只在 frontend-test 内消费;不列入则 config-only PR 会静默跳过
