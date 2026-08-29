@@ -107,10 +107,6 @@ fingerprints=(
   "T2|禁用 MCP server 从全部 pool 面消失 |CodeWhale/crates/tui/src/mcp/tests.rs|fn forkguard_mcp_pool_denied_server_disappears_from_every_surface"
   "T2|子智能体不得绕过 MCP 禁用继承       |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_spawn_request_inherit_disallowed_tools_opt_out_not_honored"
   "T2|Shell 跨 poll 保持 UTF-8 解码状态  |CodeWhale/crates/tui/src/tools/shell/output.rs|fn forkguard_shell_output_decoder_preserves_utf8_across_poll_boundaries"
-  "T2|API 后端链尾兜底为 Bing            |CodeWhale/crates/tui/src/tools/web/backend.rs|fn forkguard_api_provider_chain_tail_is_bing"
-  "T2|厂商原生搜索精确路由门控          |CodeWhale/crates/config/src/route/capabilities.rs|documented_server_side_web_search_for_route"
-  "T2|Kimi K3 Formula 搜索适配          |CodeWhale/crates/tui/src/client/provider_native_search/kimi.rs|WEB_SEARCH_FORMULA_URI"
-  "T2|全链失败建议配置 API 搜索后端      |CodeWhale/crates/tui/src/tools/web/backend.rs|configure an API-backed [search] provider"
 
   "T3|ambient project authority 密封       |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_runtime_loader_ignores_ambient_project_authority"
   "T3|Permissions 100 KiB 窄例外回归      |CodeWhale/crates/tui/src/prompts.rs|fn forkguard_instruction_fragment_preserves_content_beyond_default_cap"
@@ -157,6 +153,16 @@ fingerprints=(
   "APP|不支持的最新用户内容不可回退到旧轮  |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn forkguard_admitted_display_fallback_does_not_skip_unsupported_user_turn"
   "APP|拒绝编辑终态触发权威历史回滚        |pinvou3-app/src-tauri/src/features/assistant/engine.rs|\"operation_rejected\": operation_rejected"
 )
+
+# r12 底座专属指纹：候选基于 r11、不含 r12 的 #33/#35，仅在公开基线模式下校验
+if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
+  fingerprints+=(
+    "T2|API 后端链尾兜底为 Bing            |CodeWhale/crates/tui/src/tools/web/backend.rs|fn forkguard_api_provider_chain_tail_is_bing"
+    "T2|厂商原生搜索精确路由门控          |CodeWhale/crates/config/src/route/capabilities.rs|documented_server_side_web_search_for_route"
+    "T2|Kimi K3 Formula 搜索适配          |CodeWhale/crates/tui/src/client/provider_native_search/kimi.rs|WEB_SEARCH_FORMULA_URI"
+    "T2|全链失败建议配置 API 搜索后端      |CodeWhale/crates/tui/src/tools/web/backend.rs|configure an API-backed [search] provider"
+  )
+fi
 
 if [[ "$actual_head" == "$LOCAL_BENCHMARK_CANDIDATE" ]]; then
   fingerprints+=(
