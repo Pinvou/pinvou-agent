@@ -804,6 +804,50 @@ mod tests {
     }
 
     #[test]
+    fn v2_envelope_digesting_the_wrong_payload_is_rejected() {
+        // Legacy v2 writers derived the integrity digest from the plaintext
+        // instead of the protected bytes. Such an envelope is self-consistent
+        // but binds the wrong payload, and the strict reader must reject it
+        // rather than fall back to accepting it.
+        let run = TestRun::new("run-v2-legacy-digest");
+        let store = PrivatePredictionStore::create(run.path(), "run-v2-legacy-digest").unwrap();
+        let plaintext = b"answer-sentinel";
+        let handle = PredictionHandle::new(random_hex::<32>());
+        let binding = binding_bytes(
+            "run-v2-legacy-digest",
+            "task-v2-wrong-digest",
+            "gaia-final/v1",
+            handle.expose_to_adapter(),
+        )
+        .unwrap();
+        let protected = protect(plaintext, &binding).unwrap();
+        let legacy_integrity = integrity_digest(
+            PrivatePredictionContentType::Utf8TextV1,
+            &binding,
+            b"payload-the-digest-was-computed-over",
+        );
+        let mut envelope = encode_envelope(
+            PrivatePredictionContentType::Utf8TextV1,
+            &binding,
+            &legacy_integrity,
+            &protected,
+        )
+        .unwrap();
+        envelope[..4].copy_from_slice(LEGACY_MAGIC);
+        envelope[4] = LEGACY_SCHEMA_VERSION;
+        store.publish_blob(&handle, &envelope).unwrap();
+
+        let resolved =
+            store
+                .scorer_view()
+                .resolve_bound("task-v2-wrong-digest", "gaia-final/v1", &handle);
+        assert!(
+            resolved.is_err(),
+            "legacy plaintext-digest envelopes are not compatible"
+        );
+    }
+
+    #[test]
     fn canonical_json_v1_requires_valid_compact_json() {
         let payload = PrivatePredictionPayload::canonical_json(br#"{"answer":1}"#.to_vec())
             .expect("compact canonical json");
