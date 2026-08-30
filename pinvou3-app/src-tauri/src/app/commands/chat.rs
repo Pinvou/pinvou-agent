@@ -382,8 +382,11 @@ pub(crate) async fn chat_with_reservation(
 ///   engine task that never drains leaves this command unsettled for a long
 ///   time — the frontend invoke already has a 25s fallback timeout.
 ///
-/// Returns the engine-generated opaque steer id; the frontend uses it to
-/// correlate chat:steer_committed / chat:steer_dropped events.
+/// Returns the opaque steer id — the engine-generated ordinal, stamped by the
+/// pool with the engine generation (`e{gen}-steer-{n}`) so ids stay
+/// unambiguous across engine rebuilds; the frontend uses it to correlate
+/// chat:steer_committed / chat:steer_dropped events (stamped identically by
+/// the forwarder).
 ///
 /// Rendering the user bubble does NOT go through a backend
 /// chat:user_message: the local frontend converts the queued chip into a

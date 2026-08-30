@@ -758,8 +758,31 @@ impl Drop for IdleReaperGuard {
 /// queued chip hangs forever. Extracted into a function so the "absent → Err"
 /// contract can be covered by unit tests without an AppHandle (EnginePool
 /// construction depends on AppHandle and bridge boot).
-fn require_live_engine_for_steer(engine: Option<AppEngine>, session_id: &str) -> Result<AppEngine> {
+fn require_live_engine_for_steer<T>(engine: Option<T>, session_id: &str) -> Result<T> {
     engine.with_context(|| format!("no live engine for session '{session_id}' to steer"))
+}
+
+/// Steer ids are generation-scoped at the pool boundary. The foundation mints
+/// per-handle ordinal ids (`steer-{n}`) whose counter resets whenever an
+/// engine is rebuilt (idle reclaim / model switch), so a raw id is ambiguous
+/// across engine generations of one session: an old chip's withdrawal could
+/// retire the NEW engine's unrelated `steer-1`, and a settlement event could
+/// cross-wire two chips. The pool stamps the spawning engine's
+/// `spawned_at_ms` generation onto every id it returns and the forwarder
+/// stamps the `SteerCommitted`/`SteerDropped` payloads with the same
+/// generation, keeping chip↔event correlation exact and withdrawals
+/// generation-checked. The stamp is opaque to the frontend.
+pub(crate) fn stamp_steer_generation(generation: u64, raw_steer_id: &str) -> String {
+    format!("e{generation}-{raw_steer_id}")
+}
+
+/// Split a stamped id into `(generation, raw)`. `None` = not stamped (legacy
+/// or foreign id) — callers pass it through untranslated.
+fn parse_steer_generation(steer_id: &str) -> Option<(u64, &str)> {
+    let rest = steer_id.strip_prefix('e')?;
+    let dash = rest.find('-')?;
+    let generation = rest.get(..dash)?.parse::<u64>().ok()?;
+    Some((generation, rest.get(dash + 1..)?))
 }
 
 impl EnginePool {
@@ -1157,6 +1180,11 @@ impl EnginePool {
             .map_err(|e| anyhow::anyhow!("materialize session skills: {e}"))?;
         }
         let turn_lifecycle = self.turn_lifecycles.for_session(session_id);
+        // One timestamp for both the entry and the steer-id generation stamp
+        // the forwarder uses: the stamp on ids returned by `steer` and on the
+        // forwarded SteerCommitted/SteerDropped payloads must identify THIS
+        // engine build, so it is captured once here rather than re-read.
+        let spawned_at_ms = Self::now_epoch_ms();
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
             self.store.clone(),
@@ -1168,6 +1196,7 @@ impl EnginePool {
             turn_lifecycle.clone(),
             shell_manager,
             turn_shell_tasks,
+            spawned_at_ms,
         )
         .await?;
 
@@ -1214,7 +1243,7 @@ impl EnginePool {
                 engine: engine.clone(),
                 forwarder,
                 runtime_model: prepared,
-                spawned_at_ms: Self::now_epoch_ms(),
+                spawned_at_ms,
                 last_active_epoch_ms: AtomicU64::new(Self::now_epoch_ms()),
             },
         );
@@ -2039,9 +2068,10 @@ impl EnginePool {
         // the drop_through_generation barrier to retire parked steers (a no-op
         // when nothing is parked) with no side effects on the idle token. Only
         // the stop path does this (an interrupt's keepInbox intends to keep
-        // parked steers); even when racing a freshly reserved turn, ⏹ semantics
-        // are "stop all generation for this session", so the directions
-        // agree.
+        // parked steers); if a fresh turn got reserved between the two checks,
+        // `idle_recheck` deliberately skips the re-issue — cancelling a
+        // just-reserved turn here would break its admission contract, and
+        // that turn's own step boundaries settle parked steers normally.
         if !keep_inbox && target.is_none() {
             let still_idle = self
                 .turn_lifecycles
@@ -2261,29 +2291,62 @@ impl EnginePool {
     /// would leave the frontend chip hanging forever. The frontend takes the
     /// Err into its failure-recovery path.
     pub async fn steer(&self, session_id: &str, content: String) -> Result<String> {
-        let engine = require_live_engine_for_steer(self.handle_for(session_id).await, session_id)?;
-        engine.handle.steer(content).await
+        // One atomic entry read: engine handle + its generation. If the pool
+        // rebuilds the engine right after this read, we steer on the OLD
+        // engine and stamp with ITS generation — the pair stays consistent,
+        // which is exactly what the stamp exists for.
+        let entry = self
+            .entries
+            .lock()
+            .await
+            .get(session_id)
+            .map(|e| (e.engine.clone(), e.spawned_at_ms));
+        let (engine, generation) = require_live_engine_for_steer(entry, session_id)?;
+        let raw = engine.handle.steer(content).await?;
+        Ok(stamp_steer_generation(generation, &raw))
     }
 
     /// Withdraw a not-yet-injected steer (the ✕ on a frontend queued chip).
     ///
     /// Foundation semantics: a withdrawn steer_id never enters the transcript;
     /// when the engine meets it at any collection/injection point it skips it
-    /// and emits one `SteerDropped` (idempotent). An already-committed id has
-    /// no side effects and no event — the frontend removes the chip
-    /// optimistically and a late committed can still render the bubble.
+    /// and emits exactly one `SteerDropped` (idempotent). Marks survive across
+    /// turns; `SyncSession`/`Shutdown` clear them. The withdrawal returns an
+    /// explicit outcome (review P1-1 / CodeWhale#30): `"retired"` = the engine
+    /// copy is marked withdrawn and will never inject (the host may safely
+    /// resend the same message through another path); `"not_pending"` =
+    /// committed/settled/unknown (the injection may already be done — the
+    /// host must not resend; it waits for steer_committed to render the
+    /// bubble). An already-committed id has no side effects and no event —
+    /// the frontend removes the chip optimistically and a late committed can
+    /// still render the bubble.
     ///
     /// Engine absent → Err: the message never entered the engine, a purely
     /// local frontend removal suffices and no event needs waiting for.
-    /// Withdraw a not-yet-injected steer and return an explicit outcome
-    /// (review P1-1): `"retired"` = the engine copy is marked withdrawn and
-    /// will never inject (the host may safely resend the same message through
-    /// another path); `"not_pending"` = committed/settled/unknown (the
-    /// injection may already be done — the host must not resend; wait for
-    /// steer_committed to render the bubble).
     pub async fn withdraw_steer(&self, session_id: &str, steer_id: String) -> Result<&'static str> {
-        let engine = require_live_engine_for_steer(self.handle_for(session_id).await, session_id)?;
-        let outcome = engine.handle.withdraw_steer(&steer_id);
+        let entry = self
+            .entries
+            .lock()
+            .await
+            .get(session_id)
+            .map(|e| (e.engine.clone(), e.spawned_at_ms));
+        let (engine, generation) = require_live_engine_for_steer(entry, session_id)?;
+        // Generation check before delegation (the raw-id match below is why):
+        // a stamped id from a previous engine generation must NOT reach the
+        // live engine — the foundation compares raw strings, so the live
+        // engine's unrelated `steer-1` could be retired by a stale chip's
+        // withdrawal. The stale generation's steers died with their engine
+        // (foundation Drop drains, forwarder aborts first): they can never
+        // inject again, but they may have committed before the drop —
+        // `not_pending` ("no proof of delivery") is the honest outcome and
+        // sends the frontend to its reconcile path instead of a resend.
+        // Unstamped (legacy) ids delegate unchanged.
+        let delegated = match parse_steer_generation(&steer_id) {
+            Some((stamped, raw)) if stamped == generation => raw.to_string(),
+            Some(_) => return Ok("not_pending"),
+            None => steer_id,
+        };
+        let outcome = engine.handle.withdraw_steer(&delegated);
         Ok(match outcome {
             deepseek_tui::core::engine::SteerWithdrawal::Retired => "retired",
             deepseek_tui::core::engine::SteerWithdrawal::NotPending => "not_pending",
@@ -3200,6 +3263,40 @@ mod scheduled_model_tests {
             .err()
             .expect("steer without a live engine must fail");
         assert!(format!("{err:#}").contains("no live engine"));
+    }
+
+    #[test]
+    fn steer_id_generation_stamp_parse_round_trip() {
+        // Regression (eighth-review round): foundation steer ids are ordinals
+        // (`steer-{n}`) that reset on engine rebuild. The pool stamps the
+        // engine generation onto ids it returns; parse must recover the exact
+        // pair so withdrawals can be generation-checked.
+        let stamped = super::stamp_steer_generation(1_725_012_345_678, "steer-3");
+        assert_eq!(stamped, "e1725012345678-steer-3");
+        assert_eq!(
+            super::parse_steer_generation(&stamped),
+            Some((1_725_012_345_678, "steer-3"))
+        );
+        // Raw ids with dashes survive the round trip (the first dash splits).
+        assert_eq!(
+            super::parse_steer_generation("e42-e1725012345678-steer-3"),
+            Some((42, "e1725012345678-steer-3"))
+        );
+    }
+
+    #[test]
+    fn unstamped_steer_ids_parse_as_legacy_passthrough() {
+        // Legacy / foreign ids must not be misread as stamped: the pool
+        // delegates them untranslated so an id that happens to look ordinal
+        // still reaches the engine it was minted by.
+        assert_eq!(super::parse_steer_generation("steer-3"), None);
+        assert_eq!(super::parse_steer_generation(""), None);
+        assert_eq!(super::parse_steer_generation("esteer-3"), None);
+        assert_eq!(super::parse_steer_generation("e-nan-steer"), None);
+        assert_eq!(
+            super::parse_steer_generation("e18446744073709551616-x"),
+            None
+        );
     }
 
     #[tokio::test]

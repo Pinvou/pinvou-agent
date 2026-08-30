@@ -7,6 +7,8 @@
 
 use super::*;
 
+use crate::features::assistant::engine_pool::stamp_steer_generation;
+
 fn behavior_task_status(status: TurnOutcomeStatus, error: Option<&str>) -> &'static str {
     match status {
         TurnOutcomeStatus::Completed if error.is_none() => "success",
@@ -47,6 +49,7 @@ pub(crate) fn spawn_event_forwarder(
     turn_lifecycle: Arc<TurnLifecycle>,
     shell_manager: SharedShellManager,
     turn_shell_tasks: TurnShellTaskRegistry,
+    steer_id_generation: u64,
 ) -> tauri::async_runtime::JoinHandle<()> {
     let approve_handle = handle.clone();
     let plan_tracker: Arc<Mutex<TurnPlanTracker>> =
@@ -550,7 +553,13 @@ pub(crate) fn spawn_event_forwarder(
                 // bubble; SteerDropped is only emitted when the engine drops
                 // it. The frontend no longer guesses via
                 // chat:transcript_committed + load_session message counting.
+                // The raw id is stamped with this engine build's steer-id
+                // generation — the same stamp `EnginePool::steer` puts on the
+                // id it returned — because the foundation's ordinal ids reset
+                // on engine rebuild and must stay unambiguous per session
+                // (see stamp_steer_generation in engine_pool.rs).
                 Event::SteerCommitted { steer_id } => {
+                    let steer_id = stamp_steer_generation(steer_id_generation, &steer_id);
                     let payload = json!({
                         "session_id": session_id,
                         "steer_id": steer_id,
@@ -563,6 +572,7 @@ pub(crate) fn spawn_event_forwarder(
                     );
                 }
                 Event::SteerDropped { steer_id } => {
+                    let steer_id = stamp_steer_generation(steer_id_generation, &steer_id);
                     let payload = json!({
                         "session_id": session_id,
                         "steer_id": steer_id,
