@@ -3304,6 +3304,247 @@ async function interruptQueuedRetiredSteerResends() {
   assert.strictEqual(chatCalls[0].args.message, "撤回后重发的一句");
 }
 
+async function zapOnNotBackfilledSteerWaitsThenWithdrawsAndResends() {
+  // Eighth-review MAJOR regression: ⚡ on a chip whose steer_chat invoke is
+  // still in flight must NOT cancel+resend before the engine-side fate is
+  // known — a steer parked by the zap's own keepInbox cancel would commit at
+  // the new turn's first drain and deliver the same message twice (display
+  // dedup does not cover model input). The zap now waits for the settlement,
+  // withdraws with outcome gating, and only then resends.
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-zap-inflight"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-zap-inflight" });
+  await tick();
+  let resolveSteer = null;
+  harness.handlers.steer_chat = function () {
+    return new Promise(function (resolve) { resolveSteer = resolve; });
+  };
+  harness.handlers.withdraw_steer = function () { return "retired"; };
+  harness.handlers.cancel_generation = function () { return { terminal: true, generation: 1 }; };
+  harness.handlers.chat = function () { return "ok"; };
+
+  await bridge.chat.sendMessage("还在途的一句话");
+  await tick();
+  await tick();
+  const queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
+  assert.notStrictEqual(resolveSteer, null, "the steer invoke is in flight (deferred)");
+
+  const zap = bridge.chat.interruptAndSendQueued("chat-zap-inflight", queuedId);
+  await tick();
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "cancel_generation"; }).length,
+    0,
+    "no cancel while the steer invoke is unsettled"
+  );
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
+    0,
+    "no resend while the steer invoke is unsettled"
+  );
+
+  resolveSteer("steer-g1");
+  const result = await zap;
+  await tick();
+  assert.strictEqual(result, true, "zap completes after the gated withdrawal");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "withdraw_steer"; }).length,
+    1,
+    "the zap withdraws the settled steer itself (outcome-gated)"
+  );
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "cancel_generation"; }).length,
+    1,
+    "the interrupt runs after the withdrawal came back retired"
+  );
+  const chatCalls = harness.calls.filter(function (call) { return call.cmd === "chat"; });
+  assert.strictEqual(chatCalls.length, 1, "exactly one resend (no duplicate delivery)");
+  assert.strictEqual(chatCalls[0].args.message, "还在途的一句话");
+}
+
+async function zapOnNotBackfilledSteerNotPendingSkipsResend() {
+  // Companion to the in-flight gate: if the settled steer already committed
+  // (withdraw answers not_pending), the zap must not resend — the message is
+  // already in the engine transcript and the bubble settles from the event.
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-zap-inflight-np"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-zap-inflight-np" });
+  await tick();
+  let resolveSteer = null;
+  harness.handlers.steer_chat = function () {
+    return new Promise(function (resolve) { resolveSteer = resolve; });
+  };
+  harness.handlers.withdraw_steer = function () { return "not_pending"; };
+  harness.handlers.cancel_generation = function () { return { terminal: true, generation: 1 }; };
+  harness.handlers.chat = function () { return "ok"; };
+
+  await bridge.chat.sendMessage("已提交的一句话");
+  await tick();
+  await tick();
+  const queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
+
+  const zap = bridge.chat.interruptAndSendQueued("chat-zap-inflight-np", queuedId);
+  await tick();
+  resolveSteer("steer-g2");
+  const result = await zap;
+  await tick();
+  assert.strictEqual(result, true);
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
+    0,
+    "no resend when the settled steer turns out not_pending"
+  );
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "cancel_generation"; }).length,
+    0,
+    "no interrupt either: the message is already delivered"
+  );
+}
+
+async function zapOnSteerInvokeTimeoutRestoresTextWithoutSend() {
+  // Timeout leg of the in-flight gate: when the steer_chat invoke times out
+  // during a zap, the delivery state is unproven — the text is restored to
+  // the composer with a notice and nothing is sent (never blindly send).
+  const timeouts = [];
+  const harness = createBridgeHarness(null, {
+    setTimeout: function (fn, ms) {
+      timeouts.push({ fn, ms });
+      return timeouts.length;
+    },
+    clearTimeout: function () {},
+  });
+  const bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-zap-inflight-to"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-zap-inflight-to" });
+  await tick();
+  harness.handlers.steer_chat = function () { return new Promise(function () {}); };
+  harness.handlers.chat = function () { return "ok"; };
+
+  await bridge.chat.sendMessage("超时未决的一句话");
+  await tick();
+  await tick();
+  const queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
+
+  const zap = bridge.chat.interruptAndSendQueued("chat-zap-inflight-to", queuedId);
+  await tick();
+  // Fire the steer invoke's 25s transport timeout.
+  timeouts.filter(function (t) { return t.ms === 25000; }).forEach(function (t) { t.fn(); });
+  const result = await zap;
+  await tick();
+  await tick();
+  assert.strictEqual(result, true, "the zap settles without resending");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
+    0,
+    "timeout is not proof of delivery — no blind resend"
+  );
+  assert.strictEqual(
+    bridge.state.getMany(['chat']).composerDraft,
+    "超时未决的一句话",
+    "the text is restored to the composer (message not lost)"
+  );
+  const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.ok(
+    view.chatItems.some(function (item) { return item.type === "system"; }),
+    "an explicit notice replaces the silent drop"
+  );
+}
+
+async function secondZapWhileInterruptInFlightIsRejectedWithNotice() {
+  // Concurrency P2 → entry guard regression: a second ⚡ while one interrupt
+  // is in flight must be rejected before touching the queue — an overlapping
+  // cancel_generation could claim the first zap's freshly started turn, and
+  // flushQueued could slip a chip between the two interrupts.
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-zap-guard"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-zap-guard" });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-h1"; };
+  harness.handlers.withdraw_steer = function () { return "retired"; };
+  let resolveCancel = null;
+  harness.handlers.cancel_generation = function () {
+    return new Promise(function (resolve) { resolveCancel = resolve; });
+  };
+  harness.handlers.chat = function () { return "ok"; };
+
+  await bridge.chat.sendMessage("第一句");
+  await bridge.chat.sendMessage("第二句");
+  await tick();
+  await tick();
+  let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 2, "two chips queued");
+  const firstId = view.queued[0].id;
+  const secondId = view.queued[1].id;
+
+  const firstZap = bridge.chat.interruptAndSendQueued("chat-zap-guard", firstId);
+  await tick();
+  assert.notStrictEqual(resolveCancel, null, "the first zap is parked in its cancel");
+
+  const secondResult = await bridge.chat.interruptAndSendQueued("chat-zap-guard", secondId);
+  assert.strictEqual(secondResult, false, "the overlapping zap is rejected");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "cancel_generation"; }).length,
+    1,
+    "only one cancel_generation is in flight"
+  );
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 1, "the rejected zap leaves its chip queued");
+  assert.strictEqual(view.queued[0].id, secondId, "the surviving chip is the second one");
+  assert.ok(
+    view.chatItems.some(function (item) { return item.type === "system"; }),
+    "the rejection is surfaced as a notice, not silence"
+  );
+
+  resolveCancel({ terminal: true, generation: 1 });
+  assert.strictEqual(await firstZap, true, "the first zap completes normally");
+}
+
+async function steerFailureNoticeSuppressedWhenChipTakenByX() {
+  // Eighth-review MINOR regression: onSteerFailure's notice claimed "your
+  // text was restored to the input" even when the chip had already been
+  // taken by ×/⚡ (text deliberately discarded / owned by the zap) — the
+  // notice must only fire while this callback still owns the chip.
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-steer-notice"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-steer-notice" });
+  await tick();
+  let rejectSteer = null;
+  harness.handlers.steer_chat = function () {
+    return new Promise(function (_resolve, reject) { rejectSteer = reject; });
+  };
+
+  await bridge.chat.sendMessage("将被撤销的一句");
+  await tick();
+  await tick();
+  const queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
+  bridge.chat.removeQueued(queuedId);
+  await tick();
+  rejectSteer(new Error("engine gone"));
+  await tick();
+  await tick();
+  let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(
+    view.chatItems.filter(function (item) { return item.type === "system"; }).length,
+    0,
+    "no false 'text restored' notice after a deliberate × removal"
+  );
+
+  // Control: the same failure while the chip is untouched does notify.
+  await bridge.chat.sendMessage("正常失败的一句");
+  await tick();
+  rejectSteer(new Error("engine gone"));
+  await tick();
+  await tick();
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.ok(
+    view.chatItems.some(function (item) { return item.type === "system"; }),
+    "the notice still fires when the callback owns the chip"
+  );
+}
+
 async function transcriptFallbackTailScanTerminatesWithoutEnoughUserTail() {
   // P0 infinite-loop regression (sixth review round): the legacy fallback
   // (chat-events.js transcript_committed) tail-scan loop used i++ (should be
@@ -7549,6 +7790,11 @@ Promise.resolve()
   .then(interruptQueuedNotPendingExpiryRestoresInput)
   .then(interruptQueuedNotPendingDroppedSettlesAsRestore)
   .then(interruptQueuedRetiredSteerResends)
+  .then(zapOnNotBackfilledSteerWaitsThenWithdrawsAndResends)
+  .then(zapOnNotBackfilledSteerNotPendingSkipsResend)
+  .then(zapOnSteerInvokeTimeoutRestoresTextWithoutSend)
+  .then(secondZapWhileInterruptInFlightIsRejectedWithNotice)
+  .then(steerFailureNoticeSuppressedWhenChipTakenByX)
   .then(transcriptFallbackTailScanTerminatesWithoutEnoughUserTail)
   .then(steerDroppedByEngineRestoresDraftText)
   .then(steerSettleWatchdogNotPendingRemovesChipWithoutResend)

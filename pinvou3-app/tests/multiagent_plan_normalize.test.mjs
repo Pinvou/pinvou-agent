@@ -432,8 +432,8 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     poolSource,
-    /spawned_at_ms: Self::now_epoch_ms\(\)/,
-    '引擎必须记录纪元时间戳，供 transcripts 甄别上一进程的僵尸 worker',
+    /let spawned_at_ms = Self::now_epoch_ms\(\);[\s\S]{0,2400}spawned_at_ms,/,
+    '引擎必须记录纪元时间戳，供 transcripts 甄别上一进程的僵尸 worker（spawn 时一次计算，entry 与 steer-id 代数戳共用）',
   );
   const transcriptsSource = read('src-tauri', 'src', 'features', 'multiagent', 'transcripts.rs');
   assert.match(

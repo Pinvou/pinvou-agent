@@ -477,7 +477,11 @@
     queuedItem.steerId = steerId || null;
     if (!queuedItem.steerId) return;
     if (queuedItem.cancelled) {
-      withdrawSteerChip(sid, queuedItem);
+      // ⚡-gated chips: the zap path withdraws itself with outcome gating once
+      // the invoke settles (see runQueuedZap) — a fire-and-forget withdrawal
+      // here would race it and turn the gated outcome into a false
+      // not_pending (the second withdraw answers not_pending by idempotency).
+      if (!queuedItem.zapGate) withdrawSteerChip(sid, queuedItem);
       return;
     }
     settlePendingSteerEvent(sid, queuedItem);
@@ -532,12 +536,16 @@
       queuedItem.steered = false;
       queuedItem.steerId = null;
     }
-    // Route the notice by sid: a steer can take up to 25s to settle and the
-    // user may have switched sessions — an unconditional addSystemItem would
-    // write the warning into the currently active session's timeline.
-    runSyncOnSession(sid, function () {
-      addSystemItem("⚠️ " + bt("steerFailed"));
-    });
+    // Route the notice by sid, and only when this callback still owns the
+    // chip: a ×/⚡ takeover owns the recovery from here on (the chip is no
+    // longer in the queue), so "your text was restored to the input" would be
+    // false — the text was deliberately discarded (×) or is being re-sent by
+    // the zap's own gated path.
+    if (failureIndex >= 0) {
+      runSyncOnSession(sid, function () {
+        addSystemItem("⚠️ " + bt("steerFailed"));
+      });
+    }
     notify();
     // The turn may have ended inside the 25s wait window: its chat:done flush
     // was yielded by the then-steered queue head (flushQueued's q[0].steered
@@ -697,10 +705,23 @@
         notify();
         // Backfill/failure recovery are extracted into module-level functions
         // (explicit parameters), also keeping sendMessage's cognitive
-        // complexity under the lint threshold.
-        steer(sid, steerText)
-          .then(function (steerId) { onSteerBackfill(queuedItem, sid, steerId); })
-          .catch(function (err) { onSteerFailure(queuedItem, sid, steerPreparation, steerInputText, err); });
+        // complexity under the lint threshold. The settlement handle doubles
+        // as the ⚡ gate (see runQueuedZap): a zap on a not-yet-backfilled
+        // chip must await the engine-side fate before resending. The handle
+        // never rejects and is bounded by steer()'s own 25s timeout.
+        queuedItem.steerSettlement = steer(sid, steerText).then(
+          function (steerId) {
+            onSteerBackfill(queuedItem, sid, steerId);
+            return { ok: true, steerId: steerId == null ? null : String(steerId) };
+          },
+          function (err) {
+            onSteerFailure(queuedItem, sid, steerPreparation, steerInputText, err);
+            return {
+              ok: false,
+              timedOut: String(err && err.message) === "steer_chat timed out",
+            };
+          }
+        );
       }
     };
 
@@ -918,10 +939,12 @@
   }
 
   // Mid-turn inject channel (thin wrapper over the steer_chat command).
-  // steer_id contract: steer_chat resolves with an opaque steer_id (e.g.
-  // "steer-3") on success and rejects when the session does not exist or the
-  // engine is not running. Plain sends while busy go through here (see
-  // sendMessage); remote control and other hosts may use it too.
+  // steer_id contract: steer_chat resolves with an opaque steer_id (the pool
+  // stamps the engine generation onto the foundation's ordinal id, e.g.
+  // "e173…-steer-3", so ids stay unambiguous across engine rebuilds) on
+  // success and rejects when the session does not exist or the engine is not
+  // running. Plain sends while busy go through here (see sendMessage);
+  // remote control and other hosts may use it too.
   async function steer(sid, content) {
     safeConsoleInfo("[pinvou3][chat-ui] steer start", { sid, len: (content || "").length });
     // The invoke has no transport timeout: a stuck engine (alive, not
@@ -955,7 +978,7 @@
       rememberWithdrawn(sid, String(lateId), String(content || ""));
       invoke("withdraw_steer", { sessionId: sid, steerId: String(lateId) })
         .catch(function () { /* engine absent = will never inject */ });
-    });
+    }).catch(function () { /* the rejection is handled by the race/failure path below */ });
     try {
       steerId = await Promise.race([invokePromise, timeout]);
     } finally {
@@ -1464,6 +1487,39 @@
     });
   }
 
+  // Withdraw an engine-side steer with a bounded outcome await (25s transport
+  // timeout, aligned with steer/cancel). The withdrawn registration happens
+  // BEFORE the await so a late committed renders the bubble through it.
+  // Outcomes (foundation contract / JensenChen28 review #2):
+  //   "retired" (resolve) = the engine copy is marked withdrawn and will
+  //     never inject — the caller may safely resend;
+  //   "not_pending" (resolve) = already committed/settled — never resend;
+  //   "withdraw_timeout" = unresolved, proves nothing either way — the caller
+  //     must not resend and defers to its reconcile path;
+  //   invoke rejection (engine absent) maps to "retired": the message never
+  //     entered the engine (or was destroyed with the reclaim) — resend.
+  async function withdrawSteerOutcome(sid, steerId, text) {
+    clearSteerSettleWatchdog(sid, steerId);
+    rememberWithdrawn(sid, steerId, text);
+    const withdrawPromise = invoke("withdraw_steer", { sessionId: sid, steerId });
+    withdrawPromise.catch(function () { /* late rejection after the race settled is expected */ });
+    let withdrawTimerId = null;
+    let withdrawTimedOut = false;
+    const withdrawTimeout = new Promise(function (_, reject) {
+      withdrawTimerId = setTimeout(function () {
+        withdrawTimedOut = true;
+        reject(new Error("withdraw_steer timed out"));
+      }, STEER_INVOKE_TIMEOUT_MS);
+    });
+    try {
+      return await Promise.race([withdrawPromise, withdrawTimeout]);
+    } catch {
+      return withdrawTimedOut ? "withdraw_timeout" : "retired";
+    } finally {
+      clearTimeout(withdrawTimerId);
+    }
+  }
+
   async function interruptAndSend(sid, text, displayText, attachments, meta, restrictTools) {
     safeConsoleInfo("[pinvou3][chat-ui] interrupt-and-send start", { sid });
     interruptInFlight[sid] = true;
@@ -1588,7 +1644,33 @@
   // it at the next drain; keeping steered would make flushQueued yield and
   // the next round would never come (queue deadlock). Engine-side leftovers
   // are bubbled by a late steer_committed, dedup already handled.
+  // ⚡ entry, per-sid single-flight (concurrency P2 → entry guard): two
+  // overlapping zaps let the second cancel_generation claim the FIRST zap's
+  // freshly started turn (the cancel target is snapshotted at command
+  // execution) and let flushQueued slip a queued chip between the two
+  // interrupts. Reject the second zap with an explicit notice BEFORE it
+  // touches the queue; retrying is the user's call. The try/finally brackets
+  // the whole zap — including the withdraw-outcome window that precedes the
+  // interruptAndSend call, which previously ran unlocked. interruptAndSend
+  // keeps its own flag section (it is also a public API for remote hosts,
+  // which are expected to serialize their own calls).
   async function interruptAndSendQueued(sid, queuedId) {
+    if (interruptInFlight[sid]) {
+      runSyncOnSession(sid, function () {
+        addSystemItem("⚠️ " + bt("interruptBusy"));
+      });
+      notify();
+      return false;
+    }
+    interruptInFlight[sid] = true;
+    try {
+      return await runQueuedZap(sid, queuedId);
+    } finally {
+      interruptInFlight[sid] = false;
+    }
+  }
+
+  async function runQueuedZap(sid, queuedId) {
     const q = steeredQueueFor(sid);
     if (!q) return false;
     let index = -1;
@@ -1599,45 +1681,48 @@
     const item = q[index];
     q.splice(index, 1);
     let skipResend = false;
+    let steerSettlement = null;
     if (item.steered && item.steerId && sid) {
-      clearSteerSettleWatchdog(sid, item.steerId);
-      rememberWithdrawn(sid, item.steerId, item.text);
-      let outcome;
-      // 25s transport timeout (self-review P1-2 / re-review #2): a wedged
-      // engine would hang the zap forever on a bare await — the chip is
-      // already out of the queue and the message silently undeliverable.
-      // Timeout ≠ retired (JensenChen28 review #2): an unresolved withdrawal
-      // proves nothing — the steer may already be committed while only the
-      // response path is wedged, so proceeding to cancel+resend could send
-      // the same instruction twice. The timeout skips the resend and defers
-      // to the reconcile watchdog below (committed → bubble; dropped →
-      // silent; nothing → restore the text after 60s).
-      // Err (engine absent) = the message never entered the engine (or was
-      // destroyed with the reclaim) — resend normally.
-      const withdrawPromise = invoke("withdraw_steer", { sessionId: sid, steerId: item.steerId });
-      withdrawPromise.catch(function () { /* late rejection after the race settled is expected */ });
-      let withdrawTimerId = null;
-      let withdrawTimedOut = false;
-      const withdrawTimeout = new Promise(function (_, reject) {
-        withdrawTimerId = setTimeout(function () {
-          withdrawTimedOut = true;
-          reject(new Error("withdraw_steer timed out"));
-        }, STEER_INVOKE_TIMEOUT_MS);
-      });
-      try {
-        outcome = await Promise.race([withdrawPromise, withdrawTimeout]);
-      } catch {
-        outcome = withdrawTimedOut ? "withdraw_timeout" : "retired";
-      } finally {
-        clearTimeout(withdrawTimerId);
-      }
+      const outcome = await withdrawSteerOutcome(sid, item.steerId, item.text);
       skipResend = outcome === "not_pending" || outcome === "withdraw_timeout";
-    } else {
-      // steerId not backfilled (invoke in flight) or not steered: set the
-      // cancelled flag; the backfill callback fires the withdrawal.
-      withdrawSteerChip(sid, item);
+    } else if (item.steered && sid) {
+      // steerId not backfilled (steer_chat invoke in flight): the engine may
+      // already hold the steer, and a copy parked by this zap's own keepInbox
+      // cancel would commit at the new turn's first drain — resending before
+      // the engine-side fate is known can deliver the same message twice
+      // (display dedup does not cover model input). Gate the resend on the
+      // invoke's settlement (bounded by steer()'s own 25s timeout; normally
+      // milliseconds):
+      //   resolves with an id → withdraw with outcome gating, same rules as
+      //     the backfilled branch above;
+      //   deterministic rejection (engine/session gone) → nothing entered
+      //     the engine, resend normally;
+      //   transport timeout → delivery state unproven — never blindly send;
+      //     restore the text to the composer (steer()'s late-success
+      //     compensating withdrawal covers the registered-late case).
+      withdrawSteerChip(sid, item); // marks cancelled for the backfill path
+      item.zapGate = true; // backfill must not fire its own withdrawal (see onSteerBackfill)
+      steerSettlement = item.steerSettlement || null;
     }
     notify();
+    if (steerSettlement) {
+      const settled = await steerSettlement;
+      if (settled && settled.ok && settled.steerId && sid) {
+        item.steerId = settled.steerId;
+        const outcome = await withdrawSteerOutcome(sid, settled.steerId, item.text);
+        skipResend = outcome === "not_pending" || outcome === "withdraw_timeout";
+      } else if (settled && !settled.ok && settled.timedOut) {
+        runSyncOnSession(sid, function () {
+          addSystemItem("⚠️ " + bt("steerFailed"));
+        });
+        restoreSteerText(sid, item.text);
+        notify();
+        return true;
+      }
+      // settled.ok && !settled.steerId (legacy backend, no engine-side
+      // identity): nothing withdrawable — fall through and resend; display
+      // settlement relies on the transcript-counting fallback.
+    }
     if (skipResend) {
       // Already injected (not_pending) or withdrawal unresolved (timeout) —
       // do not resend either way. A committed stashed before the backfill
