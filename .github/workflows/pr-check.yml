@@ -960,11 +960,16 @@ jobs:
           kill "$guard_pid" 2>/dev/null || true
           exit "$status"
 
-  # 诊断 job(本分支专用,勿合入 main)。v4 已证:暖 restore 树链接的二进制 A 与
-  # 全冷编译二进制 B 内容无罪(同 VM 直跑 1729 测试双侧全绿),致死因子不在产物
-  # 内容。v5 聚焦「执行腿二次编译」:暖树 + cargo 二次调用会莫名重编根 crate
-  # ~1m47s,rust-test 最新一次死亡正发生在该 codegen 中途。A/B/C 三步用
-  # CARGO_LOG fingerprint trace 抓 cargo 判定 dirty 的具体原因。
+  # 诊断 job(本分支专用,勿合入 main)。已排除:二进制内容(v4 双侧全绿)、
+  # 二次编译本身(v5 暖树连续两次重编存活;且 5e04c415 的 rust-test 在
+  # settle=FRESH 后仍在执行腿启动 ~20s 内死亡——fresh 暖树 + 执行腿上下文 = 死)。
+  # 存活侧与死亡侧的判别变量收敛为「执行腿上下文」:memguard / CHROME+
+  # REQUIRE_E2E env / npm e2e 依赖(puppeteer-core) / cargo 作为父进程跑测试。
+  # v6 = 在探针 job 内逐相复刻 rust-test 执行腿,相位标记写 ab.log 经遥测
+  # PATCH 留证,死在哪个相位即定位到哪个变量:
+  #   P0 settle(吸收 fingerprint 竞争,与 rust-test 编译腿一致)
+  #   P1 无 memguard,cargo test 全量执行(判 cargo-exec/npm 上下文)
+  #   P2 有 memguard,cargo test 全量执行(判 memguard×暖树交互)
   rust-test-ab-probe:
     name: rust-test-ab-probe
     if: ${{ github.event_name != 'push' }}
@@ -1016,9 +1021,18 @@ jobs:
         working-directory: pinvou3-app/src-tauri
         run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
 
-      - name: Node.js + relay/浏览器 e2e 依赖(与 rust-test 一致)
-        run: |
-          echo skip  # 探针不跑真 e2e;死亡发生在二进制启动期,与 e2e 资源无关
+      - name: Node.js (relay e2e,与 rust-test 一致)
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: remote-control-relay/package-lock.json
+
+      - name: relay 依赖 (与 rust-test 一致)
+        run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
+
+      - name: 浏览器驱动依赖 (与 rust-test 一致)
+        run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
 
       - name: Cargo cache (restore 致死的 v2 暖 cache)
         uses: Swatinem/rust-cache@v2
@@ -1027,44 +1041,58 @@ jobs:
           shared-key: rust-test-v2
           save-if: false
 
-      # v5:定性「执行腿二次编译」。编译腿 --no-run 已完整链接测试二进制,执行腿
-      # 同一 VM 同一 cargo 命令仍重编根 crate ~1m47s;rust-test 最新一次死亡就发生
-      # 在该二次 codegen 中途(遥测最后 PATCH:rustc=1452MB,内存/磁盘/负载全程健康)。
-      # v4 已证暖/冷二进制内容无罪(两侧直跑 1729 测试全绿),嫌疑收敛到
-      # 「暖 restore 树 + cargo 二次调用重编」这个操作本身。
-      # 本探针:A 复刻编译腿;B 同一命令加 CARGO_LOG fingerprint trace,把 dirty
-      # 判定原因直接打 stdout(不写 /tmp,VM 死亡不丢);C 第三次调用验证 dirty
-      # 是 perpetual 还是一次性。
-      - name: A) 暖 restore 树首次编译(复刻 rust-test 编译腿)
+      - name: P0) 编译 + settle 至 FRESH(复刻 rust-test 编译腿,含 memguard)
         run: |
+          mkdir -p /tmp/ci-observe
           bash scripts/ci-live-telemetry.sh &
+          bash scripts/ci-memguard.sh &
+          guard_pid=$!
           /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1 | tail -5
+          for i in 1 2 3; do
+            out=$(cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
+            echo "$out" | tail -3
+            if echo "$out" | grep -q 'Compiling pinvou3-tauri'; then
+              echo "v6 settle pass $i: recompiled" | tee -a /tmp/ci-observe/ab.log
+            else
+              echo "v6 settle pass $i: FRESH" | tee -a /tmp/ci-observe/ab.log
+              break
+            fi
+          done
+          kill "$guard_pid" 2>/dev/null || true
 
-      - name: B) 第二次同命令调用 + fingerprint trace 抓 dirty 原因
+      - name: P1) 执行腿复刻(无 memguard):cargo test 全量执行
         run: |
           bash scripts/ci-live-telemetry.sh &
+          chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          export CHROME="$chrome"
+          export PINVOU_REQUIRE_REMOTE_E2E=1
+          echo "v6 P1 start (no memguard) $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
+          pre=$(cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
+          echo "$pre" | tail -2
+          echo "$pre" | grep -q 'Compiling pinvou3-tauri' \
+            && echo "v6 P1 tree: DIRTY" | tee -a /tmp/ci-observe/ab.log \
+            || echo "v6 P1 tree: FRESH" | tee -a /tmp/ci-observe/ab.log
           set +e
-          CARGO_LOG=cargo::core::compiler::fingerprint=trace \
-            cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run > /tmp/fp2.log 2>&1
-          echo "exit=$?"
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | python3 scripts/ci-tee-unbuffered.py
+          s=${PIPESTATUS[0]}
           set -e
-          echo "=== fingerprint dirty/stale 判定(前 120 行) ==="
-          grep -iE 'dirty|stale' /tmp/fp2.log | head -120 || true
-          echo "=== 本次实际编译/链接的单元 ==="
-          grep -E 'Compiling|Finished|Linking|error\[|error:' /tmp/fp2.log | tail -40 || true
+          echo "v6 P1 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
 
-      - name: C) 第三次调用:验证 dirty 是否 perpetual
+      - name: P2) 执行腿复刻(有 memguard):cargo test 全量执行
         run: |
           bash scripts/ci-live-telemetry.sh &
+          bash scripts/ci-memguard.sh &
+          guard_pid=$!
+          chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          export CHROME="$chrome"
+          export PINVOU_REQUIRE_REMOTE_E2E=1
+          echo "v6 P2 start (with memguard) $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
           set +e
-          CARGO_LOG=cargo::core::compiler::fingerprint=trace \
-            cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run > /tmp/fp3.log 2>&1
-          echo "exit=$?"
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | python3 scripts/ci-tee-unbuffered.py
+          s=${PIPESTATUS[0]}
           set -e
-          echo "=== fingerprint dirty/stale 判定(前 120 行) ==="
-          grep -iE 'dirty|stale' /tmp/fp3.log | head -120 || true
-          echo "=== 本次实际编译/链接的单元 ==="
-          grep -E 'Compiling|Finished|Linking|error\[|error:' /tmp/fp3.log | tail -40 || true
+          kill "$guard_pid" 2>/dev/null || true
+          echo "v6 P2 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
 
   windows-rust-test:
     name: windows-rust-test
