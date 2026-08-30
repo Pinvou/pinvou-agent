@@ -413,6 +413,23 @@ async function expand(page) {
       .filter(call => call.cmd === 'browser_show_native_surface').length >= 2);
     const generationRecovered = window.__TAURI_INVOKES__
       .filter(call => call.cmd === 'browser_show_native_surface').length >= 2;
+    // Opening the browser collapses the app sidebar with a transition. Let both
+    // the narrow layout and the legacy-width ratio migration settle before
+    // measuring drag geometry; otherwise a ResizeObserver render can race the
+    // synthetic pointer sequence and discard the transient panel width.
+    await window.__uiWait__(() =>
+      (document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width || 0) < 100
+      && (document.querySelector('[data-testid="chat-composer-wrap"]')?.getBoundingClientRect().width || 0) > 300);
+    await window.__uiStable__(() => {
+      const host = document.querySelector('[data-testid="right-dock-host"]');
+      return host ? [
+        host.getBoundingClientRect().width,
+        host.parentElement?.getBoundingClientRect().width || 0,
+        host.dataset.preferredRatio,
+        localStorage.getItem('pinvou_right_dock_ratio'),
+        host.querySelector('[role="separator"]')?.getBoundingClientRect().left,
+      ] : null;
+    });
     const separator = dockHost?.querySelector('[role="separator"]');
     const widthBeforeResize = dockHost?.getBoundingClientRect().width || 0;
     const migratedRatio = Number.parseFloat(localStorage.getItem('pinvou_right_dock_ratio') || '0');
