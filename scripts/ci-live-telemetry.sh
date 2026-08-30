@@ -28,6 +28,15 @@ CARGO_LOG="$OBSERVE_DIR/cargo.log"
 
 mkdir -p "$OBSERVE_DIR"
 
+# 机器身份(失联后日志被删,只能靠 PATCH 留证):runner 镜像版本/内核/boot_id。
+# 用于判别死亡是否与特定 runner 镜像 rollout 相关。
+{
+  echo "ImageOS=${ImageOS:-?} ImageVersion=${ImageVersion:-?}"
+  echo "uname: $(uname -a)"
+  echo "boot_id: $(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
+  echo "nproc: $(nproc) MemTotal: $(awk '/MemTotal/ {print int($2/1024)"MB"}' /proc/meminfo)"
+} > "$OBSERVE_DIR/machine.log"
+
 # 幂等:探针 job 跨 step 重复启动时只保留一个实例(每个实例会新建 Check Run)。
 if [ -f "$OBSERVE_DIR/telemetry.pid" ] && kill -0 "$(cat "$OBSERVE_DIR/telemetry.pid")" 2>/dev/null; then
   exit 0
@@ -80,6 +89,8 @@ check_id=$(gh api "repos/$GITHUB_REPOSITORY/check-runs" \
 while :; do
   last_mem=$(tail -1 "$MEM_LOG" 2>/dev/null)
   summary="$(date -u +%H:%M:%S) PATCH
+--- machine ---
+$(cat "$OBSERVE_DIR/machine.log" 2>/dev/null)
 --- 1s sampler (last 12) ---
 $(tail -12 "$MEM_LOG" 2>/dev/null)
 --- cargo tail ---

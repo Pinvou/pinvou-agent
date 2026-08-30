@@ -876,7 +876,7 @@ jobs:
           mkdir -p /tmp/ci-observe
           for i in 1 2 3; do
             [ "$status" -ne 0 ] && break
-            out=$(cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
+            out=$(CARGO_TERM_COLOR=never cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
             echo "$out" | tail -3
             if echo "$out" | grep -q 'Compiling pinvou3-tauri'; then
               echo "settle pass $i: root crate recompiled" >> /tmp/ci-observe/ab.log
@@ -909,7 +909,7 @@ jobs:
           # 根 crate(死亡历史 100% 发生在这种调用内);若 fresh 则直接进入测试。
           # 判定结果经遥测 PATCH 留证,VM 死亡后仍可读。
           mkdir -p /tmp/ci-observe
-          pre=$(cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
+          pre=$(CARGO_TERM_COLOR=never cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
           echo "$pre" | tail -3
           if echo "$pre" | grep -q 'Compiling pinvou3-tauri'; then
             echo "exec-leg: DIRTY (recompiled before tests)" >> /tmp/ci-observe/ab.log
@@ -1032,7 +1032,7 @@ jobs:
           guard_pid=$!
           /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1 | tail -5
           for i in 1 2 3; do
-            out=$(cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
+            out=$(CARGO_TERM_COLOR=never cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
             echo "$out" | tail -3
             if echo "$out" | grep -q 'Compiling pinvou3-tauri'; then
               echo "v6 settle pass $i: recompiled" | tee -a /tmp/ci-observe/ab.log
@@ -1050,7 +1050,7 @@ jobs:
           export CHROME="$chrome"
           export PINVOU_REQUIRE_REMOTE_E2E=1
           echo "v6 P1 start (no memguard) $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
-          pre=$(cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
+          pre=$(CARGO_TERM_COLOR=never cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
           echo "$pre" | tail -2
           echo "$pre" | grep -q 'Compiling pinvou3-tauri' \
             && echo "v6 P1 tree: DIRTY" | tee -a /tmp/ci-observe/ab.log \
@@ -1077,14 +1077,16 @@ jobs:
           kill "$guard_pid" 2>/dev/null || true
           echo "v6 P2 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
 
-  # v7 对照臂:保留旧探针 id/name,步骤逐字节复刻 rust-test 双腿
-  # (time -v 无管道编译腿 + settle;memguard+遥测+断言+tee 执行腿;
-  # token 仅 step 级注入,与被停用的 rust-test-disabled 一致)。
+  # v11 对照臂:与 rust-test 臂逐字节一致(P0/P1/P2、job 级 token、apt strace、
+  # needs/timeout 全同),仅 job id/name 与 YAML 定义序不同。
+  #   死 → 致死因子不在步骤字节,而在 name/id/定义序/VM 分配 → 转向调度与镜像取证。
+  #   活 → 保护字节在 P0P1P2 集合内 → 逐项剥离(P2、strace、token 层级、P0 遥测)定位。
   rust-test-ab-probe:
     name: rust-test-ab-probe
+    needs: changes
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       contents: read
       checks: write
@@ -1093,6 +1095,10 @@ jobs:
       CARGO_PROFILE_DEV_LTO: "thin"
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1"
       CARGO_PROFILE_DEV_DEBUG: "0"
+      # job 级注入:ci-live-telemetry.sh 需要 GITHUB_TOKEN 创建/PATCH 临时
+      # Check Run;v4 只在 step A 注入导致 B/C/D/E 遥测静默失败(已实证)。
+      TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -1102,7 +1108,7 @@ jobs:
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- CodeWhale
 
-      - name: 装系统依赖(与 rust-test 一致,含 time)
+      - name: 装系统依赖(与 rust-test 一致 + strace)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -1110,8 +1116,7 @@ jobs:
             librsvg2-dev libssl-dev \
             libx11-dev libxi-dev libxtst-dev \
             libayatana-appindicator3-dev \
-            build-essential pkg-config cmake lld \
-            time
+            build-essential pkg-config cmake lld strace
 
       - name: bge-m3 占位 (与 rust-test 一致)
         run: |
@@ -1148,64 +1153,58 @@ jobs:
           shared-key: rust-test-v2
           save-if: false
 
-      - name: 编译腿 v10(单变量:stdout 接 tail 管道 + memguard + settle)
-        # v10 单变量:相对 v9 死亡形状只把编译腿输出从「重定向到文件」改为
-        # 「接 tail -5 管道」(与全部存活臂一致)。v9 已证「输出不进 runner
-        # stdout」不足以保命(落盘照死),故若本臂存活,保护因子是管道本身
-        # 而非输出内容/体量。剩余共变因子只剩执行腿遥测循环与 P2 第二轮测试。
+      - name: P0) 编译 + settle 至 FRESH(复刻 rust-test 编译腿,含 memguard)
         run: |
           mkdir -p /tmp/ci-observe
+          bash scripts/ci-live-telemetry.sh &
           bash scripts/ci-memguard.sh &
           guard_pid=$!
-          set +e
           /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1 | tail -5
-          status=${PIPESTATUS[0]}
-          set -e
           for i in 1 2 3; do
-            [ "$status" -ne 0 ] && break
-            out=$(cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
+            out=$(CARGO_TERM_COLOR=never cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
             echo "$out" | tail -3
             if echo "$out" | grep -q 'Compiling pinvou3-tauri'; then
-              echo "clone settle pass $i: recompiled" | tee -a /tmp/ci-observe/ab.log
+              echo "v6 settle pass $i: recompiled" | tee -a /tmp/ci-observe/ab.log
             else
-              echo "clone settle pass $i: FRESH" | tee -a /tmp/ci-observe/ab.log
+              echo "v6 settle pass $i: FRESH" | tee -a /tmp/ci-observe/ab.log
               break
             fi
           done
           kill "$guard_pid" 2>/dev/null || true
-          exit "$status"
 
-      - name: 执行腿复刻 v8(无 memguard + 遥测 + 断言 + tee)
-        # v8 单变量:去掉执行腿的 memguard(编译腿保留)。v7 已证 job 元数据
-        # 无辜(探针步骤顶着 rust-test 名字存活)、致死因子在步骤字节内;
-        # 全部死亡的唯一公共字节是「首次 cargo test 执行时 memguard 在场」
-        # (main 无遥测也死 → 遥测不是必要件;v6 P2 memguard+第二次执行存活)。
-        # 本臂存活 → 执行腿 memguard × 暖树 = 致死必要件,修复=去掉它
-        # (memguard 全程从未触发,avail 从没低于 12GB,实证无用)。
-        env:
-          TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: P1) 执行腿复刻(无 memguard):cargo test 全量执行
         run: |
+          bash scripts/ci-live-telemetry.sh &
           chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           export CHROME="$chrome"
           export PINVOU_REQUIRE_REMOTE_E2E=1
-          bash scripts/ci-live-telemetry.sh &
-          tele_pid=$!
-          mkdir -p /tmp/ci-observe
-          echo "v8 exec-leg: NO memguard $(date -u +%T)" >> /tmp/ci-observe/ab.log
-          pre=$(cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
-          echo "$pre" | tail -3
-          if echo "$pre" | grep -q 'Compiling pinvou3-tauri'; then
-            echo "clone exec-leg: DIRTY" >> /tmp/ci-observe/ab.log
-          else
-            echo "clone exec-leg: FRESH" >> /tmp/ci-observe/ab.log
-          fi
+          echo "v6 P1 start (no memguard) $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
+          pre=$(CARGO_TERM_COLOR=never cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
+          echo "$pre" | tail -2
+          echo "$pre" | grep -q 'Compiling pinvou3-tauri' \
+            && echo "v6 P1 tree: DIRTY" | tee -a /tmp/ci-observe/ab.log \
+            || echo "v6 P1 tree: FRESH" | tee -a /tmp/ci-observe/ab.log
           set +e
           cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | python3 scripts/ci-tee-unbuffered.py
-          status=${PIPESTATUS[0]}
+          s=${PIPESTATUS[0]}
           set -e
-          kill "$tele_pid" 2>/dev/null || true
-          exit "$status"
+          echo "v6 P1 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
+
+      - name: P2) 执行腿复刻(有 memguard):cargo test 全量执行
+        run: |
+          bash scripts/ci-live-telemetry.sh &
+          bash scripts/ci-memguard.sh &
+          guard_pid=$!
+          chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          export CHROME="$chrome"
+          export PINVOU_REQUIRE_REMOTE_E2E=1
+          echo "v6 P2 start (with memguard) $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
+          set +e
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | python3 scripts/ci-tee-unbuffered.py
+          s=${PIPESTATUS[0]}
+          set -e
+          kill "$guard_pid" 2>/dev/null || true
+          echo "v6 P2 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
 
   windows-rust-test:
     name: windows-rust-test
