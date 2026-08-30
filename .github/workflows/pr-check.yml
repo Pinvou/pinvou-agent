@@ -1208,10 +1208,10 @@ jobs:
           kill "$guard_pid" 2>/dev/null || true
           echo "v6 P2 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
 
-  # v16 组合臂 1:P0 遥测行替换为「一次 POST + 每秒两次 ps 遍历」(内联,无文件写)。
-  #   活→POST×ps 组合充分;死→POST 与 ps 的组合不够,文件写/其它读是必要件。
-  probe-pspost:
-    name: probe-pspost
+  # v17 修复导向臂 1:完整 sampler+dmesg,零网络(NO_POST)。活→main 修复可以
+  #   是纯本地 1s 采样循环,不需要任何 GitHub 写入;死→POST 也是必要件之一。
+  probe-localonly:
+    name: probe-localonly
     needs: changes
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
@@ -1228,7 +1228,8 @@ jobs:
       # Check Run;v4 只在 step A 注入导致 B/C/D/E 遥测静默失败(已实证)。
       TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TELEMETRY_CHECK_NAME: tele-pspost
+      TELEMETRY_CHECK_NAME: tele-localonly
+      TELEMETRY_NO_POST: "1"
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -1286,7 +1287,7 @@ jobs:
       - name: P0) 编译 + settle 至 FRESH(复刻 rust-test 编译腿,含 memguard)
         run: |
           mkdir -p /tmp/ci-observe
-          ( gh api "repos/$GITHUB_REPOSITORY/check-runs" -X POST -f name=tele-pspost -f head_sha="$TELEMETRY_SHA" -f status=in_progress >/dev/null 2>&1; while :; do ps -eL --no-headers 2>/dev/null | wc -l >/dev/null; ps -eo rss=,comm= --sort=-rss 2>/dev/null | head -3 >/dev/null; sleep 1; done ) &
+          bash scripts/ci-live-telemetry.sh &
           bash scripts/ci-memguard.sh &
           guard_pid=$!
           /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1 | tail -5
@@ -1337,10 +1338,9 @@ jobs:
           echo "v6 P2 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
 
 
-  # v16 组合臂 2:P0 遥测行替换为「每秒 ps 遍历 + date + 追加写文件」(无 POST)。
-  #   活→ps×文件写组合充分,POST 无关;死→文件写不补 ps,POST 或脚本上下文必要。
-  probe-psfile:
-    name: probe-psfile
+  # v17 细分臂 2:完整脚本减每秒 date fork。死→date 在必要件集合内。
+  probe-nodate:
+    name: probe-nodate
     needs: changes
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
@@ -1357,7 +1357,8 @@ jobs:
       # Check Run;v4 只在 step A 注入导致 B/C/D/E 遥测静默失败(已实证)。
       TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TELEMETRY_CHECK_NAME: tele-psfile
+      TELEMETRY_CHECK_NAME: tele-nodate
+      TELEMETRY_NO_DATE: "1"
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -1415,7 +1416,7 @@ jobs:
       - name: P0) 编译 + settle 至 FRESH(复刻 rust-test 编译腿,含 memguard)
         run: |
           mkdir -p /tmp/ci-observe
-          ( while :; do { date -u +%T; ps -eL --no-headers 2>/dev/null | wc -l; ps -eo rss=,comm= --sort=-rss 2>/dev/null | head -3; } >> /tmp/ci-observe/s.log 2>/dev/null; sleep 1; done ) &
+          bash scripts/ci-live-telemetry.sh &
           bash scripts/ci-memguard.sh &
           guard_pid=$!
           /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1 | tail -5
@@ -1466,12 +1467,9 @@ jobs:
           echo "v6 P2 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
 
 
-  # v16 组合臂 3:脚本上下文最小化——sampler 只剩两次 ps 遍历 + printf 落盘
-  #   (NO_PROC 去掉 meminfo/loadavg/PSI/date),无 dmesg 无 PATCH,POST 保留。
-  #   活→「脚本上下文 + ps + 写 + POST」充分,继续剥只剩语言外壳;死→被去掉
-  #   的 /proc 读(meminfo/loadavg/PSI/date)含必要件。
-  probe-nomeminfo:
-    name: probe-nomeminfo
+  # v17 细分臂 3:完整脚本减 /proc/meminfo 读。死→meminfo 读在必要件集合内。
+  probe-nomem:
+    name: probe-nomem
     needs: changes
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
@@ -1488,10 +1486,8 @@ jobs:
       # Check Run;v4 只在 step A 注入导致 B/C/D/E 遥测静默失败(已实证)。
       TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TELEMETRY_CHECK_NAME: tele-nomeminfo
-      TELEMETRY_NO_PROC: "1"
-      TELEMETRY_NO_DMESG: "1"
-      TELEMETRY_NO_PATCH: "1"
+      TELEMETRY_CHECK_NAME: tele-nomem
+      TELEMETRY_NO_MEMINFO: "1"
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7

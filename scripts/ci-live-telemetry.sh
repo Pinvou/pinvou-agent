@@ -53,13 +53,17 @@ if [ -z "${TELEMETRY_NO_SAMPLER:-}" ]; then
     if [ -n "${TELEMETRY_NO_PROC:-}" ]; then
       ts="-"; avail="-"; swapf="-"; dirty="-"; wb="-"; load="-"; psi_mem="-"; psi_io="-"
     else
-      ts=$(date -u +%H:%M:%S)
-      read -r avail swapf dirty wb < <(awk '
+      if [ -n "${TELEMETRY_NO_DATE:-}" ]; then ts="-"; else ts=$(date -u +%H:%M:%S); fi
+      if [ -n "${TELEMETRY_NO_MEMINFO:-}" ]; then
+        avail="-"; swapf="-"; dirty="-"; wb="-"
+      else
+        read -r avail swapf dirty wb < <(awk '
         /^MemAvailable:/ {a=int($2/1024)}
         /^SwapFree:/     {s=int($2/1024)}
         /^Dirty:/        {d=int($2/1024)}
         /^Writeback:/    {w=int($2/1024)}
         END {print a, s, d, w}' /proc/meminfo)
+      fi
       load=$(cut -d' ' -f1 /proc/loadavg)
       psi_mem=$(awk '/^some/ {print $2}' /proc/pressure/memory 2>/dev/null)
       psi_io=$(awk '/^some/ {print $2}' /proc/pressure/io 2>/dev/null)
@@ -92,16 +96,19 @@ cleanup() {
 trap cleanup EXIT
 
 # --- Check Run PATCH 循环 ---
-check_id=$(gh api "repos/$GITHUB_REPOSITORY/check-runs" \
-  -X POST \
-  -f name="$CHECK_NAME" \
-  -f head_sha="$TELEMETRY_SHA" \
-  -f status="in_progress" \
-  --jq '.id' 2>/dev/null) || exit 0
-[ -n "${check_id:-}" ] && [ "$check_id" != "null" ] || exit 0
+check_id=
+if [ -z "${TELEMETRY_NO_POST:-}" ]; then
+  check_id=$(gh api "repos/$GITHUB_REPOSITORY/check-runs" \
+    -X POST \
+    -f name="$CHECK_NAME" \
+    -f head_sha="$TELEMETRY_SHA" \
+    -f status="in_progress" \
+    --jq '.id' 2>/dev/null) || exit 0
+  [ -n "${check_id:-}" ] && [ "$check_id" != "null" ] || exit 0
+fi
 
-# v14 组分开关:TELEMETRY_NO_PATCH=1 时 POST 完不再 PATCH(脚本存活但无持续流量)。
-if [ -n "${TELEMETRY_NO_PATCH:-}" ]; then
+# v14/v17 组分开关:TELEMETRY_NO_PATCH=1 或无 POST 时脚本存活但无持续流量。
+if [ -n "${TELEMETRY_NO_PATCH:-}" ] || [ -z "${check_id:-}" ]; then
   while :; do sleep 10; done
 fi
 
