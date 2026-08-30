@@ -1634,7 +1634,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         } catch (error) {
           if (inputTextRef.current === '') setInputText(text);
           else if (text) bridge.chat.prefillComposer(text, true);
-          throw error;
+          // Swallow here: the bridge already surfaced the failure (notice +
+          // restore), and the primary send paths (Enter / send button) have
+          // no catch of their own — a rethrow would only produce an
+          // unhandledrejection next to the visible recovery.
+          console.warn("[pinvou3][chat-ui] send failed", error);
         }
         personalWorkbenchTemplateIdRef.current = null;
         setPersonalWorkbenchTemplateId(null);
@@ -1648,7 +1652,14 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // finds no target.
       async function handleInterruptQueued(queuedId) {
         if (isMultiAgentReadOnly) return;
-        if (!bridge.chat || typeof bridge.chat.interruptAndSendQueued !== "function") return;
+        if (!bridge.chat || typeof bridge.chat.interruptAndSendQueued !== "function") {
+          // Never silent (this guard's silent return is exactly the
+          // historical "composer cleared but nothing happened" bug shape):
+          // dead on current targets (desktop exports it; web hides the
+          // button), but a missing export should be visible in diagnostics.
+          console.warn("[pinvou3][chat-ui] interruptAndSendQueued unavailable on this host");
+          return;
+        }
         await bridge.chat.interruptAndSendQueued(activeSessionId, queuedId);
       }
 
@@ -2386,7 +2397,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                       {(!busy || hasDraftText || hasReadyAttachment) && (
                         <button type="button" onClick={handleSend} disabled={!ready}
                           aria-label={busy ? t.queueMsg : t.sendMsg}
-                          title={busy ? t.queueMsgTip : t.sendMsg}
+                          title={busy && can('interruptSend') ? t.queueMsgTip : t.sendMsg}
                           className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? (isQueue ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md ring-2 ring-amber-300 dark:ring-amber-400' : 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0') : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
                           <Send size={17} className="translate-x-[1px]" />
                         </button>
