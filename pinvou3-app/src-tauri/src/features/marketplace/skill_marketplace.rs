@@ -874,6 +874,13 @@ impl SkillMarketplaceManager {
             ));
         }
 
+        // 自此持同 id import_lock 至函数尾：staged 暂存目录就位于共享路径
+        // `bundles/<name>/skills/` 之下，锁外 staging 会与统一导入的 rename、
+        // 与持锁展示编辑的技能目录计数交错（同 id 双通道并发可能静默混内容），
+        // 故从暂存前即持锁——锁序一致（import_lock → store file_lock），与
+        // plugin_import 统一路径的 M-4 口径对齐。
+        let import_lock = super::plugin_import::import_lock_for(&name);
+        let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
         // pass2:写出 skill_root 子树到 staged（上传技能独立成包：bundles/<name>/skills/）
         let dest = self.packages_root.join(&name).join("skills").join(&name);
         // Same as above: joined from the root, so a parent always exists;
@@ -957,12 +964,9 @@ impl SkillMarketplaceManager {
             }
         };
 
-        // 落盘改写段持同 id import_lock：与 update_display_meta 的 SKILL.md
-        // 读改写段互斥（锁序一致：import_lock → store file_lock），防重导入的
-        // rename/重基线插进「读备份 → 写 SKILL.md」窗口（plugin_import 统一路径
-        // 全程持锁；本路径目标 id 在 pass1 后才可知，从改写段起持锁）。
-        let import_lock = super::plugin_import::import_lock_for(&name);
-        let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+        // 落盘改写段已自暂存前持同 id import_lock（见上）：与 update_display_meta
+        // 的 SKILL.md 读改写段、与统一导入的 rename/重基线互斥，rename/清扫/
+        // 重基线整段在锁内完成。
         // 与 preset install 同一纪律：删旧目录失败即中止，不留"删一半"残缺目录。
         if dest.exists() {
             std::fs::remove_dir_all(&dest).map_err(|e| {
@@ -2462,6 +2466,11 @@ mod tests {
             "\u{feff}---\nname: x\ndescription: x\n---\n",
             // 成对引号剥离
             "---\nname: x\ndescription: \"带 引号\"\n---\n",
+            // 单引号行引号内首尾空白逐字回读（备份恢复的单引号兜底形态依赖
+            // 此等价：两读端先 trim 后剥引号、剥后不再 trim，引号挡住内部空白）
+            "---\nname: x\ndescription: '  前导空白  '\n---\n",
+            // 引号内制表符同理逐字回读（单引号兜底对 tab 放行）
+            "---\nname: x\ndescription: '\t制表符开头'\n---\n",
             // 缺结束 ---：引擎 parse_skill 因缺闭合围栏 Err，discover 丢弃该技能
             // （list() 查无此技 → 引擎侧 None）；镜像 rest.find("---") 同样失败
             // → None，两侧恰好吻合
@@ -3435,6 +3444,64 @@ mod tests {
         assert!(md.contains("description: orig2"), "实际内容: {md}");
         assert!(!md.contains("orig1"), "旧包描述不得写入新包: {md}");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 同 id 双 legacy 并发导入必须在锁内串行：staged 暂存目录就位于共享路径
+    /// `bundles/<id>/skills/` 之下，锁外 staging 会与统一导入的 rename、与持锁
+    /// 展示编辑的技能目录计数交错（可能静默混内容/双方报成功）——回归：锁须
+    /// 自暂存前持至函数尾（与统一路径 M-4 的并发串行化回归同口径）。主线程持
+    /// ENV_LOCK（认领推导读全局 env），工作线程按 `with_roots` 同布局直接构造
+    /// manager、不再各自取 ENV_LOCK（会与主线程自锁）。
+    #[test]
+    fn import_package_named_same_id_concurrent_is_serialized() {
+        use std::io::Write;
+        let _env = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = fresh_dir("named-concurrent");
+        let zip_path = tmp.join("pkg.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("my-skill/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: named-conc\ndescription: d\n---\n# hi")
+                .unwrap();
+            zw.finish().unwrap();
+        }
+        let zip_str = zip_path.to_string_lossy().into_owned();
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let z = zip_str.clone();
+            let root = tmp.clone();
+            handles.push(std::thread::spawn(move || {
+                let mgr = SkillMarketplaceManager {
+                    packages_root: root.join("bundles"),
+                    legacy_skills_dir: root.join("bundle/skills"),
+                    bundle_store: crate::features::marketplace::store::BundleStore::with_file(
+                        root.join("bundles.json"),
+                    ),
+                };
+                mgr.import_package_named(&z, "pkg.zip")
+            }));
+        }
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        for r in &results {
+            assert!(r.is_ok(), "并发同名导入应双方成功，实际: {results:?}");
+        }
+        let skills_dir = tmp.join("bundles/named-conc/skills");
+        assert!(
+            skills_dir.join("named-conc").join("SKILL.md").is_file(),
+            "串行落盘后技能目录应完整: {:?}",
+            std::fs::read_dir(&skills_dir).map(|rd| rd
+                .flatten()
+                .map(|e| e.path().display().to_string())
+                .collect::<Vec<_>>())
+        );
+        assert!(
+            !skills_dir.join("named-conc.tmp").exists(),
+            "并发导入结束后不得残留 staged 目录"
+        );
     }
 
     /// 伪造 zip 头部（中央目录声明 size=0、压缩流真实解压非空）的条目必须被
