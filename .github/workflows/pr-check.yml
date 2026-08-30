@@ -1148,31 +1148,19 @@ jobs:
           shared-key: rust-test-v2
           save-if: false
 
-      - name: 编译腿 v9(输出全量重定向到文件 + 毒性扫描 + memguard + settle)
-        # v9 单变量:编译腿 stdout 一个字节都不进 runner 日志管线(全量落盘,
-        # 只 tail 5 行),并对输出文件做毒性扫描(最长行/CR/NUL/ANSI 计数,
-        # 结果打 stdout)。v8 已证两臂执行腿逐字节相同仍一死一活 → 致死状态
-        # 在执行腿之前产生;全部死亡的公共字节是「暖树 + 编译腿裸输出」
-        # (存活臂编译腿全部接 tail 管道;#384 冷编译裸输出存活 → 需暖树配合)。
-        # 假设:暖编译输出含有毒字节序列,击穿 Runner.Worker 日志管线,
-        # 死亡延迟到 step 边界日志上传后(= 执行腿早期,与全部死亡点吻合)。
+      - name: 编译腿 v10(单变量:stdout 接 tail 管道 + memguard + settle)
+        # v10 单变量:相对 v9 死亡形状只把编译腿输出从「重定向到文件」改为
+        # 「接 tail -5 管道」(与全部存活臂一致)。v9 已证「输出不进 runner
+        # stdout」不足以保命(落盘照死),故若本臂存活,保护因子是管道本身
+        # 而非输出内容/体量。剩余共变因子只剩执行腿遥测循环与 P2 第二轮测试。
         run: |
           mkdir -p /tmp/ci-observe
           bash scripts/ci-memguard.sh &
           guard_pid=$!
           set +e
-          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run > /tmp/compile-leg.log 2>&1
-          status=$?
+          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1 | tail -5
+          status=${PIPESTATUS[0]}
           set -e
-          echo "=== 编译腿输出统计 ==="
-          wc -c /tmp/compile-leg.log
-          tail -5 /tmp/compile-leg.log
-          echo "=== 毒性扫描 ==="
-          echo "max_line_len: $(awk '{print length}' /tmp/compile-leg.log | sort -n | tail -1)"
-          echo "CR lines: $(grep -c $'\r' /tmp/compile-leg.log || true)"
-          echo "NUL lines: $(grep -cP '\x00' /tmp/compile-leg.log || true)"
-          echo "ANSI lines: $(grep -cP '\x1b\[' /tmp/compile-leg.log || true)"
-          echo "warning lines: $(grep -c 'warning' /tmp/compile-leg.log || true)"
           for i in 1 2 3; do
             [ "$status" -ne 0 ] && break
             out=$(cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
