@@ -34,12 +34,16 @@
     }
 
     async function installEngine() {
-      if (state.llamaEngineSetup.downloading) return;
+      // Idempotent guard: when another download is already running, skip and
+      // report it (callers wait for the in-flight task instead of proceeding
+      // with a not-yet-installed engine).
+      if (state.llamaEngineSetup.downloading) return false;
       merge({ downloading: true, downloadingItem: "engine", error: null, progress: { stage: "start", item: "engine" } });
       notify();
       try {
         await invoke("llama_engine_install_engine");
         await refreshStatus();
+      return true;
       } catch (e) {
         merge({ downloading: false, downloadingItem: null, error: String(e), progress: null });
         notify();
@@ -48,12 +52,13 @@
     }
 
     async function installModel(modelId) {
-      if (state.llamaEngineSetup.downloading) return;
+      if (state.llamaEngineSetup.downloading) return false;
       merge({ downloading: true, downloadingItem: "model", error: null, progress: { stage: "start", item: "model", modelId } });
       notify();
       try {
         await invoke("llama_engine_install_model", { model: modelId });
         await refreshStatus();
+      return true;
       } catch (e) {
         merge({ downloading: false, downloadingItem: null, error: String(e), progress: null });
         notify();
@@ -68,12 +73,13 @@
     }
 
     async function startEngine(modelId, device) {
-      if (state.llamaEngineSetup.starting) return;
+      if (state.llamaEngineSetup.starting) return false;
       merge({ starting: true, error: null });
       notify();
       try {
         await invoke("llama_engine_start", { model: modelId, device });
         await refreshStatus();
+      return true;
       } catch (e) {
         merge({ starting: false, error: String(e) });
         notify();

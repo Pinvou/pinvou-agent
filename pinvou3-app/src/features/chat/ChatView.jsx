@@ -1640,10 +1640,20 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         const leSetup = (bs && bs.llamaEngineSetup) || {};
         const lePhase = (leSetup.status && leSetup.status.phase) || '';
         const alreadyStarting = !!leSetup.starting || lePhase === 'starting' || lePhase === 'running';
+        const owned = !alreadyStarting;
+        if (owned) localEngineStartedByTokenRef.current = token;
         try {
           if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.startEngine) {
-            if (!alreadyStarting) localEngineStartedByTokenRef.current = token;
             await bridge.llamaEngine.startEngine(modelId, device);
+            // Cancel race: the cancel-path stop() can arrive at the backend BEFORE
+            // this in-flight start invoke, where it only sets STOP_REQUESTED — the
+            // start critical section then clears the flag and spawns anyway. When
+            // the invoke returns into a dead flow that owned the engine, stop once
+            // more (ref===0 means cancelled; a replacement flow would hold its own
+            // token there and takes the engine over instead).
+            if (owned && !localEngineFlowAlive(token) && localEngineStartedByTokenRef.current === 0) {
+              bridge.llamaEngine.stopEngine().catch(() => {});
+            }
           }
         } catch {
           // 启动请求失败交给下方轮询/超时兜底，不直接判死。
@@ -1651,24 +1661,38 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         // refreshStatus 直接返回最新状态（非 React 快照），轮询不依赖 stale bs。
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
-          if (localEngineTokenRef.current !== token) return false;
+          if (localEngineTokenRef.current !== token) return { ok: false, error: null };
           try {
             if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.refreshStatus) {
               const st = await bridge.llamaEngine.refreshStatus();
-              if (localEngineTokenRef.current !== token) return false;
-              if (st && st.phase === 'running') return true;
+              if (localEngineTokenRef.current !== token) return { ok: false, error: null };
+              if (st && st.phase === 'running') return { ok: true, error: null };
               // 启动即失败/自愈超限落终态：带着错误立即返回，不等满超时。
-              if (st && st.phase === 'stopped' && st.error) return false;
+              if (st && st.phase === 'stopped' && st.error) return { ok: false, error: st.error };
             }
           } catch {
             // 单次状态查询失败跳过本轮，继续轮询。
           }
           await new Promise(r => { setTimeout(r, 1000); });
         }
-        return false;
+        return { ok: false, error: null };
       }
       function localEngineFlowAlive(token) {
         return localEngineTokenRef.current === token;
+      }
+      // 另一个下载已在跑时（bridge 幂等守卫把本次安装跳过了），等待其收敛再
+      // 继续装模型/启动；轮询桥接状态切片（与设置页同源，实时非 React 快照）。
+      // 上限与发送门预算对齐；超时后照常走启动，由前置检查秒回真实错误。
+      async function waitForLocalDownloadSettled(token, timeoutMs = 300000) {
+        const deadline = Date.now() + timeoutMs;
+        while (localEngineFlowAlive(token) && Date.now() < deadline) {
+          const slices = (bridge.available && bridge.state && bridge.state.getMany)
+            ? bridge.state.getMany(['llamaEngine']) : null;
+          const setup = slices && slices.llamaEngineSetup;
+          if (!setup || !setup.downloading) return true;
+          await new Promise(r => { setTimeout(r, 1000); });
+        }
+        return false;
       }
       // 挂起新的发送前，被顶替的旧挂起按取消 resolve，避免 promise 永久悬挂
       // （发送门 await 期间输入框未禁用，用户可连续触发两次发送）。
@@ -1703,21 +1727,35 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       }
       async function startThenResolve(info, token) {
         if (localEngineFlowAlive(token)) setLocalEnginePrompt({ kind: 'starting', token });
-        const ok = await startEngineAndWait(info.localEngineModel, info.localEngineDevice, token);
+        const result = await startEngineAndWait(info.localEngineModel, info.localEngineDevice, token);
         if (!localEngineFlowAlive(token)) return; // 迟到：取消/卸载/新流程已接管
-        resolvePendingSend(ok, token);
+        if (result.ok) {
+          resolvePendingSend(true, token);
+          return;
+        }
+        // 失败原因透出到三选一弹窗（引擎/模型缺失等前置失败现在秒回）；
+        // 空错误 = 真超时，维持原文案。
+        setLocalEnginePrompt({ kind: 'timeout', token, message: result.error || '' });
       }
       async function installThenResolve(info, token) {
         setLocalEnginePrompt({ kind: 'downloading', token });
         try {
-          if (bridge.llamaEngine.installEngine) await bridge.llamaEngine.installEngine();
-          if (bridge.llamaEngine.installModel) await bridge.llamaEngine.installModel(info.localEngineModel);
+          // 桥接层在有任务进行中时把安装静默跳过并返回 false：等待在跑的
+          // 下载收敛后再继续，否则会拿着未就绪的模型去 start，只能靠超时兜底。
+          if (bridge.llamaEngine.installEngine && (await bridge.llamaEngine.installEngine()) === false) {
+            await waitForLocalDownloadSettled(token);
+          }
+          if (localEngineFlowAlive(token) && bridge.llamaEngine.installModel
+            && (await bridge.llamaEngine.installModel(info.localEngineModel)) === false) {
+            await waitForLocalDownloadSettled(token);
+          }
         } catch (e) {
           // 取消下载的 reject 与新流程顶替后的迟到 reject 都不弹错误。
           if (!localEngineFlowAlive(token)) return;
           setLocalEnginePrompt({ kind: 'installError', token, message: String((e && e.message) || e) });
           return;
         }
+        if (!localEngineFlowAlive(token)) return;
         await startThenResolve(info, token);
       }
       async function ensureLocalEngineForSend() {
@@ -1754,14 +1792,14 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           replacePendingSend({ token, resolve, info });
           setLocalEnginePrompt({ kind: 'starting', token });
           void (async () => {
-            const ok = await startEngineAndWait(info.localEngineModel, info.localEngineDevice, token);
+            const result = await startEngineAndWait(info.localEngineModel, info.localEngineDevice, token);
             // 用户取消/新流程顶替：旧流程静默退出，不动新对话框。
             if (!localEngineFlowAlive(token)) return;
-            if (ok) {
+            if (result.ok) {
               resolvePendingSend(true, token);
               return;
             }
-            setLocalEnginePrompt({ kind: 'timeout', token });
+            setLocalEnginePrompt({ kind: 'timeout', token, message: result.error || '' });
           })().catch(() => {});
         });
       }
@@ -2423,15 +2461,22 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               const info = pending && pending.info;
               const ua = t.uiAttachments;
               const llmEngineCopy = (t.uiSettingsDetail && t.uiSettingsDetail.llamaEngine) || {};
+              // The component scope only carries `theme`; binding isDark here keeps
+              // the in-place dialog styles working (bare `isDark` would be a
+              // ReferenceError the moment any gate prompt renders).
+              const isDark = theme === 'dark';
               const btnPrimary = `text-[13px] font-medium px-4 py-2 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'}`;
               const btnGhost = `text-[13px] px-4 py-2 rounded-full ${isDark ? 'bg-[#333537] hover:bg-[#444746]' : 'bg-[#E1E5EA] hover:bg-[#D3D9E0]'}`;
-              const goSettingsAndCancel = () => { if (onGotoLlamaEngine) { onGotoLlamaEngine(); } resolvePendingSend(false, p.token); };
+              // Same semantics as the cancel button: an engine started by this flow
+              // is stopped too, instead of loading on in the background after the
+              // user gave up (timeout → "Go to settings").
+              const goSettingsAndCancel = () => { cancelLocalEngineFlow(p.token); if (onGotoLlamaEngine) { onGotoLlamaEngine(); } };
               // 下载进度与设置页同口径:订阅 llamaEngineSetup.progress(pct+filename)。
               const leSetup = (bs && bs.llamaEngineSetup) || {};
               const leProg = leSetup.progress || {};
               const lePct = (leProg.total > 0 && typeof leProg.downloaded === 'number')
                 ? Math.min(100, Math.round((leProg.downloaded / leProg.total) * 100)) : null;
-              let title, body, buttons;
+              let title, body, buttons, startingCopy;
               if (p.kind === 'install') {
                 title = llmEngineCopy.title || ua.localEngineNotRunning;
                 body = ua.localEngineInstallPrompt;
@@ -2460,7 +2505,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 );
               } else if (p.kind === 'starting') {
                 title = ua.localEngineNotRunning;
-                body = llmEngineCopy.starting || ua.localEngineDownloading;
+                // The copy renders once inside the spinner row below; keeping it in
+                // `body` too would print "Starting…" twice (generic <p> + spinner).
+                startingCopy = llmEngineCopy.starting || ua.localEngineDownloading;
                 buttons = (
                   <button type="button" className={btnGhost} onClick={() => cancelLocalEngineFlow(p.token)}>{ua.localEngineCancelSend}</button>
                 );
@@ -2475,7 +2522,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 );
               } else if (p.kind === 'timeout') {
                 title = ua.localEngineStartingTimeout;
-                body = '';
+                // Surface the backend failure reason (engine/model missing now fails
+                // fast via phase=stopped+error); empty for a genuine timeout.
+                body = p.message || '';
                 // 取消发送走 cancelLocalEngineFlow：本流程拉起的引擎一并停掉；
                 // 「云端发送」与 notRunning 弹窗同语义（复用 localEngineSendFallback）。
                 buttons = (
@@ -2508,7 +2557,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                     {p.kind === 'starting' && (
                       <div className="mb-4 flex items-center gap-2 text-[12px] opacity-70">
                         <span className={`inline-block h-3 w-3 rounded-full border-2 border-t-transparent animate-spin ${isDark ? 'border-[#A8C7FA]' : 'border-[#0B57D0]'}`} />
-                        {body}
+                        {startingCopy}
                       </div>
                     )}
                     {p.kind === 'downloading' && (
