@@ -1171,7 +1171,13 @@ jobs:
           kill "$guard_pid" 2>/dev/null || true
           exit "$status"
 
-      - name: 执行腿逐字节复刻(memguard + 遥测 + 断言 + tee)
+      - name: 执行腿复刻 v8(无 memguard + 遥测 + 断言 + tee)
+        # v8 单变量:去掉执行腿的 memguard(编译腿保留)。v7 已证 job 元数据
+        # 无辜(探针步骤顶着 rust-test 名字存活)、致死因子在步骤字节内;
+        # 全部死亡的唯一公共字节是「首次 cargo test 执行时 memguard 在场」
+        # (main 无遥测也死 → 遥测不是必要件;v6 P2 memguard+第二次执行存活)。
+        # 本臂存活 → 执行腿 memguard × 暖树 = 致死必要件,修复=去掉它
+        # (memguard 全程从未触发,avail 从没低于 12GB,实证无用)。
         env:
           TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1179,11 +1185,10 @@ jobs:
           chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           export CHROME="$chrome"
           export PINVOU_REQUIRE_REMOTE_E2E=1
-          bash scripts/ci-memguard.sh &
-          guard_pid=$!
           bash scripts/ci-live-telemetry.sh &
           tele_pid=$!
           mkdir -p /tmp/ci-observe
+          echo "v8 exec-leg: NO memguard $(date -u +%T)" >> /tmp/ci-observe/ab.log
           pre=$(cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
           echo "$pre" | tail -3
           if echo "$pre" | grep -q 'Compiling pinvou3-tauri'; then
@@ -1195,7 +1200,7 @@ jobs:
           cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | python3 scripts/ci-tee-unbuffered.py
           status=${PIPESTATUS[0]}
           set -e
-          kill "$guard_pid" "$tele_pid" 2>/dev/null || true
+          kill "$tele_pid" 2>/dev/null || true
           exit "$status"
 
   windows-rust-test:
