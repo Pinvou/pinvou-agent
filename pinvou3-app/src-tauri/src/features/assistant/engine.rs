@@ -1393,6 +1393,13 @@ impl AppEngine {
     #[allow(dead_code)] // L1 runner 接入前临时 unused
     pub async fn spawn_headless(bridge: Pinvou3Bridge) -> Result<Self> {
         let mut engine_config = bridge.build_engine_config();
+        // Headless 引擎与真实会话同源地携带硬拒规则集（scope gate + 安全兜底，
+        // 见 `scope_deny_ruleset`）；`build_engine_config` 单独留下的是空默认
+        // execpolicy 引擎。
+        engine_config.exec_policy_engine =
+            codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
+                bridge.scope_deny_ruleset("")
+            ]);
         let scheduled_disallowed_tools = engine_config.disallowed_tools.clone().unwrap_or_default();
         let workspace = engine_config.workspace.clone();
         engine_config.runtime_services.shell_manager =
