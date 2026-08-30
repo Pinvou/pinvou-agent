@@ -796,15 +796,16 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: pinvou3-app/src-tauri
+          # 2026-08-29/30 事故:凡 restore 本 job 的 target/ 缓存并据其链接出的
+          # 测试二进制,执行数秒内把 runner VM 打到失联(1s 遥测实证:内存/磁盘/
+          # 负载全程健康,死亡点在套件内随机)。与 cache 内容的新旧无关——#379
+          # (debug=0)之后每次 main push 保存的 target/ 都在 restore 后复现致死,
+          # 而全冷编译(不吃 target/ 缓存)的对照组同 runner 池 100% 全绿;
+          # 纯文档 PR 也死,与 PR 代码无关。根因定位期间先关掉 target/ 缓存:
+          # 只缓存 ~/.cargo(registry/git 索引,省下载),target/ 每次全冷编译
+          # (~15 分钟,与绿色对照组同构)。根因查明并验证前不要重新打开。
+          cache-targets: false
           # 稳定 key 前缀(跨 PR/push 一致);restore 按前缀回退,lock 变了也增量。
-          # 2026-08-29 事故:当日 11:28(UTC)保存的 rust-test cache 谱系产物被污染
-          # (#379 切换 CARGO_PROFILE_DEV_DEBUG=0 期间,旧 codegen 产物与新产物混存于
-          # 同一 target 被整体打包),凡 restore 该谱系链接出的测试二进制,执行数秒内
-          # 把 runner VM 打到失联(1s 遥测实证:MemAvailable ~14.6GB、磁盘/负载全程
-          # 健康,死亡点在套件内随机;全新 cache 冷编译对照组同 runner 池全绿,
-          # Windows 谱系不受影响)。已 purge 污染谱系并 bump key 切断前缀回退。
-          # 今后修改 RUSTFLAGS / CARGO_PROFILE_* / rust-toolchain 等影响 codegen
-          # 的输入时必须同步 bump 此 key,避免新旧产物混链再次污染。
           shared-key: rust-test-v2
           # 只在 main 保存(暖 cache 唯一来源);PR 侧只读,不占 10GB 限额。
           save-if: ${{ github.ref == 'refs/heads/main' }}
