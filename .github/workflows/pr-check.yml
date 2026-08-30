@@ -797,7 +797,15 @@ jobs:
         with:
           workspaces: pinvou3-app/src-tauri
           # 稳定 key 前缀(跨 PR/push 一致);restore 按前缀回退,lock 变了也增量。
-          shared-key: rust-test
+          # 2026-08-29 事故:当日 11:28(UTC)保存的 rust-test cache 谱系产物被污染
+          # (#379 切换 CARGO_PROFILE_DEV_DEBUG=0 期间,旧 codegen 产物与新产物混存于
+          # 同一 target 被整体打包),凡 restore 该谱系链接出的测试二进制,执行数秒内
+          # 把 runner VM 打到失联(1s 遥测实证:MemAvailable ~14.6GB、磁盘/负载全程
+          # 健康,死亡点在套件内随机;全新 cache 冷编译对照组同 runner 池全绿,
+          # Windows 谱系不受影响)。已 purge 污染谱系并 bump key 切断前缀回退。
+          # 今后修改 RUSTFLAGS / CARGO_PROFILE_* / rust-toolchain 等影响 codegen
+          # 的输入时必须同步 bump 此 key,避免新旧产物混链再次污染。
+          shared-key: rust-test-v2
           # 只在 main 保存(暖 cache 唯一来源);PR 侧只读,不占 10GB 限额。
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
