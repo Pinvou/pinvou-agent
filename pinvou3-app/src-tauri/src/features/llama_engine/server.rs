@@ -45,6 +45,41 @@ pub(crate) enum StartError {
     Failed(String),
 }
 
+/// 启动前置检查失败（引擎/模型缺失、端口分配失败等）时把运行态收敛到
+/// Stopped 并落错误文案：发送门轮询以 `phase == "stopped" && error` 快速
+/// 失败，停在 Idle 会让门空转到 300s 超时。仅当引擎不在 Starting/Running
+/// 时才降级——对运行中的引擎重复 start 不得污染其状态。
+fn fail_start(app: &tauri::AppHandle, message: String) -> StartError {
+    let downgraded = {
+        let mut guard = lock_runtime();
+        if matches!(guard.phase, EnginePhase::Starting | EnginePhase::Running) {
+            false
+        } else {
+            guard.phase = EnginePhase::Stopped;
+            guard.pid = None;
+            guard.last_error = Some(message.clone());
+            true
+        }
+    };
+    if downgraded {
+        emit_state(app, "stopped", Some(message.clone()));
+    }
+    StartError::Failed(message)
+}
+
+/// spawn 阶段失败：本次调用已把相位置为 Starting（临界区之后），无条件
+/// 收敛到 Stopped 并落错误文案，发送门据此快速失败而不是空等超时。
+fn fail_spawn(app: &tauri::AppHandle, message: String) -> StartError {
+    {
+        let mut guard = lock_runtime();
+        guard.phase = EnginePhase::Stopped;
+        guard.pid = None;
+        guard.last_error = Some(message.clone());
+    }
+    emit_state(app, "stopped", Some(message.clone()));
+    StartError::Failed(message)
+}
+
 impl StartError {
     /// 转为用户可见文案（tauri 命令边界用；AlreadyRunning 的文案保持不变）。
     pub(crate) fn into_message(self) -> String {
@@ -230,19 +265,21 @@ pub(crate) async fn start(
     model_id: &str,
     device: EngineDevice,
 ) -> Result<(), StartError> {
-    let spec = download::model_spec(model_id).map_err(StartError::Failed)?;
+    let spec = download::model_spec(model_id).map_err(|e| fail_start(app, e))?;
     let bin = download::engine_binary_path();
     if !bin.is_file() {
-        return Err(StartError::Failed(
+        return Err(fail_start(
+            app,
             "引擎未安装，请先在设置中下载引擎".to_string(),
         ));
     }
     if !download::model_files_verified(spec) {
-        return Err(StartError::Failed(format!(
-            "模型 {model_id} 未就绪，请先在设置中下载模型"
-        )));
+        return Err(fail_start(
+            app,
+            format!("模型 {model_id} 未就绪，请先在设置中下载模型"),
+        ));
     }
-    let port = pick_free_port().map_err(StartError::Failed)?;
+    let port = pick_free_port().map_err(|e| fail_start(app, e))?;
     {
         let mut guard = lock_runtime();
         if matches!(guard.phase, EnginePhase::Starting | EnginePhase::Running) {
@@ -265,18 +302,10 @@ pub(crate) async fn start(
     emit_state(app, "starting", None);
 
     std::fs::create_dir_all(llama_engine_dir())
-        .map_err(|e| StartError::Failed(format!("创建引擎目录失败: {e}")))?;
+        .map_err(|e| fail_spawn(app, format!("创建引擎目录失败: {e}")))?;
     let mut child = match spawn_server(&bin, &build_args(&bin, spec, port, device)).await {
         Ok(child) => child,
-        Err(error) => {
-            let mut guard = lock_runtime();
-            guard.phase = EnginePhase::Idle;
-            guard.pid = None;
-            guard.last_error = Some(error.clone());
-            drop(guard);
-            emit_state(app, "stopped", Some(error.clone()));
-            return Err(StartError::Failed(error));
-        }
+        Err(error) => return Err(fail_spawn(app, error)),
     };
     {
         let mut guard = lock_runtime();

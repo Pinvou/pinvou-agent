@@ -221,15 +221,23 @@ pub(crate) fn llama_engine_stop() {
 /// 删除模型：delete_model_files 内部先停运行/启动中的引擎并等收口
 /// （Windows 下模型文件被进程占用无法删除，超时返回明确错误），再删权重
 /// 文件；安装状态由下次 `llama_engine_status` 按文件存在性重算。
-pub(crate) fn llama_engine_delete_model(model: String) -> Result<(), String> {
+/// async + spawn_blocking：收口等待最长 ~10s，命令层因此跑在主线程外，
+/// 等待期间不冻结 UI。
+pub(crate) async fn llama_engine_delete_model(model: String) -> Result<(), String> {
     let spec = download::model_spec(&model)?;
-    download::delete_model_files(spec).map(|_| ())
+    tokio::task::spawn_blocking(move || download::delete_model_files(spec).map(|_| ()))
+        .await
+        .map_err(|e| format!("删除模型任务失败: {e}"))?
 }
 
 /// 卸载引擎：delete_engine_files 内部先停运行/启动中的引擎并等收口，再删
 /// 引擎二进制与共享库；模型文件保留，重装引擎后即可直接使用。
-pub(crate) fn llama_engine_delete_engine() -> Result<(), String> {
-    download::delete_engine_files().map(|_| ())
+/// async 化理由同上（收口等待不冻结 UI）。
+pub(crate) async fn llama_engine_delete_engine() -> Result<(), String> {
+    tokio::task::spawn_blocking(download::delete_engine_files)
+        .await
+        .map_err(|e| format!("删除引擎任务失败: {e}"))?
+        .map(|_| ())
 }
 
 // ---------------- bridge 接线点 ----------------

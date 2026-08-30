@@ -450,6 +450,13 @@ pub(crate) async fn install_model(app: &tauri::AppHandle, model_id: &str) -> Res
     let spec = model_spec(model_id)?;
     let _guard = acquire_download("model")?;
 
+    // 即将改写模型文件时先停运行中的引擎并等收口（Windows 下运行中的
+    // llama-server 占用 gguf/mmproj，rename 会报 sharing violation；与
+    // delete 路径同口径）。已完整安装的幂等跳过不打扰运行中的引擎。
+    if !model_files_verified(&spec) {
+        stop_engine_if_running("替换模型文件")?;
+    }
+
     std::fs::create_dir_all(models_dir()).map_err(|e| format!("创建模型目录失败: {e}"))?;
     install_asset(app, &spec.gguf, "model", model_id).await?;
     install_asset(app, &spec.mmproj, "mmproj", model_id).await?;
