@@ -58,10 +58,14 @@ if [ -z "${TELEMETRY_NO_SAMPLER:-}" ]; then
       /^Writeback:/    {w=int($2/1024)}
       END {print a, s, d, w}' /proc/meminfo)
     load=$(cut -d' ' -f1 /proc/loadavg)
-    thr=$(ps -eL --no-headers 2>/dev/null | wc -l)
     psi_mem=$(awk '/^some/ {print $2}' /proc/pressure/memory 2>/dev/null)
     psi_io=$(awk '/^some/ {print $2}' /proc/pressure/io 2>/dev/null)
-    top=$(ps -eo rss=,comm= --sort=-rss 2>/dev/null | head -3 | awk '{printf "%s=%dMB ", $2, $1/1024}')
+    if [ -n "${TELEMETRY_NO_PS:-}" ]; then
+      thr="-"; top="-"
+    else
+      thr=$(ps -eL --no-headers 2>/dev/null | wc -l)
+      top=$(ps -eo rss=,comm= --sort=-rss 2>/dev/null | head -3 | awk '{printf "%s=%dMB ", $2, $1/1024}')
+    fi
     printf '%s avail=%sMB swap=%sMB dirty=%sMB wb=%sMB load=%s thr=%s %s %s | %s\n' \
       "$ts" "$avail" "$swapf" "$dirty" "$wb" "$load" "$thr" "$psi_mem" "$psi_io" "$top" \
       >>"$MEM_LOG"
