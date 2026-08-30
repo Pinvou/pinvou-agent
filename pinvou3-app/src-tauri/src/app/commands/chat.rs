@@ -20,8 +20,10 @@ pub(crate) const IMAGE_INPUT_UNKNOWN_ERROR: &str = "image_input_unsupported: \
      当前模型的图片输入能力未知。如果它支持图片,请在模型设置中将图片输入能力\
      设为“支持图片”后重试;也可以切换到支持图片的模型,或配置视觉模型。";
 
-/// 本地识图引擎发送前保证(自动启动策略的发送侧兜底,竞态防线):
-/// - 未选本地识图 / 引擎已在运行 → 直接 Ok
+/// 本地识图引擎发送前保证(自动启动策略的发送侧兜底,竞态防线)。
+/// 调用方(chat_with_reservation)已过 vision_local_gate 门,本函数只处理
+/// 「门已命中」后的路径:
+/// - 引擎已在运行 → 直接 Ok
 /// - 引擎或模型未安装 → Ok(不拦截,回落规则 1/2/3;前端弹窗引导安装)
 /// - 自动启动设为「从不」→ Ok(回落正常路由;前端弹窗三选一)
 /// - 否则 → 幂等启动并等待 Running(跟随引擎健康窗口 HEALTH_TIMEOUT);
@@ -31,14 +33,12 @@ async fn ensure_local_engine_ready(
     app: &tauri::AppHandle,
     pool: &EnginePool,
     prefs: &UserPrefs,
-    prefer_local: bool,
     sid: &str,
     store: &SessionStore,
 ) -> Result<(), String> {
     use crate::features::llama_engine::{self, server};
 
-    let snapshot = server::runtime_snapshot();
-    if !prefer_local || snapshot.phase == "running" {
+    if server::runtime_snapshot().phase == "running" {
         return Ok(());
     }
     let engine_installed = llama_engine::download::engine_installed();
@@ -219,9 +219,7 @@ pub(crate) async fn chat_with_reservation(
         let capability = bridge.effective_image_capability();
         if bridge.vision_local_gate_active() && capability != EffectiveImageCapability::Supported {
             let prefs = UserPrefs::load();
-            if let Err(error) =
-                ensure_local_engine_ready(app, pool, &prefs, true, &sid, store).await
-            {
+            if let Err(error) = ensure_local_engine_ready(app, pool, &prefs, &sid, store).await {
                 // 已配置云端视觉模型(vision_model_id)时不硬失败:引擎启动失败
                 // 回落云端兜底路由;无兜底才上报错误。
                 if !bridge.has_vision_model() {
