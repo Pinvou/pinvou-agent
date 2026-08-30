@@ -19,9 +19,3 @@ pub use macos::*;
 pub use unsupported::*;
 #[cfg(target_os = "windows")]
 pub use windows::*;
-
-/// 测试辅助：非 Windows 平台需要 `make_executable` 等 unix 行为。
-#[cfg(test)]
-pub(crate) fn unix_like() -> bool {
-    !cfg!(target_os = "windows")
-}

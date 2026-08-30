@@ -54,7 +54,3 @@ pub fn available_disk_space(path: &Path) -> Option<u64> {
 pub fn make_executable(_path: &Path) -> Result<(), String> {
     Ok(())
 }
-
-pub fn gpu_error_hint() -> &'static str {
-    "若显卡缺少 Vulkan 驱动，请在设置中切换到 CPU 设备"
-}

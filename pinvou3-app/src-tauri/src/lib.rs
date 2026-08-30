@@ -488,12 +488,6 @@ fn shutdown_browser_before_process_end(app: &tauri::AppHandle) {
 
 /// Shared asynchronous child-process harvesting before exit and restart. Managed
 /// state is not guaranteed to be dropped (kill_on_drop runs only when Child drops),
-/// so explicitly stop ACP/connector children to prevent orphans. Each closure is
-/// idempotent; even shutdown(), the highest timeout risk, only sends a oneshot and
-/// kills without a long wait.
-
-/// Shared asynchronous child-process harvesting before exit and restart. Managed
-/// state is not guaranteed to be dropped (kill_on_drop runs only when Child drops),
 /// so explicitly stop the local vision engine and ACP/connector children to prevent
 /// orphans. Each closure is idempotent; even shutdown(), the highest timeout risk,
 /// only sends a oneshot and kills without a long wait.

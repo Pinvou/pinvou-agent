@@ -31,12 +31,3 @@ pub fn available_disk_space(_path: &Path) -> Option<u64> {
 pub fn make_executable(_path: &Path) -> Result<(), String> {
     Ok(())
 }
-
-pub fn gpu_error_hint() -> &'static str {
-    ""
-}
-
-/// 不支持平台不可下载/不可运行（engine_asset_name 为空会触发明确错误）。
-pub fn unsupported_hint() -> &'static str {
-    "当前平台暂不支持本地多模态引擎"
-}

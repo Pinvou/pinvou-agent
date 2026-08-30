@@ -65,16 +65,3 @@ pub fn make_executable(path: &Path) -> Result<(), String> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
         .map_err(|e| format!("设置引擎可执行权限失败: {e}"))
 }
-
-/// GPU 失败提示按架构分流：arm64 包默认 Metal（`-ngl 99` 全量卸载），
-/// 失败引导切 CPU；x86_64（Intel）包不保证 Metal（是否 GPU 卸载由引擎
-/// 自身决定），只给通用提示、不暗示 Metal。
-#[cfg(target_arch = "aarch64")]
-pub fn gpu_error_hint() -> &'static str {
-    "若 Metal 设备初始化失败，请在设置中切换到 CPU 设备"
-}
-
-#[cfg(target_arch = "x86_64")]
-pub fn gpu_error_hint() -> &'static str {
-    "若引擎初始化失败，请在设置中切换到 CPU 设备重试"
-}

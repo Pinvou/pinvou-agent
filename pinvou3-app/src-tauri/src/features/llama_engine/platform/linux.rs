@@ -47,7 +47,3 @@ pub fn make_executable(path: &Path) -> Result<(), String> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
         .map_err(|e| format!("设置引擎可执行权限失败: {e}"))
 }
-
-pub fn gpu_error_hint() -> &'static str {
-    "若显卡缺少 Vulkan 驱动，请在设置中切换到 CPU 设备"
-}
