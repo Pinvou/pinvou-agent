@@ -1208,10 +1208,10 @@ jobs:
           kill "$guard_pid" 2>/dev/null || true
           echo "v6 P2 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
 
-  # v12 剥离臂 1:存活形状去掉 P2(第二轮全量测试)。
-  #   死 → P2 是保护必要件(极反直觉,需复跑确认);活 → P2 排除。
-  probe-nop2:
-    name: probe-nop2
+  # v13 组分臂 1:P0 遥测行替换为「仅一次 gh POST 建 check-run」(一次性 HTTPS
+  #   到 api.github.com,无采样无 PATCH 循环)。死→单次连接不够(或网络无关)。
+  probe-postonly:
+    name: probe-postonly
     needs: changes
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
@@ -1228,7 +1228,7 @@ jobs:
       # Check Run;v4 只在 step A 注入导致 B/C/D/E 遥测静默失败(已实证)。
       TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TELEMETRY_CHECK_NAME: tele-nop2
+      TELEMETRY_CHECK_NAME: tele-postonly
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -1286,119 +1286,7 @@ jobs:
       - name: P0) 编译 + settle 至 FRESH(复刻 rust-test 编译腿,含 memguard)
         run: |
           mkdir -p /tmp/ci-observe
-          bash scripts/ci-live-telemetry.sh &
-          bash scripts/ci-memguard.sh &
-          guard_pid=$!
-          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1 | tail -5
-          for i in 1 2 3; do
-            out=$(CARGO_TERM_COLOR=never cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
-            echo "$out" | tail -3
-            if echo "$out" | grep -q 'Compiling pinvou3-tauri'; then
-              echo "v6 settle pass $i: recompiled" | tee -a /tmp/ci-observe/ab.log
-            else
-              echo "v6 settle pass $i: FRESH" | tee -a /tmp/ci-observe/ab.log
-              break
-            fi
-          done
-          kill "$guard_pid" 2>/dev/null || true
-
-      - name: P1) 执行腿复刻(无 memguard):cargo test 全量执行
-        run: |
-          bash scripts/ci-live-telemetry.sh &
-          chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
-          export CHROME="$chrome"
-          export PINVOU_REQUIRE_REMOTE_E2E=1
-          echo "v6 P1 start (no memguard) $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
-          pre=$(CARGO_TERM_COLOR=never cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
-          echo "$pre" | tail -2
-          echo "$pre" | grep -q 'Compiling pinvou3-tauri' \
-            && echo "v6 P1 tree: DIRTY" | tee -a /tmp/ci-observe/ab.log \
-            || echo "v6 P1 tree: FRESH" | tee -a /tmp/ci-observe/ab.log
-          set +e
-          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | python3 scripts/ci-tee-unbuffered.py
-          s=${PIPESTATUS[0]}
-          set -e
-          echo "v6 P1 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
-
-
-  # v12 剥离臂 2:存活形状去掉 P0 编译腿开头的遥测启动(其它不变)。
-  #   死 → P0 遥测尝试是保护必要件;活 → 排除。
-  probe-nop0tele:
-    name: probe-nop0tele
-    needs: changes
-    if: ${{ github.event_name != 'push' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    permissions:
-      contents: read
-      checks: write
-    env:
-      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
-      CARGO_PROFILE_DEV_LTO: "thin"
-      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      # job 级注入:ci-live-telemetry.sh 需要 GITHUB_TOKEN 创建/PATCH 临时
-      # Check Run;v4 只在 step A 注入导致 B/C/D/E 遥测静默失败(已实证)。
-      TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TELEMETRY_CHECK_NAME: tele-nop0tele
-    steps:
-      - name: Checkout (含 submodule)
-        uses: actions/checkout@v7
-        with:
-          submodules: false
-
-      - name: 初始化公共底座 submodule
-        run: git submodule update --init --recursive -- CodeWhale
-
-      - name: 装系统依赖(与 rust-test 一致 + strace)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
-            librsvg2-dev libssl-dev \
-            libx11-dev libxi-dev libxtst-dev \
-            libayatana-appindicator3-dev \
-            build-essential pkg-config cmake lld strace
-
-      - name: bge-m3 占位 (与 rust-test 一致)
-        run: |
-          d=pinvou3-app/src-tauri/resources/bge-m3
-          mkdir -p "$d"
-          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
-            : > "$d/$f"
-          done
-
-      - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: 对齐 rust-toolchain.toml 锁定的工具链
-        working-directory: pinvou3-app/src-tauri
-        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
-
-      - name: Node.js (relay e2e,与 rust-test 一致)
-        uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: remote-control-relay/package-lock.json
-
-      - name: relay 依赖 (与 rust-test 一致)
-        run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
-
-      - name: 浏览器驱动依赖 (与 rust-test 一致)
-        run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
-
-      - name: Cargo cache (restore 致死的 v2 暖 cache)
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: pinvou3-app/src-tauri
-          shared-key: rust-test-v2
-          save-if: false
-
-      - name: P0) 编译 + settle 至 FRESH(复刻 rust-test 编译腿,含 memguard)
-        run: |
-          mkdir -p /tmp/ci-observe
+          gh api "repos/$GITHUB_REPOSITORY/check-runs" -X POST -f name=tele-postonly -f head_sha="$TELEMETRY_SHA" -f status=in_progress >/dev/null 2>&1 &
           bash scripts/ci-memguard.sh &
           guard_pid=$!
           /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1 | tail -5
@@ -1449,11 +1337,9 @@ jobs:
           echo "v6 P2 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
 
 
-  # v12 剥离臂 3:token 从 job 级降为 step 级(P1/P2),P0 遥测随之取消。
-  #   死 且剥离臂 2 活 → job 级 token 是保护必要件;两臂同死 → 共同点是
-  #   P0 遥测缺失,与臂 2 结果冲突时需复跑仲裁。
-  probe-steptoken:
-    name: probe-steptoken
+  # v13 组分臂 2:P0 遥测行替换为「仅 1s /proc 采样循环」(纯本地,无网络)。
+  probe-sampleronly:
+    name: probe-sampleronly
     needs: changes
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
@@ -1466,6 +1352,11 @@ jobs:
       CARGO_PROFILE_DEV_LTO: "thin"
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1"
       CARGO_PROFILE_DEV_DEBUG: "0"
+      # job 级注入:ci-live-telemetry.sh 需要 GITHUB_TOKEN 创建/PATCH 临时
+      # Check Run;v4 只在 step A 注入导致 B/C/D/E 遥测静默失败(已实证)。
+      TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TELEMETRY_CHECK_NAME: tele-sampleronly
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -1523,6 +1414,7 @@ jobs:
       - name: P0) 编译 + settle 至 FRESH(复刻 rust-test 编译腿,含 memguard)
         run: |
           mkdir -p /tmp/ci-observe
+          ( while :; do cat /proc/loadavg /proc/pressure/memory >> /tmp/ci-observe/s.log 2>/dev/null; sleep 1; done ) &
           bash scripts/ci-memguard.sh &
           guard_pid=$!
           /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1 | tail -5
@@ -1539,10 +1431,6 @@ jobs:
           kill "$guard_pid" 2>/dev/null || true
 
       - name: P1) 执行腿复刻(无 memguard):cargo test 全量执行
-        env:
-          TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TELEMETRY_CHECK_NAME: tele-steptoken
         run: |
           bash scripts/ci-live-telemetry.sh &
           chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
@@ -1561,10 +1449,263 @@ jobs:
           echo "v6 P1 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
 
       - name: P2) 执行腿复刻(有 memguard):cargo test 全量执行
-        env:
-          TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TELEMETRY_CHECK_NAME: tele-steptoken
+        run: |
+          bash scripts/ci-live-telemetry.sh &
+          bash scripts/ci-memguard.sh &
+          guard_pid=$!
+          chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          export CHROME="$chrome"
+          export PINVOU_REQUIRE_REMOTE_E2E=1
+          echo "v6 P2 start (with memguard) $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
+          set +e
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | python3 scripts/ci-tee-unbuffered.py
+          s=${PIPESTATUS[0]}
+          set -e
+          kill "$guard_pid" 2>/dev/null || true
+          echo "v6 P2 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
+
+
+  # v13 组分臂 3:P0 遥测行替换为「仅 sudo dmesg 循环」(sudo + 内核日志读)。
+  probe-dmesgonly:
+    name: probe-dmesgonly
+    needs: changes
+    if: ${{ github.event_name != 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      checks: write
+    env:
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
+      CARGO_PROFILE_DEV_LTO: "thin"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      # job 级注入:ci-live-telemetry.sh 需要 GITHUB_TOKEN 创建/PATCH 临时
+      # Check Run;v4 只在 step A 注入导致 B/C/D/E 遥测静默失败(已实证)。
+      TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TELEMETRY_CHECK_NAME: tele-dmesgonly
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: 初始化公共底座 submodule
+        run: git submodule update --init --recursive -- CodeWhale
+
+      - name: 装系统依赖(与 rust-test 一致 + strace)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            librsvg2-dev libssl-dev \
+            libx11-dev libxi-dev libxtst-dev \
+            libayatana-appindicator3-dev \
+            build-essential pkg-config cmake lld strace
+
+      - name: bge-m3 占位 (与 rust-test 一致)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 对齐 rust-toolchain.toml 锁定的工具链
+        working-directory: pinvou3-app/src-tauri
+        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
+
+      - name: Node.js (relay e2e,与 rust-test 一致)
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: remote-control-relay/package-lock.json
+
+      - name: relay 依赖 (与 rust-test 一致)
+        run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
+
+      - name: 浏览器驱动依赖 (与 rust-test 一致)
+        run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
+
+      - name: Cargo cache (restore 致死的 v2 暖 cache)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+          shared-key: rust-test-v2
+          save-if: false
+
+      - name: P0) 编译 + settle 至 FRESH(复刻 rust-test 编译腿,含 memguard)
+        run: |
+          mkdir -p /tmp/ci-observe
+          sudo sh -c "while :; do dmesg 2>/dev/null | tail -6 > /tmp/ci-observe/dmesg.tail; sleep 2; done" &
+          bash scripts/ci-memguard.sh &
+          guard_pid=$!
+          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1 | tail -5
+          for i in 1 2 3; do
+            out=$(CARGO_TERM_COLOR=never cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
+            echo "$out" | tail -3
+            if echo "$out" | grep -q 'Compiling pinvou3-tauri'; then
+              echo "v6 settle pass $i: recompiled" | tee -a /tmp/ci-observe/ab.log
+            else
+              echo "v6 settle pass $i: FRESH" | tee -a /tmp/ci-observe/ab.log
+              break
+            fi
+          done
+          kill "$guard_pid" 2>/dev/null || true
+
+      - name: P1) 执行腿复刻(无 memguard):cargo test 全量执行
+        run: |
+          bash scripts/ci-live-telemetry.sh &
+          chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          export CHROME="$chrome"
+          export PINVOU_REQUIRE_REMOTE_E2E=1
+          echo "v6 P1 start (no memguard) $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
+          pre=$(CARGO_TERM_COLOR=never cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
+          echo "$pre" | tail -2
+          echo "$pre" | grep -q 'Compiling pinvou3-tauri' \
+            && echo "v6 P1 tree: DIRTY" | tee -a /tmp/ci-observe/ab.log \
+            || echo "v6 P1 tree: FRESH" | tee -a /tmp/ci-observe/ab.log
+          set +e
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | python3 scripts/ci-tee-unbuffered.py
+          s=${PIPESTATUS[0]}
+          set -e
+          echo "v6 P1 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
+
+      - name: P2) 执行腿复刻(有 memguard):cargo test 全量执行
+        run: |
+          bash scripts/ci-live-telemetry.sh &
+          bash scripts/ci-memguard.sh &
+          guard_pid=$!
+          chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          export CHROME="$chrome"
+          export PINVOU_REQUIRE_REMOTE_E2E=1
+          echo "v6 P2 start (with memguard) $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
+          set +e
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | python3 scripts/ci-tee-unbuffered.py
+          s=${PIPESTATUS[0]}
+          set -e
+          kill "$guard_pid" 2>/dev/null || true
+          echo "v6 P2 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
+
+
+  # v13 组分臂 4:P0 遥测行替换为「仅一个后台 sleep 循环」(纯后台进程对照)。
+  #   若本臂也活,保护因子只是「任意后台进程」,需重新审视全部实验框架。
+  probe-sleepbg:
+    name: probe-sleepbg
+    needs: changes
+    if: ${{ github.event_name != 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      checks: write
+    env:
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
+      CARGO_PROFILE_DEV_LTO: "thin"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      # job 级注入:ci-live-telemetry.sh 需要 GITHUB_TOKEN 创建/PATCH 临时
+      # Check Run;v4 只在 step A 注入导致 B/C/D/E 遥测静默失败(已实证)。
+      TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TELEMETRY_CHECK_NAME: tele-sleepbg
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: 初始化公共底座 submodule
+        run: git submodule update --init --recursive -- CodeWhale
+
+      - name: 装系统依赖(与 rust-test 一致 + strace)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            librsvg2-dev libssl-dev \
+            libx11-dev libxi-dev libxtst-dev \
+            libayatana-appindicator3-dev \
+            build-essential pkg-config cmake lld strace
+
+      - name: bge-m3 占位 (与 rust-test 一致)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 对齐 rust-toolchain.toml 锁定的工具链
+        working-directory: pinvou3-app/src-tauri
+        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
+
+      - name: Node.js (relay e2e,与 rust-test 一致)
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: remote-control-relay/package-lock.json
+
+      - name: relay 依赖 (与 rust-test 一致)
+        run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
+
+      - name: 浏览器驱动依赖 (与 rust-test 一致)
+        run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
+
+      - name: Cargo cache (restore 致死的 v2 暖 cache)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+          shared-key: rust-test-v2
+          save-if: false
+
+      - name: P0) 编译 + settle 至 FRESH(复刻 rust-test 编译腿,含 memguard)
+        run: |
+          mkdir -p /tmp/ci-observe
+          ( while :; do sleep 1; done ) &
+          bash scripts/ci-memguard.sh &
+          guard_pid=$!
+          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1 | tail -5
+          for i in 1 2 3; do
+            out=$(CARGO_TERM_COLOR=never cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
+            echo "$out" | tail -3
+            if echo "$out" | grep -q 'Compiling pinvou3-tauri'; then
+              echo "v6 settle pass $i: recompiled" | tee -a /tmp/ci-observe/ab.log
+            else
+              echo "v6 settle pass $i: FRESH" | tee -a /tmp/ci-observe/ab.log
+              break
+            fi
+          done
+          kill "$guard_pid" 2>/dev/null || true
+
+      - name: P1) 执行腿复刻(无 memguard):cargo test 全量执行
+        run: |
+          bash scripts/ci-live-telemetry.sh &
+          chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          export CHROME="$chrome"
+          export PINVOU_REQUIRE_REMOTE_E2E=1
+          echo "v6 P1 start (no memguard) $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
+          pre=$(CARGO_TERM_COLOR=never cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
+          echo "$pre" | tail -2
+          echo "$pre" | grep -q 'Compiling pinvou3-tauri' \
+            && echo "v6 P1 tree: DIRTY" | tee -a /tmp/ci-observe/ab.log \
+            || echo "v6 P1 tree: FRESH" | tee -a /tmp/ci-observe/ab.log
+          set +e
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | python3 scripts/ci-tee-unbuffered.py
+          s=${PIPESTATUS[0]}
+          set -e
+          echo "v6 P1 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
+
+      - name: P2) 执行腿复刻(有 memguard):cargo test 全量执行
         run: |
           bash scripts/ci-live-telemetry.sh &
           bash scripts/ci-memguard.sh &
