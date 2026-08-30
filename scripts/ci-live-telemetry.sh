@@ -50,16 +50,20 @@ sampler_pid=
 if [ -z "${TELEMETRY_NO_SAMPLER:-}" ]; then
 (
   while :; do
-    ts=$(date -u +%H:%M:%S)
-    read -r avail swapf dirty wb < <(awk '
-      /^MemAvailable:/ {a=int($2/1024)}
-      /^SwapFree:/     {s=int($2/1024)}
-      /^Dirty:/        {d=int($2/1024)}
-      /^Writeback:/    {w=int($2/1024)}
-      END {print a, s, d, w}' /proc/meminfo)
-    load=$(cut -d' ' -f1 /proc/loadavg)
-    psi_mem=$(awk '/^some/ {print $2}' /proc/pressure/memory 2>/dev/null)
-    psi_io=$(awk '/^some/ {print $2}' /proc/pressure/io 2>/dev/null)
+    if [ -n "${TELEMETRY_NO_PROC:-}" ]; then
+      ts="-"; avail="-"; swapf="-"; dirty="-"; wb="-"; load="-"; psi_mem="-"; psi_io="-"
+    else
+      ts=$(date -u +%H:%M:%S)
+      read -r avail swapf dirty wb < <(awk '
+        /^MemAvailable:/ {a=int($2/1024)}
+        /^SwapFree:/     {s=int($2/1024)}
+        /^Dirty:/        {d=int($2/1024)}
+        /^Writeback:/    {w=int($2/1024)}
+        END {print a, s, d, w}' /proc/meminfo)
+      load=$(cut -d' ' -f1 /proc/loadavg)
+      psi_mem=$(awk '/^some/ {print $2}' /proc/pressure/memory 2>/dev/null)
+      psi_io=$(awk '/^some/ {print $2}' /proc/pressure/io 2>/dev/null)
+    fi
     if [ -n "${TELEMETRY_NO_PS:-}" ]; then
       thr="-"; top="-"
     else
