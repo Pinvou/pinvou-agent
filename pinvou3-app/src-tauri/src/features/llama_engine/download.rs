@@ -453,8 +453,12 @@ pub(crate) async fn install_model(app: &tauri::AppHandle, model_id: &str) -> Res
     // 即将改写模型文件时先停运行中的引擎并等收口（Windows 下运行中的
     // llama-server 占用 gguf/mmproj，rename 会报 sharing violation；与
     // delete 路径同口径）。已完整安装的幂等跳过不打扰运行中的引擎。
+    // 收口等待最长 ~10s，与 delete 命令同口径跑在 spawn_blocking——本函数
+    // 是 async，阻塞等待不得占住 tokio 工作线程。
     if !model_files_verified(&spec) {
-        stop_engine_if_running("替换模型文件")?;
+        tokio::task::spawn_blocking(|| stop_engine_if_running("替换模型文件"))
+            .await
+            .map_err(|e| format!("停止引擎任务失败: {e}"))??;
     }
 
     std::fs::create_dir_all(models_dir()).map_err(|e| format!("创建模型目录失败: {e}"))?;
