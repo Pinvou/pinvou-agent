@@ -259,12 +259,12 @@ function injectSource() {
             pid: null,
             device: 'cpu',
             detectedDevice: 'cpu',
-            activeModel: 'qwen3vl-2b-q4-k-m',
-            defaultModel: 'qwen3vl-2b-q4-k-m',
-            recommendedModel: 'qwen3vl-2b-q4-k-m',
+            activeModel: 'qwen3vl-2b-q4km',
+            defaultModel: 'qwen3vl-2b-q4km',
+            recommendedModel: 'qwen3vl-2b-q4km',
             models: [
-              { id: 'qwen3vl-2b-q4-k-m', displayName: 'Qwen3-VL 2B (Q4_K_M)', installed: true },
-              { id: 'qwen3vl-4b-q4-k-m', displayName: 'Qwen3-VL 4B (Q4_K_M)', installed: false },
+              { id: 'qwen3vl-2b-q4km', displayName: 'Qwen3-VL 2B (Q4_K_M)', installed: true },
+              { id: 'qwen3vl-4b-q4km', displayName: 'Qwen3-VL 4B (Q4_K_M)', installed: false },
             ],
             error: null,
           });
@@ -1199,10 +1199,10 @@ async function modalWidth(page, headingText) {
   // ⑦.llama.4 删除模型走应用内自绘确认弹窗（window.confirm 在 Tauri Windows
   // WebView2 下静默失效，危险操作不能依赖原生 confirm）：取消不删、确认才删。
   const llamaDeleteBtnState = await page.evaluate(() => {
-    const btn = document.querySelector('[data-testid="llama-delete-model-qwen3vl-2b-q4-k-m"]');
+    const btn = document.querySelector('[data-testid="llama-delete-model-qwen3vl-2b-q4km"]');
     return { exists: !!btn, disabled: btn ? btn.disabled : null };
   });
-  await page.evaluate(() => { document.querySelector('[data-testid="llama-delete-model-qwen3vl-2b-q4-k-m"]').click(); });
+  await page.evaluate(() => { document.querySelector('[data-testid="llama-delete-model-qwen3vl-2b-q4km"]').click(); });
   await sleep(400);
   const llamaDeleteModal = await page.evaluate(() => {
     const title = document.querySelector('.fixed.inset-0 h3');
@@ -1211,7 +1211,7 @@ async function modalWidth(page, headingText) {
       visible: !!document.querySelector('[data-testid="llama-delete-confirm"]'),
       titleText: (title && title.textContent) || '',
       mentionsModel: !!body && body.textContent.includes('Qwen3-VL 2B'),
-      deleteBtn: !!document.querySelector('[data-testid="llama-delete-model-qwen3vl-2b-q4-k-m"]'),
+      deleteBtn: !!document.querySelector('[data-testid="llama-delete-model-qwen3vl-2b-q4km"]'),
     };
   });
   let llamaDeleteCancelled = false;
@@ -1223,7 +1223,7 @@ async function modalWidth(page, headingText) {
       const calls = [...window.__SETTINGS_TEST__.calls].reverse();
       return !calls.some(item => item.cmd === 'llama_engine_delete_model');
     });
-    await page.click('[data-testid="llama-delete-model-qwen3vl-2b-q4-k-m"]');
+    await page.click('[data-testid="llama-delete-model-qwen3vl-2b-q4km"]');
     await sleep(150);
     await page.click('[data-testid="llama-delete-confirm"]');
     await sleep(250);
@@ -1235,7 +1235,7 @@ async function modalWidth(page, headingText) {
   }
   rec('⑦.llama.4 删除模型弹自绘确认框：取消不删、确认带模型 id 删除',
     llamaDeleteModal.visible && llamaDeleteModal.titleText.includes('删除') && llamaDeleteModal.mentionsModel
-      && llamaDeleteCancelled && llamaDeleteDone.called && llamaDeleteDone.model === 'qwen3vl-2b-q4-k-m',
+      && llamaDeleteCancelled && llamaDeleteDone.called && llamaDeleteDone.model === 'qwen3vl-2b-q4km',
     JSON.stringify({ modal: llamaDeleteModal, cancelled: llamaDeleteCancelled, done: llamaDeleteDone, btn: llamaDeleteBtnState, pageErrors: errors.slice(-4).map(String) }));
 
   // 回到模型子页继续 ⑦.img.6 图片能力测试。
