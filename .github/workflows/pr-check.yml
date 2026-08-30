@@ -882,6 +882,26 @@ jobs:
           /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
           status=$?
           set -e
+          # 诊断(本分支专用,勿合入 main):吸收 fingerprint mtime 竞争。
+          # v5 探针实证:tauri-codegen 的 proc-macro 在 rustc 展开期把图标缓存
+          # 文件(OUT_DIR/<blake3>)写入 target/debug/build/pinvou3-tauri-*/out/,
+          # 其 mtime 可晚于 dep-test-lib reference → 下一次 cargo 调用判定根
+          # crate dirty,重编 ~1m40s;第二次调用后 write_if_changed 不再写,
+          # fingerprint 稳定(第三次调用 0.61s fresh)。rust-test 死亡 100% 发生
+          # 在「含该二次编译的执行腿调用」内。这里最多补 3 次 --no-run 把树
+          # 收敛到 fresh,结果写 ab.log 经遥测 PATCH 留证。
+          mkdir -p /tmp/ci-observe
+          for i in 1 2 3; do
+            [ "$status" -ne 0 ] && break
+            out=$(cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
+            echo "$out" | tail -3
+            if echo "$out" | grep -q 'Compiling pinvou3-tauri'; then
+              echo "settle pass $i: root crate recompiled" >> /tmp/ci-observe/ab.log
+            else
+              echo "settle pass $i: FRESH" >> /tmp/ci-observe/ab.log
+              break
+            fi
+          done
           kill "$guard_pid" 2>/dev/null || true
           exit "$status"
 
@@ -902,6 +922,17 @@ jobs:
           guard_pid=$!
           bash scripts/ci-live-telemetry.sh &
           tele_pid=$!
+          # 诊断:跑测试前断言树已收敛(fresh)。若仍 dirty,本次调用会先重编
+          # 根 crate(死亡历史 100% 发生在这种调用内);若 fresh 则直接进入测试。
+          # 判定结果经遥测 PATCH 留证,VM 死亡后仍可读。
+          mkdir -p /tmp/ci-observe
+          pre=$(cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
+          echo "$pre" | tail -3
+          if echo "$pre" | grep -q 'Compiling pinvou3-tauri'; then
+            echo "exec-leg: DIRTY (recompiled before tests)" >> /tmp/ci-observe/ab.log
+          else
+            echo "exec-leg: FRESH (no recompile)" >> /tmp/ci-observe/ab.log
+          fi
           set +e
           cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | python3 scripts/ci-tee-unbuffered.py
           status=${PIPESTATUS[0]}
