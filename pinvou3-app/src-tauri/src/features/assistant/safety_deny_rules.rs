@@ -61,7 +61,7 @@
 //! | 3. DANGEROUS_CMDS (was already dead) | viewers × sensitive absolute files + `ssh-keygen` / `gpg --export-secret-keys[-subkeys]` command words |
 //! | 4. sudo block while super permission off (was already dead) | `sudo` (+`sudoedit`) command-word deny; rules added/removed per `super_permission::is_enabled()` snapshot |
 //! | (live substring write/exfil coverage) | `cp`/`mv`/`scp`/`rsync`/`tar`/`zip`/`ln`/`ditto`/`curl` deny when the FIRST positional (or flag-value) argument is a sensitive path (the exfil direction: sensitive data as copy source), plus `dd if=`/`of=` key-value tokens |
-//! | (live substring destroy coverage) | `rm`/`unlink`/`rmdir`/`shred`/`truncate`/`touch` deny when the FIRST positional argument is a sensitive path (Windows: `del`/`erase`/`remove-item`/`ri`/`rm`/`rd`/`rmdir`/`icacls`/`rename-item`/`rni` + canonical cmd.exe `/`-flag sequences) |
+//! | (live substring destroy coverage) | `rm`/`unlink`/`rmdir`/`shred`/`truncate` deny when the FIRST positional argument is a sensitive path (Windows: `del`/`erase`/`remove-item`/`ri`/`rm`/`rd`/`rmdir`/`icacls`/`rename-item`/`rni` + canonical cmd.exe `/`-flag sequences) |
 //! | (live substring glob-dump coverage) | viewer/exfil/destroy families include the `…/<dir>/*` glob token per sensitive directory and prefix (`cat ~/.ssh/*`, `type %userprofile%\.ssh\*`) |
 //! | (live Windows `.ps1` segments 1/2) | the same read/exfil/destroy families under Windows-native spellings: `%userprofile%\` / `$home\` / `$env:userprofile\` / `~\` prefixes, backslash directory/child/name spellings, the `%appdata%`/`%localappdata%`/`$env:` Microsoft credential & protect directories, and the resolved real home on Windows hosts |
 //! | `.ps1` segment-3 credential command words (was already dead) | `cmdkey` / `vaultcmd` / `get-credential` / `get-storedcredential` / credential-manager `control` invocations / `rundll32 keymgr.dll,krshowkeymgr` |
@@ -90,10 +90,19 @@
 //!   in their canonical orders, directory-level glob dump forms (`cat
 //!   ~/.ssh/*`) are enumerated, and the combinatorial tails (arbitrary flag
 //!   orders, name-level globs, `.exe`-suffixed command spellings) are
-//!   registered residues below.
+//!   registered residues below. One deliberate exception: `touch` on a
+//!   sensitive path is no longer denied — it can neither read nor destroy
+//!   content, so the former substring denial had zero security value
+//!   (registered as a false-positive removal below, pinned on the allow
+//!   side).
 //!
 //! ## Known v1 semantic differences (registered, not silent)
 //!
+//! - Deliberate false-positive removals (narrower than the former hook on
+//!   purpose): the substring also denied commands whose denial has no
+//!   security value in this threat model. `touch <sensitive path>` can
+//!   neither read nor destroy content, so v1 allows it (allow-trace pinned);
+//!   re-adding such a rule requires a deliberate decision.
 //! - Sensitive-directory child files are only covered for an enumerated list
 //!   of well-known credential files (files whose CONTENT is itself a secret);
 //!   the secret-bearing child DIRECTORY `.gnupg/private-keys-v1.d` is
@@ -312,15 +321,16 @@ const EXFIL_SOURCE_COMMANDS: &[&str] = &[
 ];
 
 /// First-argument destroy/tamper commands: the former live segments 1/2
-/// substrings denied deleting or mutating a sensitive path as well
-/// (`rm ~/.ssh/id_rsa`, `rm -rf ~/.ssh/`, `shred …`, `touch ~/.ssh/
-/// authorized_keys`), and the first argument of these mutators is its
+/// substrings denied deleting a sensitive path as well (`rm ~/.ssh/id_rsa`,
+/// `rm -rf ~/.ssh/`, `shred …`), and the first argument of a removal is its
 /// target, so the same anchor applies. Multi-argument `rm a b` covers only
 /// the first target (the same argument-position limit as grep — see known
 /// differences). `chmod`/`chown` are NOT here: their mode/owner argument
 /// precedes the path, so they cannot be first-argument anchored (registered
-/// residue).
-const DESTROY_SOURCE_COMMANDS: &[&str] = &["rm", "unlink", "rmdir", "shred", "truncate", "touch"];
+/// residue). `touch` is deliberately NOT here either: it can neither read
+/// nor destroy content, so denying it had zero security value — registered
+/// as a deliberate false-positive removal (see known differences).
+const DESTROY_SOURCE_COMMANDS: &[&str] = &["rm", "unlink", "rmdir", "shred", "truncate"];
 
 /// Windows-native home-directory spellings of the former `.ps1` segment 1
 /// (`%userprofile%\.ssh`, `$home\.ssh`, and the `~\` form it caught via the
@@ -693,7 +703,7 @@ fn exfil_source_rules() -> Vec<ToolAskRule> {
     exfil_rules_for(&sensitive_first_arg_variants())
 }
 
-/// Destroy/tamper deny: `rm`/`unlink`/`rmdir`/`shred`/`truncate`/`touch`
+/// Destroy/tamper deny: `rm`/`unlink`/`rmdir`/`shred`/`truncate`
 /// with a sensitive path as the FIRST positional argument (see
 /// [`DESTROY_SOURCE_COMMANDS`]); the former live substrings denied deleting
 /// or mutating a sensitive path too. Flag-prefixed forms (`rm -f …`,
@@ -1113,17 +1123,17 @@ mod tests {
         // absolute files 9 × 9 = 81; find roots 11 × 5 × 2 = 110; directory
         // glob reads 55 × 9 = 495; first-argument spellings 110 dir + 55
         // name + 45 child + 9 abs + 55 glob = 274 → exfil 9 × 274 = 2466,
-        // destroy 6 × 274 = 1644, dd 2 × 274 = 548; File tool 11 × 4 + 11
+        // destroy 5 × 274 = 1370, dd 2 × 274 = 548; File tool 11 × 4 + 11
         // = 55; Windows literal spellings 184 (88 dir + 36 child + 44 name
         // + 16 MS credential dirs) + 44 dir globs = 228 anchored tokens:
         // viewers 184 × 5 = 920 + globs 44 × 5 = 220, exfil 228 × 14 =
         // 3192, destroy 228 × 10 = 2280, cmd.exe `/`-flag sequences
         // 19 (5 del + 5 erase + 3 rd + 3 rmdir + 1 copy + 1 xcopy
         // + 1 move) × 228 = 4332, credential command words 7; POSIX command
-        // words 3; sudo 2 → 18245 total.
+        // words 3; sudo 2 → 17971 total.
         // Pinning the exact number turns any silent section drop/bypass red
         // immediately (a >=100-style weak assertion once hid a ~78% loss).
-        assert_eq!(rules.len(), 18245, "ruleset size drifted; confirm the change is intentional and update the pinned count and this breakdown");
+        assert_eq!(rules.len(), 17971, "ruleset size drifted; confirm the change is intentional and update the pinned count and this breakdown");
         let commands: Vec<&str> = rules.iter().filter_map(|r| r.command.as_deref()).collect();
         for must in [
             "cat ~/.ssh/",
@@ -1178,7 +1188,6 @@ mod tests {
             "rmdir ~/.ssh/",
             "shred ~/.ssh/id_rsa",
             "truncate ~/.ssh/id_rsa",
-            "touch ~/.ssh/authorized_keys",
             // Absolute-file backup/fragment spellings (former substring
             // coverage).
             "cat /etc/shadow-",
@@ -1377,7 +1386,6 @@ mod tests {
             "rmdir ~/.ssh/",
             "shred ~/.ssh/id_rsa",
             "truncate ~/.ssh/id_rsa",
-            "touch ~/.ssh/authorized_keys",
             // Absolute-file backup spellings (former substring coverage,
             // restored). Fragment GLOBS are denied; concrete fragment names
             // are arbitrary (containment residue — pinned below).
@@ -1494,6 +1502,11 @@ mod tests {
             // sudoers fragment names are arbitrary (containment residue; the
             // `…/sudoers.d/*` glob spelling IS denied).
             "cat /etc/sudoers.d/pinvou3",
+            // Deliberate false-positive removal (registered): `touch` can
+            // neither read nor destroy content, so denying it had zero
+            // security value — the former hook's substring denied it, v1
+            // does not reproduce that.
+            "touch ~/.ssh/authorized_keys",
             // Double-quoted ${HOME} spelling: the deny-scan expansion drops
             // the brace form from the word (contributing no text), leaving a
             // leading-slash token no rule names (registered combinatorial
