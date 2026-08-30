@@ -929,6 +929,139 @@ jobs:
           kill "$guard_pid" 2>/dev/null || true
           exit "$status"
 
+  # 诊断 job(本分支专用,勿合入 main):同 VM A/B 定性致死因子。
+  # A = restore rust-test-v2 暖 cache 后链接的测试二进制(已知:执行数秒内 VM 失联);
+  # B = 同 env 全冷编译到独立 CARGO_TARGET_DIR 的二进制(已知:绿)。
+  # 同一 VM 内先跑 B(预期绿)再跑 A(预期死),若 B 绿 A 死 → 致死因子 100% 在
+  # 链接产物内容;同时逐字节 hash 对比两侧 target/debug/deps,并用 strace 记录
+  # A 启动期的 syscall 尾迹。全程遥测 PATCH 到 Check Run,VM 死亡后仍可读取。
+  rust-test-ab-probe:
+    name: rust-test-ab-probe
+    if: ${{ github.event_name != 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      checks: write
+    env:
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
+      CARGO_PROFILE_DEV_LTO: "thin"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: 初始化公共底座 submodule
+        run: git submodule update --init --recursive -- CodeWhale
+
+      - name: 装系统依赖(与 rust-test 一致 + strace)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            librsvg2-dev libssl-dev \
+            libx11-dev libxi-dev libxtst-dev \
+            libayatana-appindicator3-dev \
+            build-essential pkg-config cmake lld strace
+
+      - name: bge-m3 占位 (与 rust-test 一致)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 对齐 rust-toolchain.toml 锁定的工具链
+        working-directory: pinvou3-app/src-tauri
+        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
+
+      - name: Node.js + relay/浏览器 e2e 依赖(与 rust-test 一致)
+        run: |
+          echo skip  # 探针不跑真 e2e;死亡发生在二进制启动期,与 e2e 资源无关
+
+      - name: Cargo cache (restore 致死的 v2 暖 cache)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+          shared-key: rust-test-v2
+          save-if: false
+
+      - name: A) 暖 restore 树链接测试二进制 A
+        env:
+          TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash scripts/ci-live-telemetry.sh &
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1 | tail -3
+          bin_a=$(find "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/target/debug/deps" -maxdepth 1 -type f -name 'pinvou3_lib-*' ! -name '*.d' -executable | head -1)
+          echo "BIN_A=$bin_a" >> "$GITHUB_ENV"
+          { echo "== A(暖链接)=="; echo "path: $bin_a"; sha256sum "$bin_a"; stat -c 'size=%s mtime=%y' "$bin_a"; rustc --version; } >> /tmp/ci-observe/ab.log
+
+      - name: B) 同 env 全冷编译到独立 target 得二进制 B (~15min)
+        run: |
+          bash scripts/ci-live-telemetry.sh &
+          export CARGO_TARGET_DIR=/tmp/cold-target
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1 | tail -3
+          bin_b=$(find /tmp/cold-target/debug/deps -maxdepth 1 -type f -name 'pinvou3_lib-*' ! -name '*.d' -executable | head -1)
+          echo "BIN_B=$bin_b" >> "$GITHUB_ENV"
+          { echo "== B(冷编译)=="; echo "path: $bin_b"; sha256sum "$bin_b"; stat -c 'size=%s mtime=%y' "$bin_b"; } >> /tmp/ci-observe/ab.log
+
+      - name: C) restore 产物 vs 冷编译产物逐字节对比
+        run: |
+          bash scripts/ci-live-telemetry.sh &
+          {
+            echo "== deps 逐字节对比(同名文件 hash 不一致/仅单侧存在) =="
+            (cd "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/target/debug/deps" && find . -maxdepth 1 -type f -printf '%f\n' | sort > /tmp/warm-names.txt)
+            (cd /tmp/cold-target/debug/deps && find . -maxdepth 1 -type f -printf '%f\n' | sort > /tmp/cold-names.txt)
+            echo "warm files: $(wc -l < /tmp/warm-names.txt), cold files: $(wc -l < /tmp/cold-names.txt)"
+            echo "--- 仅 warm 有(前 20) ---"; comm -23 /tmp/warm-names.txt /tmp/cold-names.txt | head -20
+            echo "--- 仅 cold 有(前 20) ---"; comm -13 /tmp/warm-names.txt /tmp/cold-names.txt | head -20
+            echo "--- 同名但内容不同(前 20) ---"
+            cnt=0
+            while read -r f; do
+              h1=$(sha256sum "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/target/debug/deps/$f" | cut -d' ' -f1)
+              h2=$(sha256sum "/tmp/cold-target/debug/deps/$f" | cut -d' ' -f1)
+              if [ "$h1" != "$h2" ]; then echo "DIFF: $f"; cnt=$((cnt+1)); [ $cnt -ge 20 ] && break; fi
+            done < <(comm -12 /tmp/warm-names.txt /tmp/cold-names.txt)
+            echo "(diff 计数截断于 20)"
+          } >> /tmp/ci-observe/ab.log 2>&1 || true
+
+      - name: D) 同 VM 先跑冷编译二进制 B(预期绿)
+        run: |
+          bash scripts/ci-live-telemetry.sh &
+          cd pinvou3-app/src-tauri
+          export CARGO_MANIFEST_DIR="$PWD"
+          export LD_LIBRARY_PATH="/tmp/cold-target/debug/deps:$(rustc --print sysroot)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export PINVOU_REQUIRE_REMOTE_E2E=1
+          echo "== D) 跑 B 开始 $(date -u +%T) ==" >> /tmp/ci-observe/ab.log
+          set +e
+          timeout 300 "$BIN_B" --test-threads=1 2>&1 | python3 "$GITHUB_WORKSPACE/scripts/ci-tee-unbuffered.py"
+          s=${PIPESTATUS[0]}
+          set -e
+          echo "== B exit=$s $(date -u +%T) ==" >> /tmp/ci-observe/ab.log
+
+      - name: E) 同 VM strace 跑暖链接二进制 A(预期失联)
+        run: |
+          bash scripts/ci-live-telemetry.sh &
+          cd pinvou3-app/src-tauri
+          export CARGO_MANIFEST_DIR="$PWD"
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/pinvou3-app/src-tauri/target/debug/deps:$(rustc --print sysroot)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export PINVOU_REQUIRE_REMOTE_E2E=1
+          echo "== E) strace 跑 A 开始 $(date -u +%T) ==" >> /tmp/ci-observe/ab.log
+          set +e
+          strace -f -tt -e trace=%memory,%process,openat -o /tmp/ci-observe/strace.log \
+            timeout 300 "$BIN_A" --test-threads=1 2>&1 | python3 "$GITHUB_WORKSPACE/scripts/ci-tee-unbuffered.py"
+          s=${PIPESTATUS[0]}
+          set -e
+          echo "== A exit=$s $(date -u +%T) ==" >> /tmp/ci-observe/ab.log
+
   windows-rust-test:
     name: windows-rust-test
     needs: changes

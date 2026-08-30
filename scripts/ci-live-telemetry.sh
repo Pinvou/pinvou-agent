@@ -27,6 +27,13 @@ DMESG_TAIL="$OBSERVE_DIR/dmesg.tail"
 CARGO_LOG="$OBSERVE_DIR/cargo.log"
 
 mkdir -p "$OBSERVE_DIR"
+
+# 幂等:探针 job 跨 step 重复启动时只保留一个实例(每个实例会新建 Check Run)。
+if [ -f "$OBSERVE_DIR/telemetry.pid" ] && kill -0 "$(cat "$OBSERVE_DIR/telemetry.pid")" 2>/dev/null; then
+  exit 0
+fi
+echo $$ >"$OBSERVE_DIR/telemetry.pid"
+
 : >"$MEM_LOG"
 
 # --- 1s 本地采样器(无网络依赖,死亡前最后一秒也有数据) ---
@@ -78,7 +85,11 @@ $(tail -12 "$MEM_LOG" 2>/dev/null)
 --- cargo tail ---
 $(tail -c 1000 "$CARGO_LOG" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | tail -6)
 --- dmesg tail ---
-$(cat "$DMESG_TAIL" 2>/dev/null)"
+$(cat "$DMESG_TAIL" 2>/dev/null)
+--- ab probe ---
+$(tail -25 "$OBSERVE_DIR/ab.log" 2>/dev/null)
+--- strace tail ---
+$(tail -15 "$OBSERVE_DIR/strace.log" 2>/dev/null)"
   gh api "repos/$GITHUB_REPOSITORY/check-runs/$check_id" \
     -X PATCH \
     -f "output[title]=${last_mem:-starting}" \
