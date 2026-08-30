@@ -1331,6 +1331,7 @@ impl AppEngine {
         turn_lifecycle: Arc<TurnLifecycle>,
         shell_manager: SharedShellManager,
         turn_shell_tasks: TurnShellTaskRegistry,
+        steer_id_generation: u64,
     ) -> Result<(Self, tauri::async_runtime::JoinHandle<()>)> {
         // Instructions 走 Inline，不写入远端工作区。所有会话共享产品工具面；
         // 子智能体仍由 CodeWhale 的通用角色与运行时策略进一步收窄。
@@ -1450,6 +1451,7 @@ impl AppEngine {
             turn_lifecycle.clone(),
             shell_manager,
             turn_shell_tasks.clone(),
+            steer_id_generation,
         );
 
         Ok((
