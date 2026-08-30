@@ -1066,7 +1066,7 @@ impl GaiaDiagnostics {
             .unwrap_or_else(|_| "{}".to_owned());
         let blockers = self.integration_blockers();
         format!(
-            "### 接入稳定性门禁\n\n- 状态: **{}**\n- 可用于 Agent 能力趋势比较: **{}**\n- 阻断项: {}\n- 规则: 模型/桥接/GAIA 生命周期必须零失败，且不能残留 `tool_execution_failed` 或未知工具错误。\n\n- 任务级接入失败归属: {}\n- 观测问题归属: {}\n- 安全失败原因: {}\n- 失败类别: {}\n- 模型工具提议: {}\n- 实际执行工具: {}（失败 {}）\n- 工具执行失败原因: {}\n- Agent 控制事件: {}\n- 已记录总耗时: {} ms\n\n### Benchmark 性能观测\n\n```json\n{}\n```\n\n- `agent`：Agent 循环或最终输出契约问题。\n- `model`：模型请求或协议问题。\n- `gaia_integration`：GAIA 输入、附件、backend 生命周期或私有输出接入问题。\n- `agent_or_model_bridge`：任务级超时（模型与 Agent 循环无法安全区分）或旧记录只有通用 backend 失败，现有安全数据不足以继续细分。\n- `model_tool_call`：模型选择了禁止动作、生成错误参数或请求不存在的资源。\n- `agent_recovery_policy`：工具失败后重复调用直至预算拒绝，属于 Agent/模型恢复策略问题。\n- `external_network`：目标网络连接或超时，不等同于桥接失败。\n- `external_web_source`：目标站点拒绝、动态页面或正文提取失败，不等同于 Desktop/CLI 接入失败。\n- `gaia_integration_or_unknown`：评测配置失败，或错误码仍过于宽泛；存在时本轮禁止用于 Agent 趋势比较。\n- 性能范围：仅覆盖 benchmark 中成功返回 usage 的模型请求。\n- 有效解码吞吐：`output_tokens / (请求耗时 - TTFT)`，不能替代推理服务器侧的纯硬件吞吐测试。\n- 工具诊断：预算耗尽是未执行提议的 Agent 控制事件，不计入工具调用或工具执行失败；失败原因只记录固定白名单错误码，不包含参数或返回内容。",
+            "### 接入稳定性门禁\n\n- 状态: **{}**\n- 可用于 Agent 能力趋势比较: **{}**\n- 阻断项: {}\n- 规则: 模型/桥接/GAIA 生命周期必须零失败，且不能残留 `tool_execution_failed` 或未知工具错误。\n\n- 任务级接入失败归属: {}\n- 观测问题归属: {}\n- 安全失败原因: {}\n- 失败类别: {}\n- 模型工具提议: {}\n- 实际执行工具: {}（失败 {}）\n- 工具执行失败原因: {}\n- Agent 控制事件: {}\n- 已记录总耗时: {} ms\n\n### Benchmark 性能观测\n\n```json\n{}\n```\n\n- `agent`：Agent 循环或最终输出契约问题。\n- `model`：模型请求或协议问题。\n- `gaia_integration`：GAIA 输入、附件、backend 生命周期或私有输出接入问题。\n- `agent_or_model_bridge`：任务级超时（模型与 Agent 循环无法安全区分）或旧记录只有通用 backend 失败，现有安全数据不足以继续细分。\n- `model_tool_call`：模型选择了禁止动作、生成错误参数或请求不存在的资源。\n- `agent_recovery_policy`：工具失败后重复调用直至预算拒绝，属于 Agent/模型恢复策略问题。\n- `external_network`：目标网络连接或超时，不等同于桥接失败。\n- `external_web_source`：目标站点拒绝、动态页面或正文提取失败，不等同于 Desktop/CLI 接入失败。\n- `gaia_integration_or_unknown`：评测配置失败，或错误码仍过于宽泛；存在时本轮禁止用于 Agent 趋势比较。\n- `unclassified_tool_observation`：工具失败错误码超出固定白名单（含未知码），按未知工具错误处理并阻断本轮 Agent 趋势比较。\n- 性能范围：仅覆盖 benchmark 中成功返回 usage 的模型请求。\n- 有效解码吞吐：`output_tokens / (请求耗时 - TTFT)`，不能替代推理服务器侧的纯硬件吞吐测试。\n- 工具诊断：预算耗尽是未执行提议的 Agent 控制事件，不计入工具调用或工具执行失败；失败原因只记录固定白名单错误码，不包含参数或返回内容。",
             if blockers.is_empty() { "PASS" } else { "FAIL" },
             self.agent_evaluation_eligible(),
             render_counts(&blockers),
@@ -1862,6 +1862,14 @@ mod tests {
             tool_observation_issue_layer(Some("resource_not_found")),
             "model_tool_call"
         );
+        assert_eq!(
+            tool_observation_issue_layer(Some("not_in_the_whitelist")),
+            "unclassified_tool_observation"
+        );
+        assert_eq!(
+            tool_failure_reason_key(Some("not_in_the_whitelist")),
+            "unclassified"
+        );
     }
 
     #[test]
@@ -1879,6 +1887,20 @@ mod tests {
             diagnostics.integration_blockers()["tool_execution_failed"],
             1
         );
+
+        let unknown = TaskOutcome::new("case", TaskStatus::Completed, None, vec![], 1)
+            .with_tool_observations(vec![benchmark_core::ToolObservation {
+                canonical_name: "Web".to_owned(),
+                failed: true,
+                elapsed_ms: 1,
+                failure_code: Some("weird_new_code".to_owned()),
+            }]);
+        let diagnostics = GaiaDiagnostics::from_outcomes(&[unknown]);
+        assert!(
+            !diagnostics.agent_evaluation_eligible(),
+            "unknown tool codes must block eligibility like the unclassified sentinel"
+        );
+        assert_eq!(diagnostics.integration_blockers()["unclassified"], 1);
     }
 
     #[test]

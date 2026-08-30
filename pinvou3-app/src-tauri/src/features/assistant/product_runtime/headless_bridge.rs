@@ -1950,6 +1950,117 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct RecoverySucceedsRuntime {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ProductRuntimePort for RecoverySucceedsRuntime {
+        async fn prepare(&self, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn run(
+            &self,
+            _session_id: &str,
+            _prompt: &str,
+        ) -> anyhow::Result<ProductTurnOutcome> {
+            anyhow::bail!("legacy_run_must_not_execute")
+        }
+
+        async fn run_with_policy(
+            &self,
+            _session_id: &str,
+            _prompt: &str,
+            _policy: ProductToolPolicy,
+        ) -> anyhow::Result<ProductTurnOutcome> {
+            let call = self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(ProductTurnOutcome {
+                status: "completed".to_owned(),
+                failure_code: None,
+                assistant_text: if call == 0 {
+                    "analysis without marker".to_owned()
+                } else {
+                    "FINAL ANSWER: 42".to_owned()
+                },
+                usage: Some(if call == 0 {
+                    SafeUsageMetrics::new(100, 20, 70, 30)
+                } else {
+                    SafeUsageMetrics::new(40, 10, 25, 15)
+                }),
+                tools: vec![SafeToolOutcome {
+                    name: format!("tool-{call}"),
+                    failed: false,
+                    failure_code: None,
+                    elapsed_ms: Some(7),
+                }],
+                model_requests: vec![SafeModelRequestMetric::new(50, Some(10), 100, 20)],
+            })
+        }
+
+        async fn cancel(&self, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn close(&self, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn gaia_recovery_store_failure_preserves_merged_diagnostics_and_failed_event() {
+        let runtime = Arc::new(RecoverySucceedsRuntime::default());
+        let backend = ProductHeadlessBackend::from_runtime(runtime);
+        let session = backend
+            .prepare(request("recovery-store-failure"))
+            .await
+            .unwrap();
+        let outputs = backend.private_outputs.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = outputs.lock().unwrap();
+                panic!("poison private output store for the recovery failure-path test");
+            })
+            .join()
+            .is_err()
+        );
+        let observer = Arc::new(CollectingObserver::default());
+        let task = AgentTaskInput::new("recovery-store-failure", PrivateInputHandle::new("opaque"))
+            .with_output_contract(AgentOutputContractId::new("gaia-final/v1").unwrap());
+
+        let outcome = backend
+            .run(&session, task, Arc::new(Resolver), observer.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.status(), SafeRunStatus::Failed);
+        assert_eq!(outcome.failure_code(), Some("private_output_store_failed"));
+        assert_eq!(
+            outcome.usage(),
+            Some(SafeUsageMetrics::new(140, 30, 95, 45))
+        );
+        assert_eq!(outcome.model_request_metrics().len(), 2);
+        let events = observer.0.lock().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, SafeAgentEvent::ToolFinished { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    SafeAgentEvent::RunFinished { status, .. } => Some(*status),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            [SafeRunStatus::Failed]
+        );
+    }
+
+    #[derive(Default)]
     struct FailingPolicyRuntime {
         calls: Mutex<Vec<String>>,
     }

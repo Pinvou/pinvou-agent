@@ -206,6 +206,7 @@ struct MockState {
 
 enum BackendBehavior {
     Completed,
+    CloseFailed,
     Failed,
     FailedModelRequestTimeout,
     FailFirst,
@@ -352,7 +353,30 @@ impl HeadlessAgentBackend for MockBackend {
             Duration::from_millis(4),
             Some("missing_action"),
         ));
+        if matches!(self.behavior, BackendBehavior::CloseFailed) {
+            observer.on_event(&SafeAgentEvent::tool_finished_with_code(
+                task.task_id(),
+                "api_key=PRIVATE_TOOL",
+                false,
+                Duration::from_millis(1),
+                Some("Backend exploded: HTTP 500\u{0}"),
+            ));
+        }
         match self.behavior {
+            BackendBehavior::CloseFailed => {
+                Ok(AgentTaskOutcome::completed(Duration::from_millis(2))
+                    .with_private_output(PrivateOutputHandle::new(format!(
+                        "prediction-{}",
+                        task.task_id()
+                    )))
+                    .with_usage(SafeUsageMetrics::new(100, 20, 70, 30))
+                    .with_model_request_metrics(vec![SafeModelRequestMetric::new(
+                        800,
+                        Some(90),
+                        100,
+                        20,
+                    )]))
+            }
             BackendBehavior::Completed
             | BackendBehavior::PendingPrepare
             | BackendBehavior::PendingResolveOutput
@@ -381,7 +405,14 @@ impl HeadlessAgentBackend for MockBackend {
             BackendBehavior::PendingCleanup => std::future::pending().await,
             BackendBehavior::ResolveFailed => {
                 Ok(AgentTaskOutcome::completed(Duration::from_millis(2))
-                    .with_private_output(PrivateOutputHandle::new("missing")))
+                    .with_private_output(PrivateOutputHandle::new("missing"))
+                    .with_usage(SafeUsageMetrics::new(100, 20, 70, 30))
+                    .with_model_request_metrics(vec![SafeModelRequestMetric::new(
+                        800,
+                        Some(90),
+                        100,
+                        20,
+                    )]))
             }
             BackendBehavior::MissingFinalAnswer => {
                 Err(AgentBackendError::Operation("missing_final_answer".into()))
@@ -416,6 +447,9 @@ impl HeadlessAgentBackend for MockBackend {
 
     async fn close(&self, _session: AgentSessionHandle) -> Result<(), AgentBackendError> {
         self.state.lock().unwrap().closed += 1;
+        if matches!(self.behavior, BackendBehavior::CloseFailed) {
+            return Err(AgentBackendError::Operation("close teardown secret".into()));
+        }
         if matches!(
             self.behavior,
             BackendBehavior::PendingCleanup | BackendBehavior::PendingClose
@@ -829,7 +863,110 @@ async fn private_output_resolution_failure_is_invalid_output_after_close() {
         summary.outcomes()[0].failure_category(),
         Some(&benchmark_core::SafeFailureCategory::InvalidOutput)
     );
+    let usage = summary.outcomes()[0]
+        .usage()
+        .expect("usage preserved on resolution failure");
+    assert_eq!((usage.input_tokens, usage.output_tokens), (100, 20));
+    assert_eq!(summary.outcomes()[0].model_request_observations().len(), 1);
     assert_eq!(backend.state.lock().unwrap().closed, 1);
+    fs::remove_dir_all(base).unwrap();
+}
+
+#[tokio::test]
+async fn backend_close_failure_keeps_usage_and_sanitized_tool_codes() {
+    let base = temp_base("close-failed");
+    let backend = Arc::new(MockBackend::with_behavior(BackendBehavior::CloseFailed));
+    let service = BenchmarkService::native(&base, backend.clone()).unwrap();
+    let summary = service
+        .run(
+            manifest("run-close"),
+            &BenchmarkPlan::new(vec![task("one")]),
+        )
+        .await
+        .unwrap();
+    let outcome = &summary.outcomes()[0];
+    assert_eq!(outcome.status(), TaskStatus::Failed);
+    assert_eq!(
+        outcome.failure_reason(),
+        Some(benchmark_core::SafeFailureReason::BackendCloseFailed)
+    );
+    let usage = outcome.usage().expect("usage preserved on close failure");
+    assert_eq!((usage.input_tokens, usage.output_tokens), (100, 20));
+    assert_eq!(outcome.model_request_observations().len(), 1);
+    assert_eq!(
+        outcome.model_request_observations()[0].request_duration_ms,
+        800
+    );
+    let tools = outcome.tool_observations();
+    assert_eq!(tools.len(), 3);
+    assert_eq!(
+        tools[2].failure_code.as_deref(),
+        Some("unclassified"),
+        "non-snake-case backend codes must not reach the persisted record"
+    );
+
+    let reopened = RunStore::open(&base, "run-close")
+        .unwrap()
+        .read_outcomes()
+        .unwrap();
+    assert_eq!(reopened[0].failure_reason(), outcome.failure_reason());
+    assert_eq!(reopened[0].model_request_observations().len(), 1);
+    assert!(reopened[0].usage().is_some());
+    fs::remove_dir_all(base).unwrap();
+}
+
+#[tokio::test]
+async fn close_timeout_keeps_usage_and_measures_elapsed_before_cleanup() {
+    let base = temp_base("close-timeout");
+    let backend = Arc::new(MockBackend::with_behavior(BackendBehavior::PendingClose));
+    let service = BenchmarkService::native(&base, backend.clone()).unwrap();
+    let summary = tokio::time::timeout(
+        Duration::from_secs(15),
+        service.run(
+            manifest("run-close-timeout"),
+            &BenchmarkPlan::new(vec![short_task("slow")]),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let outcome = &summary.outcomes()[0];
+    assert_eq!(outcome.status(), TaskStatus::Timeout);
+    assert_eq!(
+        outcome.failure_reason(),
+        Some(benchmark_core::SafeFailureReason::TaskTimeout)
+    );
+    let usage = outcome.usage().expect("usage preserved on close timeout");
+    assert_eq!((usage.input_tokens, usage.output_tokens), (100, 20));
+    assert!(
+        outcome.elapsed_ms() < 10_000,
+        "cleanup must not inflate elapsed"
+    );
+    assert_eq!(backend.state.lock().unwrap().cancelled, 1);
+    fs::remove_dir_all(base).unwrap();
+}
+
+#[tokio::test]
+async fn resolve_timeout_keeps_usage() {
+    let base = temp_base("resolve-timeout");
+    let backend = Arc::new(MockBackend::with_behavior(
+        BackendBehavior::PendingResolveOutput,
+    ));
+    let service = BenchmarkService::native(&base, backend).unwrap();
+    let summary = tokio::time::timeout(
+        Duration::from_secs(15),
+        service.run(
+            manifest("run-resolve-timeout"),
+            &BenchmarkPlan::new(vec![short_task("slow")]),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let outcome = &summary.outcomes()[0];
+    assert_eq!(outcome.status(), TaskStatus::Timeout);
+    let usage = outcome.usage().expect("usage preserved on resolve timeout");
+    assert_eq!((usage.input_tokens, usage.output_tokens), (100, 20));
     fs::remove_dir_all(base).unwrap();
 }
 
@@ -907,6 +1044,15 @@ async fn backend_failed_outcome_with_model_request_timeout_keeps_usage_and_timeo
         Some(benchmark_core::SafeFailureReason::ModelRequestTimeout)
     );
     assert!(reopened[0].usage().is_some());
+    assert_eq!(reopened[0].model_request_observations().len(), 1);
+    assert_eq!(
+        reopened[0].model_request_observations()[0].request_duration_ms,
+        900
+    );
+    assert_eq!(
+        reopened[0].model_request_observations()[0].ttft_ms,
+        Some(120)
+    );
     fs::remove_dir_all(base).unwrap();
 }
 

@@ -2,9 +2,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use agent_backend_api::{
-    AgentBackendError, AgentOutputContractId, AgentRunObserver, AgentTaskInput, AgentToolPolicyId,
-    HeadlessAgentBackend, PrepareRequest, PrivateInputHandle, PrivateInputResolver,
-    ResolvedPrivateInput, SafeAgentEvent, SafeRunStatus,
+    AgentBackendError, AgentOutputContractId, AgentRunObserver, AgentTaskInput, AgentTaskOutcome,
+    AgentToolPolicyId, HeadlessAgentBackend, PrepareRequest, PrivateInputHandle,
+    PrivateInputResolver, ResolvedPrivateInput, SafeAgentEvent, SafeRunStatus,
 };
 use async_trait::async_trait;
 
@@ -30,7 +30,7 @@ impl AgentRunObserver for CollectingObserver {
                 canonical_name: safe_tool_name(tool_name),
                 failed: *status != SafeRunStatus::Completed,
                 elapsed_ms: elapsed.as_millis() as u64,
-                failure_code: failure_code.clone(),
+                failure_code: failure_code.as_deref().map(safe_failure_code),
             });
         }
     }
@@ -63,6 +63,23 @@ fn safe_tool_name(name: &str) -> String {
     }
 }
 
+fn safe_failure_code(code: &str) -> String {
+    // Tool failure codes arrive from arbitrary backend implementations.
+    // Persist only conservative snake_case tokens; anything else collapses
+    // to the aggregator's unknown-code sentinel, which already blocks
+    // evaluation eligibility downstream.
+    let is_safe = !code.is_empty()
+        && code.len() <= 64
+        && code
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if is_safe {
+        code.to_owned()
+    } else {
+        "unclassified".to_owned()
+    }
+}
+
 fn collected_tools(observer: &CollectingObserver) -> Vec<ToolObservation> {
     observer
         .0
@@ -71,12 +88,43 @@ fn collected_tools(observer: &CollectingObserver) -> Vec<ToolObservation> {
         .unwrap_or_default()
 }
 
+fn backend_metrics(
+    outcome: Option<&AgentTaskOutcome>,
+) -> (Option<crate::UsageMetrics>, Vec<ModelRequestObservation>) {
+    let Some(outcome) = outcome else {
+        return (None, Vec::new());
+    };
+    let usage = outcome.usage().map(|usage| crate::UsageMetrics {
+        input_tokens: usage.input_tokens(),
+        output_tokens: usage.output_tokens(),
+        cache_hit_tokens: usage.cache_hit_tokens(),
+        cache_miss_tokens: usage.cache_miss_tokens(),
+    });
+    let model_requests = outcome
+        .model_request_metrics()
+        .iter()
+        .map(|metric| ModelRequestObservation {
+            request_duration_ms: metric.request_duration_ms(),
+            ttft_ms: metric.ttft_ms(),
+            input_tokens: metric.input_tokens(),
+            output_tokens: metric.output_tokens(),
+        })
+        .collect();
+    (usage, model_requests)
+}
+
 fn failed_task_outcome(
     task_id: &str,
     code: &str,
     elapsed_ms: u64,
     tools: Vec<ToolObservation>,
 ) -> TaskOutcome {
+    // This table classifies codes surfaced through Ok-terminal outcomes or
+    // backend.run Err(Operation). A few prepare-phase codes still propagate
+    // as run_task Err and are classified by the service Err arm instead;
+    // the two tables split by layer, so a code belongs to exactly one of
+    // them (for example attachment_resolution_failed only ever reaches the
+    // service arm).
     let (status, category, reason) = match code {
         "task_timeout" => (
             TaskStatus::Timeout,
@@ -143,10 +191,11 @@ fn failed_task_outcome(
             SafeFailureCategory::Backend,
             Some(SafeFailureReason::AgentTurnFailed),
         ),
-        // 已知生命周期码（session_closed、private_session_state_failed、
-        // private_output_store_failed、private_output_not_found、
-        // gaia_private_input_unknown、unsupported_tool_policy）与未知码
-        // 有意共用同一安全三元组，新增生命周期码无需在此扩充。
+        // Known lifecycle codes (session_closed, private_session_state_failed,
+        // private_output_store_failed, private_output_not_found,
+        // gaia_private_input_unknown, unsupported_tool_policy) intentionally
+        // share this arm with unknown codes: adding a lifecycle code never
+        // requires extending this table.
         _ => (
             TaskStatus::Failed,
             SafeFailureCategory::Infrastructure,
@@ -158,6 +207,26 @@ fn failed_task_outcome(
         .with_tool_observations(tools);
     if let Some(reason) = reason {
         outcome = outcome.with_failure_reason(reason);
+    }
+    outcome
+}
+
+/// Terminal failure after `backend.run` already returned an outcome, so the
+/// request-level metrics it carries must not be dropped (task timeout during
+/// output resolution or close, close failure, private output resolution
+/// failure).
+fn failed_task_outcome_with_metrics(
+    task_id: &str,
+    code: &str,
+    elapsed_ms: u64,
+    tools: Vec<ToolObservation>,
+    backend_outcome: Option<&AgentTaskOutcome>,
+) -> TaskOutcome {
+    let (usage, model_requests) = backend_metrics(backend_outcome);
+    let mut outcome = failed_task_outcome(task_id, code, elapsed_ms, tools)
+        .with_model_request_observations(model_requests);
+    if let Some(usage) = usage {
+        outcome = outcome.with_usage(usage);
     }
     outcome
 }
@@ -281,11 +350,12 @@ where
         )
         .await;
         if result.is_err() {
+            let elapsed = run_started.elapsed().as_millis() as u64;
             self.cleanup_timed_out_session(&session).await;
             return Ok(failed_task_outcome(
                 task.task_id(),
                 "task_timeout",
-                run_started.elapsed().as_millis() as u64,
+                elapsed,
                 collected_tools(observer.as_ref()),
             ));
         }
@@ -298,12 +368,14 @@ where
                     {
                         Ok(resolved) => Some(resolved),
                         Err(_) => {
+                            let elapsed = run_started.elapsed().as_millis() as u64;
                             self.cleanup_timed_out_session(&session).await;
-                            return Ok(failed_task_outcome(
+                            return Ok(failed_task_outcome_with_metrics(
                                 task.task_id(),
                                 "task_timeout",
-                                run_started.elapsed().as_millis() as u64,
+                                elapsed,
                                 collected_tools(observer.as_ref()),
+                                Some(outcome),
                             ));
                         }
                     }
@@ -316,21 +388,24 @@ where
             match tokio::time::timeout_at(deadline, self.backend.close(session.clone())).await {
                 Ok(result) => result,
                 Err(_) => {
+                    let elapsed = run_started.elapsed().as_millis() as u64;
                     self.cleanup_timed_out_session(&session).await;
-                    return Ok(failed_task_outcome(
+                    return Ok(failed_task_outcome_with_metrics(
                         task.task_id(),
                         "task_timeout",
-                        run_started.elapsed().as_millis() as u64,
+                        elapsed,
                         collected_tools(observer.as_ref()),
+                        result.as_ref().ok(),
                     ));
                 }
             };
         if close_result.is_err() {
-            return Ok(failed_task_outcome(
+            return Ok(failed_task_outcome_with_metrics(
                 task.task_id(),
                 "backend_close_failed",
                 run_started.elapsed().as_millis() as u64,
                 collected_tools(observer.as_ref()),
+                result.as_ref().ok(),
             ));
         }
         let outcome = match result {
@@ -347,11 +422,12 @@ where
         let private_output = match private_output {
             Some(Ok(output)) => Some(output),
             Some(Err(_)) => {
-                return Ok(failed_task_outcome(
+                return Ok(failed_task_outcome_with_metrics(
                     task.task_id(),
                     "private_output_resolution_failed",
                     run_started.elapsed().as_millis() as u64,
                     collected_tools(observer.as_ref()),
+                    Some(&outcome),
                 ));
             }
             None => None,
@@ -365,22 +441,7 @@ where
             .output_handle()
             .map(|handle| Prediction::backend(handle.expose_to_backend()));
         let tools = collected_tools(observer.as_ref());
-        let usage = outcome.usage().map(|usage| crate::UsageMetrics {
-            input_tokens: usage.input_tokens(),
-            output_tokens: usage.output_tokens(),
-            cache_hit_tokens: usage.cache_hit_tokens(),
-            cache_miss_tokens: usage.cache_miss_tokens(),
-        });
-        let model_requests = outcome
-            .model_request_metrics()
-            .iter()
-            .map(|metric| ModelRequestObservation {
-                request_duration_ms: metric.request_duration_ms(),
-                ttft_ms: metric.ttft_ms(),
-                input_tokens: metric.input_tokens(),
-                output_tokens: metric.output_tokens(),
-            })
-            .collect();
+        let (usage, model_requests) = backend_metrics(Some(&outcome));
         let mut result = if status == TaskStatus::Failed {
             failed_task_outcome(
                 task.task_id(),
@@ -414,7 +475,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::safe_tool_name;
+    use super::{safe_failure_code, safe_tool_name};
 
     #[test]
     fn product_policy_tool_names_are_preserved_in_observations() {
@@ -423,5 +484,22 @@ mod tests {
         }
         assert_eq!(safe_tool_name("[unexpected-tool]"), "[unexpected-tool]");
         assert_eq!(safe_tool_name("private-tool-sentinel"), "[redacted-tool]");
+    }
+
+    #[test]
+    fn tool_failure_codes_are_persisted_only_as_safe_tokens() {
+        assert_eq!(safe_failure_code("missing_action"), "missing_action");
+        assert_eq!(
+            safe_failure_code("http_status_failed"),
+            "http_status_failed"
+        );
+        assert_eq!(
+            safe_failure_code("Backend exploded: HTTP 500\u{0}"),
+            "unclassified"
+        );
+        assert_eq!(safe_failure_code("LEAK; DROP TABLE tasks"), "unclassified");
+        assert_eq!(safe_failure_code(""), "unclassified");
+        assert_eq!(safe_failure_code(&"a".repeat(65)), "unclassified");
+        assert_eq!(safe_failure_code(&"a".repeat(64)), "a".repeat(64));
     }
 }
