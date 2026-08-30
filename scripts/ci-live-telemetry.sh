@@ -46,6 +46,8 @@ echo $$ >"$OBSERVE_DIR/telemetry.pid"
 : >"$MEM_LOG"
 
 # --- 1s 本地采样器(无网络依赖,死亡前最后一秒也有数据) ---
+sampler_pid=
+if [ -z "${TELEMETRY_NO_SAMPLER:-}" ]; then
 (
   while :; do
     ts=$(date -u +%H:%M:%S)
@@ -67,10 +69,14 @@ echo $$ >"$OBSERVE_DIR/telemetry.pid"
   done
 ) &
 sampler_pid=$!
+fi
 
 # --- dmesg tail(OOM killer / 内核异常证据;sudo 不可用时静默降级) ---
+dmesg_pid=
+if [ -z "${TELEMETRY_NO_DMESG:-}" ]; then
 sudo sh -c "while :; do dmesg 2>/dev/null | tail -6 > '$DMESG_TAIL.tmp' && mv '$DMESG_TAIL.tmp' '$DMESG_TAIL'; sleep 2; done" &
 dmesg_pid=$!
+fi
 
 cleanup() {
   kill "$sampler_pid" "$dmesg_pid" 2>/dev/null || true
@@ -85,6 +91,11 @@ check_id=$(gh api "repos/$GITHUB_REPOSITORY/check-runs" \
   -f status="in_progress" \
   --jq '.id' 2>/dev/null) || exit 0
 [ -n "${check_id:-}" ] && [ "$check_id" != "null" ] || exit 0
+
+# v14 组分开关:TELEMETRY_NO_PATCH=1 时 POST 完不再 PATCH(脚本存活但无持续流量)。
+if [ -n "${TELEMETRY_NO_PATCH:-}" ]; then
+  while :; do sleep 10; done
+fi
 
 while :; do
   last_mem=$(tail -1 "$MEM_LOG" 2>/dev/null)

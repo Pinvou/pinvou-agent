@@ -1208,10 +1208,11 @@ jobs:
           kill "$guard_pid" 2>/dev/null || true
           echo "v6 P2 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
 
-  # v13 组分臂 1:P0 遥测行替换为「仅一次 gh POST 建 check-run」(一次性 HTTPS
-  #   到 api.github.com,无采样无 PATCH 循环)。死→单次连接不够(或网络无关)。
-  probe-postonly:
-    name: probe-postonly
+  # v14 排除臂 1:完整遥测脚本但关掉 sampler+dmesg——只剩 POST + 每 10s PATCH
+  #   持续 HTTPS 流量。活→持续 PATCH 是保护充分件,main 修复=编译/执行腿加
+  #   轻量 keepalive ping;死→网络流量不是保护因子。
+  probe-patchonly:
+    name: probe-patchonly
     needs: changes
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
@@ -1228,7 +1229,9 @@ jobs:
       # Check Run;v4 只在 step A 注入导致 B/C/D/E 遥测静默失败(已实证)。
       TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TELEMETRY_CHECK_NAME: tele-postonly
+      TELEMETRY_CHECK_NAME: tele-patchonly
+      TELEMETRY_NO_SAMPLER: "1"
+      TELEMETRY_NO_DMESG: "1"
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -1286,7 +1289,7 @@ jobs:
       - name: P0) 编译 + settle 至 FRESH(复刻 rust-test 编译腿,含 memguard)
         run: |
           mkdir -p /tmp/ci-observe
-          gh api "repos/$GITHUB_REPOSITORY/check-runs" -X POST -f name=tele-postonly -f head_sha="$TELEMETRY_SHA" -f status=in_progress >/dev/null 2>&1 &
+          bash scripts/ci-live-telemetry.sh &
           bash scripts/ci-memguard.sh &
           guard_pid=$!
           /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1 | tail -5
@@ -1337,9 +1340,10 @@ jobs:
           echo "v6 P2 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
 
 
-  # v13 组分臂 2:P0 遥测行替换为「仅 1s /proc 采样循环」(纯本地,无网络)。
-  probe-sampleronly:
-    name: probe-sampleronly
+  # v14 排除臂 2:POST + sampler + dmesg 但不做 PATCH(无持续网络流量)。
+  #   死→PATCH 持续流量是保护必要件;活→PATCH 排除。
+  probe-nopatch:
+    name: probe-nopatch
     needs: changes
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
@@ -1356,7 +1360,8 @@ jobs:
       # Check Run;v4 只在 step A 注入导致 B/C/D/E 遥测静默失败(已实证)。
       TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TELEMETRY_CHECK_NAME: tele-sampleronly
+      TELEMETRY_CHECK_NAME: tele-nopatch
+      TELEMETRY_NO_PATCH: "1"
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -1414,7 +1419,7 @@ jobs:
       - name: P0) 编译 + settle 至 FRESH(复刻 rust-test 编译腿,含 memguard)
         run: |
           mkdir -p /tmp/ci-observe
-          ( while :; do cat /proc/loadavg /proc/pressure/memory >> /tmp/ci-observe/s.log 2>/dev/null; sleep 1; done ) &
+          bash scripts/ci-live-telemetry.sh &
           bash scripts/ci-memguard.sh &
           guard_pid=$!
           /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1 | tail -5
@@ -1465,9 +1470,9 @@ jobs:
           echo "v6 P2 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
 
 
-  # v13 组分臂 3:P0 遥测行替换为「仅 sudo dmesg 循环」(sudo + 内核日志读)。
-  probe-dmesgonly:
-    name: probe-dmesgonly
+  # v14 排除臂 3:完整脚本减 sampler(dmesg+PATCH 保留)。死→sampler 必要。
+  probe-nosampler:
+    name: probe-nosampler
     needs: changes
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
@@ -1484,7 +1489,8 @@ jobs:
       # Check Run;v4 只在 step A 注入导致 B/C/D/E 遥测静默失败(已实证)。
       TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TELEMETRY_CHECK_NAME: tele-dmesgonly
+      TELEMETRY_CHECK_NAME: tele-nosampler
+      TELEMETRY_NO_SAMPLER: "1"
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -1542,7 +1548,7 @@ jobs:
       - name: P0) 编译 + settle 至 FRESH(复刻 rust-test 编译腿,含 memguard)
         run: |
           mkdir -p /tmp/ci-observe
-          sudo sh -c "while :; do dmesg 2>/dev/null | tail -6 > /tmp/ci-observe/dmesg.tail; sleep 2; done" &
+          bash scripts/ci-live-telemetry.sh &
           bash scripts/ci-memguard.sh &
           guard_pid=$!
           /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1 | tail -5
@@ -1593,10 +1599,9 @@ jobs:
           echo "v6 P2 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
 
 
-  # v13 组分臂 4:P0 遥测行替换为「仅一个后台 sleep 循环」(纯后台进程对照)。
-  #   若本臂也活,保护因子只是「任意后台进程」,需重新审视全部实验框架。
-  probe-sleepbg:
-    name: probe-sleepbg
+  # v14 排除臂 4:完整脚本减 dmesg(sampler+PATCH 保留)。死→dmesg 必要。
+  probe-nodmesg:
+    name: probe-nodmesg
     needs: changes
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
@@ -1613,7 +1618,8 @@ jobs:
       # Check Run;v4 只在 step A 注入导致 B/C/D/E 遥测静默失败(已实证)。
       TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TELEMETRY_CHECK_NAME: tele-sleepbg
+      TELEMETRY_CHECK_NAME: tele-nodmesg
+      TELEMETRY_NO_DMESG: "1"
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -1671,7 +1677,7 @@ jobs:
       - name: P0) 编译 + settle 至 FRESH(复刻 rust-test 编译腿,含 memguard)
         run: |
           mkdir -p /tmp/ci-observe
-          ( while :; do sleep 1; done ) &
+          bash scripts/ci-live-telemetry.sh &
           bash scripts/ci-memguard.sh &
           guard_pid=$!
           /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1 | tail -5
