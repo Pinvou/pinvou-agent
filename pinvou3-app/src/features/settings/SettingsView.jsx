@@ -2660,8 +2660,13 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                       <button type="button" data-testid="llama-restart-apply" onClick={() => {
                         if (!bridge.available || !bridge.llamaEngine) return;
                         const dev = llamaDevice === 'auto' ? (st.detectedDevice || 'cpu') : llamaDevice;
-                        bridge.llamaEngine.stopEngine().catch(() => {})
-                          .then(() => bridge.llamaEngine.startEngine(llamaModel, dev))
+                        // Only restart after the stop actually succeeded: a failed
+                        // stop leaves the engine running and a follow-up start would
+                        // just fail with a misleading "start failed" (its error is
+                        // already surfaced through the store by stopEngine).
+                        bridge.llamaEngine.stopEngine()
+                          .then(() => true).catch(() => false)
+                          .then(stopped => (stopped ? bridge.llamaEngine.startEngine(llamaModel, dev) : undefined))
                           .catch(() => {});
                       }}
                         className="h-9 px-4 rounded-full text-[14px] font-semibold text-white" style={{ background: '#007AFF' }}>{settingsCopy.llamaEngine.restartApply}</button>
@@ -2996,6 +3001,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           )}
           {/* eslint-disable-next-line react-hooks/static-components -- in-place-defined confirm modal is the existing structure */}
           {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} />}
+          {/* eslint-disable-next-line react-hooks/static-components -- in-place-defined confirm modal is the existing structure */}
           {llamaDeleteConfirm && <LlamaDeleteDialog confirm={llamaDeleteConfirm} />}
           {/* eslint-disable-next-line react-hooks/static-components -- in-place-defined confirm modal is the existing structure */}
           {searchDeleteConfirm && <SearchDeleteDialog source={searchDeleteConfirm} />}
