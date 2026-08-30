@@ -20,7 +20,7 @@ set -u
 
 : "${GITHUB_REPOSITORY:?}" "${GITHUB_TOKEN:?}" "${TELEMETRY_SHA:?}"
 
-CHECK_NAME="rust-test-live-telemetry"
+CHECK_NAME="${TELEMETRY_CHECK_NAME:-rust-test-live-telemetry}"
 OBSERVE_DIR="/tmp/ci-observe"
 MEM_LOG="$OBSERVE_DIR/mem-1s.log"
 DMESG_TAIL="$OBSERVE_DIR/dmesg.tail"
