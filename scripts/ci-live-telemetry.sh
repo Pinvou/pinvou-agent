@@ -64,9 +64,13 @@ if [ -z "${TELEMETRY_NO_SAMPLER:-}" ]; then
         /^Writeback:/    {w=int($2/1024)}
         END {print a, s, d, w}' /proc/meminfo)
       fi
-      load=$(cut -d' ' -f1 /proc/loadavg)
-      psi_mem=$(awk '/^some/ {print $2}' /proc/pressure/memory 2>/dev/null)
-      psi_io=$(awk '/^some/ {print $2}' /proc/pressure/io 2>/dev/null)
+      if [ -n "${TELEMETRY_NO_LOADAVG:-}" ]; then load="-"; else load=$(cut -d' ' -f1 /proc/loadavg); fi
+      if [ -n "${TELEMETRY_NO_PSI:-}" ]; then
+        psi_mem="-"; psi_io="-"
+      else
+        psi_mem=$(awk '/^some/ {print $2}' /proc/pressure/memory 2>/dev/null)
+        psi_io=$(awk '/^some/ {print $2}' /proc/pressure/io 2>/dev/null)
+      fi
     fi
     if [ -n "${TELEMETRY_NO_PS:-}" ]; then
       thr="-"; top="-"
