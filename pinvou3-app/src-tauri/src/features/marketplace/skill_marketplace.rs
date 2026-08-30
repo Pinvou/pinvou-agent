@@ -1932,9 +1932,10 @@ fn replace_top_level_description(
                 }
             }
         } else if t
-            .split(':')
-            .next()
-            .is_some_and(|k| k.trim().eq_ignore_ascii_case("description"))
+            .split_once(':')
+            // 无冒号的裸 `description` 单词行不是 description（读端/引擎都不认），
+            // 不得触发「插到末尾」分支——口径同顶层替换匹配。
+            .is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case("description"))
         {
             nested_desc_seen = true;
         }
@@ -2070,7 +2071,10 @@ fn is_engine_block_marker(value: &str) -> bool {
 
 /// 行视图（第一个整行 `---` 边界内）的顶层 `description:` 行数——写端口径的
 /// 结构守卫用（引擎按子串边界解析，与行边界不同；见
-/// [`rewrite_frontmatter_description`] 的结构守卫注释）。
+/// [`rewrite_frontmatter_description`] 的结构守卫注释）。口径与写端替换匹配、
+/// 读端解析对齐：必须有冒号、键名 trim 后等于 description——无冒号的裸
+/// `description` 单词行对三方都不是 description，不得计入（计入会让守卫对
+/// 合法输入误报「多重定义」拒绝回写）。
 fn count_top_level_description_lines(content: &str) -> usize {
     let lines: Vec<&str> = content.lines().collect();
     let Some(fm_end) = lines
@@ -2087,10 +2091,9 @@ fn count_top_level_description_lines(content: &str) -> usize {
             let lt = l.trim();
             lt.len() == l.len()
                 && lt
-                    .split(':')
-                    .next()
+                    .split_once(':')
                     // 键名 trim 后再比对，口径同读端/引擎（`description : x` 也算）
-                    .is_some_and(|k| k.trim().eq_ignore_ascii_case("description"))
+                    .is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case("description"))
         })
         .count()
 }
@@ -4147,6 +4150,34 @@ mod tests {
         let out = rewrite_frontmatter_description(block_with_fence, "新")
             .expect("边界外旧值不算重复，应放行");
         assert_eq!(read_skill_description_from_str(&out).as_deref(), Some("新"));
+    }
+
+    /// 无冒号的裸 `description` 单词行（顶层或缩进）对读端/引擎都不是
+    /// description：计数守卫不得计入（否则误报「多重定义」拒绝回写），嵌套
+    /// 检测也不得触发「插到末尾」分支（回归：计数与嵌套检测曾按无冒号前缀
+    /// 匹配，裸单词行两处都误命中）。
+    #[test]
+    fn rewrite_ignores_bare_description_word_lines() {
+        // 顶层裸单词：不算定义 → 回写正常插入 name 后，读回新值
+        let out = rewrite_frontmatter_description("---\nname: x\ndescription\n---\n", "新")
+            .expect("顶层裸 description 单词不算定义，应放行");
+        assert_eq!(out, "---\nname: x\ndescription: 新\ndescription\n---\n");
+        assert_eq!(read_skill_description_from_str(&out).as_deref(), Some("新"));
+        // 缩进裸单词：不触发「插到末尾」→ 仍插在 name 后
+        let out =
+            rewrite_frontmatter_description("---\nname: x\nmetadata:\n  description\n---\n", "新")
+                .expect("缩进裸 description 单词不算嵌套定义，应放行");
+        assert_eq!(
+            out,
+            "---\nname: x\ndescription: 新\nmetadata:\n  description\n---\n"
+        );
+        assert_eq!(read_skill_description_from_str(&out).as_deref(), Some("新"));
+        // remove 路径同理：裸单词行保留（不是 description），删行后读不到值
+        let out =
+            remove_frontmatter_description("---\nname: x\ndescription: v\ndescription\n---\n")
+                .expect("remove 只删带冒号的顶层 description 行");
+        assert_eq!(out, "---\nname: x\ndescription\n---\n");
+        assert!(read_skill_description_from_str(&out).is_none());
     }
 
     /// 单技能上传包：编排入口设覆盖 → 回写落盘 + 原值备份 + 内容指纹重算补写
