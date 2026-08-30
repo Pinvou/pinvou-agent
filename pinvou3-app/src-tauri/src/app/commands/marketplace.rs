@@ -575,38 +575,25 @@ pub async fn update_bundle_display_meta(
     display_description: Option<String>,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
-    let may_touch_skill_md = display_description.is_some(); // 单技能包可能动 SKILL.md
-    let dirty = match tokio::task::spawn_blocking(move || {
+    // 展示说明在场时单技能包可能动 SKILL.md；展示名单独编辑（None）只写
+    // extra，模型侧无感，不必热刷。
+    let may_touch_skill_md = display_description.is_some();
+    let result = tokio::task::spawn_blocking(move || {
         let mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
-        mgr.update_display_meta(&id, display_name.as_deref(), display_description.as_deref())?;
-        Ok::<bool, String>(may_touch_skill_md)
+        mgr.update_display_meta(&id, display_name.as_deref(), display_description.as_deref())
     })
     .await
-    {
-        Ok(result) => result,
-        Err(e) => return Err(format!("任务执行失败: {e}")),
-    };
-    match dirty {
-        // SKILL.md 回写/恢复改了包内容：热刷在线会话组合目录与 deny 规则集
-        // （与 update_marketplace_skill 同一收尾）。
-        Ok(touched) => {
-            if touched {
-                pool.refresh_live_sessions_skills().await;
-                pool.refresh_permission_rulesets().await;
-            }
-        }
-        Err(e) => {
-            // 失败路径也刷：sync 可能在 set_display_meta 报错前已动过 SKILL.md
-            // （窄窗口），让模型侧尽早一致。失败点在 sync 前/中/后不可知，按
-            // 「可能动过」处理——热刷是幂等的目录重扫，多刷一次无害。
-            if may_touch_skill_md {
-                pool.refresh_live_sessions_skills().await;
-                pool.refresh_permission_rulesets().await;
-            }
-            return Err(e);
-        }
+    .map_err(|e| format!("任务执行失败: {e}"))
+    .and_then(|r| r);
+    // SKILL.md 回写/恢复改了包内容：热刷在线会话组合目录与 deny 规则集（与
+    // update_marketplace_skill 同一收尾）。失败路径同样刷：sync 可能在报错前
+    // 已动过 SKILL.md（窄窗口），失败点在 sync 前/中/后不可知，按「可能动过」
+    // 处理——热刷是幂等的目录重扫，多刷一次无害。
+    if may_touch_skill_md {
+        pool.refresh_live_sessions_skills().await;
+        pool.refresh_permission_rulesets().await;
     }
-    Ok(())
+    result
 }
 
 /// 弹文件选择框选 zip 技能包并导入。前端无法用 plugin-dialog 的 JS API
