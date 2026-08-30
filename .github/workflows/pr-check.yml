@@ -711,36 +711,19 @@ jobs:
         working-directory: pinvou3-app/src-tauri
         run: cargo deny check advisories licenses bans sources
 
-  rust-test:
-    name: rust-test
+  # 诊断分支专用:v7 名字对调实验——本 job 停用(if: false), rust-test 的
+  # id/name/needs/timeout 由下方探针 job 接管,用于判别「job 元数据(name/needs/
+  # timeout)」与「step 内容」谁是致死因子。同 run 对照:rust-test clone(旧探针
+  # id,逐字节复刻 rust-test 双腿步骤)。
+  rust-test-disabled:
+    name: rust-test-disabled
     needs: changes
+    if: false # 诊断分支停用,见上方注释
     # Ready high-risk PRs and matching merge groups run the full Linux regression.
     # Explicitly low-risk leaf changes stay on compile/lint feedback; unknown Rust
     # paths fail closed through rust_full. main push 无条件执行累计编译验证并写暖
     # cache(防 concurrency pending 替换盲区),但只编译不执行测试(见下方 --no-run)。
-    if: >-
-      ${{
-        !cancelled() &&
-        github.event.action != 'closed' &&
-        (
-          github.event_name == 'push' ||
-          (
-            github.event_name == 'merge_group' &&
-            needs.changes.outputs.rust_full == 'true'
-          ) ||
-          (
-            github.event_name == 'pull_request' &&
-            github.event.pull_request.draft == false &&
-            (
-              needs.changes.outputs.rust_full == 'true' ||
-              (
-                needs.changes.outputs.rust_code == 'true' &&
-                contains(github.event.pull_request.labels.*.name, 'ci:full-rust')
-              )
-            )
-          )
-        )
-      }}
+    # (诊断分支:原 if 条件随停用一并移除,main 上以 git 历史为准。)
     runs-on: ubuntu-latest
     # Tauri + fastembed + aws-lc-sys 全冷编译耗时长;设上限避免卡死 runner 占用。
     # High-risk PR, combined-tree, and main runs retain a 120-minute safety limit.
@@ -960,21 +943,21 @@ jobs:
           kill "$guard_pid" 2>/dev/null || true
           exit "$status"
 
-  # 诊断 job(本分支专用,勿合入 main)。已排除:二进制内容(v4 双侧全绿)、
-  # 二次编译本身(v5 暖树连续两次重编存活;且 5e04c415 的 rust-test 在
-  # settle=FRESH 后仍在执行腿启动 ~20s 内死亡——fresh 暖树 + 执行腿上下文 = 死)。
-  # 存活侧与死亡侧的判别变量收敛为「执行腿上下文」:memguard / CHROME+
-  # REQUIRE_E2E env / npm e2e 依赖(puppeteer-core) / cargo 作为父进程跑测试。
-  # v6 = 在探针 job 内逐相复刻 rust-test 执行腿,相位标记写 ab.log 经遥测
-  # PATCH 留证,死在哪个相位即定位到哪个变量:
-  #   P0 settle(吸收 fingerprint 竞争,与 rust-test 编译腿一致)
-  #   P1 无 memguard,cargo test 全量执行(判 cargo-exec/npm 上下文)
-  #   P2 有 memguard,cargo test 全量执行(判 memguard×暖树交互)
-  rust-test-ab-probe:
-    name: rust-test-ab-probe
+  # 诊断 job(本分支专用,勿合入 main)。v6 已证:步骤内容与 rust-test 执行腿
+  # 完全一致的探针(settle FRESH → 无 memguard 全量测试绿 → 有 memguard 再全绿),
+  # 同一 run 内 rust-test job 照死(12:08:39 测试中失联)。判别变量只剩 job
+  # 元数据:job id/name、needs: changes、timeout-minutes。
+  # v7 对调实验(同 run 两臂):
+  #   本 job 接管 rust-test 的 id/name/needs/timeout,跑探针步骤(P0/P1/P2)。
+  #     死 → 致死因子在 job 元数据(外部按 name/id 键入,或 needs 调度时序)。
+  #   下方 rust-test-ab-probe 保留旧 id/name,逐字节复刻 rust-test 双腿步骤。
+  #     死 → 致死因子在步骤字节内容(此前探针与 rust-test 间仍有我没看到的差异)。
+  rust-test:
+    name: rust-test
+    needs: changes
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       contents: read
       checks: write
@@ -1093,6 +1076,127 @@ jobs:
           set -e
           kill "$guard_pid" 2>/dev/null || true
           echo "v6 P2 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
+
+  # v7 对照臂:保留旧探针 id/name,步骤逐字节复刻 rust-test 双腿
+  # (time -v 无管道编译腿 + settle;memguard+遥测+断言+tee 执行腿;
+  # token 仅 step 级注入,与被停用的 rust-test-disabled 一致)。
+  rust-test-ab-probe:
+    name: rust-test-ab-probe
+    if: ${{ github.event_name != 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      checks: write
+    env:
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
+      CARGO_PROFILE_DEV_LTO: "thin"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: 初始化公共底座 submodule
+        run: git submodule update --init --recursive -- CodeWhale
+
+      - name: 装系统依赖(与 rust-test 一致,含 time)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            librsvg2-dev libssl-dev \
+            libx11-dev libxi-dev libxtst-dev \
+            libayatana-appindicator3-dev \
+            build-essential pkg-config cmake lld \
+            time
+
+      - name: bge-m3 占位 (与 rust-test 一致)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 对齐 rust-toolchain.toml 锁定的工具链
+        working-directory: pinvou3-app/src-tauri
+        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
+
+      - name: Node.js (relay e2e,与 rust-test 一致)
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: remote-control-relay/package-lock.json
+
+      - name: relay 依赖 (与 rust-test 一致)
+        run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
+
+      - name: 浏览器驱动依赖 (与 rust-test 一致)
+        run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
+
+      - name: Cargo cache (restore 致死的 v2 暖 cache)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+          shared-key: rust-test-v2
+          save-if: false
+
+      - name: 编译腿逐字节复刻(time -v 无管道 + memguard + settle)
+        run: |
+          mkdir -p /tmp/ci-observe
+          bash scripts/ci-memguard.sh &
+          guard_pid=$!
+          set +e
+          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
+          status=$?
+          set -e
+          for i in 1 2 3; do
+            [ "$status" -ne 0 ] && break
+            out=$(cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
+            echo "$out" | tail -3
+            if echo "$out" | grep -q 'Compiling pinvou3-tauri'; then
+              echo "clone settle pass $i: recompiled" | tee -a /tmp/ci-observe/ab.log
+            else
+              echo "clone settle pass $i: FRESH" | tee -a /tmp/ci-observe/ab.log
+              break
+            fi
+          done
+          kill "$guard_pid" 2>/dev/null || true
+          exit "$status"
+
+      - name: 执行腿逐字节复刻(memguard + 遥测 + 断言 + tee)
+        env:
+          TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          export CHROME="$chrome"
+          export PINVOU_REQUIRE_REMOTE_E2E=1
+          bash scripts/ci-memguard.sh &
+          guard_pid=$!
+          bash scripts/ci-live-telemetry.sh &
+          tele_pid=$!
+          mkdir -p /tmp/ci-observe
+          pre=$(cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
+          echo "$pre" | tail -3
+          if echo "$pre" | grep -q 'Compiling pinvou3-tauri'; then
+            echo "clone exec-leg: DIRTY" >> /tmp/ci-observe/ab.log
+          else
+            echo "clone exec-leg: FRESH" >> /tmp/ci-observe/ab.log
+          fi
+          set +e
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | python3 scripts/ci-tee-unbuffered.py
+          status=${PIPESTATUS[0]}
+          set -e
+          kill "$guard_pid" "$tele_pid" 2>/dev/null || true
+          exit "$status"
 
   windows-rust-test:
     name: windows-rust-test
