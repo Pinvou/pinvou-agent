@@ -440,6 +440,11 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
     /steer_incarnation_seq[\s\S]{0,400}fetch_add\(1, Ordering::Relaxed\)/,
     'steer-id 代际戳必须来自进程内单调化身序列（墙钟毫秒同 tick 重建会撞号，zhuowp 复审 P1-2）',
   );
+  assert.equal(
+    (poolSource.match(/map\(\|e\| \(e\.engine\.clone\(\), e\.steer_incarnation\)\)/g) || []).length,
+    2,
+    'steer 与 withdraw_steer 必须从 entry 读取化身序列作为代际（消费端 wiring：改回 spawned_at_ms 会复活同 tick 撞号，两处须同时锁定）',
+  );
   const transcriptsSource = read('src-tauri', 'src', 'features', 'multiagent', 'transcripts.rs');
   assert.match(
     transcriptsSource,
