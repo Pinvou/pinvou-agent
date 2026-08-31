@@ -1576,6 +1576,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // 记录触发引擎启动的流程 token：发送门取消时只停自己拉起的引擎，
       // 用户在设置页手动启动的引擎不受发送门取消影响（0 = 非本流程发起）。
       const localEngineStartedByTokenRef = useRef(0);
+      // 记录在途引擎/模型下载是否由本流程发起：取消/卸载只收自己发起的
+      // 下载，不杀设置页等外部入口发起的在途下载。
+      const localEngineDownloadOwnedRef = useRef(false);
       // 组件卸载：作废旧 token 并 resolve 挂起中的发送（按取消处理），
       // 进行中的启动轮询在 1s 内停止，不再 setState。
       useEffect(() => () => {
@@ -1583,7 +1586,25 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         const pending = pendingLocalEngineSendRef.current;
         pendingLocalEngineSendRef.current = null;
         if (pending) pending.resolve(false);
+        // 卸载视同放弃：本流程拉起的引擎与发起的下载一并收掉，不在后台
+        // 白占内存/带宽；外部入口（设置页）发起的不受影响（ref 恒为 0）。
+        cancelOwnedEngineDownload();
+        const owner = localEngineStartedByTokenRef.current;
+        if (owner !== 0) {
+          localEngineStartedByTokenRef.current = 0;
+          if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.stopEngine) {
+            bridge.llamaEngine.stopEngine().catch(() => {});
+          }
+        }
       }, []);
+      // 只取消本流程发起的下载；幂等（取消后立即清标记）。
+      function cancelOwnedEngineDownload() {
+        if (!localEngineDownloadOwnedRef.current) return;
+        localEngineDownloadOwnedRef.current = false;
+        if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.cancelDownload) {
+          bridge.llamaEngine.cancelDownload();
+        }
+      }
       // 发送前预缩放命中时的轻提示（超大图已压缩），数秒后自动消失。
       const [imageCompressedNotice, setImageCompressedNotice] = useState(false);
       const imageCompressedTimerRef = useRef(null);
@@ -1712,13 +1733,20 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       }
       // 取消 starting/downloading：先按当前 token resolve（取消发送），再
       // 作废 token 停掉进行中的轮询；旧流程后续回调全部因 token 失配被丢弃。
-      // 本流程拉起的引擎随取消一并停掉（fire-and-forget），不在后台白占
-      // 最多 300s 的加载；非本流程发起的引擎（设置页手动启动）不受影响。
+      // 本流程发起的下载与拉起的引擎随取消一并收掉（fire-and-forget），不在
+      // 后台白占最多 300s 的加载；非本流程发起的（设置页手动启动）不受影响。
       function cancelLocalEngineFlow(token) {
         resolvePendingSend(false, token);
         localEngineTokenRef.current += 1;
         setLocalEnginePrompt(null);
-        if (localEngineStartedByTokenRef.current === token) {
+        cancelOwnedEngineDownload();
+        // ref 非零即停：除本流程自己外，还覆盖「死主」——顶替流读到
+        // alreadyStarting 时 owned=false 不认领所有权，被顶替流程作废后
+        // ref 原样残留，原 ref===token 校验漏掉该组合，引擎会在后台白载
+        // 数分钟。token 严格递增，此处自增后任何非零 ref 都已是死主；
+        // 设置页手动启动的引擎 ref 恒为 0，不受影响。
+        const owner = localEngineStartedByTokenRef.current;
+        if (owner !== 0) {
           localEngineStartedByTokenRef.current = 0;
           if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.stopEngine) {
             bridge.llamaEngine.stopEngine().catch(() => {});
@@ -1739,11 +1767,14 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       }
       async function installThenResolve(info, token) {
         setLocalEnginePrompt({ kind: 'downloading', token });
+        // 只有 installEngine 返回 true（= 下载由本流程发起）才登记下载所有权；
+        // 返回 false 是别人的在途下载（如设置页），等待其收敛，绝不代取消。
+        localEngineDownloadOwnedRef.current = false;
         try {
-          // 桥接层在有任务进行中时把安装静默跳过并返回 false：等待在跑的
-          // 下载收敛后再继续，否则会拿着未就绪的模型去 start，只能靠超时兜底。
           if (bridge.llamaEngine.installEngine && (await bridge.llamaEngine.installEngine()) === false) {
             await waitForLocalDownloadSettled(token);
+          } else {
+            localEngineDownloadOwnedRef.current = true;
           }
           if (localEngineFlowAlive(token) && bridge.llamaEngine.installModel
             && (await bridge.llamaEngine.installModel(info.localEngineModel)) === false) {
@@ -1756,6 +1787,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           return;
         }
         if (!localEngineFlowAlive(token)) return;
+        // 下载阶段结束，取消语义只余引擎（停止），不再有下载可取消。
+        localEngineDownloadOwnedRef.current = false;
         await startThenResolve(info, token);
       }
       async function ensureLocalEngineForSend() {
@@ -2480,9 +2513,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               if (p.kind === 'install') {
                 title = llmEngineCopy.title || ua.localEngineNotRunning;
                 body = ua.localEngineInstallPrompt;
-                // 暂不安装 = 放弃安装：后台可能还挂着上一次流程未取消的下载，一并取消。
+                // 暂不安装 = 仅放弃引导。本流程此刻尚未发起任何下载，不代取消
+                // 别人（如设置页）发起的在途下载——那只会浪费对方的进度。
                 const cancelInstallAndResolve = () => {
-                  if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.cancelDownload) bridge.llamaEngine.cancelDownload();
                   resolvePendingSend(!!(info && info.hasVisionModel), p.token);
                 };
                 buttons = (
@@ -2514,11 +2547,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               } else if (p.kind === 'downloading') {
                 title = llmEngineCopy.title || ua.localEngineNotRunning;
                 body = '';
+                // cancelLocalEngineFlow 只收本流程发起的下载（所有权登记在
+                // installThenResolve），外部入口的下载不受影响。
                 buttons = (
-                  <button type="button" className={btnGhost} onClick={() => {
-                    if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.cancelDownload) bridge.llamaEngine.cancelDownload();
-                    cancelLocalEngineFlow(p.token);
-                  }}>{llmEngineCopy.cancelDownload || ua.localEngineCancelSend}</button>
+                  <button type="button" className={btnGhost} onClick={() => cancelLocalEngineFlow(p.token)}>{llmEngineCopy.cancelDownload || ua.localEngineCancelSend}</button>
                 );
               } else if (p.kind === 'timeout') {
                 title = ua.localEngineStartingTimeout;
@@ -2540,9 +2572,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               } else {
                 title = ua.localEngineInstallError;
                 body = p.message || '';
-                // 关闭 = 放弃安装：取消可能残留的后台下载后再 resolve。
+                // 关闭 = 放弃安装：本流程发起的在途下载一并取消（别人发起的不动）。
                 const closeInstallError = () => {
-                  if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.cancelDownload) bridge.llamaEngine.cancelDownload();
+                  cancelOwnedEngineDownload();
                   resolvePendingSend(false, p.token);
                 };
                 buttons = (
