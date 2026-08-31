@@ -5221,7 +5221,8 @@ mod tests {
                 hook.event == HookEvent::ToolCallBefore
                     && hook.name.as_deref() == Some("pinvou3-sensitive-firewall")
             }),
-            "连接器自省纠正 hook（pinvou3-sensitive-firewall，安全段已迁 execpolicy）必须保留"
+            "connector-introspection hook (pinvou3-sensitive-firewall, \
+             security segment migrated to execpolicy) must stay registered"
         );
         // 平台脚本命令契约(原 sensitive_firewall_hook_uses_platform_script 的断言):
         // Windows 用 PowerShell 脚本,其余平台用 bash 脚本。
@@ -5268,7 +5269,8 @@ mod tests {
                 .hooks
                 .iter()
                 .any(|hook| hook.event == HookEvent::ToolCallBefore),
-            "每轮消息不得清掉 ToolCallBefore hook（连接器自省纠正）"
+            "per-turn messages must not drop the ToolCallBefore hook \
+             (connector introspection)"
         );
     }
 
