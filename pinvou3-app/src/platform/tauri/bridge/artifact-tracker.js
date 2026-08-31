@@ -103,11 +103,9 @@
     state.artifacts = state.artifacts.filter(function (a) { return a.path !== path; });
     if (state.artifacts.length !== before) notify();
   }
-  // 自动续卡支撑:这个文件之前是否被 present_artifact 展示过(同 basename)。
-  // 已 present 过 = 用户已确认是成品,后续 File.write/File.edit 修改它就自动
-  // 再弹一张成品卡 —— 不靠 agent 第二次主动调(Qwen3.6 迭代后常漏)。信息直接
-  // 从 chatItems 里的成品卡推导,无需单独 per-session map(chatItems 已按 session
-  // 隔离 + rerender 重建)。返回最近一张同名成品卡(取 title/description 复用)。
+  // Artifact cards use the basename as their existing presentation identity.
+  // This matches persisted artifact reconciliation, where a relative write path
+  // and the absolute watcher path must resolve to the same visible card.
   function findPresentedArtifact(path) {
     const bn = basename(path);
     if (!bn) return null;
@@ -116,6 +114,15 @@
       if (it.type === "artifact_card" && basename(it.path) === bn) return it;
     }
     return null;
+  }
+  function updatePresentedArtifact(card) {
+    if (!card || !card.path) return null;
+    const existing = findPresentedArtifact(card.path);
+    if (!existing) return null;
+    const stableId = existing.id;
+    Object.assign(existing, card, { type: "artifact_card" });
+    if (stableId !== undefined) existing.id = stableId;
+    return existing;
   }
   // 切换 session 时对账:扫 workspace 磁盘,把实际存在、但跟踪列表里没有的文件补进来。
   // 修「文件已生成在盘上、却因 app 中途重启/跟踪遗漏而不在产物面板」(以磁盘为准)。
@@ -254,6 +261,7 @@
       markTurnDirtyArtifact,
       untrackArtifact,
       findPresentedArtifact,
+      updatePresentedArtifact,
       reconcileArtifacts,
       extractArtifactPaths,
       extractArtifactPath,

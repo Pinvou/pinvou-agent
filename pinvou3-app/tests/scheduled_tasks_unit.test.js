@@ -5008,6 +5008,75 @@ async function presentationReconciliationUsesStableEventIdentity() {
     "the artifact panel must use the same semantic identity as chat cards"
   );
 
+  function presentArtifact(id, artifactPath, title) {
+    const payload = {
+      session_id: sessionId,
+      id,
+      name: "present_artifact",
+      args: { path: artifactPath, title, description: title + " description" },
+    };
+    harness.emit("chat:tool_start", payload);
+    harness.emit("chat:tool_end", {
+      session_id: sessionId,
+      id,
+      success: true,
+      output: JSON.stringify({ ok: true, abs_path: artifactPath }),
+    });
+  }
+
+  const reportPath = "C:\\Users\\tester\\.pinvou3\\sessions\\" + sessionId +
+    "\\workspace\\report.md";
+  const summaryPath = "C:\\Users\\tester\\.pinvou3\\sessions\\" + sessionId +
+    "\\workspace\\summary.pptx";
+  presentArtifact("tool-present-report", reportPath, "Report");
+  presentArtifact("tool-present-summary", summaryPath, "Summary");
+
+  const threeCardState = bridge.state.get("chat");
+  const threeCards = threeCardState.chatItems.filter(function (item) {
+    return item.type === "artifact_card";
+  });
+  assert.strictEqual(threeCards.length, 3, "the setup must contain exactly three artifact cards");
+  const originalSnakeCard = threeCards.find(function (item) {
+    return /snake-game\.html$/.test(item.path || "");
+  });
+  const originalSnakeIndex = threeCardState.chatItems.findIndex(function (item) {
+    return item.id === originalSnakeCard.id;
+  });
+
+  const editPayload = {
+    session_id: sessionId,
+    id: "tool-edit-snake",
+    name: "File",
+    args: { action: "edit", path: "snake-game.html", old_string: "v1", new_string: "v2" },
+  };
+  harness.emit("chat:tool_start", editPayload);
+  harness.emit("chat:tool_end", {
+    session_id: sessionId,
+    id: editPayload.id,
+    success: true,
+    output: "Updated snake-game.html",
+  });
+  presentArtifact("tool-present-snake-update", absoluteArtifactPath, "Snake game v2");
+
+  const updatedCardState = bridge.state.get("chat");
+  const updatedCards = updatedCardState.chatItems.filter(function (item) {
+    return item.type === "artifact_card";
+  });
+  const updatedSnakeCards = updatedCards.filter(function (item) {
+    return /snake-game\.html$/.test(item.path || "");
+  });
+  assert.strictEqual(updatedCards.length, 3,
+    "updating one of three artifact cards must not create a fourth card");
+  assert.strictEqual(updatedSnakeCards.length, 1,
+    "the updated artifact must still have exactly one card");
+  assert.strictEqual(updatedSnakeCards[0].id, originalSnakeCard.id,
+    "the updated artifact must preserve its card id");
+  assert.strictEqual(updatedCardState.chatItems.findIndex(function (item) {
+    return item.id === originalSnakeCard.id;
+  }), originalSnakeIndex, "the updated artifact must preserve its card position");
+  assert.strictEqual(updatedSnakeCards[0].title, "Snake game v2",
+    "the existing card must receive the latest presentation metadata");
+
   const questions = [{ id: "choice", header: "选择", question: "继续吗？", options: [] }];
   harness.emit("chat:user_input_required", {
     session_id: sessionId, id: "tool-question", questions,

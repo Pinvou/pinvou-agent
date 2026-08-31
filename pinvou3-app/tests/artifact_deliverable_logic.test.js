@@ -66,8 +66,9 @@ function evalIsDeliverable(snippet, label) {
   vm.createContext(ctx);
   vm.runInContext(code, ctx, { filename: file });
   const factory = ctx.window.__PINVOU_TAURI_BRIDGE_FEATURES__["artifact-tracker"];
+  const state = { artifacts: [], chatItems: [], turnDirtyArtifacts: [] };
   const feature = factory({
-    state: { artifacts: [], chatItems: [], turnDirtyArtifacts: [] },
+    state,
     invoke: async () => { throw new Error("invoke not expected"); },
     notify: () => {},
     sessionStates: {},
@@ -87,6 +88,33 @@ function evalIsDeliverable(snippet, label) {
     ["report.md", "appendix.md", "summary.md"],
     "File.patch 必须追踪全部去重后的产物路径",
   );
+
+  state.chatItems = [
+    { id: 1, type: "artifact_card", path: "C:\\workspace\\one.md", title: "One" },
+    { id: 2, type: "artifact_card", path: "C:\\workspace\\two.md", title: "Two" },
+    { id: 3, type: "artifact_card", path: "C:\\workspace\\three.md", title: "Three" },
+  ];
+  const updatedTauriCard = feature.updatePresentedArtifact({
+    type: "artifact_card",
+    path: "two.md",
+    title: "Two updated",
+    description: "Second revision",
+    time: "12:00",
+    sessionId: "session-1",
+  });
+  assert.strictEqual(state.chatItems.length, 3,
+    "updating one of three artifact cards must not append a fourth card");
+  assert.strictEqual(updatedTauriCard, state.chatItems[1],
+    "an artifact update must reuse the existing card object and position");
+  assert.strictEqual(updatedTauriCard.id, 2,
+    "an artifact update must preserve the stable card id");
+  assert.strictEqual(updatedTauriCard.path, "two.md",
+    "an artifact update should adopt the latest path");
+  assert.strictEqual(updatedTauriCard.title, "Two updated",
+    "an artifact update should refresh metadata");
+  assert.strictEqual(feature.updatePresentedArtifact({
+    type: "artifact_card", path: "four.md", title: "Four",
+  }), null, "a new artifact must still be reported to the caller as missing");
 }
 
 // 2) web 侧 bridge.js:isDeliverable 是闭包内部函数,抽取 DELIVERABLE_EXTS..isDeliverable
@@ -111,6 +139,32 @@ function evalIsDeliverable(snippet, label) {
 // 4) 回放(rerender)兜底补首卡门控:两侧 bridge 的预扫只在 isDeliverable 通过时
 //    记 writtenArtifacts → tmp/ 文件切 session 重放后不再冒出成品卡
 {
+  const webSrc = fs.readFileSync(path.join(appRoot, "src", "platform", "web", "bridge.js"), "utf8");
+  const cardState = {
+    chatItems: [
+      { id: 1, type: "artifact_card", path: "/workspace/one.md", title: "One" },
+      { id: 2, type: "artifact_card", path: "/workspace/two.md", title: "Two" },
+      { id: 3, type: "artifact_card", path: "/workspace/three.md", title: "Three" },
+    ],
+  };
+  const cardCtx = { state: cardState };
+  vm.createContext(cardCtx);
+  vm.runInContext([
+    extractFunction(webSrc, "basename"),
+    extractFunction(webSrc, "findPresentedArtifact"),
+    extractFunction(webSrc, "updatePresentedArtifact"),
+    "this.updatePresentedArtifact = updatePresentedArtifact;",
+  ].join("\n"), cardCtx);
+  const updatedWebCard = cardCtx.updatePresentedArtifact({
+    type: "artifact_card", path: "two.md", title: "Two updated",
+  });
+  assert.strictEqual(cardState.chatItems.length, 3,
+    "web bridge must update one of three artifact cards without appending a fourth");
+  assert.strictEqual(updatedWebCard, cardState.chatItems[1],
+    "web bridge must preserve the artifact card position");
+  assert.strictEqual(updatedWebCard.id, 2,
+    "web bridge must preserve the artifact card id");
+
   const GATE = 'if (dbMutation !== "edit" && isDeliverable(dap)) writtenArtifacts[dap] = true;';
   for (const rel of [
     path.join("src", "platform", "web", "bridge.js"),

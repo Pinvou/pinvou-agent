@@ -229,7 +229,7 @@
     const scheduleShellNotify = context.scheduleShellNotify;
     const markBackgroundToolItem = context.markBackgroundToolItem;
     const patchLastItem = context.patchLastItem;
-    const isDuplicateArtifactCard = context.isDuplicateArtifactCard;
+    const updatePresentedArtifact = context.updatePresentedArtifact;
     const updateToolItem = context.updateToolItem;
     const basename = context.basename;
     const hasUnresolvedItem = context.hasUnresolvedItem;
@@ -594,17 +594,15 @@
         // 用 server 解析好的绝对路径(present_artifact_server.py 的 abs_path),而非模型可能
         // 给的相对 args.path → 卡片 path 绝对,点 Open 不再报「path must be absolute」。
         const presentedPath = presentArtifactAbsPath(p.output, meta.args && meta.args.path);
-        // 同一产物没改又 present 一次 → 跳过出卡(防模型啰嗦重复);改完再 present/续卡会保留。
-        if (!isDuplicateArtifactCard(presentedPath)) {
-          addChatItem({
-            type: "artifact_card",
-            path: presentedPath,
-            title: (meta.args && meta.args.title) || "",
-            description: (meta.args && meta.args.description) || "",
-            time: timeStr(),
-            sessionId: p.session_id || state.activeSessionId,
-          });
-        }
+        const presentedCard = {
+          type: "artifact_card",
+          path: presentedPath,
+          title: (meta.args && meta.args.title) || "",
+          description: (meta.args && meta.args.description) || "",
+          time: timeStr(),
+          sessionId: p.session_id || state.activeSessionId,
+        };
+        if (!updatePresentedArtifact(presentedCard)) addChatItem(presentedCard);
         if (presentedPath) state.turnPresentedArtifacts.push(presentedPath); // 本 turn 已出成品卡,chat:done 不再兜底补
         // 同步进产物面板:present_artifact 出卡的产物也算「产出物」。修「自己生成文件、
         // 不走 write_file 的工具(如 make_pptx)→ 卡有、面板无」。trackArtifact 已去重。
@@ -783,7 +781,7 @@
         // 没有再退回 write_file 的相对 ap(由 sessionId 兜底解析)。
         const tracked = state.artifacts.find(function (a) { return basename(a.path) === _apbn && isAbsPath(a.path); });
         const cardPath = (tracked && tracked.path) || ap;
-        if (prev) addChatItem({ type: "artifact_card", path: prev.path, title: prev.title, description: prev.description, time: timeStr(), sessionId: sid });
+        if (prev) updatePresentedArtifact({ type: "artifact_card", path: cardPath, title: prev.title, description: prev.description, time: timeStr(), sessionId: sid });
         else addChatItem({ type: "artifact_card", path: cardPath, title: basename(ap), description: "", time: timeStr(), sessionId: sid });
       });
       state.turnDirtyArtifacts = [];
