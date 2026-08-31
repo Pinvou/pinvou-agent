@@ -1196,6 +1196,7 @@
   }
   function takeWithdrawn(sid, steerId) {
     const byId = withdrawnSteers[sid];
+    // biome-ignore lint/suspicious/noPrototypeBuiltins: repo pins ES2021; the prototype-safe hasOwnProperty.call is the idiom, Object.hasOwn is ES2022
     if (!byId || !Object.prototype.hasOwnProperty.call(byId, steerId)) return;
     const text = byId[steerId];
     delete byId[steerId];
