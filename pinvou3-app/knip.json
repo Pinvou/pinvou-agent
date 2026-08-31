@@ -15,6 +15,7 @@
     "src/platform/web/bootstrap.js",
     "src/platform/web/host-file-picker.js",
     "src/features/attachments/attachment-drop-controller.js",
+    "src/features/attachments/image-prescale.js",
     "src/features/personas/personas-i18n.js",
     "src/features/updater/update-notice-logic.js",
     "src/shared/authority-sync-diagnostics.js",

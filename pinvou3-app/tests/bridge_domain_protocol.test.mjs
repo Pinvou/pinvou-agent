@@ -76,13 +76,18 @@ const protocolSources = {
   updater: ['bridge/updater.js'],
   voice: ['bridge/voice.js'],
   multiAgent: ['bridge/multiagent.js'],
+  llamaEngine: ['bridge/llama-engine.js'],
 };
 
 const expectedProtocolHashes = {
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
   orchestration: '493f46eef80e6ded5243d2c75ca1c8dbcc06097051d949d4ef656267c1bbada9',
   artifacts: '37ca694534c7e6cf44b6d262c40e388999c3ba136faca0d6f57821d5b9b3df53',
-  chat: '8e7dc2c966f6724ba16ea35c4f1b6216570356745b6bb40ee2e1a7a8d6c14ed5',
+  // Local engine progress and state listeners extend the chat bridge protocol.
+  // #346 lint 规范化(var→const)改写了 listen 回调内文本，协议本身未变。
+  chat: 'f836de539bc3c6cf024c2e80b9908cb155d0b48c70feb938d832cde52e393ff9',
+  // #346 lint 规范化(object-shorthand)改写了 invoke 实参文本，协议本身未变。
+  llamaEngine: 'd5456ace25d1591591032ccda988143a4619f382eef4648a02b266b218b2af8b',
   dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
   interaction: '3f275b9c4fc77ebf42a56df1c84d638ca5f1f8a3b80612efebeddf1a39f14efd',
   knowledge: '9105a42c6b69f04d0bc28b6a72e0746648110a44823891ded3261cdcbc99766b',

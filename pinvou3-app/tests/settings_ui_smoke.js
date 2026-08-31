@@ -250,6 +250,25 @@ function injectSource() {
             runtime: null,
             warnings: [{ code: 'runtime_refresh_failed', source: 'runtime', detail: 'runtime cache locked' }],
           });
+        case 'llama_engine_status':
+          return Promise.resolve({
+            engineInstalled: true,
+            engineTag: 'b10299',
+            phase: 'stopped',
+            port: null,
+            pid: null,
+            device: 'cpu',
+            detectedDevice: 'cpu',
+            activeModel: 'qwen3vl-2b-q4km',
+            defaultModel: 'qwen3vl-2b-q4km',
+            recommendedModel: 'qwen3vl-2b-q4km',
+            models: [
+              { id: 'qwen3vl-2b-q4km', displayName: 'Qwen3-VL 2B (Q4_K_M)', installed: true },
+              { id: 'qwen3vl-4b-q4km', displayName: 'Qwen3-VL 4B (Q4_K_M)', installed: false },
+            ],
+            error: null,
+          });
+        case 'llama_engine_delete_model': return Promise.resolve(null);
         default: return Promise.resolve(null);
       }
     }
@@ -1084,6 +1103,144 @@ async function modalWidth(page, headingText) {
       && clearedVision.vision_model_id === null
       && clearedVision.image_capability_override === 'enabled',
     JSON.stringify(clearedVision && { override: clearedVision.image_capability_override, vision: clearedVision.vision_model_id }));
+
+  // ⑦.img.5b-5e 本地识图引擎选项:渲染、保存转换(vision_prefer_local_engine)、回显、清空。
+  await clickRowAction(page, 'deepseek-v4-pro', '编辑');
+  await sleep(300);
+  await page.click('[data-testid="vision-model-toggle"]');
+  await sleep(200);
+  const localEngineOptionPresent = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const options = root ? [...root.querySelectorAll('[data-testid^="vision-model-option-"]')].map(node => node.getAttribute('data-testid')) : [];
+    return options.includes('vision-model-option-__local_engine__');
+  });
+  rec('⑦.img.5b 视觉模型下拉含「本地识图引擎」选项', localEngineOptionPresent);
+  await page.click('[data-testid="vision-model-option-__local_engine__"]');
+  await sleep(200);
+  await clickExact(page, '保存');
+  await sleep(500);
+  const savedLocalEngineVision = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑦.img.5c 选「本地识图引擎」保存为 vision_prefer_local_engine 且清空 vision_model_id',
+    savedLocalEngineVision
+      && savedLocalEngineVision.vision_prefer_local_engine === true
+      && savedLocalEngineVision.vision_model_id === null,
+    JSON.stringify(savedLocalEngineVision && { prefer: savedLocalEngineVision.vision_prefer_local_engine, vision: savedLocalEngineVision.vision_model_id }));
+  await clickRowAction(page, 'deepseek-v4-pro', '编辑');
+  await sleep(300);
+  const localEngineVisionEcho = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const visionToggle = root && root.querySelector('[data-testid="vision-model-toggle"]');
+    return !!visionToggle && (visionToggle.textContent || '').includes('本地识图引擎');
+  });
+  rec('⑦.img.5d 重新打开回显「本地识图引擎」', localEngineVisionEcho);
+  await page.click('[data-testid="vision-model-toggle"]');
+  await sleep(200);
+  await page.click('[data-testid="vision-model-option-none"]');
+  await sleep(200);
+  await clickExact(page, '保存');
+  await sleep(500);
+  const clearedLocalEngineVision = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑦.img.5e 选回「无」清空 vision_prefer_local_engine',
+    clearedLocalEngineVision
+      && clearedLocalEngineVision.vision_prefer_local_engine === false
+      && clearedLocalEngineVision.vision_model_id === null,
+    JSON.stringify(clearedLocalEngineVision && { prefer: clearedLocalEngineVision.vision_prefer_local_engine, vision: clearedLocalEngineVision.vision_model_id }));
+
+  // ⑦.llama 本地识图子页(原「本地多模态引擎」侧栏分节并入模型页胶囊):自动启动三档持久化 + 退出提示文案。
+  await clickSettingsSection(page, '模型');
+  const llamaTabDebug = await page.evaluate(() => {
+    const tab = document.querySelector('[data-testid="settings-model-tab-llama"]');
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    return { hasTab: !!tab, dialogOpen: !!dialog };
+  });
+  rec('⑦.llama.0 模型页胶囊含「本地识图」且无残留弹窗', llamaTabDebug.hasTab && !llamaTabDebug.dialogOpen, JSON.stringify(llamaTabDebug));
+  await page.click('[data-testid="settings-model-tab-llama"]');
+  try {
+    await page.waitForSelector('[data-testid="llama-autostart-select"]', { timeout: 3000 });
+  } catch (waitErr) {
+    const bodyText = await page.evaluate(() => document.body.innerText.slice(-1200));
+    throw new Error(`本地识图子页未完成渲染；runtime errors=${errors.slice(-3).join(' | ')}；body=${bodyText}`, { cause: waitErr });
+  }
+  await page.click('[data-testid="llama-autostart-select"]');
+  await sleep(250);
+  const llamaSection = await page.evaluate(() => {
+    const text = document.body.innerText;
+    return {
+      hasAutoStart: text.includes('自动启动引擎'),
+      hasThreeOptions: text.includes('第一次发送图片时') && text.includes('开启 pinvou 时') && text.includes('从不'),
+      hasShutdownHint: text.includes('退出 pinvou 时引擎将自动关闭'),
+      hasVisionFallback: text.includes('自动作为图片识别兜底'),
+    };
+  });
+  rec('⑦.llama.1 本地多模态引擎区块展示自动启动三档与退出提示', Object.values(llamaSection).every(Boolean), JSON.stringify(llamaSection));
+  await page.click('[data-testid="llama-autostart-launch"]');
+  await sleep(300);
+  const llamaAutoStartSaved = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'update_settings');
+    return call && call.args && call.args.patch && call.args.patch.advanced && call.args.patch.advanced.llama_engine_auto_start;
+  });
+  rec('⑦.llama.2 选择「开启 pinvou 时」写入 advanced.llama_engine_auto_start', llamaAutoStartSaved === 'launch', String(llamaAutoStartSaved));
+
+  // ⑦.llama.3 PR3:设备档默认「自动」,显式选 GPU 持久化 llama_engine_default_device。
+  await clickExact(page, 'GPU（Vulkan / Metal）');
+  await sleep(300);
+  const llamaDeviceSaved = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'update_settings');
+    return call && call.args && call.args.patch && call.args.patch.advanced && call.args.patch.advanced.llama_engine_default_device;
+  });
+  rec('⑦.llama.3 选择 GPU 写入 advanced.llama_engine_default_device', llamaDeviceSaved === 'gpu', String(llamaDeviceSaved));
+
+  // ⑦.llama.4 删除模型走应用内自绘确认弹窗（window.confirm 在 Tauri Windows
+  // WebView2 下静默失效，危险操作不能依赖原生 confirm）：取消不删、确认才删。
+  const llamaDeleteBtnState = await page.evaluate(() => {
+    const btn = document.querySelector('[data-testid="llama-delete-model-qwen3vl-2b-q4km"]');
+    return { exists: !!btn, disabled: btn ? btn.disabled : null };
+  });
+  await page.evaluate(() => { document.querySelector('[data-testid="llama-delete-model-qwen3vl-2b-q4km"]').click(); });
+  await sleep(400);
+  const llamaDeleteModal = await page.evaluate(() => {
+    const title = document.querySelector('.fixed.inset-0 h3');
+    const body = document.querySelector('.fixed.inset-0 p');
+    return {
+      visible: !!document.querySelector('[data-testid="llama-delete-confirm"]'),
+      titleText: (title && title.textContent) || '',
+      mentionsModel: !!body && body.textContent.includes('Qwen3-VL 2B'),
+      deleteBtn: !!document.querySelector('[data-testid="llama-delete-model-qwen3vl-2b-q4km"]'),
+    };
+  });
+  let llamaDeleteCancelled = false;
+  let llamaDeleteDone = { called: false, model: null };
+  if (llamaDeleteModal.visible) {
+    await page.click('[data-testid="llama-delete-cancel"]');
+    await sleep(150);
+    llamaDeleteCancelled = await page.evaluate(() => {
+      const calls = [...window.__SETTINGS_TEST__.calls].reverse();
+      return !calls.some(item => item.cmd === 'llama_engine_delete_model');
+    });
+    await page.click('[data-testid="llama-delete-model-qwen3vl-2b-q4km"]');
+    await sleep(150);
+    await page.click('[data-testid="llama-delete-confirm"]');
+    await sleep(250);
+    llamaDeleteDone = await page.evaluate(() => {
+      const calls = [...window.__SETTINGS_TEST__.calls].reverse();
+      const call = calls.find(item => item.cmd === 'llama_engine_delete_model');
+      return { called: !!call, model: call && call.args && call.args.model };
+    });
+  }
+  rec('⑦.llama.4 删除模型弹自绘确认框：取消不删、确认带模型 id 删除',
+    llamaDeleteModal.visible && llamaDeleteModal.titleText.includes('删除') && llamaDeleteModal.mentionsModel
+      && llamaDeleteCancelled && llamaDeleteDone.called && llamaDeleteDone.model === 'qwen3vl-2b-q4km',
+    JSON.stringify({ modal: llamaDeleteModal, cancelled: llamaDeleteCancelled, done: llamaDeleteDone, btn: llamaDeleteBtnState, pageErrors: errors.slice(-4).map(String) }));
+
+  // 回到模型子页继续 ⑦.img.6 图片能力测试。
+  await page.click('[data-testid="settings-model-tab-models"]');
+  await sleep(300);
 
   // ⑦.img.6-11 测试图片能力(设计 §7.3):按钮渲染、supported/unsupported/error 分态、表单变更清除结果。
   await clickRowAction(page, 'deepseek-v4-pro', '编辑');

@@ -55,6 +55,36 @@ fn shared_credential_store() -> &'static SystemCredentialStore {
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
 const SEPARATE_REASONING_FIELD: &str = "separate_field";
 
+/// Builds the foundation vision configuration for the route selected by §9.3.
+///
+/// A local llama-server benefits from streaming progress and needs a longer
+/// request budget on slower hardware. Retrying its startup or crash-window 5xx
+/// responses only increases local resource contention. Cloud and managed local
+/// services retain the foundation defaults for compatibility.
+///
+/// 本地进程引擎不启用鉴权（llama-server 未设 `--api-key`），而底座无条件携带
+/// `Authorization` 头——本地路由一律传 `LOCAL_VLLM_API_KEY` 占位 key，不得传
+/// 主模型的真实云端凭据，避免密钥被不必要地送达本地进程。
+fn vision_model_config(
+    model: String,
+    api_key: String,
+    base_url: String,
+    is_local_process_engine: bool,
+) -> deepseek_tui::config::VisionModelConfig {
+    deepseek_tui::config::VisionModelConfig {
+        model,
+        api_key: Some(api_key),
+        base_url: Some(base_url),
+        request_timeout_secs: is_local_process_engine.then_some(300),
+        stream: is_local_process_engine.then_some(true),
+        retry_on_transient_errors: if is_local_process_engine {
+            Some(false)
+        } else {
+            None
+        },
+    }
+}
+
 // Multi-agent is an agent cluster where the main session stays the overall
 // coordinator and complex tasks nest at most one extra level — not an unbounded
 // recursive tree. Plain conversations keep the original CodeWhale caps; only
@@ -214,6 +244,61 @@ impl crate::features::memory::MemoryReviewModel for Pinvou3Bridge {
     fn memory_locale_tag(&self) -> String {
         self.locale_tag().to_string()
     }
+}
+
+/// 解析一条任意 SavedModel 的凭据(视觉兜底模型专用,设计 §9.3):
+/// 复用 `credential_ref` → 系统凭据库路径,**不存第二份明文密钥**;
+/// 不回落到全局 `DEEPSEEK_API_KEY` env(那是主模型的覆盖入口)。
+/// 本地 vLLM/loopback 无鉴权场景返回占位 key(底座要求非空)。
+/// `resolve_vision_model_config` 规则 1 与 `vision_local_gate` 的
+/// 「已配置」判定都必须走这里，两条路径凭据口径不得分叉。
+fn api_key_for_saved_model(model: &SavedModel) -> String {
+    if let Some(reference) = &model.credential_ref {
+        let store = shared_credential_store();
+        match store.get(reference) {
+            Ok(Some(key)) if !key.trim().is_empty() => return key,
+            Ok(_) => {}
+            Err(err) => {
+                eprintln!(
+                    "[pinvou3-app] credential read failed for vision model {}: {}",
+                    model.id,
+                    err.user_message()
+                );
+            }
+        }
+    }
+    if model.preset == ModelPreset::LocalVllm || base_url_uses_loopback(&model.base_url) {
+        return LOCAL_VLLM_API_KEY.to_string();
+    }
+    model.api_key.clone()
+}
+
+/// 本地引擎视觉接管门：该模型显式选择「本地识图引擎」
+/// （`vision_prefer_local_engine`，模型设置页选项），或全局兜底开关开启
+/// （默认开）**且该模型未配置视觉模型**——兜底只接管没有出路的纯文本
+/// 模型，不覆盖用户的显式视觉模型配置。`vision_model_id` 悬空（指向的
+/// 模型已删除/不存在）或指向的模型凭据缺失（如 keychain 条目被删）都
+/// 按未配置处理，与 `resolve_vision_model_config` 规则 1 同口径——判定
+/// 统一走 `api_key_for_saved_model`，否则这两类引用会让兜底与安装引导
+/// 同时静默失效（图片硬拒且不引导安装本地引擎）。
+/// 命中后引擎运行中即接管 `image_analyze` 端点；未运行则回落后续规则。
+fn vision_local_gate(
+    prefs: &crate::platform::prefs::AdvancedPrefs,
+    model: Option<&crate::platform::prefs::SavedModel>,
+) -> bool {
+    let vision_model_configured = |m: &crate::platform::prefs::SavedModel| {
+        m.vision_model_id.as_deref().is_some_and(|id| {
+            prefs
+                .saved_models
+                .iter()
+                .find(|saved| saved.id == id)
+                // 凭据缺失与悬空 id 同口径(规则 1):按「未配置」处理。
+                .is_some_and(|vision| !api_key_for_saved_model(vision).trim().is_empty())
+        })
+    };
+    model.is_some_and(|m| m.vision_prefer_local_engine)
+        || (prefs.llama_engine_vision_fallback.unwrap_or(true)
+            && model.is_none_or(|m| !vision_model_configured(m)))
 }
 
 impl Pinvou3Bridge {
@@ -918,90 +1003,125 @@ impl Pinvou3Bridge {
         }
     }
 
-    /// 解析一条任意 SavedModel 的凭据(视觉兜底模型专用,设计 §9.3):
-    /// 复用 `credential_ref` → 系统凭据库路径,**不存第二份明文密钥**;
-    /// 不回落到全局 `DEEPSEEK_API_KEY` env(那是主模型的覆盖入口)。
-    /// 本地 vLLM/loopback 无鉴权场景返回占位 key(底座要求非空)。
-    fn api_key_for_saved_model(model: &SavedModel) -> String {
-        if let Some(reference) = &model.credential_ref {
-            let store = shared_credential_store();
-            match store.get(reference) {
-                Ok(Some(key)) if !key.trim().is_empty() => return key,
-                Ok(_) => {}
-                Err(err) => {
-                    eprintln!(
-                        "[pinvou3-app] credential read failed for vision model {}: {}",
-                        model.id,
-                        err.user_message()
-                    );
-                }
-            }
-        }
-        if model.preset == ModelPreset::LocalVllm || base_url_uses_loopback(&model.base_url) {
-            return LOCAL_VLLM_API_KEY.to_string();
-        }
-        model.api_key.clone()
+    /// 本地引擎视觉接管门：该模型显式选择「本地识图引擎」，或全局兜底
+    /// 开关开启且该模型未配置视觉模型（见 `vision_local_gate`）。
+    /// 命中后引擎运行中即接管 `image_analyze` 端点；未运行则回落后续规则。
+    pub(crate) fn vision_local_gate_active(&self) -> bool {
+        vision_local_gate(&self.prefs.advanced, self.effective_model())
     }
 
     /// 视觉工具(`image_analyze`)配置解析(设计 §9.3,阶段 E)。规则:
+    /// 0. 该模型显式选择「本地识图引擎」且引擎运行中 → 本地端点(视为该
+    ///    模型的视觉模型配置,最高优先级);引擎未运行回落后续规则。
     /// 1. 主模型设置了 `vision_model_id` → 用该 SavedModel 的 endpoint + 凭据;
-    ///    id 失效、凭据缺失 → 记 warning 并优雅降级为不注册,不硬错。视觉模型
+    ///    id 悬空(指向的模型已删除/不存在)按「未配置」处理,落到规则 2/3——
+    ///    否则与 `vision_local_gate` 的 `vision_model_id.is_none()` 要求叠加,
+    ///    两条兜底静默失效,只剩硬 image_input_unsupported 且无安装引导。
+    ///    凭据缺失（如 keychain 条目被删）与悬空 id 同口径按「未配置」落到
+    ///    规则 2/3——否则本地引擎已装已跑也接不住这张图片，只剩硬
+    ///    image_input_unsupported 且无安装引导。视觉模型
     ///    **自身**的图片能力不在此处拒绝——选择器已用识图探测闸门验证(supported
     ///    才允许选中),override 标记(disabled)可能是历史探测误判残留,运行时
     ///    按实际被选中的事实使用(见函数体内注释)。
     /// 2. 未设置、但主模型能力已确认为 Supported → 复用主模型作为 workspace
     ///    图片分析工具(保留旧的复用行为,但仅限 Supported)。
-    /// 3. 主模型 Unsupported/Unknown 且未设置视觉模型 → 返回 None,不注册
-    ///    `image_analyze`(不 enable `Feature::VisionModel`)。例外:`image_analyze_always`
-    ///    (scheduled 会话)时 Unknown 回退复用主模型——scheduled 图片不走路由,
-    ///    prompt 硬规则要求调用 `image_analyze`,未注册会让模型反复调用不存在的
+    /// 3. **本地兜底**:全局兜底开关开启(默认开)且引擎运行中 → 本地端点。
+    ///    只有未配置视觉模型的纯文本模型会到达这里——规则 1/2 已把有出路
+    ///    的模型接走,本地引擎不覆盖显式配置。
+    /// 4. 以上皆不命中 → 返回 None,不注册 `image_analyze`(不 enable
+    ///    `Feature::VisionModel`)。例外:`image_analyze_always`(scheduled
+    ///    会话)时 Unknown 回退复用主模型——scheduled 图片不走路由,prompt
+    ///    硬规则要求调用 `image_analyze`,未注册会让模型反复调用不存在的
     ///    工具;调用时 provider 拒绝的优雅失败与 main 行为一致。
     fn resolve_vision_model_config(&self) -> Option<deepseek_tui::config::VisionModelConfig> {
         let effective = self.effective_model();
-        if let Some(vision_id) = effective.and_then(|model| model.vision_model_id.as_deref()) {
-            let Some(vision) = self.prefs.model_by_id(vision_id) else {
-                eprintln!(
-                    "[pinvou3-app] vision_model_id {vision_id} not found in saved_models; \
-                     image_analyze disabled"
-                );
-                return None;
-            };
-            // 视觉模型自身能力不在此处拒绝:选择器已用识图探测验证(supported
-            // 才允许选中)。override 标记(disabled)可能是历史探测误判残留
-            // (如 kimi-for-coding 曾因探测链路 400 被回填),运行时按实际被
-            // 选中的事实使用;文本模型配成视觉模型由前端探测闸门挡住。
-            let api_key = Self::api_key_for_saved_model(vision);
-            if api_key.trim().is_empty() {
-                eprintln!(
-                    "[pinvou3-app] vision model {} has no usable credential; \
-                     image_analyze disabled",
-                    vision.id
-                );
-                return None;
+        // 规则 0:模型显式选择「本地识图引擎」→ 本地端点最高优先级。
+        if effective.is_some_and(|model| model.vision_prefer_local_engine) {
+            if let Some(endpoint) = crate::features::llama_engine::vision_endpoint() {
+                // 本地 llama-server = 进程级引擎,禁掉 transient 5xx 重试,
+                // 避免启动期 / 崩溃期重发加剧资源争抢。
+                return Some(vision_model_config(
+                    self.model(),
+                    LOCAL_VLLM_API_KEY.to_string(),
+                    endpoint,
+                    true,
+                ));
             }
-            return Some(deepseek_tui::config::VisionModelConfig {
-                model: vision.model.clone(),
-                api_key: Some(api_key),
-                base_url: Some(vision.base_url.clone()),
-            });
+        }
+        if let Some(vision_id) = effective.and_then(|model| model.vision_model_id.as_deref()) {
+            // vision_model_id 悬空(指向的模型已删除/不存在)按「未配置」处理:
+            // 不提前 return,落到规则 2/3 兜底(见函数头规则 1 注释)。
+            if let Some(vision) = self.prefs.model_by_id(vision_id) {
+                // 视觉模型自身能力不在此处拒绝:选择器已用识图探测验证(supported
+                // 才允许选中)。override 标记(disabled)可能是历史探测误判残留
+                // (如 kimi-for-coding 曾因探测链路 400 被回填),运行时按实际被
+                // 选中的事实使用;文本模型配成视觉模型由前端探测闸门挡住。
+                let api_key = api_key_for_saved_model(vision);
+                if api_key.trim().is_empty() {
+                    // 凭据缺失(如 keychain 条目被删)与悬空 id 同口径:按「未配置」
+                    // 落到规则 2/3——Supported 主模型自复用或本地引擎兜底仍可用;
+                    // 提前 return None 会让已在运行的本地引擎也救不了这张图片。
+                    eprintln!(
+                        "[pinvou3-app] vision model {} has no usable credential; \
+                         treating as unconfigured",
+                        vision.id
+                    );
+                } else {
+                    // 用户配置的视觉模型(vLLM / 云端 / Ollama 等)→ 默认重试
+                    // transient 5xx;1-2s 退避对这些有 SRE 实践的服务可能命中
+                    // 已 ready 的实例。
+                    return Some(vision_model_config(
+                        vision.model.clone(),
+                        api_key,
+                        vision.base_url.clone(),
+                        false,
+                    ));
+                }
+            }
+            eprintln!(
+                "[pinvou3-app] vision_model_id {vision_id} not found in saved_models; \
+                 treating as unconfigured"
+            );
         }
         if effective.map(effective_image_capability) == Some(EffectiveImageCapability::Supported) {
-            return Some(deepseek_tui::config::VisionModelConfig {
-                model: self.model(),
-                api_key: Some(self.api_key()),
-                base_url: Some(self.base_url()),
-            });
+            // 主模型自带视觉能力(云端多模态 / vLLM 跑 Qwen2-VL 等)→
+            // 默认重试 transient 5xx。
+            return Some(vision_model_config(
+                self.model(),
+                self.api_key(),
+                self.base_url(),
+                false,
+            ));
+        }
+        // 规则 3:本地兜底——全局兜底开关开(默认开)且引擎运行中 → 本地
+        // 端点。只有未配置视觉模型的纯文本模型会到达这里(规则 1/2 已把
+        // 有出路的模型接走);本地 llama-server 同规则 0 禁 transient 5xx。
+        if self
+            .prefs
+            .advanced
+            .llama_engine_vision_fallback
+            .unwrap_or(true)
+        {
+            if let Some(endpoint) = crate::features::llama_engine::vision_endpoint() {
+                return Some(vision_model_config(
+                    self.model(),
+                    LOCAL_VLLM_API_KEY.to_string(),
+                    endpoint,
+                    true,
+                ));
+            }
         }
         // scheduled 例外:Unknown(如本地 vLLM 模型不在内置表)也注册,见函数头
-        // 注释规则 3。Unsupported 仍不注册(确认不支持的模型注册了只会持续报错)。
+        // 注释规则 4。Unsupported 仍不注册(确认不支持的模型注册了只会持续报错)。
         if self.image_analyze_always
             && effective.map(effective_image_capability) == Some(EffectiveImageCapability::Unknown)
         {
-            return Some(deepseek_tui::config::VisionModelConfig {
-                model: self.model(),
-                api_key: Some(self.api_key()),
-                base_url: Some(self.base_url()),
-            });
+            return Some(vision_model_config(
+                self.model(),
+                self.api_key(),
+                self.base_url(),
+                false,
+            ));
         }
         None
     }
@@ -1028,8 +1148,8 @@ impl Pinvou3Bridge {
 
     /// 普通会话图片输入路由(设计 §9.2,阶段 D)。仅当消息含图片附件时由命令层调用。
     /// `has_vision_model` 取自 `resolve_vision_model_config`:Supported 主模型本来就走
-    /// Native,该值只在 Unsupported/Unknown 时影响路由,而那时 Some 仅可能来自
-    /// `vision_model_id` 命中的独立视觉模型。
+    /// Native,该值只在 Unsupported/Unknown 时影响路由,此时 Some 可来自规则 1 命中
+    /// 的独立视觉模型,或规则 0/3 接管的本地引擎端点。
     pub fn image_input_mode(&self) -> crate::features::assistant::image_capability::ImageInputMode {
         crate::features::assistant::image_capability::image_input_mode(
             self.effective_image_capability(),
@@ -2467,6 +2587,20 @@ mod tests {
         (lock, EnvGuard::new(vars))
     }
 
+    // llama_engine 的全局 RUNTIME 同理:force_running_for_test/reset_runtime_for_test
+    // 的写测试与经 resolve_vision_model_config(规则 0/3 → vision_endpoint →
+    // RUNTIME)间接读它的测试必须串行,否则默认并行 cargo test 下写测试的
+    // 「运行中」窗口会把读测试的 is_none/Unsupported 断言翻掉(RAII reset 只能
+    // 保证收尾,挡不住并发读取)。锁源在 llama_engine::server(RUNTIME_TEST_LOCK,
+    // crate 级),本模块与 server.rs 自身的 RUNTIME 写测试共用同一把,口径与
+    // ENV_LOCK 一致。
+    /// 获取 RUNTIME_TEST_LOCK(毒化视为可恢复,与 locked_env 同一口径)。
+    /// 任何直接调 force_running_for_test/reset_runtime_for_test、或断言依赖
+    /// 引擎未运行态的测试,入口处先拿锁。
+    fn locked_runtime() -> std::sync::MutexGuard<'static, ()> {
+        crate::features::llama_engine::server::locked_runtime_for_test()
+    }
+
     fn fixture_bridge() -> Pinvou3Bridge {
         Pinvou3Bridge {
             prefs: UserPrefs::default(),
@@ -3342,6 +3476,7 @@ mod tests {
             endpoint_mode: None,
             image_capability_override: Default::default(),
             vision_model_id: None,
+            vision_prefer_local_engine: false,
             api_key: api_key.to_string(),
             credential_ref: None,
             credential_state: crate::platform::credential_store::CredentialState::Missing,
@@ -3368,6 +3503,7 @@ mod tests {
             endpoint_mode: None,
             image_capability_override: Default::default(),
             vision_model_id: None,
+            vision_prefer_local_engine: false,
             api_key: api_key.to_string(),
             credential_ref: None,
             credential_state: crate::platform::credential_store::CredentialState::Missing,
@@ -3410,6 +3546,8 @@ mod tests {
 
     #[test]
     fn vision_endpoint_locality_reflects_vision_model_base_url() {
+        // 未配置视觉模型时走规则 3 读全局 RUNTIME,须与写 RUNTIME 的测试串行。
+        let _runtime_lock = locked_runtime();
         // 未配置视觉模型 → None;云端视觉模型 → Some(false);loopback 视觉模型 → Some(true)。
         let mut bridge = fixture_bridge();
         set_active_model(
@@ -3462,10 +3600,264 @@ mod tests {
             .enabled(deepseek_tui::features::Feature::VisionModel));
     }
 
+    /// 本地识图引擎门：全局兜底默认开但只接管未配置视觉模型的模型；
+    /// 该模型显式选「本地识图引擎」时无条件命中（视为显式配置）。
+    /// vision_model_id 悬空（指向已删除模型）或凭据缺失按未配置处理。
+    #[test]
+    fn vision_local_gate_combinations() {
+        let model = |prefer_local: bool, vision_model_id: Option<&str>| {
+            Some(crate::platform::prefs::SavedModel {
+                id: "test".into(),
+                name: "test".into(),
+                preset: ModelPreset::Deepseek,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                reasoning_effort: None,
+                alias: None,
+                model: "deepseek-v4-pro".into(),
+                base_url: "https://api.deepseek.com".into(),
+                provider_kind: None,
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: Default::default(),
+                vision_model_id: vision_model_id.map(str::to_owned),
+                vision_prefer_local_engine: prefer_local,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: crate::platform::credential_store::CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            })
+        };
+        // 「已配置」按 saved_models 实际存在性 + 可用凭据判断（与规则 1 同
+        // 口径，统一走 api_key_for_saved_model）：v1 持有可用凭据；v2 存在
+        // 但凭据缺失（keychain 条目被删/api_key 为空）；v3 是 loopback 端点
+        // （占位 key 即视为可用，本地端点无需真实凭据）。
+        let prefs = |fallback: Option<bool>| {
+            let mut prefs = crate::platform::prefs::AdvancedPrefs {
+                llama_engine_vision_fallback: fallback,
+                ..Default::default()
+            };
+            let mut vision = model(false, None).expect("vision fixture");
+            vision.id = "v1".into();
+            vision.api_key = "sk-vision".into();
+            prefs.saved_models.push(vision);
+            let mut no_credential = model(false, None).expect("vision fixture");
+            no_credential.id = "v2".into();
+            prefs.saved_models.push(no_credential);
+            let mut loopback = model(false, None).expect("vision fixture");
+            loopback.id = "v3".into();
+            loopback.base_url = "http://127.0.0.1:8000/v1".into();
+            prefs.saved_models.push(loopback);
+            prefs
+        };
+        // 全局兜底默认开 + 未配置视觉模型 → 命中（即便模型未显式选本地）
+        assert!(vision_local_gate(&prefs(None), model(false, None).as_ref()));
+        // 全局兜底关闭 + 模型未选本地 → 不命中
+        assert!(!vision_local_gate(
+            &prefs(Some(false)),
+            model(false, None).as_ref()
+        ));
+        // 全局兜底关闭 + 模型显式选本地 → 命中（per-model 覆盖全局）
+        assert!(vision_local_gate(
+            &prefs(Some(false)),
+            model(true, None).as_ref()
+        ));
+        // 全局兜底开 + 未配置视觉模型 → 命中
+        assert!(vision_local_gate(
+            &prefs(Some(true)),
+            model(false, None).as_ref()
+        ));
+        // 全局兜底开 + 已配置视觉模型 → 不命中（兜底不覆盖显式配置）
+        assert!(!vision_local_gate(
+            &prefs(None),
+            model(false, Some("v1")).as_ref()
+        ));
+        assert!(!vision_local_gate(
+            &prefs(Some(true)),
+            model(false, Some("v1")).as_ref()
+        ));
+        // 已配置视觉模型 + 显式选本地 → 命中（显式选择优先于一切）
+        assert!(vision_local_gate(
+            &prefs(Some(false)),
+            model(true, Some("v1")).as_ref()
+        ));
+        // vision_model_id 悬空（saved_models 中不存在）→ 按未配置处理，
+        // 兜底正常命中（与 resolve_vision_model_config 规则 1 同口径）
+        assert!(vision_local_gate(
+            &prefs(None),
+            model(false, Some("ghost")).as_ref()
+        ));
+        // 视觉模型存在但凭据缺失（如 keychain 条目被删）→ 与悬空 id 同口径
+        // 按未配置处理：兜底命中，发送门才会引导启动/安装本地引擎——否则
+        // 图片硬拒且无任何引导（gate 与 resolve 口径分叉的回归点）。
+        assert!(vision_local_gate(
+            &prefs(None),
+            model(false, Some("v2")).as_ref()
+        ));
+        assert!(vision_local_gate(
+            &prefs(Some(true)),
+            model(false, Some("v2")).as_ref()
+        ));
+        // loopback 视觉模型无需真实凭据（占位 key 即可用）→ 视为已配置，
+        // 兜底不覆盖该显式配置
+        assert!(!vision_local_gate(
+            &prefs(None),
+            model(false, Some("v3")).as_ref()
+        ));
+    }
+
+    /// 规则 0：模型显式选「本地识图引擎」+ 引擎运行 → 本地端点
+    /// （全局兜底关闭也生效）；引擎未运行 → 回落后续规则。
+    #[test]
+    fn vision_config_local_engine_rule0() {
+        use crate::features::llama_engine::server;
+        // 写全局 RUNTIME 的测试须在 RUNTIME_TEST_LOCK 下运行,挡住并发的 RUNTIME 读测试。
+        let _runtime_lock = locked_runtime();
+        // RAII 守卫：测试结束复位全局 RUNTIME，避免污染其他测试的引擎运行态。
+        struct RuntimeGuard;
+        impl Drop for RuntimeGuard {
+            fn drop(&mut self) {
+                server::reset_runtime_for_test();
+            }
+        }
+        let _guard = RuntimeGuard;
+
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        bridge.prefs.advanced.saved_models[0].vision_prefer_local_engine = true;
+        bridge.prefs.advanced.llama_engine_vision_fallback = Some(false);
+
+        // 引擎未运行 → 规则 0 不命中，未配视觉模型 → 不注册
+        assert!(bridge.resolve_vision_model_config().is_none());
+
+        // 引擎运行 → 本地端点（全局兜底关闭也被 per-model 显式选择覆盖）
+        server::force_running_for_test(8765);
+        let config = bridge
+            .resolve_vision_model_config()
+            .expect("running local engine must win");
+        assert_eq!(config.base_url.as_deref(), Some("http://127.0.0.1:8765/v1"));
+        let engine = bridge.build_engine_config();
+        assert!(engine.vision_config.is_some());
+
+        // 取消显式选择（全局兜底仍关）→ 回落规则 1（vision_model_id 云端模型）
+        bridge.prefs.advanced.saved_models[0].vision_prefer_local_engine = false;
+        push_vision_model(&mut bridge, "vision-1", "gpt-4o", "sk-vision");
+        bridge.prefs.advanced.saved_models[0].vision_model_id = Some("vision-1".to_string());
+        let config = bridge
+            .resolve_vision_model_config()
+            .expect("explicit cloud vision model must resolve");
+        assert_eq!(config.model, "gpt-4o");
+
+        // 全局兜底打开 + 引擎仍在运行 + 已配置视觉模型 → 云端仍胜
+        // （兜底不覆盖显式配置）。
+        bridge.prefs.advanced.llama_engine_vision_fallback = None;
+        let config = bridge
+            .resolve_vision_model_config()
+            .expect("cloud vision model must win over local fallback");
+        assert_eq!(config.model, "gpt-4o");
+
+        // 清掉视觉模型配置 → 纯文本模型被本地兜底接管（规则 3）。
+        bridge.prefs.advanced.saved_models[0].vision_model_id = None;
+        let config = bridge
+            .resolve_vision_model_config()
+            .expect("pure-text model must fall back to local engine");
+        assert_eq!(config.base_url.as_deref(), Some("http://127.0.0.1:8765/v1"));
+    }
+
+    /// Locks the route-specific foundation options: local llama-server uses a
+    /// 300-second streaming request with retries disabled, while configured
+    /// vision services and native multimodal models retain foundation defaults.
+    #[test]
+    fn vision_config_retry_split_by_channel() {
+        use crate::features::llama_engine::server;
+        // 写全局 RUNTIME 的测试须在 RUNTIME_TEST_LOCK 下运行,挡住并发的 RUNTIME 读测试。
+        let _runtime_lock = locked_runtime();
+        // RAII 守卫：测试结束复位全局 RUNTIME，避免污染其他测试的引擎运行态。
+        struct RuntimeGuard;
+        impl Drop for RuntimeGuard {
+            fn drop(&mut self) {
+                server::reset_runtime_for_test();
+            }
+        }
+        let _guard = RuntimeGuard;
+
+        // 规则 0：本地引擎运行 → Some(false)。
+        let mut local = fixture_bridge();
+        set_active_model(
+            &mut local,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        server::force_running_for_test(8765);
+        let config = local
+            .resolve_vision_model_config()
+            .expect("running local engine must resolve");
+        assert_eq!(
+            config.retry_on_transient_errors,
+            Some(false),
+            "本地进程引擎必须禁 transient 5xx 重试(启动/崩溃窗口 1-2s 退避无意义)"
+        );
+        assert_eq!(config.request_timeout_secs, Some(300));
+        assert_eq!(config.stream, Some(true));
+
+        // 规则 1：用户配置视觉模型(vLLM/云端等)→ None 默认重试。
+        server::reset_runtime_for_test();
+        let mut configured = fixture_bridge();
+        set_active_model(
+            &mut configured,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        push_vision_model(&mut configured, "vision-vllm", "qwen2-vl-72b", "sk-vision");
+        configured.prefs.advanced.saved_models[0].vision_model_id = Some("vision-vllm".to_string());
+        let config = configured
+            .resolve_vision_model_config()
+            .expect("configured vision model must resolve");
+        assert_eq!(
+            config.retry_on_transient_errors, None,
+            "服务级视觉模型(vLLM/云端)必须保持默认重试"
+        );
+        assert_eq!(config.request_timeout_secs, None);
+        assert_eq!(config.stream, None);
+
+        // 规则 2：Supported 主模型复用 → None 默认重试。
+        let mut native = fixture_bridge();
+        set_active_model(
+            &mut native,
+            ModelPreset::OpenaiCompatible,
+            "gpt-4o",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+        let config = native
+            .resolve_vision_model_config()
+            .expect("supported main model must resolve");
+        assert_eq!(
+            config.retry_on_transient_errors, None,
+            "Supported 主模型复用必须保持默认重试"
+        );
+        assert_eq!(config.request_timeout_secs, None);
+        assert_eq!(config.stream, None);
+    }
+
     /// §9.3 规则 3:主模型 Unknown/Unsupported 且未设置视觉模型 →
     /// 不注册 image_analyze(vision_config=None 且不 enable Feature::VisionModel)。
     #[test]
     fn vision_config_absent_for_unknown_or_disabled_main_model() {
+        // Unknown/Disabled 断言 is_none 依赖引擎未运行态(规则 3 读全局 RUNTIME),
+        // 须与写 RUNTIME 的测试串行。
+        let _runtime_lock = locked_runtime();
         // Unknown:deepseek-v4-pro 不在内置已验证能力表。
         let mut unknown = fixture_bridge();
         set_active_model(
@@ -3502,6 +3894,9 @@ mod tests {
     /// 会让模型反复调用不存在的工具;Unsupported 仍不注册。
     #[test]
     fn vision_config_falls_back_for_unknown_main_model_when_image_analyze_always() {
+        // Unsupported 断言 is_none 依赖引擎未运行态(规则 3 读全局 RUNTIME),
+        // 须与写 RUNTIME 的测试串行。
+        let _runtime_lock = locked_runtime();
         let mut scheduled = fixture_bridge();
         set_active_model(
             &mut scheduled,
@@ -3534,23 +3929,72 @@ mod tests {
         assert!(unsupported.resolve_vision_model_config().is_none());
     }
 
-    /// §9.3 规则 1 的优雅降级:vision_model_id 失效(指向不存在/已删除的模型)
-    /// 或目标模型凭据缺失 → 不注册并记 warning,不硬错、不回落主模型。
+    /// §9.3 规则 3 先于规则 4（定时任务例外）：引擎一旦运行，定时任务的
+    /// image_analyze provider 随运行态漂移到本地端点。这是第 4 轮评审披露
+    /// 的已知语义，用本测试钉死该顺序，防止规则重排时静默反转。
     #[test]
-    fn vision_config_degrades_gracefully_on_missing_id_or_credential() {
-        // id 指向不存在的模型。
-        let mut ghost = fixture_bridge();
+    fn vision_config_scheduled_unknown_model_takes_local_fallback_while_engine_running() {
+        use crate::features::llama_engine::server;
+        // 规则 3 用例写全局 RUNTIME,须在 RUNTIME_TEST_LOCK 下运行。
+        let _runtime_lock = locked_runtime();
+        struct RuntimeGuard;
+        impl Drop for RuntimeGuard {
+            fn drop(&mut self) {
+                server::reset_runtime_for_test();
+            }
+        }
+        let _guard = RuntimeGuard;
+
+        let mut scheduled = fixture_bridge();
         set_active_model(
-            &mut ghost,
+            &mut scheduled,
             ModelPreset::Deepseek,
             "deepseek-v4-pro",
             "https://api.deepseek.com",
             "sk-main",
         );
-        ghost.prefs.advanced.saved_models[0].vision_model_id = Some("ghost".to_string());
-        assert!(ghost.resolve_vision_model_config().is_none());
+        scheduled.image_analyze_always = true;
+
+        // 引擎未运行 → 规则 4：定时任务复用 Unknown 主模型，策略取底座默认。
+        let config = scheduled
+            .resolve_vision_model_config()
+            .expect("scheduled session must reuse the Unknown main model while the engine is down");
+        assert_eq!(config.model, "deepseek-v4-pro");
+        assert_eq!(config.request_timeout_secs, None);
+        assert_eq!(config.stream, None);
+        assert_eq!(config.retry_on_transient_errors, None);
+
+        // 引擎运行 → 规则 3 先于规则 4：provider 漂移到本地端点（300s/流式/不重试）。
+        server::force_running_for_test(8765);
+        let config = scheduled.resolve_vision_model_config().expect(
+            "running engine must take over scheduled image_analyze (rule 3 precedes rule 4)",
+        );
+        assert_eq!(config.base_url.as_deref(), Some("http://127.0.0.1:8765/v1"));
+        assert_eq!(config.request_timeout_secs, Some(300));
+        assert_eq!(config.stream, Some(true));
+        assert_eq!(config.retry_on_transient_errors, Some(false));
+        server::reset_runtime_for_test();
+    }
+
+    /// §9.3 规则 1 的凭据缺失(如 keychain 条目被删):与悬空 id 同口径按
+    /// 「未配置」落到规则 2/3——引擎运行时被本地兜底接走、Supported 主模型
+    /// 自复用,而不是提前 return None 让图片输入被硬拒且无补救路径。
+    #[test]
+    fn vision_config_missing_credential_falls_through() {
+        use crate::features::llama_engine::server;
+        // 规则 3 用例写全局 RUNTIME,须在 RUNTIME_TEST_LOCK 下运行。
+        let _runtime_lock = locked_runtime();
+        // RAII 守卫:测试结束复位全局 RUNTIME,避免污染其他测试的引擎运行态。
+        struct RuntimeGuard;
+        impl Drop for RuntimeGuard {
+            fn drop(&mut self) {
+                server::reset_runtime_for_test();
+            }
+        }
+        let _guard = RuntimeGuard;
 
         // 目标模型无凭据(云端 base_url + 空 key + 无 credential_ref)。
+        // 引擎未运行 + 主模型能力非 Supported → 规则 2/3 均不命中,仍不注册。
         let mut no_key = fixture_bridge();
         set_active_model(
             &mut no_key,
@@ -3562,6 +4006,85 @@ mod tests {
         push_vision_model(&mut no_key, "vision-no-key", "gpt-4o", "");
         no_key.prefs.advanced.saved_models[0].vision_model_id = Some("vision-no-key".to_string());
         assert!(no_key.resolve_vision_model_config().is_none());
+
+        // 引擎运行 → 凭据缺失的云端视觉模型被跳过,落到规则 3 本地兜底。
+        server::force_running_for_test(8765);
+        let config = no_key
+            .resolve_vision_model_config()
+            .expect("missing credential must fall through to local fallback");
+        assert_eq!(config.base_url.as_deref(), Some("http://127.0.0.1:8765/v1"));
+        server::reset_runtime_for_test();
+
+        // Supported 主模型 → 凭据缺失落到规则 2 自复用,图片输入不被禁用。
+        let mut supported = fixture_bridge();
+        set_active_model(
+            &mut supported,
+            ModelPreset::OpenaiCompatible,
+            "gpt-5.6-terra",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+        push_vision_model(&mut supported, "vision-no-key", "gpt-4o", "");
+        supported.prefs.advanced.saved_models[0].vision_model_id =
+            Some("vision-no-key".to_string());
+        let config = supported
+            .resolve_vision_model_config()
+            .expect("missing credential must fall through to rule 2");
+        assert_eq!(config.model, "gpt-5.6-terra");
+    }
+
+    /// §9.3 规则 1 的悬空 id:vision_model_id 指向已删除/不存在的模型 →
+    /// 按「未配置」处理落到规则 2/3,而不是让两条兜底静默失效(否则硬
+    /// image_input_unsupported 且无安装引导)。
+    #[test]
+    fn vision_config_dangling_vision_model_id_falls_through() {
+        use crate::features::llama_engine::server;
+        // 规则 3 用例写全局 RUNTIME,须在 RUNTIME_TEST_LOCK 下运行。
+        let _runtime_lock = locked_runtime();
+        // RAII 守卫:测试结束复位全局 RUNTIME,避免污染其他测试的引擎运行态。
+        struct RuntimeGuard;
+        impl Drop for RuntimeGuard {
+            fn drop(&mut self) {
+                server::reset_runtime_for_test();
+            }
+        }
+        let _guard = RuntimeGuard;
+
+        // 主模型能力非 Supported(Unknown)+ 引擎未运行 → 规则 2/3 均不
+        // 命中,仍不注册(与未配置视觉模型的行为一致)。
+        let mut ghost = fixture_bridge();
+        set_active_model(
+            &mut ghost,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        ghost.prefs.advanced.saved_models[0].vision_model_id = Some("ghost".to_string());
+        assert!(ghost.resolve_vision_model_config().is_none());
+
+        // 悬空 id + 引擎运行 → 落到规则 3 本地兜底端点。
+        server::force_running_for_test(8765);
+        let config = ghost
+            .resolve_vision_model_config()
+            .expect("dangling vision_model_id must fall through to local fallback");
+        assert_eq!(config.base_url.as_deref(), Some("http://127.0.0.1:8765/v1"));
+        server::reset_runtime_for_test();
+
+        // 悬空 id + Supported 主模型 → 落到规则 2 复用主模型。
+        let mut supported = fixture_bridge();
+        set_active_model(
+            &mut supported,
+            ModelPreset::OpenaiCompatible,
+            "gpt-5.6-terra",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+        supported.prefs.advanced.saved_models[0].vision_model_id = Some("ghost".to_string());
+        let config = supported
+            .resolve_vision_model_config()
+            .expect("dangling vision_model_id must fall through to rule 2");
+        assert_eq!(config.model, "gpt-5.6-terra");
     }
 
     /// §9.3 规则 1 的视觉候选能力口径:视觉模型**自身**的 override 不在运行时
@@ -3629,6 +4152,10 @@ mod tests {
     #[test]
     fn image_input_mode_routes_by_capability_and_vision_model() {
         use crate::features::assistant::image_capability::ImageInputMode;
+
+        // Unknown 无视觉模型断言 Unsupported 依赖引擎未运行态(规则 3 读全局
+        // RUNTIME → has_vision_model),须与写 RUNTIME 的测试串行。
+        let _runtime_lock = locked_runtime();
 
         // Supported 主模型:无视觉模型也 Native。
         let mut native = fixture_bridge();
@@ -4421,7 +4948,9 @@ mod tests {
             let t = b.build_engine_config().compaction.token_threshold;
             let e = win - output - 1_024;
             let conservative = (t + R) * K_NUM / K_DEN + S + FRAMING;
-            eprintln!("[云端 {model}] window={win} output={output} → T={t}  E={e}  conservative={conservative}");
+            eprintln!(
+                "[云端 {model}] window={win} output={output} → T={t}  E={e}  conservative={conservative}"
+            );
             assert!(
                 conservative <= e,
                 "{model}: T={t} 换算 conservative={conservative} 必须 ≤ E={e}(不倒置)"

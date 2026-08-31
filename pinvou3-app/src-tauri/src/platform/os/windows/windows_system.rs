@@ -538,4 +538,255 @@ mod tests {
         );
         assert!(normalized_presentation_extension(Path::new("notes.txt")).is_none());
     }
+
+    #[test]
+    fn strong_igpu_whitelist_matches_real_dxgi_adapter_names() {
+        // 真机常见 Description 格式（(TM)/(R) 标记隔断裸子串，归一化后命中）。
+        assert!(is_strong_igpu("AMD Radeon(TM) 780M Graphics"));
+        assert!(is_strong_igpu("AMD Radeon(TM) 680M"));
+        assert!(is_strong_igpu("Intel(R) Iris(R) Xe Graphics"));
+        assert!(is_strong_igpu("Intel(R) Arc(TM) Graphics"));
+        // 无标记格式同样命中。
+        assert!(is_strong_igpu("AMD Radeon 780M Graphics"));
+        // 非目标硬件不误报。
+        assert!(!is_strong_igpu("Intel(R) UHD Graphics"));
+        assert!(!is_strong_igpu("NVIDIA GeForce RTX 4070"));
+        assert!(!is_strong_igpu("Microsoft Basic Render Driver"));
+        assert!(!is_strong_igpu(""));
+    }
+}
+
+// ---------------- 本地引擎硬件探测 ----------------
+
+/// 独显专用显存阈值 5.6GB：低于此档跑 4B Q4_K_M + KV 很吃力，按核显对待。
+const DEDICATED_VRAM_MIN_BYTES: u64 = 5_600_000_000;
+
+/// GPU 分级（本地引擎设备自动选择）：任一适配器专用显存 ≥5.6GB → 独显档；
+/// 名称命中强核显白名单（Radeon 680M/780M/880M/890M、Iris Xe、Arc Graphics）
+/// → 强核显档；其余核显 → 无 GPU。枚举失败一律回落无 GPU（CPU 推理）。
+/// GPU 判定前提：vulkan-1.dll 存在（引擎 win-vulkan 包走 Vulkan 后端，
+/// 缺运行时必然起不来，此时按 CPU 计）。
+pub fn gpu_class() -> crate::platform::os::GpuClass {
+    use crate::platform::os::GpuClass;
+    if !vulkan_runtime_present() {
+        return GpuClass::None;
+    }
+    enum_gpu_class().unwrap_or(GpuClass::None)
+}
+
+fn vulkan_runtime_present() -> bool {
+    let root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    root.join("System32").join("vulkan-1.dll").is_file()
+}
+
+fn enum_gpu_class() -> Option<crate::platform::os::GpuClass> {
+    use crate::platform::os::GpuClass;
+    use dxgi::*;
+    unsafe {
+        // out-param 用 MaybeUninit 接收,不以 null_mut() 占位:静态分析把
+        // null_mut 建模为「失效指针」污染源,且可变变量上的 is_null 守卫
+        // 不被识别为豁免(CodeQL rust/access-invalid-pointer,见该查询
+        // 测试集对 mut 重赋值变量的标注);MaybeUninit 从数据流源头消除。
+        let mut factory = std::mem::MaybeUninit::<*mut IDXGIFactory1>::uninit();
+        if CreateDXGIFactory1(&IID_IDXGIFactory1, factory.as_mut_ptr().cast()) != 0 {
+            return None;
+        }
+        // SAFETY: HRESULT 成功时 out-param 已被写入;仍按防御性校验非空。
+        let factory = factory.assume_init();
+        if factory.is_null() {
+            return None;
+        }
+        let mut index = 0u32;
+        let mut best = GpuClass::None;
+        loop {
+            let mut adapter = std::mem::MaybeUninit::<*mut IDXGIAdapter1>::uninit();
+            // S_OK(0) 表示还有适配器;DXGI_ERROR_NOT_FOUND 即枚举完毕。
+            let hr = ((*(*factory).lpVtbl).EnumAdapters1)(factory, index, adapter.as_mut_ptr());
+            index += 1;
+            if hr != 0 {
+                break;
+            }
+            // SAFETY: 同上,成功后 out-param 已写入。
+            let adapter = adapter.assume_init();
+            if adapter.is_null() {
+                break;
+            }
+            let mut desc: DXGI_ADAPTER_DESC1 = std::mem::zeroed();
+            let hr_desc = ((*(*adapter).lpVtbl).GetDesc1)(adapter, &mut desc);
+            com_release(adapter);
+            if hr_desc != 0 {
+                continue;
+            }
+            // 跳过 Basic Render 等软件适配器。
+            if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE != 0 {
+                continue;
+            }
+            if desc.DedicatedVideoMemory as u64 >= DEDICATED_VRAM_MIN_BYTES {
+                com_release(factory);
+                return Some(GpuClass::Dedicated);
+            }
+            if is_strong_igpu(&adapter_name(&desc.Description)) {
+                best = GpuClass::StrongIgpu;
+            }
+        }
+        com_release(factory);
+        Some(best)
+    }
+}
+
+/// IUnknown::Release(vtable 第三槽),任何 DXGI 对象头都是 IUnknown 布局。
+unsafe fn com_release<T>(obj: *mut T) {
+    use windows_sys::core::IUnknown_Vtbl;
+    if obj.is_null() {
+        return;
+    }
+    let unknown = obj.cast::<core::ffi::c_void>();
+    unsafe {
+        let vtbl = unknown.cast::<*const IUnknown_Vtbl>().read();
+        ((*vtbl).Release)(unknown);
+    }
+}
+
+/// DXGI 最小手写绑定:windows-sys 0.61 未导出 Win32_Graphics_Dxgi(该版本收窄了
+/// API 面),而完整 windows crate 仅为 GPU 枚举过重(见 Cargo.toml 依赖注释)。
+/// vtable 槽序与 GUID/布局沿用 windows-sys::core 的同代 ABI,只保留
+/// EnumAdapters1/GetDesc1 必需的完整槽位,未调用的槽仅作占位(槽位计数必须正确)。
+#[allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
+mod dxgi {
+    use core::ffi::c_void;
+    use windows_sys::core::{IUnknown_Vtbl, GUID, HRESULT};
+    use windows_sys::Win32::Foundation::LUID;
+
+    pub const IID_IDXGIFactory1: GUID = GUID::from_u128(0x770aae78_f26f_4dba_a829_253c83d1b387);
+
+    pub const DXGI_ADAPTER_FLAG_SOFTWARE: u32 = 2;
+
+    #[link(name = "dxgi")]
+    extern "system" {
+        pub fn CreateDXGIFactory1(riid: *const GUID, pfactory: *mut *mut c_void) -> HRESULT;
+    }
+
+    #[repr(C)]
+    pub struct DXGI_ADAPTER_DESC1 {
+        pub Description: [u16; 128],
+        pub VendorId: u32,
+        pub DeviceId: u32,
+        pub SubSysId: u32,
+        pub Revision: u32,
+        pub DedicatedVideoMemory: usize,
+        pub DedicatedSystemMemory: usize,
+        pub SharedSystemMemory: usize,
+        pub AdapterLuid: LUID,
+        pub Flags: u32,
+    }
+
+    #[repr(C)]
+    pub struct IDXGIFactory1 {
+        pub lpVtbl: *const IDXGIFactory1_Vtbl,
+    }
+
+    #[repr(C)]
+    pub struct IDXGIAdapter1 {
+        pub lpVtbl: *const IDXGIAdapter1_Vtbl,
+    }
+
+    /// IUnknown → IDXGIObject(4)→ IDXGIFactory(5)→ IDXGIFactory1(2)。
+    #[repr(C)]
+    pub struct IDXGIFactory1_Vtbl {
+        pub base: IUnknown_Vtbl,
+        pub SetPrivateData: usize,
+        pub SetPrivateDataInterface: usize,
+        pub GetPrivateData: usize,
+        pub GetParent: usize,
+        pub EnumAdapters: usize,
+        pub MakeWindowAssociation: usize,
+        pub GetWindowAssociation: usize,
+        pub CreateSwapChain: usize,
+        pub CreateSoftwareAdapter: usize,
+        pub EnumAdapters1: unsafe extern "system" fn(
+            this: *mut IDXGIFactory1,
+            adapter: u32,
+            ppadapter: *mut *mut IDXGIAdapter1,
+        ) -> HRESULT,
+        pub IsCurrent: usize,
+    }
+
+    /// IUnknown → IDXGIObject(4)→ IDXGIAdapter(3)→ IDXGIAdapter1(1)。
+    #[repr(C)]
+    pub struct IDXGIAdapter1_Vtbl {
+        pub base: IUnknown_Vtbl,
+        pub SetPrivateData: usize,
+        pub SetPrivateDataInterface: usize,
+        pub GetPrivateData: usize,
+        pub GetParent: usize,
+        pub EnumOutputs: usize,
+        pub GetDesc: usize,
+        pub CheckInterfaceSupport: usize,
+        pub GetDesc1: unsafe extern "system" fn(
+            this: *mut IDXGIAdapter1,
+            pdesc: *mut DXGI_ADAPTER_DESC1,
+        ) -> HRESULT,
+    }
+}
+
+fn adapter_name(buf: &[u16]) -> String {
+    let end = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
+    String::from_utf16_lossy(&buf[..end])
+}
+
+fn is_strong_igpu(name: &str) -> bool {
+    // 真实 DXGI Description 形如 "AMD Radeon(TM) 780M Graphics"、
+    // "Intel(R) Iris(R) Xe Graphics"、"Intel(R) Arc(TM) Graphics"：
+    // (TM)/(R) 标记会隔断裸子串匹配，强核显层因此在目标硬件上永远
+    // 落空、静默回落 CPU。匹配前先剥掉标记再小写化。
+    let normalized = name
+        .to_ascii_lowercase()
+        .replace("(tm)", "")
+        .replace("(r)", "");
+    [
+        "radeon 680m",
+        "radeon 780m",
+        "radeon 880m",
+        "radeon 890m",
+        "iris xe",
+        "arc graphics",
+    ]
+    .iter()
+    .any(|key| normalized.contains(key))
+}
+
+/// 物理核数（llama-server `-t` 用）：GetLogicalProcessorInformation 按
+/// RelationProcessorCore 条目计数（每条目对应一个物理核）；失败回落逻辑核数。
+pub fn physical_core_count() -> usize {
+    physical_cores_via_processor_info().unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+    })
+}
+
+fn physical_cores_via_processor_info() -> Option<usize> {
+    use windows_sys::Win32::System::SystemInformation::{
+        GetLogicalProcessorInformation, RelationProcessorCore, SYSTEM_LOGICAL_PROCESSOR_INFORMATION,
+    };
+    unsafe {
+        let mut len: u32 = 0;
+        GetLogicalProcessorInformation(std::ptr::null_mut(), &mut len);
+        if len == 0 {
+            return None;
+        }
+        let count = len as usize / std::mem::size_of::<SYSTEM_LOGICAL_PROCESSOR_INFORMATION>();
+        let mut buf: Vec<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> = Vec::with_capacity(count);
+        if GetLogicalProcessorInformation(buf.as_mut_ptr(), &mut len) == 0 {
+            return None;
+        }
+        buf.set_len(count);
+        let cores = buf
+            .iter()
+            .filter(|info| info.Relationship == RelationProcessorCore)
+            .count();
+        (cores > 0).then_some(cores)
+    }
 }

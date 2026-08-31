@@ -244,3 +244,32 @@ mod tests {
         );
     }
 }
+
+/// GPU 分级:Apple Silicon 为统一内存架构且支持 Metal,恒按独显档。
+#[cfg(target_arch = "aarch64")]
+pub fn gpu_class() -> crate::platform::os::GpuClass {
+    crate::platform::os::GpuClass::Dedicated
+}
+
+/// GPU 分级:Intel Mac 为内置核显(无独显专用显存,Metal 支持亦无保证),按核显档。
+#[cfg(target_arch = "x86_64")]
+pub fn gpu_class() -> crate::platform::os::GpuClass {
+    crate::platform::os::GpuClass::Integrated
+}
+
+/// 物理核数（llama-server `-t` 用）：sysctl hw.physicalcpu，失败回落逻辑核数。
+pub fn physical_core_count() -> usize {
+    Command::new("sysctl")
+        .args(["-n", "hw.physicalcpu"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+        })
+}

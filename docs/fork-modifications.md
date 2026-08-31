@@ -12,6 +12,7 @@
 | 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，r12 head `9c5f4f19`（#33 六提交 + #35 已 rebase 合入） |
 | 已合并修复 | 既有 `#9`、`#11`、`#12`、`#13`、`#15`、`#16`、`#17`、`#19`，以及 r11 的 `#18`、`#21`、`#22`、`#25`、`#26`、`#27`、`#29`、`#30`，r12 的 `#33`、`#35` 均已合并 |
 | 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r11` 与 r11 父仓 gitlink 均指向 `0d89a31be016457c180501417dd2c0f34ce844a6`；`r1` 至 `r11` 保持不可变；r12 底座侧已落地（`pinvou3-clean` 与 tag `pinvou-v0.9.5-r12` 指向 `9c5f4f19`），父仓 gitlink 由 PR #375 接入 |
+| 待发布底座变更 | `Pinvou/CodeWhale#20` 候选 `542c8411e118a752507f9934e5bbd3422437e5fa`；父仓 PR #323 可先验证该候选，但必须等 CodeWhale 发布新的不可变 tag 后，把 gitlink 更新到标签目标再合并 |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
 | drift | r12 基线合计 `110 files, +9781/-1168`（净增 8613 行）；r11→r12 为 `17 files, +1941/-188` |
@@ -30,6 +31,12 @@
 - 显式 route 输出上限在请求预算层生效；Moonshot 对不兼容工具逐个省略，并对用户发出每轮一次的可见诊断，具名 `tool_choice` 指向被省略工具时明确拒绝。MCP 密钥由宿主 resolver 提供且不写进进程环境；被禁用 server 在 pool、catalog、直接调用、reload、子智能体继承等入口统一表现为不可见。
 - `withdraw_steer` 返回 `SteerWithdrawal`，区分撤回、已提交和不存在；Windows Shell 输出使用跨 poll 的增量 UTF-8 解码，依赖更新修复 h2/lru 公告。r11 新增 15 条 `forkguard_*`，总数从 41 增至 56，未增加长期 fork 主题。
 - r11 相对 r10 为 `48 files changed, +2242/-292`。其中 provider projection、MCP host policy、steer lifecycle 和跨平台 shell 解码均是可复用底座能力，后续继续以通用设计优先回馈上游。
+
+### PR #20 本地视觉传输边界（待发布）
+
+- 底座继续自行维护提示词、temperature 与输出策略；可复用的宿主接口只新增可选请求超时、流式开关和瞬态错误重试开关。
+- 父仓 PR #323 仅对 app 管理的 llama-server 进程启用 300 秒流式请求并关闭瞬态重试；用户配置的云端、vLLM、Ollama 及主模型原生多模态通道继续使用底座默认值。
+- 流式解析有明确容量上限，可返回带截断标记的部分内容，空响应会失败，并复用现有重试分类器。流式中途读错误/单 chunk 超时不再混入截断标记，在重试策略耗尽后带底层原因报错；仅 `finish_reason=length` 的正常截断与无终止事件的 EOF 标记 truncated。该候选不视为已发布：PR #20 合并且 CodeWhale 生成新的不可变 tag 前，父仓公开子模块校验应保持阻塞，#323 不得合并。
 
 ### r10 固定采样与压缩用量边界（已发布）
 

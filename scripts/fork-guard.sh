@@ -8,6 +8,8 @@ APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
 PUBLISHED_HEAD="9c5f4f19b0acbc960889778a5873c7fb038b1378"
 PUBLISHED_COMMITS=36
+PENDING_HEAD="542c8411e118a752507f9934e5bbd3422437e5fa"
+PENDING_COMMITS=23
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -22,9 +24,12 @@ actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
   expected_commits="$PUBLISHED_COMMITS"
   green "  ✓ CodeWhale gitlink 指向 r12 四主题公开基线 $PUBLISHED_HEAD"
+elif [[ "$actual_head" == "$PENDING_HEAD" ]]; then
+  expected_commits="$PENDING_COMMITS"
+  green "  ✓ CodeWhale gitlink 指向 CodeWhale PR #20 待发布候选 $PENDING_HEAD"
 else
   expected_commits=""
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r12 公开 head $PUBLISHED_HEAD"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r12 公开 head $PUBLISHED_HEAD 或 PR #20 候选 $PENDING_HEAD"
   fail=1
 fi
 

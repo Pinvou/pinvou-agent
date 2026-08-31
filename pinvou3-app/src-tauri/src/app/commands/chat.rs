@@ -20,6 +20,61 @@ pub(crate) const IMAGE_INPUT_UNKNOWN_ERROR: &str = "image_input_unsupported: \
      当前模型的图片输入能力未知。如果它支持图片,请在模型设置中将图片输入能力\
      设为“支持图片”后重试;也可以切换到支持图片的模型,或配置视觉模型。";
 
+/// 本地识图引擎发送前保证(自动启动策略的发送侧兜底,竞态防线)。
+/// 调用方(chat_with_reservation)已过 vision_local_gate 门,本函数只处理
+/// 「门已命中」后的路径:
+/// - 引擎已在运行 → 直接 Ok
+/// - 引擎或模型未安装 → Ok(不拦截,回落规则 1/2/3;前端弹窗引导安装)
+/// - 自动启动设为「从不」→ Ok(回落正常路由;前端弹窗三选一)
+/// - 否则 → 幂等启动并等待 Running(跟随引擎健康窗口 HEALTH_TIMEOUT);
+///   本次真正启动后 bump 会话模型 revision,强制本轮 spawn 重建,
+///   使 build_engine_config 快照到本地端点。
+async fn ensure_local_engine_ready(
+    app: &tauri::AppHandle,
+    pool: &EnginePool,
+    prefs: &UserPrefs,
+    sid: &str,
+    store: &SessionStore,
+) -> Result<(), String> {
+    use crate::features::llama_engine::{self, server};
+
+    if server::runtime_snapshot().phase == "running" {
+        return Ok(());
+    }
+    let engine_installed = llama_engine::download::engine_installed();
+    let (model_id, device) = llama_engine::resolve_default_engine_plan(&prefs.advanced);
+    let model_ready = llama_engine::download::model_spec(&model_id)
+        .map(llama_engine::download::model_files_verified)
+        .unwrap_or(false);
+    if !engine_installed || !model_ready {
+        // 未安装/模型未就绪:不拦截,走规则 1/2/3 回落;前端发送门负责引导安装。
+        return Ok(());
+    }
+    let auto_start = prefs
+        .advanced
+        .llama_engine_auto_start
+        .unwrap_or(crate::platform::prefs::LlamaEngineAutoStart::FirstImage);
+    if auto_start == crate::platform::prefs::LlamaEngineAutoStart::Never {
+        // 从不自动启动:回落正常路由;前端弹窗提供「去设置启动/本次回落/取消」。
+        return Ok(());
+    }
+    let started = server::start_if_needed(app, &model_id, device).await?;
+    if started {
+        // 引擎本次真正启动:bump 会话模型 revision,本轮 spawn 强制重建,
+        // build_engine_config 才能快照到本地端点(EngineConfig 快照语义修复)。
+        let session_model = store
+            .session_model_id(sid)
+            .or_else(|| prefs.advanced.active_model_id.clone())
+            .unwrap_or_default();
+        if !session_model.is_empty() {
+            pool.mark_model_updated(&session_model);
+        }
+    }
+    // 等待窗口与引擎健康窗口(server.rs HEALTH_TIMEOUT)对齐:CPU 首次加载
+    // 大图模型可能超过 60s,发送门不得比引擎自身先放弃。
+    server::wait_until_running(server::HEALTH_TIMEOUT).await
+}
+
 /// 接收用户消息并转发给 Engine。
 /// 立即返回，LLM 流式输出通过 Tauri Event 异步推给前端。
 ///
@@ -157,10 +212,28 @@ pub(crate) async fn chat_with_reservation(
             .fresh_bridge_for(&sid)
             .await
             .map_err(|error| format!("resolve image input route for {sid}: {error:#}"))?;
-        (
-            bridge.image_input_mode(),
-            bridge.effective_image_capability(),
-        )
+        // 本地识图引擎发送前保证:必须在路由判定与 spawn 之前完成——
+        // resolve_vision_model_config 实时读引擎端点,且 EngineConfig 是 spawn 快照。
+        // 能力判定先行:Native 能力 Supported 的模型图片直发主模型,不需要
+        // 本地引擎兜底,跳过启动(否则所有多模态模型用户都被迫装引擎)。
+        let capability = bridge.effective_image_capability();
+        if bridge.vision_local_gate_active() && capability != EffectiveImageCapability::Supported {
+            let prefs = UserPrefs::load();
+            if let Err(error) = ensure_local_engine_ready(app, pool, &prefs, &sid, store).await {
+                // 防御性回落:save_model 的互斥归一保证 gate 活跃时该模型无可用
+                // 视觉模型(prefer_local 保存时清空 vision_model_id;兜底路径要求
+                // 未配置),has_vision_model 正常恒为 false。仅手改 settings.json
+                // 打破互斥(prefer_local 与 vision_model_id 并存)时可能为真——
+                // 此时引擎启动失败不硬错,回落云端视觉模型路由;无兜底才上报错误。
+                if !bridge.has_vision_model() {
+                    return Err(error);
+                }
+                eprintln!(
+                    "[pinvou3-app] local engine unavailable, falling back to configured vision model: {error}"
+                );
+            }
+        }
+        (bridge.image_input_mode(), capability)
     } else if has_images {
         (
             ImageInputMode::VisionToolFallback,

@@ -5,6 +5,7 @@ export const desktopBridgeApi = {
   chat: ['cancelGeneration', 'cancelShellTask', 'getComposerDraft', 'prefillComposer', 'removeQueued', 'retryFirstTurn', 'sendMessage', 'sendMessageToSession', 'setComposerDraft'],
   voice: ['appendVoiceText', 'cancelVoiceAsrSetup', 'cancelVoiceInput', 'clearVoiceInput', 'closeVoiceAsrSetup', 'installVoiceAsr', 'runVoiceInputDebugAssertions', 'startVoiceInput'],
   knowledge: ['cancelKbModel', 'downloadKbModel', 'kbModelStatus', 'listCollections', 'loadKnowledgeEmbedderAfterFirstFrame', 'mountCollection', 'mountRemoteCollection', 'removeCollection', 'removeRemoteCollection', 'setCollectionEnabled', 'setRemoteCollectionEnabled', 'unmountCollection'],
+  llamaEngine: ['cancelDownload', 'deleteEngine', 'deleteModel', 'installEngine', 'installModel', 'refreshStatus', 'startEngine', 'stopEngine'],
   scheduled: ['clearScheduledTaskDraft', 'clearScheduledTaskSelection', 'confirmScheduledTaskDraft', 'createScheduledTask', 'deleteScheduledTask', 'dismissScheduledTaskError', 'exitScheduledRunChat', 'loadScheduledTaskRecentRuns', 'loadScheduledTaskRuns', 'loadScheduledTasks', 'openScheduledRunChat', 'pauseScheduledTask', 'pickFolder', 'readScheduledTask', 'refreshScheduledTaskData', 'resumeScheduledTask', 'runScheduledTaskNow', 'selectScheduledTask', 'startScheduledTaskChat', 'toggleScheduledTaskPinned', 'updateScheduledTask'],
   sessions: ['archiveSession', 'createNewSession', 'deleteSession', 'renameSession', 'restoreArchivedSession', 'switchToSession', 'toggleSessionPinned'],
   monitor: ['clearMonitorStats', 'startMonitorPolling', 'stopMonitorPolling'],
@@ -38,7 +39,7 @@ export const desktopOnlyBridgeApi = {
 
 // 整域桌面专属：Web 端连域都不存在（区别于 platform 这类"空域仍在"）。
 // 后端 remote_control 漏斗另有权威封禁。
-export const desktopOnlyBridgeDomains = ['multiAgent'];
+export const desktopOnlyBridgeDomains = ['multiAgent', 'llamaEngine'];
 
 export function expectedWebBridgeApi() {
   return Object.fromEntries(

@@ -488,10 +488,11 @@ fn shutdown_browser_before_process_end(app: &tauri::AppHandle) {
 
 /// Shared asynchronous child-process harvesting before exit and restart. Managed
 /// state is not guaranteed to be dropped (kill_on_drop runs only when Child drops),
-/// so explicitly stop ACP/connector children to prevent orphans. Each closure is
-/// idempotent; even shutdown(), the highest timeout risk, only sends a oneshot and
-/// kills without a long wait.
+/// so explicitly stop the local vision engine and ACP/connector children to prevent
+/// orphans. Each closure is idempotent; even shutdown(), the highest timeout risk,
+/// only sends a oneshot and kills without a long wait.
 pub(crate) async fn harvest_child_processes(app: &tauri::AppHandle) {
+    crate::features::llama_engine::server::stop();
     if let Some(acp_pool) = app.try_state::<crate::features::codex_acp::AcpPool>() {
         acp_pool.shutdown_all().await;
     }
@@ -1003,6 +1004,59 @@ pub fn run() {
             // 桌宠:settings.json 里 pet.enabled 为真时随主窗口一起拉起。
             pet_window::spawn_if_enabled(app.handle());
 
+            // 本地多模态引擎会话失效钩子:引擎运行态翻转(就绪/停止)时对全部
+            // saved_models bump revision,强制会话 EngineConfig 重快照——覆盖
+            // launch 自启、手动停止、崩溃自愈三条不经 chat.rs 发送门的路径
+            // (EngineConfig 只在会话 spawn 时快照 vision 端点)。
+            crate::features::llama_engine::server::set_session_invalidation_hook(Box::new(
+                |app| {
+                    let Some(pool) = app.try_state::<EnginePool>() else {
+                        return;
+                    };
+                    let prefs = crate::platform::prefs::UserPrefs::load();
+                    for saved in &prefs.advanced.saved_models {
+                        pool.mark_model_updated(&saved.id);
+                    }
+                },
+            ));
+
+            // 本地多模态引擎自动启动(auto_start == launch):后台拉起,不阻塞
+            // 启动流程。前置校验引擎/模型已安装,不满足则静默跳过——首次发图时
+            // 发送门(chat.rs ensure_local_engine_ready)会再触发,自愈该场景。
+            {
+                use crate::features::llama_engine as llama_engine_domain;
+                use crate::platform::prefs::{LlamaEngineAutoStart, UserPrefs};
+                let launch_prefs = UserPrefs::load();
+                if launch_prefs.advanced.llama_engine_auto_start
+                    == Some(LlamaEngineAutoStart::Launch)
+                {
+                    let app = app.handle().clone();
+                    let (model_id, device) =
+                        llama_engine_domain::resolve_default_engine_plan(&launch_prefs.advanced);
+                    // setup 在主线程事件循环里执行,该线程没有进入过 tokio
+                    // 运行时上下文,裸 tokio::spawn 必 panic(且 autostart=launch
+                    // 已持久化,会变成每次启动崩溃)。tauri::async_runtime::spawn
+                    // 内部自行 enter 句柄,从任意线程派生都安全。
+                    tauri::async_runtime::spawn(async move {
+                        if !llama_engine_domain::download::engine_installed() {
+                            return;
+                        }
+                        let Ok(spec) = llama_engine_domain::download::model_spec(&model_id) else {
+                            return;
+                        };
+                        if !llama_engine_domain::download::model_files_verified(spec) {
+                            return;
+                        }
+                        let _ = llama_engine_domain::server::start_if_needed(
+                            &app,
+                            &model_id,
+                            device,
+                        )
+                        .await;
+                    });
+                }
+            }
+
             startup::mark("setup:done");
             Ok(())
         })
@@ -1151,6 +1205,14 @@ pub fn run() {
             commands::voice::voice_asr_status,
             commands::voice::install_voice_asr,
             commands::voice::cancel_voice_asr,
+            commands::llama_engine::llama_engine_status,
+            commands::llama_engine::llama_engine_install_engine,
+            commands::llama_engine::llama_engine_install_model,
+            commands::llama_engine::llama_engine_cancel_download,
+            commands::llama_engine::llama_engine_start,
+            commands::llama_engine::llama_engine_stop,
+            commands::llama_engine::llama_engine_delete_model,
+            commands::llama_engine::llama_engine_delete_engine,
             commands::sessions::list_sessions,
             commands::sessions::create_session,
             commands::sessions::load_session,
