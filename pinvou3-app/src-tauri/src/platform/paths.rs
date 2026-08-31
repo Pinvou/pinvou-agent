@@ -269,7 +269,7 @@ pub fn python_command() -> String {
 }
 
 /// Locked Python dependencies may only load through the app's bundled interpreter.
-/// `PINVOU3_PYTHON` On Windows `PINVOU3_PYTHON` and the system Python are refused so user site/sitecustomize cannot fill in missing locked dependencies.
+/// On Windows `PINVOU3_PYTHON` and the system Python are refused so user site/sitecustomize cannot fill in missing locked dependencies.
 pub fn managed_python_command() -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
