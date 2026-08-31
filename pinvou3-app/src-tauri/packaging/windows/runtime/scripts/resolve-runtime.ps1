@@ -662,7 +662,9 @@ function Test-PythonDependencyTargets {
     } else {
       $probe = "import platform,sys; expected=(int(sys.argv[1]),int(sys.argv[2])); machine=platform.machine().lower(); ok=sys.version_info[:2]==expected and machine in ('amd64','x86_64'); raise SystemExit(0 if ok else 17)"
       $version = ([string]$target.python).Split('.')
-      & $pythonExe -I -S -B -c $probe $version[0] $version[1]
+      # Discard probe stdout: pipeline output would join the trailing boolean into
+      # an array and make `-not $abiMatches` false even on a non-zero exit code.
+      $null = & $pythonExe -I -S -B -c $probe $version[0] $version[1]
       $LASTEXITCODE -eq 0
     }
     if (-not $abiMatches) {

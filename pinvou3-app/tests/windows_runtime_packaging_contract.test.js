@@ -167,6 +167,11 @@ assert.match(
   /ABI mismatch must fail closed/,
   "PowerShell contract must exercise fail-closed ABI validation",
 );
+assert.match(
+  runtimeScript,
+  /\$null = & \$pythonExe -I -S -B -c \$probe/u,
+  "ABI probe stdout must be discarded so stray output cannot flip the exit-code check",
+);
 assert.match(runtimeScript, /Get-Sha256 -Path \$sourcePath/u);
 assert.match(runtimeScript, /schemaVersion -notin @\(1, 2\)/u);
 assert.match(runtimeManifestContract, /Manifest\.stagedFiles/u);
