@@ -157,7 +157,7 @@ pub(super) fn ensure_installed(
     let result: Result<(), String> = (|| {
         let mut extracted_bytes = 0_u64;
         for wheel in &target.wheels {
-            validate_wheel(wheel)?;
+            validate_wheel(wheel, target)?;
             let cached = cache_root.join(format!("{}.whl", wheel.sha256));
             ensure_cached(wheel, &cached)?;
             extract_wheel(&cached, &staging, &mut extracted_bytes)?;
@@ -267,8 +267,14 @@ pub(super) fn validate_lock(lock: &PythonDependencyLock) -> Result<(), String> {
                 target.platform
             ));
         }
+        if target.imports.is_empty() {
+            return Err(format!(
+                "MCP Python dependency lock platform {} declares no imports to verify",
+                target.platform
+            ));
+        }
         for wheel in &target.wheels {
-            validate_wheel(wheel)?;
+            validate_wheel(wheel, target)?;
         }
     }
     Ok(())
@@ -291,7 +297,7 @@ fn target_for_platform<'a>(
         .find(|target| target.platform == platform)
 }
 
-fn validate_wheel(wheel: &PythonWheel) -> Result<(), String> {
+fn validate_wheel(wheel: &PythonWheel, target: &PythonDependencyTarget) -> Result<(), String> {
     if wheel.name.trim().is_empty() || wheel.version.trim().is_empty() {
         return Err("Python wheel is missing name or version".to_string());
     }
@@ -318,7 +324,103 @@ fn validate_wheel(wheel: &PythonWheel) -> Result<(), String> {
             wheel.name
         ));
     }
+    if !wheel_matches_target(&wheel.filename, target) {
+        return Err(format!(
+            "Python wheel '{}' is incompatible with the locked target {} (Python {})",
+            wheel.name, target.platform, target.python
+        ));
+    }
     Ok(())
+}
+
+/// Mirrors the packaging gate (`Test-PythonWheelTarget` in resolve-runtime.ps1): a
+/// wheel's interpreter/ABI/platform tags must be compatible with the locked target so
+/// a self-consistent but wrong-platform URL fails validation instead of failing later
+/// at the post-install import probe.
+fn wheel_matches_target(filename: &str, target: &PythonDependencyTarget) -> bool {
+    if target.platform != "windows-x64" {
+        // The packaging gate defines tag rules for the windows-x64 target only; other
+        // platforms have no tag contract to check yet.
+        return true;
+    }
+    let Some((major, minor)) = python_version_digits(&target.python) else {
+        return false;
+    };
+    let target_python_tag = format!("cp{major}{minor}");
+    let Some((python_tags, abi_tags, platform_tags)) =
+        split_wheel_tags(filename.strip_suffix(".whl").unwrap_or(filename))
+    else {
+        return false;
+    };
+    let is_tag = |tag: &str| {
+        !tag.is_empty()
+            && tag
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    };
+    python_tags.split('.').any(|python_tag| {
+        abi_tags.split('.').any(|abi_tag| {
+            platform_tags.split('.').any(|platform_tag| {
+                if !is_tag(python_tag) || !is_tag(abi_tag) || !is_tag(platform_tag) {
+                    return false;
+                }
+                let pure = abi_tag == "none"
+                    && (python_tag == target_python_tag
+                        || is_compatible_pure_tag(python_tag, major, minor));
+                let exact = python_tag == target_python_tag && abi_tag == target_python_tag;
+                let stable = abi_tag == "abi3"
+                    && interpreter_tag_version(python_tag, "cp").is_some_and(
+                        |(tag_major, tag_minor)| {
+                            tag_major == major
+                                && (tag_major > 3 || tag_minor >= 2)
+                                && tag_minor <= minor
+                        },
+                    );
+                if platform_tag == "win_amd64" {
+                    exact || stable || pure
+                } else {
+                    platform_tag == "any" && pure
+                }
+            })
+        })
+    })
+}
+
+/// Splits the trailing `-{python}-{abi}-{platform}` tag block off a wheel filename
+/// stem; at least one distribution/version segment must precede the tags.
+fn split_wheel_tags(stem: &str) -> Option<(&str, &str, &str)> {
+    let mut segments = stem.rsplitn(4, '-');
+    let platform_tags = segments.next()?;
+    let abi_tags = segments.next()?;
+    let python_tags = segments.next()?;
+    if segments.next().is_none() {
+        return None;
+    }
+    Some((python_tags, abi_tags, platform_tags))
+}
+
+/// `cp313`/`py39`-style interpreter tags encode a single-digit major followed by the
+/// minor digits, matching `Get-PythonInterpreterTagVersion` in resolve-runtime.ps1.
+fn interpreter_tag_version(tag: &str, prefix: &str) -> Option<(u32, u32)> {
+    let digits = tag.strip_prefix(prefix)?;
+    if digits.len() < 2 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some((digits[..1].parse().ok()?, digits[1..].parse().ok()?))
+}
+
+fn is_compatible_pure_tag(tag: &str, major: u32, minor: u32) -> bool {
+    tag == format!("py{major}")
+        || interpreter_tag_version(tag, "py")
+            .is_some_and(|(tag_major, tag_minor)| tag_major == major && tag_minor <= minor)
+}
+
+fn python_version_digits(python: &str) -> Option<(u32, u32)> {
+    let (major, minor) = python.split_once('.')?;
+    if !major.chars().all(|c| c.is_ascii_digit()) || !minor.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some((major.parse().ok()?, minor.parse().ok()?))
 }
 
 fn is_allowed_wheel_host(url: &reqwest::Url) -> bool {
@@ -930,6 +1032,62 @@ mod tests {
         let mut lock = sample_lock();
         lock.targets[0].wheels[0].sha256 = "not-a-hash".to_string();
         assert!(validate_lock(&lock).unwrap_err().contains("SHA-256"));
+    }
+
+    #[test]
+    fn lock_requires_imports_to_verify() {
+        let mut lock = sample_lock();
+        lock.targets[0].imports.clear();
+        assert!(
+            validate_lock(&lock)
+                .unwrap_err()
+                .contains("declares no imports"),
+            "empty imports must fail validation or post-install verification is vacuous"
+        );
+    }
+
+    #[test]
+    fn lock_rejects_wheels_incompatible_with_target() {
+        let incompatible = [
+            "example-1.0.0-cp312-cp312-win_amd64.whl",
+            "example-1.0.0-cp314-cp314-win_amd64.whl",
+            "example-1.0.0-cp313-cp313-win_arm64.whl",
+            "example-1.0.0-cp313-abi3-any.whl",
+            "example-1.0.0-cp313-cp313-manylinux1_x86_64.whl",
+            "example-1.0.0-CP313-cp313-win_amd64.whl",
+            "example-1.0.0.whl",
+            "py3-none-any.whl",
+        ];
+        for filename in incompatible {
+            let mut lock = sample_lock();
+            lock.targets[0].wheels[0].filename = filename.to_string();
+            lock.targets[0].wheels[0].url =
+                format!("https://files.pythonhosted.org/packages/{filename}");
+            assert!(
+                validate_lock(&lock).is_err(),
+                "accepted incompatible wheel: {filename}"
+            );
+        }
+
+        let compatible = [
+            "example-1.0.0-cp313-cp313-win_amd64.whl",
+            "example-1.0.0-cp313-abi3-win_amd64.whl",
+            "example-1.0.0-cp312-abi3-win_amd64.whl",
+            "example-1.0.0-cp39-abi3-win_amd64.whl",
+            "example-1.0.0-py3-none-any.whl",
+            "example-1.0.0-py313-none-any.whl",
+            "example-1.0.0-py2.py3-none-any.whl",
+        ];
+        for filename in compatible {
+            let mut lock = sample_lock();
+            lock.targets[0].wheels[0].filename = filename.to_string();
+            lock.targets[0].wheels[0].url =
+                format!("https://files.pythonhosted.org/packages/{filename}");
+            assert!(
+                validate_lock(&lock).is_ok(),
+                "rejected compatible wheel: {filename}"
+            );
+        }
     }
 
     /// 重试冷却只约束启动修复的自动重试（`respect_retry_cooldown=true`），
