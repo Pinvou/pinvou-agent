@@ -796,8 +796,17 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: pinvou3-app/src-tauri
+          # 2026-08-29/30 事故:凡 restore 本 job 的 target/ 缓存并据其链接出的
+          # 测试二进制,执行数秒内把 runner VM 打到失联(1s 遥测实证:内存/磁盘/
+          # 负载全程健康,死亡点在套件内随机)。与 cache 内容的新旧无关——#379
+          # (debug=0)之后每次 main push 保存的 target/ 都在 restore 后复现致死,
+          # 而全冷编译(不吃 target/ 缓存)的对照组同 runner 池 100% 全绿;
+          # 纯文档 PR 也死,与 PR 代码无关。根因定位期间先关掉 target/ 缓存:
+          # 只缓存 ~/.cargo(registry/git 索引,省下载),target/ 每次全冷编译
+          # (~15 分钟,与绿色对照组同构)。根因查明并验证前不要重新打开。
+          cache-targets: false
           # 稳定 key 前缀(跨 PR/push 一致);restore 按前缀回退,lock 变了也增量。
-          shared-key: rust-test
+          shared-key: rust-test-v2
           # 只在 main 保存(暖 cache 唯一来源);PR 侧只读,不占 10GB 限额。
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
