@@ -108,10 +108,16 @@ function evalIsDeliverable(snippet, label) {
     "an artifact update must reuse the existing card object and position");
   assert.strictEqual(updatedTauriCard.id, 2,
     "an artifact update must preserve the stable card id");
-  assert.strictEqual(updatedTauriCard.path, "two.md",
-    "an artifact update should adopt the latest path");
+  assert.strictEqual(updatedTauriCard.path, "C:\\workspace\\two.md",
+    "a relative artifact update must preserve the existing absolute openable path");
   assert.strictEqual(updatedTauriCard.title, "Two updated",
     "an artifact update should refresh metadata");
+  state.chatItems[2].path = "three.md";
+  feature.updatePresentedArtifact({
+    type: "artifact_card", path: "C:\\workspace\\three.md", title: "Three updated",
+  });
+  assert.strictEqual(state.chatItems[2].path, "C:\\workspace\\three.md",
+    "an absolute artifact update must upgrade an existing relative path");
   assert.strictEqual(feature.updatePresentedArtifact({
     type: "artifact_card", path: "four.md", title: "Four",
   }), null, "a new artifact must still be reported to the caller as missing");
@@ -151,6 +157,7 @@ function evalIsDeliverable(snippet, label) {
   vm.createContext(cardCtx);
   vm.runInContext([
     extractFunction(webSrc, "basename"),
+    extractFunction(webSrc, "isAbsPath"),
     extractFunction(webSrc, "findPresentedArtifact"),
     extractFunction(webSrc, "updatePresentedArtifact"),
     "this.updatePresentedArtifact = updatePresentedArtifact;",
@@ -164,6 +171,14 @@ function evalIsDeliverable(snippet, label) {
     "web bridge must preserve the artifact card position");
   assert.strictEqual(updatedWebCard.id, 2,
     "web bridge must preserve the artifact card id");
+  assert.strictEqual(updatedWebCard.path, "/workspace/two.md",
+    "web bridge must preserve an existing absolute path on a relative update");
+  cardState.chatItems[2].path = "three.md";
+  cardCtx.updatePresentedArtifact({
+    type: "artifact_card", path: "/workspace/three.md", title: "Three updated",
+  });
+  assert.strictEqual(cardState.chatItems[2].path, "/workspace/three.md",
+    "web bridge must allow a relative artifact path to upgrade to an absolute path");
 
   const GATE = 'if (dbMutation !== "edit" && isDeliverable(dap)) writtenArtifacts[dap] = true;';
   for (const rel of [

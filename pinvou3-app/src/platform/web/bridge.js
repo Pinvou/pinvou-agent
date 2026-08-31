@@ -4606,8 +4606,12 @@
     const existing = findPresentedArtifact(card.path);
     if (!existing) return null;
     const stableId = existing.id;
+    const stableAbsolutePath = isAbsPath(existing.path) && !isAbsPath(card.path)
+      ? existing.path
+      : null;
     Object.assign(existing, card, { type: "artifact_card" });
     if (stableId !== undefined) existing.id = stableId;
+    if (stableAbsolutePath) existing.path = stableAbsolutePath;
     return existing;
   }
   // 切换 session 时对账:扫 workspace 磁盘,把实际存在、但跟踪列表里没有的文件补进来。

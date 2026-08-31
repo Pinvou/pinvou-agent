@@ -5008,7 +5008,10 @@ async function presentationReconciliationUsesStableEventIdentity() {
     "the artifact panel must use the same semantic identity as chat cards"
   );
 
-  function presentArtifact(id, artifactPath, title) {
+  function presentArtifact(id, artifactPath, title, resolvedPath) {
+    const result = { ok: true };
+    const outputPath = resolvedPath === undefined ? artifactPath : resolvedPath;
+    if (outputPath) result.abs_path = outputPath;
     const payload = {
       session_id: sessionId,
       id,
@@ -5020,7 +5023,7 @@ async function presentationReconciliationUsesStableEventIdentity() {
       session_id: sessionId,
       id,
       success: true,
-      output: JSON.stringify({ ok: true, abs_path: artifactPath }),
+      output: JSON.stringify(result),
     });
   }
 
@@ -5056,7 +5059,7 @@ async function presentationReconciliationUsesStableEventIdentity() {
     success: true,
     output: "Updated snake-game.html",
   });
-  presentArtifact("tool-present-snake-update", absoluteArtifactPath, "Snake game v2");
+  presentArtifact("tool-present-snake-update", "snake-game.html", "Snake game v2", null);
 
   const updatedCardState = bridge.state.get("chat");
   const updatedCards = updatedCardState.chatItems.filter(function (item) {
@@ -5076,6 +5079,8 @@ async function presentationReconciliationUsesStableEventIdentity() {
   }), originalSnakeIndex, "the updated artifact must preserve its card position");
   assert.strictEqual(updatedSnakeCards[0].title, "Snake game v2",
     "the existing card must receive the latest presentation metadata");
+  assert.strictEqual(updatedSnakeCards[0].path, absoluteArtifactPath,
+    "a relative presentation update must preserve the existing absolute openable path");
 
   const questions = [{ id: "choice", header: "选择", question: "继续吗？", options: [] }];
   harness.emit("chat:user_input_required", {
