@@ -4230,10 +4230,11 @@
             if (!(gres2 && gres2.is_error) && gap && isDeliverable(gap) && lastDirtyArtifactId[gap] === b.id && !presentedArtifacts[gap] && !presentedArtifactNames[basename(gap)]) {
               const gprev = findPresentedArtifact(gap);
               if (gprev) {
-                updatePresentedArtifact({
+                const gcard = {
                   type: "artifact_card", path: gprev.path, title: gprev.title,
                   description: gprev.description, time: "", sessionId: state.activeSessionId,
-                });
+                };
+                if (!updatePresentedArtifact(gcard)) addChatItem(gcard);
               } else if (writtenArtifacts[gap]) {
                 addChatItem({ type: "artifact_card", path: gap, title: basename(gap), description: "", time: "", sessionId: state.activeSessionId });
               }
@@ -4249,10 +4250,11 @@
               if ((wres && wres.is_error) || lastDirtyArtifactId[wap] !== b.id) return;
               const wprev = findPresentedArtifact(wap);
               if (wprev) {
-                updatePresentedArtifact({
+                const wcard = {
                   type: "artifact_card", path: wprev.path, title: wprev.title,
                   description: wprev.description, time: "", sessionId: state.activeSessionId,
-                });
+                };
+                if (!updatePresentedArtifact(wcard)) addChatItem(wcard);
               } else if (writtenArtifacts[wap] && !presentedArtifacts[wap] && !presentedArtifactNames[basename(wap)]) {
                 // AI 写了产物但全程没 present_artifact → 兜底补首卡(与实时 chat:done 对齐)
                 addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "", sessionId: state.activeSessionId });
@@ -4601,10 +4603,29 @@
     }
     return null;
   }
+  // Updates an existing presentation card in place (stable id and position)
+  // instead of appending a duplicate card. Returns null when the caller must
+  // append a fresh card instead:
+  // - no card for this basename yet, or the matching card's absolute path
+  //   differs from the presented path (same-named files in different
+  //   directories are distinct artifacts, never rewritten into each other);
+  // - a user message is newer than the existing card with no file mutation
+  //   after it: the model is answering a fresh "show it again" request, and
+  //   replaying that turn must stay a visible new card.
   function updatePresentedArtifact(card) {
     if (!card || !card.path) return null;
     const existing = findPresentedArtifact(card.path);
     if (!existing) return null;
+    if (isAbsPath(existing.path) && isAbsPath(card.path) &&
+        normalizedPath(existing.path) !== normalizedPath(card.path)) return null;
+    const bn = basename(card.path);
+    for (let i = state.chatItems.length - 1; i >= 0; i--) {
+      const it = state.chatItems[i];
+      if (it === existing) break;
+      if (it.type === "user") return null;
+      if (it.type === "tool" && fileMutationAction(it.name, it.args) &&
+          extractArtifactPaths(it.args).some(function (ap) { return basename(ap) === bn; })) break;
+    }
     const stableId = existing.id;
     const stableAbsolutePath = isAbsPath(existing.path) && !isAbsPath(card.path)
       ? existing.path
@@ -6130,9 +6151,9 @@
       const interrupted = ["interrupted", "cancelled", "canceled"].includes(terminalStatus);
       if (interrupted) preserveInterruptedAssistantPresentation();
       else flushAssistantMessageToHistory();
-      // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
-      // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。
-      // 本 turn 刚 present_artifact 出过卡的跳过,不重复。edit/append 改多次也只补一张。
+      // 本 turn 写/改过的产物:present 过的就地刷新原卡(保留 id/位置,不在末尾重复补卡;
+      // 品/悟召唤图标跟随同 basename 最新一张卡,入口仍在)。AI 没 present 过的兜底补首卡
+      // (否则没召唤入口=这次的 bug)。本 turn 刚 present_artifact 出过卡的跳过;改多次也只处理一次。
       (state.turnDirtyArtifacts || []).forEach(function (ap) {
         // 按 basename 比对:present 存 server 绝对路径、turnDirty 存 write 相对路径,
         // 直接 indexOf 比不中 → present 过的文件会被兜底再补一张(重复)。
@@ -6143,8 +6164,13 @@
         // 没有再退回 write_file 的相对 ap(由 sessionId 兜底解析)。
         const tracked = state.artifacts.find(function (a) { return basename(a.path) === _apbn && isAbsPath(a.path); });
         const cardPath = (tracked && tracked.path) || ap;
-        if (prev) updatePresentedArtifact({ type: "artifact_card", path: cardPath, title: prev.title, description: prev.description, time: timeStr(), sessionId: sid });
-        else addChatItem({ type: "artifact_card", path: cardPath, title: basename(ap), description: "", time: timeStr(), sessionId: sid });
+        if (prev) {
+          // 命中「用户在原卡之后重新开口」例外(updatePresentedArtifact 返回 null)→ 仍补一张新卡。
+          const refreshed = updatePresentedArtifact({ type: "artifact_card", path: cardPath, title: prev.title, description: prev.description, time: timeStr(), sessionId: sid });
+          if (!refreshed) addChatItem({ type: "artifact_card", path: cardPath, title: prev.title, description: prev.description, time: timeStr(), sessionId: sid });
+        } else {
+          addChatItem({ type: "artifact_card", path: cardPath, title: basename(ap), description: "", time: timeStr(), sessionId: sid });
+        }
       });
       state.turnDirtyArtifacts = [];
       state.turnPresentedArtifacts = [];

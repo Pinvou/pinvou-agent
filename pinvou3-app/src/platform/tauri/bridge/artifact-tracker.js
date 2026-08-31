@@ -115,10 +115,29 @@
     }
     return null;
   }
+  // Updates an existing presentation card in place (stable id and position)
+  // instead of appending a duplicate card. Returns null when the caller must
+  // append a fresh card instead:
+  // - no card for this basename yet, or the matching card's absolute path
+  //   differs from the presented path (same-named files in different
+  //   directories are distinct artifacts, never rewritten into each other);
+  // - a user message is newer than the existing card with no file mutation
+  //   after it: the model is answering a fresh "show it again" request, and
+  //   replaying that turn must stay a visible new card.
   function updatePresentedArtifact(card) {
     if (!card || !card.path) return null;
     const existing = findPresentedArtifact(card.path);
     if (!existing) return null;
+    if (isAbsPath(existing.path) && isAbsPath(card.path) &&
+        normalizedPath(existing.path) !== normalizedPath(card.path)) return null;
+    const bn = basename(card.path);
+    for (let i = state.chatItems.length - 1; i >= 0; i--) {
+      const it = state.chatItems[i];
+      if (it === existing) break;
+      if (it.type === "user") return null;
+      if (it.type === "tool" && fileMutationAction(it.name, it.args) &&
+          extractArtifactPaths(it.args).some(function (ap) { return basename(ap) === bn; })) break;
+    }
     const stableId = existing.id;
     const stableAbsolutePath = isAbsPath(existing.path) && !isAbsPath(card.path)
       ? existing.path

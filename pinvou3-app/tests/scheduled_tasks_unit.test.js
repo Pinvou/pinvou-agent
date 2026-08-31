@@ -5082,6 +5082,45 @@ async function presentationReconciliationUsesStableEventIdentity() {
   assert.strictEqual(updatedSnakeCards[0].path, absoluteArtifactPath,
     "a relative presentation update must preserve the existing absolute openable path");
 
+  // 同 basename、不同目录(不同绝对路径)= 不同产物 → 必须追加自己的新卡,
+  // 不得把旧卡就地改写成新文件(basename 身份规则的越界守卫)。
+  const exportSummaryPath = "C:\\Users\\tester\\exports\\summary.pptx";
+  presentArtifact("tool-present-summary-export", exportSummaryPath, "Summary export");
+  const exportCardState = bridge.state.get("chat");
+  const exportCards = exportCardState.chatItems.filter(function (item) {
+    return item.type === "artifact_card";
+  });
+  assert.strictEqual(exportCards.length, 4,
+    "a same-named artifact in another directory must append its own card");
+  const summaryCards = exportCards.filter(function (item) {
+    return /summary\.pptx$/.test(item.path || "");
+  });
+  assert.strictEqual(summaryCards.length, 2,
+    "both same-named files must keep their own cards");
+  assert.strictEqual(exportCards[exportCards.length - 1].path, exportSummaryPath,
+    "the appended card must point at the newly presented file");
+  const originalSummaryCard = summaryCards.find(function (item) { return item.path !== exportSummaryPath; });
+  assert.strictEqual(originalSummaryCard.path, summaryPath,
+    "the original card must keep its own openable path");
+
+  // 用户重新开口后再 present 未改动的产物 → 必须追加新卡给出可见反馈
+  // (「再推一次/没看到」却只静默刷新旧卡是历史上实测过的 bug)。
+  await harness.emit("chat:user_message", { session_id: sessionId, content: "再把 report 给我看一次" });
+  presentArtifact("tool-present-report-again", reportPath, "Report again");
+  const feedbackCardState = bridge.state.get("chat");
+  const feedbackCards = feedbackCardState.chatItems.filter(function (item) {
+    return item.type === "artifact_card";
+  });
+  assert.strictEqual(feedbackCards.length, 5,
+    "a user-requested re-presentation of an unchanged artifact must append a visible new card");
+  const reportCards = feedbackCards.filter(function (item) {
+    return /report\.md$/.test(item.path || "");
+  });
+  assert.strictEqual(reportCards.length, 2,
+    "the original report card and the user-requested one must coexist");
+  assert.strictEqual(feedbackCards[feedbackCards.length - 1].title, "Report again",
+    "the appended card must carry the fresh presentation title");
+
   const replayFirstPresentId = "replay-present-snake-absolute";
   const replayRelativeUpdateId = "replay-present-snake-relative";
   durable = {

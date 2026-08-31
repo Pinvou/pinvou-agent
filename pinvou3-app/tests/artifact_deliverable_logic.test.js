@@ -121,6 +121,49 @@ function evalIsDeliverable(snippet, label) {
   assert.strictEqual(feature.updatePresentedArtifact({
     type: "artifact_card", path: "four.md", title: "Four",
   }), null, "a new artifact must still be reported to the caller as missing");
+
+  // 用户在上一张卡之后重新开口(如「再推一次」)且文件未再改动 → 必须追加新卡给可见
+  // 反馈,不得就地刷新旧卡(守卫历史上实测过的「用户主动要却看不到任何反馈」回归)。
+  state.chatItems = [
+    { id: 1, type: "artifact_card", path: "C:\\workspace\\one.md", title: "One" },
+    { id: 2, type: "user", text: "再推一次" },
+  ];
+  assert.strictEqual(feature.updatePresentedArtifact({
+    type: "artifact_card", path: "C:\\workspace\\one.md", title: "One v2",
+  }), null, "a user message newer than the card must be answered by a fresh appended card");
+  assert.strictEqual(state.chatItems[0].title, "One",
+    "a declined in-place update must leave the existing card untouched");
+
+  // 卡片之后文件被改(File 工具)比用户新 → 就地刷新(同一回合改完再 present 的主场景)
+  state.chatItems = [
+    { id: 1, type: "artifact_card", path: "C:\\workspace\\one.md", title: "One" },
+    { id: 2, type: "user", text: "改一下" },
+    { id: 3, type: "tool", name: "File", args: { action: "edit", path: "C:\\workspace\\one.md" } },
+  ];
+  assert.strictEqual(feature.updatePresentedArtifact({
+    type: "artifact_card", path: "C:\\workspace\\one.md", title: "One v2",
+  }), state.chatItems[0],
+    "a file mutation newer than the user message must keep the in-place update");
+
+  // 用户发言比最近一次文件变更更新(改完后用户又开口)→ 仍以用户为准追加新卡
+  state.chatItems = [
+    { id: 1, type: "artifact_card", path: "C:\\workspace\\one.md", title: "One" },
+    { id: 2, type: "tool", name: "File", args: { action: "edit", path: "C:\\workspace\\one.md" } },
+    { id: 3, type: "user", text: "再推一次" },
+  ];
+  assert.strictEqual(feature.updatePresentedArtifact({
+    type: "artifact_card", path: "C:\\workspace\\one.md", title: "One v3",
+  }), null, "a user message newer than the last mutation must still force a fresh card");
+
+  // 同 basename、不同目录(均为绝对路径)= 不同产物 → 追加新卡,不得把旧卡改写成新文件
+  state.chatItems = [
+    { id: 1, type: "artifact_card", path: "C:\\workspace\\v1\\readme.md", title: "V1" },
+  ];
+  assert.strictEqual(feature.updatePresentedArtifact({
+    type: "artifact_card", path: "C:\\workspace\\v2\\readme.md", title: "V2",
+  }), null, "an equal basename in a different absolute directory is a distinct artifact");
+  assert.strictEqual(state.chatItems[0].title, "V1",
+    "the existing card must not be rewritten by a different same-named file");
 }
 
 // 2) web 侧 bridge.js:isDeliverable 是闭包内部函数,抽取 DELIVERABLE_EXTS..isDeliverable
@@ -158,6 +201,10 @@ function evalIsDeliverable(snippet, label) {
   vm.runInContext([
     extractFunction(webSrc, "basename"),
     extractFunction(webSrc, "isAbsPath"),
+    extractFunction(webSrc, "normalizedPath"),
+    extractFunction(webSrc, "pushArtifactPath"),
+    extractFunction(webSrc, "extractArtifactPaths"),
+    extractFunction(webSrc, "fileMutationAction"),
     extractFunction(webSrc, "findPresentedArtifact"),
     extractFunction(webSrc, "updatePresentedArtifact"),
     "this.updatePresentedArtifact = updatePresentedArtifact;",
@@ -179,6 +226,35 @@ function evalIsDeliverable(snippet, label) {
   });
   assert.strictEqual(cardState.chatItems[2].path, "/workspace/three.md",
     "web bridge must allow a relative artifact path to upgrade to an absolute path");
+  assert.strictEqual(cardCtx.updatePresentedArtifact({
+    type: "artifact_card", path: "four.md", title: "Four",
+  }), null, "web bridge must report a new artifact to the caller as missing");
+
+  // web 侧同规则:用户重新开口→追加;文件变更更新→就地刷新;异目录同名→追加
+  cardState.chatItems = [
+    { id: 1, type: "artifact_card", path: "/workspace/one.md", title: "One" },
+    { id: 2, type: "user", text: "show it again" },
+  ];
+  assert.strictEqual(cardCtx.updatePresentedArtifact({
+    type: "artifact_card", path: "/workspace/one.md", title: "One v2",
+  }), null, "web bridge must also answer a user re-request with a fresh appended card");
+  cardState.chatItems = [
+    { id: 1, type: "artifact_card", path: "/workspace/one.md", title: "One" },
+    { id: 2, type: "user", text: "改一下" },
+    { id: 3, type: "tool", name: "File", args: { action: "edit", path: "/workspace/one.md" } },
+  ];
+  assert.strictEqual(cardCtx.updatePresentedArtifact({
+    type: "artifact_card", path: "/workspace/one.md", title: "One v2",
+  }), cardState.chatItems[0],
+    "web bridge must keep the in-place update when a mutation is newer than the user message");
+  cardState.chatItems = [
+    { id: 1, type: "artifact_card", path: "/workspace/v1/readme.md", title: "V1" },
+  ];
+  assert.strictEqual(cardCtx.updatePresentedArtifact({
+    type: "artifact_card", path: "/workspace/v2/readme.md", title: "V2",
+  }), null, "web bridge must treat a same-named file in another directory as a distinct artifact");
+  assert.strictEqual(cardState.chatItems[0].title, "V1",
+    "web bridge must not rewrite the existing card with a different same-named file");
 
   const GATE = 'if (dbMutation !== "edit" && isDeliverable(dap)) writtenArtifacts[dap] = true;';
   for (const rel of [

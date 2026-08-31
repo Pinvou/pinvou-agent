@@ -1875,10 +1875,11 @@
             if (!(gres2 && gres2.is_error) && gap && isDeliverable(gap) && lastDirtyArtifactId[gap] === b.id && !presentedArtifacts[gap] && !presentedArtifactNames[basename(gap)]) {
               const gprev = findPresentedArtifact(gap);
               if (gprev) {
-                updatePresentedArtifact({
+                const gcard = {
                   type: "artifact_card", path: gprev.path, title: gprev.title,
                   description: gprev.description, time: "", sessionId: state.activeSessionId,
-                });
+                };
+                if (!updatePresentedArtifact(gcard)) addChatItem(gcard);
               } else if (writtenArtifacts[gap]) {
                 addChatItem({ type: "artifact_card", path: gap, title: basename(gap), description: "", time: "", sessionId: state.activeSessionId });
               }
@@ -1894,10 +1895,11 @@
               if ((wres && wres.is_error) || lastDirtyArtifactId[wap] !== b.id) return;
               const wprev = findPresentedArtifact(wap);
               if (wprev) {
-                updatePresentedArtifact({
+                const wcard = {
                   type: "artifact_card", path: wprev.path, title: wprev.title,
                   description: wprev.description, time: "", sessionId: state.activeSessionId,
-                });
+                };
+                if (!updatePresentedArtifact(wcard)) addChatItem(wcard);
               } else if (writtenArtifacts[wap] && !presentedArtifacts[wap] && !presentedArtifactNames[basename(wap)]) {
                 // AI 写了产物但全程没 present_artifact → 兜底补首卡(与实时 chat:done 对齐)
                 addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "", sessionId: state.activeSessionId });
