@@ -1729,6 +1729,14 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         if (token !== undefined && (!pending || pending.token !== token)) return;
         pendingLocalEngineSendRef.current = null;
         setLocalEnginePrompt(null);
+        if (send) {
+          // 发送放行后引擎转交后端生命周期管理（本轮识图正在使用）——所有权
+          // 清零，组件卸载/后续取消不得再停它，否则切页会杀死进行中的图像
+          // 分析。下载此刻已完成，取消语义一并失效（兜住纯启动路径；
+          // installThenResolve 在启动前已清零）。
+          localEngineStartedByTokenRef.current = 0;
+          localEngineDownloadOwnedRef.current = false;
+        }
         if (pending) pending.resolve(send);
       }
       // 取消 starting/downloading：先按当前 token resolve（取消发送），再
@@ -1767,18 +1775,27 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       }
       async function installThenResolve(info, token) {
         setLocalEnginePrompt({ kind: 'downloading', token });
-        // 只有 installEngine 返回 true（= 下载由本流程发起）才登记下载所有权；
-        // 返回 false 是别人的在途下载（如设置页），等待其收敛，绝不代取消。
+        // 下载所有权乐观登记：桥内幂等守卫以「调用瞬间无在途下载」判定发起方，
+        // 调用前查实时桥状态（非 React 快照）即同口径预判。登记必须早于
+        // await——invoke 待决期间（下载进行中）用户点取消要能收掉它；只在
+        // invoke 返回后登记会让本流程自己发起的下载无法被取消。返回 false =
+        // 他人抢先发起（微任务级窗口），撤销登记并等待其收敛，绝不代取消。
         localEngineDownloadOwnedRef.current = false;
-        try {
-          if (bridge.llamaEngine.installEngine && (await bridge.llamaEngine.installEngine()) === false) {
+        const runOwnedInstall = async (invokeInstall) => {
+          const slices = (bridge.state && bridge.state.getMany) ? bridge.state.getMany(['llamaEngine']) : null;
+          const inFlight = !!(slices && slices.llamaEngineSetup && slices.llamaEngineSetup.downloading);
+          if (!inFlight) localEngineDownloadOwnedRef.current = true;
+          if ((await invokeInstall()) === false) {
+            localEngineDownloadOwnedRef.current = false;
             await waitForLocalDownloadSettled(token);
-          } else {
-            localEngineDownloadOwnedRef.current = true;
           }
-          if (localEngineFlowAlive(token) && bridge.llamaEngine.installModel
-            && (await bridge.llamaEngine.installModel(info.localEngineModel)) === false) {
-            await waitForLocalDownloadSettled(token);
+        };
+        try {
+          if (bridge.llamaEngine.installEngine) {
+            await runOwnedInstall(() => bridge.llamaEngine.installEngine());
+          }
+          if (localEngineFlowAlive(token) && bridge.llamaEngine.installModel) {
+            await runOwnedInstall(() => bridge.llamaEngine.installModel(info.localEngineModel));
           }
         } catch (e) {
           // 取消下载的 reject 与新流程顶替后的迟到 reject 都不弹错误。
