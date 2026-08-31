@@ -1208,27 +1208,29 @@ jobs:
           kill "$guard_pid" 2>/dev/null || true
           echo "v6 P2 done exit=$s $(date -u +%T)" | tee -a /tmp/ci-observe/ab.log
 
-  # v19 修复候选 2a:死亡形状 + 编译腿启动「完整 sampler 纯本地版」
-  # (NO_POST/NO_DMESG:meminfo+loadavg+PSI+ps×2+文件写,零网络零 dmesg)。
-  #   活→keepalive 与 sampler 的差距在 meminfo 读/脚本结构,main 修复用完整采样。
-  probe-fc-sampler:
-    name: probe-fc-sampler
+  # v20 法医臂 1:main 死亡形状(编译裸输出无 settle/执行无 pre-check,双腿带遥测
+  #   取证——遥测在死亡形状上从无保护作用,v7-v10/fc-sampler 实证),restore 毒 cache
+  #   后只删根 crate 相关产物,强制根 crate 重编+重链,700+ 依赖缓存保留。
+  #   活→毒在根 crate 产物,main 修复=restore 后清根产物(保留缓存提速,逼近真根治)。
+  probe-purgeroot:
+    name: probe-purgeroot
     needs: changes
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
       contents: read
+      checks: write
     env:
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
       CARGO_PROFILE_DEV_LTO: "thin"
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1"
       CARGO_PROFILE_DEV_DEBUG: "0"
+      # job 级注入:ci-live-telemetry.sh 需要 GITHUB_TOKEN 创建/PATCH 临时
+      # Check Run;v4 只在 step A 注入导致 B/C/D/E 遥测静默失败(已实证)。
       TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TELEMETRY_CHECK_NAME: tele-fc-sampler
-      TELEMETRY_NO_POST: "1"
-      TELEMETRY_NO_DMESG: "1"
+      TELEMETRY_CHECK_NAME: tele-purgeroot
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -1238,7 +1240,7 @@ jobs:
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- CodeWhale
 
-      - name: 装 Tauri + pinvou3 Linux 系统依赖
+      - name: 装系统依赖(与 rust-test 一致 + strace)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -1246,10 +1248,9 @@ jobs:
             librsvg2-dev libssl-dev \
             libx11-dev libxi-dev libxtst-dev \
             libayatana-appindicator3-dev \
-            build-essential pkg-config cmake lld \
-            time
+            build-essential pkg-config cmake lld strace
 
-      - name: bge-m3 占位 (骗过 tauri-build 资源校验)
+      - name: bge-m3 占位 (与 rust-test 一致)
         run: |
           d=pinvou3-app/src-tauri/resources/bge-m3
           mkdir -p "$d"
@@ -1264,17 +1265,17 @@ jobs:
         working-directory: pinvou3-app/src-tauri
         run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
 
-      - name: Node.js (relay e2e)
+      - name: Node.js (relay e2e,与 rust-test 一致)
         uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: remote-control-relay/package-lock.json
 
-      - name: relay 依赖 (真实 relay e2e)
+      - name: relay 依赖 (与 rust-test 一致)
         run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
 
-      - name: 浏览器驱动依赖 (真实 Chrome 下载 e2e)
+      - name: 浏览器驱动依赖 (与 rust-test 一致)
         run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
 
       - name: Cargo cache (restore 致死的 v2 暖 cache)
@@ -1284,7 +1285,17 @@ jobs:
           shared-key: rust-test-v2
           save-if: false
 
-      - name: cargo test --lib --no-run(编译腿 + keepalive 修复候选)
+      - name: 手术:删除 cache 里根 crate 相关产物(保留依赖缓存)
+        run: |
+          t=pinvou3-app/src-tauri/target
+          rm -rf "$t"/debug/build/pinvou3-tauri-* \
+                 "$t"/debug/.fingerprint/pinvou3-tauri-* \
+                 "$t"/debug/.fingerprint/pinvou3_lib-* \
+                 "$t"/debug/deps/pinvou3_lib-* \
+                 "$t"/debug/deps/pinvou3_tauri-* \
+                 "$t"/debug/deps/libpinvou3_tauri-*
+
+      - name: cargo test --lib --no-run(main 死亡形状编译腿:裸输出,无 settle)
         run: |
           bash scripts/ci-live-telemetry.sh &
           bash scripts/ci-memguard.sh &
@@ -1296,8 +1307,9 @@ jobs:
           kill "$guard_pid" 2>/dev/null || true
           exit "$status"
 
-      - name: cargo test --lib(执行腿,keepalive 跨 step 存活验证)
+      - name: cargo test --lib(main 死亡形状执行腿:裸输出,无 pre-check)
         run: |
+          bash scripts/ci-live-telemetry.sh &
           chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           export CHROME="$chrome"
           export PINVOU_REQUIRE_REMOTE_E2E=1
@@ -1310,20 +1322,29 @@ jobs:
           kill "$guard_pid" 2>/dev/null || true
           exit "$status"
 
-  # v19 修复候选 2b:fixcand 原样复制品(单行 keepalive),复跑统计用。
-  probe-fc-keepalive2:
-    name: probe-fc-keepalive2
+  # v20 法医臂 2:同死亡形状,restore 后删全部 build script 输出(target/debug/build,
+  #   tauri-codegen 图标缓存所在、v5 fingerprint 竞争事发地)。两臂互斥拆分:
+  #   purgeroot 活/purgebuild 死→毒在编译产物;反之为 build 输出;都活→毒在两者的
+  #   交集(根 crate build 输出=图标缓存);都死→毒在依赖 rlib 层。
+  probe-purgebuild:
+    name: probe-purgebuild
     needs: changes
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
       contents: read
+      checks: write
     env:
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
       CARGO_PROFILE_DEV_LTO: "thin"
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1"
       CARGO_PROFILE_DEV_DEBUG: "0"
+      # job 级注入:ci-live-telemetry.sh 需要 GITHUB_TOKEN 创建/PATCH 临时
+      # Check Run;v4 只在 step A 注入导致 B/C/D/E 遥测静默失败(已实证)。
+      TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TELEMETRY_CHECK_NAME: tele-purgebuild
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -1333,7 +1354,7 @@ jobs:
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- CodeWhale
 
-      - name: 装 Tauri + pinvou3 Linux 系统依赖
+      - name: 装系统依赖(与 rust-test 一致 + strace)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -1341,10 +1362,9 @@ jobs:
             librsvg2-dev libssl-dev \
             libx11-dev libxi-dev libxtst-dev \
             libayatana-appindicator3-dev \
-            build-essential pkg-config cmake lld \
-            time
+            build-essential pkg-config cmake lld strace
 
-      - name: bge-m3 占位 (骗过 tauri-build 资源校验)
+      - name: bge-m3 占位 (与 rust-test 一致)
         run: |
           d=pinvou3-app/src-tauri/resources/bge-m3
           mkdir -p "$d"
@@ -1359,17 +1379,17 @@ jobs:
         working-directory: pinvou3-app/src-tauri
         run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
 
-      - name: Node.js (relay e2e)
+      - name: Node.js (relay e2e,与 rust-test 一致)
         uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: remote-control-relay/package-lock.json
 
-      - name: relay 依赖 (真实 relay e2e)
+      - name: relay 依赖 (与 rust-test 一致)
         run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
 
-      - name: 浏览器驱动依赖 (真实 Chrome 下载 e2e)
+      - name: 浏览器驱动依赖 (与 rust-test 一致)
         run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
 
       - name: Cargo cache (restore 致死的 v2 暖 cache)
@@ -1379,9 +1399,12 @@ jobs:
           shared-key: rust-test-v2
           save-if: false
 
-      - name: cargo test --lib --no-run(编译腿 + keepalive 修复候选)
+      - name: 手术:删除 cache 里全部 build script 输出(图标缓存嫌疑目录)
+        run: rm -rf pinvou3-app/src-tauri/target/debug/build
+
+      - name: cargo test --lib --no-run(main 死亡形状编译腿:裸输出,无 settle)
         run: |
-          bash scripts/ci-keepalive.sh &
+          bash scripts/ci-live-telemetry.sh &
           bash scripts/ci-memguard.sh &
           guard_pid=$!
           set +e
@@ -1391,118 +1414,9 @@ jobs:
           kill "$guard_pid" 2>/dev/null || true
           exit "$status"
 
-      - name: cargo test --lib(执行腿,keepalive 跨 step 存活验证)
+      - name: cargo test --lib(main 死亡形状执行腿:裸输出,无 pre-check)
         run: |
-          chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
-          export CHROME="$chrome"
-          export PINVOU_REQUIRE_REMOTE_E2E=1
-          bash scripts/ci-memguard.sh &
-          guard_pid=$!
-          set +e
-          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
-          status=$?
-          set -e
-          kill "$guard_pid" 2>/dev/null || true
-          exit "$status"
-
-  # v19 修复候选 2c:死亡形状 + 单行 keepalive + 编译腿 settle 收敛循环。
-  #   活(而 2a/2b 死)→「执行腿携带 1m41s 二次编译」才是真触发器(v5 旧线索),
-  #   main 修复 = settle 循环(顺带根治 fingerprint 慢性病,keepalive 可不要)。
-  probe-fc-settle:
-    name: probe-fc-settle
-    needs: changes
-    if: ${{ github.event_name != 'push' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    permissions:
-      contents: read
-    env:
-      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
-      CARGO_PROFILE_DEV_LTO: "thin"
-      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-    steps:
-      - name: Checkout (含 submodule)
-        uses: actions/checkout@v7
-        with:
-          submodules: false
-
-      - name: 初始化公共底座 submodule
-        run: git submodule update --init --recursive -- CodeWhale
-
-      - name: 装 Tauri + pinvou3 Linux 系统依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
-            librsvg2-dev libssl-dev \
-            libx11-dev libxi-dev libxtst-dev \
-            libayatana-appindicator3-dev \
-            build-essential pkg-config cmake lld \
-            time
-
-      - name: bge-m3 占位 (骗过 tauri-build 资源校验)
-        run: |
-          d=pinvou3-app/src-tauri/resources/bge-m3
-          mkdir -p "$d"
-          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
-            : > "$d/$f"
-          done
-
-      - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: 对齐 rust-toolchain.toml 锁定的工具链
-        working-directory: pinvou3-app/src-tauri
-        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
-
-      - name: Node.js (relay e2e)
-        uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: remote-control-relay/package-lock.json
-
-      - name: relay 依赖 (真实 relay e2e)
-        run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
-
-      - name: 浏览器驱动依赖 (真实 Chrome 下载 e2e)
-        run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
-
-      - name: Cargo cache (restore 致死的 v2 暖 cache)
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: pinvou3-app/src-tauri
-          shared-key: rust-test-v2
-          save-if: false
-
-      - name: cargo test --lib --no-run(编译腿 + keepalive 修复候选)
-        run: |
-          bash scripts/ci-keepalive.sh &
-          bash scripts/ci-memguard.sh &
-          guard_pid=$!
-          set +e
-          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
-          status=$?
-          set -e
-          # settle:吸收 fingerprint mtime 竞争(tauri-codegen 图标缓存),最多补 3 次
-          # --no-run 直到根 crate FRESH,避免执行腿 cargo test 内带 1m41s 二次编译。
-          for i in 1 2 3; do
-            [ "$status" -ne 0 ] && break
-            out=$(CARGO_TERM_COLOR=never cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run 2>&1)
-            echo "$out" | tail -3
-            if echo "$out" | grep -q 'Compiling pinvou3-tauri'; then
-              echo "settle pass $i: recompiled"
-            else
-              echo "settle pass $i: FRESH"
-              break
-            fi
-          done
-          kill "$guard_pid" 2>/dev/null || true
-          exit "$status"
-
-      - name: cargo test --lib(执行腿,keepalive 跨 step 存活验证)
-        run: |
+          bash scripts/ci-live-telemetry.sh &
           chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           export CHROME="$chrome"
           export PINVOU_REQUIRE_REMOTE_E2E=1
