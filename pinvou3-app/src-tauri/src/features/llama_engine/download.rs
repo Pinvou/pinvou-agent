@@ -565,14 +565,23 @@ fn asset_urls(asset: &ModelAsset) -> Vec<String> {
 
 // ---------------- 下载与校验 ----------------
 
+/// 状态位：仅供 `llama_engine_status` 汇报「下载中」，不参与互斥。
 static DOWNLOADING: AtomicBool = AtomicBool::new(false);
+/// 互斥位：安装与删除共用的文件变更闸。删除不能复用 DOWNLOADING——
+/// 那会让状态查询在删除（含最多 ~10s 的停机等待）期间把引擎误报成
+/// 「下载中」；但删除又必须与在途安装互斥，否则「删完又被装回」、swap
+/// 改名撞 bin.old/bin.staged 清理、共享 mmproj 共用判定失真。单一原子闸
+/// 保证 install/delete 两两互斥；DOWNLOADING 只在持闸期间置位。
+static FILE_BUSY: AtomicBool = AtomicBool::new(false);
 static CANCEL: AtomicBool = AtomicBool::new(false);
 static DOWNLOAD_ITEM: Mutex<Option<&'static str>> = Mutex::new(None);
 
 const PROGRESS_EMIT_BYTES: u64 = 2 * 1024 * 1024;
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-struct DownloadGuard;
+struct DownloadGuard {
+    _busy: FileBusyGuard,
+}
 
 impl Drop for DownloadGuard {
     fn drop(&mut self) {
@@ -581,13 +590,28 @@ impl Drop for DownloadGuard {
     }
 }
 
-fn acquire_download(item: &'static str) -> Result<DownloadGuard, String> {
-    if DOWNLOADING.swap(true, Ordering::SeqCst) {
-        return Err("已有下载任务进行中".to_string());
+struct FileBusyGuard;
+
+impl Drop for FileBusyGuard {
+    fn drop(&mut self) {
+        FILE_BUSY.store(false, Ordering::SeqCst);
     }
+}
+
+fn acquire_file_busy() -> Result<FileBusyGuard, String> {
+    if FILE_BUSY.swap(true, Ordering::SeqCst) {
+        return Err("已有引擎文件安装或删除任务进行中".to_string());
+    }
+    Ok(FileBusyGuard)
+}
+
+fn acquire_download(item: &'static str) -> Result<DownloadGuard, String> {
+    let busy = acquire_file_busy()?;
+    // 持闸期间 DOWNLOADING 必为 false（所有置位点都在闸内）。
+    DOWNLOADING.store(true, Ordering::SeqCst);
     *DOWNLOAD_ITEM.lock().unwrap_or_else(|e| e.into_inner()) = Some(item);
     CANCEL.store(false, Ordering::SeqCst);
-    Ok(DownloadGuard)
+    Ok(DownloadGuard { _busy: busy })
 }
 
 pub(crate) fn is_downloading() -> bool {
@@ -866,6 +890,9 @@ pub(crate) fn model_files_verified(spec: &LlamaModelSpec) -> bool {
 /// 用户可见错误只含资产名，本地路径细节进日志（不泄露用户目录结构）。
 /// 引擎可经「下载引擎」随时重装。
 pub(crate) fn delete_engine_files() -> Result<u32, String> {
+    // 与在途安装互斥（FILE_BUSY）：否则删除可与下载/swap 交错，出现
+    // 「删除成功」后又被装回、或删 bin.old/bin.staged 撞上 swap 改名。
+    let _busy = acquire_file_busy()?;
     stop_engine_if_running("删除引擎文件")?;
     let mut removed = 0u32;
     let dir = bin_dir();
@@ -909,6 +936,9 @@ pub(crate) fn delete_engine_files() -> Result<u32, String> {
 /// mmproj 仅在无其他已安装档位共用同一文件时一并删除（历史上 2B 两档
 /// 共享 Q8_0 mmproj；当前只余 Q4_K_M 一档使用，逻辑保留以防后续加档）。
 pub(crate) fn delete_model_files(spec: &LlamaModelSpec) -> Result<u32, String> {
+    // 与在途安装互斥（FILE_BUSY）：安装中的档位尚未落盘完整，此时按
+    // 「已验证」判定共享 mmproj 会误删另一档位正在下载的投影器。
+    let _busy = acquire_file_busy()?;
     stop_engine_if_running("删除模型文件")?;
     let mut removed = 0u32;
     let gguf = model_gguf_path(spec);
