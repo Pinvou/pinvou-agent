@@ -607,11 +607,16 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(180))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= 10
+            let refused = attempt.previous().len() >= 10
                 || attempt.url().scheme() != "https"
-                || !is_allowed_wheel_host(attempt.url())
-            {
-                attempt.stop()
+                || !is_allowed_wheel_host(attempt.url());
+            if refused {
+                // Name the refused redirect instead of letting the 3xx body fail the
+                // later checksum comparison with a misleading mismatch error.
+                let redirect_url = attempt.url().clone();
+                attempt.error(format!(
+                    "Python wheel redirect left the trusted host: {redirect_url}"
+                ))
             } else {
                 attempt.follow()
             }
