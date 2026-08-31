@@ -59,7 +59,7 @@ wecom-cli mail get --json '{"mail_ids": ["<mail_id>"]}'
 }
 ```
 
-> **逐项检查 errcode**：遍历 `mail_list` 时，先检查每项的 `errcode`。为 0 表示成功，正常处理；非零表示该封邮件读取失败（如 `mail_id` 无效或不属于当前用户），按 SKILL.md「接口失败处理规范」展示 `error.message`（失败原因）和 `error.instruction`（解决建议）；禁止只回复"失败"而不附原因，禁止透出 `code`/`callid`，禁止盲目重试。
+> **逐项检查 errcode**：遍历 `mail_list` 时，先检查每项的 `errcode`。为 0 表示成功，正常处理；非零表示该封邮件读取失败（如 `mail_id` 无效或不属于当前用户），按 SKILL.md「接口失败处理」展示 `error.message`（失败原因）和 `error.instruction`（解决建议）；禁止只回复"失败"而不附原因，禁止透出 `code`/`callid`，禁止盲目重试。
 >
 > **批量场景**：当用户需要查看多封邮件详情时（如"帮我看看这几封邮件都说了什么"），可一次传入多个 `mail_id`（最多 100 个），避免逐封调用；返回的 `ori_mail_id` 用于将结果对应回请求中的具体 `mail_id`。
 
@@ -163,4 +163,4 @@ wecom-cli mail get --json '{"mail_ids": ["<mail_id>"]}'
 - **附件和内嵌图片统一走 `media download`**：`media_id` 先通过 `wecomcli-media` 技能的 `media download` 接口下载到本地拿 `file_path`，再通过 `file_path` 读取内容；不要把下载后的本地路径展示给用户
 - **`cid` 占位符必须处理**：正文中的 `![](cid:xxx)`（含 `[![](cid:xxx)](url)` 形式）是 MIME 内部引用，严禁原样外显。
 - **对用户不可见的字段**：`mail_id`、`media_id`、`content_id`、`has_more`、`next_cursor` 都是内部流转字段，不要直接展示
-- 对于提供了模糊人名的查询，优先通过 `wecomcli-contact` 技能搜索并获取完整信息（含 `mail` 字段）再传参
+- 对于提供了模糊人名的查询，优先通过 `wecomcli-contact` 技能搜索并获取完整信息（含 `users[].email` 字段）再传参

@@ -156,7 +156,52 @@ for (const f of files.filter((f) => path.basename(f) === "SKILL.md")) {
   assert.equal(name, path.basename(path.dirname(f)), `${rel(f)}: name 与目录名不一致`);
 }
 
-// 7) 语义扫描豁免登记：以上规则若在上游 sync 后出现合理新豁免，必须在本清单登记文件+理由。
+// 7) wecom smartpage→smartsheet delegation exemption contract (#366 review):
+// `database_info.id` returned by smartpage `databases get` is usable directly
+// as the smartsheet-side `docid`/`file_id` with no `s3_` prefix required —
+// the sole exception to the s3_ prefix statement. Both receiver-side and both
+// delegator-side documents must stay in sync: any side dropping the exemption,
+// or smart-sheet-edit.md reverting its prefix statement to an unconditional
+// `s3_`, fails here (registered as finding 4 of NOTICE-wecom.md
+// 「路由口径统一与文档缺陷修复(2026-08-27)」).
+const wecomRel = (...p) => rel(bundle("wecom-skills", ...p));
+const smartsheetSkill = read(bundle("wecom-skills", "wecomcli-smartsheet", "SKILL.md"));
+const smartsheetEdit = read(bundle("wecom-skills", "wecomcli-smartsheet", "references", "smart-sheet-edit.md"));
+const smartpageSkill = read(bundle("wecom-skills", "wecomcli-smartpage", "SKILL.md"));
+const smartpageEdit = read(bundle("wecom-skills", "wecomcli-smartpage", "references", "smartpage-edit.md"));
+// Receiver-side authoritative exemption: docid source item 4 plus the
+// sole-exception line of the pre-block "sole legitimate source" rule
+// (ordinary docids remain subject to the other source items and the block
+// rule; the exemption must not broaden).
+const exemptionLine = smartsheetSkill.split("\n").find((l) => l.includes("委托豁免"));
+assert.ok(
+  exemptionLine && exemptionLine.includes("`database_info.id`") && exemptionLine.includes("不要求 `s3_` 前缀"),
+  `${wecomRel("wecomcli-smartsheet", "SKILL.md")}: missing the docid source item 4 delegation exemption (database_info.id usable directly as docid, no s3_ prefix required)`,
+);
+assert.ok(
+  smartsheetSkill.split("\n").some((l) => l.includes("唯一例外") && l.includes("`database_info.id`")),
+  `${wecomRel("wecomcli-smartsheet", "SKILL.md")}: pre-block "sole legitimate source" rule missing the smartpage delegation sole exception`,
+);
+// Receiver-side reference: the `s3_` prefix statement must keep the smartpage
+// exception qualifier so it cannot revert to an absolute prefix.
+const prefixLine = smartsheetEdit.split("\n").find((l) => l.includes("适用 docid 前缀"));
+assert.ok(
+  prefixLine && prefixLine.includes("`s3_`") && prefixLine.includes("`database_info.id`") && prefixLine.includes("例外"),
+  `${wecomRel("wecomcli-smartsheet", "references", "smart-sheet-edit.md")}: the applicable-docid-prefix line must keep the s3_ + smartpage database_info.id exception qualifier`,
+);
+// Delegator side: the delegation sentence must name `database_info.id` and
+// keep the "usable directly as docid/file_id" contract.
+const delegationLine = smartpageEdit.split("\n").find((l) => l.includes("后续操作数据表"));
+assert.ok(
+  delegationLine && delegationLine.includes("`database_info.id`") && delegationLine.includes("可直接作为"),
+  `${wecomRel("wecomcli-smartpage", "references", "smartpage-edit.md")}: databases get delegation sentence missing the database_info.id direct docid/file_id contract`,
+);
+assert.ok(
+  smartpageSkill.split("\n").some((l) => l.includes("databases get") && l.includes("可直接作为")),
+  `${wecomRel("wecomcli-smartpage", "SKILL.md")}: delegation mapping missing the "databases get result directly usable as smartsheet docid" contract sentence`,
+);
+
+// 8) 语义扫描豁免登记：以上规则若在上游 sync 后出现合理新豁免，必须在本清单登记文件+理由。
 // EXEMPT_FILES 当前为空：OPENCLAW_WORKSPACE 为 dws scripts 的路径护栏 env（未设时回退
 // cwd），非宿主断言（负向断言见上）；历史审查记录（NOTICE*.md）整体豁免由 docs 过滤实现。
 const EXEMPT_FILES = [];

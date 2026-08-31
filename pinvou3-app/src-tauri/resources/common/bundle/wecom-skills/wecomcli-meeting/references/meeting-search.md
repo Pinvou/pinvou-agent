@@ -30,6 +30,7 @@ wecom-cli meeting search --json '{...}'
 | `meetings[].attendee_count` | 参会人数量                               |
 | `meetings[].meeting_room`   | 会议室名称                               |
 | `meetings[].location`       | 地点                                     |
+| `meetings[].timezone`       | 时区信息，含 `timezone_id`（IANA 标识，如 `Asia/Shanghai`，优先使用）和 `timezone_offset`（UTC 偏移量秒数，`timezone_id` 为空时使用） |
 | `next_cursor`               | 下一页游标, 传入下次请求的 `cursor` 字段 |
 | `has_more`                  | 是否还有更多数据, `true` 表示可继续翻页  |
 | `meetings_count` | `meetings` 数组元素数量 |
@@ -41,6 +42,7 @@ wecom-cli meeting search --json '{...}'
 - 有关键词时不追问补全时间, 直接搜索
 - `keywords` 为数组类型, 即使只有一个关键词也需包装为数组, 如 `["周会"]`
 - 翻页时, 通过 `has_more` 判断是否还有更多数据; `has_more: false` 时停止翻页
+- **时区标注**：会议 `timezone.timezone_offset != 28800`（非东八区）时，展示时间按 [SKILL.md 输出格式规范](../SKILL.md) 的时区标注规则在时间后带上时区，如 `14:00-15:00（纽约时间 UTC-5）`
 
 ## 意图分类
 
@@ -55,7 +57,7 @@ wecom-cli meeting search --json '{...}'
 
 1. **有会议名称/关键词 → `search`**：用户提到会议主题/关键词时，不追问时间，直接搜索。
 2. **无关键词、只给时间或泛泛浏览 → `list`**：用户只说时间（如"今天有什么会"）或泛泛地说"看看我的会议"时，改用 [meeting-list](meeting-list.md) 按时间范围查询。
-3. **要详情 → `get`**：`list`/`search` 返回摘要。需会议状态、参会人、入会链接等时，用 `get` 补充。
+3. **要详情 → `get`**：`list`/`search` 返回摘要。需会议状态、参会人列表等详情时，用 `get` 补充（`get` 返回 `meeting_status`、`attendees` 等）；入会链接/会议号仅 `create` 返回，`get` 不返回，任何场景都不展示。
 4. **与某人相关 → 优先 `search`**：寻找与某人相关的会议（如"我和张三开的会"）时，优先用 `search`（把人名作为 `keywords` 匹配参会人），而非 `list` 拉全量再过滤。
 
 

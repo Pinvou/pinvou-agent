@@ -127,7 +127,7 @@ wecom-cli mail send --json '{
 - `file_path` 必须指向回复正文的本地 `.md` 文件，`content_type` 固定填 `"markdown"`
 - 没有附件/内嵌图片时，可完全省略 `attachments` 和 `inline_images` 字段
 - 接口返回 `mail_id` → 告知用户邮件已成功回复，展示收件人和主题即可。**`mail_id` 是一串不可读的内部编码，禁止出现在面向用户的任何输出中**
-- 接口失败时 → **必须**按 SKILL.md「接口失败处理规范」展示 `error.message`（失败原因）和 `error.instruction`（解决建议）；禁止只回复"失败"而不附带原因，禁止透出 `code`/`callid`，禁止盲目重试
+- 接口失败时 → **必须**按 SKILL.md「接口失败处理」展示 `error.message`（失败原因）和 `error.instruction`（解决建议）；禁止只回复"失败"而不附带原因，禁止透出 `code`/`callid`，禁止盲目重试
 
 ## 关键注意点
 
