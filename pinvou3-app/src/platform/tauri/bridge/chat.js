@@ -1042,14 +1042,16 @@
       //   timeout = the withdrawal state is UNPROVEN — the steer may already
       //     be committed while only the response path is wedged, so
       //     auto-resending could double-deliver (JensenChen28 review #2);
-      //   Err (rejected) = deterministic "no live engine" (pool lookup), not
-      //     a wedged response path. The ⚡ path resends on Err because the
-      //     user explicitly asked to send now; this autonomous watchdog
+      //   Err (rejected) = the engine that accepted the steer is gone (pool
+      //     lookup), not a wedged response path. A rejection is NOT proof of
+      //     non-delivery — the engine may have committed the steer into the
+      //     persisted transcript before dying — so neither path resends on
+      //     Err any more: the ⚡ path maps it to "withdraw_unreachable" (no
+      //     resend, reconcile watchdog), and this autonomous watchdog
       //     restores the text instead — an unattended degrade would make
-      //     flushQueued auto-send a message whose commit fate is unknown
-      //     (a reclaimed engine may have committed and persisted it), so the
-      //     user keeps the call. Both outcomes remove the chip and restore
-      //     the text; resending is the user's decision.
+      //     flushQueued auto-send a message whose commit fate is unknown,
+      //     so the user keeps the call. Both outcomes remove the chip and
+      //     restore the text; resending is the user's decision.
       // The late commit is still rendered through the withdrawn registration
       // (same-text dedup against a user resend is already handled).
       rememberWithdrawn(sid, steerId, item.text);
