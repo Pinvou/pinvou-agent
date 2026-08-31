@@ -707,7 +707,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     format!("{error}; marketplace state rollback failed: {rollback}")
                 })?;
                 drop(python_environment);
-                let _ = self.prune_from_committed_state();
+                // Do not prune here: the restored mcp.json may still reference the
+                // pre-install environment, whose key is absent from the catalog
+                // preserve-set after a lock upgrade. Startup repair re-runs the prune
+                // with the repair-error guard once the environment is healthy again.
                 return Err(error);
             }
         }
@@ -1873,6 +1876,64 @@ mod tests {
             assert_eq!(reopened.installed_ids(), vec!["existing".to_string()]);
             assert_eq!(read_mcp_json(), old_mcp);
             assert!(!marketplace_transaction_journal().exists());
+        });
+    }
+
+    /// A failed install rolls the state back to an mcp.json entry that may reference a
+    /// pre-upgrade environment no longer present in the catalog preserve-set. Pruning
+    /// on the rollback path would delete that environment and strand the tool until
+    /// the next successful startup repair, so pruning must stay deferred to repair.
+    #[test]
+    fn install_rollback_defers_prune_of_referenced_environment() {
+        with_temp_home(|| {
+            let (python, version) = test_python();
+            write_locked_python_tool("trusted-lock", "trusted_lock_fixture", &version);
+            store::BundleStore::new()
+                .upsert(store::BundleRecord::installed_now(
+                    "trusted-lock",
+                    store::BundleSource::Preset,
+                ))
+                .unwrap();
+            write_installed_ids(&["trusted-lock".to_string()]);
+            let old_environment = crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("python-envs")
+                .join("f".repeat(64));
+            std::fs::create_dir_all(&old_environment).unwrap();
+            let server = mcp_catalog::package_mcp_dir("trusted-lock").join("server.py");
+            connectors::write_json_pretty(
+                &crate::platform::paths::mcp_config_path(),
+                &serde_json::json!({
+                    "servers": {
+                        "trusted-lock": {
+                            "command": python,
+                            "args": [
+                                "-I", "-S", "-B",
+                                crate::platform::paths::bundle_mcp_python_runner(),
+                                old_environment.join("site-packages"),
+                                server,
+                            ],
+                        }
+                    }
+                }),
+            )
+            .unwrap();
+
+            FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            assert!(manager
+                .install("trusted-lock", &std::collections::HashMap::new())
+                .is_err());
+            assert!(
+                old_environment.is_dir(),
+                "the rolled-back mcp.json still references this environment"
+            );
+            assert_eq!(
+                read_mcp_json()["servers"]["trusted-lock"]["args"][3],
+                crate::platform::paths::bundle_mcp_python_runner()
+                    .to_string_lossy()
+                    .as_ref()
+            );
         });
     }
 
