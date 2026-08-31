@@ -674,11 +674,13 @@ jobs:
           cargo clippy --lib --bins --no-deps --features server -- -D warnings
           cargo clippy --lib --bins --tests --no-deps --features server
 
-      # rustdoc 硬门禁:模块级文档地图曾积累 46 条 rustdoc 告警(private_intra_doc_links
-      # /broken_intra_doc_links/invalid_html_tags,2026-08 收口清零),此前无任何门禁
-      # 可见。RUSTDOCFLAGS 只作用于 rustdoc 本身,不会把 CodeWhale 子模块的 rustc
-      # 告警升级为错误(那属上游欠账,见 clippy 步骤注释)。
-      - name: cargo doc --no-deps (硬门禁,rustdoc 告警清零)
+      # rustdoc hard gate: the module-level documentation map once accumulated 46
+      # rustdoc warnings (private_intra_doc_links / broken_intra_doc_links /
+      # invalid_html_tags, cleaned up to zero in 2026-08) with no gate to surface
+      # them. RUSTDOCFLAGS only applies to rustdoc itself and does not escalate
+      # CodeWhale submodule rustc warnings to errors (that is upstream debt; see
+      # the clippy step comment).
+      - name: cargo doc --no-deps (hard gate, zero rustdoc warnings)
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
         working-directory: pinvou3-app/src-tauri
         env:
@@ -1001,10 +1003,12 @@ jobs:
         shell: bash
         run: rustc -O pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs -o pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
 
-      # 本 job 的 cargo 步骤不需要前端依赖:debug profile 下 tauri 的
-      # generate_context! 走 devUrl,dist/ 不会被打包,build.rs 也只依赖
-      # tauri-build/cc(2026-08 在 macOS 实测:移走 node_modules 后
-      # cargo check --all-targets 通过)。故不再安装 node/npm,省每轮 3-5 分钟。
+      # This job's cargo steps do not need frontend dependencies: under the
+      # debug profile tauri's generate_context! uses devUrl, dist/ is never
+      # packaged, and build.rs only depends on tauri-build/cc (verified on
+      # macOS in 2026-08: cargo check --all-targets passes after moving
+      # node_modules away). So node/npm setup is dropped, saving 3-5 minutes
+      # per run.
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2

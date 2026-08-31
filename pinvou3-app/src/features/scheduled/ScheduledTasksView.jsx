@@ -419,7 +419,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       );
     };
 
-    // 定时任务子组件（模块作用域：类型跨渲染稳定，避免每次渲染重建导致子树重挂载）
+    // Scheduled-task subcomponents (module scope: types stay stable across renders, avoiding per-render rebuilds that remount subtrees)
     const mutedValue = 'text-[#3C3C43]/60 dark:text-[#EBEBF5]/60';
     /** @param {{ task: ScheduledTask, toggleTask: (event: { stopPropagation(): void }, task: ScheduledTask) => Promise<void>, busyAction?: string | null, scheduledCopy: ScheduledCopy }} props - Task switch state and actions. */
     const MacSwitch = ({ task, toggleTask, busyAction, scheduledCopy }) => {
@@ -463,8 +463,9 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         ))}
       </div>
     );
-    // 工厂：绑定「我的任务」列表所需的共享状态与渲染回调，返回仅剩 className 入参的
-    // 渲染函数。调用处按普通函数调用（非 JSX 元素），不涉及组件类型与重挂载语义。
+    // Factory: binds the shared state and render callbacks needed by the "My Tasks" list and returns a
+    // render function whose only remaining argument is className. Call sites invoke it as a plain
+    // function (not a JSX element), so no component type or remount semantics are involved.
     /**
      * @param {{
      *   scheduledCopy: ScheduledCopy, taskFilter: string, setTaskFilter: (value: string) => void, error?: string,
@@ -1356,8 +1357,9 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         );
       };
 
-      // 绑定共享状态后，调用处仅需 className 入参（此处按普通函数调用，勿改为 JSX
-      // 元素使用——工厂在渲染期调用，JSX 用法会每次渲染生成新组件类型导致子树重挂载）。
+      // After binding shared state, call sites only pass className (invoked as a plain function here;
+      // do not switch to JSX usage — the factory runs during rendering, and JSX usage would create a
+      // new component type on every render and remount the subtree).
       const MyTasksSection = makeMyTasksSection({ scheduledCopy, taskFilter, setTaskFilter, error, filtered, loading, renderTaskRow });
 
       const DetailTaskDialog = () => (selected && detailForm) ? renderModal(

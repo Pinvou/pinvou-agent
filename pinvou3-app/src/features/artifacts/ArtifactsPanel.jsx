@@ -61,7 +61,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       + 'img{max-width:100%;height:auto;}'
       + '</style>';
 
-    // 稳定空数组默认值：内联 [] 每次渲染都是新引用，会让 memo 化子组件反复重渲染。
+    // Stable empty-array default: an inline [] is a new reference on every render, which makes memoized children re-render repeatedly.
     const EMPTY_DESIGN_CHANGES = [];
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- unified preview/design workbench panel: every state-machine branch maps to a preview kind or a design runtime event; splitting would sever the pv/sel linkage

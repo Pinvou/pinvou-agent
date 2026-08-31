@@ -30,7 +30,7 @@ function normalizeCodeAgents(codeAgents, selectedAgentId) {
   return normalized;
 }
 
-// 稳定空对象默认值：内联 {} 每次渲染都是新引用，会让 memo 化子组件反复重渲染。
+// Stable empty-object default: an inline {} is a new reference on every render, which makes memoized children re-render repeatedly.
 const EMPTY_COPY = {};
 
 export function HomeModeSwitcher({

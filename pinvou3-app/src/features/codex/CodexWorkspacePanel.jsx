@@ -158,7 +158,7 @@ function WorkspaceTree({
   });
 }
 
-// 稳定空数组默认值：内联 [] 每次渲染都是新引用，会让 memo 化子组件反复重渲染。
+// Stable empty-array default: an inline [] is a new reference on every render, which makes memoized children re-render repeatedly.
 const EMPTY_REFERENCES = [];
 
 export function CodexWorkspacePanel({

@@ -9,7 +9,8 @@ import { dictJa } from './i18n/ja.js';
 dict.en = dictEn;
 dict.ja = dictJa;
 
-// 只转发 dict:其余 i18n.js 导出(LANG_TO_TAG / TAG_TO_LANG / languageFromLocaleTags /
-// initialSystemLanguage / SEARCH_KEY_PROVIDERS)的消费者一律直接 import './i18n.js',
-// 本聚合 shim 不再重复转发,避免出现无人使用的再导出。
+// Only dict is re-exported: consumers of the other i18n.js exports
+// (LANG_TO_TAG / TAG_TO_LANG / languageFromLocaleTags / initialSystemLanguage /
+// SEARCH_KEY_PROVIDERS) import './i18n.js' directly; this aggregation shim no
+// longer forwards them, avoiding unused re-exports.
 export { dict } from './i18n.js';

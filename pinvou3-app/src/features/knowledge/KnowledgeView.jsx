@@ -94,7 +94,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
   );
 }
 
-// ---- 产出物子组件（模块作用域：类型跨渲染稳定，避免每次渲染重建导致子树重挂载）----
+// ---- Artifact subcomponents (module scope: types stay stable across renders, avoiding per-render rebuilds that remount subtrees) ----
 const FILE_ICON_BY_EXT = {
   html: '/file-icons/html.svg', htm: '/file-icons/html.svg', mhtml: '/file-icons/html.svg', mht: '/file-icons/html.svg',
   xml: '/file-icons/xml.svg', json: '/file-icons/code.svg', js: '/file-icons/code.svg', jsx: '/file-icons/code.svg', ts: '/file-icons/code.svg', tsx: '/file-icons/code.svg', css: '/file-icons/code.svg',
@@ -171,7 +171,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         const outputSessionId = o.sessionId || o.session_id || null;
         const cacheKey = `${outputSessionId || ''}|${o.path}|${o.mtime || 0}`;
         const boxRef = useRef(null);
-        // 无 IntersectionObserver 的环境直接视为可见（懒初始化，等价于旧版 effect 内的同步兜底）。
+        // Environments without IntersectionObserver count as visible directly (lazy init, equivalent to the old synchronous fallback inside the effect).
         const [visible, setVisible] = useState(() => !hasIntersectionObserver());
         const [pv, setPv] = useState(() => /** @type {OutputPreview} */ (outPreviewCache.current[cacheKey] || { idle: true }));
         const title = o.name.replace(/\.[^.]+$/, '');
@@ -191,7 +191,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         useEffect(() => {
           let alive = true;
           const hit = outPreviewCache.current[cacheKey];
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- mount 时从外部预览缓存/可见性门控同步快照，避免预览区闪烁
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- sync the snapshot from the external preview cache/visibility gate at mount to avoid preview flicker
           setPv(hit || (visible ? { loading: true } : { idle: true }));
           if (hit == null && visible) {
             setFrameReady(false);

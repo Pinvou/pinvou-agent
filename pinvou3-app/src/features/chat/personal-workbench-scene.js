@@ -1,14 +1,16 @@
 const PERSONAL_WORKBENCH_SCENE_KEY = 'personal-workbench';
 /**
- * 没有静态导入方:tests/personal_workbench_scene_logic.test.js 以文本方式读取
- * 本文件、剥掉 export 后在 Node vm 沙箱中按名求值,这条消费通道 knip 无法建边,
- * 故用 public 标记防止被当作死导出删除。
+ * No static importer: tests/personal_workbench_scene_logic.test.js reads this
+ * file as text, strips the export, and evaluates it by name in a Node vm
+ * sandbox; knip cannot build an edge for that channel, so the `@public` tag
+ * keeps it from being removed as a dead export.
  * @public
  */
 export const PERSONAL_WORKBENCH_SCENE_ID = 39;
 /**
- * 同上:由 tests/personal_workbench_scene_logic.test.js 的 vm 沙箱按名消费,
- * knip 无法看到该通道,故用 public 标记防止被当作死导出删除。
+ * Same as above: consumed by name through the vm sandbox in
+ * tests/personal_workbench_scene_logic.test.js; knip cannot see that channel,
+ * so the `@public` tag keeps it from being removed as a dead export.
  * @public
  */
 export const PERSONAL_WORKBENCH_SCENE_NAME = '个人工作台';

@@ -144,9 +144,10 @@ function unifiedConversationUiEnabled() {
   }
 }
 
-// Composer 活动指示器的秒级时钟包装：此前 tick 挂在 ChatView 顶层状态上，
-// busy 期间整个 ChatView（含整条转录的协调）每秒重渲染一次；指示器是唯一
-// 显示已用时间的地方，现在 tick 只重渲染这个小子树。
+// Second-clock wrapper for the composer activity indicator: the tick used to live on ChatView
+// top-level state, so while busy the whole ChatView (including all transcript coordination)
+// re-rendered once per second; the indicator is the only place showing elapsed time, and now the
+// tick re-renders just this small subtree.
 /**
  * @param {object} props - component props
  * @param {{ status: string } | null} props.turn - active conversation turn, if any
@@ -744,9 +745,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         ro.observe(el);
         return () => ro.disconnect();
       }, []);
-      // memo 化保持引用稳定：bs 快照任一 domain 变化都会换新对象，但未变化的
-      // chatItems 按引用共享；没有这层时下游投影 useMemo 会在空态([] 字面量)
-      // 每渲染失效。
+      // Memoization keeps the reference stable: any domain change in the bs snapshot swaps in a new
+      // object, but unchanged chatItems are shared by reference; without this layer the downstream
+      // projection useMemo would invalidate every render in the empty state ([] literal).
       const chatItems = useMemo(() => (bs ? bs.chatItems : []), [bs]);
       const activeSessionId = bs ? bs.activeSessionId : null;
       const activeSessionIdRef = useRef(activeSessionId);
@@ -1027,15 +1028,18 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const scheduledRunContext = bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === bs.activeSessionId
         ? bs.scheduledRunContext
         : null;
-      // 回滚开关只在挂载时读取一次：应用内没有该 key 的写入口（只有冒烟测试在
-      // 页面加载前写入 localStorage 后整页刷新），逐渲染同步读 localStorage 只是
-      // 纯开销；挂载时读进 state 保持可观察行为不变。
+      // The rollback switch is read once at mount: the app has no write path for this key (only the
+      // smoke test writes localStorage before the page loads and then reloads the whole page), so
+      // reading localStorage synchronously per render is pure overhead; reading it into state at mount
+      // keeps the observable behavior unchanged.
       const [useUnifiedConversationUi] = useState(unifiedConversationUiEnabled);
-      // 会话投影与派生集合。ChatView 每次按键（composer state）、每个流式 chunk、
-      // 每次时钟 tick 都会重渲染，此前这组 O(messages) 的投影/过滤/扫描在渲染体里
-      // 每次全量重跑。bridge 订阅快照对未变化的值按引用共享
-      // (platform/tauri/bridge.js subscriptionStateValue)，因此按输入引用 memo 化
-      // 后，只在底层会话数据真正变化时重算；投影本身是只读纯函数（不原地修改）。
+      // Conversation projection and derived collections. ChatView re-renders on every keystroke
+      // (composer state), every streaming chunk, and every clock tick; this O(messages) group of
+      // projection/filter/scan steps used to rerun in full inside the render body each time. Bridge
+      // subscription snapshots share unchanged values by reference
+      // (platform/tauri/bridge.js subscriptionStateValue), so memoizing on the input references
+      // recomputes only when the underlying conversation data actually changes; the projection itself
+      // is a read-only pure function (no in-place mutation).
       const chatThinking = bs ? bs.thinking : undefined;
       const turnTimeline = bs ? bs.turnTimeline : undefined;
       const derivedConversation = useMemo(() => {
@@ -1045,8 +1049,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           if (item.type === 'artifact_card' && item.path) latestArtIdByPath[item.path] = item.id;
         });
         const latestArtifactIds = new Set(Object.values(latestArtIdByPath));
-        // Set 每次重算都是新引用；这里额外给出按值比较的 key（字符串），供下方
-        // renderItem 稳定化做 dep：集合内容不变时回调身份保持稳定。
+        // The Set is a fresh reference on every recompute; this additionally derives a value-compared
+        // key (a string) for the renderItem stabilization below as a dep: the callback identity stays
+        // stable while the set contents are unchanged.
         const latestArtifactIdsKey = Object.values(latestArtIdByPath).sort((left, right) => (
           left < right ? -1 : left > right ? 1 : 0
         )).join('\u0000');
@@ -1061,8 +1066,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           timelineEvents: turnTimeline,
           allowScheduledTaskDraft: isScheduledTaskCreationChat,
         });
-        // 等价于 [...turns].reverse().find(turn => turn.status === 'running')：
-        // 反向扫描取最后一个 running turn，免去整段倒序拷贝。
+        // Equivalent to [...turns].reverse().find(turn => turn.status === 'running'):
+        // scan backwards for the last running turn, skipping the full reversed copy.
         let activeConversationTurn = null;
         const turns = conversationProjection.turns;
         for (let i = turns.length - 1; i >= 0; i--) {
@@ -1517,11 +1522,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         }
         return true;
       }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, t, visualPosterSceneActive]);
-      // ConversationTimeline 渲染回调稳定化：ConversationTurn 已 React.memo 化，
-      // 回调身份逐渲染变化会让所有 turn 每次全量重渲染。回调按输入变化重建身份；
-      // latestArtifactIds 的 Set 每次投影重算都是新引用，故 dep 用按值稳定的
-      // latestArtifactIdsKey、渲染时经 ref 读取最新集合（回调只在实际渲染期间
-      // 被调用，彼时 ref 已指向当次提交的投影结果）。
+      // ConversationTimeline render-callback stabilization: ConversationTurn is React.memoized, so a
+      // per-render callback identity would make every turn fully re-render each time. Callbacks only
+      // rebuild identity when their inputs change; the latestArtifactIds Set is a fresh reference on
+      // every projection recompute, so the dep is the value-stable latestArtifactIdsKey and the latest
+      // set is read through a ref at render time (the callback only runs during actual rendering, by
+      // which point the ref already points at the committed projection result).
       const latestArtifactIdsRef = useRef(latestArtifactIds);
       latestArtifactIdsRef.current = latestArtifactIds;
       const handleTimelineRenderUser = useCallback((item) => (
@@ -1535,9 +1541,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         />
       ), [activeSessionId, busy, isMultiAgentReadOnly, lastUserId, t, theme]);
       const handleTimelineRenderItem = useCallback((item) => {
-        // reasoning 由 ConversationTimeline 的 ReasoningItem 负责，
-        // 不能交给旧 ChatBubble；后者不认识该类型，会返回 null，
-        // 导致后端已收到的实时 thinking 被静默吞掉。
+        // reasoning items are handled by ConversationTimeline's ReasoningItem and must not be handed to
+        // the legacy ChatBubble; the latter does not know the type and would return null, silently
+        // swallowing real-time thinking the backend already delivered.
         if (item.type === 'reasoning') return;
         if (!item.legacyItem) return;
         return (

@@ -92,13 +92,13 @@ function visibleSortedModels(models) {
  * @property {string} delete - Delete menu item label.
  */
 
-// 稳定默认值：避免每次渲染创建新的数组字面量（react/no-unstable-default-props）。
+// Stable default: avoid creating a fresh array literal on every render (react/no-unstable-default-props).
 /** @type {SettingsModelEntry[]} */
 const EMPTY_MODELS = [];
 const DEFAULT_ENABLED_SEARCH_PROVIDERS = ['bing'];
 
-// 共享样式常量与 Memory 中心辅助函数：提升到模块作用域，保证行组件类型稳定，
-// 避免每次渲染重建 MemoryRow 导致子树重挂载。
+// Shared style constants and Memory hub helpers: hoisted to module scope so the row component type
+// stays stable, avoiding per-render MemoryRow rebuilds that remount subtrees.
 const subText = 'text-[#444746] dark:text-[#C4C7C5]';
 const faintText = 'text-[#6B7280] dark:text-[#8F969E]';
 const border = 'border-[#DDE3EA] dark:border-[#333537]';
@@ -158,7 +158,7 @@ const confidenceText = (item, copy) => {
  * }} props - Memory item and the card callbacks it closes over.
  */
 const MemoryRow = ({ item, copy, detailCopy, menuFor, setMenuFor, startEdit, archiveItem, deleteItem }) => {
-  // 直接按 kind 选择已导入的图标组件（不经工厂函数，保持组件静态可识别）。
+  // Select the imported icon component directly by kind (no factory function, keeping the component statically identifiable).
   const Icon = item.kind === 'current_focus' ? Lightbulb
     : item.kind === 'recent_activity' ? RefreshCw
     : item.kind === 'work_context' ? Briefcase
@@ -1850,7 +1850,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
     };
 
     // ==========================================
-    // 设置页子组件（模块作用域：类型跨渲染稳定，避免子树重挂载）
+    // Settings subcomponents (module scope: types stay stable across renders, avoiding subtree remounts)
     // ==========================================
     /** @param {{ title?: string, children: import('react').ReactNode, footer?: string }} props - Section chrome. */
     const IOSSection = ({ title, children, footer }) => (

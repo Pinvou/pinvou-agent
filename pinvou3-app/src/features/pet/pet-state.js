@@ -248,8 +248,10 @@ export function deriveActivities(state, now = Date.now(), copy = DEFAULT_ACTIVIT
 }
 
 /**
- * tests/pet_state_logic.test.mjs 把本文件复制到临时目录后以计算型 URL 动态
- * import 消费本导出,knip 无法为该通道建边,故用 public 标记防止被当作死导出删除。
+ * tests/pet_state_logic.test.mjs copies this file to a temp directory and
+ * dynamically imports this export via a computed URL; knip cannot build an
+ * edge for that channel, so the `@public` tag keeps it from being removed as a
+ * dead export.
  * @public
  */
 export function deriveAnimation(state, now = Date.now()) {

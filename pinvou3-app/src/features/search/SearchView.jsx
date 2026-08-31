@@ -15,7 +15,7 @@ import { sessionRoute } from '../../shared/session-management.js';
 // (在线:置顶/重命名/收纳/删除;已收纳:恢复/永久删除,按对话自身更新时间分组)。
 // 无搜索词:右侧显示所选日期的对话;有搜索词:右侧按日期分组显示全部匹配项,
 // 左侧只保留有匹配的日期,点击日期平滑滚动到右侧对应分组。
-// 稳定空数组默认值：内联 [] 每次渲染都是新引用，会让 memo 化子组件反复重渲染。
+// Stable empty-array default: an inline [] is a new reference on every render, which makes memoized children re-render repeatedly.
 const EMPTY_ARCHIVED = [];
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- session management page: filter/sort/group/batch-select form one cohesive pipeline; splitting it would introduce a lot of pass-through state

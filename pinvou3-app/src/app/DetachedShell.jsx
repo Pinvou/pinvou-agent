@@ -4,12 +4,15 @@ import { ChatView } from '../features/chat/ChatView.jsx';
 import { VIEW_LOADERS } from './view-loaders.js';
 // 撕离窗与主窗口共用同一批懒加载视图 chunk(rolldown 自动共享),工厂统一走
 // view-loaders.js 的 VIEW_LOADERS。静态 import 会让对应视图被钉回主 chunk,
-// 这里全部走 lazy;每个窗只实际加载自己 kind 的 chunk。两个例外:
-// - codex:复用 #159 的 LazyCodexAcpView 包装(web 能力门控 + checking 兜底,
-//   内部同样 lazy import CodexAcpView,共享同一 chunk);
-// - chat:主窗口在 main.jsx 静态 import ChatView(启动即渲染),撕离窗加载同一
-//   index.html,主 chunk 必然已就绪 —— 动态 import 不会产生独立 chunk,直接用
-//   静态 import 复用主 chunk 里的同一模块。
+// every view here goes through lazy; each window only actually loads the chunk
+// for its own kind. Two exceptions:
+// - codex: reuses the #159 LazyCodexAcpView wrapper (web capability gating +
+//   checking fallback; internally it also lazy-imports CodexAcpView, sharing
+//   the same chunk);
+// - chat: the main window statically imports ChatView in main.jsx (rendered at
+//   startup), and a detached window loads the same index.html, so the main
+//   chunk is necessarily already loaded; a dynamic import would not produce a
+//   separate chunk, so statically import the same module from the main chunk.
 const LazyKnowledgeView = lazy(() => VIEW_LOADERS.knowledge().then(m => ({ default: m.KnowledgeView })));
 const LazyMonitorView = lazy(() => VIEW_LOADERS.monitor().then(m => ({ default: m.MonitorView })));
 const LazyToolStoreView = lazy(() => VIEW_LOADERS.toolStore().then(m => ({ default: m.ToolStoreView })));

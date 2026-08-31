@@ -10,11 +10,12 @@
 //   2. pinvou3-app/src-tauri/Cargo.toml 的 [package] 下第一处 version = "..." 行（不动依赖版本）
 //   3. pinvou-knowledge/Cargo.toml 的 [package] 版本
 //   4. pinvou-knowledge/Cargo.lock 中 pinvou-knowledge 包版本
-//   5. pinvou3-app/src-tauri/Cargo.lock 中 pinvou3-tauri 与 pinvou-knowledge 两个包版本
-//      （该 lock 同时收录本 crate 与 path 依赖 pinvou-knowledge；漏改会导致
-//      cargo metadata/build --locked 失败，且每次构建都会悄悄改写 lock）
-//   6. pinvou3-app/package.json 的 "version" 字段
-//   7. pinvou3-app/package-lock.json 的根 "version" 与 packages[""].version（文件不存在时跳过）
+//   5. Both package versions (pinvou3-tauri and pinvou-knowledge) in
+//      pinvou3-app/src-tauri/Cargo.lock (that lock contains both this crate and
+//      the path dependency pinvou-knowledge; missing one breaks
+//      cargo metadata/build --locked, and every build then silently rewrites the lock)
+//   6. The "version" field of pinvou3-app/package.json
+//   7. The root "version" and packages[""].version of pinvou3-app/package-lock.json (skipped when the file does not exist)
 
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -49,7 +50,7 @@ export function isValidVersion(version) {
   return SEMVER_RE.test(version);
 }
 
-// 按仓库根目录推导全部同步目标路径；测试用临时根目录沙箱化，不触碰真实仓库。
+// Derive all sync target paths from a repository root; tests sandbox this with a temp root and never touch the real repository.
 function repoPaths(repoRoot) {
   return {
     versionFile: resolve(repoRoot, 'VERSION'),
@@ -184,9 +185,10 @@ function writeCargoLockVersion(path, packageName, version) {
   writeFileSync(path, result.content);
 }
 
-// 校验/同步全部目标。返回退出码：0 一致（或已同步完成），1 --check 发现不一致；
-// 致命错误（VERSION 非法、找不到 [package] version 行）仍直接 process.exit(2)。
-// repoRoot 与 checkOnly 可注入，供单元测试在临时目录沙箱中运行。
+// Validate/sync all targets. Returns the exit code: 0 when consistent (or once
+// synced), 1 when --check finds inconsistencies; fatal errors (invalid VERSION,
+// missing [package] version line) still process.exit(2) directly.
+// repoRoot and checkOnly are injectable so unit tests can run in a temp-dir sandbox.
 export function main(repoRoot = REPO_ROOT, { checkOnly = CHECK_ONLY } = {}) {
   const paths = repoPaths(repoRoot);
   const target = readTargetVersion(paths.versionFile);
@@ -195,8 +197,9 @@ export function main(repoRoot = REPO_ROOT, { checkOnly = CHECK_ONLY } = {}) {
     { name: 'pinvou3-app/src-tauri/Cargo.toml', read: () => readCargoVersion(paths.cargoToml), write: () => writeCargoVersion(paths.cargoToml, target) },
     { name: 'pinvou-knowledge/Cargo.toml', read: () => readCargoVersion(paths.knowledgeCargoToml), write: () => writeCargoVersion(paths.knowledgeCargoToml, target) },
     { name: 'pinvou-knowledge/Cargo.lock', read: () => readCargoLockVersion(paths.knowledgeCargoLock, 'pinvou-knowledge'), write: () => writeCargoLockVersion(paths.knowledgeCargoLock, 'pinvou-knowledge', target) },
-    // src-tauri 的 Cargo.lock 同时收录 pinvou3-tauri 与 path 依赖 pinvou-knowledge，
-    // 两个包在该 lock 中各恰好一个 [[package]] 段；分开登记，--check 能精确指出哪个包落后。
+    // The src-tauri Cargo.lock contains both pinvou3-tauri and the path dependency
+    // pinvou-knowledge, exactly one [[package]] section each in that lock; registering
+    // them separately lets --check pinpoint which package lags behind.
     { name: 'pinvou3-app/src-tauri/Cargo.lock(pinvou3-tauri)', read: () => readCargoLockVersion(paths.srcTauriCargoLock, 'pinvou3-tauri'), write: () => writeCargoLockVersion(paths.srcTauriCargoLock, 'pinvou3-tauri', target) },
     { name: 'pinvou3-app/src-tauri/Cargo.lock(pinvou-knowledge)', read: () => readCargoLockVersion(paths.srcTauriCargoLock, 'pinvou-knowledge'), write: () => writeCargoLockVersion(paths.srcTauriCargoLock, 'pinvou-knowledge', target) },
     { name: 'pinvou3-app/package.json', read: () => readJsonVersion(paths.packageJson), write: () => writeJsonVersion(paths.packageJson, target) },

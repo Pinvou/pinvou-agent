@@ -142,12 +142,12 @@ import {
   rememberDraftControls,
 } from './acp-draft-controls.js';
 const AGENT_SELECTION_KEY = 'pinvou_codex_agent_selection';
-// 仅做成员判断的常量集合：Set.has 替代数组 .includes（biome prefer-set-has）。
+// Constant collection used only for membership checks: Set.has replaces array .includes (biome prefer-set-has).
 const CODE_AGENT_IDS = new Set(['pinvou', 'codex', 'claude', 'kimi']);
-// 草稿空态的稳定空 turns：内联 [] 会让依赖其引用的 useMemo 每次渲染都失效。
+// Stable empty turns for the draft empty state: an inline [] would invalidate any useMemo depending on its reference on every render.
 /** @type {{ id: string, status: string }[]} */
 const EMPTY_CONVERSATION_TURNS = [];
-// 同理：sessions 默认值必须是稳定引用，内联 [] 每次渲染都是新数组。
+// Same idea: the sessions default must be a stable reference; an inline [] is a fresh array on every render.
 const EMPTY_SESSIONS = [];
 
 function workspaceName(path, unknownDirectory) {
@@ -914,8 +914,8 @@ function TurnItem({
   }
   if (item.type === 'agent_message') {
     const commentary = item.phase === 'commentary';
-    // streaming = 投影约定的 in_progress（ACP/deepseek 投影一致）：文本仍会增长时
-    // 走限流渲染，结束后由 useThrottledValue 回放逐字全文。
+    // streaming = the projection's in_progress convention (ACP/deepseek projections agree): while text
+    // can still grow, render through the throttle; when it ends, useThrottledValue replays the full text verbatim.
     return commentary
       ? <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
           streaming={item.status === 'in_progress'}
@@ -1281,9 +1281,9 @@ export function CodexAcpView({
   const busy = isNativeAgent
     ? Boolean(activeNativeLane && activeNativeLane.busy)
     : projection.turns.some(turn => turn.status === 'running');
-  // 等价于 [...visibleTurns].reverse().find(status === 'running')：反向扫描取最后
-  // 一个 running turn，且按 turns 引用 memo 化（turns 两条分支都来自 memo 化投影，
-  // 草稿空态走模块级常量数组），避免每次渲染都重建倒序拷贝。
+  // Equivalent to [...visibleTurns].reverse().find(status === 'running'): scan backwards for the last
+  // running turn, memoized on the turns reference (both turns branches come from memoized projections,
+  // and the draft empty state uses the module-level constant array), so no reversed copy is rebuilt per render.
   const activeConversationTurn = useMemo(() => {
     for (let index = visibleTurns.length - 1; index >= 0; index -= 1) {
       if (visibleTurns[index].status === 'running') return visibleTurns[index];

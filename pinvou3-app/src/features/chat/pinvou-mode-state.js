@@ -147,9 +147,10 @@ function loadPinvouModeState(storage, scopeKey = DEFAULT_PINVOU_MODE_SCOPE) {
 }
 
 /**
- * 没有静态导入方:tests/pinvou_mode_state.test.js 以文本方式读取本文件、剥掉
- * export 后在 Node vm 沙箱中按名求值,这条消费通道 knip 无法建边,故用
- * public 标记防止被当作死导出删除。
+ * No static importer: tests/pinvou_mode_state.test.js reads this file as text,
+ * strips the export, and evaluates it by name in a Node vm sandbox; knip
+ * cannot build an edge for that channel, so the `@public` tag keeps it from
+ * being removed as a dead export.
  * @public
  */
 export function hasPinvouModeState(storage, scopeKey) {

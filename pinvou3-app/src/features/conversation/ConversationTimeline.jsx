@@ -121,16 +121,17 @@ function conversationCopy(copy) {
   return merged;
 }
 
-// 流式 markdown 限流窗口：每 200ms 至少重跑一次 marked+DOMPurify+hljs，
-// 而不是每个流式 delta 全量重跑一遍（O(n²)）。结束时由 useThrottledValue
-// 保证回放逐字的最终全文。
+// Streaming markdown throttle window: rerun marked+DOMPurify+hljs on a 200ms budget instead of
+// a full rerun for every streaming delta (O(n²)). When streaming ends, useThrottledValue
+// guarantees a verbatim replay of the final full text.
 const STREAMING_MARKDOWN_THROTTLE_MS = 200;
 
-// 1s 时钟收口到最小显示子树：此前秒级 tick 挂在 ChatView 顶层状态上，
-// busy 期间整个转录每秒全量重渲染；现在只有显示已用时间的组件自己持有
-// tick。挂载/激活时先同步一次基线，再启动 interval（与原 ChatView/CodexAcpView
-// 顶层 ticker 同语义）；非激活时不创建定时器，卸载时清理。
-// 导出给 ChatView 的 composer 活动指示器包装组件复用。
+// The 1s clock is scoped to the smallest display subtree: the per-second tick used to live on
+// ChatView top-level state, re-rendering the whole transcript every second while busy; now only
+// the component showing elapsed time owns the tick. On mount/activation it first syncs a baseline,
+// then starts the interval (same semantics as the old ChatView/CodexAcpView top-level ticker); no
+// timer is created while inactive, and it is cleaned up on unmount.
+// Exported for reuse by the ChatView composer activity indicator wrapper.
 /**
  * @param {boolean} active - whether the displayed duration is currently advancing
  * @returns {number} a timestamp that advances once per second while active
@@ -795,8 +796,8 @@ function DefaultItem({
   }
   if (item.type === 'agent_message') {
     const commentary = item.phase === 'commentary';
-    // streaming = 投影约定的 in_progress（deepseek/ACP 两条投影一致）：
-    // 文本仍会增长时走限流渲染，结束时回放逐字全文。
+    // streaming = the projection's in_progress convention (deepseek/ACP projections agree):
+    // while text can still grow, render through the throttle; when it ends, the full text is replayed verbatim.
     return commentary
       ? <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
           streaming={item.status === 'in_progress'}
@@ -814,11 +815,12 @@ const noopOnRespond = () => {};
 /** @type {{ id: string, status: string }[]} */
 const EMPTY_TURNS = [];
 
-// 时间线投影（deepseek-conversation.js / acp-state.js）每次都会重建全部 turn
-// 对象：容器引用恒新，但未变化的 turn 的叶子内容完全相同（bridge 快照对未变化
-// 的值按引用共享）。因此对 `turn` 做结构化比较（bridge 订阅状态只允许 JSON 值，
-// 不会出现函数/循环），让内容未变的 turn 跳过重渲染；其余 props（父级稳定化的
-// 回调、memo 化的 copy/头像）按引用比较。
+// The timeline projections (deepseek-conversation.js / acp-state.js) rebuild every turn object on
+// each run: the container reference is always fresh, but unchanged turns have identical leaf content
+// (bridge snapshots share unchanged values by reference). So `turn` gets a structural comparison
+// (bridge subscription state only allows JSON values, so no functions/cycles), letting unchanged
+// turns skip re-rendering; the other props (parent-stabilized callbacks, memoized copy/avatar)
+// compare by reference.
 
 /**
  * Structural equality for JSON-like conversation data (bridge subscription state
@@ -887,9 +889,9 @@ function ConversationTurnView({
 }) {
   const c = conversationCopy(copy);
   const running = turn.status === 'running';
-  // 秒级 tick 收口在 running turn 自身：父级仍可传入 ticking `now`（CodexAcpView
-  // 保持原行为，走 `now || tickNow` 的 prop 优先）；不传时由内部时钟驱动已用时间，
-  // 每秒只重渲染这一个 turn 子树。
+  // The per-second tick is scoped to the running turn itself: the parent may still pass a ticking `now`
+  // (CodexAcpView keeps its original behavior via `now || tickNow` prop precedence); when omitted, an
+  // internal clock drives elapsed time, re-rendering only this one turn subtree per second.
   const tickNow = useConversationSecondClock(running);
   const effectiveNow = now || tickNow;
   const waitingPermission = turn.waitingPermission
@@ -1006,8 +1008,9 @@ function ConversationTurnView({
   );
 }
 
-// 单独声明组件再包 memo：props 类型由组件自身参数推断，comparator 的
-// Record<string, unknown> 参数不会反向污染推断。
+// Declare the component separately, then wrap it in memo: prop types are inferred from the
+// component's own parameters, so the comparator's Record<string, unknown> parameter does not
+// pollute the inference in reverse.
 export const ConversationTurn = React.memo(ConversationTurnView, areConversationTurnPropsEqual);
 
 export function ConversationTimeline({ turns = EMPTY_TURNS, ...props }) {

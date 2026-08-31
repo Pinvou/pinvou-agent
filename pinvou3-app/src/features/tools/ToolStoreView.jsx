@@ -123,7 +123,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         <div className={`h-full rounded-full transition-all ${creep ? 'bg-blue-500' : 'bg-emerald-500'}`} style={{ width: (pct || 0) + '%' }} />
       </div>
     );
-    // 稳定空数组/空对象默认值：内联 [] {} 每次渲染都是新引用，会让 memo 化子组件反复重渲染。
+    // Stable empty array/object defaults: inline [] and {} are new references on every render, which makes memoized children re-render repeatedly.
     const EMPTY_STEPS = [];
     const EMPTY_COPY = {};
     const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '', twoStep = true, browserAuth = false, steps = EMPTY_STEPS, copy = EMPTY_COPY }) => {
