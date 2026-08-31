@@ -61,6 +61,10 @@ const SEPARATE_REASONING_FIELD: &str = "separate_field";
 /// request budget on slower hardware. Retrying its startup or crash-window 5xx
 /// responses only increases local resource contention. Cloud and managed local
 /// services retain the foundation defaults for compatibility.
+///
+/// 本地进程引擎不启用鉴权（llama-server 未设 `--api-key`），而底座无条件携带
+/// `Authorization` 头——本地路由一律传 `LOCAL_VLLM_API_KEY` 占位 key，不得传
+/// 主模型的真实云端凭据，避免密钥被不必要地送达本地进程。
 fn vision_model_config(
     model: String,
     api_key: String,
@@ -1004,7 +1008,9 @@ impl Pinvou3Bridge {
     ///    id 悬空(指向的模型已删除/不存在)按「未配置」处理,落到规则 2/3——
     ///    否则与 `vision_local_gate` 的 `vision_model_id.is_none()` 要求叠加,
     ///    两条兜底静默失效,只剩硬 image_input_unsupported 且无安装引导。
-    ///    凭据缺失 → 记 warning 并优雅降级为不注册,不硬错。视觉模型
+    ///    凭据缺失（如 keychain 条目被删）与悬空 id 同口径按「未配置」落到
+    ///    规则 2/3——否则本地引擎已装已跑也接不住这张图片，只剩硬
+    ///    image_input_unsupported 且无安装引导。视觉模型
     ///    **自身**的图片能力不在此处拒绝——选择器已用识图探测闸门验证(supported
     ///    才允许选中),override 标记(disabled)可能是历史探测误判残留,运行时
     ///    按实际被选中的事实使用(见函数体内注释)。
@@ -1027,7 +1033,7 @@ impl Pinvou3Bridge {
                 // 避免启动期 / 崩溃期重发加剧资源争抢。
                 return Some(vision_model_config(
                     self.model(),
-                    self.api_key(),
+                    LOCAL_VLLM_API_KEY.to_string(),
                     endpoint,
                     true,
                 ));
@@ -1043,22 +1049,25 @@ impl Pinvou3Bridge {
                 // 选中的事实使用;文本模型配成视觉模型由前端探测闸门挡住。
                 let api_key = Self::api_key_for_saved_model(vision);
                 if api_key.trim().is_empty() {
+                    // 凭据缺失(如 keychain 条目被删)与悬空 id 同口径:按「未配置」
+                    // 落到规则 2/3——Supported 主模型自复用或本地引擎兜底仍可用;
+                    // 提前 return None 会让已在运行的本地引擎也救不了这张图片。
                     eprintln!(
                         "[pinvou3-app] vision model {} has no usable credential; \
-                         image_analyze disabled",
+                         treating as unconfigured",
                         vision.id
                     );
-                    return None;
+                } else {
+                    // 用户配置的视觉模型(vLLM / 云端 / Ollama 等)→ 默认重试
+                    // transient 5xx;1-2s 退避对这些有 SRE 实践的服务可能命中
+                    // 已 ready 的实例。
+                    return Some(vision_model_config(
+                        vision.model.clone(),
+                        api_key,
+                        vision.base_url.clone(),
+                        false,
+                    ));
                 }
-                // 用户配置的视觉模型(vLLM / 云端 / Ollama 等)→ 默认重试
-                // transient 5xx;1-2s 退避对这些有 SRE 实践的服务可能命中
-                // 已 ready 的实例。
-                return Some(vision_model_config(
-                    vision.model.clone(),
-                    api_key,
-                    vision.base_url.clone(),
-                    false,
-                ));
             }
             eprintln!(
                 "[pinvou3-app] vision_model_id {vision_id} not found in saved_models; \
@@ -1087,7 +1096,7 @@ impl Pinvou3Bridge {
             if let Some(endpoint) = crate::features::llama_engine::vision_endpoint() {
                 return Some(vision_model_config(
                     self.model(),
-                    self.api_key(),
+                    LOCAL_VLLM_API_KEY.to_string(),
                     endpoint,
                     true,
                 ));
@@ -1130,8 +1139,8 @@ impl Pinvou3Bridge {
 
     /// 普通会话图片输入路由(设计 §9.2,阶段 D)。仅当消息含图片附件时由命令层调用。
     /// `has_vision_model` 取自 `resolve_vision_model_config`:Supported 主模型本来就走
-    /// Native,该值只在 Unsupported/Unknown 时影响路由,而那时 Some 仅可能来自
-    /// `vision_model_id` 命中的独立视觉模型。
+    /// Native,该值只在 Unsupported/Unknown 时影响路由,此时 Some 可来自规则 1 命中
+    /// 的独立视觉模型,或规则 0/3 接管的本地引擎端点。
     pub fn image_input_mode(&self) -> crate::features::assistant::image_capability::ImageInputMode {
         crate::features::assistant::image_capability::image_input_mode(
             self.effective_image_capability(),
@@ -3931,11 +3940,25 @@ mod tests {
         server::reset_runtime_for_test();
     }
 
-    /// §9.3 规则 1 的优雅降级:vision_model_id 目标模型凭据缺失 →
-    /// 不注册并记 warning,不硬错、不回落主模型。
+    /// §9.3 规则 1 的凭据缺失(如 keychain 条目被删):与悬空 id 同口径按
+    /// 「未配置」落到规则 2/3——引擎运行时被本地兜底接走、Supported 主模型
+    /// 自复用,而不是提前 return None 让图片输入被硬拒且无补救路径。
     #[test]
-    fn vision_config_degrades_gracefully_on_missing_credential() {
+    fn vision_config_missing_credential_falls_through() {
+        use crate::features::llama_engine::server;
+        // 规则 3 用例写全局 RUNTIME,须在 RUNTIME_TEST_LOCK 下运行。
+        let _runtime_lock = locked_runtime();
+        // RAII 守卫:测试结束复位全局 RUNTIME,避免污染其他测试的引擎运行态。
+        struct RuntimeGuard;
+        impl Drop for RuntimeGuard {
+            fn drop(&mut self) {
+                server::reset_runtime_for_test();
+            }
+        }
+        let _guard = RuntimeGuard;
+
         // 目标模型无凭据(云端 base_url + 空 key + 无 credential_ref)。
+        // 引擎未运行 + 主模型能力非 Supported → 规则 2/3 均不命中,仍不注册。
         let mut no_key = fixture_bridge();
         set_active_model(
             &mut no_key,
@@ -3947,6 +3970,31 @@ mod tests {
         push_vision_model(&mut no_key, "vision-no-key", "gpt-4o", "");
         no_key.prefs.advanced.saved_models[0].vision_model_id = Some("vision-no-key".to_string());
         assert!(no_key.resolve_vision_model_config().is_none());
+
+        // 引擎运行 → 凭据缺失的云端视觉模型被跳过,落到规则 3 本地兜底。
+        server::force_running_for_test(8765);
+        let config = no_key
+            .resolve_vision_model_config()
+            .expect("missing credential must fall through to local fallback");
+        assert_eq!(config.base_url.as_deref(), Some("http://127.0.0.1:8765/v1"));
+        server::reset_runtime_for_test();
+
+        // Supported 主模型 → 凭据缺失落到规则 2 自复用,图片输入不被禁用。
+        let mut supported = fixture_bridge();
+        set_active_model(
+            &mut supported,
+            ModelPreset::OpenaiCompatible,
+            "gpt-5.6-terra",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+        push_vision_model(&mut supported, "vision-no-key", "gpt-4o", "");
+        supported.prefs.advanced.saved_models[0].vision_model_id =
+            Some("vision-no-key".to_string());
+        let config = supported
+            .resolve_vision_model_config()
+            .expect("missing credential must fall through to rule 2");
+        assert_eq!(config.model, "gpt-5.6-terra");
     }
 
     /// §9.3 规则 1 的悬空 id:vision_model_id 指向已删除/不存在的模型 →

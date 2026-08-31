@@ -220,8 +220,11 @@ pub(crate) async fn chat_with_reservation(
         if bridge.vision_local_gate_active() && capability != EffectiveImageCapability::Supported {
             let prefs = UserPrefs::load();
             if let Err(error) = ensure_local_engine_ready(app, pool, &prefs, &sid, store).await {
-                // 已配置云端视觉模型(vision_model_id)时不硬失败:引擎启动失败
-                // 回落云端兜底路由;无兜底才上报错误。
+                // 防御性回落:save_model 的互斥归一保证 gate 活跃时该模型无可用
+                // 视觉模型(prefer_local 保存时清空 vision_model_id;兜底路径要求
+                // 未配置),has_vision_model 正常恒为 false。仅手改 settings.json
+                // 打破互斥(prefer_local 与 vision_model_id 并存)时可能为真——
+                // 此时引擎启动失败不硬错,回落云端视觉模型路由;无兜底才上报错误。
                 if !bridge.has_vision_model() {
                     return Err(error);
                 }
