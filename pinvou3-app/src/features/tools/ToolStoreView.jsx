@@ -2181,7 +2181,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           />, document.body)}
           {/* 飞书扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
           {wecomQr && (() => {
-            const cancel = () => { invokeTauri('wecom_cancel').catch(() => {}); setWecomQr(null); setBusyId(null); };
+            // 对齐 wecomResetFlow:后端对取消已静默(不再发 wecom:error 清场),
+            // 这里必须自己清 flow,否则详情流程卡/mini 卡陈旧停在「待扫码」。
+            const cancel = () => { wecomConn.stopTick(); invokeTauri('wecom_cancel').catch(() => {}); wecomConn.setFlow(null); setWecomQr(null); setBusyId(null); };
             return createPortal((
             // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is covered by the dialog's cancel control
             // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container

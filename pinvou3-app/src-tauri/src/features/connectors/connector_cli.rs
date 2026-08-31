@@ -204,11 +204,17 @@ pub fn make_qr(url: &str) -> Option<String> {
 }
 
 /// 把 CLI 落盘的二维码 PNG(wecom-cli `--output-qrcode`)包装成 data URL,
-/// 供前端 `<img src>` 直接显示。校验 PNG 签名,读到非 PNG / 截断文件返回 `None`
-/// (调用方回退 [`make_qr`] 自绘)。
+/// 供前端 `<img src>` 直接显示。校验 PNG 签名 + IEND 尾双锚点,非 PNG / 截断文件
+/// 返回 `None`(调用方回退 [`make_qr`] 自绘)。
 pub fn png_data_url(bytes: &[u8]) -> Option<String> {
     const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
-    if bytes.len() < 8 || !bytes.starts_with(PNG_SIGNATURE) {
+    // IEND chunk 恒为 length(0)+type+CRC:对 IEND 内容 CRC 固定,可直接整段比对。
+    // 只验签名会把「只写了头部」的半截文件当完整,浏览器里渲染成坏图。
+    const IEND_TAIL: &[u8] = b"\x00\x00\x00\x00IEND\xae\x42\x60\x82";
+    if bytes.len() < PNG_SIGNATURE.len() + IEND_TAIL.len()
+        || !bytes.starts_with(PNG_SIGNATURE)
+        || !bytes.ends_with(IEND_TAIL)
+    {
         return None;
     }
     Some(format!("data:image/png;base64,{}", b64(bytes)))
@@ -488,11 +494,11 @@ mod tests {
         assert!(svg.contains("<svg"), "应含 <svg> 根节点");
     }
 
-    /// CLI 落盘 PNG → data URL;非 PNG / 截断字节拒绝(调用方回退 make_qr)。
+    /// CLI 落盘 PNG → data URL;签名 + IEND 尾校验,非 PNG / 截断字节拒绝(调用方回退 make_qr)。
     #[test]
     fn png_data_url_validates_signature() {
-        let png = b"\x89PNG\r\n\x1a\nrest-of-file-bytes";
-        let data_url = png_data_url(png).expect("带签名的字节应通过");
+        let png = b"\x89PNG\r\n\x1a\nrest-of-file\x00\x00\x00\x00IEND\xae\x42\x60\x82";
+        let data_url = png_data_url(png).expect("带签名和 IEND 尾的字节应通过");
         assert!(data_url.starts_with("data:image/png;base64,"));
         // 解码回原字节,确认无损。
         let b64 = data_url.trim_start_matches("data:image/png;base64,");
@@ -500,6 +506,14 @@ mod tests {
 
         assert!(png_data_url(b"").is_none(), "空字节应拒绝");
         assert!(png_data_url(b"\x89PNG").is_none(), "不足签名长度应拒绝");
+        assert!(
+            png_data_url(b"\x89PNG\r\n\x1a\n").is_none(),
+            "仅签名无 IEND 尾(半截文件)应拒绝"
+        );
+        assert!(
+            png_data_url(b"\x89PNG\r\n\x1a\nbody\x00\x00\x00\x00IEND\x00\x00\x00\x00").is_none(),
+            "IEND CRC 不对应拒绝"
+        );
         assert!(
             png_data_url(b"\x89JPEG\r\n\x1a\nrest").is_none(),
             "错误签名应拒绝"

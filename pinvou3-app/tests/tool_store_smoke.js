@@ -49,7 +49,7 @@ function injectSource() {
       // government-writing 初始为独立已装（MCP gongwen 未装）:覆盖 G3 混合态——
       // companion 卡动作须来自技能级 readiness(卸载),首个用例卸载后回到未装态。
       installed:{},skills:{visualizer:false,'government-writing':true},connected:{feishu:false,wecom:false,dingtalk:false,tmeet:false,ima:false},
-      oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0,failVisibility:false,
+      oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0,failVisibility:false,failOpenExternal:false,
       hidden:{plain:[],code:[]}
     };
     window.addEventListener('pinvou:tools-changed',()=>{state.composerChanged++;});
@@ -173,7 +173,9 @@ function injectSource() {
         // mock 不再 no-op，勾选往返才可测）。
         case 'get_bundle_visibility': return state.failVisibility ? Promise.reject(new Error('mock visibility read failure')) : Promise.resolve(state.hidden[args.scope]||[]);
         case 'set_bundle_visibility': state.hidden[args.scope]=(args.bundleIds||[]).map(toPackageId); return Promise.resolve(null);
-        case 'feishu_apply_skills': case 'wecom_apply_skills': case 'dingtalk_apply_skills': case 'tmeet_apply_skills': case 'open_external_url': return Promise.resolve(null);
+        case 'feishu_apply_skills': case 'wecom_apply_skills': case 'dingtalk_apply_skills': case 'tmeet_apply_skills': return Promise.resolve(null);
+        // failOpenExternal 模拟外链白名单拒绝:企微扫码弹窗「在浏览器打开」须可见报错。
+        case 'open_external_url': return state.failOpenExternal ? Promise.reject('external-url-not-allowlisted') : Promise.resolve(null);
         default: return Promise.resolve(null);
       }
     }
@@ -479,6 +481,31 @@ async function visibilityBox(page, cardText, modeLabel, click) {
       // 刀9：版本号切后端源（mock 的 9.9.9-lock 与 tsToolsData 任何版本都不同,
       // 命中即证明渲染来自 bundle_readiness 的 bundle.version）
       rec('飞书详情版本号以后端 lock 表为准',await page.evaluate(()=>document.body.innerText.includes('v9.9.9-lock')));
+    }
+    if(id==='wecom'){
+      // 企微真码弹窗:后端 emit 的 qr_data_url 直接进 <img>(iframe 已移除);
+      // 「在浏览器打开」被白名单拒绝时必须可见报错(此前静默);
+      // 取消须连流程卡一起清——后端对取消已静默,不再发 wecom:error 隐式清场。
+      await page.evaluate(() => window.__emitTauri('wecom:qr', {
+        phase: 'authorize',
+        url: 'https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&test=1',
+        qr_data_url: 'data:image/png;base64,AAAA',
+      }));
+      await sleep(150);
+      rec('企微扫码弹窗渲染后端下发的二维码', await page.evaluate(() => {
+        const img = [...document.querySelectorAll('img')].find(i => (i.getAttribute('src') || '') === 'data:image/png;base64,AAAA');
+        return !!img && document.body.innerText.includes('请使用企业微信 App 扫一扫');
+      }));
+      await page.evaluate(() => { window.__TOOL_STORE_TEST__.failOpenExternal = true; });
+      await clickExact(page, '在浏览器打开'); await sleep(150);
+      rec('企微浏览器打开被拒时可见报错', await page.evaluate(() => document.body.innerText.includes('未能打开浏览器')));
+      await page.evaluate(() => { window.__TOOL_STORE_TEST__.failOpenExternal = false; });
+      await dismiss(page);
+      await clickExact(page, '取消'); await sleep(150);
+      rec('企微弹窗取消后弹窗与流程卡一并清理', await page.evaluate(() => {
+        const qrImg = [...document.querySelectorAll('img')].some(i => (i.getAttribute('src') || '') === 'data:image/png;base64,AAAA');
+        return !qrImg && !document.body.innerText.includes('请使用企业微信 App 扫一扫');
+      }));
     }
     if(id==='tmeet'){
       await page.evaluate(() => window.__emitTauri('tmeet:qr', {

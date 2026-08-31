@@ -173,7 +173,8 @@ fn poll_qr_png(dir: &std::path::Path, timeout: Duration) -> Option<Vec<u8>> {
 fn phase_scan(app: &AppHandle) -> Result<(), String> {
     // CLI 1.1.0 的 --output-qrcode 只接受当前目录下的相对路径:让它把真授权二维码 PNG
     // 落在临时目录里。抓到的 stdout URL 是 /ai/qc/gen 落地页(打开后还要再扫一次),
-    // 不能直接编码成二维码;PNG 里的码才能一次扫码直达授权。旧 CLI 无此旗标时回退自绘。
+    // 不能直接编码成二维码;PNG 里的码才能一次扫码直达授权。能走到这的 CLI 必 ≥1.1.0
+    // (wecom_ensure_cli 的版本门已把旧版换装),回退自绘只覆盖写盘失败/轮询超时。
     let qr_dir = std::env::temp_dir().join(format!(
         "pinvou3-wecom-qr-{}",
         std::time::SystemTime::now()
@@ -181,7 +182,10 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    let _ = std::fs::create_dir_all(&qr_dir);
+    if let Err(e) = std::fs::create_dir_all(&qr_dir) {
+        // 不吞:失败时 spawn 也会因 cwd 不存在而挂,但报因会被误读成「CLI 未安装」。
+        return Err(format!("创建扫码二维码临时目录失败: {e}"));
+    }
     let mut cmd = wecom(&[
         "auth",
         "init",
@@ -233,7 +237,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             return Err("40s 内未拿到二维码链接(检查网络 / 代理)".into());
         }
     };
-    // 优先 CLI 落盘的真授权二维码;拿不到(旧 CLI / 写盘失败)回退自绘落地页二维码。
+    // 优先 CLI 落盘的真授权二维码;拿不到(写盘失败 / 轮询超时)回退自绘落地页二维码。
     let qr = poll_qr_png(&qr_dir, Duration::from_secs(6))
         .and_then(|bytes| cc::png_data_url(&bytes))
         .or_else(|| cc::make_qr(&url));

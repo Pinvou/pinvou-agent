@@ -802,7 +802,7 @@ desktopHint:'先にデスクトップで Obsidian をインストールして保
   updatedQuoted:name=>`「${name}」を更新しました`, updateSkillTitle:name=>`「${name}」を更新`,
   updateSkillOverwriteHint:'ストアの最新バージョンで上書きします。このスキルへのローカルの変更は失われます。',
   notConnectedYet:name=>`「${name}」はまだ接続されていません。`,
-  wecomScanHint:'WeCom アプリでスキャンしてください', wecomQrAlt:'WeCom ログイン用QRコード', openBrowserFailed:'ブラウザーを開けませんでした。再試行するか、リンクをブラウザーに貼り付けて開いてください', waitingAuth:'認証を待機中…', openInBrowser:'ブラウザーで開く',
+  wecomScanHint:'WeCom アプリでスキャンしてください', wecomQrAlt:'WeCom ログイン用QRコード', openBrowserFailed:'ブラウザーを開けませんでした。もう一度お試しください', waitingAuth:'認証を待機中…', openInBrowser:'ブラウザーで開く',
   mini:{ scan:'スキャン待ち', install:pct=>`インストール ${pct}%`, extract:pct=>`展開 ${pct}%`, connecting:'接続中', title:'タップして進捗を表示' },
   feishuSteps:[
 { key:'runtime', label:'ランタイムを準備', sub:'アプリ同梱の Node を使用' },
