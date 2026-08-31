@@ -473,14 +473,23 @@ pub(crate) async fn install_model(app: &tauri::AppHandle, model_id: &str) -> Res
 
 async fn install_asset(
     app: &tauri::AppHandle,
-    asset: &ModelAsset,
+    asset: &'static ModelAsset,
     item: &'static str,
     model_id: &str,
 ) -> Result<(), String> {
     let dest = models_dir().join(asset.filename);
     // 安装前检查走完整校验（size + 全量 sha256），与状态热路径的轻量
     // 检查区分开：已验证过的资产命中 VERIFY_CACHE，不会重复 hash。
-    if model_file_verified_fully(&dest, asset) {
+    // GB 级文件的全量 hash 跑在 blocking pool——本函数是 async，同步
+    // hash 会占住 tokio 工作线程（与 install_model 停机等待、delete
+    // 命令同口径）。
+    let verified = {
+        let dest = dest.clone();
+        tokio::task::spawn_blocking(move || model_file_verified_fully(&dest, asset))
+            .await
+            .map_err(|e| format!("模型校验任务失败: {e}"))?
+    };
+    if verified {
         return Ok(());
     }
     ensure_disk_space(&models_dir(), asset.expected_size)?;
@@ -515,7 +524,14 @@ async fn install_asset(
                         "stage": "model_verify", "item": item, "modelId": model_id
                     }),
                 );
-                match verify_and_promote(&tmp, &dest, asset) {
+                let promote = {
+                    let tmp = tmp.clone();
+                    let dest = dest.clone();
+                    tokio::task::spawn_blocking(move || verify_and_promote(&tmp, &dest, asset))
+                        .await
+                        .map_err(|e| format!("模型校验任务失败: {e}"))?
+                };
+                match promote {
                     Ok(()) => return Ok(()),
                     Err(_) if CANCEL.load(Ordering::Acquire) => {
                         let _ = std::fs::remove_file(&tmp);

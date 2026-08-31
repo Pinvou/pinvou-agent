@@ -903,7 +903,7 @@ async fn check_health(port: u16) -> Result<(), String> {
                 .connect_timeout(Duration::from_secs(2))
                 // 整体超时：下载并发等 IO 打满时,server 可能接受连接但
                 // 响应被拖住——没有总超时的请求会永远卡在一次轮询里,
-                // 健康门的 120s 截止与退出分支全部失效(UI 永远"启动中")。
+                // 健康门的 300s 截止与退出分支全部失效(UI 永远"启动中")。
                 .timeout(Duration::from_secs(3))
                 .build()
                 .map_err(|e| format!("HTTP client 构建失败: {e}"))
