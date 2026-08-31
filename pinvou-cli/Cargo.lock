@@ -6321,7 +6321,7 @@ dependencies = [
 
 [[package]]
 name = "pinvou-knowledge"
-version = "0.8.7"
+version = "0.8.8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -6356,7 +6356,7 @@ dependencies = [
 
 [[package]]
 name = "pinvou3-tauri"
-version = "0.8.7"
+version = "0.8.8"
 dependencies = [
  "age",
  "agent-backend-api",
@@ -6366,6 +6366,7 @@ dependencies = [
  "base64 0.22.1",
  "block2",
  "calamine",
+ "cc",
  "chrono",
  "codewhale-config",
  "codewhale-execpolicy",
@@ -6377,6 +6378,7 @@ dependencies = [
  "futures-util",
  "gtk",
  "include_dir",
+ "javascriptcore-rs",
  "libc",
  "log",
  "msg_parser",
@@ -6385,6 +6387,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "objc2-speech",
+ "objc2-web-kit",
  "parking_lot",
  "pinvou-knowledge",
  "qrcode",
@@ -6403,6 +6406,7 @@ dependencies = [
  "tauri-plugin-log",
  "tauri-plugin-notification",
  "tauri-plugin-single-instance",
+ "tauri-runtime-wry",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
