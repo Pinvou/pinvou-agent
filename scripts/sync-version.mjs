@@ -10,8 +10,9 @@
 //   2. pinvou3-app/src-tauri/Cargo.toml 的 [package] 下第一处 version = "..." 行（不动依赖版本）
 //   3. pinvou-knowledge/Cargo.toml 的 [package] 版本
 //   4. pinvou-knowledge/Cargo.lock 中 pinvou-knowledge 包版本
-//   5. pinvou3-app/package.json 的 "version" 字段
-//   6. pinvou3-app/package-lock.json 的根 "version" 与 packages[""].version（文件不存在时跳过）
+//   5. pinvou3-app/src-tauri/Cargo.lock 中 pinvou-knowledge 与 pinvou3-tauri 包版本
+//   6. pinvou3-app/package.json 的 "version" 字段
+//   7. pinvou3-app/package-lock.json 的根 "version" 与 packages[""].version（文件不存在时跳过）
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -24,6 +25,7 @@ const CHECK_ONLY = process.argv.includes('--check');
 const VERSION_FILE = resolve(REPO_ROOT, 'VERSION');
 const TAURI_CONF = resolve(REPO_ROOT, 'pinvou3-app/src-tauri/tauri.conf.json');
 const CARGO_TOML = resolve(REPO_ROOT, 'pinvou3-app/src-tauri/Cargo.toml');
+const TAURI_CARGO_LOCK = resolve(REPO_ROOT, 'pinvou3-app/src-tauri/Cargo.lock');
 const KNOWLEDGE_CARGO_TOML = resolve(REPO_ROOT, 'pinvou-knowledge/Cargo.toml');
 const KNOWLEDGE_CARGO_LOCK = resolve(REPO_ROOT, 'pinvou-knowledge/Cargo.lock');
 const PACKAGE_JSON = resolve(REPO_ROOT, 'pinvou3-app/package.json');
@@ -158,6 +160,27 @@ function writeCargoLockVersion(path, packageName, version) {
   writeFileSync(path, result.content);
 }
 
+function readCargoLockVersions(path, packageNames) {
+  const content = readFileSync(path, 'utf8');
+  const versions = packageNames.map((packageName) => ({
+    packageName,
+    version: updateCargoLockPackageVersion(content, packageName).version,
+  }));
+  const firstVersion = versions[0]?.version;
+  if (versions.every(({ version }) => version === firstVersion)) {
+    return firstVersion;
+  }
+  return versions.map(({ packageName, version }) => `${packageName} 为 ${version}`).join('，');
+}
+
+function writeCargoLockVersions(path, packageNames, version) {
+  let content = readFileSync(path, 'utf8');
+  for (const packageName of packageNames) {
+    content = updateCargoLockPackageVersion(content, packageName, version).content;
+  }
+  writeFileSync(path, content);
+}
+
 export function main() {
   const target = readTargetVersion();
   const targets = [
@@ -165,6 +188,11 @@ export function main() {
     { name: 'pinvou3-app/src-tauri/Cargo.toml', read: () => readCargoVersion(CARGO_TOML), write: () => writeCargoVersion(CARGO_TOML, target) },
     { name: 'pinvou-knowledge/Cargo.toml', read: () => readCargoVersion(KNOWLEDGE_CARGO_TOML), write: () => writeCargoVersion(KNOWLEDGE_CARGO_TOML, target) },
     { name: 'pinvou-knowledge/Cargo.lock', read: () => readCargoLockVersion(KNOWLEDGE_CARGO_LOCK, 'pinvou-knowledge'), write: () => writeCargoLockVersion(KNOWLEDGE_CARGO_LOCK, 'pinvou-knowledge', target) },
+    {
+      name: 'pinvou3-app/src-tauri/Cargo.lock',
+      read: () => readCargoLockVersions(TAURI_CARGO_LOCK, ['pinvou-knowledge', 'pinvou3-tauri']),
+      write: () => writeCargoLockVersions(TAURI_CARGO_LOCK, ['pinvou-knowledge', 'pinvou3-tauri'], target),
+    },
     { name: 'pinvou3-app/package.json', read: () => readJsonVersion(PACKAGE_JSON), write: () => writeJsonVersion(PACKAGE_JSON, target) },
   ];
   // package-lock.json 可能不存在（未提交 lock 等场景），存在才纳入同步/校验
