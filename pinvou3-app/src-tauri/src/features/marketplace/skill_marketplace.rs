@@ -1677,7 +1677,16 @@ pub(crate) fn read_skill_description_from_str(content: &str) -> Option<String> {
                         ""
                     } else {
                         let indent = l.len() - l.trim_start().len();
-                        &l[indent.min(content_indent)..]
+                        // trim_start 会剥多字节空白（U+3000/NBSP），字节计数
+                        // 的 min 可能落在字符中间——钳到最近字符边界再切，
+                        // 防 panic。引擎同款切片在此形态上自身 panic（上游
+                        // 隐患）：这是防御性分歧，仅影响引擎无法处理的形态，
+                        // 非 panic 输入两侧逐字节一致（不得加入差分矩阵）。
+                        let mut strip = indent.min(content_indent);
+                        while !l.is_char_boundary(strip) {
+                            strip -= 1;
+                        }
+                        &l[strip..]
                     }
                 })
                 .collect();
@@ -1889,7 +1898,11 @@ fn replace_top_level_description(
 
     let mut out: Vec<String> = Vec::with_capacity(lines.len() + 1);
     out.push(lines[0].to_string());
-    let mut name_line_at: Option<usize> = None;
+    let mut name_insert_at: Option<usize> = None;
+    // name 值为引擎块标记时为 true：其续行（空行/缩进行）逐行经过期间，
+    // 插入点持续后移到块尾（见下方 name 分支注释）。
+    let mut name_block_open = false;
+    let mut name_block_start = 0;
     let mut replaced = false;
     // 嵌套 map 里的 description（缩进行，任意大小写）：不动它，但插入点须在其后。
     let mut nested_desc_seen = false;
@@ -1928,7 +1941,16 @@ fn replace_top_level_description(
                     continue;
                 }
                 if key.eq_ignore_ascii_case("name") {
-                    name_line_at = Some(out.len());
+                    // 插入点缺省紧随 name 行（out.len() 是 name 行将落入的
+                    // 下标，+1 即其后）；name 值为引擎块标记时其续行（空行/
+                    // 缩进行，口径同上方 description 替换分支）也属 name 的
+                    // 块——插入点须越过整块，否则插入行把块切断，引擎把
+                    // name 读成残块（空块 → 缺 name 整包拒收，模型侧技能
+                    // 静默消失），而 description 口径的互洽校验看
+                    // 不见这种损坏。
+                    name_insert_at = Some(out.len() + 1);
+                    name_block_open = is_engine_block_marker(rest);
+                    name_block_start = i;
                 }
             }
         } else if t
@@ -1941,6 +1963,17 @@ fn replace_top_level_description(
         }
         out.push(lines[i].to_string());
         i += 1;
+        // name 块续行（空行或缩进行）逐行经过期间，插入点后移到块尾；
+        // 遇顶层非空行（无缩进）即闭块——口径与 description 替换分支一致。
+        // name 行自身是顶层非空行，但属块头，不参与闭块判定。
+        if name_block_open && i - 1 != name_block_start {
+            let pushed = lines[i - 1];
+            if pushed.trim().is_empty() || pushed.len() != pushed.trim_start().len() {
+                name_insert_at = Some(out.len());
+            } else {
+                name_block_open = false;
+            }
+        }
     }
     if !replaced {
         let at = if nested_desc_seen {
@@ -1948,7 +1981,7 @@ fn replace_top_level_description(
             // last-wins，插在嵌套 description 之前会被盖回旧值（模型侧不同步）。
             out.len()
         } else {
-            name_line_at.map_or(1, |x| x + 1)
+            name_insert_at.unwrap_or(1)
         };
         out.splice(at..at, new_lines.iter().cloned());
     }
@@ -4178,6 +4211,50 @@ mod tests {
                 .expect("remove 只删带冒号的顶层 description 行");
         assert_eq!(out, "---\nname: x\ndescription\n---\n");
         assert!(read_skill_description_from_str(&out).is_none());
+    }
+
+    /// 块标量内容缩进剥离按字节计数，而 `trim_start` 会剥多字节空白
+    /// （U+3000 全角空格、NBSP）：当 `min(行缩进, content_indent)` 落在
+    /// 多字节字符中间时按字节切片会 panic。回归：曾直接 panic，
+    /// `list_skills`/`bundle_readiness` 对含此形态的包全量崩溃且每次
+    /// 重试复现，商店持久性不可用。镜像读端钳到字符边界——引擎
+    /// `parse_skill` 同款切片在此形态上自身 panic（上游隐患），这是对
+    /// 引擎无法处理形态的防御性分歧：非 panic 输入两侧逐字节一致，
+    /// 本形态不得加入差分矩阵（引擎侧会 panic）。
+    #[test]
+    fn mirror_reader_survives_multibyte_whitespace_block_indent() {
+        // content_indent 由 ASCII 续行 " a" 定为 1 字节；下一行以 U+3000
+        // （3 字节）开头，min(3, 1) = 1 落在 U+3000 内部——旧代码在此 panic。
+        let content = "---\nname: nb\ndescription: |\n a\n\u{3000}b\n---\nbody";
+        let desc = read_skill_description_from_str(content)
+            .expect("多字节空白缩进不得 panic，也不得整块丢弃");
+        assert_eq!(desc, "a\n\u{3000}b");
+    }
+
+    /// name 值是引擎块标记（如 `name: |`）且无顶层 description：插入点必须
+    /// 越过 name 的整块续行，否则插入行把块切断——引擎把 name 读成残块
+    /// （空块 → 缺 name 整包拒收，技能从模型侧静默消失），而 description
+    /// 口径的互洽校验看不见这种损坏（description 本身读得回新值）。回归：
+    /// 曾插在 name 行后直接切断块。
+    #[test]
+    fn rewrite_inserts_after_block_scalar_name_not_inside_it() {
+        let out = rewrite_frontmatter_description("---\nname: |\n  my-skill\n---\nbody", "新说明")
+            .expect("块标量 name 上的回写不得失败");
+        assert_eq!(
+            out, "---\nname: |\n  my-skill\ndescription: 新说明\n---\nbody",
+            "插入行必须落在 name 块续行之后"
+        );
+        assert_eq!(
+            read_skill_description_from_str(&out).as_deref(),
+            Some("新说明")
+        );
+        // 多续行 + strip 指示符同口径
+        let out = rewrite_frontmatter_description("---\nname: |-\n  my-skill\n  v2\n---\n", "新")
+            .expect("多续行块标量 name 同样不得切断");
+        assert_eq!(
+            out,
+            "---\nname: |-\n  my-skill\n  v2\ndescription: 新\n---\n"
+        );
     }
 
     /// 单技能上传包：编排入口设覆盖 → 回写落盘 + 原值备份 + 内容指纹重算补写
