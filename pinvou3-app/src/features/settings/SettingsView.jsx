@@ -1827,6 +1827,12 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors the backend snapshot into local state once it lands, avoiding first-frame flicker
           setActiveSection('model');
           setModelTab('acp');
+        } else if (initialSection === 'llama') {
+          // 本地识图深链指向 model 区的 llama 子页:该 effect 在挂载后会跑一次,
+          // 若走下方通配分支把裸 'llama' 当 section 写回,会覆盖 useState 种子的
+          // 正确映射,'llama' 匹配不到任何 section 而落到通用页。
+          setActiveSection('model');
+          setModelTab(can('localVisionEngine') ? 'llama' : 'models');
         } else if (initialSection) {
           setActiveSection(initialSection);
         }
