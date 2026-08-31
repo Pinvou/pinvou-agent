@@ -97,7 +97,7 @@ tmeet tshoot feedback \
 # 2) tool_error：调用 record address 返回错误码
 tmeet tshoot feedback \
   --category "tool_error" \
-  --intent "获取某录制文件的下载地址" \
+  --intent "获取某录制文件的播放地址" \
   --tool-name "record address" \
   --error-code "200003" \
   --actions-tried "tmeet record address --meeting-record-id record_abc123" \
