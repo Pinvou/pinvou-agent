@@ -2407,7 +2407,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                       {(!busy || hasDraftText || hasReadyAttachment) && (
                         <button type="button" onClick={handleSend} disabled={!ready}
                           aria-label={busy ? t.queueMsg : t.sendMsg}
-                          title={busy && can('interruptSend') ? t.queueMsgTip : t.sendMsg}
+                          title={busy ? (can('interruptSend') ? t.queueMsgTip : t.queueMsg) : t.sendMsg}
                           className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? (isQueue ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md ring-2 ring-amber-300 dark:ring-amber-400' : 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0') : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
                           <Send size={17} className="translate-x-[1px]" />
                         </button>
