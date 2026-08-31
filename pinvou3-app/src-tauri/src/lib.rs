@@ -1033,7 +1033,11 @@ pub fn run() {
                     let app = app.handle().clone();
                     let (model_id, device) =
                         llama_engine_domain::resolve_default_engine_plan(&launch_prefs.advanced);
-                    tokio::spawn(async move {
+                    // setup 在主线程事件循环里执行,该线程没有进入过 tokio
+                    // 运行时上下文,裸 tokio::spawn 必 panic(且 autostart=launch
+                    // 已持久化,会变成每次启动崩溃)。tauri::async_runtime::spawn
+                    // 内部自行 enter 句柄,从任意线程派生都安全。
+                    tauri::async_runtime::spawn(async move {
                         if !llama_engine_domain::download::engine_installed() {
                             return;
                         }
