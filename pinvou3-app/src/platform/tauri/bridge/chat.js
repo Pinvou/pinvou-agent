@@ -1512,14 +1512,22 @@
   // Withdraw an engine-side steer with a bounded outcome await (25s transport
   // timeout, aligned with steer/cancel). The withdrawn registration happens
   // BEFORE the await so a late committed renders the bubble through it.
-  // Outcomes (foundation contract / JensenChen28 review #2):
-  //   "retired" (resolve) = the engine copy is marked withdrawn and will
-  //     never inject — the caller may safely resend;
+  // Outcomes (foundation contract / JensenChen28 review #2 / zhuowp re-review
+  // P1-1):
+  //   "retired" (resolve) = the engine confirms the copy is marked withdrawn
+  //     and will never inject — the caller may safely resend;
   //   "not_pending" (resolve) = already committed/settled — never resend;
   //   "withdraw_timeout" = unresolved, proves nothing either way — the caller
   //     must not resend and defers to its reconcile path;
-  //   invoke rejection (engine absent) maps to "retired": the message never
-  //     entered the engine (or was destroyed with the reclaim) — resend.
+  //   "withdraw_unreachable" (invoke rejection, e.g. the engine was reclaimed)
+  //     = the engine that accepted this steer is gone — it may have committed
+  //     the steer into the persisted transcript before dying, so a rejection
+  //     is NOT proof of non-delivery and must not be treated as "retired".
+  //     No resend; defer to the reconcile path (late committed → bubble /
+  //     dropped → silent / event lost → text restored after 60s).
+  //   The one genuinely safe-to-resend rejection is the steer_chat invoke's
+  //   own deterministic rejection (handled by the zap gate): that engine never
+  //   accepted anything.
   async function withdrawSteerOutcome(sid, steerId, text) {
     clearSteerSettleWatchdog(sid, steerId);
     rememberWithdrawn(sid, steerId, text);
@@ -1536,7 +1544,7 @@
     try {
       return await Promise.race([withdrawPromise, withdrawTimeout]);
     } catch {
-      return withdrawTimedOut ? "withdraw_timeout" : "retired";
+      return withdrawTimedOut ? "withdraw_timeout" : "withdraw_unreachable";
     } finally {
       clearTimeout(withdrawTimerId);
     }
@@ -1704,9 +1712,17 @@
     q.splice(index, 1);
     let skipResend = false;
     let steerSettlement = null;
+    // Only an explicit foundation "retired" (or a deterministic rejection of
+    // the steer_chat invoke itself, which never accepted anything) proves
+    // resend safety; not_pending / transport timeout / an unreachable engine
+    // are all uncertain and defer to the reconcile path (zhuowp re-review
+    // P1-1: a reclaimed engine may have committed the steer first).
+    const withdrawOutcomeForbidsResend = function (outcome) {
+      return ["not_pending", "withdraw_timeout", "withdraw_unreachable"].includes(outcome);
+    };
     if (item.steered && item.steerId && sid) {
       const outcome = await withdrawSteerOutcome(sid, item.steerId, item.text);
-      skipResend = outcome === "not_pending" || outcome === "withdraw_timeout";
+      skipResend = withdrawOutcomeForbidsResend(outcome);
     } else if (item.steered && sid) {
       // steerId not backfilled (steer_chat invoke in flight): the engine may
       // already hold the steer, and a copy parked by this zap's own keepInbox
@@ -1717,8 +1733,10 @@
       // milliseconds):
       //   resolves with an id → withdraw with outcome gating, same rules as
       //     the backfilled branch above;
-      //   deterministic rejection (engine/session gone) → nothing entered
-      //     the engine, resend normally;
+      //   deterministic rejection of the steer_chat invoke itself (engine/
+      //     session gone) → nothing entered the engine, resend normally (the
+      //     one rejection that IS safe: no engine ever accepted the steer —
+      //     unlike a withdraw_steer rejection, see withdrawSteerOutcome);
       //   transport timeout → delivery state unproven — never blindly send;
       //     restore the text to the composer (steer()'s late-success
       //     compensating withdrawal covers the registered-late case).
@@ -1732,7 +1750,7 @@
       if (settled && settled.ok && settled.steerId && sid) {
         item.steerId = settled.steerId;
         const outcome = await withdrawSteerOutcome(sid, settled.steerId, item.text);
-        skipResend = outcome === "not_pending" || outcome === "withdraw_timeout";
+        skipResend = withdrawOutcomeForbidsResend(outcome);
       } else if (settled && !settled.ok && settled.timedOut) {
         runSyncOnSession(sid, function () {
           addSystemItem("⚠️ " + bt("steerFailed"));
@@ -1746,14 +1764,15 @@
       // settlement relies on the transcript-counting fallback.
     }
     if (skipResend) {
-      // Already injected (not_pending) or withdrawal unresolved (timeout) —
-      // do not resend either way. A committed stashed before the backfill
+      // Already injected (not_pending), withdrawal unresolved (timeout), or
+      // the engine that accepted the steer is gone (unreachable) — do not
+      // resend in any of them. A committed stashed before the backfill
       // renders the bubble immediately; a late committed renders through the
-      // withdrawn registration. Neither NotPending nor a timeout is proof of
-      // delivery (foundation contract / JensenChen28 review #2): wait for the
-      // reconciling event; if it is lost (engine reclaim) the watchdog
-      // restores the text to the composer with a notice instead of treating
-      // an uncertain message as delivered.
+      // withdrawn registration. None of these outcomes is proof of delivery
+      // (foundation contract / JensenChen28 review #2 / zhuowp re-review
+      // P1-1): wait for the reconciling event; if it is lost (engine
+      // reclaim) the watchdog restores the text to the composer with a notice
+      // instead of treating an uncertain message as delivered.
       if (takeSteerEvent(sid, item.steerId) === "committed") {
         settleSteerCommitted(sid, item.steerId);
       } else {
