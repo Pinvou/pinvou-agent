@@ -1505,7 +1505,7 @@ async fn open_external_url_rejects_off_allowlist_targets() {
         "https://www.canva.cn.evil.com/api/action",               // Canva 子域钓鱼
         "https://export-download.canva.cn.evil.com/x.png",        // Canva 资源域钓鱼
         "https://meeting.tencent.com.evil.com/qrcode-login.html", // 腾讯会议授权域钓鱼
-        "https://open.weibo.com.evil.com/cli/api/oauth/device",   // 微博授权域钓鱼
+        "https://open.weibo.com.evil.com/cli/api/oauth/device",   // weibo auth-domain phishing
         "https://bce.baidu.com/",                                 // 非 console 子域,不放行
         "javascript:alert(1)",                                    // js scheme
         "file:///etc/passwd",                                     // file scheme

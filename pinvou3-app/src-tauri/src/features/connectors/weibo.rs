@@ -1,7 +1,9 @@
-//! 微博(`@weibo-ai/weibo-cli`) CLI 连接器 —— 随包 Node/npm 在线安装 + device-code 授权。
+//! Weibo (`@weibo-ai/weibo-cli`) CLI connector — bundled-Node/npm online install
+//! + device-code auth.
 //!
-//! 连接:`weibo-cli auth login --device --name Pinvou` 长驻 → 抓微博授权 URL 和 user code →
-//! 用户浏览器授权 → 进程退出后 `weibo-cli auth whoami --output json` 判 connected。
+//! Connect: `weibo-cli auth login --device --name Pinvou` runs long-lived →
+//! capture the Weibo auth URL and user code → user authorizes in browser →
+//! after the process exits, `weibo-cli auth whoami --output json` decides connected.
 
 use std::collections::VecDeque;
 use std::process::Stdio;
@@ -58,14 +60,14 @@ fn run_capture_timeout(
         .stderr(Stdio::piped());
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("启动失败: {e}(需要先完成微博 CLI 的在线安装)"))?;
+        .map_err(|e| format!("failed to spawn: {e}(finish the Weibo CLI online install first)"))?;
     let start = Instant::now();
     loop {
         match child.try_wait().map_err(|e| format!("wait: {e}"))? {
             Some(_) => {
                 let out = child
                     .wait_with_output()
-                    .map_err(|e| format!("收集微博 CLI 输出失败: {e}"))?;
+                    .map_err(|e| format!("failed to collect weibo CLI output: {e}"))?;
                 return Ok((
                     out.status.success(),
                     String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -75,7 +77,7 @@ fn run_capture_timeout(
             None if start.elapsed() > Duration::from_secs(secs) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("微博 CLI 命令超时({secs}s)"));
+                return Err(format!("weibo CLI command timed out ({secs}s)"));
             }
             None => std::thread::sleep(Duration::from_millis(200)),
         }
@@ -182,17 +184,20 @@ fn install_weibo_cli() -> Result<bool, String> {
     cc::run_with_timeout(c, 180)
 }
 
-/// 引导:确保 weibo-cli 装好且版本不低于 0.9.1。
+/// Bootstrap: make sure weibo-cli is installed and not older than 0.9.1.
 pub async fn weibo_ensure_cli() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if weibo_cli_present() {
             return Ok::<Value, String>(json!({ "ok": true, "already": true }));
         }
         if !install_weibo_cli()? {
-            return Err("微博 CLI 安装失败，请查看 ~/.pinvou3/cli-install.log".to_string());
+            return Err("Weibo CLI install failed; see ~/.pinvou3/cli-install.log".to_string());
         }
         if !weibo_cli_present() {
-            return Err("微博 CLI 安装完成但无法执行，请重试或修复应用运行时".to_string());
+            return Err(
+                "Weibo CLI was installed but cannot run; retry or repair the app runtime"
+                    .to_string(),
+            );
         }
         Ok::<Value, String>(json!({ "ok": true, "already": false }))
     })
@@ -200,11 +205,13 @@ pub async fn weibo_ensure_cli() -> Result<Value, String> {
     .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
-/// 查询当前微博连接状态。只返回布尔，不把身份 / token 信息带进 webview。
+/// Query current Weibo connection status. Booleans only; never carries
+/// identity / token information into the webview.
 pub async fn weibo_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
-        // 一次 --version 同时回答「装没装」和「版本够不够」;每个探测都有 8s
-        // 超时预算,重复探测会让一次状态查询最坏串行 4 个子进程。
+        // One --version answers both "installed" and "version sufficient";
+        // each probe has an 8s timeout budget, and repeated probes would make
+        // a single status query spawn up to 4 serial child processes.
         let Some(version) = weibo_cli_version() else {
             return Ok::<Value, String>(json!({
                 "ok": false, "connected": false, "installed": false
@@ -227,7 +234,8 @@ pub async fn weibo_status() -> Result<Value, String> {
     .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
-/// 开始连接微博。立即返回 `{started:true}`，前端 listen 事件驱动 UI。
+/// Start connecting Weibo. Returns `{started:true}` immediately; the frontend
+/// listens to events to drive the UI.
 pub async fn weibo_connect_begin(app: AppHandle) -> Result<Value, String> {
     let conn = app.state::<ConnectorConn>();
     if let Some(pid) = conn.cancel(ID) {
@@ -270,7 +278,7 @@ fn drain_for_auth_event<R: std::io::Read + Send + 'static>(
             let line = match line {
                 Ok(line) => line,
                 Err(error) => {
-                    log::warn!("[weibo] 授权输出读取失败，停止排空：{error}");
+                    log::warn!("[weibo] failed to read auth output, stop draining: {error}");
                     break;
                 }
             };
@@ -296,7 +304,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         .stderr(Stdio::piped());
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("weibo-cli auth login 启动失败: {e}(需要微博 CLI)"))?;
+        .map_err(|e| format!("weibo-cli auth login failed to spawn: {e}(Weibo CLI required)"))?;
     let conn = app.state::<ConnectorConn>();
     conn.set_pid(ID, Some(child.id()));
 
@@ -320,7 +328,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             conn.set_pid(ID, None);
             return Err(auth_failure_message(
                 &auth_lines,
-                "60s 内未拿到微博授权链接(检查网络 / 代理)",
+                "no Weibo auth URL within 60s (check network / proxy)",
             ));
         }
         match rx.recv_timeout(std::cmp::min(
@@ -348,7 +356,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
                     }
                     return Err(auth_failure_message(
                         &auth_lines,
-                        "微博授权进程提前退出，未拿到授权链接",
+                        "Weibo auth process exited early without an auth URL",
                     ));
                 }
             }
@@ -386,13 +394,13 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
                 eprintln!("[weibo] auth login exited without logged-in status: exit={status}");
                 return Err(auth_failure_message(
                     &auth_lines,
-                    "微博授权未完成(可能已取消或超时)",
+                    "Weibo auth not completed (likely cancelled or timed out)",
                 ));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(400)),
             Err(e) => {
                 conn.set_pid(ID, None);
-                return Err(format!("auth login 等待失败: {e}"));
+                return Err(format!("failed to wait on auth login: {e}"));
             }
         }
     }
@@ -409,10 +417,13 @@ fn with_user_code_param(url: &str, user_code: &str) -> String {
     format!("{url}{sep}user_code={user_code}")
 }
 
-/// device-code 输出的 URL 与验证码配对单步:返回 `Some(url)` 表示已可拼接出
-/// 最终授权链接。两种输出顺序都必须支持——URL 先行(含单行「打开链接并输入
-/// XXXX-XXXX」,排空线程对同一行先发 Url 后发 UserCode)与验证码先行;镜像
-/// 钉钉的双向配对,在首个 URL 就 break 会把后到的验证码留在通道里无人消费。
+/// One pairing step for the URL and user code printed by device-code output:
+/// `Some(url)` means the final auth link can be assembled. Both output orders
+/// must work — URL first (including the single-line "open this link and enter
+/// XXXX-XXXX" form, where the drain thread sends Url before UserCode for the
+/// same line) and user code first; this mirrors DingTalk's bidirectional
+/// pairing — breaking on the first URL would leave a later code unconsumed in
+/// the channel.
 fn pair_auth_url(
     plain_url: &mut Option<String>,
     user_code: &mut Option<String>,
@@ -562,7 +573,7 @@ fn auth_failure_message(auth_lines: &VecDeque<String>, fallback: &str) -> String
     if last_line.is_empty() {
         fallback.to_string()
     } else {
-        format!("{fallback}：{last_line}")
+        format!("{fallback}: {last_line}")
     }
 }
 
@@ -574,7 +585,8 @@ pub async fn weibo_cancel(app: AppHandle) -> Result<Value, String> {
     Ok(json!({ "ok": true }))
 }
 
-/// 断开微博:`weibo-cli auth logout`。未安装时也视为已断开。
+/// Disconnect Weibo: `weibo-cli auth logout`. Treated as disconnected when the
+/// CLI is not installed.
 pub async fn weibo_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if weibo_cli_version().is_none() {
@@ -583,7 +595,7 @@ pub async fn weibo_logout() -> Result<Value, String> {
         }
         let (ok, _, _) = run_capture_timeout(weibo(&["auth", "logout"]), SHORT_CMD_TIMEOUT_SECS)?;
         if !ok {
-            return Err("微博 CLI 退出登录失败，请重试".to_string());
+            return Err("weibo CLI logout failed; please retry".to_string());
         }
         cc::bundle_store_on_disconnected(ID);
         Ok::<Value, String>(json!({ "ok": true, "installed": true }))
@@ -592,7 +604,7 @@ pub async fn weibo_logout() -> Result<Value, String> {
     .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
-// ─────────────────────── 微博 skill 门控 ────────────────────────
+// ─────────────────────── Weibo skill gating ────────────────────────
 
 struct WeiboGate;
 impl ConnectorSkillGate for WeiboGate {
@@ -608,7 +620,7 @@ impl ConnectorSkillGate for WeiboGate {
     fn apply_skills(&self, visible: bool) -> Result<(), String> {
         crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
             .apply_weibo_skills(visible)
-            .map_err(|e| format!("更新微博技能失败: {e}"))
+            .map_err(|e| format!("failed to update weibo skills: {e}"))
     }
 }
 const GATE: WeiboGate = WeiboGate;
@@ -673,9 +685,11 @@ mod tests {
 
     #[test]
     fn weibo_commands_strip_token_envs_keep_unrelated() {
-        // env 消毒契约:remove_weibo_token_envs 必须剥离全部 4 个 WEIBO 令牌环境变量
-        // (防用户环境里的 token 静默绕过 device-code 授权与技能门控),
-        // 同时不得波及无关变量(env_clear 式过度实现会让 CLI 丢 PATH/HOME)。
+        // Env sanitization contract: remove_weibo_token_envs must strip all 4
+        // WEIBO token env vars (so tokens in the user's environment cannot
+        // silently bypass device-code auth and skill gating) without touching
+        // unrelated vars (an env_clear-style over-implementation would make the
+        // CLI lose PATH/HOME).
         let mut c = WEIBO_CTX.cli(&["--version"]);
         for k in [
             "WEIBO_CLI_TOKEN",
@@ -694,7 +708,7 @@ mod tests {
             "WEIBO_CLI_REFRESH_TOKEN",
             "WEIBO_REFRESH_TOKEN",
         ] {
-            // get_envs 的值是 Option:None = 已被 env_remove 挂起删除
+            // get_envs values are Option: None = pending removal via env_remove
             let stripped = envs
                 .get(std::ffi::OsStr::new(k))
                 .is_none_or(|v| v.is_none());
@@ -761,9 +775,11 @@ mod tests {
 
     #[test]
     fn pairs_auth_url_and_code_in_either_order() {
-        // 回归:URL 先于验证码行输出时(含单行「打开链接并输入 XXXX」形态,
-        // 排空线程对同一行先发 Url 再发 UserCode),在首个 URL 就 break 会把
-        // 验证码留在通道里无人消费 → user_code=null,前端无码可显示。
+        // Regression: when the URL line is printed before the code line
+        // (including the single-line "open this link and enter XXXX" form,
+        // where the drain thread sends Url before UserCode for the same
+        // line), breaking on the first URL would leave the code unconsumed in
+        // the channel → user_code=null and the UI has no code to show.
         let mut plain_url: Option<String> = None;
         let mut user_code: Option<String> = None;
         assert!(pair_auth_url(
@@ -782,7 +798,7 @@ mod tests {
             Some("https://open.weibo.com/cli/device?user_code=1B66-F7C7")
         );
 
-        // 验证码先行:URL 到达时立即拼上。
+        // Code first: pair immediately when the URL arrives.
         let mut plain_url: Option<String> = None;
         let mut user_code: Option<String> = None;
         assert!(pair_auth_url(
@@ -801,7 +817,7 @@ mod tests {
             Some("https://open.weibo.com/cli/device?user_code=AB12-CD34")
         );
 
-        // URL 自带 user_code:无需配对直接可用。
+        // URL already carries user_code: usable without pairing.
         assert_eq!(
             pair_auth_url(
                 &mut None,
@@ -843,8 +859,11 @@ mod tests {
         lines.push_back("starting auth".to_string());
         lines.push_back("Error: network timeout".to_string());
         assert_eq!(
-            auth_failure_message(&lines, "微博授权进程提前退出，未拿到授权链接"),
-            "微博授权进程提前退出，未拿到授权链接：Error: network timeout"
+            auth_failure_message(
+                &lines,
+                "Weibo auth process exited early without an auth URL"
+            ),
+            "Weibo auth process exited early without an auth URL: Error: network timeout"
         );
     }
 
@@ -879,14 +898,21 @@ mod tests {
 
     #[test]
     fn status_probe_timeout_is_treated_as_not_connected() {
-        // 状态探测契约:命令超时 → Err,调用方(is_logged_in/weibo_status)按未连接处理,
-        // 不把超时错误抛给工具商店或首屏门控刷新。裸 ping 不带次数限制在三个平台
-        // 都必然超过 1s 超时(macOS/Linux 无限,Windows 默认 4 次 ≈3s),无需平台分支。
+        // Status probe contract: a command timeout → Err; callers
+        // (is_logged_in/weibo_status) treat it as not connected and never
+        // surface the timeout error to the tool store or first-frame gate
+        // refresh. A bare ping without a count limit exceeds the 1s timeout on
+        // all three platforms (macOS/Linux run forever, Windows defaults to 4
+        // rounds ≈3s), so no platform branch is needed.
         let mut cmd = std::process::Command::new("ping");
         cmd.arg("127.0.0.1");
-        // 断言错误文案而非仅 is_err:若环境缺 ping 走「启动失败」分支也能 is_err,
-        // 那样测不到超时路径本身。
+        // Assert on the error text, not just is_err: an environment without
+        // ping takes the "failed to spawn" branch, which also yields is_err
+        // and would never exercise the timeout path itself.
         let err = run_capture_timeout(cmd, 1).expect_err("hung probe must time out");
-        assert!(err.contains("超时"), "must surface the timeout, got {err}");
+        assert!(
+            err.contains("timed out"),
+            "must surface the timeout, got {err}"
+        );
     }
 }

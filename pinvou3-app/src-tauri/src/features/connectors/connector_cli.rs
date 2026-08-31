@@ -344,7 +344,7 @@ pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, 
         let show = crate::features::connectors::weibo::weibo_skills_should_show();
         crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
             .apply_weibo_skills(show)
-            .map_err(|e| format!("刷新微博技能门控失败: {e}"))?;
+            .map_err(|e| format!("failed to refresh weibo skill gating: {e}"))?;
         Ok::<bool, String>(show)
     });
 
@@ -354,7 +354,8 @@ pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, 
     let wecom_visible = wecom_result.map_err(|e| format!("企微鉴权探测任务失败: {e}"))??;
     let dingtalk_visible = dingtalk_result.map_err(|e| format!("钉钉鉴权探测任务失败: {e}"))??;
     let tmeet_visible = tmeet_result.map_err(|e| format!("腾讯会议鉴权探测任务失败: {e}"))??;
-    let weibo_visible = weibo_result.map_err(|e| format!("微博鉴权探测任务失败: {e}"))??;
+    let weibo_visible =
+        weibo_result.map_err(|e| format!("weibo auth probe task failed: {e}"))??;
     let elapsed_ms = started.elapsed().as_millis() as u64;
     crate::platform::startup::mark_with_detail(
         "rust",

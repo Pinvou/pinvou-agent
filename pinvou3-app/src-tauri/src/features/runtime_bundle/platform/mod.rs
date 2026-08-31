@@ -51,8 +51,9 @@ static DINGTALK_SKILLS_DIR: Dir<'_> =
 static TMEET_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/tmeet-skills");
 
-/// 微博 CLI Pinvou 适配技能(weibo-cli,MIT CLI,技能为 Pinvou 本地适配)。
-/// 独立放 `weibo-skills/`，按微博连接 / 停用状态单独门控。
+/// Weibo CLI Pinvou-adapted skills (weibo-cli; MIT CLI, skills locally adapted
+/// by Pinvou). Kept in a separate `weibo-skills/`, gated independently by the
+/// Weibo connect/disable state.
 static WEIBO_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/weibo-skills");
 
@@ -127,10 +128,12 @@ const WEIBO_SKILL_DIRS: [&str; 1] = ["weibo-cli"];
 ///       connected users to refresh at startup (otherwise the refresh
 ///       waits for the post-first-frame refresh_connector_auth_gates
 ///       backfill).
-/// 0.29: 接入微博 CLI Pinvou 适配技能（weibo-cli 0.9.1）。0.24 是 #333 的
-///       预留槽位，但 0.25–0.28 已先行落地，故 #333 取下一空闲槽位。
-///       五棵技能树不参与内容哈希，须 bump 语义版本让已连接用户启动即同步刷新
-///       （否则要等首帧后 refresh_connector_auth_gates 补刷）。
+/// 0.29: Weibo CLI Pinvou-adapted skills (weibo-cli 0.9.1). Slot 0.24 was the
+///       original #333 reservation, but 0.25-0.28 landed first, so #333 takes
+///       the next free slot. Skill trees are excluded from the content hash,
+///       so the semantic version must be bumped for connected users to refresh
+///       at startup (otherwise the refresh waits for the post-first-frame
+///       refresh_connector_auth_gates backfill).
 pub const BUNDLE_VERSION: &str = concat!("0.29-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
@@ -461,16 +464,19 @@ mod tests {
         paths::bundles_root().join(id).join("skills")
     }
 
-    /// weibo 技能目录表双份常量互锁:本模块门控/提取用的表必须与 marketplace
-    /// `BUILTIN_CLI_BUNDLES` 引用的表一致(wecom 曾因两侧分叉出过迁移/反查与
-    /// 门控不一致的 bug)。方向说明:runtime_bundle 测试引用 marketplace 是
-    /// 既有合法方向(运行时本模块已依赖 marketplace),反向则会造成新的环。
+    /// Interlock for the duplicated weibo skill dir tables: the table used by
+    /// this module's gating/extraction must match the one referenced by
+    /// marketplace `BUILTIN_CLI_BUNDLES` (wecom once shipped a migration/
+    /// reverse-lookup vs gating divergence when the two sides forked). Note on
+    /// direction: runtime_bundle tests referencing marketplace is the existing
+    /// legal direction (the runtime module already depends on marketplace);
+    /// the reverse would create a new cycle.
     #[test]
     fn weibo_skill_dirs_match_marketplace_truth() {
         assert_eq!(
             WEIBO_SKILL_DIRS.as_slice(),
             crate::features::marketplace::bundle::WEIBO_SKILL_DIRS,
-            "runtime_bundle 与 marketplace 的 weibo 技能目录表必须一致"
+            "runtime_bundle and marketplace weibo skill dir tables must match"
         );
     }
 

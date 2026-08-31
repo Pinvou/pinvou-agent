@@ -53,7 +53,7 @@ pub const WECOM_SKILL_DIRS: &[&str] = &crate::platform::connector_skills::WECOM_
 pub const DINGTALK_SKILL_DIRS: &[&str] = &["dws"];
 /// 腾讯会议 mono skill 目录名。
 pub const TMEET_SKILL_DIRS: &[&str] = &["tmeet-skill"];
-/// 微博 Pinvou 适配 skill 目录名。
+/// Weibo Pinvou-adapted skill dir name.
 pub const WEIBO_SKILL_DIRS: &[&str] = &["weibo-cli"];
 
 const BUILTIN_CLI_BUNDLES: &[(&str, &str, &str, &[&str], &str)] = &[

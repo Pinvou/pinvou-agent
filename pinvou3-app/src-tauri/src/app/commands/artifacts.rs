@@ -711,7 +711,7 @@ const EXTERNAL_URL_ALLOWLIST: &[&str] = &[
     "https://accounts.larksuite.com/",
     // 腾讯会议 OAuth 授权页；连接腾讯会议时可从流程卡打开浏览器
     "https://meeting.tencent.com/",
-    // 微博 CLI device flow 授权页；连接微博时可从流程卡打开浏览器
+    // Weibo CLI device-flow auth pages; openable from the flow card while connecting
     "https://open.weibo.com/",
     "https://open-dev.weibo.com/",
     // Obsidian 官网:知识库连接器探测到未安装时,引导用户下载

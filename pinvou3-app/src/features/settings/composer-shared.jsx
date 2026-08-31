@@ -482,8 +482,8 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       const [dingtalkEnabled, setDingtalkEnabled] = useState(true); // 钉钉技能是否启用(未手动停用)
       const [tmeetOn, setTmeetOn] = useState(false); // 腾讯会议是否已连接(CLI 路线)
       const [tmeetEnabled, setTmeetEnabled] = useState(true); // 腾讯会议技能是否启用(未手动停用)
-      const [weiboOn, setWeiboOn] = useState(false); // 微博是否已连接(CLI 路线)
-      const [weiboEnabled, setWeiboEnabled] = useState(true); // 微博技能是否启用(未手动停用)
+      const [weiboOn, setWeiboOn] = useState(false); // weibo connected (CLI route)
+      const [weiboEnabled, setWeiboEnabled] = useState(true); // weibo skills enabled (not manually disabled)
       // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
       async function refreshToolsMenu(isAlive) {
         try {

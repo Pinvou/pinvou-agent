@@ -638,8 +638,9 @@ impl Pinvou3Bundle {
                 .all(|dir| target.join(dir).join("SKILL.md").is_file())
     }
 
-    /// 微博 mono skill 门控:`show` → 解包 `weibo-cli` 到包目录;否则删除。
-    /// 出处声明用 `NOTICE-weibo.md`,避免覆盖其他 CLI 连接器 NOTICE。
+    /// Weibo mono skill gating: `show` → extract `weibo-cli` into the package
+    /// dir; otherwise remove it. Provenance is declared in `NOTICE-weibo.md`
+    /// to avoid clobbering other CLI connectors' NOTICE.
     pub fn apply_weibo_skills(&self, show: bool) -> std::io::Result<()> {
         let target = Self::connector_package_skills_dir("weibo");
         if show {
@@ -653,7 +654,8 @@ impl Pinvou3Bundle {
         Ok(())
     }
 
-    /// 同 [`cached_feishu_skills_visible`]，以完整的微博技能目录作为启动缓存。
+    /// Same as [`cached_feishu_skills_visible`] with the complete weibo skill
+    /// dirs as the startup cache.
     pub(super) fn cached_weibo_skills_visible(&self) -> bool {
         let target = Self::connector_package_skills_dir("weibo");
         crate::platform::connector_state::weibo_skills_visible()
