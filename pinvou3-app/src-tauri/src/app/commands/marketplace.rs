@@ -446,7 +446,8 @@ pub async fn uninstall_marketplace_tool(
 
 pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), String> {
     let mgr = crate::features::marketplace::MarketplaceManager::new();
-    let companions = mgr.companion_skills(tool_id); // 卸前先取(manifest 不删,卸后也能读,保险先读)
+    // Resolve companion ownership before any OAuth, skill, or MCP state is mutated.
+    let companions = mgr.companion_skills(tool_id);
     if let Some(server_name) = mgr.oauth_remote_server_name(tool_id) {
         match marketplace_oauth_server_from_mcp_config(&server_name)? {
             Some(server) => {

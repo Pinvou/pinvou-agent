@@ -156,6 +156,11 @@ fn bundled_connector_runtime_paths_for(
 pub fn bundle_present_artifact_server() -> PathBuf {
     bundle_mcp_servers_dir().join("present_artifact_server.py")
 }
+/// Local Python MCP bootstrap that adds the tool's isolated dependency directory before running
+/// its server script.
+pub fn bundle_mcp_python_runner() -> PathBuf {
+    bundle_mcp_servers_dir().join("python_dependency_runner.py")
+}
 /// bundle 版本号文件（`~/.pinvou3/bundle/VERSION`）绝对路径。
 pub fn bundle_version_file() -> PathBuf {
     bundle_root().join("VERSION")
@@ -261,6 +266,24 @@ pub fn bundled_chrome_devtools_mcp_bin() -> Option<PathBuf> {
 ///   依赖由 marketplace 的自动 pip 安装)。
 pub fn python_command() -> String {
     crate::platform::os::python_command()
+}
+
+/// Locked Python dependencies may only load through the app's bundled interpreter.
+/// On Windows `PINVOU3_PYTHON` and the system Python are refused so user site/sitecustomize cannot fill in missing locked dependencies.
+pub fn managed_python_command() -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        return crate::platform::os::windows::bundled_python_path()
+            .map(|path| path.to_string_lossy().into_owned())
+            .ok_or_else(|| {
+                "bundled Python runtime is missing; cannot safely load locked MCP dependencies"
+                    .to_string()
+            });
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(python_command())
+    }
 }
 
 pub fn user_root() -> PathBuf {
@@ -542,6 +565,31 @@ pub(crate) mod tests {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),
             None => std::env::remove_var("PINVOU3_HOME"),
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn managed_python_rejects_pinvou3_python_override() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let previous = std::env::var_os("PINVOU3_PYTHON");
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-managed-python-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let ambient = root.join("python.exe");
+        std::fs::write(&ambient, b"ambient").unwrap();
+        std::env::set_var("PINVOU3_PYTHON", &ambient);
+
+        assert_eq!(python_command(), ambient.to_string_lossy());
+        assert!(managed_python_command().is_err());
+
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_PYTHON", value),
+            None => std::env::remove_var("PINVOU3_PYTHON"),
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

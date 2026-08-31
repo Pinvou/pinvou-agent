@@ -617,6 +617,27 @@ fn mcp_uninstall_removes_companion_skills_from_package_dir() {
         .join("skills")
         .join("government-writing");
     assert!(skill_dir.is_dir(), "companion 技能应随包装入包目录");
+    for scope in [
+        crate::features::marketplace::ConnectorScope::Plain,
+        crate::features::marketplace::ConnectorScope::Code,
+    ] {
+        crate::features::marketplace::save_disabled_bundles_for(
+            scope,
+            &["government-writing".to_string()],
+        );
+        crate::features::marketplace::save_hidden_bundles_for(
+            scope,
+            &["government-writing".to_string()],
+        );
+        assert_eq!(
+            crate::features::marketplace::load_disabled_bundles_for(scope),
+            vec!["gongwen".to_string()]
+        );
+        assert_eq!(
+            crate::features::marketplace::load_hidden_bundles_for(scope),
+            vec!["gongwen".to_string()]
+        );
+    }
 
     uninstall_marketplace_tool_sync("gongwen").unwrap();
 
@@ -631,6 +652,19 @@ fn mcp_uninstall_removes_companion_skills_from_package_dir() {
             .any(|s| s.id == "government-writing" && s.installed),
         "卸 MCP 后 companion 技能不得仍为已装态"
     );
+    for scope in [
+        crate::features::marketplace::ConnectorScope::Plain,
+        crate::features::marketplace::ConnectorScope::Code,
+    ] {
+        assert!(
+            crate::features::marketplace::load_disabled_bundles_for(scope).is_empty(),
+            "卸载成功后 companion/package 禁用 scope 必须清理"
+        );
+        assert!(
+            crate::features::marketplace::load_hidden_bundles_for(scope).is_empty(),
+            "卸载成功后 companion/package 隐藏 scope 必须清理"
+        );
+    }
 }
 
 /// Claim-flip guard (safety-relevant): if the companion skill cannot be

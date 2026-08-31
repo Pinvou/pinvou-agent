@@ -398,6 +398,40 @@ mod tests {
         });
     }
 
+    /// 独立安装的技能（市场单装/手放）即使目录名与未安装连接器声明的 companion
+    /// 重合，也不得被物化排除：V5 条件认领规定「未装包的 companion 保留独立纯
+    /// 技能包形态」（bundle.rs `skill_owner_package`），物化层不存在按 companion
+    /// 名单旁路排除的口径。钉住该约束——任何把 `unavailable_companion_skills()`
+    /// 直接并入排除集的回归都会让本测试变红。
+    #[test]
+    fn standalone_companion_named_skill_survives_uninstalled_connector() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "gongwen",
+                r#"{"id":"gongwen","name":"公文写作","description":"d","version":"1.0.0","icon":"file-text","category":"办公","mcp_tools":["mcp_gongwen_make_gongwen"],"command":"python","args":["server.py"],"companion_skills":["government-writing"]}"#,
+            );
+            let skill_dir = paths::bundle_skills_dir().join("government-writing");
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            std::fs::write(
+                skill_dir.join("SKILL.md"),
+                "---\nname: government-writing\n---\n# GW\n",
+            )
+            .unwrap();
+            // 关键前提：gongwen 连接器未安装（无 BundleStore/installed.json 记录）。
+            // 此时 gongwen 仍在清单里声明 government-writing companion，
+            // unavailable_companion_skills() 非空，但技能必须保持可用。
+            assert!(crate::features::marketplace::MarketplaceManager::new()
+                .unavailable_companion_skills()
+                .contains(&"government-writing".to_string()));
+
+            let enabled = enabled_skills_for(ConnectorScope::Plain, None);
+            assert!(
+                enabled.iter().any(|(n, _)| n == "government-writing"),
+                "未装连接器时，同名独立技能必须保留独立纯技能包形态"
+            );
+        });
+    }
+
     /// CLI 连接器（无 manifest）禁用联动：feishu 进 scope 禁用集 → 9 个 lark-*
     /// 目录全部从组合目录排除（companion 查能力包注册表静态表，无需 manifest）；
     /// 开回来 → 恢复。

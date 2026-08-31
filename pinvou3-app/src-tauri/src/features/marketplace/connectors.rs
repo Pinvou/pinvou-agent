@@ -12,6 +12,7 @@ use std::sync::{Mutex, MutexGuard};
 use crate::platform::paths;
 
 use super::bundle;
+use super::python_dependencies;
 use super::secrets::{is_sensitive_key_name, set_remote_secret_header};
 use super::types::ToolManifest;
 use super::MarketplaceManager;
@@ -19,6 +20,19 @@ use super::MarketplaceManager;
 /// mcp.json 读-改-写的进程内串行化（四轮评审 M-8）：add/remove 是裸读-改-写，
 /// 并发安装/卸载会交错丢更新；与 store.rs 的 BUNDLES_FILE_LOCK 同一范式。
 static MCP_JSON_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+static NEXT_PIP_INSTALL_RESULT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+#[cfg(test)]
+pub(super) fn set_next_pip_install_result_for_test(result: u8) {
+    NEXT_PIP_INSTALL_RESULT.store(result, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(super) fn take_pending_pip_install_result_for_test() -> u8 {
+    NEXT_PIP_INSTALL_RESULT.swap(0, std::sync::atomic::Ordering::SeqCst)
+}
 
 pub(super) fn mcp_json_lock() -> MutexGuard<'static, ()> {
     MCP_JSON_LOCK
@@ -54,10 +68,20 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         if manifest.pip_dependencies.is_empty() {
             return Ok(());
         }
-        // Windows:python-pptx 等依赖已随内置 python(python-win)预装,不在用户机器
-        // 跑 pip —— 用户也就不需要自己装 python。仅 Linux/macOS 走系统 python3 联网 pip。
+        #[cfg(test)]
+        match NEXT_PIP_INSTALL_RESULT.swap(0, std::sync::atomic::Ordering::SeqCst) {
+            1 => return Err("test-injected pip dependency failure".to_string()),
+            2 => return Ok(()),
+            _ => {}
+        }
+        // The bundled Windows interpreter is not an implicit dependency source. Every non-empty
+        // dependency set must have a verified platform wheel lock; silently accepting ambient or
+        // preinstalled packages would make the manifest incomplete and non-reproducible.
         if crate::platform::capabilities::is_windows() {
-            return Ok(());
+            return Err(format!(
+                "tool '{}' is missing the Windows Python dependency lock required for a safe install",
+                manifest.id
+            ));
         }
         let python_cmd = "python3";
         let deps = &manifest.pip_dependencies;
@@ -130,6 +154,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         manifest: &ToolManifest,
         user_config: &HashMap<String, String>,
         server_dir: &std::path::Path,
+        python_environment: Option<&python_dependencies::InstalledPythonEnvironment>,
     ) -> Result<(), String> {
         let _guard = mcp_json_lock();
         let mcp_path = paths::mcp_config_path();
@@ -149,7 +174,13 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         if !manifest.servers.is_empty() {
             self.add_remote_to_mcp_json(manifest, user_config, servers)?;
         } else {
-            self.add_local_to_mcp_json(manifest, user_config, server_dir, servers)?;
+            self.add_local_to_mcp_json(
+                manifest,
+                user_config,
+                server_dir,
+                python_environment,
+                servers,
+            )?;
         }
 
         write_json_pretty(&mcp_path, &mcp)
@@ -274,16 +305,8 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         Ok(())
     }
 
-    /// 本地工具路径:command/args/env。Python 工具用内置 python(Windows)或系统 python3。
-    /// 敏感字段走 `${ENV}` 占位,非敏感原样写。
-    fn add_local_to_mcp_json(
-        &self,
-        manifest: &ToolManifest,
-        user_config: &HashMap<String, String>,
-        server_dir: &std::path::Path,
-        servers: &mut serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(), String> {
-        let args: Vec<String> = manifest
+    fn local_server_args(manifest: &ToolManifest, server_dir: &Path) -> Vec<String> {
+        manifest
             .args
             .iter()
             .map(|a| {
@@ -293,7 +316,101 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     a.clone()
                 }
             })
-            .collect();
+            .collect()
+    }
+
+    fn managed_python_runtime_fields(
+        manifest: &ToolManifest,
+        server_dir: &Path,
+        environment: &python_dependencies::InstalledPythonEnvironment,
+    ) -> Result<(String, Vec<String>), String> {
+        if manifest.command != "python" && manifest.command != "python3" {
+            return Err(format!(
+                "tool '{}' declares Python dependencies but does not use a Python command",
+                manifest.id
+            ));
+        }
+        let args = Self::local_server_args(manifest, server_dir);
+        let Some(server_script) = args.first().cloned() else {
+            return Err(format!(
+                "tool '{}' has no Python server argument",
+                manifest.id
+            ));
+        };
+        if !Path::new(&server_script).is_file() {
+            return Err(format!(
+                "tool '{}' Python server does not exist: {}",
+                manifest.id, server_script
+            ));
+        }
+        let runner = paths::bundle_mcp_python_runner();
+        if !runner.is_file() {
+            return Err("Python MCP dependency runner is missing; restart and retry".to_string());
+        }
+        let mut wrapped_args = vec![
+            "-I".to_string(),
+            "-S".to_string(),
+            "-B".to_string(),
+            runner.to_string_lossy().into_owned(),
+            environment.site_packages.to_string_lossy().into_owned(),
+            server_script,
+        ];
+        wrapped_args.extend(args.into_iter().skip(1));
+        Ok((environment.python_command.clone(), wrapped_args))
+    }
+
+    /// Repair only the managed launcher fields. Existing configuration, secret placeholders,
+    /// enabled state, timeouts, and forward-compatible fields retain their JSON values.
+    pub(super) fn patch_managed_python_runtime(
+        &self,
+        manifest: &ToolManifest,
+        server_dir: &Path,
+        environment: &python_dependencies::InstalledPythonEnvironment,
+    ) -> Result<(), String> {
+        let (command, args) =
+            Self::managed_python_runtime_fields(manifest, server_dir, environment)?;
+        let _guard = mcp_json_lock();
+        let mcp_path = paths::mcp_config_path();
+        let content = std::fs::read_to_string(&mcp_path)
+            .map_err(|error| format!("read mcp.json: {error}"))?;
+        let mut mcp: serde_json::Value =
+            serde_json::from_str(&content).map_err(|error| format!("parse mcp.json: {error}"))?;
+        let entry = mcp
+            .get_mut("servers")
+            .and_then(serde_json::Value::as_object_mut)
+            .and_then(|servers| servers.get_mut(&manifest.id))
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| format!("mcp.json has no local server entry for '{}'", manifest.id))?;
+        let command = serde_json::Value::String(command);
+        let args = serde_json::to_value(args).map_err(|error| error.to_string())?;
+        if entry.get("command") == Some(&command) && entry.get("args") == Some(&args) {
+            return Ok(());
+        }
+        entry.insert("command".to_string(), command);
+        entry.insert("args".to_string(), args);
+        write_json_pretty(&mcp_path, &mcp)
+    }
+
+    /// Local tool layout: command/args/env. Python tools use the bundled python (Windows)
+    /// or the system python3; sensitive fields go through `${ENV}` placeholders, non-sensitive ones verbatim.
+    fn add_local_to_mcp_json(
+        &self,
+        manifest: &ToolManifest,
+        user_config: &HashMap<String, String>,
+        server_dir: &std::path::Path,
+        python_environment: Option<&python_dependencies::InstalledPythonEnvironment>,
+        servers: &mut serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        let (command, args) = if let Some(environment) = python_environment {
+            Self::managed_python_runtime_fields(manifest, server_dir, environment)?
+        } else {
+            let command = if manifest.command == "python" || manifest.command == "python3" {
+                paths::python_command()
+            } else {
+                manifest.command.clone()
+            };
+            (command, Self::local_server_args(manifest, server_dir))
+        };
 
         let mut env = manifest
             .env
@@ -342,12 +459,6 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             }
         }
 
-        // python 工具:Windows 用内置 pythonw(无窗口 + 自带依赖),其他平台系统 python3。
-        let command = if manifest.command == "python" || manifest.command == "python3" {
-            paths::python_command()
-        } else {
-            manifest.command.clone()
-        };
         let mut entry = serde_json::json!({
             "command": command,
             "args": args,

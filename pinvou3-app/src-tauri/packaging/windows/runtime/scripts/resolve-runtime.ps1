@@ -3,7 +3,8 @@ param(
   [string]$Mode = "Stage",
   [string]$RuntimeRoot = "",
   [string]$LockFile = "",
-  [switch]$Force
+  [switch]$Force,
+  [switch]$ImportFunctionsOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -467,13 +468,233 @@ function Get-TauriOverlayContent {
   return (($config | ConvertTo-Json -Depth 8) + "`n")
 }
 
+function Get-PythonInterpreterTagVersion {
+  param([string]$Tag, [string]$Prefix)
+
+  if ($Tag -cnotmatch "^${Prefix}(?<major>\d)(?<minor>\d+)$") {
+    return $null
+  }
+  return [pscustomobject]@{
+    Major = [int]$Matches['major']
+    Minor = [int]$Matches['minor']
+  }
+}
+
+function Test-CompatiblePurePythonTag {
+  param([string]$Tag, $TargetVersion)
+
+  if ($Tag -ceq "py$($TargetVersion.Major)") {
+    return $true
+  }
+  $version = Get-PythonInterpreterTagVersion -Tag $Tag -Prefix 'py'
+  return $null -ne $version -and
+    $version.Major -eq $TargetVersion.Major -and
+    $version.Minor -le $TargetVersion.Minor
+}
+
+function Test-PythonWheelTarget {
+  param([string]$Filename, [string]$Target)
+
+  if ($Target -cnotmatch '^(cp(?<targetDigits>\d+))-(?<targetPlatform>[a-z0-9_]+)$') {
+    return $false
+  }
+  $targetPython = $Matches[1]
+  $targetPlatform = $Matches['targetPlatform']
+  $targetVersion = Get-PythonInterpreterTagVersion -Tag $targetPython -Prefix 'cp'
+  if ($null -eq $targetVersion) {
+    return $false
+  }
+  if ($Filename -cnotmatch '-(?<python>[^-]+)-(?<abi>[^-]+)-(?<platform>[^-]+)\.whl$') {
+    return $false
+  }
+  $pythonTags = @($Matches['python'].Split('.'))
+  $abiTags = @($Matches['abi'].Split('.'))
+  $platformTags = @($Matches['platform'].Split('.'))
+  foreach ($tag in @($pythonTags) + @($abiTags) + @($platformTags)) {
+    if ($tag -cnotmatch '^[a-z0-9_]+$') {
+      return $false
+    }
+  }
+  foreach ($pythonTag in $pythonTags) {
+    foreach ($abiTag in $abiTags) {
+      foreach ($platformTag in $platformTags) {
+        $purePython = $abiTag -ceq 'none' -and (
+          $pythonTag -ceq $targetPython -or
+          (Test-CompatiblePurePythonTag -Tag $pythonTag -TargetVersion $targetVersion)
+        )
+        $exactCpython = $pythonTag -ceq $targetPython -and $abiTag -ceq $targetPython
+        $pythonVersion = Get-PythonInterpreterTagVersion -Tag $pythonTag -Prefix 'cp'
+        $stableAbi = $abiTag -ceq 'abi3' -and
+          $null -ne $pythonVersion -and
+          $pythonVersion.Major -eq $targetVersion.Major -and
+          ($pythonVersion.Major -gt 3 -or ($pythonVersion.Major -eq 3 -and $pythonVersion.Minor -ge 2)) -and
+          $pythonVersion.Minor -le $targetVersion.Minor
+        $compatible = if ($platformTag -ceq $targetPlatform) {
+          $exactCpython -or $stableAbi -or $purePython
+        } elseif ($platformTag -ceq 'any') {
+          $purePython
+        } else {
+          $false
+        }
+        if ($compatible) {
+          return $true
+        }
+      }
+    }
+  }
+  return $false
+}
+
+function Test-PythonDependencyTarget {
+  param($Target)
+
+  if (
+    $null -eq $Target -or
+    $Target.platform -isnot [string] -or
+    $Target.python -isnot [string] -or
+    $Target.imports -isnot [System.Array] -or
+    $Target.wheels -isnot [System.Array] -or
+    $Target.platform -cnotmatch '^[a-z0-9]+-[a-z0-9]+$' -or
+    $Target.python -cnotmatch '^\d+\.\d+$' -or
+    @($Target.imports).Count -eq 0 -or
+    @($Target.wheels).Count -eq 0
+  ) {
+    return $false
+  }
+  foreach ($import in @($Target.imports)) {
+    if ($import -isnot [string] -or $import -cnotmatch '^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$') {
+      return $false
+    }
+  }
+
+  $wheelTarget = $null
+  if ($Target.platform -ceq 'windows-x64') {
+    $versionDigits = ([string]$Target.python).Replace('.', '')
+    $wheelTarget = "cp${versionDigits}-win_amd64"
+  }
+  foreach ($wheel in @($Target.wheels)) {
+    if (
+      $null -eq $wheel -or
+      $wheel.name -isnot [string] -or
+      $wheel.version -isnot [string] -or
+      [string]::IsNullOrWhiteSpace([string]$wheel.name) -or
+      [string]::IsNullOrWhiteSpace([string]$wheel.version) -or
+      $wheel.filename -isnot [string] -or
+      $wheel.url -isnot [string] -or
+      $wheel.sha256 -isnot [string] -or
+      $wheel.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+      $wheel.filename -cnotmatch '^[A-Za-z0-9._+-]+\.whl$'
+    ) {
+      return $false
+    }
+    try {
+      $uri = [System.Uri]::new($wheel.url)
+    } catch {
+      return $false
+    }
+    if (
+      $uri.Scheme -cne 'https' -or
+      $uri.Host -cne 'files.pythonhosted.org' -or
+      [System.Uri]::UnescapeDataString($uri.Segments[-1]) -cne [string]$wheel.filename -or
+      ($null -ne $wheelTarget -and -not (Test-PythonWheelTarget -Filename $wheel.filename -Target $wheelTarget))
+    ) {
+      return $false
+    }
+  }
+  return $true
+}
+
+function Test-PythonDependencyTargets {
+  param(
+    [string]$PythonRoot,
+    [scriptblock]$AbiProbe,
+    [string]$ManifestRoot = ""
+  )
+
+  $pythonExe = Join-Path $PythonRoot "python.exe"
+  if ($null -eq $AbiProbe -and -not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) {
+    Write-Warning "Python dependency ABI probe could not find python.exe: $pythonExe"
+    return $false
+  }
+  if ([string]::IsNullOrWhiteSpace($ManifestRoot)) {
+    $ManifestRoot = Join-Path $appRoot "resources\mcp-servers"
+  }
+  if (-not (Test-Path -LiteralPath $ManifestRoot -PathType Container)) {
+    Write-Warning "Python dependency manifest root does not exist: $ManifestRoot"
+    return $false
+  }
+  $manifestPaths = @(Get-ChildItem -LiteralPath $ManifestRoot -Filter manifest.json -File -Recurse)
+  foreach ($manifestItem in $manifestPaths) {
+    $manifestPath = $manifestItem.FullName
+    $tool = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $pipDependencies = @($tool.pip_dependencies | Where-Object { $null -ne $_ })
+    if ($null -eq $tool.python_dependencies) {
+      if ($pipDependencies.Count -gt 0) {
+        Write-Warning "Python MCP declares pip_dependencies without a python_dependencies lock: $manifestPath"
+        return $false
+      }
+      continue
+    }
+    $dependencyLock = $tool.python_dependencies
+    if (
+      [int]$dependencyLock.schema_version -ne 1 -or
+      $dependencyLock.targets -isnot [System.Array] -or
+      @($dependencyLock.targets).Count -eq 0
+    ) {
+      Write-Warning "Python MCP dependency lock schema is invalid: $manifestPath"
+      return $false
+    }
+    $seenPlatforms = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    foreach ($target in @($dependencyLock.targets)) {
+      if (-not (Test-PythonDependencyTarget -Target $target) -or -not $seenPlatforms.Add([string]$target.platform)) {
+        Write-Warning "Python MCP dependency target is invalid or duplicated: $manifestPath"
+        return $false
+      }
+    }
+    $windowsTargets = @($dependencyLock.targets | Where-Object { [string]$_.platform -ceq 'windows-x64' })
+    if ($windowsTargets.Count -ne 1) {
+      Write-Warning "Python MCP dependency lock must contain exactly one windows-x64 target: $manifestPath"
+      return $false
+    }
+    $target = $windowsTargets[0]
+    $abiMatches = if ($null -ne $AbiProbe) {
+      & $AbiProbe $pythonExe $target
+    } else {
+      $probe = "import platform,sys; expected=(int(sys.argv[1]),int(sys.argv[2])); machine=platform.machine().lower(); ok=sys.version_info[:2]==expected and machine in ('amd64','x86_64'); raise SystemExit(0 if ok else 17)"
+      $version = ([string]$target.python).Split('.')
+      # Discard probe stdout: pipeline output would join the trailing boolean into
+      # an array and make `-not $abiMatches` false even on a non-zero exit code.
+      $null = & $pythonExe -I -S -B -c $probe $version[0] $version[1]
+      $LASTEXITCODE -eq 0
+    }
+    if (-not $abiMatches) {
+      Write-Warning "Bundled Python ABI does not match MCP dependency target '$($target.python)/$($target.platform)' in $manifestPath"
+      return $false
+    }
+  }
+  return $true
+}
+
+function Assert-FreshStagePythonDependencies {
+  param([string]$PythonRoot, [scriptblock]$PythonDependencyProbe)
+
+  $valid = if ($null -eq $PythonDependencyProbe) {
+    Test-PythonDependencyTargets -PythonRoot $PythonRoot
+  } else {
+    & $PythonDependencyProbe $PythonRoot
+  }
+  if (-not $valid) {
+    throw "Bundled Python ABI is incompatible with the locked Windows MCP dependency wheels."
+  }
+}
+
 function Write-TauriOverlay {
   param([string]$StageId)
   Write-Utf8WithoutBom -Path $generatedConfigPath -Content (Get-TauriOverlayContent -StageId $StageId)
 }
 
 function Test-VerifiedStageReusable {
-  param($Manifest)
+  param($Manifest, [scriptblock]$PythonDependencyProbe)
 
   $stageMarkerPath = Join-Path $stagingRoot ".verified-lock"
   if (-not (Test-VerificationMarker -Path $stageMarkerPath)) {
@@ -481,6 +702,16 @@ function Test-VerifiedStageReusable {
   }
 
   if (-not (Test-StageInventory -StageRoot $stagingRoot)) {
+    return $false
+  }
+
+  $pythonRoot = Join-Path $stagingRoot "expanded\python"
+  $pythonDependenciesValid = if ($null -eq $PythonDependencyProbe) {
+    Test-PythonDependencyTargets -PythonRoot $pythonRoot
+  } else {
+    & $PythonDependencyProbe $pythonRoot
+  }
+  if (-not $pythonDependenciesValid) {
     return $false
   }
 
@@ -551,6 +782,7 @@ function Stage-Submodule {
       }
 
       Expand-FlattenedRuntime -ZipPath (Find-ComponentArchive -PayloadRoot $payloadRoot -Pattern "python-*-embed-amd64.zip" -Label "Python") -Destination (Join-Path $expandedRoot "python") -RequiredFile "pythonw.exe"
+      Assert-FreshStagePythonDependencies -PythonRoot (Join-Path $expandedRoot "python")
       Expand-FlattenedRuntime -ZipPath (Find-ComponentArchive -PayloadRoot $payloadRoot -Pattern "node-*-win-x64.zip" -Label "Node.js") -Destination (Join-Path $expandedRoot "node") -RequiredFile "node.exe"
       Expand-FlattenedRuntime -ZipPath (Find-ComponentArchive -PayloadRoot $payloadRoot -Pattern "pandoc-*-windows-x86_64.zip" -Label "Pandoc") -Destination (Join-Path $expandedRoot "pandoc") -RequiredFile "pandoc.exe"
       Expand-FlattenedRuntime -ZipPath (Find-ComponentArchive -PayloadRoot $payloadRoot -Pattern "onnxruntime-win-x64-*-runtime.zip" -Label "ONNX Runtime") -Destination (Join-Path $expandedRoot "onnxruntime") -RequiredFile "onnxruntime.dll" -OnnxOnly
@@ -664,6 +896,10 @@ function Stage-OnnxRuntime {
   }
   Write-Host ("Staged Windows ONNX Runtime for development: {0}" -f $onnxStageRoot)
   Write-Host ("Generated ONNX development descriptor: {0}" -f $onnxDevDescriptorPath)
+}
+
+if ($ImportFunctionsOnly) {
+  return
 }
 
 $verifiedManifest = if ($Mode -eq "StageOnnx") { Get-VerifiedOnnxManifest } else { Get-VerifiedManifest }
