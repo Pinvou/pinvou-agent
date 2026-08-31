@@ -3928,6 +3928,89 @@ async function interruptQueuedWithdrawTimeoutWaitsForReconcile() {
   );
 }
 
+async function interruptQueuedWithdrawRejectionWaitsForReconcile() {
+  // zhuowp re-review P1-1 (zap path): the chip has a BACKFILLED steer id (the
+  // engine accepted the steer), and withdraw_steer REJECTS because that engine
+  // was reclaimed. The rejection is ambiguous — the engine may have committed
+  // the steer into the persisted transcript before dying — so it must NOT be
+  // treated as "retired". No cancel, no chat resend; the reconcile watchdog
+  // owns the outcome (a late committed renders the bubble and consumes the
+  // watchdog; nothing arrives → the text is restored after 60s).
+  const timeouts = [];
+  const harness = createBridgeHarness(null, {
+    setTimeout: function (fn, ms) {
+      timeouts.push({ fn, ms });
+      return timeouts.length;
+    },
+    clearTimeout: function () {},
+  });
+  const bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-zap-reject"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-zap-reject" });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-rj1"; };
+  harness.handlers.withdraw_steer = function () {
+    return Promise.reject(new Error("engine reclaimed after accepting the steer"));
+  };
+  harness.handlers.cancel_generation = function () { return { terminal: true, generation: 1 }; };
+  harness.handlers.chat = function () { return "ok"; };
+
+  await bridge.chat.sendMessage("引擎回收后撤回被拒的一句");
+  await tick();
+  await tick();
+  const queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
+
+  let result = null;
+  const p = bridge.chat
+    .interruptAndSendQueued("chat-zap-reject", queuedId)
+    .then(function (r) { result = r; }, function (e) { result = e; });
+  await withStallGuard(p, "zap withdraw rejection failed to settle into the reconcile path");
+  assert.strictEqual(result, true, "the zap is handled without a resend (engine gone, delivery state ambiguous)");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "withdraw_steer"; }).length,
+    1,
+    "the withdrawal was attempted"
+  );
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "cancel_generation"; }).length,
+    0,
+    "a rejected withdrawal must not interrupt the running turn"
+  );
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
+    0,
+    "a rejected withdrawal must not resend (the reclaimed engine may have committed the steer)"
+  );
+
+  // Reconcile direction A — the engine did commit before dying: the late
+  // committed event renders the bubble through the withdrawn registration and
+  // consumes the reconcile watchdog (no composer restore alongside).
+  harness.emit("chat:steer_committed", { session_id: "chat-zap-reject", steer_id: "steer-rj1" });
+  await tick();
+  await tick();
+  const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.ok(
+    view.chatItems.some(function (item) {
+      return item.type === "user" && item.text === "引擎回收后撤回被拒的一句";
+    }),
+    "a late committed after a rejected withdrawal renders the bubble"
+  );
+  assert.strictEqual(
+    bridge.state.getMany(['chat']).composerDraft,
+    "",
+    "engine truth wins: no text restore next to the rendered bubble"
+  );
+  // The already-consumed watchdog must no-op (no duplicate restore/notice).
+  timeouts.filter(function (t) { return t.ms === 60000; }).forEach(function (t) { t.fn(); });
+  await tick();
+  await tick();
+  assert.strictEqual(
+    bridge.state.getMany(['chat']).composerDraft,
+    "",
+    "the consumed reconcile watchdog no-ops"
+  );
+}
+
 async function steerDropRestoresAccumulateAcrossChips() {
   // Self-review P0 / re-review #1: two steered chips dropped in the same tick
   // (⏹ clears the un-injected inbox) must BOTH survive. The old empty-check
@@ -7801,6 +7884,7 @@ Promise.resolve()
   .then(steerSettleWatchdogEngineErrRestoresWithoutResend)
   .then(steerSettleWatchdogWithdrawTimeoutRestoresWithoutResend)
   .then(interruptQueuedWithdrawTimeoutWaitsForReconcile)
+  .then(interruptQueuedWithdrawRejectionWaitsForReconcile)
   .then(steerDropRestoresAccumulateAcrossChips)
   .then(steerDropRestoresToOwningBackgroundSession)
   .then(prefillRecoveryAppendFlagContract)

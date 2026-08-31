@@ -432,8 +432,13 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     poolSource,
-    /let spawned_at_ms = Self::now_epoch_ms\(\);[\s\S]{0,2400}spawned_at_ms,/,
-    '引擎必须记录纪元时间戳，供 transcripts 甄别上一进程的僵尸 worker（spawn 时一次计算，entry 与 steer-id 代数戳共用）',
+    /let spawned_at_ms = Self::now_epoch_ms\(\);[\s\S]{0,3200}spawned_at_ms,/,
+    '引擎必须记录纪元时间戳，供 transcripts 甄别上一进程的僵尸 worker（spawn 时一次计算；steer-id 代际戳另用进程内化身序列，见 zhuowp 复审 P1-2）',
+  );
+  assert.match(
+    poolSource,
+    /steer_incarnation_seq[\s\S]{0,400}fetch_add\(1, Ordering::Relaxed\)/,
+    'steer-id 代际戳必须来自进程内单调化身序列（墙钟毫秒同 tick 重建会撞号，zhuowp 复审 P1-2）',
   );
   const transcriptsSource = read('src-tauri', 'src', 'features', 'multiagent', 'transcripts.rs');
   assert.match(

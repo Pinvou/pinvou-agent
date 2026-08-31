@@ -649,6 +649,15 @@ struct EngineEntry {
     /// （subagent/mod.rs 的 load 路径），少了这道甄别，父会话重建引擎后
     /// 上一进程的僵尸 worker 会重新显示"工作中"并被永久轮询。
     spawned_at_ms: u64,
+    /// Process-monotonic engine incarnation number (the steer-id generation
+    /// source). The generation stamp disambiguates steer ids across engine
+    /// rebuilds of one session and must be unique per rebuild within the
+    /// process; `spawned_at_ms` is wall-clock milliseconds, so two rebuilds
+    /// inside the same tick (or a clock rollback) collide and defeat the
+    /// equality check (zhuowp re-review P1-2) — the incarnation sequence is
+    /// time-independent and never repeats. Used only for steer-id stamping
+    /// and matching, not for idle-reap timing.
+    steer_incarnation: u64,
     /// 最近一次 turn 提交侧活动（UNIX ms）：spawn、turn 提交（send / 编辑重发 /
     /// scheduled 轮入口）都刷新。turn 终态收口时钟在 TurnLifecycle
     /// （`last_terminal_epoch_ms`，所有终态路径共用的收口点统一刷新），空闲回收
@@ -736,6 +745,13 @@ pub struct EnginePool {
     /// 正在跑 scheduled 轮的会话集合（run_scheduled_turn 的 spawn→submit 窗口
     /// 里 lifecycle 尚未 active，空闲回收需要它做第二重保护）。
     scheduled_running_sessions: Arc<SyncMutex<HashSet<String>>>,
+    /// Steer-id engine-incarnation allocator: a process-monotonic AtomicU64
+    /// sequence bumped on every engine spawn. Arc-shared so pool clones see
+    /// one sequence (same idiom as every shared field here — EnginePool is a
+    /// cheap Tauri State clone). Replaces wall-clock `spawned_at_ms` as the
+    /// generation stamp source so that same-tick rebuilds (or clock
+    /// rollbacks) can never collide generations (zhuowp re-review P1-2).
+    steer_incarnation_seq: Arc<AtomicU64>,
 }
 
 /// 后台巡检任务句柄：Drop 时先 cancel 再 abort 双保险停止巡检
@@ -767,10 +783,12 @@ fn require_live_engine_for_steer<T>(engine: Option<T>, session_id: &str) -> Resu
 /// engine is rebuilt (idle reclaim / model switch), so a raw id is ambiguous
 /// across engine generations of one session: an old chip's withdrawal could
 /// retire the NEW engine's unrelated `steer-1`, and a settlement event could
-/// cross-wire two chips. The pool stamps the spawning engine's
-/// `spawned_at_ms` generation onto every id it returns and the forwarder
-/// stamps the `SteerCommitted`/`SteerDropped` payloads with the same
-/// generation, keeping chip↔event correlation exact and withdrawals
+/// cross-wire two chips. The pool stamps a process-monotonic engine
+/// incarnation (an AtomicU64 sequence allocated at spawn — NOT wall-clock
+/// time, which collides for same-tick rebuilds or clock rollbacks, zhuowp
+/// re-review P1-2) onto every id it returns, and the forwarder stamps the
+/// `SteerCommitted`/`SteerDropped` payloads with the same incarnation,
+/// keeping chip↔event correlation exact and withdrawals
 /// generation-checked. The stamp is opaque to the frontend.
 pub(crate) fn stamp_steer_generation(generation: u64, raw_steer_id: &str) -> String {
     format!("e{generation}-{raw_steer_id}")
@@ -783,6 +801,27 @@ fn parse_steer_generation(steer_id: &str) -> Option<(u64, &str)> {
     let dash = rest.find('-')?;
     let generation = rest.get(..dash)?.parse::<u64>().ok()?;
     Some((generation, rest.get(dash + 1..)?))
+}
+
+/// Pure withdrawal-delegation decision for a (possibly stamped) steer id
+/// against the live engine's incarnation. Kept standalone so the collision
+/// semantics are unit-testable without an AppHandle-backed pool.
+#[derive(Debug, PartialEq, Eq)]
+enum SteerWithdrawTarget<'a> {
+    /// Withdraw this id on the live engine (current incarnation, or an
+    /// unstamped legacy id delegated verbatim).
+    Raw(&'a str),
+    /// The id belongs to a previous engine incarnation — never delegate it to
+    /// the live engine (see `withdraw_steer`).
+    StaleGeneration,
+}
+
+fn delegate_steer_withdrawal(steer_id: &str, current_generation: u64) -> SteerWithdrawTarget<'_> {
+    match parse_steer_generation(steer_id) {
+        Some((stamped, raw)) if stamped == current_generation => SteerWithdrawTarget::Raw(raw),
+        Some(_) => SteerWithdrawTarget::StaleGeneration,
+        None => SteerWithdrawTarget::Raw(steer_id),
+    }
 }
 
 impl EnginePool {
@@ -827,6 +866,7 @@ impl EnginePool {
             bridge,
             idle_reaper: Arc::new(SyncMutex::new(None)),
             scheduled_running_sessions: Arc::new(SyncMutex::new(HashSet::new())),
+            steer_incarnation_seq: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -1180,11 +1220,18 @@ impl EnginePool {
             .map_err(|e| anyhow::anyhow!("materialize session skills: {e}"))?;
         }
         let turn_lifecycle = self.turn_lifecycles.for_session(session_id);
-        // One timestamp for both the entry and the steer-id generation stamp
-        // the forwarder uses: the stamp on ids returned by `steer` and on the
-        // forwarded SteerCommitted/SteerDropped payloads must identify THIS
-        // engine build, so it is captured once here rather than re-read.
+        // One wall-clock epoch for the entry ledger plus a process-monotonic
+        // incarnation for the steer-id generation stamp. The stamp on ids
+        // returned by `steer` and on the forwarded SteerCommitted/SteerDropped
+        // payloads must identify THIS engine build uniquely: the incarnation
+        // sequence guarantees uniqueness even when two rebuilds land in the
+        // same wall-clock millisecond (or the clock rolls back), where
+        // `spawned_at_ms` would collide (zhuowp re-review P1-2).
         let spawned_at_ms = Self::now_epoch_ms();
+        let steer_incarnation = self
+            .steer_incarnation_seq
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
             self.store.clone(),
@@ -1196,7 +1243,7 @@ impl EnginePool {
             turn_lifecycle.clone(),
             shell_manager,
             turn_shell_tasks,
-            spawned_at_ms,
+            steer_incarnation,
         )
         .await?;
 
@@ -1244,6 +1291,7 @@ impl EnginePool {
                 forwarder,
                 runtime_model: prepared,
                 spawned_at_ms,
+                steer_incarnation,
                 last_active_epoch_ms: AtomicU64::new(Self::now_epoch_ms()),
             },
         );
@@ -2291,16 +2339,16 @@ impl EnginePool {
     /// would leave the frontend chip hanging forever. The frontend takes the
     /// Err into its failure-recovery path.
     pub async fn steer(&self, session_id: &str, content: String) -> Result<String> {
-        // One atomic entry read: engine handle + its generation. If the pool
+        // One atomic entry read: engine handle + its incarnation. If the pool
         // rebuilds the engine right after this read, we steer on the OLD
-        // engine and stamp with ITS generation — the pair stays consistent,
+        // engine and stamp with ITS incarnation — the pair stays consistent,
         // which is exactly what the stamp exists for.
         let entry = self
             .entries
             .lock()
             .await
             .get(session_id)
-            .map(|e| (e.engine.clone(), e.spawned_at_ms));
+            .map(|e| (e.engine.clone(), e.steer_incarnation));
         let (engine, generation) = require_live_engine_for_steer(entry, session_id)?;
         let raw = engine.handle.steer(content).await?;
         Ok(stamp_steer_generation(generation, &raw))
@@ -2329,22 +2377,21 @@ impl EnginePool {
             .lock()
             .await
             .get(session_id)
-            .map(|e| (e.engine.clone(), e.spawned_at_ms));
+            .map(|e| (e.engine.clone(), e.steer_incarnation));
         let (engine, generation) = require_live_engine_for_steer(entry, session_id)?;
         // Generation check before delegation (the raw-id match below is why):
-        // a stamped id from a previous engine generation must NOT reach the
+        // a stamped id from a previous engine incarnation must NOT reach the
         // live engine — the foundation compares raw strings, so the live
         // engine's unrelated `steer-1` could be retired by a stale chip's
-        // withdrawal. The stale generation's steers died with their engine
+        // withdrawal. The stale incarnation's steers died with their engine
         // (foundation Drop drains, forwarder aborts first): they can never
         // inject again, but they may have committed before the drop —
         // `not_pending` ("no proof of delivery") is the honest outcome and
         // sends the frontend to its reconcile path instead of a resend.
         // Unstamped (legacy) ids delegate unchanged.
-        let delegated = match parse_steer_generation(&steer_id) {
-            Some((stamped, raw)) if stamped == generation => raw.to_string(),
-            Some(_) => return Ok("not_pending"),
-            None => steer_id,
+        let delegated = match delegate_steer_withdrawal(&steer_id, generation) {
+            SteerWithdrawTarget::Raw(raw) => raw.to_string(),
+            SteerWithdrawTarget::StaleGeneration => return Ok("not_pending"),
         };
         let outcome = engine.handle.withdraw_steer(&delegated);
         Ok(match outcome {
@@ -3296,6 +3343,68 @@ mod scheduled_model_tests {
         assert_eq!(
             super::parse_steer_generation("e18446744073709551616-x"),
             None
+        );
+    }
+
+    #[test]
+    fn steer_incarnations_stay_unique_across_same_tick_rebuilds() {
+        // Regression (zhuowp re-review P1-2): the generation stamp source must
+        // be unique per engine rebuild within the process. Wall-clock
+        // milliseconds collide for two rebuilds inside one tick (or after a
+        // clock rollback); the pool's incarnation sequence is time-independent,
+        // so consecutive allocations — regardless of what the clock does —
+        // mint distinct generations and therefore distinct stamped ids.
+        use std::sync::atomic::AtomicU64;
+        let seq = AtomicU64::new(0);
+        let first = seq.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+        let second = seq.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+        assert_ne!(first, second, "incarnations must never repeat");
+        // Deterministic replay of the collision scenario: two engine rebuilds
+        // with the SAME spawned_at_ms still get distinct steer generations,
+        // so a chip minted by the first cannot match the second.
+        let first_ids = (1..=2)
+            .map(|n| super::stamp_steer_generation(first, &format!("steer-{n}")))
+            .collect::<Vec<_>>();
+        let second_ids = (1..=2)
+            .map(|n| super::stamp_steer_generation(second, &format!("steer-{n}")))
+            .collect::<Vec<_>>();
+        assert_ne!(first_ids, second_ids);
+        // Foundation ordinals restart at steer-1 on every rebuild; only the
+        // incarnation keeps them apart.
+        assert_eq!(first_ids[0], format!("e{first}-steer-1"));
+        assert_eq!(second_ids[0], format!("e{second}-steer-1"));
+        assert_ne!(first_ids[0], second_ids[0]);
+    }
+
+    #[test]
+    fn stale_incarnation_withdrawal_never_delegates_on_same_tick_rebuild() {
+        // Regression (zhuowp re-review P1-2): a chip stamped by engine
+        // incarnation N must never have its withdrawal delegated into a
+        // rebuilt engine N+1, even when both rebuilds share one
+        // spawned_at_ms tick — the raw ordinal `steer-1` exists in BOTH
+        // engines, and a mis-delegation would retire the new engine's
+        // unrelated steer.
+        let first_engine = 7u64;
+        let second_engine = 8u64; // same spawned_at_ms, next incarnation
+        let stale_chip = super::stamp_steer_generation(first_engine, "steer-1");
+        assert_eq!(
+            super::delegate_steer_withdrawal(&stale_chip, first_engine),
+            super::SteerWithdrawTarget::Raw("steer-1")
+        );
+        assert_eq!(
+            super::delegate_steer_withdrawal(&stale_chip, second_engine),
+            super::SteerWithdrawTarget::StaleGeneration
+        );
+        // The rebuilt engine's own chip delegates normally.
+        let live_chip = super::stamp_steer_generation(second_engine, "steer-1");
+        assert_eq!(
+            super::delegate_steer_withdrawal(&live_chip, second_engine),
+            super::SteerWithdrawTarget::Raw("steer-1")
+        );
+        // Unstamped legacy ids keep delegating verbatim.
+        assert_eq!(
+            super::delegate_steer_withdrawal("steer-1", second_engine),
+            super::SteerWithdrawTarget::Raw("steer-1")
         );
     }
 
