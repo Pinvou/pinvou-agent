@@ -45,6 +45,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const bridgeDir = path.join(here, '..', 'src', 'platform', 'tauri', 'bridge');
 const webBridgeRoot = path.resolve(here, '..', 'src', 'platform', 'web');
 const read = relativePath => fs.readFileSync(path.join(webBridgeRoot, relativePath), 'utf8');
+const bridgeMessagesSource = fs.readFileSync(
+  path.resolve(here, '..', 'src', 'shared', 'bridge-messages.js'),
+  'utf8',
+);
 
 // ── tauri sessions.js factory boot ───────────────────────────────────
 
@@ -437,6 +441,7 @@ function bootWebBridge() {
     TextEncoder,
     TextDecoder,
   });
+  vm.runInContext(bridgeMessagesSource, context, { filename: 'shared/bridge-messages.js' });
   vm.runInContext(read('bridge.js'), context, { filename: 'platform/web/bridge.js' });
   const flat = windowObject.TauriBridge;
   // Cold switches go through loadSessionForClient's chunk protocol: a
