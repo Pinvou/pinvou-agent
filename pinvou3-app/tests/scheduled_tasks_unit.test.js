@@ -5082,6 +5082,68 @@ async function presentationReconciliationUsesStableEventIdentity() {
   assert.strictEqual(updatedSnakeCards[0].path, absoluteArtifactPath,
     "a relative presentation update must preserve the existing absolute openable path");
 
+  const replayFirstPresentId = "replay-present-snake-absolute";
+  const replayRelativeUpdateId = "replay-present-snake-relative";
+  durable = {
+    metadata: { id: sessionId, title: "Presentation identity", message_count: 5 },
+    messages: [
+      { role: "assistant", content: [{
+        type: "tool_use",
+        id: replayFirstPresentId,
+        name: "present_artifact",
+        input: {
+          path: "snake-game.html",
+          title: "Snake game v1",
+          description: "First presentation",
+        },
+      }] },
+      { role: "user", content: [{
+        type: "tool_result",
+        tool_use_id: replayFirstPresentId,
+        content: JSON.stringify({ ok: true, abs_path: absoluteArtifactPath }),
+      }] },
+      { role: "assistant", content: [{ type: "text", text: "First version ready." }] },
+      { role: "assistant", content: [{
+        type: "tool_use",
+        id: replayRelativeUpdateId,
+        name: "present_artifact",
+        input: {
+          path: "snake-game.html",
+          title: "Snake game v3",
+          description: "Latest replayed presentation",
+        },
+      }] },
+      { role: "user", content: [{
+        type: "tool_result",
+        tool_use_id: replayRelativeUpdateId,
+        content: JSON.stringify({ ok: true }),
+      }] },
+    ],
+    artifacts: [absoluteArtifactPath],
+    transcript_revision: "rev-2",
+  };
+  const recoveryHarness = createBridgeHarness();
+  recoveryHarness.handlers.load_session = function () { return durable; };
+  await recoveryHarness.bridge.sessions.switchToSession(sessionId);
+
+  const replayedCardState = recoveryHarness.bridge.state.get("chat");
+  const replayedArtifactCards = replayedCardState.chatItems.filter(function (item) {
+    return item.type === "artifact_card";
+  });
+  assert.strictEqual(replayedArtifactCards.length, 1,
+    "session replay must reconcile repeated presentations to one artifact card");
+  assert.strictEqual(replayedArtifactCards[0].path, absoluteArtifactPath,
+    "session replay must preserve the first presentation's absolute openable path");
+  assert.strictEqual(replayedArtifactCards[0].title, "Snake game v3",
+    "session replay must apply the latest relative presentation metadata");
+  assert.strictEqual(replayedArtifactCards[0].description, "Latest replayed presentation",
+    "session replay must apply the latest presentation description");
+  assert.strictEqual(replayedCardState.chatItems.indexOf(replayedArtifactCards[0]), 0,
+    "session replay must retain the first presentation's card position after an update");
+  assert.ok(replayedCardState.chatItems.some(function (item) {
+    return item.type === "assistant" && item.text === "First version ready.";
+  }), "the replay assertion must include transcript content between the two presentations");
+
   const questions = [{ id: "choice", header: "选择", question: "继续吗？", options: [] }];
   harness.emit("chat:user_input_required", {
     session_id: sessionId, id: "tool-question", questions,
