@@ -421,6 +421,36 @@ fn clear_repair_cooldown(environment_key: &str) {
     }
 }
 
+/// The legacy pip fallback has no per-platform environment, so key its cooldown
+/// on the whole lock payload instead of a single target.
+fn fallback_cooldown_key(lock: &PythonDependencyLock) -> Result<String, String> {
+    let serialized = serde_json::to_vec(lock)
+        .map_err(|e| format!("failed to serialize MCP Python dependency lock: {e}"))?;
+    Ok(crate::platform::encoding::hex_lower(&Sha256::digest(
+        serialized,
+    )))
+}
+
+/// Cooldown plumbing for the legacy pip fallback taken when the lock has no
+/// target for the current platform (non-Windows). Same semantics as the wheel
+/// path: automatic startup repair defers, explicit installs stay unrestricted
+/// and clear the marker on success.
+pub(super) fn pip_fallback_cooldown_remaining(lock: &PythonDependencyLock) -> Option<u64> {
+    repair_cooldown_remaining(&fallback_cooldown_key(lock).ok()?)
+}
+
+pub(super) fn record_pip_fallback_cooldown(lock: &PythonDependencyLock) {
+    if let Ok(key) = fallback_cooldown_key(lock) {
+        record_repair_cooldown(&key);
+    }
+}
+
+pub(super) fn clear_pip_fallback_cooldown(lock: &PythonDependencyLock) {
+    if let Ok(key) = fallback_cooldown_key(lock) {
+        clear_repair_cooldown(&key);
+    }
+}
+
 fn marker_matches(environment: &Path, expected_key: &str) -> bool {
     let Ok(content) = fs::read_to_string(environment.join(COMPLETE_MARKER)) else {
         return false;

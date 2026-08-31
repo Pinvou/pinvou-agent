@@ -878,19 +878,37 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             }
             if crate::platform::capabilities::is_windows() {
                 return Err(ManagedDependencyError::Permanent(format!(
-                    "工具 '{}' 没有适用于当前 Windows 平台的 Python 依赖锁",
+                    "tool '{}' has no Python dependency lock for the current Windows platform",
                     manifest.id
                 )));
             }
+            // No target for this platform: dependencies load through the legacy pip
+            // fallback below. Keep the wheel path's retry discipline so an offline
+            // machine does not replay pip timeouts on every startup.
+            if respect_retry_cooldown {
+                if let Some(remaining) = python_dependencies::pip_fallback_cooldown_remaining(lock)
+                {
+                    return Err(ManagedDependencyError::Transient(format!(
+                        "legacy pip dependency repair for '{}' is in the automatic retry cooldown (about {remaining} s remaining)",
+                        manifest.id
+                    )));
+                }
+            }
         }
 
-        self.pip_install_deps(manifest)
-            .map_err(ManagedDependencyError::Transient)?;
+        let pip_result = self.pip_install_deps(manifest);
+        if let Some(lock) = &manifest.python_dependencies {
+            match &pip_result {
+                Ok(()) => python_dependencies::clear_pip_fallback_cooldown(lock),
+                Err(_) => python_dependencies::record_pip_fallback_cooldown(lock),
+            }
+        }
+        pip_result.map_err(ManagedDependencyError::Transient)?;
         Ok(None)
     }
 
-    /// 完成工具注册移除后的领域清理。普通卸载与启动修复失败必须共用同一语义，
-    /// 否则 companion skill 会在 MCP 已不可用时继续进入会话提示。
+    /// Domain cleanup after a tool registration is removed. Plain uninstall and failed startup
+    /// repair must share one semantic, otherwise companion skills keep surfacing in session prompts after the MCP is already unusable.
     fn cleanup_uninstalled_tool_state(&self, tool_id: &str, secret_targets: &[(String, String)]) {
         for (target, key) in secret_targets {
             let reference = secrets::mcp_secret_reference(tool_id, target, key);
@@ -2158,6 +2176,95 @@ mod tests {
                 1,
                 "untrusted pip declaration must never reach pip"
             );
+        });
+    }
+
+    /// The legacy pip fallback (lock without a target for this platform) must
+    /// honor the same automatic-retry cooldown as the wheel path: an offline
+    /// machine must not replay pip timeouts on every startup, while explicit
+    /// installs stay unrestricted and clear the marker on success.
+    #[test]
+    fn pip_fallback_repair_honors_retry_cooldown() {
+        if crate::platform::capabilities::is_windows() {
+            // Windows never takes the pip fallback: a lock without a Windows
+            // target is a Permanent error covered by the other repair tests.
+            return;
+        }
+        with_temp_home(|| {
+            let (python, version) = test_python();
+            let manifest = serde_json::json!({
+                "id": "cooled-pip",
+                "name": "cooled-pip",
+                "description": "fixture",
+                "version": "1.0.0",
+                "icon": "fixture",
+                "category": "fixture",
+                "mcp_tools": ["mcp_cooled_pip_run"],
+                "command": "python",
+                "args": ["server.py"],
+                "pip_dependencies": ["pinvou3-test-only-dependency"],
+                "python_dependencies": {
+                    "schema_version": 1,
+                    "targets": [{
+                        "platform": "windows-x64",
+                        "python": version,
+                        "imports": ["cooled_pip_fixture"],
+                        "wheels": [{
+                            "name": "cooled-pip-fixture",
+                            "version": "1.0.0",
+                            "filename": "cooled_pip_fixture-1.0.0-py3-none-any.whl",
+                            "url": "https://files.pythonhosted.org/packages/cooled_pip_fixture-1.0.0-py3-none-any.whl",
+                            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+                        }]
+                    }]
+                }
+            });
+            let manifest = serde_json::to_string_pretty(&manifest).unwrap();
+            write_tool_manifest("cooled-pip", &manifest);
+            MarketplaceManager::<MemoryCredentialStore>::trust_dependency_manifest_for_test(
+                serde_json::from_str(&manifest).unwrap(),
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("cooled-pip").join("server.py"),
+                "print('pip fallback fixture')\n",
+            )
+            .unwrap();
+            write_legacy_python_state("cooled-pip");
+
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            connectors::set_next_pip_install_result_for_test(1);
+            let errors = manager
+                .repair_installed_python_tools_with_python(&python)
+                .unwrap();
+            assert_eq!(errors.len(), 1);
+            assert!(errors[0].contains("will retry"));
+
+            connectors::set_next_pip_install_result_for_test(2);
+            let errors = manager
+                .repair_installed_python_tools_with_python(&python)
+                .unwrap();
+            assert_eq!(errors.len(), 1);
+            assert!(
+                errors[0].contains("cooldown"),
+                "deferred repair must report the retry cooldown: {}",
+                errors[0]
+            );
+            assert_eq!(
+                connectors::take_pending_pip_install_result_for_test(),
+                2,
+                "cooled-down repair must not reach pip"
+            );
+
+            connectors::set_next_pip_install_result_for_test(2);
+            manager
+                .install_with_python("cooled-pip", &std::collections::HashMap::new(), &python)
+                .unwrap();
+            assert_eq!(
+                connectors::take_pending_pip_install_result_for_test(),
+                0,
+                "explicit install must bypass the cooldown and reach pip"
+            );
+            assert!(!python_dependencies::repair_cooldown_path_for_test().exists());
         });
     }
 
