@@ -1194,8 +1194,10 @@ export function CodexAcpView({
   }
 
   async function handleBranchSelect(branch) {
+    // busy 不在此静默拦截：交给 checkoutWorkspaceBranch 统一提示「Agent 运行中」，
+    // 避免菜单开着时回合开始的竞态下点击无反馈。
     if ((!activeId && !branchWorkspacePath) || !branch
-        || branch === workspaceBranches?.current || branchBusy || busy) return;
+        || branch === workspaceBranches?.current || branchBusy) return;
     setBranchMenuOpen(false);
     // 脏工作区先确认再切换（dirtyCount 由分支扫描一并返回，草稿态同样可用）。
     const dirtyCount = workspaceBranches?.dirtyCount || 0;
@@ -1211,19 +1213,36 @@ export function CodexAcpView({
   const [draftWorkspacePath, setDraftWorkspacePath] = useState(null);
   // 会话内用 sessionId 解析工作区；草稿态（会话未创建）直接扫描已选目录。
   const branchWorkspacePath = activeId ? null : draftWorkspacePath;
+  // 分支数据加载序号：会话切换与菜单打开都会触发加载，晚到的旧响应按序号丢弃。
+  const branchLoadSeqRef = useRef(0);
+  const loadWorkspaceBranches = useCallback(() => {
+    if (isWeb || (!activeId && !branchWorkspacePath)) return;
+    const sequence = ++branchLoadSeqRef.current;
+    listAcpWorkspaceBranches({ sessionId: activeId || null, workspacePath: branchWorkspacePath })
+      .then(result => {
+        if (branchLoadSeqRef.current === sequence) setWorkspaceBranches(result);
+      })
+      .catch(() => {
+        // 失败保留现状：首载失败保持 null（pill 隐藏），刷新失败不打扰打开着的菜单。
+      });
+  }, [activeId, branchWorkspacePath]);
   // 会话或草稿工作区变化时加载分支（仅桌面端；非 git 工作区返回 git:false，控件自动隐藏）。
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect -- 会话/草稿切换必须同步丢弃上一工作区的菜单、弹窗与分支数据，异步重载前不能显示旧工作区状态 */
     setBranchMenuOpen(false);
     setPendingBranchSwitch(null);
     setCommitBranchSwitch(null);
     setWorkspaceBranches(null);
-    if (isWeb || (!activeId && !branchWorkspacePath)) return undefined;
-    let cancelled = false;
-    listAcpWorkspaceBranches({ sessionId: activeId || null, workspacePath: branchWorkspacePath })
-      .then(result => { if (!cancelled) setWorkspaceBranches(result); })
-      .catch(() => { if (!cancelled) setWorkspaceBranches(null); });
-    return () => { cancelled = true; };
-  }, [activeId, branchWorkspacePath]);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    loadWorkspaceBranches();
+  }, [activeId, branchWorkspacePath, loadWorkspaceBranches]);
+  // 打开分支菜单时后台重取：长会话里 Agent 每回合都可能改动文件，关闭期间的
+  // 数据（尤其 dirtyCount）会过期，切换决策必须基于新鲜值。
+  function toggleBranchMenu() {
+    const opening = !branchMenuOpen;
+    setBranchMenuOpen(opening);
+    if (opening) loadWorkspaceBranches();
+  }
   const [draftWorkspaceHandle, setDraftWorkspaceHandle] = useState(null);
   const [recentWorkspaces, setRecentWorkspaces] = useState(loadRecentWorkspaces);
   const [draftControlsCache, setDraftControlsCache] = useState(loadDraftControlsCache);
@@ -3618,7 +3637,7 @@ export function CodexAcpView({
               disabled={branchBusy || busy}
               busy={busy}
               menuOpen={branchMenuOpen}
-              onToggle={() => setBranchMenuOpen(value => !value)}
+              onToggle={toggleBranchMenu}
               onSelect={name => handleBranchSelect(name).catch(showError)}
               triggerRef={branchMenuTriggerRef}
               panelRef={branchMenuPanelRef}
@@ -3653,7 +3672,7 @@ export function CodexAcpView({
             disabled={branchBusy}
             busy={false}
             menuOpen={branchMenuOpen}
-            onToggle={() => setBranchMenuOpen(value => !value)}
+            onToggle={toggleBranchMenu}
             onSelect={name => handleBranchSelect(name).catch(showError)}
             triggerRef={branchMenuTriggerRef}
             panelRef={branchMenuPanelRef}
