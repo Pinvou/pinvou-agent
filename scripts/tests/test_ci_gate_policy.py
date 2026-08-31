@@ -516,6 +516,29 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("- windows-codex-runtime-test", required_gate)
         self.assertIn("WINDOWS_CODEX_RESULT", required_gate)
 
+    def test_windows_python_dependency_contract_runs_in_required_native_job(self):
+        changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
+            "\n  fast-gate:", maxsplit=1
+        )[0]
+        windows_codex_filter = changes.split("windows_codex:", maxsplit=1)[1]
+        self.assertIn(
+            "windows_python_dependency_contract.ps1",
+            windows_codex_filter,
+        )
+
+        windows_job = self.pr_workflow.split(
+            "\n  windows-codex-runtime-test:", maxsplit=1
+        )[1].split("\n  macos-codex-runtime-test:", maxsplit=1)[0]
+        self.assertIn(
+            "npm --prefix pinvou3-app run test:windows-runtime",
+            windows_job,
+        )
+
+        required_gate = self.pr_workflow.split(
+            "\n  required-gate:", maxsplit=1
+        )[1]
+        self.assertIn("- windows-codex-runtime-test", required_gate)
+
     def test_release_contract_runs_for_ready_pr_queue_and_main(self):
         changes = _without_yaml_comments(
             self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
