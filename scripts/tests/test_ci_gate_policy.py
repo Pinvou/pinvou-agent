@@ -520,7 +520,13 @@ class CiGatePolicyTests(unittest.TestCase):
         changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
             "\n  fast-gate:", maxsplit=1
         )[0]
-        windows_codex_filter = changes.split("windows_codex:", maxsplit=1)[1]
+        # Anchor on the 12-space-indented dorny filter key (not the 8-space outputs
+        # mapping) and capture only the entry lines of that one filter group, so
+        # moving the ps1 route into another filter fails this assertion.
+        windows_codex_filter = re.search(
+            r"\n            windows_codex:\n((?:              .*(?:\n|$))+)",
+            changes,
+        ).group(1)
         self.assertIn(
             "windows_python_dependency_contract.ps1",
             windows_codex_filter,

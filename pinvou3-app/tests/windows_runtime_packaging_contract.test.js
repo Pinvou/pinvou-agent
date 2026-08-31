@@ -48,6 +48,7 @@ const pythonDependencyRuntimeTest = readApp(
   "tests",
   "windows_python_dependency_contract.ps1",
 );
+const packageJson = JSON.parse(readApp("package.json"));
 const runtimeManifestContract = readApp(
   "src-tauri",
   "packaging",
@@ -171,6 +172,11 @@ assert.match(
   runtimeScript,
   /\$null = & \$pythonExe -I -S -B -c \$probe/u,
   "ABI probe stdout must be discarded so stray output cannot flip the exit-code check",
+);
+assert.match(
+  packageJson.scripts["test:windows-runtime"],
+  /windows_python_dependency_contract\.ps1/u,
+  "the windows runtime npm chain must execute the python dependency contract, or the ps1 loses its only CI runner",
 );
 assert.match(runtimeScript, /Get-Sha256 -Path \$sourcePath/u);
 assert.match(runtimeScript, /schemaVersion -notin @\(1, 2\)/u);
