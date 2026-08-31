@@ -938,9 +938,10 @@ Object.assign(dictZh.uiAttachments, {
 
 // 自定义项标题/描述的逐供应商口径（与 i18n 化前硬编码目录一致）；未列出的供应商回退 customModelTitle。
 dictZh.uiSettingsDetail.customCodingPlanDesc = '手动填写 Coding Plan 模型 ID';
+dictZh.uiSettingsDetail.customTokenPlanDesc = '手动填写 Token Plan 模型 ID';
 
 dictZh.uiSettingsDetail.customModelTitles = {
   glm:'自定义 GLM 模型', qwen:'自定义通义模型',
   openai_compatible:'自定义兼容模型', glm_coding_plan:'自定义 GLM Coding Plan 模型',
-  tencent_coding_plan:'自定义腾讯云 Coding Plan 模型', kimi_coding_plan:'自定义 Kimi Coding Plan 模型',
+  tencent_coding_plan:'自定义腾讯云 Coding Plan 模型', tencent_token_plan:'自定义腾讯云 Token Plan 模型', kimi_coding_plan:'自定义 Kimi Coding Plan 模型',
 };

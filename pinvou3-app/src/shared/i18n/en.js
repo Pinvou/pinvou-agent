@@ -882,6 +882,7 @@ Object.assign(dictEn.uiSettingsDetail, {
   providerCatalog:{
     local:{title:'Local Model',desc:'Default model for the local service'}, glm_coding_plan:{title:'Zhipu Coding Plan / GLM Coding Plan',configTitle:'Zhipu Coding Plan',desc:'Dedicated endpoint for coding and agent tasks'},
     tencent_coding_plan:{title:'Tencent Cloud Coding Plan',configTitle:'Tencent Cloud Coding Plan',desc:'Tencent Cloud coding-plan endpoint'},
+    tencent_token_plan:{title:'Tencent Cloud Token Plan',configTitle:'Tencent Cloud Token Plan',desc:'Dedicated gateway for Tencent Cloud TokenHub Token Plan subscriptions'},
     kimi_coding_plan:{title:'Kimi Coding Plan',configTitle:'Kimi Coding Plan',desc:'Dedicated endpoint for Kimi coding tasks'},
     deepseek:{title:'DeepSeek',configTitle:'DeepSeek',desc:'Official DeepSeek API'}, kimi:{title:'Kimi China',configTitle:'Kimi',desc:'Official Moonshot API'},
     glm:{title:'Zhipu Open Platform / GLM API',configTitle:'GLM API',desc:'Standard Zhipu Open Platform API'},
@@ -924,6 +925,10 @@ Object.assign(dictEn.uiSettingsDetail.modelDescriptions, {
   '本地服务默认模型':'Default model for the local service',
   '旗舰编码模型':'Flagship coding model', '高性能编码模型':'High-performance coding model',
   '日常编码模型':'Everyday coding model', 'Coding Plan 自动模型':'Coding Plan automatic model',
+  '自动模型，智能路由':'Automatic model with smart routing',
+  '官方将于 2026-08-31 下线':'Will be retired on 2026-08-31',
+  'Hy 套餐专属模型':'Exclusive to the Hy plan',
+  '手动填写 Token Plan 模型 ID':'Enter a Token Plan model ID manually',
   '标准编码模型':'Standard coding model', 'K3 256K 上下文模型':'K3 with 256K context',
   'K3 长上下文模型':'K3 long-context model', '高速编码模型':'High-speed coding model',
   '旗舰推理':'Flagship reasoning model',
@@ -946,11 +951,12 @@ Object.assign(dictEn.uiSettingsDetail.modelDescriptions, {
 });
 
 dictEn.uiSettingsDetail.customCodingPlanDesc = 'Enter a Coding Plan model ID manually';
+dictEn.uiSettingsDetail.customTokenPlanDesc = 'Enter a Token Plan model ID manually';
 dictEn.uiSettingsDetail.modelAlias = 'Alias';
 dictEn.uiSettingsDetail.modelAliasPlaceholder = 'Optional, e.g. Daily assistant';
 
 dictEn.uiSettingsDetail.customModelTitles = {
   glm:'Custom GLM model', qwen:'Custom Qwen model',
   openai_compatible:'Custom compatible model', glm_coding_plan:'Custom GLM Coding Plan model',
-  tencent_coding_plan:'Custom Tencent Cloud Coding Plan model', kimi_coding_plan:'Custom Kimi Coding Plan model',
+  tencent_coding_plan:'Custom Tencent Cloud Coding Plan model', tencent_token_plan:'Custom Tencent Cloud Token Plan model', kimi_coding_plan:'Custom Kimi Coding Plan model',
 };

@@ -71,6 +71,19 @@ pub(super) fn migrated_minimax_base_url(value: &str) -> Option<String> {
     })
 }
 
+/// Identifies known Coding Plan/Token Plan endpoints as (vendor, canonical
+/// base_url). The two Tencent Cloud subscription tiers (checked against the
+/// official docs, 2026-08):
+/// - Coding Plan /coding/v3: overview 1823/130092 (2026-08-21),
+///   OpenAI-compatible; the same page also offers an Anthropic-compatible
+///   /coding/anthropic endpoint (not used by this repo);
+/// - Token Plan /plan/v3: access guide 1823/130075 and plan doc 1823/130119,
+///   OpenAI-compatible; a different subscription from Coding Plan with a
+///   different model lineup.
+/// Both tiers go through the generic OpenAI route: identify only backfills
+/// vendor/coding_plan metadata and does not take part in wire routing;
+/// dropping either arm makes stored configs lose separate reasoning-field
+/// parsing.
 pub(super) fn identify_coding_plan_endpoint(
     base_url: &str,
 ) -> Option<(&'static str, &'static str)> {
@@ -265,5 +278,71 @@ mod tests {
                 "{preset:?}/{model:?} 上下文窗口兜底错误"
             );
         }
+    }
+
+    /// Coding-plan endpoint identification regression: every catalog endpoint
+    /// (including both Tencent tiers) must resolve to (vendor, canonical
+    /// base_url); off-catalog compatible endpoints must return None. Losing an
+    /// identification makes stored configs lose coding_plan metadata and
+    /// separate reasoning-field parsing in normalize_provider_metadata
+    /// (see the PR #155 review).
+    #[test]
+    fn identify_coding_plan_endpoint_matches_catalog() {
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "https://open.bigmodel.cn/api/coding/paas/v4",
+                "glm",
+                "https://open.bigmodel.cn/api/coding/paas/v4",
+            ),
+            (
+                "https://api.z.ai/api/coding/paas/v4",
+                "glm",
+                "https://api.z.ai/api/coding/paas/v4",
+            ),
+            (
+                "https://api.kimi.com/coding/v1",
+                "kimi",
+                "https://api.kimi.com/coding/v1",
+            ),
+            (
+                "https://api.lkeap.cloud.tencent.com/coding/v3",
+                "tencent",
+                "https://api.lkeap.cloud.tencent.com/coding/v3",
+            ),
+            (
+                "https://api.lkeap.cloud.tencent.com/plan/v3",
+                "tencent",
+                "https://api.lkeap.cloud.tencent.com/plan/v3",
+            ),
+        ];
+        for (input, expected_vendor, expected_base) in cases {
+            let (vendor, base) = identify_coding_plan_endpoint(input)
+                .unwrap_or_else(|| panic!("{input} must be identified as a coding-plan endpoint"));
+            assert_eq!(vendor, *expected_vendor, "{input}");
+            assert_eq!(base, *expected_base, "{input}");
+        }
+        assert_eq!(
+            identify_coding_plan_endpoint("https://api.deepseek.com"),
+            None
+        );
+        assert_eq!(
+            identify_coding_plan_endpoint("https://api.lkeap.cloud.tencent.com/other/v3"),
+            None,
+            "unlisted lkeap path must not be identified"
+        );
+    }
+
+    /// When a user pastes a full chat/completions URL or variants with a
+    /// trailing slash/uppercase/outer whitespace, normalization must run
+    /// before identification; the canonical base_url is what gets persisted
+    /// and read back.
+    #[test]
+    fn identify_coding_plan_endpoint_normalizes_user_input() {
+        let (vendor, base) = identify_coding_plan_endpoint(
+            " HTTPS://API.LKEAP.CLOUD.TENCENT.COM/coding/v3/chat/completions/ ",
+        )
+        .expect("normalized tencent coding-plan endpoint must be identified");
+        assert_eq!(vendor, "tencent");
+        assert_eq!(base, "https://api.lkeap.cloud.tencent.com/coding/v3");
     }
 }
