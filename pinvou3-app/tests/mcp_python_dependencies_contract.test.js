@@ -179,7 +179,11 @@ const marketplace = [
   read('src-tauri/src/features/marketplace/mod.rs'),
   read('src-tauri/src/features/marketplace/connectors.rs'),
 ].join('\n');
-assert.match(marketplace, /缺少 Windows Python 依赖锁/, 'Windows lock failure must be explicit');
+assert.match(
+  marketplace,
+  /is missing the Windows Python dependency lock/,
+  'Windows lock failure must be explicit',
+);
 assert.match(marketplace, /bundle_mcp_python_runner/, 'managed environment is not wired into MCP launch');
 assert.match(
   marketplace,

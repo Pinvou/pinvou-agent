@@ -44,9 +44,9 @@ use crate::platform::paths;
 /// state so cleanup never acts on a stale snapshot.
 static MARKETPLACE_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
 
-/// Windows 上刚落盘的 journal 可能被杀毒软件/索引器短暂占用，commit 的删除
-/// 先重试再判失败——把可自愈的瞬时占用升级成 Integrity（阻断全部助手启动）
-/// 不成比例（review 2026-08-28）。
+/// A freshly written journal on Windows can be briefly held by antivirus or indexer
+/// processes, so the commit removal retries before failing — escalating a
+/// self-healing transient hold into Integrity (which blocks every assistant startup) would be disproportionate (review 2026-08-28).
 const JOURNAL_REMOVE_ATTEMPTS: usize = 3;
 const JOURNAL_REMOVE_RETRY_DELAY: Duration = Duration::from_millis(120);
 
@@ -198,9 +198,9 @@ fn remove_file_with_retry(path: &Path) -> Result<(), String> {
     ))
 }
 
-/// journal 只在事务存活毫秒级，两个状态文件本身都是原子写。journal 损坏或恢复
-/// 失败时隔离而非向外传播：保留的 on-disk 状态至多多半个事务，工具可经 UI 重装
-/// 自愈；让它阻断全部助手引擎启动不成比例（review 2026-08-28）。
+/// The journal only lives for milliseconds and both state files are atomic writes.
+/// A corrupt or unrecoverable journal is quarantined instead of propagated: the retained on-disk state is at most half a transaction and the tool can
+/// self-heal through a UI reinstall; blocking every assistant engine startup over it is disproportionate (review 2026-08-28).
 fn quarantine_marketplace_journal(journal: &Path, reason: &str) -> Result<(), String> {
     let quarantine = journal.with_file_name(format!(
         "state-transaction.corrupt-{}",
@@ -666,7 +666,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             .trusted_dependency_manifest(tool_id, Some(&source))
             .map_err(|error| error.message().to_string())?;
         let python_environment = if let Some(dependency_manifest) = dependency_manifest {
-            // UI 安装是用户的显式动作，不受启动修复的重试冷却限制。
+            // UI installs are explicit user actions and bypass the startup repair retry cooldown.
             self.install_python_deps(&dependency_manifest, python_override, false)
                 .map_err(|error| error.message().to_string())?
         } else if !manifest.pip_dependencies.is_empty() || manifest.python_dependencies.is_some() {
@@ -703,9 +703,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         match result {
             Ok(()) => transaction.commit()?,
             Err(error) => {
-                transaction
-                    .rollback()
-                    .map_err(|rollback| format!("{error}; Marketplace 状态回滚失败: {rollback}"))?;
+                transaction.rollback().map_err(|rollback| {
+                    format!("{error}; marketplace state rollback failed: {rollback}")
+                })?;
                 drop(python_environment);
                 let _ = self.prune_from_committed_state();
                 return Err(error);
@@ -773,9 +773,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         match result {
             Ok(()) => transaction.commit()?,
             Err(error) => {
-                transaction
-                    .rollback()
-                    .map_err(|rollback| format!("{error}; Marketplace 状态回滚失败: {rollback}"))?;
+                transaction.rollback().map_err(|rollback| {
+                    format!("{error}; marketplace state rollback failed: {rollback}")
+                })?;
                 return Err(error);
             }
         }
@@ -785,9 +785,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // fully usable instead of producing a half-uninstalled state.
         self.cleanup_uninstalled_tool_state(tool_id, &secret_targets);
 
-        // 依赖环境与 wheel 缓存按仍安装的 MCP 做引用清理。清理失败不回滚已完成的卸载，
-        // 下次卸载仍会重试，避免文件占用导致工具处于“配置已删但卸载报错”的半状态。
-        // 必须在事务锁内从刚提交的 installed.json 重读，不能使用进入锁前的过期快照。
+        // Environments and wheel caches are garbage-collected by reference to the still-installed MCPs.
+        // A failed cleanup never rolls back the finished uninstall; the next uninstall retries, so a held file cannot leave the tool stuck in a half state where the config is gone but uninstall keeps erroring.
+        // Re-read the just-committed installed.json inside the transaction lock; a snapshot taken before the lock may be stale.
         if let Err(error) = self.prune_from_committed_state() {
             log::warn!("[marketplace] prune Python dependencies failed: {error}");
         }
@@ -1074,10 +1074,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 }
             }
         }
-        // repair/downgrade 的持久状态已提交后，未引用缓存的物理清理属于可重试维护任务。
-        // Windows 上孤儿进程、杀毒或索引器可能短暂占用 .pyd，不能因此阻断全部助手启动。
-        // 存在临时失败时跳过清理：本轮的活跃锁集合可能已随清单升级变化，而 mcp.json
-        // 现有条目仍指向旧环境——此时清理会把原本可用的工具变成必坏（review 2026-08-28）。
+        // Once repair/downgrade persistent state is committed, physically removing unreferenced caches is retryable maintenance.
+        // Orphan processes, antivirus, or indexers can briefly hold .pyd files on Windows; that must never block assistant startup.
+        // Skip cleanup while transient failures exist: this round's active lock set may have shifted with a catalog upgrade while existing
+        // mcp.json entries still target the old environment — pruning then would turn working tools permanently broken (review 2026-08-28).
         if repair_errors.is_empty() {
             if let Err(error) = self.prune_from_committed_state() {
                 log::warn!("[marketplace] prune Python dependencies after repair failed: {error}");
@@ -1126,8 +1126,8 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             .unwrap_or_default()
     }
 
-    /// 仅由未安装连接器声明的 companion skills。物化层以此防御物理目录清理失败或
-    /// 异常退出留下的残留；若多个连接器共享技能，只要任一已安装就仍可使用。
+    /// Companion skills declared only by uninstalled connectors, i.e. with no live
+    /// claimant left. Cleanup uses this to remove leftover directories; a skill still claimed by any installed connector must be kept.
     pub fn unavailable_companion_skills(&self) -> Vec<String> {
         let installed: std::collections::HashSet<String> =
             self.installed_ids().into_iter().collect();
@@ -1320,7 +1320,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     fn save_installed(&self, ids: &[String]) -> Result<(), String> {
         #[cfg(test)]
         if FAIL_NEXT_INSTALLED_WRITE.swap(false, std::sync::atomic::Ordering::SeqCst) {
-            return Err("测试注入：installed.json 写入失败".to_string());
+            return Err("test injection: installed.json write failed".to_string());
         }
         let json = serde_json::to_string_pretty(ids).map_err(|e| e.to_string())?;
         write_atomic_file(&self.installed_file, json.as_bytes())
@@ -2047,7 +2047,7 @@ mod tests {
                 .repair_installed_python_tools_with_python(&python)
                 .unwrap();
             assert_eq!(deferred.len(), 1);
-            assert!(deferred[0].contains("冷却"));
+            assert!(deferred[0].contains("cooldown"));
             assert!(
                 python_dependencies::take_pending_download_failure_for_test(),
                 "deferred repair must not reach the downloader"

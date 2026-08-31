@@ -279,7 +279,7 @@ impl Pinvou3Bundle {
         // mcp.json, leaving a stable install target for the UI to retry.
         let repair_errors = repair_python_tools(marketplace).map_err(std::io::Error::other)?;
         for error in repair_errors {
-            // 打包后的 Windows GUI 没有 stderr，走日志用户才能看到"已降级/待重试"。
+            // The packaged Windows GUI has no stderr; the log is the only way users see downgrade/retry outcomes.
             log::warn!("[pinvou3-app] {error}");
         }
         // mcp.json merge:每次启动 upsert 内置 pinvou server,保留 marketplace 条目。
@@ -1145,7 +1145,7 @@ impl Pinvou3Bundle {
         // 存量 mcp.json 条目路径迁移：旧布局前缀 → 新包目录（幂等，只改本 app 写的文件）
         if can_cleanup_legacy_manifests {
             if let Err(e) = crate::features::marketplace::migrate_mcp_json_paths() {
-                log::warn!("[runtime-bundle] mcp.json 路径迁移失败: {e}");
+                log::warn!("[runtime-bundle] mcp.json path migration failed: {e}");
             }
             // Only remove embedded legacy directories after plaintext credential migration has
             // succeeded; otherwise an old manifest may still be the sole recoverable copy.

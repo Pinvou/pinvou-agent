@@ -79,7 +79,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         // preinstalled packages would make the manifest incomplete and non-reproducible.
         if crate::platform::capabilities::is_windows() {
             return Err(format!(
-                "工具 '{}' 缺少 Windows Python 依赖锁，无法安全安装",
+                "tool '{}' is missing the Windows Python dependency lock required for a safe install",
                 manifest.id
             ));
         }
@@ -391,8 +391,8 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         write_json_pretty(&mcp_path, &mcp)
     }
 
-    /// 本地工具路径:command/args/env。Python 工具用内置 python(Windows)或系统 python3。
-    /// 敏感字段走 `${ENV}` 占位,非敏感原样写。
+    /// Local tool layout: command/args/env. Python tools use the bundled python (Windows)
+    /// or the system python3; sensitive fields go through `${ENV}` placeholders, non-sensitive ones verbatim.
     fn add_local_to_mcp_json(
         &self,
         manifest: &ToolManifest,

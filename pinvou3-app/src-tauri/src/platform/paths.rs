@@ -268,14 +268,17 @@ pub fn python_command() -> String {
     crate::platform::os::python_command()
 }
 
-/// 锁定 Python 依赖只能由应用随包解释器加载。Windows 上拒绝
-/// `PINVOU3_PYTHON` 与系统 Python，避免用户 site/sitecustomize 补齐漏锁依赖。
+/// Locked Python dependencies may only load through the app's bundled interpreter.
+/// `PINVOU3_PYTHON` On Windows `PINVOU3_PYTHON` and the system Python are refused so user site/sitecustomize cannot fill in missing locked dependencies.
 pub fn managed_python_command() -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
         return crate::platform::os::windows::bundled_python_path()
             .map(|path| path.to_string_lossy().into_owned())
-            .ok_or_else(|| "随包 Python 运行时缺失，无法安全加载 MCP 锁定依赖".to_string());
+            .ok_or_else(|| {
+                "bundled Python runtime is missing; cannot safely load locked MCP dependencies"
+                    .to_string()
+            });
     }
     #[cfg(not(target_os = "windows"))]
     {

@@ -1,8 +1,8 @@
-//! MCP Python 依赖的按需安装器。
+//! On-demand installer for locked MCP Python dependencies.
 //!
-//! manifest 为每个目标平台提供完整 wheel 锁（URL + SHA-256）。安装器不调用系统 pip，
-//! 而是把已校验 wheel 解包到 `~/.pinvou3/marketplace/python-envs/<lock-hash>`；相同锁
-//! 复用环境，不同锁彼此隔离。下载缓存按 wheel 内容哈希共享。
+//! Each manifest carries a complete wheel lock per target platform (URL + SHA-256).
+//! The installer never invokes the system pip: verified wheels are unpacked into
+//! `~/.pinvou3/marketplace/python-envs/<lock-hash>`; identical locks reuse the environment, different locks stay isolated, and the download cache is shared by wheel content hash.
 
 use std::collections::HashSet;
 use std::fs::{self, File};
@@ -22,8 +22,8 @@ const MAX_ENVIRONMENT_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_WHEEL_ENTRIES: usize = 50_000;
 const PYTHON_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 const COMPLETE_MARKER: &str = "environment.json";
-/// 启动修复下载失败后的自动重试冷却。没有它，离线/被墙的机器每次启动都会在
-/// setup 路径同步重放整轮串行下载超时，阻塞引擎池初始化。
+/// Automatic retry cooldown after a failed startup-repair download. Without it, offline
+/// or blocked machines replay the whole serial download timeout chain on the setup path at every startup, stalling engine pool init.
 const REPAIR_RETRY_COOLDOWN_SECS: u64 = 600;
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(test)]
@@ -67,9 +67,9 @@ pub(crate) struct PythonDependencyLock {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct PythonDependencyTarget {
-    /// 与 `paths::connector_platform_dir` 一致，例如 `windows-x64`。
+    /// Matches `paths::connector_platform_dir`, e.g. `windows-x64`.
     pub platform: String,
-    /// 必须匹配运行解释器的 major.minor，例如 `3.13`。
+    /// Must match the running interpreter's major.minor, e.g. `3.13`.
     pub python: String,
     #[serde(default)]
     pub imports: Vec<String>,
@@ -89,17 +89,17 @@ pub(crate) struct PythonWheel {
 pub(super) struct InstalledPythonEnvironment {
     pub site_packages: PathBuf,
     pub python_command: String,
-    /// 从依赖环境就绪一直持有到 Marketplace 完成 mcp.json/installed.json 注册，
-    /// 防止并发卸载把尚未登记引用的新环境清理掉。
+    /// Held from environment readiness until Marketplace finishes the mcp.json and
+    /// installed.json registration, so a concurrent uninstall cannot prune the not-yet-referenced environment.
     _install_guard: std::sync::MutexGuard<'static, ()>,
 }
 
-/// 当前平台存在锁定目标时完成安装并返回隔离环境；没有目标时返回 `None`，由调用方走
-/// 旧平台兼容路径。锁存在但无效或安装失败时必须报错，不能静默降级到未校验 pip。
+/// Installs and returns the isolated environment when the lock has a target for the current platform; returns `None` when it does not, and the caller
+/// takes the legacy platform compatibility path. An invalid lock or a failed install must error — never degrade silently to unverified pip.
 ///
-/// `respect_retry_cooldown`：启动修复的自动重试传 `true`——下载失败后进入冷却期，
-/// 避免离线/被墙机器每次启动都重放下载超时；UI 显式安装传 `false`，用户主动重试
-/// 不受限。环境就绪后两条路径都走 marker 快路径，冷却不再生效。
+/// `respect_retry_cooldown`: startup repair passes `true` — after a download failure the
+/// environment enters a cooldown so offline or blocked machines do not replay download timeouts on every startup; explicit UI installs pass `false` and user
+/// retries stay unrestricted. Once the environment exists both paths take the marker fast path and the cooldown no longer applies.
 pub(super) fn ensure_installed(
     lock: &PythonDependencyLock,
     python_command: &str,
@@ -134,15 +134,16 @@ pub(super) fn ensure_installed(
     if respect_retry_cooldown {
         if let Some(remaining) = repair_cooldown_remaining(&environment_key) {
             return Err(format!(
-                "MCP Python 依赖下载处于自动重试冷却期（上次启动修复失败），剩余约 {remaining} 秒"
+                "MCP Python dependency download is in the automatic retry cooldown (last startup repair failed), about {remaining} s remaining"
             ));
         }
     }
 
     fs::create_dir_all(&environment_root)
-        .map_err(|e| format!("创建 MCP Python 环境目录失败: {e}"))?;
+        .map_err(|e| format!("failed to create the MCP Python environment directory: {e}"))?;
     let cache_root = wheel_cache_root();
-    fs::create_dir_all(&cache_root).map_err(|e| format!("创建 Python wheel 缓存失败: {e}"))?;
+    fs::create_dir_all(&cache_root)
+        .map_err(|e| format!("failed to create the Python wheel cache: {e}"))?;
 
     let staging = environment_root.join(format!(
         ".installing-{}-{}",
@@ -151,7 +152,7 @@ pub(super) fn ensure_installed(
     ));
     let _ = safe_remove_dir(&staging, &environment_root);
     fs::create_dir_all(staging.join("site-packages"))
-        .map_err(|e| format!("创建 Python 依赖暂存目录失败: {e}"))?;
+        .map_err(|e| format!("failed to create the Python dependency staging directory: {e}"))?;
 
     let result: Result<(), String> = (|| {
         let mut extracted_bytes = 0_u64;
@@ -168,7 +169,7 @@ pub(super) fn ensure_installed(
             safe_remove_dir(&destination, &environment_root)?;
         }
         fs::rename(&staging, &destination)
-            .map_err(|e| format!("完成 MCP Python 依赖安装失败: {e}"))?;
+            .map_err(|e| format!("failed to finalize the MCP Python dependency install: {e}"))?;
         Ok(())
     })();
 
@@ -185,8 +186,8 @@ pub(super) fn ensure_installed(
     }))
 }
 
-/// 删除没有被已安装 MCP 引用的隔离环境与 wheel 缓存。文件被运行中的 MCP 占用时，
-/// 调用方会记录错误并在下次卸载时重试。
+/// Removes isolated environments and wheel caches no longer referenced by any installed MCP. When files are held by a running MCP,
+/// the caller logs the error and retries on the next uninstall.
 pub(super) fn prune_unused(active_locks: &[PythonDependencyLock]) -> Result<(), String> {
     let _guard = INSTALL_LOCK
         .lock()
@@ -245,24 +246,24 @@ pub(super) fn prune_unused(active_locks: &[PythonDependencyLock]) -> Result<(), 
 pub(super) fn validate_lock(lock: &PythonDependencyLock) -> Result<(), String> {
     if lock.schema_version != 1 {
         return Err(format!(
-            "不支持的 MCP Python 依赖锁版本: {}",
+            "unsupported MCP Python dependency lock version: {}",
             lock.schema_version
         ));
     }
     let mut platforms = HashSet::new();
     for target in &lock.targets {
         if target.platform.trim().is_empty() || target.python.trim().is_empty() {
-            return Err("MCP Python 依赖锁缺少 platform 或 python".to_string());
+            return Err("MCP Python dependency lock is missing platform or python".to_string());
         }
         if !platforms.insert(&target.platform) {
             return Err(format!(
-                "MCP Python 依赖锁包含重复平台: {}",
+                "MCP Python dependency lock has duplicate platforms: {}",
                 target.platform
             ));
         }
         if target.wheels.is_empty() {
             return Err(format!(
-                "MCP Python 依赖锁的平台 {} 没有 wheel",
+                "MCP Python dependency lock platform {} has no wheels",
                 target.platform
             ));
         }
@@ -292,28 +293,28 @@ fn target_for_platform<'a>(
 
 fn validate_wheel(wheel: &PythonWheel) -> Result<(), String> {
     if wheel.name.trim().is_empty() || wheel.version.trim().is_empty() {
-        return Err("Python wheel 缺少 name 或 version".to_string());
+        return Err("Python wheel is missing name or version".to_string());
     }
     if !wheel.filename.ends_with(".whl")
         || wheel.filename.contains('/')
         || wheel.filename.contains('\\')
     {
-        return Err(format!("Python wheel 文件名无效: {}", wheel.filename));
+        return Err(format!("invalid Python wheel filename: {}", wheel.filename));
     }
     if !is_sha256(&wheel.sha256) {
-        return Err(format!("Python wheel SHA-256 无效: {}", wheel.name));
+        return Err(format!("invalid Python wheel SHA-256: {}", wheel.name));
     }
-    let url =
-        reqwest::Url::parse(&wheel.url).map_err(|e| format!("Python wheel 下载地址无效: {e}"))?;
+    let url = reqwest::Url::parse(&wheel.url)
+        .map_err(|e| format!("invalid Python wheel download URL: {e}"))?;
     if url.scheme() != "https" || !is_allowed_wheel_host(&url) {
         return Err(format!(
-            "Python wheel '{}' 必须来自受信任的 HTTPS 仓库",
+            "Python wheel '{}' must come from the trusted HTTPS host",
             wheel.name
         ));
     }
     if url.path_segments().and_then(Iterator::last) != Some(wheel.filename.as_str()) {
         return Err(format!(
-            "Python wheel '{}' 的文件名与下载地址不一致",
+            "Python wheel '{}' filename does not match its download URL",
             wheel.name
         ));
     }
@@ -325,8 +326,8 @@ fn is_allowed_wheel_host(url: &reqwest::Url) -> bool {
 }
 
 fn environment_key(target: &PythonDependencyTarget) -> Result<String, String> {
-    let serialized =
-        serde_json::to_vec(target).map_err(|e| format!("序列化 MCP Python 依赖锁失败: {e}"))?;
+    let serialized = serde_json::to_vec(target)
+        .map_err(|e| format!("failed to serialize MCP Python dependency lock: {e}"))?;
     Ok(crate::platform::encoding::hex_lower(&Sha256::digest(
         serialized,
     )))
@@ -350,8 +351,8 @@ fn repair_cooldown_path() -> PathBuf {
         .join("python-repair-cooldown.json")
 }
 
-/// 重试冷却标记：环境键 -> 上次自动修复失败时刻（Unix 秒）。损坏/不可读按空
-/// 处理——冷却只影响"何时自动重试"，绝不放大成安装失败。
+/// Retry cooldown markers: environment key -> last automatic repair failure in Unix seconds. Corrupt or unreadable state is treated as empty:
+/// the cooldown only gates when an automatic retry may run and never escalates into an install failure.
 fn read_repair_cooldown() -> std::collections::HashMap<String, u64> {
     match fs::read_to_string(repair_cooldown_path()) {
         Ok(content) => serde_json::from_str(&content).unwrap_or_else(|error| {
@@ -478,25 +479,28 @@ fn write_marker(
         "wheels": target.wheels,
     });
     let json = serde_json::to_vec_pretty(&marker)
-        .map_err(|e| format!("序列化 Python 环境记录失败: {e}"))?;
+        .map_err(|e| format!("failed to serialize the Python environment marker: {e}"))?;
     let mut file = File::create(environment.join(COMPLETE_MARKER))
-        .map_err(|e| format!("创建 Python 环境记录失败: {e}"))?;
+        .map_err(|e| format!("failed to create the Python environment marker: {e}"))?;
     file.write_all(&json)
         .and_then(|()| file.sync_all())
-        .map_err(|e| format!("写入 Python 环境记录失败: {e}"))
+        .map_err(|e| format!("failed to write the Python environment marker: {e}"))
 }
 
 fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> {
     #[cfg(test)]
     if FAIL_NEXT_DOWNLOAD.swap(false, std::sync::atomic::Ordering::SeqCst) {
-        return Err(format!("测试注入：下载 Python 依赖 {} 失败", wheel.name));
+        return Err(format!(
+            "test injection: failed to download Python dependency {}",
+            wheel.name
+        ));
     }
     if sha256_file(destination).is_ok_and(|actual| actual == wheel.sha256) {
         return Ok(());
     }
 
-    let url =
-        reqwest::Url::parse(&wheel.url).map_err(|e| format!("Python wheel 下载地址无效: {e}"))?;
+    let url = reqwest::Url::parse(&wheel.url)
+        .map_err(|e| format!("invalid Python wheel download URL: {e}"))?;
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(180))
@@ -512,17 +516,20 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
         }))
         .user_agent("Pinvou-Agent python-dependency-installer")
         .build()
-        .map_err(|e| format!("创建 Python 依赖下载客户端失败: {e}"))?;
+        .map_err(|e| format!("failed to build the Python dependency download client: {e}"))?;
     let response = client
         .get(url)
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
-        .map_err(|e| format!("下载 Python 依赖 {} 失败: {e}", wheel.name))?;
+        .map_err(|e| format!("failed to download Python dependency {}: {e}", wheel.name))?;
     if response
         .content_length()
         .is_some_and(|length| length > MAX_WHEEL_BYTES)
     {
-        return Err(format!("Python 依赖 {} 超过 64 MiB 安全上限", wheel.name));
+        return Err(format!(
+            "Python dependency {} exceeds the 64 MiB safety limit",
+            wheel.name
+        ));
     }
 
     let mut reader = response.take(MAX_WHEEL_BYTES + 1);
@@ -550,24 +557,31 @@ where
     let partial = destination.with_extension(format!("part-{}", std::process::id()));
     let _ = fs::remove_file(&partial);
     let mut cleanup = PartialFileCleanup::new(partial.clone());
-    let mut file = File::create(&partial).map_err(|e| format!("创建 wheel 暂存文件失败: {e}"))?;
-    let copied = io::copy(reader, &mut file).map_err(|e| format!("保存 wheel 失败: {e}"))?;
-    sync(&file).map_err(|e| format!("同步 wheel 暂存文件失败: {e}"))?;
+    let mut file = File::create(&partial)
+        .map_err(|e| format!("failed to create the wheel staging file: {e}"))?;
+    let copied =
+        io::copy(reader, &mut file).map_err(|e| format!("failed to save the wheel: {e}"))?;
+    sync(&file).map_err(|e| format!("failed to sync the wheel staging file: {e}"))?;
     drop(file);
     if copied > MAX_WHEEL_BYTES {
-        return Err(format!("Python 依赖 {} 超过 64 MiB 安全上限", wheel.name));
+        return Err(format!(
+            "Python dependency {} exceeds the 64 MiB safety limit",
+            wheel.name
+        ));
     }
-    let actual = sha256_file(&partial).map_err(|e| format!("读取 wheel 失败: {e}"))?;
+    let actual = sha256_file(&partial).map_err(|e| format!("failed to read the wheel: {e}"))?;
     if actual != wheel.sha256 {
         return Err(format!(
-            "Python 依赖 {} 校验失败（expected {}, got {}）",
+            "Python dependency {} checksum mismatch (expected {}, got {})",
             wheel.name, wheel.sha256, actual
         ));
     }
     if destination.exists() {
-        fs::remove_file(destination).map_err(|e| format!("替换 wheel 缓存失败: {e}"))?;
+        fs::remove_file(destination)
+            .map_err(|e| format!("failed to replace the wheel cache: {e}"))?;
     }
-    fs::rename(&partial, destination).map_err(|e| format!("保存 wheel 缓存失败: {e}"))?;
+    fs::rename(&partial, destination)
+        .map_err(|e| format!("failed to save the wheel cache: {e}"))?;
     cleanup.disarm();
     Ok(())
 }
@@ -577,49 +591,57 @@ fn extract_wheel(
     environment: &Path,
     extracted_bytes: &mut u64,
 ) -> Result<(), String> {
-    let file = File::open(wheel_path).map_err(|e| format!("打开 wheel 失败: {e}"))?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("读取 wheel 失败: {e}"))?;
+    let file = File::open(wheel_path).map_err(|e| format!("failed to open the wheel: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("failed to read the wheel: {e}"))?;
     if archive.len() > MAX_WHEEL_ENTRIES {
-        return Err("Python wheel 文件数量超过安全上限".to_string());
+        return Err("Python wheel exceeds the entry count safety limit".to_string());
     }
     let site_packages = environment.join("site-packages");
     for index in 0..archive.len() {
         let mut entry = archive
             .by_index(index)
-            .map_err(|e| format!("读取 wheel 条目失败: {e}"))?;
+            .map_err(|e| format!("failed to read the wheel entry: {e}"))?;
         if entry
             .unix_mode()
             .is_some_and(|mode| mode & 0o170000 == 0o120000)
         {
             return Err(format!(
-                "Python wheel 包含不允许的符号链接: {}",
+                "Python wheel contains a disallowed symlink: {}",
                 entry.name()
             ));
         }
         let Some(enclosed) = entry.enclosed_name() else {
-            return Err(format!("Python wheel 包含不安全路径: {}", entry.name()));
+            return Err(format!(
+                "Python wheel contains an unsafe path: {}",
+                entry.name()
+            ));
         };
         let Some(relative) = wheel_install_relative_path(&enclosed) else {
             continue;
         };
         *extracted_bytes = extracted_bytes
             .checked_add(entry.size())
-            .ok_or_else(|| "Python wheel 解压大小溢出".to_string())?;
+            .ok_or_else(|| "Python wheel extraction size overflow".to_string())?;
         if *extracted_bytes > MAX_ENVIRONMENT_BYTES {
-            return Err("MCP Python 依赖解压后超过 512 MiB 安全上限".to_string());
+            return Err(
+                "MCP Python dependencies exceed the 512 MiB extraction safety limit".to_string(),
+            );
         }
         let output = site_packages.join(relative);
         if entry.is_dir() {
-            fs::create_dir_all(&output).map_err(|e| format!("创建 wheel 目录失败: {e}"))?;
+            fs::create_dir_all(&output)
+                .map_err(|e| format!("failed to create the wheel directory: {e}"))?;
             continue;
         }
         if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("创建 wheel 目录失败: {e}"))?;
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create the wheel directory: {e}"))?;
         }
         let mut output_file = File::create(&output)
-            .map_err(|e| format!("创建 wheel 安装文件失败 {}: {e}", output.display()))?;
+            .map_err(|e| format!("failed to create the wheel file {}: {e}", output.display()))?;
         io::copy(&mut entry, &mut output_file)
-            .map_err(|e| format!("解压 wheel 文件失败 {}: {e}", output.display()))?;
+            .map_err(|e| format!("failed to extract the wheel file {}: {e}", output.display()))?;
     }
     Ok(())
 }
@@ -663,9 +685,12 @@ fn verify_environment(
     let detail = detail.trim();
     let detail = utf8_tail(detail, 4096);
     Err(if detail.is_empty() {
-        format!("MCP Python 依赖校验失败（exit={}）", output.status)
+        format!(
+            "MCP Python dependency verification failed (exit={})",
+            output.status
+        )
     } else {
-        format!("MCP Python 依赖校验失败: {detail}")
+        format!("MCP Python dependency verification failed: {detail}")
     })
 }
 
@@ -679,13 +704,13 @@ fn parse_python_version(value: &str) -> Result<(u8, u8), String> {
     let major = parts
         .next()
         .and_then(|value| value.parse::<u8>().ok())
-        .ok_or_else(|| format!("Python 版本无效: {value}"))?;
+        .ok_or_else(|| format!("invalid Python version: {value}"))?;
     let minor = parts
         .next()
         .and_then(|value| value.parse::<u8>().ok())
-        .ok_or_else(|| format!("Python 版本无效: {value}"))?;
+        .ok_or_else(|| format!("invalid Python version: {value}"))?;
     if parts.next().is_some() {
-        return Err(format!("Python 版本无效: {value}"));
+        return Err(format!("invalid Python version: {value}"));
     }
     Ok((major, minor))
 }
@@ -703,10 +728,14 @@ fn utf8_tail(value: &str, max_bytes: usize) -> &str {
 
 fn safe_remove_dir(path: &Path, root: &Path) -> Result<(), String> {
     if !path.starts_with(root) || path == root {
-        return Err(format!("拒绝清理 Python 依赖目录: {}", path.display()));
+        return Err(format!(
+            "refusing to remove Python dependency directory: {}",
+            path.display()
+        ));
     }
     if path.exists() {
-        fs::remove_dir_all(path).map_err(|e| format!("清理 Python 依赖目录失败: {e}"))?;
+        fs::remove_dir_all(path)
+            .map_err(|e| format!("failed to remove the Python dependency directory: {e}"))?;
     }
     Ok(())
 }
@@ -775,14 +804,16 @@ fn remove_prunable_dir(path: &Path, root: &Path) -> Result<(), String> {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if fail_path.as_deref() == Some(path) {
             *fail_path = None;
-            return Err("测试注入：清理 Python 依赖目录失败".to_string());
+            return Err(
+                "test injection: failed to remove the Python dependency directory".to_string(),
+            );
         }
     }
     safe_remove_dir(path, root)
 }
 
 fn remove_prunable_file(path: &Path) -> Result<(), String> {
-    fs::remove_file(path).map_err(|e| format!("清理未使用的 Python wheel 失败: {e}"))
+    fs::remove_file(path).map_err(|e| format!("failed to remove the unused Python wheel: {e}"))
 }
 
 struct PartialFileCleanup {
@@ -892,7 +923,9 @@ mod tests {
     fn lock_rejects_untrusted_or_unpinned_wheels() {
         let mut lock = sample_lock();
         lock.targets[0].wheels[0].url = "http://example.com/example.whl".to_string();
-        assert!(validate_lock(&lock).unwrap_err().contains("受信任"));
+        assert!(validate_lock(&lock)
+            .unwrap_err()
+            .contains("trusted HTTPS host"));
 
         let mut lock = sample_lock();
         lock.targets[0].wheels[0].sha256 = "not-a-hash".to_string();
@@ -920,14 +953,14 @@ mod tests {
 
             fail_next_download_for_test();
             let deferred = ensure_installed(&lock, "python3", true).unwrap_err();
-            assert!(deferred.contains("冷却"));
+            assert!(deferred.contains("cooldown"));
             assert!(
                 take_pending_download_failure_for_test(),
                 "deferred repair must not reach the downloader"
             );
 
             let explicit = ensure_installed(&lock, "python3", false).unwrap_err();
-            assert!(!explicit.contains("冷却"));
+            assert!(!explicit.contains("cooldown"));
             assert!(
                 !take_pending_download_failure_for_test(),
                 "explicit install consumed the injected download failure"
