@@ -942,7 +942,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         for (target, key) in secret_targets {
             let reference = secrets::mcp_secret_reference(tool_id, target, key);
             let _ = self.credential_store.delete(&reference);
-            std::env::remove_var(secrets::mcp_secret_env_var(key));
+            secrets::remove_secret_value(&secrets::mcp_secret_env_var(key));
         }
         remove_connector_from_disabled_scopes(tool_id);
         let unavailable: std::collections::HashSet<String> =
@@ -1954,9 +1954,11 @@ mod tests {
 
             FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
-            assert!(manager
-                .install("trusted-lock", &std::collections::HashMap::new())
-                .is_err());
+            assert!(
+                manager
+                    .install("trusted-lock", &std::collections::HashMap::new())
+                    .is_err()
+            );
             assert!(
                 old_environment.is_dir(),
                 "the rolled-back mcp.json still references this environment"
@@ -2055,10 +2057,12 @@ mod tests {
             connectors::write_json_pretty(&paths::mcp_config_path(), &configured).unwrap();
 
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
-            assert!(manager
-                .repair_installed_python_tools_with_python(&python)
-                .unwrap()
-                .is_empty());
+            assert!(
+                manager
+                    .repair_installed_python_tools_with_python(&python)
+                    .unwrap()
+                    .is_empty()
+            );
 
             let mcp = read_mcp_json();
             let entry = &mcp["servers"]["legacy-doc"];
@@ -2087,10 +2091,12 @@ mod tests {
             );
 
             let repaired_entry = entry.clone();
-            assert!(manager
-                .repair_installed_python_tools_with_python(&python)
-                .unwrap()
-                .is_empty());
+            assert!(
+                manager
+                    .repair_installed_python_tools_with_python(&python)
+                    .unwrap()
+                    .is_empty()
+            );
             assert_eq!(
                 read_mcp_json()["servers"]["legacy-doc"],
                 repaired_entry,
@@ -2118,9 +2124,11 @@ mod tests {
                 .unwrap();
             assert_eq!(errors.len(), 1);
             assert!(errors[0].contains("will retry"));
-            assert!(manager
-                .installed_ids()
-                .contains(&"legacy-retry".to_string()));
+            assert!(
+                manager
+                    .installed_ids()
+                    .contains(&"legacy-retry".to_string())
+            );
             assert_eq!(std::fs::read(paths::mcp_config_path()).unwrap(), mcp_before);
             assert_eq!(manager_installed_bytes(), installed_before);
             assert!(!marketplace_transaction_journal().exists());
@@ -2163,10 +2171,12 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-            assert!(manager
-                .repair_installed_python_tools_with_python(&python)
-                .unwrap()
-                .is_empty());
+            assert!(
+                manager
+                    .repair_installed_python_tools_with_python(&python)
+                    .unwrap()
+                    .is_empty()
+            );
             assert!(
                 !cooldown_path.exists(),
                 "successful repair must clear the cooldown"
@@ -2236,10 +2246,12 @@ mod tests {
                     store::BundleSource::Upload("upload-lock.zip".to_string()),
                 )
                 .unwrap();
-            assert!(manager
-                .repair_installed_python_tools_with_python(&python)
-                .unwrap()
-                .is_empty());
+            assert!(
+                manager
+                    .repair_installed_python_tools_with_python(&python)
+                    .unwrap()
+                    .is_empty()
+            );
             manager.uninstall("upload-lock").unwrap();
             manager
                 .install_with_python("upload-lock", &std::collections::HashMap::new(), &python)
@@ -2257,10 +2269,12 @@ mod tests {
                     store::BundleSource::Upload("upload-pip.zip".to_string()),
                 )
                 .unwrap();
-            assert!(manager
-                .repair_installed_python_tools_with_python(&python)
-                .unwrap()
-                .is_empty());
+            assert!(
+                manager
+                    .repair_installed_python_tools_with_python(&python)
+                    .unwrap()
+                    .is_empty()
+            );
             manager.uninstall("upload-pip").unwrap();
             manager
                 .install("upload-pip", &std::collections::HashMap::new())
@@ -2517,9 +2531,11 @@ mod tests {
             let errors = manager
                 .repair_installed_python_tools_with_python(&python)
                 .unwrap();
-            assert!(errors
-                .iter()
-                .any(|error| error.contains("downgrade failed and was rolled back")));
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("downgrade failed and was rolled back"))
+            );
             assert_eq!(manager_installed_bytes(), installed_before);
             let mcp = read_mcp_json();
             assert_eq!(mcp["servers"]["invalid-lock"], invalid_entry);
@@ -2551,19 +2567,25 @@ mod tests {
             }
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             write_installed_ids(&["connector-a".to_string()]);
-            assert!(!manager
-                .unavailable_companion_skills()
-                .contains(&"shared-skill".to_string()));
+            assert!(
+                !manager
+                    .unavailable_companion_skills()
+                    .contains(&"shared-skill".to_string())
+            );
 
             write_installed_ids(&["connector-b".to_string()]);
-            assert!(!manager
-                .unavailable_companion_skills()
-                .contains(&"shared-skill".to_string()));
+            assert!(
+                !manager
+                    .unavailable_companion_skills()
+                    .contains(&"shared-skill".to_string())
+            );
 
             write_installed_ids(&[]);
-            assert!(manager
-                .unavailable_companion_skills()
-                .contains(&"shared-skill".to_string()));
+            assert!(
+                manager
+                    .unavailable_companion_skills()
+                    .contains(&"shared-skill".to_string())
+            );
         });
     }
 

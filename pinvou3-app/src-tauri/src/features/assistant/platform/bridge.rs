@@ -4279,10 +4279,14 @@ mod tests {
             "DEEPSEEK_PROVIDER",
             "PINVOU3_MAX_OUTPUT_TOKENS",
         ]);
-        std::env::remove_var("CODEWHALE_MAX_OUTPUT_TOKENS");
-        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
-        std::env::remove_var("DEEPSEEK_PROVIDER");
-        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::remove_var("CODEWHALE_MAX_OUTPUT_TOKENS") };
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS") };
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::remove_var("DEEPSEEK_PROVIDER") };
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS") };
 
         // A. Documented cloud model (deepseek-v4-pro): declares a window, no
         // output cap.

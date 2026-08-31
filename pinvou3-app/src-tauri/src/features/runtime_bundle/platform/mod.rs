@@ -926,7 +926,8 @@ mod tests {
     fn secret_migration_failure_still_releases_runner_and_preserves_retryable_legacy_python_tool() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         paths::ensure_dirs().unwrap();
         let bundle = Pinvou3Bundle::paths();
         let server_root = paths::bundle_mcp_servers_dir();
@@ -990,11 +991,13 @@ mod tests {
                 drop(failpoint);
                 assert_eq!(
                     errors,
-                    vec![concat!(
-                        "tool 'gongwen' dependency repair will retry: ",
-                        "test-injected transient managed dependency install failure"
-                    )
-                    .to_string()]
+                    vec![
+                        concat!(
+                            "tool 'gongwen' dependency repair will retry: ",
+                            "test-injected transient managed dependency install failure"
+                        )
+                        .to_string()
+                    ]
                 );
                 assert_eq!(
                     std::fs::read(marketplace_dir.join("installed.json")).unwrap(),
@@ -1042,11 +1045,13 @@ mod tests {
             assert_eq!(gongwen[field], expected_gongwen[field], "field: {field}");
         }
         assert!(!marketplace_dir.join("state-transaction.json").exists());
-        assert!(paths::bundles_root()
-            .join("gongwen")
-            .join("skills")
-            .join("government-writing")
-            .exists());
+        assert!(
+            paths::bundles_root()
+                .join("gongwen")
+                .join("skills")
+                .join("government-writing")
+                .exists()
+        );
 
         cleanup(&tmp);
     }

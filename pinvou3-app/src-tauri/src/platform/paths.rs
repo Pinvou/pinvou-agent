@@ -590,14 +590,17 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let ambient = root.join("python.exe");
         std::fs::write(&ambient, b"ambient").unwrap();
-        std::env::set_var("PINVOU3_PYTHON", &ambient);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_PYTHON", &ambient) };
 
         assert_eq!(python_command(), ambient.to_string_lossy());
         assert!(managed_python_command().is_err());
 
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_PYTHON", value),
-            None => std::env::remove_var("PINVOU3_PYTHON"),
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_PYTHON", value) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_PYTHON") },
         }
         std::fs::remove_dir_all(root).unwrap();
     }

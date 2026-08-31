@@ -318,9 +318,10 @@ fn linux_process_starttime(pid: i32) -> Option<u64> {
 fn driver_process_identity_matches(pid: i32, expected_starttime: u64) -> bool {
     use std::os::unix::fs::MetadataExt as _;
 
+    // SAFETY: geteuid only reads the current effective uid; it has no preconditions.
+    let euid = unsafe { libc::geteuid() };
     let process_dir = std::path::Path::new("/proc").join(pid.to_string());
-    std::fs::metadata(&process_dir)
-        .is_ok_and(|metadata| metadata.uid() == unsafe { libc::geteuid() })
+    std::fs::metadata(&process_dir).is_ok_and(|metadata| metadata.uid() == euid)
         && linux_process_starttime(pid) == Some(expected_starttime)
         && std::fs::read_to_string(process_dir.join("comm"))
             .is_ok_and(|comm| comm.trim().eq_ignore_ascii_case("WebKitWebDriver"))
@@ -566,13 +567,15 @@ async fn wait_for_host_bootstrap_and_rotate_until(
                     expected_registration_nonce,
                 );
             }
-            Arc::clone(
-                &registry
-                    .get(label)
-                    .expect("binding identity was checked under the same lock")
-                    .host_bootstrap_settled,
-            )
-            .notified_owned()
+            // The nonce check above found this binding under the same
+            // registry lock, and nothing can remove it while we hold it.
+            #[allow(clippy::expect_used)]
+            let settled = registry
+                .get(label)
+                .expect("binding identity was checked under the same lock")
+                .host_bootstrap_settled
+                .clone();
+            settled.notified_owned()
         };
         tokio::time::timeout_at(deadline, notification)
             .await
@@ -624,6 +627,9 @@ fn rotate_binding_nonce_locked(
         return Err("browser/webkit-binding-not-registered".to_string());
     }
     let nonce = fresh_binding_nonce(registry);
+    // Presence was checked via contains_key above under the same registry
+    // lock; nothing can remove it in between.
+    #[allow(clippy::expect_used)]
     let binding = registry
         .get_mut(label)
         .expect("binding presence was checked under the same lock");
@@ -1338,7 +1344,11 @@ impl WebDriverRuntime {
             // PDEATHSIG is armed pre-exec so the child cannot race past it, and
             // re-checked post-fork because the spawning thread could itself die
             // between fork and prctl.
+            // SAFETY: getpid only reads the current process id; it has no preconditions.
             let expected_parent = unsafe { libc::getpid() };
+            // SAFETY: pre_exec runs in the forked child right before exec, where
+            // only async-signal-safe calls are allowed; prctl and getppid are
+            // async-signal-safe (see the PDEATHSIG design comment above).
             unsafe {
                 use std::os::unix::process::CommandExt;
                 // webdriver-pre-exec-async-signal-safe:start
@@ -2330,7 +2340,7 @@ impl PluginBuilder<tauri::EventLoopMessage> for BrowserAutomationContextPlugin {
 impl Plugin<tauri::EventLoopMessage> for BrowserAutomationContextPluginInstance {
     fn on_event(
         &mut self,
-        _event: &Event<Message<tauri::EventLoopMessage>>,
+        _event: &Event<'_, Message<tauri::EventLoopMessage>>,
         _event_loop: &EventLoopWindowTarget<Message<tauri::EventLoopMessage>>,
         _proxy: &EventLoopProxy<Message<tauri::EventLoopMessage>>,
         _control_flow: &mut ControlFlow,

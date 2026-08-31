@@ -250,7 +250,7 @@ pub async fn read_subagent_transcript(
 
 #[cfg(test)]
 mod tests {
-    use super::{delegation_reminder, DelegationLimits};
+    use super::{DelegationLimits, delegation_reminder};
     use crate::features::assistant::platform::bridge::{
         MULTI_AGENT_CODE_MAX_ADMITTED, MULTI_AGENT_CODE_MAX_CONCURRENT,
         MULTI_AGENT_WORK_MAX_ADMITTED, MULTI_AGENT_WORK_MAX_CONCURRENT,

@@ -423,9 +423,11 @@ mod tests {
             // 关键前提：gongwen 连接器未安装（无 BundleStore/installed.json 记录）。
             // 此时 gongwen 仍在清单里声明 government-writing companion，
             // unavailable_companion_skills() 非空，但技能必须保持可用。
-            assert!(crate::features::marketplace::MarketplaceManager::new()
-                .unavailable_companion_skills()
-                .contains(&"government-writing".to_string()));
+            assert!(
+                crate::features::marketplace::MarketplaceManager::new()
+                    .unavailable_companion_skills()
+                    .contains(&"government-writing".to_string())
+            );
 
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
