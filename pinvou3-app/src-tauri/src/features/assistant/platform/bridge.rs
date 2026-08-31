@@ -246,21 +246,55 @@ impl crate::features::memory::MemoryReviewModel for Pinvou3Bridge {
     }
 }
 
+/// 解析一条任意 SavedModel 的凭据(视觉兜底模型专用,设计 §9.3):
+/// 复用 `credential_ref` → 系统凭据库路径,**不存第二份明文密钥**;
+/// 不回落到全局 `DEEPSEEK_API_KEY` env(那是主模型的覆盖入口)。
+/// 本地 vLLM/loopback 无鉴权场景返回占位 key(底座要求非空)。
+/// `resolve_vision_model_config` 规则 1 与 `vision_local_gate` 的
+/// 「已配置」判定都必须走这里，两条路径凭据口径不得分叉。
+fn api_key_for_saved_model(model: &SavedModel) -> String {
+    if let Some(reference) = &model.credential_ref {
+        let store = shared_credential_store();
+        match store.get(reference) {
+            Ok(Some(key)) if !key.trim().is_empty() => return key,
+            Ok(_) => {}
+            Err(err) => {
+                eprintln!(
+                    "[pinvou3-app] credential read failed for vision model {}: {}",
+                    model.id,
+                    err.user_message()
+                );
+            }
+        }
+    }
+    if model.preset == ModelPreset::LocalVllm || base_url_uses_loopback(&model.base_url) {
+        return LOCAL_VLLM_API_KEY.to_string();
+    }
+    model.api_key.clone()
+}
+
 /// 本地引擎视觉接管门：该模型显式选择「本地识图引擎」
 /// （`vision_prefer_local_engine`，模型设置页选项），或全局兜底开关开启
 /// （默认开）**且该模型未配置视觉模型**——兜底只接管没有出路的纯文本
 /// 模型，不覆盖用户的显式视觉模型配置。`vision_model_id` 悬空（指向的
-/// 模型已删除/不存在）按未配置处理，与 `resolve_vision_model_config`
-/// 规则 1 同口径，否则悬空引用会让兜底与安装引导同时静默失效。
+/// 模型已删除/不存在）或指向的模型凭据缺失（如 keychain 条目被删）都
+/// 按未配置处理，与 `resolve_vision_model_config` 规则 1 同口径——判定
+/// 统一走 `api_key_for_saved_model`，否则这两类引用会让兜底与安装引导
+/// 同时静默失效（图片硬拒且不引导安装本地引擎）。
 /// 命中后引擎运行中即接管 `image_analyze` 端点；未运行则回落后续规则。
 fn vision_local_gate(
     prefs: &crate::platform::prefs::AdvancedPrefs,
     model: Option<&crate::platform::prefs::SavedModel>,
 ) -> bool {
     let vision_model_configured = |m: &crate::platform::prefs::SavedModel| {
-        m.vision_model_id
-            .as_deref()
-            .is_some_and(|id| prefs.saved_models.iter().any(|saved| saved.id == id))
+        m.vision_model_id.as_deref().is_some_and(|id| {
+            prefs
+                .saved_models
+                .iter()
+                .find(|saved| saved.id == id)
+                // 凭据缺失与悬空 id 同口径(规则 1):按「未配置」处理。
+                .is_some_and(|vision| !api_key_for_saved_model(vision).trim().is_empty())
+        })
     };
     model.is_some_and(|m| m.vision_prefer_local_engine)
         || (prefs.llama_engine_vision_fallback.unwrap_or(true)
@@ -969,31 +1003,6 @@ impl Pinvou3Bridge {
         }
     }
 
-    /// 解析一条任意 SavedModel 的凭据(视觉兜底模型专用,设计 §9.3):
-    /// 复用 `credential_ref` → 系统凭据库路径,**不存第二份明文密钥**;
-    /// 不回落到全局 `DEEPSEEK_API_KEY` env(那是主模型的覆盖入口)。
-    /// 本地 vLLM/loopback 无鉴权场景返回占位 key(底座要求非空)。
-    fn api_key_for_saved_model(model: &SavedModel) -> String {
-        if let Some(reference) = &model.credential_ref {
-            let store = shared_credential_store();
-            match store.get(reference) {
-                Ok(Some(key)) if !key.trim().is_empty() => return key,
-                Ok(_) => {}
-                Err(err) => {
-                    eprintln!(
-                        "[pinvou3-app] credential read failed for vision model {}: {}",
-                        model.id,
-                        err.user_message()
-                    );
-                }
-            }
-        }
-        if model.preset == ModelPreset::LocalVllm || base_url_uses_loopback(&model.base_url) {
-            return LOCAL_VLLM_API_KEY.to_string();
-        }
-        model.api_key.clone()
-    }
-
     /// 本地引擎视觉接管门：该模型显式选择「本地识图引擎」，或全局兜底
     /// 开关开启且该模型未配置视觉模型（见 `vision_local_gate`）。
     /// 命中后引擎运行中即接管 `image_analyze` 端点；未运行则回落后续规则。
@@ -1047,7 +1056,7 @@ impl Pinvou3Bridge {
                 // 才允许选中)。override 标记(disabled)可能是历史探测误判残留
                 // (如 kimi-for-coding 曾因探测链路 400 被回填),运行时按实际被
                 // 选中的事实使用;文本模型配成视觉模型由前端探测闸门挡住。
-                let api_key = Self::api_key_for_saved_model(vision);
+                let api_key = api_key_for_saved_model(vision);
                 if api_key.trim().is_empty() {
                     // 凭据缺失(如 keychain 条目被删)与悬空 id 同口径:按「未配置」
                     // 落到规则 2/3——Supported 主模型自复用或本地引擎兜底仍可用;
@@ -3593,7 +3602,7 @@ mod tests {
 
     /// 本地识图引擎门：全局兜底默认开但只接管未配置视觉模型的模型；
     /// 该模型显式选「本地识图引擎」时无条件命中（视为显式配置）。
-    /// vision_model_id 悬空（指向已删除模型）按未配置处理。
+    /// vision_model_id 悬空（指向已删除模型）或凭据缺失按未配置处理。
     #[test]
     fn vision_local_gate_combinations() {
         let model = |prefer_local: bool, vision_model_id: Option<&str>| {
@@ -3620,8 +3629,10 @@ mod tests {
                 credential_action: None,
             })
         };
-        // 「已配置」按 saved_models 实际存在性判断：fixture 里放一条 id=v1
-        // 的视觉模型供「已配置」用例引用。
+        // 「已配置」按 saved_models 实际存在性 + 可用凭据判断（与规则 1 同
+        // 口径，统一走 api_key_for_saved_model）：v1 持有可用凭据；v2 存在
+        // 但凭据缺失（keychain 条目被删/api_key 为空）；v3 是 loopback 端点
+        // （占位 key 即视为可用，本地端点无需真实凭据）。
         let prefs = |fallback: Option<bool>| {
             let mut prefs = crate::platform::prefs::AdvancedPrefs {
                 llama_engine_vision_fallback: fallback,
@@ -3629,7 +3640,15 @@ mod tests {
             };
             let mut vision = model(false, None).expect("vision fixture");
             vision.id = "v1".into();
+            vision.api_key = "sk-vision".into();
             prefs.saved_models.push(vision);
+            let mut no_credential = model(false, None).expect("vision fixture");
+            no_credential.id = "v2".into();
+            prefs.saved_models.push(no_credential);
+            let mut loopback = model(false, None).expect("vision fixture");
+            loopback.id = "v3".into();
+            loopback.base_url = "http://127.0.0.1:8000/v1".into();
+            prefs.saved_models.push(loopback);
             prefs
         };
         // 全局兜底默认开 + 未配置视觉模型 → 命中（即便模型未显式选本地）
@@ -3668,6 +3687,23 @@ mod tests {
         assert!(vision_local_gate(
             &prefs(None),
             model(false, Some("ghost")).as_ref()
+        ));
+        // 视觉模型存在但凭据缺失（如 keychain 条目被删）→ 与悬空 id 同口径
+        // 按未配置处理：兜底命中，发送门才会引导启动/安装本地引擎——否则
+        // 图片硬拒且无任何引导（gate 与 resolve 口径分叉的回归点）。
+        assert!(vision_local_gate(
+            &prefs(None),
+            model(false, Some("v2")).as_ref()
+        ));
+        assert!(vision_local_gate(
+            &prefs(Some(true)),
+            model(false, Some("v2")).as_ref()
+        ));
+        // loopback 视觉模型无需真实凭据（占位 key 即可用）→ 视为已配置，
+        // 兜底不覆盖该显式配置
+        assert!(!vision_local_gate(
+            &prefs(None),
+            model(false, Some("v3")).as_ref()
         ));
     }
 
