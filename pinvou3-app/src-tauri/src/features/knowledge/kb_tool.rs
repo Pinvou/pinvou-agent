@@ -103,7 +103,7 @@ fn source_rank_score(rank: usize) -> f64 {
 }
 
 fn build_unified_context_block(hits: &[UnifiedHit], warnings: &[String]) -> String {
-    let mut out = "在本会话启用的本地与远程知识集中检索到以下相关片段(已统一排序)。请严格基于这些片段作答并注明来源文件；上下文不足时可再次调用 `kb_search`，或用 `source_ref` 调用 `kb_open_source`。\n\n".to_string();
+    let mut out = "在本会话启用的本地与远程知识集中检索到以下相关片段(已统一排序)。请严格基于这些片段作答并注明来源文件；上下文不足时可再次调用 `kb_search`，或用 `source_ref` 调用 `kb_open_source`。对于 XLSX/DOCX/PPTX 等二进制来源，禁止调用 `File(action=\"read\")` 或用 `Bash(action=\"run\")` 全量展开。\n\n".to_string();
     if !warnings.is_empty() {
         out.push_str("部分来源暂时不可用：");
         out.push_str(&warnings.join("；"));
@@ -774,6 +774,37 @@ mod tests {
             Some(("cube/server:1".to_string(), 7, 42, 3))
         );
         assert!(parse_remote_source_ref("kbremote:bad:7:42:chunk:-1").is_none());
+    }
+
+    /// The kb_search (production unified search) result header must also carry
+    /// the binary-source prohibition: when the snippets look insufficient the
+    /// model tries to fully expand XLSX/DOCX/PPTX via File/Bash. The rule used to
+    /// exist only in the kb_open_source description and the system reminder
+    /// (regression: the production result header missed it).
+    #[test]
+    fn unified_context_block_forbids_binary_source_expansion() {
+        let unified = vec![UnifiedHit {
+            collection_name: "硬件资料".to_string(),
+            document_name: "散热报告.xlsx".to_string(),
+            source_path: "/docs/散热报告.xlsx".to_string(),
+            source_ref: "kbdoc:42:chunk:3".to_string(),
+            text: "CPU 峰值温度 78℃".to_string(),
+            score: 1.0,
+        }];
+        let block = build_unified_context_block(&unified, &[]);
+        assert!(block.contains("严格基于这些片段作答"));
+        assert!(block.contains("kb_open_source"));
+        assert!(
+            block.contains("XLSX/DOCX/PPTX 等二进制来源")
+                && block.contains("禁止调用 `File(action=\"read\")`")
+                && block.contains("`Bash(action=\"run\")` 全量展开"),
+            "unified search result header must carry the binary-source prohibition: {block}"
+        );
+        // The prohibition survives warnings: it lives inside the fixed header
+        // text and warnings are appended after it, so they cannot displace it.
+        let with_warnings = build_unified_context_block(&unified, &["远程服务离线".to_string()]);
+        assert!(with_warnings.contains("部分来源暂时不可用"));
+        assert!(with_warnings.contains("禁止调用 `File(action=\"read\")`"));
     }
 
     /// 超总字符预算:保证第一条一定注入,余下截断并提示剩余条数。

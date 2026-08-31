@@ -48,7 +48,7 @@ TOOL_DEF = {
             },
             "title": {
                 "type": "string",
-                "description": "客户一眼看懂的中文标题,不要用文件名,要有叙述感。",
+                "description": "客户一眼看懂的标题，与你的回复同语种，不要用文件名，要有叙述感。",
             },
             "description": {
                 "type": "string",

@@ -738,6 +738,31 @@ fn full_transcript(messages: &[Message]) -> String {
     lines.join("\n")
 }
 
+/// Section-header prefixes of B1 transfer messages (resolvePinvouReview: after
+/// the Pinvou review dialog checks "let AI fix" and similar actions, both
+/// frontend bridges assemble the message identically and send it back to the
+/// main session as the Boss). The message is composed of up to five sections,
+/// one per checked action, and **any of them can lead** (checking only verify
+/// makes the message start with "以下几条涉及外部事实"), so matching must cover
+/// all prefixes instead of a single starts_with. Keep in sync with
+/// resolvePinvouReview in `pinvou3-app/src/platform/tauri/bridge/chat.js` and
+/// `pinvou3-app/src/platform/web/bridge.js`. The old prefix found in historical
+/// comments ("请参考下面 Pinvou 的检阅意见") has never been sent by any frontend
+/// since the open-source baseline (e34024e6) — both bridges always used
+/// "请按下面的检阅意见" — so no compatibility branch is needed.
+const B1_TRANSFER_PREFIXES: &[&str] = &[
+    // fix section header
+    "请按下面的检阅意见",
+    // verify section header
+    "以下几条涉及外部事实",
+    // adopt section header
+    "以下事项我已拍板",
+    // ask section header
+    "以下待定项请用 request_user_input 正式问我",
+    // fill section header
+    "以下维度产物还缺",
+];
+
 /// 确定性投影（§4.2，超长降级用）：Boss 原话全留 / request_user_input 决策 /
 /// Web(action=search) 事实截断；丢 checklist、thinking、tool 细节。**产物不在这里**——由
 /// build_context 读 workspace 文件真实内容（修 edit_file bug，§10.10）。
@@ -750,11 +775,20 @@ fn project(messages: &[Message]) -> String {
         let is_user = m.role == "user";
         for b in &m.content {
             match b {
-                // B1 转交消息(applyPinvouReview 固定前缀)是 pinvou 上轮审阅回传,不是 Boss
-                // 原始需求——投影排除,否则其中引用的旧数字会被当成"AI 当前状态"误导;采纳的
-                // 决策已落在产物文件里(产物才是真相)。
+                // B1 transfer messages (fixed section headers assembled by
+                // resolvePinvouReview) are the Pinvou review feedback from the
+                // previous round, not the Boss's original request — project them
+                // out, otherwise stale numbers quoted there get read as "the AI's
+                // current state"; adopted decisions already live in the artifact
+                // files (the artifacts are the truth). The frontend (identical in
+                // the tauri/web bridges) composes one section per checked action
+                // and any of the five headers can lead, so all must be recognized;
+                // see the B1_TRANSFER_PREFIXES docs.
                 ContentBlock::Text { text, .. }
-                    if is_user && !text.starts_with("请参考下面 Pinvou 的检阅意见") =>
+                    if is_user
+                        && !B1_TRANSFER_PREFIXES
+                            .iter()
+                            .any(|prefix| text.starts_with(prefix)) =>
                 {
                     boss_says.push(text.clone())
                 }
@@ -1227,13 +1261,46 @@ mod tests {
 
     #[test]
     fn project_excludes_b1_transfer_messages() {
-        let messages = vec![
-            user_text("帮我规划欧洲游，预算 2 万"),
-            user_text("请参考下面 Pinvou 的检阅意见，修改前面的内容：\n- 【预算】采纳 8.5w（国庆 5-7w 难实现）"),
+        // Both frontend bridges (tauri/chat.js, web/bridge.js) compose
+        // resolvePinvouReview sections per checked action and any of the five
+        // headers can lead — build one case per real prefix (strings taken
+        // verbatim from the bridge sources).
+        let real_prefixes = [
+            (
+                "fix",
+                "请按下面的检阅意见，**只定向修改对应段落，不要全文重写**：",
+            ),
+            (
+                "verify",
+                "以下几条涉及外部事实，**先查证再改、标明依据，别凭记忆直接改**：",
+            ),
+            ("adopt", "以下事项我已拍板，按此更新产物："),
+            (
+                "ask",
+                "以下待定项请用 request_user_input 正式问我，别自己猜：",
+            ),
+            (
+                "fill",
+                "以下维度产物还缺，请补充进去（保留其余、只增不改）：",
+            ),
         ];
-        let p = project(&messages);
-        assert!(p.contains("帮我规划欧洲游"), "Boss 原话保留: {p}");
-        assert!(!p.contains("5-7w"), "转交消息(含上轮旧数字)要排除: {p}");
+        for (kind, prefix) in real_prefixes {
+            let messages = vec![
+                user_text("帮我规划欧洲游，预算 2 万"),
+                user_text(&format!(
+                    "{prefix}\n- 【预算】采纳 8.5w（国庆 5-7w 难实现）"
+                )),
+            ];
+            let p = project(&messages);
+            assert!(
+                p.contains("帮我规划欧洲游"),
+                "Boss's own words kept ({kind}): {p}"
+            );
+            assert!(
+                !p.contains("5-7w"),
+                "transfer message led by the {kind} header (with last round's stale numbers) must be excluded: {p}"
+            );
+        }
     }
 
     #[test]
