@@ -538,6 +538,22 @@ mod tests {
         );
         assert!(normalized_presentation_extension(Path::new("notes.txt")).is_none());
     }
+
+    #[test]
+    fn strong_igpu_whitelist_matches_real_dxgi_adapter_names() {
+        // 真机常见 Description 格式（(TM)/(R) 标记隔断裸子串，归一化后命中）。
+        assert!(is_strong_igpu("AMD Radeon(TM) 780M Graphics"));
+        assert!(is_strong_igpu("AMD Radeon(TM) 680M"));
+        assert!(is_strong_igpu("Intel(R) Iris(R) Xe Graphics"));
+        assert!(is_strong_igpu("Intel(R) Arc(TM) Graphics"));
+        // 无标记格式同样命中。
+        assert!(is_strong_igpu("AMD Radeon 780M Graphics"));
+        // 非目标硬件不误报。
+        assert!(!is_strong_igpu("Intel(R) UHD Graphics"));
+        assert!(!is_strong_igpu("NVIDIA GeForce RTX 4070"));
+        assert!(!is_strong_igpu("Microsoft Basic Render Driver"));
+        assert!(!is_strong_igpu(""));
+    }
 }
 
 // ---------------- 本地引擎硬件探测 ----------------
@@ -721,7 +737,14 @@ fn adapter_name(buf: &[u16]) -> String {
 }
 
 fn is_strong_igpu(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
+    // 真实 DXGI Description 形如 "AMD Radeon(TM) 780M Graphics"、
+    // "Intel(R) Iris(R) Xe Graphics"、"Intel(R) Arc(TM) Graphics"：
+    // (TM)/(R) 标记会隔断裸子串匹配，强核显层因此在目标硬件上永远
+    // 落空、静默回落 CPU。匹配前先剥掉标记再小写化。
+    let normalized = name
+        .to_ascii_lowercase()
+        .replace("(tm)", "")
+        .replace("(r)", "");
     [
         "radeon 680m",
         "radeon 780m",
@@ -731,7 +754,7 @@ fn is_strong_igpu(name: &str) -> bool {
         "arc graphics",
     ]
     .iter()
-    .any(|key| name.contains(key))
+    .any(|key| normalized.contains(key))
 }
 
 /// 物理核数（llama-server `-t` 用）：GetLogicalProcessorInformation 按
