@@ -965,3 +965,9 @@ dictEn.uiSettingsDetail.customModelTitles = {
   openai_compatible:'Custom compatible model', glm_coding_plan:'Custom GLM Coding Plan model',
   tencent_coding_plan:'Custom Tencent Cloud Coding Plan model', tencent_token_plan:'Custom Tencent Cloud Token Plan model', kimi_coding_plan:'Custom Kimi Coding Plan model',
 };
+
+// features/chat background task indicator entries (uiChat exists, merge instead of overwrite)
+Object.assign(dictEn.uiChat, {
+  bgTasks: 'Background Tasks',
+  bgTasksRunning: n => `${n} background task${n === 1 ? '' : 's'} running`,
+});

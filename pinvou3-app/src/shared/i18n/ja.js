@@ -967,3 +967,9 @@ dictJa.uiSettingsDetail.customModelTitles = {
   openai_compatible:'カスタム互換モデル', glm_coding_plan:'カスタム GLM Coding Plan モデル',
   tencent_coding_plan:'カスタム Tencent Cloud Coding Plan モデル', tencent_token_plan:'カスタム Tencent Cloud Token Plan モデル', kimi_coding_plan:'カスタム Kimi Coding Plan モデル',
 };
+
+// features/chat バックグラウンドタスク表示の辞書項目（uiChat は既存のためマージ）
+Object.assign(dictJa.uiChat, {
+  bgTasks: 'バックグラウンドタスク',
+  bgTasksRunning: n => `${n} 件のバックグラウンドタスク実行中`,
+});

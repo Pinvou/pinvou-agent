@@ -4335,6 +4335,9 @@
     return JSON.stringify([
       job.id, job.status, job.exit_code, job.stdout_len, job.stderr_len,
       job.stdout_tail, job.stderr_tail,
+      // elapsed_ms 按秒分桶进 key：无输出的安静任务（sleep、编译静默期）也能让
+      // 卡片每秒刷新一次耗时，而不是等到有输出才更新（否则指示器读秒恒为 0s）。
+      Math.floor((Number(job.elapsed_ms) || 0) / 1000),
     ]);
   }
 
