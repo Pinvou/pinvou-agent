@@ -4,6 +4,12 @@ import {
   invokeObservedPanelSelection,
   isSubagentPanelPublicationCurrent,
 } from './subagent-panel-publication.mjs';
+import {
+  acceptsLateCallback,
+  ownershipAfterInstall,
+  resolveDownloadOwnership,
+  shouldStopEngineAfterLateInvoke,
+} from './local-engine-gate.mjs';
 import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, Mic, Monitor, Package, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X } from '../../components/icons.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
@@ -1672,7 +1678,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             // the invoke returns into a dead flow that owned the engine, stop once
             // more (ref===0 means cancelled; a replacement flow would hold its own
             // token there and takes the engine over instead).
-            if (owned && !localEngineFlowAlive(token) && localEngineStartedByTokenRef.current === 0) {
+            if (shouldStopEngineAfterLateInvoke({
+              ownedStart: owned,
+              alive: localEngineFlowAlive(token),
+              startedRef: localEngineStartedByTokenRef.current,
+            })) {
               bridge.llamaEngine.stopEngine().catch(() => {});
             }
           }
@@ -1726,7 +1736,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         const pending = pendingLocalEngineSendRef.current;
         // token 不匹配的迟到回调（旧 install/start 流程）直接丢弃：
         // 不得关掉新流程的对话框，也不得偷 resolve 新 promise。
-        if (token !== undefined && (!pending || pending.token !== token)) return;
+        if (token !== undefined && !acceptsLateCallback(pending, token)) return;
         pendingLocalEngineSendRef.current = null;
         setLocalEnginePrompt(null);
         if (send) {
@@ -1775,18 +1785,24 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       }
       async function installThenResolve(info, token) {
         setLocalEnginePrompt({ kind: 'downloading', token });
-        // 下载所有权乐观登记：桥内幂等守卫以「调用瞬间无在途下载」判定发起方，
-        // 调用前查实时桥状态（非 React 快照）即同口径预判。登记必须早于
-        // await——invoke 待决期间（下载进行中）用户点取消要能收掉它；只在
-        // invoke 返回后登记会让本流程自己发起的下载无法被取消。返回 false =
-        // 他人抢先发起（微任务级窗口），撤销登记并等待其收敛，绝不代取消。
-        localEngineDownloadOwnedRef.current = false;
+        // 下载所有权登记（判定在 local-engine-gate.mjs，纯函数有单测）：
+        // 桥内幂等守卫以「调用瞬间无在途下载」判定发起方，调用前查实时桥
+        // 状态（非 React 快照）即同口径预判。在途下载若由本组件先前（可能
+        // 已被顶替的）流程发起则由本流程继承——否则顶替后取消按钮收不到
+        // 那次下载；仅外部入口（设置页等）发起的在途下载不认领、绝不代取消。
+        // 入口不做无条件清零：清零会孤儿化被顶替流程发起的在途下载。
         const runOwnedInstall = async (invokeInstall) => {
           const slices = (bridge.state && bridge.state.getMany) ? bridge.state.getMany(['llamaEngine']) : null;
           const inFlight = !!(slices && slices.llamaEngineSetup && slices.llamaEngineSetup.downloading);
-          if (!inFlight) localEngineDownloadOwnedRef.current = true;
-          if ((await invokeInstall()) === false) {
-            localEngineDownloadOwnedRef.current = false;
+          const ownership = resolveDownloadOwnership({ inFlight, owned: localEngineDownloadOwnedRef.current });
+          localEngineDownloadOwnedRef.current = ownership.owned;
+          const skipped = (await invokeInstall()) === false;
+          // invoke 结束即归还乐观认领（本次下载已完成或被他人抢先，取消语义
+          // 到此失效）；继承的在途下载不属于本次 invoke，所有权保持到其收敛
+          // 或被取消，下一轮再按最新在途状态重新判定。
+          localEngineDownloadOwnedRef.current = ownershipAfterInstall(ownership);
+          if (skipped) {
+            // 他人抢先发起（微任务级窗口）：等在途下载收敛再继续，绝不代取消。
             await waitForLocalDownloadSettled(token);
           }
         };
