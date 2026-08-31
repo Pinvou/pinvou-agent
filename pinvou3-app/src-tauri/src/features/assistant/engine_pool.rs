@@ -1199,11 +1199,15 @@ impl EnginePool {
     /// 复核会话仍然空闲（TOCTOU 防护）——`reap_idle_engines` 的候选快照到拿到
     /// 锁之间可能已有新 turn：`reserve_turn` 不取 gate 可先行 reserve
     /// （lifecycle 转 active），`send_reserved_user_message` 先抢 gate 提交并
-    /// 刷新活动时钟。此处若不复核，在跑 turn 会被 reclaim 收口成 Interrupted，
-    /// 已 reserve 未提交的 reservation 会被失效化、排队发送直接失败。复核要求
+    /// 刷新活动时钟。此处若不复核，在跑 turn 会被 reclaim 收口成 Interrupted
+    /// （未提交 reservation 则按下方语义保留，不会被失效）。复核要求
     /// 快照后活动时钟未前进且按现值仍满足回收条件（谓词见
     /// [`should_still_reap_after_snapshot`]）；不满足则跳过，留待下一轮巡检。
-    /// 返回是否真正回收。删除 / 切模型路径仍走 `evict`，语义不变。
+    /// 返回是否真正回收。删除 / 切模型路径仍走 `evict`，不做空闲复核；它们的
+    /// reclaim 对未提交 reservation 同样保留——删除路径发送方随后的
+    /// `store.load` 守卫仍会报错，切模型路径的待发消息会提交到重建后的新模型
+    /// 引擎。唯一仍会作废未提交 reservation 的是 [`Self::evict_locked`] 的
+    /// 无引擎分支（reserve 先于 lazy spawn 的窗口）。
     ///
     /// 残余窗口（复核之后、reclaim 收口之前的极短区间内新 reserve 的未提交
     /// reservation）不再失效：`claim_reclaimed_transition` 只认领已提交轮次，
@@ -1573,8 +1577,8 @@ impl EnginePool {
 
     /// 原子切换多智能体资源策略：先占用与发送相同的 lifecycle 槽位，再在
     /// session turn gate 内持久化状态并回收旧引擎。这样发送与切换不可能交错成
-    /// “新开关 + 旧引擎”或“旧开关 + 新引擎”。未提交 reservation 会在回收时
-    /// 静默失效，不产生伪造的 chat:done。
+    /// “新开关 + 旧引擎”或“旧开关 + 新引擎”。回收只认领已提交轮次，不产生
+    /// 伪造的 chat:done；本函数持有的占位 reservation 由 Drop 归还槽位。
     pub(crate) async fn reconfigure_multi_agent_mode(
         &self,
         session_id: &str,
@@ -1816,6 +1820,13 @@ impl EnginePool {
             // A user may have opened this conversation since the previous run.
             // Scheduled execution must rebuild from the latest task profile and
             // global model/provider settings instead of reusing that old client.
+            // Known limitation: a user reservation pending between reserve_turn
+            // and the turn gate on this fresh run session survives the reclaim
+            // (claim_reclaimed_transition preserves unsubmitted turns), so the
+            // send below bails "session_turn_in_progress" and this tick fails
+            // while the user's message goes through on the respawned engine.
+            // The window is ms-scale after create_session; every run owns a
+            // fresh session, so nothing propagates to the next run.
             self.evict_locked(session_id).await;
             let engine = match self
                 .get_or_spawn_with_policy(session_id, true, None)
@@ -2455,7 +2466,8 @@ mod scheduled_model_tests {
         // 空闲；快照后、回收拿到锁之前用户新发 turn（reserve_turn 不取 gate
         // 可先行 reserve，send_reserved_user_message 抢 gate 提交并刷新活动
         // 时钟）。复核必须发现活动并跳过回收，否则在跑 turn 会被 reclaim 收口
-        // 成 Interrupted，未提交 reservation 会被失效化导致发送直接失败。
+        // 成 Interrupted；未提交 reservation 虽已保留，仍会被无谓地换到重建
+        // 引擎上重提交。
         let turn_locks = SessionTurnLocks::default();
         let runtime_locks = SessionTurnLocks::default();
         let lifecycles = SessionTurnLifecycles::default();
