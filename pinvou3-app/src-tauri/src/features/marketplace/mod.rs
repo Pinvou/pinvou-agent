@@ -169,9 +169,9 @@ fn restore_marketplace_snapshot(snapshot: &MarketplaceStateSnapshot) -> Result<(
 
 fn remove_file_with_retry(path: &Path) -> Result<(), String> {
     let mut last_error: Option<std::io::Error> = None;
-    for attempt in 0..JOURNAL_REMOVE_ATTEMPTS {
+    for _attempt in 0..JOURNAL_REMOVE_ATTEMPTS {
         #[cfg(test)]
-        if attempt == 0
+        if _attempt == 0
             && FAIL_NEXT_JOURNAL_REMOVAL.swap(false, std::sync::atomic::Ordering::SeqCst)
         {
             last_error = Some(std::io::Error::other(

@@ -44,6 +44,10 @@ const runtimeScript = readApp(
   "scripts",
   "resolve-runtime.ps1",
 );
+const pythonDependencyRuntimeTest = readApp(
+  "tests",
+  "windows_python_dependency_contract.ps1",
+);
 const runtimeManifestContract = readApp(
   "src-tauri",
   "packaging",
@@ -51,10 +55,6 @@ const runtimeManifestContract = readApp(
   "runtime",
   "scripts",
   "runtime-manifest-contract.ps1",
-);
-const pythonDependencyRuntimeTest = readApp(
-  "tests",
-  "windows_python_dependency_contract.ps1",
 );
 const onnxRuntimeScript = readApp(
   "src-tauri",
