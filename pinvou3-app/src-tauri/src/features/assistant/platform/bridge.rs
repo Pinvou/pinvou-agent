@@ -1108,8 +1108,12 @@ impl Pinvou3Bridge {
     /// 为一个具体 wire model 生成宿主已知的 route facts：
     /// SavedModel 显式能力与实时 probe 取更小值；两者都没有时复用运行状态页同一份
     /// 模型 catalog，未知本地 vLLM 才使用 128K 保守值。
-    /// output_tokens：本地 vLLM 显式携带 Pinvou 24K 预算（防 SSE timeout 既有约束），
-    /// 云端模型不声明（SavedModel.max_output_tokens 默认 None）→ 底座按 64K/厂商能力兜底。
+    /// output_tokens: the local vLLM explicitly carries the Pinvou 24K budget
+    /// (pre-existing anti-SSE-timeout constraint); uncatalogued models on
+    /// user-configured (operator-owned) openai-compatible endpoints declare
+    /// the base window heuristic (see the in-function comment); other cloud
+    /// models stay undeclared (SavedModel.max_output_tokens defaults to None)
+    /// so the base falls back by vendor capability / conservative guess.
     fn route_limits_for_model(&self, model: &str) -> Option<codewhale_config::route::RouteLimits> {
         let saved = self.effective_model().filter(|saved| saved.model == model);
         let configured_context = saved.and_then(|saved| saved.context_window_tokens);
@@ -1122,9 +1126,52 @@ impl Pinvou3Bridge {
             (None, None) => inferred_context.or_else(|| is_local_vllm.then_some(128_000)),
         };
         let configured_output = saved.and_then(|saved| saved.max_output_tokens);
+        // User-configured openai-compatible endpoints (the `OpenAI-compatible`
+        // preset, or provider_kind == "custom") count as operator-owned: the
+        // endpoint is configured by the user and the output ceiling is the
+        // operator's responsibility. The base (upstream #5461 semantics)
+        // fail-closes uncatalogued models to the 8192 conservative guess and
+        // replaces it only when the route declares an explicit output_tokens
+        // fact — acting as the operator's proxy, the host declares the base's
+        // window heuristic (>=500K -> 64K, otherwise window/2, and half of
+        // the 128K fallback when no window fact exists) as that route fact.
+        // The declared value mirrors the base requested_cap window heuristic:
+        // documented models keep their semantics, while uncatalogued models
+        // recover the same window heuristic as documented ones instead of
+        // 8192 (a 128K window -> 64000). The value sources differ (host window
+        // fact vs base name-based heuristic), so they can diverge; the base
+        // min() only ever merges downward, and small windows stay clamped to
+        // window/2. This is a capability declaration, not the Pinvou per-turn
+        // budget, and is NOT clamped by the process-level max_output_tokens()
+        // (24K) — same as documented cloud models; users can tighten it
+        // explicitly via SavedModel.max_output_tokens (configured_output wins
+        // and is clamped by the process budget).
+        // coding_plan is the official managed entry point (bigmodel/kimi/
+        // tencent prefs normalize provider_kind by endpoint URL, preset
+        // unchanged): even when it rides on the `OpenAI-compatible` preset it
+        // is an official endpoint and must stay base fail-closed — no
+        // operator declaration.
+        let is_operator_owned_endpoint = saved.is_some_and(|saved| {
+            (saved.preset == ModelPreset::OpenaiCompatible
+                || saved.provider_kind.as_deref() == Some("custom"))
+                && saved.provider_kind.as_deref() != Some("coding_plan")
+        });
         let output_tokens = configured_output
-            .or_else(|| is_local_vllm.then(|| self.max_output_tokens()))
             .map(|tokens| tokens.min(self.max_output_tokens()))
+            .or_else(|| is_local_vllm.then(|| self.max_output_tokens()))
+            .or_else(|| {
+                // With a window fact <= 4K the output half is under 2K and cannot
+                // fit a meaningful output budget after headroom: stay undeclared
+                // (fail-closed) instead of emitting a Some(<2K) route fact.
+                let declared = context_tokens.map_or(64_000, |window| {
+                    if window >= 500_000 {
+                        65_536
+                    } else {
+                        (window / 2).min(65_536)
+                    }
+                });
+                (is_operator_owned_endpoint && declared >= 4_096).then_some(declared)
+            })
             .map(|tokens| {
                 context_tokens.map_or(tokens, |context| {
                     tokens.min(context.saturating_sub(1_024).max(1))
@@ -3712,7 +3759,16 @@ mod tests {
             "",
         );
 
-        assert_eq!(bridge.route_limits_for_model(&bridge.model()), None);
+        // Never fabricate context_tokens speculatively when no window fact
+        // exists; the output cap declares the window heuristic under the
+        // operator-owned semantics (half of the 128K fallback = 64000) for
+        // the base #5461 arm to replace the uncatalogued 8192 guess (see
+        // route_limits_for_model).
+        let limits = bridge
+            .route_limits_for_model(&bridge.model())
+            .expect("operator-owned route declares the output heuristic");
+        assert_eq!(limits.context_tokens, None);
+        assert_eq!(limits.output_tokens, Some(64_000));
         assert_eq!(bridge.effective_context_window(&bridge.model()), 128_000);
     }
 
@@ -3930,9 +3986,18 @@ mod tests {
     /// 确实生效（对应 CHANGES_REQUESTED：补沿最终预算/请求构造链的回归）。
     #[test]
     fn forkguard_cloud_route_output_not_pinned_by_global_env() {
-        let (_lock, _env) =
-            locked_env(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
+        // The base requested_cap precedence chain is CODEWHALE_ > DEEPSEEK_ >
+        // window heuristic, and provider selection also reads DEEPSEEK_PROVIDER;
+        // the guard asserts exact values, so all three are isolated.
+        let (_lock, _env) = locked_env(&[
+            "CODEWHALE_MAX_OUTPUT_TOKENS",
+            "DEEPSEEK_MAX_OUTPUT_TOKENS",
+            "DEEPSEEK_PROVIDER",
+            "PINVOU3_MAX_OUTPUT_TOKENS",
+        ]);
+        std::env::remove_var("CODEWHALE_MAX_OUTPUT_TOKENS");
         std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+        std::env::remove_var("DEEPSEEK_PROVIDER");
         std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
 
         // A. 云端（Deepseek preset）：SavedModel.max_output_tokens=None（保存云端模型
@@ -4140,7 +4205,176 @@ mod tests {
         );
         assert_eq!(
             config.compaction.token_threshold, 45_648,
-            "the explicit 24K route output limit for an unknown remote OpenAI-compatible alias must participate in the compaction budget"
+            "an unknown remote OpenAI-compatible alias follows the base window heuristic: the declared output 24576 participates (E=131072-24576-1024) instead of being crushed by the 8K conservative fallback"
+        );
+    }
+
+    /// Output-cap semantics guard (follows PR #210/#216; base semantics =
+    /// upstream #5461): documented cloud models stay undeclared (Documented
+    /// fallback); uncatalogued models on user-configured (operator-owned)
+    /// openai-compatible endpoints declare the window heuristic explicitly,
+    /// replacing the base 8192 conservative guess; uncatalogued models on
+    /// official endpoints stay undeclared (fail-closed).
+    #[test]
+    fn forkguard_cloud_models_defer_output_cap_to_base() {
+        // The base requested_cap precedence chain is CODEWHALE_ > DEEPSEEK_ >
+        // window heuristic, and provider selection also reads DEEPSEEK_PROVIDER;
+        // the guard asserts exact values, so all three are isolated.
+        let (_lock, _env) = locked_env(&[
+            "CODEWHALE_MAX_OUTPUT_TOKENS",
+            "DEEPSEEK_MAX_OUTPUT_TOKENS",
+            "DEEPSEEK_PROVIDER",
+            "PINVOU3_MAX_OUTPUT_TOKENS",
+        ]);
+        std::env::remove_var("CODEWHALE_MAX_OUTPUT_TOKENS");
+        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+        std::env::remove_var("DEEPSEEK_PROVIDER");
+        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
+
+        // A. Documented cloud model (deepseek-v4-pro): declares a window, no
+        // output cap.
+        let mut a = fixture_bridge();
+        set_active_model(
+            &mut a,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com/",
+            "k",
+        );
+        let limits_a = a
+            .route_limits_for_model(&a.model())
+            .expect("cloud route limits");
+        assert_eq!(
+            limits_a.output_tokens, None,
+            "documented cloud models must not declare output_tokens"
+        );
+
+        // B. Uncatalogued model on a user-configured endpoint: declares the
+        // route fact per the base window heuristic. No window fact -> half of
+        // the base fallback window 128K = 64000 (identical to the base
+        // effective_max_output_tokens requested_cap).
+        let mut b = fixture_bridge();
+        set_active_model(
+            &mut b,
+            ModelPreset::OpenaiCompatible,
+            "totally-unregistered-cloud-model",
+            "https://example.com/v1",
+            "k",
+        );
+        let limits_b = b
+            .route_limits_for_model(&b.model())
+            .expect("operator-owned route limits");
+        assert_eq!(
+            limits_b.context_tokens, None,
+            "uncatalogued models must not fabricate context without a window fact"
+        );
+        assert_eq!(
+            limits_b.output_tokens,
+            Some(64_000),
+            "operator-owned uncatalogued models declare the output route fact per the window heuristic"
+        );
+
+        // C. Base new-arm guard (#5461): an explicit output route fact
+        // replaces the uncatalogued 8192 guess. requested_cap=64000 (128K
+        // window heuristic), route_cap=64000 -> E=128000-64000-1024=62976.
+        // If the base lacks #5461 (route fact crushed by the 8192 guess),
+        // E=118784 and this fails.
+        let provider = b.build_dt_config().api_provider();
+        let budget = deepseek_tui::core::engine::context_input_budget_for_route(
+            provider,
+            &b.model(),
+            b.route_limits_for_model(&b.model()),
+            0,
+        )
+        .expect("unregistered cloud route must yield a budget");
+        assert_eq!(
+            budget, 62_976,
+            "operator-owned uncatalogued models fall back to the window heuristic, ceiling=128000-64000-1024"
+        );
+
+        // D. Uncatalogued model on an official endpoint: Pinvou declares no
+        // output -> the base fail-closes to 8192 (the upstream maintainer's
+        // conservative boundary: uncatalogued names on official endpoints are
+        // never opened by the host).
+        let mut d = fixture_bridge();
+        set_active_model(
+            &mut d,
+            ModelPreset::Openai,
+            "totally-unregistered-cloud-model",
+            "https://api.openai.com/v1",
+            "k",
+        );
+        let limits_d = d.route_limits_for_model(&d.model());
+        assert!(
+            limits_d
+                .as_ref()
+                .is_none_or(|limits| limits.output_tokens.is_none()),
+            "uncatalogued models on official endpoints must not declare output_tokens (fail-closed to the base)"
+        );
+        // Feed the host's real route product (not a literal None) into the
+        // base budget to pin "official endpoints stay undeclared" as
+        // behavior: if the predicate ever over-opens, the budget drifts off
+        // 118784 and this case goes red.
+        let provider_d = d.build_dt_config().api_provider();
+        let budget_d = deepseek_tui::core::engine::context_input_budget_for_route(
+            provider_d,
+            &d.model(),
+            limits_d,
+            0,
+        )
+        .expect("official unregistered route must yield a budget");
+        assert_eq!(
+            budget_d, 118_784,
+            "uncatalogued models on official endpoints keep the base 8192 guess: 128000-8192-1024"
+        );
+
+        // E. coding_plan official managed entry: even when it rides on the
+        // `OpenAI-compatible` preset (prefs normalize provider_kind to
+        // coding_plan by endpoint URL without touching the preset), it must
+        // stay fail-closed — uncatalogued names on official endpoints are
+        // never opened by the host.
+        let mut e = fixture_bridge();
+        set_active_model(
+            &mut e,
+            ModelPreset::OpenaiCompatible,
+            "totally-unregistered-cloud-model",
+            "https://api.kimi.com/coding/v1",
+            "k",
+        );
+        e.prefs.advanced.saved_models[0].provider_kind = Some("coding_plan".to_string());
+        assert_eq!(
+            e.route_limits_for_model(&e.model())
+                .and_then(|l| l.output_tokens),
+            None,
+            "the coding_plan official entry must not use an operator declaration (stays fail-closed)"
+        );
+
+        // F. Degenerate/tiny explicit windows: when the output half is <2K a
+        // declaration is meaningless -> stay undeclared (fail-closed); the
+        // 16K boundary takes window/2=8192 normally, locking the
+        // small-window window/2 convention.
+        let tiny = |window: Option<u32>| {
+            let mut f = fixture_bridge();
+            set_active_model(
+                &mut f,
+                ModelPreset::OpenaiCompatible,
+                "totally-unregistered-cloud-model",
+                "https://example.com/v1",
+                "k",
+            );
+            f.prefs.advanced.saved_models[0].context_window_tokens = window;
+            f.route_limits_for_model(&f.model())
+                .and_then(|l| l.output_tokens)
+        };
+        assert_eq!(
+            tiny(Some(2_048)),
+            None,
+            "a window whose output half is under 2K must not produce a degenerate declaration"
+        );
+        assert_eq!(
+            tiny(Some(16_384)),
+            Some(8_192),
+            "a 16K explicit window declares the output fact as window/2"
         );
     }
 
