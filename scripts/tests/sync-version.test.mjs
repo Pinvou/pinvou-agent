@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { after, test } from 'node:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { isValidVersion, main, updateCargoLockPackageVersion } from '../sync-version.mjs';
 
 const TEST_FILE = fileURLToPath(import.meta.url);
@@ -253,4 +255,37 @@ test('missing or duplicated packages in src-tauri Cargo.lock are rejected, not s
     () => updateCargoLockPackageVersion(duplicate, 'pinvou3-tauri'),
     /实际找到 2 个/u,
   );
+});
+
+test('write mode updates both workspace packages in the application Cargo.lock', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runFixtureScript(root);
+  assert.equal(result.status, 0, result.stderr);
+
+  const lock = readFileSync(join(root, 'pinvou3-app/src-tauri/Cargo.lock'), 'utf8');
+  assert.match(lock, /name = "pinvou-knowledge"\nversion = "0\.8\.9"/u);
+  assert.match(lock, /name = "pinvou3-tauri"\nversion = "0\.8\.9"/u);
+  assert.match(lock, /name = "dependency"\nversion = "1\.0\.0"/u);
+});
+
+test('--check rejects version drift in either application Cargo.lock workspace package', (t) => {
+  for (const driftingPackageName of ['pinvou-knowledge', 'pinvou3-tauri']) {
+    const root = createFixtureRepo();
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const syncResult = runFixtureScript(root);
+    assert.equal(syncResult.status, 0, syncResult.stderr);
+
+    const lockPath = join(root, 'pinvou3-app/src-tauri/Cargo.lock');
+    const lock = readFileSync(lockPath, 'utf8').replace(
+      new RegExp(`(name = "${driftingPackageName}"\\nversion = ")0\\.8\\.9"`, 'u'),
+      (_match, prefix) => `${prefix}0.8.8"`,
+    );
+    writeFileSync(lockPath, lock);
+
+    const result = runFixtureScript(root, ['--check']);
+    assert.equal(result.status, 1, `${driftingPackageName}: ${result.stdout}\n${result.stderr}`);
+    assert.match(result.stderr, /pinvou3-app\/src-tauri\/Cargo\.lock/u);
+  }
 });

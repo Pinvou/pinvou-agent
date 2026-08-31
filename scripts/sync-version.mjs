@@ -21,24 +21,7 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// import.meta.url 已被 Node 规范化为真实路径；argv[1] 则保留调用方书写形式。
-// macOS 的 /tmp、/var 是 /private 下符号链接：绝对路径调用时 argv[1] 不会经过
-// realpath，直接字符串比较会失配并静默跳过 main()，因此两侧都按真实路径比较。
-const SCRIPT_PATH = realpathSync(fileURLToPath(import.meta.url));
-
-// 是否被直接执行（而非被测试等场景 import）。argv[1] 不存在或指向缺失文件时
-// 视为非直接执行。
-function isDirectInvocation() {
-  if (!process.argv[1]) {
-    return false;
-  }
-  const invoked = resolve(process.argv[1]);
-  try {
-    return realpathSync(invoked) === SCRIPT_PATH;
-  } catch {
-    return invoked === SCRIPT_PATH;
-  }
-}
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const REPO_ROOT = resolve(dirname(SCRIPT_PATH), '..');
 const CHECK_ONLY = process.argv.includes('--check');
 
@@ -235,6 +218,22 @@ export function main(repoRoot = REPO_ROOT, { checkOnly = CHECK_ONLY } = {}) {
   return 0;
 }
 
-if (isDirectInvocation()) {
+// Node realpaths the entry module before setting import.meta.url, so on
+// symlinked paths (macOS /var/folders -> /private/var/folders, or /tmp on
+// macOS) import.meta.url differs from resolve(process.argv[1]) even when both
+// point at this file. Compare realpaths too, otherwise the CLI entry is
+// silently skipped and the script becomes a no-op library import.
+function isCliEntry() {
+  if (!process.argv[1]) return false;
+  const entry = resolve(process.argv[1]);
+  if (entry === SCRIPT_PATH) return true;
+  try {
+    return realpathSync(entry) === realpathSync(SCRIPT_PATH);
+  } catch {
+    return false;
+  }
+}
+
+if (isCliEntry()) {
   process.exit(main());
 }
