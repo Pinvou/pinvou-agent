@@ -3526,6 +3526,10 @@ mod tests {
         assert!(RUST_FORWARDED_EVENTS.contains(&"chat:reasoning_start"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"chat:reasoning_delta"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"chat:reasoning_done"));
+        assert!(policy.events.contains("chat:steer_committed"));
+        assert!(policy.events.contains("chat:steer_dropped"));
+        assert!(RUST_FORWARDED_EVENTS.contains(&"chat:steer_committed"));
+        assert!(RUST_FORWARDED_EVENTS.contains(&"chat:steer_dropped"));
         assert!(policy.events.contains("chat:user_message"));
         assert!(policy.events.contains("acp:event"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"acp:event"));
