@@ -3884,6 +3884,53 @@ mod tests {
         assert!(unsupported.resolve_vision_model_config().is_none());
     }
 
+    /// §9.3 规则 3 先于规则 4（定时任务例外）：引擎一旦运行，定时任务的
+    /// image_analyze provider 随运行态漂移到本地端点。这是第 4 轮评审披露
+    /// 的已知语义，用本测试钉死该顺序，防止规则重排时静默反转。
+    #[test]
+    fn vision_config_scheduled_unknown_model_takes_local_fallback_while_engine_running() {
+        use crate::features::llama_engine::server;
+        // 规则 3 用例写全局 RUNTIME,须在 RUNTIME_TEST_LOCK 下运行。
+        let _runtime_lock = locked_runtime();
+        struct RuntimeGuard;
+        impl Drop for RuntimeGuard {
+            fn drop(&mut self) {
+                server::reset_runtime_for_test();
+            }
+        }
+        let _guard = RuntimeGuard;
+
+        let mut scheduled = fixture_bridge();
+        set_active_model(
+            &mut scheduled,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        scheduled.image_analyze_always = true;
+
+        // 引擎未运行 → 规则 4：定时任务复用 Unknown 主模型，策略取底座默认。
+        let config = scheduled
+            .resolve_vision_model_config()
+            .expect("scheduled session must reuse the Unknown main model while the engine is down");
+        assert_eq!(config.model, "deepseek-v4-pro");
+        assert_eq!(config.request_timeout_secs, None);
+        assert_eq!(config.stream, None);
+        assert_eq!(config.retry_on_transient_errors, None);
+
+        // 引擎运行 → 规则 3 先于规则 4：provider 漂移到本地端点（300s/流式/不重试）。
+        server::force_running_for_test(8765);
+        let config = scheduled.resolve_vision_model_config().expect(
+            "running engine must take over scheduled image_analyze (rule 3 precedes rule 4)",
+        );
+        assert_eq!(config.base_url.as_deref(), Some("http://127.0.0.1:8765/v1"));
+        assert_eq!(config.request_timeout_secs, Some(300));
+        assert_eq!(config.stream, Some(true));
+        assert_eq!(config.retry_on_transient_errors, Some(false));
+        server::reset_runtime_for_test();
+    }
+
     /// §9.3 规则 1 的优雅降级:vision_model_id 目标模型凭据缺失 →
     /// 不注册并记 warning,不硬错、不回落主模型。
     #[test]
