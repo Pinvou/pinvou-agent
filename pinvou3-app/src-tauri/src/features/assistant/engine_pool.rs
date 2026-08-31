@@ -1205,9 +1205,10 @@ impl EnginePool {
     /// [`should_still_reap_after_snapshot`]）；不满足则跳过，留待下一轮巡检。
     /// 返回是否真正回收。删除 / 切模型路径仍走 `evict`，语义不变。
     ///
-    /// 已知残余窗口：复核之后、reclaim 收口之前的极短区间内新 reserve 的
-    /// 未提交 reservation 仍会被 `claim_reclaimed_transition` 静默失效（与
-    /// 删除路径同语义，不发伪造终态，发送侧收到明确错误），不阻断 turn。
+    /// 残余窗口（复核之后、reclaim 收口之前的极短区间内新 reserve 的未提交
+    /// reservation）不再失效：`claim_reclaimed_transition` 只认领已提交轮次，
+    /// 未提交 reservation 绑定的是 session 级 lifecycle 而非引擎，发送方会在
+    /// `get_or_spawn` 重建引擎后正常提交（#352）。
     async fn evict_if_idle(&self, session_id: &str, snapshot_last_active_ms: u64) -> bool {
         let active_id = self.store.active_id();
         evict_if_idle_with_gates(

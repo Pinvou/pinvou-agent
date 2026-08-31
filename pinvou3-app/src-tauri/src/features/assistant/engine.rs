@@ -226,6 +226,11 @@ struct TranscriptFallback {
 /// any transcript sanitization rule prepared for the operation. Once
 /// `mark_submitted` is called, the authoritative engine terminal event owns
 /// lifecycle completion.
+///
+/// The reservation is bound to the session-scoped lifecycle, not to any one
+/// engine: engine reclaim (idle reap, model-change rebuild) leaves an
+/// unsubmitted reservation valid so its pending send can respawn a fresh
+/// engine and submit to it.
 pub(crate) struct TurnReservation {
     lifecycle: Arc<TurnLifecycle>,
     reservation_id: u64,
@@ -799,39 +804,33 @@ impl TurnLifecycle {
         Some(transition)
     }
 
-    /// Reclaim a lifecycle after an engine disappears. A reservation which
-    /// never reached the engine mailbox is invalidated silently; only an
-    /// accepted/started operation owns a user-visible terminal event.
+    /// Reclaim a lifecycle after an engine disappears. Only a submitted
+    /// operation is claimed as a user-visible interrupted terminal. A
+    /// reservation which never reached the engine mailbox stays valid: the
+    /// lifecycle is session-scoped and survives engine replacement, so the
+    /// pending send respawns a fresh engine (lazy spawn) and submits to it
+    /// instead of failing with an invalidated reservation (#352).
     fn claim_reclaimed_transition(&self) -> Option<TerminalTransition> {
         let transition = {
             let mut state = self.state.lock();
-            if !state.active || state.terminal_emitted {
+            if !state.active || state.terminal_emitted || !state.submitted {
                 return None;
             }
+            let admission = Self::take_admission_locked(&mut state);
+            let fallback = Self::active_transcript_fallback_locked(&state);
             state.reclaimed = true;
-            if !state.submitted {
-                if let Some(reservation_id) = state.active_reservation_id.take() {
-                    Self::remove_unsubmitted_rule_locked(&mut state, reservation_id);
-                }
-                state.active = false;
-                state.turn_id = None;
-                None
-            } else {
-                let admission = Self::take_admission_locked(&mut state);
-                let fallback = Self::active_transcript_fallback_locked(&state);
-                state.terminal_emitted = true;
-                state.terminal_closing = true;
-                state.active = false;
-                state.submitted = false;
-                state.active_reservation_id = None;
-                Some(TerminalTransition {
-                    terminal: EmittedTerminal {
-                        turn_id: state.turn_id.take(),
-                    },
-                    admission,
-                    fallback,
-                })
-            }
+            state.terminal_emitted = true;
+            state.terminal_closing = true;
+            state.active = false;
+            state.submitted = false;
+            state.active_reservation_id = None;
+            Some(TerminalTransition {
+                terminal: EmittedTerminal {
+                    turn_id: state.turn_id.take(),
+                },
+                admission,
+                fallback,
+            })
         };
         transition
     }
@@ -1614,16 +1613,7 @@ impl AppEngine {
         session_id: &str,
         shell_cleanup_failed: bool,
     ) -> bool {
-        // 回收/中断不经过 TurnComplete：清掉 self_metrics 打点与 memory turn capture，
-        // 避免中断轮在进程级 map 里永久驻留。
-        if let Some(m) = app
-            .try_state::<crate::features::monitor::MonitorState>()
-            .map(|s| s.self_metrics())
-        {
-            m.on_turn_aborted(session_id);
-        }
-        crate::features::memory::discard_turn_capture(session_id);
-        match finish_reclaimed_lifecycle_turn(
+        let terminal = finish_reclaimed_lifecycle_turn(
             &self.turn_lifecycle,
             app,
             store,
@@ -1633,11 +1623,24 @@ impl AppEngine {
             shell_cleanup_failed,
             false,
         )
-        .await
+        .await;
+        let Some(terminal) = terminal else {
+            return false;
+        };
+        // 回收/中断不经过 TurnComplete：清掉 self_metrics 打点与 memory turn capture，
+        // 避免中断轮在进程级 map 里永久驻留。仅在确实认领到轮次时清理——未提交
+        // reservation 保持有效，它的轮次会在重建后的引擎上正常完成，不能提前清理。
+        if let Some(m) = app
+            .try_state::<crate::features::monitor::MonitorState>()
+            .map(|s| s.self_metrics())
         {
-            Some(EmittedTerminal {
+            m.on_turn_aborted(session_id);
+        }
+        crate::features::memory::discard_turn_capture(session_id);
+        match terminal {
+            EmittedTerminal {
                 turn_id: Some(turn_id),
-            }) => {
+            } => {
                 let _ = self.turn_events.send(EngineTurnSignal::Terminal {
                     turn_id,
                     status: TurnOutcomeStatus::Interrupted,
@@ -1645,8 +1648,7 @@ impl AppEngine {
                 });
                 true
             }
-            Some(EmittedTerminal { turn_id: None }) => true,
-            None => false,
+            EmittedTerminal { turn_id: None } => true,
         }
     }
 
@@ -2445,7 +2447,7 @@ mod turn_lifecycle_tests {
     }
 
     #[test]
-    fn reclaim_invalidates_reserved_turn_without_claiming_a_terminal() {
+    fn reclaim_preserves_unsubmitted_reservation_across_engine_removal() {
         let lifecycle = Arc::new(TurnLifecycle::default());
         let mut reservation = lifecycle.reserve().expect("reserve");
         reservation
@@ -2458,19 +2460,27 @@ mod turn_lifecycle_tests {
             .prepare_actual_user_content("private unsent prompt".to_string())
             .expect("actual prompt");
 
+        // 引擎回收（idle reap / 模型变更重建）不得认领终态，也不得作废未提交
+        // reservation：lifecycle 是 session 级，发送方会在重建后的引擎上提交。
         assert!(lifecycle.claim_reclaimed_transition().is_none());
         assert_eq!(lifecycle.claim_terminal(), None);
-        let invalidated = reservation
+        reservation
             .prepare_actual_user_content("private unsent prompt".to_string())
-            .expect_err("reclaimed reservation must reject a later send");
-        assert!(invalidated.to_string().contains("reservation invalidated"));
-        drop(reservation);
-        let next = lifecycle.reserve().expect("reclaim released reservation");
-        let (messages, matched) =
+            .expect("reclaimed reservation stays valid for the respawned engine");
+        reservation
+            .ensure_active()
+            .expect("unsubmitted reservation survives engine reclaim");
+        // sanitization rule 同样存活：快照中的 raw prompt 仍会被替换为展示消息。
+        let (sanitized, matched) =
             lifecycle.sanitize_messages(vec![engine_user("private unsent prompt")]);
-        assert!(!matched);
-        assert_eq!(messages, vec![engine_user("private unsent prompt")]);
-        drop(next);
+        assert!(matched);
+        assert_eq!(sanitized, vec![message("user", "never submitted")]);
+        // reservation 仍持有唯一轮次槽位，直至 RAII Drop 归还。
+        assert!(lifecycle.reserve().is_err());
+        drop(reservation);
+        lifecycle
+            .reserve()
+            .expect("reservation drop releases the turn slot");
     }
 
     #[test]
