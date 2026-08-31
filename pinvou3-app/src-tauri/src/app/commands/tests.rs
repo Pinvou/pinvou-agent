@@ -1538,6 +1538,7 @@ async fn open_external_url_rejects_off_allowlist_targets() {
         "https://export-download.canva.cn.evil.com/x.png",        // Canva 资源域钓鱼
         "https://meeting.tencent.com.evil.com/qrcode-login.html", // 腾讯会议授权域钓鱼
         "http://work.weixin.qq.com/ai/qc/gen",                    // 企业微信授权页非 https
+        "http://login.dingtalk.com/device",                       // 钉钉授权页非 https
         "https://bce.baidu.com/",                                 // 非 console 子域,不放行
         "javascript:alert(1)",                                    // js scheme
         "file:///etc/passwd",                                     // file scheme
@@ -1627,6 +1628,10 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     assert!(url_in_external_allowlist(
         "https://work.weixin.qq.com/ai/qc/c?s=abc&for_native=true"
     ));
+    // 钉钉 device 授权登录页(dws auth login --device 打印,带 user_code)
+    assert!(url_in_external_allowlist(
+        "https://login.dingtalk.com/device?user_code=ABCDEF"
+    ));
     assert!(url_in_external_allowlist("http://localhost:8080/"));
     assert!(url_in_external_allowlist("https://127.0.0.1:8443/preview"));
     assert!(url_in_external_allowlist("http://[::1]:3000/"));
@@ -1649,6 +1654,12 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     ));
     assert!(!url_in_external_allowlist(
         "https://work.weixin.qq.com.evil.com/ai/qc/gen"
+    ));
+    assert!(!url_in_external_allowlist(
+        "https://login.dingtalk.com.evil.com/device"
+    ));
+    assert!(!url_in_external_allowlist(
+        "https://dingtalk.com.evil.com/device"
     ));
     assert!(!url_in_external_allowlist(
         "https://docs.qq.com.evil.com/scenario/open-claw.html?nlc=1"

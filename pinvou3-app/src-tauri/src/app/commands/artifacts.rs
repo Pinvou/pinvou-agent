@@ -713,6 +713,8 @@ const EXTERNAL_URL_ALLOWLIST: &[&str] = &[
     "https://meeting.tencent.com/",
     // 企业微信扫码授权页(wecom-cli auth init 的 gen 落地页);连接企业微信走这里开浏览器
     "https://work.weixin.qq.com/",
+    // 钉钉 device 授权登录页(dws auth login --device 打印的 user_code 登录页);连接钉钉走这里开浏览器
+    "https://login.dingtalk.com/",
     // Obsidian 官网:知识库连接器探测到未安装时,引导用户下载
     "https://obsidian.md/",
     // Canva 可画 MCP 返回的设计编辑链接/预览图资源
