@@ -10,9 +10,9 @@
 //   2. pinvou3-app/src-tauri/Cargo.toml 的 [package] 下第一处 version = "..." 行（不动依赖版本）
 //   3. pinvou-knowledge/Cargo.toml 的 [package] 版本
 //   4. pinvou-knowledge/Cargo.lock 中 pinvou-knowledge 包版本
-//   5. pinvou3-app/src-tauri/Cargo.lock 中 pinvou-knowledge 与 pinvou3-tauri 包版本
-//   6. pinvou3-app/package.json 的 "version" 字段
-//   7. pinvou3-app/package-lock.json 的根 "version" 与 packages[""].version（文件不存在时跳过）
+//   5. pinvou-knowledge and pinvou3-tauri package versions in pinvou3-app/src-tauri/Cargo.lock
+//   6. The "version" field in pinvou3-app/package.json
+//   7. The root "version" and packages[""].version in pinvou3-app/package-lock.json (skipped if absent)
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -170,7 +170,7 @@ function readCargoLockVersions(path, packageNames) {
   if (versions.every(({ version }) => version === firstVersion)) {
     return firstVersion;
   }
-  return versions.map(({ packageName, version }) => `${packageName} 为 ${version}`).join('，');
+  return versions.map(({ packageName, version }) => `${packageName} is ${version}`).join(', ');
 }
 
 function writeCargoLockVersions(path, packageNames, version) {

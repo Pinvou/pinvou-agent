@@ -111,7 +111,7 @@ test('Cargo.lock 缺少或重复根包时拒绝静默通过', () => {
   );
 });
 
-test('写入模式同时同步应用 Cargo.lock 中的两个工作区包', (t) => {
+test('write mode updates both workspace packages in the application Cargo.lock', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
@@ -124,7 +124,7 @@ test('写入模式同时同步应用 Cargo.lock 中的两个工作区包', (t) =
   assert.match(lock, /name = "dependency"\nversion = "1\.0\.0"/u);
 });
 
-test('--check 拒绝应用 Cargo.lock 中任一工作区包的版本漂移', (t) => {
+test('--check rejects version drift in either application Cargo.lock workspace package', (t) => {
   for (const driftingPackageName of ['pinvou-knowledge', 'pinvou3-tauri']) {
     const root = createFixtureRepo();
     t.after(() => rmSync(root, { recursive: true, force: true }));
