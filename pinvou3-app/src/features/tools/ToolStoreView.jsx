@@ -126,7 +126,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // Stable empty array/object defaults: inline [] and {} are new references on every render, which makes memoized children re-render repeatedly.
     const EMPTY_STEPS = [];
     const EMPTY_COPY = {};
-    const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '', twoStep = true, browserAuth = false, steps = EMPTY_STEPS, copy = EMPTY_COPY }) => {
+    const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '', twoStep = true, browserAuth = false, steps = EMPTY_STEPS, copy = EMPTY_COPY, onBrowserOpenError = () => {} }) => {
       if (!flow) return null;
       const isErr = flow.phase === 'error';
       return (
@@ -164,7 +164,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                 </div>
                 {flow.qrUrl && (
                   <button type="button"
-                    onClick={() => invokeTauri('open_external_url', { url: flow.qrUrl })}
+                    onClick={() => invokeTauri('open_external_url', { url: flow.qrUrl }).catch(onBrowserOpenError)}
                     className="shrink-0 text-[13px] text-blue-600 dark:text-blue-400 hover:underline"
                   >
                     {copy.reopen}
@@ -186,7 +186,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       <span className="font-mono text-[18px] font-bold tracking-wider text-slate-900 dark:text-white">{flow.userCode}</span>
                     </div>
                   )}
-                  {flow.qrUrl && <button type="button" onClick={() => invokeTauri('open_external_url', { url: flow.qrUrl })} className="text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{copy.openBrowser}</button>}
+                  {flow.qrUrl && <button type="button" onClick={() => invokeTauri('open_external_url', { url: flow.qrUrl }).catch(onBrowserOpenError)} className="text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{copy.openBrowser}</button>}
                 </div>
               </div>
             </div>
@@ -1874,6 +1874,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         invokeTauri('wecom_cancel').catch(() => {});
         wecomConn.setFlow(null); setBusyId(null);
       };
+      // 「在浏览器打开」失败(如外链白名单拒绝)时的兜底提示,此前静默无任何反馈。
+      const browserOpenFailed = () => setAlert({ visible: true, loading: false, title: storeCopy.openBrowserFailed, isInstall: false, isError: true });
       const wecomRetry = () => { connectWecom(); };
       const disconnectWecom = async () => {
         setBusyId('wecom');
@@ -2188,15 +2190,17 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               {/* biome-ignore lint/a11y/noStaticElementInteractions: click-propagation stop layer, non-interactive container */}
               <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[440px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
                 <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-4">{storeCopy.connectTitle(storeCopy.toolNames.wecom)}</h3>
-                {/* 文案精简(方案A):扫码指引交给内嵌页自己说，这里不重复。直接内嵌企微登录页
-                    （其 JS 动态渲染真正的登录码）——避免把 gen 网页地址编码成二维码导致的二次扫码。 */}
-                {wecomQr.url
-                  ? <iframe src={wecomQr.url} title={storeCopy.loginFrameTitle(storeCopy.toolNames.wecom)} className="w-full h-[440px] rounded-2xl border border-slate-200 dark:border-white/10 bg-white" scrolling="no" />
-                  : <div className="w-52 h-52 rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-[12px] text-slate-400 px-4">{storeCopy.loginPageLoadFailed}</div>}
-                <div className="flex items-center gap-1.5 mt-4 text-[13px] text-slate-500 dark:text-slate-400">
+                {/* 后端下发 wecom-cli --output-qrcode 落盘的真授权二维码(一次扫码直达)。
+                    此前 iframe 内嵌 /ai/qc/gen 落地页:WKWebView 里常渲染不出码,
+                    且落地页 URL 编成二维码会让用户扫码后再扫一次。 */}
+                {wecomQr.qr && (
+                  <img src={wecomQr.qr} alt={storeCopy.wecomQrAlt} decoding="async" className="w-52 h-52 rounded-2xl border border-slate-200 bg-white p-1 dark:border-white/10" />
+                )}
+                <div className="mt-4 text-[13px] text-slate-500 dark:text-slate-400">{storeCopy.wecomScanHint}</div>
+                <div className="flex items-center gap-1.5 mt-2 text-[13px] text-slate-500 dark:text-slate-400">
                   <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> {storeCopy.waitingAuth}
                 </div>
-                <button type="button" onClick={() => { if (wecomQr.url) invokeTauri('open_external_url', { url: wecomQr.url }); }} className="mt-4 text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{storeCopy.openInBrowser}</button>
+                <button type="button" onClick={() => { if (wecomQr.url) invokeTauri('open_external_url', { url: wecomQr.url }).catch(browserOpenFailed); }} className="mt-4 text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{storeCopy.openInBrowser}</button>
                 <button type="button" onClick={cancel} className="mt-3 px-6 py-2 rounded-full text-[14px] font-semibold bg-slate-100 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300">{storeCopy.cancel}</button>
               </div>
             </div>
@@ -2541,16 +2545,16 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   </div>
 
                   {externalAuthAvailable && selectedTool.feishuCli && feishuFlow && (
-                    <FeishuFlowCard flow={feishuFlow} steps={storeCopy.feishuSteps} name={storeCopy.toolNames.feishu} copy={detailCopy.flow} onRetry={feishuRetry} onCancel={feishuResetFlow} />
+                    <FeishuFlowCard flow={feishuFlow} steps={storeCopy.feishuSteps} name={storeCopy.toolNames.feishu} copy={detailCopy.flow} onRetry={feishuRetry} onCancel={feishuResetFlow} onBrowserOpenError={browserOpenFailed} />
                   )}
                   {externalAuthAvailable && selectedTool.wecomCli && wecomFlow && (
-                    <FeishuFlowCard flow={wecomFlow} steps={storeCopy.wecomSteps} name={storeCopy.toolNames.wecom} copy={detailCopy.flow} twoStep={false} onRetry={wecomRetry} onCancel={wecomResetFlow} />
+                    <FeishuFlowCard flow={wecomFlow} steps={storeCopy.wecomSteps} name={storeCopy.toolNames.wecom} copy={detailCopy.flow} twoStep={false} onRetry={wecomRetry} onCancel={wecomResetFlow} onBrowserOpenError={browserOpenFailed} />
                   )}
                   {externalAuthAvailable && selectedTool.dingtalkCli && dingtalkFlow && (
-                    <FeishuFlowCard flow={dingtalkFlow} steps={storeCopy.dingtalkSteps} name={storeCopy.toolNames.dingtalk} copy={detailCopy.flow} twoStep={false} onRetry={dingtalkRetry} onCancel={dingtalkResetFlow} />
+                    <FeishuFlowCard flow={dingtalkFlow} steps={storeCopy.dingtalkSteps} name={storeCopy.toolNames.dingtalk} copy={detailCopy.flow} twoStep={false} onRetry={dingtalkRetry} onCancel={dingtalkResetFlow} onBrowserOpenError={browserOpenFailed} />
                   )}
                   {externalAuthAvailable && selectedTool.tmeetCli && tmeetFlow && (
-                    <FeishuFlowCard flow={tmeetFlow.phase === 'error' && !detailCopy.showRawErrors ? { ...tmeetFlow, err: detailCopy.actions.operationFailed } : tmeetFlow} steps={detailCopy.tmeetSteps} name={detailCopy.tools.tmeet.title} copy={detailCopy.flow} twoStep={false} browserAuth={!!tmeetFlow.browserAuth} onRetry={tmeetRetry} onCancel={tmeetResetFlow} />
+                    <FeishuFlowCard flow={tmeetFlow.phase === 'error' && !detailCopy.showRawErrors ? { ...tmeetFlow, err: detailCopy.actions.operationFailed } : tmeetFlow} steps={detailCopy.tmeetSteps} name={detailCopy.tools.tmeet.title} copy={detailCopy.flow} twoStep={false} browserAuth={!!tmeetFlow.browserAuth} onRetry={tmeetRetry} onCancel={tmeetResetFlow} onBrowserOpenError={browserOpenFailed} />
                   )}
                   {selectedTool.feishuCli && feishuConnected && !feishuFlow && (
                     <div className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">

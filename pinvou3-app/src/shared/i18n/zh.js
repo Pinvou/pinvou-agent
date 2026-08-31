@@ -830,7 +830,7 @@ desktopHint:'请先在桌面端安装 Obsidian 并创建笔记库，然后在这
   updatedQuoted:name=>`已更新「${name}」`, updateSkillTitle:name=>`更新「${name}」`,
   updateSkillOverwriteHint:'将覆盖为商店最新版本，你对该技能做的本地修改会丢失。',
   notConnectedYet:name=>`尚未连接「${name}」。`,
-  loginFrameTitle:name=>`${name}登录`, loginPageLoadFailed:'登录页加载失败，请用下方浏览器授权', waitingAuth:'等待授权中…', openInBrowser:'在浏览器打开',
+  wecomScanHint:'请使用企业微信 App 扫一扫', wecomQrAlt:'企业微信登录二维码', openBrowserFailed:'未能打开浏览器，请重试或把链接复制到浏览器打开', waitingAuth:'等待授权中…', openInBrowser:'在浏览器打开',
   mini:{ scan:'待扫码', install:pct=>`装 ${pct}%`, extract:pct=>`解压 ${pct}%`, connecting:'接入中', title:'点开查看进度' },
   feishuSteps:[
 { key:'runtime', label:'准备运行时', sub:'使用应用自带 Node' },

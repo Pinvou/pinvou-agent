@@ -146,18 +146,66 @@ fn run_connect_flow(app: &AppHandle) {
     }
 }
 
+/// 等待 CLI 落盘的二维码 PNG(出现且长度稳定后读取,避免拿到半截文件)。
+/// 超时返回 `None`(调用方回退把 URL 自绘成二维码)。
+fn poll_qr_png(dir: &std::path::Path, timeout: Duration) -> Option<Vec<u8>> {
+    let path = dir.join("qr.png");
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Ok(bytes) = std::fs::read(&path) {
+            if !bytes.is_empty() {
+                std::thread::sleep(Duration::from_millis(200));
+                if let Ok(settled) = std::fs::read(&path) {
+                    if settled.len() == bytes.len() {
+                        return Some(settled);
+                    }
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+}
+
 /// 单段:`auth init --noninteractive --no-browser` 长驻 → 抓 URL 出二维码 → 等进程退出 → 查 ready。
 fn phase_scan(app: &AppHandle) -> Result<(), String> {
-    let mut cmd = wecom(&["auth", "init", "--noninteractive", "--no-browser"]);
+    // CLI 1.1.0 的 --output-qrcode 只接受当前目录下的相对路径:让它把真授权二维码 PNG
+    // 落在临时目录里。抓到的 stdout URL 是 /ai/qc/gen 落地页(打开后还要再扫一次),
+    // 不能直接编码成二维码;PNG 里的码才能一次扫码直达授权。旧 CLI 无此旗标时回退自绘。
+    let qr_dir = std::env::temp_dir().join(format!(
+        "pinvou3-wecom-qr-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::create_dir_all(&qr_dir);
+    let mut cmd = wecom(&[
+        "auth",
+        "init",
+        "--noninteractive",
+        "--no-browser",
+        "--output-qrcode",
+        "qr.png",
+    ]);
+    cmd.current_dir(&qr_dir);
     // 独立进程组:npm shim(shell→node)派生的孙进程与 shim 同组,退出收割的
     // kill_pid_tree 按负 pid 组杀整棵树,单杀 shim pid 会把 node 孤儿化。
     crate::platform::process::std_process_group_leader(&mut cmd);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("wecom-cli auth init 启动失败: {e}(需要先完成企微 CLI 在线安装)"))?;
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&qr_dir);
+            return Err(format!(
+                "wecom-cli auth init 启动失败: {e}(需要先完成企微 CLI 在线安装)"
+            ));
+        }
+    };
     let conn = app.state::<ConnectorConn>();
     conn.set_pid(ID, Some(child.id()));
 
@@ -177,13 +225,30 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         Err(_) => {
             let _ = child.kill();
             conn.set_pid(ID, None);
+            let _ = std::fs::remove_dir_all(&qr_dir);
+            // 取消会 tree-kill 子进程 → 管道 EOF 走到这:用户主动停,静默收尾,不误报链接超时。
+            if conn.is_cancelled(ID) {
+                return Ok(());
+            }
             return Err("40s 内未拿到二维码链接(检查网络 / 代理)".into());
         }
     };
+    // 优先 CLI 落盘的真授权二维码;拿不到(旧 CLI / 写盘失败)回退自绘落地页二维码。
+    let qr = poll_qr_png(&qr_dir, Duration::from_secs(6))
+        .and_then(|bytes| cc::png_data_url(&bytes))
+        .or_else(|| cc::make_qr(&url));
+    let _ = std::fs::remove_dir_all(&qr_dir);
+    // 取消发生在等 PNG 的窗口内:静默退出。再发 wecom:qr 会把用户已关掉的扫码弹窗重新弹出。
+    // (wecom_cancel 已按 pid tree-kill,这里补 kill + pid 槽复位兜底竞态。)
+    if conn.is_cancelled(ID) {
+        let _ = child.kill();
+        conn.set_pid(ID, None);
+        return Ok(());
+    }
     cc::emit(
         app,
         "wecom:qr",
-        json!({ "phase": "authorize", "url": url, "qr_data_url": cc::make_qr(&url) }),
+        json!({ "phase": "authorize", "url": url, "qr_data_url": qr }),
     );
 
     // 等进程退出(用户扫码完成);期间轮询取消标志。退出后查 ready 收尾。
@@ -364,6 +429,29 @@ mod tests {
         assert!(!status_is_authorized("unauthorized")); // 前缀相同不能误判
         assert!(!status_is_authorized("Status: unauthorized"));
         assert!(!status_is_authorized(""));
+    }
+
+    /// 轮询 CLI 落盘的二维码 PNG:出现即读,缺文件/空目录等到超时回 None。
+    #[test]
+    fn poll_qr_png_reads_written_file_and_times_out() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-wecom-poll-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // 无文件 → 超时 None(用极短超时保持测试快)
+        assert!(poll_qr_png(&dir, Duration::from_millis(300)).is_none());
+        // 落盘后 → 读到稳定字节
+        let png = b"\x89PNG\r\n\x1a\npayload";
+        std::fs::write(dir.join("qr.png"), png).unwrap();
+        assert_eq!(
+            poll_qr_png(&dir, Duration::from_secs(3)).as_deref(),
+            Some(&png[..])
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 手动停用标志:文件存在=停用,与连接状态正交。写/删一轮。

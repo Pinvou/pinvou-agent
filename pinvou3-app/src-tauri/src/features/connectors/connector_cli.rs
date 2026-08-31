@@ -203,6 +203,17 @@ pub fn make_qr(url: &str) -> Option<String> {
     ))
 }
 
+/// 把 CLI 落盘的二维码 PNG(wecom-cli `--output-qrcode`)包装成 data URL,
+/// 供前端 `<img src>` 直接显示。校验 PNG 签名,读到非 PNG / 截断文件返回 `None`
+/// (调用方回退 [`make_qr`] 自绘)。
+pub fn png_data_url(bytes: &[u8]) -> Option<String> {
+    const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+    if bytes.len() < 8 || !bytes.starts_with(PNG_SIGNATURE) {
+        return None;
+    }
+    Some(format!("data:image/png;base64,{}", b64(bytes)))
+}
+
 /// 后台线程:逐行排空一个管道(防写满阻塞),抓到首个本连接器 URL 经 channel 送回。
 pub fn drain_for_url<R: std::io::Read + Send + 'static>(
     ctx: CliCtx,
@@ -475,6 +486,24 @@ mod tests {
         let b64 = qr.trim_start_matches("data:image/svg+xml;base64,");
         let svg = String::from_utf8(b64_decode(b64)).unwrap();
         assert!(svg.contains("<svg"), "应含 <svg> 根节点");
+    }
+
+    /// CLI 落盘 PNG → data URL;非 PNG / 截断字节拒绝(调用方回退 make_qr)。
+    #[test]
+    fn png_data_url_validates_signature() {
+        let png = b"\x89PNG\r\n\x1a\nrest-of-file-bytes";
+        let data_url = png_data_url(png).expect("带签名的字节应通过");
+        assert!(data_url.starts_with("data:image/png;base64,"));
+        // 解码回原字节,确认无损。
+        let b64 = data_url.trim_start_matches("data:image/png;base64,");
+        assert_eq!(b64_decode(b64), png.to_vec());
+
+        assert!(png_data_url(b"").is_none(), "空字节应拒绝");
+        assert!(png_data_url(b"\x89PNG").is_none(), "不足签名长度应拒绝");
+        assert!(
+            png_data_url(b"\x89JPEG\r\n\x1a\nrest").is_none(),
+            "错误签名应拒绝"
+        );
     }
 
     // 测试辅助:标准 base64 解码(生产 b64 的逆运算,仅测试用)。
