@@ -107,6 +107,14 @@ assert.match(
     'successful save must notify the composer tool menu (name override feeds its data source)',
   );
 }
+// 3-. 保存入口须拒绝在拖放导入进行中触发：busyId 槽位全局唯一，保存若覆盖
+// '__upload__'，其 finally 会提前放开拖放闸，成功后的 setEditDisplay(null)
+// 会误关导入刚自动弹出的预填对话框。
+assert.match(
+  toolStoreSource,
+  /if \(busyRef\.current\) return storeCopy\.importingSkill;/,
+  'display save must refuse while a drop-import is in flight (single busyId slot)',
+);
 // 3b. 输入框长度上限与后端校验一致（64/240 字符）：前端常量逐字对齐 Rust 侧
 // MAX_DISPLAY_NAME_CHARS / MAX_DISPLAY_DESCRIPTION_CHARS（跨端单点真源防漂移）。
 {

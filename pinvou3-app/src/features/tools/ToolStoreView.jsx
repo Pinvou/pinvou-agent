@@ -1643,6 +1643,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const doEditDisplaySave = async (values) => {
         const dlg = editDisplay;
         if (!dlg) return null;
+        // 拖放导入进行中（busyId 槽位被 '__upload__' 占用）不得保存：busyId
+        // 唯一，此处 setBusyId 会覆盖导入态、finally 提前放开拖放闸，成功后
+        // 的 setEditDisplay(null) 还会误关导入刚自动弹出的预填对话框。返回
+        // 错误文案让弹窗保留输入，导入完成后再保存。
+        if (busyRef.current) return storeCopy.importingSkill;
         setBusyId(dlg.backendId);
         try {
           await invokeTauri('update_bundle_display_meta', {
