@@ -453,10 +453,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     }
 
     // iOS 风格弹窗（安装/卸载后提示需新建会话生效）
+    // z-[210]:与扫码弹窗等其余 z-[200] body portal 同层会退化为挂载顺序定叠放
+    // （alert 后挂载才在上层），显式高一级让报错弹窗永远可见，不依赖挂载时机。
     const TsAlert = ({ alert, _theme, onDismiss, onNewChat, onCancelLoading, copy }) => { // eslint-disable-line no-unused-vars -- theme is kept for the existing props contract
       if (!alert.visible && !alert.loading) return null;
       return (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/40 backdrop-blur-sm">
           <div
             className="w-[280px] rounded-[20px] overflow-hidden shadow-2xl transition-transform duration-200 scale-100 bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]"
             style={{ animation: 'tsAlertIn .2s ease-out' }}

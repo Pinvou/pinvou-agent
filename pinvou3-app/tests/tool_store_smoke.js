@@ -498,7 +498,19 @@ async function visibilityBox(page, cardText, modeLabel, click) {
       }));
       await page.evaluate(() => { window.__TOOL_STORE_TEST__.failOpenExternal = true; });
       await clickExact(page, '在浏览器打开'); await sleep(150);
-      rec('企微浏览器打开被拒时可见报错', await page.evaluate(() => document.body.innerText.includes('未能打开浏览器')));
+      rec('企微浏览器打开被拒时可见报错且浮层置顶', await page.evaluate(() => {
+        if (!document.body.innerText.includes('未能打开浏览器')) return false;
+        // innerText 对遮挡免疫:再以 elementFromPoint 验证 alert 全屏层在自己的
+        // 中心点就是命中最上层,防止同层 body portal(如扫码弹窗)遮盖回归。
+        const title = [...document.querySelectorAll('div')].find(d => (d.textContent || '').trim().startsWith('未能打开浏览器'));
+        let layer = title;
+        while (layer && !(layer.classList.contains('fixed') && layer.classList.contains('inset-0'))) layer = layer.parentElement;
+        if (!layer) return false;
+        const r = layer.getBoundingClientRect();
+        let top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        while (top && top !== layer) top = top.parentElement;
+        return top === layer;
+      }));
       await page.evaluate(() => { window.__TOOL_STORE_TEST__.failOpenExternal = false; });
       await dismiss(page);
       await clickExact(page, '取消'); await sleep(150);
