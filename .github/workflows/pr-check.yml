@@ -1429,6 +1429,109 @@ jobs:
           kill "$guard_pid" 2>/dev/null || true
           exit "$status"
 
+  # v21 复活对照臂:v20 两手术臂(死亡形状+手术)都活了,但 v20 没有跑
+  #   「死亡形状+毒cache+不手术」的对照( rust-test 臂实为探针形状,存活是
+  #   统计基线,不构成对照)。死亡历史上 26/26,若平台层条件仍在,本臂应死;
+  #   若本臂也活→致死条件已消失(平台侧变化),手术结论全部作废,需重估
+  #   main 是否可以直接恢复 cache。形状 = probe-purgeroot 去掉手术步骤。
+  probe-deathcontrol:
+    name: probe-deathcontrol
+    needs: changes
+    if: ${{ github.event_name != 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      checks: write
+    env:
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
+      CARGO_PROFILE_DEV_LTO: "thin"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      TELEMETRY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TELEMETRY_CHECK_NAME: tele-deathcontrol
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: 初始化公共底座 submodule
+        run: git submodule update --init --recursive -- CodeWhale
+
+      - name: 装系统依赖(与 rust-test 一致 + strace)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            librsvg2-dev libssl-dev \
+            libx11-dev libxi-dev libxtst-dev \
+            libayatana-appindicator3-dev \
+            build-essential pkg-config cmake lld strace
+
+      - name: bge-m3 占位 (与 rust-test 一致)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 对齐 rust-toolchain.toml 锁定的工具链
+        working-directory: pinvou3-app/src-tauri
+        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
+
+      - name: Node.js (relay e2e,与 rust-test 一致)
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: remote-control-relay/package-lock.json
+
+      - name: relay 依赖 (与 rust-test 一致)
+        run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
+
+      - name: 浏览器驱动依赖 (与 rust-test 一致)
+        run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
+
+      - name: Cargo cache (restore 致死的 v2 暖 cache)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+          shared-key: rust-test-v2
+          save-if: false
+
+      - name: cargo test --lib --no-run(main 死亡形状编译腿:裸输出,无 settle)
+        run: |
+          bash scripts/ci-live-telemetry.sh &
+          bash scripts/ci-memguard.sh &
+          guard_pid=$!
+          set +e
+          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
+          status=$?
+          set -e
+          kill "$guard_pid" 2>/dev/null || true
+          exit "$status"
+
+      - name: cargo test --lib(main 死亡形状执行腿:裸输出,无 pre-check)
+        run: |
+          bash scripts/ci-live-telemetry.sh &
+          chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          export CHROME="$chrome"
+          export PINVOU_REQUIRE_REMOTE_E2E=1
+          bash scripts/ci-memguard.sh &
+          guard_pid=$!
+          set +e
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
+          status=$?
+          set -e
+          kill "$guard_pid" 2>/dev/null || true
+          exit "$status"
+
   windows-rust-test:
     name: windows-rust-test
     needs: changes
