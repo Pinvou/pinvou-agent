@@ -971,7 +971,7 @@ Object.assign(dictEn.uiAttachments, {
   localEngineCancelSend:'Cancel send', localEngineStartingTimeout:'Local image engine start timed out. Retry later or check logs in Settings.',
   localEngineRetry:'Retry', localEngineInstallError:'Failed to install the local image engine',
   localEngineDownloading:'Downloading engine components…', localEngineClose:'Close',
-  imageCompressed:'Large image compressed before sending; recognition may be slower',
+  imageCompressed:'Large image compressed before sending; recognition accuracy may drop slightly',
 });
 dictEn.uiSettings.localVision = 'Local Vision';
 

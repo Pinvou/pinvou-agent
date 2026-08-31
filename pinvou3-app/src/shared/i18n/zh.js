@@ -956,7 +956,7 @@ Object.assign(dictZh.uiAttachments, {
   localEngineCancelSend:'取消发送', localEngineStartingTimeout:'本地识图引擎启动超时，请稍后重试或到设置页查看日志。',
   localEngineRetry:'重试', localEngineInstallError:'本地识图引擎安装失败',
   localEngineDownloading:'正在下载引擎组件，请稍候…', localEngineClose:'关闭',
-  imageCompressed:'图片较大已压缩，识别可能较慢',
+  imageCompressed:'图片较大已压缩，识别精度可能略降',
 });
 dictZh.uiSettings.localVision = '本地识图';
 

@@ -280,10 +280,10 @@ const artifactsBridge = readRoot("src/platform/tauri/bridge/artifacts.js");
 assert(artifactsBridge.includes("PinvouImagePrescale"), "拖放链路必须接入预缩放");
 const bridgeJsFull = readRoot("src/platform/tauri/bridge.js");
 for (const [file, text] of [
-  [bridgeJsFull, "图片较大已压缩，识别可能较慢"],
+  [bridgeJsFull, "图片较大已压缩，识别精度可能略降"],
   [bridgeJsFull, "Large image compressed before sending"],
   [bridgeJsFull, "大きな画像を圧縮してから送信します"],
-  [settingsI18n, "图片较大已压缩，识别可能较慢"],
+  [settingsI18n, "图片较大已压缩，识别精度可能略降"],
   [settingsI18n, "Large image compressed before sending"],
   [settingsI18n, "大きな画像を圧縮しました"],
 ]) {

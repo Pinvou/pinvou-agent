@@ -973,7 +973,7 @@ Object.assign(dictJa.uiAttachments, {
   localEngineCancelSend:'送信キャンセル', localEngineStartingTimeout:'ローカル画像認識エンジンの起動がタイムアウトしました。後でもう一度試すか、設定でログを確認してください。',
   localEngineRetry:'再試行', localEngineInstallError:'ローカル画像認識エンジンのインストールに失敗しました',
   localEngineDownloading:'エンジンコンポーネントをダウンロード中…', localEngineClose:'閉じる',
-  imageCompressed:'大きな画像を圧縮しました。認識が遅くなる場合があります',
+  imageCompressed:'大きな画像を圧縮しました。認識精度がわずかに低下する場合があります',
 });
 dictJa.uiSettings.localVision = 'ローカル画像認識';
 
