@@ -882,6 +882,7 @@ Object.assign(dictJa.uiSettingsDetail, {
   providerCatalog:{
     local:{title:'ローカルモデル',desc:'ローカルサービスのデフォルトモデル'}, glm_coding_plan:{title:'Zhipu Coding Plan / GLM Coding Plan',configTitle:'Zhipu Coding Plan',desc:'コーディングと Agent 向けの専用エンドポイント'},
     tencent_coding_plan:{title:'Tencent Cloud Coding Plan',configTitle:'Tencent Cloud Coding Plan',desc:'Tencent Cloud のコーディングプラン用エンドポイント'},
+    tencent_token_plan:{title:'Tencent Cloud Token Plan',configTitle:'Tencent Cloud Token Plan',desc:'Tencent Cloud TokenHub Token Plan サブスクリプション専用ゲートウェイ'},
     kimi_coding_plan:{title:'Kimi Coding Plan',configTitle:'Kimi Coding Plan',desc:'Kimi のコーディング向け専用エンドポイント'},
     deepseek:{title:'DeepSeek',configTitle:'DeepSeek',desc:'DeepSeek 公式 API'}, kimi:{title:'Kimi China',configTitle:'Kimi',desc:'Moonshot 公式 API'},
     glm:{title:'Zhipu Open Platform / GLM API',configTitle:'GLM API',desc:'Zhipu Open Platform の標準 API'},
@@ -924,6 +925,10 @@ Object.assign(dictJa.uiSettingsDetail.modelDescriptions, {
   '本地服务默认模型':'ローカルサービスのデフォルトモデル',
   '旗舰编码模型':'フラッグシップコーディングモデル', '高性能编码模型':'高性能コーディングモデル',
   '日常编码模型':'日常向けコーディングモデル', 'Coding Plan 自动模型':'Coding Plan 自動モデル',
+  '自动模型，智能路由':'自動モデル（スマートルーティング）',
+  '官方将于 2026-08-31 下线':'2026-08-31 に提供終了予定',
+  'Hy 套餐专属模型':'Hy プラン専用モデル',
+  '手动填写 Token Plan 模型 ID':'Token Plan モデル ID を手動入力',
   '标准编码模型':'標準コーディングモデル', 'K3 256K 上下文模型':'K3 256K コンテキストモデル',
   'K3 长上下文模型':'K3 長コンテキストモデル', '高速编码模型':'高速コーディングモデル',
   '旗舰推理':'フラッグシップ推論モデル',
@@ -946,11 +951,12 @@ Object.assign(dictJa.uiSettingsDetail.modelDescriptions, {
 });
 
 dictJa.uiSettingsDetail.customCodingPlanDesc = 'Coding Plan モデル ID を手動入力';
+dictJa.uiSettingsDetail.customTokenPlanDesc = 'Token Plan モデル ID を手動入力';
 dictJa.uiSettingsDetail.modelAlias = '別名';
 dictJa.uiSettingsDetail.modelAliasPlaceholder = '任意（例：日常アシスタント）';
 
 dictJa.uiSettingsDetail.customModelTitles = {
   glm:'カスタム GLM モデル', qwen:'カスタム Qwen モデル',
   openai_compatible:'カスタム互換モデル', glm_coding_plan:'カスタム GLM Coding Plan モデル',
-  tencent_coding_plan:'カスタム Tencent Cloud Coding Plan モデル', kimi_coding_plan:'カスタム Kimi Coding Plan モデル',
+  tencent_coding_plan:'カスタム Tencent Cloud Coding Plan モデル', tencent_token_plan:'カスタム Tencent Cloud Token Plan モデル', kimi_coding_plan:'カスタム Kimi Coding Plan モデル',
 };

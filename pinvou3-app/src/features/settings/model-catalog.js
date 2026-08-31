@@ -158,6 +158,25 @@ const MODEL_CATALOG = {
         { model: '', title: '自定义 GLM Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
       ],
     },
+    // The two Tencent Cloud subscription tiers are modeled separately per the
+    // official docs (TokenHub product 1823):
+    // - Coding Plan: https://cloud.tencent.com/document/product/1823/130092
+    //   (checked 2026-08-21) OpenAI-compatible base URL /coding/v3; the catalog
+    //   lists all three of its model rows. The same page also offers an
+    //   Anthropic-compatible /coding/anthropic endpoint for Claude Code-style
+    //   tools; this repo's OpenAI route does not use it.
+    // - Token Plan: https://cloud.tencent.com/document/product/1823/130119
+    //   (checked 2026-08-27) OpenAI-compatible base URL /plan/v3 (access guide
+    //   in 130075); its general and Hy tiers have different lineups, and it is
+    //   a different subscription from Coding Plan.
+    // Both endpoints are identified as vendor=tencent coding_plan by
+    // identify_coding_plan_endpoint on the Rust side, so both groups must keep
+    // providerKind=CODING_PLAN to stay consistent with the metadata read back
+    // after saving. Model names pass through the generic OpenAI-compatible
+    // route verbatim and must use the official lowercase wire ids; the other
+    // parallel official spellings on the same page (e.g. kimi-k-2-5 and the
+    // deepseek/deepseek-v4-* forms) are registered in legacyAliases so stored
+    // configs match with any of them.
     {
       key: 'tencent_coding_plan',
       section: 'coding_plan',
@@ -171,7 +190,36 @@ const MODEL_CATALOG = {
       endpointAliases: ['https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions'],
       items: [
         { model: 'tc-code-latest', title: 'tc-code-latest', desc: 'Coding Plan 自动模型' },
+        { model: 'glm-5', legacyAliases: ['glm-5-0'], title: 'glm-5', desc: '旗舰编码模型' },
+        { model: 'kimi-k2.5', legacyAliases: ['kimi-k-2-5'], title: 'kimi-k2.5', desc: '官方将于 2026-08-31 下线' },
         { model: '', title: '自定义腾讯云 Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
+      ],
+    },
+    {
+      key: 'tencent_token_plan',
+      section: 'coding_plan',
+      title: '腾讯云 Token Plan / Tencent Cloud Token Plan',
+      configTitle: '腾讯云 Token Plan',
+      desc: '腾讯云 TokenHub Token 订阅接口',
+      preset: 'openai_compatible',
+      providerKind: PROVIDER_KIND_CODING_PLAN,
+      vendor: 'tencent',
+      baseUrl: 'https://api.lkeap.cloud.tencent.com/plan/v3',
+      endpointAliases: ['https://api.lkeap.cloud.tencent.com/plan/v3/chat/completions'],
+      // kimi-k2.5 is still listed in the general tier (2026-08-27 revision,
+      // retiring 2026-08-31, now agreeing with the Coding Plan page); drop the
+      // row once the retirement takes effect.
+      items: [
+        { model: 'tc-code-latest', title: 'tc-code-latest', desc: '自动模型，智能路由' },
+        { model: 'glm-5.2', legacyAliases: ['glm-5-2'], title: 'glm-5.2', desc: '旗舰推理与编码' },
+        { model: 'glm-5.1', legacyAliases: ['glm-5-1'], title: 'glm-5.1', desc: '均衡智能与成本' },
+        { model: 'glm-5', legacyAliases: ['glm-5-0'], title: 'glm-5', desc: '通用推理，默认推荐' },
+        { model: 'deepseek-v4-pro-202606', legacyAliases: ['deepseek/deepseek-v4-pro-0813', 'deepseek/deepseek-v4-pro'], title: 'deepseek-v4-pro-202606', desc: '高能力模型' },
+        { model: 'deepseek-v4-flash-202605', legacyAliases: ['deepseek/deepseek-v4-flash-0731', 'deepseek/deepseek-v4-flash'], title: 'deepseek-v4-flash-202605', desc: '快速响应' },
+        { model: 'minimax-m2.7', legacyAliases: ['minimax-m-2-7'], title: 'minimax-m2.7', desc: '最新推荐' },
+        { model: 'kimi-k2.5', legacyAliases: ['kimi-k-2-5'], title: 'kimi-k2.5', desc: '官方将于 2026-08-31 下线' },
+        { model: 'hy3', legacyAliases: ['hy3-preview'], title: 'hy3', desc: 'Hy 套餐专属模型' },
+        { model: '', title: '自定义腾讯云 Token Plan 模型', desc: '手动填写 Token Plan 模型 ID', custom: true },
       ],
     },
     {
