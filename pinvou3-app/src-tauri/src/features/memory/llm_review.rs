@@ -115,6 +115,55 @@ ttl_days 规则：
 如果没有值得记的内容，输出 {"items":[]}。
 "#;
 
+/// Output-language directive for the memory review prompt, appended to the
+/// system prompt according to the UI locale.
+///
+/// Equivalent of the review-side `output_language_directive`
+/// (features/review/mod.rs): the prompt body stays Chinese (tuned for
+/// convergence; translating it line by line would introduce behavioral drift)
+/// and only the **natural-language field values** (`content` / `reason`) switch
+/// to the target language — JSON keys and `kind` / `topic` / `action` enum
+/// values stay ASCII. zh-Hans and unknown locales → None (no-op, prompt
+/// unchanged).
+///
+/// Reachability: `enforce_memory_locale_policy` (platform/prefs/mod.rs) forces
+/// `memory_enabled` back to false for non-zh-Hans UI on every load/save, so in
+/// the normal flow en/ja users never run memory review. This directive is
+/// defense-in-depth mirroring the review-side precedent, not a fix for a
+/// reachable failure — the zh-Hans branch is the live per-review path (it
+/// hard-forces Chinese `content` even in English conversations, the same
+/// measured drift the review side hit); the en/ja branches only cover the
+/// narrow window where the locale was switched to Chinese with "restart later",
+/// memory was re-enabled, and a pre-switch engine snapshot still carries the
+/// old locale.
+pub(super) fn memory_output_language_directive(locale_tag: &str) -> Option<String> {
+    // zh-Hans: force `content` to Simplified Chinese even when the conversation
+    // is in English — the Chinese prompt body alone is not hard enough, and the
+    // values drift to English in English contexts (same issue measured on the
+    // review side).
+    if locale_tag == "zh-Hans" {
+        return Some(
+            "\n\n## 输出语言(强制)\n\
+             JSON 里所有自然语言字段值(content / reason)必须用简体中文,即使本轮\
+             对话是英文/日文也别跟着写。JSON 的 key、action / kind / topic 枚举值\
+             保持原样 ASCII。"
+                .to_string(),
+        );
+    }
+    let lang = match locale_tag {
+        "en" => "English",
+        "ja" => "Japanese (日本語)",
+        _ => return None, // unknown locale → keep the prompt as-is (Chinese)
+    };
+    Some(format!(
+        "\n\n## Output Language (HARD override)\n\
+         Write EVERY natural-language value in your JSON output in {lang}: `content` \
+         and `reason`. This OVERRIDES any wording above that asks for Chinese. Keep \
+         all JSON keys and enum values (`action`, `kind`, `topic`) exactly as \
+         specified — those stay ASCII/English."
+    ))
+}
+
 fn memory_review_log_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -443,6 +492,14 @@ async fn request_llm_memory_review(
         "never_memory": never,
     })
     .to_string();
+    // Append the output-language directive per locale, mirroring the review-side
+    // output_language_directive precedent (defense-in-depth: memory is disabled
+    // for non-Chinese UIs by enforce_memory_locale_policy; see the
+    // memory_output_language_directive docs for reachability).
+    let prompt = match memory_output_language_directive(&bridge.memory_locale_tag()) {
+        Some(suffix) => format!("{LLM_REVIEW_PROMPT}{suffix}"),
+        None => LLM_REVIEW_PROMPT.to_string(),
+    };
     // Anthropic 官方端点是 Messages 协议（x-api-key 鉴权，system 独立字段，
     // 无 response_format），走原生直连；其余 preset 仍走 OpenAI chat/completions。
     if preset == ModelPreset::Anthropic {
@@ -451,7 +508,7 @@ async fn request_llm_memory_review(
             &base_url,
             &bridge.memory_api_key(),
             &model_name,
-            LLM_REVIEW_PROMPT,
+            &prompt,
             &user_content,
             900,
         )
@@ -461,7 +518,7 @@ async fn request_llm_memory_review(
     let mut body = json!({
         "model": model_name,
         "messages": [
-            { "role": "system", "content": LLM_REVIEW_PROMPT },
+            { "role": "system", "content": prompt },
             { "role": "user", "content": user_content }
         ],
         "temperature": 0,

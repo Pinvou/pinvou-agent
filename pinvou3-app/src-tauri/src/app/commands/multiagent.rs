@@ -11,6 +11,42 @@ use super::prelude::*;
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::multiagent;
 
+/// Per-turn reminder numbers for the multi-agent resource caps (must match the
+/// MULTI_AGENT_* constants in bridge.rs).
+///
+/// Sessions split into two tiers: Work sessions run 4 direct-child concurrent /
+/// 8 tree-wide admitted; native Code sessions run 6 / 12
+/// (`build_engine_config_for_multi_agent` picks the tier via `is_code_session`,
+/// and the reminder is injected into both — the numbers must follow the tier or
+/// the model self-throttles against the wrong cap).
+pub(crate) struct DelegationLimits {
+    /// Max direct children running at the same time (launch_concurrency).
+    pub max_concurrent: usize,
+    /// Max queued + running across the whole tree (max_subagents).
+    pub max_admitted: usize,
+}
+
+/// Derive reminder numbers from the session tier: Code sessions 6/12, Work 4/8.
+/// The numbers come from the bridge constants instead of a second copy here, so
+/// the reminder cannot drift from the engine config.
+pub(crate) fn delegation_limits_for(pool: &EnginePool, session_id: &str) -> DelegationLimits {
+    if pool.is_code_session(session_id) {
+        DelegationLimits {
+            max_concurrent:
+                crate::features::assistant::platform::bridge::MULTI_AGENT_CODE_MAX_CONCURRENT,
+            max_admitted:
+                crate::features::assistant::platform::bridge::MULTI_AGENT_CODE_MAX_ADMITTED,
+        }
+    } else {
+        DelegationLimits {
+            max_concurrent:
+                crate::features::assistant::platform::bridge::MULTI_AGENT_WORK_MAX_CONCURRENT,
+            max_admitted:
+                crate::features::assistant::platform::bridge::MULTI_AGENT_WORK_MAX_ADMITTED,
+        }
+    }
+}
+
 /// 多智能体模式的每轮委派提醒（拼在用户消息之前，chat 发送链注入）。
 ///
 /// **每轮都要重申**：实测长上下文里模型对开头一次性教学的遵循率衰减（skill
@@ -31,10 +67,12 @@ use crate::features::multiagent;
 /// - 资源护栏：主会话是总协调者，普通委派使用 `max_depth=0` 成为叶子；只有
 ///   任务本身足够复杂时，第一层调用省略深度参数以继承会话上限并允许再拆
 ///   一层。第二层不得继续派生；每个子智能体显式使用底座允许的最高执行预算，
-///   避免角色默认步数截断有效工作；工作模式使用直属并行 4 / 全树准入 8。
+///   avoid role-default step caps cutting real work short; the concurrency /
+///   admission numbers follow the session tier (`DelegationLimits`, Work 4/8,
+///   Code 6/12).
 /// - Git 与子智能体工作区策略沿用普通对话语义，由父模型按任务自主决定；App
 ///   不把每个会话强制 git 化，也不封禁底座已有的 worktree 能力。
-fn delegation_reminder_with_roles(roles: Vec<String>) -> String {
+fn delegation_reminder_with_roles(roles: Vec<String>, limits: &DelegationLimits) -> String {
     let roster_block = if roles.is_empty() {
         "（本轮未匹配到合适专家，可不带 `profile` 裸派）".to_string()
     } else {
@@ -43,6 +81,8 @@ fn delegation_reminder_with_roles(roles: Vec<String>) -> String {
             roles.join("\n")
         )
     };
+    let max_concurrent = limits.max_concurrent;
+    let max_admitted = limits.max_admitted;
     format!(
         "本会话已开启多智能体模式：请按任务形态**主动委派**，工具面与普通\
          对话完全一致（联网检索、读取网页等照常）：\n\
@@ -67,8 +107,8 @@ fn delegation_reminder_with_roles(roles: Vec<String>) -> String {
          `agent` 必须显式传 `max_steps=2000` 与 `wall_time_secs=86400`，不得回落到\
          角色默认的 60/120 步；若允许直属子智能体继续拆分，任务说明中也必须\
          把同一预算规则传给它。预算只是避免提前截断的上限，任务完成后立即\
-         收束，不得为耗尽预算而空转。直属子智能体同时执行最多 4 个，\
-         整棵树排队与执行合计最多 8 个；不要递归裂变；\n\
+         收束，不得为耗尽预算而空转。直属子智能体同时执行最多 {max_concurrent} 个，\
+         整棵树排队与执行合计最多 {max_admitted} 个；不要递归裂变；\n\
          4. Git 与工作区策略由你按任务自主完成：只读任务、没有写入的并行\
          任务，以及串行的“修改→测试→审查”接力可使用默认共享工作区；共享\
          工作区不得安排两个及以上并行写入者。同一 Git 仓库确需并行写入时\
@@ -100,9 +140,9 @@ fn delegation_reminder_with_roles(roles: Vec<String>) -> String {
 }
 
 #[cfg(test)]
-fn delegation_reminder(task: &str) -> String {
+fn delegation_reminder(task: &str, limits: &DelegationLimits) -> String {
     let snapshot = ExpertRosterSnapshot::capture();
-    delegation_reminder_with_roles(snapshot.available_role_lines(task))
+    delegation_reminder_with_roles(snapshot.available_role_lines(task), limits)
 }
 
 /// 一次普通多智能体 turn 的模型内容与专家配置必须共用同一个快照。
@@ -126,7 +166,10 @@ pub(crate) fn prepare_delegation_turn(
         };
     }
     let snapshot = ExpertRosterSnapshot::capture();
-    let reminder = delegation_reminder_with_roles(snapshot.available_role_lines(task));
+    // Concurrency/admission numbers follow the session tier (Code 6/12, Work
+    // 4/8) — the same caps build_engine_config_for_multi_agent installs.
+    let limits = delegation_limits_for(pool, session_id);
+    let reminder = delegation_reminder_with_roles(snapshot.available_role_lines(task), &limits);
     PreparedDelegationTurn {
         content: format!("{reminder}\n\n---\n\n{content}"),
         expert_snapshot: Some(snapshot),
@@ -145,7 +188,10 @@ pub(crate) fn prepend_delegation_replay_reminder(
     if !enabled || !pool.multi_agent_mode_available(session_id) {
         return content;
     }
-    let reminder = delegation_reminder_with_roles(Vec::new());
+    // EditLastTurn carries no new route; pull tier numbers the same way (same
+    // source as the engine's actual caps).
+    let limits = delegation_limits_for(pool, session_id);
+    let reminder = delegation_reminder_with_roles(Vec::new(), &limits);
     format!("{reminder}\n\n---\n\n{content}")
 }
 
@@ -204,13 +250,33 @@ pub async fn read_subagent_transcript(
 
 #[cfg(test)]
 mod tests {
-    use super::delegation_reminder;
+    use super::{delegation_reminder, DelegationLimits};
+    use crate::features::assistant::platform::bridge::{
+        MULTI_AGENT_CODE_MAX_ADMITTED, MULTI_AGENT_CODE_MAX_CONCURRENT,
+        MULTI_AGENT_WORK_MAX_ADMITTED, MULTI_AGENT_WORK_MAX_CONCURRENT,
+    };
+
+    /// Reminder numbers for the Work tier (4/8) and Code tier (6/12); tests pin
+    /// both tiers.
+    fn work_limits() -> DelegationLimits {
+        DelegationLimits {
+            max_concurrent: MULTI_AGENT_WORK_MAX_CONCURRENT,
+            max_admitted: MULTI_AGENT_WORK_MAX_ADMITTED,
+        }
+    }
+
+    fn code_limits() -> DelegationLimits {
+        DelegationLimits {
+            max_concurrent: MULTI_AGENT_CODE_MAX_CONCURRENT,
+            max_admitted: MULTI_AGENT_CODE_MAX_ADMITTED,
+        }
+    }
 
     /// 每轮提醒教的是**强制委派任务、父模型只统筹**（ADR-0006）：只教裸
     /// `agent` 集群，单任务至少一个、可拆任务尽量拆、父模型亲自协调汇总。
     #[test]
     fn delegation_reminder_teaches_delegation() {
-        let msg = delegation_reminder("审查 React 前端代码");
+        let msg = delegation_reminder("审查 React 前端代码", &work_limits());
         assert!(msg.contains("主动委派"), "必须点名主动委派的行事方式");
         assert!(
             msg.contains("`agent` 工具"),
@@ -243,8 +309,8 @@ mod tests {
                 && msg.contains("第二层子智能体不得继续派生")
                 && msg.contains("不要传任何正数深度覆盖值")
                 && msg.contains("同时执行最多 4 个")
-                && msg.contains("最多 8 个"),
-            "多智能体必须明确两层委派和并发/准入资源边界"
+                && msg.contains("合计最多 8 个"),
+            "multi-agent reminder must state the two-level delegation and the concurrency/admission caps (Work tier): {msg}"
         );
         assert!(
             msg.contains("Git 与工作区策略由你按任务自主完成")
@@ -293,7 +359,7 @@ mod tests {
     /// name 字段只收 ASCII token，中文名只能走文本约定，界面据此显示身份。
     #[test]
     fn delegation_reminder_relies_on_expert_pool_only() {
-        let msg = delegation_reminder("审查 React 前端代码");
+        let msg = delegation_reminder("审查 React 前端代码", &work_limits());
         assert!(
             msg.contains("写好提示词"),
             "必须教模型自拟任务说明（无合适专家时裸派）"
@@ -325,7 +391,7 @@ mod tests {
     /// 也不得再教手写 script / plan 协议的任何碎片（真机事故的根因）。
     #[test]
     fn delegation_reminder_never_mentions_the_workflow_path() {
-        let msg = delegation_reminder("审查 React 前端代码");
+        let msg = delegation_reminder("审查 React 前端代码", &work_limits());
         assert!(
             !msg.contains("workflow"),
             "底座 read_only 工具钳制与阶段结果不传递未修，不得推荐 workflow：{msg}"
@@ -357,13 +423,13 @@ mod tests {
     /// （回归：此前正是因为字符串断行丢了 `\`，提示语里混进大段缩进。）
     #[test]
     fn delegation_reminder_contains_no_stray_indentation() {
-        let msg = delegation_reminder("审查 React 前端代码");
+        let msg = delegation_reminder("审查 React 前端代码", &work_limits());
         assert!(!msg.contains("  "), "提示语混入了源码缩进空格:\n{msg}");
     }
 
     #[test]
     fn delegation_reminder_uses_work_resource_limits() {
-        let msg = delegation_reminder("审查 React 前端代码");
+        let msg = delegation_reminder("审查 React 前端代码", &work_limits());
 
         assert!(!msg.contains("工作会话"));
         assert!(!msg.contains("保持克制"));
@@ -379,9 +445,48 @@ mod tests {
         assert!(msg.contains("第二层子智能体不得继续派生"));
     }
 
+    /// The concurrency/admission numbers must follow the session tier (regression:
+    /// they used to be hardcoded to the Work tier 4/8, so Code sessions — whose
+    /// real caps are 6/12 — made the model self-throttle against the wrong limit).
+    /// The numbers share the MULTI_AGENT_* constants in bridge.rs and must not drift.
+    #[test]
+    fn delegation_reminder_resource_limits_follow_session_tier() {
+        let work = delegation_reminder("审查 React 前端代码", &work_limits());
+        let code = delegation_reminder("审查 React 前端代码", &code_limits());
+
+        assert!(
+            work.contains("同时执行最多 4 个") && work.contains("合计最多 8 个"),
+            "Work-tier reminder must state 4/8: {work}"
+        );
+        assert!(
+            code.contains("同时执行最多 6 个") && code.contains("合计最多 12 个"),
+            "Code-tier reminder must state 6/12: {code}"
+        );
+        assert!(
+            !code.contains("同时执行最多 4 个") && !code.contains("合计最多 8 个"),
+            "Code-tier reminder must not leak Work-tier numbers: {code}"
+        );
+        assert_eq!(
+            MULTI_AGENT_WORK_MAX_CONCURRENT, 4,
+            "Work concurrency constant drifted; this breaks both the engine config and the reminder — re-check the tier semantics"
+        );
+        assert_eq!(
+            MULTI_AGENT_WORK_MAX_ADMITTED, 8,
+            "Work admission constant drifted; re-check the tier semantics"
+        );
+        assert_eq!(
+            MULTI_AGENT_CODE_MAX_CONCURRENT, 6,
+            "Code concurrency constant drifted; re-check the tier semantics"
+        );
+        assert_eq!(
+            MULTI_AGENT_CODE_MAX_ADMITTED, 12,
+            "Code admission constant drifted; re-check the tier semantics"
+        );
+    }
+
     #[test]
     fn delegation_reminder_uses_maximum_child_execution_budget() {
-        let msg = delegation_reminder("审查大型代码变更");
+        let msg = delegation_reminder("审查大型代码变更", &work_limits());
 
         assert!(
             msg.contains("`max_steps=2000`")

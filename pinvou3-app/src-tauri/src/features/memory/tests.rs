@@ -1080,6 +1080,47 @@ fn llm_review_prompt_matches_supported_actions() {
     assert!(!LLM_REVIEW_PROMPT.contains("must_create_recent_activity"));
 }
 
+/// The memory review prompt body carries no language constraint of its own; the
+/// output-language directive is appended per locale (`content` / `reason` follow
+/// the UI language, enum values stay ASCII); zh-Hans/unknown → no-op. The en/ja
+/// branches are defense-in-depth (memory is disabled for non-Chinese UIs by
+/// enforce_memory_locale_policy), mirroring the review-side precedent.
+#[test]
+fn memory_review_output_language_directive_follows_locale() {
+    use super::llm_review::memory_output_language_directive;
+
+    let en = memory_output_language_directive("en").expect("en must have a directive");
+    assert!(
+        en.contains("Write EVERY natural-language value")
+            && en.contains("`content`")
+            && en.contains("`reason`")
+            && en.contains("English"),
+        "en directive must cover content/reason and name English: {en}"
+    );
+    assert!(
+        en.contains("Keep") && en.contains("JSON keys") && en.contains("exactly as"),
+        "en directive must keep JSON keys/enum values ASCII: {en}"
+    );
+    let ja = memory_output_language_directive("ja").expect("ja must have a directive");
+    assert!(
+        ja.contains("Japanese"),
+        "ja directive must name Japanese: {ja}"
+    );
+    let zh = memory_output_language_directive("zh-Hans").expect("zh-Hans must have a directive");
+    assert!(
+        zh.contains("必须用简体中文") && zh.contains("枚举值"),
+        "zh-Hans directive must force Chinese and keep enums ASCII: {zh}"
+    );
+    assert!(
+        memory_output_language_directive("fr").is_none(),
+        "unknown locale must fall back to a no-op"
+    );
+    // The prompt body must not carry its own output-language constraint (the
+    // locale directive layer owns language).
+    assert!(!LLM_REVIEW_PROMPT.contains("输出语言"));
+    assert!(!LLM_REVIEW_PROMPT.contains("Output Language"));
+}
+
 #[test]
 fn scenario_review_writes_long_and_recent_memories() {
     let _home = IsolatedPinvouHome::new("long-recent");
