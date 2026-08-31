@@ -1481,4 +1481,28 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(tmp);
     }
+
+    /// 分支切换等破坏性操作的跨会话守卫依据：start_turn 登记后视为在途，
+    /// finish_turn 收口后放行。
+    #[test]
+    fn has_active_turn_reflects_in_flight_sessions() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-active-turn-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("PINVOU3_HOME", &tmp);
+
+        let sid = "session-active-turn-guard";
+        assert!(!has_active_turn(sid));
+        start_turn(sid);
+        assert!(has_active_turn(sid));
+        finish_turn(sid, "completed", None);
+        assert!(!has_active_turn(sid));
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
 }
