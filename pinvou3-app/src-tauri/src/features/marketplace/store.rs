@@ -1469,6 +1469,25 @@ mod tests {
         .is_ok());
     }
 
+    /// 指纹补写单锁 RMW 的「不复活」契约：记录已卸载（remove）后补写必须
+    /// 返回 Ok(false) 且不重建记录。回归钉子——回退成「读记录 →
+    /// upsert_preserving 补写」两段式会把已删记录按 stale 快照复活
+    /// （upsert_preserving 对不存在的 id 直接插入），而整个套件仍全绿。
+    #[test]
+    fn update_content_fingerprint_does_not_resurrect_removed_record() {
+        with_temp_home(|| {
+            let store = BundleStore::new();
+            store
+                .upsert(record("up", BundleSource::Upload("pkg.zip".to_string())))
+                .unwrap();
+            assert!(store.remove("up").unwrap());
+            assert!(!store
+                .update_content_fingerprint_if_exists("up", "fp-after-uninstall")
+                .unwrap());
+            assert!(store.get("up").unwrap().is_none());
+        });
+    }
+
     /// SKILL.md 原说明备份：首写留存（含空串哨兵）、清 key、仅 Upload 可写、
     /// upsert_preserving 保留。
     #[test]
