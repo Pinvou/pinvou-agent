@@ -103,6 +103,67 @@ Assert-True -Condition (-not (Test-PythonDependencyTargets -PythonRoot $fakePyth
 $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("pinvou-python-manifest-contract-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
 
+# Behavioral coverage for the real ABI probe branch (no -AbiProbe injection). Windows
+# cannot fake an executable named python.exe without a real PE image, so copy the PATH
+# python and stub its platform module: the probe then prints to stdout with a
+# controllable machine() result, which is exactly the stray-output case the
+# "$null = & $pythonExe" fix guards. Skipped when no runnable PATH python exists.
+$pathPython = (Get-Command python.exe -ErrorAction SilentlyContinue).Source
+$realProbeReady = $false
+$realProbeRoot = $null
+$probeVersion = ""
+if ($pathPython) {
+  try {
+    $null = & $pathPython -c "print('sanity')"
+    if ($LASTEXITCODE -eq 0) {
+      $realProbeRoot = Join-Path $fixtureRoot "real-probe-python"
+      $pathPythonDir = Split-Path -Parent $pathPython
+      New-Item -ItemType Directory -Path $realProbeRoot -Force | Out-Null
+      Copy-Item -LiteralPath $pathPython -Destination (Join-Path $realProbeRoot "python.exe")
+      Copy-Item -Path (Join-Path $pathPythonDir "python3*.dll") -Destination $realProbeRoot -ErrorAction SilentlyContinue
+      Copy-Item -Path (Join-Path $pathPythonDir "vcruntime140*.dll") -Destination $realProbeRoot -ErrorAction SilentlyContinue
+      Copy-Item -Path (Join-Path $pathPythonDir "Lib") -Destination (Join-Path $realProbeRoot "Lib") -Recurse
+      $realProbePython = Join-Path $realProbeRoot "python.exe"
+      $probeVersion = ([string](& $realProbePython -c "import sys; print('%d.%d' % sys.version_info[:2])")).Trim()
+      $realProbeReady = $probeVersion -cmatch '^\d+\.\d+$'
+    }
+  } catch {
+    $realProbeReady = $false
+  }
+}
+if ($realProbeReady) {
+  function Write-StubPlatform {
+    param([string]$PythonRoot, [string]$Machine)
+    $stub = "import sys`nprint(`"stray probe output`")`ndef machine():`n    return `"$Machine`"`n"
+    [System.IO.File]::WriteAllText(
+      (Join-Path $PythonRoot "Lib\platform.py"),
+      $stub,
+      [System.Text.UTF8Encoding]::new($false)
+    )
+  }
+  function New-RealProbeManifestRoot {
+    param([string]$Name, [string]$PythonVersion)
+    $directory = Join-Path $fixtureRoot $Name
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    $manifest = New-ValidManifestFixture
+    $manifest.python_dependencies.targets[0].python = $PythonVersion
+    [System.IO.File]::WriteAllText(
+      (Join-Path $directory "manifest.json"),
+      (($manifest | ConvertTo-Json -Depth 20) + "`n"),
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    return $directory
+  }
+
+  $probePassRoot = New-RealProbeManifestRoot -Name "real-probe-pass" -PythonVersion $probeVersion
+  Write-StubPlatform -PythonRoot $realProbeRoot -Machine "AMD64"
+  Assert-True -Condition (Test-PythonDependencyTargets -PythonRoot $realProbeRoot -ManifestRoot $probePassRoot) -Message "a matching real ABI probe must stay accepted when it prints to stdout"
+
+  $probeFailRoot = New-RealProbeManifestRoot -Name "real-probe-fail" -PythonVersion $probeVersion
+  Write-StubPlatform -PythonRoot $realProbeRoot -Machine "i386"
+  Assert-True -Condition (-not (Test-PythonDependencyTargets -PythonRoot $realProbeRoot -ManifestRoot $probeFailRoot)) -Message "a real ABI probe printing to stdout with a non-zero exit must be rejected"
+}
+
 $wrongSha = New-ValidManifestFixture
 $wrongSha.python_dependencies.targets[0].wheels[0].sha256 = "z" * 64
 Assert-ManifestFixtureRejected -Name "wrong-sha" -Manifest $wrongSha -FixtureRoot $fixtureRoot -PythonRoot $fakePythonRoot
