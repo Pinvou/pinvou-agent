@@ -1253,6 +1253,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         if (!el) return;
         restoreConversationScrollPosition(el, snapshot);
         lastScrollTopRef.current = el.scrollTop;
+        lastScrollHeightRef.current = el.scrollHeight;
         if (snapshot.stickToBottom) {
           autoScrollRef.current = true;
           setShowScrollBottom(false);
