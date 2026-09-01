@@ -1726,21 +1726,40 @@ mod tests {
     }
 
     fn test_python() -> (String, String) {
-        let python = std::env::var("PINVOU3_TEST_PYTHON").unwrap_or_else(|_| "python".to_string());
-        let output = std::process::Command::new(&python)
-            .args([
-                "-I",
-                "-S",
-                "-c",
-                "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')",
-            ])
-            .output()
-            .expect("test Python must start");
-        assert!(output.status.success());
-        (
-            python,
-            String::from_utf8(output.stdout).unwrap().trim().to_string(),
-        )
+        // 显式指定优先；未指定时由平台适配层给出首选解释器（posix: PATH 里
+        // python3→python；windows: PINVOU3_PYTHON/bundled python），再兜底另一
+        // 常见名——开发机可能只装其一，缺省环境下不再要求设 PINVOU3_TEST_PYTHON。
+        let mut candidates: Vec<String> = Vec::new();
+        if let Ok(python) = std::env::var("PINVOU3_TEST_PYTHON") {
+            candidates.push(python);
+        } else {
+            let primary = crate::platform::os::python_command();
+            let alternate = if primary == "python3" {
+                "python"
+            } else {
+                "python3"
+            };
+            candidates.push(primary);
+            candidates.push(alternate.to_string());
+        }
+        for python in &candidates {
+            let output = std::process::Command::new(python)
+                .args([
+                    "-I",
+                    "-S",
+                    "-c",
+                    "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')",
+                ])
+                .output();
+            let Ok(output) = output else { continue };
+            if output.status.success() {
+                let version = String::from_utf8(output.stdout).unwrap().trim().to_string();
+                return (python.clone(), version);
+            }
+        }
+        panic!(
+            "no usable Python interpreter (tried {candidates:?}); set PINVOU3_TEST_PYTHON explicitly"
+        );
     }
 
     struct LockedPythonToolFixture {
