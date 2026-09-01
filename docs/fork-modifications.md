@@ -4,19 +4,24 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-09-01 · v0.9.5 r13 基线，父仓 gitlink 由 PR #370 接入）
+## 0. 当前状态（2026-09-01 · v0.9.5 r13 基线 + phase-2 r14 候选，父仓 gitlink 由本 PR 接入）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，r13 head `f853f8f1`（r12 + #32 GAIA 评测隔离扩展） |
-| 已合并修复 | 既有 `#9`、`#11`、`#12`、`#13`、`#15`、`#16`、`#17`、`#19`，以及 r11 的 `#18`、`#21`、`#22`、`#25`、`#26`、`#27`、`#29`、`#30`，r12 的 `#33`、`#35`，r13 的 `#32` 均已合并 |
-| 发布状态 | `pinvou3-clean` 与不可变 tag `pinvou-v0.9.5-r13` 均指向 `f853f8f1566c57e6be40d5439a222a932aa79ef5`；`r1` 至 `r13` 保持不可变；父仓 gitlink 由 PR #370 对齐 r13 |
+| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，r13 发布 head `f853f8f1`（r12 + #32 GAIA 评测隔离扩展）；phase-2 候选 head `aaae5133b`（PR #37，9 提交，已 rebase 到 r13 之上，合并后为 r14） |
+| 已合并修复 | 既有 `#9`、`#11`、`#12`、`#13`、`#15`、`#16`、`#17`、`#19`，以及 r11 的 `#18`、`#21`、`#22`、`#25`、`#26`、`#27`、`#29`、`#30`，r12 的 `#33`、`#35`，r13 的 `#32` 均已合并；phase-2 的 `#37` 已提交待发布 |
+| 发布状态 | `pinvou3-clean` 与不可变 tag `pinvou-v0.9.5-r13` 均指向 `f853f8f1566c57e6be40d5439a222a932aa79ef5`；`r1` 至 `r13` 保持不可变；PR #37 以 `aaae5133b` 待发布，合并后剪 `pinvou-v0.9.5-r14`，父仓 gitlink 与 `scripts/verify-public-submodule.sh` 已按 r14 登记（合并改写 SHA 时由跟进 commit 重钉 gitlink 与登记 head） |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
-| drift | r13 基线合计 `110 files, +10895/-1195`（净增 9700 行）；r12→r13 为 `6 files, +1088/-1` |
-| 守护 | r13 为 63 条 CodeWhale `forkguard_*` 行为测试（含 6 条 GAIA 评测隔离测试）+ 通用工具/路由兼容回归 + 父仓指纹/行为测试 |
-| 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配、拒绝编辑的终态/权威历史对账、压缩后用量即时刷新与持久化回填、严格直连模型大小写桥接回归、搜索源设置页引导文案，以及 operator-owned 未登记云端模型（自定义 openai-compatible 端点）的显式输出路由事实声明与官方端点 fail-closed 守护（承 PR #216） |
+| drift | r13 基线合计 `110 files, +10895/-1195`（净增 9700 行）；r12→r13 为 `6 files, +1088/-1`；r13→r14 候选为 `5 files, +934/-32`（净增 902），累计 `111 files, +11829/-1227`（净增 10602 行） |
+| 守护 | r13 为 63 条 CodeWhale `forkguard_*` 行为测试（含 6 条 GAIA 评测隔离测试），phase-2 新增 `forkguard_subagent_execpolicy_deny_matches_main_line`（63→64）+ 通用工具/路由兼容回归 + 父仓指纹/行为测试 |
+| 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配、拒绝编辑的终态/权威历史对账、压缩后用量即时刷新与持久化回填、严格直连模型大小写桥接回归、搜索源设置页引导文案，以及 operator-owned 未登记云端模型（自定义 openai-compatible 端点）的显式输出路由事实声明与官方端点 fail-closed 守护（承 PR #216）、super_permission 开关串行化与安全拒绝规则 phase-2 扩面（本 PR） |
+
+### r14 execpolicy phase-2：匹配表达力与子代理接线（已提交待发布）
+
+- CodeWhale PR #37（9 提交，head `aaae5133b`）：`denied_prefix_matches` 新增 cmd.exe 单字母 `/` 旗标跳过（仅 `^/[A-Za-z]$`，多字符 `/tmp` 等保持 positional 以保住「写向敏感路径放行」的换钥工作流）、deny 规则中段 `*` 通配符（零或多 token，参数位向量变得可表达）、deny 命令词 `.exe` 后缀折叠；`ExecPolicyEngine.rulesets` 改 `Arc<RwLock>` 使克隆共享活规则集；嵌套子代理工具调用在执行信封门之后走与主线相同的 execpolicy 判定（`Block` 拒绝；`Prompt` 跟随主线审批姿态——父会话 auto-approve 时放行、其余姿态一律拒绝（子代理无审批面）；`Allow` 放行；空规则集字节级等价），封死「主线拒绝/需审批的命令委派给子代理绕过」的逃逸口；typed File 路径规则新增 rooted 绝对路径精确回退匹配。指纹锚点：`is_single_letter_slash_flag`、`rule_tokens[j] == "*"`、`strip_suffix(".exe")`、`Arc<RwLock<Vec<Ruleset>>>`、`absolute_path_rule_matches`、`exec_shell_ask_rule_decision_for_engine`、`forkguard_subagent_execpolicy_deny_matches_main_line`（forkguard 总数 63→64）。
+- 父仓配套（本 PR）：gitlink → `aaae5133b`、`safety_deny_rules` phase-2 扩面（17,971 → 24,488 条规则，消费上述全部新表达力）、super_permission 开关串行化（进程级 `TOGGLE_LOCK`，关闭 v1 登记的陈旧快照窗口）、fork-guard/verify/tag 登记与本文档更新。`verify-public-submodule.sh` 与 fork-guard 第 0 层在 PR #37 合并、`pinvou-v0.9.5-r14` 剪出后转绿；squash 合并改写 SHA 时由跟进 commit 重钉 gitlink 与登记 head。
 
 ### r12 厂商原生搜索与免 key 兜底 Bing 化（已合入底座）
 
@@ -105,6 +110,7 @@
 净增量高于 1500 行软线，主要保留量来自逐轮工具安全、Automation 持久化、会话恢复、工具兼容和嵌入上下文密封：
 
 - T2 r8 扩展 `+1370/-202`：逐轮权限必须同时覆盖 catalog、最终 dispatch、排队续轮、Hook、审计和只读 Shell/File 投影，并用行为回归锁住权限替换后的异步唤醒边界。
+- T2 phase-2（#37）`+934/-32`（5 文件）：deny 匹配表达力（旗标跳过/通配符/`.exe` 折叠/绝对路径规则）与子代理 execpolicy 接线及审批对齐必须原子落地——接线依赖共享活规则集，规则面退役（cmd.exe 序列枚举 4332→0 等）依赖匹配器先行；单项单文件最大增量在 `crates/execpolicy/src/lib.rs`（+561），超出单文件 200 行软线，保留原因：匹配器 DFS、通配符语义、折叠与测试同文件内聚，拆分会割断语义与回归的对照关系；后续减量顺序为上游化通配符与旗标跳过语义。
 - T4 `+373/-24`：稳定 conversation/thread 关联、Pinvou 历史 schema 兼容、misfire/no-overlap 和终态级联清理必须与 Task/Automation 持久化原子完成。
 - T3 `+253/-71`：嵌入宿主的静态指令、ambient context 和 Skill 单根来源必须在模型上下文生成前密封。
 
@@ -137,7 +143,7 @@
 
 ### T2：工具兼容与命令执行安全
 
-- **commits**：`595adce47e2d1bcf895d7bfd6426c074eb969324`、`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`（`#12`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`#13`）、`d127aed113529dc93754d044b9f352e9746f6b83`（`#15`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`#16` 的 Shell 取消边界）、`44730dfe596b70f86ae2f928959877a3e3f494e4`（`#27`）、`665b46cd9e67326459223aa662931bd36d726004`（`#29`）、`04e109af4b4786a0d49fbbeefdd77af15a9f495e`（`#22`）、`4831c3797b76485a912b056c76a4cff22f0a2863`（`#25`）、`e68a185c2ba07f327bd8b63bbfea6a70a96f33ea`（`#26`）、`ecfd68acc056b95b06d98312753a712e4c0755db`、`603eeadcdab65d71d62a5ac32b6700207433fe5c`、`eb25a255a92f7385a3fde74f1f44626cdd068125`、`8c243e7ea7094fff189ab12582aea0460b655d06`、`8111f8150bc6b103da685f6abc3f26143b3bb207`、`4f612e548090616f8206154e37c9895404a8998b`（以上六项为 `#33` 厂商原生搜索）、`9c5f4f19b0acbc960889778a5873c7fb038b1378`（`#35` 免 key 链尾 Bing 化）、`f853f8f1566c57e6be40d5439a222a932aa79ef5`（`#32` GAIA 评测隔离扩展）。
+- **commits**：`595adce47e2d1bcf895d7bfd6426c074eb969324`、`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`（`#12`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`#13`）、`d127aed113529dc93754d044b9f352e9746f6b83`（`#15`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`#16` 的 Shell 取消边界）、`44730dfe596b70f86ae2f928959877a3e3f494e4`（`#27`）、`665b46cd9e67326459223aa662931bd36d726004`（`#29`）、`04e109af4b4786a0d49fbbeefdd77af15a9f495e`（`#22`）、`4831c3797b76485a912b056c76a4cff22f0a2863`（`#25`）、`e68a185c2ba07f327bd8b63bbfea6a70a96f33ea`（`#26`）、`ecfd68acc056b95b06d98312753a712e4c0755db`、`603eeadcdab65d71d62a5ac32b6700207433fe5c`、`eb25a255a92f7385a3fde74f1f44626cdd068125`、`8c243e7ea7094fff189ab12582aea0460b655d06`、`8111f8150bc6b103da685f6abc3f26143b3bb207`、`4f612e548090616f8206154e37c9895404a8998b`（以上六项为 `#33` 厂商原生搜索）、`9c5f4f19b0acbc960889778a5873c7fb038b1378`（`#35` 免 key 链尾 Bing 化）、`f853f8f1566c57e6be40d5439a222a932aa79ef5`（`#32` GAIA 评测隔离扩展）、`bfcf2e8d5`（`#37` cmd.exe 单字母 `/` 旗标跳过）、`e5a626159`（`#37` deny 中段通配符）、`468c9c0a5`（`#37` 命令词 `.exe` 折叠）、`cd79e58f9`（`#37` 引擎克隆共享活规则集）、`17cf60b63`（`#37` 子代理 execpolicy 接线）、`817d46a35`（`#37` rustfmt）、`5313d0189`（`#37` File 绝对路径规则精确匹配）、`aa0bf1e4d`（`#37` 子代理审批姿态对齐：需审批调用在子代理拒绝）、`aaae5133b`（`#37` 绝对路径精确匹配回归）。
 - **核心文件**：`core/engine.rs`、`core/engine/tool_setup.rs`、`core/ops.rs`、`tools/file.rs`、`command_safety.rs`、`tools/shell.rs`、`docs/TOOL_SURFACE.md`。
 - **内容**：
   - `EngineConfig.extra_tools` 让宿主工具在 Plan、Agent、Yolo 等 turn registry 中一致注册。
@@ -153,9 +159,10 @@
   - 当前工具面不恢复已退役的独立追加文件工具，也没有改动 `request_user_input`。
   - r8 在 catalog 与最终 dispatch 共用 exact allowlist；显式受限轮次可清空 trusted roots，并禁止 MCP 初始化、控制面 shell、动态工具和子 Agent。控制面限制保持到下一条消息出队，受限排队续轮（goal self-continuation）、编辑重放与 MCP reload 同样拒绝；轮后子智能体完成和后台 Shell 唤醒延迟到显式新消息安装替代权限。Hook 默认关闭；受限审计保留 event 与 tool_name 等非私有身份字段，输入/输出/路径固定脱敏；`None` 保持现有 GUI 行为。
   - 父仓 GAIA 集成在同一逐轮策略上显式启用 read-only dispatch：catalog 改用只读 `File` action schema，规划与最终执行前均再次拒绝写动作；`Bash` 同步投影为 `ShellPolicy::ReadOnly`，复用直接 argv 加固路径，不能只依赖 approval。
-- **上游计划**：逐轮权限、可信根覆盖、只读 action 投影和最终 dispatch 门禁是通用嵌入能力。当前 fork 版本已随 r8 发布；后续从最新 `Hmbown/CodeWhale` main 提交独立上游 PR。Pinvou profile 名称与 GAIA 工具名单继续留在 app；上游接收后删除 fork 对应实现和本地指纹。
+  - phase-2（#37）：`denied_prefix_matches` 支持 cmd.exe 单字母 `/` 旗标跳过（多字符 slash token 保持 positional）与 deny 规则中段 `*` 通配符（零或多 token，规则作者对误拦面负责）；deny 命令词折叠 `.exe` 后缀；`ExecPolicyEngine.rulesets` 以 `Arc<RwLock>` 跨克隆共享活规则集；嵌套子代理工具调用在执行信封门后走与主线相同的 execpolicy 判定（主线拒绝或需审批的命令不能再委派给子代理绕过：`Prompt` 仅在父会话 auto-approve 下放行，其余拒绝），`Allow` 放行且空规则集零行为变化；typed File 路径规则支持 rooted 绝对路径的精确回退匹配（真实 home、`/root`、Windows profile）。`crates/execpolicy` 的通配符与绝对路径匹配为通用能力，是上游化候选。
+- **上游计划**：逐轮权限、可信根覆盖、只读 action 投影和最终 dispatch 门禁是通用嵌入能力。当前 fork 版本已随 r8 发布；后续从最新 `Hmbown/CodeWhale` main 提交独立上游 PR。Pinvou profile 名称与 GAIA 工具名单继续留在 app；上游接收后删除 fork 对应实现和本地指纹。phase-2 的 execpolicy 匹配表达力扩展（旗标跳过、通配符、`.exe` 折叠、绝对路径规则）同为上游候选。
 - **边界**：不包含 Skill 来源、Automation 或产品角色协议。
-- **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`、registry prompt、Custom allowlist alias、`forkguard_session_trusted_roots_override_persisted_workspace_trust`、`forkguard_dispatch_allowlist_rejects_forged_calls_before_all_dispatch_backends`、`forkguard_read_only_turn_rejects_write_action_at_final_dispatch`、`forkguard_restricted_agent_uses_read_only_file_schema`、`forkguard_queued_control_op_keeps_restricted_turn_authority`、`forkguard_queued_goal_continuation_and_mcp_reload_keeps_restricted_turn_authority`、`forkguard_restricted_turn_defers_idle_subagent_completion_until_new_message`、`forkguard_restricted_agent_uses_hardened_read_only_shell_context`、`forkguard_restricted_turn_defers_idle_shell_wake_until_new_message`、`forkguard_restricted_turn_hooks_require_explicit_host_opt_in`、`forkguard_restricted_tool_audit_redacts_private_sentinel`。
+- **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`、registry prompt、Custom allowlist alias、`forkguard_session_trusted_roots_override_persisted_workspace_trust`、`forkguard_dispatch_allowlist_rejects_forged_calls_before_all_dispatch_backends`、`forkguard_read_only_turn_rejects_write_action_at_final_dispatch`、`forkguard_restricted_agent_uses_read_only_file_schema`、`forkguard_queued_control_op_keeps_restricted_turn_authority`、`forkguard_queued_goal_continuation_and_mcp_reload_keeps_restricted_turn_authority`、`forkguard_restricted_turn_defers_idle_subagent_completion_until_new_message`、`forkguard_restricted_agent_uses_hardened_read_only_shell_context`、`forkguard_restricted_turn_defers_idle_shell_wake_until_new_message`、`forkguard_restricted_turn_hooks_require_explicit_host_opt_in`、`forkguard_restricted_tool_audit_redacts_private_sentinel`、phase-2 新增 `forkguard_subagent_execpolicy_deny_matches_main_line`（子代理 execpolicy 拒绝与放行、空规则集等价、File 路径、prompt 放行、活规则集热更新绑定）及 execpolicy crate 10 条新匹配语义测试。
 
 ### T3：嵌入上下文与技能来源
 

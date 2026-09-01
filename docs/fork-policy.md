@@ -1,15 +1,15 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-08-28（公开维护基线：上游 `v0.9.5` r12；r11 的 PR #18、#21、#22、#25、#26、#27、#29、#30 与 r12 的 PR #33、#35 已发布到现有 4 个 Pinvou 主题，父仓 gitlink 由父仓 PR #375 接入）
+> 最后更新：2026-09-01（公开维护基线：上游 `v0.9.5` r13，由 CodeWhale PR #32 发布；r11 的 PR #18、#21、#22、#25、#26、#27、#29、#30 与 r12 的 PR #33、#35 已发布到现有 4 个 Pinvou 主题；phase-2 的 PR #37（execpolicy 表达力与子代理接线与审批对齐）已 rebase 到 r13 之上并提交待发布，`pinvou3-clean` 合并后在合并头剪 `pinvou-v0.9.5-r14`，父仓 gitlink 由父仓 PR（本 PR）先行接入）
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
 ## 0. 当前基线
 
 - 上游：`Hmbown/CodeWhale` tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c`。
-- 公开维护分支：`Pinvou/CodeWhale:pinvou3-clean`，head `9c5f4f19`（`pinvou-v0.9.5-r12`）。
+- 公开维护分支：`Pinvou/CodeWhale:pinvou3-clean`，r13 发布 head `f853f8f1`（`pinvou-v0.9.5-r13`）；phase-2 候选 head `aaae5133b`（PR #37，9 提交，已 rebase 到 r13 之上），合并后即为 r14。
 - 升级前基线 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` 同时保留在 tag `pinvou-v0.9.0-r4` 和 branch `backup/pinvou3-clean-v0.9.0-r4`。
-- `Pinvou/CodeWhale#18`、`#21`、`#22`、`#25`、`#26`、`#27`、`#29` 与 `#30` 已发布进 r11，`#33` 与 `#35` 已发布进 r12；`pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r12` 均公开可达并指向 `9c5f4f19`，`r1` 至 `r12` 保持不可变。
+- `Pinvou/CodeWhale#18`、`#21`、`#22`、`#25`、`#26`、`#27`、`#29` 与 `#30` 已发布进 r11，`#33` 与 `#35` 已发布进 r12，`#32` 已发布进 r13；`pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r13` 均公开可达并指向 `f853f8f1566c57e6be40d5439a222a932aa79ef5`，`r1` 至 `r13` 保持不可变。PR #37 以 `aaae5133b` 为 head 待发布；`pinvou-v0.9.5-r14` 在其合并后剪出，父仓 gitlink 与 `scripts/verify-public-submodule.sh` 已按 r14 登记（合并改写 SHA 时由跟进 commit 重钉）。
 - `.gitmodules` 不配置浮动 `branch`；发布后父仓 gitlink、维护分支和不可变标签必须指向同一 commit。
 - 当前只维护 4 个长期主题：
 
@@ -39,7 +39,7 @@ Pinvou 的产品工具白名单、UI、工作区选择和业务策略留在 app�
 - 总 drift 软上限：净增 1500 行（净增 = 新增 − 删除行数，与下方基线表述同口径）。
 - 单文件 fork-distinct 改动软上限：200 行。
 - 超过不是自动拒绝，但必须记录保留原因和减量顺序。
-- r12 公开基线相对 `v0.9.5` 为 `+9781/-1168，110 文件`，净增 8613 行；相对 r11 为 `+1941/-188，17 文件`，新增厂商原生搜索适配（#33，按厂商+模型+官方端点+产品面精确门控）与 API 后端免 key 链尾 Bing 化（#35），均归入 T2。既有 r11 基线相对 `v0.9.5` 为 `+7840/-980，96 文件`，净增 6860 行。保留原因见 `docs/fork-modifications.md` 软上限评估；后续优先上游化通用逐轮权限、宿主插入/编辑接口、会话快照/恢复 API、provider 兼容、MCP 宿主策略和 Automation 生命周期修复。
+- r13 公开基线相对 `v0.9.5` 为 `+10895/-1195，110 文件`，净增 9700 行；r11→r12 为 `+1941/-188，17 文件`，新增厂商原生搜索适配（#33，按厂商+模型+官方端点+产品面精确门控）与 API 后端免 key 链尾 Bing 化（#35），均归入 T2；r12→r13 为 `+1088/-1，6 文件`（#32 GAIA 评测隔离扩展）。既有 r11 基线相对 `v0.9.5` 为 `+7840/-980，96 文件`，净增 6860 行。phase-2（#37，r14 候选）在 r13 之上为 `+934/-32，5 文件`（净增 902），归入 T2：execpolicy 匹配表达力扩展与子代理 execpolicy 接线；累计相对 `v0.9.5` 为 `+11829/-1227，111 文件`，净增 10602 行。保留原因见 `docs/fork-modifications.md` 软上限评估；后续优先上游化通用逐轮权限、宿主插入/编辑接口、会话快照/恢复 API、provider 兼容、MCP 宿主策略和 Automation 生命周期修复。
 
 ### 1.3 主题提交
 
