@@ -537,10 +537,10 @@ function messageText(blocks) {
     .trim();
 }
 
-// 与 platform/{tauri,web}/bridge.js 的 userMessageDisplayText 判定保持一致：
-// CodeWhale 内部运行时信封（subagent handoff / background shell 完成等）以
-// role=user 持久化供父模型上下文使用，展示层不得渲染为用户气泡。
-// 共享 ESM 实现见 src/shared/internal-message.mjs（bridge 闭包不可 import）。
+// 与 src/shared/internal-message.mjs 的内部运行时消息判定同源（bridge 侧的
+// 超集实现见 src/shared/bridge-messages.js）：CodeWhale 内部运行时信封
+// （subagent handoff / background shell 完成等）以 role=user 持久化供父模型
+// 上下文使用，展示层不得渲染为用户气泡。
 
 /// SavedSession messages → lane.items（hydration 是 rerenderFromMessages 的精简版：
 /// 覆盖 user / assistant text / thinking / tool_use+tool_result / request_user_input /
