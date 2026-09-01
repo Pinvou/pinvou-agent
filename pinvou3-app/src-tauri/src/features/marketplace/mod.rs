@@ -1726,9 +1726,12 @@ mod tests {
     }
 
     fn test_python() -> (String, String) {
-        // 显式指定优先；未指定时由平台适配层给出首选解释器（posix: PATH 里
-        // python3→python；windows: PINVOU3_PYTHON/bundled python），再兜底另一
-        // 常见名——开发机可能只装其一，缺省环境下不再要求设 PINVOU3_TEST_PYTHON。
+        // An explicit PINVOU3_TEST_PYTHON wins. Without it, start from the
+        // platform adapter's preferred interpreter (posix: python3→python on
+        // PATH; windows: PINVOU3_PYTHON/bundled python), then fall back to the
+        // other common name — a dev machine may have either one installed, so
+        // the default environment no longer requires setting
+        // PINVOU3_TEST_PYTHON.
         let explicit = std::env::var("PINVOU3_TEST_PYTHON").ok();
         let mut candidates: Vec<String> = Vec::new();
         match &explicit {
@@ -1759,8 +1762,9 @@ mod tests {
                 return (python.clone(), version);
             }
         }
-        // 显式指定但不可用,与缺省探测全失败是两种故障:前者该修(或去掉)现有
-        // 设置,提示"再去显式设置"反而误导。
+        // An explicit but unusable setting is a different failure from a fully
+        // failed default probe: the former should be fixed (or dropped), so
+        // telling the user to "set it explicitly" again would mislead.
         if let Some(python) = explicit {
             panic!(
                 "PINVOU3_TEST_PYTHON={python} is set but not usable; fix it or unset it to auto-probe"

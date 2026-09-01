@@ -1305,9 +1305,12 @@ mod tests {
             );
         }
 
-        // 本测试不持 ENV_LOCK 也不设 PINVOU3_HOME,不能走 cleanup()(其契约要求
-        // 调用方持锁,且会无条件 remove_var)——否则并行测试的持锁窗口会被这次
-        // 无锁移除砸穿,dingtalk/wecom 技能门控测试会以断言读错根目录的形式偶发失败。
+        // This test neither holds ENV_LOCK nor sets PINVOU3_HOME, so it must
+        // not use cleanup() — its contract requires the caller to hold the
+        // lock, and it unconditionally removes the variable. A lock-free
+        // removal here would punch through a parallel test's lock-holding
+        // window, and the dingtalk/wecom skill-gate tests then fail
+        // intermittently with assertions reading the wrong root.
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

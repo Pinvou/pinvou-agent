@@ -197,9 +197,10 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            // `prepare_codex_prompt` 经 `validate_path` 强制附件位于 `$HOME` 下
-            // (validate_upload_location)。fixture 必须跟随,否则从 $HOME 外的
-            // 检出(如 /tmp worktree)跑测试时守卫会把合法 fixture 拒之门外。
+            // `prepare_codex_prompt` forces attachments to live under `$HOME`
+            // via `validate_path` (validate_upload_location). The fixture must
+            // follow suit, or the guard rejects the legitimate fixture when the
+            // tests run from a checkout outside $HOME (e.g. a /tmp worktree).
             let path = crate::platform::os::user_home_dir().join(format!(
                 ".pinvou3-codex-attachment-test-{label}-{}-{nonce}",
                 std::process::id()
