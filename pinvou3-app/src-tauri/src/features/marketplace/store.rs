@@ -1394,12 +1394,16 @@ mod tests {
 
             let long_name = "名".repeat(MAX_DISPLAY_NAME_CHARS + 1);
             let long_desc = "述".repeat(MAX_DISPLAY_DESCRIPTION_CHARS + 1);
-            assert!(store
-                .set_display_meta("up", Some(&long_name), None)
-                .is_err());
-            assert!(store
-                .set_display_meta("up", None, Some(&long_desc))
-                .is_err());
+            assert!(
+                store
+                    .set_display_meta("up", Some(&long_name), None)
+                    .is_err()
+            );
+            assert!(
+                store
+                    .set_display_meta("up", None, Some(&long_desc))
+                    .is_err()
+            );
             // 控制字符/换行/不可见字符：展示名与展示说明一律拒绝（单行 UI 展示
             // 与单行 SKILL.md 回写都无法表达；bidi/零宽类可视觉欺骗或污染比较）
             for bad in [
@@ -1462,11 +1466,13 @@ mod tests {
         assert!(validate_display_meta(None, None).is_ok());
         assert!(validate_display_meta(Some("   "), Some("")).is_ok());
         // 恰好上限可过
-        assert!(validate_display_meta(
-            Some(&"名".repeat(MAX_DISPLAY_NAME_CHARS)),
-            Some(&"述".repeat(MAX_DISPLAY_DESCRIPTION_CHARS))
-        )
-        .is_ok());
+        assert!(
+            validate_display_meta(
+                Some(&"名".repeat(MAX_DISPLAY_NAME_CHARS)),
+                Some(&"述".repeat(MAX_DISPLAY_DESCRIPTION_CHARS))
+            )
+            .is_ok()
+        );
     }
 
     /// 指纹补写单锁 RMW 的「不复活」契约：记录已卸载（remove）后补写必须
@@ -1481,9 +1487,11 @@ mod tests {
                 .upsert(record("up", BundleSource::Upload("pkg.zip".to_string())))
                 .unwrap();
             assert!(store.remove("up").unwrap());
-            assert!(!store
-                .update_content_fingerprint_if_exists("up", "fp-after-uninstall")
-                .unwrap());
+            assert!(
+                !store
+                    .update_content_fingerprint_if_exists("up", "fp-after-uninstall")
+                    .unwrap()
+            );
             assert!(store.get("up").unwrap().is_none());
         });
     }

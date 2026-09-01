@@ -4056,7 +4056,9 @@ mod tests {
     #[test]
     fn rewrite_description_replaces_chomping_variants() {
         for marker in ["|-", ">-", "|+", ">+"] {
-            let md = format!("---\nname: x\ndescription: {marker}\n  第一行\n  description: 旧文案\nversion: 1\n---\n");
+            let md = format!(
+                "---\nname: x\ndescription: {marker}\n  第一行\n  description: 旧文案\nversion: 1\n---\n"
+            );
             let out = rewrite_frontmatter_description(&md, "新描述").unwrap();
             assert_eq!(
                 out, "---\nname: x\ndescription: 新描述\nversion: 1\n---\n",
@@ -4202,11 +4204,13 @@ mod tests {
     #[test]
     fn rewrite_description_structural_guard_for_duplicate_keys() {
         // 显式重复键：两行都替换成新值，行视图仍留两行顶层 description → Err
-        assert!(rewrite_frontmatter_description(
-            "---\ndescription: 第一\ndescription: 第二\n---\n",
-            "新"
-        )
-        .is_err());
+        assert!(
+            rewrite_frontmatter_description(
+                "---\ndescription: 第一\ndescription: 第二\n---\n",
+                "新"
+            )
+            .is_err()
+        );
         // remove 路径：循环删所有顶层行（不 break），重复键被全删 → 成功且无残留
         let out =
             remove_frontmatter_description("---\ndescription: 第一\ndescription: 第二\n---\n")
@@ -4750,16 +4754,18 @@ mod tests {
 
         // 未登记 / 预置来源 → Err，且不动文件不写 extra
         assert!(mgr.update_display_meta("ghost", None, Some("x")).is_err());
-        assert!(mgr
-            .update_display_meta("preset-x", None, Some("x"))
-            .is_err());
+        assert!(
+            mgr.update_display_meta("preset-x", None, Some("x"))
+                .is_err()
+        );
         assert!(store.skill_desc_backup("preset-x").unwrap().is_none());
 
         // 超长说明（>240）→ 校验先于回写：SKILL.md 字节不变、无备份、无 extra
         let long_desc = "x".repeat(241);
-        assert!(mgr
-            .update_display_meta("g-skill", None, Some(&long_desc))
-            .is_err());
+        assert!(
+            mgr.update_display_meta("g-skill", None, Some(&long_desc))
+                .is_err()
+        );
         assert_eq!(
             std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap(),
             original_md,
@@ -4774,9 +4780,10 @@ mod tests {
         );
 
         // 控制字符/换行说明 → 同样先于回写拒绝
-        assert!(mgr
-            .update_display_meta("g-skill", None, Some("含\n换行"))
-            .is_err());
+        assert!(
+            mgr.update_display_meta("g-skill", None, Some("含\n换行"))
+                .is_err()
+        );
         assert_eq!(
             std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap(),
             original_md,
