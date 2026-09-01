@@ -210,6 +210,34 @@ fn git_ok(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// 迁移/恢复共用的敏感文件 pathspec 全集：字面模式（.env、id_rsa 等）在 git
+/// pathspec 里只命中仓库根部，另补 `**/` 前缀版本覆盖任意深度（不含通配符的
+/// pathspec 不走 wildmatch；gitignore 语义的 exclude 本就任意深度生效，此差异
+/// 只影响 `rm --cached` 这类 pathspec 调用）。
+fn secret_pathspecs() -> Vec<String> {
+    let mut patterns: Vec<String> = SECRET_EXCLUDES.iter().map(|line| line.to_string()).collect();
+    for literal in [".env", ".env.local", "id_rsa", "id_ed25519"] {
+        patterns.push(format!("**/{literal}"));
+    }
+    patterns
+}
+
+/// 从影子 index 清除敏感文件条目（`rm --cached`，只动影子 index，不碰工作区
+/// 文件、不碰用户项目 .git）。返回 git 进程的真实成败（非零退出 = 失败）。
+fn purge_secret_patterns_from_index(repo: &Path, work_tree: &Path) -> Result<()> {
+    let patterns = secret_pathspecs();
+    let mut arguments: Vec<&str> = vec!["rm", "-r", "--cached", "--ignore-unmatch", "--quiet", "--"];
+    arguments.extend(patterns.iter().map(String::as_str));
+    let output = git(repo, work_tree, &arguments)?;
+    if !output.status.success() {
+        bail!(
+            "git rm --cached 敏感文件失败: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
 /// 初始化影子仓库（幂等）：git-dir 在账本根，work-tree 指向执行根。
 /// - `core.autocrlf false`：不受用户全局行尾配置影响，快照/恢复保持原字节；
 ///   执行根自己的 .gitattributes 仍会被尊重（与用户在项目内看到的行尾一致）。
@@ -227,8 +255,7 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
     let mut excludes: Vec<String> = SHADOW_EXCLUDES
         .iter()
         .chain(SECRET_EXCLUDES.iter())
-        .map(|line| line.to_string())
-        .collect();
+        .map(|line| line.to_string()).collect();
     // ledger 与执行根都可能未经 canonicalize（Windows 短名/大小写），统一规范化后
     // 再判断包含关系，确保临时会话（两根相同）的排除规则一定生效。
     let checkpoint_dir = checkpoints_dir(ledger_root);
@@ -249,17 +276,18 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
         .with_context(|| "写入 checkpoint 仓库 exclude 失败".to_string())?;
     // 一次性迁移（存量仓库）：exclude 只挡 untracked 文件，升级前已 add -A 进
     // 影子 index 的敏感文件会继续被跟踪、被后续快照、被 checkout-index 恢复。
-    // 按新模式清一次 index（幂等，marker 门控只跑一次；best-effort——失败留到
-    // 下次重试，不阻断快照主流程）。历史 commit objects 里的原文不在清理范围，
-    // 随 LRU 淘汰与 gc 回收。
+    // 按新模式清一次 index（幂等，marker 门控；只有 git 真实成功才写 marker，
+    // 非零退出/spawn 失败都留到下次重试，不阻断快照主流程）。历史 commit
+    // objects 里的原文不在清理范围，随 LRU 淘汰与 gc 回收。
     let migration_marker = info_dir.join("secret-excludes-v1");
     if !fresh && !migration_marker.exists() {
-        let mut arguments = vec!["rm", "-r", "--cached", "--ignore-unmatch", "--quiet", "--"];
-        arguments.extend(SECRET_EXCLUDES.iter().copied());
-        if let Err(error) = git(&repo, execution_root, &arguments) {
-            eprintln!("[checkpoints] secret-exclude migration failed (will retry next call): {error:#}");
-        } else {
-            fs::write(&migration_marker, "1\n").ok();
+        match purge_secret_patterns_from_index(&repo, execution_root) {
+            Ok(()) => {
+                fs::write(&migration_marker, "1\n").ok();
+            }
+            Err(error) => eprintln!(
+                "[checkpoints] secret-exclude migration failed (will retry next call): {error:#}"
+            ),
         }
     }
     Ok(repo)
@@ -516,6 +544,11 @@ pub fn restore_checkpoint(
     let repo = repo_dir(ledger_root);
     git_ok(&repo, &execution_root, &["read-tree", &meta.commit])
         .context("读取 checkpoint 快照失败")?;
+    // read-tree 整体替换 index：迁移前打的旧快照 tree 里可能仍含敏感文件，
+    // 不清理就会被 checkout-index 写回工作区并被后续 add -A 重新跟踪（一次性
+    // 迁移的效果被一次回滚复活）。恢复前按同一模式清影子 index（只动 index）。
+    purge_secret_patterns_from_index(&repo, &execution_root)
+        .context("清理快照中的敏感文件条目失败")?;
     git_ok(&repo, &execution_root, &["checkout-index", "-f", "-a"])
         .context("写回 checkpoint 文件失败")?;
     git_ok(&repo, &execution_root, &["clean", "-fd"]).context("清理快照后新建文件失败")?;
@@ -638,6 +671,133 @@ mod tests {
             .output()
             .map(|output| output.status.success())
             .unwrap_or(false)
+    }
+
+    /// 敏感文件 exclude 语义：.env（任意深度）/私钥本体不进快照；
+    /// .env.example、id_rsa.pub 等示例/公钥照常进快照。
+    #[test]
+    fn secret_files_are_excluded_but_examples_and_public_keys_are_tracked() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("secret-ledger");
+        let exec = TestDir::new("secret-exec");
+        exec.write(".env", "SECRET=1\n");
+        exec.write("sub/.env", "SECRET=2\n");
+        exec.write(".env.local", "SECRET=3\n");
+        exec.write(".env.example", "EXAMPLE=\n");
+        exec.write("id_rsa", "PRIVATE\n");
+        exec.write("id_rsa.pub", "PUBLIC\n");
+        exec.write("src/a.rs", "a\n");
+        create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn, "t1").unwrap();
+
+        let repo = repo_dir(ledger.path());
+        let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
+        let is_tracked = |path: &str| tracked.lines().any(|line| line == path);
+        assert!(is_tracked(".env.example"), "示例文件应照常进快照");
+        assert!(is_tracked("id_rsa.pub"), "公钥应照常进快照");
+        assert!(is_tracked("src/a.rs"));
+        assert!(!is_tracked(".env"), ".env 不得进快照");
+        assert!(!is_tracked("sub/.env"), "任意深度的 .env 不得进快照");
+        assert!(!is_tracked(".env.local"));
+        assert!(!is_tracked("id_rsa"), "私钥本体不得进快照");
+    }
+
+    /// 存量仓库一次性迁移：升级前被强制跟踪的敏感文件（含子目录深度）被
+    /// 清出影子 index，普通文件不受影响，迁移成功后写 marker。
+    #[test]
+    fn migration_purges_previously_tracked_secrets_at_any_depth() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("migrate-ledger");
+        let exec = TestDir::new("migrate-exec");
+        exec.write(".env", "SECRET=1\n");
+        exec.write("sub/.env", "SECRET=2\n");
+        exec.write("ok.txt", "ok\n");
+        // 模拟升级前的存量仓库：手工 init + 强制跟踪敏感文件（绕过 exclude）。
+        let repo = repo_dir(ledger.path());
+        fs::create_dir_all(&repo).unwrap();
+        git_ok(&repo, exec.path(), &["init"]).unwrap();
+        git_ok(&repo, exec.path(), &["add", "-f", ".env", "sub/.env", "ok.txt"]).unwrap();
+
+        ensure_repo(ledger.path(), exec.path()).unwrap();
+        let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
+        assert!(!tracked.lines().any(|line| line == ".env" || line == "sub/.env"));
+        assert!(tracked.lines().any(|line| line == "ok.txt"));
+        assert!(repo.join("info").join("secret-excludes-v1").is_file());
+    }
+
+    /// 迁移前打的旧快照 tree 里含 .env：read-tree 会把它装回 index（复活），
+    /// restore 必须在写回工作区前清掉——影子 index 无 .env，工作区现有 .env
+    /// 不被删除/覆盖，普通文件正常恢复。
+    #[test]
+    fn restore_does_not_resurrect_secret_entries_from_old_snapshot() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("resurrect-ledger");
+        let exec = TestDir::new("resurrect-exec");
+        exec.write("ok.txt", "v1\n");
+        exec.write(".env", "SECRET=old\n");
+        // 手工构造「迁移前」的快照 commit（强制跟踪 .env）并登记进 checkpoint 索引。
+        let repo = repo_dir(ledger.path());
+        fs::create_dir_all(&repo).unwrap();
+        git_ok(&repo, exec.path(), &["init"]).unwrap();
+        git_ok(&repo, exec.path(), &["config", "core.autocrlf", "false"]).unwrap();
+        git_ok(&repo, exec.path(), &["add", "-f", "ok.txt", ".env"]).unwrap();
+        let tree = git_ok(&repo, exec.path(), &["write-tree"]).unwrap().trim().to_string();
+        let commit = git_ok(
+            &repo,
+            exec.path(),
+            &[
+                "-c",
+                "user.name=Pinvou",
+                "-c",
+                "user.email=pinvou@localhost",
+                "commit-tree",
+                &tree,
+                "-m",
+                "legacy snapshot",
+            ],
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        let meta = CheckpointMeta {
+            id: "c1-1".into(),
+            turn: Some(1),
+            kind: CheckpointKind::Turn,
+            label: "legacy".into(),
+            commit: commit.clone(),
+            created_at: 0,
+        };
+        git_ok(
+            &repo,
+            exec.path(),
+            &["update-ref", &format!("refs/checkpoints/{}", meta.id), &commit],
+        )
+        .unwrap();
+        save_index(
+            ledger.path(),
+            &CheckpointIndex {
+                version: 1,
+                entries: vec![meta],
+            },
+        )
+        .unwrap();
+
+        // 用户当前的 .env（与快照内容不同）：restore 不得删除/覆盖它。
+        exec.write(".env", "SECRET=current\n");
+        restore_checkpoint(ledger.path(), exec.path(), "c1-1").unwrap();
+        let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
+        assert!(!tracked.lines().any(|line| line == ".env"), "复活进 index 的 .env 必须被清除");
+        assert_eq!(
+            exec.read(".env").as_deref(),
+            Some("SECRET=current\n"),
+            "工作区现有 .env 不得被恢复流程触碰"
+        );
+        assert_eq!(exec.read("ok.txt").as_deref(), Some("v1\n"));
     }
 
     /// 按 id 作废「未成活」快照：条目与 ref 都移除；不存在幂等 false；
