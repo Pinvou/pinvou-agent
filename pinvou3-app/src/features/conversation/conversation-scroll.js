@@ -35,6 +35,23 @@ export function transitionConversationScrollState({
   };
 }
 
+// Whether the chat auto-follow effect must force the container back to the
+// bottom on this run. Following the stream is the normal case. A user-typed
+// or mid-turn steered message parks a user bubble as the LAST item while the
+// turn's output above it keeps changing the effect's follow traits; the snap
+// for that bubble must fire once per appended item (count change) only, or
+// every streaming delta would re-force the bottom and overwrite the scroll
+// listener's "user scrolled up" state for the rest of the turn.
+export function shouldForceScrollFollow({
+  following,
+  lastItemType,
+  itemCount,
+  lastSnapItemCount,
+}) {
+  if (following) return true;
+  return lastItemType === 'user' && itemCount !== lastSnapItemCount;
+}
+
 export function measureConversationScrollGeometry({
   scrollElement,
   following,

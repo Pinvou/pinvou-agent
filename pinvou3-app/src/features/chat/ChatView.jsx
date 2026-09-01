@@ -29,6 +29,7 @@ import {
 } from '../conversation/deepseek-conversation.js';
 import {
   measureConversationScrollGeometry,
+  shouldForceScrollFollow,
   startConversationBottomFollower,
   transitionConversationScrollState,
 } from '../conversation/conversation-scroll.js';
@@ -673,6 +674,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const scrollRef = useRef(null);
       const conversationContentRef = useRef(null);
       const autoScrollRef = useRef(true);
+      const lastUserSnapLengthRef = useRef(0);
       const lastScrollTopRef = useRef(0);
       const lastScrollHeightRef = useRef(0);
       const subagentPanelScrollRef = useRef(null);
@@ -1105,8 +1107,20 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         if (!el) return;
         const lastItem = chatItems[chatItems.length - 1];
         // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the back-to-bottom button when there are no messages
-        if (!lastItem) { autoScrollRef.current = true; setShowScrollBottom(false); return; }
-        if (autoScrollRef.current || lastItem.type === 'user') {
+        if (!lastItem) { autoScrollRef.current = true; lastUserSnapLengthRef.current = 0; setShowScrollBottom(false); return; }
+        // A mid-turn steered bubble parks a user item LAST while the turn's
+        // streaming output above it keeps changing the follow traits this
+        // effect depends on — the snap for it must fire once per appended
+        // item, or every delta would re-force the bottom and overwrite the
+        // scroll listener's "user scrolled up" state for the rest of the
+        // turn (r13 review M1).
+        if (shouldForceScrollFollow({
+          following: autoScrollRef.current,
+          lastItemType: lastItem.type,
+          itemCount: chatItems.length,
+          lastSnapItemCount: lastUserSnapLengthRef.current,
+        })) {
+          lastUserSnapLengthRef.current = chatItems.length;
           el.scrollTop = el.scrollHeight;
           autoScrollRef.current = true;
           setShowScrollBottom(false);
