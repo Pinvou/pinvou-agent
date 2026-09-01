@@ -2535,7 +2535,10 @@ mod turn_lifecycle_tests {
         lifecycle.on_started("turn-zap".to_string());
         assert_eq!(
             lifecycle.take_pending_cancel(epoch),
-            Some((epoch, deepseek_tui::core::engine::CancelMode::InterruptKeepInbox)),
+            Some((
+                epoch,
+                deepseek_tui::core::engine::CancelMode::InterruptKeepInbox
+            )),
             "pending_cancel replay must carry the arming-time CancelMode, not a hardcoded stop-drop"
         );
         assert!(lifecycle.finish_once(|| {}).is_some());

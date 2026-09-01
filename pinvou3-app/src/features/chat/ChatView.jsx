@@ -2197,13 +2197,15 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                     {can('interruptSend') && (
                       <button type="button" onClick={() => handleInterruptQueued(q.id)}
                         aria-label={t.interruptMsg} title={t.interruptMsgTip}
-                        className="w-6 h-6 shrink-0 rounded-full flex items-center justify-center transition-colors text-orange-500 dark:text-orange-400 hover:bg-orange-500/10 active:bg-orange-500/15">
-                        <Zap size={13} />
+                        className="w-6 h-6 shrink-0 rounded-full flex items-center justify-center transition-colors text-blue-500 dark:text-blue-400 hover:bg-blue-500/10 active:bg-blue-500/15">
+                        <Zap size={14} />
                       </button>
                     )}
                     <button type="button" onClick={() => bridge.chat.removeQueued(q.id)}
                       aria-label={t.queuedCancel} title={t.queuedCancel}
-                      className={`w-6 h-6 shrink-0 rounded-full flex items-center justify-center transition-colors ${'hover:bg-[#F0F4F9] dark:hover:bg-[#333537]'}`}>×</button>
+                      className={`w-6 h-6 shrink-0 rounded-full flex items-center justify-center transition-colors text-[#5F6368] dark:text-[#C4C7C5] ${'hover:bg-[#F0F4F9] dark:hover:bg-[#333537]'}`}>
+                      <X size={14} />
+                    </button>
                   </div>
                 ))}
               </div>

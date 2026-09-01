@@ -2918,7 +2918,8 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // edition 2024: env writes are unsafe — same pattern as lib.rs tests.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let mut bridge = fixture_bridge();
         // 未注入 predicate：一律按非代码会话处理；plain 无模式差量。

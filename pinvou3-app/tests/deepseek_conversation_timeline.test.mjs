@@ -474,6 +474,12 @@ try {
     'the trailing steered queue runs (no inherited old terminal badge)',
   );
 
+  assert.ok(
+    conversationView.includes('const assistantRowVisible = running || presentation.length > 0 || assistantFooterVisible;')
+      && conversationView.includes('{assistantRowVisible && ('),
+    'a turn with no assistant content must not render an avatar-only row (steered message sandwiched between consecutive injections)',
+  );
+
   assert.ok(conversationView.includes("closest('a[href]')")
     && conversationView.includes('event.preventDefault()')
     && conversationView.includes('onOpenExternal(external)'),
