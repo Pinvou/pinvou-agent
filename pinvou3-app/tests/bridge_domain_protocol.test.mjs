@@ -90,8 +90,10 @@ const expectedProtocolHashes = {
   // comment wording. And again for the streaming-freeze follow-ups: the
   // settlement side table (a Promise on the queued chip poisoned the
   // subscription snapshot), steeredMidTurn bubble markers, and the hydration
-  // envelope strip.
-  chat: '104f98f37f40e50a3d9c63dc85eb5ae0e946ca99c7369a98eafca88a60b102f2',
+  // envelope strip. And again for the r13 follow-ups: the transcript
+  // fallback's legacy-chip pre-check (chat-events.js) and the zap
+  // skip-resend settlement helper (chat.js).
+  chat: 'c37571c95426b11cb8e1ecefe5489eeb389b6330fdbed53eb48402ba82169f87',
   dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
   interaction: '3f275b9c4fc77ebf42a56df1c84d638ca5f1f8a3b80612efebeddf1a39f14efd',
   knowledge: '9105a42c6b69f04d0bc28b6a72e0746648110a44823891ded3261cdcbc99766b',

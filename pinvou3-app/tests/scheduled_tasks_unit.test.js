@@ -3518,6 +3518,105 @@ async function zapOnNotBackfilledSteerNotPendingSkipsResend() {
   );
 }
 
+async function zapOnStashedDroppedRestoresTextImmediately() {
+  // r13 review P2: the dropped event can land while the steer_chat invoke is
+  // still pending (the engine discards the steer at once; the event is
+  // stashed because the chip has no backfilled id). When the zap then learns
+  // withdraw=not_pending, the stash already holds the authoritative
+  // "never delivered" terminal — the text must be restored immediately, not
+  // held hostage by the 60s reconcile watchdog.
+  const timeouts = [];
+  const harness = createBridgeHarness(null, {
+    setTimeout: function (fn, ms) {
+      timeouts.push({ fn, ms });
+      return timeouts.length;
+    },
+    clearTimeout: function () {},
+  });
+  const bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-zap-stash-drop"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-zap-stash-drop" });
+  await tick();
+  let resolveSteer = null;
+  harness.handlers.steer_chat = function () {
+    return new Promise(function (resolve) { resolveSteer = resolve; });
+  };
+  harness.handlers.withdraw_steer = function () { return "not_pending"; };
+  harness.handlers.chat = function () { return "ok"; };
+
+  await bridge.chat.sendMessage("stash 里已有 dropped 的一句");
+  await tick();
+  await tick();
+  const queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
+
+  const zap = bridge.chat.interruptAndSendQueued("chat-zap-stash-drop", queuedId);
+  await tick();
+  // The engine drops the steer before the invoke resolves: the event is
+  // stashed (the chip cannot match an id it does not have yet).
+  harness.emit("chat:steer_dropped", { session_id: "chat-zap-stash-drop", steer_id: "steer-sd1" });
+  await tick();
+  resolveSteer("steer-sd1");
+  const result = await zap;
+  await tick();
+  assert.strictEqual(result, true);
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
+    0,
+    "no resend when the stash already holds the dropped terminal"
+  );
+  assert.strictEqual(
+    bridge.state.getMany(['chat']).composerDraft,
+    "stash 里已有 dropped 的一句",
+    "the stashed dropped proof restores the text immediately (no 60s watchdog wait)"
+  );
+  assert.ok(
+    bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems.some(function (item) { return item.type === "system"; }),
+    "a failure notice accompanies the restore"
+  );
+  // Firing the never-armed reconcile timers must not produce a second
+  // restore or a late bubble.
+  timeouts.filter(function (t) { return t.ms === 60000; }).forEach(function (t) { t.fn(); });
+  await tick();
+  await tick();
+  assert.strictEqual(
+    bridge.state.getMany(['chat']).composerDraft,
+    "stash 里已有 dropped 的一句",
+    "no duplicate restore after the immediate settlement"
+  );
+}
+
+async function transcriptFallbackSkipsSteerIdChips() {
+  // r13 review P2: the transcript_committed fallback settles only legacy
+  // steered chips (no engine-side id). A queue holding only steer_id chips
+  // settles authoritatively via chat:steer_committed — the fallback must not
+  // pay a full load_session snapshot on every transcript commit.
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-fallback-skip"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-fallback-skip" });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-fs1"; };
+  await bridge.chat.sendMessage("带 id 的排队一句");
+  await tick();
+  await tick();
+  assert.strictEqual(
+    bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued.length, 1,
+    "the steered chip is queued"
+  );
+  const loadsBefore = harness.calls.filter(function (call) { return call.cmd === "load_session"; }).length;
+
+  await harness.emit("chat:transcript_committed", { session_id: "chat-fallback-skip", transcript_revision: "rev-fs1" });
+  await tick();
+  await tick();
+  const loadsAfter = harness.calls.filter(function (call) { return call.cmd === "load_session"; }).length;
+  assert.strictEqual(loadsAfter, loadsBefore,
+    "steer_id chips must not trigger the transcript fallback's load_session snapshot");
+  assert.strictEqual(
+    bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued.length, 1,
+    "the chip stays queued awaiting its authoritative steer_committed"
+  );
+}
+
 async function zapOnSteerInvokeTimeoutRestoresTextWithoutSend() {
   // Timeout leg of the in-flight gate: when the steer_chat invoke times out
   // during a zap, the delivery state is unproven — the text is restored to
@@ -7993,10 +8092,12 @@ Promise.resolve()
   .then(steerCommittedBubbleIsMidTurnAndHydratesClean)
   .then(zapOnNotBackfilledSteerWaitsThenWithdrawsAndResends)
   .then(zapOnNotBackfilledSteerNotPendingSkipsResend)
+  .then(zapOnStashedDroppedRestoresTextImmediately)
   .then(zapOnSteerInvokeTimeoutRestoresTextWithoutSend)
   .then(secondZapWhileInterruptInFlightIsRejectedWithNotice)
   .then(steerFailureNoticeSuppressedWhenChipTakenByX)
   .then(transcriptFallbackTailScanTerminatesWithoutEnoughUserTail)
+  .then(transcriptFallbackSkipsSteerIdChips)
   .then(steerDroppedByEngineRestoresDraftText)
   .then(steerSettleWatchdogNotPendingRemovesChipWithoutResend)
   .then(steerSettleWatchdogEngineErrRestoresWithoutResend)

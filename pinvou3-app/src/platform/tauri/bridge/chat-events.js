@@ -403,6 +403,17 @@
       ? state.queued
       : (sessionStates[sid] && sessionStates[sid].queued);
     if (!fallbackQueued || fallbackQueued.length === 0) return;
+    // The fallback settles only legacy steered chips (steered, no engine-side
+    // id). steer_id chips settle authoritatively via chat:steer_committed /
+    // chat:steer_dropped — without this pre-check every transcript commit
+    // during a busy queue would pay a full load_session snapshot that cannot
+    // settle anything.
+    let hasLegacySteerChip = false;
+    for (let i = 0; i < fallbackQueued.length; i++) {
+      const item = fallbackQueued[i];
+      if (item && item.steered && !item.steerId) { hasLegacySteerChip = true; break; }
+    }
+    if (!hasLegacySteerChip) return;
     invoke("load_session", { id: sid, setActive: false }).then(function (saved) {
       if (!saved || !Array.isArray(saved.messages)) return;
       // Lazy-initialized baseline = snapshot length (no earlier trustworthy

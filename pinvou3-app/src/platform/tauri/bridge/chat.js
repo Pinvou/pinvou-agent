@@ -1698,6 +1698,35 @@
   // interruptAndSend call, which previously ran unlocked. interruptAndSend
   // keeps its own flag section (it is also a public API for remote hosts,
   // which are expected to serialize their own calls).
+
+  // Settle the fate of a zapped chip whose withdraw outcome forbids resend:
+  // route by the stashed terminal event first (a committed renders the
+  // bubble; a dropped is the authoritative non-delivery terminal → immediate
+  // restore), otherwise defer to the outcome reconcile watchdog.
+  function settleZapSkipResend(sid, item) {
+    const stashedSteerKind = takeSteerEvent(sid, item.steerId);
+    if (stashedSteerKind === "committed") {
+      settleSteerCommitted(sid, item.steerId);
+      return;
+    }
+    if (stashedSteerKind === "dropped") {
+      // A stashed chat:steer_dropped IS the authoritative "never delivered"
+      // terminal for this exact steer_id — the very proof the reconcile
+      // watchdog would wait a full window for. Settle now with the same
+      // recovery semantics as the watchdog expiry and settleSteerDropped's
+      // zap-reconciling branch (failure notice + session-scoped restore);
+      // the chip itself was already removed by the zap.
+      const withdrawnText = takeWithdrawn(sid, item.steerId);
+      runSyncOnSession(sid, function () {
+        addSystemItem("⚠️ " + bt("steerFailed"));
+      });
+      restoreSteerText(sid, withdrawnText === undefined ? item.text : withdrawnText);
+      notify();
+      return;
+    }
+    armOutcomeReconcileWatchdog(sid, item);
+  }
+
   async function interruptAndSendQueued(sid, queuedId) {
     if (interruptInFlight[sid]) {
       runSyncOnSession(sid, function () {
@@ -1787,11 +1816,7 @@
       // P1-1): wait for the reconciling event; if it is lost (engine
       // reclaim) the watchdog restores the text to the composer with a notice
       // instead of treating an uncertain message as delivered.
-      if (takeSteerEvent(sid, item.steerId) === "committed") {
-        settleSteerCommitted(sid, item.steerId);
-      } else {
-        armOutcomeReconcileWatchdog(sid, item);
-      }
+      settleZapSkipResend(sid, item);
       return true;
     }
     try {
