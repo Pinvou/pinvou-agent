@@ -55,14 +55,21 @@ export function RewindChip({ entry, disabled, copy, onOpen }) {
     ? copy.rewindChipConversationOnly(entry.keepTurns)
     : copy.rewindChip(entry.keepTurns);
   return (
-    <div className="my-1 flex justify-center">
+    // Idle state is a faint thin divider line; the whole row is the hover zone,
+    // and hovering anywhere near the line fades the line out and the rewind
+    // button in. focus-visible keeps the button reachable from the keyboard.
+    <div className="group relative my-1 flex h-7 items-center justify-center">
+      <div
+        aria-hidden="true"
+        className="h-px w-24 bg-black/[0.08] transition-opacity group-hover:opacity-0 dark:bg-white/[0.12]"
+      />
       <button
         type="button"
         data-testid="rewind-chip"
         disabled={disabled}
         onClick={() => onOpen(entry)}
         title={entry.conversationOnly ? copy.rewindConversationOnlyNote : copy.rewindPreRestoreNote}
-        className="inline-flex max-w-full items-center gap-1.5 rounded-xl border border-black/[0.06] bg-black/[0.02] px-2.5 py-1 text-[11px] text-gray-500 transition-colors hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:bg-white/[0.04] dark:text-gray-400 dark:hover:text-gray-200"
+        className="absolute inline-flex max-w-full items-center gap-1.5 rounded-xl border border-black/[0.06] bg-white px-2.5 py-1 text-[11px] text-gray-500 opacity-0 shadow-sm transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-gray-700 disabled:cursor-not-allowed dark:border-white/10 dark:bg-[#2A2B2E] dark:text-gray-400 dark:hover:text-gray-200"
       >
         <RotateCcw size={11} className="shrink-0" />
         <span className="truncate">{label}</span>
