@@ -777,6 +777,7 @@
   });
   const basename = artifactTrackerFeature.basename;
   const isAbsPath = artifactTrackerFeature.isAbsPath;
+  const normalizedPath = artifactTrackerFeature.normalizedPath;
   const noteArtifactChange = artifactTrackerFeature.noteArtifactChange;
   const filterSessionArtifacts = artifactTrackerFeature.filterSessionArtifacts;
   const isDeliverable = artifactTrackerFeature.isDeliverable;
@@ -784,6 +785,7 @@
   const markTurnDirtyArtifact = artifactTrackerFeature.markTurnDirtyArtifact;
   const untrackArtifact = artifactTrackerFeature.untrackArtifact;
   const findPresentedArtifact = artifactTrackerFeature.findPresentedArtifact;
+  const updatePresentedArtifact = artifactTrackerFeature.updatePresentedArtifact;
   const reconcileArtifacts = artifactTrackerFeature.reconcileArtifacts;
   const extractArtifactPaths = artifactTrackerFeature.extractArtifactPaths;
   const extractArtifactPath = artifactTrackerFeature.extractArtifactPath;
@@ -835,7 +837,6 @@
   const toolCallAlreadyStarted = chatFeature.toolCallAlreadyStarted;
   const toolCallAlreadyFinished = chatFeature.toolCallAlreadyFinished;
   const hasChatItemForTool = chatFeature.hasChatItemForTool;
-  const isDuplicateArtifactCard = chatFeature.isDuplicateArtifactCard;
   const addSystemItem = chatFeature.addSystemItem;
   const addAuthoritySyncNotice = chatFeature.addAuthoritySyncNotice;
   const addOrMergePruneCompaction = chatFeature.addOrMergePruneCompaction;
@@ -1832,16 +1833,15 @@
             const pares = resultById[b.id];
             if (!(pares && pares.is_error)) {
               const rpp = presentArtifactAbsPath(pares && pares.content, b.input && b.input.path);
-              if (!isDuplicateArtifactCard(rpp)) {
-                addChatItem({
-                  type: "artifact_card",
-                  path: rpp,
-                  title: (b.input && b.input.title) || "",
-                  description: (b.input && b.input.description) || "",
-                  time: "",
-                  sessionId: state.activeSessionId,
-                });
-              }
+              const restoredCard = {
+                type: "artifact_card",
+                path: rpp,
+                title: (b.input && b.input.title) || "",
+                description: (b.input && b.input.description) || "",
+                time: "",
+                sessionId: state.activeSessionId,
+              };
+              if (!updatePresentedArtifact(restoredCard)) addChatItem(restoredCard);
               continue;
             }
           }
@@ -1861,10 +1861,11 @@
             if (!(gres2 && gres2.is_error) && gap && isDeliverable(gap) && lastDirtyArtifactId[gap] === b.id && !presentedArtifacts[gap] && !presentedArtifactNames[basename(gap)]) {
               const gprev = findPresentedArtifact(gap);
               if (gprev) {
-                addChatItem({
+                const gcard = {
                   type: "artifact_card", path: gprev.path, title: gprev.title,
                   description: gprev.description, time: "", sessionId: state.activeSessionId,
-                });
+                };
+                if (!updatePresentedArtifact(gcard)) addChatItem(gcard);
               } else if (writtenArtifacts[gap]) {
                 addChatItem({ type: "artifact_card", path: gap, title: basename(gap), description: "", time: "", sessionId: state.activeSessionId });
               }
@@ -1880,10 +1881,11 @@
               if ((wres && wres.is_error) || lastDirtyArtifactId[wap] !== b.id) return;
               const wprev = findPresentedArtifact(wap);
               if (wprev) {
-                addChatItem({
+                const wcard = {
                   type: "artifact_card", path: wprev.path, title: wprev.title,
                   description: wprev.description, time: "", sessionId: state.activeSessionId,
-                });
+                };
+                if (!updatePresentedArtifact(wcard)) addChatItem(wcard);
               } else if (writtenArtifacts[wap] && !presentedArtifacts[wap] && !presentedArtifactNames[basename(wap)]) {
                 // AI 写了产物但全程没 present_artifact → 兜底补首卡(与实时 chat:done 对齐)
                 addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "", sessionId: state.activeSessionId });
@@ -2003,7 +2005,7 @@
     scheduleShellNotify,
     markBackgroundToolItem,
     patchLastItem,
-    isDuplicateArtifactCard,
+    updatePresentedArtifact,
     updateToolItem,
     basename,
     hasUnresolvedItem,
@@ -2011,7 +2013,7 @@
     safeConsoleInfo,
     isScheduledRunSession,
     markScheduledInitialTurnTerminal,
-    isAbsPath,
+    isAbsPath, normalizedPath,
     addOrMergePruneCompaction,
     toolResultDisplayContent,
     get currentStreamText() { return currentStreamText; },

@@ -66,8 +66,9 @@ function evalIsDeliverable(snippet, label) {
   vm.createContext(ctx);
   vm.runInContext(code, ctx, { filename: file });
   const factory = ctx.window.__PINVOU_TAURI_BRIDGE_FEATURES__["artifact-tracker"];
+  const state = { artifacts: [], chatItems: [], turnDirtyArtifacts: [] };
   const feature = factory({
-    state: { artifacts: [], chatItems: [], turnDirtyArtifacts: [] },
+    state,
     invoke: async () => { throw new Error("invoke not expected"); },
     notify: () => {},
     sessionStates: {},
@@ -87,6 +88,108 @@ function evalIsDeliverable(snippet, label) {
     ["report.md", "appendix.md", "summary.md"],
     "File.patch 必须追踪全部去重后的产物路径",
   );
+
+  state.chatItems = [
+    { id: 1, type: "artifact_card", path: "C:\\workspace\\one.md", title: "One" },
+    { id: 2, type: "artifact_card", path: "C:\\workspace\\two.md", title: "Two" },
+    { id: 3, type: "artifact_card", path: "C:\\workspace\\three.md", title: "Three" },
+  ];
+  const updatedTauriCard = feature.updatePresentedArtifact({
+    type: "artifact_card",
+    path: "two.md",
+    title: "Two updated",
+    description: "Second revision",
+    time: "12:00",
+    sessionId: "session-1",
+  });
+  assert.strictEqual(state.chatItems.length, 3,
+    "updating one of three artifact cards must not append a fourth card");
+  assert.strictEqual(updatedTauriCard, state.chatItems[1],
+    "an artifact update must reuse the existing card object and position");
+  assert.strictEqual(updatedTauriCard.id, 2,
+    "an artifact update must preserve the stable card id");
+  assert.strictEqual(updatedTauriCard.path, "C:\\workspace\\two.md",
+    "a relative artifact update must preserve the existing absolute openable path");
+  assert.strictEqual(updatedTauriCard.title, "Two updated",
+    "an artifact update should refresh metadata");
+  state.chatItems[2].path = "three.md";
+  feature.updatePresentedArtifact({
+    type: "artifact_card", path: "C:\\workspace\\three.md", title: "Three updated",
+  });
+  assert.strictEqual(state.chatItems[2].path, "C:\\workspace\\three.md",
+    "an absolute artifact update must upgrade an existing relative path");
+  const missingArtifactLength = state.chatItems.length;
+  assert.strictEqual(feature.updatePresentedArtifact({
+    type: "artifact_card", path: "four.md", title: "Four",
+  }), null, "a new artifact must still be reported to the caller as missing");
+  assert.strictEqual(state.chatItems.length, missingArtifactLength,
+    "reporting a missing artifact must not append a card inside the update helper");
+
+  // A user re-request after the previous card must receive a fresh visible card
+  // from the caller instead of an invisible in-place refresh.
+  state.chatItems = [
+    { id: 1, type: "artifact_card", path: "C:\\workspace\\one.md", title: "One" },
+    { id: 2, type: "user", text: "再推一次" },
+  ];
+  const userRequestLength = state.chatItems.length;
+  assert.strictEqual(feature.updatePresentedArtifact({
+    type: "artifact_card", path: "C:\\workspace\\one.md", title: "One v2",
+  }), null, "a user message newer than the card must be answered by a fresh appended card");
+  assert.strictEqual(state.chatItems.length, userRequestLength,
+    "the update helper must leave appending a user-requested card to its caller");
+  assert.strictEqual(state.chatItems[0].title, "One",
+    "a declined in-place update must leave the existing card untouched");
+
+  // A file mutation newer than the user message keeps the in-place update.
+  state.chatItems = [
+    { id: 1, type: "artifact_card", path: "C:\\workspace\\one.md", title: "One" },
+    { id: 2, type: "user", text: "改一下" },
+    { id: 3, type: "tool", name: "File", args: { action: "edit", path: "C:\\workspace\\one.md" } },
+  ];
+  assert.strictEqual(feature.updatePresentedArtifact({
+    type: "artifact_card", path: "C:\\workspace\\one.md", title: "One v2",
+  }), state.chatItems[0],
+    "a file mutation newer than the user message must keep the in-place update");
+
+  // A user message newer than the last mutation still requests a fresh card.
+  state.chatItems = [
+    { id: 1, type: "artifact_card", path: "C:\\workspace\\one.md", title: "One" },
+    { id: 2, type: "tool", name: "File", args: { action: "edit", path: "C:\\workspace\\one.md" } },
+    { id: 3, type: "user", text: "再推一次" },
+  ];
+  const newerUserLength = state.chatItems.length;
+  assert.strictEqual(feature.updatePresentedArtifact({
+    type: "artifact_card", path: "C:\\workspace\\one.md", title: "One v3",
+  }), null, "a user message newer than the last mutation must still force a fresh card");
+  assert.strictEqual(state.chatItems.length, newerUserLength,
+    "the update helper must not append after declining a post-mutation user request");
+
+  // Same-named files in different absolute directories remain distinct.
+  state.chatItems = [
+    { id: 1, type: "artifact_card", path: "C:\\workspace\\v1\\readme.md", title: "V1" },
+  ];
+  const distinctAbsoluteLength = state.chatItems.length;
+  assert.strictEqual(feature.updatePresentedArtifact({
+    type: "artifact_card", path: "C:\\workspace\\v2\\readme.md", title: "V2",
+  }), null, "an equal basename in a different absolute directory is a distinct artifact");
+  assert.strictEqual(state.chatItems.length, distinctAbsoluteLength,
+    "the update helper must not append a different absolute artifact itself");
+  assert.strictEqual(state.chatItems[0].title, "V1",
+    "the existing card must not be rewritten by a different same-named file");
+
+  state.chatItems = [
+    { id: 1, type: "artifact_card", path: "C:\\workspace\\v1\\readme.md", title: "V1" },
+    { id: 2, type: "artifact_card", path: "C:\\workspace\\v2\\readme.md", title: "V2" },
+  ];
+  const updatedOlderTauriCard = feature.updatePresentedArtifact({
+    type: "artifact_card", path: "C:\\workspace\\v1\\readme.md", title: "V1 updated",
+  });
+  assert.strictEqual(updatedOlderTauriCard, state.chatItems[0],
+    "an exact path must update an older card hidden by a newer same-named card");
+  assert.strictEqual(state.chatItems.length, 2,
+    "updating the older exact artifact must not append a duplicate card");
+  assert.strictEqual(state.chatItems[1].title, "V2",
+    "updating the older exact artifact must not rewrite the newer card metadata");
 }
 
 // 2) web 侧 bridge.js:isDeliverable 是闭包内部函数,抽取 DELIVERABLE_EXTS..isDeliverable
@@ -111,6 +214,97 @@ function evalIsDeliverable(snippet, label) {
 // 4) 回放(rerender)兜底补首卡门控:两侧 bridge 的预扫只在 isDeliverable 通过时
 //    记 writtenArtifacts → tmp/ 文件切 session 重放后不再冒出成品卡
 {
+  const webSrc = fs.readFileSync(path.join(appRoot, "src", "platform", "web", "bridge.js"), "utf8");
+  const cardState = {
+    chatItems: [
+      { id: 1, type: "artifact_card", path: "/workspace/one.md", title: "One" },
+      { id: 2, type: "artifact_card", path: "/workspace/two.md", title: "Two" },
+      { id: 3, type: "artifact_card", path: "/workspace/three.md", title: "Three" },
+    ],
+  };
+  const cardCtx = { state: cardState };
+  vm.createContext(cardCtx);
+  vm.runInContext([
+    extractFunction(webSrc, "basename"),
+    extractFunction(webSrc, "isAbsPath"),
+    extractFunction(webSrc, "normalizedPath"),
+    extractFunction(webSrc, "pushArtifactPath"),
+    extractFunction(webSrc, "extractArtifactPaths"),
+    extractFunction(webSrc, "fileMutationAction"),
+    extractFunction(webSrc, "findPresentedArtifact"),
+    extractFunction(webSrc, "updatePresentedArtifact"),
+    "this.updatePresentedArtifact = updatePresentedArtifact;",
+  ].join("\n"), cardCtx);
+  const updatedWebCard = cardCtx.updatePresentedArtifact({
+    type: "artifact_card", path: "two.md", title: "Two updated",
+  });
+  assert.strictEqual(cardState.chatItems.length, 3,
+    "web bridge must update one of three artifact cards without appending a fourth");
+  assert.strictEqual(updatedWebCard, cardState.chatItems[1],
+    "web bridge must preserve the artifact card position");
+  assert.strictEqual(updatedWebCard.id, 2,
+    "web bridge must preserve the artifact card id");
+  assert.strictEqual(updatedWebCard.path, "/workspace/two.md",
+    "web bridge must preserve an existing absolute path on a relative update");
+  cardState.chatItems[2].path = "three.md";
+  cardCtx.updatePresentedArtifact({
+    type: "artifact_card", path: "/workspace/three.md", title: "Three updated",
+  });
+  assert.strictEqual(cardState.chatItems[2].path, "/workspace/three.md",
+    "web bridge must allow a relative artifact path to upgrade to an absolute path");
+  const missingWebArtifactLength = cardState.chatItems.length;
+  assert.strictEqual(cardCtx.updatePresentedArtifact({
+    type: "artifact_card", path: "four.md", title: "Four",
+  }), null, "web bridge must report a new artifact to the caller as missing");
+  assert.strictEqual(cardState.chatItems.length, missingWebArtifactLength,
+    "web update helper must not append a missing artifact itself");
+
+  // Web follows the same re-request, mutation, and distinct-path rules.
+  cardState.chatItems = [
+    { id: 1, type: "artifact_card", path: "/workspace/one.md", title: "One" },
+    { id: 2, type: "user", text: "show it again" },
+  ];
+  const webUserRequestLength = cardState.chatItems.length;
+  assert.strictEqual(cardCtx.updatePresentedArtifact({
+    type: "artifact_card", path: "/workspace/one.md", title: "One v2",
+  }), null, "web bridge must also answer a user re-request with a fresh appended card");
+  assert.strictEqual(cardState.chatItems.length, webUserRequestLength,
+    "web update helper must leave user-requested appending to the event caller");
+  cardState.chatItems = [
+    { id: 1, type: "artifact_card", path: "/workspace/one.md", title: "One" },
+    { id: 2, type: "user", text: "改一下" },
+    { id: 3, type: "tool", name: "File", args: { action: "edit", path: "/workspace/one.md" } },
+  ];
+  assert.strictEqual(cardCtx.updatePresentedArtifact({
+    type: "artifact_card", path: "/workspace/one.md", title: "One v2",
+  }), cardState.chatItems[0],
+    "web bridge must keep the in-place update when a mutation is newer than the user message");
+  cardState.chatItems = [
+    { id: 1, type: "artifact_card", path: "/workspace/v1/readme.md", title: "V1" },
+  ];
+  const distinctWebAbsoluteLength = cardState.chatItems.length;
+  assert.strictEqual(cardCtx.updatePresentedArtifact({
+    type: "artifact_card", path: "/workspace/v2/readme.md", title: "V2",
+  }), null, "web bridge must treat a same-named file in another directory as a distinct artifact");
+  assert.strictEqual(cardState.chatItems.length, distinctWebAbsoluteLength,
+    "web update helper must not append a different absolute artifact itself");
+  assert.strictEqual(cardState.chatItems[0].title, "V1",
+    "web bridge must not rewrite the existing card with a different same-named file");
+
+  cardState.chatItems = [
+    { id: 1, type: "artifact_card", path: "/workspace/v1/readme.md", title: "V1" },
+    { id: 2, type: "artifact_card", path: "/workspace/v2/readme.md", title: "V2" },
+  ];
+  const updatedOlderWebCard = cardCtx.updatePresentedArtifact({
+    type: "artifact_card", path: "/workspace/v1/readme.md", title: "V1 updated",
+  });
+  assert.strictEqual(updatedOlderWebCard, cardState.chatItems[0],
+    "web bridge must prefer the exact older path over a newer basename match");
+  assert.strictEqual(cardState.chatItems.length, 2,
+    "web exact-path updates must not append a duplicate card");
+  assert.strictEqual(cardState.chatItems[1].title, "V2",
+    "web exact-path updates must leave the newer same-named card untouched");
+
   const GATE = 'if (dbMutation !== "edit" && isDeliverable(dap)) writtenArtifacts[dap] = true;';
   for (const rel of [
     path.join("src", "platform", "web", "bridge.js"),

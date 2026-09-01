@@ -29,9 +29,7 @@
     const adoptManagedAttachments = context.adoptManagedAttachments || function () { return Promise.resolve(); };
     const discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
     const isScheduledRunSession = context.isScheduledRunSession;
-    const basename = context.basename;
     const userMessageDisplayText = context.userMessageDisplayText;
-    const extractArtifactPaths = context.extractArtifactPaths;
     const parseScheduledTaskDraftFromText = context.parseScheduledTaskDraftFromText;
     const autoCreateScheduledTaskDraft = context.autoCreateScheduledTaskDraft;
 
@@ -84,25 +82,6 @@
     return !!toolCallId && state.chatItems.some(function (item) {
       return item && item.type === type && item.toolCallId === toolCallId;
     });
-  }
-  // 成品卡是否"重复出卡":从 chatItems 末尾往前扫——先遇到该文件的修改工具(write/append/edit)
-  // → 不算重复(文件改过了,该出新版卡/续卡,即"二次修改弹新卡");先遇到同名成品卡 → 算重复
-  // (同一产物没改又 present 一次,模型常见啰嗦)。判据=「上一张同名卡之后有没有改过这个文件」。
-  // 例外:扫到**用户发言**就放行——用户在上一张卡之后又开了口(典型「再推一次」「没看到」),
-  // 这次 present 是新请求的响应,不是模型自发啰嗦;再去重 = 用户主动要却看不到任何反馈(实测 bug)。
-  function isDuplicateArtifactCard(pathv) {
-    const bn = basename(pathv);
-    if (!bn) return false;
-    for (let i = state.chatItems.length - 1; i >= 0; i--) {
-      const it = state.chatItems[i];
-      if (it.type === "tool" && context.fileMutationAction(it.name, it.args)) {
-        const changedPaths = extractArtifactPaths(it.args);
-        if (changedPaths.some(function (ap) { return basename(ap) === bn; })) return false;
-      }
-      if (it.type === "user") return false;
-      if (it.type === "artifact_card" && basename(it.path) === bn) return true;
-    }
-    return false;
   }
   function addSystemItem(text, meta) {
     const item = { type: "system", text, time: timeStr() };
@@ -771,7 +750,6 @@
       toolCallAlreadyStarted,
       toolCallAlreadyFinished,
       hasChatItemForTool,
-      isDuplicateArtifactCard,
       addSystemItem,
       addAuthoritySyncNotice,
       compactPruneRollupText,

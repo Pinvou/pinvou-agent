@@ -53,6 +53,7 @@
     const presentArtifactAbsPath = context.presentArtifactAbsPath;
     const extractArtifactPaths = context.extractArtifactPaths;
     const fileMutationAction = context.fileMutationAction;
+    const normalizedPath = context.normalizedPath;
 
     function refreshEffectiveModelConfigAfterAuthError(error) {
       if (!error || !/\b401\b|unauthorized|authentication/i.test(String(error))) return;
@@ -229,7 +230,7 @@
     const scheduleShellNotify = context.scheduleShellNotify;
     const markBackgroundToolItem = context.markBackgroundToolItem;
     const patchLastItem = context.patchLastItem;
-    const isDuplicateArtifactCard = context.isDuplicateArtifactCard;
+    const updatePresentedArtifact = context.updatePresentedArtifact;
     const updateToolItem = context.updateToolItem;
     const basename = context.basename;
     const hasUnresolvedItem = context.hasUnresolvedItem;
@@ -594,17 +595,15 @@
         // 用 server 解析好的绝对路径(present_artifact_server.py 的 abs_path),而非模型可能
         // 给的相对 args.path → 卡片 path 绝对,点 Open 不再报「path must be absolute」。
         const presentedPath = presentArtifactAbsPath(p.output, meta.args && meta.args.path);
-        // 同一产物没改又 present 一次 → 跳过出卡(防模型啰嗦重复);改完再 present/续卡会保留。
-        if (!isDuplicateArtifactCard(presentedPath)) {
-          addChatItem({
-            type: "artifact_card",
-            path: presentedPath,
-            title: (meta.args && meta.args.title) || "",
-            description: (meta.args && meta.args.description) || "",
-            time: timeStr(),
-            sessionId: p.session_id || state.activeSessionId,
-          });
-        }
+        const presentedCard = {
+          type: "artifact_card",
+          path: presentedPath,
+          title: (meta.args && meta.args.title) || "",
+          description: (meta.args && meta.args.description) || "",
+          time: timeStr(),
+          sessionId: p.session_id || state.activeSessionId,
+        };
+        if (!updatePresentedArtifact(presentedCard)) addChatItem(presentedCard);
         if (presentedPath) state.turnPresentedArtifacts.push(presentedPath); // 本 turn 已出成品卡,chat:done 不再兜底补
         // 同步进产物面板:present_artifact 出卡的产物也算「产出物」。修「自己生成文件、
         // 不走 write_file 的工具(如 make_pptx)→ 卡有、面板无」。trackArtifact 已去重。
@@ -770,9 +769,9 @@
       const interrupted = ["interrupted", "cancelled", "canceled"].includes(terminalStatus);
       if (interrupted) preserveInterruptedAssistantPresentation();
       else flushAssistantMessageToHistory();
-      // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
-      // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。
-      // 本 turn 刚 present_artifact 出过卡的跳过,不重复。edit/append 改多次也只补一张。
+      // Refresh artifacts written in this turn in place when already presented.
+      // Add only the first card for artifacts the model did not present, and
+      // skip artifacts already presented in this turn or changed repeatedly.
       (state.turnDirtyArtifacts || []).forEach(function (ap) {
         // 按 basename 比对:present 存 server 绝对路径、turnDirty 存 write 相对路径,
         // 直接 indexOf 比不中 → present 过的文件会被兜底再补一张(重复)。
@@ -781,10 +780,20 @@
         const prev = findPresentedArtifact(ap);
         // 补卡 path 优先用 disk watcher 落进产物列表的同名**绝对**路径(open 可靠、跨 session 稳);
         // 没有再退回 write_file 的相对 ap(由 sessionId 兜底解析)。
-        const tracked = state.artifacts.find(function (a) { return basename(a.path) === _apbn && isAbsPath(a.path); });
+        const tracked = state.artifacts.find(function (a) {
+          return normalizedPath(a.path) === normalizedPath(ap) && isAbsPath(a.path);
+        }) || state.artifacts.find(function (a) {
+          return basename(a.path) === _apbn && isAbsPath(a.path);
+        });
         const cardPath = (tracked && tracked.path) || ap;
-        if (prev) addChatItem({ type: "artifact_card", path: prev.path, title: prev.title, description: prev.description, time: timeStr(), sessionId: sid });
-        else addChatItem({ type: "artifact_card", path: cardPath, title: basename(ap), description: "", time: timeStr(), sessionId: sid });
+        if (prev) {
+          // A user re-request after the previous card returns null and still
+          // receives a fresh visible card.
+          const refreshed = updatePresentedArtifact({ type: "artifact_card", path: cardPath, title: prev.title, description: prev.description, time: timeStr(), sessionId: sid });
+          if (!refreshed) addChatItem({ type: "artifact_card", path: cardPath, title: prev.title, description: prev.description, time: timeStr(), sessionId: sid });
+        } else {
+          addChatItem({ type: "artifact_card", path: cardPath, title: basename(ap), description: "", time: timeStr(), sessionId: sid });
+        }
       });
       state.turnDirtyArtifacts = [];
       state.turnPresentedArtifacts = [];

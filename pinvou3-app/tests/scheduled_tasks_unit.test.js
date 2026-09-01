@@ -4959,8 +4959,8 @@ async function scheduledRunNowPollStopsOnTerminalBehavior() {
   );
 }
 
-async function presentationReconciliationUsesStableEventIdentity() {
-  const harness = createBridgeHarness();
+async function presentationReconciliationUsesStableEventIdentity(bridgeKind) {
+  const harness = createBridgeHarness(null, { bridgeKind });
   const bridge = harness.bridge;
   const sessionId = "chat-presentation-identity";
   let durable = {
@@ -5051,6 +5051,226 @@ async function presentationReconciliationUsesStableEventIdentity() {
     1,
     "the artifact panel must use the same semantic identity as chat cards"
   );
+
+  function presentArtifact(id, artifactPath, title, resolvedPath) {
+    const result = { ok: true };
+    const outputPath = resolvedPath === undefined ? artifactPath : resolvedPath;
+    if (outputPath) result.abs_path = outputPath;
+    const payload = {
+      session_id: sessionId,
+      id,
+      name: "present_artifact",
+      args: { path: artifactPath, title, description: title + " description" },
+    };
+    harness.emit("chat:tool_start", payload);
+    harness.emit("chat:tool_end", {
+      session_id: sessionId,
+      id,
+      success: true,
+      output: JSON.stringify(result),
+    });
+  }
+
+  const reportPath = "C:\\Users\\tester\\.pinvou3\\sessions\\" + sessionId +
+    "\\workspace\\report.md";
+  const summaryPath = "C:\\Users\\tester\\.pinvou3\\sessions\\" + sessionId +
+    "\\workspace\\summary.pptx";
+  presentArtifact("tool-present-report", reportPath, "Report");
+  presentArtifact("tool-present-summary", summaryPath, "Summary");
+
+  const threeCardState = bridge.state.get("chat");
+  const threeCards = threeCardState.chatItems.filter(function (item) {
+    return item.type === "artifact_card";
+  });
+  assert.strictEqual(threeCards.length, 3, "the setup must contain exactly three artifact cards");
+  const originalSnakeCard = threeCards.find(function (item) {
+    return /snake-game\.html$/.test(item.path || "");
+  });
+  const originalSnakeIndex = threeCardState.chatItems.findIndex(function (item) {
+    return item.id === originalSnakeCard.id;
+  });
+
+  const editPayload = {
+    session_id: sessionId,
+    id: "tool-edit-snake",
+    name: "File",
+    args: { action: "edit", path: "snake-game.html", old_string: "v1", new_string: "v2" },
+  };
+  harness.emit("chat:tool_start", editPayload);
+  harness.emit("chat:tool_end", {
+    session_id: sessionId,
+    id: editPayload.id,
+    success: true,
+    output: "Updated snake-game.html",
+  });
+  presentArtifact("tool-present-snake-update", "snake-game.html", "Snake game v2", null);
+
+  const updatedCardState = bridge.state.get("chat");
+  const updatedCards = updatedCardState.chatItems.filter(function (item) {
+    return item.type === "artifact_card";
+  });
+  const updatedSnakeCards = updatedCards.filter(function (item) {
+    return /snake-game\.html$/.test(item.path || "");
+  });
+  assert.strictEqual(updatedCards.length, 3,
+    "updating one of three artifact cards must not create a fourth card");
+  assert.strictEqual(updatedSnakeCards.length, 1,
+    "the updated artifact must still have exactly one card");
+  assert.strictEqual(updatedSnakeCards[0].id, originalSnakeCard.id,
+    "the updated artifact must preserve its card id");
+  assert.strictEqual(updatedCardState.chatItems.findIndex(function (item) {
+    return item.id === originalSnakeCard.id;
+  }), originalSnakeIndex, "the updated artifact must preserve its card position");
+  assert.strictEqual(updatedSnakeCards[0].title, "Snake game v2",
+    "the existing card must receive the latest presentation metadata");
+  assert.strictEqual(updatedSnakeCards[0].path, absoluteArtifactPath,
+    "a relative presentation update must preserve the existing absolute openable path");
+
+  // A same-named artifact from another absolute directory gets its own card.
+  const exportSummaryPath = "C:\\Users\\tester\\exports\\summary.pptx";
+  presentArtifact("tool-present-summary-export", exportSummaryPath, "Summary export");
+  const exportCardState = bridge.state.get("chat");
+  const exportCards = exportCardState.chatItems.filter(function (item) {
+    return item.type === "artifact_card";
+  });
+  assert.strictEqual(exportCards.length, 4,
+    "a same-named artifact in another directory must append its own card");
+  const summaryCards = exportCards.filter(function (item) {
+    return /summary\.pptx$/.test(item.path || "");
+  });
+  assert.strictEqual(summaryCards.length, 2,
+    "both same-named files must keep their own cards");
+  assert.strictEqual(exportCards[exportCards.length - 1].path, exportSummaryPath,
+    "the appended card must point at the newly presented file");
+  const originalSummaryCard = summaryCards.find(function (item) { return item.path !== exportSummaryPath; });
+  assert.strictEqual(originalSummaryCard.path, summaryPath,
+    "the original card must keep its own openable path");
+
+  presentArtifact("tool-present-summary-original-update", summaryPath, "Summary revised");
+  const exactUpdateState = bridge.state.get("chat");
+  const exactUpdateCards = exactUpdateState.chatItems.filter(function (item) {
+    return item.type === "artifact_card";
+  });
+  assert.strictEqual(exactUpdateCards.length, 4,
+    bridgeKind + " must update an older exact-path card without appending a duplicate");
+  assert.strictEqual(exactUpdateCards.find(function (item) {
+    return item.path === summaryPath;
+  }).title, "Summary revised",
+    bridgeKind + " must update the older card selected by its exact path");
+  assert.strictEqual(exactUpdateCards.find(function (item) {
+    return item.path === exportSummaryPath;
+  }).title, "Summary export",
+    bridgeKind + " must leave the newer same-named card unchanged");
+
+  await bridge.chat.sendMessage("Update the original summary");
+  const editOriginalSummary = {
+    session_id: sessionId,
+    id: "tool-edit-summary-original",
+    name: "File",
+    args: { action: "edit", path: summaryPath, old_string: "v1", new_string: "v2" },
+  };
+  harness.emit("chat:tool_start", editOriginalSummary);
+  harness.emit("chat:tool_end", {
+    session_id: sessionId,
+    id: editOriginalSummary.id,
+    success: true,
+    output: "Updated original summary",
+  });
+  await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+  await tick();
+  await tick();
+  const fallbackUpdateCards = bridge.state.get("chat").chatItems.filter(function (item) {
+    return item.type === "artifact_card";
+  });
+  assert.strictEqual(fallbackUpdateCards.length, 4,
+    bridgeKind + " chat:done fallback must update the older exact card without appending");
+  assert.strictEqual(fallbackUpdateCards.find(function (item) {
+    return item.path === summaryPath;
+  }).title, "Summary revised",
+    bridgeKind + " chat:done fallback must retain the older card metadata");
+  assert.strictEqual(fallbackUpdateCards.find(function (item) {
+    return item.path === exportSummaryPath;
+  }).title, "Summary export",
+    bridgeKind + " chat:done fallback must not borrow metadata from the newer card");
+
+  // Re-presenting after a user request appends a visible feedback card.
+  await harness.emit("chat:user_message", { session_id: sessionId, content: "再把 report 给我看一次" });
+  presentArtifact("tool-present-report-again", reportPath, "Report again");
+  const feedbackCardState = bridge.state.get("chat");
+  const feedbackCards = feedbackCardState.chatItems.filter(function (item) {
+    return item.type === "artifact_card";
+  });
+  assert.strictEqual(feedbackCards.length, 5,
+    "a user-requested re-presentation of an unchanged artifact must append a visible new card");
+  const reportCards = feedbackCards.filter(function (item) {
+    return /report\.md$/.test(item.path || "");
+  });
+  assert.strictEqual(reportCards.length, 2,
+    "the original report card and the user-requested one must coexist");
+  assert.strictEqual(feedbackCards[feedbackCards.length - 1].title, "Report again",
+    "the appended card must carry the fresh presentation title");
+
+  const replayFirstPresentId = "replay-present-snake-absolute";
+  const replayRelativeUpdateId = "replay-present-snake-relative";
+  durable = {
+    metadata: { id: sessionId, title: "Presentation identity", message_count: 5 },
+    messages: [
+      { role: "assistant", content: [{
+        type: "tool_use",
+        id: replayFirstPresentId,
+        name: "present_artifact",
+        input: {
+          path: "snake-game.html",
+          title: "Snake game v1",
+          description: "First presentation",
+        },
+      }] },
+      { role: "user", content: [{
+        type: "tool_result",
+        tool_use_id: replayFirstPresentId,
+        content: JSON.stringify({ ok: true, abs_path: absoluteArtifactPath }),
+      }] },
+      { role: "assistant", content: [{ type: "text", text: "First version ready." }] },
+      { role: "assistant", content: [{
+        type: "tool_use",
+        id: replayRelativeUpdateId,
+        name: "present_artifact",
+        input: {
+          path: "snake-game.html",
+          title: "Snake game v3",
+          description: "Latest replayed presentation",
+        },
+      }] },
+      { role: "user", content: [{
+        type: "tool_result",
+        tool_use_id: replayRelativeUpdateId,
+        content: JSON.stringify({ ok: true }),
+      }] },
+    ],
+    artifacts: [absoluteArtifactPath],
+    transcript_revision: "rev-2",
+  };
+  const recoveryHarness = createBridgeHarness(null, { bridgeKind });
+  recoveryHarness.handlers.load_session = function () { return durable; };
+  await recoveryHarness.bridge.sessions.switchToSession(sessionId);
+
+  const replayedCardState = recoveryHarness.bridge.state.get("chat");
+  const replayedArtifactCards = replayedCardState.chatItems.filter(function (item) {
+    return item.type === "artifact_card";
+  });
+  assert.strictEqual(replayedArtifactCards.length, 1,
+    "session replay must reconcile repeated presentations to one artifact card");
+  assert.strictEqual(replayedArtifactCards[0].path, absoluteArtifactPath,
+    "session replay must preserve the first presentation's absolute openable path");
+  assert.strictEqual(replayedArtifactCards[0].title, "Snake game v3",
+    "session replay must apply the latest relative presentation metadata");
+  assert.strictEqual(replayedArtifactCards[0].description, "Latest replayed presentation",
+    "session replay must apply the latest presentation description");
+  assert.strictEqual(replayedCardState.chatItems.indexOf(replayedArtifactCards[0]), 0,
+    "session replay must retain the first presentation's card position after an update");
+  assert.ok(replayedCardState.chatItems.some(function (item) {
+    return item.type === "assistant" && item.text === "First version ready.";
+  }), "the replay assertion must include transcript content between the two presentations");
 
   const questions = [{ id: "choice", header: "选择", question: "继续吗？", options: [] }];
   harness.emit("chat:user_input_required", {
@@ -5493,7 +5713,8 @@ Promise.resolve()
   .then(scheduledOwnerRegistryIsBoundedAndProtectsLive)
   .then(scheduledBufferLruNeverEvictsLive)
   .then(scheduledRunningHydrationRaceBehavior)
-  .then(presentationReconciliationUsesStableEventIdentity)
+  .then(function () { return presentationReconciliationUsesStableEventIdentity("tauri"); })
+  .then(function () { return presentationReconciliationUsesStableEventIdentity("web"); })
   .then(scheduledUnreadPollingRaceBehavior)
   .then(scheduledFolderPickerBehavior)
   .then(scheduledTemplateSourcePersistenceBehavior)

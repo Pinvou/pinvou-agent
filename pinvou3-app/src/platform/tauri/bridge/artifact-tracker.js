@@ -103,19 +103,57 @@
     state.artifacts = state.artifacts.filter(function (a) { return a.path !== path; });
     if (state.artifacts.length !== before) notify();
   }
-  // 自动续卡支撑:这个文件之前是否被 present_artifact 展示过(同 basename)。
-  // 已 present 过 = 用户已确认是成品,后续 File.write/File.edit 修改它就自动
-  // 再弹一张成品卡 —— 不靠 agent 第二次主动调(Qwen3.6 迭代后常漏)。信息直接
-  // 从 chatItems 里的成品卡推导,无需单独 per-session map(chatItems 已按 session
-  // 隔离 + rerender 重建)。返回最近一张同名成品卡(取 title/description 复用)。
+  // Prefer an exact normalized path so an older card is not hidden by a newer
+  // same-named artifact from another directory. Fall back to the basename for
+  // persisted relative paths that must reconcile with an absolute watcher path.
   function findPresentedArtifact(path) {
     const bn = basename(path);
     if (!bn) return null;
+    const normalized = normalizedPath(path);
+    let basenameMatch = null;
     for (let i = state.chatItems.length - 1; i >= 0; i--) {
       const it = state.chatItems[i];
-      if (it.type === "artifact_card" && basename(it.path) === bn) return it;
+      if (it.type !== "artifact_card" || basename(it.path) !== bn) continue;
+      if (normalizedPath(it.path) === normalized) return it;
+      if (!basenameMatch) basenameMatch = it;
     }
-    return null;
+    return basenameMatch;
+  }
+  // Updates an existing presentation card in place (stable id and position)
+  // instead of appending a duplicate card. Returns null when the caller must
+  // append a fresh card instead:
+  // - no card for this basename yet, or the matching card's absolute path
+  //   differs from the presented path (same-named files in different
+  //   directories are distinct artifacts, never rewritten into each other);
+  // - a user message is newer than the existing card with no file mutation
+  //   after it: the model is answering a fresh "show it again" request, and
+  //   replaying that turn must stay a visible new card.
+  function updatePresentedArtifact(card) {
+    if (!card || !card.path) return null;
+    const existing = findPresentedArtifact(card.path);
+    if (!existing) return null;
+    // A relative tool path may be the only bridge between a persisted relative
+    // card and its absolute watcher path. When it contains no resolvable
+    // directory, same-named files remain ambiguous, so retain the basename
+    // fallback for backward compatibility and rely on abs_path when available.
+    if (isAbsPath(existing.path) && isAbsPath(card.path) &&
+        normalizedPath(existing.path) !== normalizedPath(card.path)) return null;
+    const bn = basename(card.path);
+    for (let i = state.chatItems.length - 1; i >= 0; i--) {
+      const it = state.chatItems[i];
+      if (it === existing) break;
+      if (it.type === "user") return null;
+      if (it.type === "tool" && fileMutationAction(it.name, it.args) &&
+          extractArtifactPaths(it.args).some(function (ap) { return basename(ap) === bn; })) break;
+    }
+    const stableId = existing.id;
+    const stableAbsolutePath = isAbsPath(existing.path) && !isAbsPath(card.path)
+      ? existing.path
+      : null;
+    Object.assign(existing, card, { type: "artifact_card" });
+    if (stableId !== undefined) existing.id = stableId;
+    if (stableAbsolutePath) existing.path = stableAbsolutePath;
+    return existing;
   }
   // 切换 session 时对账:扫 workspace 磁盘,把实际存在、但跟踪列表里没有的文件补进来。
   // 修「文件已生成在盘上、却因 app 中途重启/跟踪遗漏而不在产物面板」(以磁盘为准)。
@@ -254,6 +292,7 @@
       markTurnDirtyArtifact,
       untrackArtifact,
       findPresentedArtifact,
+      updatePresentedArtifact,
       reconcileArtifacts,
       extractArtifactPaths,
       extractArtifactPath,
