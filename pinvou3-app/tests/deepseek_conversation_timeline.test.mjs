@@ -373,15 +373,15 @@ try {
     && !conversationView.includes('setOpen(autoOpen)')
     && !chatView.includes('shouldAutoOpenToolGroup='),
   'tool groups must keep a user-owned expansion state instead of opening and closing with execution status');
-  assert.ok(chatView.includes('isNearConversationBottom(el)')
-    && chatView.includes('const movingUp = el.scrollTop < lastScrollTopRef.current - 1 && !shrinkClamped')
-    && chatView.includes('if (movingUp) autoScrollRef.current = false'),
+  assert.ok(chatView.includes('const transition = transitionConversationScrollState({')
+    && chatView.includes('autoScrollRef.current = transition.following'),
     'DeepSeek streaming must pause auto-follow while the user reads history');
-  assert.ok(chatView.includes('const shrinkClamped = isShrinkClampedToBottom(el, lastScrollHeightRef.current)')
-    && chatView.includes('lastScrollHeightRef.current = el.scrollHeight'),
+  assert.ok(chatView.includes('previousScrollHeight: lastScrollHeightRef.current')
+    && chatView.includes('lastScrollHeightRef.current = transition.scrollHeight'),
     'a shrink-induced scrollTop clamp must not be mistaken for the user browsing history');
   assert.ok(chatView.includes('startConversationBottomFollower({')
-    && chatView.includes('isFollowing: () => autoScrollRef.current'),
+    && chatView.includes('isFollowing: () => autoScrollRef.current')
+    && chatView.includes('onMeasured: () => {'),
     'bottom-following conversations must recover after delayed layout and window visibility changes');
   assert.ok(chatView.includes('<ThinkingBubble'), 'the original rendering path must remain available as a fallback');
   assert.ok(chatView.includes("pinvou_conversation_ui_v2"), 'the local rollback switch must be explicit');

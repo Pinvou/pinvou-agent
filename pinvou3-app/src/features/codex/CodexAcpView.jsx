@@ -74,6 +74,11 @@ import {
   ConversationTurn,
   WorkspaceResourceButtons,
 } from '../conversation/ConversationTimeline.jsx';
+import {
+  measureConversationScrollGeometry,
+  startConversationBottomFollower,
+  transitionConversationScrollState,
+} from '../conversation/conversation-scroll.js';
 import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
 import { assistantResponseAvailable, assistantResponseText } from '../conversation/message-clipboard.js';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/composer-shared.jsx';
@@ -88,7 +93,6 @@ import {
   captureConversationScrollPosition,
   collectToolWorkspaceResources,
   isFetchTool,
-  isNearConversationBottom,
   isSearchTool,
   restoreConversationScrollPosition,
   toolWorkspaceResources,
@@ -1090,9 +1094,11 @@ export function CodexAcpView({
   const [draftConfigSelections, setDraftConfigSelections] = useState({});
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const scroller = useRef(null);
+  const conversationContentRef = useRef(null);
   const rightPanelScrollRef = useRef(null);
   const autoScrollRef = useRef(true);
   const lastScrollTopRef = useRef(0);
+  const lastScrollHeightRef = useRef(0);
   const attachmentIdRef = useRef(0);
   const attachmentMenuTriggerRef = useRef(null);
   const deviceFileInputRef = useRef(null);
@@ -1343,6 +1349,7 @@ export function CodexAcpView({
     if (!element) return;
     restoreConversationScrollPosition(element, snapshot);
     lastScrollTopRef.current = element.scrollTop;
+    lastScrollHeightRef.current = element.scrollHeight;
     if (snapshot.stickToBottom) {
       autoScrollRef.current = true;
       setShowScrollBottom(false);
@@ -2512,11 +2519,15 @@ export function CodexAcpView({
     const element = scroller.current;
     if (!element) return;
     const onScroll = () => {
-      const near = isNearConversationBottom(element);
-      const movingUp = element.scrollTop < lastScrollTopRef.current - 1;
-      lastScrollTopRef.current = element.scrollTop;
-      if (movingUp) autoScrollRef.current = false;
-      else if (near) autoScrollRef.current = true;
+      const transition = transitionConversationScrollState({
+        scrollElement: element,
+        following: autoScrollRef.current,
+        previousScrollTop: lastScrollTopRef.current,
+        previousScrollHeight: lastScrollHeightRef.current,
+      });
+      lastScrollTopRef.current = transition.scrollTop;
+      lastScrollHeightRef.current = transition.scrollHeight;
+      autoScrollRef.current = transition.following;
       const shouldShow = !autoScrollRef.current
         && element.scrollHeight > element.clientHeight + 4;
       setShowScrollBottom(current => current === shouldShow ? current : shouldShow);
@@ -2548,9 +2559,36 @@ export function CodexAcpView({
       if (element) {
         element.scrollTop = element.scrollHeight;
         lastScrollTopRef.current = element.scrollTop;
+        lastScrollHeightRef.current = element.scrollHeight;
       }
     });
     return () => window.cancelAnimationFrame(frame);
+  }, [activeId]);
+
+  useEffect(() => {
+    const scrollElement = scroller.current;
+    const contentElement = conversationContentRef.current;
+    if (!scrollElement || !contentElement) return;
+    return startConversationBottomFollower({
+      scrollElement,
+      contentElement,
+      isFollowing: () => autoScrollRef.current,
+      onMeasured: () => {
+        const measurement = measureConversationScrollGeometry({
+          scrollElement,
+          following: autoScrollRef.current,
+          previousScrollTop: lastScrollTopRef.current,
+          previousScrollHeight: lastScrollHeightRef.current,
+        });
+        lastScrollTopRef.current = measurement.scrollTop;
+        lastScrollHeightRef.current = measurement.scrollHeight;
+      },
+      onRestored: (scrollTop) => {
+        lastScrollTopRef.current = scrollTop;
+        lastScrollHeightRef.current = scrollElement.scrollHeight;
+        setShowScrollBottom(false);
+      },
+    });
   }, [activeId]);
 
   function scrollConversationToBottom() {
@@ -3262,7 +3300,7 @@ export function CodexAcpView({
         <div className="flex-1 min-h-0 flex">
         <div className="relative min-w-0 flex-1 min-h-0 flex flex-col">
         <div ref={scroller} className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
-          <div className="w-full max-w-[920px] min-h-full mx-auto px-6 py-6 flex flex-col gap-7">
+          <div ref={conversationContentRef} className="w-full max-w-[920px] min-h-full mx-auto px-6 py-6 flex flex-col gap-7">
             {workspaceUnavailable ? (
               <div
                 data-testid="codex-workspace-unavailable"
