@@ -26,7 +26,7 @@ const state = {
   activeSessionId: 'session-1',
   chatItems: [],
   messages: [],
-  tokens: { input: 0, max: 32768 }, // 云端无 vLLM probe 时的假分母起点
+  tokens: { input: 0, max: 32768 }, // 种子值：模拟「窗口已知」的会话（历史版本曾以 32K 假分母起步）
   thinking: { active: false },
 };
 const context = {
@@ -70,7 +70,7 @@ const emitUsage = payload => listeners.get('chat:usage')({
 // 这是最常见 Agent 场景：PR #213 修复前此处提前 return，真实窗口永不消费。
 context.turnUsageDirty['session-1'] = true;
 emitUsage({ input_tokens: 45000, context_window: 131072 });
-assert.equal(state.tokens.max, 131072, 'dirty 工具轮仍必须消费真实窗口，替代 32K 假分母');
+assert.equal(state.tokens.max, 131072, 'dirty 工具轮仍必须消费真实窗口');
 assert.equal(state.tokens.input, 0, 'dirty 工具轮不得更新累计 input（本轮累加值不可信）');
 assert.ok(notifyCount >= 1, '窗口变化时必须通知 UI 刷新分母');
 
@@ -101,17 +101,19 @@ emitUsage({ input_tokens: 100 }); // 无 context_window 字段
 assert.equal(state.tokens.max, maxBefore, '旧端不带 context_window 时保留旧值');
 assert.equal(state.tokens.input, 100);
 
-// 场景 6：未知窗口起点（bridge 初始 max=0，不再用 32K 假分母）——
-// 无 context_window 的 usage 不得引入假分母，也不得显示无分母背书的 input。
+// Scenario 6: unknown-window start (bridge initializes max=0, no more 32K
+// fake denominator) — a usage without context_window must not introduce a
+// fake denominator, nor surface input without denominator backing.
 state.tokens = { input: 0, max: 0 };
 context.turnUsageDirty['session-1'] = false;
 emitUsage({ input_tokens: 100 }); // 旧端不带 context_window
-assert.equal(state.tokens.max, 0, '窗口未知时保持 0，不得引入假分母');
-assert.equal(state.tokens.input, 0, '无真实分母背书时不得显示 input（100 > 0=max 被守卫跳过）');
+assert.equal(state.tokens.max, 0, 'unknown window stays 0; no fake denominator may be introduced');
+assert.equal(state.tokens.input, 0, 'input must not surface without a real denominator (100 > 0=max is skipped by the guard)');
 
-// 场景 7：窗口未知的会话随后拿到真实窗口 → 分母落位、input 正常消费。
+// Scenario 7: a session that started with an unknown window later receives
+// a real one → the denominator lands and input is consumed normally.
 emitUsage({ input_tokens: 5000, context_window: 262144 });
-assert.equal(state.tokens.max, 262144, '真实窗口到达后分母落位');
+assert.equal(state.tokens.max, 262144, 'denominator lands once the real window arrives');
 assert.equal(state.tokens.input, 5000);
 
 // ── tauri/web 双端源码断言：窗口消费必须先于 dirty guard ──
@@ -128,12 +130,13 @@ for (const [label, section] of [['tauri', tauriSection], ['web', webSection]]) {
   assert.ok(section.includes('windowTok > 0'), `${label}: 窗口 0 守卫保留`);
 }
 
-// ── 初始态源码断言：不再用 32K 假分母初始化（窗口未知 = 0，UI 隐藏占用表）──
+// ── Initial-state source assertions: neither bridge initializes with the
+// 32K fake denominator (unknown window = 0; the UI hides the meter) ──
 const tauriBridgeSource = read('src', 'platform', 'tauri', 'bridge.js');
 const tauriMonitorSource = read('src', 'platform', 'tauri', 'bridge', 'monitor.js');
-assert.ok(tauriBridgeSource.includes('tokens: { input: 0, max: 0 }'), 'tauri bridge 初始 max=0（窗口未知）');
-assert.ok(webSource.includes('tokens: { input: 0, max: 0 }'), 'web bridge 初始 max=0（窗口未知）');
-assert.ok(!webSource.includes('let maxModelLen = 32768'), 'web monitor 不得以 32K 假窗口兜底');
-assert.ok(tauriMonitorSource.includes('state.tokens.max || 0'), 'tauri monitor 不得以 32K 假窗口兜底');
+assert.ok(tauriBridgeSource.includes('tokens: { input: 0, max: 0 }'), 'tauri bridge initializes max=0 (unknown window)');
+assert.ok(webSource.includes('tokens: { input: 0, max: 0 }'), 'web bridge initializes max=0 (unknown window)');
+assert.ok(!webSource.includes('let maxModelLen = 32768'), 'web monitor must not fall back to a fake 32K window');
+assert.ok(tauriMonitorSource.includes('state.tokens.max || 0'), 'tauri monitor must not fall back to a fake 32K window');
 
 console.log('chat_usage_context_window.test.mjs: OK');

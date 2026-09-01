@@ -276,8 +276,10 @@
     queued: [],
     // 输入框待发附件 [{ id, basename, status:'parsing'|'ready'|'error', result, error }]
     attachments: [],
-    // token 预算（input_tokens / maxModelLen）。max=0 表示窗口未知（首个 chat:usage
-    // 的 context_window 或本地后端 max_model_len 到达前显示「—」），不用假分母。
+    // Token budget (input_tokens / maxModelLen). max=0 means the window is
+    // unknown: the context meter line stays hidden (its render guard needs
+    // max > 0) until a real window lands — a chat:usage context_window or a
+    // local backend max_model_len. No fabricated denominator.
     tokens: { input: 0, max: 0 },
     // 思考指示器：active 时 React 渲染计时气泡（Braille + 思考中/调用工具 + 秒数）
     thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
