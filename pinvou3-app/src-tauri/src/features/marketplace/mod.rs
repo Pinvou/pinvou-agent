@@ -1729,18 +1729,20 @@ mod tests {
         // 显式指定优先；未指定时由平台适配层给出首选解释器（posix: PATH 里
         // python3→python；windows: PINVOU3_PYTHON/bundled python），再兜底另一
         // 常见名——开发机可能只装其一，缺省环境下不再要求设 PINVOU3_TEST_PYTHON。
+        let explicit = std::env::var("PINVOU3_TEST_PYTHON").ok();
         let mut candidates: Vec<String> = Vec::new();
-        if let Ok(python) = std::env::var("PINVOU3_TEST_PYTHON") {
-            candidates.push(python);
-        } else {
-            let primary = crate::platform::os::python_command();
-            let alternate = if primary == "python3" {
-                "python"
-            } else {
-                "python3"
-            };
-            candidates.push(primary);
-            candidates.push(alternate.to_string());
+        match &explicit {
+            Some(python) => candidates.push(python.clone()),
+            None => {
+                let primary = crate::platform::os::python_command();
+                let alternate = if primary == "python3" {
+                    "python"
+                } else {
+                    "python3"
+                };
+                candidates.push(primary);
+                candidates.push(alternate.to_string());
+            }
         }
         for python in &candidates {
             let output = std::process::Command::new(python)
@@ -1756,6 +1758,13 @@ mod tests {
                 let version = String::from_utf8(output.stdout).unwrap().trim().to_string();
                 return (python.clone(), version);
             }
+        }
+        // 显式指定但不可用,与缺省探测全失败是两种故障:前者该修(或去掉)现有
+        // 设置,提示"再去显式设置"反而误导。
+        if let Some(python) = explicit {
+            panic!(
+                "PINVOU3_TEST_PYTHON={python} is set but not usable; fix it or unset it to auto-probe"
+            );
         }
         panic!(
             "no usable Python interpreter (tried {candidates:?}); set PINVOU3_TEST_PYTHON explicitly"
