@@ -1356,7 +1356,9 @@ where
         .context("headless host exited before work completed")?
 }
 
-fn build_pool(app: tauri::AppHandle, store: SessionStore) -> Result<EnginePool> {
+/// 构建与 GUI 同构的 EnginePool(同 tool_factory/tool_policy 组合)。
+/// `agentic_task` 的无头宿主复用此构造,保证 agentic 轮次与产品链路一致。
+pub(crate) fn build_pool(app: tauri::AppHandle, store: SessionStore) -> Result<EnginePool> {
     let tool_factory: EngineToolFactory = Arc::new(|app, session_id| {
         vec![
             Arc::new(knowledge::KbSearchTool::new(

@@ -23,6 +23,8 @@ use std::time::Duration;
 
 pub(crate) mod eval_tool_policy;
 #[cfg(feature = "benchmark-hooks")]
+pub mod agentic_task;
+#[cfg(feature = "benchmark-hooks")]
 pub mod headless_bridge;
 
 /// 会话创建规格

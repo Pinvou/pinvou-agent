@@ -166,8 +166,18 @@ pub enum BenchmarkCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentCommand {
+    Run {
+        prompt_file: PathBuf,
+        workspace: Option<PathBuf>,
+        timeout_secs: u64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CliCommand {
     Benchmark(BenchmarkCommand),
+    Agent(AgentCommand),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -254,8 +264,17 @@ where
             index += 1;
         }
     }
+    if values.first().map(String::as_str) == Some("agent") {
+        let command = parse_agent(&values)?;
+        return Ok(ParsedCli {
+            command: CliCommand::Agent(command),
+            output,
+        });
+    }
     if values.first().map(String::as_str) != Some("benchmark") {
-        return Err(CliError::usage("usage: pinvou benchmark <command>"));
+        return Err(CliError::usage(
+            "usage: pinvou benchmark <command> | pinvou agent run",
+        ));
     }
     let command = match values.get(1).map(String::as_str) {
         Some("list") if values.len() == 2 => BenchmarkCommand::List,
@@ -371,6 +390,34 @@ fn require_gaia(values: &[String], command: &str) -> Result<(), CliError> {
     Ok(())
 }
 
+fn parse_agent(values: &[String]) -> Result<AgentCommand, CliError> {
+    match values.get(1).map(String::as_str) {
+        Some("run") => {
+            let options = named_options(&values[2..], &["--prompt-file", "--workspace", "--timeout-secs"])?;
+            let prompt_file = option(&options, "--prompt-file")
+                .map(PathBuf::from)
+                .ok_or_else(|| CliError::usage("agent run requires --prompt-file"))?;
+            let workspace = option(&options, "--workspace").map(PathBuf::from);
+            let timeout_secs = match option(&options, "--timeout-secs") {
+                None => 600,
+                Some(value) => value
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|seconds| *seconds > 0)
+                    .ok_or_else(|| {
+                        CliError::usage("agent run requires --timeout-secs to be a positive integer")
+                    })?,
+            };
+            Ok(AgentCommand::Run {
+                prompt_file,
+                workspace,
+                timeout_secs,
+            })
+        }
+        _ => Err(CliError::usage("usage: pinvou agent run")),
+    }
+}
+
 fn named_options<'a>(
     values: &'a [String],
     allowed: &[&str],
@@ -479,6 +526,11 @@ pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
         CliCommand::Benchmark(BenchmarkCommand::NotAvailable(command)) => Err(CliError::usage(
             format!("benchmark command '{command}' is not_available"),
         )),
+        CliCommand::Agent(AgentCommand::Run {
+            prompt_file,
+            workspace,
+            timeout_secs,
+        }) => run_agent(&prompt_file, workspace.as_deref(), timeout_secs, output),
     }
 }
 
@@ -1306,6 +1358,73 @@ fn run_gaia(_output: OutputMode) -> Result<CliOutcome, CliError> {
     Err(CliError::failed("product_backend_not_enabled"))
 }
 
+#[cfg(not(feature = "product-backend"))]
+fn run_agent(
+    _prompt_file: &Path,
+    _workspace: Option<&Path>,
+    _timeout_secs: u64,
+    _output: OutputMode,
+) -> Result<CliOutcome, CliError> {
+    Err(CliError::failed("product_backend_not_enabled"))
+}
+
+#[cfg(feature = "product-backend")]
+fn run_agent(
+    prompt_file: &Path,
+    workspace: Option<&Path>,
+    timeout_secs: u64,
+    output: OutputMode,
+) -> Result<CliOutcome, CliError> {
+    let prompt = std::fs::read_to_string(prompt_file)
+        .map_err(|_| CliError::usage("agent run cannot read --prompt-file"))?;
+    let request = pinvou_product_backend::AgenticTaskRequest {
+        prompt,
+        workspace: workspace.map(Path::to_path_buf),
+        timeout_secs,
+    };
+    let report = pinvou_product_backend::run_agentic_task(request)
+        .map_err(|error| CliError::failed(format!("agent_run_failed: {error:#}")))?;
+    let failed = report.timed_out || report.error.is_some();
+    Ok(CliOutcome {
+        exit_code: if failed {
+            ExitCode::Failed
+        } else {
+            ExitCode::Success
+        },
+        stdout: render_agent_report(&report, output),
+    })
+}
+
+#[cfg(feature = "product-backend")]
+fn render_agent_report(
+    report: &pinvou_product_backend::AgenticTaskReport,
+    output: OutputMode,
+) -> String {
+    match output {
+        OutputMode::Json => serde_json::to_string(report).unwrap_or_default(),
+        OutputMode::Human => {
+            let mut lines = vec![format!(
+                "session: {} status: {}",
+                report.session_id, report.status
+            )];
+            if let Some(error) = &report.error {
+                lines.push(format!("error: {error}"));
+            }
+            if let Some(usage) = &report.usage {
+                lines.push(format!(
+                    "tokens: input={} output={} tools={}",
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    report.tool_events.len()
+                ));
+            }
+            lines.push(String::new());
+            lines.push(report.assistant_text.trim_end().to_string());
+            lines.join("\n")
+        }
+    }
+}
+
 #[cfg(feature = "product-backend")]
 mod product {
     use std::path::Path;
@@ -1584,6 +1703,94 @@ fn run_gaia(output: OutputMode) -> Result<CliOutcome, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_args_accepts_agent_run_with_options() {
+        let parsed = parse_args([
+            "pinvou",
+            "agent",
+            "run",
+            "--prompt-file",
+            "task.txt",
+            "--workspace",
+            "/tmp/task",
+            "--timeout-secs",
+            "900",
+        ])
+        .unwrap();
+        assert_eq!(
+            parsed.command(),
+            &CliCommand::Agent(AgentCommand::Run {
+                prompt_file: PathBuf::from("task.txt"),
+                workspace: Some(PathBuf::from("/tmp/task")),
+                timeout_secs: 900,
+            })
+        );
+        assert_eq!(parsed.output(), OutputMode::Human);
+    }
+
+    #[test]
+    fn parse_args_defaults_agent_run_timeout_and_workspace() {
+        let parsed = parse_args(["pinvou", "agent", "run", "--prompt-file", "task.txt"]).unwrap();
+        assert_eq!(
+            parsed.command(),
+            &CliCommand::Agent(AgentCommand::Run {
+                prompt_file: PathBuf::from("task.txt"),
+                workspace: None,
+                timeout_secs: 600,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_args_rejects_agent_run_without_prompt_file() {
+        let error = parse_args(["pinvou", "agent", "run"]).unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::Usage);
+        assert!(error.to_string().contains("--prompt-file"));
+    }
+
+    #[test]
+    fn parse_args_rejects_non_positive_agent_timeout() {
+        let error = parse_args([
+            "pinvou",
+            "agent",
+            "run",
+            "--prompt-file",
+            "task.txt",
+            "--timeout-secs",
+            "0",
+        ])
+        .unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::Usage);
+        assert!(error.to_string().contains("positive integer"));
+    }
+
+    #[test]
+    fn parse_args_rejects_unknown_agent_subcommand() {
+        let error = parse_args(["pinvou", "agent", "status"]).unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::Usage);
+    }
+
+    #[test]
+    fn parse_args_keeps_output_flag_for_agent_run() {
+        let parsed = parse_args([
+            "pinvou",
+            "--output",
+            "json",
+            "agent",
+            "run",
+            "--prompt-file",
+            "task.txt",
+        ])
+        .unwrap();
+        assert_eq!(parsed.output(), OutputMode::Json);
+    }
+
+    #[test]
+    fn parse_args_still_rejects_bare_pinvou_invocation() {
+        let error = parse_args(["pinvou"]).unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::Usage);
+    }
 
     fn temp_base(name: &str) -> PathBuf {
         let nonce = std::time::SystemTime::now()
