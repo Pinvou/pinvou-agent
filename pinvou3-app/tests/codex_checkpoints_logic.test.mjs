@@ -261,6 +261,8 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
   assert.equal(rewindUndoAvailable({}), false);
   assert.equal(rewindUndoAvailable('checkpoint-x'), false);
   assert.equal(rewindUndoAvailable({ checkpointId: 'pre-1' }), false);
+  // 防御：rewoundTurns 为 0 的状态不渲染（否则文案是「还原被截掉的 0 轮对话」）。
+  assert.equal(rewindUndoAvailable({ checkpointId: 'pre-1', keptTurns: 2, rewoundTurns: 0 }), false);
   assert.equal(
     rewindUndoAvailable({ checkpointId: 'pre-1', keptTurns: 2, rewoundTurns: 1, rewoundAt: '2026-08-21T10:00:00Z' }),
     true,

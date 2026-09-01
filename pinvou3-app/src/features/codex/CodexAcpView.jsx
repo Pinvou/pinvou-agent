@@ -2028,10 +2028,13 @@ export function CodexAcpView({
       if (reloadError) {
         // 回退已在后端生效：把成功结果随目标暂存（pendingNotice），重试只补
         // 重载、成功后补发提示——避免整条流走完时间线却没有「已回退」确认项。
+        // 重试再失败时保留既有暂存（result 为 null 的重试路径不得覆盖）。
         setRewindTarget({
           ...target,
           reloadFailed: true,
-          pendingNotice: result ? rewindNoticeText(codexCopy, result, target.keepTurns) : null,
+          pendingNotice: result
+            ? rewindNoticeText(codexCopy, result, target.keepTurns)
+            : (target.pendingNotice ?? null),
         });
         setRewindError(reloadError);
         rewindCheckpoints.refresh();
@@ -2080,6 +2083,10 @@ export function CodexAcpView({
       if (reloadError) {
         setRewindUndoEntry({ ...entry, reloadFailed: true });
         setRewindUndoError(reloadError);
+        // 与回退侧对齐：刷新让 undoState 收敛（记录已消费 → null），用户取消
+        // 弹窗后「撤销回退」入口不会以陈旧状态残留。弹窗由本地 entry 驱动，
+        // 不受 undoState 收敛影响（复位 effect 豁免 reloadFailed 条目）。
+        rewindCheckpoints.refresh();
         return;
       }
       setRewindUndoEntry(null);
