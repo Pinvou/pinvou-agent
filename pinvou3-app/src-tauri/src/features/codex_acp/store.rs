@@ -921,8 +921,10 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir()
-            .join(format!("pinvou3-agent-store-ws-{}-{nonce}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-agent-store-ws-{}-{nonce}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let record = |kind, path, mode, backend| SessionAgentRecord {
             backend,
@@ -936,29 +938,48 @@ mod tests {
             records: Arc::new(RwLock::new(HashMap::from([
                 (
                     "acp-proj".to_string(),
-                    record(CodexWorkspaceKind::Project, Some(dir.clone()),
-                        SessionMode::Plain, AgentBackend::CodexAcp),
+                    record(
+                        CodexWorkspaceKind::Project,
+                        Some(dir.clone()),
+                        SessionMode::Plain,
+                        AgentBackend::CodexAcp,
+                    ),
                 ),
                 (
                     "native-proj".to_string(),
-                    record(CodexWorkspaceKind::Project, Some(dir.clone()),
-                        SessionMode::Code, AgentBackend::Deepseek),
+                    record(
+                        CodexWorkspaceKind::Project,
+                        Some(dir.clone()),
+                        SessionMode::Code,
+                        AgentBackend::Deepseek,
+                    ),
                 ),
                 (
                     "temp-code".to_string(),
-                    record(CodexWorkspaceKind::Temporary, None,
-                        SessionMode::Code, AgentBackend::Deepseek),
+                    record(
+                        CodexWorkspaceKind::Temporary,
+                        None,
+                        SessionMode::Code,
+                        AgentBackend::Deepseek,
+                    ),
                 ),
                 (
                     "plain-chat".to_string(),
-                    record(CodexWorkspaceKind::Project, Some(dir.clone()),
-                        SessionMode::Plain, AgentBackend::Deepseek),
+                    record(
+                        CodexWorkspaceKind::Project,
+                        Some(dir.clone()),
+                        SessionMode::Plain,
+                        AgentBackend::Deepseek,
+                    ),
                 ),
             ]))),
         };
         let mut sessions = store.code_sessions_in_workspace(&dir);
         sessions.sort();
-        assert_eq!(sessions, vec!["acp-proj".to_string(), "native-proj".to_string()]);
+        assert_eq!(
+            sessions,
+            vec!["acp-proj".to_string(), "native-proj".to_string()]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
