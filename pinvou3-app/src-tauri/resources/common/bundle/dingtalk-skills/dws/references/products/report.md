@@ -404,6 +404,8 @@ dws report outbox list --cursor 0 --size 20 --format json
 
 | 脚本 | 场景 | 用法 |
 |------|------|------|
+| [report_inbox_today.py](../../scripts/report_inbox_today.py) | 查看今天（近 N 天）收到的日志列表，可选逐条拉取正文 | `python3 report_inbox_today.py [--days 1] [--detail] [--dry-run]` |
+| [report_received_today.py](../../scripts/report_received_today.py) | 同 `report_inbox_today.py`（上游重复发布的等价脚本，功能一致） | `python3 report_received_today.py [--days 1] [--detail] [--dry-run]` |
 
 
 

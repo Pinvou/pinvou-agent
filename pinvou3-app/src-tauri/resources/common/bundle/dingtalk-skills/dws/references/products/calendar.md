@@ -726,7 +726,7 @@ dws calendar event list --start "2026-03-10T14:00:00+08:00" --end "2026-03-10T15
 | 脚本 | 场景 | 用法 |
 |------|------|------|
 | [calendar_today_agenda.py](../../scripts/calendar_today_agenda.py) | 查看今天/明天/本周日程安排 | `python3 calendar_today_agenda.py today` |
-| [calendar_schedule_meeting.py](../../scripts/calendar_schedule_meeting.py) | 一键创建日程+添加参会人+预定会议室；搜房失败时输出明确原因并返回非零退出码 | `python3 calendar_schedule_meeting.py --title "复盘会" --start "2026-03-15T14:00" --end "2026-03-15T15:00" --users userId1 --book-room` |
+| [calendar_schedule_meeting.py](../../scripts/calendar_schedule_meeting.py) | 一键创建日程+添加参会人+预定会议室；无空闲会议室时脚本打印 `⚠ 该时段无空闲会议室` 警告并**正常退出（exit 0）**，上层须检查输出中的 ⚠ 标记（不要以退出码判定订房成败） | `python3 calendar_schedule_meeting.py --title "复盘会" --start "2026-03-15T14:00" --end "2026-03-15T15:00" --users userId1 --book-room` |
 | [calendar_free_slot_finder.py](../../scripts/calendar_free_slot_finder.py) | 查询多人共同空闲时段 | `python3 calendar_free_slot_finder.py --users userId1,userId2 --date 2026-03-15` |
 
 ## 相关产品

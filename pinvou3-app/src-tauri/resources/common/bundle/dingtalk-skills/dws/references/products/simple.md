@@ -75,7 +75,7 @@ Example:
 Usage:
   dws oa approval approve --instance-id <ID> --task-id <TASK_ID> [flags]
 Example:
-  dws oa approval approve --instance-id <ID> --task-id <TASK_ID> --format json
+  dws oa approval approve --instance-id <ID> --task-id <TASK_ID> --yes --format json
 ```
 
 ### 拒绝审批
@@ -83,15 +83,18 @@ Example:
 Usage:
   dws oa approval reject --instance-id <ID> --task-id <TASK_ID> [flags]
 Example:
-  dws oa approval reject --instance-id <ID> --task-id <TASK_ID> --remark "不符合要求" --format json
+  dws oa approval reject --instance-id <ID> --task-id <TASK_ID> --remark "不符合要求" --yes --format json
 ```
 
 ### 撤销审批
+
+> **CAUTION:** 撤销不可恢复 — 高危操作，执行前必须向用户确认，确认后加 `--yes`（详见 [oa.md](./oa.md) 危险操作确认）。
+
 ```
 Usage:
   dws oa approval revoke --instance-id <ID> [flags]
 Example:
-  dws oa approval revoke --instance-id <ID> --format json
+  dws oa approval revoke --instance-id <ID> --yes --format json
 ```
 
 ---

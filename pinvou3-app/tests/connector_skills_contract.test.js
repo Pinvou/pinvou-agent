@@ -156,7 +156,35 @@ for (const f of files.filter((f) => path.basename(f) === "SKILL.md")) {
   assert.equal(name, path.basename(path.dirname(f)), `${rel(f)}: name 与目录名不一致`);
 }
 
-// 7) wecom smartpage→smartsheet delegation exemption contract (#366 review):
+// 7) dws confirmation-gated commands (oa approval approve/reject/revoke):
+// executable examples must carry --yes (contract added in the PR#359
+// review). SKILL.md's dangerous-operation table and the oa.md CAUTION
+// blocks establish the policy: confirm with the user first, then run
+// with --yes; copyable Example/workflow lines must not demonstrate a
+// bare run (in a non-interactive environment revoke without --yes fails
+// with confirmation_required). Usage lines replicating the CLI help
+// (`[flags]`-terminated; the root persistent flag does not appear in
+// help synopses) are exempt; inline code and prose mentions outside
+// code fences are not scanned.
+const DWS_GATED_CMD = /\bdws oa approval (?:approve|reject|revoke)\b/;
+for (const f of docs.filter((f) => rel(f).includes("dingtalk-skills"))) {
+  let inFence = false;
+  for (const line of read(f).split("\n")) {
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (!inFence) continue;
+    const t = line.trim();
+    if (!DWS_GATED_CMD.test(t) || t.endsWith("[flags]")) continue;
+    assert.ok(
+      /(^|\s)--yes(\s|$)/.test(t),
+      `${rel(f)}: confirmation-gated example missing --yes (confirm with the user first, then run with --yes): ${t}`,
+    );
+  }
+}
+
+// 8) wecom smartpage→smartsheet delegation exemption contract (#366 review):
 // `database_info.id` returned by smartpage `databases get` is usable directly
 // as the smartsheet-side `docid`/`file_id` with no `s3_` prefix required —
 // the sole exception to the s3_ prefix statement. Both receiver-side and both
@@ -201,7 +229,7 @@ assert.ok(
   `${wecomRel("wecomcli-smartpage", "SKILL.md")}: delegation mapping missing the "databases get result directly usable as smartsheet docid" contract sentence`,
 );
 
-// 8) 语义扫描豁免登记：以上规则若在上游 sync 后出现合理新豁免，必须在本清单登记文件+理由。
+// 9) Semantic-scan exemption registry: if any rule above gains a justified new exemption after an upstream sync, register file + reason in this list.
 // EXEMPT_FILES 当前为空：OPENCLAW_WORKSPACE 为 dws scripts 的路径护栏 env（未设时回退
 // cwd），非宿主断言（负向断言见上）；历史审查记录（NOTICE*.md）整体豁免由 docs 过滤实现。
 const EXEMPT_FILES = [];

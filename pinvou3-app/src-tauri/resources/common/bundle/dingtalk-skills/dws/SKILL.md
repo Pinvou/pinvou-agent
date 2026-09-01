@@ -1,7 +1,7 @@
 ---
 name: dws
 description: 【何时用:仅当用户明确指向钉钉/DingTalk(钉钉文档、钉钉日程等)时使用;泛指做文档/表格/待办/审批默认走本地工具,不要误用钉钉】用 dws CLI 管理钉钉:AI表格/AI搜问(找人首选)/目标管理(Agoal)/组织大脑/日历/通讯录/群聊与机器人消息/待办/审批/考勤/日志(日报周报)/DING消息/钉钉文档/云盘/Markdown文件/AI听记/邮箱/在线电子表格(axls)/知识库/白板/开放平台文档/个人IM与OA事件订阅。用户要求操作上述钉钉产品时使用。
-cli_version: ">=1.0.15"
+cli_version: ">=1.0.58"
 metadata:
   requires:
     bins: ["dws"]
@@ -16,14 +16,14 @@ metadata:
 > ⚠️ 命令与 flag 以当前 dws 二进制为准:`dws <cmd> --help` 是 Cobra flags 事实源,Agent 选命令/参数约束/安全确认以 leaf Schema(`--compact`)为准,与本文档冲突时以二者为准。
 
 ## 严格禁止 (NEVER DO)
-- 不要使用 dws 命令以外的方式操作（禁止 curl、HTTP API、浏览器）
+- 不要使用 dws 命令以外的方式操作（禁止 curl、HTTP API、浏览器）。**唯一例外**：aitable 导入/导出链路返回的预签名 `uploadUrl`/`downloadUrl`（`import upload` 申请的上传凭证、`export data` 返回的下载地址）允许用 curl 直传/直下（见 [aitable-export-import.md](./references/products/aitable/aitable-export-import.md)）；除此之外禁止
 - 不要编造 UUID、ID 等标识符，必须从命令返回中提取
 - 不要猜测字段名/参数值，操作前必须先查询确认
 
 ## 严格要求 (MUST DO)
 - 所有命令必须加 `--format json` 以获取可解析输出
 - 危险操作必须先向用户确认，用户同意后才加 `--yes` 执行
-- 单次批量操作不超过 30 条记录
+- 直接调用 dws 批量接口（如 `record update`）时单次批量不超过 30 条记录；使用 [scripts/import_records.py](./scripts/import_records.py) 批量导入时按脚本默认 50 条/批（其 `DEFAULT_BATCH_SIZE=50`，上限 100）
 - 所有命令必须**严格遵循**对应产品参考文档里面规定的参数格式（参数与参数值之间用空格隔开）
 - **脚本只用于明确覆盖的复合任务**：[scripts/](./scripts/) 下的脚本可封装 AI 表格批量导入导出、钉盘目录树等流程；当公开 `+` Shortcut 已提供目标唯一解析、分页/部分失败 ledger 和确认语义时，优先 Shortcut。Chat 历史导出与机器人广播已完全下沉 Runtime，不再发布兼容脚本
 - **脚本调用约定**：统一用 `python3` 调用（多数 macOS/Linux 环境没有裸 `python` 命令）；文档中的 `scripts/...` 是相对本 Skill 根目录（`SKILL.md` 所在目录）的路径，实际执行时应拼成完整路径（如 `python3 <Skill根目录>/scripts/attendance_report_monthly.py ...`），**不要假设当前工作目录（CWD）已在 Skill 根目录**
@@ -85,6 +85,7 @@ metadata:
 | `calendar`        | 日历：日历列表/日程/参与者/附件/响应/会议室/闲忙查询/时间建议                  | [calendar.md](./references/products/calendar.md)               |
 | `chat`            | 群聊与机器人：搜索群/建群/群成员管理/改群名/消息发送(文本/Markdown/图片/文件)/拉取消息/消息收藏/@我/特别关注/机器人群发/单聊/撤回/转发/引用回复/Webhook/机器人搜索 | [chat.md](./references/products/chat.md)                       |
 | `contact`         | 通讯录：用户查询/部门/角色/花名册（学历/家庭/银行卡/紧急联系人/合同等基础字段）/离职员工/特别关注，以及创建企业、企业账号和邀请员工；不含职业历程/绩效/人才池（那些去 `hrbrain`） | [contact.md](./references/products/contact.md)                 |
+| `dev`             | 开放平台开发者：应用生命周期/机器人建号与配置/凭证/权限/事件订阅/版本发布审批/本地建联（dev connect）；**创建或建联机器人一律走 `dev`，不走 `chat`** | [dev.md](./references/products/dev.md)                         |
 | `devdoc`          | 开放平台文档：搜索开发文档                                        | [devdoc.md](./references/products/devdoc.md)                   |
 | `ding`            | DING消息：发送/撤回（应用内/短信/电话）                              | [ding.md](./references/products/ding.md)                       |
 | `doc`             | 钉钉文档：搜索/浏览/读写/块级编辑/评论/文件创建/复制/移动/重命名/**删除/导出 docx/权限管理/媒体上传下载**       | [doc.md](./references/products/doc.md)                         |
@@ -104,7 +105,7 @@ metadata:
 
 ## 意图判断决策树
 
-用户提到"AI应用/创建应用/生成系统/做工具/管理后台/低代码/宜搭" → **当前无稳定产品参考**（勿猜 `aiapp` 命令）；向用户说明该能力未以产品文档发布
+用户提到"AI应用/创建应用/生成系统/做工具/管理后台/低代码/宜搭" → 产品参考以 [dev.md](./references/products/dev.md) 为准（勿猜 `aiapp` 等未在 dev.md 列出的命令，命令以 `dws dev --help` 实测为准）；应用创建/机器人建号与建联流程见该文「典型工作流」
 用户提到"目标管理/Agoal/战略解码/经营合约/计分卡/目标模板/周月报提交统计" → `agoal`
 用户提到"找人/搜人/谁负责 XX/某事项的负责人/某项目的人/团队成员/上级/下级/按工号找人/按手机号找人" → `aisearch`（通用语义找人；若明确涉及人才池/绩效/职业历程/结构化高级条件，去 `hrbrain`）
 用户提到"表格/多维表/AI表格/记录/数据/视图/图表/仪表盘" → `aitable`
@@ -306,7 +307,7 @@ Schema 与 Help 冲突是**契约漂移**，不得静默猜测或把两边字段
 - [references/global-reference.md](./references/global-reference.md) — 全局标志、认证、输出格式
 - [references/field-rules.md](./references/field-rules.md) — AI表格字段类型规则
 - [references/error-codes.md](./references/error-codes.md) — 错误码 + 调试流程
-- [scripts/](./scripts/) — 各产品批量/复合操作脚本（AI表格批量导入导出、日历、机器人消息、通讯录、考勤、日志、待办、钉盘目录树等）
+- [scripts/](./scripts/) — 各产品批量/复合操作脚本（AI表格批量导入导出、日历、通讯录、考勤、日志、待办、钉盘目录树等）
 - [references/products/aitable/](./references/products/aitable/) — AI表格细分章节(单元格值/字段/公式/筛选/导入导出/记录增删改查/错误恢复/最佳实践);记录操作另见 [aitable-record-ops.md](./references/products/aitable-record-ops.md)
 - [references/products/pat.md](./references/products/pat.md) — PAT 浏览器策略、行为 scope 预览与授权安全要求
 - [references/capability-limits.md](./references/capability-limits.md) — 已知能力限制（doc/aitable/chat/minutes，遇到时直接告知用户不支持）

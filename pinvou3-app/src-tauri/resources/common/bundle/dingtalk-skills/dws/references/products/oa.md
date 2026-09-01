@@ -29,36 +29,41 @@ Flags:
 
 ### 同意审批
 
-> **CAUTION:** 审批决策不可撤回 — 执行前必须向用户确认。
+> **CAUTION:** 审批决策不可撤回 — 执行前必须向用户确认，确认后加 `--yes`。
 
 ```
 Usage:
   dws oa approval approve [flags]
 Example:
-  dws oa approval approve --instance-id <id> --task-id <taskId>
-  dws oa approval approve --instance-id <id> --task-id <taskId> --remark "同意"
+  dws oa approval approve --instance-id <id> --task-id <taskId> --yes
+  dws oa approval approve --instance-id <id> --task-id <taskId> --remark "同意" --yes
 Flags:
       --instance-id string   审批实例 ID (必填)
       --remark string        审批意见 (可选)
       --task-id string       审批任务 ID (必填)
+      --yes                  跳过确认（用户已同意后使用）
 ```
 
 ### 拒绝审批
 
-> **CAUTION:** 审批决策不可撤回 — 执行前必须向用户确认。
+> **CAUTION:** 审批决策不可撤回 — 执行前必须向用户确认，确认后加 `--yes`。
 
 ```
 Usage:
   dws oa approval reject [flags]
 Example:
-  dws oa approval reject --instance-id <id> --task-id <taskId> --remark "不同意"
+  dws oa approval reject --instance-id <id> --task-id <taskId> --remark "不同意" --yes
 Flags:
       --instance-id string   审批实例 ID (必填)
       --remark string        审批意见 (可选)
       --task-id string       审批任务 ID (必填)
+      --yes                  跳过确认（用户已同意后使用）
 ```
 
 ### 撤销已发起的审批
+
+> **CAUTION:** 撤销不可恢复 — 危险操作，执行前必须向用户确认，确认后加 `--yes`。
+
 ```
 Usage:
   dws oa approval revoke [flags]
@@ -68,6 +73,7 @@ Example:
 Flags:
       --instance-id string   审批实例 ID (必填)
       --remark string        撤销说明 (可选)
+      --yes                  跳过确认（用户已同意后使用）
 ```
 
 ### 获取审批操作记录
@@ -705,14 +711,14 @@ dws oa approval detail --instance-id <processInstanceId> --format json
 # 3. 获取待审批任务 ID — 提取 taskId
 dws oa approval tasks --instance-id <processInstanceId> --format json
 
-# 4a. 同意审批
-dws oa approval approve --instance-id <id> --task-id <taskId> --remark "同意" --format json
+# 4a. 同意审批（先向用户确认，同意后加 --yes 执行）
+dws oa approval approve --instance-id <id> --task-id <taskId> --remark "同意" --yes --format json
 
-# 4b. 拒绝审批
-dws oa approval reject --instance-id <id> --task-id <taskId> --remark "不符合要求" --format json
+# 4b. 拒绝审批（先向用户确认，同意后加 --yes 执行）
+dws oa approval reject --instance-id <id> --task-id <taskId> --remark "不符合要求" --yes --format json
 
-# 5. 撤销自己发起的审批
-dws oa approval revoke --instance-id <id> --remark "误发起" --format json
+# 5. 撤销自己发起的审批（高危；非交互环境不带 --yes 会 confirmation_required 失败）
+dws oa approval revoke --instance-id <id> --remark "误发起" --yes --format json
 
 # 6. 查看审批操作记录
 dws oa approval records --instance-id <processInstanceId> --format json
@@ -806,4 +812,6 @@ dws oa approval create-instance --request '{"processCode":"PROC-xxx","deptId":-1
 | 脚本 | 场景 | 用法 |
 |------|------|------|
 | [oa_pending_review.py](../../scripts/oa_pending_review.py) | 查看待审批列表+逐条显示详情 | `python3 oa_pending_review.py --days 7` |
-| [oa_batch_approve.py](../../scripts/oa_batch_approve.py) | 批量同意/拒绝审批项 | `python3 oa_batch_approve.py --action approve --days 7` |
+| [oa_batch_approve.py](../../scripts/oa_batch_approve.py) | 批量同意/拒绝审批项。**确认语义**：不带 `--yes` 且非 `--dry-run` 时脚本会 `input()` 交互确认——Agent 非交互环境（stdin 非 TTY）裸跑会 `EOFError`，必须先向用户确认、同意后加 `--yes` 执行；`--dry-run` 仅预览命令不执行 | `python3 oa_batch_approve.py --action approve --days 7 --yes` |
+
+> 单命令速查形态（每命令一条 Usage/Example，无说明文字）见 [simple.md](./simple.md)；完整口径（Flags 全列、错误处理、脚本语义）以本文件为准。
