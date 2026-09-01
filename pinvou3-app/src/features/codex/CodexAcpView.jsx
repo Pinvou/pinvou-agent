@@ -2024,6 +2024,12 @@ export function CodexAcpView({
       });
       // 跨会话竞态：await 期间会话被程序化切换（remote control）时，UI 收口
       // 动作只认原会话；重载/状态刷新已由上面的调用按 sessionId 定向完成。
+      // 已知取舍：若重载失败且暂存了 pendingNotice，此早退（或用户切会话触发
+      // 的 [activeId] 复位）会丢弃补发——回到该会话时时间线按磁盘重注水，仅
+      // 少一条内联提示；undo 侧有 refresh 重查 rewind_undo_state 的自愈兜底，
+      // rewind 的 notice 无等价物（仅写内存 lane，不落盘）。而「重载失败+用户
+      // 取消重试」路径不补发是有意的：彼时屏上仍是截断前的陈旧时间线，补发
+      // 「已回退」反而误导。
       if (activeIdRef.current !== sessionId) return;
       if (reloadError) {
         // 回退已在后端生效：把成功结果随目标暂存（pendingNotice），重试只补
