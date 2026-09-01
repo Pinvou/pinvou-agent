@@ -579,7 +579,7 @@ dictJa.uiToolCommon = {
   builtinEnabled: '内蔵 · モード制御', comingSoon: '近日公開',
   disconnect: '切断', uninstall: 'アンインストール', reauthorize: '再認証',
   connect: '接続', configure: '設定', install: 'インストール', update: '更新',
-  repair: '修復',
+  repair: '修復', editDisplay: '編集',
 };
 
 dictJa.uiChatScenes = {
@@ -791,7 +791,11 @@ desktopHint:'先にデスクトップで Obsidian をインストールして保
   writingMcpConfig:'MCP 設定を書き込んでいます…', validatingApiKey:'API キーとリモートツールを確認しています…', downloadingDeps:'初回インストールでは依存関係をダウンロードします。しばらくお待ちください…',
   waitingBrowserAuth:'ブラウザーでの認証完了を待機しています。', browserOpenedWaiting:'ブラウザーを開きました。認証を待機しています…',
   operationFailedWith:e=>`操作に失敗しました：${e}`,
-  importingSkill:'プラグインパッケージをインポート中…', validatingSkillPackage:'検証・展開中', skillImported:'プラグインパッケージをインポートしました', importFailedWith:e=>`インポートに失敗しました：${e}`,
+  importingSkill:'プラグインパッケージをインポート中…', validatingSkillPackage:'検証・展開中', importFailedWith:e=>`インポートに失敗しました：${e}`,
+  editDisplayTitle:name=>`「${name}」の表示情報を編集`, displayNameLabel:'表示名', displayNamePlaceholder:'空の場合はデフォルト名に戻ります',
+  displayDescriptionLabel:'表示説明', displayDescriptionPlaceholder:'空の場合はデフォルトの説明に戻ります',
+  editDisplayHint:'表示のみを変更し、パッケージ ID と内容は変更されません。単一スキルのパッケージでは説明を SKILL.md に同期します（空にすると元の値に戻します）。',
+  editDisplaySave:'保存', editDisplaySaved:'表示設定を保存しました',
   uploadSkillPackage:'プラグインパッケージをアップロード', dropSkillZipHere:'離してプラグインパッケージ (zip) またはスキルファイル (.md) をインポート', zipTooLarge:mb=>`ファイルが ${mb}MiB の上限を超えています`, visibilityLoadFailed:'表示設定の読み込みに失敗しました。再試行してください（保存済みの設定は変更されません）。',
   updatedQuoted:name=>`「${name}」を更新しました`, updateSkillTitle:name=>`「${name}」を更新`,
   updateSkillOverwriteHint:'ストアの最新バージョンで上書きします。このスキルへのローカルの変更は失われます。',

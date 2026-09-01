@@ -324,7 +324,12 @@ pub(crate) fn read_zip_entry_bounded(
 /// staged 路径 `bundles/<id>.tmp` 与 `.old` 备份（线程 B 可删线程 A 的在建目录），
 /// 且 same_package_content 冲突检查与原子 rename 之间无锁即 TOCTOU——必须由调用方
 /// 持锁覆盖「冲突检查 → 原子 rename 完成」整段临界区。不同包 id 持不同锁，互不阻塞。
-fn import_lock_for(id: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+///
+/// `pub(crate)`：展示名/说明编辑（skill_marketplace::update_display_meta）的
+/// SKILL.md 读改写段也持同一把锁——导入的「rename → 重基线备份」与编辑的
+/// 「读 SKILL.md/备份 → 写回」因此真正互斥（锁序一致：本锁 → store file_lock，
+/// 无死锁面），不再是仅靠注释声明的弱约定。
+pub(crate) fn import_lock_for(id: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
     static LOCKS: std::sync::OnceLock<
         std::sync::Mutex<std::collections::BTreeMap<String, std::sync::Arc<std::sync::Mutex<()>>>>,
     > = std::sync::OnceLock::new();
@@ -1015,6 +1020,23 @@ pub fn import_plugin_package(
         let _ = std::fs::remove_dir_all(&backup);
     }
 
+    // 导入即重基线：包内容整体替换后，旧包的 SKILL.md 说明备份（存于 extra，
+    // upsert_preserving 原样保留）随之失效——不清掉会让「清覆盖恢复」把**旧包**
+    // 的原描述写进新包（口径同 skill_marketplace::import_package_named）。三条
+    // UI 上传通道（选文件/拖 zip/拖 .md）都汇聚在这条统一导入路径上；首装无
+    // 备份时不写，避免无谓 churn。
+    // 位置契约：必须在 rename 成功之后**立即**执行、早于任何可能失败的供给
+    // 步骤（install_upload / upsert_preserving）。重基线与否取决于「内容已整
+    // 体替换」而非「整个导入成功」——若供给在重基线前失败早退（如 MCP 凭据缺
+    // 失），磁盘已是新包而备份仍指旧包，后续「清覆盖恢复」会把旧描述写进新
+    // SKILL.md（正是本块要防的损坏类）。
+    // 锁边界（MINOR 1 口径）：本块全程持有 import_lock（guard 至函数尾）；
+    // 展示说明的回写/恢复（update_display_meta → sync_display_description）在
+    // SKILL.md 读改写段**同样持有同 id 的 import_lock**（锁序一致：import_lock
+    // → store file_lock），同 id 的导入与编辑因此真正互斥，无「读备份 → 写
+    // SKILL.md」窗口被重导入插队的竞态。
+    let store = super::store::BundleStore::new();
+    super::skill_marketplace::rebaseline_skill_desc_backup(&store, &id, "统一导入");
     // 供给：MCP 组件走 install 管线写 mcp.json + installed.json（底座据此拉起 server，
     // 工具才能注册可用）。纯 skill 包无 mcp/ 目录，跳过（技能走物化通道）。
     // 注：旧 spanner 供给路径已删除；skill 包无可执行供给（tools[]/runtime 协议
@@ -1063,6 +1085,9 @@ pub fn import_plugin_package(
     if let Err(e) = super::store::BundleStore::new().upsert_preserving(record) {
         log::warn!("[plugin-import] bundles.json 镜像写入失败（import {id}）: {e}");
     }
+    // （导入即重基线：包内容整体替换后旧包的说明备份随之失效，必须在 rename
+    // 成功后立即清理、早于任何可能失败的供给步骤——见上方 rename 成功后的
+    // 重基线块，勿移回此处。）
 
     Ok(PluginImportReport {
         id,
@@ -1302,6 +1327,191 @@ mod tests {
         );
         assert!(pkg.join("icon.svg").is_file(), "缺省图标应落盘");
         assert!(pkg.join("plugin.json").is_file(), "派生 plugin.json 应落盘");
+
+        match prev {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 统一导入路径（三条 UI 上传通道的汇聚点）重导入时必须重基线 SKILL.md 说明
+    /// 备份：导入 v1 → 设说明（备份 orig1）→ 按文档建议删包目录后导入 v2 →
+    /// 旧备份必须被丢弃，清覆盖后恢复的是 v2 的 orig2，而非旧包的 orig1
+    /// （重基线修复最初只落在遗留路径 import_package_named 上，UI 全走不到）。
+    #[test]
+    fn unified_reimport_rebaselines_skill_description_backup() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-unified-rebaseline-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        let make_zip = |path: &std::path::Path, desc: &str| {
+            let f = std::fs::File::create(path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("my-skill/SKILL.md", opts).unwrap();
+            zw.write_all(format!("---\nname: greet\ndescription: {desc}\n---\n# hi").as_bytes())
+                .unwrap();
+            zw.finish().unwrap();
+        };
+        make_zip(&dir.join("v1.zip"), "orig1");
+
+        let report =
+            import_plugin_package(&dir.join("v1.zip").to_string_lossy(), "v1.zip").unwrap();
+        assert_eq!(report.id, "greet");
+        let store = crate::features::marketplace::store::BundleStore::new();
+        assert!(
+            store.skill_desc_backup("greet").unwrap().is_none(),
+            "首装不应有备份"
+        );
+
+        // 设展示说明：单技能包回写 SKILL.md + 备份原值 orig1
+        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+            .update_display_meta("greet", None, Some("new desc"))
+            .unwrap();
+        assert_eq!(
+            store.skill_desc_backup("greet").unwrap().as_deref(),
+            Some("orig1"),
+            "首次回写应备份原值"
+        );
+
+        // 文档 §12 的换版路径：删除包目录（保留登记）后重导入 v2（内容不同）
+        let _ = std::fs::remove_dir_all(dir.join("bundles").join("greet"));
+        make_zip(&dir.join("v2.zip"), "orig2");
+        let report =
+            import_plugin_package(&dir.join("v2.zip").to_string_lossy(), "v2.zip").unwrap();
+        assert_eq!(report.id, "greet");
+
+        // 重基线断言（回归点）：旧包备份必须被丢弃，展示覆盖本身按语义保留
+        assert_eq!(
+            store.skill_desc_backup("greet").unwrap(),
+            None,
+            "统一导入重导入必须重基线说明备份（旧包备份恢复进新包=数据损坏）"
+        );
+        assert_eq!(
+            crate::features::marketplace::store::display_override(
+                &store.get("greet").unwrap().unwrap(),
+                crate::features::marketplace::store::EXTRA_DISPLAY_DESCRIPTION
+            )
+            .as_deref(),
+            Some("new desc"),
+            "展示覆盖按既定语义跨重导入保留"
+        );
+
+        // 清覆盖：无备份 → 不动文件，SKILL.md 保持 v2 的 orig2（而非被恢复成 orig1）
+        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+            .update_display_meta("greet", None, Some(""))
+            .unwrap();
+        let md = std::fs::read_to_string(dir.join("bundles/greet/skills/greet/SKILL.md")).unwrap();
+        assert!(
+            md.contains("description: orig2"),
+            "SKILL.md 应保持新包原值: {md}"
+        );
+        assert!(!md.contains("orig1"), "旧包原值不得被恢复进新包: {md}");
+
+        match prev {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 供给失败不得绕过重基线（位置契约回归钉）：统一导入在 rename 成功后
+    /// 立即重基线、早于任何可失败的供给步骤。v2 附 mcp/manifest.json 触发
+    /// 供给，并预置形状损坏的 mcp.json（合法 JSON 但 servers 非对象）令
+    /// add_to_mcp_json 确定性失败——导入返回 Err 后，旧包说明备份必须已被
+    /// 丢弃，磁盘包目录已是 v2 内容。若未来把重基线挪回供给之后，本测试必红。
+    #[test]
+    fn unified_import_rebaselines_backup_even_when_supply_fails() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-unified-rebaseline-supply-fail-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        let make_zip = |path: &std::path::Path, desc: &str, with_mcp: bool| {
+            let f = std::fs::File::create(path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("my-skill/SKILL.md", opts).unwrap();
+            zw.write_all(format!("---\nname: greet\ndescription: {desc}\n---\n# hi").as_bytes())
+                .unwrap();
+            if with_mcp {
+                // 字段完整的合法 manifest（ToolManifest 必填字段齐全）→ 探测
+                // 阶段认作 MCP 组件（包 id 取自它，与技能 frontmatter name 同
+                // 值以命中同一条登记）；供给真正必败点在下方预置的形状损坏
+                // mcp.json（servers 非对象），与 manifest 内容无关。
+                zw.start_file("mcp/manifest.json", opts).unwrap();
+                zw.write_all(
+                    br#"{"id":"greet","name":"greet","description":"t","version":"0.0.1","icon":"","category":"custom","mcp_tools":[],"command":"echo","args":[]}"#,
+                )
+                .unwrap();
+            }
+            zw.finish().unwrap();
+        };
+        make_zip(&dir.join("v1.zip"), "orig1", false);
+
+        let report =
+            import_plugin_package(&dir.join("v1.zip").to_string_lossy(), "v1.zip").unwrap();
+        assert_eq!(report.id, "greet");
+        let store = crate::features::marketplace::store::BundleStore::new();
+        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+            .update_display_meta("greet", None, Some("new desc"))
+            .unwrap();
+        assert_eq!(
+            store.skill_desc_backup("greet").unwrap().as_deref(),
+            Some("orig1"),
+            "首次回写应备份原值"
+        );
+
+        // 预置形状损坏的 mcp.json（合法 JSON 但 servers 非对象）：后续
+        // install_upload 在 add_to_mcp_json 处确定性失败，无需外部依赖。
+        let mcp_path = crate::platform::paths::mcp_config_path();
+        std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+        std::fs::write(&mcp_path, r#"{"servers": "broken"}"#).unwrap();
+
+        // 文档 §12 的换版路径：删除包目录（保留登记）后重导入 v2（附 MCP 组件）
+        let _ = std::fs::remove_dir_all(dir.join("bundles").join("greet"));
+        make_zip(&dir.join("v2.zip"), "orig2", true);
+        let err = import_plugin_package(&dir.join("v2.zip").to_string_lossy(), "v2.zip")
+            .expect_err("MCP 供给必须失败");
+        assert!(err.contains("MCP 供给失败"), "失败须来自供给步骤: {err}");
+
+        // 回归点：供给失败早退不得绕过重基线——备份已丢弃，磁盘已是 v2。
+        assert_eq!(
+            store.skill_desc_backup("greet").unwrap(),
+            None,
+            "供给失败时重基线必须已发生（否则清覆盖会把旧包描述写进新包）"
+        );
+        let md = std::fs::read_to_string(dir.join("bundles/greet/skills/greet/SKILL.md")).unwrap();
+        assert!(
+            md.contains("description: orig2"),
+            "磁盘包目录应为 v2 内容: {md}"
+        );
 
         match prev {
             // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.

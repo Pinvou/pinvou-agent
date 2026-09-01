@@ -31,6 +31,21 @@ const SCHEMA_VERSION: u32 = 1;
 /// 包只引用不拥有 —— §4 规则 2）。后续收编 pip 依赖时新增种类常量。
 pub const ASSET_KIND_CLI: &str = "cli";
 
+/// 上传包的用户自定义 UI 展示名/说明在记录 `extra` map 里的 key（只改展示，
+/// 机读 id / 目录 / frontmatter name 一律不动；见 docs/plugin-package-spec.md）。
+pub const EXTRA_DISPLAY_NAME: &str = "display_name";
+pub const EXTRA_DISPLAY_DESCRIPTION: &str = "display_description";
+
+/// 单技能包**首次回写 SKILL.md 前**留存的 frontmatter 原 description 备份 key
+/// （清空展示说明时恢复原值用）。空串哨兵 = 原本没有 description；缺 key =
+/// 从未回写过（多技能/纯 MCP 包不回写，也不存备份）。
+pub const EXTRA_SKILL_DESC_BACKUP: &str = "skill_description_backup";
+
+/// 展示名校验上限（字符数）。
+pub const MAX_DISPLAY_NAME_CHARS: usize = 64;
+/// 展示说明校验上限（字符数；对齐 skill_marketplace 的 description 展示截断口径）。
+pub const MAX_DISPLAY_DESCRIPTION_CHARS: usize = 240;
+
 /// `bundles.json` 读-改-写的进程内串行化：统一管线登记、首启导入、后续开关命令
 /// 都可能并发触发同一份文件的读-改-写，串行化避免交错丢更新（与
 /// `disabled_connectors.json` / `disabled_skills.json` 同一范式）。
@@ -291,6 +306,25 @@ impl BundleStore {
         save_locked(&self.file, &file)
     }
 
+    /// 仅当记录仍存在时更新内容指纹（单锁 RMW，原子落盘）。id 不存在 →
+    /// Ok(false) 不写盘——「读记录 → upsert_preserving 补写」的两段式在并发
+    /// 卸载下会把已删除记录按 stale 快照复活（upsert_preserving 对不存在的
+    /// id 直接插入），指纹补写必须走本方法而非两段式。
+    pub fn update_content_fingerprint_if_exists(
+        &self,
+        id: &str,
+        fingerprint: &str,
+    ) -> Result<bool, String> {
+        let _guard = file_lock();
+        let mut file = load_locked(&self.file)?;
+        let Some(record) = file.records.iter_mut().find(|r| r.id == id) else {
+            return Ok(false);
+        };
+        record.content_fingerprint = Some(fingerprint.to_string());
+        save_locked(&self.file, &file)?;
+        Ok(true)
+    }
+
     /// 按 id 删除记录（读-改-写全程持锁，原子落盘）。id 不存在 → Ok(false)，不写盘。
     pub fn remove(&self, id: &str) -> Result<bool, String> {
         let _guard = file_lock();
@@ -329,6 +363,89 @@ impl BundleStore {
         Ok(true)
     }
 
+    /// 设置上传包的用户自定义 UI 展示名/说明（写在记录 `extra` map 的
+    /// `display_name` / `display_description` key，不动包目录与包清单）。
+    ///
+    /// - 记录不存在 → Err；`source` 非 Upload → Err（预置/内置包不可覆盖）；
+    /// - `Some(v)`：trim 后为空 = 删除该 key（清空回退默认展示）；非空 = 长度/
+    ///   控制字符校验后写入 trim 值，违规 → Err；
+    /// - `None` = 该字段不动；两个都 None = no-op 成功（仍要求记录存在且为 Upload）。
+    pub fn set_display_meta(
+        &self,
+        id: &str,
+        display_name: Option<&str>,
+        display_description: Option<&str>,
+    ) -> Result<(), String> {
+        let _guard = file_lock();
+        let mut file = load_locked(&self.file)?;
+        let Some(record) = file.records.iter_mut().find(|r| r.id == id) else {
+            return Err(format!("包 '{id}' 未登记，无法设置展示名/说明"));
+        };
+        if !matches!(record.source, BundleSource::Upload(_)) {
+            return Err(format!(
+                "包 '{id}' 非用户上传来源，预置/内置包不允许覆盖展示名/说明"
+            ));
+        }
+        if display_name.is_none() && display_description.is_none() {
+            return Ok(());
+        }
+        apply_display_meta(
+            &mut record.extra,
+            EXTRA_DISPLAY_NAME,
+            "展示名",
+            display_name,
+            MAX_DISPLAY_NAME_CHARS,
+        )?;
+        apply_display_meta(
+            &mut record.extra,
+            EXTRA_DISPLAY_DESCRIPTION,
+            "展示说明",
+            display_description,
+            MAX_DISPLAY_DESCRIPTION_CHARS,
+        )?;
+        save_locked(&self.file, &file)
+    }
+
+    /// 读取记录的 SKILL.md 原说明备份（[`EXTRA_SKILL_DESC_BACKUP`]；缺 key /
+    /// 非字符串 → None；`Some("")` = 原缺失哨兵）。清空展示说明的恢复路径用。
+    pub fn skill_desc_backup(&self, id: &str) -> Result<Option<String>, String> {
+        let _guard = file_lock();
+        let file = load_locked(&self.file)?;
+        Ok(file
+            .records
+            .iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.extra.get(EXTRA_SKILL_DESC_BACKUP))
+            .and_then(|v| v.as_str())
+            .map(str::to_string))
+    }
+
+    /// 设置/删除 [`EXTRA_SKILL_DESC_BACKUP`]（与 `set_display_meta` 同锁同门禁：
+    /// 仅 Upload 记录可写）。值由内部读取/校验管线产生（引擎口径原值或空串哨兵），
+    /// 不做展示字段校验；`None` = 删除 key。
+    pub fn set_skill_desc_backup(&self, id: &str, backup: Option<&str>) -> Result<(), String> {
+        let _guard = file_lock();
+        let mut file = load_locked(&self.file)?;
+        let Some(record) = file.records.iter_mut().find(|r| r.id == id) else {
+            return Err(format!("包 '{id}' 未登记，无法备份技能说明原值"));
+        };
+        if !matches!(record.source, BundleSource::Upload(_)) {
+            return Err(format!("包 '{id}' 非用户上传来源，不允许写说明备份"));
+        }
+        match backup {
+            Some(v) => {
+                record.extra.insert(
+                    EXTRA_SKILL_DESC_BACKUP.to_string(),
+                    serde_json::Value::String(v.to_string()),
+                );
+            }
+            None => {
+                record.extra.remove(EXTRA_SKILL_DESC_BACKUP);
+            }
+        }
+        save_locked(&self.file, &file)
+    }
+
     /// 首启一次性导入（§9）：从旧布局（installed.json + bundle/skills/* 的
     /// `.installed-from` 标记 + connectors/<platform>/bin/ 存量 CLI 二进制）反推
     /// 已装包，登记进 bundles.json。
@@ -365,6 +482,130 @@ impl BundleStore {
 // ---------------------------------------------------------------------------
 // 已持锁实现（取锁包装之上的内层；调用前必须已持有 BUNDLES_FILE_LOCK）
 // ---------------------------------------------------------------------------
+
+/// 单个展示字段的写入语义（`set_display_meta` 用）：None 不动；trim 后空 = 删 key
+/// （回退默认展示）；非空走 [`check_display_value`] 校验后写 trim 值。
+fn apply_display_meta(
+    extra: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    field_label: &str,
+    value: Option<&str>,
+    max_chars: usize,
+) -> Result<(), String> {
+    let Some(v) = value else {
+        return Ok(());
+    };
+    let trimmed = v.trim();
+    if trimmed.is_empty() {
+        extra.remove(key);
+        return Ok(());
+    }
+    check_display_value(field_label, trimmed, max_chars)?;
+    extra.insert(
+        key.to_string(),
+        serde_json::Value::String(trimmed.to_string()),
+    );
+    Ok(())
+}
+
+/// 展示字段值的统一校验（写入与预检共用同一口径）：控制字符/换行/不可见字符
+/// （bidi 控制、零宽、BOM、行/段分隔符等，见 [`is_display_unsafe_char`]）一律
+/// 拒绝（单行 UI 展示与 SKILL.md 单行回写都无法表达，或可视觉欺骗，此条各包
+/// 形态行为一致），超过字符上限 → Err。`field_label` 用人类可读字段名，不外泄
+/// 内部 key。
+///
+/// 注意：单技能包的 SKILL.md 同步在回写时另有更严的单行互洽限制（拒双引号/
+/// 反斜杠/首尾单引号，见 `rewrite_frontmatter_description`）——同一值在非
+/// 单技能包可存、在单技能包会被整体拒绝，这是同步能力差异使然，不是本函数的
+/// 口径不一致。
+/// 展示字段值的不可见字符拒绝集：`Cc`（控制字符/换行）之外，补充对卡片标题/
+/// composer 菜单/SKILL.md 回写都有实际危害或显示异常的不可见字符——
+/// - 双向控制（U+202A–202E、U+2066–2069）：可视觉重排/隐藏文本（bidi 欺骗）；
+/// - 零宽（U+200B–200D）、BOM（U+FEFF）、软连字符（U+00AD）：不可见但参与
+///   比较/搜索/指纹，还会被原样写进 SKILL.md；
+/// - 行/段分隔符（U+2028/2029，`Zl`/`Zp`）：单行 UI 与单行 frontmatter 都
+///   无法表达，效果等同换行。
+/// std 无通用 Unicode 类别 API，此处按具名范围精确拒绝；未列出的 Cf 变体
+/// （如变体选择符）不拦——宁可少拦可见字符，不误伤正常文案。
+fn is_display_unsafe_char(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{00AD}' // SOFT HYPHEN
+            | '\u{200B}'..='\u{200D}' // ZERO WIDTH SPACE..JOINER
+            | '\u{2028}'..='\u{2029}' // LINE/PARAGRAPH SEPARATOR
+            | '\u{202A}'..='\u{202E}' // bidi embedding/override controls
+            | '\u{2066}'..='\u{2069}' // bidi isolate controls
+            | '\u{FEFF}' // BOM / ZERO WIDTH NO-BREAK SPACE
+        )
+}
+
+fn check_display_value(field_label: &str, v: &str, max_chars: usize) -> Result<(), String> {
+    if v.chars().any(is_display_unsafe_char) {
+        return Err(format!("{field_label}含控制字符/不可见字符/换行，不支持"));
+    }
+    if v.chars().count() > max_chars {
+        return Err(format!("{field_label}超过 {max_chars} 字符上限"));
+    }
+    Ok(())
+}
+
+/// 展示名/说明的长度/字符预检（`sync_display_meta` 在回写 SKILL.md **之前**
+/// 调用；`apply_display_meta` 内仍有同口径校验兜底）。回写会先改包内容并重算
+/// 指纹，校验若只留在 `set_display_meta`，超长值会先落盘再报错，留下
+/// 「报错但包内容已变」的中间态——所以必须前置预检。None / trim 后空
+/// （= 清覆盖）不检；非空走 [`check_display_value`]。
+pub(crate) fn validate_display_meta(
+    display_name: Option<&str>,
+    display_description: Option<&str>,
+) -> Result<(), String> {
+    for (field_label, value, max_chars) in [
+        ("展示名", display_name, MAX_DISPLAY_NAME_CHARS),
+        (
+            "展示说明",
+            display_description,
+            MAX_DISPLAY_DESCRIPTION_CHARS,
+        ),
+    ] {
+        if let Some(v) = value.map(str::trim).filter(|s| !s.is_empty()) {
+            check_display_value(field_label, v, max_chars)?;
+        }
+    }
+    Ok(())
+}
+
+/// 上传来源的人类可读展示名回退：`Upload` 记录携带的原始文件名去扩展名
+/// （导入时已净化捕获，见命令层 safe_name/display）。上传包未设展示覆盖时
+/// 卡片标题回退到它，避免直接露出机读 id；扩展名剥空（如 ".zip"）或非
+/// Upload 来源 = None，调用方继续回退记录 id / manifest name。
+pub(crate) fn upload_display_fallback(record: &BundleRecord) -> Option<String> {
+    match &record.source {
+        BundleSource::Upload(filename) => {
+            let stem = filename
+                .rsplit_once('.')
+                .map(|(stem, _)| stem)
+                .unwrap_or(filename)
+                .trim();
+            if stem.is_empty() {
+                None
+            } else {
+                Some(stem.to_string())
+            }
+        }
+        _ => None,
+    }
+}
+
+/// 读记录的用户自定义展示字段（trim 后非空才生效；缺 key/空串/非字符串 = None，
+/// 调用方回退默认展示）。list 组装与 BundleInfo 组装共用此口径。
+pub(crate) fn display_override(record: &BundleRecord, key: &str) -> Option<String> {
+    record
+        .extra
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
 
 /// 内层读：与取锁包装分离，已持锁的 import/upsert 直接调用，避免 Mutex 重入。
 fn load_locked(path: &Path) -> Result<BundlesFile, String> {
@@ -1028,6 +1269,270 @@ mod tests {
             assert_eq!(
                 store.get("new-one").unwrap().unwrap().source,
                 BundleSource::Preset
+            );
+        });
+    }
+
+    /// 展示名/说明覆盖：设置 → 读回；trim 空串 = 删 key 回退默认；None = 不动；
+    /// 镜像写（upsert_preserving）不得丢 extra 里的展示覆盖。
+    #[test]
+    fn set_display_meta_roundtrip_and_clear() {
+        with_temp_home(|| {
+            let store = BundleStore::new();
+            store
+                .upsert(record("up", BundleSource::Upload("pkg.zip".to_string())))
+                .unwrap();
+
+            store
+                .set_display_meta("up", Some("  我的天气包 "), Some("查天气、看预警"))
+                .unwrap();
+            let rec = store.get("up").unwrap().unwrap();
+            assert_eq!(
+                display_override(&rec, EXTRA_DISPLAY_NAME).as_deref(),
+                Some("我的天气包"),
+                "写入值应 trim 后落盘"
+            );
+            assert_eq!(
+                display_override(&rec, EXTRA_DISPLAY_DESCRIPTION).as_deref(),
+                Some("查天气、看预警")
+            );
+
+            // None = 该字段不动
+            store.set_display_meta("up", None, Some("新说明")).unwrap();
+            let rec = store.get("up").unwrap().unwrap();
+            assert_eq!(
+                display_override(&rec, EXTRA_DISPLAY_NAME).as_deref(),
+                Some("我的天气包")
+            );
+            assert_eq!(
+                display_override(&rec, EXTRA_DISPLAY_DESCRIPTION).as_deref(),
+                Some("新说明")
+            );
+
+            // trim 后空串 = 删除该 key（回退默认展示）
+            store.set_display_meta("up", Some("   "), None).unwrap();
+            let rec = store.get("up").unwrap().unwrap();
+            assert_eq!(display_override(&rec, EXTRA_DISPLAY_NAME), None);
+            assert!(!rec.extra.contains_key(EXTRA_DISPLAY_NAME));
+            assert_eq!(
+                display_override(&rec, EXTRA_DISPLAY_DESCRIPTION).as_deref(),
+                Some("新说明")
+            );
+
+            // 两个都 None = no-op 成功
+            store.set_display_meta("up", None, None).unwrap();
+
+            // 镜像写保留 extra 里的展示覆盖（重装不丢用户设置）
+            store
+                .upsert_preserving(record("up", BundleSource::Preset))
+                .unwrap();
+            let rec = store.get("up").unwrap().unwrap();
+            assert_eq!(rec.source, BundleSource::Upload("pkg.zip".to_string()));
+            assert_eq!(
+                display_override(&rec, EXTRA_DISPLAY_DESCRIPTION).as_deref(),
+                Some("新说明"),
+                "upsert_preserving 不得丢展示覆盖"
+            );
+        });
+    }
+
+    /// 上传文件名展示名回退：去扩展名 + trim；非 Upload 来源 / 扩展名剥空 = None。
+    #[test]
+    fn upload_display_fallback_strips_extension() {
+        let cases = [
+            ("my skill.zip", Some("my skill")),
+            ("notes.md", Some("notes")),
+            ("archive.tar.gz", Some("archive.tar")),
+            ("no-ext", Some("no-ext")),
+            ("  spaced .zip ", Some("spaced")),
+            (".zip", None),
+        ];
+        for (filename, expected) in cases {
+            let rec = record("up", BundleSource::Upload(filename.to_string()));
+            assert_eq!(
+                upload_display_fallback(&rec).as_deref(),
+                expected,
+                "filename={filename}"
+            );
+        }
+        assert_eq!(
+            upload_display_fallback(&record("p", BundleSource::Preset)),
+            None,
+            "非 Upload 来源无文件名回退"
+        );
+    }
+
+    /// 展示覆盖的写入门禁：记录不存在 / 非 Upload 来源 / 超长一律 Err 且不写盘。
+    #[test]
+    fn set_display_meta_rejects_invalid_targets_and_lengths() {
+        with_temp_home(|| {
+            let store = BundleStore::new();
+            store
+                .upsert(record("weather", BundleSource::Preset))
+                .unwrap();
+            store
+                .upsert(record("feishu", BundleSource::Builtin))
+                .unwrap();
+            store
+                .upsert(record("up", BundleSource::Upload("pkg.zip".to_string())))
+                .unwrap();
+
+            assert!(
+                store.set_display_meta("ghost", Some("x"), None).is_err(),
+                "记录不存在应 Err"
+            );
+            for id in ["weather", "feishu"] {
+                assert!(
+                    store.set_display_meta(id, Some("x"), None).is_err(),
+                    "非 Upload 来源（{id}）应拒绝覆盖"
+                );
+                assert!(
+                    store.get(id).unwrap().unwrap().extra.is_empty(),
+                    "拒绝后不得写入 extra"
+                );
+            }
+
+            let long_name = "名".repeat(MAX_DISPLAY_NAME_CHARS + 1);
+            let long_desc = "述".repeat(MAX_DISPLAY_DESCRIPTION_CHARS + 1);
+            assert!(
+                store
+                    .set_display_meta("up", Some(&long_name), None)
+                    .is_err()
+            );
+            assert!(
+                store
+                    .set_display_meta("up", None, Some(&long_desc))
+                    .is_err()
+            );
+            // 控制字符/换行/不可见字符：展示名与展示说明一律拒绝（单行 UI 展示
+            // 与单行 SKILL.md 回写都无法表达；bidi/零宽类可视觉欺骗或污染比较）
+            for bad in [
+                "含\n换行",
+                "含\t制表",
+                "含\u{7}控制符",
+                "bidi\u{202E}逆转",
+                "bidi\u{2066}隔离",
+                "零宽\u{200B}字符",
+                "\u{FEFF}BOM开头",
+                "软\u{00AD}连字符",
+                "行分隔\u{2028}符",
+            ] {
+                assert!(
+                    store.set_display_meta("up", Some(bad), None).is_err(),
+                    "展示名含控制/不可见字符应拒绝: {bad:?}"
+                );
+                assert!(
+                    store.set_display_meta("up", None, Some(bad)).is_err(),
+                    "展示说明含控制/不可见字符应拒绝: {bad:?}"
+                );
+            }
+            // 对照：emoji / 中文 / 空格等可见字符正常放行
+            store
+                .set_display_meta("up", Some("天气 ⛅ v2"), None)
+                .unwrap();
+            // 边界：恰好上限可写
+            let ok_name = "名".repeat(MAX_DISPLAY_NAME_CHARS);
+            let ok_desc = "述".repeat(MAX_DISPLAY_DESCRIPTION_CHARS);
+            store
+                .set_display_meta("up", Some(&ok_name), Some(&ok_desc))
+                .unwrap();
+            let rec = store.get("up").unwrap().unwrap();
+            assert_eq!(
+                display_override(&rec, EXTRA_DISPLAY_NAME).as_deref(),
+                Some(ok_name.as_str())
+            );
+            assert_eq!(
+                display_override(&rec, EXTRA_DISPLAY_DESCRIPTION).as_deref(),
+                Some(ok_desc.as_str())
+            );
+        });
+    }
+
+    /// 长度预检（update_display_meta 编排在回写 SKILL.md 之前调用）：
+    /// 超限/控制字符 Err、None/清空（trim 后空）放行、恰好上限放行——与
+    /// apply_display_meta 同口径，保证前置校验不会先改包内容再报错。
+    #[test]
+    fn validate_display_meta_matches_apply_limits() {
+        assert!(
+            validate_display_meta(Some(&"名".repeat(MAX_DISPLAY_NAME_CHARS + 1)), None).is_err()
+        );
+        assert!(
+            validate_display_meta(None, Some(&"述".repeat(MAX_DISPLAY_DESCRIPTION_CHARS + 1)))
+                .is_err()
+        );
+        assert!(validate_display_meta(Some("含\n换行"), None).is_err());
+        assert!(validate_display_meta(None, Some("含\t制表")).is_err());
+        // None / trim 后空（= 清覆盖，不触发回写）不检
+        assert!(validate_display_meta(None, None).is_ok());
+        assert!(validate_display_meta(Some("   "), Some("")).is_ok());
+        // 恰好上限可过
+        assert!(
+            validate_display_meta(
+                Some(&"名".repeat(MAX_DISPLAY_NAME_CHARS)),
+                Some(&"述".repeat(MAX_DISPLAY_DESCRIPTION_CHARS))
+            )
+            .is_ok()
+        );
+    }
+
+    /// 指纹补写单锁 RMW 的「不复活」契约：记录已卸载（remove）后补写必须
+    /// 返回 Ok(false) 且不重建记录。回归钉子——回退成「读记录 →
+    /// upsert_preserving 补写」两段式会把已删记录按 stale 快照复活
+    /// （upsert_preserving 对不存在的 id 直接插入），而整个套件仍全绿。
+    #[test]
+    fn update_content_fingerprint_does_not_resurrect_removed_record() {
+        with_temp_home(|| {
+            let store = BundleStore::new();
+            store
+                .upsert(record("up", BundleSource::Upload("pkg.zip".to_string())))
+                .unwrap();
+            assert!(store.remove("up").unwrap());
+            assert!(
+                !store
+                    .update_content_fingerprint_if_exists("up", "fp-after-uninstall")
+                    .unwrap()
+            );
+            assert!(store.get("up").unwrap().is_none());
+        });
+    }
+
+    /// SKILL.md 原说明备份：首写留存（含空串哨兵）、清 key、仅 Upload 可写、
+    /// upsert_preserving 保留。
+    #[test]
+    fn skill_desc_backup_roundtrip_and_gates() {
+        with_temp_home(|| {
+            let store = BundleStore::new();
+            store
+                .upsert(record("up", BundleSource::Upload("pkg.zip".to_string())))
+                .unwrap();
+            store
+                .upsert(record("preset", BundleSource::Preset))
+                .unwrap();
+
+            assert!(store.skill_desc_backup("up").unwrap().is_none());
+            store.set_skill_desc_backup("up", Some("原描述")).unwrap();
+            assert_eq!(
+                store.skill_desc_backup("up").unwrap().as_deref(),
+                Some("原描述")
+            );
+            // 空串哨兵 ≠ None
+            store.set_skill_desc_backup("up", Some("")).unwrap();
+            assert_eq!(store.skill_desc_backup("up").unwrap().as_deref(), Some(""));
+            // 清 key
+            store.set_skill_desc_backup("up", None).unwrap();
+            assert!(store.skill_desc_backup("up").unwrap().is_none());
+            // 门禁：ghost / 预置拒绝
+            assert!(store.set_skill_desc_backup("ghost", Some("x")).is_err());
+            assert!(store.set_skill_desc_backup("preset", Some("x")).is_err());
+            // upsert_preserving 不丢备份
+            store.set_skill_desc_backup("up", Some("原描述")).unwrap();
+            let mut rec = store.get("up").unwrap().unwrap();
+            rec.content_fingerprint = Some("fp".to_string());
+            store.upsert_preserving(rec).unwrap();
+            assert_eq!(
+                store.skill_desc_backup("up").unwrap().as_deref(),
+                Some("原描述"),
+                "upsert_preserving 不得丢备份 key"
             );
         });
     }

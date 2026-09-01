@@ -577,7 +577,7 @@ dictEn.uiToolCommon = {
   builtinEnabled: 'Built-in · Mode-controlled', comingSoon: 'Coming soon',
   disconnect: 'Disconnect', uninstall: 'Uninstall', reauthorize: 'Reauthorize',
   connect: 'Connect', configure: 'Configure', install: 'Install', update: 'Update',
-  repair: 'Repair',
+  repair: 'Repair', editDisplay: 'Edit',
 };
 
 dictEn.uiChatScenes = {
@@ -789,7 +789,11 @@ desktopHint:'Install Obsidian on the desktop and create a vault first, then chec
   writingMcpConfig:'Writing MCP configuration…', validatingApiKey:'Validating the API key and remote tools…', downloadingDeps:'The first install downloads dependencies—please wait…',
   waitingBrowserAuth:'Waiting for browser authorization to complete.', browserOpenedWaiting:'Browser opened; waiting for authorization…',
   operationFailedWith:e=>`Operation failed: ${e}`,
-  importingSkill:'Importing plugin package…', validatingSkillPackage:'Validating and extracting', skillImported:'Plugin package imported', importFailedWith:e=>`Import failed: ${e}`,
+  importingSkill:'Importing plugin package…', validatingSkillPackage:'Validating and extracting', importFailedWith:e=>`Import failed: ${e}`,
+  editDisplayTitle:name=>`Edit display info for "${name}"`, displayNameLabel:'Display name', displayNamePlaceholder:'Leave empty to fall back to the default name',
+  displayDescriptionLabel:'Display description', displayDescriptionPlaceholder:'Leave empty to fall back to the default description',
+  editDisplayHint:'Only changes how the card looks; the package id and contents are untouched. Single-skill packages sync the description into SKILL.md (clearing restores the original).',
+  editDisplaySave:'Save', editDisplaySaved:'Display settings saved',
   uploadSkillPackage:'Upload Plugin Package', dropSkillZipHere:'Drop to import a plugin package (zip) or skill file (.md)', zipTooLarge:mb=>`File exceeds the ${mb}MiB limit`, visibilityLoadFailed:'Failed to load visibility settings. Please retry (saved settings are unchanged).',
   updatedQuoted:name=>`"${name}" updated`, updateSkillTitle:name=>`Update "${name}"`,
   updateSkillOverwriteHint:'This overwrites the skill with the latest store version. Your local changes to it will be lost.',

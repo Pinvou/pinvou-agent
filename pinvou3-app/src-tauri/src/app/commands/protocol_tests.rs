@@ -237,6 +237,7 @@ command_protocol!(
         "list_marketplace_skills",
         "install_marketplace_skill",
         "update_marketplace_skill",
+        "update_bundle_display_meta",
         "import_skill_package",
         "import_plugin_package_cmd",
         "import_plugin_package_bytes_cmd",

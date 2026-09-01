@@ -1491,6 +1491,7 @@ pub fn run() {
             commands::marketplace::list_marketplace_skills,
             commands::marketplace::install_marketplace_skill,
             commands::marketplace::update_marketplace_skill,
+            commands::marketplace::update_bundle_display_meta,
             commands::marketplace::import_skill_package,
             commands::marketplace::import_skill_package_bytes,
             commands::marketplace::import_plugin_package_cmd,
