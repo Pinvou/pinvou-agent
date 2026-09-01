@@ -860,6 +860,10 @@ async function modalWidth(page, headingText) {
       && manualLocalEffort.selected.length === 1
       && manualLocalEffort.selected[0] === '关闭',
     JSON.stringify(manualLocalEffort));
+  // 本地模型的窗口来自探测的 max_model_len（权威值），不提供手动输入。
+  const localNoContextWindowField = await page.evaluate(() =>
+    !document.querySelector('[data-testid="model-form-context-window"]'));
+  rec('⑥.5c 本地模型表单不显示上下文窗口输入（探测值为权威）', localNoContextWindowField);
   await clickExact(page, '取消');
   await sleep(200);
 
@@ -897,7 +901,7 @@ async function modalWidth(page, headingText) {
       noTiersDuringWindow: buttons.length === 0,
     };
   });
-  rec('⑥.5c local-compatible probe window enters pending immediately, default four tiers not exposed',
+  rec('⑥.5d local-compatible probe window enters pending immediately, default four tiers not exposed',
     probeWindow.pendingShown && probeWindow.noTiersDuringWindow,
     JSON.stringify(probeWindow));
   // After the debounce (400ms) settles: the probe command must be issued and
@@ -909,7 +913,7 @@ async function modalWidth(page, headingText) {
     const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'probe_local_server_kind');
     return call && call.args;
   });
-  rec('⑥.5d probe command carries credential args (apiKey/modelId); authenticated endpoints no longer misjudged as generic',
+  rec('⑥.5e probe command carries credential args (apiKey/modelId); authenticated endpoints no longer misjudged as generic',
     !!probeCall
       && probeCall.baseUrl === 'http://127.0.0.1:8000/v1'
       && 'apiKey' in probeCall
@@ -917,6 +921,80 @@ async function modalWidth(page, headingText) {
     JSON.stringify(probeCall));
   await clickExact(page, '取消');
   await sleep(200);
+  // 自定义模型上下文窗口入口：目录未收录的新模型 ID（厂商新发布，如 1M 档）
+  // 此前没有任何指定窗口的入口，保存恒为 null，运行时只能落到 128K 保守值。
+  // 回归锁定：字段渲染（留空）、手动值随 save_model 落盘、编辑回显、清空=null。
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '云端模型');
+  await sleep(150);
+  await clickExact(page, 'OpenAI Compatible');
+  await sleep(300);
+  const customContextEntry = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const field = root && root.querySelector('[data-testid="model-form-context-window"]');
+    return {
+      visible: !!field,
+      empty: !!field && field.value === '',
+      hintShown: !!root && root.innerText.includes('1M 填 1048576'),
+    };
+  });
+  rec('⑥.5f 自定义兼容模型表单提供留空的上下文窗口入口与说明',
+    customContextEntry.visible && customContextEntry.empty && customContextEntry.hintShown,
+    JSON.stringify(customContextEntry));
+  const customModelIdInput = await page.$('input[placeholder="输入模型 ID"]');
+  await customModelIdInput.type('glm-5.3-flash');
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const typeInto = (input, text) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const baseUrlInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    typeInto(baseUrlInput, 'https://example.com/v1');
+    typeInto(root.querySelector('[data-testid="model-form-context-window"]'), '1048576');
+  });
+  const customKeyInput = await page.$('input[placeholder="输入 API Key"]');
+  await customKeyInput.type('sk-ctx-test');
+  await sleep(150);
+  await clickExact(page, '保存');
+  await sleep(500);
+  const savedCustomContext = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑥.5g 手动上下文窗口随 save_model 落盘',
+    savedCustomContext
+      && savedCustomContext.model === 'glm-5.3-flash'
+      && savedCustomContext.preset === 'openai_compatible'
+      && savedCustomContext.provider_kind === 'custom'
+      && savedCustomContext.base_url === 'https://example.com/v1'
+      && savedCustomContext.context_window_tokens === 1048576,
+    JSON.stringify(savedCustomContext));
+  await clickRowAction(page, 'glm-5.3-flash', '编辑');
+  await sleep(300);
+  const editContextEcho = await page.evaluate(() => {
+    const field = document.querySelector('[data-testid="model-form-context-window"]');
+    return { visible: !!field, value: field ? field.value : null };
+  });
+  rec('⑥.5h 编辑模型回显已保存的上下文窗口', editContextEcho.visible && editContextEcho.value === '1048576', JSON.stringify(editContextEcho));
+  await page.evaluate(() => {
+    const field = document.querySelector('[data-testid="model-form-context-window"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(field, '');
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(150);
+  await clickExact(page, '保存');
+  await sleep(500);
+  const clearedContext = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑥.5i 清空上下文窗口保存为 null（保持系统默认，不写 0/垃圾值）',
+    clearedContext && clearedContext.model === 'glm-5.3-flash' && clearedContext.context_window_tokens === null,
+    JSON.stringify(clearedContext));
 
   await clickExact(page, '添加模型');
   await sleep(300);
