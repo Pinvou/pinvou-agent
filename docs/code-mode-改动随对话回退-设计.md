@@ -162,5 +162,9 @@ feat 分支没有的部分，本方案新增：
 
 - **compaction 摘要残留**：`merge_compaction_summary` 把压缩摘要合进 system_prompt 并持久化；回退只截 messages，system_prompt 不动——经历过压缩的会话回退后，模型上下文可能带着描述「被截掉的未来」的摘要。v1 落地最低限度方案：`rewind_to_turn` 返回 `hadCompaction`（按底座 marker 字面量检测），前端回退后如实提示「该会话经历过对话压缩，回退后上下文可能仍含早期摘要」；system_prompt 同步修正后续迭代评估。
 - **compaction 导致 turn 计数漂移**：`count_user_turns` 按当前消息序列计数，compaction 替换序列后 user prompt 数量变化，checkpoint 的 turn 号（压缩前计数）与新序列错位，chip 对齐可能失准。turn 序号漂移有三个来源（截断/压缩/编辑），本设计只处理了截断（§4 步骤 5）。彻底解法是持久化稳定 turn 锚（动存储格式），v2 评估。
-- **代码反悔缺 UI 入口**：已落地（2026-08-21）。`rewind_undo_state`（可反悔 ⟺ sidecar 有备份 + 回退后未发新轮次 + 有 PreRestore）+ `undo_last_rewind`（恢复代码到最新 PreRestore + 对话从 sidecar 还原 + engine 重建；restore 自身会再打 PreRestore，反悔可再反悔）+ 时间线「撤销回退」chip（发过新轮次自动消失）。
+- **代码反悔缺 UI 入口**：已落地（2026-08-21）。`rewind_undo_state`（可反悔 ⟺ sidecar 有备份 + 回退后未发新轮次/尾部未被编辑 + 绑定的回滚点仍在）+ `undo_last_rewind`（恢复代码到该次回退绑定的 PreRestore + 对话从 sidecar 还原 + engine 重建；restore 自身会再打 PreRestore，反悔可再反悔）+ 时间线「撤销回退」chip（发过新轮次自动消失）。
 - **他会话基线漂移**：共享执行根的其他会话在回退后继续创作时，其下一次快照会以被回退后的工作区为基线，其 checkpoint 序列语义已悄悄改变。无解，与 §6 的「恢复单位是执行根」声明一致。
+- **undo 目标绑定（2026-09-01 复审修复）**：早期实现以「最新 PreRestore」为反悔目标，多次回退/反悔重试后会错配到无关快照（降级回退的 undo 甚至会误动代码）。现为精确绑定：`_rewound_turns.json` 记录本次回退强制的 PreRestore id（降级记 None，undo 只还原对话），并要求当前 transcript revision 精确匹配截断时记录（turn 数相等只是弱代理，尾部被编辑即拒绝）。绑定快照被 LRU 淘汰则整体不可反悔，如实不渲染入口。
+- **敏感文件不进快照**：影子 exclude 列表含 `.env*`/`*.pem`/`*.key`/私钥等模式（非 git 执行根没有 .gitignore 兜底，原文快照进影子 objects 并随 diff 进入 UI 链路不可接受）；代价是这些文件不随回退恢复，属可接受取舍。
+- **临时会话账本暴露在执行根内**：两根相同时 `checkpoints/` 位于 agent 可见的工作目录内，agent 的 shell 可看到甚至误删它（exclude 只保证不进快照/不被 clean）。用户会无感知地失去回退能力；把账本根挪到执行根外属后续迭代，v1 记录为已知风险。
+- **Web 车道不支持**：rewind 直接改写本地文件，`rewind_to_turn`/`undo_last_rewind`/`list_checkpoints`/`checkpoint_diff`/`restore_checkpoint` 均未加入 web access-policy 的 allowed_commands，relay 下 invoke 抛 commandNotAllowed、前端静默不渲染入口。放行需单独评估（桌面执行语义），由 `codex_checkpoints_logic.test.mjs` 的策略断言锚定。
