@@ -296,10 +296,11 @@ pub(crate) async fn chat_with_reservation(
     // 同步等待；失败不阻断 turn——如实记日志，该轮只是没有回退入口（设计 §5
     // 降级语义）。turn 序号用 is_user_turn_prompt 同口径计数（tool_result 不计入），
     // 计数失败（会话加载失败等）登记 None，前端按顺序兜底对齐。
-    // created_snapshot_turn 记录本轮成功登记的快照序号：发送失败时它是「未成活」
+    // created_snapshot_id 记录本轮成功登记的快照：发送失败时它是「未成活」
     // 快照——重试同号 turn 的 first-wins 对齐会锚到失败那次（内容还可能混入两次
-    // 尝试之间的外部改动），发送失败路径按序号作废（见下方 Err 分支）。
-    let mut created_snapshot_turn: Option<u32> = None;
+    // 尝试之间的外部改动），发送失败路径按 id 精确作废（见下方 Err 分支；按 id
+    // 也覆盖计数失败导致的 None 序号快照）。
+    let mut created_snapshot_id: Option<String> = None;
     if store.is_code_session(&sid) {
         let turn_number = store
             .load(&sid)
@@ -321,8 +322,8 @@ pub(crate) async fn chat_with_reservation(
         })
         .await;
         match snapshot {
-            Ok(Ok(_)) => {
-                created_snapshot_turn = turn_number;
+            Ok(Ok(meta)) => {
+                created_snapshot_id = Some(meta.id);
             }
             Ok(Err(error)) => {
                 log::warn!("[pinvou3][chat] checkpoint failed sid={sid}: {error:#}")
@@ -388,18 +389,18 @@ pub(crate) async fn chat_with_reservation(
                 "send_error",
                 Some(&format!("{e:#}")),
             );
-            // 发送失败：作废本轮「未成活」快照，让重试的同号 Turn 快照成为
-            // first-wins 对齐锚（清理性质，失败仅记日志不影响错误上屏）。
-            if let Some(turn) = created_snapshot_turn {
+            // 发送失败：作废本轮「未成活」快照（按 id 精确删除），让重试的同号
+            // Turn 快照成为 first-wins 对齐锚（清理性质，失败仅记日志）。
+            if let Some(snapshot_id) = created_snapshot_id {
                 let checkpoint_ledger = roots.ledger.clone();
                 let sid_invalidate = sid.clone();
                 let _ = tauri::async_runtime::spawn_blocking(move || {
-                    if let Err(error) = crate::features::code_checkpoints::invalidate_turn_checkpoints_after(
+                    if let Err(error) = crate::features::code_checkpoints::drop_checkpoint(
                         &checkpoint_ledger,
-                        turn.saturating_sub(1),
+                        &snapshot_id,
                     ) {
                         log::warn!(
-                            "[pinvou3][chat] invalidate unsent-turn checkpoint failed sid={sid_invalidate}: {error:#}"
+                            "[pinvou3][chat] drop unsent-turn checkpoint failed sid={sid_invalidate}: {error:#}"
                         );
                     }
                 })

@@ -282,6 +282,9 @@ pub async fn rewind_to_turn(
     // 2) 截断对话（被截段落先备份进 `_rewound_turns.json`，备份失败则中止；
     //    记录绑定步骤 1 的 PreRestore id，供 undo 精确配对）。阻塞 IO 移出
     //    async worker（会话 JSON 读 + sidecar 写 + 持久化）。
+    //    注：pre_restore_id 的真实接线（restored_checkpoint.id → 记录）无单元
+    //    测试锚定（State/EnginePool 无法单测构造，测试均为手工镜像编排），
+    //    改动此处时需人工核对 undo 绑定链路。
     let store_truncate = store.inner().clone();
     let session_id_truncate = session_id.clone();
     let pre_restore_id = restored_checkpoint
@@ -372,8 +375,9 @@ fn resolve_rewind_undo_state(
         }
     }
     // 代码侧恢复目标：精确匹配记录绑定的 PreRestore（无归属的「最新一条」会
-    // 在多次回退/反悔重试后错配到无关快照）；已绑定但被 LRU 淘汰则代码侧不
-    // 可恢复，降级为仅恢复对话并在前端如实明示。
+    // 在多次回退/反悔重试后错配到无关快照）。已绑定但被 LRU 淘汰则整体不可
+    // 反悔（None，不渲染入口）——此时代码已回退而快照不可用，若只还原对话
+    // 会制造代码/对话分叉，比如实拒绝更糟。
     let checkpoint_id = match &record.pre_restore_checkpoint_id {
         Some(bound_id) => {
             let entries = checkpoints::list_checkpoints(ledger)
@@ -461,9 +465,9 @@ pub async fn undo_last_rewind(
         return Err(format!("会话「{busy}」绑定同一项目目录且正在执行，请先停止该会话再反悔"));
     }
 
-    // 预检先于 restore：三条件全部满足才动代码，把「代码已反悔、对话未反悔」
-    // 的窗口压到最小（restore_rewound_turns 落盘前还会在 mutation 锁内复核
-    // turn 数条件）。
+    // 预检先于 restore：可反悔条件全部满足才动代码，把「代码已反悔、对话未
+    // 反悔」的窗口压到最小（restore_rewound_turns 落盘前还会在 mutation 锁内
+    // 复核 turn 数 + revision 双条件）。
     let store_probe = store.inner().clone();
     let ledger_probe = ledger.clone();
     let session_id_probe = session_id.clone();
@@ -1127,6 +1131,41 @@ mod tests {
             resolve_rewind_undo_state(&store, &ledger, &id).expect("state"),
             None,
             "绑定的 PreRestore 不在 index 时必须不可反悔"
+        );
+    }
+
+    /// 旧格式 sidecar 记录（修复前写入，无 preRestoreCheckpointId /
+    /// truncatedRevision 字段）的 serde 兼容：#[serde(default)] 落 None/空串，
+    /// undo 退回 turn 数弱代理、代码侧不恢复（checkpoint_id = None）。
+    #[test]
+    fn legacy_backup_record_without_binding_still_loads() {
+        let (store, _g, id) = rewound_code_session("undo-legacy");
+        // 用旧格式 JSON 覆盖 sidecar（模拟修复前的记录）。
+        let session = store.load(&id).expect("load");
+        let removed: Vec<Message> = vec![user_msg("第二轮"), assistant_msg("答二")];
+        let legacy = serde_json::json!({
+            id.clone(): [{
+                "rewoundAt": "2026-08-21T10:00:00Z",
+                "originalRevision": "legacy",
+                "keptTurns": 1,
+                "removedMessages": removed,
+            }]
+        });
+        let sidecar = crate::platform::paths::sessions_root().join("_rewound_turns.json");
+        std::fs::write(&sidecar, serde_json::to_vec_pretty(&legacy).expect("json"))
+            .expect("write legacy sidecar");
+
+        // 旧记录可读：无绑定 → 仅对话反悔；revision 校验跳过（空串哨兵）。
+        let ledger = store.session_roots(&id).expect("roots").ledger;
+        let info = resolve_rewind_undo_state(&store, &ledger, &id)
+            .expect("state")
+            .expect("legacy record undoable");
+        assert_eq!(info.checkpoint_id, None, "旧记录无绑定，undo 不得恢复代码");
+        let restored = store.restore_rewound_turns(&id).expect("legacy restore");
+        assert_eq!(restored, 2);
+        assert_eq!(
+            store.load(&id).expect("load").messages.len(),
+            session.messages.len() + 2
         );
     }
 }

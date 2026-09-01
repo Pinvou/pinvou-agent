@@ -216,8 +216,8 @@ impl SessionStore {
     /// 可反悔条件（当前 turn 数 == 记录的 kept_turns，且记录带 truncated_revision 时
     /// 当前 revision 精确匹配，即回退后未发过新轮次、尾部未被编辑）在 mutation 锁
     /// 内重新校验；不满足则如实报错、不动磁盘。调用方（编排命令）应在动代码
-    /// （restore checkpoint）之前先用 `latest_rewound_turns_record` 完成同样的
-    /// 预检，把「代码已反悔、对话未反悔」的窗口压到最小。
+    /// （restore checkpoint）之前先用 `resolve_rewind_undo_state` 完成同样的预检
+    /// （含 revision 与绑定快照核实），把「代码已反悔、对话未反悔」的窗口压到最小。
     pub fn restore_rewound_turns(&self, id: &str) -> Result<usize> {
         let _mutation = self.scheduled_mutation.lock();
         if self.is_scheduled_session(id)? {

@@ -67,15 +67,24 @@ const SHADOW_EXCLUDES: &[&str] = &[
     "__pycache__/",
     ".venv/",
     "venv/",
-    // 敏感文件：环境变量/密钥/证书原文不进快照。
+];
+
+/// 敏感文件模式：秘密实际居住的约定位置（.env.local 系、证书/私钥本体）。
+/// 原文不进快照、不进 diff 预览——非 git 执行根（临时会话、未初始化目录）没有
+/// .gitignore 兜底，`add -A` 会把它们快照进影子 objects。收窄的取舍：
+/// .env.example/.env.sample/id_rsa.pub 等常被有意提交的示例/公钥照常进快照、
+/// 随回退恢复；.env.production 等约定文件仍会进快照（其内容通常可提交）。
+/// 代价是这些文件不随回退恢复，属可接受取舍（设计文档已知限制有记录）。
+const SECRET_EXCLUDES: &[&str] = &[
     ".env",
-    ".env.*",
+    ".env.local",
+    ".env.*.local",
     "*.pem",
     "*.key",
     "*.p12",
     "*.keystore",
-    "id_rsa*",
-    "id_ed25519*",
+    "id_rsa",
+    "id_ed25519",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,13 +217,18 @@ fn git_ok(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<String> {
 ///   checkpoint 数据在执行根内，必须排除，否则快照自我递归、clean 会误删账本）。
 fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
     let repo = repo_dir(ledger_root);
-    if !repo.join("HEAD").is_file() {
+    let fresh = !repo.join("HEAD").is_file();
+    if fresh {
         fs::create_dir_all(&repo)
             .with_context(|| format!("创建 checkpoint 仓库目录失败: {}", repo.display()))?;
         git_ok(&repo, execution_root, &["init"])?;
         git_ok(&repo, execution_root, &["config", "core.autocrlf", "false"])?;
     }
-    let mut excludes: Vec<String> = SHADOW_EXCLUDES.iter().map(|line| line.to_string()).collect();
+    let mut excludes: Vec<String> = SHADOW_EXCLUDES
+        .iter()
+        .chain(SECRET_EXCLUDES.iter())
+        .map(|line| line.to_string())
+        .collect();
     // ledger 与执行根都可能未经 canonicalize（Windows 短名/大小写），统一规范化后
     // 再判断包含关系，确保临时会话（两根相同）的排除规则一定生效。
     let checkpoint_dir = checkpoints_dir(ledger_root);
@@ -233,6 +247,21 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
         .with_context(|| format!("创建 checkpoint 仓库 info 目录失败: {}", info_dir.display()))?;
     fs::write(info_dir.join("exclude"), excludes.join("\n") + "\n")
         .with_context(|| "写入 checkpoint 仓库 exclude 失败".to_string())?;
+    // 一次性迁移（存量仓库）：exclude 只挡 untracked 文件，升级前已 add -A 进
+    // 影子 index 的敏感文件会继续被跟踪、被后续快照、被 checkout-index 恢复。
+    // 按新模式清一次 index（幂等，marker 门控只跑一次；best-effort——失败留到
+    // 下次重试，不阻断快照主流程）。历史 commit objects 里的原文不在清理范围，
+    // 随 LRU 淘汰与 gc 回收。
+    let migration_marker = info_dir.join("secret-excludes-v1");
+    if !fresh && !migration_marker.exists() {
+        let mut arguments = vec!["rm", "-r", "--cached", "--ignore-unmatch", "--quiet", "--"];
+        arguments.extend(SECRET_EXCLUDES.iter().copied());
+        if let Err(error) = git(&repo, execution_root, &arguments) {
+            eprintln!("[checkpoints] secret-exclude migration failed (will retry next call): {error:#}");
+        } else {
+            fs::write(&migration_marker, "1\n").ok();
+        }
+    }
     Ok(repo)
 }
 
@@ -435,9 +464,12 @@ pub fn diff_checkpoint(
     let mut patch = git_ok(
         &repo,
         &execution_root,
+        // 与 name-status 同开 -M：changes 清单标 renamed 时 patch 也是 rename
+        // 形态，不出现清单/补丁口径不一致。
         &[
             "diff",
             "--cached",
+            "-M",
             "--no-color",
             "--no-ext-diff",
             &meta.commit,
@@ -539,6 +571,29 @@ pub fn invalidate_turn_checkpoints_after(ledger_root: &Path, keep_turns: u32) ->
     Ok(invalidated.len())
 }
 
+/// 按 id 移除单条 checkpoint（index 条目 + ref），返回是否真的移除了一条。
+/// 用于发送失败后作废「未成活」的 Turn 快照（chat.rs send_error 路径）——按 id
+/// 精确删除，覆盖 turn 序号为 None（计数失败兜底）的情形；幂等，不存在即 false。
+pub fn drop_checkpoint(ledger_root: &Path, checkpoint_id: &str) -> Result<bool> {
+    validate_checkpoint_id(checkpoint_id)?;
+    let mut index = load_index(ledger_root)?;
+    let before = index.entries.len();
+    index.entries.retain(|entry| entry.id != checkpoint_id);
+    if index.entries.len() == before {
+        return Ok(false);
+    }
+    let repo = repo_dir(ledger_root);
+    if repo.join("HEAD").is_file() {
+        let _ = git_ref(
+            &repo,
+            &["update-ref", "-d", &format!("refs/checkpoints/{checkpoint_id}")],
+        );
+        let _ = git_ref(&repo, &["gc", "--auto", "--quiet"]);
+    }
+    save_index(ledger_root, &index)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,6 +638,40 @@ mod tests {
             .output()
             .map(|output| output.status.success())
             .unwrap_or(false)
+    }
+
+    /// 按 id 作废「未成活」快照：条目与 ref 都移除；不存在幂等 false；
+    /// turn 序号为 None 的条目同样可按 id 删。
+    #[test]
+    fn drop_checkpoint_removes_entry_by_id() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("drop-ledger");
+        let exec = TestDir::new("drop-exec");
+        exec.write("a.txt", "0\n");
+        let kept = create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn, "t1")
+            .unwrap();
+        let unsent = create_checkpoint(ledger.path(), exec.path(), None, CheckpointKind::Turn, "unsent")
+            .unwrap();
+
+        assert!(drop_checkpoint(ledger.path(), &unsent.id).unwrap());
+        let listed = list_checkpoints(ledger.path()).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, kept.id);
+        // ref 已删；幂等：再删返回 false。
+        let repo = repo_dir(ledger.path());
+        let ref_exists = git(
+            &repo,
+            exec.path(),
+            &["show-ref", "--verify", &format!("refs/checkpoints/{}", unsent.id)],
+        )
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+        assert!(!ref_exists);
+        assert!(!drop_checkpoint(ledger.path(), &unsent.id).unwrap());
+        // 非法 id 如实报错。
+        assert!(drop_checkpoint(ledger.path(), "../escape").is_err());
     }
 
     #[test]
