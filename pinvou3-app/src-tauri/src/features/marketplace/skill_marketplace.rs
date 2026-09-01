@@ -1058,7 +1058,7 @@ impl SkillMarketplaceManager {
     /// 多技能包、纯 MCP 包、目录缺失一律跳过（返回 Ok(false)，不报错）。改文件后
     /// 重算**整包目录**内容指纹并经 upsert_preserving 补写登记（保留
     /// extra/来源/首装时间——display_* 覆盖与说明备份都在 extra，一并保留）。
-    fn sync_display_description(&self, bundle_id: &str, dir: SyncDesc) -> Result<bool, String> {
+    fn sync_display_description(&self, bundle_id: &str, dir: SyncDesc<'_>) -> Result<bool, String> {
         let skills_dir = self.packages_root.join(bundle_id).join("skills");
         let Ok(rd) = std::fs::read_dir(&skills_dir) else {
             return Ok(false); // 非按包布局（纯 MCP 包/旧扁平残留）→ 跳过
