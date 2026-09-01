@@ -298,6 +298,14 @@ assert.ok(
   indexSource.indexOf('platform/web/bridge.js') < indexSource.indexOf('platform/web/bridge/domain-adapter.js'),
   'Web domain adapter must load after the flat transport',
 );
+assert.ok(
+  indexSource.indexOf('shared/bridge-messages.js') < indexSource.indexOf('platform/tauri/bridge/chat-events.js'),
+  'shared bridge messages must load before the tauri bridge chat events',
+);
+assert.ok(
+  indexSource.indexOf('shared/bridge-messages.js') < indexSource.indexOf('platform/tauri/bridge.js'),
+  'shared bridge messages must load before the tauri bridge',
+);
 
 const stableCombined = [];
 const unsubscribeStableCombined = api.state.subscribeMany(['sessions', 'chat'], snapshot => { stableCombined.push(snapshot); });
