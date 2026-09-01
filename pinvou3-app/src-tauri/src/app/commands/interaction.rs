@@ -221,11 +221,19 @@ pub async fn get_super_permission_status() -> Result<bool, String> {
 /// 切换超级权限。开启时 pkexec 弹系统密码框写 sudoers，关闭时 pkexec 删文件。
 /// 切换后同步当前 session 让新 system prompt 立即生效（注入/抹掉 sudo 引导段）。
 /// 返回真实生效状态（pkexec 失败/取消时不会变）。
+///
+/// 全程持有进程级 [`crate::platform::super_permission::TOGGLE_LOCK`]：读盘
+/// 判定 → pkexec 写/删 → `refresh_permission_rulesets` 重建广播作为整体串行
+/// 执行,并发 toggle 不再交错,sudo hard-deny 规则集不会基于过期的 sudo 快照
+/// 广播（safety_deny_rules 注册的 narrow stale-snapshot window 已消除）。
+/// 切换是低频用户操作,跨 pkexec 慢调用持锁可接受;锁仅在此处持有,guard 绑定
+/// 到函数作用域,pkexec 出错提前返回时自动释放,不会阻塞其他 Tauri 命令。
 #[tauri::command]
 pub async fn set_super_permission(
     enabled: bool,
     pool: State<'_, EnginePool>,
 ) -> Result<bool, String> {
+    let _toggle_guard = crate::platform::super_permission::TOGGLE_LOCK.lock().await;
     if enabled {
         crate::platform::super_permission::enable()?;
     } else {

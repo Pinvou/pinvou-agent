@@ -14,6 +14,15 @@
 //!
 //! 维护：卸载 .deb 时由 `prerm` 删 `/etc/sudoers.d/pinvou3`，避免遗留授权。
 
+/// 进程级切换互斥锁：超级权限的完整切换序列（`is_enabled()` 读盘判定 →
+/// pkexec 写/删 sudoers → engine 规则集重算广播）必须在持锁下整体执行。
+///
+/// 不串行化时,两个并发 toggle 会交错 pkexec 写盘与 sudo 状态快照,后完成的
+/// `refresh_permission_rulesets` 可能基于过期的 sudo 快照重建并广播规则集,
+/// 让运行中的 engine 带着错误的 sudo 面直到下次重建/重启。切换是低频用户
+/// 操作,跨 pkexec 慢调用持锁可接受;锁只被切换序列持有,不阻塞其他命令。
+pub(crate) static TOGGLE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub fn is_enabled() -> bool {
     crate::platform::os::super_permission_is_enabled()
 }
@@ -47,4 +56,44 @@ pub fn enable() -> Result<(), String> {
 
 pub fn disable() -> Result<(), String> {
     crate::platform::os::disable_super_permission()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    /// TOGGLE_LOCK 必须真正互斥：并发 toggle 的临界区（读盘判定 → 写 sudoers →
+    /// 规则集广播）不允许重叠。直接对进程级锁本身做验证（不触 pkexec/磁盘）：
+    /// 多个任务各自持锁进入临界区,进程内计数器峰值必须停在 1。
+    #[tokio::test]
+    async fn toggle_lock_serializes_concurrent_critical_sections() {
+        let in_critical = Arc::new(AtomicUsize::new(0));
+        let max_concurrent = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let in_critical = Arc::clone(&in_critical);
+            let max_concurrent = Arc::clone(&max_concurrent);
+            handles.push(tokio::spawn(async move {
+                let _guard = TOGGLE_LOCK.lock().await;
+                let observed = in_critical.fetch_add(1, Ordering::SeqCst) + 1;
+                max_concurrent.fetch_max(observed, Ordering::SeqCst);
+                // 主动让出：若锁失效,其他任务会趁隙闯入临界区,峰值升到 2+。
+                tokio::task::yield_now().await;
+                in_critical.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("toggle lock probe task panicked");
+        }
+        assert_eq!(in_critical.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            max_concurrent.load(Ordering::SeqCst),
+            1,
+            "critical sections overlapped: TOGGLE_LOCK is not mutually exclusive"
+        );
+    }
 }
