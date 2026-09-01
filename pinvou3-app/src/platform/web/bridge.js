@@ -234,8 +234,9 @@
     queued: [],
     // 输入框待发附件 [{ id, basename, status:'parsing'|'ready'|'error', result, error }]
     attachments: [],
-    // token 预算（input_tokens / maxModelLen）
-    tokens: { input: 0, max: 32768 },
+    // token 预算（input_tokens / maxModelLen）。max=0 表示窗口未知（首个 chat:usage
+    // 的 context_window 或本地后端 max_model_len 到达前显示「—」），不用假分母。
+    tokens: { input: 0, max: 0 },
     // 思考指示器：active 时 React 渲染计时气泡（Braille + 思考中/调用工具 + 秒数）
     thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
     // 卡片池: 专家面具。activePersona = 当前 session 加持的专家卡(完整对象)或 null,
@@ -349,7 +350,9 @@
   let monitorIntervalId = null;
   let monitorPollInFlight = false;
   let gpuUtilHistory = [];
-  let maxModelLen = 32768;
+  // 0 = 尚未从 get_backend_status / monitor 快照拿到真实 max_model_len；
+  // 只在有真实值时写回 state.tokens.max（两个赋值点均有真值守卫）。
+  let maxModelLen = 0;
   // 监控页「清除统计」基准点：vLLM 的几个累计 counter（TTFT/TPOT/tokens/prefix
   // cache）无法真正清零（它们跟随远端 vLLM 进程生命周期，归零要重启共享进程）。
   // 改为记一个基准快照，显示值 = 当前 counter − 基准。换模型 / vLLM 重启 → counter

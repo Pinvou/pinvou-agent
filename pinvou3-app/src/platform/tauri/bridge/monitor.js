@@ -16,7 +16,9 @@
     let monitorIntervalId = null;
     let monitorPollInFlight = false;
     let gpuUtilHistory = [];
-    let maxModelLen = state.tokens.max || 32768;
+    // 0 = 尚未从 get_backend_status / monitor 快照拿到真实 max_model_len；
+    // 只在有真实值时写回 state.tokens.max（两个赋值点均有真值守卫）。
+    let maxModelLen = state.tokens.max || 0;
     const MONITOR_BASELINE_KEY = "pinvou3.monitorStatsBaseline.self";
     let monitorBaseline = null;
     try {

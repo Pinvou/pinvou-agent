@@ -101,6 +101,19 @@ emitUsage({ input_tokens: 100 }); // 无 context_window 字段
 assert.equal(state.tokens.max, maxBefore, '旧端不带 context_window 时保留旧值');
 assert.equal(state.tokens.input, 100);
 
+// 场景 6：未知窗口起点（bridge 初始 max=0，不再用 32K 假分母）——
+// 无 context_window 的 usage 不得引入假分母，也不得显示无分母背书的 input。
+state.tokens = { input: 0, max: 0 };
+context.turnUsageDirty['session-1'] = false;
+emitUsage({ input_tokens: 100 }); // 旧端不带 context_window
+assert.equal(state.tokens.max, 0, '窗口未知时保持 0，不得引入假分母');
+assert.equal(state.tokens.input, 0, '无真实分母背书时不得显示 input（100 > 0=max 被守卫跳过）');
+
+// 场景 7：窗口未知的会话随后拿到真实窗口 → 分母落位、input 正常消费。
+emitUsage({ input_tokens: 5000, context_window: 262144 });
+assert.equal(state.tokens.max, 262144, '真实窗口到达后分母落位');
+assert.equal(state.tokens.input, 5000);
+
 // ── tauri/web 双端源码断言：窗口消费必须先于 dirty guard ──
 const tauriSection = source.slice(source.indexOf('listen("chat:usage"'), source.indexOf('listen("chat:compaction"'));
 const webSource = read('src', 'platform', 'web', 'bridge.js');
@@ -114,5 +127,13 @@ for (const [label, section] of [['tauri', tauriSection], ['web', webSection]]) {
   assert.ok(section.includes('windowTok !== state.tokens.max'), `${label}: 窗口变化才更新分母`);
   assert.ok(section.includes('windowTok > 0'), `${label}: 窗口 0 守卫保留`);
 }
+
+// ── 初始态源码断言：不再用 32K 假分母初始化（窗口未知 = 0，UI 隐藏占用表）──
+const tauriBridgeSource = read('src', 'platform', 'tauri', 'bridge.js');
+const tauriMonitorSource = read('src', 'platform', 'tauri', 'bridge', 'monitor.js');
+assert.ok(tauriBridgeSource.includes('tokens: { input: 0, max: 0 }'), 'tauri bridge 初始 max=0（窗口未知）');
+assert.ok(webSource.includes('tokens: { input: 0, max: 0 }'), 'web bridge 初始 max=0（窗口未知）');
+assert.ok(!webSource.includes('let maxModelLen = 32768'), 'web monitor 不得以 32K 假窗口兜底');
+assert.ok(tauriMonitorSource.includes('state.tokens.max || 0'), 'tauri monitor 不得以 32K 假窗口兜底');
 
 console.log('chat_usage_context_window.test.mjs: OK');

@@ -276,8 +276,9 @@
     queued: [],
     // 输入框待发附件 [{ id, basename, status:'parsing'|'ready'|'error', result, error }]
     attachments: [],
-    // token 预算（input_tokens / maxModelLen）
-    tokens: { input: 0, max: 32768 },
+    // token 预算（input_tokens / maxModelLen）。max=0 表示窗口未知（首个 chat:usage
+    // 的 context_window 或本地后端 max_model_len 到达前显示「—」），不用假分母。
+    tokens: { input: 0, max: 0 },
     // 思考指示器：active 时 React 渲染计时气泡（Braille + 思考中/调用工具 + 秒数）
     thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
     // 卡片池: 专家面具。activePersona = 当前 session 加持的专家卡(完整对象)或 null,
