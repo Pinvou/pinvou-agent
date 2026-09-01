@@ -4293,7 +4293,9 @@ async function scheduledDeletePreservesHistoryAndSessionBuffers() {
     "deleting a task must remove only its schedule definition"
   );
   assert.deepStrictEqual(
-    afterDelete.scheduledTaskRecentRuns.map(function (run) { return run.id; }).sort(),
+    afterDelete.scheduledTaskRecentRuns
+      .map(function (run) { return run.id; })
+      .sort((left, right) => left.localeCompare(right)),
     ["run-delete-exact", "run-delete-retain"],
     "deleting a task must keep both its run history and unrelated run history"
   );
