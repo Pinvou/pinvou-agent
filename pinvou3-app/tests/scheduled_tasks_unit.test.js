@@ -4250,19 +4250,53 @@ async function scheduledMutationErrorBehavior() {
   assert.strictEqual(chatHarness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).scheduledTaskBusyAction, null);
 }
 
-async function scheduledDeletePurgesOnlyReportedSessionBuffers() {
+async function scheduledDeletePreservesHistoryAndSessionBuffers() {
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
-  harness.emit("chat:delta", { session_id: "sched-delete-exact", text: "purge this exact buffer" });
+  harness.emit("chat:delta", { session_id: "sched-delete-exact", text: "retain this exact buffer" });
   harness.emit("chat:delta", { session_id: "sched-delete-retain", text: "retain this sibling buffer" });
+  harness.handlers.list_scheduled_tasks = function () {
+    return [{ id: "automation-delete", name: "Deleted task", model: "model-delete" }];
+  };
+  harness.handlers.list_scheduled_runs = function () {
+    return [
+      {
+        id: "run-delete-exact",
+        automationId: "automation-delete",
+        sessionId: "sched-delete-exact",
+        status: "completed",
+        archived: false,
+      },
+      {
+        id: "run-delete-retain",
+        automationId: "automation-other",
+        sessionId: "sched-delete-retain",
+        status: "completed",
+        archived: false,
+        taskName: "Sibling task",
+      },
+    ];
+  };
   harness.handlers.delete_scheduled_task = function () {
     return {
       id: "automation-delete",
-      deletedSessionIds: ["sched-delete-exact"],
+      deletedSessionIds: [],
     };
   };
+  await bridge.scheduled.loadScheduledTasks();
+  await bridge.scheduled.loadScheduledTaskRecentRuns();
   await bridge.scheduled.deleteScheduledTask("automation-delete");
 
+  const afterDelete = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.ok(
+    afterDelete.scheduledTasks.every(function (task) { return task.id !== "automation-delete"; }),
+    "deleting a task must remove only its schedule definition"
+  );
+  assert.deepStrictEqual(
+    afterDelete.scheduledTaskRecentRuns.map(function (run) { return run.id; }).sort(),
+    ["run-delete-exact", "run-delete-retain"],
+    "deleting a task must keep both its run history and unrelated run history"
+  );
   assert.strictEqual(await bridge.scheduled.openScheduledRunChat({
     id: "run-delete-exact",
     automationId: "automation-delete",
@@ -4270,8 +4304,8 @@ async function scheduledDeletePurgesOnlyReportedSessionBuffers() {
     status: "running",
   }, { id: "automation-delete", name: "Deleted task" }), true);
   assert.ok(
-    !JSON.stringify(bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems).includes("purge this exact buffer"),
-    "a backend-reported deleted session id must purge exactly that scheduled buffer"
+    JSON.stringify(bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems).includes("retain this exact buffer"),
+    "deleting a task must preserve its scheduled conversation buffer"
   );
   assert.strictEqual(await bridge.scheduled.exitScheduledRunChat(), true);
   assert.strictEqual(await bridge.scheduled.openScheduledRunChat({
@@ -4285,43 +4319,41 @@ async function scheduledDeletePurgesOnlyReportedSessionBuffers() {
     "deleting one task must not guess at or purge unreported scheduled session ids"
   );
 
-  const noIdsHarness = createBridgeHarness();
-  noIdsHarness.handlers.list_scheduled_tasks = function () {
-    return [{ id: "automation-no-ids", name: "No ids task" }];
+  const restartHarness = createBridgeHarness();
+  restartHarness.handlers.list_scheduled_tasks = function () {
+    return [];
   };
-  noIdsHarness.handlers.list_scheduled_runs = function () {
+  restartHarness.handlers.list_scheduled_runs = function () {
     return [{
-      id: "run-delete-no-ids",
-      automationId: "automation-no-ids",
-      sessionId: "sched-delete-no-ids",
+      id: "run-archived",
+      automationId: "automation-archived",
+      sessionId: "sched-archived",
       status: "completed",
       archived: false,
+      taskName: "Archived task",
+      taskModel: "archived-model",
     }];
   };
-  noIdsHarness.emit("chat:delta", {
-    session_id: "sched-delete-no-ids",
-    text: "retain when backend reports no ids",
+  restartHarness.emit("chat:delta", {
+    session_id: "sched-archived",
+    text: "retained after restart",
   });
-  noIdsHarness.handlers.delete_scheduled_task = function () {
-    return { id: "automation-no-ids" };
-  };
-  await noIdsHarness.bridge.scheduled.loadScheduledTasks();
-  await noIdsHarness.bridge.scheduled.loadScheduledTaskRecentRuns();
-  await noIdsHarness.bridge.scheduled.deleteScheduledTask("automation-no-ids");
+  await restartHarness.bridge.scheduled.loadScheduledTasks();
+  await restartHarness.bridge.scheduled.loadScheduledTaskRecentRuns();
+  const archivedRows = restartHarness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).scheduledTaskRecentRuns;
   assert.strictEqual(
-    noIdsHarness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).scheduledTaskRecentRuns.length,
-    0,
-    "deleting a task must remove its sidebar rows even when the backend reports no session ids"
+    archivedRows[0].taskName,
+    "Archived task",
+    "an archived run must retain its task-name snapshot after restart"
   );
-  assert.strictEqual(await noIdsHarness.bridge.scheduled.openScheduledRunChat({
-    id: "run-delete-no-ids",
-    automationId: "automation-no-ids",
-    sessionId: "sched-delete-no-ids",
-    status: "running",
-  }, { id: "automation-no-ids", name: "No ids task" }), true);
-  assert.ok(
-    JSON.stringify(noIdsHarness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems).includes("retain when backend reports no ids"),
-    "a deletion response without deletedSessionIds must not trigger heuristic purging"
+  assert.strictEqual(await restartHarness.bridge.scheduled.openScheduledRunChat(
+    archivedRows[0],
+    null
+  ), true);
+  assert.strictEqual(
+    restartHarness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).scheduledRunContext.model,
+    "archived-model",
+    "an archived run must retain its task-model snapshot after restart"
   );
 }
 
@@ -4333,7 +4365,7 @@ async function scheduledRecentRunsIgnoreStaleAggregate() {
   };
   harness.handlers.list_scheduled_runs = function () { return staleRuns.promise; };
   harness.handlers.delete_scheduled_task = function () {
-    return { id: "automation-stale", deletedSessionIds: ["sched-stale"] };
+    return { id: "automation-stale", deletedSessionIds: [] };
   };
   await harness.bridge.scheduled.loadScheduledTasks();
   const loading = harness.bridge.scheduled.loadScheduledTaskRecentRuns();
@@ -4350,7 +4382,7 @@ async function scheduledRecentRunsIgnoreStaleAggregate() {
   assert.strictEqual(
     harness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).scheduledTaskRecentRuns.length,
     0,
-    "an older aggregate response must not resurrect a deleted scheduled run"
+    "an older aggregate response must not overwrite the post-delete history snapshot"
   );
 }
 
@@ -5721,7 +5753,7 @@ Promise.resolve()
   .then(scheduledSelectionGenerationBehavior)
   .then(scheduledRefreshDoesNotOverlap)
   .then(scheduledMutationErrorBehavior)
-  .then(scheduledDeletePurgesOnlyReportedSessionBuffers)
+  .then(scheduledDeletePreservesHistoryAndSessionBuffers)
   .then(scheduledRecentRunsIgnoreStaleAggregate)
   .then(scheduledRunRecordSessionActionsBehavior)
   .then(scheduledSessionPersistenceBehavior)

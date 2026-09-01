@@ -39,6 +39,10 @@ fn scheduled_task_ui_metadata_schema_version() -> u32 {
     SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION
 }
 
+fn scheduled_history_archive_schema_version() -> u32 {
+    SCHEDULED_HISTORY_ARCHIVE_SCHEMA_VERSION
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ScheduledTaskModelBinding {
     pub(crate) model_id: String,
@@ -84,6 +88,31 @@ impl Default for ScheduledTaskUiMetadataRegistry {
     fn default() -> Self {
         Self {
             schema_version: SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION,
+            tasks: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ArchivedScheduledTask {
+    pub(crate) task: AutomationRecord,
+    #[serde(default)]
+    pub(crate) runs: Vec<AutomationRunRecord>,
+    pub(crate) deleted_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ScheduledHistoryArchiveRegistry {
+    #[serde(default = "scheduled_history_archive_schema_version")]
+    pub(crate) schema_version: u32,
+    #[serde(default)]
+    pub(crate) tasks: HashMap<String, ArchivedScheduledTask>,
+}
+
+impl Default for ScheduledHistoryArchiveRegistry {
+    fn default() -> Self {
+        Self {
+            schema_version: SCHEDULED_HISTORY_ARCHIVE_SCHEMA_VERSION,
             tasks: HashMap::new(),
         }
     }
@@ -260,6 +289,25 @@ impl VersionedRegistry for ScheduledTaskUiMetadataRegistry {
     }
 }
 
+impl VersionedRegistry for ScheduledHistoryArchiveRegistry {
+    const SUPPORTED_VERSION: u32 = SCHEDULED_HISTORY_ARCHIVE_SCHEMA_VERSION;
+    const QUARANTINE: QuarantineStrategy = QuarantineStrategy::Rename;
+    const LABEL: &'static str = "scheduled history archive";
+    const QUARANTINE_FALLBACK_NAME: &'static str = "history-archive.json";
+    const WARN_SUFFIX: &'static str = "; deleted-task run history may be unavailable";
+
+    fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    fn migrate(self) -> Self {
+        Self {
+            schema_version: SCHEDULED_HISTORY_ARCHIVE_SCHEMA_VERSION,
+            tasks: self.tasks,
+        }
+    }
+}
+
 impl VersionedRegistry for ScheduledTaskModelBindingRegistry {
     const SUPPORTED_VERSION: u32 = SCHEDULED_MODEL_BINDING_SCHEMA_VERSION;
     const QUARANTINE: QuarantineStrategy = QuarantineStrategy::Rename;
@@ -298,6 +346,120 @@ impl VersionedRegistry for ScheduledRunReadRegistry {
 }
 
 pub(crate) type ScheduledTaskUiMetadataStore = VersionedJsonStore<ScheduledTaskUiMetadataRegistry>;
+
+pub(crate) type ScheduledHistoryArchiveStore = VersionedJsonStore<ScheduledHistoryArchiveRegistry>;
+
+impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
+    pub(crate) fn archive_task(
+        &self,
+        task: AutomationRecord,
+        runs: Vec<AutomationRunRecord>,
+    ) -> Result<()> {
+        if task.id.trim().is_empty() {
+            bail!("scheduled automation id cannot be empty");
+        }
+        if let Some(run) = runs.iter().find(|run| run.automation_id != task.id) {
+            bail!(
+                "scheduled run {} belongs to automation {}, not {}",
+                run.id,
+                run.automation_id,
+                task.id
+            );
+        }
+        let automation_id = task.id.clone();
+        let mut registry = self.registry.write();
+        let previous = registry.tasks.get(&automation_id).cloned();
+        registry.tasks.insert(
+            automation_id.clone(),
+            ArchivedScheduledTask {
+                task,
+                runs,
+                deleted_at: chrono::Utc::now().to_rfc3339(),
+            },
+        );
+        if let Err(error) = self.persist(&registry) {
+            match previous {
+                Some(archived) => {
+                    registry.tasks.insert(automation_id, archived);
+                }
+                None => {
+                    registry.tasks.remove(&automation_id);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn archived_tasks(&self) -> Vec<ArchivedScheduledTask> {
+        self.registry.read().tasks.values().cloned().collect()
+    }
+
+    pub(crate) fn runs_for(&self, automation_id: &str) -> Option<Vec<AutomationRunRecord>> {
+        self.registry
+            .read()
+            .tasks
+            .get(automation_id)
+            .map(|archived| archived.runs.clone())
+    }
+
+    pub(crate) fn find_run(
+        &self,
+        automation_id: &str,
+        session_id: &str,
+    ) -> Option<AutomationRunRecord> {
+        self.registry
+            .read()
+            .tasks
+            .get(automation_id)
+            .and_then(|archived| {
+                archived
+                    .runs
+                    .iter()
+                    .find(|run| run.thread_id.as_deref() == Some(session_id))
+                    .cloned()
+            })
+    }
+
+    pub(crate) fn remove_run(
+        &self,
+        automation_id: &str,
+        run_id: &str,
+    ) -> Result<Vec<AutomationRunRecord>> {
+        let mut registry = self.registry.write();
+        let Some(previous) = registry.tasks.get(automation_id).cloned() else {
+            return Ok(Vec::new());
+        };
+        let mut updated = previous.clone();
+        updated.runs.retain(|run| run.id != run_id);
+        if updated.runs.len() == previous.runs.len() {
+            return Ok(previous.runs);
+        }
+        let remaining = updated.runs.clone();
+        if remaining.is_empty() {
+            registry.tasks.remove(automation_id);
+        } else {
+            registry.tasks.insert(automation_id.to_string(), updated);
+        }
+        if let Err(error) = self.persist(&registry) {
+            registry.tasks.insert(automation_id.to_string(), previous);
+            return Err(error);
+        }
+        Ok(remaining)
+    }
+
+    pub(crate) fn remove_task(&self, automation_id: &str) -> Result<()> {
+        let mut registry = self.registry.write();
+        let Some(previous) = registry.tasks.remove(automation_id) else {
+            return Ok(());
+        };
+        if let Err(error) = self.persist(&registry) {
+            registry.tasks.insert(automation_id.to_string(), previous);
+            return Err(error);
+        }
+        Ok(())
+    }
+}
 
 impl VersionedJsonStore<ScheduledTaskUiMetadataRegistry> {
     pub(crate) fn metadata_for(&self, automation_id: &str) -> (bool, Option<String>) {
