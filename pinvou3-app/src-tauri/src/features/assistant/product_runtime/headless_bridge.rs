@@ -22,7 +22,7 @@ use tauri::Manager;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::features::assistant::attachments::{
-    build_message_with_attachments, stage_file_in_workspace,
+    build_read_only_message_with_attachments, stage_file_in_workspace,
 };
 use crate::features::assistant::engine_pool::{EnginePool, EngineToolFactory, ToolPolicy};
 use crate::features::assistant::platform::headless_attachments::ensure_staged_attachments_supported;
@@ -163,7 +163,7 @@ fn prepare_product_attachment_content(
             &execution_root.join(staged_path),
         ));
     }
-    Ok(build_message_with_attachments(
+    Ok(build_read_only_message_with_attachments(
         prompt,
         attachments,
         &execution_root,

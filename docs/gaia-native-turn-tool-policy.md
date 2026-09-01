@@ -138,8 +138,10 @@ ExecutionRequest::NativeTurn.tool_policy
 
 - Product backend 将已解析附件复制到 per-session 临时 workspace，不持久化原路径。
 - 拒绝目录、symlink/reparse point、危险文件名和超限文件。
-- Office/PDF 使用 host `file_ingest` 在 `spawn_blocking` 中预处理；这不等于开放 Office/MCP
-  或 shell 工具。
+- Office/PDF 使用 host `file_ingest` 在 `spawn_blocking` 中预处理；XLSX 除单元格值外还保留
+  非默认填充色、公式和合并区域的有界结构注释。这不等于开放 Office/MCP 或 shell 工具。
+- 附件提示必须与 profile 的实际权限一致；只读评测不得提示模型调用 File 写入、shell 或
+  代码执行动作，大附件只能提示分页只读。
 - Ingest 共享 task 单一 deadline，并受输入/输出大小和解析深度限制。
 - 绝对外部路径、`..`、symlink/junction 逃逸和用户 trusted roots 均拒绝。
 - cancel、timeout、prepare/run/close 错误均清理 session、staging 和中间产物。
