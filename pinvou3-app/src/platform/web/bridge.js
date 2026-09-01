@@ -4003,24 +4003,11 @@
   }
 
   function userMessageInputProvenance(blocks) {
-    const textBlocks = Array.isArray(blocks) ? blocks : [];
-    for (let i = 0; i < textBlocks.length; i++) {
-      const block = textBlocks[i];
-      if (!block || block.type !== "text") continue;
-      const text = String(block.text || "").trim();
-      if (text.indexOf("<turn_meta>") !== 0) continue;
-      // CodeWhale appends human-readable authority detail after the stable
-      // provenance identifier. Parse only that identifier so both the current
-      // one-line shape and legacy two-line metadata remain compatible.
-      const match = text.match(/(?:^|\n)Input provenance:\s*([a-z0-9_-]+)/i);
-      if (match && match[1]) return match[1].toLowerCase();
-    }
-    return "";
+    return window.PinvouBridgeMessages.userMessageInputProvenance(blocks);
   }
 
   function isInternalUserMessageProvenance(provenance) {
-    // shell_completion 同为 CodeWhale 非权威内部来源（SHELL_COMPLETION_HANDOFF_TURN_META）。
-    return ["runtime", "subagent_handoff", "shell_completion"].includes(provenance);
+    return window.PinvouBridgeMessages.isInternalUserMessageProvenance(provenance);
   }
   // isInternalRuntimeUserMessage（下方 live 路径同一判定）与本函数等价：
   // 历史重载与实时事件两条展示路径共用同一信封判定，避免两处实现漂移。
@@ -5501,9 +5488,7 @@
   // 后台临时切工作集跑完再切回。下面每个监听器的 body 与旧单 session 版逐字一致,
   // 只是包了一层路由,所以 active session 行为零变化。
   function isInternalRuntimeUserMessage(value) {
-    const text = String(value || "").trim();
-    return /^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>/i.test(text) &&
-      /<\/codewhale:runtime_event>\s*$/i.test(text);
+    return window.PinvouBridgeMessages.isInternalRuntimeUserMessage(value);
   }
 
   function applyRemoteUserMessageEvent(e, force) {

@@ -1711,6 +1711,18 @@ async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
     'internal shell completion payload',
     '</codewhale:runtime_event>',
   ].join('\n');
+  const runtimeTurnMeta = [
+    '<turn_meta>',
+    'Current workspace: /private/workspace',
+    'Input provenance: runtime (non-authoritative)',
+    '</turn_meta>',
+  ].join('\n');
+  const serializedEnvelopeAndMeta = completionText + '\n' + runtimeTurnMeta;
+  const serializedRuntimePromptAndMeta = [
+    'Tool calls have failed for 2 consecutive steps. Do not repeat the same call unchanged.',
+    'Switch to an alternate tool or source.',
+    runtimeTurnMeta,
+  ].join('\n');
 
   for (let bridgeIndex = 0; bridgeIndex < 2; bridgeIndex++) {
     const bridgeKind = bridgeIndex === 0 ? "tauri" : "web";
@@ -1744,6 +1756,9 @@ async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
           { role: "user", content: [
             { type: "text", text: "<turn_meta>\nInput provenance: shell_completion (non-authoritative)\n</turn_meta>" },
           ] },
+          // Some transports flatten the runtime payload and its metadata into one text block.
+          { role: "user", content: [{ type: "text", text: serializedEnvelopeAndMeta }] },
+          { role: "user", content: [{ type: "text", text: serializedRuntimePromptAndMeta }] },
           { role: "assistant", content: [{ type: "text", text: "parent final answer" }] },
         ],
         artifacts: [],
@@ -1760,6 +1775,7 @@ async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
       "current child-only completion summary",
       "current runtime recovery hint",
       "internal shell completion payload",
+      "Tool calls have failed for 2 consecutive steps",
       "codewhale:runtime_event",
       "Current workspace:",
       "Input provenance: shell_completion",
@@ -1777,6 +1793,34 @@ async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
       bridgeKind + " must preserve current provenance metadata");
     assert.ok(raw.includes("shell_completion (non-authoritative)"),
       bridgeKind + " must preserve shell_completion provenance metadata");
+    assert.ok(raw.includes("Tool calls have failed for 2 consecutive steps"),
+      bridgeKind + " must preserve serialized runtime guidance in model context");
+
+    await harness.emit("chat:user_message", {
+      session_id: sessionId,
+      content: serializedEnvelopeAndMeta,
+      operation: "append",
+    });
+    await harness.emit("chat:user_message", {
+      session_id: sessionId,
+      content: serializedRuntimePromptAndMeta,
+      operation: "append",
+    });
+    const afterLiveInternal = JSON.stringify(harness.bridge.state.get("chat").chatItems);
+    assert.ok(!afterLiveInternal.includes("Tool calls have failed for 2 consecutive steps"),
+      bridgeKind + " must hide a live runtime prompt with trailing provenance metadata");
+    assert.ok(!afterLiveInternal.includes("current child-only completion summary"),
+      bridgeKind + " must hide a live envelope with trailing metadata");
+
+    const quotedEnvelope = completionText + "\nPlease explain this literal runtime envelope.";
+    await harness.emit("chat:user_message", {
+      session_id: sessionId,
+      content: quotedEnvelope,
+      operation: "append",
+    });
+    const afterQuotedEnvelope = JSON.stringify(harness.bridge.state.get("chat").chatItems);
+    assert.ok(afterQuotedEnvelope.includes("Please explain this literal runtime envelope."),
+      bridgeKind + " must retain user text following an internal-looking quoted envelope");
   }
 }
 
