@@ -833,7 +833,7 @@ try {
     && codexView.includes('data-testid="acp-account-menu"')
     && codexView.includes('switchAccountAffectsSessions'),
   'every ACP Agent must expose an account menu and a force account-switch action');
-  assert.ok(codexView.includes('const movingUp = element.scrollTop < lastScrollTopRef.current - 1')
+  assert.ok(codexView.includes('const movingUp = element.scrollTop < lastScrollTopRef.current - 1 && !shrinkClamped')
     && codexView.includes('if (movingUp) autoScrollRef.current = false')
     && codexView.includes('if (autoScrollRef.current)')
     && codexView.includes('scrollConversationToBottom')
@@ -841,6 +841,12 @@ try {
     && codexView.includes('bottom-full')
     && !codexView.includes('bottom-[106px]'),
   'Codex streaming must pause auto-follow and place the return action above, not over, the composer');
+  assert.ok(codexView.includes('const shrinkClamped = isShrinkClampedToBottom(element, lastScrollHeightRef.current)')
+    && codexView.includes('else if (!shrinkClamped && near) autoScrollRef.current = true')
+    && codexView.includes('const contentElement = conversationContentRef.current')
+    && codexView.includes('return startConversationBottomFollower({')
+    && codexView.includes('lastScrollHeightRef.current = scrollElement.scrollHeight'),
+  'Codex streaming must retain bottom following across content shrink and asynchronous layout changes');
   assert.ok(!codexView.includes('<JsonBlock'), 'raw ACP JSON must not leak into normal command UI');
   assert.ok(codexView.includes('await submitAcpPrompt({')
     && codexView.includes('attachments: readyAttachments.map(attachment => attachment.result)')
