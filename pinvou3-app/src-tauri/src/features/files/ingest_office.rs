@@ -191,6 +191,11 @@ fn spreadsheet_text_from_bytes(
     let mut wb = open_workbook_auto_from_rs(std::io::Cursor::new(bytes))
         .map_err(|e| format!("calamine 解析失败: {e}"))?;
 
+    // calamine 对 XLSX 公式 Range 按公式格极值做稠密物化（见
+    // spreadsheet_structure::MAX_FORMULA_SPAN_CELLS），必须先按内容预扫跨度；
+    // XLS/ODS 是打开时预构建、网格有界，返回 None 即无需守卫。
+    let formula_span_limits = super::spreadsheet_structure::xlsx_formula_span_limits(bytes);
+
     let cell = |c: &Data| -> String {
         if c.is_empty() {
             String::new()
@@ -225,9 +230,20 @@ fn spreadsheet_text_from_bytes(
             out.push('\n');
         }
         out.push('\n');
-        match wb.worksheet_formula(&name) {
-            Ok(formulas) => append_formula_annotations(&mut out, &name, &formulas),
-            Err(error) => log::warn!("spreadsheet formula extraction failed: {error}"),
+        let formula_span = formula_span_limits
+            .as_ref()
+            .and_then(|limits| limits.get(&name));
+        if formula_span.is_none_or(|&(rows, cols)| {
+            rows.saturating_mul(cols) <= super::spreadsheet_structure::MAX_FORMULA_SPAN_CELLS
+        }) {
+            match wb.worksheet_formula(&name) {
+                Ok(formulas) => append_formula_annotations(&mut out, &name, &formulas),
+                Err(error) => log::warn!("spreadsheet formula extraction failed: {error}"),
+            }
+        } else {
+            log::warn!(
+                "spreadsheet formula extraction skipped for sheet {name}: formula cell span exceeds limit"
+            );
         }
     }
     if preserve_xlsx_structure {
@@ -260,7 +276,7 @@ fn append_formula_annotations(
         }
         if written == 0 {
             out.push_str("### 工作表公式：");
-            out.push_str(sheet_name);
+            out.push_str(&super::spreadsheet_structure::flatten_text(sheet_name));
             out.push('\n');
         }
         out.push_str("- ");
@@ -269,7 +285,9 @@ fn append_formula_annotations(
             start_column.saturating_add(relative_column as u32),
         ));
         out.push_str(": =");
-        out.push_str(formula.strip_prefix('=').unwrap_or(formula));
+        out.push_str(&super::spreadsheet_structure::flatten_text(
+            formula.strip_prefix('=').unwrap_or(formula),
+        ));
         out.push('\n');
         written += 1;
     }
@@ -425,5 +443,27 @@ mod tests {
         assert_eq!(a1_cell(9, 25), "Z10");
         assert_eq!(a1_cell(0, 26), "AA1");
         assert_eq!(a1_cell(41, 701), "ZZ42");
+    }
+
+    #[test]
+    fn distant_formula_span_sheet_keeps_values_without_formulas() {
+        // 若跨度守卫被移除，calamine 会对该 fixture 触发 PB 级稠密分配并
+        // abort 整个测试进程（红=进程崩溃），而非普通断言失败。
+        let bytes = super::super::spreadsheet_structure::distant_formula_fixture();
+        let txt = spreadsheet_text_from_bytes(&bytes, true).expect("ingest 应安全完成");
+        assert!(txt.contains("## 工作表：Map"), "值路径不受守卫影响");
+        assert!(
+            !txt.contains("### 工作表公式"),
+            "超限公式的注记应整段跳过: {txt}"
+        );
+    }
+
+    #[test]
+    fn formula_annotations_fold_control_whitespace() {
+        let bytes = super::super::spreadsheet_structure::folded_formula_fixture();
+        let txt = spreadsheet_text_from_bytes(&bytes, true).expect("应能解析 fixture");
+        assert!(txt.contains("### 工作表公式：Fold X"), "{txt}");
+        assert!(txt.contains("A1: =SUM(1) + 2"), "{txt}");
+        assert!(!txt.contains("=SUM(1)\n"), "公式文本不得携带原始换行");
     }
 }
