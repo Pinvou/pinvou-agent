@@ -708,8 +708,14 @@
         // complexity under the lint threshold. The settlement handle doubles
         // as the ⚡ gate (see runQueuedZap): a zap on a not-yet-backfilled
         // chip must await the engine-side fate before resending. The handle
-        // never rejects and is bounded by steer()'s own 25s timeout.
-        queuedItem.steerSettlement = steer(sid, steerText).then(
+        // never rejects and is bounded by steer()'s own 25s timeout. It lives
+        // in a module-side table, NOT on the chip: queued chips are part of
+        // the subscription-visible chat slice, whose snapshot validator only
+        // accepts JSON-like values — a Promise on the chip made every
+        // notify() throw ("Subscription state only supports arrays and plain
+        // objects") and froze the whole streaming UI until the chip left the
+        // queue at settlement.
+        rememberSteerSettlement(sid, queuedItem.id, steer(sid, steerText).then(
           function (steerId) {
             onSteerBackfill(queuedItem, sid, steerId);
             return { ok: true, steerId: steerId == null ? null : String(steerId) };
@@ -721,7 +727,7 @@
               timedOut: String(err && err.message) === "steer_chat timed out",
             };
           }
-        );
+        ));
       }
     };
 
@@ -1138,6 +1144,30 @@
   // settle immediately when the chip's id is backfilled (sendMessage's
   // steer().then). If the user removes the chip via × before backfill, the
   // stash entry lingers — negligible volume, unique steer_ids, acceptable.
+  // Steer settlement side table (sid → chipId → promise): the steer_chat
+  // settlement doubles as the ⚡ gate but is NOT subscription state. The chat
+  // slice's snapshot validator only accepts arrays/plain objects/JSON scalars,
+  // so parking the promise on the queued chip made every notify() throw and
+  // froze all streaming updates until the chip left the queue. Entries
+  // self-delete once settled; the zap takes (and deletes) its entry before
+  // awaiting — whoever holds the promise reference keeps it either way.
+  const steerSettlements = {};
+  function rememberSteerSettlement(sid, chipId, settlement) {
+    let byId = steerSettlements[sid];
+    if (!byId) {
+      byId = Object.create(null);
+      steerSettlements[sid] = byId;
+    }
+    byId[chipId] = settlement.finally(function () { delete byId[chipId]; });
+  }
+  function takeSteerSettlement(sid, chipId) {
+    const byId = steerSettlements[sid];
+    if (!byId) return null;
+    const settlement = byId[chipId] || null;
+    if (settlement) delete byId[chipId];
+    return settlement;
+  }
+
   const pendingSteerEvents = {};
   // Cap (sixth review round P2): remotely injected steer events may never
   // have a local chip to consume them; the stash must not grow unbounded —
@@ -1176,6 +1206,7 @@
     delete pendingSteerEvents[sid];
     delete withdrawnSteers[sid];
     delete interruptInFlight[sid];
+    delete steerSettlements[sid];
     const watchdogs = steerSettleWatchdogs[sid];
     if (watchdogs) {
       for (const steerId of Object.keys(watchdogs)) clearTimeout(watchdogs[steerId]);
@@ -1264,7 +1295,7 @@
             if (state.chatItems[i] && state.chatItems[i].type === "user") { lastUser = state.chatItems[i]; break; }
           }
           if (lastUser && lastUser.text === withdrawnText) return;
-          addChatItem({ type: "user", text: withdrawnText, time: timeStr() });
+          addChatItem({ type: "user", text: withdrawnText, time: timeStr(), steeredMidTurn: true });
         });
         notify();
         return;
@@ -1280,11 +1311,13 @@
       q.splice(index, 1);
       // The message is already in the engine transcript; the bubble renders
       // the chip text and transcript_committed later syncs state.messages to
-      // the authoritative version.
+      // the authoritative version. steeredMidTurn tells the conversation
+      // projection this is a mid-turn injection, not a turn admission — it
+      // must not consume a timing record or carry a phantom lifecycle badge.
       state.chatItems = state.chatItems.filter(function (ci) {
         return !ci.turnErrorNotice && !ci.authoritySyncNotice;
       });
-      addChatItem({ type: "user", text: item.text, time: timeStr() });
+      addChatItem({ type: "user", text: item.text, time: timeStr(), steeredMidTurn: true });
     });
     notify();
   }
@@ -1723,7 +1756,7 @@
       //     compensating withdrawal covers the registered-late case).
       withdrawSteerChip(sid, item); // marks cancelled for the backfill path
       item.zapGate = true; // backfill must not fire its own withdrawal (see onSteerBackfill)
-      steerSettlement = item.steerSettlement || null;
+      steerSettlement = takeSteerSettlement(sid, item.id);
     }
     notify();
     if (steerSettlement) {

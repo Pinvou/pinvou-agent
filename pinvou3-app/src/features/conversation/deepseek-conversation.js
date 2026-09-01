@@ -175,6 +175,97 @@ export function pairDeepSeekTimeline(events = []) {
   return records.filter(record => record.startedAt && record.rawStatus.toLowerCase() !== 'send_error');
 }
 
+// Attach timing-record lifecycles to the projected turns. Kept standalone so
+// the projection itself stays under the cognitive-complexity budget.
+//   - Primary pairing matches record.turnIndex against admitted user turns
+//     (steered mid-turn injections are excluded upstream: they logged no
+//     user_start of their own and must not consume a record). While the
+//     session is busy, a record without a terminal is merely in flight — skip
+//     it AND consume it so the trailing fallback cannot re-attach it (live
+//     repro: a steered continuation badged the admitted turn "interrupted"
+//     although its own response segment had already finished).
+//   - The trailing fallback pairs leftovers positionally; with more records
+//     than turns the surplus is record noise (a parked-steer resume
+//     continuation whose assistant_done attached to the original turn id), so
+//     prefer records that actually carry a terminal.
+function assignDeepSeekTimelines(turns, userTurns, timelineEvents, busy) {
+  const timeline = pairDeepSeekTimeline(timelineEvents);
+  const assigned = new Set();
+  for (const record of timeline) {
+    if (!Number.isSafeInteger(record.turnIndex) || !userTurns[record.turnIndex]) continue;
+    if (busy && record.status === 'incomplete') {
+      assigned.add(record.id);
+      continue;
+    }
+    Object.assign(userTurns[record.turnIndex], {
+      status: record.status,
+      error: record.error,
+      startedAt: record.startedAt,
+      completedAt: record.completedAt,
+      usage: record.usage,
+      lifecycleKnown: true,
+    });
+    assigned.add(record.id);
+  }
+  const unassignedRecords = timeline.filter(record => !assigned.has(record.id));
+  const unassignedTurns = userTurns.filter(turn => !turn.lifecycleKnown);
+  const trailingSource = unassignedRecords.length > unassignedTurns.length
+    ? unassignedRecords.filter(record => record.status !== 'incomplete')
+    : unassignedRecords;
+  const trailingPairCount = Math.min(trailingSource.length, unassignedTurns.length);
+  if (trailingPairCount <= 0) return;
+  const trailingRecords = trailingSource.slice(-trailingPairCount);
+  const trailingTurns = unassignedTurns.slice(-trailingPairCount);
+  trailingRecords.forEach((record, index) => {
+    Object.assign(trailingTurns[index], {
+      status: record.status,
+      error: record.error,
+      startedAt: record.startedAt,
+      completedAt: record.completedAt,
+      usage: record.usage,
+      lifecycleKnown: true,
+    });
+  });
+}
+
+// A steered turn belongs to the same engine turn as the admitted message
+// before it (it consumed no timing record of its own). That engine turn's
+// terminal arrives on the admitted turn's record — but visually the task
+// ended at the run's TAIL (the last steered continuation), and only the tail
+// should carry the badge (live feedback: stamping every turn before an
+// insertion point duplicated the terminal down the whole run). While busy
+// nothing has a terminal, so nothing moves and the run stays badge-less
+// except the active indicator on the trailing turn.
+function transferSteeredRunTerminals(turns) {
+  let start = 0;
+  while (start < turns.length) {
+    let end = start;
+    while (end + 1 < turns.length
+      && turns[end + 1].userItem
+      && turns[end + 1].userItem.steeredMidTurn) end += 1;
+    if (end > start) {
+      const head = turns[start];
+      const tail = turns[end];
+      if (head.lifecycleKnown && head.completedAt) {
+        tail.status = head.status;
+        tail.error = head.error;
+        tail.startedAt = head.startedAt;
+        tail.completedAt = head.completedAt;
+        tail.usage = head.usage;
+        tail.lifecycleKnown = true;
+        for (let clear = start; clear < end; clear += 1) {
+          turns[clear].status = 'completed';
+          turns[clear].error = null;
+          turns[clear].completedAt = null;
+          turns[clear].usage = null;
+          turns[clear].lifecycleKnown = false;
+        }
+      }
+    }
+    start = end + 1;
+  }
+}
+
 /**
  * DeepSeek-TUI 仍以原 chatItems / SavedSession 为事实源；这里只做只读投影，
  * 不改变底座消息、工具、记忆、产物或计划卡的存储格式。
@@ -208,7 +299,12 @@ export function projectDeepSeekConversation({
       current.userItem = item;
       current.userText = String(item.text || '');
       turns.push(current);
-      userTurns.push(current);
+      // A steered mid-turn injection is NOT a turn admission: it has no
+      // user_start timing record of its own, so it must not consume one —
+      // otherwise the record lands on the wrong turn (a natural queue showed
+      // a phantom "interrupted" badge) and the admitted turn loses its
+      // lifecycle. It still renders as its own visual turn.
+      if (!item.steeredMidTurn) userTurns.push(current);
       continue;
     }
     ensureTurn(index).items.push(projectItem(item, index, { allowScheduledTaskDraft }));
@@ -233,36 +329,8 @@ export function projectDeepSeekConversation({
     ));
   }
 
-  const timeline = pairDeepSeekTimeline(timelineEvents);
-  const assigned = new Set();
-  for (const record of timeline) {
-    if (!Number.isSafeInteger(record.turnIndex) || !userTurns[record.turnIndex]) continue;
-    const turn = userTurns[record.turnIndex];
-    Object.assign(turn, {
-      status: record.status,
-      error: record.error,
-      startedAt: record.startedAt,
-      completedAt: record.completedAt,
-      usage: record.usage,
-      lifecycleKnown: true,
-    });
-    assigned.add(record.id);
-  }
-  const unassignedRecords = timeline.filter(record => !assigned.has(record.id));
-  const unassignedTurns = userTurns.filter(turn => !turn.lifecycleKnown);
-  const trailingPairCount = Math.min(unassignedRecords.length, unassignedTurns.length);
-  const trailingRecords = trailingPairCount > 0 ? unassignedRecords.slice(-trailingPairCount) : [];
-  const trailingTurns = trailingPairCount > 0 ? unassignedTurns.slice(-trailingPairCount) : [];
-  trailingRecords.forEach((record, index) => {
-    Object.assign(trailingTurns[index], {
-      status: record.status,
-      error: record.error,
-      startedAt: record.startedAt,
-      completedAt: record.completedAt,
-      usage: record.usage,
-      lifecycleKnown: true,
-    });
-  });
+  assignDeepSeekTimelines(turns, userTurns, timelineEvents, busy);
+  if (!busy) transferSteeredRunTerminals(turns);
 
   const activeTurn = turns[turns.length - 1];
   if (activeTurn && busy) {

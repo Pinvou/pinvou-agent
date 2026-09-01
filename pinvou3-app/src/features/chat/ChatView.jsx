@@ -1083,6 +1083,23 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       }
 
       // Auto-scroll：只在原本贴底时滚内部容器到底（绝不动外层窗口，避免浏览历史时被拉回底部）
+      // Mid-turn steer: once the injected user bubble becomes the LAST item, the
+      // streaming assistant item keeps growing ABOVE it — keying the follow only
+      // on the last item's traits freezes live output visually until the turn
+      // ends (length/last-html never change while only the streaming item
+      // updates). Follow the last streaming/running item's traits as well.
+      let streamingFollowHtml;
+      let runningFollowOutputLength;
+      for (let followIdx = chatItems.length - 1; followIdx >= 0; followIdx--) {
+        const followItem = chatItems[followIdx];
+        if (followItem?.streaming && streamingFollowHtml === undefined) {
+          streamingFollowHtml = followItem.html;
+        }
+        if (followItem?.state === 'running' && runningFollowOutputLength === undefined) {
+          runningFollowOutputLength = followItem.output?.length;
+        }
+        if (streamingFollowHtml !== undefined && runningFollowOutputLength !== undefined) break;
+      }
       useEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
@@ -1102,10 +1119,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         chatItems.length,
         // eslint-disable-next-line react-hooks/exhaustive-deps -- the last message's html is an intentionally narrow complex-expression dep
         chatItems[chatItems.length - 1]?.html,
+        streamingFollowHtml,
         // eslint-disable-next-line react-hooks/exhaustive-deps -- streaming output length is an intentionally narrow conditional-expression dep
         chatItems[chatItems.length - 1]?.state === 'running'
           ? chatItems[chatItems.length - 1]?.output?.length
           : 0,
+        runningFollowOutputLength,
         composerH,
       ]);
 

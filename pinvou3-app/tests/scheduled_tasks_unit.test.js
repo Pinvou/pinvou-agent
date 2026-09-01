@@ -3304,6 +3304,122 @@ async function interruptQueuedRetiredSteerResends() {
   assert.strictEqual(chatCalls[0].args.message, "撤回后重发的一句");
 }
 
+async function steerChipStaysSubscriptionSafeDuringStream() {
+  // Live repro (#308 dev run): the zap gate stored the steer settlement
+  // Promise on the queued chip; the subscription snapshot validator only
+  // accepts arrays/plain objects/JSON scalars, so every notify() after the
+  // queue threw "Subscription state only supports arrays and plain objects"
+  // and the streaming UI (text AND thinking) froze until the chip left the
+  // queue at settlement, then rendered everything at once. Chips must stay
+  // JSON-like — the settlement now lives in a module-side table. A real
+  // subscriber forces notify() through the validated snapshot path (the bare
+  // harness has no subscribers, which is why this never failed before).
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-substate"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-substate" });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-sub1"; };
+
+  const snapshots = [];
+  const unsubscribe = bridge.state.subscribeMany(["chat"], function (snapshot) {
+    snapshots.push(snapshot);
+  });
+
+  let threw = null;
+  try {
+    await bridge.chat.sendMessage("排队后流式不冻结的一句");
+    await tick();
+    await tick();
+    harness.emit("chat:delta", { session_id: "chat-substate", text: "仍在流式" });
+    await tick();
+    await tick();
+  } catch (e) { threw = e; }
+  assert.strictEqual(threw, null, "queue + stream must not throw in notify (got: " + (threw && threw.message) + ")");
+  const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.ok(
+    view.chatItems.some(function (i) { return i.type === "assistant" && i.text === "仍在流式"; }),
+    "deltas keep rendering after a busy queue"
+  );
+  assert.ok(snapshots.length > 0, "subscription snapshots were built and delivered");
+  assert.ok(
+    snapshots.every(function (s) { return Array.isArray(s.queued); }),
+    "queued chips stay JSON-like in every snapshot"
+  );
+  unsubscribe();
+}
+
+async function steerCommittedBubbleIsMidTurnAndHydratesClean() {
+  // Steered bubbles carry steeredMidTurn (the conversation projection must
+  // not let a mid-turn injection consume a timing record — a natural queue
+  // showed a phantom "interrupted" badge), and hydration of the engine-side
+  // persisted message must strip the baked <turn_meta> envelope (live repro:
+  // the restarted bubble rendered the raw envelope) and re-apply the same
+  // marker from the envelope's presence (only steered messages persist one).
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-steer-mid"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-steer-mid" });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-mid1"; };
+
+  await bridge.chat.sendMessage("中途注入的一句");
+  await tick();
+  await tick();
+  harness.emit("chat:steer_committed", { session_id: "chat-steer-mid", steer_id: "steer-mid1" });
+  await tick();
+  await tick();
+  let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  const liveBubble = view.chatItems.find(function (i) {
+    return i.type === "user" && i.text === "中途注入的一句";
+  });
+  assert.ok(liveBubble, "steer settlement renders the user bubble");
+  assert.strictEqual(liveBubble.steeredMidTurn, true, "live steer bubble is marked as a mid-turn injection");
+
+  // Hydration replay of the engine-persisted shape (the restart scenario):
+  // the steered message carries a baked turn_meta text block that ordinary
+  // admissions lack. Switch away and back so switchToSession rebuilds
+  // chatItems from disk through rerenderFromMessages.
+  const disk = [
+    { role: "user", content: [{ type: "text", text: "原始问题" }] },
+    { role: "assistant", content: [{ type: "text", text: "第一段回答" }] },
+    { role: "user", content: [
+      { type: "text", text: "中途注入的一句" },
+      { type: "text", text: "<turn_meta>\nCurrent local date: 2026-08-31\n</turn_meta>" },
+    ] },
+    { role: "assistant", content: [{ type: "text", text: "第二段回答" }] },
+  ];
+  harness.handlers.load_session = function () {
+    return {
+      metadata: { id: "chat-steer-mid", title: "Steer", message_count: disk.length },
+      transcript_revision: "rev-hydrate",
+      messages: disk,
+      artifacts: [],
+    };
+  };
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-steer-hydrate-other"), true);
+  await tick();
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-steer-mid"), true);
+  await tick();
+  await tick();
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  const hydrated = view.chatItems.find(function (i) {
+    return i.type === "user" && i.text === "中途注入的一句";
+  });
+  assert.ok(hydrated, "hydrated steer bubble survives the replay");
+  assert.strictEqual(
+    hydrated.text.indexOf("<turn_meta>"),
+    -1,
+    "the baked envelope is stripped from the hydrated bubble"
+  );
+  assert.strictEqual(hydrated.steeredMidTurn, true, "hydration re-applies the mid-turn marker from the envelope");
+  const ordinary = view.chatItems.find(function (i) {
+    return i.type === "user" && i.text === "原始问题";
+  });
+  assert.ok(ordinary, "ordinary messages hydrate normally");
+  assert.notStrictEqual(ordinary.steeredMidTurn, true, "ordinary admissions are not marked as steered");
+}
+
 async function zapOnNotBackfilledSteerWaitsThenWithdrawsAndResends() {
   // Eighth-review MAJOR regression: ⚡ on a chip whose steer_chat invoke is
   // still in flight must NOT cancel+resend before the engine-side fate is
@@ -7873,6 +7989,8 @@ Promise.resolve()
   .then(interruptQueuedNotPendingExpiryRestoresInput)
   .then(interruptQueuedNotPendingDroppedSettlesAsRestore)
   .then(interruptQueuedRetiredSteerResends)
+  .then(steerChipStaysSubscriptionSafeDuringStream)
+  .then(steerCommittedBubbleIsMidTurnAndHydratesClean)
   .then(zapOnNotBackfilledSteerWaitsThenWithdrawsAndResends)
   .then(zapOnNotBackfilledSteerNotPendingSkipsResend)
   .then(zapOnSteerInvokeTimeoutRestoresTextWithoutSend)

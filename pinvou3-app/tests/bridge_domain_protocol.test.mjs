@@ -87,8 +87,11 @@ const expectedProtocolHashes = {
   // scans raw source, so comment wording is part of the digest). Recomputed
   // again for the eighth-review fixes: zap resend gating on the in-flight
   // steer settlement, the per-sid zap entry guard, and the accompanying
-  // comment wording.
-  chat: '773989c02f993b860cbebc8b2d57ec211a8ee2d26c47a38182e83cda7ab4419b',
+  // comment wording. And again for the streaming-freeze follow-ups: the
+  // settlement side table (a Promise on the queued chip poisoned the
+  // subscription snapshot), steeredMidTurn bubble markers, and the hydration
+  // envelope strip.
+  chat: 'a26ffdf6cc05db1c9705692a55c015edbb351f7a421b6635aca1e8e581b73cb7',
   dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
   interaction: '3f275b9c4fc77ebf42a56df1c84d638ca5f1f8a3b80612efebeddf1a39f14efd',
   knowledge: '9105a42c6b69f04d0bc28b6a72e0746648110a44823891ded3261cdcbc99766b',

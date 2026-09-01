@@ -475,7 +475,9 @@
           // user messages precede the additions).
           if (firstText && firstText === itemText) {
             fallbackQueued.shift();
-            addChatItem({ type: "user", text: itemText, time: timeStr() });
+            // Legacy-backend steer settlement: same mid-turn semantics as
+            // settleSteerCommitted's bubble (no admission, no timing record).
+            addChatItem({ type: "user", text: itemText, time: timeStr(), steeredMidTurn: true });
           }
         }
       });

@@ -1781,10 +1781,21 @@
       const m = state.messages[mi];
       const blocks = Array.isArray(m.content) ? m.content : [];
       if (m.role === "user") {
-        const utext = userMessageDisplayText(blocks, isScheduledRunSession(state.activeSessionId));
+        // Always strip exact internal envelopes: mid-turn steered messages
+        // are persisted engine-side WITH a baked <turn_meta> block (ordinary
+        // admissions are not), and without the filter the hydrated bubble
+        // rendered the raw envelope after a restart.
+        const utext = userMessageDisplayText(blocks, true);
         if (utext) {
           // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
           const uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };
+          // An engine-baked envelope marks a mid-turn steer injection (no
+          // admission, no timing record): the conversation projection must
+          // not let it consume a lifecycle record (phantom "interrupted").
+          if ((Array.isArray(blocks) ? blocks : []).some(function (b) {
+            const t = String(b && b.type === "text" ? b.text : "").trim();
+            return (t.indexOf("<turn_meta>") === 0 && t.endsWith("</turn_meta>")) || t === "<turn_meta_unchanged />";
+          })) uitem2.steeredMidTurn = true;
           const scene = pinvouSceneForMessagePos(mi);
           if (scene) uitem2.pinvouScene = scene;
           if (utext.includes("以下维度产物还缺")) uitem2.pinvouTransfer = "悟";

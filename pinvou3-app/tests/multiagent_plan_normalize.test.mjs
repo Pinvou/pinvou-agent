@@ -433,17 +433,17 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   assert.match(
     poolSource,
     /let spawned_at_ms = Self::now_epoch_ms\(\);[\s\S]{0,3200}spawned_at_ms,/,
-    '引擎必须记录纪元时间戳，供 transcripts 甄别上一进程的僵尸 worker（spawn 时一次计算；steer-id 代际戳另用进程内化身序列，见 zhuowp 复审 P1-2）',
+    'the engine must record its epoch timestamp for transcript zombie-worker screening (computed once at spawn; the steer-id generation comes from the process-monotonic incarnation sequence, zhuowp re-review P1-2)',
   );
   assert.match(
     poolSource,
     /steer_incarnation_seq[\s\S]{0,400}fetch_add\(1, Ordering::Relaxed\)/,
-    'steer-id 代际戳必须来自进程内单调化身序列（墙钟毫秒同 tick 重建会撞号，zhuowp 复审 P1-2）',
+    'steer-id generations must come from a process-monotonic incarnation sequence (wall-clock milliseconds collide for same-tick rebuilds, zhuowp re-review P1-2)',
   );
   assert.equal(
     (poolSource.match(/map\(\|e\| \(e\.engine\.clone\(\), e\.steer_incarnation\)\)/g) || []).length,
     2,
-    'steer 与 withdraw_steer 必须从 entry 读取化身序列作为代际（消费端 wiring：改回 spawned_at_ms 会复活同 tick 撞号，两处须同时锁定）',
+    'steer and withdraw_steer must read the incarnation from the entry as their generation (consumption wiring: reverting to spawned_at_ms revives the same-tick collision; both sites must stay locked)',
   );
   const transcriptsSource = read('src-tauri', 'src', 'features', 'multiagent', 'transcripts.rs');
   assert.match(
