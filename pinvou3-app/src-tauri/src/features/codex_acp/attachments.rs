@@ -197,13 +197,13 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let path = std::env::current_dir()
-                .unwrap()
-                .join("target")
-                .join(format!(
-                    "pinvou3-codex-attachment-{label}-{}-{nonce}",
-                    std::process::id()
-                ));
+            // `prepare_codex_prompt` 经 `validate_path` 强制附件位于 `$HOME` 下
+            // (validate_upload_location)。fixture 必须跟随,否则从 $HOME 外的
+            // 检出(如 /tmp worktree)跑测试时守卫会把合法 fixture 拒之门外。
+            let path = crate::platform::os::user_home_dir().join(format!(
+                ".pinvou3-codex-attachment-test-{label}-{}-{nonce}",
+                std::process::id()
+            ));
             fs::create_dir_all(&path).unwrap();
             Self(path)
         }
