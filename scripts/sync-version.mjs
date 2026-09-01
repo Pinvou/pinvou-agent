@@ -14,11 +14,28 @@
 //   6. The "version" field in pinvou3-app/package.json
 //   7. The root "version" and packages[""].version in pinvou3-app/package-lock.json (skipped if absent)
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const SCRIPT_PATH = fileURLToPath(import.meta.url);
+// import.meta.url 已被 Node 规范化为真实路径；argv[1] 则保留调用方书写形式。
+// macOS 的 /tmp、/var 是 /private 下符号链接：绝对路径调用时 argv[1] 不会经过
+// realpath，直接字符串比较会失配并静默跳过 main()，因此两侧都按真实路径比较。
+const SCRIPT_PATH = realpathSync(fileURLToPath(import.meta.url));
+
+// 是否被直接执行（而非被测试等场景 import）。argv[1] 不存在或指向缺失文件时
+// 视为非直接执行。
+function isDirectInvocation() {
+  if (!process.argv[1]) {
+    return false;
+  }
+  const invoked = resolve(process.argv[1]);
+  try {
+    return realpathSync(invoked) === SCRIPT_PATH;
+  } catch {
+    return invoked === SCRIPT_PATH;
+  }
+}
 const REPO_ROOT = resolve(dirname(SCRIPT_PATH), '..');
 const CHECK_ONLY = process.argv.includes('--check');
 
@@ -225,6 +242,6 @@ export function main() {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === SCRIPT_PATH) {
+if (isDirectInvocation()) {
   main();
 }
