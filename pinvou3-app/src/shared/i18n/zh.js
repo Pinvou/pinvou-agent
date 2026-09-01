@@ -65,6 +65,7 @@ const codexZh = {
   rewindNoticeCompaction:'注意：该会话经历过对话压缩，回退后模型上下文可能仍包含早期摘要。',
   rewindUndo:'撤销回退', rewindUndoTitle:'确认撤销回退',
   rewindUndoBody:n=>`将恢复代码到回退前的状态，并还原被截掉的 ${n} 轮对话。`,
+  rewindUndoBodyConversationOnly:n=>`该次回退仅截断了对话（代码未改动）；将还原被截掉的 ${n} 轮对话，代码保持当前状态。`,
   rewindUndoConfirm:'撤销回退', rewindUndoBusy:'正在撤销…',
   rewindUndoDone:'已撤销回退：代码与对话已恢复到回退前的状态。',
   compactStart:'正在压缩上下文', compactDone:'上下文压缩完成', compactFail:'上下文压缩失败',

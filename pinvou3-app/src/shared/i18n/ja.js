@@ -66,6 +66,7 @@ const codexJa = {
   rewindNoticeCompaction:'注意：このセッションでは会話の圧縮が行われたため、巻き戻し後もモデルのコンテキストに以前の要約が残っている可能性があります。',
   rewindUndo:'巻き戻しを取り消す', rewindUndoTitle:'巻き戻し取消しの確認',
   rewindUndoBody:n=>`コードを巻き戻し前の状態に復元し、削除された ${n} ターンの会話を復元します。`,
+  rewindUndoBodyConversationOnly:n=>`その巻き戻しは会話のみが対象でした（コードは変更されていません）。削除された ${n} ターンの会話を復元し、コードは現在の状態のままにします。`,
   rewindUndoConfirm:'巻き戻しを取り消す', rewindUndoBusy:'取消し中…',
   rewindUndoDone:'巻き戻しを取り消しました：コードと会話が巻き戻し前の状態に復元されました。',
   compactStart:'コンテキストを圧縮中', compactDone:'コンテキストを圧縮しました', compactFail:'コンテキストの圧縮に失敗しました',

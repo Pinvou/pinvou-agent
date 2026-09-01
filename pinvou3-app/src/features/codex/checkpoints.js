@@ -112,12 +112,17 @@ export function rewindNoticeText(copy, result, keepTurns) {
 
 /**
  * 「撤销回退」入口可见性（纯函数）：后端 rewind_undo_state 的可反悔语义
- * （sidecar 有备份 + 回退后未发新轮次 + 有 PreRestore 快照）已收敛为
- * 「非 null 即渲染」，这里只做形状校验——无 PreRestore checkpointId 的
- * 条目视为不可反悔（如仅对话回退后后端返回的残缺状态）。
+ * （sidecar 有备份 + 回退后未发新轮次/尾部未被编辑 + 绑定的回滚点仍在）
+ * 已收敛为「非 null 即渲染」，这里只做形状校验。checkpointId 为 null 是
+ * 合法的降级形态（仅对话回退的撤销只还原对话），文案由弹窗按此分流。
  */
 export function rewindUndoAvailable(undoState) {
-  return Boolean(undoState && typeof undoState === 'object' && undoState.checkpointId);
+  return Boolean(
+    undoState
+      && typeof undoState === 'object'
+      && Number.isInteger(undoState.keptTurns)
+      && Number.isInteger(undoState.rewoundTurns),
+  );
 }
 
 /**
@@ -183,10 +188,22 @@ export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
     }
   }, [enabled]);
 
+  // 预览缓存只随会话切换清空：refreshKey（turns/busy 复合键）变化时若一并清空，
+  // 打开中的确认弹窗会在 busy 边沿/后台投影变化后丢失 previewState 且不再重拉，
+  // 「将撤销的变更」区域变空白。快照内容的时效由「每次开弹窗都重拉」保证
+  // （openRewindDialog → preview），与列表刷新解耦。
+  const previewSessionRef = useRef(sessionId);
   useEffect(() => {
-    setPreviews({});
+    if (previewSessionRef.current !== sessionId) {
+      previewSessionRef.current = sessionId;
+      setPreviews({});
+    }
+  }, [sessionId]);
+
+  useEffect(() => {
+    // refreshKey 为 turnCount:busy 复合键（见 checkpointRefreshKey），变化即重拉
+    // 列表与可反悔状态；预览缓存不受影响（见上）。
     refresh();
-    // refreshKey 由调用方给（turns.length），变化即重新拉取。
   }, [sessionId, enabled, refreshKey, refresh]);
 
   /** 懒加载某 checkpoint 的 diff 预览（缓存随 sessionId/refreshKey 失效）。 */

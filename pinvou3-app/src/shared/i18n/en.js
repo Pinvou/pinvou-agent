@@ -66,6 +66,7 @@ const codexEn = {
   rewindNoticeCompaction:'Note: this session went through conversation compaction, so the model context may still contain earlier summaries after the rewind.',
   rewindUndo:'Undo rewind', rewindUndoTitle:'Confirm undo rewind',
   rewindUndoBody:n=>`This restores the code to its pre-rewind state and brings back the ${n} truncated turn(s) of conversation.`,
+  rewindUndoBodyConversationOnly:n=>`That rewind only truncated the conversation (your code was not changed); this brings back the ${n} truncated turn(s) of conversation and leaves the code as is.`,
   rewindUndoConfirm:'Undo rewind', rewindUndoBusy:'Undoing…',
   rewindUndoDone:'Rewind undone: code and conversation are back to their pre-rewind state.',
   compactStart:'Compacting context', compactDone:'Context compacted', compactFail:'Context compaction failed',

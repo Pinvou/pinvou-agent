@@ -1310,11 +1310,21 @@ export function CodexAcpView({
   const [rewindError, setRewindError] = useState('');
   const [rewinding, setRewinding] = useState(false);
   // 「撤销回退」：可见性由 rewindCheckpoints.undoState（rewind_undo_state）驱动，
-  // null 不渲染；open 时渲染轻量确认弹窗。
+  // null 不渲染；open 时渲染轻量确认弹窗。rewindUndoReloadFailed 标记「撤销已生效
+  // 但重载失败」——重试只补重载，不再发 undo_last_rewind。
   const rewindUndoState = rewindCheckpoints.undoState;
   const [rewindUndoOpen, setRewindUndoOpen] = useState(false);
   const [rewindUndoError, setRewindUndoError] = useState('');
   const [rewindUndoing, setRewindUndoing] = useState(false);
+  const [rewindUndoReloadFailed, setRewindUndoReloadFailed] = useState(false);
+  // 可反悔状态消失（回退后发了新轮/记录被消费）时复位弹窗开关：否则 open 残留
+  // 为 true，下次 rewind 使 undoState 复现后确认弹窗会无人触发地自动弹出。
+  useEffect(() => {
+    if (!rewindUndoAvailable(rewindUndoState)) {
+      setRewindUndoOpen(false);
+      setRewindUndoReloadFailed(false);
+    }
+  }, [rewindUndoState]);
   // Equivalent to [...visibleTurns].reverse().find(status === 'running'): scan backwards for the last
   // running turn, memoized on the turns reference (both turns branches come from memoized projections,
   // and the draft empty state uses the module-level constant array), so no reversed copy is rebuilt per render.
@@ -1991,29 +2001,42 @@ export function CodexAcpView({
   // 含本会话/跨会话忙碌门）。成功后先重载再收口（联调 Bug B）：loadSession 走
   // 既有路径按磁盘截断后内容重注水，成败都强制 bump tick 兜底重投影；重载
   // 失败留在弹窗如实上屏（弹窗不在重载前关闭，错误不再被吞进不可见状态）。
+  // 重载失败时回退已在后端生效：刷新 checkpoint/undo 状态让「撤销回退」入口
+  // 出现（用户自救通道），并把目标标记为 reloadFailed——重试只补重载，不会
+  // 对已截断的对话再发一次 rewind_to_turn（那会必败且文案令人困惑）。
   async function confirmRewind() {
     const target = rewindTarget;
     if (!target || !activeId || rewinding) return;
+    const sessionId = activeId;
     setRewinding(true);
     setRewindError('');
     try {
-      const result = await invoke('rewind_to_turn', {
-        sessionId: activeId,
-        keepTurns: target.keepTurns,
-        conversationOnly: target.conversationOnly,
-      });
+      const result = target.reloadFailed
+        ? null
+        : await invoke('rewind_to_turn', {
+          sessionId,
+          keepTurns: target.keepTurns,
+          conversationOnly: target.conversationOnly,
+        });
       const { error: reloadError } = await reloadSessionAfterRewind({
-        reload: () => loadSession(activeId),
+        reload: () => loadSession(sessionId),
         bumpTick: () => setNativeLaneTick(tick => tick + 1),
       });
+      // 跨会话竞态：await 期间会话被程序化切换（remote control）时，UI 收口
+      // 动作只认原会话；重载/状态刷新已由上面的调用按 sessionId 定向完成。
+      if (activeIdRef.current !== sessionId) return;
       if (reloadError) {
+        setRewindTarget({ ...target, reloadFailed: true });
         setRewindError(reloadError);
+        rewindCheckpoints.refresh();
         return;
       }
       setRewindTarget(null);
-      const notice = rewindNoticeText(codexCopy, result, target.keepTurns);
-      appendNativeSystemItem(getNativeLane(activeId), notice);
-      setNativeLaneTick(tick => tick + 1);
+      if (result) {
+        const notice = rewindNoticeText(codexCopy, result, target.keepTurns);
+        appendNativeSystemItem(getNativeLane(sessionId), notice);
+        setNativeLaneTick(tick => tick + 1);
+      }
       // 入口可用性随新时间线重算（refreshKey 的 turns/busy 变化通常已触发，此处兜底）。
       rewindCheckpoints.refresh();
     } catch (err) {
@@ -2023,26 +2046,38 @@ export function CodexAcpView({
     }
   }
 
-  // 撤销回退：undo_last_rewind（恢复代码到最新 PreRestore + 对话从备份还原 +
-  // engine 重建）；成功后复用 reloadSessionAfterRewind 重载编排（与回退后同语义：
-  // 先重载、成败都 bumpTick、成功才关弹窗），失败错误留在弹窗上屏。
+  // 撤销回退：undo_last_rewind（恢复代码到绑定回滚点（仅对话降级则跳过）+
+  // 对话从备份还原 + engine 重建）；成功后复用 reloadSessionAfterRewind 重载编排
+  // （与回退后同语义：先重载、成败都 bumpTick、成功才关弹窗），失败错误留在弹窗
+  // 上屏。重载失败时撤销已在后端生效：重试只补重载（reloadFailed 标记），不会对
+  // 已还原的对话再发一次 undo_last_rewind（记录已消费，必败且文案令人困惑）。
   async function confirmRewindUndo() {
     if (!rewindUndoState || !activeId || rewindUndoing) return;
+    const sessionId = activeId;
+    const reloadOnly = rewindUndoReloadFailed;
     setRewindUndoing(true);
     setRewindUndoError('');
     try {
-      await invoke('undo_last_rewind', { sessionId: activeId });
+      if (!reloadOnly) {
+        await invoke('undo_last_rewind', { sessionId });
+      }
       const { error: reloadError } = await reloadSessionAfterRewind({
-        reload: () => loadSession(activeId),
+        reload: () => loadSession(sessionId),
         bumpTick: () => setNativeLaneTick(tick => tick + 1),
       });
+      // 跨会话竞态：await 期间会话被程序化切换时不再写原会话的 UI 状态。
+      if (activeIdRef.current !== sessionId) return;
       if (reloadError) {
+        setRewindUndoReloadFailed(true);
         setRewindUndoError(reloadError);
         return;
       }
+      setRewindUndoReloadFailed(false);
       setRewindUndoOpen(false);
-      appendNativeSystemItem(getNativeLane(activeId), codexCopy.rewindUndoDone);
-      setNativeLaneTick(tick => tick + 1);
+      if (!reloadOnly) {
+        appendNativeSystemItem(getNativeLane(sessionId), codexCopy.rewindUndoDone);
+        setNativeLaneTick(tick => tick + 1);
+      }
       // refresh 连带重查 rewind_undo_state：撤销后不可再反悔，入口随之消失。
       rewindCheckpoints.refresh();
     } catch (err) {

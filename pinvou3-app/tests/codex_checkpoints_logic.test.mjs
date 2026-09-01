@@ -252,18 +252,46 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
 }
 
 // ── rewindUndoAvailable：「撤销回退」入口可见性 ─────────────────────
-// 后端 rewind_undo_state 非 null 即可反悔（sidecar 备份 + 未发新轮 + PreRestore），
-// 前端只做形状校验：无 checkpointId 的残缺状态不渲染。
+// 后端 rewind_undo_state 非 null 即可反悔（sidecar 备份 + 未发新轮/尾部未编辑 +
+// 绑定的回滚点仍在），前端只做形状校验。checkpointId 为 null 是合法的降级形态
+// （仅对话回退的撤销只还原对话），不是残缺状态。
 {
   assert.equal(rewindUndoAvailable(null), false);
   assert.equal(rewindUndoAvailable(undefined), false);
   assert.equal(rewindUndoAvailable({}), false);
-  assert.equal(rewindUndoAvailable({ checkpointId: '', keptTurns: 2, rewoundTurns: 1 }), false);
   assert.equal(rewindUndoAvailable('checkpoint-x'), false);
+  assert.equal(rewindUndoAvailable({ checkpointId: 'pre-1' }), false);
   assert.equal(
     rewindUndoAvailable({ checkpointId: 'pre-1', keptTurns: 2, rewoundTurns: 1, rewoundAt: '2026-08-21T10:00:00Z' }),
     true,
   );
+  // 降级（仅对话回退）的撤销：无回滚点，仅还原对话——入口照常渲染。
+  assert.equal(
+    rewindUndoAvailable({ checkpointId: null, keptTurns: 2, rewoundTurns: 1, rewoundAt: '2026-09-01T10:00:00Z' }),
+    true,
+  );
+}
+
+// ── Web 车道策略锚定：rewind 直接改写本地文件，保持桌面专属 ─────────
+// 与 multiagent_plan_normalize.test.mjs 的「桌面专属」断言同款：防止未来误放行
+// （放行需单独评估 relay 侧的本地文件写语义）。
+{
+  const { readFileSync } = await import('node:fs');
+  const policy = JSON.parse(readFileSync(new URL('../src/platform/web/access-policy.json', import.meta.url), 'utf8'));
+  for (const command of [
+    'list_checkpoints',
+    'checkpoint_diff',
+    'restore_checkpoint',
+    'rewind_to_turn',
+    'rewind_undo_state',
+    'undo_last_rewind',
+  ]) {
+    assert.equal(
+      policy.allowed_commands.includes(command),
+      false,
+      `${command} 必须保持桌面专属（rewind 直接改写本地文件，web relay 放行需单独评估）`,
+    );
+  }
 }
 
 console.log('codex_checkpoints_logic: all assertions passed');

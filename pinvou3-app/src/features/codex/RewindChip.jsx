@@ -58,6 +58,8 @@ export function RewindChip({ entry, disabled, copy, onOpen }) {
     // Idle state is a faint thin divider line; the whole row is the hover zone,
     // and hovering anywhere near the line fades the line out and the rewind
     // button in. focus-visible keeps the button reachable from the keyboard.
+    // pointer-events follow visibility: an opacity-0 button would otherwise
+    // still intercept clicks aimed at the timeline content beneath it.
     <div className="group relative my-1 flex h-7 items-center justify-center">
       <div
         aria-hidden="true"
@@ -69,7 +71,7 @@ export function RewindChip({ entry, disabled, copy, onOpen }) {
         disabled={disabled}
         onClick={() => onOpen(entry)}
         title={entry.conversationOnly ? copy.rewindConversationOnlyNote : copy.rewindPreRestoreNote}
-        className="absolute inline-flex max-w-full items-center gap-1.5 rounded-xl border border-black/[0.06] bg-white px-2.5 py-1 text-[11px] text-gray-500 opacity-0 shadow-sm transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-gray-700 disabled:cursor-not-allowed dark:border-white/10 dark:bg-[#2A2B2E] dark:text-gray-400 dark:hover:text-gray-200"
+        className="pointer-events-none absolute inline-flex max-w-full items-center gap-1.5 rounded-xl border border-black/[0.06] bg-white px-2.5 py-1 text-[11px] text-gray-500 opacity-0 shadow-sm transition-opacity focus:pointer-events-auto focus:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 hover:text-gray-700 disabled:cursor-not-allowed dark:border-white/10 dark:bg-[#2A2B2E] dark:text-gray-400 dark:hover:text-gray-200"
       >
         <RotateCcw size={11} className="shrink-0" />
         <span className="truncate">{label}</span>
@@ -80,6 +82,16 @@ export function RewindChip({ entry, disabled, copy, onOpen }) {
 
 // 「撤销回退」入口：渲染在时间线末尾（回退成功的内联提示其后），可见性由
 // rewind_undo_state 驱动（null 不渲染，见 checkpoints.js rewindUndoAvailable）。
+//
+// 撤销文案按 state.checkpointId 分流：有绑定回滚点 = 代码+对话一起恢复；
+// null = 被撤销的那次回退是仅对话降级（代码未动过），撤销也只还原对话，
+// 文案必须如实、不得承诺恢复代码。
+function rewindUndoBodyText(copy, state) {
+  return state?.checkpointId
+    ? copy.rewindUndoBody(state.rewoundTurns)
+    : copy.rewindUndoBodyConversationOnly(state.rewoundTurns);
+}
+
 export function RewindUndoChip({ state, disabled, copy, onOpen }) {
   return (
     <div className="my-1 flex justify-center">
@@ -88,7 +100,7 @@ export function RewindUndoChip({ state, disabled, copy, onOpen }) {
         data-testid="rewind-undo-chip"
         disabled={disabled}
         onClick={() => onOpen(state)}
-        title={copy.rewindUndoBody(state.rewoundTurns)}
+        title={rewindUndoBodyText(copy, state)}
         className="inline-flex max-w-full items-center gap-1.5 rounded-xl border border-blue-500/25 bg-blue-500/[0.06] px-2.5 py-1 text-[11px] text-blue-600 transition-colors hover:bg-blue-500/10 disabled:cursor-not-allowed disabled:opacity-40 dark:text-blue-300"
       >
         <RotateCcw size={11} className="shrink-0" />
@@ -104,8 +116,18 @@ export function RewindUndoChip({ state, disabled, copy, onOpen }) {
 export function RewindConfirmDialog({ entry, previewState, error, busy, theme, copy, onCancel, onConfirm }) {
   const isDark = theme === 'dark';
   const dialogRef = useRef(null);
+  // 焦点只在挂载时夺取一次：父组件传入的 onCancel 是内联箭头函数、每次渲染都
+  // 换新身份，若 focus 与 keydown 同处一个带依赖的 effect，弹窗打开期间任意父级
+  // 重渲染（chat tick、轮询）都会把焦点从按钮拽回容器，打断键盘操作。
+  // 卸载时把焦点归还给触发前的元素。
   useEffect(() => {
+    const previous = document.activeElement;
     dialogRef.current?.focus();
+    return () => {
+      if (previous instanceof HTMLElement) previous.focus();
+    };
+  }, []);
+  useEffect(() => {
     const onKey = (event) => {
       if (event.key === 'Escape' && !busy) {
         event.preventDefault();
@@ -212,8 +234,18 @@ export function RewindConfirmDialog({ entry, previewState, error, busy, theme, c
 export function RewindUndoConfirmDialog({ state, error, busy, theme, copy, onCancel, onConfirm }) {
   const isDark = theme === 'dark';
   const dialogRef = useRef(null);
+  // 焦点只在挂载时夺取一次：父组件传入的 onCancel 是内联箭头函数、每次渲染都
+  // 换新身份，若 focus 与 keydown 同处一个带依赖的 effect，弹窗打开期间任意父级
+  // 重渲染（chat tick、轮询）都会把焦点从按钮拽回容器，打断键盘操作。
+  // 卸载时把焦点归还给触发前的元素。
   useEffect(() => {
+    const previous = document.activeElement;
     dialogRef.current?.focus();
+    return () => {
+      if (previous instanceof HTMLElement) previous.focus();
+    };
+  }, []);
+  useEffect(() => {
     const onKey = (event) => {
       if (event.key === 'Escape' && !busy) {
         event.preventDefault();
@@ -247,7 +279,7 @@ export function RewindUndoConfirmDialog({ state, error, busy, theme, copy, onCan
           {copy.rewindUndoTitle}
         </div>
         <div className={`mt-3 text-[12px] leading-5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
-          {copy.rewindUndoBody(state.rewoundTurns)}
+          {rewindUndoBodyText(copy, state)}
         </div>
 
         {error && <div className="mt-3 text-[12px] leading-5 text-red-500">{error}</div>}
