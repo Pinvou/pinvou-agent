@@ -620,6 +620,14 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // maxLength 与后端 64/240 字符上限一致，Escape 关闭与 backdrop 一致。
     const MAX_DISPLAY_NAME_CHARS = 64;
     const MAX_DISPLAY_DESCRIPTION_CHARS = 240;
+    // 与后端 is_display_unsafe_char 同一拒绝集（store.rs）：Cc 控制字符（含
+    // Tab/换行/DEL/C1，JS 侧用 \p{Cc} 属性转义表达，与 Rust char::is_control
+    // 同一 Unicode 类别且不触发 no-control-regex 规则）+ 软连字符 + 零宽字
+    // 符 + 行段/段落分隔符 + bidi 控制符 + BOM。只剥 \r\n 的话，表格里复制
+    // 的 TSV（含 Tab）等输入仍会前端放行、后端必败——在这里剥掉，保证能输
+    // 入的就能保存。
+    const DISPLAY_UNSAFE_CHARS = /[\p{Cc}\u00AD\u200B-\u200D\u2028-\u2029\u202A-\u202E\u2066-\u2069\uFEFF]/gu;
+    const stripDisplayUnsafe = s => s.replaceAll(DISPLAY_UNSAFE_CHARS, '');
     const TsEditDisplayDialog = ({ dialog, onConfirm, onCancel, copy }) => {
       const [name, setName] = useState(dialog.name || '');
       const [desc, setDesc] = useState(dialog.description || '');
@@ -675,7 +683,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   maxLength={MAX_DISPLAY_NAME_CHARS}
                   placeholder={copy.displayNamePlaceholder}
                   value={name}
-                  onChange={e => setName(e.target.value)}
+                  onChange={e => setName(stripDisplayUnsafe(e.target.value))}
                   className={inputCls}
                 />
               </div>
@@ -690,10 +698,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   maxLength={MAX_DISPLAY_DESCRIPTION_CHARS}
                   placeholder={copy.displayDescriptionPlaceholder}
                   value={desc}
-                  onChange={e => setDesc(e.target.value.replaceAll(/[\r\n]/g, ''))}
+                  onChange={e => setDesc(stripDisplayUnsafe(e.target.value))}
                   // 粘贴多行文本会绕过 Enter 拦截（paste 不派发 keydown），留进
-                  // 值里就是必败保存——在粘贴处同样剥离换行（与 onChange 同口径，
-                  // 顺带兜住任何残留换行来源）。
+                  // 值里就是必败保存——在粘贴处同样剥离（与 onChange 同口径，
+                  // 顺带兜住任何残留来源）。
                   onPaste={e => {
                     const text = (e.clipboardData || window.clipboardData)?.getData('text/plain');
                     if (text == null) return;
@@ -703,7 +711,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                     // chars() 校验对半个代理报错，报错文案不可读）；长度上限也
                     // 按码点计，与后端 chars().count() 同口径（maxLength 的
                     // UTF-16 计数只影响可输入上限的松紧，不会超后端限）。
-                    const clamp = s => [...s.replaceAll(/[\r\n]/g, '')].slice(0, MAX_DISPLAY_DESCRIPTION_CHARS).join('');
+                    const clamp = s => [...stripDisplayUnsafe(s)].slice(0, MAX_DISPLAY_DESCRIPTION_CHARS).join('');
                     const pos = e.target.selectionStart ?? e.target.value.length;
                     const head = clamp(e.target.value.slice(0, pos));
                     const tail = e.target.value.slice(e.target.selectionEnd ?? pos);
@@ -804,6 +812,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const [busyId, setBusyId] = useState(null);
       const busyRef = useRef(null); // 拖放 controller 经 ref 读最新 busyId(闭包不刷新)
       busyRef.current = busyId;
+      // 展示编辑弹窗开着时拒绝拖放导入（同经 ref 读最新值）：导入成功会按新包
+      // 自动预填并整体替换 editDisplay（key 重挂载），A 包未保存的输入被静默
+      // 丢弃——模态弹窗期间拖放应视为不可达输入。声明在 editDisplay 之前仅为
+      // 就近聚合 ref，赋值同步在其 useState 声明处。
+      const editDisplayRef = useRef(null);
       const [dropActive, setDropActive] = useState(false); // 拖放 overlay 可见性
       // 页面级拖放导入技能包:capture 阶段接管 document,隔离全局附件通道
       // (见 attachment-drop-controller.js;canAccept 经 busyRef 读最新值)。
@@ -813,7 +826,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         return ctrl.install({
           document,
           capture: true,
-          canAccept: () => canMutateToolStore && !busyRef.current,
+          canAccept: () => canMutateToolStore && !busyRef.current && !editDisplayRef.current,
           onActiveChange: setDropActive,
           onFiles: handleZipDrop,
         });
@@ -1624,6 +1637,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // display_description 原值），留空 = 清覆盖回退默认。保存调
       // update_bundle_display_meta 后按现有模式 loadBackendState 刷新。
       const [editDisplay, setEditDisplay] = useState(null); // { backendId, cardTitle, name, description }
+      editDisplayRef.current = editDisplay; // 拖放 canAccept 经 ref 读最新弹窗态
       // 预填口径（与导入弹窗不同，是有意的）：编辑入口预填 extra 覆盖**原值**
       // （未设 = 空，留空保存即清覆盖回退默认）；导入入口预填**生效默认名**
       // （回退链取值），让用户直接保存固定默认或改名——见 doImportSkillZip。
@@ -2150,8 +2164,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             </div>
           ), document.body)}
           {/* 上传包展示名/说明编辑弹窗（edit_display 动作触发；条件挂载，state 初值即当前覆盖值）。
-              key 按 backendId 强制重挂载：弹窗开着时拖放导入新包会原位替换 editDisplay，
-              无 key 则输入框保留旧包的 useState 初值、保存却写进新包 id（串台）。 */}
+              key 按 backendId 强制重挂载：编辑目标切换（重开/自动预填）时不得复用旧包的
+              useState 输入初值、保存却写进新包 id（串台）。弹窗开着时的拖放导入已在
+              canAccept 处拒绝（editDisplayRef），原位替换路径不再可达。 */}
           {editDisplay && createPortal(<TsEditDisplayDialog
             key={editDisplay.backendId}
             dialog={editDisplay}

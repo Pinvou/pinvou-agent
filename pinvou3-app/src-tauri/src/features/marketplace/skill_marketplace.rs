@@ -732,6 +732,12 @@ impl SkillMarketplaceManager {
         if !is_safe_skill_name(&dir_name) {
             return Err(format!("非法技能名 '{dir_name}'"));
         }
+        // 自此持同 id import_lock 至函数尾：与统一导入/遗留导入/展示编辑
+        // （update_display_meta）共用同一把锁、同一锁序（import_lock → store
+        // file_lock）。此前并发卸载不持锁，展示编辑「读备份 → 写 SKILL.md」
+        // 临界区可能被卸载插队（编辑成功返回而目录已删，仅注释披露的窄窗口）。
+        let import_lock = super::plugin_import::import_lock_for(skill_id);
+        let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
         let legacy = self.legacy_skills_dir.join(&dir_name);
         let mut deleted_any = false;
         for dir in self.package_candidate_dirs(&dir_name) {
@@ -994,9 +1000,7 @@ impl SkillMarketplaceManager {
         // upsert_preserving 原样保留 extra，备份里存的是**旧包**的引擎口径原值，
         // 不清掉会让之后的「清覆盖恢复」把旧描述写进新包。导入即重基线。
         // （展示名/说明覆盖本身按既定语义跨重导入保留，不动。）
-        if let Err(e) = self.bundle_store.set_skill_desc_backup(&name, None) {
-            log::warn!("[skill-marketplace] 清理说明备份失败（import {name}）: {e}");
-        }
+        rebaseline_skill_desc_backup(&self.bundle_store, &name, "遗留导入");
         Ok(name)
     }
 
@@ -1352,6 +1356,36 @@ pub struct SkillSelfHealReport {
 }
 
 // 辅助 ------------------------------------------------------------------------
+
+/// 导入即重基线：包内容整体替换后，旧包的 SKILL.md 说明备份（存于 extra）
+/// 随之失效，必须丢弃——否则「清覆盖恢复」会把旧包描述写进新包。统一导入
+/// 与遗留导入共用；`ctx` 仅为日志定位。
+/// 失败口径：读失败不得静默跳过（残留备份将无任何痕迹）；写失败重试一次
+/// （瞬时 IO 抖动），仍失败升 error——此刻磁盘已是新包而备份仍指旧包，后续
+/// 「清覆盖恢复」可能把旧描述写进新 SKILL.md，日志必须留可定位痕迹；下一次
+/// 成功重导入会自然重基线自愈。
+pub(crate) fn rebaseline_skill_desc_backup(store: &super::store::BundleStore, id: &str, ctx: &str) {
+    match store.skill_desc_backup(id) {
+        Ok(Some(_)) => {
+            let mut last = Ok(());
+            for _ in 0..2 {
+                last = store.set_skill_desc_backup(id, None);
+                if last.is_ok() {
+                    break;
+                }
+            }
+            if let Err(e) = last {
+                log::error!(
+                    "[skill-marketplace] 清理说明备份失败（{ctx} {id}），旧包备份残留，清覆盖恢复可能把旧描述写进新包: {e}"
+                );
+            }
+        }
+        Err(e) => {
+            log::warn!("[skill-marketplace] 读取说明备份失败（{ctx} {id}），跳过重基线: {e}")
+        }
+        Ok(None) => {}
+    }
+}
 
 /// 迁移期 companion 归属映射：扫描旧布局 `bundle/mcp-servers/<id>/manifest.json`
 /// 的 `companion_skills` 声明，产出 技能名 → 所属 MCP 包 id。仅供

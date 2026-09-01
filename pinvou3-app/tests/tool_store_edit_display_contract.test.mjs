@@ -215,4 +215,52 @@ assert.match(
   'import dialog prefill must default to the effective display name (override > fallback)',
 );
 
+// 7. 输入清洗与后端 is_display_unsafe_char 同集：Cc 控制字符（含 Tab/换行/
+// DEL/C1）+ 软连字符 + 零宽 + 行段/段落分隔符 + bidi + BOM。只剥 \r\n 会让
+// TSV 粘贴（含 Tab）等仍前端放行、后端必败。名称与说明输入、粘贴 clamp 三处
+// 都必须走同一清洗器。
+assert.match(
+  toolStoreSource,
+  /const DISPLAY_UNSAFE_CHARS = \/\[\\p\{Cc\}\\u00AD\\u200B-\\u200D\\u2028-\\u2029\\u202A-\\u202E\\u2066-\\u2069\\uFEFF\]\/gu/,
+  'sanitizer regex must mirror the backend is_display_unsafe_char rejection set (\\p{Cc} == char::is_control)',
+);
+const stripUses = toolStoreSource.match(/stripDisplayUnsafe\(/g) || [];
+assert.ok(
+  stripUses.length >= 3, // name onChange + desc onChange + paste clamp
+  `stripDisplayUnsafe must be applied to name/desc onChange and paste clamp (found ${stripUses.length} call sites)`,
+);
+assert.match(
+  toolStoreSource,
+  /onChange=\{e => setName\(stripDisplayUnsafe\(e\.target\.value\)\)\}/,
+  'name input must strip backend-rejected characters',
+);
+assert.match(
+  toolStoreSource,
+  /onChange=\{e => setDesc\(stripDisplayUnsafe\(e\.target\.value\)\)\}/,
+  'description textarea must strip backend-rejected characters',
+);
+assert.match(
+  toolStoreSource,
+  /const clamp = s => \[\.\.\.stripDisplayUnsafe\(s\)\]\.slice\(0, MAX_DISPLAY_DESCRIPTION_CHARS\)\.join\(''\)/,
+  'paste clamp must strip backend-rejected characters (not just \\r\\n)',
+);
+
+// 8. 编辑弹窗开着时拒绝拖放导入：导入成功会按新包自动预填并整体替换
+// editDisplay（key 重挂载），A 包未保存输入被静默丢弃——模态期间拖放不可达。
+assert.match(
+  toolStoreSource,
+  /const editDisplayRef = useRef\(null\)/,
+  'dialog-open state must be exposed to the drop controller via a ref',
+);
+assert.match(
+  toolStoreSource,
+  /editDisplayRef\.current = editDisplay;/,
+  'editDisplayRef must track the editDisplay state on render',
+);
+assert.match(
+  toolStoreSource,
+  /canAccept: \(\) => canMutateToolStore && !busyRef\.current && !editDisplayRef\.current/,
+  'drop imports must be refused while the edit-display dialog is open',
+);
+
 console.log('tool store edit-display contract tests passed');
