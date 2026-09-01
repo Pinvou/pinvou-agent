@@ -1305,7 +1305,10 @@ mod tests {
             );
         }
 
-        cleanup(&tmp);
+        // 本测试不持 ENV_LOCK 也不设 PINVOU3_HOME,不能走 cleanup()(其契约要求
+        // 调用方持锁,且会无条件 remove_var)——否则并行测试的持锁窗口会被这次
+        // 无锁移除砸穿,dingtalk/wecom 技能门控测试会以断言读错根目录的形式偶发失败。
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// 已下架预置技能的清理:市场标记的删、无标记裸残留的删、用户上传(upload:)的保。
