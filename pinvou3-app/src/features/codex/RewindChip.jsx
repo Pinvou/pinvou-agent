@@ -124,7 +124,9 @@ export function RewindConfirmDialog({ entry, previewState, error, busy, theme, c
     const previous = document.activeElement;
     dialogRef.current?.focus();
     return () => {
-      if (previous instanceof HTMLElement) previous.focus();
+      // 时间线重载后触发元素可能已重建（旧节点分离）——focus 分离元素是规范
+      // 允许的 no-op，isConnected 判断只为意图明确。
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
     };
   }, []);
   useEffect(() => {
@@ -142,6 +144,9 @@ export function RewindConfirmDialog({ entry, previewState, error, busy, theme, c
   const changes = (previewState?.diff && Array.isArray(previewState.diff.changes))
     ? previewState.diff.changes
     : [];
+  // reloadFailed = 回退已生效、仅重载失败：预览与截断说明已执行完毕，不再展示，
+  // 只保留「重试仅重新加载」的说明，确认键变为「重试加载」。
+  const reloadFailed = Boolean(entry.reloadFailed);
 
   return createPortal(
     <div data-testid="rewind-confirm" className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -166,43 +171,51 @@ export function RewindConfirmDialog({ entry, previewState, error, busy, theme, c
           {copy.rewindDialogTitle}
         </div>
 
-        <div className="mt-3">
-          <div className="text-[10px] font-medium uppercase tracking-wider text-gray-400">
-            {copy.rewindUndoChanges}
+        {reloadFailed ? (
+          <div className={`mt-3 text-[12px] leading-5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
+            {copy.rewindReloadRetryNote}
           </div>
-          {entry.conversationOnly ? (
-            <div className={`mt-1.5 text-[12px] leading-5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
-              {copy.rewindConversationOnlyNote}
-            </div>
-          ) : (
-            <div className="mt-1.5 text-[12px] leading-5">
-              {previewState?.loading && <span className="text-gray-400">{copy.rewindLoading}</span>}
-              {previewState?.error && (
-                <span className="text-red-500">{copy.rewindPreviewFailed}: {previewState.error}</span>
+        ) : (
+          <>
+            <div className="mt-3">
+              <div className="text-[10px] font-medium uppercase tracking-wider text-gray-400">
+                {copy.rewindUndoChanges}
+              </div>
+              {entry.conversationOnly ? (
+                <div className={`mt-1.5 text-[12px] leading-5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
+                  {copy.rewindConversationOnlyNote}
+                </div>
+              ) : (
+                <div className="mt-1.5 text-[12px] leading-5">
+                  {previewState?.loading && <span className="text-gray-400">{copy.rewindLoading}</span>}
+                  {previewState?.error && (
+                    <span className="text-red-500">{copy.rewindPreviewFailed}: {previewState.error}</span>
+                  )}
+                  {summary && (
+                    <>
+                      <div className={isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}>
+                        <ChangeSummary summary={summary} copy={copy} />
+                      </div>
+                      <ChangeFileList changes={changes} copy={copy} />
+                    </>
+                  )}
+                </div>
               )}
-              {summary && (
-                <>
-                  <div className={isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}>
-                    <ChangeSummary summary={summary} copy={copy} />
-                  </div>
-                  <ChangeFileList changes={changes} copy={copy} />
-                </>
-              )}
             </div>
-          )}
-        </div>
 
-        <div className="mt-3">
-          <div className="text-[10px] font-medium uppercase tracking-wider text-gray-400">
-            {copy.rewindConversationLabel}
-          </div>
-          <div className={`mt-1.5 text-[12px] leading-5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
-            {copy.rewindConversationTarget(entry.keepTurns)}
-          </div>
-        </div>
+            <div className="mt-3">
+              <div className="text-[10px] font-medium uppercase tracking-wider text-gray-400">
+                {copy.rewindConversationLabel}
+              </div>
+              <div className={`mt-1.5 text-[12px] leading-5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
+                {copy.rewindConversationTarget(entry.keepTurns)}
+              </div>
+            </div>
 
-        {!entry.conversationOnly && (
-          <div className="mt-3 text-[11px] leading-5 text-gray-400">{copy.rewindPreRestoreNote}</div>
+            {!entry.conversationOnly && (
+              <div className="mt-3 text-[11px] leading-5 text-gray-400">{copy.rewindPreRestoreNote}</div>
+            )}
+          </>
         )}
 
         {error && <div className="mt-3 text-[12px] leading-5 text-red-500">{error}</div>}
@@ -221,7 +234,7 @@ export function RewindConfirmDialog({ entry, previewState, error, busy, theme, c
             className="rounded-xl px-3 py-1.5 text-[12px] font-medium text-white transition-colors bg-blue-600 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-45"
             disabled={busy}
             onClick={onConfirm}
-          >{busy ? copy.rewindBusy : copy.rewindConfirm}</button>
+          >{busy ? copy.rewindBusy : reloadFailed ? copy.rewindRetryReload : copy.rewindConfirm}</button>
         </div>
       </div>
     </div>,
@@ -242,7 +255,9 @@ export function RewindUndoConfirmDialog({ state, error, busy, theme, copy, onCan
     const previous = document.activeElement;
     dialogRef.current?.focus();
     return () => {
-      if (previous instanceof HTMLElement) previous.focus();
+      // 时间线重载后触发元素可能已重建（旧节点分离）——focus 分离元素是规范
+      // 允许的 no-op，isConnected 判断只为意图明确。
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
     };
   }, []);
   useEffect(() => {
@@ -279,7 +294,7 @@ export function RewindUndoConfirmDialog({ state, error, busy, theme, copy, onCan
           {copy.rewindUndoTitle}
         </div>
         <div className={`mt-3 text-[12px] leading-5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
-          {rewindUndoBodyText(copy, state)}
+          {state.reloadFailed ? copy.rewindReloadRetryNote : rewindUndoBodyText(copy, state)}
         </div>
 
         {error && <div className="mt-3 text-[12px] leading-5 text-red-500">{error}</div>}
@@ -298,7 +313,7 @@ export function RewindUndoConfirmDialog({ state, error, busy, theme, copy, onCan
             className="rounded-xl px-3 py-1.5 text-[12px] font-medium text-white transition-colors bg-blue-600 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-45"
             disabled={busy}
             onClick={onConfirm}
-          >{busy ? copy.rewindUndoBusy : copy.rewindUndoConfirm}</button>
+          >{busy ? copy.rewindUndoBusy : state.reloadFailed ? copy.rewindRetryReload : copy.rewindUndoConfirm}</button>
         </div>
       </div>
     </div>,

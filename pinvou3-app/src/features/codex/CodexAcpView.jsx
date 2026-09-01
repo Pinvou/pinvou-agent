@@ -1309,20 +1309,20 @@ export function CodexAcpView({
   const [rewindTarget, setRewindTarget] = useState(null);
   const [rewindError, setRewindError] = useState('');
   const [rewinding, setRewinding] = useState(false);
-  // 「撤销回退」：可见性由 rewindCheckpoints.undoState（rewind_undo_state）驱动，
-  // null 不渲染；open 时渲染轻量确认弹窗。rewindUndoReloadFailed 标记「撤销已生效
-  // 但重载失败」——重试只补重载，不再发 undo_last_rewind。
+  // 「撤销回退」：入口可见性由 rewindCheckpoints.undoState（rewind_undo_state）
+  // 驱动，null 不渲染。确认弹窗由本地条目副本 rewindUndoEntry 驱动（打开时快照
+  // undoState）——后端可反悔状态会因 refreshKey 边沿/记录消费随时变 null，若
+  // 弹窗直接挂在其上，「撤销已生效但重载失败」的重试窗口会被边沿击穿（弹窗关、
+  // 错误吞、重试通道丢）。reloadFailed 重试期内弹窗与 undoState 生命周期解耦。
   const rewindUndoState = rewindCheckpoints.undoState;
-  const [rewindUndoOpen, setRewindUndoOpen] = useState(false);
+  const [rewindUndoEntry, setRewindUndoEntry] = useState(null);
   const [rewindUndoError, setRewindUndoError] = useState('');
   const [rewindUndoing, setRewindUndoing] = useState(false);
-  const [rewindUndoReloadFailed, setRewindUndoReloadFailed] = useState(false);
-  // 可反悔状态消失（回退后发了新轮/记录被消费）时复位弹窗开关：否则 open 残留
-  // 为 true，下次 rewind 使 undoState 复现后确认弹窗会无人触发地自动弹出。
   useEffect(() => {
+    // 可反悔状态消失（回退后发了新轮/记录被消费）时收回弹窗；reloadFailed
+    // 重试窗口豁免（弹窗由本地副本驱动，重试只补重载、不再发 undo）。
     if (!rewindUndoAvailable(rewindUndoState)) {
-      setRewindUndoOpen(false);
-      setRewindUndoReloadFailed(false);
+      setRewindUndoEntry(current => (current && current.reloadFailed ? current : null));
     }
   }, [rewindUndoState]);
   // Equivalent to [...visibleTurns].reverse().find(status === 'running'): scan backwards for the last
@@ -1420,7 +1420,7 @@ export function CodexAcpView({
     setSubagentPanel(null);
     setRewindTarget(null);
     setRewindError('');
-    setRewindUndoOpen(false);
+    setRewindUndoEntry(null);
     setRewindUndoError('');
   }, [activeId]);
   useEffect(() => {
@@ -2026,14 +2026,22 @@ export function CodexAcpView({
       // 动作只认原会话；重载/状态刷新已由上面的调用按 sessionId 定向完成。
       if (activeIdRef.current !== sessionId) return;
       if (reloadError) {
-        setRewindTarget({ ...target, reloadFailed: true });
+        // 回退已在后端生效：把成功结果随目标暂存（pendingNotice），重试只补
+        // 重载、成功后补发提示——避免整条流走完时间线却没有「已回退」确认项。
+        setRewindTarget({
+          ...target,
+          reloadFailed: true,
+          pendingNotice: result ? rewindNoticeText(codexCopy, result, target.keepTurns) : null,
+        });
         setRewindError(reloadError);
         rewindCheckpoints.refresh();
         return;
       }
       setRewindTarget(null);
-      if (result) {
-        const notice = rewindNoticeText(codexCopy, result, target.keepTurns);
+      const notice = result
+        ? rewindNoticeText(codexCopy, result, target.keepTurns)
+        : target.pendingNotice;
+      if (notice) {
         appendNativeSystemItem(getNativeLane(sessionId), notice);
         setNativeLaneTick(tick => tick + 1);
       }
@@ -2049,12 +2057,14 @@ export function CodexAcpView({
   // 撤销回退：undo_last_rewind（恢复代码到绑定回滚点（仅对话降级则跳过）+
   // 对话从备份还原 + engine 重建）；成功后复用 reloadSessionAfterRewind 重载编排
   // （与回退后同语义：先重载、成败都 bumpTick、成功才关弹窗），失败错误留在弹窗
-  // 上屏。重载失败时撤销已在后端生效：重试只补重载（reloadFailed 标记），不会对
-  // 已还原的对话再发一次 undo_last_rewind（记录已消费，必败且文案令人困惑）。
+  // 上屏。弹窗状态走本地副本 rewindUndoEntry：重载失败时撤销已在后端生效（记录
+  // 已消费，undoState 随后收敛为 null），把 entry 标记 reloadFailed 留在屏上——
+  // 重试只补重载，不会再发一次必败的 undo_last_rewind。
   async function confirmRewindUndo() {
-    if (!rewindUndoState || !activeId || rewindUndoing) return;
+    const entry = rewindUndoEntry;
+    if (!entry || !activeId || rewindUndoing) return;
     const sessionId = activeId;
-    const reloadOnly = rewindUndoReloadFailed;
+    const reloadOnly = Boolean(entry.reloadFailed);
     setRewindUndoing(true);
     setRewindUndoError('');
     try {
@@ -2068,16 +2078,13 @@ export function CodexAcpView({
       // 跨会话竞态：await 期间会话被程序化切换时不再写原会话的 UI 状态。
       if (activeIdRef.current !== sessionId) return;
       if (reloadError) {
-        setRewindUndoReloadFailed(true);
+        setRewindUndoEntry({ ...entry, reloadFailed: true });
         setRewindUndoError(reloadError);
         return;
       }
-      setRewindUndoReloadFailed(false);
-      setRewindUndoOpen(false);
-      if (!reloadOnly) {
-        appendNativeSystemItem(getNativeLane(sessionId), codexCopy.rewindUndoDone);
-        setNativeLaneTick(tick => tick + 1);
-      }
+      setRewindUndoEntry(null);
+      appendNativeSystemItem(getNativeLane(sessionId), codexCopy.rewindUndoDone);
+      setNativeLaneTick(tick => tick + 1);
       // refresh 连带重查 rewind_undo_state：撤销后不可再反悔，入口随之消失。
       rewindCheckpoints.refresh();
     } catch (err) {
@@ -3633,7 +3640,7 @@ export function CodexAcpView({
                 state={rewindUndoState}
                 disabled={busy || rewinding || rewindUndoing}
                 copy={codexCopy}
-                onOpen={() => { setRewindUndoError(''); setRewindUndoOpen(true); }}
+                onOpen={(state) => { setRewindUndoError(''); setRewindUndoEntry({ ...state, reloadFailed: false }); }}
               />
             )}
           </div>
@@ -4203,15 +4210,17 @@ export function CodexAcpView({
             onConfirm={confirmRewind}
           />
         )}
-        {rewindUndoOpen && rewindUndoAvailable(rewindUndoState) && (
-          // 「撤销回退」轻量确认：说明将恢复代码与被截掉的 N 轮对话。
+        {rewindUndoEntry && (
+          // 「撤销回退」轻量确认：说明将恢复代码（有绑定回滚点时）与被截掉的
+          // N 轮对话；reloadFailed 时降级为「重试加载」语义。本地副本驱动，
+          // 与 undoState 生命周期解耦（见状态声明处注释）。
           <RewindUndoConfirmDialog
-            state={rewindUndoState}
+            state={rewindUndoEntry}
             error={rewindUndoError}
             busy={rewindUndoing}
             theme={theme}
             copy={codexCopy}
-            onCancel={() => { if (!rewindUndoing) setRewindUndoOpen(false); }}
+            onCancel={() => { if (!rewindUndoing) setRewindUndoEntry(null); }}
             onConfirm={confirmRewindUndo}
           />
         )}

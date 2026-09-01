@@ -60,6 +60,7 @@ const codexJa = {
   rewindMoreFiles:count=>`ほか ${count} 件のファイル`,
   rewindLoading:'変更を読み込み中…', rewindPreviewFailed:'変更プレビューの読み込みに失敗しました',
   rewindConfirm:'巻き戻す', rewindCancel:'キャンセル', rewindBusy:'巻き戻し中…',
+  rewindRetryReload:'再読み込みを再試行', rewindReloadRetryNote:'操作は適用されましたが、セッションの再読み込みに失敗しました。再試行はセッションの再読み込みのみを行い、操作を繰り返しません。',
   rewindNoticeRestored:n=>n>0?`ターン ${n} の末尾まで巻き戻しました：コードと会話が復元されました。巻き戻し前のコード状態はロールバックポイントとして自動保存済みです。`:'ターン 1 の前まで巻き戻しました：コードと会話が復元されました。巻き戻し前のコード状態はロールバックポイントとして自動保存済みです。',
   rewindNoticeDegraded:'会話を巻き戻しました。その地点のコードスナップショットは利用不可（削除された可能性）のため、コードは変更されていません。',
   rewindNoticeConversationOnly:'会話を巻き戻しました。コードは変更されていません。',

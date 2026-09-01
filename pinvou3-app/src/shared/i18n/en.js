@@ -60,6 +60,7 @@ const codexEn = {
   rewindMoreFiles:count=>`${count} more file(s)`,
   rewindLoading:'Loading changes…', rewindPreviewFailed:'Failed to load the change preview',
   rewindConfirm:'Rewind', rewindCancel:'Cancel', rewindBusy:'Rewinding…',
+  rewindRetryReload:'Retry reload', rewindReloadRetryNote:'The operation took effect, but reloading the session failed. Retrying only reloads the session; it does not repeat the operation.',
   rewindNoticeRestored:n=>n>0?`Rewound to the end of turn ${n}: code and conversation restored. The pre-rewind code state was saved as a rollback point, so you can undo this.`:'Rewound to before turn 1: code and conversation restored. The pre-rewind code state was saved as a rollback point, so you can undo this.',
   rewindNoticeDegraded:'Conversation rewound; the code snapshot for that point is unavailable (possibly evicted), so the code was not changed.',
   rewindNoticeConversationOnly:'Conversation rewound; the code was not changed.',

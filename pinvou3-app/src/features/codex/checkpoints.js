@@ -121,7 +121,8 @@ export function rewindUndoAvailable(undoState) {
     undoState
       && typeof undoState === 'object'
       && Number.isInteger(undoState.keptTurns)
-      && Number.isInteger(undoState.rewoundTurns),
+      && Number.isInteger(undoState.rewoundTurns)
+      && undoState.rewoundTurns > 0,
   );
 }
 
@@ -206,7 +207,8 @@ export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
     refresh();
   }, [sessionId, enabled, refreshKey, refresh]);
 
-  /** 懒加载某 checkpoint 的 diff 预览（缓存随 sessionId/refreshKey 失效）。 */
+  /** 懒加载某 checkpoint 的 diff 预览（缓存只随 sessionId 切换失效；refreshKey
+   *  边沿不清缓存，快照时效由「每次开弹窗都重拉」保证）。 */
   const preview = useCallback(async (checkpointId) => {
     const id = sessionRef.current;
     if (!id) return;

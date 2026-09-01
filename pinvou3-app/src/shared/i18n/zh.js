@@ -59,6 +59,7 @@ const codexZh = {
   rewindMoreFiles:count=>`另有 ${count} 个文件`,
   rewindLoading:'正在读取变更…', rewindPreviewFailed:'变更预览读取失败',
   rewindConfirm:'确认回退', rewindCancel:'取消', rewindBusy:'正在回退…',
+  rewindRetryReload:'重试加载', rewindReloadRetryNote:'操作已生效，但重新加载会话失败。重试仅重新加载会话内容，不会重复执行该操作。',
   rewindNoticeRestored:n=>n>0?`已回退到第 ${n} 轮末尾：代码与对话已恢复；回退前的代码状态已自动保存为回滚点，可再次回退反悔。`:'已回退到第一轮之前：代码与对话已恢复；回退前的代码状态已自动保存为回滚点，可再次回退反悔。',
   rewindNoticeDegraded:'已回退对话；该时间点的代码快照不可用（可能已被淘汰），代码未回退。',
   rewindNoticeConversationOnly:'已回退对话，代码未改动。',
