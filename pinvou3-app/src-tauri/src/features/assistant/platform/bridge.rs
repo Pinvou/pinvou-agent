@@ -1638,7 +1638,15 @@ impl Pinvou3Bridge {
             max_tool_calls: {
                 #[cfg(feature = "benchmark-hooks")]
                 {
-                    Some(max_tool_calls.unwrap_or(8).min(8))
+                    // 评测构建默认 8 次/轮(GAIA 防失控护栏)。Terminal-Bench 等
+                    // 长程 agentic 场景用 PINVOU3_MAX_TOOL_CALLS 显式抬高,与
+                    // PINVOU3_ALLOW_SHELL/PINVOU3_MAX_OUTPUT_TOKENS 同一 env 约定;
+                    // 未设置时行为不变。
+                    let cap = std::env::var("PINVOU3_MAX_TOOL_CALLS")
+                        .ok()
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .unwrap_or(8);
+                    Some(max_tool_calls.unwrap_or(cap).min(cap))
                 }
                 #[cfg(not(feature = "benchmark-hooks"))]
                 {
@@ -5014,6 +5022,29 @@ mod tests {
             bridge.build_engine_config().max_steps,
             321,
             "settings.json 中的 advanced.max_steps 必须继续覆盖底座默认值"
+        );
+    }
+
+    /// benchmark-hooks 构建的工具调用护栏:默认 8 次/轮不变,
+    /// PINVOU3_MAX_TOOL_CALLS 显式抬高(Terminal-Bench 等 agentic 场景)。
+    #[cfg(feature = "benchmark-hooks")]
+    #[test]
+    fn engine_config_tool_call_cap_respects_env_override() {
+        let (_lock, _env) = locked_env(&["PINVOU3_MAX_TOOL_CALLS"]);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::remove_var("PINVOU3_MAX_TOOL_CALLS") };
+        assert_eq!(
+            fixture_bridge().build_engine_config().max_tool_calls,
+            Some(8),
+            "评测构建默认护栏必须保持 8 次/轮"
+        );
+
+        // SAFETY: see above.
+        unsafe { std::env::set_var("PINVOU3_MAX_TOOL_CALLS", "512") };
+        assert_eq!(
+            fixture_bridge().build_engine_config().max_tool_calls,
+            Some(512),
+            "PINVOU3_MAX_TOOL_CALLS 必须能抬高护栏"
         );
     }
 
