@@ -53,6 +53,18 @@ pub struct RewoundTurnsRecord {
     pub original_revision: String,
     /// 截断后保留的用户 turn 数（即「回退到第 N 轮」的 N）。
     pub kept_turns: u32,
+    /// 本次回退在代码侧强制的 PreRestore checkpoint id（undo 的代码恢复目标，
+    /// 精确绑定到本次回退——不能用「最新 PreRestore」兜底：其它回退/反悔产生的
+    /// 回滚点会被误配，把代码恢复到与本次回退无关的状态）。降级（仅回退对话、
+    /// 代码未动）为 None，undo 时只恢复对话。
+    #[serde(default)]
+    pub pre_restore_checkpoint_id: Option<String>,
+    /// 截断后 transcript 的 revision。undo 复核条件：当前 revision 必须精确等于
+    /// 它——turn 数相等只是弱代理（回退后编辑第 N 轮的 assistant 回复不改 turn
+    /// 数），revision 精确匹配才能保证被截段落接续的尾部未被改动。旧记录无此
+    /// 字段（空串），跳过本校验、退回 turn 数弱代理。
+    #[serde(default)]
+    pub truncated_revision: String,
     /// 被截掉的消息：第 N+1 个用户 turn prompt 起，含其后的 assistant/tool_result。
     pub removed_messages: Vec<Message>,
 }
@@ -109,10 +121,14 @@ impl SessionStore {
     ///
     /// 被截段落在落盘前先备份进 `_rewound_turns.json`；备份写失败则中止截断
     /// （备份是被截对话唯一的留存，不能裸截）。
+    ///
+    /// `pre_restore_checkpoint_id`：编排命令在恢复代码步骤拿到的本次回退专属
+    /// 回滚点（降级回退传 None），随记录落盘，供 undo 精确配对。
     pub fn truncate_to_user_turn(
         &self,
         id: &str,
         keep_turns: u32,
+        pre_restore_checkpoint_id: Option<String>,
     ) -> Result<TruncateToTurnOutcome> {
         let _mutation = self.scheduled_mutation.lock();
         if self.is_scheduled_session(id)? {
@@ -143,6 +159,7 @@ impl SessionStore {
         let cut = turn_prompt_indices[keep_turns as usize];
         let original_revision = transcript_revision(&session.messages)?;
         let removed_messages: Vec<Message> = session.messages.split_off(cut);
+        let truncated_revision = transcript_revision(&session.messages)?;
 
         // 先备份后落盘：备份失败时磁盘上的 transcript 尚未被修改。
         let removed_count = removed_messages.len();
@@ -150,6 +167,8 @@ impl SessionStore {
             rewound_at: Utc::now().to_rfc3339(),
             original_revision,
             kept_turns: keep_turns,
+            pre_restore_checkpoint_id,
+            truncated_revision,
             removed_messages,
         };
         let mut backups = load_rewound_turns_map()?;
@@ -194,10 +213,11 @@ impl SessionStore {
     /// `transcript_revision` 自然变化，持旧 revision 的 CAS 自然失败（期望行为，
     /// 远程控制编辑不得覆盖反悔结果），无需额外处理。
     ///
-    /// 可反悔条件（当前 turn 数 == 记录的 kept_turns，即回退后未发过新轮次）在
-    /// mutation 锁内重新校验；不满足则如实报错、不动磁盘。调用方（编排命令）应
-    /// 在动代码（restore checkpoint）之前先用 `latest_rewound_turns_record` 完成
-    /// 同样的预检，把「代码已反悔、对话未反悔」的窗口压到最小。
+    /// 可反悔条件（当前 turn 数 == 记录的 kept_turns，且记录带 truncated_revision 时
+    /// 当前 revision 精确匹配，即回退后未发过新轮次、尾部未被编辑）在 mutation 锁
+    /// 内重新校验；不满足则如实报错、不动磁盘。调用方（编排命令）应在动代码
+    /// （restore checkpoint）之前先用 `latest_rewound_turns_record` 完成同样的
+    /// 预检，把「代码已反悔、对话未反悔」的窗口压到最小。
     pub fn restore_rewound_turns(&self, id: &str) -> Result<usize> {
         let _mutation = self.scheduled_mutation.lock();
         if self.is_scheduled_session(id)? {
@@ -223,6 +243,15 @@ impl SessionStore {
                 "回退后已产生新轮次（当前 {current_turns} 轮，回退时为 {} 轮），不可反悔",
                 record.kept_turns
             );
+        }
+        // turn 数相等只是弱代理：回退后编辑第 N 轮的回复不改 turn 数，但被截段落
+        // 接续的尾部已变。revision 精确匹配才放行；旧记录无此字段（空串）时退回
+        // turn 数弱代理（功能发布前的开发期数据，不为之保留精确校验）。
+        if !record.truncated_revision.is_empty() {
+            let current_revision = transcript_revision(&session.messages)?;
+            if current_revision != record.truncated_revision {
+                bail!("回退后对话内容已被编辑，不可反悔");
+            }
         }
         let restored = record.removed_messages.len();
         session.messages.extend(record.removed_messages);

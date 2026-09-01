@@ -3255,7 +3255,7 @@ fn rewind_truncates_at_turn_boundary_with_interleaved_tool_results() {
         .expect("seed transcript");
     let original_revision = transcript_revision(&messages).expect("revision");
 
-    let outcome = store.truncate_to_user_turn(&id, 1).expect("rewind to turn 1");
+    let outcome = store.truncate_to_user_turn(&id, 1, None).expect("rewind to turn 1");
 
     assert_eq!(outcome.rewound_turns, 2);
     assert_eq!(outcome.removed_messages, 5);
@@ -3266,13 +3266,16 @@ fn rewind_truncates_at_turn_boundary_with_interleaved_tool_results() {
         transcript_revision(&kept).expect("kept revision")
     );
 
-    // sidecar 备份：截断时间、原 revision、被截消息齐全。
+    // sidecar 备份：截断时间、原 revision、被截消息齐全；记录截断后 revision
+    // （undo 精确复核条件）与代码回滚点绑定（本次未传 → None）。
     let records = rewound_records(&id);
     assert_eq!(records.len(), 1);
     let record = &records[0];
     assert!(!record.rewound_at.is_empty());
     assert_eq!(record.original_revision, original_revision);
     assert_eq!(record.kept_turns, 1);
+    assert_eq!(record.truncated_revision, outcome.new_revision);
+    assert_eq!(record.pre_restore_checkpoint_id, None);
     assert_eq!(record.removed_messages, messages[4..]);
 }
 
@@ -3296,7 +3299,7 @@ fn rewind_to_zero_turns_empties_transcript() {
         )
         .expect("seed transcript");
 
-    let outcome = store.truncate_to_user_turn(&id, 0).expect("rewind to zero");
+    let outcome = store.truncate_to_user_turn(&id, 0, None).expect("rewind to zero");
 
     assert_eq!(outcome.rewound_turns, 2);
     assert_eq!(outcome.removed_messages, 4);
@@ -3321,8 +3324,8 @@ fn rewind_out_of_range_errors_and_leaves_transcript_untouched() {
         .expect("seed transcript");
 
     // N == 当前 turn 数（无可截内容）与 N > 当前 turn 数都必须报错。
-    assert!(store.truncate_to_user_turn(&id, 1).is_err());
-    assert!(store.truncate_to_user_turn(&id, 7).is_err());
+    assert!(store.truncate_to_user_turn(&id, 1, None).is_err());
+    assert!(store.truncate_to_user_turn(&id, 7, None).is_err());
     assert_eq!(store.load(&id).expect("load").messages, messages);
     assert!(
         !paths::sessions_root()
@@ -3354,7 +3357,7 @@ fn rewind_bypasses_guard_while_update_messages_stays_protected() {
     // 同样的断式覆盖走通用入口仍被守卫拦截。
     assert!(store.update_messages(&id, vec![]).is_err());
     // 回退专用路径放行（N=0 清空全部也允许）。
-    store.truncate_to_user_turn(&id, 0).expect("rewind");
+    store.truncate_to_user_turn(&id, 0, None).expect("rewind");
     assert!(store.load(&id).expect("load").messages.is_empty());
 }
 
@@ -3377,7 +3380,7 @@ fn stale_revision_cas_fails_after_rewind() {
         .expect("seed transcript");
     let stale_revision = transcript_revision(&messages).expect("revision");
 
-    store.truncate_to_user_turn(&id, 1).expect("rewind");
+    store.truncate_to_user_turn(&id, 1, None).expect("rewind");
 
     let error = store
         .compare_and_swap_messages(&id, &stale_revision, messages)
@@ -3405,7 +3408,7 @@ fn rewind_backups_append_and_cap_at_limit() {
                 ],
             )
             .expect("reseed transcript");
-        store.truncate_to_user_turn(&id, 0).expect("rewind");
+        store.truncate_to_user_turn(&id, 0, None).expect("rewind");
     }
     let records = rewound_records(&id);
     assert_eq!(records.len(), 20, "每会话备份条数封顶 20（LRU 裁最老）");
@@ -3429,7 +3432,7 @@ fn delete_session_purges_rewound_turns_backup() {
             vec![user_text("第一轮"), assistant_text("答一"), user_text("第二轮")],
         )
         .expect("seed transcript");
-    store.truncate_to_user_turn(&id, 1).expect("rewind");
+    store.truncate_to_user_turn(&id, 1, None).expect("rewind");
     assert_eq!(rewound_records(&id).len(), 1);
 
     store.delete(&id).expect("delete session");
@@ -3460,7 +3463,7 @@ fn restore_rewound_turns_round_trips_messages_and_consumes_record() {
     store
         .update_messages(&id, messages.clone())
         .expect("seed transcript");
-    store.truncate_to_user_turn(&id, 1).expect("rewind");
+    store.truncate_to_user_turn(&id, 1, None).expect("rewind");
     assert_eq!(store.load(&id).expect("load").messages.len(), 3);
 
     let restored = store.restore_rewound_turns(&id).expect("undo rewind");
@@ -3495,7 +3498,7 @@ fn restore_rewound_turns_rejects_after_new_turn() {
             ],
         )
         .expect("seed transcript");
-    store.truncate_to_user_turn(&id, 1).expect("rewind");
+    store.truncate_to_user_turn(&id, 1, None).expect("rewind");
     // 回退后重新创作：追加新轮次（turn 数变为 2 ≠ kept_turns 1）。
     store
         .update_messages(
@@ -3550,12 +3553,12 @@ fn truncate_reports_compaction_summary_residue_in_system_prompt() {
         .expect("seed plain");
 
     let outcome = store
-        .truncate_to_user_turn(&with_marker.metadata.id, 1)
+        .truncate_to_user_turn(&with_marker.metadata.id, 1, None)
         .expect("rewind with marker");
     assert!(outcome.had_compaction, "含标记必须上报 had_compaction");
 
     let outcome = store
-        .truncate_to_user_turn(&without_marker.metadata.id, 1)
+        .truncate_to_user_turn(&without_marker.metadata.id, 1, None)
         .expect("rewind without marker");
     assert!(!outcome.had_compaction, "普通 system_prompt 不得误报");
 }

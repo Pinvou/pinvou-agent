@@ -51,6 +51,9 @@ const DIFF_PATCH_LIMIT: usize = 512 * 1024;
 
 /// 影子仓库的 exclude 列表：与 workspace 浏览的忽略目录对齐，避免把依赖/构建
 /// 产物纳入快照（git 项目自身的 .gitignore 会被影子仓库自然尊重，无需重复）。
+/// 另排除常见敏感文件：非 git 执行根（临时会话、未初始化目录）没有 .gitignore
+/// 兜底，`add -A` 会把 .env/私钥原文快照进影子 objects 并随 diff 进入 UI 链路；
+/// 代价是这些文件不随回退恢复，属可接受取舍（设计文档已知限制有记录）。
 const SHADOW_EXCLUDES: &[&str] = &[
     ".git/",
     ".hg/",
@@ -64,6 +67,15 @@ const SHADOW_EXCLUDES: &[&str] = &[
     "__pycache__/",
     ".venv/",
     "venv/",
+    // 敏感文件：环境变量/密钥/证书原文不进快照。
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.keystore",
+    "id_rsa*",
+    "id_ed25519*",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -417,7 +429,8 @@ pub fn diff_checkpoint(
     let name_status = git_ok(
         &repo,
         &execution_root,
-        &["diff", "--cached", "--name-status", "--no-color", &meta.commit],
+        // -M 开启 rename 检测，parse_name_status 的 renamed 分支才不是死代码。
+        &["diff", "--cached", "--name-status", "-M", "--no-color", &meta.commit],
     )?;
     let mut patch = git_ok(
         &repo,

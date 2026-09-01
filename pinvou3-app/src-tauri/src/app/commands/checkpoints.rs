@@ -49,9 +49,16 @@ pub async fn list_checkpoints(
 pub async fn checkpoint_diff(
     session_id: String,
     checkpoint_id: String,
+    pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<CheckpointDiff, String> {
     let (ledger, execution) = resolve_code_session_roots(&session_id, &store)?;
+    // 软忙碌门：diff 会先 add -A 写影子 index，turn 进行中会与引擎写文件及
+    // create_checkpoint 抢同一 index.lock（偶发失败或抓到写了一半的中间态），
+    // 如实拒绝让前端稍后重试（确认弹窗只在空闲时可开，竞态窗口在点击之后）。
+    if pool.is_turn_active(&session_id) {
+        return Err("会话正在执行，请稍后再读取变更预览".to_string());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         checkpoints::diff_checkpoint(&ledger, &execution, &checkpoint_id)
             .map_err(|error| format!("读取检查点差异失败: {error:#}"))
@@ -219,10 +226,20 @@ pub async fn rewind_to_turn(
         .reserve_turn(&session_id)
         .map_err(|error| format!("预约会话 turn 失败（会话忙碌？）: {error:#}"))?;
     // 跨会话忙碌门：恢复单位是执行根，同根其它会话在跑时回退会撤销它正在写的
-    // 文件，如实拒绝并告知哪个会话在忙。
-    if let Some(busy) = busy_peer_on_same_execution_root(&store, &session_id, &execution, |id| {
-        pool.is_turn_active(id)
-    })? {
+    // 文件，如实拒绝并告知哪个会话在忙。store.list() 全量读会话元数据是阻塞
+    // IO，移出 async worker。
+    let store_gate = store.inner().clone();
+    let session_id_gate = session_id.clone();
+    let execution_gate = execution.clone();
+    let pool_gate = pool.inner().clone();
+    if let Some(busy) = tauri::async_runtime::spawn_blocking(move || {
+        busy_peer_on_same_execution_root(&store_gate, &session_id_gate, &execution_gate, |id| {
+            pool_gate.is_turn_active(id)
+        })
+    })
+    .await
+    .map_err(|error| format!("跨会话忙碌检查任务失败: {error}"))??
+    {
         return Err(format!("会话「{busy}」绑定同一项目目录且正在执行，请先停止该会话再回退"));
     }
 
@@ -262,14 +279,38 @@ pub async fn rewind_to_turn(
         .map_err(|error| format!("回滚检查点任务失败: {error}"))??;
         restored_checkpoint = Some(undo);
     }
-    // 2) 截断对话（被截段落先备份进 `_rewound_turns.json`，备份失败则中止）。
-    let outcome = store
-        .truncate_to_user_turn(&session_id, keep_turns)
-        .map_err(|error| format!("截断对话失败: {error:#}"))?;
+    // 2) 截断对话（被截段落先备份进 `_rewound_turns.json`，备份失败则中止；
+    //    记录绑定步骤 1 的 PreRestore id，供 undo 精确配对）。阻塞 IO 移出
+    //    async worker（会话 JSON 读 + sidecar 写 + 持久化）。
+    let store_truncate = store.inner().clone();
+    let session_id_truncate = session_id.clone();
+    let pre_restore_id = restored_checkpoint
+        .as_ref()
+        .map(|checkpoint| checkpoint.id.clone());
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        store_truncate.truncate_to_user_turn(&session_id_truncate, keep_turns, pre_restore_id)
+    })
+    .await
+    .map_err(|error| format!("截断对话任务失败: {error}"))?
+    .map_err(|error| match &restored_checkpoint {
+        // 代码已回退而对话未截断：如实告知代码侧已变更并给出回滚点 id，
+        // 用户可用「撤销回退」（备份已写时）或该回滚点恢复代码。
+        Some(checkpoint) => format!(
+            "代码已回退（回滚点 {}），但截断对话失败: {error:#}",
+            checkpoint.id
+        ),
+        None => format!("截断对话失败: {error:#}"),
+    })?;
     // 2.5) 作废被截对话分支的 Turn checkpoint（P0 修复：turn 序号会被重新创作
     //    复用，留着旧分支快照会让 first-wins 对齐锚到被遗弃分支）。降级模式同样
-    //    要作废——对话已截断，turn 复用问题与是否恢复代码无关。
-    invalidate_abandoned_turn_checkpoints(&ledger, keep_turns);
+    //    要作废——对话已截断，turn 复用问题与是否恢复代码无关。git 子进程 +
+    //    gc 是阻塞 IO，移出 async worker。
+    let ledger_invalidate = ledger.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        invalidate_abandoned_turn_checkpoints(&ledger_invalidate, keep_turns);
+    })
+    .await
+    .map_err(|error| format!("作废被截分支检查点任务失败: {error}"))?;
     // 3) 回收 engine 实例（复用删除会话的回收路径：cancel + Shutdown + abort
     //    forwarder）；下次发送时 get_or_spawn 未命中 → lazy respawn → 用截断后
     //    的磁盘历史 SyncSession 注水（engine_pool.rs 既有链路，设计 §4.2）。
@@ -287,8 +328,11 @@ pub async fn rewind_to_turn(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RewindUndoInfo {
-    /// 最新 PreRestore checkpoint id（回退时强制打的回滚点，反悔 = 恢复到它）。
-    pub checkpoint_id: String,
+    /// 本次回退强制的 PreRestore checkpoint id（反悔 = 恢复到它，精确绑定自
+    /// sidecar 记录，不用「最新 PreRestore」兜底——其它回退/反悔产生的回滚点
+    /// 会被误配）。None = 本次回退是仅对话降级，代码未动，反悔只还原对话，
+    /// 前端文案必须相应调整（不得再承诺恢复代码）。
+    pub checkpoint_id: Option<String>,
     /// 当时回退保留的用户 turn 数。
     pub kept_turns: u32,
     /// 被截掉的用户 turn 数（供文案「将恢复 N 轮」）。
@@ -297,9 +341,11 @@ pub struct RewindUndoInfo {
     pub rewound_at: String,
 }
 
-/// 可反悔判定（undo 三条件）：① sidecar 有回退备份记录（取最新）② 当前
-/// `count_user_turns` == 记录的 kept_turns（回退后没发过新轮次；发了就不再可
-/// 反悔）③ checkpoint index 里有 PreRestore 条目（取最新）。任一不满足返回
+/// 可反悔判定（undo 条件）：① sidecar 有回退备份记录（取最新）② 当前
+/// `count_user_turns` == 记录的 kept_turns，且记录带 truncated_revision 时当前
+/// revision 精确匹配（回退后没发过新轮次、尾部未被编辑；发了/改了就不再可
+/// 反悔）③ 记录绑定的 PreRestore checkpoint 仍在 index 里（LRU 淘汰则代码侧
+/// 不可反悔）；记录未绑定（仅对话降级）时本条件不涉及代码。①②不满足返回
 /// None（如实不可反悔，不报错）。
 fn resolve_rewind_undo_state(
     store: &SessionStore,
@@ -318,17 +364,32 @@ fn resolve_rewind_undo_state(
     if checkpoints::count_user_turns(&session.messages) != record.kept_turns {
         return Ok(None);
     }
-    let entries = checkpoints::list_checkpoints(ledger)
-        .map_err(|error| format!("读取检查点列表失败: {error:#}"))?;
-    let Some(pre_restore) = entries
-        .iter()
-        .rev()
-        .find(|entry| entry.kind == CheckpointKind::PreRestore)
-    else {
-        return Ok(None);
+    if !record.truncated_revision.is_empty() {
+        let current_revision = crate::features::sessions::transcript_revision(&session.messages)
+            .map_err(|error| format!("计算对话 revision 失败: {error:#}"))?;
+        if current_revision != record.truncated_revision {
+            return Ok(None);
+        }
+    }
+    // 代码侧恢复目标：精确匹配记录绑定的 PreRestore（无归属的「最新一条」会
+    // 在多次回退/反悔重试后错配到无关快照）；已绑定但被 LRU 淘汰则代码侧不
+    // 可恢复，降级为仅恢复对话并在前端如实明示。
+    let checkpoint_id = match &record.pre_restore_checkpoint_id {
+        Some(bound_id) => {
+            let entries = checkpoints::list_checkpoints(ledger)
+                .map_err(|error| format!("读取检查点列表失败: {error:#}"))?;
+            let still_there = entries
+                .iter()
+                .any(|entry| entry.kind == CheckpointKind::PreRestore && entry.id == *bound_id);
+            if !still_there {
+                return Ok(None);
+            }
+            Some(bound_id.clone())
+        }
+        None => None,
     };
     Ok(Some(RewindUndoInfo {
-        checkpoint_id: pre_restore.id.clone(),
+        checkpoint_id,
         kept_turns: record.kept_turns,
         rewound_turns: checkpoints::count_user_turns(&record.removed_messages),
         rewound_at: record.rewound_at,
@@ -385,9 +446,18 @@ pub async fn undo_last_rewind(
     let reservation = pool
         .reserve_turn(&session_id)
         .map_err(|error| format!("预约会话 turn 失败（会话忙碌？）: {error:#}"))?;
-    if let Some(busy) = busy_peer_on_same_execution_root(&store, &session_id, &execution, |id| {
-        pool.is_turn_active(id)
-    })? {
+    let store_gate = store.inner().clone();
+    let session_id_gate = session_id.clone();
+    let execution_gate = execution.clone();
+    let pool_gate = pool.inner().clone();
+    if let Some(busy) = tauri::async_runtime::spawn_blocking(move || {
+        busy_peer_on_same_execution_root(&store_gate, &session_id_gate, &execution_gate, |id| {
+            pool_gate.is_turn_active(id)
+        })
+    })
+    .await
+    .map_err(|error| format!("跨会话忙碌检查任务失败: {error}"))??
+    {
         return Err(format!("会话「{busy}」绑定同一项目目录且正在执行，请先停止该会话再反悔"));
     }
 
@@ -404,25 +474,41 @@ pub async fn undo_last_rewind(
     .map_err(|error| format!("反悔预检任务失败: {error}"))??
     .ok_or_else(|| "没有可反悔的回退（未回退过，或回退后已产生新轮次）".to_string())?;
 
-    // 1) 恢复代码到最新 PreRestore。对称语义：restore 内部会再打一次
-    //    PreRestore（内容为回退后的状态），「反悔的反悔」仍可恢复。
-    let ledger_restore = ledger.clone();
-    let execution_restore = execution.clone();
-    let checkpoint_id = undo_info.checkpoint_id.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        checkpoints::restore_checkpoint(&ledger_restore, &execution_restore, &checkpoint_id)
-            .map_err(|error| format!("恢复回滚点失败: {error:#}"))
+    // 1) 恢复代码到本次回退绑定的 PreRestore（仅对话降级的回退无绑定，跳过
+    //    本步——degraded 语义承诺绝不动代码）。对称语义：restore 内部会再打
+    //    一次 PreRestore（内容为回退后的状态），「反悔的反悔」仍可恢复；该新
+    //    回滚点不影响本 undo 的目标选择（绑定 id 已在 undo_info 里，重试不漂移）。
+    if let Some(checkpoint_id) = undo_info.checkpoint_id.clone() {
+        let ledger_restore = ledger.clone();
+        let execution_restore = execution.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            checkpoints::restore_checkpoint(&ledger_restore, &execution_restore, &checkpoint_id)
+                .map_err(|error| format!("恢复回滚点失败: {error:#}"))
+        })
+        .await
+        .map_err(|error| format!("恢复回滚点任务失败: {error}"))??;
+    }
+    // 2) 恢复对话：被截消息追加回 transcript 尾部并删 sidecar 记录（阻塞 IO
+    //    移出 async worker）。此步失败 = 代码已反悔而对话未反悔——如实报错
+    //    并留可诊断日志（含回滚点 id 供人工对齐）；记录未消费，重试仍会恢复
+    //    到同一个绑定回滚点，不会因步骤 1 新打的 PreRestore 而漂移。
+    let store_restore = store.inner().clone();
+    let session_id_restore = session_id.clone();
+    let restored_messages = tauri::async_runtime::spawn_blocking(move || {
+        store_restore.restore_rewound_turns(&session_id_restore)
     })
     .await
-    .map_err(|error| format!("恢复回滚点任务失败: {error}"))??;
-    // 2) 恢复对话：被截消息追加回 transcript 尾部并删 sidecar 记录。此步失败 =
-    //    代码已反悔而对话未反悔——如实报错并留可诊断日志（含回滚点 id 供人工对齐）。
-    let restored_messages = store.restore_rewound_turns(&session_id).map_err(|error| {
-        eprintln!(
-            "[checkpoints] undo_last_rewind conversation restore failed for {session_id} after code restore to {}: {error:#}",
-            undo_info.checkpoint_id
-        );
-        format!("代码已恢复到回滚点，但对话恢复失败: {error:#}")
+    .map_err(|error| format!("恢复对话任务失败: {error}"))?
+    .map_err(|error| {
+        match &undo_info.checkpoint_id {
+            Some(checkpoint_id) => {
+                eprintln!(
+                    "[checkpoints] undo_last_rewind conversation restore failed for {session_id} after code restore to {checkpoint_id}: {error:#}"
+                );
+                format!("代码已恢复到回滚点，但对话恢复失败: {error:#}")
+            }
+            None => format!("对话恢复失败: {error:#}"),
+        }
     })?;
     // 3) 回收 engine（同 rewind：下次发送 lazy respawn + SyncSession 重注水）。
     pool.evict(&session_id).await;
@@ -511,7 +597,9 @@ mod tests {
             std::process::id(),
             crate::platform::paths::tests::unique_suffix()
         ));
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 测试进程内由 ENV_LOCK 串行化所有 PINVOU3_HOME 改写（与
+        // sessions/tests.rs 同款约定）。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let store = SessionStore::boot().expect("boot SessionStore");
         (store, guard)
     }
@@ -740,7 +828,7 @@ mod tests {
                 ],
             )
             .expect("seed transcript");
-        store.truncate_to_user_turn(&id, 1).expect("rewind to turn 1");
+        store.truncate_to_user_turn(&id, 1, None).expect("rewind to turn 1");
         (store, guard, id)
     }
 
@@ -798,22 +886,39 @@ mod tests {
         );
     }
 
-    /// undo 条件③破（sidecar 有记录、turn 数匹配，但 index 无 PreRestore）→ None；
-    /// 三条件齐全 → Some 且字段正确。顺带覆盖 rewind→undo 编排往返：
+    /// undo 条件③破（记录绑定的 PreRestore 已被 LRU 淘汰）→ None；
+    /// 条件齐全 → Some 且字段正确。顺带覆盖 rewind→undo 编排往返：
     /// 代码与对话都回到 rewind 前。
     #[test]
     fn undo_state_conditions_and_rewind_undo_round_trip() {
         if !git_available() {
             return;
         }
-        let (store, _g, id) = rewound_code_session("undo-round-trip");
+        let (store, _g) = isolated_store("undo-round-trip");
+        let session = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let id = session.metadata.id.clone();
+        let code_id = id.clone();
+        store.set_code_session_predicate(Arc::new(move |candidate: &str| candidate == code_id));
+        store
+            .update_messages(
+                &id,
+                vec![
+                    user_msg("第一轮"),
+                    assistant_msg("答一"),
+                    user_msg("第二轮"),
+                    assistant_msg("答二"),
+                ],
+            )
+            .expect("seed transcript");
         // 该会话两根相同（未绑项目）：checkpoint 账本落会话私有目录。
         let roots = store.session_roots(&id).expect("roots");
         let ledger = roots.ledger.clone();
         let exec = roots.execution.clone();
         std::fs::create_dir_all(&ledger).expect("ledger dir");
         std::fs::write(exec.join("code.txt"), "v2\n").expect("write v2");
-        // 回退时强制的 PreRestore 快照（内容为 rewind 前的代码 v2）。
+        // 镜像 rewind_to_turn 步骤 1：恢复代码前强制的 PreRestore（内容 = rewind 前 v2）。
         let pre_restore = checkpoints::create_checkpoint(
             &ledger,
             &exec,
@@ -822,21 +927,25 @@ mod tests {
             "回滚点",
         )
         .expect("pre-restore checkpoint");
+        // 镜像步骤 2：截断对话，记录绑定本次回退的 PreRestore。
+        store
+            .truncate_to_user_turn(&id, 1, Some(pre_restore.id.clone()))
+            .expect("rewind to turn 1");
         // 模拟 rewind 的代码侧结果：执行根已是回退后状态 v1。
         std::fs::write(exec.join("code.txt"), "v1\n").expect("write v1");
 
-        // 三条件齐全 → Some，字段正确（被截 1 轮，checkpoint_id 为最新 PreRestore）。
+        // 条件齐全 → Some，字段正确（被截 1 轮，checkpoint_id 为记录绑定的 PreRestore）。
         let info = rewind_undo_state_inner(&store, &id)
             .expect("state")
             .expect("undoable");
-        assert_eq!(info.checkpoint_id, pre_restore.id);
+        assert_eq!(info.checkpoint_id.as_deref(), Some(pre_restore.id.as_str()));
         assert_eq!(info.kept_turns, 1);
         assert_eq!(info.rewound_turns, 1);
         assert!(!info.rewound_at.is_empty());
 
         // 编排往返（镜像 undo_last_rewind 的步骤 1/2；State/EnginePool 无法在
         // 单元测试构造，命令本体仅是这段顺序 + 忙碌门 + evict）：
-        checkpoints::restore_checkpoint(&ledger, &exec, &info.checkpoint_id)
+        checkpoints::restore_checkpoint(&ledger, &exec, &pre_restore.id)
             .expect("restore code to pre-restore");
         let restored = store.restore_rewound_turns(&id).expect("restore conversation");
         assert_eq!(restored, 2);
@@ -865,17 +974,159 @@ mod tests {
         let _ = std::fs::remove_dir_all(&ledger);
     }
 
-    /// undo 条件③单独为否：sidecar 有记录、turn 数匹配，但 index 无 PreRestore → None。
-    /// 独立成测试：`isolated_store` 持有进程级 ENV_LOCK 直到 guard drop，同一测试
-    /// 内二次调用会自死锁（std::sync::Mutex 不可重入），每测试只调一次。
+    /// M1 回归：仅对话降级回退（无代码快照）的记录不绑定 PreRestore——undo 只
+    /// 还原对话，绝不因 index 里存在其它回退留下的 PreRestore 而误动代码。
+    #[test]
+    fn degraded_rewind_undo_never_restores_code() {
+        if !git_available() {
+            return;
+        }
+        let (store, _g, id) = rewound_code_session("undo-degraded");
+        let roots = store.session_roots(&id).expect("roots");
+        let ledger = roots.ledger.clone();
+        let exec = roots.execution.clone();
+        std::fs::create_dir_all(&ledger).expect("ledger dir");
+        std::fs::write(exec.join("code.txt"), "user-work\n").expect("write");
+        // 一次更早的完整回退留下的 PreRestore（与本次降级回退无关）。
+        checkpoints::create_checkpoint(&ledger, &exec, None, CheckpointKind::PreRestore, "无关回滚点")
+            .expect("unrelated pre-restore");
+        std::fs::write(exec.join("code.txt"), "user-work-new\n").expect("write new");
+
+        // 降级记录（rewound_code_session 以 None 绑定截断）：undo 状态可用但
+        // checkpoint_id 必须是 None——不能错配到上面那条无关回滚点。
+        let info = rewind_undo_state_inner(&store, &id)
+            .expect("state")
+            .expect("degraded undo available");
+        assert_eq!(info.checkpoint_id, None, "降级回退的 undo 不得恢复代码");
+
+        // undo 只追加对话：代码文件保持用户新作的内容。
+        let restored = store.restore_rewound_turns(&id).expect("restore conversation");
+        assert_eq!(restored, 2);
+        assert_eq!(
+            std::fs::read_to_string(exec.join("code.txt")).expect("read"),
+            "user-work-new\n",
+            "降级回退的 undo 不得触碰代码"
+        );
+        let _ = std::fs::remove_dir_all(&ledger);
+    }
+
+    /// M2 回归：undo 步骤 1 会新打一条更晚的 PreRestore；undo 候选必须仍绑定
+    /// 原记录里的回滚点，重试不得漂移到新快照（否则把代码恢复回已回退状态）。
+    #[test]
+    fn undo_target_stays_bound_after_later_pre_restore() {
+        if !git_available() {
+            return;
+        }
+        let (store, _g) = isolated_store("undo-retry");
+        let session = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let id = session.metadata.id.clone();
+        let code_id = id.clone();
+        store.set_code_session_predicate(Arc::new(move |candidate: &str| candidate == code_id));
+        store
+            .update_messages(
+                &id,
+                vec![
+                    user_msg("第一轮"),
+                    assistant_msg("答一"),
+                    user_msg("第二轮"),
+                    assistant_msg("答二"),
+                ],
+            )
+            .expect("seed transcript");
+        let roots = store.session_roots(&id).expect("roots");
+        let ledger = roots.ledger.clone();
+        let exec = roots.execution.clone();
+        std::fs::create_dir_all(&ledger).expect("ledger dir");
+        std::fs::write(exec.join("code.txt"), "v2\n").expect("write v2");
+        let bound = checkpoints::create_checkpoint(
+            &ledger,
+            &exec,
+            None,
+            CheckpointKind::PreRestore,
+            "回滚点",
+        )
+        .expect("bound pre-restore");
+        store
+            .truncate_to_user_turn(&id, 1, Some(bound.id.clone()))
+            .expect("rewind to turn 1");
+        // 模拟 undo 步骤 1 已成功、步骤 2 失败：restore 内部新打的更晚 PreRestore。
+        std::fs::write(exec.join("code.txt"), "v1\n").expect("write v1");
+        let poisoned = checkpoints::create_checkpoint(
+            &ledger,
+            &exec,
+            None,
+            CheckpointKind::PreRestore,
+            "undo 步骤 1 的副作用快照",
+        )
+        .expect("poisoning pre-restore");
+        assert_ne!(bound.id, poisoned.id);
+
+        // 重试 undo：候选仍是绑定的回滚点，不是更晚的那条。
+        let info = rewind_undo_state_inner(&store, &id)
+            .expect("state")
+            .expect("retry undoable");
+        assert_eq!(
+            info.checkpoint_id.as_deref(),
+            Some(bound.id.as_str()),
+            "undo 目标不得漂移到 undo 自己新打的 PreRestore"
+        );
+        let _ = std::fs::remove_dir_all(&ledger);
+    }
+
+    /// m4 回归：回退后编辑了保留尾部的 assistant 回复（turn 数不变）→ revision
+    /// 不再匹配截断时的记录，如实不可反悔（弱代理时代会错误放行）。
+    #[test]
+    fn undo_state_none_after_tail_edit_since_rewind() {
+        let (store, _g, id) = rewound_code_session("undo-tail-edit");
+        store
+            .update_messages(
+                &id,
+                vec![user_msg("第一轮"), assistant_msg("答一（已编辑）")],
+            )
+            .expect("edit tail");
+        assert_eq!(
+            rewind_undo_state_inner(&store, &id).expect("state"),
+            None,
+            "回退后尾部被编辑必须不可反悔"
+        );
+        // restore 路径在 mutation 锁内复核，同样拒绝。
+        assert!(store.restore_rewound_turns(&id).is_err());
+    }
+
+    /// undo 条件③单独为否：记录绑定了 PreRestore 但该条目已不在 index（LRU
+    /// 淘汰）→ None。独立成测试：`isolated_store` 持有进程级 ENV_LOCK 直到
+    /// guard drop，同一测试内二次调用会自死锁（std::sync::Mutex 不可重入）。
     #[test]
     fn undo_state_none_without_pre_restore_checkpoint() {
-        let (store, _g, id) = rewound_code_session("undo-no-prerestore");
+        let (store, _g) = isolated_store("undo-no-prerestore");
+        let session = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let id = session.metadata.id.clone();
+        let code_id = id.clone();
+        store.set_code_session_predicate(Arc::new(move |candidate: &str| candidate == code_id));
+        store
+            .update_messages(
+                &id,
+                vec![
+                    user_msg("第一轮"),
+                    assistant_msg("答一"),
+                    user_msg("第二轮"),
+                    assistant_msg("答二"),
+                ],
+            )
+            .expect("seed transcript");
+        // 绑定一个不存在的 checkpoint（等价于绑定后又被淘汰）。
+        store
+            .truncate_to_user_turn(&id, 1, Some("c999-1".into()))
+            .expect("rewind to turn 1");
         let ledger = store.session_roots(&id).expect("roots").ledger;
         assert_eq!(
             resolve_rewind_undo_state(&store, &ledger, &id).expect("state"),
             None,
-            "index 无 PreRestore 条目时必须不可反悔"
+            "绑定的 PreRestore 不在 index 时必须不可反悔"
         );
     }
 }
