@@ -777,6 +777,7 @@
   });
   const basename = artifactTrackerFeature.basename;
   const isAbsPath = artifactTrackerFeature.isAbsPath;
+  const normalizedPath = artifactTrackerFeature.normalizedPath;
   const noteArtifactChange = artifactTrackerFeature.noteArtifactChange;
   const filterSessionArtifacts = artifactTrackerFeature.filterSessionArtifacts;
   const isDeliverable = artifactTrackerFeature.isDeliverable;
@@ -2027,7 +2028,7 @@
     safeConsoleInfo,
     isScheduledRunSession,
     markScheduledInitialTurnTerminal,
-    isAbsPath,
+    isAbsPath, normalizedPath,
     addOrMergePruneCompaction,
     toolResultDisplayContent,
     get currentStreamText() { return currentStreamText; },

@@ -103,17 +103,21 @@
     state.artifacts = state.artifacts.filter(function (a) { return a.path !== path; });
     if (state.artifacts.length !== before) notify();
   }
-  // Artifact cards use the basename as their existing presentation identity.
-  // This matches persisted artifact reconciliation, where a relative write path
-  // and the absolute watcher path must resolve to the same visible card.
+  // Prefer an exact normalized path so an older card is not hidden by a newer
+  // same-named artifact from another directory. Fall back to the basename for
+  // persisted relative paths that must reconcile with an absolute watcher path.
   function findPresentedArtifact(path) {
     const bn = basename(path);
     if (!bn) return null;
+    const normalized = normalizedPath(path);
+    let basenameMatch = null;
     for (let i = state.chatItems.length - 1; i >= 0; i--) {
       const it = state.chatItems[i];
-      if (it.type === "artifact_card" && basename(it.path) === bn) return it;
+      if (it.type !== "artifact_card" || basename(it.path) !== bn) continue;
+      if (normalizedPath(it.path) === normalized) return it;
+      if (!basenameMatch) basenameMatch = it;
     }
-    return null;
+    return basenameMatch;
   }
   // Updates an existing presentation card in place (stable id and position)
   // instead of appending a duplicate card. Returns null when the caller must
@@ -128,6 +132,10 @@
     if (!card || !card.path) return null;
     const existing = findPresentedArtifact(card.path);
     if (!existing) return null;
+    // A relative tool path may be the only bridge between a persisted relative
+    // card and its absolute watcher path. When it contains no resolvable
+    // directory, same-named files remain ambiguous, so retain the basename
+    // fallback for backward compatibility and rely on abs_path when available.
     if (isAbsPath(existing.path) && isAbsPath(card.path) &&
         normalizedPath(existing.path) !== normalizedPath(card.path)) return null;
     const bn = basename(card.path);

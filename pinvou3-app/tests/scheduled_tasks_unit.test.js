@@ -4915,8 +4915,8 @@ async function scheduledRunNowPollStopsOnTerminalBehavior() {
   );
 }
 
-async function presentationReconciliationUsesStableEventIdentity() {
-  const harness = createBridgeHarness();
+async function presentationReconciliationUsesStableEventIdentity(bridgeKind) {
+  const harness = createBridgeHarness(null, { bridgeKind });
   const bridge = harness.bridge;
   const sessionId = "chat-presentation-identity";
   let durable = {
@@ -5082,8 +5082,7 @@ async function presentationReconciliationUsesStableEventIdentity() {
   assert.strictEqual(updatedSnakeCards[0].path, absoluteArtifactPath,
     "a relative presentation update must preserve the existing absolute openable path");
 
-  // 同 basename、不同目录(不同绝对路径)= 不同产物 → 必须追加自己的新卡,
-  // 不得把旧卡就地改写成新文件(basename 身份规则的越界守卫)。
+  // A same-named artifact from another absolute directory gets its own card.
   const exportSummaryPath = "C:\\Users\\tester\\exports\\summary.pptx";
   presentArtifact("tool-present-summary-export", exportSummaryPath, "Summary export");
   const exportCardState = bridge.state.get("chat");
@@ -5103,8 +5102,54 @@ async function presentationReconciliationUsesStableEventIdentity() {
   assert.strictEqual(originalSummaryCard.path, summaryPath,
     "the original card must keep its own openable path");
 
-  // 用户重新开口后再 present 未改动的产物 → 必须追加新卡给出可见反馈
-  // (「再推一次/没看到」却只静默刷新旧卡是历史上实测过的 bug)。
+  presentArtifact("tool-present-summary-original-update", summaryPath, "Summary revised");
+  const exactUpdateState = bridge.state.get("chat");
+  const exactUpdateCards = exactUpdateState.chatItems.filter(function (item) {
+    return item.type === "artifact_card";
+  });
+  assert.strictEqual(exactUpdateCards.length, 4,
+    bridgeKind + " must update an older exact-path card without appending a duplicate");
+  assert.strictEqual(exactUpdateCards.find(function (item) {
+    return item.path === summaryPath;
+  }).title, "Summary revised",
+    bridgeKind + " must update the older card selected by its exact path");
+  assert.strictEqual(exactUpdateCards.find(function (item) {
+    return item.path === exportSummaryPath;
+  }).title, "Summary export",
+    bridgeKind + " must leave the newer same-named card unchanged");
+
+  await bridge.chat.sendMessage("Update the original summary");
+  const editOriginalSummary = {
+    session_id: sessionId,
+    id: "tool-edit-summary-original",
+    name: "File",
+    args: { action: "edit", path: summaryPath, old_string: "v1", new_string: "v2" },
+  };
+  harness.emit("chat:tool_start", editOriginalSummary);
+  harness.emit("chat:tool_end", {
+    session_id: sessionId,
+    id: editOriginalSummary.id,
+    success: true,
+    output: "Updated original summary",
+  });
+  await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+  await tick();
+  await tick();
+  const fallbackUpdateCards = bridge.state.get("chat").chatItems.filter(function (item) {
+    return item.type === "artifact_card";
+  });
+  assert.strictEqual(fallbackUpdateCards.length, 4,
+    bridgeKind + " chat:done fallback must update the older exact card without appending");
+  assert.strictEqual(fallbackUpdateCards.find(function (item) {
+    return item.path === summaryPath;
+  }).title, "Summary revised",
+    bridgeKind + " chat:done fallback must retain the older card metadata");
+  assert.strictEqual(fallbackUpdateCards.find(function (item) {
+    return item.path === exportSummaryPath;
+  }).title, "Summary export",
+    bridgeKind + " chat:done fallback must not borrow metadata from the newer card");
+
+  // Re-presenting after a user request appends a visible feedback card.
   await harness.emit("chat:user_message", { session_id: sessionId, content: "再把 report 给我看一次" });
   presentArtifact("tool-present-report-again", reportPath, "Report again");
   const feedbackCardState = bridge.state.get("chat");
@@ -5161,7 +5206,7 @@ async function presentationReconciliationUsesStableEventIdentity() {
     artifacts: [absoluteArtifactPath],
     transcript_revision: "rev-2",
   };
-  const recoveryHarness = createBridgeHarness();
+  const recoveryHarness = createBridgeHarness(null, { bridgeKind });
   recoveryHarness.handlers.load_session = function () { return durable; };
   await recoveryHarness.bridge.sessions.switchToSession(sessionId);
 
@@ -5624,7 +5669,8 @@ Promise.resolve()
   .then(scheduledOwnerRegistryIsBoundedAndProtectsLive)
   .then(scheduledBufferLruNeverEvictsLive)
   .then(scheduledRunningHydrationRaceBehavior)
-  .then(presentationReconciliationUsesStableEventIdentity)
+  .then(function () { return presentationReconciliationUsesStableEventIdentity("tauri"); })
+  .then(function () { return presentationReconciliationUsesStableEventIdentity("web"); })
   .then(scheduledUnreadPollingRaceBehavior)
   .then(scheduledFolderPickerBehavior)
   .then(scheduledTemplateSourcePersistenceBehavior)

@@ -53,6 +53,7 @@
     const presentArtifactAbsPath = context.presentArtifactAbsPath;
     const extractArtifactPaths = context.extractArtifactPaths;
     const fileMutationAction = context.fileMutationAction;
+    const normalizedPath = context.normalizedPath;
 
     function refreshEffectiveModelConfigAfterAuthError(error) {
       if (!error || !/\b401\b|unauthorized|authentication/i.test(String(error))) return;
@@ -768,9 +769,9 @@
       const interrupted = ["interrupted", "cancelled", "canceled"].includes(terminalStatus);
       if (interrupted) preserveInterruptedAssistantPresentation();
       else flushAssistantMessageToHistory();
-      // 本 turn 写/改过的产物:present 过的就地刷新原卡(保留 id/位置,不在末尾重复补卡;
-      // 品/悟召唤图标跟随同 basename 最新一张卡,入口仍在)。AI 没 present 过的兜底补首卡
-      // (否则没召唤入口=这次的 bug)。本 turn 刚 present_artifact 出过卡的跳过;改多次也只处理一次。
+      // Refresh artifacts written in this turn in place when already presented.
+      // Add only the first card for artifacts the model did not present, and
+      // skip artifacts already presented in this turn or changed repeatedly.
       (state.turnDirtyArtifacts || []).forEach(function (ap) {
         // 按 basename 比对:present 存 server 绝对路径、turnDirty 存 write 相对路径,
         // 直接 indexOf 比不中 → present 过的文件会被兜底再补一张(重复)。
@@ -779,10 +780,15 @@
         const prev = findPresentedArtifact(ap);
         // 补卡 path 优先用 disk watcher 落进产物列表的同名**绝对**路径(open 可靠、跨 session 稳);
         // 没有再退回 write_file 的相对 ap(由 sessionId 兜底解析)。
-        const tracked = state.artifacts.find(function (a) { return basename(a.path) === _apbn && isAbsPath(a.path); });
+        const tracked = state.artifacts.find(function (a) {
+          return normalizedPath(a.path) === normalizedPath(ap) && isAbsPath(a.path);
+        }) || state.artifacts.find(function (a) {
+          return basename(a.path) === _apbn && isAbsPath(a.path);
+        });
         const cardPath = (tracked && tracked.path) || ap;
         if (prev) {
-          // 命中「用户在原卡之后重新开口」例外(updatePresentedArtifact 返回 null)→ 仍补一张新卡。
+          // A user re-request after the previous card returns null and still
+          // receives a fresh visible card.
           const refreshed = updatePresentedArtifact({ type: "artifact_card", path: cardPath, title: prev.title, description: prev.description, time: timeStr(), sessionId: sid });
           if (!refreshed) addChatItem({ type: "artifact_card", path: cardPath, title: prev.title, description: prev.description, time: timeStr(), sessionId: sid });
         } else {
