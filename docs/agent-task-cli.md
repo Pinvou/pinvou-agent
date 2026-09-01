@@ -26,7 +26,7 @@ PINVOU3_HOME=/path/to/sandbox pinvou agent run \
 
 json 报告字段:`session_id`、`status`(`Completed`/`Failed`/`timeout`/`error` 或引擎状态)、`timed_out`、`assistant_text`(最后一轮助手文本)、`tool_events`(仅工具名与成败,不含参数/结果)、`usage`(输入/输出/缓存/思考 token)、`error`。工具事件刻意不携带负载,报告可安全落盘到 `/logs` 供 harness 做 usage 汇总。
 
-退出码:轮次完成且无错误为 0;`timed_out` 或 `error` 非空为 1;参数错误为 2。
+退出码:只要产出报告(含 `timeout`/`error` 状态)即为 0——轮内失败由 harness 判分器按报告结算,非零退出会让超时任务被记为 exception 而非 0 分,扭曲均值;非零退出码保留给宿主级失败(读文件失败、后端不可用等),参数错误为 2。
 
 ## 容器内运行(Terminal-Bench 形态)
 

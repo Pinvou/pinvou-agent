@@ -1384,13 +1384,12 @@ fn run_agent(
     };
     let report = pinvou_product_backend::run_agentic_task(request)
         .map_err(|error| CliError::failed(format!("agent_run_failed: {error:#}")))?;
-    let failed = report.timed_out || report.error.is_some();
+    // TB/harness 语义:只要拿到报告就退出 0(超时/轮内错误都在报告字段里,
+    // 由 harness 的判分器结算 reward);非零退出码保留给宿主级失败(读文件、
+    // 后端不可用等)。否则超时任务会被 harness 记成 exception 而非 0 分,
+    // 均值只在幸存任务上计算,分数失真。
     Ok(CliOutcome {
-        exit_code: if failed {
-            ExitCode::Failed
-        } else {
-            ExitCode::Success
-        },
+        exit_code: ExitCode::Success,
         stdout: render_agent_report(&report, output),
     })
 }
