@@ -16,7 +16,11 @@ for (const file of ['conversation-model.js', 'conversation-scroll.js']) {
     path.join(conversationDir, file),
   );
 }
-const { startConversationBottomFollower } = await import(
+const {
+  measureConversationScrollGeometry,
+  startConversationBottomFollower,
+  transitionConversationScrollState,
+} = await import(
   `${pathToFileURL(path.join(conversationDir, 'conversation-scroll.js')).href}?t=${Date.now()}`
 );
 const { isShrinkClampedToBottom } = await import(
@@ -182,6 +186,88 @@ try {
     'content growth must never be treated as a shrink clamp');
   assert.equal(isShrinkClampedToBottom(null, 1000), false,
     'a missing element must not be reported as clamped');
+
+  // Exercise the state transition shared by Chat and Codex: the user first leaves
+  // the bottom, then content shrinks without a scroll event, and finally the user
+  // deliberately returns to the new bottom. The resize measurement must replace the
+  // stale height before that last scroll so future output resumes bottom following.
+  const recoveryElement = { scrollHeight: 1200, scrollTop: 1000, clientHeight: 200 };
+  let recoveryState = { following: true, scrollTop: 1000, scrollHeight: 1200 };
+  const applyRecoveryScroll = () => {
+    const transition = transitionConversationScrollState({
+      scrollElement: recoveryElement,
+      following: recoveryState.following,
+      previousScrollTop: recoveryState.scrollTop,
+      previousScrollHeight: recoveryState.scrollHeight,
+    });
+    recoveryState = {
+      following: transition.following,
+      scrollTop: transition.scrollTop,
+      scrollHeight: transition.scrollHeight,
+    };
+  };
+  const stopRecovery = startConversationBottomFollower({
+    scrollElement: recoveryElement,
+    contentElement: recoveryElement,
+    isFollowing: () => recoveryState.following,
+    onMeasured: () => {
+      const measurement = measureConversationScrollGeometry({
+        scrollElement: recoveryElement,
+        following: recoveryState.following,
+        previousScrollTop: recoveryState.scrollTop,
+        previousScrollHeight: recoveryState.scrollHeight,
+      });
+      recoveryState.scrollTop = measurement.scrollTop;
+      recoveryState.scrollHeight = measurement.scrollHeight;
+    },
+    onRestored: (scrollTop) => {
+      recoveryState.scrollTop = scrollTop;
+      recoveryState.scrollHeight = recoveryElement.scrollHeight;
+    },
+    windowObject: fakeWindow,
+    documentObject: fakeDocument,
+  });
+  const recoveryObserver = observers[2];
+  flushFrame();
+
+  recoveryElement.scrollTop = 600;
+  applyRecoveryScroll();
+  assert.equal(recoveryState.following, false, 'scrolling up must pause bottom following');
+
+  recoveryElement.scrollHeight = 1000;
+  recoveryObserver.trigger(recoveryElement);
+  flushFrame();
+  assert.deepEqual(recoveryState, { following: false, scrollTop: 600, scrollHeight: 1000 },
+    'a resize without a scroll event must refresh geometry without pulling history browsing to the bottom');
+
+  recoveryElement.scrollTop = 800;
+  applyRecoveryScroll();
+  assert.equal(recoveryState.following, true,
+    'a deliberate downward scroll to the new bottom must resume following after content shrink');
+
+  recoveryElement.scrollHeight = 1300;
+  recoveryObserver.trigger(recoveryElement);
+  flushFrame();
+  assert.equal(recoveryElement.scrollTop, 1100,
+    'later content growth must remain pinned after the user resumes following');
+  stopRecovery();
+
+  const clampedMeasurement = measureConversationScrollGeometry({
+    scrollElement: shrinkClamped,
+    following: false,
+    previousScrollTop: 800,
+    previousScrollHeight: 1000,
+  });
+  assert.deepEqual(clampedMeasurement, { scrollTop: 800, scrollHeight: 1000 },
+    'resize measurement must preserve a shrink-clamp baseline until its possible scroll event arrives');
+  const clampedTransition = transitionConversationScrollState({
+    scrollElement: shrinkClamped,
+    following: false,
+    previousScrollTop: clampedMeasurement.scrollTop,
+    previousScrollHeight: clampedMeasurement.scrollHeight,
+  });
+  assert.equal(clampedTransition.following, false,
+    'a delayed shrink-clamp scroll event must not resume following for a history reader');
 
   console.log('conversation_scroll_follow: ok');
 } finally {

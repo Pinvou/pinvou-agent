@@ -1,9 +1,70 @@
-import { restoreConversationScrollPosition } from './conversation-model.js';
+import {
+  isNearConversationBottom,
+  isShrinkClampedToBottom,
+  restoreConversationScrollPosition,
+} from './conversation-model.js';
+
+export function transitionConversationScrollState({
+  scrollElement,
+  following,
+  previousScrollTop,
+  previousScrollHeight,
+}) {
+  if (!scrollElement) {
+    return {
+      following,
+      movingUp: false,
+      nearBottom: true,
+      shrinkClamped: false,
+      scrollTop: Number(previousScrollTop) || 0,
+      scrollHeight: Number(previousScrollHeight) || 0,
+    };
+  }
+
+  const nearBottom = isNearConversationBottom(scrollElement);
+  const shrinkClamped = isShrinkClampedToBottom(scrollElement, previousScrollHeight);
+  const movingUp = scrollElement.scrollTop < (Number(previousScrollTop) || 0) - 1
+    && !shrinkClamped;
+  return {
+    following: movingUp ? false : ((!shrinkClamped && nearBottom) || following),
+    movingUp,
+    nearBottom,
+    shrinkClamped,
+    scrollTop: scrollElement.scrollTop,
+    scrollHeight: scrollElement.scrollHeight,
+  };
+}
+
+export function measureConversationScrollGeometry({
+  scrollElement,
+  following,
+  previousScrollTop,
+  previousScrollHeight,
+}) {
+  const previous = {
+    scrollTop: Number(previousScrollTop) || 0,
+    scrollHeight: Number(previousScrollHeight) || 0,
+  };
+  if (!scrollElement) return previous;
+
+  // Preserve the pre-shrink baseline when the browser has clamped a history
+  // reader to the new bottom. A scroll event may still arrive after ResizeObserver;
+  // retaining the old height lets the transition identify that event as layout-owned
+  // instead of incorrectly resuming follow mode.
+  if (!following && isShrinkClampedToBottom(scrollElement, previous.scrollHeight)) {
+    return previous;
+  }
+  return {
+    scrollTop: scrollElement.scrollTop,
+    scrollHeight: scrollElement.scrollHeight,
+  };
+}
 
 export function startConversationBottomFollower({
   scrollElement,
   contentElement,
   isFollowing,
+  onMeasured,
   onRestored,
   windowObject = typeof window === 'undefined' ? null : window,
   documentObject = typeof document === 'undefined' ? null : document,
@@ -12,6 +73,10 @@ export function startConversationBottomFollower({
 
   let frame = null;
   const restoreBottomIfFollowing = () => {
+    // ResizeObserver runs after layout has updated scrollTop/scrollHeight. Record that
+    // baseline even while history browsing, so the next user scroll is not compared
+    // with stale pre-reflow geometry and mistaken for a shrink-induced clamp.
+    if (onMeasured) onMeasured(scrollElement);
     if (!isFollowing()) return;
     if (frame !== null) windowObject.cancelAnimationFrame(frame);
     frame = windowObject.requestAnimationFrame(() => {

@@ -27,13 +27,15 @@ import {
   conversationItemsForMode,
   projectDeepSeekConversation,
 } from '../conversation/deepseek-conversation.js';
-import { startConversationBottomFollower } from '../conversation/conversation-scroll.js';
+import {
+  measureConversationScrollGeometry,
+  startConversationBottomFollower,
+  transitionConversationScrollState,
+} from '../conversation/conversation-scroll.js';
 import {
   captureConversationScrollPosition,
   isFetchTool,
-  isNearConversationBottom,
   isSearchTool,
-  isShrinkClampedToBottom,
   restoreConversationScrollPosition,
 } from '../conversation/conversation-model.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
@@ -1045,18 +1047,15 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         const el = scrollRef.current;
         if (!el) return;
         const onScroll = () => {
-          const near = isNearConversationBottom(el);
-          // A content shrink (e.g. content-visibility replacing its 600px estimate with a
-          // smaller real height) makes the browser clamp scrollTop down to the new maximum.
-          // That programmatic jump carries no user intent, so it must neither disable
-          // auto-follow (the bottom follower and streaming effect depend on it) nor
-          // re-enable it for a user who was browsing history.
-          const shrinkClamped = isShrinkClampedToBottom(el, lastScrollHeightRef.current);
-          const movingUp = el.scrollTop < lastScrollTopRef.current - 1 && !shrinkClamped;
-          lastScrollTopRef.current = el.scrollTop;
-          lastScrollHeightRef.current = el.scrollHeight;
-          if (movingUp) autoScrollRef.current = false;
-          else if (!shrinkClamped && near) autoScrollRef.current = true;
+          const transition = transitionConversationScrollState({
+            scrollElement: el,
+            following: autoScrollRef.current,
+            previousScrollTop: lastScrollTopRef.current,
+            previousScrollHeight: lastScrollHeightRef.current,
+          });
+          lastScrollTopRef.current = transition.scrollTop;
+          lastScrollHeightRef.current = transition.scrollHeight;
+          autoScrollRef.current = transition.following;
           const shouldShow = !autoScrollRef.current && el.scrollHeight > el.clientHeight + 4;
           setShowScrollBottom(v => v === shouldShow ? v : shouldShow);
         };
@@ -1130,6 +1129,16 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           scrollElement,
           contentElement,
           isFollowing: () => autoScrollRef.current,
+          onMeasured: () => {
+            const measurement = measureConversationScrollGeometry({
+              scrollElement,
+              following: autoScrollRef.current,
+              previousScrollTop: lastScrollTopRef.current,
+              previousScrollHeight: lastScrollHeightRef.current,
+            });
+            lastScrollTopRef.current = measurement.scrollTop;
+            lastScrollHeightRef.current = measurement.scrollHeight;
+          },
           onRestored: (scrollTop) => {
             lastScrollTopRef.current = scrollTop;
             lastScrollHeightRef.current = scrollElement.scrollHeight;

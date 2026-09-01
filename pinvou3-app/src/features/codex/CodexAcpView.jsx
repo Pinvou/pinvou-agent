@@ -74,7 +74,11 @@ import {
   ConversationTurn,
   WorkspaceResourceButtons,
 } from '../conversation/ConversationTimeline.jsx';
-import { startConversationBottomFollower } from '../conversation/conversation-scroll.js';
+import {
+  measureConversationScrollGeometry,
+  startConversationBottomFollower,
+  transitionConversationScrollState,
+} from '../conversation/conversation-scroll.js';
 import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
 import { assistantResponseAvailable, assistantResponseText } from '../conversation/message-clipboard.js';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/composer-shared.jsx';
@@ -89,9 +93,7 @@ import {
   captureConversationScrollPosition,
   collectToolWorkspaceResources,
   isFetchTool,
-  isNearConversationBottom,
   isSearchTool,
-  isShrinkClampedToBottom,
   restoreConversationScrollPosition,
   toolWorkspaceResources,
 } from '../conversation/conversation-model.js';
@@ -2517,13 +2519,15 @@ export function CodexAcpView({
     const element = scroller.current;
     if (!element) return;
     const onScroll = () => {
-      const near = isNearConversationBottom(element);
-      const shrinkClamped = isShrinkClampedToBottom(element, lastScrollHeightRef.current);
-      const movingUp = element.scrollTop < lastScrollTopRef.current - 1 && !shrinkClamped;
-      lastScrollTopRef.current = element.scrollTop;
-      lastScrollHeightRef.current = element.scrollHeight;
-      if (movingUp) autoScrollRef.current = false;
-      else if (!shrinkClamped && near) autoScrollRef.current = true;
+      const transition = transitionConversationScrollState({
+        scrollElement: element,
+        following: autoScrollRef.current,
+        previousScrollTop: lastScrollTopRef.current,
+        previousScrollHeight: lastScrollHeightRef.current,
+      });
+      lastScrollTopRef.current = transition.scrollTop;
+      lastScrollHeightRef.current = transition.scrollHeight;
+      autoScrollRef.current = transition.following;
       const shouldShow = !autoScrollRef.current
         && element.scrollHeight > element.clientHeight + 4;
       setShowScrollBottom(current => current === shouldShow ? current : shouldShow);
@@ -2569,6 +2573,16 @@ export function CodexAcpView({
       scrollElement,
       contentElement,
       isFollowing: () => autoScrollRef.current,
+      onMeasured: () => {
+        const measurement = measureConversationScrollGeometry({
+          scrollElement,
+          following: autoScrollRef.current,
+          previousScrollTop: lastScrollTopRef.current,
+          previousScrollHeight: lastScrollHeightRef.current,
+        });
+        lastScrollTopRef.current = measurement.scrollTop;
+        lastScrollHeightRef.current = measurement.scrollHeight;
+      },
       onRestored: (scrollTop) => {
         lastScrollTopRef.current = scrollTop;
         lastScrollHeightRef.current = scrollElement.scrollHeight;
