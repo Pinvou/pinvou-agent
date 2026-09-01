@@ -224,10 +224,10 @@ pub async fn get_super_permission_status() -> Result<bool, String> {
 ///
 /// 全程持有进程级 [`crate::platform::super_permission::TOGGLE_LOCK`]：读盘
 /// 判定 → pkexec 写/删 → `refresh_permission_rulesets` 重建广播作为整体串行
-/// 执行,并发 toggle 不再交错,sudo hard-deny 规则集不会基于过期的 sudo 快照
+/// 执行，并发 toggle 不再交错，sudo hard-deny 规则集不会基于过期的 sudo 快照
 /// 广播（safety_deny_rules 注册的 narrow stale-snapshot window 已消除）。
-/// 切换是低频用户操作,跨 pkexec 慢调用持锁可接受;锁仅在此处持有,guard 绑定
-/// 到函数作用域,pkexec 出错提前返回时自动释放,不会阻塞其他 Tauri 命令。
+/// 切换是低频用户操作，跨 pkexec 慢调用持锁可接受；锁仅在此处持有，guard 绑定
+/// 到函数作用域，pkexec 出错提前返回时自动释放，不会阻塞其他 Tauri 命令。
 #[tauri::command]
 pub async fn set_super_permission(
     enabled: bool,
