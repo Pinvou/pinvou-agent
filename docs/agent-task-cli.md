@@ -20,7 +20,7 @@ PINVOU3_HOME=/path/to/sandbox pinvou agent run \
 - `--timeout-secs`(默认 600):轮次超时;超时先走取消,取消后若轮次在沉淀窗口(30s)内仍未结束则直接产出 `timeout` 报告,绝不无限等待。
 - `--output human|json`:human 打印会话/状态行加 assistant 文本;json 打印完整报告单行 JSON。
 
-前置条件:沙箱 `PINVOU3_HOME` 的 `settings.json` 需配置激活模型(任意 OpenAI 兼容端点均可,`preset = "openai_compatible"`);`PINVOU3_ALLOW_SHELL=1` 可钉死 shell 授权(不依赖 prefs)。
+前置条件:沙箱 `PINVOU3_HOME` 的 `settings.json` 需配置激活模型(任意 OpenAI 兼容端点均可,`preset = "openai_compatible"`);`PINVOU3_ALLOW_SHELL=1` 可钉死 shell 授权(不依赖 prefs)。注意 benchmark-hooks 构建默认把每轮工具调用上限钉在 8 次(GAIA 防失控护栏),长程 agentic 任务需 `PINVOU3_MAX_TOOL_CALLS=512` 之类的显式抬高。
 
 ## 输出契约
 
