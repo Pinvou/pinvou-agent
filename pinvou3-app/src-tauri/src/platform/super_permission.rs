@@ -36,7 +36,7 @@ pub fn instruction_block() -> &'static str {
 /// no-op 的关键(静态 prompt 刷不动,就每 turn 重新注入)。
 ///
 /// **开启**:直接 sudo 一步到位,别先试裸命令(否则模型对 `/etc` 写只会裸 touch 然后放弃)。
-/// **关闭**:禁 sudo(会被 deny hook 拦或卡超时),引导用户开开关。
+/// **Off**: sudo is denied (the execpolicy deny rule rejects it immediately instead of blocking until timeout); guide the user to enable the toggle.
 pub fn turn_reminder() -> &'static str {
     crate::platform::os::super_permission_turn_reminder()
 }

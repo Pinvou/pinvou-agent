@@ -1393,6 +1393,14 @@ impl AppEngine {
     #[allow(dead_code)] // L1 runner 接入前临时 unused
     pub async fn spawn_headless(bridge: Pinvou3Bridge) -> Result<Self> {
         let mut engine_config = bridge.build_engine_config();
+        // The headless engine carries the same hard-deny ruleset as real
+        // sessions (scope gate + safety fallback, see `scope_deny_ruleset`);
+        // a bare `build_engine_config` leaves the empty default execpolicy
+        // engine.
+        engine_config.exec_policy_engine =
+            codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
+                bridge.scope_deny_ruleset(""),
+            ]);
         let scheduled_disallowed_tools = engine_config.disallowed_tools.clone().unwrap_or_default();
         let workspace = engine_config.workspace.clone();
         engine_config.runtime_services.shell_manager =

@@ -1341,7 +1341,7 @@ impl Pinvou3Bridge {
             tools,
             // —— v0.8.51 上游新增字段 ——
             speech_output_dir,
-            hook_executor: _, // pinvou3 注入敏感目录防火墙 + CLI 环境 hook
+            hook_executor: _, // pinvou3 injects the bundle hook (connector introspection correction) + CLI env hook
             // —— v0.8.53 上游新增字段,透传 default(subagent 心跳超时;配 subagent
             //    lifecycle hooks feat)。⚠️ 本地慢 vLLM 下或需像 subagent_api_timeout
             //    一样调大,先透传 default,验证后再评估。——
@@ -1623,9 +1623,13 @@ impl Pinvou3Bridge {
         // `## Skills` 块不渲染），发送路径的自愈（`ensure_session_skills`）保证
         // 目录在下次物化时机前被重建。
         cfg.skills_dir = crate::platform::paths::session_skills_dir(session_id);
-        // CLI 硬拦截（scope 门禁的 execpolicy 通道）：spawn 注入初值；开关切换
-        // 后的热刷走 EnginePool::refresh_permission_rulesets，两处同一份计算。
-        // 规则集 = CLI 二进制名 deny + 禁用技能脚本路径 deny（§5.1 通道③）。
+        // CLI hard-deny (the execpolicy channel of the scope gate): spawn-time
+        // injection initial value; the hot refresh after a toggle goes through
+        // EnginePool::refresh_permission_rulesets — both share this one
+        // computation. Ruleset = CLI binary-name deny + disabled skill
+        // script-path deny (§5.1 channel ③) + sensitive-data/privilege
+        // safety deny (segments 1-4 of the former bundle hook
+        // deny_sensitive_paths, see the safety_deny_rules module docs).
         cfg.exec_policy_engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
             self.scope_deny_ruleset(session_id),
         ]);
@@ -1694,12 +1698,38 @@ impl Pinvou3Bridge {
             .collect::<Vec<_>>()
     }
 
-    /// scope 门禁的完整 execpolicy 硬拦截规则集 = CLI 二进制名 deny + 禁用技能的
-    /// 脚本路径 deny（§5.1 通道③）。spawn 注入初值与开关热刷共用这一份计算。
+    /// The full execpolicy hard-deny ruleset for the scope gate + safety net =
+    /// CLI binary-name deny + disabled-skill script-path deny (§5.1 channel ③)
+    /// + sensitive-data/privilege deny (segments 1-4 of the former bundle hook
+    /// deny_sensitive_paths, v1). Shared by the spawn-time injection initial
+    /// value and the toggle hot refresh. `command` denies are also promoted
+    /// into `denied_prefixes` (same semantics as the foundation config
+    /// loader), activating the deny-always-wins channel with flag awareness /
+    /// basename folding / wrapper stripping.
     pub(crate) fn scope_deny_ruleset(&self, session_id: &str) -> codewhale_execpolicy::Ruleset {
+        self.scope_deny_ruleset_with(
+            session_id,
+            crate::features::assistant::safety_deny_rules::safety_deny_rules(),
+        )
+    }
+
+    /// Injectable form of [`scope_deny_ruleset`] for the safety section:
+    /// production passes the live disk snapshot
+    /// [`safety_deny_rules::safety_deny_rules`]; tests inject a fixed sudo
+    /// state (decoupled from the host's real `/etc/sudoers.d/pinvou3`).
+    /// Regression tests must go through this entry — the ruleset composition
+    /// stays naturally same-source with production, so adding/removing rule
+    /// sources in production takes effect in the tests instead of silently
+    /// passing.
+    pub(crate) fn scope_deny_ruleset_with(
+        &self,
+        session_id: &str,
+        safety_rules: Vec<codewhale_execpolicy::ToolAskRule>,
+    ) -> codewhale_execpolicy::Ruleset {
         let mut rules = self.cli_deny_rules(session_id);
         rules.extend(self.skill_script_deny_rules(session_id));
-        codewhale_execpolicy::Ruleset::user(vec![], vec![]).with_ask_rules(rules)
+        rules.extend(safety_rules);
+        crate::features::assistant::safety_deny_rules::ruleset_with_denied_prefix_promotion(rules)
     }
 
     /// 带脚本技能的执行点硬拦截（marketplace-unification §5.1 通道③）。
@@ -1905,10 +1935,15 @@ impl Pinvou3Bridge {
         config
     }
 
-    /// 注入硬拦截 hook：ToolCallBefore 时 spawn 一个 shell 脚本检查 tool args
-    /// 是否触碰敏感目录（~/.ssh / ~/.gnupg / ~/.aws / 等），命中 exit 1
-    /// 让上游拒绝该 tool 调用。脚本本体在 bundle 中,首次启动解包到
-    /// `~/.pinvou3/bundle/deny_sensitive_paths.sh`。
+    /// Injects the connector introspection-correction hook: at ToolCallBefore
+    /// the bundle script is spawned to send a correction back to the model
+    /// when a skill-based connector is mistakenly introspected as MCP
+    /// (exit 2 + stdout JSON reason, the Hooks v2 contract). The
+    /// sensitive-path/dangerous-command/sudo hard-deny segments the script
+    /// used to carry have moved to the execpolicy rule engine
+    /// (`safety_deny_rules`); the script no longer hard-denies. The script
+    /// itself lives in the bundle and is unpacked on first start to
+    /// `~/.pinvou3/bundle/deny_sensitive_paths.sh`.
     fn build_hooks_config(&self) -> HooksConfig {
         #[cfg(windows)]
         let sensitive_command = {
@@ -3251,10 +3286,27 @@ mod tests {
         }));
         use crate::features::marketplace::ConnectorScope;
 
-        // plain 无禁用 → 无脚本规则
-        assert!(bridge.scope_deny_ruleset("sess-plain").ask_rules.is_empty());
+        // With no scope disablement: no CLI binary rules, no skill script
+        // rules (`run.py` style). Safety-net rules (path + command) are
+        // always present; covered by the safety_deny_rules tests.
+        assert!(
+            bridge
+                .scope_deny_ruleset("sess-plain")
+                .ask_rules
+                .iter()
+                .all(|r| !r.command.as_deref().is_some_and(|c| c.contains("run.py")))
+        );
+        assert!(
+            bridge
+                .scope_deny_ruleset("sess-plain")
+                .ask_rules
+                .iter()
+                .any(|r| r.path.is_some()
+                    && r.action == codewhale_execpolicy::PermissionAction::Deny),
+            "safety-net File path rules should always be present"
+        );
 
-        // plain 禁 my-skill → 含指向该脚本的 deny 规则
+        // plain disables my-skill → contains a deny rule pointing at the script
         crate::features::marketplace::skill_scope::save_disabled_skills_for(
             ConnectorScope::Plain,
             &["my-skill".to_string()],
@@ -3266,24 +3318,32 @@ mod tests {
                 .as_deref()
                 .is_some_and(|c| c.starts_with("python ") && c.contains("run.py"))
                 && r.action == codewhale_execpolicy::PermissionAction::Deny),
-            "禁用技能脚本应有 deny 规则: {:?}",
+            "disabled skill script should have a deny rule: {:?}",
             rs.ask_rules
         );
 
-        // 开回 → 规则消失（热刷重算的同一口径）
+        // Re-enabled → script rule disappears (same computation as the hot
+        // refresh; safety-net rules remain)
         crate::features::marketplace::skill_scope::save_disabled_skills_for(
             ConnectorScope::Plain,
             &[],
         );
-        assert!(bridge.scope_deny_ruleset("sess-plain").ask_rules.is_empty());
+        assert!(
+            bridge
+                .scope_deny_ruleset("sess-plain")
+                .ask_rules
+                .iter()
+                .all(|r| !r.command.as_deref().is_some_and(|c| c.contains("run.py")))
+        );
 
-        // code 未初始化 → 默认全禁已装技能 → 同样生成脚本规则
+        // code not initialized → all installed skills disabled by default →
+        // script rules generated the same way
         let rs = bridge.scope_deny_ruleset("sess-code");
         assert!(
             rs.ask_rules
                 .iter()
                 .any(|r| r.command.as_deref().is_some_and(|c| c.contains("run.py"))),
-            "code 默认全禁应覆盖技能脚本"
+            "code default-all-disabled should cover skill scripts"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -3314,6 +3374,76 @@ mod tests {
                 "non-Windows sensitive firewall hook must use bash script, got: {command}"
             );
         }
+    }
+
+    /// Falsified-dead-path regression for the hook → execpolicy migration:
+    /// since foundation v0.9.3 the model only calls `Bash` (the hook received
+    /// `Bash`, so its exec_shell*-gated segments silently passed). The
+    /// composed session-engine ruleset must deny `sudo rm` / `cat /etc/shadow`
+    /// (the measured dead samples of former hook segments 3/4) plus the
+    /// live-hook coverage that segment 1/2 used to provide via substring —
+    /// sensitive-directory child files and exfil sources (the collaborator
+    /// audit samples) — under Never/YOLO semantics.
+    #[test]
+    fn session_exec_policy_denies_migrated_hook_targets_under_bash_tool() {
+        let bridge = fixture_bridge();
+        // Go through the production injectable entry so the ruleset
+        // composition is naturally same-source with scope_deny_ruleset (only
+        // the sudo section injects the "off" state instead of reading the
+        // host disk: a Linux host with /etc/sudoers.d/pinvou3 present —
+        // super permission on — would drop the sudo rules from the disk
+        // snapshot; the regression test must decouple from the host state to
+        // stay reproducible).
+        let ruleset = bridge.scope_deny_ruleset_with(
+            "sess-plain",
+            crate::features::assistant::safety_deny_rules::safety_deny_rules_for(false),
+        );
+        let engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![ruleset]);
+        // Never is the strictest reading (only deny-always-wins passes
+        // nothing); Bypass/Auto map AskForApproval to OnFailure and a deny
+        // short-circuits them the same way.
+        let check = |command: &str| {
+            engine
+                .check(codewhale_execpolicy::ExecPolicyContext {
+                    command,
+                    cwd: ".",
+                    // The engine resolves Bash(action=run) to exec_shell via
+                    // canonical_action_alias before consulting rules
+                    // (engine.rs exec_shell_ask_rule_decision).
+                    tool: Some("exec_shell"),
+                    path: None,
+                    ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
+                    sandbox_mode: None,
+                })
+                .unwrap()
+        };
+        for cmd in [
+            "sudo rm -rf /tmp/x",
+            "cat /etc/shadow",
+            // Former live segment 1/2 coverage that must survive the
+            // migration: sensitive-directory child files and exfil sources.
+            "cat ~/.ssh/config",
+            "cat ~/.kube/config",
+            "cp ~/.ssh/id_rsa /tmp/x",
+        ] {
+            let d = check(cmd);
+            assert!(
+                !d.allow,
+                "former dead path must stay fixed ({cmd} deny): {}",
+                d.reason()
+            );
+            assert!(
+                matches!(
+                    d.requirement,
+                    codewhale_execpolicy::ExecApprovalRequirement::Forbidden { .. }
+                ),
+                "{cmd}: {:?}",
+                d.requirement
+            );
+        }
+        // Ordinary commands are unaffected.
+        assert!(check("cat README.md").allow);
+        assert!(check("git status").allow);
     }
 
     #[test]
@@ -5095,7 +5225,8 @@ mod tests {
                 hook.event == HookEvent::ToolCallBefore
                     && hook.name.as_deref() == Some("pinvou3-sensitive-firewall")
             }),
-            "敏感目录硬拦截 hook 必须保留"
+            "connector-introspection hook (pinvou3-sensitive-firewall, \
+             security segment migrated to execpolicy) must stay registered"
         );
         // 平台脚本命令契约(原 sensitive_firewall_hook_uses_platform_script 的断言):
         // Windows 用 PowerShell 脚本,其余平台用 bash 脚本。
@@ -5142,7 +5273,8 @@ mod tests {
                 .hooks
                 .iter()
                 .any(|hook| hook.event == HookEvent::ToolCallBefore),
-            "每轮消息不得清掉敏感目录防火墙"
+            "per-turn messages must not drop the ToolCallBefore hook \
+             (connector introspection)"
         );
     }
 

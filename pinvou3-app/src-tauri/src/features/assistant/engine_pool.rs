@@ -1981,10 +1981,14 @@ impl EnginePool {
         }
     }
 
-    /// execpolicy 硬拦截热刷（scope 门禁通道③）：连接器/技能开关落盘后按各会话
-    /// 自己的 scope 重算 deny 规则集（CLI 二进制名 + 禁用技能脚本路径）并广播给
-    /// 所有在跑 engine，下一轮即硬拒。新 spawn / 重建的引擎由
-    /// build_engine_config_for_session_roots 注入初值——两处共用 `bridge.scope_deny_ruleset`。
+    /// execpolicy hard-deny hot refresh (scope gate channel ③ + safety net):
+    /// after connector/skill toggles are persisted or the super-permission
+    /// toggle changes, recompute the deny ruleset per session scope (CLI
+    /// binary names + disabled skill script paths + sensitive-data/privilege
+    /// rules) and broadcast it to every running engine so it hard-denies from
+    /// the next turn. Newly spawned / rebuilt engines get the initial value
+    /// from build_engine_config_for_session_roots — both share
+    /// `bridge.scope_deny_ruleset`.
     pub async fn refresh_permission_rulesets(&self) {
         let targets = self
             .entries
