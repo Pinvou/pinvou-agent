@@ -17,6 +17,8 @@ use super::ingest_deps::{
     pdf_tool_command, system_tools,
 };
 
+const MAX_FORMULAS_PER_SHEET: usize = 2_048;
+
 /// pandoc 原生支持的文字文档（docx/odt）摄入：`pandoc -t markdown`。
 pub(super) fn ingest_pandoc(
     path: &Path,
@@ -171,11 +173,18 @@ pub(super) fn ingest_spreadsheet(
 /// 单元格内换行折成空格，避免破坏「一行 = 一条记录」的语义（利于切块/检索）。
 fn spreadsheet_all_sheets_text(path: &Path) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("读取文件失败: {e}"))?;
-    spreadsheet_text_from_bytes(&bytes)
+    let preserve_xlsx_structure = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("xlsx"));
+    spreadsheet_text_from_bytes(&bytes, preserve_xlsx_structure)
 }
 
 /// 抽取核心（接收字节，便于单测喂 fixture）。见 [`spreadsheet_all_sheets_text`]。
-fn spreadsheet_text_from_bytes(bytes: &[u8]) -> Result<String, String> {
+fn spreadsheet_text_from_bytes(
+    bytes: &[u8],
+    preserve_xlsx_structure: bool,
+) -> Result<String, String> {
     // DataType trait 提供 Data::is_empty()（calamine 0.26 是 trait 方法，非固有）。
     use calamine::{Data, DataType, Reader, open_workbook_auto_from_rs};
 
@@ -216,11 +225,73 @@ fn spreadsheet_text_from_bytes(bytes: &[u8]) -> Result<String, String> {
             out.push('\n');
         }
         out.push('\n');
+        match wb.worksheet_formula(&name) {
+            Ok(formulas) => append_formula_annotations(&mut out, &name, &formulas),
+            Err(error) => log::warn!("spreadsheet formula extraction failed: {error}"),
+        }
     }
-    if let Ok(Some(structure)) = super::spreadsheet_structure::xlsx_structure_annotations(bytes) {
-        out.push_str(&structure);
+    if preserve_xlsx_structure {
+        match super::spreadsheet_structure::xlsx_structure_annotations(bytes) {
+            Ok(Some(structure)) => out.push_str(&structure),
+            Ok(None) => {}
+            Err(error) => log::warn!("XLSX structure extraction failed: {error}"),
+        }
     }
     Ok(out)
+}
+
+fn append_formula_annotations(
+    out: &mut String,
+    sheet_name: &str,
+    formulas: &calamine::Range<String>,
+) {
+    let Some((start_row, start_column)) = formulas.start() else {
+        return;
+    };
+    let mut written = 0usize;
+    let mut truncated = false;
+    for (relative_row, relative_column, formula) in formulas.used_cells() {
+        if formula.is_empty() {
+            continue;
+        }
+        if written == MAX_FORMULAS_PER_SHEET {
+            truncated = true;
+            break;
+        }
+        if written == 0 {
+            out.push_str("### 工作表公式：");
+            out.push_str(sheet_name);
+            out.push('\n');
+        }
+        out.push_str("- ");
+        out.push_str(&a1_cell(
+            start_row.saturating_add(relative_row as u32),
+            start_column.saturating_add(relative_column as u32),
+        ));
+        out.push_str(": =");
+        out.push_str(formula.strip_prefix('=').unwrap_or(formula));
+        out.push('\n');
+        written += 1;
+    }
+    if truncated {
+        out.push_str("- 公式过多，以上列表已截断\n");
+    }
+    if written > 0 {
+        out.push('\n');
+    }
+}
+
+fn a1_cell(row: u32, column: u32) -> String {
+    let mut remaining = u64::from(column) + 1;
+    let mut letters = Vec::new();
+    while remaining > 0 {
+        let digit = ((remaining - 1) % 26) as u8;
+        letters.push(char::from(b'A' + digit));
+        remaining = (remaining - 1) / 26;
+    }
+    letters.reverse();
+    let column_name: String = letters.into_iter().collect();
+    format!("{column_name}{}", u64::from(row) + 1)
 }
 
 /// 演示类（.pptx/.ppt/.odp + WPS .dps）：LibreOffice **没有 Impress→txt 导出**
@@ -314,7 +385,7 @@ mod tests {
         // （实测 4-sheet 散热报告只抽到首页、CPU/温升数据全失）。calamine 必须把
         // 全部工作表逐行抽出。fixture 是 3-sheet 合成表（Cover/配置表/温升表）。
         let bytes = include_bytes!("../../../test-fixtures/multi_sheet.xlsx");
-        let txt = spreadsheet_text_from_bytes(bytes).expect("calamine 应能解析 fixture");
+        let txt = spreadsheet_text_from_bytes(bytes, true).expect("calamine 应能解析 fixture");
         // 三个工作表标题都要在
         assert!(txt.contains("## 工作表：Cover"), "缺 Cover sheet");
         assert!(
@@ -333,5 +404,26 @@ mod tests {
             txt.contains("CPU | key part | model | Ultra 7 258V SRPMN"),
             "同一行单元格应保留在一行"
         );
+    }
+
+    #[test]
+    fn spreadsheet_appends_structure_and_expanded_shared_formulas() {
+        let bytes = super::super::spreadsheet_structure::synthetic_xlsx_fixture();
+        let txt = spreadsheet_text_from_bytes(&bytes, true).expect("应能解析合成 XLSX");
+
+        assert!(txt.contains("### 工作表公式：Map"));
+        assert!(txt.contains("D3: =SUM(A1:B1)"));
+        assert!(txt.contains("D4: =SUM(A2:B2)"));
+        assert!(txt.contains("### 工作表结构：Map"));
+        assert!(txt.contains("fill #00FF00: A1, C2"));
+        assert!(txt.contains("合并区域: A1:B1"));
+    }
+
+    #[test]
+    fn converts_zero_based_coordinates_to_a1_notation() {
+        assert_eq!(a1_cell(0, 0), "A1");
+        assert_eq!(a1_cell(9, 25), "Z10");
+        assert_eq!(a1_cell(0, 26), "AA1");
+        assert_eq!(a1_cell(41, 701), "ZZ42");
     }
 }
