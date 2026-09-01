@@ -1891,6 +1891,13 @@ mod tests {
             .into_owned()
     }
 
+    /// Removes a test fixture directory and unsets `PINVOU3_HOME` in-process.
+    ///
+    /// Contract: the caller must hold `bridge::paths::tests::ENV_LOCK` for the
+    /// whole call — only that lock serializes the unconditional `remove_var`
+    /// against tests that set the variable under it. A test that never sets
+    /// `PINVOU3_HOME` must not borrow this helper; remove its directory
+    /// directly instead.
     fn cleanup(dir: &str) {
         // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::remove_var("PINVOU3_HOME") };
