@@ -59,7 +59,19 @@ pub async fn checkpoint_diff(
     if pool.is_turn_active(&session_id) {
         return Err("会话正在执行，请稍后再读取变更预览".to_string());
     }
+    // 跨会话软门：同执行根的其它原生 code 会话在跑时同样抢影子 index.lock
+    // （它的 create_checkpoint/引擎写文件 vs 本 diff 的 add -A 与迁移 purge）。
+    let store_gate = store.inner().clone();
+    let session_id_gate = session_id.clone();
+    let pool_gate = pool.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        if let Some(busy) =
+            busy_peer_on_same_execution_root(&store_gate, &session_id_gate, &execution, |id| {
+                pool_gate.is_turn_active(id)
+            })?
+        {
+            return Err(format!("会话「{busy}」绑定同一项目目录且正在执行，请稍后再读取变更预览"));
+        }
         checkpoints::diff_checkpoint(&ledger, &execution, &checkpoint_id)
             .map_err(|error| format!("读取检查点差异失败: {error:#}"))
     })

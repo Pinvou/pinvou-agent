@@ -210,23 +210,30 @@ fn git_ok(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// 迁移/恢复共用的敏感文件 pathspec 全集：字面模式（.env、id_rsa 等）在 git
-/// pathspec 里只命中仓库根部，另补 `**/` 前缀版本覆盖任意深度（不含通配符的
-/// pathspec 不走 wildmatch；gitignore 语义的 exclude 本就任意深度生效，此差异
-/// 只影响 `rm --cached` 这类 pathspec 调用）。
+/// 迁移/恢复共用的敏感文件 pathspec 全集：字面模式（无通配符，如 .env、
+/// id_rsa）在 git pathspec 里只命中仓库根部，自动派生 `**/` 前缀版本覆盖任意
+/// 深度；含通配符的模式（*.pem 等）本身跨 `/` 匹配，无需派生。gitignore 语义
+/// 的 exclude 本就任意深度生效，此差异只影响 `rm --cached` 这类 pathspec 调用。
 fn secret_pathspecs() -> Vec<String> {
     let mut patterns: Vec<String> = SECRET_EXCLUDES.iter().map(|line| line.to_string()).collect();
-    for literal in [".env", ".env.local", "id_rsa", "id_ed25519"] {
-        patterns.push(format!("**/{literal}"));
+    for line in SECRET_EXCLUDES {
+        if !line.contains(['*', '?', '[']) {
+            patterns.push(format!("**/{line}"));
+        }
     }
     patterns
 }
 
 /// 从影子 index 清除敏感文件条目（`rm --cached`，只动影子 index，不碰工作区
 /// 文件、不碰用户项目 .git）。返回 git 进程的真实成败（非零退出 = 失败）。
+///
+/// 必须带 `-f`：`git rm --cached` 的 up-to-date 检查用相对路径 lstat，解析到
+/// 调用进程的 cwd 而非影子 work-tree（git 2.55 实测，`--cached` 跳过
+/// setup_work_tree）——cwd 恰含同名文件时检查打到无关文件上、purge 全有或全
+/// 无地失败。`-f` 与 `--cached` 组合只绕过该检查，工作区文件绝不被碰。
 fn purge_secret_patterns_from_index(repo: &Path, work_tree: &Path) -> Result<()> {
     let patterns = secret_pathspecs();
-    let mut arguments: Vec<&str> = vec!["rm", "-r", "--cached", "--ignore-unmatch", "--quiet", "--"];
+    let mut arguments: Vec<&str> = vec!["rm", "-r", "--cached", "--ignore-unmatch", "--quiet", "-f", "--"];
     arguments.extend(patterns.iter().map(String::as_str));
     let output = git(repo, work_tree, &arguments)?;
     if !output.status.success() {
@@ -472,6 +479,75 @@ fn parse_name_status(text: &str) -> Vec<CheckpointChange> {
         .collect()
 }
 
+/// 仅支持 `*` 的通配匹配（任意字符序列）。敏感模式均无斜杠，等价于
+/// gitignore 对 basename 的匹配语义。
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let text: Vec<char> = text.chars().collect();
+    let (mut p, mut t, mut star, mut mark) = (0usize, 0usize, None, 0usize);
+    while t < text.len() {
+        if p < pattern.len() && pattern[p] == text[t] {
+            p += 1;
+            t += 1;
+        } else if p < pattern.len() && pattern[p] == '*' {
+            star = Some(p);
+            mark = t;
+            p += 1;
+        } else if let Some(star_at) = star {
+            p = star_at + 1;
+            mark += 1;
+            t = mark;
+        } else {
+            return false;
+        }
+    }
+    while p < pattern.len() && pattern[p] == '*' {
+        p += 1;
+    }
+    p == pattern.len()
+}
+
+/// path 是否命中敏感文件模式：模式均无斜杠 → 字面 = basename 精确匹配，
+/// 含 `*` 的按 basename 通配（任意深度）。
+fn secret_path_matches(path: &str) -> bool {
+    let basename = path.rsplit('/').next().unwrap_or(path);
+    SECRET_EXCLUDES.iter().any(|pattern| {
+        if pattern.contains('*') {
+            wildcard_match(pattern, basename)
+        } else {
+            basename == *pattern
+        }
+    })
+}
+
+/// diff --git 段头是否指向敏感文件。按空白切 token、剥 a//b/ 前缀与引号；
+/// 含空格/特殊字符的 C-quoted 路径可能解析不全——此时放行该段（展示层过滤
+/// 是防泄露的第二道，快照侧 exclude/purge 才是第一道），如实记录在案。
+fn diff_section_is_secret(header: &str) -> bool {
+    header
+        .split_whitespace()
+        .map(|token| token.trim_matches('"'))
+        .filter_map(|token| token.strip_prefix("a/").or_else(|| token.strip_prefix("b/")))
+        .any(secret_path_matches)
+}
+
+/// 从 unified diff 文本剔除命中敏感文件模式的整段文件 diff：迁移前打的旧
+/// 快照 tree 里可能仍有秘密原文（purge 只清 index），预览不得把原文带进 UI。
+fn filter_secret_paths_from_patch(patch: &str) -> String {
+    let mut out = String::with_capacity(patch.len());
+    let mut skip = false;
+    for line in patch.lines() {
+        if line.starts_with("diff --git ") {
+            skip = diff_section_is_secret(line);
+        }
+        if !skip {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// 快照与当前执行根的差异预览（即「回滚将撤销的变更」），供 UI 确认前展示。
 pub fn diff_checkpoint(
     ledger_root: &Path,
@@ -489,7 +565,7 @@ pub fn diff_checkpoint(
         // -M 开启 rename 检测，parse_name_status 的 renamed 分支才不是死代码。
         &["diff", "--cached", "--name-status", "-M", "--no-color", &meta.commit],
     )?;
-    let mut patch = git_ok(
+    let raw_patch = git_ok(
         &repo,
         &execution_root,
         // 与 name-status 同开 -M：changes 清单标 renamed 时 patch 也是 rename
@@ -503,6 +579,14 @@ pub fn diff_checkpoint(
             &meta.commit,
         ],
     )?;
+    // legacy 快照（迁移前打的）tree 里可能仍含秘密原文：清单与 patch 都剔除
+    // 命中敏感模式的条目，预览既不带原文上屏，也不谎称「回滚将删除 .env」
+    // （restore 实际保留工作区现有同名文件）。
+    let changes: Vec<CheckpointChange> = parse_name_status(&name_status)
+        .into_iter()
+        .filter(|change| !secret_path_matches(&change.path))
+        .collect();
+    let mut patch = filter_secret_paths_from_patch(&raw_patch);
     let patch_truncated = patch.len() > DIFF_PATCH_LIMIT;
     if patch_truncated {
         let mut end = DIFF_PATCH_LIMIT;
@@ -514,7 +598,7 @@ pub fn diff_checkpoint(
     }
     Ok(CheckpointDiff {
         checkpoint: meta,
-        changes: parse_name_status(&name_status),
+        changes,
         patch,
         patch_truncated,
     })
@@ -673,8 +757,9 @@ mod tests {
             .unwrap_or(false)
     }
 
-    /// 敏感文件 exclude 语义：.env（任意深度）/私钥本体不进快照；
-    /// .env.example、id_rsa.pub 等示例/公钥照常进快照。
+    /// 敏感文件 exclude 语义：.env（任意深度，gitignore 语义的 exclude 文件
+    /// 本就在任意深度生效）/私钥本体不进快照；.env.example、id_rsa.pub 等
+    /// 示例/公钥照常进快照。本测试锚定 exclude 集合的回归。
     #[test]
     fn secret_files_are_excluded_but_examples_and_public_keys_are_tracked() {
         if !git_available() {
@@ -705,6 +790,9 @@ mod tests {
 
     /// 存量仓库一次性迁移：升级前被强制跟踪的敏感文件（含子目录深度）被
     /// 清出影子 index，普通文件不受影响，迁移成功后写 marker。
+    /// 覆盖迁移主战场：index 里的秘密是旧内容、磁盘上是新内容（用户上次
+    /// 快照后改过）——带 -f 的 rm --cached 必须照样成功（其 up-to-date 检查
+    /// 不带 -f 时会把 lstat 打到进程 cwd 上，成败取决于启动目录）。
     #[test]
     fn migration_purges_previously_tracked_secrets_at_any_depth() {
         if !git_available() {
@@ -720,12 +808,17 @@ mod tests {
         fs::create_dir_all(&repo).unwrap();
         git_ok(&repo, exec.path(), &["init"]).unwrap();
         git_ok(&repo, exec.path(), &["add", "-f", ".env", "sub/.env", "ok.txt"]).unwrap();
+        // 迁移主战场：快照后用户改了秘密文件，index 与工作区内容不同。
+        exec.write(".env", "SECRET=changed\n");
+        exec.write("sub/.env", "SECRET=changed-too\n");
 
         ensure_repo(ledger.path(), exec.path()).unwrap();
         let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
         assert!(!tracked.lines().any(|line| line == ".env" || line == "sub/.env"));
         assert!(tracked.lines().any(|line| line == "ok.txt"));
         assert!(repo.join("info").join("secret-excludes-v1").is_file());
+        // 工作区文件绝不被迁移触碰。
+        assert_eq!(exec.read(".env").as_deref(), Some("SECRET=changed\n"));
     }
 
     /// 迁移前打的旧快照 tree 里含 .env：read-tree 会把它装回 index（复活），
@@ -798,6 +891,74 @@ mod tests {
             "工作区现有 .env 不得被恢复流程触碰"
         );
         assert_eq!(exec.read("ok.txt").as_deref(), Some("v1\n"));
+    }
+
+    /// legacy 快照（迁移前打的，tree 含 .env）的 diff 预览：清单与 patch 都
+    /// 不得带敏感条目/秘密原文上屏；普通文件变更照常展示。
+    #[test]
+    fn diff_preview_filters_secret_paths_from_legacy_snapshot() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("difffilter-ledger");
+        let exec = TestDir::new("difffilter-exec");
+        exec.write("ok.txt", "v1\n");
+        exec.write(".env", "SECRET=old\n");
+        // 同 restore 测试：手工构造含秘密的 legacy 快照并登记。
+        let repo = repo_dir(ledger.path());
+        fs::create_dir_all(&repo).unwrap();
+        git_ok(&repo, exec.path(), &["init"]).unwrap();
+        git_ok(&repo, exec.path(), &["config", "core.autocrlf", "false"]).unwrap();
+        git_ok(&repo, exec.path(), &["add", "-f", "ok.txt", ".env"]).unwrap();
+        let tree = git_ok(&repo, exec.path(), &["write-tree"]).unwrap().trim().to_string();
+        let commit = git_ok(
+            &repo,
+            exec.path(),
+            &[
+                "-c",
+                "user.name=Pinvou",
+                "-c",
+                "user.email=pinvou@localhost",
+                "commit-tree",
+                &tree,
+                "-m",
+                "legacy snapshot",
+            ],
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        git_ok(&repo, exec.path(), &["update-ref", "refs/checkpoints/c1-1", &commit]).unwrap();
+        save_index(
+            ledger.path(),
+            &CheckpointIndex {
+                version: 1,
+                entries: vec![CheckpointMeta {
+                    id: "c1-1".into(),
+                    turn: Some(1),
+                    kind: CheckpointKind::Turn,
+                    label: "legacy".into(),
+                    commit,
+                    created_at: 0,
+                }],
+            },
+        )
+        .unwrap();
+
+        // 当前状态：ok.txt 改了，.env 也改了（purge 后不在 index，快照→当前
+        // 的原始 diff 会显示 D .env 且 patch 带 SECRET=old 原文）。
+        exec.write("ok.txt", "v2\n");
+        exec.write(".env", "SECRET=current\n");
+        let diff = diff_checkpoint(ledger.path(), exec.path(), "c1-1").unwrap();
+        assert!(
+            diff.changes.iter().all(|change| change.path != ".env"),
+            "敏感条目不得出现在变更清单: {:?}",
+            diff.changes
+        );
+        assert!(diff.changes.iter().any(|change| change.path == "ok.txt"));
+        assert!(!diff.patch.contains("SECRET=old"), "patch 不得带秘密原文");
+        assert!(!diff.patch.contains("SECRET=current"));
+        assert!(diff.patch.contains("ok.txt"));
     }
 
     /// 按 id 作废「未成活」快照：条目与 ref 都移除；不存在幂等 false；
