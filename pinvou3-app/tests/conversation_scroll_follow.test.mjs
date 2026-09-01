@@ -268,6 +268,14 @@ try {
   });
   assert.equal(clampedTransition.following, false,
     'a delayed shrink-clamp scroll event must not resume following for a history reader');
+  const followedShrink = transitionConversationScrollState({
+    scrollElement: shrinkClamped,
+    following: true,
+    previousScrollTop: clampedMeasurement.scrollTop,
+    previousScrollHeight: clampedMeasurement.scrollHeight,
+  });
+  assert.equal(followedShrink.following, true,
+    'a shrink-clamp scroll event while following must keep pinning instead of pausing the follower');
 
   console.log('conversation_scroll_follow: ok');
 } finally {
