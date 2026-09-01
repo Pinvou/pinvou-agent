@@ -3495,7 +3495,9 @@ mod tests {
     /// (the measured dead samples of former hook segments 3/4) plus the
     /// live-hook coverage that segment 1/2 used to provide via substring —
     /// sensitive-directory child files and exfil sources (the collaborator
-    /// audit samples) — under Never/YOLO semantics.
+    /// audit samples) — and the v2 faces (arg-position readers, find -name
+    /// enumeration, persistence writes) under Never/YOLO semantics, with the
+    /// rotation/config allowances kept open.
     #[test]
     fn session_exec_policy_denies_migrated_hook_targets_under_bash_tool() {
         let bridge = fixture_bridge();
@@ -3537,6 +3539,12 @@ mod tests {
             "cat ~/.ssh/config",
             "cat ~/.kube/config",
             "cp ~/.ssh/id_rsa /tmp/x",
+            // v2 phase-2 faces.
+            "grep secret ~/.kube/config",
+            "find ~ -name id_rsa",
+            "tee -a ~/.bashrc",
+            "dd if=/dev/zero of=~/.ssh/authorized_keys",
+            "mkfs.ext4 /dev/sda",
         ] {
             let d = check(cmd);
             assert!(
@@ -3553,9 +3561,13 @@ mod tests {
                 d.requirement
             );
         }
-        // Ordinary commands are unaffected.
+        // Ordinary commands and the deliberate allowances are unaffected.
         assert!(check("cat README.md").allow);
         assert!(check("git status").allow);
+        assert!(check("chmod 600 ~/.ssh/id_rsa").allow);
+        assert!(check("git config --global user.name").allow);
+        assert!(check("cp /tmp/new ~/.ssh/authorized_keys").allow);
+        assert!(check("grep id_rsa docs/notes.md").allow);
     }
 
     #[test]
