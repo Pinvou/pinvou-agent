@@ -1,4 +1,4 @@
-const { createReadStream, existsSync, statSync } = require('fs');
+const { createReadStream, existsSync, readdirSync, statSync } = require('fs');
 const { createServer } = require('http');
 const { extname, isAbsolute, join, relative, resolve } = require('path');
 
@@ -15,10 +15,45 @@ const mime = {
   '.webp': 'image/webp',
 };
 
+// An existing but outdated dist silently renders the previous UI and produces
+// confusing selector-miss failures (the "UI build not found" error above only
+// covers a fully missing dist). Reject the default dist when any file under
+// src/ is newer than dist/index.html — a rebase or branch switch after the
+// last build is enough to trigger it. Explicit PINVOU3_UI_TEST_ROOT roots are
+// exempt: their owner controls freshness (e.g. hand-written fixtures).
+function assertFreshBuild() {
+  if (process.env.PINVOU3_UI_TEST_ROOT) return;
+  const builtAt = statSync(join(root, 'index.html')).mtimeMs;
+  let newestSource = null;
+  let newestMtime = 0;
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(path);
+        continue;
+      }
+      const mtime = statSync(path).mtimeMs;
+      if (mtime > newestMtime) {
+        newestMtime = mtime;
+        newestSource = path;
+      }
+    }
+  };
+  walk(resolve(__dirname, '../src'));
+  if (newestMtime > builtAt) {
+    throw new Error(
+      `UI build is stale: ${relative(resolve(__dirname, '..'), newestSource)} is newer than ` +
+        'dist/index.html; run `npm run build:ui` before browser smoke tests'
+    );
+  }
+}
+
 function startUiTestServer() {
   if (!existsSync(join(root, 'index.html'))) {
     throw new Error('UI build not found; run `npm run build:ui` before browser smoke tests');
   }
+  assertFreshBuild();
   return new Promise((resolveReady, reject) => {
     const server = createServer((req, res) => {
       const pathname = decodeURIComponent(new URL(req.url || '/', 'http://127.0.0.1').pathname);
