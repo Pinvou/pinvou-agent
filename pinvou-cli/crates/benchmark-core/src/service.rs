@@ -217,6 +217,7 @@ where
             .filter(|task| runnable.contains(task.task_id()))
         {
             store.mark_running(task.task_id())?;
+            let task_started = std::time::Instant::now();
             let outcome = match self.runner.run_task(task, &context).await {
                 Ok(outcome) => outcome,
                 Err(error) => {
@@ -234,7 +235,7 @@ where
                         },
                         None,
                         vec![],
-                        0,
+                        task_started.elapsed().as_millis() as u64,
                     )
                     .with_failure_category(if timeout {
                         SafeFailureCategory::Timeout
@@ -243,10 +244,30 @@ where
                     } else {
                         SafeFailureCategory::Backend
                     });
-                    if error.code() == "missing_final_answer" {
+                    if error.code() == "task_timeout" {
+                        outcome.with_failure_reason(crate::SafeFailureReason::TaskTimeout)
+                    } else if error.code() == "missing_final_answer" {
                         outcome.with_failure_reason(crate::SafeFailureReason::MissingFinalAnswer)
+                    } else if error.code() == "private_output_resolution_failed" {
+                        outcome.with_failure_reason(
+                            crate::SafeFailureReason::PrivateOutputResolutionFailed,
+                        )
+                    } else if error.code() == "attachment_resolution_failed" {
+                        outcome
+                            .with_failure_category(SafeFailureCategory::Infrastructure)
+                            .with_failure_reason(
+                                crate::SafeFailureReason::AttachmentResolutionFailed,
+                            )
+                    } else if error.code() == "backend_prepare_failed" {
+                        outcome.with_failure_reason(crate::SafeFailureReason::BackendPrepareFailed)
+                    } else if error.code() == "backend_close_failed" {
+                        outcome.with_failure_reason(crate::SafeFailureReason::BackendCloseFailed)
                     } else {
                         outcome
+                            .with_failure_category(SafeFailureCategory::Infrastructure)
+                            .with_failure_reason(
+                                crate::SafeFailureReason::IntegrationLifecycleFailed,
+                            )
                     }
                 }
             };

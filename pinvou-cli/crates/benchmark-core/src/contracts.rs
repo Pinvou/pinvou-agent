@@ -268,6 +268,15 @@ pub struct ToolObservation {
     pub canonical_name: String,
     pub failed: bool,
     pub elapsed_ms: u64,
+    pub failure_code: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelRequestObservation {
+    pub request_duration_ms: u64,
+    pub ttft_ms: Option<u64>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -281,7 +290,21 @@ pub enum SafeFailureCategory {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SafeFailureReason {
+    TaskTimeout,
     MissingFinalAnswer,
+    AgentTurnFailed,
+    AgentToolFailed,
+    ModelContextLimit,
+    ModelRateLimited,
+    ModelRequestTimeout,
+    ModelTransportFailed,
+    ModelProtocolFailed,
+    AttachmentResolutionFailed,
+    AttachmentStagingFailed,
+    BackendPrepareFailed,
+    BackendCloseFailed,
+    PrivateOutputResolutionFailed,
+    IntegrationLifecycleFailed,
 }
 
 #[derive(Clone, Debug)]
@@ -296,6 +319,7 @@ pub struct TaskOutcome {
     failure_category: Option<SafeFailureCategory>,
     failure_reason: Option<SafeFailureReason>,
     tool_observations: Vec<ToolObservation>,
+    model_request_observations: Vec<ModelRequestObservation>,
     private_output: Option<SecretOutput>,
 }
 impl TaskOutcome {
@@ -317,6 +341,7 @@ impl TaskOutcome {
             failure_category: None,
             failure_reason: None,
             tool_observations: Vec::new(),
+            model_request_observations: Vec::new(),
             private_output: None,
         }
     }
@@ -365,6 +390,16 @@ impl TaskOutcome {
     }
     pub fn tool_observations(&self) -> &[ToolObservation] {
         &self.tool_observations
+    }
+    pub fn with_model_request_observations(
+        mut self,
+        observations: Vec<ModelRequestObservation>,
+    ) -> Self {
+        self.model_request_observations = observations;
+        self
+    }
+    pub fn model_request_observations(&self) -> &[ModelRequestObservation] {
+        &self.model_request_observations
     }
     pub fn with_private_output(mut self, output: SecretOutput) -> Self {
         self.private_output = Some(output);

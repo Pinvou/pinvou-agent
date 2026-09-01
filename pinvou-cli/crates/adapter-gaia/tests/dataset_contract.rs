@@ -500,7 +500,7 @@ fn scorer_returns_official_compatible_aggregate_only_for_complete_level1_coverag
 }
 
 #[test]
-fn scorer_preserves_evaluated_and_correct_counts_for_partial_runs() {
+fn scorer_counts_terminal_failures_as_incorrect_complete_coverage() {
     let snapshot = TempSnapshot::new();
     write_fixture(snapshot.path(), GAIA_DATASET_REVISION, &valid_rows(), None);
     let dataset = Arc::new(verify_dataset(snapshot.path()).unwrap());
@@ -531,11 +531,11 @@ fn scorer_preserves_evaluated_and_correct_counts_for_partial_runs() {
         .unwrap();
 
     let report = adapter.score(&run).unwrap();
-    assert_eq!(report.evaluated(), 1);
+    assert_eq!(report.evaluated(), 2);
     assert_eq!(report.correct(), 1);
-    assert!(!report.is_complete());
-    assert!(!report.is_official_dataset_compatible());
-    assert_eq!(report.comparable_accuracy(), None);
+    assert!(report.is_complete());
+    assert!(report.is_official_dataset_compatible());
+    assert_eq!(report.comparable_accuracy(), Some(0.5));
 }
 
 #[test]
@@ -568,9 +568,9 @@ fn scorer_fails_closed_for_incomplete_unknown_duplicate_or_unavailable_predictio
         ],
     ));
     partial(&CompletedRun::new(
-        "not-completed",
+        "not-terminal",
         vec![
-            TaskOutcome::new("safe-task-1", TaskStatus::Failed, None, vec![], 1),
+            TaskOutcome::new("safe-task-1", TaskStatus::Running, None, vec![], 1),
             run.outcomes()[1].clone(),
         ],
     ));

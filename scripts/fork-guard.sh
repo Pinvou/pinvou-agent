@@ -6,8 +6,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-PUBLISHED_HEAD="9c5f4f19b0acbc960889778a5873c7fb038b1378"
-PUBLISHED_COMMITS=36
+PUBLISHED_HEAD="f853f8f1566c57e6be40d5439a222a932aa79ef5"
+PUBLISHED_COMMITS=37
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -17,21 +17,21 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 r12 公开四主题基线拓扑 ──"
+bold "── 第 0 层：v0.9.5 r13 公开四主题基线拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
   expected_commits="$PUBLISHED_COMMITS"
-  green "  ✓ CodeWhale gitlink 指向 r12 四主题公开基线 $PUBLISHED_HEAD"
+  green "  ✓ CodeWhale gitlink 指向 r13 四主题公开基线 $PUBLISHED_HEAD"
 else
   expected_commits=""
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r12 公开 head $PUBLISHED_HEAD"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r13 公开 head $PUBLISHED_HEAD"
   fail=1
 fi
 
 if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null; then
-  green "  ✓ r12 公开基线继承官方 v0.9.5"
+  green "  ✓ 当前公开 gitlink 继承官方 v0.9.5"
 else
-  red "  ✗ r12 公开基线未继承官方 v0.9.5 $EXPECTED_UPSTREAM"
+  red "  ✗ 当前 gitlink 未继承官方 v0.9.5 $EXPECTED_UPSTREAM"
   fail=1
 fi
 
@@ -39,7 +39,7 @@ commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev
 if [[ -n "$expected_commits" && "$commit_count" == "$expected_commits" ]]; then
   green "  ✓ v0.9.5 之上 $expected_commits 个登记提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r12 合法拓扑应为 ${expected_commits:-29}"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，登记拓扑应为 ${expected_commits:-37}"
   fail=1
 fi
 
@@ -101,10 +101,6 @@ fingerprints=(
   "T2|禁用 MCP server 从全部 pool 面消失 |CodeWhale/crates/tui/src/mcp/tests.rs|fn forkguard_mcp_pool_denied_server_disappears_from_every_surface"
   "T2|子智能体不得绕过 MCP 禁用继承       |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_spawn_request_inherit_disallowed_tools_opt_out_not_honored"
   "T2|Shell 跨 poll 保持 UTF-8 解码状态  |CodeWhale/crates/tui/src/tools/shell/output.rs|fn forkguard_shell_output_decoder_preserves_utf8_across_poll_boundaries"
-  "T2|API 后端链尾兜底为 Bing            |CodeWhale/crates/tui/src/tools/web/backend.rs|fn forkguard_api_provider_chain_tail_is_bing"
-  "T2|厂商原生搜索精确路由门控          |CodeWhale/crates/config/src/route/capabilities.rs|documented_server_side_web_search_for_route"
-  "T2|Kimi K3 Formula 搜索适配          |CodeWhale/crates/tui/src/client/provider_native_search/kimi.rs|WEB_SEARCH_FORMULA_URI"
-  "T2|全链失败建议配置 API 搜索后端      |CodeWhale/crates/tui/src/tools/web/backend.rs|configure an API-backed [search] provider"
 
   "T3|ambient project authority 密封       |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_runtime_loader_ignores_ambient_project_authority"
   "T3|Permissions 100 KiB 窄例外回归      |CodeWhale/crates/tui/src/prompts.rs|fn forkguard_instruction_fragment_preserves_content_beyond_default_cap"
@@ -131,7 +127,6 @@ fingerprints=(
   "T2|受限轮后子智能体完成等待新消息      |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_turn_defers_idle_subagent_completion_until_new_message"
   "T2|只读轮次启用 Shell 加固上下文       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_agent_uses_hardened_read_only_shell_context"
   "T2|受限轮后 Shell 唤醒等待新消息       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_turn_defers_idle_shell_wake_until_new_message"
-
   "APP|产品白名单复用原生 allowed_tools   |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names())"
   "APP|会话工具开关走动态禁用整形          |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn shape_disallowed_tools("
   "APP|v0.9.5 subagent state root 透传     |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|cfg.subagent_state_root = Some(roots.ledger);"
@@ -153,6 +148,20 @@ fingerprints=(
   "APP|拒绝编辑终态触发权威历史回滚        |pinvou3-app/src-tauri/src/features/assistant/engine.rs|\"operation_rejected\": operation_rejected"
 )
 
+# r13 同时包含 r12 搜索边界与正式发布的 GAIA 评测隔离扩展。
+fingerprints+=(
+  "T2|API 后端链尾兜底为 Bing            |CodeWhale/crates/tui/src/tools/web/backend.rs|fn forkguard_api_provider_chain_tail_is_bing"
+  "T2|厂商原生搜索精确路由门控          |CodeWhale/crates/config/src/route/capabilities.rs|documented_server_side_web_search_for_route"
+  "T2|Kimi K3 Formula 搜索适配          |CodeWhale/crates/tui/src/client/provider_native_search/kimi.rs|WEB_SEARCH_FORMULA_URI"
+  "T2|全链失败建议配置 API 搜索后端      |CodeWhale/crates/tui/src/tools/web/backend.rs|configure an API-backed [search] provider"
+  "T2|评测控制默认关闭且显式启用          |CodeWhale/crates/tui/src/core/ops.rs|fn forkguard_benchmark_controls_are_explicit_and_default_off"
+  "T2|评测只修复无歧义只读调用            |CodeWhale/crates/tui/src/core/engine/turn_loop.rs|fn forkguard_benchmark_repairs_only_unambiguous_read_actions"
+  "T2|评测兼容修复受行为测试约束          |CodeWhale/crates/tui/src/core/engine/turn_loop.rs|fn forkguard_benchmark_repairs_read_schema_and_attachments"
+  "T2|评测工具预算截断受轮次测试约束      |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_benchmark_budget_truncates_batch_and_clears_followup_tool_surface"
+  "T2|评测 final-only 熔断有界            |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_benchmark_final_only_rejects_repeated_tool_only_responses"
+  "T2|评测参数修复经真实轮次执行          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_benchmark_turn_repairs_file_aliases_before_execution"
+)
+
 for fp in "${fingerprints[@]}"; do
   IFS='|' read -r theme desc file pat <<<"$fp"
   if grep -qF -- "$pat" "$REPO/$file" 2>/dev/null; then
@@ -172,10 +181,13 @@ fi
 echo
 bold "── 第 2 层：CodeWhale forkguard 回归 ──"
 ( cd "$TUI" && cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1 ) || fail=1
+( cd "$TUI" && cargo test -p codewhale-tui --lib --locked --features benchmark-eval-controls forkguard_benchmark_ -- --test-threads=1 ) || fail=1
 
 echo
 bold "── 第 3 层：pinvou3-app forkguard 回归 ──"
 ( cd "$APP" && cargo test --lib --locked forkguard_ -- --test-threads=1 ) || fail=1
+( cd "$APP" && cargo test --lib --locked --features benchmark-hooks eval_send_message_op_isolated_from_gui_authority_and_installs_exact_policy -- --test-threads=1 ) || fail=1
+( cd "$APP" && cargo test --lib --locked --features benchmark-hooks features::assistant::product_runtime::headless_bridge::tests -- --test-threads=1 ) || fail=1
 
 echo
 if [[ $fail -eq 0 ]]; then

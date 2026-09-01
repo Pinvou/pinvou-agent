@@ -57,6 +57,8 @@ struct PersistedOutcome {
     #[serde(default)]
     failure_reason: Option<PersistedFailureReason>,
     tool_observations: Vec<PersistedToolObservation>,
+    #[serde(default)]
+    model_request_observations: Vec<PersistedModelRequestObservation>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -64,6 +66,16 @@ struct PersistedToolObservation {
     canonical_name: String,
     failed: bool,
     elapsed_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    failure_code: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PersistedModelRequestObservation {
+    request_duration_ms: u64,
+    ttft_ms: Option<u64>,
+    input_tokens: u64,
+    output_tokens: u64,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -100,7 +112,21 @@ enum PersistedFailure {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum PersistedFailureReason {
+    TaskTimeout,
     MissingFinalAnswer,
+    AgentTurnFailed,
+    AgentToolFailed,
+    ModelContextLimit,
+    ModelRateLimited,
+    ModelRequestTimeout,
+    ModelTransportFailed,
+    ModelProtocolFailed,
+    AttachmentResolutionFailed,
+    AttachmentStagingFailed,
+    BackendPrepareFailed,
+    BackendCloseFailed,
+    PrivateOutputResolutionFailed,
+    IntegrationLifecycleFailed,
 }
 
 impl PersistedOutcome {
@@ -138,6 +164,18 @@ impl PersistedOutcome {
                     canonical_name: tool.canonical_name,
                     failed: tool.failed,
                     elapsed_ms: tool.elapsed_ms,
+                    failure_code: tool.failure_code,
+                })
+                .collect(),
+        )
+        .with_model_request_observations(
+            self.model_request_observations
+                .into_iter()
+                .map(|metric| crate::ModelRequestObservation {
+                    request_duration_ms: metric.request_duration_ms,
+                    ttft_ms: metric.ttft_ms,
+                    input_tokens: metric.input_tokens,
+                    output_tokens: metric.output_tokens,
                 })
                 .collect(),
         );
@@ -160,8 +198,48 @@ impl PersistedOutcome {
         }
         if let Some(reason) = self.failure_reason {
             outcome = outcome.with_failure_reason(match reason {
+                PersistedFailureReason::TaskTimeout => crate::SafeFailureReason::TaskTimeout,
                 PersistedFailureReason::MissingFinalAnswer => {
                     crate::SafeFailureReason::MissingFinalAnswer
+                }
+                PersistedFailureReason::AgentTurnFailed => {
+                    crate::SafeFailureReason::AgentTurnFailed
+                }
+                PersistedFailureReason::AgentToolFailed => {
+                    crate::SafeFailureReason::AgentToolFailed
+                }
+                PersistedFailureReason::ModelContextLimit => {
+                    crate::SafeFailureReason::ModelContextLimit
+                }
+                PersistedFailureReason::ModelRateLimited => {
+                    crate::SafeFailureReason::ModelRateLimited
+                }
+                PersistedFailureReason::ModelRequestTimeout => {
+                    crate::SafeFailureReason::ModelRequestTimeout
+                }
+                PersistedFailureReason::ModelTransportFailed => {
+                    crate::SafeFailureReason::ModelTransportFailed
+                }
+                PersistedFailureReason::ModelProtocolFailed => {
+                    crate::SafeFailureReason::ModelProtocolFailed
+                }
+                PersistedFailureReason::AttachmentResolutionFailed => {
+                    crate::SafeFailureReason::AttachmentResolutionFailed
+                }
+                PersistedFailureReason::AttachmentStagingFailed => {
+                    crate::SafeFailureReason::AttachmentStagingFailed
+                }
+                PersistedFailureReason::BackendPrepareFailed => {
+                    crate::SafeFailureReason::BackendPrepareFailed
+                }
+                PersistedFailureReason::BackendCloseFailed => {
+                    crate::SafeFailureReason::BackendCloseFailed
+                }
+                PersistedFailureReason::PrivateOutputResolutionFailed => {
+                    crate::SafeFailureReason::PrivateOutputResolutionFailed
+                }
+                PersistedFailureReason::IntegrationLifecycleFailed => {
+                    crate::SafeFailureReason::IntegrationLifecycleFailed
                 }
             });
         }
@@ -218,8 +296,48 @@ impl From<&TaskOutcome> for PersistedOutcome {
                 SafeFailureCategory::Cancelled => PersistedFailure::Cancelled,
             }),
             failure_reason: outcome.failure_reason().map(|reason| match reason {
+                crate::SafeFailureReason::TaskTimeout => PersistedFailureReason::TaskTimeout,
                 crate::SafeFailureReason::MissingFinalAnswer => {
                     PersistedFailureReason::MissingFinalAnswer
+                }
+                crate::SafeFailureReason::AgentTurnFailed => {
+                    PersistedFailureReason::AgentTurnFailed
+                }
+                crate::SafeFailureReason::AgentToolFailed => {
+                    PersistedFailureReason::AgentToolFailed
+                }
+                crate::SafeFailureReason::ModelContextLimit => {
+                    PersistedFailureReason::ModelContextLimit
+                }
+                crate::SafeFailureReason::ModelRateLimited => {
+                    PersistedFailureReason::ModelRateLimited
+                }
+                crate::SafeFailureReason::ModelRequestTimeout => {
+                    PersistedFailureReason::ModelRequestTimeout
+                }
+                crate::SafeFailureReason::ModelTransportFailed => {
+                    PersistedFailureReason::ModelTransportFailed
+                }
+                crate::SafeFailureReason::ModelProtocolFailed => {
+                    PersistedFailureReason::ModelProtocolFailed
+                }
+                crate::SafeFailureReason::AttachmentResolutionFailed => {
+                    PersistedFailureReason::AttachmentResolutionFailed
+                }
+                crate::SafeFailureReason::AttachmentStagingFailed => {
+                    PersistedFailureReason::AttachmentStagingFailed
+                }
+                crate::SafeFailureReason::BackendPrepareFailed => {
+                    PersistedFailureReason::BackendPrepareFailed
+                }
+                crate::SafeFailureReason::BackendCloseFailed => {
+                    PersistedFailureReason::BackendCloseFailed
+                }
+                crate::SafeFailureReason::PrivateOutputResolutionFailed => {
+                    PersistedFailureReason::PrivateOutputResolutionFailed
+                }
+                crate::SafeFailureReason::IntegrationLifecycleFailed => {
+                    PersistedFailureReason::IntegrationLifecycleFailed
                 }
             }),
             tool_observations: outcome
@@ -229,6 +347,17 @@ impl From<&TaskOutcome> for PersistedOutcome {
                     canonical_name: tool.canonical_name.clone(),
                     failed: tool.failed,
                     elapsed_ms: tool.elapsed_ms,
+                    failure_code: tool.failure_code.clone(),
+                })
+                .collect(),
+            model_request_observations: outcome
+                .model_request_observations()
+                .iter()
+                .map(|metric| PersistedModelRequestObservation {
+                    request_duration_ms: metric.request_duration_ms,
+                    ttft_ms: metric.ttft_ms,
+                    input_tokens: metric.input_tokens,
+                    output_tokens: metric.output_tokens,
                 })
                 .collect(),
         }

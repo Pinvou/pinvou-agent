@@ -75,7 +75,10 @@ pub(crate) fn score_dataset(dataset: &GaiaDataset, run: &CompletedRun) -> Offici
             return partial(0, 0);
         }
         match outcome.status() {
-            TaskStatus::Failed | TaskStatus::Timeout | TaskStatus::Cancelled => continue,
+            TaskStatus::Failed | TaskStatus::Timeout | TaskStatus::Cancelled => {
+                evaluated += 1;
+                continue;
+            }
             TaskStatus::Planned | TaskStatus::Running => return partial(0, 0),
             TaskStatus::Completed => {}
         }

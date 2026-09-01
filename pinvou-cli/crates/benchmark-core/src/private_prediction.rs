@@ -10,8 +10,10 @@ use zeroize::Zeroizing;
 use crate::security::{validate_component, validate_safe_text};
 use crate::{BenchmarkError, PredictionHandle, Result, TaskOutcome};
 
-const MAGIC: &[u8; 4] = b"PVP2";
-const SCHEMA_VERSION: u8 = 2;
+const CURRENT_MAGIC: &[u8; 4] = b"PVP3";
+const CURRENT_SCHEMA_VERSION: u8 = 3;
+const LEGACY_MAGIC: &[u8; 4] = b"PVP2";
+const LEGACY_SCHEMA_VERSION: u8 = 2;
 const INTEGRITY_BYTES: usize = 32;
 const MAX_PRIVATE_PREDICTION_BYTES: usize = 1024 * 1024;
 const MAX_ENVELOPE_BYTES: u64 = 2 * 1024 * 1024;
@@ -280,7 +282,7 @@ impl ScorerView {
             prediction_type,
             handle.expose_to_adapter(),
         )?;
-        let (content_type, binding, integrity, protected) = decode_envelope(&envelope)?;
+        let (_version, content_type, binding, integrity, protected) = decode_envelope(&envelope)?;
         if binding != expected_binding {
             return Err(corrupt());
         }
@@ -333,8 +335,8 @@ fn encode_envelope(
         return Err(corrupt());
     }
     let mut result = Vec::with_capacity(capacity);
-    result.extend_from_slice(MAGIC);
-    result.push(SCHEMA_VERSION);
+    result.extend_from_slice(CURRENT_MAGIC);
+    result.push(CURRENT_SCHEMA_VERSION);
     result.push(content_type.tag());
     result.extend_from_slice(&binding_len.to_le_bytes());
     result.extend_from_slice(&protected_len.to_le_bytes());
@@ -344,13 +346,32 @@ fn encode_envelope(
     Ok(result)
 }
 
-type DecodedEnvelope<'a> = (PrivatePredictionContentType, &'a [u8], &'a [u8], &'a [u8]);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EnvelopeVersion {
+    LegacyV2,
+    CurrentV3,
+}
+
+type DecodedEnvelope<'a> = (
+    EnvelopeVersion,
+    PrivatePredictionContentType,
+    &'a [u8],
+    &'a [u8],
+    &'a [u8],
+);
 
 fn decode_envelope(bytes: &[u8]) -> Result<DecodedEnvelope<'_>> {
     let header_len = 12 + INTEGRITY_BYTES;
-    if bytes.len() < header_len || &bytes[..4] != MAGIC || bytes[4] != SCHEMA_VERSION {
+    if bytes.len() < header_len {
         return Err(corrupt());
     }
+    let version = if &bytes[..4] == CURRENT_MAGIC && bytes[4] == CURRENT_SCHEMA_VERSION {
+        EnvelopeVersion::CurrentV3
+    } else if &bytes[..4] == LEGACY_MAGIC && bytes[4] == LEGACY_SCHEMA_VERSION {
+        EnvelopeVersion::LegacyV2
+    } else {
+        return Err(corrupt());
+    };
     let content_type = PrivatePredictionContentType::from_tag(bytes[5])?;
     let binding_len = usize::from(u16::from_le_bytes([bytes[6], bytes[7]]));
     let protected_len = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
@@ -360,6 +381,7 @@ fn decode_envelope(bytes: &[u8]) -> Result<DecodedEnvelope<'_>> {
         return Err(corrupt());
     }
     Ok((
+        version,
         content_type,
         &bytes[header_len..binding_end],
         &bytes[12..header_len],
@@ -725,6 +747,103 @@ mod tests {
                 b"other-binding",
                 b"answer-sentinel",
             )
+        );
+    }
+
+    #[test]
+    fn new_envelopes_use_an_unambiguous_v3_header() {
+        let run = TestRun::new("run-v3-header");
+        let store = PrivatePredictionStore::create(run.path(), "run-v3-header").unwrap();
+        let handle = store
+            .put(
+                "task-1",
+                "gaia-final/v1",
+                PrivatePredictionPayload::utf8("answer-sentinel").unwrap(),
+            )
+            .unwrap();
+        let envelope = fs::read(store.blob_path(&handle)).unwrap();
+        assert_eq!(&envelope[..4], CURRENT_MAGIC);
+        assert_eq!(envelope[4], CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn reader_accepts_strictly_verified_v2_envelopes() {
+        let run = TestRun::new("run-v2-compat");
+        let store = PrivatePredictionStore::create(run.path(), "run-v2-compat").unwrap();
+        let plaintext = b"answer-sentinel";
+        let handle = PredictionHandle::new(random_hex::<32>());
+        let binding = binding_bytes(
+            "run-v2-compat",
+            "task-v2-digest",
+            "gaia-final/v1",
+            handle.expose_to_adapter(),
+        )
+        .unwrap();
+        let protected = protect(plaintext, &binding).unwrap();
+        let integrity = integrity_digest(
+            PrivatePredictionContentType::Utf8TextV1,
+            &binding,
+            &protected,
+        );
+        let mut envelope = encode_envelope(
+            PrivatePredictionContentType::Utf8TextV1,
+            &binding,
+            &integrity,
+            &protected,
+        )
+        .unwrap();
+        envelope[..4].copy_from_slice(LEGACY_MAGIC);
+        envelope[4] = LEGACY_SCHEMA_VERSION;
+        store.publish_blob(&handle, &envelope).unwrap();
+
+        let payload = store
+            .scorer_view()
+            .resolve_bound("task-v2-digest", "gaia-final/v1", &handle)
+            .unwrap();
+        assert_eq!(payload.expose_to_scorer(), plaintext);
+    }
+
+    #[test]
+    fn v2_envelope_digesting_the_wrong_payload_is_rejected() {
+        // Legacy v2 writers derived the integrity digest from the plaintext
+        // instead of the protected bytes. Such an envelope is self-consistent
+        // but binds the wrong payload, and the strict reader must reject it
+        // rather than fall back to accepting it.
+        let run = TestRun::new("run-v2-legacy-digest");
+        let store = PrivatePredictionStore::create(run.path(), "run-v2-legacy-digest").unwrap();
+        let plaintext = b"answer-sentinel";
+        let handle = PredictionHandle::new(random_hex::<32>());
+        let binding = binding_bytes(
+            "run-v2-legacy-digest",
+            "task-v2-wrong-digest",
+            "gaia-final/v1",
+            handle.expose_to_adapter(),
+        )
+        .unwrap();
+        let protected = protect(plaintext, &binding).unwrap();
+        let legacy_integrity = integrity_digest(
+            PrivatePredictionContentType::Utf8TextV1,
+            &binding,
+            b"payload-the-digest-was-computed-over",
+        );
+        let mut envelope = encode_envelope(
+            PrivatePredictionContentType::Utf8TextV1,
+            &binding,
+            &legacy_integrity,
+            &protected,
+        )
+        .unwrap();
+        envelope[..4].copy_from_slice(LEGACY_MAGIC);
+        envelope[4] = LEGACY_SCHEMA_VERSION;
+        store.publish_blob(&handle, &envelope).unwrap();
+
+        let resolved =
+            store
+                .scorer_view()
+                .resolve_bound("task-v2-wrong-digest", "gaia-final/v1", &handle);
+        assert!(
+            resolved.is_err(),
+            "legacy plaintext-digest envelopes are not compatible"
         );
     }
 

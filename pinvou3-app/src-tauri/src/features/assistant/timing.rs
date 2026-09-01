@@ -466,6 +466,21 @@ pub struct TimelineEvent {
     pub tool_failures: Option<u64>,
     #[cfg(any(feature = "benchmark-hooks", test))]
     pub authorized_tool_catalog: Option<ToolCatalogSummary>,
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_duration_ms: Option<u64>,
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttft_ms: Option<u64>,
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
 }
 
 /// 读取 session 的全部 timeline 事件,按 timestamp 升序。
@@ -537,6 +552,7 @@ fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
             | "first_delta"
             | "tool_call_started"
             | "tool_call_completed"
+            | "model_request_metric"
     );
     #[cfg(not(any(feature = "benchmark-hooks", test)))]
     let is_observation_event = false;
@@ -607,6 +623,16 @@ fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
             .get("authorized_tool_catalog")
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok()),
+        #[cfg(any(feature = "benchmark-hooks", test))]
+        elapsed_ms: v.get("elapsed_ms").and_then(|x| x.as_u64()),
+        #[cfg(any(feature = "benchmark-hooks", test))]
+        request_duration_ms: v.get("request_duration_ms").and_then(|x| x.as_u64()),
+        #[cfg(any(feature = "benchmark-hooks", test))]
+        ttft_ms: v.get("ttft_ms").and_then(|x| x.as_u64()),
+        #[cfg(any(feature = "benchmark-hooks", test))]
+        input_tokens: v.get("input_tokens").and_then(|x| x.as_u64()),
+        #[cfg(any(feature = "benchmark-hooks", test))]
+        output_tokens: v.get("output_tokens").and_then(|x| x.as_u64()),
     })
 }
 

@@ -4,7 +4,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PINVOU_CODEWHALE_PATH="CodeWhale"
 PINVOU_CODEWHALE_URL="https://github.com/Pinvou/CodeWhale.git"
-PINVOU_CODEWHALE_TAG="pinvou-v0.9.5-r12"
+PINVOU_CODEWHALE_TAG="pinvou-v0.9.5-r13"
 
 if [[ $# -ne 0 ]]; then
   echo "unknown argument: $1" >&2

@@ -14,7 +14,13 @@ class BenchmarkIsolationPolicyTests(unittest.TestCase):
         features = manifest.split("[features]", 1)[1].split("[build-dependencies]", 1)[0]
 
         self.assertIn('default = ["local-embed"]', features)
-        self.assertIn('benchmark-hooks = ["dep:agent-backend-api"]', features)
+        self.assertIn(
+            'benchmark-hooks = ["dep:agent-backend-api", "deepseek-tui/benchmark-observability", "deepseek-tui/benchmark-eval-controls"]',
+            features,
+        )
+        codewhale_manifest = self.read("CodeWhale/crates/tui/Cargo.toml")
+        self.assertIn("benchmark-observability = []", codewhale_manifest)
+        self.assertIn("benchmark-eval-controls = []", codewhale_manifest)
         self.assertIn("agent-backend-api = {", manifest)
         self.assertIn("optional = true", manifest)
 

@@ -207,7 +207,7 @@ fn submission_reopened_run_writes_compact_official_jsonl_without_private_inputs(
 }
 
 #[test]
-fn submission_rejects_partial_or_existing_destination_without_overwrite() {
+fn submission_enforces_terminal_complete_runs_and_never_overwrites() {
     let (snapshot, dataset) = verified_fixture();
     let (adapter, runtime, run) = submission_completed_run(&snapshot, Arc::new(dataset));
     let destination = snapshot.path().join("submission.jsonl");
@@ -226,6 +226,21 @@ fn submission_rejects_partial_or_existing_destination_without_overwrite() {
     let rendered = format!("{error:?} {error}");
     assert!(!rendered.contains(snapshot.path().to_string_lossy().as_ref()));
     assert!(!rendered.contains("candidate answer"));
+
+    for status in [TaskStatus::Planned, TaskStatus::Running] {
+        let nonterminal = benchmark_core::CompletedRun::new(
+            "nonterminal",
+            vec![TaskOutcome::new("safe-task-1", status, None, vec![], 1)],
+        );
+        assert_eq!(
+            adapter
+                .write_submission(&nonterminal, &destination)
+                .unwrap_err()
+                .code(),
+            "gaia_submission_not_completed"
+        );
+        assert!(!destination.exists());
+    }
 
     let unknown = benchmark_core::CompletedRun::new(
         "unknown",
@@ -254,13 +269,12 @@ fn submission_rejects_partial_or_existing_destination_without_overwrite() {
             1,
         )],
     );
+    adapter.write_submission(&failed, &destination).unwrap();
     assert_eq!(
-        adapter
-            .write_submission(&failed, &destination)
-            .unwrap_err()
-            .code(),
-        "gaia_submission_not_completed"
+        fs::read_to_string(&destination).unwrap(),
+        "{\"task_id\":\"safe-task-1\",\"model_answer\":\"\"}\n"
     );
+    fs::remove_file(&destination).unwrap();
 
     let prediction_dir = runtime.join("eval/runs/gaia-submission-run/private/predictions");
     let blob = fs::read_dir(prediction_dir)
