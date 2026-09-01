@@ -863,6 +863,61 @@ async function modalWidth(page, headingText) {
   await clickExact(page, '取消');
   await sleep(200);
 
+  // Probe window and credential pass-through (PR #218 round 6): openai_compatible
+  // + a local/private address → thinking depth enters pending "from the moment
+  // the probe is scheduled" (the default four tiers from
+  // localProbeTiersForKind(null) are not exposed, preventing the user from
+  // picking/saving a misleading tier before the endpoint type is known); the
+  // probe_local_server_kind issued after the debounce must carry the form's
+  // apiKey/modelId (authenticated vLLM 401s on /v1/models without credentials,
+  // misjudging generic).
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '云端模型');
+  await sleep(150);
+  await clickExact(page, 'OpenAI Compatible');
+  await sleep(250);
+  const baseUrlInput = await page.evaluateHandle(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const label = dialog && [...dialog.querySelectorAll('label,span')].find(node => (node.textContent || '').trim() === 'API 地址');
+    const row = label && label.closest('div');
+    return row && row.querySelector('input');
+  });
+  await baseUrlInput.type('http://127.0.0.1:8000/v1', { delay: 20 });
+  // Within the < 400ms debounce window: the pending copy must show and no
+  // tier buttons may be offered (pre-fix, probePending was only set in the
+  // timer callback, so the window fell back to the default four tiers).
+  const probeWindow = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const text = dialog ? dialog.innerText : '';
+    const effortRow = [...(dialog ? dialog.querySelectorAll('span') : [])].find(node => (node.textContent || '').trim() === '思考深度');
+    const buttons = effortRow && effortRow.parentElement ? [...effortRow.parentElement.querySelectorAll('button')].map(node => (node.textContent || '').trim()) : [];
+    return {
+      pendingShown: text.includes('正在探测服务类型'),
+      noTiersDuringWindow: buttons.length === 0,
+    };
+  });
+  rec('⑥.5c local-compatible probe window enters pending immediately, default four tiers not exposed',
+    probeWindow.pendingShown && probeWindow.noTiersDuringWindow,
+    JSON.stringify(probeWindow));
+  // After the debounce (400ms) settles: the probe command must be issued and
+  // carry the credential args (empty form key → apiKey:null + edit-mode model
+  // id; create mode modelId:null, with Rust reading the stored credential as
+  // the fallback).
+  await sleep(700);
+  const probeCall = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'probe_local_server_kind');
+    return call && call.args;
+  });
+  rec('⑥.5d probe command carries credential args (apiKey/modelId); authenticated endpoints no longer misjudged as generic',
+    !!probeCall
+      && probeCall.baseUrl === 'http://127.0.0.1:8000/v1'
+      && 'apiKey' in probeCall
+      && 'modelId' in probeCall,
+    JSON.stringify(probeCall));
+  await clickExact(page, '取消');
+  await sleep(200);
+
   await clickExact(page, '添加模型');
   await sleep(300);
   const cloudPickerWidth = await modalWidth(page, '添加模型');

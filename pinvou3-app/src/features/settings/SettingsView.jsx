@@ -17,6 +17,7 @@ import {
   groupModelsForSelector,
   selectorMainLabel,
   reasoningEffortTiersForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort,
+  localProbeTiersForKind, reasoningEffortDisplayForTiers, baseUrlUsesLocalOrPrivate,
 } from './model-catalog.js';
 import { CommunityPanel } from './CommunityPanel.jsx';
 import { COMMUNITY_DISCUSSIONS_URL, COMMUNITY_QQ_GROUP_NAME, COMMUNITY_QQ_GROUP_NUMBER, COMMUNITY_QQ_QR_IMAGE_SRC } from './community-config.js';
@@ -709,7 +710,65 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         : null;
       const isCodingPlan = providerKind === PROVIDER_KIND_CODING_PLAN || (activeProvider && activeProvider.providerKind === PROVIDER_KIND_CODING_PLAN);
       // 当前表单模型可切换的思考深度档位（底座不支持的模型为空 = 不提供切换）。
-      const reasoningEffortTiers = reasoningEffortTiersForModel({ preset, model, vendor, base_url: baseUrl, provider_kind: providerKind }) || [];
+      // 本地/私网 openai_compatible 端点：按 Rust 探测结果下发真实档位
+      // （vllm→四档、ollama→off/high、lmstudio/generic→不支持），避免 UI
+      // 显示档位但 wire 层空操作的「调了个寂寞」。
+      const [probedKind, setProbedKind] = useState(null);
+      const [probePending, setProbePending] = useState(false);
+      const isLocalCompatible = preset === 'openai_compatible' && baseUrlUsesLocalOrPrivate(baseUrl.trim());
+      const probeSupported = bridge.available && !!bridge.models && typeof bridge.models.probeLocalServerKind === 'function';
+      useEffect(() => {
+        if (!isLocalCompatible) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- leaving the local-compatible state must synchronously clear the probe window so stale tiers never render one commit
+          setProbedKind(null);
+          setProbePending(false);
+          return;
+        }
+        let cancelled = false;
+        // Enter pending during the debounce window (round-6 P2): no tiers are
+        // offered from the moment the probe is scheduled (the default four
+        // tiers from localProbeTiersForKind(null) are only the fallback for an
+        // unreachable probe; they must not be exposed during the "probe
+        // incoming" window, or the user could pick/save a misleading tier
+        // before the result is known). An unreachable probe (bridge
+        // unsupported/failed) is reset by then/catch to null + pending=false,
+        // landing on the default four tiers.
+        setProbePending(true);
+        setProbedKind(null);
+        // debounce：base_url 是原始输入 state，不 debounce 时逐键触发探测
+        // （Rust 侧缓存 key 含端口/路径，每个中间态都是新 key、各自串行
+        // 探测最坏 ~12s）。停键 400ms 后才发起一次。
+        const timer = setTimeout(() => {
+          if (probeSupported) {
+            // Credentials share the same source as handleTest: a freshly typed
+            // form key wins, otherwise the saved model id lets Rust read the
+            // stored credential — probing an authenticated vLLM (--api-key)
+            // without a key 401s into generic and falsely reports "thinking
+            // tiers are not supported".
+            bridge.models.probeLocalServerKind(baseUrl.trim(), apiKey.trim(), initial.__new ? null : initial.id)
+              .then((kind) => { if (!cancelled) setProbedKind(kind); })
+              // 探测调用本身失败（命令被拒/版本不支持）≠ 探测出 generic：
+              // 置回 null 走 localProbeTiersForKind 的默认四档，不误报「不支持」。
+              .catch(() => { if (!cancelled) setProbedKind(null); })
+              .finally(() => { if (!cancelled) setProbePending(false); });
+          } else {
+            // web 预览无探测能力：保持默认四档（与旧行为一致），不误报不支持。
+            if (!cancelled) setProbedKind(null);
+            if (!cancelled) setProbePending(false);
+          }
+        }, 400);
+        return () => { cancelled = true; clearTimeout(timer); };
+      }, [isLocalCompatible, baseUrl, apiKey, initial.id, initial.__new, probeSupported]);
+      const reasoningEffortTiers = isLocalCompatible
+        ? (probePending ? [] : (localProbeTiersForKind(probedKind) || []))
+        : (reasoningEffortTiersForModel({ preset, model, vendor, base_url: baseUrl, provider_kind: providerKind }) || []);
+      // Highlight fallback: the form value is normalized against the static
+      // four tiers (stored low/medium keep their values), but once ollama is
+      // probed only the off/high tiers render, so those values would land on
+      // no button; the display maps to the nearest tier while saving still
+      // uses the original form value, so a stored tier survives switching back
+      // to a four-tier endpoint.
+      const reasoningEffortDisplay = reasoningEffortDisplayForTiers(reasoningEffort, reasoningEffortTiers);
       // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
       function normalizeConnectionTestResult(value, isCodingPlanProvider) {
         if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -1578,25 +1637,33 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                 </section>
               )}
               {renderImageInputSection()}
-              {showConfigFields && reasoningEffortTiers.length > 0 && (
+              {(showConfigFields && (reasoningEffortTiers.length > 0 || isLocalCompatible)) && (
                 <section>
                   <div className={formGroup}>
                     <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
                       <span className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{settingsCopy.reasoningEffort}</span>
-                      <div className="ml-auto flex flex-wrap justify-end gap-1">
-                        {reasoningEffortTiers.map(tier => (
-                          <button
-                            key={tier}
-                            type="button"
-                            onClick={() => setReasoningEffort(tier)}
-                            className={`h-7 min-w-[52px] px-3 rounded-full text-[13px] font-medium transition-colors ${
-                              reasoningEffort === tier
-                                ? 'bg-[#007AFF] text-white dark:bg-[#0A84FF]'
-                                : 'bg-[#E5E5EA] text-[#636366] hover:bg-[#D9D9DE] dark:bg-white/[0.07] dark:text-[#C7C7CC] dark:hover:bg-white/[0.12]'
-                            }`}
-                          >{settingsCopy.reasoningEffortTiers[tier] || tier}</button>
-                        ))}
-                      </div>
+                      {reasoningEffortTiers.length > 0 ? (
+                        <div className="ml-auto flex flex-wrap justify-end gap-1">
+                          {reasoningEffortTiers.map(tier => (
+                            <button
+                              key={tier}
+                              type="button"
+                              onClick={() => setReasoningEffort(tier)}
+                              className={`h-7 min-w-[52px] px-3 rounded-full text-[13px] font-medium transition-colors ${
+                                reasoningEffortDisplay === tier
+                                  ? 'bg-[#007AFF] text-white dark:bg-[#0A84FF]'
+                                  : 'bg-[#E5E5EA] text-[#636366] hover:bg-[#D9D9DE] dark:bg-white/[0.07] dark:text-[#C7C7CC] dark:hover:bg-white/[0.12]'
+                              }`}
+                            >{settingsCopy.reasoningEffortTiers[tier] || tier}</button>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className={`ml-auto text-right text-[12px] leading-4 ${probePending ? 'text-[#8A8A8E] dark:text-[#98989D]' : 'text-[#FF9500] dark:text-[#FFB340]'}`}>
+                          {probePending
+                            ? (settingsCopy.reasoningProbePending || '正在探测服务类型…')
+                            : (settingsCopy.reasoningProbeUnsupported || '该端点不支持思考档位调节')}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </section>

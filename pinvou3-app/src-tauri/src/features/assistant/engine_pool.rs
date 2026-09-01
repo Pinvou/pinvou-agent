@@ -46,7 +46,7 @@ use crate::features::assistant::engine::{
 #[cfg(any(feature = "benchmark-hooks", test))]
 use crate::features::assistant::eval::{EvalModelSelection, EvalSuiteModelSnapshot, ModelIdentity};
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
-use crate::features::assistant::platform::bridge::Pinvou3Bridge;
+use crate::features::assistant::platform::bridge::{Pinvou3Bridge, base_url_uses_local_or_private};
 use crate::features::assistant::runtime_model::{
     ModelCredentialMode, PassthroughRuntimeModelProvider, PreparedRuntimeModel,
     RuntimeModelProvider, RuntimeModelRequest,
@@ -985,12 +985,39 @@ impl EnginePool {
     ) -> Pinvou3Bridge {
         bridge.session_model = Some(prepared.model.clone());
         bridge.runtime_model_credential = prepared.credential.clone();
+        // 本地端点（OpenAI 兼容 preset 指向本机/内网服务）：探测服务类型
+        // （Ollama / vLLM / LM Studio / 通用），让思考控制走对应底座 wire 协议。
+        // A probe failure (service not started/timeout/auth failure) is
+        // classified as generic, keeping the existing openai wire route. The
+        // probe request carries a credential from the same origin as real
+        // inference (bridge.api_key()): authenticated vLLM (--api-key) 401s
+        // on /v1/models without credentials, and misclassifying it as a
+        // generic endpoint loses default-off thinking and the vLLM tiers
+        // (inference itself still succeeds with the configured key).
+        if bridge.provider() == "openai" && base_url_uses_local_or_private(&bridge.base_url()) {
+            let api_key = bridge.api_key();
+            bridge.probed_local_kind = Some(
+                crate::core::model_endpoint::probe_local_server_kind(
+                    &bridge.base_url(),
+                    Some(api_key.as_str()),
+                )
+                .await,
+            );
+        }
         // 本地 vLLM:发请求的 model 名以 vLLM 实际 served name 为准(探测 /v1/models),
         // 免去写死 qwen36_35b_256k 与 --served-model-name 不一致的 model_not_found。
-        // 探测失败(vLLM 没起)保持配置值;云端 provider 不探测。
+        // 探测失败(vLLM 没起)保持配置值;云端 provider 不探测。OpenAI 兼容端点
+        // 探测出 vLLM 时同样享受 served name 跟随（provider() 已映射为 "vllm"）。
         if bridge.provider() == "vllm" {
-            let (served, max_len) =
-                crate::features::monitor::probe_vllm_model_info(&bridge.base_url()).await;
+            // The served-name probe carries the same inference-same-origin
+            // credential (authenticated vLLM 401s on /v1/models; on probe
+            // failure the configured model name is kept).
+            let api_key = bridge.api_key();
+            let (served, max_len) = crate::features::monitor::probe_vllm_model_info(
+                &bridge.base_url(),
+                Some(api_key.as_str()),
+            )
+            .await;
             if let Some(served) = served.filter(|_| !pins_scheduled_model) {
                 if let Some(mut model) = bridge.effective_model_owned() {
                     if model.model != served {

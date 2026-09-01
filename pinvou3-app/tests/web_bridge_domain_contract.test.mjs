@@ -330,4 +330,48 @@ cyclic.self = cyclic;
 invokeResponse = async command => command === 'web_access_ingest_file' ? cyclic : null;
 await assert.rejects(api.attachments.addAttachmentByPath('/tmp/cyclic.txt'), /must not contain cycles/);
 
+// probeLocalServerKind 降级契约（PR #218 五审 P2）：web 桥层不得吞错伪造成
+// generic——命令失败（web 白名单不含该命令/老版本桌面）必须 reject，由消费方
+// （SettingsView）catch 后置 null 走 localProbeTiersForKind 默认四档；否则本地
+// vLLM/Ollama 会被误报成「该端点不支持思考档位调节」。
+// Authenticated pass-through contract (PR #218 round-6 P1): apiKey/modelId
+// must travel with the command — authenticated vLLM (--api-key) 401s on
+// /v1/models without credentials, and probing would misclassify the
+// authenticated endpoint as generic.
+invokeResponse = async command => {
+  if (command !== 'probe_local_server_kind') return null;
+  throw new Error('probe_local_server_kind is not allowed');
+};
+await assert.rejects(
+  () => api.models.probeLocalServerKind('http://127.0.0.1:8000/v1'),
+  /not allowed/,
+  'web probeLocalServerKind must reject (not swallow) command failures',
+);
+let webProbedArgs = null;
+invokeResponse = async (command, args) => {
+  if (command !== 'probe_local_server_kind') return null;
+  webProbedArgs = { ...args };
+  return 'ollama';
+};
+assert.equal(
+  await api.models.probeLocalServerKind('http://127.0.0.1:11434/v1'),
+  'ollama',
+  'web probeLocalServerKind must pass the probed kind through unchanged',
+);
+assert.deepEqual(
+  webProbedArgs,
+  { baseUrl: 'http://127.0.0.1:11434/v1', apiKey: null, modelId: null },
+  'web probeLocalServerKind must normalize absent credentials to null',
+);
+assert.equal(
+  await api.models.probeLocalServerKind('http://127.0.0.1:11434/v1', 'sk-form-key', 'model-1'),
+  'ollama',
+  'web probeLocalServerKind must accept credential arguments',
+);
+assert.deepEqual(
+  webProbedArgs,
+  { baseUrl: 'http://127.0.0.1:11434/v1', apiKey: 'sk-form-key', modelId: 'model-1' },
+  'web probeLocalServerKind must forward apiKey/modelId for authenticated endpoints',
+);
+
 console.log('web bridge domain contract passed');

@@ -512,7 +512,9 @@ async fn model_review(
     let provider = bridge.provider();
     let preset = review_model_preset(bridge);
     let model_name = if provider == "vllm" {
-        crate::features::monitor::probe_vllm_model_info(&base_url)
+        // The served-name probe uses an inference-same-origin key:
+        // authenticated vLLM 401s on /v1/models.
+        crate::features::monitor::probe_vllm_model_info(&base_url, Some(bridge.api_key().as_str()))
             .await
             .0
             .unwrap_or_else(|| bridge.model())

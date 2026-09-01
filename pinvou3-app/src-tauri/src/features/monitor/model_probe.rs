@@ -593,26 +593,19 @@ fn vllm_target_kind(upstream: &str) -> &'static str {
 /// (上下文窗口)。名字用于发请求(免写死名字与 `--served-model-name` 不一致的
 /// model_not_found);窗口用于填 `active_route_limits.context_tokens`,让压缩阈值按真实
 /// 窗口推导(见 docs/context-compaction-设计.md)。探测失败(vLLM 没起/超时)返回
-/// `(None, None)`,调用方 fallback 配置值 + 名字 hint 老路。
-pub async fn probe_vllm_model_info(base_url: &str) -> (Option<String>, Option<u32>) {
-    let Some(client) = shared_probe_client() else {
-        return (None, None);
-    };
-    let url = if base_url.trim_end_matches('/').ends_with("/v1") {
-        format!("{}/models", base_url.trim_end_matches('/'))
-    } else {
-        format!("{}/v1/models", base_url.trim_end_matches('/'))
-    };
-    let Ok(resp) = client.get(url).timeout(Duration::from_secs(3)).send().await else {
-        return (None, None);
-    };
-    if !resp.status().is_success() {
-        return (None, None);
+/// `(None, None)`, and the caller falls back to the configured values plus the
+/// name hint. See `core::model_endpoint::apply_bearer` for `bearer` semantics:
+/// authenticated vLLM (`--api-key`) 401s on `/v1/models` without credentials,
+/// so pass a key from the same origin as real inference.
+pub async fn probe_vllm_model_info(
+    base_url: &str,
+    bearer: Option<&str>,
+) -> (Option<String>, Option<u32>) {
+    // HTTP 层与 URL 拼装复用 core 的共享探测（避免 /v1/models 口径漂移）。
+    match crate::core::model_endpoint::fetch_v1_models(base_url, bearer).await {
+        Some(v) => parse_models_response(v).unwrap_or((None, None)),
+        None => (None, None),
     }
-    let Ok(v) = resp.json::<serde_json::Value>().await else {
-        return (None, None);
-    };
-    parse_models_response(v).unwrap_or((None, None))
 }
 
 /// 当前 monitor/探测应使用的 vLLM base_url。
@@ -655,7 +648,7 @@ mod tests {
     async fn live_probe_returns_window() {
         let base = std::env::var("PINVOU3_LIVE_VLLM")
             .unwrap_or_else(|_| "http://127.0.0.1:8000/v1".to_string());
-        let (name, window) = probe_vllm_model_info(&base).await;
+        let (name, window) = probe_vllm_model_info(&base, None).await;
         eprintln!("live probe @ {base}: name={name:?} max_model_len={window:?}");
         let window = window.expect("真机 vLLM 必须探测到 max_model_len(客户 bug 的核心修复)");
         assert!(

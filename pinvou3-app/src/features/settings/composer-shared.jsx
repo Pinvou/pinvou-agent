@@ -20,6 +20,7 @@ import {
 import {
   groupModelsForSelector, selectorMainLabel, selectorSubLabel,
   reasoningEffortTiersForModel, normalizeStoredReasoningEffort,
+  localProbeTiersForKind, reasoningEffortDisplayForTiers, baseUrlUsesLocalOrPrivate,
 } from './model-catalog.js';
 
 // 会话中「打开」是未提交态：新一轮对话发出前允许改回（误开可撤销），发出后
@@ -64,6 +65,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       multiAgentEnabled: multiAgentEnabledProp,
       multiAgentAvailable: multiAgentAvailableProp,
       onToggleMultiAgent,
+      // eslint-disable-next-line sonarjs/cognitive-complexity -- the composer selector aggregates model/menu/multi-agent branches; splitting needs a dedicated design like the SettingsView suppression
     }) => {
       const [open, setOpen] = useState(false);
       const triggerRef = useRef(null);
@@ -108,10 +110,55 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       const busy = busyProp === undefined ? (bs ? bs.busy : false) : busyProp;
       const effectiveId = currentSessionModelId || activeModelId;
       const current = savedModels.find(m => m.id === effectiveId);
-      const reasoningEffortTiers = current ? (reasoningEffortTiersForModel(current) || []) : [];
+      const [currentProbedKind, setCurrentProbedKind] = useState(null);
+      const [currentProbePending, setCurrentProbePending] = useState(false);
+      // 本地/私网 openai_compatible 端点：探测服务类型，按探测结果下发真实档位
+      // （vllm→四档、ollama→off/high、lmstudio/generic→不支持提示）。
+      const currentBaseUrl = current ? (current.base_url || '') : '';
+      const currentModelId = current ? current.id : null;
+      const isLocalCompatible = !!current && current.preset === 'openai_compatible' && baseUrlUsesLocalOrPrivate(currentBaseUrl);
+      useEffect(() => {
+        if (!isLocalCompatible) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- leaving the local-compatible state must synchronously clear the probe window so stale tiers never render one commit
+          setCurrentProbedKind(null);
+          setCurrentProbePending(false);
+          return;
+        }
+        let cancelled = false;
+        setCurrentProbePending(true);
+        setCurrentProbedKind(null);
+        if (bridge.available && bridge.models && bridge.models.probeLocalServerKind) {
+          // Credential source: the saved model's credential reference (Rust
+          // reads it by model_id) — authenticated vLLM (--api-key) 401s on
+          // /v1/models, so probing without credentials misclassifies the
+          // authenticated endpoint as generic and falsely reports "thinking
+          // tiers are not supported".
+          bridge.models.probeLocalServerKind(currentBaseUrl, '', currentModelId)
+            .then((kind) => { if (!cancelled) setCurrentProbedKind(kind); })
+            // 探测调用本身失败（命令被拒/版本不支持）≠ 探测出 generic：
+            // 置回 null 走 localProbeTiersForKind 的默认四档，不误报「不支持」。
+            .catch(() => { if (!cancelled) setCurrentProbedKind(null); })
+            .finally(() => { if (!cancelled) setCurrentProbePending(false); });
+        } else {
+          // web 预览无探测能力：保持默认四档（与旧行为一致），不误报不支持。
+          if (!cancelled) setCurrentProbedKind(null);
+          if (!cancelled) setCurrentProbePending(false);
+        }
+        return () => { cancelled = true; };
+      }, [isLocalCompatible, currentBaseUrl, currentModelId]);
+      const reasoningEffortTiers = isLocalCompatible
+        ? (currentProbePending ? [] : (localProbeTiersForKind(currentProbedKind) || []))
+        : (current ? (reasoningEffortTiersForModel(current) || []) : []);
       // 存量档位（可能保存过底座归一前的旧值，如 deepseek 的 medium）先归一到
       // 档位表内等价档位再高亮，避免「档位表不含该值 → 下拉无高亮」。
       const reasoningEffortValue = current ? normalizeStoredReasoningEffort(current, current.reasoning_effort) : null;
+      // Highlight fallback: normalization uses the static four-tier table, but
+      // once ollama is probed only the off/high tiers render, so a stored
+      // low/medium would land on no button; the display maps to the nearest
+      // tier (think:true is equivalent to high), while click comparison still
+      // uses the normalized original value, so a saved low survives switching
+      // back to a four-tier endpoint.
+      const reasoningEffortDisplay = reasoningEffortDisplayForTiers(reasoningEffortValue, reasoningEffortTiers);
       const [effortSaveError, setEffortSaveError] = useState('');
       function setReasoningEffortForCurrent(tier) {
         if (!current) return;
@@ -186,23 +233,31 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
                     </>
                   );
                 })()}
-                {current && reasoningEffortTiers.length > 0 && (
+                {current && (reasoningEffortTiers.length > 0 || isLocalCompatible) && (
                   <>
                     <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
                     <div className="px-3 pt-1 pb-1">
                       <div className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 mb-1.5">{t.thinkingDepth}</div>
-                      <div className="flex flex-wrap gap-1">
-                        {reasoningEffortTiers.map(tier => (
-                          <button type="button" key={tier} onClick={() => setReasoningEffortForCurrent(tier)}
-                            className={`h-7 min-w-[48px] px-2.5 rounded-full text-[12px] font-medium transition-colors ${
-                              reasoningEffortValue === tier
-                                ? 'bg-[#007AFF] text-white'
-                                : 'bg-black/[0.05] dark:bg-white/[0.08] text-gray-600 dark:text-gray-300 hover:bg-black/[0.09] dark:hover:bg-white/[0.13]'
+                      {reasoningEffortTiers.length > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {reasoningEffortTiers.map(tier => (
+                            <button type="button" key={tier} onClick={() => setReasoningEffortForCurrent(tier)}
+                              className={`h-7 min-w-[48px] px-2.5 rounded-full text-[12px] font-medium transition-colors ${
+                                reasoningEffortDisplay === tier
+                                  ? 'bg-[#007AFF] text-white'
+                                  : 'bg-black/[0.05] dark:bg-white/[0.08] text-gray-600 dark:text-gray-300 hover:bg-black/[0.09] dark:hover:bg-white/[0.13]'
                             }`}>
-                            {t.thinkingDepthTiers[tier] || tier}
-                          </button>
-                        ))}
-                      </div>
+                              {t.thinkingDepthTiers[tier] || tier}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className={`text-[11px] leading-4 ${currentProbePending ? 'text-gray-400 dark:text-gray-500' : 'text-[#FF9500] dark:text-[#FFB340]'}`}>
+                          {currentProbePending
+                            ? ((t.uiSettingsDetail && t.uiSettingsDetail.reasoningProbePending) || '正在探测服务类型…')
+                            : ((t.uiSettingsDetail && t.uiSettingsDetail.reasoningProbeUnsupported) || '该端点不支持思考档位调节')}
+                        </div>
+                      )}
                       {effortSaveError && (
                         <div className="mt-1.5 text-[11px] leading-4 text-[#FF3B30] dark:text-[#FF6B6B]">{effortSaveError}</div>
                       )}
