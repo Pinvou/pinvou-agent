@@ -93,19 +93,94 @@ impl Default for ScheduledTaskUiMetadataRegistry {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ArchivedScheduledTaskSnapshot {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) model: Option<String>,
+}
+
+impl From<&AutomationRecord> for ArchivedScheduledTaskSnapshot {
+    fn from(task: &AutomationRecord) -> Self {
+        Self {
+            id: task.id.clone(),
+            name: task.name.clone(),
+            model: task.model.clone(),
+        }
+    }
+}
+
+fn deserialize_archived_runs_lossy<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<AutomationRunRecord>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let values = <Vec<serde_json::Value> as serde::Deserialize>::deserialize(deserializer)?;
+    let mut runs = Vec::with_capacity(values.len());
+    for value in values {
+        match serde_json::from_value(value) {
+            Ok(run) => runs.push(run),
+            Err(error) => {
+                log::warn!("Ignoring invalid run in scheduled history archive: {error}");
+            }
+        }
+    }
+    Ok(runs)
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ArchivedScheduledTask {
-    pub(crate) task: AutomationRecord,
-    #[serde(default)]
+    pub(crate) task: ArchivedScheduledTaskSnapshot,
+    #[serde(default, deserialize_with = "deserialize_archived_runs_lossy")]
     pub(crate) runs: Vec<AutomationRunRecord>,
     pub(crate) deleted_at: String,
+}
+
+fn archived_task_is_valid(key: &str, archived: &ArchivedScheduledTask) -> bool {
+    !archived.task.id.trim().is_empty()
+        && archived.task.id == key
+        && archived
+            .runs
+            .iter()
+            .all(|run| run.automation_id == archived.task.id)
+}
+
+fn deserialize_archived_tasks_lossy<'de, D>(
+    deserializer: D,
+) -> std::result::Result<HashMap<String, ArchivedScheduledTask>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let values =
+        <HashMap<String, serde_json::Value> as serde::Deserialize>::deserialize(deserializer)?;
+    let mut tasks = HashMap::with_capacity(values.len());
+    for (key, value) in values {
+        match serde_json::from_value::<ArchivedScheduledTask>(value) {
+            Ok(archived) if archived_task_is_valid(&key, &archived) => {
+                tasks.insert(key, archived);
+            }
+            Ok(_) => {
+                log::warn!(
+                    "Ignoring inconsistent scheduled history archive entry for automation {key}"
+                );
+            }
+            Err(error) => {
+                log::warn!(
+                    "Ignoring invalid scheduled history archive entry for automation {key}: {error}"
+                );
+            }
+        }
+    }
+    Ok(tasks)
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ScheduledHistoryArchiveRegistry {
     #[serde(default = "scheduled_history_archive_schema_version")]
     pub(crate) schema_version: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_archived_tasks_lossy")]
     pub(crate) tasks: HashMap<String, ArchivedScheduledTask>,
 }
 
@@ -352,7 +427,7 @@ pub(crate) type ScheduledHistoryArchiveStore = VersionedJsonStore<ScheduledHisto
 impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
     pub(crate) fn archive_task(
         &self,
-        task: AutomationRecord,
+        task: ArchivedScheduledTaskSnapshot,
         runs: Vec<AutomationRunRecord>,
     ) -> Result<()> {
         if task.id.trim().is_empty() {
@@ -425,15 +500,15 @@ impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
         &self,
         automation_id: &str,
         run_id: &str,
-    ) -> Result<Vec<AutomationRunRecord>> {
+    ) -> Result<Option<RemovedArchivedRun>> {
         let mut registry = self.registry.write();
         let Some(previous) = registry.tasks.get(automation_id).cloned() else {
-            return Ok(Vec::new());
+            return Ok(None);
         };
         let mut updated = previous.clone();
         updated.runs.retain(|run| run.id != run_id);
         if updated.runs.len() == previous.runs.len() {
-            return Ok(previous.runs);
+            return Ok(None);
         }
         let remaining = updated.runs.clone();
         if remaining.is_empty() {
@@ -445,7 +520,31 @@ impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
             registry.tasks.insert(automation_id.to_string(), previous);
             return Err(error);
         }
-        Ok(remaining)
+        Ok(Some(RemovedArchivedRun {
+            archived_task: previous,
+            remaining_runs: remaining,
+        }))
+    }
+
+    pub(crate) fn restore_task(&self, archived: ArchivedScheduledTask) -> Result<()> {
+        let automation_id = archived.task.id.clone();
+        if !archived_task_is_valid(&automation_id, &archived) {
+            bail!("invalid scheduled history archive entry for {automation_id}");
+        }
+        let mut registry = self.registry.write();
+        let previous = registry.tasks.insert(automation_id.clone(), archived);
+        if let Err(error) = self.persist(&registry) {
+            match previous {
+                Some(previous) => {
+                    registry.tasks.insert(automation_id, previous);
+                }
+                None => {
+                    registry.tasks.remove(&automation_id);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub(crate) fn remove_task(&self, automation_id: &str) -> Result<()> {
@@ -459,6 +558,11 @@ impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
         }
         Ok(())
     }
+}
+
+pub(crate) struct RemovedArchivedRun {
+    pub(crate) archived_task: ArchivedScheduledTask,
+    pub(crate) remaining_runs: Vec<AutomationRunRecord>,
 }
 
 impl VersionedJsonStore<ScheduledTaskUiMetadataRegistry> {

@@ -27,7 +27,7 @@ const MAX_TERMINAL_RUNS_PER_AUTOMATION: usize = 50;
 const SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION: u32 = 2;
 const SCHEDULED_MODEL_BINDING_SCHEMA_VERSION: u32 = 1;
 const SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION: u32 = 1;
-const SCHEDULED_HISTORY_ARCHIVE_SCHEMA_VERSION: u32 = 1;
+const SCHEDULED_HISTORY_ARCHIVE_SCHEMA_VERSION: u32 = 2;
 const SCHEDULED_EXECUTION_MODE: &str = "yolo";
 
 #[path = "stores.rs"]
@@ -600,22 +600,26 @@ impl ScheduledTaskState {
                 }
             }
         };
-        let run = active_run.clone().or(archived_run);
-        if run.as_ref().is_some_and(|run| {
-            matches!(
-                run.status,
-                AutomationRunStatus::Queued | AutomationRunStatus::Running
-            )
-        }) {
+        if active_run
+            .as_ref()
+            .or(archived_run.as_ref())
+            .is_some_and(|run| {
+                matches!(
+                    run.status,
+                    AutomationRunStatus::Queued | AutomationRunStatus::Running
+                )
+            })
+        {
             return Err("正在运行的定时任务记录不能删除".to_string());
         }
 
-        deleter
-            .delete_scheduled_conversation(session_id, &automation_id)
-            .await
-            .map_err(|err| format!("Failed to delete scheduled conversation: {err:#}"))?;
-
         if let Some(run) = active_run {
+            // Keep the foundation's established active-run cascade order. Its
+            // task/run deletion API owns the active record and remains unchanged.
+            deleter
+                .delete_scheduled_conversation(session_id, &automation_id)
+                .await
+                .map_err(|err| format!("Failed to delete scheduled conversation: {err:#}"))?;
             let task_manager = self
                 .task_manager
                 .as_ref()
@@ -633,8 +637,11 @@ impl ScheduledTaskState {
                 })?
             };
             compact_viewed_runs(&self.read_state, &automation_id, &remaining);
-        } else if let Some(run) = run {
-            let remaining = self
+        } else if let Some(run) = archived_run {
+            // Archived history is app-owned. Commit its removal before deleting
+            // the conversation so an archive write failure cannot strand a
+            // visible run whose session has already disappeared.
+            let removal = self
                 .history_archive
                 .remove_run(&automation_id, &run.id)
                 .map_err(|err| {
@@ -642,73 +649,145 @@ impl ScheduledTaskState {
                         "Failed to delete archived scheduled run '{}': {err:#}",
                         run.id
                     )
+                })?
+                .ok_or_else(|| {
+                    format!(
+                        "Archived scheduled run '{}' changed before deletion",
+                        run.id
+                    )
                 })?;
-            compact_viewed_runs(&self.read_state, &automation_id, &remaining);
+            if let Err(delete_error) = deleter
+                .delete_scheduled_conversation(session_id, &automation_id)
+                .await
+            {
+                if let Err(rollback_error) =
+                    self.history_archive.restore_task(removal.archived_task)
+                {
+                    return Err(format!(
+                        "Failed to delete scheduled conversation: {delete_error:#}; additionally failed to restore archived scheduled run '{}': {rollback_error:#}",
+                        run.id
+                    ));
+                }
+                return Err(format!(
+                    "Failed to delete scheduled conversation: {delete_error:#}"
+                ));
+            }
+            compact_viewed_runs(&self.read_state, &automation_id, &removal.remaining_runs);
+        } else {
+            // A crash may leave a scheduled profile before its run is linked.
+            deleter
+                .delete_scheduled_conversation(session_id, &automation_id)
+                .await
+                .map_err(|err| format!("Failed to delete scheduled conversation: {err:#}"))?;
         }
         Ok(())
     }
 
     async fn delete_task_inner(&self, id: &str) -> Result<DeletedScheduledTaskDto> {
-        {
+        let original_status = {
             let manager = self.automations.lock().await;
+            let original = manager
+                .get_automation(id)
+                .with_context(|| format!("read automation {id} before deletion"))?;
             manager
                 .pause_automation(id)
                 .with_context(|| format!("pause automation {id}"))?;
-        }
-
-        self.reconcile_runs().await?;
-        let runs = {
-            let manager = self.automations.lock().await;
-            manager.list_runs(id, None)?
+            original.status
         };
-        self.cancel_active_run_tasks(&runs).await?;
-        self.reconcile_runs().await?;
 
-        let (task_snapshot, runs) = {
-            let manager = self.automations.lock().await;
-            (manager.get_automation(id)?, manager.list_runs(id, None)?)
-        };
-        self.history_archive
-            .archive_task(task_snapshot.clone(), runs)
-            .with_context(|| format!("archive scheduled task history {id}"))?;
+        let result = async {
+            self.reconcile_runs().await?;
+            let runs = {
+                let manager = self.automations.lock().await;
+                manager.list_runs(id, None)?
+            };
+            self.cancel_active_run_tasks(&runs).await?;
+            self.reconcile_runs().await?;
 
-        let deleted = {
-            let manager = self.automations.lock().await;
-            match manager.delete_automation(id) {
-                Ok(deleted) => deleted,
-                Err(error) if manager.get_automation(id).is_err() => {
-                    log::warn!(
-                        "Scheduled task {id} definition was removed but run-directory cleanup failed; using the durable history archive: {error:#}"
-                    );
-                    task_snapshot
+            let (task_snapshot, runs) = {
+                let manager = self.automations.lock().await;
+                (manager.get_automation(id)?, manager.list_runs(id, None)?)
+            };
+            self.history_archive
+                .archive_task(ArchivedScheduledTaskSnapshot::from(&task_snapshot), runs)
+                .with_context(|| format!("archive scheduled task history {id}"))?;
+
+            let deleted = {
+                let manager = self.automations.lock().await;
+                match manager.delete_automation(id) {
+                    Ok(deleted) => deleted,
+                    Err(error) if manager.get_automation(id).is_err() => {
+                        log::warn!(
+                            "Scheduled task {id} definition was removed but run-directory cleanup failed; using the durable history archive: {error:#}"
+                        );
+                        task_snapshot
+                    }
+                    Err(error) => {
+                        drop(manager);
+                        self.history_archive
+                            .remove_task(id)
+                            .with_context(|| format!("roll back scheduled history archive {id}"))?;
+                        return Err(error).with_context(|| format!("delete automation {id}"));
+                    }
                 }
-                Err(error) => {
-                    drop(manager);
-                    self.history_archive
-                        .remove_task(id)
-                        .with_context(|| format!("roll back scheduled history archive {id}"))?;
-                    return Err(error).with_context(|| format!("delete automation {id}"));
-                }
+            };
+            if let Err(error) = self.model_bindings.remove(id) {
+                log::warn!(
+                    "Deleted scheduled task {id}, but failed to remove its model binding: {error:#}"
+                );
             }
+            if let Err(error) = self.ui_metadata.remove(id) {
+                log::warn!(
+                    "Deleted scheduled task {id}, but failed to remove its UI metadata: {error:#}"
+                );
+            }
+            Ok(DeletedScheduledTaskDto {
+                task: map_scheduled_task_with_bindings(
+                    deleted,
+                    Some(&self.model_bindings),
+                    Some(&self.ui_metadata),
+                ),
+                deleted_session_ids: Vec::new(),
+            })
+        }
+        .await;
+
+        match result {
+            Ok(deleted) => Ok(deleted),
+            Err(error) => {
+                if let Err(restore_error) = self
+                    .restore_task_status_if_present(id, original_status)
+                    .await
+                {
+                    return Err(error.context(format!(
+                        "additionally failed to restore automation {id} after failed deletion: {restore_error:#}"
+                    )));
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn restore_task_status_if_present(
+        &self,
+        id: &str,
+        original_status: AutomationStatus,
+    ) -> Result<()> {
+        let manager = self.automations.lock().await;
+        let Ok(current) = manager.get_automation(id) else {
+            // delete_automation removes the definition before cleaning its run
+            // directory. A missing definition is therefore a committed delete,
+            // and must never be recreated by compensation.
+            return Ok(());
         };
-        if let Err(error) = self.model_bindings.remove(id) {
-            log::warn!(
-                "Deleted scheduled task {id}, but failed to remove its model binding: {error:#}"
-            );
+        if current.status == original_status {
+            return Ok(());
         }
-        if let Err(error) = self.ui_metadata.remove(id) {
-            log::warn!(
-                "Deleted scheduled task {id}, but failed to remove its UI metadata: {error:#}"
-            );
-        }
-        Ok(DeletedScheduledTaskDto {
-            task: map_scheduled_task_with_bindings(
-                deleted,
-                Some(&self.model_bindings),
-                Some(&self.ui_metadata),
-            ),
-            deleted_session_ids: Vec::new(),
-        })
+        match original_status {
+            AutomationStatus::Active => manager.resume_automation(id)?,
+            AutomationStatus::Paused => manager.pause_automation(id)?,
+        };
+        Ok(())
     }
 
     async fn reconcile_runs(&self) -> Result<()> {
@@ -1857,6 +1936,107 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_history_archive_migrates_legacy_full_task_to_minimal_snapshot() {
+        let dir = temp_home();
+        let path = dir.join("legacy-history-archive.json");
+        let legacy = serde_json::json!({
+            "schema_version": 1,
+            "tasks": {
+                "automation-1": {
+                    "task": {
+                        "id": "automation-1",
+                        "name": "Legacy task",
+                        "model": "legacy-model",
+                        "prompt": "private prompt that must not survive migration",
+                        "cwds": ["C:/private/workspace"],
+                        "allow_shell": true,
+                        "trust_mode": true
+                    },
+                    "runs": [],
+                    "deleted_at": "2026-01-01T00:00:00Z"
+                }
+            }
+        });
+        std::fs::write(&path, legacy.to_string()).expect("write legacy archive");
+
+        let store = ScheduledHistoryArchiveStore::open(path.clone()).expect("migrate archive");
+        let archived = store.archived_tasks();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].task.id, "automation-1");
+        assert_eq!(archived[0].task.name, "Legacy task");
+        assert_eq!(archived[0].task.model.as_deref(), Some("legacy-model"));
+
+        let persisted: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&path).expect("read migrated history archive"),
+        )
+        .expect("parse migrated history archive");
+        assert_eq!(
+            persisted["schema_version"],
+            SCHEDULED_HISTORY_ARCHIVE_SCHEMA_VERSION
+        );
+        let snapshot = &persisted["tasks"]["automation-1"]["task"];
+        assert!(snapshot.get("prompt").is_none());
+        assert!(snapshot.get("cwds").is_none());
+        assert!(snapshot.get("allow_shell").is_none());
+        assert!(snapshot.get("trust_mode").is_none());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn scheduled_history_archive_skips_only_corrupt_entries_and_runs() {
+        let dir = temp_home();
+        let path = dir.join("partially-corrupt-history-archive.json");
+        let payload = serde_json::json!({
+            "schema_version": SCHEDULED_HISTORY_ARCHIVE_SCHEMA_VERSION,
+            "tasks": {
+                "automation-good": {
+                    "task": {
+                        "id": "automation-good",
+                        "name": "Retained task",
+                        "model": "retained-model"
+                    },
+                    "runs": [
+                        {
+                            "id": "run-good",
+                            "automation_id": "automation-good",
+                            "scheduled_for": "2026-01-01T00:00:00Z",
+                            "status": "completed",
+                            "created_at": "2026-01-01T00:00:00Z"
+                        },
+                        { "id": 42, "not": "a valid run" }
+                    ],
+                    "deleted_at": "2026-01-01T00:00:00Z"
+                },
+                "automation-bad": {
+                    "task": { "id": 42 },
+                    "runs": [],
+                    "deleted_at": "2026-01-01T00:00:00Z"
+                }
+            }
+        });
+        std::fs::write(&path, payload.to_string()).expect("write partial archive");
+
+        let store = ScheduledHistoryArchiveStore::open(path.clone())
+            .expect("one corrupt entry must not quarantine the whole archive");
+        let archived = store.archived_tasks();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].task.id, "automation-good");
+        assert_eq!(archived[0].runs.len(), 1);
+        assert_eq!(archived[0].runs[0].id, "run-good");
+        assert!(path.exists(), "the valid archive file must remain in place");
+        assert!(
+            std::fs::read_dir(&dir)
+                .expect("read archive directory")
+                .filter_map(|entry| entry.ok())
+                .all(|entry| !entry.file_name().to_string_lossy().contains(".invalid-")),
+            "partial item damage must not quarantine valid history"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn scheduled_task_root_uses_pinvou_home() {
         let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
@@ -1973,6 +2153,32 @@ mod tests {
             expected_task_id: &str,
         ) -> Result<()> {
             self.0.delete_scheduled_run(session_id, expected_task_id)
+        }
+    }
+
+    struct FailingConversationDeleter;
+
+    #[async_trait::async_trait]
+    impl ScheduledConversationDeleter for FailingConversationDeleter {
+        async fn delete_scheduled_conversation(
+            &self,
+            _session_id: &str,
+            _expected_task_id: &str,
+        ) -> Result<()> {
+            bail!("injected conversation deletion failure")
+        }
+    }
+
+    struct UnexpectedConversationDeleter;
+
+    #[async_trait::async_trait]
+    impl ScheduledConversationDeleter for UnexpectedConversationDeleter {
+        async fn delete_scheduled_conversation(
+            &self,
+            _session_id: &str,
+            _expected_task_id: &str,
+        ) -> Result<()> {
+            panic!("conversation deletion must not run before the archive commit")
         }
     }
 
@@ -2298,6 +2504,177 @@ mod tests {
             .expect("remaining archived runs");
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id, second.id);
+
+        fixture.task_manager.shutdown();
+        drop(fixture);
+        match previous {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn failed_task_history_archive_restores_original_active_status() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_home();
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        let fixture = cascade_fixture(None).await;
+        {
+            let manager = fixture.state.automations.lock().await;
+            let active = manager
+                .resume_automation(&fixture.automation_id)
+                .expect("activate fixture task");
+            assert_eq!(active.status, AutomationStatus::Active);
+        }
+        let archive_path = scheduled_history_archive_path();
+        std::fs::create_dir_all(&archive_path).expect("block archive file with directory");
+
+        let error = fixture
+            .state
+            .delete_for_test(fixture.automation_id.clone())
+            .await
+            .expect_err("archive persistence must fail");
+        assert!(error.contains("archive scheduled task history"), "{error}");
+        {
+            let manager = fixture.state.automations.lock().await;
+            let retained = manager
+                .get_automation(&fixture.automation_id)
+                .expect("failed deletion must retain task definition");
+            assert_eq!(
+                retained.status,
+                AutomationStatus::Active,
+                "compensation must restore the pre-delete scheduling status"
+            );
+        }
+        assert!(
+            fixture
+                .state
+                .history_archive
+                .runs_for(&fixture.automation_id)
+                .is_none(),
+            "failed archive writes must also roll back in-memory archive state"
+        );
+
+        fixture.task_manager.shutdown();
+        drop(fixture);
+        match previous {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn archived_run_archive_write_failure_keeps_session_and_retryable_history() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_home();
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        let fixture = cascade_fixture(None).await;
+        let run = run_once(&fixture).await;
+        let session_id = run.thread_id.clone().expect("archived run session");
+        fixture
+            .state
+            .delete_for_test(fixture.automation_id.clone())
+            .await
+            .expect("archive task history");
+        let archive_path = scheduled_history_archive_path();
+        std::fs::remove_file(&archive_path).expect("remove writable archive file");
+        std::fs::create_dir(&archive_path).expect("block archive file with directory");
+
+        let error = fixture
+            .state
+            .delete_run_for_session_with(&session_id, &UnexpectedConversationDeleter)
+            .await
+            .expect_err("archive commit must fail before session deletion");
+        assert!(
+            error.contains("Failed to delete archived scheduled run"),
+            "{error}"
+        );
+        assert!(
+            fixture.state.sessions.scheduled_session_exists(&session_id),
+            "archive persistence failure must leave the conversation untouched"
+        );
+        let retained = fixture
+            .state
+            .history_archive
+            .runs_for(&fixture.automation_id)
+            .expect("retryable archived history");
+        assert!(retained.iter().any(|item| item.id == run.id));
+
+        fixture.task_manager.shutdown();
+        drop(fixture);
+        match previous {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn archived_run_conversation_failure_rolls_back_persisted_history() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_home();
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        let fixture = cascade_fixture(None).await;
+        let run = run_once(&fixture).await;
+        let session_id = run.thread_id.clone().expect("archived run session");
+        fixture
+            .state
+            .delete_for_test(fixture.automation_id.clone())
+            .await
+            .expect("archive task history");
+
+        let error = fixture
+            .state
+            .delete_run_for_session_with(&session_id, &FailingConversationDeleter)
+            .await
+            .expect_err("injected conversation deletion must fail");
+        assert!(
+            error.contains("injected conversation deletion failure"),
+            "{error}"
+        );
+        assert!(
+            fixture.state.sessions.scheduled_session_exists(&session_id),
+            "failed conversation deletion must retain the session"
+        );
+        let retained = fixture
+            .state
+            .history_archive
+            .runs_for(&fixture.automation_id)
+            .expect("rolled-back archived history");
+        assert!(retained.iter().any(|item| item.id == run.id));
+        let reopened = ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
+            .expect("reopen rolled-back history archive");
+        assert!(
+            reopened
+                .runs_for(&fixture.automation_id)
+                .expect("persisted rolled-back history")
+                .iter()
+                .any(|item| item.id == run.id),
+            "rollback must be durable across restart"
+        );
 
         fixture.task_manager.shutdown();
         drop(fixture);
