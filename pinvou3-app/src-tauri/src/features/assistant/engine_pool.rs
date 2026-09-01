@@ -46,7 +46,7 @@ use crate::features::assistant::engine::{
 #[cfg(any(feature = "benchmark-hooks", test))]
 use crate::features::assistant::eval::{EvalModelSelection, EvalSuiteModelSnapshot, ModelIdentity};
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
-use crate::features::assistant::platform::bridge::{base_url_uses_local_or_private, Pinvou3Bridge};
+use crate::features::assistant::platform::bridge::{Pinvou3Bridge, base_url_uses_local_or_private};
 use crate::features::assistant::runtime_model::{
     ModelCredentialMode, PassthroughRuntimeModelProvider, PreparedRuntimeModel,
     RuntimeModelProvider, RuntimeModelRequest,
