@@ -1133,7 +1133,11 @@ mod tests {
         // words 3; sudo 2 → 17971 total.
         // Pinning the exact number turns any silent section drop/bypass red
         // immediately (a >=100-style weak assertion once hid a ~78% loss).
-        assert_eq!(rules.len(), 17971, "ruleset size drifted; confirm the change is intentional and update the pinned count and this breakdown");
+        assert_eq!(
+            rules.len(),
+            17971,
+            "ruleset size drifted; confirm the change is intentional and update the pinned count and this breakdown"
+        );
         let commands: Vec<&str> = rules.iter().filter_map(|r| r.command.as_deref()).collect();
         for must in [
             "cat ~/.ssh/",

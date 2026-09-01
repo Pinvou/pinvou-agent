@@ -3289,11 +3289,13 @@ mod tests {
         // With no scope disablement: no CLI binary rules, no skill script
         // rules (`run.py` style). Safety-net rules (path + command) are
         // always present; covered by the safety_deny_rules tests.
-        assert!(bridge
-            .scope_deny_ruleset("sess-plain")
-            .ask_rules
-            .iter()
-            .all(|r| !r.command.as_deref().is_some_and(|c| c.contains("run.py"))));
+        assert!(
+            bridge
+                .scope_deny_ruleset("sess-plain")
+                .ask_rules
+                .iter()
+                .all(|r| !r.command.as_deref().is_some_and(|c| c.contains("run.py")))
+        );
         assert!(
             bridge
                 .scope_deny_ruleset("sess-plain")
@@ -3326,11 +3328,13 @@ mod tests {
             ConnectorScope::Plain,
             &[],
         );
-        assert!(bridge
-            .scope_deny_ruleset("sess-plain")
-            .ask_rules
-            .iter()
-            .all(|r| !r.command.as_deref().is_some_and(|c| c.contains("run.py"))));
+        assert!(
+            bridge
+                .scope_deny_ruleset("sess-plain")
+                .ask_rules
+                .iter()
+                .all(|r| !r.command.as_deref().is_some_and(|c| c.contains("run.py")))
+        );
 
         // code not initialized → all installed skills disabled by default →
         // script rules generated the same way

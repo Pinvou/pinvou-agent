@@ -1399,7 +1399,7 @@ impl AppEngine {
         // engine.
         engine_config.exec_policy_engine =
             codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
-                bridge.scope_deny_ruleset("")
+                bridge.scope_deny_ruleset(""),
             ]);
         let scheduled_disallowed_tools = engine_config.disallowed_tools.clone().unwrap_or_default();
         let workspace = engine_config.workspace.clone();
