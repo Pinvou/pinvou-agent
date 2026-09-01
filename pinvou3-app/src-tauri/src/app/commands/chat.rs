@@ -294,24 +294,28 @@ pub(crate) async fn chat_with_reservation(
     // 原生代码会话每个 turn 开始前对执行根打 checkpoint（影子 git，数据落账本根，
     // 机制见 features/code_checkpoints）。快照必须先于引擎写文件，因此在 send 前
     // 同步等待；失败不阻断 turn——如实记日志，该轮只是没有回退入口（设计 §5
-    // 降级语义）。turn 序号用 is_user_turn_prompt 同口径计数（tool_result 不计入），
-    // 计数失败（会话加载失败等）登记 None，前端按顺序兜底对齐。
+    // 降级语义）。
     // created_snapshot_id 记录本轮成功登记的快照：发送失败时它是「未成活」
     // 快照——重试同号 turn 的 first-wins 对齐会锚到失败那次（内容还可能混入两次
     // 尝试之间的外部改动），发送失败路径按 id 精确作废（见下方 Err 分支；按 id
     // 也覆盖计数失败导致的 None 序号快照）。
     let mut created_snapshot_id: Option<String> = None;
     if store.is_code_session(&sid) {
-        let turn_number = store
-            .load(&sid)
-            .map(|session| {
-                crate::features::code_checkpoints::count_user_turns(&session.messages) + 1
-            })
-            .ok();
+        let store_count = store.clone();
+        let sid_count = sid.clone();
         let checkpoint_ledger = roots.ledger.clone();
         let checkpoint_execution = roots.execution.clone();
         let label = display_content.clone();
         let snapshot = tauri::async_runtime::spawn_blocking(move || {
+            // turn 序号用 is_user_turn_prompt 同口径计数（tool_result 不计入），
+            // 计数失败（会话加载失败等）登记 None，前端按顺序兜底对齐。会话 JSON
+            // 读取是阻塞 IO，与快照同驻 spawn_blocking。
+            let turn_number = store_count
+                .load(&sid_count)
+                .map(|session| {
+                    crate::features::code_checkpoints::count_user_turns(&session.messages) + 1
+                })
+                .ok();
             crate::features::code_checkpoints::create_checkpoint(
                 &checkpoint_ledger,
                 &checkpoint_execution,

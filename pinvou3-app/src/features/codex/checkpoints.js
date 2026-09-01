@@ -23,17 +23,23 @@ import { invokeTauri as invoke } from '../../platform/tauri/client.js';
 export function checkpointMapByTurn(checkpoints) {
   const map = new Map();
   for (const checkpoint of checkpoints || []) {
-    const turn = Number.isInteger(checkpoint?.turn) && checkpoint.turn > 0
+    const turn = Number.isSafeInteger(checkpoint?.turn) && checkpoint.turn > 0
       ? checkpoint.turn
       : null;
     if (turn === null) continue;
     if (!map.has(turn)) map.set(turn, checkpoint);
   }
-  // 全部缺序号时退化为按创建顺序对齐（老数据/计数失败场景）。
+  // 全部缺序号时退化为按创建顺序对齐（老数据/计数失败场景）；仅 Turn 快照
+  // 占位——PreRestore 是回滚点不是 turn 边界，占位会让 chip 误显示为可代码
+  // 回退（后端 resolve_rewind_plan 只认 turn 号对得上的 Turn 条目）；序号按
+  // Turn 条目连续分配，不被中间的 PreRestore 打断。
   if (!map.size && Array.isArray(checkpoints)) {
-    checkpoints.forEach((checkpoint, index) => {
-      if (checkpoint && checkpoint.id) map.set(index + 1, checkpoint);
-    });
+    let sequential = 0;
+    for (const checkpoint of checkpoints) {
+      if (!checkpoint || !checkpoint.id || checkpoint.kind !== 'turn') continue;
+      sequential += 1;
+      map.set(sequential, checkpoint);
+    }
   }
   return map;
 }
@@ -120,8 +126,8 @@ export function rewindUndoAvailable(undoState) {
   return Boolean(
     undoState
       && typeof undoState === 'object'
-      && Number.isInteger(undoState.keptTurns)
-      && Number.isInteger(undoState.rewoundTurns)
+      && Number.isSafeInteger(undoState.keptTurns)
+      && Number.isSafeInteger(undoState.rewoundTurns)
       && undoState.rewoundTurns > 0,
   );
 }
@@ -193,11 +199,15 @@ export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
   // 打开中的确认弹窗会在 busy 边沿/后台投影变化后丢失 previewState 且不再重拉，
   // 「将撤销的变更」区域变空白。快照内容的时效由「每次开弹窗都重拉」保证
   // （openRewindDialog → preview），与列表刷新解耦。
+  // 会话切换瞬间同步清空列表/可反悔状态：否则旧会话的 checkpoints 会在新 fetch
+  // 返回前对齐到新会话的 turns 上，入口变体短暂错判（可点击但 preview 必败）。
   const previewSessionRef = useRef(sessionId);
   useEffect(() => {
     if (previewSessionRef.current !== sessionId) {
       previewSessionRef.current = sessionId;
       setPreviews({});
+      setCheckpoints([]);
+      setUndoState(null);
     }
   }, [sessionId]);
 
@@ -207,8 +217,8 @@ export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
     refresh();
   }, [sessionId, enabled, refreshKey, refresh]);
 
-  /** 懒加载某 checkpoint 的 diff 预览（缓存只随 sessionId 切换失效；refreshKey
-   *  边沿不清缓存，快照时效由「每次开弹窗都重拉」保证）。 */
+  // 懒加载某 checkpoint 的 diff 预览（缓存只随 sessionId 切换失效；refreshKey
+  // 边沿不清缓存，快照时效由「每次开弹窗都重拉」保证）。
   const preview = useCallback(async (checkpointId) => {
     const id = sessionRef.current;
     if (!id) return;

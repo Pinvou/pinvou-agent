@@ -1284,9 +1284,12 @@ export function CodexAcpView({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the version counter of the mutable lane object; it must stay in deps to trigger re-projection
     [isNativeAgent, activeNativeLane, activeId, nativeLaneTick],
   );
-  const visibleTurns = isNativeAgent
-    ? (nativeProjection ? nativeProjection.turns : EMPTY_CONVERSATION_TURNS)
-    : projection.turns;
+  const visibleTurns = useMemo(
+    () => (isNativeAgent
+      ? (nativeProjection ? nativeProjection.turns : EMPTY_CONVERSATION_TURNS)
+      : projection.turns),
+    [isNativeAgent, nativeProjection, projection.turns],
+  );
   const busy = isNativeAgent
     ? Boolean(activeNativeLane && activeNativeLane.busy)
     : projection.turns.some(turn => turn.status === 'running');
@@ -1322,6 +1325,7 @@ export function CodexAcpView({
     // 可反悔状态消失（回退后发了新轮/记录被消费）时收回弹窗；reloadFailed
     // 重试窗口豁免（弹窗由本地副本驱动，重试只补重载、不再发 undo）。
     if (!rewindUndoAvailable(rewindUndoState)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot mirror of the undo-state lifecycle; same pattern as the session-switch reset below
       setRewindUndoEntry(current => (current && current.reloadFailed ? current : null));
     }
   }, [rewindUndoState]);
@@ -1422,6 +1426,10 @@ export function CodexAcpView({
     setRewindError('');
     setRewindUndoEntry(null);
     setRewindUndoError('');
+    // in-flight 标志一并复位：回退/撤销进行中切会话时，旧 promise 的 UI 写入
+    // 已被 activeIdRef 守卫拦住，标志留着只会把新会话的入口一直禁用。
+    setRewinding(false);
+    setRewindUndoing(false);
   }, [activeId]);
   useEffect(() => {
     if (typeof window === 'undefined' || !isNativeAgent) return;
@@ -2105,23 +2113,6 @@ export function CodexAcpView({
     } finally {
       setRewindUndoing(false);
     }
-  }
-
-  async function createSession(workspacePath = draftWorkspacePath) {
-    setError('');
-    setWorkspaceMenuOpen(false);
-    const metadata = await invoke('create_codex_acp_session', {
-      workspacePath,
-      agentId: draftAgentId,
-    });
-    // loadSession 用 nativeSessionIdsRef 判定分流；新会话先登记，避免它读到旧 prop。
-    if (draftAgentId === 'pinvou') nativeSessionIdsRef.current.add(metadata.id);
-    if (workspacePath) setRecentWorkspaces(rememberWorkspace(workspacePath));
-    await refreshSessions();
-    skipNextActiveLoadRef.current = metadata.id;
-    if (onActiveSessionChange) onActiveSessionChange(metadata.id);
-    const info = await loadSession(metadata.id);
-    return { id: metadata.id, info };
   }
 
   // Self-healing for envelope-seq gaps in the web live stream: after the

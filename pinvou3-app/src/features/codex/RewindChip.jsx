@@ -6,12 +6,40 @@
 // 由视图层调 rewind_to_turn 编排（恢复代码 + 截断对话 + engine 回收重注水）。
 // 无 Turn 快照的边界是「仅回退对话」变体（conversationOnly），文案明示代码不回退。
 
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { RotateCcw } from '../../components/icons.jsx';
 import { summarizeCheckpointChanges } from './checkpoints.js';
 
 const FILE_LIST_LIMIT = 8;
+
+// 弹窗焦点：挂载时夺取一次（父组件内联 onCancel 每渲染换新身份，若 focus 放进
+// 带依赖的 effect，弹窗打开期间任意父级重渲染都会把焦点从按钮拽回容器），卸载
+// 时归还先前焦点元素（触发元素可能已随时间线重载重建，isConnected 守卫；
+// focus 分离元素是规范允许的 no-op）。两个确认弹窗共用。
+function useDialogFocusRestore(dialogRef) {
+  useEffect(() => {
+    const previous = document.activeElement;
+    dialogRef.current?.focus();
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
+  }, [dialogRef]);
+}
+
+// Escape 关闭（busy 时禁用）。两个确认弹窗共用。
+function useDialogEscapeKey(busy, onCancel) {
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.key === 'Escape' && !busy) {
+        event.preventDefault();
+        onCancel();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [busy, onCancel]);
+}
 
 function ChangeSummary({ summary, copy }) {
   if (!summary.total) {
@@ -116,29 +144,8 @@ export function RewindUndoChip({ state, disabled, copy, onOpen }) {
 export function RewindConfirmDialog({ entry, previewState, error, busy, theme, copy, onCancel, onConfirm }) {
   const isDark = theme === 'dark';
   const dialogRef = useRef(null);
-  // 焦点只在挂载时夺取一次：父组件传入的 onCancel 是内联箭头函数、每次渲染都
-  // 换新身份，若 focus 与 keydown 同处一个带依赖的 effect，弹窗打开期间任意父级
-  // 重渲染（chat tick、轮询）都会把焦点从按钮拽回容器，打断键盘操作。
-  // 卸载时把焦点归还给触发前的元素。
-  useEffect(() => {
-    const previous = document.activeElement;
-    dialogRef.current?.focus();
-    return () => {
-      // 时间线重载后触发元素可能已重建（旧节点分离）——focus 分离元素是规范
-      // 允许的 no-op，isConnected 判断只为意图明确。
-      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
-    };
-  }, []);
-  useEffect(() => {
-    const onKey = (event) => {
-      if (event.key === 'Escape' && !busy) {
-        event.preventDefault();
-        onCancel();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [busy, onCancel]);
+  useDialogFocusRestore(dialogRef);
+  useDialogEscapeKey(busy, onCancel);
 
   const summary = previewState?.diff ? summarizeCheckpointChanges(previewState.diff.changes) : null;
   const changes = (previewState?.diff && Array.isArray(previewState.diff.changes))
@@ -247,29 +254,8 @@ export function RewindConfirmDialog({ entry, previewState, error, busy, theme, c
 export function RewindUndoConfirmDialog({ state, error, busy, theme, copy, onCancel, onConfirm }) {
   const isDark = theme === 'dark';
   const dialogRef = useRef(null);
-  // 焦点只在挂载时夺取一次：父组件传入的 onCancel 是内联箭头函数、每次渲染都
-  // 换新身份，若 focus 与 keydown 同处一个带依赖的 effect，弹窗打开期间任意父级
-  // 重渲染（chat tick、轮询）都会把焦点从按钮拽回容器，打断键盘操作。
-  // 卸载时把焦点归还给触发前的元素。
-  useEffect(() => {
-    const previous = document.activeElement;
-    dialogRef.current?.focus();
-    return () => {
-      // 时间线重载后触发元素可能已重建（旧节点分离）——focus 分离元素是规范
-      // 允许的 no-op，isConnected 判断只为意图明确。
-      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
-    };
-  }, []);
-  useEffect(() => {
-    const onKey = (event) => {
-      if (event.key === 'Escape' && !busy) {
-        event.preventDefault();
-        onCancel();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [busy, onCancel]);
+  useDialogFocusRestore(dialogRef);
+  useDialogEscapeKey(busy, onCancel);
 
   return createPortal(
     <div data-testid="rewind-undo-confirm" className="fixed inset-0 z-50 flex items-center justify-center p-4">

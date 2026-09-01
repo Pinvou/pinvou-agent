@@ -15,7 +15,7 @@ import {
   assert.equal(isMissingWorkspaceDirectoryError('读取 Codex 工作区失败: 权限不足'), false);
   assert.equal(isMissingWorkspaceDirectoryError(new Error('network error')), false);
   assert.equal(isMissingWorkspaceDirectoryError(null), false);
-  assert.equal(isMissingWorkspaceDirectoryError(undefined), false);
+  assert.equal(isMissingWorkspaceDirectoryError(), false);
   assert.equal(isMissingWorkspaceDirectoryError(''), false);
 }
 
@@ -31,8 +31,8 @@ import {
   };
   const { expanded: nextExpanded, entriesByDirectory: nextEntries } =
     pruneMissingDirectory(expanded, entriesByDirectory, '.luzeyang');
-  assert.deepEqual([...nextExpanded].sort(), ['src', 'src/features']);
-  assert.deepEqual(Object.keys(nextEntries).sort(), ['', 'src']);
+  assert.deepEqual([...nextExpanded].sort((a, b) => a.localeCompare(b)), ['src', 'src/features']);
+  assert.deepEqual(Object.keys(nextEntries).sort((a, b) => a.localeCompare(b)), ['', 'src']);
   // 保留的条目引用不变（不重建数组），根目录（''）不受逐出影响。
   assert.equal(nextEntries[''], entriesByDirectory['']);
   assert.equal(nextEntries.src, entriesByDirectory.src);
@@ -42,7 +42,7 @@ import {
 {
   const expanded = new Set(['src', 'src/old', 'src/old/deep', 'src/older', 'src/new']);
   const { expanded: nextExpanded } = pruneMissingDirectory(expanded, {}, 'src/old');
-  assert.deepEqual([...nextExpanded].sort(), ['src', 'src/new', 'src/older']);
+  assert.deepEqual([...nextExpanded].sort((a, b) => a.localeCompare(b)), ['src', 'src/new', 'src/older']);
 }
 
 // 边界：missingPath 为空/非法时逐出为空操作；空集合输入安全。
@@ -50,8 +50,8 @@ import {
   const expanded = new Set(['', 'src']);
   const entries = { '': [], src: [] };
   const unchanged = pruneMissingDirectory(expanded, entries, '');
-  assert.deepEqual([...unchanged.expanded].sort(), ['', 'src']);
-  assert.deepEqual(Object.keys(unchanged.entriesByDirectory).sort(), ['', 'src']);
+  assert.deepEqual([...unchanged.expanded].sort((a, b) => a.localeCompare(b)), ['', 'src']);
+  assert.deepEqual(Object.keys(unchanged.entriesByDirectory).sort((a, b) => a.localeCompare(b)), ['', 'src']);
   const empty = pruneMissingDirectory(null, undefined, 'src');
   assert.equal(empty.expanded.size, 0);
   assert.deepEqual(empty.entriesByDirectory, {});

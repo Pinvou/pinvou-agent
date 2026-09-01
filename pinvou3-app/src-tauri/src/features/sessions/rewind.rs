@@ -272,6 +272,12 @@ impl SessionStore {
 
     /// 删除/保留策略清理会话时同步清掉其回退备份（best-effort：失败只留孤儿数据，
     /// 不影响主流程）。
+    ///
+    /// 已知取舍：不持 `scheduled_mutation` 锁——调用方
+    /// `reconcile_scheduled_profiles` 已持锁（parking_lot Mutex 不可重入，内部
+    /// 加锁会死锁）。由此存在与并发 `truncate_to_user_turn` 的 read-modify-write
+    /// 窗口（删除会话撞上另一会话回退时可能用旧 map 覆盖新备份记录）：概率低、
+    /// 后果是备份记录丢失（undo 入口消失），可接受。
     pub(crate) fn purge_rewound_turns_backups(ids: &[String]) {
         if ids.is_empty() || !rewound_turns_path().exists() {
             return;

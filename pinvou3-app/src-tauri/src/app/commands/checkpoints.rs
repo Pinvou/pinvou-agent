@@ -96,6 +96,22 @@ pub async fn restore_checkpoint(
     let reservation = pool
         .reserve_turn(&session_id)
         .map_err(|error| format!("预约会话 turn 失败（会话忙碌？）: {error:#}"))?;
+    // 跨会话忙碌门：与 rewind_to_turn 同款——恢复单位是执行根，同根其它会话
+    // 在跑时回滚会撤销它正在写的文件。store.list() 是阻塞 IO，移出 async worker。
+    let store_gate = store.inner().clone();
+    let session_id_gate = session_id.clone();
+    let execution_gate = execution.clone();
+    let pool_gate = pool.inner().clone();
+    if let Some(busy) = tauri::async_runtime::spawn_blocking(move || {
+        busy_peer_on_same_execution_root(&store_gate, &session_id_gate, &execution_gate, |id| {
+            pool_gate.is_turn_active(id)
+        })
+    })
+    .await
+    .map_err(|error| format!("跨会话忙碌检查任务失败: {error}"))??
+    {
+        return Err(format!("会话「{busy}」绑定同一项目目录且正在执行，请先停止该会话再回滚"));
+    }
     let result = tauri::async_runtime::spawn_blocking(move || {
         checkpoints::restore_checkpoint(&ledger, &execution, &checkpoint_id)
             .map_err(|error| format!("回滚检查点失败: {error:#}"))
@@ -111,7 +127,9 @@ pub async fn restore_checkpoint(
 #[serde(rename_all = "camelCase")]
 pub struct RewindToTurnResult {
     /// 恢复代码时自动打的 PreRestore 回滚点（与 `restore_checkpoint` 返回值同语义，
-    /// 供「已回退、可反悔」提示）；降级（仅回退对话）时为 None。
+    /// 供「已回退、可反悔」提示）；降级（仅回退对话）时为 None。注：undo 的绑定
+    /// 载体是 sidecar 记录（`RewoundTurnsRecord.pre_restore_checkpoint_id`），本
+    /// 返回值仅作展示，不参与反悔链路。
     pub restored_checkpoint: Option<CheckpointMeta>,
     /// 被截掉的用户 turn 数。
     pub rewound_turns: u32,
@@ -521,7 +539,9 @@ pub async fn undo_last_rewind(
                 eprintln!(
                     "[checkpoints] undo_last_rewind conversation restore failed for {session_id} after code restore to {checkpoint_id}: {error:#}"
                 );
-                format!("代码已恢复到回滚点，但对话恢复失败: {error:#}")
+                format!(
+                    "代码已恢复到回滚点 {checkpoint_id}，但对话恢复失败（可重试；记录未消费）: {error:#}"
+                )
             }
             None => format!("对话恢复失败: {error:#}"),
         }

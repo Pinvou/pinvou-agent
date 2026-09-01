@@ -52,17 +52,22 @@ import {
   assert.equal(map.get(3).id, 'c3');
 }
 
-// 全部缺序号（计数失败兜底）时按创建顺序对齐。
+// 全部缺序号（计数失败兜底）时按创建顺序对齐；仅 Turn 快照占位（PreRestore
+// 回滚点不是 turn 边界，占位会让入口误显示为可代码回退）。
 {
-  const map = checkpointMapByTurn([{ id: 'a' }, { id: 'b' }]);
+  const map = checkpointMapByTurn([{ id: 'a', kind: 'turn' }, { id: 'b', kind: 'turn' }]);
   assert.equal(map.get(1).id, 'a');
   assert.equal(map.get(2).id, 'b');
+  const withPreRestore = checkpointMapByTurn([{ id: 'a', kind: 'turn' }, { id: 'u', kind: 'preRestore' }, { id: 'b', kind: 'turn' }]);
+  assert.equal(withPreRestore.get(1).id, 'a');
+  assert.equal(withPreRestore.get(2).id, 'b');
+  assert.equal(withPreRestore.size, 2, 'PreRestore 不得占位');
 }
 
 // 空/非法输入。
 assert.equal(checkpointMapByTurn([]).size, 0);
 assert.equal(checkpointMapByTurn(null).size, 0);
-assert.equal(checkpointMapByTurn(undefined).size, 0);
+assert.equal(checkpointMapByTurn().size, 0);
 
 // ── summarizeCheckpointChanges：diff 摘要计数 ───────────────────────
 {
@@ -212,7 +217,7 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
 {
   let ticks = 0;
   const { error } = await reloadSessionAfterRewind({
-    reload: async () => { throw '会话正在执行，请先停止当前任务再回退'; },
+    reload: async () => { throw new Error('会话正在执行，请先停止当前任务再回退'); },
     bumpTick: () => { ticks += 1; },
   });
   assert.equal(error, '会话正在执行，请先停止当前任务再回退');
@@ -257,7 +262,7 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
 // （仅对话回退的撤销只还原对话），不是残缺状态。
 {
   assert.equal(rewindUndoAvailable(null), false);
-  assert.equal(rewindUndoAvailable(undefined), false);
+  assert.equal(rewindUndoAvailable(), false);
   assert.equal(rewindUndoAvailable({}), false);
   assert.equal(rewindUndoAvailable('checkpoint-x'), false);
   assert.equal(rewindUndoAvailable({ checkpointId: 'pre-1' }), false);

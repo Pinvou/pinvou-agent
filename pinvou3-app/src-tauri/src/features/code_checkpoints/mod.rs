@@ -215,10 +215,15 @@ fn git_ok(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<String> {
 /// 深度；含通配符的模式（*.pem 等）本身跨 `/` 匹配，无需派生。gitignore 语义
 /// 的 exclude 本就任意深度生效，此差异只影响 `rm --cached` 这类 pathspec 调用。
 fn secret_pathspecs() -> Vec<String> {
-    let mut patterns: Vec<String> = SECRET_EXCLUDES.iter().map(|line| line.to_string()).collect();
+    // :(icase) 对齐 Windows 默认 core.ignorecase=true 的 exclude 语义：大写命名
+    // 的敏感文件（.ENV 等）也被 purge 命中。
+    let mut patterns: Vec<String> = SECRET_EXCLUDES
+        .iter()
+        .map(|line| format!(":(icase){line}"))
+        .collect();
     for line in SECRET_EXCLUDES {
         if !line.contains(['*', '?', '[']) {
-            patterns.push(format!("**/{line}"));
+            patterns.push(format!(":(icase)**/{line}"));
         }
     }
     patterns
@@ -511,11 +516,16 @@ fn wildcard_match(pattern: &str, text: &str) -> bool {
 /// 含 `*` 的按 basename 通配（任意深度）。
 fn secret_path_matches(path: &str) -> bool {
     let basename = path.rsplit('/').next().unwrap_or(path);
+    // Windows 下 gitignore exclude 默认 core.ignorecase=true（.ENV 也被排除）；
+    // 过滤侧对齐为 ASCII 大小写不敏感，避免 legacy 仓库里大写命名的敏感文件
+    // 逃过 purge/预览过滤。
+    let basename_lower = basename.to_ascii_lowercase();
     SECRET_EXCLUDES.iter().any(|pattern| {
-        if pattern.contains('*') {
-            wildcard_match(pattern, basename)
+        let pattern_lower = pattern.to_ascii_lowercase();
+        if pattern_lower.contains('*') {
+            wildcard_match(&pattern_lower, &basename_lower)
         } else {
-            basename == *pattern
+            basename_lower == pattern_lower
         }
     })
 }
