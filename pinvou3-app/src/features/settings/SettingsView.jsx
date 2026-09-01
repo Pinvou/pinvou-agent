@@ -1618,12 +1618,15 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                     {/* 上下文窗口（云端模型可选）：目录未收录的新模型 ID（厂商新发布）
                         无法被 catalog 识别，运行时只能落到 128K 保守窗口。此处按官方
                         标称值声明后 route_limits 优先采用；留空 = null = 保持现状
-                        默认（doSave 既有语义，不改任何存量行为）。本地模型由探测的
-                        max_model_len 提供权威窗口，不显示此字段。 */}
+                        默认（doSave 既有语义，不改任何存量行为）。local_vllm preset
+                        不显示此字段（探测的 max_model_len 是权威窗口）；
+                        openai_compatible 指向本机端点时仍显示，超填会被运行时
+                        探测值取 min 钳制。输入截断到 9 位：context_window_tokens
+                        落盘为 u32，防止保存报原始反序列化错误或 Infinity 静默落 null。 */}
                     {!isLocalPreset && renderInlineField({
                       label: t.modelContextWindow,
                       value: contextWindow,
-                      onChange: e => setContextWindow(e.target.value.replaceAll(/[^0-9]/g, '')), // eslint-disable-line sonarjs/concise-regex -- keep [^0-9] literal instead of \D; readability first
+                      onChange: e => setContextWindow(e.target.value.replaceAll(/[^0-9]/g, '').slice(0, 9)), // eslint-disable-line sonarjs/concise-regex -- keep [^0-9] literal instead of \D; readability first
                       placeholder: settingsCopy.modelContextWindowPlaceholder,
                       testId: 'model-form-context-window',
                       inputMode: 'numeric',

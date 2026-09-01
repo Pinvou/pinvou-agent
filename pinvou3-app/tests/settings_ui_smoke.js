@@ -995,6 +995,22 @@ async function modalWidth(page, headingText) {
   rec('⑥.5i 清空上下文窗口保存为 null（保持系统默认，不写 0/垃圾值）',
     clearedContext && clearedContext.model === 'glm-5.3-flash' && clearedContext.context_window_tokens === null,
     JSON.stringify(clearedContext));
+  // 输入上限：context_window_tokens 落盘为 u32，超长输入必须被截断在 9 位内，
+  // 否则保存报原始 serde 反序列化错误（或 Infinity 静默落 null）。
+  await clickRowAction(page, 'glm-5.3-flash', '编辑');
+  await sleep(300);
+  await page.evaluate(() => {
+    const field = document.querySelector('[data-testid="model-form-context-window"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(field, '9999999999999');
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(150);
+  const overflowTruncated = await page.evaluate(() =>
+    document.querySelector('[data-testid="model-form-context-window"]').value);
+  rec('⑥.5j 超长数字输入截断到 9 位（u32 落盘上限内）', overflowTruncated === '999999999', JSON.stringify({ overflowTruncated }));
+  await clickExact(page, '取消');
+  await sleep(200);
 
   await clickExact(page, '添加模型');
   await sleep(300);
