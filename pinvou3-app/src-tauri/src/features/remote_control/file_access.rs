@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use base64::Engine as _;
 use serde::Serialize;
 
-use super::platform;
 use super::MAX_TRANSFER_CHUNK_BYTES;
+use super::platform;
 use crate::features::sessions::SessionStore;
 use crate::platform::paths;
 

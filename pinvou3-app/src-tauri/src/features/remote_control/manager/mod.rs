@@ -11,12 +11,12 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter};
 
 use super::platform;
 use super::protocol::{
-    WebAccessConfig, WebAccessInfo, WebAccessStatus, WebAccessStatusKind, PROTOCOL_VERSION,
+    PROTOCOL_VERSION, WebAccessConfig, WebAccessInfo, WebAccessStatus, WebAccessStatusKind,
 };
 use super::relay_client::{self, RelayInbound, RelayOutbound, RelaySender};
 
@@ -46,13 +46,13 @@ use persistence::{
 // enums (`RpcRequestAction`, `RpcReadyAction`, `EventSource`, ...) and calls
 // the pure helpers, so the whole surface is imported by name.
 use rpc::{
+    EventSource, NewRpcAdmission, ReplayMessageContext, RpcReadyAction, RpcRequestAction,
     bounded_rpc_completion, enqueue_stream_reset, event_message, is_event_subscribed,
     prepare_bridge_generation, prepare_new_rpc_admission, prune_rpc_cache,
     request_conflict_completion, rpc_admission_rejection, rpc_error_completion, rpc_fingerprint,
     rpc_in_flight_expired, rpc_response, snapshot_message, stream_reset_message,
     subscription_filtered_replay_messages, tombstone_completion, try_enqueue_message_batch,
-    validate_bridge_generation, validate_rpc_command, validate_web_rpc_scope, EventSource,
-    NewRpcAdmission, ReplayMessageContext, RpcReadyAction, RpcRequestAction,
+    validate_bridge_generation, validate_rpc_command, validate_web_rpc_scope,
 };
 
 // The transfer buffer helpers mutate `Inner` through borrowed guards. They are
@@ -68,8 +68,8 @@ use transfer::{
 };
 pub(crate) use transfer::{sweep_stale_web_attachment_uploads, web_attachment_uploads_base};
 use workspace_grants::{
-    require_host_workspace_authorization, WebWorkspaceGrantReservation, WebWorkspaceGrantStore,
-    WebWorkspaceIdentity,
+    WebWorkspaceGrantReservation, WebWorkspaceGrantStore, WebWorkspaceIdentity,
+    require_host_workspace_authorization,
 };
 
 // 正式安装包默认连接生产 Relay；本地联调由 run-dev.sh 显式覆盖到隔离的
@@ -982,12 +982,14 @@ impl RemoteControlManager {
 
     fn start_web_session_transfer_reaper(&self) {
         let inner = Arc::downgrade(&self.inner);
-        std::thread::spawn(move || loop {
-            std::thread::sleep(WEB_SESSION_TRANSFER_REAPER_INTERVAL);
-            let Some(inner) = inner.upgrade() else {
-                break;
-            };
-            prune_expired_web_session_transfers(&mut inner.lock());
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(WEB_SESSION_TRANSFER_REAPER_INTERVAL);
+                let Some(inner) = inner.upgrade() else {
+                    break;
+                };
+                prune_expired_web_session_transfers(&mut inner.lock());
+            }
         });
     }
 
@@ -1273,10 +1275,11 @@ impl RemoteControlManager {
         );
         let mut results = Vec::with_capacity(handles.len());
         for handle in handles {
-            let cached = inner
-                .web_attachments
-                .get_mut(handle)
-                .expect("attachment presence checked above");
+            // Already validated via contains_key in the critical section above;
+            // still return an error as a fallback instead of panicking.
+            let Some(cached) = inner.web_attachments.get_mut(handle) else {
+                return Err(format!("远程控制附件句柄不存在或已过期：{handle}"));
+            };
             cached.reservation_id = Some(reservation_id.clone());
             results.push(cached.result.clone());
         }
@@ -1444,10 +1447,12 @@ impl RemoteControlManager {
                 upload.data.len()
             ));
         }
+        // Presence was just verified via get_mut within the same borrow
+        // above; still return an error as a fallback instead of panicking.
         let completed = inner
             .web_session_uploads
             .remove(upload_id)
-            .expect("upload exists above")
+            .ok_or("远程控制会话上传不存在或已过期")?
             .data;
         inner.web_session_upload_order.retain(|id| id != upload_id);
         Ok(Some(completed))
@@ -1556,10 +1561,11 @@ impl RemoteControlManager {
                 MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES / (1024 * 1024)
             ));
         }
-        let download = inner
-            .web_session_downloads
-            .get_mut(download_id)
-            .expect("reservation checked above");
+        // Reservation presence was verified in the same critical section
+        // above; still return an error as a fallback instead of panicking.
+        let Some(download) = inner.web_session_downloads.get_mut(download_id) else {
+            return Err("remote-control session download reservation is missing or expired".into());
+        };
         download.reserved_bytes = total;
         download.total = total;
         download.ready = true;
@@ -2894,7 +2900,7 @@ mod tests {
         acknowledge_pending_revocation_at, load_config_from, load_pending_revocations_from,
         queue_pending_revocation_at,
     };
-    use super::rpc::{web_session_scope, WebSessionScope};
+    use super::rpc::{WebSessionScope, web_session_scope};
     use super::*;
 
     const TEST_ENDPOINT_ID: &str = "ep_test";
@@ -3318,10 +3324,12 @@ mod tests {
             staging.exists(),
             "an active turn still needs the source file"
         );
-        assert!(inner
-            .web_attachments
-            .get("attachment_a")
-            .is_some_and(|cached| cached.discard_requested));
+        assert!(
+            inner
+                .web_attachments
+                .get("attachment_a")
+                .is_some_and(|cached| cached.discard_requested)
+        );
 
         finish_web_attachment_reservation_inner(
             &mut inner,
@@ -3697,9 +3705,11 @@ mod tests {
         }
         assert_eq!(ledger.entries.len(), RPC_CACHE_CAPACITY);
         assert!(ledger.get("request-0").is_none());
-        assert!(ledger
-            .get(&format!("request-{RPC_CACHE_CAPACITY}"))
-            .is_some());
+        assert!(
+            ledger
+                .get(&format!("request-{RPC_CACHE_CAPACITY}"))
+                .is_some()
+        );
     }
 
     #[test]
@@ -3980,9 +3990,11 @@ mod tests {
         assert_eq!(stream.seq, 0);
         assert!(stream.journal.is_empty());
         assert_eq!(stream.journal_bytes, 0);
-        assert!(stream
-            .replay_after(0)
-            .is_some_and(|events| events.is_empty()));
+        assert!(
+            stream
+                .replay_after(0)
+                .is_some_and(|events| events.is_empty())
+        );
 
         stream
             .record_with_limits(

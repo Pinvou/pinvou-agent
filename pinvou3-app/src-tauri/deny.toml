@@ -17,16 +17,12 @@ ignore = [
     # 本应用仅新增同版本直接依赖，以便在 GTK 主线程原子执行主窗口 show/deiconify/present；
     # 等 Tauri 提供 GTK4 runtime 后移除此依赖与例外。
     "RUSTSEC-2024-0415",
-    # quick-xml DoS/ReDoS(解析恶意 XML 的二次复杂度/内存耗尽)。本仓 quick-xml 原经
-    # calamine 0.26(→0.31.0)与 plist/tauri(→0.39.4)传递引入;均已只读解析用户提供的
-    # xlsx/plist,非网络面 XML 输入,风险中等。
-    # calamine 已在依赖升级 PR(reqwest/sha2/calamine/tokio-tungstenite 安全升级)升到 0.36
-    # (→quick-xml 0.41+),消除了 calamine 这一路的 0.31.0。
-    # 剩余 quick-xml 0.39.4 由 plist 1.9.0(pinned 在 tauri 2.11)传递引入,plist 的
-    # quick-xml 是 ^0.39.2,< 0.40,本仓不可单独抬;等 tauri 升级带 plist 升级后自然消失。
-    # 暂按已知风险接受(本 ignore 仍命中 plist 那一路;calamine 一路已不再命中)。
-    "RUSTSEC-2026-0194", # quick-xml 二次复杂度(plist/tauri 传递,等上游 plist)
-    "RUSTSEC-2026-0195", # quick-xml NsReader 内存耗尽(plist/tauri 传递,等上游 plist)
+    # RUSTSEC-2026-0194 (quick-xml quadratic complexity) and
+    # RUSTSEC-2026-0195 (NsReader memory exhaustion) no longer match:
+    # both advisories are fixed in quick-xml >=0.41.0, and the lockfile
+    # already resolves 0.41.0 (both the plist 1.10.0 and calamine 0.36.1
+    # paths). Without an ignore entry, a future dependency downgrade below
+    # 0.41 would trip the advisory and fail CI again — reassess then.
 ]
 # unmaintained 保留 "workspace":父 crate 依赖图比子模块深
 # (子模块 + Tauri GTK3/glib + fastembed),实测 unmaintained="all" 会命中 gtk-rs GTK3、
@@ -34,6 +30,10 @@ ignore = [
 # 的条目并 fail CI。这些非本仓可修(等 tauri/gtk-rs 升级),"workspace" 仅报 workspace crate,
 # 把噪声挡在 CI 之外;真漏洞仍由上面的 ignore 显式管理 + cargo update 修复。
 unmaintained = "workspace"
+# Yanked versions fail directly: the default warn level is not enough — a
+# yanked entry in the lockfile breaks reproducible builds once the dependency
+# graph changes later; fail early, replace early.
+yanked = "deny"
 
 [licenses]
 version = 2

@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use super::{binary_placeholder, estimate_tokens, secret_placeholder, IngestResult};
+use super::{IngestResult, binary_placeholder, estimate_tokens, secret_placeholder};
 
 /// 已知文本扩展名（txt/md/json/csv/...）的摄入：读字节 → 私钥内容兜底 → 统一解码。
 pub(super) fn ingest_text(

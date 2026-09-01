@@ -15,9 +15,9 @@ use anyhow::{Context, Result};
 use deepseek_tui::models::{ContentBlock, Message};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::features::assistant::platform::bridge::{prefs::ModelPreset, Pinvou3Bridge};
+use crate::features::assistant::platform::bridge::{Pinvou3Bridge, prefs::ModelPreset};
 
 const PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾问，召之即来。
 
@@ -341,7 +341,9 @@ fn latest_artifact_file(messages: &[Message], workspace: &Path) -> Option<(Strin
     let n = content.chars().count();
     let bounded = if n > ARTIFACT_CHAR_LIMIT {
         let head: String = content.chars().take(ARTIFACT_CHAR_LIMIT).collect();
-        format!("{head}\n\n…（产物共 {n} 字，这里是前 {ARTIFACT_CHAR_LIMIT} 字；后半未展示，如需审让 Boss 指定。P1 改 map-reduce 分块全审）")
+        format!(
+            "{head}\n\n…（产物共 {n} 字，这里是前 {ARTIFACT_CHAR_LIMIT} 字；后半未展示，如需审让 Boss 指定。P1 改 map-reduce 分块全审）"
+        )
     } else {
         content
     };
@@ -1123,9 +1125,11 @@ mod tests {
     fn output_language_directive_per_locale() {
         let en = output_language_directive("en").expect("en 应有指令");
         assert!(en.contains("English") && en.contains("OVERRIDES"));
-        assert!(output_language_directive("ja")
-            .unwrap()
-            .contains("Japanese"));
+        assert!(
+            output_language_directive("ja")
+                .unwrap()
+                .contains("Japanese")
+        );
         assert!(
             output_language_directive("zh-Hans")
                 .unwrap()

@@ -3,17 +3,17 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::future::Future;
-use std::io::{copy, Read};
+use std::io::{Read, copy};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use agent_backend_api::{
-    notify_observer, AgentBackendError, AgentRunObserver, AgentSessionHandle, AgentTaskInput,
-    AgentTaskOutcome, HeadlessAgentBackend, PrepareRequest, PrivateInputResolver,
-    PrivateOutputHandle, PrivateOutputResolver, ResolvedAttachmentSource, SafeAgentEvent,
-    SafeRunStatus, SafeUsageMetrics, SecretOutput, SecretText, SuiteModelIdentity,
+    AgentBackendError, AgentRunObserver, AgentSessionHandle, AgentTaskInput, AgentTaskOutcome,
+    HeadlessAgentBackend, PrepareRequest, PrivateInputResolver, PrivateOutputHandle,
+    PrivateOutputResolver, ResolvedAttachmentSource, SafeAgentEvent, SafeRunStatus,
+    SafeUsageMetrics, SecretOutput, SecretText, SuiteModelIdentity, notify_observer,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -27,7 +27,7 @@ use crate::features::assistant::attachments::{
 use crate::features::assistant::engine_pool::{EnginePool, EngineToolFactory, ToolPolicy};
 use crate::features::assistant::platform::headless_attachments::ensure_staged_attachments_supported;
 use crate::features::assistant::product_runtime::eval_tool_policy::{
-    resolve_eval_policy, EvalToolPolicy,
+    EvalToolPolicy, resolve_eval_policy,
 };
 use crate::features::assistant::product_runtime::{
     EnginePoolRuntime, EvalSuiteModelGuard, ProductChatRuntime, SessionSpec, TurnInput,
@@ -1046,6 +1046,7 @@ where
 {
     crate::install_rustls_provider();
     crate::ensure_release_env();
+    crate::startup_process_env();
     let async_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(16 * 1024 * 1024)
@@ -1308,16 +1309,20 @@ mod tests {
             error.to_string(),
             "agent backend operation failed: run_failed"
         );
-        assert!(!backend
-            .tool_policies
-            .lock()
-            .unwrap()
-            .contains_key(session.expose_to_backend()));
-        assert!(!backend
-            .runtime_sessions
-            .lock()
-            .unwrap()
-            .contains_key(session.expose_to_backend()));
+        assert!(
+            !backend
+                .tool_policies
+                .lock()
+                .unwrap()
+                .contains_key(session.expose_to_backend())
+        );
+        assert!(
+            !backend
+                .runtime_sessions
+                .lock()
+                .unwrap()
+                .contains_key(session.expose_to_backend())
+        );
         assert_eq!(
             runtime
                 .calls
@@ -1449,16 +1454,20 @@ mod tests {
         runtime.cancel_called.notified().await;
         cancelling.abort();
         assert!(cancelling.await.unwrap_err().is_cancelled());
-        assert!(!backend
-            .tool_policies
-            .lock()
-            .unwrap()
-            .contains_key(session.expose_to_backend()));
-        assert!(backend
-            .runtime_sessions
-            .lock()
-            .unwrap()
-            .contains_key(session.expose_to_backend()));
+        assert!(
+            !backend
+                .tool_policies
+                .lock()
+                .unwrap()
+                .contains_key(session.expose_to_backend())
+        );
+        assert!(
+            backend
+                .runtime_sessions
+                .lock()
+                .unwrap()
+                .contains_key(session.expose_to_backend())
+        );
 
         backend.close(session).await.unwrap();
         assert_eq!(runtime.close_calls.load(Ordering::Relaxed), 1);

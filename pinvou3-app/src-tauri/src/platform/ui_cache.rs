@@ -32,7 +32,10 @@ pub(crate) fn configure_runtime_environment() {
     #[cfg(target_os = "windows")]
     if std::env::var_os("HOME").is_none() {
         if let Some(profile) = std::env::var_os("USERPROFILE") {
-            std::env::set_var("HOME", profile);
+            // SAFETY: only called during the run() startup sequence (single-threaded
+            // phase, Tauri/tokio runtimes not started); same startup env-write
+            // collection as the other env writes here, no concurrent readers.
+            unsafe { std::env::set_var("HOME", profile) };
         }
     }
 
@@ -40,7 +43,9 @@ pub(crate) fn configure_runtime_environment() {
     {
         for (key, value) in LINUX_UI_ENV_DEFAULTS {
             if std::env::var_os(key).is_none() {
-                std::env::set_var(key, value);
+                // SAFETY: only called during the run() startup sequence (single-threaded
+                // phase, no child process or thread started yet).
+                unsafe { std::env::set_var(key, value) };
             }
         }
         let has_override = WEBKIT_RENDERING_OVERRIDE_KEYS
@@ -49,7 +54,8 @@ pub(crate) fn configure_runtime_environment() {
         let is_arm64_nvidia =
             cfg!(target_arch = "aarch64") && Path::new("/proc/driver/nvidia/version").is_file();
         if should_force_webkit_dmabuf_shm(is_arm64_nvidia, has_override) {
-            std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1");
+            // SAFETY: same as above, run() startup sequence single-threaded phase.
+            unsafe { std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1") };
         }
     }
 }
@@ -194,9 +200,11 @@ mod tests {
         assert!(should_force_webkit_dmabuf_shm(true, false));
         assert!(!should_force_webkit_dmabuf_shm(true, true));
         assert!(!should_force_webkit_dmabuf_shm(false, false));
-        assert!(!LINUX_UI_ENV_DEFAULTS
-            .iter()
-            .any(|(key, _)| *key == "WEBKIT_DISABLE_COMPOSITING_MODE"));
+        assert!(
+            !LINUX_UI_ENV_DEFAULTS
+                .iter()
+                .any(|(key, _)| *key == "WEBKIT_DISABLE_COMPOSITING_MODE")
+        );
     }
 }
 

@@ -32,6 +32,15 @@ pub fn command_exists(command: &str) -> bool {
     super::super::platform::command_exists(command)
 }
 
+/// OS-specific single-threaded startup-window env writes (Windows:
+/// `ORT_DYLIB_PATH` / LibreOffice `PATH` prepend; no-op on other
+/// platforms). Called only by lib.rs `startup_process_env` before the
+/// first thread spawn; the multi-threaded phase must not write the
+/// process env (edition 2024 concurrent-reader risk).
+pub fn startup_platform_env() {
+    super::super::platform::startup_platform_env()
+}
+
 pub fn current_system_locale() -> Option<String> {
     super::super::platform::current_system_locale()
 }

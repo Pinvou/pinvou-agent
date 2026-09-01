@@ -8,16 +8,16 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc, LazyLock,
+    atomic::{AtomicU64, Ordering},
 };
 use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::json;
 use tauri::{
-    webview::{DownloadEvent, NewWindowResponse, PageLoadEvent},
     Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewBuilder, WebviewUrl,
+    webview::{DownloadEvent, NewWindowResponse, PageLoadEvent},
 };
 
 use super::super::{NativeSurfaceBounds, TabInfo};
@@ -379,15 +379,8 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             return Err("No browser automation backend is available on this platform".to_string());
         }
         self.reap_quarantined_for_session(app, session_id)?;
-        if self.workspaces.contains_key(session_id) {
-            return Ok(self
-                .workspaces
-                .get(session_id)
-                .expect("workspace was already validated")
-                .tabs
-                .iter()
-                .map(|tab| tab.token.clone())
-                .collect());
+        if let Some(workspace) = self.workspaces.get(session_id) {
+            return Ok(workspace.tabs.iter().map(|tab| tab.token.clone()).collect());
         }
         if self
             .platform
@@ -462,6 +455,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         }
 
         let mut entries = entries.into_iter();
+        // restore.urls was validated non-empty at the top of this function and
+        // entries was built one-to-one from it, so the first entry exists.
+        #[allow(clippy::expect_used)]
         let first = entries
             .next()
             .expect("restore manifest contains at least one tab");
@@ -898,9 +894,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 creation_id,
             ) {
                 Ok(_) => Err(error),
-                Err(rollback_error) => {
-                    Err(format!("{error}; exact rollback of hidden candidate failed: {rollback_error}"))
-                }
+                Err(rollback_error) => Err(format!(
+                    "{error}; exact rollback of hidden candidate failed: {rollback_error}"
+                )),
             },
         }
     }
@@ -1083,6 +1079,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             return Ok(Some(tab_token.to_string()));
         }
         self.ensure_tab_capacity(session_id)?;
+        // The workspace lookup above returned Some under the same &mut self,
+        // and nothing since could have removed it.
+        #[allow(clippy::expect_used)]
         let workspace = self
             .workspaces
             .get(session_id)
@@ -1125,6 +1124,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         let created_label = entry.label.clone();
         let created_publication = Arc::clone(&entry.published);
 
+        // The workspace lookup above returned Some under the same &mut self,
+        // and nothing since could have removed it.
+        #[allow(clippy::expect_used)]
         let workspace = self
             .workspaces
             .get_mut(session_id)
@@ -1280,18 +1282,22 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         })?;
         set_exclusive_workspace_visibility(&mut self.workspaces, session_id);
         {
+            // The is_some_and check above confirmed the workspace exists, and
+            // this method holds &mut self throughout.
+            #[allow(clippy::expect_used)]
             let workspace = self
                 .workspaces
                 .get_mut(session_id)
                 .expect("workspace was checked above");
             workspace.bounds = Some(bounds);
         }
-        let show_result = show_active_workspace(
-            window.app_handle(),
-            self.workspaces
-                .get(session_id)
-                .expect("workspace was checked above"),
-        );
+        // Same checked-existence invariant as the block directly above.
+        #[allow(clippy::expect_used)]
+        let workspace = self
+            .workspaces
+            .get(session_id)
+            .expect("workspace was checked above");
+        let show_result = show_active_workspace(window.app_handle(), workspace);
         if let Err(error) = show_result {
             if let Some(workspace) = self.workspaces.get_mut(session_id) {
                 workspace.visible = false;
@@ -1306,7 +1312,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                     match show_active_workspace(window.app_handle(), previous) {
                         Ok(()) => self.active_session = Some(previous_session.to_string()),
                         Err(restore_error) => {
-                            eprintln!("[browser] Failed to roll back native workspace display: {restore_error}");
+                            eprintln!(
+                                "[browser] Failed to roll back native workspace display: {restore_error}"
+                            );
                             if let Some(previous) = self.workspaces.get_mut(previous_session) {
                                 previous.visible = false;
                             }
@@ -1561,10 +1569,14 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                     if let Err(restore_error) =
                         persist_workspace_snapshot(workspace, rollback.revision)
                     {
-                        eprintln!("[browser] Failed to roll back user tab activation mapping: {restore_error}");
+                        eprintln!(
+                            "[browser] Failed to roll back user tab activation mapping: {restore_error}"
+                        );
                     }
                     if let Err(restore_error) = show_active_workspace(app, workspace) {
-                        eprintln!("[browser] Failed to roll back user tab activation display: {restore_error}");
+                        eprintln!(
+                            "[browser] Failed to roll back user tab activation display: {restore_error}"
+                        );
                     }
                     emit_control_changed(app, session_id, &workspace.active_tab, rollback);
                     return Err(error);
@@ -1858,6 +1870,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         }
         let entry = entry.clone();
         let control = Arc::clone(&workspace.control);
+        // The workspace lookup above returned Some under the same &mut self,
+        // and nothing since could have removed it.
+        #[allow(clippy::expect_used)]
         let workspace = self
             .workspaces
             .get_mut(session_id)
@@ -1886,8 +1901,13 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         }
         if let Some(app) = app {
             if let Err(error) = self.persist_restore_workspace(app, session_id) {
-                eprintln!("[browser] Failed to refresh restore manifest after creation compensation: {error}");
+                eprintln!(
+                    "[browser] Failed to refresh restore manifest after creation compensation: {error}"
+                );
             }
+            // The workspace lookup above returned Some under the same &mut
+            // self, and the compensation path never removes it.
+            #[allow(clippy::expect_used)]
             let workspace = self
                 .workspaces
                 .get(session_id)
@@ -2173,6 +2193,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             .get(session_id)
             .is_some_and(|workspace| workspace.tabs.is_empty());
         if workspace_empty {
+            // workspace_empty above proved the key exists; this method holds
+            // &mut self, so the entry cannot disappear before removal.
+            #[allow(clippy::expect_used)]
             let workspace = self
                 .workspaces
                 .remove(session_id)
@@ -2533,7 +2556,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                     if let Err(restore_error) =
                         persist_workspace_snapshot(workspace, rollback.revision)
                     {
-                        eprintln!("[browser] Failed to roll back user pending-tab mapping: {restore_error}");
+                        eprintln!(
+                            "[browser] Failed to roll back user pending-tab mapping: {restore_error}"
+                        );
                     }
                     emit_control_changed(app, session_id, &workspace.active_tab, rollback);
                     return Err(error);
@@ -2546,10 +2571,14 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                         if let Err(restore_error) =
                             persist_workspace_snapshot(workspace, rollback.revision)
                         {
-                            eprintln!("[browser] Failed to roll back user pending-tab display mapping: {restore_error}");
+                            eprintln!(
+                                "[browser] Failed to roll back user pending-tab display mapping: {restore_error}"
+                            );
                         }
                         if let Err(restore_error) = show_active_workspace(app, workspace) {
-                            eprintln!("[browser] Failed to roll back user pending-tab physical surface: {restore_error}");
+                            eprintln!(
+                                "[browser] Failed to roll back user pending-tab physical surface: {restore_error}"
+                            );
                         }
                         emit_control_changed(app, session_id, &workspace.active_tab, rollback);
                         return Err(error);
@@ -2956,10 +2985,12 @@ fn persist_workspace_snapshot(workspace: &Workspace, revision: u64) -> Result<()
 }
 
 fn workspace_state_value_with_revision(workspace: &Workspace, revision: u64) -> serde_json::Value {
-    debug_assert!(workspace
-        .tabs
-        .iter()
-        .all(|tab| tab.automation_target.is_some()));
+    debug_assert!(
+        workspace
+            .tabs
+            .iter()
+            .all(|tab| tab.automation_target.is_some())
+    );
     json!({
         "version": 2,
         "mapping_authority": "host",
@@ -3553,7 +3584,9 @@ fn build_webview<P: PlatformWebviewConfig>(
                 )))
             }
             Err(close_error) => Err(WebviewBuildError::with_survivor(
-                format!("Failed to initialize hidden browser tab: {hide_error}; compensating close failed: {close_error}"),
+                format!(
+                    "Failed to initialize hidden browser tab: {hide_error}; compensating close failed: {close_error}"
+                ),
                 entry,
             )),
         };
@@ -3633,6 +3666,10 @@ where
         .ok_or_else(|| "browser/control-lease-lost".to_string())
 }
 
+// Callers check the tab exists before closing its WebView, so remove_token
+// always succeeds; after a non-empty close, `fallback` is clamped into
+// 0..tabs.len(), so token_at always succeeds.
+#[allow(clippy::expect_used)]
 fn remove_tab_from_workspace(workspace: &mut Workspace, tab_token: &str) {
     let (index, _) = workspace
         .tabs
@@ -3726,6 +3763,9 @@ fn reconcile_workspace_close(
         .collect::<Vec<_>>();
     let mut errors = Vec::new();
     for token in tokens {
+        // tokens was snapshotted from this workspace's tab list, and each
+        // token is removed at most once below.
+        #[allow(clippy::expect_used)]
         let entry = workspace
             .tabs
             .by_token(&token)
@@ -3764,6 +3804,9 @@ fn reconcile_staged_close(
     keys.sort();
     let mut errors = Vec::new();
     for key in keys {
+        // keys was snapshotted from staged_tabs, and each key is removed at
+        // most once below.
+        #[allow(clippy::expect_used)]
         let entry = staged_tabs
             .get(&key)
             .cloned()
@@ -3805,6 +3848,9 @@ fn reconcile_quarantined_close(
     keys.sort();
     let mut errors = Vec::new();
     for key in keys {
+        // keys was snapshotted from quarantined_tabs, and each key is removed
+        // at most once below.
+        #[allow(clippy::expect_used)]
         let entry = quarantined_tabs
             .get(&key)
             .cloned()
@@ -4055,9 +4101,11 @@ fn browser_initialization_script(
     location_signal_nonce: &str,
 ) -> String {
     debug_assert!(location_signal_nonce.len() == 32);
-    debug_assert!(location_signal_nonce
-        .bytes()
-        .all(|byte| byte.is_ascii_hexdigit()));
+    debug_assert!(
+        location_signal_nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    );
     let bootstrap_identity = cdp_tab_token
         .map(|tab_token| {
             debug_assert!(is_valid_token(tab_token));
@@ -4184,7 +4232,8 @@ mod tests {
     impl TestHomeGuard {
         fn install(path: &Path) -> Self {
             let previous = std::env::var_os("PINVOU3_HOME");
-            std::env::set_var("PINVOU3_HOME", path);
+            // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+            unsafe { std::env::set_var("PINVOU3_HOME", path) };
             Self { previous }
         }
     }
@@ -4192,8 +4241,10 @@ mod tests {
     impl Drop for TestHomeGuard {
         fn drop(&mut self) {
             match self.previous.take() {
-                Some(value) => std::env::set_var("PINVOU3_HOME", value),
-                None => std::env::remove_var("PINVOU3_HOME"),
+                // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+                Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+                // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
             }
         }
     }
@@ -4748,16 +4799,22 @@ mod tests {
             .unwrap();
         assert!(!surface.has_session("session-a"));
         assert!(surface.owns_session_resources("session-a"));
-        assert!(surface
-            .webview_label_for_tab("session-a", "0123456789abcdef")
-            .is_none());
-        assert!(surface
-            .webview_label_for_tab("session-a", "1111111111111111")
-            .is_none());
-        assert!(surface
-            .quarantined_tabs
-            .values()
-            .all(|entry| !entry.is_published()));
+        assert!(
+            surface
+                .webview_label_for_tab("session-a", "0123456789abcdef")
+                .is_none()
+        );
+        assert!(
+            surface
+                .webview_label_for_tab("session-a", "1111111111111111")
+                .is_none()
+        );
+        assert!(
+            surface
+                .quarantined_tabs
+                .values()
+                .all(|entry| !entry.is_published())
+        );
 
         let first =
             reconcile_quarantined_close(&mut surface.quarantined_tabs, "session-a", |entry| {
@@ -4892,9 +4949,11 @@ mod tests {
             test_entry(&key.1, "staged-agent", 2, false, Some("create-a")),
         );
 
-        assert!(surface
-            .rollback_staged_agent_creation(None, "session-a", &key.1, "wrong-generation")
-            .is_err());
+        assert!(
+            surface
+                .rollback_staged_agent_creation(None, "session-a", &key.1, "wrong-generation")
+                .is_err()
+        );
         assert!(surface.staged_tabs.contains_key(&key));
         assert_eq!(
             surface.rollback_staged_agent_creation(None, "session-a", &key.1, "create-a"),
@@ -4965,10 +5024,7 @@ mod tests {
             Some(1)
         );
 
-        surface
-            .workspaces
-            .get("session-a")
-            .unwrap()
+        surface.workspaces["session-a"]
             .control
             .bump(Some(NativeControlOwner::User));
         assert_eq!(
@@ -5026,7 +5082,8 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous_home = std::env::var_os("PINVOU3_HOME");
         let temp = tempfile::tempdir().unwrap();
-        std::env::set_var("PINVOU3_HOME", temp.path());
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", temp.path()) };
 
         let session_id = format!(
             "missing-created-blank-{}-{}",
@@ -5082,8 +5139,10 @@ mod tests {
         assert!(restore_path.exists());
 
         match previous_home {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }
 
@@ -5343,10 +5402,12 @@ mod tests {
             br#"{"version":1,"active_index":0,"target_id":"old","tabs":[{"url":"https://example.com"}]}"#,
         )
         .is_err());
-        assert!(parse_restore_workspace(
-            br#"{"version":1,"active_index":0,"tabs":[{"url":"file:///secret"}]}"#,
-        )
-        .is_err());
+        assert!(
+            parse_restore_workspace(
+                br#"{"version":1,"active_index":0,"tabs":[{"url":"file:///secret"}]}"#,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -5428,10 +5489,7 @@ mod tests {
         let mut forged = lease.clone();
         forged.lease = "00000000000000000000000000000000".to_string();
         assert!(!surface.assert_lease(&forged).unwrap());
-        surface
-            .workspaces
-            .get("session-a")
-            .unwrap()
+        surface.workspaces["session-a"]
             .control
             .bump(Some(NativeControlOwner::User));
         assert!(!surface.assert_lease(&lease).unwrap());
@@ -5597,9 +5655,11 @@ mod tests {
             },
         );
 
-        assert!(surface
-            .bind_target("session-b", "fedcba9876543210", "target-a")
-            .is_err());
+        assert!(
+            surface
+                .bind_target("session-b", "fedcba9876543210", "target-a")
+                .is_err()
+        );
     }
 
     #[test]

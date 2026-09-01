@@ -5,7 +5,7 @@
 //! 保留 EnginePool 与 headless 评测宿主仍消费的模型身份、不可变选中快照
 //! 与 judge 身份校验。
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ModelIdentity {
@@ -103,7 +103,7 @@ pub(crate) fn validate_judge_identity(tested: &ModelIdentity, judge: &ModelIdent
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_judge_identity, EvalModelSelection, ModelIdentity};
+    use super::{EvalModelSelection, ModelIdentity, validate_judge_identity};
 
     #[test]
     fn selection_is_a_non_sensitive_immutable_snapshot() {

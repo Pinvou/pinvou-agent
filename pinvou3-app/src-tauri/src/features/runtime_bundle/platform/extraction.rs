@@ -673,41 +673,54 @@ impl Pinvou3Bundle {
         // 条目自愈恢复(parse 失败早期返回会让坏 mcp.json 永远修不好)。
         let mut mcp = self.load_mcp_json_for_repair();
         let present_server = paths::bundle_present_artifact_server();
-        if mcp.get("servers").and_then(|s| s.as_object()).is_none() {
-            mcp.as_object_mut()
-                .unwrap()
-                .insert("servers".into(), serde_json::json!({}));
+        // Both paths of load_mcp_json_for_repair return an object skeleton;
+        // reaching either arm below means the user hand-edited mcp.json into
+        // a valid-but-unexpected shape, so include the file path in the error.
+        let Some(mcp_object) = mcp.as_object_mut() else {
+            return Err(std::io::Error::other(format!(
+                "mcp.json top level is not an object: {}",
+                self.mcp_json.display()
+            )));
+        };
+        if mcp_object
+            .get("servers")
+            .and_then(|s| s.as_object())
+            .is_none()
+        {
+            mcp_object.insert("servers".into(), serde_json::json!({}));
         }
+        let Some(servers) = mcp["servers"].as_object_mut() else {
+            return Err(std::io::Error::other(format!(
+                "mcp.json servers value is not an object: {}",
+                self.mcp_json.display()
+            )));
+        };
+        // 迁移:旧版 server key 是 `pinvou`(与产品名 `pinvou3` 差一个 3,模型采样必漂成
+        // pinvou3 → `Failed to find MCP server: pinvou3`)。改用 `pinvou3` 对齐产品名,并删掉
+        // 旧 `pinvou` 条目——upsert 不会自动删旧名,不删会留两个指向同一脚本的 server。
+        servers.remove("pinvou");
         // Windows 用内置 pythonw(无窗口 + 自带依赖);其他平台系统 python3。见 paths::python_command。
         let python_cmd = paths::python_command();
-        {
-            let servers = mcp["servers"].as_object_mut().unwrap();
-            // Migrate the legacy `pinvou` server key to the product-aligned `pinvou3` key.
-            // Models otherwise tend to request `pinvou3` and receive
-            // `Failed to find MCP server: pinvou3`. Upsert does not remove the old key, so
-            // delete it explicitly to avoid duplicate servers targeting the same script.
-            servers.remove("pinvou");
-            servers.insert(
-                "pinvou3".to_string(),
-                serde_json::json!({
-                    "command": python_cmd.clone(),
-                    "args": [present_server.to_string_lossy()]
-                }),
-            );
-            // Browser MCP lets Work-mode Agents operate the in-app native WebView and is
-            // deliberately absent from global mcp.json. Only Work-mode sessions expose it.
-            // Remove only historical entries owned by this app (commands targeting
-            // browser-wrapper.mjs). Preserve user-defined servers with the same name, such
-            // as playwright-mcp, because unconditional removal would silently destroy user
-            // configuration on every startup. `work_mode_mcp_config_path` injects Browser
-            // MCP through the session-specific `~/.pinvou3/browser/mcp.work.json` file.
-            let remove_browser_residue = servers
-                .get("browser")
-                .map(is_browser_wrapper_residue)
-                .unwrap_or(false);
-            if remove_browser_residue {
-                servers.remove("browser");
-            }
+        servers.insert(
+            "pinvou3".to_string(),
+            serde_json::json!({
+                "command": python_cmd.clone(),
+                "args": [present_server.to_string_lossy()]
+            }),
+        );
+        // Browser MCP lets Work-mode Agents operate the in-app native WebView and is
+        // deliberately absent from global mcp.json. Only Work-mode sessions expose it.
+        // Remove only historical entries owned by this app (commands targeting
+        // browser-wrapper.mjs). Preserve user-defined servers with the same name, such
+        // as playwright-mcp, because unconditional removal would silently destroy user
+        // configuration on every startup. `work_mode_mcp_config_path` injects Browser
+        // MCP through the session-specific `~/.pinvou3/browser/mcp.work.json` file.
+        let remove_browser_residue = servers
+            .get("browser")
+            .map(is_browser_wrapper_residue)
+            .unwrap_or(false);
+        if remove_browser_residue {
+            servers.remove("browser");
         }
         self.refresh_mcp_python_commands(&mut mcp, &python_cmd)?;
         let json = serde_json::to_string_pretty(&mcp).map_err(std::io::Error::other)?;
@@ -950,6 +963,9 @@ impl Pinvou3Bundle {
         });
         let mut obj = mcp;
         if obj.get("servers").and_then(|s| s.as_object()).is_none() {
+            // mcp was validated as a JSON object in the match above, so
+            // as_object_mut always yields Some here.
+            #[allow(clippy::unwrap_used)]
             obj.as_object_mut()
                 .unwrap()
                 .insert("servers".into(), serde_json::json!({}));
@@ -962,6 +978,9 @@ impl Pinvou3Bundle {
         // Historical wrapper residue owned by this app is removed. Preserve this namespace
         // boundary even when the built-in backend is unavailable, so a user server cannot
         // impersonate the embedded same-page browser through `mcp_browser_*`.
+        // The block above guarantees `servers` exists and is an object, so
+        // both indexing and as_object_mut always succeed here.
+        #[allow(clippy::unwrap_used)]
         let servers = obj["servers"].as_object_mut().unwrap();
         if let Some(browser_entry) = browser_entry {
             install_work_mode_browser_server(servers, browser_entry);
@@ -1246,7 +1265,8 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = super::Pinvou3Bundle::paths();
 
         // Installed Upload record colliding with the embedded spec id "weather".
@@ -1272,7 +1292,8 @@ mod tests {
             "上传包目录不得被内嵌重释放覆盖"
         );
 
-        std::env::remove_var("PINVOU3_HOME");
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

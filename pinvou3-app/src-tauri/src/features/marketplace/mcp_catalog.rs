@@ -126,7 +126,11 @@ pub fn release_package(id: &str) -> Result<Option<String>, String> {
         return Ok(None);
     };
     let mcp_dir = package_mcp_dir(id);
-    let parent = mcp_dir.parent().expect("包目录必有父级");
+    // bundles/<id>/mcp is joined from bundles_root() and always has a parent;
+    // still return an error as the fallback.
+    let Some(parent) = mcp_dir.parent() else {
+        return Err(format!("package dir missing parent: {}", mcp_dir.display()));
+    };
     std::fs::create_dir_all(parent).map_err(|e| format!("创建包目录失败: {e}"))?;
     let staged = parent.join(".mcp.tmp");
     let _ = std::fs::remove_dir_all(&staged);

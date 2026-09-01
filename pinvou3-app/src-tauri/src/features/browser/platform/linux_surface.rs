@@ -8,9 +8,9 @@
 
 use std::{
     sync::{
+        Arc,
         atomic::{AtomicU8, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError},
-        Arc,
     },
     time::Duration,
 };
@@ -155,9 +155,9 @@ fn receive_webview_result(
 ) -> Result<(), String> {
     match receiver.recv_timeout(timeout) {
         Ok(result) => result,
-        Err(RecvTimeoutError::Disconnected) => {
-            Err(format!("Linux {action} was interrupted before GTK acknowledgement"))
-        }
+        Err(RecvTimeoutError::Disconnected) => Err(format!(
+            "Linux {action} was interrupted before GTK acknowledgement"
+        )),
         Err(RecvTimeoutError::Timeout) => match state.compare_exchange(
             DISPATCH_PENDING,
             DISPATCH_CANCELLED,
@@ -167,9 +167,9 @@ fn receive_webview_result(
             Ok(_) => Err(format!(
                 "Linux {action} timed out waiting for the GTK main thread; the unexecuted operation was cancelled"
             )),
-            Err(DISPATCH_RUNNING | DISPATCH_FINISHED) => receiver
-                .recv()
-                .map_err(|_| format!("Linux {action} was interrupted before GTK acknowledgement"))?,
+            Err(DISPATCH_RUNNING | DISPATCH_FINISHED) => receiver.recv().map_err(|_| {
+                format!("Linux {action} was interrupted before GTK acknowledgement")
+            })?,
             Err(_) => Err(format!("Linux {action} was cancelled")),
         },
     }
@@ -363,8 +363,8 @@ mod tests {
     };
 
     use super::{
-        begin_webview_operation, logical_bounds, receive_webview_result, LogicalBounds,
-        DISPATCH_PENDING, DISPATCH_RUNNING,
+        DISPATCH_PENDING, DISPATCH_RUNNING, LogicalBounds, begin_webview_operation, logical_bounds,
+        receive_webview_result,
     };
     use crate::features::browser::NativeSurfaceBounds;
 

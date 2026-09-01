@@ -24,14 +24,14 @@
 
 use std::path::{Path, PathBuf};
 
-use include_dir::{include_dir, Dir};
+use include_dir::{Dir, include_dir};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::platform::paths;
 
 /// 预置技能资源:编译进二进制。每个子目录(pua/ nuwa/)是一个含 SKILL.md 的 skill。
-static MARKETPLACE_DIR: Dir =
+static MARKETPLACE_DIR: Dir<'static> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/skill-marketplace");
 
 /// 单个 skill 子树未压缩大小上限(防御性,预置/上传都适用)。
@@ -379,7 +379,14 @@ impl SkillMarketplaceManager {
             .ok_or_else(|| format!("嵌入资源缺失: {}", m.source_dir))?;
 
         let dest = self.package_skill_dir(m.skill_name);
-        let parent = dest.parent().expect("包目录必有父级");
+        // bundles/<owner>/skills/<name> is joined from the root, so it always
+        // has a parent; still fall back to an error return.
+        let Some(parent) = dest.parent() else {
+            return Err(format!(
+                "skill package dir has no parent: {}",
+                dest.display()
+            ));
+        };
         std::fs::create_dir_all(parent).map_err(|e| format!("创建包 skills 目录: {e}"))?;
         let staged = parent.join(format!("{}.tmp", m.skill_name));
         let _ = std::fs::remove_dir_all(&staged);
@@ -730,7 +737,7 @@ impl SkillMarketplaceManager {
         // 镜像删除（预置 id 即记录 id；上传技能 id = 目录名，与 install 的登记口径一致）。
         if let Err(e) = self.bundle_store.remove(skill_id) {
             log::warn!(
-                "[skill-marketplace] bundles.json 镜像删除失败（uninstall {skill_id}）: {e}"
+                "[skill-marketplace] failed to delete bundles.json mirror entry (uninstall {skill_id}): {e}"
             );
         }
         Ok(())
@@ -846,7 +853,14 @@ impl SkillMarketplaceManager {
 
         // pass2:写出 skill_root 子树到 staged（上传技能独立成包：bundles/<name>/skills/）
         let dest = self.packages_root.join(&name).join("skills").join(&name);
-        let parent = dest.parent().expect("包目录必有父级");
+        // Same as above: joined from the root, so a parent always exists;
+        // still fall back to an error return.
+        let Some(parent) = dest.parent() else {
+            return Err(format!(
+                "skill package dir has no parent: {}",
+                dest.display()
+            ));
+        };
         std::fs::create_dir_all(parent).map_err(|e| format!("创建包 skills 目录: {e}"))?;
         let staged = parent.join(format!("{name}.tmp"));
         let _ = std::fs::remove_dir_all(&staged);
@@ -1078,7 +1092,17 @@ impl SkillMarketplaceManager {
             report.kept.push(name.to_string());
             return false;
         }
-        let parent = target.parent().expect("包目录必有父级");
+        // The migration target is joined from the root, so it always has a
+        // parent; treat the anomalous shape as "migration failed, keep the
+        // old location".
+        let Some(parent) = target.parent() else {
+            log::warn!(
+                "[skill-marketplace] failed to migrate {name}: target dir has no parent ({}), keeping the old location",
+                target.display()
+            );
+            report.kept.push(name.to_string());
+            return false;
+        };
         let result = std::fs::create_dir_all(parent).and_then(|()| std::fs::rename(dir, target));
         match result {
             Ok(()) => {
@@ -1620,23 +1644,27 @@ mod tests {
         // install 登记内容指纹（update_available 的比对基准）
         let store =
             crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
-        assert!(store
-            .get("government-writing")
-            .unwrap()
-            .expect("install 应登记")
-            .content_fingerprint
-            .is_some());
-        assert!(mgr
-            .list_skills()
-            .iter()
-            .any(|s| s.id == "government-writing" && s.installed));
+        assert!(
+            store
+                .get("government-writing")
+                .unwrap()
+                .expect("install should register the skill")
+                .content_fingerprint
+                .is_some()
+        );
+        assert!(
+            mgr.list_skills()
+                .iter()
+                .any(|s| s.id == "government-writing" && s.installed)
+        );
 
         mgr.uninstall("government-writing").unwrap();
         assert!(!skill_dir.exists(), "卸载应删目录");
-        assert!(mgr
-            .list_skills()
-            .iter()
-            .any(|s| s.id == "government-writing" && !s.installed));
+        assert!(
+            mgr.list_skills()
+                .iter()
+                .any(|s| s.id == "government-writing" && !s.installed)
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1861,9 +1889,11 @@ mod tests {
 
         let report = mgr.self_heal_skills(&["visual-design"]);
         assert!(!orphan.exists(), "孤儿副本应删除");
-        assert!(report
-            .removed_orphan_dirs
-            .contains(&"orphan-skill/orphan-skill".to_string()));
+        assert!(
+            report
+                .removed_orphan_dirs
+                .contains(&"orphan-skill/orphan-skill".to_string())
+        );
         assert!(recorded.exists(), "有记录副本应保留");
         assert!(preset_dir.exists(), "预置名副本应保留（可重释放）");
         assert!(cli_dir.exists(), "CLI 静态所有副本应保留");
@@ -2127,17 +2157,19 @@ mod tests {
             skill_md.contains("present_artifact(path, title)"),
             "应要求产物卡交付"
         );
-        assert!(mgr
-            .list_skills()
-            .iter()
-            .any(|s| s.id == "pptx" && s.installed));
+        assert!(
+            mgr.list_skills()
+                .iter()
+                .any(|s| s.id == "pptx" && s.installed)
+        );
 
         mgr.uninstall("pptx").unwrap();
         assert!(!skill_dir.exists(), "卸载应删目录");
-        assert!(mgr
-            .list_skills()
-            .iter()
-            .any(|s| s.id == "pptx" && !s.installed));
+        assert!(
+            mgr.list_skills()
+                .iter()
+                .any(|s| s.id == "pptx" && !s.installed)
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -2172,7 +2204,10 @@ mod tests {
         // install 登记的指纹应与嵌入资源指纹一致（刚装即一致 → 无更新提示）
         let store =
             crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
-        let record = store.get("visualizer").unwrap().expect("install 应登记");
+        let record = store
+            .get("visualizer")
+            .unwrap()
+            .expect("install should register the skill");
         let embedded_fp = embedded_skill_fingerprint(mgr.preset("visualizer").unwrap());
         assert_eq!(record.content_fingerprint, embedded_fp);
         let skill_md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
@@ -2208,10 +2243,11 @@ mod tests {
                 && design_system.contains("role=\"img\""),
             "Visualizer reference 应包含 Chart.js、artifact 和 canvas 无障碍规则"
         );
-        assert!(mgr
-            .list_skills()
-            .iter()
-            .any(|s| s.id == "visualizer" && s.installed));
+        assert!(
+            mgr.list_skills()
+                .iter()
+                .any(|s| s.id == "visualizer" && s.installed)
+        );
 
         mgr.uninstall("visualizer").unwrap();
         assert!(!skill_dir.exists(), "卸载应删目录");
@@ -2239,10 +2275,11 @@ mod tests {
             read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
             Some("ima-skills")
         );
-        assert!(mgr
-            .list_skills()
-            .iter()
-            .any(|s| s.id == "ima-skills" && s.installed));
+        assert!(
+            mgr.list_skills()
+                .iter()
+                .any(|s| s.id == "ima-skills" && s.installed)
+        );
 
         mgr.uninstall("ima-skills").unwrap();
         assert!(!skill_dir.exists(), "卸载应删目录");
@@ -2306,10 +2343,11 @@ mod tests {
             !skmd.contains("mcporter"),
             "SKILL.md 不应残留 mcporter 调用说明"
         );
-        assert!(mgr
-            .list_skills()
-            .iter()
-            .any(|s| s.id == "tencent-docs-skill" && s.installed));
+        assert!(
+            mgr.list_skills()
+                .iter()
+                .any(|s| s.id == "tencent-docs-skill" && s.installed)
+        );
 
         mgr.uninstall("tencent-docs-skill").unwrap();
         assert!(!skill_dir.exists(), "卸载应删目录");
@@ -2646,11 +2684,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         f();
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

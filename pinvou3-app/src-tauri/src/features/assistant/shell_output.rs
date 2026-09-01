@@ -13,7 +13,7 @@ use deepseek_tui::tools::shell::{
     SharedShellManager, ShellJobDetail, ShellJobSnapshot, ShellStatus,
 };
 use parking_lot::Mutex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(80);

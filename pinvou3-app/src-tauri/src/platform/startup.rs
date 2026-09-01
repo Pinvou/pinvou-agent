@@ -175,7 +175,7 @@ pub fn report_frontend_startup(entries: Vec<FrontendStartupEntry>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_field, rotate_if_oversized, MAX_LOG_BYTES};
+    use super::{MAX_LOG_BYTES, clean_field, rotate_if_oversized};
 
     #[test]
     fn startup_log_fields_are_single_line_and_bounded() {

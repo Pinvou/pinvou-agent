@@ -21,9 +21,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::MarketplaceManager;
 use super::skill_marketplace::SkillMarketplaceManager;
 use super::store;
-use super::MarketplaceManager;
 
 // 内置 CLI 连接器清单（修复方案 V2：ima 无 CLI 二进制，移出 CLI 包，归凭据型技能包）。
 // 条目 = (id, 展示名, CLI 二进制名, 配套技能目录, 功能描述)。本表是「连接器 → CLI 二进制 /
@@ -740,11 +740,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         f();
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

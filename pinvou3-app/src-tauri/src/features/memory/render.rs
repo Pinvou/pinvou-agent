@@ -13,9 +13,9 @@ use crate::platform::paths;
 
 use super::io;
 use super::types::{
-    InjectedMemoryItem, MemoryProfile, NeverMemoryItem, PendingMemoryItem, PreferenceFile,
+    CURRENT_FOCUS_MAX_INJECTED, InjectedMemoryItem, MemoryProfile, NeverMemoryItem,
+    PendingMemoryItem, PreferenceFile, RECENT_ACTIVITY_MAX_INJECTED, RECENT_WORK_MAX_INJECTED,
     RecentWorkItem, RuntimeMemorySnapshot, TimedMemoryItem, WorkContextFile,
-    CURRENT_FOCUS_MAX_INJECTED, RECENT_ACTIVITY_MAX_INJECTED, RECENT_WORK_MAX_INJECTED,
 };
 use super::util::{push_if_present, write_text_atomic};
 

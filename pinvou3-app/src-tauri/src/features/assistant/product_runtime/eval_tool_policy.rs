@@ -81,8 +81,8 @@ pub(crate) fn resolve_eval_policy(
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_eval_policy, EvalNetworkClass, EvalToolPolicy, GAIA_OFFLINE_V1_ALLOWED_TOOLS,
-        GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS, PRODUCT_V1_ALLOWED_TOOLS,
+        EvalNetworkClass, EvalToolPolicy, GAIA_OFFLINE_V1_ALLOWED_TOOLS,
+        GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS, PRODUCT_V1_ALLOWED_TOOLS, resolve_eval_policy,
     };
     use crate::features::assistant::tool_policy::is_pinvou3_allowed;
     use deepseek_tui::config::VisionModelConfig;

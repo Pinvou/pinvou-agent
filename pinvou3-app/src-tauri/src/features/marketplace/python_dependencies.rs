@@ -986,11 +986,14 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        std::env::set_var("PINVOU3_HOME", &root);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
         test();
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = fs::remove_dir_all(root);
     }
@@ -1030,9 +1033,11 @@ mod tests {
     fn lock_rejects_untrusted_or_unpinned_wheels() {
         let mut lock = sample_lock();
         lock.targets[0].wheels[0].url = "http://example.com/example.whl".to_string();
-        assert!(validate_lock(&lock)
-            .unwrap_err()
-            .contains("trusted HTTPS host"));
+        assert!(
+            validate_lock(&lock)
+                .unwrap_err()
+                .contains("trusted HTTPS host")
+        );
 
         let mut lock = sample_lock();
         lock.targets[0].wheels[0].sha256 = "not-a-hash".to_string();
@@ -1172,9 +1177,11 @@ mod tests {
         let mut extracted_bytes = 0;
         extract_wheel(&wheel, &environment, &mut extracted_bytes).unwrap();
 
-        assert!(environment
-            .join("site-packages/example/__init__.py")
-            .is_file());
+        assert!(
+            environment
+                .join("site-packages/example/__init__.py")
+                .is_file()
+        );
         assert!(environment.join("site-packages/shared.py").is_file());
         assert!(!environment.join("site-packages/ignored.exe").exists());
         fs::remove_dir_all(root).unwrap();
@@ -1239,12 +1246,16 @@ mod tests {
             assert!(environment_root.join("notes").is_dir());
             assert!(!environment_root.join("b".repeat(64)).exists());
             assert!(cache_root.join(format!("{}.whl", "a".repeat(64))).is_file());
-            assert!(!cache_root
-                .join(format!("{}.part-789", "c".repeat(64)))
-                .exists());
-            assert!(cache_root
-                .join(format!("{}.part-worker", "d".repeat(64)))
-                .is_file());
+            assert!(
+                !cache_root
+                    .join(format!("{}.part-789", "c".repeat(64)))
+                    .exists()
+            );
+            assert!(
+                cache_root
+                    .join(format!("{}.part-worker", "d".repeat(64)))
+                    .is_file()
+            );
             assert!(cache_root.join("README.txt").is_file());
         });
     }
@@ -1268,13 +1279,12 @@ mod tests {
         assert!(!partial.exists());
         assert!(!destination.exists());
 
-        assert!(persist_wheel_download_with_sync(
-            &mut Cursor::new(bytes),
-            &destination,
-            &wheel,
-            |_| Err(io::Error::other("injected sync failure")),
-        )
-        .is_err());
+        assert!(
+            persist_wheel_download_with_sync(&mut Cursor::new(bytes), &destination, &wheel, |_| {
+                Err(io::Error::other("injected sync failure"))
+            },)
+            .is_err()
+        );
         assert!(!partial.exists());
         assert!(!destination.exists());
 
@@ -1333,7 +1343,8 @@ mod tests {
             unique_suffix()
         ));
         let previous_home = std::env::var_os("PINVOU3_HOME");
-        std::env::set_var("PINVOU3_HOME", &root);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
 
         let first = ensure_installed(&lock, &python, false).unwrap().unwrap();
         let gongwen_site_packages = first.site_packages.clone();
@@ -1455,8 +1466,10 @@ mod tests {
         assert!(!pptx_site_packages.exists());
 
         match previous_home {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         fs::remove_dir_all(root).unwrap();
     }

@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use pinvou_knowledge::model::DeviceGrant;
 
 use super::super::{
-    HostOwnerClaim, HostRestoreResult, PackagedHostResources, SharedKnowledgeHostStatus,
-    LOCAL_ENDPOINT,
+    HostOwnerClaim, HostRestoreResult, LOCAL_ENDPOINT, PackagedHostResources,
+    SharedKnowledgeHostStatus,
 };
 
 pub async fn status() -> SharedKnowledgeHostStatus {

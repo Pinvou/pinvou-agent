@@ -212,13 +212,11 @@ pub fn install_model_candidate(
             .map_err(|error| format!("备份现有模型失败: {error}"))?;
     }
     if let Err(error) = std::fs::rename(candidate, destination) {
-        if had_destination {
-            if let Err(rollback_error) = std::fs::rename(&backup, destination) {
-                return Err(format!(
-                    "部署模型失败: {error}; 回滚旧模型也失败: {rollback_error}; 旧模型仍保留在 {}",
-                    backup.display()
-                ));
-            }
+        if had_destination && let Err(rollback_error) = std::fs::rename(&backup, destination) {
+            return Err(format!(
+                "部署模型失败: {error}; 回滚旧模型也失败: {rollback_error}; 旧模型仍保留在 {}",
+                backup.display()
+            ));
         }
         return Err(format!("部署模型失败: {error}"));
     }
@@ -366,13 +364,13 @@ where
         .map_err(|error| format!("连接模型源失败({}): {error}", manifest_file.source_path))?
         .error_for_status()
         .map_err(|error| format!("模型源响应异常({}): {error}", manifest_file.source_path))?;
-    if let Some(actual) = response.content_length() {
-        if actual != manifest_file.bytes {
-            return Err(format!(
-                "模型文件大小不符({}): 期望 {} 字节，服务端返回 {} 字节",
-                manifest_file.source_path, manifest_file.bytes, actual
-            ));
-        }
+    if let Some(actual) = response.content_length()
+        && actual != manifest_file.bytes
+    {
+        return Err(format!(
+            "模型文件大小不符({}): 期望 {} 字节，服务端返回 {} 字节",
+            manifest_file.source_path, manifest_file.bytes, actual
+        ));
     }
 
     let mut output = tokio::fs::File::create(destination)
@@ -578,9 +576,11 @@ mod tests {
         destinations.dedup();
         assert_eq!(destinations.len(), KNOWLEDGE_MODEL_FILES.len());
         assert_eq!(KNOWLEDGE_MODEL_FILES[0].destination_path, "model.onnx");
-        assert!(KNOWLEDGE_MODEL_FILES
-            .iter()
-            .all(|file| file.sha256.len() == 64));
+        assert!(
+            KNOWLEDGE_MODEL_FILES
+                .iter()
+                .all(|file| file.sha256.len() == 64)
+        );
     }
 
     #[test]
@@ -675,9 +675,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![3, 3, 5, 5]
         );
-        assert!(progress
-            .windows(2)
-            .all(|pair| pair[0].downloaded_bytes <= pair[1].downloaded_bytes));
+        assert!(
+            progress
+                .windows(2)
+                .all(|pair| pair[0].downloaded_bytes <= pair[1].downloaded_bytes)
+        );
         assert_eq!(
             progress.iter().map(|value| value.stage).collect::<Vec<_>>(),
             vec![
@@ -757,9 +759,11 @@ mod tests {
         std::fs::create_dir_all(&candidate).unwrap();
         std::fs::write(candidate.join("model.onnx"), b"new").unwrap();
 
-        assert!(install_model_candidate(&candidate, &destination)
-            .unwrap()
-            .is_none());
+        assert!(
+            install_model_candidate(&candidate, &destination)
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             std::fs::read(destination.join("model.onnx")).unwrap(),
             b"new"

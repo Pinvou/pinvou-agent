@@ -1,9 +1,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde_json::json;
 
-use super::{events::patch_acp_state, AcpPool, AcpSession, CodexAcpSessionInfo};
+use super::{AcpPool, AcpSession, CodexAcpSessionInfo, events::patch_acp_state};
 
 /// Owns the session's configuration slot until the operation finishes. Drop
 /// based release keeps cancellation and early-return paths from leaving the
@@ -286,7 +286,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let busy = AtomicBool::new(false);
         let configuring = AtomicBool::new(false);
@@ -339,7 +340,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let busy = AtomicBool::new(false);
         let configuring = AtomicBool::new(false);
@@ -397,7 +399,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let busy = AtomicBool::new(false);
         let configuring = AtomicBool::new(false);

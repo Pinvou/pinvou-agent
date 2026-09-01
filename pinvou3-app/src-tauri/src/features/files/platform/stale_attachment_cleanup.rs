@@ -53,7 +53,7 @@ where
 
 #[cfg(unix)]
 mod platform {
-    use super::{device_numbers_match, is_stale, NameValidator};
+    use super::{NameValidator, device_numbers_match, is_stale};
     use std::ffi::{CStr, CString};
     use std::fs::File;
     use std::io;
@@ -115,6 +115,9 @@ mod platform {
         if root_fd < 0 {
             return Err(io::Error::last_os_error());
         }
+        // SAFETY: root_fd is verified non-negative, an owning fd just returned by
+        // libc::open and not yet adopted by any object; from_raw_fd hands sole
+        // ownership to File, whose Drop is responsible for closing it.
         let mut current = unsafe { File::from_raw_fd(root_fd) };
         for component in path.components() {
             match component {
@@ -123,6 +126,10 @@ mod platform {
                     let name = CString::new(name.as_bytes()).map_err(|_| {
                         io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL")
                     })?;
+                    // SAFETY: current holds the live directory fd of the previous
+                    // component; name is a CString whose pointer is NUL terminated
+                    // with a lifetime covering the call; openat reads it only during
+                    // the call, and a -1 failure is converted to io::Error below.
                     let fd = unsafe {
                         libc::openat(
                             current.as_raw_fd(),
@@ -133,6 +140,9 @@ mod platform {
                     if fd < 0 {
                         return Err(io::Error::last_os_error());
                     }
+                    // SAFETY: fd is verified non-negative and not yet adopted;
+                    // from_raw_fd transfers sole ownership; assigning Drops the old
+                    // current, so there is no leak or double close.
                     current = unsafe { File::from_raw_fd(fd) };
                 }
                 Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
@@ -150,23 +160,40 @@ mod platform {
     unsafe fn errno_location() -> *mut libc::c_int {
         #[cfg(target_os = "linux")]
         {
+            // SAFETY: __errno_location returns a valid writable address of errno in
+            // this thread's TLS, valid for the thread's lifetime; callers only read
+            // or write that single-element address, with no cross-thread sharing.
             unsafe { libc::__errno_location() }
         }
         #[cfg(target_os = "macos")]
         {
+            // SAFETY: __error returns a valid writable address of errno in this
+            // thread's TLS (the darwin equivalent), valid for the thread's lifetime;
+            // callers only read or write that single-element address.
             unsafe { libc::__error() }
         }
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn directory_names(directory: &File) -> io::Result<Vec<String>> {
+        // SAFETY: directory.as_raw_fd() is a live directory fd; F_DUPFD_CLOEXEC only
+        // duplicates the descriptor and leaves the original fd's ownership untouched;
+        // the returned new fd is managed explicitly by this function (close or hand
+        // over to fdopendir), and failure returns -1.
         let duplicate = unsafe { libc::fcntl(directory.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
         if duplicate < 0 {
             return Err(io::Error::last_os_error());
         }
+        // SAFETY: duplicate is verified non-negative, freshly duplicated and not yet
+        // adopted; POSIX defines fdopendir as taking exclusive ownership of the fd on
+        // success (closedir releases it), while on failure the fd still belongs to the
+        // caller - both paths below handle it exactly once.
         let stream = unsafe { libc::fdopendir(duplicate) };
         if stream.is_null() {
             let error = io::Error::last_os_error();
+            // SAFETY: fdopendir failed without adopting duplicate, so the fd still
+            // belongs to this function; close it exactly once to avoid a leak; the
+            // error has no further recovery action, so the return value is ignored.
             unsafe { libc::close(duplicate) };
             return Err(error);
         }
@@ -174,15 +201,27 @@ mod platform {
         let mut names = Vec::new();
         let mut enumeration_error = None;
         loop {
+            // SAFETY: errno_location() returns a valid writable address of this
+            // thread's errno; zero it to distinguish whether readdir returning NULL
+            // means EOF or an error.
             unsafe { *errno_location() = 0 };
+            // SAFETY: stream comes from a successful fdopendir and is exclusively
+            // owned by this function with no concurrent access; per POSIX the
+            // returned dirent pointer is valid only until the next readdir/closedir,
+            // and d_name is read immediately below, not held across calls.
             let entry = unsafe { libc::readdir(stream) };
             if entry.is_null() {
+                // SAFETY: errno_location() points at this thread's errno, zeroed
+                // above, so a non-zero value is readdir's real error code.
                 let errno = unsafe { *errno_location() };
                 if errno != 0 {
                     enumeration_error = Some(io::Error::from_raw_os_error(errno));
                 }
                 break;
             }
+            // SAFETY: entry is non-NULL and readdir has not been called again; the
+            // kernel guarantees d_name is NUL terminated and within array bounds, and
+            // CStr::from_ptr reads only up to that terminator.
             let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
             let Ok(name) = name.to_str() else {
                 enumeration_error = Some(io::Error::new(
@@ -195,6 +234,9 @@ mod platform {
                 names.push(name.to_string());
             }
         }
+        // SAFETY: stream is the sole DIR* handed over by fdopendir; closedir frees it
+        // exactly once (together with the fd it adopted internally); stream is not
+        // accessed afterwards.
         if unsafe { libc::closedir(stream) } != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -213,6 +255,9 @@ mod platform {
     }
 
     fn open_directory_at(parent: &File, name: &CString) -> io::Result<File> {
+        // SAFETY: parent holds a live directory fd; name is a CString, NUL terminated
+        // with a lifetime covering the call; O_NOFOLLOW|O_DIRECTORY guarantees no
+        // following of replacement links, and failure returns -1.
         let fd = unsafe {
             libc::openat(
                 parent.as_raw_fd(),
@@ -223,10 +268,15 @@ mod platform {
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
+        // SAFETY: fd is verified non-negative and not yet adopted; from_raw_fd
+        // transfers sole ownership to File.
         Ok(unsafe { File::from_raw_fd(fd) })
     }
 
     fn open_regular_file_at(parent: &File, name: &CString) -> io::Result<File> {
+        // SAFETY: parent holds a live directory fd; name is a CString, NUL terminated
+        // with a lifetime covering the call; O_NONBLOCK prevents blocking when
+        // opening a FIFO, and failure returns -1.
         let fd = unsafe {
             libc::openat(
                 parent.as_raw_fd(),
@@ -237,6 +287,8 @@ mod platform {
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
+        // SAFETY: fd is verified non-negative and not yet adopted; from_raw_fd
+        // transfers sole ownership to File.
         Ok(unsafe { File::from_raw_fd(fd) })
     }
 
@@ -269,6 +321,10 @@ mod platform {
         // Revalidate the anchored name against the opened inode. `unlinkat`
         // never follows a replacement symlink and cannot escape `upload_dir`.
         let mut current = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: upload_dir holds a live directory fd; filename_c is NUL terminated;
+        // AT_SYMLINK_NOFOLLOW guarantees lstat semantics; the kernel initializes the
+        // whole stat only on a successful write, and on failure current stays
+        // uninitialized and unread.
         if unsafe {
             libc::fstatat(
                 upload_dir.as_raw_fd(),
@@ -280,6 +336,9 @@ mod platform {
         {
             return Ok(false);
         }
+        // SAFETY: fstatat on the previous line returned 0, so the kernel has fully
+        // written current per the libc::stat layout; assume_init only reads
+        // initialized data.
         let current = unsafe { current.assume_init() };
         if !device_numbers_match(current.st_dev, metadata.dev())
             || current.st_ino != metadata.ino()
@@ -288,10 +347,17 @@ mod platform {
         {
             return Ok(false);
         }
+        // SAFETY: upload_dir holds a live directory fd; filename_c is NUL terminated;
+        // flags=0 unlinks exactly this directory entry without following symlinks;
+        // dev/ino/nlink/mode were revalidated above.
         if unsafe { libc::unlinkat(upload_dir.as_raw_fd(), filename_c.as_ptr(), 0) } != 0 {
             return Ok(false);
         }
         drop(file);
+        // SAFETY: root holds a live directory fd; upload_name is NUL terminated;
+        // AT_REMOVEDIR requires the target to be a directory, this entry's linked
+        // file was just unlinked and the open handle dropped, and the kernel
+        // guarantees the empty-directory check (non-empty/non-directory returns -1).
         if unsafe { libc::unlinkat(root.as_raw_fd(), upload_name.as_ptr(), libc::AT_REMOVEDIR) }
             != 0
         {
@@ -328,7 +394,7 @@ mod tests {
 
 #[cfg(windows)]
 mod platform {
-    use super::{is_stale, NameValidator};
+    use super::{NameValidator, is_stale};
     use std::fs::{File, OpenOptions};
     use std::io;
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
@@ -336,10 +402,10 @@ mod platform {
     use std::path::{Component, Path, PathBuf};
     use std::time::{Duration, SystemTime};
     use windows_sys::Win32::Storage::FileSystem::{
-        FileDispositionInfo, GetFileInformationByHandle, SetFileInformationByHandle,
         BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO,
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
-        FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo, GetFileInformationByHandle,
+        SetFileInformationByHandle,
     };
 
     #[cfg(test)]

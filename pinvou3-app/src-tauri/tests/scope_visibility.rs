@@ -5,12 +5,12 @@
 //!   cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml \
 //!       --test scope_visibility -- --nocapture --test-threads=1
 
+use pinvou3_lib::features::marketplace::ConnectorScope;
 use pinvou3_lib::features::marketplace::scope::{
     load_disabled_bundles_for, load_hidden_bundles_for, remove_bundle_from_disabled_scopes,
     save_disabled_bundles_for, save_hidden_bundles_for, sync_deny_all_scopes_after_install,
     unavailable_bundles_for,
 };
-use pinvou3_lib::features::marketplace::ConnectorScope;
 
 /// 用例间共享 PINVOU3_HOME 环境变量：同 target 默认并行跑，env 互相覆盖会竞态
 /// （六轮评审 R3）——进程内 std Mutex 串行化（与 plugin_import_e2e.rs 同范式，
@@ -31,11 +31,14 @@ fn with_temp_home<F: FnOnce()>(f: F) {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let prev = std::env::var("PINVOU3_HOME").ok();
-    std::env::set_var("PINVOU3_HOME", &dir);
+    // SAFETY: this file's ENV_LOCK is held; env writes are serialized in the test process.
+    unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
     f();
     match prev {
-        Some(v) => std::env::set_var("PINVOU3_HOME", v),
-        None => std::env::remove_var("PINVOU3_HOME"),
+        // SAFETY: this file's ENV_LOCK is held; env writes are serialized in the test process.
+        Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+        // SAFETY: this file's ENV_LOCK is held; env writes are serialized in the test process.
+        None => unsafe { std::env::remove_var("PINVOU3_HOME") },
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

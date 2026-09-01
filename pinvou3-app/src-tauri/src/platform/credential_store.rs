@@ -36,7 +36,7 @@ const MODEL_API_KEY_SERVICE: &str = "pinvou3-model-api-key";
 /// converges on the next `delete`, so mutual exclusion never breaks.
 ///
 /// **安全权衡**:缓存值为明文 secret,仅在进程内存(不落盘),与本 crate 内其他明文 secret
-/// 在内存中的驻留(如 bridge 注入给引擎的 api_key、marketplace 重灌进进程 env 的 mcp
+/// 在内存中的驻留(如 bridge 注入给引擎的 api_key、marketplace 经进程内注册表下发的 mcp
 /// secret)同等敏感等级,均仅驻留进程内存、不落盘。Keychain 仍是单一真相源:`set`/`delete`
 /// 同步更新缓存;环境变量路径不经过此缓存。仅 `Ok` 结果缓存(含 `Ok(None)`),`Err` 不缓存,
 /// 允许临时性 Keychain 故障(或用户在授权弹窗上点"拒绝")后下次重试自愈。
@@ -70,7 +70,11 @@ fn key_locks() -> &'static Mutex<HashMap<(String, String), Arc<Mutex<()>>>> {
 /// 在释放 `key_locks` 自身锁的前提下被调用方持有,确保"取锁"不与"持锁"嵌套、无死锁。
 fn key_lock_for(service: &str, account: &str) -> Arc<Mutex<()>> {
     let key = (service.to_string(), account.to_string());
-    let mut locks = key_locks().lock().expect("key locks poisoned");
+    // Only take the lock handle; a holder panic must not take down sessions:
+    // follow the repo-wide poisoned-lock recovery convention.
+    let mut locks = key_locks()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     locks
         .entry(key)
         .or_insert_with(|| Arc::new(Mutex::new(())))
@@ -251,7 +255,12 @@ impl SystemCredentialStore {
             "[credential_store] secrets_for lock wait start service={}",
             service
         );
-        let mut cache = self.cache.lock().expect("credential store cache lock");
+        // On a cache miss the backend is rebuilt and the entry replaced as a
+        // whole, with no partial writes; poisoned-lock recovery keeps consistency.
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         log::info!(
             "[credential_store] secrets_for lock acquired service={} elapsed_ms={}",
             service,

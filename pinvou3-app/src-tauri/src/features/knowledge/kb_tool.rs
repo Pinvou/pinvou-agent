@@ -6,16 +6,16 @@
 //! `commands::build_kb_agentic_guide`。
 
 use async_trait::async_trait;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use futures_util::future::join_all;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tauri::{AppHandle, Manager};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use deepseek_tui::tools::spec::{ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec};
 
-use super::{l1::ScopedChunkHit, Document};
+use super::{Document, l1::ScopedChunkHit};
 use crate::features::{
     knowledge::KnowledgeService, remote_knowledge::RemoteKnowledgeService, sessions::SessionStore,
 };

@@ -723,7 +723,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-a";
         let turn_id = start_turn(sid);
@@ -755,7 +756,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-usage";
         start_turn(sid);
@@ -797,7 +799,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-snapshot";
         start_turn(sid);
@@ -836,10 +839,13 @@ mod tests {
     #[test]
     fn read_timeline_handles_missing_file() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(
-            "PINVOU3_HOME",
-            std::env::temp_dir().join(format!("nonexistent-{}", now_ms())),
-        );
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe {
+            std::env::set_var(
+                "PINVOU3_HOME",
+                std::env::temp_dir().join(format!("nonexistent-{}", now_ms())),
+            )
+        };
         let timeline = read_timeline("never-existed").unwrap();
         assert!(timeline.is_empty());
     }
@@ -854,7 +860,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-corrupt";
         start_turn(sid);
@@ -883,7 +890,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-stats";
         // 2 个 completed turn + 1 个 failed turn
@@ -922,10 +930,13 @@ mod tests {
     #[test]
     fn compute_stats_on_missing_session_is_default() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(
-            "PINVOU3_HOME",
-            std::env::temp_dir().join(format!("nope-{}", now_ms())),
-        );
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe {
+            std::env::set_var(
+                "PINVOU3_HOME",
+                std::env::temp_dir().join(format!("nope-{}", now_ms())),
+            )
+        };
         let stats = compute_stats("does-not-exist").unwrap();
         assert_eq!(stats.turn_count, 0);
         assert_eq!(stats.total_input_tokens, 0);
@@ -945,7 +956,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-interrupted";
         // 1 completed + 1 failed + 2 interrupted(一个 PascalCase 一个 lowercase,
@@ -983,7 +995,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-terminal-edges";
         start_turn(sid);
@@ -1021,7 +1034,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-bad-identity";
         start_turn(sid);
@@ -1057,7 +1071,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let path = crate::platform::paths::session_timing_events("session-io-error");
         std::fs::create_dir_all(&path).unwrap();
@@ -1077,7 +1092,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let path = crate::platform::paths::session_timing_events("session-too-large");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1102,7 +1118,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-badts";
         // 一条正常 turn
@@ -1159,7 +1176,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-tail-pop";
         let stale = start_turn(sid);
@@ -1207,7 +1225,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-clear";
         start_turn(sid);
@@ -1239,7 +1258,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-extended-usage";
         start_turn(sid);
@@ -1303,7 +1323,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: this test holds platform::paths::tests::ENV_LOCK; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-queued";
         let first = start_turn(sid);
@@ -1365,7 +1386,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: this test holds platform::paths::tests::ENV_LOCK; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-phases";
         start_turn(sid);

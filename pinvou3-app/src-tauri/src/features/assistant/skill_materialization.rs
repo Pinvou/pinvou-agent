@@ -322,11 +322,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         f();
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -420,9 +423,11 @@ mod tests {
             // 关键前提：gongwen 连接器未安装（无 BundleStore/installed.json 记录）。
             // 此时 gongwen 仍在清单里声明 government-writing companion，
             // unavailable_companion_skills() 非空，但技能必须保持可用。
-            assert!(crate::features::marketplace::MarketplaceManager::new()
-                .unavailable_companion_skills()
-                .contains(&"government-writing".to_string()));
+            assert!(
+                crate::features::marketplace::MarketplaceManager::new()
+                    .unavailable_companion_skills()
+                    .contains(&"government-writing".to_string())
+            );
 
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(

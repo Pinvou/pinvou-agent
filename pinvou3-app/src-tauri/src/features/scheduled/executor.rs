@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use deepseek_tui::core::events::TurnOutcomeStatus;
 use deepseek_tui::task_manager::{
@@ -265,10 +265,10 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use anyhow::{bail, Result};
+    use anyhow::{Result, bail};
     use async_trait::async_trait;
     use deepseek_tui::automation_manager::{
-        run_now_shared, AutomationManager, AutomationStatus, CreateAutomationRequest,
+        AutomationManager, AutomationStatus, CreateAutomationRequest, run_now_shared,
     };
     use deepseek_tui::core::events::TurnOutcomeStatus;
     use deepseek_tui::task_manager::{
@@ -575,20 +575,22 @@ mod tests {
         assert_eq!(missing.model_id, None);
 
         let mut ambiguous = profile.clone();
-        assert!(bind_profile_model_id(
-            &mut ambiguous,
-            &[
-                saved_model("first", "wire-model"),
-                saved_model("second", "wire-model"),
-            ],
-        )
-        .is_ok());
+        assert!(
+            bind_profile_model_id(
+                &mut ambiguous,
+                &[
+                    saved_model("first", "wire-model"),
+                    saved_model("second", "wire-model"),
+                ],
+            )
+            .is_ok()
+        );
         assert_eq!(ambiguous.model_id, None);
     }
 
     #[tokio::test]
-    async fn success_creates_and_links_a_durable_independent_session_before_completion(
-    ) -> Result<()> {
+    async fn success_creates_and_links_a_durable_independent_session_before_completion()
+    -> Result<()> {
         let runtime = Arc::new(ScriptedRuntime::new([Script::Complete {
             turn_id: "real-turn-42".to_string(),
         }]));

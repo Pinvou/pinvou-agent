@@ -5,8 +5,8 @@ use deepseek_tui::mcp::{McpConfig, McpPool, McpServerConfig, McpTimeouts};
 use crate::platform::credential_store::redact_secret;
 use crate::platform::paths;
 
-use super::types::{MarketplaceToolValidation, ToolManifest};
 use super::MarketplaceManager;
+use super::types::{MarketplaceToolValidation, ToolManifest};
 
 /// 把远程 MCP 校验抛出的原始错误归类成用户可读的中文提示。
 /// 先脱敏(redact_secret),再按 auth/network/限流/超时等关键词归类。

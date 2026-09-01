@@ -19,18 +19,18 @@ use serde_json::Value;
 use crate::platform::{paths, prefs::UserPrefs};
 
 use super::types::{
-    looks_like_profile_preference_text, normalize_preference_topic, normalize_profile_label,
-    normalize_timed_memory_kind, normalize_timed_memory_topic, normalize_work_context_topic,
-    MemoryProfile, MemorySuggestion, MemoryTextPatch, MemoryWriteEvent, NeverMemoryItem,
-    PendingMemoryItem, PreferenceFile, ProfilePatch, RecentWorkItem, RecentWorkPatch,
-    RuntimeMemorySnapshot, TimedMemoryItem, TopicMigrationJournal, TopicMutation, TopicRead,
-    TopicReconciliation, TurnCapture, TurnMemoryCapture, WorkContextFile,
-    CURRENT_FOCUS_ACTIVE_MAX_STORED, CURRENT_FOCUS_DEFAULT_TTL_DAYS, NEVER_MEMORY_MAX_STORED,
+    CURRENT_FOCUS_ACTIVE_MAX_STORED, CURRENT_FOCUS_DEFAULT_TTL_DAYS, MemoryProfile,
+    MemorySuggestion, MemoryTextPatch, MemoryWriteEvent, NEVER_MEMORY_MAX_STORED, NeverMemoryItem,
     PENDING_MEMORY_ACTIVE_MAX_STORED, PENDING_MEMORY_RESOLVED_MAX_STORED, PENDING_STATUS_CONFIRMED,
     PENDING_STATUS_IGNORED, PENDING_STATUS_OBSERVED, PENDING_STATUS_PENDING, PROFILE_VERSION,
-    RECENT_ACTIVITY_ACTIVE_MAX_STORED, RECENT_ACTIVITY_DEFAULT_TTL_DAYS,
-    RECENT_WORK_ACTIVE_MAX_STORED, RECENT_WORK_ARCHIVED_MAX_STORED, RECENT_WORK_DEFAULT_TTL_DAYS,
-    TIMED_MEMORY_ARCHIVED_MAX_STORED,
+    PendingMemoryItem, PreferenceFile, ProfilePatch, RECENT_ACTIVITY_ACTIVE_MAX_STORED,
+    RECENT_ACTIVITY_DEFAULT_TTL_DAYS, RECENT_WORK_ACTIVE_MAX_STORED,
+    RECENT_WORK_ARCHIVED_MAX_STORED, RECENT_WORK_DEFAULT_TTL_DAYS, RecentWorkItem, RecentWorkPatch,
+    RuntimeMemorySnapshot, TIMED_MEMORY_ARCHIVED_MAX_STORED, TimedMemoryItem,
+    TopicMigrationJournal, TopicMutation, TopicRead, TopicReconciliation, TurnCapture,
+    TurnMemoryCapture, WorkContextFile, looks_like_profile_preference_text,
+    normalize_preference_topic, normalize_profile_label, normalize_timed_memory_kind,
+    normalize_timed_memory_topic, normalize_work_context_topic,
 };
 use super::util::{
     clean_candidate_sentence, clean_id, clean_scalar, clean_text, file_lifecycle_lock,
@@ -435,9 +435,11 @@ fn resolve_topic_authorities<T: Clone>(
                 .ok();
             (canonical, modified, path.clone())
         });
-        let (authority_path, authority) = group
-            .pop()
-            .expect("topic groups are constructed from at least one record");
+        // Groups are built by or_default().push, so each has at least one
+        // record; skip empty groups defensively.
+        let Some((authority_path, authority)) = group.pop() else {
+            continue;
+        };
         for (duplicate, _) in group {
             // A duplicate that cannot be removed right now (e.g. an open
             // handle on Windows) must not fail the whole load: keep it on

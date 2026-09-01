@@ -628,6 +628,10 @@ impl InstallOutputReaders {
         }
     }
 
+    // finish consumes self by value; stdout/stderr are only set to Some in the
+    // constructor with no other write site, so take must yield Some. Moving the
+    // fields out is impossible due to Drop; the panic branch is unreachable.
+    #[allow(clippy::expect_used)]
     async fn finish(mut self) -> (String, String) {
         self.child_finished.store(true, Ordering::Release);
         let stdout = self.stdout.take().expect("stdout reader missing");

@@ -6,14 +6,14 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Barrier;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
 use parking_lot::{Mutex, RwLock};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -314,7 +314,7 @@ impl L1Store {
              ORDER BY d.parsed_at DESC, d.id DESC LIMIT ?2"
         };
         let mut stmt = c.prepare(sql)?;
-        let map = |r: &rusqlite::Row| -> rusqlite::Result<Document> {
+        let map = |r: &rusqlite::Row<'_>| -> rusqlite::Result<Document> {
             Ok(Document {
                 id: r.get(0)?,
                 collection_id: r.get(1)?,
@@ -833,7 +833,7 @@ impl L1Store {
         lim: usize,
     ) -> rusqlite::Result<Vec<ChunkHit>> {
         let c = self.conn.lock();
-        let map = |r: &rusqlite::Row| -> rusqlite::Result<ChunkHit> {
+        let map = |r: &rusqlite::Row<'_>| -> rusqlite::Result<ChunkHit> {
             Ok(ChunkHit {
                 document_id: r.get(0)?,
                 text: r.get(1)?,
@@ -1085,7 +1085,12 @@ impl L1Store {
         )?;
         let mut out: Vec<ChunkHit> = Vec::new();
         for path in order {
-            let (document_id, best, doc_name, ords) = by_doc.remove(&path).expect("aggregated");
+            // `order` and `by_doc` are built in the same loop above, so every
+            // path must have an aggregation entry. If that invariant ever
+            // breaks, skip the path loudly instead of silently losing recall.
+            let Some((document_id, best, doc_name, ords)) = by_doc.remove(&path) else {
+                continue;
+            };
             // 命中 ord 各自 ±radius 的并集（去重、有序）。
             let mut want: BTreeSet<i64> = BTreeSet::new();
             for o in ords {
@@ -1094,8 +1099,11 @@ impl L1Store {
                     want.insert(x);
                 }
             }
-            let lo = *want.iter().next().unwrap();
-            let hi = *want.iter().last().unwrap();
+            // Each aggregation entry is created by at least one hit ord, so
+            // `want` cannot be empty. Guard the invariant the same way.
+            let (Some(&lo), Some(&hi)) = (want.first(), want.last()) else {
+                continue;
+            };
             let rows = stmt.query_map(params![collection_id, path, lo, hi], |r| {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
             })?;
@@ -1354,10 +1362,11 @@ mod tests {
             page,
             vec![(1, "chunk-1".to_string()), (2, "chunk-2".to_string())]
         );
-        assert!(l1
-            .document_chunk_window(other, doc, 0, 8)
-            .unwrap()
-            .is_empty());
+        assert!(
+            l1.document_chunk_window(other, doc, 0, 8)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1506,10 +1515,12 @@ mod tests {
             .unwrap();
         l1.replace_doc_chunks(doc, cid, &["语义检索测试段落".to_string()], None)
             .unwrap();
-        assert!(!clone
-            .retrieve_for_chat(cid, "语义检索", 5, 0)
-            .unwrap()
-            .is_empty());
+        assert!(
+            !clone
+                .retrieve_for_chat(cid, "语义检索", 5, 0)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1693,10 +1704,11 @@ mod tests {
             ),
             ImportIngestOutcome::Completed
         ));
-        assert!(!l1
-            .retrieve_for_chat(collection_id, "旧内容", 5, 0)
-            .unwrap()
-            .is_empty());
+        assert!(
+            !l1.retrieve_for_chat(collection_id, "旧内容", 5, 0)
+                .unwrap()
+                .is_empty()
+        );
 
         fs::write(&file, "   \n").unwrap();
         let (_second_jobs, second_job, second_item) = prepare_import(&l1, collection_id, &file);
@@ -1710,10 +1722,11 @@ mod tests {
             ),
             ImportIngestOutcome::Skipped
         ));
-        assert!(l1
-            .retrieve_for_chat(collection_id, "旧内容", 5, 0)
-            .unwrap()
-            .is_empty());
+        assert!(
+            l1.retrieve_for_chat(collection_id, "旧内容", 5, 0)
+                .unwrap()
+                .is_empty()
+        );
         let document = l1.list_documents(collection_id, 0).unwrap().pop().unwrap();
         assert_eq!(document.parse_status, "skipped");
         assert_eq!(document.n_chunks, 0);
@@ -1764,14 +1777,16 @@ mod tests {
         assert_eq!(after.id, before.id);
         assert_eq!(after.parse_status, before.parse_status);
         assert_eq!(after.n_chunks, before.n_chunks);
-        assert!(!l1
-            .retrieve_for_chat(collection_id, "旧正式内容", 5, 0)
-            .unwrap()
-            .is_empty());
-        assert!(l1
-            .retrieve_for_chat(collection_id, "全新内容", 5, 0)
-            .unwrap()
-            .is_empty());
+        assert!(
+            !l1.retrieve_for_chat(collection_id, "旧正式内容", 5, 0)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            l1.retrieve_for_chat(collection_id, "全新内容", 5, 0)
+                .unwrap()
+                .is_empty()
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1809,10 +1824,11 @@ mod tests {
         assert!(!only[0].text.contains("第一段"), "radius=0 不带邻居");
 
         // 门控:无关键词命中 → 空(不注入)。空 query → 空。
-        assert!(l1
-            .retrieve_for_chat(cid, "彻底无关的查询词组", 5, 1)
-            .unwrap()
-            .is_empty());
+        assert!(
+            l1.retrieve_for_chat(cid, "彻底无关的查询词组", 5, 1)
+                .unwrap()
+                .is_empty()
+        );
         assert!(l1.retrieve_for_chat(cid, "   ", 5, 1).unwrap().is_empty());
     }
 }

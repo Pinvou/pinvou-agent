@@ -890,7 +890,11 @@ pub fn import_plugin_package(
             "包 id '{id}' 已存在且内容不同，请改名后重试（避免覆盖已有包）"
         ));
     }
-    let parent = pkg_dir.parent().expect("bundles 目录必有父级");
+    // bundles/<id> comes from joining bundles_root(), so a parent always
+    // exists; still return an error as a fallback.
+    let Some(parent) = pkg_dir.parent() else {
+        return Err(format!("package dir missing parent: {}", pkg_dir.display()));
+    };
     std::fs::create_dir_all(parent).map_err(|e| format!("创建 bundles 目录: {e}"))?;
     let staged = pkg_dir.with_extension("tmp");
     let _ = std::fs::remove_dir_all(&staged);
@@ -1179,7 +1183,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let zip_path = dir.join("combo.zip");
         {
@@ -1242,8 +1247,10 @@ mod tests {
         );
 
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1264,7 +1271,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let zip_path = dir.join("skill.zip");
         {
@@ -1296,8 +1304,10 @@ mod tests {
         assert!(pkg.join("plugin.json").is_file(), "派生 plugin.json 应落盘");
 
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1318,7 +1328,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let zip_path = dir.join("combo.zip");
         {
@@ -1371,8 +1382,10 @@ mod tests {
         assert!(err.contains("内容不同"), "不同内容应报冲突，实际: {err}");
 
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1393,7 +1406,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let zip_path = dir.join("mcp.zip");
         {
@@ -1418,8 +1432,10 @@ mod tests {
         assert_eq!(second.id, "wcalc");
 
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1440,7 +1456,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let zip_path = dir.join("mcp.zip");
         {
@@ -1489,8 +1506,10 @@ mod tests {
         );
 
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1512,7 +1531,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         // 非规范 skill dir：声明 dir="my-skill"（zip 内确有 my-skill/SKILL.md，
         // 旧逻辑 detect 放行、落盘静默丢弃）。
@@ -1565,8 +1585,10 @@ mod tests {
         assert!(err.contains("非规范"), "非规范 mcp dir 应拒收，实际: {err}");
 
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1589,7 +1611,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let zip_path = dir.join("combo.zip");
         {
@@ -1637,8 +1660,10 @@ mod tests {
         );
 
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1674,7 +1699,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let zip_path = dir.join("combo.zip");
         {
@@ -1708,8 +1734,10 @@ mod tests {
         );
 
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1732,7 +1760,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let write_zip = |server_py: &[u8], skill_md: &[u8]| {
             let zip_path = dir.join("combo.zip");
@@ -1787,8 +1816,10 @@ mod tests {
         );
 
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1810,7 +1841,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         // 形态 1：plugin.json 只声明 skills:[demo]，zip 夹带 skills/other/。
         let zip_path = dir.join("declared.zip");
@@ -1863,8 +1895,10 @@ mod tests {
         );
 
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1886,7 +1920,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let zip_path = dir.join("skill.zip");
         {
@@ -1907,9 +1942,12 @@ mod tests {
             "拒收不得落盘包目录"
         );
 
-        match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("PINVOU3_HOME", v),
+                None => std::env::remove_var("PINVOU3_HOME"),
+            }
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1928,7 +1966,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let previous_home = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let zip_path = dir.join("gongwen.zip");
         {
@@ -1962,8 +2001,10 @@ mod tests {
         );
 
         match previous_home {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1985,7 +2026,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         // Existing plugin package owning skill "foo".
         let foreign = dir.join("bundles/other-pkg/skills/foo");
@@ -2013,9 +2055,12 @@ mod tests {
             "拒收不得落盘包目录"
         );
 
-        match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("PINVOU3_HOME", v),
+                None => std::env::remove_var("PINVOU3_HOME"),
+            }
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

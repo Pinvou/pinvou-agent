@@ -111,11 +111,14 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        std::env::set_var("PINVOU3_HOME", &root);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
         f(root.clone());
         match old_home {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(root);
     }

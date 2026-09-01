@@ -111,6 +111,7 @@ jobs:
           node --test
           scripts/tests/sync-version.test.mjs
           scripts/tests/select-frontend-smokes.test.mjs
+          scripts/tests/pr-check-routing.test.mjs
 
       - name: 校验 VERSION 与各版本文件一致
         run: node scripts/sync-version.mjs --check
@@ -617,7 +618,9 @@ jobs:
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: pinvou3-app/src-tauri
+          workspaces: |
+            pinvou3-app/src-tauri
+            pinvou-knowledge
           shared-key: rust-lint
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -638,30 +641,72 @@ jobs:
             libayatana-appindicator3-dev \
             build-essential pkg-config cmake
 
-      # clippy 硬门禁(无 continue-on-error):lint 配置走 Cargo.toml [lints] 表,
-      # 不用命令行 -W/-D(避免与本地行为分叉)。[lints] 只启用实测零欠账的 lint(deny),
-      # deny 命中即非零退出;欠账 lint/group 显式 allow(见表内注释,清理 PR 消化后启用)。
-      # --lib:只检查主库,不编译 tests/examples。--no-deps:不 lint 依赖;
-      # CodeWhale 子模块(path 依赖)的告警不受本仓 [lints] 约束,属上游欠账,仅显示不挡。
-      - name: cargo clippy --lib (硬门禁,[lints] deny 命中即 fail)
+      # Clippy hard gate (no continue-on-error): lint config lives in the
+      # Cargo.toml [lints] table, never CLI -W/-D (avoids divergence from
+      # local runs). Two steps:
+      # 1) --lib --bins -D warnings: full hard gate on production code
+      #    (deny + warn all zero-tolerance, including the items cleared in
+      #    this PR such as undocumented_unsafe_blocks/expect_used/unwrap_used).
+      # 2) --lib --bins --tests: test code under the deny hard gate
+      #    (todo!/dbg!/get_unwrap are banned in tests too); warn-level lints
+      #    (unwrap/expect are a testing convention, ~3400 existing) are not
+      #    enforced on test targets to keep the noise floor useful.
+      # --no-deps: dependencies are not linted; warnings from the CodeWhale
+      # submodule (a path dependency) are outside this [lints] table —
+      # upstream backlog, displayed but never blocking.
+      - name: cargo clippy (hard gate, [lints] deny hits fail)
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
         working-directory: pinvou3-app/src-tauri
-        run: cargo clippy --lib --no-deps
+        run: |
+          cargo clippy --lib --bins --no-deps --features dev-tools -- -D warnings
+          cargo clippy --lib --bins --tests --no-deps --features dev-tools
 
-      # dump_system_prompt 由 dev-tools feature 隔离，默认的 lib/clippy/test 均不会
-      # 编译它；显式检查，防止 CodeWhale Prompt API 升级再次漏适配。
+      # pinvou-knowledge is a standalone workspace (outside src-tauri), linted
+      # separately; its [lints] table follows the app policy (testing
+      # conventions as above — warn-level lints not enforced on --tests).
+      - name: cargo clippy pinvou-knowledge (hard gate)
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
+        working-directory: pinvou-knowledge
+        run: |
+          cargo clippy --lib --bins --no-deps --features server -- -D warnings
+          cargo clippy --lib --bins --tests --no-deps --features server
+
+      # cargo-shear (unused deps / unlinked source files): static parse, no
+      # compile cost, rust-analyzer-grade precision (same tool as uv/oxc);
+      # exemptions are registered in Cargo.toml [package.metadata.cargo-shear].
+      # Gated on rust_code (not just rust_dependencies): shear also detects
+      # unlinked .rs files, so an orphan source file added without touching
+      # Cargo metadata must still be caught. Version is pinned: install-action
+      # defaults to latest, and upstream CLI changes (e.g. --manifest-path
+      # removal) would silently break the gate.
+      - name: Install cargo-shear
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' && needs.changes.outputs.rust_code == 'true' }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-shear@1.13.4
+      - name: cargo shear (hard gate, both workspaces)
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' && needs.changes.outputs.rust_code == 'true' }}
+        run: |
+          cargo shear --deny-warnings pinvou3-app/src-tauri
+          cargo shear --deny-warnings pinvou-knowledge
+
+      # dump_system_prompt is isolated behind the dev-tools feature: the
+      # default lib/clippy/test targets never compile it. Check explicitly so
+      # a CodeWhale Prompt API upgrade cannot slip through unadapted.
+      # (clippy --lib --bins + dev-tools already includes this bin; kept here
+      # as defense in depth at zero extra cost.)
       - name: cargo check --bin dump_system_prompt (dev-tools)
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
         working-directory: pinvou3-app/src-tauri
         run: cargo check --bin dump_system_prompt --features dev-tools
 
-      # cargo-deny 只与 Cargo/lock/deny/gitlink 等依赖与策略路径有关。
+      # cargo-deny only cares about dependency/policy paths (Cargo/lock/deny/gitlink).
       - name: cargo-deny (advisories/licenses/bans/sources)
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' && needs.changes.outputs.rust_dependencies == 'true' }}
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
-      - name: cargo deny check (硬门禁)
+      - name: cargo deny check (hard gate)
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' && needs.changes.outputs.rust_dependencies == 'true' }}
         working-directory: pinvou3-app/src-tauri
         run: cargo deny check advisories licenses bans sources

@@ -11,9 +11,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{atomic_write, AgentConfigWriter, EffectiveConfig, EffectiveEntry, ProviderTarget};
+use super::{AgentConfigWriter, EffectiveConfig, EffectiveEntry, ProviderTarget, atomic_write};
 
 const ENV_BASE_URL: &str = "ANTHROPIC_BASE_URL";
 const ENV_AUTH_TOKEN: &str = "ANTHROPIC_AUTH_TOKEN";
@@ -328,16 +328,20 @@ mod tests {
         writer.revert_to_official(None).unwrap();
         let config: Value =
             serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
-        assert!(config
-            .get("env")
-            .unwrap()
-            .get("ANTHROPIC_BASE_URL")
-            .is_none());
-        assert!(config
-            .get("env")
-            .unwrap()
-            .get("ANTHROPIC_AUTH_TOKEN")
-            .is_none());
+        assert!(
+            config
+                .get("env")
+                .unwrap()
+                .get("ANTHROPIC_BASE_URL")
+                .is_none()
+        );
+        assert!(
+            config
+                .get("env")
+                .unwrap()
+                .get("ANTHROPIC_AUTH_TOKEN")
+                .is_none()
+        );
         assert!(config.get("env").unwrap().get("ANTHROPIC_MODEL").is_none());
         // 其他 env 键与顶层保留
         assert_eq!(config["env"]["CUSTOM"], "v");

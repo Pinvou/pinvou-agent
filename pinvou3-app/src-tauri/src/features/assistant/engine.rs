@@ -14,15 +14,15 @@
 //! 在同一个 EngineHandle 内自然累积。
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
-use deepseek_tui::core::engine::{spawn_engine, EngineHandle};
+use deepseek_tui::core::engine::{EngineHandle, spawn_engine};
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
 use deepseek_tui::core::ops::Op;
 use deepseek_tui::models::Message;
-use deepseek_tui::tools::shell::{new_shared_shell_manager, SharedShellManager};
+use deepseek_tui::tools::shell::{SharedShellManager, new_shared_shell_manager};
 use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
 use parking_lot::Mutex;
@@ -32,17 +32,17 @@ use tokio::sync::broadcast;
 
 pub(crate) use crate::features::assistant::engine_support::EngineTurnSignal;
 use crate::features::assistant::engine_support::{
-    apply_scheduled_turn_policy, maybe_notify_task_completed, persist_successful_tool_artifact,
-    scheduled_tool_should_auto_approve, TurnCompletionTracker,
+    TurnCompletionTracker, apply_scheduled_turn_policy, maybe_notify_task_completed,
+    persist_successful_tool_artifact, scheduled_tool_should_auto_approve,
 };
 use crate::features::assistant::expert_roster::{
-    cleanup_legacy_expert_projection, ExpertRosterSnapshot,
+    ExpertRosterSnapshot, cleanup_legacy_expert_projection,
 };
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::assistant::turn_shell_tasks::TurnShellTaskRegistry;
 use crate::features::sessions::{
-    transcript_revision, ChatEngineState, ScheduledEngineState, ScheduledRunProfile,
-    ScheduledTokenAccounting, SessionStore,
+    ChatEngineState, ScheduledEngineState, ScheduledRunProfile, ScheduledTokenAccounting,
+    SessionStore, transcript_revision,
 };
 use crate::features::sessions::{SerializableMode, SessionModeState};
 
@@ -1293,16 +1293,17 @@ impl AppEngine {
         // 次专家池读取；否则专家恰好在两次构造之间变更时，首轮就会出现名册
         // 与 spawn-time route 不一致。
         let expert_snapshot = multi_agent_enabled.then(ExpertRosterSnapshot::capture);
-        let mut engine_config = if multi_agent_enabled {
-            // 多智能体面：装配专家名册和专用资源上限；工具面仍与普通会话
-            // 完全一致，普通会话不继承这些限制。
-            bridge.build_engine_config_for_multi_agent(
-                session_id,
-                roots,
-                expert_snapshot.as_deref().expect("multi-agent snapshot"),
-            )
-        } else {
-            bridge.build_engine_config_for_session_roots(session_id, roots)
+        // expert_snapshot and multi_agent_enabled share one source (the `then`
+        // above is driven directly by that boolean), so dispatch on roster
+        // presence instead of re-asserting the same invariant twice between
+        // the bool and the Option.
+        let mut engine_config = match expert_snapshot.as_deref() {
+            Some(snapshot) => {
+                // 多智能体面：装配专家名册和专用资源上限；工具面仍与普通会话
+                // 完全一致，普通会话不继承这些限制。
+                bridge.build_engine_config_for_multi_agent(session_id, roots, snapshot)
+            }
+            None => bridge.build_engine_config_for_session_roots(session_id, roots),
         };
         engine_config.runtime_services.shell_manager = Some(shell_manager.clone());
         // Agentic RAG:给该 session 的 engine 注入 kb_search + kb_open_source(都持
@@ -1809,8 +1810,8 @@ mod turn_lifecycle_tests {
     use crate::features::sessions::SessionModeState;
     use deepseek_tui::models::{ContentBlock, Message};
     use std::cell::Cell;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn message(role: &str, text: &str) -> Message {
         Message {
@@ -1857,9 +1858,11 @@ mod turn_lifecycle_tests {
 
         lifecycle.on_submitted();
         lifecycle.on_started("turn-2".to_string());
-        assert!(lifecycle
-            .finish_once(|| emitted.set(emitted.get() + 1))
-            .is_some());
+        assert!(
+            lifecycle
+                .finish_once(|| emitted.set(emitted.get() + 1))
+                .is_some()
+        );
         assert_eq!(emitted.get(), 2);
     }
 
@@ -1890,9 +1893,11 @@ mod turn_lifecycle_tests {
         // → invalidate 必须返回 false：engine 已在跑，cancel 应走 cancel_current
         // 路径（TurnComplete 终态），不能再由 invalidate 补发，否则会双发 chat:done。
         let reservation2 = lifecycle.reserve().expect("reserve again");
-        assert!(lifecycle
-            .on_started_transition("turn-submitted".to_string())
-            .is_some());
+        assert!(
+            lifecycle
+                .on_started_transition("turn-submitted".to_string())
+                .is_some()
+        );
         assert!(!lifecycle.invalidate_unsubmitted_reservation());
         reservation2.mark_submitted();
     }
@@ -1924,9 +1929,11 @@ mod turn_lifecycle_tests {
 
         // 已 submitted 的 turn 不能再被 claim（engine 已接手，走 cancel_current 路径）。
         let reservation2 = lifecycle.reserve().expect("reserve");
-        assert!(lifecycle
-            .on_started_transition("turn-submitted".to_string())
-            .is_some());
+        assert!(
+            lifecycle
+                .on_started_transition("turn-submitted".to_string())
+                .is_some()
+        );
         assert!(!lifecycle.claim_unsubmitted_terminal());
         reservation2.mark_submitted();
     }
@@ -2319,9 +2326,11 @@ mod turn_lifecycle_tests {
         assert!(lifecycle.finish_once(|| {}).is_some());
 
         // on_started_transition 从 idle 激活（newly_active 分支）推进到 epoch=3。
-        assert!(lifecycle
-            .on_started_transition("turn-stale".to_string())
-            .is_some());
+        assert!(
+            lifecycle
+                .on_started_transition("turn-stale".to_string())
+                .is_some()
+        );
         assert_eq!(lifecycle.current_turn_generation(), Some(3));
         assert!(lifecycle.finish_once(|| {}).is_some());
     }
@@ -2396,9 +2405,11 @@ mod turn_lifecycle_tests {
         let mut one_shot = Some("skill body".to_string());
 
         let rejected = lifecycle.reserve();
-        assert!(rejected
-            .as_ref()
-            .is_err_and(|error| error.to_string().contains("session_turn_in_progress")));
+        assert!(
+            rejected
+                .as_ref()
+                .is_err_and(|error| error.to_string().contains("session_turn_in_progress"))
+        );
         assert_eq!(one_shot.as_deref(), Some("skill body"));
 
         let consumed_after_admission = one_shot.take();
@@ -2713,8 +2724,8 @@ mod turn_lifecycle_tests {
 #[cfg(test)]
 mod scheduled_turn_tests {
     use super::{
-        apply_scheduled_turn_policy, persist_successful_tool_artifact,
-        scheduled_tool_should_auto_approve, EngineTurnSignal, TurnCompletionTracker,
+        EngineTurnSignal, TurnCompletionTracker, apply_scheduled_turn_policy,
+        persist_successful_tool_artifact, scheduled_tool_should_auto_approve,
     };
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile};
     use deepseek_tui::compaction::CompactionConfig;
@@ -2903,7 +2914,8 @@ mod scheduled_turn_tests {
                 .as_nanos()
         ));
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &root);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
         let workspace = root.join("external-workspace");
         std::fs::create_dir_all(&workspace).expect("workspace");
         let report = workspace.join("report.md");
@@ -2974,15 +2986,20 @@ mod scheduled_turn_tests {
         );
 
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(root);
     }
 }
 
 #[cfg(test)]
-// 测试借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;单线程测试内跨 await 持有无竞争者,不会死锁。
+// Tests borrow platform::paths::tests::ENV_LOCK (std Mutex) to serialize global env access;
+// cargo test runs test threads in parallel, but env-writing tests are mutually serialized, and
+// the lock is held across await only inside a current_thread runtime with no reentrant path,
+// so it cannot deadlock.
 #[allow(clippy::await_holding_lock)]
 mod live_tests {
     use super::*;
@@ -3006,8 +3023,10 @@ mod live_tests {
         fn drop(&mut self) {
             for (name, val) in &self.saved {
                 match val {
-                    Some(v) => std::env::set_var(name, v),
-                    None => std::env::remove_var(name),
+                    // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+                    Some(v) => unsafe { std::env::set_var(name, v) },
+                    // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+                    None => unsafe { std::env::remove_var(name) },
                 }
             }
         }
@@ -3035,9 +3054,12 @@ mod live_tests {
             "DEEPSEEK_FORCE_HTTP1",
             "PINVOU3_SKIP_WARMUP",
         ]);
-        std::env::set_var("DEEPSEEK_ALLOW_INSECURE_HTTP", "1");
-        std::env::set_var("DEEPSEEK_FORCE_HTTP1", "1");
-        std::env::set_var("PINVOU3_SKIP_WARMUP", "1");
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("DEEPSEEK_ALLOW_INSECURE_HTTP", "1") };
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("DEEPSEEK_FORCE_HTTP1", "1") };
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_SKIP_WARMUP", "1") };
 
         let bridge = Pinvou3Bridge::boot().expect("boot bridge");
         let engine = AppEngine::spawn_headless(bridge)
@@ -3116,8 +3138,14 @@ mod live_tests {
         eprintln!("[live] event seq: {seq:?}");
         eprintln!(
             "[live] snapshot: ttft_count={} ttft_sum_s={:.4} tps_tokens={} tps_time_s={:.4} gen={} prompt={} cache_hit={} cache_miss={}",
-            s.ttft_count, s.ttft_sum_s, s.tps_tokens, s.tps_time_s,
-            s.gen_tokens_total, s.prompt_tokens_total, s.cache_hit_tokens, s.cache_miss_tokens
+            s.ttft_count,
+            s.ttft_sum_s,
+            s.tps_tokens,
+            s.tps_time_s,
+            s.gen_tokens_total,
+            s.prompt_tokens_total,
+            s.cache_hit_tokens,
+            s.cache_miss_tokens
         );
         if s.ttft_count > 0 {
             eprintln!(

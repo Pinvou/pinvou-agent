@@ -519,16 +519,23 @@ pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// 进程级 env var 是测试的硬隔离障碍:cargo test 默认并行跑,多个测试
-    /// 同时改 PINVOU3_HOME 会互相覆盖断言。这是 **crate 级唯一的 env 锁源**:
-    /// bridge/mod.rs(EnvGuard,DEEPSEEK_*)、feedback、notifications 等模块
-    /// 所有 mutate env var 的测试都借用这把锁串行执行,使 env 写测试彼此串行。
+    /// Process-wide env vars are a hard isolation obstacle for tests: cargo
+    /// test runs tests in parallel by default, and concurrent modifications of
+    /// PINVOU3_HOME would clobber each other's assertions. This is the
+    /// **crate-wide single env lock source**: every test that mutates env
+    /// vars (bridge/mod.rs EnvGuard/DEEPSEEK_*, feedback, notifications, and
+    /// other modules) borrows this lock, so env-writing tests serialize
+    /// against one another.
     ///
-    /// 注意:锁源单一只让 **持锁的 env 写测试** 之间互斥,**不代表** 可以撤掉
-    /// `--test-threads=1`——未持锁的 env 读取者仍可能观察到其他测试的临时值。
-    /// Mutex poison 后通过 `PoisonError::into_inner()` 取得的仍是已加锁 guard,
-    /// 不会绕过互斥。CI 暂时串行执行；根治需消除测试对进程级 env 的依赖,
-    /// 或让所有读写都通过同一隔离层。
+    /// Note: a single lock source only provides mutual exclusion between
+    /// **env-writing tests that hold the lock**; it does **not** mean
+    /// `--test-threads=1` can be dropped — env readers that do not take the
+    /// lock may still observe another test's temporary value. After mutex
+    /// poisoning, the guard obtained via `PoisonError::into_inner()` is
+    /// still a locked guard, so mutual exclusion is not bypassed. CI runs
+    /// tests single-threaded for now; the real fix is to remove tests'
+    /// dependence on process-level env vars, or route all reads and writes
+    /// through a single isolation layer.
     pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// 生成**进程内**唯一的单调递增后缀,供测试临时目录/会话 ID 命名用。
@@ -551,7 +558,8 @@ pub(crate) mod tests {
     fn pinvou3_home_respects_env_override() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-test-override");
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-test-override") };
         assert_eq!(
             pinvou3_home(),
             crate::platform::os::platform_compat_path("/tmp/pinvou3-test-override")
@@ -562,8 +570,10 @@ pub(crate) mod tests {
                 .join("settings.json")
         );
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }
 
@@ -580,14 +590,17 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let ambient = root.join("python.exe");
         std::fs::write(&ambient, b"ambient").unwrap();
-        std::env::set_var("PINVOU3_PYTHON", &ambient);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_PYTHON", &ambient) };
 
         assert_eq!(python_command(), ambient.to_string_lossy());
         assert!(managed_python_command().is_err());
 
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_PYTHON", value),
-            None => std::env::remove_var("PINVOU3_PYTHON"),
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_PYTHON", value) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_PYTHON") },
         }
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -596,13 +609,16 @@ pub(crate) mod tests {
     fn eval_reports_are_scoped_under_pinvou_home() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let previous = std::env::var_os("PINVOU3_HOME");
-        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-eval-paths");
+        // SAFETY: this test holds platform::paths::tests::ENV_LOCK; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-eval-paths") };
 
         assert_eq!(eval_reports_dir(), pinvou3_home().join("eval"));
 
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: this test holds platform::paths::tests::ENV_LOCK; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: this test holds platform::paths::tests::ENV_LOCK; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }
 
@@ -610,7 +626,8 @@ pub(crate) mod tests {
     fn scheduled_paths_are_derived_from_pinvou_home() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-scheduled-paths");
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-scheduled-paths") };
 
         assert_eq!(scheduled_runs_root(), pinvou3_home().join("scheduled-runs"));
         assert_eq!(scheduled_tasks_root(), pinvou3_home().join("scheduled"));
@@ -634,9 +651,11 @@ pub(crate) mod tests {
                 .join("read-state.json")
         );
         if let Some(value) = previous {
-            std::env::set_var("PINVOU3_HOME", value);
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            unsafe { std::env::set_var("PINVOU3_HOME", value) };
         } else {
-            std::env::remove_var("PINVOU3_HOME");
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            unsafe { std::env::remove_var("PINVOU3_HOME") };
         }
     }
 
@@ -650,7 +669,8 @@ pub(crate) mod tests {
     fn connector_bin_dir_covers_all_on_demand_platforms() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-connector-path-test");
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-connector-path-test") };
         let root = crate::platform::os::platform_compat_path("/tmp/pinvou3-connector-path-test");
         let expected = |platform: &str| Some(root.join("connectors").join(platform).join("bin"));
         assert_eq!(
@@ -676,8 +696,10 @@ pub(crate) mod tests {
         assert_eq!(managed_connector_bin_dir_for("windows", "aarch64"), None);
         assert_eq!(managed_connector_bin_dir_for("freebsd", "x86_64"), None);
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }
 
@@ -717,7 +739,8 @@ pub(crate) mod tests {
     fn session_artifacts_layout() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-artifacts-layout-test");
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-artifacts-layout-test") };
         let root = crate::platform::os::platform_compat_path("/tmp/pinvou3-artifacts-layout-test");
         assert_eq!(
             session_artifacts_dir("abc123"),
@@ -728,8 +751,10 @@ pub(crate) mod tests {
             root.join("sessions").join("default").join("artifacts")
         );
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }
 }

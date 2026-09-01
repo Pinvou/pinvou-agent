@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{install::probe_cli, resolve_claude_cli, resolve_kimi_path, AcpPool, AgentBackend};
+use super::{AcpPool, AgentBackend, install::probe_cli, resolve_claude_cli, resolve_kimi_path};
 
 /// Claude / Kimi 独立的 CLI 探测缓存：选择一个 Agent 不应顺带探测另一个 Agent。
 /// 外层 Option 区分“尚未探测”，内层 Option 表示“已经探测但未找到 CLI”。

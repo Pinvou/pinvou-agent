@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rusqlite::types::Type;
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 use crate::embedding::{blob_to_vec, vec_to_blob};
 use crate::model::{
@@ -746,12 +746,12 @@ impl Store {
         let rows = {
             let mut statement = transaction
                 .prepare("SELECT id,vec FROM chunks WHERE vec_sig IS NULL ORDER BY id LIMIT ?1")?;
-            let rows = statement
+
+            statement
                 .query_map(params![limit.clamp(1, 2_000) as i64], |row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
                 })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            rows
+                .collect::<rusqlite::Result<Vec<_>>>()?
         };
         {
             let mut update =
@@ -858,10 +858,10 @@ impl Store {
         let paths = {
             let mut statement =
                 transaction.prepare("SELECT storage_path FROM documents WHERE collection_id=?1")?;
-            let paths = statement
+
+            statement
                 .query_map(params![id], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            paths
+                .collect::<rusqlite::Result<Vec<_>>>()?
         };
         transaction.execute(
             "DELETE FROM chunks WHERE document_id IN (SELECT id FROM documents WHERE collection_id=?1)",
@@ -884,10 +884,10 @@ impl Store {
                  WHERE (d.deleted_at IS NOT NULL AND d.deleted_at<=?1) \
                     OR (c.deleted_at IS NOT NULL AND c.deleted_at<=?1)",
             )?;
-            let paths = statement
+
+            statement
                 .query_map(params![cutoff], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            paths
+                .collect::<rusqlite::Result<Vec<_>>>()?
         };
         transaction.execute(
             "DELETE FROM chunks WHERE document_id IN (\
@@ -1056,8 +1056,8 @@ impl Store {
                 "SELECT id,endpoints_json,auto_approve_read,created_at,expires_at,stopped_at \
                  FROM shares ORDER BY created_at DESC,id DESC",
             )?;
-            let records = statement.query_map([], map_share)?.collect();
-            records
+
+            statement.query_map([], map_share)?.collect()
         })
     }
 
@@ -1181,7 +1181,8 @@ impl Store {
                 "SELECT id,device_name,status,scope,share_id,device_id,created_at,expires_at,resolved_at \
                  FROM join_requests ORDER BY created_at DESC,id DESC LIMIT ?1 OFFSET ?2",
             )?;
-            let records = statement
+
+            statement
                 .query_map(
                     params![
                         limit.map(|value| value.clamp(1, 500) as i64).unwrap_or(-1),
@@ -1189,8 +1190,7 @@ impl Store {
                     ],
                     map_join_request,
                 )?
-                .collect();
-            records
+                .collect()
         })
     }
 
@@ -1362,18 +1362,18 @@ impl Store {
                 )
                 .optional()
         })?;
-        if let Some(grant) = &device {
-            if !grant.revoked {
-                // Authentication must remain responsive while a large index
-                // transaction owns the primary connection. Presence updates are
-                // telemetry, so skip rather than queue behind that transaction.
-                if let Some(connection) = self.conn.try_lock() {
-                    let timestamp = now();
-                    let _ = connection.execute(
+        if let Some(grant) = &device
+            && !grant.revoked
+        {
+            // Authentication must remain responsive while a large index
+            // transaction owns the primary connection. Presence updates are
+            // telemetry, so skip rather than queue behind that transaction.
+            if let Some(connection) = self.conn.try_lock() {
+                let timestamp = now();
+                let _ = connection.execute(
                         "UPDATE devices SET last_seen_at=?2 WHERE id=?1 AND (last_seen_at IS NULL OR last_seen_at<?3)",
                         params![grant.id, timestamp, timestamp - 60],
                     );
-                }
             }
         }
         Ok(device.filter(|grant| !grant.revoked))
@@ -1754,8 +1754,8 @@ fn cosine_blob(query: &[f32], blob: &[u8]) -> Option<f32> {
         return None;
     }
     let mut score = 0.0f32;
-    for (left, chunk) in query.iter().zip(blob.chunks_exact(4)) {
-        let right = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+    for (left, chunk) in query.iter().zip(blob.as_chunks::<4>().0) {
+        let right = f32::from_le_bytes(*chunk);
         score += left * right;
     }
     score.is_finite().then_some(score)
@@ -1920,8 +1920,8 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{
-        vector_signature, vector_signature_neighbors, DeviceMutationError, DocumentIndexUpdate,
-        RestoreDocumentOutcome, Store, SQLITE_BUSY_TIMEOUT, VECTOR_SIGNATURE_RADIUS,
+        DeviceMutationError, DocumentIndexUpdate, RestoreDocumentOutcome, SQLITE_BUSY_TIMEOUT,
+        Store, VECTOR_SIGNATURE_RADIUS, vector_signature, vector_signature_neighbors,
     };
 
     #[test]
@@ -2214,20 +2214,22 @@ mod tests {
         store.trash_document(document.id).unwrap();
         let chunks = vec!["race".to_string()];
         let vectors = vec![vec![1.0_f32, 0.0]];
-        assert!(store
-            .replace_document_index(
-                document.id,
-                DocumentIndexUpdate {
-                    name: "race.txt",
-                    ext: Some("txt"),
-                    storage_path: "managed-race",
-                    size: 4,
-                    sha256: "sha",
-                    chunks: &chunks,
-                    vectors: &vectors,
-                },
-            )
-            .is_err());
+        assert!(
+            store
+                .replace_document_index(
+                    document.id,
+                    DocumentIndexUpdate {
+                        name: "race.txt",
+                        ext: Some("txt"),
+                        storage_path: "managed-race",
+                        size: 4,
+                        sha256: "sha",
+                        chunks: &chunks,
+                        vectors: &vectors,
+                    },
+                )
+                .is_err()
+        );
         store
             .mark_document_failed(document.id, "索引落库失败")
             .unwrap();
@@ -2311,9 +2313,11 @@ mod tests {
 
         assert!(has_signature);
         assert_eq!(vector_signature_neighbors(42).len(), 697);
-        assert!(vector_signature_neighbors(42)
-            .into_iter()
-            .all(|candidate| (candidate ^ 42).count_ones() <= VECTOR_SIGNATURE_RADIUS));
+        assert!(
+            vector_signature_neighbors(42)
+                .into_iter()
+                .all(|candidate| (candidate ^ 42).count_ones() <= VECTOR_SIGNATURE_RADIUS)
+        );
     }
 
     #[test]
@@ -2577,9 +2581,11 @@ mod tests {
         store.delete_device("member-1").unwrap();
 
         assert!(store.device("member-1").unwrap().is_none());
-        assert!(store
-            .approve_join_request("request-1", crate::model::AccessScope::Read)
-            .is_err());
+        assert!(
+            store
+                .approve_join_request("request-1", crate::model::AccessScope::Read)
+                .is_err()
+        );
         let resolved = store.list_join_requests(None, 0).unwrap();
         assert_eq!(
             resolved[0].status,
@@ -2661,9 +2667,11 @@ mod tests {
         assert_eq!(collections[0].id, trashed_collection.id);
         assert_eq!(collections[0].doc_count, 2);
 
-        assert!(store
-            .permanently_delete_document(active_document.id)
-            .is_err());
+        assert!(
+            store
+                .permanently_delete_document(active_document.id)
+                .is_err()
+        );
         assert_eq!(
             store
                 .permanently_delete_document(trashed_document.id)
@@ -2677,10 +2685,12 @@ mod tests {
             .unwrap();
         paths.sort();
         assert_eq!(paths, vec!["managed-first", "managed-second"]);
-        assert!(store
-            .collection(trashed_collection.id, true)
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .collection(trashed_collection.id, true)
+                .unwrap()
+                .is_none()
+        );
         assert!(store.document(first.id, true).unwrap().is_none());
         assert!(store.document(second.id, true).unwrap().is_none());
         let chunk_count: i64 = store

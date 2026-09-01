@@ -7,8 +7,8 @@ use super::windows_path;
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::Globalization::{GetUserPreferredUILanguages, MUI_LANGUAGE_NAME};
 use windows_sys::Win32::System::Registry::{
-    RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER,
-    KEY_READ, REG_EXPAND_SZ, REG_SZ,
+    HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, KEY_READ, REG_EXPAND_SZ, REG_SZ, RegCloseKey,
+    RegOpenKeyExW, RegQueryValueExW,
 };
 
 pub fn current_system_locale() -> Option<String> {
@@ -49,7 +49,7 @@ pub fn current_system_locale() -> Option<String> {
 /// Access denied also means the process exists under another user or integrity level.
 /// Browser watch uses this before removing a stale port file.
 pub fn process_alive(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED};
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, GetLastError};
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     // SAFETY: This only queries existence, and every non-null handle is closed immediately.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
@@ -119,10 +119,7 @@ pub fn command_exists(command: &str) -> bool {
             }
         }
     }
-    if let Some(path) = common_libreoffice_tool_path(command) {
-        if let Some(dir) = path.parent() {
-            ensure_dir_on_process_path(dir.to_path_buf());
-        }
+    if common_libreoffice_tool_path(command).is_some() {
         return true;
     }
     false
@@ -154,9 +151,6 @@ pub fn libreoffice_tool_path() -> PathBuf {
         }
     }
     if let Some(path) = common_libreoffice_tool_path("soffice") {
-        if let Some(dir) = path.parent() {
-            ensure_dir_on_process_path(dir.to_path_buf());
-        }
         return path;
     }
     PathBuf::from("soffice")
@@ -363,11 +357,7 @@ fn read_registry_string(root: HKEY, key_path: &str, value_name: Option<&str>) ->
 
     let len = data.iter().position(|&ch| ch == 0).unwrap_or(data.len());
     let value = String::from_utf16_lossy(&data[..len]).trim().to_string();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    if value.is_empty() { None } else { Some(value) }
 }
 
 fn read_bios_serial_from_powershell() -> Option<String> {
@@ -405,11 +395,7 @@ fn read_bios_serial_from_wmic() -> Option<String> {
 
 fn non_empty_stdout(stdout: Vec<u8>) -> Option<String> {
     let value = String::from_utf8_lossy(&stdout).trim().to_string();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    if value.is_empty() { None } else { Some(value) }
 }
 
 fn normalize_bios_serial_for_binding(input: &str) -> Option<String> {
@@ -435,15 +421,32 @@ fn wide_null(value: &str) -> Vec<u16> {
     OsStr::new(value).encode_wide().chain(Some(0)).collect()
 }
 
-fn ensure_dir_on_process_path(dir: std::path::PathBuf) {
+/// Windows env writes in the single-threaded startup window: the ONNX
+/// Runtime dylib path plus the detected LibreOffice program dir are prepended
+/// to PATH (the latter lets soffice and its child processes resolve by name,
+/// so the runtime no longer needs to write PATH). Called only by lib.rs
+/// `startup_process_env` before the first thread spawn; the multi-threaded
+/// phase never writes the process env (edition 2024 concurrent-reader risk).
+pub fn startup_platform_env() {
+    windows_path::startup_configure_onnxruntime_dylib();
+    let Some(soffice) = common_libreoffice_tool_path("soffice") else {
+        return;
+    };
+    let Some(dir) = soffice.parent() else {
+        return;
+    };
     let current = std::env::var_os("PATH").unwrap_or_default();
-    if std::env::split_paths(&current).any(|path| same_path(&path, &dir)) {
+    // Both the read (split_paths) and the write (set_var) happen inside the
+    // single-threaded window; the dedup check avoids duplicate prepends.
+    if std::env::split_paths(&current).any(|path| same_path(&path, dir)) {
         return;
     }
-    let mut paths = vec![dir];
+    let mut paths = vec![dir.to_path_buf()];
     paths.extend(std::env::split_paths(&current));
     if let Ok(joined) = std::env::join_paths(paths) {
-        std::env::set_var("PATH", joined);
+        // SAFETY: called only from the single-threaded startup window (see the
+        // function docs); no concurrent env readers.
+        unsafe { std::env::set_var("PATH", joined) };
     }
 }
 

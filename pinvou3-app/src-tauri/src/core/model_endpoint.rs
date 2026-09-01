@@ -478,10 +478,12 @@ mod tests {
         });
         assert_eq!(anthropic_messages_text(&v).as_deref(), Some("{\"a\":1}"));
         assert!(anthropic_messages_text(&serde_json::json!({"content": []})).is_none());
-        assert!(anthropic_messages_text(
-            &serde_json::json!({"content": [{"type": "thinking", "thinking": "..."}]})
-        )
-        .is_none());
+        assert!(
+            anthropic_messages_text(
+                &serde_json::json!({"content": [{"type": "thinking", "thinking": "..."}]})
+            )
+            .is_none()
+        );
         assert!(anthropic_messages_text(&serde_json::json!({})).is_none());
     }
 }

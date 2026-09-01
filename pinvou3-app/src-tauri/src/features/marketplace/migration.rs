@@ -3,12 +3,13 @@
 
 use crate::platform::paths;
 
+use super::MarketplaceManager;
 use super::connectors::write_json_pretty;
 use super::secrets::{
     mcp_secret_env_var, mcp_secret_placeholder, mcp_secret_reference, mcp_secret_store_error,
+    store_secret_value,
 };
 use super::types::McpSecretMigrationResult;
-use super::MarketplaceManager;
 
 /// 内置的"已知有明文密钥的工具"清单(迁移目标)。
 #[derive(Debug, Clone, Copy)]
@@ -204,7 +205,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 return Err(mcp_secret_store_error(spec.tool_id, spec.key, e));
             }
         };
-        std::env::set_var(mcp_secret_env_var(spec.key), env_value);
+        store_secret_value(mcp_secret_env_var(spec.key), env_value);
         Ok(())
     }
 }

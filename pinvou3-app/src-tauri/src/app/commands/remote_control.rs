@@ -11,11 +11,11 @@ use crate::features::codex_acp::workspace::{
     WorkspaceChanges, WorkspaceDiff, WorkspaceEntry, WorkspaceListing, WorkspacePreview,
 };
 use crate::features::codex_acp::{
-    project_acp_elicitation_request_for_web, project_acp_permission_request_for_web,
-    project_acp_value_for_web, AcpEventEnvelope, AcpPool, AgentBackend, CodexAcpPendingElicitation,
-    CodexAcpPendingPermission, CodexAcpSessionInfo,
+    AcpEventEnvelope, AcpPool, AgentBackend, CodexAcpPendingElicitation, CodexAcpPendingPermission,
+    CodexAcpSessionInfo, project_acp_elicitation_request_for_web,
+    project_acp_permission_request_for_web, project_acp_value_for_web,
 };
-use crate::features::remote_control::{file_access, manager, MAX_TRANSFER_CHUNK_BYTES};
+use crate::features::remote_control::{MAX_TRANSFER_CHUNK_BYTES, file_access, manager};
 use crate::features::remote_control::{
     RelaySettingsInfo, RemoteControlManager, WebAccessInfo, WebAccessStatus,
 };
@@ -1020,22 +1020,25 @@ pub async fn web_access_codex_acp_prompt(
         let attachment_handles = attachment_handles.unwrap_or_default();
         let (attachment_reservation, attachments) =
             manager.reserve_web_attachments(&attachment_handles)?;
-        let (attachments, staged_sources) =
-            match stage_uploaded_attachments(attachments, &session_id, &store) {
-                Ok(staged) => staged,
-                Err(error) => {
-                    if let Err(release_error) = manager.finish_web_attachment_reservation(
-                        &attachment_reservation,
-                        &attachment_handles,
-                        false,
-                    ) {
-                        eprintln!(
+        let (attachments, staged_sources) = match stage_uploaded_attachments(
+            attachments,
+            &session_id,
+            &store,
+        ) {
+            Ok(staged) => staged,
+            Err(error) => {
+                if let Err(release_error) = manager.finish_web_attachment_reservation(
+                    &attachment_reservation,
+                    &attachment_handles,
+                    false,
+                ) {
+                    eprintln!(
                         "[web-access] release ACP attachment reservation failed: {release_error}"
                     );
-                    }
-                    return Err(error);
                 }
-            };
+                return Err(error);
+            }
+        };
         let result = super::codex::codex_acp_prompt_with_attachments(
             session_id,
             message,
@@ -1344,8 +1347,8 @@ async fn web_access_chat_for_session(
                     false,
                 ) {
                     eprintln!(
-                    "[web-access] release staged attachment reservation failed: {release_error}"
-                );
+                        "[web-access] release staged attachment reservation failed: {release_error}"
+                    );
                 }
                 return Err(error);
             }
@@ -1669,12 +1672,12 @@ pub async fn web_access_render_artifact_visual(
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_web_chat_session_supported, web_acp_agent_id, web_acp_result,
-        web_artifact_storage_path, web_session_result, web_workspace_result, WebAcpOperation,
-        WebSavedSession, WebSessionMetadata, WebSessionOperation, WebWorkspaceOperation,
+        WebAcpOperation, WebSavedSession, WebSessionMetadata, WebSessionOperation,
+        WebWorkspaceOperation, ensure_web_chat_session_supported, web_acp_agent_id, web_acp_result,
+        web_artifact_storage_path, web_session_result, web_workspace_result,
     };
-    use deepseek_tui::session_manager::{create_saved_session, SavedSession};
-    use serde_json::{json, Value};
+    use deepseek_tui::session_manager::{SavedSession, create_saved_session};
+    use serde_json::{Value, json};
     use std::path::Path;
 
     #[test]

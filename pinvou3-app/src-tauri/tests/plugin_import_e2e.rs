@@ -26,11 +26,14 @@ fn with_temp_home<F: FnOnce()>(f: F) {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let prev = std::env::var("PINVOU3_HOME").ok();
-    std::env::set_var("PINVOU3_HOME", &dir);
+    // SAFETY: this file's ENV_LOCK is held; env writes are serialized in the test process.
+    unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
     f();
     match prev {
-        Some(v) => std::env::set_var("PINVOU3_HOME", v),
-        None => std::env::remove_var("PINVOU3_HOME"),
+        // SAFETY: this file's ENV_LOCK is held; env writes are serialized in the test process.
+        Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+        // SAFETY: this file's ENV_LOCK is held; env writes are serialized in the test process.
+        None => unsafe { std::env::remove_var("PINVOU3_HOME") },
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

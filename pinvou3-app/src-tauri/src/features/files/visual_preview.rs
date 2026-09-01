@@ -9,11 +9,11 @@
 
 use std::path::{Path, PathBuf};
 
+use super::IngestResult;
 use super::ingest_deps::{
     add_ocr_tessdata_arg, libreoffice_tool_command, libreoffice_user_installation_arg,
     ocr_lang_arg, ocr_tool_command, pdf_tool_command, system_tools,
 };
-use super::IngestResult;
 
 // ============== 产物可视化预览助手（commands::render_artifact_visual 复用）==============
 
@@ -146,7 +146,7 @@ pub fn libreoffice_to_inline_html(path: &Path) -> Result<String, String> {
                 return Err(format!(
                     "LibreOffice 转换失败: {}",
                     String::from_utf8_lossy(&o.stderr).trim()
-                ))
+                ));
             }
             Err(e) => return Err(format!("LibreOffice 调用失败: {e}")),
         }
@@ -211,7 +211,7 @@ pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<Strin
                 return Err(format!(
                     "LibreOffice 转 PDF 失败: {}",
                     String::from_utf8_lossy(&o.stderr).trim()
-                ))
+                ));
             }
             Err(e) => return Err(format!("LibreOffice 调用失败: {e}")),
         }
@@ -241,7 +241,7 @@ pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<Strin
                 return Err(format!(
                     "pdftoppm 转图失败: {}",
                     String::from_utf8_lossy(&o.stderr).trim()
-                ))
+                ));
             }
             Err(e) => return Err(format!("pdftoppm 调用失败: {e}")),
         }
@@ -304,7 +304,7 @@ pub fn pdf_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<String>,
                 return Err(format!(
                     "pdftoppm 转图失败: {}",
                     String::from_utf8_lossy(&o.stderr).trim()
-                ))
+                ));
             }
             Err(e) => return Err(format!("pdftoppm 调用失败: {e}")),
         }

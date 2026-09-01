@@ -15,9 +15,9 @@ use crate::features::codex_acp::workspace::{
     self, WorkspaceChanges, WorkspaceDiff, WorkspaceEntry, WorkspaceListing, WorkspacePreview,
 };
 use crate::features::codex_acp::{
-    validate_codex_project_workspace, AcpAgentDescriptor, AcpEventEnvelope, AcpPool, AgentBackend,
-    CodexAcpPendingElicitation, CodexAcpPendingPermission, CodexAcpSessionInfo, CodexAcpStatus,
-    CodexAcpWorkspaceInfo, CodexWorkspaceKind,
+    AcpAgentDescriptor, AcpEventEnvelope, AcpPool, AgentBackend, CodexAcpPendingElicitation,
+    CodexAcpPendingPermission, CodexAcpSessionInfo, CodexAcpStatus, CodexAcpWorkspaceInfo,
+    CodexWorkspaceKind, validate_codex_project_workspace,
 };
 use crate::features::sessions::{SessionKind, SessionStore};
 
@@ -845,9 +845,11 @@ async fn create_code_native_session(
         rollback_created_code_session(&session.metadata.id, store, acp_pool);
         return Err(error);
     }
-    let baseline_root = match kind {
-        CodexWorkspaceKind::Project => project_workspace.clone().expect("项目会话必有工作目录"),
-        CodexWorkspaceKind::Temporary => {
+    // Dispatch on workspace presence consistently with kind: Some is the
+    // project session baseline root; None goes to the temporary directory.
+    let baseline_root = match &project_workspace {
+        Some(root) => root.clone(),
+        None => {
             let temporary_workspace = match store
                 .session_roots(&session.metadata.id)
                 .map(|roots| roots.execution)

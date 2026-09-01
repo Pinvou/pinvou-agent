@@ -411,7 +411,7 @@ pub(crate) fn artifact_info_impl(path: &str) -> Result<ArtifactInfo, String> {
                 kind: "denied".into(),
                 exists: false,
                 modified: 0,
-            })
+            });
         }
     };
     let meta = match std::fs::metadata(&p) {
@@ -422,7 +422,7 @@ pub(crate) fn artifact_info_impl(path: &str) -> Result<ArtifactInfo, String> {
                 kind: "missing".into(),
                 exists: false,
                 modified: 0,
-            })
+            });
         }
     };
     let ext = p

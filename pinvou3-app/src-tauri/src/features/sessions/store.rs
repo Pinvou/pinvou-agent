@@ -10,17 +10,17 @@
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use deepseek_tui::artifacts::{ArtifactKind, ArtifactRecord};
 use deepseek_tui::models::Message;
 use deepseek_tui::session_manager::{
-    create_saved_session_with_id_and_mode, SavedSession, SessionManager, SessionMetadata,
+    SavedSession, SessionManager, SessionMetadata, create_saved_session_with_id_and_mode,
 };
 use parking_lot::{Mutex, RwLock};
 
@@ -30,8 +30,8 @@ use super::scheduled::ChatEngineState;
 use super::transcript::{looks_like_truncating_overwrite, transcript_revision};
 use super::validators::{generate_session_id, persisted_system_prompt, validate_session_id};
 use super::{
-    session_roots_for, CodeSessionPredicate, ExecutionRootResolver, SessionDeletedHook,
-    SessionKind, SessionPurgedHook, SessionRoots, SessionStore,
+    CodeSessionPredicate, ExecutionRootResolver, SessionDeletedHook, SessionKind,
+    SessionPurgedHook, SessionRoots, SessionStore, session_roots_for,
 };
 use crate::core::mode_state::SerializableMode;
 use crate::platform::prefs::UserPrefs;

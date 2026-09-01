@@ -4,12 +4,25 @@ version = "0.8.9"
 description = "品悟智能助手桌面应用后端"
 authors = ["pinvou"]
 license = "MIT"
-edition = "2021"
-# MSRV:rust-version 是「能编译本 crate 的最低版本」下限;
-# 实际构建工具链由 rust-toolchain.toml 锁定到具体版本(可复现),二者语义互补。
+# edition 2024: aligned with the CodeWhale foundation (workspace edition
+# "2024"); requires rustc >= 1.85.
+edition = "2024"
+# MSRV: rust-version is the lower bound "the minimum rustc that can compile
+# this crate"; the actual toolchain is pinned to an exact version by
+# rust-toolchain.toml (reproducible). The two are complementary.
+# 1.89 > the 1.85 floor of edition 2024 — kept unchanged.
 rust-version = "1.89"
-# 主 binary 是 Tauri app(src/main.rs);src/bin/dump_system_prompt.rs 是 dev 工具,
-# 加这个键让 `cargo run`(不带 --bin)默认跑主 app,不再因为多 bin 报错。
+# cargo-shear (unused-dependency / unlinked-file check) exemption:
+# rustc-stack-wrapper.rs is not a compilation target of this crate; it is
+# source code that scripts/rustc-stack-wrapper-select.sh compiles on demand
+# into rustc-stack-wrapper.exe on Windows (direct CreateProcess launch to
+# bypass the cmd 8191-char limit) — see the RUSTC_WRAPPER notes in
+# .cargo/config.toml. Do NOT delete it per shear's advice.
+[package.metadata.cargo-shear]
+ignored-paths = ["scripts/rustc-stack-wrapper.rs"]
+# The main binary is the Tauri app (src/main.rs); src/bin/dump_system_prompt.rs
+# is a dev tool. This key makes `cargo run` (without --bin) default to the
+# main app instead of erroring out due to multiple bins.
 default-run = "pinvou3-tauri"
 autobins = false
 
@@ -253,57 +266,124 @@ javascriptcore = { package = "javascriptcore-rs", version = "1.1" }
 tauri-runtime-wry = "=2.11.4"
 
 # =============================================================================
-# Lint 门禁 —— 硬门禁设计:只启用「当前实测零欠账」的 lint(deny);
-# 有欠账的 lint/group 显式 allow 并注明欠账规模,由清理 PR(#35 及后续)消化后逐个启用。
-# CI(pr-check.yml rust-lint job)直接跑 `cargo clippy --lib --no-deps`(无 continue-on-error),
-# deny 命中即 fail;allow 的欠账 lint 被静默,不产生告警噪声。
-# 实测基线(rust 1.97.1,2026-07-28):应用 crate 的 clippy::all 组 20 处欠账
-# (不含 CodeWhale),rustc 默认 lint 既有基线为 113 处。
+# Lint gates — hard-gate design: deny only lints with a measured zero
+# backlog; lints/groups with backlog are explicitly allowed with the backlog
+# size noted, to be enabled one by one by follow-up cleanup PRs.
+# CI (rust-lint job in pr-check.yml) runs two steps (no continue-on-error):
+# `cargo clippy --lib --bins --no-deps --features dev-tools -- -D warnings`
+# and `+ --tests`; a deny hit fails CI, allowed backlog lints stay silent.
+# Measured baseline (rustc 1.97.1, 2026-08-24, after the edition 2024
+# migration): every individually denied lint below has zero backlog; the
+# `all` group still carries hundreds (collapsible_if ~154,
+# too_many_arguments ~22, unnecessary_sort_by 7, …) so the group stays
+# allowed and only high-value lints are denied individually.
+# The remaining 19 private_interfaces hits all originate from the CodeWhale
+# submodule — not covered by this table under --no-deps (upstream backlog).
 # =============================================================================
 [lints.rust]
-# —— 零欠账,deny 硬门禁(实测 0 违规)——
-# unsafe 代码块内部仍要求显式 unsafe 操作,避免误用:
+# —— Zero backlog, deny hard gate (measured 0 violations) ——
+# Operations inside unsafe blocks still require explicit unsafe blocks,
+# preventing accidental misuse:
 unsafe_op_in_unsafe_fn = "deny"
-# 多余的花括号 import,如 `use std::{collections::{HashMap}};`
+# Redundant nested braces in imports, e.g. `use std::{collections::{HashMap}};`
 unused_import_braces = "deny"
-# 能省略的显式 lifetime 标注:
+# Explicit lifetime annotations that could be elided:
 unused_lifetimes = "deny"
-# 未使用的 import / 变量 / mut(本 PR 已清零 3 处,deny 防回流):
+# Unused imports / variables / mut:
 unused_imports = "deny"
 unused_variables = "deny"
 unused_mut = "deny"
+# edition 2024 is adopted; this group keeps the code upgradable under
+# future rustc evolution (measured zero backlog):
+rust_2024_compatibility = "deny"
+# Known future-incompatible patterns (deprecated syntax etc.; zero backlog):
+future_incompatible = "deny"
+# Transitional while pub reachability is being tightened (rust_2018_idioms
+# backlog cleared in this PR; warn→deny after one stable observation cycle):
+rust_2018_idioms = "warn"
+# Hidden lifetime parameters (elided_lifetimes_in_paths is part of the
+# group; backlog cleared in the same pass). The rust_2018_idioms warn above
+# covers it; raising to deny is left to a follow-up cleanup PR.
 
-# —— 有欠账,显式 allow;注释给出欠账规模,清理 PR(#35 及后续)消化后升 deny ——
-# unreachable_pub:1795 处欠账(全 crate pub 未收口,工程量大,单独清理)。
+# —— Backlog: explicitly allowed; sizes noted, to be re-enabled after cleanup ——
+# unreachable_pub: 1795 hits (crate-wide pub tightening; large effort, own PR).
 unreachable_pub = "allow"
-# let_underscore_drop:306 处欠账(`let _ =` 吞 Drop 副作用,需逐个确认语义)。
+# let_underscore_drop: 306 hits (`let _ =` swallowing Drop side effects; each
+# site needs semantic confirmation).
 let_underscore_drop = "allow"
-# dead_code:96 处欠账(历史保留代码/平台条件编译残留,需甄别后清理)。
+# dead_code: 96 hits (historical keepers / cfg residue; needs triage).
 dead_code = "allow"
-# private_interfaces:14 处欠账(pub 接口暴露私有类型,随 unreachable_pub 一起收口)。
+# private_interfaces: 14 hits (pub interfaces exposing private types; to be
+# tightened together with unreachable_pub).
 private_interfaces = "allow"
+# missing_docs: 699 hits — this crate is a private bin (never published to
+# crates.io, no external consumers); doc completeness is of limited value,
+# allowed long-term.
+missing_docs = "allow"
 
 [lints.clippy]
-# —— all / pedantic 组有历史欠账,整组 allow(priority=-1 保证下方具体 lint 的 deny 生效)——
-# all 组(correctness+suspicious+style+complexity+perf)应用 crate 实测 20 处欠账;
-# pedantic 组欠账更多(原方案全量 warn 实测近 2000 条告警,等于无门禁)。
-# 欠账由清理 PR(#35 及后续)消化后,再整组或逐 lint 升 deny。
+# —— The all/pedantic groups carry historical backlog; allowed as groups
+# (priority=-1 keeps the individual denies below effective) ——
+# The all group still measures in the hundreds (collapsible_if ~154 /
+# too_many_arguments ~22 etc.) and grows as clippy evolves; allowing the
+# whole group is the conservative posture. The individually denied lints
+# below are unaffected. The pedantic group has ~2360 hits (doc_markdown 871,
+# mostly from mixed Chinese/English comments) — allowed long-term; the
+# high-value subset is denied individually below.
 all = { level = "allow", priority = -1 }
 pedantic = { level = "allow", priority = -1 }
 
-# —— 精选零欠账「防回归」lint,deny 硬门禁(实测 0 违规,新增即 fail CI)——
-# dbg!/todo!/unimplemented! 会在运行时 panic 或留下调试残留:遗留即隐患。
+# —— Curated zero-backlog regression guards: deny hard gate (0 violations,
+# new hits fail CI) ——
+# dbg!/todo!/unimplemented! panic at runtime or leave debug residue behind.
 dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
-# 多余 unwrap(正确性,误报极低)。
+# Redundant unwrap (correctness class, very low false-positive rate).
 unnecessary_unwrap = "deny"
-# 禁 `dep = "*"` 通配版本(防未来新增不锁版本的危险依赖)。
+# Forbid `dep = "*"` wildcard versions (prevent future un-pinned deps).
 wildcard_dependencies = "deny"
-# 注:print_stdout/print_stderr 未启用——本 app 启动诊断大量用 eprintln!(早于日志
-#     后端就绪),启用会刷出大量噪声;待日志链路统一后再评估。
-# 注:cargo_common_metadata 未启用——本 crate 是 private bin(不发布 crates.io),
-#     repository/readme/keywords/categories 无意义。
+# Pointer `as` casts (provenance pitfalls in FFI; all converted to
+# ptr.cast(), deny prevents regressions):
+ptr_as_ptr = "deny"
+# Rc<Mutex<_>> deadlock footgun / needless heap alloc of Rc<String>/Rc<Vec>
+# (measured 0):
+rc_mutex = "deny"
+empty_drop = "deny"
+# Single-arm match destructuring suggested as if let (style class, uniform):
+single_match = "deny"
+# cargo group: feature naming hygiene (measured 0; guards against future
+# counter-intuitive feature names):
+negative_feature_names = "deny"
+redundant_feature_names = "deny"
+
+# —— Cleared in this PR, kept at warn for one observation cycle before deny ——
+# Every unsafe block requires a SAFETY comment (the edition 2024 migration
+# added many unsafe blocks; the macOS/Linux compile surface is fully
+# annotated). Legacy Windows-only unsafe blocks (~34: PDH/registry FFI etc.)
+# remain unannotated — CI compiles on Linux and never sees them, so the warn
+# guard does not apply to the Windows target; follow-up cleanup PR.
+undocumented_unsafe_blocks = "warn"
+# unwrap/expect in a long-lived desktop process kills the session on panic
+# (baseline: unwrap 6 / expect 38; test code exempt). Production code is
+# cleared in this PR; kept at warn to prevent regressions.
+unwrap_used = "warn"
+expect_used = "warn"
+# unwrap/expect inside Result constructors (API smell; baseline 3):
+unwrap_in_result = "warn"
+# process::exit skips cleanup hooks (one baseline site in the Tauri lib):
+exit = "warn"
+# `.get(i).unwrap()` pattern (baseline 0, deny directly):
+get_unwrap = "deny"
+
+# Not enabled: print_stdout/print_stderr — startup diagnostics rely heavily
+#     on eprintln! (before the logging backend is up); revisit once the
+#     logging pipeline is unified.
+# Not enabled: cargo_common_metadata — this crate is a private bin (never
+#     published to crates.io); repository/readme/keywords/categories are moot.
+# Not enabled: doc_markdown (871 hits) — comments are mostly Chinese;
+#     backtick-wrapping has low value and high noise there. Prose checks
+#     belong in a dedicated tool (e.g. cargo-spellcheck), not clippy.
 
 # =============================================================================
 # 构建优化 Profile —— release 开启「安全范围内最大优化」

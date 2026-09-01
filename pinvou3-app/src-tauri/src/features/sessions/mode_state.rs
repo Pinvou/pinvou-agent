@@ -16,12 +16,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::core::mode_state::{ModeDefaultsView, ModeLane, SerializableMode};
 
-use super::injections::{PendingPlanClaim, PendingTurnInjections};
 use super::SessionStore;
+use super::injections::{PendingPlanClaim, PendingTurnInjections};
 use crate::platform::prefs::{CodePermissionPrefs, UserPrefs};
 use std::collections::HashMap;
 use std::io::ErrorKind;

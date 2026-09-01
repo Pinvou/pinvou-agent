@@ -12,8 +12,8 @@ use anyhow::{Context, Result};
 use toml::Value;
 
 use super::{
-    atomic_write, AgentConfigWriter, EffectiveConfig, EffectiveEntry, ProviderTarget,
-    ProviderWireApi, PROVIDER_ID_PREFIX,
+    AgentConfigWriter, EffectiveConfig, EffectiveEntry, PROVIDER_ID_PREFIX, ProviderTarget,
+    ProviderWireApi, atomic_write,
 };
 
 pub struct KimiConfigWriter {
@@ -122,10 +122,13 @@ impl AgentConfigWriter for KimiConfigWriter {
             })
             .unwrap_or_default();
         if !managed_providers.is_empty() {
-            let providers = table
-                .get_mut("providers")
-                .and_then(Value::as_table_mut)
-                .expect("managed ids 来自存在的表");
+            // managed_providers was just collected from the providers table
+            // of the same in-memory config, so it must be retrievable again;
+            // if not, the data shape is abnormal and we should error out
+            // instead of panicking.
+            let Some(providers) = table.get_mut("providers").and_then(Value::as_table_mut) else {
+                anyhow::bail!("kimi config.toml providers table lost during rollback");
+            };
             for id in managed_providers {
                 providers.remove(&id);
             }
@@ -146,10 +149,11 @@ impl AgentConfigWriter for KimiConfigWriter {
             })
             .unwrap_or_default();
         if !managed_models.is_empty() {
-            let models = table
-                .get_mut("models")
-                .and_then(Value::as_table_mut)
-                .expect("managed ids 来自存在的表");
+            // Same as above: managed_models was just collected from the
+            // models table of the same in-memory config.
+            let Some(models) = table.get_mut("models").and_then(Value::as_table_mut) else {
+                anyhow::bail!("kimi config.toml models table lost during rollback");
+            };
             for id in managed_models {
                 models.remove(&id);
             }
@@ -430,16 +434,20 @@ mod tests {
         let raw = fs::read_to_string(dir.join("config.toml")).unwrap();
         let config: Value = toml::from_str(&raw).unwrap();
         assert!(config.get("default_model").is_none());
-        assert!(config
-            .get("providers")
-            .unwrap()
-            .get("pv-aaaaaaaaaaaa")
-            .is_none());
-        assert!(config
-            .get("models")
-            .unwrap()
-            .get("pv-aaaaaaaaaaaa-main")
-            .is_none());
+        assert!(
+            config
+                .get("providers")
+                .unwrap()
+                .get("pv-aaaaaaaaaaaa")
+                .is_none()
+        );
+        assert!(
+            config
+                .get("models")
+                .unwrap()
+                .get("pv-aaaaaaaaaaaa-main")
+                .is_none()
+        );
         // 官方表保留
         assert_eq!(config["models"]["official"]["model"], "kimi-k2.5".into());
         assert_eq!(
@@ -483,11 +491,13 @@ mod tests {
         let raw = fs::read_to_string(dir.join("config.toml")).unwrap();
         let config: Value = toml::from_str(&raw).unwrap();
         assert_eq!(config["default_model"], "kimi-code/k3".into());
-        assert!(config
-            .get("providers")
-            .unwrap()
-            .get("pv-aaaaaaaaaaaa")
-            .is_none());
+        assert!(
+            config
+                .get("providers")
+                .unwrap()
+                .get("pv-aaaaaaaaaaaa")
+                .is_none()
+        );
         // 恢复后的产物重新通过官方校验（官方登录态不断裂）
         assert!(crate::features::codex_acp::introspect::kimi_runtime_config_ready(&raw, true));
         let _ = fs::remove_dir_all(&dir);

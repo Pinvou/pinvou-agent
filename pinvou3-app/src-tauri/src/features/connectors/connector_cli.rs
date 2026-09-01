@@ -17,8 +17,8 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
 use std::sync::Mutex;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -189,11 +189,11 @@ pub fn parse_semver3(s: &str) -> Option<(u64, u64, u64)> {
 /// 纯 Rust(qrcode crate),不依赖具体 CLI 的 qrcode 子命令——各连接器通用。
 /// 失败返回 `None`(前端回退开浏览器)。
 pub fn make_qr(url: &str) -> Option<String> {
-    use qrcode::render::svg;
     use qrcode::QrCode;
+    use qrcode::render::svg;
     let code = QrCode::new(url.as_bytes()).ok()?;
     let svg_xml = code
-        .render::<svg::Color>()
+        .render::<svg::Color<'_>>()
         .min_dimensions(220, 220)
         .quiet_zone(true)
         .build();
@@ -375,7 +375,7 @@ pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, 
 pub fn bundle_store_on_connected(id: &str) {
     use crate::features::marketplace::bundle;
     use crate::features::marketplace::store::{
-        AssetRef, BundleRecord, BundleSource, BundleStore, ASSET_KIND_CLI,
+        ASSET_KIND_CLI, AssetRef, BundleRecord, BundleSource, BundleStore,
     };
     let mut record = BundleRecord::installed_now(id, BundleSource::Builtin);
     if let Some(bin) = bundle::cli_bundle_bin(id) {

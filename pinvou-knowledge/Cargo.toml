@@ -4,7 +4,9 @@ version = "0.8.9"
 description = "Pinvou 可复用知识库核心与自包含服务器"
 authors = ["pinvou"]
 license = "MIT"
-edition = "2021"
+# edition 2024: aligned with the CodeWhale foundation and pinvou3-app;
+# requires rustc >= 1.85 — MSRV 1.89 unchanged.
+edition = "2024"
 rust-version = "1.89"
 default-run = "pinvou-knowledge-server"
 
@@ -82,13 +84,45 @@ fastembed = { version = "4", optional = true }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 
+# Lint gates follow the same policy as pinvou3-app/src-tauri: zero-backlog
+# lints get a deny hard gate; lints with backlog are allowed with the size
+# noted (measured on rustc 1.97.1 / edition 2024). The clippy::all backlog
+# (collapsible_if 5 / let_and_return 5) was cleared in this PR and stays at
+# warn for one stable observation cycle before deny; pedantic has ~256 hits
+# for later cleanup.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 unused_imports = "deny"
 unused_variables = "deny"
+unused_mut = "deny"
+rust_2024_compatibility = "deny"
+future_incompatible = "deny"
+# Backlog cleared in the same pass; same warn→deny cadence as src-tauri.
+# priority=-1 keeps the specific lints above (which sit at the default
+# priority 0) winning over the group:
+rust_2018_idioms = { level = "warn", priority = -1 }
 
 [lints.clippy]
 dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
 wildcard_dependencies = "deny"
+negative_feature_names = "deny"
+redundant_feature_names = "deny"
+# The all-group backlog of this crate is cleared; warn for observation,
+# deny later:
+all = { level = "warn", priority = -1 }
+# Large pedantic backlog, allowed long-term:
+pedantic = { level = "allow", priority = -1 }
+
+# —— Restriction-group regression guards aligned with src-tauri (measured
+# zero backlog; warn guards against new additions) ——
+# This crate currently has no unsafe blocks; any future one must carry a
+# SAFETY comment:
+undocumented_unsafe_blocks = "warn"
+# No unwrap/expect in production code (all in test modules); warn prevents
+# regressions:
+unwrap_used = "warn"
+expect_used = "warn"
+unwrap_in_result = "warn"
+exit = "warn"

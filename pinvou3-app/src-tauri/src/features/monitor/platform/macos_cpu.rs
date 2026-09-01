@@ -49,7 +49,7 @@ mod ffi {
         pub ru_nivcsw: i64,
     }
 
-    extern "C" {
+    unsafe extern "C" {
         pub fn mach_host_self() -> MachPort;
         pub fn host_statistics64(
             host: MachPort,
@@ -84,6 +84,10 @@ static CPU_IDENTITY: OnceLock<(String, u32)> = OnceLock::new();
 static HOST_PORT: OnceLock<ffi::MachPort> = OnceLock::new();
 
 fn host_port() -> ffi::MachPort {
+    // SAFETY: mach_host_self is a pure query function with no
+    // preconditions; the returned send right is a bare u32 port name (not a
+    // pointer), held for the process lifetime by a process-wide OnceLock and
+    // never released, so there is no aliasing or dangling.
     *HOST_PORT.get_or_init(|| unsafe { ffi::mach_host_self() })
 }
 
@@ -157,6 +161,11 @@ fn read_brand_string() -> Option<String> {
     let name = b"machdep.cpu.brand_string\0";
     let mut buf = [0u8; 128];
     let mut len = buf.len();
+    // SAFETY: name is a NUL-terminated literal; sysctlbyname performs a
+    // read-only query (newp=NULL, newlen=0, no kernel state writes), oldp
+    // points to a 128-byte stack buffer and the length declared via oldlenp
+    // matches that buffer; the kernel updates len to the amount actually
+    // written and does not write out of bounds.
     let status = unsafe {
         ffi::sysctlbyname(
             name.as_ptr().cast(),
@@ -175,21 +184,23 @@ fn read_brand_string() -> Option<String> {
         .ok()?
         .trim()
         .to_string();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name)
-    }
+    if name.is_empty() { None } else { Some(name) }
 }
 
 fn read_system_ticks() -> Option<SystemTicks> {
     let mut info = ffi::HostCpuLoadInfo::default();
     let mut count: u32 = info.cpu_ticks.len() as u32;
+    // SAFETY: host_statistics64 writes at most `count` ints under
+    // HOST_CPU_LOAD_INFO semantics (4 here, matching the cpu_ticks capacity)
+    // into a sufficiently sized stack structure; host_port is this process's
+    // send right from mach_host_self, valid for this flavor; the kernel
+    // updates count to the amount actually written, never out of bounds, and
+    // failure only returns a non-zero kern_return_t.
     let status = unsafe {
         ffi::host_statistics64(
             host_port(),
             HOST_CPU_LOAD_INFO,
-            &mut info as *mut ffi::HostCpuLoadInfo as *mut i32,
+            (&mut info as *mut ffi::HostCpuLoadInfo).cast::<i32>(),
             &mut count,
         )
     };
@@ -208,6 +219,11 @@ fn read_system_ticks() -> Option<SystemTicks> {
 
 fn read_process_ticks() -> Option<ProcessTicks> {
     let mut usage = ffi::Rusage::default();
+    // SAFETY: getrusage only writes this process's statistics into usage
+    // under RUSAGE_SELF semantics; Rusage matches the darwin 64-bit
+    // struct rusage layout (the rusage_layout_matches_kernel_struct test
+    // pins the 144-byte layout), the pointer targets a sufficiently sized
+    // stack structure, and failure only returns -1.
     let status = unsafe { ffi::getrusage(RUSAGE_SELF, &mut usage) };
     if status != 0 {
         return None;

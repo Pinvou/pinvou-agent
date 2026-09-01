@@ -13,10 +13,10 @@ use std::time::Instant;
 
 use super::Inner;
 use super::{
-    CachedWebAttachment, WebAttachmentUpload, WebSessionDownload, WebSessionDownloadChunk,
-    MAX_WEB_ATTACHMENT_UPLOADS, MAX_WEB_ATTACHMENT_UPLOAD_TOTAL_BYTES, MAX_WEB_SESSION_DOWNLOADS,
-    MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES, WEB_ATTACHMENT_UPLOAD_DIR_PREFIX,
-    WEB_SESSION_TRANSFER_TTL,
+    CachedWebAttachment, MAX_WEB_ATTACHMENT_UPLOAD_TOTAL_BYTES, MAX_WEB_ATTACHMENT_UPLOADS,
+    MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES, MAX_WEB_SESSION_DOWNLOADS,
+    WEB_ATTACHMENT_UPLOAD_DIR_PREFIX, WEB_SESSION_TRANSFER_TTL, WebAttachmentUpload,
+    WebSessionDownload, WebSessionDownloadChunk,
 };
 use crate::platform::paths;
 
@@ -218,10 +218,12 @@ pub(super) fn append_web_attachment_upload_chunk(
             upload.file_name
         );
     }
+    // get_mut validated this under the same borrow just above; still return an
+    // error as the fallback instead of panicking.
     let completed = inner
         .web_attachment_uploads
         .remove(upload_id)
-        .expect("upload exists above");
+        .ok_or("远程控制附件上传不存在或已过期")?;
     inner
         .web_attachment_upload_order
         .retain(|id| id != upload_id);
@@ -264,8 +266,8 @@ pub(crate) fn web_session_downloads_base() -> PathBuf {
     paths::pinvou3_home().join("web-session-downloads")
 }
 
-pub(crate) fn open_web_session_downloads_base(
-) -> Result<crate::platform::filesystem::PrivateFileDirectory, String> {
+pub(crate) fn open_web_session_downloads_base()
+-> Result<crate::platform::filesystem::PrivateFileDirectory, String> {
     let base = web_session_downloads_base();
     crate::platform::filesystem::open_private_file_directory(&base)
         .map_err(|error| format!("prepare remote-control Session download directory: {error}"))
@@ -461,7 +463,7 @@ mod tests {
     ))]
     use super::sweep_stale_web_session_downloads_in;
     use crate::features::remote_control::manager::{
-        Inner, WebSessionDownload, WEB_SESSION_TRANSFER_TTL,
+        Inner, WEB_SESSION_TRANSFER_TTL, WebSessionDownload,
     };
     use std::time::{Duration, Instant};
 

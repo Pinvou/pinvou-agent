@@ -14,7 +14,7 @@ pub mod platform;
     kind = "static",
     modifiers = "+whole-archive"
 )]
-extern "C" {}
+unsafe extern "C" {}
 
 pub use features::assistant::attachments::{
     build_message_with_attachments, stage_file_in_workspace,
@@ -69,7 +69,14 @@ fn ensure_release_env() {
     crate::platform::ui_cache::configure_runtime_environment();
     for (k, v) in RELEASE_ENV_DEFAULTS {
         if env::var_os(k).is_none() {
-            env::set_var(k, v);
+            // SAFETY: ensure_release_env is only called by the first line of
+            // run() and by the headless benchmark host startup sequence
+            // (headless_bridge.rs run_headless_host, before the tokio runtime
+            // is built); at both call sites the process has only the main
+            // thread — no concurrent env readers (audit conclusion: the first
+            // thread spawn happens in the lib.rs setup phase, after this
+            // function); calls inside tests run under ENV_LOCK serialization.
+            unsafe { env::set_var(k, v) };
         }
     }
 
@@ -102,7 +109,8 @@ fn ensure_release_env() {
             }
             dirs.extend(env::split_paths(&old));
             if let Ok(joined) = env::join_paths(dirs) {
-                env::set_var("PATH", joined);
+                // SAFETY: same as above; run() single-threaded startup, no concurrent env readers.
+                unsafe { env::set_var("PATH", joined) };
             }
         }
     }
@@ -222,6 +230,9 @@ impl SessionBrowserCleanupQueue {
             let Some(session_id) = selected else {
                 break;
             };
+            // session_id was selected from state.pending above under the same
+            // lock, so the entry must still be present.
+            #[allow(clippy::expect_used)]
             let schedule = state
                 .pending
                 .remove(&session_id)
@@ -420,7 +431,7 @@ fn spawn_deleted_session_browser_cleanup(app: tauri::AppHandle, store: SessionSt
     }));
 
     tauri::async_runtime::spawn(async move {
-        use futures_util::{stream::FuturesUnordered, StreamExt};
+        use futures_util::{StreamExt, stream::FuturesUnordered};
 
         let mut cleanups = FuturesUnordered::new();
 
@@ -467,6 +478,40 @@ fn spawn_orphaned_session_browser_reconciliation(app: tauri::AppHandle, store: S
     tauri::async_runtime::spawn(reconcile_orphaned_session_browser_files_until_success(
         app, store,
     ));
+}
+
+/// Funnel for process env writes inside the single-threaded startup window
+/// (besides the release defaults of `ensure_release_env`).
+///
+/// Since edition 2024, `set_var` is unsafe and requires no concurrent env
+/// readers or writers. This function is called only from the head region of
+/// `run()` and from the headless benchmark host startup sequence
+/// (`headless_bridge.rs run_headless_host`, before the tokio runtime is
+/// built); at both call sites the process has only the main thread (the same
+/// proven window as `ensure_release_env`). From the multi-threaded phase (the
+/// Tauri setup onward) process env writes are forbidden entirely: MCP secrets
+/// travel via keyring + in-process registry through the foundation resolver
+/// hook, so the runtime no longer needs any env writes.
+///
+/// What it writes:
+/// - `PINVOU3_SESSION_ARTIFACTS`: the binary artifacts landing dir for MCP
+///   stdio subprocesses such as PPT / official-document tools (fixed to
+///   `sessions/default/artifacts/`; a stdio server cannot reliably perceive
+///   the current GUI session — concrete ownership is decided by tool events
+///   carrying `session_id` and by frontend persistence).
+/// - OS-specific startup writes (`platform::os::startup_platform_env`): on
+///   Windows, configure the ONNX Runtime dylib path and prepend LibreOffice
+///   to `PATH`; no-op on other platforms.
+pub(crate) fn startup_process_env() {
+    // SAFETY: single-threaded startup window (see the function docs); no
+    // concurrent env readers.
+    unsafe {
+        std::env::set_var(
+            "PINVOU3_SESSION_ARTIFACTS",
+            crate::platform::paths::default_session_artifacts_dir(),
+        )
+    };
+    crate::platform::os::startup_platform_env();
 }
 
 /// `iframe[srcdoc]` 在 WebKitGTK 中会作为宿主 WebView 的 `about:srcdoc` 导航
@@ -518,6 +563,10 @@ pub(crate) async fn prepare_app_restart(app: &tauri::AppHandle) {
 /// macOS 的 embed_plist 用 `#[no_mangle] static _EMBED_INFO_PLIST` 让重复
 /// 展开成为链接错误;GUI(`run`)与 headless 评测宿主(benchmark-hooks)必须
 /// 共用这里的单一 Context 构造,不得在别处再展开该宏。
+// The generate_context! macro expansion internally calls process::exit (a
+// missing context means the app cannot start); this is Tauri macro behavior,
+// not a code path of this repo, so it is exempted.
+#[allow(clippy::exit)]
 pub fn build_tauri_context() -> tauri::Context {
     tauri::generate_context!()
 }
@@ -534,6 +583,7 @@ pub fn run() {
     // aws-lc-rs(FIPS 可候选、性能优于 ring),在任何 TLS 连接之前装好。
     install_rustls_provider();
     ensure_release_env();
+    startup_process_env();
     startup::init();
     startup::mark("environment:ready");
     // 必须早于 Tauri Builder/WebView 创建：避免升级后 WebKit 复用旧 index.html，
@@ -748,7 +798,16 @@ pub fn run() {
             let store_for_engine = session_store.unwrap_or_else(|| {
                 // store boot 失败时退化用一份临时 store（让 engine 至少能起来）；
                 // 实际使用 session 相关命令会失败,但聊天能跑
-                SessionStore::boot_for_process_startup().expect("session store boot fallback")
+                //
+                // If the second boot still fails (e.g. read-only disk), no
+                // usable store can be constructed and there is no available
+                // failure path on the engine surface — the app is unusable.
+                // Failing fast via panic beats running degraded, so expect
+                // is kept here.
+                #[allow(clippy::expect_used)]
+                || -> SessionStore {
+                    SessionStore::boot_for_process_startup().expect("session store boot fallback")
+                }()
             });
             // Install the browser transient-protocol startup barrier before any Engine,
             // scheduler, or remote producer. spawn_watch synchronously isolates the
@@ -1449,6 +1508,10 @@ pub fn run() {
     // Keep the historical marker so old and new startup runs remain comparable.
     startup::mark("tauri:run_enter");
     startup::mark("tauri:build:start");
+    // Tauri template idiom: a builder.build failure means the window/event loop
+    // cannot be built and the process has not entered a user session; there is
+    // no degradation path — keep expect to fail fast.
+    #[allow(clippy::expect_used)]
     let app = builder
         .build(context)
         .expect("error while building tauri application");
@@ -1486,7 +1549,7 @@ pub fn run() {
 #[cfg(test)]
 mod tool_allowlist_contract {
     use crate::features::assistant::tool_policy::{
-        is_pinvou3_allowed, PINVOU3_ALLOWED_TOOLS, PINVOU3_ALWAYS_LOADED_TOOLS,
+        PINVOU3_ALLOWED_TOOLS, PINVOU3_ALWAYS_LOADED_TOOLS, is_pinvou3_allowed,
     };
 
     /// Pinvou 只允许产品需要的 canonical 工具家族；动态 MCP 工具限制在标准命名空间。
@@ -1567,9 +1630,9 @@ mod navigation_policy_tests {
 #[cfg(test)]
 mod session_browser_cleanup_retry_tests {
     use super::{
+        SESSION_BROWSER_CLEANUP_INITIAL_RETRY, SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY,
+        SESSION_BROWSER_CLEANUP_MAX_RETRY, SessionBrowserCleanupQueue,
         next_session_browser_cleanup_retry, session_browser_cleanup_failure_kind,
-        SessionBrowserCleanupQueue, SESSION_BROWSER_CLEANUP_INITIAL_RETRY,
-        SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY, SESSION_BROWSER_CLEANUP_MAX_RETRY,
     };
 
     #[test]
@@ -1691,9 +1754,11 @@ mod session_browser_cleanup_retry_tests {
 
         let first = queue.claim_ready_up_to(now, SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
         assert_eq!(first.len(), SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
-        assert!(first
-            .iter()
-            .all(|claim| failure_ids.contains(&claim.session_id)));
+        assert!(
+            first
+                .iter()
+                .all(|claim| failure_ids.contains(&claim.session_id))
+        );
         for claim in first {
             queue.complete_attempt(claim, false, now);
         }
@@ -1707,9 +1772,11 @@ mod session_browser_cleanup_retry_tests {
             now += SESSION_BROWSER_CLEANUP_MAX_RETRY;
             let retry = queue.claim_ready_up_to(now, SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
             assert_eq!(retry.len(), SESSION_BROWSER_CLEANUP_MAX_CONCURRENCY);
-            assert!(retry
-                .iter()
-                .all(|claim| failure_ids.contains(&claim.session_id)));
+            assert!(
+                retry
+                    .iter()
+                    .all(|claim| failure_ids.contains(&claim.session_id))
+            );
             for claim in retry {
                 queue.complete_attempt(claim, false, now);
             }
@@ -1783,8 +1850,11 @@ mod release_env_defaults_guard {
         fn drop(&mut self) {
             for (k, v) in &self.0 {
                 match v {
-                    Some(v) => std::env::set_var(k, v),
-                    None => std::env::remove_var(k),
+                    // SAFETY: holding platform::paths::tests::ENV_LOCK (see each
+                    // use site); env writes in the test process are serialized.
+                    Some(v) => unsafe { std::env::set_var(k, v) },
+                    // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
+                    None => unsafe { std::env::remove_var(k) },
                 }
             }
             // ensure_release_env 可能 set 了快照中原本不存在的 key（PATH 分支、Linux
@@ -1795,7 +1865,8 @@ mod release_env_defaults_guard {
                 .filter(|k| !keep.contains(k))
                 .collect();
             for k in stale {
-                std::env::remove_var(&k);
+                // SAFETY: same as above; cleanup-side removal under ENV_LOCK serialization.
+                unsafe { std::env::remove_var(&k) };
             }
         }
     }
@@ -1825,17 +1896,57 @@ mod release_env_defaults_guard {
 
         // 第二层：实际注入路径（ensure_release_env 是 run() 启动路径的 release env
         // 注入函数）。先清掉外部可能残留的 env，确保断言的是注入函数自身的行为。
-        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
-        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
+        // SAFETY: holding platform::paths::tests::ENV_LOCK (first line of this test); env writes serialized.
+        unsafe { std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS") };
+        // SAFETY: same as above; ENV_LOCK serialization.
+        unsafe { std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS") };
         super::ensure_release_env();
         assert!(
             std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS").is_none(),
-            "ensure_release_env 不得重新注入 DEEPSEEK_MAX_OUTPUT_TOKENS（会重新钉死云端）"
+            "ensure_release_env must not re-inject DEEPSEEK_MAX_OUTPUT_TOKENS (would re-pin cloud caps)"
         );
         assert!(
             std::env::var_os("PINVOU3_MAX_OUTPUT_TOKENS").is_none(),
-            "ensure_release_env 不得重新注入 PINVOU3_MAX_OUTPUT_TOKENS（品悟上限仅经 prefs/route 携带）"
+            "ensure_release_env must not re-inject PINVOU3_MAX_OUTPUT_TOKENS (the Pinvou cap travels only via prefs/route)"
         );
         // 退出时 EnvSnapshot::drop 按快照完整还原（含 PATH / UI env / 常量表变量）。
+    }
+
+    /// `startup_process_env` is the sole injection funnel for
+    /// `PINVOU3_SESSION_ARTIFACTS` (bridge boot runs in the multi-threaded
+    /// phase and must not write the process env; see the dual assertion in
+    /// bridge.rs `forkguard_boot_env_must_not_pin_global_output_cap`).
+    /// This test locks the positive behavior: the single-threaded startup
+    /// function must write the session artifacts dir into the process env for
+    /// MCP stdio subprocesses such as PPT / official-document tools to
+    /// inherit.
+    #[test]
+    fn startup_process_env_writes_session_artifacts() {
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _snapshot = EnvSnapshot::take();
+
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-startup-env-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&root).expect("create isolated PINVOU3_HOME");
+        // SAFETY: holding platform::paths::tests::ENV_LOCK (first line of this test); env writes serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        // SAFETY: same as above; ENV_LOCK serialization.
+        unsafe { std::env::remove_var("PINVOU3_SESSION_ARTIFACTS") };
+
+        super::startup_process_env();
+
+        let expected = crate::platform::paths::default_session_artifacts_dir();
+        assert_eq!(
+            std::env::var("PINVOU3_SESSION_ARTIFACTS").as_deref(),
+            Ok(expected.to_str().expect("isolated home path must be UTF-8")),
+            "startup_process_env must inject PINVOU3_SESSION_ARTIFACTS"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -2,7 +2,7 @@ use tauri::{AppHandle, State};
 
 use crate::features::assistant::engine_pool::EnginePool;
 use crate::features::files::file_ingest::{self as dependency_checks, DependencyCheckItem};
-use crate::features::knowledge::{model_download, KnowledgeService};
+use crate::features::knowledge::{KnowledgeService, model_download};
 use crate::features::voice::voice_asr;
 
 const INSTALL_VOICE_MODEL: &str = "voice_asr_model";

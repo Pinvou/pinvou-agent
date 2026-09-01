@@ -2,15 +2,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use parking_lot::RwLock;
 use reqwest::Client;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
 use super::{
-    diagnostics, install_action_for, official_script_supported, AcpPool, AgentBackend,
-    CodexAcpStatus,
+    AcpPool, AgentBackend, CodexAcpStatus, diagnostics, install_action_for,
+    official_script_supported,
 };
 
 const CODEX_LATEST_URL: &str = "https://releases.openai.com/codex/channels/latest";
@@ -179,9 +179,17 @@ impl AcpPool {
     /// 经 spawn_blocking。没有合规本地 CLI 时不发出无意义的 latest 请求。
     pub(super) async fn status_for_async(&self, backend: AgentBackend) -> CodexAcpStatus {
         let pool = self.clone();
-        let mut status = tokio::task::spawn_blocking(move || pool.status_for(backend))
-            .await
-            .expect("ACP 状态探测任务异常退出");
+        let Ok(mut status) = tokio::task::spawn_blocking(move || pool.status_for(backend)).await
+        else {
+            // The JoinHandle is Err only when the blocking task panicked or
+            // the runtime cancelled it. Degraded fallback: probe the baseline
+            // status directly (skipping the latest overlay, matching the
+            // offline case) instead of letting a panic take down the session.
+            eprintln!(
+                "[acp] status probe task exited unexpectedly, falling back to a direct probe: {backend:?}"
+            );
+            return self.status_for(backend);
+        };
         if status.codex_available {
             self.latest_version_probe.refresh(backend, false).await;
         }
@@ -464,15 +472,19 @@ mod tests {
         );
         assert!(parse_latest_response(AgentBackend::ClaudeAcp, b"<html>failed</html>").is_err());
         assert!(parse_latest_response(AgentBackend::KimiAcp, b"0.31").is_err());
-        assert!(parse_codex_release_url(
-            &reqwest::Url::parse("https://github.com/openai/codex/releases/latest").unwrap()
-        )
-        .is_err());
-        assert!(parse_codex_release_url(
-            &reqwest::Url::parse("https://example.com/openai/codex/releases/tag/rust-v0.146.0")
-                .unwrap()
-        )
-        .is_err());
+        assert!(
+            parse_codex_release_url(
+                &reqwest::Url::parse("https://github.com/openai/codex/releases/latest").unwrap()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_codex_release_url(
+                &reqwest::Url::parse("https://example.com/openai/codex/releases/tag/rust-v0.146.0")
+                    .unwrap()
+            )
+            .is_err()
+        );
     }
 
     #[test]

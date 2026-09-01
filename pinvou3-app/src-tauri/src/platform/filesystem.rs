@@ -590,6 +590,9 @@ fn open_private_file_directory_impl(
 
     let path = std::ffi::CString::new(expected.canonical_path.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "directory path contains NUL"))?;
+    // SAFETY: path is a CString, NUL terminated with a lifetime covering the call;
+    // O_NOFOLLOW|O_DIRECTORY guarantees no symlink following and accepts directories
+    // only, and a -1 failure is converted to io::Error below.
     let fd: RawFd = unsafe {
         libc::open(
             path.as_ptr(),
@@ -599,6 +602,9 @@ fn open_private_file_directory_impl(
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: fd is verified non-negative, an owning fd just returned by open and
+    // not yet adopted; from_raw_fd hands sole ownership to File, whose Drop is
+    // responsible for closing it.
     let directory_handle = unsafe { File::from_raw_fd(fd) };
     let metadata = directory_handle.metadata()?;
     if !metadata.is_dir() || metadata.dev() != expected.device || metadata.ino() != expected.inode {
@@ -826,6 +832,10 @@ fn open_child_directory_impl(
     use std::os::fd::{AsRawFd as _, FromRawFd as _};
 
     let name = unix_name(name)?;
+    // SAFETY: directory_handle is an open, owned fd whose lifetime covers the
+    // call; name is a CString, NUL terminated and alive for the call;
+    // O_NOFOLLOW|O_DIRECTORY rejects symlinks and non-directories, and a -1
+    // failure is converted to io::Error below.
     let fd = unsafe {
         libc::openat(
             directory.directory_handle.as_raw_fd(),
@@ -837,6 +847,9 @@ fn open_child_directory_impl(
         return Err(io::Error::last_os_error());
     }
     let child = PrivateFileDirectory {
+        // SAFETY: fd is verified non-negative, an owning fd just returned by
+        // openat and not yet adopted; from_raw_fd hands sole ownership to File,
+        // whose Drop is responsible for closing it.
         directory_handle: unsafe { File::from_raw_fd(fd) },
     };
     child.enforce_private_permissions()?;
@@ -868,6 +881,10 @@ fn create_private_child_directory_impl(
     use std::os::fd::AsRawFd as _;
 
     let name_c = unix_name(name)?;
+    // SAFETY: directory_handle is an open, owned fd whose lifetime covers the
+    // call; name_c is a CString, NUL terminated and alive for the call; the
+    // 0o700 mode is a plain value, and a nonzero failure is converted to
+    // io::Error via errno below, with AlreadyExists tolerated.
     if unsafe {
         libc::mkdirat(
             directory.directory_handle.as_raw_fd(),
@@ -909,6 +926,10 @@ fn open_plain_file_impl(
     use std::os::fd::{AsRawFd as _, FromRawFd as _};
 
     let name = unix_name(name)?;
+    // SAFETY: directory_handle is an open, owned fd whose lifetime covers the
+    // call; name is a CString, NUL terminated and alive for the call;
+    // O_NOFOLLOW rejects symlinks, and a -1 failure is converted to io::Error
+    // below, with NotFound mapped to None.
     let fd = unsafe {
         libc::openat(
             directory.directory_handle.as_raw_fd(),
@@ -924,6 +945,9 @@ fn open_plain_file_impl(
             Err(error)
         };
     }
+    // SAFETY: fd is verified non-negative, an owning fd just returned by openat
+    // and not yet adopted; from_raw_fd hands sole ownership to File, whose Drop
+    // is responsible for closing it.
     let file = unsafe { File::from_raw_fd(fd) };
     if !unix_named_file_matches(directory, &name, &file)? {
         return Err(io::Error::new(
@@ -995,6 +1019,11 @@ fn atomic_write_private_file_impl(
     let (temporary_name, mut temporary_file) = loop {
         let temporary_name = private_atomic_temp_name();
         let temporary_name_c = unix_name(&temporary_name)?;
+        // SAFETY: directory_handle is an open, owned fd whose lifetime covers
+        // the call; temporary_name_c is a CString, NUL terminated and alive for
+        // the call; O_EXCL guarantees a fresh entry, the mode is passed as the
+        // C-variadic-promoted c_uint, and a -1 failure is converted to
+        // io::Error below, with AlreadyExists retried.
         let fd = unsafe {
             libc::openat(
                 directory.directory_handle.as_raw_fd(),
@@ -1006,6 +1035,9 @@ fn atomic_write_private_file_impl(
             )
         };
         if fd >= 0 {
+            // SAFETY: fd is verified non-negative, an owning fd just returned
+            // by openat and not yet adopted; from_raw_fd hands sole ownership
+            // to File, whose Drop is responsible for closing it.
             break (temporary_name, unsafe { File::from_raw_fd(fd) });
         }
         let error = io::Error::last_os_error();
@@ -1014,6 +1046,10 @@ fn atomic_write_private_file_impl(
         }
     };
     let temporary_name_c = unix_name(&temporary_name)?;
+    // SAFETY: directory_handle is an open, owned fd whose lifetime covers the
+    // call, and temporary_name_c is a CString, NUL terminated and alive for
+    // the call; the removal target is the temporary entry created above, and
+    // any failure is ignored (best-effort cleanup).
     let cleanup_temporary = || unsafe {
         libc::unlinkat(
             directory.directory_handle.as_raw_fd(),
@@ -1029,6 +1065,10 @@ fn atomic_write_private_file_impl(
         cleanup_temporary();
         return Err(error);
     }
+    // SAFETY: directory_handle is an open, owned fd whose lifetime covers the
+    // call (used for both sides of the rename); temporary_name_c and
+    // destination are CStrings, NUL terminated and alive for the call; a
+    // nonzero failure is converted to io::Error via errno below.
     if unsafe {
         libc::renameat(
             directory.directory_handle.as_raw_fd(),
@@ -1063,7 +1103,7 @@ fn rename_windows_file_to_directory(
     use std::os::windows::ffi::OsStrExt as _;
     use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Wdk::Storage::FileSystem::{
-        FileRenameInformation, NtSetInformationFile, FILE_RENAME_INFORMATION,
+        FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile,
     };
     use windows_sys::Win32::Foundation::RtlNtStatusToDosError;
     use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
@@ -1200,13 +1240,18 @@ fn move_plain_file_to_impl(
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 "both source and destination private files exist",
-            ))
+            ));
         }
         (Some(_), None) => {}
     }
     let source_name_c = unix_name(source_name)?;
     let destination_name_c = unix_name(destination_name)?;
     #[cfg(target_os = "linux")]
+    // SAFETY: source.directory_handle and destination.directory_handle are
+    // open, owned fds whose lifetimes cover the call; source_name_c and
+    // destination_name_c are CStrings, NUL terminated and alive for the call;
+    // RENAME_NOREPLACE prevents clobbering an existing destination, and a
+    // nonzero failure is converted to io::Error via errno below.
     let rename_result = unsafe {
         libc::renameat2(
             source.directory_handle.as_raw_fd(),
@@ -1217,6 +1262,11 @@ fn move_plain_file_to_impl(
         )
     };
     #[cfg(target_os = "macos")]
+    // SAFETY: source.directory_handle and destination.directory_handle are
+    // open, owned fds whose lifetimes cover the call; source_name_c and
+    // destination_name_c are CStrings, NUL terminated and alive for the call;
+    // RENAME_EXCL prevents clobbering an existing destination, and a nonzero
+    // failure is converted to io::Error via errno below.
     let rename_result = unsafe {
         libc::renameatx_np(
             source.directory_handle.as_raw_fd(),
@@ -1232,6 +1282,10 @@ fn move_plain_file_to_impl(
     let moved = destination
         .open_plain_file(destination_name)?
         .ok_or_else(|| io::Error::other("moved private file is not visible"))?;
+    // The match above returns early for every combination where source_file is
+    // None, so reaching this point implies Some; restructuring would only
+    // obscure that single fall-through case.
+    #[allow(clippy::expect_used)]
     let source_file = source_file.expect("source file checked above");
     use std::os::unix::fs::MetadataExt as _;
     let expected = source_file.metadata()?;
@@ -1267,7 +1321,7 @@ fn move_plain_file_to_impl(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "private source is a reparse point or non-file",
-            ))
+            ));
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => return Err(error),
@@ -1280,7 +1334,7 @@ fn move_plain_file_to_impl(
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 "both source and destination private files exist",
-            ))
+            ));
         }
         (Some(_), None) => {}
     }
@@ -1313,6 +1367,10 @@ fn remove_empty_child_directory_impl(
     use std::os::fd::AsRawFd as _;
 
     let name = unix_name(name)?;
+    // SAFETY: directory_handle is an open, owned fd whose lifetime covers the
+    // call; name is a CString, NUL terminated and alive for the call;
+    // AT_REMOVEDIR restricts removal to directories, and a nonzero failure is
+    // converted to io::Error via errno below, with NotFound mapped to false.
     if unsafe {
         libc::unlinkat(
             directory.directory_handle.as_raw_fd(),
@@ -1375,6 +1433,10 @@ struct UnixDirectoryStream(*mut libc::DIR);
 ))]
 impl Drop for UnixDirectoryStream {
     fn drop(&mut self) {
+        // SAFETY: self.0 can only come from a successful fdopendir (see
+        // entry_names_impl) and is exclusively owned by UnixDirectoryStream after
+        // construction; closedir frees it exactly once (together with the fd it
+        // adopted internally), and it is not accessed after drop.
         unsafe { libc::closedir(self.0) };
     }
 }
@@ -1413,17 +1475,30 @@ fn next_unix_directory_entry(
     use std::os::unix::ffi::OsStringExt as _;
 
     next_unix_directory_entry_with(
+        // SAFETY: errno_location() returns a valid writable address of errno in
+        // this thread's TLS; zero it to distinguish whether readdir returning NULL
+        // means EOF or an error.
         || unsafe { *libc::errno_location() = 0 },
         || {
+            // SAFETY: stream.0 comes from a successful fdopendir and is exclusively
+            // owned by UnixDirectoryStream, with no concurrent readdir inside this
+            // closure; the returned dirent pointer is valid only until the next
+            // readdir/closedir, and d_name is read immediately below, not held
+            // across calls.
             let entry = unsafe { libc::readdir(stream.0) };
             if entry.is_null() {
                 None
             } else {
+                // SAFETY: entry is non-NULL and readdir has not been called again;
+                // the kernel guarantees d_name is NUL terminated and within array
+                // bounds, and CStr::from_ptr reads only up to that terminator.
                 let bytes =
                     unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
                 Some(std::ffi::OsString::from_vec(bytes.to_vec()))
             }
         },
+        // SAFETY: errno_location() points at this thread's errno, zeroed by the
+        // earlier closure, so a non-zero value is readdir's real error code.
         || unsafe { *libc::errno_location() },
     )
 }
@@ -1435,7 +1510,13 @@ fn next_unix_directory_entry(
 fn entry_names_impl(directory: &PrivateFileDirectory) -> io::Result<Vec<std::ffi::OsString>> {
     use std::os::fd::AsRawFd as _;
 
-    let current = std::ffi::CString::new(".").expect("literal contains no NUL");
+    // The literal "." contains no NUL, so the CString construction cannot fail;
+    // propagate the error as a fallback instead of panicking.
+    let current = std::ffi::CString::new(".")
+        .map_err(|e| std::io::Error::other(format!("failed to build directory literal: {e}")))?;
+    // SAFETY: directory_handle holds a live directory fd; current is the CString of
+    // the literal ".", NUL terminated with a lifetime covering the call; a -1
+    // failure is converted to io::Error below.
     let duplicate = unsafe {
         libc::openat(
             directory.directory_handle.as_raw_fd(),
@@ -1446,9 +1527,16 @@ fn entry_names_impl(directory: &PrivateFileDirectory) -> io::Result<Vec<std::ffi
     if duplicate < 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: duplicate is verified non-negative, freshly duplicated for this
+    // purpose and not yet adopted; POSIX defines fdopendir as taking exclusive
+    // ownership of the fd on success (closedir releases it), while on failure the
+    // fd still belongs to the caller.
     let stream = unsafe { libc::fdopendir(duplicate) };
     if stream.is_null() {
         let error = io::Error::last_os_error();
+        // SAFETY: fdopendir failed without adopting duplicate, so the fd still
+        // belongs to this function; close it exactly once to avoid a leak, and the
+        // return value has no further recovery action and may be ignored.
         unsafe { libc::close(duplicate) };
         return Err(error);
     }
@@ -1495,6 +1583,9 @@ fn unix_named_file_matches(
     use std::os::fd::{AsRawFd as _, FromRawFd as _};
     use std::os::unix::fs::MetadataExt as _;
 
+    // SAFETY: directory_handle holds a live directory fd; name is a CString, NUL
+    // terminated with a lifetime covering the call; O_NOFOLLOW|O_NONBLOCK guarantees
+    // no link following and no blocking when opening a FIFO; failure returns -1.
     let named_fd = unsafe {
         libc::openat(
             directory.directory_handle.as_raw_fd(),
@@ -1505,6 +1596,8 @@ fn unix_named_file_matches(
     if named_fd < 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: named_fd is verified non-negative and not yet adopted; from_raw_fd
+    // transfers sole ownership to File.
     let named = unsafe { File::from_raw_fd(named_fd) }.metadata()?;
     let opened = file.metadata()?;
     Ok(opened.file_type().is_file()
@@ -1524,6 +1617,10 @@ fn create_delete_on_close_file_impl(
     use std::os::fd::{AsRawFd as _, FromRawFd as _};
 
     let name = unix_name(std::ffi::OsStr::new(name))?;
+    // SAFETY: directory_handle holds a live directory fd; name is a CString, NUL
+    // terminated; O_CREAT|O_EXCL guarantees atomic creation with 0600 only when
+    // absent, never overwriting an existing entry, and O_NOFOLLOW rejects symlinks;
+    // failure returns -1.
     let fd = unsafe {
         libc::openat(
             directory.directory_handle.as_raw_fd(),
@@ -1535,6 +1632,8 @@ fn create_delete_on_close_file_impl(
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: fd is verified non-negative and not yet adopted; from_raw_fd
+    // transfers sole ownership to File.
     let file = unsafe { File::from_raw_fd(fd) };
     if !unix_named_file_matches(directory, &name, &file)? {
         return Err(io::Error::new(
@@ -1542,6 +1641,9 @@ fn create_delete_on_close_file_impl(
             "created private file changed before unlink",
         ));
     }
+    // SAFETY: directory_handle holds a live directory fd; name is NUL terminated;
+    // flags=0 unlinks exactly this directory entry without following links; the
+    // previous line revalidated dev/ino/nlink against the just-created handle.
     if unsafe { libc::unlinkat(directory.directory_handle.as_raw_fd(), name.as_ptr(), 0) } != 0 {
         return Err(io::Error::last_os_error());
     }
@@ -1589,6 +1691,9 @@ fn remove_plain_file_impl(
     use std::os::fd::{AsRawFd as _, FromRawFd as _};
 
     let name = unix_name(name)?;
+    // SAFETY: directory_handle holds a live directory fd; name is a CString, NUL
+    // terminated; O_NOFOLLOW|O_NONBLOCK rejects symlinks and does not block when
+    // opening a FIFO; failure returns -1.
     let fd = unsafe {
         libc::openat(
             directory.directory_handle.as_raw_fd(),
@@ -1604,6 +1709,8 @@ fn remove_plain_file_impl(
             Err(error)
         };
     }
+    // SAFETY: fd is verified non-negative and not yet adopted; from_raw_fd
+    // transfers sole ownership to File.
     let file = unsafe { File::from_raw_fd(fd) };
     if !unix_named_file_matches(directory, &name, &file)? {
         return Err(io::Error::new(
@@ -1611,6 +1718,10 @@ fn remove_plain_file_impl(
             "private entry is non-regular, multiply linked, or changed during removal",
         ));
     }
+    // SAFETY: directory_handle holds a live directory fd; name is NUL terminated;
+    // flags=0 unlinks exactly this directory entry without following links; the
+    // previous line revalidated that the target and the opened handle are the same
+    // plain file.
     if unsafe { libc::unlinkat(directory.directory_handle.as_raw_fd(), name.as_ptr(), 0) } != 0 {
         let error = io::Error::last_os_error();
         return if error.kind() == io::ErrorKind::NotFound {
@@ -1657,7 +1768,7 @@ fn remove_plain_file_impl(
 fn mark_windows_file_handle_for_deletion(file: &File) -> io::Result<()> {
     use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::Storage::FileSystem::{
-        FileDispositionInfo, SetFileInformationByHandle, FILE_DISPOSITION_INFO,
+        FILE_DISPOSITION_INFO, FileDispositionInfo, SetFileInformationByHandle,
     };
 
     let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
@@ -1797,7 +1908,7 @@ fn windows_directory_identity(path: &Path) -> io::Result<(u32, u64)> {
 fn windows_file_identity(file: &File) -> io::Result<(u32, u64)> {
     use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::Storage::FileSystem::{
-        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
     };
 
     let mut information = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
@@ -1851,7 +1962,7 @@ fn replace_file_atomically_impl(tmp: &Path, target: &Path, backup: &Path) -> Rep
 #[cfg(windows)]
 fn system_replace_file(target: &Path, replacement: &Path, backup: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
+    use windows_sys::Win32::Storage::FileSystem::{REPLACEFILE_WRITE_THROUGH, ReplaceFileW};
 
     let wide = |path: &Path| {
         path.as_os_str()
@@ -2124,9 +2235,10 @@ pub(crate) mod tests {
         drop(state);
         assert!(root.remove_plain_file(OsStr::new("state.json")).unwrap());
         std::fs::create_dir(root_path.join("non-file-entry")).unwrap();
-        assert!(root
-            .remove_plain_file(OsStr::new("non-file-entry"))
-            .is_err());
+        assert!(
+            root.remove_plain_file(OsStr::new("non-file-entry"))
+                .is_err()
+        );
         assert!(root_path.join("non-file-entry").is_dir());
         std::fs::remove_dir(root_path.join("non-file-entry")).unwrap();
         #[cfg(unix)]
@@ -2153,10 +2265,11 @@ pub(crate) mod tests {
                 .unwrap(),
             super::MovePlainFileOutcome::Moved
         );
-        assert!(root
-            .open_plain_file(OsStr::new("source"))
-            .unwrap()
-            .is_none());
+        assert!(
+            root.open_plain_file(OsStr::new("source"))
+                .unwrap()
+                .is_none()
+        );
         let mut moved = child
             .open_plain_file(OsStr::new("destination"))
             .unwrap()
@@ -2167,9 +2280,10 @@ pub(crate) mod tests {
         drop(moved);
         assert!(child.remove_plain_file(OsStr::new("destination")).unwrap());
         drop(child);
-        assert!(root
-            .remove_empty_child_directory(OsStr::new("child"))
-            .unwrap());
+        assert!(
+            root.remove_empty_child_directory(OsStr::new("child"))
+                .unwrap()
+        );
     }
 
     #[cfg(unix)]
@@ -2673,8 +2787,8 @@ pub(crate) mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_atomic_replace_never_exposes_a_partial_target_to_readers() {
-        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         let (root, target, replacement, backup) = windows_replace_fixture("concurrent-reader");
         let old = "a".repeat(32 * 1024);

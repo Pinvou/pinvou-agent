@@ -11,11 +11,11 @@ use std::sync::{Mutex, MutexGuard};
 
 use crate::platform::paths;
 
+use super::MarketplaceManager;
 use super::bundle;
 use super::python_dependencies;
 use super::secrets::{is_sensitive_key_name, set_remote_secret_header};
 use super::types::ToolManifest;
-use super::MarketplaceManager;
 
 /// mcp.json 读-改-写的进程内串行化（四轮评审 M-8）：add/remove 是裸读-改-写，
 /// 并发安装/卸载会交错丢更新；与 store.rs 的 BUNDLES_FILE_LOCK 同一范式。

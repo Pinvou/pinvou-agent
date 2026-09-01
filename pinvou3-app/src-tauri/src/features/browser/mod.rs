@@ -27,7 +27,7 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::platform::filesystem::{MovePlainFileOutcome, PrivateFileDirectory};
@@ -2200,7 +2200,9 @@ impl BrowserManager {
             }
             ("none", None) => {}
             _ => {
-                return Err("browser Prepare journal compensation generation is invalid".to_string())
+                return Err(
+                    "browser Prepare journal compensation generation is invalid".to_string()
+                );
             }
         }
         // A revision mismatch means newer task state superseded this Prepare.
@@ -2394,9 +2396,9 @@ impl BrowserManager {
                                 .and_then(|()| remove_hosted_prepare_journal(&journal_path))
                             {
                                 error.message = format!(
-                                        "{}; durable compensation after Prepare failure is incomplete: {cleanup_error}",
-                                        error.message
-                                    );
+                                    "{}; durable compensation after Prepare failure is incomplete: {cleanup_error}",
+                                    error.message
+                                );
                                 if error.rollback.is_none() {
                                     error.rollback = journal.compensation.rollback_value();
                                 }
@@ -2405,9 +2407,9 @@ impl BrowserManager {
                         Ok(None) => {}
                         Err(cleanup_error) => {
                             error.message = format!(
-                                    "{}; durable journal after Prepare failure is unreadable: {cleanup_error}",
-                                    error.message
-                                );
+                                "{}; durable journal after Prepare failure is unreadable: {cleanup_error}",
+                                error.message
+                            );
                         }
                     }
                 }
@@ -2914,7 +2916,9 @@ impl BrowserManager {
 
     fn persist_native_restore_best_effort(&self, browser_session_id: &str) {
         if let Err(error) = self.persist_native_restore(browser_session_id) {
-            eprintln!("[browser] native browser state committed; persistence will retry in the background: {error}");
+            eprintln!(
+                "[browser] native browser state committed; persistence will retry in the background: {error}"
+            );
         }
     }
 
@@ -3173,10 +3177,11 @@ impl BrowserManager {
             drop(surface);
             let cleanup = cleanup.and_then(|has_remaining| {
                 if created_new_port {
-                    remove_failed_restore_port_if_unshared(
-                        port.expect("a newly created CDP endpoint always has a port"),
-                        has_remaining,
-                    )?;
+                    // created_new_port is only set when a fresh CDP endpoint
+                    // was bound, which always yields Some(port).
+                    #[allow(clippy::expect_used)]
+                    let port = port.expect("a newly created CDP endpoint always has a port");
+                    remove_failed_restore_port_if_unshared(port, has_remaining)?;
                 }
                 Ok(())
             });
@@ -3317,8 +3322,8 @@ impl BrowserManager {
                 Ok(watcher) => Some(watcher),
                 Err(error) => {
                     eprintln!(
-                            "[browser] failed to initialize native browser request watcher; using periodic scanning: {error}"
-                        );
+                        "[browser] failed to initialize native browser request watcher; using periodic scanning: {error}"
+                    );
                     None
                 }
             };
@@ -3439,7 +3444,9 @@ impl BrowserManager {
                             continue;
                         }
                         fail_count = 0;
-                        eprintln!("[browser] automation endpoint lost on port {port}; resetting CDP connection");
+                        eprintln!(
+                            "[browser] automation endpoint lost on port {port}; resetting CDP connection"
+                        );
                         if let Some(task) = inner.loop_task.take() {
                             task.abort();
                         }
@@ -3483,7 +3490,9 @@ impl BrowserManager {
                     mgr.activated
                         .store(true, std::sync::atomic::Ordering::SeqCst);
                 } else {
-                    eprintln!("[browser] failed to attach the native-page automation endpoint; retrying later");
+                    eprintln!(
+                        "[browser] failed to attach the native-page automation endpoint; retrying later"
+                    );
                 }
             }
         });
@@ -3499,13 +3508,13 @@ impl BrowserManager {
     async fn reattach_existing(
         &self,
         session: Arc<cdp::CdpSession>,
-        gen: u64,
+        generation: u64,
     ) -> Result<(), String> {
         let (target_id, sid) = attach_first_page_cached(&session, &self.page_sessions).await?;
         let mut inner = self.inner.lock().await;
         // If stop() ran during attachment, discard this generation. Otherwise an old
         // connection could switch to a new session after its prior stream stopped.
-        if self.stop_gen.load(std::sync::atomic::Ordering::SeqCst) != gen
+        if self.stop_gen.load(std::sync::atomic::Ordering::SeqCst) != generation
             || self.shutting_down.load(std::sync::atomic::Ordering::SeqCst)
         {
             return Err(
@@ -3539,11 +3548,14 @@ impl BrowserManager {
             // closes, reactivate a page on the existing connection instead of opening
             // a second WebSocket and leaking/duplicating its reader and event loop.
             if inner.session.is_some() {
+                // Presence checked directly above under the same lock; clone
+                // before dropping inner so the reattach owns its handle.
+                #[allow(clippy::expect_used)]
                 let session = inner.session.clone().expect("session presence was checked");
-                let gen = self.stop_gen.load(std::sync::atomic::Ordering::SeqCst);
+                let generation = self.stop_gen.load(std::sync::atomic::Ordering::SeqCst);
                 // Do not hold inner across CDP attachment I/O; reacquire it to commit state.
                 drop(inner);
-                return self.reattach_existing(session, gen).await;
+                return self.reattach_existing(session, generation).await;
             }
         }
 
@@ -3925,7 +3937,7 @@ impl BrowserManager {
     /// all tabs were closed and active is empty, attach the automation session to
     /// a tab newly created by the model through MCP.
     async fn on_target_created(&self, target_id: &str) {
-        let gen = self.stop_gen.load(std::sync::atomic::Ordering::SeqCst);
+        let generation = self.stop_gen.load(std::sync::atomic::Ordering::SeqCst);
         let session = {
             let inner = self.inner.lock().await;
             if inner.active_session.is_some() {
@@ -3942,7 +3954,7 @@ impl BrowserManager {
             return;
         };
         let mut inner = self.inner.lock().await;
-        if self.stop_gen.load(std::sync::atomic::Ordering::SeqCst) != gen {
+        if self.stop_gen.load(std::sync::atomic::Ordering::SeqCst) != generation {
             return; // Stop raced with attach; discard the result.
         }
         if inner.active_session.is_some() {
@@ -4159,7 +4171,9 @@ impl BrowserManager {
                     }
                 }
                 if let Err(error) = surface.close_preserving_restore(app.as_ref()) {
-                    eprintln!("[browser] Failed to close native browser pages before restart; process exit will reclaim them: {error}");
+                    eprintln!(
+                        "[browser] Failed to close native browser pages before restart; process exit will reclaim them: {error}"
+                    );
                 }
             }
         }
@@ -4217,7 +4231,9 @@ impl BrowserManager {
                             // Navigation and tab changes persist continuously. If
                             // the exit snapshot fails, retain the previous complete
                             // manifest instead of damaging it with partial write/delete.
-                            eprintln!("[browser] Failed to refresh browser restore manifest during exit: {error}");
+                            eprintln!(
+                                "[browser] Failed to refresh browser restore manifest during exit: {error}"
+                            );
                         }
                     }
                     if let Err(error) = surface.close_preserving_restore(app.as_ref()) {
@@ -4232,7 +4248,9 @@ impl BrowserManager {
                 );
             }
         } else {
-            eprintln!("[browser] Restore persistence is active during exit; retaining the latest restore point and letting process exit destroy pages");
+            eprintln!(
+                "[browser] Restore persistence is active during exit; retaining the latest restore point and letting process exit destroy pages"
+            );
         }
 
         if let Ok(mut inner) = self.inner.try_lock() {
@@ -4252,7 +4270,9 @@ impl BrowserManager {
             inner.active_session = None;
             inner.active_target = None;
         } else {
-            eprintln!("[browser] Automation state lock is busy during exit; process exit will reclaim the connection");
+            eprintln!(
+                "[browser] Automation state lock is busy during exit; process exit will reclaim the connection"
+            );
         }
         if let Some(mut page_sessions) = self.page_sessions.try_lock() {
             page_sessions.clear();
@@ -4938,7 +4958,9 @@ async fn run_event_loop(app: AppHandle, mut events: tokio::sync::mpsc::Receiver<
                 {
                     Ok(TargetLifecycleReconcileOutcome::Reconciled) => {}
                     Ok(TargetLifecycleReconcileOutcome::ConnectionInvalidated(error)) => {
-                        eprintln!("[browser] {error}; reset CDP connection and waiting for automatic reconnect");
+                        eprintln!(
+                            "[browser] {error}; reset CDP connection and waiting for automatic reconnect"
+                        );
                         break;
                     }
                     Err(error) => eprintln!("[browser] {error}"),
@@ -5067,7 +5089,9 @@ fn private_directory_modified_at_or_after(
                 }
             }
             Ok(_) => {
-                return Err("Browser Prepare quarantine nesting is deeper than expected".to_string())
+                return Err(
+                    "Browser Prepare quarantine nesting is deeper than expected".to_string()
+                );
             }
             Err(_) => {
                 let file = directory.open_plain_file(&name).map_err(|error| {
@@ -5104,7 +5128,7 @@ fn reconcile_unassigned_hosted_prepare_quarantine(
         Err(error) => {
             return Err(format!(
                 "Failed to open unassigned browser Prepare quarantine: {error}"
-            ))
+            ));
         }
     };
     let mut slots = directory.entry_names().map_err(|error| {
@@ -6094,7 +6118,7 @@ fn next_hosted_prepare_quarantine_slot(
             Err(error) => {
                 return Err(format!(
                     "Browser Prepare quarantine marker is not a stable regular file: {error}"
-                ))
+                ));
             }
         }
     }
@@ -6157,7 +6181,7 @@ fn quarantine_unreadable_hosted_prepare_state(
     {
         MovePlainFileOutcome::Moved | MovePlainFileOutcome::AlreadyMoved => {}
         MovePlainFileOutcome::Missing => {
-            return Err("Unreadable browser Prepare journal disappeared".to_string())
+            return Err("Unreadable browser Prepare journal disappeared".to_string());
         }
     }
     Ok(session_token)
@@ -6174,7 +6198,7 @@ fn remove_hosted_prepare_quarantine_slot(
         Err(error) => {
             return Err(format!(
                 "Failed to open browser Prepare quarantine slot: {error}"
-            ))
+            ));
         }
     };
     if !unassigned {
@@ -6203,7 +6227,7 @@ fn remove_hosted_prepare_quarantine_for_token_from_root(
         Err(error) => {
             return Err(format!(
                 "Failed to open browser Prepare token quarantine {session_token}: {error}"
-            ))
+            ));
         }
     };
     let mut slots = directory.entry_names().map_err(|error| {
@@ -6425,7 +6449,9 @@ fn validate_hosted_prepare_journal(
             }
         }
         _ if journal.response.is_some() => {
-            return Err("Uncommitted Prepare journal cannot contain a success response".to_string())
+            return Err(
+                "Uncommitted Prepare journal cannot contain a success response".to_string(),
+            );
         }
         _ => {}
     }
@@ -6478,7 +6504,7 @@ fn reap_acknowledged_committed_prepare_journals(
             return Err(format!(
                 "Failed to read browser Prepare journal directory {}: {error}",
                 journal_dir.display()
-            ))
+            ));
         }
     };
     for entry in entries {
@@ -6999,7 +7025,10 @@ fn parse_host_owned_port_json(raw: &str) -> Option<u16> {
 
 fn write_port_file(port: u16, owner: &str, browser_pid: Option<u32>) -> Result<(), String> {
     let path = paths::browser_cdp_port_json();
-    std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Browser CDP port path has no parent directory".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let mut data = json!({
         "port": port,
         "pid": std::process::id(),
@@ -7036,7 +7065,7 @@ fn remove_failed_restore_port_if_unshared(
             return Err(format!(
                 "Failed to verify failed browser restore endpoint {}: {error}",
                 path.display()
-            ))
+            ));
         }
     };
     if parse_host_owned_port_json(&raw) != Some(expected_port) {
@@ -7647,7 +7676,8 @@ mod tests {
     impl PinvouHomeGuard {
         fn install(path: &Path) -> Self {
             let previous = std::env::var_os("PINVOU3_HOME");
-            std::env::set_var("PINVOU3_HOME", path);
+            // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+            unsafe { std::env::set_var("PINVOU3_HOME", path) };
             Self(previous)
         }
     }
@@ -7655,8 +7685,10 @@ mod tests {
     impl Drop for PinvouHomeGuard {
         fn drop(&mut self) {
             match self.0.take() {
-                Some(previous) => std::env::set_var("PINVOU3_HOME", previous),
-                None => std::env::remove_var("PINVOU3_HOME"),
+                // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+                Some(previous) => unsafe { std::env::set_var("PINVOU3_HOME", previous) },
+                // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
             }
         }
     }
@@ -7751,36 +7783,48 @@ mod tests {
     #[test]
     fn hosted_request_artifacts_expire_with_their_live_caller_budget() {
         let now = 100_000;
-        assert!(validate_hosted_request_freshness_at(
-            &hosted_request_at(HostedBrowserOperation::CoreTool, now - 25_000),
-            now,
-        )
-        .is_ok());
-        assert!(validate_hosted_request_freshness_at(
-            &hosted_request_at(HostedBrowserOperation::CoreTool, now - 25_001),
-            now,
-        )
-        .is_err());
-        assert!(validate_hosted_request_freshness_at(
-            &hosted_request_at(HostedBrowserOperation::CreateTab, now - 12_001),
-            now,
-        )
-        .is_err());
-        assert!(validate_hosted_request_freshness_at(
-            &hosted_request_at(HostedBrowserOperation::EndAgentOperation, now - 12_000),
-            now,
-        )
-        .is_ok());
-        assert!(validate_hosted_request_freshness_at(
-            &hosted_request_at(HostedBrowserOperation::Prepare, now + 5_001),
-            now,
-        )
-        .is_err());
-        assert!(validate_hosted_request_freshness_at(
-            &hosted_request_at(HostedBrowserOperation::Prepare, 0),
-            now,
-        )
-        .is_err());
+        assert!(
+            validate_hosted_request_freshness_at(
+                &hosted_request_at(HostedBrowserOperation::CoreTool, now - 25_000),
+                now,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_hosted_request_freshness_at(
+                &hosted_request_at(HostedBrowserOperation::CoreTool, now - 25_001),
+                now,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_hosted_request_freshness_at(
+                &hosted_request_at(HostedBrowserOperation::CreateTab, now - 12_001),
+                now,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_hosted_request_freshness_at(
+                &hosted_request_at(HostedBrowserOperation::EndAgentOperation, now - 12_000),
+                now,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_hosted_request_freshness_at(
+                &hosted_request_at(HostedBrowserOperation::Prepare, now + 5_001),
+                now,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_hosted_request_freshness_at(
+                &hosted_request_at(HostedBrowserOperation::Prepare, 0),
+                now,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -8489,12 +8533,16 @@ mod tests {
 
         let manager = BrowserManager::new();
         manager.bind_session_validator(Arc::new(|_| true));
-        assert!(manager
-            .ensure_browser_session_allowed(&request.session_id)
-            .is_ok());
-        assert!(manager
-            .ensure_browser_session_allowed("brand-new-session")
-            .is_ok());
+        assert!(
+            manager
+                .ensure_browser_session_allowed(&request.session_id)
+                .is_ok()
+        );
+        assert!(
+            manager
+                .ensure_browser_session_allowed("brand-new-session")
+                .is_ok()
+        );
 
         // A second damaged generation for the same task gets a new slot. The
         // first slot is never mistaken for active restore/runtime state.
@@ -8553,9 +8601,11 @@ mod tests {
         );
         let manager = BrowserManager::new();
         manager.bind_session_validator(Arc::new(|_| true));
-        assert!(manager
-            .ensure_browser_session_allowed("brand-new-session")
-            .is_ok());
+        assert!(
+            manager
+                .ensure_browser_session_allowed("brand-new-session")
+                .is_ok()
+        );
     }
 
     #[test]
@@ -8722,11 +8772,13 @@ mod tests {
         symlink(&external_quarantine, hosted_prepare_quarantine_dir()).unwrap();
 
         assert!(remove_hosted_prepare_quarantine_for_token(&request.session_token).is_err());
-        assert!(reconcile_hosted_prepare_quarantine_files(
-            &HashSet::new(),
-            SystemTime::now() + Duration::from_secs(1),
-        )
-        .is_err());
+        assert!(
+            reconcile_hosted_prepare_quarantine_files(
+                &HashSet::new(),
+                SystemTime::now() + Duration::from_secs(1),
+            )
+            .is_err()
+        );
         assert_eq!(std::fs::read(&external_marker).unwrap(), b"must-remain");
     }
 
@@ -8991,17 +9043,23 @@ mod tests {
     fn session_validator_rejects_crash_orphans_and_pending_delete_marker_wins() {
         let manager = BrowserManager::new();
         manager.bind_session_validator(Arc::new(|session_id| session_id == "active-session"));
-        assert!(manager
-            .ensure_browser_session_allowed("active-session")
-            .is_ok());
-        assert!(manager
-            .ensure_browser_session_allowed("orphan-from-previous-process")
-            .is_err());
+        assert!(
+            manager
+                .ensure_browser_session_allowed("active-session")
+                .is_ok()
+        );
+        assert!(
+            manager
+                .ensure_browser_session_allowed("orphan-from-previous-process")
+                .is_err()
+        );
 
         manager.mark_session_deleted("active-session");
-        assert!(manager
-            .ensure_browser_session_allowed("active-session")
-            .is_err());
+        assert!(
+            manager
+                .ensure_browser_session_allowed("active-session")
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -9028,10 +9086,12 @@ mod tests {
         std::fs::write(cancellation_path.with_extension("response"), b"response").unwrap();
         validate_hosted_cancellation(&cancellation, &cancellation_path).unwrap();
 
-        assert!(manager
-            .discard_absent_session_cancellation(&cancellation, &cancellation_path)
-            .await
-            .unwrap());
+        assert!(
+            manager
+                .discard_absent_session_cancellation(&cancellation, &cancellation_path)
+                .await
+                .unwrap()
+        );
 
         assert_eq!(manager.native_surface.lock().request_record_count(), 0);
         for extension in ["json", "response", "cancelled"] {
@@ -9049,9 +9109,11 @@ mod tests {
         let manager = BrowserManager::new();
         manager.bind_session_validator(Arc::new(|session_id| session_id == "active-session"));
         manager.mark_session_deleted("active-session");
-        assert!(manager
-            .ensure_browser_session_allowed("active-session")
-            .is_err());
+        assert!(
+            manager
+                .ensure_browser_session_allowed("active-session")
+                .is_err()
+        );
         let request_dir = paths::browser_host_requests_dir();
         std::fs::create_dir_all(&request_dir).unwrap();
         let active_prefix = paths::browser_session_token("active-session");
@@ -9074,17 +9136,23 @@ mod tests {
             .await
             .expect("idempotent browser artifact cleanup");
 
-        assert!(manager
-            .ensure_browser_session_allowed("active-session")
-            .is_ok());
+        assert!(
+            manager
+                .ensure_browser_session_allowed("active-session")
+                .is_ok()
+        );
         assert!(manager.pending_deleted_session_ids.read().is_empty());
         for extension in ["json", "response", "cancelled"] {
-            assert!(!request_dir
-                .join(format!("{active_prefix}-request-a.{extension}"))
-                .exists());
-            assert!(request_dir
-                .join(format!("{other_prefix}-request-b.{extension}"))
-                .exists());
+            assert!(
+                !request_dir
+                    .join(format!("{active_prefix}-request-a.{extension}"))
+                    .exists()
+            );
+            assert!(
+                request_dir
+                    .join(format!("{other_prefix}-request-b.{extension}"))
+                    .exists()
+            );
         }
     }
 
@@ -9107,9 +9175,11 @@ mod tests {
                 NativeRequestClaim::Execute
             );
             let record = json!({ "rollback": { "kind": "none" } });
-            assert!(surface
-                .complete_request("active-session", "request-retry", record.clone())
-                .unwrap());
+            assert!(
+                surface
+                    .complete_request("active-session", "request-retry", record.clone())
+                    .unwrap()
+            );
             assert_eq!(
                 surface
                     .cancel_request("active-session", "request-retry")
@@ -9127,10 +9197,12 @@ mod tests {
 
         assert!(error.contains("MCP configuration"));
         assert_eq!(manager.native_surface.lock().request_record_count(), 1);
-        assert!(manager
-            .pending_deleted_session_ids
-            .read()
-            .contains("active-session"));
+        assert!(
+            manager
+                .pending_deleted_session_ids
+                .read()
+                .contains("active-session")
+        );
 
         std::fs::remove_dir(&mcp_path).unwrap();
         manager

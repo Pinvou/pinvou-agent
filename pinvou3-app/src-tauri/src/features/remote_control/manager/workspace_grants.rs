@@ -252,12 +252,16 @@ mod tests {
             now,
         );
 
-        assert!(store
-            .reserve(&first, "endpoint-two", now + Duration::from_secs(1))
-            .is_err());
-        assert!(store
-            .reserve(&first, "endpoint-one", now + Duration::from_secs(1))
-            .is_err());
+        assert!(
+            store
+                .reserve(&first, "endpoint-two", now + Duration::from_secs(1))
+                .is_err()
+        );
+        assert!(
+            store
+                .reserve(&first, "endpoint-one", now + Duration::from_secs(1))
+                .is_err()
+        );
 
         let second = workspace_handle(2);
         let path = PathBuf::from("workspace-two");
@@ -272,9 +276,11 @@ mod tests {
             .reserve(&second, "endpoint-one", now + Duration::from_secs(1))
             .unwrap();
         assert_eq!(reservation.path(), path.as_path());
-        assert!(store
-            .reserve(&second, "endpoint-one", now + Duration::from_secs(2))
-            .is_err());
+        assert!(
+            store
+                .reserve(&second, "endpoint-one", now + Duration::from_secs(2))
+                .is_err()
+        );
     }
 
     #[test]
@@ -352,9 +358,11 @@ mod tests {
             test_identity(0),
             now,
         );
-        assert!(store
-            .reserve(&expired, "endpoint", now + WEB_WORKSPACE_GRANT_TTL)
-            .is_err());
+        assert!(
+            store
+                .reserve(&expired, "endpoint", now + WEB_WORKSPACE_GRANT_TTL)
+                .is_err()
+        );
 
         for seed in 1..=MAX_WEB_WORKSPACE_GRANTS + 1 {
             store.issue(

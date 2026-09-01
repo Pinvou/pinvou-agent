@@ -10,12 +10,12 @@
 
 use std::path::Path;
 
+use super::IngestResult;
 use super::estimate_tokens;
 use super::ingest_deps::{
     libreoffice_tool_command, libreoffice_user_installation_arg, pandoc_tool_command,
     pdf_tool_command, system_tools,
 };
-use super::IngestResult;
 
 /// pandoc 原生支持的文字文档（docx/odt）摄入：`pandoc -t markdown`。
 pub(super) fn ingest_pandoc(
@@ -177,7 +177,7 @@ fn spreadsheet_all_sheets_text(path: &Path) -> Result<String, String> {
 /// 抽取核心（接收字节，便于单测喂 fixture）。见 [`spreadsheet_all_sheets_text`]。
 fn spreadsheet_text_from_bytes(bytes: Vec<u8>) -> Result<String, String> {
     // DataType trait 提供 Data::is_empty()（calamine 0.26 是 trait 方法，非固有）。
-    use calamine::{open_workbook_auto_from_rs, Data, DataType, Reader};
+    use calamine::{Data, DataType, Reader, open_workbook_auto_from_rs};
 
     let mut wb = open_workbook_auto_from_rs(std::io::Cursor::new(bytes))
         .map_err(|e| format!("calamine 解析失败: {e}"))?;

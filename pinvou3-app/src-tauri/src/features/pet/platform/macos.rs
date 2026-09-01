@@ -58,6 +58,11 @@ fn apply_pet_window_policy_impl(window: &tauri::WebviewWindow) {
         Ok(pointer) => pointer,
         Err(_) => return,
     };
+    // SAFETY: raw comes from tauri's ns_window() and points to a live
+    // NSWindow instance (the window handle keeps it alive for the scope of
+    // this function); retain_autoreleased only adds one retain and hands the
+    // reference to Retained (balanced by Drop's release), so the pointer
+    // cannot be freed through an alias.
     let Some(ns_window): Option<Retained<NSWindow>> =
         (unsafe { Retained::retain_autoreleased(raw.cast()) })
     else {
@@ -85,6 +90,11 @@ fn resize_pet_window_impl(
         Ok(pointer) => pointer,
         Err(_) => return,
     };
+    // SAFETY: same as above — raw comes from tauri's ns_window() and the
+    // window handle is still alive; retain_autoreleased adds one retain and
+    // hands the reference to Retained (balanced by Drop's release), and all
+    // later setFrame_display calls run on the main thread (see the
+    // MainThreadMarker dispatch at the call site).
     let Some(ns_window): Option<Retained<NSWindow>> =
         (unsafe { Retained::retain_autoreleased(raw.cast()) })
     else {

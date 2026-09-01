@@ -239,10 +239,12 @@ mod tests {
         );
         assert!(scheduled_session_id(&root.join("chat-123.json"), &root).is_none());
         assert!(scheduled_session_id(&root.join("_hidden_sessions.json"), &root).is_none());
-        assert!(scheduled_session_id(
-            &root.join("sched-123").join("workspace").join("report.md"),
-            &root
-        )
-        .is_none());
+        assert!(
+            scheduled_session_id(
+                &root.join("sched-123").join("workspace").join("report.md"),
+                &root
+            )
+            .is_none()
+        );
     }
 }

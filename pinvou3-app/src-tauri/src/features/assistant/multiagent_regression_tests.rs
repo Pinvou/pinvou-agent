@@ -36,8 +36,10 @@ impl Drop for EnvRestore {
     fn drop(&mut self) {
         for (name, value) in &self.values {
             match value {
-                Some(value) => std::env::set_var(name, value),
-                None => std::env::remove_var(name),
+                // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+                Some(value) => unsafe { std::env::set_var(name, value) },
+                // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+                None => unsafe { std::env::remove_var(name) },
             }
         }
         if self.reload_personas {
@@ -250,7 +252,8 @@ fn fleet_config_survives_execution_ledger_split_and_keeps_native_precedence() {
     let codewhale_home = root.join("codewhale-home");
     std::fs::create_dir_all(&execution).expect("create execution root");
     std::fs::create_dir_all(&ledger).expect("create ledger root");
-    std::env::set_var("CODEWHALE_HOME", &codewhale_home);
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+    unsafe { std::env::set_var("CODEWHALE_HOME", &codewhale_home) };
 
     let snapshot = ExpertRosterSnapshot::capture();
     let roster = deepseek_tui::FleetRoster::load(snapshot.fleet_config(), &execution);
@@ -340,15 +343,24 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
     let pinvou_home = root.join("pinvou-home");
     let codewhale_home = root.join("codewhale-home");
     std::fs::create_dir_all(&project).expect("create project");
-    std::env::set_var("PINVOU3_HOME", &pinvou_home);
-    std::env::set_var("CODEWHALE_HOME", &codewhale_home);
-    std::env::set_var("DEEPSEEK_PROVIDER", "vllm");
-    std::env::set_var("DEEPSEEK_API_KEY", "local-test-key");
-    std::env::set_var("DEEPSEEK_MODEL", "qwen36_35b_256k");
-    std::env::set_var("DEEPSEEK_REASONING_EFFORT", "off");
-    std::env::set_var("DEEPSEEK_ALLOW_INSECURE_HTTP", "1");
-    std::env::set_var("DEEPSEEK_FORCE_HTTP1", "1");
-    std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "4096");
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+    unsafe { std::env::set_var("PINVOU3_HOME", &pinvou_home) };
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+    unsafe { std::env::set_var("CODEWHALE_HOME", &codewhale_home) };
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+    unsafe { std::env::set_var("DEEPSEEK_PROVIDER", "vllm") };
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+    unsafe { std::env::set_var("DEEPSEEK_API_KEY", "local-test-key") };
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+    unsafe { std::env::set_var("DEEPSEEK_MODEL", "qwen36_35b_256k") };
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+    unsafe { std::env::set_var("DEEPSEEK_REASONING_EFFORT", "off") };
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+    unsafe { std::env::set_var("DEEPSEEK_ALLOW_INSECURE_HTTP", "1") };
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+    unsafe { std::env::set_var("DEEPSEEK_FORCE_HTTP1", "1") };
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+    unsafe { std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "4096") };
 
     let created = crate::features::personas::create_user_persona(PersonaCard {
         id: String::new(),
@@ -364,7 +376,8 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
     .expect("create probe persona");
     let profile_id = format!("exp-{}", created.id);
     let (base_url, probe, server_task) = start_spawn_probe(profile_id.clone()).await;
-    std::env::set_var("DEEPSEEK_BASE_URL", base_url);
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+    unsafe { std::env::set_var("DEEPSEEK_BASE_URL", base_url) };
 
     let mut bridge = Pinvou3Bridge::boot_with_workspace(project.clone()).expect("boot bridge");
     bridge.set_code_session_predicate(Arc::new(|session_id| session_id.starts_with("code-")));

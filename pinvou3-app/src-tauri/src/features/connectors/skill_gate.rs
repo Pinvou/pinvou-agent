@@ -91,7 +91,9 @@ mod tests {
                 .unwrap_or(0)
         );
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+        // serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let _ = std::fs::create_dir_all(crate::platform::paths::pinvou3_home());
 
         let gate = FakeGate;
@@ -114,8 +116,12 @@ mod tests {
         assert!(!gate.is_disabled());
 
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes
+            // are serialized in-process.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes
+            // are serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -134,7 +140,9 @@ mod tests {
                 .unwrap_or(0)
         );
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+        // serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let gate = FakeGate;
         assert_eq!(
@@ -143,8 +151,12 @@ mod tests {
         );
 
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes
+            // are serialized in-process.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes
+            // are serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&tmp);
     }

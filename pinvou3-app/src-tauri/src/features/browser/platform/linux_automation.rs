@@ -6,7 +6,7 @@
 //! loopback inspector. W3C Actions produce page-local trusted input without
 //! moving the user's desktop-wide pointer or injecting JavaScript events.
 
-use std::collections::{hash_map::Entry, HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::path::PathBuf;
@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use reqwest::{Method, Url};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tauri::Webview;
 use tauri_runtime_wry::tao::event::Event;
 use tauri_runtime_wry::tao::event_loop::{ControlFlow, EventLoopProxy, EventLoopWindowTarget};
@@ -25,8 +25,8 @@ use tauri_runtime_wry::{
     Context, EventLoopIterationContext, Message, Plugin, PluginBuilder, WebContext, WebContextStore,
 };
 
-use super::state::{NativeTabLease, UserNavigationState, WorkspaceControl};
 use super::NativeInput;
+use super::state::{NativeTabLease, UserNavigationState, WorkspaceControl};
 
 const DRIVER_BIN_ENV: &str = "PINVOU3_WEBKIT_WEBDRIVER_BIN";
 const SESSION_READY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -217,7 +217,10 @@ pub(super) fn prepare_process_environment() -> Result<(), String> {
     }
 
     let port = reserve_loopback_port()?;
-    std::env::set_var("WEBKIT_INSPECTOR_SERVER", format!("127.0.0.1:{port}"));
+    // SAFETY: called only from the single-threaded process startup path
+    // (`run()` before Tauri spawns WebView threads), so there are no
+    // concurrent env readers.
+    unsafe { std::env::set_var("WEBKIT_INSPECTOR_SERVER", format!("127.0.0.1:{port}")) };
     INSPECTOR_PORT
         .set(port)
         .map_err(|_| "inspector endpoint initialized concurrently".to_string())?;
@@ -315,9 +318,10 @@ fn linux_process_starttime(pid: i32) -> Option<u64> {
 fn driver_process_identity_matches(pid: i32, expected_starttime: u64) -> bool {
     use std::os::unix::fs::MetadataExt as _;
 
+    // SAFETY: geteuid only reads the current effective uid; it has no preconditions.
+    let euid = unsafe { libc::geteuid() };
     let process_dir = std::path::Path::new("/proc").join(pid.to_string());
-    std::fs::metadata(&process_dir)
-        .is_ok_and(|metadata| metadata.uid() == unsafe { libc::geteuid() })
+    std::fs::metadata(&process_dir).is_ok_and(|metadata| metadata.uid() == euid)
         && linux_process_starttime(pid) == Some(expected_starttime)
         && std::fs::read_to_string(process_dir.join("comm"))
             .is_ok_and(|comm| comm.trim().eq_ignore_ascii_case("WebKitWebDriver"))
@@ -563,13 +567,15 @@ async fn wait_for_host_bootstrap_and_rotate_until(
                     expected_registration_nonce,
                 );
             }
-            Arc::clone(
-                &registry
-                    .get(label)
-                    .expect("binding identity was checked under the same lock")
-                    .host_bootstrap_settled,
-            )
-            .notified_owned()
+            // The nonce check above found this binding under the same
+            // registry lock, and nothing can remove it while we hold it.
+            #[allow(clippy::expect_used)]
+            let settled = registry
+                .get(label)
+                .expect("binding identity was checked under the same lock")
+                .host_bootstrap_settled
+                .clone();
+            settled.notified_owned()
         };
         tokio::time::timeout_at(deadline, notification)
             .await
@@ -621,6 +627,9 @@ fn rotate_binding_nonce_locked(
         return Err("browser/webkit-binding-not-registered".to_string());
     }
     let nonce = fresh_binding_nonce(registry);
+    // Presence was checked via contains_key above under the same registry
+    // lock; nothing can remove it in between.
+    #[allow(clippy::expect_used)]
     let binding = registry
         .get_mut(label)
         .expect("binding presence was checked under the same lock");
@@ -1335,7 +1344,11 @@ impl WebDriverRuntime {
             // PDEATHSIG is armed pre-exec so the child cannot race past it, and
             // re-checked post-fork because the spawning thread could itself die
             // between fork and prctl.
+            // SAFETY: getpid only reads the current process id; it has no preconditions.
             let expected_parent = unsafe { libc::getpid() };
+            // SAFETY: pre_exec runs in the forked child right before exec, where
+            // only async-signal-safe calls are allowed; prctl and getppid are
+            // async-signal-safe (see the PDEATHSIG design comment above).
             unsafe {
                 use std::os::unix::process::CommandExt;
                 // webdriver-pre-exec-async-signal-safe:start
@@ -2327,7 +2340,7 @@ impl PluginBuilder<tauri::EventLoopMessage> for BrowserAutomationContextPlugin {
 impl Plugin<tauri::EventLoopMessage> for BrowserAutomationContextPluginInstance {
     fn on_event(
         &mut self,
-        _event: &Event<Message<tauri::EventLoopMessage>>,
+        _event: &Event<'_, Message<tauri::EventLoopMessage>>,
         _event_loop: &EventLoopWindowTarget<Message<tauri::EventLoopMessage>>,
         _proxy: &EventLoopProxy<Message<tauri::EventLoopMessage>>,
         _control_flow: &mut ControlFlow,
@@ -2546,22 +2559,24 @@ mod tests {
             .local_addr()
             .expect("redirect target address");
         let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-        let redirect_received = std::thread::spawn(move || loop {
-            match redirect_target.accept() {
-                Ok((mut stream, _)) => {
-                    let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 14\r\nConnection: close\r\n\r\n{\"value\":null}";
-                    stream
-                        .write_all(response)
-                        .expect("write redirect target response");
-                    return true;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if stop_rx.try_recv().is_ok() {
-                        return false;
+        let redirect_received = std::thread::spawn(move || {
+            loop {
+                match redirect_target.accept() {
+                    Ok((mut stream, _)) => {
+                        let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 14\r\nConnection: close\r\n\r\n{\"value\":null}";
+                        stream
+                            .write_all(response)
+                            .expect("write redirect target response");
+                        return true;
                     }
-                    std::thread::sleep(Duration::from_millis(5));
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if stop_rx.try_recv().is_ok() {
+                            return false;
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("accept redirect target request: {error}"),
                 }
-                Err(error) => panic!("accept redirect target request: {error}"),
             }
         });
 
@@ -2591,8 +2606,10 @@ mod tests {
         let initial_request = initial_request.join().expect("initial WebDriver request");
         let redirect_received = redirect_received.join().expect("redirect target thread");
 
-        assert!(initial_request
-            .starts_with("POST /session/opaque-driver/element/button/click HTTP/1.1"));
+        assert!(
+            initial_request
+                .starts_with("POST /session/opaque-driver/element/button/click HTTP/1.1")
+        );
         assert!(matches!(
             result,
             Err(WebDriverRequestError {
@@ -2625,8 +2642,10 @@ mod tests {
             .expect_err("dropped acknowledgement must fail");
         let received = request.join().expect("fake WebDriver request thread");
 
-        assert!(received
-            .starts_with("POST /session/driver-commit-unknown/element/button/click HTTP/1.1"));
+        assert!(
+            received
+                .starts_with("POST /session/driver-commit-unknown/element/button/click HTTP/1.1")
+        );
         assert!(error.starts_with(ACTION_COMMIT_UNKNOWN_WEBDRIVER));
         assert!(error.contains("request failed"));
     }
@@ -2655,8 +2674,10 @@ mod tests {
             .expect_err("malformed acknowledgement must fail");
         let received = request.join().expect("fake WebDriver request thread");
 
-        assert!(received
-            .starts_with("POST /session/driver-malformed-ack/element/button/click HTTP/1.1"));
+        assert!(
+            received
+                .starts_with("POST /session/driver-malformed-ack/element/button/click HTTP/1.1")
+        );
         assert!(error.starts_with(ACTION_COMMIT_UNKNOWN_WEBDRIVER));
         assert!(error.contains("decode WebKitWebDriver"));
     }

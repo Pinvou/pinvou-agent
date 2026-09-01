@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use rusqlite::{params, params_from_iter, types::Value, Connection};
+use rusqlite::{Connection, params, params_from_iter, types::Value};
 use serde::Serialize;
 
 /// schema 版本。v3 起包含用户创建的 L1 数据，后续版本必须提供原地迁移。
@@ -259,7 +259,7 @@ impl Store {
                 Err(_) => 0,
             }
         }; // 连接在此 drop，才能删文件
-           // v3 首次包含不可重建的知识集业务数据，必须原地迁移；更旧的版本仅含可重扫的 L0 索引。
+        // v3 首次包含不可重建的知识集业务数据，必须原地迁移；更旧的版本仅含可重扫的 L0 索引。
         let stale = existed && !matches!(current_version, 3 | SCHEMA_VERSION);
         if stale {
             let p = db_path.display().to_string();
@@ -388,16 +388,17 @@ impl Store {
         let mut vals: Vec<Value> = Vec::new();
 
         let text = q.text.as_deref().map(str::trim).filter(|s| !s.is_empty());
-        let use_fts = text.map(|t| t.chars().count() >= 3).unwrap_or(false);
 
-        if use_fts {
+        // Text present with >=3 chars goes to FTS; the branch holds the Some
+        // value directly, avoiding a repeated unwrap.
+        if let Some(t) = text.filter(|t| t.chars().count() >= 3) {
             sql.push_str(
                 "SELECT f.path, f.name, f.ext, f.size, f.mtime, f.is_dir \
                  FROM files_fts JOIN files f ON f.id = files_fts.rowid \
                  WHERE f.status='indexed' AND f.is_dir=0 AND files_fts MATCH ?",
             );
             // trigram：双引号包成字符串字面量做子串匹配，内部引号翻倍转义。
-            let t = text.unwrap().replace('"', "\"\"");
+            let t = t.replace('"', "\"\"");
             vals.push(Value::Text(format!("\"{t}\"")));
         } else {
             sql.push_str("SELECT f.path, f.name, f.ext, f.size, f.mtime, f.is_dir FROM files f WHERE f.status='indexed' AND f.is_dir=0");

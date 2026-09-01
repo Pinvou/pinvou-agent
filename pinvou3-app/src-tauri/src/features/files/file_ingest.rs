@@ -40,7 +40,7 @@ mod text_decode;
 mod visual_preview;
 
 pub use ingest_deps::{
-    check_dependencies, install_dependencies, system_tools, DependencyCheckItem, SystemTools,
+    DependencyCheckItem, SystemTools, check_dependencies, install_dependencies, system_tools,
 };
 pub use visual_preview::{
     base64_encode, image_file_to_data_uri, libreoffice_to_inline_html, ocr_image_for_kb,

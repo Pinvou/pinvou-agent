@@ -149,8 +149,8 @@ pub(crate) fn arm_hidden_main_window_fallback(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_defer_main_window_activation, should_fallback_reveal,
-        HIDDEN_MAIN_WINDOW_FALLBACK_SECS,
+        HIDDEN_MAIN_WINDOW_FALLBACK_SECS, should_defer_main_window_activation,
+        should_fallback_reveal,
     };
 
     #[test]
