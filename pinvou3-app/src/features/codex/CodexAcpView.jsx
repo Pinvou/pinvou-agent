@@ -1312,6 +1312,12 @@ export function CodexAcpView({
   const [rewindTarget, setRewindTarget] = useState(null);
   const [rewindError, setRewindError] = useState('');
   const [rewinding, setRewinding] = useState(false);
+  // 回退/撤销是全局单 flight：in-flight 按 sessionId 记账到 ref（state 只是
+  // UI 镜像）。切会话的复位 effect 只清 UI 标志；旧 promise 的 finally 仅在
+  // ref 仍指向本次调用时才清——否则 A 在途时切 B 发起回退，A settle 的
+  // finally 会把 B 的守卫标志抹掉（评审 M2）。
+  const rewindInFlightRef = useRef(null);
+  const rewindUndoInFlightRef = useRef(null);
   // 「撤销回退」：入口可见性由 rewindCheckpoints.undoState（rewind_undo_state）
   // 驱动，null 不渲染。确认弹窗由本地条目副本 rewindUndoEntry 驱动（打开时快照
   // undoState）——后端可反悔状态会因 refreshKey 边沿/记录消费随时变 null，若
@@ -2014,8 +2020,9 @@ export function CodexAcpView({
   // 对已截断的对话再发一次 rewind_to_turn（那会必败且文案令人困惑）。
   async function confirmRewind() {
     const target = rewindTarget;
-    if (!target || !activeId || rewinding) return;
+    if (!target || !activeId || rewinding || rewindInFlightRef.current) return;
     const sessionId = activeId;
+    rewindInFlightRef.current = sessionId;
     setRewinding(true);
     setRewindError('');
     try {
@@ -2067,7 +2074,12 @@ export function CodexAcpView({
     } catch (err) {
       setRewindError(String(err && err.message ? err.message : err));
     } finally {
-      setRewinding(false);
+      // 仅当 in-flight 记账仍指向本次调用才清除：切会话后旧 promise 的
+      // finally 不得抹掉新会话（或新调用）的守卫标志（评审 M2）。
+      if (rewindInFlightRef.current === sessionId) {
+        rewindInFlightRef.current = null;
+        setRewinding(false);
+      }
     }
   }
 
@@ -2079,9 +2091,10 @@ export function CodexAcpView({
   // 重试只补重载，不会再发一次必败的 undo_last_rewind。
   async function confirmRewindUndo() {
     const entry = rewindUndoEntry;
-    if (!entry || !activeId || rewindUndoing) return;
+    if (!entry || !activeId || rewindUndoing || rewindUndoInFlightRef.current) return;
     const sessionId = activeId;
     const reloadOnly = Boolean(entry.reloadFailed);
+    rewindUndoInFlightRef.current = sessionId;
     setRewindUndoing(true);
     setRewindUndoError('');
     try {
@@ -2111,7 +2124,11 @@ export function CodexAcpView({
     } catch (err) {
       setRewindUndoError(String(err && err.message ? err.message : err));
     } finally {
-      setRewindUndoing(false);
+      // 与 confirmRewind 同款：in-flight 记账仍指向本次调用才清除。
+      if (rewindUndoInFlightRef.current === sessionId) {
+        rewindUndoInFlightRef.current = null;
+        setRewindUndoing(false);
+      }
     }
   }
 

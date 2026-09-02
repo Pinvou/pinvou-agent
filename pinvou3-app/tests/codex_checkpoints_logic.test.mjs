@@ -52,16 +52,14 @@ import {
   assert.equal(map.get(3).id, 'c3');
 }
 
-// 全部缺序号（计数失败兜底）时按创建顺序对齐；仅 Turn 快照占位（PreRestore
-// 回滚点不是 turn 边界，占位会让入口误显示为可代码回退）。
+// 全部缺序号（计数失败）时不做顺序兜底：后端 resolve_rewind_plan 只认 turn 号
+// 对得上的 Turn 条目，顺序对齐出的「代码回退」入口必被后端拒绝——返回空 map，
+// 边界全部走「仅回退对话」变体（诚实且可用）。
 {
   const map = checkpointMapByTurn([{ id: 'a', kind: 'turn' }, { id: 'b', kind: 'turn' }]);
-  assert.equal(map.get(1).id, 'a');
-  assert.equal(map.get(2).id, 'b');
-  const withPreRestore = checkpointMapByTurn([{ id: 'a', kind: 'turn' }, { id: 'u', kind: 'preRestore' }, { id: 'b', kind: 'turn' }]);
-  assert.equal(withPreRestore.get(1).id, 'a');
-  assert.equal(withPreRestore.get(2).id, 'b');
-  assert.equal(withPreRestore.size, 2, 'PreRestore 不得占位');
+  assert.equal(map.size, 0, '缺序号的快照不参与对齐');
+  const withPreRestore = checkpointMapByTurn([{ id: 'u', turn: null, kind: 'preRestore' }]);
+  assert.equal(withPreRestore.size, 0, 'PreRestore 不得占位');
 }
 
 // 空/非法输入。
@@ -217,7 +215,8 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
 {
   let ticks = 0;
   const { error } = await reloadSessionAfterRewind({
-    reload: async () => { throw new Error('会话正在执行，请先停止当前任务再回退'); },
+    // eslint-disable-next-line no-throw-literal -- Tauri invoke rejects with plain strings; this test pins the String() normalization
+    reload: async () => { throw '会话正在执行，请先停止当前任务再回退'; },
     bumpTick: () => { ticks += 1; },
   });
   assert.equal(error, '会话正在执行，请先停止当前任务再回退');
@@ -299,6 +298,10 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
       `${command} 必须保持桌面专属（rewind 直接改写本地文件，web relay 放行需单独评估）`,
     );
   }
+  // 视图侧经 canInvoke 能力检查提前收口（不为每个 refreshKey 边沿发必被拒的请求）。
+  const checkpointsSource = readFileSync(new URL('../src/features/codex/checkpoints.js', import.meta.url), 'utf8');
+  assert.match(checkpointsSource, /canInvoke\('list_checkpoints'\)/, '列表刷新必须先过 canInvoke 门');
+  assert.match(checkpointsSource, /canInvoke\('checkpoint_diff'\)/, 'diff 预览必须先过 canInvoke 门');
 }
 
 console.log('codex_checkpoints_logic: all assertions passed');

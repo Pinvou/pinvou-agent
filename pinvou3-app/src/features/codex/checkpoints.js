@@ -14,11 +14,15 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invokeTauri as invoke } from '../../platform/tauri/client.js';
+import { canInvoke } from '../../shared/platform.js';
 
 /**
  * checkpoint 列表 → Map<turnNumber, checkpoint>。
- * turn 缺失（计数失败兜底）的条目不参与对齐；同一 turn 取先创建者（turn 快照），
- * 回滚点（turn=None 的 preRestore）不占位。
+ * turn 缺失（计数失败）的条目不参与对齐；同一 turn 取先创建者（turn 快照），
+ * 回滚点（turn=None 的 preRestore）不占位。全部缺序号时不做顺序兜底：
+ * 后端 resolve_rewind_plan 只认 turn 号对得上的 Turn 条目，顺序对齐出的入口
+ * 承诺「代码+对话回退」必被后端拒绝——退回空 map，边界全部走「仅回退对话」
+ * 变体（诚实且可用）。
  */
 export function checkpointMapByTurn(checkpoints) {
   const map = new Map();
@@ -28,18 +32,6 @@ export function checkpointMapByTurn(checkpoints) {
       : null;
     if (turn === null) continue;
     if (!map.has(turn)) map.set(turn, checkpoint);
-  }
-  // 全部缺序号时退化为按创建顺序对齐（老数据/计数失败场景）；仅 Turn 快照
-  // 占位——PreRestore 是回滚点不是 turn 边界，占位会让 chip 误显示为可代码
-  // 回退（后端 resolve_rewind_plan 只认 turn 号对得上的 Turn 条目）；序号按
-  // Turn 条目连续分配，不被中间的 PreRestore 打断。
-  if (!map.size && Array.isArray(checkpoints)) {
-    let sequential = 0;
-    for (const checkpoint of checkpoints) {
-      if (!checkpoint || !checkpoint.id || checkpoint.kind !== 'turn') continue;
-      sequential += 1;
-      map.set(sequential, checkpoint);
-    }
   }
   return map;
 }
@@ -169,7 +161,9 @@ export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
 
   const refresh = useCallback(async () => {
     const id = sessionRef.current;
-    if (!id || !enabled) {
+    // canInvoke 门（设计 §3 web 立场）：rewind 命令桌面专属，web 车道直接
+    // 不渲染入口，不为每个 refreshKey 边沿发两个必被 access-policy 拒的请求。
+    if (!id || !enabled || !canInvoke('list_checkpoints')) {
       setCheckpoints([]);
       setPreviews({});
       setUndoState(null);
@@ -190,8 +184,9 @@ export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
         setUndoState(rewindUndoAvailable(state) ? state : null);
       }
     } catch {
-      // 可反悔状态查询失败同样静默：不渲染「撤销回退」入口即诚实降级。
-      if (sessionRef.current === id) setUndoState(null);
+      // 瞬时查询失败（relay 抖动等）保留旧状态：置 null 会让打开中的撤销确认
+      // 弹窗被复位 effect 静默关掉。真正的「不可反悔」由后端返回 null 表达，
+      // 不走这条错误路径。
     }
   }, [enabled]);
 
@@ -221,7 +216,7 @@ export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
   // 边沿不清缓存，快照时效由「每次开弹窗都重拉」保证）。
   const preview = useCallback(async (checkpointId) => {
     const id = sessionRef.current;
-    if (!id) return;
+    if (!id || !canInvoke('checkpoint_diff')) return;
     setPreviews(current => ({ ...current, [checkpointId]: { loading: true } }));
     try {
       const diff = await invoke('checkpoint_diff', { sessionId: id, checkpointId });
