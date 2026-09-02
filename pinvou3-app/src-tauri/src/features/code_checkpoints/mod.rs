@@ -48,12 +48,18 @@ pub(crate) use turns::count_user_turns;
 const MAX_CHECKPOINTS: usize = 20;
 /// diff 预览的 patch 文本上限（超出截断，changes 清单不受影响）。
 const DIFF_PATCH_LIMIT: usize = 512 * 1024;
+/// 执行根体积门（对齐底座 snapshot 的 DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT）：
+/// 超过 2GB 的目录不做快照——每轮全量 `add -A` 的 IO/CPU 与影子仓库存储都不
+/// 划算，该会话如实没有回退入口（设计 §5 降级语义）。
+const MAX_WORKSPACE_BYTES_FOR_SNAPSHOT: u64 = 2 * 1024 * 1024 * 1024;
+/// 体积估算的条目数上限（超出按超限处理，防止巨型目录树把估算本身变成负担）。
+const SIZE_WALK_MAX_ENTRIES: usize = 200_000;
+/// 影子仓库存储预算（对齐底座 MAX_SNAPSHOT_SIZE_MB）：LRU 裁条目不裁字节，
+/// 大文件项目单靠条目数守不住体积；超出时裁到一半条目并 gc 收敛。
+const MAX_SHADOW_REPO_BYTES: u64 = 500 * 1024 * 1024;
 
 /// 影子仓库的 exclude 列表：与 workspace 浏览的忽略目录对齐，避免把依赖/构建
 /// 产物纳入快照（git 项目自身的 .gitignore 会被影子仓库自然尊重，无需重复）。
-/// 另排除常见敏感文件：非 git 执行根（临时会话、未初始化目录）没有 .gitignore
-/// 兜底，`add -A` 会把 .env/私钥原文快照进影子 objects 并随 diff 进入 UI 链路；
-/// 代价是这些文件不随回退恢复，属可接受取舍（设计文档已知限制有记录）。
 const SHADOW_EXCLUDES: &[&str] = &[
     ".git/",
     ".hg/",
@@ -164,6 +170,74 @@ fn now_nanos() -> u128 {
         .unwrap_or_default()
 }
 
+/// 估算执行根体积（跳过 exclude 目录与符号链接；条目数超 SIZE_WALK_MAX_ENTRIES
+/// 或读取失败返回 None——按「不在预算内」处理，宁可跳过快照也不低估）。
+fn estimate_workspace_bytes(execution_root: &Path) -> Option<u64> {
+    let skip_dirs: std::collections::HashSet<&str> = SHADOW_EXCLUDES
+        .iter()
+        .map(|line| line.trim_end_matches('/'))
+        .collect();
+    let mut total: u64 = 0;
+    let mut entries: usize = 0;
+    let mut stack = vec![execution_root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let read = fs::read_dir(&dir).ok()?;
+        for entry in read {
+            let entry = entry.ok()?;
+            entries += 1;
+            if entries > SIZE_WALK_MAX_ENTRIES {
+                return None;
+            }
+            // 不跟随符号链接（file_type 自身不触发跟随）。
+            let file_type = entry.file_type().ok()?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                if !skip_dirs.contains(entry.file_name().to_string_lossy().as_ref()) {
+                    stack.push(entry.path());
+                }
+            } else if let Ok(metadata) = entry.metadata() {
+                total += metadata.len();
+                if total > MAX_WORKSPACE_BYTES_FOR_SNAPSHOT {
+                    return Some(total);
+                }
+            }
+        }
+    }
+    Some(total)
+}
+
+/// 执行根是否在快照体积预算内（chat.rs 在 turn 快照前调用；超限的会话如实
+/// 没有回退入口，不算错误）。
+pub fn execution_root_within_snapshot_budget(execution_root: &Path) -> bool {
+    estimate_workspace_bytes(execution_root)
+        .is_some_and(|bytes| bytes <= MAX_WORKSPACE_BYTES_FOR_SNAPSHOT)
+}
+
+/// 影子仓库当前体积（objects + pack 文件总和；读取失败按 0——压力裁剪是
+/// best-effort，量不出来就不裁）。
+fn shadow_repo_bytes(repo: &Path) -> u64 {
+    let mut total: u64 = 0;
+    let mut stack = vec![repo.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(read) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in read.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                stack.push(entry.path());
+            } else if let Ok(metadata) = entry.metadata() {
+                total += metadata.len();
+            }
+        }
+    }
+    total
+}
+
 /// checkpoint id 校验：命令入口的路径安全闸（id 会拼进 git ref/日志，不进文件路径，
 /// 但仍按 SessionRoots 的 validate 惯例收紧字符集，防注入）。
 fn validate_checkpoint_id(id: &str) -> Result<()> {
@@ -261,6 +335,13 @@ fn purge_secret_patterns_from_index(repo: &Path, work_tree: &Path) -> Result<()>
 /// 初始化影子仓库（幂等）：git-dir 在账本根，work-tree 指向执行根。
 /// - `core.autocrlf false`：不受用户全局行尾配置影响，快照/恢复保持原字节；
 ///   执行根自己的 .gitattributes 仍会被尊重（与用户在项目内看到的行尾一致）。
+/// - `core.ignorecase true`：大小写口径三层统一的关键。exclude 遵循 gitignore
+///   语义、其大小写行为由该配置决定——默认 false（Linux/大小写敏感 APFS）时
+///   `.ENV` 这类大写秘密文件逃过 exclude 被快照跟踪，而 purge pathspec
+///   （`:(icase)`）与预览过滤都是大小写不敏感：restore 的 purge 把它移出 index
+///   后它变成「未跟踪且未被忽略」，会被随后的 `clean -fd` 物理删除（数据丢失
+///   级缺陷，评审 B1）。强制 true 后三层一致：大写秘密永不进快照，且因被
+///   ignored 而不受 clean 波及。
 /// - `info/exclude`：忽略依赖/构建目录 + checkpoint 目录自身（临时会话两根相同，
 ///   checkpoint 数据在执行根内，必须排除，否则快照自我递归、clean 会误删账本）。
 fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
@@ -272,6 +353,13 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
         git_ok(&repo, execution_root, &["init"])?;
         git_ok(&repo, execution_root, &["config", "core.autocrlf", "false"])?;
     }
+    // config 幂等：存量仓库（本次修复前创建、ignorecase 未设置）也必须补齐，
+    // 否则三层口径在旧仓库上依旧分裂。
+    git_ok(
+        &repo,
+        execution_root,
+        &["config", "core.ignorecase", "true"],
+    )?;
     let mut excludes: Vec<String> = SHADOW_EXCLUDES
         .iter()
         .chain(SECRET_EXCLUDES.iter())
@@ -428,6 +516,33 @@ pub fn create_checkpoint(
             );
         }
         let _ = git(&repo, &execution_root, &["gc", "--auto", "--quiet"]);
+    }
+    // 存储压力闸（对齐底座 MAX_SNAPSHOT_SIZE_MB）：LRU 裁条目不裁字节，大文件
+    // 项目单靠条目数守不住体积。超预算时裁到一半条目 + 主动 gc 收敛（至少保留
+    // 最新一条——刚登记的本条；被裁的 undo 绑定由可反悔判定如实收敛）。
+    if shadow_repo_bytes(&repo) > MAX_SHADOW_REPO_BYTES && index.entries.len() > 1 {
+        let target = (index.entries.len() / 2).max(1);
+        let evicted: Vec<CheckpointMeta> = index
+            .entries
+            .drain(..index.entries.len() - target)
+            .collect();
+        for entry in &evicted {
+            let _ = git(
+                &repo,
+                &execution_root,
+                &[
+                    "update-ref",
+                    "-d",
+                    &format!("refs/checkpoints/{}", entry.id),
+                ],
+            );
+        }
+        let _ = git(&repo, &execution_root, &["gc", "--prune=now", "--quiet"]);
+        eprintln!(
+            "[checkpoints] shadow repo over {}MB budget, pruned {} oldest entries",
+            MAX_SHADOW_REPO_BYTES / 1024 / 1024,
+            evicted.len()
+        );
     }
     save_index(ledger_root, &index)?;
     Ok(meta)
@@ -594,8 +709,12 @@ pub fn diff_checkpoint(
     let name_status = git_ok(
         &repo,
         &execution_root,
-        // -M 开启 rename 检测，parse_name_status 的 renamed 分支才不是死代码。
+        // -M 开启 rename 检测，parse_name_status 的 renamed 分支才不是死代码；
+        // core.quotepath=false：非 ASCII 文件名原样输出（默认会把中文路径转成
+        // 八进制转义，确认弹窗的变更清单不可读）。
         &[
+            "-c",
+            "core.quotepath=false",
             "diff",
             "--cached",
             "--name-status",
@@ -607,9 +726,11 @@ pub fn diff_checkpoint(
     let raw_patch = git_ok(
         &repo,
         &execution_root,
-        // 与 name-status 同开 -M：changes 清单标 renamed 时 patch 也是 rename
-        // 形态，不出现清单/补丁口径不一致。
+        // 与 name-status 同开 -M + quotepath：changes 清单标 renamed 时 patch
+        // 也是 rename 形态，中文路径在两处都是原文。
         &[
+            "-c",
+            "core.quotepath=false",
             "diff",
             "--cached",
             "-M",
@@ -840,6 +961,99 @@ mod tests {
         assert!(!is_tracked("sub/.env"), "任意深度的 .env 不得进快照");
         assert!(!is_tracked(".env.local"));
         assert!(!is_tracked("id_rsa"), "私钥本体不得进快照");
+    }
+
+    /// M3 回归：中文（非 ASCII）文件名在 diff 预览中原样上屏，不被
+    /// core.quotepath 转成八进制转义。
+    #[test]
+    fn diff_preview_shows_non_ascii_paths_verbatim() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("quotepath-ledger");
+        let exec = TestDir::new("quotepath-exec");
+        exec.write("文档/需求.md", "v1\n");
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        exec.write("文档/需求.md", "v2\n");
+        exec.write("新建文件.rs", "fn main() {}\n");
+
+        let diff = diff_checkpoint(ledger.path(), exec.path(), &first.id).unwrap();
+        assert!(
+            diff.changes
+                .iter()
+                .any(|change| change.path == "文档/需求.md"),
+            "中文路径必须原样出现在清单: {:?}",
+            diff.changes
+        );
+        assert!(
+            diff.changes
+                .iter()
+                .any(|change| change.path == "新建文件.rs")
+        );
+        assert!(diff.patch.contains("文档/需求.md"));
+        assert!(!diff.patch.contains("\\346"), "不得出现八进制转义");
+    }
+
+    /// B1 回归（评审 Blocker）：大写命名的秘密文件（`.ENV`）在大小写敏感
+    /// 文件系统上曾逃过 exclude 被快照跟踪，restore 的 icase purge 把它移出
+    /// index 后被 `clean -fd` 物理删除。影子仓库强制 `core.ignorecase true`
+    /// 后：`.ENV` 永不进快照、被 ignored 而不受 clean 波及——用户在 turn 间
+    /// 对它的修改原样保留，restore 后仍然存在且内容不变。
+    #[test]
+    fn uppercase_secret_survives_restore_untouched() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("icase-ledger");
+        let exec = TestDir::new("icase-exec");
+        exec.write("ok.txt", "v1\n");
+        exec.write(".ENV", "SECRET=before\n");
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+
+        // turn 1 同时改了普通文件和大写秘密文件。
+        exec.write("ok.txt", "v2\n");
+        exec.write(".ENV", "SECRET=after\n");
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t2",
+        )
+        .unwrap();
+
+        // 大写秘密从未进快照（exclude 在 core.ignorecase=true 下大小写不敏感）。
+        let repo = repo_dir(ledger.path());
+        let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
+        assert!(
+            !tracked
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case(".env"))
+        );
+
+        // 回退到 turn 1：普通文件恢复，.ENV 存活且保持用户最新内容（未被
+        // checkout-index 覆盖、未被 clean 删除）。
+        restore_checkpoint(ledger.path(), exec.path(), &first.id).unwrap();
+        assert_eq!(exec.read("ok.txt").as_deref(), Some("v1\n"));
+        assert_eq!(
+            exec.read(".ENV").as_deref(),
+            Some("SECRET=after\n"),
+            "大写秘密文件必须在 restore 后存活且内容不变"
+        );
     }
 
     /// 存量仓库一次性迁移：升级前被强制跟踪的敏感文件（含子目录深度）被

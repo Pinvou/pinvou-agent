@@ -307,6 +307,14 @@ pub(crate) async fn chat_with_reservation(
         let checkpoint_execution = roots.execution.clone();
         let label = display_content.clone();
         let snapshot = tauri::async_runtime::spawn_blocking(move || {
+            // 执行根体积门（对齐底座 snapshot 机制）：超过 2GB 的目录不做快照——
+            // 全量 add -A 的 IO 与影子仓库存储都不划算，该轮如实没有回退入口
+            // （返回 None 表示主动跳过，与快照失败区分）。
+            if !crate::features::code_checkpoints::execution_root_within_snapshot_budget(
+                &checkpoint_execution,
+            ) {
+                return Ok(None);
+            }
             // turn 序号用 is_user_turn_prompt 同口径计数（tool_result 不计入），
             // 计数失败（会话加载失败等）登记 None，前端按顺序兜底对齐。会话 JSON
             // 读取是阻塞 IO，与快照同驻 spawn_blocking。
@@ -323,11 +331,17 @@ pub(crate) async fn chat_with_reservation(
                 crate::features::code_checkpoints::CheckpointKind::Turn,
                 &label,
             )
+            .map(Some)
         })
         .await;
         match snapshot {
-            Ok(Ok(meta)) => {
+            Ok(Ok(Some(meta))) => {
                 created_snapshot_id = Some(meta.id);
+            }
+            Ok(Ok(None)) => {
+                log::info!(
+                    "[pinvou3][chat] checkpoint skipped sid={sid}: execution root exceeds snapshot size budget"
+                );
             }
             Ok(Err(error)) => {
                 log::warn!("[pinvou3][chat] checkpoint failed sid={sid}: {error:#}")
