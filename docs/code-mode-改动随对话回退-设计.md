@@ -30,6 +30,11 @@
 
 复用底座需 4 处 fork 改动（pub/facade、锚定、会话命名空间、保留策略），按项目公约应优先回馈上游，周期不可控。
 
+> 2026-09-02 评审补充：底座其后提供了 `snapshot_with_session` + `[sid=...]` 标签前缀，
+> 部分缓解了会话归属问题（上述第 2/3 条的措辞需按此现状理解）；其余不复用理由
+> （非 pub、保留策略与会话生命周期脱节）不变。两条资源闸（工作区 >2GB 跳过快照、
+> 影子库存储 500MB 压力裁剪）已对齐移植进 app 侧（§12 见规模上限条目）。
+
 ### 2.2 移植 feat 分支 app 侧 checkpoint（选定）
 
 以 `qiuYliangM/feat-full-code-mode` 提交 `32b5fdf9e`（`code_sessions/checkpoints.rs`，714 行，含 6 个 Rust 测试 + 前端逻辑测试）为基底移植，**砍掉 ACP 钩子**。机制层（shadow git 操作，约 200 行）刻意照搬底座已验证的安全语义；策略层（按会话存储、turn 锚定、LRU、commands/UI）为 app 新增，是底座没有也不该有的部分。
@@ -111,6 +116,14 @@ feat 分支没有的部分，本方案新增：
 > `rewind_to_turn` 落地；防线三退化为「diff 预览如实展示全部将撤销变更 + 忙碌冲突错误
 > 原样上屏」（前端暂无同根会话数据源，条件警示文案未做）；防线一（绑定感知提示）未做，
 > 后续迭代补。
+>
+> 2026-09-02 评审后加固：防线二从「check-then-act 查询」升级为进程级互斥——
+> `EnginePool` 按 canonical 执行根维护回退 flag，回退/回滚/撤销置位后复查在途 peer，
+> 同根会话的新 turn 预约（`reserve_turn`）与定时轮（`run_scheduled_turn`）在同一把
+> flag 锁内检查后被拒，竞态关闭；枚举源换成含 sched- 定时会话的全量列表，plain/code/
+> scheduled 同根在途都拦截。**已知盲区**：ACP 会话的 turn 不经 EnginePool（外部 agent
+> 进程），其同根在途写文件无法被感知，v1 如实接受（绑定同一目录跑 ACP agent 属
+> 高风险用法，产品侧另行引导）。
 
 回退的恢复单位是执行根；多会话绑定同一项目目录时，回退会撤销该根上的全部变更（含其他会话和用户手动改动）。v1 不做按会话归因（shell 改动无法可靠归因），不做 worktree 隔离（改变产品形态，v2 独立评估），只做知情与防竞态：
 
@@ -168,5 +181,6 @@ feat 分支没有的部分，本方案新增：
 - **敏感文件不进快照**：影子 exclude 列表含 `.env`/`.env.local`/`.env.*.local`、`*.pem`/`*.key`/私钥本体等模式（非 git 执行根没有 .gitignore 兜底，原文快照进影子 objects 并随 diff 进入 UI 链路不可接受）。模式收窄到秘密实际居住的约定：`.env.example`/`id_rsa.pub` 等常被有意提交的示例/公钥照常进快照；`.env.production` 类约定文件仍会进快照。代价是命中的文件不随回退恢复，属可接受取舍。存量影子仓库由 `ensure_repo` 的 marker 门控一次性迁移（`git rm --cached -f`，任意深度）覆盖；legacy 快照 tree 里的原文条目在 restore 时（read-tree 后）再次清除、在 diff 预览中按同模式过滤（清单与 patch 都不上屏）；历史 commit objects 里的原文随 LRU 淘汰与 gc 回收。
 - **临时会话账本暴露在执行根内**：两根相同时 `checkpoints/` 位于 agent 可见的工作目录内，agent 的 shell 可看到甚至误删它（exclude 只保证不进快照/不被 clean）。用户会无感知地失去回退能力；把账本根挪到执行根外属后续迭代，v1 记录为已知风险。
 - **undo 后对同一节点再回退退化为仅对话**：回退会作废 `turn > keep` 的全部 Turn 快照（含恢复目标 turn N+1），undo 只还原代码+对话、不重建 Turn 快照；此后再次回退到第 N 轮找不到目标快照，只能仅回退对话。方向保守正确（胜过锚到被遗弃分支），重新创作新轮次后快照自然重建。
+- **规模上限（对齐底座资源闸，2026-09-02 评审 M4 后补齐）**：执行根体积超 2GB 跳过快照（该会话如实没有回退入口，估算跳过 exclude 目录、条目数封顶 20 万）；影子仓库存储超 500MB 时裁到一半条目并 gc 收敛（LRU 裁条目不裁字节，大文件项目单靠条目数守不住）。
 - **悬停入口的触屏可达性**：回退入口平时是淡色细线、hover 显形（桌面鼠标语义）；纯触屏无 hover，需首 tap 触发 `:hover` 再点按。鉴于 rewind 命令桌面专属（web 策略锚定测试锁定），v1 不为触屏加交互复杂度。
 - **Web 车道不支持**：rewind 直接改写本地文件，`rewind_to_turn`/`undo_last_rewind`/`list_checkpoints`/`checkpoint_diff`/`restore_checkpoint` 均未加入 web access-policy 的 allowed_commands，relay 下 invoke 抛 commandNotAllowed、前端静默不渲染入口。放行需单独评估（桌面执行语义），由 `codex_checkpoints_logic.test.mjs` 的策略断言锚定。
