@@ -707,7 +707,9 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     /const terminalWithoutTranscript =/,
     '子智能体在建 transcript 前失败时必须直接显示 ledger 错误，不能再发必败读取',
   );
-  assert.match(panelSource, /copy\.agentNoTranscript\(agent && agent\.error\)/);
+  // The fallback still shows the ledger error, redacted through the shared
+  // timelineDisplayError before display.
+  assert.match(panelSource, /copy\.agentNoTranscript\(\n[\s\S]*?timelineDisplayError\(agent\.error, \{ language \}\)/);
   assert.match(panelSource, /const agentResolved = !!agent/);
   assert.match(panelSource, /const transcriptUnavailable = !!\(agent && agent\.has_transcript === false\)/);
   assert.match(
@@ -1264,6 +1266,74 @@ test('transcript 适配：内部运行时信封不得渲染为任务指令气泡
   assert.ok(!JSON.stringify(turns[0]).includes('child completion summary'), '信封正文不得上屏');
   assert.ok(!JSON.stringify(turns[0]).includes('codewhale:runtime_event'), '信封 XML 不得进入展示');
   assert.ok(!JSON.stringify(turns[0]).includes('shell_completion'), '仅-provenance 形态同样不上屏');
+});
+
+// Same model-service classifier as main chat: load the classic script
+// so the projection's globalThis probe finds it.
+vm.runInThisContext(
+  read('src', 'shared', 'model-service-errors.js'),
+  { filename: 'model-service-errors.js' },
+);
+
+test('transcript 适配：模型服务失败重建友好卡并脱敏原始报文', () => {
+  const { turns } = projectSubagentTranscript({
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: '调研任务' }] },
+      { role: 'assistant', content: [{ type: 'text', text: '我来查一下。' }] },
+    ],
+    agent: {
+      agentId: 'agent_1a2b3c4d',
+      role: 'scout',
+      done: true,
+      failed: true,
+      error: 'SSE stream request failed: HTTP 402 {"error":{"message":"Insufficient Balance","api_key":"sk-secret123"}}',
+    },
+    options: {
+      language: 'zh-Hans',
+      modelServiceState: {
+        currentSessionModelId: 'm1',
+        savedModels: [{ id: 'm1', provider: 'deepseek' }],
+      },
+    },
+  });
+  const turn = turns[0];
+  assert.equal(turn.status, 'Failed');
+  assert.ok(turn.userError, '门控接管的模型服务失败必须重建 userError 卡');
+  assert.equal(turn.userError.kind, 'billing');
+  assert.doesNotMatch(turn.error, /sk-secret123/, '红字兜底必须先脱敏再上屏');
+  assert.doesNotMatch(turn.userError.technicalDetail || '', /sk-secret123/);
+  assert.match(turn.userError.title, /DeepSeek/, 'provider 标签须从 bridge state 推导');
+});
+
+test('transcript 适配：本地工具错误不建友好卡，原文脱敏兜底', () => {
+  const { turns } = projectSubagentTranscript({
+    messages: [{ role: 'user', content: [{ type: 'text', text: '跑本地脚本' }] }],
+    agent: {
+      agentId: 'agent_1a2b3c4d',
+      done: true,
+      failed: true,
+      error: 'permission denied while reading local file /etc/hosts',
+    },
+    options: { language: 'en' },
+  });
+  const turn = turns[0];
+  assert.equal(turn.userError, null, '非模型服务错误不得劫持成模型服务卡');
+  assert.ok(turn.error && turn.error.includes('permission denied'), '原文保留作红字兜底');
+});
+
+test('transcript 适配：友好卡文案跟随界面语言', () => {
+  const { turns } = projectSubagentTranscript({
+    messages: [],
+    agent: {
+      agentId: 'agent_1a2b3c4d',
+      done: true,
+      failed: true,
+      error: 'SSE stream request failed: HTTP 429 rate limit exceeded',
+    },
+    options: { language: 'en' },
+  });
+  assert.equal(turns[0].userError.kind, 'rate_limit');
+  assert.doesNotMatch(turns[0].userError.title, /[\u4e00-\u9fff]/, 'en 界面不得泄漏中文标题');
 });
 
 test('transcript 适配：文件工具归 file_change，终态后不留转圈条目', () => {

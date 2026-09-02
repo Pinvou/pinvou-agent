@@ -109,7 +109,6 @@
   const STRONG_MODEL_ERROR_KEYWORDS = [
     "invalid api key",
     "incorrect api key",
-    "insufficient balance",
     "insufficient quota",
     "quota exceeded",
     "quota exhausted",
@@ -129,6 +128,11 @@
     "账户余额",
     "余额不足",
     "欠费",
+    // "insufficient balance" stays in the same tier as the Chinese payment
+    // phrases above: DeepSeek's real 402 wording is already taken over via
+    // MODEL_CALL_PREFIXES / status codes, while local wallet/payment failures
+    // say the same words and must not be told to top up the model API.
+    "insufficient balance",
   ];
 
   const AMBIGUOUS_MODEL_ERROR_KEYWORDS = [
@@ -296,6 +300,8 @@
   // ②模型服务语义词,且必须叠加 API/厂商上下文——裸的 timeout/connection
   // refused/server error 等词在本地工具错误(git、ssh、npm、docker)里同样
   // 常见,不能仅凭它们断言"模型服务故障"。
+  const MEMORY_EXHAUSTION_RE = /(?:^|[^a-z0-9])(?:out\s+of\s+memory|oom|内存(?:耗尽|不足|溢出))(?![a-z0-9])/i;
+
   function isModelServiceError(raw) {
     if (raw && typeof raw === "object" && raw.kind && raw.title && raw.message) return true;
     const text = String(raw || "");
@@ -308,6 +314,13 @@
     // 卷挂载报 "user quota exceeded")先于计费强词排除,否则本地写盘失败会被
     // 提示"请充值或切换模型"。
     if (/(?:^|[^a-z0-9])(?:disk|nfs|inode|filesystem|storage|user)\s+quota(?![a-z0-9])/i.test(normalized)) return false;
+    // Local inference/training memory exhaustion (vLLM/PyTorch "CUDA out of
+    // memory", worker OOM) shares its shape with gRPC RESOURCE_EXHAUSTED.
+    // Exclude it before the quota keywords so a local OOM is not answered
+    // with "check your API quota"; genuine provider quota errors never carry
+    // memory-exhaustion wording. classify applies the same rule so prefixed
+    // transport errors do not fall into quota either.
+    if (MEMORY_EXHAUSTION_RE.test(normalized)) return false;
     if (hasAny(lower, normalized, STRONG_MODEL_ERROR_KEYWORDS)) return true;
     const apiSignal = hasApiSignal(lower, normalized);
     const providerSignal = hasProviderNameSignal(lower, normalized);
@@ -344,7 +357,8 @@
     if (status === 402 || hasAny(lower, normalized, ["payment required", "insufficient balance", "余额不足", "欠费", "账户余额"])) {
       return { kind: "billing", httpStatus: status };
     }
-    if (hasAny(lower, normalized, ["quota exceeded", "insufficient quota", "quota exhausted", "quota has been exceeded", "exceeded your current quota", "resource exhausted", "额度不足", "额度用尽", "额度耗尽", "用量超出"])) {
+    if (hasAny(lower, normalized, ["quota exceeded", "insufficient quota", "quota exhausted", "quota has been exceeded", "exceeded your current quota", "额度不足", "额度用尽", "额度耗尽", "用量超出"])
+      || (hasAny(lower, normalized, ["resource exhausted"]) && !MEMORY_EXHAUSTION_RE.test(normalized))) {
       return { kind: "quota", httpStatus: status };
     }
     // 403 与频控词共存时按频控分(GitHub/OpenAI 风格 "403 forbidden: rate limit exceeded")
@@ -372,8 +386,12 @@
     // 枚举追不完,API-Key/HMAC 等非标 scheme 曾整体漏掉凭证段)、可选 JSON
     // 引号;值一段吞到首个分隔符(引号/逗号/分号/括号/&/换行),允许值内
     // 空格以覆盖 "Digest username=x, ..." 之外的两段式凭证。
+    // Digest parameter blobs (username="x", realm=y) are swallowed whole
+    // before the generic value: the generic class stops at the first quote
+    // and would leak the comma-separated params. A single-pass alternation
+    // also keeps the generic branch from re-masking the Digest placeholder.
     text = text.replaceAll(
-      /((?:proxy-)?authorization[\s"']*[:=][\s"']*)([^"'),;}&\]\r\n]+)/gi,
+      /((?:proxy-)?authorization[\s"']*[:=][\s"']*)(?:digest\s+[^;\r\n]+|[^"'),;}&\][\r\n]+)/gi,
       (m, p1) => keepPrefix(p1),
     );
     // Cookie/Set-Cookie 头整段吞值:多对凭证以 "; " 分隔,下方 kv 规则的值
@@ -386,8 +404,11 @@
     );
     // 裸 Bearer <token>(无 Authorization 头名,配置回显/排错日志常见形态)。
     text = text.replaceAll(/\b(Bearer\s+)[a-z0-9._~+=/-]{12,}/gi, (m, p1) => keepPrefix(p1));
-    // 裸 Basic/Digest <base64>(同上);阈值 16 换取 "basic <普通词>" 不误吞。
-    text = text.replaceAll(/\b((?:Basic|Digest)\s+)[a-z0-9+/=]{16,}/gi, (m, p1) => keepPrefix(p1));
+    // Bare Basic/Digest <base64> (same shapes without a header name); the
+    // threshold of 12 covers the shortest "user:pass" form (dXNlcjpwYXNz is
+    // exactly 12 chars, which the previous 16-char threshold let through)
+    // at the cost of occasionally masking a plain word after "basic".
+    text = text.replaceAll(/\b((?:Basic|Digest)\s+)[a-z0-9+/=]{12,}/gi, (m, p1) => keepPrefix(p1));
     // 强凭证键(password/passphrase/secret)两种形态都整段吞值:
     // ①引号值允许空格("correct horse battery staple" 这类多词口令);
     // ②未加引号时吞到行尾或首个 ,/;/&,否则多词口令只吞首词、其余词泄漏。
@@ -407,7 +428,7 @@
     // 排查信息得以保留。
     /* eslint-disable sonarjs/regex-complexity, sonarjs/duplicates-in-character-class -- the credential-key whitelist is deliberately exhaustive; splitting it would reduce auditability */
     text = text.replaceAll(
-      /(["']?\b(?:api[_-]?key|api[_-]?secret|authorization|token|password|secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|secret[_-]?key|ssh[_-]?key|private[_-]?key|session[_-]?id|session[_-]?token|sessionid|jsessionid|cookie|set[_-]?cookie)\b["']?\s*[:=]\s*["']?)(?:[A-Za-z][^"',\s&}]*|[A-Za-z0-9][A-Za-z0-9._~-]{9,})/gi,
+      /(["']?\b(?:api[_-]?key|api[_-]?secret|api[_-]?token|authorization|token|password|secret|access[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|client[_-]?secret|app[_-]?secret|consumer[_-]?key|secret[_-]?key|secret[_-]?token|ssh[_-]?key|private[_-]?key|session[_-]?id|session[_-]?token|sessionid|jsessionid|cookie|set[_-]?cookie)\b["']?\s*[:=]\s*["']?)(?:[A-Za-z][^"',\s&}]*|[A-Za-z0-9][A-Za-z0-9._~-]{9,})/gi,
       (m, p1) => keepPrefix(p1),
     );
     /* eslint-enable sonarjs/regex-complexity, sonarjs/duplicates-in-character-class */
@@ -420,7 +441,7 @@
     // URL 查询参数形态(query 里的值几乎必然是凭证,不加形态条件)。
     /* eslint-disable sonarjs/regex-complexity -- same whitelist rationale as above */
     text = text.replaceAll(
-      /([?&](?:api[_-]?key|api[_-]?secret|key|authorization|token|password|secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|ssh[_-]?key|session[_-]?id|sessionid)=)[^&#\s]+/gi,
+      /([?&](?:api[_-]?key|api[_-]?secret|api[_-]?token|key|authorization|token|password|secret|access[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|client[_-]?secret|app[_-]?secret|consumer[_-]?key|ssh[_-]?key|session[_-]?id|sessionid)=)[^&#\s]+/gi,
       (m, p1) => keepPrefix(p1),
     );
     /* eslint-enable sonarjs/regex-complexity */

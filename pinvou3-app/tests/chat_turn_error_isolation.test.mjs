@@ -120,10 +120,25 @@ assert.equal(
 // 分类顺序:OOM(内存耗尽)不再落到 quota;403+rate limit 共存按频控分。
 assert.equal(modelErrors.classify('HTTP 500: worker killed 内存耗尽 (OOM)').kind, 'server');
 assert.equal(modelErrors.classify('HTTP 403 forbidden: rate limit exceeded').kind, 'rate_limit');
-// 计费强词(quota/insufficient balance 等)是门控的独立通道,必须无条件接管——
-// 防止只走底座前缀路径的测试让强词表静默失效。
-assert.equal(modelErrors.isModelServiceError('insufficient balance'), true);
+// English OOM shares its shape with gRPC RESOURCE_EXHAUSTED: local
+// VRAM/memory exhaustion must not be answered with "check your API quota";
+// genuine quota errors (no memory wording) are unaffected.
+assert.equal(modelErrors.isModelServiceError('Resource exhausted: OOM when allocating tensor with shape[8192,8192]'), false);
+assert.equal(modelErrors.isModelServiceError('CUDA out of memory. Tried to allocate 2.00 GiB'), false);
+assert.notEqual(modelErrors.classify('Resource exhausted: OOM when allocating tensor').kind, 'quota');
+assert.equal(modelErrors.isModelServiceError('google.rpc RESOURCE_EXHAUSTED: quota exceeded'), true);
+assert.equal(modelErrors.classify('RESOURCE_EXHAUSTED: Insufficient Quota').kind, 'quota');
+// Billing strong words (quota etc.) are a standalone gate channel and must
+// take over unconditionally, so prefix-only tests cannot silently break the
+// list. "insufficient balance" now shares the tier of its Chinese
+// equivalents: the bare words also appear in local wallet/payment errors and
+// require API/provider context; DeepSeek 402 still gates via prefixes and
+// status codes.
 assert.equal(modelErrors.isModelServiceError('quota has been exceeded'), true);
+assert.equal(modelErrors.isModelServiceError('insufficient balance'), false);
+assert.equal(modelErrors.isModelServiceError('Payment failed: insufficient balance'), false);
+assert.equal(modelErrors.isModelServiceError('DeepSeek API error: insufficient balance'), true);
+assert.equal(modelErrors.classify('SSE stream request failed: HTTP 402 insufficient balance').kind, 'billing');
 // 泛中文支付语("账户余额/余额不足/欠费")在本地支付/转账错误里同样常见:
 // 裸措辞不再劫持,叠加 API/厂商上下文后仍是强计费信号。
 assert.equal(modelErrors.isModelServiceError('支付失败:账户余额不足'), false);
@@ -229,6 +244,33 @@ assert.doesNotMatch(
   modelErrors.redactTechnicalDetail('refresh_token: rt_live_abc123def456ghi789'),
   /rt_live_abc123/,
   'compound credential keys must be redacted',
+);
+// Cloud key ids and vendor token compound names: access_key (AWS AKIA)
+// is the most common.
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('access_key: AKIAIOSFODNN7EXAMPLE'),
+  /AKIAIOSFODNN7EXAMPLE/,
+  'access_key compound key must be redacted',
+);
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('api_token: pat_abcdefgh1234'),
+  /pat_abcdefgh1234/,
+  'api_token compound key must be redacted',
+);
+// The 12-char bare Basic form (dXNlcjpwYXNz = user:pass) must be covered;
+// usage counters stay untouched.
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('proxy replied: Basic dXNlcjpwYXNz'),
+  /dXNlcjpwYXNz/,
+  'short bare Basic credentials must be redacted',
+);
+assert.equal(modelErrors.redactTechnicalDetail('token: 15000'), 'token: 15000');
+// Digest parameter blobs (comma params beyond the quote-truncated generic
+// value) must be swallowed whole.
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('Authorization: Digest username="x", realm=y'),
+  /realm=y/,
+  'Digest parameter blob must be redacted',
 );
 assert.doesNotMatch(
   modelErrors.redactTechnicalDetail('client_secret: GOCSPX-abcdef1234567890'),
