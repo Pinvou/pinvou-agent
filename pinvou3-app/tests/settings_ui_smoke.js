@@ -496,6 +496,45 @@ async function modalWidth(page, headingText) {
     && updateDownloadState.text.includes('取消下载')
     && updateDownloadState.desc.includes('正在下载更新 37%'),
     JSON.stringify(updateDownloadState));
+  await page.evaluate(() => {
+    let downloaded = 37000;
+    window.__SETTINGS_TEST__.progressFloodHandledCount = 0;
+    const timer = window.setInterval(() => {
+      downloaded = Math.min(downloaded + 16, 99000);
+      void window.__SETTINGS_TEST__.emit('update:progress', { downloaded, total: 100000 }).then(() => {
+        window.__SETTINGS_TEST__.progressFloodHandledCount += 1;
+      });
+    }, 0);
+    window.__SETTINGS_TEST__.stopProgressFlood = () => window.clearInterval(timer);
+  });
+  await page.waitForFunction(() => window.__SETTINGS_TEST__.progressFloodHandledCount >= 50, { timeout: 5000 });
+  await page.waitForFunction(() => {
+    const root = document.querySelector('#settings-version-update');
+    return root && !root.innerText.includes('37%');
+  }, { timeout: 5000 });
+  const floodBeforeNavigation = await page.evaluate(() => ({
+    handled: window.__SETTINGS_TEST__.progressFloodHandledCount,
+    description: document.querySelector('#settings-version-update')?.innerText || '',
+  }));
+  const navigationStartedAt = Date.now();
+  let floodAfterNavigation;
+  try {
+    await page.click('[data-testid="settings-section-model"]');
+    await page.waitForFunction(() =>
+      (document.querySelector('[data-testid="settings-content"] h1')?.textContent || '').trim() === '模型',
+    { timeout: 2000 });
+    floodAfterNavigation = await page.evaluate(() => window.__SETTINGS_TEST__.progressFloodHandledCount);
+  } finally {
+    await page.evaluate(() => window.__SETTINGS_TEST__.stopProgressFlood());
+  }
+  rec('Update progress bursts do not block settings navigation',
+    floodBeforeNavigation.handled >= 50
+    && !floodBeforeNavigation.description.includes('37%')
+    && floodAfterNavigation > floodBeforeNavigation.handled
+    && Date.now() - navigationStartedAt < 2000,
+    `handled=${floodBeforeNavigation.handled}->${floodAfterNavigation}, latency=${Date.now() - navigationStartedAt}ms`);
+  await page.click('[data-testid="settings-section-update"]');
+  await page.waitForFunction(() => !!document.querySelector('#settings-version-update'));
   await page.click('#settings-version-update [data-settings-update-action="true"]');
   await sleep(150);
   rec('①c 设置页可取消正在进行的更新下载', await callCount(page, 'cancel_download') === 1);
