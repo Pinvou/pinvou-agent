@@ -2,6 +2,11 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
+import { formatAttachmentLimitError } from '../src/features/attachments/attachment-limit-errors.js';
+import { dictEn } from '../src/shared/i18n/en.js';
+import { dictJa } from '../src/shared/i18n/ja.js';
+import { dictZh } from '../src/shared/i18n/zh.js';
+
 globalThis.window = {
   __PINVOU_TAURI_BRIDGE_FEATURES__: {},
   btoa: value => Buffer.from(value, 'binary').toString('base64'),
@@ -31,6 +36,8 @@ vm.runInThisContext(bridgeSource, { filename: 'artifacts.js' });
 
 const state = { activeSessionId: null, attachments: [] };
 const invokedCommands = [];
+const systemItems = [];
+let pasteImageError = null;
 const feature = window.__PINVOU_TAURI_BRIDGE_FEATURES__.artifacts;
 assert.equal(typeof feature, 'function');
 
@@ -39,6 +46,9 @@ const api = feature({
   notify() {},
   async invoke(command, args) {
     invokedCommands.push({ command, args });
+    if (command === 'save_paste_image' && pasteImageError) {
+      throw new Error(pasteImageError);
+    }
     if (command === 'ingest_draft_file_chunk') {
       return {
         basename: args.filename,
@@ -64,7 +74,7 @@ const api = feature({
     return {};
   },
   bt: value => value,
-  addSystemItem() {},
+  addSystemItem(item) { systemItems.push(item); },
   dialogOpen: null,
   basename: value => String(value).split(/[\\/]/).pop(),
   isDeliverable: () => false,
@@ -146,5 +156,17 @@ assert.equal(
   'attachment_file_too_large',
   'browser preflight failures must use the same stable code as backend rejection',
 );
+
+pasteImageError = 'attachment_file_too_large';
+for (const dictionary of [dictZh, dictEn, dictJa]) {
+  await api.addPasteImage('oversized.png', [1], error => (
+    formatAttachmentLimitError(error, dictionary.uiAttachments)
+  ));
+  assert.equal(
+    systemItems.at(-1),
+    dictionary.uiAttachments.fileTooLarge,
+    'ordinary chat paste failures must use the shared localized limit formatter',
+  );
+}
 
 console.log('attachment drop bridge tests passed');

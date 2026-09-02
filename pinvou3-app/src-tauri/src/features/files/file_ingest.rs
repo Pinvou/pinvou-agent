@@ -61,6 +61,7 @@ pub const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 pub const ATTACHMENT_FILE_TOO_LARGE: &str = "attachment_file_too_large";
 pub const ATTACHMENT_ARCHIVE_TOO_MANY_ENTRIES: &str = "attachment_archive_too_many_entries";
 pub const ATTACHMENT_ARCHIVE_EXPANDED_TOO_LARGE: &str = "attachment_archive_expanded_too_large";
+pub const ATTACHMENT_ARCHIVE_UNSAFE_ENTRY: &str = "attachment_archive_unsafe_entry";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AttachmentLimitViolation {
@@ -78,6 +79,9 @@ pub(super) enum AttachmentLimitViolation {
         expanded_bytes: u64,
         max_bytes: u64,
     },
+    ArchiveUnsafeEntry {
+        archive_byte_size: u64,
+    },
 }
 
 impl AttachmentLimitViolation {
@@ -86,6 +90,7 @@ impl AttachmentLimitViolation {
             Self::FileTooLarge { .. } => ATTACHMENT_FILE_TOO_LARGE,
             Self::ArchiveTooManyEntries { .. } => ATTACHMENT_ARCHIVE_TOO_MANY_ENTRIES,
             Self::ArchiveExpandedTooLarge { .. } => ATTACHMENT_ARCHIVE_EXPANDED_TOO_LARGE,
+            Self::ArchiveUnsafeEntry { .. } => ATTACHMENT_ARCHIVE_UNSAFE_ENTRY,
         }
     }
 
@@ -134,6 +139,13 @@ impl AttachmentLimitViolation {
                     expanded_bytes as f64 / 1024.0 / 1024.0,
                     max_bytes / 1024 / 1024
                 ),
+            ),
+            Self::ArchiveUnsafeEntry { archive_byte_size } => IngestResult::warning(
+                "archive",
+                basename,
+                path,
+                archive_byte_size,
+                "压缩包包含链接、重解析点或越界路径，已拒绝读取",
             ),
         }
     }
@@ -398,10 +410,7 @@ fn secret_placeholder(basename: String, path_str: String, byte_size: u64) -> Ing
 /// 文件选择器直接拿原 path；HTML5 拖拽使用独立的有界分块摄入，不调用这个。
 pub fn save_paste_image(filename: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Err(format!(
-            "图片 {:.1} MB 超过 20 MB 上限",
-            bytes.len() as f64 / 1024.0 / 1024.0
-        ));
+        return Err(ATTACHMENT_FILE_TOO_LARGE.into());
     }
     let pastes = crate::platform::os::user_home_dir()
         .join(".pinvou3")
@@ -910,6 +919,16 @@ mod tests {
             ATTACHMENT_FILE_TOO_LARGE
         );
         std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn oversized_paste_image_uses_stable_attachment_limit_code() {
+        let oversized = vec![0_u8; (MAX_FILE_BYTES + 1) as usize];
+
+        assert_eq!(
+            save_paste_image("oversized.png", &oversized).unwrap_err(),
+            ATTACHMENT_FILE_TOO_LARGE
+        );
     }
 
     #[test]

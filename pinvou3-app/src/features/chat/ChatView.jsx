@@ -1988,7 +1988,13 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           reader.onload = () => {
             const bytes = [...new Uint8Array(reader.result)];
             const ext = (file.type.split('/')[1] || 'png');
-            if (bridge.available) bridge.attachments.addPasteImage(`paste-${Date.now()}.${ext}`, bytes);
+            if (bridge.available) {
+              bridge.attachments.addPasteImage(
+                `paste-${Date.now()}.${ext}`,
+                bytes,
+                formatAttachmentError,
+              );
+            }
           };
           reader.readAsArrayBuffer(file);
         }

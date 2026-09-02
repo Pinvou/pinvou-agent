@@ -2307,7 +2307,13 @@ export function CodexAcpView({
           });
           await addAttachmentByPath(path, attachmentKey);
         } catch (err) {
-          showError(err);
+          const limitError = formatAttachmentLimitError(err, t.uiAttachments);
+          if (limitError) {
+            console.error('Codex paste attachment failed:', err);
+            setError(limitError);
+          } else {
+            showError(err);
+          }
         }
       };
       reader.readAsArrayBuffer(file);

@@ -203,11 +203,14 @@
       .catch(function (e) { addSystemItem(bt("openFailed") + e); return false; });
   }
 
-  async function addPasteImage(filename, bytes) {
+  async function addPasteImage(filename, bytes, formatError) {
     try {
       const path = await invoke("save_paste_image", { filename, bytes });
       await addAttachmentByPath(path);
-    } catch (e) { addSystemItem(bt("pasteImageFailed") + e); }
+    } catch (e) {
+      const limitError = typeof formatError === "function" ? formatError(e) : "";
+      addSystemItem(limitError || bt("pasteImageFailed") + e);
+    }
   }
   function removeAttachment(id) {
     const removed = state.attachments.find(function (a) { return a.id === id; });

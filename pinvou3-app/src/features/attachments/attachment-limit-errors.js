@@ -2,10 +2,11 @@ export const ATTACHMENT_LIMIT_ERROR_CODES = Object.freeze({
   fileTooLarge: 'attachment_file_too_large',
   archiveTooManyEntries: 'attachment_archive_too_many_entries',
   archiveExpandedTooLarge: 'attachment_archive_expanded_too_large',
+  archiveUnsafeEntry: 'attachment_archive_unsafe_entry',
 });
 
 /** @typedef {{ code?: unknown, message?: unknown }} AttachmentLimitErrorLike */
-/** @typedef {{ fileTooLarge?: string, archiveTooManyEntries?: string, archiveExpandedTooLarge?: string }} AttachmentLimitCopy */
+/** @typedef {{ fileTooLarge?: string, archiveTooManyEntries?: string, archiveExpandedTooLarge?: string, archiveUnsafeEntry?: string }} AttachmentLimitCopy */
 
 /**
  * Normalize browser-side size failures and backend attachment rejection codes.
@@ -40,6 +41,8 @@ export function formatAttachmentLimitError(error, copy = {}) {
       return copy.archiveTooManyEntries || '';
     case ATTACHMENT_LIMIT_ERROR_CODES.archiveExpandedTooLarge:
       return copy.archiveExpandedTooLarge || '';
+    case ATTACHMENT_LIMIT_ERROR_CODES.archiveUnsafeEntry:
+      return copy.archiveUnsafeEntry || '';
     default:
       return '';
   }

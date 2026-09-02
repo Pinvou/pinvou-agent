@@ -401,6 +401,7 @@
       deviceUploadTooLarge: name => `⚠️ ${name} exceeds the 20 MB attachment limit`,
       archiveTooManyEntries: "the archive contains more than 50 entries and cannot be attached",
       archiveExpandedTooLarge: "the archive expands beyond 100 MB and cannot be attached",
+      archiveUnsafeEntry: "the archive contains unsafe links or paths and cannot be attached",
       deviceUploadEmpty: name => `⚠️ ${name} is empty and cannot be attached`,
       deviceUploadFailed: "⚠️ Upload failed: ",
       deviceUploadDigestInvalid: "the attachment integrity digest was invalid. Try again.",
@@ -514,6 +515,7 @@
       deviceUploadTooLarge: name => `⚠️ ${name} は添付の上限 20 MB を超えています`,
       archiveTooManyEntries: "アーカイブに 50 個を超える項目が含まれているため添付できません",
       archiveExpandedTooLarge: "アーカイブの展開後サイズが 100 MB を超えるため添付できません",
+      archiveUnsafeEntry: "アーカイブに安全でないリンクまたはパスが含まれているため添付できません",
       deviceUploadEmpty: name => `⚠️ ${name} は空のため添付できません`,
       deviceUploadFailed: "⚠️ アップロードに失敗: ",
       deviceUploadDigestInvalid: "添付ファイルの整合性ダイジェストが無効です。もう一度お試しください。",
@@ -627,6 +629,7 @@
       deviceUploadTooLarge: name => `⚠️ ${name} 超过附件 20 MB 上限`,
       archiveTooManyEntries: "压缩包包含超过 50 个条目，无法添加",
       archiveExpandedTooLarge: "压缩包解压后超过 100 MB，无法添加",
+      archiveUnsafeEntry: "压缩包包含不安全的链接或路径，无法添加",
       deviceUploadEmpty: name => `⚠️ ${name} 是空文件，无法添加`,
       deviceUploadFailed: "⚠️ 上传失败: ",
       deviceUploadDigestInvalid: "附件完整性校验值无效，请重试",
@@ -8213,6 +8216,9 @@
     }
     if (raw === "attachment_archive_expanded_too_large") {
       return { code: raw, message: bt("archiveExpandedTooLarge") };
+    }
+    if (raw === "attachment_archive_unsafe_entry") {
+      return { code: raw, message: bt("archiveUnsafeEntry") };
     }
     return null;
   }
