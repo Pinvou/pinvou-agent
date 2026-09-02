@@ -52,6 +52,16 @@ assert.strictEqual(tasks[1].output, '');
 assert.strictEqual(JSON.stringify(deriveRunningShellTasks(null)), '[]');
 assert.strictEqual(JSON.stringify(deriveRunningShellTasks()), '[]');
 
+// 同一 taskId 的重复卡片（轮询快照卡 + tool_end 快速通道打标的原卡）只计一次，
+// 先出现的原卡（真实命令参数）优先
+const duplicated = deriveRunningShellTasks([
+  { type: 'tool', toolId: 'tool-dup-real', name: 'exec_shell', taskId: 'job-dup', sessionId: 's1', state: 'running', background: true, args: { command: 'real card' }, elapsedMs: 1000 },
+  { type: 'tool', toolId: 'shell-task:job-dup', name: 'exec_shell', taskId: 'job-dup', sessionId: 's1', state: 'running', shellSnapshot: true, args: { command: 'synthetic card' }, elapsedMs: 900 },
+]);
+assert.strictEqual(duplicated.length, 1);
+assert.strictEqual(duplicated[0].command, 'real card');
+assert.strictEqual(duplicated[0].taskId, 'job-dup');
+
 // 超长命令截断
 const longCommand = 'x'.repeat(COMMAND_SUMMARY_MAX + 10);
 const [truncated] = deriveRunningShellTasks([

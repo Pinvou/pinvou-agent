@@ -686,7 +686,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       );
     };
 
-    const BackgroundTasksIndicator = ({ tasks, t, chatCopy }) => {
+    const BackgroundTasksIndicator = ({ tasks, t, chatCopy, compact }) => {
       const [open, setOpen] = useState(false);
       const [prevTaskCount, setPrevTaskCount] = useState(tasks.length);
       const triggerRef = useRef(null);
@@ -705,7 +705,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             <Terminal size={12} /> <span>{chatCopy.bgTasks}</span>
             <span className={`px-1 rounded-full text-[10px] ${'bg-white/70 dark:bg-black/15'}`}>{tasks.length}</span>
           </button>
-          <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={false}
+          {/* compact 跟随其他输入框弹层的视口契约：窄屏/移动 WebUI 走 portal 锚定路径 */}
+          <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
             desktopClassName={`absolute bottom-full left-0 mb-2 z-50 w-[360px] max-w-[calc(100vw-24px)] max-h-[420px] overflow-y-auto ${POPOVER_SURFACE}`}>
             <div className={`px-3 py-2 text-[12px] font-medium ${'text-[#85888D] dark:text-[#9AA0A6]'}`}>{chatCopy.bgTasksRunning(tasks.length)}</div>
             <div className={`divide-y ${'divide-black/5 dark:divide-white/5'}`}>
@@ -2519,7 +2520,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   copy={t.uiConversation}
                 />
                 {/* 后台 shell 任务胶囊：跟随"处理中"提示行，任务存续期间常驻（轮次结束后仍运行时也保留入口） */}
-                <BackgroundTasksIndicator tasks={runningShellTasks} t={t} chatCopy={chatCopy} />
+                <BackgroundTasksIndicator tasks={runningShellTasks} t={t} chatCopy={chatCopy} compact={composerCompact} />
               </div>
               {isMultiAgentReadOnly ? (
                 <div

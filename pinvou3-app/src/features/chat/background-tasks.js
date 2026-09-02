@@ -21,9 +21,17 @@ function summarizeCommand(command) {
 }
 
 // chatItems 是当前会话的工作集（切会话时整体换入换出），无需再按 sessionId 过滤。
+// 同一 taskId 可能短暂出现两张运行中卡片：轮询为命令匹配失败的任务补建了快照卡，
+// 随后 tool_end 快速通道又给原卡打上 background 标记，快照卡要等 tool_end 才被剪掉。
+// 按 taskId 去重，先出现的原卡（真实命令参数）优先。
 function deriveRunningShellTasks(chatItems) {
   if (!Array.isArray(chatItems)) return [];
-  return chatItems.filter(isRunningShellTaskItem).map(item => ({
+  const seenTaskIds = new Set();
+  return chatItems.filter(item => {
+    if (!isRunningShellTaskItem(item) || seenTaskIds.has(item.taskId)) return false;
+    seenTaskIds.add(item.taskId);
+    return true;
+  }).map(item => ({
     taskId: item.taskId,
     sessionId: item.sessionId,
     command: summarizeCommand(item.args && item.args.command),
