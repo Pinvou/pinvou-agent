@@ -19,11 +19,19 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use deepseek_tui::models::Message;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use super::SessionStore;
 use super::transcript::transcript_revision;
 use super::validators::validate_session_id;
+
+/// `_rewound_turns.json` 的专用互斥锁：truncate/restore/purge 三方对整个
+/// sidecar map 的 read-modify-write 都经它串行化（替代「调用方已持
+/// scheduled_mutation」的错误假设——`SessionStore::delete` 路径并不持该锁，
+/// 删除会话 X 与会话 Y 的回退存在真实的覆盖竞态，评审 M8）。叶锁：持它期间
+/// 不再取其它锁，与 scheduled_mutation 无环。
+static REWIND_BACKUP_LOCK: Mutex<()> = Mutex::new(());
 
 /// sidecar 文件名（与 `_session_models.json` 等并列在 sessions 根下）。
 const REWOUND_TURNS_FILE: &str = "_rewound_turns.json";
@@ -176,30 +184,34 @@ impl SessionStore {
         let cut = turn_prompt_indices[keep_turns as usize];
         let original_revision = transcript_revision(&session.messages)?;
         let removed_messages: Vec<Message> = session.messages.split_off(cut);
+        // 截断后的新 revision（undo 复核条件 + 返回值；同一份数据只算一次）。
         let truncated_revision = transcript_revision(&session.messages)?;
 
-        // 先备份后落盘：备份失败时磁盘上的 transcript 尚未被修改。
+        // 先备份后落盘：备份失败时磁盘上的 transcript 尚未被修改。sidecar 的
+        // read-modify-write 经 REWIND_BACKUP_LOCK 与 purge/restore 串行（评审 M8）。
         let removed_count = removed_messages.len();
         let record = RewoundTurnsRecord {
             rewound_at: Utc::now().to_rfc3339(),
             original_revision,
             kept_turns: keep_turns,
             pre_restore_checkpoint_id,
-            truncated_revision,
+            truncated_revision: truncated_revision.clone(),
             removed_messages,
         };
-        let mut backups = load_rewound_turns_map()?;
-        let records = backups.entry(id.to_string()).or_default();
-        records.push(record);
-        if records.len() > MAX_REWIND_BACKUPS_PER_SESSION {
-            let overflow = records.len() - MAX_REWIND_BACKUPS_PER_SESSION;
-            records.drain(..overflow);
+        {
+            let _backup_guard = REWIND_BACKUP_LOCK.lock();
+            let mut backups = load_rewound_turns_map()?;
+            let records = backups.entry(id.to_string()).or_default();
+            records.push(record);
+            if records.len() > MAX_REWIND_BACKUPS_PER_SESSION {
+                let overflow = records.len() - MAX_REWIND_BACKUPS_PER_SESSION;
+                records.drain(..overflow);
+            }
+            persist_rewound_turns_map(&backups).context("回退备份写入失败，已中止截断")?;
         }
-        persist_rewound_turns_map(&backups).context("回退备份写入失败，已中止截断")?;
 
         session.metadata.message_count = session.messages.len();
         session.metadata.updated_at = Utc::now();
-        let new_revision = transcript_revision(&session.messages)?;
         let had_compaction = system_prompt_has_compaction_summary(session.system_prompt.as_ref());
         // 显式放行路径：直接持久化截断结果，不走 update_messages /
         // compare_and_swap_messages，因此不触发 looks_like_truncating_overwrite；
@@ -208,7 +220,7 @@ impl SessionStore {
         Ok(TruncateToTurnOutcome {
             rewound_turns: total_turns - keep_turns,
             removed_messages: removed_count,
-            new_revision,
+            new_revision: truncated_revision,
             had_compaction,
         })
     }
@@ -241,6 +253,7 @@ impl SessionStore {
             bail!("Cannot undo rewind for scheduled-run session '{id}'");
         }
         validate_session_id(id)?;
+        let _backup_guard = REWIND_BACKUP_LOCK.lock();
         let mut backups = load_rewound_turns_map()?;
         let record = backups
             .get(id)
@@ -288,17 +301,13 @@ impl SessionStore {
     }
 
     /// 删除/保留策略清理会话时同步清掉其回退备份（best-effort：失败只留孤儿数据，
-    /// 不影响主流程）。
-    ///
-    /// 已知取舍：不持 `scheduled_mutation` 锁——调用方
-    /// `reconcile_scheduled_profiles` 已持锁（parking_lot Mutex 不可重入，内部
-    /// 加锁会死锁）。由此存在与并发 `truncate_to_user_turn` 的 read-modify-write
-    /// 窗口（删除会话撞上另一会话回退时可能用旧 map 覆盖新备份记录）：概率低、
-    /// 后果是备份记录丢失（undo 入口消失），可接受。
+    /// 不影响主流程）。read-modify-write 经 REWIND_BACKUP_LOCK 与 truncate/restore
+    /// 串行（评审 M8：delete 路径不持 scheduled_mutation，专用锁替代此前的错误假设）。
     pub(crate) fn purge_rewound_turns_backups(ids: &[String]) {
         if ids.is_empty() || !rewound_turns_path().exists() {
             return;
         }
+        let _backup_guard = REWIND_BACKUP_LOCK.lock();
         let result = load_rewound_turns_map().and_then(|mut map| {
             let mut changed = false;
             for id in ids {

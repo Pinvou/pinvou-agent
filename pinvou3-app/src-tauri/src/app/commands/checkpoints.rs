@@ -59,8 +59,9 @@ pub async fn checkpoint_diff(
     if pool.is_turn_active(&session_id) {
         return Err("会话正在执行，请稍后再读取变更预览".to_string());
     }
-    // 跨会话软门：同执行根的其它会话在跑时同样抢影子 index.lock
-    // （它的 create_checkpoint/引擎写文件 vs 本 diff 的 add -A 与迁移 purge）。
+    // 跨会话软门：同执行根的其它会话在跑时，本 diff 的 add -A 会读到对方
+    // 引擎写了一半的文件（影子仓库按会话分目录，peer 间不共享 index.lock——
+    // 门的理由是共享执行根的中间态，不是锁竞争）。
     let store_gate = store.inner().clone();
     let session_id_gate = session_id.clone();
     let pool_gate = pool.inner().clone();
@@ -81,59 +82,12 @@ pub async fn checkpoint_diff(
     .map_err(|error| format!("读取检查点差异任务失败: {error}"))?
 }
 
-#[tauri::command]
-pub async fn restore_checkpoint(
-    session_id: String,
-    checkpoint_id: String,
-    pool: State<'_, EnginePool>,
-    store: State<'_, SessionStore>,
-) -> Result<CheckpointMeta, String> {
-    let (ledger, execution) = resolve_code_session_roots(&session_id, &store)?;
-    // 忙碌门：turn 进行中回滚会与引擎写文件竞争，如实拒绝（前端同时禁用入口）。
-    // 先快速检查给出友好文案，再经 turn 预约机制原子占位消除竞态；预约持有到
-    // 恢复完成（未提交，Drop 自动归还 slot），防止恢复期间新 turn 并发写文件。
-    if pool.is_turn_active(&session_id) {
-        return Err("会话正在执行，请先停止当前任务再回滚".to_string());
-    }
-    let reservation = pool
-        .reserve_turn(&session_id)
-        .map_err(|error| format!("预约会话 turn 失败（会话忙碌？）: {error:#}"))?;
-    // 执行根互斥：置位后同根会话的新 turn 预约（含 scheduled）全部被拒；
-    // 随后复查在途 peer（已 active 的不受预约门拦截）。
-    let _root_guard = pool.begin_execution_root_rewind(&execution);
-    // 跨会话忙碌门：与 rewind_to_turn 同款——恢复单位是执行根，同根其它会话
-    // 在跑时回滚会撤销它正在写的文件。全量枚举是阻塞 IO，移出 async worker。
-    let store_gate = store.inner().clone();
-    let session_id_gate = session_id.clone();
-    let execution_gate = execution.clone();
-    let pool_gate = pool.inner().clone();
-    if let Some(busy) = tauri::async_runtime::spawn_blocking(move || {
-        busy_peer_on_same_execution_root(&store_gate, &session_id_gate, &execution_gate, |id| {
-            pool_gate.is_turn_active(id) || pool_gate.is_scheduled_turn_running(id)
-        })
-    })
-    .await
-    .map_err(|error| format!("跨会话忙碌检查任务失败: {error}"))??
-    {
-        return Err(format!(
-            "会话「{busy}」绑定同一项目目录且正在执行，请先停止该会话再回滚"
-        ));
-    }
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        checkpoints::restore_checkpoint(&ledger, &execution, &checkpoint_id)
-            .map_err(|error| format!("回滚检查点失败: {error:#}"))
-    })
-    .await
-    .map_err(|error| format!("回滚检查点任务失败: {error}"))?;
-    drop(reservation);
-    result
-}
-
 /// `rewind_to_turn` 的编排结果（设计 §4：供前端刷新与提示）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RewindToTurnResult {
-    /// 恢复代码时自动打的 PreRestore 回滚点（与 `restore_checkpoint` 返回值同语义，
+    /// 恢复代码时自动打的 PreRestore 回滚点（与 feature 层
+    /// `checkpoints::restore_checkpoint` 返回值同语义，
     /// 供「已回退、可反悔」提示）；降级（仅回退对话）时为 None。注：undo 的绑定
     /// 载体是 sidecar 记录（`RewoundTurnsRecord.pre_restore_checkpoint_id`），本
     /// 返回值仅作展示，不参与反悔链路。
@@ -558,16 +512,30 @@ pub async fn undo_last_rewind(
     .await
     .map_err(|error| format!("恢复对话任务失败: {error}"))?
     .map_err(|error| {
-        match &undo_info.checkpoint_id {
-            Some(checkpoint_id) => {
+        // 区分可重试与条件已破（评审 M7）：revision/turn 数不匹配（「不可反悔」）
+        // 时重试必然再败，如实告知记录仍在、需人工处理，不把用户引向无效重试；
+        // IO 类失败（记录未消费）才可安全重试。
+        let detail = format!("{error:#}");
+        let condition_broken = detail.contains("不可反悔");
+        match (&undo_info.checkpoint_id, condition_broken) {
+            (Some(checkpoint_id), true) => {
                 eprintln!(
-                    "[checkpoints] undo_last_rewind conversation restore failed for {session_id} after code restore to {checkpoint_id}: {error:#}"
+                    "[checkpoints] undo_last_rewind conversation restore failed (condition broken) for {session_id} after code restore to {checkpoint_id}: {detail}"
                 );
                 format!(
-                    "代码已恢复到回滚点 {checkpoint_id}，但对话恢复失败（可重试；记录未消费）: {error:#}"
+                    "代码已恢复到回滚点 {checkpoint_id}，但对话恢复失败且不可重试（{detail}）；被截对话仍保留在回退备份中，需人工处理"
                 )
             }
-            None => format!("对话恢复失败: {error:#}"),
+            (Some(checkpoint_id), false) => {
+                eprintln!(
+                    "[checkpoints] undo_last_rewind conversation restore failed for {session_id} after code restore to {checkpoint_id}: {detail}"
+                );
+                format!(
+                    "代码已恢复到回滚点 {checkpoint_id}，但对话恢复失败（可重试；记录未消费）: {detail}"
+                )
+            }
+            (None, true) => format!("对话恢复失败且不可重试（{detail}）；被截对话仍保留在回退备份中，需人工处理"),
+            (None, false) => format!("对话恢复失败: {detail}"),
         }
     })?;
     // 3) 回收 engine（同 rewind：下次发送 lazy respawn + SyncSession 重注水）。

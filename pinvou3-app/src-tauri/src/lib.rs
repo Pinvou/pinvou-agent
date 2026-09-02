@@ -1079,7 +1079,6 @@ pub fn run() {
             commands::chat::withdraw_steer,
             commands::checkpoints::list_checkpoints,
             commands::checkpoints::checkpoint_diff,
-            commands::checkpoints::restore_checkpoint,
             commands::checkpoints::rewind_to_turn,
             commands::checkpoints::rewind_undo_state,
             commands::checkpoints::undo_last_rewind,
