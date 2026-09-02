@@ -121,10 +121,7 @@ pub(super) fn append_web_attachment_upload_chunk(
         return Err("远程控制附件上传需要有效的文件名".into());
     }
     if total as u64 > crate::features::files::file_ingest::MAX_FILE_BYTES {
-        return Err(format!(
-            "文件超过附件 {} MB 上限",
-            crate::features::files::file_ingest::MAX_FILE_BYTES / (1024 * 1024)
-        ));
+        return Err(crate::features::files::file_ingest::ATTACHMENT_FILE_TOO_LARGE.into());
     }
     prune_expired_web_session_transfers(inner);
     if offset == 0 {

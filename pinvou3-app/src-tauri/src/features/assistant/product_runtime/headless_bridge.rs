@@ -300,9 +300,12 @@ fn prepare_product_attachment_content(
             "attachments",
         )
         .ok_or_else(fixed_error)?;
-        attachments.push(crate::features::files::file_ingest::ingest(
-            &execution_root.join(staged_path),
-        ));
+        attachments.push(
+            crate::features::files::file_ingest::ingest_attachment(
+                &execution_root.join(staged_path),
+            )
+            .map_err(|_| fixed_error())?,
+        );
     }
     Ok(build_read_only_message_with_attachments(
         prompt,

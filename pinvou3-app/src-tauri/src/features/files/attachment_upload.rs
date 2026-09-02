@@ -367,8 +367,17 @@ async fn adopt_upload(
 
     if tokio::fs::try_exists(&target_dir).await.unwrap_or(false) {
         let (_, target_file) = managed_completed_file(target_workspace, upload_id).await?;
-        let _ = remove_dir_if_present(&upload_completed_dir(source_workspace, upload_id)).await;
-        return Ok(ingest_managed_file(&target_file));
+        return match ingest_managed_file(&target_file) {
+            Ok(result) => {
+                let _ =
+                    remove_dir_if_present(&upload_completed_dir(source_workspace, upload_id)).await;
+                Ok(result)
+            }
+            Err(error) => {
+                let _ = remove_dir_if_present(&target_dir).await;
+                Err(error)
+            }
+        };
     }
 
     let (source_dir, source_file) = managed_completed_file(source_workspace, upload_id).await?;
@@ -387,19 +396,25 @@ async fn adopt_upload(
         let _ = remove_dir_if_present(&target_dir).await;
         return Err(format!("迁移附件草稿失败：{error}"));
     }
-    let result = ingest_managed_file(&target_file);
+    let result = match ingest_managed_file(&target_file) {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = remove_dir_if_present(&target_dir).await;
+            return Err(error);
+        }
+    };
     if let Err(error) = remove_dir_if_present(&source_dir).await {
         eprintln!("[attachment] cleanup adopted draft failed: {error}");
     }
     Ok(result)
 }
 
-fn ingest_managed_file(path: &Path) -> IngestResult {
+fn ingest_managed_file(path: &Path) -> Result<IngestResult, String> {
     // Windows canonicalization adds a `\\?\` prefix. Keep the idempotent
     // retry response byte-for-byte stable with the first adoption while still
     // using the canonical path for containment validation above.
     let compatible = crate::platform::os::platform_compat_path(&path.to_string_lossy());
-    file_ingest::ingest(&compatible)
+    file_ingest::ingest_attachment(&compatible)
 }
 
 /// Append one HTML5 drop chunk inside a session-owned workspace.
@@ -422,8 +437,11 @@ pub async fn append_chunk(
 ) -> Result<Option<IngestResult>, String> {
     let upload_id = validate_upload_id(upload_id)?;
     let filename = validate_filename(filename)?;
-    if total == 0 || total as u64 > MAX_FILE_BYTES {
-        return Err("附件为空或超过 20 MiB 上限".into());
+    if total == 0 {
+        return Err("附件为空".into());
+    }
+    if total as u64 > MAX_FILE_BYTES {
+        return Err(file_ingest::ATTACHMENT_FILE_TOO_LARGE.into());
     }
     if data.len() > MAX_ATTACHMENT_CHUNK_BYTES {
         return Err("附件分块超过 256 KiB".into());
@@ -491,7 +509,14 @@ pub async fn append_chunk(
         .await
         .map_err(|error| format!("提交会话附件失败：{error}"))?;
     let completed_path = completed_dir.join(filename);
-    Ok(Some(file_ingest::ingest(&completed_path)))
+    let result = match ingest_managed_file(&completed_path) {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = remove_dir_if_present(&completed_dir).await;
+            return Err(error);
+        }
+    };
+    Ok(Some(result))
 }
 
 /// Clean up bytes from a failed append without touching a previously completed
@@ -563,7 +588,7 @@ pub async fn discard_attachment(workspace: &Path, path: &str) -> Result<(), Stri
 mod tests {
     use super::{
         ConversationAttachmentRecord, ConversationAttachmentReference, MAX_ATTACHMENT_CHUNK_BYTES,
-        STALE_ATTACHMENT_AGE, abort_staging_upload, adopt_upload, append_chunk,
+        MAX_FILE_BYTES, STALE_ATTACHMENT_AGE, abort_staging_upload, adopt_upload, append_chunk,
         append_draft_chunk_in_workspace, conversation_attachment_names_for_display_prefix,
         conversation_attachment_refs_path, discard_attachment, record_conversation_attachments,
         resolve_conversation_attachment, sweep_stale_draft_attachment_workspace,
@@ -787,6 +812,28 @@ mod tests {
             .is_err()
         );
         assert!(!workspace.exists());
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_declared_attachment_before_writing() {
+        let workspace = test_workspace("file-cap");
+        let upload_id = "desktop_attach_file_cap";
+        assert_eq!(
+            append_chunk(
+                &workspace,
+                upload_id,
+                "large.bin",
+                0,
+                MAX_FILE_BYTES as usize + 1,
+                &[],
+                false,
+                None,
+            )
+            .await
+            .unwrap_err(),
+            crate::features::files::file_ingest::ATTACHMENT_FILE_TOO_LARGE
+        );
+        assert!(!upload_staging_dir(&workspace, upload_id).exists());
     }
 
     #[tokio::test]

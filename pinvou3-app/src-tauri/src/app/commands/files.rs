@@ -30,7 +30,7 @@ pub async fn ingest_file(
     path: String,
 ) -> Result<crate::features::files::file_ingest::IngestResult, String> {
     let p = crate::features::files::file_ingest::validate_path(&path)?;
-    Ok(crate::features::files::file_ingest::ingest(&p))
+    crate::features::files::file_ingest::ingest_attachment(&p)
 }
 
 /// Receive an HTML5 `File` into a sessionless draft area. Dropping or pasting

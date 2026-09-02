@@ -3120,7 +3120,11 @@ mod tests {
             None,
         )
         .expect_err("uploads above MAX_FILE_BYTES must fail before transfer");
-        assert!(error.contains("上限"), "unexpected error: {error}");
+        assert_eq!(
+            error,
+            crate::features::files::file_ingest::ATTACHMENT_FILE_TOO_LARGE,
+            "the precheck failure must surface as a stable wire code for localized client copy"
+        );
         assert!(inner.web_attachment_uploads.is_empty());
     }
 
