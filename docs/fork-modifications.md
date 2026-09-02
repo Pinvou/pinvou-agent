@@ -17,6 +17,11 @@
 | 守护 | 54 条独立 CodeWhale `forkguard_*` 行为测试（48 条默认 + 6 条 `benchmark-eval-controls`）+ 父仓指纹与行为测试 |
 | 父仓适配 | v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖本批底座能力 |
 
+### 轮次绑定取消：宿主 stop 按轮身份分派（父仓适配，本 PR）
+
+- 底座半边已并入登记批次：CodeWhale PR #38（squash `f5c68cab8`，见第 3 节提交序列与 T1 保留内容）把共享 cancel 槽升级为 `TurnCancelSlot { turn_id, token }`，并提供宿主入口 `EngineHandle::cancel_turn(turn_id, reason, mode) -> bool`（身份校验、steer 处置与 token 克隆在同一把槽锁内完成）与收口期 `EngineHandle::publish_stop_disposition(reason, mode)`（只发布 stop 处置、绝不触发任何 token）。父仓 gitlink 维持第 0 节登记头不变，无独立候选 gitlink。
+- 父仓配套（本 PR，与底座共同封闭 pinvou-agent#254）：`EnginePool::cancel` 的取消闭包在 `arm_pending_cancel_and_cancel` 的同一 state 锁临界区内领取 (epoch、已观察 turn_id、收口期) 同源身份快照，经 `turn_bound_cancel_action` 纯函数分派——绑定命中走 `cancel_turn_with_mode`（槽已切换时底座整体跳过、不发布处置）；目标轮尚未被 forwarder 观察到（submit→TurnStarted 窗口）与终态收口期收敛为仅 `publish_stop_disposition`、绝不开火——窗口内引擎槽可能已是延迟观察到的自主续跑轮活 token，无差别开火即 #254，真正在途的目标轮由同临界区内 arm 的 `pending_cancel` 在 TurnStarted 后按 turn 绑定重放取消（槽已切走则底座身份校验把重放整体丢弃）；forwarder 的 `pending_cancel` 重放改为 turn 绑定。已知边界：① 级联取消（`Op::CancelSubAgents`）未随裁决收敛，绑定跳过时仍取消引擎当前全部子智能体（N 的遗留清理是停止契约，与 N+1 刚派生的子智能体在 app 侧不可区分）；② 入口即 idle 的 backstop（stop=clear 契约）刻意保留无绑定开火——该路径无目标轮可裁决，若引擎已自主续跑，命中其活 token 是 clear 契约的预期语义，瞄准已结束轮的 stop 入口快照为 Some、不会走到该分支。
+
 ## 1. 为什么本次使用 clean re-fork
 
 旧 r13 相对 v0.9.5 修改 110 个文件。与 v0.9.12 对照时，104 个旧修改文件也被上游改动，直接三方移植预计产生 57 个冲突文件。与此同时，上游已经吸收或重构了大量旧 patch，包括会话快照/恢复、编辑上一轮、压缩后 token、provider/model 路由、原生搜索、Windows UTF-8 Shell、JSON schema 修复与任务基础设施。
