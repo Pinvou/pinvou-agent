@@ -1398,11 +1398,18 @@ fn run_agent(
     // letting a typo'd path get silently created deeper in the stack.
     let workspace = match workspace {
         Some(path) => {
-            let resolved = std::fs::canonicalize(path).map_err(|_| {
-                CliError::failed(format!(
-                    "agent run --workspace does not exist: {}",
-                    path.display()
-                ))
+            let resolved = std::fs::canonicalize(path).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    CliError::failed(format!(
+                        "agent run --workspace does not exist: {}",
+                        path.display()
+                    ))
+                } else {
+                    CliError::failed(format!(
+                        "agent run --workspace cannot be accessed: {} ({error})",
+                        path.display()
+                    ))
+                }
             })?;
             if !resolved.is_dir() {
                 return Err(CliError::failed(format!(

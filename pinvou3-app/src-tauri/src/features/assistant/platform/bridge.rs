@@ -1645,13 +1645,31 @@ impl Pinvou3Bridge {
                     // PINVOU3_ALLOW_SHELL/PINVOU3_MAX_OUTPUT_TOKENS; unset
                     // keeps the behavior bit-identical.
                     let cap = match std::env::var("PINVOU3_MAX_TOOL_CALLS") {
-                        Ok(value) => value.parse::<u32>().unwrap_or_else(|_| {
+                        Ok(value) => match value.parse::<u32>() {
+                            // A zero cap would disable every tool call, which
+                            // is never a useful configuration: reject it like
+                            // any other invalid value.
+                            Ok(0) => {
+                                eprintln!(
+                                    "[pinvou3-app] ignoring PINVOU3_MAX_TOOL_CALLS=0 (a zero per-turn cap would disable every tool); falling back to the default cap of 8"
+                                );
+                                8
+                            }
+                            Ok(cap) => cap,
+                            Err(_) => {
+                                eprintln!(
+                                    "[pinvou3-app] ignoring invalid PINVOU3_MAX_TOOL_CALLS={value:?}; falling back to the default cap of 8"
+                                );
+                                8
+                            }
+                        },
+                        Err(std::env::VarError::NotUnicode(value)) => {
                             eprintln!(
                                 "[pinvou3-app] ignoring invalid PINVOU3_MAX_TOOL_CALLS={value:?}; falling back to the default cap of 8"
                             );
                             8
-                        }),
-                        Err(_) => 8,
+                        }
+                        Err(std::env::VarError::NotPresent) => 8,
                     };
                     Some(max_tool_calls.unwrap_or(cap).min(cap))
                 }
@@ -5054,6 +5072,36 @@ mod tests {
             Some(512),
             "PINVOU3_MAX_TOOL_CALLS must be able to raise the guard"
         );
+
+        // A zero cap would disable every tool call; it must be rejected like
+        // any other invalid value instead of silently disabling all tools.
+        // SAFETY: see above.
+        unsafe { std::env::set_var("PINVOU3_MAX_TOOL_CALLS", "0") };
+        assert_eq!(
+            fixture_bridge().build_engine_config().max_tool_calls,
+            Some(8),
+            "PINVOU3_MAX_TOOL_CALLS=0 must fall back to the default guard of 8"
+        );
+
+        // Non-UTF-8 values cannot parse; they must fall back to the default
+        // instead of panicking or corrupting the cap. Unix-only: only Unix
+        // can build a non-UTF-8 OsStr from raw bytes.
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            // SAFETY: see above.
+            unsafe {
+                std::env::set_var(
+                    "PINVOU3_MAX_TOOL_CALLS",
+                    std::ffi::OsStr::from_bytes(&[0xff]),
+                );
+            }
+            assert_eq!(
+                fixture_bridge().build_engine_config().max_tool_calls,
+                Some(8),
+                "a non-UTF-8 PINVOU3_MAX_TOOL_CALLS must fall back to the default guard of 8"
+            );
+        }
     }
 
     /// 安全敏感字段必须固定——这些值改了会让 pinvou3 出现奇怪行为或越权。

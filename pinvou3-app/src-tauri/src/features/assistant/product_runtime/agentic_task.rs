@@ -112,8 +112,10 @@ pub fn run_agentic_task_headless(request: AgenticTaskRequest) -> Result<AgenticT
 
 /// Drive one agentic turn: bind the execution root → pin the active model →
 /// Yolo submit → timeout watchdog → collect the report → clean up the
-/// temporary session. A report is always returned (internal failures land in
-/// the `error` field); only host-level faults propagate as `Err`.
+/// temporary session. Once the turn is submitted, a report is always
+/// returned (internal failures land in the `error` field); setup faults
+/// (model pin, session prepare, submit) propagate as `Err` instead — the
+/// CLI surfaces those as exit 1 without a report.
 ///
 /// The execution root resolver must be registered before the pool enters an
 /// `Arc` (the bridge setter needs `&mut self`), which is why this function
@@ -248,7 +250,9 @@ async fn run_turn(
     enum TurnOutcome {
         Done(TurnResult),
         AbandonedAfterCancel,
-        WaitFailed(anyhow::Error),
+        /// The `bool` records whether the deadline had already fired when the
+        /// wait failed, so the report can keep the timeout classification.
+        WaitFailed(bool, anyhow::Error),
     }
     let turn_outcome = if timed_out && runtime.is_turn_active(session_id) {
         TurnOutcome::AbandonedAfterCancel
@@ -258,7 +262,7 @@ async fn run_turn(
         // real root cause, so they get an explicit error report.
         match runtime.wait_for_completion(&handle).await {
             Ok(turn) => TurnOutcome::Done(turn),
-            Err(error) => TurnOutcome::WaitFailed(error),
+            Err(error) => TurnOutcome::WaitFailed(timed_out, error),
         }
     };
     match turn_outcome {
@@ -318,16 +322,37 @@ async fn run_turn(
                 error: Some("agent turn did not settle after cancel".to_string()),
             })
         }
-        TurnOutcome::WaitFailed(error) => Ok(AgenticTaskReport {
-            session_id: session_id.to_owned(),
-            status: "error".to_string(),
-            timed_out: false,
-            completed_after_deadline: false,
-            assistant_text: String::new(),
-            tool_events: Vec::new(),
-            usage: None,
-            error: Some(format!("failed to read turn result: {error:#}")),
-        }),
+        TurnOutcome::WaitFailed(timed_out, error) => {
+            // When the deadline had already fired, the task genuinely
+            // overran: keep the timeout classification (matching the
+            // abandoned-after-cancel arm) instead of downgrading it to a
+            // generic error, and salvage the partial transcript the same
+            // way. The read failure itself stays in `error`.
+            let (assistant_text, tool_events) = if timed_out {
+                partial_turn_analysis(runtime, &handle)
+            } else {
+                (String::new(), Vec::new())
+            };
+            let error = if timed_out {
+                format!("agent turn timed out; failed to read turn result: {error:#}")
+            } else {
+                format!("failed to read turn result: {error:#}")
+            };
+            Ok(AgenticTaskReport {
+                session_id: session_id.to_owned(),
+                status: if timed_out {
+                    "timeout".to_string()
+                } else {
+                    "error".to_string()
+                },
+                timed_out,
+                completed_after_deadline: false,
+                assistant_text,
+                tool_events,
+                usage: None,
+                error: Some(error),
+            })
+        }
     }
 }
 
