@@ -4,7 +4,7 @@ import {
   invokeObservedPanelSelection,
   isSubagentPanelPublicationCurrent,
 } from './subagent-panel-publication.mjs';
-import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, Mic, Monitor, Package, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X } from '../../components/icons.jsx';
+import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, Mic, Monitor, Package, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -29,6 +29,7 @@ import {
 } from '../conversation/deepseek-conversation.js';
 import {
   measureConversationScrollGeometry,
+  shouldForceScrollFollow,
   startConversationBottomFollower,
   transitionConversationScrollState,
 } from '../conversation/conversation-scroll.js';
@@ -609,7 +610,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
     };
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy main view: session/mode/artifact/browser state is highly cohesive; split refactor tracked separately
-    const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, browserDockAvailable = false, browserDockOpen = false, rightDockActivePanelId = null, onRightDockPanelSelectionChange, onOpenBrowserDock }) => {
+    const ChatView = ({ theme, t, bs, prefill, prefillAppend = false, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, browserDockAvailable = false, browserDockOpen = false, rightDockActivePanelId = null, onRightDockPanelSelectionChange, onOpenBrowserDock }) => {
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
       const sceneCopy = chatCopy.sceneModes;
@@ -673,6 +674,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const scrollRef = useRef(null);
       const conversationContentRef = useRef(null);
       const autoScrollRef = useRef(true);
+      const lastUserSnapLengthRef = useRef(0);
       const lastScrollTopRef = useRef(0);
       const lastScrollHeightRef = useRef(0);
       const subagentPanelScrollRef = useRef(null);
@@ -1027,20 +1029,30 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: restart the per-second ticker only when the thinking-phase start (startedAt) changes
       }, [busy, useUnifiedConversationUi, bs && bs.thinking && bs.thinking.startedAt]);
 
-      // 外部入口可预填输入框并把焦点移到末尾。
+      // External entries can prefill the composer and focus its end.
+      // Template/navigation entries (KnowledgeView "continue in chat",
+      // scheduled-task guide, markdown preview, ...) use whole-draft
+      // replacement semantics; failure recovery uses append semantics
+      // (prefillAppend=true, joined with a newline) — the user may have
+      // started the next message during the await and replacement would
+      // clobber it (re-review #4: the two consumer classes stay separate;
+      // recovery must not leak back into template entries).
       useEffect(() => {
         if (prefill) {
-          setInputText(prefill);
+          const merged = (prefillAppend && inputTextRef.current)
+            ? inputTextRef.current + '\n' + prefill
+            : prefill;
+          setInputText(merged);
           setTimeout(() => {
             if (composerRef.current) {
               composerRef.current.focus();
-              composerRef.current.setSelectionRange(prefill.length, prefill.length);
+              composerRef.current.setSelectionRange(merged.length, merged.length);
             }
           }, 80);
           if (onPrefillConsumed) onPrefillConsumed();
         }
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: prefill only when prefill changes; setInputText is a stable callback, adding onPrefillConsumed would retrigger consumption
-      }, [prefill]);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: prefill/prefillAppend only when they change; setInputText is a stable callback, adding onPrefillConsumed would retrigger consumption
+      }, [prefill, prefillAppend]);
 
       // 用户向上翻历史时暂停流式自动贴底；回到底部或发送新消息后恢复。
       useEffect(() => {
@@ -1073,13 +1085,42 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       }
 
       // Auto-scroll：只在原本贴底时滚内部容器到底（绝不动外层窗口，避免浏览历史时被拉回底部）
+      // Mid-turn steer: once the injected user bubble becomes the LAST item, the
+      // streaming assistant item keeps growing ABOVE it — keying the follow only
+      // on the last item's traits freezes live output visually until the turn
+      // ends (length/last-html never change while only the streaming item
+      // updates). Follow the last streaming/running item's traits as well.
+      let streamingFollowHtml;
+      let runningFollowOutputLength;
+      for (let followIdx = chatItems.length - 1; followIdx >= 0; followIdx--) {
+        const followItem = chatItems[followIdx];
+        if (followItem?.streaming && streamingFollowHtml === undefined) {
+          streamingFollowHtml = followItem.html;
+        }
+        if (followItem?.state === 'running' && runningFollowOutputLength === undefined) {
+          runningFollowOutputLength = followItem.output?.length;
+        }
+        if (streamingFollowHtml !== undefined && runningFollowOutputLength !== undefined) break;
+      }
       useEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
         const lastItem = chatItems[chatItems.length - 1];
         // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the back-to-bottom button when there are no messages
-        if (!lastItem) { autoScrollRef.current = true; setShowScrollBottom(false); return; }
-        if (autoScrollRef.current || lastItem.type === 'user') {
+        if (!lastItem) { autoScrollRef.current = true; lastUserSnapLengthRef.current = 0; setShowScrollBottom(false); return; }
+        // A mid-turn steered bubble parks a user item LAST while the turn's
+        // streaming output above it keeps changing the follow traits this
+        // effect depends on — the snap for it must fire once per appended
+        // item, or every delta would re-force the bottom and overwrite the
+        // scroll listener's "user scrolled up" state for the rest of the
+        // turn (r13 review M1).
+        if (shouldForceScrollFollow({
+          following: autoScrollRef.current,
+          lastItemType: lastItem.type,
+          itemCount: chatItems.length,
+          lastSnapItemCount: lastUserSnapLengthRef.current,
+        })) {
+          lastUserSnapLengthRef.current = chatItems.length;
           el.scrollTop = el.scrollHeight;
           autoScrollRef.current = true;
           setShowScrollBottom(false);
@@ -1092,10 +1133,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         chatItems.length,
         // eslint-disable-next-line react-hooks/exhaustive-deps -- the last message's html is an intentionally narrow complex-expression dep
         chatItems[chatItems.length - 1]?.html,
+        streamingFollowHtml,
         // eslint-disable-next-line react-hooks/exhaustive-deps -- streaming output length is an intentionally narrow conditional-expression dep
         chatItems[chatItems.length - 1]?.state === 'running'
           ? chatItems[chatItems.length - 1]?.output?.length
           : 0,
+        runningFollowOutputLength,
         composerH,
       ]);
 
@@ -1613,12 +1656,54 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           setInputText(constrained.text);
           return;
         }
-        const accepted = await sendChatMessage(constrained.text);
-        if (accepted) {
-          setInputText('');
-          personalWorkbenchTemplateIdRef.current = null;
-          setPersonalWorkbenchTemplateId(null);
+        const text = constrained.text;
+        // Clear the composer the moment the button is clicked (before the
+        // await returns); on failure (reserve conflict etc.) restore the text —
+        // a message is never silently lost. While busy the bridge steers into
+        // the current turn (with attachments it queues locally), see
+        // sendMessage. The restore replaces wholesale only when the composer is
+        // empty: sendChatMessage awaits capability installs etc. and the user
+        // may have started the next message meanwhile — an unconditional
+        // overwrite would clobber it, so a non-empty composer degrades to an
+        // append-style prefill (newline separator, re-review #4) that does not
+        // interrupt typing.
+        setInputText('');
+        try {
+          const accepted = await sendChatMessage(text);
+          if (!accepted) {
+            if (inputTextRef.current === '') setInputText(text);
+            else if (text) bridge.chat.prefillComposer(text, true);
+          }
+        } catch (error) {
+          if (inputTextRef.current === '') setInputText(text);
+          else if (text) bridge.chat.prefillComposer(text, true);
+          // Swallow here: the bridge already surfaced the failure (notice +
+          // restore), and the primary send paths (Enter / send button) have
+          // no catch of their own — a rethrow would only produce an
+          // unhandledrejection next to the visible recovery.
+          console.warn("[pinvou3][chat-ui] send failed", error);
         }
+        personalWorkbenchTemplateIdRef.current = null;
+        setPersonalWorkbenchTemplateId(null);
+      }
+
+      // Zap-send a queued chip: interrupt the current generation and send
+      // that queued message immediately (cancel + chat path, abandoning the
+      // current AI progress). On failure the bridge restores the message to
+      // the queue with a notice — nothing to do here. No local single-flight
+      // needed: the bridge removes the chip first, so a double click simply
+      // finds no target.
+      async function handleInterruptQueued(queuedId) {
+        if (isMultiAgentReadOnly) return;
+        if (!bridge.chat || typeof bridge.chat.interruptAndSendQueued !== "function") {
+          // Never silent (this guard's silent return is exactly the
+          // historical "composer cleared but nothing happened" bug shape):
+          // dead on current targets (desktop exports it; web hides the
+          // button), but a missing export should be visible in diagnostics.
+          console.warn("[pinvou3][chat-ui] interruptAndSendQueued unavailable on this host");
+          return;
+        }
+        await bridge.chat.interruptAndSendQueued(activeSessionId, queuedId);
       }
 
       function handleKeyDown(e) {
@@ -1885,7 +1970,13 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   t={t}
                   onSend={(q) => {
                     setWelcomeToolId(null);
-                    sendChatMessage(q);
+                    // sendChatMessage's failure path re-throws (the current
+                    // implementation never rejects, but stay consistent with
+                    // handleSend's defense so it cannot become a floating
+                    // rejection later).
+                    Promise.resolve(sendChatMessage(q)).catch((err) => {
+                      console.warn("[pinvou3][chat-ui] welcome-card send failed", err);
+                    });
                   }}
                 />
               </div>
@@ -2102,14 +2193,33 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   comingSoonLabel={chatViewCopy.comingSoon}
                 />
               )}
-            {/* 排队待发消息 chips（生成中继续输入会积压到这里，本轮跑完自动发） */}
+            {/* Queued-message overlay: a full card covering the area above the
+                composer (sending while busy = steer into the engine's current
+                turn; with attachments = plain local queuing). The ⚡ on each
+                entry = zap-send (withdraw the engine copy + interrupt the
+                current turn and send this one immediately); × = cancel
+                (steered chips do a real withdraw_steer; plain chips are
+                removed locally). ⚡ is gated by the interruptSend capability
+                (hidden on web). */}
             {queued.length > 0 && (
-              <div className="flex flex-col gap-1 mb-2 px-2">
-                {queued.map((q) => (
-                  <div key={q.id} className={`flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full text-[12px] self-start max-w-full ${'bg-[#EAEDF1] text-[#444746] dark:bg-[#2A2B2D] dark:text-[#C4C7C5]'}`}>
-                    <span className="opacity-60">{t.queuedTag}</span>
-                    <span className="max-w-[480px] truncate">{q.displayText}</span>
-                    <button type="button" onClick={() => bridge.chat.removeQueued(q.id)} title={t.queuedCancel} className={`w-5 h-5 rounded-full flex items-center justify-center ${'hover:bg-[#F0F4F9] dark:hover:bg-[#333537]'}`}>×</button>
+              <div className={`mb-2 rounded-2xl border shadow-lg backdrop-blur-xl overflow-hidden max-h-[40vh] overflow-y-auto ${'border-black/[0.06] bg-white/90 dark:border-white/10 dark:bg-[#161618]/90'}`}>
+                {queued.map((q, index) => (
+                  <div key={q.id}
+                    className={`flex items-center gap-2 px-3 py-2 text-[12px] text-[#444746] dark:text-[#C4C7C5] ${index > 0 ? 'border-t border-black/[0.06] dark:border-white/10' : ''}`}>
+                    <span className="opacity-60 shrink-0">{t.queuedTag}</span>
+                    <span className="flex-1 min-w-0 truncate">{q.displayText}</span>
+                    {can('interruptSend') && (
+                      <button type="button" onClick={() => handleInterruptQueued(q.id)}
+                        aria-label={t.interruptMsg} title={t.interruptMsgTip}
+                        className="w-6 h-6 shrink-0 rounded-full flex items-center justify-center transition-colors text-blue-500 dark:text-blue-400 hover:bg-blue-500/10 active:bg-blue-500/15">
+                        <Zap size={14} />
+                      </button>
+                    )}
+                    <button type="button" onClick={() => bridge.chat.removeQueued(q.id)}
+                      aria-label={t.queuedCancel} title={t.queuedCancel}
+                      className={`w-6 h-6 shrink-0 rounded-full flex items-center justify-center transition-colors text-[#5F6368] dark:text-[#C4C7C5] ${'hover:bg-[#F0F4F9] dark:hover:bg-[#333537]'}`}>
+                      <X size={14} />
+                    </button>
                   </div>
                 ))}
               </div>
@@ -2313,28 +2423,31 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>
-                {!tabletVoiceMode && hasDraftText && (
-                  <button type="button" onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
-                    className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
-                      canClearInput
-                        ? 'text-[#5F6368] hover:bg-black/5 dark:text-[#C4C7C5] dark:hover:bg-white/10'
-                        : 'text-gray-400 cursor-not-allowed opacity-60'
-                    }`}>
-                    <Trash2 size={18} />
-                  </button>
-                )}
-                {busy ? (
-                  <button type="button" onClick={handleCancel} disabled={cancellingSessionIds.has(activeSessionId)}
-                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-                    <StopCircle size={20} />
-                  </button>
-                ) : (() => {
+                {(() => {
+                  // While busy, Stop is always shown (typing mid-generation
+                  // must still allow "stop but keep the draft").
+                  // The send button while busy = steer into the current turn
+                  // (with attachments, local queuing); zap-send moved onto the
+                  // queued chips (one per entry), not the send area.
                   const ready = canSend && !sceneCapabilityPreparing;
+                  const isQueue = busy && ready;
                   return (
-                    <button type="button" onClick={handleSend} disabled={!ready} aria-label={t.sendMsg} title={t.sendMsg}
-                      className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0' : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
-                      <Send size={17} className="translate-x-[1px]" />
-                    </button>
+                    <div className="flex items-center gap-1">
+                      {busy && (
+                        <button type="button" onClick={handleCancel} disabled={cancellingSessionIds.has(activeSessionId)}
+                          className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                          <StopCircle size={20} />
+                        </button>
+                      )}
+                      {(!busy || hasDraftText || hasReadyAttachment) && (
+                        <button type="button" onClick={handleSend} disabled={!ready}
+                          aria-label={busy ? t.queueMsg : t.sendMsg}
+                          title={busy ? (can('interruptSend') ? t.queueMsgTip : t.queueMsg) : t.sendMsg}
+                          className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? (isQueue ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md ring-2 ring-amber-300 dark:ring-amber-400' : 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0') : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
+                          <Send size={17} className="translate-x-[1px]" />
+                        </button>
+                      )}
+                    </div>
                   );
                 })()}
               </div>

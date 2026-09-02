@@ -188,6 +188,8 @@ const RUST_FORWARDED_EVENTS: &[&str] = &[
     "chat:reasoning_delta",
     "chat:reasoning_done",
     "chat:done",
+    "chat:steer_committed",
+    "chat:steer_dropped",
     "chat:plan_ready",
     "chat:plan_resolved",
     "chat:plan_snapshot",
@@ -3532,6 +3534,10 @@ mod tests {
         assert!(RUST_FORWARDED_EVENTS.contains(&"chat:reasoning_start"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"chat:reasoning_delta"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"chat:reasoning_done"));
+        assert!(policy.events.contains("chat:steer_committed"));
+        assert!(policy.events.contains("chat:steer_dropped"));
+        assert!(RUST_FORWARDED_EVENTS.contains(&"chat:steer_committed"));
+        assert!(RUST_FORWARDED_EVENTS.contains(&"chat:steer_dropped"));
         assert!(policy.events.contains("chat:user_message"));
         assert!(policy.events.contains("acp:event"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"acp:event"));
@@ -3789,10 +3795,12 @@ mod tests {
             "compact_now",
             "edit_last_turn",
             "get_session_pinvou_scene_events",
+            "get_session_steered_messages",
             "get_session_timeline",
             "get_codex_workspace_changes",
             "get_codex_workspace_diff",
             "save_session_pinvou_scene_events",
+            "save_session_steered_messages",
             "web_access_chat",
             "web_access_cancel_codex_acp",
             "web_access_get_codex_workspace_changes",

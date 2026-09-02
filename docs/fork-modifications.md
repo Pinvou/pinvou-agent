@@ -31,6 +31,11 @@
 - `withdraw_steer` 返回 `SteerWithdrawal`，区分撤回、已提交和不存在；Windows Shell 输出使用跨 poll 的增量 UTF-8 解码，依赖更新修复 h2/lru 公告。r11 新增 15 条 `forkguard_*`，总数从 41 增至 56，未增加长期 fork 主题。
 - r11 相对 r10 为 `48 files changed, +2242/-292`。其中 provider projection、MCP host policy、steer lifecycle 和跨平台 shell 解码均是可复用底座能力，后续继续以通用设计优先回馈上游。
 
+### r11 steer 撤回 outcome（已发布）
+
+- CodeWhale PR #30 以 `e6bc34769` 合入（维护者 follow-up `69ed3bfbd` 强化契约并纳入 forkguard）：`EngineHandle::withdraw_steer` 返回 `SteerWithdrawal::Retired`（撤回生效、永不注入、恰好一条 `SteerDropped`）/ `NotPending`（已结算或未知——**不是已投递证明**，宿主必须等对账终态事件，不确定时保留输入）。pinvou-agent#308 的 ⚡ 瞬发据此在撤回后决定是否重发，闭合「撤回成功/已注入」不可区分导致的重复投递。另含 `#[must_use]` 防宿主静默忽略返回值。
+- 同期维护分支还合入 MCP 禁用工具旁路封闭（`e68a185c2`）与严格直连模型大小写匹配（`0d89a31be`）等修复，归入既有主题，无新增长期 fork 主题。
+
 ### r10 固定采样与压缩用量边界（已发布）
 
 - CodeWhale PR #19 以 `feb8761aeda31749f3d54c6e1f8ef460540567a1` 发布。Kimi Code 会员路由仅对精确会员模型名单（`k3`、`k3-256k`、`kimi-for-coding`、`kimi-for-coding-highspeed`）剥离非 1 的固定采样字段；DeepSeek 仅对精确 `deepseek-v4-flash` Responses 路径保留兼容 shim，Chat 方言继续透传官方 0..=2 采样契约。
@@ -82,6 +87,19 @@
 - 新增 `forkguard_host_bulk_cancel_stops_all_running_children_idempotently`，锁定批量取消和重复取消行为。
 - 修复退役后两处通用兼容回归：MCP registry 提示恢复 canonical `Bash(action="run")` / `Web(action="fetch")`，Custom SubAgent allowlist 的旧 action alias 继续解析到已注册的 canonical family。
 
+### 会话 steer 与确定性取消（CodeWhale#16 / pinvou-agent#308，已发布）
+
+- **状态**：CodeWhale#16 已合并、`#30`（`withdraw_steer` 返回 `SteerWithdrawal` outcome）随后续修复合入，公开基线为 `pinvou-v0.9.5-r11`（`0d89a31be`）；本节内容已按约定并入 T1/T2 主题的 commits、公开基线 head 与 drift 登记，本节保留为发布记录。
+- **T1（宿主嵌入与路由边界）新增**：
+  - 会话 steer（mid-turn 注入）底座原语：`SteerMessage { id, content }` 经 steer channel 入队，`EngineHandle::steer` 入队时生成并返回 opaque `steer_id`；`Event::SteerCommitted` / `Event::SteerDropped` 携带 `steer_id` 供宿主关联排队占位消息，不使用内容哈希（非 ASCII 内容跨语言哈希无法实现一致）。
+  - `EngineHandle::cancel_with_mode(reason, CancelMode)`（r10 起）：`InterruptKeepInbox`（⚡ 打断）把未注入 steer 跨轮 park，由下一轮 step 边界注入；`StopDropInbox`（⏹ 停止）在全部 Interrupted 出口统一 settle——`pending_steers` 与 steer channel 残留逐条发 `SteerDropped`。处置模式与 cancel token 在同一次句柄调用内原子发布，宿主没有独立的 cancel 前开关。
+  - `Op::SyncSession` 与 `Op::Shutdown` 销毁前清场并逐条发 `SteerDropped`，杜绝跨会话注入；`Drop for Engine` 以 `try_send` best-effort 兜底，覆盖宿主 evict/reclaim 直接丢弃引擎的路径。
+  - steer 撤回：`EngineHandle::withdraw_steer` 把 id 记入引擎共享撤回集合，#30 起返回 `SteerWithdrawal` outcome（`Retired` = 永不注入、可安全重发；`NotPending` = 不构成送达证明，需按事件对账；r10 初版为 fire-and-forget，见上节状态）；所有收集/注入点过滤被撤回 id 并恰好发一条 `SteerDropped`，被撤回 steer 永不注入 transcript；撤回标记跨轮存活，`SyncSession`/`Shutdown` 清场时一并清除。宿主 UI 排队占位的 ✕ 由此在注入前真正生效。
+- **T2（工具兼容与命令执行安全）新增**：
+  - cancel 杀进程范围收敛：`ShellManager::kill_running_turn_foreground` 只杀本轮前台（`spawned_as_foreground` 且无 `owner_agent`）shell 进程组——底座层内，用户转后台的任务与子智能体 background shell 不被 cancel 连带 kill。范围说明：本条仅描述底座 `ShellManager`；Pinvou app 层在 cancel 时另有自己的轮次级清理（`SessionTurnShellTasks`），仍会回收被打断轮次登记的后台任务与子智能体 shell。
+- **守护**：8 条新行为测试——`steer_lifecycle_rejects_idle_and_assigns_unique_ids`、`steer_lifecycle_capacity_wait_revalidates_target`、`steer_lifecycle_interrupt_keeps_input_for_next_turn`、`steer_lifecycle_stop_retires_reserved_late_send_once`、`steer_lifecycle_session_rejects_late_reserved_send`、`forkguard_steer_lifecycle_withdrawal_is_bounded_and_prevents_commit`、`engine_drop_reports_unconsumed_steers_best_effort`（`core/engine/tests.rs`），`kill_running_turn_foreground_scopes_to_this_turns_unowned_foreground_shells`（`tools/shell/tests.rs`）；指纹见 `scripts/fork-guard.sh` T1/T2 steer 条目。
+- **上游策略**：该能力按上游中性实现（英文注释、无 Pinvou 私有语境），后续按 §5 规则从 upstream main 建净分支回馈；回馈合入前以本登记为准。
+
 ### 软上限评估
 
 净增量高于 1500 行软线，主要保留量来自逐轮工具安全、Automation 持久化、会话恢复、工具兼容和嵌入上下文密封：
@@ -96,7 +114,7 @@
 
 ### T1：宿主嵌入与路由边界
 
-- **commits**：`331cb1594688c723d98499d9ca11f05af291b599`、`2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`（`#11`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`#13`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`#16`）、`07d183e350ce4a1ed4f91bdfa1875c996e710d2b`（`#17`）、`feb8761aeda31749f3d54c6e1f8ef460540567a1`（`#19`）、`485884913308cdf7564bc60da2e416be637083b5`（`#21`）、`04e109af4b4786a0d49fbbeefdd77af15a9f495e`（`#22`）、`69ed3bfbdb314f901d4cf4120f1caaaf0b6aa529`（`#30`）、`0d89a31be016457c180501417dd2c0f34ce844a6`（`#18`）。
+- **commits**：`331cb1594688c723d98499d9ca11f05af291b599`、`2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`（`#11`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`#13`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`#16`）、`07d183e350ce4a1ed4f91bdfa1875c996e710d2b`（`#17`）、`feb8761aeda31749f3d54c6e1f8ef460540567a1`（`#19`）、`485884913308cdf7564bc60da2e416be637083b5`（`#21`）、`04e109af4b4786a0d49fbbeefdd77af15a9f495e`（`#22`）、`e6bc347694ef4229b84919c49fea54fc584377c4` + `69ed3bfbdb314f901d4cf4120f1caaaf0b6aa529`（`#30`，steer 撤回 outcome）、`0d89a31be016457c180501417dd2c0f34ce844a6`（`#18`）。
 - **公开规模**：r8 前置规模为 10 文件、`+394/-31`；r9 至 r11 的增量按上节整体登记。
 - **核心文件**：`crates/tui/src/lib.rs`、`core/{engine,events,ops}.rs`、`core/engine/{handle,turn_loop}.rs`、`runtime_handoff.rs`、`route_runtime.rs`、`runtime_threads.rs`、`automation_manager.rs`、`session_manager.rs`。
 - **内容**：

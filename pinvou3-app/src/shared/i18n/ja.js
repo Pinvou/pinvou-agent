@@ -433,6 +433,8 @@ const jaBase = {
         sidebarCollapse: 'サイドバーを折りたたむ', sidebarExpand: 'サイドバーを展開',
         skillPrefill: name => `${name} を使ってやりたいこと: `,
         queuedTag: '待機中', queuedCancel: '取り消し',
+        queueMsg: '今すぐ送信', queueMsgTip: '生成中：テキストは可能ならこのターンに注入（不可時はキュー）、添付は常にキュー',
+        interruptMsg: '割り込み送信', interruptMsgTip: '現在のAIタスクを中断して即座に送信',
         attachParsing: '解析中…', attachFailed: '失敗', attachProtectedLocation: 'ファイルの場所は保護されています', attachAdd: 'ファイルを添付',
         attachFromDevice: 'このデバイスからアップロード', attachFromHost: 'デスクトップから選択', attachUploading: pct => `アップロード中 ${pct}%`,
         attachmentOpen: '既定のアプリで開く', attachmentDownload: '添付ファイルをダウンロード', attachmentCopyAddress: 'パスをコピー',

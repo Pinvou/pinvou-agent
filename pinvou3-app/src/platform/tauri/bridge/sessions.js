@@ -47,6 +47,9 @@
     const loadPinvouSceneEventsForSession = context.loadPinvouSceneEventsForSession || function () { return []; };
     const syncPinvouSceneEventsForSession = context.syncPinvouSceneEventsForSession ||
       function (sid) { return Promise.resolve(loadPinvouSceneEventsForSession(sid)); };
+    const loadSteeredMessagesForSession = context.loadSteeredMessagesForSession || function () { return []; };
+    const syncSteeredMessagesForSession = context.syncSteeredMessagesForSession ||
+      function (sid) { return Promise.resolve(loadSteeredMessagesForSession(sid)); };
     const MAX_SCHEDULED_SESSION_BUFFERS = 64;
     const MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
     // All-session buffer cap: each sessionStates entry holds the full
@@ -369,6 +372,7 @@
     buf.personaEvents = state.personaEvents;
     buf.pinvouReviews = state.pinvouReviews;
     buf.pinvouSceneEvents = state.pinvouSceneEvents;
+    buf.steeredMessages = state.steeredMessages;
     buf.busy = buf.scheduledInitialTurnPhase === "active" ? true : state.busy;
     buf.planSnapshot = state.planSnapshot; buf.modeState = state.modeState;
     buf.thinking = state.thinking; buf.tokens = state.tokens; buf.queued = state.queued;
@@ -392,6 +396,7 @@
     state.personaEvents = buf.personaEvents || [];
     state.pinvouReviews = buf.pinvouReviews || [];
     state.pinvouSceneEvents = buf.pinvouSceneEvents || [];
+    state.steeredMessages = buf.steeredMessages || [];
     state.pinvouModal = null; // 切 session 关掉检阅弹窗
     state.turnDirtyArtifacts = []; // turn 临时态,切 session 清空,别串到新 session
     state.turnPresentedArtifacts = [];
@@ -426,6 +431,7 @@
     buf.personaEvents = [];
     buf.pinvouReviews = [];
     buf.pinvouSceneEvents = loadPinvouSceneEventsForSession(saved.metadata && saved.metadata.id);
+    buf.steeredMessages = loadSteeredMessagesForSession(saved.metadata && saved.metadata.id);
     if (completedRemoteTurn) {
       buf.remoteTurnActive = false;
       buf.remoteTerminalSeen = false;
@@ -466,6 +472,7 @@
     try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch { buf.personaEvents = []; }
     try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch { buf.pinvouReviews = []; }
     buf.pinvouSceneEvents = await syncPinvouSceneEventsForSession(sid);
+    buf.steeredMessages = await syncSteeredMessagesForSession(sid);
     try { buf.turnTimeline = await invoke("get_session_timeline", { sessionId: sid }) || []; } catch { buf.turnTimeline = []; }
     // 手机可能在桌面仍停留草稿页/其他 session 时先唤醒这个后台 session。
     // 仅 hydrate messages 而把 chatItems 留空，会让后续 switchToSession 命中缓存快路径，
@@ -916,6 +923,7 @@
     let personaEvents = [];
     let pinvouReviews = [];
     const pinvouSceneEvents = await syncPinvouSceneEventsForSession(id);
+    const steeredMessages = await syncSteeredMessagesForSession(id);
     let turnTimeline = [];
     try { personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch { /* optional data; default to empty */ }
     try { pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch { /* optional data; default to empty */ }
@@ -944,6 +952,7 @@
       state.personaEvents = personaEvents.length ? personaEvents : (liveBuffer.personaEvents || []);
       state.pinvouReviews = pinvouReviews.length ? pinvouReviews : (liveBuffer.pinvouReviews || []);
       state.pinvouSceneEvents = pinvouSceneEvents.length ? pinvouSceneEvents : (liveBuffer.pinvouSceneEvents || []);
+      state.steeredMessages = steeredMessages.length ? steeredMessages : (liveBuffer.steeredMessages || []);
       state.turnTimeline = turnTimeline.length ? turnTimeline : (liveBuffer.turnTimeline || []);
       state.artifacts = filterSessionArtifacts(
         mergeHydratedArtifacts(saved.artifacts, liveArtifacts),
@@ -969,6 +978,7 @@
       state.personaEvents = personaEvents;
       state.pinvouReviews = pinvouReviews;
       state.pinvouSceneEvents = pinvouSceneEvents;
+      state.steeredMessages = steeredMessages;
       state.turnTimeline = turnTimeline;
       resetPendingAssistant();
       state.chatItems = [];

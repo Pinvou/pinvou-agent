@@ -359,6 +359,92 @@ pub(crate) async fn chat_with_reservation(
     }
 }
 
+/// Mid-turn inject: while the current turn is still running, deliver a
+/// user message to the next step boundary. The foundation's
+/// `EngineHandle::steer` appends to session.messages automatically after
+/// each tool result and before the next model call; the model sees it on
+/// its next thinking pass.
+///
+/// Difference from `chat()`:
+/// - `chat()` starts a new turn (reserve_turn → SendMessage) and is rejected
+///   while turn_in_progress
+/// - `steer_chat()` only enqueues into the steer channel, starts no new
+///   turn, and is callable during turn_in_progress
+///
+/// Failure modes:
+/// - session missing / engine not running → Err; the frontend takes its
+///   failure-recovery path
+/// - engine idle (no active turn to accept the steer) → Err; the frontend
+///   takes its failure-recovery path
+/// - steer channel full → the foundation's `reserve_owned().await` suspends
+///   waiting for capacity (it does not error immediately); if the target
+///   turn changes while waiting, it reports "steer target changed". A wedged
+///   engine task that never drains leaves this command unsettled for a long
+///   time — the frontend invoke already has a 25s fallback timeout.
+///
+/// Returns the opaque steer id — the engine-generated ordinal, stamped by the
+/// pool with the engine generation (`e{gen}-steer-{n}`) so ids stay
+/// unambiguous across engine rebuilds; the frontend uses it to correlate
+/// chat:steer_committed / chat:steer_dropped events (stamped identically by
+/// the forwarder).
+///
+/// Rendering the user bubble does NOT go through a backend
+/// chat:user_message: the local frontend converts the queued chip into a
+/// bubble in place when chat:steer_committed settles (bridge/chat.js
+/// settleSteerCommitted — precise control over the chip → bubble visual
+/// switch, also avoiding duplication with the turn_loop drain's
+/// SessionUpdated). Known limitation: it bypasses turn admission, so
+/// remote/web observers do not see the steer-injected message until a full
+/// reload.
+#[tauri::command]
+pub async fn steer_chat(
+    session_id: Option<String>,
+    content: String,
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
+) -> Result<String, String> {
+    // Empty-content pre-check aligned with chat(): an empty steer would
+    // otherwise do a full engine round-trip (allocate a permit → foundation
+    // trims and drops it as empty) while the frontend has already created a
+    // chip and then receives a misleading steer_dropped notice.
+    if content.trim().is_empty() {
+        return Err("empty steer content".to_string());
+    }
+    let sid = require_active_sid(session_id, &store)?;
+    pool.steer(&sid, content)
+        .await
+        .map_err(|e| format!("steer_chat: {e:#}"))
+}
+
+/// Withdraw a not-yet-injected steer (the ✕ on a frontend queued chip /
+/// precondition of the ⚡ zap-send).
+///
+/// The engine guarantees a withdrawn steer_id never enters the transcript
+/// and emits one `chat:steer_dropped` when it drops it (idempotent).
+///
+/// Returns an explicit outcome (review P1-1): `"retired"` = the withdrawal
+/// took effect and it will never inject, the frontend may safely resend
+/// through another path; `"not_pending"` = committed/settled/unknown id —
+/// the injection may already be done and the frontend must not resend (the
+/// bubble is rendered by steer_committed). String projection of the
+/// foundation's `EngineHandle::withdraw_steer` `SteerWithdrawal` enum.
+///
+/// Failure modes: session missing / engine not running → Err (the message
+/// never entered the engine; a purely local chip removal suffices).
+#[tauri::command]
+pub async fn withdraw_steer(
+    session_id: Option<String>,
+    steer_id: String,
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
+) -> Result<String, String> {
+    let sid = require_active_sid(session_id, &store)?;
+    pool.withdraw_steer(&sid, steer_id)
+        .await
+        .map(str::to_string)
+        .map_err(|e| format!("withdraw_steer: {e:#}"))
+}
+
 fn prepare_conversation_attachment_record(
     attachments: &[crate::features::files::file_ingest::IngestResult],
     load_message_index: impl FnOnce() -> Result<usize, String>,

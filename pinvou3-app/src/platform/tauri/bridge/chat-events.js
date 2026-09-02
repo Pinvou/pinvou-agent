@@ -222,6 +222,8 @@
     const isDeliverable = context.isDeliverable;
     const noteArtifactChange = context.noteArtifactChange;
     const persistMessagesFor = context.persistMessagesFor;
+    const captureSteerPositions = context.captureSteerPositions || function () {};
+    const recordSteeredMessages = context.recordSteeredMessages || function () {};
     const composePlanMarkdown = context.composePlanMarkdown;
     const refreshHistoryList = context.refreshHistoryList;
     const isShellExecutionTool = context.isShellExecutionTool;
@@ -335,6 +337,33 @@
     applyRemoteUserMessageEvent(e, false);
   });
 
+  // P0-A: steer delivery confirmation (steer_id edition). The engine
+  // appends the steer to the transcript and emits committed (with the opaque
+  // steer_id); the frontend turns the matching queued chip into a bubble — no
+  // more content_hash fingerprinting (UTF-16/UTF-8 encoding differences made
+  // the two sides disagree for CJK and non-CJK content alike). Settlement
+  // lives in chat.js (the chip owner), including the pending stash for
+  // "event before the invoke returns" and the optimistic removal for "×
+  // withdrawal"; legacy backends (events without steer_id) fall back to
+  // transcript_committed counting. steer_dropped carries both engine-initiated
+  // drops and user × withdrawals (withdraw_steer).
+  const settleSteerCommitted = context.settleSteerCommitted;
+  const settleSteerDropped = context.settleSteerDropped;
+  listen("chat:steer_committed", function (e) {
+    const p = e && e.payload || {};
+    const sid = p.session_id || state.activeSessionId;
+    const steerId = String(p.steer_id || "");
+    if (!sid || !steerId) return;
+    settleSteerCommitted(sid, steerId);
+  });
+  listen("chat:steer_dropped", function (e) {
+    const p = e && e.payload || {};
+    const sid = p.session_id || state.activeSessionId;
+    const steerId = String(p.steer_id || "");
+    if (!sid || !steerId) return;
+    settleSteerDropped(sid, steerId);
+  });
+
   listen("chat:transcript_committed", function (e) {
     const payload = e && e.payload || {};
     const sid = payload.session_id || state.activeSessionId;
@@ -355,6 +384,130 @@
         if (ready) flushQueued(sid);
       }).catch(function () {});
     }
+    // Mid-turn inject delivery-completion fallback signal: after turn_loop
+    // appends the steer to session.messages and the forwarder finishes
+    // persisting, it emits chat:transcript_committed.
+    // Authoritative settlement is chat:steer_committed (steer_id matching);
+    // this only covers legacy backends (chip without steerId): the legacy
+    // steer chip still waiting in state.queued should become a user bubble
+    // and sync state.messages.
+    //
+    // This event is also the retry point for steer position capture: the
+    // persist it announces is exactly what captureSteerPositions reads, so
+    // any steer committed before its snapshot became available settles its
+    // sidecar position here.
+    //
+    // The count delta = the number of new messages; consume exactly that
+    // many entries from the head of state.queued. Drain only when the growth
+    // is > 0 and includes new user-role messages, to avoid false triggers on
+    // other commits (subagent completion, runtime follow-up turns).
+    // The guard must route by the event's sid (a background session's chip
+    // lives in sessionStates[sid].queued, not the active working set): reading
+    // the active queue would skip the fallback wholesale for a legacy chip
+    // whose session was switched away after the steer, leaving the background
+    // chip hanging and blocking flushQueued's queue head.
+    const fallbackQueued = sid === state.activeSessionId
+      ? state.queued
+      : (sessionStates[sid] && sessionStates[sid].queued);
+    // Retry pending steer position captures now that the persist this event
+    // announces is durable (no-op when nothing is pending).
+    captureSteerPositions(sid);
+    if (!fallbackQueued || fallbackQueued.length === 0) return;
+    // The fallback settles only legacy steered chips (steered, no engine-side
+    // id). steer_id chips settle authoritatively via chat:steer_committed /
+    // chat:steer_dropped — without this pre-check every transcript commit
+    // during a busy queue would pay a full load_session snapshot that cannot
+    // settle anything.
+    let hasLegacySteerChip = false;
+    for (let i = 0; i < fallbackQueued.length; i++) {
+      const item = fallbackQueued[i];
+      if (item && item.steered && !item.steerId) { hasLegacySteerChip = true; break; }
+    }
+    if (!hasLegacySteerChip) return;
+    invoke("load_session", { id: sid, setActive: false }).then(function (saved) {
+      if (!saved || !Array.isArray(saved.messages)) return;
+      // Lazy-initialized baseline = snapshot length (no earlier trustworthy
+      // count). Pairing does not slice(preCount) to count from the head but
+      // "tail-aligns": match the queue-head legacy chip's same-text user
+      // message backwards from the snapshot tail — same-text old messages in
+      // history always precede the new injection and can never mispair
+      // (fixes the lazy-init first event draining all of history via
+      // slice(0)).
+      const lazyBaseline = committedBuffer.lastSeenMessageCount == null;
+      const preCount = lazyBaseline
+        ? saved.messages.length
+        : committedBuffer.lastSeenMessageCount;
+      const newMessages = saved.messages;
+      // Compaction etc. shrink the transcript: reset the baseline with it,
+      // otherwise newMessages.length <= preCount holds forever and the
+      // fallback never fires again.
+      if (newMessages.length < preCount) {
+        committedBuffer.lastSeenMessageCount = newMessages.length;
+        return;
+      }
+      // Lazy initialization (first fallback) has no "previous frame" to
+      // compare against; continue even when the length is unchanged — right
+      // after an injection, this frame's snapshot tail IS the injection
+      // result, and the tail alignment below validates it.
+      if (!lazyBaseline && newMessages.length === preCount) return;
+      committedBuffer.lastSeenMessageCount = newMessages.length;
+      runSyncOnSession(sid, function () {
+        state.messages = newMessages;
+        // Tail alignment: drainable candidates = the new user messages after
+        // preCount in the snapshot; for lazy init (preCount === length) the
+        // candidate list is empty, but right after an injection the tail
+        // message itself is the injection result — walk backwards from the
+        // tail checking same-text against the queue-head chips and drain only
+        // on a contiguous tail match, so same-text old history never
+        // mispairs.
+        const additions = newMessages.slice(Math.min(preCount, newMessages.length));
+        const userAdditions = additions.filter(function (m) { return m && m.role === "user"; });
+        const tailCandidates = [];
+        for (let i = newMessages.length - 1;
+             i >= 0 && tailCandidates.length < Math.max(fallbackQueued.length, 1) && i >= newMessages.length - 16;
+             i--) {
+          if (newMessages[i] && newMessages[i].role === "user") tailCandidates.unshift(newMessages[i]);
+        }
+        const scanList = userAdditions.length > 0 ? [...userAdditions, ...tailCandidates.slice(userAdditions.length)] : tailCandidates;
+        for (let i = 0; i < scanList.length && fallbackQueued.length > 0; i++) {
+          const message = scanList[i];
+          const item = fallbackQueued[0];
+          // Only settle legacy steer chips (steered without a steerId):
+          // id-carrying ones are settled authoritatively by
+          // chat:steer_committed, plain queued chips belong to flushQueued —
+          // the fallback touches neither, avoiding mispairing.
+          if (!item.steered || item.steerId) break;
+          // Extract the real user input, skipping turn_meta /
+          // system-reminder metadata blocks.
+          const content = Array.isArray(message.content) ? message.content : [];
+          const firstText = content
+            .filter(function (block) { return block && block.type === "text"; })
+            .map(function (block) { return String(block.text || ""); })
+            .filter(function (text) {
+              const t = text.trim();
+              return !(t.indexOf("<turn_meta>") === 0 && t.endsWith("</turn_meta>")) &&
+                !(t.indexOf("<system-reminder>") === 0 && t.endsWith("</system-reminder>"));
+            })
+            .join("");
+          const itemText = String(item.text || "");
+          // Exact match: the old two-way indexOf containment mispaired
+          // different messages with similar prefixes. On mismatch, keep
+          // scanning the later additions (with a zero baseline, historical
+          // user messages precede the additions).
+          if (firstText && firstText === itemText) {
+            fallbackQueued.shift();
+            // Legacy-backend steer settlement: same mid-turn semantics as
+            // settleSteerCommitted's bubble (no admission, no timing record).
+            addChatItem({ type: "user", text: itemText, time: timeStr(), steeredMidTurn: true });
+            // The persisted position is known exactly here (the match ran
+            // against the durable snapshot): record the sidecar marker
+            // directly, no pending-capture retry needed.
+            recordSteeredMessages(sid, [{ pos: newMessages.indexOf(message), text: itemText }]);
+          }
+        }
+      });
+      notify();
+    }).catch(function () { /* silent:fall back to existing behavior */ });
   });
 
   listen("chat:turn_started", function (e) { onSessionEvent(e, function () {

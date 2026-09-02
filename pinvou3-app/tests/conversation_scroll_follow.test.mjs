@@ -18,6 +18,7 @@ for (const file of ['conversation-model.js', 'conversation-scroll.js']) {
 }
 const {
   measureConversationScrollGeometry,
+  shouldForceScrollFollow,
   startConversationBottomFollower,
   transitionConversationScrollState,
 } = await import(
@@ -276,6 +277,24 @@ try {
   });
   assert.equal(followedShrink.following, true,
     'a shrink-clamp scroll event while following must keep pinning instead of pausing the follower');
+
+  // r13 review M1: a mid-turn steered bubble parks a user item LAST while the
+  // turn's streaming output above it keeps changing the follow traits — the
+  // snap must fire once per appended item, not on every delta, or it would
+  // overwrite the scroll listener's "user scrolled up" state for the rest of
+  // the turn.
+  assert.equal(shouldForceScrollFollow({
+    following: true, lastItemType: 'user', itemCount: 5, lastSnapItemCount: 5,
+  }), true, 'following the stream must keep forcing the bottom');
+  assert.equal(shouldForceScrollFollow({
+    following: false, lastItemType: 'assistant', itemCount: 5, lastSnapItemCount: 4,
+  }), false, 'a non-user last item must never force the snap while history reading');
+  assert.equal(shouldForceScrollFollow({
+    following: false, lastItemType: 'user', itemCount: 6, lastSnapItemCount: 5,
+  }), true, 'a newly appended user item must snap once even while history reading');
+  assert.equal(shouldForceScrollFollow({
+    following: false, lastItemType: 'user', itemCount: 6, lastSnapItemCount: 6,
+  }), false, 'the same parked user bubble must not re-snap on streaming deltas above it');
 
   console.log('conversation_scroll_follow: ok');
 } finally {

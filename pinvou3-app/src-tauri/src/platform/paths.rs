@@ -490,6 +490,17 @@ pub fn session_pinvou_scene_events(session_id: &str) -> PathBuf {
         .join("pinvou_scene_events.json")
 }
 
+/// `~/.pinvou3/sessions/<session_id>/steered_messages.json` —— 会话内 mid-turn
+/// steer 消息的位置标记（每条 `{pos, text}`）。steer 落盘与普通 admission 对齐、
+/// 不含 `<turn_meta>` 块，重载投影无法再从信封反推"非 turn admission"，因此把
+/// 该展示层事实显式持久化。与 scene sidecar 一样独立于 messages：纯 UI 元数据
+/// 不进 LLM 上下文；`text` 用于压实/编辑漂移后的保守校验，失配即不标记。
+pub fn session_steered_messages(session_id: &str) -> PathBuf {
+    sessions_root()
+        .join(session_id)
+        .join("steered_messages.json")
+}
+
 /// `~/.pinvou3/sessions/<session_id>/timing_events.jsonl` —— 每轮对话端到端耗时
 /// 事件(sidecar)。刻意独立于 messages/session schema, 避免影响上下文和产物逻辑。
 pub fn session_timing_events(session_id: &str) -> PathBuf {
