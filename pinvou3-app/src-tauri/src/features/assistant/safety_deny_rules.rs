@@ -29,10 +29,14 @@
 //! with token-level + shell-expansion/dequoting matching, and a typed `Deny`
 //! short-circuits every approval mode (including YOLO/Never). Evaluation
 //! happens after the ToolCallBefore hook and before approval; the two defense
-//! lines are independent and either one blocks. Coverage is bounded to
-//! main-line sessions: nested subagent tool calls do not pass through this
-//! check (the foundation subagent executor does not consult execpolicy yet;
-//! see registered differences). Precedent in this codebase:
+//! lines are independent and either one blocks. Since the r14 foundation
+//! baseline (CodeWhale PR #37), nested subagent tool calls pass the SAME
+//! execpolicy decision as the main line (after the execution-envelope gate):
+//! `Block` refuses with the main-line wording, a `Prompt` decision follows
+//! the parent's posture authority (it passes under parent auto-approve and
+//! refuses otherwise — a child has no approval surface, so every prompting
+//! posture and `Never` sessions fail closed), and `Allow` passes. Precedent
+//! in this codebase:
 //! `scope_deny_ruleset` (connector/skill gating) uses the same channel.
 //!
 //! ## Matching semantics (`crates/execpolicy`)
@@ -101,20 +105,25 @@
 //!
 //! ## Phase-2 scope alignment (v2)
 //!
-//! Mainstream harnesses ship almost no default dangerous-command deny list.
-//! The structural faces that ARE shipped: Claude Code hard-denies `rm` on the
-//! critical path and gates writes to protected paths; Codex CLI forces an
-//! `rm` confirmation and sandboxes by default; Gemini CLI validates dangerous
-//! flags and sandboxes; Goose ships opt-in regex threat patterns (fork bomb,
-//! disk wipe class); Cline's broad static blacklist is plan-mode-only, which
-//! Pinvou already covers structurally (Plan mode restricts via the read-only
-//! toolset plus sandbox — noted, deliberately not replicated as a deny list).
-//! Nobody ships a Windows destructive-command list, so the Windows face below
-//! stays ahead of every mainstream harness. v2 closes the two faces mainstream
-//! covers structurally — catastrophic system destruction and
-//! persistence/protected writes — and uses the foundation's new matcher
-//! expressiveness (middle wildcard, `/`-flag skipping, `.exe` folding,
-//! rooted-absolute File paths) to retire most v1-registered residues.
+//! Mainstream harnesses ship little default dangerous-command denial. The
+//! structural faces that ARE shipped: Claude Code hard-denies `rm` on the
+//! critical path, gates writes to protected paths, and runs a classifier
+//! block list; Codex CLI hard-denies forced `rm` (fail-closed through
+//! wrapper nesting), ships a default Windows dangerous-command set
+//! (`Remove-Item -Force`, `del /f`, `rd /s /q`), and sandboxes by default;
+//! Gemini CLI ships built-in dangerous-command checks (including a Windows
+//! destructive set: `del`/`erase`/`format`/`remove-item`), hard-blocks
+//! command substitution at execution time, and sandboxes; Goose ships opt-in
+//! regex threat patterns (fork bomb, disk wipe class); Cline has no static
+//! blacklist at all (per its docs, the model flags each command's
+//! `requires_approval`) — noted, nothing to replicate. The Windows
+//! destructive-command face below is therefore at parity with (mostly wider
+//! than) the narrow built-in sets Codex/Gemini/Claude Code ship. v2 closes
+//! the two faces mainstream covers structurally — catastrophic system
+//! destruction and persistence/protected writes — and uses the foundation's
+//! new matcher expressiveness (middle wildcard, `/`-flag skipping, `.exe`
+//! folding, rooted-absolute File paths) to retire most v1-registered
+//! residues.
 //!
 //! v2 family deltas (all wildcard re-anchoring is count-neutral per spelling;
 //! `*` widens each rule's deny face to "the sensitive path appears among the
@@ -124,13 +133,13 @@
 //! |---|---|---|
 //! | R1 wildcard re-anchoring of viewer/destroy/dd families | count-neutral | multi-target `rm a ~/.ssh/id_rsa`, flags between command and target, cmd.exe canonical `/`-flag sequence enumeration (4332 rules) DELETED — single-letter `/`-flag skipping makes it redundant, `.exe` command spellings (`cat.exe`) |
 //! | R2 `dd * if=/of=<spelling>` | count-neutral | `dd if=<any> of=<sensitive>` overwrite order (registered v1 residue) |
-//! | R3 argument-position readers `grep`/`egrep`/`fgrep`/`rg` (+ Windows `findstr`/`select-string`) `* <home-anchored spelling>` | 1516 | the "grep argument-position" residue; home-anchored spellings only, never bare names (`grep id_rsa docs/notes.md` stays allowed) |
-//! | R4 cold viewers/transcription `nl`/`tac`/`rev`/`zcat`/`bzcat`/`xzcat`/`lz4`/`gunzip`/`gzip`/`sed`/`awk`/`perl` (+ `openssl base64`) × the R3 inventory (POSIX + Windows prefixes) | 6409 | the "cold viewers" residue; `sed -i` writes on sensitive paths are deny-worthy too, so read/write ambiguity is accepted; editors stay allowed |
+//! | R3 argument-position readers `grep`/`egrep`/`fgrep`/`rg` (+ Windows `findstr`/`select-string`) `* <home-anchored spelling>` | 1516 | the "grep argument-position" residue; home-anchored spellings only, never bare names (`grep id_rsa docs/notes.md` stays allowed); on Windows hosts the resolved real-home (`C:\Users\me\…`) spellings join the inventory |
+//! | R4 cold viewers/transcription `nl`/`tac`/`rev`/`zcat`/`bzcat`/`xzcat`/`lz4`/`gunzip`/`gzip`/`sed`/`awk`/`perl` (+ `openssl base64`) × the R3 inventory (POSIX + Windows prefixes, incl. resolved real-home on Windows hosts) | 6409 | the "cold viewers" residue; `sed -i` writes on sensitive paths are deny-worthy too, so read/write ambiguity is accepted; editors stay allowed |
 //! | R4b system credential files `/etc/shadow*`/`/etc/sudoers*` × the R3 readers + R4 viewers (POSIX only) | 153 | extends the warm-viewer absolute-file coverage to the argument-position/cold-viewer commands, so `grep root /etc/shadow` or `openssl base64 /etc/sudoers` cannot replace `cat /etc/shadow` |
 //! | R5 `find * -name/-iname <sensitive name>` | 22 | `find ~ -name id_rsa` under general search roots (v1 residue); name-level globs and `id_rsa.pub` stay allowed |
 //! | R6 dest-first exfil `tar`/`7z`/`unzip` wildcards, `wget --post-file=` (+ its space-separated spelling), `aws s3 {cp,mv,sync}` verb-anchored | 2192 | dest-first archive/upload residues; `aws` anchored right after the verb so downloads INTO a sensitive path (key restore) pass |
-//! | R7 catastrophic destruction: `mkfs*`/`newfs*`/`diskutil erase*`, `dd * of=/dev/<dev>`, `chmod 000/777 <top-level>`, Windows `format`/`diskpart`/`vssadmin delete shadows`/`bcdedit` + drive-root destroy targets | 113 | the mainstream "critical-path rm / disk wipe" face (Claude Code / Codex / Goose analogs) |
-//! | R8 persistence/protected writes via `tee`/`cp`/`mv`/`install` into shell startup files, repo/config injection points, sudoers; `systemctl enable/mask`, `crontab -e/-r/-`, `schtasks /create`, `sc create`, `new-service`, canonical autorun `reg add` keys, `visudo` | 409 | the Claude Code protected-path analog, expressible subset |
+//! | R7 catastrophic destruction: `mkfs*`/`newfs*`/`diskutil erase*` (+ `diskutil apfs deleteContainer`/`secureErase`), `dd * of=/dev/<dev>`, `chmod 000/777 <top-level>` (Linux FHS + macOS system roots), Windows `format`/`diskpart`/`vssadmin delete shadows`/`bcdedit` + drive-root destroy targets | 125 | the mainstream "critical-path rm / disk wipe" face (Claude Code / Codex / Goose analogs) |
+//! | R8 persistence/protected writes via `tee`/`cp`/`mv`/`install` into shell startup files, repo/config injection points, sudoers; `systemctl enable/mask`, `crontab -e/-r/-`, `schtasks /create`, `sc create`, `new-service`, canonical autorun `reg add` keys, `visudo` | 410 | the Claude Code protected-path analog, expressible subset |
 //! | R9 File-tool rooted-absolute reads (abs files, real home, `/root`, literal `~`) | 309 | the "home-absolute File paths" residue |
 //!
 //! ## Registered semantic differences
@@ -148,7 +157,13 @@
 //! home-absolute File reads; the super-permission toggle stale-snapshot
 //! window for toggle-vs-toggle races (toggles are serialized by
 //! `platform::super_permission::TOGGLE_LOCK`, so the ruleset rebuild after a
-//! toggle can no longer race a concurrent toggle).
+//! toggle can no longer race a concurrent toggle); nested subagent tool
+//! calls escaping the deny face (the r14 foundation wires the subagent
+//! registry to the same injected engine — `Block` refuses with the main-line
+//! wording and a `Prompt` decision fails closed unless the parent
+//! auto-approves — closing the delegation escape hatch; the former
+//! ToolCallBefore hook never fired for nested subagent calls either, so this
+//! was a pre-existing coverage boundary, not a migration regression).
 //!
 //! ### Residues remaining (registered, not silent)
 //!
@@ -213,7 +228,10 @@
 //! - Concrete sudoers fragment names (`/etc/sudoers.d/<fragment>` — arbitrary
 //!   names; the `…/sudoers.d/*` glob spelling IS denied), arbitrary
 //!   `.git/hooks/<name>` names (the five standard hook names are denied),
-//!   `reg add` under non-autorun keys, `schtasks` actions beyond `/create`.
+//!   `reg add` under non-autorun keys, `schtasks` actions beyond `/create`,
+//!   and prefix-variant spellings of the workspace persistence targets
+//!   (`tee ./.git/config`, `tee $PWD/.gitmodules` — the token channel has no
+//!   leading-`./` or cwd-prefix folding).
 //! - `dd of=/dev/<partition>` spellings (`/dev/sda1`) and device names beyond
 //!   the enumerated common set; `chmod 000/777` on subdirectories of the
 //!   top-level dirs (`/usr/local`); fork-bomb BODY variants (the foundation
@@ -227,13 +245,6 @@
 //!   segment scan splits on real newlines and prefers over-blocking; a script
 //!   containing a literal `cat /etc/shadow` line is hard-denied (inherent
 //!   foundation deny-scan behavior, live since rule 3 exists).
-//! - Nested subagent tool calls do not pass through execpolicy (see above);
-//!   under YOLO subagents are not bound by these rules — to be closed when
-//!   the foundation wires the subagent executor to execpolicy. The former
-//!   ToolCallBefore hook did not fire for nested subagent tool calls either
-//!   (hooks execute on the main-line turn loop only; the subagent registry
-//!   dispatches tools directly), so this is a pre-existing coverage boundary
-//!   shared with main, not a regression introduced by this migration.
 //!
 //! ### Deliberate allowances (each pinned in the allow-trace test — silent
 //! re-tightening turns the suite red)
@@ -550,6 +561,8 @@ const CATASTROPHIC_COMMAND_WORDS: &[&str] = &[
     "diskutil erasedisk",
     "diskutil erasevolume",
     "diskutil erasefs",
+    "diskutil apfs deletecontainer",
+    "diskutil secureerase",
 ];
 
 /// Common block devices for the `dd * of=/dev/<dev>` wipe enumeration (v2
@@ -564,9 +577,31 @@ const DD_TARGET_DEVICES: &[&str] = &[
 /// family (v2 R7): exact tokens only, so `chmod 777 /usr/local` and any
 /// non-top-level path stay allowed. Modes other than 000/777 on sensitive
 /// paths stay a deliberate rotation allowance (`chmod 600 ~/.ssh/id_rsa`).
+/// The list covers the shared Linux FHS top-levels plus the macOS system
+/// roots (`/Users`, `/System`, `/Library`, `/Applications`, `/private`) —
+/// macOS is the primary shipping host, so its wipe face must not be thinner
+/// than the Linux one (the engine folds case, hence the lowercase spellings).
 const CHMOD_TOP_LEVEL_DIRS: &[&str] = &[
-    "/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/opt", "/root", "/run", "/sbin",
-    "/srv", "/tmp", "/usr", "/var",
+    "/",
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/home",
+    "/lib",
+    "/opt",
+    "/root",
+    "/run",
+    "/sbin",
+    "/srv",
+    "/tmp",
+    "/usr",
+    "/var",
+    "/users",
+    "/system",
+    "/library",
+    "/applications",
+    "/private",
 ];
 
 /// Modes for the catastrophic chmod family (v2 R7): only the
@@ -1140,13 +1175,14 @@ fn win_destroy_rules(path_variants: &[String]) -> Vec<ToolAskRule> {
     rules
 }
 
-/// Windows-native rules under the resolved real-home prefix (injected; the
-/// production value comes from [`win_real_home_prefix`]): resolved
-/// `C:\Users\me\...` spellings of the same families plus the resolved
-/// `%USERPROFILE%` targets of the Microsoft credential/protect directories
-/// (roaming = credentials, local = protect; both spellings of each, matching
-/// the former hook's belt-and-braces list).
-fn win_real_home_rules(home_prefix: &str) -> Vec<ToolAskRule> {
+/// Resolved real-home (`C:\Users\me\`) spellings of the sensitive inventory:
+/// directories (bare + trailing backslash), credential child files, and
+/// owning-directory filenames, plus the resolved `%USERPROFILE%` targets of
+/// the Microsoft credential/protect directories (roaming = credentials,
+/// local = protect; both spellings of each, matching the former hook's
+/// belt-and-braces list). Shared by the viewer/exfil/destroy family
+/// ([`win_real_home_rules`]) and the v2 R3/R4 reader/viewer families.
+fn win_real_home_variants(home_prefix: &str) -> Vec<String> {
     let prefixes = [home_prefix.to_string()];
     let mut variants = Vec::new();
     for dir in SENSITIVE_DIR_NAMES {
@@ -1167,6 +1203,28 @@ fn win_real_home_rules(home_prefix: &str) -> Vec<ToolAskRule> {
         variants.push(format!("{home_prefix}{sub}"));
         variants.push(format!("{home_prefix}{sub}\\"));
     }
+    variants
+}
+
+/// Resolved real-home directory-level glob spellings (`C:\Users\me\.ssh\*`) —
+/// the injected-home analog of [`win_dir_glob_variants`], for the R3/R4
+/// reader/viewer inventories (which include the literal-prefix globs).
+fn win_real_home_glob_variants(home_prefix: &str) -> Vec<String> {
+    let mut variants = Vec::new();
+    for dir in SENSITIVE_DIR_NAMES {
+        let win_rel = dir.replace('/', "\\");
+        variants.push(format!("{home_prefix}{win_rel}\\*"));
+    }
+    variants
+}
+
+/// Windows-native rules under the resolved real-home prefix (injected; the
+/// production value comes from [`win_real_home_prefix`]): resolved
+/// `C:\Users\me\...` spellings of the viewer/exfil/destroy families (the
+/// v2 R3/R4 reader/viewer families take the same inventory through
+/// [`win_arg_position_reader_rules`] / [`cold_viewer_rules`]).
+fn win_real_home_rules(home_prefix: &str) -> Vec<ToolAskRule> {
+    let variants = win_real_home_variants(home_prefix);
     let mut rules = win_viewer_rules(&variants);
     rules.extend(win_exfil_rules(&variants));
     rules.extend(win_destroy_rules(&variants));
@@ -1189,10 +1247,19 @@ fn arg_position_reader_rules() -> Vec<ToolAskRule> {
 
 /// Argument-position reader rules (v2 R3, Windows commands): `findstr` /
 /// `select-string` × the full Windows-native spelling inventory (the
-/// Windows-native analog of the POSIX reader family).
-fn win_arg_position_reader_rules() -> Vec<ToolAskRule> {
+/// Windows-native analog of the POSIX reader family). When a resolved
+/// real-home prefix is injected (a Windows host), the `C:\Users\me\...`
+/// spellings join the inventory too — otherwise
+/// `findstr password C:\Users\me\.ssh\id_rsa` would be a same-effort bypass
+/// of the denied `type C:\Users\me\.ssh\id_rsa` (the POSIX reader family
+/// already spells the process's real home via [`home_dir_prefixes`]).
+fn win_arg_position_reader_rules(win_home_prefix: Option<&str>) -> Vec<ToolAskRule> {
     let mut variants = win_sensitive_variants();
     variants.extend(win_dir_glob_variants());
+    if let Some(home) = win_home_prefix {
+        variants.extend(win_real_home_variants(home));
+        variants.extend(win_real_home_glob_variants(home));
+    }
     let mut rules = Vec::new();
     for path in &variants {
         for cmd in WIN_ARG_POSITION_READERS {
@@ -1206,11 +1273,18 @@ fn win_arg_position_reader_rules() -> Vec<ToolAskRule> {
 /// [`COLD_VIEWERS`] plus the anchored `[openssl, base64, <spelling>]`
 /// one-liner. Each command is spelled under BOTH inventories (POSIX
 /// home-anchored + Windows-native), matching the R3 reader inventory and the
-/// house "inert where spellings cannot occur" rule.
-fn cold_viewer_rules() -> Vec<ToolAskRule> {
+/// house "inert where spellings cannot occur" rule. When a resolved Windows
+/// real-home prefix is injected, its spellings join too (same rationale as
+/// [`win_arg_position_reader_rules`]: `sed -i s/x/y/
+/// C:\Users\me\.ssh\config` must not bypass the denied `type` form).
+fn cold_viewer_rules(win_home_prefix: Option<&str>) -> Vec<ToolAskRule> {
     let mut variants = home_anchored_variants();
     variants.extend(win_sensitive_variants());
     variants.extend(win_dir_glob_variants());
+    if let Some(home) = win_home_prefix {
+        variants.extend(win_real_home_variants(home));
+        variants.extend(win_real_home_glob_variants(home));
+    }
     let mut rules = Vec::new();
     for path in &variants {
         for cmd in COLD_VIEWERS {
@@ -1319,9 +1393,9 @@ fn catastrophic_rules() -> Vec<ToolAskRule> {
 /// Persistence / protected-write rules (v2 R8): `tee`/`cp`/`mv`/`install`
 /// into shell startup files (home-anchored + `/etc` login scripts), the
 /// repo/config injection points (`~/.gitconfig`, workspace git hooks, …),
-/// sudoers (`[tee|cp|mv, *, /etc/sudoers]`, the `tee …/sudoers.d/*` glob
-/// token, `visudo`), and the service/scheduled-task/registry-autorun command
-/// words. The main residual gap — shell REDIRECTION writes
+/// sudoers (`[tee|cp|mv|install, *, /etc/sudoers]`, the `tee …/sudoers.d/*`
+/// glob token, `visudo`), and the service/scheduled-task/registry-autorun
+/// command words. The main residual gap — shell REDIRECTION writes
 /// (`echo x >> ~/.bashrc`) — is invisible to the token channel and stays
 /// registered (module docs).
 fn persistence_rules() -> Vec<ToolAskRule> {
@@ -1340,8 +1414,10 @@ fn persistence_rules() -> Vec<ToolAskRule> {
             rules.push(deny_cmd(format!("{cmd} * {target}")));
         }
     }
-    // Privilege: sudoers writes and the editor that grants them.
-    for cmd in ["tee", "cp", "mv"] {
+    // Privilege: sudoers writes and the editor that grants them. `install`
+    // is here too: `install -m 440 payload /etc/sudoers` is a same-effort
+    // bypass of the `cp` form.
+    for cmd in ["tee", "cp", "mv", "install"] {
         rules.push(deny_cmd(format!("{cmd} * /etc/sudoers")));
     }
     rules.push(deny_cmd("tee /etc/sudoers.d/*".to_string()));
@@ -1514,8 +1590,8 @@ pub(crate) fn safety_deny_rules_with_home(
     rules.extend(dd_bitcopy_rules());
     rules.extend(sensitive_dir_glob_read_rules());
     rules.extend(arg_position_reader_rules());
-    rules.extend(win_arg_position_reader_rules());
-    rules.extend(cold_viewer_rules());
+    rules.extend(win_arg_position_reader_rules(win_home_prefix.as_deref()));
+    rules.extend(cold_viewer_rules(win_home_prefix.as_deref()));
     rules.extend(system_credential_reader_rules());
     rules.extend(find_name_rules());
     rules.extend(dest_first_exfil_rules());
@@ -1660,16 +1736,17 @@ mod tests {
         // readers + 12 cold viewers + openssl base64) = 153; find -name
         // 11 × 2 = 22; dest-first exfil 8 × 274 (tar/7z/unzip +
         // wget --post-file in both =-joined and space spellings + aws s3
-        // cp/mv/sync) = 2192; catastrophic 16
-        // POSIX words + 20 dd devices + 30 chmod (2 modes × 15 dirs) + 7
-        // Windows words = 73; persistence 98 targets × 4 write commands
+        // cp/mv/sync) = 2192; catastrophic 18
+        // POSIX words + 20 dd devices + 40 chmod (2 modes × 20 dirs — Linux
+        // FHS + macOS system roots) + 7 Windows words = 85; persistence 98
+        // targets × 4 write commands
         // (60 startup home + 4 /etc startup + 25 home config + 9 workspace)
-        // = 392 + 3 sudoers + 1 sudoers.d glob + 1 visudo + 12 service
-        // words = 409; File tool 55 workspace-relative + 309 absolute
+        // = 392 + 4 sudoers + 1 sudoers.d glob + 1 visudo + 12 service
+        // words = 410; File tool 55 workspace-relative + 309 absolute
         // (36 abs files + 33 dirs(list_dir) + 108 children + 132 names);
         // Windows viewers (184 + 44) × 5 = 1140, exfil 228 × 14 = 3192,
         // destroy (228 + 4 drive roots) × 10 = 2320, credential command
-        // words 7; POSIX command words 3; sudo 2 → 24488 total. The v1
+        // words 7; POSIX command words 3; sudo 2 → 24501 total. The v1
         // canonical cmd.exe `/`-flag-sequence family (4332 rules) is deleted:
         // single-letter `/`-flag skipping makes the wildcard destroy rules
         // cover every order (probe: `del /q /f …` below).
@@ -1677,7 +1754,7 @@ mod tests {
         // immediately (a >=100-style weak assertion once hid a ~78% loss).
         assert_eq!(
             rules.len(),
-            24488,
+            24501,
             "ruleset size drifted; confirm the change is intentional and update the pinned count and this breakdown"
         );
         let commands: Vec<&str> = rules.iter().filter_map(|r| r.command.as_deref()).collect();
@@ -2304,7 +2381,10 @@ mod tests {
     /// Rules built with an injected Windows real-home prefix deny the
     /// resolved `C:\Users\me\...` spellings a model writes once it knows the
     /// user name, including the resolved MS credential/protect directories.
-    /// Other users' profiles stay allowed (registered residue).
+    /// The v2 R3/R4 reader/viewer families take the same resolved-home
+    /// inventory, so `findstr`/`select-string`/`sed`/`openssl base64` cannot
+    /// replace the denied `type` form. Other users' profiles stay allowed
+    /// (registered residue).
     #[test]
     fn win_real_home_spellings_are_denied_with_injected_home() {
         let ruleset = ruleset_with_denied_prefix_promotion(safety_deny_rules_with_home(
@@ -2321,6 +2401,13 @@ mod tests {
             "del C:\\Users\\me\\.aws\\credentials",
             "type C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Credentials",
             "cat C:\\Users\\me\\AppData\\Local\\Microsoft\\Protect",
+            // R3/R4 argument-position readers and cold viewers over the
+            // resolved-home spelling (the same-effort bypass of `type`).
+            "findstr /i password C:\\Users\\me\\.ssh\\id_rsa",
+            "Select-String -Pattern password C:\\Users\\me\\.aws\\credentials",
+            "sed -i s/x/y/ C:\\Users\\me\\.ssh\\config",
+            "openssl base64 C:\\Users\\me\\.ssh\\id_rsa",
+            "findstr password C:\\Users\\me\\.ssh\\*",
         ] {
             let d = check(&engine, cmd);
             assert!(!d.allow, "expected deny: {cmd} -> {:?}", d.reason());
@@ -2328,6 +2415,8 @@ mod tests {
         for cmd in [
             "type C:\\Users\\other\\.ssh\\id_rsa",
             "type C:\\Users\\me\\notes.md",
+            "findstr password C:\\Users\\me\\notes.md",
+            "findstr password C:\\Users\\other\\.ssh\\id_rsa",
         ] {
             let d = check(&engine, cmd);
             assert!(d.allow, "must not over-block: {cmd} -> {:?}", d.reason());
