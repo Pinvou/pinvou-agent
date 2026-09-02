@@ -104,7 +104,7 @@ jobs:
       - name: Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
 
       - name: 版本与 CI 路由脚本测试
         run: >-
@@ -387,7 +387,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: |
             pinvou3-app/package-lock.json
@@ -486,7 +486,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: remote-control-relay/package-lock.json
 
@@ -509,7 +509,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: pinvou3-app/package-lock.json
 
@@ -541,7 +541,7 @@ jobs:
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.97.1
+          toolchain: 1.98.0
           components: clippy, rustfmt
 
       - name: Cargo cache
@@ -839,7 +839,7 @@ jobs:
         if: ${{ github.event_name != 'push' }}
         uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: remote-control-relay/package-lock.json
 
@@ -1147,7 +1147,7 @@ jobs:
       - name: Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: pinvou3-app/package-lock.json
 
@@ -1183,7 +1183,7 @@ jobs:
       - name: Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
 
       - name: 准备 macOS universal ACP Bridge
         run: ./pinvou3-app/scripts/prepare-codex-bridge-runtime.sh

@@ -4,5 +4,5 @@
 # 升级方式:改这里一个数字即可,CI(dtolnay/rust-toolchain 读取本文件)与本地自动一致。
 # 带上 clippy / rustfmt 组件，配合 lint 门禁。
 [toolchain]
-channel = "1.97.1"
+channel = "1.98.0"
 components = ["clippy", "rustfmt"]

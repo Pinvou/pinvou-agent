@@ -27,7 +27,7 @@ else
   DD="--"
 fi
 
-NODE_VERSION="22.22.0"
+NODE_VERSION="24.20.0"
 CODEX_ACP_VERSION="1.6.2"
 CODEX_ACP_PACKAGE="@agentclientprotocol/codex-acp"
 CLAUDE_ACP_VERSION="0.70.0"
@@ -130,10 +130,10 @@ node_archive_ext() {
 
 node_sha256() {
   case "$1" in
-    linux-x64) echo "9aa8e9d2298ab68c600bd6fb86a6c13bce11a4eca1ba9b39d79fa021755d7c37" ;;
-    linux-arm64) echo "1bf1eb9ee63ffc4e5d324c0b9b62cf4a289f44332dfef9607cea1a0d9596ba6f" ;;
-    darwin-x64) echo "5ea50c9d6dea3dfa3abb66b2656f7a4e1c8cef23432b558d45fb538c7b5dedce" ;;
-    darwin-arm64) echo "5ed4db0fcf1eaf84d91ad12462631d73bf4576c1377e192d222e48026a902640" ;;
+    linux-x64) echo "2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2" ;;
+    linux-arm64) echo "5f4ddab610c1ab2016b3c227cebdbf6d9495161487e4739c7b90090595f465f7" ;;
+    darwin-x64) echo "9e5b2644cf107befb6aefca676b96d3296bc10138096f022ed378d6233ed81f4" ;;
+    darwin-arm64) echo "40e5607e5ecb3db9192723776da2d75d966260fc74a7a9e731c1bd67dda96bc8" ;;
     *) return 1 ;;
   esac
 }

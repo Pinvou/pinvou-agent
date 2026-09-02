@@ -4,5 +4,5 @@
 # Cargo.toml; bump this one number to upgrade. clippy / rustfmt
 # components back the lint gates.
 [toolchain]
-channel = "1.97.1"
+channel = "1.98.0"
 components = ["clippy", "rustfmt"]
