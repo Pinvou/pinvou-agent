@@ -49,6 +49,7 @@ const PlatformToolAction = ({ copy, t, ...props }) => {
   const showExport = !!(props.size === 'lg' && props.tool && props.tool.installed && !props.tool.builtin && props.tool.exportable !== false && props.tool.backendId && props.onExport);
   const exportBtn = showExport && (
     <button
+      type="button"
       data-testid="tool-store-export"
       data-tool-id={props.tool.backendId}
       disabled={!!props.busy}
@@ -884,13 +885,21 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // （list 为只读命令，Web 端可看列表；恢复/删除挂 toolStoreMutations 能力门）。
       const [showRecycleBin, setShowRecycleBin] = useState(false);
       const [recycledPlugins, setRecycledPlugins] = useState([]);
+      // 加载态：进入子页到首包返回之间不得闪「回收站是空的」空态；recycledLoaded
+      // 标记首次加载完成（成功或失败都算，失败由 alert 提示），加载中渲染 spinner。
+      const [recycledLoading, setRecycledLoading] = useState(false);
+      const [recycledLoaded, setRecycledLoaded] = useState(false);
       const [purgeConfirm, setPurgeConfirm] = useState(null); // { id, name }
       const loadRecycledPlugins = () => {
+        setRecycledLoading(true);
         invokeTauri('list_recycled_plugins').then(list => {
           setRecycledPlugins(Array.isArray(list) ? list : []);
         }).catch((e) => {
           console.error('list_recycled_plugins failed:', e);
           setAlert({ visible: true, loading: false, title: storeCopy.recycleBinLoadFailed, isInstall: false, isError: true });
+        }).finally(() => {
+          setRecycledLoading(false);
+          setRecycledLoaded(true);
         });
       };
       useEffect(() => {
@@ -923,8 +932,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }
       };
       // 彻底删除：二次确认（沿用更新确认的弹窗模式）后物理删除包文件与回收站条目。
+      // Web 只读降级 fail-closed：确认弹窗入口虽由 canMutateToolStore 门控，处理函数
+      // 自身同样拒绝（与本文件其它变更处理函数同一纪律）。
       const doPurgeRecycled = async () => {
-        if (!purgeConfirm || busyRef.current) return;
+        if (!canMutateToolStore || !purgeConfirm || busyRef.current) return;
         const { id, name } = purgeConfirm;
         setPurgeConfirm(null);
         setBusyId(id);
@@ -2313,17 +2324,21 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           {/* 回收站彻底删除二次确认:物理删除包文件与回收站条目,不可恢复
               (自绘确认,风格对齐预置技能更新确认) */}
           {purgeConfirm && createPortal((
+            // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is covered by the dialog's cancel control
+            // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
             <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setPurgeConfirm(null)}>
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: dialog content stopPropagation only, interaction happens on the buttons inside */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: dialog content wrapper, non-interactive container */}
               <div className="w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]" onClick={e => e.stopPropagation()}>
                 <div className="px-6 pt-6 pb-5 text-center">
                   <div className="text-[17px] font-semibold mb-1.5 text-slate-900 dark:text-white">{storeCopy.recyclePurgeTitle(purgeConfirm.name)}</div>
                   <div className="text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">{storeCopy.recyclePurgeHint}</div>
                 </div>
                 <div className="border-t border-slate-200 dark:border-white/10 flex">
-                  <button onClick={() => setPurgeConfirm(null)} className="flex-1 py-3 text-[17px] text-center transition-colors text-slate-500 active:bg-slate-100 dark:text-slate-400 dark:active:bg-white/5 border-r border-slate-200 dark:border-white/10">
+                  <button type="button" onClick={() => setPurgeConfirm(null)} className="flex-1 py-3 text-[17px] text-center transition-colors text-slate-500 active:bg-slate-100 dark:text-slate-400 dark:active:bg-white/5 border-r border-slate-200 dark:border-white/10">
                     {storeCopy.cancel}
                   </button>
-                  <button data-testid="recycled-purge-confirm" onClick={doPurgeRecycled} className="flex-1 py-3 text-[17px] font-semibold text-center transition-colors text-rose-600 active:bg-slate-100 dark:text-rose-400 dark:active:bg-white/5">
+                  <button type="button" data-testid="recycled-purge-confirm" onClick={doPurgeRecycled} className="flex-1 py-3 text-[17px] font-semibold text-center transition-colors text-rose-600 active:bg-slate-100 dark:text-rose-400 dark:active:bg-white/5">
                     {storeCopy.recyclePurge}
                   </button>
                 </div>
@@ -2363,7 +2378,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             <header className="z-30 bg-white/80 dark:bg-[#131314]/80 backdrop-blur-2xl transition-colors">
               <div className="max-w-[1400px] mx-auto border-b border-slate-200/50 pb-6 dark:border-white/10">
                 <div className="flex items-center gap-3">
-                  <button data-testid="recycle-bin-back" onClick={() => setShowRecycleBin(false)} title={storeCopy.back} aria-label={storeCopy.back}
+                  <button type="button" data-testid="recycle-bin-back" onClick={() => setShowRecycleBin(false)} title={storeCopy.back} aria-label={storeCopy.back}
                     className="w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 flex items-center justify-center text-slate-600 dark:text-slate-300 transition-colors shrink-0">
                     <ChevronLeft size={20} />
                   </button>
@@ -2392,19 +2407,19 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                           </div>
                           {canMutateToolStore && (
                             <div className="flex items-center gap-2 shrink-0">
-                              <button data-testid={`recycled-restore-${item.id}`} onClick={() => handleRestoreRecycled(item)}
+                              <button type="button" data-testid={`recycled-restore-${item.id}`} onClick={() => handleRestoreRecycled(item)}
                                 disabled={!!item.package_missing || busyId === item.id}
                                 title={item.package_missing ? storeCopy.recycleRestoreUnavailable : undefined}
                                 className="inline-flex h-8 items-center rounded-full bg-blue-600 px-4 text-[12px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed">
                                 {storeCopy.recycleRestore}
                               </button>
-                              <button data-testid={`recycled-export-${item.id}`} onClick={() => handleExportRecycled(item)}
+                              <button type="button" data-testid={`recycled-export-${item.id}`} onClick={() => handleExportRecycled(item)}
                                 disabled={!!item.package_missing || busyId === item.id}
                                 title={item.package_missing ? storeCopy.recycleExportUnavailable : undefined}
                                 className="inline-flex h-8 items-center rounded-full bg-slate-100 px-4 text-[12px] font-semibold text-slate-700 shadow-sm transition-colors hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed dark:bg-[#2C2C2E] dark:text-slate-200 dark:hover:bg-[#3A3A3C]">
                                 {storeCopy.recycleExport}
                               </button>
-                              <button data-testid={`recycled-purge-${item.id}`} onClick={() => setPurgeConfirm({ id: item.id, name })}
+                              <button type="button" data-testid={`recycled-purge-${item.id}`} onClick={() => setPurgeConfirm({ id: item.id, name })}
                                 disabled={busyId === item.id}
                                 className="inline-flex h-8 items-center rounded-full bg-slate-100 px-4 text-[12px] font-semibold text-rose-600 shadow-sm transition-colors hover:bg-slate-200 disabled:opacity-40 dark:bg-[#2C2C2E] dark:text-rose-400 dark:hover:bg-[#3A3A3C]">
                                 {storeCopy.recyclePurge}
@@ -2415,6 +2430,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       );
                     })}
                   </ul>
+                ) : (recycledLoading || !recycledLoaded) ? (
+                  <div data-testid="recycle-bin-loading" className="py-24 text-center flex flex-col items-center">
+                    <span className="w-6 h-6 mb-4 rounded-full border-2 border-blue-500 border-t-transparent animate-spin inline-block shrink-0" />
+                    <p className="text-slate-500 dark:text-slate-400">{storeCopy.recycleBinLoading}</p>
+                  </div>
                 ) : (
                   <div className="py-24 text-center flex flex-col items-center">
                     <div className="w-16 h-16 mb-4 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400">
@@ -2545,7 +2565,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                             <Check size={14} className="mr-1.5 opacity-70" />
                             <span>{storeCopy.installedOnly}</span>
                           </button>
-                          <button data-testid="tool-store-recycle-bin" onClick={() => setShowRecycleBin(true)} title={storeCopy.recycleBin}
+                          <button type="button" data-testid="tool-store-recycle-bin" onClick={() => setShowRecycleBin(true)} title={storeCopy.recycleBin}
                             className="h-9 whitespace-nowrap shrink-0 inline-flex items-center rounded-full px-3.5 text-[13px] font-semibold transition-colors bg-[#F2F2F7] text-[#000] hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-[#fff] dark:hover:bg-[#3A3A3C]">
                             <Trash2 size={14} className="mr-1.5 opacity-70" />
                             <span>{storeCopy.recycleBin}</span>

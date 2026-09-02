@@ -11,8 +11,11 @@
 //! （`__pycache__/`、`*.pyc`）不打包（与导入管线的磁盘比对豁免口径一致）；
 //! 符号链接不跟随、不打包（防把包外文件带进 zip / 链接环）。写出为原子写：
 //! 同目录临时文件 + rename 覆盖，中途失败不动用户已确认覆盖的原目标文件。
+//! 累计未压缩大小超过导入管线硬上限（`plugin_import::MAX_PLUGIN_SIZE_BYTES`）
+//! 即拒绝导出：超出上限的 zip 无法被自家导入管线导回，「成功导出」只是假象。
 //!
-//! manifest 净化（导出已安装包时启用，防御性兜底）：安装期
+//! manifest 净化（两个导出路径均启用，防御性兜底；回收站导出按包的原安装
+//! 位置 `bundles/<id>` 匹配前缀）：安装期
 //! `connectors::add_local_to_mcp_json` 会把 `server.py` 入口参数改写为
 //! `bundles/<id>/mcp/server.py` 绝对路径 —— 但该改写只发生在写 mcp.json 时，
 //! 盘上 manifest 保持原始相对形式；旧版本/手改/迁移路径落过绝对路径的包，
@@ -52,7 +55,7 @@ pub fn export_installed_plugin(pkg_id: &str, dest_zip: &Path) -> Result<(), Stri
             pkg_dir.display()
         ));
     }
-    let written = write_package_zip(&pkg_dir, dest_zip, true)?;
+    let written = write_package_zip(&pkg_dir, dest_zip, Some(&pkg_dir))?;
     log::info!(
         "[package-export] 已导出已安装包 {pkg_id}（{written} 个条目）→ {}",
         dest_zip.display()
@@ -61,21 +64,35 @@ pub fn export_installed_plugin(pkg_id: &str, dest_zip: &Path) -> Result<(), Stri
 }
 
 /// 把包目录打成标准插件包 zip（包内容平铺在 zip 根），返回写入条目数。
-/// `sanitize_args`：`mcp/manifest.json` 的 args 净化（见模块注释；回收站导出
-/// 置 false——回收的包未经安装期改写，原样打包）。
+/// `sanitize_against`：`Some(pkg_dir)` 时对 `mcp/manifest.json` 做 args 净化
+/// （见模块注释）——绝对路径参数按 `pkg_dir.join("mcp")` 前缀还原为相对形式，
+/// 对已是相对形式的 args 原样透传；`None` 不净化。回收站导出传包的原安装位置
+/// （`bundles/<id>`）而非回收站目录：旧版本/手改的 manifest 落的是安装期绝对
+/// 路径，前缀按回收站目录匹配会漏净化，产出在别的机器导不回的 zip。
+/// 大小上限：累计未压缩大小超过导入管线硬上限
+/// （`plugin_import::MAX_PLUGIN_SIZE_BYTES`）即拒绝——超出上限的 zip 在任何
+/// 机器都导不回来，导出「成功」只是假象。
 /// 原子写（底座 `write_atomic` 同范式，流式版）：先写目标同目录的临时文件，
 /// 全部写完 sync 后 rename 覆盖目标——用户已确认覆盖的原文件在中途失败时
 /// 保持原样不动；临时文件随 NamedTempFile drop 自动清理，不留半写 zip。
 pub(crate) fn write_package_zip(
     src_dir: &Path,
     dest_zip: &Path,
-    sanitize_args: bool,
+    sanitize_against: Option<&Path>,
 ) -> Result<usize, String> {
     let mut files = Vec::new();
-    collect_export_files(src_dir, src_dir, &mut files)
+    let mut total_bytes: u64 = 0;
+    collect_export_files(src_dir, src_dir, &mut files, &mut total_bytes)
         .map_err(|e| format!("遍历 {} 失败: {e}", src_dir.display()))?;
     if files.is_empty() {
         return Err(format!("包目录 {} 为空，无法导出", src_dir.display()));
+    }
+    if total_bytes > super::plugin_import::MAX_PLUGIN_SIZE_BYTES {
+        return Err(format!(
+            "包总大小 {} MiB 超过插件包上限 {} MiB（导入管线的硬上限），拒绝导出——超出上限的 zip 无法重新导入",
+            total_bytes / (1024 * 1024),
+            super::plugin_import::MAX_PLUGIN_SIZE_BYTES / (1024 * 1024),
+        ));
     }
     files.sort();
     // 同目录临时文件：rename 保证同盘原子替换；中途任何失败都不动原目标。
@@ -93,10 +110,10 @@ pub(crate) fn write_package_zip(
         // 风险）；统一 '/' 分隔，与导入管线的路径口径一致。
         zw.start_file(rel, opts)
             .map_err(|e| format!("写 zip 条目 {rel}: {e}"))?;
-        if sanitize_args && rel == "mcp/manifest.json" {
+        if let Some(sanitize_root) = sanitize_against.filter(|_| rel == "mcp/manifest.json") {
             let raw =
                 std::fs::read(path).map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
-            let sanitized = sanitize_manifest_args(&raw, &src_dir.join("mcp"));
+            let sanitized = sanitize_manifest_args(&raw, &sanitize_root.join("mcp"));
             zw.write_all(&sanitized)
                 .map_err(|e| format!("写 zip 条目 {rel}: {e}"))?;
         } else {
@@ -147,14 +164,15 @@ fn persist_tempfile(tmp: tempfile::NamedTempFile, dest_zip: &Path) -> Result<(),
     Ok(())
 }
 
-/// 递归收集导出条目（相对路径用 '/' 分隔）：跳过 Python 运行缓存
-/// （`__pycache__/` 子树与 `*.pyc`，与 plugin_import 的磁盘比对豁免口径一致）。
-/// 符号链接一律跳过（`symlink_metadata` 不跟随）：用户手工放进包目录的链接
-/// 若跟随会把包外文件打进 zip，链接环也无深度保护。
+/// 递归收集导出条目（相对路径用 '/' 分隔）并累计未压缩总大小：跳过 Python
+/// 运行缓存（`__pycache__/` 子树与 `*.pyc`，与 plugin_import 的磁盘比对豁免
+/// 口径一致）。符号链接一律跳过（`symlink_metadata` 不跟随）：用户手工放进包
+/// 目录的链接若跟随会把包外文件打进 zip，链接环也无深度保护。
 fn collect_export_files(
     root: &Path,
     dir: &Path,
     out: &mut Vec<(String, PathBuf)>,
+    total_bytes: &mut u64,
 ) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -164,7 +182,7 @@ fn collect_export_files(
             continue;
         }
         if meta.is_dir() {
-            collect_export_files(root, &path, out)?;
+            collect_export_files(root, &path, out, total_bytes)?;
             continue;
         }
         let rel = path
@@ -176,6 +194,7 @@ fn collect_export_files(
         {
             continue;
         }
+        *total_bytes = total_bytes.saturating_add(meta.len());
         out.push((rel, path));
     }
     Ok(())
@@ -448,7 +467,7 @@ mod tests {
         symlink(&pkg, pkg.join("skills/loop")).unwrap();
 
         let dest = dir.join("export.zip");
-        let written = write_package_zip(&pkg, &dest, false).expect("含符号链接不应导致导出失败");
+        let written = write_package_zip(&pkg, &dest, None).expect("含符号链接不应导致导出失败");
         assert_eq!(written, 2, "只有真实文件入包");
 
         let archive_file = std::fs::File::open(&dest).unwrap();
@@ -492,7 +511,7 @@ mod tests {
         std::fs::write(&dest, "用户已有的原文件内容").unwrap();
 
         assert!(
-            write_package_zip(&pkg, &dest, false).is_err(),
+            write_package_zip(&pkg, &dest, None).is_err(),
             "读到不可读文件应失败"
         );
         assert_eq!(
@@ -513,6 +532,33 @@ mod tests {
 
         // 恢复权限，避免临时目录清理留下不可读文件。
         let _ = std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o644));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 大小上限：累计未压缩大小超过导入管线硬上限即拒绝导出（超限 zip 无法被
+    /// 自家导入管线导回，「成功导出」只是假象）。用 set_len 撑出超限逻辑大小，
+    /// 不写真实数据（检查只看 metadata，不发生大文件读写）。
+    #[test]
+    fn write_package_zip_rejects_oversized_package() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-pkgexport-oversize-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pkg = dir.join("pkg");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("plugin.json"), "{}").unwrap();
+        let big = std::fs::File::create(pkg.join("runtime.bin")).unwrap();
+        big.set_len(crate::features::marketplace::plugin_import::MAX_PLUGIN_SIZE_BYTES + 1)
+            .unwrap();
+        drop(big);
+
+        let dest = dir.join("export.zip");
+        let err = write_package_zip(&pkg, &dest, None).unwrap_err();
+        assert!(err.contains("超过插件包上限"), "错误应说明超过上限: {err}");
+        assert!(!dest.exists(), "拒绝导出不得残留文件");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

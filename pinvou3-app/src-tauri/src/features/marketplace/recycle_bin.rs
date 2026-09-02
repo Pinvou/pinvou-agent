@@ -205,7 +205,13 @@ impl RecycleBin {
         // 持有新建目录句柄会报 os error 5，实测命中）。
         if let Err(e) = super::plugin_import::rename_dir_with_retry(&src, &dst) {
             // rename 失败通常什么都没动；兜底尝试回滚（部分平台跨设备 rename 语义差异）。
-            let _ = super::plugin_import::rename_dir_with_retry(&dst, &src);
+            // 回滚失败必须留痕：目录可能处于半搬移状态，静默吞掉将无从排查。
+            if let Err(re) = super::plugin_import::rename_dir_with_retry(&dst, &src) {
+                log::error!(
+                    "[recycle-bin] 回收 {pkg_id} rename 失败后的兜底回滚也失败（{} 可能处于半搬移状态）: {re}",
+                    dst.display()
+                );
+            }
             return Err(format!(
                 "搬移 {} → {} 失败: {e}",
                 src.display(),
@@ -224,7 +230,18 @@ impl RecycleBin {
             extra: serde_json::Map::new(),
         });
         if let Err(e) = save_locked(&self.file, &file) {
-            let _ = super::plugin_import::rename_dir_with_retry(&dst, &src);
+            if let Err(re) = super::plugin_import::rename_dir_with_retry(&dst, &src) {
+                // 清单无条目而目录滞留回收站根 = list/restore/purge 不可见的孤儿
+                // （数据未丢）。必须响亮留痕，并如实上报（不能谎称已回滚）。
+                log::error!(
+                    "[recycle-bin] 回收 {pkg_id} 清单写入失败，目录回滚也失败：{} 滞留回收站根但无清单条目（数据未丢，需人工搬回）: {re}",
+                    dst.display()
+                );
+                return Err(format!(
+                    "写入回收站清单失败: {e}；目录回滚也失败，包目录滞留在 {}（数据未丢，需人工搬回）: {re}",
+                    dst.display()
+                ));
+            }
             return Err(format!("写入回收站清单失败（已回滚目录）: {e}"));
         }
         log::info!(
@@ -291,7 +308,13 @@ impl RecycleBin {
         std::fs::create_dir_all(&self.bundles_root)
             .map_err(|e| format!("创建包目录根 {} 失败: {e}", self.bundles_root.display()))?;
         if let Err(e) = super::plugin_import::rename_dir_with_retry(&src, &dst) {
-            let _ = super::plugin_import::rename_dir_with_retry(&dst, &src);
+            // 搬回失败通常什么都没动；兜底回滚失败必须留痕（目录可能半搬移）。
+            if let Err(re) = super::plugin_import::rename_dir_with_retry(&dst, &src) {
+                log::error!(
+                    "[recycle-bin] 取回 {pkg_id} rename 失败后的兜底回滚也失败（{} 可能处于半搬移状态）: {re}",
+                    src.display()
+                );
+            }
             return Err(format!(
                 "搬回 {} → {} 失败: {e}",
                 src.display(),
@@ -334,8 +357,12 @@ impl RecycleBin {
     /// 把回收站包目录 `recycle-bin/<id>/` 的内容打成 zip（plugin.json、mcp/、
     /// skills/ 等平铺在 zip 根，对齐 plugin-package-spec 的包结构，可经统一导入
     /// 管线 `plugin_import::import_plugin_package` 重新导入）。写出逻辑复用
-    /// `package_export::write_package_zip`（回收的包未经安装期改写，传
-    /// sanitize_args=false 原样打包；只打包插件包本体，不含回收站清单等元数据）。
+    /// `package_export::write_package_zip`（只打包插件包本体，不含回收站清单等
+    /// 元数据）。args 净化与已安装包导出同口径启用：当前版本卸载的包 manifest
+    /// 保持相对 args（净化是 no-op），但旧版本/手改的 manifest 可能落了安装期
+    /// 绝对路径——净化前缀必须按包的原安装位置 `bundles/<id>`（而非回收站目录）
+    /// 匹配，否则漏净化产出在别的机器导不回的 zip；已是相对形式的 args 原样
+    /// 透传，不会误改。
     /// 全程持 `file_lock()`：并发的 take_back/purge 会把包目录搬走/删掉，锁内
     /// 导出保证遍历期间目录不会被并发操作挪动（zip 较大时持锁偏久，正确性优先）。
     pub fn export_package(&self, pkg_id: &str, dest_zip: &Path) -> Result<(), String> {
@@ -354,7 +381,10 @@ impl RecycleBin {
                 src.display()
             ));
         }
-        let written = super::package_export::write_package_zip(&src, dest_zip, false)?;
+        // 净化前缀按原安装位置（回收前 manifest 里的绝对路径指向 bundles/<id>/mcp/）。
+        let sanitize_root = self.bundles_root.join(pkg_id);
+        let written =
+            super::package_export::write_package_zip(&src, dest_zip, Some(&sanitize_root))?;
         log::info!(
             "[recycle-bin] 已导出包 {pkg_id}（{written} 个条目）→ {}",
             dest_zip.display()
@@ -389,8 +419,14 @@ pub(crate) fn package_kind(pkg_dir: &Path) -> &'static str {
 ///    （`resolve_secret_placeholder` 响亮报错）——登记已恢复 installed=true，
 ///    `credentials_required=true` 由前端引导重填，重填走 install 幂等补齐
 ///    mcp.json/installed.json；
+///    供给失败则整体回滚到回收站（目录搬回 + 清单条目复原 + 登记移除），用户可
+///    修复后从回收站重试，不残留「记录已安装、无供给面、回收站条目已消费、无从
+///    重试」的半恢复态；
 /// 4. 技能组件随包目录搬回 + 登记恢复即回到安装态（技能无独立供给管线）；
-/// 5. scope 禁用集兜底清理（卸载时命令层已清，恢复后不应残留禁用）。
+/// 5. scope 禁用集兜底清理（卸载时命令层已清，恢复后不应残留禁用）。有意为之：
+///    恢复是对用户既有安装的撤销回退，不是新装——新装的 DenyAll 默认禁用同意门
+///    （`sync_deny_all_scopes_after_install`）不适用于恢复，恢复的包回到卸载前的
+///    启用态（评审确认，见 marketplace-unification §4）。
 ///
 /// 并发契约：全程持同 id `import_lock_for`（与导入/卸载/展示编辑同一把锁；
 /// 锁序 import → recycle → store，与卸载路径一致，无死锁面），恢复整链路
@@ -441,12 +477,36 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
             log::info!(
                 "[recycle-bin] 恢复 {pkg_id}：manifest 声明了 secrets，凭据已在卸载时删除，跳过 MCP 供给，待用户重填凭据"
             );
-        } else {
-            mgr.install_upload(pkg_id, record.source.clone())?;
+        } else if let Err(e) = mgr.install_upload(pkg_id, record.source.clone()) {
+            // 供给失败整体回滚到回收站（mcp.json/installed.json 已由 install_upload
+            // 内部事务回滚）：目录搬回 + 清单条目复原 + 登记移除，用户可从回收站
+            // 重试；不回滚会残留「记录已安装、无供给面、条目已消费无从重试」的
+            // 半恢复态。回滚自身失败必须响亮留痕并如实上报。
+            let rollback_display = match &record.source {
+                super::store::BundleSource::Upload(zip) => zip.clone(),
+                _ => pkg_id.to_string(),
+            };
+            let rollback_kind = package_kind(&pkg_dir);
+            if let Err(re) =
+                bin.recycle_package(pkg_id, rollback_kind, &rollback_display, record.clone())
+            {
+                log::error!(
+                    "[recycle-bin] 恢复 {pkg_id} 供给失败（{e}），回滚到回收站也失败：包目录仍在 {}、登记 installed=true、无回收站条目: {re}",
+                    pkg_dir.display()
+                );
+                return Err(format!(
+                    "恢复 {pkg_id} 失败: {e}；回滚到回收站也失败（包目录仍在原位，登记为已安装）: {re}"
+                ));
+            }
+            if let Err(se) = BundleStore::new().remove(pkg_id) {
+                log::warn!("[recycle-bin] 恢复 {pkg_id} 回滚后登记移除失败: {se}");
+            }
+            return Err(format!("恢复 {pkg_id} 失败（已回滚至回收站，可重试）: {e}"));
         }
     }
 
-    // scope 禁用集：包 id + 包内技能目录名一并兜底清理。
+    // scope 禁用集：包 id + 包内技能目录名一并兜底清理。恢复有意跳过新装的
+    // DenyAll 默认禁用同意门（见函数头注释第 5 点）。
     super::scope::remove_bundle_from_disabled_scopes(pkg_id);
     if let Ok(rd) = std::fs::read_dir(pkg_dir.join("skills")) {
         for entry in rd.flatten() {
@@ -815,6 +875,73 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// 恢复供给失败整体回滚到回收站：MCP 包 manifest 损坏 → install_upload 失败
+    /// （load_manifest 读不出），此时必须目录搬回 + 清单条目复原 + 登记移除，
+    /// 用户可修复后从回收站重试；不得残留「记录已安装、无供给面、条目已消费
+    /// 无从重试」的半恢复态（review P2）。
+    #[test]
+    fn restore_mcp_supply_failure_rolls_back_to_recycle_bin() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = fresh_dir("restore-rollback");
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        // 损坏 manifest 的 MCP 包：has_mcp 成立（文件在）但 load_manifest 读不出，
+        // install_upload 必失败（且 manifest 无 secrets 声明，不走进凭据分支）。
+        let pkg = paths::bundles_root().join("broken-mcp");
+        std::fs::create_dir_all(pkg.join("mcp")).unwrap();
+        std::fs::write(pkg.join("mcp/manifest.json"), "not-json{{{").unwrap();
+        let store = BundleStore::new();
+        store.upsert(upload_record("broken-mcp")).unwrap();
+        let record = store.get("broken-mcp").unwrap().unwrap();
+        store.remove("broken-mcp").unwrap();
+        RecycleBin::new()
+            .recycle_package("broken-mcp", KIND_MCP, "broken-mcp.zip", record)
+            .unwrap();
+
+        let err = restore_plugin("broken-mcp").unwrap_err();
+        assert!(
+            err.contains("已回滚至回收站"),
+            "供给失败应整体回滚并提示可重试: {err}"
+        );
+        assert!(
+            !pkg.exists(),
+            "回滚后包目录应搬回回收站，bundles/<id>/ 不得残留"
+        );
+        assert!(
+            tmp.join("marketplace/recycle-bin/broken-mcp/mcp/manifest.json")
+                .is_file(),
+            "回滚后回收站目录应完整"
+        );
+        let list = RecycleBin::new().list().unwrap();
+        assert_eq!(list.len(), 1, "回滚后清单条目应复原（可重试）");
+        assert_eq!(list[0].id, "broken-mcp");
+        assert!(!list[0].package_missing);
+        assert!(
+            store.get("broken-mcp").unwrap().is_none(),
+            "回滚后登记应移除（与卸载后状态一致）"
+        );
+
+        // 修复 manifest 后可从回收站重试并成功（恢复路径全链路可自愈）。
+        std::fs::write(
+            tmp.join("marketplace/recycle-bin/broken-mcp/mcp/manifest.json"),
+            r#"{"id":"broken-mcp","name":"b","description":"d","version":"1","icon":"","category":"c","mcp_tools":[],"command":"python","args":["server.py"]}"#,
+        )
+        .unwrap();
+        restore_plugin("broken-mcp").expect("修复后重试恢复应成功");
+        assert!(pkg.join("mcp/manifest.json").is_file());
+        assert!(store.get("broken-mcp").unwrap().unwrap().installed);
+        assert!(RecycleBin::new().list().unwrap().is_empty());
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// 导出：清单内条目生成 zip，plugin.json/mcp/skills 条目完整可读回；Python
     /// 运行缓存（__pycache__/、*.pyc）不打包。
     #[test]
@@ -882,6 +1009,60 @@ mod tests {
         )
         .unwrap();
         assert!(skill.contains("name: exp-skill"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 回收站导出的 args 净化：旧版本/手改 manifest 落了安装期绝对路径（指向
+    /// 原安装位置 bundles/<id>/mcp/），导出必须还原为相对入口脚本名——净化前缀
+    /// 按原安装位置匹配（回收站目录前缀会漏匹配，产出导不回的 zip）。
+    #[test]
+    fn export_package_sanitizes_legacy_absolute_args() {
+        let tmp = fresh_dir("export-sanitize");
+        let bin = RecycleBin::with_roots(tmp.clone());
+        let pkg = tmp.join("bundles/legacy-mcp");
+        std::fs::create_dir_all(pkg.join("mcp")).unwrap();
+        std::fs::write(pkg.join("mcp/server.py"), b"print('hi')").unwrap();
+        let abs_entry = pkg
+            .join("mcp/server.py")
+            .to_string_lossy()
+            .replace('\\', "\\\\");
+        std::fs::write(
+            pkg.join("mcp/manifest.json"),
+            format!(
+                r#"{{"id":"legacy-mcp","name":"L","description":"d","version":"1","icon":"","category":"c","mcp_tools":[],"command":"python","args":["{abs_entry}"]}}"#
+            ),
+        )
+        .unwrap();
+        bin.recycle_package(
+            "legacy-mcp",
+            KIND_MCP,
+            "legacy-mcp.zip",
+            upload_record("legacy-mcp"),
+        )
+        .unwrap();
+
+        let dest = tmp.join("export.zip");
+        bin.export_package("legacy-mcp", &dest).unwrap();
+
+        let archive_file = std::fs::File::open(&dest).unwrap();
+        let mut archive = zip::ZipArchive::new(archive_file).unwrap();
+        let mut manifest = String::new();
+        std::io::Read::read_to_string(
+            &mut archive.by_name("mcp/manifest.json").unwrap(),
+            &mut manifest,
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(
+            value["args"],
+            serde_json::json!(["server.py"]),
+            "安装期绝对路径应还原为相对入口脚本名: {manifest}"
+        );
+        // 源文件不被净化修改（导出只读源）
+        let on_disk =
+            std::fs::read_to_string(tmp.join("recycle-bin/legacy-mcp/mcp/manifest.json")).unwrap();
+        assert!(on_disk.contains(&abs_entry));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

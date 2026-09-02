@@ -851,7 +851,7 @@ Object.assign(dictJa.uiToolStore, {
   groupByType:'タイプ別', groupByBusiness:'業務別',
   typeGroups:{ bundle:'プラグインパック', mcp:'MCP', skill:'スキル', cli:'CLI 連携', api:'API & Webhook', upcoming:'近日公開' },
   recycleBin:'ごみ箱', recycleBinTitle:'プラグインのごみ箱', recycleBinEmpty:'ごみ箱は空です', recycleBinEmptyHint:'アップロードしたプラグインをアンインストールするとここに移動します。復元または完全に削除できます。',
-  recycleBinLoadFailed:'ごみ箱の読み込みに失敗しました。もう一度お試しください。', recycledAt:time=>`移動日時: ${time}`,
+  recycleBinLoadFailed:'ごみ箱の読み込みに失敗しました。もう一度お試しください。', recycleBinLoading:'ごみ箱を読み込み中…', recycledAt:time=>`移動日時: ${time}`,
   recycleRestore:'復元', recycleRestoreUnavailable:'パッケージファイルが見つからないため復元できません', recyclePurge:'完全に削除',
   recyclePurgeTitle:name=>`「${name}」を完全に削除しますか？`, recyclePurgeHint:'この操作は取り消せません。プラグインパッケージのファイルは完全に削除されます。',
   recycleRestored:name=>`「${name}」を復元しました`, recycleRestoredCredentials:name=>`「${name}」を復元しました。認証情報はアンインストール時に削除されているため、再度入力してください。`, recyclePurged:name=>`「${name}」を完全に削除しました`,

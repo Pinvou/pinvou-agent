@@ -870,13 +870,18 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // Upload 整包回收 preflight（M2）：回收站不可用（同 id 目标残留/根目录不可
         // 建）时在拆任何供给面之前 fail loud —— 此前 secrets/installed.json/mcp.json
         // 已不可逆拆除后回收失败只回写 bundles.json，造成「显示已安装、实际未供给」。
+        // 注意文案口径：命令层（uninstall_marketplace_tool_sync）对远程 OAuth 工具
+        // 的 token 删除先于本函数，此处中止时 token 可能已删除——只能说市场安装态
+        // （mcp.json/installed.json/bundles.json/包目录/secrets）未改动。
         let pkg_dir = paths::bundles_root().join(tool_id);
         let will_recycle = upload_record.is_some() && pkg_dir.exists();
         if will_recycle {
             recycle_bin::RecycleBin::new()
                 .preflight_recycle(tool_id)
                 .map_err(|e| {
-                    format!("回收站不可用，已中止卸载 {tool_id}（未改动任何安装态）: {e}")
+                    format!(
+                        "回收站不可用，已中止卸载 {tool_id}（市场安装态未改动；若该工具配置了远程 OAuth，其登录状态可能已在卸载流程中先行清除）: {e}"
+                    )
                 })?;
         }
 
