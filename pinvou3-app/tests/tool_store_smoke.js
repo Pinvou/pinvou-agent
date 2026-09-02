@@ -174,7 +174,7 @@ function injectSource() {
         case 'get_bundle_visibility': return state.failVisibility ? Promise.reject(new Error('mock visibility read failure')) : Promise.resolve(state.hidden[args.scope]||[]);
         case 'set_bundle_visibility': state.hidden[args.scope]=(args.bundleIds||[]).map(toPackageId); return Promise.resolve(null);
         case 'feishu_apply_skills': case 'wecom_apply_skills': case 'dingtalk_apply_skills': case 'tmeet_apply_skills': return Promise.resolve(null);
-        // failOpenExternal 模拟外链白名单拒绝:企微扫码弹窗「在浏览器打开」须可见报错。
+        // failOpenExternal simulates an external-url allowlist rejection: the WeCom QR modal's "Open in browser" must surface a visible error.
         case 'open_external_url': return state.failOpenExternal ? Promise.reject('external-url-not-allowlisted') : Promise.resolve(null);
         default: return Promise.resolve(null);
       }
@@ -483,25 +483,26 @@ async function visibilityBox(page, cardText, modeLabel, click) {
       rec('飞书详情版本号以后端 lock 表为准',await page.evaluate(()=>document.body.innerText.includes('v9.9.9-lock')));
     }
     if(id==='wecom'){
-      // 企微真码弹窗:后端 emit 的 qr_data_url 直接进 <img>(iframe 已移除);
-      // 「在浏览器打开」被白名单拒绝时必须可见报错(此前静默);
-      // 取消须连流程卡一起清——后端对取消已静默,不再发 wecom:error 隐式清场。
+      // WeCom real-QR modal: the backend-emitted qr_data_url goes straight into <img> (iframe removed);
+      // an allowlist-rejected "Open in browser" must surface a visible error (previously silent);
+      // cancel must clear the flow card too — backend cancel is now silent, no wecom:error implicit cleanup.
       await page.evaluate(() => window.__emitTauri('wecom:qr', {
         phase: 'authorize',
         url: 'https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&test=1',
         qr_data_url: 'data:image/png;base64,AAAA',
       }));
       await sleep(150);
-      rec('企微扫码弹窗渲染后端下发的二维码', await page.evaluate(() => {
+      rec('WeCom QR modal renders the backend-issued QR', await page.evaluate(() => {
         const img = [...document.querySelectorAll('img')].find(i => (i.getAttribute('src') || '') === 'data:image/png;base64,AAAA');
         return !!img && document.body.innerText.includes('请使用企业微信 App 扫一扫');
       }));
       await page.evaluate(() => { window.__TOOL_STORE_TEST__.failOpenExternal = true; });
       await clickExact(page, '在浏览器打开'); await sleep(150);
-      rec('企微浏览器打开被拒时可见报错且浮层置顶', await page.evaluate(() => {
+      rec('WeCom browser-open rejection shows a visible topmost alert', await page.evaluate(() => {
         if (!document.body.innerText.includes('未能打开浏览器')) return false;
-        // innerText 对遮挡免疫:再以 elementFromPoint 验证 alert 全屏层在自己的
-        // 中心点就是命中最上层,防止同层 body portal(如扫码弹窗)遮盖回归。
+        // innerText is blind to occlusion: also verify via elementFromPoint that the alert's
+        // fullscreen layer is the topmost hit at its own center, guarding against a
+        // same-level body portal (e.g. the QR modal) covering it again.
         const title = [...document.querySelectorAll('div')].find(d => (d.textContent || '').trim().startsWith('未能打开浏览器'));
         let layer = title;
         while (layer && !(layer.classList.contains('fixed') && layer.classList.contains('inset-0'))) layer = layer.parentElement;
@@ -514,7 +515,7 @@ async function visibilityBox(page, cardText, modeLabel, click) {
       await page.evaluate(() => { window.__TOOL_STORE_TEST__.failOpenExternal = false; });
       await dismiss(page);
       await clickExact(page, '取消'); await sleep(150);
-      rec('企微弹窗取消后弹窗与流程卡一并清理', await page.evaluate(() => {
+      rec('WeCom modal cancel clears both modal and flow card', await page.evaluate(() => {
         const qrImg = [...document.querySelectorAll('img')].some(i => (i.getAttribute('src') || '') === 'data:image/png;base64,AAAA');
         return !qrImg && !document.body.innerText.includes('请使用企业微信 App 扫一扫');
       }));

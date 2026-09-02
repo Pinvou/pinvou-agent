@@ -453,8 +453,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     }
 
     // iOS 风格弹窗（安装/卸载后提示需新建会话生效）
-    // z-[210]:与扫码弹窗等其余 z-[200] body portal 同层会退化为挂载顺序定叠放
-    // （alert 后挂载才在上层），显式高一级让报错弹窗永远可见，不依赖挂载时机。
+    // z-[210]: sharing z-[200] with the QR modal and other body portals would
+    // degrade stacking to mount order (the alert only paints on top because it
+    // mounts later); one explicit level up keeps the error alert always visible.
     const TsAlert = ({ alert, _theme, onDismiss, onNewChat, onCancelLoading, copy }) => { // eslint-disable-line no-unused-vars -- theme is kept for the existing props contract
       if (!alert.visible && !alert.loading) return null;
       return (
@@ -1876,7 +1877,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         invokeTauri('wecom_cancel').catch(() => {});
         wecomConn.setFlow(null); setBusyId(null);
       };
-      // 「在浏览器打开」失败(如外链白名单拒绝)时的兜底提示,此前静默无任何反馈。
+      // Fallback notice when "Open in browser" fails (e.g. external-url allowlist rejection); previously silent.
       const browserOpenFailed = () => setAlert({ visible: true, loading: false, title: storeCopy.openBrowserFailed, isInstall: false, isError: true });
       const wecomRetry = () => { connectWecom(); };
       const disconnectWecom = async () => {
@@ -2183,8 +2184,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           />, document.body)}
           {/* 飞书扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
           {wecomQr && (() => {
-            // 对齐 wecomResetFlow:后端对取消已静默(不再发 wecom:error 清场),
-            // 这里必须自己清 flow,否则详情流程卡/mini 卡陈旧停在「待扫码」。
+            // Mirrors wecomResetFlow: backend cancel is now silent (no wecom:error
+            // cleanup), so we must clear the flow here, otherwise the detail/mini
+            // flow cards stay stale on "waiting for scan".
             const cancel = () => { wecomConn.stopTick(); invokeTauri('wecom_cancel').catch(() => {}); wecomConn.setFlow(null); setWecomQr(null); setBusyId(null); };
             return createPortal((
             // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is covered by the dialog's cancel control
@@ -2194,9 +2196,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               {/* biome-ignore lint/a11y/noStaticElementInteractions: click-propagation stop layer, non-interactive container */}
               <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[440px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
                 <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-4">{storeCopy.connectTitle(storeCopy.toolNames.wecom)}</h3>
-                {/* 后端下发 wecom-cli --output-qrcode 落盘的真授权二维码(一次扫码直达)。
-                    此前 iframe 内嵌 /ai/qc/gen 落地页:WKWebView 里常渲染不出码,
-                    且落地页 URL 编成二维码会让用户扫码后再扫一次。 */}
+                {/* Real auth QR emitted by the backend (wecom-cli --output-qrcode PNG), one scan straight to authorization.
+                    Previously an iframe embedded the /ai/qc/gen landing page: WKWebView often failed to render the code,
+                    and encoding the landing-page URL as a QR made users scan a second time. */}
                 {wecomQr.qr && (
                   <img src={wecomQr.qr} alt={storeCopy.wecomQrAlt} decoding="async" className="w-52 h-52 rounded-2xl border border-slate-200 bg-white p-1 dark:border-white/10" />
                 )}
