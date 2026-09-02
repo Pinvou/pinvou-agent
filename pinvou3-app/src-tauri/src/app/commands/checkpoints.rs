@@ -195,7 +195,7 @@ fn busy_peer_on_same_execution_root(
 ///
 /// 时机：restore + 对话截断都成功之后。清理性质——失败只如实记日志，不让整个
 /// 回退失败（恢复与截断已生效，作废只是防止旧分支快照遮蔽新分支）。
-/// `restore_checkpoint` 命令不调本函数：它不动对话，turn 编号继续有效。
+/// （独立的 restore_checkpoint IPC 命令已移除，此处仅 rewind/undo 编排调用。）
 fn invalidate_abandoned_turn_checkpoints(ledger: &std::path::Path, keep_turns: u32) {
     match checkpoints::invalidate_turn_checkpoints_after(ledger, keep_turns) {
         Ok(_) => {}
@@ -225,9 +225,9 @@ pub async fn rewind_to_turn(
     let reservation = pool
         .reserve_turn(&session_id)
         .map_err(|error| format!("预约会话 turn 失败（会话忙碌？）: {error:#}"))?;
-    // 执行根互斥：置位后同根会话的新 turn 预约（含 scheduled）全部被拒；
-    // 随后复查在途 peer（已 active 的不受预约门拦截）。
-    let _root_guard = pool.begin_execution_root_rewind(&execution);
+    // 执行根互斥：check-and-set 置位后同根会话的新 turn 预约（含 scheduled）
+    // 全部被拒；另一个回退已在飞时如实拒绝（胜者优先，败者不持 Guard）。
+    let _root_guard = pool.begin_execution_root_rewind(&execution)?;
     // 跨会话忙碌门：恢复单位是执行根，同根其它会话在跑时回退会撤销它正在写的
     // 文件，如实拒绝并告知哪个会话在忙。全量枚举（含 scheduled）是阻塞 IO，
     // 移出 async worker。
@@ -454,8 +454,8 @@ pub async fn undo_last_rewind(
     let reservation = pool
         .reserve_turn(&session_id)
         .map_err(|error| format!("预约会话 turn 失败（会话忙碌？）: {error:#}"))?;
-    // 执行根互斥：与 rewind_to_turn 同款（置位 + 在途 peer 复查）。
-    let _root_guard = pool.begin_execution_root_rewind(&execution);
+    // 执行根互斥：与 rewind_to_turn 同款（check-and-set 置位 + 在途 peer 复查）。
+    let _root_guard = pool.begin_execution_root_rewind(&execution)?;
     let store_gate = store.inner().clone();
     let session_id_gate = session_id.clone();
     let execution_gate = execution.clone();
@@ -1134,8 +1134,14 @@ mod tests {
             None,
             "回退后尾部被编辑必须不可反悔"
         );
-        // restore 路径在 mutation 锁内复核，同样拒绝。
-        assert!(store.restore_rewound_turns(&id).is_err());
+        // restore 路径在 mutation 锁内复核，同样拒绝。错误文案锚定「不可反悔」
+        // 字样——undo_last_rewind 的失败分类依赖它区分「条件已破（不可重试）」
+        // 与「IO 失败（可重试）」，改文案必须先改分类逻辑（评审 nit）。
+        let error = store.restore_rewound_turns(&id).expect_err("must refuse");
+        assert!(
+            format!("{error:#}").contains("不可反悔"),
+            "条件已破的错误必须含「不可反悔」字样（undo 分类契约）: {error:#}"
+        );
     }
 
     /// undo 条件③单独为否：记录绑定了 PreRestore 但该条目已不在 index（LRU

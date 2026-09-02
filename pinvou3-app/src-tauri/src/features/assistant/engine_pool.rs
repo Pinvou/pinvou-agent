@@ -1815,16 +1815,24 @@ impl EnginePool {
             .clone()
     }
 
-    /// 进入执行根回退/回滚临界区：置位后同根任何会话的新 turn 预约被拒绝。
-    /// 调用方置位后必须复查在途 peer（已 active 的 turn 不受预约门拦截，
+    /// 进入执行根回退/回滚临界区：check-and-set 在同一 flag 锁内完成——已置位
+    /// 即拒绝（「该目录正在回退」），胜者独占置位权。此前置位不查旧值、Guard
+    /// Drop 无条件清零：同根两会话先后置位后，败者的 Drop 会把胜者的临界区在
+    /// 飞行中打开（评审 M2）。拒绝路径不创建 Guard，胜者的 Drop 仍是唯一清零点。
+    /// 调用方置位成功后必须复查在途 peer（已 active 的 turn 不受预约门拦截，
     /// 见 busy_peer_on_same_execution_root）。
     pub(crate) fn begin_execution_root_rewind(
         &self,
         execution_root: &std::path::Path,
-    ) -> ExecutionRootRewindGuard {
+    ) -> Result<ExecutionRootRewindGuard, String> {
         let flag = self.execution_root_rewind_flag(execution_root);
-        *flag.lock() = true;
-        ExecutionRootRewindGuard { flag }
+        let mut guard = flag.lock();
+        if *guard {
+            return Err("该会话绑定的项目目录正在回退/回滚，请稍后再试".to_string());
+        }
+        *guard = true;
+        drop(guard);
+        Ok(ExecutionRootRewindGuard { flag })
     }
 
     /// 该会话是否有在途的 scheduled 轮（spawn→submit 窗口里 lifecycle 尚未
