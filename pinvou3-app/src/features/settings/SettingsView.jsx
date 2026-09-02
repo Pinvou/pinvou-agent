@@ -1164,6 +1164,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           // 同一 provider 内换模型时重置思考深度到新模型的默认档位：K2.6 选 off 后切 K3
           // 会残留不在 K3 档位表内的 off，界面无高亮且保存仍写旧值；与 applyCatalogItem 一致。
           setReasoningEffort(reasoningEffortForModelSwitch({ preset, model: nextModel, vendor, base_url: baseUrl }));
+          // Explicit model switches also reset the manual context window so it never leaks across models (same reset discipline as applyCatalogItem).
+          setContextWindow('');
           // 与 applyCatalogItem 一致:未手动改过档位时按新条目的视觉能力标注预填。
           if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(nextModel));
           setProviderModelPickerOpen(false);
@@ -1214,7 +1216,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           </>
         );
       };
-      const renderInlineField = ({ label, value, onChange, placeholder, type = 'text', trailing, readOnly = false, testId }) => (
+      const renderInlineField = ({ label, value, onChange, placeholder, type = 'text', trailing, readOnly = false, testId, inputMode, spellCheck }) => (
         <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
           {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
           <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{label}</label>
@@ -1225,6 +1227,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             readOnly={readOnly}
             placeholder={placeholder}
             data-testid={testId}
+            inputMode={inputMode}
+            spellCheck={spellCheck}
             className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366] ${readOnly ? 'cursor-default' : ''}`}
           />
           {trailing}
@@ -1611,6 +1615,28 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                       </div>
                     )}
                     {showBaseUrlField && renderInlineField({ label: t.customBaseUrl, value: baseUrl, onChange: e => handleBaseUrlChange(e.target.value) })}
+                    {/* Context window (optional for cloud models): a newly released
+                        model ID not yet in the catalog cannot be resolved by it, so
+                        the runtime falls back to the conservative 128K window.
+                        Declaring the vendor's rated value here makes route_limits
+                        prefer it; empty = null = today's default (existing doSave
+                        semantics, no change to any stored behavior). local_vllm
+                        presets do not show this field (the probed max_model_len is
+                        the authoritative window); an openai_compatible endpoint
+                        pointing at localhost still shows it, with over-declared
+                        values min-clamped against the runtime probe. Input is
+                        truncated to 9 digits: context_window_tokens is persisted
+                        as u32, so longer input would fail save_model with a raw
+                        deserialization error (or Infinity silently saving null). */}
+                    {!isLocalPreset && renderInlineField({
+                      label: t.modelContextWindow,
+                      value: contextWindow,
+                      onChange: e => setContextWindow(e.target.value.replaceAll(/[^0-9]/g, '').slice(0, 9)), // eslint-disable-line sonarjs/concise-regex -- keep [^0-9] literal instead of \D; readability first
+                      placeholder: settingsCopy.modelContextWindowPlaceholder,
+                      testId: 'model-form-context-window',
+                      inputMode: 'numeric',
+                      spellCheck: false,
+                    })}
                     {isLocalPreset && (
                       <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
                         {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and toggle button are siblings; the toggle carries aria-pressed itself */}
@@ -1633,6 +1659,9 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                       </div>
                     )}
                   </div>
+                  {!isLocalPreset && (
+                    <div className={`px-1 mt-1.5 text-[12px] leading-4 ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{settingsCopy.modelContextWindowHint}</div>
+                  )}
                   {keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
                 </section>
               )}

@@ -878,7 +878,7 @@ Object.assign(dictEn.uiSettingsDetail, {
   add:'Add', manualLocalModel:'Add a local model manually',
   manualLocalModelDesc:'Enter the API URL and model ID', cloudModels:'Cloud models',
   localModels:'Local models', toolCalling:'Tool calling', apiKeyRequired:'Requires API Key',
-  testBeforeSave:'Test whether the service is available before saving',
+  testBeforeSave:'Test whether the service is available before saving', modelContextWindowPlaceholder:'e.g. 1048576', modelContextWindowHint:'Leave empty for the system default (uncatalogued models fall back to a 128K conservative value). For a newer model, enter its official window, e.g. 1048576 for 1M.',
   addProvider:provider=>`Add ${provider}`, editProvider:provider=>`Edit ${provider}`,
   autoDetectLocalModel:'Automatically detect local models',
   codingPlanTestUnavailable:'This provider endpoint cannot be tested right now, but you can still save the configuration',

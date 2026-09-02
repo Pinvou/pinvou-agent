@@ -860,6 +860,10 @@ async function modalWidth(page, headingText) {
       && manualLocalEffort.selected.length === 1
       && manualLocalEffort.selected[0] === '关闭',
     JSON.stringify(manualLocalEffort));
+  // A local model's window comes from the probed max_model_len (authoritative), so no manual input is offered.
+  const localNoContextWindowField = await page.evaluate(() =>
+    !document.querySelector('[data-testid="model-form-context-window"]'));
+  rec('⑥.5c local model form hides the context window input (probed value is authoritative)', localNoContextWindowField);
   await clickExact(page, '取消');
   await sleep(200);
 
@@ -897,7 +901,7 @@ async function modalWidth(page, headingText) {
       noTiersDuringWindow: buttons.length === 0,
     };
   });
-  rec('⑥.5c local-compatible probe window enters pending immediately, default four tiers not exposed',
+  rec('⑥.5d local-compatible probe window enters pending immediately, default four tiers not exposed',
     probeWindow.pendingShown && probeWindow.noTiersDuringWindow,
     JSON.stringify(probeWindow));
   // After the debounce (400ms) settles: the probe command must be issued and
@@ -909,12 +913,105 @@ async function modalWidth(page, headingText) {
     const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'probe_local_server_kind');
     return call && call.args;
   });
-  rec('⑥.5d probe command carries credential args (apiKey/modelId); authenticated endpoints no longer misjudged as generic',
+  rec('⑥.5e probe command carries credential args (apiKey/modelId); authenticated endpoints no longer misjudged as generic',
     !!probeCall
       && probeCall.baseUrl === 'http://127.0.0.1:8000/v1'
       && 'apiKey' in probeCall
       && 'modelId' in probeCall,
     JSON.stringify(probeCall));
+  await clickExact(page, '取消');
+  await sleep(200);
+  // Custom-model context-window entry: a newly released model ID not yet in the
+  // catalog (e.g. a 1M-class model) previously had no way to declare its window,
+  // so saves were always null and the runtime fell back to the conservative 128K.
+  // Regression lock: field renders empty, manual value persists via save_model,
+  // edit echoes it back, and clearing saves null.
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '云端模型');
+  await sleep(150);
+  await clickExact(page, 'OpenAI Compatible');
+  await sleep(300);
+  const customContextEntry = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const field = root && root.querySelector('[data-testid="model-form-context-window"]');
+    return {
+      visible: !!field,
+      empty: !!field && field.value === '',
+      hintShown: !!root && root.innerText.includes('1M 填 1048576'),
+    };
+  });
+  rec('⑥.5f custom compatible model form offers an empty context-window entry with hint',
+    customContextEntry.visible && customContextEntry.empty && customContextEntry.hintShown,
+    JSON.stringify(customContextEntry));
+  const customModelIdInput = await page.$('input[placeholder="输入模型 ID"]');
+  await customModelIdInput.type('glm-5.3-flash');
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const typeInto = (input, text) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const baseUrlInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    typeInto(baseUrlInput, 'https://example.com/v1');
+    typeInto(root.querySelector('[data-testid="model-form-context-window"]'), '1048576');
+  });
+  const customKeyInput = await page.$('input[placeholder="输入 API Key"]');
+  await customKeyInput.type('sk-ctx-test');
+  await sleep(150);
+  await clickExact(page, '保存');
+  await sleep(500);
+  const savedCustomContext = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑥.5g manual context window persists via save_model',
+    savedCustomContext
+      && savedCustomContext.model === 'glm-5.3-flash'
+      && savedCustomContext.preset === 'openai_compatible'
+      && savedCustomContext.provider_kind === 'custom'
+      && savedCustomContext.base_url === 'https://example.com/v1'
+      && savedCustomContext.context_window_tokens === 1048576,
+    JSON.stringify(savedCustomContext));
+  await clickRowAction(page, 'glm-5.3-flash', '编辑');
+  await sleep(300);
+  const editContextEcho = await page.evaluate(() => {
+    const field = document.querySelector('[data-testid="model-form-context-window"]');
+    return { visible: !!field, value: field ? field.value : null };
+  });
+  rec('⑥.5h edit model echoes the saved context window', editContextEcho.visible && editContextEcho.value === '1048576', JSON.stringify(editContextEcho));
+  await page.evaluate(() => {
+    const field = document.querySelector('[data-testid="model-form-context-window"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(field, '');
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(150);
+  await clickExact(page, '保存');
+  await sleep(500);
+  const clearedContext = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑥.5i clearing the context window saves null (system default kept, no 0/garbage value)',
+    clearedContext && clearedContext.model === 'glm-5.3-flash' && clearedContext.context_window_tokens === null,
+    JSON.stringify(clearedContext));
+  // Input bound: context_window_tokens is persisted as u32, so oversized input
+  // must be truncated to 9 digits; otherwise save_model fails with a raw serde
+  // deserialization error (or Infinity silently saves null).
+  await clickRowAction(page, 'glm-5.3-flash', '编辑');
+  await sleep(300);
+  await page.evaluate(() => {
+    const field = document.querySelector('[data-testid="model-form-context-window"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(field, '9999999999999');
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(150);
+  const overflowTruncated = await page.evaluate(() =>
+    document.querySelector('[data-testid="model-form-context-window"]').value);
+  rec('⑥.5j oversized numeric input is truncated to 9 digits (within the u32 persist bound)', overflowTruncated === '999999999', JSON.stringify({ overflowTruncated }));
   await clickExact(page, '取消');
   await sleep(200);
 
