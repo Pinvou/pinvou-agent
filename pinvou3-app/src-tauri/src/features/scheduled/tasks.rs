@@ -27,6 +27,10 @@ const MAX_TERMINAL_RUNS_PER_AUTOMATION: usize = 50;
 const SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION: u32 = 2;
 const SCHEDULED_MODEL_BINDING_SCHEMA_VERSION: u32 = 1;
 const SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION: u32 = 1;
+// Starts at 2: v1 was a full-task snapshot format that only existed during
+// development of this feature and was never released; the v1→v2 migration
+// strips the legacy overbroad snapshot fields.
+const SCHEDULED_HISTORY_ARCHIVE_SCHEMA_VERSION: u32 = 2;
 const SCHEDULED_EXECUTION_MODE: &str = "yolo";
 
 #[path = "stores.rs"]
@@ -63,6 +67,7 @@ pub struct ScheduledTaskState {
     read_state: ScheduledRunReadStore,
     model_bindings: ScheduledTaskModelBindingStore,
     ui_metadata: ScheduledTaskUiMetadataStore,
+    history_archive: ScheduledHistoryArchiveStore,
     operation_locks: ParkingMutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
     pool: Option<EnginePool>,
     fallback_model: String,
@@ -179,6 +184,8 @@ pub struct ScheduledRunDto {
     pub pinned: bool,
     pub pinned_at: Option<String>,
     pub archived: bool,
+    pub task_name: Option<String>,
+    pub task_model: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -229,6 +236,10 @@ fn scheduled_task_ui_metadata_path() -> std::path::PathBuf {
     scheduled_automation_root().join("task-ui-metadata.json")
 }
 
+fn scheduled_history_archive_path() -> std::path::PathBuf {
+    scheduled_automation_root().join("history-archive.json")
+}
+
 fn open_scheduled_automation_manager(root: PathBuf) -> Result<AutomationManager> {
     AutomationManager::open(root)
 }
@@ -249,6 +260,7 @@ impl ScheduledTaskState {
             ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())?;
         let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())?;
         let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())?;
+        let history_archive = ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())?;
         let fallback_model = default_automation_model(Some(bridge));
         let manager = open_scheduled_automation_manager(scheduled_automation_root())?;
         let allow_shell = bridge.allow_shell();
@@ -299,6 +311,7 @@ impl ScheduledTaskState {
             read_state,
             model_bindings,
             ui_metadata,
+            history_archive,
             operation_locks: ParkingMutex::new(HashMap::new()),
             pool: Some(pool),
             fallback_model,
@@ -467,8 +480,8 @@ impl ScheduledTaskState {
 
     async fn delete_task(&self, id: String) -> Result<DeletedScheduledTaskDto, String> {
         // Keep the per-automation gate for the complete destructive workflow. A
-        // cancellation-style outer timeout could release the gate after only
-        // some sessions were removed, allowing update/run-now into partial state.
+        // cancellation-style outer timeout could release the gate midway through
+        // the archive-then-delete sequence, allowing update/run-now into partial state.
         let _operation = self.lock_operation(&id).await;
         self.delete_task_inner(&id)
             .await
@@ -508,19 +521,27 @@ impl ScheduledTaskState {
         automation_id: String,
         run_id: String,
     ) -> Result<ScheduledRunViewedDto, String> {
-        let manager = self.automations.lock().await;
-        manager
-            .get_automation(&automation_id)
-            .map_err(|err| format!("Failed to read scheduled task '{automation_id}': {err}"))?;
-        let runs = manager.list_runs(&automation_id, None).map_err(|err| {
-            format!("Failed to list scheduled task runs for '{automation_id}': {err}")
-        })?;
+        let runs =
+            {
+                let manager = self.automations.lock().await;
+                match manager.get_automation(&automation_id) {
+                    Ok(_) => manager.list_runs(&automation_id, None).map_err(|err| {
+                        format!("Failed to list scheduled task runs for '{automation_id}': {err}")
+                    })?,
+                    Err(active_error) => self.history_archive.runs_for(&automation_id).ok_or_else(
+                        || {
+                            format!(
+                                "Failed to read scheduled task '{automation_id}': {active_error}"
+                            )
+                        },
+                    )?,
+                }
+            };
         let run = runs.iter().find(|run| run.id == run_id).ok_or_else(|| {
             format!("Scheduled run '{run_id}' does not belong to task '{automation_id}'")
         })?;
         ensure_scheduled_run_can_be_marked_viewed(run, &self.sessions)
             .map_err(|err| err.to_string())?;
-        drop(manager);
         compact_viewed_runs(&self.read_state, &automation_id, &runs);
         self.read_state
             .mark_viewed(&automation_id, &run_id)
@@ -563,31 +584,45 @@ impl ScheduledTaskState {
         // 崩溃可能留下 profile 已存在但 run 尚未 ThreadLinked 的会话，此时仍要能删会话——
         // 底座对「没有 run」已用 Ok(空) 表达，所以读失败必须上抛：把读失败当成没有 run 会
         // 删掉 Session 却留下 Run/Task，而 owned_session_id 从此返回 None,残留将不可见。
-        let run = {
+        let archived_run = self.history_archive.find_run(&automation_id, session_id);
+        let active_run = {
             let manager = self.automations.lock().await;
-            manager
-                .list_runs(&automation_id, None)
-                .map_err(|err| {
-                    format!("Failed to list runs for scheduled task '{automation_id}': {err}")
-                })?
-                .into_iter()
-                .find(|run| run.thread_id.as_deref() == Some(session_id))
+            match manager.get_automation(&automation_id) {
+                Ok(_) => manager
+                    .list_runs(&automation_id, None)
+                    .map_err(|err| {
+                        format!("Failed to list runs for scheduled task '{automation_id}': {err}")
+                    })?
+                    .into_iter()
+                    .find(|run| run.thread_id.as_deref() == Some(session_id)),
+                Err(_) if archived_run.is_some() => None,
+                Err(error) => {
+                    return Err(format!(
+                        "Failed to read scheduled task '{automation_id}': {error}"
+                    ));
+                }
+            }
         };
-        if run.as_ref().is_some_and(|run| {
-            matches!(
-                run.status,
-                AutomationRunStatus::Queued | AutomationRunStatus::Running
-            )
-        }) {
+        if active_run
+            .as_ref()
+            .or(archived_run.as_ref())
+            .is_some_and(|run| {
+                matches!(
+                    run.status,
+                    AutomationRunStatus::Queued | AutomationRunStatus::Running
+                )
+            })
+        {
             return Err("正在运行的定时任务记录不能删除".to_string());
         }
 
-        deleter
-            .delete_scheduled_conversation(session_id, &automation_id)
-            .await
-            .map_err(|err| format!("Failed to delete scheduled conversation: {err:#}"))?;
-
-        if let Some(run) = run {
+        if let Some(run) = active_run {
+            // Keep the foundation's established active-run cascade order. Its
+            // task/run deletion API owns the active record and remains unchanged.
+            deleter
+                .delete_scheduled_conversation(session_id, &automation_id)
+                .await
+                .map_err(|err| format!("Failed to delete scheduled conversation: {err:#}"))?;
             let task_manager = self
                 .task_manager
                 .as_ref()
@@ -605,71 +640,157 @@ impl ScheduledTaskState {
                 })?
             };
             compact_viewed_runs(&self.read_state, &automation_id, &remaining);
+        } else if let Some(run) = archived_run {
+            // Archived history is app-owned. Commit its removal before deleting
+            // the conversation so an archive write failure cannot strand a
+            // visible run whose session has already disappeared.
+            let removal = self
+                .history_archive
+                .remove_run(&automation_id, &run.id)
+                .map_err(|err| {
+                    format!(
+                        "Failed to delete archived scheduled run '{}': {err:#}",
+                        run.id
+                    )
+                })?
+                .ok_or_else(|| {
+                    format!(
+                        "Archived scheduled run '{}' changed before deletion",
+                        run.id
+                    )
+                })?;
+            if let Err(delete_error) = deleter
+                .delete_scheduled_conversation(session_id, &automation_id)
+                .await
+            {
+                if let Err(rollback_error) =
+                    self.history_archive.restore_task(removal.archived_task)
+                {
+                    return Err(format!(
+                        "Failed to delete scheduled conversation: {delete_error:#}; additionally failed to restore archived scheduled run '{}': {rollback_error:#}",
+                        run.id
+                    ));
+                }
+                return Err(format!(
+                    "Failed to delete scheduled conversation: {delete_error:#}"
+                ));
+            }
+            compact_viewed_runs(&self.read_state, &automation_id, &removal.remaining_runs);
+        } else {
+            // A crash may leave a scheduled profile before its run is linked.
+            deleter
+                .delete_scheduled_conversation(session_id, &automation_id)
+                .await
+                .map_err(|err| format!("Failed to delete scheduled conversation: {err:#}"))?;
         }
         Ok(())
     }
 
     async fn delete_task_inner(&self, id: &str) -> Result<DeletedScheduledTaskDto> {
-        {
+        let original_status = {
             let manager = self.automations.lock().await;
+            let original = manager
+                .get_automation(id)
+                .with_context(|| format!("read automation {id} before deletion"))?;
             manager
                 .pause_automation(id)
                 .with_context(|| format!("pause automation {id}"))?;
-        }
-
-        self.reconcile_runs().await?;
-        let runs = {
-            let manager = self.automations.lock().await;
-            manager.list_runs(id, None)?
+            original.status
         };
-        self.cancel_active_run_tasks(&runs).await?;
-        self.reconcile_runs().await?;
 
-        let runs = {
-            let manager = self.automations.lock().await;
-            manager.list_runs(id, None)?
-        };
-        let owned_sessions = owned_scheduled_sessions(id, &runs, &self.sessions)?;
-        if !owned_sessions.is_empty() && self.pool.is_none() {
-            bail!("engine pool is unavailable while scheduled sessions still exist");
+        let result = async {
+            self.reconcile_runs().await?;
+            let runs = {
+                let manager = self.automations.lock().await;
+                manager.list_runs(id, None)?
+            };
+            self.cancel_active_run_tasks(&runs).await?;
+            self.reconcile_runs().await?;
+
+            let (task_snapshot, runs) = {
+                let manager = self.automations.lock().await;
+                (manager.get_automation(id)?, manager.list_runs(id, None)?)
+            };
+            self.history_archive
+                .archive_task(ArchivedScheduledTaskSnapshot::from(&task_snapshot), runs)
+                .with_context(|| format!("archive scheduled task history {id}"))?;
+
+            let deleted = {
+                let manager = self.automations.lock().await;
+                match manager.delete_automation(id) {
+                    Ok(deleted) => deleted,
+                    Err(error) if manager.get_automation(id).is_err() => {
+                        log::warn!(
+                            "Scheduled task {id} definition was removed but run-directory cleanup failed; using the durable history archive: {error:#}"
+                        );
+                        task_snapshot
+                    }
+                    Err(error) => {
+                        drop(manager);
+                        self.history_archive
+                            .remove_task(id)
+                            .with_context(|| format!("roll back scheduled history archive {id}"))?;
+                        return Err(error).with_context(|| format!("delete automation {id}"));
+                    }
+                }
+            };
+            if let Err(error) = self.model_bindings.remove(id) {
+                log::warn!(
+                    "Deleted scheduled task {id}, but failed to remove its model binding: {error:#}"
+                );
+            }
+            if let Err(error) = self.ui_metadata.remove(id) {
+                log::warn!(
+                    "Deleted scheduled task {id}, but failed to remove its UI metadata: {error:#}"
+                );
+            }
+            Ok(DeletedScheduledTaskDto {
+                task: map_scheduled_task_with_bindings(
+                    deleted,
+                    Some(&self.model_bindings),
+                    Some(&self.ui_metadata),
+                ),
+                deleted_session_ids: Vec::new(),
+            })
         }
-        let mut deleted_session_ids = Vec::with_capacity(owned_sessions.len());
-        for (session_id, owner_id) in owned_sessions {
-            if let Some(pool) = &self.pool {
-                pool.delete_scheduled_run(&session_id, &owner_id)
+        .await;
+
+        match result {
+            Ok(deleted) => Ok(deleted),
+            Err(error) => {
+                if let Err(restore_error) = self
+                    .restore_task_status_if_present(id, original_status)
                     .await
-                    .with_context(|| format!("delete scheduled session {session_id}"))?;
-                deleted_session_ids.push(session_id);
+                {
+                    return Err(error.context(format!(
+                        "additionally failed to restore automation {id} after failed deletion: {restore_error:#}"
+                    )));
+                }
+                Err(error)
             }
         }
+    }
 
-        let deleted = {
-            let manager = self.automations.lock().await;
-            manager.delete_automation(id)?
+    async fn restore_task_status_if_present(
+        &self,
+        id: &str,
+        original_status: AutomationStatus,
+    ) -> Result<()> {
+        let manager = self.automations.lock().await;
+        let Ok(current) = manager.get_automation(id) else {
+            // delete_automation removes the definition before cleaning its run
+            // directory. A missing definition is therefore a committed delete,
+            // and must never be recreated by compensation.
+            return Ok(());
         };
-        if let Err(error) = self.read_state.remove_automation(id) {
-            log::warn!(
-                "Deleted scheduled task {id}, but failed to remove its viewed-run state: {error:#}"
-            );
+        if current.status == original_status {
+            return Ok(());
         }
-        if let Err(error) = self.model_bindings.remove(id) {
-            log::warn!(
-                "Deleted scheduled task {id}, but failed to remove its model binding: {error:#}"
-            );
-        }
-        if let Err(error) = self.ui_metadata.remove(id) {
-            log::warn!(
-                "Deleted scheduled task {id}, but failed to remove its UI metadata: {error:#}"
-            );
-        }
-        Ok(DeletedScheduledTaskDto {
-            task: map_scheduled_task_with_bindings(
-                deleted,
-                Some(&self.model_bindings),
-                Some(&self.ui_metadata),
-            ),
-            deleted_session_ids,
-        })
+        match original_status {
+            AutomationStatus::Active => manager.resume_automation(id)?,
+            AutomationStatus::Paused => manager.pause_automation(id)?,
+        };
+        Ok(())
     }
 
     async fn reconcile_runs(&self) -> Result<()> {
@@ -1124,6 +1245,17 @@ fn map_scheduled_run(
     read_state: &ScheduledRunReadStore,
     session_titles: &HashMap<String, String>,
 ) -> ScheduledRunDto {
+    map_scheduled_run_with_task(record, sessions, read_state, session_titles, None, None)
+}
+
+fn map_scheduled_run_with_task(
+    record: AutomationRunRecord,
+    sessions: &SessionStore,
+    read_state: &ScheduledRunReadStore,
+    session_titles: &HashMap<String, String>,
+    task_name: Option<String>,
+    task_model: Option<String>,
+) -> ScheduledRunDto {
     let session_id = owned_session_id_from_snapshot(&record, sessions, session_titles);
     let session_title = session_id
         .as_deref()
@@ -1158,6 +1290,8 @@ fn map_scheduled_run(
         pinned,
         pinned_at,
         archived,
+        task_name,
+        task_model,
     }
 }
 
@@ -1457,7 +1591,7 @@ pub async fn list_scheduled_task_runs(
     let record = manager
         .get_automation(&id)
         .map_err(|err| format!("Failed to read scheduled task '{id}': {err}"))?;
-    ensure_automation_workspace(&manager, record)
+    let record = ensure_automation_workspace(&manager, record)
         .map_err(|err| format!("Failed to prepare scheduled task workspace '{id}': {err:#}"))?;
     let records = manager
         .list_runs(&id, limit)
@@ -1467,10 +1601,19 @@ pub async fn list_scheduled_task_runs(
     }
     let session_titles = scheduled_session_titles(&state.sessions)
         .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
+    let task_name = record.name;
+    let task_model = record.model;
     Ok(records
         .into_iter()
         .map(|record| {
-            map_scheduled_run(record, &state.sessions, &state.read_state, &session_titles)
+            map_scheduled_run_with_task(
+                record,
+                &state.sessions,
+                &state.read_state,
+                &session_titles,
+                Some(task_name.clone()),
+                task_model.clone(),
+            )
         })
         .collect())
 }
@@ -1485,28 +1628,71 @@ pub async fn list_scheduled_runs(
         .reconcile_runs()
         .await
         .map_err(|err| format!("Failed to reconcile scheduled task runs: {err}"))?;
-    let manager = state.automations.lock().await;
-    let automations = manager
-        .list_automations()
-        .map_err(|err| format!("Failed to list scheduled tasks: {err}"))?;
     let mut records = Vec::new();
-    for automation in automations {
-        let runs = manager.list_runs(&automation.id, None).map_err(|err| {
-            format!(
-                "Failed to list scheduled task runs for '{}': {err}",
-                automation.id
-            )
-        })?;
-        compact_viewed_runs(&state.read_state, &automation.id, &runs);
-        records.extend(runs);
+    let mut active_run_keys = HashSet::new();
+    {
+        let manager = state.automations.lock().await;
+        let automations = manager
+            .list_automations()
+            .map_err(|err| format!("Failed to list scheduled tasks: {err}"))?;
+        for automation in automations {
+            let runs = manager.list_runs(&automation.id, None).map_err(|err| {
+                format!(
+                    "Failed to list scheduled task runs for '{}': {err}",
+                    automation.id
+                )
+            })?;
+            active_run_keys.extend(
+                runs.iter()
+                    .map(|run| (run.automation_id.clone(), run.id.clone())),
+            );
+            records.extend(
+                runs.into_iter()
+                    .map(|run| (run, Some(automation.name.clone()), automation.model.clone())),
+            );
+        }
     }
-    records.sort_by(|left, right| right.scheduled_for.cmp(&left.scheduled_for));
+    for archived in state.history_archive.archived_tasks() {
+        records.extend(
+            archived
+                .runs
+                .into_iter()
+                .filter(|run| {
+                    !active_run_keys.contains(&(run.automation_id.clone(), run.id.clone()))
+                })
+                .map(|run| {
+                    (
+                        run,
+                        Some(archived.task.name.clone()),
+                        archived.task.model.clone(),
+                    )
+                }),
+        );
+    }
+    let mut runs_by_automation = HashMap::<String, Vec<AutomationRunRecord>>::new();
+    for (run, _, _) in &records {
+        runs_by_automation
+            .entry(run.automation_id.clone())
+            .or_default()
+            .push(run.clone());
+    }
+    for (automation_id, runs) in runs_by_automation {
+        compact_viewed_runs(&state.read_state, &automation_id, &runs);
+    }
+    records.sort_by(|(left, _, _), (right, _, _)| right.scheduled_for.cmp(&left.scheduled_for));
     let session_titles = scheduled_session_titles(&state.sessions)
         .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
     Ok(records
         .into_iter()
-        .map(|record| {
-            map_scheduled_run(record, &state.sessions, &state.read_state, &session_titles)
+        .map(|(record, task_name, task_model)| {
+            map_scheduled_run_with_task(
+                record,
+                &state.sessions,
+                &state.read_state,
+                &session_titles,
+                task_name,
+                task_model,
+            )
         })
         .collect())
 }
@@ -1753,6 +1939,107 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_history_archive_migrates_legacy_full_task_to_minimal_snapshot() {
+        let dir = temp_home();
+        let path = dir.join("legacy-history-archive.json");
+        let legacy = serde_json::json!({
+            "schema_version": 1,
+            "tasks": {
+                "automation-1": {
+                    "task": {
+                        "id": "automation-1",
+                        "name": "Legacy task",
+                        "model": "legacy-model",
+                        "prompt": "private prompt that must not survive migration",
+                        "cwds": ["C:/private/workspace"],
+                        "allow_shell": true,
+                        "trust_mode": true
+                    },
+                    "runs": [],
+                    "deleted_at": "2026-01-01T00:00:00Z"
+                }
+            }
+        });
+        std::fs::write(&path, legacy.to_string()).expect("write legacy archive");
+
+        let store = ScheduledHistoryArchiveStore::open(path.clone()).expect("migrate archive");
+        let archived = store.archived_tasks();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].task.id, "automation-1");
+        assert_eq!(archived[0].task.name, "Legacy task");
+        assert_eq!(archived[0].task.model.as_deref(), Some("legacy-model"));
+
+        let persisted: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&path).expect("read migrated history archive"),
+        )
+        .expect("parse migrated history archive");
+        assert_eq!(
+            persisted["schema_version"],
+            SCHEDULED_HISTORY_ARCHIVE_SCHEMA_VERSION
+        );
+        let snapshot = &persisted["tasks"]["automation-1"]["task"];
+        assert!(snapshot.get("prompt").is_none());
+        assert!(snapshot.get("cwds").is_none());
+        assert!(snapshot.get("allow_shell").is_none());
+        assert!(snapshot.get("trust_mode").is_none());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn scheduled_history_archive_skips_only_corrupt_entries_and_runs() {
+        let dir = temp_home();
+        let path = dir.join("partially-corrupt-history-archive.json");
+        let payload = serde_json::json!({
+            "schema_version": SCHEDULED_HISTORY_ARCHIVE_SCHEMA_VERSION,
+            "tasks": {
+                "automation-good": {
+                    "task": {
+                        "id": "automation-good",
+                        "name": "Retained task",
+                        "model": "retained-model"
+                    },
+                    "runs": [
+                        {
+                            "id": "run-good",
+                            "automation_id": "automation-good",
+                            "scheduled_for": "2026-01-01T00:00:00Z",
+                            "status": "completed",
+                            "created_at": "2026-01-01T00:00:00Z"
+                        },
+                        { "id": 42, "not": "a valid run" }
+                    ],
+                    "deleted_at": "2026-01-01T00:00:00Z"
+                },
+                "automation-bad": {
+                    "task": { "id": 42 },
+                    "runs": [],
+                    "deleted_at": "2026-01-01T00:00:00Z"
+                }
+            }
+        });
+        std::fs::write(&path, payload.to_string()).expect("write partial archive");
+
+        let store = ScheduledHistoryArchiveStore::open(path.clone())
+            .expect("one corrupt entry must not quarantine the whole archive");
+        let archived = store.archived_tasks();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].task.id, "automation-good");
+        assert_eq!(archived[0].runs.len(), 1);
+        assert_eq!(archived[0].runs[0].id, "run-good");
+        assert!(path.exists(), "the valid archive file must remain in place");
+        assert!(
+            std::fs::read_dir(&dir)
+                .expect("read archive directory")
+                .filter_map(|entry| entry.ok())
+                .all(|entry| !entry.file_name().to_string_lossy().contains(".invalid-")),
+            "partial item damage must not quarantine valid history"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn scheduled_task_root_uses_pinvou_home() {
         let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
@@ -1872,6 +2159,32 @@ mod tests {
         }
     }
 
+    struct FailingConversationDeleter;
+
+    #[async_trait::async_trait]
+    impl ScheduledConversationDeleter for FailingConversationDeleter {
+        async fn delete_scheduled_conversation(
+            &self,
+            _session_id: &str,
+            _expected_task_id: &str,
+        ) -> Result<()> {
+            bail!("injected conversation deletion failure")
+        }
+    }
+
+    struct UnexpectedConversationDeleter;
+
+    #[async_trait::async_trait]
+    impl ScheduledConversationDeleter for UnexpectedConversationDeleter {
+        async fn delete_scheduled_conversation(
+            &self,
+            _session_id: &str,
+            _expected_task_id: &str,
+        ) -> Result<()> {
+            panic!("conversation deletion must not run before the archive commit")
+        }
+    }
+
     /// 等到目标 run 既挂上了会话、状态又到位。`want_terminal=false` 用于挂住的
     /// executor：那时 run 会停在 Running。
     ///
@@ -1979,6 +2292,10 @@ mod tests {
                 read_state,
                 model_bindings,
                 ui_metadata,
+                history_archive: ScheduledHistoryArchiveStore::open(
+                    scheduled_history_archive_path(),
+                )
+                .expect("history archive"),
                 operation_locks: ParkingMutex::new(HashMap::new()),
                 pool: None,
                 fallback_model: "cascade-model".to_string(),
@@ -2100,6 +2417,280 @@ mod tests {
 
     /// 正在排队/运行的记录不允许删除——拒绝发生在任何破坏性动作之前。
     #[tokio::test]
+    async fn deleting_task_preserves_completed_run_history_and_sessions() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_home();
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        let fixture = cascade_fixture(None).await;
+        let first = run_once(&fixture).await;
+        let second = run_once(&fixture).await;
+        let first_session = first.thread_id.clone().expect("first session");
+        let second_session = second.thread_id.clone().expect("second session");
+
+        let deleted = fixture
+            .state
+            .delete_for_test(fixture.automation_id.clone())
+            .await
+            .expect("delete task while retaining history");
+        assert!(deleted.deleted_session_ids.is_empty());
+        {
+            let manager = fixture.state.automations.lock().await;
+            assert!(
+                manager.get_automation(&fixture.automation_id).is_err(),
+                "the schedule definition must be removed"
+            );
+        }
+        assert!(
+            fixture
+                .state
+                .sessions
+                .scheduled_session_exists(&first_session),
+            "the first historical conversation must be retained"
+        );
+        assert!(
+            fixture
+                .state
+                .sessions
+                .scheduled_session_exists(&second_session),
+            "the second historical conversation must be retained"
+        );
+        let archived = fixture
+            .state
+            .history_archive
+            .runs_for(&fixture.automation_id)
+            .expect("archived runs");
+        assert_eq!(archived.len(), 2);
+        assert!(archived.iter().any(|run| run.id == first.id));
+        assert!(archived.iter().any(|run| run.id == second.id));
+
+        let reopened = ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
+            .expect("reopen history archive");
+        let reopened_task = reopened
+            .archived_tasks()
+            .into_iter()
+            .find(|archived| archived.task.id == fixture.automation_id)
+            .expect("persisted archived task");
+        assert_eq!(reopened_task.task.name, deleted.task.name);
+        assert_eq!(reopened_task.runs.len(), 2);
+
+        fixture
+            .state
+            .mark_run_viewed(fixture.automation_id.clone(), second.id.clone())
+            .await
+            .expect("mark archived run viewed");
+        fixture
+            .state
+            .delete_run_for_session_with(&first_session, &fixture.deleter)
+            .await
+            .expect("delete one archived run");
+        assert!(
+            !fixture
+                .state
+                .sessions
+                .scheduled_session_exists(&first_session)
+        );
+        assert!(
+            fixture
+                .state
+                .sessions
+                .scheduled_session_exists(&second_session)
+        );
+        let remaining = fixture
+            .state
+            .history_archive
+            .runs_for(&fixture.automation_id)
+            .expect("remaining archived runs");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, second.id);
+
+        fixture.task_manager.shutdown();
+        drop(fixture);
+        match previous {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn failed_task_history_archive_restores_original_active_status() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_home();
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        let fixture = cascade_fixture(None).await;
+        {
+            let manager = fixture.state.automations.lock().await;
+            let active = manager
+                .resume_automation(&fixture.automation_id)
+                .expect("activate fixture task");
+            assert_eq!(active.status, AutomationStatus::Active);
+        }
+        let archive_path = scheduled_history_archive_path();
+        std::fs::create_dir_all(&archive_path).expect("block archive file with directory");
+
+        let error = fixture
+            .state
+            .delete_for_test(fixture.automation_id.clone())
+            .await
+            .expect_err("archive persistence must fail");
+        assert!(error.contains("archive scheduled task history"), "{error}");
+        {
+            let manager = fixture.state.automations.lock().await;
+            let retained = manager
+                .get_automation(&fixture.automation_id)
+                .expect("failed deletion must retain task definition");
+            assert_eq!(
+                retained.status,
+                AutomationStatus::Active,
+                "compensation must restore the pre-delete scheduling status"
+            );
+        }
+        assert!(
+            fixture
+                .state
+                .history_archive
+                .runs_for(&fixture.automation_id)
+                .is_none(),
+            "failed archive writes must also roll back in-memory archive state"
+        );
+
+        fixture.task_manager.shutdown();
+        drop(fixture);
+        match previous {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn archived_run_archive_write_failure_keeps_session_and_retryable_history() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_home();
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        let fixture = cascade_fixture(None).await;
+        let run = run_once(&fixture).await;
+        let session_id = run.thread_id.clone().expect("archived run session");
+        fixture
+            .state
+            .delete_for_test(fixture.automation_id.clone())
+            .await
+            .expect("archive task history");
+        let archive_path = scheduled_history_archive_path();
+        std::fs::remove_file(&archive_path).expect("remove writable archive file");
+        std::fs::create_dir(&archive_path).expect("block archive file with directory");
+
+        let error = fixture
+            .state
+            .delete_run_for_session_with(&session_id, &UnexpectedConversationDeleter)
+            .await
+            .expect_err("archive commit must fail before session deletion");
+        assert!(
+            error.contains("Failed to delete archived scheduled run"),
+            "{error}"
+        );
+        assert!(
+            fixture.state.sessions.scheduled_session_exists(&session_id),
+            "archive persistence failure must leave the conversation untouched"
+        );
+        let retained = fixture
+            .state
+            .history_archive
+            .runs_for(&fixture.automation_id)
+            .expect("retryable archived history");
+        assert!(retained.iter().any(|item| item.id == run.id));
+
+        fixture.task_manager.shutdown();
+        drop(fixture);
+        match previous {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn archived_run_conversation_failure_rolls_back_persisted_history() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_home();
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        let fixture = cascade_fixture(None).await;
+        let run = run_once(&fixture).await;
+        let session_id = run.thread_id.clone().expect("archived run session");
+        fixture
+            .state
+            .delete_for_test(fixture.automation_id.clone())
+            .await
+            .expect("archive task history");
+
+        let error = fixture
+            .state
+            .delete_run_for_session_with(&session_id, &FailingConversationDeleter)
+            .await
+            .expect_err("injected conversation deletion must fail");
+        assert!(
+            error.contains("injected conversation deletion failure"),
+            "{error}"
+        );
+        assert!(
+            fixture.state.sessions.scheduled_session_exists(&session_id),
+            "failed conversation deletion must retain the session"
+        );
+        let retained = fixture
+            .state
+            .history_archive
+            .runs_for(&fixture.automation_id)
+            .expect("rolled-back archived history");
+        assert!(retained.iter().any(|item| item.id == run.id));
+        let reopened = ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
+            .expect("reopen rolled-back history archive");
+        assert!(
+            reopened
+                .runs_for(&fixture.automation_id)
+                .expect("persisted rolled-back history")
+                .iter()
+                .any(|item| item.id == run.id),
+            "rollback must be durable across restart"
+        );
+
+        fixture.task_manager.shutdown();
+        drop(fixture);
+        match previous {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn deleting_an_active_run_is_refused_before_anything_is_removed() {
         let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
@@ -2214,6 +2805,8 @@ mod tests {
             read_state,
             model_bindings,
             ui_metadata,
+            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
+                .expect("history archive"),
             operation_locks: ParkingMutex::new(HashMap::new()),
             pool: None,
             fallback_model: default_automation_model(None),
@@ -2298,6 +2891,8 @@ mod tests {
             read_state,
             model_bindings,
             ui_metadata,
+            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
+                .expect("history archive"),
             operation_locks: ParkingMutex::new(HashMap::new()),
             pool: None,
             fallback_model: default_automation_model(None),
@@ -2392,6 +2987,8 @@ mod tests {
             read_state,
             model_bindings,
             ui_metadata,
+            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
+                .expect("history archive"),
             operation_locks: ParkingMutex::new(HashMap::new()),
             pool: None,
             fallback_model: default_automation_model(None),
@@ -2510,6 +3107,8 @@ mod tests {
             read_state,
             model_bindings,
             ui_metadata,
+            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
+                .expect("history archive"),
             operation_locks: ParkingMutex::new(HashMap::new()),
             pool: None,
             fallback_model: default_automation_model(None),
@@ -2661,6 +3260,8 @@ mod tests {
             read_state,
             model_bindings,
             ui_metadata,
+            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
+                .expect("history archive"),
             operation_locks: ParkingMutex::new(HashMap::new()),
             pool: None,
             fallback_model: default_automation_model(None),
@@ -2865,6 +3466,8 @@ mod tests {
             read_state,
             model_bindings,
             ui_metadata,
+            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
+                .expect("history archive"),
             operation_locks: ParkingMutex::new(HashMap::new()),
             pool: None,
             fallback_model: default_automation_model(None),
@@ -2938,6 +3541,8 @@ mod tests {
             read_state,
             model_bindings,
             ui_metadata,
+            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
+                .expect("history archive"),
             operation_locks: ParkingMutex::new(HashMap::new()),
             pool: None,
             fallback_model: default_automation_model(None),
@@ -3348,6 +3953,8 @@ mod tests {
             read_state,
             model_bindings,
             ui_metadata,
+            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
+                .expect("history archive"),
             operation_locks: ParkingMutex::new(HashMap::new()),
             pool: None,
             fallback_model: default_automation_model(None),
@@ -3431,6 +4038,8 @@ mod tests {
             read_state,
             model_bindings,
             ui_metadata,
+            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
+                .expect("history archive"),
             operation_locks: ParkingMutex::new(HashMap::new()),
             pool: None,
             fallback_model: default_automation_model(None),

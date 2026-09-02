@@ -77,7 +77,7 @@ const SCHEDULED_TASKS_ENTRY_ENABLED = true;
 function isDefaultChatTitle(title) {
   return DEFAULT_CHAT_TITLES.has(title);
 }
-// Static regression anchor: SCHEDULED_TASKS_ENTRY_ENABLED && (<NavItem icon={<Clock size={18} />} label={t.scheduledPlans} unread={!!(bs && (bs.scheduledTasks || []).some(task => task.hasUnreadRuns))} />)
+// Static regression anchor: SCHEDULED_TASKS_ENTRY_ENABLED && (<NavItem icon={<Clock size={18} />} label={t.scheduledPlans} unread={!!(bs && ((bs.scheduledTasks || []).some(task => task.hasUnreadRuns) || (bs.scheduledTaskRecentRuns || []).some(run => run && run.unread)))} />)
 const PREVIEW_SCHEDULED_RUN_SHORTCUTS = [
   { id: 'preview-run-1', automationId: 'preview-daily-brief', taskNameKey: 'previewTaskDailyBrief', sessionId: 'preview-session-1', status: 'completed', scheduledFor: '2026-07-14T08:00:00+08:00', unread: true },
   { id: 'preview-run-4', automationId: 'preview-follow-up', taskNameKey: 'previewTaskFollowUp', sessionId: 'preview-session-4', status: 'running', scheduledFor: '2026-07-14T09:00:00+08:00', unread: false },
@@ -2494,7 +2494,8 @@ function workspaceDisplayName(path) {
 
       // 移动壳层派生数据：顶栏标题跟随当前视图（对话态显示会话标题）；
       // 未读红点与侧栏入口同源，避免两套提醒逻辑漂移。
-      const scheduledUnread = !!(bs && (bs.scheduledTasks || []).some(task => task.hasUnreadRuns));
+      const scheduledUnread = !!(bs && ((bs.scheduledTasks || []).some(task => task.hasUnreadRuns)
+        || (bs.scheduledTaskRecentRuns || []).some(run => run && run.unread)));
       const mobileTitle = currentView === 'chat'
         ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
         : currentView === 'codex'
@@ -2804,7 +2805,7 @@ function workspaceDisplayName(path) {
                 <NavItem
                   icon={<Clock size={18} />} label={t.scheduledPlans}
                   active={currentView === 'scheduled'}
-                  unread={!!(bs && (bs.scheduledTasks || []).some(task => task.hasUnreadRuns))}
+                  unread={!!(bs && ((bs.scheduledTasks || []).some(task => task.hasUnreadRuns) || (bs.scheduledTaskRecentRuns || []).some(run => run && run.unread)))}
                   theme={activeTheme}
                   t={t}
                   isSidebarOpen={isSidebarOpen}
