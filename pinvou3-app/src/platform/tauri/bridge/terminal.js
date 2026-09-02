@@ -26,8 +26,18 @@
     return null;
   }
 
+  const SHELL_TOOL_NAMES = ["exec_shell", "exec_shell_wait", "exec_wait", "task_shell_start", "task_shell_wait", "shell", "Bash"];
+
   function isShellExecutionTool(name) {
-    return ["exec_shell", "exec_shell_wait", "exec_wait", "task_shell_start", "task_shell_wait", "shell", "Bash"].includes(name);
+    return SHELL_TOOL_NAMES.includes(name);
+  }
+
+  function mentionsShellTool(text) {
+    // 子智能体的工具调用不产生 chat:tool_start（forwarder 只把 Mailbox 的
+    // ToolCallStarted 转成 multiagent:agent_progress），只能从进展文本里认出
+    // shell 工具并借此调度快照轮询。status 形如 "🔧 exec_shell (step 3)"。
+    const raw = String(text || "");
+    return SHELL_TOOL_NAMES.some((name) => raw.includes(name));
   }
 
   function utf8Length(text) {
@@ -70,9 +80,6 @@
     return JSON.stringify([
       job.id, job.status, job.exit_code, job.stdout_len, job.stderr_len,
       job.stdout_tail, job.stderr_tail,
-      // elapsed_ms 按秒分桶进 key：无输出的安静任务（sleep、编译静默期）也能让
-      // 卡片每秒刷新一次耗时，而不是等到有输出才更新（否则指示器读秒恒为 0s）。
-      Math.floor((Number(job.elapsed_ms) || 0) / 1000),
     ]);
   }
 
@@ -453,6 +460,7 @@
     return {
       updateToolItem,
       isShellExecutionTool,
+      mentionsShellTool,
       utf8Length,
       formatShellSnapshot,
       shellCommandForItem,

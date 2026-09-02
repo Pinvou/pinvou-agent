@@ -46,6 +46,7 @@ import { ConversationAttachmentBubble } from '../attachments/ConversationAttachm
 import { splitAttachmentLine } from '../attachments/attachment-message.js';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
 import { deriveRunningShellTasks, formatElapsedMs, tailOutputLines } from './background-tasks.js';
+import { useShellTaskCancel } from './shell-task-cancel.js';
 import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
 // 重面板惰性化:ArtifactsPanel(design/产物场景才出现)与 SubagentTranscriptPanel
 // (专家卡点开才出现)各带一串专属依赖(design-runtime/EditableMarkdownPreview/
@@ -641,31 +642,35 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
     // 数据来自 bridge 轮询 reconcile 进 chatItems 的快照（terminal.js
     // applyShellSnapshots / markBackgroundToolItem），点击弹出列表可查看输出、取消任务。
     const BackgroundTaskRow = ({ task, t, chatCopy }) => {
-      const [cancelling, setCancelling] = useState(false);
-      const [cancelError, setCancelError] = useState('');
-      const cancel = async () => {
-        if (cancelling) return;
-        setCancelling(true);
-        setCancelError('');
-        try {
-          await bridge.chat.cancelShellTask(task.sessionId, task.taskId);
-        } catch (error) {
-          console.warn('cancel shell task failed', error);
-          setCancelError(`${t.shellCancelFailed || t.toolFailed}: ${String(error)}`);
-        } finally {
-          setCancelling(false);
-        }
-      };
+      const { cancelling, cancelError, cancel } = useShellTaskCancel(t);
+      // 计时基线：轮询 reconcile 只在有新输出时改卡片，安静任务的 elapsedMs
+      // 不会变化，走秒由指示器用"基线值 + 本地流逝"自推（每行一个 1s interval，
+      // 仅浮层展开时挂载）。不把秒级 tick 塞进全局 chatItems reconcile——那会让
+      // 整个 ChatView 在后台任务存续期间每秒重渲染一次（second-clock 曾因此
+      // 从 ChatView 顶层移走，见 LiveConversationActivityIndicator 上方注释）。
+      const [now, setNow] = useState(() => Date.now());
+      useEffect(() => {
+        const timer = setInterval(() => setNow(Date.now()), 1000);
+        return () => clearInterval(timer);
+      }, []);
+      // 服务端 elapsedMs 变化（新输出触发 reconcile）时，渲染期同步换基线
+      // （React "adjust state when a prop changes" 模式）；基线时间戳直接用
+      // now 状态，保证渲染纯度。
+      const [elapsedBaseline, setElapsedBaseline] = useState(() => ({ elapsedMs: task.elapsedMs, at: now }));
+      if (elapsedBaseline.elapsedMs !== task.elapsedMs) {
+        setElapsedBaseline({ elapsedMs: task.elapsedMs, at: now });
+      }
+      const elapsedMs = elapsedBaseline.elapsedMs + Math.max(0, now - elapsedBaseline.at);
       const tail = tailOutputLines(task.output, 3);
       const lastLine = tailOutputLines(task.output, 1);
       return (
         <div className="px-3 py-2 hover:bg-black/[0.03] dark:hover:bg-white/[0.04]"
-          data-testid="bg-task-row" data-shell-task-id={task.taskId}>
+          data-testid="bg-task-row" data-bg-shell-task-id={task.taskId}>
           <div className="flex items-center gap-2 min-w-0">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
             <span className={`flex-1 min-w-0 truncate font-mono text-[12px] ${'text-[#1F1F1F] dark:text-[#E3E3E3]'}`} title={task.command}>{task.command}</span>
-            <span className={`shrink-0 text-[11px] tabular-nums ${'text-[#85888D] dark:text-[#9AA0A6]'}`}>{formatElapsedMs(task.elapsedMs)}</span>
-            <button type="button" data-testid="cancel-shell-task" disabled={cancelling} onClick={cancel}
+            <span className={`shrink-0 text-[11px] tabular-nums ${'text-[#85888D] dark:text-[#9AA0A6]'}`}>{formatElapsedMs(elapsedMs)}</span>
+            <button type="button" data-testid="bg-cancel-shell-task" disabled={cancelling} onClick={() => cancel(task.sessionId, task.taskId)}
               aria-label={chatCopy.cancel} title={cancelling ? chatCopy.cancelling : chatCopy.cancel}
               className={`shrink-0 p-1 rounded-full disabled:opacity-50 transition-colors ${'text-[#85888D] hover:text-[#C5221F] hover:bg-black/5 dark:text-[#9AA0A6] dark:hover:text-[#F28B82] dark:hover:bg-white/10'}`}>
               <StopCircle size={14} />

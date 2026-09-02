@@ -20,18 +20,22 @@ vm.runInContext(
 
 const { COMMAND_SUMMARY_MAX, deriveRunningShellTasks, formatElapsedMs, tailOutputLines } = context;
 
-// deriveRunningShellTasks：只保留带 taskId 且 running 的 tool 卡
+// deriveRunningShellTasks：只保留带后台标记（background / shellSnapshot）、
+// taskId 且 running 的 tool 卡
 const items = [
   // 轮询补建的 shell 快照卡（子 agent detached job）
-  { type: 'tool', toolId: 'shell-task:job-1', name: 'exec_shell', taskId: 'job-1', sessionId: 's1', state: 'running', args: { command: 'cargo build' }, elapsedMs: 61000, output: 'line1\nline2' },
+  { type: 'tool', toolId: 'shell-task:job-1', name: 'exec_shell', taskId: 'job-1', sessionId: 's1', state: 'running', shellSnapshot: true, args: { command: 'cargo build' }, elapsedMs: 61000, output: 'line1\nline2' },
   // 被标记为后台的工具卡
   { type: 'tool', toolId: 'tool-2', name: 'exec_shell', taskId: 'job-2', sessionId: 's1', state: 'running', background: true, args: { command: 'npm run dev' }, elapsedMs: 5000 },
   // 已完成 → 排除
-  { type: 'tool', toolId: 'shell-task:job-3', name: 'exec_shell', taskId: 'job-3', sessionId: 's1', state: 'done', args: { command: 'ls' } },
+  { type: 'tool', toolId: 'shell-task:job-3', name: 'exec_shell', taskId: 'job-3', sessionId: 's1', state: 'done', shellSnapshot: true, args: { command: 'ls' } },
   // 失败 → 排除
-  { type: 'tool', toolId: 'shell-task:job-4', name: 'exec_shell', taskId: 'job-4', sessionId: 's1', state: 'failed', args: { command: 'make' } },
+  { type: 'tool', toolId: 'shell-task:job-4', name: 'exec_shell', taskId: 'job-4', sessionId: 's1', state: 'failed', shellSnapshot: true, args: { command: 'make' } },
   // 无 taskId 的前台工具卡 → 排除
   { type: 'tool', toolId: 'tool-5', name: 'exec_shell', state: 'running', args: { command: 'pwd' } },
+  // 前台工具卡被轮询的命令匹配回退挂上 taskId（无后台标记）→ 排除，
+  // 不能把前台命令误标成"后台任务"
+  { type: 'tool', toolId: 'tool-5b', name: 'exec_shell', taskId: 'job-5', sessionId: 's1', state: 'running', args: { command: 'sleep 30' } },
   // 非 tool 条目 → 排除
   { type: 'user', text: 'hi' },
   null,
@@ -51,7 +55,7 @@ assert.strictEqual(JSON.stringify(deriveRunningShellTasks()), '[]');
 // 超长命令截断
 const longCommand = 'x'.repeat(COMMAND_SUMMARY_MAX + 10);
 const [truncated] = deriveRunningShellTasks([
-  { type: 'tool', taskId: 'job-9', sessionId: 's1', state: 'running', args: { command: longCommand } },
+  { type: 'tool', taskId: 'job-9', sessionId: 's1', state: 'running', shellSnapshot: true, args: { command: longCommand } },
 ]);
 assert.strictEqual(truncated.command.length, COMMAND_SUMMARY_MAX + 1);
 assert.ok(truncated.command.endsWith('…'));

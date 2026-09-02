@@ -4,11 +4,14 @@
 
 const COMMAND_SUMMARY_MAX = 80;
 
-// 后台 shell 任务在 chatItems 里的形态（terminal.js 的 applyShellSnapshots 与
-// markBackgroundToolItem 写入）：type='tool'、带 taskId、state='running'；
-// 子 agent 启动的 detached job 由轮询补建 shellSnapshot 卡，同样命中该过滤。
+// 后台 shell 任务在 chatItems 里的形态：type='tool'、带 taskId、state='running'，
+// 且必须带后台标记 —— background 由 markBackgroundToolItem（桌面端 backgrounded
+// 快速通道）和 tool_end 的 backgrounded 元数据写入，shellSnapshot 由轮询为子 agent
+// detached job 补建卡时写入。前台 shell 卡也会被 applyShellSnapshots 的命令匹配
+// 回退挂上 taskId，但没有这两个标记；指示器若不区分，会把前台命令误标成"后台任务"。
 function isRunningShellTaskItem(item) {
-  return Boolean(item && item.type === 'tool' && item.taskId && item.state === 'running');
+  return Boolean(item && item.type === 'tool' && item.taskId && item.state === 'running' &&
+    (item.background || item.shellSnapshot));
 }
 
 function summarizeCommand(command) {
