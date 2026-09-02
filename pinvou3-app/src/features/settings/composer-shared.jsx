@@ -149,8 +149,8 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       const reasoningEffortTiers = isLocalCompatible
         ? (currentProbePending ? [] : (localReasoningTiers(current ? current.model : null, currentProbedKind) || []))
         : (current ? (reasoningEffortTiersForModel(current) || []) : []);
-      // 本地路由（vllm preset / 本地兼容端点）命中「思考永开、不可控」知识表：
-      // 档位区显示「思考始终开启」提示而非探测不支持。
+      // Local routes (vllm preset / local-compatible endpoints) hit the "always-thinking,
+      // no-control" knowledge table: the effort-tier area shows an "always on" hint instead of probe-unsupported.
       const currentNoControlThinking = !!current
         && (current.preset === 'local_vllm' || isLocalCompatible)
         && !!(alwaysThinkingSpecForModel(current.model) || {}).noControl;

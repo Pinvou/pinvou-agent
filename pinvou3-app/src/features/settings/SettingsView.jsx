@@ -842,8 +842,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const reasoningEffortTiers = isLocalCompatible
         ? (probePending ? [] : (localReasoningTiers(model, probedKind) || []))
         : (reasoningEffortTiersForModel({ preset, model, vendor, base_url: baseUrl, provider_kind: providerKind }) || []);
-      // 本地路由（vllm preset / 本地兼容端点）命中「思考永开、不可控」知识表：
-      // 档位区显示「思考始终开启」提示而非探测不支持。
+      // Local routes (vllm preset / local-compatible endpoints) hit the "always-thinking,
+      // no-control" knowledge table: the effort-tier area shows an "always on" hint instead of probe-unsupported.
       const localNoControlThinking = (preset === 'local_vllm' || isLocalCompatible)
         && !!(alwaysThinkingSpecForModel(model) || {}).noControl;
       // Highlight fallback: the form value is normalized against the static

@@ -813,10 +813,13 @@ impl Pinvou3Bridge {
                     match self.probed_local_kind {
                         Some(LocalServerKind::Ollama) => return "ollama".to_string(),
                         // SGLang / llama.cpp / KoboldCpp / LMDeploy / Docker
-                        // Model Runner 都支持 chat_template_kwargs.enable_thinking
-                        // 与 reasoning_effort 透传，与 vLLM wire 同构；底座自带的
-                        // sglang provider 目前是 DeepSeek 兼容路由、不适合本地通用
-                        // 服务，故统一映射到 vllm provider。
+                        // Model Runner all support passthrough of
+                        // chat_template_kwargs.enable_thinking and
+                        // reasoning_effort, structurally identical to the vLLM
+                        // wire; the engine's built-in sglang provider is
+                        // currently a DeepSeek-compatible route and unsuitable
+                        // for generic local servers, so all of them map to the
+                        // vllm provider.
                         Some(
                             LocalServerKind::Vllm
                             | LocalServerKind::Sglang
@@ -875,18 +878,25 @@ impl Pinvou3Bridge {
     /// 优先级：用户显式设置的 `SavedModel.reasoning_effort` > provider 默认
     /// （本地模型——vLLM 与探测出的 Ollama——默认 off 防 SSE timeout；其余默认
     /// high——底座自身默认是 Max，品悟统一收口到 high，符合产品默认思考强度）。
-    /// 例外是本地路由上的思考不可关闭模型：命中 `core::always_thinking` 知识表
-    /// 时按表归一（NoControl 不发任何思考参数；Tiers 只允许表内档位，stored
-    /// 越界/缺省归一到最低档），覆盖 stored 值与本地默认 off。
+    /// The exception is models whose thinking cannot be disabled on local
+    /// routes: when the `core::always_thinking` knowledge table matches,
+    /// normalize per the table (NoControl sends no thinking parameters; Tiers
+    /// only allows the tiers in the table — out-of-tier/missing stored values
+    /// normalize to the lowest tier), overriding the stored value and the
+    /// local default off.
     ///
-    /// 本地 OpenAI 兼容端点（loopback 的 LM Studio 等，探测不出服务类型或判定为
-    /// LM Studio/通用）保持旧行为不注入档位（None），避免底座 openai wire route
-    /// 对 `reasoning_effort` 的空操作与不认识的请求参数引起漂移。思考永开知识表
-    /// 归一同样不作用于该路由（wire 空操作，注入无效；前端 `localReasoningTiers`
-    /// 对 lmstudio/generic 同口径不提供档位）。注意底座对 openai 的
-    /// `reasoning_effort` 空操作仅对普通模型成立：gpt-5.5/5.6/codex
-    /// 家族会经 `apply_openai_reasoning_effort` 注入档位（本地端点模型名不匹配
-    /// 该家族，此处不注入不受影响）。
+    /// Local OpenAI-compatible endpoints (loopback LM Studio etc., where the
+    /// probe cannot identify the server type or resolves to LM Studio/generic)
+    /// keep the legacy behavior of not injecting a tier (None), to avoid drift
+    /// from the engine's openai wire route no-op on `reasoning_effort` and
+    /// from unrecognized request parameters. The always-thinking knowledge
+    /// table normalization likewise does not apply to this route (the wire is
+    /// a no-op, so injection is ineffective; the frontend `localReasoningTiers`
+    /// likewise offers no tiers for lmstudio/generic). Note that the engine's
+    /// openai `reasoning_effort` no-op only holds for plain models: the
+    /// gpt-5.5/5.6/codex family gets tiers injected via
+    /// `apply_openai_reasoning_effort` (local endpoint model names do not match
+    /// that family, so not injecting here is unaffected).
     ///
     /// 注意：Kimi Code 的 `kimi-for-coding` 等是 always-thinking 模型，官方
     /// 接入要求 Thinking 保持开启；默认 high 由底座翻译成
@@ -894,27 +904,36 @@ impl Pinvou3Bridge {
     /// （探测 payload 仍需显式注入 thinking，见 image_capability.rs）。
     fn request_reasoning_effort(&self) -> Option<String> {
         let provider = self.provider();
-        // 「本地路由」：vllm/ollama provider。openai wire 指向本地/私网端点
-        // （LM Studio/通用服务）时底座对 reasoning_effort 是空操作，知识表归一
-        // 注入无效，不进归一（stored 值仍按下方「显式选择优先」透传，不影响
-        // 后续探测为 vllm 时生效）；云端精确路由（moonshot/zai 等）同样不进。
+        // "Local route": the vllm/ollama providers. When the openai wire
+        // points at a local/private endpoint (LM Studio/generic server), the
+        // engine treats reasoning_effort as a no-op, so knowledge-table
+        // normalization would be ineffective and is skipped (the stored value
+        // is still passed through per "explicit user choice wins" below, so it
+        // takes effect once a later probe resolves to vllm); precise cloud
+        // routes (moonshot/zai etc.) are likewise skipped.
         let is_local_route = matches!(provider.as_str(), "vllm" | "ollama");
         if is_local_route {
             let model = self.effective_model();
             if let Some(spec) = model.and_then(|m| always_thinking_spec(&m.model)) {
                 let stored = model.and_then(|m| m.reasoning_effort.as_deref());
                 return match spec {
-                    // 思考不可关且无档位可控：不发任何思考参数，让模型原生
-                    // 思考（覆盖用户存储值）。
+                    // Thinking cannot be disabled and no tiers are
+                    // controllable: send no thinking parameters and let the
+                    // model think natively (overrides the user's stored
+                    // value).
                     AlwaysThinkingSpec::NoControl => None,
-                    // 思考永开但档位可控：stored 在允许档位内则用 stored，否则
-                    // （含 stored=="off"、缺省、越界如 medium 之于 kimi-k3）
-                    // 归一为允许的最低档。
+                    // Always-thinking but tiers are controllable: use the
+                    // stored value if it is within the allowed tiers,
+                    // otherwise (including stored=="off", missing, or
+                    // out-of-tier such as medium for kimi-k3) normalize to the
+                    // lowest allowed tier.
                     AlwaysThinkingSpec::Tiers(tiers) => {
-                        // 底座 ollama wire 只有布尔 think（off=think:false，其余
-                        // 一律 think:true），不发送档位字符串；思考永开模型在
-                        // ollama 路由下唯一有意义的暴露是 "high"（前端
-                        // `localReasoningTiers` 同口径只给 ['high']）。
+                        // The engine's ollama wire only has a boolean think
+                        // (off=think:false, everything else think:true) and
+                        // never sends tier strings; for an always-thinking
+                        // model on the ollama route the only meaningful
+                        // exposure is "high" (the frontend
+                        // `localReasoningTiers` likewise only gives ['high']).
                         if provider == "ollama" {
                             return Some("high".to_string());
                         }
@@ -6459,11 +6478,16 @@ mod tests {
         }
     }
 
-    /// 思考永开知识表归一不作用于 openai wire route（LM Studio/通用服务）：
-    /// 底座对 openai 的 reasoning_effort 是空操作，注入无效——kimi-k3 无 stored
-    /// 时保持 None 默认，不做最低档归一；stored 值（含 off）仍按「显式选择优先」
-    /// 透传，不改动 prefs，后续探测为 vllm 时 stored 档位照常经知识表归一生效。
-    /// 前端 `localReasoningTiers` 对 lmstudio/generic 同口径不提供档位。
+    /// Always-thinking knowledge table normalization does not apply to the
+    /// openai wire route (LM Studio/generic servers): the engine treats
+    /// openai reasoning_effort as a no-op, so injection is ineffective —
+    /// kimi-k3 without a stored value keeps the None default and is not
+    /// normalized to the lowest tier; the stored value (including off) is
+    /// still passed through per "explicit user choice wins" without rewriting
+    /// prefs, and the stored tier still takes effect via knowledge-table
+    /// normalization once a later probe resolves to vllm.
+    /// The frontend `localReasoningTiers` likewise offers no tiers for
+    /// lmstudio/generic.
     #[test]
     fn local_lmstudio_or_generic_probe_skips_always_thinking_normalization() {
         for kind in [LocalServerKind::LmStudio, LocalServerKind::Generic] {
@@ -6486,9 +6510,10 @@ mod tests {
             assert_eq!(
                 bridge.request_reasoning_effort(),
                 None,
-                "{kind:?}: openai wire 空操作，知识表不注入最低档"
+                "{kind:?}: openai wire is a no-op, knowledge table does not inject the lowest tier"
             );
-            // stored off 透传（显式选择优先），不被知识表归一为 low。
+            // stored off passes through (explicit user choice wins), not
+            // normalized to low by the knowledge table.
             bridge
                 .prefs
                 .advanced
@@ -6498,13 +6523,14 @@ mod tests {
             assert_eq!(
                 bridge.request_reasoning_effort().as_deref(),
                 Some("off"),
-                "{kind:?}: stored 值透传，prefs 不被知识表改写"
+                "{kind:?}: stored value passes through, prefs are not rewritten by the knowledge table"
             );
         }
     }
 
-    /// NoControl 模型（deepseek-r1）在 openai wire route 同样不发思考参数
-    /// （None）——与 vllm/ollama 路由的归一结果一致，无行为差异。
+    /// NoControl models (deepseek-r1) likewise send no thinking parameters
+    /// (None) on the openai wire route — identical to the normalization result
+    /// on the vllm/ollama routes, no behavior difference.
     #[test]
     fn local_generic_probe_no_control_model_sends_no_thinking_params() {
         let (_lock, _env) = locked_env(&[
@@ -6626,9 +6652,10 @@ mod tests {
         );
     }
 
-    /// SGLang / llama.cpp / KoboldCpp / LMDeploy / Docker Model Runner 探测
-    /// 结果统一映射到底座 vllm provider（chat_template_kwargs + reasoning_effort
-    /// wire 同构），本地默认关思考。
+    /// SGLang / llama.cpp / KoboldCpp / LMDeploy / Docker Model Runner probe
+    /// results all map to the engine's vllm provider (chat_template_kwargs +
+    /// reasoning_effort wire are structurally identical), defaulting to
+    /// thinking off locally.
     #[test]
     fn local_reasoning_frameworks_map_to_vllm_wire_and_default_off() {
         for kind in [
@@ -6662,8 +6689,9 @@ mod tests {
         }
     }
 
-    /// 本地 vLLM 上的思考不可关闭模型（kimi-k3，仅 low/high 档）：stored "off"
-    /// 是关不掉的，归一为允许的最低档 "low"。
+    /// A model whose thinking cannot be disabled on local vLLM (kimi-k3,
+    /// low/high tiers only): stored "off" cannot actually turn thinking off,
+    /// so it normalizes to the lowest allowed tier "low".
     #[test]
     fn local_vllm_kimi_k3_stored_off_normalizes_to_low() {
         let (_lock, _env) = locked_env(&[
@@ -6690,11 +6718,12 @@ mod tests {
         assert_eq!(
             bridge.request_reasoning_effort().as_deref(),
             Some("low"),
-            "kimi-k3 思考永开，stored off 必须归一到最低档"
+            "kimi-k3 is always-thinking, stored off must normalize to the lowest tier"
         );
     }
 
-    /// kimi-k3 stored 档位在允许表内（high）时保留 stored。
+    /// kimi-k3 keeps the stored value when the stored tier is in the allowed
+    /// table (high).
     #[test]
     fn local_vllm_kimi_k3_stored_high_is_kept() {
         let (_lock, _env) = locked_env(&[
@@ -6721,7 +6750,8 @@ mod tests {
         assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("high"));
     }
 
-    /// kimi-k3 无 stored：归一为最低档 "low"（不套本地默认 off）。
+    /// kimi-k3 without a stored value: normalizes to the lowest tier "low"
+    /// (the local default off does not apply).
     #[test]
     fn local_vllm_kimi_k3_without_stored_defaults_to_low() {
         let (_lock, _env) = locked_env(&[
@@ -6742,7 +6772,8 @@ mod tests {
         assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("low"));
     }
 
-    /// kimi-k3 越界档位（medium 不在 low/high 表内）归一为最低档 "low"。
+    /// kimi-k3 with an out-of-tier stored value (medium is not in the
+    /// low/high table) normalizes to the lowest tier "low".
     #[test]
     fn local_vllm_kimi_k3_out_of_tier_medium_normalizes_to_low() {
         let (_lock, _env) = locked_env(&[
@@ -6769,8 +6800,9 @@ mod tests {
         assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("low"));
     }
 
-    /// NoControl 模型（deepseek-r1）：思考不可关且无档位可控，不发任何思考
-    /// 参数（None），覆盖 stored 值。
+    /// NoControl models (deepseek-r1): thinking cannot be disabled and no
+    /// tiers are controllable, so no thinking parameters are sent (None),
+    /// overriding the stored value.
     #[test]
     fn local_vllm_deepseek_r1_sends_no_thinking_params() {
         let (_lock, _env) = locked_env(&[
@@ -6797,12 +6829,13 @@ mod tests {
         assert_eq!(
             bridge.request_reasoning_effort(),
             None,
-            "deepseek-r1 不发任何思考参数，让模型原生思考"
+            "deepseek-r1 sends no thinking parameters, letting the model think natively"
         );
     }
 
-    /// ollama 路由上的思考永开模型（gpt-oss）：底座 ollama wire 只有布尔
-    /// think，档位字符串发不出去，stored 任意值（含 off）都归一为 "high"。
+    /// An always-thinking model on the ollama route (gpt-oss): the engine's
+    /// ollama wire only has a boolean think and cannot send tier strings, so
+    /// any stored value (including off) normalizes to "high".
     #[test]
     fn local_ollama_gpt_oss_normalizes_to_high() {
         let (_lock, _env) = locked_env(&[
@@ -6830,12 +6863,12 @@ mod tests {
         assert_eq!(
             bridge.request_reasoning_effort().as_deref(),
             Some("high"),
-            "gpt-oss 在 ollama 下关不掉思考，stored off 也必须归一为 high"
+            "gpt-oss cannot turn off thinking under ollama, stored off must also normalize to high"
         );
     }
 
-    /// 不命中知识表的普通本地模型（qwen3-32b 不含 thinking）：保持本地默认
-    /// off 不变。
+    /// A plain local model that does not match the knowledge table
+    /// (qwen3-32b without thinking): keeps the local default off unchanged.
     #[test]
     fn local_vllm_plain_model_keeps_default_off() {
         let (_lock, _env) = locked_env(&[
@@ -6856,8 +6889,10 @@ mod tests {
         assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("off"));
     }
 
-    /// 远端官方 moonshot 的 kimi-k3 不进本地归一：无 stored 默认 high，
-    /// stored off 照常透传（显式选择优先，云端路由不受知识表影响）。
+    /// kimi-k3 on the official remote moonshot route does not enter local
+    /// normalization: defaults to high without a stored value, and stored off
+    /// passes through as-is (explicit user choice wins; cloud routes are not
+    /// affected by the knowledge table).
     #[test]
     fn remote_moonshot_kimi_k3_not_affected_by_local_normalization() {
         let (_lock, _env) = locked_env(&[
@@ -6878,7 +6913,7 @@ mod tests {
         assert_eq!(
             bridge.request_reasoning_effort().as_deref(),
             Some("high"),
-            "云端精确路由保持默认 high"
+            "precise cloud route keeps the default high"
         );
         bridge
             .prefs
@@ -6889,7 +6924,7 @@ mod tests {
         assert_eq!(
             bridge.request_reasoning_effort().as_deref(),
             Some("off"),
-            "云端 stored off 照常透传，不被知识表归一"
+            "cloud stored off passes through as-is, not normalized by the knowledge table"
         );
     }
 

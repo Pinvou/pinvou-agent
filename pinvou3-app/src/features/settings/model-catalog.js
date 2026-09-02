@@ -962,18 +962,26 @@ function reasoningProviderForModel(model) {
   }
 }
 
-// 「思考始终开启」模型的本地部署知识表（兜底）。仅作用于本地路由
-// （vllm / 本地 loopback 端点 / 探测出的 ollama），云端精确路由不走此表。
-// 依据：
-// - Kimi K3 思考永开，官方档位 low/high/max；底座 wire 层把 max 钳到 high，
-//   故只暴露 low/high。
-// - GLM-5.3 / GLM-4.7 思考永开，同理暴露 low/high。
-// - GPT-OSS 思考不可关，官方只有 low/medium/high 三档。
+// Local-deployment knowledge table (fallback) for "thinking always on" models.
+// Only applies to local routes (vllm / local loopback endpoints / probed
+// ollama); exact cloud routes do not use this table.
+// Basis:
+// - Kimi K3 is always-thinking, official effort tiers low/high/max; the engine
+//   wire layer clamps max to high, so only low/high are exposed.
+// - GLM-5.3 / GLM-4.7 are always-thinking and likewise expose low/high.
+// - GPT-OSS thinking cannot be disabled; officially only three tiers low/medium/high.
 // - kimi-k2-thinking / kimi-k2.5-thinking / kimi-k2.7 / deepseek-r1 /
-//   minimax-m2 / qwen3 thinking 系：思考不可关且无档位可控（noControl）。
-// 当框架（探测结果）明确回报可关时以框架为准——本表只在本地路由的档位
-// 解析中作为兜底叠加，不覆盖云端精确路由。
-// modelId 小写化并把 `_`/空格归一为 `-` 后做子串匹配。
+//   minimax-m2 / qwen3 thinking family: thinking cannot be disabled and has no
+//   tier control (noControl).
+// When a framework (probe result) explicitly reports thinking can be disabled,
+// the framework wins — this table only overlays as a fallback during effort
+// tier resolution on local routes; it never overrides exact cloud routes.
+// modelId is lowercased with `_`/whitespace normalized to `-`, then substring-matched.
+// Accepted risk: substring matching also covers future names (e.g. a future
+// kimi-k3.5 matches the kimi-k3 entry); entries are re-reviewed as new models ship.
+// GLM-5.3 scope note: this table applies to local routes only; the cloud exact
+// route (z.ai first-party) deliberately keeps its own ['off','high','max'] tiers
+// from the hosted API contract.
 function alwaysThinkingSpecForModel(modelId) {
   const normalized = String(modelId || '').trim().toLowerCase().replaceAll(/[\s_]+/g, '-');
   if (!normalized) return null;
@@ -1010,11 +1018,13 @@ function reasoningEffortTiersForModel(model) {
   if (!tiers) return null;
   const modelName = String((model && model.model) || '').trim().toLowerCase();
   const baseUrl = (model && model.base_url) || '';
-  // 本地路由（vllm preset / 本地 loopback openai_compatible 端点）命中思考
-  // 永开知识表：noControl → null（沿用「不支持调节」语义出口）；tiers → 以
-  // 知识表档位替代默认档位表。云端精确路由（zai/moonshot/minimax）不受影响。
-  // （探测出的 ollama 不走这里：本地兼容端点的档位由 localReasoningTiers 按
-  // 探测 kind 叠加知识表下发。）
+  // Local routes (vllm preset / local loopback openai_compatible endpoint) that
+  // hit the always-thinking knowledge table: noControl → null (reusing the
+  // "not adjustable" semantic exit); tiers → the knowledge-table tiers replace
+  // the default tier table. Exact cloud routes (zai/moonshot/minimax) are
+  // unaffected. (Probed ollama does not go through here: tiers for local
+  // compatible endpoints are issued by localReasoningTiers, which overlays the
+  // knowledge table on the probed kind.)
   const localSpec = ['vllm', 'local'].includes(provider)
     ? alwaysThinkingSpecForModel(model && model.model)
     : null;
@@ -1057,7 +1067,8 @@ function isAlwaysThinkingK3Route(model) {
 function defaultReasoningEffortForModel(model) {
   const provider = reasoningProviderForModel(model);
   if (provider === 'vllm' || provider === 'local') {
-    // 思考永开且档位可控的模型（知识表）：off 不可用，默认最低档。
+    // Always-thinking models with controllable tiers (knowledge table): off is
+    // unavailable, default to the lowest tier.
     const spec = alwaysThinkingSpecForModel(model && model.model);
     if (spec && spec.tiers) return spec.tiers[0];
     return 'off';
@@ -1086,8 +1097,9 @@ const REASONING_EFFORT_CANONICAL = {
 // 存量档位归一：用户可能保存过底座归一前的旧值（别名或不在档位表内的档位，
 // 如 deepseek 的 medium → 底座归一为 high）。展示与表单初始值都取归一后的档位，
 // 避免「档位表不含该值 → 下拉无高亮 / 残留无法选中的脏值」；无档位模型返回 null。
-// 本地思考永开知识表模型（tiers 来自 alwaysThinkingSpecForModel）无需特判：
-// 存量 off 等不在 spec.tiers 内的值会落到末尾的默认档（spec.tiers[0]）。
+// Local always-thinking knowledge-table models (tiers from alwaysThinkingSpecForModel)
+// need no special case: stored values outside spec.tiers (e.g. off) fall
+// through to the trailing default tier (spec.tiers[0]).
 function normalizeStoredReasoningEffort(model, stored) {
   const tiers = reasoningEffortTiersForModel(model) || [];
   if (!tiers.length) return null;
@@ -1108,9 +1120,9 @@ function normalizeStoredReasoningEffort(model, stored) {
 // 本地 OpenAI 兼容端点按探测服务类型可切换的档位。与 Rust
 // `probe_local_server_kind` 结果对齐：
 // - vllm → 底座 `chat_template_kwargs` 支持四档
-// - sglang / llamacpp / koboldcpp / lmdeploy / dockermodelrunner → 思考控制
-//   wire 与 vLLM 同构（chat_template_kwargs + reasoning_effort 透传），
-//   档位集合与 vllm 相同
+// - sglang / llamacpp / koboldcpp / lmdeploy / dockermodelrunner → thinking
+//   control wire is structurally identical to vLLM (chat_template_kwargs +
+//   reasoning_effort passthrough); the tier set is the same as vllm
 // - ollama → 底座 `think` 布尔开关：off=think:false，其余档位一律归一 think=true，
 //   只暴露 off/high 避免「看起来不同、实际相同」的误导
 // - lmstudio / generic → 底座 openai wire route 对 reasoning_effort 是空操作，
@@ -1134,12 +1146,15 @@ function localProbeTiersForKind(kind) {
   }
 }
 
-// 探测档位 × 模型知识表的叠加（SettingsView 模型编辑弹窗与聊天输入区模型
-// 弹层共用）：模型命中思考永开知识表时以知识表为准——noControl → null
-// （前端显示「思考始终开启」提示，而非探测不支持）；tiers → 覆盖探测档位。
-// 例外：lmstudio/generic 端点底座 openai wire route 对 reasoning_effort 是
-// 空操作，知识表档位同样调了个寂寞——回落探测结果（null），不提供切换。
-// 未命中时按探测结果下发档位。
+// Overlay of probed tiers × the model knowledge table (shared by the
+// SettingsView model-edit dialog and the chat input model popover): when the
+// model hits the always-thinking knowledge table, the table wins — noControl →
+// null (frontend shows the "thinking always on" hint rather than "probe
+// unsupported"); tiers → override the probed tiers.
+// Exception: on lmstudio/generic endpoints the engine openai wire route treats
+// reasoning_effort as a no-op, so the knowledge-table tiers would equally
+// change nothing — fall back to the probe result (null), no switching offered.
+// On a miss, tiers are issued per the probe result.
 function localReasoningTiers(modelId, probedKind) {
   const spec = alwaysThinkingSpecForModel(modelId);
   if (spec) {
@@ -1147,10 +1162,11 @@ function localReasoningTiers(modelId, probedKind) {
     if (probedKind === 'lmstudio' || probedKind === 'generic') {
       return localProbeTiersForKind(probedKind);
     }
-    // 底座 ollama wire 只有布尔 think（off=think:false，其余档位一律归一
-    // think:true），不发送档位字符串；思考永开模型在 ollama 路由下唯一有意义
-    // 的暴露是 high（如 GPT-OSS 只认 low/medium/high 字符串，true/false 被
-    // 忽略，思考本就关不掉）。
+    // The engine ollama wire only has the boolean think (off=think:false, all
+    // other tiers normalize to think:true) and never sends a tier string; for
+    // always-thinking models on the ollama route the only meaningful exposure
+    // is high (e.g. GPT-OSS only accepts the low/medium/high strings —
+    // true/false is ignored, and thinking cannot be disabled anyway).
     if (probedKind === 'ollama') return ['high'];
     return spec.tiers;
   }

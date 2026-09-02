@@ -459,7 +459,7 @@ test('localProbeTiersForKind 按探测结果映射真实档位', () => {
   // vllm → 四档；ollama → think 开关两档（避免 low/medium/high 归一误导）
   assert.deepStrictEqual([...localProbeTiersForKind('vllm')], ['off', 'low', 'medium', 'high']);
   assert.deepStrictEqual([...localProbeTiersForKind('ollama')], ['off', 'high']);
-  // 与 vLLM 思考控制 wire 同构的框架 → 与 vllm 相同四档
+  // Frameworks wire-isomorphic with vLLM thinking control → same four tiers as vllm
   for (const kind of ['sglang', 'llamacpp', 'koboldcpp', 'lmdeploy', 'dockermodelrunner']) {
     assert.deepStrictEqual([...localProbeTiersForKind(kind)], ['off', 'low', 'medium', 'high'], kind);
   }
@@ -471,10 +471,10 @@ test('localProbeTiersForKind 按探测结果映射真实档位', () => {
   assert.deepStrictEqual([...localProbeTiersForKind('unknown')], ['off', 'low', 'medium', 'high']);
 });
 
-test('alwaysThinkingSpecForModel：思考永开模型知识表匹配', () => {
-  // vm realm 对象与测试 realm 原型不同，按 JSON 结构比较
+test('alwaysThinkingSpecForModel: always-thinking model knowledge table matching', () => {
+  // vm realm objects have different prototypes from the test realm; compare via JSON structure
   const specJson = (modelId) => JSON.stringify(alwaysThinkingSpecForModel(modelId));
-  // 大小写不敏感 + 下划线/空格归一为 '-'
+  // case-insensitive + underscores/spaces normalized to '-'
   assert.strictEqual(specJson('kimi-k3'), '{"tiers":["low","high"]}');
   assert.strictEqual(specJson('Kimi-K3'), '{"tiers":["low","high"]}');
   assert.strictEqual(specJson('kimi_k3'), '{"tiers":["low","high"]}');
@@ -482,14 +482,14 @@ test('alwaysThinkingSpecForModel：思考永开模型知识表匹配', () => {
   assert.strictEqual(specJson('glm-5.3'), '{"tiers":["low","high"]}');
   assert.strictEqual(specJson('GLM-4.7'), '{"tiers":["low","high"]}');
   assert.strictEqual(specJson('gpt-oss-120b'), '{"tiers":["low","medium","high"]}');
-  // noControl：思考不可关且无档位可控
+  // noControl: thinking cannot be disabled and no effort tier is controllable
   assert.strictEqual(specJson('kimi-k2-thinking'), '{"noControl":true}');
   assert.strictEqual(specJson('Kimi-K2.5-Thinking'), '{"noControl":true}');
   assert.strictEqual(specJson('kimi-k2.7'), '{"noControl":true}');
   assert.strictEqual(specJson('deepseek-r1-0528'), '{"noControl":true}');
   assert.strictEqual(specJson('MiniMax-M2'), '{"noControl":true}');
   assert.strictEqual(specJson('Qwen3-235B-A22B-Thinking'), '{"noControl":true}');
-  // 不命中：普通 qwen3（无 thinking）、其它模型、空值
+  // no match: plain qwen3 (no thinking), other models, empty values
   assert.strictEqual(alwaysThinkingSpecForModel('qwen3-32b'), null);
   assert.strictEqual(alwaysThinkingSpecForModel('qwen36_35b_256k'), null);
   assert.strictEqual(alwaysThinkingSpecForModel('glm-5.2'), null);
@@ -497,51 +497,51 @@ test('alwaysThinkingSpecForModel：思考永开模型知识表匹配', () => {
   assert.strictEqual(alwaysThinkingSpecForModel(null), null);
 });
 
-test('本地路由命中知识表：档位/默认值/存量归一', () => {
-  // spec.tiers 模型（本地 vllm preset）：档位表被知识表替代，无 off 档
+test('local routes hitting the knowledge table: tiers/defaults/stored-value normalization', () => {
+  // spec.tiers model (local vllm preset): tier table replaced by the knowledge table, no off tier
   const k3Local = { preset: 'local_vllm', model: 'kimi-k3' };
   assert.deepStrictEqual([...reasoningEffortTiersForModel(k3Local)], ['low', 'high']);
   assert.strictEqual(defaultReasoningEffortForModel(k3Local), 'low');
-  // 存量 off 不在 spec.tiers 内 → 归一为最低档 low；合法值 high 原样保留
+  // stored off is not in spec.tiers → normalized to the lowest tier low; valid high is kept as-is
   assert.strictEqual(normalizeStoredReasoningEffort(k3Local, 'off'), 'low');
   assert.strictEqual(normalizeStoredReasoningEffort(k3Local, 'high'), 'high');
   assert.strictEqual(normalizeStoredReasoningEffort(k3Local, null), 'low');
-  // 本地 loopback openai_compatible 端点同样走知识表
+  // local loopback openai_compatible endpoints also go through the knowledge table
   const gptOssLocal = { preset: 'openai_compatible', model: 'gpt-oss-20b', base_url: 'http://127.0.0.1:8000/v1' };
   assert.deepStrictEqual([...reasoningEffortTiersForModel(gptOssLocal)], ['low', 'medium', 'high']);
   assert.strictEqual(defaultReasoningEffortForModel(gptOssLocal), 'low');
-  // noControl 模型 → null（不提供切换，沿用「不支持调节」语义出口）
+  // noControl model → null (no switch offered, reusing the "not adjustable" semantic exit)
   const r1Local = { preset: 'local_vllm', model: 'deepseek-r1:14b' };
   assert.strictEqual(reasoningEffortTiersForModel(r1Local), null);
   assert.strictEqual(normalizeStoredReasoningEffort(r1Local, 'high'), null);
-  // 普通本地模型不受影响：仍默认 off、四档
+  // plain local models are unaffected: still default off, four tiers
   const qwenLocal = { preset: 'local_vllm', model: 'qwen3-32b' };
   assert.deepStrictEqual([...reasoningEffortTiersForModel(qwenLocal)], ['off', 'low', 'medium', 'high']);
   assert.strictEqual(defaultReasoningEffortForModel(qwenLocal), 'off');
-  // 云端精确路由不受影响：z.ai first-party 的 glm-5.3 仍是 off/high/max
+  // exact cloud routes are unaffected: z.ai first-party glm-5.3 is still off/high/max
   const glmCloud = { preset: 'glm', vendor: 'glm', model: 'glm-5.3', base_url: 'https://api.z.ai/api/paas/v4' };
   assert.deepStrictEqual([...reasoningEffortTiersForModel(glmCloud)], ['off', 'high', 'max']);
-  // 云端 moonshot K3 直连路由不变：low/high/max
+  // direct moonshot cloud route for K3 unchanged: low/high/max
   const k3Direct = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k3', base_url: 'https://api.moonshot.ai/v1' };
   assert.deepStrictEqual([...reasoningEffortTiersForModel(k3Direct)], ['low', 'high', 'max']);
 });
 
-test('localReasoningTiers：探测档位 × 模型知识表叠加', () => {
-  // spec.tiers 覆盖探测档位（即使探测回报四档框架）
+test('localReasoningTiers: probed tiers overlaid with the model knowledge table', () => {
+  // spec.tiers overrides the probed tiers (even when the probe reports a four-tier framework)
   assert.deepStrictEqual([...localReasoningTiers('kimi-k3', 'vllm')], ['low', 'high']);
   assert.deepStrictEqual([...localReasoningTiers('gpt-oss-120b', 'sglang')], ['low', 'medium', 'high']);
-  // ollama 路由下底座 wire 只有布尔 think，思考永开模型唯一有意义的暴露是 high
+  // under the ollama route the engine wire only has boolean think, so the only meaningful exposure for an always-thinking model is high
   assert.deepStrictEqual([...localReasoningTiers('gpt-oss-120b', 'ollama')], ['high']);
-  // noControl → null（前端显示「思考始终开启」提示）
+  // noControl → null (frontend shows a "thinking is always on" notice)
   assert.strictEqual(localReasoningTiers('deepseek-r1:14b', 'vllm'), null);
   assert.strictEqual(localReasoningTiers('Qwen3-235B-A22B-Thinking', 'ollama'), null);
-  // lmstudio/generic：底座 openai wire route 对 reasoning_effort 是空操作，
-  // 知识表档位同样不提供——回落探测结果（null），恢复「端点不支持」提示
+  // lmstudio/generic: the engine's openai wire route is a no-op for reasoning_effort,
+  // and knowledge-table tiers are likewise not offered — fall back to the probe result (null), restoring the "endpoint unsupported" notice
   assert.strictEqual(localReasoningTiers('kimi-k3', 'lmstudio'), null);
   assert.strictEqual(localReasoningTiers('gpt-oss-120b', 'generic'), null);
-  // noControl 在 lmstudio/generic 同样为 null（提示逻辑不变）
+  // noControl on lmstudio/generic is likewise null (notice logic unchanged)
   assert.strictEqual(localReasoningTiers('deepseek-r1:14b', 'generic'), null);
-  // 未命中知识表 → 按探测结果下发
+  // no knowledge-table match → apply the probed tiers as-is
   assert.deepStrictEqual([...localReasoningTiers('qwen3-32b', 'ollama')], ['off', 'high']);
   assert.deepStrictEqual([...localReasoningTiers('qwen3-32b', 'llamacpp')], ['off', 'low', 'medium', 'high']);
   assert.strictEqual(localReasoningTiers('qwen3-32b', 'generic'), null);

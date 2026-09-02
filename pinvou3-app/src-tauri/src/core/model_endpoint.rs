@@ -11,9 +11,10 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 /// 探测结果 TTL 缓存：同一 base_url 的本地服务类型在短时间内不会变化。
-/// 探测经 `tokio::join!` 并行发出（各请求共享 3s 超时，挂起端点最坏 ~3s），
-/// 多会话/多入口（EnginePool spawn、连接测试、前端探测）重复探测仍会放大
-/// 开销；按 base_url 缓存可合并。
+/// Probes are issued in parallel via `tokio::join!` (all requests share a 3s
+/// timeout; a hung endpoint costs ~3s at worst). Repeated probes across
+/// sessions/entry points (EnginePool spawn, connection test, frontend probe)
+/// still amplify the cost; caching by base_url merges them.
 const PROBE_CACHE_TTL: Duration = Duration::from_secs(60);
 
 static PROBE_KIND_CACHE: std::sync::OnceLock<
@@ -265,11 +266,13 @@ pub fn strip_v1_suffix(url: &str) -> Option<String> {
 
 /// 本地推理服务类型（决定思考控制走哪套 wire 协议）。
 ///
-/// Ollama 经 `think` 布尔开关（无档位）；vLLM 及 wire 同构的 SGLang /
-/// llama.cpp / KoboldCpp / LMDeploy / Docker Model Runner 经
-/// `chat_template_kwargs.enable_thinking` + `reasoning_effort` 支持
-/// off/low/medium/high 档位（bridge 统一映射到底座 vllm provider）；LM Studio
-/// 与通用 OpenAI 兼容端点走 openai wire route，底座暂不注入思考控制。
+/// Ollama uses the `think` boolean switch (no effort tiers); vLLM and the
+/// wire-identical SGLang / llama.cpp / KoboldCpp / LMDeploy / Docker Model
+/// Runner support off/low/medium/high effort tiers via
+/// `chat_template_kwargs.enable_thinking` + `reasoning_effort` (the bridge
+/// maps them uniformly to the engine vllm provider); LM Studio and generic
+/// OpenAI-compatible endpoints take the openai wire route, where the engine
+/// does not yet inject thinking control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalServerKind {
     /// vLLM：底座经 `chat_template_kwargs.enable_thinking` + `reasoning_effort`
@@ -277,18 +280,21 @@ pub enum LocalServerKind {
     Vllm,
     /// Ollama：底座经 `think` 布尔支持开关（off=think:false，其余 think:true）。
     Ollama,
-    /// SGLang：特征端点 `/get_server_info`；思考控制 wire 与 vLLM 同构。
+    /// SGLang: signature endpoint `/get_server_info`; thinking-control wire
+    /// is identical to vLLM.
     Sglang,
-    /// llama.cpp（llama-server）：特征端点 `/props`；思考控制 wire 与 vLLM 同构。
+    /// llama.cpp (llama-server): signature endpoint `/props`;
+    /// thinking-control wire is identical to vLLM.
     LlamaCpp,
-    /// KoboldCpp：特征端点 `/api/extra/version`；兼容 llama.cpp 的 `/props`，
-    /// 判别优先级高于 LlamaCpp；思考控制 wire 与 vLLM 同构。
+    /// KoboldCpp: signature endpoint `/api/extra/version`; also compatible
+    /// with llama.cpp's `/props`, so its identification priority ranks above
+    /// LlamaCpp; thinking-control wire is identical to vLLM.
     KoboldCpp,
-    /// LMDeploy：`/v1/models` 的 `owned_by == "lmdeploy"`（中等置信度特征）；
-    /// 思考控制 wire 与 vLLM 同构。
+    /// LMDeploy: `owned_by == "lmdeploy"` in `/v1/models` (medium-confidence
+    /// signature); thinking-control wire is identical to vLLM.
     LmDeploy,
-    /// Docker Model Runner：仅 12434 端口的 `/models` JSON 数组管理 API
-    /// （端口门控）；思考控制 wire 与 vLLM 同构。
+    /// Docker Model Runner: `/models` JSON-array management API on port 12434
+    /// only (port-gated); thinking-control wire is identical to vLLM.
     DockerModelRunner,
     /// LM Studio：底座 openai wire route 暂不注入思考控制（保持旧行为）。
     LmStudio,
@@ -297,15 +303,18 @@ pub enum LocalServerKind {
 }
 
 /// 探测本地推理服务类型。只应在本地端点（`base_url_uses_local_or_private`）上
-/// 调用；所有候选特征端点并行探测（`tokio::join!`，共享 3s 超时，挂起端点最坏
-/// ~3s），全部完成后按特征互斥性优先级挑选：Ollama（`/api/tags`）> LM Studio
-/// （`/api/v0/models`）> KoboldCpp（`/api/extra/version`）> LlamaCpp（`/props`）
-/// > Sglang（`/get_server_info`）> LmDeploy（`/v1/models` 的 `owned_by`）>
-/// Vllm（`owned_by`）> 通用。唯一例外是 DockerModelRunner 端口门控优先：
-/// DMR 同时暴露 Ollama 兼容的 `/api/tags`，仅 12434 端口在 Ollama 判定之前
-/// 先查主机根 `/models` 的管理 API 形状（JSON 数组），命中即判
-/// DockerModelRunner，未命中按原顺序继续。
-/// 探测失败
+/// called; all candidate signature endpoints are probed in parallel
+/// (`tokio::join!`, shared 3s timeout, a hung endpoint costs ~3s at worst),
+/// and once all complete the result is picked by signature-exclusivity
+/// priority: Ollama (`/api/tags`) > LM Studio (`/api/v0/models`) > KoboldCpp
+/// (`/api/extra/version`) > LlamaCpp (`/props`) > Sglang
+/// (`/get_server_info`) > LmDeploy (`owned_by` in `/v1/models`) > Vllm
+/// (`owned_by`) > Generic. The only exception is DockerModelRunner
+/// port-gate priority: DMR also exposes an Ollama-compatible `/api/tags`, so
+/// on port 12434 only, the management API shape (JSON array) at the host
+/// root `/models` is checked before the Ollama decision — a hit means
+/// DockerModelRunner, a miss continues in the original order.
+/// Probe failure
 /// (service not started/timeout/auth 401) returns `Generic`; callers keep the
 /// existing openai wire route and do not change behavior on probe failure.
 ///
@@ -315,7 +324,8 @@ pub enum LocalServerKind {
 /// Generic misclassification, losing default-off thinking and the real
 /// effort tiers. Pass `None` for endpoints without auth.
 ///
-/// 结果按 base_url 缓存 `PROBE_CACHE_TTL`：即使并行后挂起端点仍要付一次 ~3s，
+/// Results are cached by base_url for `PROBE_CACHE_TTL`: even with parallel
+/// probes a hung endpoint still costs one ~3s,
 /// repeated probes across sessions/entry points amplify the cost; a hit
 /// within the TTL returns the cached value directly. The cache/in-flight key
 /// contains only base_url, never credentials: a positive identification
@@ -509,30 +519,35 @@ pub(crate) fn clear_probe_kind_cache() {
     }
 }
 
-/// 各候选探测的命中结果，供 [`select_local_server_kind`] 做优先级挑选。
-/// 拆成纯数据结构的目的是：端口门控优先的顺序决策不依赖真实 12434 端口绑定，
-/// 可以在测试里直接构造命中组合覆盖。
+/// Hit results of each candidate probe, for [`select_local_server_kind`] to
+/// pick by priority. Kept as a plain data structure so the port-gate-first
+/// ordering decision does not depend on a real port-12434 binding and tests
+/// can construct hit combinations directly.
 struct ProbeCandidateHits {
-    /// base_url 有效端口为 12434（Docker Model Runner 端口门控）。
+    /// base_url's effective port is 12434 (Docker Model Runner port gate).
     docker_port_gated: bool,
-    /// 12434 端口主机根 `/models` 返回 JSON 数组（DMR 管理 API 形状）。
+    /// Host-root `/models` on port 12434 returns a JSON array (DMR
+    /// management API shape).
     docker_mgmt_shape: bool,
     ollama: bool,
     lmstudio_v0: bool,
     koboldcpp: bool,
     llamacpp: bool,
     sglang: bool,
-    /// `/v1/models` 响应体（LMDeploy 与 vLLM 的 owned_by 判别共用一次抓取）。
+    /// `/v1/models` response body (one fetch shared by the LMDeploy and vLLM
+    /// owned_by decisions).
     v1_models: Option<serde_json::Value>,
 }
 
-/// 探测结果的优先级挑选（纯函数，不发请求）。顺序：Docker Model Runner
-/// 端口门控优先（DMR 同时暴露 Ollama 兼容的 `/api/tags`，若按通用优先级会
-/// 先命中 Ollama 分支，DockerModelRunner 永远不可达；仅 12434 端口在 Ollama
-/// 判定前检查管理 API 形状，未命中按原顺序继续）> Ollama > LM Studio >
-/// KoboldCpp > LlamaCpp > Sglang > LmDeploy > Vllm > 通用。KoboldCpp 兼容
-/// llama.cpp 的 `/props` 必须先于 LlamaCpp；LMDeploy 与 vLLM 共用 owned_by
-/// 特征，LMDeploy 优先。
+/// Priority selection over probe results (pure function, no requests).
+/// Order: Docker Model Runner port gate first (DMR also exposes an
+/// Ollama-compatible `/api/tags`; under the generic priority the Ollama
+/// branch would hit first and DockerModelRunner would be unreachable, so on
+/// port 12434 only, the management API shape is checked before the Ollama
+/// decision — a miss continues in the original order) > Ollama > LM Studio >
+/// KoboldCpp > LlamaCpp > Sglang > LmDeploy > Vllm > Generic. KoboldCpp is
+/// also compatible with llama.cpp's `/props`, so it must come before
+/// LlamaCpp; LMDeploy and vLLM share the owned_by signature, LMDeploy first.
 fn select_local_server_kind(hits: ProbeCandidateHits) -> LocalServerKind {
     if hits.docker_port_gated && hits.docker_mgmt_shape {
         return LocalServerKind::DockerModelRunner;
@@ -552,8 +567,9 @@ fn select_local_server_kind(hits: ProbeCandidateHits) -> LocalServerKind {
     if hits.sglang {
         return LocalServerKind::Sglang;
     }
-    // LMDeploy：/v1/models 中任一 owned_by == "lmdeploy"。中等置信度特征：
-    // owned_by 是各实现自报字段，非 LMDeploy 独有约定，仅作为弱标识。
+    // LMDeploy: any owned_by == "lmdeploy" in /v1/models. Medium-confidence
+    // signature: owned_by is a self-reported field of each implementation,
+    // not an LMDeploy-only convention, so it serves only as a weak marker.
     if hits
         .v1_models
         .as_ref()
@@ -572,10 +588,13 @@ fn select_local_server_kind(hits: ProbeCandidateHits) -> LocalServerKind {
     LocalServerKind::Generic
 }
 
-/// 无缓存的实际探测（TTL 缓存命中时直接返回，见 `probe_local_server_kind`）。
-/// 所有候选探测经 `tokio::join!` 并行发出（各自共享 `shared_probe_client` 的
-/// 3s 超时，挂起端点最坏 ~3s 而非串行累加）；`/v1/models` 只抓取一次，供
-/// LMDeploy 与 vLLM 的 `owned_by` 判别共用。全部完成后按特征互斥性优先级挑选。
+/// The actual probe without cache (a TTL cache hit returns directly; see
+/// `probe_local_server_kind`). All candidate probes are issued in parallel
+/// via `tokio::join!` (each shares `shared_probe_client`'s 3s timeout, so a
+/// hung endpoint costs ~3s at worst instead of accumulating serially);
+/// `/v1/models` is fetched only once, shared by the LMDeploy and vLLM
+/// `owned_by` decisions. Once all complete, the result is picked by
+/// signature-exclusivity priority.
 /// See [`apply_bearer`] for `bearer` semantics.
 async fn probe_local_server_kind_uncached(base_url: &str, bearer: Option<&str>) -> LocalServerKind {
     let docker_port_gated = is_docker_model_runner_port(base_url);
@@ -623,8 +642,9 @@ async fn probe_lmstudio_v0_only(base_url: &str, bearer: Option<&str>) -> Option<
 /// 抓取 OpenAI 兼容 `/v1/models` 响应体。探测地址口径与
 /// `features::monitor::probe_vllm_model_info` 一致：upstream 带 `/v1` 直接拼
 /// `/models`，不带则补 `/v1/models`。失败/非 2xx/解析失败返回 `None`，调用方
-/// 按探测失败处理。共享给 kind 探测链（`probe_local_server_kind_uncached` 一次
-/// 抓取供 LMDeploy/vLLM 的 owned_by 判别共用）与 monitor 的 vLLM served-name
+/// treated as probe failure. Shared with the kind-probe chain
+/// (`probe_local_server_kind_uncached` fetches once for the LMDeploy/vLLM
+/// owned_by decisions) and monitor's vLLM served-name
 /// probe, so the `/v1/models` URL assembly stays consistent in both places.
 /// See [`apply_bearer`] for `bearer` semantics: an authenticated vLLM
 /// returns 401 on `/v1/models` without credentials.
@@ -649,9 +669,10 @@ pub(crate) async fn fetch_v1_models(
     resp.json::<serde_json::Value>().await.ok()
 }
 
-/// 判别用的轻量 Ollama 探测：只查 `/api/tags`（200 且模型列表非空），判定口径
-/// 与 `probe_ollama_models` 一致但不抓 `/api/ps`——kind 探测不需要 loaded 状态，
-/// 模型列表组装逻辑仍归 `probe_ollama_models` 独有。
+/// Lightweight Ollama probe for identification: checks only `/api/tags` (200
+/// with a non-empty model list); the decision matches `probe_ollama_models`
+/// but does not fetch `/api/ps` — kind probing does not need loaded state,
+/// and model-list assembly remains exclusive to `probe_ollama_models`.
 /// See [`apply_bearer`] for `bearer` semantics.
 async fn probe_ollama_tags(base_url: &str, bearer: Option<&str>) -> bool {
     let Some(host) = strip_v1_suffix(base_url) else {
@@ -673,8 +694,8 @@ async fn probe_ollama_tags(base_url: &str, bearer: Option<&str>) -> bool {
     !parse_ollama_tag_names(v).is_empty()
 }
 
-/// 探测 KoboldCpp：`/api/extra/version` 200 且 JSON `result` 字符串包含
-/// "koboldcpp"（大小写不敏感）。
+/// Probe KoboldCpp: `/api/extra/version` returns 200 and the JSON `result`
+/// string contains "koboldcpp" (case-insensitive).
 /// See [`apply_bearer`] for `bearer` semantics.
 async fn probe_koboldcpp_version(base_url: &str, bearer: Option<&str>) -> bool {
     let Some(host) = strip_v1_suffix(base_url) else {
@@ -698,9 +719,11 @@ async fn probe_koboldcpp_version(base_url: &str, bearer: Option<&str>) -> bool {
         .is_some_and(|s| s.to_ascii_lowercase().contains("koboldcpp"))
 }
 
-/// 探测 llama.cpp：`/props` 200 且 JSON 对象同时含 `default_generation_settings`
-/// 与 `total_slots`。注意 KoboldCpp 也兼容 `/props`，判别优先级必须低于
-/// KoboldCpp（见 `probe_local_server_kind_uncached` 的挑选顺序）。
+/// Probe llama.cpp: `/props` returns 200 and the JSON object contains both
+/// `default_generation_settings` and `total_slots`. Note KoboldCpp is also
+/// compatible with `/props`, so this probe's identification priority must
+/// rank below KoboldCpp (see the selection order in
+/// `probe_local_server_kind_uncached`).
 /// See [`apply_bearer`] for `bearer` semantics.
 async fn probe_llamacpp_props(base_url: &str, bearer: Option<&str>) -> bool {
     let Some(host) = strip_v1_suffix(base_url) else {
@@ -724,8 +747,9 @@ async fn probe_llamacpp_props(base_url: &str, bearer: Option<&str>) -> bool {
     })
 }
 
-/// 探测 SGLang：`/get_server_info` 200 且 JSON 对象含 `version` 字符串字段
-/// （响应是 ServerArgs 序列化大 JSON，宽松解析，只看 version 存在）。
+/// Probe SGLang: `/get_server_info` returns 200 and the JSON object has a
+/// `version` string field (the response is a large serialized ServerArgs
+/// JSON; parse loosely and only check that version exists).
 /// See [`apply_bearer`] for `bearer` semantics.
 async fn probe_sglang_server_info(base_url: &str, bearer: Option<&str>) -> bool {
     let Some(host) = strip_v1_suffix(base_url) else {
@@ -747,8 +771,9 @@ async fn probe_sglang_server_info(base_url: &str, bearer: Option<&str>) -> bool 
     v.get("version").and_then(Value::as_str).is_some()
 }
 
-/// Docker Model Runner 端口门控：其管理 API 固定在 12434 端口，其他端口
-/// 一律不探测（避免对任意本地端点多发一次 `/models` 请求）。
+/// Docker Model Runner port gate: its management API is fixed on port 12434;
+/// no other port is probed (avoids an extra `/models` request against
+/// arbitrary local endpoints).
 fn is_docker_model_runner_port(base_url: &str) -> bool {
     reqwest::Url::parse(base_url.trim())
         .ok()
@@ -756,11 +781,13 @@ fn is_docker_model_runner_port(base_url: &str) -> bool {
         == Some(12434)
 }
 
-/// Docker Model Runner 管理 API 根地址：管理端点在主机根（`/models`），不在
-/// OpenAI 兼容前缀之下。按 `/engines/v1` → `/engines` → `/v1` 的顺序去掉
-/// 尾部前缀（`/engines/v1` 必须先于 `/engines`，否则残留 `/engines`），使
-/// `http://host:12434/engines/v1`、`http://host:12434/v1`、裸主机等文档地址
-/// 都归一到主机根。
+/// Docker Model Runner management API root: the management endpoint lives at
+/// the host root (`/models`), not under the OpenAI-compatible prefix. Strip
+/// trailing prefixes in the order `/engines/v1` → `/engines` → `/v1`
+/// (`/engines/v1` must come before `/engines`, otherwise `/engines` is left
+/// behind), normalizing documented addresses such as
+/// `http://host:12434/engines/v1`, `http://host:12434/v1`, and the bare host
+/// to the host root.
 fn strip_docker_model_runner_root(url: &str) -> Option<String> {
     let trimmed = url.trim_end_matches('/');
     for suffix in ["/engines/v1", "/engines", "/v1"] {
@@ -771,10 +798,12 @@ fn strip_docker_model_runner_root(url: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
-/// 探测 Docker Model Runner：仅当 base_url 有效端口为 12434（端口门控，见
-/// [`is_docker_model_runner_port`]）时 GET 主机根的 `/models`（地址归一见
-/// [`strip_docker_model_runner_root`]）；200 且响应是 JSON 数组才命中——这是
-/// Docker 管理 API 的形状，OpenAI 兼容形状是含 "data" 的对象，以此区分。
+/// Probe Docker Model Runner: only when base_url's effective port is 12434
+/// (port gate, see [`is_docker_model_runner_port`]), GET `/models` at the
+/// host root (address normalization in [`strip_docker_model_runner_root`]);
+/// a hit requires 200 with a JSON-array response — that is the Docker
+/// management API shape, whereas the OpenAI-compatible shape is an object
+/// with "data", which distinguishes them.
 /// See [`apply_bearer`] for `bearer` semantics.
 async fn probe_docker_model_runner(base_url: &str, bearer: Option<&str>) -> bool {
     if !is_docker_model_runner_port(base_url) {
@@ -799,8 +828,9 @@ async fn probe_docker_model_runner(base_url: &str, bearer: Option<&str>) -> bool
         .is_some_and(|v| v.is_array())
 }
 
-/// `/v1/models` 响应体中任一模型 `owned_by` 等于期望值（大小写不敏感）。
-/// 供 vLLM（`"vllm"`）与 LMDeploy（`"lmdeploy"`）判别共用同一次抓取结果。
+/// Whether any model's `owned_by` in the `/v1/models` response body equals
+/// the expected value (case-insensitive). Lets vLLM (`"vllm"`) and LMDeploy
+/// (`"lmdeploy"`) identification share the same fetch result.
 fn v1_models_owned_by_matches(v: &serde_json::Value, expected: &str) -> bool {
     v.get("data")
         .and_then(Value::as_array)
@@ -1157,8 +1187,9 @@ mod tests {
         }
     }
 
-    /// Ollama 特征端点命中：/api/tags 返回模型列表 → 判定 Ollama（kind 探测
-    /// 只查 /api/tags，不抓 /api/ps，loaded 状态归 probe_ollama_models）。
+    /// Ollama signature endpoint hit: /api/tags returns a model list →
+    /// identified as Ollama (kind probing only checks /api/tags and does not
+    /// fetch /api/ps; loaded state belongs to probe_ollama_models).
     #[tokio::test]
     async fn probe_local_kind_detects_ollama_via_api_tags() {
         let _state = PROBE_STATE_TEST_MUTEX.lock().await;
@@ -1216,8 +1247,8 @@ mod tests {
         );
     }
 
-    /// KoboldCpp 特征命中：/api/extra/version 的 result 字段含 "koboldcpp"
-    /// （大小写不敏感）→ 判定 KoboldCpp。
+    /// KoboldCpp signature hit: the result field of /api/extra/version
+    /// contains "koboldcpp" (case-insensitive) → identified as KoboldCpp.
     #[tokio::test]
     async fn probe_local_kind_detects_koboldcpp_via_extra_version() {
         let _state = PROBE_STATE_TEST_MUTEX.lock().await;
@@ -1232,8 +1263,10 @@ mod tests {
         );
     }
 
-    /// llama.cpp 特征命中：/props 同时含 default_generation_settings 与
-    /// total_slots → 判定 LlamaCpp；缺任一字段不命中（宽松解析防误判）。
+    /// llama.cpp signature hit: /props contains both
+    /// default_generation_settings and total_slots → identified as LlamaCpp;
+    /// missing either field is not a hit (loose parsing prevents
+    /// misidentification).
     #[tokio::test]
     async fn probe_local_kind_detects_llamacpp_via_props() {
         let _state = PROBE_STATE_TEST_MUTEX.lock().await;
@@ -1247,7 +1280,7 @@ mod tests {
             LocalServerKind::LlamaCpp
         );
         clear_probe_kind_cache();
-        // 缺 total_slots：形状不完整，不判 LlamaCpp（其余端点 404 → Generic）。
+        // Missing total_slots: incomplete shape, not LlamaCpp (all other endpoints 404 → Generic).
         let partial = spawn_probe_server(vec![(
             "/props",
             r#"{"default_generation_settings":{"n_ctx":4096}}"#,
@@ -1259,8 +1292,9 @@ mod tests {
         );
     }
 
-    /// 优先级：KoboldCpp 兼容 llama.cpp 的 /props，两个特征同时命中时必须
-    /// 判为 KoboldCpp（KoboldCpp 优先级高于 LlamaCpp）。
+    /// Priority: KoboldCpp is also compatible with llama.cpp's /props, so
+    /// when both signatures hit it must be identified as KoboldCpp
+    /// (KoboldCpp ranks above LlamaCpp).
     #[tokio::test]
     async fn probe_local_kind_koboldcpp_wins_over_llamacpp_props() {
         let _state = PROBE_STATE_TEST_MUTEX.lock().await;
@@ -1281,8 +1315,9 @@ mod tests {
         );
     }
 
-    /// SGLang 特征命中：/get_server_info 是 ServerArgs 序列化大 JSON，宽松
-    /// 解析只看 version 字符串字段存在 → 判定 Sglang。
+    /// SGLang signature hit: /get_server_info is a large serialized
+    /// ServerArgs JSON; loose parsing only checks that the version string
+    /// field exists → identified as Sglang.
     #[tokio::test]
     async fn probe_local_kind_detects_sglang_via_server_info() {
         let _state = PROBE_STATE_TEST_MUTEX.lock().await;
@@ -1297,8 +1332,9 @@ mod tests {
         );
     }
 
-    /// LMDeploy 命中：/v1/models 中 owned_by == "lmdeploy"（大小写不敏感，
-    /// 中等置信度特征）。与 vLLM 共用同一次 /v1/models 抓取，LMDeploy 优先。
+    /// LMDeploy hit: owned_by == "lmdeploy" in /v1/models (case-insensitive,
+    /// medium-confidence signature). Shares the same /v1/models fetch with
+    /// vLLM; LMDeploy takes priority.
     #[tokio::test]
     async fn probe_local_kind_detects_lmdeploy_via_owned_by() {
         let _state = PROBE_STATE_TEST_MUTEX.lock().await;
@@ -1313,22 +1349,24 @@ mod tests {
         );
     }
 
-    /// Docker Model Runner 端口门控：/models 返回 JSON 数组（管理 API 形状）
-    /// 但端口不是 12434 → 不探测该端点，不判 DockerModelRunner（落 Generic）。
+    /// Docker Model Runner port gate: /models returns a JSON array
+    /// (management API shape) but the port is not 12434 → the endpoint is
+    /// not probed and DockerModelRunner is not selected (falls to Generic).
     #[tokio::test]
     async fn probe_local_kind_docker_model_runner_gated_by_port_12434() {
         let _state = PROBE_STATE_TEST_MUTEX.lock().await;
-        // mock 绑定随机端口（必 ≠ 12434 门控值时跳过探测）。
+        // The mock binds a random port (never the 12434 gate value, so probing is skipped).
         let server = spawn_probe_server(vec![("/models", r#"[{"id":"qwen3"}]"#)]).await;
         assert_eq!(
             probe_local_server_kind(&server.url, None).await,
             LocalServerKind::Generic,
-            "非 12434 端口不尝试 Docker Model Runner 管理 API"
+            "non-12434 ports must not attempt the Docker Model Runner management API"
         );
     }
 
-    /// 端口门控纯函数：仅有效端口 == 12434 才允许探测；无显式端口按协议
-    /// 默认（http=80）不命中；非法 URL 不命中。
+    /// Port-gate pure function: only an effective port == 12434 allows
+    /// probing; no explicit port falls back to the protocol default
+    /// (http=80) and misses; invalid URLs miss.
     #[test]
     fn docker_model_runner_port_gate_requires_12434() {
         assert!(is_docker_model_runner_port("http://localhost:12434/v1"));
@@ -1340,9 +1378,10 @@ mod tests {
         assert!(!is_docker_model_runner_port("not a url"));
     }
 
-    /// DMR 管理 API 地址归一：管理端点在主机根 `/models`，`/engines/v1`、
-    /// `/engines`、`/v1`（按此顺序，避免 `/engines/v1` 残留 `/engines`）与
-    /// 裸主机都归一到主机根。
+    /// DMR management API address normalization: the management endpoint
+    /// lives at the host root `/models`; `/engines/v1`, `/engines`, `/v1`
+    /// (in this order, so `/engines/v1` does not leave `/engines` behind)
+    /// and the bare host all normalize to the host root.
     #[test]
     fn docker_model_runner_root_strips_openai_prefixes() {
         assert_eq!(
@@ -1372,9 +1411,11 @@ mod tests {
         );
     }
 
-    /// 顺序决策（纯函数，无需绑定 12434 端口）：DMR 暴露 Ollama 兼容的
-    /// /api/tags，端口门控内管理 API 形状命中时必须优先于 Ollama 判为
-    /// DockerModelRunner；形状未命中或不在门控端口时按原顺序落 Ollama。
+    /// Ordering decision (pure function, no real port-12434 binding needed):
+    /// DMR exposes an Ollama-compatible /api/tags, so within the port gate a
+    /// management API shape hit must beat Ollama and select
+    /// DockerModelRunner; on a shape miss or a non-gated port, the original
+    /// order applies and it falls to Ollama.
     #[test]
     fn select_local_server_kind_docker_model_runner_wins_over_ollama_when_gated() {
         let both_hit = || ProbeCandidateHits {
@@ -1390,9 +1431,9 @@ mod tests {
         assert_eq!(
             select_local_server_kind(both_hit()),
             LocalServerKind::DockerModelRunner,
-            "12434 端口管理 API 形状命中应优先于 Ollama"
+            "a management API shape hit on port 12434 should beat Ollama"
         );
-        // 管理 API 形状未命中：按原顺序继续，Ollama 特征生效。
+        // Management API shape miss: continue in the original order; the Ollama signature wins.
         assert_eq!(
             select_local_server_kind(ProbeCandidateHits {
                 docker_mgmt_shape: false,
@@ -1400,7 +1441,7 @@ mod tests {
             }),
             LocalServerKind::Ollama
         );
-        // 非 12434 端口：管理形状不被采信（探测本身已被门控跳过）。
+        // Non-12434 port: the management shape is not trusted (the probe itself was skipped by the gate).
         assert_eq!(
             select_local_server_kind(ProbeCandidateHits {
                 docker_port_gated: false,
@@ -1552,7 +1593,8 @@ mod tests {
 
     /// in-flight 合并：并发多次调用同一 base_url 共享一次探测。
     /// mock server 统计 /api/tags 命中次数——合并生效时无论并发多少调用，
-    /// 特征端点只被打一次（候选探测并行发出、无短路，每个端点每次探测各命中一次）。
+    /// each signature endpoint is hit exactly once (candidate probes run in
+    /// parallel with no short-circuit, so each endpoint is hit once per probe).
     #[tokio::test]
     async fn probe_local_kind_merges_concurrent_calls_into_one_probe() {
         let _state = PROBE_STATE_TEST_MUTEX.lock().await;

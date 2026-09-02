@@ -1054,8 +1054,10 @@ async function modalWidth(page, headingText) {
   await clickExact(page, '取消');
   await sleep(200);
 
-  // noControl 模型（思考永开不可控，如 deepseek-r1）叠加在探测档位之上：探测
-  // 完成后档位区显示「思考始终开启」提示，而非档位按钮或「端点不支持」提示。
+  // A noControl model (always-thinking and not controllable, e.g. deepseek-r1)
+  // takes precedence over the probed effort tier: after the probe completes, the
+  // effort tier area shows the "thinking always on" hint instead of tier buttons
+  // or the "endpoint not supported" hint.
   await clickExact(page, '添加模型');
   await sleep(300);
   await clickExact(page, '云端模型');
@@ -1076,7 +1078,8 @@ async function modalWidth(page, headingText) {
     return row && row.querySelector('input');
   });
   await r1BaseUrlInput.type('http://127.0.0.1:8000/v1', { delay: 20 });
-  // 越过 400ms debounce，探测返回 null（mock 默认）→ 知识表 noControl 仍优先生效
+  // Wait past the 400ms debounce; the probe returns null (mock default), so the
+  // knowledge table noControl entry still wins
   await sleep(700);
   const r1Effort = await page.evaluate(() => {
     const dialog = document.querySelector('[data-testid="model-form-dialog"]');
@@ -1089,7 +1092,7 @@ async function modalWidth(page, headingText) {
       noTierButtons: buttons.length === 0,
     };
   });
-  rec('⑥.5e noControl 模型（deepseek-r1）本地路由显示「思考始终开启」提示，无档位按钮',
+  rec('⑥.5e noControl model (deepseek-r1) local route shows "thinking always on" hint with no effort tier buttons',
     r1Effort.alwaysOnShown && r1Effort.unsupportedHidden && r1Effort.noTierButtons,
     JSON.stringify(r1Effort));
   await clickExact(page, '取消');
