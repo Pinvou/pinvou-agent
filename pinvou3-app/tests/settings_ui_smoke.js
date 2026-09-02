@@ -496,6 +496,28 @@ async function modalWidth(page, headingText) {
     && updateDownloadState.text.includes('取消下载')
     && updateDownloadState.desc.includes('正在下载更新 37%'),
     JSON.stringify(updateDownloadState));
+  await page.evaluate(() => {
+    let downloaded = 37000;
+    const timer = window.setInterval(() => {
+      downloaded = Math.min(downloaded + 16, 99000);
+      void window.__SETTINGS_TEST__.emit('update:progress', { downloaded, total: 100000 });
+    }, 0);
+    window.__SETTINGS_TEST__.stopProgressFlood = () => window.clearInterval(timer);
+  });
+  const navigationStartedAt = Date.now();
+  try {
+    await page.click('[data-testid="settings-section-model"]');
+    await page.waitForFunction(() =>
+      (document.querySelector('[data-testid="settings-content"] h1')?.textContent || '').trim() === '模型',
+    { timeout: 2000 });
+  } finally {
+    await page.evaluate(() => window.__SETTINGS_TEST__.stopProgressFlood());
+  }
+  rec('Update progress bursts do not block settings navigation',
+    Date.now() - navigationStartedAt < 2000,
+    `latency=${Date.now() - navigationStartedAt}ms`);
+  await page.click('[data-testid="settings-section-update"]');
+  await page.waitForFunction(() => !!document.querySelector('#settings-version-update'));
   await page.click('#settings-version-update [data-settings-update-action="true"]');
   await sleep(150);
   rec('①c 设置页可取消正在进行的更新下载', await callCount(page, 'cancel_download') === 1);
