@@ -166,6 +166,65 @@ pub async fn accept_plan(
     let mut reservation = pool
         .reserve_turn(&session_id)
         .map_err(|error| format!("reserve accept_plan turn: {error:#}"))?;
+    // 与 chat.rs 同款的 turn 快照前奏：accept_plan 发送真实用户消息（
+    // is_user_turn_prompt 计数口径一致），切 YOLO 执行恰是最高风险的一轮——
+    // 缺快照会让其编辑只能连同前一轮一起回退（评审 M6）。失败/超预算如实记
+    // 日志不阻断 turn（设计 §5 降级语义）；发送失败按 id 作废「未成活」快照。
+    let mut created_snapshot_id: Option<String> = None;
+    let mut checkpoint_ledger_root = None;
+    if store.is_code_session(&session_id) {
+        let roots = store
+            .session_roots(&session_id)
+            .map_err(|error| format!("解析会话根失败: {error:#}"))?;
+        checkpoint_ledger_root = Some(roots.ledger.clone());
+        let store_count = store.inner().clone();
+        let sid_count = session_id.clone();
+        let checkpoint_ledger = roots.ledger.clone();
+        let checkpoint_execution = roots.execution.clone();
+        let label = "✅ 就这么干".to_string();
+        let snapshot = tauri::async_runtime::spawn_blocking(move || {
+            if !crate::features::code_checkpoints::execution_root_within_snapshot_budget(
+                &checkpoint_execution,
+                &checkpoint_ledger,
+            ) {
+                return Ok(None);
+            }
+            let turn_number = store_count
+                .load(&sid_count)
+                .map(|session| {
+                    crate::features::code_checkpoints::count_user_turns(&session.messages) + 1
+                })
+                .ok();
+            crate::features::code_checkpoints::create_checkpoint(
+                &checkpoint_ledger,
+                &checkpoint_execution,
+                turn_number,
+                crate::features::code_checkpoints::CheckpointKind::Turn,
+                &label,
+            )
+            .map(Some)
+        })
+        .await;
+        created_snapshot_id = match snapshot {
+            Ok(Ok(Some(meta))) => Some(meta.id),
+            Ok(Ok(None)) => {
+                log::info!(
+                    "[pinvou3][accept_plan] checkpoint skipped sid={session_id}: execution root exceeds snapshot size budget"
+                );
+                None
+            }
+            Ok(Err(error)) => {
+                log::warn!("[pinvou3][accept_plan] checkpoint failed sid={session_id}: {error:#}");
+                None
+            }
+            Err(error) => {
+                log::warn!(
+                    "[pinvou3][accept_plan] checkpoint task failed sid={session_id}: {error}"
+                );
+                None
+            }
+        };
+    }
     let plan_claim = store
         .claim_pending_plan(&session_id, &plan_id)
         .map_err(|error| format!("accept_plan({session_id}): {error:#}"))?;
@@ -199,6 +258,20 @@ pub async fn accept_plan(
         )
         .await
     {
+        // 发送失败：作废「未成活」快照（与 chat.rs 同款，按 id 精确删除）。
+        if let (Some(ledger), Some(snapshot_id)) = (checkpoint_ledger_root, created_snapshot_id) {
+            let sid_drop = session_id.clone();
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                if let Err(error) =
+                    crate::features::code_checkpoints::drop_checkpoint(&ledger, &snapshot_id)
+                {
+                    log::warn!(
+                        "[pinvou3][accept_plan] drop unsent-turn checkpoint failed sid={sid_drop}: {error:#}"
+                    );
+                }
+            })
+            .await;
+        }
         let rollback = plan_claim.rollback();
         return Err(match rollback {
             Ok(()) => format!("accept_plan send_user_message: {error:#}"),

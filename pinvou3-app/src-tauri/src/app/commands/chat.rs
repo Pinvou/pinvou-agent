@@ -312,6 +312,7 @@ pub(crate) async fn chat_with_reservation(
             // （返回 None 表示主动跳过，与快照失败区分）。
             if !crate::features::code_checkpoints::execution_root_within_snapshot_budget(
                 &checkpoint_execution,
+                &checkpoint_ledger,
             ) {
                 return Ok(None);
             }
