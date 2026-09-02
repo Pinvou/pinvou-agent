@@ -4279,8 +4279,19 @@
     return null;
   }
 
+  const SHELL_TOOL_NAMES = ["exec_shell", "task_shell_start", "shell", "Bash"];
+
   function isShellExecutionTool(name) {
-    return ["exec_shell", "task_shell_start", "shell", "Bash"].includes(name);
+    return SHELL_TOOL_NAMES.includes(name);
+  }
+
+  function mentionsShellTool(text) {
+    // 子智能体的工具调用不产生 chat:tool_start，forwarder 把 mailbox 的
+    // ToolCallStarted 转成 multiagent:agent_progress（status 形如
+    // "🔧 exec_shell (step 3)"）。据此调度快照轮询，让子 agent 的后台
+    // shell 任务被 applyShellSnapshots 发现。
+    const raw = String(text || "");
+    return SHELL_TOOL_NAMES.some((name) => raw.includes(name));
   }
 
   function utf8Length(text) {
@@ -5896,6 +5907,17 @@
     return fallbackPath;
   }
 
+  // 子智能体不产生 chat:tool_start/chat:tool_end（forwarder 只转发 mailbox 进展），
+  // 它启动的后台 shell 任务若无人调度轮询，就要等到会话切换或顶层 shell 调用
+  // 才会被 applyShellSnapshots 发现。从进展文本认出 shell 工具即补一次调度；
+  // 轮询自身会在没有运行中任务时自停，不会常驻。
+  listen("multiagent:agent_progress", function (e) {
+    const p = e.payload || {};
+    if (p.session_id && mentionsShellTool(p.status)) {
+      scheduleShellPoll(p.session_id, true);
+    }
+  });
+
   listen("chat:tool_start", function (e) { onSessionEvent(e, function () {
     const p = e.payload || {};
     // Relay reconnects and the desktop event bridge may replay the last frame.
@@ -6040,6 +6062,9 @@
       }
       updatedToolItem.taskId = shellTaskId;
       updatedToolItem.sessionId = p.session_id || state.activeSessionId;
+      // 后台 shell 任务标记：供后台任务指示器区分"真后台"与被轮询命令匹配
+      // 回退挂上 taskId 的前台卡（桌面端 backgrounded 快速通道等价逻辑）。
+      if (p.metadata && p.metadata.backgrounded === true) updatedToolItem.background = true;
       const shellStatus = String((p.metadata && p.metadata.status) || "").toLowerCase();
       if (shellStatus === "running" || /running|background/i.test(String(p.output || ""))) {
         updatedToolItem.state = "running";

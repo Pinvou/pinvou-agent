@@ -184,6 +184,7 @@
     "chat:usage",
     "chat:user_message",
     "chat:user_input_required",
+    "multiagent:agent_progress",
     "scheduled_task:run_updated",
     "session:deleted",
     "session:list_changed",

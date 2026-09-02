@@ -2049,6 +2049,7 @@
   const terminalFeature = installBridgeFeature("terminal", { state, notify, invoke, bt, runSyncOnSession, addChatItem });
   const updateToolItem = terminalFeature.updateToolItem;
   const isShellExecutionTool = terminalFeature.isShellExecutionTool;
+  const mentionsShellTool = terminalFeature.mentionsShellTool;
   const scheduleShellPoll = terminalFeature.scheduleShellPoll;
   const scheduleShellNotify = terminalFeature.scheduleShellNotify;
   const markBackgroundToolItem = terminalFeature.markBackgroundToolItem;
@@ -2140,6 +2141,7 @@
     composePlanMarkdown,
     refreshHistoryList,
     isShellExecutionTool,
+    mentionsShellTool,
     scheduleShellPoll,
     appendToolItemOutput,
     scheduleShellNotify,
