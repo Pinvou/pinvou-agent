@@ -1,0 +1,57 @@
+name: DCO
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  signoff:
+    name: Signed-off commits
+    runs-on: ubuntu-latest
+    steps:
+      # 进入 Merge Queue 前，每个 PR 已通过本 required check。merge_group 中只包含
+      # GitHub 生成的组合提交，此处复用同名 check 上报成功，避免队列等待缺失上下文。
+      - name: 确认队列中的 PR 已通过 DCO
+        if: github.event_name == 'merge_group'
+        run: echo "DCO 已在各 PR 入队前验证"
+
+      - name: Verify DCO sign-offs
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const commits = await github.paginate(
+              github.rest.pulls.listCommits,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                per_page: 100,
+              },
+            );
+
+            const signoff = /^Signed-off-by:\s+.+\s+<[^<>@\s]+@[^<>\s]+>$/im;
+            const trustedBots = new Set([
+              "dependabot[bot]",
+              "github-actions[bot]",
+            ]);
+            // merge commit(parents > 1,如同步 main 产生的 "Merge branch 'main' into ...")
+            // 天然不带 sign-off,按 probot/dco 惯例豁免;普通 commit 缺 sign-off 仍 fail。
+            const unsigned = commits.filter(({ author, committer, commit, parents }) => {
+              if ((parents?.length ?? 0) > 1) return false;
+              const login = author?.login ?? committer?.login;
+              return !trustedBots.has(login) && !signoff.test(commit.message);
+            });
+
+            if (unsigned.length > 0) {
+              const list = unsigned
+                .map(({ sha, commit }) => `- ${sha.slice(0, 12)} ${commit.message.split("\n", 1)[0]}`)
+                .join("\n");
+              core.setFailed(`The following commits are missing a valid Signed-off-by trailer:\n${list}`);
+            }

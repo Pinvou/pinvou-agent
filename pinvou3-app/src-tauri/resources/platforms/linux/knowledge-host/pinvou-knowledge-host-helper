@@ -1,0 +1,760 @@
+#!/bin/sh
+set -eu
+
+SERVICE=pinvou-knowledge.service
+DATA_DIR=/var/lib/pinvou-knowledge
+MODEL_MOUNT=/var/lib/pinvou-knowledge-model
+INSTALL_DIR=/usr/lib/pinvou
+INSTALL_BIN=$INSTALL_DIR/pinvou-knowledge-server
+UNIT_FILE=/etc/systemd/system/$SERVICE
+UNIT_BACKUP=$UNIT_FILE.previous
+DATA_LOCK=/var/lib/.pinvou-knowledge.data.lock
+LOCK_DIR=/run/pinvou
+LOCK_FILE=$LOCK_DIR/knowledge-host.lock
+# 正式包中的值必须保持 0。npm run dev 只在 target 下生成值为 1 的副本，
+# 让开发客户端可以验收一键创建，同时不放宽已安装资源的 root 所有权边界。
+DEVELOPMENT_RESOURCE=0
+
+fail() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+require_absolute_path() {
+  candidate=$1
+  message=$2
+  case "$candidate" in
+    /*) ;;
+    *) fail "$message" ;;
+  esac
+}
+
+[ "$(id -u)" -eq 0 ] || fail "需要管理员权限"
+[ "$(uname -s)" = Linux ] || fail "仅支持 Linux"
+case "${PKEXEC_UID:-}" in
+  0|''|*[!0-9]*) fail "无法确认发起操作的 PINVOU 用户" ;;
+esac
+PKEXEC_CALLER_UID=$PKEXEC_UID
+getent passwd "$PKEXEC_CALLER_UID" >/dev/null || fail "发起操作的 PINVOU 用户不存在"
+command -v flock >/dev/null 2>&1 || fail "系统缺少 flock，无法安全管理共享知识库"
+if [ -e "$LOCK_DIR" ] || [ -L "$LOCK_DIR" ]; then
+  [ -d "$LOCK_DIR" ] || fail "共享知识库锁目录不是目录"
+  [ ! -L "$LOCK_DIR" ] || fail "拒绝使用符号链接锁目录"
+fi
+install -d -m 0700 -o root -g root "$LOCK_DIR"
+lock_dir_owner=$(stat -c %u "$LOCK_DIR" 2>/dev/null) || fail "无法检查共享知识库锁目录"
+lock_dir_mode=$(stat -c %a "$LOCK_DIR" 2>/dev/null) || fail "无法检查共享知识库锁目录权限"
+[ "$lock_dir_owner" -eq 0 ] && [ "$lock_dir_mode" = 700 ] || fail "共享知识库锁目录权限不安全"
+if [ -e "$LOCK_FILE" ] || [ -L "$LOCK_FILE" ]; then
+  [ -f "$LOCK_FILE" ] || fail "共享知识库锁文件不是普通文件"
+  [ ! -L "$LOCK_FILE" ] || fail "拒绝使用符号链接锁文件"
+  lock_owner=$(stat -c %u "$LOCK_FILE" 2>/dev/null) || fail "无法检查共享知识库锁文件"
+  [ "$lock_owner" -eq 0 ] || fail "共享知识库锁文件所有者不安全"
+fi
+umask 077
+exec 9>"$LOCK_FILE"
+chmod 0600 "$LOCK_FILE"
+flock -n 9 || fail "另一项共享知识库管理操作正在进行，请稍后再试"
+
+validate_development_path_chain() {
+  current_dir=$1
+  service_uid=$2
+  while [ "$current_dir" != / ]; do
+    directory_owner=$(stat -c %u "$current_dir" 2>/dev/null) || fail "无法检查开发资源目录链"
+    directory_mode=$(stat -c %a "$current_dir" 2>/dev/null) || fail "无法检查开发资源目录链权限"
+    [ "$directory_owner" -eq 0 ] || [ "$directory_owner" -eq "$service_uid" ] || \
+      fail "开发资源目录链所有者不安全"
+    case "$directory_mode" in
+      *[2367][0-9]|*[0-9][2367]) fail "开发资源目录链权限不安全" ;;
+    esac
+    current_dir=$(dirname "$current_dir")
+  done
+}
+
+secure_packaged_file() {
+  path=$1
+  service_uid=$2
+  [ -f "$path" ] || fail "安装包资源不存在"
+  [ ! -L "$path" ] || fail "拒绝使用符号链接安装包资源"
+  owner=$(stat -c %u "$path" 2>/dev/null) || fail "无法检查安装包资源"
+  mode=$(stat -c %a "$path" 2>/dev/null) || fail "无法检查安装包资源权限"
+  case "$mode" in
+    *[2367][0-9]|*[0-9][2367]) fail "安装包资源权限不安全" ;;
+  esac
+  helper_path=$(readlink -f "$0" 2>/dev/null) || fail "无法检查共享知识库管理组件"
+  [ -f "$helper_path" ] || fail "共享知识库管理组件不存在"
+  [ ! -L "$0" ] || fail "拒绝使用符号链接共享知识库管理组件"
+  helper_owner=$(stat -c %u "$helper_path" 2>/dev/null) || fail "无法检查共享知识库管理组件"
+  helper_mode=$(stat -c %a "$helper_path" 2>/dev/null) || fail "无法检查共享知识库管理组件权限"
+  case "$helper_mode" in
+    *[2367][0-9]|*[0-9][2367]) fail "共享知识库管理组件权限不安全" ;;
+  esac
+
+  if [ "$owner" -eq 0 ]; then
+    [ "$helper_owner" -eq 0 ] || fail "共享知识库管理组件所有者不安全"
+    return 0
+  fi
+
+  [ "$DEVELOPMENT_RESOURCE" -eq 1 ] || fail "请使用正式安装的 PINVOU 创建共享知识库"
+  [ "$owner" -eq "$service_uid" ] || fail "开发服务资源不属于当前 PINVOU 用户"
+  [ "$helper_owner" -eq "$service_uid" ] || fail "开发管理组件不属于当前 PINVOU 用户"
+  [ "$(basename "$path")" = pinvou-knowledge-server ] || fail "开发服务资源名称无效"
+  source_path=$(readlink -f "$path" 2>/dev/null) || fail "无法检查开发服务资源"
+  resource_dir=$(dirname "$helper_path")
+  [ "$(dirname "$source_path")" = "$resource_dir" ] || fail "开发服务资源必须与管理组件同目录"
+  validate_development_path_chain "$resource_dir" "$service_uid"
+  resource_owner=$(stat -c %u "$resource_dir" 2>/dev/null) || fail "无法检查开发资源目录"
+  resource_mode=$(stat -c %a "$resource_dir" 2>/dev/null) || fail "无法检查开发资源目录权限"
+  [ "$resource_owner" -eq "$service_uid" ] || fail "开发资源目录不属于当前 PINVOU 用户"
+  case "$resource_mode" in
+    *[2367][0-9]|*[0-9][2367]) fail "开发资源目录权限不安全" ;;
+  esac
+}
+
+validate_semver_identifiers() {
+  identifiers=$1
+  numeric_leading_zero_rule=$2
+  case "$identifiers" in
+    ''|.*|*.|*..*) fail "共享知识库服务版本无效" ;;
+  esac
+  previous_ifs=$IFS
+  IFS=.
+  set -- $identifiers
+  IFS=$previous_ifs
+  for identifier do
+    case "$identifier" in
+      ''|*[!0-9A-Za-z-]*) fail "共享知识库服务版本无效" ;;
+    esac
+    if [ "$numeric_leading_zero_rule" = reject ]; then
+      case "$identifier" in
+        *[!0-9]*) ;;
+        0|[1-9]|[1-9][0-9]*) ;;
+        *) fail "共享知识库服务版本无效" ;;
+      esac
+    fi
+  done
+}
+
+validate_semver_number() {
+  number=$1
+  case "$number" in
+    0|[1-9]|[1-9][0-9]*) ;;
+    *) fail "共享知识库服务版本无效" ;;
+  esac
+}
+
+validate_semver() {
+  version=$1
+  case "$version" in
+    ''|*[!0-9A-Za-z.+-]*) fail "共享知识库服务版本无效" ;;
+  esac
+  version_without_build=$version
+  case "$version" in
+    *+*)
+      build=${version#*+}
+      case "$build" in *+*) fail "共享知识库服务版本无效" ;; esac
+      validate_semver_identifiers "$build" allow
+      version_without_build=${version%%+*}
+      ;;
+  esac
+  core=$version_without_build
+  case "$version_without_build" in
+    *-*)
+      prerelease=${version_without_build#*-}
+      validate_semver_identifiers "$prerelease" reject
+      core=${version_without_build%%-*}
+      ;;
+  esac
+  major=${core%%.*}
+  core_rest=${core#*.}
+  [ "$core_rest" != "$core" ] || fail "共享知识库服务版本无效"
+  minor=${core_rest%%.*}
+  patch=${core_rest#*.}
+  [ "$patch" != "$core_rest" ] || fail "共享知识库服务版本无效"
+  case "$patch" in *.*) fail "共享知识库服务版本无效" ;; esac
+  validate_semver_number "$major"
+  validate_semver_number "$minor"
+  validate_semver_number "$patch"
+}
+
+binary_release_version() {
+  binary=$1
+  service_uid=$2
+  service_gid=$3
+  version_output=$(setpriv --reuid "$service_uid" --regid "$service_gid" --clear-groups -- \
+    "$binary" --version 2>/dev/null) || fail "无法读取共享知识库服务版本"
+  version=${version_output##* }
+  validate_semver "$version"
+  printf '%s\n' "$version"
+}
+
+decimal_compare() {
+  left=$1
+  right=$2
+  if [ "${#left}" -lt "${#right}" ]; then
+    printf '%s\n' -1
+  elif [ "${#left}" -gt "${#right}" ]; then
+    printf '%s\n' 1
+  elif [ "$left" = "$right" ]; then
+    printf '%s\n' 0
+  else
+    LC_ALL=C awk -v left="$left" -v right="$right" \
+      'BEGIN { print (("x" left) < ("x" right)) ? -1 : 1 }'
+  fi
+}
+
+semver_identifier_compare() {
+  left=$1
+  right=$2
+  left_numeric=1
+  right_numeric=1
+  case "$left" in *[!0-9]*) left_numeric=0 ;; esac
+  case "$right" in *[!0-9]*) right_numeric=0 ;; esac
+  if [ "$left_numeric" -eq 1 ] && [ "$right_numeric" -eq 1 ]; then
+    decimal_compare "$left" "$right"
+  elif [ "$left_numeric" -eq 1 ]; then
+    printf '%s\n' -1
+  elif [ "$right_numeric" -eq 1 ]; then
+    printf '%s\n' 1
+  elif [ "$left" = "$right" ]; then
+    printf '%s\n' 0
+  else
+    LC_ALL=C awk -v left="$left" -v right="$right" \
+      'BEGIN { print (("x" left) < ("x" right)) ? -1 : 1 }'
+  fi
+}
+
+# 输出 -1/0/1，分别表示左侧 SemVer 低于、等于或高于右侧。
+semver_compare() {
+  left=$1
+  right=$2
+  validate_semver "$left"
+  validate_semver "$right"
+
+  left_base=${left%%+*}
+  right_base=${right%%+*}
+  left_core=$left_base
+  right_core=$right_base
+  left_prerelease=
+  right_prerelease=
+  case "$left_base" in
+    *-*) left_core=${left_base%%-*}; left_prerelease=${left_base#*-} ;;
+  esac
+  case "$right_base" in
+    *-*) right_core=${right_base%%-*}; right_prerelease=${right_base#*-} ;;
+  esac
+
+  left_major=${left_core%%.*}
+  left_rest=${left_core#*.}
+  left_minor=${left_rest%%.*}
+  left_patch=${left_rest#*.}
+  right_major=${right_core%%.*}
+  right_rest=${right_core#*.}
+  right_minor=${right_rest%%.*}
+  right_patch=${right_rest#*.}
+  for part_pair in "$left_major:$right_major" "$left_minor:$right_minor" "$left_patch:$right_patch"; do
+    left_part=${part_pair%%:*}
+    right_part=${part_pair#*:}
+    part_result=$(decimal_compare "$left_part" "$right_part")
+    if [ "$part_result" -ne 0 ]; then
+      printf '%s\n' "$part_result"
+      return 0
+    fi
+  done
+
+  if [ -z "$left_prerelease" ] && [ -z "$right_prerelease" ]; then
+    printf '%s\n' 0
+    return 0
+  elif [ -z "$left_prerelease" ]; then
+    printf '%s\n' 1
+    return 0
+  elif [ -z "$right_prerelease" ]; then
+    printf '%s\n' -1
+    return 0
+  fi
+
+  left_remaining=$left_prerelease
+  right_remaining=$right_prerelease
+  while :; do
+    left_more=0
+    right_more=0
+    left_identifier=$left_remaining
+    right_identifier=$right_remaining
+    case "$left_remaining" in
+      *.*) left_identifier=${left_remaining%%.*}; left_remaining=${left_remaining#*.}; left_more=1 ;;
+    esac
+    case "$right_remaining" in
+      *.*) right_identifier=${right_remaining%%.*}; right_remaining=${right_remaining#*.}; right_more=1 ;;
+    esac
+    identifier_result=$(semver_identifier_compare "$left_identifier" "$right_identifier")
+    if [ "$identifier_result" -ne 0 ]; then
+      printf '%s\n' "$identifier_result"
+      return 0
+    fi
+    if [ "$left_more" -eq 0 ] && [ "$right_more" -eq 0 ]; then
+      printf '%s\n' 0
+      return 0
+    elif [ "$left_more" -eq 0 ]; then
+      printf '%s\n' -1
+      return 0
+    elif [ "$right_more" -eq 0 ]; then
+      printf '%s\n' 1
+      return 0
+    fi
+  done
+}
+
+validate_service_account() {
+  candidate_uid=$1
+  candidate_gid=$2
+  case "$candidate_uid:$candidate_gid" in
+    *[!0-9:]*|0:*|*:0) fail "宿主用户无效" ;;
+  esac
+  service_account=$(getent passwd "$candidate_uid") || fail "宿主用户不存在"
+  [ "$candidate_uid" = "$PKEXEC_CALLER_UID" ] || fail "宿主用户与授权操作的 PINVOU 用户不一致"
+  service_primary_gid=$(printf '%s' "$service_account" | cut -d: -f4)
+  [ "$service_primary_gid" = "$candidate_gid" ] || fail "宿主用户主组不匹配"
+  validated_service_home=$(printf '%s' "$service_account" | cut -d: -f6)
+  [ -n "$validated_service_home" ] || fail "宿主用户目录无效"
+}
+
+validate_model_path_chain() {
+  current_dir=$1
+  user_home=$2
+  service_uid=$3
+  while :; do
+    if [ -e "$current_dir" ]; then
+      [ -d "$current_dir" ] || fail "模型目录链包含非目录路径"
+      [ ! -L "$current_dir" ] || fail "拒绝使用符号链接模型目录"
+      directory_owner=$(stat -c %u "$current_dir" 2>/dev/null) || fail "无法检查模型目录链"
+      [ "$directory_owner" -eq "$service_uid" ] || fail "模型目录链不属于当前 PINVOU 用户"
+    fi
+    [ "$current_dir" = "$user_home" ] && break
+    parent_dir=$(dirname "$current_dir")
+    [ "$parent_dir" != "$current_dir" ] || fail "模型目录不属于当前 PINVOU 用户"
+    current_dir=$parent_dir
+  done
+}
+
+validate_existing_host_owner() {
+  validate_data_dir
+  [ -d "$DATA_DIR" ] || fail "共享知识库数据不存在"
+  data_owner=$(stat -c %u "$DATA_DIR" 2>/dev/null) || fail "无法检查共享知识库数据目录"
+  [ "$data_owner" = "$PKEXEC_CALLER_UID" ] || fail "共享知识库数据不属于当前 PINVOU 用户"
+}
+
+write_unit() {
+  service_uid=$1
+  service_gid=$2
+  model_dir=$3
+  model_parent=$(dirname "$model_dir")
+  model_name=$(basename "$model_dir")
+  cat >"$UNIT_FILE.new" <<EOF
+[Unit]
+Description=PINVOU shared knowledge host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$service_uid
+Group=$service_gid
+StateDirectory=pinvou-knowledge
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/pinvou-knowledge
+ExecStart=/usr/lib/pinvou/pinvou-knowledge-server --bind 0.0.0.0:3210 --data-dir /var/lib/pinvou-knowledge --model-dir $MODEL_MOUNT/$model_name
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindPaths=$model_parent:$MODEL_MOUNT
+ReadWritePaths=/var/lib/pinvou-knowledge $DATA_LOCK $MODEL_MOUNT
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 0644 "$UNIT_FILE.new"
+  mv -f "$UNIT_FILE.new" "$UNIT_FILE"
+}
+
+validate_data_dir() {
+  [ -e "$DATA_DIR" ] || return 0
+  [ -d "$DATA_DIR" ] || fail "共享知识库数据路径不是目录"
+  [ ! -L "$DATA_DIR" ] || fail "拒绝使用符号链接数据目录"
+  resolved=$(readlink -f "$DATA_DIR" 2>/dev/null || true)
+  [ "$resolved" = "$DATA_DIR" ] || fail "共享知识库数据目录异常"
+}
+
+prepare_data_lock() {
+  service_uid=$1
+  service_gid=$2
+  if [ -e "$DATA_LOCK" ] || [ -L "$DATA_LOCK" ]; then
+    [ -f "$DATA_LOCK" ] || fail "共享知识库数据锁不是普通文件"
+    [ ! -L "$DATA_LOCK" ] || fail "拒绝使用符号链接数据锁"
+    data_lock_owner=$(stat -c %u "$DATA_LOCK" 2>/dev/null) || fail "无法检查共享知识库数据锁"
+    [ "$data_lock_owner" -eq "$service_uid" ] || fail "共享知识库数据锁所有者不安全"
+  else
+    install -m 0600 -o "$service_uid" -g "$service_gid" /dev/null "$DATA_LOCK"
+  fi
+  chmod 0600 "$DATA_LOCK"
+}
+
+model_complete() {
+  root=$1
+  { [ -f "$root/model.onnx" ] || [ -f "$root/onnx/model_int8.onnx" ]; } &&
+    [ -f "$root/tokenizer.json" ] &&
+    [ -f "$root/config.json" ] &&
+    [ -f "$root/special_tokens_map.json" ] &&
+    [ -f "$root/tokenizer_config.json" ]
+}
+
+rollback_install() {
+  [ "${rollback_pending:-0}" -eq 1 ] || return 0
+  rollback_pending=0
+  trap - EXIT HUP INT TERM
+  systemctl stop "$SERVICE" >/dev/null 2>&1 || true
+  if [ "${had_binary:-0}" -eq 1 ] && [ -f "$INSTALL_BIN.previous" ]; then
+    mv -f "$INSTALL_BIN.previous" "$INSTALL_BIN"
+  else
+    rm -f "$INSTALL_BIN"
+  fi
+  if [ "${had_unit:-0}" -eq 1 ] && [ -f "$UNIT_BACKUP" ]; then
+    mv -f "$UNIT_BACKUP" "$UNIT_FILE"
+  else
+    rm -f "$UNIT_FILE"
+  fi
+  if [ "${had_data:-0}" -eq 1 ]; then
+    chown -R "${old_data_uid}:${old_data_gid}" "$DATA_DIR" >/dev/null 2>&1 || true
+  fi
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  if [ "${was_enabled:-0}" -eq 1 ]; then
+    systemctl enable "$SERVICE" >/dev/null 2>&1 || true
+  else
+    systemctl disable "$SERVICE" >/dev/null 2>&1 || true
+  fi
+  if [ "${was_active:-0}" -eq 1 ]; then
+    systemctl restart "$SERVICE" >/dev/null 2>&1 || true
+  fi
+}
+
+restart_service_after_maintenance() {
+  [ "${maintenance_restart_pending:-0}" -eq 1 ] || return 0
+  maintenance_restart_pending=0
+  trap - EXIT HUP INT TERM
+  systemctl start "$SERVICE" >/dev/null 2>&1 || true
+}
+
+begin_service_maintenance() {
+  maintenance_restart_pending=1
+  trap 'restart_service_after_maintenance' EXIT
+  trap 'restart_service_after_maintenance; exit 129' HUP
+  trap 'restart_service_after_maintenance; exit 130' INT
+  trap 'restart_service_after_maintenance; exit 143' TERM
+  systemctl stop "$SERVICE"
+}
+
+finish_service_maintenance() {
+  failure_message=$1
+  if ! systemctl start "$SERVICE"; then
+    fail "$failure_message"
+  fi
+  maintenance_restart_pending=0
+  trap - EXIT HUP INT TERM
+}
+
+install_or_upgrade() {
+  source_bin=$1
+  model_dir=$2
+  service_uid=$3
+  service_gid=$4
+  case "$model_dir" in
+    /*) ;;
+    *) fail "模型目录无效" ;;
+  esac
+  case "$model_dir" in
+    *[!A-Za-z0-9_./-]*|*:*|*' '*|*'	'*) fail "模型目录包含不支持的字符" ;;
+  esac
+  validate_service_account "$service_uid" "$service_gid"
+  user_home=$validated_service_home
+  case "$model_dir" in
+    "$user_home"/.pinvou3/knowledge/models/bge-m3) ;;
+    *) fail "模型目录不属于当前 PINVOU 用户" ;;
+  esac
+  validate_model_path_chain "$model_dir" "$user_home" "$service_uid"
+  secure_packaged_file "$source_bin" "$service_uid"
+  command -v setpriv >/dev/null 2>&1 || fail "系统缺少 setpriv，无法安全安装共享知识库"
+  if [ -f "$INSTALL_BIN" ]; then
+    source_version=$(binary_release_version "$source_bin" "$service_uid" "$service_gid")
+    installed_version=$(binary_release_version "$INSTALL_BIN" "$service_uid" "$service_gid")
+    version_result=$(semver_compare "$source_version" "$installed_version")
+    if [ "$version_result" -lt 0 ]; then
+      fail "当前 PINVOU 版本 $source_version 低于已安装的共享知识库服务 $installed_version，已拒绝降级；请先升级 PINVOU"
+    fi
+  fi
+
+  validate_data_dir
+  had_data=0
+  old_data_uid=$service_uid
+  old_data_gid=$service_gid
+  if [ -d "$DATA_DIR" ]; then
+    had_data=1
+    old_data_uid=$(stat -c %u "$DATA_DIR") || fail "无法检查共享知识库数据目录"
+    old_data_gid=$(stat -c %g "$DATA_DIR") || fail "无法检查共享知识库数据目录"
+    [ "$old_data_uid" = "$service_uid" ] && [ "$old_data_gid" = "$service_gid" ] || \
+      fail "共享知识库数据属于其他用户，已拒绝静默变更所有权"
+  fi
+  had_unit=0
+  [ -f "$UNIT_FILE" ] && {
+    cp -p "$UNIT_FILE" "$UNIT_BACKUP"
+    had_unit=1
+  }
+  had_binary=0
+  [ -f "$INSTALL_BIN" ] && {
+    cp -p "$INSTALL_BIN" "$INSTALL_BIN.previous"
+    had_binary=1
+  }
+  was_enabled=0
+  systemctl is-enabled --quiet "$SERVICE" >/dev/null 2>&1 && was_enabled=1
+  was_active=0
+  systemctl is-active --quiet "$SERVICE" >/dev/null 2>&1 && was_active=1
+  rollback_pending=1
+  trap 'rollback_install' EXIT
+  trap 'rollback_install; exit 129' HUP
+  trap 'rollback_install; exit 130' INT
+  trap 'rollback_install; exit 143' TERM
+
+  install -d -m 0755 -o root -g root "$INSTALL_DIR"
+  install -d -m 0700 -o "$service_uid" -g "$service_gid" "$DATA_DIR"
+  prepare_data_lock "$service_uid" "$service_gid"
+  model_parent=$(dirname "$model_dir")
+  install -d -m 0700 -o "$service_uid" -g "$service_gid" "$model_parent"
+  install -d -m 0700 -o "$service_uid" -g "$service_gid" "$model_dir"
+  install -d -m 0755 -o root -g root "$MODEL_MOUNT"
+  chown -R "$service_uid:$service_gid" "$DATA_DIR"
+  legacy_model=$DATA_DIR/models/bge-m3
+  if ! model_complete "$model_dir" && model_complete "$legacy_model"; then
+    cp -a "$legacy_model/." "$model_dir/"
+    chown -R "$service_uid:$service_gid" "$model_dir"
+  fi
+  install -m 0755 -o root -g root "$source_bin" "$INSTALL_BIN.new"
+  mv -f "$INSTALL_BIN.new" "$INSTALL_BIN"
+  write_unit "$service_uid" "$service_gid" "$model_dir"
+  systemctl daemon-reload
+  systemctl enable "$SERVICE" >/dev/null
+  systemctl restart "$SERVICE" || fail "共享知识库服务启动失败，正在恢复旧版本"
+  attempts=0
+  while [ "$attempts" -lt 30 ]; do
+    if setpriv --reuid "$service_uid" --regid "$service_gid" --clear-groups -- \
+        "$INSTALL_BIN" --health-check https://127.0.0.1:3210 >/dev/null 2>&1; then
+      rollback_pending=0
+      trap - EXIT HUP INT TERM
+      return 0
+    fi
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  fail "共享知识库服务健康检查失败，正在恢复旧版本"
+}
+
+read_owner_claim() {
+  service_uid=$1
+  service_gid=$2
+  claim=$DATA_DIR/host-owner.claim
+  [ -f "$claim" ] && [ -s "$claim" ] || fail "没有可领取的本机所有者凭据"
+  [ ! -L "$claim" ] || fail "拒绝读取符号链接所有者凭据"
+  claim_owner_uid=$(stat -c %u "$claim" 2>/dev/null) || fail "无法检查本机所有者凭据"
+  claim_mode=$(stat -c %a "$claim" 2>/dev/null) || fail "无法检查本机所有者凭据权限"
+  [ "$claim_owner_uid" -eq "$service_uid" ] || fail "本机所有者凭据不属于当前 PINVOU 用户"
+  case "$claim_mode" in *[1-7][0-9]|*[0-9][1-7]) fail "本机所有者凭据权限不安全" ;; esac
+  command -v setpriv >/dev/null 2>&1 || fail "系统缺少 setpriv，无法安全读取所有者凭据"
+  setpriv --reuid "$service_uid" --regid "$service_gid" --clear-groups -- \
+    cat -- "$claim" || fail "无法读取本机所有者凭据"
+}
+
+show_owner_claim() {
+  read_owner_claim "$1" "$2"
+}
+
+claim_owner() {
+  validate_existing_host_owner
+  service_uid=$data_owner
+  service_gid=$(getent passwd "$service_uid" | cut -d: -f4)
+  validate_service_account "$service_uid" "$service_gid"
+  read_owner_claim "$service_uid" "$service_gid"
+  setpriv --reuid "$service_uid" --regid "$service_gid" --clear-groups -- \
+    rm -f -- "$claim" || fail "无法移除已领取的本机所有者凭据"
+}
+
+set_owner_device() {
+  device_id=$1
+  scope=$2
+  service_uid=$3
+  service_gid=$4
+  case "$device_id" in
+    ''|*[!A-Za-z0-9_-]*) fail "成员设备无效" ;;
+  esac
+  case "$scope" in owner|manage) ;; *) fail "所有者权限无效" ;; esac
+  validate_service_account "$service_uid" "$service_gid"
+  command -v setpriv >/dev/null 2>&1 || fail "系统缺少 setpriv，无法安全修改所有者"
+  [ -x "$INSTALL_BIN" ] || fail "共享知识库服务未安装"
+  begin_service_maintenance
+  if ! result=$(setpriv --reuid "$service_uid" --regid "$service_gid" --clear-groups -- \
+      "$INSTALL_BIN" --data-dir "$DATA_DIR" --host-owner-device "$device_id" \
+      --host-owner-scope "$scope"); then
+    fail "修改所有者失败"
+  fi
+  finish_service_maintenance "所有者已修改，但共享知识库服务未能重新启动"
+  printf '%s\n' "$result"
+}
+
+recover_owner() {
+  source_bin=$1
+  service_uid=$2
+  service_gid=$3
+  validate_data_dir
+  validate_service_account "$service_uid" "$service_gid"
+  secure_packaged_file "$source_bin" "$service_uid"
+  command -v setpriv >/dev/null 2>&1 || fail "系统缺少 setpriv，无法安全恢复所有者"
+  [ -x "$INSTALL_BIN" ] || fail "共享知识库服务未安装"
+  begin_service_maintenance
+  if ! result=$(setpriv --reuid "$service_uid" --regid "$service_gid" --clear-groups -- \
+      "$source_bin" --data-dir "$DATA_DIR" \
+      --recover-host-owner-claim "$DATA_DIR/host-owner.claim"); then
+    fail "恢复本机所有者失败"
+  fi
+  finish_service_maintenance "本机所有者已恢复，但共享知识库服务未能重新启动"
+  attempts=0
+  while [ "$attempts" -lt 30 ]; do
+    if setpriv --reuid "$service_uid" --regid "$service_gid" --clear-groups -- \
+        "$INSTALL_BIN" --health-check https://127.0.0.1:3210 >/dev/null 2>&1; then
+      printf '%s\n' "$result"
+      return 0
+    fi
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  fail "本机所有者已恢复，但共享知识库服务尚未就绪"
+}
+
+validate_service_identity() {
+  service_uid=$1
+  service_gid=$2
+  validate_service_account "$service_uid" "$service_gid"
+  command -v setpriv >/dev/null 2>&1 || fail "系统缺少 setpriv，无法安全执行备份操作"
+  [ -x "$INSTALL_BIN" ] || fail "共享知识库服务未安装"
+}
+
+backup_host() {
+  output=$1
+  local_recipient=$2
+  recovery_recipient=$3
+  service_uid=$4
+  service_gid=$5
+  validate_service_identity "$service_uid" "$service_gid"
+  require_absolute_path "$output" "备份路径无效"
+  begin_service_maintenance
+  if ! result=$(setpriv --reuid "$service_uid" --regid "$service_gid" --clear-groups -- \
+      "$INSTALL_BIN" --data-dir "$DATA_DIR" --backup-output "$output" \
+      --backup-recipient "$local_recipient" --backup-recipient "$recovery_recipient"); then
+    fail "创建加密备份失败"
+  fi
+  finish_service_maintenance "备份已完成，但共享知识库服务未能重新启动"
+  printf '%s\n' "$result"
+}
+
+restore_host() {
+  input=$1
+  identity_file=$2
+  mode=$3
+  service_uid=$4
+  service_gid=$5
+  validate_service_identity "$service_uid" "$service_gid"
+  # Validate each argument independently. Combining both values in one case
+  # expression lets a colon inside either path satisfy the other path's slash.
+  require_absolute_path "$input" "备份文件路径无效"
+  require_absolute_path "$identity_file" "恢复密钥路径无效"
+  [ -f "$input" ] || fail "备份文件不存在"
+  [ -f "$identity_file" ] || fail "恢复密钥不存在"
+  identity_owner=$(stat -c %u "$identity_file" 2>/dev/null) || fail "无法检查恢复密钥"
+  identity_mode=$(stat -c %a "$identity_file" 2>/dev/null) || fail "无法检查恢复密钥权限"
+  [ "$identity_owner" -eq "$service_uid" ] || fail "恢复密钥不属于当前 PINVOU 用户"
+  case "$identity_mode" in *[1-7][0-9]|*[0-9][1-7]) fail "恢复密钥权限不安全" ;; esac
+  case "$mode" in same-host|content-only) ;; *) fail "恢复模式无效" ;; esac
+  begin_service_maintenance
+  if ! result=$(setpriv --reuid "$service_uid" --regid "$service_gid" --clear-groups -- \
+      "$INSTALL_BIN" --data-dir "$DATA_DIR" --restore-input "$input" \
+      --restore-identity-file "$identity_file" --restore-mode "$mode"); then
+    fail "恢复共享知识库失败，原数据未被替换"
+  fi
+  finish_service_maintenance "数据已恢复，但共享知识库服务未能重新启动"
+  printf '%s\n' "$result"
+  if [ "$mode" = content-only ] && { [ -e "$DATA_DIR/host-owner.claim" ] || [ -L "$DATA_DIR/host-owner.claim" ]; }; then
+    show_owner_claim "$service_uid" "$service_gid"
+  fi
+}
+
+remove_host() {
+  mode=$1
+  case "$mode" in keep-data|delete-data) ;; *) fail "移除模式无效" ;; esac
+  validate_existing_host_owner
+  systemctl disable --now "$SERVICE" >/dev/null 2>&1 || true
+  rm -f "$UNIT_FILE" "$INSTALL_BIN" "$INSTALL_BIN.previous"
+  rmdir "$MODEL_MOUNT" >/dev/null 2>&1 || true
+  systemctl daemon-reload
+  if [ "$mode" = delete-data ]; then
+    [ -e "$DATA_DIR" ] || return 0
+    resolved=$(readlink -f "$DATA_DIR" 2>/dev/null || true)
+    [ "$resolved" = "$DATA_DIR" ] || fail "拒绝删除异常的数据目录"
+    rm -rf -- "$DATA_DIR"
+    rm -f -- "$DATA_LOCK"
+  fi
+}
+
+action=${1:-}
+case "$action" in
+  install|upgrade)
+    [ "$#" -eq 5 ] || fail "安装参数无效"
+    install_or_upgrade "$2" "$3" "$4" "$5"
+    if [ -e "$DATA_DIR/host-owner.claim" ] || [ -L "$DATA_DIR/host-owner.claim" ]; then
+      show_owner_claim "$4" "$5"
+    fi
+    ;;
+  claim-owner)
+    [ "$#" -eq 1 ] || fail "领取参数无效"
+    claim_owner
+    ;;
+  set-owner)
+    [ "$#" -eq 5 ] || fail "所有者参数无效"
+    set_owner_device "$2" "$3" "$4" "$5"
+    ;;
+  recover-owner)
+    [ "$#" -eq 4 ] || fail "恢复所有者参数无效"
+    recover_owner "$2" "$3" "$4"
+    ;;
+  backup)
+    [ "$#" -eq 6 ] || fail "备份参数无效"
+    backup_host "$2" "$3" "$4" "$5" "$6"
+    ;;
+  restore)
+    [ "$#" -eq 6 ] || fail "恢复参数无效"
+    restore_host "$2" "$3" "$4" "$5" "$6"
+    ;;
+  remove)
+    [ "$#" -eq 2 ] || fail "移除参数无效"
+    remove_host "$2"
+    ;;
+  *) fail "未知操作" ;;
+esac

@@ -1,0 +1,10 @@
+This directory is populated at build time by pinvou3-app/scripts/tauri/chrome-devtools-mcp.js:
+the official npm registry chrome-devtools-mcp package (Apache-2.0, pinned SHA-512),
+its self-contained Rollup build/ output (about 13 MB, with a guarded target_id adapter),
++ catalog-shim.json (lazy-start shim response catalog),
++ .vendor-version.json, distributed through the package resource overlay as runtime/chrome-devtools-mcp.
+
+This tracked .gitkeep preserves the resource directory for the Tauri layout tests
+(tauri_platform_layout and tauri_effective_config); generated output is ignored by .gitignore.
+npm run dev vendors the runtime automatically and injects its entry point into the development
+process. Browser MCP is not guaranteed when Tauri is started outside the project scripts.

@@ -1,0 +1,486 @@
+fn command_names(source: &str) -> Vec<&str> {
+    let mut commands = Vec::new();
+    let mut command_attribute_seen = false;
+    for line in source.lines() {
+        let line = line.trim();
+        if line.starts_with("async_command_passthrough!(")
+            || line.starts_with("sync_command_passthrough!(")
+        {
+            let name = line
+                .split_once(',')
+                .expect("passthrough domain")
+                .1
+                .trim()
+                .split('(')
+                .next()
+                .expect("passthrough command name");
+            commands.push(name);
+            continue;
+        }
+        if line.starts_with("#[tauri::command") {
+            command_attribute_seen = true;
+            continue;
+        }
+        if !command_attribute_seen {
+            continue;
+        }
+        if let Some((_, suffix)) = line.split_once("fn ") {
+            commands.push(
+                suffix
+                    .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+                    .next()
+                    .expect("command function name"),
+            );
+            command_attribute_seen = false;
+        }
+    }
+    commands
+}
+
+macro_rules! command_protocol {
+    ($test_name:ident, $source:literal, [$($command:literal),* $(,)?]) => {
+        #[test]
+        fn $test_name() {
+            let expected: &[&str] = &[$($command),*];
+            assert_eq!(command_names(include_str!($source)).as_slice(), expected);
+        }
+    };
+}
+
+command_protocol!(
+    artifacts_protocol,
+    "artifacts.rs",
+    [
+        "read_artifact_text",
+        "write_artifact_text",
+        "list_deliverable_index",
+        "artifact_info",
+        "read_artifact_image_b64",
+        "read_artifact_thumbnail",
+        "render_artifact_visual",
+        "open_external_url",
+        "open_user_external_url",
+        "detect_obsidian",
+        "open_in_system",
+        "open_containing_folder",
+        "reveal_session_folder",
+        "open_scheduled_task_folder",
+        "open_artifact_window"
+    ]
+);
+command_protocol!(attachments_protocol, "attachments.rs", []);
+command_protocol!(
+    assistant_response_protocol,
+    "assistant_response.rs",
+    ["export_assistant_response", "open_assistant_share_target"]
+);
+command_protocol!(
+    behavior_telemetry_protocol,
+    "behavior_telemetry.rs",
+    ["track_behavior_event"]
+);
+command_protocol!(chat_protocol, "chat.rs", ["chat"]);
+command_protocol!(
+    connectors_protocol,
+    "connectors.rs",
+    [
+        "set_disabled_connectors",
+        "get_disabled_connectors",
+        "set_bundle_visibility",
+        "get_bundle_visibility",
+        "set_disabled_skills",
+        "get_disabled_skills",
+        "set_project_skills_enabled",
+        "get_project_skills_enabled",
+        "refresh_connector_auth_gates",
+        "feishu_ensure_cli",
+        "feishu_status",
+        "feishu_connect_begin",
+        "feishu_cancel",
+        "feishu_logout",
+        "feishu_apply_skills",
+        "set_feishu_enabled",
+        "feishu_skills_state",
+        "wecom_ensure_cli",
+        "wecom_status",
+        "wecom_connect_begin",
+        "wecom_cancel",
+        "wecom_logout",
+        "wecom_apply_skills",
+        "set_wecom_enabled",
+        "wecom_skills_state",
+        "dingtalk_ensure_cli",
+        "dingtalk_status",
+        "dingtalk_connect_begin",
+        "dingtalk_cancel",
+        "dingtalk_logout",
+        "dingtalk_apply_skills",
+        "set_dingtalk_enabled",
+        "dingtalk_skills_state",
+        "tmeet_ensure_cli",
+        "tmeet_status",
+        "tmeet_connect_begin",
+        "tmeet_cancel",
+        "tmeet_logout",
+        "tmeet_apply_skills",
+        "set_tmeet_enabled",
+        "tmeet_skills_state",
+        "ima_status",
+        "ima_connect",
+        "ima_logout"
+    ]
+);
+command_protocol!(
+    dependencies_protocol,
+    "dependencies.rs",
+    ["check_dependencies", "install_dependencies"]
+);
+command_protocol!(
+    files_protocol,
+    "files.rs",
+    [
+        "ingest_file",
+        "ingest_draft_file_chunk",
+        "cancel_draft_file_upload",
+        "adopt_draft_attachment",
+        "ingest_dropped_file_chunk",
+        "cancel_dropped_file_upload",
+        "discard_dropped_attachment",
+        "resolve_conversation_attachment",
+        "open_conversation_attachment",
+        "reveal_conversation_attachment",
+        "save_paste_image",
+    ]
+);
+command_protocol!(
+    interaction_protocol,
+    "interaction.rs",
+    [
+        "compact_now",
+        "get_mode_state",
+        "get_code_permission_prefs",
+        "confirm_code_yolo",
+        "get_mode_defaults",
+        "set_mode_default",
+        "set_plan_mode_next",
+        "exit_plan_to_yolo",
+        "set_multi_agent_mode",
+        "accept_plan",
+        "get_super_permission_status",
+        "set_super_permission",
+        "read_skill_body",
+        "discard_plan",
+        "submit_user_input",
+        "cancel_user_input",
+        "get_pending_user_inputs",
+        "restart_engine",
+        "summon_pinvou"
+    ]
+);
+command_protocol!(
+    knowledge_protocol,
+    "knowledge.rs",
+    [
+        "session_mount_collection",
+        "session_set_mounted_collections",
+        "session_add_mounted_collection",
+        "session_set_mounted_collection_enabled",
+        "session_remove_mounted_collection",
+        "session_unmount_collection",
+        "session_mounted_collection",
+        "session_mounted_collections",
+        "session_mounted_collections_snapshot",
+        "kb_start_scan",
+        "kb_scan_status",
+        "kb_cancel_scan",
+        "kb_type_counts",
+        "kb_collection_list",
+        "kb_collection_create",
+        "kb_collection_update",
+        "kb_collection_delete",
+        "kb_collection_add_sources",
+        "kb_index_status",
+        "kb_index_cancel",
+        "kb_index_failed_files",
+        "kb_index_resume",
+        "kb_index_retry_file",
+        "kb_documents",
+        "kb_remove_document",
+        "kb_embed_info",
+        "kb_search",
+        "kb_stats",
+        "kb_model_status",
+        "kb_model_cancel",
+        "kb_model_load_after_first_frame",
+        "kb_model_download"
+    ]
+);
+command_protocol!(
+    local_llm_protocol,
+    "local_llm.rs",
+    [
+        "detect_local_vllm_setup",
+        "decline_local_vllm_setup",
+        "bootstrap_local_vllm"
+    ]
+);
+command_protocol!(
+    marketplace_protocol,
+    "marketplace.rs",
+    [
+        "list_marketplace_tools",
+        "install_marketplace_tool",
+        "get_marketplace_tool_auth_status",
+        "start_marketplace_tool_oauth_login",
+        "cancel_marketplace_tool_oauth_login",
+        "uninstall_marketplace_tool",
+        "list_marketplace_skills",
+        "install_marketplace_skill",
+        "update_marketplace_skill",
+        "update_bundle_display_meta",
+        "import_skill_package",
+        "import_plugin_package_cmd",
+        "import_plugin_package_bytes_cmd",
+        "import_skill_md_bytes",
+        "import_skill_package_bytes",
+        "uninstall_marketplace_skill",
+        "bundle_readiness",
+        "export_plugin_spec"
+    ]
+);
+command_protocol!(
+    memory_protocol,
+    "memory.rs",
+    [
+        "update_memory_profile",
+        "get_memory_overview",
+        "confirm_pending_memory",
+        "ignore_pending_memory",
+        "never_pending_memory",
+        "archive_recent_work_memory",
+        "delete_memory_preference",
+        "update_memory_preference",
+        "update_work_context_memory",
+        "delete_work_context_memory",
+        "update_timed_memory",
+        "delete_timed_memory",
+        "edit_last_turn"
+    ]
+);
+command_protocol!(
+    monitor_protocol,
+    "monitor.rs",
+    [
+        "get_monitor_snapshot",
+        "discover_local_vllm",
+        "get_backend_status"
+    ]
+);
+command_protocol!(
+    pet_protocol,
+    "pet.rs",
+    [
+        "open_detached_window",
+        "begin_detach_drag",
+        "set_pet_enabled",
+        "get_pet_scale",
+        "set_pet_scale",
+        "set_pet_activity_visible",
+        "save_pet_position",
+        "save_pet_vertical_alignment",
+        "open_main_from_pet",
+        "take_pet_navigation",
+        "queue_pet_reply",
+        "take_pet_reply",
+        "get_selected_pet",
+        "set_selected_pet"
+    ]
+);
+command_protocol!(
+    personas_protocol,
+    "personas.rs",
+    [
+        "list_personas",
+        "read_persona_body",
+        "equip_persona",
+        "create_persona",
+        "update_persona",
+        "delete_persona",
+        "save_session_persona_events",
+        "get_session_persona_events",
+        "save_session_pinvou_reviews",
+        "get_session_pinvou_reviews",
+        "unequip_persona",
+        "get_active_persona"
+    ]
+);
+command_protocol!(
+    runtime_protocol,
+    "runtime.rs",
+    [
+        "cancel_generation",
+        "get_platform_capabilities",
+        "list_shell_tasks",
+        "cancel_shell_task"
+    ]
+);
+command_protocol!(
+    remote_control_protocol,
+    "remote_control.rs",
+    [
+        "web_access_enable",
+        "web_access_disable",
+        "web_access_status",
+        "web_access_rotate",
+        "web_access_relay_settings",
+        "web_access_set_relay",
+        "web_access_reset_relay",
+        "web_access_bridge_ready",
+        "web_access_rpc_begin",
+        "web_access_rpc_respond",
+        "web_access_publish_event",
+        "web_access_list_host_files",
+        "web_access_list_sessions",
+        "web_access_list_archived_sessions",
+        "web_access_create_session",
+        "web_access_load_session_chunk",
+        "web_access_cancel_session_download",
+        "web_access_ingest_file",
+        "web_access_upload_attachment_chunk",
+        "web_access_abort_attachment_upload",
+        "web_access_discard_attachment",
+        "web_access_read_conversation_attachment_chunk",
+        "web_access_create_session_and_chat",
+        "web_access_chat",
+        "web_access_create_codex_acp_session",
+        "web_access_list_codex_workspace",
+        "web_access_search_codex_workspace",
+        "web_access_preview_codex_workspace_file",
+        "web_access_get_codex_workspace_changes",
+        "web_access_get_codex_workspace_diff",
+        "web_access_cancel_codex_acp",
+        "web_access_codex_acp_prompt",
+        "web_access_get_codex_acp_timeline",
+        "web_access_get_codex_acp_session_info",
+        "web_access_set_codex_acp_model",
+        "web_access_set_codex_acp_mode",
+        "web_access_set_codex_acp_config_option",
+        "web_access_get_codex_acp_pending_permissions",
+        "web_access_respond_codex_acp_permission",
+        "web_access_get_codex_acp_pending_elicitations",
+        "web_access_respond_codex_acp_elicitation",
+        "web_access_list_codex_acp_sessions",
+        "web_access_list_acp_agents",
+        "web_access_get_acp_agent_status",
+        "web_access_save_session_messages_chunk",
+        "web_access_transcribe_voice_audio",
+        "web_access_read_artifact_chunk",
+        "web_access_update_settings",
+        "web_access_artifact_info",
+        "web_access_read_artifact_text",
+        "web_access_write_artifact_text",
+        "web_access_read_artifact_image_b64",
+        "web_access_read_artifact_thumbnail",
+        "web_access_render_artifact_visual"
+    ]
+);
+command_protocol!(
+    scheduled_protocol,
+    "scheduled.rs",
+    [
+        "list_scheduled_tasks",
+        "read_scheduled_task",
+        "list_scheduled_task_runs",
+        "list_scheduled_runs",
+        "create_scheduled_task",
+        "update_scheduled_task",
+        "pause_scheduled_task",
+        "resume_scheduled_task",
+        "set_scheduled_task_pinned",
+        "delete_scheduled_task",
+        "run_scheduled_task_now",
+        "mark_scheduled_run_viewed",
+        "scheduled_task_chat_prompt"
+    ]
+);
+command_protocol!(
+    sessions_protocol,
+    "sessions.rs",
+    [
+        "list_sessions",
+        "list_archived_sessions",
+        "create_session",
+        "load_session",
+        "delete_session",
+        "rename_session",
+        "set_session_pinned",
+        "set_session_archived",
+        "save_session_messages",
+        "save_session_artifacts",
+        "save_session_pinvou_scene_events",
+        "get_session_pinvou_scene_events",
+        "list_workspace_files"
+    ]
+);
+command_protocol!(
+    settings_protocol,
+    "settings.rs",
+    [
+        "get_settings",
+        "submit_feedback",
+        "get_effective_model_config",
+        "list_models",
+        "probe_local_server_kind",
+        "reveal_model_api_key",
+        "save_model",
+        "delete_model",
+        "set_active_model",
+        "set_session_model",
+        "get_session_model_id",
+        "get_image_input_capability",
+        "test_search_provider",
+        "test_model_connection",
+        "test_image_input_capability",
+        "update_settings",
+        "update_search_settings",
+        "save_settings_and_restart",
+        "save_search_settings_and_restart"
+    ]
+);
+command_protocol!(timeline_protocol, "timeline.rs", ["get_session_timeline"]);
+command_protocol!(
+    startup_protocol,
+    "startup.rs",
+    ["report_frontend_startup", "reveal_startup_window"]
+);
+command_protocol!(
+    updater_protocol,
+    "updater.rs",
+    [
+        "get_app_version",
+        "check_for_update",
+        "download_update",
+        "install_update",
+        "restart_app",
+        "cancel_download",
+        "report_pending_update_result"
+    ]
+);
+command_protocol!(
+    voice_protocol,
+    "voice.rs",
+    [
+        "transcribe_voice_audio",
+        "reset_microphone_permission",
+        "voice_asr_status",
+        "install_voice_asr",
+        "cancel_voice_asr"
+    ]
+);
+// 多智能体（会话内主动委派，ADR-0006）。独立入口/台账/审批命令已随收缩
+// 退役，只剩子智能体执行记录的只读投影；开关命令在 interaction.rs。
+command_protocol!(
+    multiagent_protocol,
+    "multiagent.rs",
+    ["list_subagent_transcripts", "read_subagent_transcript"]
+);

@@ -1,0 +1,289 @@
+const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+const appRoot = path.resolve(__dirname, "..");
+const read = (...parts) =>
+  fs.readFileSync(path.join(appRoot, ...parts), "utf8");
+
+const capabilities = read(
+  "src-tauri",
+  "src",
+  "platform",
+  "capabilities.rs",
+);
+const codexAcp = read(
+  "src-tauri",
+  "src",
+  "features",
+  "codex_acp",
+  "mod.rs",
+);
+// Wave 2 把安装/版本探测逻辑拆到 install.rs；相关断言改读该子模块。
+const codexAcpInstall = read(
+  "src-tauri",
+  "src",
+  "features",
+  "codex_acp",
+  "install.rs",
+);
+const codexAcpPlatform = read(
+  "src-tauri",
+  "src",
+  "features",
+  "codex_acp",
+  "platform",
+  "mod.rs",
+);
+const codexAcpWindows = read(
+  "src-tauri",
+  "src",
+  "features",
+  "codex_acp",
+  "platform",
+  "windows.rs",
+);
+const windowsPath = read(
+  "src-tauri",
+  "src",
+  "platform",
+  "os",
+  "windows",
+  "windows_path.rs",
+);
+const processRuntime = read("src-tauri", "src", "platform", "process.rs");
+const buildScript = read("scripts", "tauri", "build.js");
+const bridgeBuildScript = read("scripts", "tauri", "codex-bridge.js");
+const {
+  BRIDGE_ENTRYPOINT,
+  CLAUDE_BRIDGE_ENTRYPOINT,
+  expectedMarker,
+  hideWindowsChildProcesses,
+  isPrepared,
+  validateNodeRuntime,
+  windowsBridgeOverlay,
+} = require("../scripts/tauri/codex-bridge.js");
+
+assert.match(
+  capabilities,
+  /matches!\(os,\s*"linux"\s*\|\s*"windows"\s*\|\s*"macos"\)/,
+  "Windows、Linux 和 macOS must advertise Codex ACP capability",
+);
+assert.match(
+  codexAcpWindows,
+  /fn adapter_needs_node\(_adapter: &Path\) -> bool \{\s*true\s*\}/,
+  "Windows adapters must validate Node even when the adapter is a command shim",
+);
+assert.match(
+  codexAcpWindows,
+  /adapter\.extension\(\)[\s\S]*?Some\("cmd"\)/,
+  "Windows command shims must be detected explicitly",
+);
+assert.match(
+  codexAcpWindows,
+  /HiddenTokioCommand::new\("cmd"\)[\s\S]*?\["\/D", "\/S", "\/C"\]/,
+  "codex-acp.cmd must run through cmd /D /S /C",
+);
+assert.match(
+  codexAcpWindows,
+  /HiddenTokioCommand::new\(crate::platform::os::external_application_path\(node\)\)/,
+  "the installed Node Bridge must start without a visible Windows console",
+);
+assert.match(
+  codexAcp,
+  /CODEX_INSTALL_SCRIPT_WINDOWS: &str = "https:\/\/chatgpt\.com\/codex\/install\.ps1"/,
+  "Windows Codex installation must use OpenAI's official installer",
+);
+assert.match(
+  codexAcpWindows,
+  /var_os\("LOCALAPPDATA"\)[\s\S]*?join\("Programs"\)[\s\S]*?join\("OpenAI"\)[\s\S]*?join\("Codex"\)[\s\S]*?join\("bin"\)[\s\S]*?join\("codex\.exe"\)/,
+  "Windows must probe the default path used by OpenAI install.ps1",
+);
+assert.match(
+  windowsPath,
+  /fn platform_compat_path[\s\S]*?strip_prefix\(r"\\\\\?\\UNC\\"\)[\s\S]*?strip_prefix\(r"\\\\\?\\"\)/,
+  "Windows OS paths must remove verbatim prefixes before external-process launch",
+);
+assert.match(
+  codexAcpWindows,
+  /HiddenTokioCommand::new\(crate::platform::os::external_application_path\(node\)\)[\s\S]*?command\.arg\(adapter\)/,
+  "bundled Node and the JavaScript Bridge must receive normalized installed paths",
+);
+assert.match(
+  codexAcpPlatform,
+  /#\[cfg\(target_os = "windows"\)\][\s\S]*?use windows as current/,
+  "Codex platform behavior must be selected at compile time",
+);
+assert.match(
+  codexAcp,
+  /"session:bridge_stderr"[\s\S]*?"session:initialize_failed"[\s\S]*?exit_status=/,
+  "Bridge stderr and exit status must remain available in persistent ACP diagnostics",
+);
+assert.match(
+  bridgeBuildScript,
+  /windowsHide: true[\s\S]*?hideWindowsChildProcesses/,
+  "the packaged ACP Bridge must hide the Codex CLI process it starts on Windows",
+);
+assert.match(
+  codexAcpInstall,
+  /fn resolve_codex_cli\([\s\S]*?platform::codex_official_install_path\(\)/,
+  "Windows must discover the official installer path without relying on a restarted PATH",
+);
+assert.match(codexAcpInstall, /\["claude\.exe", "claude\.cmd"\]/);
+assert.match(codexAcpInstall, /\["kimi\.exe", "kimi\.cmd"\]/);
+assert.match(
+  codexAcp,
+  /AgentBackend::KimiAcp => \{[\s\S]*?external_tokio_command\(&executable\)[\s\S]*?command\.arg\("acp"\)/,
+  "Kimi npm command shims must start ACP through the shared external-command adapter",
+);
+assert.match(
+  processRuntime,
+  /fn external_tokio_command_for\([\s\S]*?HiddenTokioCommand::new\("cmd"\)[\s\S]*?\["\/D", "\/S", "\/C"\]/,
+  "Windows npm command shims must run through cmd /D /S /C",
+);
+assert.equal(
+  windowsBridgeOverlay().bundle.resources["target/windows-runtime/codex-bridge/"],
+  "runtime/codex-bridge",
+  "Windows packages must retain the prepared Codex ACP Bridge",
+);
+assert.equal(
+  windowsBridgeOverlay().bundle.resources["target/windows-runtime/node/"],
+  undefined,
+  "Codex Bridge must not own or duplicate the shared Windows Node runtime",
+);
+assert.doesNotMatch(
+  bridgeBuildScript,
+  /WINDOWS_NODE_VERSION|nodejs\.org\/dist|curl\.exe|tar\.exe/,
+  "Codex Bridge must reuse an existing Node instead of downloading one",
+);
+assert.match(
+  buildScript,
+  /if \(isDev\)[\s\S]*?prepareWindowsCodexBridge\(\)/,
+  "Windows development must prepare the same managed ACP Bridge",
+);
+assert.match(
+  buildScript,
+  /additionalConfigs\.push\(WINDOWS_BRIDGE_CONFIG_PATH\)/,
+  "Windows packages must inject the generated Codex Bridge overlay",
+);
+
+const preparedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pinvou-codex-bridge-"));
+try {
+  const bridgeRoot = path.join(preparedRoot, "codex-bridge");
+  const expected = expectedMarker({ architecture: "x64" });
+  const sourcePackage = JSON.parse(
+    read("scripts", "codex-bridge-runtime", "package.json"),
+  );
+  const packageJsonPath = path.join(
+    bridgeRoot,
+    "acp",
+    "node_modules",
+    "@agentclientprotocol",
+    "codex-acp",
+    "package.json",
+  );
+  const claudePackageJsonPath = path.join(
+    bridgeRoot,
+    "acp",
+    "node_modules",
+    "@agentclientprotocol",
+    "claude-agent-acp",
+    "package.json",
+  );
+  fs.mkdirSync(path.dirname(packageJsonPath), { recursive: true });
+  fs.mkdirSync(path.dirname(claudePackageJsonPath), { recursive: true });
+  fs.mkdirSync(path.dirname(path.join(bridgeRoot, BRIDGE_ENTRYPOINT)), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.dirname(path.join(bridgeRoot, CLAUDE_BRIDGE_ENTRYPOINT)), {
+    recursive: true,
+  });
+  fs.writeFileSync(path.join(bridgeRoot, "manifest.json"), JSON.stringify(expected));
+  fs.writeFileSync(
+    packageJsonPath,
+    JSON.stringify({ version: sourcePackage.dependencies["@agentclientprotocol/codex-acp"] }),
+  );
+  fs.writeFileSync(
+    claudePackageJsonPath,
+    JSON.stringify({
+      version: sourcePackage.dependencies["@agentclientprotocol/claude-agent-acp"],
+    }),
+  );
+  const bridgeEntrypoint = path.join(bridgeRoot, BRIDGE_ENTRYPOINT);
+  fs.writeFileSync(
+    bridgeEntrypoint,
+    [
+      'spawn(`"${codexPath}" app-server`, { shell: true, env: spawnEnv })',
+      'spawn(process.execPath, [bundledCodexPath, "app-server"], { env: spawnEnv })',
+    ].join("\n"),
+  );
+  hideWindowsChildProcesses(bridgeEntrypoint);
+  fs.writeFileSync(
+    path.join(bridgeRoot, CLAUDE_BRIDGE_ENTRYPOINT),
+    "console.log('claude-agent-acp');",
+  );
+
+  assert.deepEqual(Object.keys(expected), [
+    "schema_version",
+    "platform",
+    "arch",
+    "package_json_sha256",
+    "lockfile_sha256",
+  ]);
+  assert.equal(isPrepared(expected, bridgeRoot), true);
+  const redundantCodexPackage = path.join(
+    bridgeRoot,
+    "acp",
+    "node_modules",
+    "@openai",
+    "codex-win32-x64",
+  );
+  fs.mkdirSync(redundantCodexPackage, { recursive: true });
+  assert.equal(
+    isPrepared(expected, bridgeRoot),
+    false,
+    "prepared runtime must reject a redundant bundled Codex platform package",
+  );
+  fs.rmSync(redundantCodexPackage, { recursive: true });
+  // Claude Code 走系统安装，任何 claude 平台原生包（含 win32-x64）都必须被拒绝。
+  for (const platformPackage of [
+    "claude-agent-sdk-win32-arm64",
+    "claude-agent-sdk-win32-x64",
+  ]) {
+    const redundantClaudePackage = path.join(
+      bridgeRoot,
+      "acp",
+      "node_modules",
+      "@anthropic-ai",
+      platformPackage,
+    );
+    fs.mkdirSync(redundantClaudePackage, { recursive: true });
+    assert.equal(
+      isPrepared(expected, bridgeRoot),
+      false,
+      `prepared runtime must reject a bundled Claude platform package: ${platformPackage}`,
+    );
+    fs.rmSync(redundantClaudePackage, { recursive: true });
+  }
+  fs.rmSync(bridgeEntrypoint);
+  assert.equal(
+    isPrepared(expected, bridgeRoot),
+    false,
+    "prepared Bridge must be rejected when its entrypoint is absent",
+  );
+} finally {
+  fs.rmSync(preparedRoot, { recursive: true, force: true });
+}
+
+assert.match(
+  validateNodeRuntime(process.execPath, {
+    environment: process.env,
+    spawn: spawnSync,
+  }),
+  /^v\d+\./,
+  "Bridge preparation must validate and reuse the supplied Node runtime",
+);
+
+console.log("✓ Windows Codex ACP packaging and command-shim contract passed");

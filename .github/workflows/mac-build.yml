@@ -1,0 +1,205 @@
+name: mac-build
+
+# macOS arm64 编译验证工作流(独立于 pr-check.yml 的秒级 fast-gate,不挤 ubuntu runner)。
+# 仅在相关改动进入 main 后触发,不作为 PR 检测项。
+# runner:macos-15(GitHub-hosted Apple Silicon,M Series;钉死大版本号以保证可复现)。
+#
+# 与 pr-check.yml 的 rust-test 关系:
+# - rust-test runs full lib tests for high-risk ready PRs and matching merge
+#   groups; main push runs cumulative compile-only verification (--no-run) to
+#   warm the shared cache. Explicitly low-risk Rust changes use the fast gate.
+# - mac-build 在 macos-15 上只跑 cargo check + cargo test --lib + release-fast 冒烟,
+#   验证 macOS 平台目标零回归。真发版的 thin-LTO --release 产物由 scripts/release-macos.sh 产出。
+# - mac-build 不跑 relay e2e(那需要 remote-control-relay 的 node_modules,mac-build 不装
+#   该依赖)。因此不设 PINVOU_REQUIRE_REMOTE_E2E,让 e2e 测试在缺依赖时静默跳过而非 panic。
+#
+# 分层触发(2026-07 CI 成本审计:暖 cache 全量 ~17min,其中 universal bundle smoke 占
+# 8.6min ≈ 50%,与 release-packages 在 VERSION bump 时的真实 dmg 构建重叠;
+# main 高峰期 ~19 pushes/天,每次全量跑完一天排队 5+ 小时 mac runner):
+# - 每次触发:check + test + release-fast + verify(~8min),macOS 原生回归核心。
+# - 仅打包链路(bundle_chain)变更:追加 universal bundle smoke。链路覆盖仍完整:
+#   链路 PR 合入前由 pr-check 跑轻量发布契约;VERSION bump 再构建全量 dmg。
+# - cancel-in-progress 保持 true(verify-tip):8min 任务在 push 间隙大概率跑完,
+#   被取消的中间 run 由更新的 tip 取代,不为每个中间 commit 排队。
+# - 纯前端改动(pinvou3-app/src/**)不触发:cargo check/test 不依赖前端产物,
+#   前端进包由打包链路的 bundle smoke 与正式 release-packages 覆盖。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # 纯前端 src/** 已由 PR/Queue 的 frontend-test 覆盖，不启动昂贵的
+      # Tauri/Rust universal 构建；package manifest 仍可能改变构建工具链，保留。
+      - 'pinvou3-app/src-tauri/**'
+      - 'pinvou3-app/scripts/tauri/**'
+      - 'pinvou3-app/package.json'
+      - 'pinvou3-app/package-lock.json'
+      - 'pinvou3-app/vite.config.js'
+      - 'CodeWhale'
+      - '.github/workflows/mac-build.yml'
+      - 'scripts/run-mac-verify.sh'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 打包链路检测:仅这些路径变化时才跑 8.6min 的 universal bundle smoke。
+  # 注意:bundle_chain 的每条路径都必须被上方 on.push.paths 覆盖,否则是死条目
+  # (workflow 根本不会触发,filter 无从匹配);scripts/tests/test_ci_gate_policy.py
+  # 对此有回归断言。VERSION 刻意不在其中:VERSION-only push 不触发本 workflow
+  # (VERSION bump 的全量 dmg 由 release-packages 构建),而真实版本同步提交必伴随
+  # tauri.conf.json/package.json 变更,经这两条进入 bundle_chain,smoke 不会漏。
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      bundle_chain: ${{ steps.filter.outputs.bundle_chain }}
+    steps:
+      # fetch-depth:0:dorny/paths-filter 在 push 事件下用 before..sha 本地 diff。
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            bundle_chain:
+              - 'pinvou3-app/scripts/tauri/**'
+              - 'pinvou3-app/src-tauri/tauri.conf.json'
+              - 'pinvou3-app/src-tauri/config/**'
+              - 'pinvou3-app/src-tauri/packaging/**'
+              - 'pinvou3-app/src-tauri/resources/**'
+              - 'pinvou3-app/package.json'
+              - 'pinvou3-app/package-lock.json'
+              - 'pinvou3-app/vite.config.js'
+              - '.github/workflows/mac-build.yml'
+
+  build:
+    needs: changes
+    runs-on: macos-15
+    timeout-minutes: 50
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+      # dev profile 的 line-tables-only 已固化进 Cargo.toml [profile.dev],
+      # 不再需要 CARGO_PROFILE_DEV_DEBUG 环境变量。
+      # v0.9.5 升级后 dev 对依赖开 O2 + 256 codegen-units 时,rustc/LLVM 编译
+      # codewhale-tui 会在 MachineLateinstrsCleanup 递归中栈溢出(SIGBUS)。
+      # .cargo/config.toml 不设置 rustc-wrapper(全局键无法按平台条件化,且
+      # Windows 上指向无扩展名 sh 会 os error 193),由 macOS 构建 job 显式
+      # 注入 RUSTC_WRAPPER 指向 sh 版(wrapper 只作用于编译期 rustc 进程,
+      # cargo run / cargo test 目标进程不继承 RUST_MIN_STACK)。
+      # 必须用 ${{ github.workspace }} 绝对路径:Cargo 按自身进程 cwd 解析
+      # RUSTC_WRAPPER 相对路径,而 cargo 步骤 working-directory 是
+      # pinvou3-app/src-tauri,相对路径会被双拼成不存在的路径(os error 2)。
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      # 本 step 只作 rustup 引导;实际工具链由 pinvou3-app/src-tauri/rust-toolchain.toml
+      # 锁定具体版本(下方 cargo 步骤 working-directory 在 src-tauri,rustup 按该文件
+      # 自动安装并使用 pinned 版本,本地与 CI 不漂移)。
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # universal 构建需要双 target;装到 rust-toolchain.toml 锁定的 pinned 工具链上
+      # (working-directory 在 src-tauri,rustup 按该文件的 override 解析工具链)。
+      - name: 安装双 target (universal 构建)
+        working-directory: pinvou3-app/src-tauri
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Rust cache
+        # 本工作流仅在 main 上运行,统一写入 main 作用域缓存。
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+          shared-key: mac-build
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # macOS 27+ 兼容:dyld 新增 LINKEDIT 字符串池 8 字节对齐校验,而 release(及继承它的
+      # release-fast)默认 strip=symbols 会让 proc-macro dylib dlopen 被拒 → E0463
+      # (macOS ≤26 无此校验)。runner 目前是 macos-15(不受影响),但 GitHub 升级 runner 到
+      # macOS 27+ 时若缺此注入,cargo/tauri 构建(--release 或 --profile release-fast)会硬失败。
+      # 同 release-macos.sh 的 workaround;详见该脚本「问题 A」注释。等上游修后可移除。
+      - name: macOS 27+ strip workaround
+        run: |
+          if [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 27 ] 2>/dev/null; then
+            echo "CARGO_PROFILE_RELEASE_STRIP=none" >> "$GITHUB_ENV"
+            echo "CARGO_PROFILE_RELEASE_FAST_STRIP=none" >> "$GITHUB_ENV"
+            echo "RUSTFLAGS=-C strip=none" >> "$GITHUB_ENV"
+            echo "⚠️ macOS $(sw_vers -productVersion) → 注入 strip=none(绕过 dyld 对齐校验)"
+          else
+            echo "✓ macOS $(sw_vers -productVersion),保留默认 strip"
+          fi
+
+      - name: Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: pinvou3-app/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: pinvou3-app
+        run: npm ci --prefer-offline --no-audit
+
+      # bge-m3 是 gitignored 大资源(559MB),CI 干净 checkout 没有它,
+      # 而 tauri_build::build() 会校验 tauri.conf resources 路径存在。
+      # 造空占位文件骗过资源校验即可(同 pr-check.yml 的 linux rust-test)。
+      - name: bge-m3 占位 (骗过 tauri-build 资源校验)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      - name: Cargo check (aarch64-apple-darwin)
+        working-directory: pinvou3-app/src-tauri
+        run: cargo check --target aarch64-apple-darwin --lib
+
+      - name: Cargo test (Mac native, lib)
+        working-directory: pinvou3-app/src-tauri
+        run: cargo test --target aarch64-apple-darwin --lib -- --test-threads=1
+
+      # 编译冒烟用 release-fast(Cargo.toml 里专为 CI 定义的轻量 profile:lto=false、
+      # codegen-units=16、inherits="release"):release 现带 lto="thin"+codegen-units=1,
+      # 全图 thin-LTO 冷编译极易吃满 50min 上限;release-fast 验证 release 路径代码可编译即可。
+      # 下方 tauri bundle 冒烟也用同一 release-fast profile —— 同 profile 同 target dir,
+      # bundle 的 aarch64 编译腿直接复用本步产物,不再两套 profile 重复编译全图。
+      - name: Cargo build (release-fast 冒烟)
+        working-directory: pinvou3-app/src-tauri
+        run: cargo build --profile release-fast --target aarch64-apple-darwin --lib
+
+      # tauri bundle smoke:验证 dmg/app 实际打包链路(Info.plist/entitlements/资源打包)。
+      # 仅打包链路(bundle_chain)变更时跑(占全量 job 约 50% 耗时,见头部「分层触发」);
+      # 打包链路 PR 合入前由 pr-check 跑轻量发布契约,VERSION bump 再构建全量 dmg。
+      # universal 打包失败会让 mac-build 失败,避免主线在没有可发布 arm64 + x86_64 产物时仍显示成功。
+      - name: Tauri bundle smoke (验证 dmg/app 打包,仅打包链路变更)
+        if: needs.changes.outputs.bundle_chain == 'true'
+        working-directory: pinvou3-app
+        # universal-apple-darwin 是 Tauri 专属 target(内部跑 aarch64+x86_64 两次 cargo + lipo),
+        # 不是合法 rustc target triple;故 cargo check/test/build 仍用 host(aarch64),
+        # 仅此处 tauri 构建用 universal,产出可在 Intel + Apple Silicon 通用运行的 dmg/app。
+        # `-- --profile release-fast`:tauri v2 CLI 的 build 无一等 --profile 选项,
+        # 自定义 profile 经 `--` 后的 runner 尾随参数透传给 cargo(CLI 据此定位
+        # target/<triple>/release-fast/ 产物);与上方冒烟同 profile,aarch64 腿复用其产物,
+        # x86_64 腿为唯一新增编译。真正发版的 thin-LTO 产物由 release-macos.sh 产出。
+        run: node scripts/tauri/build.js build --target universal-apple-darwin -- --profile release-fast
+
+      # Verify 脚本:轻量探测(brew/connector CLI) + 核心校验(plist/usage-key/bundle targets)。
+      # 核心校验失败会 exit 1,挡 build(此前 continue-on-error 让核心校验失败也变绿)。
+      # if: always():上游 cargo check/test/build 失败时仍跑 verify,确保 plist(NSSpeech/
+      #   NSMicrophone usage description)/bundle targets/CFBundleIdentifier 核心校验不被 skip
+      #   (verify 内部自带 --skip-test,不依赖上游产物)。
+      # --skip-test:上游已跑 cargo check+test,verify 不重复(省 ~10min),只跑探测 + 核心校验。
+      - name: Verify 脚本 (plist/usage-key/bundle targets 校验)
+        if: always()
+        run: ./scripts/run-mac-verify.sh --skip-test

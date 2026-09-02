@@ -1,0 +1,28 @@
+{
+  "id": "weather",
+  "name": "高德天气",
+  "description": "查询国内城市实时天气与未来预报，支持天气卡片渲染",
+  "version": "1.0.0",
+  "icon": "cloud-sun",
+  "category": "生活工具",
+  "mcp_tools": ["mcp_weather_get_weather"],
+  "command": "python",
+  "args": ["server.py"],
+  "secret_env": [
+    {
+      "key": "AMAP_KEY",
+      "provider": "amap",
+      "required": true
+    }
+  ],
+  "config_fields": [
+    { "key": "AMAP_KEY", "label": "高德 Web 服务 API Key", "required": true, "target": "env", "secret": true }
+  ],
+  "routing_rules": [
+    "天气/气温/温度/下雨/下雪/穿衣/带伞 → `mcp_weather_get_weather`，不要用 `web_search`"
+  ],
+  "tool_table_entries": [
+    "| 天气 | `mcp_weather_get_weather` (高德天气 API,参数 city + days) |"
+  ],
+  "pip_dependencies": []
+}

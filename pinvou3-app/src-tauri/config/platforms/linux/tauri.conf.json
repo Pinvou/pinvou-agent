@@ -1,0 +1,32 @@
+{
+  "$schema": "../../../../node_modules/@tauri-apps/cli/config.schema.json",
+  "bundle": {
+    "targets": ["deb"],
+    "resources": {
+      "resources/platforms/linux/asr/": "runtime/asr",
+      "resources/platforms/linux/codex-bridge/": "runtime/codex-bridge",
+      "resources/platforms/linux/knowledge-host/": "runtime/knowledge-host"
+    },
+    "linux": {
+      "deb": {
+        "desktopTemplate": "packaging/linux/deb/pinvou3.desktop",
+        "postInstallScript": "packaging/linux/deb/scripts/postinst.sh",
+        "preRemoveScript": "packaging/linux/deb/scripts/prerm.sh",
+        "depends": [
+          "libwebkit2gtk-4.1-0 (>= 2.40)",
+          "webkit2gtk-driver"
+        ],
+        "recommends": [
+          "poppler-utils",
+          "tesseract-ocr",
+          "tesseract-ocr-chi-sim",
+          "pandoc",
+          "p7zip-full",
+          "python3",
+          "libreoffice",
+          "libemail-outlook-message-perl"
+        ]
+      }
+    }
+  }
+}

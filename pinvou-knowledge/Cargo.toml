@@ -1,0 +1,128 @@
+[package]
+name = "pinvou-knowledge"
+version = "0.9.0"
+description = "Pinvou 可复用知识库核心与自包含服务器"
+authors = ["pinvou"]
+license = "MIT"
+# edition 2024: aligned with the CodeWhale foundation and pinvou3-app;
+# requires rustc >= 1.85 — MSRV 1.89 unchanged.
+edition = "2024"
+rust-version = "1.89"
+default-run = "pinvou-knowledge-server"
+
+[lib]
+name = "pinvou_knowledge"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pinvou-knowledge-server"
+path = "src/main.rs"
+required-features = ["server"]
+
+[features]
+default = ["client", "local-embed", "server"]
+client = ["dep:futures-util", "dep:reqwest", "dep:rustls"]
+discovery = ["dep:mdns-sd"]
+local-embed = ["dep:fastembed"]
+server = [
+    "client",
+    "discovery",
+    "local-embed",
+    "dep:axum",
+    "dep:axum-server",
+    "dep:age",
+    "dep:clap",
+    "dep:flate2",
+    "dep:mime_guess",
+    "dep:rcgen",
+    "dep:tar",
+    "dep:tower-http",
+    "dep:wait-timeout",
+]
+
+[dependencies]
+anyhow = "1.0"
+# Keep 0.22 to match the app: upstreams still require 0.22; a solo 0.23 bump would add a second copy. Revisit once upstreams align.
+base64 = "0.22"
+calamine = "0.36"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+encoding_rs = "0.8"
+parking_lot = "0.12"
+rand = "0.10"
+rusqlite = { version = "0.39", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11"
+tempfile = "3"
+tokio = { version = "1.49", features = ["full"] }
+url = "2"
+
+axum = { version = "0.8", features = ["multipart"], optional = true }
+axum-server = { version = "=0.8.0", default-features = false, features = ["tls-rustls"], optional = true }
+age = { version = "=0.12.1", default-features = false, optional = true }
+clap = { version = "4", features = ["derive", "env"], optional = true }
+flate2 = { version = "1", optional = true }
+futures-util = { version = "0.3", optional = true }
+mime_guess = { version = "2", optional = true }
+mdns-sd = { version = "=0.20.3", optional = true }
+# 0.15 collapses with mdns-sd's transitive if-addrs into a single version (the former =0.14.0 pin forced two).
+if-addrs = "0.15"
+rcgen = { version = "=0.14.9", features = ["x509-parser"], optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "multipart", "stream"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"], optional = true }
+tar = { version = "0.4", optional = true }
+tower-http = { version = "0.6", features = ["catch-panic", "limit", "request-id", "trace"], optional = true }
+wait-timeout = { version = "0.2", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+fastembed = { version = "4", optional = true, default-features = false, features = ["ort-load-dynamic"] }
+
+[target.'cfg(not(windows))'.dependencies]
+fastembed = { version = "4", optional = true }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+
+# Lint gates follow the same policy as pinvou3-app/src-tauri: zero-backlog
+# lints get a deny hard gate; lints with backlog are allowed with the size
+# noted (measured on rustc 1.97.1 / edition 2024). The clippy::all backlog
+# (collapsible_if 5 / let_and_return 5) was cleared in this PR and stays at
+# warn for one stable observation cycle before deny; pedantic has ~256 hits
+# for later cleanup.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_imports = "deny"
+unused_variables = "deny"
+unused_mut = "deny"
+rust_2024_compatibility = "deny"
+future_incompatible = "deny"
+# Backlog cleared in the same pass; same warn→deny cadence as src-tauri.
+# priority=-1 keeps the specific lints above (which sit at the default
+# priority 0) winning over the group:
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+wildcard_dependencies = "deny"
+negative_feature_names = "deny"
+redundant_feature_names = "deny"
+# The all-group backlog of this crate is cleared; warn for observation,
+# deny later:
+all = { level = "warn", priority = -1 }
+# Large pedantic backlog, allowed long-term:
+pedantic = { level = "allow", priority = -1 }
+
+# —— Restriction-group regression guards aligned with src-tauri (measured
+# zero backlog; warn guards against new additions) ——
+# This crate currently has no unsafe blocks; any future one must carry a
+# SAFETY comment:
+undocumented_unsafe_blocks = "warn"
+# No unwrap/expect in production code (all in test modules); warn prevents
+# regressions:
+unwrap_used = "warn"
+expect_used = "warn"
+unwrap_in_result = "warn"
+exit = "warn"

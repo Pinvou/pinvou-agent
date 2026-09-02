@@ -1,0 +1,24 @@
+[Unit]
+Description=Pinvou shared knowledge server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pinvou-knowledge
+Group=pinvou-knowledge
+StateDirectory=pinvou-knowledge
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/pinvou-knowledge
+ExecStart=/usr/local/bin/pinvou-knowledge-server --bind 0.0.0.0:3210 --data-dir /var/lib/pinvou-knowledge
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pinvou-knowledge /var/lib/.pinvou-knowledge.data.lock
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

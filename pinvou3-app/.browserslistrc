@@ -1,0 +1,8 @@
+# Minimum supported WebViews and web targets for the frontend build.
+# Desktop: macOS 11 ships Safari 14.0 WKWebView (the binding constraint);
+# Windows 10 1809 uses evergreen WebView2 (auto-updating Chromium).
+# Web relay: iOS 14 mobile Safari and legacy desktop browsers.
+safari >= 14
+ios_saf >= 14
+chrome >= 107
+firefox >= 115

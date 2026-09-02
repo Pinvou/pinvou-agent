@@ -1,0 +1,16 @@
+scripts/validate-commit-msg.py text eol=lf
+# Shell 脚本必须 LF:core.autocrlf=true 的 Windows checkout 会把 .sh 转成 CRLF,
+# 严格模式的 bash 读到 \r 直接失败(fork-guard.sh 等 PR 门控脚本跑不起来)。
+*.sh text eol=lf
+pinvou3-app/src-tauri/resources/platforms/linux/knowledge-host/pinvou-knowledge-host-helper text eol=lf
+# 编译期 include_str! 内嵌并按 "\n\n" 切分/golden 字节测试锁定:autocrlf=true 的
+# Windows checkout 转成 CRLF 后 split_once("\n\n") 直接 panic。
+pinvou3-app/src-tauri/resources/common/bundle/instructions-*.md text eol=lf
+# Vendored browser assets ship byte-exact and are locked to the SHA-256
+# registry in pinvou3-app/src/vendor/README.md (enforced by
+# pinvou3-app/tests/vendor_asset_integrity.test.js); a core.autocrlf=true
+# checkout would rewrite line endings and break that contract.
+pinvou3-app/src/vendor/*.js text eol=lf
+# The vendor script rewrites this tracked placeholder after replacing its
+# directory; pin LF so its embedded GITKEEP bytes are identical on all hosts.
+pinvou3-app/src-tauri/resources/platforms/windows/chrome-devtools-mcp/.gitkeep text eol=lf
