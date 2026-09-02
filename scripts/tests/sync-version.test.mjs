@@ -289,3 +289,22 @@ test('--check rejects version drift in either application Cargo.lock workspace p
     assert.match(result.stderr, /pinvou3-app\/src-tauri\/Cargo\.lock/u);
   }
 });
+
+test('missing lock package entry exits 2 with a clean message instead of an uncaught stack trace', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  // Drop the pinvou3-tauri section so the lock lookup finds zero matches.
+  const lockPath = join(root, 'pinvou3-app/src-tauri/Cargo.lock');
+  const lock = readFileSync(lockPath, 'utf8').replace(
+    /\n\[\[package\]\]\nname = "pinvou3-tauri"\nversion = "0\.8\.8"\n/u,
+    '\n',
+  );
+  writeFileSync(lockPath, lock);
+
+  const result = runFixtureScript(root, ['--check']);
+  assert.equal(result.status, 2, `${result.stdout}\n${result.stderr}`);
+  // The Chinese anchor matches sync-version.mjs's pre-existing (history-exempt) error text.
+  assert.match(result.stderr, /实际找到 0 个/u);
+  assert.doesNotMatch(result.stderr, /^\s+at\s/um);
+});

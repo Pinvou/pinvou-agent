@@ -194,7 +194,16 @@ export function main(repoRoot = REPO_ROOT, { checkOnly = CHECK_ONLY } = {}) {
 
   let inconsistent = 0;
   for (const item of targets) {
-    const current = item.read();
+    // Missing target files (ENOENT) and missing/duplicate Cargo.lock package
+    // entries surface here as thrown errors; keep the script's convention of a
+    // clean message + exit 2 for fatal errors instead of an uncaught stack trace.
+    let current;
+    try {
+      current = item.read();
+    } catch (error) {
+      console.error(`${item.name}: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(2);
+    }
     if (current === target) {
       console.log(`[一致] ${item.name}: ${current}`);
       continue;
