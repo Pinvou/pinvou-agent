@@ -3255,12 +3255,18 @@ fn rewind_truncates_at_turn_boundary_with_interleaved_tool_results() {
         .expect("seed transcript");
     let original_revision = transcript_revision(&messages).expect("revision");
 
-    let outcome = store.truncate_to_user_turn(&id, 1, None).expect("rewind to turn 1");
+    let outcome = store
+        .truncate_to_user_turn(&id, 1, None)
+        .expect("rewind to turn 1");
 
     assert_eq!(outcome.rewound_turns, 2);
     assert_eq!(outcome.removed_messages, 5);
     let kept = store.load(&id).expect("load").messages;
-    assert_eq!(kept, messages[..4], "保留第 1 轮全部消息（含 tool_result 交错段）");
+    assert_eq!(
+        kept,
+        messages[..4],
+        "保留第 1 轮全部消息（含 tool_result 交错段）"
+    );
     assert_eq!(
         outcome.new_revision,
         transcript_revision(&kept).expect("kept revision")
@@ -3299,7 +3305,9 @@ fn rewind_to_zero_turns_empties_transcript() {
         )
         .expect("seed transcript");
 
-    let outcome = store.truncate_to_user_turn(&id, 0, None).expect("rewind to zero");
+    let outcome = store
+        .truncate_to_user_turn(&id, 0, None)
+        .expect("rewind to zero");
 
     assert_eq!(outcome.rewound_turns, 2);
     assert_eq!(outcome.removed_messages, 4);
@@ -3328,9 +3336,7 @@ fn rewind_out_of_range_errors_and_leaves_transcript_untouched() {
     assert!(store.truncate_to_user_turn(&id, 7, None).is_err());
     assert_eq!(store.load(&id).expect("load").messages, messages);
     assert!(
-        !paths::sessions_root()
-            .join("_rewound_turns.json")
-            .exists(),
+        !paths::sessions_root().join("_rewound_turns.json").exists(),
         "失败的回退不得产生 sidecar"
     );
 }
@@ -3413,9 +3419,11 @@ fn rewind_backups_append_and_cap_at_limit() {
     let records = rewound_records(&id);
     assert_eq!(records.len(), 20, "每会话备份条数封顶 20（LRU 裁最老）");
     // 最老的一条（round 0）已被裁掉，剩余的是最后 20 次。
-    assert!(records
-        .iter()
-        .all(|record| record.removed_messages.len() == 4));
+    assert!(
+        records
+            .iter()
+            .all(|record| record.removed_messages.len() == 4)
+    );
 }
 
 /// 删除会话时回退备份 sidecar 同步清理。
@@ -3429,7 +3437,11 @@ fn delete_session_purges_rewound_turns_backup() {
     store
         .update_messages(
             &id,
-            vec![user_text("第一轮"), assistant_text("答一"), user_text("第二轮")],
+            vec![
+                user_text("第一轮"),
+                assistant_text("答一"),
+                user_text("第二轮"),
+            ],
         )
         .expect("seed transcript");
     store.truncate_to_user_turn(&id, 1, None).expect("rewind");
@@ -3438,9 +3450,7 @@ fn delete_session_purges_rewound_turns_backup() {
     store.delete(&id).expect("delete session");
 
     // sidecar 中该会话的备份已清；无其他会话时整个文件被移除。
-    assert!(!paths::sessions_root()
-        .join("_rewound_turns.json")
-        .exists());
+    assert!(!paths::sessions_root().join("_rewound_turns.json").exists());
 }
 
 // ===================== 回退反悔（restore_rewound_turns）+ compaction 标记 =====================
@@ -3475,7 +3485,12 @@ fn restore_rewound_turns_round_trips_messages_and_consumes_record() {
         "反悔后 transcript 必须逐条回到截断前"
     );
     // 记录已被消费：再次反悔如实报错。
-    assert!(store.latest_rewound_turns_record(&id).expect("read").is_none());
+    assert!(
+        store
+            .latest_rewound_turns_record(&id)
+            .expect("read")
+            .is_none()
+    );
     assert!(store.restore_rewound_turns(&id).is_err());
 }
 
@@ -3518,7 +3533,12 @@ fn restore_rewound_turns_rejects_after_new_turn() {
     assert!(error.to_string().contains("不可反悔"), "{error:#}");
     assert_eq!(store.load(&id).expect("load").messages.len(), 4);
     // 记录保留（未消费），数据不丢。
-    assert!(store.latest_rewound_turns_record(&id).expect("read").is_some());
+    assert!(
+        store
+            .latest_rewound_turns_record(&id)
+            .expect("read")
+            .is_some()
+    );
 }
 
 /// had_compaction：system_prompt 含/不含底座压缩摘要标记两例。

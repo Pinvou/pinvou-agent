@@ -16,14 +16,14 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use deepseek_tui::models::Message;
 use serde::{Deserialize, Serialize};
 
+use super::SessionStore;
 use super::transcript::transcript_revision;
 use super::validators::validate_session_id;
-use super::SessionStore;
 
 /// sidecar 文件名（与 `_session_models.json` 等并列在 sessions 根下）。
 const REWOUND_TURNS_FILE: &str = "_rewound_turns.json";
@@ -93,7 +93,7 @@ fn load_rewound_turns_map() -> Result<HashMap<String, Vec<RewoundTurnsRecord>>> 
         Ok(bytes) => bytes,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(HashMap::new()),
         Err(error) => {
-            return Err(error).with_context(|| format!("读取回退备份失败: {}", path.display()))
+            return Err(error).with_context(|| format!("读取回退备份失败: {}", path.display()));
         }
     };
     serde_json::from_slice(&bytes).with_context(|| format!("解析回退备份失败: {}", path.display()))
@@ -105,7 +105,9 @@ fn persist_rewound_turns_map(map: &HashMap<String, Vec<RewoundTurnsRecord>>) -> 
         return match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error).with_context(|| format!("清理回退备份失败: {}", path.display())),
+            Err(error) => {
+                Err(error).with_context(|| format!("清理回退备份失败: {}", path.display()))
+            }
         };
     }
     let payload = serde_json::to_vec_pretty(map).context("序列化回退备份失败")?;
@@ -151,9 +153,7 @@ impl SessionStore {
             .collect();
         let total_turns = turn_prompt_indices.len() as u32;
         if keep_turns >= total_turns {
-            bail!(
-                "会话当前只有 {total_turns} 轮，无法回退到第 {keep_turns} 轮末尾（无可截内容）"
-            );
+            bail!("会话当前只有 {total_turns} 轮，无法回退到第 {keep_turns} 轮末尾（无可截内容）");
         }
         // turn_prompt_indices[keep_turns] 即第 N+1 个用户 turn prompt 的下标。
         let cut = turn_prompt_indices[keep_turns as usize];

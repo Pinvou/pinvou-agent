@@ -70,7 +70,9 @@ pub async fn checkpoint_diff(
                 pool_gate.is_turn_active(id)
             })?
         {
-            return Err(format!("会话「{busy}」绑定同一项目目录且正在执行，请稍后再读取变更预览"));
+            return Err(format!(
+                "会话「{busy}」绑定同一项目目录且正在执行，请稍后再读取变更预览"
+            ));
         }
         checkpoints::diff_checkpoint(&ledger, &execution, &checkpoint_id)
             .map_err(|error| format!("读取检查点差异失败: {error:#}"))
@@ -110,7 +112,9 @@ pub async fn restore_checkpoint(
     .await
     .map_err(|error| format!("跨会话忙碌检查任务失败: {error}"))??
     {
-        return Err(format!("会话「{busy}」绑定同一项目目录且正在执行，请先停止该会话再回滚"));
+        return Err(format!(
+            "会话「{busy}」绑定同一项目目录且正在执行，请先停止该会话再回滚"
+        ));
     }
     let result = tauri::async_runtime::spawn_blocking(move || {
         checkpoints::restore_checkpoint(&ledger, &execution, &checkpoint_id)
@@ -270,7 +274,9 @@ pub async fn rewind_to_turn(
     .await
     .map_err(|error| format!("跨会话忙碌检查任务失败: {error}"))??
     {
-        return Err(format!("会话「{busy}」绑定同一项目目录且正在执行，请先停止该会话再回退"));
+        return Err(format!(
+            "会话「{busy}」绑定同一项目目录且正在执行，请先停止该会话再回退"
+        ));
     }
 
     // 定位 checkpoint + 截断可行性预检。必须在 restore 之前：先恢复代码才发现
@@ -284,15 +290,14 @@ pub async fn rewind_to_turn(
         let session = store_snapshot
             .load(&session_id_snapshot)
             .map_err(|error| format!("读取会话失败: {error:#}"))?;
-        Ok::<_, String>((
-            entries,
-            checkpoints::count_user_turns(&session.messages),
-        ))
+        Ok::<_, String>((entries, checkpoints::count_user_turns(&session.messages)))
     })
     .await
     .map_err(|error| format!("回退预检任务失败: {error}"))??;
     if keep_turns >= total_turns {
-        return Err(format!("会话当前只有 {total_turns} 轮，无法回退到第 {keep_turns} 轮末尾"));
+        return Err(format!(
+            "会话当前只有 {total_turns} 轮，无法回退到第 {keep_turns} 轮末尾"
+        ));
     }
     let plan = resolve_rewind_plan(entries, keep_turns, conversation_only)?;
 
@@ -492,7 +497,9 @@ pub async fn undo_last_rewind(
     .await
     .map_err(|error| format!("跨会话忙碌检查任务失败: {error}"))??
     {
-        return Err(format!("会话「{busy}」绑定同一项目目录且正在执行，请先停止该会话再反悔"));
+        return Err(format!(
+            "会话「{busy}」绑定同一项目目录且正在执行，请先停止该会话再反悔"
+        ));
     }
 
     // 预检先于 restore：可反悔条件全部满足才动代码，把「代码已反悔、对话未
@@ -676,29 +683,30 @@ mod tests {
             code_ids.iter().any(|candidate| candidate == id)
         }));
         let busy_bob = bob_id.clone();
-        let hit = busy_peer_on_same_execution_root(&store, &alice_id, &project, |id| id == busy_bob)
-            .expect("gate");
+        let hit =
+            busy_peer_on_same_execution_root(&store, &alice_id, &project, |id| id == busy_bob)
+                .expect("gate");
         assert_eq!(hit, Some(bob.metadata.title.clone()));
 
         // 不忙碌 → 放行。
-        let none = busy_peer_on_same_execution_root(&store, &alice_id, &project, |_| false)
-            .expect("gate");
+        let none =
+            busy_peer_on_same_execution_root(&store, &alice_id, &project, |_| false).expect("gate");
         assert_eq!(none, None);
 
         // 自身忙碌不算（门只看其它会话）。
         let busy_alice = alice_id.clone();
-        let none = busy_peer_on_same_execution_root(&store, &alice_id, &project, |id| {
-            id == busy_alice
-        })
-        .expect("gate");
+        let none =
+            busy_peer_on_same_execution_root(&store, &alice_id, &project, |id| id == busy_alice)
+                .expect("gate");
         assert_eq!(none, None);
 
         // 非 code 会话即使同根且忙碌也不拦（ACP/plain 不归本门管）。
         let only_alice = alice_id.clone();
         store.set_code_session_predicate(Arc::new(move |id: &str| id == only_alice));
         let busy_bob = bob_id.clone();
-        let none = busy_peer_on_same_execution_root(&store, &alice_id, &project, |id| id == busy_bob)
-            .expect("gate");
+        let none =
+            busy_peer_on_same_execution_root(&store, &alice_id, &project, |id| id == busy_bob)
+                .expect("gate");
         assert_eq!(none, None);
     }
 
@@ -744,10 +752,9 @@ mod tests {
         }));
 
         let busy_carol = carol_id.clone();
-        let none = busy_peer_on_same_execution_root(&store, &alice_id, &project, |id| {
-            id == busy_carol
-        })
-        .expect("gate");
+        let none =
+            busy_peer_on_same_execution_root(&store, &alice_id, &project, |id| id == busy_carol)
+                .expect("gate");
         assert_eq!(none, None, "不同执行根的忙碌会话不得拦截");
     }
 
@@ -782,8 +789,9 @@ mod tests {
         checkpoints::create_checkpoint(&ledger, &exec, Some(1), CheckpointKind::Turn, "t1")
             .expect("c1");
         std::fs::write(exec.join("a.txt"), "1\n").expect("write");
-        let old_t2 = checkpoints::create_checkpoint(&ledger, &exec, Some(2), CheckpointKind::Turn, "t2")
-            .expect("c2");
+        let old_t2 =
+            checkpoints::create_checkpoint(&ledger, &exec, Some(2), CheckpointKind::Turn, "t2")
+                .expect("c2");
         std::fs::write(exec.join("a.txt"), "2\n").expect("write");
         checkpoints::create_checkpoint(&ledger, &exec, Some(3), CheckpointKind::Turn, "t3")
             .expect("c3");
@@ -801,8 +809,9 @@ mod tests {
 
         // 重新创作：新分支的 turn 2 打新快照。若旧 t2 未作废，find 会先命中它。
         std::fs::write(exec.join("a.txt"), "new-branch\n").expect("write");
-        let new_t2 = checkpoints::create_checkpoint(&ledger, &exec, Some(2), CheckpointKind::Turn, "t2-new")
-            .expect("c2 new");
+        let new_t2 =
+            checkpoints::create_checkpoint(&ledger, &exec, Some(2), CheckpointKind::Turn, "t2-new")
+                .expect("c2 new");
         assert_ne!(old_t2.id, new_t2.id);
         let plan = resolve_rewind_plan(
             checkpoints::list_checkpoints(&ledger).expect("list"),
@@ -845,7 +854,9 @@ mod tests {
     }
 
     /// 造一个带两轮对话、且已回退到第 1 轮的 code 会话；返回 (store, guard, 会话 id)。
-    fn rewound_code_session(label: &str) -> (SessionStore, std::sync::MutexGuard<'static, ()>, String) {
+    fn rewound_code_session(
+        label: &str,
+    ) -> (SessionStore, std::sync::MutexGuard<'static, ()>, String) {
         let (store, guard) = isolated_store(label);
         let session = store
             .create_new("/model".into(), None, std::env::temp_dir())
@@ -864,7 +875,9 @@ mod tests {
                 ],
             )
             .expect("seed transcript");
-        store.truncate_to_user_turn(&id, 1, None).expect("rewind to turn 1");
+        store
+            .truncate_to_user_turn(&id, 1, None)
+            .expect("rewind to turn 1");
         (store, guard, id)
     }
 
@@ -983,7 +996,9 @@ mod tests {
         // 单元测试构造，命令本体仅是这段顺序 + 忙碌门 + evict）：
         checkpoints::restore_checkpoint(&ledger, &exec, &pre_restore.id)
             .expect("restore code to pre-restore");
-        let restored = store.restore_rewound_turns(&id).expect("restore conversation");
+        let restored = store
+            .restore_rewound_turns(&id)
+            .expect("restore conversation");
         assert_eq!(restored, 2);
         // 代码与对话都回到 rewind 前。
         assert_eq!(
@@ -1002,10 +1017,12 @@ mod tests {
         // 记录已消费 → 不再可反悔；对称语义：restore 又打了一条 PreRestore，
         // 「反悔的反悔」在代码侧仍可恢复（index 里 PreRestore 仍在）。
         assert_eq!(rewind_undo_state_inner(&store, &id).expect("state"), None);
-        assert!(checkpoints::list_checkpoints(&ledger)
-            .expect("list")
-            .iter()
-            .any(|entry| entry.kind == CheckpointKind::PreRestore));
+        assert!(
+            checkpoints::list_checkpoints(&ledger)
+                .expect("list")
+                .iter()
+                .any(|entry| entry.kind == CheckpointKind::PreRestore)
+        );
 
         let _ = std::fs::remove_dir_all(&ledger);
     }
@@ -1024,8 +1041,14 @@ mod tests {
         std::fs::create_dir_all(&ledger).expect("ledger dir");
         std::fs::write(exec.join("code.txt"), "user-work\n").expect("write");
         // 一次更早的完整回退留下的 PreRestore（与本次降级回退无关）。
-        checkpoints::create_checkpoint(&ledger, &exec, None, CheckpointKind::PreRestore, "无关回滚点")
-            .expect("unrelated pre-restore");
+        checkpoints::create_checkpoint(
+            &ledger,
+            &exec,
+            None,
+            CheckpointKind::PreRestore,
+            "无关回滚点",
+        )
+        .expect("unrelated pre-restore");
         std::fs::write(exec.join("code.txt"), "user-work-new\n").expect("write new");
 
         // 降级记录（rewound_code_session 以 None 绑定截断）：undo 状态可用但
@@ -1036,7 +1059,9 @@ mod tests {
         assert_eq!(info.checkpoint_id, None, "降级回退的 undo 不得恢复代码");
 
         // undo 只追加对话：代码文件保持用户新作的内容。
-        let restored = store.restore_rewound_turns(&id).expect("restore conversation");
+        let restored = store
+            .restore_rewound_turns(&id)
+            .expect("restore conversation");
         assert_eq!(restored, 2);
         assert_eq!(
             std::fs::read_to_string(exec.join("code.txt")).expect("read"),
