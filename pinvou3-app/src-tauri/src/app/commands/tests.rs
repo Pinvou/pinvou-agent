@@ -1537,17 +1537,17 @@ async fn open_external_url_rejects_off_allowlist_targets() {
         "https://www.canva.cn.evil.com/api/action",               // Canva 子域钓鱼
         "https://export-download.canva.cn.evil.com/x.png",        // Canva 资源域钓鱼
         "https://meeting.tencent.com.evil.com/qrcode-login.html", // 腾讯会议授权域钓鱼
-        "http://work.weixin.qq.com/ai/qc/gen",                    // 企业微信授权页非 https
-        "http://login.dingtalk.com/device",                       // 钉钉授权页非 https
-        "https://bce.baidu.com/",                                 // 非 console 子域,不放行
-        "javascript:alert(1)",                                    // js scheme
-        "file:///etc/passwd",                                     // file scheme
-        "https://google.com/",                                    // 任何第三方域
-        "http://localhost.evil.com:8080/",                        // localhost 前缀钓鱼
-        "http://user@localhost:8080/",                            // 不允许 URL 凭据
-        "http://192.168.1.10:8080/",                              // 局域网地址不是 loopback
-        "",                                                       // 空串
-        "metaso.cn/",                                             // 缺 scheme
+        "http://work.weixin.qq.com/ai/qc/gen",                    // WeCom auth page over non-https
+        "http://login.dingtalk.com/device", // DingTalk auth page over non-https
+        "https://bce.baidu.com/",           // 非 console 子域,不放行
+        "javascript:alert(1)",              // js scheme
+        "file:///etc/passwd",               // file scheme
+        "https://google.com/",              // 任何第三方域
+        "http://localhost.evil.com:8080/",  // localhost 前缀钓鱼
+        "http://user@localhost:8080/",      // 不允许 URL 凭据
+        "http://192.168.1.10:8080/",        // 局域网地址不是 loopback
+        "",                                 // 空串
+        "metaso.cn/",                       // 缺 scheme
     ];
     for url in rejected {
         let err = open_external_url(url.to_string()).await.err();
@@ -1621,14 +1621,14 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     assert!(url_in_external_allowlist(
         "https://docs.qq.com/scenario/open-claw.html?nlc=1"
     ));
-    // 企业微信扫码授权页(wecom-cli auth init 落地页)
+    // WeCom scan-to-authorize page (wecom-cli auth init landing page)
     assert!(url_in_external_allowlist(
         "https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&scode=abc"
     ));
     assert!(url_in_external_allowlist(
         "https://work.weixin.qq.com/ai/qc/c?s=abc&for_native=true"
     ));
-    // 钉钉 device 授权登录页(dws auth login --device 打印,带 user_code)
+    // DingTalk device authorization login page (printed by `dws auth login --device`, carries user_code)
     assert!(url_in_external_allowlist(
         "https://login.dingtalk.com/device?user_code=ABCDEF"
     ));

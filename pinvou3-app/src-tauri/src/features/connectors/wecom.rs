@@ -146,8 +146,9 @@ fn run_connect_flow(app: &AppHandle) {
     }
 }
 
-/// 等待 CLI 落盘的二维码 PNG(出现且长度稳定后读取,避免拿到半截文件)。
-/// 超时返回 `None`(调用方回退把 URL 自绘成二维码)。
+/// Waits for the QR PNG written to disk by the CLI (read once it exists and its
+/// length is stable, to avoid grabbing a half-written file).
+/// Returns `None` on timeout (the caller falls back to drawing the URL as a QR).
 fn poll_qr_png(dir: &std::path::Path, timeout: Duration) -> Option<Vec<u8>> {
     let path = dir.join("qr.png");
     let deadline = std::time::Instant::now() + timeout;
@@ -171,10 +172,13 @@ fn poll_qr_png(dir: &std::path::Path, timeout: Duration) -> Option<Vec<u8>> {
 
 /// 单段:`auth init --noninteractive --no-browser` 长驻 → 抓 URL 出二维码 → 等进程退出 → 查 ready。
 fn phase_scan(app: &AppHandle) -> Result<(), String> {
-    // CLI 1.1.0 的 --output-qrcode 只接受当前目录下的相对路径:让它把真授权二维码 PNG
-    // 落在临时目录里。抓到的 stdout URL 是 /ai/qc/gen 落地页(打开后还要再扫一次),
-    // 不能直接编码成二维码;PNG 里的码才能一次扫码直达授权。能走到这的 CLI 必 ≥1.1.0
-    // (wecom_ensure_cli 的版本门已把旧版换装),回退自绘只覆盖写盘失败/轮询超时。
+    // CLI 1.1.0's --output-qrcode only accepts a path relative to the current
+    // directory, so the real auth QR PNG is written into a temp dir. The stdout
+    // URL is the /ai/qc/gen landing page (which would ask the user to scan
+    // again) and cannot be encoded as the QR directly; only the PNG QR reaches
+    // authorization in one scan. Any CLI that reaches this point is ≥1.1.0
+    // (wecom_ensure_cli's version gate force-replaces older ones), so the
+    // self-drawn fallback only covers PNG write failure / poll timeout.
     let qr_dir = std::env::temp_dir().join(format!(
         "pinvou3-wecom-qr-{}",
         std::time::SystemTime::now()
@@ -183,8 +187,9 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             .unwrap_or(0)
     ));
     if let Err(e) = std::fs::create_dir_all(&qr_dir) {
-        // 不吞:失败时 spawn 也会因 cwd 不存在而挂,但报因会被误读成「CLI 未安装」。
-        return Err(format!("创建扫码二维码临时目录失败: {e}"));
+        // Not swallowed: spawn would also fail on the missing cwd, but its cause
+        // would be misread as "CLI not installed".
+        return Err(format!("failed to create the scan QR temp dir: {e}"));
     }
     let mut cmd = wecom(&[
         "auth",
@@ -206,7 +211,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         Err(e) => {
             let _ = std::fs::remove_dir_all(&qr_dir);
             return Err(format!(
-                "wecom-cli auth init 启动失败: {e}(需要先完成企微 CLI 在线安装)"
+                "failed to start wecom-cli auth init: {e} (install the WeCom CLI online first)"
             ));
         }
     };
@@ -230,20 +235,24 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             let _ = child.kill();
             conn.set_pid(ID, None);
             let _ = std::fs::remove_dir_all(&qr_dir);
-            // 取消会 tree-kill 子进程 → 管道 EOF 走到这:用户主动停,静默收尾,不误报链接超时。
+            // Cancel tree-kills the child → pipe EOF lands here: the user stopped
+            // on purpose, so finish silently instead of misreporting a link timeout.
             if conn.is_cancelled(ID) {
                 return Ok(());
             }
-            return Err("40s 内未拿到二维码链接(检查网络 / 代理)".into());
+            return Err("no QR link within 40s (check network / proxy)".into());
         }
     };
-    // 优先 CLI 落盘的真授权二维码;拿不到(写盘失败 / 轮询超时)回退自绘落地页二维码。
+    // Prefer the real auth QR written by the CLI; on failure (write failure /
+    // poll timeout) fall back to the self-drawn landing-page QR.
     let qr = poll_qr_png(&qr_dir, Duration::from_secs(6))
         .and_then(|bytes| cc::png_data_url(&bytes))
         .or_else(|| cc::make_qr(&url));
     let _ = std::fs::remove_dir_all(&qr_dir);
-    // 取消发生在等 PNG 的窗口内:静默退出。再发 wecom:qr 会把用户已关掉的扫码弹窗重新弹出。
-    // (wecom_cancel 已按 pid tree-kill,这里补 kill + pid 槽复位兜底竞态。)
+    // Cancel during the PNG wait window: exit silently. Emitting wecom:qr now
+    // would re-open the scan modal the user already dismissed.
+    // (wecom_cancel already tree-killed by pid; the extra kill + pid slot reset
+    // here covers the race.)
     if conn.is_cancelled(ID) {
         let _ = child.kill();
         conn.set_pid(ID, None);
@@ -435,7 +444,8 @@ mod tests {
         assert!(!status_is_authorized(""));
     }
 
-    /// 轮询 CLI 落盘的二维码 PNG:出现即读,缺文件/空目录等到超时回 None。
+    /// Polls the QR PNG written by the CLI: read once it appears; a missing
+    /// file / empty dir waits until timeout and returns None.
     #[test]
     fn poll_qr_png_reads_written_file_and_times_out() {
         let dir = std::env::temp_dir().join(format!(
@@ -446,9 +456,9 @@ mod tests {
                 .unwrap_or(0)
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        // 无文件 → 超时 None(用极短超时保持测试快)
+        // No file → timeout None (a very short timeout keeps the test fast)
         assert!(poll_qr_png(&dir, Duration::from_millis(300)).is_none());
-        // 落盘后 → 读到稳定字节
+        // After the file lands → stable bytes are read
         let png = b"\x89PNG\r\n\x1a\npayload";
         std::fs::write(dir.join("qr.png"), png).unwrap();
         assert_eq!(
