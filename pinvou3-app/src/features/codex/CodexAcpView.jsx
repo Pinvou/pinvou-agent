@@ -2020,7 +2020,12 @@ export function CodexAcpView({
   // 对已截断的对话再发一次 rewind_to_turn（那会必败且文案令人困惑）。
   async function confirmRewind() {
     const target = rewindTarget;
-    if (!target || !activeId || rewinding || rewindInFlightRef.current) return;
+    if (!target || !activeId || rewinding) return;
+    // 全局单 flight：另一会话的回退仍在途时不静默吞点击，如实上屏（评审 M9）。
+    if (rewindInFlightRef.current) {
+      setRewindError(codexCopy.rewindInFlightBusy);
+      return;
+    }
     const sessionId = activeId;
     rewindInFlightRef.current = sessionId;
     setRewinding(true);
@@ -2091,7 +2096,12 @@ export function CodexAcpView({
   // 重试只补重载，不会再发一次必败的 undo_last_rewind。
   async function confirmRewindUndo() {
     const entry = rewindUndoEntry;
-    if (!entry || !activeId || rewindUndoing || rewindUndoInFlightRef.current) return;
+    if (!entry || !activeId || rewindUndoing) return;
+    // 与 confirmRewind 同款：另一会话的撤销仍在途时如实上屏（评审 M9）。
+    if (rewindUndoInFlightRef.current) {
+      setRewindUndoError(codexCopy.rewindInFlightBusy);
+      return;
+    }
     const sessionId = activeId;
     const reloadOnly = Boolean(entry.reloadFailed);
     rewindUndoInFlightRef.current = sessionId;
@@ -3589,7 +3599,7 @@ export function CodexAcpView({
                       // 无快照的边界为「仅回退对话」变体（rewindEntriesByTurnId 判定）。
                       <RewindChip
                         entry={rewindEntries.get(turn.id)}
-                        disabled={busy || rewinding}
+                        disabled={busy || rewinding || rewindUndoing}
                         copy={codexCopy}
                         onOpen={openRewindDialog}
                       />

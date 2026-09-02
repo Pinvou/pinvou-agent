@@ -186,7 +186,7 @@ export function RewindConfirmDialog({ entry, previewState, error, busy, theme, c
           <>
             <div className="mt-3">
               <div className="text-[10px] font-medium uppercase tracking-wider text-gray-400">
-                {copy.rewindUndoChanges}
+                {copy.rewindChangesToUndo}
               </div>
               {entry.conversationOnly ? (
                 <div className={`mt-1.5 text-[12px] leading-5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>

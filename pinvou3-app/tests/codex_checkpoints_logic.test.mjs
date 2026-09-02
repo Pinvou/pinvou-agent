@@ -287,7 +287,6 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
   for (const command of [
     'list_checkpoints',
     'checkpoint_diff',
-    'restore_checkpoint',
     'rewind_to_turn',
     'rewind_undo_state',
     'undo_last_rewind',

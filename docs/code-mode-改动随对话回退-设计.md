@@ -1,6 +1,6 @@
 # 代码模式「改动随对话回退」设计方案
 
-> 状态：设计提案，待评审。
+> 状态：已落地（PR #397，经两轮评审加固）。
 > 范围：**仅品悟原生代码会话（Native code lane）**；ACP 会话（Codex/Claude 外部进程）明确不做。
 > 关联：`docs/adr/0006-多智能体收缩为会话内主动委派模式.md`（需修订，见 §8）、`docs/code-native-agent-完全体架构设计.md`（qiuYliangM/feat-full-code-mode 分支，本方案移植其 checkpoint 机制）。
 
@@ -26,7 +26,7 @@
 - `mod snapshot;` 非 pub（`CodeWhale/crates/tui/src/lib.rs:134`），app 使用必须改 fork；
 - 标签用进程内 `turn_counter`（`engine.rs`），重启后 `pre-turn:1` 重复，多进程下锚定失效；
 - 存储按工作区哈希隔离（`~/.codewhale/snapshots/`），同工作区多会话交错，保留策略 7 天/50 个/500MB 与会话生命周期脱节；
-- pinvou 当前显式关闭：`snapshots_enabled: false`（`pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs:1315`），两套体系不并存。
+- pinvou 当前显式关闭：`snapshots_enabled: false`（`pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs:1500`），两套体系不并存。
 
 复用底座需 4 处 fork 改动（pub/facade、锚定、会话命名空间、保留策略），按项目公约应优先回馈上游，周期不可控。
 
@@ -65,7 +65,7 @@
 
 **移植时的修正**：
 
-1. **turn 计数口径**（必须改）：feat 分支用 `messages.iter().filter(|m| m.role == "user").count() + 1`，会把 tool_result（同样以 `role="user"` 落盘）计入，导致 turn 号错位。改用 `is_user_turn_prompt` 同口径谓词（`CodeWhale/crates/tui/src/runtime_handoff.rs:583`，`deepseek_tui` 已 re-export），与 `8d4d2a991`「编辑重发三层同口径」保持一致。
+1. **turn 计数口径**（必须改）：feat 分支用 `messages.iter().filter(|m| m.role == "user").count() + 1`，会把 tool_result（同样以 `role="user"` 落盘）计入，导致 turn 号错位。改用 `is_user_turn_prompt` 同口径谓词（`CodeWhale/crates/tui/src/runtime_handoff.rs:637`，`deepseek_tui` 已 re-export），与 `8d4d2a991`「编辑重发三层同口径」保持一致。
 2. **模块落位**：feat 分支依赖 `code_sessions` 模块拆分，本方案不引入该重构；移植到现有 `codex_acp` 相邻位置或新建 `features/code_checkpoints/`，按架构守卫边界落位。
 3. **快照钩子**：只保留原生车道 `chat_with_reservation`（`app/commands/chat.rs`）一处，删除 ACP `codex_acp_prompt` 钩子。
 
@@ -74,20 +74,20 @@
 feat 分支没有的部分，本方案新增：
 
 1. **磁盘截断**：`SessionStore` 新增「截断到第 N 轮」方法，复用 `8d4d2a991` 的同口径定位逻辑（`is_user_turn_prompt` rposition）；被截段落写入 sidecar `_rewound_turns.json`（留恢复可能，UI 不暴露 redo）；放行 `looks_like_truncating_overwrite` 守卫（`sessions/transcript.rs:27`）的显式回退路径。
-2. **engine 内存态**：不新增 fork Op。回退后**回收该会话 engine 实例**，下次发送时走既有 `Op::SyncSession` 用截断后的 messages 重新注水（注水链路 `features/assistant/engine.rs:1602` 现成）。回退只发生在空闲态，无在途状态可丢。
+2. **engine 内存态**：不新增 fork Op。回退后**回收该会话 engine 实例**，下次发送时走既有 `Op::SyncSession` 用截断后的 messages 重新注水（注水链路 `features/assistant/engine.rs:1729` 现成）。回退只发生在空闲态，无在途状态可丢。
 3. **前端**：每个 turn 边界渲染回退入口（移植 `CheckpointChip.jsx` + `checkpoints.js` 的 `checkpointMapByTurn` 对齐与兜底规则），点击后懒加载 diff 预览（`checkpoint_diff`）+ 二次确认；确认后串行执行：恢复代码 → 截断对话 → 刷新时间线。
 
 **回退命令（新 Tauri command，如 `rewind_to_turn`）编排**：
 
 ```text
-1. 忙碌门：本会话 reserve_turn；同执行根其他会话忙碌 → 拒绝（§6 防线二）
+1. 忙碌门：本会话 reserve_turn + 执行根互斥 flag（§6 防线二加固版）；同执行根其他会话忙碌 → 拒绝
 2. 定位 checkpoint：turn N+1 的 Turn 快照；不存在（LRU 淘汰/快照失败）→ 降级为「仅回退对话」，文案明示
-3. restore_checkpoint（内部强制 PreRestore）
+3. feature 层 restore_checkpoint（内部强制 PreRestore）
 4. SessionStore 截断到第 N 轮 + sidecar 备份
 5. 作废旧分支快照：index 中 turn > N 的 Turn 条目移除并删 ref（清理性质，失败只 warn；
    被截分支的代码状态已由步骤 3 的 PreRestore 兜底）。conversation_only 降级同样作废——
-   对话已截断，turn 复用冲突与是否恢复代码无关。restore_checkpoint 命令不做此作废
-   （它不动对话，turn 编号继续有效）
+   对话已截断，turn 复用冲突与是否恢复代码无关。独立的 restore_checkpoint IPC 命令
+   已移除（无前端调用方，且「只恢复代码不动对话」恰是本特性要消除的分叉形态）
 6. 回收 engine 实例
 7. 返回 { restoredCheckpoint, rewoundTurns } 供前端刷新与提示
 ```
@@ -183,4 +183,6 @@ feat 分支没有的部分，本方案新增：
 - **undo 后对同一节点再回退退化为仅对话**：回退会作废 `turn > keep` 的全部 Turn 快照（含恢复目标 turn N+1），undo 只还原代码+对话、不重建 Turn 快照；此后再次回退到第 N 轮找不到目标快照，只能仅回退对话。方向保守正确（胜过锚到被遗弃分支），重新创作新轮次后快照自然重建。
 - **规模上限（对齐底座资源闸，2026-09-02 评审 M4 后补齐）**：执行根体积超 2GB 跳过快照（该会话如实没有回退入口，估算跳过 exclude 目录、条目数封顶 20 万）；影子仓库存储超 500MB 时裁到一半条目并 gc 收敛（LRU 裁条目不裁字节，大文件项目单靠条目数守不住）。
 - **悬停入口的触屏可达性**：回退入口平时是淡色细线、hover 显形（桌面鼠标语义）；纯触屏无 hover，需首 tap 触发 `:hover` 再点按。鉴于 rewind 命令桌面专属（web 策略锚定测试锁定），v1 不为触屏加交互复杂度。
-- **Web 车道不支持**：rewind 直接改写本地文件，`rewind_to_turn`/`undo_last_rewind`/`list_checkpoints`/`checkpoint_diff`/`restore_checkpoint` 均未加入 web access-policy 的 allowed_commands，relay 下 invoke 抛 commandNotAllowed、前端静默不渲染入口。放行需单独评估（桌面执行语义），由 `codex_checkpoints_logic.test.mjs` 的策略断言锚定。
+- **Web 车道不支持**：rewind 直接改写本地文件，`rewind_to_turn`/`undo_last_rewind`/`rewind_undo_state`/`list_checkpoints`/`checkpoint_diff` 均未加入 web access-policy 的 allowed_commands，前端经 `canInvoke` 能力检查提前收口（不发必被拒的请求）。放行需单独评估（桌面执行语义），由 `codex_checkpoints_logic.test.mjs` 的策略断言锚定。
+- **core.ignorecase=true 的取舍**：为堵住大写秘密文件逃过 exclude 后被 restore 误删的链路（评审 B1），影子仓库强制大小写不敏感。代价：大小写敏感文件系统上仅大小写不同的改名（`Foo.java` → `foo.java`）对快照不可见、不随回退恢复。相比 B1 的数据丢失风险，该取舍可接受。
+- **嵌套 git 仓库/submodule 在回退语义之外**：快照以 gitlink 记录嵌套仓库（内容不跟踪），restore 不 materialize 它，`clean -fd` 也不删除含 `.git` 的目录——agent 在嵌套仓库内的编辑不会被回退，turn 中 clone 出的仓库在回退后存活。changes 清单对 gitlink 条目如实标注（三语「嵌套仓库（不回退）」）。
