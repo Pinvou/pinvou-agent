@@ -126,7 +126,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // Stable empty array/object defaults: inline [] and {} are new references on every render, which makes memoized children re-render repeatedly.
     const EMPTY_STEPS = [];
     const EMPTY_COPY = {};
-    const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '', twoStep = true, browserAuth = false, steps = EMPTY_STEPS, copy = EMPTY_COPY, onBrowserOpenError = () => {} }) => {
+    const NOOP = () => {};
+    const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '', twoStep = true, browserAuth = false, steps = EMPTY_STEPS, copy = EMPTY_COPY, onBrowserOpenError = NOOP }) => {
       if (!flow) return null;
       const isErr = flow.phase === 'error';
       return (
