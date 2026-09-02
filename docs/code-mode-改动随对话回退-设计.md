@@ -87,7 +87,12 @@ feat 分支没有的部分，本方案新增：
 5. 作废旧分支快照：index 中 turn > N 的 Turn 条目移除并删 ref（清理性质，失败只 warn；
    被截分支的代码状态已由步骤 3 的 PreRestore 兜底）。conversation_only 降级同样作废——
    对话已截断，turn 复用冲突与是否恢复代码无关。独立的 restore_checkpoint IPC 命令
-   已移除（无前端调用方，且「只恢复代码不动对话」恰是本特性要消除的分叉形态）
+   已移除（无前端调用方，且「只恢复代码不动对话」恰是本特性要消除的分叉形态）。
+   作废失败或进程在「截断落盘后、作废前」崩溃时残留的旧分支快照由**预检和解**兜底：
+   每次回退预检按 `_rewound_turns.json` 的记录（备份先于截断落盘，记录存在即截断已
+   生效）重放作废——`turn > kept_turns` 且创建于该次回退之前的 Turn 快照必属被弃分支
+   （新分支同号快照创建于回退后，不受波及），作废最终一致、自愈（2026-09-02 评审
+   finding 修复，`invalidate_stale_turn_checkpoints` + 回归测试锚定）
 6. 回收 engine 实例
 7. 返回 { restoredCheckpoint, rewoundTurns, degraded, hadCompaction } 供前端刷新与提示
 ```
@@ -180,9 +185,10 @@ feat 分支没有的部分，本方案新增：
 - **undo 目标绑定（2026-09-01 复审修复）**：早期实现以「最新 PreRestore」为反悔目标，多次回退/反悔重试后会错配到无关快照（降级回退的 undo 甚至会误动代码）。现为精确绑定：`_rewound_turns.json` 记录本次回退强制的 PreRestore id（降级记 None，undo 只还原对话），并要求当前 transcript revision 精确匹配截断时记录（turn 数相等只是弱代理，尾部被编辑即拒绝）。绑定快照被 LRU 淘汰则整体不可反悔，如实不渲染入口。
 - **敏感文件不进快照**：影子 exclude 列表含 `.env`/`.env.local`/`.env.*.local`、`*.pem`/`*.key`/私钥本体等模式（非 git 执行根没有 .gitignore 兜底，原文快照进影子 objects 并随 diff 进入 UI 链路不可接受）。模式收窄到秘密实际居住的约定：`.env.example`/`id_rsa.pub` 等常被有意提交的示例/公钥照常进快照；`.env.production` 类约定文件仍会进快照。代价是命中的文件不随回退恢复，属可接受取舍。存量影子仓库由 `ensure_repo` 的 marker 门控一次性迁移（`git rm --cached -f`，任意深度）覆盖；legacy 快照 tree 里的原文条目在 restore 时（read-tree 后）再次清除、在 diff 预览中按同模式过滤（清单与 patch 都不上屏）；历史 commit objects 里的原文随 LRU 淘汰与 gc 回收。
 - **临时会话账本暴露在执行根内**：两根相同时 `checkpoints/` 位于 agent 可见的工作目录内，agent 的 shell 可看到甚至误删它（exclude 只保证不进快照/不被 clean）。用户会无感知地失去回退能力；把账本根挪到执行根外属后续迭代，v1 记录为已知风险。
-- **undo 后对同一节点再回退退化为仅对话**：回退会作废 `turn > keep` 的全部 Turn 快照（含恢复目标 turn N+1），undo 只还原代码+对话、不重建 Turn 快照；此后再次回退到第 N 轮找不到目标快照，只能仅回退对话。方向保守正确（胜过锚到被遗弃分支），重新创作新轮次后快照自然重建。
+- **undo 后对同一节点再回退退化为仅对话**：回退会作废 `turn > keep` 的全部 Turn 快照（含恢复目标 turn N+1），undo 只还原代码+对话、不重建 Turn 快照；此后再次回退到第 N 轮找不到目标快照，只能仅回退对话。同理会话的「任意轮回退」在 undo 后对中间轮（N+1 至回退前顶点）也降级——这些轮的 Turn 快照已被作废且 undo 不逆转，重新创作新轮次前只剩回滚点（PreRestore）可达的状态。方向保守正确（胜过锚到被遗弃分支），重新创作新轮次后快照自然重建。
 - **规模上限（对齐底座资源闸，2026-09-02 评审 M4 后补齐）**：执行根体积超 2GB 跳过快照（该会话如实没有回退入口，估算跳过 exclude 目录、条目数封顶 20 万）；影子仓库存储超 500MB 时裁到一半条目并 gc 收敛（LRU 裁条目不裁字节，大文件项目单靠条目数守不住）。
 - **悬停入口的触屏可达性**：回退入口平时是淡色细线、hover 显形（桌面鼠标语义）；纯触屏无 hover，需首 tap 触发 `:hover` 再点按。鉴于 rewind 命令桌面专属（web 策略锚定测试锁定），v1 不为触屏加交互复杂度。
 - **Web 车道不支持**：rewind 直接改写本地文件，`rewind_to_turn`/`undo_last_rewind`/`rewind_undo_state`/`list_checkpoints`/`checkpoint_diff` 均未加入 web access-policy 的 allowed_commands，前端经 `canInvoke` 能力检查提前收口（不发必被拒的请求）。放行需单独评估（桌面执行语义），由 `codex_checkpoints_logic.test.mjs` 的策略断言锚定。
 - **秘密排除恒大小写不敏感，core.ignorecase 仅承载 git 原生语义**：为堵住大写秘密文件逃过 exclude 后被 restore 误删的链路（评审 B1），敏感模式自身写成大小写不敏感形式——info/exclude 用 `icase_gitignore_pattern` 展开的字符类（`[xX]`）、purge pathspec 恒带 `:(icase)`、预览过滤恒按 ASCII 折叠匹配——三层在任何文件系统上命中相同的大小写变体集合，不依赖影子仓库的 core.ignorecase。core.ignorecase 仍按 `fs_is_case_insensitive` 探测设置（每次 ensure 幂等校正），但只承载 git 原生大小写语义：不无条件强制 true，大小写敏感文件系统上强制不敏感会引发 git alias 冲突（`Makefile`/`makefile` 共存时 `add -A` 整体 fatal、别名新文件静默跳过、仅大小写改名记成空树，评审 M1）；探测后这些都不触发。alias 冲突发生时快照失败以 error 级日志显式上报（不再静默 warn）。残余取舍：大小写不敏感系统上仅大小写不同的改名对快照不可见、不随回退恢复。
 - **嵌套 git 仓库/submodule 在回退语义之外**：快照以 gitlink 记录嵌套仓库（内容不跟踪），restore 不 materialize 它，`clean -fd` 也不删除含 `.git` 的目录——agent 在嵌套仓库内的编辑不会被回退，turn 中 clone 出的仓库在回退后存活。changes 清单对 gitlink 条目如实标注（三语「嵌套仓库（不回退）」）。
+- **影子 git 的环境隔离（2026-09-02 评审后加固）**：影子仓库的全部 git 子进程剥离宿主 `GIT_*` 变量（`GIT_INDEX_FILE`/`GIT_OBJECT_DIRECTORY`/`GIT_DIR` 等会把内部操作重定向到无关仓库）并钉死系统/全局 gitconfig（用户全局 `core.fsmonitor=true` 会对执行根拉起守护进程）；`fs_is_case_insensitive` 的探针文件（`.Pinvou-Icase-Probe-*`）入 exclude，并发同根会话的 `add -A` 不会把它卷进快照；体积估算遇不可读目录时如实记路径级日志（调用方的「超预算」文案不再掩盖权限类失败）。

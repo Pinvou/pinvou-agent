@@ -60,6 +60,8 @@ const MAX_SHADOW_REPO_BYTES: u64 = 500 * 1024 * 1024;
 
 /// 影子仓库的 exclude 列表：与 workspace 浏览的忽略目录对齐，避免把依赖/构建
 /// 产物纳入快照（git 项目自身的 .gitignore 会被影子仓库自然尊重，无需重复）。
+/// `.Pinvou-Icase-Probe-*` 是 `fs_is_case_insensitive` 的探针文件：同根另一
+/// 会话的快照可能在探针存活的毫秒窗口内 `add -A` 把它卷进快照，显式排除。
 const SHADOW_EXCLUDES: &[&str] = &[
     ".git/",
     ".hg/",
@@ -73,6 +75,7 @@ const SHADOW_EXCLUDES: &[&str] = &[
     "__pycache__/",
     ".venv/",
     "venv/",
+    ".Pinvou-Icase-Probe-*",
 ];
 
 /// 敏感文件模式：秘密实际居住的约定位置（.env.local 系、证书/私钥本体、
@@ -203,8 +206,10 @@ fn now_nanos() -> u128 {
 
 /// 估算执行根体积（跳过 exclude 目录、内嵌的 checkpoint 账本目录与符号链接；
 /// 条目数超 SIZE_WALK_MAX_ENTRIES 或读取失败返回 None——按「不在预算内」处理，
-/// 宁可跳过快照也不低估）。临时会话两根相同，影子仓库自身会被反复快照增长，
-/// 必须排除，否则它会把自己顶过 2GB 门（评审 nit）。
+/// 宁可跳过快照也不低估；读取失败必须如实记日志，调用方的「超预算」文案
+/// 分不清两类原因，单个不可读目录会把该会话快照永久静默禁用——评审 nit）。
+/// 临时会话两根相同，影子仓库自身会被反复快照增长，必须排除，否则它会把
+/// 自己顶过 2GB 门（评审 nit）。
 fn estimate_workspace_bytes(execution_root: &Path, ledger_root: &Path) -> Option<u64> {
     let skip_dirs: std::collections::HashSet<&str> = SHADOW_EXCLUDES
         .iter()
@@ -216,15 +221,42 @@ fn estimate_workspace_bytes(execution_root: &Path, ledger_root: &Path) -> Option
     let mut entries: usize = 0;
     let mut stack = vec![execution_root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let read = fs::read_dir(&dir).ok()?;
+        let read = match fs::read_dir(&dir) {
+            Ok(read) => read,
+            Err(error) => {
+                eprintln!(
+                    "[checkpoints] 体积估算读取目录失败（按不在预算内处理，快照跳过）: {}: {error:#}",
+                    dir.display()
+                );
+                return None;
+            }
+        };
         for entry in read {
-            let entry = entry.ok()?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    eprintln!(
+                        "[checkpoints] 体积估算读取目录项失败（按不在预算内处理，快照跳过）: {}: {error:#}",
+                        dir.display()
+                    );
+                    return None;
+                }
+            };
             entries += 1;
             if entries > SIZE_WALK_MAX_ENTRIES {
                 return None;
             }
             // 不跟随符号链接（file_type 自身不触发跟随）。
-            let file_type = entry.file_type().ok()?;
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(error) => {
+                    eprintln!(
+                        "[checkpoints] 体积估算读取文件类型失败（按不在预算内处理，快照跳过）: {}: {error:#}",
+                        entry.path().display()
+                    );
+                    return None;
+                }
+            };
             if file_type.is_symlink() {
                 continue;
             }
@@ -320,8 +352,29 @@ fn canonical_execution_root(execution_root: &Path) -> Result<PathBuf> {
     Ok(canonical)
 }
 
+/// 影子仓库专用 git 命令：剥离宿主环境的 `GIT_*` 变量——启动 shell 里的
+/// `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE`/`GIT_OBJECT_DIRECTORY` 会把影子
+/// 仓库的内部操作重定向到无关仓库，`GIT_CONFIG_*` 注入会覆盖影子仓库的精心
+/// 配置；系统/全局 gitconfig 钉死为空（用户全局的 `core.fsmonitor=true` 会对
+/// 执行根拉起守护进程）。`PATH`/`HOME` 等基础环境保留（定位 git 可执行文件
+/// 与签名/钩子以外的正常行为需要）。
+fn isolated_git_command() -> std::process::Command {
+    let mut command = crate::platform::process::HiddenCommand::new("git");
+    for (key, _) in std::env::vars() {
+        if key.starts_with("GIT_") {
+            command.env_remove(&key);
+        }
+    }
+    command.env("GIT_CONFIG_NOSYSTEM", "1");
+    command.env(
+        "GIT_CONFIG_GLOBAL",
+        if cfg!(windows) { "NUL" } else { "/dev/null" },
+    );
+    command
+}
+
 fn git(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<std::process::Output> {
-    let output = crate::platform::process::HiddenCommand::new("git")
+    let output = isolated_git_command()
         .arg(format!("--git-dir={}", repo.display()))
         .arg(format!("--work-tree={}", work_tree.display()))
         .args(arguments)
@@ -982,7 +1035,7 @@ pub fn restore_checkpoint(
 
 /// 只操作 refs 的 git 调用（update-ref/gc 不需要 work-tree）。
 fn git_ref(repo: &Path, arguments: &[&str]) -> Result<std::process::Output> {
-    let output = crate::platform::process::HiddenCommand::new("git")
+    let output = isolated_git_command()
         .arg(format!("--git-dir={}", repo.display()))
         .args(arguments)
         .output()
@@ -1003,13 +1056,42 @@ fn git_ref(repo: &Path, arguments: &[&str]) -> Result<std::process::Output> {
 /// 被截分支的代码状态已由本次 rewind 强制的 PreRestore 快照兜底，不丢反悔能力。
 /// 返回作废条数；无符合条件条目时幂等返回 0（不触碰磁盘）。
 pub fn invalidate_turn_checkpoints_after(ledger_root: &Path, keep_turns: u32) -> Result<usize> {
+    invalidate_entries_if(ledger_root, |entry| {
+        entry.kind == CheckpointKind::Turn && entry.turn.is_some_and(|turn| turn > keep_turns)
+    })
+}
+
+/// 陈旧快照和解（评审 finding：作废失败/崩溃残留）。`invalidate_turn_checkpoints_after`
+/// 是清理性质，失败只记日志；残留的旧分支快照随后会在 first-wins 下抢占同号
+/// turn 的对齐锚。sidecar 回退备份先于截断落盘，是可靠的和解凭据：对某次回退
+/// （keep_turns，截断时刻），`turn > keep_turns` 且**创建于截断时刻之前**的
+/// Turn 快照必属被截分支——回退后新分支的同号快照创建于截断之后，不受波及。
+/// rewind 预检按备份记录逐条调用本函数，让作废最终一致、自愈。
+///
+/// `created_before` 为秒级时间戳（备份记录 `rewound_at` 的解析结果）。
+pub fn invalidate_stale_turn_checkpoints(
+    ledger_root: &Path,
+    keep_turns: u32,
+    created_before: i64,
+) -> Result<usize> {
+    invalidate_entries_if(ledger_root, |entry| {
+        entry.kind == CheckpointKind::Turn
+            && entry.turn.is_some_and(|turn| turn > keep_turns)
+            && entry.created_at <= created_before
+    })
+}
+
+/// 按谓词作废条目：从 index 移除命中项并删其 `refs/checkpoints/<id>` ref
+/// （照抄 LRU 淘汰段的 `update-ref -d` + 末尾 `gc --auto` 模式），保留原有
+/// 条目顺序。返回作废条数；无命中时幂等返回 0（不触碰磁盘）。
+fn invalidate_entries_if(
+    ledger_root: &Path,
+    matches: impl Fn(&CheckpointMeta) -> bool,
+) -> Result<usize> {
     let mut index = load_index(ledger_root)?;
     // partition 稳定保序：kept 即「原顺序去掉被作废条目」。
     let (kept, invalidated): (Vec<CheckpointMeta>, Vec<CheckpointMeta>) =
-        index.entries.into_iter().partition(|entry| {
-            !(entry.kind == CheckpointKind::Turn
-                && entry.turn.is_some_and(|turn| turn > keep_turns))
-        });
+        index.entries.into_iter().partition(|entry| !matches(entry));
     if invalidated.is_empty() {
         return Ok(0);
     }
@@ -1915,6 +1997,8 @@ mod tests {
         let exec = TestDir::new("ignore-exec");
         exec.write("src/a.rs", "a\n");
         exec.write("node_modules/pkg/index.js", "dep\n");
+        // fs_is_case_insensitive 的探针文件：并发同根会话的 add -A 不得卷入。
+        exec.write(".Pinvou-Icase-Probe-1234", "");
         let first = create_checkpoint(
             ledger.path(),
             exec.path(),
@@ -1923,6 +2007,14 @@ mod tests {
             "t",
         )
         .unwrap();
+        let repo = repo_dir(ledger.path());
+        let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
+        assert!(
+            !tracked
+                .lines()
+                .any(|line| line.starts_with(".Pinvou-Icase-Probe-")),
+            "探针文件不得进快照: {tracked}"
+        );
         // node_modules 内的变化不产生新 commit（被 exclude，不进入快照）。
         exec.write("node_modules/pkg/index.js", "dep2\n");
         let second = create_checkpoint(
@@ -2025,5 +2117,111 @@ mod tests {
         let listed = list_checkpoints(ledger.path()).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].kind, CheckpointKind::PreRestore);
+    }
+
+    /// 陈旧快照和解（评审 finding）：只作废「turn > keep_turns 且创建于截断
+    /// 时刻之前」的 Turn 条目；回退后新分支的同号快照（创建于截断后）保留；
+    /// 幂等。
+    #[test]
+    fn invalidate_stale_turn_checkpoints_respects_creation_cutoff() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("stale-ledger");
+        let exec = TestDir::new("stale-exec");
+        exec.write("a.txt", "0\n");
+        let t1 = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        exec.write("a.txt", "1\n");
+        let old_t2 = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "old t2",
+        )
+        .unwrap();
+        // 截断时刻。created_at 是秒级：睡过一秒边界，保证与前后快照可区分。
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let cutoff = now_seconds();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        // 回退后的新分支同号快照（创建于截断之后）。
+        exec.write("a.txt", "1-new\n");
+        let new_t2 = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "new t2",
+        )
+        .unwrap();
+
+        let removed = invalidate_stale_turn_checkpoints(ledger.path(), 1, cutoff).unwrap();
+        assert_eq!(removed, 1);
+        let listed = list_checkpoints(ledger.path()).unwrap();
+        let ids: Vec<&str> = listed.iter().map(|entry| entry.id.as_str()).collect();
+        assert!(ids.contains(&t1.id.as_str()), "turn <= keep 的不动");
+        assert!(
+            !ids.contains(&old_t2.id.as_str()),
+            "被弃分支的旧快照必须作废"
+        );
+        assert!(ids.contains(&new_t2.id.as_str()), "新分支同号快照必须保留");
+        // 幂等：再次和解无条目可删。
+        assert_eq!(
+            invalidate_stale_turn_checkpoints(ledger.path(), 1, cutoff).unwrap(),
+            0
+        );
+    }
+
+    /// GIT_* 环境隔离（评审 nit）：宿主环境的 GIT_INDEX_FILE /
+    /// GIT_OBJECT_DIRECTORY 不得把影子仓库的内部操作重定向到无关位置。
+    #[test]
+    fn git_subprocess_ignores_host_git_environment() {
+        if !git_available() {
+            return;
+        }
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let bogus = TestDir::new("bogus-gitdir");
+        // SAFETY: ENV_LOCK 序列化进程环境写（crate 级唯一约定）；影子 git 调用
+        // 自身剥离 GIT_*，并发测试的 git 子进程同样走隔离命令，不受本变量影响。
+        unsafe {
+            std::env::set_var("GIT_INDEX_FILE", bogus.path().join("index"));
+            std::env::set_var("GIT_OBJECT_DIRECTORY", bogus.path().join("objects"));
+        }
+        let result = std::panic::catch_unwind(|| {
+            let ledger = TestDir::new("env-ledger");
+            let exec = TestDir::new("env-exec");
+            exec.write("a.txt", "0\n");
+            create_checkpoint(
+                ledger.path(),
+                exec.path(),
+                Some(1),
+                CheckpointKind::Turn,
+                "t1",
+            )
+            .unwrap();
+            // 对象与索引都落在影子仓库，bogus 目录保持空。
+            let repo = repo_dir(ledger.path());
+            let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
+            assert!(tracked.lines().any(|line| line == "a.txt"));
+            assert!(
+                !bogus.path().join("index").exists() && !bogus.path().join("objects").exists(),
+                "GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY 必须被隔离"
+            );
+        });
+        // SAFETY: 同 ENV_LOCK 序列化。
+        unsafe {
+            std::env::remove_var("GIT_INDEX_FILE");
+            std::env::remove_var("GIT_OBJECT_DIRECTORY");
+        }
+        result.unwrap();
     }
 }

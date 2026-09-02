@@ -233,6 +233,17 @@ impl SessionStore {
             .and_then(|records| records.last().cloned()))
     }
 
+    /// 该会话的全部回退备份记录（陈旧 Turn 快照和解的数据源：作废步骤失败/
+    /// 崩溃时，按各记录的 kept_turns + rewound_at 重放作废——备份先于截断
+    /// 落盘，记录存在即截断已生效）。
+    pub fn rewound_turns_records(&self, id: &str) -> Result<Vec<RewoundTurnsRecord>> {
+        validate_session_id(id)?;
+        Ok(load_rewound_turns_map()?
+            .get(id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
     /// 回退反悔：把最新备份记录的被截消息追加回 transcript 尾部并持久化，随后从
     /// sidecar 删除该条记录，返回恢复的消息条数。
     ///

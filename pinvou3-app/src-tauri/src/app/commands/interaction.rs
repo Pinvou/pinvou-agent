@@ -233,7 +233,7 @@ pub async fn accept_plan(
             Ok(Ok(Some(meta))) => Some(meta.id),
             Ok(Ok(None)) => {
                 log::info!(
-                    "[pinvou3][accept_plan] checkpoint skipped sid={session_id}: execution root exceeds snapshot size budget"
+                    "[pinvou3][accept_plan] checkpoint skipped sid={session_id}: execution root over snapshot size budget or not fully readable (see earlier checkpoint estimate log)"
                 );
                 None
             }

@@ -2021,8 +2021,11 @@ export function CodexAcpView({
   async function confirmRewind() {
     const target = rewindTarget;
     if (!target || !activeId || rewinding) return;
-    // 全局单 flight：另一会话的回退仍在途时不静默吞点击，如实上屏（评审 M9）。
-    if (rewindInFlightRef.current) {
+    // 单 flight（跨操作类型）：本会话/另一会话的回退或撤销任一在途时不静默
+    // 吞点击，如实上屏（评审 M9）；两个 ref 分别记账回退与撤销，后端执行根
+    // flag 对跨类型并发兜底拒绝（评审 finding：本地门也按跨类型检查，注释
+    // 与行为口径一致）。
+    if (rewindInFlightRef.current || rewindUndoInFlightRef.current) {
       setRewindError(codexCopy.rewindInFlightBusy);
       return;
     }
@@ -2103,8 +2106,8 @@ export function CodexAcpView({
   async function confirmRewindUndo() {
     const entry = rewindUndoEntry;
     if (!entry || !activeId || rewindUndoing) return;
-    // 与 confirmRewind 同款：另一会话的撤销仍在途时如实上屏（评审 M9）。
-    if (rewindUndoInFlightRef.current) {
+    // 与 confirmRewind 同款跨类型单 flight：回退/撤销任一在途时如实上屏（评审 M9）。
+    if (rewindUndoInFlightRef.current || rewindInFlightRef.current) {
       setRewindUndoError(codexCopy.rewindInFlightBusy);
       return;
     }

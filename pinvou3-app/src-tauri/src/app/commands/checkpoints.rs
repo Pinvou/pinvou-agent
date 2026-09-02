@@ -254,6 +254,38 @@ pub async fn rewind_to_turn(
     let ledger_snapshot = ledger.clone();
     let session_id_snapshot = session_id.clone();
     let (entries, total_turns) = tauri::async_runtime::spawn_blocking(move || {
+        // 陈旧 Turn 快照和解（评审 finding）：历史回退的作废步骤失败或进程在
+        // 截断落盘后、作废前崩溃时，被截分支的 Turn 快照会残留，并在 first-wins
+        // 下抢占新分支同号 turn 的对齐锚（再次回退静默恢复出被弃分支的代码）。
+        // sidecar 备份先于截断落盘，其记录是可靠凭据：`turn > kept_turns` 且
+        // 创建于该次回退之前的快照必属被弃分支（新分支同号快照创建于回退后）。
+        // best-effort：和解失败不阻塞回退，如实记日志（与即时作废同级语义）。
+        match store_snapshot.rewound_turns_records(&session_id_snapshot) {
+            Ok(records) => {
+                for record in records {
+                    let cutoff = match chrono::DateTime::parse_from_rfc3339(&record.rewound_at) {
+                        Ok(moment) => moment.timestamp(),
+                        Err(error) => {
+                            eprintln!(
+                                "[checkpoints] 回退备份时间戳无法解析，跳过该条和解（{}）: {error:#}",
+                                record.rewound_at
+                            );
+                            continue;
+                        }
+                    };
+                    if let Err(error) = checkpoints::invalidate_stale_turn_checkpoints(
+                        &ledger_snapshot,
+                        record.kept_turns,
+                        cutoff,
+                    ) {
+                        eprintln!("[checkpoints] 陈旧 checkpoint 和解失败（仅清理未做）: {error:#}");
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!("[checkpoints] 读取回退备份记录失败（仅和解未做）: {error:#}");
+            }
+        }
         let entries = checkpoints::list_checkpoints(&ledger_snapshot)
             .map_err(|error| format!("读取检查点列表失败: {error:#}"))?;
         let session = store_snapshot
@@ -300,10 +332,11 @@ pub async fn rewind_to_turn(
     .await
     .map_err(|error| format!("截断对话任务失败: {error}"))?
     .map_err(|error| match &restored_checkpoint {
-        // 代码已回退而对话未截断：如实告知代码侧已变更并给出回滚点 id，
-        // 用户可用「撤销回退」（备份已写时）或该回滚点恢复代码。
+        // 代码已回退而对话未截断：备份未写成 → undo 记录不存在，「撤销回退」
+        // 不可用；独立的 restore 入口已移除。可执行的自救只有重试回退（恢复
+        // 幂等，重试会重做恢复与截断）；回滚点 id 仅作排查线索如实给出。
         Some(checkpoint) => format!(
-            "代码已回退（回滚点 {}），但截断对话失败: {error:#}",
+            "代码已回退（原代码保存在回滚点 {}），但截断对话失败: {error:#}。请直接重试回退以完成截断；应用内没有单独恢复代码的入口",
             checkpoint.id
         ),
         None => format!("截断对话失败: {error:#}"),

@@ -341,7 +341,7 @@ pub(crate) async fn chat_with_reservation(
             }
             Ok(Ok(None)) => {
                 log::info!(
-                    "[pinvou3][chat] checkpoint skipped sid={sid}: execution root exceeds snapshot size budget"
+                    "[pinvou3][chat] checkpoint skipped sid={sid}: execution root over snapshot size budget or not fully readable (see earlier checkpoint estimate log)"
                 );
             }
             Ok(Err(error)) => {
