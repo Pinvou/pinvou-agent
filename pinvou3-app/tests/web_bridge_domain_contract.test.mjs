@@ -154,6 +154,21 @@ unsubscribeSecondFlat();
 unsubscribeChat();
 unsubscribeCombined();
 
+invokeResponse = async command => {
+  if (command === 'save_paste_image') throw new Error('attachment_file_too_large');
+  return null;
+};
+let externalFormatterCalled = false;
+await api.attachments.addPasteImage('oversized.png', [1], () => {
+  externalFormatterCalled = true;
+  return 'external formatter should not be needed';
+});
+const pasteLimitNotice = api.state.get('chat').chatItems.at(-1);
+assert.equal(pasteLimitNotice.type, 'system');
+assert.equal(pasteLimitNotice.text, '⚠️ oversized.png 超过附件 20 MB 上限');
+assert.doesNotMatch(pasteLimitNotice.text, /attachment_file_too_large/);
+assert.equal(externalFormatterCalled, false, 'the Web bridge must reuse its own localized limit formatter');
+
 const flatReentrantFirst = [];
 const flatReentrantSecond = [];
 const domainReentrantFirst = [];
