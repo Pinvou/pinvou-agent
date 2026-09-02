@@ -1164,7 +1164,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           // 同一 provider 内换模型时重置思考深度到新模型的默认档位：K2.6 选 off 后切 K3
           // 会残留不在 K3 档位表内的 off，界面无高亮且保存仍写旧值；与 applyCatalogItem 一致。
           setReasoningEffort(reasoningEffortForModelSwitch({ preset, model: nextModel, vendor, base_url: baseUrl }));
-          // 显式换模型也不跨模型保留手动上下文窗口（与 applyCatalogItem 的重置一致）。
+          // Explicit model switches also reset the manual context window so it never leaks across models (same reset discipline as applyCatalogItem).
           setContextWindow('');
           // 与 applyCatalogItem 一致:未手动改过档位时按新条目的视觉能力标注预填。
           if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(nextModel));
@@ -1615,14 +1615,19 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                       </div>
                     )}
                     {showBaseUrlField && renderInlineField({ label: t.customBaseUrl, value: baseUrl, onChange: e => handleBaseUrlChange(e.target.value) })}
-                    {/* 上下文窗口（云端模型可选）：目录未收录的新模型 ID（厂商新发布）
-                        无法被 catalog 识别，运行时只能落到 128K 保守窗口。此处按官方
-                        标称值声明后 route_limits 优先采用；留空 = null = 保持现状
-                        默认（doSave 既有语义，不改任何存量行为）。local_vllm preset
-                        不显示此字段（探测的 max_model_len 是权威窗口）；
-                        openai_compatible 指向本机端点时仍显示，超填会被运行时
-                        探测值取 min 钳制。输入截断到 9 位：context_window_tokens
-                        落盘为 u32，防止保存报原始反序列化错误或 Infinity 静默落 null。 */}
+                    {/* Context window (optional for cloud models): a newly released
+                        model ID not yet in the catalog cannot be resolved by it, so
+                        the runtime falls back to the conservative 128K window.
+                        Declaring the vendor's rated value here makes route_limits
+                        prefer it; empty = null = today's default (existing doSave
+                        semantics, no change to any stored behavior). local_vllm
+                        presets do not show this field (the probed max_model_len is
+                        the authoritative window); an openai_compatible endpoint
+                        pointing at localhost still shows it, with over-declared
+                        values min-clamped against the runtime probe. Input is
+                        truncated to 9 digits: context_window_tokens is persisted
+                        as u32, so longer input would fail save_model with a raw
+                        deserialization error (or Infinity silently saving null). */}
                     {!isLocalPreset && renderInlineField({
                       label: t.modelContextWindow,
                       value: contextWindow,

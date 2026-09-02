@@ -860,10 +860,10 @@ async function modalWidth(page, headingText) {
       && manualLocalEffort.selected.length === 1
       && manualLocalEffort.selected[0] === '关闭',
     JSON.stringify(manualLocalEffort));
-  // 本地模型的窗口来自探测的 max_model_len（权威值），不提供手动输入。
+  // A local model's window comes from the probed max_model_len (authoritative), so no manual input is offered.
   const localNoContextWindowField = await page.evaluate(() =>
     !document.querySelector('[data-testid="model-form-context-window"]'));
-  rec('⑥.5c 本地模型表单不显示上下文窗口输入（探测值为权威）', localNoContextWindowField);
+  rec('⑥.5c local model form hides the context window input (probed value is authoritative)', localNoContextWindowField);
   await clickExact(page, '取消');
   await sleep(200);
 
@@ -921,9 +921,11 @@ async function modalWidth(page, headingText) {
     JSON.stringify(probeCall));
   await clickExact(page, '取消');
   await sleep(200);
-  // 自定义模型上下文窗口入口：目录未收录的新模型 ID（厂商新发布，如 1M 档）
-  // 此前没有任何指定窗口的入口，保存恒为 null，运行时只能落到 128K 保守值。
-  // 回归锁定：字段渲染（留空）、手动值随 save_model 落盘、编辑回显、清空=null。
+  // Custom-model context-window entry: a newly released model ID not yet in the
+  // catalog (e.g. a 1M-class model) previously had no way to declare its window,
+  // so saves were always null and the runtime fell back to the conservative 128K.
+  // Regression lock: field renders empty, manual value persists via save_model,
+  // edit echoes it back, and clearing saves null.
   await clickExact(page, '添加模型');
   await sleep(300);
   await clickExact(page, '云端模型');
@@ -939,7 +941,7 @@ async function modalWidth(page, headingText) {
       hintShown: !!root && root.innerText.includes('1M 填 1048576'),
     };
   });
-  rec('⑥.5f 自定义兼容模型表单提供留空的上下文窗口入口与说明',
+  rec('⑥.5f custom compatible model form offers an empty context-window entry with hint',
     customContextEntry.visible && customContextEntry.empty && customContextEntry.hintShown,
     JSON.stringify(customContextEntry));
   const customModelIdInput = await page.$('input[placeholder="输入模型 ID"]');
@@ -964,7 +966,7 @@ async function modalWidth(page, headingText) {
     const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
     return call && call.args && call.args.model;
   });
-  rec('⑥.5g 手动上下文窗口随 save_model 落盘',
+  rec('⑥.5g manual context window persists via save_model',
     savedCustomContext
       && savedCustomContext.model === 'glm-5.3-flash'
       && savedCustomContext.preset === 'openai_compatible'
@@ -978,7 +980,7 @@ async function modalWidth(page, headingText) {
     const field = document.querySelector('[data-testid="model-form-context-window"]');
     return { visible: !!field, value: field ? field.value : null };
   });
-  rec('⑥.5h 编辑模型回显已保存的上下文窗口', editContextEcho.visible && editContextEcho.value === '1048576', JSON.stringify(editContextEcho));
+  rec('⑥.5h edit model echoes the saved context window', editContextEcho.visible && editContextEcho.value === '1048576', JSON.stringify(editContextEcho));
   await page.evaluate(() => {
     const field = document.querySelector('[data-testid="model-form-context-window"]');
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
@@ -992,11 +994,12 @@ async function modalWidth(page, headingText) {
     const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
     return call && call.args && call.args.model;
   });
-  rec('⑥.5i 清空上下文窗口保存为 null（保持系统默认，不写 0/垃圾值）',
+  rec('⑥.5i clearing the context window saves null (system default kept, no 0/garbage value)',
     clearedContext && clearedContext.model === 'glm-5.3-flash' && clearedContext.context_window_tokens === null,
     JSON.stringify(clearedContext));
-  // 输入上限：context_window_tokens 落盘为 u32，超长输入必须被截断在 9 位内，
-  // 否则保存报原始 serde 反序列化错误（或 Infinity 静默落 null）。
+  // Input bound: context_window_tokens is persisted as u32, so oversized input
+  // must be truncated to 9 digits; otherwise save_model fails with a raw serde
+  // deserialization error (or Infinity silently saves null).
   await clickRowAction(page, 'glm-5.3-flash', '编辑');
   await sleep(300);
   await page.evaluate(() => {
@@ -1008,7 +1011,7 @@ async function modalWidth(page, headingText) {
   await sleep(150);
   const overflowTruncated = await page.evaluate(() =>
     document.querySelector('[data-testid="model-form-context-window"]').value);
-  rec('⑥.5j 超长数字输入截断到 9 位（u32 落盘上限内）', overflowTruncated === '999999999', JSON.stringify({ overflowTruncated }));
+  rec('⑥.5j oversized numeric input is truncated to 9 digits (within the u32 persist bound)', overflowTruncated === '999999999', JSON.stringify({ overflowTruncated }));
   await clickExact(page, '取消');
   await sleep(200);
 
