@@ -18,6 +18,11 @@
 | 守护 | r13 为 63 条 CodeWhale `forkguard_*` 行为测试（含 6 条 GAIA 评测隔离测试）+ 通用工具/路由兼容回归 + 父仓指纹/行为测试 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配、拒绝编辑的终态/权威历史对账、压缩后用量即时刷新与持久化回填、严格直连模型大小写桥接回归、搜索源设置页引导文案，以及 operator-owned 未登记云端模型（自定义 openai-compatible 端点）的显式输出路由事实声明与官方端点 fail-closed 守护（承 PR #216） |
 
+### 轮次绑定取消槽：陈旧 stop 不误杀底座自主续跑轮（r13 之上的独立候选，本 PR）
+
+- CodeWhale PR #38（1 提交，head `2239d54a0`）：共享 cancel 槽从裸 `CancellationToken` 升级为 `TurnCancelSlot { turn_id, token }`，`handle_send_message` 与用户 `!` shell 轮先铸造 turn id、再原子换入绑定该身份的新 token；新增宿主入口 `EngineHandle::cancel_turn(turn_id, reason, mode) -> bool`——身份校验与 token 克隆在同一把槽锁内完成，对并发换槽原子，克隆出的 token 只可能命中目标轮；身份不匹配时整体跳过且不发布 steer 处置与取消原因。`cancel_with_mode` 语义不变（单用户前端仍取消当前 token）。封闭 pinvou-agent#254：idle 子代理完成、后台 shell 唤醒、goal 延续三条自主续跑路径在宿主观察到 `TurnStarted` 前就换掉共享 token，宿主 epoch 复查放行的陈旧 stop 此前会命中续跑轮的活跃 token。指纹锚点：`TurnCancelSlot`、`pub fn cancel_turn(&self, turn_id: &str, reason: CancelReason, mode: CancelMode) -> bool`、`forkguard_cancel_turn_binding_spares_unnamed_turns_and_hits_the_observed_turn`（注入阻塞 client 的真实引擎回归：外来 turn id 不触碰在途请求，观察到的 `TurnStarted` id 精确打断该轮）。
+- 父仓配套（本 PR）：gitlink → `2239d54a0`；`EnginePool::cancel` 入口在同一 state 锁内快照 (epoch, turn_id) 同源身份（`TurnLifecycle::current_turn_identity`），取消闭包按引擎槽轮身份做最终裁决（目标轮未启动的 submit→TurnStarted 窗口退回无绑定取消，由 forwarder 重放兜底）；forwarder 的 `pending_cancel` 重放改为 turn 绑定；fork-guard 第 0 层候选 head 双登记（`CANDIDATE_HEAD`）与本节指纹。配对 CodeWhale PR 合并、候选剪出前，`scripts/verify-public-submodule.sh` 对候选 gitlink 保持红（候选期已知状态，与既有候选流程一致）。
+
 ### r12 厂商原生搜索与免 key 兜底 Bing 化（已合入底座）
 
 - CodeWhale PR #33（六提交 rebase 后以 `4f612e548` 汇入）：新增 DeepSeek Responses、Model Studio Token Plan（Qwen）、Moonshot/Kimi（K2.6 内建 `$web_search`、K3 官方 Formula 协议、Kimi Code `/search`）、Z.AI/智谱（全球 `search-prime` / 中国 `search_std`）、Xiaomi MiMo 的厂商原生搜索适配。能力按"厂商+模型+官方端点+产品面"四重精确匹配 fail-closed，K3 Formula 独立 180 秒预算与 8 次调用上限；评审发现的端点匹配宽松（整 URL 小写、无限剥尾斜杠）由收官提交 `4f612e548` 引入 `is_exact_url_route` 收紧。指纹锚点：`documented_server_side_web_search_for_route`、`WEB_SEARCH_FORMULA_URI`。

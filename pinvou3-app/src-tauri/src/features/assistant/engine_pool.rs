@@ -2082,6 +2082,20 @@ impl EnginePool {
         // 时刻的轮次 epoch，并发请求中排队较晚的 C2 在 turn_lock 释放后若发现
         // 目标轮已结束（新轮已 reserve），整体 no-op，不误取消新轮。
         let app = &self.app;
+        // 目标轮的引擎侧身份（TurnStarted 观察到的 turn_id）。它与
+        // cancel_turn_with_gates 入口的 target epoch 快照是两次独立加锁，
+        // 极窄窗口内可能拿到跨轮视图（epoch 已切新轮、turn_id 仍是旧轮），
+        // 但所有交错都退化为安全结果：engine 槽裁决会取消已结束旧轮的死
+        // token（无害 no-op）或整体跳过，真正的本轮取消由 forwarder 的
+        // pending_cancel 重放兜底。引擎自主启动的续跑轮（idle 子代理完成 /
+        // 后台 shell 唤醒 / goal 延续）不经过 app 的 reserve，其 token 在
+        // forwarder 观察到 TurnStarted 之前就已换新——单靠 epoch 复查挡不住
+        // 这个滞后窗口（issue #254），闭包在引擎槽上按 turn 身份做最终裁决。
+        let target_turn_id = self
+            .turn_lifecycles
+            .get(session_id)
+            .and_then(|lc| lc.current_turn_identity())
+            .and_then(|(_, turn_id)| turn_id);
         let (target, claimed_unsubmitted) = cancel_turn_with_gates(
             &self.turn_locks,
             &self.turn_lifecycles,
@@ -2106,7 +2120,20 @@ impl EnginePool {
             // （早于下一轮 SendMessage）；通道满（容量 32）时放弃，由阶段二
             // 及 mismatch 补发路径持锁 await 保证送达（reviewer 点 9 + G1）。
             |engine| {
-                engine.cancel_current_with_mode(steer_mode);
+                // 引擎槽上的 turn 绑定裁决（issue #254）：epoch 复查通过仍可能
+                // 是滞后视图（引擎自主续跑轮已换 token、TurnStarted 尚未抵达
+                // forwarder）。槽内仍是目标轮时取消语义与 cancel_with_mode
+                // 完全一致；槽已切到别的轮则整体跳过——目标轮必然已结束，
+                // 新轮不是本次停止的对象。目标轮尚未启动（submit→TurnStarted
+                // 窗口，turn_id 未知）时退回无绑定取消：槽内是上一轮遗留
+                // token，取消无害；本轮的真正取消由 forwarder 在 TurnStarted
+                // 后按 pending_cancel 以 turn 绑定重放。
+                match target_turn_id.as_deref() {
+                    Some(turn_id) => {
+                        engine.cancel_turn_with_mode(turn_id, steer_mode);
+                    }
+                    None => engine.cancel_current_with_mode(steer_mode),
+                }
                 let _ = engine.handle.try_send(Op::CancelSubAgents);
             },
             // cascade_cancel：阶段二持 turn_lock 时 await 发送级联取消，保证在

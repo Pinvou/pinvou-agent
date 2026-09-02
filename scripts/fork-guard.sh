@@ -8,6 +8,11 @@ APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
 PUBLISHED_HEAD="f853f8f1566c57e6be40d5439a222a932aa79ef5"
 PUBLISHED_COMMITS=37
+# 候选登记：r13 公开基线之上的待发布候选（配对 CodeWhale PR 待合并、候选
+# tag 未剪出前，第 0 层同时接受已发布 head 与候选 head；CodeWhale PR squash
+# 合并改写 SHA 时由跟进 commit 重钉本登记，见 docs/fork-modifications.md）。
+CANDIDATE_HEAD="2239d54a02a43d605a77b043fa34cb3c0affeae2"
+CANDIDATE_COMMITS=38
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -19,12 +24,15 @@ fail=0
 
 bold "── 第 0 层：v0.9.5 r13 公开四主题基线拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
+registered_head="" ; registered_commits=""
 if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
-  expected_commits="$PUBLISHED_COMMITS"
+  registered_head="$PUBLISHED_HEAD" ; registered_commits="$PUBLISHED_COMMITS"
   green "  ✓ CodeWhale gitlink 指向 r13 四主题公开基线 $PUBLISHED_HEAD"
+elif [[ -n "$CANDIDATE_HEAD" && "$actual_head" == "$CANDIDATE_HEAD" ]]; then
+  registered_head="$CANDIDATE_HEAD" ; registered_commits="$CANDIDATE_COMMITS"
+  green "  ✓ CodeWhale gitlink 指向已登记候选 ${CANDIDATE_HEAD}（r13 + $((CANDIDATE_COMMITS - PUBLISHED_COMMITS)) 个候选提交）"
 else
-  expected_commits=""
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r13 公开 head $PUBLISHED_HEAD"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r13 公开 head ${PUBLISHED_HEAD} 或已登记候选 ${CANDIDATE_HEAD}"
   fail=1
 fi
 
@@ -36,10 +44,10 @@ else
 fi
 
 commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev/null || true)"
-if [[ -n "$expected_commits" && "$commit_count" == "$expected_commits" ]]; then
-  green "  ✓ v0.9.5 之上 $expected_commits 个登记提交"
+if [[ -n "$registered_commits" && "$commit_count" == "$registered_commits" ]]; then
+  green "  ✓ v0.9.5 之上 $commit_count 个登记提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，登记拓扑应为 ${expected_commits:-37}"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，登记拓扑应为 ${registered_commits:-$PUBLISHED_COMMITS}"
   fail=1
 fi
 
@@ -71,6 +79,9 @@ fingerprints=(
   "T1|撤回 outcome 枚举定义               |CodeWhale/crates/tui/src/core/engine.rs|pub enum SteerWithdrawal"
   "T1|撤回有界且阻止注入回归             |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_steer_lifecycle_withdrawal_is_bounded_and_prevents_commit"
   "T1|committed 先到时撤回对账回归        |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_steer_lifecycle_late_withdraw_reconciles_committed_event"
+  "T1|轮次绑定取消槽与身份契约            |CodeWhale/crates/tui/src/core/engine.rs|pub struct TurnCancelSlot"
+  "T1|宿主轮次绑定取消入口                |CodeWhale/crates/tui/src/core/engine/handle.rs|pub fn cancel_turn(&self, turn_id: &str, reason: CancelReason, mode: CancelMode) -> bool"
+  "T1|陈旧取消不误杀自主续跑轮回归        |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_cancel_turn_binding_spares_unnamed_turns_and_hits_the_observed_turn"
   "T1|编辑目标分类排除工具结果和内部信封  |CodeWhale/crates/tui/src/runtime_handoff.rs|pub fn edit_last_turn_target"
   "T1|宿主复用权威编辑目标分类            |CodeWhale/crates/tui/src/lib.rs|edit_last_turn_target,"
   "T1|编辑上一轮截断在真实用户消息        |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_edit_last_turn_cuts_at_user_prompt_before_tool_results"
@@ -145,6 +156,8 @@ fingerprints=(
   "APP|会话工具开关走动态禁用整形          |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn shape_disallowed_tools("
   "APP|v0.9.5 subagent state root 透传     |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|cfg.subagent_state_root = Some(roots.ledger);"
   "APP|停止与回收级联取消子智能体          |pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs|Op::CancelSubAgents"
+  "APP|取消入口在引擎槽上按轮身份裁决      |pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs|engine.cancel_turn_with_mode(turn_id, steer_mode)"
+  "APP|pending 取消按引擎轮身份重放        |pinvou3-app/src-tauri/src/features/assistant/forwarder.rs|approve_handle.cancel_turn("
   "APP|resolved route 由宿主统一解析        |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn resolve_runtime_route_for_model("
   "APP|GLM 小写存量配置解析到规范直连模型  |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn forkguard_zai_direct_route_survives_model_casing_mismatch"
   "APP|128K/256K compaction 合约            |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn forkguard_compaction_128k_scenarios"
