@@ -1726,21 +1726,53 @@ mod tests {
     }
 
     fn test_python() -> (String, String) {
-        let python = std::env::var("PINVOU3_TEST_PYTHON").unwrap_or_else(|_| "python".to_string());
-        let output = std::process::Command::new(&python)
-            .args([
-                "-I",
-                "-S",
-                "-c",
-                "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')",
-            ])
-            .output()
-            .expect("test Python must start");
-        assert!(output.status.success());
-        (
-            python,
-            String::from_utf8(output.stdout).unwrap().trim().to_string(),
-        )
+        // An explicit PINVOU3_TEST_PYTHON wins. Without it, start from the
+        // platform adapter's preferred interpreter (posix: python3→python on
+        // PATH; windows: PINVOU3_PYTHON/bundled python), then fall back to the
+        // other common name — a dev machine may have either one installed, so
+        // the default environment no longer requires setting
+        // PINVOU3_TEST_PYTHON.
+        let explicit = std::env::var("PINVOU3_TEST_PYTHON").ok();
+        let mut candidates: Vec<String> = Vec::new();
+        match &explicit {
+            Some(python) => candidates.push(python.clone()),
+            None => {
+                let primary = crate::platform::os::python_command();
+                let alternate = if primary == "python3" {
+                    "python"
+                } else {
+                    "python3"
+                };
+                candidates.push(primary);
+                candidates.push(alternate.to_string());
+            }
+        }
+        for python in &candidates {
+            let output = std::process::Command::new(python)
+                .args([
+                    "-I",
+                    "-S",
+                    "-c",
+                    "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')",
+                ])
+                .output();
+            let Ok(output) = output else { continue };
+            if output.status.success() {
+                let version = String::from_utf8(output.stdout).unwrap().trim().to_string();
+                return (python.clone(), version);
+            }
+        }
+        // An explicit but unusable setting is a different failure from a fully
+        // failed default probe: the former should be fixed (or dropped), so
+        // telling the user to "set it explicitly" again would mislead.
+        if let Some(python) = explicit {
+            panic!(
+                "PINVOU3_TEST_PYTHON={python} is set but not usable; fix it or unset it to auto-probe"
+            );
+        }
+        panic!(
+            "no usable Python interpreter (tried {candidates:?}); set PINVOU3_TEST_PYTHON explicitly"
+        );
     }
 
     struct LockedPythonToolFixture {

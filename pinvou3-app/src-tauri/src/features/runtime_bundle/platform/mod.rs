@@ -1305,7 +1305,13 @@ mod tests {
             );
         }
 
-        cleanup(&tmp);
+        // This test neither holds ENV_LOCK nor sets PINVOU3_HOME, so it must
+        // not use cleanup() — its contract requires the caller to hold the
+        // lock, and it unconditionally removes the variable. A lock-free
+        // removal here would punch through a parallel test's lock-holding
+        // window, and the dingtalk/wecom skill-gate tests then fail
+        // intermittently with assertions reading the wrong root.
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// 已下架预置技能的清理:市场标记的删、无标记裸残留的删、用户上传(upload:)的保。
@@ -1888,6 +1894,13 @@ mod tests {
             .into_owned()
     }
 
+    /// Removes a test fixture directory and unsets `PINVOU3_HOME` in-process.
+    ///
+    /// Contract: the caller must hold `bridge::paths::tests::ENV_LOCK` for the
+    /// whole call — only that lock serializes the unconditional `remove_var`
+    /// against tests that set the variable under it. A test that never sets
+    /// `PINVOU3_HOME` must not borrow this helper; remove its directory
+    /// directly instead.
     fn cleanup(dir: &str) {
         // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::remove_var("PINVOU3_HOME") };

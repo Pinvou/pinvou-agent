@@ -197,13 +197,14 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let path = std::env::current_dir()
-                .unwrap()
-                .join("target")
-                .join(format!(
-                    "pinvou3-codex-attachment-{label}-{}-{nonce}",
-                    std::process::id()
-                ));
+            // `prepare_codex_prompt` forces attachments to live under `$HOME`
+            // via `validate_path` (validate_upload_location). The fixture must
+            // follow suit, or the guard rejects the legitimate fixture when the
+            // tests run from a checkout outside $HOME (e.g. a /tmp worktree).
+            let path = crate::platform::os::user_home_dir().join(format!(
+                ".pinvou3-codex-attachment-test-{label}-{}-{nonce}",
+                std::process::id()
+            ));
             fs::create_dir_all(&path).unwrap();
             Self(path)
         }
