@@ -234,8 +234,8 @@ assert.ok(
 );
 assert.ok(
   indexHtml.includes('data-testid="scheduled-nav-unread"') &&
-    /unread=\{!!\(bs && \(bs\.scheduledTasks \|\| \[\]\)\.some\(task => task\.hasUnreadRuns\)\)\}/.test(indexHtml),
-  'the Scheduled sidebar item should aggregate unread completed runs across tasks'
+    /unread=\{!!\(bs && \(\(bs\.scheduledTasks \|\| \[\]\)\.some\(task => task\.hasUnreadRuns\) \|\| \(bs\.scheduledTaskRecentRuns \|\| \[\]\)\.some\(run => run && run\.unread\)\)\)\}/.test(indexHtml),
+  'the Scheduled sidebar item should aggregate unread completed runs across tasks, including retained runs of deleted tasks'
 );
 assert.ok(
   /scheduled_task:run_updated[\s\S]{0,180}scheduleScheduledRunRefresh\(\)/.test(tauriBridge) &&

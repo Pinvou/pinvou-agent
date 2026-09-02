@@ -27,6 +27,9 @@ const MAX_TERMINAL_RUNS_PER_AUTOMATION: usize = 50;
 const SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION: u32 = 2;
 const SCHEDULED_MODEL_BINDING_SCHEMA_VERSION: u32 = 1;
 const SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION: u32 = 1;
+// Starts at 2: v1 was a full-task snapshot format that only existed during
+// development of this feature and was never released; the v1→v2 migration
+// strips the legacy overbroad snapshot fields.
 const SCHEDULED_HISTORY_ARCHIVE_SCHEMA_VERSION: u32 = 2;
 const SCHEDULED_EXECUTION_MODE: &str = "yolo";
 
@@ -477,8 +480,8 @@ impl ScheduledTaskState {
 
     async fn delete_task(&self, id: String) -> Result<DeletedScheduledTaskDto, String> {
         // Keep the per-automation gate for the complete destructive workflow. A
-        // cancellation-style outer timeout could release the gate after only
-        // some sessions were removed, allowing update/run-now into partial state.
+        // cancellation-style outer timeout could release the gate midway through
+        // the archive-then-delete sequence, allowing update/run-now into partial state.
         let _operation = self.lock_operation(&id).await;
         self.delete_task_inner(&id)
             .await
