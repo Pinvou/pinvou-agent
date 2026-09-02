@@ -149,6 +149,30 @@ pub(super) fn accept_plan_instruction(plan_markdown: &str) -> String {
     format!("用户已批准方案,立即开始执行。方案:\n\n{plan_markdown}")
 }
 
+/// 「未成活」快照作废（发送前任何早退共用，按 id 精确删除；残留快照会抢占
+/// 重试时同号 turn 的 first-wins 对齐锚——评审 M5）。
+async fn drop_unsent_turn_checkpoint(
+    ledger: Option<std::path::PathBuf>,
+    snapshot_id: Option<String>,
+    session_id: &str,
+    caller: &str,
+) {
+    if let (Some(ledger), Some(snapshot_id)) = (ledger, snapshot_id) {
+        let sid = session_id.to_string();
+        let caller = caller.to_string();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            if let Err(error) =
+                crate::features::code_checkpoints::drop_checkpoint(&ledger, &snapshot_id)
+            {
+                log::warn!(
+                    "[pinvou3][{caller}] drop unsent-turn checkpoint failed sid={sid}: {error:#}"
+                );
+            }
+        })
+        .await;
+    }
+}
+
 /// 用户点 plan_card [✅ 就这么干]：接受 plan，切 YOLO 执行(对齐底座 accept-yolo)。
 /// 流程：
 ///   1. 设 mode=Yolo
@@ -214,7 +238,16 @@ pub async fn accept_plan(
                 None
             }
             Ok(Err(error)) => {
-                log::warn!("[pinvou3][accept_plan] checkpoint failed sid={session_id}: {error:#}");
+                // git alias 冲突：与 chat.rs 同款 error 级显式上报（评审 M1）。
+                if format!("{error:#}").contains("alias") {
+                    log::error!(
+                        "[pinvou3][accept_plan] checkpoint failed (git alias conflict, session has no rewind entries) sid={session_id}: {error:#}"
+                    );
+                } else {
+                    log::warn!(
+                        "[pinvou3][accept_plan] checkpoint failed sid={session_id}: {error:#}"
+                    );
+                }
                 None
             }
             Err(error) => {
@@ -225,16 +258,33 @@ pub async fn accept_plan(
             }
         };
     }
-    let plan_claim = store
-        .claim_pending_plan(&session_id, &plan_id)
-        .map_err(|error| format!("accept_plan({session_id}): {error:#}"))?;
+    let plan_claim = match store.claim_pending_plan(&session_id, &plan_id) {
+        Ok(claim) => claim,
+        Err(error) => {
+            drop_unsent_turn_checkpoint(
+                checkpoint_ledger_root.clone(),
+                created_snapshot_id.clone(),
+                &session_id,
+                "accept_plan",
+            )
+            .await;
+            return Err(format!("accept_plan({session_id}): {error:#}"));
+        }
+    };
     let accepted_mode_state = plan_claim.accepted_state().clone();
-    reservation
-        .set_admission_metadata(TurnAdmissionMetadata::accept_plan(
-            plan_id.clone(),
-            accepted_mode_state.clone(),
-        ))
-        .map_err(|error| format!("prepare accept_plan admission: {error:#}"))?;
+    if let Err(error) = reservation.set_admission_metadata(TurnAdmissionMetadata::accept_plan(
+        plan_id.clone(),
+        accepted_mode_state.clone(),
+    )) {
+        drop_unsent_turn_checkpoint(
+            checkpoint_ledger_root.clone(),
+            created_snapshot_id.clone(),
+            &session_id,
+            "accept_plan",
+        )
+        .await;
+        return Err(format!("prepare accept_plan admission: {error:#}"));
+    }
     let prepared_delegation = super::multiagent::prepare_delegation_turn(
         pool.inner(),
         &session_id,
@@ -259,19 +309,13 @@ pub async fn accept_plan(
         .await
     {
         // 发送失败：作废「未成活」快照（与 chat.rs 同款，按 id 精确删除）。
-        if let (Some(ledger), Some(snapshot_id)) = (checkpoint_ledger_root, created_snapshot_id) {
-            let sid_drop = session_id.clone();
-            let _ = tauri::async_runtime::spawn_blocking(move || {
-                if let Err(error) =
-                    crate::features::code_checkpoints::drop_checkpoint(&ledger, &snapshot_id)
-                {
-                    log::warn!(
-                        "[pinvou3][accept_plan] drop unsent-turn checkpoint failed sid={sid_drop}: {error:#}"
-                    );
-                }
-            })
-            .await;
-        }
+        drop_unsent_turn_checkpoint(
+            checkpoint_ledger_root,
+            created_snapshot_id,
+            &session_id,
+            "accept_plan",
+        )
+        .await;
         let rollback = plan_claim.rollback();
         return Err(match rollback {
             Ok(()) => format!("accept_plan send_user_message: {error:#}"),
