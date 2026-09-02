@@ -535,6 +535,12 @@ test('localReasoningTiers：探测档位 × 模型知识表叠加', () => {
   // noControl → null（前端显示「思考始终开启」提示）
   assert.strictEqual(localReasoningTiers('deepseek-r1:14b', 'vllm'), null);
   assert.strictEqual(localReasoningTiers('Qwen3-235B-A22B-Thinking', 'ollama'), null);
+  // lmstudio/generic：底座 openai wire route 对 reasoning_effort 是空操作，
+  // 知识表档位同样不提供——回落探测结果（null），恢复「端点不支持」提示
+  assert.strictEqual(localReasoningTiers('kimi-k3', 'lmstudio'), null);
+  assert.strictEqual(localReasoningTiers('gpt-oss-120b', 'generic'), null);
+  // noControl 在 lmstudio/generic 同样为 null（提示逻辑不变）
+  assert.strictEqual(localReasoningTiers('deepseek-r1:14b', 'generic'), null);
   // 未命中知识表 → 按探测结果下发
   assert.deepStrictEqual([...localReasoningTiers('qwen3-32b', 'ollama')], ['off', 'high']);
   assert.deepStrictEqual([...localReasoningTiers('qwen3-32b', 'llamacpp')], ['off', 'low', 'medium', 'high']);

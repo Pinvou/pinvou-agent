@@ -881,8 +881,10 @@ impl Pinvou3Bridge {
     ///
     /// 本地 OpenAI 兼容端点（loopback 的 LM Studio 等，探测不出服务类型或判定为
     /// LM Studio/通用）保持旧行为不注入档位（None），避免底座 openai wire route
-    /// 对 `reasoning_effort` 的空操作与不认识的请求参数引起漂移。注意底座对
-    /// openai 的 `reasoning_effort` 空操作仅对普通模型成立：gpt-5.5/5.6/codex
+    /// 对 `reasoning_effort` 的空操作与不认识的请求参数引起漂移。思考永开知识表
+    /// 归一同样不作用于该路由（wire 空操作，注入无效；前端 `localReasoningTiers`
+    /// 对 lmstudio/generic 同口径不提供档位）。注意底座对 openai 的
+    /// `reasoning_effort` 空操作仅对普通模型成立：gpt-5.5/5.6/codex
     /// 家族会经 `apply_openai_reasoning_effort` 注入档位（本地端点模型名不匹配
     /// 该家族，此处不注入不受影响）。
     ///
@@ -892,10 +894,11 @@ impl Pinvou3Bridge {
     /// （探测 payload 仍需显式注入 thinking，见 image_capability.rs）。
     fn request_reasoning_effort(&self) -> Option<String> {
         let provider = self.provider();
-        // 「本地路由」：vllm/ollama provider，或 openai wire 指向本地/私网端点。
-        // 云端精确路由（moonshot/zai 等）不进知识表归一。
-        let is_local_route = matches!(provider.as_str(), "vllm" | "ollama")
-            || (provider == "openai" && base_url_uses_local_or_private(&self.base_url()));
+        // 「本地路由」：vllm/ollama provider。openai wire 指向本地/私网端点
+        // （LM Studio/通用服务）时底座对 reasoning_effort 是空操作，知识表归一
+        // 注入无效，不进归一（stored 值仍按下方「显式选择优先」透传，不影响
+        // 后续探测为 vllm 时生效）；云端精确路由（moonshot/zai 等）同样不进。
+        let is_local_route = matches!(provider.as_str(), "vllm" | "ollama");
         if is_local_route {
             let model = self.effective_model();
             if let Some(spec) = model.and_then(|m| always_thinking_spec(&m.model)) {
@@ -6454,6 +6457,73 @@ mod tests {
             assert_eq!(bridge.request_reasoning_effort(), None, "{kind:?}");
             assert_eq!(bridge.build_dt_config().reasoning_effort, None, "{kind:?}");
         }
+    }
+
+    /// 思考永开知识表归一不作用于 openai wire route（LM Studio/通用服务）：
+    /// 底座对 openai 的 reasoning_effort 是空操作，注入无效——kimi-k3 无 stored
+    /// 时保持 None 默认，不做最低档归一；stored 值（含 off）仍按「显式选择优先」
+    /// 透传，不改动 prefs，后续探测为 vllm 时 stored 档位照常经知识表归一生效。
+    /// 前端 `localReasoningTiers` 对 lmstudio/generic 同口径不提供档位。
+    #[test]
+    fn local_lmstudio_or_generic_probe_skips_always_thinking_normalization() {
+        for kind in [LocalServerKind::LmStudio, LocalServerKind::Generic] {
+            let (_lock, _env) = locked_env(&[
+                "DEEPSEEK_MODEL",
+                "DEEPSEEK_PROVIDER",
+                "DEEPSEEK_BASE_URL",
+                "DEEPSEEK_API_KEY",
+            ]);
+            let mut bridge = fixture_bridge();
+            set_active_model(
+                &mut bridge,
+                ModelPreset::OpenaiCompatible,
+                "kimi-k3",
+                "http://127.0.0.1:1234/v1",
+                "",
+            );
+            bridge.probed_local_kind = Some(kind);
+            assert_eq!(bridge.provider(), "openai", "{kind:?}");
+            assert_eq!(
+                bridge.request_reasoning_effort(),
+                None,
+                "{kind:?}: openai wire 空操作，知识表不注入最低档"
+            );
+            // stored off 透传（显式选择优先），不被知识表归一为 low。
+            bridge
+                .prefs
+                .advanced
+                .saved_models
+                .last_mut()
+                .map(|m| m.reasoning_effort = Some("off".to_string()));
+            assert_eq!(
+                bridge.request_reasoning_effort().as_deref(),
+                Some("off"),
+                "{kind:?}: stored 值透传，prefs 不被知识表改写"
+            );
+        }
+    }
+
+    /// NoControl 模型（deepseek-r1）在 openai wire route 同样不发思考参数
+    /// （None）——与 vllm/ollama 路由的归一结果一致，无行为差异。
+    #[test]
+    fn local_generic_probe_no_control_model_sends_no_thinking_params() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "deepseek-r1",
+            "http://127.0.0.1:1234/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Generic);
+        assert_eq!(bridge.provider(), "openai");
+        assert_eq!(bridge.request_reasoning_effort(), None);
     }
 
     /// 显式保存的档位优先于「本地 generic 端点不注入」默认：用户在 LM Studio/

@@ -1010,11 +1010,12 @@ function reasoningEffortTiersForModel(model) {
   if (!tiers) return null;
   const modelName = String((model && model.model) || '').trim().toLowerCase();
   const baseUrl = (model && model.base_url) || '';
-  // 本地路由（vllm / 本地 loopback 端点；ollama 为探测 kind，此处一并覆盖）
-  // 命中思考永开知识表：noControl → null（沿用「不支持调节」语义出口）；
-  // tiers → 以知识表档位替代默认档位表。云端精确路由（zai/moonshot/minimax）
-  // 不受影响。
-  const localSpec = ['vllm', 'local', 'ollama'].includes(provider)
+  // 本地路由（vllm preset / 本地 loopback openai_compatible 端点）命中思考
+  // 永开知识表：noControl → null（沿用「不支持调节」语义出口）；tiers → 以
+  // 知识表档位替代默认档位表。云端精确路由（zai/moonshot/minimax）不受影响。
+  // （探测出的 ollama 不走这里：本地兼容端点的档位由 localReasoningTiers 按
+  // 探测 kind 叠加知识表下发。）
+  const localSpec = ['vllm', 'local'].includes(provider)
     ? alwaysThinkingSpecForModel(model && model.model)
     : null;
   if (localSpec) return localSpec.noControl ? null : localSpec.tiers;
@@ -1136,11 +1137,16 @@ function localProbeTiersForKind(kind) {
 // 探测档位 × 模型知识表的叠加（SettingsView 模型编辑弹窗与聊天输入区模型
 // 弹层共用）：模型命中思考永开知识表时以知识表为准——noControl → null
 // （前端显示「思考始终开启」提示，而非探测不支持）；tiers → 覆盖探测档位。
+// 例外：lmstudio/generic 端点底座 openai wire route 对 reasoning_effort 是
+// 空操作，知识表档位同样调了个寂寞——回落探测结果（null），不提供切换。
 // 未命中时按探测结果下发档位。
 function localReasoningTiers(modelId, probedKind) {
   const spec = alwaysThinkingSpecForModel(modelId);
   if (spec) {
     if (spec.noControl) return null;
+    if (probedKind === 'lmstudio' || probedKind === 'generic') {
+      return localProbeTiersForKind(probedKind);
+    }
     // 底座 ollama wire 只有布尔 think（off=think:false，其余档位一律归一
     // think:true），不发送档位字符串；思考永开模型在 ollama 路由下唯一有意义
     // 的暴露是 high（如 GPT-OSS 只认 low/medium/high 字符串，true/false 被

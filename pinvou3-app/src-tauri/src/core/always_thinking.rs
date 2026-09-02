@@ -18,13 +18,27 @@ pub enum AlwaysThinkingSpec {
     NoControl,
 }
 
-/// 按模型 id 查知识表。匹配口径：id 小写化并把 `_`/空格归一为 `-` 后做子串
-/// 匹配（覆盖 `vendor/Model_Name`、tag、量化后缀等常见书写形态）。
+/// 按模型 id 查知识表。匹配口径：id trim 后小写化，并把 `_`/空白字符的连续
+/// 段折叠为单个 `-`，再做子串匹配（覆盖 `vendor/Model_Name`、tag、量化后缀
+/// 等常见书写形态）。与前端 `model-catalog.js alwaysThinkingSpecForModel`
+/// 的归一口径（`trim().toLowerCase().replaceAll(/[\s_]+/g, '-')`）对齐。
 pub fn always_thinking_spec(model_id: &str) -> Option<AlwaysThinkingSpec> {
-    let normalized = model_id
-        .to_ascii_lowercase()
-        .replace('_', "-")
-        .replace(' ', "-");
+    let trimmed = model_id.trim();
+    let mut normalized = String::with_capacity(trimmed.len());
+    let mut pending_sep = false;
+    for ch in trimmed.chars() {
+        if ch == '_' || ch.is_whitespace() {
+            pending_sep = true;
+        } else {
+            // 折叠分隔符连续段为单个 '-'；前导分隔符（trim 后仅剩 `_`）不产生
+            // 前导 '-'，对子串匹配无影响（表内条目均不以 '-' 开头）。
+            if pending_sep && !normalized.is_empty() {
+                normalized.push('-');
+            }
+            pending_sep = false;
+            normalized.push(ch.to_ascii_lowercase());
+        }
+    }
     let id = normalized.as_str();
     // Kimi K3：官方仅 low/high/max 档位且思考永开；底座 vllm wire 会把 max
     // 钳到 high，故只暴露 low/high。
@@ -128,6 +142,24 @@ mod tests {
             always_thinking_spec("MINIMAX_M2"),
             Some(AlwaysThinkingSpec::NoControl)
         );
+    }
+
+    /// 归一与前端 JS 口径对齐：trim + 连续 `_`/空白段折叠为单个 `-`。
+    #[test]
+    fn matching_trims_and_collapses_separator_runs() {
+        assert_eq!(
+            always_thinking_spec("  Kimi  K3  "),
+            Some(AlwaysThinkingSpec::Tiers(&["low", "high"]))
+        );
+        assert_eq!(
+            always_thinking_spec("deepseek__r1"),
+            Some(AlwaysThinkingSpec::NoControl)
+        );
+        assert_eq!(
+            always_thinking_spec("Qwen3-235B-A22B_Thinking"),
+            Some(AlwaysThinkingSpec::NoControl)
+        );
+        assert_eq!(always_thinking_spec("   "), None);
     }
 
     /// qwen3 只有 Thinking 变体命中：普通 qwen3（qwen3-32b、qwen3:8b）可控
