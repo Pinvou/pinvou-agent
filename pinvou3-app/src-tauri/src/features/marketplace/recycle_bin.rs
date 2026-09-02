@@ -401,6 +401,24 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     let import_lock = super::plugin_import::import_lock_for(pkg_id);
     let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
     let bin = RecycleBin::new();
+    // 恢复碰撞 preflight（fail-closed，先于任何搬移）：回收期间市场状态可能已
+    // 变（例如导入了把同名技能作为 companion 的包），碰撞状态下恢复会造出同
+    // 技能双份物理副本，后续技能卸载的候选目录清理会连唯一副本一起删。检查
+    // 与导入通道同口径（`ensure_skill_restorable`）；此刻包目录仍在回收站，
+    // 自身副本不会被误判为他包副本。
+    let recycled_skills_dir = bin.root.join(pkg_id).join("skills");
+    if recycled_skills_dir.is_dir() {
+        let mut skill_names: Vec<String> = std::fs::read_dir(&recycled_skills_dir)
+            .map_err(|e| format!("读取 {} 失败: {e}", recycled_skills_dir.display()))?
+            .flatten()
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        skill_names.sort();
+        for name in &skill_names {
+            super::skill_marketplace::ensure_skill_restorable(name)?;
+        }
+    }
     let record = bin.take_back(pkg_id)?;
     let mgr = super::MarketplaceManager::new();
     let pkg_dir = paths::bundles_root().join(pkg_id);
@@ -733,6 +751,62 @@ mod tests {
             RecycleBin::new().list().unwrap().is_empty(),
             "恢复后清单应清空"
         );
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 恢复碰撞 preflight：回收期间导入了同名 companion 的包后，恢复 fail-closed
+    /// 拒绝（清单与回收站目录原样保留）。碰撞状态下恢复会造出同技能双份物理副本，
+    /// 此后技能卸载的候选目录清理会把用户唯一副本连他包副本一起删（review P1）。
+    #[test]
+    fn restore_refuses_skill_name_colliding_with_foreign_package() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = fresh_dir("restore-collide");
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let pkg = paths::bundles_root().join("my-skill");
+        std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
+        std::fs::write(
+            pkg.join("skills/my-skill/SKILL.md"),
+            "---\nname: my-skill\n---\n",
+        )
+        .unwrap();
+        let store = BundleStore::new();
+        store.upsert(upload_record("my-skill")).unwrap();
+        let record = store.get("my-skill").unwrap().unwrap();
+        store.remove("my-skill").unwrap();
+        RecycleBin::new()
+            .recycle_package("my-skill", KIND_SKILL, "my-skill.zip", record)
+            .unwrap();
+
+        // 冲突注入：回收期间他包 m 实体化了同名 companion 副本。
+        let foreign = paths::bundles_root().join("m/skills/my-skill");
+        std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::write(foreign.join("SKILL.md"), "---\nname: my-skill\n---\n").unwrap();
+
+        let err = restore_plugin("my-skill").unwrap_err();
+        assert!(
+            err.contains("无法恢复"),
+            "应拒绝碰撞恢复并提示先处理冲突包: {err}"
+        );
+        assert!(
+            RecycleBin::new().list().unwrap().len() == 1,
+            "拒绝后回收清单应原样保留"
+        );
+        assert!(
+            tmp.join("marketplace/recycle-bin/my-skill/skills/my-skill/SKILL.md")
+                .is_file(),
+            "回收站目录不得被搬出"
+        );
+        assert!(foreign.join("SKILL.md").is_file(), "他包同名副本不得受影响");
+        assert!(store.get("my-skill").unwrap().is_none(), "不得重建登记");
 
         match prev {
             Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },

@@ -787,8 +787,18 @@ impl SkillMarketplaceManager {
                     }
                     return Ok(());
                 }
-                // companion 技能（属主为 MCP 包）：随属主包卸载整包回收；单独卸载
-                // 走下方物理删除（当前 UI 不提供 companion 单独卸载入口）。
+                if owner != skill_id && pkg_dir.is_dir() {
+                    // Upload 登记且包目录仍在，但属主被其他已装包认领（例如回收
+                    // 期间导入了同名 companion 的包后又从回收站恢复）：落到下方
+                    // 候选目录物理删除会把用户唯一副本与他包副本一并删掉且无回收
+                    // 条目 —— fail-closed 拒绝卸载，不动任何目录；冲突消除（卸载
+                    // 占用包）后可正常整包回收。
+                    return Err(format!(
+                        "技能 '{skill_id}' 属于上传包，但已被已安装包 '{owner}' 的同名配套技能占用，已拒绝卸载以保护唯一副本；请先卸载占用包 '{owner}' 再重试"
+                    ));
+                }
+                // 其余 Upload 落空情形（own 包目录缺失的瘫记录/滞留副本）：删记录
+                // 不以目录存在为前提，沿用既有目录无关清理语义。
             }
         }
 
@@ -2337,6 +2347,40 @@ pub(crate) fn foreign_skill_copies_under(
     out
 }
 
+/// 回收站恢复碰撞 preflight：导入通道拒绝的技能名碰撞对恢复同样成立 —— 回收
+/// 期间市场状态可能已变（例如导入了把同名技能作为 companion 的包），碰撞状态
+/// 下恢复会造出同技能的双份物理副本，此后技能卸载的候选目录清理会把唯一副本
+/// 连他包副本一起删掉。与上传通道（`install_upload_skill`）同三查：预置名占用 /
+/// 属主认领 / 他包物理副本。仅读盘与登记，不动任何状态；碰撞对象的建包不持同
+/// id 锁，极端并发交错由技能卸载的 fail-closed 拒绝兜底。`pub(crate)`：回收站
+/// `restore_plugin` 在取回目录前应用同一检查。
+pub(crate) fn ensure_skill_restorable(skill_name: &str) -> Result<(), String> {
+    if is_preset_skill_name(skill_name) {
+        return Err(format!(
+            "技能名 '{skill_name}' 与市场预置技能冲突，无法恢复；请先卸载同名预置技能，或从回收站彻底删除后改名重新导入"
+        ));
+    }
+    let owner = super::bundle::skill_owner_package(skill_name);
+    if owner != skill_name {
+        return Err(format!(
+            "技能名 '{skill_name}' 已被已安装包 '{owner}' 的配套技能占用，无法恢复；请先卸载该包再从回收站恢复"
+        ));
+    }
+    if let Some(other) = foreign_skill_copies_under(
+        &SkillMarketplaceManager::new().packages_root,
+        skill_name,
+        skill_name,
+    )
+    .into_iter()
+    .next()
+    {
+        return Err(format!(
+            "技能 '{skill_name}' 已存在于包 '{other}'，无法恢复；请先卸载该包再从回收站恢复"
+        ));
+    }
+    Ok(())
+}
+
 /// 把任意字符串（文件名 stem 等）净化为合法技能名：非 `[a-zA-Z0-9_-]` 字符 → `-`，
 /// 掐头去尾的 `-` 去掉、截 64；空结果兜底 "skill"。`pub(crate)`：单 .md 导入的
 /// 文件名兜底命名用。
@@ -3517,6 +3561,86 @@ mod tests {
             crate::features::marketplace::recycle_bin::KIND_SKILL
         );
         assert!(!list[0].package_missing);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Upload 登记且包目录仍在，但属主被其他已装包认领（回收期间导入了同名
+    /// companion 的包后又从回收站恢复的历史状态）时，卸载 fail-closed 拒绝：
+    /// 不动任何目录、保留登记。此前落入候选目录物理删除，会把用户唯一副本与
+    /// 他包副本一起删掉且无回收条目（review P1）。走真实 paths（属主认领经
+    /// `MarketplaceManager::new()` 现算），借 ENV_LOCK 与其它 env 测试串行。
+    #[test]
+    fn uninstall_upload_skill_refuses_when_recycle_not_safe() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = fresh_dir("uninstall_refuse");
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        // 已装包 m：manifest 声明 companion up-skill，且实体化了同名副本。
+        let m_dir = crate::platform::paths::bundles_root().join("m");
+        std::fs::create_dir_all(m_dir.join("mcp")).unwrap();
+        std::fs::write(
+            m_dir.join("mcp/manifest.json"),
+            r#"{"id":"m","name":"M","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["up-skill"]}"#,
+        )
+        .unwrap();
+        let foreign = m_dir.join("skills/up-skill");
+        std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::write(foreign.join("SKILL.md"), "---\nname: up-skill\n---\n").unwrap();
+        // Upload 独立技能包 up-skill（用户唯一副本）+ 已装包 m 的登记（V5 认领）。
+        let own = crate::platform::paths::bundles_root().join("up-skill/skills/up-skill");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join("SKILL.md"), "---\nname: up-skill\n---\n").unwrap();
+        let store = crate::features::marketplace::store::BundleStore::new();
+        store
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    "m",
+                    crate::features::marketplace::store::BundleSource::Preset,
+                ),
+            )
+            .unwrap();
+        store
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    "up-skill",
+                    crate::features::marketplace::store::BundleSource::Upload(
+                        "pkg.zip".to_string(),
+                    ),
+                ),
+            )
+            .unwrap();
+
+        let err = SkillMarketplaceManager::new()
+            .uninstall("up-skill")
+            .unwrap_err();
+        assert!(
+            err.contains("拒绝卸载"),
+            "应 fail-closed 拒绝卸载并保护唯一副本: {err}"
+        );
+        assert!(own.join("SKILL.md").is_file(), "用户唯一副本不得被物理删除");
+        assert!(
+            foreign.join("SKILL.md").is_file(),
+            "他包同名副本不得被物理删除"
+        );
+        assert!(
+            store.get("up-skill").unwrap().is_some(),
+            "拒绝卸载应保留登记"
+        );
+        assert!(
+            crate::features::marketplace::recycle_bin::RecycleBin::new()
+                .list()
+                .unwrap()
+                .is_empty(),
+            "不得产生回收条目"
+        );
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

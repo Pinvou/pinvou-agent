@@ -42,9 +42,11 @@ const PlatformToolAction = ({ copy, t, ...props }) => {
     );
   }
   // 已安装插件（上传/预置/自定义 MCP）的「导出」按钮只出现在详情页（size="lg"），
-  // 列表卡片不展示（Web 只读已在上方 return 掉）；内置卡（builtin，非包）不导出。
+  // 列表卡片不展示（Web 只读已在上方 return 掉）；内置卡（builtin，非包）不导出；
+  // 预置目录包不导出（exportable=false，与后端 export_installed_plugin 的拒绝口径
+  // 一致：导出的 zip 受导入管线预置冲突保护、无法重新导入）。
   // 样式对齐 TsActionBtn 的次要按钮。
-  const showExport = !!(props.size === 'lg' && props.tool && props.tool.installed && !props.tool.builtin && props.tool.backendId && props.onExport);
+  const showExport = !!(props.size === 'lg' && props.tool && props.tool.installed && !props.tool.builtin && props.tool.exportable !== false && props.tool.backendId && props.onExport);
   const exportBtn = showExport && (
     <button
       data-testid="tool-store-export"
@@ -1278,8 +1280,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         // desc 已由 uiToolDetails 三语本地化，category 的 manifest 中文词汇与前端
         // 分组 id 不兼容（统一词汇属后续清理）。
         const bf = bs && bs.bundle ? bs.bundle : null;
+        // 可导出性跟随后端（list_marketplace_tools.exportable）：预置目录包 false
+        // —— 后端 export_installed_plugin 对 catalog id 一律拒绝，按钮不隐藏必然报错。
+        const tb = t.backendId ? toolBackend.find(x => x.id === t.backendId) : null;
         return {
           ...t,
+          exportable: tb ? tb.exportable !== false : true,
           version: bf && bf.version ? `v${String(bf.version).replace(/^v/i, '')}` : t.version,
           configFields: mergeConfigFields(bf ? bf.config_fields : null, t.configFields),
           logoSrc: THIRD_PARTY_TOOL_LOGOS[t.backendId] || THIRD_PARTY_TOOL_LOGOS[t.id] || null,
@@ -1331,6 +1337,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             icon: Server, color: 'bg-gradient-to-b from-slate-400 to-slate-600',
             installed: bs ? bs.installed : !!x.installed,
             authRequired: false, userUploaded: x.source === 'upload',
+            exportable: x.exportable !== false,
             actions: actionsOf(bs),
           };
           return localizeTool(base, t);

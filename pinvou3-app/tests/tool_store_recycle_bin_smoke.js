@@ -46,6 +46,10 @@ function injectSource() {
     // 前端卸载提示不得出现「移入回收站」。
     var tools=[
       {id:'my-preset-mcp',name:'my-preset-mcp',description:'手写自定义 MCP',version:'1.0.0',installed:true,source:'preset'},
+      // 预置目录包(list_marketplace_tools.exportable=false):详情页不得渲染「导出」
+      // 按钮 —— 后端 export_installed_plugin 对 catalog id 一律拒绝(导出的 zip 无法
+      // 重新导入),按钮不隐藏必然报错(与文档「市场预置包不导出」一致)。
+      {id:'blocked-catalog-mcp',name:'blocked-catalog-mcp',description:'预置目录包',version:'1.0.0',installed:true,source:'builtin',exportable:false},
     ];
     var handlers={
       get_settings:function(){return {theme:'liquid-light',language:'zh-Hans'};},
@@ -197,6 +201,23 @@ async function dismiss(page) {
       && !document.body.innerText.includes('已导出为')));
     await page.evaluate(() => { window.__EXPORT_CANCEL__ = false; });
     // 关闭详情页返回列表(点击弹窗蒙层)
+    await page.evaluate(() => {
+      const modal = document.querySelector('.ts-modal-in');
+      if (modal && modal.parentElement) modal.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+    await sleep(300);
+
+    // 3b. 预置目录包(exportable:false)详情页不渲染「导出」按钮:后端对 catalog id
+    //     一律拒绝导出,按钮不隐藏必然报错(与文档「市场预置包不导出」一致)。
+    await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('div')].filter(el =>
+        (el.textContent || '').includes('blocked-catalog-mcp') && el.querySelector('button'));
+      const row = rows[rows.length - 1];
+      if (row) row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+    await sleep(400);
+    rec('预置目录包详情页不渲染导出按钮', await page.evaluate(() =>
+      !document.querySelector('[data-testid="tool-store-export"]')));
     await page.evaluate(() => {
       const modal = document.querySelector('.ts-modal-in');
       if (modal && modal.parentElement) modal.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));

@@ -131,6 +131,12 @@ pub(super) fn default_tool_source() -> String {
     "builtin".to_string()
 }
 
+/// `MarketplaceToolInfo.exportable` 的 serde 缺省值：旧后端数据缺字段时按
+/// 「可导出」处理 —— 与导入/回收站导出通道的既有行为一致，前端不因升级漏按钮。
+pub(super) fn default_tool_exportable() -> bool {
+    true
+}
+
 // ---------------------------------------------------------------------------
 // mcp.json 明文密钥迁移结果
 // ---------------------------------------------------------------------------
@@ -168,6 +174,12 @@ pub struct MarketplaceToolInfo {
     /// 回收站」而实际保留目录，文案说谎）。
     #[serde(default = "default_tool_source")]
     pub source: String,
+    /// 是否可导出为标准插件包 zip：`mcp_catalog` 预置目录包为 false（导出的 zip
+    /// 受导入管线预置冲突保护、无法重新导入，后端 `export_installed_plugin` 也会
+    /// 拒绝），迁移登记为 Preset 的手写自定义 MCP、上传包为 true。前端据此隐藏
+    /// 详情页「导出」按钮，与后端 fail-fast 口径一致（避免按钮必然报错）。
+    #[serde(default = "default_tool_exportable")]
+    pub exportable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -795,8 +795,7 @@ const AcFmtIcon = FileTypeIcon;
           // repair：CLI 包重连（flow=cli_connect）走 onAction；技能包覆盖重装即修复，走 onUpdate
           repair: { label: T.repair, cls: btnCls.outline, run: (a) => (a.flow && a.flow.kind === 'cli_connect' ? onAction(tool.backendId, false) : onUpdate && onUpdate(tool.backendId)) },
         };
-        // edit_display 收敛进详情页（size="lg"）：列表卡片操作区不展示（与导出按钮同口径）。
-        const list = tool.actions.filter(a => specs[a.id] && (a.id !== 'edit_display' || isLg));
+        const list = tool.actions.filter(a => specs[a.id]);
         // ima 等认领技能的 update 挂在连接器卡上，后端 actions 不含它——沿用
         // updateAvailable 本地补一个 update 按钮（V5 认领退出后清理）。
         if (tool.updateAvailable && onUpdate && list.every(a => a.id !== 'update')) {
