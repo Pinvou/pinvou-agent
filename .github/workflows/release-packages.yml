@@ -58,7 +58,7 @@ jobs:
       - name: Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
 
       - name: 版本同步脚本测试
         run: node --test scripts/tests/sync-version.test.mjs
@@ -137,7 +137,7 @@ jobs:
       - name: Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: pinvou3-app/package-lock.json
 
@@ -249,7 +249,7 @@ jobs:
       - name: Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: pinvou3-app/package-lock.json
 
@@ -355,7 +355,7 @@ jobs:
       - name: Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: pinvou3-app/package-lock.json
 
@@ -475,7 +475,7 @@ jobs:
       - name: Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: pinvou3-app/package-lock.json
 
