@@ -1638,14 +1638,21 @@ impl Pinvou3Bridge {
             max_tool_calls: {
                 #[cfg(feature = "benchmark-hooks")]
                 {
-                    // 评测构建默认 8 次/轮(GAIA 防失控护栏)。Terminal-Bench 等
-                    // 长程 agentic 场景用 PINVOU3_MAX_TOOL_CALLS 显式抬高,与
-                    // PINVOU3_ALLOW_SHELL/PINVOU3_MAX_OUTPUT_TOKENS 同一 env 约定;
-                    // 未设置时行为不变。
-                    let cap = std::env::var("PINVOU3_MAX_TOOL_CALLS")
-                        .ok()
-                        .and_then(|value| value.parse::<u32>().ok())
-                        .unwrap_or(8);
+                    // Eval builds pin 8 tool calls per turn by default (the
+                    // GAIA runaway guard). Long-horizon agentic scenarios such
+                    // as Terminal-Bench raise it explicitly via
+                    // PINVOU3_MAX_TOOL_CALLS, same env convention as
+                    // PINVOU3_ALLOW_SHELL/PINVOU3_MAX_OUTPUT_TOKENS; unset
+                    // keeps the behavior bit-identical.
+                    let cap = match std::env::var("PINVOU3_MAX_TOOL_CALLS") {
+                        Ok(value) => value.parse::<u32>().unwrap_or_else(|_| {
+                            eprintln!(
+                                "[pinvou3-app] ignoring invalid PINVOU3_MAX_TOOL_CALLS={value:?}; falling back to the default cap of 8"
+                            );
+                            8
+                        }),
+                        Err(_) => 8,
+                    };
                     Some(max_tool_calls.unwrap_or(cap).min(cap))
                 }
                 #[cfg(not(feature = "benchmark-hooks"))]
@@ -5025,8 +5032,9 @@ mod tests {
         );
     }
 
-    /// benchmark-hooks 构建的工具调用护栏:默认 8 次/轮不变,
-    /// PINVOU3_MAX_TOOL_CALLS 显式抬高(Terminal-Bench 等 agentic 场景)。
+    /// Tool-call guard of benchmark-hooks builds: the default 8 calls/turn
+    /// stays, PINVOU3_MAX_TOOL_CALLS raises it explicitly (Terminal-Bench and
+    /// similar agentic scenarios).
     #[cfg(feature = "benchmark-hooks")]
     #[test]
     fn engine_config_tool_call_cap_respects_env_override() {
@@ -5036,7 +5044,7 @@ mod tests {
         assert_eq!(
             fixture_bridge().build_engine_config().max_tool_calls,
             Some(8),
-            "评测构建默认护栏必须保持 8 次/轮"
+            "eval builds must keep the default guard of 8 tool calls per turn"
         );
 
         // SAFETY: see above.
@@ -5044,7 +5052,7 @@ mod tests {
         assert_eq!(
             fixture_bridge().build_engine_config().max_tool_calls,
             Some(512),
-            "PINVOU3_MAX_TOOL_CALLS 必须能抬高护栏"
+            "PINVOU3_MAX_TOOL_CALLS must be able to raise the guard"
         );
     }
 

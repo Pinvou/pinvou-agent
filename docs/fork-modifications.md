@@ -194,6 +194,13 @@
 - bundle instructions、按会话 Skill 组合目录、用户 AGENTS 注入。
 - UI、Tauri IPC、工作区与产物卡、Shell 输出观察和前端终态对账。
 - 定时任务页面、通知和业务日志展示。
+- `features/assistant/product_runtime/agentic_task.rs` (PR #398): headless
+  single-task agentic entry for external harnesses (Terminal-Bench/Harbor),
+  benchmark-hooks gated. It drives a product-equivalent turn through the GUI
+  send path (`eval_tool_policy = None`) without touching eval tool policies,
+  and shares the windowless host bootstrap with the eval backend. Covered by
+  the fork-guard layer-3 `agentic_task::tests` and the
+  `engine_config_tool_call_cap_respects_env_override` regression.
 
 CodeWhale fork 只提供这些产品能力不可缺少的底座生命周期入口和原子不变量。
 

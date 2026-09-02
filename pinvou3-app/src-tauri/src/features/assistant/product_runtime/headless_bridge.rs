@@ -1307,10 +1307,12 @@ impl PrivateOutputResolver for ProductHeadlessBackend {
     }
 }
 
-/// 无窗口产品宿主的共享引导:rustls/env/tokio/单一 generate_context 展开、
-/// store 启动序列、`build_pool`,最后把 `EnginePool + SessionStore` 交给工作
-/// 闭包。`run_headless_host`(评测后端)与 `run_agentic_task_headless`
-/// (agentic 单任务)都走这里,保证宿主引导只有一份实现。
+/// Shared bootstrap of the windowless product host: rustls/env/tokio/the
+/// single generate_context expansion, the store boot sequence, `build_pool`,
+/// and finally handing `EnginePool + SessionStore` to the work closure. Both
+/// `run_headless_host` (eval backend) and `run_agentic_task_headless`
+/// (agentic single task) go through here, so the host bootstrap has exactly
+/// one implementation.
 pub fn run_windowless_host<T, Work, WorkFuture>(work: Work) -> Result<T>
 where
     T: Send + 'static,
@@ -1327,8 +1329,9 @@ where
         .context("build headless async runtime")?;
     tauri::async_runtime::set(async_runtime.handle().clone());
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-    // 复用 lib.rs 的单一 generate_context 展开点:本 crate 内二次展开会在
-    // macOS 触发 embed_plist 的 _EMBED_INFO_PLIST 重复符号链接错误。
+    // Reuse lib.rs's single generate_context expansion point: a second
+    // expansion inside this crate triggers duplicate
+    // _EMBED_INFO_PLIST (embed_plist) link errors on macOS.
     let mut context = crate::build_tauri_context();
     context.config_mut().app.windows.clear();
     let app = tauri::Builder::default()
@@ -1371,8 +1374,10 @@ where
     })
 }
 
-/// 构建与 GUI 同构的 EnginePool(同 tool_factory/tool_policy 组合)。
-/// `agentic_task` 的无头宿主复用此构造,保证 agentic 轮次与产品链路一致。
+/// Build an EnginePool isomorphic to the GUI (same
+/// tool_factory/tool_policy combination). The `agentic_task` headless host
+/// reuses this constructor so agentic turns stay identical to the product
+/// path.
 pub(crate) fn build_pool(app: tauri::AppHandle, store: SessionStore) -> Result<EnginePool> {
     let tool_factory: EngineToolFactory = Arc::new(|app, session_id| {
         vec![

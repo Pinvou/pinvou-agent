@@ -390,8 +390,10 @@ fn require_gaia(values: &[String], command: &str) -> Result<(), CliError> {
     Ok(())
 }
 
-/// `agent run --timeout-secs` 的解析期上限(7 天):无上限的 u64 会让
-/// `Instant + Duration` 溢出 panic,进程以 101 退出且无报告。
+/// Parse-time cap for `agent run --timeout-secs` (7 days): an unbounded u64
+/// would overflow `Instant + Duration`, exiting 101 with no report. Must stay
+/// in lockstep with the library clamp `pinvou_product_backend::MAX_TIMEOUT_SECS`
+/// (asserted equal by `agent_timeout_cap_matches_library_clamp`).
 const AGENT_TIMEOUT_SECS_MAX: u64 = 7 * 24 * 60 * 60;
 
 fn parse_agent(values: &[String]) -> Result<AgentCommand, CliError> {
@@ -1385,25 +1387,49 @@ fn run_agent(
     timeout_secs: u64,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    // 与 lib.rs 其它 read 失败的先例一致(read_to_string -> failed):
-    // 文件不可读属宿主级失败(exit 1),不是参数用法错误——文档的退出码
-    // 契约也把"读文件失败"列在宿主级。
+    // Consistent with the other read failures in lib.rs (read_to_string ->
+    // failed): an unreadable file is a host-level failure (exit 1), not an
+    // argument usage error — the documented exit-code contract also lists
+    // read failures under host-level.
     let prompt = std::fs::read_to_string(prompt_file)
         .map_err(|_| CliError::failed("agent run cannot read --prompt-file"))?;
+    // Canonicalize so the engine receives an absolute path regardless of cwd
+    // changes, and fail fast on a missing/non-directory workspace instead of
+    // letting a typo'd path get silently created deeper in the stack.
+    let workspace = match workspace {
+        Some(path) => {
+            let resolved = std::fs::canonicalize(path).map_err(|_| {
+                CliError::failed(format!(
+                    "agent run --workspace does not exist: {}",
+                    path.display()
+                ))
+            })?;
+            if !resolved.is_dir() {
+                return Err(CliError::failed(format!(
+                    "agent run --workspace is not a directory: {}",
+                    resolved.display()
+                )));
+            }
+            Some(resolved)
+        }
+        None => None,
+    };
     let request = pinvou_product_backend::AgenticTaskRequest {
         prompt,
-        workspace: workspace.map(Path::to_path_buf),
+        workspace,
         timeout_secs,
     };
     let report = pinvou_product_backend::run_agentic_task(request)
         .map_err(|error| CliError::failed(format!("agent_run_failed: {error:#}")))?;
-    // TB/harness 语义:只要拿到报告就退出 0(超时/轮内错误都在报告字段里,
-    // 由 harness 的判分器结算 reward);非零退出码保留给宿主级失败(读文件、
-    // 后端不可用等)。否则超时任务会被 harness 记成 exception 而非 0 分,
-    // 均值只在幸存任务上计算,分数失真。
+    // TB/harness semantics: exit 0 whenever a report is produced (timeouts and
+    // in-turn errors live in the report fields and are settled by the
+    // harness grader); non-zero exit codes are reserved for host-level
+    // failures (unreadable file, unusable backend, ...). Otherwise a timed-out
+    // task would be recorded as an exception instead of a 0-reward run and the
+    // mean would only cover surviving tasks, skewing scores.
     Ok(CliOutcome {
         exit_code: ExitCode::Success,
-        stdout: render_agent_report(&report, output),
+        stdout: render_agent_report(&report, output)?,
     })
 }
 
@@ -1411,9 +1437,11 @@ fn run_agent(
 fn render_agent_report(
     report: &pinvou_product_backend::AgenticTaskReport,
     output: OutputMode,
-) -> String {
+) -> Result<String, CliError> {
     match output {
-        OutputMode::Json => serde_json::to_string(report).unwrap_or_default(),
+        OutputMode::Json => serde_json::to_string(report).map_err(|error| {
+            CliError::failed(format!("agent report serialization failed: {error}"))
+        }),
         OutputMode::Human => {
             let mut lines = vec![format!(
                 "session: {} status: {}",
@@ -1432,7 +1460,7 @@ fn render_agent_report(
             }
             lines.push(String::new());
             lines.push(report.assistant_text.trim_end().to_string());
-            lines.join("\n")
+            Ok(lines.join("\n"))
         }
     }
 }
@@ -1779,8 +1807,9 @@ mod tests {
 
     #[test]
     fn parse_args_rejects_oversized_agent_timeout() {
-        // u64::MAX 可正常 parse,但 Instant + Duration 会溢出 panic;
-        // 解析期必须拦下并给出带上限的用法错误。
+        // u64::MAX parses fine, but Instant + Duration would overflow and
+        // panic; the parse layer must reject it with a usage error carrying
+        // the cap.
         let error = parse_args([
             "pinvou",
             "agent",
@@ -1794,6 +1823,17 @@ mod tests {
         assert_eq!(error.exit_code(), ExitCode::Usage);
         assert!(error.to_string().contains("no greater than"));
         assert_eq!(AGENT_TIMEOUT_SECS_MAX, 7 * 24 * 60 * 60);
+    }
+
+    /// The CLI parse cap and the library clamp guard the same
+    /// `Instant + Duration` overflow; they must never diverge.
+    #[cfg(feature = "product-backend")]
+    #[test]
+    fn agent_timeout_cap_matches_library_clamp() {
+        assert_eq!(
+            AGENT_TIMEOUT_SECS_MAX,
+            pinvou_product_backend::MAX_TIMEOUT_SECS
+        );
     }
 
     #[test]
