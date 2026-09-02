@@ -390,10 +390,17 @@ fn require_gaia(values: &[String], command: &str) -> Result<(), CliError> {
     Ok(())
 }
 
+/// `agent run --timeout-secs` 的解析期上限(7 天):无上限的 u64 会让
+/// `Instant + Duration` 溢出 panic,进程以 101 退出且无报告。
+const AGENT_TIMEOUT_SECS_MAX: u64 = 7 * 24 * 60 * 60;
+
 fn parse_agent(values: &[String]) -> Result<AgentCommand, CliError> {
     match values.get(1).map(String::as_str) {
         Some("run") => {
-            let options = named_options(&values[2..], &["--prompt-file", "--workspace", "--timeout-secs"])?;
+            let options = named_options(
+                &values[2..],
+                &["--prompt-file", "--workspace", "--timeout-secs"],
+            )?;
             let prompt_file = option(&options, "--prompt-file")
                 .map(PathBuf::from)
                 .ok_or_else(|| CliError::usage("agent run requires --prompt-file"))?;
@@ -403,9 +410,12 @@ fn parse_agent(values: &[String]) -> Result<AgentCommand, CliError> {
                 Some(value) => value
                     .parse::<u64>()
                     .ok()
-                    .filter(|seconds| *seconds > 0)
+                    .filter(|seconds| *seconds > 0 && *seconds <= AGENT_TIMEOUT_SECS_MAX)
                     .ok_or_else(|| {
-                        CliError::usage("agent run requires --timeout-secs to be a positive integer")
+                        CliError::usage(format!(
+                            "agent run requires --timeout-secs to be a positive integer \
+                             no greater than {AGENT_TIMEOUT_SECS_MAX}"
+                        ))
                     })?,
             };
             Ok(AgentCommand::Run {
@@ -1375,8 +1385,11 @@ fn run_agent(
     timeout_secs: u64,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
+    // 与 lib.rs 其它 read 失败的先例一致(read_to_string -> failed):
+    // 文件不可读属宿主级失败(exit 1),不是参数用法错误——文档的退出码
+    // 契约也把"读文件失败"列在宿主级。
     let prompt = std::fs::read_to_string(prompt_file)
-        .map_err(|_| CliError::usage("agent run cannot read --prompt-file"))?;
+        .map_err(|_| CliError::failed("agent run cannot read --prompt-file"))?;
     let request = pinvou_product_backend::AgenticTaskRequest {
         prompt,
         workspace: workspace.map(Path::to_path_buf),
@@ -1762,6 +1775,25 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.exit_code(), ExitCode::Usage);
         assert!(error.to_string().contains("positive integer"));
+    }
+
+    #[test]
+    fn parse_args_rejects_oversized_agent_timeout() {
+        // u64::MAX 可正常 parse,但 Instant + Duration 会溢出 panic;
+        // 解析期必须拦下并给出带上限的用法错误。
+        let error = parse_args([
+            "pinvou",
+            "agent",
+            "run",
+            "--prompt-file",
+            "task.txt",
+            "--timeout-secs",
+            &(u64::MAX.to_string()),
+        ])
+        .unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::Usage);
+        assert!(error.to_string().contains("no greater than"));
+        assert_eq!(AGENT_TIMEOUT_SECS_MAX, 7 * 24 * 60 * 60);
     }
 
     #[test]

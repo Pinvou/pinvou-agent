@@ -1307,10 +1307,14 @@ impl PrivateOutputResolver for ProductHeadlessBackend {
     }
 }
 
-pub fn run_headless_host<T, Work, WorkFuture>(work: Work) -> Result<T>
+/// 无窗口产品宿主的共享引导:rustls/env/tokio/单一 generate_context 展开、
+/// store 启动序列、`build_pool`,最后把 `EnginePool + SessionStore` 交给工作
+/// 闭包。`run_headless_host`(评测后端)与 `run_agentic_task_headless`
+/// (agentic 单任务)都走这里,保证宿主引导只有一份实现。
+pub fn run_windowless_host<T, Work, WorkFuture>(work: Work) -> Result<T>
 where
     T: Send + 'static,
-    Work: FnOnce(Arc<dyn HeadlessAgentBackend>) -> WorkFuture + Send + 'static,
+    Work: FnOnce(EnginePool, SessionStore) -> WorkFuture + Send + 'static,
     WorkFuture: Future<Output = Result<T>> + Send + 'static,
 {
     crate::install_rustls_provider();
@@ -1337,12 +1341,10 @@ where
             store.load_pinned_sessions();
             store.load_hidden_sessions();
             app.manage(store.clone());
-            let pool = build_pool(app.handle().clone(), store)?;
-            let backend: Arc<dyn HeadlessAgentBackend> =
-                Arc::new(ProductHeadlessBackend::from_engine_pool(pool)?);
+            let pool = build_pool(app.handle().clone(), store.clone())?;
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let result = work(backend).await;
+                let result = work(pool, store).await;
                 let _ = result_tx.send(result);
                 handle.exit(0);
             });
@@ -1354,6 +1356,19 @@ where
     result_rx
         .blocking_recv()
         .context("headless host exited before work completed")?
+}
+
+pub fn run_headless_host<T, Work, WorkFuture>(work: Work) -> Result<T>
+where
+    T: Send + 'static,
+    Work: FnOnce(Arc<dyn HeadlessAgentBackend>) -> WorkFuture + Send + 'static,
+    WorkFuture: Future<Output = Result<T>> + Send + 'static,
+{
+    run_windowless_host(|pool, _store| async move {
+        let backend: Arc<dyn HeadlessAgentBackend> =
+            Arc::new(ProductHeadlessBackend::from_engine_pool(pool)?);
+        work(backend).await
+    })
 }
 
 /// 构建与 GUI 同构的 EnginePool(同 tool_factory/tool_policy 组合)。

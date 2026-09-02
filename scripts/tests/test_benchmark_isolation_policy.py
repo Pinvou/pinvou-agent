@@ -37,7 +37,7 @@ class BenchmarkIsolationPolicyTests(unittest.TestCase):
         )
         self.assertIn(
             '#[cfg(feature = "benchmark-hooks")]\n'
-            "pub use features::assistant::product_runtime::headless_bridge;",
+            "pub use features::assistant::product_runtime::{agentic_task, headless_bridge};",
             lib,
         )
 

@@ -18,12 +18,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use deepseek_tui::tui::app::AppMode;
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
 
 use crate::features::assistant::engine_pool::EnginePool;
-use crate::features::assistant::product_runtime::headless_bridge::build_pool;
+use crate::features::assistant::product_runtime::headless_bridge::run_windowless_host;
 use crate::features::assistant::product_runtime::{
-    EnginePoolRuntime, ProductChatRuntime, SessionSpec, TurnInput,
+    EnginePoolRuntime, ProductChatRuntime, SessionSpec, TurnInput, TurnResult,
 };
 use crate::features::sessions::{ExecutionRootResolver, SessionStore};
 
@@ -70,6 +69,11 @@ pub struct AgenticTaskReport {
     pub session_id: String,
     pub status: String,
     pub timed_out: bool,
+    /// 超时竞态标记:回合在截止后、取消生效前自然完成(拿到完整终态结果),
+    /// 此时 `status` 保留引擎真实状态而非 `timeout`,判分端可据此区分
+    /// "真做完但过了线"与"被取消"。
+    #[serde(default)]
+    pub completed_after_deadline: bool,
     pub assistant_text: String,
     pub tool_events: Vec<AgenticToolEvent>,
     pub usage: Option<AgenticUsageReport>,
@@ -78,49 +82,11 @@ pub struct AgenticTaskReport {
 
 /// 在窗口化 Tauri 宿主里跑一次 agentic 任务并返回结构化报告。
 ///
-/// 宿主引导与 [`super::headless_bridge::run_headless_host`] 保持同构
-/// (同一 `build_tauri_context` 展开点、同一 store 启动序列),区别仅在
-/// 交给工作闭包的是 `Arc<EnginePool>` + `SessionStore` 而非评测后端。
+/// 宿主引导复用 [`run_windowless_host`](super::headless_bridge::run_windowless_host)
+/// (与评测后端同一份实现),区别仅在交给工作闭包的是 `EnginePool` +
+/// `SessionStore` 而非评测后端。
 pub fn run_agentic_task_headless(request: AgenticTaskRequest) -> Result<AgenticTaskReport> {
-    crate::install_rustls_provider();
-    crate::ensure_release_env();
-    crate::startup_process_env();
-    let async_runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .thread_stack_size(16 * 1024 * 1024)
-        .build()
-        .context("build headless async runtime")?;
-    tauri::async_runtime::set(async_runtime.handle().clone());
-    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-    // 复用 lib.rs 的单一 generate_context 展开点:本 crate 内二次展开会在
-    // macOS 触发 embed_plist 的 _EMBED_INFO_PLIST 重复符号链接错误。
-    let mut context = crate::build_tauri_context();
-    context.config_mut().app.windows.clear();
-    let app = tauri::Builder::default()
-        .setup(move |app| {
-            if let Ok(resource_dir) = app.path().resource_dir() {
-                crate::platform::paths::set_runtime_resource_dir(resource_dir);
-            }
-            let store = SessionStore::boot().context("boot headless session store")?;
-            store.load_session_models();
-            store.load_pinned_sessions();
-            store.load_hidden_sessions();
-            app.manage(store.clone());
-            let pool = build_pool(app.handle().clone(), store.clone())?;
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let result = run_agentic_task(pool, store, request).await;
-                let _ = result_tx.send(result);
-                handle.exit(0);
-            });
-            Ok(())
-        })
-        .build(context)
-        .context("build windowless Pinvou host")?;
-    app.run_return(|_, _| {});
-    result_rx
-        .blocking_recv()
-        .context("headless host exited before work completed")?
+    run_windowless_host(|pool, store| run_agentic_task(pool, store, request))
 }
 
 /// 驱动一次 agentic 轮次:绑定执行根 → 钉住 active model → Yolo 提交 →
@@ -206,48 +172,79 @@ async fn run_turn(
     // `wait_for_completion` 内部是"轮次活跃即继续轮询"的无界等待;超时路径
     // 上取消可能无法让引擎真正停下,这里以沉淀窗口为界截断:取消后轮次仍
     // 活跃就放弃完整 TurnResult,直接产出超时报告,绝不无限等待。
-    let turn_result = if timed_out && runtime.is_turn_active(session_id) {
-        None
+    enum TurnOutcome {
+        Done(TurnResult),
+        AbandonedAfterCancel,
+        WaitFailed(anyhow::Error),
+    }
+    let turn_outcome = if timed_out && runtime.is_turn_active(session_id) {
+        TurnOutcome::AbandonedAfterCancel
     } else {
-        runtime.wait_for_completion(&handle).await.ok()
+        // 读取失败(read_timeline/load_eval_transcript 等)与超时无关:伪装成
+        // timeout 会吞掉真实根因,这里显式分流出 error 报告。
+        match runtime.wait_for_completion(&handle).await {
+            Ok(turn) => TurnOutcome::Done(turn),
+            Err(error) => TurnOutcome::WaitFailed(error),
+        }
     };
-    match turn_result {
-        Some(turn) => Ok(AgenticTaskReport {
-            session_id: session_id.to_owned(),
-            status: if timed_out {
+    match turn_outcome {
+        TurnOutcome::Done(turn) => {
+            // 超时竞态:截止后、取消生效前回合自然完成(cancel 对已完成轮次
+            // 是 no-op),拿到的是完整终态——保留引擎真实状态并打
+            // completed_after_deadline 标记,由判分端决策;取消引发的
+            // Failed/Cancelled 是超时的后果,仍按 timeout 报告。
+            let completed_after_deadline =
+                timed_out && turn.status.eq_ignore_ascii_case("completed");
+            let status = if timed_out && !completed_after_deadline {
                 "timeout".to_string()
             } else {
                 turn.status
-            },
-            timed_out,
-            assistant_text: turn.assistant_text,
-            tool_events: turn
-                .tool_events
-                .into_iter()
-                .map(|event| AgenticToolEvent {
-                    name: event.name,
-                    failed: event.failed,
-                })
-                .collect(),
-            usage: turn.usage.map(|usage| AgenticUsageReport {
-                input_tokens: usage.input_tokens,
-                output_tokens: usage.output_tokens,
-                cache_hit_tokens: usage.cache_hit_tokens,
-                cache_miss_tokens: usage.cache_miss_tokens,
-                cache_write_tokens: usage.cache_write_tokens,
-                reasoning_tokens: usage.reasoning_tokens,
-                context_window: usage.context_window,
-            }),
-            error: turn.error,
-        }),
-        None => Ok(AgenticTaskReport {
+            };
+            Ok(AgenticTaskReport {
+                session_id: session_id.to_owned(),
+                status,
+                timed_out,
+                completed_after_deadline,
+                assistant_text: turn.assistant_text,
+                tool_events: turn
+                    .tool_events
+                    .into_iter()
+                    .map(|event| AgenticToolEvent {
+                        name: event.name,
+                        failed: event.failed,
+                    })
+                    .collect(),
+                usage: turn.usage.map(|usage| AgenticUsageReport {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    cache_hit_tokens: usage.cache_hit_tokens,
+                    cache_miss_tokens: usage.cache_miss_tokens,
+                    cache_write_tokens: usage.cache_write_tokens,
+                    reasoning_tokens: usage.reasoning_tokens,
+                    context_window: usage.context_window,
+                }),
+                error: turn.error,
+            })
+        }
+        TurnOutcome::AbandonedAfterCancel => Ok(AgenticTaskReport {
             session_id: session_id.to_owned(),
             status: "timeout".to_string(),
-            timed_out,
+            timed_out: true,
+            completed_after_deadline: false,
             assistant_text: String::new(),
             tool_events: Vec::new(),
             usage: None,
             error: Some("agent turn did not settle after cancel".to_string()),
+        }),
+        TurnOutcome::WaitFailed(error) => Ok(AgenticTaskReport {
+            session_id: session_id.to_owned(),
+            status: "error".to_string(),
+            timed_out: false,
+            completed_after_deadline: false,
+            assistant_text: String::new(),
+            tool_events: Vec::new(),
+            usage: None,
+            error: Some(format!("failed to read turn result: {error:#}")),
         }),
     }
 }
@@ -263,21 +260,17 @@ fn fresh_session_id() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        AgenticTaskReport, AgenticTaskRequest, AgenticToolEvent, DEFAULT_TIMEOUT_SECS,
-    };
+    use super::{AgenticTaskReport, AgenticTaskRequest, AgenticToolEvent, DEFAULT_TIMEOUT_SECS};
 
     #[test]
     fn request_defaults_timeout_and_workspace() {
-        let request: AgenticTaskRequest =
-            serde_json::from_str(r#"{"prompt":"do it"}"#).unwrap();
+        let request: AgenticTaskRequest = serde_json::from_str(r#"{"prompt":"do it"}"#).unwrap();
         assert_eq!(request.timeout_secs, DEFAULT_TIMEOUT_SECS);
         assert!(request.workspace.is_none());
 
-        let request: AgenticTaskRequest = serde_json::from_str(
-            r#"{"prompt":"p","workspace":"/tmp/task","timeout_secs":42}"#,
-        )
-        .unwrap();
+        let request: AgenticTaskRequest =
+            serde_json::from_str(r#"{"prompt":"p","workspace":"/tmp/task","timeout_secs":42}"#)
+                .unwrap();
         assert_eq!(request.timeout_secs, 42);
         assert_eq!(
             request.workspace,
@@ -289,8 +282,9 @@ mod tests {
     fn report_roundtrips_without_leaking_tool_payloads() {
         let report = AgenticTaskReport {
             session_id: "agentic_1_0".to_string(),
-            status: "ok".to_string(),
-            timed_out: false,
+            status: "Completed".to_string(),
+            timed_out: true,
+            completed_after_deadline: true,
             assistant_text: "done".to_string(),
             tool_events: vec![AgenticToolEvent {
                 name: "Bash".to_string(),
@@ -301,8 +295,26 @@ mod tests {
         };
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"name\":\"Bash\""));
+        assert!(json.contains("\"completed_after_deadline\":true"));
         assert!(!json.contains("secret"));
         let parsed: AgenticTaskReport = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, report);
+    }
+
+    #[test]
+    fn report_deserializes_without_new_marker_field() {
+        // 旧报告(无 completed_after_deadline)必须仍可解析,默认 false。
+        let json = r#"{
+            "session_id":"agentic_1_0",
+            "status":"timeout",
+            "timed_out":true,
+            "assistant_text":"",
+            "tool_events":[],
+            "usage":null,
+            "error":null
+        }"#;
+        let parsed: AgenticTaskReport = serde_json::from_str(json).unwrap();
+        assert!(!parsed.completed_after_deadline);
+        assert_eq!(parsed.status, "timeout");
     }
 }
