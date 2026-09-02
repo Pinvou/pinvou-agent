@@ -171,7 +171,7 @@
       att.error = e && e.code === "device_upload_empty"
         ? bt("attachEmptyFile")
         : e && e.code === "device_upload_too_large"
-          ? bt("attachTooLarge")
+          ? "attachment_file_too_large"
           : e && e.code === "device_upload_cancelled"
             ? bt("attachAddCancelled")
             : e && e.code === "device_upload_invalid_result"

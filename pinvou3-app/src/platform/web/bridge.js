@@ -399,6 +399,8 @@
       imageUnknown: "Image input capability of the current model is unknown. If it supports images, set image input to “Supports images” in model settings; you can also configure a vision model.",
       attachStillUploading: "⚠️ Attachment still uploading, try again shortly",
       deviceUploadTooLarge: name => `⚠️ ${name} exceeds the 20 MB attachment limit`,
+      archiveTooManyEntries: "the archive contains more than 50 entries and cannot be attached",
+      archiveExpandedTooLarge: "the archive expands beyond 100 MB and cannot be attached",
       deviceUploadEmpty: name => `⚠️ ${name} is empty and cannot be attached`,
       deviceUploadFailed: "⚠️ Upload failed: ",
       deviceUploadDigestInvalid: "the attachment integrity digest was invalid. Try again.",
@@ -510,6 +512,8 @@
       imageUnknown: "現在のモデルの画像入力能力は不明です。画像に対応している場合は、モデル設定で画像入力能力を「画像対応」に設定してください。ビジョンモデルを構成することもできます。",
       attachStillUploading: "⚠️ 添付ファイルをアップロード中です。少し待ってから送信してください",
       deviceUploadTooLarge: name => `⚠️ ${name} は添付の上限 20 MB を超えています`,
+      archiveTooManyEntries: "アーカイブに 50 個を超える項目が含まれているため添付できません",
+      archiveExpandedTooLarge: "アーカイブの展開後サイズが 100 MB を超えるため添付できません",
       deviceUploadEmpty: name => `⚠️ ${name} は空のため添付できません`,
       deviceUploadFailed: "⚠️ アップロードに失敗: ",
       deviceUploadDigestInvalid: "添付ファイルの整合性ダイジェストが無効です。もう一度お試しください。",
@@ -621,6 +625,8 @@
       imageUnknown: "当前模型的图片输入能力未知。如果它支持图片，请在模型设置中将图片输入能力设为“支持图片”后重试；也可以配置视觉模型。",
       attachStillUploading: "⚠️ 附件还在上传,请稍后再发",
       deviceUploadTooLarge: name => `⚠️ ${name} 超过附件 20 MB 上限`,
+      archiveTooManyEntries: "压缩包包含超过 50 个条目，无法添加",
+      archiveExpandedTooLarge: "压缩包解压后超过 100 MB，无法添加",
       deviceUploadEmpty: name => `⚠️ ${name} 是空文件，无法添加`,
       deviceUploadFailed: "⚠️ 上传失败: ",
       deviceUploadDigestInvalid: "附件完整性校验值无效，请重试",
@@ -8196,6 +8202,39 @@
     } catch (e) { att.status = "error"; att.error = String(e); }
     notify();
   }
+
+  function attachmentLimitDisplayError(error, fileName) {
+    const raw = String(error && error.message ? error.message : error);
+    if ((error && error.code === "device_upload_too_large") || raw === "attachment_file_too_large") {
+      return { code: "attachment_file_too_large", message: bt("deviceUploadTooLarge")(fileName) };
+    }
+    if (raw === "attachment_archive_too_many_entries") {
+      return { code: raw, message: bt("archiveTooManyEntries") };
+    }
+    if (raw === "attachment_archive_expanded_too_large") {
+      return { code: raw, message: bt("archiveExpandedTooLarge") };
+    }
+    return null;
+  }
+
+  function deviceUploadDisplayError(error, fileName) {
+    const limitError = attachmentLimitDisplayError(error, fileName);
+    if (limitError) return limitError;
+    const rawUploadError = String(error && error.message ? error.message : error);
+    if (error && error.code === "device_upload_empty") {
+      const message = bt("deviceUploadEmpty")(fileName);
+      return { code: message, message };
+    }
+    if (rawUploadError === "web_attachment_digest_invalid") {
+      const message = bt("deviceUploadDigestInvalid");
+      return { code: message, message };
+    }
+    if (rawUploadError === "web_attachment_integrity_mismatch") {
+      const message = bt("deviceUploadIntegrityMismatch");
+      return { code: message, message };
+    }
+    return { code: rawUploadError, message: rawUploadError };
+  }
   async function addPasteImage(filename, bytes) {
     try {
       const path = await invoke("save_paste_image", { filename, bytes });
@@ -8286,21 +8325,12 @@
     } catch (e) {
       if (!e || e.code !== "device_upload_cancelled") {
         att.status = "error";
-        // Desktop integrity failures come back as a stable wire code
-        // (transfer.rs) and map to the current language; other errors keep
-        // their raw text (existing behavior; translation convergence is a
-        // separate follow-up).
-        const rawUploadError = String(e && e.message ? e.message : e);
-        att.error = e && e.code === "device_upload_empty"
-          ? bt("deviceUploadEmpty")(file.name)
-          : e && e.code === "device_upload_too_large"
-            ? bt("deviceUploadTooLarge")(file.name)
-            : rawUploadError === "web_attachment_digest_invalid"
-              ? bt("deviceUploadDigestInvalid")
-              : rawUploadError === "web_attachment_integrity_mismatch"
-                ? bt("deviceUploadIntegrityMismatch")
-                : rawUploadError;
-        addSystemItem(bt("deviceUploadFailed") + att.error);
+        // Desktop preflight and integrity failures come back as stable wire
+        // codes. Keep limit codes on the chip so React can translate them when
+        // the active language changes; system notices are translated here.
+        const displayError = deviceUploadDisplayError(e, file.name);
+        att.error = displayError.code;
+        addSystemItem(bt("deviceUploadFailed") + displayError.message);
       }
     }
     notify();

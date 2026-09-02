@@ -731,7 +731,7 @@ pub async fn web_access_upload_attachment_chunk(
             .map_err(|error| format!("write uploaded attachment: {error}"))?;
         file.write_all(&bytes)
             .map_err(|error| format!("write uploaded attachment: {error}"))?;
-        Ok(crate::features::files::file_ingest::ingest(&path))
+        crate::features::files::file_ingest::ingest_attachment(&path)
     })
     .await
     .map_err(|error| format!("ingest uploaded attachment task: {error}"))

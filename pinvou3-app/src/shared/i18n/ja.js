@@ -324,7 +324,7 @@ const jaBase = {
           transcriptReadFailed:'⚠️ 会話記録の読み込みに失敗しました。自動的に再試行しています…',
         },
         uiHomeMode: { work:'作業', design:'デザイン', code:'コード', providerSettings:'プロバイダー設定' },
-        uiAttachments: { parsing:'解析中', failed:'失敗', remove:name=>`添付ファイル ${name} を削除`, dropRelease:'ドロップして添付', dropWebTitle:'あらゆる内容を追加', dropWebHint:'ファイルをここにドロップして会話に追加できます' },
+        uiAttachments: { parsing:'解析中', failed:'失敗', remove:name=>`添付ファイル ${name} を削除`, dropRelease:'ドロップして添付', dropWebTitle:'あらゆる内容を追加', dropWebHint:'ファイルをここにドロップして会話に追加できます', fileTooLarge:'ファイルが添付上限の 20 MB を超えているため追加できません', archiveTooManyEntries:'圧縮ファイルに 50 件を超える項目が含まれているため追加できません', archiveExpandedTooLarge:'展開後のサイズが 100 MB を超えるため追加できません' },
         uiCodex: codexJa,
         uiAcpProviders: acpProvidersJa,
 

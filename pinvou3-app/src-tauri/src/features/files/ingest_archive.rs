@@ -8,10 +8,14 @@
 
 use std::path::{Path, PathBuf};
 
+use super::AttachmentLimitViolation;
 use super::IngestResult;
 use super::classify;
 use super::ingest;
 use super::ingest_deps::{archive_tool_command, system_tools};
+
+const MAX_ARCHIVE_ENTRIES: usize = 50;
+const MAX_ARCHIVE_EXPANDED_BYTES: u64 = 100 * 1024 * 1024;
 
 /// 压缩包（.zip/.rar/.7z）：先用 7z 列出内容做炸弹预检（条目数 + 解压后总大小，
 /// 解压前就拦），通过后解压到临时目录，递归调主 `ingest` 处理每个文件并汇总。
@@ -22,35 +26,21 @@ pub(super) fn ingest_archive(
     basename: String,
     path_str: String,
     byte_size: u64,
-) -> IngestResult {
-    const MAX_ENTRIES: usize = 50;
-    const MAX_TOTAL_BYTES: u64 = 100 * 1024 * 1024; // 解压后总量上限，防压缩炸弹
-
+) -> Result<IngestResult, AttachmentLimitViolation> {
     let mk_err = |msg: String| {
         IngestResult::warning("archive", &basename, Path::new(&path_str), byte_size, msg)
     };
 
     if !system_tools().sevenzip {
-        return mk_err(archive_tool_missing_message());
+        return Ok(mk_err(archive_tool_missing_message()));
     }
 
     // 预检：解压前就用 7z 列表拦截压缩炸弹。
     match archive_list_stats(path) {
         Ok((count, total)) => {
-            if count > MAX_ENTRIES {
-                return mk_err(format!(
-                    "压缩包条目过多（{count} > {MAX_ENTRIES}），拒绝展开"
-                ));
-            }
-            if total > MAX_TOTAL_BYTES {
-                return mk_err(format!(
-                    "压缩包解压后约 {:.0} MB，超过 {} MB 上限（疑似压缩炸弹），拒绝展开",
-                    total as f64 / 1024.0 / 1024.0,
-                    MAX_TOTAL_BYTES / 1024 / 1024
-                ));
-            }
+            check_archive_limits(byte_size, count, total)?;
         }
-        Err(e) => return mk_err(format!("压缩包内容读取失败: {e}")),
+        Err(e) => return Ok(mk_err(format!("压缩包内容读取失败: {e}"))),
     }
 
     let ts = std::time::SystemTime::now()
@@ -59,7 +49,7 @@ pub(super) fn ingest_archive(
         .unwrap_or(0);
     let tmpdir = std::env::temp_dir().join(format!("pinvou3-archive-{ts}"));
     if let Err(e) = std::fs::create_dir_all(&tmpdir) {
-        return mk_err(format!("创建临时目录失败: {e}"));
+        return Ok(mk_err(format!("创建临时目录失败: {e}")));
     }
 
     let extract = archive_tool_command()
@@ -74,12 +64,12 @@ pub(super) fn ingest_archive(
             Err(e) => e.to_string(),
         };
         let _ = std::fs::remove_dir_all(&tmpdir);
-        return mk_err(format!("7z 解压失败: {detail}"));
+        return Ok(mk_err(format!("7z 解压失败: {detail}")));
     }
 
     // 递归收集文件，对每个调主 ingest；嵌套压缩包不展开。
     let mut files = Vec::new();
-    collect_files(&tmpdir, &mut files, MAX_ENTRIES);
+    collect_files(&tmpdir, &mut files, MAX_ARCHIVE_ENTRIES);
 
     let mut sections = Vec::new();
     for f in &files {
@@ -108,7 +98,7 @@ pub(super) fn ingest_archive(
     let _ = std::fs::remove_dir_all(&tmpdir);
 
     if sections.is_empty() {
-        return mk_err("压缩包为空或无可识别文件".into());
+        return Ok(mk_err("压缩包为空或无可识别文件".into()));
     }
     let content = format!(
         "压缩包 {} 含 {} 个文件：\n\n{}",
@@ -116,7 +106,31 @@ pub(super) fn ingest_archive(
         files.len(),
         sections.join("\n")
     );
-    IngestResult::with_markdown("archive", &basename, path, byte_size, content)
+    Ok(IngestResult::with_markdown(
+        "archive", &basename, path, byte_size, content,
+    ))
+}
+
+fn check_archive_limits(
+    archive_byte_size: u64,
+    entries: usize,
+    expanded_bytes: u64,
+) -> Result<(), AttachmentLimitViolation> {
+    if entries > MAX_ARCHIVE_ENTRIES {
+        return Err(AttachmentLimitViolation::ArchiveTooManyEntries {
+            archive_byte_size,
+            entries,
+            max_entries: MAX_ARCHIVE_ENTRIES,
+        });
+    }
+    if expanded_bytes > MAX_ARCHIVE_EXPANDED_BYTES {
+        return Err(AttachmentLimitViolation::ArchiveExpandedTooLarge {
+            archive_byte_size,
+            expanded_bytes,
+            max_bytes: MAX_ARCHIVE_EXPANDED_BYTES,
+        });
+    }
+    Ok(())
 }
 
 /// `7z l -slt` 列出条目，返回 (文件数, 解压后总字节)。用于解压前的炸弹预检。
@@ -181,6 +195,29 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>, limit: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn archive_limits_accept_boundaries_and_reject_excess() {
+        assert!(
+            check_archive_limits(1024, MAX_ARCHIVE_ENTRIES, MAX_ARCHIVE_EXPANDED_BYTES).is_ok()
+        );
+        assert_eq!(
+            check_archive_limits(1024, MAX_ARCHIVE_ENTRIES + 1, 1),
+            Err(AttachmentLimitViolation::ArchiveTooManyEntries {
+                archive_byte_size: 1024,
+                entries: MAX_ARCHIVE_ENTRIES + 1,
+                max_entries: MAX_ARCHIVE_ENTRIES,
+            })
+        );
+        assert_eq!(
+            check_archive_limits(2048, 1, MAX_ARCHIVE_EXPANDED_BYTES + 1),
+            Err(AttachmentLimitViolation::ArchiveExpandedTooLarge {
+                archive_byte_size: 2048,
+                expanded_bytes: MAX_ARCHIVE_EXPANDED_BYTES + 1,
+                max_bytes: MAX_ARCHIVE_EXPANDED_BYTES,
+            })
+        );
+    }
 
     #[test]
     fn windows_archive_missing_message_points_to_bundled_runtime() {

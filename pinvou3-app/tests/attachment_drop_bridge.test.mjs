@@ -137,4 +137,14 @@ await new Promise(resolve => { setTimeout(resolve, 0); });
 assert.equal(invokedCommands.at(-1).command, 'discard_dropped_attachment');
 assert.equal(invokedCommands.at(-1).args.sessionId, 'session_test_123');
 
+const oversized = fakeFile('oversized.zip');
+oversized.size = 20 * 1024 * 1024 + 1;
+await api.uploadDeviceFiles([oversized]);
+assert.equal(state.attachments.at(-1).status, 'error');
+assert.equal(
+  state.attachments.at(-1).error,
+  'attachment_file_too_large',
+  'browser preflight failures must use the same stable code as backend rejection',
+);
+
 console.log('attachment drop bridge tests passed');

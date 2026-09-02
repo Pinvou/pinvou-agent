@@ -58,6 +58,87 @@ use serde::{Deserialize, Serialize};
 /// ≤ 此值,否则 20-64MiB 文件会被 mobile 接受但 file_ingest 静默降级为 oversize 兜底)。
 pub const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 
+pub const ATTACHMENT_FILE_TOO_LARGE: &str = "attachment_file_too_large";
+pub const ATTACHMENT_ARCHIVE_TOO_MANY_ENTRIES: &str = "attachment_archive_too_many_entries";
+pub const ATTACHMENT_ARCHIVE_EXPANDED_TOO_LARGE: &str = "attachment_archive_expanded_too_large";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AttachmentLimitViolation {
+    FileTooLarge {
+        byte_size: u64,
+        max_bytes: u64,
+    },
+    ArchiveTooManyEntries {
+        archive_byte_size: u64,
+        entries: usize,
+        max_entries: usize,
+    },
+    ArchiveExpandedTooLarge {
+        archive_byte_size: u64,
+        expanded_bytes: u64,
+        max_bytes: u64,
+    },
+}
+
+impl AttachmentLimitViolation {
+    fn wire_code(self) -> &'static str {
+        match self {
+            Self::FileTooLarge { .. } => ATTACHMENT_FILE_TOO_LARGE,
+            Self::ArchiveTooManyEntries { .. } => ATTACHMENT_ARCHIVE_TOO_MANY_ENTRIES,
+            Self::ArchiveExpandedTooLarge { .. } => ATTACHMENT_ARCHIVE_EXPANDED_TOO_LARGE,
+        }
+    }
+
+    fn into_warning(self, path: &Path) -> IngestResult {
+        let basename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("(unnamed)");
+        match self {
+            Self::FileTooLarge {
+                byte_size,
+                max_bytes,
+            } => IngestResult::warning(
+                "oversize",
+                basename,
+                path,
+                byte_size,
+                format!(
+                    "文件 {:.1} MB 超过 {} MB 上限,请拆分或裁剪",
+                    byte_size as f64 / 1024.0 / 1024.0,
+                    max_bytes / 1024 / 1024
+                ),
+            ),
+            Self::ArchiveTooManyEntries {
+                archive_byte_size,
+                entries,
+                max_entries,
+            } => IngestResult::warning(
+                "archive",
+                basename,
+                path,
+                archive_byte_size,
+                format!("压缩包条目过多（{entries} > {max_entries}），拒绝展开"),
+            ),
+            Self::ArchiveExpandedTooLarge {
+                archive_byte_size,
+                expanded_bytes,
+                max_bytes,
+            } => IngestResult::warning(
+                "archive",
+                basename,
+                path,
+                archive_byte_size,
+                format!(
+                    "压缩包解压后约 {:.0} MB，超过 {} MB 上限（疑似压缩炸弹），拒绝展开",
+                    expanded_bytes as f64 / 1024.0 / 1024.0,
+                    max_bytes / 1024 / 1024
+                ),
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestResult {
     /// 类型分类：text / pdf / docx / xlsx / image / binary
@@ -146,8 +227,20 @@ fn estimate_tokens(text: &str) -> u32 {
     (chars as f64 / 1.6).ceil() as u32
 }
 
-/// 主入口：派发到不同处理函数，返回统一 IngestResult。
+/// Generic ingest keeps limit failures as warning placeholders for non-chat
+/// callers such as knowledge indexing. Chat attachment entry points must use
+/// [`ingest_attachment`] so a rejected file never becomes a sendable chip.
 pub fn ingest(path: &Path) -> IngestResult {
+    ingest_checked(path).unwrap_or_else(|violation| violation.into_warning(path))
+}
+
+/// Ingest a user-selected chat attachment and reject hard size/archive limits
+/// with stable wire codes that the three UI languages can render locally.
+pub fn ingest_attachment(path: &Path) -> Result<IngestResult, String> {
+    ingest_checked(path).map_err(|violation| violation.wire_code().to_string())
+}
+
+fn ingest_checked(path: &Path) -> Result<IngestResult, AttachmentLimitViolation> {
     let basename = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -157,27 +250,21 @@ pub fn ingest(path: &Path) -> IngestResult {
     let meta = match std::fs::metadata(path) {
         Ok(m) => m,
         Err(e) => {
-            return IngestResult::warning(
+            return Ok(IngestResult::warning(
                 "missing",
                 &basename,
                 path,
                 0,
                 format!("文件不存在: {e}"),
-            );
+            ));
         }
     };
     let byte_size = meta.len();
     if byte_size > MAX_FILE_BYTES {
-        return IngestResult::warning(
-            "oversize",
-            &basename,
-            path,
+        return Err(AttachmentLimitViolation::FileTooLarge {
             byte_size,
-            format!(
-                "文件 {:.1} MB 超过 20 MB 上限,请拆分或裁剪",
-                byte_size as f64 / 1024.0 / 1024.0
-            ),
-        );
+            max_bytes: MAX_FILE_BYTES,
+        });
     }
 
     let ext = path
@@ -187,7 +274,7 @@ pub fn ingest(path: &Path) -> IngestResult {
         .unwrap_or_default();
     let kind = classify(&ext);
 
-    match kind {
+    let result = match kind {
         "text" => text_decode::ingest_text(path, basename, path_str, byte_size),
         "pdf" => ingest_pdf::ingest_pdf(path, basename, path_str, byte_size),
         // 文字文档：pandoc 原生支持 docx/odt。
@@ -201,7 +288,7 @@ pub fn ingest(path: &Path) -> IngestResult {
             ingest_office::ingest_spreadsheet(path, basename, path_str, byte_size, &ext)
         }
         "image" => visual_preview::ingest_image(path, basename, path_str, byte_size),
-        "archive" => ingest_archive::ingest_archive(path, basename, path_str, byte_size),
+        "archive" => return ingest_archive::ingest_archive(path, basename, path_str, byte_size),
         "email" => ingest_email::ingest_email(path, basename, path_str, byte_size, &ext),
         "media" => media_placeholder(basename, path_str, byte_size),
         // 私钥 / 密钥库:绝不读正文(防泄露给 LLM)。见 classify 的 "secret" 分支。
@@ -209,7 +296,8 @@ pub fn ingest(path: &Path) -> IngestResult {
         // 未知扩展名 / 无扩展名:不再一刀切 binary,先内容嗅探。是文本就当文本读
         // (让模型看到内容 —— 这是「接受任何文件」的根本解),真二进制才降级。
         _ => text_decode::sniff_text_or_binary(path, basename, path_str, byte_size),
-    }
+    };
+    Ok(result)
 }
 
 /// 按「文档类型」而非新旧分流：pandoc 只吃 docx/odt，pptx/ppt/xlsx/ods/xls 一律
@@ -817,6 +905,10 @@ mod tests {
         let r = ingest(&tmp);
         assert_eq!(r.kind, "oversize");
         assert!(r.warning.is_some());
+        assert_eq!(
+            ingest_attachment(&tmp).unwrap_err(),
+            ATTACHMENT_FILE_TOO_LARGE
+        );
         std::fs::remove_file(&tmp).ok();
     }
 
