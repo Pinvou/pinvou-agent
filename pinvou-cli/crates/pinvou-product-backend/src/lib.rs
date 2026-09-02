@@ -12,3 +12,14 @@ where
 {
     pinvou3_lib::headless_bridge::run_headless_host(work)
 }
+
+/// Run one agentic single task in the windowed product host
+/// (product-equivalent toolchain, including shell). Types are re-exported
+/// through `pinvou3_lib` so callers need no engine-internal dependency.
+pub fn run_agentic_task(
+    request: pinvou3_lib::agentic_task::AgenticTaskRequest,
+) -> Result<pinvou3_lib::agentic_task::AgenticTaskReport> {
+    pinvou3_lib::agentic_task::run_agentic_task_headless(request)
+}
+
+pub use pinvou3_lib::agentic_task::{AgenticTaskReport, AgenticTaskRequest, MAX_TIMEOUT_SECS};
