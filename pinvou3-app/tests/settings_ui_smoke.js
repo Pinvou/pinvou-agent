@@ -1054,6 +1054,47 @@ async function modalWidth(page, headingText) {
   await clickExact(page, '取消');
   await sleep(200);
 
+  // noControl 模型（思考永开不可控，如 deepseek-r1）叠加在探测档位之上：探测
+  // 完成后档位区显示「思考始终开启」提示，而非档位按钮或「端点不支持」提示。
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '云端模型');
+  await sleep(150);
+  await clickExact(page, 'OpenAI Compatible');
+  await sleep(250);
+  const r1ModelInput = await page.evaluateHandle(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const label = dialog && [...dialog.querySelectorAll('label,span')].find(node => (node.textContent || '').trim() === '模型 ID');
+    const row = label && label.closest('div');
+    return row && row.querySelector('input');
+  });
+  await r1ModelInput.type('deepseek-r1:14b', { delay: 10 });
+  const r1BaseUrlInput = await page.evaluateHandle(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const label = dialog && [...dialog.querySelectorAll('label,span')].find(node => (node.textContent || '').trim() === 'API 地址');
+    const row = label && label.closest('div');
+    return row && row.querySelector('input');
+  });
+  await r1BaseUrlInput.type('http://127.0.0.1:8000/v1', { delay: 20 });
+  // 越过 400ms debounce，探测返回 null（mock 默认）→ 知识表 noControl 仍优先生效
+  await sleep(700);
+  const r1Effort = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const text = dialog ? dialog.innerText : '';
+    const effortRow = [...(dialog ? dialog.querySelectorAll('span') : [])].find(node => (node.textContent || '').trim() === '思考深度');
+    const buttons = effortRow && effortRow.parentElement ? [...effortRow.parentElement.querySelectorAll('button')].map(node => (node.textContent || '').trim()) : [];
+    return {
+      alwaysOnShown: text.includes('该模型思考始终开启，无法关闭'),
+      unsupportedHidden: !text.includes('该端点不支持思考档位调节'),
+      noTierButtons: buttons.length === 0,
+    };
+  });
+  rec('⑥.5e noControl 模型（deepseek-r1）本地路由显示「思考始终开启」提示，无档位按钮',
+    r1Effort.alwaysOnShown && r1Effort.unsupportedHidden && r1Effort.noTierButtons,
+    JSON.stringify(r1Effort));
+  await clickExact(page, '取消');
+  await sleep(200);
+
   await clickExact(page, '添加模型');
   await sleep(300);
   const cloudPickerWidth = await modalWidth(page, '添加模型');

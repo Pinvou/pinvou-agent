@@ -17,7 +17,7 @@ import {
   groupModelsForSelector,
   selectorMainLabel,
   reasoningEffortTiersForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort,
-  localProbeTiersForKind, reasoningEffortDisplayForTiers, baseUrlUsesLocalOrPrivate,
+  alwaysThinkingSpecForModel, localReasoningTiers, reasoningEffortDisplayForTiers, baseUrlUsesLocalOrPrivate,
 } from './model-catalog.js';
 import { CommunityPanel } from './CommunityPanel.jsx';
 import { COMMUNITY_DISCUSSIONS_URL, COMMUNITY_QQ_GROUP_NAME, COMMUNITY_QQ_GROUP_NUMBER, COMMUNITY_QQ_QR_IMAGE_SRC } from './community-config.js';
@@ -840,8 +840,12 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         return () => { cancelled = true; clearTimeout(timer); };
       }, [isLocalCompatible, baseUrl, apiKey, initial.id, initial.__new, probeSupported]);
       const reasoningEffortTiers = isLocalCompatible
-        ? (probePending ? [] : (localProbeTiersForKind(probedKind) || []))
+        ? (probePending ? [] : (localReasoningTiers(model, probedKind) || []))
         : (reasoningEffortTiersForModel({ preset, model, vendor, base_url: baseUrl, provider_kind: providerKind }) || []);
+      // 本地路由（vllm preset / 本地兼容端点）命中「思考永开、不可控」知识表：
+      // 档位区显示「思考始终开启」提示而非探测不支持。
+      const localNoControlThinking = (preset === 'local_vllm' || isLocalCompatible)
+        && !!(alwaysThinkingSpecForModel(model) || {}).noControl;
       // Highlight fallback: the form value is normalized against the static
       // four tiers (stored low/medium keep their values), but once ollama is
       // probed only the off/high tiers render, so those values would land on
@@ -1746,7 +1750,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                 </section>
               )}
               {renderImageInputSection()}
-              {(showConfigFields && (reasoningEffortTiers.length > 0 || isLocalCompatible)) && (
+              {(showConfigFields && (reasoningEffortTiers.length > 0 || isLocalCompatible || localNoControlThinking)) && (
                 <section>
                   <div className={formGroup}>
                     <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
@@ -1770,7 +1774,9 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                         <span className={`ml-auto text-right text-[12px] leading-4 ${probePending ? 'text-[#8A8A8E] dark:text-[#98989D]' : 'text-[#FF9500] dark:text-[#FFB340]'}`}>
                           {probePending
                             ? (settingsCopy.reasoningProbePending || '正在探测服务类型…')
-                            : (settingsCopy.reasoningProbeUnsupported || '该端点不支持思考档位调节')}
+                            : localNoControlThinking
+                              ? (settingsCopy.reasoningThinkingAlwaysOn || '该模型思考始终开启，无法关闭')
+                              : (settingsCopy.reasoningProbeUnsupported || '该端点不支持思考档位调节')}
                         </span>
                       )}
                     </div>

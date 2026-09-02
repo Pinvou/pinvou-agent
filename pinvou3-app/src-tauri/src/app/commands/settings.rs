@@ -307,6 +307,13 @@ pub async fn probe_local_server_kind(
     Ok(match kind {
         crate::core::model_endpoint::LocalServerKind::Vllm => "vllm".to_string(),
         crate::core::model_endpoint::LocalServerKind::Ollama => "ollama".to_string(),
+        crate::core::model_endpoint::LocalServerKind::Sglang => "sglang".to_string(),
+        crate::core::model_endpoint::LocalServerKind::LlamaCpp => "llamacpp".to_string(),
+        crate::core::model_endpoint::LocalServerKind::KoboldCpp => "koboldcpp".to_string(),
+        crate::core::model_endpoint::LocalServerKind::LmDeploy => "lmdeploy".to_string(),
+        crate::core::model_endpoint::LocalServerKind::DockerModelRunner => {
+            "dockermodelrunner".to_string()
+        }
         crate::core::model_endpoint::LocalServerKind::LmStudio => "lmstudio".to_string(),
         crate::core::model_endpoint::LocalServerKind::Generic => "generic".to_string(),
     })

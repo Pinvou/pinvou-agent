@@ -32,6 +32,7 @@ use deepseek_tui::tui::app::AppMode;
 
 use self::bundle::{Pinvou3Bundle, instructions_code_md, instructions_md};
 use self::prefs::{ModelPreset, SavedModel, UserPrefs};
+use crate::core::always_thinking::{AlwaysThinkingSpec, always_thinking_spec};
 use crate::core::model_endpoint::LocalServerKind;
 use crate::core::session_mode::SessionMode;
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
@@ -811,7 +812,19 @@ impl Pinvou3Bridge {
                 if base_url_uses_local_or_private(&self.base_url()) {
                     match self.probed_local_kind {
                         Some(LocalServerKind::Ollama) => return "ollama".to_string(),
-                        Some(LocalServerKind::Vllm) => return "vllm".to_string(),
+                        // SGLang / llama.cpp / KoboldCpp / LMDeploy / Docker
+                        // Model Runner 都支持 chat_template_kwargs.enable_thinking
+                        // 与 reasoning_effort 透传，与 vLLM wire 同构；底座自带的
+                        // sglang provider 目前是 DeepSeek 兼容路由、不适合本地通用
+                        // 服务，故统一映射到 vllm provider。
+                        Some(
+                            LocalServerKind::Vllm
+                            | LocalServerKind::Sglang
+                            | LocalServerKind::LlamaCpp
+                            | LocalServerKind::KoboldCpp
+                            | LocalServerKind::LmDeploy
+                            | LocalServerKind::DockerModelRunner,
+                        ) => return "vllm".to_string(),
                         _ => {}
                     }
                 }
@@ -862,6 +875,9 @@ impl Pinvou3Bridge {
     /// 优先级：用户显式设置的 `SavedModel.reasoning_effort` > provider 默认
     /// （本地模型——vLLM 与探测出的 Ollama——默认 off 防 SSE timeout；其余默认
     /// high——底座自身默认是 Max，品悟统一收口到 high，符合产品默认思考强度）。
+    /// 例外是本地路由上的思考不可关闭模型：命中 `core::always_thinking` 知识表
+    /// 时按表归一（NoControl 不发任何思考参数；Tiers 只允许表内档位，stored
+    /// 越界/缺省归一到最低档），覆盖 stored 值与本地默认 off。
     ///
     /// 本地 OpenAI 兼容端点（loopback 的 LM Studio 等，探测不出服务类型或判定为
     /// LM Studio/通用）保持旧行为不注入档位（None），避免底座 openai wire route
@@ -875,13 +891,47 @@ impl Pinvou3Bridge {
     /// `thinking: {"type":"enabled"}`，天然满足该要求，无需特判模型名
     /// （探测 payload 仍需显式注入 thinking，见 image_capability.rs）。
     fn request_reasoning_effort(&self) -> Option<String> {
+        let provider = self.provider();
+        // 「本地路由」：vllm/ollama provider，或 openai wire 指向本地/私网端点。
+        // 云端精确路由（moonshot/zai 等）不进知识表归一。
+        let is_local_route = matches!(provider.as_str(), "vllm" | "ollama")
+            || (provider == "openai" && base_url_uses_local_or_private(&self.base_url()));
+        if is_local_route {
+            let model = self.effective_model();
+            if let Some(spec) = model.and_then(|m| always_thinking_spec(&m.model)) {
+                let stored = model.and_then(|m| m.reasoning_effort.as_deref());
+                return match spec {
+                    // 思考不可关且无档位可控：不发任何思考参数，让模型原生
+                    // 思考（覆盖用户存储值）。
+                    AlwaysThinkingSpec::NoControl => None,
+                    // 思考永开但档位可控：stored 在允许档位内则用 stored，否则
+                    // （含 stored=="off"、缺省、越界如 medium 之于 kimi-k3）
+                    // 归一为允许的最低档。
+                    AlwaysThinkingSpec::Tiers(tiers) => {
+                        // 底座 ollama wire 只有布尔 think（off=think:false，其余
+                        // 一律 think:true），不发送档位字符串；思考永开模型在
+                        // ollama 路由下唯一有意义的暴露是 "high"（前端
+                        // `localReasoningTiers` 同口径只给 ['high']）。
+                        if provider == "ollama" {
+                            return Some("high".to_string());
+                        }
+                        Some(
+                            stored
+                                .filter(|effort| tiers.contains(effort))
+                                .unwrap_or(tiers[0])
+                                .to_string(),
+                        )
+                    }
+                };
+            }
+        }
         if let Some(effort) = self
             .effective_model()
             .and_then(|model| model.reasoning_effort.as_deref())
         {
             return Some(effort.to_string());
         }
-        match self.provider().as_str() {
+        match provider.as_str() {
             // 本地模型默认关思考：vLLM 防 SSE timeout；Ollama 防思考 trace 抢占首包。
             "vllm" | "ollama" => Some("off".to_string()),
             // 本地 OpenAI 兼容端点（loopback/私网的 LM Studio/通用服务）不注入，
@@ -6503,6 +6553,273 @@ mod tests {
             bridge.request_reasoning_effort().as_deref(),
             Some("high"),
             "显式档位必须覆盖本地默认 off"
+        );
+    }
+
+    /// SGLang / llama.cpp / KoboldCpp / LMDeploy / Docker Model Runner 探测
+    /// 结果统一映射到底座 vllm provider（chat_template_kwargs + reasoning_effort
+    /// wire 同构），本地默认关思考。
+    #[test]
+    fn local_reasoning_frameworks_map_to_vllm_wire_and_default_off() {
+        for kind in [
+            LocalServerKind::Sglang,
+            LocalServerKind::LlamaCpp,
+            LocalServerKind::KoboldCpp,
+            LocalServerKind::LmDeploy,
+            LocalServerKind::DockerModelRunner,
+        ] {
+            let (_lock, _env) = locked_env(&[
+                "DEEPSEEK_MODEL",
+                "DEEPSEEK_PROVIDER",
+                "DEEPSEEK_BASE_URL",
+                "DEEPSEEK_API_KEY",
+            ]);
+            let mut bridge = fixture_bridge();
+            set_active_model(
+                &mut bridge,
+                ModelPreset::OpenaiCompatible,
+                "local-model",
+                "http://127.0.0.1:8000/v1",
+                "",
+            );
+            bridge.probed_local_kind = Some(kind);
+            assert_eq!(bridge.provider(), "vllm", "{kind:?}");
+            assert_eq!(
+                bridge.request_reasoning_effort().as_deref(),
+                Some("off"),
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// 本地 vLLM 上的思考不可关闭模型（kimi-k3，仅 low/high 档）：stored "off"
+    /// 是关不掉的，归一为允许的最低档 "low"。
+    #[test]
+    fn local_vllm_kimi_k3_stored_off_normalizes_to_low() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "kimi-k3",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Vllm);
+        bridge
+            .prefs
+            .advanced
+            .saved_models
+            .last_mut()
+            .map(|m| m.reasoning_effort = Some("off".to_string()));
+        assert_eq!(
+            bridge.request_reasoning_effort().as_deref(),
+            Some("low"),
+            "kimi-k3 思考永开，stored off 必须归一到最低档"
+        );
+    }
+
+    /// kimi-k3 stored 档位在允许表内（high）时保留 stored。
+    #[test]
+    fn local_vllm_kimi_k3_stored_high_is_kept() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "kimi-k3",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Vllm);
+        bridge
+            .prefs
+            .advanced
+            .saved_models
+            .last_mut()
+            .map(|m| m.reasoning_effort = Some("high".to_string()));
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("high"));
+    }
+
+    /// kimi-k3 无 stored：归一为最低档 "low"（不套本地默认 off）。
+    #[test]
+    fn local_vllm_kimi_k3_without_stored_defaults_to_low() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "kimi-k3",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Vllm);
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("low"));
+    }
+
+    /// kimi-k3 越界档位（medium 不在 low/high 表内）归一为最低档 "low"。
+    #[test]
+    fn local_vllm_kimi_k3_out_of_tier_medium_normalizes_to_low() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "kimi-k3",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Vllm);
+        bridge
+            .prefs
+            .advanced
+            .saved_models
+            .last_mut()
+            .map(|m| m.reasoning_effort = Some("medium".to_string()));
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("low"));
+    }
+
+    /// NoControl 模型（deepseek-r1）：思考不可关且无档位可控，不发任何思考
+    /// 参数（None），覆盖 stored 值。
+    #[test]
+    fn local_vllm_deepseek_r1_sends_no_thinking_params() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "deepseek-r1",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Vllm);
+        bridge
+            .prefs
+            .advanced
+            .saved_models
+            .last_mut()
+            .map(|m| m.reasoning_effort = Some("off".to_string()));
+        assert_eq!(
+            bridge.request_reasoning_effort(),
+            None,
+            "deepseek-r1 不发任何思考参数，让模型原生思考"
+        );
+    }
+
+    /// ollama 路由上的思考永开模型（gpt-oss）：底座 ollama wire 只有布尔
+    /// think，档位字符串发不出去，stored 任意值（含 off）都归一为 "high"。
+    #[test]
+    fn local_ollama_gpt_oss_normalizes_to_high() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "gpt-oss-120b",
+            "http://127.0.0.1:11434/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Ollama);
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("high"));
+        bridge
+            .prefs
+            .advanced
+            .saved_models
+            .last_mut()
+            .map(|m| m.reasoning_effort = Some("off".to_string()));
+        assert_eq!(
+            bridge.request_reasoning_effort().as_deref(),
+            Some("high"),
+            "gpt-oss 在 ollama 下关不掉思考，stored off 也必须归一为 high"
+        );
+    }
+
+    /// 不命中知识表的普通本地模型（qwen3-32b 不含 thinking）：保持本地默认
+    /// off 不变。
+    #[test]
+    fn local_vllm_plain_model_keeps_default_off() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "qwen3-32b",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Vllm);
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("off"));
+    }
+
+    /// 远端官方 moonshot 的 kimi-k3 不进本地归一：无 stored 默认 high，
+    /// stored off 照常透传（显式选择优先，云端路由不受知识表影响）。
+    #[test]
+    fn remote_moonshot_kimi_k3_not_affected_by_local_normalization() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Kimi,
+            "kimi-k3",
+            "https://api.moonshot.cn/v1",
+            "sk-test",
+        );
+        assert_eq!(bridge.provider(), "moonshot");
+        assert_eq!(
+            bridge.request_reasoning_effort().as_deref(),
+            Some("high"),
+            "云端精确路由保持默认 high"
+        );
+        bridge
+            .prefs
+            .advanced
+            .saved_models
+            .last_mut()
+            .map(|m| m.reasoning_effort = Some("off".to_string()));
+        assert_eq!(
+            bridge.request_reasoning_effort().as_deref(),
+            Some("off"),
+            "云端 stored off 照常透传，不被知识表归一"
         );
     }
 

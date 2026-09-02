@@ -962,6 +962,35 @@ function reasoningProviderForModel(model) {
   }
 }
 
+// 「思考始终开启」模型的本地部署知识表（兜底）。仅作用于本地路由
+// （vllm / 本地 loopback 端点 / 探测出的 ollama），云端精确路由不走此表。
+// 依据：
+// - Kimi K3 思考永开，官方档位 low/high/max；底座 wire 层把 max 钳到 high，
+//   故只暴露 low/high。
+// - GLM-5.3 / GLM-4.7 思考永开，同理暴露 low/high。
+// - GPT-OSS 思考不可关，官方只有 low/medium/high 三档。
+// - kimi-k2-thinking / kimi-k2.5-thinking / kimi-k2.7 / deepseek-r1 /
+//   minimax-m2 / qwen3 thinking 系：思考不可关且无档位可控（noControl）。
+// 当框架（探测结果）明确回报可关时以框架为准——本表只在本地路由的档位
+// 解析中作为兜底叠加，不覆盖云端精确路由。
+// modelId 小写化并把 `_`/空格归一为 `-` 后做子串匹配。
+function alwaysThinkingSpecForModel(modelId) {
+  const normalized = String(modelId || '').trim().toLowerCase().replaceAll(/[\s_]+/g, '-');
+  if (!normalized) return null;
+  if (normalized.includes('kimi-k3')) return { tiers: ['low', 'high'] };
+  if (normalized.includes('glm-5.3') || normalized.includes('glm-4.7')) return { tiers: ['low', 'high'] };
+  if (normalized.includes('gpt-oss')) return { tiers: ['low', 'medium', 'high'] };
+  if (normalized.includes('kimi-k2-thinking')
+    || normalized.includes('kimi-k2.5-thinking')
+    || normalized.includes('kimi-k2.7')
+    || normalized.includes('deepseek-r1')
+    || normalized.includes('minimax-m2')
+    || (normalized.includes('qwen3') && normalized.includes('thinking'))) {
+    return { noControl: true };
+  }
+  return null;
+}
+
 // 该模型可切换的思考深度档位（无则 null = 不提供切换）。
 // 路由/模型级细分（仅品悟目录收录的模型）：
 // - zai：first-party z.ai 端点上 GLM-5.2/5.3 提供 tiered effort（off/high/max），
@@ -981,6 +1010,14 @@ function reasoningEffortTiersForModel(model) {
   if (!tiers) return null;
   const modelName = String((model && model.model) || '').trim().toLowerCase();
   const baseUrl = (model && model.base_url) || '';
+  // 本地路由（vllm / 本地 loopback 端点；ollama 为探测 kind，此处一并覆盖）
+  // 命中思考永开知识表：noControl → null（沿用「不支持调节」语义出口）；
+  // tiers → 以知识表档位替代默认档位表。云端精确路由（zai/moonshot/minimax）
+  // 不受影响。
+  const localSpec = ['vllm', 'local', 'ollama'].includes(provider)
+    ? alwaysThinkingSpecForModel(model && model.model)
+    : null;
+  if (localSpec) return localSpec.noControl ? null : localSpec.tiers;
   if (provider === 'zai') {
     if (!isExactZaiChatBaseUrl(baseUrl)) return null;
     if (modelName === 'glm-5.2' || modelName === 'glm-5.3') return ['off', 'high', 'max'];
@@ -1018,7 +1055,12 @@ function isAlwaysThinkingK3Route(model) {
 // （防 SSE timeout / 思考 trace 抢占首包），其余 high。
 function defaultReasoningEffortForModel(model) {
   const provider = reasoningProviderForModel(model);
-  if (provider === 'vllm' || provider === 'local') return 'off';
+  if (provider === 'vllm' || provider === 'local') {
+    // 思考永开且档位可控的模型（知识表）：off 不可用，默认最低档。
+    const spec = alwaysThinkingSpecForModel(model && model.model);
+    if (spec && spec.tiers) return spec.tiers[0];
+    return 'off';
+  }
   return reasoningEffortTiersForModel(model) ? 'high' : null;
 }
 
@@ -1043,6 +1085,8 @@ const REASONING_EFFORT_CANONICAL = {
 // 存量档位归一：用户可能保存过底座归一前的旧值（别名或不在档位表内的档位，
 // 如 deepseek 的 medium → 底座归一为 high）。展示与表单初始值都取归一后的档位，
 // 避免「档位表不含该值 → 下拉无高亮 / 残留无法选中的脏值」；无档位模型返回 null。
+// 本地思考永开知识表模型（tiers 来自 alwaysThinkingSpecForModel）无需特判：
+// 存量 off 等不在 spec.tiers 内的值会落到末尾的默认档（spec.tiers[0]）。
 function normalizeStoredReasoningEffort(model, stored) {
   const tiers = reasoningEffortTiersForModel(model) || [];
   if (!tiers.length) return null;
@@ -1063,6 +1107,9 @@ function normalizeStoredReasoningEffort(model, stored) {
 // 本地 OpenAI 兼容端点按探测服务类型可切换的档位。与 Rust
 // `probe_local_server_kind` 结果对齐：
 // - vllm → 底座 `chat_template_kwargs` 支持四档
+// - sglang / llamacpp / koboldcpp / lmdeploy / dockermodelrunner → 思考控制
+//   wire 与 vLLM 同构（chat_template_kwargs + reasoning_effort 透传），
+//   档位集合与 vllm 相同
 // - ollama → 底座 `think` 布尔开关：off=think:false，其余档位一律归一 think=true，
 //   只暴露 off/high 避免「看起来不同、实际相同」的误导
 // - lmstudio / generic → 底座 openai wire route 对 reasoning_effort 是空操作，
@@ -1070,7 +1117,13 @@ function normalizeStoredReasoningEffort(model, stored) {
 // - null（尚未探测/探测失败）→ 返回默认四档，前端在探测完成前不提供误导档位
 function localProbeTiersForKind(kind) {
   switch (kind) {
-    case 'vllm': return ['off', 'low', 'medium', 'high'];
+    case 'vllm':
+    case 'sglang':
+    case 'llamacpp':
+    case 'koboldcpp':
+    case 'lmdeploy':
+    case 'dockermodelrunner':
+      return ['off', 'low', 'medium', 'high'];
     case 'ollama': return ['off', 'high'];
     case 'lmstudio':
     case 'generic':
@@ -1078,6 +1131,24 @@ function localProbeTiersForKind(kind) {
     default:
       return ['off', 'low', 'medium', 'high'];
   }
+}
+
+// 探测档位 × 模型知识表的叠加（SettingsView 模型编辑弹窗与聊天输入区模型
+// 弹层共用）：模型命中思考永开知识表时以知识表为准——noControl → null
+// （前端显示「思考始终开启」提示，而非探测不支持）；tiers → 覆盖探测档位。
+// 未命中时按探测结果下发档位。
+function localReasoningTiers(modelId, probedKind) {
+  const spec = alwaysThinkingSpecForModel(modelId);
+  if (spec) {
+    if (spec.noControl) return null;
+    // 底座 ollama wire 只有布尔 think（off=think:false，其余档位一律归一
+    // think:true），不发送档位字符串；思考永开模型在 ollama 路由下唯一有意义
+    // 的暴露是 high（如 GPT-OSS 只认 low/medium/high 字符串，true/false 被
+    // 忽略，思考本就关不掉）。
+    if (probedKind === 'ollama') return ['high'];
+    return spec.tiers;
+  }
+  return localProbeTiersForKind(probedKind);
 }
 
 // Visual fallback of stored tiers against the probed tier table: normalization
@@ -1123,7 +1194,9 @@ export {
   defaultReasoningEffortForModel,
   reasoningEffortForModelSwitch,
   normalizeStoredReasoningEffort,
+  alwaysThinkingSpecForModel,
   localProbeTiersForKind,
+  localReasoningTiers,
   reasoningEffortDisplayForTiers,
   baseUrlUsesLocalOrPrivate,
 };

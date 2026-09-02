@@ -35,13 +35,15 @@ vm.runInContext(
   `this.baseUrlUsesLoopback = baseUrlUsesLoopback;\n` +
   `this.baseUrlUsesLocalOrPrivate = baseUrlUsesLocalOrPrivate;\n` +
   `this.localProbeTiersForKind = localProbeTiersForKind;\n` +
+  `this.alwaysThinkingSpecForModel = alwaysThinkingSpecForModel;\n` +
+  `this.localReasoningTiers = localReasoningTiers;\n` +
   `this.reasoningEffortDisplayForTiers = reasoningEffortDisplayForTiers;\n` +
   `this.catalogImageCapableForModel = catalogImageCapableForModel;\n`,
   ctx,
   { filename: srcPath },
 );
 
-const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, baseUrlUsesLoopback, baseUrlUsesLocalOrPrivate, localProbeTiersForKind, catalogImageCapableForModel, reasoningEffortDisplayForTiers } = ctx;
+const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, baseUrlUsesLoopback, baseUrlUsesLocalOrPrivate, localProbeTiersForKind, alwaysThinkingSpecForModel, localReasoningTiers, catalogImageCapableForModel, reasoningEffortDisplayForTiers } = ctx;
 
 // i18n 测试替身:复刻实际字典里会用到的字段
 const t = {
@@ -457,12 +459,87 @@ test('localProbeTiersForKind 按探测结果映射真实档位', () => {
   // vllm → 四档；ollama → think 开关两档（避免 low/medium/high 归一误导）
   assert.deepStrictEqual([...localProbeTiersForKind('vllm')], ['off', 'low', 'medium', 'high']);
   assert.deepStrictEqual([...localProbeTiersForKind('ollama')], ['off', 'high']);
+  // 与 vLLM 思考控制 wire 同构的框架 → 与 vllm 相同四档
+  for (const kind of ['sglang', 'llamacpp', 'koboldcpp', 'lmdeploy', 'dockermodelrunner']) {
+    assert.deepStrictEqual([...localProbeTiersForKind(kind)], ['off', 'low', 'medium', 'high'], kind);
+  }
   // lmstudio/generic 底座空操作 → null（前端显示不支持提示）
   assert.strictEqual(localProbeTiersForKind('lmstudio'), null);
   assert.strictEqual(localProbeTiersForKind('generic'), null);
   // 未探测/未知 → 默认四档（前端探测完成前不误报不支持）
   assert.deepStrictEqual([...localProbeTiersForKind(null)], ['off', 'low', 'medium', 'high']);
   assert.deepStrictEqual([...localProbeTiersForKind('unknown')], ['off', 'low', 'medium', 'high']);
+});
+
+test('alwaysThinkingSpecForModel：思考永开模型知识表匹配', () => {
+  // vm realm 对象与测试 realm 原型不同，按 JSON 结构比较
+  const specJson = (modelId) => JSON.stringify(alwaysThinkingSpecForModel(modelId));
+  // 大小写不敏感 + 下划线/空格归一为 '-'
+  assert.strictEqual(specJson('kimi-k3'), '{"tiers":["low","high"]}');
+  assert.strictEqual(specJson('Kimi-K3'), '{"tiers":["low","high"]}');
+  assert.strictEqual(specJson('kimi_k3'), '{"tiers":["low","high"]}');
+  assert.strictEqual(specJson('Kimi K3 Instruct'), '{"tiers":["low","high"]}');
+  assert.strictEqual(specJson('glm-5.3'), '{"tiers":["low","high"]}');
+  assert.strictEqual(specJson('GLM-4.7'), '{"tiers":["low","high"]}');
+  assert.strictEqual(specJson('gpt-oss-120b'), '{"tiers":["low","medium","high"]}');
+  // noControl：思考不可关且无档位可控
+  assert.strictEqual(specJson('kimi-k2-thinking'), '{"noControl":true}');
+  assert.strictEqual(specJson('Kimi-K2.5-Thinking'), '{"noControl":true}');
+  assert.strictEqual(specJson('kimi-k2.7'), '{"noControl":true}');
+  assert.strictEqual(specJson('deepseek-r1-0528'), '{"noControl":true}');
+  assert.strictEqual(specJson('MiniMax-M2'), '{"noControl":true}');
+  assert.strictEqual(specJson('Qwen3-235B-A22B-Thinking'), '{"noControl":true}');
+  // 不命中：普通 qwen3（无 thinking）、其它模型、空值
+  assert.strictEqual(alwaysThinkingSpecForModel('qwen3-32b'), null);
+  assert.strictEqual(alwaysThinkingSpecForModel('qwen36_35b_256k'), null);
+  assert.strictEqual(alwaysThinkingSpecForModel('glm-5.2'), null);
+  assert.strictEqual(alwaysThinkingSpecForModel(''), null);
+  assert.strictEqual(alwaysThinkingSpecForModel(null), null);
+});
+
+test('本地路由命中知识表：档位/默认值/存量归一', () => {
+  // spec.tiers 模型（本地 vllm preset）：档位表被知识表替代，无 off 档
+  const k3Local = { preset: 'local_vllm', model: 'kimi-k3' };
+  assert.deepStrictEqual([...reasoningEffortTiersForModel(k3Local)], ['low', 'high']);
+  assert.strictEqual(defaultReasoningEffortForModel(k3Local), 'low');
+  // 存量 off 不在 spec.tiers 内 → 归一为最低档 low；合法值 high 原样保留
+  assert.strictEqual(normalizeStoredReasoningEffort(k3Local, 'off'), 'low');
+  assert.strictEqual(normalizeStoredReasoningEffort(k3Local, 'high'), 'high');
+  assert.strictEqual(normalizeStoredReasoningEffort(k3Local, null), 'low');
+  // 本地 loopback openai_compatible 端点同样走知识表
+  const gptOssLocal = { preset: 'openai_compatible', model: 'gpt-oss-20b', base_url: 'http://127.0.0.1:8000/v1' };
+  assert.deepStrictEqual([...reasoningEffortTiersForModel(gptOssLocal)], ['low', 'medium', 'high']);
+  assert.strictEqual(defaultReasoningEffortForModel(gptOssLocal), 'low');
+  // noControl 模型 → null（不提供切换，沿用「不支持调节」语义出口）
+  const r1Local = { preset: 'local_vllm', model: 'deepseek-r1:14b' };
+  assert.strictEqual(reasoningEffortTiersForModel(r1Local), null);
+  assert.strictEqual(normalizeStoredReasoningEffort(r1Local, 'high'), null);
+  // 普通本地模型不受影响：仍默认 off、四档
+  const qwenLocal = { preset: 'local_vllm', model: 'qwen3-32b' };
+  assert.deepStrictEqual([...reasoningEffortTiersForModel(qwenLocal)], ['off', 'low', 'medium', 'high']);
+  assert.strictEqual(defaultReasoningEffortForModel(qwenLocal), 'off');
+  // 云端精确路由不受影响：z.ai first-party 的 glm-5.3 仍是 off/high/max
+  const glmCloud = { preset: 'glm', vendor: 'glm', model: 'glm-5.3', base_url: 'https://api.z.ai/api/paas/v4' };
+  assert.deepStrictEqual([...reasoningEffortTiersForModel(glmCloud)], ['off', 'high', 'max']);
+  // 云端 moonshot K3 直连路由不变：low/high/max
+  const k3Direct = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k3', base_url: 'https://api.moonshot.ai/v1' };
+  assert.deepStrictEqual([...reasoningEffortTiersForModel(k3Direct)], ['low', 'high', 'max']);
+});
+
+test('localReasoningTiers：探测档位 × 模型知识表叠加', () => {
+  // spec.tiers 覆盖探测档位（即使探测回报四档框架）
+  assert.deepStrictEqual([...localReasoningTiers('kimi-k3', 'vllm')], ['low', 'high']);
+  assert.deepStrictEqual([...localReasoningTiers('gpt-oss-120b', 'sglang')], ['low', 'medium', 'high']);
+  // ollama 路由下底座 wire 只有布尔 think，思考永开模型唯一有意义的暴露是 high
+  assert.deepStrictEqual([...localReasoningTiers('gpt-oss-120b', 'ollama')], ['high']);
+  // noControl → null（前端显示「思考始终开启」提示）
+  assert.strictEqual(localReasoningTiers('deepseek-r1:14b', 'vllm'), null);
+  assert.strictEqual(localReasoningTiers('Qwen3-235B-A22B-Thinking', 'ollama'), null);
+  // 未命中知识表 → 按探测结果下发
+  assert.deepStrictEqual([...localReasoningTiers('qwen3-32b', 'ollama')], ['off', 'high']);
+  assert.deepStrictEqual([...localReasoningTiers('qwen3-32b', 'llamacpp')], ['off', 'low', 'medium', 'high']);
+  assert.strictEqual(localReasoningTiers('qwen3-32b', 'generic'), null);
+  assert.deepStrictEqual([...localReasoningTiers('qwen3-32b', null)], ['off', 'low', 'medium', 'high']);
 });
 
 test('reasoningEffortDisplayForTiers: display fallback of stored tiers against probed tiers', () => {
