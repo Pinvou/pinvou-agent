@@ -96,7 +96,24 @@ fn load_rewound_turns_map() -> Result<HashMap<String, Vec<RewoundTurnsRecord>>> 
             return Err(error).with_context(|| format!("读取回退备份失败: {}", path.display()));
         }
     };
-    serde_json::from_slice(&bytes).with_context(|| format!("解析回退备份失败: {}", path.display()))
+    match serde_json::from_slice(&bytes) {
+        Ok(map) => Ok(map),
+        Err(parse_error) => {
+            // 损坏的 sidecar 不得全局锁死 rewind/undo：改名隔离（保留现场供人工
+            // 恢复）后按空 map 继续——代价是存量备份记录对该会话不再可见（undo
+            // 入口消失），胜过整个功能报错卡死。
+            let quarantine =
+                path.with_extension(format!("corrupt-{}", Utc::now().format("%Y%m%d%H%M%S")));
+            eprintln!(
+                "[sessions] 回退备份损坏，隔离为 {} 后按空继续: {parse_error:#}",
+                quarantine.display()
+            );
+            if let Err(error) = std::fs::rename(&path, &quarantine) {
+                eprintln!("[sessions] 隔离损坏的回退备份失败: {error:#}");
+            }
+            Ok(HashMap::new())
+        }
+    }
 }
 
 fn persist_rewound_turns_map(map: &HashMap<String, Vec<RewoundTurnsRecord>>) -> Result<()> {

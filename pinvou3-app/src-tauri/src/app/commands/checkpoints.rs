@@ -59,7 +59,7 @@ pub async fn checkpoint_diff(
     if pool.is_turn_active(&session_id) {
         return Err("会话正在执行，请稍后再读取变更预览".to_string());
     }
-    // 跨会话软门：同执行根的其它原生 code 会话在跑时同样抢影子 index.lock
+    // 跨会话软门：同执行根的其它会话在跑时同样抢影子 index.lock
     // （它的 create_checkpoint/引擎写文件 vs 本 diff 的 add -A 与迁移 purge）。
     let store_gate = store.inner().clone();
     let session_id_gate = session_id.clone();
@@ -67,7 +67,7 @@ pub async fn checkpoint_diff(
     tauri::async_runtime::spawn_blocking(move || {
         if let Some(busy) =
             busy_peer_on_same_execution_root(&store_gate, &session_id_gate, &execution, |id| {
-                pool_gate.is_turn_active(id)
+                pool_gate.is_turn_active(id) || pool_gate.is_scheduled_turn_running(id)
             })?
         {
             return Err(format!(
@@ -98,15 +98,18 @@ pub async fn restore_checkpoint(
     let reservation = pool
         .reserve_turn(&session_id)
         .map_err(|error| format!("预约会话 turn 失败（会话忙碌？）: {error:#}"))?;
+    // 执行根互斥：置位后同根会话的新 turn 预约（含 scheduled）全部被拒；
+    // 随后复查在途 peer（已 active 的不受预约门拦截）。
+    let _root_guard = pool.begin_execution_root_rewind(&execution);
     // 跨会话忙碌门：与 rewind_to_turn 同款——恢复单位是执行根，同根其它会话
-    // 在跑时回滚会撤销它正在写的文件。store.list() 是阻塞 IO，移出 async worker。
+    // 在跑时回滚会撤销它正在写的文件。全量枚举是阻塞 IO，移出 async worker。
     let store_gate = store.inner().clone();
     let session_id_gate = session_id.clone();
     let execution_gate = execution.clone();
     let pool_gate = pool.inner().clone();
     if let Some(busy) = tauri::async_runtime::spawn_blocking(move || {
         busy_peer_on_same_execution_root(&store_gate, &session_id_gate, &execution_gate, |id| {
-            pool_gate.is_turn_active(id)
+            pool_gate.is_turn_active(id) || pool_gate.is_scheduled_turn_running(id)
         })
     })
     .await
@@ -187,12 +190,21 @@ fn normalize_root(path: &std::path::Path) -> std::path::PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// 跨会话忙碌门（设计 §6 防线二）：枚举会话，找出 execution 根相同的其它原生
-/// 代码会话，任一 `is_busy` 即返回其展示名（标题，空则 id）。
+/// 跨会话忙碌门（设计 §6 防线二）：枚举全部会话（`list_sessions_cached`，含
+/// scheduled 的 sched- 前缀会话——`store.list()` 会把它们滤掉，那是确定性
+/// 漏判），找出 execution 根相同的其它会话，任一 `is_busy` 即返回其展示名
+/// （标题，空则 id）。调用方的 is_busy 应覆盖 `is_turn_active` 与
+/// `is_scheduled_turn_running`（scheduled 轮的 spawn→submit 窗口）。
 ///
-/// 性能取舍：`store.list()` 与历史面板同价（读 ≤50 条会话元数据）；根解析只
-/// 对 code session 做——`is_code_session` 是内存谓词零 IO，plain 会话不进
-/// `session_roots`。
+/// 调用方必须先在 `begin_execution_root_rewind` 置位互斥 flag 再调本函数：
+/// 在途 peer 由本函数复查拦下，新 peer 由 flag 门在预约侧拦下（两侧在同一把
+/// flag 锁上做 check-and-act，消除 check-then-act 竞态）。
+///
+/// 已知盲区：ACP 会话的 turn 不经 EnginePool（外部 agent 进程），在途写文件
+/// 无法被本门感知；设计文档如实记录。
+///
+/// 性能取舍：全量读会话元数据与历史面板同价；根解析失败（如目录被删）的
+/// 会话无从比较执行根，跳过。
 fn busy_peer_on_same_execution_root(
     store: &SessionStore,
     session_id: &str,
@@ -201,22 +213,22 @@ fn busy_peer_on_same_execution_root(
 ) -> Result<Option<String>, String> {
     let target = normalize_root(execution_root);
     let sessions = store
-        .list()
+        .list_sessions_cached()
         .map_err(|error| format!("枚举会话失败: {error:#}"))?;
-    for metadata in sessions {
-        if metadata.id == session_id || !store.is_code_session(&metadata.id) {
+    for metadata in sessions.iter() {
+        if metadata.id == session_id {
             continue;
         }
         let roots = match store.session_roots(&metadata.id) {
             Ok(roots) => roots,
-            // 根解析失败的会话（如定时会话残留）无从比较执行根，跳过。
+            // 根解析失败的会话（如目录被删）无从比较执行根，跳过。
             Err(_) => continue,
         };
         if normalize_root(&roots.execution) == target && is_busy(&metadata.id) {
             let label = if metadata.title.is_empty() {
-                metadata.id
+                metadata.id.clone()
             } else {
-                metadata.title
+                metadata.title.clone()
             };
             return Ok(Some(label));
         }
@@ -259,16 +271,19 @@ pub async fn rewind_to_turn(
     let reservation = pool
         .reserve_turn(&session_id)
         .map_err(|error| format!("预约会话 turn 失败（会话忙碌？）: {error:#}"))?;
+    // 执行根互斥：置位后同根会话的新 turn 预约（含 scheduled）全部被拒；
+    // 随后复查在途 peer（已 active 的不受预约门拦截）。
+    let _root_guard = pool.begin_execution_root_rewind(&execution);
     // 跨会话忙碌门：恢复单位是执行根，同根其它会话在跑时回退会撤销它正在写的
-    // 文件，如实拒绝并告知哪个会话在忙。store.list() 全量读会话元数据是阻塞
-    // IO，移出 async worker。
+    // 文件，如实拒绝并告知哪个会话在忙。全量枚举（含 scheduled）是阻塞 IO，
+    // 移出 async worker。
     let store_gate = store.inner().clone();
     let session_id_gate = session_id.clone();
     let execution_gate = execution.clone();
     let pool_gate = pool.inner().clone();
     if let Some(busy) = tauri::async_runtime::spawn_blocking(move || {
         busy_peer_on_same_execution_root(&store_gate, &session_id_gate, &execution_gate, |id| {
-            pool_gate.is_turn_active(id)
+            pool_gate.is_turn_active(id) || pool_gate.is_scheduled_turn_running(id)
         })
     })
     .await
@@ -485,13 +500,15 @@ pub async fn undo_last_rewind(
     let reservation = pool
         .reserve_turn(&session_id)
         .map_err(|error| format!("预约会话 turn 失败（会话忙碌？）: {error:#}"))?;
+    // 执行根互斥：与 rewind_to_turn 同款（置位 + 在途 peer 复查）。
+    let _root_guard = pool.begin_execution_root_rewind(&execution);
     let store_gate = store.inner().clone();
     let session_id_gate = session_id.clone();
     let execution_gate = execution.clone();
     let pool_gate = pool.inner().clone();
     if let Some(busy) = tauri::async_runtime::spawn_blocking(move || {
         busy_peer_on_same_execution_root(&store_gate, &session_id_gate, &execution_gate, |id| {
-            pool_gate.is_turn_active(id)
+            pool_gate.is_turn_active(id) || pool_gate.is_scheduled_turn_running(id)
         })
     })
     .await
@@ -647,8 +664,9 @@ mod tests {
         (store, guard)
     }
 
-    /// 跨会话忙碌门：同执行根的其它原生 code 会话忙碌 → 返回其标题；不忙碌、
-    /// 不同根、非 code 会话、自身忙碌都不拦截。
+    /// 跨会话忙碌门：同执行根的其它会话忙碌 → 返回其标题；不忙碌、
+    /// 不同根、自身忙碌都不拦截。非 code 会话（plain/scheduled）同根且在途
+    /// 也拦截——门看的是「谁在往这个目录写文件」，不是会话类型。
     #[test]
     fn busy_gate_flags_only_busy_code_peers_on_same_root() {
         let (store, _g) = isolated_store("peer");
@@ -677,11 +695,7 @@ mod tests {
             }
         }));
 
-        // 仅 alice/bob 是原生 code 会话时：bob 忙碌 → 命中其标题。
-        let code_ids = vec![alice_id.clone(), bob_id.clone()];
-        store.set_code_session_predicate(Arc::new(move |id: &str| {
-            code_ids.iter().any(|candidate| candidate == id)
-        }));
+        // bob 忙碌 → 命中其标题。
         let busy_bob = bob_id.clone();
         let hit =
             busy_peer_on_same_execution_root(&store, &alice_id, &project, |id| id == busy_bob)
@@ -700,14 +714,14 @@ mod tests {
                 .expect("gate");
         assert_eq!(none, None);
 
-        // 非 code 会话即使同根且忙碌也不拦（ACP/plain 不归本门管）。
+        // 非 code 会话（plain）同根且在途同样拦截：它会往同一目录写文件。
         let only_alice = alice_id.clone();
         store.set_code_session_predicate(Arc::new(move |id: &str| id == only_alice));
         let busy_bob = bob_id.clone();
-        let none =
+        let hit =
             busy_peer_on_same_execution_root(&store, &alice_id, &project, |id| id == busy_bob)
                 .expect("gate");
-        assert_eq!(none, None);
+        assert_eq!(hit, Some(bob.metadata.title.clone()));
     }
 
     /// 不同执行根的会话忙碌不影响本根回退。

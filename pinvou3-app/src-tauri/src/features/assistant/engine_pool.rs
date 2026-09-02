@@ -752,6 +752,27 @@ pub struct EnginePool {
     /// generation stamp source so that same-tick rebuilds (or clock
     /// rollbacks) can never collide generations (zhuowp re-review P1-2).
     steer_incarnation_seq: Arc<AtomicU64>,
+    /// 按 canonical 执行根的回退互斥标志（值为 true = 该目录正在回退/回滚）。
+    /// 影子仓库按会话分 dir，同根会话的 restore（checkout-index + clean）与在途
+    /// turn 写文件互不感知——连 index.lock 都撞不上。turn 预约（reserve_turn /
+    /// run_scheduled_turn 的在途登记）在此 flag 锁内检查，回退侧置位后复查在途
+    /// peer：两侧在同一把锁上完成各自的 check-and-act，消除竞态。
+    /// 已知取舍：条目只增不减（每绑定过一个执行根一条 Arc<Mutex<bool>>，字节级，
+    /// 会话量级无压力）；flag 本身是「置位/检查」信号而非排他锁，真正的互斥由
+    /// 回退方的会话 reservation + 在途 peer 复查共同保证——改动此结构时注意
+    /// 不要只保留 flag 而丢掉 reservation。
+    execution_root_rewind_flags: Arc<SyncMutex<HashMap<std::path::PathBuf, Arc<SyncMutex<bool>>>>>,
+}
+
+/// 执行根回退互斥的持有凭证：Drop 自动放行（含 panic/错误早退路径）。
+pub(crate) struct ExecutionRootRewindGuard {
+    flag: Arc<SyncMutex<bool>>,
+}
+
+impl Drop for ExecutionRootRewindGuard {
+    fn drop(&mut self) {
+        *self.flag.lock() = false;
+    }
 }
 
 /// 后台巡检任务句柄：Drop 时先 cancel 再 abort 双保险停止巡检
@@ -867,6 +888,7 @@ impl EnginePool {
             idle_reaper: Arc::new(SyncMutex::new(None)),
             scheduled_running_sessions: Arc::new(SyncMutex::new(HashSet::new())),
             steer_incarnation_seq: Arc::new(AtomicU64::new(0)),
+            execution_root_rewind_flags: Arc::new(SyncMutex::new(HashMap::new())),
         })
     }
 
@@ -1763,10 +1785,52 @@ impl EnginePool {
     /// consume one-shot state, stage attachments, or perform other side effects.
     /// Dropping the returned guard before submission restores the slot.
     pub(crate) fn reserve_turn(&self, session_id: &str) -> Result<TurnReservation> {
+        // 执行根回退门：flag 锁横跨「检查 + lifecycle 占位」，与回退侧的
+        // 「置位 + 在途 peer 复查」在同一把锁两侧——回退若先置位，本预约必然
+        // 看到并拒绝；本预约若先占位，回退侧的忙碌复查必然看到 active。
+        // 根不可解析（目录被删等）时跳过本门（与忙碌门同款降级）。
+        let root_flag = self
+            .store
+            .session_roots(session_id)
+            .ok()
+            .map(|roots| self.execution_root_rewind_flag(&roots.execution));
+        let _flag_guard = root_flag.as_ref().map(|flag| flag.lock());
+        if _flag_guard.as_deref().is_some_and(|rewinding| *rewinding) {
+            bail!("该会话绑定的项目目录正在回退/回滚，请稍后重试");
+        }
         let mut reservation = self.turn_lifecycles.for_session(session_id).reserve()?;
         let baseline = self.store.load(session_id)?;
         reservation.set_base_transcript_revision(transcript_revision(&baseline.messages)?);
         Ok(reservation)
+    }
+
+    /// 执行根回退互斥 flag（按 canonical 根去重；两端的短名/大小写差异归一）。
+    fn execution_root_rewind_flag(&self, execution_root: &std::path::Path) -> Arc<SyncMutex<bool>> {
+        let canonical =
+            std::fs::canonicalize(execution_root).unwrap_or_else(|_| execution_root.to_path_buf());
+        self.execution_root_rewind_flags
+            .lock()
+            .entry(canonical)
+            .or_default()
+            .clone()
+    }
+
+    /// 进入执行根回退/回滚临界区：置位后同根任何会话的新 turn 预约被拒绝。
+    /// 调用方置位后必须复查在途 peer（已 active 的 turn 不受预约门拦截，
+    /// 见 busy_peer_on_same_execution_root）。
+    pub(crate) fn begin_execution_root_rewind(
+        &self,
+        execution_root: &std::path::Path,
+    ) -> ExecutionRootRewindGuard {
+        let flag = self.execution_root_rewind_flag(execution_root);
+        *flag.lock() = true;
+        ExecutionRootRewindGuard { flag }
+    }
+
+    /// 该会话是否有在途的 scheduled 轮（spawn→submit 窗口里 lifecycle 尚未
+    /// active，回退门的 peer 复查需要把它算作忙碌）。
+    pub(crate) fn is_scheduled_turn_running(&self, session_id: &str) -> bool {
+        self.scheduled_running_sessions.lock().contains(session_id)
     }
 
     /// 刷新会话引擎的空闲时钟（turn 开始时调用，异步上下文安全：瞬时取
@@ -1972,9 +2036,29 @@ impl EnginePool {
         // scheduled 轮登记：spawn→submit 窗口 lifecycle 尚未 active，空闲回收
         // 需要这层显式保护；无论成败都在收尾注销（panic 由 abort 语义兜底，
         // 该任务本身就是 spawn 出来的 detached future）。
-        self.scheduled_running_sessions
-            .lock()
-            .insert(session_id.to_string());
+        // 执行根回退门：flag 锁横跨「检查 + 在途登记」（与 reserve_turn 同款
+        // 竞态消除），回退进行中本次定时执行如实失败，由调度器记录。
+        let root_flag = self
+            .store
+            .session_roots(session_id)
+            .ok()
+            .map(|roots| self.execution_root_rewind_flag(&roots.execution));
+        match &root_flag {
+            Some(flag) => {
+                let flag_guard = flag.lock();
+                if *flag_guard {
+                    bail!("该会话绑定的项目目录正在回退/回滚，本次定时执行失败");
+                }
+                self.scheduled_running_sessions
+                    .lock()
+                    .insert(session_id.to_string());
+            }
+            None => {
+                self.scheduled_running_sessions
+                    .lock()
+                    .insert(session_id.to_string());
+            }
+        }
         let result = async {
             self.touch_engine_activity(session_id).await;
             let profile = self
