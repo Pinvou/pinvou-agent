@@ -345,7 +345,16 @@ pub(crate) async fn chat_with_reservation(
                 );
             }
             Ok(Err(error)) => {
-                log::warn!("[pinvou3][chat] checkpoint failed sid={sid}: {error:#}")
+                // git alias 冲突（大小写不敏感目录下 Makefile/makefile 共存）会让
+                // 该会话每轮快照都失败、永久没有回退入口——error 级显式上报，
+                // 不静默 warn（评审 M1）。
+                if format!("{error:#}").contains("alias") {
+                    log::error!(
+                        "[pinvou3][chat] checkpoint failed (git alias conflict, session has no rewind entries) sid={sid}: {error:#}"
+                    );
+                } else {
+                    log::warn!("[pinvou3][chat] checkpoint failed sid={sid}: {error:#}")
+                }
             }
             Err(error) => {
                 log::warn!("[pinvou3][chat] checkpoint task failed sid={sid}: {error}")

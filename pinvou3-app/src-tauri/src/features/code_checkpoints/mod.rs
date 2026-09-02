@@ -89,6 +89,7 @@ const SECRET_EXCLUDES: &[&str] = &[
     ".env.*.local",
     ".npmrc",
     ".netrc",
+    "credentials.json",
     "*.pem",
     "*.key",
     "*.p12",
@@ -96,6 +97,7 @@ const SECRET_EXCLUDES: &[&str] = &[
     "*.pkcs12",
     "*.keystore",
     "*.jks",
+    "*.kdbx",
     "*.gpg",
     "*.pgp",
     "id_rsa",
@@ -235,6 +237,32 @@ pub fn execution_root_within_snapshot_budget(execution_root: &Path, ledger_root:
         .is_some_and(|bytes| bytes <= MAX_WORKSPACE_BYTES_FOR_SNAPSHOT)
 }
 
+/// 探测执行根文件系统是否大小写不敏感：写入混合大小写探针文件，再以全大写
+/// 形式 stat——能读到同一文件即不敏感。探测失败（目录不可写等）按「敏感」
+/// 处理：大小写敏感语义下 exclude/purge/过滤三层一致即可（见 ensure_repo
+/// 的 core.ignorecase 注释），不会触发 alias 冲突。
+fn fs_is_case_insensitive(dir: &Path) -> bool {
+    let probe = dir.join(format!(".Pinvou-Icase-Probe-{}", std::process::id()));
+    let insensitive = match fs::write(&probe, b"") {
+        Ok(()) => {
+            let other = dir.join(format!(".PINVOU-ICASE-PROBE-{}", std::process::id()));
+            fs::metadata(&other).is_ok()
+        }
+        Err(_) => false,
+    };
+    let _ = fs::remove_file(&probe);
+    insensitive
+}
+
+/// 影子仓库的大小写口径（purge pathspec 与预览过滤随它走，三层必须与
+/// gitignore 语义的 exclude 一致，否则 .ENV 类文件会逃过 exclude 却被
+/// icase purge 移出 index、被 clean -fd 物理删除——评审 B1）。
+fn shadow_ignorecase(repo: &Path, work_tree: &Path) -> bool {
+    git_ok(repo, work_tree, &["config", "--get", "core.ignorecase"])
+        .map(|value| value.trim().eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// 影子仓库当前体积（objects + pack 文件总和；读取失败按 0——压力裁剪是
 /// best-effort，量不出来就不裁）。
 fn shadow_repo_bytes(repo: &Path) -> u64 {
@@ -308,16 +336,21 @@ fn git_ok(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<String> {
 /// id_rsa）在 git pathspec 里只命中仓库根部，自动派生 `**/` 前缀版本覆盖任意
 /// 深度；含通配符的模式（*.pem 等）本身跨 `/` 匹配，无需派生。gitignore 语义
 /// 的 exclude 本就任意深度生效，此差异只影响 `rm --cached` 这类 pathspec 调用。
-fn secret_pathspecs() -> Vec<String> {
-    // :(icase) 对齐 Windows 默认 core.ignorecase=true 的 exclude 语义：大写命名
-    // 的敏感文件（.ENV 等）也被 purge 命中。
-    let mut patterns: Vec<String> = SECRET_EXCLUDES
-        .iter()
-        .map(|line| format!(":(icase){line}"))
-        .collect();
+/// `icase` 随影子仓库的 core.ignorecase（与 exclude 口径严格一致）：大小写不
+/// 敏感文件系统上模式带 `:(icase)` 前缀；大小写敏感系统上不带——三层一致
+/// 才不会出现「exclude 放行、purge 错杀」的 B1 链路（评审 M1）。
+fn secret_pathspecs(icase: bool) -> Vec<String> {
+    let prefix = |line: &str| {
+        if icase {
+            format!(":(icase){line}")
+        } else {
+            line.to_string()
+        }
+    };
+    let mut patterns: Vec<String> = SECRET_EXCLUDES.iter().map(|line| prefix(line)).collect();
     for line in SECRET_EXCLUDES {
         if !line.contains(['*', '?', '[']) {
-            patterns.push(format!(":(icase)**/{line}"));
+            patterns.push(prefix(&format!("**/{line}")));
         }
     }
     patterns
@@ -331,7 +364,7 @@ fn secret_pathspecs() -> Vec<String> {
 /// setup_work_tree）——cwd 恰含同名文件时检查打到无关文件上、purge 全有或全
 /// 无地失败。`-f` 与 `--cached` 组合只绕过该检查，工作区文件绝不被碰。
 fn purge_secret_patterns_from_index(repo: &Path, work_tree: &Path) -> Result<()> {
-    let patterns = secret_pathspecs();
+    let patterns = secret_pathspecs(shadow_ignorecase(repo, work_tree));
     let mut arguments: Vec<&str> = vec![
         "rm",
         "-r",
@@ -355,13 +388,15 @@ fn purge_secret_patterns_from_index(repo: &Path, work_tree: &Path) -> Result<()>
 /// 初始化影子仓库（幂等）：git-dir 在账本根，work-tree 指向执行根。
 /// - `core.autocrlf false`：不受用户全局行尾配置影响，快照/恢复保持原字节；
 ///   执行根自己的 .gitattributes 仍会被尊重（与用户在项目内看到的行尾一致）。
-/// - `core.ignorecase true`：大小写口径三层统一的关键。exclude 遵循 gitignore
-///   语义、其大小写行为由该配置决定——默认 false（Linux/大小写敏感 APFS）时
-///   `.ENV` 这类大写秘密文件逃过 exclude 被快照跟踪，而 purge pathspec
-///   （`:(icase)`）与预览过滤都是大小写不敏感：restore 的 purge 把它移出 index
-///   后它变成「未跟踪且未被忽略」，会被随后的 `clean -fd` 物理删除（数据丢失
-///   级缺陷，评审 B1）。强制 true 后三层一致：大写秘密永不进快照，且因被
-///   ignored 而不受 clean 波及。
+/// - `core.ignorecase`：按执行根文件系统语义探测设置（`fs_is_case_insensitive`），
+///   每次 ensure 幂等校正。三层口径一致是 B1 的关键：exclude（gitignore 语义，
+///   大小写行为由该配置决定）、purge pathspec、预览过滤必须同向——exclude 放行
+///   而 icase purge 错杀时，`clean -fd` 会物理删除用户的真实文件（评审 B1）。
+///   无条件强制 true 的另一面是 git alias 冲突（评审 M1）：大小写敏感文件系统
+///   上 `Makefile`/`makefile` 共存会让 `add -A` 整体 fatal（快照静默全灭）、
+///   已跟踪别名的新文件被静默跳过、仅大小写改名会记成空树——探测设置后这些
+///   都不触发（大小写不敏感系统上才承受其语义，那里 alias 冲突本来就不可能
+///   同时存在两个仅大小写不同的文件）。
 /// - `info/exclude`：忽略依赖/构建目录 + checkpoint 目录自身（临时会话两根相同，
 ///   checkpoint 数据在执行根内，必须排除，否则快照自我递归、clean 会误删账本）。
 fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
@@ -373,12 +408,16 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
         git_ok(&repo, execution_root, &["init"])?;
         git_ok(&repo, execution_root, &["config", "core.autocrlf", "false"])?;
     }
-    // config 幂等：存量仓库（本次修复前创建、ignorecase 未设置）也必须补齐，
-    // 否则三层口径在旧仓库上依旧分裂。
+    // config 幂等：按执行根 fs 语义探测（存量仓库同样每次校正）。
+    let ignorecase = if fs_is_case_insensitive(execution_root) {
+        "true"
+    } else {
+        "false"
+    };
     git_ok(
         &repo,
         execution_root,
-        &["config", "core.ignorecase", "true"],
+        &["config", "core.ignorecase", ignorecase],
     )?;
     let mut excludes: Vec<String> = SHADOW_EXCLUDES
         .iter()
@@ -442,10 +481,13 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
         Err(parse_error) => {
             // 损坏的 index 不得让该会话的 checkpoint 功能永久失效（临时会话的
             // 账本就在 agent 可见的工作目录内，agent 的工具可能写坏它）：隔离
-            // 保留现场后从空索引重建——与 sidecar `_rewound_turns.json` 的损坏
-            // 处理同款。代价：影子仓库里的历史快照失去索引（不可列不可用，
-            // 对象随 gc 回收），此后快照能力恢复。
-            let quarantine = path.with_extension("json.corrupt");
+            // 保留现场（带时间戳，二次损坏不覆盖首次取证）后从空索引重建——与
+            // sidecar `_rewound_turns.json` 的损坏处理同款。代价：影子仓库里的
+            // 历史快照失去索引（不可列不可用，对象随 gc 回收），此后快照能力恢复。
+            let quarantine = path.with_extension(format!(
+                "json.corrupt-{}",
+                chrono::Utc::now().format("%Y%m%d%H%M%S")
+            ));
             eprintln!(
                 "[checkpoints] checkpoint 索引损坏，隔离为 {} 后从空索引重建: {parse_error:#}",
                 quarantine.display()
@@ -554,13 +596,18 @@ fn create_checkpoint_preserving(
     )?;
     index.entries.push(meta.clone());
     // 淘汰辅助：把最老的可淘汰条目（跳过 preserve）移出 index 并删其 ref。
-    // 返回实际淘汰条数。
+    // 返回实际淘汰条数。最新一条（刚登记的 meta）恒保留：压力分支名额滚存时
+    // 会把 preserve 挡下的名额落到它头上——刚创建的 PreRestore 被裁掉再被
+    // gc --prune=now 物理删除，undo 绑定静默断裂（评审 M3）。
+    let mut preserve_with_newest: Vec<&str> = preserve.to_vec();
+    preserve_with_newest.push(meta.id.as_str());
+    let preserve_set = &preserve_with_newest;
     let evict_oldest = |index: &mut CheckpointIndex, count: usize| -> usize {
         let mut evicted_ids = Vec::new();
         let mut kept = Vec::with_capacity(index.entries.len());
         let mut evictable_left = count;
         for entry in index.entries.drain(..) {
-            if evictable_left > 0 && !preserve.contains(&entry.id.as_str()) {
+            if evictable_left > 0 && !preserve_set.contains(&entry.id.as_str()) {
                 evicted_ids.push(entry.id);
                 evictable_left -= 1;
             } else {
@@ -710,27 +757,58 @@ fn wildcard_match(pattern: &str, text: &str) -> bool {
 }
 
 /// path 是否命中敏感文件模式：模式均无斜杠 → 字面 = basename 精确匹配，
-/// 含 `*` 的按 basename 通配（任意深度）。
-fn secret_path_matches(path: &str) -> bool {
+/// 含 `*` 的按 basename 通配（任意深度）。`icase` 随影子仓库 core.ignorecase
+/// （与 exclude/purge 三层同向，评审 B1/M1）。
+fn secret_path_matches(path: &str, icase: bool) -> bool {
     let basename = path.rsplit('/').next().unwrap_or(path);
-    // Windows 下 gitignore exclude 默认 core.ignorecase=true（.ENV 也被排除）；
-    // 过滤侧对齐为 ASCII 大小写不敏感，避免 legacy 仓库里大写命名的敏感文件
-    // 逃过 purge/预览过滤。
-    let basename_lower = basename.to_ascii_lowercase();
-    SECRET_EXCLUDES.iter().any(|pattern| {
-        let pattern_lower = pattern.to_ascii_lowercase();
-        if pattern_lower.contains('*') {
-            wildcard_match(&pattern_lower, &basename_lower)
+    let (basename, patterns): (String, Vec<String>) = if icase {
+        (
+            basename.to_ascii_lowercase(),
+            SECRET_EXCLUDES
+                .iter()
+                .map(|pattern| pattern.to_ascii_lowercase())
+                .collect(),
+        )
+    } else {
+        (
+            basename.to_string(),
+            SECRET_EXCLUDES
+                .iter()
+                .map(|pattern| pattern.to_string())
+                .collect(),
+        )
+    };
+    patterns.iter().any(|pattern| {
+        if pattern.contains('*') {
+            wildcard_match(pattern, &basename)
         } else {
-            basename_lower == pattern_lower
+            basename == *pattern
         }
     })
 }
 
-/// diff --git 段头是否指向敏感文件。按空白切 token、剥 a//b/ 前缀与引号；
-/// 含空格的路径（git 原样输出 `a/my dir/.env`，不引号包裹）无法靠 header
-/// token 命中，由 ---/+++ 行兜底（见 filter_secret_paths_from_patch）。
-fn diff_section_is_secret(header: &str) -> bool {
+/// diff --git 段头是否指向敏感文件。常规按空白切 token、剥 a//b/ 前缀与引号；
+/// 含空格/tab 的路径（git C-quoting 输出 `diff --git "a/x y" "b/x y"`）按引号
+/// 段解析；仍解析不了时由 ---/+++ 行兜底（见 filter_secret_paths_from_patch）。
+fn diff_section_is_secret(header: &str, icase: bool) -> bool {
+    if let Some(rest) = header.strip_prefix("diff --git \"") {
+        // C-quoted 形式：按引号段提取 a/ 与 b/ 路径（路径可含空格）。
+        if let Some(path) = rest.strip_prefix("a/").and_then(|s| s.split('"').next()) {
+            if secret_path_matches(path, icase) {
+                return true;
+            }
+        }
+        if let Some(path) = rest
+            .split("\" \"")
+            .nth(1)
+            .and_then(|s| s.strip_prefix("b/"))
+            .and_then(|s| s.split('"').next())
+        {
+            if secret_path_matches(path, icase) {
+                return true;
+            }
+        }
+    }
     header
         .split_whitespace()
         .map(|token| token.trim_matches('"'))
@@ -739,17 +817,20 @@ fn diff_section_is_secret(header: &str) -> bool {
                 .strip_prefix("a/")
                 .or_else(|| token.strip_prefix("b/"))
         })
-        .any(secret_path_matches)
+        .any(|token| secret_path_matches(token, icase))
 }
 
 /// `--- a/<path>` / `+++ b/<path>` 行的路径判定（整行剩余部分即路径，容忍空格；
-/// 删除文件的 marker 行尾部带 tab 填充，先剥掉；/dev/null 与引号包裹形式如实处理）。
-fn marker_line_is_secret(line: &str) -> bool {
+/// 删除文件的 marker 行尾部带 tab 填充，先剥掉；路径含 tab/引号时 git 用
+/// C-quoting 输出 `--- "a/x"`，剥掉外层引号再判定；/dev/null 如实不命中）。
+fn marker_line_is_secret(line: &str, icase: bool) -> bool {
     let path = line
         .strip_prefix("--- a/")
-        .or_else(|| line.strip_prefix("+++ b/"));
+        .or_else(|| line.strip_prefix("+++ b/"))
+        .or_else(|| line.strip_prefix("--- \"a/"))
+        .or_else(|| line.strip_prefix("+++ \"b/"));
     match path {
-        Some(path) => secret_path_matches(path.trim_end().trim_matches('"')),
+        Some(path) => secret_path_matches(path.trim_end().trim_matches('"'), icase),
         None => false,
     }
 }
@@ -758,7 +839,7 @@ fn marker_line_is_secret(line: &str) -> bool {
 /// 快照 tree 里可能仍有秘密原文（purge 只清 index），预览不得把原文带进 UI。
 /// 按段缓冲后判定（header 或 ---/+++ 行任一命中即整段剔除）——含空格路径
 /// 无法从段头 token 解析，必须看到 ---/+++ 行才能判定（评审 M1）。
-fn filter_secret_paths_from_patch(patch: &str) -> String {
+fn filter_secret_paths_from_patch(patch: &str, icase: bool) -> String {
     let mut out = String::with_capacity(patch.len());
     let mut section: Vec<&str> = Vec::new();
     let mut section_secret = false;
@@ -776,8 +857,8 @@ fn filter_secret_paths_from_patch(patch: &str) -> String {
     for line in patch.lines() {
         if line.starts_with("diff --git ") {
             flush(&mut out, &mut section, &mut section_secret);
-            section_secret = diff_section_is_secret(line);
-        } else if marker_line_is_secret(line) {
+            section_secret = diff_section_is_secret(line, icase);
+        } else if marker_line_is_secret(line, icase) {
             section_secret = true;
         }
         section.push(line);
@@ -832,12 +913,14 @@ pub fn diff_checkpoint(
     )?;
     // legacy 快照（迁移前打的）tree 里可能仍含秘密原文：清单与 patch 都剔除
     // 命中敏感模式的条目，预览既不带原文上屏，也不谎称「回滚将删除 .env」
-    // （restore 实际保留工作区现有同名文件）。
+    // （restore 实际保留工作区现有同名文件）。过滤大小写口径随影子仓库
+    // core.ignorecase（与 exclude/purge 三层同向）。
+    let icase = shadow_ignorecase(&repo, &execution_root);
     let changes: Vec<CheckpointChange> = parse_raw_status(&raw_status)
         .into_iter()
-        .filter(|change| !secret_path_matches(&change.path))
+        .filter(|change| !secret_path_matches(&change.path, icase))
         .collect();
-    let mut patch = filter_secret_paths_from_patch(&raw_patch);
+    let mut patch = filter_secret_paths_from_patch(&raw_patch, icase);
     let patch_truncated = patch.len() > DIFF_PATCH_LIMIT;
     if patch_truncated {
         let mut end = DIFF_PATCH_LIMIT;
@@ -1416,12 +1499,17 @@ mod tests {
 
         let index = load_index(ledger.path()).expect("quarantined load");
         assert!(index.entries.is_empty());
-        assert!(
-            ledger
-                .path()
-                .join("checkpoints/index.json.corrupt")
-                .is_file()
-        );
+        // 隔离文件带时间戳后缀（二次损坏不覆盖首次取证）。
+        let quarantined = fs::read_dir(checkpoints_dir(ledger.path()))
+            .unwrap()
+            .flatten()
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("index.json.corrupt-")
+            });
+        assert!(quarantined);
         assert!(!index_path(ledger.path()).exists());
         // 快照能力恢复。
         create_checkpoint(
