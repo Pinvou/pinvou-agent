@@ -1514,13 +1514,23 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             state: pinvouModeStateRef.current,
           };
         }
+        let dispatchResult;
         try {
-          await bridge.chat.sendMessage(visibleOutgoing, meta);
+          dispatchResult = await bridge.chat.sendMessage(visibleOutgoing, meta);
         } catch (error) {
           pendingModeScopeMigrationRef.current = null;
           throw error;
         }
-        return true;
+        // sendMessage resolves true only when something was actually
+        // dispatched (sent / steered / queued). false marks notice-only early
+        // returns (attachments still parsing, remote-turn sync block): nothing
+        // was sent and the composer text was not put back, so the caller must
+        // restore it — returning false routes the resolve through handleSend's
+        // empty-vs-typed restore instead of silently dropping the draft
+        // (#406). "restored" marks paths that already returned the text to the
+        // composer (first-turn materialization abort, session switch);
+        // restoring again would duplicate it.
+        return dispatchResult !== false;
       }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, t, visualPosterSceneActive]);
       // ConversationTimeline render-callback stabilization: ConversationTurn is React.memoized, so a
       // per-render callback identity would make every turn fully re-render each time. Callbacks only
@@ -1755,8 +1765,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         }
         const text = constrained.text;
         // Clear the composer the moment the button is clicked (before the
-        // await returns); on failure (reserve conflict etc.) restore the text —
-        // a message is never silently lost. While busy the bridge steers into
+        // await returns); on failure (reserve conflict etc.) or a notice-only
+        // not-dispatched resolution (attachments still parsing, remote-turn
+        // sync block — sendMessage reports false) restore the text — a message
+        // is never silently lost. While busy the bridge steers into
         // the current turn (with attachments it queues locally), see
         // sendMessage. The restore replaces wholesale only when the composer is
         // empty: sendChatMessage awaits capability installs etc. and the user
