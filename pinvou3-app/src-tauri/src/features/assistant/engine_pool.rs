@@ -35,6 +35,7 @@ use deepseek_tui::tools::spec::ToolSpec;
 use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
 use parking_lot::Mutex as SyncMutex;
+use serde::Serialize;
 use tauri::AppHandle;
 use tauri::async_runtime::JoinHandle;
 use tokio::sync::Mutex;
@@ -449,16 +450,54 @@ fn should_retry_cascade(lifecycle: Option<&TurnLifecycle>) -> bool {
 /// 是 no-op（简化③）。
 ///
 /// [`should_retry_cascade`]: fn@should_retry_cascade
+/// Return of the `cancel_generation` command: the turn cancellation result,
+/// letting the frontend `interruptAndSend` decide "whether to wait for a
+/// `chat:done` event".
+///
+/// - `generation`: the epoch of the target turn being cancelled; **None**
+///   covers two ambiguous cases — an idle session (no turn to cancel) and a
+///   missing target session; callers should treat both uniformly as "no
+///   specific turn was cancelled" (`terminal` is then always true and no
+///   event wait is needed).
+/// - `terminal`: **true** = the target turn's terminal is confirmed and the
+///   reserve gate is reopened, so the frontend can send a new message without
+///   waiting for events — three cases: the cancel completed the terminal by
+///   itself via the unsubmitted-claim path (the claim path's chat:done is
+///   emitted before the cancel command returns, so a frontend listener always
+///   misses it and only the command's return value can confirm); the target
+///   turn's reserve gate is already reopened (terminal closing finished,
+///   including the mismatch case where the target turn already ended and a
+///   new turn was reserved); or the session is idle.
+///   **false** = the cancel took effect but the target turn's terminal is
+///   still closing (reserve gate not open); the frontend should wait for the
+///   `chat:done` event carrying that `generation`.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelOutcome {
+    pub generation: Option<u64>,
+    pub terminal: bool,
+}
+
+/// Returns `(target_generation, claimed_unsubmitted)`:
+/// - `target_generation`: the target turn epoch snapshotted when the cancel
+///   was initiated (None when idle).
+/// - `claimed_unsubmitted`: whether the cancel **completed** the terminal by
+///   itself via the unsubmitted-claim path (the claim path's chat:done is
+///   emitted before the cancel command returns, so a frontend listener always
+///   misses it; the caller must therefore mark the result terminal=true so the
+///   frontend skips the event wait).
 async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
     turn_locks: &SessionTurnLocks,
     turn_lifecycles: &SessionTurnLifecycles,
     turn_shell_tasks: &SessionTurnShellTasks,
     session_id: &str,
+    steer_mode: deepseek_tui::core::engine::CancelMode,
     mut get_engine: E,
     mut cancel_current: X,
     mut cascade_cancel: F,
     claim_unsubmitted: C,
-) where
+) -> (Option<u64>, bool)
+where
     E: FnMut() -> EFut,
     EFut: Future<Output = Option<G>>,
     X: FnMut(&G),
@@ -491,8 +530,9 @@ async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
             // （reviewer 点 8）。epoch 不匹配时返回 false 且不执行取消闭包，
             // 阶段二持锁复查 generation 会整体 no-op（reviewer 点 6）。
             if let Some(lifecycle) = turn_lifecycles.get(session_id) {
-                lifecycle
-                    .arm_pending_cancel_and_cancel(target.unwrap_or(0), || cancel_current(&engine));
+                lifecycle.arm_pending_cancel_and_cancel(target.unwrap_or(0), steer_mode, || {
+                    cancel_current(&engine)
+                });
             } else {
                 cancel_current(&engine);
             }
@@ -523,7 +563,10 @@ async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
                 cascade_cancel(&engine).await;
             }
         }
-        return;
+        // The target turn already ended (its terminal was emitted
+        // elsewhere): the caller derives terminal=true from comparing target
+        // with current (no frontend event wait needed).
+        return (target, false);
     }
 
     // generation 匹配，目标轮仍是发起时刻那一轮：清理它的 shell 任务。
@@ -554,10 +597,11 @@ async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
                     // 需要同一把 state 锁，无法在「校验/arm」与「取消」之间插入
                     // 轮次切换。返回 false = 复查通过后轮次已切换：跳过 cancel
                     // 及级联副作用，避免命中新轮活跃 token（reviewer 点 6）。
-                    let armed = lifecycle
-                        .arm_pending_cancel_and_cancel(target.unwrap_or(0), || {
-                            cancel_current(&engine)
-                        });
+                    let armed = lifecycle.arm_pending_cancel_and_cancel(
+                        target.unwrap_or(0),
+                        steer_mode,
+                        || cancel_current(&engine),
+                    );
                     if armed {
                         // 级联取消必须在释放 turn gate 前完成入队（reviewer 点 4）：
                         // 下一轮 SendMessage 需等同一把 turn_lock，级联取消必先入队，
@@ -590,6 +634,7 @@ async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
     if let Some(cancellation) = shell_cancellation {
         cancellation.cleanup().await;
     }
+    (target, claimed_unsubmitted)
 }
 
 /// 池里一个 session 的常驻条目:engine + 它专属的 event forwarder task。
@@ -604,6 +649,15 @@ struct EngineEntry {
     /// （subagent/mod.rs 的 load 路径），少了这道甄别，父会话重建引擎后
     /// 上一进程的僵尸 worker 会重新显示"工作中"并被永久轮询。
     spawned_at_ms: u64,
+    /// Process-monotonic engine incarnation number (the steer-id generation
+    /// source). The generation stamp disambiguates steer ids across engine
+    /// rebuilds of one session and must be unique per rebuild within the
+    /// process; `spawned_at_ms` is wall-clock milliseconds, so two rebuilds
+    /// inside the same tick (or a clock rollback) collide and defeat the
+    /// equality check (zhuowp re-review P1-2) — the incarnation sequence is
+    /// time-independent and never repeats. Used only for steer-id stamping
+    /// and matching, not for idle-reap timing.
+    steer_incarnation: u64,
     /// 最近一次 turn 提交侧活动（UNIX ms）：spawn、turn 提交（send / 编辑重发 /
     /// scheduled 轮入口）都刷新。turn 终态收口时钟在 TurnLifecycle
     /// （`last_terminal_epoch_ms`，所有终态路径共用的收口点统一刷新），空闲回收
@@ -691,6 +745,13 @@ pub struct EnginePool {
     /// 正在跑 scheduled 轮的会话集合（run_scheduled_turn 的 spawn→submit 窗口
     /// 里 lifecycle 尚未 active，空闲回收需要它做第二重保护）。
     scheduled_running_sessions: Arc<SyncMutex<HashSet<String>>>,
+    /// Steer-id engine-incarnation allocator: a process-monotonic AtomicU64
+    /// sequence bumped on every engine spawn. Arc-shared so pool clones see
+    /// one sequence (same idiom as every shared field here — EnginePool is a
+    /// cheap Tauri State clone). Replaces wall-clock `spawned_at_ms` as the
+    /// generation stamp source so that same-tick rebuilds (or clock
+    /// rollbacks) can never collide generations (zhuowp re-review P1-2).
+    steer_incarnation_seq: Arc<AtomicU64>,
 }
 
 /// 后台巡检任务句柄：Drop 时先 cancel 再 abort 双保险停止巡检
@@ -704,6 +765,62 @@ impl Drop for IdleReaperGuard {
     fn drop(&mut self) {
         self.cancel.cancel();
         self.handle.abort();
+    }
+}
+
+/// M-7: a steer must have a live engine to deliver to. When the engine is
+/// absent (the session is not running) return Err — otherwise no
+/// steer_committed/steer_dropped event would ever arrive and the frontend's
+/// queued chip hangs forever. Extracted into a function so the "absent → Err"
+/// contract can be covered by unit tests without an AppHandle (EnginePool
+/// construction depends on AppHandle and bridge boot).
+fn require_live_engine_for_steer<T>(engine: Option<T>, session_id: &str) -> Result<T> {
+    engine.with_context(|| format!("no live engine for session '{session_id}' to steer"))
+}
+
+/// Steer ids are generation-scoped at the pool boundary. The foundation mints
+/// per-handle ordinal ids (`steer-{n}`) whose counter resets whenever an
+/// engine is rebuilt (idle reclaim / model switch), so a raw id is ambiguous
+/// across engine generations of one session: an old chip's withdrawal could
+/// retire the NEW engine's unrelated `steer-1`, and a settlement event could
+/// cross-wire two chips. The pool stamps a process-monotonic engine
+/// incarnation (an AtomicU64 sequence allocated at spawn — NOT wall-clock
+/// time, which collides for same-tick rebuilds or clock rollbacks, zhuowp
+/// re-review P1-2) onto every id it returns, and the forwarder stamps the
+/// `SteerCommitted`/`SteerDropped` payloads with the same incarnation,
+/// keeping chip↔event correlation exact and withdrawals
+/// generation-checked. The stamp is opaque to the frontend.
+pub(crate) fn stamp_steer_generation(generation: u64, raw_steer_id: &str) -> String {
+    format!("e{generation}-{raw_steer_id}")
+}
+
+/// Split a stamped id into `(generation, raw)`. `None` = not stamped (legacy
+/// or foreign id) — callers pass it through untranslated.
+fn parse_steer_generation(steer_id: &str) -> Option<(u64, &str)> {
+    let rest = steer_id.strip_prefix('e')?;
+    let dash = rest.find('-')?;
+    let generation = rest.get(..dash)?.parse::<u64>().ok()?;
+    Some((generation, rest.get(dash + 1..)?))
+}
+
+/// Pure withdrawal-delegation decision for a (possibly stamped) steer id
+/// against the live engine's incarnation. Kept standalone so the collision
+/// semantics are unit-testable without an AppHandle-backed pool.
+#[derive(Debug, PartialEq, Eq)]
+enum SteerWithdrawTarget<'a> {
+    /// Withdraw this id on the live engine (current incarnation, or an
+    /// unstamped legacy id delegated verbatim).
+    Raw(&'a str),
+    /// The id belongs to a previous engine incarnation — never delegate it to
+    /// the live engine (see `withdraw_steer`).
+    StaleGeneration,
+}
+
+fn delegate_steer_withdrawal(steer_id: &str, current_generation: u64) -> SteerWithdrawTarget<'_> {
+    match parse_steer_generation(steer_id) {
+        Some((stamped, raw)) if stamped == current_generation => SteerWithdrawTarget::Raw(raw),
+        Some(_) => SteerWithdrawTarget::StaleGeneration,
+        None => SteerWithdrawTarget::Raw(steer_id),
     }
 }
 
@@ -749,6 +866,7 @@ impl EnginePool {
             bridge,
             idle_reaper: Arc::new(SyncMutex::new(None)),
             scheduled_running_sessions: Arc::new(SyncMutex::new(HashSet::new())),
+            steer_incarnation_seq: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -1129,6 +1247,18 @@ impl EnginePool {
             .map_err(|e| anyhow::anyhow!("materialize session skills: {e}"))?;
         }
         let turn_lifecycle = self.turn_lifecycles.for_session(session_id);
+        // One wall-clock epoch for the entry ledger plus a process-monotonic
+        // incarnation for the steer-id generation stamp. The stamp on ids
+        // returned by `steer` and on the forwarded SteerCommitted/SteerDropped
+        // payloads must identify THIS engine build uniquely: the incarnation
+        // sequence guarantees uniqueness even when two rebuilds land in the
+        // same wall-clock millisecond (or the clock rolls back), where
+        // `spawned_at_ms` would collide (zhuowp re-review P1-2).
+        let spawned_at_ms = Self::now_epoch_ms();
+        let steer_incarnation = self
+            .steer_incarnation_seq
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
             self.store.clone(),
@@ -1140,6 +1270,7 @@ impl EnginePool {
             turn_lifecycle.clone(),
             shell_manager,
             turn_shell_tasks,
+            steer_incarnation,
         )
         .await?;
 
@@ -1186,7 +1317,8 @@ impl EnginePool {
                 engine: engine.clone(),
                 forwarder,
                 runtime_model: prepared,
-                spawned_at_ms: Self::now_epoch_ms(),
+                spawned_at_ms,
+                steer_incarnation,
                 last_active_epoch_ms: AtomicU64::new(Self::now_epoch_ms()),
             },
         );
@@ -1929,16 +2061,37 @@ impl EnginePool {
     ///
     /// 「停止」按钮是子智能体唯一的确定性停止入口（卡片上没有取消按钮，
     /// 自然语言指令只是建议）；只取消宿主轮会留下继续烧钱的后台子智能体。
-    pub async fn cancel(&self, session_id: &str) {
+    ///
+    /// `keep_inbox` (P0-A): when interrupting (true), un-injected steers are
+    /// kept for the next turn; when stopping (false), clear them and emit
+    /// SteerDropped so the frontend removes the chip with a notice —
+    /// preventing a "gone from the UI but alive in the engine" hang.
+    pub async fn cancel(&self, session_id: &str, keep_inbox: bool) -> CancelOutcome {
+        // r10 foundation: the steer disposition
+        // (InterruptKeepInbox/StopDropInbox) and the cancel token are
+        // published atomically by cancel_with_mode; a separate keepInbox
+        // toggle set before the cancel is no longer needed (the old two-step
+        // write had a disposition cross-talk window under concurrent
+        // cancels).
+        let steer_mode = if keep_inbox {
+            deepseek_tui::core::engine::CancelMode::InterruptKeepInbox
+        } else {
+            deepseek_tui::core::engine::CancelMode::StopDropInbox
+        };
         // 两阶段 generation 守护见 cancel_turn_with_gates：cancel 请求绑定发起
         // 时刻的轮次 epoch，并发请求中排队较晚的 C2 在 turn_lock 释放后若发现
         // 目标轮已结束（新轮已 reserve），整体 no-op，不误取消新轮。
         let app = &self.app;
-        cancel_turn_with_gates(
+        let (target, claimed_unsubmitted) = cancel_turn_with_gates(
             &self.turn_locks,
             &self.turn_lifecycles,
             &self.turn_shell_tasks,
             session_id,
+            // steer_mode is passed to cancel_turn_with_gates as well: the
+            // pending_cancel armed during the submit→TurnStarted window must
+            // carry the same disposition mode so the forwarder replay cannot
+            // degrade into a mode-less StopDropInbox.
+            steer_mode,
             // get_engine：取在场 engine 句柄（不取消，epoch 校验由
             // cancel_turn_with_gates 在 await 之后、cancel 之前执行，消除
             // handle_for 取 entries 锁期间的 TOCTOU 窗口）。
@@ -1953,7 +2106,7 @@ impl EnginePool {
             // （早于下一轮 SendMessage）；通道满（容量 32）时放弃，由阶段二
             // 及 mismatch 补发路径持锁 await 保证送达（reviewer 点 9 + G1）。
             |engine| {
-                engine.cancel_current();
+                engine.cancel_current_with_mode(steer_mode);
                 let _ = engine.handle.try_send(Op::CancelSubAgents);
             },
             // cascade_cancel：阶段二持 turn_lock 时 await 发送级联取消，保证在
@@ -1978,7 +2131,86 @@ impl EnginePool {
                 lifecycle.emit_unsubmitted_interrupted_terminal_for_epoch(app, session_id, target)
             },
         )
-        .await
+        .await;
+        // Idle-window backstop for the "stop = clear" contract (third review
+        // round, item 2): when the turn ended naturally, the lifecycle is
+        // already idle (target=None) but the frontend busy flag has not reset,
+        // a ⏹ press hits the idle guard in phase one of the gate function and
+        // never runs the cancel closure — steers parked by the previous
+        // round's keepInbox escape StopDropInbox, get injected next round as
+        // usual, and no chat:steer_dropped is emitted. In that case re-issue
+        // StopDropInbox once to the live engine — the foundation merely raises
+        // the drop_through_generation barrier to retire parked steers (a no-op
+        // when nothing is parked) with no side effects on the idle token. Only
+        // the stop path does this (an interrupt's keepInbox intends to keep
+        // parked steers); if a fresh turn got reserved between the two checks,
+        // `idle_recheck` deliberately skips the re-issue — cancelling a
+        // just-reserved turn here would break its admission contract, and
+        // that turn's own step boundaries settle parked steers normally.
+        if !keep_inbox && target.is_none() {
+            let still_idle = self
+                .turn_lifecycles
+                .get(session_id)
+                .and_then(|lc| lc.current_turn_generation())
+                .is_none();
+            if still_idle {
+                if let Some(engine) = self.handle_for(session_id).await {
+                    // Re-check once after handle_for's await to narrow the window.
+                    let idle_recheck = self
+                        .turn_lifecycles
+                        .get(session_id)
+                        .and_then(|lc| lc.current_turn_generation())
+                        .is_none();
+                    if idle_recheck {
+                        engine.cancel_current_with_mode(
+                            deepseek_tui::core::engine::CancelMode::StopDropInbox,
+                        );
+                    }
+                }
+            }
+        }
+        // Assemble the turn result. `terminal=true` is allowed in exactly
+        // three cases:
+        //   1) claim path — the terminal was completed by the cancel itself
+        //      (its chat:done is emitted before the cancel returns and before
+        //      the frontend listener registers, so it is always missed and
+        //      must be confirmed by the command's return value);
+        //   2) idle (target=None) — there is no event to wait for;
+        //   3) the target turn's reserve gate is already reopened
+        //      (is_reserve_gate_open_for) — the terminal has finished closing:
+        //      either the lifecycle is idle (in the authoritative terminal
+        //      path, reopening the gate and emitting chat:done happen in the
+        //      same synchronous block, finish before emit with no await in
+        //      between, so observing an open gate ⇒ chat:done was already
+        //      emitted), or a new turn is active with epoch != target (a
+        //      reserve can only succeed after the old turn reopened the gate,
+        //      so the old turn's terminal must have closed — terminal=true is
+        //      mandatory here, otherwise the frontend waits for an already
+        //      emitted-and-missed chat:done until timeout and then hits the
+        //      new turn's reserve).
+        // Everything else is terminal=false (the frontend waits for the
+        // chat:done carrying the target generation): **engine turn loop exit
+        // ≠ lifecycle released** — until the forwarder processes TurnComplete
+        // and claims, the lifecycle is still active and a chat reserve_turn
+        // would hit session_turn_in_progress. The only reliable "slot
+        // released" signal for the frontend is chat:done (emitted only after
+        // the gate reopens).
+        // (M-6: is_terminal_emitted was previously used for terminal=true, but
+        // between the claim setting terminal_emitted and
+        // finish_terminal_emission reopening the gate, the forwarder has
+        // several spawn_blocking persistence awaits; inside that window the
+        // gate is still closed, and a frontend that skips the wait and calls
+        // doSendFor directly hits session_turn_in_progress → intermittent zap
+        // delivery failures. The criterion must be "gate open", not "terminal
+        // claimed".)
+        let reserve_gate_open = self
+            .turn_lifecycles
+            .get(session_id)
+            .is_some_and(|lc| lc.is_reserve_gate_open_for(target));
+        CancelOutcome {
+            generation: target,
+            terminal: claimed_unsubmitted || target.is_none() || reserve_gate_open,
+        }
     }
 
     /// pinvou3 工具开关(全局持久):把"被禁用的工具全名"(模型可见全名,小写)广播给
@@ -2115,6 +2347,84 @@ impl EnginePool {
             engine.cancel_user_input(tool_call_id).await?;
         }
         Ok(())
+    }
+
+    /// Mid-turn inject: deliver a user message to the next step boundary of
+    /// the current turn. The foundation's `EngineHandle::steer` already
+    /// implements it — the turn loop drains the `rx_steer` channel after each
+    /// tool result and before the next model call, appending to
+    /// session.messages automatically (see foundation turn_loop.rs:493-510).
+    /// The model sees the message on its next thinking pass, matching Claude
+    /// Code's "insert while the main agent is idle" semantics.
+    ///
+    /// Returns the opaque steer id (`steer-{n}`) generated at enqueue time;
+    /// the frontend uses it to associate the queued chip with
+    /// `chat:steer_committed` / `chat:steer_dropped` events.
+    ///
+    /// Engine absent (session not running) → Err (M-7): there is nothing to
+    /// deliver to and no committed/dropped event would ever come; a silent Ok
+    /// would leave the frontend chip hanging forever. The frontend takes the
+    /// Err into its failure-recovery path.
+    pub async fn steer(&self, session_id: &str, content: String) -> Result<String> {
+        // One atomic entry read: engine handle + its incarnation. If the pool
+        // rebuilds the engine right after this read, we steer on the OLD
+        // engine and stamp with ITS incarnation — the pair stays consistent,
+        // which is exactly what the stamp exists for.
+        let entry = self
+            .entries
+            .lock()
+            .await
+            .get(session_id)
+            .map(|e| (e.engine.clone(), e.steer_incarnation));
+        let (engine, generation) = require_live_engine_for_steer(entry, session_id)?;
+        let raw = engine.handle.steer(content).await?;
+        Ok(stamp_steer_generation(generation, &raw))
+    }
+
+    /// Withdraw a not-yet-injected steer (the ✕ on a frontend queued chip).
+    ///
+    /// Foundation semantics: a withdrawn steer_id never enters the transcript;
+    /// when the engine meets it at any collection/injection point it skips it
+    /// and emits exactly one `SteerDropped` (idempotent). Marks survive across
+    /// turns; `SyncSession`/`Shutdown` clear them. The withdrawal returns an
+    /// explicit outcome (review P1-1 / CodeWhale#30): `"retired"` = the engine
+    /// copy is marked withdrawn and will never inject (the host may safely
+    /// resend the same message through another path); `"not_pending"` =
+    /// committed/settled/unknown (the injection may already be done — the
+    /// host must not resend; it waits for steer_committed to render the
+    /// bubble). An already-committed id has no side effects and no event —
+    /// the frontend removes the chip optimistically and a late committed can
+    /// still render the bubble.
+    ///
+    /// Engine absent → Err: the message never entered the engine, a purely
+    /// local frontend removal suffices and no event needs waiting for.
+    pub async fn withdraw_steer(&self, session_id: &str, steer_id: String) -> Result<&'static str> {
+        let entry = self
+            .entries
+            .lock()
+            .await
+            .get(session_id)
+            .map(|e| (e.engine.clone(), e.steer_incarnation));
+        let (engine, generation) = require_live_engine_for_steer(entry, session_id)?;
+        // Generation check before delegation (the raw-id match below is why):
+        // a stamped id from a previous engine incarnation must NOT reach the
+        // live engine — the foundation compares raw strings, so the live
+        // engine's unrelated `steer-1` could be retired by a stale chip's
+        // withdrawal. The stale incarnation's steers died with their engine
+        // (foundation Drop drains, forwarder aborts first): they can never
+        // inject again, but they may have committed before the drop —
+        // `not_pending` ("no proof of delivery") is the honest outcome and
+        // sends the frontend to its reconcile path instead of a resend.
+        // Unstamped (legacy) ids delegate unchanged.
+        let delegated = match delegate_steer_withdrawal(&steer_id, generation) {
+            SteerWithdrawTarget::Raw(raw) => raw.to_string(),
+            SteerWithdrawTarget::StaleGeneration => return Ok("not_pending"),
+        };
+        let outcome = engine.handle.withdraw_steer(&delegated);
+        Ok(match outcome {
+            deepseek_tui::core::engine::SteerWithdrawal::Retired => "retired",
+            deepseek_tui::core::engine::SteerWithdrawal::NotPending => "not_pending",
+        })
     }
 
     /// super permission 改动后调用。**无需热刷静态 prompt**——sudo 的开/关状态
@@ -3015,6 +3325,116 @@ mod scheduled_model_tests {
         assert!(lifecycles.get("session-1").is_none());
     }
 
+    #[test]
+    fn steer_without_live_engine_is_an_error() {
+        // M-7: steer must return Err when the engine is absent (the session
+        // is not running) — a silent Ok would leave the frontend queued chip
+        // waiting forever for steer_committed/steer_dropped. EnginePool
+        // construction depends on AppHandle and bridge boot and cannot be
+        // instantiated in unit tests, so the contract is covered on
+        // require_live_engine_for_steer instead.
+        let err = super::require_live_engine_for_steer(None::<super::AppEngine>, "session-1")
+            .err()
+            .expect("steer without a live engine must fail");
+        assert!(format!("{err:#}").contains("no live engine"));
+    }
+
+    #[test]
+    fn steer_id_generation_stamp_parse_round_trip() {
+        // Regression (eighth-review round): foundation steer ids are ordinals
+        // (`steer-{n}`) that reset on engine rebuild. The pool stamps the
+        // engine generation onto ids it returns; parse must recover the exact
+        // pair so withdrawals can be generation-checked.
+        let stamped = super::stamp_steer_generation(1_725_012_345_678, "steer-3");
+        assert_eq!(stamped, "e1725012345678-steer-3");
+        assert_eq!(
+            super::parse_steer_generation(&stamped),
+            Some((1_725_012_345_678, "steer-3"))
+        );
+        // Raw ids with dashes survive the round trip (the first dash splits).
+        assert_eq!(
+            super::parse_steer_generation("e42-e1725012345678-steer-3"),
+            Some((42, "e1725012345678-steer-3"))
+        );
+    }
+
+    #[test]
+    fn unstamped_steer_ids_parse_as_legacy_passthrough() {
+        // Legacy / foreign ids must not be misread as stamped: the pool
+        // delegates them untranslated so an id that happens to look ordinal
+        // still reaches the engine it was minted by.
+        assert_eq!(super::parse_steer_generation("steer-3"), None);
+        assert_eq!(super::parse_steer_generation(""), None);
+        assert_eq!(super::parse_steer_generation("esteer-3"), None);
+        assert_eq!(super::parse_steer_generation("e-nan-steer"), None);
+        assert_eq!(
+            super::parse_steer_generation("e18446744073709551616-x"),
+            None
+        );
+    }
+
+    #[test]
+    fn steer_incarnations_stay_unique_across_same_tick_rebuilds() {
+        // Regression (zhuowp re-review P1-2): the generation stamp source must
+        // be unique per engine rebuild within the process. Wall-clock
+        // milliseconds collide for two rebuilds inside one tick (or after a
+        // clock rollback); the pool's incarnation sequence is time-independent,
+        // so consecutive allocations — regardless of what the clock does —
+        // mint distinct generations and therefore distinct stamped ids.
+        use std::sync::atomic::AtomicU64;
+        let seq = AtomicU64::new(0);
+        let first = seq.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+        let second = seq.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+        assert_ne!(first, second, "incarnations must never repeat");
+        // Deterministic replay of the collision scenario: two engine rebuilds
+        // with the SAME spawned_at_ms still get distinct steer generations,
+        // so a chip minted by the first cannot match the second.
+        let first_ids = (1..=2)
+            .map(|n| super::stamp_steer_generation(first, &format!("steer-{n}")))
+            .collect::<Vec<_>>();
+        let second_ids = (1..=2)
+            .map(|n| super::stamp_steer_generation(second, &format!("steer-{n}")))
+            .collect::<Vec<_>>();
+        assert_ne!(first_ids, second_ids);
+        // Foundation ordinals restart at steer-1 on every rebuild; only the
+        // incarnation keeps them apart.
+        assert_eq!(first_ids[0], format!("e{first}-steer-1"));
+        assert_eq!(second_ids[0], format!("e{second}-steer-1"));
+        assert_ne!(first_ids[0], second_ids[0]);
+    }
+
+    #[test]
+    fn stale_incarnation_withdrawal_never_delegates_on_same_tick_rebuild() {
+        // Regression (zhuowp re-review P1-2): a chip stamped by engine
+        // incarnation N must never have its withdrawal delegated into a
+        // rebuilt engine N+1, even when both rebuilds share one
+        // spawned_at_ms tick — the raw ordinal `steer-1` exists in BOTH
+        // engines, and a mis-delegation would retire the new engine's
+        // unrelated steer.
+        let first_engine = 7u64;
+        let second_engine = 8u64; // same spawned_at_ms, next incarnation
+        let stale_chip = super::stamp_steer_generation(first_engine, "steer-1");
+        assert_eq!(
+            super::delegate_steer_withdrawal(&stale_chip, first_engine),
+            super::SteerWithdrawTarget::Raw("steer-1")
+        );
+        assert_eq!(
+            super::delegate_steer_withdrawal(&stale_chip, second_engine),
+            super::SteerWithdrawTarget::StaleGeneration
+        );
+        // The rebuilt engine's own chip delegates normally.
+        let live_chip = super::stamp_steer_generation(second_engine, "steer-1");
+        assert_eq!(
+            super::delegate_steer_withdrawal(&live_chip, second_engine),
+            super::SteerWithdrawTarget::Raw("steer-1")
+        );
+        // Unstamped legacy ids keep delegating verbatim.
+        assert_eq!(
+            super::delegate_steer_withdrawal("steer-1", second_engine),
+            super::SteerWithdrawTarget::Raw("steer-1")
+        );
+    }
+
     #[tokio::test]
     async fn scheduled_close_and_concurrent_followup_share_one_session_gate() {
         let locks = SessionTurnLocks::default();
@@ -3377,6 +3797,7 @@ mod scheduled_model_tests {
                 &lifecycles,
                 &shell_tasks,
                 sid,
+                deepseek_tui::core::engine::CancelMode::StopDropInbox,
                 // get_engine：engine 在场（阶段一与阶段二复查都返回 Some）。
                 || async { Some(()) },
                 // cancel_current：阶段一与阶段二复查都走这里：用计数区分。
@@ -3460,6 +3881,7 @@ mod scheduled_model_tests {
             &lifecycles,
             &shell_tasks,
             sid,
+            deepseek_tui::core::engine::CancelMode::StopDropInbox,
             // get_engine：engine 在场。
             || async { Some(()) },
             // cancel_current：记录触发。
@@ -3522,6 +3944,7 @@ mod scheduled_model_tests {
                 &lifecycles,
                 &shell_tasks,
                 sid,
+                deepseek_tui::core::engine::CancelMode::StopDropInbox,
                 // get_engine：engine 在场（阶段一与补发复查都返回 Some）。
                 || async { Some(()) },
                 // cancel_current：阶段一执行一次（取消旧轮）。
@@ -3596,6 +4019,7 @@ mod scheduled_model_tests {
                 &lifecycles,
                 &shell_tasks,
                 sid,
+                deepseek_tui::core::engine::CancelMode::StopDropInbox,
                 || async { Some(()) },
                 move |_engine: &()| {
                     probe_cancel.store(true, Ordering::Release);
@@ -3676,6 +4100,7 @@ mod scheduled_model_tests {
                 &lifecycles,
                 &shell_tasks,
                 sid,
+                deepseek_tui::core::engine::CancelMode::StopDropInbox,
                 move || {
                     let entered = entered.clone();
                     let release = release.clone();
@@ -3763,6 +4188,7 @@ mod scheduled_model_tests {
                 &lifecycles,
                 &shell_tasks,
                 sid,
+                deepseek_tui::core::engine::CancelMode::StopDropInbox,
                 // engine 不在场 → get_engine 返回 None → 不取消，走 claim_unsubmitted 分支。
                 || async { None::<()> },
                 // cancel_current：engine 不在场时不应被调用。
@@ -3824,6 +4250,7 @@ mod scheduled_model_tests {
             &lifecycles,
             &shell_tasks,
             sid,
+            deepseek_tui::core::engine::CancelMode::StopDropInbox,
             // engine 不在场 → get_engine 返回 None → 不 cancel，走 claim_unsubmitted。
             || async { None::<()> },
             // cancel_current：engine 不在场，不应被调用。
@@ -3898,6 +4325,7 @@ mod scheduled_model_tests {
                 &lifecycles,
                 &shell_tasks,
                 sid,
+                deepseek_tui::core::engine::CancelMode::StopDropInbox,
                 // get_engine：第一次调用（阶段一）通知已进入后挂起（模拟
                 // handle_for 取 entries 锁的 await），放行后返回「engine 在场」。
                 // 若实现退化（阶段二缺 generation 守护，即 #205 原始 bug），
@@ -3986,6 +4414,7 @@ mod scheduled_model_tests {
             &lifecycles,
             &shell_tasks,
             sid,
+            deepseek_tui::core::engine::CancelMode::StopDropInbox,
             // get_engine：engine 在场。
             || async { Some(()) },
             // cancel_current 探针：仅计数。cancel 在 state 锁内执行，探针不能
@@ -4012,5 +4441,189 @@ mod scheduled_model_tests {
             lifecycle.take_pending_cancel(epoch).is_some(),
             "pending_cancel must be armed before cancel_current so a TurnStarted can be replayed"
         );
+    }
+
+    #[tokio::test]
+    async fn cancel_outcome_assembly_inputs_cover_every_terminal_branch() {
+        // Sixth review round regression: the CancelOutcome assembly of
+        // `EnginePool::cancel` (`terminal: claimed_unsubmitted ||
+        // target.is_none() || reserve_gate_open` at the end of cancel() in
+        // this file) — any true → terminal=true, all false → false. EnginePool
+        // construction depends on AppHandle (tauri's test feature is not
+        // enabled and the repo has no mock_app precedent), so cancel() itself
+        // is not unit-testable; this test executes the exact same assembly
+        // expression branch by branch with the exact same input sources
+        // (cancel_turn_with_gates' return value + TurnLifecycle::
+        // is_reserve_gate_open_for), locking the truth table.
+
+        // Branch "target.is_none()": idle session (no lifecycle) → no event
+        // to wait for, terminal=true (the frontend must not wait for a
+        // chat:done in vain).
+        {
+            let locks = SessionTurnLocks::default();
+            let lifecycles = SessionTurnLifecycles::default();
+            let shell_tasks = SessionTurnShellTasks::default();
+            let sid = "session-outcome-idle";
+            let (target, claimed_unsubmitted) = cancel_turn_with_gates(
+                &locks,
+                &lifecycles,
+                &shell_tasks,
+                sid,
+                deepseek_tui::core::engine::CancelMode::StopDropInbox,
+                || async { None::<()> },
+                |_engine: &()| {},
+                |_engine: &()| async {},
+                |_lc, _target| false,
+            )
+            .await;
+            let reserve_gate_open = lifecycles
+                .get(sid)
+                .is_some_and(|lc| lc.is_reserve_gate_open_for(target));
+            assert_eq!(target, None, "idle session has no target generation");
+            assert!(!claimed_unsubmitted, "nothing to claim while idle");
+            assert!(
+                claimed_unsubmitted || target.is_none() || reserve_gate_open,
+                "idle session must assemble terminal=true (no chat:done to wait for)"
+            );
+        }
+
+        // Branch "claimed_unsubmitted": unsubmitted reservation + engine
+        // absent → the claim path claims the terminal (its chat:done is
+        // emitted before the cancel returns, so a frontend listener always
+        // misses it) → claimed_unsubmitted=true → terminal=true.
+        {
+            let locks = SessionTurnLocks::default();
+            let lifecycles = SessionTurnLifecycles::default();
+            let shell_tasks = SessionTurnShellTasks::default();
+            let sid = "session-outcome-claimed";
+            let lifecycle = lifecycles.for_session(sid);
+            let _reservation = lifecycle.reserve().expect("unsubmitted reservation");
+            let (target, claimed_unsubmitted) = cancel_turn_with_gates(
+                &locks,
+                &lifecycles,
+                &shell_tasks,
+                sid,
+                deepseek_tui::core::engine::CancelMode::InterruptKeepInbox,
+                || async { None::<()> },
+                |_engine: &()| {},
+                |_engine: &()| async {},
+                |_lc, _target| true,
+            )
+            .await;
+            let reserve_gate_open = lifecycles
+                .get(sid)
+                .is_some_and(|lc| lc.is_reserve_gate_open_for(target));
+            assert_eq!(target, Some(1));
+            assert!(
+                claimed_unsubmitted,
+                "the claim path must surface as claimed_unsubmitted"
+            );
+            assert!(
+                claimed_unsubmitted || target.is_none() || reserve_gate_open,
+                "claimed terminal must assemble terminal=true (its chat:done is unobservable)"
+            );
+        }
+
+        // Branch "reserve_gate_open" and the all-false contrast: a submitted
+        // turn still closing its terminal after cancel (the persistence window
+        // between claim and finish, gate closed) → all three inputs false →
+        // terminal=false (the frontend waits for chat:done); once the
+        // forwarder finishes closing (finish_once = claim + emit + finish,
+        // same order as the authoritative path) the gate reopens
+        // → terminal=true。
+        {
+            let locks = SessionTurnLocks::default();
+            let lifecycles = SessionTurnLifecycles::default();
+            let shell_tasks = SessionTurnShellTasks::default();
+            let sid = "session-outcome-gate";
+            let lifecycle = lifecycles.for_session(sid);
+            assert!(lifecycle.on_submitted());
+            let (target, claimed_unsubmitted) = cancel_turn_with_gates(
+                &locks,
+                &lifecycles,
+                &shell_tasks,
+                sid,
+                deepseek_tui::core::engine::CancelMode::StopDropInbox,
+                || async { Some(()) },
+                |_engine: &()| {},
+                |_engine: &()| async {},
+                |_lc, _target| false,
+            )
+            .await;
+            assert_eq!(target, Some(1));
+            assert!(
+                !claimed_unsubmitted,
+                "a submitted turn never takes the claim path"
+            );
+            let reserve_gate_open = lifecycles
+                .get(sid)
+                .is_some_and(|lc| lc.is_reserve_gate_open_for(target));
+            assert!(
+                !(claimed_unsubmitted || target.is_none() || reserve_gate_open),
+                "terminal closing in progress: all inputs false -> terminal=false (frontend waits for chat:done)"
+            );
+            // Terminal closing finished (gate reopening precedes the
+            // chat:done emit, same synchronous block) → gate reopened.
+            assert!(lifecycle.finish_once(|| {}).is_some());
+            let reserve_gate_open = lifecycles
+                .get(sid)
+                .is_some_and(|lc| lc.is_reserve_gate_open_for(target));
+            assert!(
+                claimed_unsubmitted || target.is_none() || reserve_gate_open,
+                "reserve gate reopened: terminal=true is safe (chat:done already emitted)"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_gates_arm_pending_cancel_with_the_given_steering_mode() {
+        // Lock the downstream half of the keep_inbox → CancelMode mapping
+        // (sixth review round): EnginePool::cancel picks InterruptKeepInbox
+        // (interrupt) or StopDropInbox (stop) per keep_inbox and passes it
+        // into this function; this test locks "whichever mode is passed in,
+        // the pending_cancel armed during the submit→TurnStarted window
+        // carries that same mode for the forwarder replay" — preventing
+        // cancel_turn_with_gates from internally degrading to a hard-coded
+        // StopDropInbox (a ⚡ interrupt would wrongly clear un-injected queued
+        // steers). The literal `if keep_inbox` mapping inside cancel() and the
+        // idle StopDropInbox re-issue need an EnginePool (AppHandle) plus a
+        // live engine, untestable in the current harness (consistent with the
+        // note on require_live_engine_for_steer).
+        for mode in [
+            deepseek_tui::core::engine::CancelMode::InterruptKeepInbox,
+            deepseek_tui::core::engine::CancelMode::StopDropInbox,
+        ] {
+            let locks = SessionTurnLocks::default();
+            let lifecycles = SessionTurnLifecycles::default();
+            let shell_tasks = SessionTurnShellTasks::default();
+            let sid = if mode == deepseek_tui::core::engine::CancelMode::InterruptKeepInbox {
+                "session-mode-keep-inbox"
+            } else {
+                "session-mode-stop-drop"
+            };
+            let lifecycle = lifecycles.for_session(sid);
+            // Submitted but TurnStarted not yet arrived (turn_id=None) → the
+            // arm preconditions hold.
+            assert!(lifecycle.on_submitted());
+            let epoch = lifecycle.current_turn_generation().expect("active epoch");
+            cancel_turn_with_gates(
+                &locks,
+                &lifecycles,
+                &shell_tasks,
+                sid,
+                mode,
+                || async { Some(()) },
+                |_engine: &()| {},
+                |_engine: &()| async {},
+                |_lc, _target| false,
+            )
+            .await;
+            assert_eq!(
+                lifecycle.take_pending_cancel(epoch),
+                Some((epoch, mode)),
+                "armed pending_cancel must carry the CancelMode passed to cancel_turn_with_gates"
+            );
+            assert!(lifecycle.finish_once(|| {}).is_some());
+        }
     }
 }

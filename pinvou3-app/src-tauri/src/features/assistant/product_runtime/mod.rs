@@ -415,7 +415,9 @@ impl ProductChatRuntime for EnginePoolRuntime {
     }
 
     async fn cancel(&self, session_id: &str) {
-        self.pool.cancel(session_id).await;
+        // Evaluation/headless cancel means stop: un-injected steers are not
+        // kept (StopDropInbox).
+        self.pool.cancel(session_id, false).await;
     }
 
     async fn close(&self, session_id: &str) {

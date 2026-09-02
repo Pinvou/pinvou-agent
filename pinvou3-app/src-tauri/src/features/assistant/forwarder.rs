@@ -7,6 +7,8 @@
 
 use super::*;
 
+use crate::features::assistant::engine_pool::stamp_steer_generation;
+
 fn behavior_task_status(status: TurnOutcomeStatus, error: Option<&str>) -> &'static str {
     match status {
         TurnOutcomeStatus::Completed if error.is_none() => "success",
@@ -47,6 +49,7 @@ pub(crate) fn spawn_event_forwarder(
     turn_lifecycle: Arc<TurnLifecycle>,
     shell_manager: SharedShellManager,
     turn_shell_tasks: TurnShellTaskRegistry,
+    steer_id_generation: u64,
 ) -> tauri::async_runtime::JoinHandle<()> {
     let approve_handle = handle.clone();
     let plan_tracker: Arc<Mutex<TurnPlanTracker>> =
@@ -96,15 +99,21 @@ pub(crate) fn spawn_event_forwarder(
                     // 消费 pending_cancel（无论 admitted 与否，防止跨轮泄漏）。
                     // reset_cancel_token() 在 TurnStarted 之前已执行，若 cancel
                     // 在此之前 arm 了标记，现在重新 cancel 命中的是本轮活跃 token。
-                    // pending_cancel 携带 arming 时的 turn_epoch：只有匹配当前轮
-                    // 的 arm 才在此重放 cancel，跨轮的 stale arm 被丢弃（#207）。
+                    // pending_cancel carries the turn_epoch and steer
+                    // disposition mode from arming time: only an arm matching
+                    // the current turn replays the cancel here (stale arms
+                    // from other turns are dropped, #207), and the replay must
+                    // call cancel_with_mode with the arming-time mode — the
+                    // mode-less cancel() hard-codes StopDropInbox and would
+                    // lose ⚡'s keepInbox semantics on the replay path.
                     let epoch = turn_lifecycle.current_turn_generation().unwrap_or(0);
-                    let pending_cancel = turn_lifecycle.take_pending_cancel(epoch).is_some();
+                    let pending_cancel = turn_lifecycle.take_pending_cancel(epoch);
                     if !admitted {
                         continue;
                     }
-                    if pending_cancel {
-                        approve_handle.cancel();
+                    if let Some((_, mode)) = pending_cancel {
+                        approve_handle
+                            .cancel_with_mode(deepseek_tui::core::engine::CancelReason::User, mode);
                     }
                     active_transcript_seen = false;
                     active_operation_rejected = false;
@@ -532,8 +541,49 @@ pub(crate) fn spawn_event_forwarder(
                     // 已先于 ApprovalRequired fire，前端已收到正确的 args。
                     // 之前在此 emit 会用 args=null 覆盖前端 toolMeta，导致产物路径丢失。
                 }
+                // Main-side cleanup: CodeWhale-native workflow events are
+                // managed by the foundation itself; the app only consumes the
+                // generic subagent events (AgentSpawned no longer registers a
+                // role).
                 Event::AgentSpawned { .. } => {}
-                // CodeWhale 原生 workflow 事件由底座自行管理；应用只消费通用子智能体事件。
+                // Mid-turn inject delivery confirmation (P0-A): after the
+                // engine appends the steer message to the transcript it emits
+                // SteerCommitted (carrying the enqueue-time steer_id), which
+                // the frontend uses to turn the matching queued chip into a
+                // bubble; SteerDropped is only emitted when the engine drops
+                // it. The frontend no longer guesses via
+                // chat:transcript_committed + load_session message counting.
+                // The raw id is stamped with this engine build's steer-id
+                // generation — the same stamp `EnginePool::steer` puts on the
+                // id it returned — because the foundation's ordinal ids reset
+                // on engine rebuild and must stay unambiguous per session
+                // (see stamp_steer_generation in engine_pool.rs).
+                Event::SteerCommitted { steer_id } => {
+                    let steer_id = stamp_steer_generation(steer_id_generation, &steer_id);
+                    let payload = json!({
+                        "session_id": session_id,
+                        "steer_id": steer_id,
+                    });
+                    let _ = app.emit("chat:steer_committed", payload.clone());
+                    crate::features::remote_control::forward_app_event(
+                        &app,
+                        "chat:steer_committed",
+                        payload,
+                    );
+                }
+                Event::SteerDropped { steer_id } => {
+                    let steer_id = stamp_steer_generation(steer_id_generation, &steer_id);
+                    let payload = json!({
+                        "session_id": session_id,
+                        "steer_id": steer_id,
+                    });
+                    let _ = app.emit("chat:steer_dropped", payload.clone());
+                    crate::features::remote_control::forward_app_event(
+                        &app,
+                        "chat:steer_dropped",
+                        payload,
+                    );
+                }
                 Event::WorkflowUi { .. } => {}
                 Event::AgentProgress { id, status, .. } => {
                     let payload = json!({
@@ -932,15 +982,28 @@ pub(crate) fn spawn_event_forwarder(
                         // abort this forwarder and leave the frontend permanently
                         // busy. Reclaim now observes the lifecycle as terminal and
                         // cannot publish a conflicting Interrupted outcome.
+                        //
+                        // P0-B: finish_terminal_emission must run before the
+                        // emit so that when chat:done arrives the reserve gate
+                        // is already reopened (contract: chat:done ⇒ slot
+                        // released) and the frontend's interruptAndSend needs
+                        // no fixed sleep. The generation is read before finish
+                        // (it returns to None afterwards). The emit stays
+                        // before the harness await: the harness section can be
+                        // interrupted by engine eviction, and the terminal
+                        // must go out first or the frontend stays busy
+                        // forever.
+                        let generation = turn_lifecycle.current_turn_generation().unwrap_or(0);
+                        turn_lifecycle.finish_terminal_emission();
                         emit_chat_terminal(
                             &app,
                             &session_id,
+                            generation,
                             terminal_status,
                             terminal_error.clone(),
                             shell_cleanup_failed,
                             operation_rejected,
                         );
-                        turn_lifecycle.finish_terminal_emission();
 
                         // ── [回归底座式] M2 自驱 + M3 文本兜底已彻底砍掉 ──
                         // M2:执行不自动续跑,回底座由用户驱动。M3(Plan 写了方案没调

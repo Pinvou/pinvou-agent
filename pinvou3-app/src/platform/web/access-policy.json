@@ -170,6 +170,8 @@
     "chat:reasoning_delta",
     "chat:reasoning_done",
     "chat:done",
+    "chat:steer_committed",
+    "chat:steer_dropped",
     "chat:memory_write",
     "chat:plan_ready",
     "chat:plan_resolved",

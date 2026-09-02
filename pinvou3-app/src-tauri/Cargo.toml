@@ -12,6 +12,13 @@ edition = "2024"
 # rust-toolchain.toml (reproducible). The two are complementary.
 # 1.89 > the 1.85 floor of edition 2024 — kept unchanged.
 rust-version = "1.89"
+# The main binary is the Tauri app (src/main.rs); src/bin/dump_system_prompt.rs
+# is a dev tool. This key makes `cargo run` (without --bin) default to the
+# main app instead of erroring out due to multiple bins. Must live directly in
+# [package]: below the [package.metadata.*] header these keys are swallowed
+# into the metadata table and silently ignored (dev run failed on this).
+default-run = "pinvou3-tauri"
+autobins = false
 # cargo-shear (unused-dependency / unlinked-file check) exemption:
 # rustc-stack-wrapper.rs is not a compilation target of this crate; it is
 # source code that scripts/rustc-stack-wrapper-select.sh compiles on demand
@@ -20,11 +27,6 @@ rust-version = "1.89"
 # .cargo/config.toml. Do NOT delete it per shear's advice.
 [package.metadata.cargo-shear]
 ignored-paths = ["scripts/rustc-stack-wrapper.rs"]
-# The main binary is the Tauri app (src/main.rs); src/bin/dump_system_prompt.rs
-# is a dev tool. This key makes `cargo run` (without --bin) default to the
-# main app instead of erroring out due to multiple bins.
-default-run = "pinvou3-tauri"
-autobins = false
 
 [[bin]]
 name = "pinvou3-tauri"

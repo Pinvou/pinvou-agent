@@ -359,6 +359,127 @@ try {
   'the shared card must expose explicit radio/checkbox choices and an explicit submit action');
   assert.ok(conversationView.includes('查看原始数据'),
     'model-facing compacted payloads must be secondary diagnostic details');
+  // Steered mid-turn messages are not turn admissions: they must never
+  // consume a timing record or inherit a phantom lifecycle. Live repros
+  // (#308): a naturally queued steer showed an "interrupted" badge, and the
+  // parked-steer resume continuation can log an orphan user_start whose
+  // assistant_done attaches to the original turn id.
+  const steerBadgeCases = [
+    {
+      label: 'one completed pair (real disk shape, no ui_turn_index)',
+      timelineEvents: [
+        { turn_id: 't0', event: 'user_start', timestamp: 100 },
+        { turn_id: 't0', event: 'assistant_done', timestamp: 200, status: 'Completed' },
+      ],
+      expectedSteered: 'Completed',
+    },
+    {
+      label: 'orphan resume user_start without its own terminal',
+      timelineEvents: [
+        { turn_id: 't0', event: 'user_start', timestamp: 100 },
+        { turn_id: 't0', event: 'assistant_done', timestamp: 200, status: 'Completed' },
+        { turn_id: 't1', event: 'user_start', timestamp: 300 },
+      ],
+      expectedSteered: 'Completed',
+    },
+    {
+      label: 'genuine stop during the continuation inherits the honest interrupted terminal',
+      timelineEvents: [
+        { turn_id: 't0', event: 'user_start', timestamp: 100 },
+        { turn_id: 't1', event: 'user_start', timestamp: 300 },
+        { turn_id: 't1', event: 'assistant_done', timestamp: 400, status: 'Interrupted' },
+      ],
+      expectedSteered: 'Interrupted',
+    },
+  ];
+  for (const steerCase of steerBadgeCases) {
+    const steeredProjection = projectDeepSeekConversation({
+      chatItems: [
+        { id: 20, type: 'user', text: '总结战国七雄的兴衰历史' },
+        { id: 21, type: 'assistant', text: 'seg1', html: '<p>seg1</p>' },
+        { id: 22, type: 'user', text: '以秦国为主', steeredMidTurn: true },
+        { id: 23, type: 'assistant', text: 'seg2', html: '<p>seg2</p>' },
+      ],
+      busy: false,
+      thinking: null,
+      sessionId: 'session-steer',
+      timelineEvents: steerCase.timelineEvents,
+    });
+    assert.equal(steeredProjection.turns.length, 2, `steered message still renders as its own visual turn (${steerCase.label})`);
+    assert.ok(
+      !steeredProjection.turns[0].lifecycleKnown && !steeredProjection.turns[0].completedAt,
+      `the run head carries no badge once the terminal moved to the tail (${steerCase.label})`,
+    );
+    assert.equal(steeredProjection.turns[1].status, steerCase.expectedSteered, `the run tail shows the engine turn's terminal (${steerCase.label})`);
+  }
+
+  // While the turn is still running, the admitted turn's user_start has no
+  // assistant_done yet — and its own response segment has already finished,
+  // so the queue/continuation has nothing to do with it: NO badge at all
+  // (live repro: it badged "interrupted" during a steered continuation and
+  // only flipped to completed at the end; "processing" was equally wrong).
+  const inFlightProjection = projectDeepSeekConversation({
+    chatItems: [
+      { id: 30, type: 'user', text: '总结战国七雄的兴衰历史' },
+      { id: 31, type: 'assistant', text: 'seg1', html: '<p>seg1</p>' },
+      { id: 32, type: 'user', text: '以秦国为主', steeredMidTurn: true },
+      { id: 33, type: 'assistant', text: 'seg2', html: '<p>seg2</p>', streaming: true },
+    ],
+    busy: true,
+    thinking: { active: true, phase: 'thinking', startedAt: 123456 },
+    sessionId: 'session-steer-live',
+    timelineEvents: [
+      // Live records carry ui_turn_index (the frontend stamps it when the
+      // turn starts; authoritative refreshes backfill it within the open
+      // window) — the primary matching path is what runs while busy.
+      { turn_id: 't0', event: 'user_start', timestamp: 100, ui_turn_index: 0 },
+    ],
+  });
+  assert.ok(
+    !inFlightProjection.turns[0].lifecycleKnown && !inFlightProjection.turns[0].completedAt && !inFlightProjection.turns[0].error,
+    'an in-flight turn renders no status footer at all while the session is busy',
+  );
+  assert.equal(inFlightProjection.turns[1].status, 'running', 'the trailing steered turn stays the active one');
+
+  // Older terminals must not stick to a queue in flight: an earlier turn's
+  // Completed/Interrupted belongs to that turn only — while a new engine turn
+  // runs with a steered queue, its turns show nothing until their own
+  // terminal (live feedback: every queue's previous turn inherited the first
+  // terminal ever seen).
+  const stickyProjection = projectDeepSeekConversation({
+    chatItems: [
+      { id: 40, type: 'user', text: '更早的问题' },
+      { id: 41, type: 'assistant', text: 'done seg', html: '<p>done</p>' },
+      { id: 42, type: 'user', text: '本轮问题' },
+      { id: 43, type: 'assistant', text: 'seg1', html: '<p>seg1</p>' },
+      { id: 44, type: 'user', text: '本轮排队', steeredMidTurn: true },
+      { id: 45, type: 'assistant', text: 'seg2', html: '<p>seg2</p>', streaming: true },
+    ],
+    busy: true,
+    thinking: { active: true, phase: 'thinking', startedAt: 123456 },
+    sessionId: 'session-steer-sticky',
+    timelineEvents: [
+      { turn_id: 'old', event: 'user_start', timestamp: 10, ui_turn_index: 0 },
+      { turn_id: 'old', event: 'assistant_done', timestamp: 20, status: 'Completed', ui_turn_index: 0 },
+      { turn_id: 'now', event: 'user_start', timestamp: 100, ui_turn_index: 1 },
+    ],
+  });
+  assert.equal(stickyProjection.turns[0].status, 'Completed', 'the earlier turn keeps its own terminal');
+  assert.ok(
+    !stickyProjection.turns[1].lifecycleKnown && !stickyProjection.turns[1].completedAt,
+    'the running turn inherits no old terminal while busy',
+  );
+  assert.equal(
+    stickyProjection.turns[2].status, 'running',
+    'the trailing steered queue runs (no inherited old terminal badge)',
+  );
+
+  assert.ok(
+    conversationView.includes('const assistantRowVisible = running || presentation.length > 0 || assistantFooterVisible;')
+      && conversationView.includes('{assistantRowVisible && ('),
+    'a turn with no assistant content must not render an avatar-only row (steered message sandwiched between consecutive injections)',
+  );
+
   assert.ok(conversationView.includes("closest('a[href]')")
     && conversationView.includes('event.preventDefault()')
     && conversationView.includes('onOpenExternal(external)'),

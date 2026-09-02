@@ -432,8 +432,18 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     poolSource,
-    /spawned_at_ms: Self::now_epoch_ms\(\)/,
-    '引擎必须记录纪元时间戳，供 transcripts 甄别上一进程的僵尸 worker',
+    /let spawned_at_ms = Self::now_epoch_ms\(\);[\s\S]{0,3200}spawned_at_ms,/,
+    'the engine must record its epoch timestamp for transcript zombie-worker screening (computed once at spawn; the steer-id generation comes from the process-monotonic incarnation sequence, zhuowp re-review P1-2)',
+  );
+  assert.match(
+    poolSource,
+    /steer_incarnation_seq[\s\S]{0,400}fetch_add\(1, Ordering::Relaxed\)/,
+    'steer-id generations must come from a process-monotonic incarnation sequence (wall-clock milliseconds collide for same-tick rebuilds, zhuowp re-review P1-2)',
+  );
+  assert.equal(
+    (poolSource.match(/map\(\|e\| \(e\.engine\.clone\(\), e\.steer_incarnation\)\)/g) || []).length,
+    2,
+    'steer and withdraw_steer must read the incarnation from the entry as their generation (consumption wiring: reverting to spawned_at_ms revives the same-tick collision; both sites must stay locked)',
   );
   const transcriptsSource = read('src-tauri', 'src', 'features', 'multiagent', 'transcripts.rs');
   assert.match(
@@ -780,8 +790,8 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   const chatBridgeSource2 = read('src', 'platform', 'tauri', 'bridge', 'chat.js');
   assert.match(
     chatBridgeSource2,
-    /prefillComposer\(text\);\s*return;/,
-    '物化中止时输入必须回填输入框，不得静默丢字（复核 P1）',
+    /prefillComposer\(text(?:,\s*true)?\);\s*return;/,
+    '物化中止时输入必须回填输入框，不得静默丢字（复核 P1；复审 #4 起恢复类 prefill 带 append=true）',
   );
   assert.match(
     toolRenderersSource,

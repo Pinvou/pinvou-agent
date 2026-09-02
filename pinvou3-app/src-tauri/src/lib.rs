@@ -1075,6 +1075,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::chat::chat,
+            commands::chat::steer_chat,
+            commands::chat::withdraw_steer,
             commands::behavior_telemetry::track_behavior_event,
             commands::assistant_response::export_assistant_response,
             commands::assistant_response::open_assistant_share_target,
@@ -1237,6 +1239,8 @@ pub fn run() {
             commands::sessions::save_session_artifacts,
             commands::sessions::save_session_pinvou_scene_events,
             commands::sessions::get_session_pinvou_scene_events,
+            commands::sessions::save_session_steered_messages,
+            commands::sessions::get_session_steered_messages,
             commands::sessions::list_workspace_files,
             commands::runtime::cancel_generation,
             commands::runtime::list_shell_tasks,

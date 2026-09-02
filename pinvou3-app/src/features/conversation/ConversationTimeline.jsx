@@ -785,6 +785,15 @@ export function ConversationTurn({
       : '';
   const userAttachments = Array.isArray(turn.userAttachments) ? turn.userAttachments : [];
   const assistantAvailable = assistantResponseAvailable(turn);
+  // Footer/visibility: a turn with no assistant content must not render an
+  // avatar-only row. Live repro: a steered message sandwiched between two
+  // consecutive injections has no items of its own — the unconditional avatar
+  // column showed a lone pinvou avatar between the two user bubbles. The row
+  // renders only for running turns (activity indicator), turns with items, or
+  // turns carrying a terminal footer (badge/duration/usage/error).
+  const assistantFooterVisible = !running
+    && (assistantAvailable || turn.lifecycleKnown || turn.completedAt || turn.error);
+  const assistantRowVisible = running || presentation.length > 0 || assistantFooterVisible;
   const userContent = renderUser && turn.userItem
     ? renderUser(turn.userItem, turn)
     : (turn.userText || userAttachments.length)
@@ -813,6 +822,7 @@ export function ConversationTurn({
   return (
     <section className="space-y-4" data-conversation-turn={turn.id} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 600px' }}>
       {userContent}
+      {assistantRowVisible && (
       <div className="flex items-start gap-3">
         {assistantAvatar || (
           <div className="mt-1 w-7 h-7 rounded-xl bg-gradient-to-br from-[#34A853] to-[#168C46] text-white flex items-center justify-center shrink-0 shadow-sm">
@@ -848,7 +858,7 @@ export function ConversationTurn({
               />
             );
           })}
-          {!running && (assistantAvailable || turn.lifecycleKnown || turn.completedAt || turn.error) && <AssistantMessageFooter>
+          {assistantFooterVisible && <AssistantMessageFooter>
             {assistantAvailable && (
               <AssistantMessageActions resolveText={() => assistantResponseText(turn)} copy={c} />
             )}
@@ -866,6 +876,7 @@ export function ConversationTurn({
           </AssistantMessageFooter>}
         </div>
       </div>
+      )}
     </section>
   );
 }

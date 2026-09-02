@@ -209,6 +209,9 @@
     pinvouReviews: [],
     // 专业子模式用户消息标签(sidecar, 不进 messages/LLM)。每项 {pos, scene}。
     pinvouSceneEvents: [],
+    // mid-turn steer 消息位置标记(sidecar, 不进 messages/LLM)。每项 {pos, text}：
+    // steer 落盘与 admission 对齐、无 <turn_meta> 尾块, 重载靠它恢复 steeredMidTurn。
+    steeredMessages: [],
     // Pinvou 检阅结果弹窗(不进对话流);null=关闭。一次只一个,裁决/跳过直接操作它的 review、不靠 pos。
     pinvouModal: null,
     // 本 turn 被 write/append/edit 改过的产物 path(去重)。chat:done 时给每个补一张成品卡
@@ -439,6 +442,10 @@
       imageUnsupported: "The current model does not support images. Switch to an image-capable model, or configure a vision model in model settings.",
       imageUnknown: "Image input capability of the current model is unknown. If it supports images, set image input to “Supports images” in model settings; you can also configure a vision model.",
       turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
+      steerDropped: "Queued message was not delivered (turn interrupted), cancelled",
+      steerFailed: "Interrupt failed (session unavailable or engine not running); your text was restored to the input",
+      interruptQueuedFailed: "Interrupt & send failed; the message was restored to the queue",
+      interruptBusy: "Another interrupt is already in progress; the message stays queued — retry in a moment",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       compactInactive: "The session engine is not running yet. Send a message before compacting the context",
@@ -514,6 +521,10 @@
       imageUnsupported: "現在のモデルは画像に対応していません。画像対応モデルに切り替えるか、モデル設定でビジョンモデルを構成してください。",
       imageUnknown: "現在のモデルの画像入力能力は不明です。画像に対応している場合は、モデル設定で画像入力能力を「画像対応」に設定してください。ビジョンモデルを構成することもできます。",
       turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
+      steerDropped: "キューしたメッセージが未達（ターン中断）のため取り消しました",
+      steerFailed: "割り込みに失敗しました（セッション無効またはエンジン未起動）。内容は入力欄に復元しました",
+      interruptQueuedFailed: "割り込み送信に失敗しました。メッセージはキューに復元しました",
+      interruptBusy: "別の割り込みが進行中のため実行できません。メッセージはキューに残ります。しばらくしてから再試行してください",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       compactInactive: "セッション Engine はまだ起動していません。メッセージを送信してからコンテキストを圧縮してください",
@@ -589,6 +600,10 @@
       imageUnsupported: "当前模型不支持图片。请切换到支持图片的模型，或在模型设置中配置视觉模型。",
       imageUnknown: "当前模型的图片输入能力未知。如果它支持图片，请在模型设置中将图片输入能力设为“支持图片”后重试；也可以配置视觉模型。",
       turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
+      steerDropped: "排队消息未送达（回合中断），已取消",
+      steerFailed: "插队失败（会话不可用或引擎未运行），内容已恢复到输入框",
+      interruptQueuedFailed: "插队发送失败，消息已恢复到排队区",
+      interruptBusy: "已有打断正在进行，消息保留在排队区，请稍后重试",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       compactInactive: "会话引擎尚未运行。请先发送一条消息，再压缩上下文",
@@ -773,6 +788,94 @@
     }
     return "";
   }
+  // ── Steered-message sidecar（mid-turn steer 位置标记）──────────────
+  // steer 落盘与普通 admission 对齐、不含 <turn_meta> 块（Rust sanitize 统一
+  // 剥离），重载投影无法再借信封反推"非 turn admission"，因此结算时把
+  // {pos, text} 显式持久化。text 用于压实/编辑漂移后的保守校验：重载时
+  // 仅在 pos 处展示文本一致才打 steeredMidTurn，失配退化为普通 admission，
+  // 与信封时代的最坏情况相同。
+  const STEERED_MESSAGES_STORAGE_PREFIX = "pinvou_steered_messages_v1:";
+  function steeredMessagesStorageKey(sid) {
+    return STEERED_MESSAGES_STORAGE_PREFIX + String(sid || "").trim();
+  }
+  function normalizeSteeredMessages(events) {
+    const byPos = {};
+    (Array.isArray(events) ? events : []).forEach(function (event) {
+      const pos = Number(event && event.pos);
+      const text = String(event && event.text != null ? event.text : "");
+      if (!Number.isFinite(pos) || pos < 0 || !text) return;
+      byPos[Math.floor(pos)] = { pos: Math.floor(pos), text };
+    });
+    return Object.keys(byPos).map(function (key) { return byPos[key]; })
+      .sort(function (left, right) { return left.pos - right.pos; });
+  }
+  function loadSteeredMessagesForSession(sid) {
+    if (!sid || !window.localStorage) return [];
+    try {
+      return normalizeSteeredMessages(JSON.parse(window.localStorage.getItem(steeredMessagesStorageKey(sid)) || "[]"));
+    } catch {
+      return [];
+    }
+  }
+  function saveSteeredMessagesForSession(sid, events) {
+    if (!sid) return;
+    const normalized = normalizeSteeredMessages(events);
+    try {
+      if (window.localStorage) {
+        window.localStorage.setItem(steeredMessagesStorageKey(sid), JSON.stringify(normalized));
+      }
+    } catch {
+      // localStorage 只作离线缓存，写失败不影响后端 sidecar。
+    }
+    Promise.resolve().then(function () {
+      return invoke("save_session_steered_messages", {
+        sessionId: sid,
+        events: normalized,
+      });
+    }).catch(function () {});
+  }
+  async function syncSteeredMessagesForSession(sid) {
+    const cached = loadSteeredMessagesForSession(sid);
+    if (!sid) return cached;
+    try {
+      const remote = normalizeSteeredMessages(
+        await invoke("get_session_steered_messages", { sessionId: sid })
+      );
+      if (remote.length) {
+        try {
+          window.localStorage.setItem(steeredMessagesStorageKey(sid), JSON.stringify(remote));
+        } catch { /* fall back to the remote data when the localStorage write fails */ }
+        return remote;
+      }
+      if (cached.length) {
+        await invoke("save_session_steered_messages", { sessionId: sid, events: cached });
+      }
+      return cached;
+    } catch {
+      return cached;
+    }
+  }
+  // 合并写入一批 {pos, text}（同 pos 后写覆盖），并同步当前内存态（活动
+  // session 写 state，后台 session 写其 buffer）。返回归一化后的完整列表。
+  function recordSteeredMessages(sid, entries) {
+    if (!sid || !Array.isArray(entries) || !entries.length) return;
+    const base = sid === state.activeSessionId
+      ? state.steeredMessages
+      : (sessionStates[sid] && sessionStates[sid].steeredMessages) || loadSteeredMessagesForSession(sid);
+    const merged = normalizeSteeredMessages([...(Array.isArray(base) ? base : []), ...entries]);
+    if (sid === state.activeSessionId) state.steeredMessages = merged;
+    else if (sessionStates[sid]) sessionStates[sid].steeredMessages = merged;
+    saveSteeredMessagesForSession(sid, merged);
+  }
+  // 重载投影查询：pos 命中且展示文本一致才认（压实/编辑会让 pos 漂移，
+  // 文本校验防止把别的 admission 误标为 steer）。
+  function isSteeredMessagePos(pos, text) {
+    const events = normalizeSteeredMessages(state.steeredMessages);
+    for (let i = 0; i < events.length; i++) {
+      if (events[i].pos === pos) return events[i].text === String(text || "");
+    }
+    return false;
+  }
   const artifactTrackerFeature = installBridgeFeature("artifact-tracker", {
     state, invoke, sessionStates,
     notify,
@@ -814,6 +917,7 @@
     ensureSession: function (...args) { return ensureSession(...args); },
     getBuffer: function (...args) { return getBuffer(...args); },
     recordPinvouSceneForMessage,
+    recordSteeredMessages,
     reconcileRemoteTurn: function (...args) { return reconcileRemoteTurn(...args); },
     markRemoteTurn: function (...args) { return markRemoteTurn(...args); },
     adoptManagedAttachments: function (...args) { return adoptManagedAttachments(...args); },
@@ -857,6 +961,12 @@
   const retryFirstTurn = chatFeature.retryFirstTurn;
   const prefillComposer = chatFeature.prefillComposer;
   const removeQueued = chatFeature.removeQueued;
+  const steer = chatFeature.steer;
+  const interruptAndSend = chatFeature.interruptAndSend;
+  const interruptAndSendQueued = chatFeature.interruptAndSendQueued;
+  const settleSteerCommitted = chatFeature.settleSteerCommitted;
+  const settleSteerDropped = chatFeature.settleSteerDropped;
+  const captureSteerPositions = chatFeature.captureSteerPositions;
   const summonPinvou = chatFeature.summonPinvou;
   const inspectPinvou = chatFeature.inspectPinvou;
   const resolvePinvouReview = chatFeature.resolvePinvouReview;
@@ -886,6 +996,14 @@
       if (id && reason === "delete" && window.localStorage) {
         try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch { /* localStorage may be unavailable or full; the key is a cache and its loss is non-fatal */ }
       }
+      // Steer intermediates (stashed events / withdrawn texts / the
+      // in-flight interrupt flag) are cleared together with the session: on
+      // delete, the engine side is covered by SyncSession's SteerDropped; LRU
+      // eviction (reason === "evict") also clears — the chip left the working
+      // set with the buffer and no consumer remains for its events.
+      if (id && typeof chatFeature.purgeSteerState === "function") {
+        chatFeature.purgeSteerState(id);
+      }
     },
     runSyncOnSession, persistMessagesFor,
     resetPendingAssistant: function (...args) { return resetPendingAssistant(...args); },
@@ -911,6 +1029,8 @@
     bt, userMessageDisplayText,
     loadPinvouSceneEventsForSession,
     syncPinvouSceneEventsForSession,
+    loadSteeredMessagesForSession,
+    syncSteeredMessagesForSession,
     loadMemoryOverview: function (...args) { return loadMemoryOverview(...args); },
     isScheduledRunSession,
     get currentStreamText() { return currentStreamText; },
@@ -1756,10 +1876,23 @@
       const m = state.messages[mi];
       const blocks = Array.isArray(m.content) ? m.content : [];
       if (m.role === "user") {
-        const utext = userMessageDisplayText(blocks, isScheduledRunSession(state.activeSessionId));
+        // Always strip exact internal envelopes: sessions saved before the
+        // persistence alignment still carry the engine-baked <turn_meta>
+        // block on mid-turn steered messages, and without the filter the
+        // hydrated bubble rendered the raw envelope after a restart.
+        const utext = userMessageDisplayText(blocks, true);
         if (utext) {
           // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
           const uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };
+          // A mid-turn steer injection is no admission (no timing record):
+          // the conversation projection must not let it consume a lifecycle
+          // record (phantom "interrupted"). New sessions mark it via the
+          // steered-messages sidecar (pos + text verified); the envelope
+          // check stays as the fallback for pre-alignment persisted sessions.
+          if (isSteeredMessagePos(mi, utext) || (Array.isArray(blocks) ? blocks : []).some(function (b) {
+            const t = String(b && b.type === "text" ? b.text : "").trim();
+            return (t.indexOf("<turn_meta>") === 0 && t.endsWith("</turn_meta>")) || t === "<turn_meta_unchanged />";
+          })) uitem2.steeredMidTurn = true;
           const scene = pinvouSceneForMessagePos(mi);
           if (scene) uitem2.pinvouScene = scene;
           if (utext.includes("以下维度产物还缺")) uitem2.pinvouTransfer = "悟";
@@ -1979,6 +2112,10 @@
     flushAssistantMessageToHistory,
     resetPendingAssistant, flushQueued,
     isBusyFor, doSendFor,
+    settleSteerCommitted,
+    settleSteerDropped,
+    captureSteerPositions,
+    recordSteeredMessages,
     ensureSessionBufferLoaded,
     getBuffer, markRemoteTurn,
     reconcileRemoteTurn, saveWorkingSetTo,
@@ -2335,6 +2472,9 @@
       retryFirstTurn,
       prefillComposer,
       removeQueued,
+      steer,
+      interruptAndSend,
+      interruptAndSendQueued,
       cancelGeneration,
       cancelShellTask,
     },
