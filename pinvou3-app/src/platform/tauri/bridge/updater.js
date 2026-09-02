@@ -15,13 +15,43 @@
     const listen = context.listen;
     const getBuffer = context.getBuffer;
     const bt = context.bt;
+  const UPDATE_PROGRESS_NOTIFY_INTERVAL_MS = 200;
+  /** @type {number | null} */
+  let updateProgressNotifyTimer = null;
+
+  function cancelScheduledUpdateProgressNotification() {
+    if (updateProgressNotifyTimer === null) return;
+    root.clearTimeout(updateProgressNotifyTimer);
+    updateProgressNotifyTimer = null;
+  }
+
+  /** @param {{ total?: unknown, downloaded?: unknown } | null | undefined} payload - Raw update progress event payload. */
+  function publishUpdateProgress(payload) {
+    const total = Number(payload && payload.total) || 0;
+    const downloaded = Number(payload && payload.downloaded) || 0;
+    const nextProgress = total > 0
+      ? Math.max(0, Math.min(100, Math.round((downloaded / total) * 100)))
+      : 0;
+    if (nextProgress === state.updateProgress) return;
+
+    state.updateProgress = nextProgress;
+    if (nextProgress >= 100) {
+      cancelScheduledUpdateProgressNotification();
+      notify();
+      return;
+    }
+    if (updateProgressNotifyTimer !== null) return;
+    updateProgressNotifyTimer = root.setTimeout(function () {
+      updateProgressNotifyTimer = null;
+      notify();
+    }, UPDATE_PROGRESS_NOTIFY_INTERVAL_MS);
+  }
   // ── 应用内升级 ───────────────────────────────────────────────────
   // 链路: check_for_update(对比服务器 latest.json) → download_update(流式下载+sha256,
   // 进度走 update:progress 事件) → install_update(pkexec apt) → restart_app。
   listen("update:progress", function (e) {
-    const p = e.payload || {};
-    state.updateProgress = p.total ? Math.round((p.downloaded / p.total) * 100) : 0;
-    notify();
+    if (!state.updateDownloading || state.updateCancelling || state.updateProgress >= 100) return;
+    publishUpdateProgress(e.payload || {});
   });
   listen("remote_control:status", function (e) {
     state.remoteControl = Object.assign({}, state.remoteControl, e.payload || {});
@@ -81,10 +111,12 @@
     const info = state.updateInfo;
     const shouldRestartAfterInstall = info.platform !== "windows";
     let installed = false;
+    cancelScheduledUpdateProgressNotification();
     state.updateDownloading = true; state.updateCancelling = false;
     state.updateProgress = 0; state.updateError = null; notify();
     try {
       const downloadResult = await invoke("download_update", { info: state.updateInfo });
+      cancelScheduledUpdateProgressNotification();
       state.updateProgress = 100; notify();
       state.updateInfo = info; // 复原：install 用发起时的版本元数据，不随静默检查漂移
       if (downloadResult && typeof downloadResult === "object" && downloadResult.installer_path) {
@@ -99,6 +131,7 @@
       if (state.updateCancelling) state.updateProgress = 0;
       else state.updateError = String(e);
     }
+    cancelScheduledUpdateProgressNotification();
     state.updateDownloading = false; state.updateCancelling = false; notify();
     if (installed && shouldRestartAfterInstall) restartApp();
     return installed;
@@ -107,6 +140,7 @@
   // 已进入 install(pkexec/apt)则无效(系统接管,装一半不能停)。
   function cancelUpdate() {
     if (!state.updateDownloading || state.updateCancelling) return;
+    cancelScheduledUpdateProgressNotification();
     state.updateCancelling = true; notify();
     invoke("cancel_download").catch(function () { /* 忽略,下载循环超时也会退 */ });
   }
