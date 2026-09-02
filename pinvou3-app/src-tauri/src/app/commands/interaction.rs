@@ -219,8 +219,9 @@ pub async fn get_super_permission_status() -> Result<bool, String> {
 }
 
 /// 切换超级权限。开启时 pkexec 弹系统密码框写 sudoers，关闭时 pkexec 删文件。
-/// 切换后同步当前 session 让新 system prompt 立即生效（注入/抹掉 sudo 引导段）。
-/// 返回真实生效状态（pkexec 失败/取消时不会变）。
+/// 切换后重建并热刷所有运行中 engine 的 execpolicy 规则集（sudo hard-deny 随
+/// 开关增删）；session 的 sudo 引导状态由 per-turn reminder 实时注入（静态
+/// prompt 只在 spawn 时渲染，不热刷）。返回真实生效状态（pkexec 失败/取消时不会变）。
 ///
 /// 全程持有进程级 [`crate::platform::super_permission::TOGGLE_LOCK`]：读盘
 /// 判定 → pkexec 写/删 → `refresh_permission_rulesets` 重建广播作为整体串行
@@ -239,9 +240,10 @@ pub async fn set_super_permission(
     } else {
         crate::platform::super_permission::disable()?;
     }
-    // 多 session 并发:重写所有已起 engine 的 session 专属 instructions(含新 sudo 引导块),
-    // engine 下个 turn rehydrate 时从 disk 重读 → 「下次 turn 生效」。低频操作,不为即时
-    // 生效去 SyncSession 打断在跑的 turn。未起的 session 首次 spawn 时自然带上新引导。
+    // refresh_all_instructions 目前是刻意的 no-op(engine_pool.rs):静态 prompt 只在
+    // engine spawn 时渲染一次,sudo 引导状态不进静态段,改由 per-turn reminder 实时注入
+    // (super_permission::turn_reminder),所以切换后下一 turn 即生效。保留此调用作为挂点:
+    // 若未来恢复 instructions 热刷,切换序列是正确触发点。
     pool.refresh_all_instructions().await;
     // sudo hard-deny rules are added/removed with the toggle state (deny sudo
     // while off / allow while on): recompute and hot-refresh the execpolicy

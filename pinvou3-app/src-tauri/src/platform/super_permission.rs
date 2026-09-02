@@ -21,6 +21,10 @@
 /// `refresh_permission_rulesets` 可能基于过期的 sudo 快照重建并广播规则集,
 /// 让运行中的 engine 带着错误的 sudo 面直到下次重建/重启。切换是低频用户
 /// 操作,跨 pkexec 慢调用持锁可接受;锁只被切换序列持有,不阻塞其他命令。
+///
+/// 覆盖边界:进程级锁无法串行化进程外修改(root shell、第二个应用实例、
+/// .deb `prerm` 卸载删除)。这些不做防御——`is_enabled()` 每次实时读盘,
+/// per-turn reminder 与下一次规则集 refresh 会自愈到真实状态。
 pub(crate) static TOGGLE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub fn is_enabled() -> bool {
