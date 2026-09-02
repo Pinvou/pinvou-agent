@@ -120,7 +120,14 @@ where
 }
 
 /// 检查模型目录是否包含 PINVOU 运行所需的 ONNX 与 tokenizer 文件。
+///
+/// 目录可能来自调用方配置(如服务器 CLI 参数),先 canonicalize 解析符号链接,
+/// 再在解析后的真实路径上做存在性检查:目录被替换成符号链接时旧检查会穿透,
+/// 解析失败(目录不存在)时保持原有「不完整」语义。
 pub fn model_directory_is_complete(dir: &Path) -> bool {
+    let Ok(dir) = std::fs::canonicalize(dir) else {
+        return false;
+    };
     let onnx = dir.join("model.onnx").is_file()
         || dir.join("onnx").join("model_int8.onnx").is_file()
         || dir.join("onnx").join("model.onnx").is_file();

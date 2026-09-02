@@ -22,6 +22,9 @@ const VECTOR_SIGNATURE_RADIUS: u32 = 3;
 // bases used by a single team. Above this boundary the signature index bounds
 // the amount of vector data read by one query.
 const VECTOR_EXACT_SCAN_THRESHOLD: i64 = 20_000;
+// 向量检索候选堆的容量上界。上游已把 limit clamp 到 ≤50、候选放大 ×4(≤200),
+// 这里再兜底一次,保证分配规模永不随请求输入增长。
+const MAX_VECTOR_CANDIDATE_HEAP: usize = 200;
 
 #[derive(Debug)]
 pub enum DeviceMutationError {
@@ -1584,7 +1587,14 @@ fn search_vectors_on_connection(
     limit: usize,
 ) -> rusqlite::Result<Vec<SearchHit>> {
     let transaction = connection.transaction()?;
-    let mut best = BinaryHeap::<Reverse<VectorCandidate>>::with_capacity(limit);
+    // limit 源于检索请求并已在上游 clamp,但这里仍显式限定堆容量上界:
+    // with_capacity 直接信任请求值会把分配规模交给客户端输入。
+    let heap_capacity = if limit <= MAX_VECTOR_CANDIDATE_HEAP {
+        limit
+    } else {
+        MAX_VECTOR_CANDIDATE_HEAP
+    };
+    let mut best = BinaryHeap::<Reverse<VectorCandidate>>::with_capacity(heap_capacity);
     let active_chunks_sql = format!(
         "SELECT COUNT(*) FROM (SELECT 1 FROM chunks k \
          JOIN documents d ON d.id=k.document_id JOIN collections c ON c.id=k.collection_id \

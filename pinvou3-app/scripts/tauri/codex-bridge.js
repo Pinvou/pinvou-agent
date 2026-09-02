@@ -219,6 +219,9 @@ function isPrepared(expected = expectedMarker(), outputRoot = WINDOWS_BRIDGE_ROO
 }
 
 function checkedSpawn(spawn, command, args, options, label) {
+  // codeql[js/shell-command-injection-from-environment] 构建期脚本只执行仓库内资源:
+  // command 来自 __dirname 派生的 APP_ROOT、process.execPath,或 windows-runtime 描述符
+  // 中已通过 resolveDescriptorPath 限定在 src-tauri 内的相对路径,均不含外部输入。
   const result = spawn(command, args, options);
   if (result.error) throw result.error;
   if (result.status !== 0) {
