@@ -1,7 +1,8 @@
-import React, { useId, useMemo, useState, useSyncExternalStore } from 'react';
+import React, { useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
+import { useThrottledValue } from './useThrottledValue.js';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -105,8 +106,46 @@ const DEFAULT_COPY = {
   copyReplyFailed: '复制失败',
 };
 
+// conversationCopy(copy) merges the ~70-key default copy table with the caller's
+// overrides; it used to run once per component per render, so long transcripts
+// rebuilt that object for every turn on every keystroke/stream chunk. The merged
+// table is immutable and `copy` identities are stable (i18n dict tables), so cache
+// the merge per source table (same WeakMap trick as ChatView's legacyMarkdownCache).
+const conversationCopyCache = new WeakMap();
 function conversationCopy(copy) {
-  return { ...DEFAULT_COPY, ...copy };
+  if (!copy) return DEFAULT_COPY;
+  const cached = conversationCopyCache.get(copy);
+  if (cached) return cached;
+  const merged = { ...DEFAULT_COPY, ...copy };
+  conversationCopyCache.set(copy, merged);
+  return merged;
+}
+
+// Streaming markdown throttle window: rerun marked+DOMPurify+hljs on a 200ms budget instead of
+// a full rerun for every streaming delta (O(n²)). When streaming ends, useThrottledValue
+// guarantees a verbatim replay of the final full text.
+const STREAMING_MARKDOWN_THROTTLE_MS = 200;
+
+// The 1s clock is scoped to the smallest display subtree: the per-second tick used to live on
+// ChatView top-level state, re-rendering the whole transcript every second while busy; now only
+// the component showing elapsed time owns the tick. On mount/activation it first syncs a baseline,
+// then starts the interval (same semantics as the old ChatView/CodexAcpView top-level ticker); no
+// timer is created while inactive, and it is cleaned up on unmount.
+// Exported for reuse by the ChatView composer activity indicator wrapper.
+/**
+ * @param {boolean} active - whether the displayed duration is currently advancing
+ * @returns {number} a timestamp that advances once per second while active
+ */
+export function useConversationSecondClock(active) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- sync the clock baseline once on activation so elapsed time is correct immediately, before the first interval tick
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return now;
 }
 
 function localizedSemanticLabel(value, copy) {
@@ -122,12 +161,17 @@ function localizedSemanticLabel(value, copy) {
   }[value] || value;
 }
 
-export function ConversationMarkdown({ text, className = '', onOpenExternal, onOpenResource }) {
+export function ConversationMarkdown({ text, className = '', onOpenExternal, onOpenResource, streaming = false }) {
   // lazy language registration bumps the version when it completes; the version must stay in the useMemo deps
   // (syntax-highlighter.js contract), otherwise already-rendered code stays plain text after registration completes.
   const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
+  // While the message is still streaming, parse the throttled snapshot instead of
+  // every chunk (marked+DOMPurify+hljs over the full growing text is O(n²) per
+  // chunk). The hook flushes the exact final text when `streaming` drops, so the
+  // completed message always renders verbatim.
+  const renderText = useThrottledValue(text, STREAMING_MARKDOWN_THROTTLE_MS, streaming);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- syntaxVersion is a version counter; any change requires recomputing to restore highlighting
-  const html = useMemo(() => renderMarkdown(text), [text, syntaxVersion]);
+  const html = useMemo(() => renderMarkdown(renderText), [renderText, syntaxVersion]);
   const openLink = (event) => {
     const anchor = event.target && event.target.closest && event.target.closest('a[href]');
     if (!anchor) return;
@@ -552,10 +596,20 @@ function runningToolLabel(item, copy) {
 function ToolGroup({ group, now, renderToolItem, onOpenExternal, onOpenResource, copy }) {
   const c = conversationCopy(copy);
   const items = group.items || [];
-  const running = items.some(item => terminalStatus(item.status) === 'running');
-  const failedCount = items.filter(countsAsFailedOperation).length;
+  // Single pass instead of `.some` + `.filter` + reverse().`find` (three scans
+  // per group per render): `runningItem` ends at the LAST running item, matching
+  // the previous reverse().find.
+  let running = false;
+  let failedCount = 0;
+  let runningItem = null;
+  for (const item of items) {
+    if (terminalStatus(item.status) === 'running') {
+      running = true;
+      runningItem = item;
+    }
+    if (countsAsFailedOperation(item)) failedCount += 1;
+  }
   const failed = failedCount > 0;
-  const runningItem = [...items].reverse().find(item => terminalStatus(item.status) === 'running');
   const runningLabel = runningToolLabel(runningItem, c);
   const runningSuffix = runningLabel ? ` · ${runningLabel}` : '';
   const leadLabel = running ? `${c.executing}${runningSuffix}` : c.executionSteps;
@@ -742,19 +796,87 @@ function DefaultItem({
   }
   if (item.type === 'agent_message') {
     const commentary = item.phase === 'commentary';
+    // streaming = the projection's in_progress convention (deepseek/ACP projections agree):
+    // while text can still grow, render through the throttle; when it ends, the full text is replayed verbatim.
     return commentary
       ? <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
+          streaming={item.status === 'in_progress'}
           className="text-[13px] leading-6 text-gray-500 dark:text-gray-400" />
-      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource} />;
+      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
+          streaming={item.status === 'in_progress'} />;
   }
   return null;
 }
 
-export function ConversationTurn({
+// Default props must keep stable identities or React.memo below would see fresh
+// objects/functions on every parent render and never skip work.
+const EMPTY_PENDING_BY_TOOL = Object.freeze({});
+const noopOnRespond = () => {};
+/** @type {{ id: string, status: string }[]} */
+const EMPTY_TURNS = [];
+
+// The timeline projections (deepseek-conversation.js / acp-state.js) rebuild every turn object on
+// each run: the container reference is always fresh, but unchanged turns have identical leaf content
+// (bridge snapshots share unchanged values by reference). So `turn` gets a structural comparison
+// (bridge subscription state only allows JSON values, so no functions/cycles), letting unchanged
+// turns skip re-rendering; the other props (parent-stabilized callbacks, memoized copy/avatar)
+// compare by reference.
+
+/**
+ * Structural equality for JSON-like conversation data (bridge subscription state
+ * admits no functions or cycles, so recursion is safe).
+ * @param {unknown} left - previous value
+ * @param {unknown} right - next value
+ * @returns {boolean} true when both values are structurally equal
+ */
+function isEqualConversationValue(left, right) {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left)) {
+    if (!Array.isArray(right) || left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+      if (!isEqualConversationValue(left[index], right[index])) return false;
+    }
+    return true;
+  }
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  const leftObject = /** @type {Record<string, unknown>} */ (left);
+  const rightObject = /** @type {Record<string, unknown>} */ (right);
+  const leftKeys = Object.keys(leftObject);
+  const rightKeys = Object.keys(rightObject);
+  if (leftKeys.length !== rightKeys.length) return false;
+  for (let index = 0; index < leftKeys.length; index += 1) {
+    const key = leftKeys[index];
+    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor; Object.hasOwn is unavailable and this call is already the safe form
+    if (!Object.prototype.hasOwnProperty.call(rightObject, key)) return false;
+    if (!isEqualConversationValue(leftObject[key], rightObject[key])) return false;
+  }
+  return true;
+}
+
+/**
+ * @param {Record<string, unknown>} prev - previous props
+ * @param {Record<string, unknown>} next - next props
+ * @returns {boolean} true when the turn subtree should skip re-rendering
+ */
+function areConversationTurnPropsEqual(prev, next) {
+  const keys = Object.keys(next);
+  if (keys.length !== Object.keys(prev).length) return false;
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index];
+    if (key === 'turn') {
+      if (!isEqualConversationValue(prev.turn, next.turn)) return false;
+      continue;
+    }
+    if (!Object.is(prev[key], next[key])) return false;
+  }
+  return true;
+}
+
+function ConversationTurnView({
   turn,
   now,
-  pendingByTool = {},
-  onRespond = () => {},
+  pendingByTool = EMPTY_PENDING_BY_TOOL,
+  onRespond = noopOnRespond,
   responding = false,
   renderUser,
   renderItem,
@@ -766,13 +888,18 @@ export function ConversationTurn({
   copy,
 }) {
   const c = conversationCopy(copy);
+  const running = turn.status === 'running';
+  // The per-second tick is scoped to the running turn itself: the parent may still pass a ticking `now`
+  // (CodexAcpView keeps its original behavior via `now || tickNow` prop precedence); when omitted, an
+  // internal clock drives elapsed time, re-rendering only this one turn subtree per second.
+  const tickNow = useConversationSecondClock(running);
+  const effectiveNow = now || tickNow;
   const waitingPermission = turn.waitingPermission
     || (turn.permissions || []).some(permission => !permission.resolved);
   const waitingInput = turn.waitingInput
     || (turn.elicitations || []).some(elicitation => !elicitation.resolved);
   const waitingAttention = waitingPermission || waitingInput;
-  const running = turn.status === 'running';
-  const duration = c.elapsed(elapsedMs(turn.startedAt, turn.completedAt, now));
+  const duration = c.elapsed(elapsedMs(turn.startedAt, turn.completedAt, effectiveNow));
   const showTerminalDuration = Boolean(turn.startedAt && turn.completedAt);
   const presentation = turn.presentation || turn.items || [];
   const operationCount = Number(turn.operationCount || 0);
@@ -837,7 +964,7 @@ export function ConversationTurn({
             </div>
           )}
           {presentation.map((item, index) => {
-            const context = { turn, now, pendingByTool, onRespond, responding };
+            const context = { turn, now: effectiveNow, pendingByTool, onRespond, responding };
             const custom = renderItem && renderItem(item, context);
             if (custom !== undefined) {
               return <React.Fragment key={item.id || `${item.type}-${index}`}>{custom}</React.Fragment>;
@@ -846,7 +973,7 @@ export function ConversationTurn({
               <DefaultItem
                 key={item.id || `${item.type}-${index}`}
                 item={item}
-                now={now}
+                now={effectiveNow}
                 pendingByTool={pendingByTool}
                 onRespond={onRespond}
                 responding={responding}
@@ -881,7 +1008,12 @@ export function ConversationTurn({
   );
 }
 
-export function ConversationTimeline({ turns = [], ...props }) {
+// Declare the component separately, then wrap it in memo: prop types are inferred from the
+// component's own parameters, so the comparator's Record<string, unknown> parameter does not
+// pollute the inference in reverse.
+export const ConversationTurn = React.memo(ConversationTurnView, areConversationTurnPropsEqual);
+
+export function ConversationTimeline({ turns = EMPTY_TURNS, ...props }) {
   return (
     <>
       {turns.map(turn => <ConversationTurn key={turn.id} turn={turn} {...props} />)}

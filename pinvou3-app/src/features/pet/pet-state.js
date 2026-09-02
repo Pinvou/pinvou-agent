@@ -247,6 +247,13 @@ export function deriveActivities(state, now = Date.now(), copy = DEFAULT_ACTIVIT
     ));
 }
 
+/**
+ * tests/pet_state_logic.test.mjs copies this file to a temp directory and
+ * dynamically imports this export via a computed URL; knip cannot build an
+ * edge for that channel, so the `@public` tag keeps it from being removed as a
+ * dead export.
+ * @public
+ */
 export function deriveAnimation(state, now = Date.now()) {
   const first = deriveActivities(state, now)[0];
   return first ? first.status : null;

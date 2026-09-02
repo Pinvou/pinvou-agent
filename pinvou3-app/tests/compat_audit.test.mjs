@@ -6,7 +6,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { runAudit } from '../scripts/audit-compat.mjs';
-import { staticRuntimeScripts } from '../vite.config.js';
+import { staticRuntimeScripts } from '../vite.config.mjs';
 
 // WebView compatibility contract: the desktop minimum is macOS 11
 // (WKWebView = Safari 14.0). scripts/audit-compat.mjs parses every

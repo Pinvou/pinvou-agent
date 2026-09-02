@@ -24,7 +24,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as acorn from 'acorn';
-import { staticRuntimeScripts, staticRuntimeScriptPrefixes } from '../vite.config.js';
+import { staticRuntimeScripts, staticRuntimeScriptPrefixes } from '../vite.config.mjs';
 
 const appRoot = resolve(fileURLToPath(import.meta.url), '../..');
 const sourceRoot = join(appRoot, 'src');

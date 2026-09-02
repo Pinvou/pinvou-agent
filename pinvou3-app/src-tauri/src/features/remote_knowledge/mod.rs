@@ -837,7 +837,7 @@ impl RemoteKnowledgeService {
         let mut next = self.pending_joins();
         next.retain(|item| item.request_id != pending.request_id);
         next.push(pending);
-        next.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        next.sort_by_key(|right| std::cmp::Reverse(right.created_at));
         save_pending_joins(&self.pending_path, &next)?;
         *self.pending_joins.write() = next;
         Ok(())
@@ -1335,7 +1335,7 @@ fn load_pending_joins(path: &Path) -> Result<Vec<PendingJoin>, String> {
             && !item.server_id.trim().is_empty()
             && !item.endpoint.trim().is_empty()
     });
-    joins.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    joins.sort_by_key(|right| std::cmp::Reverse(right.created_at));
     Ok(joins)
 }
 
@@ -1451,7 +1451,7 @@ fn write_download_without_overwrite(
         let target = destination.join(candidate_name);
         match write_new_file(&target, bytes) {
             Ok(path) => return Ok(path),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error.to_string()),
         }
     }
@@ -1491,7 +1491,7 @@ mod tests {
             tls_ca: "test-ca".to_string(),
             legacy_insecure_http: false,
         };
-        save_connections(&path, &[connection.clone()]).unwrap();
+        save_connections(&path, std::slice::from_ref(&connection)).unwrap();
         let raw = fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("token"));
         assert_eq!(load_connections(&path).unwrap(), vec![connection]);

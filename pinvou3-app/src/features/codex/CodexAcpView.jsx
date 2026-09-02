@@ -142,7 +142,13 @@ import {
   rememberDraftControls,
 } from './acp-draft-controls.js';
 const AGENT_SELECTION_KEY = 'pinvou_codex_agent_selection';
-const CODE_AGENT_IDS = ['pinvou', 'codex', 'claude', 'kimi'];
+// Constant collection used only for membership checks: Set.has replaces array .includes (biome prefer-set-has).
+const CODE_AGENT_IDS = new Set(['pinvou', 'codex', 'claude', 'kimi']);
+// Stable empty turns for the draft empty state: an inline [] would invalidate any useMemo depending on its reference on every render.
+/** @type {{ id: string, status: string }[]} */
+const EMPTY_CONVERSATION_TURNS = [];
+// Same idea: the sessions default must be a stable reference; an inline [] is a fresh array on every render.
+const EMPTY_SESSIONS = [];
 
 function workspaceName(path, unknownDirectory) {
   // eslint-disable-next-line sonarjs/super-linear-regex -- trailing [\\/]+ strips path separators; single char class, so backtracking is linear
@@ -185,7 +191,7 @@ function forgetWorkspace(path) {
 function loadAgentSelection() {
   try {
     const value = localStorage.getItem(AGENT_SELECTION_KEY);
-    return value && CODE_AGENT_IDS.includes(value) ? value : null;
+    return value && CODE_AGENT_IDS.has(value) ? value : null;
   } catch {
     return null;
   }
@@ -908,10 +914,14 @@ function TurnItem({
   }
   if (item.type === 'agent_message') {
     const commentary = item.phase === 'commentary';
+    // streaming = the projection's in_progress convention (ACP/deepseek projections agree): while text
+    // can still grow, render through the throttle; when it ends, useThrottledValue replays the full text verbatim.
     return commentary
       ? <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
+          streaming={item.status === 'in_progress'}
           className="text-[13px] leading-6 text-gray-500 dark:text-gray-400" />
-      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource} />;
+      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
+          streaming={item.status === 'in_progress'} />;
   }
   return null;
 }
@@ -995,7 +1005,7 @@ function Turn({
 export function CodexAcpView({
   theme,
   t,
-  sessions = [],
+  sessions = EMPTY_SESSIONS,
   activeId = null,
   draftEpoch = 0,
   onActiveSessionChange,
@@ -1116,11 +1126,11 @@ export function CodexAcpView({
       onAttempt: (sessionId, attempt) => console.warn(
         `[acp] live event sequence gap detected for ${sessionId}; resyncing from the authoritative timeline (attempt ${attempt})`,
       ),
-      onRetry: (sessionId, attempt, error) => console.warn(
+      onRetry: (_sessionId, attempt, error) => console.warn(
         `[acp] timeline resync after event sequence gap failed (attempt ${attempt}); retrying with backoff`,
         error,
       ),
-      onGiveUp: (sessionId, attempt, error) => console.warn(
+      onGiveUp: (_sessionId, attempt, error) => console.warn(
         `[acp] timeline resync after event sequence gap gave up after ${attempt} attempts; the gap stays unhealed until reconnect or session reopen`,
         error,
       ),
@@ -1266,14 +1276,20 @@ export function CodexAcpView({
     [isNativeAgent, activeNativeLane, activeId, nativeLaneTick],
   );
   const visibleTurns = isNativeAgent
-    ? (nativeProjection ? nativeProjection.turns : [])
+    ? (nativeProjection ? nativeProjection.turns : EMPTY_CONVERSATION_TURNS)
     : projection.turns;
   const busy = isNativeAgent
     ? Boolean(activeNativeLane && activeNativeLane.busy)
     : projection.turns.some(turn => turn.status === 'running');
-  const activeConversationTurn = [...visibleTurns]
-    .reverse()
-    .find(turn => turn.status === 'running') || null;
+  // Equivalent to [...visibleTurns].reverse().find(status === 'running'): scan backwards for the last
+  // running turn, memoized on the turns reference (both turns branches come from memoized projections,
+  // and the draft empty state uses the module-level constant array), so no reversed copy is rebuilt per render.
+  const activeConversationTurn = useMemo(() => {
+    for (let index = visibleTurns.length - 1; index >= 0; index -= 1) {
+      if (visibleTurns[index].status === 'running') return visibleTurns[index];
+    }
+    return null;
+  }, [visibleTurns]);
   // 原生车道底栏控件的展示值（归属保护：refresh 返回前按默认/暂存显示；
   // 默认 = 全局 code_last_mode，从未用过 code 模式 → Plan 只读）。
   const nativeDraftControlsHandoff = nativeDraftControlsHandoffRef.current?.sessionId === activeId
@@ -3079,6 +3095,7 @@ export function CodexAcpView({
       return (
         <ConversationMarkdown
           text={item.legacyItem.text}
+          streaming={item.status === 'in_progress'}
           onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
           onOpenResource={isWeb ? undefined : openWorkspaceResource}
         />

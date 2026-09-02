@@ -133,7 +133,7 @@ pub(super) fn resolve_claude_cli(adapter: Option<&Path>) -> Option<PathBuf> {
         if let Some(path) = adapter.and_then(|adapter| {
             adapter.ancestors().find_map(|ancestor| {
                 (ancestor.file_name().and_then(|value| value.to_str()) == Some("node_modules"))
-                    .then(|| ancestor.join("@anthropic-ai").join(&package).join(&binary))
+                    .then(|| ancestor.join("@anthropic-ai").join(&package).join(binary))
                     .filter(|candidate| nonempty_file(candidate))
             })
         }) {
@@ -579,7 +579,7 @@ pub(super) fn official_script_supported(backend: AgentBackend) -> bool {
             matches!(arch, "x86_64" | "aarch64")
                 && (matches!(os, "macos" | "windows") || (os == "linux" && !musl))
         }
-        _ => false,
+        AgentBackend::Deepseek => false,
     }
 }
 
@@ -1433,7 +1433,7 @@ pub(super) fn stale_official_target(target: &Path, resolved_ok: Option<&Path>) -
     let is_working_file = target
         .metadata()
         .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
-    !is_working_file || !resolved_ok.is_some_and(|path| path == target)
+    !is_working_file || resolved_ok.is_none_or(|path| path != target)
 }
 
 pub(super) async fn stream_install_lines<R: AsyncRead + Unpin>(

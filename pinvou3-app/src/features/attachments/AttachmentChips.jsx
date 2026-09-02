@@ -1,14 +1,30 @@
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 
+/**
+ * Uploaded / parsing attachment chip record as produced by the chat and ACP
+ * views (`id` + `basename` + lifecycle `status`; `progress`/`error` arrive
+ * with the matching upload events).
+ * @typedef {object} AttachmentChip
+ * @property {string} id - Stable attachment id used for removal.
+ * @property {string} basename - File name shown on the chip.
+ * @property {string} status - Lifecycle: uploading | parsing | ready | error.
+ * @property {number} [progress] - Upload progress percentage.
+ * @property {string | null} [error] - Error message for failed attachments.
+ */
+
+/** @type {AttachmentChip[]} */
+const EMPTY_ATTACHMENTS = [];
+const EMPTY_LABEL = () => '';
+
 export function AttachmentChips({
-  attachments = [],
+  attachments = EMPTY_ATTACHMENTS,
   onRemove,
   dark = false,
   parsingLabel = '',
-  uploadingLabel = () => '',
+  uploadingLabel = EMPTY_LABEL,
   failedLabel = '',
-  removeLabel = () => '',
-  formatError = () => '',
+  removeLabel = EMPTY_LABEL,
+  formatError = EMPTY_LABEL,
   className = '',
 }) {
   if (!attachments.length) return null;

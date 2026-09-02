@@ -557,7 +557,7 @@ pub(super) fn atomic_write_private_json<T: Serialize>(
                 temporary = Some((candidate, file));
                 break;
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(format!("create {}: {error}", candidate.display())),
         }
     }

@@ -391,7 +391,7 @@ mod tests {
         let writer = ClaudeConfigWriter::new(&dir);
         writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
         let effective = writer.effective().unwrap();
-        assert_eq!(effective.relay_active, true);
+        assert!(effective.relay_active);
         // base_url 与 model 展示；AUTH_TOKEN（凭据）绝不出现
         let keys: Vec<&str> = effective
             .entries

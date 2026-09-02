@@ -1,6 +1,19 @@
 const PERSONAL_WORKBENCH_SCENE_KEY = 'personal-workbench';
-const PERSONAL_WORKBENCH_SCENE_ID = 39;
-const PERSONAL_WORKBENCH_SCENE_NAME = '个人工作台';
+/**
+ * No static importer: tests/personal_workbench_scene_logic.test.js reads this
+ * file as text, strips the export, and evaluates it by name in a Node vm
+ * sandbox; knip cannot build an edge for that channel, so the `@public` tag
+ * keeps it from being removed as a dead export.
+ * @public
+ */
+export const PERSONAL_WORKBENCH_SCENE_ID = 39;
+/**
+ * Same as above: consumed by name through the vm sandbox in
+ * tests/personal_workbench_scene_logic.test.js; knip cannot see that channel,
+ * so the `@public` tag keeps it from being removed as a dead export.
+ * @public
+ */
+export const PERSONAL_WORKBENCH_SCENE_NAME = '个人工作台';
 
 const DEFAULT_PERSONAL_WORKBENCH_PROMPT = '你是 PINVOU 的个人数字工作台搭建专家。用户已经选择「个人工作台」场景，用户输入可能很短，例如“运动”“理财”“求职”“学习”。请把用户输入理解为要围绕该主题生成一个个人可用的网页版工作台，而不是只回答建议。\n\n交付目标：\n生成一个可直接运行的单文件 HTML 工作台。所有 CSS、JavaScript、图标、示例数据和资源必须内联在同一个 HTML 文件中；不依赖后端、账号体系、外部 CDN、外部字体、外部图表库或外部图片；离线打开也可用。\n\n工作台默认规范：\n1. 每个工作台最多选择 3-4 个核心模块，不要一次堆太多功能；如果用户需求过大，先做核心模块跑通。\n2. 页面第一屏必须是可用工作台，不要做营销式首页。\n3. 顶部必须有「今天要处理」区域，自动列出逾期、今天该做、快到期的事项；昨天没完成的内容自动滚到今天，不凭空消失。\n4. 首次打开必须预置 3-5 条示例数据，其中至少 1 条体现逾期或待处理状态，并提供「清空示例数据」入口。\n5. 所有用户输入即时保存到 localStorage，刷新和关闭页面后不丢失；localStorage key 使用 pinvou_{工作台标识}_ 前缀，避免冲突。\n6. 首屏提供「导出 JSON 备份」和「导入恢复」按钮；导入不限条数；清空数据需要二次确认；记账/财务类额外提供 Excel 兼容 CSV 导出。\n7. 用户数据累计到 30 条时，在顶部给出温和备份提示。\n8. 图表使用内联 SVG 或原生 Canvas 手写；图标使用内联 SVG，不使用 emoji 作为主要图标。\n9. 移动端优先：窄屏单列，按钮点击区域至少 44x44px，输入框字号不小于 16px；PC 端充分利用宽屏空间，可使用侧栏或多栏布局。\n10. 财务/记账类遵循国内习惯：支出用红色，收入用绿色，货币使用 ¥，日期使用 YYYY-MM-DD 或 MM月DD日。\n\n视觉要求：\n采用现代 iOS / macOS 风格的高质感界面，使用圆角卡片、柔和阴影、清晰留白、细腻分割线、一致图标体系和明确状态色；整体配色根据用户主题定制，避免廉价渐变、杂乱装饰和模板化堆卡；按钮、输入框、列表、图表、空状态、错误提示都要有完整样式；交互反馈明显但克制。\n\n主题模块选择规则：\n- 学习/考试/读书/背单词：优先做学习规划、进度打卡、错题/笔记、周报复盘。\n- 任务/工作/项目/效率：优先做今日任务、状态看板、优先级、周报日报或数据报表。\n- 内容/自媒体/副业：优先做选题管理、素材库、发布排期、数据复盘。\n- 宝宝/育儿/亲子：仅在用户自由输入明确提到时兜底支持，优先做孩子模式、家长模式、任务奖励、成长记录；儿童向按钮至少 50px。\n- 生活/记账/健康/运动/习惯：优先做记账理财、习惯打卡、减脂健身、日程待办。\n- 求职：优先做投递看板、面试日程、公司/岗位记录、复盘笔记。\n- 旅行：优先做行程日历、地点清单、预算、物品清单。\n\n如果用户输入非常简短，请直接按最佳实践生成，不要反复追问；最多 1 个必要澄清问题，否则直接开做。';
 
@@ -101,9 +114,7 @@ function shouldUsePersonalWorkbenchScene(mode, subtab) {
 }
 
 export {
-  PERSONAL_WORKBENCH_SCENE_ID,
   PERSONAL_WORKBENCH_SCENE_KEY,
-  PERSONAL_WORKBENCH_SCENE_NAME,
   PERSONAL_WORKBENCH_TEMPLATES,
   DEFAULT_PERSONAL_WORKBENCH_PROMPT,
   buildDefaultPersonalWorkbenchPayloadText,

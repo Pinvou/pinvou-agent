@@ -146,7 +146,14 @@ function loadPinvouModeState(storage, scopeKey = DEFAULT_PINVOU_MODE_SCOPE) {
   return createPinvouModeState({ mode: 'work', workSubtab: UNROUTED_WORK_SUBTAB });
 }
 
-function hasPinvouModeState(storage, scopeKey) {
+/**
+ * No static importer: tests/pinvou_mode_state.test.js reads this file as text,
+ * strips the export, and evaluates it by name in a Node vm sandbox; knip
+ * cannot build an edge for that channel, so the `@public` tag keeps it from
+ * being removed as a dead export.
+ * @public
+ */
+export function hasPinvouModeState(storage, scopeKey) {
   if (!scopeKey || scopeKey === DEFAULT_PINVOU_MODE_SCOPE) return false;
   const target = storage || (typeof window === 'undefined' ? null : window.localStorage);
   const store = readModeStore(target);
@@ -225,7 +232,6 @@ export {
   WORK_SUBTABS,
   createPinvouModeScopeKey,
   createPinvouModeState,
-  hasPinvouModeState,
   loadPinvouModeState,
   normalizeDesignSubtab,
   normalizePinvouMode,

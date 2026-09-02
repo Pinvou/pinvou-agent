@@ -447,7 +447,7 @@ impl BundleStore {
     }
 
     /// 首启一次性导入（§9）：从旧布局（installed.json + bundle/skills/* 的
-    /// `.installed-from` 标记 + connectors/<platform>/bin/ 存量 CLI 二进制）反推
+    /// `.installed-from` 标记 + `connectors/<platform>/bin/` 存量 CLI 二进制）反推
     /// 已装包，登记进 bundles.json。
     ///
     /// - **幂等**：`legacy_imported` 闸置位后直接跳过；闸未置位时也只补缺失 id，

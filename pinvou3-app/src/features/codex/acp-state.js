@@ -1,7 +1,6 @@
 import {
   commandExecutionDetails,
   presentConversationItems,
-  stripTerminalControlSequences,
 } from '../conversation/conversation-model.js';
 
 export function unifiedConversationUiEnabled() {
@@ -533,6 +532,17 @@ export {
   commandExecutionDetails,
   contentText,
   mergeTool,
-  stripTerminalControlSequences,
   toolItemType,
 };
+
+/**
+ * Not used inside this file; only re-exported for consumers.
+ * tests/codex_acp_timeline.test.mjs copies this file to a temp directory and
+ * dynamically imports the re-export via a computed URL; knip cannot build an
+ * edge for that channel, so the `@public` tag keeps it from being removed as a
+ * dead export.
+ * @public
+ */
+export {
+  stripTerminalControlSequences,
+} from '../conversation/conversation-model.js';

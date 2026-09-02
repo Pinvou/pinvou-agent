@@ -105,7 +105,11 @@ const describeSelectedElement = (element, L) => {
   };
 };
 
-const DesignInspectorPanel = ({ t, selectedElement, changes = [], onApplyChange, onClearChanges, docked = false }) => {
+// Stable empty-array default: an inline [] is a fresh identity on every render
+// and re-renders memoized children.
+const EMPTY_CHANGES = [];
+
+const DesignInspectorPanel = ({ t, selectedElement, changes = EMPTY_CHANGES, onApplyChange, onClearChanges, docked = false }) => {
   const L = t.uiArtifacts;
   const style = (selectedElement && selectedElement.computedStyle) || {};
   const [textDraft, setTextDraft] = useState('');

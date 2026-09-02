@@ -1,13 +1,13 @@
 //! pinvou3-app 与 CodeWhale Engine 的桥接层。
 //!
 //! 职责：
-//!  1. 通过 [`bridge::Pinvou3Bridge`] 把 `~/.pinvou3/settings.json` 翻译成
-//!     [`EngineConfig`] / [`DtConfig`]，然后 `spawn_engine`，存到 Tauri State
+//!  1. 通过 [`Pinvou3Bridge`] 把 `~/.pinvou3/settings.json` 翻译成
+//!     [`EngineConfig`](deepseek_tui::core::engine::EngineConfig) / [`DtConfig`](deepseek_tui::config::Config)，然后 `spawn_engine`，存到 Tauri State
 //!  2. 后台 task 持续读 `EngineHandle::rx_event`，转译成 Tauri 事件
 //!     （`chat:delta` / `chat:reasoning_start` / `chat:reasoning_delta` /
 //!     `chat:reasoning_done` / `chat:tool_start` / `chat:tool_end` / `chat:done`
 //!     / `chat:plan_ready`）
-//!  3. 暴露 `send_reserved_user_message()` 给 [`commands::chat`] 调用
+//!  3. 暴露 `send_reserved_user_message()` 给 `commands::chat` 调用
 //!
 //! 所有配置决策（model / paths / locale / allow_shell ...）都在 bridge 里，
 //! 这一层只做 "boot engine + 转发事件"。Engine 自管 session 状态，多轮对话
@@ -53,8 +53,8 @@ const SCHEDULED_TURN_REMINDER: &str =
 
 /// 单个 session 的 engine wrapper(handle + 该 session 绑定的 bridge)。
 ///
-/// 多引擎并发模型下,[`EnginePool`](crate::features::assistant::engine_pool::EnginePool) 为每个 session
-/// 持有一个 `AppEngine`(经 [`spawn_for_session`](Self::spawn_for_session) 创建);
+/// 多引擎并发模型下,`EnginePool` 为每个 session
+/// 持有一个 `AppEngine`(经 `spawn_for_session` 创建);
 /// L1 headless harness 经 [`spawn_headless`](Self::spawn_headless) 单独用一个。
 /// Clone 廉价(EngineHandle 内部 Arc)。
 #[derive(Clone)]
@@ -1515,7 +1515,7 @@ impl AppEngine {
     /// 调用方自己消费 `engine.handle.rx_event` 拿到 ToolCallStarted /
     /// ToolCallComplete / TurnComplete 做断言。
     ///
-    /// 不复用 [`spawn`] 是因为它强依赖 Tauri AppHandle (`spawn_event_forwarder`
+    /// 不复用 `spawn_for_session` 是因为它强依赖 Tauri AppHandle (`spawn_event_forwarder`
     /// 里 `app.emit(...)`),测试场景没有 webview/event 系统跑不起来。
     #[allow(dead_code)] // L1 runner 接入前临时 unused
     pub async fn spawn_headless(bridge: Pinvou3Bridge) -> Result<Self> {

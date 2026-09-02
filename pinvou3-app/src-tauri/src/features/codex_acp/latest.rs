@@ -114,9 +114,7 @@ impl LatestVersionProbe {
                 return cached.version;
             }
         }
-        let Some(gate) = self.gates.get(&backend) else {
-            return None;
-        };
+        let gate = self.gates.get(&backend)?;
         let _guard = gate.lock().await;
         if !force {
             if let Some(cached) = self.fresh_entry(backend) {

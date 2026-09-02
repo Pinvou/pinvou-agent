@@ -1667,7 +1667,7 @@
   const runScheduledTaskNow = scheduledFeature.runScheduledTaskNow;
   const startScheduledTaskChat = scheduledFeature.startScheduledTaskChat;
   // ── Session management ───────────────────────────────────────────
-  const PLAN_TOOLS = ["update_plan", "checklist_write", "todo_write"];
+  const PLAN_TOOLS = new Set(["update_plan", "checklist_write", "todo_write"]);
 
   // tool_result.content 可能是 string 或 Anthropic content blocks 数组，归一成纯文本。
   function toolResultText(content) {
@@ -1982,7 +1982,7 @@
             }
           }
           // update_plan / checklist_write / todo_write → 收集快照，本条消息末尾还原方案卡
-          if (PLAN_TOOLS.includes(b.name)) {
+          if (PLAN_TOOLS.has(b.name)) {
             const snap = parsePlanSnapshot(resultById[b.id] && resultById[b.id].content);
             if (snap) {
               if (b.name === "update_plan") planSnap = snap; else todosSnap = snap;

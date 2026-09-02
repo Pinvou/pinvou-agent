@@ -56,10 +56,10 @@
   // 办公文档 + markdown 报告 + 数据表 + 图片 + 打包件都算成品(覆盖 AI 常见产出格式)。
   // 中间/草稿(.txt/.json/.xml 等)刻意不在此列 → 不进面板,避免一堆过程文件污染产物列表;
   // 这类格式若确是成品,靠模型 present_artifact 显式挂出(present 过的不受扩展名门控)。
-  const DELIVERABLE_EXTS = [
+  const DELIVERABLE_EXTS = new Set([
     "pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls",
     "md", "csv", "png", "jpg", "jpeg", "svg", "gif", "webp", "zip",
-  ];
+  ]);
   // tmp/ 是提示词约定的中间文件目录(instructions.md:中间/临时文件一律写 tmp/,
   // 不进产出物列表)。tmp/ 下的文件即使扩展名是成品型(.md/.html 等)也不算自动成品;
   // 确需展示只能靠模型显式 present_artifact(显式 present 不经 isDeliverable 门控)。
@@ -73,7 +73,7 @@
   function isDeliverable(path) {
     if (isTmpPath(path)) return false;
     const ext = (String(path || "").split(".").pop() || "").toLowerCase();
-    return DELIVERABLE_EXTS.includes(ext);
+    return DELIVERABLE_EXTS.has(ext);
   }
   function trackArtifact(path) {
     if (!path) return;

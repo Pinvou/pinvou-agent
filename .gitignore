@@ -97,4 +97,8 @@ pinvou3-app/src-tauri/resources/platforms/linux/codex-bridge/node/
 pinvou3-app/src-tauri/resources/platforms/linux/codex-bridge/acp/
 pinvou3-app/src-tauri/resources/platforms/linux/codex-bridge/manifest.json
 pinvou3-app/src-tauri/resources/platforms/linux/.codex-bridge-build.*/
+pinvou3-app/src-tauri/resources/platforms/macos/codex-bridge/node/
+pinvou3-app/src-tauri/resources/platforms/macos/codex-bridge/acp/
+pinvou3-app/src-tauri/resources/platforms/macos/codex-bridge/manifest.json
+pinvou3-app/src-tauri/resources/platforms/macos/.codex-bridge-build.*/
 .codewhale-worktrees/

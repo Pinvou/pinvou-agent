@@ -33,6 +33,26 @@ export const staticRuntimeScripts = new Set([
 ]);
 export const staticRuntimeScriptPrefixes = ['platform/tauri/bridge/', 'platform/web/bridge/'];
 
+// Verbatim-copied static assets referenced by string paths instead of ESM
+// imports (JSX `src="..."` literals, `resolveAppAssetUrl('...')`, CSS url(), or
+// dynamic prefixes like `file-icons/theme/${iconFile}` and
+// `'avatars/avatar-' + n + '.svg'`). These must exist under their source
+// relative paths in dist. Images imported through ESM are emitted hashed by
+// Vite and must NOT be listed here — duplicating them verbatim doubles dist
+// size. When new code starts referencing an asset by string path, register it
+// in one of the two lists below; tests/runtime_asset_allowlist.test.mjs binds
+// resolveAppAssetUrl('...') literals to these lists and rejects stale entries.
+export const staticRuntimeAssetPaths = new Set([
+  'assets/brand/brand-blue.png',
+  'assets/megacube-icon.png',
+]);
+export const staticRuntimeAssetPrefixes = [
+  'assets/tool-icons/',
+  'avatars/',
+  'brand-icons/',
+  'file-icons/',
+];
+
 function assertClassicRuntimeScriptsCopied(outputRoot) {
   const indexHtml = readFileSync(join(sourceRoot, 'index.html'), 'utf8');
   for (const relative of localClassicScriptPaths(indexHtml)) {
@@ -72,9 +92,13 @@ function copyRuntimeAssets() {
             visit(source);
             continue;
           }
-      const relative = source.slice(sourceRoot.length + 1).replaceAll('\\', '/');
-      const isRuntimeScript = staticRuntimeScripts.has(relative) || staticRuntimeScriptPrefixes.some(prefix => relative.startsWith(prefix));
-          if (!staticExtensions.has(extname(entry.name).toLowerCase()) && !isRuntimeScript) continue;
+          const relative = source.slice(sourceRoot.length + 1).replaceAll('\\', '/');
+          const isRuntimeScript = staticRuntimeScripts.has(relative)
+            || staticRuntimeScriptPrefixes.some(prefix => relative.startsWith(prefix));
+          const isStringPathAsset = staticExtensions.has(extname(entry.name).toLowerCase())
+            && (staticRuntimeAssetPaths.has(relative)
+              || staticRuntimeAssetPrefixes.some(prefix => relative.startsWith(prefix)));
+          if (!isRuntimeScript && !isStringPathAsset) continue;
           const containedSource = resolveContainedRuntimePath(sourceRoot, relative);
           const target = resolveContainedRuntimePath(outputRoot, relative);
           mkdirSync(resolve(target, '..'), { recursive: true });
@@ -133,6 +157,22 @@ export default defineConfig(({ mode }) => {
             pet: resolve(sourceRoot, 'pet.html'),
             reader: resolve(sourceRoot, 'reader.html'),
           },
+      output: webBuild
+        ? {
+            // Single-entry web build has no multi-entry sharing, so react-dom/
+            // react/scheduler would stay inlined in main and trip the 500 kB
+            // chunk warning. Extract them into a dedicated vendor chunk; the
+            // multi-entry UI build already gets an equivalent separate shared
+            // chunk from rolldown's automatic splitting, so this only applies
+            // to the web mode.
+            codeSplitting: {
+              groups: [{
+                name: 'vendor',
+                test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/,
+              }],
+            },
+          }
+        : undefined,
     },
   },
   };

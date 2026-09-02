@@ -524,7 +524,6 @@ impl Pinvou3Bundle {
     /// (顶层散落的 NOTICE.md 不含 SKILL.md,会被注册表忽略。)
     /// 飞书技能门控:`show` → 解包 9 个 lark 技能到包目录;否则**删掉**它们(+ NOTICE.md)。
     /// 幂等(删不存在的目录不报错)。可见性 = 目录在不在,引擎重刷系统提示时重扫即生效。
-
     fn connector_package_skills_dir(id: &str) -> std::path::PathBuf {
         paths::bundles_root().join(id).join("skills")
     }
@@ -908,9 +907,7 @@ impl Pinvou3Bundle {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let Some((code, hint)) = browser_last_error_hint(&raw, now) else {
-            return None;
-        };
+        let (code, hint) = browser_last_error_hint(&raw, now)?;
         Some(format!(
             "Browser tools (`mcp_browser_*`) failed during the previous startup ({code}): {hint} If browser access is needed, ask the user to open a new conversation and retry."
         ))

@@ -1679,7 +1679,7 @@ pub async fn list_scheduled_runs(
     for (automation_id, runs) in runs_by_automation {
         compact_viewed_runs(&state.read_state, &automation_id, &runs);
     }
-    records.sort_by(|(left, _, _), (right, _, _)| right.scheduled_for.cmp(&left.scheduled_for));
+    records.sort_by_key(|(run, _, _)| std::cmp::Reverse(run.scheduled_for));
     let session_titles = scheduled_session_titles(&state.sessions)
         .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
     Ok(records

@@ -79,10 +79,10 @@ pub(super) fn kimi_runtime_config_ready(raw: &str, oauth_credentials_valid: bool
     else {
         return false;
     };
-    if !provider
+    if provider
         .get("type")
         .and_then(toml::Value::as_str)
-        .is_some_and(|value| !value.trim().is_empty())
+        .is_none_or(|value| value.trim().is_empty())
     {
         return false;
     }

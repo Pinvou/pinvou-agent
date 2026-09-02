@@ -1368,7 +1368,7 @@ mod tests {
                     kind: "quality".into(),
                     persona: "budget".into(), // 在 alternates，保留
                     text: "z".into(),
-                    suggestion: "".into(),
+                    suggestion: String::new(),
                 },
             ],
             risk: Some("high".into()),

@@ -1894,7 +1894,7 @@ impl AcpPool {
             };
             let (command, args) = brew_install_args(backend, brew_package_installed(backend))
                 .with_context(|| format!("{} 不支持 Homebrew 升级", backend.display_name()))?;
-            let output = run_brew(&args, &command)?;
+            let output = run_brew(&args, command)?;
             if output.status.success() || already_done(&output) {
                 return Ok(());
             }
@@ -2265,7 +2265,7 @@ impl AcpPool {
                 diagnostics::write(
                     &operation_id,
                     "script:move_aside_failed",
-                    &format!("{error:#}"),
+                    format!("{error:#}"),
                 );
                 return Err(error);
             }

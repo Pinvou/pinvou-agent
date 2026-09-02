@@ -758,7 +758,7 @@ pub fn run() {
             startup::mark("retired_features:start");
             if let Err(error) = crate::features::retirement::retire_removed_features() {
                 eprintln!("[pinvou3-app] retired feature cleanup failed (will retry next boot): {error}");
-                startup::mark_with_detail("rust", "retired_features:error", &error.to_string());
+                startup::mark_with_detail("rust", "retired_features:error", &error);
             }
             startup::mark("retired_features:done");
 

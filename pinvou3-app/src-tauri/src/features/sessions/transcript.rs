@@ -16,7 +16,6 @@ use sha2::{Digest, Sha256};
 /// Session metadata and artifacts intentionally do not participate: renaming a
 /// Session or discovering an artifact must not invalidate a browser transcript
 /// edit that was based on the same messages.
-
 pub fn transcript_revision(messages: &[Message]) -> Result<String> {
     let encoded = serde_json::to_vec(messages).context("serialize transcript for revision")?;
     Ok(crate::platform::encoding::hex_lower(&Sha256::digest(

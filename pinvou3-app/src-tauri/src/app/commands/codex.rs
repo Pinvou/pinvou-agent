@@ -280,7 +280,7 @@ pub(crate) async fn codex_acp_prompt_with_attachments(
     } else {
         message.as_str()
     };
-    super::sessions::apply_default_session_title(&store, &session_id, title_source)?;
+    super::sessions::apply_default_session_title(store, &session_id, title_source)?;
     // Timing registration lives inside `AcpPool::send_message`, after busy
     // admission succeeds but before the prompt task is spawned: the spawned
     // turn can complete before `send_message` returns, so registering here

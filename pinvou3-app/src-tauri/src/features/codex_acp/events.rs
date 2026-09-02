@@ -1181,7 +1181,7 @@ fn load_web_timeline_page_from_path(
         });
     }
 
-    let mut file = fs::File::open(&path)
+    let mut file = fs::File::open(path)
         .with_context(|| format!("读取 ACP timeline {} 失败", path.display()))?;
     let file_len = file.metadata()?.len();
     let start = cursor.unwrap_or(0);

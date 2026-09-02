@@ -10,43 +10,20 @@
 //   2. pinvou3-app/src-tauri/Cargo.toml 的 [package] 下第一处 version = "..." 行（不动依赖版本）
 //   3. pinvou-knowledge/Cargo.toml 的 [package] 版本
 //   4. pinvou-knowledge/Cargo.lock 中 pinvou-knowledge 包版本
-//   5. pinvou-knowledge and pinvou3-tauri package versions in pinvou3-app/src-tauri/Cargo.lock
-//   6. The "version" field in pinvou3-app/package.json
-//   7. The root "version" and packages[""].version in pinvou3-app/package-lock.json (skipped if absent)
+//   5. Both package versions (pinvou3-tauri and pinvou-knowledge) in
+//      pinvou3-app/src-tauri/Cargo.lock (that lock contains both this crate and
+//      the path dependency pinvou-knowledge; missing one breaks
+//      cargo metadata/build --locked, and every build then silently rewrites the lock)
+//   6. The "version" field of pinvou3-app/package.json
+//   7. The root "version" and packages[""].version of pinvou3-app/package-lock.json (skipped when the file does not exist)
 
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// import.meta.url 已被 Node 规范化为真实路径；argv[1] 则保留调用方书写形式。
-// macOS 的 /tmp、/var 是 /private 下符号链接：绝对路径调用时 argv[1] 不会经过
-// realpath，直接字符串比较会失配并静默跳过 main()，因此两侧都按真实路径比较。
-const SCRIPT_PATH = realpathSync(fileURLToPath(import.meta.url));
-
-// 是否被直接执行（而非被测试等场景 import）。argv[1] 不存在或指向缺失文件时
-// 视为非直接执行。
-function isDirectInvocation() {
-  if (!process.argv[1]) {
-    return false;
-  }
-  const invoked = resolve(process.argv[1]);
-  try {
-    return realpathSync(invoked) === SCRIPT_PATH;
-  } catch {
-    return invoked === SCRIPT_PATH;
-  }
-}
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const REPO_ROOT = resolve(dirname(SCRIPT_PATH), '..');
 const CHECK_ONLY = process.argv.includes('--check');
-
-const VERSION_FILE = resolve(REPO_ROOT, 'VERSION');
-const TAURI_CONF = resolve(REPO_ROOT, 'pinvou3-app/src-tauri/tauri.conf.json');
-const CARGO_TOML = resolve(REPO_ROOT, 'pinvou3-app/src-tauri/Cargo.toml');
-const TAURI_CARGO_LOCK = resolve(REPO_ROOT, 'pinvou3-app/src-tauri/Cargo.lock');
-const KNOWLEDGE_CARGO_TOML = resolve(REPO_ROOT, 'pinvou-knowledge/Cargo.toml');
-const KNOWLEDGE_CARGO_LOCK = resolve(REPO_ROOT, 'pinvou-knowledge/Cargo.lock');
-const PACKAGE_JSON = resolve(REPO_ROOT, 'pinvou3-app/package.json');
-const PACKAGE_LOCK = resolve(REPO_ROOT, 'pinvou3-app/package-lock.json');
 
 // SemVer 2.0.0：禁止数字段前导零，预发布数字标识同样禁止前导零；
 // 允许合法的预发布与构建元数据，例如 1.2.3-rc.1+build.7。
@@ -56,9 +33,23 @@ export function isValidVersion(version) {
   return SEMVER_RE.test(version);
 }
 
+// Derive all sync target paths from a repository root; tests sandbox this with a temp root and never touch the real repository.
+function repoPaths(repoRoot) {
+  return {
+    versionFile: resolve(repoRoot, 'VERSION'),
+    tauriConf: resolve(repoRoot, 'pinvou3-app/src-tauri/tauri.conf.json'),
+    cargoToml: resolve(repoRoot, 'pinvou3-app/src-tauri/Cargo.toml'),
+    knowledgeCargoToml: resolve(repoRoot, 'pinvou-knowledge/Cargo.toml'),
+    knowledgeCargoLock: resolve(repoRoot, 'pinvou-knowledge/Cargo.lock'),
+    srcTauriCargoLock: resolve(repoRoot, 'pinvou3-app/src-tauri/Cargo.lock'),
+    packageJson: resolve(repoRoot, 'pinvou3-app/package.json'),
+    packageLock: resolve(repoRoot, 'pinvou3-app/package-lock.json'),
+  };
+}
+
 // 读取单一事实来源：根目录 VERSION 文件（内容只有一行版本号）
-function readTargetVersion() {
-  const version = readFileSync(VERSION_FILE, 'utf8').trim();
+function readTargetVersion(versionFile) {
+  const version = readFileSync(versionFile, 'utf8').trim();
   if (!isValidVersion(version)) {
     console.error(`VERSION 文件内容不是合法版本号: "${version}"`);
     process.exit(2);
@@ -177,54 +168,47 @@ function writeCargoLockVersion(path, packageName, version) {
   writeFileSync(path, result.content);
 }
 
-function readCargoLockVersions(path, packageNames) {
-  const content = readFileSync(path, 'utf8');
-  const versions = packageNames.map((packageName) => ({
-    packageName,
-    version: updateCargoLockPackageVersion(content, packageName).version,
-  }));
-  const firstVersion = versions[0]?.version;
-  if (versions.every(({ version }) => version === firstVersion)) {
-    return firstVersion;
-  }
-  return versions.map(({ packageName, version }) => `${packageName} is ${version}`).join(', ');
-}
-
-function writeCargoLockVersions(path, packageNames, version) {
-  let content = readFileSync(path, 'utf8');
-  for (const packageName of packageNames) {
-    content = updateCargoLockPackageVersion(content, packageName, version).content;
-  }
-  writeFileSync(path, content);
-}
-
-export function main() {
-  const target = readTargetVersion();
+// Validate/sync all targets. Returns the exit code: 0 when consistent (or once
+// synced), 1 when --check finds inconsistencies; fatal errors (invalid VERSION,
+// missing [package] version line) still process.exit(2) directly.
+// repoRoot and checkOnly are injectable so unit tests can run in a temp-dir sandbox.
+export function main(repoRoot = REPO_ROOT, { checkOnly = CHECK_ONLY } = {}) {
+  const paths = repoPaths(repoRoot);
+  const target = readTargetVersion(paths.versionFile);
   const targets = [
-    { name: 'pinvou3-app/src-tauri/tauri.conf.json', read: () => readJsonVersion(TAURI_CONF), write: () => writeJsonVersion(TAURI_CONF, target) },
-    { name: 'pinvou3-app/src-tauri/Cargo.toml', read: () => readCargoVersion(CARGO_TOML), write: () => writeCargoVersion(CARGO_TOML, target) },
-    { name: 'pinvou-knowledge/Cargo.toml', read: () => readCargoVersion(KNOWLEDGE_CARGO_TOML), write: () => writeCargoVersion(KNOWLEDGE_CARGO_TOML, target) },
-    { name: 'pinvou-knowledge/Cargo.lock', read: () => readCargoLockVersion(KNOWLEDGE_CARGO_LOCK, 'pinvou-knowledge'), write: () => writeCargoLockVersion(KNOWLEDGE_CARGO_LOCK, 'pinvou-knowledge', target) },
-    {
-      name: 'pinvou3-app/src-tauri/Cargo.lock',
-      read: () => readCargoLockVersions(TAURI_CARGO_LOCK, ['pinvou-knowledge', 'pinvou3-tauri']),
-      write: () => writeCargoLockVersions(TAURI_CARGO_LOCK, ['pinvou-knowledge', 'pinvou3-tauri'], target),
-    },
-    { name: 'pinvou3-app/package.json', read: () => readJsonVersion(PACKAGE_JSON), write: () => writeJsonVersion(PACKAGE_JSON, target) },
+    { name: 'pinvou3-app/src-tauri/tauri.conf.json', read: () => readJsonVersion(paths.tauriConf), write: () => writeJsonVersion(paths.tauriConf, target) },
+    { name: 'pinvou3-app/src-tauri/Cargo.toml', read: () => readCargoVersion(paths.cargoToml), write: () => writeCargoVersion(paths.cargoToml, target) },
+    { name: 'pinvou-knowledge/Cargo.toml', read: () => readCargoVersion(paths.knowledgeCargoToml), write: () => writeCargoVersion(paths.knowledgeCargoToml, target) },
+    { name: 'pinvou-knowledge/Cargo.lock', read: () => readCargoLockVersion(paths.knowledgeCargoLock, 'pinvou-knowledge'), write: () => writeCargoLockVersion(paths.knowledgeCargoLock, 'pinvou-knowledge', target) },
+    // The src-tauri Cargo.lock contains both pinvou3-tauri and the path dependency
+    // pinvou-knowledge, exactly one [[package]] section each in that lock; registering
+    // them separately lets --check pinpoint which package lags behind.
+    { name: 'pinvou3-app/src-tauri/Cargo.lock(pinvou3-tauri)', read: () => readCargoLockVersion(paths.srcTauriCargoLock, 'pinvou3-tauri'), write: () => writeCargoLockVersion(paths.srcTauriCargoLock, 'pinvou3-tauri', target) },
+    { name: 'pinvou3-app/src-tauri/Cargo.lock(pinvou-knowledge)', read: () => readCargoLockVersion(paths.srcTauriCargoLock, 'pinvou-knowledge'), write: () => writeCargoLockVersion(paths.srcTauriCargoLock, 'pinvou-knowledge', target) },
+    { name: 'pinvou3-app/package.json', read: () => readJsonVersion(paths.packageJson), write: () => writeJsonVersion(paths.packageJson, target) },
   ];
   // package-lock.json 可能不存在（未提交 lock 等场景），存在才纳入同步/校验
-  if (existsSync(PACKAGE_LOCK)) {
-    targets.push({ name: 'pinvou3-app/package-lock.json', read: () => readPackageLockVersion(PACKAGE_LOCK), write: () => writePackageLockVersion(PACKAGE_LOCK, target) });
+  if (existsSync(paths.packageLock)) {
+    targets.push({ name: 'pinvou3-app/package-lock.json', read: () => readPackageLockVersion(paths.packageLock), write: () => writePackageLockVersion(paths.packageLock, target) });
   }
 
   let inconsistent = 0;
   for (const item of targets) {
-    const current = item.read();
+    // Missing target files (ENOENT) and missing/duplicate Cargo.lock package
+    // entries surface here as thrown errors; keep the script's convention of a
+    // clean message + exit 2 for fatal errors instead of an uncaught stack trace.
+    let current;
+    try {
+      current = item.read();
+    } catch (error) {
+      console.error(`${item.name}: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(2);
+    }
     if (current === target) {
       console.log(`[一致] ${item.name}: ${current}`);
       continue;
     }
-    if (CHECK_ONLY) {
+    if (checkOnly) {
       console.error(`[不一致] ${item.name}: 当前 ${current}，应为 ${target}`);
       inconsistent += 1;
     } else {
@@ -233,15 +217,32 @@ export function main() {
     }
   }
 
-  if (CHECK_ONLY && inconsistent > 0) {
+  if (checkOnly && inconsistent > 0) {
     console.error(`共 ${inconsistent} 处版本号与 VERSION(${target}) 不一致，请运行 node scripts/sync-version.mjs 同步`);
-    process.exit(1);
+    return 1;
   }
-  if (!CHECK_ONLY) {
+  if (!checkOnly) {
     console.log(`版本号已同步为 ${target}`);
+  }
+  return 0;
+}
+
+// Node realpaths the entry module before setting import.meta.url, so on
+// symlinked paths (macOS /var/folders -> /private/var/folders, or /tmp on
+// macOS) import.meta.url differs from resolve(process.argv[1]) even when both
+// point at this file. Compare realpaths too, otherwise the CLI entry is
+// silently skipped and the script becomes a no-op library import.
+function isCliEntry() {
+  if (!process.argv[1]) return false;
+  const entry = resolve(process.argv[1]);
+  if (entry === SCRIPT_PATH) return true;
+  try {
+    return realpathSync(entry) === realpathSync(SCRIPT_PATH);
+  } catch {
+    return false;
   }
 }
 
-if (isDirectInvocation()) {
-  main();
+if (isCliEntry()) {
+  process.exit(main());
 }

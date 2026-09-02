@@ -441,8 +441,8 @@ fn normalized_host_path(path: &str) -> String {
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("//?/UNC/"))
     {
         format!("//{}", &normalized[8..])
-    } else if normalized.starts_with("//?/") {
-        normalized[4..].to_string()
+    } else if let Some(stripped) = normalized.strip_prefix("//?/") {
+        stripped.to_string()
     } else {
         normalized
     };
@@ -1759,16 +1759,15 @@ mod tests {
             "web_workspace_diff_failed"
         );
         assert_eq!(
-            web_session_result(WebSessionOperation::ListSessions, error.clone()).unwrap_err(),
+            web_session_result(WebSessionOperation::ListSessions, error).unwrap_err(),
             "web_session_list_sessions_failed"
         );
         assert_eq!(
-            web_session_result(WebSessionOperation::ListArchivedSessions, error.clone())
-                .unwrap_err(),
+            web_session_result(WebSessionOperation::ListArchivedSessions, error).unwrap_err(),
             "web_session_list_archived_sessions_failed"
         );
         assert_eq!(
-            web_session_result(WebSessionOperation::CreateSession, error.clone()).unwrap_err(),
+            web_session_result(WebSessionOperation::CreateSession, error).unwrap_err(),
             "web_session_create_session_failed"
         );
         assert_eq!(

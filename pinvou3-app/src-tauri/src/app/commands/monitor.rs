@@ -148,7 +148,7 @@ fn local_model_provider_for_url(base_url: &str) -> (&'static str, &'static str) 
     match local_port_of(base_url) {
         Some(11434) => ("ollama", "Ollama"),
         Some(1234) => ("lm_studio", "LM Studio"),
-        Some(8000 | 8001 | 8002) => ("vllm", "vLLM"),
+        Some(8000..=8002) => ("vllm", "vLLM"),
         _ => ("openai_compatible", "OpenAI Compatible"),
     }
 }

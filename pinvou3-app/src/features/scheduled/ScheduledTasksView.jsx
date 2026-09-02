@@ -9,6 +9,35 @@ import dailyBriefImage from '../../assets/scheduled/daily-brief.jpg';
 import followUpMonitorImage from '../../assets/scheduled/follow-up-monitor.jpg';
 import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
 
+/**
+ * Scheduled task row record as delivered by `appState.scheduledTasks`
+ * (backend wire shape; preview tasks carry the same core fields).
+ * @typedef {object} ScheduledTask
+ * @property {string} id - Stable task id.
+ * @property {string} name - Task display name.
+ * @property {string} status - 'active' when enabled, otherwise paused.
+ * @property {string} [scheduleLabel] - Human-readable schedule summary.
+ * @property {boolean} [isRunning] - A run is currently executing.
+ * @property {boolean} [hasUnreadRuns] - Unread run results exist.
+ * @property {string} [nextRunAt] - Next run ISO timestamp.
+ * @property {string} [lastRunAt] - Last run ISO timestamp.
+ * @property {string} [createdAt] - Creation ISO timestamp.
+ */
+
+/**
+ * Subset of `t.uiScheduled` consumed by the hoisted task-list components.
+ * @typedef {object} ScheduledCopy
+ * @property {(name: string) => string} pause - Pause switch aria-label.
+ * @property {(name: string) => string} resume - Resume switch aria-label.
+ * @property {string} filterAll - "All" filter tab label.
+ * @property {string} filterActive - "Active" filter tab label.
+ * @property {string} filterPaused - "Paused" filter tab label.
+ * @property {string} myTasks - Task list section heading.
+ * @property {string} closeError - Error banner close aria-label.
+ * @property {string} loading - Loading placeholder copy.
+ * @property {string} empty - Empty list placeholder copy.
+ */
+
     // 点模板即激活（开箱即用）：工作间由任务自动分配，不再需要选目录或先暂停。
     const SCHEDULED_TASK_TEMPLATES = [
       {
@@ -388,6 +417,92 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           {wheel}
         </span>
       );
+    };
+
+    // Scheduled-task subcomponents (module scope: types stay stable across renders, avoiding per-render rebuilds that remount subtrees)
+    const mutedValue = 'text-[#3C3C43]/60 dark:text-[#EBEBF5]/60';
+    /** @param {{ task: ScheduledTask, toggleTask: (event: { stopPropagation(): void }, task: ScheduledTask) => Promise<void>, busyAction?: string | null, scheduledCopy: ScheduledCopy }} props - Task switch state and actions. */
+    const MacSwitch = ({ task, toggleTask, busyAction, scheduledCopy }) => {
+      const checked = task.status === 'active';
+      return (
+        <button
+          type="button"
+          onClick={(event) => toggleTask(event, task)}
+          disabled={!!busyAction}
+          aria-pressed={checked}
+          aria-label={checked ? scheduledCopy.pause(task.name) : scheduledCopy.resume(task.name)}
+          className={`relative flex h-6 w-11 shrink-0 items-center rounded-full p-[1px] transition-colors duration-300 disabled:opacity-50 ${
+            checked ? 'bg-[#34C759]' : 'bg-[#D8DADD] dark:bg-[#4A4B50]'
+          }`}
+        >
+          <span
+            className={`h-5 w-5 rounded-full bg-white shadow-[0_3px_8px_rgba(0,0,0,0.15),0_1px_1px_rgba(0,0,0,0.05)] transition-transform duration-300 ${
+              checked ? 'translate-x-5' : 'translate-x-0'
+            }`}
+          />
+        </button>
+      );
+    };
+    /** @param {{ scheduledCopy: ScheduledCopy, taskFilter: string, setTaskFilter: (value: string) => void }} props - Filter tab state and copy. */
+    const FilterTabs = ({ scheduledCopy, taskFilter, setTaskFilter }) => (
+      <div data-testid="scheduled-filter-tabs" className={`grid grid-cols-3 rounded-[8px] p-0.5 bg-[#767680]/12 dark:bg-[#767680]/24`}>
+        {[
+          ['all', scheduledCopy.filterAll],
+          ['active', scheduledCopy.filterActive],
+          ['paused', scheduledCopy.filterPaused],
+        ].map(([value, label]) => (
+          <button key={value} type="button" onClick={() => setTaskFilter(value)}
+            aria-pressed={taskFilter === value}
+            className={`h-7 min-w-[72px] rounded-[6.5px] px-3 text-[13px] font-medium transition-colors ${
+              taskFilter === value
+                ? 'bg-white text-black shadow-sm dark:bg-[#636366] dark:text-white'
+                : `${mutedValue}`
+            }`}>
+            {label}
+          </button>
+        ))}
+      </div>
+    );
+    // Factory: binds the shared state and render callbacks needed by the "My Tasks" list and returns a
+    // render function whose only remaining argument is className. Call sites invoke it as a plain
+    // function (not a JSX element), so no component type or remount semantics are involved.
+    /**
+     * @param {{
+     *   scheduledCopy: ScheduledCopy, taskFilter: string, setTaskFilter: (value: string) => void, error?: string,
+     *   filtered: ScheduledTask[], loading?: boolean,
+     *   renderTaskRow: (task: ScheduledTask, index: number, list: ScheduledTask[]) => import('react').ReactNode,
+     * }} shared - Task list section state and row renderer.
+     */
+    const makeMyTasksSection = ({ scheduledCopy, taskFilter, setTaskFilter, error, filtered, loading, renderTaskRow }) => {
+      const MyTasksSection = ({ className = '' } = {}) => (
+        <section className={className || 'mb-5'}>
+          <div className="mb-4 ml-1 flex items-center justify-between gap-4">
+            <h2 className={`text-[13px] font-bold uppercase tracking-wider ${mutedValue}`}>{scheduledCopy.myTasks}</h2>
+            <FilterTabs scheduledCopy={scheduledCopy} taskFilter={taskFilter} setTaskFilter={setTaskFilter} />
+          </div>
+          <div className={`overflow-hidden rounded-[20px] border shadow-[0_2px_10px_rgba(0,0,0,0.02),0_8px_32px_rgba(0,0,0,0.04)] border-black/5 bg-white dark:border-white/15 dark:bg-[#1C1C1E]`}>
+            {error && (
+              <div role="alert" data-testid="scheduled-error" className={`m-3 flex items-start gap-2 rounded-[12px] px-3 py-2 text-[13px] bg-[#FCE8E6] text-[#A50E0E] dark:bg-[#3A2424] dark:text-[#F2B8B5]`}>
+                <span className="min-w-0 flex-1">{error}</span>
+                <button type="button" onClick={() => bridge?.dismissScheduledTaskError?.()}
+                  aria-label={scheduledCopy.closeError} className="mt-[-2px] rounded-full p-1 opacity-65 transition-opacity hover:opacity-100">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
+            {filtered.length ? (
+              <div data-testid="scheduled-task-groups">
+                {filtered.map((task, index) => renderTaskRow(task, index, filtered))}
+              </div>
+            ) : (
+              <div className={`px-4 py-8 text-center text-[14px] ${mutedValue}`}>
+                {loading ? scheduledCopy.loading : scheduledCopy.empty}
+              </div>
+            )}
+          </div>
+        </section>
+      );
+      return MyTasksSection;
     };
 
     const ScheduledTasksView = ({ theme, t, onOpenChat, onGotoModelSettings }) => {
@@ -1005,32 +1120,9 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const iosSeparator = 'border-[#3C3C43]/20 dark:border-[#545458]/50';
       const iosInsetSurface = 'bg-[#F2F2F7] dark:bg-[#2C2C2E]';
       const iosHistorySurface = 'bg-[#F5F5F7] dark:bg-[#2C2C2E]';
-      const mutedValue = 'text-[#3C3C43]/60 dark:text-[#EBEBF5]/60';
       const pressedRow = 'active:bg-[#E5E5EA] dark:active:bg-[#3A3A3C]';
       const modalPortalTarget = typeof document === 'undefined' ? null : document.body;
       const renderModal = node => modalPortalTarget ? createPortal(node, modalPortalTarget) : node;
-
-      const MacSwitch = ({ task }) => {
-        const checked = task.status === 'active';
-        return (
-          <button
-            type="button"
-            onClick={(event) => toggleTask(event, task)}
-            disabled={!!busyAction}
-            aria-pressed={checked}
-            aria-label={checked ? scheduledCopy.pause(task.name) : scheduledCopy.resume(task.name)}
-            className={`relative flex h-6 w-11 shrink-0 items-center rounded-full p-[1px] transition-colors duration-300 disabled:opacity-50 ${
-              checked ? 'bg-[#34C759]' : 'bg-[#D8DADD] dark:bg-[#4A4B50]'
-            }`}
-          >
-            <span
-              className={`h-5 w-5 rounded-full bg-white shadow-[0_3px_8px_rgba(0,0,0,0.15),0_1px_1px_rgba(0,0,0,0.05)] transition-transform duration-300 ${
-                checked ? 'translate-x-5' : 'translate-x-0'
-              }`}
-            />
-          </button>
-        );
-      };
 
       const taskIconMeta = (task) => {
         const template = SCHEDULED_TASK_TEMPLATES.find(item => item.id === task.templateId);
@@ -1054,26 +1146,6 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         }
         return { Icon: Clock, className: 'bg-[#F5F5F7] text-[#86868B] dark:bg-[#2C2C2E] dark:text-[#8E8E93]' };
       };
-
-      const FilterTabs = () => (
-        <div data-testid="scheduled-filter-tabs" className={`grid grid-cols-3 rounded-[8px] p-0.5 bg-[#767680]/12 dark:bg-[#767680]/24`}>
-          {[
-            ['all', scheduledCopy.filterAll],
-            ['active', scheduledCopy.filterActive],
-            ['paused', scheduledCopy.filterPaused],
-          ].map(([value, label]) => (
-            <button key={value} type="button" onClick={() => setTaskFilter(value)}
-              aria-pressed={taskFilter === value}
-              className={`h-7 min-w-[72px] rounded-[6.5px] px-3 text-[13px] font-medium transition-colors ${
-                taskFilter === value
-                  ? 'bg-white text-black shadow-sm dark:bg-[#636366] dark:text-white'
-                  : `${mutedValue}`
-              }`}>
-              {label}
-            </button>
-          ))}
-        </div>
-      );
 
       const FormScheduleRows = ({ editor, selectedDays, prefix, onEdit, onCloseWeekly }) => editor ? (
         <>
@@ -1234,6 +1306,11 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         </section>
       );
 
+      /**
+       * @param {ScheduledTask} task - Scheduled task.
+       * @param {number} index - Row index.
+       * @param {ScheduledTask[]} [list] - Task list used for the last-row separator.
+       */
       const renderTaskRow = (task, index, list = filtered) => {
         const { Icon, className } = taskIconMeta(task);
         return (
@@ -1270,7 +1347,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                 </span>
               </button>
               <div className="flex shrink-0 items-center gap-2 pr-2">
-                <MacSwitch task={task} />
+                <MacSwitch task={task} toggleTask={toggleTask} busyAction={busyAction} scheduledCopy={scheduledCopy} />
               </div>
             </div>
             {index !== list.length - 1 && (
@@ -1280,34 +1357,10 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         );
       };
 
-      const MyTasksSection = ({ className = '' } = {}) => (
-        <section className={className || 'mb-5'}>
-          <div className="mb-4 ml-1 flex items-center justify-between gap-4">
-            <h2 className={`text-[13px] font-bold uppercase tracking-wider ${mutedValue}`}>{scheduledCopy.myTasks}</h2>
-            <FilterTabs />
-          </div>
-          <div className={`overflow-hidden rounded-[20px] border shadow-[0_2px_10px_rgba(0,0,0,0.02),0_8px_32px_rgba(0,0,0,0.04)] border-black/5 bg-white dark:border-white/15 dark:bg-[#1C1C1E]`}>
-            {error && (
-              <div role="alert" data-testid="scheduled-error" className={`m-3 flex items-start gap-2 rounded-[12px] px-3 py-2 text-[13px] bg-[#FCE8E6] text-[#A50E0E] dark:bg-[#3A2424] dark:text-[#F2B8B5]`}>
-                <span className="min-w-0 flex-1">{error}</span>
-                <button type="button" onClick={() => bridge?.dismissScheduledTaskError?.()}
-                  aria-label={scheduledCopy.closeError} className="mt-[-2px] rounded-full p-1 opacity-65 transition-opacity hover:opacity-100">
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            )}
-            {filtered.length ? (
-              <div data-testid="scheduled-task-groups">
-                {filtered.map((task, index) => renderTaskRow(task, index, filtered))}
-              </div>
-            ) : (
-              <div className={`px-4 py-8 text-center text-[14px] ${mutedValue}`}>
-                {loading ? scheduledCopy.loading : scheduledCopy.empty}
-              </div>
-            )}
-          </div>
-        </section>
-      );
+      // After binding shared state, call sites only pass className (invoked as a plain function here;
+      // do not switch to JSX usage — the factory runs during rendering, and JSX usage would create a
+      // new component type on every render and remount the subtree).
+      const MyTasksSection = makeMyTasksSection({ scheduledCopy, taskFilter, setTaskFilter, error, filtered, loading, renderTaskRow });
 
       const DetailTaskDialog = () => (selected && detailForm) ? renderModal(
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[6px]">
@@ -1400,7 +1453,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <span className={mutedValue}>{scheduledCopy.enableTask}</span>
-                  <MacSwitch task={selected} />
+                  <MacSwitch task={selected} toggleTask={toggleTask} busyAction={busyAction} scheduledCopy={scheduledCopy} />
                 </div>
               </div>
 
@@ -1525,7 +1578,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               </header>
 
               <div data-testid="scheduled-left-toolbar" className="sr-only">
-                {FilterTabs()}
+                {FilterTabs({ scheduledCopy, taskFilter, setTaskFilter })}
               </div>
               <main className="min-h-0 flex-1 overflow-y-auto pb-6 custom-scrollbar">
                 {renderTemplateSuggestions()}

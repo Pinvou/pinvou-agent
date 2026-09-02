@@ -776,7 +776,7 @@ pub fn import_plugin_package(
     // 拒绝与预置/内置包 id 冲突：用户上传包顶替市场预置会让 UI/默认值/资源池
     // 全部错位，且无法回滚（预置版本指纹与上传不同）。内置 CLI 连接器另由
     // `mcp_catalog` 索引覆盖（结构 Rust 函数式 API）。
-    if !crate::features::marketplace::mcp_catalog::spec_for(&id).is_none() {
+    if crate::features::marketplace::mcp_catalog::spec_for(&id).is_some() {
         return Err(format!(
             "包 id '{id}' 与市场预置 MCP 冲突，请改用其它 id 或通过市场直接安装"
         ));

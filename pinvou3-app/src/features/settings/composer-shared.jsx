@@ -5,7 +5,7 @@
 // 组件实现与 SettingsView.jsx 原版逐字节一致。
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown, Cpu, Plus, Store, Users, Wrench, X, Zap } from '../../components/icons.jsx';
+import { Check, ChevronDown, Cpu, Plus, Store, Users, Wrench, X } from '../../components/icons.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { Toggle } from '../../components/Toggle.jsx';
 import { bridge, useBridgeState } from '../../hooks/useBridge.js';
@@ -452,55 +452,6 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       );
     };
 
-    // 输入框「技能」入口：⚡ 药丸 + popover。视觉设计=内置自动技能（只读，模型 load_skill 时显"使用中"
-    // 并高亮药丸）。activeSkill 由 bridge 检测 load_skill 设，纯只读指示。
-    const ComposerModeMenu = ({ t, bs, compact }) => {
-      const [open, setOpen] = useState(false);
-      const SKILLS = [
-        { id: 'visual-design', name: t.uiSettingsView.visualDesignSkillName, desc: t.uiSettingsView.visualDesignSkillDesc, kind: 'auto' },
-      ];
-      const activeId = bs && bs.activeSkill;
-      const cur = SKILLS.find(s => s.id === activeId && s.kind === 'auto');
-      return (
-        <div className="relative">
-          <button type="button" onClick={() => setOpen(o => !o)} title={cur ? cur.name : t.composerMode}
-            className={`flex items-center shrink-0 font-semibold transition-colors border ${compact ? 'justify-center w-9 h-9 rounded-full' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] whitespace-nowrap'} ${cur
-              ? 'bg-[#007AFF]/[0.1] dark:bg-[#0A84FF]/20 text-[#007AFF] dark:text-[#5AC8FA] border-[#007AFF]/20 dark:border-[#0A84FF]/30'
-              : 'bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] text-gray-700 dark:text-gray-200 border-black/[0.045] dark:border-white/[0.06]'}`}>
-            <Zap size={compact ? 14 : 13} className={cur ? '' : 'opacity-70'} />
-            {!compact && (cur ? cur.name : t.composerMode)}
-            {!compact && <ChevronDown size={13} className="opacity-50 shrink-0" />}
-          </button>
-          {open && (
-            <>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click empty area to collapse the popup; the keyboard path is covered by the trigger button (aria-expanded) */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-empty-area collapse layer; non-interactive container */}
-              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
-              <div className="absolute bottom-full left-0 mb-2 z-50 w-64 bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
-                <div className="px-3 py-2 text-[11px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">{t.composerModeTitle}</div>
-                {SKILLS.map(s => {
-                  const soon = s.kind === 'soon';
-                  const inUse = s.kind === 'auto' && activeId === s.id;
-                  return (
-                    <div key={s.id} className={`flex items-start justify-between gap-2 px-3 py-2.5 rounded-xl ${soon ? 'opacity-50' : ''}`}>
-                      <span className="min-w-0">
-                        <span className="block text-[13px] font-medium text-gray-800 dark:text-gray-100 truncate">{s.name}</span>
-                        <span className="block text-[11px] text-gray-400 dark:text-gray-500 truncate">{s.desc}</span>
-                      </span>
-                      {soon
-                        ? <span className="shrink-0 text-[10px] font-semibold text-gray-400 dark:text-gray-500 bg-black/[0.04] dark:bg-white/10 px-2 py-0.5 rounded-full leading-none mt-0.5">{t.composerSkillSoon}</span>
-                        : inUse
-                          ? <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-[#34C759] bg-[#34C759]/10 px-2 py-0.5 rounded-full leading-none mt-0.5"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759]" />{t.composerSkillInUse}</span>
-                          : <span className="shrink-0 text-[10px] font-semibold text-[#007AFF] dark:text-[#5AC8FA] bg-[#007AFF]/10 dark:bg-[#0A84FF]/15 px-2 py-0.5 rounded-full leading-none mt-0.5">{t.composerSkillAuto}</span>}
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
-        </div>
-      );
-    };
     // 输入框底栏:工具菜单(只展示已装工具 + 跳工具商店;无会话级开关——后端无此概念)。
     // 可选触发器变体：triggerVariant='pill' 时触发器渲染为代码页配置组同款 pill
     //（triggerLabel 为可选 10px 前缀文案；triggerTestId 覆盖默认 testid），
@@ -813,4 +764,4 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       );
     };
 
-export { ComposerModelSelector, ScaledHtmlPreview, ComposerModeMenu, ComposerToolMenu };
+export { ComposerModelSelector, ScaledHtmlPreview, ComposerToolMenu };

@@ -122,21 +122,11 @@ pub struct EffectiveEntry {
 /// 从配置文件读出的当前生效状态。`provider_hint` 是能直接从文件反推的 provider id
 /// （claude 的 env 无法反推，为 None）。`entries` 供前端「生效中配置」只读区展示，
 /// 值全部来自实际配置文件（F4 可见化）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EffectiveConfig {
     pub relay_active: bool,
     pub provider_hint: Option<String>,
     pub entries: Vec<EffectiveEntry>,
-}
-
-impl Default for EffectiveConfig {
-    fn default() -> Self {
-        Self {
-            relay_active: false,
-            provider_hint: None,
-            entries: Vec::new(),
-        }
-    }
 }
 
 /// 统一配置写入契约。根目录由构造参数注入（生产传各 CLI 的 home，单测传临时目录）。
@@ -1303,7 +1293,7 @@ mod tests {
         let a = generate_provider_id();
         let b = generate_provider_id();
         assert!(a.starts_with(PROVIDER_ID_PREFIX));
-        assert!(a.len() == 12 + PROVIDER_ID_PREFIX.len());
+        assert_eq!(a.len(), 12 + PROVIDER_ID_PREFIX.len());
         assert_ne!(a, b);
     }
 

@@ -76,10 +76,7 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
             return file;
         }
     };
-    let mut file: DisabledBundlesFile = match serde_json::from_str(&content) {
-        Ok(f) => f,
-        Err(_) => DisabledBundlesFile::default(),
-    };
+    let mut file: DisabledBundlesFile = serde_json::from_str(&content).unwrap_or_default();
     if strip_skill_prefixes(&mut file) {
         save_disabled_bundles_file(&file);
     }
