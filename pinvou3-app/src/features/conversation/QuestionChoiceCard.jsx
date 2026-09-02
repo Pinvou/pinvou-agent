@@ -1,6 +1,10 @@
 import { useId, useState } from 'react';
 import { MessageCircle } from '../../components/icons.jsx';
 
+// Stable empty-array default: an inline [] is a new reference on every render, which makes memoized children re-render repeatedly.
+const EMPTY_QUESTIONS = [];
+const EMPTY_ANSWERS = [];
+
 function normalizedOptions(question) {
   return (question.options || []).map(option => ({
     value: option.value == null ? option.label : option.value,
@@ -75,8 +79,8 @@ function copyState(state) {
 export function QuestionChoiceCard({
   title,
   description = '',
-  questions = [],
-  initialAnswers = [],
+  questions = EMPTY_QUESTIONS,
+  initialAnswers = EMPTY_ANSWERS,
   resolved = false,
   submitting = false,
   statusText = '',

@@ -210,10 +210,11 @@ fn migrate_legacy_binary(name: &str, version: &str, expected_sha256: &str) {
         if file_sha256_matches(&legacy, expected_sha256) {
             let _ = fs::remove_file(&legacy);
         }
-    } else if file_sha256_matches(&legacy, expected_sha256) {
-        if fs::create_dir_all(&version_dir).is_ok() && fs::rename(&legacy, &destination).is_ok() {
-            log::info!("[connectors] 旧布局 CLI 迁移到版本目录: {name}@{version}");
-        }
+    } else if file_sha256_matches(&legacy, expected_sha256)
+        && fs::create_dir_all(&version_dir).is_ok()
+        && fs::rename(&legacy, &destination).is_ok()
+    {
+        log::info!("[connectors] 旧布局 CLI 迁移到版本目录: {name}@{version}");
         // rename 失败（跨盘/占用）不阻塞：下次启动/连接重试
     }
     // bin 目录腾空后清理（licenses 等旁挂内容在平台目录，不在 bin 内）

@@ -299,7 +299,7 @@ pub async fn list_archived_sessions(
             .map_err(|e| format!("list_archived_sessions: {e:#}"))?,
     );
     metas.retain(|m| store.is_hidden(&m.id));
-    metas.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    metas.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
     Ok(metas
         .into_iter()
         .map(|metadata| {

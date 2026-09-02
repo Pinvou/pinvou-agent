@@ -61,8 +61,11 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       + 'img{max-width:100%;height:auto;}'
       + '</style>';
 
+    // Stable empty-array default: an inline [] is a new reference on every render, which makes memoized children re-render repeatedly.
+    const EMPTY_DESIGN_CHANGES = [];
+
     // eslint-disable-next-line sonarjs/cognitive-complexity -- unified preview/design workbench panel: every state-machine branch maps to a preview kind or a design runtime event; splitting would sever the pv/sel linkage
-    const ArtifactsPanel = ({ bs, t, onClose, isWide, onGotoSettings, isFullscreen = false, onToggleFullscreen, preferredArtifactPath, onPreviewArtifact, designMode = false, designCommand, selectedDesignElement, designChanges = [], onDesignRuntimeStatus, onDesignElementSelected, onDesignChangeApplied, onDesignMutation, onDesignApplyChange, onDesignClearChanges, onDesignAiSubmit, designAiState, onDesignAiStateChange }) => {
+    const ArtifactsPanel = ({ bs, t, onClose, isWide, onGotoSettings, isFullscreen = false, onToggleFullscreen, preferredArtifactPath, onPreviewArtifact, designMode = false, designCommand, selectedDesignElement, designChanges = EMPTY_DESIGN_CHANGES, onDesignRuntimeStatus, onDesignElementSelected, onDesignChangeApplied, onDesignMutation, onDesignApplyChange, onDesignClearChanges, onDesignAiSubmit, designAiState, onDesignAiStateChange }) => {
       const uiA = t.uiArtifacts;
       const showDesignWorkbench = isFullscreen && designMode;
       const canOpenContainingFolder = can('externalSystemOpen');
@@ -77,7 +80,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       const [sel, setSel] = useState(initialSelectedArtifact ? { ...initialSelectedArtifact, sessionId: initialSelectedArtifact.sessionId || activeSessionId } : null);        // 选中的 artifact { path, basename }
       const [pv, setPv] = useState(initialSelectedArtifact ? { loading: true } : {});            // 预览态
       const [infos, setInfos] = useState({});      // path → { size, kind, modified }(列表行元信息)
-      const [externalUpdateBlocked, setExternalUpdateBlocked] = useState(false);
+      const [externalUpdateBlocked, setExternalUpdateBlocked] = useState(/** @type {false|'removed'|'modified'} */ (false));
       const [htmlZoomMode, setHtmlZoomMode] = useState('fit');
       const [htmlScale, setHtmlScale] = useState(1);
       const [htmlCustomScale, setHtmlCustomScale] = useState(1);

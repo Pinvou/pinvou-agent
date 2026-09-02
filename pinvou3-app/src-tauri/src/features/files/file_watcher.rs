@@ -12,7 +12,7 @@
 //!
 //! 其中 `sessions/default/artifacts/` 是 MCP 办公产物的公共落点；文件系统
 //! watcher 不能据此判断真实对话归属，真实归属以带 `session_id` 的工具事件为准。
-//! 不在 workspace/artifacts 子目录下的事件(如 sessions/<id>.json session 元数据本身)忽略。
+//! 不在 workspace/artifacts 子目录下的事件(如 `sessions/<id>.json` session 元数据本身)忽略。
 //!
 //! Debouncing：notify 后端(inotify)对单个文件写入可能 fire 多次事件
 //! (Create + 多次 Modify(Data) + 最后 Modify(Metadata))。watcher 端不 debounce,

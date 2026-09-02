@@ -238,7 +238,7 @@ jobs:
               - 'pinvou3-app/src-tauri/packaging/**'
               - 'pinvou3-app/package.json'
               - 'pinvou3-app/package-lock.json'
-              - 'pinvou3-app/vite.config.js'
+              - 'pinvou3-app/vite.config.mjs'
               - 'pinvou3-app/eslint.config.mjs'
               - '.github/workflows/pr-check.yml'
             frontend:
@@ -257,7 +257,7 @@ jobs:
               - 'scripts/mcp-server-contract-smoke.py'
               - 'pinvou3-app/package.json'
               - 'pinvou3-app/package-lock.json'
-              - 'pinvou3-app/vite.config.js'
+              - 'pinvou3-app/vite.config.mjs'
               - 'pinvou3-app/eslint.config.mjs'
               # 静态门禁配置(oxlint/Biome/knip/jsconfig)与 Safari 14 兼容审计脚本
               # 只在 frontend-test 内消费;不列入则 config-only PR 会静默跳过
@@ -418,6 +418,9 @@ jobs:
 
       - name: knip (unused files/exports)
         run: npm run lint:knip
+
+      - name: madge (circular imports)
+        run: npm run lint:cycles
 
       - name: Vite build
         run: npm run build:ui
@@ -670,6 +673,19 @@ jobs:
         run: |
           cargo clippy --lib --bins --no-deps --features server -- -D warnings
           cargo clippy --lib --bins --tests --no-deps --features server
+
+      # rustdoc hard gate: the module-level documentation map once accumulated 46
+      # rustdoc warnings (private_intra_doc_links / broken_intra_doc_links /
+      # invalid_html_tags, cleaned up to zero in 2026-08) with no gate to surface
+      # them. RUSTDOCFLAGS only applies to rustdoc itself and does not escalate
+      # CodeWhale submodule rustc warnings to errors (that is upstream debt; see
+      # the clippy step comment).
+      - name: cargo doc --no-deps (hard gate, zero rustdoc warnings)
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
+        working-directory: pinvou3-app/src-tauri
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps
 
       # cargo-shear (unused deps / unlinked source files): static parse, no
       # compile cost, rust-analyzer-grade precision (same tool as uv/oxc);
@@ -987,15 +1003,12 @@ jobs:
         shell: bash
         run: rustc -O pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs -o pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
 
-      - name: Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: pinvou3-app/package-lock.json
-
-      - name: 安装前端构建依赖
-        run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
+      # This job's cargo steps do not need frontend dependencies: under the
+      # debug profile tauri's generate_context! uses devUrl, dist/ is never
+      # packaged, and build.rs only depends on tauri-build/cc (verified on
+      # macOS in 2026-08: cargo check --all-targets passes after moving
+      # node_modules away). So node/npm setup is dropped, saving 3-5 minutes
+      # per run.
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2

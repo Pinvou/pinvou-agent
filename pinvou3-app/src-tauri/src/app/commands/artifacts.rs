@@ -1108,7 +1108,7 @@ mod visual_cache_tests {
                 <= MAX_VISUAL_CACHE_BYTES,
             "total bytes must fall back within the budget"
         );
-        assert!(state.len() >= 1, "at least the newest entry must survive");
+        assert!(!state.is_empty(), "at least the newest entry must survive");
     }
 
     #[test]

@@ -351,6 +351,14 @@ export function openAcpExternalUrl(value) {
   return Promise.resolve(Boolean(opened));
 }
 
+/**
+ * tests/acp_platform_client.test.mjs consumes this export through a computed
+ * dynamic import with a query string
+ * (`import(\`../src/features/codex/acpClient.js?test=${Date.now()}\`)`).
+ * knip cannot build an edge for that channel, so the `@public` tag keeps it from
+ * being removed as a dead export.
+ * @public
+ */
 export const acpAttachmentLimits = Object.freeze({
   get chunkBytes() { return chunkedUploader().CHUNK_BYTES; },
   get maxBytes() { return chunkedUploader().MAX_FILE_BYTES; },

@@ -158,6 +158,9 @@ function WorkspaceTree({
   });
 }
 
+// Stable empty-array default: an inline [] is a new reference on every render, which makes memoized children re-render repeatedly.
+const EMPTY_REFERENCES = [];
+
 export function CodexWorkspacePanel({
   session,
   workspacePath = '',
@@ -165,7 +168,7 @@ export function CodexWorkspacePanel({
   activationKey,
   onActiveChange,
   onClose,
-  references = [],
+  references = EMPTY_REFERENCES,
   onAddReference,
   refreshToken = 0,
   onChangeCount,

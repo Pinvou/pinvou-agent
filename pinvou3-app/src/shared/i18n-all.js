@@ -9,4 +9,8 @@ import { dictJa } from './i18n/ja.js';
 dict.en = dictEn;
 dict.ja = dictJa;
 
-export { dict, LANG_TO_TAG, TAG_TO_LANG, languageFromLocaleTags, initialSystemLanguage, SEARCH_KEY_PROVIDERS } from './i18n.js';
+// Only dict is re-exported: consumers of the other i18n.js exports
+// (LANG_TO_TAG / TAG_TO_LANG / languageFromLocaleTags / initialSystemLanguage /
+// SEARCH_KEY_PROVIDERS) import './i18n.js' directly; this aggregation shim no
+// longer forwards them, avoiding unused re-exports.
+export { dict } from './i18n.js';

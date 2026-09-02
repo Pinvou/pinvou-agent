@@ -4100,7 +4100,7 @@ fn browser_initialization_script(
     cdp_tab_token: Option<&str>,
     location_signal_nonce: &str,
 ) -> String {
-    debug_assert!(location_signal_nonce.len() == 32);
+    debug_assert_eq!(location_signal_nonce.len(), 32);
     debug_assert!(
         location_signal_nonce
             .bytes()

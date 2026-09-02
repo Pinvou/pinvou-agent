@@ -598,7 +598,6 @@ impl KnowledgeService {
 /// 后台索引入口的补载实现已上收到 `KnowledgeService::
 /// reload_embedder_if_import_needed`（导入线程持有服务句柄，补载必须经
 /// install_embedder 启动空闲巡检，自由函数直写 l1 槽会绕过巡检启动）。
-
 fn expand_import_roots(roots: &[PathBuf], cancel: &AtomicBool) -> Vec<PathBuf> {
     let ex = Excluder::default();
     let mut files = Vec::new();

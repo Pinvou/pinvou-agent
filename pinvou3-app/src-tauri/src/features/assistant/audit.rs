@@ -1,6 +1,6 @@
 //! 助手审计流水：append-only JSONL。
 //!
-//! 一行 = 一个事件：{"ts":"<RFC3339>","kind":"...","role":"...","detail":{...}}
+//! 一行 = 一个事件：{"ts":"`<RFC3339>`","kind":"...","role":"...","detail":{...}}
 //! 文件在 session workspace 根：`<ws>/workflow_audit.jsonl`。
 //! 只追加不改写；写失败只 eprintln 不 panic（审计绝不能弄死工作流）。
 //! 单 run 实测量级 <100KB,暂不轮转;若未来常驻累积 >50MB 再加 rotation。

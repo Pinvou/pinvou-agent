@@ -98,7 +98,7 @@ fn reserve_unique_staged_file(
             .open(&path)
         {
             Ok(file) => return Some((file, path, candidate)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(_) => return None,
         }
     }

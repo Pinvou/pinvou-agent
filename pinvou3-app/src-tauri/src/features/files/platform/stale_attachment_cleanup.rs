@@ -121,7 +121,7 @@ mod platform {
         let mut current = unsafe { File::from_raw_fd(root_fd) };
         for component in path.components() {
             match component {
-                Component::RootDir => continue,
+                Component::RootDir => {}
                 Component::Normal(name) => {
                     let name = CString::new(name.as_bytes()).map_err(|_| {
                         io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL")

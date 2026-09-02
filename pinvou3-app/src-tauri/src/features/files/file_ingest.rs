@@ -16,13 +16,13 @@
 //!
 //! 本文件是 **facade**：只承载主入口 `ingest` 派发、共享类型 [`IngestResult`] /
 //! [`MAX_FILE_BYTES`]、路径校验工具与 placeholder。各格式摄入逻辑拆到子模块：
-//! - [`ingest_deps`]：系统工具探测 + 依赖体检 + 外部命令构建
-//! - [`text_decode`]：纯文本摄入 + 内容嗅探 / 解码
-//! - [`ingest_pdf`]：PDF 摄入
-//! - [`ingest_office`]：pandoc / LibreOffice / 表格 / 演示摄入
-//! - [`ingest_archive`]：压缩包摄入
-//! - [`ingest_email`]：邮件摄入
-//! - [`visual_preview`]：OCR + 可视化预览（base64 / data URI / 逐页 PNG）
+//! - `ingest_deps`：系统工具探测 + 依赖体检 + 外部命令构建
+//! - `text_decode`：纯文本摄入 + 内容嗅探 / 解码
+//! - `ingest_pdf`：PDF 摄入
+//! - `ingest_office`：pandoc / LibreOffice / 表格 / 演示摄入
+//! - `ingest_archive`：压缩包摄入
+//! - `ingest_email`：邮件摄入
+//! - `visual_preview`：OCR + 可视化预览（base64 / data URI / 逐页 PNG）
 
 #[path = "ingest_archive.rs"]
 mod ingest_archive;

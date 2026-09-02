@@ -66,7 +66,7 @@ impl Language {
             return Language::En;
         };
         let primary = locale
-            .split(|ch: char| matches!(ch, '-' | '_' | '.' | '@' | ':'))
+            .split(['-', '_', '.', '@', ':'])
             .next()
             .unwrap_or_default()
             .to_ascii_lowercase();
@@ -1852,7 +1852,7 @@ mod tests {
 
     #[test]
     fn search_prefs_normalized_api_key_treats_blank_as_none() {
-        for raw in [None, Some("".to_string()), Some("   \n\t ".to_string())] {
+        for raw in [None, Some(String::new()), Some("   \n\t ".to_string())] {
             let prefs = SearchPrefs {
                 provider: SearchProvider::Metaso,
                 api_key: raw,

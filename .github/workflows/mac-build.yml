@@ -34,7 +34,7 @@ on:
       - 'pinvou3-app/scripts/tauri/**'
       - 'pinvou3-app/package.json'
       - 'pinvou3-app/package-lock.json'
-      - 'pinvou3-app/vite.config.js'
+      - 'pinvou3-app/vite.config.mjs'
       - 'CodeWhale'
       - '.github/workflows/mac-build.yml'
       - 'scripts/run-mac-verify.sh'
@@ -76,7 +76,7 @@ jobs:
               - 'pinvou3-app/src-tauri/resources/**'
               - 'pinvou3-app/package.json'
               - 'pinvou3-app/package-lock.json'
-              - 'pinvou3-app/vite.config.js'
+              - 'pinvou3-app/vite.config.mjs'
               - '.github/workflows/mac-build.yml'
 
   build:

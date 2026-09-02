@@ -1,6 +1,6 @@
 //! 技能市场管理器 — 管理 skill(SKILL.md 目录)的安装/卸载/上传导入。
 //!
-//! 与 MCP 工具市场([`super::marketplace`])刻意分开:MCP 工具是 server 进程(改
+//! 与 MCP 工具市场([`crate::features::marketplace`])刻意分开:MCP 工具是 server 进程(改
 //! mcp.json),技能是磁盘上的 SKILL.md 目录。Phase 2 第十刀起按包聚合落盘:
 //! 市场技能住 `~/.pinvou3/bundles/<pkg-id>/skills/<name>/`（§4 一个包 = 一个
 //! 目录 = 一个属主，包 id 推导复用 `bundle::skill_owner_package`）；内置释放
@@ -158,7 +158,7 @@ pub struct MarketplaceSkillInfo {
     /// true = 已安装预置技能的磁盘内容与当前嵌入资源不一致(App 升级带来新版,
     /// 或本地被改过),前端据此显示"更新"按钮;更新=覆盖重装,用户确认后执行。
     /// 无版本号概念:打开商店列表时做无状态目录树比对(见
-    /// [`SkillMarketplaceManager::preset_update_available`])。未安装/上传技能恒 false。
+    /// `SkillMarketplaceManager::preset_update_available`)。未安装/上传技能恒 false。
     pub update_available: bool,
     /// 用户自定义展示名/说明覆盖的**原值**（仅上传技能；存于 bundles.json extra，
     /// 供前端编辑弹窗预填）。title/description 已是应用覆盖后的生效值。
@@ -1008,7 +1008,7 @@ impl SkillMarketplaceManager {
     /// 特性层入口，存在/来源门禁与长度/字符校验都在这里，命令层只做搬运）。
     ///
     /// 顺序契约（「报错但包内容已变」中间态的最小化）：
-    /// 1. 门禁（存在 + Upload）与校验（[`validate_display_meta`]）先于一切落盘；
+    /// 1. 门禁（存在 + Upload）与校验（`validate_display_meta`）先于一切落盘；
     /// 2. 展示说明非空 → 单技能包回写 SKILL.md（含互洽校验、原值备份、指纹
     ///    重算）；空（清覆盖）→ 单技能包从备份恢复原值。非单技能包两向都跳过；
     /// 3. 最后 `set_display_meta` 写 extra（与门禁同口径兜底）。

@@ -11,6 +11,33 @@ import { resolveAppAssetUrl } from '../../shared/asset-url.mjs';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
+/**
+ * Deliverable/output row record from `list_deliverable_index` (backend wire
+ * shape; `session_id` is the legacy snake-case spelling of `sessionId`).
+ * @typedef {object} KnowledgeOutput
+ * @property {string} path - Artifact file path.
+ * @property {string} name - File name shown in lists and previews.
+ * @property {string} [ext] - Lower-cased file extension.
+ * @property {string} [category] - Output category key (web | doc | img | ppt).
+ * @property {string} [sessionId] - Owning session id.
+ * @property {string} [session_id] - Legacy snake-case session id.
+ * @property {number} [mtime] - Modification time embedded in preview cache keys.
+ * @property {string} [source] - Producer source tag.
+ */
+
+/**
+ * Cached output preview payload (`{ idle: true }` / `{ loading: true }` are
+ * placeholder states; the remaining flavors map to the preview render branches).
+ * @typedef {object} OutputPreview
+ * @property {boolean} [idle] - No preview loaded yet.
+ * @property {boolean} [loading] - Preview request in flight.
+ * @property {'image' | 'html' | 'officeHtml' | 'text' | 'fallback'} [kind] - Preview flavor.
+ * @property {string} [url] - Image/object URL for image previews.
+ * @property {string} [html] - HTML document body for web/office previews.
+ * @property {string} [text] - Plain text excerpt for text previews.
+ * @property {string} [error] - Failure message for fallback previews.
+ */
+
 const kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false };
 
 const MODEL_PROGRESS_RADIUS = 31;
@@ -66,6 +93,203 @@ function ModelProgressIndicator({ downloading, percent, label }) {
     </div>
   );
 }
+
+// ---- Artifact subcomponents (module scope: types stay stable across renders, avoiding per-render rebuilds that remount subtrees) ----
+const FILE_ICON_BY_EXT = {
+  html: '/file-icons/html.svg', htm: '/file-icons/html.svg', mhtml: '/file-icons/html.svg', mht: '/file-icons/html.svg',
+  xml: '/file-icons/xml.svg', json: '/file-icons/code.svg', js: '/file-icons/code.svg', jsx: '/file-icons/code.svg', ts: '/file-icons/code.svg', tsx: '/file-icons/code.svg', css: '/file-icons/code.svg',
+  xls: '/file-icons/xlsx.svg', xlsx: '/file-icons/xlsx.svg', csv: '/file-icons/csv.svg', ods: '/file-icons/xlsx.svg', et: '/file-icons/xlsx.svg',
+  ppt: '/file-icons/pptx.svg', pptx: '/file-icons/pptx.svg', odp: '/file-icons/pptx.svg', dps: '/file-icons/pptx.svg',
+  doc: '/file-icons/docx.svg', docx: '/file-icons/docx.svg', md: '/file-icons/txt.svg', txt: '/file-icons/txt.svg', rtf: '/file-icons/docx.svg', odt: '/file-icons/docx.svg', wps: '/file-icons/docx.svg',
+  pdf: '/file-icons/pdf.svg',
+  png: '/file-icons/photo.svg', jpg: '/file-icons/photo.svg', jpeg: '/file-icons/photo.svg', gif: '/file-icons/photo.svg', webp: '/file-icons/photo.svg', bmp: '/file-icons/photo.svg', svg: '/file-icons/photo.svg', heic: '/file-icons/photo.svg', fig: '/file-icons/photo.svg',
+  zip: '/file-icons/zip.svg', rar: '/file-icons/zip.svg', '7z': '/file-icons/zip.svg', tar: '/file-icons/zip.svg', gz: '/file-icons/zip.svg',
+};
+/** @type {Record<string, string>} */
+const FILE_ICON_BY_CAT = { web: '/file-icons/html.svg', doc: '/file-icons/docx.svg', img: '/file-icons/photo.svg', ppt: '/file-icons/pptx.svg' };
+/**
+ * @param {string} ext - File extension.
+ * @param {string} [category] - Output category fallback.
+ */
+const fileIconSrc = (ext, category) => resolveAppAssetUrl(
+  FILE_ICON_BY_EXT[String(ext || '').toLowerCase()]
+    || FILE_ICON_BY_CAT[category ?? '']
+    || '/file-icons/genericfile.svg',
+);
+/** @param {{ meta: { color: string, label: string }, ext: string, category?: string }} props - Output file icon inputs. */
+const OutputFileIcon = ({ meta, ext, category }) => {
+  const lowerExt = String(ext || '').toLowerCase();
+  const code = lowerExt.toUpperCase().slice(0, 4) || meta.label;
+  const isImageIcon = category === 'img' || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'heic', 'fig'].includes(lowerExt);
+  return (
+    <span
+      className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden text-[10px] font-semibold tracking-[0.02em]"
+      style={{ color: meta.color }}
+    >
+      <img src={fileIconSrc(ext, category)} alt="" loading="lazy" decoding="async" className={`${isImageIcon ? 'h-9 w-9' : 'h-10 w-10'} object-contain`} draggable={false} />
+      <span className="sr-only">{code}</span>
+    </span>
+  );
+};
+/** @param {{ s: string, t: { kbStReady: string, kbStIndexing: string, kbStPending: string } }} props - Collection status and localized copy. */
+const StatusPill = ({ s, t }) => {
+  /** @type {Record<string, string[]>} */
+  const map = { ready: ['●', t.kbStReady, 'text-[#18a957] dark:text-[#7DD3A8]'], indexing: ['◐', t.kbStIndexing, 'text-[#0B57D0] dark:text-[#A8C7FA]'], pending: ['○', t.kbStPending, 'text-[#c98a00] dark:text-[#E8C468]'] };
+  const v = map[s] || map.ready;
+  return <span className={`text-[12px] font-medium ${v[2]}`}>{v[0]} {v[1]}</span>;
+};
+/** @param {{ o: KnowledgeOutput, compact?: boolean, t: { kbOutContinue: string, kbOutNewProject: string, kbOutOpenFolder: string, uiKnowledge: { downloadOutput: string } }, continueOutput: (output: KnowledgeOutput) => void, newOutputProject: (output: KnowledgeOutput) => void, openFolder: (path: string) => void, canOpenSystemFiles?: boolean, canDownloadArtifacts?: boolean }} props - Output row actions and their handlers. */
+const OutputActions = ({ o, compact, t, continueOutput, newOutputProject, openFolder, canOpenSystemFiles, canDownloadArtifacts }) => (
+      <div className={`flex items-center gap-1 ${compact ? 'justify-end' : 'mt-3'}`}>
+        <button type="button" onClick={() => continueOutput(o)}
+          className={`h-8 px-2.5 rounded-[9px] text-[13px] font-medium transition-colors active:opacity-70 text-[#007AFF] hover:bg-[#007AFF]/10 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/10`}>
+          {t.kbOutContinue}
+        </button>
+        <button type="button" onClick={() => newOutputProject(o)}
+          className={`h-8 px-2.5 rounded-[9px] text-[13px] font-medium transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#D1D1D6] dark:hover:bg-white/[0.08]`}>
+          {t.kbOutNewProject}
+        </button>
+        {canOpenSystemFiles && (
+          <button type="button" title={t.kbOutOpenFolder} onClick={() => openFolder(o.path)}
+            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
+            <FolderOpen size={15} />
+          </button>
+        )}
+        {isWeb && canDownloadArtifacts && bridge.artifacts.downloadArtifact && (
+          <button type="button" title={t.uiKnowledge.downloadOutput} onClick={() => bridge.artifacts.downloadArtifact(o.path, o.sessionId || o.session_id)}
+            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
+            <Download size={15} />
+          </button>
+        )}
+      </div>
+    );
+/** @returns {boolean} Whether IntersectionObserver is available in the current window. */
+const hasIntersectionObserver = () => typeof window !== 'undefined' && 'IntersectionObserver' in window;
+/** @param {{ o: KnowledgeOutput, onOpen?: () => void, outPreviewCache: { current: Record<string, OutputPreview> }, runQueuedPreview: (job: () => Promise<OutputPreview>) => Promise<OutputPreview>, rememberOutPreview: (key: string, preview: OutputPreview) => void, outCatMeta: (category: string | undefined) => { icon?: import('react').ComponentType<{ size?: number }>, color: string } }} props - Output preview inputs and shared cache helpers. */
+const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, rememberOutPreview, outCatMeta }) => {
+        const ext = String(o.ext || '').toLowerCase();
+        const outputSessionId = o.sessionId || o.session_id || null;
+        const cacheKey = `${outputSessionId || ''}|${o.path}|${o.mtime || 0}`;
+        const boxRef = useRef(null);
+        // Environments without IntersectionObserver count as visible directly (lazy init, equivalent to the old synchronous fallback inside the effect).
+        const [visible, setVisible] = useState(() => !hasIntersectionObserver());
+        const [pv, setPv] = useState(() => /** @type {OutputPreview} */ (outPreviewCache.current[cacheKey] || { idle: true }));
+        const title = o.name.replace(/\.[^.]+$/, '');
+        const [frameReady, setFrameReady] = useState(false);
+        useEffect(() => {
+          const node = boxRef.current;
+          if (!node || !hasIntersectionObserver()) return;
+          const io = new IntersectionObserver((entries) => {
+            if (entries.some((e) => e.isIntersecting)) {
+              setVisible(true);
+              io.disconnect();
+            }
+          }, { rootMargin: '0px', threshold: 0.08 });
+          io.observe(node);
+          return () => io.disconnect();
+        }, [cacheKey]);
+        useEffect(() => {
+          let alive = true;
+          const hit = outPreviewCache.current[cacheKey];
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- sync the snapshot from the external preview cache/visibility gate at mount to avoid preview flicker
+          setPv(hit || (visible ? { loading: true } : { idle: true }));
+          if (hit == null && visible) {
+            setFrameReady(false);
+            const timer = setTimeout(() => {
+          runQueuedPreview(async () => {
+            const freshHit = outPreviewCache.current[cacheKey];
+            if (freshHit) return freshHit;
+            try {
+              /** @type {OutputPreview | null} */
+              let next = null;
+              if (o.category === 'img' && bridge.artifacts.readArtifactImageB64) {
+                next = { kind: 'image', url: await bridge.artifacts.readArtifactImageB64(o.path, outputSessionId) };
+              } else if (ext === 'pptx' && bridge.artifacts.readArtifactThumbnail) {
+                const thumb = await bridge.artifacts.readArtifactThumbnail(o.path, outputSessionId);
+                next = thumb ? { kind: 'image', url: thumb } : null;
+              }
+              if (!next && (o.category === 'web' || ext === 'html' || ext === 'htm') && bridge.artifacts.readArtifactText) {
+                next = { kind: 'html', html: await bridge.artifacts.readArtifactText(o.path, outputSessionId) };
+              }
+              if (!next && ['docx', 'doc', 'odt', 'rtf'].includes(ext) && bridge.artifacts.renderArtifactVisual) {
+                const visual = await bridge.artifacts.renderArtifactVisual(o.path, outputSessionId);
+                if (visual && visual.mode === 'html' && visual.html) {
+                  next = { kind: 'officeHtml', html: visual.html + OFFICE_HTML_STYLE };
+                }
+              }
+              if (!next && ['md', 'markdown', 'txt', 'csv', 'json', 'log'].includes(ext) && bridge.artifacts.readArtifactText) {
+                const text = await bridge.artifacts.readArtifactText(o.path, outputSessionId);
+                next = { kind: 'text', text: text.slice(0, 1600) };
+              }
+              if (!next) next = { kind: 'fallback' };
+              rememberOutPreview(cacheKey, next);
+              return next;
+            } catch (e) {
+              const next = /** @type {OutputPreview} */ ({ kind: 'fallback', error: String(e) });
+              rememberOutPreview(cacheKey, next);
+              return next;
+            }
+          }).then((/** @type {OutputPreview} */ next) => { if (alive) setPv(next); });
+          }, 80);
+            return () => { alive = false; clearTimeout(timer); };
+          }
+          return () => { alive = false; };
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
+        }, [cacheKey, visible, o.path, o.category, ext, outputSessionId, runQueuedPreview, rememberOutPreview]);
+
+        const htmlPreviewDoc = (html) => '<style>html,body{overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
+        const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
+        const shell = (children) => (
+          // biome-ignore lint/a11y/noStaticElementInteractions: conditional role=button + onKeyDown are below; static analysis cannot see the dynamic role
+          <div ref={boxRef} onClick={onOpen} role={onOpen ? 'button' : undefined} tabIndex={onOpen ? 0 : undefined}
+            onKeyDown={(e) => { if (onOpen && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(); } }}
+            className={`h-[164px] m-2 rounded-[15px] overflow-hidden relative bg-[#111216] ring-1 ring-white/[0.045] ${onOpen ? 'cursor-pointer' : ''}`}>
+            {children}
+          </div>
+        );
+        if (pv.idle || pv.loading) return shell(
+          <div className="absolute inset-0 p-6">
+            <div className="h-[13px] w-[68%] rounded-full bg-white/15 animate-pulse mb-4"></div>
+            <div className="h-2 w-[88%] rounded-full bg-white/10 animate-pulse mb-2.5"></div>
+            <div className="h-2 w-[76%] rounded-full bg-white/10 animate-pulse mb-2.5"></div>
+            <div className="h-2 w-[54%] rounded-full bg-white/10 animate-pulse"></div>
+          </div>
+        );
+        if (pv.kind === 'image') return shell(<img src={pv.url} alt="" decoding="async" className="w-full h-full object-cover" />);
+        if (pv.kind === 'html') return shell(
+          <>
+            {!frameReady && <div className="absolute inset-0 bg-[#15171a]"></div>}
+            <iframe title={o.name} sandbox="allow-same-origin" scrolling="no" srcDoc={htmlPreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
+              className={`absolute inset-0 w-[200%] h-[200%] origin-top-left scale-50 bg-[#15171a] pointer-events-none border-0 transition-opacity duration-300 ${frameReady ? 'opacity-100' : 'opacity-0'}`}
+              style={{ colorScheme: 'dark' }} />
+          </>
+        );
+        if (pv.kind === 'officeHtml') return shell(
+          <>
+            {!frameReady && <div className="absolute inset-0 bg-white"></div>}
+            <iframe title={o.name} sandbox="allow-same-origin" scrolling="no" srcDoc={officePreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
+              className={`absolute inset-0 w-[200%] h-[200%] origin-top-left scale-50 bg-white pointer-events-none border-0 transition-opacity duration-300 ${frameReady ? 'opacity-100' : 'opacity-0'}`}
+              style={{ colorScheme: 'light' }} />
+          </>
+        );
+        if (pv.kind === 'text') {
+          const lines = String(pv.text || '').split(/\r?\n/).filter(Boolean).slice(0, 8);
+          return shell(
+            <div className="absolute inset-0 p-5 font-mono text-[11px] leading-relaxed text-[#9aa2ad] overflow-hidden">
+              <b className="block text-[#e7eaf0] text-[14px] mb-3 truncate"># {title}</b>
+              {lines.map((line, i) => <p key={i} className={`m-0 mb-1.5 truncate ${i % 2 ? 'text-[#6e747e]' : ''}`}>{line}</p>)}
+            </div>
+          );
+        }
+        const meta = outCatMeta(o.category);
+        const Icon = meta.icon || FileText;
+        return shell(
+          <div className="absolute inset-0 grid place-items-center" style={{ color: meta.color }}>
+            <div className="w-16 h-16 rounded-2xl grid place-items-center" style={{ background: meta.color + '24' }}><Icon size={30} /></div>
+          </div>
+        );
+      };
+
 
       // eslint-disable-next-line sonarjs/cognitive-complexity -- KnowledgeView aggregates the knowledge-base and outputs sub-views in one file; splitting needs a dedicated design; complexity tracked via this suppression for now
     const KnowledgeView = ({ theme, t, mode }) => {
@@ -177,7 +401,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
       // eslint-disable-next-line react-hooks/exhaustive-deps -- MAX_OUT_PREVIEW_CACHE*/outPreviewValueBytes are render-invariant; listing them would churn the callback identity every render
       }, []);
       const outPreviewQueue = useRef({ active: 0, jobs: [] });
-      const runQueuedPreview = useCallback((job) => new Promise((resolve, reject) => {
+      const runQueuedPreview = useCallback((/** @type {() => Promise<OutputPreview>} */ job) => /** @type {Promise<OutputPreview>} */ (new Promise((resolve, reject) => {
         const q = outPreviewQueue.current;
         const pump = () => {
           while (q.active < 2 && q.jobs.length > 0) {
@@ -194,7 +418,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
         };
         q.jobs.push({ job, resolve, reject });
         pump();
-      }), []);
+      })), []);
       const outputListSig = (list) => (list || []).map((o) => `${o.path || ''}|${o.mtime || 0}|${o.size || 0}|${o.sessionId || ''}|${o.source || ''}|${o.name || ''}`).join('\n');
       const outputsSigRef = useRef(outputListSig(kbCache.outputs));
       const OUTPUT_CATS = [
@@ -205,36 +429,6 @@ function ModelProgressIndicator({ downloading, percent, label }) {
         { key: 'ppt', label: t.kbOutCatPpt, color: '#e0773a', icon: PresentationIcon },
       ];
       const outCatMeta = (k) => OUTPUT_CATS.find((c) => c.key === k) || OUTPUT_CATS[0];
-      const FILE_ICON_BY_EXT = {
-        html: '/file-icons/html.svg', htm: '/file-icons/html.svg', mhtml: '/file-icons/html.svg', mht: '/file-icons/html.svg',
-        xml: '/file-icons/xml.svg', json: '/file-icons/code.svg', js: '/file-icons/code.svg', jsx: '/file-icons/code.svg', ts: '/file-icons/code.svg', tsx: '/file-icons/code.svg', css: '/file-icons/code.svg',
-        xls: '/file-icons/xlsx.svg', xlsx: '/file-icons/xlsx.svg', csv: '/file-icons/csv.svg', ods: '/file-icons/xlsx.svg', et: '/file-icons/xlsx.svg',
-        ppt: '/file-icons/pptx.svg', pptx: '/file-icons/pptx.svg', odp: '/file-icons/pptx.svg', dps: '/file-icons/pptx.svg',
-        doc: '/file-icons/docx.svg', docx: '/file-icons/docx.svg', md: '/file-icons/txt.svg', txt: '/file-icons/txt.svg', rtf: '/file-icons/docx.svg', odt: '/file-icons/docx.svg', wps: '/file-icons/docx.svg',
-        pdf: '/file-icons/pdf.svg',
-        png: '/file-icons/photo.svg', jpg: '/file-icons/photo.svg', jpeg: '/file-icons/photo.svg', gif: '/file-icons/photo.svg', webp: '/file-icons/photo.svg', bmp: '/file-icons/photo.svg', svg: '/file-icons/photo.svg', heic: '/file-icons/photo.svg', fig: '/file-icons/photo.svg',
-        zip: '/file-icons/zip.svg', rar: '/file-icons/zip.svg', '7z': '/file-icons/zip.svg', tar: '/file-icons/zip.svg', gz: '/file-icons/zip.svg',
-      };
-      const FILE_ICON_BY_CAT = { web: '/file-icons/html.svg', doc: '/file-icons/docx.svg', img: '/file-icons/photo.svg', ppt: '/file-icons/pptx.svg' };
-      const fileIconSrc = (ext, category) => resolveAppAssetUrl(
-        FILE_ICON_BY_EXT[String(ext || '').toLowerCase()]
-          || FILE_ICON_BY_CAT[category]
-          || '/file-icons/genericfile.svg',
-      );
-      const OutputFileIcon = ({ meta, ext, category }) => {
-        const lowerExt = String(ext || '').toLowerCase();
-        const code = lowerExt.toUpperCase().slice(0, 4) || meta.label;
-        const isImageIcon = category === 'img' || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'heic', 'fig'].includes(lowerExt);
-        return (
-          <span
-            className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden text-[10px] font-semibold tracking-[0.02em]"
-            style={{ color: meta.color }}
-          >
-            <img src={fileIconSrc(ext, category)} alt="" loading="lazy" decoding="async" className={`${isImageIcon ? 'h-9 w-9' : 'h-10 w-10'} object-contain`} draggable={false} />
-            <span className="sr-only">{code}</span>
-          </span>
-        );
-      };
       const refreshOutputs = useCallback(async () => {
         const list = bridge && bridge.artifacts.listDeliverableIndex
           ? await bridge.artifacts.listDeliverableIndex().catch(() => [])
@@ -329,126 +523,6 @@ function ModelProgressIndicator({ downloading, percent, label }) {
         if (bridge && bridge.chat.prefillComposer) {
           bridge.chat.prefillComposer(`${t.kbOutContinuePrefill(o.name)}\n\n${t.uiKnowledge.filePathLabel}${o.path}\n\n${t.kbOutRequirementLabel}`);
         }
-      };
-      const OutputLivePreview = ({ o, onOpen }) => {
-        const ext = String(o.ext || '').toLowerCase();
-        const outputSessionId = o.sessionId || o.session_id || null;
-        const cacheKey = `${outputSessionId || ''}|${o.path}|${o.mtime || 0}`;
-        const boxRef = useRef(null);
-        const [visible, setVisible] = useState(false);
-        const [pv, setPv] = useState(() => outPreviewCache.current[cacheKey] || { idle: true });
-        const title = o.name.replace(/\.[^.]+$/, '');
-        const [frameReady, setFrameReady] = useState(false);
-        useEffect(() => {
-          const node = boxRef.current;
-          if (!node) return;
-          if (!('IntersectionObserver' in window)) { setVisible(true); return; }
-          const io = new IntersectionObserver((entries) => {
-            if (entries.some((e) => e.isIntersecting)) {
-              setVisible(true);
-              io.disconnect();
-            }
-          }, { rootMargin: '0px', threshold: 0.08 });
-          io.observe(node);
-          return () => io.disconnect();
-        }, [cacheKey]);
-        useEffect(() => {
-          let alive = true;
-          const hit = outPreviewCache.current[cacheKey];
-          if (hit) { setPv(hit); return () => { alive = false; }; }
-          if (!visible) { setPv({ idle: true }); return () => { alive = false; }; }
-          setPv({ loading: true });
-          setFrameReady(false);
-          const timer = setTimeout(() => {
-          runQueuedPreview(async () => {
-            const freshHit = outPreviewCache.current[cacheKey];
-            if (freshHit) return freshHit;
-            try {
-              let next = null;
-              if (o.category === 'img' && bridge.artifacts.readArtifactImageB64) {
-                next = { kind: 'image', url: await bridge.artifacts.readArtifactImageB64(o.path, outputSessionId) };
-              } else if (ext === 'pptx' && bridge.artifacts.readArtifactThumbnail) {
-                const thumb = await bridge.artifacts.readArtifactThumbnail(o.path, outputSessionId);
-                next = thumb ? { kind: 'image', url: thumb } : null;
-              }
-              if (!next && (o.category === 'web' || ext === 'html' || ext === 'htm') && bridge.artifacts.readArtifactText) {
-                next = { kind: 'html', html: await bridge.artifacts.readArtifactText(o.path, outputSessionId) };
-              }
-              if (!next && ['docx', 'doc', 'odt', 'rtf'].includes(ext) && bridge.artifacts.renderArtifactVisual) {
-                const visual = await bridge.artifacts.renderArtifactVisual(o.path, outputSessionId);
-                if (visual && visual.mode === 'html' && visual.html) {
-                  next = { kind: 'officeHtml', html: visual.html + OFFICE_HTML_STYLE };
-                }
-              }
-              if (!next && ['md', 'markdown', 'txt', 'csv', 'json', 'log'].includes(ext) && bridge.artifacts.readArtifactText) {
-                const text = await bridge.artifacts.readArtifactText(o.path, outputSessionId);
-                next = { kind: 'text', text: text.slice(0, 1600) };
-              }
-              if (!next) next = { kind: 'fallback' };
-              rememberOutPreview(cacheKey, next);
-              return next;
-            } catch (e) {
-              const next = { kind: 'fallback', error: String(e) };
-              rememberOutPreview(cacheKey, next);
-              return next;
-            }
-          }).then((next) => { if (alive) setPv(next); });
-          }, 80);
-          return () => { alive = false; clearTimeout(timer); };
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
-        }, [cacheKey, visible, o.path, o.category, ext, outputSessionId, runQueuedPreview, rememberOutPreview]);
-
-        const htmlPreviewDoc = (html) => '<style>html,body{overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
-        const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
-        const shell = (children) => (
-          // biome-ignore lint/a11y/noStaticElementInteractions: conditional role=button + onKeyDown are below; static analysis cannot see the dynamic role
-          <div ref={boxRef} onClick={onOpen} role={onOpen ? 'button' : undefined} tabIndex={onOpen ? 0 : undefined}
-            onKeyDown={(e) => { if (onOpen && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(); } }}
-            className={`h-[164px] m-2 rounded-[15px] overflow-hidden relative bg-[#111216] ring-1 ring-white/[0.045] ${onOpen ? 'cursor-pointer' : ''}`}>
-            {children}
-          </div>
-        );
-        if (pv.idle || pv.loading) return shell(
-          <div className="absolute inset-0 p-6">
-            <div className="h-[13px] w-[68%] rounded-full bg-white/15 animate-pulse mb-4"></div>
-            <div className="h-2 w-[88%] rounded-full bg-white/10 animate-pulse mb-2.5"></div>
-            <div className="h-2 w-[76%] rounded-full bg-white/10 animate-pulse mb-2.5"></div>
-            <div className="h-2 w-[54%] rounded-full bg-white/10 animate-pulse"></div>
-          </div>
-        );
-        if (pv.kind === 'image') return shell(<img src={pv.url} alt="" decoding="async" className="w-full h-full object-cover" />);
-        if (pv.kind === 'html') return shell(
-          <>
-            {!frameReady && <div className="absolute inset-0 bg-[#15171a]"></div>}
-            <iframe title={o.name} sandbox="allow-same-origin" scrolling="no" srcDoc={htmlPreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
-              className={`absolute inset-0 w-[200%] h-[200%] origin-top-left scale-50 bg-[#15171a] pointer-events-none border-0 transition-opacity duration-300 ${frameReady ? 'opacity-100' : 'opacity-0'}`}
-              style={{ colorScheme: 'dark' }} />
-          </>
-        );
-        if (pv.kind === 'officeHtml') return shell(
-          <>
-            {!frameReady && <div className="absolute inset-0 bg-white"></div>}
-            <iframe title={o.name} sandbox="allow-same-origin" scrolling="no" srcDoc={officePreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
-              className={`absolute inset-0 w-[200%] h-[200%] origin-top-left scale-50 bg-white pointer-events-none border-0 transition-opacity duration-300 ${frameReady ? 'opacity-100' : 'opacity-0'}`}
-              style={{ colorScheme: 'light' }} />
-          </>
-        );
-        if (pv.kind === 'text') {
-          const lines = String(pv.text || '').split(/\r?\n/).filter(Boolean).slice(0, 8);
-          return shell(
-            <div className="absolute inset-0 p-5 font-mono text-[11px] leading-relaxed text-[#9aa2ad] overflow-hidden">
-              <b className="block text-[#e7eaf0] text-[14px] mb-3 truncate"># {title}</b>
-              {lines.map((line, i) => <p key={i} className={`m-0 mb-1.5 truncate ${i % 2 ? 'text-[#6e747e]' : ''}`}>{line}</p>)}
-            </div>
-          );
-        }
-        const meta = outCatMeta(o.category);
-        const Icon = meta.icon || FileText;
-        return shell(
-          <div className="absolute inset-0 grid place-items-center" style={{ color: meta.color }}>
-            <div className="w-16 h-16 rounded-2xl grid place-items-center" style={{ background: meta.color + '24' }}><Icon size={30} /></div>
-          </div>
-        );
       };
 
       // ================= 文件管理 (L0) =================
@@ -841,11 +915,6 @@ function ModelProgressIndicator({ downloading, percent, label }) {
       }, [addMenu]);
       const chooseAdd = (kind) => { const src = addMenu && addMenu.src; setAddMenu(null); if (src === 'coll') doAdd(activeColl && activeColl.id, kind); else dzPick(kind); };
       const folderPickerAvailable = !!(bridge && bridge.files && bridge.files.pickFolders);
-      const StatusPill = ({ s }) => {
-        const map = { ready: ['●', t.kbStReady, 'text-[#18a957] dark:text-[#7DD3A8]'], indexing: ['◐', t.kbStIndexing, 'text-[#0B57D0] dark:text-[#A8C7FA]'], pending: ['○', t.kbStPending, 'text-[#c98a00] dark:text-[#E8C468]'] };
-        const v = map[s] || map.ready;
-        return <span className={`text-[12px] font-medium ${v[2]}`}>{v[0]} {v[1]}</span>;
-      };
       const docStatusLabel = (d) => d.parseStatus === 'parsed' ? `${d.nChunks} ${t.kbBlocks}` : (d.parseStatus === 'skipped' ? t.kbSkipped : (d.parseStatus === 'pending' ? t.kbStPending : d.parseStatus));
 
       return (
@@ -1059,30 +1128,6 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                     </div>
                   );
                   const sections = groupOutputs(activeOutputs).filter((x) => x.rows.length > 0);
-                  const OutputActions = ({ o, compact }) => (
-                    <div className={`flex items-center gap-1 ${compact ? 'justify-end' : 'mt-3'}`}>
-                      <button type="button" onClick={() => continueOutput(o)}
-                        className={`h-8 px-2.5 rounded-[9px] text-[13px] font-medium transition-colors active:opacity-70 text-[#007AFF] hover:bg-[#007AFF]/10 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/10`}>
-                        {t.kbOutContinue}
-                      </button>
-                      <button type="button" onClick={() => newOutputProject(o)}
-                        className={`h-8 px-2.5 rounded-[9px] text-[13px] font-medium transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#D1D1D6] dark:hover:bg-white/[0.08]`}>
-                        {t.kbOutNewProject}
-                      </button>
-                      {canOpenSystemFiles && (
-                        <button type="button" title={t.kbOutOpenFolder} onClick={() => openFolder(o.path)}
-                          className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
-                          <FolderOpen size={15} />
-                        </button>
-                      )}
-                      {isWeb && canDownloadArtifacts && bridge.artifacts.downloadArtifact && (
-                        <button type="button" title={t.uiKnowledge.downloadOutput} onClick={() => bridge.artifacts.downloadArtifact(o.path, o.sessionId || o.session_id)}
-                          className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
-                          <Download size={15} />
-                        </button>
-                      )}
-                    </div>
-                  );
                   return (
                     <div>
                       {outView === 'list' && (
@@ -1115,14 +1160,14 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                                 {rows.map((o) => (
                                     <article key={o.path} className={`group min-h-[286px] rounded-[22px] overflow-hidden border transition-all duration-200 bg-white border-black/[0.045] hover:border-black/[0.075] dark:bg-[#1C1C1E] dark:border-white/[0.055] dark:hover:bg-[#202124] dark:hover:border-white/[0.09]`}
                                       style={isDark ? { boxShadow: '0 14px 36px rgba(0,0,0,.24)' } : { boxShadow: '0 1px 2px rgba(0,0,0,.035), 0 10px 24px rgba(0,0,0,.05)' }}>{/* isDark dynamic-value: 保留 (multi-stop boxShadow) */}
-                                      <OutputLivePreview o={o} onOpen={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || o.session_id || null })} />
+                                      <OutputLivePreview o={o} onOpen={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || o.session_id || null })} outPreviewCache={outPreviewCache} runQueuedPreview={runQueuedPreview} rememberOutPreview={rememberOutPreview} outCatMeta={outCatMeta} />
                                       <div className="px-5 pb-4">
                                         <div className="flex items-start gap-3 pt-1">
                                           <div className={`text-[17px] leading-[23px] font-semibold flex-1 min-w-0 truncate ${ink}`} title={o.name}>{o.name}</div>
                                           <span className="h-6 min-w-[48px] px-2.5 rounded-full inline-flex items-center justify-center text-[11px] font-normal tracking-[0.02em] shrink-0 text-[#0066CC] dark:text-[#8DB7FF] bg-[rgba(0,122,255,.08)] dark:bg-[rgba(10,132,255,.10)]">{String(o.ext || '').toUpperCase().slice(0, 4)}</span>
                                         </div>
                                         <div className={`flex items-center gap-2 text-[13px] mt-2 text-[#6E6E73] dark:text-[#AEAEB2]`}><span>{fmtOutputDate(o.mtime)}</span><i className="w-1 h-1 rounded-full bg-current opacity-40"></i><span className="truncate">{o.source || t.kbSubOutput}</span></div>
-                                        <OutputActions o={o} />
+                                        <OutputActions o={o} t={t} continueOutput={continueOutput} newOutputProject={newOutputProject} openFolder={openFolder} canOpenSystemFiles={canOpenSystemFiles} canDownloadArtifacts={canDownloadArtifacts} />
                                       </div>
                                     </article>
                                   ))}
@@ -1448,7 +1493,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                           )}
                           <div className="flex items-center justify-between mt-4 pt-3 border-t border-gray-400/15">
                             <span className={`text-[12px] ${muted}`}><b className="text-[#54545f] dark:text-[#C4C7C5]">{c.docCount}</b> {t.kbDocs} · {fmtSize(c.totalBytes)}</span>
-                            <StatusPill s={c.status} />
+                            <StatusPill s={c.status} t={t} />
                           </div>
                         </div>
                       );})}

@@ -178,7 +178,7 @@ pub(super) fn code_session_sidecar_root(store_path: &Path) -> PathBuf {
     store_path
         .parent()
         .map(|parent| parent.join("sessions"))
-        .unwrap_or_else(|| crate::platform::paths::sessions_root())
+        .unwrap_or_else(crate::platform::paths::sessions_root)
 }
 
 /// 该 session 的原生代码会话 sidecar 路径。
@@ -1288,7 +1288,7 @@ mod tests {
         store
             .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
             .unwrap();
-        let sidecar = read_code_session_sidecar(&store.path(), "session-1")
+        let sidecar = read_code_session_sidecar(store.path(), "session-1")
             .expect("sidecar should exist after binding");
         assert_eq!(sidecar.workspace_kind, CodexWorkspaceKind::Project);
         assert_eq!(sidecar.workspace_path.as_deref(), Some(root.as_path()));

@@ -211,7 +211,7 @@ fn projected_worker_status(
 /// 故障伪装成"没有子智能体"，前端的"读取失败重试中"永远收不到）。
 ///
 /// `engine_epoch_ms`：父会话引擎的纪元时间戳，None = 引擎没起。非终态
-/// worker 的存活判定见 [`projected_worker_status`]。
+/// worker 的存活判定见 `projected_worker_status`。
 pub fn list(
     workspace: &Path,
     engine_epoch_ms: Option<u64>,

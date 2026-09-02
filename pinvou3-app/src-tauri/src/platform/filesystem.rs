@@ -222,10 +222,7 @@ pub(crate) fn recover_interrupted_replace(
             |_| {
                 Err(ReplaceError::new(
                     ReplaceState::RolledBack,
-                    io::Error::new(
-                        io::ErrorKind::Other,
-                        "interrupted replacement was rolled back",
-                    ),
+                    io::Error::other("interrupted replacement was rolled back"),
                 ))
             },
         );

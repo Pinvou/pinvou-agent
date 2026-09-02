@@ -397,7 +397,7 @@ mod tests {
     // 空包名(如 email_dependency_packages 返回 "")应被过滤,而非误传 brew。
     #[test]
     fn filters_empty_package_names() {
-        let err = install_dependencies(vec!["".into()], None).unwrap_err();
+        let err = install_dependencies(vec![String::new()], None).unwrap_err();
         assert_eq!(err, "没有需要安装的依赖");
     }
 

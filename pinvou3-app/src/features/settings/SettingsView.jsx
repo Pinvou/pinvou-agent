@@ -39,6 +39,172 @@ function visibleSortedModels(models) {
     .filter(model => model && model.id)];
 }
 
+/**
+ * Model record as passed down from the app shell (`bs.savedModels`) and read
+ * by the model selector / delete dialogs.
+ * @typedef {object} SettingsModelEntry
+ * @property {string} id - Stable model id.
+ * @property {string} [name] - Display name.
+ * @property {string} [model] - Wire model identifier.
+ * @property {string} [alias] - User-set alias.
+ * @property {string} [preset] - Provider preset key.
+ * @property {string} [base_url] - Provider endpoint base URL (vision probing).
+ * @property {boolean} [readonly] - Built-in models cannot be edited.
+ * @property {boolean} [system] - System models cannot be deleted.
+ */
+
+/**
+ * Memory list item from `bs.memory` (preferences / work context / focus /
+ * recent activity lists get their `kind` stamped in before rendering).
+ * @typedef {object} MemoryItem
+ * @property {string} id - Stable memory id.
+ * @property {string} kind - Memory list kind the item belongs to.
+ * @property {string} text - Memory body text.
+ * @property {string} [status] - Lifecycle status ('active' items are shown).
+ * @property {number} [confidence] - Confidence score; absent for auto memory.
+ * @property {string} [updated_at] - Last update ISO timestamp.
+ * @property {string} [created_at] - Creation ISO timestamp.
+ * @property {string} [last_seen_at] - Last seen ISO timestamp.
+ * @property {string} [last_used_at] - Last used ISO timestamp.
+ */
+
+/**
+ * Memory-card strings from `t.uiSettingsView`.
+ * @typedef {object} MemoryCardCopy
+ * @property {string} memoryTimeSaved - Copy when no timestamp exists.
+ * @property {string} memoryTimeToday - Copy for same-day updates.
+ * @property {(days: number) => string} memoryTimeDaysAgo - Copy N days back.
+ * @property {(month: number, day: number) => string} memoryTimeDate - Copy for older dates.
+ * @property {string} memorySource - Source line prefix.
+ * @property {string} memoryMoreActions - Overflow menu button title.
+ * @property {string} memoryArchive - Archive menu item label.
+ * @property {string} memoryConfidenceAuto - Confidence label: auto.
+ * @property {string} memoryConfidenceHigh - Confidence label: high.
+ * @property {string} memoryConfidenceMid - Confidence label: mid.
+ * @property {string} memoryConfidenceLow - Confidence label: low.
+ */
+
+/**
+ * Memory detail-dialog strings from `t.uiSettingsDetail`.
+ * @typedef {object} MemoryDetailCopy
+ * @property {{ current_focus: string, recent_activity: string, work_context: string, preference: string }} memoryTypes - Kind display names.
+ * @property {string} edit - Edit menu item label.
+ * @property {string} delete - Delete menu item label.
+ */
+
+// Stable default: avoid creating a fresh array literal on every render (react/no-unstable-default-props).
+/** @type {SettingsModelEntry[]} */
+const EMPTY_MODELS = [];
+const DEFAULT_ENABLED_SEARCH_PROVIDERS = ['bing'];
+
+// Shared style constants and Memory hub helpers: hoisted to module scope so the row component type
+// stays stable, avoiding per-render MemoryRow rebuilds that remount subtrees.
+const subText = 'text-[#444746] dark:text-[#C4C7C5]';
+const faintText = 'text-[#6B7280] dark:text-[#8F969E]';
+const border = 'border-[#DDE3EA] dark:border-[#333537]';
+const cardBg = 'bg-white border-[#DDE3EA] dark:bg-[#17191D] dark:border-white/[0.08]';
+const panelBg = 'bg-[#F8FAFD] text-[#1F1F1F] dark:bg-[#1F2023] dark:text-[#E8EAED]';
+const inputBg = 'bg-white border-[#DDE3EA] text-[#1F1F1F] placeholder:text-[#8A9099] dark:bg-[#131314] dark:border-[#3C4043] dark:text-[#E8EAED] dark:placeholder:text-[#777D86]';
+const ghostBtn = 'bg-[#E1E5EA] text-[#1F1F1F] hover:bg-[#D3D9E0] dark:bg-white/[0.07] dark:text-[#E3E3E3] dark:hover:bg-white/[0.11]';
+const dangerBtn = 'text-[#C5221F] hover:bg-[#FCE8E6] dark:text-[#F28B82] dark:hover:bg-[#3A2425]';
+const primaryBtn = 'bg-[#0B57D0] text-white hover:bg-[#1967D2] dark:bg-[#A8C7FA] dark:text-[#041E49] dark:hover:bg-[#C2D7FB]';
+const selectedTab = 'bg-[#E8F0FE] border-[#B8D1FF] text-[#0B57D0] dark:bg-[rgba(43,119,255,0.16)] dark:border-[rgba(70,145,255,0.35)] dark:text-[#D8E8FF]';
+/**
+ * @param {string} kind - Memory item kind.
+ * @param {MemoryDetailCopy} detailCopy - Localized settings detail copy.
+ */
+const memoryTypeLabel = (kind, detailCopy) => kind === 'current_focus' ? detailCopy.memoryTypes.current_focus
+  : kind === 'recent_activity' ? detailCopy.memoryTypes.recent_activity
+  : kind === 'work_context' ? detailCopy.memoryTypes.work_context
+  : detailCopy.memoryTypes.preference;
+/** @param {string} kind - Memory item kind. */
+const memoryTypeTone = kind => kind === 'work_context' ? 'text-[#8AB4F8] bg-[#1A73E8]/[0.13]'
+  : kind === 'current_focus' ? 'text-[#FDD663] bg-[#FDD663]/[0.12]'
+  : kind === 'recent_activity' ? 'text-[#81C995] bg-[#34A853]/[0.12]'
+  : kind === 'profile' ? 'text-[#C58AF9] bg-[#A142F4]/[0.12]'
+  : 'text-[#A8C7FA] bg-[#A8C7FA]/[0.12]';
+/**
+ * @param {MemoryItem} item - Memory item with timestamps.
+ * @param {MemoryCardCopy} copy - Localized memory card copy.
+ */
+const formatMemoryTime = (item, copy) => {
+  const raw = item.updated_at || item.created_at || item.last_seen_at || item.last_used_at;
+  if (!raw) return copy.memoryTimeSaved;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return copy.memoryTimeSaved;
+  const diff = Date.now() - date.getTime();
+  const day = 24 * 60 * 60 * 1000;
+  if (diff >= 0 && diff < day) return copy.memoryTimeToday;
+  if (diff >= day && diff < 7 * day) return copy.memoryTimeDaysAgo(Math.floor(diff / day));
+  return copy.memoryTimeDate(date.getMonth() + 1, date.getDate());
+};
+/**
+ * @param {MemoryItem} item - Memory item with a confidence score.
+ * @param {MemoryCardCopy} copy - Localized memory card copy.
+ */
+const confidenceText = (item, copy) => {
+  const n = Number(item.confidence);
+  if (!Number.isFinite(n)) return copy.memoryConfidenceAuto;
+  if (n >= 0.85) return copy.memoryConfidenceHigh;
+  if (n >= 0.65) return copy.memoryConfidenceMid;
+  return copy.memoryConfidenceLow;
+};
+/**
+ * @param {{
+ *   item: MemoryItem, copy: MemoryCardCopy, detailCopy: MemoryDetailCopy,
+ *   menuFor: string | null, setMenuFor: (next: string | null) => void,
+ *   startEdit: (item: MemoryItem) => void, archiveItem: (item: MemoryItem) => void,
+ *   deleteItem: (item: MemoryItem) => void,
+ * }} props - Memory item and the card callbacks it closes over.
+ */
+const MemoryRow = ({ item, copy, detailCopy, menuFor, setMenuFor, startEdit, archiveItem, deleteItem }) => {
+  // Select the imported icon component directly by kind (no factory function, keeping the component statically identifiable).
+  const Icon = item.kind === 'current_focus' ? Lightbulb
+    : item.kind === 'recent_activity' ? RefreshCw
+    : item.kind === 'work_context' ? Briefcase
+    : item.kind === 'profile' ? User
+    : Sparkles;
+  const rowKey = `${item.kind}:${item.id}`;
+  return (
+    <div className={`group relative rounded-2xl border px-4 py-4 ${cardBg} shadow-[0_12px_34px_rgba(0,0,0,0.16)]`}>
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 mb-3">
+            <span className={`w-7 h-7 rounded-full flex items-center justify-center ${memoryTypeTone(item.kind)}`}><Icon size={14} /></span>
+            <span className="text-[13px] font-medium">{memoryTypeLabel(item.kind, detailCopy)}</span>
+            <span className={`ml-auto text-[11px] ${faintText}`}>{formatMemoryTime(item, copy)}</span>
+          </div>
+          <div className="text-[14px] leading-relaxed break-words">{item.text}</div>
+          <div className={`mt-3 text-[12px] ${faintText}`}>
+            {copy.memorySource} · {confidenceText(item, copy)}
+          </div>
+        </div>
+        <button type="button"
+          title={copy.memoryMoreActions}
+          onClick={(e) => {
+            e.stopPropagation();
+            setMenuFor(menuFor === rowKey ? null : rowKey);
+          }}
+          className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-colors text-[#5F6368] hover:bg-black/[0.06] dark:text-[#AEB4BC] dark:hover:bg-white/[0.08] dark:hover:text-[#F2F3F5]`}
+        >
+          <MoreHorizontal size={17} />
+        </button>
+      </div>
+      {menuFor === rowKey && (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard path handled by the real buttons inside the menu
+        // biome-ignore lint/a11y/noStaticElementInteractions: menu positioning container; menu items are real buttons
+        <div onClick={(e) => e.stopPropagation()} className={`absolute right-4 top-12 z-10 min-w-[118px] rounded-xl border ${border} bg-white text-[#1F1F1F] dark:bg-[#24262B] dark:text-[#E8EAED] shadow-2xl overflow-hidden`}>
+          <button type="button" onClick={() => startEdit(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] hover:bg-black/[0.04] dark:hover:bg-white/[0.07]`}><Edit2 size={14} />{detailCopy.edit}</button>
+          {(item.kind === 'current_focus' || item.kind === 'recent_activity') && (
+            <button type="button" onClick={() => archiveItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] hover:bg-black/[0.04] dark:hover:bg-white/[0.07]`}><Archive size={14} />{copy.memoryArchive}</button>
+          )}
+          <button type="button" onClick={() => deleteItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${dangerBtn}`}><Trash2 size={14} />{detailCopy.delete}</button>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const SCard = React.forwardRef( // eslint-disable-line react/display-name -- forwardRef display component; no display-name debugging need
   ({ title, titleAdornment, children, id, style }, ref) => (
       <section ref={ref} id={id} style={style} className={`rounded-[24px] p-6 bg-[#F0F4F9] dark:bg-[#1E1F20]`}>
@@ -110,23 +276,13 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const [open, setOpen] = useState(false);
       const [tab, setTab] = useState('long_term');
       const [query, setQuery] = useState('');
-      const [menuFor, setMenuFor] = useState(null);
+      const [menuFor, setMenuFor] = useState(/** @type {string | null} */ (null));
       const [draft, setDraft] = useState({
         call_name: identity.call_name || '',
         assistant_alias: identity.assistant_alias || '',
       });
       const [editing, setEditing] = useState(null);
       const [saving, setSaving] = useState(false);
-      const subText = 'text-[#444746] dark:text-[#C4C7C5]';
-      const faintText = 'text-[#6B7280] dark:text-[#8F969E]';
-      const border = 'border-[#DDE3EA] dark:border-[#333537]';
-      const cardBg = 'bg-white border-[#DDE3EA] dark:bg-[#17191D] dark:border-white/[0.08]';
-      const panelBg = 'bg-[#F8FAFD] text-[#1F1F1F] dark:bg-[#1F2023] dark:text-[#E8EAED]';
-      const inputBg = 'bg-white border-[#DDE3EA] text-[#1F1F1F] placeholder:text-[#8A9099] dark:bg-[#131314] dark:border-[#3C4043] dark:text-[#E8EAED] dark:placeholder:text-[#777D86]';
-      const ghostBtn = 'bg-[#E1E5EA] text-[#1F1F1F] hover:bg-[#D3D9E0] dark:bg-white/[0.07] dark:text-[#E3E3E3] dark:hover:bg-white/[0.11]';
-      const dangerBtn = 'text-[#C5221F] hover:bg-[#FCE8E6] dark:text-[#F28B82] dark:hover:bg-[#3A2425]';
-      const primaryBtn = 'bg-[#0B57D0] text-white hover:bg-[#1967D2] dark:bg-[#A8C7FA] dark:text-[#041E49] dark:hover:bg-[#C2D7FB]';
-      const selectedTab = 'bg-[#E8F0FE] border-[#B8D1FF] text-[#0B57D0] dark:bg-[rgba(43,119,255,0.16)] dark:border-[rgba(70,145,255,0.35)] dark:text-[#D8E8FF]';
       const profileCount = (identity.call_name ? 1 : 0) + (identity.assistant_alias ? 1 : 0);
       const profileSummary = [
         identity.call_name ? copy.profileCallName(identity.call_name) : '',
@@ -148,20 +304,6 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         { key: 'recent', label: copy.memoryTabRecent, count: recentCount, icon: RefreshCw },
       ];
       const tabMeta = tabs.find(x => x.key === tab) || tabs[0];
-      const memoryTypeLabel = kind => kind === 'current_focus' ? detailCopy.memoryTypes.current_focus
-        : kind === 'recent_activity' ? detailCopy.memoryTypes.recent_activity
-        : kind === 'work_context' ? detailCopy.memoryTypes.work_context
-        : detailCopy.memoryTypes.preference;
-      const memoryTypeIcon = kind => kind === 'current_focus' ? Lightbulb
-        : kind === 'recent_activity' ? RefreshCw
-        : kind === 'work_context' ? Briefcase
-        : kind === 'profile' ? User
-        : Sparkles;
-      const memoryTypeTone = kind => kind === 'work_context' ? 'text-[#8AB4F8] bg-[#1A73E8]/[0.13]'
-        : kind === 'current_focus' ? 'text-[#FDD663] bg-[#FDD663]/[0.12]'
-        : kind === 'recent_activity' ? 'text-[#81C995] bg-[#34A853]/[0.12]'
-        : kind === 'profile' ? 'text-[#C58AF9] bg-[#A142F4]/[0.12]'
-        : 'text-[#A8C7FA] bg-[#A8C7FA]/[0.12]';
       const normalizedQuery = query.trim().toLowerCase();
       const searchMatch = text => !normalizedQuery || String(text || '').toLowerCase().includes(normalizedQuery);
 
@@ -227,68 +369,6 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       };
       const activeList = tab === 'recent' ? recentItems : longTermItems;
       const filteredList = activeList.filter(item => searchMatch(item.text || item.content));
-
-      const formatMemoryTime = item => {
-        const raw = item.updated_at || item.created_at || item.last_seen_at || item.last_used_at;
-        if (!raw) return copy.memoryTimeSaved;
-        const date = new Date(raw);
-        if (Number.isNaN(date.getTime())) return copy.memoryTimeSaved;
-        const diff = Date.now() - date.getTime();
-        const day = 24 * 60 * 60 * 1000;
-        if (diff >= 0 && diff < day) return copy.memoryTimeToday;
-        if (diff >= day && diff < 7 * day) return copy.memoryTimeDaysAgo(Math.floor(diff / day));
-        return copy.memoryTimeDate(date.getMonth() + 1, date.getDate());
-      };
-      const confidenceText = item => {
-        const n = Number(item.confidence);
-        if (!Number.isFinite(n)) return copy.memoryConfidenceAuto;
-        if (n >= 0.85) return copy.memoryConfidenceHigh;
-        if (n >= 0.65) return copy.memoryConfidenceMid;
-        return copy.memoryConfidenceLow;
-      };
-
-      const MemoryRow = ({ item }) => {
-        const Icon = memoryTypeIcon(item.kind);
-        const rowKey = `${item.kind}:${item.id}`;
-        return (
-          <div className={`group relative rounded-2xl border px-4 py-4 ${cardBg} shadow-[0_12px_34px_rgba(0,0,0,0.16)]`}>
-            <div className="flex items-start justify-between gap-4">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 mb-3">
-                  <span className={`w-7 h-7 rounded-full flex items-center justify-center ${memoryTypeTone(item.kind)}`}><Icon size={14} /></span>
-                  <span className="text-[13px] font-medium">{memoryTypeLabel(item.kind)}</span>
-                  <span className={`ml-auto text-[11px] ${faintText}`}>{formatMemoryTime(item)}</span>
-                </div>
-                <div className="text-[14px] leading-relaxed break-words">{item.text}</div>
-                <div className={`mt-3 text-[12px] ${faintText}`}>
-                  {copy.memorySource} · {confidenceText(item)}
-                </div>
-              </div>
-              <button type="button"
-                title={copy.memoryMoreActions}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setMenuFor(menuFor === rowKey ? null : rowKey);
-                }}
-                className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-colors text-[#5F6368] hover:bg-black/[0.06] dark:text-[#AEB4BC] dark:hover:bg-white/[0.08] dark:hover:text-[#F2F3F5]`}
-              >
-                <MoreHorizontal size={17} />
-              </button>
-            </div>
-            {menuFor === rowKey && (
-              // biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard path handled by the real buttons inside the menu
-              // biome-ignore lint/a11y/noStaticElementInteractions: menu positioning container; menu items are real buttons
-              <div onClick={(e) => e.stopPropagation()} className={`absolute right-4 top-12 z-10 min-w-[118px] rounded-xl border ${border} bg-white text-[#1F1F1F] dark:bg-[#24262B] dark:text-[#E8EAED] shadow-2xl overflow-hidden`}>
-                <button type="button" onClick={() => startEdit(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] hover:bg-black/[0.04] dark:hover:bg-white/[0.07]`}><Edit2 size={14} />{detailCopy.edit}</button>
-                {(item.kind === 'current_focus' || item.kind === 'recent_activity') && (
-                  <button type="button" onClick={() => archiveItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] hover:bg-black/[0.04] dark:hover:bg-white/[0.07]`}><Archive size={14} />{copy.memoryArchive}</button>
-                )}
-                <button type="button" onClick={() => deleteItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${dangerBtn}`}><Trash2 size={14} />{detailCopy.delete}</button>
-              </div>
-            )}
-          </div>
-        );
-      };
 
       return (
         <>
@@ -388,7 +468,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                         {filteredList.length === 0 ? (
                           <div className={`text-[13px] ${subText}`}>{query.trim() ? copy.memoryNoMatchLongTerm : copy.memoryEmptyLongTerm}</div>
                         ) : (
-                          <div className="space-y-3">{filteredList.map(item => <MemoryRow key={`${item.kind}:${item.id}`} item={item} />)}</div>
+                          <div className="space-y-3">{filteredList.map(item => <MemoryRow key={`${item.kind}:${item.id}`} item={item} copy={copy} detailCopy={detailCopy} menuFor={menuFor} setMenuFor={setMenuFor} startEdit={startEdit} archiveItem={archiveItem} deleteItem={deleteItem} />)}</div>
                         )}
                         <div className={`rounded-2xl border px-4 py-3 bg-white/70 border-[#DDE3EA] dark:bg-white/[0.03] dark:border-white/[0.06]`}>
                           <div className={`text-[12px] leading-relaxed ${faintText}`}>{copy.memoryLongTermHint}</div>
@@ -398,7 +478,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                       <div className={`text-[13px] ${subText}`}>{query.trim() ? copy.memoryNoMatchRecent : copy.memoryEmptyRecent}</div>
                     ) : (
                       <div className="space-y-3">
-                        {filteredList.map(item => <MemoryRow key={`${item.kind}:${item.id}`} item={item} />)}
+                        {filteredList.map(item => <MemoryRow key={`${item.kind}:${item.id}`} item={item} copy={copy} detailCopy={detailCopy} menuFor={menuFor} setMenuFor={setMenuFor} startEdit={startEdit} archiveItem={archiveItem} deleteItem={deleteItem} />)}
                         <div className={`rounded-2xl border px-4 py-3 bg-white/70 border-[#DDE3EA] dark:bg-white/[0.03] dark:border-white/[0.06]`}>
                           <div className={`text-[12px] leading-relaxed ${faintText}`}>{copy.memoryRecentHint}</div>
                         </div>
@@ -418,7 +498,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
               <div className={`relative w-full max-w-[560px] rounded-[18px] border ${border} ${panelBg} p-5 shadow-2xl`}>
                 <div className="flex items-center justify-between gap-3 mb-4">
                   <div>
-                    <div className="text-[16px] font-semibold">{detailCopy.editTitle(memoryTypeLabel(editing.kind))}</div>
+                    <div className="text-[16px] font-semibold">{detailCopy.editTitle(memoryTypeLabel(editing.kind, detailCopy))}</div>
                     <div className={`text-[12px] mt-1 ${subText}`}>{copy.memoryEditDesc}</div>
                   </div>
                   <button type="button" onClick={() => setEditing(null)} className={`w-8 h-8 rounded-full flex items-center justify-center ${ghostBtn}`}><X size={15} /></button>
@@ -618,7 +698,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
 
     // 添加/编辑模型模态弹窗。
       // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
-    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs, models = [] }) => {
+    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs, models = EMPTY_MODELS }) => {
       const settingsCopy = t.uiSettingsDetail;
       const localVllmSupported = !!(bs.platformCapabilities && bs.platformCapabilities.localVllmSupported);
       const modelScope = initial.__scope || (initial.preset === 'local_vllm' ? 'local' : 'cloud');
@@ -1798,8 +1878,198 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       );
     };
 
+    // ==========================================
+    // Settings subcomponents (module scope: types stay stable across renders, avoiding subtree remounts)
+    // ==========================================
+    /** @param {{ title?: string, children: import('react').ReactNode, footer?: string }} props - Section chrome. */
+    const IOSSection = ({ title, children, footer }) => (
+      <section className="mb-6">
+        {title && <div className={`px-3 mb-2 text-[12px] font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`}>{title}</div>}
+        <div className={`overflow-hidden rounded-[18px] bg-white dark:bg-[#2C2C2E]`}>{children}</div>
+        {footer && <div className={`px-3 mt-2 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]`}>{footer}</div>}
+      </section>
+    );
+    /** @param {{ label: string, desc?: string, value?: string, children?: import('react').ReactNode, onClick?: () => void, danger?: boolean }} props - Row content and optional click behavior. */
+    const IOSRow = ({ label, desc, value, children, onClick, danger }) => {
+      const RowTag = onClick ? 'button' : 'div';
+      return (
+      <RowTag
+        type={onClick ? 'button' : undefined}
+        onClick={onClick}
+        className={`w-full min-h-[58px] flex flex-wrap items-center gap-3 px-4 py-2.5 text-left border-b last:border-b-0 max-sm:flex-col max-sm:items-stretch ${
+          'border-black/[0.12] text-[#1C1C1E] dark:border-white/[0.10] dark:text-[#F2F2F7]'
+        } ${onClick ? ('hover:bg-black/[0.035] dark:hover:bg-white/[0.05]') : ''}`}
+      >
+        <div className="flex-1 min-w-[120px] max-sm:min-w-0">
+          <div className={`text-[15px] leading-5 font-normal whitespace-nowrap ${danger ? 'text-[#FF3B30]' : ''}`}>{label}</div>
+          {desc && <div className={`mt-0.5 text-[13px] leading-5 text-[#8A8A8E] dark:text-[#98989D]`}>{desc}</div>}
+        </div>
+        {value && <div className={`text-[14px] shrink-0 text-[#8A8A8E] dark:text-[#98989D]`}>{value}</div>}
+        {children}
+      </RowTag>
+      );
+    };
+    /** @param {{ checked: boolean, onChange: (checked: boolean) => void }} props - Switch state. */
+    const IOSSwitch = ({ checked, onChange }) => <Toggle checked={checked} onChange={onChange} size="md" />;
+    /** @param {{ id: string, icon: import('react').ReactNode, label: string, dot?: boolean, active: boolean, onSelect: (id: string) => void }} props - Sidebar section entry. */
+    const SectionButton = ({ id, icon, label, dot, active, onSelect }) => (
+      <button
+        type="button"
+        data-testid={`settings-section-${id}`}
+        onClick={() => onSelect(id)}
+        className={`w-full h-10 px-3 rounded-[14px] flex items-center gap-2.5 text-[14px] transition-colors max-sm:w-auto max-sm:shrink-0 ${
+          active
+            ? ('bg-[#D8EAFE] text-[#007AFF] dark:bg-[#173A5E] dark:text-[#64B5F6]')
+            : ('text-[#1C1C1E] hover:bg-black/[0.04] dark:text-[#F2F2F7] dark:hover:bg-white/[0.06]')
+        }`}
+      >
+        <span className={`w-7 h-7 rounded-[9px] flex items-center justify-center ${active ? 'bg-[#007AFF]/10' : ('bg-black/[0.05] dark:bg-white/[0.08]')}`}>{icon}</span>
+        <span className="font-semibold truncate">{label}</span>
+        {dot && <span className="ml-auto w-2.5 h-2.5 rounded-full bg-[#FF3B30]" />}
+      </button>
+    );
+    /** @param {{ children: import('react').ReactNode }} props - Grouped rows. */
+    const Group = ({ children }) => (
+      <div className={`overflow-hidden rounded-[18px] border bg-white border-black/[0.03] dark:bg-[#2C2C2E] dark:border-white/[0.04]`}>{children}</div>
+    );
+    /** @param {{ children: import('react').ReactNode }} props - Small section heading. */
+    const SectionTitle = ({ children }) => (
+      <div className={`px-3 mb-2 text-[12px] leading-4 font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`}>{children}</div>
+    );
+    /** @param {{ active: boolean }} props - Selection state. */
+    const RadioDot = ({ active }) => (
+      <span className={`block w-5 h-5 rounded-full border-[3px] ${active ? 'border-[#007AFF]' : ('border-[#AEAEB2] dark:border-[#636366]')}`}>
+        {active && <span className="block w-2 h-2 rounded-full bg-[#007AFF] mx-auto mt-[3px]" />}
+      </span>
+    );
+    /** @param {{ children: import('react').ReactNode, tone?: string }} props - Inline status chip. */
+    const Tag = ({ children, tone = 'green' }) => (
+      <span className={`shrink-0 text-[12px] px-2 py-0.5 rounded-md ${
+        tone === 'gray'
+          ? ('bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]')
+          : 'bg-[#34C759]/15 text-[#248A3D]'
+      }`}>{children}</span>
+    );
+    /**
+     * @param {{
+     *   provider: string, isNew: boolean, onClose: () => void, searchOptions: { key: string, label: string, desc: string }[],
+     *   searchHasKey: (provider: string) => boolean,
+     *   settingsCopy: { editSearch: string, apiKeyPlaceholder: string, show: string, hide: string, save: string, cancel: string },
+     *   onAddSearchProvider?: (provider: string) => void, setSearchApiKey: (key: string, provider: string) => void,
+     *   setRestartDialog: (next: string | null) => void,
+     * }} props - Search-source editor modal state and actions.
+     */
+    const SearchSourceModal = ({ provider, isNew, onClose, searchOptions, searchHasKey, settingsCopy, onAddSearchProvider, setSearchApiKey, setRestartDialog }) => {
+      const option = searchOptions.find(x => x.key === provider);
+      const [showSearchKey, setShowSearchKey] = useState(false);
+      const [draftKey, setDraftKey] = useState('');
+      const hasSavedKey = searchHasKey(provider);
+      const canSaveSearch = (provider === 'bing' && isNew) || !!String(draftKey || '').trim();
+      useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the in-progress draft when switching search providers while the modal is open; controlled mirror of the provider prop
+        setDraftKey('');
+        setShowSearchKey(false);
+      }, [provider]);
+      return (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the close button at the modal top-right
+        // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onClose}>
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
+          <div onClick={e => e.stopPropagation()}
+            className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
+            <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b border-black/[0.10] dark:border-white/[0.10]`}>
+              <div>
+                <h2 className="text-[20px] leading-6 font-semibold">{settingsCopy.editSearch}</h2>
+                <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{option ? option.label : provider}</p>
+              </div>
+              <button type="button" onClick={onClose} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}><X size={18} /></button>
+            </div>
+            <div className="space-y-4 px-5 py-4">
+              <section>
+                <div className={`overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`}>
+                  <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>
+                  {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
+                  <label className="shrink-0 text-[14px] leading-5">API Key</label>
+                  <input type="text" value={draftKey} onChange={e => setDraftKey(e.target.value)}
+                    // biome-ignore lint/a11y/noAutofocus: the edit-search-source modal focuses the key input on open; focus is the input intent
+                    autoFocus
+                    placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
+                    style={showSearchKey ? undefined : { WebkitTextSecurity: 'disc' }}
+                    className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none placeholder:text-[#8A8A8E] dark:placeholder:text-[#636366]`} />
+                  <button type="button" onClick={() => setShowSearchKey(v => !v)} className="shrink-0 text-[14px] text-[#007AFF]">{showSearchKey ? settingsCopy.hide : settingsCopy.show}</button>
+                  </div>
+                </div>
+              </section>
+            </div>
+            <div className={`flex justify-end gap-2 px-5 py-4 border-t border-black/[0.10] dark:border-white/[0.10]`}>
+              <button type="button" onClick={onClose} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/[0.04] dark:text-[#0A84FF] dark:hover:bg-white/[0.06]`}>{settingsCopy.cancel}</button>
+              <button type="button" onClick={() => {
+                if (!canSaveSearch) return;
+                if (isNew) onAddSearchProvider && onAddSearchProvider(provider);
+                if (draftKey.trim()) setSearchApiKey(draftKey, provider);
+                onClose();
+                setRestartDialog('search');
+              }} disabled={!canSaveSearch} className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">{settingsCopy.save}</button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+    /** @param {{ type: string, settingsCopy: { restartSearchTitle: string, restartLanguageTitle: string, restartSearchDesc: string, restartLanguageDesc: string, later: string, restartNow: string }, onSaveSearchConfig?: () => unknown, onConfirmSearchConfig: () => unknown, setRestartDialog: (next: string | null) => void }} props - Restart prompt state and actions. */
+    const RestartDialog = ({ type, settingsCopy, onSaveSearchConfig, onConfirmSearchConfig, setRestartDialog }) => (
+      <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
+        <div className={`w-[340px] overflow-hidden rounded-[18px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
+          <div className="px-6 pt-6 pb-5 text-center">
+            <h3 className="text-[18px] font-semibold">{type === 'search' ? settingsCopy.restartSearchTitle : settingsCopy.restartLanguageTitle}</h3>
+            <p className={`mt-2 text-[14px] leading-5 text-[#8A8A8E] dark:text-[#98989D]`}>{type === 'search' ? settingsCopy.restartSearchDesc : settingsCopy.restartLanguageDesc}</p>
+          </div>
+          <div className={`grid grid-cols-2 border-t border-black/[0.12] dark:border-white/[0.12]`}>
+            <button type="button" onClick={async () => {
+              if (type === 'search' && onSaveSearchConfig) {
+                const saved = await onSaveSearchConfig();
+                if (saved === false) return;
+              }
+              setRestartDialog(null);
+            }} className={`h-12 text-[17px] font-semibold border-r border-black/[0.12] text-[#007AFF] dark:border-white/[0.12] dark:text-[#0A84FF]`}>{settingsCopy.later}</button>
+            <button type="button" onClick={() => { setRestartDialog(null); type === 'search' ? onConfirmSearchConfig() : (bridge.available && bridge.updater.restartApp()); }} className="h-12 text-[17px] font-semibold text-[#007AFF]">{settingsCopy.restartNow}</button>
+          </div>
+        </div>
+      </div>
+    );
+    /** @param {{ model: SettingsModelEntry, settingsCopy: { deleteModelTitle: string, deleteModelDesc: string, deleteModel: string, cancel: string }, onDeleteModel: (model: SettingsModelEntry) => void, setModelDeleteConfirm: (next: SettingsModelEntry | null) => void }} props - Delete-model confirm state and actions. */
+    const ModelDeleteDialog = ({ model, settingsCopy, onDeleteModel, setModelDeleteConfirm }) => (
+      <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
+        <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
+          <div className="px-5 pt-5 pb-4 text-center">
+            <h3 className="text-[17px] leading-6 font-semibold">{settingsCopy.deleteModelTitle}</h3>
+            <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{settingsCopy.deleteModelDesc}</p>
+          </div>
+          <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
+            <button type="button" onClick={() => { onDeleteModel(model); setModelDeleteConfirm(null); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{settingsCopy.deleteModel}</button>
+            <button type="button" onClick={() => setModelDeleteConfirm(null)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{settingsCopy.cancel}</button>
+          </div>
+        </div>
+      </div>
+    );
+    /** @param {{ source: { key: string, label: string }, settingsCopy: { deleteSearchTitle: string, deleteSearchDesc: (label: string) => string, deleteSearch: string, cancel: string }, onDeleteSearchProvider?: (key: string) => void, setSearchDeleteConfirm: (next: { key: string, label: string } | null) => void, setRestartDialog: (next: string | null) => void }} props - Delete-search confirm state and actions. */
+    const SearchDeleteDialog = ({ source, settingsCopy, onDeleteSearchProvider, setSearchDeleteConfirm, setRestartDialog }) => (
+      <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
+        <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
+          <div className="px-5 pt-5 pb-4 text-center">
+            <h3 className="text-[17px] leading-6 font-semibold">{settingsCopy.deleteSearchTitle}</h3>
+            <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{settingsCopy.deleteSearchDesc(source.label)}</p>
+          </div>
+          <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
+            <button type="button" onClick={() => { onDeleteSearchProvider && onDeleteSearchProvider(source.key); setSearchDeleteConfirm(null); setRestartDialog('search'); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{settingsCopy.deleteSearch}</button>
+            <button type="button" onClick={() => setSearchDeleteConfirm(null)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{settingsCopy.cancel}</button>
+          </div>
+        </div>
+      </div>
+    );
+
     // eslint-disable-next-line no-unused-vars, sonarjs/cognitive-complexity -- contract slot parameters kept; the settings page aggregates many form branches, splitting needs a dedicated design
-    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = ['bing'], onAddSearchProvider, onDeleteSearchProvider, _searchApiKey, setSearchApiKey, _searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, _searchNeedsRestart, _languageNeedsRestart, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
+    const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = DEFAULT_ENABLED_SEARCH_PROVIDERS, onAddSearchProvider, onDeleteSearchProvider, _searchApiKey, setSearchApiKey, _searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, _searchNeedsRestart, _languageNeedsRestart, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
       const settingsCopy = t.uiSettingsDetail;
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showSuperPermissionSettings = !!platformCapabilities.showSuperPermissionSettings;
@@ -1819,12 +2089,12 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const acpProvidersTabVisible = !!platformCapabilities.codexAcpSupported;
       const canPickHostFiles = can('hostFilePicker');
       const [editingModel, setEditingModel] = useState(null);
-      const [modelDeleteConfirm, setModelDeleteConfirm] = useState(null);
+      const [modelDeleteConfirm, setModelDeleteConfirm] = useState(/** @type {SettingsModelEntry | null} */ (null));
       const [editingSearch, setEditingSearch] = useState(null);
       const [pendingSearchProvider, setPendingSearchProvider] = useState(null);
-      const [searchDeleteConfirm, setSearchDeleteConfirm] = useState(null);
+      const [searchDeleteConfirm, setSearchDeleteConfirm] = useState(/** @type {{ key: string, label: string } | null} */ (null));
       const [searchPickerOpen, setSearchPickerOpen] = useState(false);
-      const [restartDialog, setRestartDialog] = useState(null);
+      const [restartDialog, setRestartDialog] = useState(/** @type {string | null} */ (null));
       const modelEnvLocked = (bs && bs.effectiveModelConfig && bs.effectiveModelConfig.env_overrides) || [];
       const [feedbackOpen, setFeedbackOpen] = useState(false);
       const [feedbackDraft, setFeedbackDraft] = useState({ type: 'issue', title: '', description: '', attachments: [] });
@@ -1956,72 +2226,11 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         };
       // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: completing it would cause duplicate requests or polling loops
       }, []);
-      const IOSSection = ({ title, children, footer }) => (
-        <section className="mb-6">
-          {title && <div className={`px-3 mb-2 text-[12px] font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`}>{title}</div>}
-          <div className={`overflow-hidden rounded-[18px] bg-white dark:bg-[#2C2C2E]`}>{children}</div>
-          {footer && <div className={`px-3 mt-2 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]`}>{footer}</div>}
-        </section>
-      );
-      const IOSRow = ({ label, desc, value, children, onClick, danger }) => {
-        const RowTag = onClick ? 'button' : 'div';
-        return (
-        <RowTag
-          type={onClick ? 'button' : undefined}
-          onClick={onClick}
-          className={`w-full min-h-[58px] flex flex-wrap items-center gap-3 px-4 py-2.5 text-left border-b last:border-b-0 max-sm:flex-col max-sm:items-stretch ${
-            'border-black/[0.12] text-[#1C1C1E] dark:border-white/[0.10] dark:text-[#F2F2F7]'
-          } ${onClick ? ('hover:bg-black/[0.035] dark:hover:bg-white/[0.05]') : ''}`}
-        >
-          <div className="flex-1 min-w-[120px] max-sm:min-w-0">
-            <div className={`text-[15px] leading-5 font-normal whitespace-nowrap ${danger ? 'text-[#FF3B30]' : ''}`}>{label}</div>
-            {desc && <div className={`mt-0.5 text-[13px] leading-5 text-[#8A8A8E] dark:text-[#98989D]`}>{desc}</div>}
-          </div>
-          {value && <div className={`text-[14px] shrink-0 text-[#8A8A8E] dark:text-[#98989D]`}>{value}</div>}
-          {children}
-        </RowTag>
-        );
-      };
-      const IOSSwitch = ({ checked, onChange }) => <Toggle checked={checked} onChange={onChange} size="md" />;
-      const SectionButton = ({ id, icon, label, dot }) => (
-        <button
-          type="button"
-          data-testid={`settings-section-${id}`}
-          onClick={() => setActiveSection(id)}
-          className={`w-full h-10 px-3 rounded-[14px] flex items-center gap-2.5 text-[14px] transition-colors max-sm:w-auto max-sm:shrink-0 ${
-            activeSection === id
-              ? ('bg-[#D8EAFE] text-[#007AFF] dark:bg-[#173A5E] dark:text-[#64B5F6]')
-              : ('text-[#1C1C1E] hover:bg-black/[0.04] dark:text-[#F2F2F7] dark:hover:bg-white/[0.06]')
-          }`}
-        >
-          <span className={`w-7 h-7 rounded-[9px] flex items-center justify-center ${activeSection === id ? 'bg-[#007AFF]/10' : ('bg-black/[0.05] dark:bg-white/[0.08]')}`}>{icon}</span>
-          <span className="font-semibold truncate">{label}</span>
-          {dot && <span className="ml-auto w-2.5 h-2.5 rounded-full bg-[#FF3B30]" />}
-        </button>
-      );
       const actionButton = (tone = 'blue') => {
         if (tone === 'green') return 'text-[#34C759] hover:bg-[#34C759]/10';
         if (tone === 'red') return 'text-[#FF3B30] hover:bg-[#FF3B30]/10';
         return 'text-[#007AFF] hover:bg-[#007AFF]/10';
       };
-      const Group = ({ children }) => (
-        <div className={`overflow-hidden rounded-[18px] border bg-white border-black/[0.03] dark:bg-[#2C2C2E] dark:border-white/[0.04]`}>{children}</div>
-      );
-      const SectionTitle = ({ children }) => (
-        <div className={`px-3 mb-2 text-[12px] leading-4 font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`}>{children}</div>
-      );
-      const RadioDot = ({ active }) => (
-        <span className={`block w-5 h-5 rounded-full border-[3px] ${active ? 'border-[#007AFF]' : ('border-[#AEAEB2] dark:border-[#636366]')}`}>
-          {active && <span className="block w-2 h-2 rounded-full bg-[#007AFF] mx-auto mt-[3px]" />}
-        </span>
-      );
-      const Tag = ({ children, tone = 'green' }) => (
-        <span className={`shrink-0 text-[12px] px-2 py-0.5 rounded-md ${
-          tone === 'gray'
-            ? ('bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]')
-            : 'bg-[#34C759]/15 text-[#248A3D]'
-        }`}>{children}</span>
-      );
       const userModels = visibleSortedModels(savedModels || []);
       const searchOptions = [
         { key: 'bing', label: 'Bing', desc: settingsCopy.searchDescriptions.bing },
@@ -2521,110 +2730,6 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             update: t.uiSettings.update,
             help: t.uiSettings.help,
           }[activeSection] || t.uiSettings.general);
-      const SearchSourceModal = ({ provider, isNew, onClose }) => {
-        const option = searchOptions.find(x => x.key === provider);
-        const [showSearchKey, setShowSearchKey] = useState(false);
-        const [draftKey, setDraftKey] = useState('');
-        const hasSavedKey = searchHasKey(provider);
-        const canSaveSearch = (provider === 'bing' && isNew) || !!String(draftKey || '').trim();
-        useEffect(() => {
-          setDraftKey('');
-          setShowSearchKey(false);
-        }, [provider]);
-        return (
-          // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the close button at the modal top-right
-          // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onClose}>
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
-            <div onClick={e => e.stopPropagation()}
-              className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
-              <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b border-black/[0.10] dark:border-white/[0.10]`}>
-                <div>
-                  <h2 className="text-[20px] leading-6 font-semibold">{settingsCopy.editSearch}</h2>
-                  <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{option ? option.label : provider}</p>
-                </div>
-                <button type="button" onClick={onClose} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}><X size={18} /></button>
-              </div>
-              <div className="space-y-4 px-5 py-4">
-                <section>
-                  <div className={`overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`}>
-                    <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>
-                    {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
-                    <label className="shrink-0 text-[14px] leading-5">API Key</label>
-                    <input type="text" value={draftKey} onChange={e => setDraftKey(e.target.value)}
-                      // biome-ignore lint/a11y/noAutofocus: the edit-search-source modal focuses the key input on open; focus is the input intent
-                      autoFocus
-                      placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
-                      style={showSearchKey ? undefined : { WebkitTextSecurity: 'disc' }}
-                      className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none placeholder:text-[#8A8A8E] dark:placeholder:text-[#636366]`} />
-                    <button type="button" onClick={() => setShowSearchKey(v => !v)} className="shrink-0 text-[14px] text-[#007AFF]">{showSearchKey ? settingsCopy.hide : settingsCopy.show}</button>
-                    </div>
-                  </div>
-                </section>
-              </div>
-              <div className={`flex justify-end gap-2 px-5 py-4 border-t border-black/[0.10] dark:border-white/[0.10]`}>
-                <button type="button" onClick={onClose} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/[0.04] dark:text-[#0A84FF] dark:hover:bg-white/[0.06]`}>{settingsCopy.cancel}</button>
-                <button type="button" onClick={() => {
-                  if (!canSaveSearch) return;
-                  if (isNew) onAddSearchProvider && onAddSearchProvider(provider);
-                  if (draftKey.trim()) setSearchApiKey(draftKey, provider);
-                  onClose();
-                  setRestartDialog('search');
-                }} disabled={!canSaveSearch} className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">{settingsCopy.save}</button>
-              </div>
-            </div>
-          </div>
-        );
-      };
-      const RestartDialog = ({ type }) => (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
-          <div className={`w-[340px] overflow-hidden rounded-[18px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
-            <div className="px-6 pt-6 pb-5 text-center">
-              <h3 className="text-[18px] font-semibold">{type === 'search' ? settingsCopy.restartSearchTitle : settingsCopy.restartLanguageTitle}</h3>
-              <p className={`mt-2 text-[14px] leading-5 text-[#8A8A8E] dark:text-[#98989D]`}>{type === 'search' ? settingsCopy.restartSearchDesc : settingsCopy.restartLanguageDesc}</p>
-            </div>
-            <div className={`grid grid-cols-2 border-t border-black/[0.12] dark:border-white/[0.12]`}>
-              <button type="button" onClick={async () => {
-                if (type === 'search' && onSaveSearchConfig) {
-                  const saved = await onSaveSearchConfig();
-                  if (saved === false) return;
-                }
-                setRestartDialog(null);
-              }} className={`h-12 text-[17px] font-semibold border-r border-black/[0.12] text-[#007AFF] dark:border-white/[0.12] dark:text-[#0A84FF]`}>{settingsCopy.later}</button>
-              <button type="button" onClick={() => { setRestartDialog(null); type === 'search' ? onConfirmSearchConfig() : (bridge.available && bridge.updater.restartApp()); }} className="h-12 text-[17px] font-semibold text-[#007AFF]">{settingsCopy.restartNow}</button>
-            </div>
-          </div>
-        </div>
-      );
-      const ModelDeleteDialog = ({ model }) => (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
-          <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
-            <div className="px-5 pt-5 pb-4 text-center">
-              <h3 className="text-[17px] leading-6 font-semibold">{settingsCopy.deleteModelTitle}</h3>
-              <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{settingsCopy.deleteModelDesc}</p>
-            </div>
-            <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
-              <button type="button" onClick={() => { onDeleteModel(model); setModelDeleteConfirm(null); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{settingsCopy.deleteModel}</button>
-              <button type="button" onClick={() => setModelDeleteConfirm(null)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{settingsCopy.cancel}</button>
-            </div>
-          </div>
-        </div>
-      );
-      const SearchDeleteDialog = ({ source }) => (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
-          <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
-            <div className="px-5 pt-5 pb-4 text-center">
-              <h3 className="text-[17px] leading-6 font-semibold">{settingsCopy.deleteSearchTitle}</h3>
-              <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{settingsCopy.deleteSearchDesc(source.label)}</p>
-            </div>
-            <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
-              <button type="button" onClick={() => { onDeleteSearchProvider && onDeleteSearchProvider(source.key); setSearchDeleteConfirm(null); setRestartDialog('search'); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{settingsCopy.deleteSearch}</button>
-              <button type="button" onClick={() => setSearchDeleteConfirm(null)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{settingsCopy.cancel}</button>
-            </div>
-          </div>
-        </div>
-      );
       return (
         // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the close button inside the settings window
         // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
@@ -2653,25 +2758,17 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             >
               <div className={`mb-4 px-1 text-[12px] font-semibold max-sm:hidden text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.common}</div>
               <div className="space-y-2 max-sm:flex max-sm:space-y-0 max-sm:gap-2">
-                {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
-                <SectionButton id="general" icon={<Sparkles size={17} />} label={t.uiSettings.general} />
-                {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
-                <SectionButton id="model" icon={<Cpu size={17} />} label={t.uiSettings.model} />
-                {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
-                <SectionButton id="search" icon={<Search size={17} />} label={t.uiSettings.search} />
-                {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
-                {memorySettingsVisible && <SectionButton id="memory" icon={<Database size={17} />} label={t.uiSettings.memory} />}
+                <SectionButton id="general" icon={<Sparkles size={17} />} label={t.uiSettings.general} active={activeSection === 'general'} onSelect={setActiveSection} />
+                <SectionButton id="model" icon={<Cpu size={17} />} label={t.uiSettings.model} active={activeSection === 'model'} onSelect={setActiveSection} />
+                <SectionButton id="search" icon={<Search size={17} />} label={t.uiSettings.search} active={activeSection === 'search'} onSelect={setActiveSection} />
+                {memorySettingsVisible && <SectionButton id="memory" icon={<Database size={17} />} label={t.uiSettings.memory} active={activeSection === 'memory'} onSelect={setActiveSection} />}
               </div>
               <div className={`mt-7 mb-4 px-1 text-[12px] font-semibold max-sm:hidden text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.system}</div>
               <div className="space-y-2 max-sm:flex max-sm:space-y-0 max-sm:gap-2">
-                {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
-                {canUseSuperPermission && <SectionButton id="permissions" icon={<Wrench size={17} />} label={t.uiSettings.permissions} />}
-                {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
-                {canUpdateApp && <SectionButton id="update" icon={<RefreshCw size={17} />} label={t.uiSettings.update} dot={hasUpdate} />}
-                {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
-                <SectionButton id="help" icon={<MessageSquare size={17} />} label={t.uiSettings.help} />
-                {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
-                <SectionButton id="community" icon={<Users size={17} />} label={t.uiSettings.community} />
+                {canUseSuperPermission && <SectionButton id="permissions" icon={<Wrench size={17} />} label={t.uiSettings.permissions} active={activeSection === 'permissions'} onSelect={setActiveSection} />}
+                {canUpdateApp && <SectionButton id="update" icon={<RefreshCw size={17} />} label={t.uiSettings.update} dot={hasUpdate} active={activeSection === 'update'} onSelect={setActiveSection} />}
+                <SectionButton id="help" icon={<MessageSquare size={17} />} label={t.uiSettings.help} active={activeSection === 'help'} onSelect={setActiveSection} />
+                <SectionButton id="community" icon={<Users size={17} />} label={t.uiSettings.community} active={activeSection === 'community'} onSelect={setActiveSection} />
               </div>
             </aside>
             {onCloseSettings && (
@@ -2695,10 +2792,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
               // 保存/错误提示由弹窗内部控制关闭(保存失败保持打开展示行内错误)。
               onSave={async m => onSaveModel(m)} />
           )}
-          {/* eslint-disable-next-line react-hooks/static-components -- in-place-defined confirm modal is the existing structure */}
-          {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} />}
-          {/* eslint-disable-next-line react-hooks/static-components -- in-place-defined confirm modal is the existing structure */}
-          {searchDeleteConfirm && <SearchDeleteDialog source={searchDeleteConfirm} />}
+          {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} settingsCopy={settingsCopy} onDeleteModel={onDeleteModel} setModelDeleteConfirm={setModelDeleteConfirm} />}
+          {searchDeleteConfirm && <SearchDeleteDialog source={searchDeleteConfirm} settingsCopy={settingsCopy} onDeleteSearchProvider={onDeleteSearchProvider} setSearchDeleteConfirm={setSearchDeleteConfirm} setRestartDialog={setRestartDialog} />}
           {searchPickerOpen && (
             // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal cancel button
             // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
@@ -2740,8 +2835,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
               </div>
             </div>
           )}
-          {/* eslint-disable-next-line react-hooks/static-components -- in-place-defined modal is the existing structure */}
-          {editingSearch && <SearchSourceModal provider={editingSearch} isNew={pendingSearchProvider === editingSearch} onClose={() => { setEditingSearch(null); setPendingSearchProvider(null); }} />}
+          {editingSearch && <SearchSourceModal provider={editingSearch} isNew={pendingSearchProvider === editingSearch} onClose={() => { setEditingSearch(null); setPendingSearchProvider(null); }} searchOptions={searchOptions} searchHasKey={searchHasKey} settingsCopy={settingsCopy} onAddSearchProvider={onAddSearchProvider} setSearchApiKey={setSearchApiKey} setRestartDialog={setRestartDialog} />}
           {memoryEditor && (
             // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the close button at the modal top-right
             // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
@@ -2785,8 +2879,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
               </div>
             </div>
           )}
-          {/* eslint-disable-next-line react-hooks/static-components -- in-place-defined modal is the existing structure */}
-          {restartDialog && <RestartDialog type={restartDialog} />}
+          {restartDialog && <RestartDialog type={restartDialog} settingsCopy={settingsCopy} onSaveSearchConfig={onSaveSearchConfig} onConfirmSearchConfig={onConfirmSearchConfig} setRestartDialog={setRestartDialog} />}
           {feedbackOpen && (
             // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal close button
             // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container

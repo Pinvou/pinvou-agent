@@ -18,6 +18,9 @@ import {
 
 const SidePanelPresenceContext = createContext(null);
 
+/** @type {string[]} */
+const EMPTY_STORAGE_KEYS = [];
+
 function uniqueStorageKeys(keys) {
   return [...new Set((keys || []).filter(Boolean))];
 }
@@ -103,9 +106,9 @@ export function ResizableSidePanel({
   children,
   panelId,
   storageKey,
-  legacyPixelStorageKey,
-  legacyPixelStorageKeys = [],
-  legacyRatioStorageKeys = [],
+  legacyPixelStorageKey = '',
+  legacyPixelStorageKeys = EMPTY_STORAGE_KEYS,
+  legacyRatioStorageKeys = EMPTY_STORAGE_KEYS,
   defaultRatio = 0.42,
   minWidth = 360,
   minMainWidth = 520,
