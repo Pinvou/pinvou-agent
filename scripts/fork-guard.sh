@@ -39,7 +39,7 @@ commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev
 if [[ -n "$expected_commits" && "$commit_count" == "$expected_commits" ]]; then
   green "  ✓ v0.9.5 之上 $expected_commits 个登记提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r14 合法拓扑应为 ${expected_commits:-44}"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r14 合法拓扑应为 ${expected_commits:-46}"
   fail=1
 fi
 

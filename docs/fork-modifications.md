@@ -21,7 +21,7 @@
 ### r14 execpolicy phase-2：匹配表达力与子代理接线（已提交待发布）
 
 - CodeWhale PR #37（9 提交，head `aaae5133b`）：`denied_prefix_matches` 新增 cmd.exe 单字母 `/` 旗标跳过（仅 `^/[A-Za-z]$`，多字符 `/tmp` 等保持 positional 以保住「写向敏感路径放行」的换钥工作流）、deny 规则中段 `*` 通配符（零或多 token，参数位向量变得可表达）、deny 命令词 `.exe` 后缀折叠；`ExecPolicyEngine.rulesets` 改 `Arc<RwLock>` 使克隆共享活规则集；嵌套子代理工具调用在执行信封门之后走与主线相同的 execpolicy 判定（`Block` 拒绝；`Prompt` 跟随主线审批姿态——父会话 auto-approve 时放行、其余姿态一律拒绝（子代理无审批面）；`Allow` 放行；空规则集字节级等价），封死「主线拒绝/需审批的命令委派给子代理绕过」的逃逸口；typed File 路径规则新增 rooted 绝对路径精确回退匹配。指纹锚点：`is_single_letter_slash_flag`、`rule_tokens[j] == "*"`、`strip_suffix(".exe")`、`Arc<RwLock<Vec<Ruleset>>>`、`absolute_path_rule_matches`、`exec_shell_ask_rule_decision_for_engine`、`forkguard_subagent_execpolicy_deny_matches_main_line`（forkguard 总数 63→64）。
-- 父仓配套（本 PR）：gitlink → `aaae5133b`、`safety_deny_rules` phase-2 扩面（17,971 → 24,488 条规则，消费上述全部新表达力）、super_permission 开关串行化（进程级 `TOGGLE_LOCK`，关闭 v1 登记的陈旧快照窗口）、fork-guard/verify/tag 登记与本文档更新。`verify-public-submodule.sh` 与 fork-guard 第 0 层在 PR #37 合并、`pinvou-v0.9.5-r14` 剪出后转绿；squash 合并改写 SHA 时由跟进 commit 重钉 gitlink 与登记 head。
+- 父仓配套（本 PR）：gitlink → `aaae5133b`、`safety_deny_rules` phase-2 扩面（17,971 → 24,501 条规则，消费上述全部新表达力）、super_permission 开关串行化（进程级 `TOGGLE_LOCK`，关闭 v1 登记的陈旧快照窗口）、fork-guard/verify/tag 登记与本文档更新。`verify-public-submodule.sh` 与 fork-guard 第 0 层在 PR #37 合并、`pinvou-v0.9.5-r14` 剪出后转绿；squash 合并改写 SHA 时由跟进 commit 重钉 gitlink 与登记 head。
 
 ### r12 厂商原生搜索与免 key 兜底 Bing 化（已合入底座）
 
@@ -110,7 +110,7 @@
 净增量高于 1500 行软线，主要保留量来自逐轮工具安全、Automation 持久化、会话恢复、工具兼容和嵌入上下文密封：
 
 - T2 r8 扩展 `+1370/-202`：逐轮权限必须同时覆盖 catalog、最终 dispatch、排队续轮、Hook、审计和只读 Shell/File 投影，并用行为回归锁住权限替换后的异步唤醒边界。
-- T2 phase-2（#37）`+934/-32`（5 文件）：deny 匹配表达力（旗标跳过/通配符/`.exe` 折叠/绝对路径规则）与子代理 execpolicy 接线及审批对齐必须原子落地——接线依赖共享活规则集，规则面退役（cmd.exe 序列枚举 4332→0 等）依赖匹配器先行；单项单文件最大增量在 `crates/execpolicy/src/lib.rs`（+561），超出单文件 200 行软线，保留原因：匹配器 DFS、通配符语义、折叠与测试同文件内聚，拆分会割断语义与回归的对照关系；后续减量顺序为上游化通配符与旗标跳过语义。
+- T2 phase-2（#37）`+934/-32`（5 文件）：deny 匹配表达力（旗标跳过/通配符/`.exe` 折叠/绝对路径规则）与子代理 execpolicy 接线及审批对齐必须原子落地——接线依赖共享活规则集，规则面退役（cmd.exe 序列枚举 4332→0 等）依赖匹配器先行；单项单文件最大增量在 `crates/execpolicy/src/lib.rs`（+538/-23），超出单文件 200 行软线，保留原因：匹配器 DFS、通配符语义、折叠与测试同文件内聚，拆分会割断语义与回归的对照关系；后续减量顺序为上游化通配符与旗标跳过语义。
 - T4 `+373/-24`：稳定 conversation/thread 关联、Pinvou 历史 schema 兼容、misfire/no-overlap 和终态级联清理必须与 Task/Automation 持久化原子完成。
 - T3 `+253/-71`：嵌入宿主的静态指令、ambient context 和 Skill 单根来源必须在模型上下文生成前密封。
 
