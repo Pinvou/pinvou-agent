@@ -18,15 +18,15 @@
 //! 历史上本文件是 3700+ 行的 god-module，混了 7 类职责。Wave 2 任务 2d 把它
 //! 拆成 facade（本文件，保留 struct 定义 + 常量）+ 子模块：
 //!
-//! - [`store`] —— 会话存储 CRUD / 生命周期 / engine-state 持久化入口
-//! - [`scheduled`] —— 定时运行 profile / engine-state 类型与 registry
-//! - [`retention`] —— 保留策略与 `persist_then_reconcile` 系列 helper
-//! - [`transcript`] —— transcript revision / 截断保护
-//! - [`mode_state`] —— per-session 模式状态机（mode/plan/persona/skill）
-//! - [`injections`] —— 一次性注入与 plan-claim 的事务 checkout guard
-//! - [`sidecars`] —— skill 绑定 / 模型 / 置顶 / 收起 的独立 sidecar 落盘
-//! - [`rewind`] —— 代码模式回退的对话截断与 `_rewound_turns.json` 备份
-//! - [`validators`] —— id / workspace / 路径校验与小型 helper
+//! - `store` —— 会话存储 CRUD / 生命周期 / engine-state 持久化入口
+//! - `scheduled` —— 定时运行 profile / engine-state 类型与 registry
+//! - `retention` —— 保留策略与 `persist_then_reconcile` 系列 helper
+//! - `transcript` —— transcript revision / 截断保护
+//! - `mode_state` —— per-session 模式状态机（mode/plan/persona/skill）
+//! - `injections` —— 一次性注入与 plan-claim 的事务 checkout guard
+//! - `sidecars` —— skill 绑定 / 模型 / 置顶 / 收起 的独立 sidecar 落盘
+//! - `rewind` —— 代码模式回退的对话截断与 `_rewound_turns.json` 备份
+//! - `validators` —— id / workspace / 路径校验与小型 helper
 //!
 //! 子模块通过 `impl SessionStore` 续写方法（Rust 允许同一 struct 的 impl 块
 //! 散布在子模块里），并直接读 `&self` 的私有字段——struct 字段对后代模块

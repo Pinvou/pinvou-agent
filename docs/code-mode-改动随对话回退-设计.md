@@ -73,8 +73,8 @@
 
 feat 分支没有的部分，本方案新增：
 
-1. **磁盘截断**：`SessionStore` 新增「截断到第 N 轮」方法，复用 `8d4d2a991` 的同口径定位逻辑（`is_user_turn_prompt` rposition）；被截段落写入 sidecar `_rewound_turns.json`（留恢复可能，UI 不暴露 redo）；放行 `looks_like_truncating_overwrite` 守卫（`sessions/transcript.rs:27`）的显式回退路径。
-2. **engine 内存态**：不新增 fork Op。回退后**回收该会话 engine 实例**，下次发送时走既有 `Op::SyncSession` 用截断后的 messages 重新注水（注水链路 `features/assistant/engine.rs:1729` 现成）。回退只发生在空闲态，无在途状态可丢。
+1. **磁盘截断**：`SessionStore` 新增「截断到第 N 轮」方法，复用 `8d4d2a991` 的同口径定位逻辑（`is_user_turn_prompt` rposition）；被截段落写入 sidecar `_rewound_turns.json`（留恢复可能，UI 不暴露 redo）；放行 `looks_like_truncating_overwrite` 守卫（`sessions/transcript.rs:26`）的显式回退路径。
+2. **engine 内存态**：不新增 fork Op。回退后**回收该会话 engine 实例**，下次发送时走既有 `Op::SyncSession` 用截断后的 messages 重新注水（注水链路 `features/assistant/engine.rs:1866` 的 `sync_session` 现成）。回退只发生在空闲态，无在途状态可丢。
 3. **前端**：每个 turn 边界渲染回退入口（移植 `CheckpointChip.jsx` + `checkpoints.js` 的 `checkpointMapByTurn` 对齐与兜底规则），点击后懒加载 diff 预览（`checkpoint_diff`）+ 二次确认；确认后串行执行：恢复代码 → 截断对话 → 刷新时间线。
 
 **回退命令（新 Tauri command，如 `rewind_to_turn`）编排**：
@@ -89,7 +89,7 @@ feat 分支没有的部分，本方案新增：
    对话已截断，turn 复用冲突与是否恢复代码无关。独立的 restore_checkpoint IPC 命令
    已移除（无前端调用方，且「只恢复代码不动对话」恰是本特性要消除的分叉形态）
 6. 回收 engine 实例
-7. 返回 { restoredCheckpoint, rewoundTurns } 供前端刷新与提示
+7. 返回 { restoredCheckpoint, rewoundTurns, degraded, hadCompaction } 供前端刷新与提示
 ```
 
 > **turn 序号是消息序列的相对位置，不是稳定锚**。回退后重新创作会复用 turn 编号，
@@ -184,5 +184,5 @@ feat 分支没有的部分，本方案新增：
 - **规模上限（对齐底座资源闸，2026-09-02 评审 M4 后补齐）**：执行根体积超 2GB 跳过快照（该会话如实没有回退入口，估算跳过 exclude 目录、条目数封顶 20 万）；影子仓库存储超 500MB 时裁到一半条目并 gc 收敛（LRU 裁条目不裁字节，大文件项目单靠条目数守不住）。
 - **悬停入口的触屏可达性**：回退入口平时是淡色细线、hover 显形（桌面鼠标语义）；纯触屏无 hover，需首 tap 触发 `:hover` 再点按。鉴于 rewind 命令桌面专属（web 策略锚定测试锁定），v1 不为触屏加交互复杂度。
 - **Web 车道不支持**：rewind 直接改写本地文件，`rewind_to_turn`/`undo_last_rewind`/`rewind_undo_state`/`list_checkpoints`/`checkpoint_diff` 均未加入 web access-policy 的 allowed_commands，前端经 `canInvoke` 能力检查提前收口（不发必被拒的请求）。放行需单独评估（桌面执行语义），由 `codex_checkpoints_logic.test.mjs` 的策略断言锚定。
-- **core.ignorecase=true 的取舍**：为堵住大写秘密文件逃过 exclude 后被 restore 误删的链路（评审 B1），影子仓库强制大小写不敏感。代价：大小写敏感文件系统上仅大小写不同的改名（`Foo.java` → `foo.java`）对快照不可见、不随回退恢复。相比 B1 的数据丢失风险，该取舍可接受。
+- **core.ignorecase 按文件系统语义探测**：为堵住大写秘密文件逃过 exclude 后被 restore 误删的链路（评审 B1），影子仓库的大小写口径由 `fs_is_case_insensitive` 探测决定（每次 ensure 幂等校正），exclude/purge/预览过滤三层严格同向。不无条件强制 true：大小写敏感文件系统上强制不敏感会引发 git alias 冲突（`Makefile`/`makefile` 共存时 `add -A` 整体 fatal、别名新文件静默跳过、仅大小写改名记成空树，评审 M1）；探测后这些都不触发。alias 冲突发生时快照失败以 error 级日志显式上报（不再静默 warn）。残余取舍：大小写不敏感系统上仅大小写不同的改名对快照不可见、不随回退恢复。
 - **嵌套 git 仓库/submodule 在回退语义之外**：快照以 gitlink 记录嵌套仓库（内容不跟踪），restore 不 materialize 它，`clean -fd` 也不删除含 `.git` 的目录——agent 在嵌套仓库内的编辑不会被回退，turn 中 clone 出的仓库在回退后存活。changes 清单对 gitlink 条目如实标注（三语「嵌套仓库（不回退）」）。
