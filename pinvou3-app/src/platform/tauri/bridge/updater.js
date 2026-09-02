@@ -50,6 +50,7 @@
   // 链路: check_for_update(对比服务器 latest.json) → download_update(流式下载+sha256,
   // 进度走 update:progress 事件) → install_update(pkexec apt) → restart_app。
   listen("update:progress", function (e) {
+    if (!state.updateDownloading || state.updateCancelling || state.updateProgress >= 100) return;
     publishUpdateProgress(e.payload || {});
   });
   listen("remote_control:status", function (e) {
