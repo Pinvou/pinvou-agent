@@ -1307,10 +1307,16 @@ impl PrivateOutputResolver for ProductHeadlessBackend {
     }
 }
 
-pub fn run_headless_host<T, Work, WorkFuture>(work: Work) -> Result<T>
+/// Shared bootstrap of the windowless product host: rustls/env/tokio/the
+/// single generate_context expansion, the store boot sequence, `build_pool`,
+/// and finally handing `EnginePool + SessionStore` to the work closure. Both
+/// `run_headless_host` (eval backend) and `run_agentic_task_headless`
+/// (agentic single task) go through here, so the host bootstrap has exactly
+/// one implementation.
+pub fn run_windowless_host<T, Work, WorkFuture>(work: Work) -> Result<T>
 where
     T: Send + 'static,
-    Work: FnOnce(Arc<dyn HeadlessAgentBackend>) -> WorkFuture + Send + 'static,
+    Work: FnOnce(EnginePool, SessionStore) -> WorkFuture + Send + 'static,
     WorkFuture: Future<Output = Result<T>> + Send + 'static,
 {
     crate::install_rustls_provider();
@@ -1323,8 +1329,9 @@ where
         .context("build headless async runtime")?;
     tauri::async_runtime::set(async_runtime.handle().clone());
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-    // 复用 lib.rs 的单一 generate_context 展开点:本 crate 内二次展开会在
-    // macOS 触发 embed_plist 的 _EMBED_INFO_PLIST 重复符号链接错误。
+    // Reuse lib.rs's single generate_context expansion point: a second
+    // expansion inside this crate triggers duplicate
+    // _EMBED_INFO_PLIST (embed_plist) link errors on macOS.
     let mut context = crate::build_tauri_context();
     context.config_mut().app.windows.clear();
     let app = tauri::Builder::default()
@@ -1337,12 +1344,10 @@ where
             store.load_pinned_sessions();
             store.load_hidden_sessions();
             app.manage(store.clone());
-            let pool = build_pool(app.handle().clone(), store)?;
-            let backend: Arc<dyn HeadlessAgentBackend> =
-                Arc::new(ProductHeadlessBackend::from_engine_pool(pool)?);
+            let pool = build_pool(app.handle().clone(), store.clone())?;
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let result = work(backend).await;
+                let result = work(pool, store).await;
                 let _ = result_tx.send(result);
                 handle.exit(0);
             });
@@ -1356,7 +1361,24 @@ where
         .context("headless host exited before work completed")?
 }
 
-fn build_pool(app: tauri::AppHandle, store: SessionStore) -> Result<EnginePool> {
+pub fn run_headless_host<T, Work, WorkFuture>(work: Work) -> Result<T>
+where
+    T: Send + 'static,
+    Work: FnOnce(Arc<dyn HeadlessAgentBackend>) -> WorkFuture + Send + 'static,
+    WorkFuture: Future<Output = Result<T>> + Send + 'static,
+{
+    run_windowless_host(|pool, _store| async move {
+        let backend: Arc<dyn HeadlessAgentBackend> =
+            Arc::new(ProductHeadlessBackend::from_engine_pool(pool)?);
+        work(backend).await
+    })
+}
+
+/// Build an EnginePool isomorphic to the GUI (same
+/// tool_factory/tool_policy combination). The `agentic_task` headless host
+/// reuses this constructor so agentic turns stay identical to the product
+/// path.
+pub(crate) fn build_pool(app: tauri::AppHandle, store: SessionStore) -> Result<EnginePool> {
     let tool_factory: EngineToolFactory = Arc::new(|app, session_id| {
         vec![
             Arc::new(knowledge::KbSearchTool::new(

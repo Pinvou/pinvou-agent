@@ -21,6 +21,8 @@ use crate::features::assistant::eval::{EvalModelSelection, EvalSuiteModelSnapsho
 use crate::features::assistant::timing;
 use std::time::Duration;
 
+#[cfg(feature = "benchmark-hooks")]
+pub mod agentic_task;
 pub(crate) mod eval_tool_policy;
 #[cfg(feature = "benchmark-hooks")]
 pub mod headless_bridge;

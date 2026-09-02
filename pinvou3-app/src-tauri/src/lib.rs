@@ -23,7 +23,7 @@ pub use features::assistant::attachments::{
 use tauri::Manager;
 
 #[cfg(feature = "benchmark-hooks")]
-pub use features::assistant::product_runtime::headless_bridge;
+pub use features::assistant::product_runtime::{agentic_task, headless_bridge};
 
 use crate::app::commands;
 use crate::features::{

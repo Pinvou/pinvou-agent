@@ -202,6 +202,8 @@ bold "── 第 3 层：pinvou3-app forkguard 回归 ──"
 ( cd "$APP" && cargo test --lib --locked forkguard_ -- --test-threads=1 ) || fail=1
 ( cd "$APP" && cargo test --lib --locked --features benchmark-hooks eval_send_message_op_isolated_from_gui_authority_and_installs_exact_policy -- --test-threads=1 ) || fail=1
 ( cd "$APP" && cargo test --lib --locked --features benchmark-hooks features::assistant::product_runtime::headless_bridge::tests -- --test-threads=1 ) || fail=1
+( cd "$APP" && cargo test --lib --locked --features benchmark-hooks features::assistant::product_runtime::agentic_task::tests -- --test-threads=1 ) || fail=1
+( cd "$APP" && cargo test --lib --locked --features benchmark-hooks engine_config_tool_call_cap_respects_env_override -- --test-threads=1 ) || fail=1
 
 echo
 if [[ $fail -eq 0 ]]; then
