@@ -5,11 +5,11 @@ import {
 
 /// ACP 泳道错误文本(红字兜底)展示前的无条件脱敏:agent CLI 的原始报文
 /// 可能带网关自定义 body 或凭证,门控没接管的不建友好卡,但仍不得带密上屏。
-function redactDisplayError(error) {
+function redactDisplayError(error, language) {
   if (!error) return error || null;
   const helper = typeof globalThis !== 'undefined' && globalThis.PinvouModelServiceErrors;
   if (!helper || typeof helper.redactTechnicalDetail !== 'function') return error;
-  return helper.redactTechnicalDetail(String(error));
+  return helper.redactTechnicalDetail(String(error), language);
 }
 
 export function unifiedConversationUiEnabled() {
@@ -187,7 +187,8 @@ export function presentTurnItems(items) {
  * 原始 event log 仍是事实源；tool update 只更新同一个 tool_call_id。
  */
 // eslint-disable-next-line sonarjs/cognitive-complexity -- event log to Turn/Item projection: single-pass merge of many ACP event shapes; splitting would repeat the traversal
-export function projectAcpTimeline(input) {
+export function projectAcpTimeline(input, options = {}) {
+  const language = options && options.language;
   const seen = new Set();
   const events = [...(input || [])]
     .filter(event => {
@@ -353,7 +354,7 @@ export function projectAcpTimeline(input) {
       // ACP 泳道的错误文本来自 agent CLI(codex/claude/gemini),可能原样携带
       // 网关报文或凭证;红字展示前无条件脱敏(分类可以漏,凭证不能漏)。
       // helper(classic script)缺失时原样保留,降级为既有行为。
-      turn.error = redactDisplayError(data.error || null);
+      turn.error = redactDisplayError(data.error || null, language);
       turn.completedAt = envelope.timestamp;
     }
   }

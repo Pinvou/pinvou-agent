@@ -133,7 +133,10 @@ function timelineUsage(usage) {
   };
 }
 
-function timelineUserError(event, options = {}) {
+// Exported for the sibling subagent transcript adapter
+// (subagent-conversation.mjs) so every lane shares one gate / redaction /
+// trilingual copy implementation instead of reimplementing it.
+export function timelineUserError(event, options = {}) {
   const existing = event && (event.user_error || event.userError);
   if (existing && typeof existing === 'object') return existing;
   const error = event && event.error;
@@ -154,7 +157,7 @@ function timelineUserError(event, options = {}) {
 /// provider 原始报文,门控没接管(不建 user_error 卡)的也要先脱敏再展示
 /// ——分类允许漏判,凭证不允许漏。userError 卡走 build(),自身已脱敏;
 /// provider 信号提取(如 URL 里的 api.deepseek.com)在 build 内用原文,不受影响。
-function timelineDisplayError(error, options = {}) {
+export function timelineDisplayError(error, options = {}) {
   if (!error) return error || null;
   const helper = globalThis.PinvouModelServiceErrors;
   if (!helper || typeof helper.redactTechnicalDetail !== 'function') return error;

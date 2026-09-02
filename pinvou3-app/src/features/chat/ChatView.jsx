@@ -1183,6 +1183,26 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // is a read-only pure function (no in-place mutation).
       const chatThinking = bs ? bs.thinking : undefined;
       const turnTimeline = bs ? bs.turnTimeline : undefined;
+      // Timeline error cards build friendly copy in the UI language and
+      // derive the provider label from bridge state (providerLabelFromState
+      // reads currentSessionModelId/activeModelId/savedModels/
+      // effectiveModelConfig/activeProvider). bs is a whole-snapshot object
+      // whose reference changes on every domain update; putting bs itself in
+      // the projection memo deps would re-project the full transcript on
+      // non-chat updates (updater/monitor). Same narrowing as CodexAcpView's
+      // nativeModelServiceState.
+      const modelServiceLanguage = bs && bs.settings && bs.settings.language;
+      const chatModelServiceState = useMemo(
+        () => (bs ? {
+          currentSessionModelId: bs.currentSessionModelId,
+          activeModelId: bs.activeModelId,
+          savedModels: bs.savedModels,
+          effectiveModelConfig: bs.effectiveModelConfig,
+          activeProvider: bs.activeProvider,
+        } : null),
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- track only the field references providerLabelFromState consumes, not the whole bs snapshot
+        [bs && bs.currentSessionModelId, bs && bs.activeModelId, bs && bs.savedModels, bs && bs.effectiveModelConfig, bs && bs.activeProvider],
+      );
       const derivedConversation = useMemo(() => {
         const visibleChatItems = chatItems.filter((item) => !(item.type === 'memory_candidate' && !item.resolved));
         const latestArtIdByPath = {};
@@ -1206,8 +1226,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           sessionId: activeSessionId,
           timelineEvents: turnTimeline,
           allowScheduledTaskDraft: isScheduledTaskCreationChat,
-          language: bs && bs.settings && bs.settings.language,
-          modelServiceState: bs,
+          language: modelServiceLanguage,
+          modelServiceState: chatModelServiceState,
         });
         // Equivalent to [...turns].reverse().find(turn => turn.status === 'running'):
         // scan backwards for the last running turn, skipping the full reversed copy.
@@ -1217,7 +1237,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           if (turns[i].status === 'running') { activeConversationTurn = turns[i]; break; }
         }
         return { visibleChatItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
-      }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, useUnifiedConversationUi, chatThinking, turnTimeline, activeSessionId, bs]);
+      }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, useUnifiedConversationUi, chatThinking, turnTimeline, activeSessionId, modelServiceLanguage, chatModelServiceState]);
       const { visibleChatItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
 
       // External entries can prefill the composer and focus its end.
@@ -2953,6 +2973,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               selectionRequestId={subagentPanel.selectionRequestId}
               t={t}
               theme={theme}
+              language={modelServiceLanguage}
+              modelServiceState={chatModelServiceState}
               onClose={closeSubagentPanel}
             />
             </PanelSuspense>

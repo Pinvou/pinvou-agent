@@ -453,6 +453,12 @@
             errorText = errorText.includes("能力未知")
               ? bt("imageUnknown")
               : bt("imageUnsupported");
+          } else if (window.PinvouBridgeMessages && typeof window.PinvouBridgeMessages.redactRawError === "function") {
+            // Raw submit-failure bodies can also carry gateway bodies or
+            // credentials; redact through the same outlet as the
+            // transient/done fallbacks (classification may miss, credentials
+            // must not).
+            errorText = window.PinvouBridgeMessages.redactRawError(errorText, state);
           }
           addSystemItem(concurrentTurn
             ? bt("turnAlreadyInProgress")

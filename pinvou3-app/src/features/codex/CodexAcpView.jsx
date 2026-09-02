@@ -1167,7 +1167,11 @@ export function CodexAcpView({
     acpConfigOperationTracker.switchSession(activeId);
     acpSendOperationTracker.switchSession(activeId || DRAFT_ATTACHMENT_KEY);
   }, [acpConfigOperationTracker, acpSendOperationTracker, activeId]);
-  const projection = useMemo(() => projectAcpTimeline(events), [events]);
+  const acpModelServiceLanguage = bs && bs.settings && bs.settings.language;
+  const projection = useMemo(
+    () => projectAcpTimeline(events, { language: acpModelServiceLanguage }),
+    [events, acpModelServiceLanguage],
+  );
   // 草稿态（!activeId）没有会话，退回使用该 agent 缓存的配置快照来预展示选项。
   const draftControlsInfo = activeId ? null : draftControlsCache[draftAgentId] || null;
   const sessionControlsInfo = sessionInfoSessionId === activeId ? sessionInfo : null;
