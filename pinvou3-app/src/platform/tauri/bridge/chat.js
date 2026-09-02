@@ -24,6 +24,7 @@
     const ensureSession = context.ensureSession;
     const getBuffer = context.getBuffer;
     const recordPinvouSceneForMessage = context.recordPinvouSceneForMessage || function () {};
+    const recordSteeredMessages = context.recordSteeredMessages || function () {};
     const reconcileRemoteTurn = context.reconcileRemoteTurn;
     const markRemoteTurn = context.markRemoteTurn;
     const adoptManagedAttachments = context.adoptManagedAttachments || function () { return Promise.resolve(); };
@@ -1197,6 +1198,11 @@
   // and the stashed text renders a bubble. Key = steer_id, value = message
   // text.
   const withdrawnSteers = {};
+  // Committed steers whose persisted position has not been captured yet
+  // (sid → [{ text }]). The settle event can arrive before the forwarder
+  // finishes persisting the injection, so the capture retries on each
+  // chat:transcript_committed (guaranteed to follow the persist).
+  const pendingSteerPositions = {};
   // On session delete/eviction, clear that session's steer intermediates:
   // stashed events / withdrawn texts (they contain user message text that
   // must not outlive the deleted session) / the in-flight interrupt flag.
@@ -1205,6 +1211,7 @@
   function purgeSteerState(sid) {
     delete pendingSteerEvents[sid];
     delete withdrawnSteers[sid];
+    delete pendingSteerPositions[sid];
     delete interruptInFlight[sid];
     delete steerSettlements[sid];
     const watchdogs = steerSettleWatchdogs[sid];
@@ -1239,6 +1246,54 @@
     return sid === state.activeSessionId
       ? state.queued
       : (sessionStates[sid] && sessionStates[sid].queued);
+  }
+  // A committed steer is persisted by the Rust forwarder as a plain display
+  // copy (no <turn_meta> tail, same shape as admissions since the
+  // persistence alignment). The reload projection can therefore no longer
+  // recognize it from the transcript; record its position in the
+  // steered-messages sidecar instead. The persisted position is learned
+  // from a load_session snapshot: the steer is the latest same-text user
+  // message, matched from the tail so older same-text history never
+  // mispairs (same tail-alignment rule as the legacy fallback below).
+  function noteSteerCommittedForPosition(sid, text) {
+    text = String(text || "");
+    if (!sid || !text) return;
+    const pending = pendingSteerPositions[sid] || [];
+    pending.push({ text });
+    pendingSteerPositions[sid] = pending;
+    captureSteerPositions(sid);
+  }
+  function captureSteerPositions(sid) {
+    const pending = pendingSteerPositions[sid];
+    if (!sid || !pending || !pending.length) return;
+    const scanned = pending.length;
+    invoke("load_session", { id: sid, setActive: false }).then(function (saved) {
+      const messages = saved && Array.isArray(saved.messages) ? saved.messages : [];
+      const used = Object.create(null);
+      const found = [];
+      const remaining = [];
+      pending.slice(0, scanned).forEach(function (entry) {
+        let index = -1;
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (used[i]) continue;
+          const m = messages[i];
+          if (!m || m.role !== "user") continue;
+          const content = Array.isArray(m.content) ? m.content : [];
+          if (userMessageDisplayText(content, true) === entry.text) { index = i; break; }
+        }
+        if (index < 0) {
+          remaining.push(entry);
+          return;
+        }
+        used[index] = true;
+        found.push({ pos: index, text: entry.text });
+      });
+      // Entries appended while the snapshot was in flight live beyond
+      // `scanned` in the same array; keep them alongside the unmatched.
+      const current = pendingSteerPositions[sid] || [];
+      pendingSteerPositions[sid] = [...remaining, ...current.slice(scanned)];
+      if (found.length) recordSteeredMessages(sid, found);
+    }).catch(function () { /* snapshot unavailable: retried on the next transcript_committed */ });
   }
   function findSteerChipIndex(sid, steerId) {
     const q = steeredQueueFor(sid);
@@ -1297,6 +1352,10 @@
           if (lastUser && lastUser.text === withdrawnText) return;
           addChatItem({ type: "user", text: withdrawnText, time: timeStr(), steeredMidTurn: true });
         });
+        // A committed event means the engine injected the message regardless
+        // of which path rendered the bubble: the persisted position must be
+        // recorded either way (re-recording is idempotent per pos).
+        noteSteerCommittedForPosition(sid, withdrawnText);
         notify();
         return;
       }
@@ -1318,6 +1377,7 @@
         return !ci.turnErrorNotice && !ci.authoritySyncNotice;
       });
       addChatItem({ type: "user", text: item.text, time: timeStr(), steeredMidTurn: true });
+      noteSteerCommittedForPosition(sid, item.text);
     });
     notify();
   }
@@ -1944,6 +2004,7 @@
       steer,
       settleSteerCommitted,
       settleSteerDropped,
+      captureSteerPositions,
       purgeSteerState,
     };
   };

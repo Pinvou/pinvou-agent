@@ -669,6 +669,18 @@ impl TurnLifecycle {
     /// lifetime with its UI display message. Rules intentionally survive turn
     /// completion because later `SessionUpdated` snapshots still contain the
     /// raw prompts from all earlier turns until the engine is rebuilt.
+    ///
+    /// After the rules run, mid-turn steer injections are the only remaining
+    /// external-user messages still carrying the engine-baked trailing
+    /// `<turn_meta>` block (`inject_steer` adds it for the model wire; there
+    /// is no admission rule because a steer never goes through the chat
+    /// command path). Strip that block so the persisted transcript holds the
+    /// same display copy as admissions: model-facing metadata never reaches
+    /// disk, and a rebuilt engine no longer replays stale date/workspace
+    /// envelopes inside historical steer text. Runtime-owned user turns
+    /// (sub-agent handoff, shell completion, memory recall) keep their block:
+    /// it carries the `Input provenance` line the display layer needs to
+    /// recognize them as internal.
     fn sanitize_messages(&self, mut messages: Vec<Message>) -> (Vec<Message>, bool) {
         let state = self.state.lock();
         let active_reservation_id = state.active_reservation_id;
@@ -689,7 +701,34 @@ impl TurnLifecycle {
                 active_rule_matched = true;
             }
         }
+        drop(state);
+        for message in messages.iter_mut() {
+            Self::strip_external_turn_meta_tail(message);
+        }
         (messages, active_rule_matched)
+    }
+
+    /// Strip a trailing engine-baked `<turn_meta>` block from an external-user
+    /// message, turning it into the same display copy admissions persist as.
+    /// Only the trailing envelope is removed; a leading block (legacy shape)
+    /// stays, and envelopes carrying an `Input provenance` line mark
+    /// runtime-owned turns and must survive for internal-message detection.
+    fn strip_external_turn_meta_tail(message: &mut Message) {
+        if message.role != "user" || message.content.len() < 2 {
+            return;
+        }
+        let is_display_copy_tail = match message.content.last() {
+            Some(deepseek_tui::models::ContentBlock::Text { text, .. }) => {
+                let trimmed = text.trim();
+                trimmed.starts_with("<turn_meta>")
+                    && trimmed.ends_with("</turn_meta>")
+                    && !trimmed.contains("Input provenance:")
+            }
+            _ => false,
+        };
+        if is_display_copy_tail {
+            message.content.pop();
+        }
     }
 
     fn active_transcript_fallback(&self) -> Option<TranscriptFallback> {
@@ -2915,6 +2954,56 @@ mod turn_lifecycle_tests {
     }
 
     #[test]
+    fn sanitize_strips_steer_turn_meta_tail_but_keeps_internal_envelopes() {
+        let lifecycle = TurnLifecycle::default();
+        let turn_meta_tail = |text: &str| Message {
+            role: "user".to_string(),
+            content: vec![
+                ContentBlock::Text {
+                    text: text.to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::Text {
+                    text: "<turn_meta>\nCurrent local date: 2026-09-01\n</turn_meta>".to_string(),
+                    cache_control: None,
+                },
+            ],
+        };
+        let runtime_owned = Message {
+            role: "user".to_string(),
+            content: vec![
+                ContentBlock::Text {
+                    text: "sub-agent done".to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::Text {
+                    text: "<turn_meta>\nInput provenance: subagent_handoff (non-authoritative)\n</turn_meta>"
+                        .to_string(),
+                    cache_control: None,
+                },
+            ],
+        };
+
+        let (sanitized, matched) = lifecycle.sanitize_messages(vec![
+            turn_meta_tail("mid-turn steer"),
+            runtime_owned.clone(),
+            message("user", "plain display copy"),
+            message("assistant", "not a user turn"),
+        ]);
+
+        assert!(!matched);
+        // Steer injection: the engine-baked envelope is stripped, persisting
+        // the same display copy shape as admissions.
+        assert_eq!(sanitized[0], message("user", "mid-turn steer"));
+        // Runtime-owned turns keep their envelope: the provenance line is the
+        // display layer's internal-message signal.
+        assert_eq!(sanitized[1], runtime_owned);
+        // Already-clean messages and non-user roles pass through untouched.
+        assert_eq!(sanitized[2], message("user", "plain display copy"));
+        assert_eq!(sanitized[3], message("assistant", "not a user turn"));
+    }
+
+    #[test]
     fn failed_reserved_submission_rolls_back_lifecycle_and_sanitization_rule() {
         let lifecycle = Arc::new(TurnLifecycle::default());
         {
@@ -2931,7 +3020,9 @@ mod turn_lifecycle_tests {
         let next = lifecycle.reserve().expect("reservation restored");
         let (messages, matched) = lifecycle.sanitize_messages(vec![engine_user("private actual")]);
         assert!(!matched);
-        assert_eq!(messages, vec![engine_user("private actual")]);
+        // No rule matched, but the display-copy strip still applies: the
+        // engine-baked <turn_meta> tail never persists.
+        assert_eq!(messages, vec![message("user", "private actual")]);
         drop(next);
     }
 
@@ -2964,7 +3055,9 @@ mod turn_lifecycle_tests {
         lifecycle.prune_stale_transcript_rules();
         let (messages, matched) = lifecycle.sanitize_messages(vec![engine_user("private raw 1")]);
         assert!(!matched);
-        assert_eq!(messages, vec![engine_user("private raw 1")]);
+        // Rule is gone, but the display-copy strip still drops the baked
+        // <turn_meta> tail before persistence.
+        assert_eq!(messages, vec![message("user", "private raw 1")]);
         let (sanitized, matched) = lifecycle.sanitize_messages(vec![engine_user("live raw")]);
         assert!(matched);
         assert_eq!(sanitized, vec![message("user", "live display")]);
@@ -2975,7 +3068,7 @@ mod turn_lifecycle_tests {
         lifecycle.prune_stale_transcript_rules();
         let (messages, matched) = lifecycle.sanitize_messages(vec![engine_user("live raw")]);
         assert!(!matched);
-        assert_eq!(messages, vec![engine_user("live raw")]);
+        assert_eq!(messages, vec![message("user", "live raw")]);
     }
 }
 

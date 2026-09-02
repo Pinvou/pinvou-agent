@@ -618,6 +618,109 @@ pub async fn get_session_pinvou_scene_events(
     Ok(normalize_pinvou_scene_events(events).unwrap_or_else(|_| serde_json::json!([])))
 }
 
+fn normalize_steered_messages(events: serde_json::Value) -> Result<serde_json::Value, String> {
+    let entries = events
+        .as_array()
+        .ok_or_else(|| "steered messages 必须是数组".to_string())?;
+    if entries.len() > 10_000 {
+        return Err("steered messages 超过 10000 条上限".to_string());
+    }
+    let mut normalized = std::collections::BTreeMap::<u64, String>::new();
+    for entry in entries {
+        let pos = entry
+            .get("pos")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| "steered message 缺少有效 pos".to_string())?;
+        let text = entry
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "steered message 缺少有效 text".to_string())?;
+        if text.len() > 64_000 {
+            return Err("steered message text 超过 64000 字符上限".to_string());
+        }
+        normalized.insert(pos, text.to_string());
+    }
+    Ok(serde_json::Value::Array(
+        normalized
+            .into_iter()
+            .map(|(pos, text)| serde_json::json!({ "pos": pos, "text": text }))
+            .collect(),
+    ))
+}
+
+/// 保存 mid-turn steer 消息的位置标记。steer 落盘与普通 admission 对齐、不含
+/// `<turn_meta>` 块，重载投影靠该 sidecar 恢复"非 turn admission"标记；独立于
+/// messages 持久化，桌面端与 WebUI 共享。
+#[tauri::command]
+pub async fn save_session_steered_messages(
+    session_id: String,
+    events: serde_json::Value,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    ensure_chat_session(&store, &session_id, "save_session_steered_messages")?;
+    let normalized = normalize_steered_messages(events)?;
+    let path = crate::platform::paths::session_steered_messages(&session_id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("创建 steered sidecar 目录失败: {error}"))?;
+    }
+    let payload = serde_json::to_vec(&normalized)
+        .map_err(|error| format!("序列化 steered sidecar 失败: {error}"))?;
+    deepseek_tui::utils::write_atomic(&path, &payload)
+        .map_err(|error| format!("写 steered sidecar 失败: {error:#}"))
+}
+
+/// 读取 mid-turn steer 消息的位置标记。旧版本或损坏 sidecar 按空数组处理。
+#[tauri::command]
+pub async fn get_session_steered_messages(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<serde_json::Value, String> {
+    ensure_chat_session(&store, &session_id, "get_session_steered_messages")?;
+    let path = crate::platform::paths::session_steered_messages(&session_id);
+    let Ok(payload) = std::fs::read(&path) else {
+        return Ok(serde_json::json!([]));
+    };
+    let Ok(events) = serde_json::from_slice::<serde_json::Value>(&payload) else {
+        return Ok(serde_json::json!([]));
+    };
+    Ok(normalize_steered_messages(events).unwrap_or_else(|_| serde_json::json!([])))
+}
+
+#[cfg(test)]
+mod steered_message_tests {
+    use super::normalize_steered_messages;
+
+    #[test]
+    fn steered_messages_are_validated_deduplicated_and_sorted() {
+        let normalized = normalize_steered_messages(serde_json::json!([
+            { "pos": 9, "text": "second steer" },
+            { "pos": 4, "text": "first steer" },
+            { "pos": 9, "text": "second steer edited" }
+        ]))
+        .expect("valid steered messages");
+        assert_eq!(
+            normalized,
+            serde_json::json!([
+                { "pos": 4, "text": "first steer" },
+                { "pos": 9, "text": "second steer edited" }
+            ])
+        );
+    }
+
+    #[test]
+    fn steered_messages_reject_invalid_entries() {
+        assert!(
+            normalize_steered_messages(serde_json::json!([
+                { "pos": -1, "text": "x" }
+            ]))
+            .is_err()
+        );
+        assert!(normalize_steered_messages(serde_json::json!([{ "pos": 1 }])).is_err());
+        assert!(normalize_steered_messages(serde_json::json!({ "pos": 1 })).is_err());
+    }
+}
+
 #[cfg(test)]
 mod pinvou_scene_event_tests {
     use super::normalize_pinvou_scene_events;

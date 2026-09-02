@@ -222,6 +222,8 @@
     const isDeliverable = context.isDeliverable;
     const noteArtifactChange = context.noteArtifactChange;
     const persistMessagesFor = context.persistMessagesFor;
+    const captureSteerPositions = context.captureSteerPositions || function () {};
+    const recordSteeredMessages = context.recordSteeredMessages || function () {};
     const composePlanMarkdown = context.composePlanMarkdown;
     const refreshHistoryList = context.refreshHistoryList;
     const isShellExecutionTool = context.isShellExecutionTool;
@@ -390,6 +392,11 @@
     // steer chip still waiting in state.queued should become a user bubble
     // and sync state.messages.
     //
+    // This event is also the retry point for steer position capture: the
+    // persist it announces is exactly what captureSteerPositions reads, so
+    // any steer committed before its snapshot became available settles its
+    // sidecar position here.
+    //
     // The count delta = the number of new messages; consume exactly that
     // many entries from the head of state.queued. Drain only when the growth
     // is > 0 and includes new user-role messages, to avoid false triggers on
@@ -402,6 +409,9 @@
     const fallbackQueued = sid === state.activeSessionId
       ? state.queued
       : (sessionStates[sid] && sessionStates[sid].queued);
+    // Retry pending steer position captures now that the persist this event
+    // announces is durable (no-op when nothing is pending).
+    captureSteerPositions(sid);
     if (!fallbackQueued || fallbackQueued.length === 0) return;
     // The fallback settles only legacy steered chips (steered, no engine-side
     // id). steer_id chips settle authoritatively via chat:steer_committed /
@@ -489,6 +499,10 @@
             // Legacy-backend steer settlement: same mid-turn semantics as
             // settleSteerCommitted's bubble (no admission, no timing record).
             addChatItem({ type: "user", text: itemText, time: timeStr(), steeredMidTurn: true });
+            // The persisted position is known exactly here (the match ran
+            // against the durable snapshot): record the sidecar marker
+            // directly, no pending-capture retry needed.
+            recordSteeredMessages(sid, [{ pos: newMessages.indexOf(message), text: itemText }]);
           }
         }
       });
