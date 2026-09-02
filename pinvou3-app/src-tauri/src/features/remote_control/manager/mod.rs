@@ -201,6 +201,7 @@ const RUST_FORWARDED_EVENTS: &[&str] = &[
     "chat:usage",
     "chat:user_message",
     "chat:user_input_required",
+    "multiagent:agent_progress",
     "scheduled_task:run_updated",
     "session:deleted",
     "session:list_changed",
@@ -3556,6 +3557,8 @@ mod tests {
         assert!(RUST_FORWARDED_EVENTS.contains(&"session:model_changed"));
         assert!(policy.events.contains("session:persona_changed"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"session:persona_changed"));
+        assert!(policy.events.contains("multiagent:agent_progress"));
+        assert!(RUST_FORWARDED_EVENTS.contains(&"multiagent:agent_progress"));
     }
 
     #[test]

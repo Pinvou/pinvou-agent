@@ -4,7 +4,7 @@ import {
   invokeObservedPanelSelection,
   isSubagentPanelPublicationCurrent,
 } from './subagent-panel-publication.mjs';
-import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, Mic, Monitor, Package, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
+import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, Mic, Monitor, Package, Paperclip, Presentation, Send, Sparkles, StopCircle, Terminal, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -12,7 +12,7 @@ import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../share
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import { AppIcon, DEPT_ORDER, deptLabelFor, personaText } from '../personas/persona-shared.jsx';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/composer-shared.jsx';
-import { ComposerPopover } from '../../components/ComposerPopover.jsx';
+import { ComposerPopover, POPOVER_SURFACE } from '../../components/ComposerPopover.jsx';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { ViewErrorBoundary } from '../../shared/ViewErrorBoundary.jsx';
 import { ArtifactCard, localizeTool, tsToolsData, tsToolWelcomeData } from '../tools/tool-common.jsx';
@@ -46,6 +46,8 @@ import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachment
 import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
 import { splitAttachmentLine } from '../attachments/attachment-message.js';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
+import { deriveRunningShellTasks, formatElapsedMs, tailOutputLines } from './background-tasks.js';
+import { useShellTaskCancel } from './shell-task-cancel.js';
 import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
 // 重面板惰性化:ArtifactsPanel(design/产物场景才出现)与 SubagentTranscriptPanel
 // (专家卡点开才出现)各带一串专属依赖(design-runtime/EditableMarkdownPreview/
@@ -637,6 +639,85 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       );
     };
 
+    // 后台任务指示器（输入框上方"处理中"提示行右侧的蓝色胶囊）：仅当前会话有运行中后台 shell 任务时渲染。
+    // 数据来自 bridge 轮询 reconcile 进 chatItems 的快照（terminal.js
+    // applyShellSnapshots / markBackgroundToolItem），点击弹出列表可查看输出、取消任务。
+    const BackgroundTaskRow = ({ task, t, chatCopy }) => {
+      const { cancelling, cancelError, cancel } = useShellTaskCancel(t);
+      // 计时基线：轮询 reconcile 只在有新输出时改卡片，安静任务的 elapsedMs
+      // 不会变化，走秒由指示器用"基线值 + 本地流逝"自推（每行一个 1s interval，
+      // 仅浮层展开时挂载）。不把秒级 tick 塞进全局 chatItems reconcile——那会让
+      // 整个 ChatView 在后台任务存续期间每秒重渲染一次（second-clock 曾因此
+      // 从 ChatView 顶层移走，见 LiveConversationActivityIndicator 上方注释）。
+      const [now, setNow] = useState(() => Date.now());
+      useEffect(() => {
+        const timer = setInterval(() => setNow(Date.now()), 1000);
+        return () => clearInterval(timer);
+      }, []);
+      // 服务端 elapsedMs 变化（新输出触发 reconcile）时，渲染期同步换基线
+      // （React "adjust state when a prop changes" 模式）；基线时间戳直接用
+      // now 状态，保证渲染纯度。
+      const [elapsedBaseline, setElapsedBaseline] = useState(() => ({ elapsedMs: task.elapsedMs, at: now }));
+      if (elapsedBaseline.elapsedMs !== task.elapsedMs) {
+        setElapsedBaseline({ elapsedMs: task.elapsedMs, at: now });
+      }
+      const elapsedMs = elapsedBaseline.elapsedMs + Math.max(0, now - elapsedBaseline.at);
+      const tail = tailOutputLines(task.output, 3);
+      const lastLine = tailOutputLines(task.output, 1);
+      return (
+        <div className="px-3 py-2 hover:bg-black/[0.03] dark:hover:bg-white/[0.04]"
+          data-testid="bg-task-row" data-bg-shell-task-id={task.taskId}>
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+            <span className={`flex-1 min-w-0 truncate font-mono text-[12px] ${'text-[#1F1F1F] dark:text-[#E3E3E3]'}`} title={task.command}>{task.command}</span>
+            <span className={`shrink-0 text-[11px] tabular-nums ${'text-[#85888D] dark:text-[#9AA0A6]'}`}>{formatElapsedMs(elapsedMs)}</span>
+            <button type="button" data-testid="bg-cancel-shell-task" disabled={cancelling} onClick={() => cancel(task.sessionId, task.taskId)}
+              aria-label={chatCopy.cancel} title={cancelling ? chatCopy.cancelling : chatCopy.cancel}
+              className={`shrink-0 p-1 rounded-full disabled:opacity-50 transition-colors ${'text-[#85888D] hover:text-[#C5221F] hover:bg-black/5 dark:text-[#9AA0A6] dark:hover:text-[#F28B82] dark:hover:bg-white/10'}`}>
+              <StopCircle size={14} />
+            </button>
+          </div>
+          {lastLine && (
+            <div className={`mt-0.5 pl-3.5 truncate font-mono text-[11px] ${'text-[#9AA0A6] dark:text-[#6E7276]'}`} title={tail}>{lastLine}</div>
+          )}
+          {cancelError && (
+            <div className={`mt-1 ml-3.5 px-2 py-1 rounded-lg text-[11px] truncate ${'bg-red-50 text-[#C5221F] dark:bg-red-500/10 dark:text-[#F28B82]'}`} title={cancelError}>{cancelError}</div>
+          )}
+        </div>
+      );
+    };
+
+    const BackgroundTasksIndicator = ({ tasks, t, chatCopy, compact }) => {
+      const [open, setOpen] = useState(false);
+      const [prevTaskCount, setPrevTaskCount] = useState(tasks.length);
+      const triggerRef = useRef(null);
+      // 任务全部结束时自动收起，避免浮层停留在空列表（渲染期间同步调整 state）。
+      if (prevTaskCount !== tasks.length) {
+        setPrevTaskCount(tasks.length);
+        if (tasks.length === 0) setOpen(false);
+      }
+      if (tasks.length === 0) return null;
+      return (
+        <div className="relative pointer-events-auto">
+          <button type="button" ref={triggerRef} data-testid="chat-bg-tasks-entry"
+            onClick={() => setOpen(value => !value)}
+            aria-label={chatCopy.bgTasks} title={chatCopy.bgTasks}
+            className={`h-6 px-2.5 rounded-full text-[11px] font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 ${'bg-[#E8F0FE] text-[#1967D2] hover:bg-[#D2E3FC] dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#8FB8F8]'}`}>
+            <Terminal size={12} /> <span>{chatCopy.bgTasks}</span>
+            <span className={`px-1 rounded-full text-[10px] ${'bg-white/70 dark:bg-black/15'}`}>{tasks.length}</span>
+          </button>
+          {/* compact 跟随其他输入框弹层的视口契约：窄屏/移动 WebUI 走 portal 锚定路径 */}
+          <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
+            desktopClassName={`absolute bottom-full left-0 mb-2 z-50 w-[360px] max-w-[calc(100vw-24px)] max-h-[420px] overflow-y-auto ${POPOVER_SURFACE}`}>
+            <div className={`px-3 py-2 text-[12px] font-medium ${'text-[#85888D] dark:text-[#9AA0A6]'}`}>{chatCopy.bgTasksRunning(tasks.length)}</div>
+            <div className={`divide-y ${'divide-black/5 dark:divide-white/5'}`}>
+              {tasks.map(task => <BackgroundTaskRow key={task.taskId} task={task} t={t} chatCopy={chatCopy} />)}
+            </div>
+          </ComposerPopover>
+        </div>
+      );
+    };
+
     // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy main view: session/mode/artifact/browser state is highly cohesive; split refactor tracked separately
     const ChatView = ({ theme, t, bs, prefill, prefillAppend = false, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, browserDockAvailable = false, browserDockOpen = false, rightDockActivePanelId = null, onRightDockPanelSelectionChange, onOpenBrowserDock }) => {
       const chatCopy = t.uiChat;
@@ -782,6 +863,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const artifactItems = (bs && bs.artifacts) || [];
       const artifactCount = artifactItems.length;
       const latestArtifact = artifactItems[artifactItems.length - 1] || null;
+      // 当前会话仍在运行的后台 shell 任务（编译、下载等），驱动输入框上方的胶囊指示器。
+      // chatItems 只含当前会话条目，且由 bridge 轮询保持新鲜，直接派生即可。
+      const runningShellTasks = deriveRunningShellTasks(chatItems);
       const conversationStarted = chatItems.some(item => item && item.type === 'user') || artifactCount > 0;
       const pinvouMode = pinvouModeState.mode;
       const workSubtab = pinvouModeState.workSubtab;
@@ -2438,12 +2522,15 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   clearLabel={sceneCopy.clear(activeScene.label)}
                 />
               )}
-              <LiveConversationActivityIndicator
-                turn={activeConversationTurn}
-                onRequestAttention={scrollChatToBottom}
-                className="mb-0.5"
-                copy={t.uiConversation}
-              />
+              <div className="flex items-center gap-2 mb-0.5">
+                <LiveConversationActivityIndicator
+                  turn={activeConversationTurn}
+                  onRequestAttention={scrollChatToBottom}
+                  copy={t.uiConversation}
+                />
+                {/* 后台 shell 任务胶囊：跟随"处理中"提示行，任务存续期间常驻（轮次结束后仍运行时也保留入口） */}
+                <BackgroundTasksIndicator tasks={runningShellTasks} t={t} chatCopy={chatCopy} compact={composerCompact} />
+              </div>
               {isMultiAgentReadOnly ? (
                 <div
                   role="note"

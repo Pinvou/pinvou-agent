@@ -950,3 +950,9 @@ dictZh.uiSettingsDetail.customModelTitles = {
   openai_compatible:'自定义兼容模型', glm_coding_plan:'自定义 GLM Coding Plan 模型',
   tencent_coding_plan:'自定义腾讯云 Coding Plan 模型', tencent_token_plan:'自定义腾讯云 Token Plan 模型', kimi_coding_plan:'自定义 Kimi Coding Plan 模型',
 };
+
+// features/chat 后台任务指示器词条（uiChat 已存在，合并而非覆盖）
+Object.assign(dictZh.uiChat, {
+  bgTasks: '后台任务',
+  bgTasksRunning: n => `${n} 个后台任务运行中`,
+});

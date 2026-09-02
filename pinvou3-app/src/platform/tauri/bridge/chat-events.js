@@ -227,6 +227,7 @@
     const composePlanMarkdown = context.composePlanMarkdown;
     const refreshHistoryList = context.refreshHistoryList;
     const isShellExecutionTool = context.isShellExecutionTool;
+    const mentionsShellTool = context.mentionsShellTool;
     const scheduleShellPoll = context.scheduleShellPoll;
     const appendToolItemOutput = context.appendToolItemOutput;
     const scheduleShellNotify = context.scheduleShellNotify;
@@ -706,6 +707,17 @@
     scheduleShellNotify();
   }); });
 
+  // 子智能体不产生 chat:tool_start/chat:tool_end（forwarder 只转发 mailbox 进展），
+  // 它启动的后台 shell 任务若无人调度轮询，就要等到会话切换或顶层 shell 调用
+  // 才会被 applyShellSnapshots 发现。从进展文本认出 shell 工具即补一次调度；
+  // 轮询自身会在没有运行中任务时自停，不会常驻。
+  listen("multiagent:agent_progress", function (e) {
+    const p = e.payload || {};
+    if (p.session_id && mentionsShellTool(p.status)) {
+      scheduleShellPoll(p.session_id, true);
+    }
+  });
+
   // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
   listen("chat:tool_end", function (e) { onSessionEvent(e, function () {
     const p = e.payload || {};
@@ -808,6 +820,10 @@
       }
       updatedToolItem.taskId = shellTaskId;
       updatedToolItem.sessionId = p.session_id || state.activeSessionId;
+      // 通用路径也可能承载后台 shell 任务（未走上方 backgrounded 快速通道的平台/分支）：
+      // 补上 background 标记，供后台任务指示器区分"真后台"与被轮询命令匹配回退
+      // 挂上 taskId 的前台卡。
+      if (p.metadata && p.metadata.backgrounded === true) updatedToolItem.background = true;
       const shellStatus = String((p.metadata && p.metadata.status) || "").toLowerCase();
       if (shellStatus === "running" || /running|background/i.test(String(p.output || ""))) {
         updatedToolItem.state = "running";

@@ -591,7 +591,14 @@ pub(crate) fn spawn_event_forwarder(
                         "agent_id": id,
                         "status": status,
                     });
-                    let _ = app.emit("multiagent:agent_progress", payload);
+                    // Web 端没有 chat:tool_start 的子智能体等价事件， bridge 靠该进展
+                    // 文本调度 shell 快照轮询（发现子 agent 的后台任务），必须转发。
+                    let _ = app.emit("multiagent:agent_progress", payload.clone());
+                    let _ = crate::features::remote_control::forward_app_event(
+                        &app,
+                        "multiagent:agent_progress",
+                        payload,
+                    );
                 }
                 // mailbox 信封同时维护 Shell scope 与通用子智能体审计。
                 Event::SubAgentMailbox { message, .. } => {
@@ -642,7 +649,13 @@ pub(crate) fn spawn_event_forwarder(
                                 "agent_id": agent_id,
                                 "status": format!("🔧 {tool_name} (step {step})"),
                             });
-                            let _ = app.emit("multiagent:agent_progress", payload);
+                            // 同 AgentProgress：Web 端靠它发现子 agent 的后台 shell 任务。
+                            let _ = app.emit("multiagent:agent_progress", payload.clone());
+                            let _ = crate::features::remote_control::forward_app_event(
+                                &app,
+                                "multiagent:agent_progress",
+                                payload,
+                            );
                         }
                         MM::Completed { agent_id, summary } => {
                             turn_shell_tasks.complete_agent(&agent_id);
