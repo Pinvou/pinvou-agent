@@ -40,13 +40,13 @@ export const staticRuntimeScriptPrefixes = ['platform/tauri/bridge/', 'platform/
 // relative paths in dist. Images imported through ESM are emitted hashed by
 // Vite and must NOT be listed here — duplicating them verbatim doubles dist
 // size. When new code starts referencing an asset by string path, register it
-// in one of the two lists below (the compatibility/asset tests do not catch a
-// missing file).
-const staticRuntimeAssetPaths = new Set([
+// in one of the two lists below; tests/runtime_asset_allowlist.test.mjs binds
+// resolveAppAssetUrl('...') literals to these lists and rejects stale entries.
+export const staticRuntimeAssetPaths = new Set([
   'assets/brand/brand-blue.png',
   'assets/megacube-icon.png',
 ]);
-const staticRuntimeAssetPrefixes = [
+export const staticRuntimeAssetPrefixes = [
   'assets/tool-icons/',
   'avatars/',
   'brand-icons/',
