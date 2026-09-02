@@ -15,7 +15,7 @@ set -euo pipefail
 
 QUANT="${1:-q4_k}"
 SENSEVOICE_COMMIT="c78e6919351ac83255e96de46169f518097f1ef3"
-CMAKE_VERSION="3.30.5"
+CMAKE_VERSION="4.4.2"
 ASR_DIR="$HOME/.pinvou3/asr"
 MODEL_FILE="sense-voice-small-${QUANT}.gguf"
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -38,8 +38,8 @@ if command -v cmake >/dev/null; then
 else
   echo "    cmake 缺失，下载预编译(免 root)…"
   case "$(uname -m)" in
-    aarch64) CMAKE_SHA256="da7dead2c92c1747b40d506d7f7d68590f5bab175316d2e7af73e48a2e417e48" ;;
-    x86_64) CMAKE_SHA256="f747d9b23e1a252a8beafb4ed2bc2ddf78cff7f04a8e4de19f4ff88e9b51dc9d" ;;
+    aarch64) CMAKE_SHA256="9ca1aadb4451c5dcbdc67f9b4aff42dab52abbaebd8db9e2900026502dbed671" ;;
+    x86_64) CMAKE_SHA256="3ada9a3f5d8a85413579bdd0ea6aa8e8da86efdd6d15c91a1afa517f2021956c" ;;
     *) echo "❌ cmake 自动下载暂不支持架构: $(uname -m)"; exit 1 ;;
   esac
   curl --retry 4 --retry-all-errors -fsSL -o "$WORK/cmake.tgz" \
