@@ -219,16 +219,22 @@ pub async fn get_super_permission_status() -> Result<bool, String> {
 }
 
 /// 切换超级权限。开启时 pkexec 弹系统密码框写 sudoers，关闭时 pkexec 删文件。
-/// 切换后重建并热刷所有运行中 engine 的 execpolicy 规则集（sudo hard-deny 随
-/// 开关增删）；session 的 sudo 引导状态由 per-turn reminder 实时注入（静态
-/// prompt 只在 spawn 时渲染，不热刷）。返回真实生效状态（pkexec 失败/取消时不会变）。
+/// After toggling, rebuild and hot-refresh the execpolicy ruleset of every
+/// running engine (sudo hard-deny is added/removed with the toggle); the
+/// session's sudo guidance state is injected live by the per-turn reminder
+/// (the static prompt renders only at spawn and is not hot-refreshed).
+/// Returns the real effective state (unchanged when pkexec fails/is cancelled).
 ///
-/// 全程持有进程级 [`crate::platform::super_permission::TOGGLE_LOCK`]：读盘
-/// 判定 → pkexec 写/删 → `refresh_permission_rulesets` 重建广播作为整体串行
-/// 执行，并发 toggle 不再交错，sudo hard-deny 规则集不会基于过期的 sudo 快照
-/// 广播（safety_deny_rules 注册的 narrow stale-snapshot window 已消除）。
-/// 切换是低频用户操作，跨 pkexec 慢调用持锁可接受；锁仅在此处持有，guard 绑定
-/// 到函数作用域，pkexec 出错提前返回时自动释放，不会阻塞其他 Tauri 命令。
+/// Holds the process-wide [`crate::platform::super_permission::TOGGLE_LOCK`]
+/// for the whole sequence: disk-state read → pkexec write/remove →
+/// `refresh_permission_rulesets` rebuild + broadcast run serialized as one
+/// unit, so concurrent toggles no longer interleave and the sudo hard-deny
+/// ruleset is never rebuilt from a stale sudo snapshot (the narrow
+/// stale-snapshot window registered in safety_deny_rules is closed).
+/// Toggling is a low-frequency user action, so holding the lock across the
+/// slow pkexec call is acceptable; the lock is held only here, the guard is
+/// scoped to the function, and an early pkexec error return releases it
+/// automatically without blocking other Tauri commands.
 #[tauri::command]
 pub async fn set_super_permission(
     enabled: bool,
@@ -240,10 +246,12 @@ pub async fn set_super_permission(
     } else {
         crate::platform::super_permission::disable()?;
     }
-    // refresh_all_instructions 目前是刻意的 no-op(engine_pool.rs):静态 prompt 只在
-    // engine spawn 时渲染一次,sudo 引导状态不进静态段,改由 per-turn reminder 实时注入
-    // (super_permission::turn_reminder),所以切换后下一 turn 即生效。保留此调用作为挂点:
-    // 若未来恢复 instructions 热刷,切换序列是正确触发点。
+    // refresh_all_instructions is a deliberate no-op today (engine_pool.rs):
+    // the static prompt renders once at engine spawn and the sudo guidance
+    // state is not part of the static segment — it is injected live by the
+    // per-turn reminder (super_permission::turn_reminder), so the toggle takes
+    // effect on the next turn. Keep this call as a hook point: if instructions
+    // hot-refresh is ever restored, the toggle sequence is the right trigger.
     pool.refresh_all_instructions().await;
     // sudo hard-deny rules are added/removed with the toggle state (deny sudo
     // while off / allow while on): recompute and hot-refresh the execpolicy

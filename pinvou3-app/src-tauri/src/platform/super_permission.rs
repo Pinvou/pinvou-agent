@@ -14,17 +14,23 @@
 //!
 //! 维护：卸载 .deb 时由 `prerm` 删 `/etc/sudoers.d/pinvou3`，避免遗留授权。
 
-/// 进程级切换互斥锁：超级权限的完整切换序列（`is_enabled()` 读盘判定 →
-/// pkexec 写/删 sudoers → engine 规则集重算广播）必须在持锁下整体执行。
+/// Process-wide toggle mutex: the full super-permission toggle sequence
+/// (`is_enabled()` disk read → pkexec write/remove of the sudoers file →
+/// engine ruleset rebuild + broadcast) must run as a whole under the lock.
 ///
-/// 不串行化时,两个并发 toggle 会交错 pkexec 写盘与 sudo 状态快照,后完成的
-/// `refresh_permission_rulesets` 可能基于过期的 sudo 快照重建并广播规则集,
-/// 让运行中的 engine 带着错误的 sudo 面直到下次重建/重启。切换是低频用户
-/// 操作,跨 pkexec 慢调用持锁可接受;锁只被切换序列持有,不阻塞其他命令。
+/// Without serialization, two concurrent toggles interleave the pkexec write
+/// with the sudo-state snapshot, and the later `refresh_permission_rulesets`
+/// may rebuild and broadcast a ruleset from a stale sudo snapshot, leaving
+/// running engines with the wrong sudo face until the next rebuild/restart.
+/// Toggling is a low-frequency user action, so holding the lock across the
+/// slow pkexec call is acceptable; only the toggle sequence holds the lock and
+/// other commands are not blocked.
 ///
-/// 覆盖边界:进程级锁无法串行化进程外修改(root shell、第二个应用实例、
-/// .deb `prerm` 卸载删除)。这些不做防御——`is_enabled()` 每次实时读盘,
-/// per-turn reminder 与下一次规则集 refresh 会自愈到真实状态。
+/// Coverage boundary: a process-wide lock cannot serialize out-of-process
+/// changes (root shells, a second app instance, `.deb` `prerm` removal).
+/// Those are not defended against — `is_enabled()` re-reads the disk on every
+/// call, and the per-turn reminder plus the next ruleset refresh self-heal to
+/// the real state.
 pub(crate) static TOGGLE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub fn is_enabled() -> bool {
@@ -70,9 +76,11 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    /// TOGGLE_LOCK 必须真正互斥：并发 toggle 的临界区（读盘判定 → 写 sudoers →
-    /// 规则集广播）不允许重叠。直接对进程级锁本身做验证（不触 pkexec/磁盘）：
-    /// 多个任务各自持锁进入临界区,进程内计数器峰值必须停在 1。
+    /// TOGGLE_LOCK must be truly exclusive: the critical section of concurrent
+    /// toggles (disk read → sudoers write → ruleset broadcast) must never
+    /// overlap. Probe the process-wide lock directly (no pkexec/disk): several
+    /// tasks each enter the critical section under the lock, and the
+    /// in-process counter peak must stay at 1.
     #[tokio::test]
     async fn toggle_lock_serializes_concurrent_critical_sections() {
         let in_critical = Arc::new(AtomicUsize::new(0));
@@ -85,7 +93,8 @@ mod tests {
                 let _guard = TOGGLE_LOCK.lock().await;
                 let observed = in_critical.fetch_add(1, Ordering::SeqCst) + 1;
                 max_concurrent.fetch_max(observed, Ordering::SeqCst);
-                // 主动让出：若锁失效,其他任务会趁隙闯入临界区,峰值升到 2+。
+                // Deliberate yield: if the lock were broken, other tasks would
+                // slip into the critical section here and the peak would hit 2+.
                 tokio::task::yield_now().await;
                 in_critical.fetch_sub(1, Ordering::SeqCst);
             }));
