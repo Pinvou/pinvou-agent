@@ -4,8 +4,8 @@
  * 验证回收站入口(chips 行)、子页面切换(标题+返回按钮,主列表消失)、
  * 列表渲染(名称/类型/回收时间)、恢复(含凭据提示)、导出(成功提示/取消静默)、
  * package_missing 禁用恢复与导出、彻底删除二次确认、空态文案、返回主列表、
- * 已安装卡片导出按钮(成功提示文件名/取消静默/卸载后消失)、
- * 上传技能卸载提示「移入回收站」。
+ * 已安装插件详情页导出按钮(列表卡片不渲染/成功提示文件名/取消静默/卸载后消失)、
+ * 上传技能卸载提示「移入回收站」、手写自定义 MCP(source:'preset')卸载不提示「移入回收站」。
  * 前置:先 npm run build:ui。
  */
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -42,6 +42,11 @@ function injectSource() {
     var skills=[
       {id:'my-test-skill',title:'my-test-skill',description:'用大模型整理会议纪要',installed:true,user_uploaded:true,subtitle:''},
     ];
+    // 手写自定义 MCP(迁移登记,source:'preset'):卸载保留目录、不进回收站,
+    // 前端卸载提示不得出现「移入回收站」。
+    var tools=[
+      {id:'my-preset-mcp',name:'my-preset-mcp',description:'手写自定义 MCP',version:'1.0.0',installed:true,source:'preset'},
+    ];
     var handlers={
       get_settings:function(){return {theme:'liquid-light',language:'zh-Hans'};},
       get_selected_pet:function(){return 'lingling';},
@@ -52,7 +57,13 @@ function injectSource() {
       get_mode_state:function(){return {mode:'yolo',plan_phase:'none'};},
       get_super_permission_status:function(){return false;},
       detect_local_vllm_setup:function(){return {eligible:false};},
-      list_marketplace_tools:function(){return [];},
+      list_marketplace_tools:function(){return tools.slice();},
+      // 卸载后工具从后端列表消失(真实后端语义:自定义 MCP 卸载删登记,不再列出)。
+      uninstall_marketplace_tool:function(args){
+        var i=tools.findIndex(function(x){return x.id===args.toolId;});
+        if(i>=0)tools.splice(i,1);
+        return null;
+      },
       get_marketplace_tool_auth_status:function(){return {status:'not_installed'};},
       // 卸载后技能从后端列表消失(真实后端语义:上传技能卸载进回收站,不再列出),
       // 前端卡片随之卸载——「卸载后无导出按钮」断言依赖这一状态变化。
@@ -83,7 +94,7 @@ function injectSource() {
         if(hit.package_missing)throw new Error('包目录缺失: '+args.id);
         return window.__EXPORT_CANCEL__?null:('C:\\\\Users\\\\test\\\\Downloads\\\\export-'+args.id+'.zip');
       },
-      // 已安装插件导出(卡片操作区):同款取消/路径语义,默认文件名 <id>.zip。
+      // 已安装插件导出(详情页操作区):同款取消/路径语义,默认文件名 <id>.zip。
       export_installed_plugin:function(args){
         return window.__EXPORT_CANCEL__?null:('C:\\\\Users\\\\test\\\\Downloads\\\\'+args.id+'.zip');
       },
@@ -151,30 +162,46 @@ async function dismiss(page) {
     // 1. 回收站入口按钮存在(chips 行「仅显示已安装」旁)
     rec('回收站入口按钮渲染', await page.evaluate(() => !!document.querySelector('[data-testid="tool-store-recycle-bin"]')));
 
-    // 2. 已安装卡片(上传技能 my-test-skill)操作区出现「导出」按钮;未安装卡片没有
-    rec('已安装卡片渲染导出按钮且仅此一个', await page.evaluate(() => {
+    // 2. 列表卡片不渲染「导出」按钮(导出已收敛进详情页)
+    rec('列表卡片不渲染导出按钮', await page.evaluate(() =>
+      !document.querySelector('[data-testid="tool-store-export"]')));
+    // 3. 打开 my-test-skill 详情页 → 操作区渲染「导出」按钮;点击导出 →
+    //    export_installed_plugin(id);成功提示标题只含文件名,路径进副标题;取消静默
+    await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('div')].filter(el =>
+        (el.textContent || '').includes('my-test-skill') && el.querySelector('button'));
+      const row = rows[rows.length - 1];
+      if (row) row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+    await sleep(400);
+    rec('详情页渲染导出按钮且仅此一个', await page.evaluate(() => {
       const btns = [...document.querySelectorAll('[data-testid="tool-store-export"]')];
       return btns.length === 1 && btns[0].getAttribute('data-tool-id') === 'my-test-skill';
     }));
-    // 3. 点击导出 → export_installed_plugin(id);成功提示标题只含文件名,路径进副标题;取消静默
     await page.click('[data-testid="tool-store-export"]');
     await sleep(400);
-    rec('卡片导出调用 export_installed_plugin(id)', await page.evaluate(() =>
+    rec('详情页导出调用 export_installed_plugin(id)', await page.evaluate(() =>
       window.__PINVOU_MOCK_CALLS__.some(c => c.cmd === 'export_installed_plugin' && c.args.id === 'my-test-skill')));
-    rec('卡片导出成功提示标题只含文件名', await page.evaluate(() => {
+    rec('详情页导出成功提示标题只含文件名', await page.evaluate(() => {
       const title = [...document.querySelectorAll('div')].find(d => (d.textContent || '').trim() === '已导出为 my-test-skill.zip');
       return !!title && !title.textContent.includes('C:') && title.classList.contains('break-all');
     }));
-    rec('卡片导出成功副标题含完整路径', await page.evaluate(() =>
+    rec('详情页导出成功副标题含完整路径', await page.evaluate(() =>
       [...document.querySelectorAll('div')].some(d => (d.textContent || '').trim() === 'C:\\Users\\test\\Downloads\\my-test-skill.zip' && d.classList.contains('break-all'))));
     await dismiss(page);
     await page.evaluate(() => { window.__EXPORT_CANCEL__ = true; });
     await page.click('[data-testid="tool-store-export"]');
     await sleep(400);
-    rec('卡片导出取消(返回 null)静默不提示', await page.evaluate(() =>
+    rec('详情页导出取消(返回 null)静默不提示', await page.evaluate(() =>
       window.__PINVOU_MOCK_CALLS__.filter(c => c.cmd === 'export_installed_plugin').length === 2
       && !document.body.innerText.includes('已导出为')));
     await page.evaluate(() => { window.__EXPORT_CANCEL__ = false; });
+    // 关闭详情页返回列表(点击弹窗蒙层)
+    await page.evaluate(() => {
+      const modal = document.querySelector('.ts-modal-in');
+      if (modal && modal.parentElement) modal.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+    await sleep(300);
 
     // 4. 上传技能卸载提示「移入回收站」(预置/普通卸载不出现该文案)
     await page.evaluate(() => {
@@ -186,8 +213,19 @@ async function dismiss(page) {
     await sleep(600);
     rec('上传技能卸载提示移入回收站', await page.evaluate(() => document.body.innerText.includes('已卸载「my-test-skill」，移入回收站')));
     await dismiss(page);
-    rec('卸载后卡片不再渲染导出按钮', await page.evaluate(() =>
+    rec('卸载后不再渲染导出按钮', await page.evaluate(() =>
       !document.querySelector('[data-testid="tool-store-export"]')));
+
+    // 4b. 手写自定义 MCP(source:'preset')卸载不进回收站:提示为普通卸载文案,
+    //     不得出现「移入回收站」(后端保留目录,回收站找不到,文案不能说谎)
+    await page.click('[data-testid="tool-store-action"][data-tool-id="my-preset-mcp"]');
+    await sleep(600);
+    rec('preset 自定义 MCP 卸载提示不含移入回收站', await page.evaluate(() =>
+      document.body.innerText.includes('已卸载「my-preset-mcp」')
+      && !document.body.innerText.includes('移入回收站')));
+    await dismiss(page);
+    rec('preset 自定义 MCP 卸载后卡片消失', await page.evaluate(() =>
+      !document.querySelector('[data-testid="tool-store-action"][data-tool-id="my-preset-mcp"]')));
 
     // 3. 打开回收站 → 切换为子页面(非弹窗):触发 list_recycled_plugins,
     //    页面标题/返回按钮出现,主列表(搜索框)消失;条目渲染(名称/类型徽标/回收时间)

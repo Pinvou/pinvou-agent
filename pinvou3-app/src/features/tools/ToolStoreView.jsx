@@ -41,9 +41,10 @@ const PlatformToolAction = ({ copy, t, ...props }) => {
       </span>
     );
   }
-  // 已安装插件（上传/预置/自定义 MCP）附「导出」按钮（Web 只读已在上方 return 掉）；
-  // 内置卡（builtin，非包）不导出。样式对齐 TsActionBtn 的次要按钮。
-  const showExport = !!(props.tool && props.tool.installed && !props.tool.builtin && props.tool.backendId && props.onExport);
+  // 已安装插件（上传/预置/自定义 MCP）的「导出」按钮只出现在详情页（size="lg"），
+  // 列表卡片不展示（Web 只读已在上方 return 掉）；内置卡（builtin，非包）不导出。
+  // 样式对齐 TsActionBtn 的次要按钮。
+  const showExport = !!(props.size === 'lg' && props.tool && props.tool.installed && !props.tool.builtin && props.tool.backendId && props.onExport);
   const exportBtn = showExport && (
     <button
       data-testid="tool-store-export"
@@ -920,7 +921,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       };
       // 彻底删除：二次确认（沿用更新确认的弹窗模式）后物理删除包文件与回收站条目。
       const doPurgeRecycled = async () => {
-        if (!purgeConfirm) return;
+        if (!purgeConfirm || busyRef.current) return;
         const { id, name } = purgeConfirm;
         setPurgeConfirm(null);
         setBusyId(id);
@@ -1308,9 +1309,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             : false,
         };
       });
-      // 自定义 MCP（上传的，不在内置 tsToolsData 里的）动态合成卡片：安装时显示、
+      // 自定义 MCP（不在内置 tsToolsData 里的后端条目）动态合成卡片：安装时显示、
       // 卸载后从 list_marketplace_tools 消失，不依赖前端硬编码。展示文案走 i18n
       // overlay（localizeTool，按 backendId 三语覆盖），后端 name/desc 兜底。
+      // userUploaded 以后端 source 为准：仅 upload（用户上传包）卸载进回收站；
+      // preset（市场预置/手写自定义 MCP 迁移登记）卸载保留目录、不进回收站；
+      // source 缺失（旧后端）取 false——宁可少提示「移入回收站」，不说谎。
       const customMcpTools = toolBackend
         .filter(x => tsToolsData.every(t => t.backendId !== x.id))
         .map(x => {
@@ -1325,7 +1329,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             latency: storeCopy.localLatency, desc: (bf && bf.description) || x.description || '',
             icon: Server, color: 'bg-gradient-to-b from-slate-400 to-slate-600',
             installed: bs ? bs.installed : !!x.installed,
-            authRequired: false, userUploaded: true,
+            authRequired: false, userUploaded: x.source === 'upload',
             actions: actionsOf(bs),
           };
           return localizeTool(base, t);
@@ -2366,7 +2370,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   <ul data-testid="recycled-plugin-list" className="flex flex-col">
                     {recycledPlugins.map((item) => {
                       const name = item.display_name || item.id;
-                      const recycledAt = item.recycled_at ? new Date(item.recycled_at).toLocaleString() : '';
+                      // recycled_at 非法（旧数据/异常写入）时不渲染时间，避免透出 "Invalid Date"
+                      const recycledDate = item.recycled_at ? new Date(item.recycled_at) : null;
+                      const recycledAt = recycledDate && !Number.isNaN(recycledDate.getTime()) ? recycledDate.toLocaleString() : '';
                       return (
                         <li key={item.id} data-testid={`recycled-plugin-${item.id}`} className="flex items-center gap-4 py-3 border-b border-slate-100 dark:border-white/5 last:border-0">
                           <div className="flex-1 min-w-0">

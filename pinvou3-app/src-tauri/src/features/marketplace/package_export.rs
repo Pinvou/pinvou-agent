@@ -1,9 +1,13 @@
 //! 包目录 → 标准插件包 zip 的导出：回收站导出与已安装包导出共用的写出逻辑。
 //!
+// architecture-guard: allow-target-cfg -- persist_tempfile 的 rename 覆盖需区分 Windows 瞬时占用重试与 Unix 直接 rename，属单函数 OS 原语差异；原子写失败场景由 cfg(unix) 测试覆盖，Windows 变体照搬 write_atomic 既有口径。
+//!
 //! zip 布局对齐 plugin-package-spec：包内容（plugin.json、mcp/、skills/ 等）
 //! 平铺在 zip 根，可经统一导入管线 `plugin_import::import_plugin_package` 重新
 //! 导入。只打包插件包本体（不含回收站清单等外部元数据）；Python 运行缓存
-//! （`__pycache__/`、`*.pyc`）不打包（与导入管线的磁盘比对豁免口径一致）。
+//! （`__pycache__/`、`*.pyc`）不打包（与导入管线的磁盘比对豁免口径一致）；
+//! 符号链接不跟随、不打包（防把包外文件带进 zip / 链接环）。写出为原子写：
+//! 同目录临时文件 + rename 覆盖，中途失败不动用户已确认覆盖的原目标文件。
 //!
 //! manifest 净化（导出已安装包时启用，防御性兜底）：安装期
 //! `connectors::add_local_to_mcp_json` 会把 `server.py` 入口参数改写为
@@ -42,8 +46,9 @@ pub fn export_installed_plugin(pkg_id: &str, dest_zip: &Path) -> Result<(), Stri
 /// 把包目录打成标准插件包 zip（包内容平铺在 zip 根），返回写入条目数。
 /// `sanitize_args`：`mcp/manifest.json` 的 args 净化（见模块注释；回收站导出
 /// 置 false——回收的包未经安装期改写，原样打包）。
-/// 直接写用户选定的目标（保存对话框已确认覆盖）；中途失败清理半写文件，
-/// 不留损坏 zip。
+/// 原子写（底座 `write_atomic` 同范式，流式版）：先写目标同目录的临时文件，
+/// 全部写完 sync 后 rename 覆盖目标——用户已确认覆盖的原文件在中途失败时
+/// 保持原样不动；临时文件随 NamedTempFile drop 自动清理，不留半写 zip。
 pub(crate) fn write_package_zip(
     src_dir: &Path,
     dest_zip: &Path,
@@ -56,41 +61,79 @@ pub(crate) fn write_package_zip(
         return Err(format!("包目录 {} 为空，无法导出", src_dir.display()));
     }
     files.sort();
-    let result = (|| -> Result<(), String> {
-        let out = std::fs::File::create(dest_zip)
-            .map_err(|e| format!("创建 {} 失败: {e}", dest_zip.display()))?;
-        let mut zw = zip::ZipWriter::new(out);
-        let opts = zip::write::SimpleFileOptions::default();
-        for (rel, path) in &files {
-            // 条目名即包内相对路径（盘上真实遍历产出，恒为 root 子孙，无穿越
-            // 风险）；统一 '/' 分隔，与导入管线的路径口径一致。
-            zw.start_file(rel, opts)
+    // 同目录临时文件：rename 保证同盘原子替换；中途任何失败都不动原目标。
+    let parent = dest_zip
+        .parent()
+        .ok_or_else(|| format!("目标 {} 无父目录，无法导出", dest_zip.display()))?;
+    let tmp = tempfile::Builder::new()
+        .prefix(".pinvou3-export-")
+        .tempfile_in(parent)
+        .map_err(|e| format!("创建临时文件（{} 所在目录）失败: {e}", dest_zip.display()))?;
+    let mut zw = zip::ZipWriter::new(tmp);
+    let opts = zip::write::SimpleFileOptions::default();
+    for (rel, path) in &files {
+        // 条目名即包内相对路径（盘上真实遍历产出，恒为 root 子孙，无穿越
+        // 风险）；统一 '/' 分隔，与导入管线的路径口径一致。
+        zw.start_file(rel, opts)
+            .map_err(|e| format!("写 zip 条目 {rel}: {e}"))?;
+        if sanitize_args && rel == "mcp/manifest.json" {
+            let raw =
+                std::fs::read(path).map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+            let sanitized = sanitize_manifest_args(&raw, &src_dir.join("mcp"));
+            zw.write_all(&sanitized)
                 .map_err(|e| format!("写 zip 条目 {rel}: {e}"))?;
-            if sanitize_args && rel == "mcp/manifest.json" {
-                let raw = std::fs::read(path)
-                    .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
-                let sanitized = sanitize_manifest_args(&raw, &src_dir.join("mcp"));
-                zw.write_all(&sanitized)
-                    .map_err(|e| format!("写 zip 条目 {rel}: {e}"))?;
-            } else {
-                let mut reader = std::fs::File::open(path)
-                    .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
-                std::io::copy(&mut reader, &mut zw)
-                    .map_err(|e| format!("写 zip 条目 {rel}: {e}"))?;
+        } else {
+            let mut reader = std::fs::File::open(path)
+                .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+            std::io::copy(&mut reader, &mut zw).map_err(|e| format!("写 zip 条目 {rel}: {e}"))?;
+        }
+    }
+    let tmp = zw.finish().map_err(|e| format!("完成 zip 写入: {e}"))?;
+    tmp.as_file()
+        .sync_all()
+        .map_err(|e| format!("同步临时文件失败: {e}"))?;
+    persist_tempfile(tmp, dest_zip)?;
+    Ok(files.len())
+}
+
+/// 临时文件 rename 覆盖落盘：Windows 上杀软/索引器可能短暂持有目标句柄导致
+/// 替换被拒（底座 `write_atomic`、`rename_dir_with_retry` 同口径），对瞬时
+/// 错误退避重试；永久性错误直接报错。失败时临时文件随 drop 清理，不动原目标。
+#[cfg(not(windows))]
+fn persist_tempfile(tmp: tempfile::NamedTempFile, dest_zip: &Path) -> Result<(), String> {
+    tmp.persist(dest_zip)
+        .map_err(|e| format!("落盘 {} 失败: {}", dest_zip.display(), e.error))?;
+    Ok(())
+}
+
+/// Windows 变体：见非 Windows 版注释。
+#[cfg(windows)]
+fn persist_tempfile(tmp: tempfile::NamedTempFile, dest_zip: &Path) -> Result<(), String> {
+    const MAX_PERSIST_ATTEMPTS: usize = 6;
+    let mut pending = tmp;
+    for attempt in 0..MAX_PERSIST_ATTEMPTS {
+        match pending.persist(dest_zip) {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                let retryable = err.error.kind() == std::io::ErrorKind::PermissionDenied
+                    || matches!(err.error.raw_os_error(), Some(5 | 32 | 33));
+                if !retryable || attempt + 1 == MAX_PERSIST_ATTEMPTS {
+                    return Err(format!("落盘 {} 失败: {}", dest_zip.display(), err.error));
+                }
+                pending = err.file;
+                std::thread::sleep(std::time::Duration::from_millis(
+                    10u64.saturating_mul(1u64 << attempt),
+                ));
             }
         }
-        zw.finish().map_err(|e| format!("完成 zip 写入: {e}"))?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(dest_zip);
     }
-    result?;
-    Ok(files.len())
+    Ok(())
 }
 
 /// 递归收集导出条目（相对路径用 '/' 分隔）：跳过 Python 运行缓存
 /// （`__pycache__/` 子树与 `*.pyc`，与 plugin_import 的磁盘比对豁免口径一致）。
+/// 符号链接一律跳过（`symlink_metadata` 不跟随）：用户手工放进包目录的链接
+/// 若跟随会把包外文件打进 zip，链接环也无深度保护。
 fn collect_export_files(
     root: &Path,
     dir: &Path,
@@ -99,7 +142,11 @@ fn collect_export_files(
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_dir() {
+        let meta = std::fs::symlink_metadata(&path)?;
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
             collect_export_files(root, &path, out)?;
             continue;
         }
@@ -168,11 +215,11 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         f();
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -192,8 +239,7 @@ mod tests {
             .join("other/tool.py")
             .to_string_lossy()
             .replace('\\', "\\\\");
-        let raw =
-            format!(r#"{{"id":"exp-mcp","args":["{abs_entry}","--flag","{abs_outside}"]}}"#);
+        let raw = format!(r#"{{"id":"exp-mcp","args":["{abs_entry}","--flag","{abs_outside}"]}}"#);
         let out = sanitize_manifest_args(raw.as_bytes(), &mcp_dir);
         let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
         let outside_expected = base.join("other/tool.py").to_string_lossy().to_string();
@@ -339,5 +385,100 @@ mod tests {
                 crate::features::marketplace::store::BundleSource::Upload(_)
             ));
         });
+    }
+
+    /// 符号链接不跟随：包目录里的链接文件/链接目录/链接环都不进 zip，
+    /// 导出正常完成，只含真实文件（symlink 创建需 unix 权限语义，Windows
+    /// 需开发者模式/特权，故仅 unix 跑）。
+    #[cfg(unix)]
+    #[test]
+    fn write_package_zip_skips_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-pkgexport-symlink-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pkg = dir.join("pkg");
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(pkg.join("skills/s")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(pkg.join("plugin.json"), "{}").unwrap();
+        std::fs::write(pkg.join("skills/s/SKILL.md"), "---\nname: s\n---\n").unwrap();
+        std::fs::write(outside.join("secret.txt"), "包外内容不得入包").unwrap();
+        // 链接文件（指向包外）、链接目录（指向包外）、链接环（指回祖先目录）
+        symlink(outside.join("secret.txt"), pkg.join("linked-secret.txt")).unwrap();
+        symlink(&outside, pkg.join("linked-dir")).unwrap();
+        symlink(&pkg, pkg.join("skills/loop")).unwrap();
+
+        let dest = dir.join("export.zip");
+        let written = write_package_zip(&pkg, &dest, false).expect("含符号链接不应导致导出失败");
+        assert_eq!(written, 2, "只有真实文件入包");
+
+        let archive_file = std::fs::File::open(&dest).unwrap();
+        let mut archive = zip::ZipArchive::new(archive_file).unwrap();
+        let mut names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["plugin.json".to_string(), "skills/s/SKILL.md".to_string(),],
+            "符号链接（文件/目录/环）一律不打包"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 原子写：中途失败（包内文件读到一半不可读）时，用户已确认覆盖的原目标
+    /// 文件内容保持原样，且目标目录不留临时文件残骸。
+    /// （chmod 000 注入读取失败依赖 unix 权限语义，故仅 unix 跑。）
+    #[cfg(unix)]
+    #[test]
+    fn failed_export_keeps_existing_dest_untouched() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-pkgexport-atomic-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pkg = dir.join("pkg");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("good.txt"), "ok").unwrap();
+        // 排序后 good.txt 先写、z-broken.bin 后读 → 真实的「写了一半失败」。
+        let broken = pkg.join("z-broken.bin");
+        std::fs::write(&broken, "x").unwrap();
+        std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let dest = dir.join("export.zip");
+        std::fs::write(&dest, "用户已有的原文件内容").unwrap();
+
+        assert!(
+            write_package_zip(&pkg, &dest, false).is_err(),
+            "读到不可读文件应失败"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&dest).unwrap(),
+            "用户已有的原文件内容",
+            "中途失败不得改动原目标文件"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.starts_with(".pinvou3-export-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "失败应清理临时文件，不留残骸: {leftovers:?}"
+        );
+
+        // 恢复权限，避免临时目录清理留下不可读文件。
+        let _ = std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o644));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -767,7 +767,9 @@ impl SkillMarketplaceManager {
                         _ => skill_id.to_string(),
                     };
                     if let Err(e) = self.bundle_store.remove(skill_id) {
-                        log::warn!("[skill-marketplace] bundles.json 镜像删除失败（uninstall {skill_id}）: {e}");
+                        log::warn!(
+                            "[skill-marketplace] bundles.json 镜像删除失败（uninstall {skill_id}）: {e}"
+                        );
                     }
                     if let Err(e) = self.recycle_bin.recycle_package(
                         skill_id,
@@ -777,7 +779,9 @@ impl SkillMarketplaceManager {
                     ) {
                         // 回收失败（目录已回滚原位）：登记回写保持一致，卸载 fail loud。
                         if let Err(re) = self.bundle_store.upsert(record) {
-                            log::warn!("[skill-marketplace] 回收失败后登记回写失败（{skill_id}）: {re}");
+                            log::warn!(
+                                "[skill-marketplace] 回收失败后登记回写失败（{skill_id}）: {re}"
+                            );
                         }
                         return Err(format!("移入回收站失败（{skill_id}）: {e}"));
                     }
@@ -2688,23 +2692,27 @@ mod tests {
             );
             // install 登记内容指纹（update_available 的比对基准）
             let store = crate::features::marketplace::store::BundleStore::new();
-            assert!(store
-                .get("government-writing")
-                .unwrap()
-                .expect("install 应登记")
-                .content_fingerprint
-                .is_some());
-            assert!(mgr
-                .list_skills()
-                .iter()
-                .any(|s| s.id == "government-writing" && s.installed));
+            assert!(
+                store
+                    .get("government-writing")
+                    .unwrap()
+                    .expect("install 应登记")
+                    .content_fingerprint
+                    .is_some()
+            );
+            assert!(
+                mgr.list_skills()
+                    .iter()
+                    .any(|s| s.id == "government-writing" && s.installed)
+            );
 
             mgr.uninstall("government-writing").unwrap();
             assert!(!skill_dir.exists(), "卸载应删目录");
-            assert!(mgr
-                .list_skills()
-                .iter()
-                .any(|s| s.id == "government-writing" && !s.installed));
+            assert!(
+                mgr.list_skills()
+                    .iter()
+                    .any(|s| s.id == "government-writing" && !s.installed)
+            );
         });
     }
 
@@ -3198,17 +3206,19 @@ mod tests {
                 skill_md.contains("present_artifact(path, title)"),
                 "应要求产物卡交付"
             );
-            assert!(mgr
-                .list_skills()
-                .iter()
-                .any(|s| s.id == "pptx" && s.installed));
+            assert!(
+                mgr.list_skills()
+                    .iter()
+                    .any(|s| s.id == "pptx" && s.installed)
+            );
 
             mgr.uninstall("pptx").unwrap();
             assert!(!skill_dir.exists(), "卸载应删目录");
-            assert!(mgr
-                .list_skills()
-                .iter()
-                .any(|s| s.id == "pptx" && !s.installed));
+            assert!(
+                mgr.list_skills()
+                    .iter()
+                    .any(|s| s.id == "pptx" && !s.installed)
+            );
         });
     }
 
@@ -3384,10 +3394,11 @@ mod tests {
                 !skmd.contains("mcporter"),
                 "SKILL.md 不应残留 mcporter 调用说明"
             );
-            assert!(mgr
-                .list_skills()
-                .iter()
-                .any(|s| s.id == "tencent-docs-skill" && s.installed));
+            assert!(
+                mgr.list_skills()
+                    .iter()
+                    .any(|s| s.id == "tencent-docs-skill" && s.installed)
+            );
 
             mgr.uninstall("tencent-docs-skill").unwrap();
             assert!(!skill_dir.exists(), "卸载应删目录");
@@ -3501,7 +3512,10 @@ mod tests {
         assert_eq!(list.len(), 1, "回收清单应有记录");
         assert_eq!(list[0].id, "up-skill");
         assert_eq!(list[0].display_name, "pkg.zip");
-        assert_eq!(list[0].kind, crate::features::marketplace::recycle_bin::KIND_SKILL);
+        assert_eq!(
+            list[0].kind,
+            crate::features::marketplace::recycle_bin::KIND_SKILL
+        );
         assert!(!list[0].package_missing);
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -3535,7 +3549,11 @@ mod tests {
         // 模拟「组合包已整包回收」：回收站里存在含该技能的包目录。
         let recycled_skill = tmp.join("recycle-bin/some-bundle/skills/recycle-aware-skill");
         std::fs::create_dir_all(&recycled_skill).unwrap();
-        std::fs::write(recycled_skill.join("SKILL.md"), "---\nname: recycle-aware-skill\n---").unwrap();
+        std::fs::write(
+            recycled_skill.join("SKILL.md"),
+            "---\nname: recycle-aware-skill\n---",
+        )
+        .unwrap();
         let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
 
         mgr.uninstall("recycle-aware-skill")
@@ -3554,7 +3572,10 @@ mod tests {
     fn uninstall_unknown_skill_is_noop() {
         let tmp = fresh_dir("unknown_noop");
         let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
-        assert!(mgr.uninstall("never-installed").is_ok(), "无目录无登记应为 Ok no-op");
+        assert!(
+            mgr.uninstall("never-installed").is_ok(),
+            "无目录无登记应为 Ok no-op"
+        );
         assert!(
             mgr.recycle_bin.list().unwrap().is_empty(),
             "no-op 卸载不得产生回收站条目"
@@ -3705,6 +3726,9 @@ mod tests {
                     legacy_skills_dir: root.join("bundle/skills"),
                     bundle_store: crate::features::marketplace::store::BundleStore::with_file(
                         root.join("bundles.json"),
+                    ),
+                    recycle_bin: crate::features::marketplace::recycle_bin::RecycleBin::with_roots(
+                        root.clone(),
                     ),
                 };
                 mgr.import_package_named(&z, "pkg.zip")

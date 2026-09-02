@@ -473,15 +473,43 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
     // sessions with its scripts outside the execpolicy deny rules. Abort on
     // failure (same discipline as the install path's abort-on-delete-failure):
     // the MCP stays installed, the claim stays stable, and the user can retry.
-    for sid in companions {
+    //
+    // Upload 组合包例外（B1）：companion 技能在 bundles.json 无独立登记，此时
+    // MCP 未卸、`skill_owner_package` 仍判归本包 —— 走技能物理删除会把用户唯一
+    // 副本的 `bundles/<pkg>/skills/<sid>` 删掉，随后整包回收只剩残缺包（kind
+    // 退化为 mcp）。Upload 来源的包卸载 = 整包（含 skills/）进回收站，companion
+    // 不单独物理删除，其 scope 清理挪到包卸载成功后（卸载失败则技能仍在，
+    // 不应提前清 scope）。判定只认 bundles.json 登记的 Upload 来源；读失败按
+    // 非 Upload 走原路径 —— 该路径的技能卸载自身对 bundles.json 读失败
+    // fail-closed 中止（skill_marketplace::uninstall），不会误删。
+    let recycles_with_package = crate::features::marketplace::store::BundleStore::new()
+        .get(tool_id)
+        .ok()
+        .flatten()
+        .is_some_and(|r| {
+            matches!(
+                r.source,
+                crate::features::marketplace::store::BundleSource::Upload(_)
+            )
+        });
+    for sid in &companions {
+        if recycles_with_package {
+            continue; // companion 随整包回收，见上注释
+        }
         crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-            .uninstall(&sid)
+            .uninstall(sid)
             .map_err(|e| format!("联动卸载配套技能 '{sid}' 失败（已中止工具卸载，请重试）: {e}"))?;
         // Scope entries are cleared only after the skill is actually gone —
         // otherwise a still-installed skill would be silently re-enabled.
-        crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(&sid);
+        crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(sid);
     }
     mgr.uninstall(tool_id)?;
+    if recycles_with_package {
+        // 整包已回收（companion 目录随包搬离）→ 此时技能确实没了，再清 scope。
+        for sid in &companions {
+            crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(sid);
+        }
+    }
     // 已卸载的连接器从两个 scope 的禁用集移除(避免残留 id)。
     crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id);
     Ok(())
@@ -951,8 +979,8 @@ pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), Str
 
 /// 回收站列表（只读；Web 端 access-policy 放行 list_*）。
 #[tauri::command]
-pub fn list_recycled_plugins(
-) -> Result<Vec<crate::features::marketplace::recycle_bin::RecycledPluginInfo>, String> {
+pub fn list_recycled_plugins()
+-> Result<Vec<crate::features::marketplace::recycle_bin::RecycledPluginInfo>, String> {
     crate::features::marketplace::recycle_bin::RecycleBin::new().list()
 }
 
@@ -1374,5 +1402,83 @@ mod tests {
     fn recycle_export_default_name_is_package_id_zip() {
         assert_eq!(recycle_export_default_name("my-pkg"), "my-pkg.zip");
         assert_eq!(recycle_export_default_name("up-skill"), "up-skill.zip");
+    }
+
+    /// B1 全链路回归：Upload 组合包（mcp/ + skills/）经真实命令路径
+    /// `uninstall_marketplace_tool_sync` 卸载 —— companion 技能在 bundles.json 无
+    /// 独立登记、MCP 未卸前 `skill_owner_package` 仍判归本包，此前被物理删除、
+    /// 整包回收只剩残缺包（kind 退化 mcp）。修复后 companion 随整包回收：
+    /// 回收条目 kind=bundle 且 skills/ 内容完整。
+    /// 借 ENV_LOCK 与其它 mutate PINVOU3_HOME 的测试串行。
+    #[test]
+    fn uninstall_upload_bundle_via_command_recycles_companion_skills() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-uninstall-cmd-test-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        // 组合包落盘：mcp/manifest.json（声明 companion_skills）+ skills/<sid>/SKILL.md。
+        let manifest_dir = crate::features::marketplace::mcp_catalog::package_mcp_dir("up-cmd");
+        std::fs::create_dir_all(&manifest_dir).unwrap();
+        std::fs::write(
+            manifest_dir.join("manifest.json"),
+            r#"{"id":"up-cmd","name":"UpCmd","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["up-cmd-skill"]}"#,
+        )
+        .unwrap();
+        let skill_dir = crate::platform::paths::bundles_root().join("up-cmd/skills/up-cmd-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "---\nname: up-cmd-skill\n---\n").unwrap();
+        let mgr = crate::features::marketplace::MarketplaceManager::new();
+        mgr.install_upload(
+            "up-cmd",
+            crate::features::marketplace::store::BundleSource::Upload("up-cmd.zip".to_string()),
+        )
+        .unwrap();
+        assert!(
+            skill_dir.join("SKILL.md").is_file(),
+            "前置：companion 已落盘"
+        );
+
+        uninstall_marketplace_tool_sync("up-cmd").expect("命令路径卸载应成功");
+
+        let recycled =
+            crate::platform::paths::pinvou3_home().join("marketplace/recycle-bin/up-cmd");
+        assert!(
+            recycled.join("mcp/manifest.json").is_file(),
+            "mcp/ 应完整保留在回收站"
+        );
+        assert!(
+            recycled.join("skills/up-cmd-skill/SKILL.md").is_file(),
+            "companion 技能应随整包回收，不得被物理删除"
+        );
+        assert!(
+            !crate::platform::paths::bundles_root()
+                .join("up-cmd")
+                .exists(),
+            "整包应搬离 bundles_root"
+        );
+        let list = crate::features::marketplace::recycle_bin::RecycleBin::new()
+            .list()
+            .unwrap();
+        assert_eq!(list.len(), 1, "回收清单应有且仅有一条");
+        assert_eq!(
+            list[0].kind,
+            crate::features::marketplace::recycle_bin::KIND_BUNDLE,
+            "组合包回收条目 kind 应为 bundle（skills/ 未被先删）"
+        );
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

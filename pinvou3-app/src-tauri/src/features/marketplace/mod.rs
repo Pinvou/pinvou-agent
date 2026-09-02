@@ -314,6 +314,18 @@ impl Drop for MarketplaceStateTransaction {
     }
 }
 
+/// BundleSource → 前端契约字符串（`MarketplaceToolInfo.source`："upload" |
+/// "preset" | "builtin"）。Unknown（前向兼容的未识别来源）归 preset：其卸载
+/// 行为是保留目录（不匹配 Upload 回收分支），按非上传展示才不说谎（M4）。
+fn tool_source_contract(source: &store::BundleSource) -> &'static str {
+    match source {
+        store::BundleSource::Upload(_) => "upload",
+        store::BundleSource::Preset => "preset",
+        store::BundleSource::Builtin => "builtin",
+        store::BundleSource::Unknown(_) => "preset",
+    }
+}
+
 // 对外 pub 面保持不变:类型从 types 子模块 re-export。
 pub use types::{
     ConfigField, MarketplaceToolInfo, MarketplaceToolValidation, McpSecretMigrationResult,
@@ -623,24 +635,33 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// 前端列表：所有可用工具 + 安装状态。上传包若有用户自定义展示名/说明覆盖
     /// （bundles.json extra，仅 Upload 来源生效），name/description 用覆盖值——
     /// 与 `BundleRegistry::list`（bundle_readiness）同一口径，避免卡片与
-    /// composer 菜单两处标题不一致。
+    /// composer 菜单两处标题不一致。`source` 按 bundles.json 记录的实际
+    /// BundleSource 填充（M4：前端据此区分「上传包卸载进回收站」与
+    /// 「预置/自定义卸载保留目录」）。
     pub fn list_tools(&self) -> Vec<MarketplaceToolInfo> {
         let installed = self.installed_ids();
-        // 一次读全量记录（含 Upload 门禁），避免逐工具取锁+整文件解析的 N+1；
-        // 读失败（如损坏 JSON）warn 后降级为「无覆盖」，口径同 bundle.rs 的
-        // store 读回退。
-        let upload_records: Vec<store::BundleRecord> = match store::BundleStore::new().records() {
-            Ok(records) => records
-                .into_iter()
-                .filter(|r| matches!(r.source, store::BundleSource::Upload(_)))
-                .collect(),
+        // 一次读全量记录，同时供展示覆盖（仅 Upload 记录生效）与 source 填充，
+        // 避免逐工具取锁+整文件解析的 N+1。读失败（如损坏 JSON）warn 后降级：
+        // 展示覆盖按「无覆盖」（口径同 bundle.rs 的 store 读回退），source 按
+        // 「无记录 = builtin」（宁可少提示「移入回收站」，不说谎）。
+        let records: Vec<store::BundleRecord> = match store::BundleStore::new().records() {
+            Ok(records) => records,
             Err(e) => {
-                log::warn!("[marketplace] BundleStore 读取失败，list_tools 不应用展示覆盖: {e}");
+                log::warn!(
+                    "[marketplace] BundleStore 读取失败，list_tools 不应用展示覆盖、source 按 builtin: {e}"
+                );
                 Vec::new()
             }
         };
-        let upload_by_id: std::collections::HashMap<&str, &store::BundleRecord> =
-            upload_records.iter().map(|r| (r.id.as_str(), r)).collect();
+        let upload_by_id: std::collections::HashMap<&str, &store::BundleRecord> = records
+            .iter()
+            .filter(|r| matches!(r.source, store::BundleSource::Upload(_)))
+            .map(|r| (r.id.as_str(), r))
+            .collect();
+        let source_by_id: std::collections::HashMap<&str, &str> = records
+            .iter()
+            .map(|r| (r.id.as_str(), tool_source_contract(&r.source)))
+            .collect();
         self.available_tools()
             .into_iter()
             .map(|m| {
@@ -656,6 +677,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     None => (m.name, m.description),
                 };
                 MarketplaceToolInfo {
+                    source: source_by_id
+                        .get(m.id.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "builtin".to_string()),
                     installed: installed.contains(&m.id),
                     id: m.id,
                     name,
@@ -806,31 +831,132 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         Ok(())
     }
 
-    /// 卸载工具：从 installed.json + mcp.json 中移除
+    /// 卸载工具：从 installed.json + mcp.json 中移除，包目录按来源处置
+    /// （Upload 整包进回收站 / 可重释放预置物理删除 / 其余保留）。
     pub fn uninstall(&self, tool_id: &str) -> Result<(), String> {
+        // 并发守护（M2）由事务锁承担：卸载全程持 MARKETPLACE_TRANSACTION_LOCK，
+        // 同 id 并发卸载时后到者等先到者卸完再重读登记，看到的是「已回收」终态，
+        // 回收失败回滚不会把先删的记录复活成幽灵 installed；顺带串行化跨 id 的
+        // installed.json / mcp.json 读-改-写。
         let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         recover_marketplace_transaction()?;
+
+        // 登记快照先读（在拆任何供给面之前）：来源判定必须先于 remove —— 先删登记
+        // 再查恒为 false（三轮评审：上传包目录被误删的数据丢失 bug）。fail-closed：
+        // bundles.json 读不出就当可能是 Upload（不可删），不把读失败按非 Upload 照删
+        // （六轮评审 R1）。
+        let store = store::BundleStore::new();
+        let records_result = store.records();
+        let source_may_be_upload = records_result
+            .as_ref()
+            .map(|records| {
+                records
+                    .iter()
+                    .any(|r| r.id == tool_id && matches!(r.source, store::BundleSource::Upload(_)))
+            })
+            .unwrap_or(true);
+        // Upload 来源的记录快照（回收站清单用；恢复时据此重建登记）。读失败/无记录
+        // → None，保持「原位保留」语义（不回收、不删除）。
+        let upload_record = records_result
+            .unwrap_or_default()
+            .into_iter()
+            .find(|r| r.id == tool_id && matches!(r.source, store::BundleSource::Upload(_)));
+
+        // Upload 整包回收 preflight（M2）：回收站不可用（同 id 目标残留/根目录不可
+        // 建）时在拆任何供给面之前 fail loud —— 此前 secrets/installed.json/mcp.json
+        // 已不可逆拆除后回收失败只回写 bundles.json，造成「显示已安装、实际未供给」。
+        let pkg_dir = paths::bundles_root().join(tool_id);
+        let will_recycle = upload_record.is_some() && pkg_dir.exists();
+        if will_recycle {
+            recycle_bin::RecycleBin::new()
+                .preflight_recycle(tool_id)
+                .map_err(|e| {
+                    format!("回收站不可用，已中止卸载 {tool_id}（未改动任何安装态）: {e}")
+                })?;
+        }
+
+        // secret 目标快照必须在回收搬目录之前取（Upload 整包回收后 load_manifest
+        // 读不到声明）；实际删除在事务 commit 之后（cleanup_uninstalled_tool_state）
+        // —— 回收/事务失败回滚时 keyring 凭据原样保留，回滚才算完整（keyring
+        // 删除不可逆，M2）。
         let secret_targets = self
             .load_manifest(tool_id)
             .map(|manifest| secrets::manifest_secret_targets(&manifest))
             .unwrap_or_default();
-        // 删该工具在 keyring 的 secret(防孤儿;此时 manifest 未删、仍可读声明)。
-        // 删不掉不阻断卸载；若用户重新安装并重新填 key，会写入新的系统凭据。
-        if let Some(manifest) = self.load_manifest(tool_id) {
-            for (target, key) in secrets::manifest_secret_targets(&manifest) {
-                let reference = secrets::mcp_secret_reference(tool_id, &target, &key);
-                let _ = self.credential_store.delete(&reference);
-                secrets::remove_secret_value(&secrets::mcp_secret_env_var(&key));
-            }
-        }
+
+        // mcp.json / installed.json / bundles.json 镜像 / 包目录回收在同一事务窗口：
+        // 回收失败即整体回到卸载前状态（目录由 recycle_package 自回滚，登记以本次
+        // 所删为限回写，installed.json / mcp.json 由事务快照恢复），不残留
+        // 「显示已安装、实际未供给」的半卸载态。
         let transaction = MarketplaceStateTransaction::begin(&self.installed_file)?;
         let result = (|| {
             self.remove_from_mcp_json(tool_id)?;
             let mut installed = self.installed_ids();
             installed.retain(|id| id != tool_id);
-            self.save_installed(&installed)
+            self.save_installed(&installed)?;
+
+            // 镜像删除（与 install 对称：失败只记日志。命令层 OAuth token 前置删除的
+            // 中止语义在 uninstall_marketplace_tool_sync，先于本函数，不受影响）。
+            // removed_by_us = 记录是否由本次调用删除：回收失败回滚仅以本次所删为限
+            // 回写，不复活他人已删的记录。
+            let removed_by_us = match store.remove(tool_id) {
+                Ok(removed) => removed,
+                Err(e) => {
+                    log::warn!(
+                        "[marketplace] bundles.json 镜像删除失败（uninstall {tool_id}）: {e}"
+                    );
+                    false
+                }
+            };
+
+            // 包目录处置（§4 修订：卸载 = 删登记 + 目录按来源处置）。companion 技能由
+            // 命令层联动处理（Upload 组合包跳过物理删除、随整包回收，见
+            // commands::marketplace::uninstall_marketplace_tool_sync）。
+            // - Upload 来源：整包搬入回收站（含 mcp/ 与 skills/，用户唯一副本不删），
+            //   搬离 bundles_root 后商店列表不再出现；恢复/彻底删除由回收站命令负责。
+            // - 可重释放的内嵌预置（内嵌目录有 spec 且登记非 Upload）：删目录
+            //   （六轮评审 R1，数据丢失）。
+            // - 其余一律保留 `bundles/<id>/`（用户唯一副本）：手写自定义 MCP
+            //   （migrate_custom_mcp_layout 从旧布局强迁、无 plugin.json、登记为
+            //   Preset）、无记录、bundles.json 读失败。
+            let can_redeliver = mcp_catalog::spec_for(tool_id).is_some();
+            if let Some(record) = upload_record {
+                if pkg_dir.exists() {
+                    let display_name = match &record.source {
+                        store::BundleSource::Upload(zip) => zip.clone(),
+                        _ => tool_id.to_string(),
+                    };
+                    let kind = recycle_bin::package_kind(&pkg_dir);
+                    if let Err(e) = recycle_bin::RecycleBin::new().recycle_package(
+                        tool_id,
+                        kind,
+                        &display_name,
+                        record.clone(),
+                    ) {
+                        // preflight 已过仍失败 = 极端 IO 异常（rename/清单写；目录已
+                        // 由 recycle_package 回滚原位）。登记仅以本次所删为限回写；
+                        // installed.json / mcp.json 由下方事务 rollback 恢复；
+                        // secrets 此时尚未删除 —— 全态回到卸载前，卸载 fail loud。
+                        if removed_by_us {
+                            if let Err(re) = store.upsert(record) {
+                                log::warn!(
+                                    "[marketplace] 回收失败后登记回写失败（{tool_id}）: {re}"
+                                );
+                            }
+                        }
+                        return Err(format!("移入回收站失败（{tool_id}）: {e}"));
+                    }
+                }
+            } else if can_redeliver && !source_may_be_upload {
+                if pkg_dir.exists() {
+                    let _ = std::fs::remove_dir_all(pkg_dir.join("mcp"));
+                    let _ = std::fs::remove_dir(pkg_dir.join("skills")); // 仅空目录能删掉
+                    let _ = std::fs::remove_dir(&pkg_dir);
+                }
+            }
+            Ok(())
         })();
         match result {
             Ok(()) => transaction.commit()?,
@@ -852,72 +978,6 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // Re-read the just-committed installed.json inside the transaction lock; a snapshot taken before the lock may be stale.
         if let Err(error) = self.prune_from_committed_state() {
             log::warn!("[marketplace] prune Python dependencies failed: {error}");
-        }
-
-        // 镜像删除（与 install 对称：失败只记日志。命令层 OAuth token 前置删除的
-        // 中止语义在 uninstall_marketplace_tool_sync，先于本函数，不受影响）。
-        // 来源查询必须先于 remove —— 先删登记再查恒为 false（三轮评审：上传包目录
-        // 被误删的数据丢失 bug）。fail-closed：bundles.json 读不出就当可能是
-        // Upload（不可删），不把读失败按非 Upload 照删（六轮评审 R1）。
-        let store = store::BundleStore::new();
-        let records_result = store.records();
-        let source_may_be_upload = records_result
-            .as_ref()
-            .map(|records| {
-                records
-                    .iter()
-                    .any(|r| r.id == tool_id && matches!(r.source, store::BundleSource::Upload(_)))
-            })
-            .unwrap_or(true);
-        // Upload 来源的记录快照（回收站清单用；恢复时据此重建登记）。读失败/无记录
-        // → None，保持「原位保留」语义（不回收、不删除）。
-        let upload_record = records_result
-            .unwrap_or_default()
-            .into_iter()
-            .find(|r| r.id == tool_id && matches!(r.source, store::BundleSource::Upload(_)));
-        if let Err(e) = store.remove(tool_id) {
-            log::warn!("[marketplace] bundles.json 镜像删除失败（uninstall {tool_id}）: {e}");
-        }
-
-        // 包目录处置（§4 修订：卸载 = 删登记 + 目录按来源处置）。companion 技能由
-        // 命令层联动处理（Upload 组合包整包回收后，其 uninstall 走 recycle-aware
-        // 只清登记，见 skill_marketplace::uninstall）。
-        // - Upload 来源：整包搬入回收站（含 mcp/ 与 skills/，用户唯一副本不删），
-        //   搬离 bundles_root 后商店列表不再出现；恢复/彻底删除由回收站命令负责。
-        // - 可重释放的内嵌预置（内嵌目录有 spec 且登记非 Upload）：删目录
-        //   （六轮评审 R1，数据丢失）。
-        // - 其余一律保留 `bundles/<id>/`（用户唯一副本）：手写自定义 MCP
-        //   （migrate_custom_mcp_layout 从旧布局强迁、无 plugin.json、登记为
-        //   Preset）、无记录、bundles.json 读失败。
-        let can_redeliver = mcp_catalog::spec_for(tool_id).is_some();
-        if let Some(record) = upload_record {
-            let pkg_dir = paths::bundles_root().join(tool_id);
-            if pkg_dir.exists() {
-                let display_name = match &record.source {
-                    store::BundleSource::Upload(zip) => zip.clone(),
-                    _ => tool_id.to_string(),
-                };
-                let kind = recycle_bin::package_kind(&pkg_dir);
-                if let Err(e) = recycle_bin::RecycleBin::new().recycle_package(
-                    tool_id,
-                    kind,
-                    &display_name,
-                    record.clone(),
-                ) {
-                    // 回收失败（目录已回滚原位）：登记回写保持安装态一致，卸载 fail loud。
-                    if let Err(re) = store.upsert(record) {
-                        log::warn!("[marketplace] 回收失败后登记回写失败（{tool_id}）: {re}");
-                    }
-                    return Err(format!("移入回收站失败（{tool_id}）: {e}"));
-                }
-            }
-        } else if can_redeliver && !source_may_be_upload {
-            let pkg_dir = paths::bundles_root().join(tool_id);
-            if pkg_dir.exists() {
-                let _ = std::fs::remove_dir_all(pkg_dir.join("mcp"));
-                let _ = std::fs::remove_dir(pkg_dir.join("skills")); // 仅空目录能删掉
-                let _ = std::fs::remove_dir(&pkg_dir);
-            }
         }
 
         Ok(())
@@ -2349,6 +2409,11 @@ mod tests {
                     .is_empty()
             );
             manager.uninstall("upload-lock").unwrap();
+            // Upload 卸载 = 整包进回收站（回收站契约），重装前先取回目录；
+            // 登记由下方 install 重建。
+            recycle_bin::RecycleBin::new()
+                .take_back("upload-lock")
+                .unwrap();
             manager
                 .install_with_python("upload-lock", &std::collections::HashMap::new(), &python)
                 .unwrap();
@@ -2372,6 +2437,10 @@ mod tests {
                     .is_empty()
             );
             manager.uninstall("upload-pip").unwrap();
+            // 同上：Upload 卸载后整包在回收站，取回后再走重装路径。
+            recycle_bin::RecycleBin::new()
+                .take_back("upload-pip")
+                .unwrap();
             manager
                 .install("upload-pip", &std::collections::HashMap::new())
                 .unwrap();
@@ -3946,7 +4015,9 @@ mod tests {
                 "卸载应移除 installed.json 登记"
             );
             assert!(
-                !crate::platform::paths::bundles_root().join("up-tool").exists(),
+                !crate::platform::paths::bundles_root()
+                    .join("up-tool")
+                    .exists(),
                 "Upload 卸载后包目录应搬离 bundles_root"
             );
             assert!(
@@ -3981,10 +4052,14 @@ mod tests {
                     "companion_skills":["up-bundle-skill"]
                 }"#,
             );
-            let skill_dir = crate::platform::paths::bundles_root()
-                .join("up-bundle/skills/up-bundle-skill");
+            let skill_dir =
+                crate::platform::paths::bundles_root().join("up-bundle/skills/up-bundle-skill");
             std::fs::create_dir_all(&skill_dir).unwrap();
-            std::fs::write(skill_dir.join("SKILL.md"), "---\nname: up-bundle-skill\n---\n").unwrap();
+            std::fs::write(
+                skill_dir.join("SKILL.md"),
+                "---\nname: up-bundle-skill\n---\n",
+            )
+            .unwrap();
             let mgr = MarketplaceManager::new();
             mgr.install_upload(
                 "up-bundle",
@@ -3994,14 +4069,16 @@ mod tests {
 
             mgr.uninstall("up-bundle").unwrap();
 
-            let recycle_root = crate::platform::paths::pinvou3_home()
-                .join("marketplace/recycle-bin/up-bundle");
+            let recycle_root =
+                crate::platform::paths::pinvou3_home().join("marketplace/recycle-bin/up-bundle");
             assert!(
                 recycle_root.join("mcp/manifest.json").is_file(),
                 "mcp/ 应完整保留在回收站"
             );
             assert!(
-                recycle_root.join("skills/up-bundle-skill/SKILL.md").is_file(),
+                recycle_root
+                    .join("skills/up-bundle-skill/SKILL.md")
+                    .is_file(),
                 "skills/ 应完整保留在回收站"
             );
             let recycled = recycle_bin::RecycleBin::new().list().unwrap();
@@ -4046,10 +4123,17 @@ mod tests {
                 .installed_at;
 
             mgr.uninstall("up-re").unwrap();
-            assert!(!crate::platform::paths::bundles_root().join("up-re").exists());
+            assert!(
+                !crate::platform::paths::bundles_root()
+                    .join("up-re")
+                    .exists()
+            );
 
             let result = recycle_bin::restore_plugin("up-re").unwrap();
-            assert!(!result.credentials_required, "无 secrets 的包不应要求重填凭据");
+            assert!(
+                !result.credentials_required,
+                "无 secrets 的包不应要求重填凭据"
+            );
 
             assert!(
                 crate::platform::paths::bundles_root()
@@ -4120,7 +4204,10 @@ mod tests {
             );
 
             let result = recycle_bin::restore_plugin("up-secret").unwrap();
-            assert!(result.credentials_required, "声明 secrets 的包恢复应提示重填凭据");
+            assert!(
+                result.credentials_required,
+                "声明 secrets 的包恢复应提示重填凭据"
+            );
             assert!(
                 crate::platform::paths::bundles_root()
                     .join("up-secret/mcp/manifest.json")
@@ -4292,5 +4379,179 @@ mod tests {
                 "bundles.json 读失败时卸载应保留目录（fail-closed）"
             );
         });
+    }
+
+    /// M2：Upload 包卸载先做回收 preflight —— 回收站目标被同 id 残留占用时，
+    /// 卸载在拆任何供给面之前 fail loud：installed.json / mcp.json / keyring
+    /// secrets / bundles.json 登记 / 包目录全部原样保留（此前回收失败只回写
+    /// bundles.json，造成「显示已安装、实际未供给」）。
+    #[test]
+    fn uninstall_upload_recycle_preflight_failure_leaves_everything_untouched() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "up-guard",
+                r#"{
+                    "id":"up-guard","name":"UpGuard","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"UP_GUARD_KEY","provider":"up","required":true}]
+                }"#,
+            );
+            let cred = MemoryCredentialStore::default();
+            cred.set(
+                &mcp_secret_reference("up-guard", "env", "UP_GUARD_KEY"),
+                &secret_value("up"),
+            )
+            .unwrap();
+            let mgr = MarketplaceManager::with_store(cred.clone());
+            mgr.install_upload(
+                "up-guard",
+                store::BundleSource::Upload("guard.zip".to_string()),
+            )
+            .unwrap();
+            // 同 id 回收站目标残留 → preflight 拒绝覆盖。
+            let occupied =
+                crate::platform::paths::pinvou3_home().join("marketplace/recycle-bin/up-guard");
+            std::fs::create_dir_all(&occupied).unwrap();
+
+            let err = mgr.uninstall("up-guard").unwrap_err();
+            assert!(err.contains("回收站"), "报错应指向回收站不可用: {err}");
+
+            assert!(
+                mgr.installed_ids().contains(&"up-guard".to_string()),
+                "installed.json 应原样保留"
+            );
+            assert!(
+                read_mcp_json()["servers"].get("up-guard").is_some(),
+                "mcp.json 供给条目应原样保留"
+            );
+            assert!(
+                cred.get(&mcp_secret_reference("up-guard", "env", "UP_GUARD_KEY"))
+                    .unwrap()
+                    .is_some(),
+                "secrets 应原样保留（回收失败不删凭据）"
+            );
+            assert!(
+                store::BundleStore::new().get("up-guard").unwrap().is_some(),
+                "bundles.json 登记应原样保留"
+            );
+            assert!(
+                crate::platform::paths::bundles_root()
+                    .join("up-guard/mcp/manifest.json")
+                    .is_file(),
+                "包目录应原样保留在 bundles_root"
+            );
+            assert!(
+                recycle_bin::RecycleBin::new().list().unwrap().is_empty(),
+                "不得产生孤儿清单条目"
+            );
+            // install 期间 resolve_secret_placeholder 灌进进程 env 的占位变量手动清理
+            // （with_temp_home 只恢复固定几个，本用例因卸载中止不会走 secrets 删除）。
+            unsafe { std::env::remove_var("PINVOU3_MCP_SECRET_UP_GUARD_KEY") };
+        });
+    }
+
+    /// M2 并发守护：同一 Upload 包卸载成功后再次卸载（并发后到者经
+    /// MARKETPLACE_TRANSACTION_LOCK 串行化后的形态）—— 不得复活 bundles.json
+    /// 登记 / 供给面，返回 Ok 且回收站清单不变。
+    #[test]
+    fn uninstall_already_recycled_upload_package_does_not_resurrect_record() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "up-twice",
+                r#"{
+                    "id":"up-twice","name":"UpTwice","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"python","args":["server.py"]
+                }"#,
+            );
+            let mgr = MarketplaceManager::new();
+            mgr.install_upload(
+                "up-twice",
+                store::BundleSource::Upload("twice.zip".to_string()),
+            )
+            .unwrap();
+            mgr.uninstall("up-twice").unwrap();
+            assert_eq!(recycle_bin::RecycleBin::new().list().unwrap().len(), 1);
+
+            // 并发后到者（锁串行后的第二次调用）：登记已被先到者删除并回收。
+            mgr.uninstall("up-twice").unwrap();
+
+            assert!(
+                store::BundleStore::new().get("up-twice").unwrap().is_none(),
+                "不得复活 bundles.json 登记"
+            );
+            assert!(
+                !mgr.installed_ids().contains(&"up-twice".to_string()),
+                "不得复活 installed.json 登记"
+            );
+            assert!(
+                read_mcp_json()["servers"].get("up-twice").is_none(),
+                "不得复活 mcp.json 供给条目"
+            );
+            assert_eq!(
+                recycle_bin::RecycleBin::new().list().unwrap().len(),
+                1,
+                "不得重复回收/改写清单"
+            );
+        });
+    }
+
+    /// M4：list_tools 的 source 填充 —— Upload 登记 = "upload"（卸载进回收站），
+    /// Preset 登记（市场预置/手写自定义 MCP 迁移）= "preset"（卸载保留目录），
+    /// 无记录的内置市场条目 = "builtin"。前端据此区分卸载文案，不再把自定义 MCP
+    /// 卸载谎报为「已移入回收站」。
+    #[test]
+    fn list_tools_fills_source_from_bundle_records() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "up-src",
+                r#"{
+                    "id":"up-src","name":"UpSrc","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"python","args":["server.py"]
+                }"#,
+            );
+            write_tool_manifest(
+                "custom-src",
+                r#"{
+                    "id":"custom-src","name":"CustomSrc","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"python","args":["server.py"]
+                }"#,
+            );
+            let mgr = MarketplaceManager::new();
+            mgr.install_upload("up-src", store::BundleSource::Upload("src.zip".to_string()))
+                .unwrap();
+            // 无 plugin.json 的自定义包：install 镜像登记为 Preset
+            mgr.install("custom-src", &std::collections::HashMap::new())
+                .unwrap();
+
+            let tools = mgr.list_tools();
+            let source_of = |id: &str| tools.iter().find(|t| t.id == id).map(|t| t.source.as_str());
+            assert_eq!(source_of("up-src"), Some("upload"), "Upload 登记 → upload");
+            assert_eq!(
+                source_of("custom-src"),
+                Some("preset"),
+                "Preset 登记（自定义迁移 MCP）→ preset"
+            );
+            assert_eq!(
+                source_of("obsidian"),
+                Some("builtin"),
+                "无记录的内置市场条目 → builtin"
+            );
+
+            // serde 契约：字段名 `source`，取值为三值字符串。
+            let value =
+                serde_json::to_value(tools.iter().find(|t| t.id == "up-src").unwrap()).unwrap();
+            assert_eq!(value["source"], serde_json::json!("upload"));
+        });
+    }
+
+    /// M4 兼容：旧数据缺 source 字段时反序列化默认 "builtin"（前端按非上传
+    /// 处理 —— 宁可少提示「移入回收站」，不说谎）。
+    #[test]
+    fn tool_info_source_defaults_to_builtin_when_absent() {
+        let info: MarketplaceToolInfo = serde_json::from_str(
+            r#"{"id":"x","name":"n","description":"d","version":"1","icon":"i","category":"c","installed":false}"#,
+        )
+        .unwrap();
+        assert_eq!(info.source, "builtin");
     }
 }
