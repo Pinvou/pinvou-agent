@@ -75,22 +75,33 @@ const SHADOW_EXCLUDES: &[&str] = &[
     "venv/",
 ];
 
-/// 敏感文件模式：秘密实际居住的约定位置（.env.local 系、证书/私钥本体）。
-/// 原文不进快照、不进 diff 预览——非 git 执行根（临时会话、未初始化目录）没有
-/// .gitignore 兜底，`add -A` 会把它们快照进影子 objects。收窄的取舍：
-/// .env.example/.env.sample/id_rsa.pub 等常被有意提交的示例/公钥照常进快照、
-/// 随回退恢复；.env.production 等约定文件仍会进快照（其内容通常可提交）。
+/// 敏感文件模式：秘密实际居住的约定位置（.env.local 系、证书/私钥本体、
+/// 含 token 的包管理凭据）。原文不进快照、不进 diff 预览——非 git 执行根
+/// （临时会话、未初始化目录）没有 .gitignore 兜底，`add -A` 会把它们快照进
+/// 影子 objects。收窄的取舍：.env.example/.env.sample/id_rsa.pub 等常被有意
+/// 提交的示例/公钥照常进快照、随回退恢复；.env.production 等约定文件仍会
+/// 进快照（其内容通常可提交）。扩展名对齐 file_ingest.rs 的 secret 分类
+/// （key/pem/p12/pfx/keystore/jks/gpg/pgp）与 gitleaks 的私钥约定。
 /// 代价是这些文件不随回退恢复，属可接受取舍（设计文档已知限制有记录）。
 const SECRET_EXCLUDES: &[&str] = &[
     ".env",
     ".env.local",
     ".env.*.local",
+    ".npmrc",
+    ".netrc",
     "*.pem",
     "*.key",
     "*.p12",
+    "*.pfx",
+    "*.pkcs12",
     "*.keystore",
+    "*.jks",
+    "*.gpg",
+    "*.pgp",
     "id_rsa",
     "id_ed25519",
+    "id_dsa",
+    "id_ecdsa",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,13 +181,17 @@ fn now_nanos() -> u128 {
         .unwrap_or_default()
 }
 
-/// 估算执行根体积（跳过 exclude 目录与符号链接；条目数超 SIZE_WALK_MAX_ENTRIES
-/// 或读取失败返回 None——按「不在预算内」处理，宁可跳过快照也不低估）。
-fn estimate_workspace_bytes(execution_root: &Path) -> Option<u64> {
+/// 估算执行根体积（跳过 exclude 目录、内嵌的 checkpoint 账本目录与符号链接；
+/// 条目数超 SIZE_WALK_MAX_ENTRIES 或读取失败返回 None——按「不在预算内」处理，
+/// 宁可跳过快照也不低估）。临时会话两根相同，影子仓库自身会被反复快照增长，
+/// 必须排除，否则它会把自己顶过 2GB 门（评审 nit）。
+fn estimate_workspace_bytes(execution_root: &Path, ledger_root: &Path) -> Option<u64> {
     let skip_dirs: std::collections::HashSet<&str> = SHADOW_EXCLUDES
         .iter()
         .map(|line| line.trim_end_matches('/'))
         .collect();
+    let ledger_canonical =
+        fs::canonicalize(ledger_root).unwrap_or_else(|_| ledger_root.to_path_buf());
     let mut total: u64 = 0;
     let mut entries: usize = 0;
     let mut stack = vec![execution_root.to_path_buf()];
@@ -194,8 +209,13 @@ fn estimate_workspace_bytes(execution_root: &Path) -> Option<u64> {
                 continue;
             }
             if file_type.is_dir() {
+                let path = entry.path();
+                let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                if canonical == ledger_canonical {
+                    continue;
+                }
                 if !skip_dirs.contains(entry.file_name().to_string_lossy().as_ref()) {
-                    stack.push(entry.path());
+                    stack.push(path);
                 }
             } else if let Ok(metadata) = entry.metadata() {
                 total += metadata.len();
@@ -210,8 +230,8 @@ fn estimate_workspace_bytes(execution_root: &Path) -> Option<u64> {
 
 /// 执行根是否在快照体积预算内（chat.rs 在 turn 快照前调用；超限的会话如实
 /// 没有回退入口，不算错误）。
-pub fn execution_root_within_snapshot_budget(execution_root: &Path) -> bool {
-    estimate_workspace_bytes(execution_root)
+pub fn execution_root_within_snapshot_budget(execution_root: &Path, ledger_root: &Path) -> bool {
+    estimate_workspace_bytes(execution_root, ledger_root)
         .is_some_and(|bytes| bytes <= MAX_WORKSPACE_BYTES_FOR_SNAPSHOT)
 }
 
@@ -417,9 +437,28 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
                 .with_context(|| format!("读取 checkpoint 索引失败: {}", path.display()));
         }
     };
-    let index: CheckpointIndex =
-        serde_json::from_slice(&bytes).context("解析 checkpoint 索引失败")?;
-    Ok(index)
+    match serde_json::from_slice(&bytes) {
+        Ok(index) => Ok(index),
+        Err(parse_error) => {
+            // 损坏的 index 不得让该会话的 checkpoint 功能永久失效（临时会话的
+            // 账本就在 agent 可见的工作目录内，agent 的工具可能写坏它）：隔离
+            // 保留现场后从空索引重建——与 sidecar `_rewound_turns.json` 的损坏
+            // 处理同款。代价：影子仓库里的历史快照失去索引（不可列不可用，
+            // 对象随 gc 回收），此后快照能力恢复。
+            let quarantine = path.with_extension("json.corrupt");
+            eprintln!(
+                "[checkpoints] checkpoint 索引损坏，隔离为 {} 后从空索引重建: {parse_error:#}",
+                quarantine.display()
+            );
+            if let Err(error) = fs::rename(&path, &quarantine) {
+                eprintln!("[checkpoints] 隔离损坏索引失败: {error:#}");
+            }
+            Ok(CheckpointIndex {
+                version: 1,
+                entries: Vec::new(),
+            })
+        }
+    }
 }
 
 fn save_index(ledger_root: &Path, index: &CheckpointIndex) -> Result<()> {
@@ -453,6 +492,21 @@ pub fn create_checkpoint(
     turn: Option<u32>,
     kind: CheckpointKind,
     label: &str,
+) -> Result<CheckpointMeta> {
+    create_checkpoint_preserving(ledger_root, execution_root, turn, kind, label, &[])
+}
+
+/// `create_checkpoint` 的保留变体：LRU/存储压力淘汰跳过 `preserve` 中的条目。
+/// `restore_checkpoint` 打 PreRestore 时以此保住恢复目标——否则目标恰落在被
+/// 淘汰的一半里时 ref 被删、commit 被 prune，随后 read-tree 失败，用户请求
+/// 的历史被销毁（评审 M2）。
+fn create_checkpoint_preserving(
+    ledger_root: &Path,
+    execution_root: &Path,
+    turn: Option<u32>,
+    kind: CheckpointKind,
+    label: &str,
+    preserve: &[&str],
 ) -> Result<CheckpointMeta> {
     let execution_root = canonical_execution_root(execution_root)?;
     let repo = ensure_repo(ledger_root, &execution_root)?;
@@ -499,22 +553,35 @@ pub fn create_checkpoint(
         ],
     )?;
     index.entries.push(meta.clone());
-    if index.entries.len() > MAX_CHECKPOINTS {
-        let overflow = index.entries.len() - MAX_CHECKPOINTS;
-        let evicted: Vec<CheckpointMeta> = index.entries.drain(..overflow).collect();
-        // 被裁掉的条目删 ref，commit 变为不可达，交给 git 后台回收；
-        // 回收失败不影响裁剪语义（索引已裁，对象留到下次 gc）。
-        for entry in &evicted {
+    // 淘汰辅助：把最老的可淘汰条目（跳过 preserve）移出 index 并删其 ref。
+    // 返回实际淘汰条数。
+    let evict_oldest = |index: &mut CheckpointIndex, count: usize| -> usize {
+        let mut evicted_ids = Vec::new();
+        let mut kept = Vec::with_capacity(index.entries.len());
+        let mut evictable_left = count;
+        for entry in index.entries.drain(..) {
+            if evictable_left > 0 && !preserve.contains(&entry.id.as_str()) {
+                evicted_ids.push(entry.id);
+                evictable_left -= 1;
+            } else {
+                kept.push(entry);
+            }
+        }
+        index.entries = kept;
+        for id in &evicted_ids {
             let _ = git(
                 &repo,
                 &execution_root,
-                &[
-                    "update-ref",
-                    "-d",
-                    &format!("refs/checkpoints/{}", entry.id),
-                ],
+                &["update-ref", "-d", &format!("refs/checkpoints/{id}")],
             );
         }
+        evicted_ids.len()
+    };
+    if index.entries.len() > MAX_CHECKPOINTS {
+        let overflow = index.entries.len() - MAX_CHECKPOINTS;
+        // 被裁掉的条目删 ref，commit 变为不可达，交给 git 后台回收；
+        // 回收失败不影响裁剪语义（索引已裁，对象留到下次 gc）。
+        evict_oldest(&mut index, overflow);
         let _ = git(&repo, &execution_root, &["gc", "--auto", "--quiet"]);
     }
     // 存储压力闸（对齐底座 MAX_SNAPSHOT_SIZE_MB）：LRU 裁条目不裁字节，大文件
@@ -522,26 +589,12 @@ pub fn create_checkpoint(
     // 最新一条——刚登记的本条；被裁的 undo 绑定由可反悔判定如实收敛）。
     if shadow_repo_bytes(&repo) > MAX_SHADOW_REPO_BYTES && index.entries.len() > 1 {
         let target = (index.entries.len() / 2).max(1);
-        let evicted: Vec<CheckpointMeta> = index
-            .entries
-            .drain(..index.entries.len() - target)
-            .collect();
-        for entry in &evicted {
-            let _ = git(
-                &repo,
-                &execution_root,
-                &[
-                    "update-ref",
-                    "-d",
-                    &format!("refs/checkpoints/{}", entry.id),
-                ],
-            );
-        }
+        let drain_count = index.entries.len() - target;
+        let evicted = evict_oldest(&mut index, drain_count);
         let _ = git(&repo, &execution_root, &["gc", "--prune=now", "--quiet"]);
         eprintln!(
-            "[checkpoints] shadow repo over {}MB budget, pruned {} oldest entries",
+            "[checkpoints] shadow repo over {}MB budget, pruned {evicted} oldest entries",
             MAX_SHADOW_REPO_BYTES / 1024 / 1024,
-            evicted.len()
         );
     }
     save_index(ledger_root, &index)?;
@@ -591,21 +644,32 @@ fn find_checkpoint(ledger_root: &Path, checkpoint_id: &str) -> Result<Checkpoint
         .with_context(|| format!("checkpoint '{checkpoint_id}' 不存在"))
 }
 
-fn parse_name_status(text: &str) -> Vec<CheckpointChange> {
+/// `diff --cached --raw` 输出行解析（`:<srcmode> <dstmode> <srcsha> <dstsha> <status>\t<path>`，
+/// rename/copy 多一个 `\t<newpath>`）。gitlink（嵌套仓库/submodule，mode 160000）
+/// 单独标注——快照不跟踪其内容、restore 不会 materialize 它（评审 M4）。
+fn parse_raw_status(text: &str) -> Vec<CheckpointChange> {
     text.lines()
         .filter_map(|line| {
-            let mut parts = line.split('\t');
-            let status = parts.next()?;
-            let label = match status.chars().next() {
-                Some('A') => "added",
-                Some('M') => "modified",
-                Some('D') => "deleted",
-                Some('R') => "renamed",
-                Some('C') => "copied",
-                _ => "other",
+            let (header, paths) = line.split_once('\t')?;
+            let fields: Vec<&str> = header.split_whitespace().collect();
+            if fields.len() < 5 {
+                return None;
+            }
+            let (src_mode, dst_mode, status) = (fields[0], fields[1], fields[4]);
+            let label = if src_mode == "160000" || dst_mode == "160000" {
+                "gitlink"
+            } else {
+                match status.chars().next() {
+                    Some('A') => "added",
+                    Some('M') => "modified",
+                    Some('D') => "deleted",
+                    Some('R') => "renamed",
+                    Some('C') => "copied",
+                    _ => "other",
+                }
             };
             // R/C 状态是「旧路径\t新路径」，展示新路径。
-            let path = parts.last()?.to_string();
+            let path = paths.rsplit('\t').next()?.to_string();
             if path.is_empty() {
                 return None;
             }
@@ -664,8 +728,8 @@ fn secret_path_matches(path: &str) -> bool {
 }
 
 /// diff --git 段头是否指向敏感文件。按空白切 token、剥 a//b/ 前缀与引号；
-/// 含空格/特殊字符的 C-quoted 路径可能解析不全——此时放行该段（展示层过滤
-/// 是防泄露的第二道，快照侧 exclude/purge 才是第一道），如实记录在案。
+/// 含空格的路径（git 原样输出 `a/my dir/.env`，不引号包裹）无法靠 header
+/// token 命中，由 ---/+++ 行兜底（见 filter_secret_paths_from_patch）。
 fn diff_section_is_secret(header: &str) -> bool {
     header
         .split_whitespace()
@@ -678,20 +742,47 @@ fn diff_section_is_secret(header: &str) -> bool {
         .any(secret_path_matches)
 }
 
+/// `--- a/<path>` / `+++ b/<path>` 行的路径判定（整行剩余部分即路径，容忍空格；
+/// 删除文件的 marker 行尾部带 tab 填充，先剥掉；/dev/null 与引号包裹形式如实处理）。
+fn marker_line_is_secret(line: &str) -> bool {
+    let path = line
+        .strip_prefix("--- a/")
+        .or_else(|| line.strip_prefix("+++ b/"));
+    match path {
+        Some(path) => secret_path_matches(path.trim_end().trim_matches('"')),
+        None => false,
+    }
+}
+
 /// 从 unified diff 文本剔除命中敏感文件模式的整段文件 diff：迁移前打的旧
 /// 快照 tree 里可能仍有秘密原文（purge 只清 index），预览不得把原文带进 UI。
+/// 按段缓冲后判定（header 或 ---/+++ 行任一命中即整段剔除）——含空格路径
+/// 无法从段头 token 解析，必须看到 ---/+++ 行才能判定（评审 M1）。
 fn filter_secret_paths_from_patch(patch: &str) -> String {
     let mut out = String::with_capacity(patch.len());
-    let mut skip = false;
+    let mut section: Vec<&str> = Vec::new();
+    let mut section_secret = false;
+    let flush = |out: &mut String, section: &mut Vec<&str>, secret: &mut bool| {
+        if !*secret {
+            for line in section.drain(..) {
+                out.push_str(line);
+                out.push('\n');
+            }
+        } else {
+            section.clear();
+        }
+        *secret = false;
+    };
     for line in patch.lines() {
         if line.starts_with("diff --git ") {
-            skip = diff_section_is_secret(line);
+            flush(&mut out, &mut section, &mut section_secret);
+            section_secret = diff_section_is_secret(line);
+        } else if marker_line_is_secret(line) {
+            section_secret = true;
         }
-        if !skip {
-            out.push_str(line);
-            out.push('\n');
-        }
+        section.push(line);
     }
+    flush(&mut out, &mut section, &mut section_secret);
     out
 }
 
@@ -706,18 +797,18 @@ pub fn diff_checkpoint(
     let repo = ensure_repo(ledger_root, &execution_root)?;
     // add -A 让影子 index 反映当前执行根，diff --cached <commit> 即「快照→现在」。
     git_ok(&repo, &execution_root, &["add", "-A"])?;
-    let name_status = git_ok(
+    let raw_status = git_ok(
         &repo,
         &execution_root,
-        // -M 开启 rename 检测，parse_name_status 的 renamed 分支才不是死代码；
-        // core.quotepath=false：非 ASCII 文件名原样输出（默认会把中文路径转成
-        // 八进制转义，确认弹窗的变更清单不可读）。
+        // --raw 带文件模式（gitlink 160000 = 嵌套仓库/submodule，清单中如实
+        // 标注）；-M 开启 rename 检测；core.quotepath=false：非 ASCII 文件名
+        // 原样输出（默认会把中文路径转成八进制转义，确认弹窗不可读）。
         &[
             "-c",
             "core.quotepath=false",
             "diff",
             "--cached",
-            "--name-status",
+            "--raw",
             "-M",
             "--no-color",
             &meta.commit,
@@ -726,7 +817,7 @@ pub fn diff_checkpoint(
     let raw_patch = git_ok(
         &repo,
         &execution_root,
-        // 与 name-status 同开 -M + quotepath：changes 清单标 renamed 时 patch
+        // 与 --raw 同开 -M + quotepath：changes 清单标 renamed 时 patch
         // 也是 rename 形态，中文路径在两处都是原文。
         &[
             "-c",
@@ -742,7 +833,7 @@ pub fn diff_checkpoint(
     // legacy 快照（迁移前打的）tree 里可能仍含秘密原文：清单与 patch 都剔除
     // 命中敏感模式的条目，预览既不带原文上屏，也不谎称「回滚将删除 .env」
     // （restore 实际保留工作区现有同名文件）。
-    let changes: Vec<CheckpointChange> = parse_name_status(&name_status)
+    let changes: Vec<CheckpointChange> = parse_raw_status(&raw_status)
         .into_iter()
         .filter(|change| !secret_path_matches(&change.path))
         .collect();
@@ -777,12 +868,16 @@ pub fn restore_checkpoint(
     let meta = find_checkpoint(ledger_root, checkpoint_id)?;
     let execution_root = canonical_execution_root(execution_root)?;
     // 回滚点快照失败必须中止：没有可反悔的兜底就不能动用户文件。
-    let undo = create_checkpoint(
+    // preserve 传入恢复目标：PreRestore 触发的 LRU/存储压力淘汰不得把目标
+    // 本身裁掉（ref 删除 + commit prune 会让随后的 read-tree 失败，用户请求
+    // 的历史被销毁，评审 M2）。
+    let undo = create_checkpoint_preserving(
         ledger_root,
         &execution_root,
         None,
         CheckpointKind::PreRestore,
         &format!("回滚到 {} 前的自动快照", meta.id),
+        &[&meta.id],
     )
     .context("回滚前自动快照失败，已中止回滚")?;
     let repo = repo_dir(ledger_root);
@@ -1178,6 +1273,212 @@ mod tests {
             "工作区现有 .env 不得被恢复流程触碰"
         );
         assert_eq!(exec.read("ok.txt").as_deref(), Some("v1\n"));
+    }
+
+    /// 评审 M1 回归：含空格路径的秘密文件（`my dir/.env`）——git 原样输出
+    /// 不引号包裹，段头 token 解析不到它，必须由 ---/+++ 行兜底整段剔除。
+    #[test]
+    fn diff_preview_filters_secret_paths_with_spaces() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("spacefilter-ledger");
+        let exec = TestDir::new("spacefilter-exec");
+        exec.write("ok.txt", "v1\n");
+        exec.write("my dir/.env", "SECRET=old\n");
+        let repo = repo_dir(ledger.path());
+        fs::create_dir_all(&repo).unwrap();
+        git_ok(&repo, exec.path(), &["init"]).unwrap();
+        git_ok(&repo, exec.path(), &["config", "core.autocrlf", "false"]).unwrap();
+        git_ok(&repo, exec.path(), &["add", "-f", "ok.txt", "my dir/.env"]).unwrap();
+        let tree = git_ok(&repo, exec.path(), &["write-tree"])
+            .unwrap()
+            .trim()
+            .to_string();
+        let commit = git_ok(
+            &repo,
+            exec.path(),
+            &[
+                "-c",
+                "user.name=Pinvou",
+                "-c",
+                "user.email=pinvou@localhost",
+                "commit-tree",
+                &tree,
+                "-m",
+                "legacy snapshot",
+            ],
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        git_ok(
+            &repo,
+            exec.path(),
+            &["update-ref", "refs/checkpoints/c1-1", &commit],
+        )
+        .unwrap();
+        save_index(
+            ledger.path(),
+            &CheckpointIndex {
+                version: 1,
+                entries: vec![CheckpointMeta {
+                    id: "c1-1".into(),
+                    turn: Some(1),
+                    kind: CheckpointKind::Turn,
+                    label: "legacy".into(),
+                    commit,
+                    created_at: 0,
+                }],
+            },
+        )
+        .unwrap();
+
+        exec.write("ok.txt", "v2\n");
+        exec.write("my dir/.env", "SECRET=current\n");
+        let diff = diff_checkpoint(ledger.path(), exec.path(), "c1-1").unwrap();
+        assert!(
+            diff.changes
+                .iter()
+                .all(|change| !change.path.ends_with(".env")),
+            "含空格的秘密路径不得出现在清单: {:?}",
+            diff.changes
+        );
+        assert!(
+            !diff.patch.contains("SECRET=old"),
+            "patch 不得带秘密原文:\n{}",
+            diff.patch
+        );
+        assert!(
+            !diff.patch.contains("my dir/.env"),
+            "含空格秘密段必须整段剔除:\n{}",
+            diff.patch
+        );
+        assert!(diff.patch.contains("ok.txt"));
+    }
+
+    /// 评审 M2 回归：restore 打 PreRestore 触发 LRU 淘汰时不得淘汰恢复目标
+    /// 本身（目标恰在淘汰区时 ref 被删 + commit 被 prune → read-tree 失败且
+    /// 用户请求的历史被销毁）。
+    #[test]
+    fn restore_preserves_target_from_pre_restore_eviction() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("preserve-ledger");
+        let exec = TestDir::new("preserve-exec");
+        exec.write("a.txt", "0\n");
+        let target = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        // 恰好打满 LRU 上限（target 是最老条目但尚未被淘汰）；restore 的
+        // PreRestore 是第 MAX+1 条，溢出淘汰的第一顺位就是 target。
+        for turn in 2..=MAX_CHECKPOINTS {
+            exec.write("a.txt", &format!("{turn}\n"));
+            create_checkpoint(
+                ledger.path(),
+                exec.path(),
+                Some(turn as u32),
+                CheckpointKind::Turn,
+                "t",
+            )
+            .unwrap();
+        }
+        // restore 目标是最老条目：PreRestore 会触发淘汰，但 preserve 保住 target。
+        let undo = restore_checkpoint(ledger.path(), exec.path(), &target.id).unwrap();
+        assert_eq!(undo.kind, CheckpointKind::PreRestore);
+        assert_eq!(exec.read("a.txt").as_deref(), Some("0\n"));
+        // 目标条目仍在 index（未被自己的 PreRestore 淘汰）。
+        let listed = list_checkpoints(ledger.path()).unwrap();
+        assert!(
+            listed.iter().any(|entry| entry.id == target.id),
+            "恢复目标不得被 PreRestore 的淘汰挤出: {listed:?}"
+        );
+    }
+
+    /// 评审 M3 回归：损坏的 index.json 被隔离为 index.json.corrupt 并从空索引
+    /// 重建——该会话的 checkpoint 能力恢复（此前所有操作永久失败）。
+    #[test]
+    fn corrupt_index_is_quarantined_and_rebuilt_empty() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("corrupt-ledger");
+        let exec = TestDir::new("corrupt-exec");
+        exec.write("a.txt", "a\n");
+        fs::create_dir_all(checkpoints_dir(ledger.path())).unwrap();
+        fs::write(index_path(ledger.path()), b"{ not valid json !!!").unwrap();
+
+        let index = load_index(ledger.path()).expect("quarantined load");
+        assert!(index.entries.is_empty());
+        assert!(
+            ledger
+                .path()
+                .join("checkpoints/index.json.corrupt")
+                .is_file()
+        );
+        assert!(!index_path(ledger.path()).exists());
+        // 快照能力恢复。
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        assert_eq!(list_checkpoints(ledger.path()).unwrap().len(), 1);
+    }
+
+    /// 评审 M4 回归：嵌套 git 仓库在 changes 清单中标注为 gitlink（快照不跟踪
+    /// 其内容、restore 不 materialize——UI 必须如实区分，不能暗示可回退）。
+    #[test]
+    fn nested_git_repo_is_labeled_gitlink_in_changes() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("gitlink-ledger");
+        let exec = TestDir::new("gitlink-exec");
+        exec.write("ok.txt", "v1\n");
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        // turn 1：在执行根内 clone 出一个嵌套仓库（git 以 gitlink 记录；
+        // 需要真实 .git 子目录 + commit——--git-dir 指向目录本身只会产生普通文件，
+        // unborn HEAD 的空仓库也不会进 index）。
+        exec.write("ok.txt", "v2\n");
+        let nested = exec.path().join("vendor/lib");
+        let nested_git = nested.join(".git");
+        fs::create_dir_all(&nested).unwrap();
+        git_ok(&nested_git, &nested, &["init"]).unwrap();
+        git_ok(&nested_git, &nested, &["config", "user.name", "T"]).unwrap();
+        git_ok(&nested_git, &nested, &["config", "user.email", "t@t"]).unwrap();
+        exec.write("vendor/lib/README.md", "lib\n");
+        git_ok(&nested_git, &nested, &["add", "README.md"]).unwrap();
+        git_ok(&nested_git, &nested, &["commit", "-m", "init"]).unwrap();
+
+        let diff = diff_checkpoint(ledger.path(), exec.path(), &first.id).unwrap();
+        let gitlink = diff
+            .changes
+            .iter()
+            .find(|change| change.path == "vendor/lib")
+            .expect("nested repo in changes");
+        assert_eq!(gitlink.status, "gitlink");
+        assert!(
+            diff.changes
+                .iter()
+                .any(|change| change.path == "ok.txt" && change.status == "modified")
+        );
     }
 
     /// legacy 快照（迁移前打的，tree 含 .env）的 diff 预览：清单与 patch 都
