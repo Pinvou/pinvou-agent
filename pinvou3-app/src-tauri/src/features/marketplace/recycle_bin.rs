@@ -363,9 +363,12 @@ impl RecycleBin {
     }
 }
 
-/// 按包目录内容推导回收站 kind：mcp/ + skills/ → bundle；仅 mcp/ → mcp；否则 skill。
+/// 按包目录内容推导回收站 kind：`mcp/manifest.json` 存在（与恢复侧供给判定
+/// `restore_plugin` 的 `has_mcp` 同口径）+ skills/ → bundle；仅 mcp → mcp；
+/// 否则 skill。以 manifest 文件而非 `mcp/` 目录为准，避免「有 mcp/ 目录但
+/// manifest 缺失/损坏」的包 kind 记为 mcp/bundle、恢复却零供给的口径劈叉。
 pub(crate) fn package_kind(pkg_dir: &Path) -> &'static str {
-    let has_mcp = pkg_dir.join("mcp").is_dir();
+    let has_mcp = pkg_dir.join("mcp").join("manifest.json").is_file();
     let has_skills = pkg_dir.join("skills").is_dir();
     match (has_mcp, has_skills) {
         (true, true) => KIND_BUNDLE,
@@ -388,7 +391,15 @@ pub(crate) fn package_kind(pkg_dir: &Path) -> &'static str {
 ///    mcp.json/installed.json；
 /// 4. 技能组件随包目录搬回 + 登记恢复即回到安装态（技能无独立供给管线）；
 /// 5. scope 禁用集兜底清理（卸载时命令层已清，恢复后不应残留禁用）。
+///
+/// 并发契约：全程持同 id `import_lock_for`（与导入/卸载/展示编辑同一把锁；
+/// 锁序 import → recycle → store，与卸载路径一致，无死锁面），恢复整链路
+/// （取回 → 重建登记 → 供给）对并发的同 id 重导入/再卸载串行——取回前抢锁，
+/// 避免与并发导入的「rename → 备份重基线」交错；`install_upload` 只取全局
+/// 事务锁，不在本锁上重入。与卸载侧的 recycle preflight 对称：先锁再动目录。
 pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
+    let import_lock = super::plugin_import::import_lock_for(pkg_id);
+    let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
     let bin = RecycleBin::new();
     let record = bin.take_back(pkg_id)?;
     let mgr = super::MarketplaceManager::new();

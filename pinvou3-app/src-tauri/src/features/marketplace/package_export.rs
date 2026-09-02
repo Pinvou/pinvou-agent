@@ -4,7 +4,10 @@
 //!
 //! zip 布局对齐 plugin-package-spec：包内容（plugin.json、mcp/、skills/ 等）
 //! 平铺在 zip 根，可经统一导入管线 `plugin_import::import_plugin_package` 重新
-//! 导入。只打包插件包本体（不含回收站清单等外部元数据）；Python 运行缓存
+//! 导入。已安装包导出拒绝预置目录 id：导入管线会拒绝与 `mcp_catalog` 预置 id
+//! 冲突的包（防上传包顶替预置），预置导出的 zip 在任何机器都导不回去，fail-fast
+//! 报错（见 `export_installed_plugin`）。只打包插件包本体（不含回收站清单等外部
+//! 元数据）；Python 运行缓存
 //! （`__pycache__/`、`*.pyc`）不打包（与导入管线的磁盘比对豁免口径一致）；
 //! 符号链接不跟随、不打包（防把包外文件带进 zip / 链接环）。写出为原子写：
 //! 同目录临时文件 + rename 覆盖，中途失败不动用户已确认覆盖的原目标文件。
@@ -22,12 +25,26 @@ use std::path::{Path, PathBuf};
 
 use crate::platform::paths;
 
-/// 已安装包导出为标准插件包 zip。fail-closed：id 安全校验 + 只导出
-/// `bundles_root()` 下真实存在的包目录（不存在的 id 报错，不导出任何文件）。
+/// 已安装包导出为标准插件包 zip。fail-closed：id 安全校验 + 预置目录包拒绝
+/// （预置可从市场重装，导出必产出无法重导的死档案）+ 只导出 `bundles_root()`
+/// 下真实存在的包目录（不存在的 id 报错，不导出任何文件）。并发契约：校验后
+/// 全程持同 id `import_lock_for`（与导入/卸载/展示编辑同一把锁）——并发卸载/
+/// 回收会把 `bundles/<id>` 搬走，锁内导出避免遍历到半搬移的目录却产出「成功」
+/// 的不完整 zip（回收站导出由其自身 `file_lock()` 串行化，同口径）。
 pub fn export_installed_plugin(pkg_id: &str, dest_zip: &Path) -> Result<(), String> {
     if !super::skill_marketplace::is_safe_skill_name(pkg_id) {
         return Err(format!("非法包 id '{pkg_id}'"));
     }
+    // 预置目录包不导出：预置 id 受导入管线冲突保护（`plugin_import` 拒绝与
+    // `mcp_catalog` 冲突的包），导出的 zip 无法重新导入；预置可从市场重新安装，
+    // 导出无重导价值。迁移登记为 Preset 的手写自定义 MCP 不在目录内，不受此限。
+    if crate::features::marketplace::mcp_catalog::spec_for(pkg_id).is_some() {
+        return Err(format!(
+            "包 '{pkg_id}' 属于市场预置，可从市场重新安装，无需导出（预置 id 受导入管线冲突保护，导出的 zip 无法重新导入）"
+        ));
+    }
+    let import_lock = super::plugin_import::import_lock_for(pkg_id);
+    let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
     let pkg_dir = paths::bundles_root().join(pkg_id);
     if !pkg_dir.is_dir() {
         return Err(format!(
@@ -334,6 +351,23 @@ mod tests {
             let dest = paths::pinvou3_home().join("export.zip");
             assert!(export_installed_plugin("never-installed", &dest).is_err());
             assert!(export_installed_plugin("../etc", &dest).is_err());
+            assert!(!dest.exists(), "拒绝导出不得到留文件");
+        });
+    }
+
+    /// 预置目录包不导出：预置 id 受导入管线冲突保护，导出的 zip 在任何机器都
+    /// 无法重新导入，导出必产出死档案——fail-fast 报错，不留导出文件。迁移
+    /// 登记为 Preset 的手写自定义 MCP 不在 `mcp_catalog` 内，不受此限。
+    #[test]
+    fn export_installed_plugin_rejects_preset_catalog_id() {
+        with_temp_home(|| {
+            let preset_id = crate::features::marketplace::mcp_catalog::MCP_PACKAGES[0].id;
+            let pkg = paths::bundles_root().join(preset_id);
+            std::fs::create_dir_all(&pkg).unwrap();
+            std::fs::write(pkg.join("plugin.json"), "{}").unwrap();
+            let dest = paths::pinvou3_home().join("export.zip");
+            let err = export_installed_plugin(preset_id, &dest).unwrap_err();
+            assert!(err.contains("市场预置"), "错误应说明预置包不可导出: {err}");
             assert!(!dest.exists(), "拒绝导出不得到留文件");
         });
     }

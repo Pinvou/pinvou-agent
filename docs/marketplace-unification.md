@@ -116,8 +116,9 @@ disconnect / uninstall / enable_in(scope)…），每个动作带可用性与原
    （`marketplace/recycle-bin/<id>/`，含 mcp/ 与 skills/；恢复 = 搬回 + 重走安装
    管线，凭据 secrets 卸载时已删需重填；彻底删除由用户手动触发；条目也可导出为
    符合插件包规范的 zip——plugin.json/mcp/skills 平铺在 zip 根，可经统一导入管线
-   重新导入；已安装包（上传/预置/自定义 MCP）同样可导出为标准插件包 zip，
-   导出入口在卡片详情页操作区（列表卡片不渲染），
+   重新导入；已安装包（上传/自定义 MCP）同样可导出为标准插件包 zip，
+   导出入口在卡片详情页操作区（列表卡片不渲染）；市场预置包不导出——
+   预置 id 受导入管线冲突保护，导出的 zip 无法重导，预置可从市场重装，
    导出时 `mcp/manifest.json` args 中指向包内的绝对路径还原为相对形式），
    Preset/Builtin 可重释放仍物理删除；手写自定义 MCP（迁移登记为 preset 来源的
    用户自管目录）卸载只删登记、保留目录、不进回收站——残留目录 UI 不可见，

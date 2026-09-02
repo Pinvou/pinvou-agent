@@ -893,6 +893,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       };
       useEffect(() => {
         if (showRecycleBin) loadRecycledPlugins();
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch only on sub-page entry; loadRecycledPlugins closes over storeCopy (error copy only), re-creating it must not re-trigger the fetch
       }, [showRecycleBin]);
       // 恢复为已安装：credentials_required=true 表示该插件的 MCP 组件声明了凭据
       // secrets（卸载时已删除），仅还原目录与登记，需提示用户重新填写凭据。
