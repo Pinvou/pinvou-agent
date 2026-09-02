@@ -8245,7 +8245,10 @@
     try {
       const path = await invoke("save_paste_image", { filename, bytes });
       await addAttachmentByPath(path);
-    } catch (e) { addSystemItem(bt("pasteImageFailed") + e); }
+    } catch (e) {
+      const limitError = attachmentLimitDisplayError(e, filename);
+      addSystemItem(limitError ? limitError.message : bt("pasteImageFailed") + e);
+    }
   }
   function releaseAttachmentOnDesktop(attachment) {
     // Accepts a composer attachment ({ result, uploadId }) or a bare
