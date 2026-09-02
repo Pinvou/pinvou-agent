@@ -6321,7 +6321,7 @@ dependencies = [
 
 [[package]]
 name = "pinvou-knowledge"
-version = "0.8.8"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -6356,7 +6356,7 @@ dependencies = [
 
 [[package]]
 name = "pinvou3-tauri"
-version = "0.8.8"
+version = "0.9.0"
 dependencies = [
  "age",
  "agent-backend-api",
@@ -6391,6 +6391,7 @@ dependencies = [
  "parking_lot",
  "pinvou-knowledge",
  "qrcode",
+ "quick-xml",
  "rand 0.10.2",
  "reqwest 0.13.4",
  "rusqlite",
