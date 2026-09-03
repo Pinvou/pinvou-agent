@@ -6,7 +6,7 @@
 
 **An open-source desktop AI agent workspace for work, design, and coding.**
 
-[English](README.md) · [简体中文](README.zh-CN.md)
+[English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
 [![CI](https://github.com/Pinvou/pinvou-agent/actions/workflows/pr-check.yml/badge.svg)](https://github.com/Pinvou/pinvou-agent/actions/workflows/pr-check.yml)
 [![License: MIT](https://img.shields.io/github/license/Pinvou/pinvou-agent)](LICENSE)
@@ -199,7 +199,7 @@ Run these commands from the repository root:
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and CI gates, and [docs/fork-policy.md](docs/fork-policy.md) for CodeWhale maintenance rules. By participating, you agree to our [Code of Conduct](CODE_OF_CONDUCT.md).
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and CI gates, and [docs/fork-policy.md](docs/fork-policy.md) with the [current fork modification inventory](docs/fork-modifications.md) for CodeWhale maintenance rules. By participating, you agree to our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## 💬 Community & Security
 
