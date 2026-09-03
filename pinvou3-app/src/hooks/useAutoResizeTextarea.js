@@ -3,10 +3,9 @@ import { useEffect } from 'react';
 /**
  * textarea 随内容自动伸缩：值变化后先置 auto 再按 scrollHeight 收敛到 [min, max]。
  * 此前 ChatView 主输入框与 PetWindow 回复框各自内联同型 effect，收敛到本 hook。
- *
- * @param {{ current: HTMLTextAreaElement|null }} ref
+ * @param {Object} ref - 指向 textarea 的 ref（{ current: HTMLTextAreaElement|null }）
  * @param {string} value - 触发重算的受控值
- * @param {{ min?: number, max?: number }} [opts] - 高度钳制（px）
+ * @param {Object} [opts] - { min, max } 高度钳制（px）
  */
 export function useAutoResizeTextarea(ref, value, { min = 48, max = 160 } = {}) {
   useEffect(() => {
