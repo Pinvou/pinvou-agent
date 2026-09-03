@@ -22,6 +22,7 @@ import {
 import { CommunityPanel } from './CommunityPanel.jsx';
 import { COMMUNITY_DISCUSSIONS_URL, COMMUNITY_QQ_GROUP_NAME, COMMUNITY_QQ_GROUP_NUMBER, COMMUNITY_QQ_QR_IMAGE_SRC } from './community-config.js';
 import { ProvidersSection } from './ProvidersSection.jsx';
+import { ReasoningTierPicker, useLocalServerKindProbe } from './local-server-tiers.jsx';
 
 function isReadonlyModel(model) {
   return !!(model && (model.readonly || model.system));
@@ -793,52 +794,17 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       // 本地/私网 openai_compatible 端点：按 Rust 探测结果下发真实档位
       // （vllm→四档、ollama→off/high、lmstudio/generic→不支持），避免 UI
       // 显示档位但 wire 层空操作的「调了个寂寞」。
-      const [probedKind, setProbedKind] = useState(null);
-      const [probePending, setProbePending] = useState(false);
       const isLocalCompatible = preset === 'openai_compatible' && baseUrlUsesLocalOrPrivate(baseUrl.trim());
-      const probeSupported = bridge.available && !!bridge.models && typeof bridge.models.probeLocalServerKind === 'function';
-      useEffect(() => {
-        if (!isLocalCompatible) {
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- leaving the local-compatible state must synchronously clear the probe window so stale tiers never render one commit
-          setProbedKind(null);
-          setProbePending(false);
-          return;
-        }
-        let cancelled = false;
-        // Enter pending during the debounce window (round-6 P2): no tiers are
-        // offered from the moment the probe is scheduled (the default four
-        // tiers from localProbeTiersForKind(null) are only the fallback for an
-        // unreachable probe; they must not be exposed during the "probe
-        // incoming" window, or the user could pick/save a misleading tier
-        // before the result is known). An unreachable probe (bridge
-        // unsupported/failed) is reset by then/catch to null + pending=false,
-        // landing on the default four tiers.
-        setProbePending(true);
-        setProbedKind(null);
-        // debounce：base_url 是原始输入 state，不 debounce 时逐键触发探测
-        // （Rust 侧缓存 key 含端口/路径，每个中间态都是新 key、各自串行
-        // 探测最坏 ~12s）。停键 400ms 后才发起一次。
-        const timer = setTimeout(() => {
-          if (probeSupported) {
-            // Credentials share the same source as handleTest: a freshly typed
-            // form key wins, otherwise the saved model id lets Rust read the
-            // stored credential — probing an authenticated vLLM (--api-key)
-            // without a key 401s into generic and falsely reports "thinking
-            // tiers are not supported".
-            bridge.models.probeLocalServerKind(baseUrl.trim(), apiKey.trim(), initial.__new ? null : initial.id)
-              .then((kind) => { if (!cancelled) setProbedKind(kind); })
-              // 探测调用本身失败（命令被拒/版本不支持）≠ 探测出 generic：
-              // 置回 null 走 localProbeTiersForKind 的默认四档，不误报「不支持」。
-              .catch(() => { if (!cancelled) setProbedKind(null); })
-              .finally(() => { if (!cancelled) setProbePending(false); });
-          } else {
-            // web 预览无探测能力：保持默认四档（与旧行为一致），不误报不支持。
-            if (!cancelled) setProbedKind(null);
-            if (!cancelled) setProbePending(false);
-          }
-        }, 400);
-        return () => { cancelled = true; clearTimeout(timer); };
-      }, [isLocalCompatible, baseUrl, apiKey, initial.id, initial.__new, probeSupported]);
+      // 表单入口：baseUrl/apiKey 是逐键输入 state，探测防抖 400ms（停键才发），
+      // 探测前 trim 与原始输入依赖语义见 useLocalServerKindProbe。
+      const { probedKind, probePending } = useLocalServerKindProbe({
+        enabled: isLocalCompatible,
+        baseUrl,
+        apiKey,
+        modelId: initial.__new ? null : initial.id,
+        debounceMs: 400,
+        trimInputs: true,
+      });
       const reasoningEffortTiers = isLocalCompatible
         ? (probePending ? [] : (localReasoningTiers(model, probedKind) || []))
         : (reasoningEffortTiersForModel({ preset, model, vendor, base_url: baseUrl, provider_kind: providerKind }) || []);
@@ -1318,6 +1284,20 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           {trailing}
         </div>
       );
+      // API Key 输入行（三处同构：云厂商预设 / 自定义云 Key / 本地 Key）：行内容
+      // 逐字一致——显隐按钮走 toggleApiKeyVisibility（编辑态可揭示已存密钥），
+      // 输入非空即置 keyAction='replace'；withBorder 只差行分隔线（表单组内
+      // 唯一行无分隔线，多行行带 border-b last:border-b-0）。
+      const renderApiKeyField = ({ withBorder = false }) => (
+        <div className={withBorder ? `min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}` : 'min-h-[54px] flex items-center gap-3 px-4 py-2.5'}>
+          {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
+          <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>API Key</label>
+          <input type={showKey ? 'text' : 'password'} autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
+            placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
+            className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`} />
+          <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? settingsCopy.hide : settingsCopy.show}</button>
+        </div>
+      );
       const renderCloudProviderPicker = () => {
         const bySection = ['coding_plan', 'official_api', 'custom'].map(section => ({
           section,
@@ -1658,14 +1638,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
               {!isLocalPreset && !customModel && (
                 <section>
                   <div className={formGroup}>
-                    <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
-                      {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
-                      <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>API Key</label>
-                      <input type={showKey ? 'text' : 'password'} autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
-                        placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
-                        className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`} />
-                      <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? settingsCopy.hide : settingsCopy.show}</button>
-                    </div>
+                    {renderApiKeyField({ withBorder: false })}
                   </div>
                   {keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
                 </section>
@@ -1688,16 +1661,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                     })}
                     {showProviderModelField && renderProviderModelField()}
                     {showModelIdField && !showProviderModelField && renderInlineField({ label: isLocalPreset ? settingsCopy.localModelId : settingsCopy.modelId, value: model, onChange: e => handleModelIdChange(e.target.value), placeholder: isLocalPreset ? '' : settingsCopy.modelIdPlaceholder })}
-                    {showCustomCloudKeyField && (
-                      <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
-                        {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
-                        <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>API Key</label>
-                        <input type={showKey ? 'text' : 'password'} autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
-                          placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
-                          className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`} />
-                        <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? settingsCopy.hide : settingsCopy.show}</button>
-                      </div>
-                    )}
+                    {showCustomCloudKeyField && renderApiKeyField({ withBorder: true })}
                     {showBaseUrlField && renderInlineField({ label: t.customBaseUrl, value: baseUrl, onChange: e => handleBaseUrlChange(e.target.value) })}
                     {/* Context window (optional for cloud models): a newly released
                         model ID not yet in the catalog cannot be resolved by it, so
@@ -1732,16 +1696,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                         </button>
                       </div>
                     )}
-                    {showLocalKeyField && (
-                      <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
-                        {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
-                        <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>API Key</label>
-                        <input type={showKey ? 'text' : 'password'} autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
-                          placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
-                          className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`} />
-                        <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? settingsCopy.hide : settingsCopy.show}</button>
-                      </div>
-                    )}
+                    {showLocalKeyField && renderApiKeyField({ withBorder: true })}
                   </div>
                   {!isLocalPreset && (
                     <div className={`px-1 mt-1.5 text-[12px] leading-4 ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{settingsCopy.modelContextWindowHint}</div>
@@ -1755,30 +1710,15 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                   <div className={formGroup}>
                     <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
                       <span className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{settingsCopy.reasoningEffort}</span>
-                      {reasoningEffortTiers.length > 0 ? (
-                        <div className="ml-auto flex flex-wrap justify-end gap-1">
-                          {reasoningEffortTiers.map(tier => (
-                            <button
-                              key={tier}
-                              type="button"
-                              onClick={() => setReasoningEffort(tier)}
-                              className={`h-7 min-w-[52px] px-3 rounded-full text-[13px] font-medium transition-colors ${
-                                reasoningEffortDisplay === tier
-                                  ? 'bg-[#007AFF] text-white dark:bg-[#0A84FF]'
-                                  : 'bg-[#E5E5EA] text-[#636366] hover:bg-[#D9D9DE] dark:bg-white/[0.07] dark:text-[#C7C7CC] dark:hover:bg-white/[0.12]'
-                              }`}
-                            >{settingsCopy.reasoningEffortTiers[tier] || tier}</button>
-                          ))}
-                        </div>
-                      ) : (
-                        <span className={`ml-auto text-right text-[12px] leading-4 ${probePending ? 'text-[#8A8A8E] dark:text-[#98989D]' : 'text-[#FF9500] dark:text-[#FFB340]'}`}>
-                          {probePending
-                            ? (settingsCopy.reasoningProbePending || '正在探测服务类型…')
-                            : localNoControlThinking
-                              ? (settingsCopy.reasoningThinkingAlwaysOn || '该模型思考始终开启，无法关闭')
-                              : (settingsCopy.reasoningProbeUnsupported || '该端点不支持思考档位调节')}
-                        </span>
-                      )}
+                      <ReasoningTierPicker
+                        t={t}
+                        variant="form"
+                        tiers={reasoningEffortTiers}
+                        selected={reasoningEffortDisplay}
+                        onSelect={setReasoningEffort}
+                        pending={probePending}
+                        noControlThinking={localNoControlThinking}
+                      />
                     </div>
                   </div>
                 </section>
@@ -2043,35 +1983,43 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         </div>
       </div>
     );
-    /** @param {{ model: SettingsModelEntry, settingsCopy: { deleteModelTitle: string, deleteModelDesc: string, deleteModel: string, cancel: string }, onDeleteModel: (model: SettingsModelEntry) => void, setModelDeleteConfirm: (next: SettingsModelEntry | null) => void }} props - Delete-model confirm state and actions. */
-    const ModelDeleteDialog = ({ model, settingsCopy, onDeleteModel, setModelDeleteConfirm }) => (
+    // iOS 风格确认弹层（堆叠按钮：上方红色确认、下方蓝色取消；背景点击不关闭）。
+    // 模型删除/搜索源删除两处同构；RestartDialog（两列 grid、更宽）不在此列。
+    const SheetConfirmDialog = ({ title, desc, confirmLabel, cancelLabel, onConfirm, onCancel }) => (
       <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
         <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
           <div className="px-5 pt-5 pb-4 text-center">
-            <h3 className="text-[17px] leading-6 font-semibold">{settingsCopy.deleteModelTitle}</h3>
-            <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{settingsCopy.deleteModelDesc}</p>
+            <h3 className="text-[17px] leading-6 font-semibold">{title}</h3>
+            <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{desc}</p>
           </div>
           <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
-            <button type="button" onClick={() => { onDeleteModel(model); setModelDeleteConfirm(null); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{settingsCopy.deleteModel}</button>
-            <button type="button" onClick={() => setModelDeleteConfirm(null)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{settingsCopy.cancel}</button>
+            <button type="button" onClick={onConfirm} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{confirmLabel}</button>
+            <button type="button" onClick={onCancel} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{cancelLabel}</button>
           </div>
         </div>
       </div>
     );
+    /** @param {{ model: SettingsModelEntry, settingsCopy: { deleteModelTitle: string, deleteModelDesc: string, deleteModel: string, cancel: string }, onDeleteModel: (model: SettingsModelEntry) => void, setModelDeleteConfirm: (next: SettingsModelEntry | null) => void }} props - Delete-model confirm state and actions. */
+    const ModelDeleteDialog = ({ model, settingsCopy, onDeleteModel, setModelDeleteConfirm }) => (
+      <SheetConfirmDialog
+        title={settingsCopy.deleteModelTitle}
+        desc={settingsCopy.deleteModelDesc}
+        confirmLabel={settingsCopy.deleteModel}
+        cancelLabel={settingsCopy.cancel}
+        onConfirm={() => { onDeleteModel(model); setModelDeleteConfirm(null); }}
+        onCancel={() => setModelDeleteConfirm(null)}
+      />
+    );
     /** @param {{ source: { key: string, label: string }, settingsCopy: { deleteSearchTitle: string, deleteSearchDesc: (label: string) => string, deleteSearch: string, cancel: string }, onDeleteSearchProvider?: (key: string) => void, setSearchDeleteConfirm: (next: { key: string, label: string } | null) => void, setRestartDialog: (next: string | null) => void }} props - Delete-search confirm state and actions. */
     const SearchDeleteDialog = ({ source, settingsCopy, onDeleteSearchProvider, setSearchDeleteConfirm, setRestartDialog }) => (
-      <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
-        <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
-          <div className="px-5 pt-5 pb-4 text-center">
-            <h3 className="text-[17px] leading-6 font-semibold">{settingsCopy.deleteSearchTitle}</h3>
-            <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{settingsCopy.deleteSearchDesc(source.label)}</p>
-          </div>
-          <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
-            <button type="button" onClick={() => { onDeleteSearchProvider && onDeleteSearchProvider(source.key); setSearchDeleteConfirm(null); setRestartDialog('search'); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{settingsCopy.deleteSearch}</button>
-            <button type="button" onClick={() => setSearchDeleteConfirm(null)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{settingsCopy.cancel}</button>
-          </div>
-        </div>
-      </div>
+      <SheetConfirmDialog
+        title={settingsCopy.deleteSearchTitle}
+        desc={settingsCopy.deleteSearchDesc(source.label)}
+        confirmLabel={settingsCopy.deleteSearch}
+        cancelLabel={settingsCopy.cancel}
+        onConfirm={() => { onDeleteSearchProvider && onDeleteSearchProvider(source.key); setSearchDeleteConfirm(null); setRestartDialog('search'); }}
+        onCancel={() => setSearchDeleteConfirm(null)}
+      />
     );
 
     // eslint-disable-next-line no-unused-vars, sonarjs/cognitive-complexity -- contract slot parameters kept; the settings page aggregates many form branches, splitting needs a dedicated design
