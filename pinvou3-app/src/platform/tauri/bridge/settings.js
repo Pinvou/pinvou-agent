@@ -36,7 +36,8 @@
     try {
       state.settings = await invoke("get_settings");
     } catch {
-      state.settings = { theme: "genesis", language: "zh-Hans" };
+      // 后端不可达 = 无从判断,深浅按跟随系统(color_scheme: system)兜底。
+      state.settings = { theme: "genesis", color_scheme: "system", language: "zh-Hans" };
     }
     notify();
   }

@@ -77,6 +77,7 @@
     "test:web-access-desktop-proxy": "node tests/web_access_desktop_proxy.test.mjs",
     "test:web-asset-base-path": "node tests/web_asset_base_path.test.mjs",
     "test:ui-language": "node tests/ui_language_coverage.test.mjs",
+    "test:color-scheme": "node --test tests/color_scheme_logic.test.mjs",
     "test:web-bootstrap": "node tests/web_bootstrap_transport.test.mjs",
     "test:api-key-gate": "node tests/api_key_gate_logic.test.js",
     "test:artifact-deliverable": "node tests/artifact_deliverable_logic.test.js",

@@ -19,6 +19,8 @@ const LazyToolStoreView = lazy(() => VIEW_LOADERS.toolStore().then(m => ({ defau
 const LazyCardPoolView = lazy(() => VIEW_LOADERS.cardpool().then(m => ({ default: m.CardPoolView })));
 const DetachedViewFallback = () => <div className="p-6 text-sm opacity-60">…</div>;
 import { useBridgeState } from '../hooks/useBridge.js';
+import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
+import { normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { emitTauri, isTauriAvailable, listenTauri } from '../platform/tauri/client.js';
 import { listAcpSessions } from '../features/codex/acpClient.js';
 import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG } from '../shared/i18n.js';
@@ -30,7 +32,11 @@ function useDetachedBase() {
     'settings', 'personas',
   ]);
   const [language, setLanguage] = useState(initialSystemLanguage);
-  const [activeTheme, setActiveTheme] = useState('dark');
+  // 深浅色与主窗口同口径:偏好 system=跟随系统(实时),判不出浅色;撕离窗无设置入口,
+  // 偏好只在 bootstrap 从主设置读一次,之后随系统变化仍实时跟随(system 档)。
+  const systemDark = useSystemDarkMode();
+  const [colorScheme, setColorScheme] = useState('system');
+  const activeTheme = resolveTheme(colorScheme, systemDark);
   const [, setPersonaI18nTick] = useState(0);
   const initRef = useRef(false);
 
@@ -44,7 +50,7 @@ function useDetachedBase() {
     // en/ja lazy dictionaries: the entry only bootstraps the system language;
     // the persisted language may not be loaded yet, so ensure it before switching.
     if (lang) ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
-    setActiveTheme(bs.settings.theme === 'liquid-light' ? 'light' : 'dark');
+    setColorScheme(normalizeColorScheme(bs.settings.color_scheme));
     initRef.current = true;
   }, [bs]);
   useEffect(() => {

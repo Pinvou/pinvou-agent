@@ -72,6 +72,7 @@ function injectSource() {
     var handlers = Object.create(null);
     var settings = {
       theme: 'liquid-light',
+      color_scheme: 'light',
       language: 'zh-Hans',
       memory_enabled: true,
       notifications: { enabled: true, task_completed: true },

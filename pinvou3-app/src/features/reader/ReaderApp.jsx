@@ -4,6 +4,7 @@ import {
 } from '../../components/icons.jsx';
 import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
 import { invokeTauri, listenTauri, tauriEvents } from '../../platform/tauri/client.js';
+import { normalizeColorScheme, resolveTheme } from '../../shared/color-scheme.js';
 import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG } from '../../shared/i18n.js';
 import {
   CodeViewerContent,
@@ -61,8 +62,9 @@ export function ReaderApp() {
       if (disposed) return;
       const lang = TAG_TO_LANG[settings?.language] || initialSystemLanguage();
       ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
-      // 后端 Theme 枚举只认 genesis/liquid-light/liquid-dark；深色=genesis，浅色=liquid-light。
-      document.documentElement.classList.toggle('dark', settings?.theme !== 'liquid-light');
+      // 深浅跟随应用偏好:显式 light/dark 直接用;system/缺失跟随系统,判不出浅色
+      // (与主窗口 shared/color-scheme.js 同口径)。阅读器无设置入口,加载时应用一次。
+      document.documentElement.classList.toggle('dark', resolveTheme(normalizeColorScheme(settings?.color_scheme)) === 'dark');
     }).catch(() => {});
     tauriEvents.listen('ui:language_changed', (event) => {
       const next = event.payload?.language;

@@ -17,6 +17,8 @@ import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layou
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
 import { bridge, useBridgeState, usePlatformCapability, activeModelIsLocal, shouldShowApiKeyGate } from '../hooks/useBridge.js';
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
+import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
+import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
 import { TEMPORARY_GROUP_KEY, groupSessionsByFolder } from '../shared/sidebar-grouping.js';
@@ -225,7 +227,11 @@ function workspaceDisplayName(path) {
       const [activeChat, setActiveChat] = useState(null);
       const [currentView, setCurrentViewState] = useState('chat');
       const [sessionSyncEpoch, setSessionSyncEpoch] = useState(0);
-      const [activeTheme, setActiveTheme] = useState('dark');
+      // 深浅色偏好:system=跟随系统(首次安装默认,系统切换实时跟随),light/dark=显式选择。
+      // activeTheme 是解析后的实际渲染主题,判定不出系统偏好时浅色(见 shared/color-scheme.js)。
+      const systemDark = useSystemDarkMode();
+      const [colorScheme, setColorScheme] = useState('system');
+      const activeTheme = resolveTheme(colorScheme, systemDark);
       // Browser state is scoped to workspace sessions: switching chats only shows
       // that chat's WebView2. The login profile remains globally shared by the
       // backend. Legacy events without a sessionId must fail closed.
@@ -1251,15 +1257,20 @@ function workspaceDisplayName(path) {
       const initUiPrefsFromSettings = (settings) => {
         if (isWeb) {
           bootedLanguageRef.current = language;
+          // Web 端深浅偏好存浏览器本地;未选择(首次访问/存储禁用)跟随系统,判不出浅色。
+          let storedScheme = null;
+          try { storedScheme = window.localStorage.getItem(COLOR_SCHEME_STORAGE_KEY); } catch { /* silently degrade when WebView disables storage */ }
+          setColorScheme(normalizeColorScheme(storedScheme));
         } else {
           const lang = TAG_TO_LANG[settings.language];
           // 落盘语言可能尚未装载(en/ja 惰性 chunk);ensure 后再切,失败停在系统语言
           if (lang && lang !== language) ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
           // engine 已用此语言启动,作为「需重启」基线(切语言不重启 engine,见 commands.rs)
           bootedLanguageRef.current = lang || language;
-          // 后端 Theme 枚举(prefs.rs)只认 genesis/liquid-light/liquid-dark;深色=genesis,浅色=liquid-light
-          const th = settings.theme === 'liquid-light' ? 'light' : 'dark';
-          if (th !== activeTheme) setActiveTheme(th);
+          // 深浅偏好的权威是 color_scheme(light/dark/system);首次安装为 system 跟随系统。
+          // theme(genesis/liquid-light/liquid-dark)是旧字段,旧档缺 color_scheme 时后端已按
+          // 它推导补齐(prefs.rs),前端不再读 theme,避免两处口径分叉。
+          setColorScheme(normalizeColorScheme(settings.color_scheme));
         }
         const notifications = settings.notifications || {};
         setTaskCompletedNotif(notifications.task_completed !== false && notifications.enabled !== false);
@@ -2394,14 +2405,19 @@ function workspaceDisplayName(path) {
         }
       }
 
-      function handleSetTheme(th) {
-        setActiveTheme(th);
+      function handleSetTheme(scheme) {
+        setColorScheme(scheme);
         if (isWeb) {
-          try { window.localStorage.setItem('pinvou.web.theme', th); } catch { /* silently degrade when WebView disables storage */ }
+          try { window.localStorage.setItem(COLOR_SCHEME_STORAGE_KEY, scheme); } catch { /* silently degrade when WebView disables storage */ }
           return;
         }
         if (bridge.available) {
-          bridge.settings.saveSettings({ theme: th === 'dark' ? 'genesis' : 'liquid-light' });
+          // color_scheme 是偏好权威(system/light/dark);theme 同步解析值,兼容只认
+          // 旧字段的消费方(如降级运行的旧版本)。
+          bridge.settings.saveSettings({
+            theme: resolveTheme(scheme, systemDark) === 'dark' ? 'genesis' : 'liquid-light',
+            color_scheme: scheme,
+          });
         }
       }
 
@@ -3283,7 +3299,7 @@ function workspaceDisplayName(path) {
             {currentView === 'settings' && (
               <SettingsErrorBoundary theme={activeTheme} t={t}>
                 <LazySettingsView
-                  activeTheme={activeTheme} setActiveTheme={handleSetTheme}
+                  activeTheme={activeTheme} colorScheme={colorScheme} onColorSchemeChange={handleSetTheme}
                   language={language} setLanguage={handleSetLanguage}
                   superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
                   taskCompletedNotif={taskCompletedNotif} setTaskCompletedNotif={handleSetTaskCompletedNotif}

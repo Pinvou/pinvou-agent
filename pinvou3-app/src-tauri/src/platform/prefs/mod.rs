@@ -482,6 +482,8 @@ pub struct ModeDefaultPrefs {
 #[serde(default)]
 pub struct UserPrefs {
     pub theme: Theme,
+    /// 深浅色偏好:system=跟随系统(前端判断,判不出时浅色),light/dark=显式选择。
+    /// 引入晚于 `theme`;旧档缺失时 load 按 theme 推导,首次安装保持 system 默认。
     pub color_scheme: ColorScheme,
     pub language: Language,
     pub memory_enabled: bool,
@@ -497,6 +499,9 @@ pub struct UserPrefs {
 struct ParsedSettings {
     prefs: UserPrefs,
     allow_normalization_persist: bool,
+    /// 旧档缺 `color_scheme` 时刚从 `theme` 推导过一次(见 parse 内注释)。
+    /// 计入 normalization 持久化门槛,让推导值首次 load 即落盘,文件自描述。
+    color_scheme_derived: bool,
 }
 
 fn should_persist_normalization(allow_persist: bool, requested: bool, changed: bool) -> bool {
@@ -522,6 +527,7 @@ impl UserPrefs {
             return ParsedSettings {
                 prefs: Self::defaults_for_system_locale(system_locale),
                 allow_normalization_persist: false,
+                color_scheme_derived: false,
             };
         };
         let value: serde_json::Value = match serde_json::from_str(raw) {
@@ -533,12 +539,20 @@ impl UserPrefs {
                 return ParsedSettings {
                     prefs: Self::defaults_for_system_locale(system_locale),
                     allow_normalization_persist: false,
+                    color_scheme_derived: false,
                 };
             }
         };
         let has_language = value
             .as_object()
             .is_some_and(|settings| settings.contains_key("language"));
+        // `color_scheme` 是「深浅色偏好」(system=跟随系统)。字段晚于 `theme` 引入:
+        // 旧档没有该 key 时,无法区分「用户显式选过 theme」和「从未动过(默认
+        // genesis 深色)」,统一按旧生效外观推导,升级后界面深浅不变;只有真正
+        // 首次安装(无 settings.json,走上面的默认分支)才保持 System 跟随系统。
+        let has_color_scheme = value
+            .as_object()
+            .is_some_and(|settings| settings.contains_key("color_scheme"));
         let mut prefs: Self = match serde_json::from_value(value) {
             Ok(prefs) => prefs,
             Err(error) => {
@@ -548,15 +562,25 @@ impl UserPrefs {
                 return ParsedSettings {
                     prefs: Self::defaults_for_system_locale(system_locale),
                     allow_normalization_persist: false,
+                    color_scheme_derived: false,
                 };
             }
         };
         if !has_language {
             prefs.language = Language::from_system_locale(system_locale);
         }
+        let mut color_scheme_derived = false;
+        if !has_color_scheme {
+            prefs.color_scheme = match prefs.theme {
+                Theme::LiquidLight => ColorScheme::Light,
+                Theme::Genesis | Theme::LiquidDark => ColorScheme::Dark,
+            };
+            color_scheme_derived = true;
+        }
         ParsedSettings {
             prefs,
             allow_normalization_persist: true,
+            color_scheme_derived,
         }
     }
 
@@ -571,6 +595,7 @@ impl UserPrefs {
         let system_locale = crate::platform::os::current_system_locale();
         let mut parsed = Self::parse_settings_with_state(raw.as_deref(), system_locale.as_deref());
         let allow_normalization_persist = parsed.allow_normalization_persist;
+        let color_scheme_derived = parsed.color_scheme_derived;
         let prefs = &mut parsed.prefs;
         // 必须在 migrate_models/normalize 改写前记录；否则只能修正本次运行的内存值，
         // save gate 看不到变化，旧域名会永久留在 settings.json 中、每次启动重复迁移。
@@ -596,7 +621,8 @@ impl UserPrefs {
         let normalization_changed = minimax_endpoint_changed
             || local_model_alias_changed
             || migration.settings_sanitized
-            || memory_policy_changed;
+            || memory_policy_changed
+            || color_scheme_derived;
         if should_persist_normalization(
             allow_normalization_persist,
             persist_normalized,
@@ -1719,6 +1745,108 @@ mod tests {
         let prefs = UserPrefs::parse_settings(Some(r#"{"theme":"genesis"}"#), Some("ja-JP"));
         assert_eq!(prefs.theme, Theme::Genesis);
         assert_eq!(prefs.language, Language::Ja);
+    }
+
+    /// 旧档(无 color_scheme key)按旧生效外观从 theme 推导深浅偏好,升级后界面不变;
+    /// 仅真正首次安装(无 settings.json → 默认分支)保持 System 跟随系统。
+    #[test]
+    fn legacy_settings_derive_color_scheme_from_theme() {
+        for (raw, expected) in [
+            (r#"{"theme":"genesis"}"#, ColorScheme::Dark),
+            (r#"{"theme":"liquid-dark"}"#, ColorScheme::Dark),
+            (r#"{"theme":"liquid-light"}"#, ColorScheme::Light),
+        ] {
+            let parsed = UserPrefs::parse_settings_with_state(Some(raw), Some("en-US"));
+            assert_eq!(parsed.prefs.color_scheme, expected, "raw: {raw}");
+            assert!(parsed.color_scheme_derived, "raw: {raw}");
+            assert!(parsed.allow_normalization_persist, "raw: {raw}");
+        }
+    }
+
+    /// 显式写过的 color_scheme(含 system=跟随系统)永不被 theme 推导覆盖。
+    #[test]
+    fn explicit_color_scheme_is_never_rederived() {
+        for (raw, expected) in [
+            (
+                r#"{"theme":"liquid-light","color_scheme":"system"}"#,
+                ColorScheme::System,
+            ),
+            (
+                r#"{"theme":"genesis","color_scheme":"light"}"#,
+                ColorScheme::Light,
+            ),
+            (
+                r#"{"theme":"genesis","color_scheme":"dark"}"#,
+                ColorScheme::Dark,
+            ),
+        ] {
+            let parsed = UserPrefs::parse_settings_with_state(Some(raw), Some("en-US"));
+            assert_eq!(parsed.prefs.color_scheme, expected, "raw: {raw}");
+            assert!(!parsed.color_scheme_derived, "raw: {raw}");
+        }
+    }
+
+    /// 首次安装(无 settings.json):color_scheme 保持 System,且不触发 normalization 回写。
+    #[test]
+    fn fresh_settings_keep_color_scheme_system() {
+        let parsed = UserPrefs::parse_settings_with_state(None, Some("en-US"));
+        assert_eq!(parsed.prefs.color_scheme, ColorScheme::System);
+        assert!(!parsed.color_scheme_derived);
+        assert!(!parsed.allow_normalization_persist);
+    }
+
+    /// load 对旧档的推导值一次性回写,settings.json 此后自描述;
+    /// 已显式保存过 color_scheme 的档位不再改写。
+    #[test]
+    fn load_persists_derived_color_scheme_once() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        let temporary_home = std::env::temp_dir().join(format!(
+            "pinvou3-prefs-color-scheme-derive-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&temporary_home);
+        std::fs::create_dir_all(&temporary_home).expect("create temporary prefs home");
+        // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &temporary_home) };
+
+        let settings_path = super::super::paths::settings_path();
+        std::fs::write(&settings_path, r#"{"theme":"liquid-light"}"#).expect("write legacy prefs");
+
+        let loaded = UserPrefs::load();
+        assert_eq!(loaded.color_scheme, ColorScheme::Light);
+        let persisted = std::fs::read_to_string(&settings_path).expect("read normalized prefs");
+        assert!(
+            persisted.contains(r#""color_scheme": "light""#),
+            "persisted: {persisted}"
+        );
+
+        // 已显式保存的 system 不被 load 改写。
+        std::fs::write(
+            &settings_path,
+            r#"{"theme":"genesis","color_scheme":"system"}"#,
+        )
+        .expect("write explicit prefs");
+        let loaded = UserPrefs::load();
+        assert_eq!(loaded.color_scheme, ColorScheme::System);
+        let persisted = std::fs::read_to_string(&settings_path).expect("read explicit prefs");
+        let value: serde_json::Value = serde_json::from_str(&persisted).expect("parse persisted");
+        assert_eq!(
+            value.get("color_scheme").and_then(|v| v.as_str()),
+            Some("system"),
+            "persisted: {persisted}"
+        );
+
+        let _ = std::fs::remove_dir_all(&temporary_home);
+        match old_home {
+            // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
     }
 
     #[test]
