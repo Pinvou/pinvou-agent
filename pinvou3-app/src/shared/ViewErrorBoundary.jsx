@@ -5,6 +5,7 @@ import React from 'react';
 // 边界提供「重新加载页面」入口(reload 会重新执行 import,绕开缓存)。
 // 默认整页口径(viewLoadFailed/viewReload);variant="panel" 是面板槽位口径
 // (panelLoadFailed,嵌进面板位而非占满视图,ChatView 懒面板等局部挂载用)。
+// heading 可覆盖默认标题(设置页边界沿用「设置页加载失败」文案,其余走 viewLoadFailed)。
 // 文案均走 i18n 三语,不引入单语言硬编码。
 export class ViewErrorBoundary extends React.Component {
   constructor(props) {
@@ -54,7 +55,7 @@ export class ViewErrorBoundary extends React.Component {
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 px-16 py-12">
           <div className="max-w-[800px] rounded-2xl border p-5 bg-white border-[#DDE3EA] text-[#1F1F1F] dark:bg-[#1F2023] dark:border-[#333537] dark:text-[#E8EAED]">
-            <div className="text-[18px] font-semibold mb-2">{copy.viewLoadFailed}</div>
+            <div className="text-[18px] font-semibold mb-2">{this.props.heading || copy.viewLoadFailed}</div>
             <div className="text-[13px] leading-relaxed text-[#444746] dark:text-[#C4C7C5]">
               {message}
             </div>
