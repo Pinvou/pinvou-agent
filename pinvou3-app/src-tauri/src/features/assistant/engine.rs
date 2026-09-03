@@ -482,6 +482,24 @@ impl TurnLifecycle {
         }
     }
 
+    /// 当前活动轮的 (epoch, turn_id) 原子快照，供 cancel 入口一次性绑定
+    /// 目标轮身份。`turn_id` 来自 forwarder 观察到的 `TurnStarted`，未启动
+    /// （submit 后 `TurnStarted` 未抵达）时为 `None`——此时 cancel 走
+    /// pending_cancel 预案，由 forwarder 在 `TurnStarted` 后按引擎侧
+    /// turn 绑定重放。
+    ///
+    /// epoch 单独读（[`current_turn_generation`](Self::current_turn_generation)）
+    /// 与 turn_id 分两次加锁会拿到交叉视图（epoch 属 A 轮、turn_id 属 B 轮），
+    /// 本方法保证二者同源。
+    pub(crate) fn current_turn_identity(&self) -> Option<(u64, Option<String>)> {
+        let state = self.state.lock();
+        if state.active || state.terminal_closing {
+            Some((state.turn_epoch, state.turn_id.clone()))
+        } else {
+            None
+        }
+    }
+
     /// 当前活动轮是否已提交（`SendMessage` 已入队 / `TurnStarted` 已抵达）。
     /// 供 cancel 阶段二在 generation mismatch（新轮已 reserve）时判断新轮是否
     /// 已经真正开始：仅 reserve 未 send 时，engine 里仍是旧轮遗留的子代理，
@@ -1693,6 +1711,24 @@ impl AppEngine {
             .cancel_with_mode(deepseek_tui::core::engine::CancelReason::User, mode);
     }
 
+    /// 只取消引擎当前槽内仍属于 `turn_id` 的那一轮（底座 r13+ 的 turn 绑定
+    /// 取消）。返回 `false` 表示引擎槽已切到别的轮——典型场景是引擎自主
+    /// 启动了续跑轮（idle 子代理完成 / 后台 shell 唤醒 / goal 延续），其
+    /// token 在 app 观察到 `TurnStarted` 之前就已换新；此时绝不能把旧轮的
+    /// 停止命中新轮（issue #254）。返回 `false` 时底座不发布任何 steer
+    /// 处置或取消原因。
+    pub(crate) fn cancel_turn_with_mode(
+        &self,
+        turn_id: &str,
+        mode: deepseek_tui::core::engine::CancelMode,
+    ) -> bool {
+        self.handle.cancel_turn(
+            turn_id,
+            deepseek_tui::core::engine::CancelReason::User,
+            mode,
+        )
+    }
+
     async fn send_turn_op(&self, op: Op) -> Result<()> {
         let activated = self.turn_lifecycle.on_submitted();
         if !activated {
@@ -2473,6 +2509,55 @@ mod turn_lifecycle_tests {
             lifecycle.take_pending_cancel(0).is_none(),
             "idle must not arm pending_cancel"
         );
+    }
+
+    #[test]
+    fn current_turn_identity_snapshots_epoch_and_turn_id_from_one_state_view() {
+        // issue #254：cancel 入口需要 (epoch, turn_id) 同源快照。分两次加锁
+        // 会拿到交叉视图（epoch 属 A 轮、turn_id 属 B 轮），turn 绑定取消会
+        // 被指到错误的轮身份。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        assert_eq!(lifecycle.current_turn_identity(), None, "idle session");
+
+        // reserve 激活但 TurnStarted 未抵达：turn_id 仍是 None
+        // （submit→TurnStarted 窗口，cancel 走 pending_cancel 预案）。
+        let reservation = lifecycle.reserve().expect("reserve");
+        let (epoch, turn_id) = lifecycle
+            .current_turn_identity()
+            .expect("reserved identity");
+        assert_eq!(epoch, 1);
+        assert_eq!(turn_id, None, "reserved turn has not observed TurnStarted");
+
+        // TurnStarted 抵达：同一 epoch 下 turn_id 就位（不额外推进 epoch）。
+        lifecycle.on_started("turn-1".to_string());
+        let (started_epoch, started_turn_id) =
+            lifecycle.current_turn_identity().expect("started identity");
+        assert_eq!(started_epoch, epoch, "TurnStarted keeps the reserved epoch");
+        assert_eq!(started_turn_id.as_deref(), Some("turn-1"));
+
+        // 终态收口期（terminal_closing）：epoch 口径与 current_turn_generation
+        // 一致；turn_id 已被终态认领取走（EmittedTerminal 载荷），此时 turn
+        // 绑定取消自然跳过——轮已结束，无 token 可取消。
+        lifecycle.claim_terminal().expect("claim terminal");
+        let (closing_epoch, closing_turn_id) = lifecycle
+            .current_turn_identity()
+            .expect("terminal-closing identity");
+        assert_eq!(closing_epoch, epoch);
+        assert_eq!(
+            closing_turn_id, None,
+            "terminal claim takes the turn_id into the terminal payload"
+        );
+
+        // 闸门重开（空闲）：回到 None。
+        lifecycle.finish_terminal_emission();
+        assert_eq!(
+            lifecycle.current_turn_identity(),
+            None,
+            "gate reopened returns to idle"
+        );
+
+        // 防 Drop 副作用。
+        reservation.mark_submitted();
     }
 
     #[test]
