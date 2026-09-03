@@ -4,7 +4,7 @@ import {
   invokeObservedPanelSelection,
   isSubagentPanelPublicationCurrent,
 } from './subagent-panel-publication.mjs';
-import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, Mic, Monitor, Package, Paperclip, Presentation, Send, Sparkles, StopCircle, Terminal, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
+import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, Mic, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -856,7 +856,61 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         }
         return '';
       };
-      const queued = (bs && bs.queued) || []; // 排队待发消息（当前 session 生成中时积压）
+      // 排队待发消息（当前 session 生成中时积压）。Same stability contract as
+      // chatItems above: the effect reconciling an interrupted queue edit
+      // depends on this array by reference.
+      const queued = useMemo(() => (bs && bs.queued) || [], [bs]);
+      const [queuedEdits, setQueuedEdits] = useState({});
+      const [queuedActions, setQueuedActions] = useState({});
+      const [queuedActionErrors, setQueuedActionErrors] = useState({});
+      const queuedEditInputRef = useRef(null);
+      // ChatView survives session switches. Key transient queue UI state by
+      // session instead of clearing it from an effect: a slow withdrawal in
+      // session A must not disable or surface an error in newly active B.
+      const queuedEditCandidate = activeSessionId ? queuedEdits[activeSessionId] || null : null;
+      const queuedEdit = queuedEditCandidate && queued.some(item => item && item.id === queuedEditCandidate.id)
+        ? queuedEditCandidate
+        : null;
+      const queuedAction = activeSessionId ? queuedActions[activeSessionId] || null : null;
+      const queuedActionBusy = !!(queuedAction && queuedAction.id != null);
+      const queuedActionErrorState = activeSessionId ? queuedActionErrors[activeSessionId] || null : null;
+      const queuedActionError = queuedActionErrorState ? queuedActionErrorState.text : '';
+      const queuedEditFocusKey = queuedEdit ? `${activeSessionId}:${queuedEdit.id}` : '';
+      useLayoutEffect(() => {
+        if (!queuedEditFocusKey || !queuedEditInputRef.current) return;
+        queuedEditInputRef.current.focus();
+        queuedEditInputRef.current.select();
+      }, [queuedEditFocusKey]);
+      // The queue drains itself on turn end while an editor may be open: the
+      // item is sent with its pre-edit text, so a modified draft would be
+      // discarded silently. Disclose it once through the shared action-error
+      // notice. A successful save or an explicit cancel removes the entry
+      // while the item is still queued, so neither lands here.
+      useEffect(() => {
+        if (!queuedEditCandidate || !activeSessionId) return;
+        if (queued.some(item => item && item.id === queuedEditCandidate.id)) return;
+        const lostEntry = queuedEditCandidate;
+        const lostSessionId = activeSessionId;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- the queue lives in the external bridge store; when a flushed item takes an open editor with it, the stale entry must be dropped and the lost draft disclosed in the same commit
+        setQueuedEdits(current => {
+          if (!current[lostSessionId] || current[lostSessionId].id !== lostEntry.id) return current;
+          const next = { ...current };
+          delete next[lostSessionId];
+          return next;
+        });
+        if (String(lostEntry.text || '') !== String(lostEntry.initial || '')) {
+          const notice = { queuedId: lostEntry.id, text: t.queuedEditInterrupted };
+          setQueuedActionErrors(current => ({ ...current, [lostSessionId]: notice }));
+          window.setTimeout(() => {
+            setQueuedActionErrors(current => {
+              if (current[lostSessionId] !== notice) return current;
+              const next = { ...current };
+              delete next[lostSessionId];
+              return next;
+            });
+          }, 5000);
+        }
+      }, [queuedEditCandidate, queued, activeSessionId, t]);
       const ctxTokens = (bs && bs.tokens) || null; // {input, max}，chat:usage 每轮更新
       const ctxPct = ctxTokens && ctxTokens.max > 0 ? ctxTokens.input / ctxTokens.max : 0;
       const fmtCtxTok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
@@ -1915,6 +1969,90 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         await bridge.chat.interruptAndSendQueued(activeSessionId, queuedId);
       }
 
+      /**
+       * @param {number|string} queuedId Queue item identifier.
+       * @param {() => boolean|Promise<boolean>} action Session-scoped bridge operation.
+       */
+      async function runQueuedAction(queuedId, action) {
+        if (isMultiAgentReadOnly || queuedActionBusy) return false;
+        const actionSessionId = activeSessionId;
+        if (!actionSessionId) return false;
+        setQueuedActionErrors(current => {
+          const next = { ...current };
+          delete next[actionSessionId];
+          return next;
+        });
+        setQueuedActions(current => ({ ...current, [actionSessionId]: { id: queuedId } }));
+        /** @param {string} text Failure message to display. */
+        const showFailure = (text) => {
+          const notice = { queuedId, text };
+          setQueuedActionErrors(current => ({ ...current, [actionSessionId]: notice }));
+          window.setTimeout(() => {
+            setQueuedActionErrors(current => {
+              if (current[actionSessionId] !== notice) return current;
+              const next = { ...current };
+              delete next[actionSessionId];
+              return next;
+            });
+          }, 5000);
+        };
+        try {
+          const completed = await action();
+          if (!completed) showFailure(t.queuedActionFailed);
+          return !!completed;
+        } catch (error) {
+          console.warn('[pinvou3][chat-ui] queued message action failed', error);
+          showFailure(t.queuedActionFailed);
+          return false;
+        } finally {
+          setQueuedActions(current => {
+            if (!current[actionSessionId] || current[actionSessionId].id !== queuedId) return current;
+            const next = { ...current };
+            delete next[actionSessionId];
+            return next;
+          });
+        }
+      }
+
+      /** @param {number|string} queuedId Queue item identifier. */
+      function handlePrioritizeQueued(queuedId) {
+        if (!bridge.chat || typeof bridge.chat.prioritizeQueued !== 'function') return;
+        void runQueuedAction(queuedId, () => bridge.chat.prioritizeQueued(activeSessionId, queuedId));
+      }
+
+      /** @param {{id: number|string, attachments?: unknown[]}} item Queue item being edited. */
+      async function handleSaveQueuedEdit(item) {
+        if (!queuedEdit || queuedEdit.id !== item.id) return;
+        const editSessionId = activeSessionId;
+        if (!editSessionId) return;
+        const nextText = String(queuedEdit.text || '').trim();
+        if (!nextText && !(item.attachments || []).length) {
+          const notice = { queuedId: item.id, text: t.queuedEmpty };
+          setQueuedActionErrors(current => ({ ...current, [editSessionId]: notice }));
+          window.setTimeout(() => {
+            setQueuedActionErrors(current => {
+              if (current[editSessionId] !== notice) return current;
+              const next = { ...current };
+              delete next[editSessionId];
+              return next;
+            });
+          }, 5000);
+          return;
+        }
+        if (!bridge.chat || typeof bridge.chat.editQueued !== 'function') return;
+        const completed = await runQueuedAction(item.id, () => (
+          bridge.chat.editQueued(editSessionId, item.id, nextText)
+        ));
+        if (completed) {
+          setQueuedEdits(current => {
+            if (!current[editSessionId] || current[editSessionId].id !== item.id) return current;
+            const next = { ...current };
+            delete next[editSessionId];
+            return next;
+          });
+        }
+      }
+
       function handleKeyDown(e) {
         // 输入法合成期间(例如中文输入法敲回车确认候选词上屏)不要触发发送,
         // 否则一次回车会既上屏又发送消息。与 PetWindow 处理保持一致。
@@ -2371,35 +2509,115 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   comingSoonLabel={chatViewCopy.comingSoon}
                 />
               )}
-            {/* Queued-message overlay: a full card covering the area above the
-                composer (sending while busy = steer into the engine's current
-                turn; with attachments = plain local queuing). The ⚡ on each
-                entry = zap-send (withdraw the engine copy + interrupt the
-                current turn and send this one immediately); × = cancel
-                (steered chips do a real withdraw_steer; plain chips are
-                removed locally). ⚡ is gated by the interruptSend capability
-                (hidden on web). */}
-            {queued.length > 0 && (
+            {/* Queued-message overlay. Pin makes an item the next safe local
+                send without interrupting the current response; edit preserves
+                attachments and scene metadata. Engine-injected steer chips
+                are mutated only after the bridge confirms their withdrawal.
+                ⚡ remains the explicit interrupt-and-send action. */}
+            {(queued.length > 0 || queuedActionError) && (
               <div className={`mb-2 rounded-2xl border shadow-lg backdrop-blur-xl overflow-hidden max-h-[40vh] overflow-y-auto ${'border-black/[0.06] bg-white/90 dark:border-white/10 dark:bg-[#161618]/90'}`}>
                 {queued.map((q, index) => (
                   <div key={q.id}
                     className={`flex items-center gap-2 px-3 py-2 text-[12px] text-[#444746] dark:text-[#C4C7C5] ${index > 0 ? 'border-t border-black/[0.06] dark:border-white/10' : ''}`}>
                     <span className="opacity-60 shrink-0">{t.queuedTag}</span>
-                    <span className="flex-1 min-w-0 truncate">{q.displayText}</span>
+                    {queuedEdit && queuedEdit.id === q.id ? (
+                      <textarea
+                        data-testid={`queued-message-edit-${q.id}`}
+                        ref={queuedEditInputRef}
+                        value={queuedEdit.text}
+                        rows={2}
+                        aria-label={t.queuedEdit}
+                        onChange={(event) => setQueuedEdits(current => ({
+                          ...current,
+                          [activeSessionId]: { ...current[activeSessionId], text: event.target.value },
+                        }))}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Escape') {
+                            setQueuedEdits(current => {
+                              const next = { ...current };
+                              delete next[activeSessionId];
+                              return next;
+                            });
+                          }
+                          if (event.key === 'Enter' && !event.shiftKey && !isImeComposing(event)) {
+                            event.preventDefault();
+                            void handleSaveQueuedEdit(q);
+                          }
+                        }}
+                        className="flex-1 min-w-0 resize-none rounded-lg border border-black/10 bg-white/80 px-2 py-1 outline-none focus:border-blue-500 dark:border-white/15 dark:bg-white/5"
+                      />
+                    ) : (
+                      <span className="flex-1 min-w-0 truncate">{q.displayText}</span>
+                    )}
+                    {queuedEdit && queuedEdit.id === q.id ? (
+                      <>
+                        <button type="button" onClick={() => void handleSaveQueuedEdit(q)}
+                          data-testid={`queued-message-save-${q.id}`}
+                          disabled={queuedActionBusy}
+                          aria-label={t.queuedSave} title={t.queuedSave}
+                          className="w-6 h-6 shrink-0 rounded-full flex items-center justify-center text-emerald-600 hover:bg-emerald-500/10 disabled:opacity-40 dark:text-emerald-400">
+                          <Check size={14} />
+                        </button>
+                        <button type="button" onClick={() => setQueuedEdits(current => {
+                          const next = { ...current };
+                          delete next[activeSessionId];
+                          return next;
+                        })}
+                          disabled={queuedActionBusy}
+                          aria-label={t.queuedEditCancel} title={t.queuedEditCancel}
+                          className="w-6 h-6 shrink-0 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-black/5 disabled:opacity-40 dark:text-[#C4C7C5] dark:hover:bg-white/10">
+                          <X size={14} />
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button type="button" onClick={() => handlePrioritizeQueued(q.id)}
+                          data-testid={`queued-message-prioritize-${q.id}`}
+                          disabled={queuedActionBusy || !!queuedEdit || isMultiAgentReadOnly}
+                          aria-label={t.queuedPrioritize} title={t.queuedPrioritize}
+                          className="w-6 h-6 shrink-0 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-black/5 disabled:opacity-40 dark:text-[#C4C7C5] dark:hover:bg-white/10">
+                          <PinIcon size={14} />
+                        </button>
+                        <button type="button" onClick={() => {
+                          setQueuedActionErrors(current => {
+                            const next = { ...current };
+                            delete next[activeSessionId];
+                            return next;
+                          });
+                          setQueuedEdits(current => ({
+                            ...current,
+                            [activeSessionId]: { id: q.id, text: String(q.text || ''), initial: String(q.text || '') },
+                          }));
+                        }}
+                          data-testid={`queued-message-edit-action-${q.id}`}
+                          disabled={queuedActionBusy || !!queuedEdit || isMultiAgentReadOnly}
+                          aria-label={t.queuedEdit} title={t.queuedEdit}
+                          className="w-6 h-6 shrink-0 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-black/5 disabled:opacity-40 dark:text-[#C4C7C5] dark:hover:bg-white/10">
+                          <Edit2 size={14} />
+                        </button>
+                      </>
+                    )}
                     {can('interruptSend') && (
                       <button type="button" onClick={() => handleInterruptQueued(q.id)}
+                        disabled={queuedActionBusy || !!queuedEdit || isMultiAgentReadOnly}
                         aria-label={t.interruptMsg} title={t.interruptMsgTip}
-                        className="w-6 h-6 shrink-0 rounded-full flex items-center justify-center transition-colors text-blue-500 dark:text-blue-400 hover:bg-blue-500/10 active:bg-blue-500/15">
+                        className="w-6 h-6 shrink-0 rounded-full flex items-center justify-center transition-colors text-blue-500 dark:text-blue-400 hover:bg-blue-500/10 active:bg-blue-500/15 disabled:opacity-40">
                         <Zap size={14} />
                       </button>
                     )}
                     <button type="button" onClick={() => bridge.chat.removeQueued(q.id)}
+                      disabled={queuedActionBusy || !!queuedEdit || isMultiAgentReadOnly}
                       aria-label={t.queuedCancel} title={t.queuedCancel}
-                      className={`w-6 h-6 shrink-0 rounded-full flex items-center justify-center transition-colors text-[#5F6368] dark:text-[#C4C7C5] ${'hover:bg-[#F0F4F9] dark:hover:bg-[#333537]'}`}>
+                      className={`w-6 h-6 shrink-0 rounded-full flex items-center justify-center transition-colors text-[#5F6368] dark:text-[#C4C7C5] disabled:opacity-40 ${'hover:bg-[#F0F4F9] dark:hover:bg-[#333537]'}`}>
                       <X size={14} />
                     </button>
                   </div>
                 ))}
+                {queuedActionError && (
+                  <div role="status" className="border-t border-black/[0.06] px-3 py-2 text-[11px] text-amber-700 dark:border-white/10 dark:text-amber-300">
+                    {queuedActionError}
+                  </div>
+                )}
               </div>
             )}
             {/* 模型选择器/知识库挂载已挪进下方底栏(ComposerModelSelector/ComposerKbSelector) */}
