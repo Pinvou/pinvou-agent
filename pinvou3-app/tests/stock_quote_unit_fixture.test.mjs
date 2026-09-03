@@ -25,7 +25,9 @@ const vite = await createServer({
   // percent-encoded on POSIX; fileURLToPath is the portable form.
   root: fileURLToPath(new URL('..', import.meta.url)),
   logLevel: 'error',
-  server: { middlewareMode: true },
+  // One-shot SSR module load: file watching is never used and only ENOSPC-flakes
+  // server startup on hosts with low inotify limits.
+  server: { middlewareMode: true, watch: null },
   optimizeDeps: { noDiscovery: true },
 });
 const { StockQuoteCard } = await vite.ssrLoadModule('/src/features/tools/tool-common.jsx');
