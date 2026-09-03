@@ -55,9 +55,10 @@ for (const language of ['zh', 'en', 'ja']) {
   assert.ok(dict[language].uiChat.sceneModes.poster, `${language}.uiChat.sceneModes.poster must exist`);
   assert.ok(dict[language].uiChat.sceneModes.dataVisualization, `${language}.uiChat.sceneModes.dataVisualization must exist`);
   assert.ok(dict[language].uiChat.sceneModes.pptDesign, `${language}.uiChat.sceneModes.pptDesign must exist`);
-  assert.ok(dict[language].uiChat.sceneModes.pptUnavailable, `${language}.uiChat.sceneModes.pptUnavailable must exist`);
   assert.ok(dict[language].uiChat.sceneModes.designGeneralPlaceholder, `${language}.uiChat.sceneModes.designGeneralPlaceholder must exist`);
   assert.ok(dict[language].uiChatView.placeholderPersonalWorkbench, `${language}.uiChatView.placeholderPersonalWorkbench must exist`);
+  assert.ok(dict[language].uiChatView.placeholderDesignPpt, `${language}.uiChatView.placeholderDesignPpt must exist`);
+  assert.ok(dict[language].uiChatScenes.pptDesign, `${language}.uiChatScenes.pptDesign must exist`);
   assert.equal(
     typeof dict[language].uiChat.sceneModes.clear,
     'function',

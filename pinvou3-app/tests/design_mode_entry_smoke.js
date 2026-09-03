@@ -44,11 +44,13 @@ function injectSource() {
     var DRAFT_CONTENT = '<!doctype html><html><body><main id="app"><section class="hero"><h1 class="hero-title">Draft Poster</h1><button class="primary">Draft</button></section></main></body></html>';
     var SESSIONS = [{id:'s-design',title:'HTML设计测试',created_at:1,updated_at:9}];
     var MARKET_TOOLS = [
-      {id:'gongwen', installed:false, companion_skills:['government-writing']}
+      {id:'gongwen', installed:false, companion_skills:['government-writing']},
+      {id:'pptx', installed:false, companion_skills:['pptx']}
     ];
     var MARKET_SKILLS = [
       {id:'government-writing', installed:false},
-      {id:'visualizer', installed:false}
+      {id:'visualizer', installed:false},
+      {id:'pptx', installed:false}
     ];
     window.__PINVOU_TEST_INSTALLS = [];
     window.__PINVOU_TEST_CHAT_CALLS = [];
@@ -111,6 +113,9 @@ function injectSource() {
           MARKET_TOOLS.forEach(function(item){ if (item.id === (args && args.toolId)) item.installed = true; });
           if ((args && args.toolId) === 'gongwen') {
             MARKET_SKILLS.forEach(function(item){ if (item.id === 'government-writing') item.installed = true; });
+          }
+          if ((args && args.toolId) === 'pptx') {
+            MARKET_SKILLS.forEach(function(item){ if (item.id === 'pptx') item.installed = true; });
           }
           return Promise.resolve(null);
         case 'install_marketplace_skill':
@@ -569,8 +574,8 @@ async function clickExactButton(page, text) {
       designDataPlaceholder.designDataTab &&
       designDataPlaceholder.posterTab &&
       designDataPlaceholder.pptTab &&
-      designDataPlaceholder.pptDisabled &&
-      /PPT 生成能力修复中/.test(designDataPlaceholder.pptTitle || '') &&
+      !designDataPlaceholder.pptDisabled &&
+      designDataPlaceholder.pptTitle === 'PPT设计' &&
       JSON.stringify(designDataPlaceholder.tabOrder) === JSON.stringify(['海报', '数据可视化', 'PPT设计']) &&
       designDataPlaceholder.unavailableTabs.length === 0 &&
       dataPayload &&
@@ -585,24 +590,47 @@ async function clickExactButton(page, text) {
       !/Excel 仪表盘/.test((dataPayload.payload || '').split('---')[0] || ''),
     JSON.stringify({ designDataPlaceholder, dataPayload }));
   await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
-  await page.evaluate(() => {
-    const ppt = document.querySelector('[data-testid="design-subtab-picker-option-ppt"]');
-    if (ppt) ppt.click();
-  });
+  await page.click('[data-testid="design-subtab-picker-option-ppt"]');
   await sleep(250);
-  const disabledPptState = await page.evaluate(() => {
+  const pptSceneState = await page.evaluate(() => {
     const textarea = document.querySelector('textarea');
     return {
       placeholder: textarea && textarea.getAttribute('placeholder'),
-      sentCount: (window.__PINVOU_TEST_SENT_MESSAGES || []).length,
-      activePpt: document.querySelector('[data-testid="design-subtab-picker-option-ppt"]')?.getAttribute('aria-disabled') === 'true',
+      tag: document.querySelector('[data-testid="pinvou-scene-tag"]')?.textContent || '',
+      ariaDisabled: document.querySelector('[data-testid="design-subtab-picker-option-ppt"]')?.getAttribute('aria-disabled'),
     };
   });
-  rec('PPT 设计入口暂时置灰且不会触发生成路由',
-    disabledPptState.placeholder === '粘贴数据或描述指标，生成可视化看板' &&
-      disabledPptState.sentCount === 0 &&
-      disabledPptState.activePpt,
-    JSON.stringify({ disabledPptState }));
+  await page.focus('textarea');
+  await page.keyboard.type('做一个 Q2 季度汇报 PPT');
+  await page.keyboard.press('Enter');
+  await sleep(700);
+  const pptPayload = await page.evaluate(() => {
+    const sent = (window.__PINVOU_TEST_SENT_MESSAGES || [])[0] || null;
+    return sent && {
+      text: sent.text,
+      scene: sent.meta && sent.meta.pinvouScene,
+      requiredSkill: sent.meta && sent.meta.pinvouRequiredSkill,
+      requiredTool: sent.meta && sent.meta.pinvouRequiredTool,
+      payload: sent.meta && sent.meta.pinvouPayloadText,
+      installs: window.__PINVOU_TEST_INSTALLS || [],
+    };
+  });
+  rec('设计-PPT设计自动准备并强制路由到 pptx 技能和工具',
+      pptSceneState.placeholder === '描述你要生成的 PPT 主题或修改要求' &&
+      pptSceneState.tag.includes('PPT设计') &&
+      !pptSceneState.ariaDisabled &&
+      pptPayload &&
+      pptPayload.text === '做一个 Q2 季度汇报 PPT' &&
+      pptPayload.scene === 'design:ppt' &&
+      pptPayload.requiredSkill === 'pptx' &&
+      pptPayload.requiredTool === 'pptx' &&
+      pptPayload.installs.some(item => item.type === 'tool' && item.id === 'pptx') &&
+      /PPT 设计场景路由/.test(pptPayload.payload || '') &&
+      /pptx/.test(pptPayload.payload || '') &&
+      /mcp_pptx_make_pptx/.test(pptPayload.payload || '') &&
+      /present_artifact/.test(pptPayload.payload || '') &&
+      /PPT 自检/.test(pptPayload.payload || ''),
+    JSON.stringify({ pptSceneState, pptPayload }));
   await page.click('[data-testid="design-subtab-picker-option-poster"]');
   await sleep(200);
 
