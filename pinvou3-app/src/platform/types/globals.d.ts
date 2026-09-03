@@ -10,6 +10,14 @@
 // .d.ts (they are a silent no-op); only `declare global` blocks actually
 // augment the Window type.
 declare global {
+  // ES2022 API the ES2021 lib target doesn't know. The runtime polyfill for
+  // the Safari 14 floor lives in src/shared/legacy-polyfills.js (compat is
+  // gated by audit-compat.mjs); declaring it here teaches the type checker
+  // about the polyfilled member without raising the jsconfig lib.
+  interface ObjectConstructor {
+    hasOwn(object: object, propertyKey: PropertyKey): boolean;
+  }
+
   interface Window {
     PinvouPlatform: any;
     TauriBridge: any;
