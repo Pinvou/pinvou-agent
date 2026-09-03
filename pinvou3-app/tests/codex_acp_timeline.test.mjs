@@ -1008,8 +1008,7 @@ try {
     && codexView.includes("invoke('get_mode_state'")
     && codexView.includes("invoke('set_plan_mode_next'")
     && codexView.includes("invoke('exit_plan_to_yolo'")
-    && codexView.includes("invoke('set_multi_agent_mode'")
-    && codexView.includes("invoke('cancel_generation'"),
+    && codexView.includes("invoke('set_multi_agent_mode'"),
   'native composer controls must switch via per-session commands with an explicit sessionId');
   assert.ok(!codexView.includes('bridge.models.')
     && !codexView.includes('bridge.knowledge.')
@@ -1073,6 +1072,19 @@ try {
   // 冗余 refreshNativeControls（3 次 invoke）；ChatView bridge 路径同样受益。
   assert.ok(composerControls.includes("(target === 'plan' && isPlan) || (target === 'yolo' && !isPlan)"),
   'ComposerModeChip must early-return when the clicked mode equals the active mode');
+  const sharedModeSwitch = composerControls.slice(
+    composerControls.indexOf('async function switchTo(target)'),
+    composerControls.indexOf('const optCls'),
+  );
+  const nativeModeSwitch = codexView.slice(
+    codexView.indexOf('async function performNativeModeSwitch'),
+    codexView.indexOf('async function confirmPendingYoloSwitch'),
+  );
+  assert.ok(
+    !sharedModeSwitch.includes('cancelGeneration')
+      && !nativeModeSwitch.includes("invoke('cancel_generation'"),
+    'switching Plan to YOLO while a turn is running must not cancel the in-flight response',
+  );
 
   // ── buildElicitationContent：保留属性 answerKey 不被 Object.prototype 吞掉 ──
   // requestedSchema 的 property key 后端仅校验非空，constructor/toString/__proto__ 是合法输入。

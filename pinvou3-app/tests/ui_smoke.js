@@ -2357,6 +2357,44 @@ async function expand(page) {
   });
   rec('⑥ chip 渲染+下拉两项+点Plan切到Plan', chip.found && /YOLO/.test(chip.label || '') && chipMenu.yoloDesc && chipMenu.planDesc && /Plan/.test(afterLabel), JSON.stringify({ ...chip, ...chipMenu, afterLabel }));
 
+  // Switching the permission mode affects subsequent turns only. The active
+  // streaming turn must not be cancelled, and later deltas must remain visible.
+  const modeSwitchInvokeStart = await page.evaluate(async () => {
+    const handlers = window.__TAURI_EVENT_HANDLERS__['chat:turn_started'] || [];
+    for (const handler of handlers) await handler({ payload: { session_id: 's1' } });
+    return window.__TAURI_INVOKES__.length;
+  });
+  await page.evaluate(() => {
+    document.querySelector('[title^="切换工作模式"]')?.click();
+  });
+  await sleep(150);
+  await clickText(page, 'YOLO');
+  await sleep(300);
+  const modeSwitchDuringStream = await page.evaluate(async (invokeStart) => {
+    const deltaHandlers = window.__TAURI_EVENT_HANDLERS__['chat:delta'] || [];
+    for (const handler of deltaHandlers) {
+      await handler({ payload: { session_id: 's1', text: 'mode-switch-stream-continued' } });
+    }
+    const recent = window.__TAURI_INVOKES__.slice(invokeStart);
+    return {
+      exitedPlan: recent.some(entry => entry.cmd === 'exit_plan_to_yolo' && entry.args.sessionId === 's1'),
+      cancelled: recent.some(entry => entry.cmd === 'cancel_generation' && entry.args.sessionId === 's1'),
+      busy: window.TauriBridge.state.get('chat').busy,
+      continued: window.TauriBridge.state.get('chat').chatItems.some(item =>
+        item && item.type === 'assistant' && String(item.text || '').includes('mode-switch-stream-continued')),
+    };
+  }, modeSwitchInvokeStart);
+  rec('switching Plan to YOLO keeps the active response streaming',
+    modeSwitchDuringStream.exitedPlan && !modeSwitchDuringStream.cancelled &&
+      modeSwitchDuringStream.busy && modeSwitchDuringStream.continued,
+    JSON.stringify(modeSwitchDuringStream));
+  await page.evaluate(async () => {
+    const handlers = window.__TAURI_EVENT_HANDLERS__['chat:done'] || [];
+    for (const handler of handlers) {
+      await handler({ payload: { session_id: 's1', status: 'Completed' } });
+    }
+  });
+
   // ⑤b 收纳成功 toast 的「前往查看」必须直达对话管理页并展开「已收纳」面板，且按钮不折行。
   await expand(page); await sleep(200);
   const archiveMenuOpened = await page.evaluate(() => {
