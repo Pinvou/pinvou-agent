@@ -49,7 +49,8 @@
   }
 
   // Single observable, session-scoped path for restoring dropped/failed steer
-  // text (self-review P0 + re-review #1). A bare setComposerDraft is invisible
+  // text (self-review P0 + re-review #1) and send text abandoned by a session
+  // switch mid-send (issue #406). A bare setComposerDraft is invisible
   // (the composer is React-local state that only re-reads the store on
   // [activeSessionId, draftEpoch]), so with two dropped chips the first text
   // went store-only and the second chip's prefill write-through destroyed it.
@@ -556,14 +557,26 @@
     if (!isBusyFor(sid)) flushQueued(sid);
   }
 
+  // Return protocol (issue #406 — ChatView clears the composer before the
+  // await, so every non-dispatching exit must say so; resolving undefined
+  // used to read as "accepted" and silently dropped the draft):
+  // - true         dispatched: sent, steered (busy chip) or queued for delivery.
+  // - "restored"   nothing dispatched, but the text is already back in the
+  //                composer (bridge-side restore) — the caller must not
+  //                restore again, it would duplicate the draft.
+  // - false        nothing dispatched and the text was NOT restored
+  //                (notice-only early returns) — the caller owns putting the
+  //                draft back (handleSend's empty-vs-typed restore).
+  // Main-path send failures still throw (surfaceFailure) and the caller
+  // restores through its catch.
   async function sendMessage(text, meta) {
     text = (text || "").trim();
     const readyAttachments = state.attachments.filter(function (a) { return a.status === "ready" && a.result; });
-    if (!text && readyAttachments.length === 0) return;
+    if (!text && readyAttachments.length === 0) return false;
     // 还有解析中的附件 → 等
     if (state.attachments.some(function (a) { return a.status === "parsing"; })) {
       addSystemItem(bt("attachStillParsing"));
-      return;
+      return false;
     }
 
     if (!state.activeSessionId) {
@@ -578,7 +591,10 @@
         // append=true: failure-recovery semantics — the user may have started
         // the next message during the await; replacing would clobber it.
         prefillComposer(text, true);
-        return;
+        // The prefill IS the restore; "restored" stops the caller from doing
+        // it a second time (the prefill lands asynchronously and would then
+        // append a duplicate).
+        return "restored";
       }
     }
     const sid = state.activeSessionId;
@@ -596,14 +612,19 @@
     } catch (error) {
       if (state.activeSessionId !== sid) {
         abandonPreparedAttachments();
-        return;
+        // The user navigated away during the await: the text goes back to the
+        // session it was typed in (buffer draft), never into the session now
+        // on screen — "restored" keeps the caller from prefilling it there.
+        restoreSteerText(sid, text);
+        return "restored";
       }
       addSystemItem(bt("deviceUploadFailed") + String(error && error.message ? error.message : error));
-      return;
+      return false;
     }
     if (state.activeSessionId !== sid) {
       abandonPreparedAttachments();
-      return;
+      restoreSteerText(sid, text);
+      return "restored";
     }
     const activeTurnBuffer = getBuffer(sid);
     // 展示文本：把附件 chip 名附在用户消息末尾
@@ -734,7 +755,7 @@
 
     if (isBusyFor(sid)) {
       busySteerBranch();
-      return;
+      return true;
     }
     // Legacy behavior: with state.queued non-empty, still go through
     // flushQueued (cross-session remote-control edge cases).
@@ -742,29 +763,31 @@
       const queuedPreparation = consumeUiTurnState();
       queuePrepared(queuedPreparation);
       flushQueued(sid);
-      return;
+      return true;
     }
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
         !(await reconcileRemoteTurn(sid))) {
       if (state.activeSessionId !== sid) {
         abandonPreparedAttachments();
-        return;
+        restoreSteerText(sid, text);
+        return "restored";
       }
       recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
         operation: "send",
       }, authoritySyncBufferSnapshot(sid, activeTurnBuffer)));
       addAuthoritySyncNotice(bt("remoteTurnSyncing"));
-      return;
+      return false;
     }
     if (state.activeSessionId !== sid) {
       abandonPreparedAttachments();
-      return;
+      restoreSteerText(sid, text);
+      return "restored";
     }
     if (isBusyFor(sid) || state.queued.length > 0) {
       const racedQueuePreparation = consumeUiTurnState();
       queuePrepared(racedQueuePreparation);
       if (!isBusyFor(sid)) flushQueued(sid);
-      return;
+      return true;
     }
 
     const preparation = consumeUiTurnState();
@@ -797,6 +820,7 @@
       return !readyAttachments.includes(attachment);
     });
     notify();
+    return true;
   }
   // WebUI 草稿首条消息失败时的专用重试入口。桌面端没有远程草稿，
   // 保留同名空实现以维持跨宿主 Bridge API 的稳定形状。
