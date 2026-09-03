@@ -2,7 +2,7 @@ export const desktopBridgeApi = {
   lifecycle: ['init'],
   state: ['get', 'getMany', 'subscribe', 'subscribeMany'],
   platform: ['loadPlatformCapabilities', 'refreshConnectorAuthGates'],
-  chat: ['cancelGeneration', 'cancelShellTask', 'getComposerDraft', 'interruptAndSend', 'interruptAndSendQueued', 'prefillComposer', 'removeQueued', 'retryFirstTurn', 'sendMessage', 'sendMessageToSession', 'setComposerDraft', 'steer'],
+  chat: ['cancelGeneration', 'cancelShellTask', 'editQueued', 'getComposerDraft', 'interruptAndSend', 'interruptAndSendQueued', 'prefillComposer', 'prioritizeQueued', 'removeQueued', 'retryFirstTurn', 'sendMessage', 'sendMessageToSession', 'setComposerDraft', 'steer'],
   voice: ['appendVoiceText', 'cancelVoiceAsrSetup', 'cancelVoiceInput', 'clearVoiceInput', 'closeVoiceAsrSetup', 'installVoiceAsr', 'runVoiceInputDebugAssertions', 'startVoiceInput'],
   knowledge: ['cancelKbModel', 'downloadKbModel', 'kbModelStatus', 'listCollections', 'loadKnowledgeEmbedderAfterFirstFrame', 'mountCollection', 'mountRemoteCollection', 'removeCollection', 'removeRemoteCollection', 'setCollectionEnabled', 'setRemoteCollectionEnabled', 'unmountCollection'],
   scheduled: ['clearScheduledTaskDraft', 'clearScheduledTaskSelection', 'confirmScheduledTaskDraft', 'createScheduledTask', 'deleteScheduledTask', 'dismissScheduledTaskError', 'exitScheduledRunChat', 'loadScheduledTaskRecentRuns', 'loadScheduledTaskRuns', 'loadScheduledTasks', 'openScheduledRunChat', 'pauseScheduledTask', 'pickFolder', 'readScheduledTask', 'refreshScheduledTaskData', 'resumeScheduledTask', 'runScheduledTaskNow', 'selectScheduledTask', 'startScheduledTaskChat', 'toggleScheduledTaskPinned', 'updateScheduledTask'],

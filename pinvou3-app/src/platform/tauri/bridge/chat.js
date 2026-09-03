@@ -85,6 +85,39 @@
   // message is sent (or its failure path finishes); the remaining queue is
   // then served by the interrupt round's chat:done.
   const interruptInFlight = {};
+  // Queue reordering/editing may need to withdraw an engine-side steer before
+  // changing the local chip. Keep flush/zap from racing another message ahead
+  // while that delivery outcome is being established.
+  const queueMutationInFlight = {};
+  // A queue edit/reorder temporarily removes a known-id steer chip before it
+  // awaits withdraw_steer. Preserve a terminal event that lands in that
+  // window: dropped proves the old copy is safe to mutate, while committed
+  // proves the old copy won and the requested mutation must be abandoned.
+  const queueMutationTerminals = {};
+
+  function beginQueueMutationReconciliation(sid, steerId) {
+    let byId = queueMutationTerminals[sid];
+    if (!byId) {
+      byId = Object.create(null);
+      queueMutationTerminals[sid] = byId;
+    }
+    byId[steerId] = "pending";
+  }
+
+  function recordQueueMutationTerminal(sid, steerId, kind) {
+    const byId = queueMutationTerminals[sid];
+    if (!byId || byId[steerId] === undefined) return false;
+    byId[steerId] = kind;
+    return true;
+  }
+
+  function takeQueueMutationTerminal(sid, steerId) {
+    const byId = queueMutationTerminals[sid];
+    if (!byId || byId[steerId] === undefined) return null;
+    const kind = byId[steerId];
+    delete byId[steerId];
+    return kind === "pending" ? null : kind;
+  }
 
   // Transport-layer timeout for steer_chat invokes. The Rust steer() awaits
   // a foundation mpsc send; if the engine task is stuck (alive but not
@@ -227,6 +260,68 @@
     return String(text || "").trim()
       ? String(text) + "\n\n" + attachmentLine
       : attachmentLine;
+  }
+  // Queue chips expose only the user's editable text. The model payload may
+  // additionally contain a scheduled-task guide or scene instructions, so
+  // keep it separately and remember the exact envelope around the original
+  // user text. Editing can then rebuild the payload without exposing or
+  // discarding those internal constraints.
+  function queuedPayloadEnvelope(userText, payloadText, meta) {
+    const user = String(userText || "");
+    const payload = String(payloadText == null ? user : payloadText);
+    if (!user) return { before: payload, after: "" };
+    const requested = meta && meta.pinvouPayloadText
+      ? String(meta.pinvouPayloadText).trim()
+      : "";
+    let index = -1;
+    if (requested) {
+      const requestedIndex = payload.indexOf(requested);
+      let userIndex = -1;
+      if (requested.startsWith(user)) userIndex = 0;
+      else if (requested.endsWith(user)) userIndex = requested.length - user.length;
+      else if (requested.indexOf(user) === requested.lastIndexOf(user)) userIndex = requested.indexOf(user);
+      if (requestedIndex >= 0 && userIndex >= 0) index = requestedIndex + userIndex;
+    } else if (payload === user || payload.endsWith(user)) {
+      index = payload.length - user.length;
+    } else if (payload.indexOf(user) === payload.lastIndexOf(user)) {
+      index = payload.indexOf(user);
+    }
+    if (index < 0) return payload === user ? { before: "", after: "" } : null;
+    return {
+      before: payload.slice(0, index),
+      after: payload.slice(index + user.length),
+    };
+  }
+  function makeQueuedMessage(id, userText, payloadText, displayText, attachments, meta, restrictTools) {
+    return {
+      id,
+      text: userText,
+      payloadText,
+      payloadEnvelope: queuedPayloadEnvelope(userText, payloadText, meta),
+      metaPayloadEnvelope: meta && meta.pinvouPayloadText
+        ? queuedPayloadEnvelope(userText, meta.pinvouPayloadText, meta)
+        : null,
+      displayText,
+      attachments,
+      meta,
+      restrictTools,
+    };
+  }
+  function rebuiltQueuedPayload(item, userText) {
+    const envelope = item && item.payloadEnvelope;
+    if (!envelope || typeof envelope.before !== "string" || typeof envelope.after !== "string") return null;
+    return envelope.before + userText + envelope.after;
+  }
+  function rebuiltQueuedMetaPayload(item, userText) {
+    const envelope = item && item.metaPayloadEnvelope;
+    if (!envelope || typeof envelope.before !== "string" || typeof envelope.after !== "string") return null;
+    return envelope.before + userText + envelope.after;
+  }
+  function queuedMetaNeedsAdmission(meta) {
+    if (!meta || typeof meta !== "object") return false;
+    return Object.keys(meta).some(function (key) {
+      return key.indexOf("pinvou") === 0;
+    });
   }
   // 桌宠窗口靠全局事件感知回合起止。turn_start 补齐"发送 → 首 token"的空窗
   // (chat:delta 之前引擎在思考,宠物不该干站着);turn_end 只兜 invoke 直接失败
@@ -381,7 +476,7 @@
     // Interrupt in flight: queued messages yield — the interrupt message goes
     // first (otherwise flush would reserve the turn and the interrupt itself
     // would be lost to turn_in_progress).
-    if (interruptInFlight[sid]) return;
+    if (interruptInFlight[sid] || queueMutationInFlight[sid]) return;
     const pendingBuffer = sessionStates[sid];
     if (pendingBuffer && pendingBuffer.remoteTurnActive) {
       reconcileRemoteTurn(sid).then(function (ready) {
@@ -402,7 +497,7 @@
       ? formatAttachmentDisplayText(item.text, attachments)
       : item.displayText;
     notify();
-    doSendFor(sid, item.text, displayText, attachments, item.meta || null, !!item.restrictTools, true)
+    doSendFor(sid, item.payloadText == null ? item.text : item.payloadText, displayText, attachments, item.meta || null, !!item.restrictTools, true)
       .catch(function () {
         const retryQueue = sid === state.activeSessionId
           ? state.queued
@@ -426,14 +521,9 @@
     const targetQueue = targetBuffer && targetBuffer.queued;
     if (isBusyFor(sid) || (targetQueue && targetQueue.length > 0)) {
       runSyncOnSession(sid, function () {
-        state.queued.push({
-          id: ++context.itemIdSeq,
-          text: content,
-          displayText: content,
-          attachments: [],
-          meta: meta || null,
-          restrictTools: false,
-        });
+        state.queued.push(makeQueuedMessage(
+          ++context.itemIdSeq, content, content, content, [], meta || null, false
+        ));
       });
       notify();
       if (!isBusyFor(sid)) flushQueued(sid);
@@ -448,14 +538,9 @@
     targetBuffer = getBuffer(sid);
     if (isBusyFor(sid) || (targetBuffer.queued && targetBuffer.queued.length > 0)) {
       runSyncOnSession(sid, function () {
-        state.queued.push({
-          id: ++context.itemIdSeq,
-          text: content,
-          displayText: content,
-          attachments: [],
-          meta: meta || null,
-          restrictTools: false,
-        });
+        state.queued.push(makeQueuedMessage(
+          ++context.itemIdSeq, content, content, content, [], meta || null, false
+        ));
       });
       notify();
       if (!isBusyFor(sid)) flushQueued(sid);
@@ -661,14 +746,15 @@
       state.activeSkill = consumed.activeSkill;
     }
     function queuePrepared(prepared) {
-      state.queued.push({
-        id: ++context.itemIdSeq,
-        text: prepared.payloadText,
+      state.queued.push(makeQueuedMessage(
+        ++context.itemIdSeq,
+        text,
+        prepared.payloadText,
         displayText,
-        attachments: attachmentsPayload,
-        meta: meta || null,
-        restrictTools: prepared.restrictTools,
-      });
+        attachmentsPayload,
+        meta || null,
+        prepared.restrictTools,
+      ));
       state.attachments = state.attachments.filter(function (attachment) {
         return !readyAttachments.includes(attachment);
       });
@@ -680,9 +766,10 @@
     // turn loop embeds it at the next step boundary. Chips settle by steer_id
     // via chat:steer_committed (→ bubble) / chat:steer_dropped (→ removal +
     // notice); × cancels through a real withdraw_steer (see removeQueued).
-    // Attachments: the steer channel carries text only, so sends with
-    // attachments fall back to plain local queuing (queuePrepared, delivered
-    // by flushQueued after this turn's chat:done).
+    // The steer channel carries text only. Attachments, restricted turns,
+    // scene/context metadata, and payloads that differ from the user's text
+    // must retain the normal admission contract, so they remain local until
+    // flushQueued sends them after this turn's chat:done.
     // The busy branch is extracted into a nested function (closures reach the
     // local helpers like consumeUiTurnState) to keep sendMessage's cognitive
     // complexity under the lint threshold.
@@ -696,6 +783,13 @@
         const steerPreparation = consumeUiTurnState();
         const steerText = steerPreparation.payloadText;
         const steerInputText = text;
+        const steerEligible = steerText === steerInputText &&
+          !steerPreparation.restrictTools &&
+          !queuedMetaNeedsAdmission(meta);
+        if (!steerEligible) {
+          queuePrepared(steerPreparation);
+          return;
+        }
         // Clear the composer draft (mirrors sendMessage's success path).
         // setComposerDraft syncs the session buffer so switching away and back
         // does not resurrect the sent text; a background session's steer
@@ -706,23 +800,22 @@
         // steerId is backfilled when the invoke resolves; events may arrive
         // before that, so unsettled events are stashed per session (see
         // pendingSteerEvents below).
-        const queuedItem = {
-          id: ++context.itemIdSeq,
-          text: steerText,
-          displayText: steerText,
-          attachments: [],
-          meta: null,
-          // The steer channel has no restrictTools parameter (steer_chat
-          // carries text only); hard-coding false is a deliberate trade-off:
-          // restricted scenes like the scheduled-task guide degrade to a plain
-          // injection while busy, without tool restrictions. The non-busy
-          // queueing path still keeps prepared.restrictTools.
-          restrictTools: false,
+        const queuedItem = Object.assign(makeQueuedMessage(
+          ++context.itemIdSeq,
+          steerInputText,
+          steerText,
+          steerInputText,
+          [],
+          null,
+          // Eligibility above guarantees the payload has no admission-only
+          // context and does not need tool restriction.
+          false,
+        ), {
           queuedAt: Date.now(),
           steered: true,
           steerId: null,
           cancelled: false,
-        };
+        });
         state.queued.push(queuedItem);
         notify();
         // Backfill/failure recovery are extracted into module-level functions
@@ -852,6 +945,216 @@
     state.queued = state.queued.filter(function (q) { return q.id !== id; });
     if (removed && removed.steered) withdrawSteerChip(state.activeSessionId, removed);
     notify();
+  }
+
+  function queuedItemIndex(queue, queuedId) {
+    if (!queue) return -1;
+    for (let i = 0; i < queue.length; i++) {
+      if (queue[i] && queue[i].id === queuedId) return i;
+    }
+    return -1;
+  }
+
+  function firstLocalQueueIndex(queue) {
+    let index = 0;
+    while (index < queue.length && queue[index] && queue[index].steered) index++;
+    return index;
+  }
+
+  function makeQueuedItemLocal(item) {
+    item.steered = false;
+    item.steerId = null;
+    item.cancelled = false;
+    delete item.zapGate;
+  }
+
+  // Detach a queued item only after its engine-side copy is known to be safe
+  // to mutate. Plain local items are immediate. A steered item requires an
+  // explicit `retired` outcome; uncertain outcomes keep the old content under
+  // the established reconcile path so edited/reordered text is never sent in
+  // addition to a copy that may already have reached the model.
+  async function detachQueuedForMutation(sid, queuedId) {
+    const queue = steeredQueueFor(sid);
+    const index = queuedItemIndex(queue, queuedId);
+    if (index < 0) return null;
+    const item = queue[index];
+    queue.splice(index, 1);
+    if (!item.steered) return { item, index };
+
+    let settlement = null;
+    let outcome = null;
+    let terminal = null;
+    if (item.steerId && sid) {
+      beginQueueMutationReconciliation(sid, item.steerId);
+      outcome = await withdrawSteerOutcome(sid, item.steerId, item.text);
+      terminal = takeQueueMutationTerminal(sid, item.steerId);
+    } else if (sid) {
+      withdrawSteerChip(sid, item);
+      // Reuse the gated-backfill contract from queued zap: onSteerBackfill
+      // must leave the outcome to this owner instead of firing a second,
+      // outcome-destroying withdrawal.
+      item.zapGate = true;
+      settlement = takeSteerSettlement(sid, item.id);
+      if (!settlement) {
+        // Legacy/id-less settlement may already have left the side table.
+        // Without an engine identity there is no safe withdrawal primitive.
+        item.cancelled = false;
+        delete item.zapGate;
+        const currentQueue = steeredQueueFor(sid);
+        if (currentQueue) currentQueue.splice(Math.min(index, currentQueue.length), 0, item);
+        notify();
+        return null;
+      }
+    }
+    notify();
+
+    if (settlement) {
+      const settled = await settlement;
+      if (settled && settled.ok && settled.steerId && sid) {
+        item.steerId = settled.steerId;
+        beginQueueMutationReconciliation(sid, settled.steerId);
+        outcome = await withdrawSteerOutcome(sid, settled.steerId, item.text);
+        terminal = takeQueueMutationTerminal(sid, settled.steerId);
+      } else if (settled && !settled.ok && !settled.timedOut) {
+        // steer_chat itself was deterministically rejected: no engine copy
+        // exists, so converting the chip to a local queue item is safe.
+        makeQueuedItemLocal(item);
+        return { item, index };
+      } else if (settled && !settled.ok && settled.timedOut) {
+        runSyncOnSession(sid, function () {
+          addSystemItem("⚠️ " + bt("steerFailed"));
+        });
+        restoreSteerText(sid, item.text);
+        notify();
+        return null;
+      } else {
+        // A legacy successful steer without an engine id cannot be withdrawn
+        // safely. Put the original chip back and let transcript settlement
+        // resolve it without changing its content or order.
+        item.cancelled = false;
+        delete item.zapGate;
+        const currentQueue = steeredQueueFor(sid);
+        if (currentQueue) currentQueue.splice(Math.min(index, currentQueue.length), 0, item);
+        notify();
+        return null;
+      }
+    }
+
+    if (terminal === "dropped") {
+      if (outcome === "retired") {
+        takeWithdrawn(sid, item.steerId);
+        makeQueuedItemLocal(item);
+        return { item, index };
+      }
+      // A dropped terminal racing an uncertain command response prevents
+      // loss, but it does not turn an edit into a silent resend. Hand the
+      // original user text back explicitly; the user can retry the change.
+      const withdrawnText = takeWithdrawn(sid, item.steerId);
+      runSyncOnSession(sid, function () {
+        addSystemItem("⚠️ " + bt("steerFailed"));
+      });
+      restoreSteerText(sid, withdrawnText === undefined ? item.text : withdrawnText);
+      notify();
+      return null;
+    }
+    if (terminal === "committed") return null;
+    if (outcome !== "retired") {
+      // not_pending / timeout / unreachable are all delivery-uncertain. The
+      // old message remains authoritative and the existing watchdog/event
+      // reconciliation restores or renders it exactly once.
+      settleZapSkipResend(sid, item);
+      return null;
+    }
+    makeQueuedItemLocal(item);
+    return { item, index };
+  }
+
+  async function mutateQueued(sid, queuedId, mutation, nextText) {
+    if (!sid || queueMutationInFlight[sid] || interruptInFlight[sid]) return false;
+    queueMutationInFlight[sid] = true;
+    try {
+      const initialQueue = steeredQueueFor(sid);
+      const initialIndex = queuedItemIndex(initialQueue, queuedId);
+      if (mutation === "edit" && initialIndex >= 0 &&
+          String(nextText == null ? "" : nextText).trim() === initialQueue[initialIndex].text) {
+        // A no-op save must not demote a live steer to a next-turn local
+        // send: the withdrawal below is real and irreversible, so an
+        // unchanged text short-circuits before the transport is touched.
+        return true;
+      }
+      if (mutation === "prioritize" && initialIndex >= 0 && initialQueue[initialIndex].steered) {
+        // A steer is already ordered in the engine's current-turn inbox. It
+        // may move ahead of local-only items in the visual queue without any
+        // transport change. It cannot safely leapfrog an earlier steer: the
+        // foundation has no reorder primitive, and withdrawing only the
+        // target would move it later rather than earlier.
+        const earlierSteer = initialQueue.slice(0, initialIndex).some(function (item) {
+          return item && item.steered;
+        });
+        if (earlierSteer) return false;
+        const item = initialQueue.splice(initialIndex, 1)[0];
+        initialQueue.unshift(item);
+        notify();
+        return true;
+      }
+      const detached = await detachQueuedForMutation(sid, queuedId);
+      if (!detached) return false;
+      const queue = steeredQueueFor(sid);
+      if (!queue) {
+        (detached.item.attachments || []).forEach(discardManagedAttachment);
+        return false;
+      }
+      if (mutation === "edit") {
+        const text = String(nextText == null ? "" : nextText).trim();
+        if (!text && !(detached.item.attachments || []).length) {
+          queue.splice(Math.min(detached.index, queue.length), 0, detached.item);
+          notify();
+          return false;
+        }
+        const payloadText = rebuiltQueuedPayload(detached.item, text);
+        if (payloadText === null) {
+          queue.splice(Math.min(detached.index, queue.length), 0, detached.item);
+          notify();
+          return false;
+        }
+        let metaPayloadText = null;
+        // Match send-time admission: only a non-empty meta payload gets an
+        // envelope, so only that shape can be rebuilt around the new text.
+        const hasMetaPayload = !!(detached.item.meta && detached.item.meta.pinvouPayloadText);
+        if (hasMetaPayload) {
+          metaPayloadText = rebuiltQueuedMetaPayload(detached.item, text);
+          if (metaPayloadText === null) {
+            queue.splice(Math.min(detached.index, queue.length), 0, detached.item);
+            notify();
+            return false;
+          }
+        }
+        detached.item.text = text;
+        detached.item.payloadText = payloadText;
+        detached.item.displayText = formatAttachmentDisplayText(text, detached.item.attachments || []);
+        if (hasMetaPayload) {
+          detached.item.meta = Object.assign({}, detached.item.meta, { pinvouPayloadText: metaPayloadText });
+        }
+      }
+      const localStart = firstLocalQueueIndex(queue);
+      const insertionIndex = mutation === "prioritize"
+        ? localStart
+        : Math.max(localStart, Math.min(detached.index, queue.length));
+      queue.splice(insertionIndex, 0, detached.item);
+      notify();
+      return true;
+    } finally {
+      delete queueMutationInFlight[sid];
+      if (!isBusyFor(sid)) flushQueued(sid);
+    }
+  }
+
+  function prioritizeQueued(sid, queuedId) {
+    return mutateQueued(sid, queuedId, "prioritize");
+  }
+
+  function editQueued(sid, queuedId, text) {
+    return mutateQueued(sid, queuedId, "edit", text);
   }
 
   // ── Pinvou v4 召唤式检阅:Boss 主动呼叫,审当前 session 前面的工作 ──
@@ -1237,6 +1540,8 @@
     delete withdrawnSteers[sid];
     delete pendingSteerPositions[sid];
     delete interruptInFlight[sid];
+    delete queueMutationInFlight[sid];
+    delete queueMutationTerminals[sid];
     delete steerSettlements[sid];
     const watchdogs = steerSettleWatchdogs[sid];
     if (watchdogs) {
@@ -1363,6 +1668,7 @@
   function settleSteerCommitted(sid, steerId) {
     clearSteerSettleWatchdog(sid, steerId);
     clearOutcomeReconcileWatchdog(sid, steerId);
+    recordQueueMutationTerminal(sid, steerId, "committed");
     if (findSteerChipIndex(sid, steerId) < 0) {
       const withdrawnText = takeWithdrawn(sid, steerId);
       if (withdrawnText !== undefined) {
@@ -1421,6 +1727,12 @@
     const zapReconciling = !!(outcomeReconcileWatchdogs[sid] && outcomeReconcileWatchdogs[sid][steerId]);
     clearOutcomeReconcileWatchdog(sid, steerId);
     if (findSteerChipIndex(sid, steerId) < 0) {
+      if (recordQueueMutationTerminal(sid, steerId, "dropped")) {
+        // detachQueuedForMutation owns this copy. Keep the user's text in its
+        // detached item so a racing not_pending/timeout can consume this
+        // authoritative terminal and explicitly restore the original text.
+        return;
+      }
       const withdrawnText = takeWithdrawn(sid, steerId);
       if (withdrawnText !== undefined) {
         if (zapReconciling) {
@@ -1812,7 +2124,7 @@
   }
 
   async function interruptAndSendQueued(sid, queuedId) {
-    if (interruptInFlight[sid]) {
+    if (interruptInFlight[sid] || queueMutationInFlight[sid]) {
       runSyncOnSession(sid, function () {
         addSystemItem("⚠️ " + bt("interruptBusy"));
       });
@@ -1905,7 +2217,12 @@
     }
     try {
       return await interruptAndSend(
-        sid, item.text, item.displayText, item.attachments || [], item.meta || null, !!item.restrictTools
+        sid,
+        item.payloadText == null ? item.text : item.payloadText,
+        item.displayText,
+        item.attachments || [],
+        item.meta || null,
+        !!item.restrictTools,
       );
     } catch (e) {
       console.warn("[pinvou3][chat-ui] interrupt-queued failed, restoring chip", {
@@ -2015,6 +2332,8 @@
       retryFirstTurn,
       prefillComposer,
       removeQueued,
+      prioritizeQueued,
+      editQueued,
       summonPinvou,
       inspectPinvou,
       recordPinvouReview,
