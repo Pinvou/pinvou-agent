@@ -398,7 +398,7 @@
   // plan-stuck / fallback / execution-stuck 卡片动作
   async function planStuckReplan(itemId) {
     patchItemById(itemId, { resolved: true, statusLabel: bt("replanRequested") }); notify();
-    await sendMessage("请用 todo_write 工具输出完整方案步骤,不要直接调写工具。");
+    await sendMessage(bt("planStuckReplanPrompt"));
   }
   async function planStuckGo(itemId) {
     const sid = state.activeSessionId;
@@ -410,7 +410,7 @@
     // sendMessageToSession 校验失败（会话已删/对账中）会 throw，必须接住并
     // 定向提示，否则成为 React onClick 上的 unhandled rejection，用户无感知。
     try {
-      await sendMessageToSession(sid, "按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。");
+      await sendMessageToSession(sid, bt("planStuckGoPrompt"));
     } catch (e) { addSystemItemFor(sid, bt("planContinueFailed") + e); notify(); }
   }
 

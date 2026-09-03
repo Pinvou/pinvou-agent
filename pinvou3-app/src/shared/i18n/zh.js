@@ -399,7 +399,7 @@ export const dictZh = {
         feedbackTooManyFiles: '最多只能上传 5 个附件。', feedbackPickUnavailable: '当前环境无法打开文件选择器。',
         chatGreeting: '你好，今天想聊点什么？', artifacts: '产物与代码', placeholder: '询问 PINVOU 或输入指令', disclaimer: 'PINVOU 可能会生成不准确的信息，请仔细核实。', ctxUsage: '上下文',
         chatInputLimitReached: n => `已达到 ${n} 字符上限，无法继续输入。`,
-        searchPlaceholder: 'Search chats', searchNoResults: '没有匹配的对话', searchDateAll: '全部',
+        searchPlaceholder: '搜索对话', searchNoResults: '没有匹配的对话', searchDateAll: '全部',
         searchBatchManage: '批量管理', searchBatchDone: '完成', searchSelectAll: '全选', searchSelectedCount: n => `已选 ${n} 项`,
         searchArchivedEntry: '已收纳', searchArchivedEmpty: '暂无收纳的对话', searchRestore: '恢复', searchArchivedAt: d => `收纳于 ${d}`, searchPanelChats: '对话',
         // —— 卡牌池(cp*)。注:卡牌内容(名称/简介/正文)是数据,不在 UI 词典内 ——
@@ -635,6 +635,17 @@ ready: '已启用数据可视化，开始生成',
 failure: '数据可视化能力准备失败，请稍后重试。',
   },
   missingCapabilities: (ids) => `缺少能力：${ids}`,
+  // 个人工作台模板 chip 展示名。数据源 personal-workbench-scene.js 的 title 保留
+  // 中文原文（草稿匹配「标题」与消息 meta 消费），渲染层按 id 取这里的本地化名。
+  workbenchTemplates: {
+    'life-log': '生活记录',
+    'personal-ledger': '个人账本',
+    'study-plan': '学习计划',
+    'task-board': '任务看板',
+    'job-tracker': '求职管理',
+    'travel-planner': '旅行计划',
+    'fitness-checkin': '运动打卡',
+  },
 };
 
 
@@ -790,8 +801,10 @@ dictZh.uiArtifacts = {
   diTypes:{ element:'元素', graphic:'图形', button:'按钮', link:'链接', input:'输入控件', text:'文字', card:'卡片', container:'容器' },
   diNoSelection:'未选择', diSelected:type=>`已选中${type}`,
   diFontSystem:'系统默认', diFontCustom:'自定义字体', diFont:'字体',
+  diFontYaHei:'微软雅黑', diFontPingFang:'苹方', diFontSimSun:'宋体', diFontSimHei:'黑体', diFontKaiTi:'楷体', diFontFangSong:'仿宋', diFontSourceHanSans:'思源黑体', diFontSourceHanSerif:'思源宋体',
   diPickColor:color=>`选择颜色 ${color}`, diClear:'清除', diDone:'完成',
   diChangeFallback:'设计变更', diSelectHint:'请选择预览中的元素', diCollapseDetails:'收起详情', diViewDetails:'查看详情',
+  diChangeGroupEdit:'编辑', diChangeGroupTextEdit:'文本编辑', diChangeGroupResize:'调整大小', diChangeGroupMove:'移动', diChangeTypeText:'文本',
   diClearChanges:'清空修改', diNoLocation:'无定位信息',
   diSecCommon:'常用编辑', diText:'文案', diFontSize:'字号', diFontWeight:'字重', diAlign:'对齐',
   diOptDefault:'默认', diAlignLeft:'左对齐', diOptCenter:'居中', diAlignRight:'右对齐', diAlignJustify:'两端对齐', diTextColor:'文字颜色',
