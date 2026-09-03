@@ -2,15 +2,16 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Check, Copy, ExternalLink, FolderOpen, Link, X,
 } from '../../components/icons.jsx';
+import { useCopyFlash } from '../../hooks/useCopyFlash.js';
+import { pathBasename } from '../../shared/path-utils.js';
 import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
 import { invokeTauri, listenTauri, tauriEvents } from '../../platform/tauri/client.js';
 import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG } from '../../shared/i18n.js';
 import {
+  CODE_VIEWER_ICON_BUTTON,
   CodeViewerContent,
-  clampViewerFontSize,
-  rememberViewerFontSize,
-  savedViewerFontSize,
   useCodeHighlight,
+  useViewerFontSize,
   viewerFontSizeBounds,
 } from '../codex/CodeViewerContent.jsx';
 
@@ -25,7 +26,7 @@ function tabKey(request) {
 }
 
 function tabName(relativePath) {
-  return String(relativePath || '').split(/[\\/]/u).pop() || relativePath || '';
+  return pathBasename(relativePath, { fallback: relativePath }) || '';
 }
 
 function ReaderTabContent({ tab, state, fontSize, copy }) {
@@ -48,8 +49,8 @@ export function ReaderApp() {
   const [tabs, setTabs] = useState([]);
   const [activeKey, setActiveKey] = useState('');
   const [previews, setPreviews] = useState({});
-  const [fontSize, setFontSize] = useState(savedViewerFontSize);
-  const [copied, setCopied] = useState('');
+  const [fontSize, adjustFontSize] = useViewerFontSize();
+  const [copied, copyText] = useCopyFlash(1200);
   const fontBounds = viewerFontSizeBounds();
   const loadedKeysRef = useRef(new Set());
 
@@ -166,12 +167,6 @@ export function ReaderApp() {
     };
   }, [openTab]);
 
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(''), 1200);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
-
   const activeTab = tabs.find(tab => tab.key === activeKey) || null;
   const activeState = activeTab ? previews[activeTab.key] || { loading: true, error: '', preview: null } : null;
 
@@ -193,20 +188,6 @@ export function ReaderApp() {
     });
   }
 
-  function copyText(target, value) {
-    if (!value) return;
-    navigator.clipboard?.writeText(value);
-    setCopied(target);
-  }
-
-  function adjustFontSize(delta) {
-    setFontSize((current) => {
-      const next = clampViewerFontSize(current + delta);
-      rememberViewerFontSize(next);
-      return next;
-    });
-  }
-
   function openActive(command) {
     if (!activeTab) return;
     invokeTauri(command, {
@@ -216,7 +197,7 @@ export function ReaderApp() {
     }).catch(nextError => console.error('code reader open failed:', nextError));
   }
 
-  const iconButton = 'w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-40 disabled:hover:bg-transparent';
+  const iconButton = CODE_VIEWER_ICON_BUTTON;
 
   return (
     <div className="h-screen flex flex-col bg-white dark:bg-[#1E1E20] text-gray-900 dark:text-gray-100">

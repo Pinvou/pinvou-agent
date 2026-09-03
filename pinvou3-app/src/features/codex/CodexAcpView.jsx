@@ -76,12 +76,24 @@ import {
   rewindUndoAvailable,
   useSessionCheckpoints,
 } from './checkpoints.js';
-import { RewindChip, RewindConfirmDialog, RewindUndoChip, RewindUndoConfirmDialog } from './RewindChip.jsx';
 import {
+  RewindChip,
+  RewindConfirmDialog,
+  RewindUndoChip,
+  RewindUndoConfirmDialog,
+  useDialogEscapeKey,
+  useDialogFocusRestore,
+} from './RewindChip.jsx';
+import {
+  CompactItemRow,
   ConversationActivityIndicator,
   ConversationMarkdown,
   ConversationTurn,
+  PlanBlock,
+  StructuredValue,
+  TerminalBlock,
   WorkspaceResourceButtons,
+  useConversationSecondClock,
 } from '../conversation/ConversationTimeline.jsx';
 import {
   measureConversationScrollGeometry,
@@ -97,13 +109,17 @@ import {
   ComposerModeChip,
 } from '../chat/composer-controls.jsx';
 import { visibleUserModels } from '../../shared/model-options.js';
+import { formatCompactCount } from '../../shared/format-number.js';
+import { pathBasename } from '../../shared/path-utils.js';
 import { selectorMainLabel } from '../settings/model-catalog.js';
 import {
   captureConversationScrollPosition,
   collectToolWorkspaceResources,
+  elapsedMs,
   isFetchTool,
   isSearchTool,
   restoreConversationScrollPosition,
+  terminalStatus,
   toolWorkspaceResources,
 } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
@@ -111,6 +127,7 @@ import { PlanLayer, ToolCard, cardBoxCls, cardBtnCls } from '../tools/tool-rende
 import { notifyChatRoundCommitted } from '../tools/tool-events.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { formatAttachmentLimitError } from '../attachments/attachment-limit-errors.js';
+import { collectClipboardImages, readPasteImageAsBytes } from '../attachments/paste-image.js';
 import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import { bridge } from '../../hooks/useBridge.js';
@@ -161,15 +178,8 @@ const EMPTY_CONVERSATION_TURNS = [];
 const EMPTY_SESSIONS = [];
 
 function workspaceName(path, unknownDirectory) {
-  // eslint-disable-next-line sonarjs/super-linear-regex -- trailing [\\/]+ strips path separators; single char class, so backtracking is linear
-  const normalized = String(path || '').replace(/[\\/]+$/, '');
-  if (!normalized) return unknownDirectory;
-  return normalized.split(/[\\/]/).filter(Boolean).pop() || normalized;
-}
-
-// token 缩写与主聊天 ChatView 的 fmtCtxTok 同款（1.2k / 3.4M）。
-function fmtNativeCtxTok(n) {
-  return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
+  // 尾分隔符剥离 + Windows 盘符路径语义收敛到 shared/path-utils（原内联实现同款）。
+  return pathBasename(path, { collapseTrailing: true, fallback: unknownDirectory });
 }
 
 function loadRecentWorkspaces() {
@@ -363,74 +373,9 @@ function StatusBadge({ status, copy }) {
   );
 }
 
-function elapsedMs(start, end, now) {
-  const from = Date.parse(start || '');
-  const to = Date.parse(end || '') || now;
-  if (!Number.isFinite(from) || !Number.isFinite(to)) return 0;
-  return Math.max(0, to - from);
-}
-
-function terminalStatus(status, exitCode = null) {
-  const normalized = String(status || '').toLowerCase();
-  if (normalized === 'failed' || (exitCode != null && exitCode !== 0)) return 'failed';
-  if (['completed', 'cancelled', 'canceled'].includes(normalized)) return 'completed';
-  return 'running';
-}
-
-function TerminalBlock({ label, text }) {
-  if (!text) return null;
-  return (
-    <div className="mt-3 min-w-0 max-w-full">
-      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-gray-400">{label}</div>
-      <pre className="max-h-80 max-w-full overflow-auto whitespace-pre rounded-xl bg-[#F4F5F7] dark:bg-black/30 px-3 py-2.5 text-[12px] leading-5 font-mono text-gray-700 dark:text-gray-200">{text}</pre>
-    </div>
-  );
-}
-
-function StructuredValue({ label, value }) {
-  if (value == null || value === '' || (Array.isArray(value) && !value.length)) return null;
-  if (typeof value !== 'object') return <TerminalBlock label={label} text={String(value)} />;
-  const entries = Object.entries(value);
-  if (!entries.length) return null;
-  return (
-    <div className="mt-3">
-      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-gray-400">{label}</div>
-      <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] overflow-hidden">
-        {entries.map(([key, entry]) => (
-          <div key={key} className="grid grid-cols-[120px_minmax(0,1fr)] border-b last:border-b-0 border-black/[0.05] dark:border-white/[0.06] text-[11px]">
-            <div className="px-3 py-2 bg-black/[0.025] dark:bg-white/[0.025] text-gray-400 font-mono">{key}</div>
-            <pre className="px-3 py-2 overflow-x-auto whitespace-pre-wrap font-mono text-gray-700 dark:text-gray-200">
-              {typeof entry === 'string' ? entry : JSON.stringify(entry, null, 2)}
-            </pre>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function CompactItemRow({ icon, title, meta, status, open, onToggle, controlsId }) {
-  const tone = status === 'failed'
-    ? 'text-red-500 bg-red-500/10'
-    : status === 'running'
-      ? 'text-blue-500 bg-blue-500/10'
-      : 'text-gray-500 bg-black/[0.04] dark:bg-white/[0.06]';
-  return (
-    <button type="button" onClick={onToggle}
-      data-testid="conversation-compact-item-toggle"
-      aria-expanded={controlsId ? Boolean(open) : undefined}
-      aria-controls={controlsId && open ? controlsId : undefined}
-      className="w-full min-w-0 min-h-10 overflow-hidden px-2.5 py-2 flex items-center gap-2.5 text-left rounded-xl hover:bg-black/[0.025] dark:hover:bg-white/[0.035]">
-      <span className={`w-6 h-6 shrink-0 rounded-lg flex items-center justify-center ${tone}`}>{icon}</span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[12px] font-medium">{title}</span>
-        {meta && <span className="block mt-0.5 text-[10px] text-gray-400">{meta}</span>}
-      </span>
-      {status === 'running' && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />}
-      <ChevronDown size={13} className={`shrink-0 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
-    </button>
-  );
-}
+// elapsedMs / terminalStatus / TerminalBlock / StructuredValue / CompactItemRow /
+// PlanBlock 与 ChatView 时间线同源，统一从 conversation 模块导入（CompactItemRow
+// 补齐 warning 色调分支，terminalStatus 归一 'done'）。
 
 function CommandExecutionItem({ item, now, copy }) {
   const details = commandExecutionDetails(item.tool);
@@ -547,26 +492,6 @@ function ReasoningItem({ item, now, copy }) {
         <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && hasDetails && <div id={detailsId} data-testid="conversation-reasoning-content" className="min-w-0 max-w-full ml-3 pl-3 py-1 border-l border-violet-500/15 text-[12px] leading-6 text-gray-500 dark:text-gray-300 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{item.text}</div>}
-    </div>
-  );
-}
-
-function PlanBlock({ plan, copy }) {
-  const entries = plan && plan.entries || [];
-  if (!entries.length) return null;
-  return (
-    <div data-testid="conversation-plan" className="min-w-0 max-w-full rounded-2xl border border-violet-500/15 bg-violet-500/[0.04] p-3.5">
-      <div className="text-[12px] font-semibold text-violet-600 dark:text-violet-300 mb-2">{copy.plan}</div>
-      <div className="space-y-2">
-        {entries.map((entry, index) => (
-          <div key={index} className="min-w-0 flex items-start gap-2 text-[13px]">
-            <span className={`mt-1.5 w-2 h-2 shrink-0 rounded-full ${
-              entry.status === 'completed' ? 'bg-emerald-500' : entry.status === 'in_progress' ? 'bg-blue-500 animate-pulse' : 'bg-gray-300 dark:bg-gray-600'
-            }`} />
-            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{entry.content}</span>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
@@ -829,17 +754,9 @@ function NativeYoloConfirmCard({ theme, t, busy, onConfirm, onCancel }) {
   const dialogRef = useRef(null);
   // 打开即聚焦卡片（键盘可达），Esc 视为取消——与 NativePlanCard 内联卡不同，
   // 这是一张全屏模态，必须挡住底层控件，故补 role=dialog/aria-modal/键盘交互。
-  useEffect(() => {
-    dialogRef.current?.focus();
-    const onKey = (e) => {
-      if (e.key === 'Escape' && !busy) {
-        e.preventDefault();
-        onCancel();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [busy, onCancel]);
+  // 焦点/Escape 交互与 RewindChip 的两个确认弹窗共用同一对 hook（卸载时归还焦点）。
+  useDialogFocusRestore(dialogRef);
+  useDialogEscapeKey(busy, onCancel);
   // portal 到 <body>：该卡片渲染在 composer 容器内，而容器的 backdrop-blur 会成为
   // `position: fixed` 的包含块，不 portal 的话全屏模态只会盖住输入框区域，
   // 点击遮罩取消也随之失效。
@@ -1048,7 +965,6 @@ export function CodexAcpView({
   const [workspaceDockActivation, setWorkspaceDockActivation] = useState(0);
   const [subagentPanel, setSubagentPanel] = useState(null);
   const [workspaceChangeCount, setWorkspaceChangeCount] = useState(0);
-  const [now, setNow] = useState(Date.now());
   const useUnifiedConversationUi = unifiedConversationUiEnabled();
   const [localConfigApplying, setConfigApplying] = useState('');
   const acpConfigOperationTrackerRef = useRef(null);
@@ -1294,6 +1210,9 @@ export function CodexAcpView({
   const busy = isNativeAgent
     ? Boolean(activeNativeLane && activeNativeLane.busy)
     : projection.turns.some(turn => turn.status === 'running');
+  // 每秒时钟与 ChatView 同源：busy 激活时先同步基线再走 interval，非激活不建定时器，
+  // 卸载清理（原顶部 ticker 的收敛版）。
+  const now = useConversationSecondClock(busy);
   // 「回退到第 N 轮」入口（仅原生代码车道）：checkpoint 列表 + turn 边界对齐。
   // 回退编排（rewind_to_turn）由 confirmRewind 发起；成功后走既有 loadSession
   // 重载（磁盘对话已截断、engine 已被后端回收重注水）。refreshKey 含 busy 边沿：
@@ -2309,7 +2228,7 @@ export function CodexAcpView({
     if (!path || !sessionId) return;
     const id = `codex-attachment-${++attachmentIdRef.current}`;
     cancelledAttachmentIdsRef.current.delete(id);
-    const basename = String(path).split(/[\\/]/).filter(Boolean).pop() || String(path);
+    const basename = pathBasename(path, { collapseTrailing: true, fallback: String(path) });
     updateAttachments(sessionId, current => [
       ...current,
       { id, basename, status: 'parsing', result: null, error: null },
@@ -2495,25 +2414,19 @@ export function CodexAcpView({
   }, []);
 
   function handlePaste(event) {
-    // WebKit's DataTransferItemList has no Symbol.iterator; spreading throws TypeError, so Array.from is required.
-    // eslint-disable-next-line unicorn/prefer-spread -- DataTransferItemList is not iterable on any Safari/WKWebView version
-    const items = Array.from(event.clipboardData && event.clipboardData.items || []);
-    const images = items.filter(item => item.type && item.type.startsWith('image/'));
+    // WebKit-safe filter + image File extraction shared with the chat paste path;
+    // whether to swallow the event is decided here (single preventDefault below).
+    const images = collectClipboardImages(event);
     if (!images.length) return;
     if (!deviceFileUploadAvailable && !canInvoke('save_paste_image')) return;
     event.preventDefault();
-    images.forEach(item => {
-      const file = item.getAsFile();
-      if (!file) return;
+    images.forEach(file => {
       if (deviceFileUploadAvailable) {
         uploadDeviceFiles([file]).catch(showError);
         return;
       }
       // Safari 14 has no Blob#arrayBuffer; the paste-image bridge path keeps FileReader-based reading
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const bytes = [...new Uint8Array(reader.result)];
-        const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+      readPasteImageAsBytes(file).then(async ({ bytes, ext }) => {
         try {
           const path = await invoke('save_paste_image', {
             filename: `paste-${Date.now()}.${ext}`,
@@ -2529,8 +2442,10 @@ export function CodexAcpView({
             showError(err);
           }
         }
-      };
-      reader.readAsArrayBuffer(file);
+      }, (readError) => {
+        // 原内联 FileReader 未挂 onerror：读失败保持静默，仅留诊断日志。
+        console.error('Codex paste image read failed:', readError);
+      });
     });
   }
 
@@ -2736,14 +2651,6 @@ export function CodexAcpView({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- poll only on the login-in-progress edge; refreshStatus reference changes must not restart the poll chain
   }, [activeAgentId, activeStatus?.login_in_progress]);
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- set the elapsed-time baseline immediately, then advance it every second via timer
-    setNow(Date.now());
-    if (!busy) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [busy]);
 
   // 切会话/回草稿时关掉记忆弹层（徽标内容按新会话 lane 自动切换）。
   useEffect(() => {
@@ -4020,8 +3927,8 @@ export function CodexAcpView({
                           data-testid="native-usage-chip"
                           onClick={() => compactNativeSession().catch(showError)}
                           disabled={busy || working || nativeCompacting}
-                          title={codexCopy.nativeUsageTitle(fmtNativeCtxTok(nativeTokensInput), nativeCtxPct)}
-                          aria-label={codexCopy.nativeUsageTitle(fmtNativeCtxTok(nativeTokensInput), nativeCtxPct)}
+                          title={codexCopy.nativeUsageTitle(formatCompactCount(nativeTokensInput), nativeCtxPct)}
+                          aria-label={codexCopy.nativeUsageTitle(formatCompactCount(nativeTokensInput), nativeCtxPct)}
                           className="relative inline-flex h-8 items-center gap-1.5 overflow-hidden rounded-xl border border-black/[0.07] bg-black/[0.025] px-2.5 text-[11px] font-semibold text-[#1F1F1F] transition-all hover:-translate-y-px hover:shadow-sm disabled:cursor-default disabled:opacity-50 dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#E8EAED]"
                         >
                           {nativeCtxPct != null && (
@@ -4031,7 +3938,7 @@ export function CodexAcpView({
                               style={{ width: `${nativeCtxPct}%` }}
                             />
                           )}
-                          <span className="relative">{nativeCompacting ? codexCopy.compactStart : fmtNativeCtxTok(nativeTokensInput)}</span>
+                          <span className="relative">{nativeCompacting ? codexCopy.compactStart : formatCompactCount(nativeTokensInput)}</span>
                         </button>
                       )}
                       {nativeMemoryItems.length > 0 && (

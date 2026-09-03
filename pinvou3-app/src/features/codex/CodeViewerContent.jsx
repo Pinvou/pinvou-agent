@@ -1,5 +1,6 @@
-import { useMemo, useSyncExternalStore } from 'react';
+import { useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { RefreshCw } from '../../components/icons.jsx';
+import { pathBasename } from '../../shared/path-utils.js';
 import {
   getSyntaxHighlightVersion,
   highlightCode,
@@ -40,9 +41,26 @@ export function viewerFontSizeBounds() {
   return { min: VIEWER_MIN_FONT_SIZE, max: VIEWER_MAX_FONT_SIZE };
 }
 
+// 字号状态 + A-/A+ 调整：弹窗（CodeViewerModal）与独立阅读器（ReaderApp）共用，
+// 持久化走同一 VIEWER_FONT_SIZE_KEY（原两处内联实现逐字相同，故直接收敛为一个 hook）。
+export function useViewerFontSize() {
+  const [fontSize, setFontSize] = useState(savedViewerFontSize);
+  const adjustViewerFontSize = useCallback((delta) => {
+    setFontSize((current) => {
+      const next = clampViewerFontSize(current + delta);
+      rememberViewerFontSize(next);
+      return next;
+    });
+  }, []);
+  return [fontSize, adjustViewerFontSize];
+}
+
+// 标题栏图标按钮的统一样式（弹窗与独立阅读器的 A-/A+/复制/打开/关闭按钮同款）。
+export const CODE_VIEWER_ICON_BUTTON = 'w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-40 disabled:hover:bg-transparent';
+
 // 高亮语言提示：优先扩展名（app.jsx → jsx），无扩展名时用完整文件名（Dockerfile / Makefile）。
 function languageHintForFile(name) {
-  const base = String(name || '').split(/[\\/]/u).pop() || '';
+  const base = pathBasename(name);
   const dot = base.lastIndexOf('.');
   if (dot > 0) return base.slice(dot + 1).toLowerCase();
   return base.toLowerCase();
