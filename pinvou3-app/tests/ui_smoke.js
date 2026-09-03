@@ -1684,33 +1684,57 @@ async function expand(page) {
       .some(node => /^今天 \(\d+\)$/.test((node.textContent || '').trim()) && inSidebar(node));
     const collapseLabel = () =>
       document.querySelector('[data-testid="sidebar-collapse-all-groups"]')?.getAttribute('aria-label') || '';
+    // 折叠的真实 DOM 效果:组容器(首个子元素为组头 button)折叠时不再渲染行容器
+    const todayRowsRendered = () => {
+      const group = [...document.querySelectorAll('div')].find(node =>
+        node.children.length >= 1 && node.children[0]?.tagName === 'BUTTON'
+        && /^今天 \(\d+\)$/.test((node.children[0].textContent || '').trim()) && inSidebar(node));
+      return !!group && group.children.length >= 2;
+    };
     const result = {
       found: true,
       freshStoredAbsent: localStorage.getItem('pinvou_sidebar_code_style') === null,
       freshAllPressed: pressed(pillAll) && !pressed(pillCode),
       freshTodayShown: todayLabelVisible(),
     };
-    pillCode.click(); await settle();
-    result.codeStored = localStorage.getItem('pinvou_sidebar_code_style') === 'code';
-    result.codePressed = pressed(pillCode) && !pressed(pillAll);
-    result.codeTodayHidden = !todayLabelVisible();
-    pillAll.click(); await settle();
-    result.allStored = localStorage.getItem('pinvou_sidebar_code_style') === 'normal';
-    result.allPressed = pressed(pillAll) && !pressed(pillCode);
-    result.allTodayShown = todayLabelVisible();
-    const before = collapseLabel();
-    const collapseButton = document.querySelector('[data-testid="sidebar-collapse-all-groups"]');
-    result.allCollapseVisible = !!collapseButton && !!before;
-    let labelFlips = false;
-    if (collapseButton) {
-      collapseButton.click(); await settle();
-      const mid = collapseLabel();
-      collapseButton.click(); await settle();
-      const after = collapseLabel();
-      labelFlips = !!before && !!mid && mid !== before && after === before;
+    try {
+      pillCode.click(); await settle();
+      result.codeStored = localStorage.getItem('pinvou_sidebar_code_style') === 'code';
+      result.codePressed = pressed(pillCode) && !pressed(pillAll);
+      result.codeTodayHidden = !todayLabelVisible();
+      pillAll.click(); await settle();
+      result.allStored = localStorage.getItem('pinvou_sidebar_code_style') === 'normal';
+      result.allPressed = pressed(pillAll) && !pressed(pillCode);
+      result.allTodayShown = todayLabelVisible();
+      const before = collapseLabel();
+      const collapseButton = document.querySelector('[data-testid="sidebar-collapse-all-groups"]');
+      result.allCollapseVisible = !!collapseButton && !!before;
+      let labelFlips = false;
+      let domToggles = false;
+      let snapshots = '';
+      if (collapseButton) {
+        const snap = () => collapseLabel() + '|' + todayRowsRendered();
+        const s0 = snap();
+        collapseButton.click(); await settle();
+        const s1 = snap();
+        collapseButton.click(); await settle();
+        const s2 = snap();
+        snapshots = `s0=${s0} s1=${s1} s2=${s2}`;
+        const lbl = (s) => s.split('|')[0];
+        const rows = (s) => s.split('|')[1] === 'true';
+        // 种子会话全部落在「今天」单组:初始即全展开,s0 的 label 即「全展开」基准
+        const expandedLabel = lbl(s0);
+        labelFlips = !!lbl(s0) && !!lbl(s1) && lbl(s1) !== lbl(s0) && lbl(s2) === lbl(s0);
+        // 每个快照里 label 聚合与行渲染必须一致(全展开⇔行渲染),且初始行确实可见
+        const coherent = (s) => (lbl(s) === expandedLabel) === rows(s);
+        domToggles = rows(s0) === true && coherent(s0) && coherent(s1) && coherent(s2);
+      }
+      result.collapseLabelFlips = labelFlips;
+      result.collapseDomToggles = domToggles;
+      result.snapshots = snapshots;
+    } finally {
+      localStorage.removeItem('pinvou_sidebar_code_style');
     }
-    result.collapseLabelFlips = labelFlips;
-    localStorage.removeItem('pinvou_sidebar_code_style');
     return result;
   });
   rec('①a-7 任务列表胶囊三态默认/持久化与一键折叠翻转',
@@ -1718,7 +1742,8 @@ async function expand(page) {
       && sidebarPillState.freshStoredAbsent && sidebarPillState.freshAllPressed && sidebarPillState.freshTodayShown
       && sidebarPillState.codeStored && sidebarPillState.codePressed && sidebarPillState.codeTodayHidden
       && sidebarPillState.allStored && sidebarPillState.allPressed && sidebarPillState.allTodayShown
-      && sidebarPillState.allCollapseVisible && sidebarPillState.collapseLabelFlips,
+      && sidebarPillState.allCollapseVisible && sidebarPillState.collapseLabelFlips
+      && sidebarPillState.collapseDomToggles,
     JSON.stringify(sidebarPillState));
 
   // 模型表单可能包含尚未保存的名称、地址和密钥，点击遮罩层不能意外丢失草稿；
