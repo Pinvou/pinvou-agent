@@ -2646,11 +2646,6 @@ async function queuedSceneEditRebuildsInternalPayload(bridgeKind) {
   assert.strictEqual(await bridge.sessions.switchToSession(sid), true);
   harness.emit("chat:turn_started", { session_id: sid });
   await tick();
-  if (bridgeKind === "tauri") {
-    harness.handlers.steer_chat = function () { return "steer-scene-edit"; };
-    harness.handlers.withdraw_steer = function () { return "retired"; };
-  }
-
   const original = "HTML";
   const internalGuide = "PRIVATE HTML SCENE GUIDE: load a capability before answering";
   const originalPayload = internalGuide + "\n\nUser requirement:\n" + original;
@@ -2664,6 +2659,12 @@ async function queuedSceneEditRebuildsInternalPayload(bridgeKind) {
   await tick();
   let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.strictEqual(view.queued.length, 1);
+  assert.ok(!view.queued[0].steered, bridgeKind + ": scene/context messages remain in the local queue");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "steer_chat"; }).length,
+    0,
+    bridgeKind + ": scene/context payloads never use the text-only steer channel"
+  );
   assert.strictEqual(view.queued[0].text, original, bridgeKind + ": edit value is user text only");
   assert.ok(!view.queued[0].displayText.includes(internalGuide), bridgeKind + ": private guide is absent from queue UI text");
   assert.ok(view.queued[0].payloadText.includes(internalGuide), bridgeKind + ": private guide remains in the model payload");
@@ -2678,7 +2679,11 @@ async function queuedSceneEditRebuildsInternalPayload(bridgeKind) {
   );
   assert.strictEqual(view.queued[0].meta.marker, "preserved", bridgeKind + ": unrelated metadata survives editing");
   assert.strictEqual(view.queued[0].meta.pinvouScene, "work:personal-workbench", bridgeKind + ": scene routing survives editing");
-  assert.strictEqual(view.queued[0].meta.pinvouPayloadText, view.queued[0].payloadText);
+  assert.strictEqual(
+    view.queued[0].meta.pinvouPayloadText,
+    internalGuide + "\n\nUser requirement:\nedited scene request",
+    bridgeKind + ": scene meta is rebuilt without absorbing an unrelated admission prefix"
+  );
 
   await harness.emit("chat:done", { session_id: sid });
   await tick();
@@ -2687,6 +2692,78 @@ async function queuedSceneEditRebuildsInternalPayload(bridgeKind) {
   const delivery = harness.calls.find(function (call) { return call.cmd === command; });
   assert.ok(delivery, bridgeKind + ": edited queue item is delivered after the active turn");
   assert.strictEqual(delivery.args.message, internalGuide + "\n\nUser requirement:\nedited scene request");
+}
+
+async function desktopBusyAdmissionOnlyMessageKeepsFullContract() {
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  harness.handlers.ingest_file = function () {
+    return { path: "/managed/context.xlsx", basename: "context.xlsx" };
+  };
+  await bridge.scheduled.startScheduledTaskChat();
+  // Materialize the guided draft without consuming its pending prompt. A
+  // knowledge mount uses the shared ensureSession path but does not submit a
+  // chat turn, letting the test establish a real busy session afterwards.
+  await bridge.knowledge.mountCollection(7);
+  const sid = bridge.state.getMany(['sessions', 'chat', 'scheduled']).activeSessionId;
+  await bridge.attachments.addAttachmentByPath("context.xlsx");
+  await harness.emit("chat:turn_started", { session_id: sid });
+  await tick();
+
+  const original = "HTML";
+  const sceneGuide = "PRIVATE HTML SCENE GUIDE";
+  const originalScenePayload = sceneGuide + "\n\nUser requirement:\n" + original;
+  const meta = {
+    pinvouScene: "work:personal-workbench",
+    pinvouPayloadText: originalScenePayload,
+    marker: "keep-me",
+  };
+  assert.strictEqual(await bridge.chat.sendMessage(original, meta), true);
+  let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 1);
+  assert.ok(!view.queued[0].steered, "admission-only message stays local while the current turn is busy");
+  assert.strictEqual(view.queued[0].text, original, "queue chip and edit value contain only user text");
+  assert.ok(!view.queued[0].displayText.includes("scheduled guide"));
+  assert.ok(!view.queued[0].displayText.includes(sceneGuide));
+  assert.ok(view.queued[0].displayText.includes("context.xlsx"), "attachment remains visible without exposing context");
+  assert.strictEqual(view.queued[0].restrictTools, true, "scheduled-task restriction is retained in the queue");
+  assert.strictEqual(view.queued[0].attachments.length, 1);
+  assert.strictEqual(view.queued[0].meta.marker, "keep-me");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "steer_chat"; }).length,
+    0,
+    "payload/context/attachment turns must not use steer_chat"
+  );
+
+  assert.strictEqual(await bridge.chat.editQueued(sid, view.queued[0].id, "edited scheduled scene"), true);
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  const expectedScenePayload = sceneGuide + "\n\nUser requirement:\nedited scheduled scene";
+  const expectedPayload = "scheduled guide\n\n" + expectedScenePayload;
+  assert.strictEqual(view.queued[0].payloadText, expectedPayload);
+  assert.strictEqual(view.queued[0].meta.pinvouPayloadText, expectedScenePayload);
+  assert.strictEqual(view.queued[0].restrictTools, true);
+  assert.strictEqual(view.queued[0].attachments[0].basename, "context.xlsx");
+
+  await harness.emit("chat:done", { session_id: sid });
+  await tick();
+  await tick();
+  const delivery = harness.calls.find(function (call) { return call.cmd === "chat"; });
+  assert.ok(delivery, "chat:done flushes the admission-only message through the normal chat path");
+  assert.strictEqual(delivery.args.message, expectedPayload);
+  assert.strictEqual(delivery.args.restrictTools, true);
+  assert.strictEqual(delivery.args.attachments.length, 1);
+  assert.strictEqual(delivery.args.attachments[0].basename, "context.xlsx");
+
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.ok(
+    view.chatItems.some(function (item) {
+      return item.type === "user" && item.text.includes("edited scheduled scene") && item.pinvouScene === "work:personal-workbench";
+    }),
+    "normal admission preserves the scene marker on the visible user bubble"
+  );
+  assert.ok(!JSON.stringify(view.chatItems).includes(sceneGuide), "live presentation never contains the private scene guide");
+  assert.ok(!JSON.stringify(view.messages).includes(sceneGuide), "frontend persistence snapshot contains display text, not the model guide");
+  assert.ok(!JSON.stringify(view.messages).includes("scheduled guide"), "scheduled guide stays out of the display transcript snapshot");
 }
 
 async function editQueuedSteerWithdrawsBeforeChangingPayload() {
@@ -8395,6 +8472,7 @@ Promise.resolve()
   .then(function () { return queuedMessageActionsReorderAndEditPlainItems("web"); })
   .then(function () { return queuedSceneEditRebuildsInternalPayload("tauri"); })
   .then(function () { return queuedSceneEditRebuildsInternalPayload("web"); })
+  .then(desktopBusyAdmissionOnlyMessageKeepsFullContract)
   .then(editQueuedSteerWithdrawsBeforeChangingPayload)
   .then(editQueuedSteerRefusesUncertainWithdrawal)
   .then(editQueuedDroppedBeforeNotPendingRestoresOriginal)

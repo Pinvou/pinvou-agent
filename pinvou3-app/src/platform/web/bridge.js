@@ -4781,6 +4781,9 @@
       text: userText,
       payloadText,
       payloadEnvelope: queuedPayloadEnvelope(userText, payloadText, meta),
+      metaPayloadEnvelope: meta && meta.pinvouPayloadText
+        ? queuedPayloadEnvelope(userText, meta.pinvouPayloadText, meta)
+        : null,
       displayText,
       attachments,
       meta,
@@ -4789,6 +4792,11 @@
   }
   function rebuiltQueuedPayload(item, userText) {
     const envelope = item && item.payloadEnvelope;
+    if (!envelope || typeof envelope.before !== "string" || typeof envelope.after !== "string") return null;
+    return envelope.before + userText + envelope.after;
+  }
+  function rebuiltQueuedMetaPayload(item, userText) {
+    const envelope = item && item.metaPayloadEnvelope;
     if (!envelope || typeof envelope.before !== "string" || typeof envelope.after !== "string") return null;
     return envelope.before + userText + envelope.after;
   }
@@ -5488,12 +5496,18 @@
     if (!text && !(item.attachments || []).length) return false;
     const payloadText = rebuiltQueuedPayload(item, text);
     if (payloadText === null) return false;
+    let metaPayloadText = null;
+    // biome-ignore lint/suspicious/noPrototypeBuiltins: repo targets ES2021; Object.hasOwn is ES2022
+    const hasMetaPayload = item.meta && Object.prototype.hasOwnProperty.call(item.meta, "pinvouPayloadText");
+    if (hasMetaPayload) {
+      metaPayloadText = rebuiltQueuedMetaPayload(item, text);
+      if (metaPayloadText === null) return false;
+    }
     item.text = text;
     item.payloadText = payloadText;
     item.displayText = formatAttachmentDisplayText(text, item.attachments || []);
-    // biome-ignore lint/suspicious/noPrototypeBuiltins: repo targets ES2021; Object.hasOwn is ES2022
-    if (item.meta && Object.prototype.hasOwnProperty.call(item.meta, "pinvouPayloadText")) {
-      item.meta = Object.assign({}, item.meta, { pinvouPayloadText: payloadText });
+    if (hasMetaPayload) {
+      item.meta = Object.assign({}, item.meta, { pinvouPayloadText: metaPayloadText });
     }
     notify();
     return true;

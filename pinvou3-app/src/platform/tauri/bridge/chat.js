@@ -298,6 +298,9 @@
       text: userText,
       payloadText,
       payloadEnvelope: queuedPayloadEnvelope(userText, payloadText, meta),
+      metaPayloadEnvelope: meta && meta.pinvouPayloadText
+        ? queuedPayloadEnvelope(userText, meta.pinvouPayloadText, meta)
+        : null,
       displayText,
       attachments,
       meta,
@@ -308,6 +311,17 @@
     const envelope = item && item.payloadEnvelope;
     if (!envelope || typeof envelope.before !== "string" || typeof envelope.after !== "string") return null;
     return envelope.before + userText + envelope.after;
+  }
+  function rebuiltQueuedMetaPayload(item, userText) {
+    const envelope = item && item.metaPayloadEnvelope;
+    if (!envelope || typeof envelope.before !== "string" || typeof envelope.after !== "string") return null;
+    return envelope.before + userText + envelope.after;
+  }
+  function queuedMetaNeedsAdmission(meta) {
+    if (!meta || typeof meta !== "object") return false;
+    return Object.keys(meta).some(function (key) {
+      return key.indexOf("pinvou") === 0;
+    });
   }
   // 桌宠窗口靠全局事件感知回合起止。turn_start 补齐"发送 → 首 token"的空窗
   // (chat:delta 之前引擎在思考,宠物不该干站着);turn_end 只兜 invoke 直接失败
@@ -752,9 +766,10 @@
     // turn loop embeds it at the next step boundary. Chips settle by steer_id
     // via chat:steer_committed (→ bubble) / chat:steer_dropped (→ removal +
     // notice); × cancels through a real withdraw_steer (see removeQueued).
-    // Attachments: the steer channel carries text only, so sends with
-    // attachments fall back to plain local queuing (queuePrepared, delivered
-    // by flushQueued after this turn's chat:done).
+    // The steer channel carries text only. Attachments, restricted turns,
+    // scene/context metadata, and payloads that differ from the user's text
+    // must retain the normal admission contract, so they remain local until
+    // flushQueued sends them after this turn's chat:done.
     // The busy branch is extracted into a nested function (closures reach the
     // local helpers like consumeUiTurnState) to keep sendMessage's cognitive
     // complexity under the lint threshold.
@@ -768,6 +783,13 @@
         const steerPreparation = consumeUiTurnState();
         const steerText = steerPreparation.payloadText;
         const steerInputText = text;
+        const steerEligible = steerText === steerInputText &&
+          !steerPreparation.restrictTools &&
+          !queuedMetaNeedsAdmission(meta);
+        if (!steerEligible) {
+          queuePrepared(steerPreparation);
+          return;
+        }
         // Clear the composer draft (mirrors sendMessage's success path).
         // setComposerDraft syncs the session buffer so switching away and back
         // does not resurrect the sent text; a background session's steer
@@ -784,12 +806,9 @@
           steerText,
           steerInputText,
           [],
-          meta || null,
-          // The steer channel has no restrictTools parameter (steer_chat
-          // carries text only); hard-coding false is a deliberate trade-off:
-          // restricted scenes like the scheduled-task guide degrade to a plain
-          // injection while busy, without tool restrictions. The non-busy
-          // queueing path still keeps prepared.restrictTools.
+          null,
+          // Eligibility above guarantees the payload has no admission-only
+          // context and does not need tool restriction.
           false,
         ), {
           queuedAt: Date.now(),
@@ -1091,12 +1110,22 @@
           notify();
           return false;
         }
+        let metaPayloadText = null;
+        // biome-ignore lint/suspicious/noPrototypeBuiltins: repo targets ES2021; Object.hasOwn is ES2022
+        const hasMetaPayload = detached.item.meta && Object.prototype.hasOwnProperty.call(detached.item.meta, "pinvouPayloadText");
+        if (hasMetaPayload) {
+          metaPayloadText = rebuiltQueuedMetaPayload(detached.item, text);
+          if (metaPayloadText === null) {
+            queue.splice(Math.min(detached.index, queue.length), 0, detached.item);
+            notify();
+            return false;
+          }
+        }
         detached.item.text = text;
         detached.item.payloadText = payloadText;
         detached.item.displayText = formatAttachmentDisplayText(text, detached.item.attachments || []);
-        // biome-ignore lint/suspicious/noPrototypeBuiltins: repo targets ES2021; Object.hasOwn is ES2022
-        if (detached.item.meta && Object.prototype.hasOwnProperty.call(detached.item.meta, "pinvouPayloadText")) {
-          detached.item.meta = Object.assign({}, detached.item.meta, { pinvouPayloadText: payloadText });
+        if (hasMetaPayload) {
+          detached.item.meta = Object.assign({}, detached.item.meta, { pinvouPayloadText: metaPayloadText });
         }
       }
       const localStart = firstLocalQueueIndex(queue);
