@@ -32,6 +32,7 @@ use deepseek_tui::tui::app::AppMode;
 
 use self::bundle::{Pinvou3Bundle, instructions_code_md, instructions_md};
 use self::prefs::{ModelPreset, SavedModel, UserPrefs};
+use crate::core::always_thinking::{AlwaysThinkingSpec, always_thinking_spec};
 use crate::core::model_endpoint::LocalServerKind;
 use crate::core::session_mode::SessionMode;
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
@@ -811,7 +812,22 @@ impl Pinvou3Bridge {
                 if base_url_uses_local_or_private(&self.base_url()) {
                     match self.probed_local_kind {
                         Some(LocalServerKind::Ollama) => return "ollama".to_string(),
-                        Some(LocalServerKind::Vllm) => return "vllm".to_string(),
+                        // SGLang / llama.cpp / KoboldCpp / LMDeploy / Docker
+                        // Model Runner all support passthrough of
+                        // chat_template_kwargs.enable_thinking and
+                        // reasoning_effort, structurally identical to the vLLM
+                        // wire; the engine's built-in sglang provider is
+                        // currently a DeepSeek-compatible route and unsuitable
+                        // for generic local servers, so all of them map to the
+                        // vllm provider.
+                        Some(
+                            LocalServerKind::Vllm
+                            | LocalServerKind::Sglang
+                            | LocalServerKind::LlamaCpp
+                            | LocalServerKind::KoboldCpp
+                            | LocalServerKind::LmDeploy
+                            | LocalServerKind::DockerModelRunner,
+                        ) => return "vllm".to_string(),
                         _ => {}
                     }
                 }
@@ -862,26 +878,82 @@ impl Pinvou3Bridge {
     /// 优先级：用户显式设置的 `SavedModel.reasoning_effort` > provider 默认
     /// （本地模型——vLLM 与探测出的 Ollama——默认 off 防 SSE timeout；其余默认
     /// high——底座自身默认是 Max，品悟统一收口到 high，符合产品默认思考强度）。
+    /// The exception is models whose thinking cannot be disabled on local
+    /// routes: when the `core::always_thinking` knowledge table matches,
+    /// normalize per the table (NoControl sends no thinking parameters; Tiers
+    /// only allows the tiers in the table — out-of-tier/missing stored values
+    /// normalize to the lowest tier), overriding the stored value and the
+    /// local default off.
     ///
-    /// 本地 OpenAI 兼容端点（loopback 的 LM Studio 等，探测不出服务类型或判定为
-    /// LM Studio/通用）保持旧行为不注入档位（None），避免底座 openai wire route
-    /// 对 `reasoning_effort` 的空操作与不认识的请求参数引起漂移。注意底座对
-    /// openai 的 `reasoning_effort` 空操作仅对普通模型成立：gpt-5.5/5.6/codex
-    /// 家族会经 `apply_openai_reasoning_effort` 注入档位（本地端点模型名不匹配
-    /// 该家族，此处不注入不受影响）。
+    /// Local OpenAI-compatible endpoints (loopback LM Studio etc., where the
+    /// probe cannot identify the server type or resolves to LM Studio/generic)
+    /// keep the legacy behavior of not injecting a tier (None), to avoid drift
+    /// from the engine's openai wire route no-op on `reasoning_effort` and
+    /// from unrecognized request parameters. The always-thinking knowledge
+    /// table normalization likewise does not apply to this route (the wire is
+    /// a no-op, so injection is ineffective; the frontend `localReasoningTiers`
+    /// likewise offers no tiers for lmstudio/generic). Note that the engine's
+    /// openai `reasoning_effort` no-op only holds for plain models: the
+    /// gpt-5.5/5.6/codex family gets tiers injected via
+    /// `apply_openai_reasoning_effort` (local endpoint model names do not match
+    /// that family, so not injecting here is unaffected).
     ///
     /// 注意：Kimi Code 的 `kimi-for-coding` 等是 always-thinking 模型，官方
     /// 接入要求 Thinking 保持开启；默认 high 由底座翻译成
     /// `thinking: {"type":"enabled"}`，天然满足该要求，无需特判模型名
     /// （探测 payload 仍需显式注入 thinking，见 image_capability.rs）。
     fn request_reasoning_effort(&self) -> Option<String> {
+        let provider = self.provider();
+        // "Local route": the vllm/ollama providers. When the openai wire
+        // points at a local/private endpoint (LM Studio/generic server), the
+        // engine treats reasoning_effort as a no-op, so knowledge-table
+        // normalization would be ineffective and is skipped (the stored value
+        // is still passed through per "explicit user choice wins" below, so it
+        // takes effect once a later probe resolves to vllm); precise cloud
+        // routes (moonshot/zai etc.) are likewise skipped.
+        let is_local_route = matches!(provider.as_str(), "vllm" | "ollama");
+        if is_local_route {
+            let model = self.effective_model();
+            if let Some(spec) = model.and_then(|m| always_thinking_spec(&m.model)) {
+                let stored = model.and_then(|m| m.reasoning_effort.as_deref());
+                return match spec {
+                    // Thinking cannot be disabled and no tiers are
+                    // controllable: send no thinking parameters and let the
+                    // model think natively (overrides the user's stored
+                    // value).
+                    AlwaysThinkingSpec::NoControl => None,
+                    // Always-thinking but tiers are controllable: use the
+                    // stored value if it is within the allowed tiers,
+                    // otherwise (including stored=="off", missing, or
+                    // out-of-tier such as medium for kimi-k3) normalize to the
+                    // lowest allowed tier.
+                    AlwaysThinkingSpec::Tiers(tiers) => {
+                        // The engine's ollama wire only has a boolean think
+                        // (off=think:false, everything else think:true) and
+                        // never sends tier strings; for an always-thinking
+                        // model on the ollama route the only meaningful
+                        // exposure is "high" (the frontend
+                        // `localReasoningTiers` likewise only gives ['high']).
+                        if provider == "ollama" {
+                            return Some("high".to_string());
+                        }
+                        Some(
+                            stored
+                                .filter(|effort| tiers.contains(effort))
+                                .unwrap_or(tiers[0])
+                                .to_string(),
+                        )
+                    }
+                };
+            }
+        }
         if let Some(effort) = self
             .effective_model()
             .and_then(|model| model.reasoning_effort.as_deref())
         {
             return Some(effort.to_string());
         }
-        match self.provider().as_str() {
+        match provider.as_str() {
             // 本地模型默认关思考：vLLM 防 SSE timeout；Ollama 防思考 trace 抢占首包。
             "vllm" | "ollama" => Some("off".to_string()),
             // 本地 OpenAI 兼容端点（loopback/私网的 LM Studio/通用服务）不注入，
@@ -6493,6 +6565,80 @@ mod tests {
         }
     }
 
+    /// Always-thinking knowledge table normalization does not apply to the
+    /// openai wire route (LM Studio/generic servers): the engine treats
+    /// openai reasoning_effort as a no-op, so injection is ineffective —
+    /// kimi-k3 without a stored value keeps the None default and is not
+    /// normalized to the lowest tier; the stored value (including off) is
+    /// still passed through per "explicit user choice wins" without rewriting
+    /// prefs, and the stored tier still takes effect via knowledge-table
+    /// normalization once a later probe resolves to vllm.
+    /// The frontend `localReasoningTiers` likewise offers no tiers for
+    /// lmstudio/generic.
+    #[test]
+    fn local_lmstudio_or_generic_probe_skips_always_thinking_normalization() {
+        for kind in [LocalServerKind::LmStudio, LocalServerKind::Generic] {
+            let (_lock, _env) = locked_env(&[
+                "DEEPSEEK_MODEL",
+                "DEEPSEEK_PROVIDER",
+                "DEEPSEEK_BASE_URL",
+                "DEEPSEEK_API_KEY",
+            ]);
+            let mut bridge = fixture_bridge();
+            set_active_model(
+                &mut bridge,
+                ModelPreset::OpenaiCompatible,
+                "kimi-k3",
+                "http://127.0.0.1:1234/v1",
+                "",
+            );
+            bridge.probed_local_kind = Some(kind);
+            assert_eq!(bridge.provider(), "openai", "{kind:?}");
+            assert_eq!(
+                bridge.request_reasoning_effort(),
+                None,
+                "{kind:?}: openai wire is a no-op, knowledge table does not inject the lowest tier"
+            );
+            // stored off passes through (explicit user choice wins), not
+            // normalized to low by the knowledge table.
+            bridge
+                .prefs
+                .advanced
+                .saved_models
+                .last_mut()
+                .map(|m| m.reasoning_effort = Some("off".to_string()));
+            assert_eq!(
+                bridge.request_reasoning_effort().as_deref(),
+                Some("off"),
+                "{kind:?}: stored value passes through, prefs are not rewritten by the knowledge table"
+            );
+        }
+    }
+
+    /// NoControl models (deepseek-r1) likewise send no thinking parameters
+    /// (None) on the openai wire route — identical to the normalization result
+    /// on the vllm/ollama routes, no behavior difference.
+    #[test]
+    fn local_generic_probe_no_control_model_sends_no_thinking_params() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "deepseek-r1",
+            "http://127.0.0.1:1234/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Generic);
+        assert_eq!(bridge.provider(), "openai");
+        assert_eq!(bridge.request_reasoning_effort(), None);
+    }
+
     /// 显式保存的档位优先于「本地 generic 端点不注入」默认：用户在 LM Studio/
     /// 通用端点存过档位（如 web 预览静态四档时代的 off）时，stored 值直接透传
     /// ——「显式选择优先」是既定设计；openai wire route 对非 gpt-5.x reasoning
@@ -6590,6 +6736,282 @@ mod tests {
             bridge.request_reasoning_effort().as_deref(),
             Some("high"),
             "显式档位必须覆盖本地默认 off"
+        );
+    }
+
+    /// SGLang / llama.cpp / KoboldCpp / LMDeploy / Docker Model Runner probe
+    /// results all map to the engine's vllm provider (chat_template_kwargs +
+    /// reasoning_effort wire are structurally identical), defaulting to
+    /// thinking off locally.
+    #[test]
+    fn local_reasoning_frameworks_map_to_vllm_wire_and_default_off() {
+        for kind in [
+            LocalServerKind::Sglang,
+            LocalServerKind::LlamaCpp,
+            LocalServerKind::KoboldCpp,
+            LocalServerKind::LmDeploy,
+            LocalServerKind::DockerModelRunner,
+        ] {
+            let (_lock, _env) = locked_env(&[
+                "DEEPSEEK_MODEL",
+                "DEEPSEEK_PROVIDER",
+                "DEEPSEEK_BASE_URL",
+                "DEEPSEEK_API_KEY",
+            ]);
+            let mut bridge = fixture_bridge();
+            set_active_model(
+                &mut bridge,
+                ModelPreset::OpenaiCompatible,
+                "local-model",
+                "http://127.0.0.1:8000/v1",
+                "",
+            );
+            bridge.probed_local_kind = Some(kind);
+            assert_eq!(bridge.provider(), "vllm", "{kind:?}");
+            assert_eq!(
+                bridge.request_reasoning_effort().as_deref(),
+                Some("off"),
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// A model whose thinking cannot be disabled on local vLLM (kimi-k3,
+    /// low/high tiers only): stored "off" cannot actually turn thinking off,
+    /// so it normalizes to the lowest allowed tier "low".
+    #[test]
+    fn local_vllm_kimi_k3_stored_off_normalizes_to_low() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "kimi-k3",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Vllm);
+        bridge
+            .prefs
+            .advanced
+            .saved_models
+            .last_mut()
+            .map(|m| m.reasoning_effort = Some("off".to_string()));
+        assert_eq!(
+            bridge.request_reasoning_effort().as_deref(),
+            Some("low"),
+            "kimi-k3 is always-thinking, stored off must normalize to the lowest tier"
+        );
+    }
+
+    /// kimi-k3 keeps the stored value when the stored tier is in the allowed
+    /// table (high).
+    #[test]
+    fn local_vllm_kimi_k3_stored_high_is_kept() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "kimi-k3",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Vllm);
+        bridge
+            .prefs
+            .advanced
+            .saved_models
+            .last_mut()
+            .map(|m| m.reasoning_effort = Some("high".to_string()));
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("high"));
+    }
+
+    /// kimi-k3 without a stored value: normalizes to the lowest tier "low"
+    /// (the local default off does not apply).
+    #[test]
+    fn local_vllm_kimi_k3_without_stored_defaults_to_low() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "kimi-k3",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Vllm);
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("low"));
+    }
+
+    /// kimi-k3 with an out-of-tier stored value (medium is not in the
+    /// low/high table) normalizes to the lowest tier "low".
+    #[test]
+    fn local_vllm_kimi_k3_out_of_tier_medium_normalizes_to_low() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "kimi-k3",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Vllm);
+        bridge
+            .prefs
+            .advanced
+            .saved_models
+            .last_mut()
+            .map(|m| m.reasoning_effort = Some("medium".to_string()));
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("low"));
+    }
+
+    /// NoControl models (deepseek-r1): thinking cannot be disabled and no
+    /// tiers are controllable, so no thinking parameters are sent (None),
+    /// overriding the stored value.
+    #[test]
+    fn local_vllm_deepseek_r1_sends_no_thinking_params() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "deepseek-r1",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Vllm);
+        bridge
+            .prefs
+            .advanced
+            .saved_models
+            .last_mut()
+            .map(|m| m.reasoning_effort = Some("off".to_string()));
+        assert_eq!(
+            bridge.request_reasoning_effort(),
+            None,
+            "deepseek-r1 sends no thinking parameters, letting the model think natively"
+        );
+    }
+
+    /// An always-thinking model on the ollama route (gpt-oss): the engine's
+    /// ollama wire only has a boolean think and cannot send tier strings, so
+    /// any stored value (including off) normalizes to "high".
+    #[test]
+    fn local_ollama_gpt_oss_normalizes_to_high() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "gpt-oss-120b",
+            "http://127.0.0.1:11434/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Ollama);
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("high"));
+        bridge
+            .prefs
+            .advanced
+            .saved_models
+            .last_mut()
+            .map(|m| m.reasoning_effort = Some("off".to_string()));
+        assert_eq!(
+            bridge.request_reasoning_effort().as_deref(),
+            Some("high"),
+            "gpt-oss cannot turn off thinking under ollama, stored off must also normalize to high"
+        );
+    }
+
+    /// A plain local model that does not match the knowledge table
+    /// (qwen3-32b without thinking): keeps the local default off unchanged.
+    #[test]
+    fn local_vllm_plain_model_keeps_default_off() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "qwen3-32b",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Vllm);
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("off"));
+    }
+
+    /// kimi-k3 on the official remote moonshot route does not enter local
+    /// normalization: defaults to high without a stored value, and stored off
+    /// passes through as-is (explicit user choice wins; cloud routes are not
+    /// affected by the knowledge table).
+    #[test]
+    fn remote_moonshot_kimi_k3_not_affected_by_local_normalization() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Kimi,
+            "kimi-k3",
+            "https://api.moonshot.cn/v1",
+            "sk-test",
+        );
+        assert_eq!(bridge.provider(), "moonshot");
+        assert_eq!(
+            bridge.request_reasoning_effort().as_deref(),
+            Some("high"),
+            "precise cloud route keeps the default high"
+        );
+        bridge
+            .prefs
+            .advanced
+            .saved_models
+            .last_mut()
+            .map(|m| m.reasoning_effort = Some("off".to_string()));
+        assert_eq!(
+            bridge.request_reasoning_effort().as_deref(),
+            Some("off"),
+            "cloud stored off passes through as-is, not normalized by the knowledge table"
         );
     }
 

@@ -914,6 +914,7 @@ dictZh.uiSettingsDetail.memoryTopicCleanupRequired = '记忆已更新，旧主�
 Object.assign(dictZh.uiSettingsDetail, {
   reasoningEffort:'思考深度', reasoningEffortTiers:{ off:'关闭', low:'低', medium:'中', high:'高', max:'最深' },
   reasoningProbePending:'正在探测服务类型…', reasoningProbeUnsupported:'该端点不支持思考档位调节',
+  reasoningThinkingAlwaysOn:'该模型思考始终开启，无法关闭',
   addProvider:provider=>`添加 ${provider}`, editProvider:provider=>`编辑 ${provider}`,
   autoDetectLocalModel:'自动检测本地模型',
   codingPlanTestUnavailable:'当前厂商接口暂时无法完成测试，但不影响保存配置',
