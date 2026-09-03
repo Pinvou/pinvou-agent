@@ -679,7 +679,7 @@ try {
   const boundedLongTextClass = 'whitespace-pre-wrap break-words [overflow-wrap:anywhere]';
   assert.ok(codexView.includes(boundedLongTextClass)
     && conversationView.includes(boundedLongTextClass)
-    && codexView.includes('max-h-80 max-w-full overflow-auto whitespace-pre')
+    // TerminalBlock（含 max-h-80 边界）已由两条时间线共享单源实现，见 ConversationTimeline.jsx。
     && conversationView.includes('max-h-80 max-w-full overflow-auto whitespace-pre'),
   'reasoning, plan, permission, and terminal content must stay within both timeline implementations');
   assert.ok(codexView.includes("open_codex_workspace_resource")
@@ -796,8 +796,9 @@ try {
   // 契约（2026-08-12 更新）：Design 入口必须回到 ChatView design 模式；从 code
   // 页切回时保留原工作会话（不强制 createNewSession，否则新建 plain 会话把
   // 用户切过的 Plan 顶成 Yolo），仅草稿态才新建会话。
+  // design 与 work 分支已合并为单条参数化路径（行为不变），契约按合并后形状断言。
   assert.match(main,
-    /else if \(mode === 'design'\) \{[\s\S]*?savePinvouModeState\(\{ mode: 'design' \}[^;]*;[\s\S]*?createNewSession\(\);[\s\S]*?setCurrentView\('chat'\)/,
+    /else if \(mode === 'design' \|\| mode === 'work'\) \{[\s\S]*?savePinvouModeState\(\{ mode \}[^;]*;[\s\S]*?createNewSession\(\);[\s\S]*?setCurrentView\('chat'\)/,
     'selecting Design from the shared mode entry must return to ChatView design mode');
   assert.ok(
     main.includes("if (bridge.available && !bridge.activeSessionId) bridge.sessions.createNewSession();"),
@@ -819,8 +820,13 @@ try {
     && chatView.includes('<PinvouLogo className="h-5 w-5" title={chatViewCopy.agentName}')
     && codexView.includes('<AcpAgentLogo agentId={activeAgentId} className="h-5 w-5"'),
   'assistant avatars must use the Pinvou and selected ACP Agent identity marks');
-  assert.ok(conversationView.includes('思考中'), 'running reasoning must expose a timer label');
-  assert.ok(conversationView.includes('执行步骤'), 'tool items must use a compact presentation group');
+  // 文案回退已收敛到 dict.zh.uiConversation（ConversationTimeline 以 copy 键引用），
+  // 断言「键在时间线中被消费 + zh 词条存在」。
+  const conversationZhDict = readFileSync(path.join(root, 'src', 'shared', 'i18n', 'zh.js'), 'utf8');
+  assert.ok(conversationView.includes('c.thinking') && conversationZhDict.includes("thinking:'思考中'"),
+    'running reasoning must expose a timer label');
+  assert.ok(conversationView.includes('c.executionSteps') && conversationZhDict.includes("executionSteps:'执行步骤'"),
+    'tool items must use a compact presentation group');
   assert.ok(!codexView.includes("useState(state === 'failed')"),
     'failed operation details must stay collapsed until the user opens them');
   assert.ok(!codexView.includes('useState(running || failed)'),

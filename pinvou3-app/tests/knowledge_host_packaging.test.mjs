@@ -318,7 +318,8 @@ test('native host setup reports real milestones to a blocking progress dialog', 
   assert.match(remoteKnowledgeView, /role="progressbar"/u);
   assert.match(remoteKnowledgeView, /shared-kb-host-progress-error/u);
   assert.doesNotMatch(remoteKnowledgeView, /closeDisabled=\{!\['complete', 'failed'\]\.includes\(hostProgress\.phase\)\}/u);
-  assert.match(remoteKnowledgeView, /current\?\.operation === 'install'/u);
+  // install/upgrade/reconnect 已合并为 runHostOperation 骨架，成功覆写守卫按 operation 参数化。
+  assert.match(remoteKnowledgeView, /current\?\.operation === operation/u);
 });
 
 test('existing standalone data and model are adopted with a complete rollback path', () => {
