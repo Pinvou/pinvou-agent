@@ -7,13 +7,18 @@ function IosSearchField({
   className = '',
   inputClassName = '',
   onKeyDown,
+  onClear,
+  clearLabel,
   disabled = false,
   compact = false,
+  inputRef,
+  trailing,
 }) {
   return (
     <div className={`relative ${compact ? 'h-9' : 'h-12'} ${className}`}>
       <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: '#8E8E93' }} />
       <input
+        ref={inputRef}
         type="text"
         value={value}
         disabled={disabled}
@@ -22,16 +27,23 @@ function IosSearchField({
         onKeyDown={onKeyDown}
         className={`h-full w-full rounded-[14px] border-none bg-[rgba(118,118,128,.12)] dark:bg-[rgba(118,118,128,.24)] text-[#000] dark:text-[#fff] pl-10 pr-10 font-normal outline-none placeholder:text-[#8E8E93] disabled:cursor-default ${compact ? 'text-[13px]' : 'text-[16px]'} ${inputClassName}`}
       />
-      {value ? (
-        <button
-          type="button"
-          onClick={() => onChange && onChange({ target: { value: '' } })}
-          className="absolute right-3 top-1/2 -translate-y-1/2"
-          style={{ color: '#8E8E93' }}
-        >
-          <X size={16} />
-        </button>
-      ) : null}
+      <div className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-1.5">
+        {trailing || null}
+        {value ? (
+          <button
+            type="button"
+            aria-label={clearLabel}
+            onClick={() => {
+              if (onClear) onClear();
+              if (onChange) onChange({ target: { value: '' } });
+              if (inputRef && inputRef.current) inputRef.current.focus();
+            }}
+            style={{ color: '#8E8E93' }}
+          >
+            <X size={16} />
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
