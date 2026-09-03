@@ -286,7 +286,6 @@ const ComposerModeChip = ({ t, bs, compact, mode: modeProp, busy: busyProp, onSw
     if (target === 'plan' && !isPlan) {
       await bridge.interaction.setPlanModeNext();
     } else if (target === 'yolo' && isPlan) {
-      if (busy) await bridge.chat.cancelGeneration();
       await bridge.interaction.exitPlanToYolo();
     }
   }
