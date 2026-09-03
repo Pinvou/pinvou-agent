@@ -91,8 +91,9 @@ feat 分支没有的部分，本方案新增：
    作废失败或进程在「截断落盘后、作废前」崩溃时残留的旧分支快照由**预检和解**兜底：
    每次回退预检按 `_rewound_turns.json` 的记录（备份先于截断落盘，记录存在即截断已
    生效）重放作废——`turn > kept_turns` 且创建于该次回退之前的 Turn 快照必属被弃分支
-   （新分支同号快照创建于回退后，不受波及），作废最终一致、自愈（2026-09-02 评审
-   finding 修复，`invalidate_stale_turn_checkpoints` + 回归测试锚定）
+   （新分支同号快照创建于回退后，不受波及；秒级时间戳下同秒条目无法区分归属，按被弃
+   处理——误删只令后续回退降级，漏删会重新引入 first-wins 劫持），作废最终一致、自愈
+   （2026-09-02 评审 finding 修复，`invalidate_stale_turn_checkpoints` + 回归测试锚定）
 6. 回收 engine 实例
 7. 返回 { restoredCheckpoint, rewoundTurns, degraded, hadCompaction } 供前端刷新与提示
 ```

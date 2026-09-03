@@ -360,8 +360,11 @@ fn canonical_execution_root(execution_root: &Path) -> Result<PathBuf> {
 /// 与签名/钩子以外的正常行为需要）。
 fn isolated_git_command() -> std::process::Command {
     let mut command = crate::platform::process::HiddenCommand::new("git");
-    for (key, _) in std::env::vars() {
-        if key.starts_with("GIT_") {
+    // vars_os 而非 vars：POSIX 允许环境变量取任意字节，vars 遇非 UTF-8 键/值会
+    // 直接 panic（lib.rs EnvSnapshot 同坑在先），一个这样的变量就会废掉该用户
+    // 全部快照能力；前缀按原始字节匹配，key 无需转 String。
+    for (key, _) in std::env::vars_os() {
+        if key.as_encoded_bytes().starts_with(b"GIT_") {
             command.env_remove(&key);
         }
     }
@@ -1063,7 +1066,9 @@ pub fn invalidate_turn_checkpoints_after(ledger_root: &Path, keep_turns: u32) ->
 /// turn 的对齐锚。sidecar 回退备份先于截断落盘，是可靠的和解凭据：对某次回退
 /// （keep_turns，截断时刻），`turn > keep_turns` 且**创建于截断时刻之前**的
 /// Turn 快照必属被截分支——回退后新分支的同号快照创建于截断之后，不受波及。
-/// rewind 预检按备份记录逐条调用本函数，让作废最终一致、自愈。
+/// created_at 与截断时刻同为秒级：同秒创建的条目无法区分归属，按被截分支
+/// 处理（安全方向，见谓词处注释）。rewind 预检按备份记录逐条调用本函数，
+/// 让作废最终一致、自愈。
 ///
 /// `created_before` 为秒级时间戳（备份记录 `rewound_at` 的解析结果）。
 pub fn invalidate_stale_turn_checkpoints(
@@ -1074,6 +1079,10 @@ pub fn invalidate_stale_turn_checkpoints(
     invalidate_entries_if(ledger_root, |entry| {
         entry.kind == CheckpointKind::Turn
             && entry.turn.is_some_and(|turn| turn > keep_turns)
+            // <= 故意不收紧为 <：秒级精度下同秒条目无法区分归属，按被截分支
+            // 处理是安全方向——误删新分支锚点只让后续回退到该轮降级为仅对话，
+            // 漏删被截锚点会重新引入 first-wins 劫持，且该截止随记录固定、
+            // 不会被后续和解自动修正。
             && entry.created_at <= created_before
     })
 }
@@ -2218,6 +2227,48 @@ mod tests {
         unsafe {
             std::env::remove_var("GIT_INDEX_FILE");
             std::env::remove_var("GIT_OBJECT_DIRECTORY");
+        }
+        result.unwrap();
+    }
+
+    /// vars_os 修正（评审 P2）：环境变量含非 UTF-8 的键或值时 `vars()` 会
+    /// panic；剥离循环必须容忍任意字节，快照流程照常工作。unix 专属：
+    /// `OsStringExt::from_vec` 构造非 UTF-8 变量。
+    #[cfg(unix)]
+    #[test]
+    fn git_subprocess_tolerates_non_utf8_git_environment() {
+        use std::os::unix::ffi::OsStringExt;
+        if !git_available() {
+            return;
+        }
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let raw_key = std::ffi::OsString::from_vec(vec![b'G', b'I', b'T', b'_', 0xFF]);
+        let named_key = std::ffi::OsString::from_vec(b"GIT_PROXY_COMMAND".to_vec());
+        // SAFETY: ENV_LOCK 序列化进程环境写（crate 级唯一约定）；影子 git 调用
+        // 自身按原始字节剥离 GIT_*，不解析变量名/值。
+        unsafe {
+            std::env::set_var(&raw_key, "bogus");
+            std::env::set_var(&named_key, std::ffi::OsString::from_vec(vec![0xFF]));
+        }
+        let result = std::panic::catch_unwind(|| {
+            let ledger = TestDir::new("nonutf8-ledger");
+            let exec = TestDir::new("nonutf8-exec");
+            exec.write("a.txt", "0\n");
+            create_checkpoint(
+                ledger.path(),
+                exec.path(),
+                Some(1),
+                CheckpointKind::Turn,
+                "t1",
+            )
+            .unwrap();
+        });
+        // SAFETY: 同 ENV_LOCK 序列化。
+        unsafe {
+            std::env::remove_var(&raw_key);
+            std::env::remove_var(&named_key);
         }
         result.unwrap();
     }
