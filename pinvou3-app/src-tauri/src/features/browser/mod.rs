@@ -357,7 +357,9 @@ struct HostedPrepareJournal {
 
 enum HostedPrepareJournalMatch {
     Absent,
-    Matching(HostedPrepareJournal),
+    // Box keeps the no-data variants from paying the journal's size on every
+    // match (clippy::large_enum_variant).
+    Matching(Box<HostedPrepareJournal>),
     Superseded,
 }
 
@@ -6298,7 +6300,7 @@ fn matching_hosted_prepare_journal_for_cancellation(
     cancellation: &HostedBrowserCancellation,
 ) -> Result<Option<HostedPrepareJournal>, String> {
     match classify_hosted_prepare_journal_for_cancellation(cancellation)? {
-        HostedPrepareJournalMatch::Matching(journal) => Ok(Some(journal)),
+        HostedPrepareJournalMatch::Matching(journal) => Ok(Some(*journal)),
         HostedPrepareJournalMatch::Absent | HostedPrepareJournalMatch::Superseded => Ok(None),
     }
 }
@@ -6323,7 +6325,7 @@ fn classify_hosted_prepare_journal_for_cancellation(
         // cancellation is an idempotent no-op that can still be acknowledged.
         return Ok(HostedPrepareJournalMatch::Superseded);
     }
-    Ok(HostedPrepareJournalMatch::Matching(journal))
+    Ok(HostedPrepareJournalMatch::Matching(Box::new(journal)))
 }
 
 /// Read the cancellation path reserved for one durable Prepare generation and

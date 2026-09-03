@@ -761,7 +761,7 @@ mod tests {
                 None
             }
         }));
-        let code_ids = vec![alice_id.clone(), carol_id.clone()];
+        let code_ids = [alice_id.clone(), carol_id.clone()];
         store.set_code_session_predicate(Arc::new(move |id: &str| {
             code_ids.iter().any(|candidate| candidate == id)
         }));

@@ -337,6 +337,12 @@ missing_docs = "allow"
 # high-value subset is denied individually below.
 all = { level = "allow", priority = -1 }
 pedantic = { level = "allow", priority = -1 }
+# The perf group used to be allowed together with `all`; the measured backlog
+# in 2026-09 was only 3 warnings (result_large_err / large_enum_variant /
+# manual_ascii_case_insensitive) and has been cleared, so the group is
+# promoted to a hard deny gate to keep redundant_clone-class perf regressions
+# out (priority=1 overrides the -1 on `all`).
+perf = { level = "deny", priority = 1 }
 
 # —— Curated zero-backlog regression guards: deny hard gate (0 violations,
 # new hits fail CI) ——
