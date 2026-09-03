@@ -275,7 +275,7 @@ export function ConversationActivityIndicator({
   return <div role="status" aria-live="polite" className={sharedClass}>{content}</div>;
 }
 
-function TerminalBlock({ label, text }) {
+export function TerminalBlock({ label, text }) {
   if (!text) return null;
   return (
     <div className="mt-3 min-w-0 max-w-full">
@@ -285,7 +285,7 @@ function TerminalBlock({ label, text }) {
   );
 }
 
-function StructuredValue({ label, value }) {
+export function StructuredValue({ label, value }) {
   if (value == null || value === '' || (Array.isArray(value) && !value.length)) return null;
   if (typeof value !== 'object') return <TerminalBlock label={label} text={String(value)} />;
   const entries = Object.entries(value);
@@ -307,7 +307,7 @@ function StructuredValue({ label, value }) {
   );
 }
 
-function CompactItemRow({ icon, title, meta, status, open, onToggle, controlsId }) {
+export function CompactItemRow({ icon, title, meta, status, open, onToggle, controlsId }) {
   const tone = status === 'failed'
     ? 'text-red-500 bg-red-500/10'
     : status === 'warning'
@@ -681,7 +681,7 @@ function ReasoningItem({ item, now, copy }) {
   );
 }
 
-function PlanBlock({ plan, copy }) {
+export function PlanBlock({ plan, copy }) {
   const c = conversationCopy(copy);
   const entries = plan && plan.entries || [];
   if (!entries.length) return null;

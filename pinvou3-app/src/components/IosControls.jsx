@@ -12,6 +12,7 @@ function IosSearchField({
   disabled = false,
   compact = false,
   inputRef,
+  inputTestId,
   trailing,
 }) {
   return (
@@ -20,6 +21,7 @@ function IosSearchField({
       <input
         ref={inputRef}
         type="text"
+        data-testid={inputTestId}
         value={value}
         disabled={disabled}
         placeholder={placeholder}
