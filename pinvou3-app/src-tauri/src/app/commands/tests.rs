@@ -1537,15 +1537,17 @@ async fn open_external_url_rejects_off_allowlist_targets() {
         "https://www.canva.cn.evil.com/api/action",               // Canva 子域钓鱼
         "https://export-download.canva.cn.evil.com/x.png",        // Canva 资源域钓鱼
         "https://meeting.tencent.com.evil.com/qrcode-login.html", // 腾讯会议授权域钓鱼
-        "https://bce.baidu.com/",                                 // 非 console 子域,不放行
-        "javascript:alert(1)",                                    // js scheme
-        "file:///etc/passwd",                                     // file scheme
-        "https://google.com/",                                    // 任何第三方域
-        "http://localhost.evil.com:8080/",                        // localhost 前缀钓鱼
-        "http://user@localhost:8080/",                            // 不允许 URL 凭据
-        "http://192.168.1.10:8080/",                              // 局域网地址不是 loopback
-        "",                                                       // 空串
-        "metaso.cn/",                                             // 缺 scheme
+        "http://work.weixin.qq.com/ai/qc/gen",                    // WeCom auth page over non-https
+        "http://login.dingtalk.com/device", // DingTalk auth page over non-https
+        "https://bce.baidu.com/",           // 非 console 子域,不放行
+        "javascript:alert(1)",              // js scheme
+        "file:///etc/passwd",               // file scheme
+        "https://google.com/",              // 任何第三方域
+        "http://localhost.evil.com:8080/",  // localhost 前缀钓鱼
+        "http://user@localhost:8080/",      // 不允许 URL 凭据
+        "http://192.168.1.10:8080/",        // 局域网地址不是 loopback
+        "",                                 // 空串
+        "metaso.cn/",                       // 缺 scheme
     ];
     for url in rejected {
         let err = open_external_url(url.to_string()).await.err();
@@ -1619,6 +1621,17 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     assert!(url_in_external_allowlist(
         "https://docs.qq.com/scenario/open-claw.html?nlc=1"
     ));
+    // WeCom scan-to-authorize page (wecom-cli auth init landing page)
+    assert!(url_in_external_allowlist(
+        "https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&scode=abc"
+    ));
+    assert!(url_in_external_allowlist(
+        "https://work.weixin.qq.com/ai/qc/c?s=abc&for_native=true"
+    ));
+    // DingTalk device authorization login page (printed by `dws auth login --device`, carries user_code)
+    assert!(url_in_external_allowlist(
+        "https://login.dingtalk.com/device?user_code=ABCDEF"
+    ));
     assert!(url_in_external_allowlist("http://localhost:8080/"));
     assert!(url_in_external_allowlist("https://127.0.0.1:8443/preview"));
     assert!(url_in_external_allowlist("http://[::1]:3000/"));
@@ -1638,6 +1651,15 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     ));
     assert!(!url_in_external_allowlist(
         "https://meeting.tencent.com.evil.com/qrcode-login.html"
+    ));
+    assert!(!url_in_external_allowlist(
+        "https://work.weixin.qq.com.evil.com/ai/qc/gen"
+    ));
+    assert!(!url_in_external_allowlist(
+        "https://login.dingtalk.com.evil.com/device"
+    ));
+    assert!(!url_in_external_allowlist(
+        "https://dingtalk.com.evil.com/device"
     ));
     assert!(!url_in_external_allowlist(
         "https://docs.qq.com.evil.com/scenario/open-claw.html?nlc=1"

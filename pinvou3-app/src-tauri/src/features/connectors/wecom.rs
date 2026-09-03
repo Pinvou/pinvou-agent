@@ -146,18 +146,75 @@ fn run_connect_flow(app: &AppHandle) {
     }
 }
 
+/// Waits for the QR PNG written to disk by the CLI (read once it exists and its
+/// length is stable, to avoid grabbing a half-written file).
+/// Returns `None` on timeout (the caller falls back to drawing the URL as a QR).
+fn poll_qr_png(dir: &std::path::Path, timeout: Duration) -> Option<Vec<u8>> {
+    let path = dir.join("qr.png");
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Ok(bytes) = std::fs::read(&path) {
+            if !bytes.is_empty() {
+                std::thread::sleep(Duration::from_millis(200));
+                if let Ok(settled) = std::fs::read(&path) {
+                    if settled.len() == bytes.len() {
+                        return Some(settled);
+                    }
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+}
+
 /// 单段:`auth init --noninteractive --no-browser` 长驻 → 抓 URL 出二维码 → 等进程退出 → 查 ready。
 fn phase_scan(app: &AppHandle) -> Result<(), String> {
-    let mut cmd = wecom(&["auth", "init", "--noninteractive", "--no-browser"]);
+    // CLI 1.1.0's --output-qrcode only accepts a path relative to the current
+    // directory, so the real auth QR PNG is written into a temp dir. The stdout
+    // URL is the /ai/qc/gen landing page (which would ask the user to scan
+    // again) and cannot be encoded as the QR directly; only the PNG QR reaches
+    // authorization in one scan. Any CLI that reaches this point is ≥1.1.0
+    // (wecom_ensure_cli's version gate force-replaces older ones), so the
+    // self-drawn fallback only covers PNG write failure / poll timeout.
+    let qr_dir = std::env::temp_dir().join(format!(
+        "pinvou3-wecom-qr-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    if let Err(e) = std::fs::create_dir_all(&qr_dir) {
+        // Not swallowed: spawn would also fail on the missing cwd, but its cause
+        // would be misread as "CLI not installed".
+        return Err(format!("failed to create the scan QR temp dir: {e}"));
+    }
+    let mut cmd = wecom(&[
+        "auth",
+        "init",
+        "--noninteractive",
+        "--no-browser",
+        "--output-qrcode",
+        "qr.png",
+    ]);
+    cmd.current_dir(&qr_dir);
     // 独立进程组:npm shim(shell→node)派生的孙进程与 shim 同组,退出收割的
     // kill_pid_tree 按负 pid 组杀整棵树,单杀 shim pid 会把 node 孤儿化。
     crate::platform::process::std_process_group_leader(&mut cmd);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("wecom-cli auth init 启动失败: {e}(需要先完成企微 CLI 在线安装)"))?;
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&qr_dir);
+            return Err(format!(
+                "failed to start wecom-cli auth init: {e} (install the WeCom CLI online first)"
+            ));
+        }
+    };
     let conn = app.state::<ConnectorConn>();
     conn.set_pid(ID, Some(child.id()));
 
@@ -177,13 +234,34 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         Err(_) => {
             let _ = child.kill();
             conn.set_pid(ID, None);
-            return Err("40s 内未拿到二维码链接(检查网络 / 代理)".into());
+            let _ = std::fs::remove_dir_all(&qr_dir);
+            // Cancel tree-kills the child → pipe EOF lands here: the user stopped
+            // on purpose, so finish silently instead of misreporting a link timeout.
+            if conn.is_cancelled(ID) {
+                return Ok(());
+            }
+            return Err("no QR link within 40s (check network / proxy)".into());
         }
     };
+    // Prefer the real auth QR written by the CLI; on failure (write failure /
+    // poll timeout) fall back to the self-drawn landing-page QR.
+    let qr = poll_qr_png(&qr_dir, Duration::from_secs(6))
+        .and_then(|bytes| cc::png_data_url(&bytes))
+        .or_else(|| cc::make_qr(&url));
+    let _ = std::fs::remove_dir_all(&qr_dir);
+    // Cancel during the PNG wait window: exit silently. Emitting wecom:qr now
+    // would re-open the scan modal the user already dismissed.
+    // (wecom_cancel already tree-killed by pid; the extra kill + pid slot reset
+    // here covers the race.)
+    if conn.is_cancelled(ID) {
+        let _ = child.kill();
+        conn.set_pid(ID, None);
+        return Ok(());
+    }
     cc::emit(
         app,
         "wecom:qr",
-        json!({ "phase": "authorize", "url": url, "qr_data_url": cc::make_qr(&url) }),
+        json!({ "phase": "authorize", "url": url, "qr_data_url": qr }),
     );
 
     // 等进程退出(用户扫码完成);期间轮询取消标志。退出后查 ready 收尾。
@@ -364,6 +442,30 @@ mod tests {
         assert!(!status_is_authorized("unauthorized")); // 前缀相同不能误判
         assert!(!status_is_authorized("Status: unauthorized"));
         assert!(!status_is_authorized(""));
+    }
+
+    /// Polls the QR PNG written by the CLI: read once it appears; a missing
+    /// file / empty dir waits until timeout and returns None.
+    #[test]
+    fn poll_qr_png_reads_written_file_and_times_out() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-wecom-poll-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // No file → timeout None (a very short timeout keeps the test fast)
+        assert!(poll_qr_png(&dir, Duration::from_millis(300)).is_none());
+        // After the file lands → stable bytes are read
+        let png = b"\x89PNG\r\n\x1a\npayload";
+        std::fs::write(dir.join("qr.png"), png).unwrap();
+        assert_eq!(
+            poll_qr_png(&dir, Duration::from_secs(3)).as_deref(),
+            Some(&png[..])
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 手动停用标志:文件存在=停用,与连接状态正交。写/删一轮。
