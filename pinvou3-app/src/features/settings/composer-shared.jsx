@@ -20,7 +20,7 @@ import {
 import {
   groupModelsForSelector, selectorMainLabel, selectorSubLabel,
   reasoningEffortTiersForModel, normalizeStoredReasoningEffort,
-  localProbeTiersForKind, reasoningEffortDisplayForTiers, baseUrlUsesLocalOrPrivate,
+  alwaysThinkingSpecForModel, localReasoningTiers, reasoningEffortDisplayForTiers, baseUrlUsesLocalOrPrivate,
 } from './model-catalog.js';
 
 // 会话中「打开」是未提交态：新一轮对话发出前允许改回（误开可撤销），发出后
@@ -147,8 +147,13 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         return () => { cancelled = true; };
       }, [isLocalCompatible, currentBaseUrl, currentModelId]);
       const reasoningEffortTiers = isLocalCompatible
-        ? (currentProbePending ? [] : (localProbeTiersForKind(currentProbedKind) || []))
+        ? (currentProbePending ? [] : (localReasoningTiers(current ? current.model : null, currentProbedKind) || []))
         : (current ? (reasoningEffortTiersForModel(current) || []) : []);
+      // Local routes (vllm preset / local-compatible endpoints) hit the "always-thinking,
+      // no-control" knowledge table: the effort-tier area shows an "always on" hint instead of probe-unsupported.
+      const currentNoControlThinking = !!current
+        && (current.preset === 'local_vllm' || isLocalCompatible)
+        && !!(alwaysThinkingSpecForModel(current.model) || {}).noControl;
       // 存量档位（可能保存过底座归一前的旧值，如 deepseek 的 medium）先归一到
       // 档位表内等价档位再高亮，避免「档位表不含该值 → 下拉无高亮」。
       const reasoningEffortValue = current ? normalizeStoredReasoningEffort(current, current.reasoning_effort) : null;
@@ -233,7 +238,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
                     </>
                   );
                 })()}
-                {current && (reasoningEffortTiers.length > 0 || isLocalCompatible) && (
+                {current && (reasoningEffortTiers.length > 0 || isLocalCompatible || currentNoControlThinking) && (
                   <>
                     <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
                     <div className="px-3 pt-1 pb-1">
@@ -255,7 +260,9 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
                         <div className={`text-[11px] leading-4 ${currentProbePending ? 'text-gray-400 dark:text-gray-500' : 'text-[#FF9500] dark:text-[#FFB340]'}`}>
                           {currentProbePending
                             ? ((t.uiSettingsDetail && t.uiSettingsDetail.reasoningProbePending) || '正在探测服务类型…')
-                            : ((t.uiSettingsDetail && t.uiSettingsDetail.reasoningProbeUnsupported) || '该端点不支持思考档位调节')}
+                            : currentNoControlThinking
+                              ? ((t.uiSettingsDetail && t.uiSettingsDetail.reasoningThinkingAlwaysOn) || '该模型思考始终开启，无法关闭')
+                              : ((t.uiSettingsDetail && t.uiSettingsDetail.reasoningProbeUnsupported) || '该端点不支持思考档位调节')}
                         </div>
                       )}
                       {effortSaveError && (

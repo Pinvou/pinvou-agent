@@ -35,13 +35,15 @@ vm.runInContext(
   `this.baseUrlUsesLoopback = baseUrlUsesLoopback;\n` +
   `this.baseUrlUsesLocalOrPrivate = baseUrlUsesLocalOrPrivate;\n` +
   `this.localProbeTiersForKind = localProbeTiersForKind;\n` +
+  `this.alwaysThinkingSpecForModel = alwaysThinkingSpecForModel;\n` +
+  `this.localReasoningTiers = localReasoningTiers;\n` +
   `this.reasoningEffortDisplayForTiers = reasoningEffortDisplayForTiers;\n` +
   `this.catalogImageCapableForModel = catalogImageCapableForModel;\n`,
   ctx,
   { filename: srcPath },
 );
 
-const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, baseUrlUsesLoopback, baseUrlUsesLocalOrPrivate, localProbeTiersForKind, catalogImageCapableForModel, reasoningEffortDisplayForTiers } = ctx;
+const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, baseUrlUsesLoopback, baseUrlUsesLocalOrPrivate, localProbeTiersForKind, alwaysThinkingSpecForModel, localReasoningTiers, catalogImageCapableForModel, reasoningEffortDisplayForTiers } = ctx;
 
 // i18n 测试替身:复刻实际字典里会用到的字段
 const t = {
@@ -457,12 +459,93 @@ test('localProbeTiersForKind 按探测结果映射真实档位', () => {
   // vllm → 四档；ollama → think 开关两档（避免 low/medium/high 归一误导）
   assert.deepStrictEqual([...localProbeTiersForKind('vllm')], ['off', 'low', 'medium', 'high']);
   assert.deepStrictEqual([...localProbeTiersForKind('ollama')], ['off', 'high']);
+  // Frameworks wire-isomorphic with vLLM thinking control → same four tiers as vllm
+  for (const kind of ['sglang', 'llamacpp', 'koboldcpp', 'lmdeploy', 'dockermodelrunner']) {
+    assert.deepStrictEqual([...localProbeTiersForKind(kind)], ['off', 'low', 'medium', 'high'], kind);
+  }
   // lmstudio/generic 底座空操作 → null（前端显示不支持提示）
   assert.strictEqual(localProbeTiersForKind('lmstudio'), null);
   assert.strictEqual(localProbeTiersForKind('generic'), null);
   // 未探测/未知 → 默认四档（前端探测完成前不误报不支持）
   assert.deepStrictEqual([...localProbeTiersForKind(null)], ['off', 'low', 'medium', 'high']);
   assert.deepStrictEqual([...localProbeTiersForKind('unknown')], ['off', 'low', 'medium', 'high']);
+});
+
+test('alwaysThinkingSpecForModel: always-thinking model knowledge table matching', () => {
+  // vm realm objects have different prototypes from the test realm; compare via JSON structure
+  const specJson = (modelId) => JSON.stringify(alwaysThinkingSpecForModel(modelId));
+  // case-insensitive + underscores/spaces normalized to '-'
+  assert.strictEqual(specJson('kimi-k3'), '{"tiers":["low","high"]}');
+  assert.strictEqual(specJson('Kimi-K3'), '{"tiers":["low","high"]}');
+  assert.strictEqual(specJson('kimi_k3'), '{"tiers":["low","high"]}');
+  assert.strictEqual(specJson('Kimi K3 Instruct'), '{"tiers":["low","high"]}');
+  assert.strictEqual(specJson('glm-5.3'), '{"tiers":["low","high"]}');
+  assert.strictEqual(specJson('GLM-4.7'), '{"tiers":["low","high"]}');
+  assert.strictEqual(specJson('gpt-oss-120b'), '{"tiers":["low","medium","high"]}');
+  // noControl: thinking cannot be disabled and no effort tier is controllable
+  assert.strictEqual(specJson('kimi-k2-thinking'), '{"noControl":true}');
+  assert.strictEqual(specJson('Kimi-K2.5-Thinking'), '{"noControl":true}');
+  assert.strictEqual(specJson('kimi-k2.7'), '{"noControl":true}');
+  assert.strictEqual(specJson('deepseek-r1-0528'), '{"noControl":true}');
+  assert.strictEqual(specJson('MiniMax-M2'), '{"noControl":true}');
+  assert.strictEqual(specJson('Qwen3-235B-A22B-Thinking'), '{"noControl":true}');
+  // no match: plain qwen3 (no thinking), other models, empty values
+  assert.strictEqual(alwaysThinkingSpecForModel('qwen3-32b'), null);
+  assert.strictEqual(alwaysThinkingSpecForModel('qwen36_35b_256k'), null);
+  assert.strictEqual(alwaysThinkingSpecForModel('glm-5.2'), null);
+  assert.strictEqual(alwaysThinkingSpecForModel(''), null);
+  assert.strictEqual(alwaysThinkingSpecForModel(null), null);
+});
+
+test('local routes hitting the knowledge table: tiers/defaults/stored-value normalization', () => {
+  // spec.tiers model (local vllm preset): tier table replaced by the knowledge table, no off tier
+  const k3Local = { preset: 'local_vllm', model: 'kimi-k3' };
+  assert.deepStrictEqual([...reasoningEffortTiersForModel(k3Local)], ['low', 'high']);
+  assert.strictEqual(defaultReasoningEffortForModel(k3Local), 'low');
+  // stored off is not in spec.tiers → normalized to the lowest tier low; valid high is kept as-is
+  assert.strictEqual(normalizeStoredReasoningEffort(k3Local, 'off'), 'low');
+  assert.strictEqual(normalizeStoredReasoningEffort(k3Local, 'high'), 'high');
+  assert.strictEqual(normalizeStoredReasoningEffort(k3Local, null), 'low');
+  // local loopback openai_compatible endpoints also go through the knowledge table
+  const gptOssLocal = { preset: 'openai_compatible', model: 'gpt-oss-20b', base_url: 'http://127.0.0.1:8000/v1' };
+  assert.deepStrictEqual([...reasoningEffortTiersForModel(gptOssLocal)], ['low', 'medium', 'high']);
+  assert.strictEqual(defaultReasoningEffortForModel(gptOssLocal), 'low');
+  // noControl model → null (no switch offered, reusing the "not adjustable" semantic exit)
+  const r1Local = { preset: 'local_vllm', model: 'deepseek-r1:14b' };
+  assert.strictEqual(reasoningEffortTiersForModel(r1Local), null);
+  assert.strictEqual(normalizeStoredReasoningEffort(r1Local, 'high'), null);
+  // plain local models are unaffected: still default off, four tiers
+  const qwenLocal = { preset: 'local_vllm', model: 'qwen3-32b' };
+  assert.deepStrictEqual([...reasoningEffortTiersForModel(qwenLocal)], ['off', 'low', 'medium', 'high']);
+  assert.strictEqual(defaultReasoningEffortForModel(qwenLocal), 'off');
+  // exact cloud routes are unaffected: z.ai first-party glm-5.3 is still off/high/max
+  const glmCloud = { preset: 'glm', vendor: 'glm', model: 'glm-5.3', base_url: 'https://api.z.ai/api/paas/v4' };
+  assert.deepStrictEqual([...reasoningEffortTiersForModel(glmCloud)], ['off', 'high', 'max']);
+  // direct moonshot cloud route for K3 unchanged: low/high/max
+  const k3Direct = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k3', base_url: 'https://api.moonshot.ai/v1' };
+  assert.deepStrictEqual([...reasoningEffortTiersForModel(k3Direct)], ['low', 'high', 'max']);
+});
+
+test('localReasoningTiers: probed tiers overlaid with the model knowledge table', () => {
+  // spec.tiers overrides the probed tiers (even when the probe reports a four-tier framework)
+  assert.deepStrictEqual([...localReasoningTiers('kimi-k3', 'vllm')], ['low', 'high']);
+  assert.deepStrictEqual([...localReasoningTiers('gpt-oss-120b', 'sglang')], ['low', 'medium', 'high']);
+  // under the ollama route the engine wire only has boolean think, so the only meaningful exposure for an always-thinking model is high
+  assert.deepStrictEqual([...localReasoningTiers('gpt-oss-120b', 'ollama')], ['high']);
+  // noControl → null (frontend shows a "thinking is always on" notice)
+  assert.strictEqual(localReasoningTiers('deepseek-r1:14b', 'vllm'), null);
+  assert.strictEqual(localReasoningTiers('Qwen3-235B-A22B-Thinking', 'ollama'), null);
+  // lmstudio/generic: the engine's openai wire route is a no-op for reasoning_effort,
+  // and knowledge-table tiers are likewise not offered — fall back to the probe result (null), restoring the "endpoint unsupported" notice
+  assert.strictEqual(localReasoningTiers('kimi-k3', 'lmstudio'), null);
+  assert.strictEqual(localReasoningTiers('gpt-oss-120b', 'generic'), null);
+  // noControl on lmstudio/generic is likewise null (notice logic unchanged)
+  assert.strictEqual(localReasoningTiers('deepseek-r1:14b', 'generic'), null);
+  // no knowledge-table match → apply the probed tiers as-is
+  assert.deepStrictEqual([...localReasoningTiers('qwen3-32b', 'ollama')], ['off', 'high']);
+  assert.deepStrictEqual([...localReasoningTiers('qwen3-32b', 'llamacpp')], ['off', 'low', 'medium', 'high']);
+  assert.strictEqual(localReasoningTiers('qwen3-32b', 'generic'), null);
+  assert.deepStrictEqual([...localReasoningTiers('qwen3-32b', null)], ['off', 'low', 'medium', 'high']);
 });
 
 test('reasoningEffortDisplayForTiers: display fallback of stored tiers against probed tiers', () => {
