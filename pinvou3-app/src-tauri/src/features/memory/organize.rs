@@ -273,12 +273,26 @@ impl OrganizeSnapshot {
 
     fn ids_for(&self, kind: &str) -> BTreeSet<String> {
         match kind {
-            "preference" => self.preferences.iter().map(|item| item.id.clone()).collect(),
-            "work_context" => self.work_context.iter().map(|item| item.id.clone()).collect(),
-            "current_focus" => self.current_focus.iter().map(|item| item.id.clone()).collect(),
-            "recent_activity" => {
-                self.recent_activity.iter().map(|item| item.id.clone()).collect()
-            }
+            "preference" => self
+                .preferences
+                .iter()
+                .map(|item| item.id.clone())
+                .collect(),
+            "work_context" => self
+                .work_context
+                .iter()
+                .map(|item| item.id.clone())
+                .collect(),
+            "current_focus" => self
+                .current_focus
+                .iter()
+                .map(|item| item.id.clone())
+                .collect(),
+            "recent_activity" => self
+                .recent_activity
+                .iter()
+                .map(|item| item.id.clone())
+                .collect(),
             "pending" => self.pending.iter().map(|item| item.id.clone()).collect(),
             _ => BTreeSet::new(),
         }
@@ -415,7 +429,9 @@ pub(super) fn validate_organize_action(
             }
         }
         if content.is_empty() {
-            return drop_action(format!("organize: drop {op} {kind} with empty cleaned content"));
+            return drop_action(format!(
+                "organize: drop {op} {kind} with empty cleaned content"
+            ));
         }
     }
     let raw_topic = clean_text(&raw.topic, 40);

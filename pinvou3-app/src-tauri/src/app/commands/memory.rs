@@ -215,7 +215,11 @@ fn refresh_memory_snapshot_document(
     ) {
         let detail = format!("write memory snapshot: {error}");
         eprintln!("[memory] {detail}");
-        warnings.push(memory_warning("snapshot_refresh_failed", "snapshot", detail));
+        warnings.push(memory_warning(
+            "snapshot_refresh_failed",
+            "snapshot",
+            detail,
+        ));
     }
     warnings
 }
@@ -492,7 +496,11 @@ pub async fn organize_memory(
         .await
         .map_err(|error| format!("organize memory: {error:#}"))?;
     let (runtime, mut warnings) = refresh_memory_runtime_best_effort(None, &store, &app);
-    warnings.extend(refresh_memory_snapshot_document(None, &store, runtime.as_ref()));
+    warnings.extend(refresh_memory_snapshot_document(
+        None,
+        &store,
+        runtime.as_ref(),
+    ));
     Ok(MemoryOrganizeState {
         report,
         runtime,
