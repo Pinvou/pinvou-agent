@@ -1118,8 +1118,9 @@
           return false;
         }
         let metaPayloadText = null;
-        // biome-ignore lint/suspicious/noPrototypeBuiltins: repo targets ES2021; Object.hasOwn is ES2022
-        const hasMetaPayload = detached.item.meta && Object.prototype.hasOwnProperty.call(detached.item.meta, "pinvouPayloadText");
+        // Match send-time admission: only a non-empty meta payload gets an
+        // envelope, so only that shape can be rebuilt around the new text.
+        const hasMetaPayload = !!(detached.item.meta && detached.item.meta.pinvouPayloadText);
         if (hasMetaPayload) {
           metaPayloadText = rebuiltQueuedMetaPayload(detached.item, text);
           if (metaPayloadText === null) {

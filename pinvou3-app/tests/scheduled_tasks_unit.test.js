@@ -2694,6 +2694,45 @@ async function queuedSceneEditRebuildsInternalPayload(bridgeKind) {
   assert.strictEqual(delivery.args.message, internalGuide + "\n\nUser requirement:\nedited scene request");
 }
 
+async function queuedEditWithEmptyMetaPayloadStaysPlain(bridgeKind) {
+  const harness = createBridgeHarness(Object.create(null), bridgeKind === "web" ? {
+    bridgeKind: "web",
+    webSupportedCommands: [
+      "web_access_chat", "web_access_load_session_chunk", "web_access_cancel_session_download",
+      "web_access_list_sessions", "web_access_list_archived_sessions", "web_access_status",
+    ],
+  } : undefined);
+  const bridge = harness.bridge;
+  const sid = "chat-queued-empty-meta-" + bridgeKind;
+  assert.strictEqual(await bridge.sessions.switchToSession(sid), true);
+  harness.emit("chat:turn_started", { session_id: sid });
+  await tick();
+  const meta = { pinvouScene: "work:personal-workbench", pinvouPayloadText: "", marker: "kept" };
+  assert.strictEqual(await bridge.chat.sendMessage("plain while busy", meta), true);
+  await tick();
+  await tick();
+  let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 1);
+
+  // An empty meta payload must edit like a plain message: send-time admission
+  // treats "" as absence, so the edit must not demand an envelope that was
+  // never built (regression: hasOwnProperty made every save fail forever).
+  assert.strictEqual(await bridge.chat.editQueued(sid, view.queued[0].id, "edited plain"), true);
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued[0].text, "edited plain");
+  assert.strictEqual(view.queued[0].payloadText, "edited plain", bridgeKind + ": empty meta payload keeps the edit plain");
+  assert.strictEqual(view.queued[0].meta.marker, "kept", bridgeKind + ": unrelated metadata survives the edit");
+  assert.strictEqual(view.queued[0].meta.pinvouPayloadText, "", bridgeKind + ": empty meta payload is left untouched");
+
+  await harness.emit("chat:done", { session_id: sid });
+  await tick();
+  await tick();
+  const command = bridgeKind === "web" ? "web_access_chat" : "chat";
+  const delivery = harness.calls.find(function (call) { return call.cmd === command; });
+  assert.ok(delivery, bridgeKind + ": edited item is delivered after the active turn");
+  assert.strictEqual(delivery.args.message, "edited plain", bridgeKind + ": delivery matches send-time empty-meta semantics");
+}
+
 async function desktopBusyAdmissionOnlyMessageKeepsFullContract() {
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
@@ -8585,6 +8624,8 @@ Promise.resolve()
   .then(function () { return queuedMessageActionsReorderAndEditPlainItems("web"); })
   .then(function () { return queuedSceneEditRebuildsInternalPayload("tauri"); })
   .then(function () { return queuedSceneEditRebuildsInternalPayload("web"); })
+  .then(function () { return queuedEditWithEmptyMetaPayloadStaysPlain("tauri"); })
+  .then(function () { return queuedEditWithEmptyMetaPayloadStaysPlain("web"); })
   .then(desktopBusyAdmissionOnlyMessageKeepsFullContract)
   .then(editQueuedSteerWithdrawsBeforeChangingPayload)
   .then(editQueuedSteerRefusesUncertainWithdrawal)

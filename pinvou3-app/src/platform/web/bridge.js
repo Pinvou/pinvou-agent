@@ -5497,8 +5497,9 @@
     const payloadText = rebuiltQueuedPayload(item, text);
     if (payloadText === null) return false;
     let metaPayloadText = null;
-    // biome-ignore lint/suspicious/noPrototypeBuiltins: repo targets ES2021; Object.hasOwn is ES2022
-    const hasMetaPayload = item.meta && Object.prototype.hasOwnProperty.call(item.meta, "pinvouPayloadText");
+    // Match send-time admission: only a non-empty meta payload gets an
+    // envelope, so only that shape can be rebuilt around the new text.
+    const hasMetaPayload = !!(item.meta && item.meta.pinvouPayloadText);
     if (hasMetaPayload) {
       metaPayloadText = rebuiltQueuedMetaPayload(item, text);
       if (metaPayloadText === null) return false;
