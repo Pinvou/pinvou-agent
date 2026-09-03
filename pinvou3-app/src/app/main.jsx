@@ -2971,12 +2971,12 @@ function workspaceDisplayName(path) {
                       </div>
                       {/* 全部/代码 胶囊 + 一键折叠(分组)按钮:位于「任务列表」标题下方 */}
                       <div className="flex items-center justify-between gap-2 px-1">
-                        <div className="flex items-center gap-0.5" role="tablist" aria-label={t.sidebarTaskFilter}>
+                        <div className="flex items-center gap-0.5" role="group" aria-label={t.sidebarTaskStyle}>
                         <button
                           type="button"
                           data-testid="sidebar-task-pill-all"
                           aria-pressed={!sidebarCodeListActive}
-                          onClick={() => setSidebarCodeStylePersisted('normal')}
+                          onClick={() => { setSidebarCodeStylePersisted('normal'); setTaskFilterOpen(false); }}
                           className={`h-6 px-2.5 rounded-full text-[12px] font-normal transition-colors ${
                             sidebarCodeListActive
                               ? (activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]')
@@ -2989,7 +2989,7 @@ function workspaceDisplayName(path) {
                           type="button"
                           data-testid="sidebar-task-pill-code"
                           aria-pressed={sidebarCodeListActive}
-                          onClick={() => setSidebarCodeStylePersisted('code')}
+                          onClick={() => { setSidebarCodeStylePersisted('code'); setTaskFilterOpen(false); }}
                           className={`h-6 px-2.5 rounded-full text-[12px] font-normal transition-colors ${
                             sidebarCodeListActive
                               ? (activeTheme === 'dark' ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#E1E5EA] text-[#0B57D0]')
@@ -3021,7 +3021,7 @@ function workspaceDisplayName(path) {
                     {taskFilterOpen && (
                       <div
                         data-testid="sidebar-task-filter-menu"
-                        className={`absolute right-0 top-8 z-50 w-44 overflow-hidden rounded-2xl border p-1.5 shadow-xl ${
+                        className={`absolute right-0 top-16 z-50 w-44 overflow-hidden rounded-2xl border p-1.5 shadow-xl ${
                           activeTheme === 'dark' ? 'border-white/10 bg-[#202124]' : 'border-black/10 bg-white'
                         }`}
                       >

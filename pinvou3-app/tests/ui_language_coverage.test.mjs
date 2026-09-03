@@ -85,6 +85,11 @@ for (const language of ['zh', 'en', 'ja']) {
   for (const deadKey of ['confirmTitle', 'impactLabels', 'startDenied', 'stages', 'terminal', 'workerCount', 'advancedEdit', 'planCompileError']) {
     assert.equal(multiAgent[deadKey], undefined, `${language}.uiMultiAgent.${deadKey} is retired and must stay deleted`);
   }
+  // The bottom-right code-style toggle was replaced by the All/Code pill in
+  // the task list header; its tooltip copy must not come back as dead keys.
+  for (const deadKey of ['sidebarCodeStyleOn', 'sidebarCodeStyleOff']) {
+    assert.equal(dict[language][deadKey], undefined, `${language}.${deadKey} is retired and must stay deleted`);
+  }
 }
 
 // 三语 key parity:zh 是全集基准,en 必须覆盖 zh 的每个叶子 key(ja 经 en
