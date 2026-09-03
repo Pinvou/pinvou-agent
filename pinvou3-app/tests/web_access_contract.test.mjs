@@ -192,6 +192,13 @@ for (const command of [
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (KB import controls)`);
 }
 
+// 记忆整理是全局动作（无会话作用域，与 get_memory_overview 同面）：设置页
+// 「AI 整理记忆」按钮与「上次整理」历史回读在 WebUI 同样可用，任一遗漏都会
+// 让按钮以 command_not_allowed 静默失败。
+for (const command of ['organize_memory', 'get_memory_organize_history']) {
+  assert.equal(allowed.has(command), true, `${command} must be allowed on Web (memory organize)`);
+}
+
 // 已授权连接器的只读状态查询属于 WebUI 业务面（ToolStoreView 挂载即调用 *_status，
 // SettingsView 的 composer 工具菜单调用 *_skills_state）。任一遗漏会让对应连接器在
 // Web 端永远显示未连接：卡片因 externalAuth 不可用而依赖 installed 徽标展示。

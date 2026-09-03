@@ -55,6 +55,9 @@ assert.equal(updateCall[1].input.kind, undefined, 'update input must never carry
 
 const backendInput = api.scheduledTaskBackendInput({ name: 'n', kind: 'memory_organize' });
 assert.equal(backendInput.kind, undefined, 'scheduledTaskBackendInput must strip kind');
-assert.deepEqual(Object.keys(backendInput).sort(), ['mode', 'name']);
+assert.deepEqual(
+  Object.keys(backendInput).sort(), // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
+  ['mode', 'name'],
+);
 
 console.log('scheduled bridge kind threading passed');

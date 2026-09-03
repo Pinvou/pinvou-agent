@@ -734,6 +734,7 @@ dictEn.uiSettingsView = {
   memoryOrganizing: 'Organizing',
   memoryOrganizeNoChange: 'Memory is already tidy; nothing was changed this time',
   memoryOrganizeSummary: (merged, updated, deleted) => `Merged ${merged}, updated ${updated}, deleted ${deleted}`,
+  memoryOrganizeFailed: reason => `Failed to organize memory: ${reason}`,
   memoryLastOrganized: time => `Last organized: ${time}`,
   memoryOffNotice: 'Once memory is enabled, PINVOU uses this information in conversations and automatically organizes new long-term and recent memories.',
   memoryLongTermTabDesc: 'Name, long-term preferences, and work context',

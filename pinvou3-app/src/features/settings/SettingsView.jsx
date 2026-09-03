@@ -2372,8 +2372,12 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             ? t.uiSettingsView.memoryOrganizeNoChange
             : t.uiSettingsView.memoryOrganizeSummary(count(report.merged), count(report.updated), count(report.deleted)));
           loadMemoryOrganizeHistory();
-        } catch {
-          // organizeMemory 已经把失败写入 memory.error（上方统一渲染），这里不再重复提示
+        } catch (error) {
+          // organizeMemory 已把失败写入 memory.error，但 memory.error 的统一
+          // 渲染是通用的“加载失败”文案，会吞掉具体原因；这里把原因透传到
+          // 整理结果行。
+          const reason = (error && error.message) || String(error);
+          setMemoryOrganizeMessage(t.uiSettingsView.memoryOrganizeFailed(reason));
         } finally {
           setMemoryOrganizing(false);
         }

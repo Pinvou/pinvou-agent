@@ -736,6 +736,7 @@ dictJa.uiSettingsView = {
   memoryOrganizing: '整理中',
   memoryOrganizeNoChange: 'メモリはすでに整っています。今回の変更はありません',
   memoryOrganizeSummary: (merged, updated, deleted) => `統合 ${merged} 件、更新 ${updated} 件、削除 ${deleted} 件`,
+  memoryOrganizeFailed: reason => `メモリの整理に失敗：${reason}`,
   memoryLastOrganized: time => `前回の整理：${time}`,
   memoryOffNotice: 'メモリを有効にすると、PINVOU は会話でこれらの情報を使用し、新しい長期メモリと最近のメモリを自動で整理します。',
   memoryLongTermTabDesc: '呼び名、長期設定、業務コンテキスト',

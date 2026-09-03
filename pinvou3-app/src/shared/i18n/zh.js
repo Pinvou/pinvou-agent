@@ -760,6 +760,7 @@ dictZh.uiSettingsView = {
   memoryOrganizing: '整理中',
   memoryOrganizeNoChange: '记忆已经很整洁，本次未做调整',
   memoryOrganizeSummary: (merged, updated, deleted) => `已合并 ${merged} 条、更新 ${updated} 条、删除 ${deleted} 条`,
+  memoryOrganizeFailed: reason => `记忆整理失败：${reason}`,
   memoryLastOrganized: time => `上次整理：${time}`,
   memoryOffNotice: '开启记忆后，PINVOU 会在对话中使用这些信息，并自动整理新的长期记忆与近期记忆。',
   memoryLongTermTabDesc: '称呼、长期偏好与工作背景',

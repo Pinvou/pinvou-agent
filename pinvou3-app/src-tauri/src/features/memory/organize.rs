@@ -7,6 +7,7 @@
 //! 字段）不在整理范围。
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
 use std::time::Duration as StdDuration;
 
 use anyhow::{Context, Result, anyhow};
@@ -34,6 +35,11 @@ use super::util::{
 
 const LLM_ORGANIZE_TIMEOUT: StdDuration = StdDuration::from_secs(75);
 const ORGANIZE_HISTORY_MAX_REPORTS: usize = 20;
+
+/// 进程级单飞守卫：手动按钮与定时任务可能并发触发两次整理，io 层虽然并发
+/// 安全，但两个 pass 会基于各自（最长 75 秒前的）快照交叉应用破坏性动作，
+/// 这里直接拒绝后到者。pub(super) 供并发拒绝测试预占锁。
+pub(super) static ORGANIZE_IN_FLIGHT: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 pub(super) const MEMORY_ORGANIZE_PROMPT: &str = r#"你是 pinvou 的后台记忆整理器。你只做一件事：对照已有的全部记忆存储，输出整理优化动作（合并重复、改写过时表述、删除低价值条目）。不要回答用户问题，不要解释你的判断，不要记录任何新信息。
 
@@ -72,7 +78,9 @@ pub(super) const MEMORY_ORGANIZE_PROMPT: &str = r#"你是 pinvou 的后台记忆
 "#;
 
 /// 一次记忆整理的报告。`scanned` 固定含六类存储的条目数；`deleted` /
-/// `updated` / `merged` 按 kind 计数（merged 记被合并掉的条目数）。
+/// `updated` / `merged` 按 kind 计数且互不重叠：`merged` 只记 merge 中被
+/// 合并移除的源条目，`deleted` 只记 delete 动作移除的条目，三者求和即实际
+/// 改动的条目数。
 /// Deserialize 供 `organize_history.json` 的有界历史回读使用。
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct MemoryOrganizeReport {
@@ -100,6 +108,15 @@ pub async fn organize_memory_with_llm(
         );
         return Err(anyhow!("memory disabled"));
     }
+    let guard = ORGANIZE_IN_FLIGHT.get_or_init(|| tokio::sync::Mutex::new(()));
+    let Ok(_in_flight) = guard.try_lock() else {
+        append_memory_review_diagnostic(
+            "organize",
+            "skipped",
+            json!({ "reason": "already_in_progress" }),
+        );
+        return Err(anyhow!("memory organize already in progress"));
+    };
     let started_at = Utc::now().to_rfc3339();
     append_memory_review_diagnostic(
         "organize",
@@ -507,6 +524,7 @@ fn apply_organize_actions(
                     Some(split) => split,
                     None => continue,
                 };
+                let mut keep_updated = false;
                 match update_organize_item(
                     &action.kind,
                     keep,
@@ -514,23 +532,38 @@ fn apply_organize_actions(
                     &action.content,
                 ) {
                     Ok(true) => {
+                        keep_updated = true;
                         *updated.entry(action.kind.clone()).or_default() += 1;
-                        *merged.entry(action.kind.clone()).or_default() += rest.len() as u32;
                     }
                     Ok(false) => {
                         warnings.push(format!(
-                            "organize: merge {} {keep} did not match any item",
+                            "organize: merge {} {keep} did not match any item; merge skipped",
                             action.kind
                         ));
                     }
                     Err(error) => {
-                        warnings.push(format!("organize: merge {} {keep}: {error}", action.kind));
+                        warnings.push(format!(
+                            "organize: merge {} {keep}: {error}; merge skipped",
+                            action.kind
+                        ));
                     }
+                }
+                if !keep_updated {
+                    // 合并内容尚未落库，此时删除其余源条目会造成不可逆的
+                    // 信息丢失；整条动作按失败处理，源条目原样保留。
+                    continue;
                 }
                 for id in rest {
                     match delete_organize_item(&action.kind, id) {
-                        Ok(true) => *deleted.entry(action.kind.clone()).or_default() += 1,
-                        Ok(false) => {}
+                        // 被合并移除的条目只计 merged，不与 deleted 重复计数：
+                        // 三个口径互不重叠，求和即实际改动的条目数。
+                        Ok(true) => *merged.entry(action.kind.clone()).or_default() += 1,
+                        Ok(false) => {
+                            warnings.push(format!(
+                                "organize: merge {} {id} did not match any item",
+                                action.kind
+                            ));
+                        }
                         Err(error) => {
                             warnings
                                 .push(format!("organize: delete {} {id}: {error}", action.kind));

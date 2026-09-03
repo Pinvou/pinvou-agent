@@ -292,6 +292,7 @@ pub async fn review_turn_candidates_with_llm(
         &user,
         &assistant,
         trigger,
+        explicit_signal,
         &delivery_summary,
     )
     .await
@@ -390,9 +391,33 @@ pub(super) fn has_memory_review_signal(user: &str) -> bool {
     ]
     .iter()
     .any(|needle| user.contains(needle))
-        || ["remember", "keep in mind", "don't forget", "do not forget"]
+        || ["keep in mind", "don't forget", "do not forget"]
             .iter()
             .any(|needle| lower.contains(needle))
+        || contains_imperative_remember(&lower)
+}
+
+/// "remember" 仅在祈使位置匹配（句首、标点之后或 "please" 之后的词首）：
+/// explicit_user_signal 在本模块携带 auto_write 门槛放宽的实际写后果，而
+/// "Do you remember...?" / "I don't remember ..." 这类陈述、疑问句中的
+/// remember 并不是记录请求，宁窄勿宽。
+fn contains_imperative_remember(lower: &str) -> bool {
+    const NEEDLE: &str = "remember";
+    let mut from = 0;
+    while let Some(pos) = lower[from..].find(NEEDLE) {
+        let start = from + pos;
+        let after = &lower[start + NEEDLE.len()..];
+        let word_end = !after.starts_with(|c: char| c.is_ascii_alphabetic());
+        let before = lower[..start].trim_end();
+        let lead = before.is_empty()
+            || before.ends_with(['.', ',', '!', '?', ';', ':'])
+            || before.ends_with("please");
+        if word_end && lead {
+            return true;
+        }
+        from = start + NEEDLE.len();
+    }
+    false
 }
 
 pub(super) fn assistant_suggests_delivery_complete(user: &str, assistant: &str) -> bool {
@@ -453,6 +478,7 @@ async fn request_llm_memory_review(
     user: &str,
     assistant: &str,
     trigger: &str,
+    explicit_signal: bool,
     delivery_summary: &[String],
 ) -> Result<LlmMemoryReview> {
     let client = Client::builder()
@@ -519,7 +545,10 @@ async fn request_llm_memory_review(
     // for non-Chinese UIs by enforce_memory_locale_policy; see the
     // memory_output_language_directive docs for reachability).
     let mut prompt = LLM_REVIEW_PROMPT.to_string();
-    if trigger == "explicit_user_signal" {
+    // 用 explicit_signal（而非 trigger）驱动硬约束：门槛放宽以 explicit_signal
+    // 为准，两者必须同开同关，否则会出现“门槛已放宽但 prompt 未禁止 skip”的
+    // 不一致回合（如 explicit_signal 与 delivery_complete 并存时）。
+    if explicit_signal {
         prompt.push_str(LLM_REVIEW_EXPLICIT_SIGNAL_PROMPT);
     }
     if let Some(suffix) = memory_output_language_directive(&bridge.memory_locale_tag()) {
