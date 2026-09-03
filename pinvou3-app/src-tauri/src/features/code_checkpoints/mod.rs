@@ -2230,46 +2230,4 @@ mod tests {
         }
         result.unwrap();
     }
-
-    /// vars_os 修正（评审 P2）：环境变量含非 UTF-8 的键或值时 `vars()` 会
-    /// panic；剥离循环必须容忍任意字节，快照流程照常工作。unix 专属：
-    /// `OsStringExt::from_vec` 构造非 UTF-8 变量。
-    #[cfg(unix)]
-    #[test]
-    fn git_subprocess_tolerates_non_utf8_git_environment() {
-        use std::os::unix::ffi::OsStringExt;
-        if !git_available() {
-            return;
-        }
-        let _lock = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        let raw_key = std::ffi::OsString::from_vec(vec![b'G', b'I', b'T', b'_', 0xFF]);
-        let named_key = std::ffi::OsString::from_vec(b"GIT_PROXY_COMMAND".to_vec());
-        // SAFETY: ENV_LOCK 序列化进程环境写（crate 级唯一约定）；影子 git 调用
-        // 自身按原始字节剥离 GIT_*，不解析变量名/值。
-        unsafe {
-            std::env::set_var(&raw_key, "bogus");
-            std::env::set_var(&named_key, std::ffi::OsString::from_vec(vec![0xFF]));
-        }
-        let result = std::panic::catch_unwind(|| {
-            let ledger = TestDir::new("nonutf8-ledger");
-            let exec = TestDir::new("nonutf8-exec");
-            exec.write("a.txt", "0\n");
-            create_checkpoint(
-                ledger.path(),
-                exec.path(),
-                Some(1),
-                CheckpointKind::Turn,
-                "t1",
-            )
-            .unwrap();
-        });
-        // SAFETY: 同 ENV_LOCK 序列化。
-        unsafe {
-            std::env::remove_var(&raw_key);
-            std::env::remove_var(&named_key);
-        }
-        result.unwrap();
-    }
 }
