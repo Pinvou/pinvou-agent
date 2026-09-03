@@ -70,6 +70,7 @@
     "list_marketplace_tools",
     "list_models",
     "list_personas",
+    "list_recycled_plugins",
     "list_scheduled_runs",
     "list_scheduled_task_runs",
     "list_scheduled_tasks",

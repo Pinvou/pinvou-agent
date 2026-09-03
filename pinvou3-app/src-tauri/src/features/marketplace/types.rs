@@ -125,6 +125,18 @@ pub(super) fn default_bearer_scheme() -> String {
     "Bearer".to_string()
 }
 
+/// `MarketplaceToolInfo.source` 的 serde 缺省值：旧数据/旧前端缺字段时按
+/// 「非上传」处理（builtin）——宁可少提示「移入回收站」，不对自定义 MCP 说谎。
+pub(super) fn default_tool_source() -> String {
+    "builtin".to_string()
+}
+
+/// `MarketplaceToolInfo.exportable` 的 serde 缺省值：旧后端数据缺字段时按
+/// 「可导出」处理 —— 与导入/回收站导出通道的既有行为一致，前端不因升级漏按钮。
+pub(super) fn default_tool_exportable() -> bool {
+    true
+}
+
 // ---------------------------------------------------------------------------
 // mcp.json 明文密钥迁移结果
 // ---------------------------------------------------------------------------
@@ -155,6 +167,19 @@ pub struct MarketplaceToolInfo {
     /// 时前端漏建映射导致两卡状态分叉。
     #[serde(default)]
     pub companion_skills: Vec<String>,
+    /// 包来源："upload" | "preset" | "builtin" —— 与 bundles.json 的 BundleSource
+    /// 对应（无记录的内置市场条目 = builtin；migrate_custom_mcp_layout 迁移的手写
+    /// 自定义 MCP 登记为 preset）。前端据此区分卸载文案：仅 upload 卸载进回收站
+    /// （M4：此前非内置后端卡一律标 userUploaded，自定义 MCP 卸载提示「已移入
+    /// 回收站」而实际保留目录，文案说谎）。
+    #[serde(default = "default_tool_source")]
+    pub source: String,
+    /// 是否可导出为标准插件包 zip：`mcp_catalog` 预置目录包为 false（导出的 zip
+    /// 受导入管线预置冲突保护、无法重新导入，后端 `export_installed_plugin` 也会
+    /// 拒绝），迁移登记为 Preset 的手写自定义 MCP、上传包为 true。前端据此隐藏
+    /// 详情页「导出」按钮，与后端 fail-fast 口径一致（避免按钮必然报错）。
+    #[serde(default = "default_tool_exportable")]
+    pub exportable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
