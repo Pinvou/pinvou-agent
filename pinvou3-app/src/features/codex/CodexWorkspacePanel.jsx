@@ -3,6 +3,8 @@ import {
   AppWindow, Check, ChevronDown, ChevronRight, ExternalLink, FileText,
   Link, Plus, RefreshCw, Search, X,
 } from '../../components/icons.jsx';
+import { useCopyFlash } from '../../hooks/useCopyFlash.js';
+import { pathBasename } from '../../shared/path-utils.js';
 import { RightDockPanel } from '../../components/layout/RightDock.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
@@ -50,15 +52,9 @@ function WorkspaceTree({
   copy,
 }) {
   const entries = entriesByDirectory[directory] || [];
-  const [copiedPath, setCopiedPath] = useState('');
-
-  function copyRowPath(relativePath) {
-    navigator.clipboard?.writeText(relativePath);
-    setCopiedPath(relativePath);
-    window.setTimeout(() => {
-      setCopiedPath(current => (current === relativePath ? '' : current));
-    }, 1200);
-  }
+  // 复制行路径 + 「已复制」反馈（1200ms 复位）收敛到 useCopyFlash（原内联
+  // setTimeout 直连 navigator.clipboard，无 execCommand 回退）。
+  const [copiedPath, copyRowPath] = useCopyFlash(1200);
 
   return entries.map(entry => {
     const isDirectory = entry.kind === 'directory';
@@ -362,7 +358,7 @@ export function CodexWorkspacePanel({
   // 变更项 → 弹窗 diff 视图；与 showFile 共用 viewer 弹窗（diff 字段驱动 diff 模式），
   // 同样用请求序号防竞态。
   async function showDiff(change) {
-    const name = String(change.relativePath).split('/').pop() || change.relativePath;
+    const name = pathBasename(change.relativePath, { fallback: change.relativePath });
     const requestId = ++previewRequestRef.current;
     setViewer({ name, relativePath: change.relativePath, preview: null, diff: null, loading: true, error: '' });
     try {

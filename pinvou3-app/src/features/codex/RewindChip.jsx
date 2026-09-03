@@ -18,8 +18,8 @@ const FILE_LIST_LIMIT = 8;
 // 时归还先前焦点元素（触发元素可能已随时间线重载重建，isConnected 守卫；
 // focus 分离元素是规范允许的 no-op）。initialFocusRef 提供时优先聚焦该元素
 // （如需立即输入的文本框）——这里晚于 React 的 autoFocus 提交执行，会覆盖它，
-// 所以初始聚焦必须走这条路径而不是 autoFocus 属性。两个确认弹窗与 CodexAcpView
-// 的分支切换弹窗共用。
+// 所以初始聚焦必须走这条路径而不是 autoFocus 属性。两个确认弹窗、
+// NativeYoloConfirmCard 与 CodexAcpView 的分支切换弹窗共用。
 export function useDialogFocusRestore(dialogRef, initialFocusRef) {
   useEffect(() => {
     const previous = document.activeElement;
@@ -30,7 +30,8 @@ export function useDialogFocusRestore(dialogRef, initialFocusRef) {
   }, [dialogRef, initialFocusRef]);
 }
 
-// Escape 关闭（busy 时禁用）。两个确认弹窗共用；CodexAcpView 的分支切换弹窗也复用。
+// Escape 关闭（busy 时禁用）。两个确认弹窗、NativeYoloConfirmCard 与 CodexAcpView
+// 的分支切换弹窗共用。
 export function useDialogEscapeKey(busy, onCancel) {
   useEffect(() => {
     const onKey = (event) => {
