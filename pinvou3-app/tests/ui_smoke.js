@@ -353,6 +353,38 @@ async function expand(page) {
     JSON.stringify(visualShell),
   );
 
+  const artifactPresentation = await page.evaluate(async () => {
+    await window.TauriBridge.sessions.switchToSession('s1');
+    await window.__uiWait__(() => !!document.querySelector('[data-testid="chat-scroll"]'));
+    const artifactPath = window.TauriBridge.state.get('chat').artifacts[0]?.path;
+    const panelVisible = () => document.querySelector('[data-testid="artifact-side-panel"]')
+      ?.getAttribute('aria-hidden') === 'false';
+    window.dispatchEvent(Object.assign(new Event('pinvou:present-artifact'), {
+      detail: { sessionId: 's-browser-b', path: '/home/x/ignored.md', toolCallId: 'background-present' },
+    }));
+    await new Promise(resolve => setTimeout(resolve, 80));
+    const backgroundIgnored = !panelVisible();
+    window.dispatchEvent(Object.assign(new Event('pinvou:present-artifact'), {
+      detail: { sessionId: 's1', path: artifactPath, toolCallId: 'active-present' },
+    }));
+    await window.__uiWait__(panelVisible);
+    const activeOpened = panelVisible();
+    await window.__uiWait__(() => [...window.__TAURI_INVOKES__].some(call =>
+      call.cmd === 'read_artifact_text' && call.args?.path === artifactPath));
+    const previewRequested = [...window.__TAURI_INVOKES__].some(call =>
+      call.cmd === 'read_artifact_text' && call.args?.path === artifactPath);
+    await window.__uiWait__(() => !!document.querySelector('[data-testid="artifact-close"]'));
+    document.querySelector('[data-testid="artifact-close"]')?.click();
+    await window.__uiWait__(() => !panelVisible());
+    return { backgroundIgnored, activeOpened, previewRequested, closed: !panelVisible() };
+  });
+  rec(
+    'artifact presentation opens the active work-chat preview without changing the artifact count',
+    artifactPresentation.backgroundIgnored && artifactPresentation.activeOpened
+      && artifactPresentation.previewRequested && artifactPresentation.closed,
+    JSON.stringify(artifactPresentation),
+  );
+
   // After the Agent starts the browser, desktop UI expands the owning task's side panel. The
   // native-surface command returns false in this headless mock, so the component must show an
   // explicit unavailable state and must not fall back to a screenshot stream.

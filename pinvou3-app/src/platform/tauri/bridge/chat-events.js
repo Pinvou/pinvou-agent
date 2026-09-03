@@ -768,7 +768,8 @@
           time: timeStr(),
           sessionId: p.session_id || state.activeSessionId,
         };
-        if (!updatePresentedArtifact(presentedCard)) addChatItem(presentedCard);
+        const presentationCard = updatePresentedArtifact(presentedCard) || presentedCard;
+        if (presentationCard === presentedCard) addChatItem(presentedCard);
         if (presentedPath) state.turnPresentedArtifacts.push(presentedPath); // 本 turn 已出成品卡,chat:done 不再兜底补
         // 同步进产物面板:present_artifact 出卡的产物也算「产出物」。修「自己生成文件、
         // 不走 write_file 的工具(如 make_pptx)→ 卡有、面板无」。trackArtifact 已去重。
@@ -776,6 +777,18 @@
         delete context.toolMeta[p.id];
         context.currentStreamText = ""; context.currentStreamId = 0;
         notify();
+        // Card identity and panel presentation are separate concerns: updating an
+        // existing card keeps its stable transcript position, so every explicit
+        // present_artifact call must still request a visible preview. Use the
+        // reconciled card path because a relative tool argument may have retained
+        // an older absolute path that the preview can actually open.
+        try {
+          window.dispatchEvent(new CustomEvent("pinvou:present-artifact", { detail: {
+            sessionId: presentedCard.sessionId,
+            path: presentationCard.path,
+            toolCallId: p.id,
+          } }));
+        } catch { /* DOM event dispatch failure leaves the artifact available from the dock */ }
         return;
       }
       // 失败:补一张工具卡承载错误输出(tool_start 时跳过了灰卡)
