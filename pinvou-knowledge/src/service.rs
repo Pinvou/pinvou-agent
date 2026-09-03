@@ -1550,10 +1550,11 @@ fn managed_source_file(documents_dir: &Path, storage_path: &str) -> Result<PathB
     if !path.is_file() {
         return Err("受管源文件丢失".to_string());
     }
-    // 逐组件校验之上再做一次 canonicalize + 前缀包含:storage_path 读回自文档库,
-    // 属于不可信输入,下载目标必须仍解析在 documents_dir 内(该形态同时是
-    // CodeQL rust/path-injection 认可的修复,见 `remove_managed_sources`)。
-    // 返回解析后的真实路径。
+    // On top of the per-component checks, canonicalize and require a prefix
+    // match: storage_path is read back from the document store and is
+    // untrusted input, so the download target must still resolve inside
+    // documents_dir (the remediation shape CodeQL rust/path-injection
+    // recognizes; see `remove_managed_sources`). Returns the resolved path.
     let root =
         std::fs::canonicalize(documents_dir).map_err(|_| "受管源文件目录丢失".to_string())?;
     let canonical = std::fs::canonicalize(&path).map_err(|_| "受管源文件丢失".to_string())?;
