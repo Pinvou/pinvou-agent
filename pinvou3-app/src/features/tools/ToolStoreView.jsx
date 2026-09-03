@@ -893,16 +893,23 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // ——单独标记，子页渲染失败态（重进子页或恢复/彻底删除后的重取会自动重试）。
       const [recycledLoadFailed, setRecycledLoadFailed] = useState(false);
       const [purgeConfirm, setPurgeConfirm] = useState(null); // { id, name }
+      // 加载代际守卫：进/出子页、恢复/彻底删除后的重取可能重叠，先发后至的失败
+      // 不得覆盖后发成功（否则空回收站会被渲染成失败态 + 假错误提示）。
+      const recycledLoadSeqRef = useRef(0);
       const loadRecycledPlugins = () => {
+        const seq = ++recycledLoadSeqRef.current;
         setRecycledLoading(true);
         setRecycledLoadFailed(false);
         invokeTauri('list_recycled_plugins').then(list => {
+          if (seq !== recycledLoadSeqRef.current) return;
           setRecycledPlugins(Array.isArray(list) ? list : []);
         }).catch((e) => {
+          if (seq !== recycledLoadSeqRef.current) return;
           console.error('list_recycled_plugins failed:', e);
           setRecycledLoadFailed(true);
           setAlert({ visible: true, loading: false, title: storeCopy.recycleBinLoadFailed, isInstall: false, isError: true });
         }).finally(() => {
+          if (seq !== recycledLoadSeqRef.current) return;
           setRecycledLoading(false);
           setRecycledLoaded(true);
         });

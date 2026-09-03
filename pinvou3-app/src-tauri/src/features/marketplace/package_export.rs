@@ -6,7 +6,9 @@
 //! 平铺在 zip 根，可经统一导入管线 `plugin_import::import_plugin_package` 重新
 //! 导入。已安装包导出拒绝预置目录 id：导入管线会拒绝与 `mcp_catalog` 预置 id
 //! 冲突的包（防上传包顶替预置），预置导出的 zip 在任何机器都导不回去，fail-fast
-//! 报错（见 `export_installed_plugin`）。只打包插件包本体（不含回收站清单等外部
+//! 报错（见 `export_installed_plugin`）。包内预置技能组件同口径拒收——按包内
+//! `skills/` 真实组件判定，不按包 id（导入管线只按技能组件名拒绝预置名，不限制
+//! 包 id 撞预置技能名）。只打包插件包本体（不含回收站清单等外部
 //! 元数据）；Python 运行缓存
 //! （`__pycache__/`、`*.pyc`）不打包（与导入管线的磁盘比对豁免口径一致）；
 //! 符号链接不跟随、不打包（防把包外文件带进 zip / 链接环）。写出为原子写：
@@ -28,12 +30,14 @@ use std::path::{Path, PathBuf};
 
 use crate::platform::paths;
 
-/// 已安装包导出为标准插件包 zip。fail-closed：id 安全校验 + 预置目录包拒绝
-/// （预置可从市场重装，导出必产出无法重导的死档案）+ 只导出 `bundles_root()`
-/// 下真实存在的包目录（不存在的 id 报错，不导出任何文件）。并发契约：校验后
-/// 全程持同 id `import_lock_for`（与导入/卸载/展示编辑同一把锁）——并发卸载/
-/// 回收会把 `bundles/<id>` 搬走，锁内导出避免遍历到半搬移的目录却产出「成功」
-/// 的不完整 zip（回收站导出由其自身 `file_lock()` 串行化，同口径）。
+/// 已安装包导出为标准插件包 zip。fail-closed：id 安全校验 + 预置包拒绝
+/// （目录 id 受导入管线冲突保护、包内预置技能组件受导入管线技能名冲突保护，
+/// 导出必产出无法重导的死档案）+ 只导出 `bundles_root()` 下真实存在的包目录
+/// （不存在的 id 报错，不导出任何文件）。并发契约：校验后全程持同 id
+/// `import_lock_for`——导入/恢复/回收站导出等同锁持有方互斥；但卸载与启动修复
+/// 只在市场事务锁下搬移 `bundles/<id>`、不持本锁，本锁不能阻止并发搬移：彼时
+/// 按路径的遍历/打开会失败，导出报错且原子写不动原目标，不会产出「成功」的
+/// 不完整 zip（回收站导出由其自身 `file_lock()` 串行化，同口径）。
 pub fn export_installed_plugin(pkg_id: &str, dest_zip: &Path) -> Result<(), String> {
     if !super::skill_marketplace::is_safe_skill_name(pkg_id) {
         return Err(format!("非法包 id '{pkg_id}'"));
@@ -46,13 +50,6 @@ pub fn export_installed_plugin(pkg_id: &str, dest_zip: &Path) -> Result<(), Stri
             "包 '{pkg_id}' 属于市场预置，可从市场重新安装，无需导出（预置 id 受导入管线冲突保护，导出的 zip 无法重新导入）"
         ));
     }
-    // 预置技能包同口径：预置技能名受导入通道冲突保护（`install_upload_skill`
-    // 拒绝预置名），导出的 zip 同样无法重新导入；预置技能可从市场重新安装。
-    if super::skill_marketplace::is_preset_skill_name(pkg_id) {
-        return Err(format!(
-            "包 '{pkg_id}' 属于市场预置技能，可从市场重新安装，无需导出（预置技能名受导入管线冲突保护，导出的 zip 无法重新导入）"
-        ));
-    }
     let import_lock = super::plugin_import::import_lock_for(pkg_id);
     let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
     let pkg_dir = paths::bundles_root().join(pkg_id);
@@ -62,12 +59,38 @@ pub fn export_installed_plugin(pkg_id: &str, dest_zip: &Path) -> Result<(), Stri
             pkg_dir.display()
         ));
     }
+    // 预置技能组件同口径拒收：导入管线按技能组件名拒绝预置名（`plugin_import`
+    // 与 `install_upload_skill` 同源），包内含预置名技能目录时导出的 zip 无法
+    // 重新导入；预置技能可从市场重新安装。只比对包内真实技能组件、不比对包 id：
+    // 导入管线不限制包 id 撞预置技能名，纯 MCP 的上传包 id 撞名仍可导出并再导入，
+    // 按 id 拒会误杀（错误信息「属于市场预置技能」对该类包也不属实）。
+    if let Some(skill) = preset_skill_component_in(&pkg_dir) {
+        return Err(format!(
+            "包 '{pkg_id}' 含市场预置技能 '{skill}'，其 zip 受导入管线技能名冲突保护无法重新导入；预置技能可从市场重新安装"
+        ));
+    }
     let written = write_package_zip(&pkg_dir, dest_zip, Some(&pkg_dir))?;
     log::info!(
         "[package-export] 已导出已安装包 {pkg_id}（{written} 个条目）→ {}",
         dest_zip.display()
     );
     Ok(())
+}
+
+/// 包内 `skills/` 子目录中的预置技能名组件（若有）。各安装通道的技能统一落在
+/// `bundles/<pkg>/skills/<名>/`，盘上技能目录即该包的技能组件全集；导入管线
+/// 正是按组件名拒绝预置名，故含预置名组件的包导出必产出无法重导的死档案。
+fn preset_skill_component_in(pkg_dir: &Path) -> Option<String> {
+    let entries = std::fs::read_dir(pkg_dir.join("skills")).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
+            && super::skill_marketplace::is_preset_skill_name(&name)
+        {
+            return Some(name);
+        }
+    }
+    None
 }
 
 /// 把包目录打成标准插件包 zip（包内容平铺在 zip 根），返回写入条目数。
@@ -398,15 +421,22 @@ mod tests {
         });
     }
 
-    /// 预置技能包同口径不导出：预置技能名受导入通道冲突保护，导出的 zip 无法
-    /// 重新导入，fail-fast 报错，不留导出文件。
+    /// 预置技能组件同口径不导出：导入管线按包内技能组件名拒绝预置名，含预置名
+    /// 技能目录的包导出的 zip 无法重新导入，fail-fast 报错，不留导出文件。
     #[test]
-    fn export_installed_plugin_rejects_preset_skill_name() {
+    fn export_installed_plugin_rejects_preset_skill_component() {
         with_temp_home(|| {
             let preset_name = "government-writing"; // skill_marketplace::preset_manifests 首个注册项
+            assert!(
+                crate::features::marketplace::skill_marketplace::is_preset_skill_name(preset_name)
+            );
             let pkg = paths::bundles_root().join(preset_name);
-            std::fs::create_dir_all(&pkg).unwrap();
-            std::fs::write(pkg.join("plugin.json"), "{}").unwrap();
+            std::fs::create_dir_all(pkg.join("skills").join(preset_name)).unwrap();
+            std::fs::write(
+                pkg.join("skills").join(preset_name).join("SKILL.md"),
+                "---\nname: government-writing\n---\n",
+            )
+            .unwrap();
             let dest = paths::pinvou3_home().join("export.zip");
             let err = export_installed_plugin(preset_name, &dest).unwrap_err();
             assert!(
@@ -414,6 +444,49 @@ mod tests {
                 "错误应说明预置技能不可导出: {err}"
             );
             assert!(!dest.exists(), "拒绝导出不得到留文件");
+        });
+    }
+
+    /// 包 id 撞预置技能名但包内无预置技能组件（纯 MCP 上传包）不得误杀：导入
+    /// 管线只按技能组件名拒绝预置名，不限制包 id，这类 zip 可正常重新导入。
+    #[test]
+    fn export_installed_plugin_allows_preset_named_id_without_preset_skill() {
+        with_temp_home(|| {
+            let id = "government-writing"; // 预置技能名，但不在 mcp_catalog/CLI/退役名单内
+            assert!(crate::features::marketplace::skill_marketplace::is_preset_skill_name(id));
+            assert!(crate::features::marketplace::mcp_catalog::spec_for(id).is_none());
+            assert!(crate::features::marketplace::bundle::cli_bundle_skill_dirs(id).is_empty());
+            assert!(
+                !crate::features::marketplace::skill_marketplace::RETIRED_SKILL_NAMES.contains(&id)
+            );
+            let pkg = paths::bundles_root().join(id);
+            std::fs::create_dir_all(pkg.join("mcp")).unwrap();
+            std::fs::write(pkg.join("mcp/server.py"), b"print('hi')").unwrap();
+            std::fs::write(
+                pkg.join("plugin.json"),
+                r#"{
+                    "manifest_version":1,"id":"government-writing","name":"government-writing",
+                    "components":{"mcp_servers":[{"id":"government-writing","dir":"mcp"}]}
+                }"#,
+            )
+            .unwrap();
+            std::fs::write(
+                pkg.join("mcp/manifest.json"),
+                r#"{"id":"government-writing","name":"government-writing","description":"d","version":"1","icon":"","category":"c","mcp_tools":[],"command":"python","args":["server.py"]}"#,
+            )
+            .unwrap();
+
+            let dest = paths::pinvou3_home().join("export.zip");
+            export_installed_plugin(id, &dest)
+                .expect("id 撞预置技能名但无预置技能组件，导出不应被拒");
+            // 模拟「在别的机器导入」：导出后移除原包目录，走统一导入管线验证往返。
+            std::fs::remove_dir_all(&pkg).unwrap();
+            let report = crate::features::marketplace::plugin_import::import_plugin_package(
+                &dest.to_string_lossy(),
+                "government-writing.zip",
+            )
+            .expect("导出的 zip 应可重新导入（导入管线不按包 id 拒预置技能名）");
+            assert_eq!(report.id, id);
         });
     }
 

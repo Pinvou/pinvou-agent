@@ -170,6 +170,12 @@ for (const command of [
   'web_access_enable',
   // 上传包展示名/说明编辑写 bundles.json 并可能回写 SKILL.md：写操作桌面专用。
   'update_bundle_display_meta',
+  // 回收站恢复/彻底删除与两种包导出都是桌面端写操作（原生保存对话框 + 文件系统
+  // 变更）：Web 端回收站只读，仅放行 list_recycled_plugins，写命令留在桌面端。
+  'restore_recycled_plugin',
+  'purge_recycled_plugin',
+  'export_recycled_plugin',
+  'export_installed_plugin',
 ]) {
   assert.equal(allowed.has(command), false, `${command} must remain desktop-only`);
 }

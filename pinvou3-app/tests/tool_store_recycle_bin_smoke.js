@@ -5,7 +5,9 @@
  * 列表渲染(名称/类型/回收时间)、恢复(含凭据提示)、导出(成功提示/取消静默)、
  * package_missing 禁用恢复与导出、彻底删除二次确认、空态文案、返回主列表、
  * 已安装插件详情页导出按钮(列表卡片不渲染/成功提示文件名/取消静默/卸载后消失)、
- * 上传技能卸载提示「移入回收站」、手写自定义 MCP(source:'preset')卸载不提示「移入回收站」。
+ * 上传技能卸载提示「移入回收站」、手写自定义 MCP(source:'preset')卸载不提示「移入回收站」、
+ * 伴随技能卡导出继承所属包 exportable(预置目录包无按钮/可导出组合包映射包 id)、
+ * 列表加载失败态(渲染失败提示而非空态,重进子页自动重取恢复)。
  * 前置:先 npm run build:ui。
  */
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -88,7 +90,12 @@ function injectSource() {
         if(i>=0)skills.splice(i,1);
         return null;
       },
-      list_recycled_plugins:function(){return recycled.slice();},
+      // __RECYCLE_LIST_FAIL__=true 时列表命令拒绝:覆盖「加载失败态」分支
+      // (渲染失败提示而非「回收站是空的」空态)。
+      list_recycled_plugins:function(){
+        if(window.__RECYCLE_LIST_FAIL__)throw new Error('注入的列表加载失败');
+        return recycled.slice();
+      },
       restore_recycled_plugin:function(args){
         var i=recycled.findIndex(function(x){return x.id===args.id;});
         if(i<0)throw new Error('未知回收站条目 '+args.id);
@@ -143,7 +150,16 @@ function injectSource() {
     };
     function invoke(cmd, args){
       window.__PINVOU_MOCK_CALLS__.push({cmd: cmd, args: args || {}});
-      if (Object.prototype.hasOwnProperty.call(handlers, cmd)) return Promise.resolve(handlers[cmd](args));
+      // 真实 Tauri invoke 恒返回 Promise(handler 失败也是 reject,从不同步抛):
+      // handler 抛错必须转成 Promise.reject,否则同步异常会绕过前端 .catch 链、
+      // 在 React effect 里炸掉组件树,而不是走到加载失败分支。
+      if (Object.prototype.hasOwnProperty.call(handlers, cmd)) {
+        try {
+          return Promise.resolve(handlers[cmd](args));
+        } catch (e) {
+          return Promise.reject(e);
+        }
+      }
       // 未注册的命令直接 reject：防止前端命令名漂移再被 default 假绿掩盖。
       return Promise.reject(new Error('unregistered command: ' + cmd));
     }
@@ -289,7 +305,7 @@ async function dismiss(page) {
     rec('preset 自定义 MCP 卸载后卡片消失', await page.evaluate(() =>
       !document.querySelector('[data-testid="tool-store-action"][data-tool-id="my-preset-mcp"]')));
 
-    // 3. 打开回收站 → 切换为子页面(非弹窗):触发 list_recycled_plugins,
+    // 5. 打开回收站 → 切换为子页面(非弹窗):触发 list_recycled_plugins,
     //    页面标题/返回按钮出现,主列表(搜索框)消失;条目渲染(名称/类型徽标/回收时间)
     await page.click('[data-testid="tool-store-recycle-bin"]');
     await sleep(400);
@@ -309,7 +325,7 @@ async function dismiss(page) {
       return !!list && list.innerText.includes('回收于');
     }));
 
-    // 4. package_missing 条目恢复/导出按钮禁用,彻底删除按钮可用
+    // 6. package_missing 条目恢复/导出按钮禁用,彻底删除按钮可用
     rec('package_missing 条目禁用恢复', await page.evaluate(() => {
       const restore = document.querySelector('[data-testid="recycled-restore-old-skill"]');
       const purge = document.querySelector('[data-testid="recycled-purge-old-skill"]');
@@ -321,7 +337,7 @@ async function dismiss(page) {
       return !!exp && exp.disabled && !!ok && !ok.disabled;
     }));
 
-    // 5. 导出 my-mcp:标题只含文件名(不含完整路径),路径降级为副标题(break-all 防溢出);
+    // 7. 导出 my-mcp:标题只含文件名(不含完整路径),路径降级为副标题(break-all 防溢出);
     //    mock 返回 null(用户取消)时不给任何提示
     await page.click('[data-testid="recycled-export-my-mcp"]');
     await sleep(400);
@@ -345,7 +361,7 @@ async function dismiss(page) {
       && !document.body.innerText.includes('已导出为')));
     await page.evaluate(() => { window.__EXPORT_CANCEL__ = false; });
 
-    // 6. 恢复 my-mcp → 命令带 id;credentials_required=true → 提示重填凭据;列表刷新移除该条目
+    // 8. 恢复 my-mcp → 命令带 id;credentials_required=true → 提示重填凭据;列表刷新移除该条目
     await page.click('[data-testid="recycled-restore-my-mcp"]');
     await sleep(600);
     rec('恢复调用 restore_recycled_plugin(id)', await page.evaluate(() =>
@@ -361,7 +377,7 @@ async function dismiss(page) {
       return !!list && !list.innerText.includes('my-mcp.zip') && list.innerText.includes('old-skill.zip');
     }));
 
-    // 7. 彻底删除:先弹二次确认,确认后调 purge_recycled_plugin 并刷新列表
+    // 9. 彻底删除:先弹二次确认,确认后调 purge_recycled_plugin 并刷新列表
     await page.click('[data-testid="recycled-purge-old-skill"]');
     await sleep(250);
     rec('彻底删除弹二次确认', await page.evaluate(() =>
@@ -375,17 +391,39 @@ async function dismiss(page) {
     rec('彻底删除成功提示', await page.evaluate(() => document.body.innerText.includes('已彻底删除「old-skill.zip」')));
     await dismiss(page);
 
-    // 8. 清空后显示空态文案
+    // 10. 清空后显示空态文案
     rec('回收站空态文案', await page.evaluate(() =>
       !document.querySelector('[data-testid="recycled-plugin-list"]')
       && document.body.innerText.includes('回收站是空的')));
 
-    // 9. 返回按钮回到插件中心主列表
+    // 11. 返回按钮回到插件中心主列表
     await page.click('[data-testid="recycle-bin-back"]');
     await sleep(300);
     rec('返回按钮回到主列表', await page.evaluate(() =>
       !!document.querySelector('[data-testid="tool-store-search"]')
       && !document.querySelector('[data-testid="recycle-bin-back"]')));
+
+    // 12. 列表加载失败态:注入 list_recycled_plugins 拒绝 → 渲染失败提示而非
+    //     「回收站是空的」空态;清除注入重进子页自动重取,恢复渲染(空态)。
+    //     返回主列表会重挂载整个视图,先等它稳定再点入口(否则 CI 慢机上点击会
+    //     撞上布局位移被吞),断言用 waitForFunction 轮询,不赌固定 sleep。
+    await sleep(300);
+    await page.evaluate(() => { window.__RECYCLE_LIST_FAIL__ = true; });
+    await page.click('[data-testid="tool-store-recycle-bin"]');
+    await page.waitForFunction(() => document.querySelector('[data-testid="recycle-bin-load-failed"]'), { timeout: 10000 });
+    rec('列表加载失败渲染失败态而非空态', await page.evaluate(() =>
+      !!document.querySelector('[data-testid="recycle-bin-load-failed"]')
+      && !document.body.innerText.includes('回收站是空的')));
+    await dismiss(page);
+    await page.evaluate(() => { window.__RECYCLE_LIST_FAIL__ = false; });
+    await page.click('[data-testid="recycle-bin-back"]');
+    await sleep(300);
+    await page.click('[data-testid="tool-store-recycle-bin"]');
+    await page.waitForFunction(() => document.querySelector('[data-testid="recycle-bin-back"]')
+      && document.body.innerText.includes('回收站是空的'), { timeout: 10000 });
+    rec('清除注入重进子页自动重取恢复空态', await page.evaluate(() =>
+      !document.querySelector('[data-testid="recycle-bin-load-failed"]')
+      && document.body.innerText.includes('回收站是空的')));
   } finally {
     await browser.close();
   }
