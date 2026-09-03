@@ -22,6 +22,11 @@ const VECTOR_SIGNATURE_RADIUS: u32 = 3;
 // bases used by a single team. Above this boundary the signature index bounds
 // the amount of vector data read by one query.
 const VECTOR_EXACT_SCAN_THRESHOLD: i64 = 20_000;
+// Upper bound for the vector-search candidate heap. Upstream clamps the
+// search limit to <=50 and widens it x4 (<=200) for candidates; this
+// backstop keeps the effective limit, and therefore the allocation and
+// retention of the heap, independent of request input.
+const MAX_VECTOR_CANDIDATE_HEAP: usize = 200;
 
 #[derive(Debug)]
 pub enum DeviceMutationError {
@@ -1584,6 +1589,12 @@ fn search_vectors_on_connection(
     limit: usize,
 ) -> rusqlite::Result<Vec<SearchHit>> {
     let transaction = connection.transaction()?;
+    // The limit comes from search requests. Upstream already clamps it to
+    // 50 * 4 candidates, but this function must not trust that: clamp the
+    // effective limit itself so both the with_capacity hint and the number
+    // of retained candidates (the heap grows on push regardless of the
+    // initial capacity) stay bounded by MAX_VECTOR_CANDIDATE_HEAP.
+    let limit = limit.min(MAX_VECTOR_CANDIDATE_HEAP);
     let mut best = BinaryHeap::<Reverse<VectorCandidate>>::with_capacity(limit);
     let active_chunks_sql = format!(
         "SELECT COUNT(*) FROM (SELECT 1 FROM chunks k \
@@ -2754,5 +2765,61 @@ mod tests {
         assert_eq!(primary_timeout, expected);
         assert_eq!(read_timeout, expected);
         assert_eq!(memory_timeout, expected);
+    }
+
+    #[test]
+    fn vector_candidate_heap_is_bounded_regardless_of_request_limit() {
+        let store = Store::in_memory().unwrap();
+        let collection = store.create_collection("vector-limit", None).unwrap();
+        let document = store
+            .insert_document(
+                collection.id,
+                "vectors.txt",
+                Some("txt"),
+                "vectors",
+                1,
+                "sha",
+            )
+            .unwrap();
+        // One chunk more than the heap bound, with half the vectors pointing
+        // along the query (cosine 1.0) and half against it (cosine -1.0).
+        let total = super::MAX_VECTOR_CANDIDATE_HEAP + 10;
+        let chunks: Vec<String> = (0..total).map(|index| format!("chunk-{index}")).collect();
+        let vectors: Vec<Vec<f32>> = (0..total)
+            .map(|index| {
+                if index % 2 == 0 {
+                    vec![1.0, 0.0]
+                } else {
+                    vec![-1.0, 0.0]
+                }
+            })
+            .collect();
+        store
+            .replace_document_index(
+                document.id,
+                DocumentIndexUpdate {
+                    name: "vectors.txt",
+                    ext: Some("txt"),
+                    storage_path: "vectors",
+                    size: 1,
+                    sha256: "sha",
+                    chunks: &chunks,
+                    vectors: &vectors,
+                },
+            )
+            .unwrap();
+
+        let ids = super::id_list(&[collection.id]);
+        let hits = store
+            .with_read_connection(|connection| {
+                super::search_vectors_on_connection(connection, &ids, &[1.0, 0.0], 10_000)
+            })
+            .unwrap();
+
+        // An oversized request limit must not lift the bound: only
+        // MAX_VECTOR_CANDIDATE_HEAP candidates are retained even though more
+        // exist, and the retained set keeps the best ones first.
+        assert_eq!(hits.len(), super::MAX_VECTOR_CANDIDATE_HEAP);
+        assert_eq!(hits.iter().filter(|hit| hit.score > 0.0).count(), total / 2);
     }
 }

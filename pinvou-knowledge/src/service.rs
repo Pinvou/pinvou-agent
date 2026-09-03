@@ -1550,7 +1550,18 @@ fn managed_source_file(documents_dir: &Path, storage_path: &str) -> Result<PathB
     if !path.is_file() {
         return Err("受管源文件丢失".to_string());
     }
-    Ok(path)
+    // On top of the per-component checks, canonicalize and require a prefix
+    // match: storage_path is read back from the document store and is
+    // untrusted input, so the download target must still resolve inside
+    // documents_dir (the remediation shape CodeQL rust/path-injection
+    // recognizes; see `remove_managed_sources`). Returns the resolved path.
+    let root =
+        std::fs::canonicalize(documents_dir).map_err(|_| "受管源文件目录丢失".to_string())?;
+    let canonical = std::fs::canonicalize(&path).map_err(|_| "受管源文件丢失".to_string())?;
+    if !canonical.starts_with(&root) {
+        return Err("受管源文件路径越界".to_string());
+    }
+    Ok(canonical)
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
