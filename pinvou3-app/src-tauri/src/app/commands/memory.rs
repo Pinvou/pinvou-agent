@@ -132,13 +132,25 @@ fn memory_warning(code: &str, source: &str, detail: impl Into<String>) -> Memory
     }
 }
 
-/// 复用 get_memory_overview 的装载与快照写入 helper，刷新 `snapshot.md` 设备
-/// 快照文档。失败以 warning 返回，不影响调用方主流程。
-fn refresh_memory_snapshot_document(
-    session_id: Option<String>,
-    store: &SessionStore,
-    runtime: Option<&crate::features::memory::RuntimeMemorySnapshot>,
-) -> Vec<MemoryWarning> {
+/// get_memory_overview 与整理后的快照刷新共用的八类权威源装载结果。
+struct MemorySources {
+    profile: crate::features::memory::MemoryProfile,
+    preferences: Vec<crate::features::memory::PreferenceFile>,
+    work_context: Vec<crate::features::memory::WorkContextFile>,
+    current_focus: Vec<crate::features::memory::TimedMemoryItem>,
+    recent_activity: Vec<crate::features::memory::TimedMemoryItem>,
+    recent_work: Vec<crate::features::memory::RecentWorkItem>,
+    pending: Vec<crate::features::memory::PendingMemoryItem>,
+    never: Vec<crate::features::memory::NeverMemoryItem>,
+}
+
+/// 逐源加载全部权威源并记录 warning / source status，供 get_memory_overview
+/// 与整理后的快照刷新共用，避免两处装载口径漂移。
+fn load_memory_sources() -> (
+    MemorySources,
+    Vec<MemoryWarning>,
+    BTreeMap<String, MemorySourceStatus>,
+) {
     let mut warnings = Vec::new();
     let mut sources = BTreeMap::new();
     let profile = load_memory_source(
@@ -189,6 +201,40 @@ fn refresh_memory_snapshot_document(
         &mut warnings,
         &mut sources,
     );
+    (
+        MemorySources {
+            profile,
+            preferences,
+            work_context,
+            current_focus,
+            recent_activity,
+            recent_work,
+            pending,
+            never,
+        },
+        warnings,
+        sources,
+    )
+}
+
+/// 复用 get_memory_overview 的装载与快照写入 helper，刷新 `snapshot.md` 设备
+/// 快照文档。失败以 warning 返回，不影响调用方主流程。
+fn refresh_memory_snapshot_document(
+    session_id: Option<String>,
+    store: &SessionStore,
+    runtime: Option<&crate::features::memory::RuntimeMemorySnapshot>,
+) -> Vec<MemoryWarning> {
+    let (sources, mut warnings, _) = load_memory_sources();
+    let MemorySources {
+        profile,
+        preferences,
+        work_context,
+        current_focus,
+        recent_activity,
+        recent_work,
+        pending,
+        never,
+    } = sources;
     let runtime = match (runtime, resolve_memory_session_id(session_id, store)) {
         (Some(snapshot), _) => Some(snapshot.clone()),
         (None, Some(sid)) => match crate::features::memory::runtime_snapshot(&sid) {
@@ -312,56 +358,17 @@ pub async fn get_memory_overview(
     session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<MemoryOverviewState, String> {
-    let mut warnings = Vec::new();
-    let mut sources = BTreeMap::new();
-    let profile = load_memory_source(
-        "profile",
-        crate::features::memory::load_profile(),
-        &mut warnings,
-        &mut sources,
-    );
-    let preferences = load_topic_memory_source(
-        "preferences",
-        crate::features::memory::list_preferences_with_cleanup(),
-        &mut warnings,
-        &mut sources,
-    );
-    let work_context = load_topic_memory_source(
-        "work_context",
-        crate::features::memory::load_work_context_with_cleanup(),
-        &mut warnings,
-        &mut sources,
-    );
-    let current_focus = load_memory_source(
-        "current_focus",
-        crate::features::memory::load_current_focus(),
-        &mut warnings,
-        &mut sources,
-    );
-    let recent_activity = load_memory_source(
-        "recent_activity",
-        crate::features::memory::load_recent_activity(),
-        &mut warnings,
-        &mut sources,
-    );
-    let recent_work = load_memory_source(
-        "recent_work",
-        crate::features::memory::load_recent_work(),
-        &mut warnings,
-        &mut sources,
-    );
-    let pending = load_memory_source(
-        "pending",
-        crate::features::memory::load_pending_memory(),
-        &mut warnings,
-        &mut sources,
-    );
-    let never = load_memory_source(
-        "never",
-        crate::features::memory::load_never_memory(),
-        &mut warnings,
-        &mut sources,
-    );
+    let (sources_loaded, mut warnings, mut sources) = load_memory_sources();
+    let MemorySources {
+        profile,
+        preferences,
+        work_context,
+        current_focus,
+        recent_activity,
+        recent_work,
+        pending,
+        never,
+    } = sources_loaded;
     let authoritative_sources_available = sources.values().all(|status| status.available);
     let runtime = match resolve_memory_session_id(session_id, &store) {
         Some(sid) => match crate::features::memory::runtime_snapshot(&sid) {
@@ -492,7 +499,8 @@ pub async fn organize_memory(
             bridge
         }
     };
-    let report = crate::features::memory::organize_memory_with_llm(&bridge)
+    // 手动按钮没有可取消的宿主，cancel 传 None（定时任务入口才传 token）。
+    let report = crate::features::memory::organize_memory_with_llm(&bridge, None)
         .await
         .map_err(|error| format!("organize memory: {error:#}"))?;
     let (runtime, mut warnings) = refresh_memory_runtime_best_effort(None, &store, &app);

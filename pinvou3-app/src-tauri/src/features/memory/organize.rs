@@ -15,6 +15,7 @@ use chrono::Utc;
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 use crate::platform::prefs::ModelPreset;
 
@@ -97,8 +98,12 @@ pub struct MemoryOrganizeReport {
 }
 
 /// 整理入口：机械预清理 → 全量快照 → LLM 整理动作 → 清洗校验 → 应用 → 落历史。
+/// `cancel` 由定时任务入口传入（手动按钮没有可取消的宿主，传 `None`）：入口
+/// 与“LLM 返回后、动作应用前”各检查一次，保证已取消的运行不留下已应用的
+/// 破坏性动作。
 pub async fn organize_memory_with_llm(
     bridge: &(impl MemoryReviewModel + ?Sized),
+    cancel: Option<&CancellationToken>,
 ) -> Result<MemoryOrganizeReport> {
     if !io::memory_enabled() {
         append_memory_review_diagnostic(
@@ -107,6 +112,10 @@ pub async fn organize_memory_with_llm(
             json!({ "reason": "memory_disabled" }),
         );
         return Err(anyhow!("memory disabled"));
+    }
+    if cancel.is_some_and(|cancel| cancel.is_cancelled()) {
+        append_memory_review_diagnostic("organize", "skipped", json!({ "reason": "canceled" }));
+        return Err(anyhow!("memory organize canceled"));
     }
     let guard = ORGANIZE_IN_FLIGHT.get_or_init(|| tokio::sync::Mutex::new(()));
     let Ok(_in_flight) = guard.try_lock() else {
@@ -161,6 +170,17 @@ pub async fn organize_memory_with_llm(
             return Err(error);
         }
     };
+    // 取消边界：LLM 返回后、任何 delete/update/merge 应用前。LLM 等待期的取消
+    // 由 executor 侧 select 丢弃本 future 兜住；这里兜住 select 无法打断的
+    // 同步段——保证“已取消”的 run 不会留下已应用的动作。
+    if cancel.is_some_and(|cancel| cancel.is_cancelled()) {
+        append_memory_review_diagnostic(
+            "organize",
+            "skipped",
+            json!({ "reason": "canceled_before_apply" }),
+        );
+        return Err(anyhow!("memory organize canceled before apply"));
+    }
 
     let mut skipped_sensitive = 0u32;
     let validated: Vec<OrganizeAction> = raw_actions
@@ -249,7 +269,12 @@ impl OrganizeSnapshot {
             work_context: io::load_work_context()?,
             current_focus: io::load_current_focus()?,
             recent_activity: io::load_recent_activity()?,
-            pending: io::load_pending_memory()?,
+            // 只装载未决议候选：ignored/confirmed 已有用户决定，无整理价值，
+            // 也不应随整理请求再次外发给模型（与按轮复盘的 pending 口径一致）。
+            pending: io::load_pending_memory()?
+                .into_iter()
+                .filter(|item| item.status == super::types::PENDING_STATUS_PENDING)
+                .collect(),
             never: io::load_never_memory()?,
         })
     }
@@ -613,23 +638,12 @@ fn update_organize_item(
 }
 
 /// 应用完成后对两类 timed store 再做一次规范化 / 去重 / 容量压实，清掉
-/// update/merge 留下的重复或超限条目。失败记 warning，不影响主流程。
+/// update/merge 留下的重复或超限条目。压实走 io 层加锁入口：load 与整文件
+/// 回写必须同锁，否则快照间隙里按轮复盘刚写入的条目会被旧列表覆盖丢失。
+/// 失败记 warning，不影响主流程。
 fn compact_timed_stores(warnings: &mut Vec<String>) {
     for kind in ["current_focus", "recent_activity"] {
-        let result = (|| -> std::io::Result<()> {
-            let items = if kind == "recent_activity" {
-                io::load_recent_activity()?
-            } else {
-                io::load_current_focus()?
-            };
-            let path = if kind == "recent_activity" {
-                io::recent_activity_path()
-            } else {
-                io::current_focus_path()
-            };
-            io::write_timed_memory_file(&path, &items, kind)
-        })();
-        if let Err(error) = result {
+        if let Err(error) = io::compact_timed_memory_store(kind) {
             warnings.push(format!("organize: compact {kind}: {error}"));
         }
     }

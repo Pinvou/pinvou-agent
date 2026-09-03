@@ -13,17 +13,18 @@ use crate::platform::paths;
 use crate::platform::prefs::ModelPreset;
 
 use super::io::{
-    commit_topic_migration_unlocked_with, current_focus_path, enqueue_memory_candidate,
-    is_delivery_tool, load_preferences, load_profile, pending_item_from_suggestion,
-    reconcile_topic_migration_journals_unlocked, summarize_tool_start,
-    topic_migration_journal_path, upsert_timed_memory_unlocked, write_never_memory_unlocked,
-    write_pending_memory_unlocked, write_recent_work_unlocked, write_timed_memory_file,
+    commit_topic_migration_unlocked_with, compact_timed_memory_store, current_focus_path,
+    enqueue_memory_candidate, is_delivery_tool, load_preferences, load_profile,
+    pending_item_from_suggestion, reconcile_topic_migration_journals_unlocked,
+    summarize_tool_start, topic_migration_journal_path, upsert_timed_memory_unlocked,
+    write_never_memory_unlocked, write_pending_memory_unlocked, write_recent_work_unlocked,
+    write_timed_memory_file,
 };
 use super::llm_review::{
     LLM_REVIEW_PROMPT, append_memory_review_diagnostic_to, apply_llm_memory_review,
     apply_memory_review_reasoning_controls, assistant_suggests_delivery_complete,
-    discover_turn_suggestions, has_memory_review_signal, memory_review_error_stage,
-    parse_llm_memory_review, sanitize_llm_memory_item,
+    discover_turn_suggestions, has_explicit_remember_signal, has_memory_review_signal,
+    memory_review_error_stage, parse_llm_memory_review, sanitize_llm_memory_item,
 };
 use super::render::render_from_parts;
 // 引入全部常量（MAX_STORED / PENDING_STATUS_* / PROFILE_VERSION / Llm* 实体）。
@@ -1888,6 +1889,108 @@ fn explicit_signal_relaxes_auto_write_confidence_gates() {
     );
 }
 
+#[test]
+fn explicit_remember_signal_is_narrower_than_review_signal() {
+    // 记录请求短语：宽窄两集同时命中。
+    assert!(has_explicit_remember_signal("请记住我喜欢简洁的回答"));
+    assert!(has_explicit_remember_signal(
+        "please remember that I prefer concise answers"
+    ));
+    assert!(has_explicit_remember_signal(
+        "Don't forget to use simplified Chinese"
+    ));
+    // 普通状态汇报：宽集命中（仍发起复盘），窄集不命中（不放宽写门槛）。
+    let status_update = "我最近在推进A项目，继续，优先把测试补齐";
+    assert!(has_memory_review_signal(status_update));
+    assert!(!has_explicit_remember_signal(status_update));
+    // 陈述、疑问句里的 remember 两集都不命中。
+    assert!(!has_explicit_remember_signal(
+        "Do you remember the deadline for the report?"
+    ));
+}
+
+/// 走真实请求路径的接线测试：宽集命中但窄集未命中的回合，门槛放宽与
+/// “禁止 skip”硬约束都不生效；窄集命中时两者同时生效。断言用硬约束独有
+/// 短语——user_content 的 trigger 字段本身也含 explicit_user_signal 字样，
+/// 不能作为判别串。
+#[tokio::test]
+async fn review_explicit_remember_drives_threshold_and_prompt_wiring() {
+    const CONSTRAINT_MARK: &str = "用户明确要求记住的内容必须落在输出里";
+    let _home = IsolatedPinvouHome::new("explicit-remember-wiring");
+    enable_memory_for_tests();
+    let timed_item = json!({
+        "action": "auto_write",
+        "kind": "current_focus",
+        "topic": "current_work",
+        "content": "正在推进公司人力资源手册更新，后续继续细化章节结构",
+        "confidence": 0.82,
+        "ttl_days": 21
+    });
+
+    // 宽集命中、窄集未命中：0.82 < 默认 0.86 → 落 pending；prompt 无硬约束。
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let capture_for_stub = captured.clone();
+    let bridge = FakeOrganizeModel {
+        base_url: spawn_chat_completions_stub_with_hook(
+            json!({ "items": [timed_item] }).to_string(),
+            Some(Box::new(move |body: &str| {
+                *capture_for_stub.lock().unwrap() = body.to_string();
+            })),
+        ),
+    };
+    let capture = TurnMemoryCapture {
+        user: "我最近在推进A项目，继续，优先把测试补齐".to_string(),
+        assistant: "好的，已记录进展".to_string(),
+        tool_summaries: Vec::new(),
+        delivery_complete: false,
+    };
+    let outcome = review_turn_candidates_with_llm(&bridge, &capture, "sess-wiring")
+        .await
+        .expect("review must run for a broad-signal turn");
+    assert!(outcome.events.is_empty(), "no relaxed auto_write expected");
+    assert_eq!(outcome.pending.len(), 1, "0.82 falls to pending_confirm");
+    {
+        let body = captured.lock().unwrap();
+        assert!(
+            !body.contains(CONSTRAINT_MARK),
+            "hard constraint must not be appended without an explicit remember request"
+        );
+    }
+
+    // 窄集命中：同一 0.82 条目 ≥ 放宽后的 0.80 → auto_write；prompt 带硬约束。
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let capture_for_stub = captured.clone();
+    let bridge = FakeOrganizeModel {
+        base_url: spawn_chat_completions_stub_with_hook(
+            json!({ "items": [timed_item] }).to_string(),
+            Some(Box::new(move |body: &str| {
+                *capture_for_stub.lock().unwrap() = body.to_string();
+            })),
+        ),
+    };
+    let capture = TurnMemoryCapture {
+        user: "记住：我正在推进人力资源手册更新".to_string(),
+        assistant: "好的，已记住".to_string(),
+        tool_summaries: Vec::new(),
+        delivery_complete: false,
+    };
+    let outcome = review_turn_candidates_with_llm(&bridge, &capture, "sess-wiring")
+        .await
+        .expect("review must run for an explicit remember turn");
+    assert!(
+        outcome
+            .events
+            .iter()
+            .any(|event| event.kind == "current_focus"),
+        "0.82 >= relaxed 0.80 must auto write"
+    );
+    let body = captured.lock().unwrap();
+    assert!(
+        body.contains(CONSTRAINT_MARK),
+        "hard constraint must ride along with the relaxed thresholds"
+    );
+}
+
 /// 在隔离 HOME 下打开记忆开关（zh-Hans 是唯一支持记忆的语言，见
 /// enforce_memory_locale_policy），供 organize 入口的 memory_enabled 守卫通过。
 fn enable_memory_for_tests() {
@@ -1931,14 +2034,15 @@ impl MemoryReviewModel for FakeOrganizeModel {
 /// 起一个只响应一次 chat/completions 的本地 HTTP stub，返回固定 message.content，
 /// 并返回 base_url。读取完整请求头与 body 后再响应，避免过早关闭触发 RST。
 fn spawn_chat_completions_stub(content: String) -> String {
-    spawn_chat_completions_stub_with_hook(content, None::<Box<dyn FnOnce() + Send>>)
+    spawn_chat_completions_stub_with_hook(content, None)
 }
 
 /// 同上，但可在返回响应前执行一个闭包：模拟整理的 LLM 调用期间（快照装载
-/// 之后、动作应用之前）其他写入者并发改动存储。
+/// 之后、动作应用之前）其他写入者并发改动存储，或断言发往模型的 prompt /
+/// user_content 组装。
 fn spawn_chat_completions_stub_with_hook(
     content: String,
-    before_response: Option<Box<dyn FnOnce() + Send>>,
+    before_response: Option<Box<dyn FnOnce(&str) + Send>>,
 ) -> String {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -1987,7 +2091,9 @@ fn spawn_chat_completions_stub_with_hook(
         // 请求已抵达意味着 organize 已完成快照装载并进入 LLM 调用：此刻执行
         // hook 才是对“快照之后、应用之前”并发窗口的真实模拟。
         if let Some(hook) = before_response {
-            hook();
+            let body =
+                String::from_utf8_lossy(&request[body_start.min(request.len())..]).into_owned();
+            hook(&body);
         }
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -2057,7 +2163,7 @@ async fn organize_memory_merges_duplicates_and_deletes_stale_focus() {
         base_url: spawn_chat_completions_stub(actions.to_string()),
     };
 
-    let report = organize_memory_with_llm(&bridge).await.unwrap();
+    let report = organize_memory_with_llm(&bridge, None).await.unwrap();
 
     assert!(!report.no_change);
     assert_eq!(report.model, "fake-organize-model");
@@ -2125,11 +2231,13 @@ async fn organize_merge_skips_source_deletion_when_keep_update_fails() {
     let bridge = FakeOrganizeModel {
         base_url: spawn_chat_completions_stub_with_hook(
             actions.to_string(),
-            Some(Box::new(move || fs::remove_file(&keep_path).unwrap())),
+            Some(Box::new(move |_body: &str| {
+                fs::remove_file(&keep_path).unwrap()
+            })),
         ),
     };
 
-    let report = organize_memory_with_llm(&bridge).await.unwrap();
+    let report = organize_memory_with_llm(&bridge, None).await.unwrap();
 
     // 源条目保留，无任何计数落库，但留有 merge skipped warning。
     assert!(
@@ -2162,7 +2270,7 @@ async fn organize_memory_rejects_concurrent_second_pass() {
         base_url: "http://127.0.0.1:9".to_string(),
     };
 
-    let error = organize_memory_with_llm(&bridge).await.unwrap_err();
+    let error = organize_memory_with_llm(&bridge, None).await.unwrap_err();
 
     assert!(error.to_string().contains("already in progress"));
     // 被拒绝的 pass 不落历史。
@@ -2177,7 +2285,7 @@ async fn organize_memory_without_content_skips_llm_and_reports_no_change() {
     let bridge = FakeOrganizeModel {
         base_url: "http://127.0.0.1:9".to_string(),
     };
-    let report = organize_memory_with_llm(&bridge).await.unwrap();
+    let report = organize_memory_with_llm(&bridge, None).await.unwrap();
     assert!(report.no_change);
     assert!(report.warnings.is_empty());
     assert_eq!(report.scanned["preference"], 0);
@@ -2193,9 +2301,125 @@ async fn organize_memory_requires_memory_enabled() {
     let bridge = FakeOrganizeModel {
         base_url: "http://127.0.0.1:9".to_string(),
     };
-    let error = organize_memory_with_llm(&bridge).await.unwrap_err();
+    let error = organize_memory_with_llm(&bridge, None).await.unwrap_err();
     assert!(error.to_string().contains("memory disabled"));
     assert!(load_organize_history().is_empty());
+}
+
+#[tokio::test]
+async fn organize_memory_rejects_a_precanceled_token() {
+    let _home = IsolatedPinvouHome::new("organize-precanceled");
+    enable_memory_for_tests();
+    // 端口 9（discard）几乎必然拒连：若入口取消检查失效，错误会是连接错误
+    // 而非取消。
+    let bridge = FakeOrganizeModel {
+        base_url: "http://127.0.0.1:9".to_string(),
+    };
+    let token = tokio_util::sync::CancellationToken::new();
+    token.cancel();
+
+    let error = organize_memory_with_llm(&bridge, Some(&token))
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("canceled"), "{error:#}");
+    assert!(load_organize_history().is_empty());
+}
+
+#[tokio::test]
+async fn organize_memory_canceled_before_apply_applies_nothing() {
+    let _home = IsolatedPinvouHome::new("organize-cancel-before-apply");
+    enable_memory_for_tests();
+    let preference_dir = paths::user_memory_preferences_dir();
+    fs::create_dir_all(&preference_dir).unwrap();
+    let id_a = "pref_cancel".to_string();
+    write_json_atomic(
+        &preference_dir.join(format!("{id_a}.json")),
+        &preference_fixture(&id_a, "answer_style", "回答默认先给结论"),
+    )
+    .unwrap();
+    let actions = json!({
+        "actions": [
+            {
+                "op": "delete",
+                "kind": "preference",
+                "ids": [id_a],
+                "reason": "取消边界测试"
+            }
+        ]
+    });
+    // 取消落在 LLM 调用期间（请求已抵达、响应未返回）：动作应用前的取消
+    // 检查必须生效——已取消的运行不得留下已应用的删除，也不落历史。
+    let token = tokio_util::sync::CancellationToken::new();
+    let cancel_in_flight = token.clone();
+    let bridge = FakeOrganizeModel {
+        base_url: spawn_chat_completions_stub_with_hook(
+            actions.to_string(),
+            Some(Box::new(move |_body: &str| cancel_in_flight.cancel())),
+        ),
+    };
+
+    let error = organize_memory_with_llm(&bridge, Some(&token))
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("canceled"), "{error:#}");
+    assert!(
+        list_preferences()
+            .unwrap()
+            .iter()
+            .any(|item| item.id == id_a),
+        "a canceled run must not apply destructive actions"
+    );
+    assert!(load_organize_history().is_empty());
+}
+
+#[test]
+fn compact_timed_memory_store_dedupes_and_enforces_capacity() {
+    let _home = IsolatedPinvouHome::new("timed-compact-entry");
+    let now = Utc::now();
+    let base = |id: &str, text: &str, hours_ago: i64| TimedMemoryItem {
+        id: id.to_string(),
+        kind: "current_focus".to_string(),
+        topic: "current_work".to_string(),
+        text: text.to_string(),
+        source: "test".to_string(),
+        confidence: 0.9,
+        created_at: (now - Duration::hours(hours_ago)).to_rfc3339(),
+        updated_at: (now - Duration::hours(hours_ago)).to_rfc3339(),
+        last_hit: (now - Duration::hours(hours_ago)).to_rfc3339(),
+        ttl_days: 90,
+        status: "active".to_string(),
+    };
+    // 同 id 重复行 + 超过 active 容量的填充条目：加锁压实入口在重载后一次性
+    // 完成去重与容量收敛，与 update 路径的写语义保持一致。
+    let mut items = vec![base("focus_dup", "较新的重复行内容", 1)];
+    items.push(base("focus_dup", "较旧的重复行内容", 2));
+    for i in 0..(CURRENT_FOCUS_ACTIVE_MAX_STORED + 2) {
+        items.push(base(
+            &format!("focus_fill_{i}"),
+            &format!("填充条目{i}"),
+            3 + i as i64,
+        ));
+    }
+    write_timed_memory_file(&current_focus_path(), &items, "current_focus").unwrap();
+
+    compact_timed_memory_store("current_focus").unwrap();
+
+    let compacted = load_current_focus().unwrap();
+    let duplicates = compacted
+        .iter()
+        .filter(|item| item.id == "focus_dup")
+        .count();
+    assert_eq!(duplicates, 1, "duplicate ids must collapse to one item");
+    let active = compacted
+        .iter()
+        .filter(|item| item.status == "active")
+        .count();
+    assert!(
+        active <= CURRENT_FOCUS_ACTIVE_MAX_STORED,
+        "compact must enforce the active capacity cap, got {active}"
+    );
 }
 
 #[tokio::test]
@@ -2206,9 +2430,64 @@ async fn organize_history_is_bounded_to_recent_twenty() {
         base_url: "http://127.0.0.1:9".to_string(),
     };
     for _ in 0..25 {
-        organize_memory_with_llm(&bridge).await.unwrap();
+        organize_memory_with_llm(&bridge, None).await.unwrap();
     }
     assert_eq!(load_organize_history().len(), 20);
+}
+
+#[tokio::test]
+async fn organize_scans_only_undecided_pending_candidates() {
+    let _home = IsolatedPinvouHome::new("organize-pending-scope");
+    enable_memory_for_tests();
+    // 未决议候选 + 用户已忽略候选各一条：整理只扫描前者，后者已有用户决定，
+    // 不再随整理请求外发给模型（与按轮复盘的 pending 口径一致）。
+    let keep = enqueue_memory_candidate(MemorySuggestion {
+        kind: "preference".to_string(),
+        topic: "answer_style".to_string(),
+        content: "回答保持简洁分点".to_string(),
+        source: "test".to_string(),
+    })
+    .unwrap();
+    let ignored = enqueue_memory_candidate(MemorySuggestion {
+        kind: "preference".to_string(),
+        topic: "editor_preference".to_string(),
+        content: "不要用 vim 编辑配置文件".to_string(),
+        source: "test".to_string(),
+    })
+    .unwrap();
+    ignore_pending_memory(&ignored.id).unwrap();
+
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let capture_for_stub = captured.clone();
+    let bridge = FakeOrganizeModel {
+        base_url: spawn_chat_completions_stub_with_hook(
+            json!({ "actions": [] }).to_string(),
+            Some(Box::new(move |body: &str| {
+                *capture_for_stub.lock().unwrap() = body.to_string();
+            })),
+        ),
+    };
+
+    let report = organize_memory_with_llm(&bridge, None).await.unwrap();
+
+    assert_eq!(
+        report.scanned["pending"], 1,
+        "only undecided candidates count as scanned"
+    );
+    let body = captured.lock().unwrap();
+    assert!(
+        body.contains(&keep.content),
+        "undecided candidate must reach the model"
+    );
+    assert!(
+        !body.contains(&ignored.content),
+        "ignored candidate must not be sent to the model"
+    );
+    assert!(
+        report.warnings.is_empty(),
+        "unexpected warnings: {:?}",
+        report.warnings
+    );
 }
 
 #[test]

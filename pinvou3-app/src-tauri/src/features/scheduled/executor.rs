@@ -47,8 +47,9 @@ pub(crate) trait ScheduledConversationRuntime: Send + Sync {
     ) -> Result<ScheduledTurnCompletion>;
 
     /// 执行一次 app 侧记忆整理（`memory_organize` 种类任务的运行体）。
-    /// 与对话轮不同：不创建会话、不经过引擎。
-    async fn organize_memory(&self) -> Result<MemoryOrganizeReport>;
+    /// 与对话轮不同：不创建会话、不经过引擎。取消语义见
+    /// [`ScheduledChatExecutor::execute_memory_organize`]。
+    async fn organize_memory(&self, cancel: CancellationToken) -> Result<MemoryOrganizeReport>;
 }
 
 /// Production implementation backed by the existing session store and engine
@@ -109,7 +110,7 @@ impl ScheduledConversationRuntime for EngineScheduledRuntime {
             .await
     }
 
-    async fn organize_memory(&self) -> Result<MemoryOrganizeReport> {
+    async fn organize_memory(&self, cancel: CancellationToken) -> Result<MemoryOrganizeReport> {
         // 与 chat 命令层的 organize_memory 同口径：memory 关闭时先拒绝。
         if !crate::features::memory::memory_enabled() {
             anyhow::bail!("memory disabled");
@@ -126,7 +127,7 @@ impl ScheduledConversationRuntime for EngineScheduledRuntime {
                 bridge
             }
         };
-        crate::features::memory::organize_memory_with_llm(&bridge).await
+        crate::features::memory::organize_memory_with_llm(&bridge, Some(&cancel)).await
     }
 }
 
@@ -178,8 +179,22 @@ impl ScheduledChatExecutor {
     /// ThreadCreated / ThreadLinked 事件——run 生命周期只需要底座 Task 的终态
     /// （reconcile 会把 thread_id/turn_id 缺省的 Task 状态回写到 run 记录），
     /// 整理报告本身经记忆历史命令查看，运行记录保持干净。
+    ///
+    /// 取消语义：select 让取消即时生效，不必等最长 75s 的整理调用返回（否则
+    /// 删除运行中任务的 15s 终态等待几乎必然超时）；取消分支丢弃在途 future，
+    /// 连同未返回的 LLM 请求一起中止。LLM 已返回、应用动作前的取消由
+    /// organize 内部的应用前检查兜住；仅剩同步应用段（毫秒级）无法打断，
+    /// 该情形按取消记录 run，报告已落 organize_history.json 可审计。
     async fn execute_memory_organize(&self, cancel: CancellationToken) -> TaskExecutionResult {
-        let organized = self.runtime.organize_memory().await;
+        let organized = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => None,
+            organized = self.runtime.organize_memory(cancel.clone()) => Some(organized),
+        };
+        let organized = match organized {
+            Some(organized) => organized,
+            None => return canceled(),
+        };
         if cancel.is_cancelled() {
             return canceled();
         }
@@ -399,6 +414,7 @@ mod tests {
         yolo_allow_shell: AtomicBool,
         organize_calls: AtomicUsize,
         organize_error: Mutex<Option<String>>,
+        organize_hang_after_cancel: AtomicBool,
         started: Notify,
     }
 
@@ -434,12 +450,18 @@ mod tests {
                 yolo_allow_shell: AtomicBool::new(true),
                 organize_calls: AtomicUsize::new(0),
                 organize_error: Mutex::new(None),
+                organize_hang_after_cancel: AtomicBool::new(false),
                 started: Notify::new(),
             }
         }
 
         fn set_yolo_allow_shell(&self, allow_shell: bool) {
             self.yolo_allow_shell.store(allow_shell, Ordering::SeqCst);
+        }
+
+        fn set_organize_hang_after_cancel(&self, hang: bool) {
+            self.organize_hang_after_cancel
+                .store(hang, Ordering::SeqCst);
         }
 
         fn set_organize_error(&self, error: Option<String>) {
@@ -546,8 +568,16 @@ mod tests {
             }
         }
 
-        async fn organize_memory(&self) -> Result<MemoryOrganizeReport> {
+        async fn organize_memory(&self, cancel: CancellationToken) -> Result<MemoryOrganizeReport> {
             self.organize_calls.fetch_add(1, Ordering::SeqCst);
+            if self.organize_hang_after_cancel.load(Ordering::SeqCst) {
+                // 模拟长时间无返回的 LLM 调用：通知测试已进入整理，再触发取消
+                // 并永久挂起。修复前 executor 会等在这里，删除运行中任务的
+                // 15s 终态等待几乎必然超时。
+                self.started.notify_one();
+                cancel.cancel();
+                std::future::pending::<()>().await;
+            }
             if let Some(error) = self.organize_error.lock().unwrap().clone() {
                 bail!(error);
             }
@@ -1075,6 +1105,37 @@ mod tests {
         assert!(
             runtime.profiles().is_empty(),
             "failed organize must not leave a session either"
+        );
+        manager.shutdown();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn memory_organize_run_cancels_without_waiting_for_the_llm_call() -> Result<()> {
+        let runtime = Arc::new(ScriptedRuntime::new([]));
+        runtime.set_organize_hang_after_cancel(true);
+        let executor = Arc::new(
+            ScheduledChatExecutor::new(runtime.clone()).with_kind_resolver(Arc::new(|_| {
+                Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string())
+            })),
+        );
+        let (_root, manager) = manager_with_executor(executor).await?;
+
+        let queued = manager.add_task(request("organize memory")).await?;
+        // 等 runtime 进入永不返回的整理调用，再取消：修复前 executor 会一直
+        // 等 75s 的整理调用本身，删除运行中任务的 15s 终态等待必然超时。
+        runtime.started.notified().await;
+        manager.cancel_task(&queued.id).await?;
+        let finished =
+            wait_for_terminal_state(&manager, &queued.id, std::time::Duration::from_secs(5))
+                .await?;
+
+        assert_eq!(finished.status, TaskStatus::Canceled);
+        assert_eq!(finished.thread_id, None);
+        assert_eq!(
+            runtime.organize_call_count(),
+            1,
+            "cancel must not wait for the in-flight organize call"
         );
         manager.shutdown();
         Ok(())
