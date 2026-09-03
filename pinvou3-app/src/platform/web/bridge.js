@@ -468,6 +468,7 @@
       memoryWriteFailed: "Failed to write memory: ",
       memoryIgnoreFailed: "Failed to ignore memory: ",
       memoryNeverFailed: "Failed to update the never-ask setting: ",
+      memoryOrganizeFailed: "Failed to organize memory: ",
       planTicketExpired: "⚠️ The plan ticket has expired. Regenerate the plan before running it",
       downloadLimitSuffix: size => " (current file " + size + " MiB)",
       downloadLimitError: suffix => "Remote artifact downloads are limited to 256 MiB" + suffix + ". Open the file directly on the desktop.",
@@ -590,6 +591,7 @@
       memoryWriteFailed: "メモリの書き込みに失敗：",
       memoryIgnoreFailed: "メモリの無視に失敗：",
       memoryNeverFailed: "「今後表示しない」の設定に失敗：",
+      memoryOrganizeFailed: "メモリの整理に失敗：",
       planTicketExpired: "⚠️ プランの認証情報が失効しました。プランを再生成してから実行してください",
       downloadLimitSuffix: size => "（現在のファイル " + size + " MiB）",
       downloadLimitError: suffix => "リモート制御での成果物ダウンロード上限は 256 MiB です" + suffix + "。デスクトップ側で直接開いてください。",
@@ -712,6 +714,7 @@
       memoryWriteFailed: "记忆写入失败：",
       memoryIgnoreFailed: "忽略记忆失败：",
       memoryNeverFailed: "设置不再提示失败：",
+      memoryOrganizeFailed: "记忆整理失败：",
       planTicketExpired: "⚠️ 方案凭证已失效，请重新生成方案后再执行",
       downloadLimitSuffix: size => "（当前文件 " + size + " MiB）",
       downloadLimitError: suffix => "远程控制单个产物下载上限为 256 MiB" + suffix + "，请在桌面端直接打开该文件。",
@@ -2780,8 +2783,14 @@
   async function createScheduledTask(input) {
     return runScheduledTaskAction("create", async function () {
       const templateId = input && typeof input.templateId === "string" ? input.templateId.trim() : "";
+      // kind is create-time task metadata (currently only "memory_organize"; the
+      // backend rejects anything else). It deliberately stays out of
+      // SCHEDULED_TASK_WRITABLE_FIELDS so edit flows can never resend it.
+      // 与 tauri 桥保持同一契约（审计对齐）。
+      const kind = input && typeof input.kind === "string" ? input.kind.trim() : "";
       const selectAfterCreate = !input || input.selectAfterCreate !== false;
       const backendInput = scheduledTaskBackendInput(input);
+      if (kind) backendInput.kind = kind;
       const created = await invoke("create_scheduled_task", { input: backendInput });
       if (!created || !created.id) {
         throw new Error(bt("scheduledCreateNoId"));
@@ -7739,6 +7748,31 @@
       if (sid === state.activeSessionId) addSystemItem(bt("memoryNeverFailed") + e);
     }
   }
+  // AI 整理记忆（与 tauri memory.js 同一契约）：整理全局记忆数据，入口仍捕获
+  // 会话，成功/失败只写回发起会话的面板；成功走 applyMemoryWriteState 收敛
+  // runtime/warnings 并重拉 overview，报告由调用方从返回值取。失败写入带
+  // memoryOrganizeFailed 前缀的 memory.error（卡片既有错误行呈现）并继续抛出。
+  async function organizeMemory() {
+    if (!invoke) return null;
+    const sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(与 tauri 对齐)
+    try {
+      const result = await invoke("organize_memory");
+      if (sid === state.activeSessionId && result) applyMemoryWriteState(result);
+      // 整理会合并/删除条目：重拉 overview 刷新面板；返回原始载荷。
+      await loadMemoryOverview();
+      return result;
+    } catch (e) {
+      if (sid === state.activeSessionId) {
+        state.memory = Object.assign({}, state.memory, { error: bt("memoryOrganizeFailed") + e });
+        notify();
+      }
+      throw e;
+    }
+  }
+  async function loadOrganizeHistory() {
+    if (!invoke) return [];
+    return invoke("get_memory_organize_history");
+  }
   // ── 思考指示器状态（每次阶段切换重置计时）──────────────────────
   function startThinking() { state.thinking = { active: true, phase: "thinking", toolName: "", startedAt: Date.now() }; }
   function thinkingTool(name) { state.thinking = { active: true, phase: "tool", toolName: name || "", startedAt: Date.now() }; }
@@ -9766,6 +9800,8 @@
     confirmMemoryCandidate,
     ignoreMemoryCandidate,
     neverMemoryCandidate,
+    organizeMemory,
+    loadOrganizeHistory,
     // AI 造卡开场引导卡:落一条展示气泡 + 记一条 persona 事件(随会话持久化)。
     // 走 personaEvents 时间线,冷重载时 rerenderFromMessages 按 pos 还原 → 切会话/重启不丢。
     postCardCreatorIntro,

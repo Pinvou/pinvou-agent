@@ -133,7 +133,7 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 pub const BUNDLE_VERSION: &str = concat!("0.27-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
-/// 骨架 = 身份/底线/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：
+/// 骨架 = 身份/底线/用户记忆/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：
 /// `{{PINVOU3_MODE_ENV_SECTION}}`（§工作环境 位）与
 /// `{{PINVOU3_MODE_ARTIFACT_RULE}}`（§工具与事实 的成品条位）。
 /// 拆分说明：work 专属的 §工作环境(L10-13) 与 present_artifact 条(L18) 在原文中
@@ -727,6 +727,12 @@ mod tests {
         let tools_at = INSTRUCTIONS_SHARED_MD.find("## 工具与事实").unwrap();
         let how_at = INSTRUCTIONS_SHARED_MD.find("## 怎么干").unwrap();
         assert!(env_at < tools_at && tools_at < artifact_at && artifact_at < how_at);
+        // §用户记忆 紧跟 §底线、在模式层环境段之前（见「底线」权威顺序的引用位）。
+        let bottom_at = INSTRUCTIONS_SHARED_MD.find("## 底线").unwrap();
+        let memory_at = INSTRUCTIONS_SHARED_MD
+            .find("## 用户记忆")
+            .expect("用户记忆 section must stay in the shared skeleton");
+        assert!(bottom_at < memory_at && memory_at < env_at);
     }
 
     #[test]

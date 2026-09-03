@@ -419,6 +419,34 @@
       if (sid === state.activeSessionId) addSystemItem(bt("memoryNeverFailed") + e);
     }
   }
+  // AI 整理记忆：整理的是全局记忆数据，不依赖当前会话；但入口仍捕获会话，
+  // 成功/失败都只写回发起会话的面板（同 saveMemoryProfilePatch 的不变量，
+  // 防止 await 期间切走后把结果或错误渲染进别的对话流）。成功后沿用写流程
+  // 的 runtime/warnings 收敛（applyMemoryWriteState）并重拉 overview 刷新面板
+  // 内容；报告本身由调用方从返回值取。失败时写入带 memoryOrganizeFailed
+  // 前缀的 memory.error（卡片既有错误行呈现）并继续抛出。
+  async function organizeMemory() {
+    if (!invoke) return null;
+    const sid = state.activeSessionId; // same as saveMemoryProfilePatch: after switching away, never write to B's panel
+    try {
+      const result = await invoke("organize_memory");
+      if (sid === state.activeSessionId && result) applyMemoryWriteState(result);
+      // 整理会合并/删除条目：照其他写流程重拉 overview 刷新面板内容；
+      // 返回值保持 organize_memory 原始载荷（report/runtime/warnings）。
+      await loadMemoryOverview();
+      return result;
+    } catch (e) {
+      if (sid === state.activeSessionId) {
+        state.memory = Object.assign({}, state.memory, { error: bt("memoryOrganizeFailed") + e });
+        notify();
+      }
+      throw e;
+    }
+  }
+  async function loadOrganizeHistory() {
+    if (!invoke) return [];
+    return invoke("get_memory_organize_history");
+  }
     return {
       handleMemoryWrite,
       loadMemoryOverview,
@@ -429,7 +457,9 @@
       archiveRecentWorkMemory,
       confirmMemoryCandidate,
       ignoreMemoryCandidate,
-      neverMemoryCandidate
+      neverMemoryCandidate,
+      organizeMemory,
+      loadOrganizeHistory
     };
   };
 })(window);

@@ -104,7 +104,9 @@ const expectedProtocolHashes = {
   dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
   interaction: '3f275b9c4fc77ebf42a56df1c84d638ca5f1f8a3b80612efebeddf1a39f14efd',
   knowledge: '9105a42c6b69f04d0bc28b6a72e0746648110a44823891ded3261cdcbc99766b',
-  memory: '541f1b0c05aeee20d8fb4a19048cbd2f55cad84444363694cbe17263d0425228',
+  // memory recomputed for the memory-maintenance feature: organize_memory +
+  // get_memory_organize_history invokes added to bridge/memory.js.
+  memory: '843ccd95e2f23d865e76e1ed0b2a34bac2abb4e3faa4b2c16226113551985cec',
   monitor: '01bf9a7c9b9b3f313cf49e975e6503627ff373caed0f4b3be07a6a98492a7c43',
   personas: 'd16d99104c45bb3e7a6585862b0ba30936bf31a4fef2238453a0a0a35e3c1806',
   remoteControl: '0001038f6e32075aa5dbc3253ad2c3dfff207b8fe0bf1c65d710dc37b2937ee1',

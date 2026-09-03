@@ -16,7 +16,10 @@ const state = {
 };
 let response;
 let rejectOverview = false;
-const invoke = async command => {
+// organizeMemory 内部会续发 overview 重拉,按命令名记录入参而不是只记最后一次。
+const invokeArgsByCommand = new Map();
+const invoke = async (command, ...rest) => {
+  invokeArgsByCommand.set(command, [command, ...rest]);
   if (command === 'get_memory_overview' && rejectOverview) throw new Error('overview unavailable');
   return typeof response === 'function' ? response(command) : response;
 };
@@ -114,3 +117,38 @@ rejectOverview = true;
 await api.confirmMemoryCandidate('pending-1');
 assert.deepEqual(state.memory.pending, [], 'committed confirmation must survive overview failure');
 rejectOverview = false;
+
+// ── AI 整理记忆契约 ──────────────────────────────────────────────
+// organize_memory 必须以无参形式调用，并原样 resolve 后端载荷
+// { report, runtime, warnings }；整理后重拉 overview 收敛面板。
+const organizePayload = {
+  report: {
+    started_at: '2026-09-03T09:00:00Z', finished_at: '2026-09-03T09:00:05Z', model: 'test-model',
+    scanned: { preference: 3 }, deleted: { preference: 1 }, updated: { preference: 1 }, merged: { preference: 2 },
+    skipped_sensitive: 1, no_change: false, warnings: [],
+  },
+  runtime: null,
+  warnings: [],
+};
+response = command => command === 'organize_memory'
+  ? organizePayload
+  : overview({ preferences: [{ id: 'pref-new', text: 'detailed' }] });
+const organizeResult = await api.organizeMemory();
+assert.equal(organizeResult, organizePayload, 'organizeMemory must resolve the organize_memory payload');
+assert.deepEqual(invokeArgsByCommand.get('organize_memory'), ['organize_memory'], 'organize_memory must be invoked without args');
+assert.equal(state.memory.error, null, 'successful organize must clear the panel error');
+
+// 失败：写入带 bt 前缀的 memory.error（卡片既有错误行呈现）并继续抛出。
+response = command => {
+  if (command === 'organize_memory') throw new Error('organize memory: model unavailable');
+  return overview();
+};
+await assert.rejects(api.organizeMemory(), /organize memory: model unavailable/, 'organize failures must propagate');
+assert.match(state.memory.error, /^memoryOrganizeFailed/, 'failure must surface through the memory.error channel');
+assert.match(state.memory.error, /organize memory: model unavailable/);
+
+// 整理历史：透传 get_memory_organize_history 的数组（最新在前）。
+const historyPayload = [{ finished_at: '2026-09-03T09:00:05Z' }, { finished_at: '2026-09-02T09:00:00Z' }];
+response = command => command === 'get_memory_organize_history' ? historyPayload : overview();
+assert.equal(await api.loadOrganizeHistory(), historyPayload, 'loadOrganizeHistory must pass the history array through');
+assert.deepEqual(invokeArgsByCommand.get('get_memory_organize_history'), ['get_memory_organize_history']);

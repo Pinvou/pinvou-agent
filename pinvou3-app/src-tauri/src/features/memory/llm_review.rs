@@ -115,6 +115,10 @@ ttl_days 规则：
 如果没有值得记的内容，输出 {"items":[]}。
 "#;
 
+/// trigger 为 explicit_user_signal 时追加到系统提示的硬约束：用户明确要求记住
+/// 的内容不允许被 skip 掉，敏感边界保持不变。
+pub(super) const LLM_REVIEW_EXPLICIT_SIGNAL_PROMPT: &str = "\n\n本轮 trigger 为 explicit_user_signal：用户明确要求记住或表达了长期偏好。用户明确要求记住的内容必须落在输出里（auto_write / auto_update / pending_confirm 之一），不要输出 skip；仍不得记录敏感信息。";
+
 /// Output-language directive for the memory review prompt, appended to the
 /// system prompt according to the UI locale.
 ///
@@ -275,6 +279,7 @@ pub async fn review_turn_candidates_with_llm(
         "triggered",
         json!({
             "trigger": trigger,
+            "explicit_signal": explicit_signal,
             "provider": bridge.memory_provider(),
             "model": bridge.memory_model(),
             "user_chars": user.chars().count(),
@@ -308,7 +313,7 @@ pub async fn review_turn_candidates_with_llm(
             .entry(clean_text(&item.action, 24))
             .or_default() += 1;
     }
-    let outcome = match apply_llm_memory_review(review) {
+    let outcome = match apply_llm_memory_review(review, explicit_signal) {
         Ok(outcome) => outcome,
         Err(error) => {
             append_memory_review_diagnostic(
@@ -340,6 +345,9 @@ pub async fn review_turn_candidates_with_llm(
 }
 
 pub(super) fn has_memory_review_signal(user: &str) -> bool {
+    // CJK 词素无大小写之分，直接在原文匹配；ASCII 短语在 to_lowercase 后匹配，
+    // 覆盖 "Remember" / "REMEMBER" 等大小写变体。
+    let lower = user.to_lowercase();
     [
         "记住",
         "以后",
@@ -352,6 +360,12 @@ pub(super) fn has_memory_review_signal(user: &str) -> bool {
         "我不喜欢",
         "我偏好",
         "我的习惯",
+        "记一下",
+        "帮我记",
+        "记录一下",
+        "记着",
+        "记好",
+        "记牢",
         "默认",
         "优先",
         "尽量",
@@ -376,6 +390,9 @@ pub(super) fn has_memory_review_signal(user: &str) -> bool {
     ]
     .iter()
     .any(|needle| user.contains(needle))
+        || ["remember", "keep in mind", "don't forget", "do not forget"]
+            .iter()
+            .any(|needle| lower.contains(needle))
 }
 
 pub(super) fn assistant_suggests_delivery_complete(user: &str, assistant: &str) -> bool {
@@ -501,10 +518,13 @@ async fn request_llm_memory_review(
     // output_language_directive precedent (defense-in-depth: memory is disabled
     // for non-Chinese UIs by enforce_memory_locale_policy; see the
     // memory_output_language_directive docs for reachability).
-    let prompt = match memory_output_language_directive(&bridge.memory_locale_tag()) {
-        Some(suffix) => format!("{LLM_REVIEW_PROMPT}{suffix}"),
-        None => LLM_REVIEW_PROMPT.to_string(),
-    };
+    let mut prompt = LLM_REVIEW_PROMPT.to_string();
+    if trigger == "explicit_user_signal" {
+        prompt.push_str(LLM_REVIEW_EXPLICIT_SIGNAL_PROMPT);
+    }
+    if let Some(suffix) = memory_output_language_directive(&bridge.memory_locale_tag()) {
+        prompt.push_str(&suffix);
+    }
     // Anthropic 官方端点是 Messages 协议（x-api-key 鉴权，system 独立字段，
     // 无 response_format），走原生直连；其余 preset 仍走 OpenAI chat/completions。
     if preset == ModelPreset::Anthropic {
@@ -556,10 +576,18 @@ async fn request_llm_memory_review(
     parse_llm_memory_review(content)
 }
 
-pub(super) fn apply_llm_memory_review(review: LlmMemoryReview) -> Result<MemoryReviewOutcome> {
+/// 应用已解析的复盘结果。`explicit_signal` 表示本轮由用户明确的"记住"类表达
+/// 触发：auto_write / auto_update 的置信度门槛相应放宽（profile 0.92→0.85、
+/// timed 0.86→0.80、work_context 0.94→0.90），清洗下限 0.70 与敏感过滤不变。
+pub(super) fn apply_llm_memory_review(
+    review: LlmMemoryReview,
+    explicit_signal: bool,
+) -> Result<MemoryReviewOutcome> {
+    let timed_auto_threshold = if explicit_signal { 0.80 } else { 0.86 };
+    let work_context_auto_threshold = if explicit_signal { 0.90 } else { 0.94 };
     let mut outcome = MemoryReviewOutcome::default();
     for raw in review.items {
-        let Some(decision) = sanitize_llm_memory_item(raw) else {
+        let Some(decision) = sanitize_llm_memory_item(raw, explicit_signal) else {
             continue;
         };
         let suggestion = decision.suggestion;
@@ -573,7 +601,7 @@ pub(super) fn apply_llm_memory_review(review: LlmMemoryReview) -> Result<MemoryR
             suggestion.kind.as_str(),
             "current_focus" | "recent_activity"
         ) && matches!(decision.action.as_str(), "auto_write" | "auto_update")
-            && decision.confidence >= 0.86
+            && decision.confidence >= timed_auto_threshold
         {
             match io::upsert_timed_memory_locked(
                 &suggestion.kind,
@@ -596,7 +624,7 @@ pub(super) fn apply_llm_memory_review(review: LlmMemoryReview) -> Result<MemoryR
         }
         if suggestion.kind == "work_context"
             && matches!(decision.action.as_str(), "auto_write" | "auto_update")
-            && decision.confidence >= 0.94
+            && decision.confidence >= work_context_auto_threshold
         {
             match io::upsert_work_context_locked(&suggestion, decision.confidence) {
                 Ok(item) => outcome.events.push(MemoryWriteEvent {
@@ -619,7 +647,10 @@ pub(super) fn apply_llm_memory_review(review: LlmMemoryReview) -> Result<MemoryR
     Ok(outcome)
 }
 
-pub(super) fn sanitize_llm_memory_item(raw: LlmMemoryItem) -> Option<SanitizedMemoryDecision> {
+pub(super) fn sanitize_llm_memory_item(
+    raw: LlmMemoryItem,
+    explicit_signal: bool,
+) -> Option<SanitizedMemoryDecision> {
     let action = clean_text(&raw.action, 24);
     if action == "skip" || raw.confidence < 0.70 {
         return None;
@@ -675,7 +706,9 @@ pub(super) fn sanitize_llm_memory_item(raw: LlmMemoryItem) -> Option<SanitizedMe
             _ => return None,
         };
         content = super::util::clean_memory_label(&clean_profile_memory_content(&content, &topic))?;
-        if action == "auto_write" && raw.confidence < 0.92 {
+        // 用户明确要求记住时称呼类记忆门槛 0.92 → 0.85。
+        let profile_auto_write_threshold = if explicit_signal { 0.85 } else { 0.92 };
+        if action == "auto_write" && raw.confidence < profile_auto_write_threshold {
             return None;
         }
     } else if matches!(kind.as_str(), "current_focus" | "recent_activity") {

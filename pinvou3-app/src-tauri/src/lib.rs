@@ -1314,6 +1314,8 @@ pub fn run() {
             commands::connectors::get_project_skills_enabled,
             commands::memory::update_memory_profile,
             commands::memory::get_memory_overview,
+            commands::memory::organize_memory,
+            commands::memory::get_memory_organize_history,
             commands::memory::confirm_pending_memory,
             commands::memory::ignore_pending_memory,
             commands::memory::never_pending_memory,

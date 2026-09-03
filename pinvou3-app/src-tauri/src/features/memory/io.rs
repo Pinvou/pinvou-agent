@@ -78,6 +78,10 @@ pub fn snapshot_path() -> PathBuf {
     paths::user_memory_snapshot()
 }
 
+pub fn organize_history_path() -> PathBuf {
+    paths::user_memory_organize_history()
+}
+
 pub fn pending_memory_path() -> PathBuf {
     paths::user_memory_pending()
 }
@@ -1500,6 +1504,15 @@ pub fn refresh_recent_work_expiry() -> io::Result<usize> {
     let now = Utc::now();
     Ok(refresh_recent_work_expiry_unlocked(now)?
         + refresh_timed_memory_expiry_unlocked("current_focus", now)?
+        + refresh_timed_memory_expiry_unlocked("recent_activity", now)?)
+}
+
+/// 仅刷新 current_focus / recent_activity 的过期归档。organize 等独立入口在
+/// 全量扫描前调用，与 `refresh_recent_work_expiry` 同样各自短暂持有写锁。
+pub fn refresh_timed_memory_expiry() -> io::Result<usize> {
+    let _guard = write_lock().lock();
+    let now = Utc::now();
+    Ok(refresh_timed_memory_expiry_unlocked("current_focus", now)?
         + refresh_timed_memory_expiry_unlocked("recent_activity", now)?)
 }
 
