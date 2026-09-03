@@ -293,7 +293,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const [editing, setEditing] = useState(null);
       const [saving, setSaving] = useState(false);
       const [organizing, setOrganizing] = useState(false);
-      const [organizeReport, setOrganizeReport] = useState(/** @type {any} */ (null));
+      const [organizeReport, setOrganizeReport] = useState(/** @type {{ no_change?: boolean, merged?: Record<string, number>, updated?: Record<string, number>, deleted?: Record<string, number> } | null} */ (null));
       const [lastOrganizedAt, setLastOrganizedAt] = useState('');
       const profileCount = (identity.call_name ? 1 : 0) + (identity.assistant_alias ? 1 : 0);
       const profileSummary = [
@@ -336,7 +336,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       }, [tab, open]);
       // 上次整理时间在卡片打开时读取一次；成功整理后由 organizeNow 刷新。
       useEffect(() => {
-        if (!bridge.available || !bridge.memory.loadOrganizeHistory) return undefined;
+        if (!bridge.available || !bridge.memory.loadOrganizeHistory) return;
         let cancelled = false;
         bridge.memory.loadOrganizeHistory().then(history => {
           if (cancelled) return;
@@ -344,7 +344,6 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           if (finished) setLastOrganizedAt(memoryOrganizeTime(finished));
         }).catch(() => {}); // 上次整理时间仅为展示信息,读取失败降级为不显示
         return () => { cancelled = true; };
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- load once when the card opens; organizeNow refreshes after each run
       }, []);
 
       const reload = () => bridge.available && bridge.memory.loadMemoryOverview && bridge.memory.loadMemoryOverview();
@@ -2382,6 +2381,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       useEffect(() => {
         if (activeSection === 'memory' && memoryEnabled && bridge.available && bridge.memory.loadMemoryOverview) bridge.memory.loadMemoryOverview();
         if (activeSection === 'memory' && memoryEnabled) loadMemoryOrganizeHistory();
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: history load follows the same gated section-open trigger as the overview load
       }, [activeSection, memoryEnabled]);
       useEffect(() => {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors the backend snapshot into local state once it lands, avoiding first-frame flicker

@@ -1773,7 +1773,7 @@ use std::collections::BTreeMap;
 
 use super::llm_review::LLM_REVIEW_EXPLICIT_SIGNAL_PROMPT;
 use super::organize::{
-    MEMORY_ORGANIZE_PROMPT, LlmOrganizeAction, OrganizeSnapshot, load_organize_history,
+    LlmOrganizeAction, MEMORY_ORGANIZE_PROMPT, OrganizeSnapshot, load_organize_history,
     organize_memory_with_llm, validate_organize_action,
 };
 
@@ -1840,19 +1840,37 @@ fn explicit_signal_relaxes_auto_write_confidence_gates() {
     };
 
     // 默认门槛：work_context 0.91 < 0.94、timed 0.82 < 0.86 → 全部落 pending。
-    let outcome =
-        apply_llm_memory_review(LlmMemoryReview { items: vec![work_item.clone(), timed_item.clone()] }, false)
-            .unwrap();
+    let outcome = apply_llm_memory_review(
+        LlmMemoryReview {
+            items: vec![work_item.clone(), timed_item.clone()],
+        },
+        false,
+    )
+    .unwrap();
     assert!(outcome.events.is_empty());
     assert_eq!(outcome.pending.len(), 2);
 
     // explicit_signal：work_context >= 0.90、timed >= 0.80 → 全部 auto_write。
-    let outcome =
-        apply_llm_memory_review(LlmMemoryReview { items: vec![work_item, timed_item] }, true)
-            .unwrap();
+    let outcome = apply_llm_memory_review(
+        LlmMemoryReview {
+            items: vec![work_item, timed_item],
+        },
+        true,
+    )
+    .unwrap();
     assert!(outcome.pending.is_empty());
-    assert!(outcome.events.iter().any(|event| event.kind == "work_context"));
-    assert!(outcome.events.iter().any(|event| event.kind == "current_focus"));
+    assert!(
+        outcome
+            .events
+            .iter()
+            .any(|event| event.kind == "work_context")
+    );
+    assert!(
+        outcome
+            .events
+            .iter()
+            .any(|event| event.kind == "current_focus")
+    );
 }
 
 /// 在隔离 HOME 下打开记忆开关（zh-Hans 是唯一支持记忆的语言，见
@@ -2106,79 +2124,89 @@ fn organize_validation_drops_out_of_scope_and_sensitive_actions() {
     let mut skipped_sensitive = 0u32;
 
     // profile 动作直接丢弃（用户身份字段不在整理范围）。
-    assert!(validate_organize_action(
-        LlmOrganizeAction {
-            op: "update".into(),
-            kind: "profile".into(),
-            ids: vec!["anything".into()],
-            content: "用户希望被称呼为欣哥".into(),
-            ..Default::default()
-        },
-        &snapshot,
-        &mut skipped_sensitive,
-        &mut warnings,
-    )
-    .is_none());
+    assert!(
+        validate_organize_action(
+            LlmOrganizeAction {
+                op: "update".into(),
+                kind: "profile".into(),
+                ids: vec!["anything".into()],
+                content: "用户希望被称呼为欣哥".into(),
+                ..Default::default()
+            },
+            &snapshot,
+            &mut skipped_sensitive,
+            &mut warnings,
+        )
+        .is_none()
+    );
 
     // 敏感内容丢弃并计入 skipped_sensitive。
-    assert!(validate_organize_action(
-        LlmOrganizeAction {
-            op: "update".into(),
-            kind: "preference".into(),
-            ids: vec![pref_id.clone()],
-            content: "我的手机号是 13800138000".into(),
-            ..Default::default()
-        },
-        &snapshot,
-        &mut skipped_sensitive,
-        &mut warnings,
-    )
-    .is_none());
+    assert!(
+        validate_organize_action(
+            LlmOrganizeAction {
+                op: "update".into(),
+                kind: "preference".into(),
+                ids: vec![pref_id.clone()],
+                content: "我的手机号是 13800138000".into(),
+                ..Default::default()
+            },
+            &snapshot,
+            &mut skipped_sensitive,
+            &mut warnings,
+        )
+        .is_none()
+    );
     assert_eq!(skipped_sensitive, 1);
 
     // 引用不存在的 id 丢弃。
-    assert!(validate_organize_action(
-        LlmOrganizeAction {
-            op: "delete".into(),
-            kind: "preference".into(),
-            ids: vec!["pref_unknown".into()],
-            ..Default::default()
-        },
-        &snapshot,
-        &mut skipped_sensitive,
-        &mut warnings,
-    )
-    .is_none());
+    assert!(
+        validate_organize_action(
+            LlmOrganizeAction {
+                op: "delete".into(),
+                kind: "preference".into(),
+                ids: vec!["pref_unknown".into()],
+                ..Default::default()
+            },
+            &snapshot,
+            &mut skipped_sensitive,
+            &mut warnings,
+        )
+        .is_none()
+    );
 
     // pending 只允许 delete，update/merge 一律丢弃。
-    assert!(validate_organize_action(
-        LlmOrganizeAction {
-            op: "update".into(),
-            kind: "pending".into(),
-            ids: vec![pending.id],
-            content: "回答保持简洁分点".into(),
-            ..Default::default()
-        },
-        &snapshot,
-        &mut skipped_sensitive,
-        &mut warnings,
-    )
-    .is_none());
+    assert!(
+        validate_organize_action(
+            LlmOrganizeAction {
+                op: "update".into(),
+                kind: "pending".into(),
+                ids: vec![pending.id],
+                content: "回答保持简洁分点".into(),
+                ..Default::default()
+            },
+            &snapshot,
+            &mut skipped_sensitive,
+            &mut warnings,
+        )
+        .is_none()
+    );
 
     // merge 少于 2 个 id 丢弃。
-    assert!(validate_organize_action(
-        LlmOrganizeAction {
-            op: "merge".into(),
-            kind: "preference".into(),
-            ids: vec![pref_id],
-            content: "回答默认先给结论，再给步骤".into(),
-            ..Default::default()
-        },
-        &snapshot,
-        &mut skipped_sensitive,
-        &mut warnings,
-    )
-    .is_none());
+    assert!(
+        validate_organize_action(
+            LlmOrganizeAction {
+                op: "merge".into(),
+                kind: "preference".into(),
+                ids: vec![pref_id],
+                content: "回答默认先给结论，再给步骤".into(),
+                ..Default::default()
+            },
+            &snapshot,
+            &mut skipped_sensitive,
+            &mut warnings,
+        )
+        .is_none()
+    );
 
     assert!(!warnings.is_empty());
 }
