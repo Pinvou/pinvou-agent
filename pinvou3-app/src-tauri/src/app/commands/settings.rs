@@ -672,7 +672,9 @@ fn model_connection_http_result(status: reqwest::StatusCode) -> ModelConnectionT
 fn model_connection_error_result(err: &reqwest::Error) -> ModelConnectionTestResult {
     let raw = crate::platform::credential_store::redact_secret(&err.to_string());
     let raw_lower = raw.to_lowercase();
-    let detail = Some(format!("连接失败: {raw}"));
+    // detail 原样透传脱敏后的底层错误;中文摘要由前端按 code 查
+    // connectionMessages 提供(硬编码中文前缀会在 en/ja 界面混排)。
+    let detail = Some(raw);
     if err.is_timeout() {
         return model_connection_result(
             false,
@@ -1110,6 +1112,14 @@ fn classify_image_capability_http(
             format!("未能正确识别图像，原因未知（HTTP {status_code}）：{summary}"),
             Some(status_code),
         ),
+        // 402 计费类与「测试连接」同口径:明确指引充值,避免同屏一个说
+        // 充值、一个说检查 API Key 的矛盾反馈。
+        402 => image_capability_result(
+            "error",
+            false,
+            format!("账户余额不足，请充值后重试（HTTP {status_code}）：{summary}"),
+            Some(status_code),
+        ),
         _ => image_capability_result("error", false, summary, Some(status_code)),
     }
 }
@@ -1440,6 +1450,19 @@ mod tests {
             model_connection_http_result(reqwest::StatusCode::BAD_GATEWAY).code,
             "server_unavailable"
         );
+    }
+
+    #[test]
+    fn image_capability_http_result_calls_out_billing_on_402() {
+        // 图片能力探测的 402 与「测试连接」同口径:明确指引充值,避免同屏
+        // 一个说充值、一个说检查 API Key 的矛盾反馈(R3 MINOR 1 残留)。
+        let billing = classify_image_capability_http(
+            reqwest::StatusCode::PAYMENT_REQUIRED,
+            r#"{"error":{"message":"Insufficient Balance","type":"insufficient_balance"}}"#,
+        );
+        assert!(!billing.verified);
+        assert_eq!(billing.http_status, Some(402));
+        assert!(billing.summary.contains("账户余额不足"));
     }
 
     #[test]

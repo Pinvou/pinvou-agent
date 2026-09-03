@@ -951,7 +951,7 @@ Object.assign(dictZh.uiSettingsDetail, {
   addProvider:provider=>`添加 ${provider}`, editProvider:provider=>`编辑 ${provider}`,
   autoDetectLocalModel:'自动检测本地模型',
   codingPlanTestUnavailable:'当前厂商接口暂时无法完成测试，但不影响保存配置',
-  connectionMessages:{ ok:'连接成功，服务可用', auth_invalid:'API Key 无效，请检查后重新填写', auth_forbidden:'当前 API Key 没有访问权限', billing:'账户余额不足，请充值后重试，或切换到其他模型', rate_limited:'请求过于频繁或额度不足，请稍后再试', endpoint_not_found:'接口地址不可用', method_not_allowed:'接口不支持测试请求', http_error:'连接失败，请检查配置后重试', unknown:'连接失败，请稍后重试' },
+  connectionMessages:{ ok:'连接成功，服务可用', auth_invalid:'API Key 无效，请检查后重新填写', auth_forbidden:'当前 API Key 没有访问权限', billing:'账户余额不足，请充值后重试，或切换到其他模型', rate_limited:'请求过于频繁或额度不足，请稍后再试', redirect:'服务地址发生跳转，无法确认可用性', request_invalid:'请求格式不被服务接受，请检查模型配置', timeout:'连接超时，请检查网络或本地服务是否启动', tls_error:'安全证书校验失败，请检查代理或网络环境', dns_failed:'无法解析服务地址，请检查网络', connection_refused:'无法连接到服务，请确认本地模型服务已启动', server_unavailable:'服务暂时不可用，请稍后再试', endpoint_not_found:'接口地址不可用', method_not_allowed:'接口不支持测试请求', http_error:'连接失败，请检查配置后重试', unknown:'连接失败，请稍后重试' },
   catalogSections:{ coding_plan:'Coding Plan', official_api:'官方 API', custom:'自定义兼容接口' },
   providerCatalog:{},
   imageCapability:'图片输入能力', imageCapabilityEnabled:'支持图片', imageCapabilityDisabled:'不支持图片', imageCapabilityPinvou:'自动处理',

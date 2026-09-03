@@ -6349,6 +6349,13 @@
             });
           }
         }
+      } else {
+        // 成功(或无错误)终态:回合已恢复完成,本回合 transient 气泡的
+        // "系统会继续重试"声明过时,统一隐藏(发送时已清空上一回合项)。
+        const messages = bridgeMessages();
+        if (typeof messages.settleModelServiceErrorNotices === "function") {
+          messages.settleModelServiceErrorNotices(state);
+        }
       }
       const shellMessages = bridgeMessages();
       if (typeof shellMessages.showShellCleanupFailure === "function") {

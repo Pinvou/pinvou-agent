@@ -159,7 +159,7 @@ function upsertNativeModelServiceNotice(lane, payload, terminal, options, termin
     language,
     terminal,
     providerLabel: typeof helper.providerLabelFromState === 'function'
-      ? helper.providerLabelFromState(options && options.modelServiceState, null, language)
+      ? helper.providerLabelFromState(options && options.modelServiceState, language)
       : '',
   });
   const notice = helper.noticeText(userError);
@@ -622,6 +622,15 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
           const item = { id: nextId(lane), type: 'system', text: notice, time: timeStr() };
           if (timelineTakesOver) item.legacyConversationOnly = true;
           lane.items.push(item);
+        }
+      } else if (!p.error) {
+        // 成功(或无错误)终态:回合已恢复完成,当前回合 transient 模型服务气泡的
+        // "会继续重试"声明过时,与 bridge settleModelServiceErrorNotices 同语义
+        // 统一隐藏;裸串回退项(对已发生错误的陈述)保留既有行为。
+        const start = currentTurnStart(lane);
+        for (let i = start; i < lane.items.length; i += 1) {
+          const item = lane.items[i];
+          if (item && item.userError && !item.legacyConversationOnly) item.legacyConversationOnly = true;
         }
       }
       return true;

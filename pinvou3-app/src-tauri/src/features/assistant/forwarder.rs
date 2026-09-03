@@ -731,7 +731,10 @@ pub(crate) fn spawn_event_forwarder(
                     let operation_rejected = std::mem::take(&mut active_operation_rejected);
                     let mut shell_cleanup_failed = false;
                     let mut terminal_status = status;
-                    let mut terminal_error = error;
+                    // chat:done 的错误文本同样先过 Rust 脱敏分层(与 Error 事件
+                    // 的 transient/fatal 路径同一道防线)。
+                    let mut terminal_error =
+                        error.map(|error| crate::platform::credential_store::redact_secret(&error));
                     if let Some(base_total_tokens) = scheduled_base_total_tokens {
                         scheduled_engine_total_tokens = scheduled_engine_total_tokens
                             .saturating_add(u64::from(usage.input_tokens))
@@ -1187,8 +1190,18 @@ pub(crate) fn spawn_event_forwarder(
                     // (且会误触发 flush/closeBubble/plan_phase 收尾)。只飘个 advisory。
                     // 仅 recoverable==false(致命)才是真结束 → chat:done。
                     if envelope.recoverable {
-                        let payload =
-                            json!({ "session_id": session_id, "error": envelope.message });
+                        // 错误文本跨 webview 边界前先过 Rust 脱敏分层
+                        // (Bearer/sk-/长随机 token),前端 redactTechnicalDetail
+                        // 是第二道;Rust 侧先行保证持久化/截图前的第一手文本已脱敏。
+                        // 结构化 code/category 原样透传,供前端在字符串分类之外
+                        // 保留受控错误语义(流式路径当前多为通用 "transient",
+                        // 前端不得仅凭它判定模型服务错误)。
+                        let payload = json!({
+                            "session_id": session_id,
+                            "error": crate::platform::credential_store::redact_secret(&envelope.message),
+                            "code": envelope.code,
+                            "category": envelope.category.to_string(),
+                        });
                         let _ = app.emit("chat:transient_error", payload.clone());
                         crate::features::remote_control::forward_app_event(
                             &app,
@@ -1198,7 +1211,9 @@ pub(crate) fn spawn_event_forwarder(
                     } else {
                         // 底座在致命 Error 后仍会发权威 TurnComplete(Failed)。这里只缓存
                         // 文本；完成、持久化和 chat:done 全部由 TurnComplete 单点处理。
-                        turn_tracker.on_fatal_error(envelope.message);
+                        turn_tracker.on_fatal_error(
+                            crate::platform::credential_store::redact_secret(&envelope.message),
+                        );
                     }
                 }
                 #[cfg(feature = "benchmark-hooks")]

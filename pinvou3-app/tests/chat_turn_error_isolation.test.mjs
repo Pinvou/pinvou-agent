@@ -557,6 +557,91 @@ for (const language of ['en', 'ja', 'zh-Hans']) {
 assert.doesNotMatch(modelErrors.build('HTTP 429 too many requests', { language: 'en', terminal: false }).message, /\{stop\}/);
 assert.doesNotMatch(modelErrors.build('HTTP 429 too many requests', { language: 'ja', terminal: true }).message, /\{stop\}/);
 
+// ── 遗留清单修复:计费词表缺口(Anthropic 官方 402 措辞 / 通义 Arrearage 错误码,
+// R3 M5 残留)──无状态码裸串(ACP 泳道/子代理面板)也必须接管并归为 billing。
+assert.equal(modelErrors.isModelServiceError('Your credit balance is too low'), true);
+assert.equal(modelErrors.classify('Your credit balance is too low').kind, 'billing');
+assert.equal(modelErrors.isModelServiceError('Arrearage: account suspended, please recharge'), true);
+assert.equal(modelErrors.classify('Arrearage: account suspended, please recharge').kind, 'billing');
+assert.equal(
+  modelErrors.classify('HTTP 402 {"type":"billing_error","message":"Your credit balance is too low"}').kind,
+  'billing',
+);
+
+// ── 遗留清单修复:内容政策拒绝(R6 遗留"确定性失败仍引导稍后重试")──
+// 模型服务专属语义无条件接管;新增 content 类别为确定性失败(retryable=false),
+// 三语均无 {stop} 占位符,transient 与终态措辞一致,不再引导"稍后重试"。
+assert.equal(modelErrors.isModelServiceError('content policy violation: request blocked'), true);
+assert.equal(modelErrors.isModelServiceError('Your request was rejected as a result of our safety system'), true);
+assert.equal(modelErrors.isModelServiceError('output blocked by content filtering policy'), true);
+const contentEn = modelErrors.build('content policy violation: request blocked', { language: 'en', terminal: true });
+assert.equal(contentEn.kind, 'content');
+assert.equal(contentEn.retryable, false);
+assert.doesNotMatch(contentEn.message, /Try again later/);
+assert.doesNotMatch(contentEn.message, /\{stop\}/);
+const contentZh = modelErrors.build('content policy violation: request blocked', { language: 'zh-Hans', terminal: true });
+assert.equal(contentZh.kind, 'content');
+assert.doesNotMatch(contentZh.message, /稍后重试/);
+assert.equal(
+  modelErrors.build('content policy violation: request blocked', { language: 'ja', terminal: false }).message,
+  modelErrors.build('content policy violation: request blocked', { language: 'ja', terminal: true }).message,
+  'content-policy failures are deterministic: transient and terminal wording match',
+);
+
+// ── 遗留清单修复:zh 默认 provider + server 类别的叠词(R3 MINOR 4)──
+assert.equal(
+  modelErrors.build('SSE stream request failed: HTTP 503 Service Unavailable', { language: 'zh-Hans', terminal: true }).title,
+  '当前模型服务暂时不可用',
+);
+assert.equal(
+  modelErrors.build('SSE stream request failed: HTTP 503 Service Unavailable', { language: 'zh-Hans', terminal: true, providerLabel: 'DeepSeek' }).title,
+  'DeepSeek服务暂时不可用',
+  'brand labels keep the 服务 suffix',
+);
+
+// ── 遗留清单修复:成功 done 收敛 transient 声明(R7 follow-up)──
+// 回合恢复完成后,"系统会继续重试"的未来承诺已过时,统一隐藏;裸串回退项是
+// 对已发生错误的陈述,保持可见;已隐藏项不被复活。
+const settleState = { settings: { language: 'zh-Hans' }, chatItems: [] };
+messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
+  { error: 'SSE stream idle timeout after 30s — no data received' },
+  settleState,
+  (text, metadata) => settleState.chatItems.push({ text, ...metadata }),
+  false,
+);
+settleState.chatItems.push({ text: '⚠️ shell command failed: permission denied', turnErrorNotice: true });
+settleState.chatItems.push({ text: '⚠️ 旧终态', turnErrorNotice: true, legacyConversationOnly: true, userError: { kind: 'billing' } });
+assert.equal(messageSandbox.window.PinvouBridgeMessages.settleModelServiceErrorNotices(settleState), true);
+assert.equal(settleState.chatItems[0].legacyConversationOnly, true, 'successful done must settle the same-turn transient claim');
+assert.equal(settleState.chatItems[1].legacyConversationOnly, undefined, 'bare fallback notices are factual statements and stay visible');
+assert.equal(settleState.chatItems[2].legacyConversationOnly, true, 'already-hidden items are not resurrected');
+assert.equal(
+  messageSandbox.window.PinvouBridgeMessages.settleModelServiceErrorNotices({ settings: {}, chatItems: [] }),
+  false,
+  'nothing to settle returns false',
+);
+
+// ── 遗留清单修复:forwarder 结构化 code/category 透传(R3 M3 / R4 P1)──
+// 受控语义保留在用户卡上供诊断与后续消费;不得参与门控/分类(流式路径多为
+// 通用 "transient",字符串门控仍是判定来源)。
+const codedState = { settings: { language: 'en' }, chatItems: [] };
+messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
+  { error: 'SSE stream request failed: HTTP 402 insufficient balance', code: 'transient', category: 'internal' },
+  codedState,
+  (text, metadata) => codedState.chatItems.push({ text, ...metadata }),
+  false,
+);
+assert.equal(codedState.chatItems[0].userError.errorCode, 'transient');
+assert.equal(codedState.chatItems[0].userError.errorCategory, 'internal');
+const uncodedState = { settings: { language: 'en' }, chatItems: [] };
+messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
+  { error: 'SSE stream request failed: HTTP 402 insufficient balance' },
+  uncodedState,
+  (text, metadata) => uncodedState.chatItems.push({ text, ...metadata }),
+  false,
+);
+assert.equal('errorCode' in uncodedState.chatItems[0].userError, false, 'no code field stays absent');
+
 const terminalSandbox = { window: {}, Date };
 vm.runInNewContext(modelServiceErrorsSource, terminalSandbox, { filename: 'model-service-errors.js' });
 vm.runInNewContext(bridgeMessagesSource, terminalSandbox, { filename: 'bridge-messages.js' });
@@ -680,6 +765,18 @@ assert.match(doneSection, /legacyConversationOnly: timelineTakesOver/);
 assert.match(bridgeMessagesSource, /payload\.shell_cleanup_failed/);
 assert.match(doneSection, /messages\.addModelServiceErrorNotice/);
 assert.match(doneSection, /typeof messages\.addModelServiceErrorNotice === "function"/);
+// 成功终态(无 error)必须收敛同回合 transient 气泡(R7 follow-up);错误终态
+// 仍走 addModelServiceErrorNotice 的升级/隐藏路径,二者互斥。
+assert.match(doneSection, /messages\.settleModelServiceErrorNotices/);
+assert.match(doneSection, /typeof messages\.settleModelServiceErrorNotices === "function"/);
+assert.match(bridgeMessagesSource, /settleModelServiceErrorNotices: function/);
+assert.match(
+  webBridgeSource.slice(
+    webBridgeSource.indexOf('listen("chat:done"'),
+    webBridgeSource.indexOf('listen("chat:usage"'),
+  ),
+  /settleModelServiceErrorNotices/,
+);
 assert.match(doneSection, /shellMessages\.showShellCleanupFailure/);
 assert.match(doneSection, /typeof shellMessages\.showShellCleanupFailure === "function"/);
 assert.match(
@@ -743,6 +840,24 @@ assert.ok(
   turnCompleteSection.indexOf('timing::finish_turn_with_usage')
     < turnCompleteSection.indexOf('emit_chat_terminal'),
   '正常完成必须先落权威时间线，再向前端发送 chat:done',
+);
+// 错误文本跨 webview 边界前先过 Rust 脱敏分层;transient payload 保留底座
+// 受控 code/category(R3 M3 / R4 P1:前端不得只靠字符串猜测)。
+const errorEventSection = engineSource.slice(
+  engineSource.indexOf('Event::Error { envelope'),
+  engineSource.indexOf('Event::CompactionFailed', engineSource.indexOf('Event::Error { envelope')),
+);
+assert.match(
+  errorEventSection,
+  /redact_secret\(&envelope\.message\)/,
+  'transient error text must pass the Rust redaction layer before crossing to the webview',
+);
+assert.match(errorEventSection, /"code": envelope\.code/);
+assert.match(errorEventSection, /"category": envelope\.category\.to_string\(\)/);
+assert.match(
+  turnCompleteSection,
+  /redact_secret\(&error\)/,
+  'chat:done terminal error text must pass the Rust redaction layer too',
 );
 const reclaimedSection = engineSource.slice(
   engineSource.indexOf('async fn finish_reclaimed_lifecycle_turn'),

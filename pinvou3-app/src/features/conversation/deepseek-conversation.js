@@ -145,7 +145,7 @@ export function timelineUserError(event, options = {}) {
   if (typeof helper.isModelServiceError === 'function' && !helper.isModelServiceError(error)) return null;
   const providerLabel = options.providerLabel
     || (typeof helper.providerLabelFromState === 'function'
-      ? helper.providerLabelFromState(options.modelServiceState, null, options.language)
+      ? helper.providerLabelFromState(options.modelServiceState, options.language)
       : '');
   return helper.build(error, {
     language: options.language,
@@ -378,6 +378,9 @@ export function projectDeepSeekConversation({
     activeTurn.startedAt = thinking && thinking.startedAt || Date.now();
     activeTurn.completedAt = null;
     activeTurn.error = null;
+    // 与 error 同步清除:回合重新运行时,残留的 userError 卡会在
+    // "执行中"状态下展示上一轮的"已停止"措辞,与运行态自相矛盾。
+    activeTurn.userError = null;
     activeTurn.lifecycleKnown = true;
     activeTurn.activityToolName = thinking && thinking.phase === 'tool' && thinking.toolName
       ? thinking.toolName
