@@ -5868,6 +5868,24 @@ mod tests {
     /// 必须使用不同 workspace 隔离产物,同时保持静态 instructions 前缀一致以便缓存复用。
     #[test]
     fn engine_config_for_session_keeps_isolation_without_prompt_variance() {
+        // This test reads env-derived paths (PINVOU3_HOME -> bundle_browser_wrapper)
+        // twice and asserts the static instructions are identical across the two calls.
+        // Without holding the crate-wide ENV_LOCK, a concurrent test writing
+        // PINVOU3_HOME could flip the "Browser capabilities" section between the two
+        // calls (flake observed on 2026-09-03, reproduced on a clean main checkout).
+        // locked_env pins PINVOU3_HOME to a fresh empty temp dir, so the wrapper is
+        // deterministically absent and the instructions stay byte-stable across calls.
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-prompt-variance-{}-{}",
+            std::process::id(),
+            crate::bridge::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create hermetic temp PINVOU3_HOME");
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+
         let bridge = fixture_bridge();
         let (a, b) = ("sess-aaaa-1111", "sess-bbbb-2222");
         let cfg_a = bridge.build_engine_config_for_session(a);
@@ -5905,6 +5923,8 @@ mod tests {
         // (见 build_session_system_prompt 注释:per-session 变动进 cache 前缀会
         // 触发 vLLM prefix-cache MISS → 工具调用漂移)。session 隔离由不同 workspace
         // 和每个 session 独立的 EngineConfig/Engine 实例负责,name 仅是展示标签。
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
