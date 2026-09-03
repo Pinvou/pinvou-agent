@@ -10,6 +10,10 @@ import { invokeTauri } from '../../platform/tauri/client.js';
 import { resolveAppAssetUrl } from '../../shared/asset-url.mjs';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { formatBytes } from '../../shared/format-number.js';
+import { formatLocalDate } from '../../shared/date-utils.js';
+import { applyDocumentDelta, stableAccentColor } from '../../shared/knowledge-utils.js';
+import { useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
 
 /**
  * Deliverable/output row record from `list_deliverable_index` (backend wire
@@ -138,31 +142,116 @@ const StatusPill = ({ s, t }) => {
   const v = map[s] || map.ready;
   return <span className={`text-[12px] font-medium ${v[2]}`}>{v[0]} {v[1]}</span>;
 };
-/** @param {{ o: KnowledgeOutput, compact?: boolean, t: { kbOutContinue: string, kbOutNewProject: string, kbOutOpenFolder: string, uiKnowledge: { downloadOutput: string } }, continueOutput: (output: KnowledgeOutput) => void, newOutputProject: (output: KnowledgeOutput) => void, openFolder: (path: string) => void, canOpenSystemFiles?: boolean, canDownloadArtifacts?: boolean }} props - Output row actions and their handlers. */
-const OutputActions = ({ o, compact, t, continueOutput, newOutputProject, openFolder, canOpenSystemFiles, canDownloadArtifacts }) => (
-      <div className={`flex items-center gap-1 ${compact ? 'justify-end' : 'mt-3'}`}>
-        <button type="button" onClick={() => continueOutput(o)}
-          className={`h-8 px-2.5 rounded-[9px] text-[13px] font-medium transition-colors active:opacity-70 text-[#007AFF] hover:bg-[#007AFF]/10 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/10`}>
+/**
+ * 产出物操作按钮组(网格卡片与列表行共用)。
+ * - `compact`: 行内布局(右对齐,无 mt-3);`small`: 12px 文字档(列表行内按钮原尺寸);
+ * - `stopPropagation`: 整行可点开预览时,按钮点击不再冒泡触发行点击;
+ * - `wrapperClassName`: 覆盖容器类(列表行需要 shrink-0 布局)。
+ * @param {{ o: KnowledgeOutput, compact?: boolean, small?: boolean, stopPropagation?: boolean, wrapperClassName?: string, t: { kbOutContinue: string, kbOutNewProject: string, kbOutOpenFolder: string, uiKnowledge: { downloadOutput: string } }, continueOutput: (output: KnowledgeOutput) => void, newOutputProject: (output: KnowledgeOutput) => void, openFolder: (path: string) => void, canOpenSystemFiles?: boolean, canDownloadArtifacts?: boolean }} props - Output row actions and their handlers.
+ */
+const OutputActions = ({ o, compact, small, stopPropagation, wrapperClassName, t, continueOutput, newOutputProject, openFolder, canOpenSystemFiles, canDownloadArtifacts }) => {
+      const guarded = (fn) => (stopPropagation ? (e) => { e.stopPropagation(); fn(); } : fn);
+      const textBtn = `${small ? 'h-8 rounded-[9px] px-2.5 text-[12px]' : 'h-8 px-2.5 rounded-[9px] text-[13px]'} font-medium transition-colors active:opacity-70`;
+      return (
+      <div className={wrapperClassName || `flex items-center gap-1 ${compact ? 'justify-end' : 'mt-3'}`}>
+        <button type="button" onClick={guarded(() => continueOutput(o))}
+          className={`${textBtn} text-[#007AFF] hover:bg-[#007AFF]/10 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/10`}>
           {t.kbOutContinue}
         </button>
-        <button type="button" onClick={() => newOutputProject(o)}
-          className={`h-8 px-2.5 rounded-[9px] text-[13px] font-medium transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#D1D1D6] dark:hover:bg-white/[0.08]`}>
+        <button type="button" onClick={guarded(() => newOutputProject(o))}
+          className={`${textBtn} text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#D1D1D6] dark:hover:bg-white/[0.08]`}>
           {t.kbOutNewProject}
         </button>
         {canOpenSystemFiles && (
-          <button type="button" title={t.kbOutOpenFolder} onClick={() => openFolder(o.path)}
+          <button type="button" title={t.kbOutOpenFolder} onClick={guarded(() => openFolder(o.path))}
             className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
             <FolderOpen size={15} />
           </button>
         )}
         {isWeb && canDownloadArtifacts && bridge.artifacts.downloadArtifact && (
-          <button type="button" title={t.uiKnowledge.downloadOutput} onClick={() => bridge.artifacts.downloadArtifact(o.path, o.sessionId || o.session_id)}
+          <button type="button" title={t.uiKnowledge.downloadOutput} onClick={guarded(() => bridge.artifacts.downloadArtifact(o.path, o.sessionId || o.session_id))}
             className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
             <Download size={15} />
           </button>
         )}
       </div>
-    );
+      );
+    };
+// ---- 本页特征内的共用小组件(模块作用域:类型跨渲染稳定,避免每次渲染重建导致子树重挂载) ----
+/** 文件表 / 产出物列表共用的整行外壳类(点击行打开预览)。 */
+const TABLE_ROW_CLASS = 'group py-4 border-b cursor-pointer border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A]';
+/** 文件表 / 产出物列表共用排序:主键 mtime(按 dir 升降),同时间按名称 localeCompare 稳定排序。 */
+const sortByTimeDesc = (list, dir) => {
+  const d = dir === 'asc' ? 1 : -1;
+  return [...list].sort((a, b) => {
+    const byTime = ((a.mtime || 0) - (b.mtime || 0)) * d;
+    if (byTime) return byTime;
+    return String(a.name || '').localeCompare(String(b.name || ''));
+  });
+};
+/** 分类 chip 行(文件类型卡 / 产出物分类共用):横向滚动容器 + 激活态圆角 chip,可选计数列。 */
+const ChipTabs = ({ items, value, onChange, countOf }) => (
+  <div className="flex overflow-x-auto gap-2 no-scrollbar scroll-smooth">
+    {items.map((c) => {
+      const on = value === c.key;
+      return (
+        <button type="button" key={c.key} onClick={() => onChange(c.key)}
+          className={"h-7 whitespace-nowrap shrink-0 text-[13px] px-3 rounded-full font-semibold transition-colors " + (on ? 'bg-[#3A3A3C] dark:bg-[#fff] text-[#fff] dark:text-[#000]' : 'bg-[#F2F2F7] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff]')}>
+          {c.label}
+          {countOf ? <span className="ml-1.5 opacity-70">{countOf(c).toLocaleString()}</span> : null}
+        </button>
+      );
+    })}
+  </div>
+);
+/** 加载骨架行(文件 / 产出物列表共用):图标占位方块 + 逐行递减宽度的灰条,参数对齐两处原样式。 */
+const SkeletonRows = ({ panelClassName, panelStyle, icon = 'w-7 h-7', start = 60, step = 6 }) => (
+  <div className={`rounded-2xl overflow-hidden ${panelClassName}`} style={panelStyle}>
+    {Array.from({ length: 6 }).map((_, i) => (
+      <div key={i} className="flex items-center gap-3 px-5 py-3 border-b border-gray-400/10 last:border-0">
+        <div className={`${icon} rounded-lg shrink-0 animate-pulse bg-black/[0.07] dark:bg-white/10`} />
+        <div className={`flex-1 h-3 rounded animate-pulse bg-black/[0.07] dark:bg-white/10`} style={{ maxWidth: `${start - i * step}%` }} />
+      </div>
+    ))}
+  </div>
+);
+/** 产出物空状态(3 处共用):Archive 图标块 + 主/副文案;紧凑档(列表筛选无结果)由调用方传 action 重置按钮。 */
+const KbEmptyState = ({ muted, card, ink, title, hint, action, compact }) => (
+  <div className={`text-center ${compact ? 'py-14' : 'py-20'} ${muted}`}>
+    <div className={`${compact ? 'w-12 h-12 mx-auto rounded-2xl grid place-items-center mb-3' : 'w-14 h-14 mx-auto rounded-2xl grid place-items-center mb-4'} ${card}`}><Archive size={compact ? 20 : 24} /></div>
+    <p className={`${compact ? 'text-[14px] font-bold mb-3' : 'text-[15px] font-bold mb-1'} ${ink}`}>{title}</p>
+    {hint ? <p className="text-[13px]">{hint}</p> : null}
+    {action || null}
+  </div>
+);
+/** 表头「时间」排序按钮(文件表 / 产出物列表共用):点击切换升降序,Chevron 随之旋转。 */
+const SortableTimeHeader = ({ t, dir, onToggle, justifySelfStart }) => (
+  <button
+    type="button"
+    onClick={onToggle}
+    className={`inline-flex w-fit ${justifySelfStart ? 'justify-self-start ' : ''}items-center gap-1 rounded-[8px] py-1 transition-colors hover:text-[#1D1D1F] dark:hover:text-[#E5E5EA]`}
+  >
+    <span>{t.kbColTime}</span>
+    <ChevronDown size={13} className={`transition-transform ${dir === 'asc' ? 'rotate-180' : ''}`} />
+  </button>
+);
+/**
+ * 知识页模态外壳(删除知识集 / 移除文档确认 / 新建知识集 / 加入知识库 四处共用):
+ * 半透明遮罩点击关闭,内容区 stopPropagation;confirmDoc 需要 role="dialog" 语义,
+ * 加入知识库浮层宽 380,其余 400,均由 props 承载。
+ */
+const KbDialog = ({ onClose, testId, role, ariaModal, width = 'w-[400px]', children }) => (
+  // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal cancel button
+  // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
+  <div data-testid={testId} className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+    {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
+    {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
+    {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: aria-modal follows the prop-provided role (confirmDoc passes role dialog); static analysis cannot see the dynamic role */}
+    <div role={role} aria-modal={ariaModal} onClick={(e) => e.stopPropagation()} className={`${width} rounded-2xl p-6 bg-white dark:bg-[#1E1F20]`}>
+      {children}
+    </div>
+  </div>
+);
 /** @returns {boolean} Whether IntersectionObserver is available in the current window. */
 const hasIntersectionObserver = () => typeof window !== 'undefined' && 'IntersectionObserver' in window;
 /** @param {{ o: KnowledgeOutput, onOpen?: () => void, outPreviewCache: { current: Record<string, OutputPreview> }, runQueuedPreview: (job: () => Promise<OutputPreview>) => Promise<OutputPreview>, rememberOutPreview: (key: string, preview: OutputPreview) => void, outCatMeta: (category: string | undefined) => { icon?: import('react').ComponentType<{ size?: number }>, color: string } }} props - Output preview inputs and shared cache helpers. */
@@ -308,18 +397,9 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // ---------- 共用 ----------
       const openFile = (p) => canOpenSystemFiles ? inv('open_in_system', { path: p }).catch(() => {}) : Promise.resolve(false);
       const openFolder = (p) => canOpenSystemFiles ? inv('open_containing_folder', { path: p }).catch(() => {}) : Promise.resolve(false);
-      const fmtSize = (b) => {
-        if (b == null) return '';
-        if (b < 1024) return b + ' B';
-        if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
-        if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
-        return (b / 1073741824).toFixed(2) + ' GB';
-      };
-      const fmtDate = (s) => {
-        if (!s) return '';
-        const d = new Date(s * 1000), p = (n) => String(n).padStart(2, '0');
-        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-      };
+      // 字节 / 日期格式化收敛到 shared(formatBytes GB 档由原两位小数并为一位;fmtDate 入参为秒,需转毫秒)。
+      const fmtSize = (b) => formatBytes(b, { missing: '' });
+      const fmtDate = (s) => formatLocalDate(s ? s * 1000 : null);
       const fmtOutputDate = (s) => {
         if (!s) return '';
         const d = new Date(s * 1000), now = new Date(), p = (n) => String(n).padStart(2, '0');
@@ -353,9 +433,9 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       const CAT_COLOR = { all:'#6a6a78', doc:'#2f6beb', sheet:'#18a957', ppt:'#e0773a', pdf:'#d63a3a', img:'#d6589a', zip:'#8a6ad6' };
       // 每个类型卡的独立图标(对齐设计稿,不再全用 FileText)
       const CAT_ICON = { all:GridIcon, doc:FileText, sheet:TableIcon, ppt:PresentationIcon, pdf:FileText, img:ImageIcon, zip:Archive };
-      // 知识库 → 按分类/名稳定配色(对齐设计稿彩色卡片图标)
+      // 知识库 → 按分类/名稳定配色(对齐设计稿彩色卡片图标);取色逻辑收敛到 shared,本页保留 9 色长调色板。
       const COLL_PALETTE = ['#3f7bf0','#7b5fe6','#1aa07a','#d6873e','#d6589a','#4b7bd6','#e0903a','#2b9d7a','#7d6ae6'];
-      const collColor = (c) => COLL_PALETTE[Math.abs(String((c && (c.category || c.name)) || '').split('').reduce((a, ch) => a + ch.codePointAt(0), 0)) % COLL_PALETTE.length];
+      const collColor = (c) => stableAccentColor(c && (c.category || c.name), COLL_PALETTE);
 
       // ================= 产出物 =================
       const [outputs, setOutputs] = useState(kbCache.outputs);
@@ -465,14 +545,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           return catOk && qOk;
         });
       }, [outputs, outCat, outQuery]);
-      const sortedFilteredOutputs = React.useMemo(() => {
-        const dir = outSortDir === 'asc' ? 1 : -1;
-        return [...filteredOutputs].sort((a, b) => {
-          const byTime = ((a.mtime || 0) - (b.mtime || 0)) * dir;
-          if (byTime) return byTime;
-          return String(a.name || '').localeCompare(String(b.name || ''));
-        });
-      }, [filteredOutputs, outSortDir]);
+      const sortedFilteredOutputs = React.useMemo(() => sortByTimeDesc(filteredOutputs, outSortDir), [filteredOutputs, outSortDir]);
       const queryOutputs = React.useMemo(() => {
         const q = outQuery.trim().toLowerCase();
         return outputs.filter((o) => !q || String(o.name || '').toLowerCase().includes(q) || String(o.source || '').toLowerCase().includes(q));
@@ -551,14 +624,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         if (!c.exts) return stats ? stats.totalFiles : 0;
         return c.exts.reduce((s, e) => s + (extCountMap[e] || 0), 0);
       };
-      const sortedResults = React.useMemo(() => {
-        const dir = fileSortDir === 'asc' ? 1 : -1;
-        return [...results].sort((a, b) => {
-          const byTime = ((a.mtime || 0) - (b.mtime || 0)) * dir;
-          if (byTime) return byTime;
-          return String(a.name || '').localeCompare(String(b.name || ''));
-        });
-      }, [results, fileSortDir]);
+      const sortedResults = React.useMemo(() => sortByTimeDesc(results, fileSortDir), [results, fileSortDir]);
 
       const refreshL0 = useCallback(async () => {
         // 三个查询并行(原顺序 await 累加延迟);拉完更新缓存 + loaded,供 remount 秒显。
@@ -852,12 +918,8 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           kbCache.allDocs = next;
           return next;
         });
-        setColls((current) => current.map((collection) => (collection.id === document.collectionId ? {
-          ...collection,
-          docCount: Math.max(0, (collection.docCount || 0) - 1),
-          chunkCount: Math.max(0, (collection.chunkCount || 0) - (document.nChunks || 0)),
-          totalBytes: Math.max(0, (collection.totalBytes || 0) - (document.size || 0)),
-        } : collection)));
+        // 集合计数乐观更新(docCount/chunkCount/totalBytes 随删除同步下调,钳制 ≥0)收敛到 shared。
+        setColls((current) => applyDocumentDelta(current, document.collectionId, document, -1));
         try {
           await inv('kb_remove_document', { docId: document.id });
         } catch (error) {
@@ -874,46 +936,36 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       };
       // 点知识库卡片=就地聚焦该集(再点同卡/「全部」取消),下方文件表随之切换。不再跳二级详情页。
       const openColl = (c) => { if (activeColl && activeColl.id === c.id) setActiveColl(null); else { setActiveColl(c); loadDocs(c.id); } };
-      // kind='files' 走文件多选；kind='folders' 走目录选择，后端 WalkDir 递归展开。
-      const doAdd = async (cid, kind) => {
+      // 选文件/文件夹加入知识库(原 doAdd/dzPick 合并):kind='files' 走文件多选;kind='folders' 走目录选择，
+      // 后端 WalkDir 递归展开。singleCollectionShortcut=知识库页底部入口:仅一个知识集直接加,多个/无则走
+      // 「加入知识库」浮层;否则 collectionId 为聚焦态工具栏指定的目标集。
+      const pickAndAdd = async (kind, { collectionId, singleCollectionShortcut } = {}) => {
         if (!canPickHostFiles || indexing) return;
         const picker = bridge && bridge.files && (kind === 'folders' ? bridge.files.pickFolders : bridge.files.pickFiles);
         if (!picker) return;
         let paths;
         try { paths = await picker(); } catch { paths = []; }
         if (!paths || !paths.length) return;
-        try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: cid, paths })); } catch { /* silently degrade */ }
-      };
-      // 知识库页底部入口：选文件/文件夹 → 单知识集直接加；多个/无则走「加入知识库」浮层选择。
-      const dzPick = async (kind) => {
-        if (!canPickHostFiles || indexing) return;
-        const picker = bridge && bridge.files && (kind === 'folders' ? bridge.files.pickFolders : bridge.files.pickFiles);
-        if (!picker) return;
-        let paths;
-        try { paths = await picker(); } catch { paths = []; }
-        if (!paths || !paths.length) return;
-        if (colls.length === 1) { try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: colls[0].id, paths })); } catch { /* silently degrade */ } }
-        else { setAddToKb(paths); }
+        if (singleCollectionShortcut) {
+          if (colls.length === 1) { try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: colls[0].id, paths })); } catch { /* silently degrade */ } }
+          else { setAddToKb(paths); }
+          return;
+        }
+        try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId, paths })); } catch { /* silently degrade */ }
       };
       // 「+ 添加 ▾」下拉菜单：文件 / 文件夹。portal 到 body 以免被 overflow-y-auto 裁剪。
       const [addMenu, setAddMenu] = useState(null); // null | {left,top,width,src}
+      const addMenuRef = useRef(null); // 菜单本体(portal 到 body):outside-close 用 contains 判定点在菜单内不关闭
       const openAddMenu = (src, el) => {
         const r = el.getBoundingClientRect(); const w = 188, h = 96;
         const left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8));
         const top = (r.bottom + 6 + h > window.innerHeight) ? Math.max(8, r.top - h - 6) : Math.max(8, r.bottom + 6);
         setAddMenu({ left, top, width: w, src });
       };
-      useEffect(() => {
-        if (!addMenu) return;
-        const close = () => setAddMenu(null);
-        const esc = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
-        document.addEventListener('pointerdown', close);
-        window.addEventListener('keydown', esc);
-        window.addEventListener('resize', close);
-        window.addEventListener('scroll', close, true);
-        return () => { document.removeEventListener('pointerdown', close); window.removeEventListener('keydown', esc); window.removeEventListener('resize', close); window.removeEventListener('scroll', close, true); };
-      }, [addMenu]);
-      const chooseAdd = (kind) => { const src = addMenu && addMenu.src; setAddMenu(null); if (src === 'coll') doAdd(activeColl && activeColl.id, kind); else dzPick(kind); };
+      // 点外(pointerdown 捕获 + contains 判定) / Esc(preventDefault) / resize / 滚动(捕获) 统一关闭,
+      // 复用共享 hook,替换原手写监听 effect。
+      useOutsidePointerClose(!!addMenu, () => setAddMenu(null), [addMenuRef], { escape: true, escapeOnWindow: true, preventEscapeDefault: true, viewportClose: true });
+      const chooseAdd = (kind) => { const src = addMenu && addMenu.src; setAddMenu(null); if (src === 'coll') pickAndAdd(kind, { collectionId: activeColl && activeColl.id }); else pickAndAdd(kind, { singleCollectionShortcut: true }); };
       const folderPickerAvailable = !!(bridge && bridge.files && bridge.files.pickFolders);
       const docStatusLabel = (d) => d.parseStatus === 'parsed' ? `${d.nChunks} ${t.kbBlocks}` : (d.parseStatus === 'skipped' ? t.kbSkipped : (d.parseStatus === 'pending' ? t.kbStPending : d.parseStatus));
 
@@ -1001,18 +1053,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                   <div>
                     <div>
                         <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                          <div className="flex overflow-x-auto gap-2 no-scrollbar scroll-smooth">
-                            {CATS.map((c) => {
-                              const on = cat === c.key;
-                              return (
-                                <button type="button" key={c.key} onClick={() => setCat(c.key)}
-                                  className={"h-7 whitespace-nowrap shrink-0 text-[13px] px-3 rounded-full font-semibold transition-colors " + (on ? 'bg-[#3A3A3C] dark:bg-[#fff] text-[#fff] dark:text-[#000]' : 'bg-[#F2F2F7] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff]')}>
-                                  {c.label}
-                                  <span className="ml-1.5 opacity-70">{catCount(c).toLocaleString()}</span>
-                                </button>
-                              );
-                            })}
-                          </div>
+                          <ChipTabs items={CATS} value={cat} onChange={setCat} countOf={catCount} />
                         </div>
 
                         {searched && results.length === 0 ? (
@@ -1024,21 +1065,14 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                             >
                               <span className="text-left">{t.kbColName}</span>
                               <span className="text-right">{t.kbColSize}</span>
-                              <button
-                                type="button"
-                                onClick={() => setFileSortDir((v) => v === 'desc' ? 'asc' : 'desc')}
-                                className={`inline-flex w-fit items-center gap-1 rounded-[8px] py-1 transition-colors hover:text-[#1D1D1F] dark:hover:text-[#E5E5EA]`}
-                              >
-                                <span>{t.kbColTime}</span>
-                                <ChevronDown size={13} className={`transition-transform ${fileSortDir === 'asc' ? 'rotate-180' : ''}`} />
-                              </button>
+                              <SortableTimeHeader t={t} dir={fileSortDir} onToggle={() => setFileSortDir((v) => v === 'desc' ? 'asc' : 'desc')} />
                               <span className="text-center">{t.kbOutColActions}</span>
                             </div>
                             {sortedResults.map((f) => { const e = extOf(f); return (
                               // biome-ignore lint/a11y/useKeyWithClickEvents: list-row click is a shortcut; keyboard path handled by the in-row action buttons
                               // biome-ignore lint/a11y/noStaticElementInteractions: list-row click hot zone; not a standalone interactive control
                               <div key={f.path} onClick={() => setOutputPreview({ path: f.path, sessionId: null })}
-                                className="group py-4 border-b cursor-pointer border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A]">
+                                className={TABLE_ROW_CLASS}>
                                   <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_100px_132px_132px] items-center gap-4">
                                   <div className="flex min-w-0 items-center gap-4">
                                     <OutputFileIcon meta={{ color: extColor(e), label: extLabel(e) }} ext={e} />
@@ -1096,14 +1130,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                       );})}
                     </div>
                     <div className={`text-[15px] font-bold mb-3 ${ink}`}>{t.kbAllFiles}</div>
-                    <div className={`rounded-2xl overflow-hidden ${panel}`} style={panelShadow}>
-                      {Array.from({ length: 6 }).map((_, i) => (
-                        <div key={i} className="flex items-center gap-3 px-5 py-3 border-b border-gray-400/10 last:border-0">
-                          <div className={`w-7 h-7 rounded-lg shrink-0 animate-pulse bg-black/[0.07] dark:bg-white/10`} />
-                          <div className={`flex-1 h-3 rounded animate-pulse bg-black/[0.07] dark:bg-white/10`} style={{ maxWidth: `${60 - i * 6}%` }} />
-                        </div>
-                      ))}
-                    </div>
+                    <SkeletonRows panelClassName={panel} panelStyle={panelShadow} />
                   </div>
                 )}
               </div>
@@ -1113,37 +1140,18 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
             {sub === 'output' && (
               <div className="max-w-[1400px] mx-auto">
                 {outputsLoaded ? outputs.length === 0 ? (
-                  <div className={`text-center py-20 ${muted}`}>
-                    <div className={`w-14 h-14 mx-auto rounded-2xl grid place-items-center mb-4 ${card}`}><Archive size={24} /></div>
-                    <p className={`text-[15px] font-bold mb-1 ${ink}`}>{t.kbOutEmpty}</p>
-                    <p className="text-[13px]">{t.kbOutEmptyHint}</p>
-                  </div>
+                  <KbEmptyState muted={muted} card={card} ink={ink} title={t.kbOutEmpty} hint={t.kbOutEmptyHint} />
                 ) : (() => {
                   const activeOutputs = outView === 'list' ? sortedFilteredOutputs : queryOutputs;
                   if (outView === 'grid' && activeOutputs.length === 0) return (
-                    <div className={`text-center py-20 ${muted}`}>
-                      <div className={`w-14 h-14 mx-auto rounded-2xl grid place-items-center mb-4 ${card}`}><Archive size={24} /></div>
-                      <p className={`text-[15px] font-bold mb-1 ${ink}`}>{t.kbOutEmpty}</p>
-                      <p className="text-[13px]">{t.kbOutEmptyHint}</p>
-                    </div>
+                    <KbEmptyState muted={muted} card={card} ink={ink} title={t.kbOutEmpty} hint={t.kbOutEmptyHint} />
                   );
                   const sections = groupOutputs(activeOutputs).filter((x) => x.rows.length > 0);
                   return (
                     <div>
                       {outView === 'list' && (
                         <div className="relative mb-5">
-                          <div className="flex overflow-x-auto gap-2 no-scrollbar scroll-smooth">
-                          {OUTPUT_CATS.map((c) => {
-                            const on = outCat === c.key;
-                            return (
-                              <button type="button" key={c.key} onClick={() => setOutCat(c.key)}
-                                className={"h-7 whitespace-nowrap shrink-0 text-[13px] px-3 rounded-full font-semibold transition-colors " + (on ? 'bg-[#3A3A3C] dark:bg-[#fff] text-[#fff] dark:text-[#000]' : 'bg-[#F2F2F7] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff]')}>
-                                {c.label}
-                                <span className="ml-1.5 opacity-70">{outputCount(c.key)}</span>
-                              </button>
-                            );
-                          })}
-                          </div>
+                          <ChipTabs items={OUTPUT_CATS} value={outCat} onChange={setOutCat} countOf={(c) => outputCount(c.key)} />
                         </div>
                       )}
 
@@ -1178,11 +1186,8 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                       ) : (
                         <div>
                           {activeOutputs.length === 0 && (
-                            <div className={`text-center py-14 ${muted}`}>
-                              <div className={`w-12 h-12 mx-auto rounded-2xl grid place-items-center mb-3 ${card}`}><Archive size={20} /></div>
-                              <p className={`text-[14px] font-bold mb-3 ${ink}`}>{t.kbNoResults || t.kbOutEmpty}</p>
-                              <button type="button" onClick={() => { setOutCat('all'); setOutQuery(''); }} className={`px-4 py-2 rounded-full text-[13px] font-bold ${soft}`}>{t.kbOutCatAll}</button>
-                            </div>
+                            <KbEmptyState muted={muted} card={card} ink={ink} compact title={t.kbNoResults || t.kbOutEmpty}
+                              action={<button type="button" onClick={() => { setOutCat('all'); setOutQuery(''); }} className={`px-4 py-2 rounded-full text-[13px] font-bold ${soft}`}>{t.kbOutCatAll}</button>} />
                           )}
                           {activeOutputs.length > 0 && (
                             <div className="grid grid-cols-1">
@@ -1190,14 +1195,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                                 className="hidden md:grid grid-cols-[minmax(0,1fr)_132px_176px] items-center gap-4 border-b pb-2 text-[12px] font-medium border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A] text-[rgba(60,60,67,.55)] dark:text-[rgba(235,235,245,.5)]"
                               >
                                 <span className="text-left">{t.kbColName}</span>
-                                <button
-                                  type="button"
-                                  onClick={() => setOutSortDir((v) => v === 'desc' ? 'asc' : 'desc')}
-                                  className={`inline-flex w-fit justify-self-start items-center gap-1 rounded-[8px] py-1 transition-colors hover:text-[#1D1D1F] dark:hover:text-[#E5E5EA]`}
-                                >
-                                  <span>{t.kbColTime}</span>
-                                  <ChevronDown size={13} className={`transition-transform ${outSortDir === 'asc' ? 'rotate-180' : ''}`} />
-                                </button>
+                                <SortableTimeHeader t={t} dir={outSortDir} justifySelfStart onToggle={() => setOutSortDir((v) => v === 'desc' ? 'asc' : 'desc')} />
                                 <div className="flex justify-end">
                                   <span className="w-[144px] text-center">{t.kbOutColActions}</span>
                                 </div>
@@ -1208,7 +1206,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                                   // biome-ignore lint/a11y/useKeyWithClickEvents: list-row click is a shortcut; keyboard path handled by the in-row action buttons
                                   // biome-ignore lint/a11y/noStaticElementInteractions: list-row click hot zone; not a standalone interactive control
                                   <div key={o.path} onClick={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || o.session_id || null })}
-                                    className="group py-4 border-b cursor-pointer border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A]">
+                                    className={TABLE_ROW_CLASS}>
                                     <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_132px_176px] items-center gap-4">
                                       <div className="flex min-w-0 items-center gap-4">
                                         <OutputFileIcon meta={meta} ext={o.ext} category={o.category} />
@@ -1222,28 +1220,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                                       <div className="hidden md:block text-[12px] font-medium tabular-nums text-[rgba(60,60,67,.62)] dark:text-[rgba(235,235,245,.62)]">
                                         {fmtOutputDate(o.mtime)}
                                       </div>
-                                      <div className="flex shrink-0 items-center justify-end gap-1">
-                                        <button type="button" onClick={(e) => { e.stopPropagation(); continueOutput(o); }}
-                                          className={`h-8 rounded-[9px] px-2.5 text-[12px] font-medium transition-colors active:opacity-70 text-[#007AFF] hover:bg-[#007AFF]/10 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/10`}>
-                                          {t.kbOutContinue}
-                                        </button>
-                                        <button type="button" onClick={(e) => { e.stopPropagation(); newOutputProject(o); }}
-                                          className={`h-8 rounded-[9px] px-2.5 text-[12px] font-medium transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#D1D1D6] dark:hover:bg-white/[0.08]`}>
-                                          {t.kbOutNewProject}
-                                        </button>
-                                        {canOpenSystemFiles && (
-                                          <button type="button" title={t.kbOutOpenFolder} onClick={(e) => { e.stopPropagation(); openFolder(o.path); }}
-                                            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
-                                            <FolderOpen size={15} />
-                                          </button>
-                                        )}
-                                        {isWeb && canDownloadArtifacts && bridge.artifacts.downloadArtifact && (
-                                          <button type="button" title={t.uiKnowledge.downloadOutput} onClick={(e) => { e.stopPropagation(); bridge.artifacts.downloadArtifact(o.path, o.sessionId || o.session_id); }}
-                                            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
-                                            <Download size={15} />
-                                          </button>
-                                        )}
-                                      </div>
+                                      <OutputActions o={o} compact small stopPropagation wrapperClassName="flex shrink-0 items-center justify-end gap-1" t={t} continueOutput={continueOutput} newOutputProject={newOutputProject} openFolder={openFolder} canOpenSystemFiles={canOpenSystemFiles} canDownloadArtifacts={canDownloadArtifacts} />
                                       <div className="col-span-2 text-[12px] md:hidden text-[rgba(60,60,67,.55)] dark:text-[rgba(235,235,245,.5)]">
                                         {fmtOutputDate(o.mtime)}
                                       </div>
@@ -1258,14 +1235,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                     </div>
                   );
                 })() : (
-                  <div className={`rounded-2xl overflow-hidden ${panel}`} style={panelShadow}>
-                    {Array.from({ length: 6 }).map((_, i) => (
-                      <div key={i} className="flex items-center gap-3 px-5 py-3 border-b border-gray-400/10 last:border-0">
-                        <div className={`w-8 h-8 rounded-lg shrink-0 animate-pulse bg-black/[0.07] dark:bg-white/10`} />
-                        <div className={`flex-1 h-3 rounded animate-pulse bg-black/[0.07] dark:bg-white/10`} style={{ maxWidth: `${70 - i * 7}%` }} />
-                      </div>
-                    ))}
-                  </div>
+                  <SkeletonRows panelClassName={panel} panelStyle={panelShadow} icon="w-8 h-8" start={70} step={7} />
                 )}
               </div>
             )}
@@ -1574,96 +1544,73 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
 
           {/* 删除知识集 二次确认(删库连同所有文档+索引,不可恢复) */}
           {delColl && (
-            // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal cancel button
-            // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
-            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setDelColl(null)}>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
-              <div onClick={(e) => e.stopPropagation()} className={`w-[400px] rounded-2xl p-6 bg-white dark:bg-[#1E1F20]`}>
-                <div className={`flex items-center gap-2 text-[16px] font-bold mb-2 ${ink}`}>
-                  <AlertTriangle size={18} style={{ color: '#d63a3a' }} />
-                  {t.kbDelCollConfirm.replace('{n}', () => String(delColl.name))}
-                </div>
-                <div className={`text-[13px] leading-relaxed mb-5 ${muted}`}>{t.kbDelCollWarn.replace('{c}', () => String(delColl.docCount || 0))}</div>
-                <div className="flex justify-end gap-2">
-                  <button type="button" onClick={() => setDelColl(null)} className={`px-4 py-2 rounded-full text-[13px] ${card} ${muted}`}>{t.kbCancel}</button>
-                  <button type="button" onClick={() => { deleteColl(delColl.id); setDelColl(null); }} className="px-4 py-2 rounded-full text-[13px] font-medium text-white" style={{ background: '#d63a3a' }}>{t.kbDelete}</button>
-                </div>
+            <KbDialog onClose={() => setDelColl(null)}>
+              <div className={`flex items-center gap-2 text-[16px] font-bold mb-2 ${ink}`}>
+                <AlertTriangle size={18} style={{ color: '#d63a3a' }} />
+                {t.kbDelCollConfirm.replace('{n}', () => String(delColl.name))}
               </div>
-            </div>
+              <div className={`text-[13px] leading-relaxed mb-5 ${muted}`}>{t.kbDelCollWarn.replace('{c}', () => String(delColl.docCount || 0))}</div>
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setDelColl(null)} className={`px-4 py-2 rounded-full text-[13px] ${card} ${muted}`}>{t.kbCancel}</button>
+                <button type="button" onClick={() => { deleteColl(delColl.id); setDelColl(null); }} className="px-4 py-2 rounded-full text-[13px] font-medium text-white" style={{ background: '#d63a3a' }}>{t.kbDelete}</button>
+              </div>
+            </KbDialog>
           )}
 
           {/* 从本地知识库移除文档：只删除索引，不触碰磁盘原文件。 */}
           {confirmDoc && (
-            // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal cancel button
-            // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
-            <div data-testid="kb-remove-document-confirm" className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setConfirmDoc(null)}>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
-              <div role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()} className="w-[400px] rounded-2xl bg-white p-6 dark:bg-[#1E1F20]">
-                <div className={`mb-2 flex items-center gap-2 text-[16px] font-bold ${ink}`}>
-                  <AlertTriangle size={18} style={{ color: '#d63a3a' }} />
-                  {t.kbRemoveDocConfirm.replace('{n}', () => String(confirmDoc.name))}
-                </div>
-                <div className={`mb-5 text-[13px] leading-relaxed ${muted}`}>{t.kbRemoveDocWarn}</div>
-                <div className="flex justify-end gap-2">
-                  <button type="button" onClick={() => setConfirmDoc(null)} className={`rounded-full px-4 py-2 text-[13px] ${card} ${muted}`}>{t.kbCancel}</button>
-                  <button type="button" onClick={() => removeDocument(confirmDoc)} className="rounded-full bg-[#d63a3a] px-4 py-2 text-[13px] font-medium text-white">{t.kbRemove}</button>
-                </div>
+            <KbDialog onClose={() => setConfirmDoc(null)} testId="kb-remove-document-confirm" role="dialog" ariaModal="true">
+              <div className={`mb-2 flex items-center gap-2 text-[16px] font-bold ${ink}`}>
+                <AlertTriangle size={18} style={{ color: '#d63a3a' }} />
+                {t.kbRemoveDocConfirm.replace('{n}', () => String(confirmDoc.name))}
               </div>
-            </div>
+              <div className={`mb-5 text-[13px] leading-relaxed ${muted}`}>{t.kbRemoveDocWarn}</div>
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setConfirmDoc(null)} className={`rounded-full px-4 py-2 text-[13px] ${card} ${muted}`}>{t.kbCancel}</button>
+                <button type="button" onClick={() => removeDocument(confirmDoc)} className="rounded-full bg-[#d63a3a] px-4 py-2 text-[13px] font-medium text-white">{t.kbRemove}</button>
+              </div>
+            </KbDialog>
           )}
 
           {/* 新建知识集 modal */}
           {newColl && (
-            // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal cancel button
-            // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
-            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setNewColl(null)}>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
-              <div onClick={(e) => e.stopPropagation()} className={`w-[400px] rounded-2xl p-6 bg-white dark:bg-[#1E1F20]`}>
-                <div className={`text-[17px] font-bold mb-4 ${ink}`}>{newColl.id ? t.kbEditColl : t.kbNewColl}</div>
-                {/* biome-ignore lint/a11y/noAutofocus: the new-collection modal focuses the name input on open; focus is the input intent */}
-                <input autoFocus value={newColl.name} placeholder={t.kbCollNamePh} onChange={(e) => setNewColl({ ...newColl, name: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter' && !isImeComposing(e)) createColl(); }}
-                  className={`w-full px-4 py-2.5 rounded-xl mb-3 text-[14px] outline-none bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#2A2B2D] dark:text-[#E3E3E3]`} />
-                <input value={newColl.category} placeholder={t.kbCollCatPh} onChange={(e) => setNewColl({ ...newColl, category: e.target.value })}
-                  className={`w-full px-4 py-2.5 rounded-xl mb-4 text-[14px] outline-none bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#2A2B2D] dark:text-[#E3E3E3]`} />
-                <div className="flex justify-end gap-2">
-                  <button type="button" onClick={() => setNewColl(null)} className={`px-4 py-2 rounded-full text-[13px] ${card} ${muted}`}>{t.kbCancel}</button>
-                  <button type="button" onClick={createColl} className={`px-4 py-2 rounded-full text-[13px] font-medium ${accent}`}>{newColl.id ? t.kbSave : t.kbCreate}</button>
-                </div>
+            <KbDialog onClose={() => setNewColl(null)}>
+              <div className={`text-[17px] font-bold mb-4 ${ink}`}>{newColl.id ? t.kbEditColl : t.kbNewColl}</div>
+              {/* biome-ignore lint/a11y/noAutofocus: the new-collection modal focuses the name input on open; focus is the input intent */}
+              <input autoFocus value={newColl.name} placeholder={t.kbCollNamePh} onChange={(e) => setNewColl({ ...newColl, name: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter' && !isImeComposing(e)) createColl(); }}
+                className={`w-full px-4 py-2.5 rounded-xl mb-3 text-[14px] outline-none bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#2A2B2D] dark:text-[#E3E3E3]`} />
+              <input value={newColl.category} placeholder={t.kbCollCatPh} onChange={(e) => setNewColl({ ...newColl, category: e.target.value })}
+                className={`w-full px-4 py-2.5 rounded-xl mb-4 text-[14px] outline-none bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#2A2B2D] dark:text-[#E3E3E3]`} />
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setNewColl(null)} className={`px-4 py-2 rounded-full text-[13px] ${card} ${muted}`}>{t.kbCancel}</button>
+                <button type="button" onClick={createColl} className={`px-4 py-2 rounded-full text-[13px] font-medium ${accent}`}>{newColl.id ? t.kbSave : t.kbCreate}</button>
               </div>
-            </div>
+            </KbDialog>
           )}
 
           {/* 加入知识库 浮层 */}
           {addToKb && (
-            // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal close control
-            // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
-            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setAddToKb(null)}>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
-              <div onClick={(e) => e.stopPropagation()} className={`w-[380px] rounded-2xl p-6 bg-white dark:bg-[#1E1F20]`}>
-                <div className={`text-[16px] font-bold mb-1 ${ink}`}>{t.kbAddToKb}</div>
-                <div className={`text-[12px] mb-4 truncate ${muted}`}>{Array.isArray(addToKb) ? `${addToKb.length} ${t.kbDocs}` : addToKb}</div>
-                {colls.length === 0 ? (
-                  <div className={`text-[13px] mb-4 ${muted}`}>{t.kbNoCollsShort}</div>
-                ) : (
-                  <div className="flex flex-col gap-1 mb-4 max-h-[240px] overflow-y-auto">
-                    {colls.map((c) => (
-                      <button type="button" key={c.id} onClick={async () => { try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: c.id, paths: Array.isArray(addToKb) ? addToKb : [addToKb] })); } catch { /* silently degrade */ } setAddToKb(null); if (!outputsOnly) setSub('kb'); }}
-                        className={`text-left px-4 py-2.5 rounded-xl text-[14px] ${card} ${iconHover} ${ink}`}>{c.name}</button>
-                    ))}
-                  </div>
-                )}
+            <KbDialog onClose={() => setAddToKb(null)} width="w-[380px]">
+              <div className={`text-[16px] font-bold mb-1 ${ink}`}>{t.kbAddToKb}</div>
+              <div className={`text-[12px] mb-4 truncate ${muted}`}>{Array.isArray(addToKb) ? `${addToKb.length} ${t.kbDocs}` : addToKb}</div>
+              {colls.length === 0 ? (
+                <div className={`text-[13px] mb-4 ${muted}`}>{t.kbNoCollsShort}</div>
+              ) : (
+                <div className="flex flex-col gap-1 mb-4 max-h-[240px] overflow-y-auto">
+                  {colls.map((c) => (
+                    <button type="button" key={c.id} onClick={async () => { try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: c.id, paths: Array.isArray(addToKb) ? addToKb : [addToKb] })); } catch { /* silently degrade */ } setAddToKb(null); if (!outputsOnly) setSub('kb'); }}
+                      className={`text-left px-4 py-2.5 rounded-xl text-[14px] ${card} ${iconHover} ${ink}`}>{c.name}</button>
+                  ))}
+                </div>
+              )}
       {/* eslint-disable-next-line sonarjs/no-unenclosed-multiline-block -- single-line blocks are this file's existing style; bulk re-wrapping would flood the diff */}
-                <button type="button" onClick={() => { setAddToKb(null); if (!outputsOnly) setSub('kb'); setNewColl({ name: '', category: '' }); }} className={`w-full px-4 py-2.5 rounded-xl text-[13px] font-medium ${soft}`}>+ {t.kbNewColl}</button>
-              </div>
-            </div>
+              <button type="button" onClick={() => { setAddToKb(null); if (!outputsOnly) setSub('kb'); setNewColl({ name: '', category: '' }); }} className={`w-full px-4 py-2.5 rounded-xl text-[13px] font-medium ${soft}`}>+ {t.kbNewColl}</button>
+            </KbDialog>
           )}
 
           {/* 「+ 添加 ▾」下拉菜单：文件 / 文件夹(后端 WalkDir 递归展开目录) */}
           {addMenu && typeof document !== 'undefined' && createPortal(
-            <div onPointerDown={(e) => e.stopPropagation()} style={{ left: addMenu.left, top: addMenu.top, width: addMenu.width }}
+            <div ref={addMenuRef} onPointerDown={(e) => e.stopPropagation()} style={{ left: addMenu.left, top: addMenu.top, width: addMenu.width }}
               className={`fixed z-[1000] overflow-hidden rounded-xl py-1 shadow-xl ring-1 bg-white ring-black/10 dark:bg-[#202124] dark:ring-white/10`}>
               <button type="button" data-testid="kb-add-files" onClick={() => chooseAdd('files')} className={`w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]`}><FileText size={15} /><span>{t.kbAddFiles}</span></button>
               <button type="button" data-testid="kb-add-folder" onClick={() => chooseAdd('folders')} disabled={!folderPickerAvailable} className={`w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] ${folderPickerAvailable ? 'text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]' : 'opacity-40 cursor-default'}`}><FolderOpen size={15} /><span>{t.kbAddFolder}</span></button>
