@@ -1077,6 +1077,8 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&temporary_home);
         std::fs::create_dir_all(&temporary_home).expect("create temporary prefs home");
+        // SAFETY: holding ENV_LOCK (first line of this test); env writes in the
+        // test process are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &temporary_home) };
 
         // Fixture must pin LocalVllm explicitly: `ModelPreset::default()` is
@@ -1120,7 +1122,10 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temporary_home);
         match old_home {
+            // SAFETY: holding ENV_LOCK (first line of this test); restore-side
+            // env writes serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: same as above; removal serialized under ENV_LOCK.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }

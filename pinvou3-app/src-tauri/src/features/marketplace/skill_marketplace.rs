@@ -1652,7 +1652,7 @@ pub(crate) fn read_skill_description_from_str(content: &str) -> Option<String> {
         };
         let value = value.trim();
         let is_block_scalar = matches!(value, ">" | "|" | ">-" | ">+" | "|-" | "|+");
-        if key.trim().to_ascii_lowercase() != "description" {
+        if !key.trim().eq_ignore_ascii_case("description") {
             // 引擎对**任意键**消费块状续行（is_block_scalar 判定在键过滤之前，
             // `|`/`>` 块整块进那个键的值）——其他键块内的 `description:` 行
             // 不是 description。镜像必须同样跳过这些续行，否则会读出引擎侧

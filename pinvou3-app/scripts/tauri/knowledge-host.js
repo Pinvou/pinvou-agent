@@ -7,6 +7,7 @@ const {
   writeFileSync,
 } = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const { APP_ROOT } = require('./platform-config.js');
 
@@ -114,7 +115,11 @@ function prepareKnowledgeHost({
   if (!development) cargoArgs.push('--release');
   cargoArgs.push(
     '--manifest-path', manifest, '--bin', 'pinvou-knowledge-server',
-    '-j', process.env.PINVOU_KNOWLEDGE_BUILD_JOBS || '2',
+    // Default to all cores: knowledge-host builds in an isolated target dir that
+    // is always cold on release machines/CI, where -j 2 drags this step out to
+    // minutes; memory-constrained environments can still override via
+    // PINVOU_KNOWLEDGE_BUILD_JOBS (same name as pinvou-knowledge/deploy/install.sh).
+    '-j', process.env.PINVOU_KNOWLEDGE_BUILD_JOBS || String(os.availableParallelism()),
   );
   const result = spawn(
     process.env.CARGO || 'cargo',
