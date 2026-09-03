@@ -1798,6 +1798,21 @@ fn review_signal_detects_explicit_remember_phrases() {
     assert!(has_memory_review_signal("这个要点你要记牢"));
     // 普通问答不触发。
     assert!(!has_memory_review_signal("今天天气如何"));
+    // 陈述、疑问句中的 remember 不是记录请求：explicit signal 携带 auto_write
+    // 门槛放宽的实际写后果，宁窄勿宽。
+    assert!(!has_memory_review_signal(
+        "Do you remember the deadline for the report?"
+    ));
+    assert!(!has_memory_review_signal(
+        "I don't remember my old password"
+    ));
+    // 词边界：remembers 不是祈使的 remember。
+    assert!(!has_memory_review_signal("This song remembers me of home"));
+    // 祈使位置的 remember 仍然触发（句首、标点之后）。
+    assert!(has_memory_review_signal("Remember: I prefer dark mode"));
+    assert!(has_memory_review_signal(
+        "ok, remember that I take the 7:30 train"
+    ));
 }
 
 #[test]
@@ -1916,6 +1931,15 @@ impl MemoryReviewModel for FakeOrganizeModel {
 /// 起一个只响应一次 chat/completions 的本地 HTTP stub，返回固定 message.content，
 /// 并返回 base_url。读取完整请求头与 body 后再响应，避免过早关闭触发 RST。
 fn spawn_chat_completions_stub(content: String) -> String {
+    spawn_chat_completions_stub_with_hook(content, None::<Box<dyn FnOnce() + Send>>)
+}
+
+/// 同上，但可在返回响应前执行一个闭包：模拟整理的 LLM 调用期间（快照装载
+/// 之后、动作应用之前）其他写入者并发改动存储。
+fn spawn_chat_completions_stub_with_hook(
+    content: String,
+    before_response: Option<Box<dyn FnOnce() + Send>>,
+) -> String {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let payload = json!({
@@ -1959,6 +1983,11 @@ fn spawn_chat_completions_stub(content: String) -> String {
                     }
                 }
             }
+        }
+        // 请求已抵达意味着 organize 已完成快照装载并进入 LLM 调用：此刻执行
+        // hook 才是对“快照之后、应用之前”并发窗口的真实模拟。
+        if let Some(hook) = before_response {
+            hook();
         }
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -2037,6 +2066,8 @@ async fn organize_memory_merges_duplicates_and_deletes_stale_focus() {
     assert_eq!(report.updated["preference"], 1);
     assert_eq!(report.merged["preference"], 1);
     assert_eq!(report.deleted["current_focus"], 1);
+    // 口径互不重叠：被合并移除的条目只计 merged，不再重复计入 deleted。
+    assert!(!report.deleted.contains_key("preference"));
     assert_eq!(report.skipped_sensitive, 0);
     assert!(
         report.warnings.is_empty(),
@@ -2056,6 +2087,86 @@ async fn organize_memory_merges_duplicates_and_deletes_stale_focus() {
     assert_eq!(history[0].finished_at, report.finished_at);
     assert_eq!(history[0].deleted["current_focus"], 1);
     assert_eq!(history[0].updated["preference"], 1);
+}
+
+#[tokio::test]
+async fn organize_merge_skips_source_deletion_when_keep_update_fails() {
+    let _home = IsolatedPinvouHome::new("organize-merge-keep-gone");
+    enable_memory_for_tests();
+    let preference_dir = paths::user_memory_preferences_dir();
+    fs::create_dir_all(&preference_dir).unwrap();
+    let id_a = "pref_keep".to_string();
+    let id_b = "pref_source".to_string();
+    write_json_atomic(
+        &preference_dir.join(format!("{id_a}.json")),
+        &preference_fixture(&id_a, "answer_style", "回答默认先给结论"),
+    )
+    .unwrap();
+    write_json_atomic(
+        &preference_dir.join(format!("{id_b}.json")),
+        &preference_fixture(&id_b, "workflow_preference", "回答需要给出步骤"),
+    )
+    .unwrap();
+    let actions = json!({
+        "actions": [
+            {
+                "op": "merge",
+                "kind": "preference",
+                "ids": [id_a, id_b],
+                "content": "回答默认先给结论",
+                "reason": "两条重复偏好合并为一条"
+            }
+        ]
+    });
+    // 快照装载后、动作应用前，主条目被并发删除（如逐轮复盘的清理）：keep
+    // 更新返回 Ok(false) 时不得删除其余源条目，否则合并内容没有落库而源
+    // 条目先没了，造成不可逆的信息丢失。
+    let keep_path = preference_dir.join(format!("{id_a}.json"));
+    let bridge = FakeOrganizeModel {
+        base_url: spawn_chat_completions_stub_with_hook(
+            actions.to_string(),
+            Some(Box::new(move || fs::remove_file(&keep_path).unwrap())),
+        ),
+    };
+
+    let report = organize_memory_with_llm(&bridge).await.unwrap();
+
+    // 源条目保留，无任何计数落库，但留有 merge skipped warning。
+    assert!(
+        list_preferences()
+            .unwrap()
+            .iter()
+            .any(|item| item.id == id_b),
+        "merge source must survive a failed keep update"
+    );
+    assert!(report.updated.is_empty());
+    assert!(report.merged.is_empty());
+    assert!(report.deleted.is_empty());
+    assert!(report.no_change);
+    assert!(
+        report.warnings.iter().any(|w| w.contains("merge skipped")),
+        "unexpected warnings: {:?}",
+        report.warnings
+    );
+}
+
+#[tokio::test]
+async fn organize_memory_rejects_concurrent_second_pass() {
+    let _home = IsolatedPinvouHome::new("organize-single-flight");
+    enable_memory_for_tests();
+    // 预占进程级单飞守卫，模拟另一个 pass（手动按钮或定时任务）正在整理。
+    // IsolatedPinvouHome 自带进程级互斥，不会与其他 organize 测试并发。
+    let guard = super::organize::ORGANIZE_IN_FLIGHT.get_or_init(|| tokio::sync::Mutex::new(()));
+    let _permit = guard.lock().await;
+    let bridge = FakeOrganizeModel {
+        base_url: "http://127.0.0.1:9".to_string(),
+    };
+
+    let error = organize_memory_with_llm(&bridge).await.unwrap_err();
+
+    assert!(error.to_string().contains("already in progress"));
+    // 被拒绝的 pass 不落历史。
+    assert!(load_organize_history().is_empty());
 }
 
 #[tokio::test]
