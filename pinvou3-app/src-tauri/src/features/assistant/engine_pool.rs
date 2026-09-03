@@ -1144,29 +1144,31 @@ impl EnginePool {
                 .await,
             );
         }
-        // 本地 vLLM:发请求的 model 名以 vLLM 实际 served name 为准(探测 /v1/models),
+        // 本地 vLLM:模型名以服务端实际 served 列表为准做一致性校正(resolve_served_model),
         // 免去写死 qwen36_35b_256k 与 --served-model-name 不一致的 model_not_found。
-        // 探测失败(vLLM 没起)保持配置值;云端 provider 不探测。OpenAI 兼容端点
-        // 探测出 vLLM 时同样享受 served name 跟随（provider() 已映射为 "vllm"）。
+        // 配置名在服务列表中必须原样保留——LM Studio/Ollama 的 /v1/models 是全部
+        // 已下载模型的多元素列表,首元素与用户选的模型无关,拿它顶替配置名就是
+        // 「对话指定模型与实际加载模型不一致」的断链。仅单模型服务且不含配置名时
+        // 才跟随 served name。探测失败(vLLM 没起)保持配置值;云端 provider 不探测。
+        // OpenAI 兼容端点探测出 vLLM 时同样走此校正（provider() 已映射为 "vllm"）。
         if bridge.provider() == "vllm" {
             // The served-name probe carries the same inference-same-origin
             // credential (authenticated vLLM 401s on /v1/models; on probe
             // failure the configured model name is kept).
             let api_key = bridge.api_key();
-            let (served, max_len) = crate::features::monitor::probe_vllm_model_info(
-                &bridge.base_url(),
-                Some(api_key.as_str()),
-            )
-            .await;
-            if let Some(served) = served.filter(|_| !pins_scheduled_model) {
-                if let Some(mut model) = bridge.effective_model_owned() {
-                    if model.model != served {
-                        model.model = served;
-                        bridge.session_model = Some(model);
-                    }
+            if let Some(mut model) = bridge.effective_model_owned() {
+                let (served, max_len) = crate::features::monitor::resolve_served_model(
+                    &bridge.base_url(),
+                    Some(api_key.as_str()),
+                    &model.model,
+                )
+                .await;
+                if served != model.model && !pins_scheduled_model {
+                    model.model = served;
+                    bridge.session_model = Some(model);
                 }
+                bridge.probed_context_tokens = max_len;
             }
-            bridge.probed_context_tokens = max_len;
         }
         bridge
     }
@@ -2733,7 +2735,19 @@ fn resolve_spawn_model(
             .transpose();
     }
     if let Some(model_id) = interactive_model_override {
-        return Ok(models.iter().find(|model| model.id == model_id).cloned());
+        // 与 scheduled/探测同口径:会话绑定的模型配置被删除或重建(id 随探测重新
+        // 生成)后,绝不能静默回退到全局 active 模型——否则对话里选了 A、实际跑的
+        // 是 B。显式报错让用户重新选择,链路不允许断链。
+        let selected = models
+            .iter()
+            .find(|model| model.id == model_id)
+            .cloned()
+            .with_context(|| {
+                format!(
+                    "当前会话选择的模型配置已失效，请在对话中重新选择模型。缺失配置：{model_id}"
+                )
+            })?;
+        return Ok(Some(selected));
     }
     scheduled_profile
         .map(|profile| resolve_scheduled_model(models, profile))
@@ -3331,6 +3345,30 @@ mod scheduled_model_tests {
         ];
         assert!(resolve_scheduled_model(&models, &profile(Some("missing"), "wire-model")).is_err());
         assert!(resolve_scheduled_model(&models, &profile(Some("wanted"), "wire-model")).is_err());
+    }
+
+    /// 会话级模型选择与 scheduled 同口径：绑定的配置被删除/重建（探测重新生成
+    /// id）后必须显式报错让用户重选，不能静默回退到全局 active 模型——否则
+    /// 对话里选了 A、实际加载的是 B（本地 LM Studio 用户反馈的断链）。
+    #[test]
+    fn interactive_override_missing_id_never_falls_back_to_active() {
+        let models = vec![model("active", "active-model")];
+        let error = resolve_spawn_model(&models, None, Some("deleted-id"), false)
+            .expect_err("stale session binding must surface, not fall back to active");
+        let message = error.to_string();
+        assert!(
+            message.contains("deleted-id") && message.contains("已失效"),
+            "报错须指明失效配置 id，实得：{message}"
+        );
+        // 仍存在的覆盖照常解析。
+        let models = vec![model("active", "active-model"), model("kept", "kept-wire")];
+        assert_eq!(
+            resolve_spawn_model(&models, None, Some("kept"), false)
+                .expect("resolvable override")
+                .expect("selected model")
+                .id,
+            "kept"
+        );
     }
 
     #[test]

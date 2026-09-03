@@ -25,7 +25,7 @@ mod self_metrics;
 #[allow(unused_imports)]
 pub use model_probe::{
     MonitorDiagnostic, VllmSnapshot, VllmStatus, active_model_snapshot, probe_vllm_model_info,
-    vllm_base_url, vllm_configured_model, vllm_snapshot,
+    resolve_served_model, vllm_base_url, vllm_configured_model, vllm_snapshot,
 };
 pub use self_metrics::{SelfMetrics, SelfMetricsDebugSnapshot, SelfPerfSnapshot};
 
