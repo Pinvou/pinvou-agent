@@ -135,6 +135,7 @@ import {
   ComposerKbSelector,
   ComposerModeChip,
 } from './composer-controls.jsx';
+import { ComposerWorkspaceSelector } from './ComposerWorkspaceSelector.jsx';
 
 const UNIFIED_CONVERSATION_UI_KEY = 'pinvou_conversation_ui_v2';
 const MULTI_AGENT_ENABLED = can('multiAgent');
@@ -2808,6 +2809,17 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               <div className="flex items-center justify-between mt-1.5 gap-2">
                 <div className="flex items-center gap-1.5 min-w-0 flex-1">
                   <ComposerAttachButton t={t} compact={composerCompact} />
+                  {/* 草稿态工作目录选择（对齐 code 模式草稿选择器）：仅桌面端 + 草稿态；
+                      Web bridge 无 sessions.setDraftWorkspace/pickDraftWorkspace，方法存在性守卫兜底。
+                      bs.draftWorkspacePath 在 Web 快照里不存在，|| null 兜底。 */}
+                  {!activeSessionId && can('desktopChrome') && bridge.sessions && typeof bridge.sessions.pickDraftWorkspace === 'function' && (
+                    <ComposerWorkspaceSelector
+                      copy={t.uiChatWorkspace}
+                      draftWorkspacePath={(bs && bs.draftWorkspacePath) || null}
+                      onPickWorkspace={() => bridge.sessions.pickDraftWorkspace()}
+                      onSelectWorkspace={path => bridge.sessions.setDraftWorkspace(path)}
+                    />
+                  )}
                   <button type="button" onClick={handleVoiceClick} disabled={primaryVoiceDisabled} data-testid="composer-voice-button" aria-label={primaryVoiceLabel} title={primaryVoiceLabel}
                     className={`${
                       voiceRecording

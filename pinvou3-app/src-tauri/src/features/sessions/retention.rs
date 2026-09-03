@@ -217,6 +217,16 @@ impl SessionStore {
             self.save_session_mode_states();
         }
 
+        let removed_workspaces = {
+            let mut workspaces = self.session_workspaces.write();
+            let before = workspaces.len();
+            workspaces.retain(|id, _| !contains(id.as_str()));
+            workspaces.len() != before
+        };
+        if removed_workspaces {
+            self.save_session_workspaces();
+        }
+
         let removed_models = {
             let mut models = self.session_models.write();
             let before = models.len();

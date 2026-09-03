@@ -109,7 +109,9 @@ const expectedProtocolHashes = {
   personas: 'd16d99104c45bb3e7a6585862b0ba30936bf31a4fef2238453a0a0a35e3c1806',
   remoteControl: '0001038f6e32075aa5dbc3253ad2c3dfff207b8fe0bf1c65d710dc37b2937ee1',
   scheduled: '7d6ca9783925a5071a364097ebdf0112511f9503b5e4534346b9fda6873ec036',
-  sessions: '7dd63b9cb4ab7b7e03f81abc0822baa9bd1dd61f27fa8b8d2df009126d1c6c60',
+  // Recomputed for the normal-chat draft workspace selector: create_session
+  // now carries the optional workspacePath payload (bridge/sessions.js).
+  sessions: 'a695b49ae35d8ee69eb4795f5dd769dded901463e36908c1b2416977ceb9fbc5',
   settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
   updater: '86412d40999a268d3d92dc4fe97e3fe465de08745423be820f38a462d79aaced',
   voice: '281399c4de7cdc3adf2f50a422ea5725cb98cbf175e1de8beb0d610655d0028a',

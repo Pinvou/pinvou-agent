@@ -352,7 +352,7 @@ pub async fn web_access_create_session(
 ) -> Result<WebSessionMetadata, String> {
     let metadata = web_session_result(
         WebSessionOperation::CreateSession,
-        super::sessions::create_session(Some(false), app, store, pool).await,
+        super::sessions::create_session(Some(false), None, app, store, pool).await,
     )?;
     let transcript_revision = crate::features::sessions::transcript_revision(&[])
         .map_err(|error| format!("create empty transcript revision: {error:#}"))?;
@@ -805,7 +805,7 @@ pub async fn web_access_create_session_and_chat(
 ) -> Result<WebSessionMetadata, String> {
     let transcript_revision = crate::features::sessions::transcript_revision(&[])
         .map_err(|error| format!("create empty transcript revision: {error:#}"))?;
-    let metadata = super::sessions::create_session_record(false, &store, &pool)?;
+    let metadata = super::sessions::create_session_record(false, &store, &pool, None)?;
     let session_id = metadata.id.clone();
 
     if let Err(error) = web_access_chat_for_session(

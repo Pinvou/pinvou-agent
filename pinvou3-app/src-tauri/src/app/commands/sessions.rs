@@ -317,13 +317,16 @@ pub async fn list_archived_sessions(
 
 /// 新建空 session 并设为 active。返回创建的 SessionMetadata。
 /// 引擎层的 session 状态切换由 chat() 下次发消息时自然处理（暂不发 SyncSession）。
+/// `workspace` 为 Some 时 metadata.workspace 用该目录（展示用），None 保持
+/// 现状（pool.bridge.workspace，home 目录）。
 pub(super) fn create_session_record(
     set_active: bool,
     store: &SessionStore,
     pool: &EnginePool,
+    workspace: Option<PathBuf>,
 ) -> Result<SessionMetadata, String> {
     let (model, model_id) = pool.default_model_for_new_session();
-    let workspace = pool.bridge.workspace.clone();
+    let workspace = workspace.unwrap_or_else(|| pool.bridge.workspace.clone());
     let session = store
         .create_new(model, model_id, workspace)
         .map_err(|e| format!("create_session: {e:#}"))?;
@@ -336,11 +339,32 @@ pub(super) fn create_session_record(
 #[tauri::command]
 pub async fn create_session(
     set_active: Option<bool>,
+    workspace_path: Option<String>,
     app: AppHandle,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionMetadata, String> {
-    let metadata = create_session_record(set_active.unwrap_or(true), &store, &pool)?;
+    let workspace = workspace_path
+        .as_deref()
+        .map(crate::features::sessions::validate_user_workspace_path)
+        .transpose()
+        .map_err(|e| format!("create_session: invalid workspace_path: {e:#}"))?;
+    let metadata =
+        create_session_record(set_active.unwrap_or(true), &store, &pool, workspace.clone())?;
+    if let Some(workspace) = workspace {
+        // 绑定落盘失败不能留下「看似创建成功、重启后 execution 根回退私有目录」
+        // 的会话:回滚删除刚建的空 session(参照 create_new 的 rollback 风格)。
+        if let Err(error) = store.bind_session_workspace(&metadata.id, workspace) {
+            let rollback = store.delete(&metadata.id);
+            return Err(match rollback {
+                Ok(()) => format!("create_session: bind workspace: {error:#}"),
+                Err(rollback_error) => format!(
+                    "create_session: bind workspace: {error:#}; rollback Session {}: {rollback_error:#}",
+                    metadata.id
+                ),
+            });
+        }
+    }
     emit_session_event(&app, "session:list_changed", &metadata.id, "created");
     // 多 session 并发:不预热 engine(lazy)。新建的空 session 没有历史,首条 chat
     // 时 EnginePool.get_or_spawn 会为它 spawn 一个带专属 workspace 的 engine。
@@ -830,6 +854,7 @@ pub(super) fn list_workspace_files_for_session(
     Ok(out)
 }
 use super::prelude::*;
+use std::path::PathBuf;
 
 #[cfg(test)]
 mod desktop_saved_session_contract_tests {

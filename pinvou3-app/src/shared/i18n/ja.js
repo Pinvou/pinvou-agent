@@ -907,6 +907,15 @@ Object.assign(dictJa, {
   remoteKbFolderSummary:'{count} 件の文書を検出', remoteKbFolderSkipped:'{count} 件をスキップ', remoteKbFolderEmpty:'インポート可能な文書がありません', remoteKbFolderLimitExceeded:'1 回のフォルダインポートは 10,000 件までです',
 });
 
+// 通常チャットの下書き状態で使う作業ディレクトリ選択 UI
+// （features/chat/ComposerWorkspaceSelector.jsx）。code モードの
+// uiCodex 下書きセレクターと文言を揃える。
+dictJa.uiChatWorkspace = {
+  defaultWorkspace:'既定のワークスペース', defaultWorkspaceDesc:'Pinvou が管理するセッション用ディレクトリを使用します',
+  chooseDirectory:'ディレクトリを選択…', chooseDirectoryDesc:'そのディレクトリで Agent を直接作業させます',
+  recentDirectories:'最近使用した項目', chooseDirectoryDialog:'作業ディレクトリを選択', unknownDirectory:'不明なディレクトリ',
+};
+
 dictJa.uiSettingsDetail.memoryLoadFailed = 'メモリプロフィールの読み込みに失敗しました。再試行してください。';
 
 dictJa.uiSettingsDetail.memorySaveFailed = 'メモリプロフィールの保存に失敗しました。再試行してください。';

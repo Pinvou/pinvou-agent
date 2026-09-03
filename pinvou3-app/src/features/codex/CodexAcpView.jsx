@@ -140,8 +140,13 @@ import {
   uploadAcpDeviceAttachment,
 } from './acpClient.js';
 import { can, canInvoke, isWeb, onPlatformConnectionChange } from '../../shared/platform.js';
+import {
+  forgetWorkspace,
+  loadRecentWorkspaces,
+  rememberWorkspace,
+  workspaceName,
+} from '../../shared/workspace-recents.js';
 const invoke = invokeTauri;
-const RECENT_WORKSPACES_KEY = 'pinvou_codex_recent_workspaces';
 const DRAFT_ATTACHMENT_KEY = '__codex_draft__';
 
 // 草稿配置快照缓存已抽到 ./acp-draft-controls.js（供设置页共用，避免与
@@ -160,41 +165,9 @@ const EMPTY_CONVERSATION_TURNS = [];
 // Same idea: the sessions default must be a stable reference; an inline [] is a fresh array on every render.
 const EMPTY_SESSIONS = [];
 
-function workspaceName(path, unknownDirectory) {
-  // eslint-disable-next-line sonarjs/super-linear-regex -- trailing [\\/]+ strips path separators; single char class, so backtracking is linear
-  const normalized = String(path || '').replace(/[\\/]+$/, '');
-  if (!normalized) return unknownDirectory;
-  return normalized.split(/[\\/]/).filter(Boolean).pop() || normalized;
-}
-
 // token 缩写与主聊天 ChatView 的 fmtCtxTok 同款（1.2k / 3.4M）。
 function fmtNativeCtxTok(n) {
   return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
-}
-
-function loadRecentWorkspaces() {
-  try {
-    const value = JSON.parse(localStorage.getItem(RECENT_WORKSPACES_KEY) || '[]');
-    return Array.isArray(value) ? value.filter(path => typeof path === 'string').slice(0, 6) : [];
-  } catch {
-    return [];
-  }
-}
-
-function rememberWorkspace(path) {
-  const next = [path, ...loadRecentWorkspaces().filter(item => item !== path)].slice(0, 6);
-  localStorage.setItem(RECENT_WORKSPACES_KEY, JSON.stringify(next));
-  return next;
-}
-
-function forgetWorkspace(path) {
-  const next = loadRecentWorkspaces().filter(item => item !== path);
-  try {
-    localStorage.setItem(RECENT_WORKSPACES_KEY, JSON.stringify(next));
-  } catch {
-    // localStorage 不可用时仍允许当前窗口继续创建新会话。
-  }
-  return next;
 }
 
 // 记住用户上次在 code 界面选择的 agent：重开界面/重启应用后沿用，直到用户再次切换。

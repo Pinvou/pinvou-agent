@@ -16,6 +16,10 @@
     const invoke = context.invoke;
     const listen = context.listen;
     const notify = context.notify;
+    // 系统目录选择对话框（bridge.js 注入 TAURI.dialog.open；React 不得直接
+    // 触碰 Tauri 全局，草稿工作区选择由此封装）。不可用时为 undefined，
+    // pickDraftWorkspace 以 null 早退。
+    const dialogOpen = context.dialogOpen || null;
     const sessionStates = context.sessionStates;
     const scheduledRunSessionOwners = context.scheduledRunSessionOwners;
     const personaPlaceholderTitles = context.personaPlaceholderTitles;
@@ -555,6 +559,8 @@
     state.scheduledTaskPendingGuide = null; // 换了对话,未发送的定时任务引导词作废
     // 新草稿从关闭状态开始：寄存意图作废，开关行显示同步复位。
     state.pendingDraftMultiAgent = false;
+    // 新草稿回到默认工作区：上一份草稿的目录选择不带入（两个提前返回分支共用此复位）。
+    state.draftWorkspacePath = null;
 
     // 已在干净草稿态 → 只 notify(epoch 已自增)。注意要连 chatItems 一起判空:messages 与 chatItems
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
@@ -576,6 +582,45 @@
   // 公开「新建对话」入口(侧边栏按钮)= 进草稿态。名字保留以兼容前端调用。
   async function createNewSession() { enterDraft(); }
 
+  // ── 草稿态工作目录选择（普通聊天，对齐 code 模式草稿选择器）────────────
+  // 最近列表与 src/shared/workspace-recents.js 同 key 同语义：本文件是
+  // <script src> 经典脚本，无法 import 该 ES 模块，下面是它的逐字镜像，
+  // 改动任一侧必须同步另一侧（tests/chat_draft_workspace_logic.test.mjs
+  // 锁定桥侧行为，tests/workspace_recents_logic.test.mjs 锁定共享模块）。
+  const DRAFT_WORKSPACE_RECENTS_KEY = "pinvou_codex_recent_workspaces";
+  function rememberDraftWorkspaceRecent(path) {
+    let list;
+    try {
+      const value = JSON.parse(localStorage.getItem(DRAFT_WORKSPACE_RECENTS_KEY) || "[]");
+      list = Array.isArray(value) ? value.filter(function (item) { return typeof item === "string"; }).slice(0, 6) : [];
+    } catch {
+      list = [];
+    }
+    const next = [path, ...list.filter(function (item) { return item !== path; })].slice(0, 6);
+    try {
+      localStorage.setItem(DRAFT_WORKSPACE_RECENTS_KEY, JSON.stringify(next));
+    } catch {
+      // localStorage 不可用时仅本次不记忆，不影响选目录本身。
+    }
+  }
+  // 仅草稿态生效；path = null 表示回到默认（会话私有目录）。
+  function setDraftWorkspace(path) {
+    if (state.activeSessionId) return;
+    state.draftWorkspacePath = path || null;
+    notify();
+  }
+  // 系统目录选择对话框：选中后记入最近列表并写回草稿选择，返回选中的 path；
+  // 用户取消（或对话框不可用/非草稿态）返回 null，不改变现有选择。
+  async function pickDraftWorkspace() {
+    if (state.activeSessionId || !dialogOpen) return null;
+    const selected = await dialogOpen({ directory: true, multiple: false, title: bt("pickFolderTitle") });
+    const path = Array.isArray(selected) ? selected[0] : selected;
+    if (!path) return null;
+    rememberDraftWorkspaceRecent(path);
+    setDraftWorkspace(path);
+    return path;
+  }
+
   // 草稿态首次有实质内容时真正向后端创建 session 并切为 active;已有 active 直接返回。
   // 返回新 session id,创建失败返回 null。调用方:sendMessage(首条消息) / equipPersona(加卡)。
   // 并发防护（审计）：草稿态双击发送会并发 create_session，导致两条消息分家到两个新
@@ -592,7 +637,9 @@
     const p = (async function () {
       // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
       try {
-        const meta = await invoke("create_session");
+        // 草稿选定的工作目录随物化一并下发；null = 后端现状（会话私有目录）。
+        // 参数在 invoke 同步求值时捕获，await 期间的后续选择不影响本次创建。
+        const meta = await invoke("create_session", { workspacePath: state.draftWorkspacePath || null });
         // create_session 等待期间用户可能已发送/清空输入，必须读取最新值，
         // 不能把 await 前的已发送文本带入新 session。
         const composerDraft = state.composerDraft || "";
@@ -611,6 +658,9 @@
         // 清：switchActiveTo 会把寄存意图当作已消费。
         const pendingMultiAgent = state.pendingDraftMultiAgent === true;
         state.pendingDraftMultiAgent = false;
+        // 物化已提交：目录选择随会话落地，清除草稿选择；create_session 失败
+        // （外层 catch 路径）则保留选择以便用户重试。
+        state.draftWorkspacePath = null;
         switchActiveTo(meta.id, { fresh: true });
         // 草稿态因首条消息/加卡等实质操作物化为 session 时，输入草稿也要
         // 跟随迁移；这不是用户主动切换到另一个已有会话。
@@ -1372,6 +1422,8 @@
       refreshHistoryList,
       enterDraft,
       createNewSession,
+      setDraftWorkspace,
+      pickDraftWorkspace,
       ensureSession,
       reportSessionSwitchFailure,
       hydratedMessageKey,

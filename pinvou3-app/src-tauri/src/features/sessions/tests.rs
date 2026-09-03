@@ -97,6 +97,7 @@ fn reopen_store(store: &SessionStore) -> Result<SessionStore> {
     reopened.load_pinned_sessions();
     reopened.load_hidden_sessions();
     reopened.load_session_mode_states();
+    reopened.load_session_workspaces();
     {
         let _mutation = reopened.scheduled_mutation.lock();
         reopened.enforce_session_retention_locked()?;
@@ -315,6 +316,151 @@ fn scheduled_profile(task_id: &str) -> ScheduledRunProfile {
         trust_mode: false,
         auto_approve: false,
     }
+}
+
+fn unique_temp_dir(label: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "pinvou3-{label}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ))
+}
+
+#[test]
+fn session_roots_user_workspace_binding_uses_bound_execution_root() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let bound_dir = unique_temp_dir("user-workspace-binding");
+    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
+    store
+        .bind_session_workspace(&s.metadata.id, bound_dir.clone())
+        .expect("bind");
+
+    let roots = store.session_roots(&s.metadata.id).expect("roots");
+    assert_eq!(roots.execution, bound_dir);
+    // 账本根恒为会话私有目录,不污染用户选择的目录。
+    let private = paths::session_workspace_dir(&s.metadata.id);
+    assert_eq!(roots.ledger, private);
+
+    // 未绑定的会话不受影响,两根仍一致。
+    let other = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create other");
+    let other_roots = store.session_roots(&other.metadata.id).expect("roots");
+    assert_eq!(other_roots.execution, other_roots.ledger);
+
+    let _ = std::fs::remove_dir_all(&bound_dir);
+}
+
+#[test]
+fn session_workspace_binding_survives_reload() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let bound_dir = unique_temp_dir("user-workspace-reload");
+    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
+    store
+        .bind_session_workspace(&s.metadata.id, bound_dir.clone())
+        .expect("bind");
+
+    let reopened = reopen_store(&store).expect("reopen");
+    assert_eq!(
+        reopened.session_workspace_binding(&s.metadata.id),
+        Some(bound_dir.clone())
+    );
+    let roots = reopened.session_roots(&s.metadata.id).expect("roots");
+    assert_eq!(roots.execution, bound_dir);
+
+    let _ = std::fs::remove_dir_all(&bound_dir);
+}
+
+#[test]
+fn delete_session_removes_workspace_binding() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let bound_dir = unique_temp_dir("user-workspace-delete");
+    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
+    store
+        .bind_session_workspace(&s.metadata.id, bound_dir.clone())
+        .expect("bind");
+    let sidecar = paths::sessions_root().join("_session_workspaces.json");
+    assert!(sidecar.is_file());
+
+    store.delete(&s.metadata.id).expect("delete");
+    assert!(store.session_workspace_binding(&s.metadata.id).is_none());
+    // 最后一条绑定被移除后 sidecar 文件一并删除。
+    assert!(!sidecar.exists());
+
+    let _ = std::fs::remove_dir_all(&bound_dir);
+}
+
+#[test]
+fn load_session_workspaces_drops_ghost_entries() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let bound_dir = unique_temp_dir("user-workspace-ghost");
+    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
+    store
+        .bind_session_workspace(&s.metadata.id, bound_dir.clone())
+        .expect("bind");
+    // 模拟进程外删除会话后的残留:对应 `<id>.json` 不存在的绑定。
+    store
+        .bind_session_workspace("ghost-session-id", bound_dir.clone())
+        .expect("bind ghost");
+
+    store.load_session_workspaces();
+    assert!(
+        store
+            .session_workspace_binding("ghost-session-id")
+            .is_none()
+    );
+    assert_eq!(
+        store.session_workspace_binding(&s.metadata.id),
+        Some(bound_dir.clone())
+    );
+    // ghost 清理后重写文件:盘面与内存一致。
+    let sidecar = paths::sessions_root().join("_session_workspaces.json");
+    let on_disk: std::collections::HashMap<String, PathBuf> =
+        serde_json::from_str(&std::fs::read_to_string(&sidecar).expect("read sidecar"))
+            .expect("parse sidecar");
+    assert!(!on_disk.contains_key("ghost-session-id"));
+    assert_eq!(on_disk.get(&s.metadata.id), Some(&bound_dir));
+
+    let _ = std::fs::remove_dir_all(&bound_dir);
+}
+
+#[test]
+fn validate_user_workspace_path_rejects_invalid_and_accepts_directory() {
+    use super::validators::validate_user_workspace_path;
+
+    assert!(validate_user_workspace_path("").is_err());
+    assert!(validate_user_workspace_path("   ").is_err());
+    assert!(validate_user_workspace_path("relative/dir").is_err());
+
+    let missing = unique_temp_dir("user-workspace-missing");
+    assert!(validate_user_workspace_path(missing.to_str().expect("utf8")).is_err());
+
+    // 文件而非目录 → 拒绝。
+    let file = unique_temp_dir("user-workspace-file");
+    std::fs::write(&file, b"x").expect("seed file");
+    assert!(validate_user_workspace_path(file.to_str().expect("utf8")).is_err());
+    let _ = std::fs::remove_file(&file);
+
+    // 合法目录 → canonicalize 后返回。
+    let dir = unique_temp_dir("user-workspace-valid");
+    std::fs::create_dir_all(&dir).expect("create dir");
+    let validated = validate_user_workspace_path(dir.to_str().expect("utf8")).expect("valid dir");
+    assert_eq!(validated, dir.canonicalize().expect("canonicalize"));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn text_message(role: &str, text: &str) -> Message {

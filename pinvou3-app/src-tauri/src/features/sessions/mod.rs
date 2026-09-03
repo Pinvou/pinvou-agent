@@ -27,6 +27,7 @@
 //! - `sidecars` —— skill 绑定 / 模型 / 置顶 / 收起 的独立 sidecar 落盘
 //! - `rewind` —— 代码模式回退的对话截断与 `_rewound_turns.json` 备份
 //! - `validators` —— id / workspace / 路径校验与小型 helper
+//! - `workspace_bindings` —— 普通 chat 会话用户工作目录绑定的 sidecar 落盘
 //!
 //! 子模块通过 `impl SessionStore` 续写方法（Rust 允许同一 struct 的 impl 块
 //! 散布在子模块里），并直接读 `&self` 的私有字段——struct 字段对后代模块
@@ -42,6 +43,7 @@ mod sidecars;
 mod store;
 mod transcript;
 mod validators;
+mod workspace_bindings;
 
 #[cfg(test)]
 mod tests;
@@ -77,7 +79,7 @@ pub use self::scheduled::{
 pub use self::transcript::transcript_revision;
 /// Re-export the crate-visible session-id validator (used by commands). It is
 /// `pub(crate)` so it stays out of the crate's public API surface.
-pub(crate) use self::validators::validate_session_id;
+pub(crate) use self::validators::{validate_session_id, validate_user_workspace_path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionKind {
@@ -131,6 +133,11 @@ pub struct SessionStore {
     /// 后注入;None = 无代码会话项目绑定,所有会话的执行根都是会话私有目录。
     /// 账本根(附件/审计/产物/远程授权)不受其影响,恒为会话私有目录。
     pub(crate) execution_root_resolver: Arc<RwLock<Option<ExecutionRootResolver>>>,
+    /// 普通 chat 会话的用户工作目录绑定:session_id → 用户选择的目录。独立落盘到
+    /// `_session_workspaces.json`,不改 SavedSession 结构。`session_roots` 在
+    /// resolver 未命中时回退查这里:命中即 execution=绑定目录、ledger=会话私有
+    /// 目录(与原生代码会话绑定同款双根语义)。
+    pub(crate) session_workspaces: Arc<RwLock<HashMap<String, PathBuf>>>,
     /// 品悟原生 code 会话判定（ACP 会话恒为 plain，见 codex_acp store）。
     /// 与 Engine bridge / 远程端共用同一份 `SessionAgentStore` 闭包，由 app 组合根
     /// (lib.rs) 注入；None = 无 code 会话判定（测试/启动早期），全部按 plain 语义。
@@ -208,10 +215,11 @@ pub type SessionPurgedHook = Arc<dyn Fn(&str) + Send + Sync>;
 pub type SessionDeletedHook = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// 一个会话的两个根:
-/// - `execution`:Engine cwd / shell 执行目录。绑了项目目录的原生代码会话 = 项目
-///   目录;其余会话 = 会话私有目录(scheduled 会话 = 其 automation workspace)。
-/// - `ledger`:应用账本根(附件/审计/产物/远程授权)。绑了项目目录的原生代码会话
-///   恒为会话私有目录(不污染用户项目);其余会话与 execution 相同。
+/// - `execution`:Engine cwd / shell 执行目录。绑了项目目录的原生代码会话、或绑了
+///   用户工作目录的普通 chat 会话 = 绑定目录;其余会话 = 会话私有目录(scheduled
+///   会话 = 其 automation workspace)。
+/// - `ledger`:应用账本根(附件/审计/产物/远程授权)。有绑定目录的会话恒为会话
+///   私有目录(不污染用户目录);其余会话与 execution 相同。
 ///
 /// 由 [`SessionStore::session_roots`] 统一解析,调用方按用途显式选择用哪个根,
 /// 避免把执行根误当账本根写盘(或反之)。
@@ -221,9 +229,10 @@ pub struct SessionRoots {
     pub ledger: PathBuf,
 }
 
-/// 两个根的纯解析:给定原生代码会话绑定的项目目录(无绑定传 `None`),返回
-/// 执行根与账本根。不感知 scheduled 会话——scheduled 的两个根都是其
-/// automation workspace,由 [`SessionStore::session_roots`] 在上层处理。
+/// 两个根的纯解析:给定会话绑定的执行目录(原生代码会话的项目目录,或普通
+/// chat 会话的用户工作目录;无绑定传 `None`),返回执行根与账本根。不感知
+/// scheduled 会话——scheduled 的两个根都是其 automation workspace,由
+/// [`SessionStore::session_roots`] 在上层处理。
 pub fn session_roots_for(session_id: &str, bound_project_root: Option<PathBuf>) -> SessionRoots {
     let private = paths::session_workspace_dir(session_id);
     match bound_project_root {

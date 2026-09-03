@@ -905,6 +905,15 @@ Object.assign(dictEn, {
   remoteKbFolderSummary:'{count} documents found', remoteKbFolderSkipped:'{count} skipped', remoteKbFolderEmpty:'No supported documents were found in this folder', remoteKbFolderLimitExceeded:'A folder import can contain at most 10,000 documents',
 });
 
+// Draft-state working directory selector for normal chat
+// (features/chat/ComposerWorkspaceSelector.jsx), mirroring the code-mode
+// draft selector copy in uiCodex.
+dictEn.uiChatWorkspace = {
+  defaultWorkspace:'Default workspace', defaultWorkspaceDesc:'Use a Pinvou-managed session directory',
+  chooseDirectory:'Choose directory…', chooseDirectoryDesc:'Let the Agent work directly in that directory',
+  recentDirectories:'Recent', chooseDirectoryDialog:'Choose a working directory', unknownDirectory:'Unknown directory',
+};
+
 dictEn.uiSettingsDetail.memoryLoadFailed = 'Failed to load memory profile. Please try again.';
 
 dictEn.uiSettingsDetail.memorySaveFailed = 'Failed to save memory profile. Please try again.';
