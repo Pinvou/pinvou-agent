@@ -8,11 +8,43 @@ import {
   ACP_MODEL_1M_VARIANTS, ACP_MODEL_PRESETS, ACP_PROVIDER_PRESETS, CLAUDE_MODEL_SLOT_IDS,
 } from './acp-provider-catalog.js';
 
+// ModelSuggestInput 与 PresetSelect 共享的下拉机制：150ms blur 延迟关闭、Esc
+// 关闭、onMouseDown 选中。保持 blur-timeout 方案（不换 outside-pointer 检测）：
+// 选中发生在 blur 之后、计时器到点之前，时序语义是既有行为。
+function useSuggestDropdown() {
+  const [open, setOpen] = useState(false);
+  return {
+    open,
+    setOpen,
+    onBlur: () => window.setTimeout(() => setOpen(false), 150),
+    onKeyDown: event => { if (event.key === 'Escape') setOpen(false); },
+  };
+}
+
+// 下拉面板（两个选择器同款面板样式，仅最大高度不同）。
+function SuggestPanel({ testId, maxHeightClass, children }) {
+  return (
+    <div
+      data-testid={testId}
+      className={`absolute z-10 mt-1 ${maxHeightClass} w-full overflow-y-auto custom-scrollbar rounded-xl border border-black/[0.08] dark:border-white/[0.12] bg-white dark:bg-[#2A2B2D] shadow-lg`}
+    >
+      {children}
+    </div>
+  );
+}
+
+// 选项 onMouseDown + preventDefault：在触发元素 blur 前完成选中并收起面板。
+const selectViaMouseDown = (select, setOpen) => event => {
+  event.preventDefault();
+  select();
+  setOpen(false);
+};
+
 // 模型建议下拉（替代原生 datalist）：**候选全量展示、不做字符过滤**（原生
 // datalist 会把不匹配的候选隐藏，用户容易误以为「只有匹配的几个模型可
 // 选」），仅按输入把匹配项排在前面。点击选中；Esc/失焦关闭。
 function ModelSuggestInput({ value, onChange, suggestions, inputClass, placeholder, testId }) {
-  const [open, setOpen] = useState(false);
+  const { open, setOpen, onBlur, onKeyDown } = useSuggestDropdown();
   const query = String(value || '').trim().toLowerCase();
   const score = name => {
     const lower = name.toLowerCase();
@@ -33,30 +65,26 @@ function ModelSuggestInput({ value, onChange, suggestions, inputClass, placehold
         value={value}
         onChange={event => { onChange(event.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}
-        onBlur={() => window.setTimeout(() => setOpen(false), 150)}
-        onKeyDown={event => { if (event.key === 'Escape') setOpen(false); }}
+        onBlur={onBlur}
+        onKeyDown={onKeyDown}
         placeholder={placeholder}
         spellCheck={false}
         autoComplete="off"
       />
       {open && sorted.length > 0 && (
-        <div
-          data-testid={`${testId}-suggest`}
-          className="absolute z-10 mt-1 max-h-44 w-full overflow-y-auto custom-scrollbar rounded-xl border border-black/[0.08] dark:border-white/[0.12] bg-white dark:bg-[#2A2B2D] shadow-lg"
-        >
+        <SuggestPanel testId={`${testId}-suggest`} maxHeightClass="max-h-44">
           {sorted.map(modelName => (
             <button
               key={modelName}
               type="button"
               data-testid={`${testId}-option-${modelName}`}
-              // onMouseDown + preventDefault：在 input blur 前完成选中
-              onMouseDown={event => { event.preventDefault(); onChange(modelName); setOpen(false); }}
+              onMouseDown={selectViaMouseDown(() => onChange(modelName), setOpen)}
               className="block w-full px-3 py-2 text-left font-mono text-[12px] hover:bg-black/[0.05] dark:hover:bg-white/[0.08]"
             >
               {modelName}
             </button>
           ))}
-        </div>
+        </SuggestPanel>
       )}
     </div>
   );
@@ -65,7 +93,7 @@ function ModelSuggestInput({ value, onChange, suggestions, inputClass, placehold
 // 预设选择器（替代原生 select，与 ModelSuggestInput 同款面板样式）：
 // 按钮展示当前选择，点开全量列表，失焦/Esc 关闭。
 function PresetSelect({ value, onChange, presets, otherLabel, copy, inputClass }) {
-  const [open, setOpen] = useState(false);
+  const { open, setOpen, onBlur, onKeyDown } = useSuggestDropdown();
   const current = presets.find(preset => preset.key === value) || null;
   // 展示名走 i18n（copy[preset.nameKey]），缺失 key 时回退 preset.name
   const label = preset => (preset && copy && copy[preset.nameKey]) || (preset && preset.name) || '';
@@ -75,22 +103,19 @@ function PresetSelect({ value, onChange, presets, otherLabel, copy, inputClass }
         type="button"
         data-testid="acp-provider-preset"
         onClick={() => setOpen(current => !current)}
-        onBlur={() => window.setTimeout(() => setOpen(false), 150)}
-        onKeyDown={event => { if (event.key === 'Escape') setOpen(false); }}
+        onBlur={onBlur}
+        onKeyDown={onKeyDown}
         className={`${inputClass} flex items-center justify-between gap-2 text-left`}
       >
         <span className="truncate">{current ? label(current) : otherLabel}</span>
         <ChevronDown size={14} className="shrink-0 opacity-60" />
       </button>
       {open && (
-        <div
-          data-testid="acp-provider-preset-suggest"
-          className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto custom-scrollbar rounded-xl border border-black/[0.08] dark:border-white/[0.12] bg-white dark:bg-[#2A2B2D] shadow-lg"
-        >
+        <SuggestPanel testId="acp-provider-preset-suggest" maxHeightClass="max-h-56">
           <button
             type="button"
             data-testid="acp-provider-preset-option-other"
-            onMouseDown={event => { event.preventDefault(); onChange(''); setOpen(false); }}
+            onMouseDown={selectViaMouseDown(() => onChange(''), setOpen)}
             className="block w-full px-3 py-2 text-left text-[12px] opacity-70 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]"
           >
             {otherLabel}
@@ -100,13 +125,13 @@ function PresetSelect({ value, onChange, presets, otherLabel, copy, inputClass }
               key={preset.key}
               type="button"
               data-testid={`acp-provider-preset-option-${preset.key}`}
-              onMouseDown={event => { event.preventDefault(); onChange(preset.key); setOpen(false); }}
+              onMouseDown={selectViaMouseDown(() => onChange(preset.key), setOpen)}
               className={`block w-full px-3 py-2 text-left text-[12px] hover:bg-black/[0.05] dark:hover:bg-white/[0.08] ${preset.key === value ? 'font-semibold text-[#007AFF]' : ''}`}
             >
               {label(preset)}
             </button>
           ))}
-        </div>
+        </SuggestPanel>
       )}
     </div>
   );
