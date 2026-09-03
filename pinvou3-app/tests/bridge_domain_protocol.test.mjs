@@ -97,8 +97,10 @@ const expectedProtocolHashes = {
   // (bridge.js) and the position-capture load_session (chat.js). And again
   // for the background-task indicator: the multiagent:agent_progress listen
   // that schedules the shell snapshot poll for sub-agent spawned tasks
-  // (chat-events.js).
-  chat: '610c1acd32faa210b9269052789340b992e9b6bfe96b8bb18ea69b046e8e6ffe',
+  // (chat-events.js). Recomputed for explicit artifact presentation: a
+  // successful present_artifact tool_end now emits a session-scoped request
+  // that opens the preview even when the existing card is updated in place.
+  chat: 'e5a97c56781d34f0ea8d7ef17825fa45295abb10ce2a82cada6eadad5b2bf2ab',
   dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
   interaction: '3f275b9c4fc77ebf42a56df1c84d638ca5f1f8a3b80612efebeddf1a39f14efd',
   knowledge: '9105a42c6b69f04d0bc28b6a72e0746648110a44823891ded3261cdcbc99766b',

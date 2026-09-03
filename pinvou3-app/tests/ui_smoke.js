@@ -353,6 +353,54 @@ async function expand(page) {
     JSON.stringify(visualShell),
   );
 
+  const artifactPresentation = await page.evaluate(async () => {
+    await window.TauriBridge.sessions.switchToSession('s1');
+    await window.__uiWait__(() => !!document.querySelector('[data-testid="chat-scroll"]'));
+    const stateArtifacts = () => window.TauriBridge.state.get('chat').artifacts;
+    const artifactPath = stateArtifacts()[0]?.path;
+    const countBefore = stateArtifacts().length;
+    const panelVisible = () => document.querySelector('[data-testid="artifact-side-panel"]')
+      ?.getAttribute('aria-hidden') === 'false';
+    window.dispatchEvent(Object.assign(new Event('pinvou:present-artifact'), {
+      detail: { sessionId: 's-browser-b', path: '/home/x/ignored.md', toolCallId: 'background-present' },
+    }));
+    // Poll a full observation window instead of a single sleep so a late misfire
+    // from a lazy chunk or slow React commit cannot slip past the negative check.
+    let backgroundLeaked = false;
+    for (let tick = 0; tick < 20 && !backgroundLeaked; tick++) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      backgroundLeaked = panelVisible();
+    }
+    const backgroundIgnored = !backgroundLeaked;
+    window.dispatchEvent(Object.assign(new Event('pinvou:present-artifact'), {
+      detail: { sessionId: 's1', path: artifactPath, toolCallId: 'active-present' },
+    }));
+    await window.__uiWait__(panelVisible);
+    const activeOpened = panelVisible();
+    await window.__uiWait__(() => [...window.__TAURI_INVOKES__].some(call =>
+      call.cmd === 'read_artifact_text' && call.args?.path === artifactPath));
+    const previewRequested = [...window.__TAURI_INVOKES__].some(call =>
+      call.cmd === 'read_artifact_text' && call.args?.path === artifactPath);
+    await window.__uiWait__(() => !!document.querySelector('[data-testid="artifact-close"]'));
+    document.querySelector('[data-testid="artifact-close"]')?.click();
+    await window.__uiWait__(() => !panelVisible());
+    return {
+      backgroundIgnored,
+      activeOpened,
+      previewRequested,
+      closed: !panelVisible(),
+      countBefore,
+      countAfter: stateArtifacts().length,
+    };
+  });
+  rec(
+    'artifact presentation opens the active work-chat preview without changing the artifact count',
+    artifactPresentation.backgroundIgnored && artifactPresentation.activeOpened
+      && artifactPresentation.previewRequested && artifactPresentation.closed
+      && artifactPresentation.countBefore === artifactPresentation.countAfter,
+    JSON.stringify(artifactPresentation),
+  );
+
   // After the Agent starts the browser, desktop UI expands the owning task's side panel. The
   // native-surface command returns false in this headless mock, so the component must show an
   // explicit unavailable state and must not fall back to a screenshot stream.
