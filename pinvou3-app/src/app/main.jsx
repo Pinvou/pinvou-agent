@@ -1532,13 +1532,16 @@ function workspaceDisplayName(path) {
       // 日期组展开状态:未点过的组按默认值走(今天展开、以往折叠),点过后记住用户选择
       const [dateGroupOpen, setDateGroupOpen] = useState({});
       // Code-style sidebar: enabled by default in code mode (folder grouping +
-      // collapsed primary nav); the bottom-right button switches back to the standard
-      // style. The choice is persisted and survives re-entering code mode.
+      // collapsed primary nav); the 全部/代码 pill switches style explicitly.
+      // null means the user never picked: standard list outside code mode, code
+      // style inside code mode (the long-standing default). Once picked, the
+      // choice is persisted and applies in every mode.
       const [sidebarCodeStyle, setSidebarCodeStyle] = useState(() => {
         try {
-          return localStorage.getItem('pinvou_sidebar_code_style') === 'normal' ? 'normal' : 'code';
+          const stored = localStorage.getItem('pinvou_sidebar_code_style');
+          return stored === 'normal' || stored === 'code' ? stored : null;
         } catch {
-          return 'code';
+          return null;
         }
       });
       // The 全部/代码 pill drives both state and the persisted choice in one place.
@@ -1560,11 +1563,11 @@ function workspaceDisplayName(path) {
       // code sessions; only explicitly switching back to work/design, or opening a normal
       // chat session, exits it.
       const [codeModeOn, setCodeModeOn] = useState(false);
-      const codeStyleActive = codeModeOn && sidebarCodeStyle === 'code';
-      // 任务列表的展示形态只由 全部/代码 胶囊决定,与是否处于 code 模式无关——
-      // 胶囊在头部常驻,任何模式下点「代码」都要切到按文件夹分组的 code 列表。
+      // 任务列表的展示形态由 全部/代码 胶囊决定;未显式选择(null)时普通模式
+      // 默认「全部」标准列表、code 模式默认 code 样式(沿用既有默认)。
       // codeStyleActive 仍用于主导航折叠等 code 模式专属行为。
-      const sidebarCodeListActive = sidebarCodeStyle === 'code';
+      const sidebarCodeListActive = sidebarCodeStyle === null ? codeModeOn : sidebarCodeStyle === 'code';
+      const codeStyleActive = codeModeOn && sidebarCodeListActive;
       // Exiting code mode resets the primary-nav collapse bar, so the next entry starts
       // from the default collapsed form.
       useEffect(() => {
