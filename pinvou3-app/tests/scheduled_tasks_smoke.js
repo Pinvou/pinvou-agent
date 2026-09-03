@@ -3,7 +3,7 @@
  * Scheduled tasks UI smoke test.
  *
  * Loads the real src/index.html with a mocked Tauri bridge. Verifies that the
- * scheduled-task page exposes three templates, creates/edits tasks immediately,
+ * scheduled-task page exposes four templates, creates/edits tasks immediately,
  * and opens running or completed conversations in the normal ChatView.
  */
 const fs = require('fs');
@@ -1197,7 +1197,7 @@ async function openScheduledNav(page) {
     defaultState.navClicked &&
     defaultState.navClicked &&
     defaultState.hasIntro &&
-    defaultState.templateCount === 3 &&
+    defaultState.templateCount === 4 &&
     defaultState.hasDailyBrief &&
     defaultState.detailVisible === false &&
     defaultState.listDeleteCount === 0 &&

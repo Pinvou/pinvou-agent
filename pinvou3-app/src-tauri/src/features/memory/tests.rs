@@ -1033,7 +1033,7 @@ fn llm_review_sanitizer_rejects_question_labels() {
         ttl_days: None,
         reason: String::new(),
     };
-    assert!(sanitize_llm_memory_item(item).is_none());
+    assert!(sanitize_llm_memory_item(item, false).is_none());
 }
 
 #[test]
@@ -1047,7 +1047,7 @@ fn llm_review_sanitizer_cleans_explicit_profile_labels() {
         ttl_days: None,
         reason: String::new(),
     };
-    let decision = sanitize_llm_memory_item(item).unwrap();
+    let decision = sanitize_llm_memory_item(item, false).unwrap();
     let suggestion = decision.suggestion;
     assert_eq!(decision.action, "auto_write");
     assert_eq!(suggestion.kind, "profile");
@@ -1062,7 +1062,7 @@ fn llm_review_parser_accepts_json_object() {
         )
         .unwrap();
     assert_eq!(parsed.items.len(), 1);
-    let decision = sanitize_llm_memory_item(parsed.items[0].clone()).unwrap();
+    let decision = sanitize_llm_memory_item(parsed.items[0].clone(), false).unwrap();
     let suggestion = decision.suggestion;
     assert_eq!(decision.action, "pending_confirm");
     assert_eq!(suggestion.kind, "preference");
@@ -1081,7 +1081,7 @@ fn llm_review_sanitizer_does_not_override_recent_kind_by_status_words() {
         ttl_days: None,
         reason: String::new(),
     };
-    let decision = sanitize_llm_memory_item(item).unwrap();
+    let decision = sanitize_llm_memory_item(item, false).unwrap();
     assert_eq!(decision.suggestion.kind, "current_focus");
     assert_eq!(decision.suggestion.topic, "current_work");
 }
@@ -1190,7 +1190,7 @@ fn scenario_review_writes_long_and_recent_memories() {
         ],
     };
 
-    let outcome = apply_llm_memory_review(review).unwrap();
+    let outcome = apply_llm_memory_review(review, false).unwrap();
     assert_eq!(outcome.pending.len(), 1);
     assert!(
         outcome
@@ -1296,7 +1296,7 @@ fn scenario_review_filters_low_quality_memory() {
         ],
     };
 
-    let outcome = apply_llm_memory_review(review).unwrap();
+    let outcome = apply_llm_memory_review(review, false).unwrap();
     assert!(outcome.events.is_empty());
     assert!(outcome.pending.is_empty());
     assert!(load_profile().unwrap().identity.call_name.is_empty());
@@ -1554,7 +1554,7 @@ fn llm_recent_work_accepts_delivery_completion_status() {
         ttl_days: None,
         reason: String::new(),
     };
-    let decision = sanitize_llm_memory_item(item).unwrap();
+    let decision = sanitize_llm_memory_item(item, false).unwrap();
     let suggestion = decision.suggestion;
     assert_eq!(suggestion.kind, "recent_activity");
     assert_eq!(suggestion.topic, "completed_work");
@@ -1765,4 +1765,447 @@ fn memory_review_reasoning_controls_keep_kimi_gate_on_url_path() {
             "{model} 不应注入 thinking disable"
         );
     }
+}
+
+// ---- “记住”可靠性（explicit signal）与记忆整理（organize）测试 ----
+
+use std::collections::BTreeMap;
+
+use super::llm_review::LLM_REVIEW_EXPLICIT_SIGNAL_PROMPT;
+use super::organize::{
+    MEMORY_ORGANIZE_PROMPT, LlmOrganizeAction, OrganizeSnapshot, load_organize_history,
+    organize_memory_with_llm, validate_organize_action,
+};
+
+#[test]
+fn review_signal_detects_explicit_remember_phrases() {
+    // ASCII 短语对大小写不敏感（to_lowercase 后匹配）。
+    assert!(has_memory_review_signal(
+        "please remember that I prefer concise answers"
+    ));
+    assert!(has_memory_review_signal(
+        "Please REMEMBER this for next time"
+    ));
+    assert!(has_memory_review_signal("Keep in mind that I like tables"));
+    assert!(has_memory_review_signal(
+        "Don't forget to use simplified Chinese"
+    ));
+    assert!(has_memory_review_signal("Do not forget the deadline"));
+    // CJK 词素直接在原文匹配。
+    assert!(has_memory_review_signal("记一下我的习惯"));
+    assert!(has_memory_review_signal("帮我记一下这个偏好"));
+    assert!(has_memory_review_signal("记录一下这个结论"));
+    assert!(has_memory_review_signal("这个要点你要记牢"));
+    // 普通问答不触发。
+    assert!(!has_memory_review_signal("今天天气如何"));
+}
+
+#[test]
+fn explicit_signal_prompt_is_appended_wording_contract() {
+    // explicit_user_signal 的硬约束措辞：不允许 skip，敏感边界保持。
+    assert!(LLM_REVIEW_EXPLICIT_SIGNAL_PROMPT.contains("explicit_user_signal"));
+    assert!(LLM_REVIEW_EXPLICIT_SIGNAL_PROMPT.contains("不要输出 skip"));
+    assert!(LLM_REVIEW_EXPLICIT_SIGNAL_PROMPT.contains("仍不得记录敏感信息"));
+}
+
+#[test]
+fn organize_prompt_encodes_scope_rules() {
+    assert!(MEMORY_ORGANIZE_PROMPT.contains("\"op\": \"delete | update | merge\""));
+    assert!(MEMORY_ORGANIZE_PROMPT.contains("禁止输出 kind=profile"));
+    assert!(MEMORY_ORGANIZE_PROMPT.contains("pending 只允许 delete"));
+    assert!(MEMORY_ORGANIZE_PROMPT.contains("不要为了整理而整理"));
+    assert!(MEMORY_ORGANIZE_PROMPT.contains("{\"actions\":[]}"));
+}
+
+#[test]
+fn explicit_signal_relaxes_auto_write_confidence_gates() {
+    let _home = IsolatedPinvouHome::new("explicit-thresholds");
+    let work_item = LlmMemoryItem {
+        action: "auto_write".to_string(),
+        kind: "work_context".to_string(),
+        topic: "role_domain".to_string(),
+        content: "用户长期负责公司内部制度、流程和办公文档建设".to_string(),
+        confidence: 0.91,
+        ttl_days: None,
+        reason: String::new(),
+    };
+    let timed_item = LlmMemoryItem {
+        action: "auto_write".to_string(),
+        kind: "current_focus".to_string(),
+        topic: "current_work".to_string(),
+        content: "正在推进公司人力资源手册更新，后续继续细化章节结构".to_string(),
+        confidence: 0.82,
+        ttl_days: Some(21),
+        reason: String::new(),
+    };
+
+    // 默认门槛：work_context 0.91 < 0.94、timed 0.82 < 0.86 → 全部落 pending。
+    let outcome =
+        apply_llm_memory_review(LlmMemoryReview { items: vec![work_item.clone(), timed_item.clone()] }, false)
+            .unwrap();
+    assert!(outcome.events.is_empty());
+    assert_eq!(outcome.pending.len(), 2);
+
+    // explicit_signal：work_context >= 0.90、timed >= 0.80 → 全部 auto_write。
+    let outcome =
+        apply_llm_memory_review(LlmMemoryReview { items: vec![work_item, timed_item] }, true)
+            .unwrap();
+    assert!(outcome.pending.is_empty());
+    assert!(outcome.events.iter().any(|event| event.kind == "work_context"));
+    assert!(outcome.events.iter().any(|event| event.kind == "current_focus"));
+}
+
+/// 在隔离 HOME 下打开记忆开关（zh-Hans 是唯一支持记忆的语言，见
+/// enforce_memory_locale_policy），供 organize 入口的 memory_enabled 守卫通过。
+fn enable_memory_for_tests() {
+    let path = paths::settings_path();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, "{\"language\":\"zh-Hans\",\"memory_enabled\":true}").unwrap();
+}
+
+/// organize 测试用假模型：MemoryReviewModel 的纯数据实现，base_url 指向本地
+/// chat/completions stub。
+struct FakeOrganizeModel {
+    base_url: String,
+}
+
+impl MemoryReviewModel for FakeOrganizeModel {
+    fn memory_provider(&self) -> String {
+        "openai_compatible".to_string()
+    }
+
+    fn memory_model(&self) -> String {
+        "fake-organize-model".to_string()
+    }
+
+    fn memory_base_url(&self) -> String {
+        self.base_url.clone()
+    }
+
+    fn memory_api_key(&self) -> String {
+        "test-key".to_string()
+    }
+
+    fn memory_model_preset(&self) -> ModelPreset {
+        ModelPreset::OpenaiCompatible
+    }
+
+    fn memory_locale_tag(&self) -> String {
+        "zh-Hans".to_string()
+    }
+}
+
+/// 起一个只响应一次 chat/completions 的本地 HTTP stub，返回固定 message.content，
+/// 并返回 base_url。读取完整请求头与 body 后再响应，避免过早关闭触发 RST。
+fn spawn_chat_completions_stub(content: String) -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let payload = json!({
+        "choices": [
+            { "message": { "content": content } }
+        ]
+    })
+    .to_string();
+    std::thread::spawn(move || {
+        use std::io::{Read as _, Write as _};
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let body_start = loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => break request.len(),
+                Ok(n) => {
+                    request.extend_from_slice(&chunk[..n]);
+                    if let Some(pos) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break pos + 4;
+                    }
+                }
+                Err(_) => break request.len(),
+            }
+        };
+        if let Ok(headers) = std::str::from_utf8(&request[..body_start.min(request.len())]) {
+            let content_length = headers.lines().find_map(|line| {
+                let value = line
+                    .strip_prefix("content-length: ")
+                    .or_else(|| line.strip_prefix("Content-Length: "))?;
+                value.trim().parse::<usize>().ok()
+            });
+            if let Some(length) = content_length {
+                while request.len().saturating_sub(body_start) < length {
+                    match stream.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => request.extend_from_slice(&chunk[..n]),
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+#[tokio::test]
+async fn organize_memory_merges_duplicates_and_deletes_stale_focus() {
+    let _home = IsolatedPinvouHome::new("organize-happy");
+    enable_memory_for_tests();
+    let preference_dir = paths::user_memory_preferences_dir();
+    fs::create_dir_all(&preference_dir).unwrap();
+    let id_a = "pref_dup_a".to_string();
+    let id_b = "pref_dup_b".to_string();
+    // 两条重复偏好：topic 归一化后不同才能在 load 时共存（同 topic 会被
+    // authority 解析去重）。
+    write_json_atomic(
+        &preference_dir.join(format!("{id_a}.json")),
+        &preference_fixture(&id_a, "answer_style", "回答默认先给结论"),
+    )
+    .unwrap();
+    write_json_atomic(
+        &preference_dir.join(format!("{id_b}.json")),
+        &preference_fixture(&id_b, "workflow_preference", "回答默认先给结论，再给步骤"),
+    )
+    .unwrap();
+    let now = Utc::now();
+    let stale_focus = TimedMemoryItem {
+        id: "focus_stale".to_string(),
+        kind: "current_focus".to_string(),
+        topic: "current_work".to_string(),
+        text: "推进去年年会策划方案".to_string(),
+        source: "test".to_string(),
+        confidence: 0.9,
+        created_at: (now - Duration::days(40)).to_rfc3339(),
+        updated_at: (now - Duration::days(40)).to_rfc3339(),
+        last_hit: (now - Duration::days(40)).to_rfc3339(),
+        ttl_days: 21,
+        status: "active".to_string(),
+    };
+    write_timed_memory_file(&current_focus_path(), &[stale_focus], "current_focus").unwrap();
+
+    let actions = json!({
+        "actions": [
+            {
+                "op": "merge",
+                "kind": "preference",
+                "ids": [id_a, id_b],
+                "content": "回答默认先给结论，再给步骤",
+                "reason": "两条重复偏好合并为一条"
+            },
+            {
+                "op": "delete",
+                "kind": "current_focus",
+                "ids": ["focus_stale"],
+                "reason": "已过期且被正式记忆覆盖"
+            }
+        ]
+    });
+    let bridge = FakeOrganizeModel {
+        base_url: spawn_chat_completions_stub(actions.to_string()),
+    };
+
+    let report = organize_memory_with_llm(&bridge).await.unwrap();
+
+    assert!(!report.no_change);
+    assert_eq!(report.model, "fake-organize-model");
+    assert_eq!(report.scanned["preference"], 2);
+    assert_eq!(report.scanned["current_focus"], 1);
+    assert_eq!(report.updated["preference"], 1);
+    assert_eq!(report.merged["preference"], 1);
+    assert_eq!(report.deleted["current_focus"], 1);
+    assert_eq!(report.skipped_sensitive, 0);
+    assert!(
+        report.warnings.is_empty(),
+        "unexpected warnings: {:?}",
+        report.warnings
+    );
+
+    // 合并后只剩一条偏好且内容为合并版本；过期关注被删除。
+    let preferences = list_preferences().unwrap();
+    assert_eq!(preferences.len(), 1);
+    assert!(preferences[0].text.contains("再给步骤"));
+    assert!(load_current_focus().unwrap().is_empty());
+
+    // 历史落盘（newest first），且与本次报告一致。
+    let history = load_organize_history();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].finished_at, report.finished_at);
+    assert_eq!(history[0].deleted["current_focus"], 1);
+    assert_eq!(history[0].updated["preference"], 1);
+}
+
+#[tokio::test]
+async fn organize_memory_without_content_skips_llm_and_reports_no_change() {
+    let _home = IsolatedPinvouHome::new("organize-empty");
+    enable_memory_for_tests();
+    // 端口 9（discard）几乎必然拒连：若错误地发起 LLM 调用，本测试失败。
+    let bridge = FakeOrganizeModel {
+        base_url: "http://127.0.0.1:9".to_string(),
+    };
+    let report = organize_memory_with_llm(&bridge).await.unwrap();
+    assert!(report.no_change);
+    assert!(report.warnings.is_empty());
+    assert_eq!(report.scanned["preference"], 0);
+    assert_eq!(report.scanned["profile"], 0);
+    // no_change 报告同样落历史，保证“上次整理时间”可见。
+    assert_eq!(load_organize_history().len(), 1);
+}
+
+#[tokio::test]
+async fn organize_memory_requires_memory_enabled() {
+    let _home = IsolatedPinvouHome::new("organize-disabled");
+    // 默认 prefs memory_enabled=false → 入口守卫直接报错，不触碰网络。
+    let bridge = FakeOrganizeModel {
+        base_url: "http://127.0.0.1:9".to_string(),
+    };
+    let error = organize_memory_with_llm(&bridge).await.unwrap_err();
+    assert!(error.to_string().contains("memory disabled"));
+    assert!(load_organize_history().is_empty());
+}
+
+#[tokio::test]
+async fn organize_history_is_bounded_to_recent_twenty() {
+    let _home = IsolatedPinvouHome::new("organize-history-bound");
+    enable_memory_for_tests();
+    let bridge = FakeOrganizeModel {
+        base_url: "http://127.0.0.1:9".to_string(),
+    };
+    for _ in 0..25 {
+        organize_memory_with_llm(&bridge).await.unwrap();
+    }
+    assert_eq!(load_organize_history().len(), 20);
+}
+
+#[test]
+fn organize_validation_drops_out_of_scope_and_sensitive_actions() {
+    let _home = IsolatedPinvouHome::new("organize-guards");
+    enable_memory_for_tests();
+    let preference_dir = paths::user_memory_preferences_dir();
+    fs::create_dir_all(&preference_dir).unwrap();
+    let pref_id = "pref_guard".to_string();
+    write_json_atomic(
+        &preference_dir.join(format!("{pref_id}.json")),
+        &preference_fixture(&pref_id, "answer_style", "回答默认先给结论"),
+    )
+    .unwrap();
+    let pending = enqueue_memory_candidate(MemorySuggestion {
+        kind: "preference".to_string(),
+        topic: "answer_style".to_string(),
+        content: "回答保持简洁分点".to_string(),
+        source: "test".to_string(),
+    })
+    .unwrap();
+    let snapshot = OrganizeSnapshot::load().unwrap();
+    let mut warnings = Vec::new();
+    let mut skipped_sensitive = 0u32;
+
+    // profile 动作直接丢弃（用户身份字段不在整理范围）。
+    assert!(validate_organize_action(
+        LlmOrganizeAction {
+            op: "update".into(),
+            kind: "profile".into(),
+            ids: vec!["anything".into()],
+            content: "用户希望被称呼为欣哥".into(),
+            ..Default::default()
+        },
+        &snapshot,
+        &mut skipped_sensitive,
+        &mut warnings,
+    )
+    .is_none());
+
+    // 敏感内容丢弃并计入 skipped_sensitive。
+    assert!(validate_organize_action(
+        LlmOrganizeAction {
+            op: "update".into(),
+            kind: "preference".into(),
+            ids: vec![pref_id.clone()],
+            content: "我的手机号是 13800138000".into(),
+            ..Default::default()
+        },
+        &snapshot,
+        &mut skipped_sensitive,
+        &mut warnings,
+    )
+    .is_none());
+    assert_eq!(skipped_sensitive, 1);
+
+    // 引用不存在的 id 丢弃。
+    assert!(validate_organize_action(
+        LlmOrganizeAction {
+            op: "delete".into(),
+            kind: "preference".into(),
+            ids: vec!["pref_unknown".into()],
+            ..Default::default()
+        },
+        &snapshot,
+        &mut skipped_sensitive,
+        &mut warnings,
+    )
+    .is_none());
+
+    // pending 只允许 delete，update/merge 一律丢弃。
+    assert!(validate_organize_action(
+        LlmOrganizeAction {
+            op: "update".into(),
+            kind: "pending".into(),
+            ids: vec![pending.id],
+            content: "回答保持简洁分点".into(),
+            ..Default::default()
+        },
+        &snapshot,
+        &mut skipped_sensitive,
+        &mut warnings,
+    )
+    .is_none());
+
+    // merge 少于 2 个 id 丢弃。
+    assert!(validate_organize_action(
+        LlmOrganizeAction {
+            op: "merge".into(),
+            kind: "preference".into(),
+            ids: vec![pref_id],
+            content: "回答默认先给结论，再给步骤".into(),
+            ..Default::default()
+        },
+        &snapshot,
+        &mut skipped_sensitive,
+        &mut warnings,
+    )
+    .is_none());
+
+    assert!(!warnings.is_empty());
+}
+
+#[test]
+fn organize_report_serializes_snake_case_for_frontend() {
+    let report = MemoryOrganizeReport {
+        started_at: "2026-01-01T00:00:00+00:00".to_string(),
+        finished_at: "2026-01-01T00:00:01+00:00".to_string(),
+        model: "fake".to_string(),
+        scanned: BTreeMap::from([("preference".to_string(), 2)]),
+        deleted: BTreeMap::new(),
+        updated: BTreeMap::new(),
+        merged: BTreeMap::new(),
+        skipped_sensitive: 1,
+        no_change: false,
+        warnings: vec![],
+    };
+    let value = serde_json::to_value(&report).unwrap();
+    // serde 默认 snake_case，与 MemoryOverviewState 等既有 memory DTO 一致。
+    assert_eq!(value["started_at"], "2026-01-01T00:00:00+00:00");
+    assert_eq!(value["finished_at"], "2026-01-01T00:00:01+00:00");
+    assert_eq!(value["model"], "fake");
+    assert_eq!(value["scanned"]["preference"], 2);
+    assert_eq!(value["skipped_sensitive"], 1);
+    assert_eq!(value["no_change"], false);
+    let serialized = serde_json::to_string(&report).unwrap();
+    assert!(serialized.contains("\"started_at\""));
+    assert!(!serialized.contains("startedAt"));
 }

@@ -45,6 +45,13 @@ pub struct MemoryOverviewState {
     pub sources: BTreeMap<String, MemorySourceStatus>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryOrganizeState {
+    pub report: crate::features::memory::MemoryOrganizeReport,
+    pub runtime: Option<crate::features::memory::RuntimeMemorySnapshot>,
+    pub warnings: Vec<MemoryWarning>,
+}
+
 fn resolve_memory_session_id(session_id: Option<String>, store: &SessionStore) -> Option<String> {
     session_id.or_else(|| store.active_id())
 }
@@ -123,6 +130,94 @@ fn memory_warning(code: &str, source: &str, detail: impl Into<String>) -> Memory
         source: source.to_string(),
         detail: detail.into(),
     }
+}
+
+/// 复用 get_memory_overview 的装载与快照写入 helper，刷新 `snapshot.md` 设备
+/// 快照文档。失败以 warning 返回，不影响调用方主流程。
+fn refresh_memory_snapshot_document(
+    session_id: Option<String>,
+    store: &SessionStore,
+    runtime: Option<&crate::features::memory::RuntimeMemorySnapshot>,
+) -> Vec<MemoryWarning> {
+    let mut warnings = Vec::new();
+    let mut sources = BTreeMap::new();
+    let profile = load_memory_source(
+        "profile",
+        crate::features::memory::load_profile(),
+        &mut warnings,
+        &mut sources,
+    );
+    let preferences = load_topic_memory_source(
+        "preferences",
+        crate::features::memory::list_preferences_with_cleanup(),
+        &mut warnings,
+        &mut sources,
+    );
+    let work_context = load_topic_memory_source(
+        "work_context",
+        crate::features::memory::load_work_context_with_cleanup(),
+        &mut warnings,
+        &mut sources,
+    );
+    let current_focus = load_memory_source(
+        "current_focus",
+        crate::features::memory::load_current_focus(),
+        &mut warnings,
+        &mut sources,
+    );
+    let recent_activity = load_memory_source(
+        "recent_activity",
+        crate::features::memory::load_recent_activity(),
+        &mut warnings,
+        &mut sources,
+    );
+    let recent_work = load_memory_source(
+        "recent_work",
+        crate::features::memory::load_recent_work(),
+        &mut warnings,
+        &mut sources,
+    );
+    let pending = load_memory_source(
+        "pending",
+        crate::features::memory::load_pending_memory(),
+        &mut warnings,
+        &mut sources,
+    );
+    let never = load_memory_source(
+        "never",
+        crate::features::memory::load_never_memory(),
+        &mut warnings,
+        &mut sources,
+    );
+    let runtime = match (runtime, resolve_memory_session_id(session_id, store)) {
+        (Some(snapshot), _) => Some(snapshot.clone()),
+        (None, Some(sid)) => match crate::features::memory::runtime_snapshot(&sid) {
+            Ok(snapshot) => Some(snapshot),
+            Err(error) => {
+                let detail = format!("render runtime memory: {error}");
+                eprintln!("[memory] {detail}");
+                warnings.push(memory_warning("runtime_refresh_failed", "runtime", detail));
+                None
+            }
+        },
+        (None, None) => None,
+    };
+    if let Err(error) = crate::features::memory::write_memory_snapshot_document(
+        &profile,
+        &preferences,
+        &work_context,
+        &current_focus,
+        &recent_activity,
+        &recent_work,
+        &pending,
+        &never,
+        runtime.as_ref(),
+    ) {
+        let detail = format!("write memory snapshot: {error}");
+        eprintln!("[memory] {detail}");
+        warnings.push(memory_warning("snapshot_refresh_failed", "snapshot", detail));
+    }
+    warnings
 }
 
 fn load_memory_source<T: Default>(
@@ -365,6 +460,50 @@ pub async fn get_memory_overview(
         warnings,
         sources,
     })
+}
+
+/// 整理优化记忆：全量扫描六类存储，LLM 产出 delete/update/merge 并应用。
+/// 前端在 memory 关闭时应保持按钮禁用；这里仍做 memory_enabled 守卫。
+#[tauri::command]
+pub async fn organize_memory(
+    app: AppHandle,
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
+) -> Result<MemoryOrganizeState, String> {
+    if !crate::features::memory::memory_enabled() {
+        return Err("memory disabled".to_string());
+    }
+    // 与 chat 的图片路由同一套解析：fresh bridge 按会话绑定模型（含本地 vLLM
+    // served name 探测与运行时凭据准备）。尚无活跃会话（如全新草稿）时退化为
+    // pool 共享 bridge + 全局 prefs 直读，同 get_image_input_capability 兜底。
+    let bridge = match resolve_memory_session_id(None, &store) {
+        Some(sid) => pool
+            .fresh_bridge_for(&sid)
+            .await
+            .map_err(|error| format!("organize memory: resolve bridge for {sid}: {error:#}"))?,
+        None => {
+            let mut bridge = pool.bridge.clone();
+            bridge.prefs = UserPrefs::load();
+            bridge.session_model = None;
+            bridge
+        }
+    };
+    let report = crate::features::memory::organize_memory_with_llm(&bridge)
+        .await
+        .map_err(|error| format!("organize memory: {error:#}"))?;
+    let (runtime, mut warnings) = refresh_memory_runtime_best_effort(None, &store, &app);
+    warnings.extend(refresh_memory_snapshot_document(None, &store, runtime.as_ref()));
+    Ok(MemoryOrganizeState {
+        report,
+        runtime,
+        warnings,
+    })
+}
+
+/// 最近的记忆整理报告，新的在前；从未整理过时返回空数组。
+#[tauri::command]
+pub fn get_memory_organize_history() -> Vec<crate::features::memory::MemoryOrganizeReport> {
+    crate::features::memory::load_organize_history()
 }
 
 #[tauri::command]

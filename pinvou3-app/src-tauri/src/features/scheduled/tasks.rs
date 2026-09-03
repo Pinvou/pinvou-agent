@@ -26,12 +26,15 @@ const SCHEDULED_RETENTION_INTERVAL: Duration = Duration::from_secs(15);
 const MAX_TERMINAL_RUNS_PER_AUTOMATION: usize = 50;
 const SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION: u32 = 2;
 const SCHEDULED_MODEL_BINDING_SCHEMA_VERSION: u32 = 1;
+const SCHEDULED_TASK_KIND_SCHEMA_VERSION: u32 = 1;
 const SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION: u32 = 1;
 // Starts at 2: v1 was a full-task snapshot format that only existed during
 // development of this feature and was never released; the v1→v2 migration
 // strips the legacy overbroad snapshot fields.
 const SCHEDULED_HISTORY_ARCHIVE_SCHEMA_VERSION: u32 = 2;
 const SCHEDULED_EXECUTION_MODE: &str = "yolo";
+/// 目前唯一受支持的任务种类：运行时执行 app 侧记忆整理，而不是引擎对话轮。
+pub(crate) const SCHEDULED_TASK_KIND_MEMORY_ORGANIZE: &str = "memory_organize";
 
 #[path = "stores.rs"]
 mod stores;
@@ -66,6 +69,7 @@ pub struct ScheduledTaskState {
     sessions: SessionStore,
     read_state: ScheduledRunReadStore,
     model_bindings: ScheduledTaskModelBindingStore,
+    task_kinds: ScheduledTaskKindStore,
     ui_metadata: ScheduledTaskUiMetadataStore,
     history_archive: ScheduledHistoryArchiveStore,
     operation_locks: ParkingMutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
@@ -93,6 +97,8 @@ pub struct ScheduledTaskDto {
     pub cwds: Vec<String>,
     pub model: Option<String>,
     pub model_id: Option<String>,
+    /// 任务种类；None = 普通聊天任务，`memory_organize` = 运行时执行记忆整理。
+    pub kind: Option<String>,
     pub mode: Option<String>,
     pub allow_shell: bool,
     pub trust_mode: bool,
@@ -125,6 +131,9 @@ pub struct CreateScheduledTaskInput {
     pub model: Option<String>,
     #[serde(default)]
     pub model_id: Option<String>,
+    /// 任务种类；只接受缺省（普通聊天任务）或 "memory_organize"。
+    #[serde(default)]
+    pub kind: Option<String>,
     #[serde(default)]
     pub mode: Option<String>,
     #[serde(default)]
@@ -232,6 +241,10 @@ fn scheduled_model_bindings_path() -> std::path::PathBuf {
     scheduled_automation_root().join("model-bindings.json")
 }
 
+fn scheduled_task_kinds_path() -> std::path::PathBuf {
+    scheduled_automation_root().join("task-kinds.json")
+}
+
 fn scheduled_task_ui_metadata_path() -> std::path::PathBuf {
     scheduled_automation_root().join("task-ui-metadata.json")
 }
@@ -259,6 +272,7 @@ impl ScheduledTaskState {
         let read_state =
             ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())?;
         let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())?;
+        let task_kinds = ScheduledTaskKindStore::open(scheduled_task_kinds_path())?;
         let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())?;
         let history_archive = ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())?;
         let fallback_model = default_automation_model(Some(bridge));
@@ -282,6 +296,12 @@ impl ScheduledTaskState {
                 Arc::new(move |automation_id: &str, model: &str| {
                     model_bindings.model_id_for(automation_id, model)
                 })
+            },
+            {
+                let task_kinds = task_kinds.clone();
+                Some(Arc::new(move |automation_id: &str| {
+                    task_kinds.kind_for(automation_id)
+                }))
             },
         ));
         let task_manager = TaskManager::start_with_executor(task_cfg, executor).await?;
@@ -310,6 +330,7 @@ impl ScheduledTaskState {
             sessions,
             read_state,
             model_bindings,
+            task_kinds,
             ui_metadata,
             history_archive,
             operation_locks: ParkingMutex::new(HashMap::new()),
@@ -343,6 +364,8 @@ impl ScheduledTaskState {
         let manager = self.automations.lock().await;
         let requested_model_id = input.model_id.clone();
         let requires_model_binding = requested_model_id.is_some();
+        // 种类先于任何持久化校验/归一化，垃圾值直接拒绝（与 mode 校验同风格）。
+        let requested_kind = canonical_scheduled_kind(input.kind.clone())?;
         let created = manager
             .create_automation(build_create_request(
                 input,
@@ -367,9 +390,16 @@ impl ScheduledTaskState {
                 created.id
             );
         }
+        if let Some(kind) = requested_kind {
+            if let Err(error) = self.task_kinds.set_kind(&created.id, Some(kind)) {
+                let _ = manager.delete_automation(&created.id);
+                return Err(format!("Failed to save scheduled task kind: {error:#}"));
+            }
+        }
         Ok(map_scheduled_task_with_bindings(
             created,
             Some(&self.model_bindings),
+            Some(&self.task_kinds),
             Some(&self.ui_metadata),
         ))
     }
@@ -413,6 +443,7 @@ impl ScheduledTaskState {
             &self.sessions,
             &self.read_state,
             &self.model_bindings,
+            &self.task_kinds,
             &self.ui_metadata,
             None,
         )
@@ -431,6 +462,7 @@ impl ScheduledTaskState {
             &self.sessions,
             &self.read_state,
             &self.model_bindings,
+            &self.task_kinds,
             &self.ui_metadata,
             None,
         )
@@ -451,6 +483,7 @@ impl ScheduledTaskState {
             &self.sessions,
             &self.read_state,
             &self.model_bindings,
+            &self.task_kinds,
             &self.ui_metadata,
             None,
         )
@@ -472,6 +505,7 @@ impl ScheduledTaskState {
             &self.sessions,
             &self.read_state,
             &self.model_bindings,
+            &self.task_kinds,
             &self.ui_metadata,
             None,
         )
@@ -744,14 +778,22 @@ impl ScheduledTaskState {
                     "Deleted scheduled task {id}, but failed to remove its UI metadata: {error:#}"
                 );
             }
-            Ok(DeletedScheduledTaskDto {
+            // 先构造 DTO 再清种类：删除回执里保留 kind 供前端渲染模板标记。
+            let deleted = DeletedScheduledTaskDto {
                 task: map_scheduled_task_with_bindings(
                     deleted,
                     Some(&self.model_bindings),
+                    Some(&self.task_kinds),
                     Some(&self.ui_metadata),
                 ),
                 deleted_session_ids: Vec::new(),
-            })
+            };
+            if let Err(error) = self.task_kinds.remove(id) {
+                log::warn!(
+                    "Deleted scheduled task {id}, but failed to remove its kind: {error:#}"
+                );
+            }
+            Ok(deleted)
         }
         .await;
 
@@ -1066,9 +1108,17 @@ async fn prune_scheduled_history(
 fn map_scheduled_task_with_bindings(
     record: AutomationRecord,
     model_bindings: Option<&ScheduledTaskModelBindingStore>,
+    task_kinds: Option<&ScheduledTaskKindStore>,
     ui_metadata: Option<&ScheduledTaskUiMetadataStore>,
 ) -> ScheduledTaskDto {
-    map_scheduled_task_with_run_state(record, false, false, model_bindings, ui_metadata)
+    map_scheduled_task_with_run_state(
+        record,
+        false,
+        false,
+        model_bindings,
+        task_kinds,
+        ui_metadata,
+    )
 }
 
 fn map_scheduled_task_with_run_state(
@@ -1076,12 +1126,14 @@ fn map_scheduled_task_with_run_state(
     has_unread_runs: bool,
     is_running: bool,
     model_bindings: Option<&ScheduledTaskModelBindingStore>,
+    task_kinds: Option<&ScheduledTaskKindStore>,
     ui_metadata: Option<&ScheduledTaskUiMetadataStore>,
 ) -> ScheduledTaskDto {
     let model_id = record
         .model
         .as_deref()
         .and_then(|model| model_bindings.and_then(|store| store.model_id_for(&record.id, model)));
+    let kind = task_kinds.and_then(|store| store.kind_for(&record.id));
     let (pinned, pinned_at) = ui_metadata
         .map(|store| store.metadata_for(&record.id))
         .unwrap_or((false, None));
@@ -1100,6 +1152,7 @@ fn map_scheduled_task_with_run_state(
         cwds: Vec::new(),
         model: record.model,
         model_id,
+        kind,
         mode: record.mode,
         allow_shell: record.allow_shell.unwrap_or(false),
         trust_mode: record.trust_mode.unwrap_or(false),
@@ -1214,6 +1267,7 @@ fn map_scheduled_task_from_manager(
     sessions: &SessionStore,
     read_state: &ScheduledRunReadStore,
     model_bindings: &ScheduledTaskModelBindingStore,
+    task_kinds: &ScheduledTaskKindStore,
     ui_metadata: &ScheduledTaskUiMetadataStore,
     session_titles: Option<&HashMap<String, String>>,
 ) -> Result<ScheduledTaskDto> {
@@ -1235,6 +1289,7 @@ fn map_scheduled_task_from_manager(
         has_unread_runs,
         is_running,
         Some(model_bindings),
+        Some(task_kinds),
         Some(ui_metadata),
     ))
 }
@@ -1329,6 +1384,8 @@ fn build_create_request(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(default_model);
     canonical_scheduled_mode(input.mode, None)?;
+    // 种类在创建期白名单校验（归一化结果由 create_task 持有并落 sidecar）。
+    canonical_scheduled_kind(input.kind)?;
     // 工作间由 automation_id 自动分配；客户端不能提供或覆盖路径。
     let status = paused_to_status(input.paused.unwrap_or(false));
     Ok(CreateAutomationRequest {
@@ -1359,6 +1416,8 @@ fn build_update_request(
         input.trust_mode,
         input.auto_approve,
     );
+    // 种类是创建期决定的一次性属性：更新契约不含 kind（UpdateScheduledTaskInput
+    // 没有该字段，JSON 里多传的 kind 会被 serde 静默丢弃），永不改写 sidecar。
     canonical_scheduled_mode(input.mode, None)?;
     let status = input.paused.map(paused_to_status);
     Ok(UpdateAutomationRequest {
@@ -1391,6 +1450,21 @@ fn canonical_scheduled_mode(
         "agent" | "plan" | "yolo" => Ok(Some(mode.to_string())),
         _ => Err(format!(
             "Scheduled task mode must be exactly one of agent|plan|yolo, got '{mode}'"
+        )),
+    }
+}
+
+/// 种类白名单：缺省为普通聊天任务；目前只接受 `memory_organize`。
+/// 风格与 [`canonical_scheduled_mode`] 一致：trim 后精确匹配，其余一律拒绝。
+fn canonical_scheduled_kind(kind: Option<String>) -> Result<Option<String>, String> {
+    let Some(kind) = kind else {
+        return Ok(None);
+    };
+    let kind = kind.trim();
+    match kind {
+        SCHEDULED_TASK_KIND_MEMORY_ORGANIZE => Ok(Some(kind.to_string())),
+        _ => Err(format!(
+            "Scheduled task kind must be exactly one of memory_organize, got '{kind}'"
         )),
     }
 }
@@ -1534,6 +1608,9 @@ pub async fn list_scheduled_tasks(
     if let Err(error) = state.model_bindings.compact(&current_ids) {
         log::warn!("Unable to compact scheduled model bindings: {error:#}");
     }
+    if let Err(error) = state.task_kinds.compact(&current_ids) {
+        log::warn!("Unable to compact scheduled task kinds: {error:#}");
+    }
     if let Err(error) = state.ui_metadata.compact(&current_ids) {
         log::warn!("Unable to compact scheduled task UI metadata: {error:#}");
     }
@@ -1548,6 +1625,7 @@ pub async fn list_scheduled_tasks(
                 &state.sessions,
                 &state.read_state,
                 &state.model_bindings,
+                &state.task_kinds,
                 &state.ui_metadata,
                 Some(&session_titles),
             )
@@ -1573,6 +1651,7 @@ pub async fn read_scheduled_task(
         &state.sessions,
         &state.read_state,
         &state.model_bindings,
+        &state.task_kinds,
         &state.ui_metadata,
         Some(&session_titles),
     )
@@ -1939,6 +2018,58 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_task_kind_store_round_trips_and_normalizes_unrecognized_kinds() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        let store = ScheduledTaskKindStore::open(path.clone()).expect("open kind store");
+        assert_eq!(store.kind_for("automation-1"), None, "empty registry");
+
+        store
+            .set_kind(
+                "automation-1",
+                Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string()),
+            )
+            .expect("set kind");
+        assert_eq!(
+            store.kind_for("automation-1").as_deref(),
+            Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE)
+        );
+
+        let reopened = ScheduledTaskKindStore::open(path.clone()).expect("reopen kind store");
+        assert_eq!(
+            reopened.kind_for("automation-1").as_deref(),
+            Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE),
+            "kind must persist across restart"
+        );
+
+        // 非受支持种类（历史遗留或手工写入）读取时归一化为普通聊天任务。
+        let mut registry = reopened.registry.read().clone();
+        registry.tasks.insert(
+            "automation-legacy".to_string(),
+            ScheduledTaskKindEntry {
+                kind: "legacy_kind".to_string(),
+                updated_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+        );
+        reopened.persist(&registry).expect("persist legacy kind");
+        let reloaded =
+            ScheduledTaskKindStore::open(path.clone()).expect("reload legacy kind store");
+        assert_eq!(reloaded.kind_for("automation-legacy"), None);
+        assert_eq!(
+            reloaded.kind_for("automation-1").as_deref(),
+            Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE)
+        );
+
+        // set_kind(None) 删除记录，回到普通聊天任务。
+        reloaded.set_kind("automation-1", None).expect("clear kind");
+        assert_eq!(reloaded.kind_for("automation-1"), None);
+        let cleared = ScheduledTaskKindStore::open(path).expect("reopen cleared store");
+        assert_eq!(cleared.kind_for("automation-1"), None);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn scheduled_history_archive_migrates_legacy_full_task_to_minimal_snapshot() {
         let dir = temp_home();
         let path = dir.join("legacy-history-archive.json");
@@ -2240,6 +2371,8 @@ mod tests {
                 .expect("read state");
         let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
             .expect("model bindings");
+        let task_kinds =
+            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
         let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
             .expect("ui metadata");
         let manager =
@@ -2291,6 +2424,7 @@ mod tests {
                 sessions,
                 read_state,
                 model_bindings,
+                task_kinds,
                 ui_metadata,
                 history_archive: ScheduledHistoryArchiveStore::open(
                     scheduled_history_archive_path(),
@@ -2794,6 +2928,8 @@ mod tests {
                 .expect("read state");
         let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
             .expect("model bindings");
+        let task_kinds =
+            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
         let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
             .expect("ui metadata");
         let manager =
@@ -2804,6 +2940,7 @@ mod tests {
             sessions,
             read_state,
             model_bindings,
+            task_kinds,
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
@@ -2820,6 +2957,7 @@ mod tests {
                 prompt: "检查项目状态".to_string(),
                 rrule: "FREQ=HOURLY;INTERVAL=6".to_string(),
                 cwds: vec![dir.join("workspace").to_string_lossy().into_owned()],
+                kind: None,
                 model: None,
                 model_id: None,
                 mode: Some("agent".to_string()),
@@ -2880,6 +3018,8 @@ mod tests {
                 .expect("read state");
         let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
             .expect("model bindings");
+        let task_kinds =
+            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
         let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
             .expect("ui metadata");
         let manager =
@@ -2890,6 +3030,7 @@ mod tests {
             sessions,
             read_state,
             model_bindings,
+            task_kinds,
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
@@ -2908,6 +3049,7 @@ mod tests {
                 prompt: "汇总近期工作".to_string(),
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
                 cwds: vec!["D:/should-be-ignored".to_string()],
+                kind: None,
                 model: None,
                 model_id: None,
                 mode: Some("yolo".to_string()),
@@ -2976,6 +3118,8 @@ mod tests {
                 .expect("read state");
         let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
             .expect("model bindings");
+        let task_kinds =
+            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
         let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
             .expect("ui metadata");
         let manager =
@@ -2986,6 +3130,7 @@ mod tests {
             sessions,
             read_state,
             model_bindings,
+            task_kinds,
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
@@ -3003,6 +3148,7 @@ mod tests {
                 prompt: "检查模型绑定".to_string(),
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
                 cwds: Vec::new(),
+                kind: None,
                 model: Some("deepseek-v4-flash".to_string()),
                 model_id: Some("deepseek-b".to_string()),
                 mode: Some("yolo".to_string()),
@@ -3078,6 +3224,160 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// `memory_organize` 种类的完整生命周期：垃圾种类创建期拒绝且不留任何持久
+    /// 化；合法种类落到 sidecar 并随 DTO 返回；更新契约不含 kind；删除回执仍带
+    /// kind 且 sidecar 清理干净。
+    #[tokio::test]
+    async fn memory_organize_kind_create_update_and_delete_lifecycle() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_home();
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        let sessions = SessionStore::boot().expect("session store");
+        sessions
+            .reconcile_scheduled_profiles()
+            .expect("reconcile scheduled profiles");
+        let read_state =
+            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
+                .expect("read state");
+        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
+            .expect("model bindings");
+        let task_kinds =
+            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
+        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
+            .expect("ui metadata");
+        let manager =
+            open_scheduled_automation_manager(scheduled_automation_root()).expect("automations");
+        let state = ScheduledTaskState {
+            automations: Arc::new(tokio::sync::Mutex::new(manager)),
+            task_manager: None,
+            sessions,
+            read_state,
+            model_bindings,
+            task_kinds,
+            ui_metadata,
+            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
+                .expect("history archive"),
+            operation_locks: ParkingMutex::new(HashMap::new()),
+            pool: None,
+            fallback_model: default_automation_model(None),
+            scheduler_cancel: None,
+            scheduler_handle: None,
+            retention_handle: None,
+        };
+
+        // 垃圾种类：拒绝错误与 mode 校验同风格，且任何持久化都不发生。
+        let error = state
+            .create_for_test(CreateScheduledTaskInput {
+                name: "bad kind".to_string(),
+                prompt: "must not persist".to_string(),
+                rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
+                cwds: Vec::new(),
+                kind: Some("summarize".to_string()),
+                model: None,
+                model_id: None,
+                mode: Some("yolo".to_string()),
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                paused: Some(false),
+            })
+            .await
+            .expect_err("unknown kind must be rejected");
+        assert!(error.contains("memory_organize"), "{error}");
+        assert!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .expect("list")
+                .is_empty(),
+            "rejected kind must not leave an automation"
+        );
+        assert!(
+            state.task_kinds.registry.read().tasks.is_empty(),
+            "rejected kind must not leave a kind entry"
+        );
+
+        // 合法种类：sidecar 落库，DTO 携带 kind。
+        let created = state
+            .create_for_test(CreateScheduledTaskInput {
+                name: "整理记忆".to_string(),
+                prompt: "ignored".to_string(),
+                rrule: "FREQ=HOURLY;INTERVAL=24".to_string(),
+                cwds: Vec::new(),
+                kind: Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string()),
+                model: None,
+                model_id: None,
+                mode: Some("yolo".to_string()),
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                paused: Some(false),
+            })
+            .await
+            .expect("create memory organize task");
+        assert_eq!(
+            created.kind.as_deref(),
+            Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE)
+        );
+        assert_eq!(
+            state.task_kinds.kind_for(&created.id).as_deref(),
+            Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE)
+        );
+        let reloaded =
+            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("reload kind store");
+        assert_eq!(
+            reloaded.kind_for(&created.id).as_deref(),
+            Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE),
+            "kind must persist across restart"
+        );
+
+        // 更新契约不含 kind：JSON 里多传 kind 被 serde 静默丢弃，sidecar 不变。
+        let update: UpdateScheduledTaskInput = serde_json::from_value(serde_json::json!({
+            "name": "整理记忆（改名）",
+            "kind": "summarize"
+        }))
+        .expect("update payload with a stale kind field parses");
+        let updated = state
+            .update_for_test(created.id.clone(), update)
+            .await
+            .expect("update memory organize task");
+        assert_eq!(updated.name, "整理记忆（改名）");
+        assert_eq!(
+            updated.kind.as_deref(),
+            Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE),
+            "kind is immutable after creation"
+        );
+        assert_eq!(
+            state.task_kinds.kind_for(&created.id).as_deref(),
+            Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE)
+        );
+
+        // 删除回执仍带 kind 供前端渲染，sidecar 清理干净。
+        let deleted = state
+            .delete_for_test(created.id.clone())
+            .await
+            .expect("delete memory organize task");
+        assert_eq!(
+            deleted.task.kind.as_deref(),
+            Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE)
+        );
+        assert_eq!(state.task_kinds.kind_for(&created.id), None);
+
+        match previous {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn scheduled_task_ui_metadata_pin_unpin_and_delete_cleanup() {
         let _guard = crate::platform::paths::tests::ENV_LOCK
@@ -3096,6 +3396,8 @@ mod tests {
                 .expect("read state");
         let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
             .expect("model bindings");
+        let task_kinds =
+            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
         let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
             .expect("ui metadata");
         let manager =
@@ -3106,6 +3408,7 @@ mod tests {
             sessions,
             read_state,
             model_bindings,
+            task_kinds,
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
@@ -3123,6 +3426,7 @@ mod tests {
                 prompt: "检查置顶".to_string(),
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
                 cwds: Vec::new(),
+                kind: None,
                 model: Some("deepseek-v4-flash".to_string()),
                 model_id: None,
                 mode: Some("yolo".to_string()),
@@ -3249,6 +3553,8 @@ mod tests {
                 .expect("read state");
         let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
             .expect("model bindings");
+        let task_kinds =
+            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
         let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
             .expect("ui metadata");
         let manager =
@@ -3259,6 +3565,7 @@ mod tests {
             sessions,
             read_state,
             model_bindings,
+            task_kinds,
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
@@ -3277,6 +3584,7 @@ mod tests {
                 prompt: "检查运行状态".to_string(),
                 rrule: "FREQ=HOURLY;INTERVAL=2".to_string(),
                 cwds: vec!["/tmp/workspace-a".to_string()],
+                kind: None,
                 model: None,
                 model_id: None,
                 mode: Some("agent".to_string()),
@@ -3361,12 +3669,18 @@ mod tests {
             },
             None,
             None,
+            None,
         );
 
         let value = serde_json::to_value(dto).expect("serialize task dto");
         assert!(
             value.get("sourceSessionId").is_none(),
             "base-owned automations must not expose the removed chat-session binding"
+        );
+        assert_eq!(
+            value.get("kind"),
+            Some(&serde_json::Value::Null),
+            "chat tasks serialize kind as null when no kind store is consulted"
         );
         assert_eq!(
             value.get("isRunning"),
@@ -3414,6 +3728,7 @@ mod tests {
                 prompt: "prepare it".to_string(),
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
                 cwds: Vec::new(),
+                kind: None,
                 model: None,
                 model_id: None,
                 mode: Some("plan".to_string()),
@@ -3455,6 +3770,8 @@ mod tests {
                 .expect("read state");
         let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
             .expect("model bindings");
+        let task_kinds =
+            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
         let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
             .expect("ui metadata");
         let manager =
@@ -3465,6 +3782,7 @@ mod tests {
             sessions,
             read_state,
             model_bindings,
+            task_kinds,
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
@@ -3482,6 +3800,7 @@ mod tests {
                 prompt: "must not persist".to_string(),
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
                 cwds: Vec::new(),
+                kind: None,
                 model: None,
                 model_id: None,
                 mode: Some("planner".to_string()),
@@ -3530,6 +3849,8 @@ mod tests {
                 .expect("read state");
         let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
             .expect("model bindings");
+        let task_kinds =
+            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
         let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
             .expect("ui metadata");
         let manager =
@@ -3540,6 +3861,7 @@ mod tests {
             sessions,
             read_state,
             model_bindings,
+            task_kinds,
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
@@ -3556,6 +3878,7 @@ mod tests {
                 prompt: "keep valid".to_string(),
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
                 cwds: Vec::new(),
+                kind: None,
                 model: None,
                 model_id: None,
                 mode: Some("agent".to_string()),
@@ -3942,6 +4265,8 @@ mod tests {
                 .expect("read state");
         let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
             .expect("model bindings");
+        let task_kinds =
+            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
         let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
             .expect("ui metadata");
         let manager =
@@ -3952,6 +4277,7 @@ mod tests {
             sessions,
             read_state,
             model_bindings,
+            task_kinds,
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
@@ -3968,6 +4294,7 @@ mod tests {
                 prompt: "test operation lock".to_string(),
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
                 cwds: Vec::new(),
+                kind: None,
                 model: None,
                 model_id: None,
                 mode: Some("yolo".to_string()),
@@ -4027,6 +4354,8 @@ mod tests {
                 .expect("read state");
         let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
             .expect("model bindings");
+        let task_kinds =
+            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
         let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
             .expect("ui metadata");
         let manager =
@@ -4037,6 +4366,7 @@ mod tests {
             sessions,
             read_state,
             model_bindings,
+            task_kinds,
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
@@ -4053,6 +4383,7 @@ mod tests {
                 prompt: "delete remains successful".to_string(),
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
                 cwds: Vec::new(),
+                kind: None,
                 model: None,
                 model_id: None,
                 mode: Some("yolo".to_string()),
