@@ -590,9 +590,10 @@ fn vllm_target_kind(upstream: &str) -> &'static str {
 }
 
 /// 轻量探测本地 vLLM:一次 `/v1/models` 拿两样——实际 served 模型名 + `max_model_len`
-/// (上下文窗口)。名字用于发请求(免写死名字与 `--served-model-name` 不一致的
-/// model_not_found);窗口用于填 `active_route_limits.context_tokens`,让压缩阈值按真实
-/// 窗口推导(见 docs/context-compaction-设计.md)。探测失败(vLLM 没起/超时)返回
+/// (上下文窗口)。名字用于监控展示;推理请求的模型名必须走 [`resolve_served_model`]
+/// (本函数取列表首元素,只对单模型 vLLM 服务正确)。窗口用于填
+/// `active_route_limits.context_tokens`,让压缩阈值按真实窗口推导(见
+/// docs/context-compaction-设计.md)。探测失败(vLLM 没起/超时)返回
 /// `(None, None)`, and the caller falls back to the configured values plus the
 /// name hint. See `core::model_endpoint::apply_bearer` for `bearer` semantics:
 /// authenticated vLLM (`--api-key`) 401s on `/v1/models` without credentials,
@@ -605,6 +606,48 @@ pub async fn probe_vllm_model_info(
     match crate::core::model_endpoint::fetch_v1_models(base_url, bearer).await {
         Some(v) => parse_models_response(v).unwrap_or((None, None)),
         None => (None, None),
+    }
+}
+
+/// 「探测 → 用户选择 → 使用所选」链路的最后一环：决定本地 OpenAI 兼容引擎
+/// 实际发请求的模型名。LM Studio / Ollama 的 `/v1/models` 返回**全部已下载
+/// 模型**（多元素列表，首元素与用户在品悟里选的模型无关），因此：
+/// - 配置名已在列表中 → 原样使用（未加载的模型由引擎 JIT 载入，那是用户的
+///   显式选择；取首元素顶替配置名正是用户反馈的「对话指定模型与实际加载
+///   模型不一致」）；
+/// - 配置名不在列表且服务恰好只暴露一个模型 → 跟随该名（真 vLLM 改
+///   `--served-model-name` 后写死配置名失效的既有修复场景，保持不变）；
+/// - 其余（探测失败 / 多元素列表且不含配置名）→ 保持配置名，让推理端显式
+///   报 model_not_found，绝不静默换成列表里任一其他模型。
+/// 返回 `(发请求用的模型名, 该模型的上下文窗口)`；配置名被保留时窗口为
+/// `None`（列表里没有该模型，不能拿别的模型的窗口推压缩阈值）。
+fn resolve_served_model_from_entries(
+    configured: &str,
+    entries: &[crate::core::model_endpoint::OpenAiModelInfo],
+) -> (String, Option<u32>) {
+    if let Some(matched) = entries.iter().find(|model| model.id == configured) {
+        return (configured.to_string(), matched.max_model_len);
+    }
+    if let [single] = entries {
+        return (single.id.clone(), single.max_model_len);
+    }
+    (configured.to_string(), None)
+}
+
+/// 抓取 `/v1/models` 并按 [`resolve_served_model_from_entries`] 决策实际模型名。
+/// 探测失败时返回配置名 + `None` 窗口。`bearer` 语义同
+/// [`probe_vllm_model_info`]（同源推理密钥）。
+pub async fn resolve_served_model(
+    base_url: &str,
+    bearer: Option<&str>,
+    configured: &str,
+) -> (String, Option<u32>) {
+    match crate::core::model_endpoint::fetch_v1_models(base_url, bearer)
+        .await
+        .and_then(crate::core::model_endpoint::parse_models_response_list)
+    {
+        Some(entries) => resolve_served_model_from_entries(configured, &entries),
+        None => (configured.to_string(), None),
     }
 }
 
@@ -698,6 +741,52 @@ mod tests {
         let (id, max) = parse_models_response(json).unwrap();
         assert_eq!(id.as_deref(), Some("/model"));
         assert_eq!(max, Some(65536));
+    }
+
+    fn served_entry(
+        id: &str,
+        max_model_len: Option<u32>,
+    ) -> crate::core::model_endpoint::OpenAiModelInfo {
+        crate::core::model_endpoint::OpenAiModelInfo {
+            id: id.to_string(),
+            max_model_len,
+            loaded: None,
+        }
+    }
+
+    /// LM Studio 形态：`/v1/models` 返回全部已下载模型（多元素列表）。用户选的
+    /// 模型在列表中 → 必须原样使用并取它自己的窗口，绝不能被首元素顶替
+    /// （用户反馈「对话指定模型与实际加载模型不一致」的根因）。
+    #[test]
+    fn served_model_keeps_configured_name_found_in_multi_model_list() {
+        let entries = vec![
+            served_entry("first-downloaded", Some(4096)),
+            served_entry("user-picked", Some(131_072)),
+        ];
+        let (name, window) = resolve_served_model_from_entries("user-picked", &entries);
+        assert_eq!(name, "user-picked");
+        assert_eq!(window, Some(131_072));
+    }
+
+    /// 真 vLLM 场景：改了 `--served-model-name` 后列表只剩一个陌生名字 →
+    /// 跟随该名（既有修复行为保持不变）。
+    #[test]
+    fn served_model_follows_single_unknown_name() {
+        let entries = vec![served_entry("served-name", Some(65536))];
+        let (name, window) = resolve_served_model_from_entries("qwen36_35b_256k", &entries);
+        assert_eq!(name, "served-name");
+        assert_eq!(window, Some(65536));
+    }
+
+    /// 多元素列表且不含配置名（配置失效/被手改）：保留配置名让推理端显式报
+    /// model_not_found，绝不静默换成列表里的任何模型；窗口也不能拿别的模型的
+    /// 顶替（否则压缩阈值按错误窗口推导）。
+    #[test]
+    fn served_model_keeps_configured_name_when_absent_from_multi_model_list() {
+        let entries = vec![served_entry("a", Some(4096)), served_entry("b", Some(8192))];
+        let (name, window) = resolve_served_model_from_entries("gone", &entries);
+        assert_eq!(name, "gone");
+        assert_eq!(window, None);
     }
 
     #[test]
