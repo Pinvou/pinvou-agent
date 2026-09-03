@@ -961,6 +961,8 @@
   const retryFirstTurn = chatFeature.retryFirstTurn;
   const prefillComposer = chatFeature.prefillComposer;
   const removeQueued = chatFeature.removeQueued;
+  const prioritizeQueued = chatFeature.prioritizeQueued;
+  const editQueued = chatFeature.editQueued;
   const steer = chatFeature.steer;
   const interruptAndSend = chatFeature.interruptAndSend;
   const interruptAndSendQueued = chatFeature.interruptAndSendQueued;
@@ -2474,6 +2476,8 @@
       retryFirstTurn,
       prefillComposer,
       removeQueued,
+      prioritizeQueued,
+      editQueued,
       steer,
       interruptAndSend,
       interruptAndSendQueued,

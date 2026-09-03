@@ -85,6 +85,10 @@
   // message is sent (or its failure path finishes); the remaining queue is
   // then served by the interrupt round's chat:done.
   const interruptInFlight = {};
+  // Queue reordering/editing may need to withdraw an engine-side steer before
+  // changing the local chip. Keep flush/zap from racing another message ahead
+  // while that delivery outcome is being established.
+  const queueMutationInFlight = {};
 
   // Transport-layer timeout for steer_chat invokes. The Rust steer() awaits
   // a foundation mpsc send; if the engine task is stuck (alive but not
@@ -381,7 +385,7 @@
     // Interrupt in flight: queued messages yield — the interrupt message goes
     // first (otherwise flush would reserve the turn and the interrupt itself
     // would be lost to turn_in_progress).
-    if (interruptInFlight[sid]) return;
+    if (interruptInFlight[sid] || queueMutationInFlight[sid]) return;
     const pendingBuffer = sessionStates[sid];
     if (pendingBuffer && pendingBuffer.remoteTurnActive) {
       reconcileRemoteTurn(sid).then(function (ready) {
@@ -854,6 +858,164 @@
     notify();
   }
 
+  function queuedItemIndex(queue, queuedId) {
+    if (!queue) return -1;
+    for (let i = 0; i < queue.length; i++) {
+      if (queue[i] && queue[i].id === queuedId) return i;
+    }
+    return -1;
+  }
+
+  function firstLocalQueueIndex(queue) {
+    let index = 0;
+    while (index < queue.length && queue[index] && queue[index].steered) index++;
+    return index;
+  }
+
+  function makeQueuedItemLocal(item) {
+    item.steered = false;
+    item.steerId = null;
+    item.cancelled = false;
+    delete item.zapGate;
+  }
+
+  // Detach a queued item only after its engine-side copy is known to be safe
+  // to mutate. Plain local items are immediate. A steered item requires an
+  // explicit `retired` outcome; uncertain outcomes keep the old content under
+  // the established reconcile path so edited/reordered text is never sent in
+  // addition to a copy that may already have reached the model.
+  async function detachQueuedForMutation(sid, queuedId) {
+    const queue = steeredQueueFor(sid);
+    const index = queuedItemIndex(queue, queuedId);
+    if (index < 0) return null;
+    const item = queue[index];
+    queue.splice(index, 1);
+    if (!item.steered) return { item, index };
+
+    let settlement = null;
+    let outcome = null;
+    if (item.steerId && sid) {
+      outcome = await withdrawSteerOutcome(sid, item.steerId, item.text);
+    } else if (sid) {
+      withdrawSteerChip(sid, item);
+      // Reuse the gated-backfill contract from queued zap: onSteerBackfill
+      // must leave the outcome to this owner instead of firing a second,
+      // outcome-destroying withdrawal.
+      item.zapGate = true;
+      settlement = takeSteerSettlement(sid, item.id);
+      if (!settlement) {
+        // Legacy/id-less settlement may already have left the side table.
+        // Without an engine identity there is no safe withdrawal primitive.
+        item.cancelled = false;
+        delete item.zapGate;
+        const currentQueue = steeredQueueFor(sid);
+        if (currentQueue) currentQueue.splice(Math.min(index, currentQueue.length), 0, item);
+        notify();
+        return null;
+      }
+    }
+    notify();
+
+    if (settlement) {
+      const settled = await settlement;
+      if (settled && settled.ok && settled.steerId && sid) {
+        item.steerId = settled.steerId;
+        outcome = await withdrawSteerOutcome(sid, settled.steerId, item.text);
+      } else if (settled && !settled.ok && !settled.timedOut) {
+        // steer_chat itself was deterministically rejected: no engine copy
+        // exists, so converting the chip to a local queue item is safe.
+        makeQueuedItemLocal(item);
+        return { item, index };
+      } else if (settled && !settled.ok && settled.timedOut) {
+        runSyncOnSession(sid, function () {
+          addSystemItem("⚠️ " + bt("steerFailed"));
+        });
+        restoreSteerText(sid, item.text);
+        notify();
+        return null;
+      } else {
+        // A legacy successful steer without an engine id cannot be withdrawn
+        // safely. Put the original chip back and let transcript settlement
+        // resolve it without changing its content or order.
+        item.cancelled = false;
+        delete item.zapGate;
+        const currentQueue = steeredQueueFor(sid);
+        if (currentQueue) currentQueue.splice(Math.min(index, currentQueue.length), 0, item);
+        notify();
+        return null;
+      }
+    }
+
+    if (outcome !== "retired") {
+      // not_pending / timeout / unreachable are all delivery-uncertain. The
+      // old message remains authoritative and the existing watchdog/event
+      // reconciliation restores or renders it exactly once.
+      settleZapSkipResend(sid, item);
+      return null;
+    }
+    makeQueuedItemLocal(item);
+    return { item, index };
+  }
+
+  async function mutateQueued(sid, queuedId, mutation, nextText) {
+    if (!sid || queueMutationInFlight[sid] || interruptInFlight[sid]) return false;
+    queueMutationInFlight[sid] = true;
+    try {
+      const initialQueue = steeredQueueFor(sid);
+      const initialIndex = queuedItemIndex(initialQueue, queuedId);
+      if (mutation === "prioritize" && initialIndex >= 0 && initialQueue[initialIndex].steered) {
+        // A steer is already ordered in the engine's current-turn inbox. It
+        // may move ahead of local-only items in the visual queue without any
+        // transport change. It cannot safely leapfrog an earlier steer: the
+        // foundation has no reorder primitive, and withdrawing only the
+        // target would move it later rather than earlier.
+        const earlierSteer = initialQueue.slice(0, initialIndex).some(function (item) {
+          return item && item.steered;
+        });
+        if (earlierSteer) return false;
+        const item = initialQueue.splice(initialIndex, 1)[0];
+        initialQueue.unshift(item);
+        notify();
+        return true;
+      }
+      const detached = await detachQueuedForMutation(sid, queuedId);
+      if (!detached) return false;
+      const queue = steeredQueueFor(sid);
+      if (!queue) {
+        (detached.item.attachments || []).forEach(discardManagedAttachment);
+        return false;
+      }
+      if (mutation === "edit") {
+        const text = String(nextText == null ? "" : nextText).trim();
+        if (!text && !(detached.item.attachments || []).length) {
+          queue.splice(Math.min(detached.index, queue.length), 0, detached.item);
+          notify();
+          return false;
+        }
+        detached.item.text = text;
+        detached.item.displayText = formatAttachmentDisplayText(text, detached.item.attachments || []);
+      }
+      const localStart = firstLocalQueueIndex(queue);
+      const insertionIndex = mutation === "prioritize"
+        ? localStart
+        : Math.max(localStart, Math.min(detached.index, queue.length));
+      queue.splice(insertionIndex, 0, detached.item);
+      notify();
+      return true;
+    } finally {
+      delete queueMutationInFlight[sid];
+      if (!isBusyFor(sid)) flushQueued(sid);
+    }
+  }
+
+  function prioritizeQueued(sid, queuedId) {
+    return mutateQueued(sid, queuedId, "prioritize");
+  }
+
+  function editQueued(sid, queuedId, text) {
+    return mutateQueued(sid, queuedId, "edit", text);
+  }
+
   // ── Pinvou v4 召唤式检阅:Boss 主动呼叫,审当前 session 前面的工作 ──
   // 设计 docs/品悟v4-常驻检阅助手设计.md。纯召唤、不替 Boss 决策。
   // 审查卡进 chatItems(当前会话可见);跨会话持久化(进 messages/独立存储)是 §6 后续增强。
@@ -1237,6 +1399,7 @@
     delete withdrawnSteers[sid];
     delete pendingSteerPositions[sid];
     delete interruptInFlight[sid];
+    delete queueMutationInFlight[sid];
     delete steerSettlements[sid];
     const watchdogs = steerSettleWatchdogs[sid];
     if (watchdogs) {
@@ -1812,7 +1975,7 @@
   }
 
   async function interruptAndSendQueued(sid, queuedId) {
-    if (interruptInFlight[sid]) {
+    if (interruptInFlight[sid] || queueMutationInFlight[sid]) {
       runSyncOnSession(sid, function () {
         addSystemItem("⚠️ " + bt("interruptBusy"));
       });
@@ -2015,6 +2178,8 @@
       retryFirstTurn,
       prefillComposer,
       removeQueued,
+      prioritizeQueued,
+      editQueued,
       summonPinvou,
       inspectPinvou,
       recordPinvouReview,

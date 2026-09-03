@@ -5427,6 +5427,37 @@
     notify();
   }
 
+  function queueForSession(sid) {
+    return sid === state.activeSessionId
+      ? state.queued
+      : (sessionStates[sid] && sessionStates[sid].queued);
+  }
+
+  function prioritizeQueued(sid, queuedId) {
+    const queue = queueForSession(sid);
+    if (!queue) return false;
+    const index = queue.findIndex(function (item) { return item && item.id === queuedId; });
+    if (index < 0) return false;
+    const item = queue.splice(index, 1)[0];
+    queue.unshift(item);
+    notify();
+    if (!isBusyFor(sid)) flushQueued(sid);
+    return true;
+  }
+
+  function editQueued(sid, queuedId, nextText) {
+    const queue = queueForSession(sid);
+    if (!queue) return false;
+    const item = queue.find(function (queued) { return queued && queued.id === queuedId; });
+    if (!item) return false;
+    const text = String(nextText == null ? "" : nextText).trim();
+    if (!text && !(item.attachments || []).length) return false;
+    item.text = text;
+    item.displayText = formatAttachmentDisplayText(text, item.attachments || []);
+    notify();
+    return true;
+  }
+
   // ── Pinvou v4 召唤式检阅:Boss 主动呼叫,审当前 session 前面的工作 ──
   // 设计 docs/品悟v4-常驻检阅助手设计.md。纯召唤、不替 Boss 决策。
   // 审查卡进 chatItems(当前会话可见);跨会话持久化(进 messages/独立存储)是 §6 后续增强。
@@ -9495,6 +9526,8 @@
     retryFirstTurn,
     prefillComposer,
     removeQueued,
+    prioritizeQueued,
+    editQueued,
     startVoiceInput,
     installVoiceAsr,
     closeVoiceAsrSetup,

@@ -816,9 +816,15 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     },
     chat: {
       sendMessage: function (text, meta) { return rawBridge.sendMessage(text, meta); },
+      sendMessageToSession: function (sid, text, meta) { return rawBridge.sendMessageToSession(sid, text, meta); },
+      prioritizeQueued: function (sid, id) { return rawBridge.prioritizeQueued(sid, id); },
+      editQueued: function (sid, id, text) { return rawBridge.editQueued(sid, id, text); },
     },
     interaction: {
       editLastTurn: function (text) { return rawBridge.editLastTurn(text); },
+    },
+    attachments: {
+      addAttachmentByPath: function (path) { return rawBridge.addAttachmentByPath(path); },
     },
     scheduled: {
       openScheduledRunChat: function (run, task) { return rawBridge.openScheduledRunChat(run, task); },
@@ -2567,6 +2573,133 @@ async function attachmentQueuedChipCancelNeverTouchesEngine() {
     }).length,
     0,
     "× cancel on a plain queued chip makes zero engine calls"
+  );
+}
+
+async function queuedMessageActionsReorderAndEditPlainItems(bridgeKind) {
+  const harness = createBridgeHarness(Object.create(null), bridgeKind === "web" ? {
+    bridgeKind: "web",
+    webSupportedCommands: [
+      "web_access_load_session_chunk", "web_access_cancel_session_download",
+      "web_access_list_sessions", "web_access_list_archived_sessions",
+      "web_access_status",
+    ],
+  } : undefined);
+  const bridge = harness.bridge;
+  const sid = "chat-queue-actions-" + bridgeKind;
+  assert.strictEqual(await bridge.sessions.switchToSession(sid), true);
+  harness.emit("chat:turn_started", { session_id: sid });
+  await tick();
+
+  const ingestCommand = bridgeKind === "web" ? "web_access_ingest_file" : "ingest_file";
+  harness.handlers[ingestCommand] = function (args) {
+    return bridgeKind === "web"
+      ? { handle: "handle-" + args.path, basename: args.path }
+      : { path: "/managed/" + args.path, basename: args.path };
+  };
+  await bridge.attachments.addAttachmentByPath("first.txt");
+  await bridge.chat.sendMessage("first queued", { source: "first" });
+  await bridge.attachments.addAttachmentByPath("second.txt");
+  await bridge.chat.sendMessage("second queued", { source: "second" });
+  let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.deepStrictEqual(
+    Array.from(view.queued, function (item) { return item.text; }),
+    ["first queued", "second queued"],
+    bridgeKind + ": messages start in FIFO order"
+  );
+  const secondId = view.queued[1].id;
+
+  assert.strictEqual(await bridge.chat.editQueued(sid, secondId, "second edited"), true);
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued[1].text, "second edited", bridgeKind + ": edit replaces only queued text");
+  assert.ok(view.queued[1].displayText.includes("second edited"), bridgeKind + ": display text follows the edit");
+  assert.ok(view.queued[1].displayText.includes("second.txt"), bridgeKind + ": edit preserves attachment display");
+  assert.strictEqual(view.queued[1].attachments.length, 1, bridgeKind + ": edit preserves attachment payloads");
+  assert.strictEqual(view.queued[1].meta.source, "second", bridgeKind + ": edit preserves message metadata");
+
+  assert.strictEqual(await bridge.chat.prioritizeQueued(sid, secondId), true);
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.deepStrictEqual(
+    Array.from(view.queued, function (item) { return item.text; }),
+    ["second edited", "first queued"],
+    bridgeKind + ": prioritize moves the item to the queue front"
+  );
+  assert.strictEqual(
+    harness.calls.filter(function (call) {
+      return call.cmd === "chat" || call.cmd === "web_access_chat" || call.cmd === "cancel_generation";
+    }).length,
+    0,
+    bridgeKind + ": edit/prioritize do not interrupt or start a turn while busy"
+  );
+}
+
+async function editQueuedSteerWithdrawsBeforeChangingPayload() {
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const sid = "chat-queue-edit-steer";
+  assert.strictEqual(await bridge.sessions.switchToSession(sid), true);
+  harness.emit("chat:turn_started", { session_id: sid });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-edit-1"; };
+  harness.handlers.withdraw_steer = function () { return "retired"; };
+
+  await bridge.chat.sendMessage("old engine payload");
+  await tick();
+  await tick();
+  const queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
+  assert.strictEqual(await bridge.chat.editQueued(sid, queuedId, "new local payload"), true);
+
+  const withdraw = harness.calls.find(function (call) { return call.cmd === "withdraw_steer"; });
+  assert.ok(withdraw, "editing a steered item withdraws its engine copy first");
+  assert.strictEqual(withdraw.args.steerId, "steer-edit-1");
+  const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 1);
+  assert.strictEqual(view.queued[0].text, "new local payload");
+  assert.strictEqual(view.queued[0].steered, false, "the edited item becomes a safe local queue entry");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "chat" || call.cmd === "cancel_generation"; }).length,
+    0,
+    "editing never interrupts the active answer"
+  );
+}
+
+async function editQueuedSteerRefusesUncertainWithdrawal() {
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const sid = "chat-queue-edit-uncertain";
+  assert.strictEqual(await bridge.sessions.switchToSession(sid), true);
+  harness.emit("chat:turn_started", { session_id: sid });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-edit-uncertain-1"; };
+  harness.handlers.withdraw_steer = function () { return "not_pending"; };
+
+  await bridge.chat.sendMessage("authoritative old payload");
+  await tick();
+  await tick();
+  const queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
+  assert.strictEqual(
+    await bridge.chat.editQueued(sid, queuedId, "must not be sent"),
+    false,
+    "an uncertain withdrawal refuses the edit"
+  );
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
+    0,
+    "uncertain delivery never resends edited text"
+  );
+
+  await harness.emit("chat:steer_committed", { session_id: sid, steer_id: "steer-edit-uncertain-1" });
+  await tick();
+  const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.ok(
+    view.chatItems.some(function (item) {
+      return item.type === "user" && item.text === "authoritative old payload";
+    }),
+    "the engine-authoritative old payload is rendered after a too-late withdrawal"
+  );
+  assert.ok(
+    !view.chatItems.some(function (item) { return String(item.text || "").includes("must not be sent"); }),
+    "the rejected edit never reaches the transcript"
   );
 }
 
@@ -8130,6 +8263,10 @@ Promise.resolve()
   .then(removeQueuedSteeredChipWithdrawsFromEngine)
   .then(removeQueuedBeforeSteerIdBackfillWithdrawsOnBackfill)
   .then(attachmentQueuedChipCancelNeverTouchesEngine)
+  .then(function () { return queuedMessageActionsReorderAndEditPlainItems("tauri"); })
+  .then(function () { return queuedMessageActionsReorderAndEditPlainItems("web"); })
+  .then(editQueuedSteerWithdrawsBeforeChangingPayload)
+  .then(editQueuedSteerRefusesUncertainWithdrawal)
   .then(interruptQueuedSteeredChipWithdrawsBeforeSending)
   .then(interruptQueuedFailureRestoresChipToQueue)
   .then(interruptQueuedWhileIdleSendsWithoutCancel)
