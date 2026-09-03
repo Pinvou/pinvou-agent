@@ -114,7 +114,12 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: pinvou3-app/src-tauri
+          # The pinvou-knowledge:knowledge-host server builds cold in an isolated
+          # target dir; without a cache every release recompiles it from scratch
+          # (one of the three ELFs in the deb).
+          workspaces: |
+            pinvou3-app/src-tauri
+            pinvou-knowledge
           # jammy 后缀:runner 从 24.04 降到 22.04 时必须换 key,防止 24.04
           # glibc 环境编译的 target 产物被复用进 22.04 构建混入新符号引用。
           shared-key: release-linux-x64-jammy
@@ -230,7 +235,10 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: pinvou3-app/src-tauri
+          # Same as x64: also cache the pinvou-knowledge isolated target dir.
+          workspaces: |
+            pinvou3-app/src-tauri
+            pinvou-knowledge
           # jammy 后缀:同 x64,换 runner 基座后必须换 key 防止旧 glibc 产物混链。
           shared-key: release-linux-arm64-jammy
           # 只在 main 保存(对齐 pr-check 的配额保护策略);PR 侧只读,不写 1.2GB+ 缓存。
@@ -453,7 +461,11 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: pinvou3-app/src-tauri
+          # Same as the Linux release job: also cache the pinvou-knowledge
+          # isolated target dir.
+          workspaces: |
+            pinvou3-app/src-tauri
+            pinvou-knowledge
           shared-key: release-macos-universal
           # 只在 main 保存(对齐 pr-check 的配额保护策略);PR 侧只读,不写 2GB+ 缓存。
           save-if: ${{ github.ref == 'refs/heads/main' }}

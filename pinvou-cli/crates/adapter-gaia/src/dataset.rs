@@ -842,6 +842,54 @@ fn verify_attachment(
     }))
 }
 
+fn looks_absolute(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    Path::new(value).is_absolute()
+        || value.starts_with('/')
+        || value.starts_with('\\')
+        || (bytes.len() >= 2 && bytes[1] == b':')
+}
+
+fn ensure_no_link_components(root: &Path, relative: &Path) -> Result<(), GaiaDatasetError> {
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            return Err(GaiaDatasetError::AttachmentUnsafe);
+        };
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if is_link_or_reparse(&metadata) => {
+                return Err(GaiaDatasetError::AttachmentUnsafe);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(GaiaDatasetError::AttachmentMissing);
+            }
+            Err(_) => return Err(GaiaDatasetError::AttachmentUnsafe),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn is_link_or_reparse(metadata: &Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    metadata.file_type().is_symlink()
+        || windows_attributes_indicate_reparse(metadata.file_attributes())
+}
+
+#[cfg(windows)]
+fn windows_attributes_indicate_reparse(attributes: u32) -> bool {
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_link_or_reparse(metadata: &Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
 #[cfg(test)]
 mod level_schema_contract_tests {
     use super::*;
@@ -933,54 +981,6 @@ mod level_schema_contract_tests {
         ));
         assert!(level_schema_result(group).is_err());
     }
-}
-
-fn looks_absolute(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    Path::new(value).is_absolute()
-        || value.starts_with('/')
-        || value.starts_with('\\')
-        || (bytes.len() >= 2 && bytes[1] == b':')
-}
-
-fn ensure_no_link_components(root: &Path, relative: &Path) -> Result<(), GaiaDatasetError> {
-    let mut current = root.to_path_buf();
-    for component in relative.components() {
-        let Component::Normal(component) = component else {
-            return Err(GaiaDatasetError::AttachmentUnsafe);
-        };
-        current.push(component);
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) if is_link_or_reparse(&metadata) => {
-                return Err(GaiaDatasetError::AttachmentUnsafe);
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(GaiaDatasetError::AttachmentMissing);
-            }
-            Err(_) => return Err(GaiaDatasetError::AttachmentUnsafe),
-        }
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn is_link_or_reparse(metadata: &Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    metadata.file_type().is_symlink()
-        || windows_attributes_indicate_reparse(metadata.file_attributes())
-}
-
-#[cfg(windows)]
-fn windows_attributes_indicate_reparse(attributes: u32) -> bool {
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-    attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-fn is_link_or_reparse(metadata: &Metadata) -> bool {
-    metadata.file_type().is_symlink()
 }
 
 #[cfg(all(test, windows))]

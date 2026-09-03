@@ -434,11 +434,11 @@ fn named_options<'a>(
     values: &'a [String],
     allowed: &[&str],
 ) -> Result<Vec<(&'a str, &'a str)>, CliError> {
-    if values.len() % 2 != 0 {
+    if !values.len().is_multiple_of(2) {
         return Err(CliError::usage("benchmark option requires a value"));
     }
     let mut parsed = Vec::new();
-    for pair in values.chunks_exact(2) {
+    for pair in values.as_chunks::<2>().0 {
         let name = pair[0].as_str();
         let value = pair[1].as_str();
         if !allowed.contains(&name)

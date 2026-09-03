@@ -3102,24 +3102,30 @@ fn build_webview<P: PlatformWebviewConfig>(
     url: &str,
     control: Arc<WorkspaceControl>,
     published: bool,
-) -> Result<SurfaceEntry, WebviewBuildError> {
-    let window = app
-        .get_window("main")
-        .ok_or_else(|| WebviewBuildError::new("Main window is not ready".to_string()))?;
-    let parsed_url = url
-        .parse()
-        .map_err(|e| WebviewBuildError::new(format!("Initial browser URL is invalid: {e}")))?;
+) -> Result<SurfaceEntry, Box<WebviewBuildError>> {
+    let window = app.get_window("main").ok_or_else(|| {
+        Box::new(WebviewBuildError::new(
+            "Main window is not ready".to_string(),
+        ))
+    })?;
+    let parsed_url = url.parse().map_err(|e| {
+        Box::new(WebviewBuildError::new(format!(
+            "Initial browser URL is invalid: {e}"
+        )))
+    })?;
     let initial_last_known_url =
         validated_surface_url(url.to_string(), tab_token).ok_or_else(|| {
-            WebviewBuildError::new(
+            Box::new(WebviewBuildError::new(
                 "Initial browser URL cannot be written to restore state".to_string(),
-            )
+            ))
         })?;
-    let page_id = next_native_page_id().map_err(WebviewBuildError::new)?;
+    let page_id = next_native_page_id().map_err(|error| Box::new(WebviewBuildError::new(error)))?;
     let label = format!("{WEBVIEW_LABEL_PREFIX}{tab_token}");
     if let Some(stale) = app.get_webview(&label) {
         stale.close().map_err(|e| {
-            WebviewBuildError::new(format!("Failed to close invalid browser tab: {e}"))
+            Box::new(WebviewBuildError::new(format!(
+                "Failed to close invalid browser tab: {e}"
+            )))
         })?;
     }
 
@@ -3168,7 +3174,7 @@ fn build_webview<P: PlatformWebviewConfig>(
         &user_navigation,
         has_internal_marker_for_token(url, tab_token),
     )
-    .map_err(WebviewBuildError::new)?;
+    .map_err(|error| Box::new(WebviewBuildError::new(error)))?;
     let location_signal_nonce = format!("{:032x}", rand::random::<u128>());
     let navigation_location_signal_nonce = location_signal_nonce.clone();
     let init_script = browser_initialization_script(cdp_tab_token, &location_signal_nonce);
@@ -3177,7 +3183,7 @@ fn build_webview<P: PlatformWebviewConfig>(
         Ok(builder) => builder,
         Err(error) => {
             super::unregister_browser_core_webview_binding(&label);
-            return Err(WebviewBuildError::new(error));
+            return Err(Box::new(WebviewBuildError::new(error)));
         }
     }
         // BrowserCore runs in every frame on all three desktop engines. The
@@ -3557,9 +3563,9 @@ fn build_webview<P: PlatformWebviewConfig>(
         Ok(webview) => webview,
         Err(error) => {
             super::unregister_browser_core_webview_binding(&label);
-            return Err(WebviewBuildError::new(format!(
+            return Err(Box::new(WebviewBuildError::new(format!(
                 "Failed to create system-WebView browser tab: {error}"
-            )));
+            ))));
         }
     };
     let entry = SurfaceEntry {
@@ -3579,16 +3585,16 @@ fn build_webview<P: PlatformWebviewConfig>(
         return match webview.close() {
             Ok(()) => {
                 super::unregister_browser_core_webview_binding(&entry.label);
-                Err(WebviewBuildError::new(format!(
+                Err(Box::new(WebviewBuildError::new(format!(
                     "Failed to initialize hidden browser tab: {hide_error}"
-                )))
+                ))))
             }
-            Err(close_error) => Err(WebviewBuildError::with_survivor(
+            Err(close_error) => Err(Box::new(WebviewBuildError::with_survivor(
                 format!(
                     "Failed to initialize hidden browser tab: {hide_error}; compensating close failed: {close_error}"
                 ),
                 entry,
-            )),
+            ))),
         };
     }
     if let Err(attach_error) = super::attach_native_surface(&webview) {
@@ -3596,16 +3602,16 @@ fn build_webview<P: PlatformWebviewConfig>(
         return match webview.close() {
             Ok(()) => {
                 super::unregister_browser_core_webview_binding(&entry.label);
-                Err(WebviewBuildError::new(format!(
+                Err(Box::new(WebviewBuildError::new(format!(
                     "Failed to initialize native browser-tab container: {attach_error}"
-                )))
+                ))))
             }
-            Err(close_error) => Err(WebviewBuildError::with_survivor(
+            Err(close_error) => Err(Box::new(WebviewBuildError::with_survivor(
                 format!(
                     "Failed to initialize native browser-tab container: {attach_error}; compensating close failed: {close_error}"
                 ),
                 entry,
-            )),
+            ))),
         };
     }
     Ok(entry)

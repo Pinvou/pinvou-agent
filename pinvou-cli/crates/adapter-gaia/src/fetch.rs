@@ -364,14 +364,32 @@ impl fmt::Debug for SnapshotFileMetadata {
     }
 }
 
+/// Downloader failures deliberately carry no payload: the error channel is
+/// redacted so repository paths or digests never leak through it (same
+/// discipline as [`SnapshotFileMetadata`]'s Debug impl).
+///
+/// Internal helpers keep plumbing `Result<_, ()>`; `From<()>` adapts them at
+/// the public trait boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SnapshotFetchFailure;
+
+impl From<()> for SnapshotFetchFailure {
+    fn from((): ()) -> Self {
+        SnapshotFetchFailure
+    }
+}
+
 pub trait SnapshotDownloader: Send + Sync {
     fn preflight(
         &self,
         request: &SnapshotPreflightRequest<'_>,
-    ) -> Result<Vec<SnapshotFileMetadata>, ()>;
+    ) -> Result<Vec<SnapshotFileMetadata>, SnapshotFetchFailure>;
 
-    fn download(&self, request: &SnapshotDownloadRequest<'_>, destination: &Path)
-    -> Result<(), ()>;
+    fn download(
+        &self,
+        request: &SnapshotDownloadRequest<'_>,
+        destination: &Path,
+    ) -> Result<(), SnapshotFetchFailure>;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -381,9 +399,9 @@ impl SnapshotDownloader for HfSnapshotDownloader {
     fn preflight(
         &self,
         request: &SnapshotPreflightRequest<'_>,
-    ) -> Result<Vec<SnapshotFileMetadata>, ()> {
+    ) -> Result<Vec<SnapshotFileMetadata>, SnapshotFetchFailure> {
         if request.repo_id != GAIA_REPO_ID || request.revision != GAIA_DATASET_REVISION {
-            return Err(());
+            return Err(SnapshotFetchFailure);
         }
         let repo = hf_repo(
             request.token,
@@ -394,16 +412,16 @@ impl SnapshotDownloader for HfSnapshotDownloader {
         let requested = request
             .remote_paths
             .iter()
-            .map(|path| path.to_str().ok_or(()).map(str::to_owned))
+            .map(|path| path.to_str().ok_or(SnapshotFetchFailure).map(str::to_owned))
             .collect::<Result<HashSet<_>, _>>()?;
         if requested.len() != request.remote_paths.len() {
-            return Err(());
+            return Err(SnapshotFetchFailure);
         }
         let response = repo
             .info_request()
             .query("blobs", "true")
             .call()
-            .map_err(|_| ())?;
+            .map_err(|_| SnapshotFetchFailure)?;
         Ok(parse_hf_metadata(response.into_reader(), &requested)?.siblings)
     }
 
@@ -411,9 +429,9 @@ impl SnapshotDownloader for HfSnapshotDownloader {
         &self,
         request: &SnapshotDownloadRequest<'_>,
         destination: &Path,
-    ) -> Result<(), ()> {
+    ) -> Result<(), SnapshotFetchFailure> {
         if request.repo_id != GAIA_REPO_ID || request.revision != GAIA_DATASET_REVISION {
-            return Err(());
+            return Err(SnapshotFetchFailure);
         }
         let repo = hf_repo(
             request.token,
@@ -424,7 +442,7 @@ impl SnapshotDownloader for HfSnapshotDownloader {
         if request.expected.remote_path() != Path::new(request.remote_path)
             || request.expected.size() > request.remaining_budget
         {
-            return Err(());
+            return Err(SnapshotFetchFailure);
         }
         let url = repo.url(request.remote_path);
         let response = ureq::AgentBuilder::new()
@@ -436,12 +454,12 @@ impl SnapshotDownloader for HfSnapshotDownloader {
                 &format!("Bearer {}", request.token.expose_to_backend()),
             )
             .call()
-            .map_err(|_| ())?;
+            .map_err(|_| SnapshotFetchFailure)?;
         let content_length = response
             .header("Content-Length")
-            .map(|value| value.parse::<u64>().map_err(|_| ()))
+            .map(|value| value.parse::<u64>().map_err(|_| SnapshotFetchFailure))
             .transpose()?;
-        let parent = destination.parent().ok_or(())?;
+        let parent = destination.parent().ok_or(SnapshotFetchFailure)?;
         create_private_parent_directories(parent)?;
         stream_verified_file(
             response.into_reader(),
@@ -449,8 +467,8 @@ impl SnapshotDownloader for HfSnapshotDownloader {
             destination,
             request.expected,
             request.remaining_budget,
-        )
-        .map(|_| ())
+        )?;
+        Ok(())
     }
 }
 
@@ -716,10 +734,10 @@ impl<D: SnapshotDownloader> GaiaSnapshotManager<D> {
         expected_digest: [u8; 32],
     ) -> Result<GaiaAcquisition, GaiaFetchError> {
         let ready_root = self.ready_root();
-        if ready_root.exists() {
-            if let Ok(ready) = self.verify_ready(&ready_root, expected_size, expected_digest) {
-                return Ok(ready);
-            }
+        if ready_root.exists()
+            && let Ok(ready) = self.verify_ready(&ready_root, expected_size, expected_digest)
+        {
+            return Ok(ready);
         }
 
         let _lock = AcquisitionLock::claim(&self.acquisition_root)?;
@@ -2206,16 +2224,16 @@ mod review_contract_tests {
         fn preflight(
             &self,
             _request: &SnapshotPreflightRequest<'_>,
-        ) -> Result<Vec<SnapshotFileMetadata>, ()> {
-            Err(())
+        ) -> Result<Vec<SnapshotFileMetadata>, SnapshotFetchFailure> {
+            Err(SnapshotFetchFailure)
         }
 
         fn download(
             &self,
             _request: &SnapshotDownloadRequest<'_>,
             _destination: &Path,
-        ) -> Result<(), ()> {
-            Err(())
+        ) -> Result<(), SnapshotFetchFailure> {
+            Err(SnapshotFetchFailure)
         }
     }
 
@@ -2322,7 +2340,7 @@ mod review_contract_tests {
     #[test]
     fn fetch_remote_budget_rejects_oversized_file_total_and_count_before_download() {
         assert!(validate_remote_budget(&[MAX_FILE_BYTES + 1]).is_err());
-        assert!(validate_remote_budget(&vec![MAX_FILE_BYTES; 13]).is_err());
+        assert!(validate_remote_budget(&[MAX_FILE_BYTES; 13]).is_err());
         assert!(validate_remote_budget(&vec![1; MAX_TRANSFER_FILES + 1]).is_err());
         assert!(validate_remote_budget(&[GAIA_PARQUET_SIZE, 20]).is_ok());
     }

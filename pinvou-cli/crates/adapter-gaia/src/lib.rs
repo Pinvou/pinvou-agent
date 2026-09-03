@@ -24,8 +24,8 @@ use benchmark_core::{
 pub use dataset::{GAIA_REVISION_MARKER, GaiaAttachment, GaiaDataset, GaiaDatasetError, GaiaRow};
 pub use fetch::{
     GAIA_READY_MARKER, GaiaAcquisition, GaiaFetchError, GaiaSnapshotManager, GaiaSource,
-    HfSnapshotDownloader, SnapshotDownloadRequest, SnapshotDownloader, SnapshotFileMetadata,
-    SnapshotPreflightRequest,
+    HfSnapshotDownloader, SnapshotDownloadRequest, SnapshotDownloader, SnapshotFetchFailure,
+    SnapshotFileMetadata, SnapshotPreflightRequest,
 };
 pub use private_inputs::GaiaPrivateInputs;
 pub use scorer::{GAIA_SCORER_RUNTIME_PROFILE, question_scorer};

@@ -1292,7 +1292,10 @@ function RemoteKnowledgeView({ t, embedded = false }) {
       refreshError = String(error);
     }
     setUploadInProgress(false);
-    const counts = nextQueue.reduce((output, item) => ({ ...output, [item.status]: (output[item.status] || 0) + 1 }), {});
+    const counts = {};
+    for (const item of nextQueue) {
+      counts[item.status] = (counts[item.status] || 0) + 1;
+    }
     const completed = counts.success || 0;
     const existing = counts.duplicate || 0;
     const processing = (counts.pending_index || 0) + (counts.duplicate_pending || 0);
