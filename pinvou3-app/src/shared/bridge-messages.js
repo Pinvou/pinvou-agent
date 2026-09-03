@@ -108,11 +108,16 @@
         return null;
       }
       const language = state.settings && state.settings.language;
-      return helper.build(raw || error, {
+      const userError = helper.build(raw || error, {
         language,
-        providerLabel: helper.providerLabelFromState(state, null, language),
+        providerLabel: helper.providerLabelFromState(state, language),
         terminal: payload.terminal !== false,
       });
+      // forwarder 透传的底座结构化 code/category 保留在用户卡上:流式路径
+      // 当前多为通用 "transient",仅作受控语义留存/诊断,不参与门控与分类。
+      if (typeof (payload && payload.code) === "string" && payload.code) userError.errorCode = payload.code;
+      if (typeof (payload && payload.category) === "string" && payload.category) userError.errorCategory = payload.category;
+      return userError;
     },
 
     addModelServiceErrorNotice: function (payload, state, addSystemItem, legacyConversationOnly, terminalRecord) {
@@ -163,6 +168,23 @@
       payload.user_error = userError;
       payload.userError = userError;
       return true;
+    },
+    // chat:done 成功(无 error)到达时,同回合的 transient 模型服务气泡("系统
+    // 会继续重试")已过时:回合恢复完成,过时声明不能比它描述的恢复活得更久。
+    // 仅隐藏带 userError 的项(其措辞含"继续重试"的未来承诺);裸串回退项是
+    // 对已发生错误的陈述,保留既有行为。错误终态不走此路径——
+    // addModelServiceErrorNotice 已按身份升级/隐藏。
+    settleModelServiceErrorNotices: function (state) {
+      state = state || {};
+      const chatItems = Array.isArray(state.chatItems) ? state.chatItems : [];
+      let settled = false;
+      chatItems.forEach(function (item) {
+        if (item && item.turnErrorNotice && item.userError && !item.legacyConversationOnly) {
+          item.legacyConversationOnly = true;
+          settled = true;
+        }
+      });
+      return settled;
     },
     showShellCleanupFailure: function (payload, state, addSystemItem) {
       if (!payload || !payload.shell_cleanup_failed) return;

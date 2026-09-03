@@ -103,7 +103,7 @@ const expectedProtocolHashes = {
   // And again for the model-service error notices: chat-events.js gains
   // chat:transient_error redaction/listener body changes (the extractor
   // scans raw source, so comment wording is part of the digest).
-  chat: 'f324651a55676e6a6ad012037596613aa396eff76b52f8490dc59ca08aff1148',
+  chat: 'aba3008c970d171621b5a791178fc197ee1630a598db97159abda3a48d696578',
   dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
   interaction: '3f275b9c4fc77ebf42a56df1c84d638ca5f1f8a3b80612efebeddf1a39f14efd',
   knowledge: '9105a42c6b69f04d0bc28b6a72e0746648110a44823891ded3261cdcbc99766b',

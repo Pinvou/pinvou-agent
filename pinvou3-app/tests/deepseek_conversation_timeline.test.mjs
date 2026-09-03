@@ -428,6 +428,22 @@ try {
   const conversationView = readFileSync(path.join(root, 'src', 'features', 'conversation', 'ConversationTimeline.jsx'), 'utf8');
   const questionChoiceCard = readFileSync(path.join(root, 'src', 'features', 'conversation', 'QuestionChoiceCard.jsx'), 'utf8');
   const toolRenderers = readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-renderers.jsx'), 'utf8');
+  // busy 块必须与 error 同步清除 userError(R2 L1):回合重新运行时,残留的
+  // userError 卡会在"执行中"状态下展示上一轮的"已停止"措辞。
+  const deepseekSource = readFileSync(path.join(root, 'src', 'features', 'conversation', 'deepseek-conversation.js'), 'utf8');
+  const busyBlock = deepseekSource.slice(
+    deepseekSource.indexOf('if (activeTurn && busy) {'),
+    deepseekSource.indexOf('if (activeTurn && busy && tokens'),
+  );
+  assert.ok(
+    busyBlock.includes('activeTurn.error = null') && busyBlock.includes('activeTurn.userError = null'),
+    'busy re-run must clear stale userError in lockstep with error',
+  );
+  // 时间线错误卡双主题(R3/R4 遗留):硬编码深色在亮色主题下突兀。
+  assert.ok(
+    conversationView.includes('bg-white/85') && conversationView.includes('dark:bg-[rgba(38,38,42,0.78)]'),
+    'timeline user-error card must provide a light theme alongside the dark glass style',
+  );
   assert.ok(chatView.includes('<ConversationTimeline'), 'DeepSeek must render through the shared timeline by default');
   assert.ok(chatView.includes('data-testid="chat-artifacts-entry"')
     && chatView.includes('{activeSessionId && (')

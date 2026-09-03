@@ -818,9 +818,10 @@ try {
     session_id: 's20', error: 'SSE stream idle timeout after 30s — no data received',
   }, { language: 'en', modelServiceState: null });
   applyNativeChatEvent(lane20, 'chat:done', { session_id: 's20', status: 'Completed' });
-  // 上一回合的 transient 无终态错误接管,保持可见。
-  const prevTurnNotice = lane20.items.find(item => item.userError);
-  assert.equal(prevTurnNotice.legacyConversationOnly, undefined, 'previous turn transient must stay visible');
+  // 成功终态:transient 的"会继续重试"声明随回合恢复完成而过时,与
+  // bridge settleModelServiceErrorNotices 同语义统一隐藏,不得比恢复活得久。
+  const settledTurnNotice = lane20.items.find(item => item.userError);
+  assert.equal(settledTurnNotice.legacyConversationOnly, true, 'successful done must settle the same-turn transient claim');
   applyNativeChatEvent(lane20, 'chat:user_message', { session_id: 's20', content: '第二问' });
   applyNativeChatEvent(lane20, 'chat:transient_error', {
     session_id: 's20', error: 'SSE stream idle timeout after 30s — no data received',
@@ -828,16 +829,16 @@ try {
   applyNativeChatEvent(lane20, 'chat:done', {
     session_id: 's20', status: 'Failed', error: 'SSE stream request failed: HTTP 402 insufficient balance',
   }, { language: 'en', modelServiceState: null });
-  const turn2Notices = lane20.items.filter(item => item.userError && item !== prevTurnNotice);
+  const turn2Notices = lane20.items.filter(item => item.userError && item !== settledTurnNotice);
   assert.equal(turn2Notices.length, 2, 'different-identity terminal error adds its own notice');
   assert.ok(
     turn2Notices.every(item => item.legacyConversationOnly === true),
     'terminal takeover must hide all same-turn model-service transient bubbles',
   );
   assert.equal(
-    prevTurnNotice.legacyConversationOnly,
-    undefined,
-    'terminal takeover must not touch previous-turn bubbles',
+    settledTurnNotice.legacyConversationOnly,
+    true,
+    'terminal takeover must not resurrect the settled previous-turn bubble',
   );
   // 假 key 用拼接构造,避免触发 GitHub push protection 密钥形态扫描(合成值)。
   const FAKE_PROJ_KEY = 'sk-proj-' + 'abcdefghijklmnop1234567890';

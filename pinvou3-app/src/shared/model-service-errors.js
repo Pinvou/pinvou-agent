@@ -115,6 +115,18 @@
     "quota has been exceeded",
     "exceeded your current quota",
     "payment required",
+    // Anthropic 官方 402 措辞("Your credit balance is too low")与通义
+    // "Arrearage" 错误码:纯厂商计费语,本地工具错误几乎不会出现,无状态码
+    // 裸串(ACP 泳道/子代理面板)也应接管。
+    "credit balance",
+    "arrearage",
+    // 内容政策拒绝是模型服务专属语义(OpenAI moderation/safety system、
+    // Anthropic content filtering),本地工具不产这类措辞,无条件接管;
+    // 且属确定性失败,不得引导"稍后重试"(见 content 文案)。
+    "content policy",
+    "content filter",
+    "content filtering",
+    "safety system",
     "额度不足",
     "额度用尽",
     "额度耗尽",
@@ -162,72 +174,93 @@
     return language === "en" ? "en" : language === "ja" ? "ja" : "zh";
   }
 
+  function defaultProviderLabel(language) {
+    const lang = languageTag(language);
+    return lang === "en" ? "current model service" : lang === "ja" ? "現在のモデルサービス" : "当前模型服务";
+  }
+
+  // 三语文案表提升为模块常量:每次 build 只做两次查表,不再重建 ~60 项
+  // 对象字面量(错误分类在每条事件上高频调用)。{provider} 在取词时替换,
+  // {stop} 占位符由 build 按终态/瞬态措辞替换。
+  const COPY = {
+    zh: {
+      billingTitle: "{provider}账户余额不足",
+      billingMessage: "当前使用的 {provider} API 账户余额不足，{stop}请充值对应平台账户，或在模型设置中切换到其他可用模型。",
+      quotaTitle: "{provider} API 额度不足",
+      quotaMessage: "当前使用的 {provider} API 额度不足，{stop}请检查额度，或在模型设置中切换到其他可用模型。",
+      rateTitle: "{provider}请求过于频繁",
+      rateMessage: "当前模型服务请求过于频繁，{stop}请稍后重试，或切换到其他可用模型。",
+      authTitle: "{provider} API Key 无效",
+      authMessage: "当前模型服务的 API Key 无效或已失效。请在模型设置中检查并重新填写。",
+      permissionTitle: "{provider}没有访问权限",
+      permissionMessage: "当前 API Key 没有访问该模型服务的权限。请检查账号权限，或切换到其他可用模型。",
+      serverTitle: "{provider}服务暂时不可用",
+      serverMessage: "当前模型服务暂时不可用，{stop}请稍后重试，或切换到其他可用模型。",
+      networkTitle: "网络连接失败",
+      networkMessage: "无法连接到当前模型服务。{stop}请检查网络、代理或服务地址后重试。",
+      contextTitle: "上下文太长",
+      contextMessage: "当前对话内容超过模型可处理范围。请压缩上下文、减少输入内容，或开启新会话后重试。",
+      contentTitle: "内容被模型服务拒绝",
+      contentMessage: "当前内容被模型服务的内容政策拒绝。请调整表述或拆分内容后重试，或在模型设置中切换到其他模型。",
+      unknownTitle: "当前模型服务不可用",
+      unknownMessage: "当前模型服务返回异常，{stop}请稍后重试，或在模型设置中切换到其他可用模型。",
+    },
+    en: {
+      billingTitle: "{provider} account balance is insufficient",
+      billingMessage: "The {provider} API account does not have enough balance, {stop}Add balance with the provider or switch to another model in settings.",
+      quotaTitle: "{provider} API quota is insufficient",
+      quotaMessage: "The {provider} API quota is insufficient, {stop}Check quota or switch to another model in settings.",
+      rateTitle: "{provider} is rate-limiting requests",
+      rateMessage: "The current model service is receiving too many requests, {stop}Try again later or switch to another model.",
+      authTitle: "{provider} API key is invalid",
+      authMessage: "The API key for the current model service is invalid or expired. Check it in model settings.",
+      permissionTitle: "{provider} access is not allowed",
+      permissionMessage: "The current API key does not have access to this model service. Check account permissions or switch models.",
+      serverTitle: "{provider} is temporarily unavailable",
+      serverMessage: "The current model service is temporarily unavailable, {stop}Try again later or switch to another model.",
+      networkTitle: "Network connection failed",
+      networkMessage: "Pinvou could not connect to the current model service. {stop}Check network, proxy, or endpoint settings and retry.",
+      contextTitle: "Context is too long",
+      contextMessage: "This conversation is longer than the model can handle. Compact context, reduce input, or start a new session.",
+      contentTitle: "Content rejected by the model service",
+      contentMessage: "The model service declined this content under its content policy. Rephrase or split the content, or switch to another model in settings.",
+      unknownTitle: "Current model service is unavailable",
+      unknownMessage: "The current model service returned an error, {stop}Try again later or switch to another model in settings.",
+    },
+    ja: {
+      billingTitle: "{provider} のアカウント残高が不足しています",
+      billingMessage: "現在使用している {provider} API アカウントの残高が不足しているため、{stop}プロバイダー側でチャージするか、モデル設定で別のモデルに切り替えてください。",
+      quotaTitle: "{provider} API の割り当てが不足しています",
+      quotaMessage: "現在使用している {provider} API の割り当てが不足しているため、{stop}割り当てを確認するか、別のモデルに切り替えてください。",
+      rateTitle: "{provider} のリクエストが多すぎます",
+      rateMessage: "現在のモデルサービスへのリクエストが多すぎます。{stop}しばらくしてから再試行するか、別のモデルに切り替えてください。",
+      authTitle: "{provider} API Key が無効です",
+      authMessage: "現在のモデルサービスの API Key が無効、または期限切れです。モデル設定で確認して再入力してください。",
+      permissionTitle: "{provider} にアクセスできません",
+      permissionMessage: "現在の API Key にはこのモデルサービスへのアクセス権がありません。アカウント権限を確認するか、別のモデルに切り替えてください。",
+      serverTitle: "{provider} は一時的に利用できません",
+      serverMessage: "現在のモデルサービスは一時的に利用できません。{stop}しばらくしてから再試行するか、別のモデルに切り替えてください。",
+      networkTitle: "ネットワーク接続に失敗しました",
+      networkMessage: "現在のモデルサービスに接続できません。{stop}ネットワーク、プロキシ、またはエンドポイント設定を確認して再試行してください。",
+      contextTitle: "コンテキストが長すぎます",
+      contextMessage: "この会話はモデルが処理できる範囲を超えています。コンテキストを圧縮する、入力を減らす、または新しい会話で再試行してください。",
+      contentTitle: "コンテンツがモデルサービスに拒否されました",
+      contentMessage: "現在のコンテンツはモデルサービスのコンテンツポリシーによって拒否されました。表現を変えるか内容を分割して再試行するか、モデル設定で別のモデルに切り替えてください。",
+      unknownTitle: "現在のモデルサービスを利用できません",
+      unknownMessage: "現在のモデルサービスでエラーが発生しました。{stop}しばらくしてから再試行するか、別のモデルに切り替えてください。",
+    },
+  };
+
   function textFor(language, key, provider) {
     const lang = languageTag(language);
-    const p = provider || (lang === "en" ? "current model service" : lang === "ja" ? "現在のモデルサービス" : "当前模型服务");
-    const copy = {
-      zh: {
-        billingTitle: p + "账户余额不足",
-        billingMessage: "当前使用的 " + p + " API 账户余额不足，{stop}请充值对应平台账户，或在模型设置中切换到其他可用模型。",
-        quotaTitle: p + " API 额度不足",
-        quotaMessage: "当前使用的 " + p + " API 额度不足，{stop}请检查额度，或在模型设置中切换到其他可用模型。",
-        rateTitle: p + "请求过于频繁",
-        rateMessage: "当前模型服务请求过于频繁，{stop}请稍后重试，或切换到其他可用模型。",
-        authTitle: p + " API Key 无效",
-        authMessage: "当前模型服务的 API Key 无效或已失效。请在模型设置中检查并重新填写。",
-        permissionTitle: p + "没有访问权限",
-        permissionMessage: "当前 API Key 没有访问该模型服务的权限。请检查账号权限，或切换到其他可用模型。",
-        serverTitle: p + "服务暂时不可用",
-        serverMessage: "当前模型服务暂时不可用，{stop}请稍后重试，或切换到其他可用模型。",
-        networkTitle: "网络连接失败",
-        networkMessage: "无法连接到当前模型服务。{stop}请检查网络、代理或服务地址后重试。",
-        contextTitle: "上下文太长",
-        contextMessage: "当前对话内容超过模型可处理范围。请压缩上下文、减少输入内容，或开启新会话后重试。",
-        unknownTitle: "当前模型服务不可用",
-        unknownMessage: "当前模型服务返回异常，{stop}请稍后重试，或在模型设置中切换到其他可用模型。",
-      },
-      en: {
-        billingTitle: p + " account balance is insufficient",
-        billingMessage: "The " + p + " API account does not have enough balance, {stop}Add balance with the provider or switch to another model in settings.",
-        quotaTitle: p + " API quota is insufficient",
-        quotaMessage: "The " + p + " API quota is insufficient, {stop}Check quota or switch to another model in settings.",
-        rateTitle: p + " is rate-limiting requests",
-        rateMessage: "The current model service is receiving too many requests, {stop}Try again later or switch to another model.",
-        authTitle: p + " API key is invalid",
-        authMessage: "The API key for the current model service is invalid or expired. Check it in model settings.",
-        permissionTitle: p + " access is not allowed",
-        permissionMessage: "The current API key does not have access to this model service. Check account permissions or switch models.",
-        serverTitle: p + " is temporarily unavailable",
-        serverMessage: "The current model service is temporarily unavailable, {stop}Try again later or switch to another model.",
-        networkTitle: "Network connection failed",
-        networkMessage: "Pinvou could not connect to the current model service. {stop}Check network, proxy, or endpoint settings and retry.",
-        contextTitle: "Context is too long",
-        contextMessage: "This conversation is longer than the model can handle. Compact context, reduce input, or start a new session.",
-        unknownTitle: "Current model service is unavailable",
-        unknownMessage: "The current model service returned an error, {stop}Try again later or switch to another model in settings.",
-      },
-      ja: {
-        billingTitle: p + " のアカウント残高が不足しています",
-        billingMessage: "現在使用している " + p + " API アカウントの残高が不足しているため、{stop}プロバイダー側でチャージするか、モデル設定で別のモデルに切り替えてください。",
-        quotaTitle: p + " API の割り当てが不足しています",
-        quotaMessage: "現在使用している " + p + " API の割り当てが不足しているため、{stop}割り当てを確認するか、別のモデルに切り替えてください。",
-        rateTitle: p + " のリクエストが多すぎます",
-        rateMessage: "現在のモデルサービスへのリクエストが多すぎます。{stop}しばらくしてから再試行するか、別のモデルに切り替えてください。",
-        authTitle: p + " API Key が無効です",
-        authMessage: "現在のモデルサービスの API Key が無効、または期限切れです。モデル設定で確認して再入力してください。",
-        permissionTitle: p + " にアクセスできません",
-        permissionMessage: "現在の API Key にはこのモデルサービスへのアクセス権がありません。アカウント権限を確認するか、別のモデルに切り替えてください。",
-        serverTitle: p + " は一時的に利用できません",
-        serverMessage: "現在のモデルサービスは一時的に利用できません。{stop}しばらくしてから再試行するか、別のモデルに切り替えてください。",
-        networkTitle: "ネットワーク接続に失敗しました",
-        networkMessage: "現在のモデルサービスに接続できません。{stop}ネットワーク、プロキシ、またはエンドポイント設定を確認して再試行してください。",
-        contextTitle: "コンテキストが長すぎます",
-        contextMessage: "この会話はモデルが処理できる範囲を超えています。コンテキストを圧縮する、入力を減らす、または新しい会話で再試行してください。",
-        unknownTitle: "現在のモデルサービスを利用できません",
-        unknownMessage: "現在のモデルサービスでエラーが発生しました。{stop}しばらくしてから再試行するか、別のモデルに切り替えてください。",
-      },
-    };
-    return copy[lang][key];
+    const p = provider || defaultProviderLabel(language);
+    let out = String(COPY[lang][key]).split("{provider}").join(p);
+    // zh 默认标签以「服务」结尾,serverTitle 的「服务」后缀会叠词
+    // ("当前模型服务服务暂时不可用");品牌标签(DeepSeek/智谱等)保持后缀。
+    if (lang === "zh" && key === "serverTitle" && p.endsWith("服务")) {
+      out = p + "暂时不可用";
+    }
+    return out;
   }
 
   function extractHttpStatus(text) {
@@ -348,13 +381,18 @@
     const normalized = normalizeForMatch(text);
     const status = extractHttpStatus(text);
 
+    // 内容政策拒绝(OpenAI moderation/safety system、Anthropic content
+    // filtering)最具体,先于其他类别;确定性失败,无 {stop} 占位符。
+    if (hasAny(lower, normalized, ["content policy", "content filter", "content filtering", "safety system", "内容政策", "内容安全策略"])) {
+      return { kind: "content", httpStatus: status };
+    }
     if (hasAny(lower, normalized, ["context length", "maximum context", "prompt is too long", "context window"])) {
       return { kind: "context", httpStatus: status };
     }
     if (status === 401 || hasAny(lower, normalized, ["unauthorized", "authentication", "authorization failed", "invalid api key", "incorrect api key", "invalid key", "invalid token", "bearer token"])) {
       return { kind: "auth", httpStatus: status };
     }
-    if (status === 402 || hasAny(lower, normalized, ["payment required", "insufficient balance", "余额不足", "欠费", "账户余额"])) {
+    if (status === 402 || hasAny(lower, normalized, ["payment required", "insufficient balance", "credit balance", "arrearage", "余额不足", "欠费", "账户余额"])) {
       return { kind: "billing", httpStatus: status };
     }
     if (hasAny(lower, normalized, ["quota exceeded", "insufficient quota", "quota exhausted", "quota has been exceeded", "exceeded your current quota", "额度不足", "额度用尽", "额度耗尽", "用量超出"])
@@ -480,22 +518,16 @@
     return "";
   }
 
-  function providerLabelFromState(state, fallbackRoute, language) {
+  function providerLabelFromState(state, language) {
     let saved = null;
     const activeId = state && (state.currentSessionModelId || state.activeModelId);
     if (state && Array.isArray(state.savedModels) && activeId) {
       saved = state.savedModels.find(function (model) { return model && model.id === activeId; }) || null;
     }
-    return providerLabelFrom(fallbackRoute, language)
-      || providerLabelFrom(saved, language)
+    return providerLabelFrom(saved, language)
       || providerLabelFrom(state && state.effectiveModelConfig, language)
       || providerLabelFrom(state && state.activeProvider, language)
       || "";
-  }
-
-  function defaultProviderLabel(language) {
-    const lang = languageTag(language);
-    return lang === "en" ? "current model service" : lang === "ja" ? "現在のモデルサービス" : "当前模型服务";
   }
 
   // 从错误文本自身提取 provider 名。历史回合重建友好提示时(重启/切会话后),
@@ -534,6 +566,7 @@
         server: true,
         network: true,
         context: true,
+        content: true,
         unknown: true,
       };
       const kind = allowedKind[raw.kind] ? raw.kind : "unknown";
@@ -562,6 +595,7 @@
       server: ["serverTitle", "serverMessage", true],
       network: ["networkTitle", "networkMessage", true],
       context: ["contextTitle", "contextMessage", false],
+      content: ["contentTitle", "contentMessage", false],
       unknown: ["unknownTitle", "unknownMessage", true],
     }[classified.kind] || ["unknownTitle", "unknownMessage", true];
     let message = textFor(language, key[1], provider);
