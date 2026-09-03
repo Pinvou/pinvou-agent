@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Search, X } from '../../components/icons.jsx';
+import { X } from '../../components/icons.jsx';
+import { IosSearchField } from '../../components/IosControls.jsx';
 
 export const SearchOverlay = ({ theme, history, t, onSelect, onClose }) => {
   const isDark = theme === 'dark';
@@ -46,29 +47,15 @@ export const SearchOverlay = ({ theme, history, t, onSelect, onClose }) => {
         onClick={e => e.stopPropagation()}
       >
         <div className="p-3">
-          <div
-            className="flex h-12 items-center gap-3 rounded-full px-4 bg-[rgba(118,118,128,.12)] dark:bg-[rgba(255,255,255,.08)]"
-          >
-            <Search size={20} className="text-[#6E6E73] dark:text-[#C7C7CC]" />
-            <input
-              ref={inputRef}
-              type="text"
+          <div className="flex h-12 items-center gap-3">
+            <IosSearchField
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder={t.searchPlaceholder}
-              className="min-w-0 flex-1 bg-transparent border-none outline-none text-[17px] leading-6 text-[#1D1D1F] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#8E8E93]"
+              inputRef={inputRef}
+              clearLabel={t.clearSearch}
+              className="min-w-0 flex-1"
             />
-            {query && (
-              <button
-                type="button"
-                onClick={() => { setQuery(''); inputRef.current && inputRef.current.focus(); }}
-                title={t.clearSearch}
-                aria-label={t.clearSearch}
-                className="w-7 h-7 shrink-0 rounded-full flex items-center justify-center transition-colors bg-[rgba(60,60,67,.18)] dark:bg-[rgba(255,255,255,.10)] text-[#6E6E73] dark:text-[#C7C7CC]"
-              >
-                <X size={15} />
-              </button>
-            )}
             <button
               type="button"
               onClick={onClose}
