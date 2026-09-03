@@ -221,7 +221,7 @@ export function pairDeepSeekTimeline(events = [], options = {}) {
 //     than turns the surplus is record noise (a parked-steer resume
 //     continuation whose assistant_done attached to the original turn id), so
 //     prefer records that actually carry a terminal.
-function assignDeepSeekTimelines(turns, userTurns, timelineEvents, busy, options) {
+function assignDeepSeekTimelines(userTurns, timelineEvents, busy, options) {
   const timeline = pairDeepSeekTimeline(timelineEvents, options);
   const assigned = new Set();
   for (const record of timeline) {
@@ -369,7 +369,7 @@ export function projectDeepSeekConversation({
     ));
   }
 
-  assignDeepSeekTimelines(turns, userTurns, timelineEvents, busy, { language, providerLabel, modelServiceState });
+  assignDeepSeekTimelines(userTurns, timelineEvents, busy, { language, providerLabel, modelServiceState });
   if (!busy) transferSteeredRunTerminals(turns);
 
   const activeTurn = turns[turns.length - 1];

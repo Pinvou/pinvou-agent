@@ -4825,10 +4825,11 @@
       return text.includes("能力未知") ? bt("imageUnknown") : bt("imageUnsupported");
     }
     // Same policy as the tauri bridge: redact raw submit-failure bodies
-    // before display (classification may miss, credentials must not). If
-    // the helper is missing, return raw and keep the previous behavior.
+    // before display (classification may miss, credentials must not). Pass
+    // state so the placeholder matches the UI language. If the helper is
+    // missing, return raw and keep the previous behavior.
     if (window.PinvouBridgeMessages && typeof window.PinvouBridgeMessages.redactRawError === "function") {
-      return window.PinvouBridgeMessages.redactRawError(text);
+      return window.PinvouBridgeMessages.redactRawError(text, state);
     }
     return text;
   }
