@@ -994,6 +994,16 @@ impl TurnLifecycle {
         Some(transition)
     }
 
+    /// Test-only: drives the authoritative reclaim-claim path so cross-module
+    /// tests (engine_pool's model-update rebuild scenario, which has no
+    /// `AppHandle`) can verify that a reclaim neither claims a turn nor
+    /// invalidates an unsubmitted reservation. Returns whether a submitted
+    /// turn was claimed.
+    #[cfg(test)]
+    pub(crate) fn claim_reclaimed_once(&self) -> bool {
+        self.claim_reclaimed_transition().is_some()
+    }
+
     pub(crate) fn invalidate_unsubmitted_reservation(&self) -> bool {
         let _emission = self.emission.lock();
         let mut state = self.state.lock();
