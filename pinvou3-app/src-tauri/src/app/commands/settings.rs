@@ -1112,14 +1112,11 @@ fn classify_image_capability_http(
             format!("未能正确识别图像，原因未知（HTTP {status_code}）：{summary}"),
             Some(status_code),
         ),
-        // 402 计费类与「测试连接」同口径:明确指引充值,避免同屏一个说
-        // 充值、一个说检查 API Key 的矛盾反馈。
-        402 => image_capability_result(
-            "error",
-            false,
-            format!("账户余额不足，请充值后重试（HTTP {status_code}）：{summary}"),
-            Some(status_code),
-        ),
+        // 402 计费类与「测试连接」同口径,但指引充值文案属 UI copy,不得在
+        // Rust 侧硬编码单语言(en/ja 界面会混排):这里只透传 http_status 与
+        // provider 原始摘要,前端按 http_status==402 查三语 connectionMessages.
+        // billing 文案。summary 保持 provider 原文,不带任何硬编码语言前缀。
+        402 => image_capability_result("error", false, summary, Some(status_code)),
         _ => image_capability_result("error", false, summary, Some(status_code)),
     }
 }
@@ -1453,16 +1450,20 @@ mod tests {
     }
 
     #[test]
-    fn image_capability_http_result_calls_out_billing_on_402() {
-        // 图片能力探测的 402 与「测试连接」同口径:明确指引充值,避免同屏
-        // 一个说充值、一个说检查 API Key 的矛盾反馈(R3 MINOR 1 残留)。
+    fn image_capability_http_result_402_keeps_status_and_raw_summary() {
+        // 图片能力探测的 402 与「测试连接」同口径,但充值指引文案属 UI copy:
+        // Rust 侧不硬编码单语言摘要,只透传 http_status(前端据此查三语
+        // connectionMessages.billing)与 provider 原始摘要(供详情展示)。
+        // 状态仍必须落在 "error"(与「不支持」严格区分)。
         let billing = classify_image_capability_http(
             reqwest::StatusCode::PAYMENT_REQUIRED,
             r#"{"error":{"message":"Insufficient Balance","type":"insufficient_balance"}}"#,
         );
+        assert_eq!(billing.status, "error");
         assert!(!billing.verified);
         assert_eq!(billing.http_status, Some(402));
-        assert!(billing.summary.contains("账户余额不足"));
+        assert!(billing.summary.contains("Insufficient Balance"));
+        assert!(!billing.summary.contains("账户余额不足"));
     }
 
     #[test]

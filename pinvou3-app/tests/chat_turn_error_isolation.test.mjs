@@ -150,6 +150,11 @@ assert.equal(modelErrors.isModelServiceError('ssh: connect to host git.openai.co
 assert.equal(modelErrors.isModelServiceError('error: failed to push some refs to https://github.com/deepseek-ai/models.git: read timed out'), false);
 assert.equal(modelErrors.isModelServiceError('collect2: fatal error: ld terminated with signal 11'), false);
 assert.equal(modelErrors.isModelServiceError('user quota exceeded on /home volume'), false);
+// 包管理器 CLI 输出头部(npm ERR! / ERR_PNPM_*):registry URL 里的包名
+// (…/openai)会冒充厂商信号,叠加 "connection refused" 歧义词曾把本地
+// registry 故障劫持成模型服务网络卡。
+assert.equal(modelErrors.isModelServiceError('npm ERR! network request to https://registry.npmjs.org/openai failed, reason: connect ECONNREFUSED 127.0.0.1:4873'), false);
+assert.equal(modelErrors.isModelServiceError('ERR_PNPM_NO_NETWORK  request to https://registry.npmjs.org/openai failed'), false);
 // 漏接管修复:provider 名/裸 401 + unauthorized、"Incorrect API key"(OpenAI
 // 真实措辞)、gemini-cli 的 "[API Error: …]" 外壳、claude 厂商名。
 assert.equal(modelErrors.isModelServiceError('OpenAI API error: 401 Unauthorized'), true);
@@ -358,6 +363,63 @@ const structuredKeyed = modelErrors.build(
 assert.doesNotMatch(structuredKeyed.title, /AIzaSy/, 'structured passthrough must redact title');
 assert.doesNotMatch(structuredKeyed.message, /sk-zzz-abc123def456/, 'structured passthrough must redact message');
 assert.match(structuredNotice.technicalDetail, /\[敏感信息已隐藏\]/);
+// 转义 JSON 形态(网关报文嵌入外层信封):kv 规则必须跨过键名两侧的 \"
+// 前缀吞掉值,否则凭证值完整泄漏。
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('{\\"password\\": \\"sup3rSecretValue\\"}'),
+  /sup3rSecretValue/,
+  'backslash-escaped JSON password values must be redacted',
+);
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('{\\"api_key\\": \\"4f8a2b6c9d1e3f5a\\"}'),
+  /4f8a2b6c9d1e3f5a/,
+  'backslash-escaped JSON api_key values must be redacted',
+);
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('{\\"authorization\\": \\"Basic dXNlcjpwYXNz\\"}'),
+  /dXNlcjpwYXNz/,
+  'backslash-escaped JSON authorization headers must be redacted',
+);
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('{\\"cookie\\": \\"SID=aaa.bbb; HSID=ccc.ddd\\"}'),
+  /HSID=ccc/,
+  'backslash-escaped JSON cookie headers must be redacted',
+);
+// 环境变量形态:键名是 _ 前缀复合名(\b 在下划线旁不成立,曾整体泄漏),
+// 值可含 /(Google OAuth refresh_token "1//0…")与 +(base64)。
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('OPENAI_API_KEY=1a2b3c4d5e6f7g8h9i0j'),
+  /1a2b3c4d5e6f/,
+  'underscore-prefixed env-style api keys must be redacted',
+);
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('ZHIPUAI_API_KEY=abc123def456ghijkl'),
+  /abc123def456/,
+  'provider-prefixed env-style keys must be redacted',
+);
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('refresh_token=1//0abcDEFghiJKL'),
+  /1\/\/0abcDEF/,
+  'slash-bearing OAuth refresh tokens must be redacted',
+);
+// 幂等性:同一文本经 forwarder 与 JS 两次 redact、或 build 对已构建卡片对象
+// 重脱敏时,结果必须稳定——占位符不得被二次吞改成 "[R][R]"(去重键随之漂移,
+// 同一错误出两张措辞矛盾的卡)。
+const onceRedacted = modelErrors.redactTechnicalDetail(
+  'Authorization: Basic dXNlcjpwYXNz; password: "two words here"; OPENAI_API_KEY=1a2b3c4d5e6f7g8h9i0j; sk-abcdef1234567890; Cookie: SID=aaa',
+  'en',
+);
+assert.equal(
+  modelErrors.redactTechnicalDetail(onceRedacted, 'en'),
+  onceRedacted,
+  'redaction must be idempotent: already-redacted text passes through unchanged',
+);
+const pipelineErrorForBuild = 'Invalid API-key provided: Authorization: Basic dXNlcjpwYXNz, session_id: 8f3k9d2l-4abc-1234';
+const builtCard = modelErrors.build('SSE stream request failed: HTTP 402 ' + pipelineErrorForBuild, { language: 'en' });
+const rebuiltCard = modelErrors.build(builtCard, { language: 'en' });
+assert.equal(rebuiltCard.technicalDetail, builtCard.technicalDetail, 're-building a built card must keep technicalDetail stable');
+assert.equal(rebuiltCard.title, builtCard.title, 're-building a built card must keep the title stable');
+assert.doesNotMatch(rebuiltCard.technicalDetail, /\[redacted\]\[redacted\]/, 'placeholder must never be re-masked into a doubled placeholder');
 assert.equal(modelErrors.build({ kind: 'nope', title: 't', message: 'm' }, { language: 'zh-Hans' }).kind, 'unknown', 'unknown structured kinds must fall back to unknown');
 const cleanupState = { settings: { language: 'ja' }, chatItems: [] };
 const addCleanupItem = (text, metadata) => cleanupState.chatItems.push({ text, ...metadata });
@@ -490,6 +552,43 @@ const upgraded = transientThenDoneState.chatItems[0];
 assert.match(upgraded.text, /本次回复已停止/, 'upgraded item switches to terminal wording');
 assert.equal(upgraded.legacyConversationOnly, true, 'upgraded item is hidden from the unified timeline');
 assert.equal(upgraded.userError.kind, 'billing');
+// done 双次构建回归:recordTurnCompleted 先把 build #1 卡片写回 payload 的
+// user_error 字段,addModelServiceErrorNotice 随后对 raw 再 build 一次
+// (bridge-messages.js modelServiceUserError 的 raw 分支)。脱敏不幂等时
+// Authorization 占位符被二次吞改、technicalDetail 漂移,身份去重落空 →
+// 同一错误出现 transient 与 terminal 两张措辞矛盾的卡。修复后二次 build
+// 必须逐字段稳定、去重命中、升级原条目。
+const doubleBuildError = 'SSE stream request failed: HTTP 402 {"error":{"message":"Insufficient Balance"},"headers":{"Authorization":"Basic dXNlcjpwYXNz"}}';
+const doubleBuildState = { settings: { language: 'zh-Hans' }, chatItems: [] };
+const pushToDoubleBuild = (text, metadata) => doubleBuildState.chatItems.push({ text, ...metadata });
+messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
+  { error: doubleBuildError },
+  doubleBuildState,
+  pushToDoubleBuild,
+  false,
+);
+assert.equal(doubleBuildState.chatItems.length, 1);
+const donePayload = { error: doubleBuildError };
+donePayload.user_error = messageSandbox.window.PinvouBridgeMessages.modelServiceUserError(donePayload, doubleBuildState);
+assert.ok(donePayload.user_error, 'recordTurnCompleted-style build must produce a card');
+messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
+  donePayload,
+  doubleBuildState,
+  pushToDoubleBuild,
+  true,
+  { error: doubleBuildError },
+);
+assert.equal(
+  doubleBuildState.chatItems.length,
+  1,
+  're-built card must dedupe against the transient card (stable technicalDetail)',
+);
+assert.match(doubleBuildState.chatItems[0].text, /本次回复已停止/);
+assert.doesNotMatch(
+  JSON.stringify(doubleBuildState.chatItems[0].userError),
+  /\[敏感信息已隐藏\]\[敏感信息已隐藏\]/,
+  'placeholder must never be doubled by re-redaction',
+);
 // 身份不同的 transient/done 序列:transient(network)与 done(billing)文本、
 // kind、技术详情均不同,身份去重必然落空;终态到达且时间线记录带 error 时,
 // 同回合所有模型服务 transient 气泡必须一并隐藏,否则残留"系统会继续重试"

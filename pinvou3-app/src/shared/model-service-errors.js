@@ -321,12 +321,15 @@
   // 本地 CLI 工具的固定错误形态,先于语义词表排除:git 的 "fatal:" 行与
   // ssh/curl 的 "connect to host … port N" 在 remote URL/主机名里带厂商名时
   // (github.com/openai、git.openai.com)叠加网络歧义词,会被误判成模型服务
-  // 故障并劫持成"请重试"卡。底座模型错误恒带 MODEL_CALL_PREFIXES 并已在
-  // 上方接管,不会落到这里,故排除不伤及真实模型服务错误。
+  // 故障并劫持成"请重试"卡;npm/pnpm 的 CLI 输出头部同理——registry URL 里
+  // 的包名(如 …/openai)会冒充厂商信号。底座模型错误恒带 MODEL_CALL_PREFIXES
+  // 并已在上方接管,不会落到这里,故排除不伤及真实模型服务错误。
   const LOCAL_TOOL_SHAPES = [
     /(?:^|[\s(@])fatal(?: error)?:/i,
     /(?:connect to host|failed to connect to)\s+\S+\s+port\s+\d+/i,
     /failed to push some refs/i,
+    /(?:^|[\r\n])\s{0,4}npm err(?:or)?!/i,
+    /err_pnpm_[a-z0-9_]+/i,
   ];
 
   // 分类器只接管两类错误:①底座模型调用的固定前缀(见 MODEL_CALL_PREFIXES);
@@ -362,7 +365,9 @@
     // 仍是强计费信号。
     if ((apiSignal || providerSignal) && hasAny(lower, normalized, STRONG_WITH_CONTEXT_KEYWORDS)) return true;
     const status = extractHttpStatus(text);
-    // extractHttpStatus 只在文本含 HTTP/status 字样时才返回非空,无需再验上下文词。
+    // extractHttpStatus 只在文本含 HTTP/status 字样时才返回非空,但状态码本身
+    // 不构成模型服务上下文——本地服务/代理输出同款 "HTTP/1.1 500"——故仍须
+    // 与 api/厂商信号叠加(见下方组合条件),裸状态行不接管。
     const statusIsModelLike = status !== null
       && (status === 401 || status === 402 || status === 403 || status === 429 || (status >= 500 && status <= 599));
     // apiSignal 与 providerSignal 走同一规则:必须叠加歧义错误词或 model-like
@@ -423,21 +428,26 @@
     // Authorization/Proxy-Authorization 整段吞值:任意 scheme(scheme 词表
     // 枚举追不完,API-Key/HMAC 等非标 scheme 曾整体漏掉凭证段)、可选 JSON
     // 引号;值一段吞到首个分隔符(引号/逗号/分号/括号/&/换行),允许值内
-    // 空格以覆盖 "Digest username=x, ..." 之外的两段式凭证。
+    // 空格以覆盖 "Digest username=x, ..." 之外的两段式凭证。值段不吞 `[`/
+    // `\`/行首空白:已脱敏占位符 "[redacted]" 不得被二次匹配——否则重复脱敏
+    // 会把它劣化成 "[redacted][redacted]" 并让去重键漂移(gap 贪心回溯会让
+    // 值段从空格起重新吞入,故值首字符强制非空白,回溯后仍无法命中);`\`
+    // 排除保住转义 JSON 的尾部 `\"`。
     // Digest parameter blobs (username="x", realm=y) are swallowed whole
     // before the generic value: the generic class stops at the first quote
     // and would leak the comma-separated params. A single-pass alternation
     // also keeps the generic branch from re-masking the Digest placeholder.
     text = text.replaceAll(
-      /((?:proxy-)?authorization[\s"']*[:=][\s"']*)(?:digest\s+[^;\r\n]+|[^"'),;}&\][\r\n]+)/gi,
+      /((?:proxy-)?authorization[\s"'\\]*[:=][\s"'\\]*)(?:digest\s+[^;\r\n]+|(?:[^"'),;}&\][\s\\])(?:[^"'),;}&\][\r\n\\]*))/gi,
       (m, p1) => keepPrefix(p1),
     );
     // Cookie/Set-Cookie 头整段吞值:多对凭证以 "; " 分隔,下方 kv 规则的值
     // 字符类在首个空格处截断,只能吞第一对(SID 吞掉、HSID/SSID 原样泄漏)。
     // HTTP 头一行一对,按头名吞到行尾不越界;前缀限 [空格/引号/行首/JSON
-    // 分隔符],把 "document.cookie = …" 之外的普通说明词挡在外面。
+    // 分隔符],把 "document.cookie = …" 之外的普通说明词挡在外面;分隔符
+    // 允许 `\`,覆盖转义 JSON 的 \"cookie\": \"…\" 形态。
     text = text.replaceAll(
-      /((?:^|[\s"',;[])(?:set[\s_-]?cookie|cookie)[\s"']*[:=][\s"']*)[^\r\n]*/gi,
+      /((?:^|[\s"',;\\[])(?:set[\s_-]?cookie|cookie)[\s"'\\]*[:=][\s"'\\]*)[^\r\n]*/gi,
       (m, p1) => keepPrefix(p1),
     );
     // 裸 Bearer <token>(无 Authorization 头名,配置回显/排错日志常见形态)。
@@ -448,34 +458,45 @@
     // at the cost of occasionally masking a plain word after "basic".
     text = text.replaceAll(/\b((?:Basic|Digest)\s+)[a-z0-9+/=]{12,}/gi, (m, p1) => keepPrefix(p1));
     // 强凭证键(password/passphrase/secret)两种形态都整段吞值:
-    // ①引号值允许空格("correct horse battery staple" 这类多词口令);
+    // ①引号值允许空格("correct horse battery staple" 这类多词口令),
+    //   引号允许 `\` 前缀(网关报文嵌入外层信封后的 {\"password\": \"…\"}
+    //   转义 JSON 形态);值取惰性匹配,尾部 `\` 归还闭合引号组;
     // ②未加引号时吞到行尾或首个 ,/;/&,否则多词口令只吞首词、其余词泄漏。
     text = text.replaceAll(
-      /(["']?\b(?:password|passphrase|secret)\b["']?\s*[:=]\s*["'])([^"']{2,})(["'])/gi,
+      /((?:\\?["'])?\b(?:password|passphrase|secret)\b(?:\\?["'])?\s*[:=]\s*(?:\\?["']))([^"']{2,}?)(\\?["'])/gi,
       (m, p1, p2, p3) => p1 + sensitive + p3,
     );
     text = text.replaceAll(
-      /(["']?\b(?:password|passphrase|secret)\b["']?\s*[:=]\s*)([^"'\r\n,;&]{2,})/gi,
+      /((?:\\?["'])?\b(?:password|passphrase|secret)\b(?:\\?["'])?\s*[:=]\s*)([^"'\r\n,;&]{2,})/gi,
       (m, p1) => keepPrefix(p1),
     );
-    // kv 形态的凭证键:左侧词边界 + 键名白名单(含 refresh_token/client_secret
-    // 等复合名——\b 在下划线旁不成立,必须整体枚举;cookie/set-cookie 头整段
-    // 按凭证处理)。值取「字母开头」或「≥10 位、可含 -/_/./~ 的字母数字」
-    // (数字开头或带连字符的会话凭证,如 8f3k9d2l-4abc-… / 1234-5678-…);
-    // "token: 15000" 用量计数是纯数字且不足 10 位,不命中,context 错误的
-    // 排查信息得以保留。
+    // kv 形态的凭证键:键名白名单(含 refresh_token/client_secret 等复合名)。
+    // 键前置边界不能写 \b——\b 在下划线旁不成立,而环境变量形态的
+    // OPENAI_API_KEY / ZHIPUAI_API_KEY 恰好是 `_` 前缀;也不能写 lookbehind
+    // (?<![A-Za-z0-9])——静态运行时脚本受 Safari 14 语法基线约束(compat
+    // audit,Safari 16.4 才支持)。故把边界捕获进前缀组:引号分支(含转义
+    // JSON 的 \")与「行首或非字母数字」分支二选一,keepPrefix 原样保留前缀,
+    // 替换输出不变,同时仍挡住 "x99api_key" 这类子串误命中。
+    // 值取「字母开头」或「≥10 位、可含 -/_/./~/+// 的字母数字」(数字开头或
+    // 带连字符的会话凭证,如 8f3k9d2l-4abc-… / 1234-5678-…;/ 与 + 覆盖 Google
+    // OAuth refresh_token("1//0abc…")与 base64 形态);"token: 15000" 用量计数
+    // 是纯数字且不足 10 位,不命中,context 错误的排查信息得以保留。已脱敏
+    // 占位符以 `[` 开头,两支值形态都不命中,重复脱敏幂等。
     /* eslint-disable sonarjs/regex-complexity, sonarjs/duplicates-in-character-class -- the credential-key whitelist is deliberately exhaustive; splitting it would reduce auditability */
     text = text.replaceAll(
-      /(["']?\b(?:api[_-]?key|api[_-]?secret|api[_-]?token|authorization|token|password|secret|access[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|client[_-]?secret|app[_-]?secret|consumer[_-]?key|secret[_-]?key|secret[_-]?token|ssh[_-]?key|private[_-]?key|session[_-]?id|session[_-]?token|sessionid|jsessionid|cookie|set[_-]?cookie)\b["']?\s*[:=]\s*["']?)(?:[A-Za-z][^"',\s&}]*|[A-Za-z0-9][A-Za-z0-9._~-]{9,})/gi,
-      (m, p1) => keepPrefix(p1),
+      /((?:\\?["'])|(?:^|[^A-Za-z0-9"']))((?:api[_-]?key|api[_-]?secret|api[_-]?token|authorization|token|password|secret|access[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|client[_-]?secret|app[_-]?secret|consumer[_-]?key|secret[_-]?key|secret[_-]?token|ssh[_-]?key|private[_-]?key|session[_-]?id|session[_-]?token|sessionid|jsessionid|cookie|set[_-]?cookie)\b(?:\\?["'])?\s*[:=]\s*(?:\\?['"])?)((?:[A-Za-z][^"',\s&}]*|[A-Za-z0-9][A-Za-z0-9._~+/-]{9,}))/gi,
+      (m, p1, p2) => p1 + p2 + sensitive,
     );
     /* eslint-enable sonarjs/regex-complexity, sonarjs/duplicates-in-character-class */
     // 裸 key 键另行收紧(值要求字母开头且含数字):"key": "model-name"
-    // 这类非凭证值不再被误吞,而 "key": "abc123def456" 仍被吞掉。
+    // 这类非凭证值不再被误吞,而 "key": "abc123def456" 仍被吞掉;引号允许
+    // `\` 前缀(转义 JSON)。
+    /* eslint-disable sonarjs/regex-complexity -- key + optional escaped quotes + separator + digit-lookahead value shape is inherently multi-part; splitting it would obscure the single-match contract */
     text = text.replaceAll(
-      /(["']?\bkey\b["']?\s*[:=]\s*["']?)(?=[a-z][^"',\s&}]*\d)[a-z][^"',\s&}]+/gi,
+      /((?:\\?["'])?\bkey\b(?:\\?["'])?\s*[:=]\s*(?:\\?["'])?)((?=[a-z][^"',\s&}]*\d)[a-z][^"',\s&}]+)/gi,
       (m, p1) => keepPrefix(p1),
     );
+    /* eslint-enable sonarjs/regex-complexity */
     // URL 查询参数形态(query 里的值几乎必然是凭证,不加形态条件)。
     /* eslint-disable sonarjs/regex-complexity -- same whitelist rationale as above */
     text = text.replaceAll(
