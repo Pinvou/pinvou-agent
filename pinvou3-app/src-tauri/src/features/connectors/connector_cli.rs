@@ -203,6 +203,26 @@ pub fn make_qr(url: &str) -> Option<String> {
     ))
 }
 
+/// Wraps the QR PNG written to disk by the CLI (wecom-cli `--output-qrcode`) as a
+/// data URL so the frontend can show it directly via `<img src>`. Validates the PNG
+/// signature plus the IEND tail; non-PNG / truncated files return `None` (the
+/// caller falls back to [`make_qr`]).
+pub fn png_data_url(bytes: &[u8]) -> Option<String> {
+    const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+    // The IEND chunk is always length(0) + type + CRC: the CRC over the IEND
+    // content is fixed, so the whole tail can be compared verbatim. Checking only
+    // the signature would accept a half-written file (header only) and the browser
+    // would render a broken image.
+    const IEND_TAIL: &[u8] = b"\x00\x00\x00\x00IEND\xae\x42\x60\x82";
+    if bytes.len() < PNG_SIGNATURE.len() + IEND_TAIL.len()
+        || !bytes.starts_with(PNG_SIGNATURE)
+        || !bytes.ends_with(IEND_TAIL)
+    {
+        return None;
+    }
+    Some(format!("data:image/png;base64,{}", b64(bytes)))
+}
+
 /// 后台线程:逐行排空一个管道(防写满阻塞),抓到首个本连接器 URL 经 channel 送回。
 pub fn drain_for_url<R: std::io::Read + Send + 'static>(
     ctx: CliCtx,
@@ -475,6 +495,38 @@ mod tests {
         let b64 = qr.trim_start_matches("data:image/svg+xml;base64,");
         let svg = String::from_utf8(b64_decode(b64)).unwrap();
         assert!(svg.contains("<svg"), "应含 <svg> 根节点");
+    }
+
+    /// CLI-written PNG → data URL; signature + IEND tail validated, non-PNG / truncated bytes rejected (caller falls back to make_qr).
+    #[test]
+    fn png_data_url_validates_signature() {
+        let png = b"\x89PNG\r\n\x1a\nrest-of-file\x00\x00\x00\x00IEND\xae\x42\x60\x82";
+        let data_url = png_data_url(png).expect("bytes with signature and IEND tail should pass");
+        assert!(data_url.starts_with("data:image/png;base64,"));
+        // Decode back to the original bytes to confirm losslessness.
+        let b64 = data_url.trim_start_matches("data:image/png;base64,");
+        assert_eq!(b64_decode(b64), png.to_vec());
+
+        assert!(
+            png_data_url(b"").is_none(),
+            "empty bytes should be rejected"
+        );
+        assert!(
+            png_data_url(b"\x89PNG").is_none(),
+            "shorter than the signature should be rejected"
+        );
+        assert!(
+            png_data_url(b"\x89PNG\r\n\x1a\n").is_none(),
+            "signature without IEND tail (half-written file) should be rejected"
+        );
+        assert!(
+            png_data_url(b"\x89PNG\r\n\x1a\nbody\x00\x00\x00\x00IEND\x00\x00\x00\x00").is_none(),
+            "mismatched IEND CRC should be rejected"
+        );
+        assert!(
+            png_data_url(b"\x89JPEG\r\n\x1a\nrest").is_none(),
+            "wrong signature should be rejected"
+        );
     }
 
     // 测试辅助:标准 base64 解码(生产 b64 的逆运算,仅测试用)。

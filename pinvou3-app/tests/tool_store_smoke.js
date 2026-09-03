@@ -49,7 +49,7 @@ function injectSource() {
       // government-writing 初始为独立已装（MCP gongwen 未装）:覆盖 G3 混合态——
       // companion 卡动作须来自技能级 readiness(卸载),首个用例卸载后回到未装态。
       installed:{},skills:{visualizer:false,'government-writing':true},connected:{feishu:false,wecom:false,dingtalk:false,tmeet:false,ima:false},
-      oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0,failVisibility:false,
+      oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0,failVisibility:false,failOpenExternal:false,
       hidden:{plain:[],code:[]}
     };
     window.addEventListener('pinvou:tools-changed',()=>{state.composerChanged++;});
@@ -173,7 +173,9 @@ function injectSource() {
         // mock 不再 no-op，勾选往返才可测）。
         case 'get_bundle_visibility': return state.failVisibility ? Promise.reject(new Error('mock visibility read failure')) : Promise.resolve(state.hidden[args.scope]||[]);
         case 'set_bundle_visibility': state.hidden[args.scope]=(args.bundleIds||[]).map(toPackageId); return Promise.resolve(null);
-        case 'feishu_apply_skills': case 'wecom_apply_skills': case 'dingtalk_apply_skills': case 'tmeet_apply_skills': case 'open_external_url': return Promise.resolve(null);
+        case 'feishu_apply_skills': case 'wecom_apply_skills': case 'dingtalk_apply_skills': case 'tmeet_apply_skills': return Promise.resolve(null);
+        // failOpenExternal simulates an external-url allowlist rejection: the WeCom QR modal's "Open in browser" must surface a visible error.
+        case 'open_external_url': return state.failOpenExternal ? Promise.reject('external-url-not-allowlisted') : Promise.resolve(null);
         default: return Promise.resolve(null);
       }
     }
@@ -479,6 +481,44 @@ async function visibilityBox(page, cardText, modeLabel, click) {
       // 刀9：版本号切后端源（mock 的 9.9.9-lock 与 tsToolsData 任何版本都不同,
       // 命中即证明渲染来自 bundle_readiness 的 bundle.version）
       rec('飞书详情版本号以后端 lock 表为准',await page.evaluate(()=>document.body.innerText.includes('v9.9.9-lock')));
+    }
+    if(id==='wecom'){
+      // WeCom real-QR modal: the backend-emitted qr_data_url goes straight into <img> (iframe removed);
+      // an allowlist-rejected "Open in browser" must surface a visible error (previously silent);
+      // cancel must clear the flow card too — backend cancel is now silent, no wecom:error implicit cleanup.
+      await page.evaluate(() => window.__emitTauri('wecom:qr', {
+        phase: 'authorize',
+        url: 'https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&test=1',
+        qr_data_url: 'data:image/png;base64,AAAA',
+      }));
+      await sleep(150);
+      rec('WeCom QR modal renders the backend-issued QR', await page.evaluate(() => {
+        const img = [...document.querySelectorAll('img')].find(i => (i.getAttribute('src') || '') === 'data:image/png;base64,AAAA');
+        return !!img && document.body.innerText.includes('请使用企业微信 App 扫一扫');
+      }));
+      await page.evaluate(() => { window.__TOOL_STORE_TEST__.failOpenExternal = true; });
+      await clickExact(page, '在浏览器打开'); await sleep(150);
+      rec('WeCom browser-open rejection shows a visible topmost alert', await page.evaluate(() => {
+        if (!document.body.innerText.includes('未能打开浏览器')) return false;
+        // innerText is blind to occlusion: also verify via elementFromPoint that the alert's
+        // fullscreen layer is the topmost hit at its own center, guarding against a
+        // same-level body portal (e.g. the QR modal) covering it again.
+        const title = [...document.querySelectorAll('div')].find(d => (d.textContent || '').trim().startsWith('未能打开浏览器'));
+        let layer = title;
+        while (layer && !(layer.classList.contains('fixed') && layer.classList.contains('inset-0'))) layer = layer.parentElement;
+        if (!layer) return false;
+        const r = layer.getBoundingClientRect();
+        let top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        while (top && top !== layer) top = top.parentElement;
+        return top === layer;
+      }));
+      await page.evaluate(() => { window.__TOOL_STORE_TEST__.failOpenExternal = false; });
+      await dismiss(page);
+      await clickExact(page, '取消'); await sleep(150);
+      rec('WeCom modal cancel clears both modal and flow card', await page.evaluate(() => {
+        const qrImg = [...document.querySelectorAll('img')].some(i => (i.getAttribute('src') || '') === 'data:image/png;base64,AAAA');
+        return !qrImg && !document.body.innerText.includes('请使用企业微信 App 扫一扫');
+      }));
     }
     if(id==='tmeet'){
       await page.evaluate(() => window.__emitTauri('tmeet:qr', {

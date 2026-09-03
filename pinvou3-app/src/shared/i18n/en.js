@@ -800,7 +800,7 @@ desktopHint:'Install Obsidian on the desktop and create a vault first, then chec
   updatedQuoted:name=>`"${name}" updated`, updateSkillTitle:name=>`Update "${name}"`,
   updateSkillOverwriteHint:'This overwrites the skill with the latest store version. Your local changes to it will be lost.',
   notConnectedYet:name=>`"${name}" is not connected yet.`,
-  loginFrameTitle:name=>`${name} sign-in`, loginPageLoadFailed:'Failed to load the sign-in page—use browser authorization below', waitingAuth:'Waiting for authorization…', openInBrowser:'Open in browser',
+  wecomScanHint:'Scan with the WeCom app', wecomQrAlt:'WeCom sign-in QR code', openBrowserFailed:"Couldn't open the browser—please retry", waitingAuth:'Waiting for authorization…', openInBrowser:'Open in browser',
   mini:{ scan:'Scan pending', install:pct=>`Installing ${pct}%`, extract:pct=>`Extracting ${pct}%`, connecting:'Connecting', title:'Tap to view progress' },
   feishuSteps:[
 { key:'runtime', label:'Prepare runtime', sub:'Use the app-provided Node runtime' },
