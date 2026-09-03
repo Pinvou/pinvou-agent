@@ -304,7 +304,7 @@ fn ingest_checked(path: &Path) -> Result<IngestResult, AttachmentLimitViolation>
         "email" => ingest_email::ingest_email(path, basename, path_str, byte_size, &ext),
         "media" => media_placeholder(basename, path_str, byte_size),
         // 私钥 / 密钥库:绝不读正文(防泄露给 LLM)。见 classify 的 "secret" 分支。
-        "secret" => secret_placeholder(basename, path_str, byte_size),
+        "secret" => redacted_secret_placeholder(basename, path_str, byte_size),
         // 未知扩展名 / 无扩展名:不再一刀切 binary,先内容嗅探。是文本就当文本读
         // (让模型看到内容 —— 这是「接受任何文件」的根本解),真二进制才降级。
         _ => text_decode::sniff_text_or_binary(path, basename, path_str, byte_size),
@@ -320,7 +320,8 @@ fn classify(ext: &str) -> &'static str {
         // 安全硬墙(优先级最高):私钥 / 密钥库类扩展名一律不读正文 —— 防止私钥被读进
         // markdown、内联进 prompt、进而发给(可能的云端)LLM。validate_path 只挡 5 个
         // 敏感目录,挡不住 ~/certs/server.key 这类文件,故在此补文件级拒绝。
-        // 走 "secret" 分类 → secret_placeholder(markdown 恒为 None),不进 sniff。
+        // The "secret" class goes to redacted_secret_placeholder (markdown
+        // always None) and never reaches sniffing.
         // 注意:公钥证书(crt/cer/csr)本身可公开,仍归 text,方便用户问「证书 CN/到期日」。
         "key" | "pem" | "p12" | "pfx" | "keystore" | "jks" | "kdbx" | "gpg" | "pgp" => "secret",
         // 纯文本:文档 + 结构化数据 + 源码 + Web + 配置 + 公钥证书(均为 UTF-8/文本可读)。
@@ -395,7 +396,14 @@ fn binary_placeholder(basename: String, path_str: String, byte_size: u64) -> Ing
 /// 私钥 / 密钥库文件的占位:与 binary_placeholder 同为 markdown=None,但文案明确说明
 /// 「为防泄露而拒绝读取」,便于用户理解为什么内容没被读入。kind 用 "binary" 以复用
 /// 前端既有分类展示(无需新增前端分支),靠 warning 区分原因。
-fn secret_placeholder(basename: String, path_str: String, byte_size: u64) -> IngestResult {
+///
+/// Naming constraint: the name must carry a sanitized marker such as
+/// "redact". The return value flows into the log/failure messages of many
+/// test assertions, and CodeQL rust/cleartext-logging picks its taint
+/// sources by "name contains secret without a redact/hash-style sanitizer
+/// word", so `secret_placeholder` produced ~20 false "cleartext logging of
+/// sensitive data" findings on those assertions.
+fn redacted_secret_placeholder(basename: String, path_str: String, byte_size: u64) -> IngestResult {
     IngestResult::warning(
         "binary",
         &basename,

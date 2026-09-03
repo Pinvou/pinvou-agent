@@ -219,6 +219,13 @@ function isPrepared(expected = expectedMarker(), outputRoot = WINDOWS_BRIDGE_ROO
 }
 
 function checkedSpawn(spawn, command, args, options, label) {
+  // Build-time script that runs on a trusted build machine. The command comes
+  // from process.execPath, Windows runtime descriptor paths already confined
+  // to src-tauri by resolveDescriptorPath, or, for Windows npm installs, the
+  // npm-provided npm_execpath (executed via node) and the OS-provided ComSpec
+  // interpreter, with character-whitelisted npm arguments. No user-controlled
+  // input reaches it.
+  // codeql[js/shell-command-injection-from-environment] build-time script on a trusted build machine; the only environment-derived values are npm- and OS-provided build-tool paths.
   const result = spawn(command, args, options);
   if (result.error) throw result.error;
   if (result.status !== 0) {

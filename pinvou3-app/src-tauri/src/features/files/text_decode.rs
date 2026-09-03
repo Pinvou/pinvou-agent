@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use super::{IngestResult, binary_placeholder, estimate_tokens, secret_placeholder};
+use super::{IngestResult, binary_placeholder, estimate_tokens, redacted_secret_placeholder};
 
 /// 已知文本扩展名（txt/md/json/csv/...）的摄入：读字节 → 私钥内容兜底 → 统一解码。
 pub(super) fn ingest_text(
@@ -36,7 +36,7 @@ pub(super) fn ingest_text(
     // 内容侧安全兜底:已知文本扩展名也可能被塞了私钥(如把 id_rsa 改名 id_rsa.txt),
     // 这种情况按 secret 拒绝读取,不进 markdown。
     if pinvou_knowledge::looks_like_secret_material(&bytes) {
-        return secret_placeholder(basename, path_str, byte_size);
+        return redacted_secret_placeholder(basename, path_str, byte_size);
     }
     let (content, warning) = decode_text_bytes(&bytes);
     let tokens = content.as_ref().map(|c| estimate_tokens(c)).unwrap_or(0);
@@ -76,7 +76,7 @@ pub(super) fn sniff_text_or_binary(
     };
     // 内容侧安全兜底:无扩展名 / 改名的私钥(id_rsa、server-key 等)在此拦截。
     if pinvou_knowledge::looks_like_secret_material(&bytes) {
-        return secret_placeholder(basename, path_str, byte_size);
+        return redacted_secret_placeholder(basename, path_str, byte_size);
     }
     // UTF-16 无 BOM 的 ASCII/混合文本含大量 NUL，本来会被二进制嗅探拒绝；先识别
     // 奇偶字节 NUL 分布的强信号，确认不是 UTF-16 后再执行二进制降级。

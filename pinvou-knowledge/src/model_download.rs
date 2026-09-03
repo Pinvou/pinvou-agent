@@ -119,8 +119,21 @@ where
     .await
 }
 
-/// 检查模型目录是否包含 PINVOU 运行所需的 ONNX 与 tokenizer 文件。
+/// Check whether a model directory contains the ONNX and tokenizer files
+/// PINVOU needs at runtime.
+///
+/// The directory may come from caller configuration (e.g. a server CLI flag),
+/// so canonicalize it first: the existence checks then answer for the
+/// directory the path actually resolves to, and a missing directory keeps the
+/// incomplete semantics. Symlinked directories are followed on purpose, like
+/// every other file operation on this path: there is no trusted root to
+/// enforce here (versioned symlink layouts such as `current -> models/v3`
+/// are a supported override shape), so the probe only reports incomplete for
+/// paths that do not resolve.
 pub fn model_directory_is_complete(dir: &Path) -> bool {
+    let Ok(dir) = std::fs::canonicalize(dir) else {
+        return false;
+    };
     let onnx = dir.join("model.onnx").is_file()
         || dir.join("onnx").join("model_int8.onnx").is_file()
         || dir.join("onnx").join("model.onnx").is_file();
@@ -781,5 +794,37 @@ mod tests {
 
         assert!(recover_model_directory(&destination).unwrap().is_none());
         assert!(!legacy.exists());
+    }
+
+    // Symlink resolution is Unix-only in this suite: creating a directory
+    // symlink on Windows requires privileges the test runner does not have.
+    #[cfg(unix)]
+    #[test]
+    fn completeness_probe_resolves_a_symlinked_model_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("bge-m3-v3");
+        std::fs::create_dir_all(target.join("onnx")).unwrap();
+        std::fs::write(target.join("onnx").join("model_int8.onnx"), b"onnx").unwrap();
+        for file in [
+            "tokenizer.json",
+            "config.json",
+            "special_tokens_map.json",
+            "tokenizer_config.json",
+        ] {
+            std::fs::write(target.join(file), b"x").unwrap();
+        }
+        let link = root.path().join("current");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        // The probe follows the operating system's path resolution on
+        // purpose: a versioned symlink layout reports complete when its
+        // target holds the required files.
+        assert!(model_directory_is_complete(&link));
+
+        std::fs::remove_file(target.join("tokenizer.json")).unwrap();
+        assert!(!model_directory_is_complete(&link));
+        // A dangling symlink does not resolve and stays incomplete.
+        std::fs::remove_dir_all(&target).unwrap();
+        assert!(!model_directory_is_complete(&link));
     }
 }
