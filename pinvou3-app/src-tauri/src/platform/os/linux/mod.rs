@@ -6,8 +6,9 @@ pub(crate) use super::locale::current_system_locale;
 
 pub use linux_path::{
     apply_user_npm_prefix, configure_onnxruntime_dylib, connector_cli_command,
-    filesystem_path_identity_key, kill_pid_tree, obsidian_config_path, path_component_eq,
-    platform_compat_path, python_command, user_home_dir, validate_upload_location,
+    filesystem_path_identity_key, kill_pid_tree, null_device, obsidian_config_path,
+    path_component_eq, platform_compat_path, python_command, user_home_dir,
+    validate_upload_location,
 };
 pub use linux_permission::{
     disable_super_permission, enable_super_permission, super_permission_is_enabled,

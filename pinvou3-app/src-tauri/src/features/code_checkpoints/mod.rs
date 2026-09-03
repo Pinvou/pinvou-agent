@@ -366,10 +366,7 @@ fn isolated_git_command() -> std::process::Command {
         }
     }
     command.env("GIT_CONFIG_NOSYSTEM", "1");
-    command.env(
-        "GIT_CONFIG_GLOBAL",
-        if cfg!(windows) { "NUL" } else { "/dev/null" },
-    );
+    command.env("GIT_CONFIG_GLOBAL", crate::platform::os::null_device());
     command
 }
 

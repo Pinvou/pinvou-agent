@@ -114,6 +114,11 @@ pub fn python_command() -> String {
     "python3".to_string()
 }
 
+/// POSIX 空设备路径。
+pub fn null_device() -> &'static str {
+    "/dev/null"
+}
+
 /// 在 `PATH` 环境变量中逐目录扫描给定命令是否可执行。
 fn which_in_path(cmd: &str) -> bool {
     if let Ok(path_var) = std::env::var("PATH") {
