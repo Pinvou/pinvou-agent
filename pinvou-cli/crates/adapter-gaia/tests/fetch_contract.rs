@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use adapter_gaia::{
     GaiaFetchError, GaiaSnapshotManager, GaiaSource, SnapshotDownloadRequest, SnapshotDownloader,
-    SnapshotFileMetadata, SnapshotPreflightRequest,
+    SnapshotFetchFailure, SnapshotFileMetadata, SnapshotPreflightRequest,
 };
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -46,16 +46,16 @@ impl SnapshotDownloader for DenyDownloader {
     fn preflight(
         &self,
         _request: &SnapshotPreflightRequest<'_>,
-    ) -> Result<Vec<SnapshotFileMetadata>, ()> {
-        Err(())
+    ) -> Result<Vec<SnapshotFileMetadata>, SnapshotFetchFailure> {
+        Err(SnapshotFetchFailure)
     }
 
     fn download(
         &self,
         _request: &SnapshotDownloadRequest<'_>,
         _destination: &Path,
-    ) -> Result<(), ()> {
-        Err(())
+    ) -> Result<(), SnapshotFetchFailure> {
+        Err(SnapshotFetchFailure)
     }
 }
 
