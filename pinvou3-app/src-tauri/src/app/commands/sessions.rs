@@ -731,14 +731,16 @@ mod pinvou_scene_event_tests {
         let normalized = normalize_pinvou_scene_events(serde_json::json!([
             { "pos": 7, "scene": "design:poster" },
             { "pos": 2, "scene": "work:document-writing" },
-            { "pos": 7, "scene": "design:ppt" }
+            { "pos": 7, "scene": "design:data-visualization" },
+            { "pos": 5, "scene": "design:ppt" }
         ]))
         .expect("valid scene events");
         assert_eq!(
             normalized,
             serde_json::json!([
                 { "pos": 2, "scene": "work:document-writing" },
-                { "pos": 7, "scene": "design:ppt" }
+                { "pos": 5, "scene": "design:ppt" },
+                { "pos": 7, "scene": "design:data-visualization" }
             ])
         );
     }
