@@ -4310,9 +4310,21 @@
   }
 
   const SHELL_TOOL_NAMES = ["exec_shell", "task_shell_start", "shell", "Bash"];
+  const SHELL_WAIT_TOOL_NAMES = ["exec_shell_wait", "exec_wait", "task_shell_wait"];
 
   function isShellExecutionTool(name) {
     return SHELL_TOOL_NAMES.includes(name);
+  }
+
+  function latestShellToolIsWaitObserver() {
+    for (let i = state.chatItems.length - 1; i >= 0; i--) {
+      const item = state.chatItems[i];
+      if (item && item.type === "tool" &&
+          (isShellExecutionTool(item.name) || SHELL_WAIT_TOOL_NAMES.includes(item.name))) {
+        return SHELL_WAIT_TOOL_NAMES.includes(item.name);
+      }
+    }
+    return false;
   }
 
   function mentionsShellTool(text) {
@@ -4435,9 +4447,12 @@
           });
           if (item) item.shellHistoryReconciled = true;
         }
-        // A detached job may have been started by a subagent, so no matching
-        // top-level tool card exists. Completed jobs must also get a card: the
-        // first poll may happen after a short detached process already exited.
+        // A wait tool only observes existing work and cannot create a new job.
+        // The manager retains completed jobs across later waits, so an
+        // unmatched terminal snapshot here belongs to earlier work and must
+        // not be appended beside the wait result. A start tool can still race
+        // with a very short detached job, whose first snapshot is terminal.
+        if (!item && !running && latestShellToolIsWaitObserver()) return;
         if (!item) {
           item = {
             type: "tool", toolId: "shell-task:" + job.id, name: "exec_shell",
