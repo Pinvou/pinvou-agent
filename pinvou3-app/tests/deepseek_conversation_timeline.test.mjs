@@ -357,7 +357,9 @@ try {
   assert.ok(questionChoiceCard.includes("type={question.multiSelect ? 'checkbox' : 'radio'}")
     && questionChoiceCard.includes('onClick={submit}'),
   'the shared card must expose explicit radio/checkbox choices and an explicit submit action');
-  assert.ok(conversationView.includes('查看原始数据'),
+  // 「查看原始数据」文案回退已收敛到 dict.zh.uiConversation.viewRaw。
+  const conversationZhDict = readFileSync(path.join(root, 'src', 'shared', 'i18n', 'zh.js'), 'utf8');
+  assert.ok(conversationView.includes('c.viewRaw') && conversationZhDict.includes("viewRaw:'查看原始数据'"),
     'model-facing compacted payloads must be secondary diagnostic details');
   // Steered mid-turn messages are not turn admissions: they must never
   // consume a timing record or inherit a phantom lifecycle. Live repros
