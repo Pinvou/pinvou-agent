@@ -14,6 +14,13 @@ import { invokeTauri, isTauriAvailable } from '../../platform/tauri/client.js';
 
 const COMPOSER_ICON_BUTTON_CLASS = 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-transparent text-gray-700 hover:text-gray-900 dark:text-gray-200 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition-colors border border-transparent';
 
+// composer 弹层菜单条目的统一外观(整宽、反蓝 hover)。默认条目为"图标+文案"左排
+// (gap-2.5);右侧带勾选态/计数的选项条目用 justify-between 两端对齐,共用
+// COMPOSER_MENU_ENTRY_SHARED 尾段,避免两份长 class 各自漂移。
+const COMPOSER_MENU_ENTRY_SHARED = 'px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group';
+const COMPOSER_MENU_ENTRY_CLASS = `w-full flex items-center gap-2.5 ${COMPOSER_MENU_ENTRY_SHARED}`;
+const COMPOSER_MENU_ENTRY_OPTION_CLASS = `w-full flex items-center justify-between ${COMPOSER_MENU_ENTRY_SHARED}`;
+
 /* eslint-disable sonarjs/cognitive-complexity -- dense mounted-state normalization / explicit-lane branches; legacy view; tracked separately */
 const ComposerKbSelector = ({
   t,
@@ -255,7 +262,7 @@ const ComposerKbSelector = ({
               <>
                 <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
                 <button type="button" onClick={unmount}
-                  className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
+                  className={COMPOSER_MENU_ENTRY_CLASS}>
                   <X size={15} className="text-gray-400 group-hover:text-white/90" />
                   {t.kbMountRemove}
                 </button>
@@ -289,7 +296,7 @@ const ComposerModeChip = ({ t, bs, compact, mode: modeProp, busy: busyProp, onSw
       await bridge.interaction.exitPlanToYolo();
     }
   }
-  const optCls = "w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group";
+  const optCls = COMPOSER_MENU_ENTRY_OPTION_CLASS;
   return (
     <div className="relative">
       <button type="button" ref={triggerRef} onClick={() => setOpen(!open)} title={t.modeSwitchTitle + ' · ' + (isPlan ? t.modePlan : t.modeYolo)}
@@ -320,3 +327,4 @@ const ComposerModeChip = ({ t, bs, compact, mode: modeProp, busy: busyProp, onSw
 };
 
 export { COMPOSER_ICON_BUTTON_CLASS, ComposerKbSelector, ComposerModeChip };
+export { COMPOSER_MENU_ENTRY_CLASS };
