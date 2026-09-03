@@ -4,6 +4,7 @@ import { BookOpen, Building2, ChevronDown, CloudSun, Code, FileText, Hexagon, La
 import { bridge } from '../../hooks/useBridge.js';
 import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
 import { can, isWeb } from '../../shared/platform.js';
+import { pathBasename } from '../../shared/path-utils.js';
 import { parseUnifiedDiff, diffStats } from './unified-diff-parser.js';
 import { dict } from '../../shared/i18n.js';
 
@@ -127,8 +128,10 @@ const AcFmtIcon = FileTypeIcon;
 
     const toolBasename = (p) => {
       if (typeof p !== 'string' || !p) return '';
-      const parts = p.replace(/\/+$/, '').split('/'); // eslint-disable-line sonarjs/super-linear-regex -- trailing-slash normalization; input is a path of bounded length
-      return parts[parts.length - 1] || p;
+      // 与 shared/path-utils 的 pathBasename 同一实现:剥尾分隔符后取末段,空结果
+      // 回退原路径(全分隔符串,如 '///')。原内联版只按 '/' 切;pathBasename 额外
+      // 兼容 '\\' 分隔(Windows 路径取到的末段名更准确)。
+      return pathBasename(p, { collapseTrailing: true, fallback: p });
     };
 
     // A 档摘要：只从结构化 args 提“动作对象”（文件名/命令/模式），稳且免费，不 parse output。
