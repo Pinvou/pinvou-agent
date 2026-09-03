@@ -244,6 +244,9 @@ pub async fn review_turn_candidates_with_llm(
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>();
     let explicit_signal = has_memory_review_signal(&user);
+    // 写后果（门槛放宽 + 禁止 skip 硬约束）由窄口径的明确记录请求驱动；
+    // 宽集只决定是否发起复盘（见 has_explicit_remember_signal 文档）。
+    let explicit_remember = has_explicit_remember_signal(&user);
     let delivery_complete =
         capture.delivery_complete || assistant_suggests_delivery_complete(&user, &assistant);
     let skip_reason = if user.is_empty() {
@@ -280,6 +283,7 @@ pub async fn review_turn_candidates_with_llm(
         json!({
             "trigger": trigger,
             "explicit_signal": explicit_signal,
+            "explicit_remember": explicit_remember,
             "provider": bridge.memory_provider(),
             "model": bridge.memory_model(),
             "user_chars": user.chars().count(),
@@ -292,7 +296,7 @@ pub async fn review_turn_candidates_with_llm(
         &user,
         &assistant,
         trigger,
-        explicit_signal,
+        explicit_remember,
         &delivery_summary,
     )
     .await
@@ -314,7 +318,7 @@ pub async fn review_turn_candidates_with_llm(
             .entry(clean_text(&item.action, 24))
             .or_default() += 1;
     }
-    let outcome = match apply_llm_memory_review(review, explicit_signal) {
+    let outcome = match apply_llm_memory_review(review, explicit_remember) {
         Ok(outcome) => outcome,
         Err(error) => {
             append_memory_review_diagnostic(
@@ -388,6 +392,29 @@ pub(super) fn has_memory_review_signal(user: &str) -> bool {
         "最近主要",
         "后面还",
         "继续",
+    ]
+    .iter()
+    .any(|needle| user.contains(needle))
+        || ["keep in mind", "don't forget", "do not forget"]
+            .iter()
+            .any(|needle| lower.contains(needle))
+        || contains_imperative_remember(&lower)
+}
+
+/// 窄口径的“用户明确要求记住”判定：只有记录请求短语本身命中时，才追加
+/// “禁止 skip”硬约束并放宽 auto_write 置信度门槛。[`has_memory_review_signal`]
+/// 的宽集（最近 / 正在 / 继续 / 优先 等状态词）仍负责“是否发起复盘”——它们
+/// 只说明本轮可能有值得记的内容，不构成明确的记录请求，不承担放宽的写后果。
+pub(super) fn has_explicit_remember_signal(user: &str) -> bool {
+    let lower = user.to_lowercase();
+    [
+        "记住",
+        "记一下",
+        "帮我记",
+        "记录一下",
+        "记着",
+        "记好",
+        "记牢",
     ]
     .iter()
     .any(|needle| user.contains(needle))
@@ -478,7 +505,7 @@ async fn request_llm_memory_review(
     user: &str,
     assistant: &str,
     trigger: &str,
-    explicit_signal: bool,
+    explicit_remember: bool,
     delivery_summary: &[String],
 ) -> Result<LlmMemoryReview> {
     let client = Client::builder()
@@ -545,10 +572,10 @@ async fn request_llm_memory_review(
     // for non-Chinese UIs by enforce_memory_locale_policy; see the
     // memory_output_language_directive docs for reachability).
     let mut prompt = LLM_REVIEW_PROMPT.to_string();
-    // 用 explicit_signal（而非 trigger）驱动硬约束：门槛放宽以 explicit_signal
+    // 用 explicit_remember（而非 trigger）驱动硬约束：门槛放宽以 explicit_remember
     // 为准，两者必须同开同关，否则会出现“门槛已放宽但 prompt 未禁止 skip”的
     // 不一致回合（如 explicit_signal 与 delivery_complete 并存时）。
-    if explicit_signal {
+    if explicit_remember {
         prompt.push_str(LLM_REVIEW_EXPLICIT_SIGNAL_PROMPT);
     }
     if let Some(suffix) = memory_output_language_directive(&bridge.memory_locale_tag()) {
@@ -605,18 +632,19 @@ async fn request_llm_memory_review(
     parse_llm_memory_review(content)
 }
 
-/// 应用已解析的复盘结果。`explicit_signal` 表示本轮由用户明确的"记住"类表达
-/// 触发：auto_write / auto_update 的置信度门槛相应放宽（profile 0.92→0.85、
-/// timed 0.86→0.80、work_context 0.94→0.90），清洗下限 0.70 与敏感过滤不变。
+/// 应用已解析的复盘结果。`explicit_remember` 表示本轮命中了用户明确的“记住”
+/// 类记录请求（窄口径 [`has_explicit_remember_signal`]）：auto_write /
+/// auto_update 的置信度门槛相应放宽（profile 0.92→0.85、timed 0.86→0.80、
+/// work_context 0.94→0.90），清洗下限 0.70 与敏感过滤不变。
 pub(super) fn apply_llm_memory_review(
     review: LlmMemoryReview,
-    explicit_signal: bool,
+    explicit_remember: bool,
 ) -> Result<MemoryReviewOutcome> {
-    let timed_auto_threshold = if explicit_signal { 0.80 } else { 0.86 };
-    let work_context_auto_threshold = if explicit_signal { 0.90 } else { 0.94 };
+    let timed_auto_threshold = if explicit_remember { 0.80 } else { 0.86 };
+    let work_context_auto_threshold = if explicit_remember { 0.90 } else { 0.94 };
     let mut outcome = MemoryReviewOutcome::default();
     for raw in review.items {
-        let Some(decision) = sanitize_llm_memory_item(raw, explicit_signal) else {
+        let Some(decision) = sanitize_llm_memory_item(raw, explicit_remember) else {
             continue;
         };
         let suggestion = decision.suggestion;
@@ -678,7 +706,7 @@ pub(super) fn apply_llm_memory_review(
 
 pub(super) fn sanitize_llm_memory_item(
     raw: LlmMemoryItem,
-    explicit_signal: bool,
+    explicit_remember: bool,
 ) -> Option<SanitizedMemoryDecision> {
     let action = clean_text(&raw.action, 24);
     if action == "skip" || raw.confidence < 0.70 {
@@ -736,7 +764,7 @@ pub(super) fn sanitize_llm_memory_item(
         };
         content = super::util::clean_memory_label(&clean_profile_memory_content(&content, &topic))?;
         // 用户明确要求记住时称呼类记忆门槛 0.92 → 0.85。
-        let profile_auto_write_threshold = if explicit_signal { 0.85 } else { 0.92 };
+        let profile_auto_write_threshold = if explicit_remember { 0.85 } else { 0.92 };
         if action == "auto_write" && raw.confidence < profile_auto_write_threshold {
             return None;
         }

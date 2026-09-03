@@ -1142,6 +1142,18 @@ pub(super) fn write_timed_memory_file(
     write_text_atomic(path, &lines)
 }
 
+/// 在写锁内重载并回写单个 timed store：normalize / 去重 / 容量压实后原子落盘。
+/// 读-改-写全程持 [`write_lock`]，与 `update_timed_memory` 等写入口互斥；
+/// organize 的应用后压实用它替代裸 load+write，避免两步之间按轮复盘刚写入
+/// 的条目被旧列表整文件覆盖。
+pub fn compact_timed_memory_store(kind: &str) -> io::Result<()> {
+    let _guard = write_lock().lock();
+    let kind = normalize_timed_memory_kind(kind);
+    let path = timed_memory_path(&kind);
+    let items = load_timed_memory_file(&path, &kind)?;
+    write_timed_memory_file(&path, &items, &kind)
+}
+
 fn compact_timed_memory_items(mut items: Vec<TimedMemoryItem>, kind: &str) -> Vec<TimedMemoryItem> {
     let kind = normalize_timed_memory_kind(kind);
     items.sort_by(|a, b| {
