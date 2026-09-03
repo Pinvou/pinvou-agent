@@ -889,13 +889,18 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 标记首次加载完成（成功或失败都算，失败由 alert 提示），加载中渲染 spinner。
       const [recycledLoading, setRecycledLoading] = useState(false);
       const [recycledLoaded, setRecycledLoaded] = useState(false);
+      // 加载失败态：失败时列表空、但渲染「空回收站」文案会与错误提示自相矛盾
+      // ——单独标记，子页渲染失败态（重进子页或恢复/彻底删除后的重取会自动重试）。
+      const [recycledLoadFailed, setRecycledLoadFailed] = useState(false);
       const [purgeConfirm, setPurgeConfirm] = useState(null); // { id, name }
       const loadRecycledPlugins = () => {
         setRecycledLoading(true);
+        setRecycledLoadFailed(false);
         invokeTauri('list_recycled_plugins').then(list => {
           setRecycledPlugins(Array.isArray(list) ? list : []);
         }).catch((e) => {
           console.error('list_recycled_plugins failed:', e);
+          setRecycledLoadFailed(true);
           setAlert({ visible: true, loading: false, title: storeCopy.recycleBinLoadFailed, isInstall: false, isError: true });
         }).finally(() => {
           setRecycledLoading(false);
@@ -1408,6 +1413,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         .filter(x => !x.user_uploaded && !staticSkillIds.has(x.id) && !CONNECTOR_CLAIMED_SKILLS.has(x.id))
         .map(x => {
           const mcpId = skillToMcp[x.id] || null;
+          // 可导出性跟随所属包（与 handleExportInstalled 的 skillToMcp 包级映射同口径）：
+          // 预置目录包 exportable=false，按钮不隐藏则详情页点击必被后端拒绝。无配套
+          // MCP 的合成卡是纯预置技能——预置技能名受导入通道冲突保护，导出的 zip 无法
+          // 重新导入，同样不导出（后端 export_installed_plugin 对预置技能名同口径拒绝）。
+          const ownerExportable = mcpId
+            ? (toolBackend.find(b => b.id === mcpId) || {}).exportable !== false
+            : false;
           // 组合包卡的业务分类跟随配套 MCP(公文=gongwen→docs;pptx 连接器卡已删,元数据在 tsToolWelcomeData)
           const mcpEntry = mcpId
             ? (tsToolsData.find(t => t.backendId === mcpId) || tsToolWelcomeData.find(t => t.backendId === mcpId))
@@ -1432,6 +1444,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             category: mcpEntry ? (mcpEntry.category || 'skill') : 'skill',
             type: mcpId ? ((storeCopy.typeGroups || {}).bundle || 'Bundle') : 'Skill',
             companionBundle: !!mcpId,
+            exportable: ownerExportable,
             version: '—', latency: storeCopy.localLatency, desc: x.description || '',
             icon: tsSkillIconByName[x.icon] || Package, color: x.color || 'bg-gradient-to-b from-slate-400 to-slate-600',
             installed: mcpId ? (mcpInstalled || skillInstalled) : skillInstalled,
@@ -2434,6 +2447,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   <div data-testid="recycle-bin-loading" className="py-24 text-center flex flex-col items-center">
                     <span className="w-6 h-6 mb-4 rounded-full border-2 border-blue-500 border-t-transparent animate-spin inline-block shrink-0" />
                     <p className="text-slate-500 dark:text-slate-400">{storeCopy.recycleBinLoading}</p>
+                  </div>
+                ) : recycledLoadFailed ? (
+                  <div data-testid="recycle-bin-load-failed" className="py-24 text-center flex flex-col items-center">
+                    <div className="w-16 h-16 mb-4 rounded-full bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center text-amber-500">
+                      <Trash2 size={28} />
+                    </div>
+                    <p className="text-slate-500 dark:text-slate-400">{storeCopy.recycleBinLoadFailed}</p>
                   </div>
                 ) : (
                   <div className="py-24 text-center flex flex-col items-center">

@@ -46,6 +46,13 @@ pub fn export_installed_plugin(pkg_id: &str, dest_zip: &Path) -> Result<(), Stri
             "包 '{pkg_id}' 属于市场预置，可从市场重新安装，无需导出（预置 id 受导入管线冲突保护，导出的 zip 无法重新导入）"
         ));
     }
+    // 预置技能包同口径：预置技能名受导入通道冲突保护（`install_upload_skill`
+    // 拒绝预置名），导出的 zip 同样无法重新导入；预置技能可从市场重新安装。
+    if super::skill_marketplace::is_preset_skill_name(pkg_id) {
+        return Err(format!(
+            "包 '{pkg_id}' 属于市场预置技能，可从市场重新安装，无需导出（预置技能名受导入管线冲突保护，导出的 zip 无法重新导入）"
+        ));
+    }
     let import_lock = super::plugin_import::import_lock_for(pkg_id);
     let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
     let pkg_dir = paths::bundles_root().join(pkg_id);
@@ -387,6 +394,25 @@ mod tests {
             let dest = paths::pinvou3_home().join("export.zip");
             let err = export_installed_plugin(preset_id, &dest).unwrap_err();
             assert!(err.contains("市场预置"), "错误应说明预置包不可导出: {err}");
+            assert!(!dest.exists(), "拒绝导出不得到留文件");
+        });
+    }
+
+    /// 预置技能包同口径不导出：预置技能名受导入通道冲突保护，导出的 zip 无法
+    /// 重新导入，fail-fast 报错，不留导出文件。
+    #[test]
+    fn export_installed_plugin_rejects_preset_skill_name() {
+        with_temp_home(|| {
+            let preset_name = "government-writing"; // skill_marketplace::preset_manifests 首个注册项
+            let pkg = paths::bundles_root().join(preset_name);
+            std::fs::create_dir_all(&pkg).unwrap();
+            std::fs::write(pkg.join("plugin.json"), "{}").unwrap();
+            let dest = paths::pinvou3_home().join("export.zip");
+            let err = export_installed_plugin(preset_name, &dest).unwrap_err();
+            assert!(
+                err.contains("预置技能"),
+                "错误应说明预置技能不可导出: {err}"
+            );
             assert!(!dest.exists(), "拒绝导出不得到留文件");
         });
     }

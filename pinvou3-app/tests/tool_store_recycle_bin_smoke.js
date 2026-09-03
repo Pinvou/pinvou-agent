@@ -41,15 +41,26 @@ function injectSource() {
     ];
     var skills=[
       {id:'my-test-skill',title:'my-test-skill',description:'用大模型整理会议纪要',installed:true,user_uploaded:true,subtitle:''},
+      // 预置目录包的伴随技能(非静态卡、user_uploaded:false)→ 前端 companionSkillCards
+      // 合成卡是列表里唯一可见卡(MCP 卡被 bundleMcpIds 过滤)。其可导出性必须跟随所属
+      // 包:所属为预置目录包(exportable:false)→ 详情页不得渲染「导出」按钮。
+      {id:'blocked-catalog-skill',title:'blocked-catalog-skill',description:'预置目录包伴随技能',installed:true,user_uploaded:false,subtitle:''},
+      // 手写自定义 MCP(迁移登记,exportable 缺省 true)的伴随技能:继承为 true,
+      // 详情页渲染「导出」且点击映射到所属包 id 调 export_installed_plugin。
+      {id:'my-companion-skill',title:'my-companion-skill',description:'自定义包伴随技能',installed:true,user_uploaded:false,subtitle:''},
     ];
     // 手写自定义 MCP(迁移登记,source:'preset'):卸载保留目录、不进回收站,
     // 前端卸载提示不得出现「移入回收站」。
     var tools=[
       {id:'my-preset-mcp',name:'my-preset-mcp',description:'手写自定义 MCP',version:'1.0.0',installed:true,source:'preset'},
-      // 预置目录包(list_marketplace_tools.exportable=false):详情页不得渲染「导出」
-      // 按钮 —— 后端 export_installed_plugin 对 catalog id 一律拒绝(导出的 zip 无法
-      // 重新导入),按钮不隐藏必然报错(与文档「市场预置包不导出」一致)。
-      {id:'blocked-catalog-mcp',name:'blocked-catalog-mcp',description:'预置目录包',version:'1.0.0',installed:true,source:'builtin',exportable:false},
+      // 预置目录包(list_marketplace_tools.exportable=false),manifest 声明伴随技能:
+      // 真实场景里目录包经伴随技能卡呈现在列表(MCP 卡被过滤),「详情页不渲染导出
+      // 按钮」必须在该路径上断言 —— 后端 export_installed_plugin 对 catalog id 一律
+      // 拒绝(导出的 zip 无法重新导入),按钮不隐藏必然报错(与文档「市场预置包不导出」
+      // 一致)。
+      {id:'blocked-catalog-mcp',name:'blocked-catalog-mcp',description:'预置目录包',version:'1.0.0',installed:true,source:'builtin',exportable:false,companion_skills:['blocked-catalog-skill']},
+      // 可导出的手写组合包(迁移登记 preset,不在 mcp_catalog):伴随技能卡继承 true。
+      {id:'my-companion-mcp',name:'my-companion-mcp',description:'手写自定义组合包',version:'1.0.0',installed:true,source:'preset',companion_skills:['my-companion-skill']},
     ];
     var handlers={
       get_settings:function(){return {theme:'liquid-light',language:'zh-Hans'};},
@@ -207,17 +218,47 @@ async function dismiss(page) {
     });
     await sleep(300);
 
-    // 3b. 预置目录包(exportable:false)详情页不渲染「导出」按钮:后端对 catalog id
-    //     一律拒绝导出,按钮不隐藏必然报错(与文档「市场预置包不导出」一致)。
+    // 3b. 预置目录包经伴随技能卡呈现(MCP 卡被列表过滤):详情页不渲染「导出」按钮。
+    //     后端对 catalog id 一律拒绝导出,按钮不隐藏必然报错(与文档「市场预置包不导出」
+    //     一致)。先证明详情弹窗确实打开且为伴随技能卡,避免「列表页本无导出按钮」的空真。
     await page.evaluate(() => {
       const rows = [...document.querySelectorAll('div')].filter(el =>
-        (el.textContent || '').includes('blocked-catalog-mcp') && el.querySelector('button'));
+        (el.textContent || '').includes('blocked-catalog-skill') && el.querySelector('button'));
       const row = rows[rows.length - 1];
       if (row) row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
     await sleep(400);
-    rec('预置目录包详情页不渲染导出按钮', await page.evaluate(() =>
-      !document.querySelector('[data-testid="tool-store-export"]')));
+    rec('预置目录包伴随技能卡详情页打开且无导出按钮', await page.evaluate(() => {
+      const modal = document.querySelector('.ts-modal-in');
+      return !!modal && modal.textContent.includes('blocked-catalog-skill')
+        && !document.querySelector('[data-testid="tool-store-export"]');
+    }));
+    rec('预置目录包 MCP 卡被伴随卡取代不进列表', await page.evaluate(() =>
+      !document.querySelector('[data-tool-id="blocked-catalog-mcp"]')));
+    await page.evaluate(() => {
+      const modal = document.querySelector('.ts-modal-in');
+      if (modal && modal.parentElement) modal.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+    await sleep(300);
+
+    // 3c. 可导出手写组合包的伴随技能卡:继承所属包 exportable(true),详情页渲染
+    //     「导出」且点击映射到所属包 id 调 export_installed_plugin。
+    await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('div')].filter(el =>
+        (el.textContent || '').includes('my-companion-skill') && el.querySelector('button'));
+      const row = rows[rows.length - 1];
+      if (row) row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+    await sleep(400);
+    rec('可导出组合包伴随技能卡详情页渲染导出按钮', await page.evaluate(() => {
+      const btns = [...document.querySelectorAll('[data-testid="tool-store-export"]')];
+      return btns.length === 1 && btns[0].getAttribute('data-tool-id') === 'my-companion-skill';
+    }));
+    await page.click('[data-testid="tool-store-export"]');
+    await sleep(400);
+    rec('伴随技能卡导出映射到所属包 id', await page.evaluate(() =>
+      window.__PINVOU_MOCK_CALLS__.some(c => c.cmd === 'export_installed_plugin' && c.args.id === 'my-companion-mcp')));
+    await dismiss(page);
     await page.evaluate(() => {
       const modal = document.querySelector('.ts-modal-in');
       if (modal && modal.parentElement) modal.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
