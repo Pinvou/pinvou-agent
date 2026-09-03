@@ -2763,13 +2763,14 @@ mod scheduled_model_tests {
     use super::{
         EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions, Pinvou3Bridge,
         PreparedRuntimeState, ScheduledUnattendedGuard, SessionShellManagers,
-        SessionTurnLifecycles, SessionTurnLocks, SessionTurnShellTasks, cancel_turn_with_gates,
-        default_model_for_new_session_from, delete_chat_session_with_gate,
+        SessionTurnLifecycles, SessionTurnLocks, SessionTurnShellTasks, TranscriptOperation,
+        cancel_turn_with_gates, default_model_for_new_session_from, delete_chat_session_with_gate,
         delete_scheduled_run_with_gate, delete_then_forget, evict_if_idle_with_gates,
         generation_matches, identity_for_active_model, identity_for_saved_model,
         quiesce_engine_before_reclaim, resolve_eval_model_selection_from,
         resolve_runtime_model_override, resolve_scheduled_model, resolve_spawn_model,
         scheduled_profile_after_turn_gate, should_still_reap_after_snapshot, should_sync_session,
+        user_display_message,
     };
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
@@ -3388,6 +3389,64 @@ mod scheduled_model_tests {
         let after_save = PreparedRuntimeState::new(prepared, revisions.current("model-1"));
 
         assert!(after_save.requires_rebuild_from(&previous));
+    }
+
+    #[test]
+    fn rebuild_does_not_swallow_inflight_reservation() {
+        // #253 regression (deterministic composition, no real engine): saving
+        // the model/credentials (the mark_model_updated revision bump) -> the
+        // sender reserves -> the next get_or_spawn sees requires_rebuild_from
+        // -> the old engine gets reclaimed. Before the fix, the !submitted
+        // branch of claim_reclaimed_transition invalidated this freshly
+        // reserved reservation, send_reserved_turn_op's ensure_active then
+        // failed, and the user message was silently dropped; after the fix
+        // (#385) the unsubmitted reservation survives the reclaim and the
+        // message is submitted to the rebuilt engine.
+        let revisions = ModelUpdateRevisions::default();
+        let prepared = PreparedRuntimeModel::unchanged(model("model-1", "wire-model"));
+        let entry_state = PreparedRuntimeState::new(prepared.clone(), revisions.current("model-1"));
+
+        let lifecycles = SessionTurnLifecycles::default();
+        let sid = "session-rebuild-reservation";
+        let lifecycle = lifecycles.for_session(sid);
+        let mut reservation = lifecycle.reserve().expect("reserve before model save");
+        reservation
+            .set_transcript(
+                TranscriptOperation::Append,
+                user_display_message("saved-model first message"),
+            )
+            .expect("display transcript");
+
+        // Saving the model: after the revision bump the next turn's prepared
+        // state necessarily differs -> a rebuild is required.
+        revisions.bump("model-1");
+        let next_turn_state = PreparedRuntimeState::new(prepared, revisions.current("model-1"));
+        assert!(
+            next_turn_state.requires_rebuild_from(&entry_state),
+            "saved-model revision must force the next turn to rebuild the engine"
+        );
+
+        // The get_or_spawn rebuild path touches two lifecycle write points:
+        // the authoritative reclaim claim must not hit an unsubmitted turn,
+        // and rule pruning must not touch the in-flight reservation's rules.
+        assert!(
+            !lifecycle.claim_reclaimed_once(),
+            "reclaim must not claim a turn that never reached the engine mailbox"
+        );
+        lifecycle.prune_stale_transcript_rules();
+
+        // The respawned engine shares the session-scoped lifecycle
+        // (spawn_for_session passes the same Arc), so the send-side
+        // ensure_active must pass; the rebuild must also not reset busy —
+        // the in-flight reservation still occupies the single turn slot.
+        assert!(
+            Arc::ptr_eq(&lifecycle, &lifecycles.for_session(sid)),
+            "respawned engine must share the session-scoped lifecycle"
+        );
+        reservation
+            .ensure_active()
+            .expect("unsubmitted reservation must survive the model-update rebuild");
+        assert!(lifecycle.reserve().is_err());
     }
 
     #[tokio::test]
