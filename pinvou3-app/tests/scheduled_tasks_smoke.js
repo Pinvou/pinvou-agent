@@ -1220,7 +1220,7 @@ async function openScheduledNav(page) {
     templateCreateState.paused === false &&
     workspaceUiAbsent &&
     templateRetainedState.detailHidden &&
-    templateRetainedState.count === 3 &&
+    templateRetainedState.count === 4 &&
     templateRetainedState.hasDailyBrief &&
     templateEditState.updateCalls >= 4 &&
     templateEditState.name === '编辑后的每日早报' &&
