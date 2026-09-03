@@ -356,14 +356,22 @@ async function expand(page) {
   const artifactPresentation = await page.evaluate(async () => {
     await window.TauriBridge.sessions.switchToSession('s1');
     await window.__uiWait__(() => !!document.querySelector('[data-testid="chat-scroll"]'));
-    const artifactPath = window.TauriBridge.state.get('chat').artifacts[0]?.path;
+    const stateArtifacts = () => window.TauriBridge.state.get('chat').artifacts;
+    const artifactPath = stateArtifacts()[0]?.path;
+    const countBefore = stateArtifacts().length;
     const panelVisible = () => document.querySelector('[data-testid="artifact-side-panel"]')
       ?.getAttribute('aria-hidden') === 'false';
     window.dispatchEvent(Object.assign(new Event('pinvou:present-artifact'), {
       detail: { sessionId: 's-browser-b', path: '/home/x/ignored.md', toolCallId: 'background-present' },
     }));
-    await new Promise(resolve => setTimeout(resolve, 80));
-    const backgroundIgnored = !panelVisible();
+    // Poll a full observation window instead of a single sleep so a late misfire
+    // from a lazy chunk or slow React commit cannot slip past the negative check.
+    let backgroundLeaked = false;
+    for (let tick = 0; tick < 20 && !backgroundLeaked; tick++) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      backgroundLeaked = panelVisible();
+    }
+    const backgroundIgnored = !backgroundLeaked;
     window.dispatchEvent(Object.assign(new Event('pinvou:present-artifact'), {
       detail: { sessionId: 's1', path: artifactPath, toolCallId: 'active-present' },
     }));
@@ -376,12 +384,20 @@ async function expand(page) {
     await window.__uiWait__(() => !!document.querySelector('[data-testid="artifact-close"]'));
     document.querySelector('[data-testid="artifact-close"]')?.click();
     await window.__uiWait__(() => !panelVisible());
-    return { backgroundIgnored, activeOpened, previewRequested, closed: !panelVisible() };
+    return {
+      backgroundIgnored,
+      activeOpened,
+      previewRequested,
+      closed: !panelVisible(),
+      countBefore,
+      countAfter: stateArtifacts().length,
+    };
   });
   rec(
     'artifact presentation opens the active work-chat preview without changing the artifact count',
     artifactPresentation.backgroundIgnored && artifactPresentation.activeOpened
-      && artifactPresentation.previewRequested && artifactPresentation.closed,
+      && artifactPresentation.previewRequested && artifactPresentation.closed
+      && artifactPresentation.countBefore === artifactPresentation.countAfter,
     JSON.stringify(artifactPresentation),
   );
 

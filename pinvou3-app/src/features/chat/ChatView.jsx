@@ -1509,6 +1509,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         showArtifactsPreview(latestArtifact && latestArtifact.path);
       }, [latestArtifact, showArtifactsPreview]);
       useEffect(() => {
+        if (typeof window === 'undefined') return;
         const onPresentArtifact = (event) => {
           const detail = event && event.detail;
           if (!detail || detail.sessionId !== activeSessionId || !detail.path) return;
