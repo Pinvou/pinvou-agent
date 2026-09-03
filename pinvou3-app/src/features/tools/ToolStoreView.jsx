@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { BookOpen, Check, ChevronLeft, Download, Globe, Package, Search, Server, Settings, Upload, XIcon, Zap } from '../../components/icons.jsx';
+import { BookOpen, Check, ChevronLeft, Download, Globe, Package, Search, Server, Settings, Trash2, Upload, XIcon, Zap } from '../../components/icons.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
 import { localizeTool, mergeConfigFields, TsActionBtn, tsCategories, tsSkillIconByName, tsSkillsData, tsToolsData, tsToolWelcomeData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
@@ -41,7 +41,32 @@ const PlatformToolAction = ({ copy, t, ...props }) => {
       </span>
     );
   }
-  return <TsActionBtn {...props} t={t} />;
+  // 已安装插件（上传/预置/自定义 MCP）的「导出」按钮只出现在详情页（size="lg"），
+  // 列表卡片不展示（Web 只读已在上方 return 掉）；内置卡（builtin，非包）不导出；
+  // 预置目录包不导出（exportable=false，与后端 export_installed_plugin 的拒绝口径
+  // 一致：导出的 zip 受导入管线预置冲突保护、无法重新导入）。
+  // 样式对齐 TsActionBtn 的次要按钮。
+  const showExport = !!(props.size === 'lg' && props.tool && props.tool.installed && !props.tool.builtin && props.tool.exportable !== false && props.tool.backendId && props.onExport);
+  const exportBtn = showExport && (
+    <button
+      type="button"
+      data-testid="tool-store-export"
+      data-tool-id={props.tool.backendId}
+      disabled={!!props.busy}
+      title={copy.recycleExport}
+      onClick={(e) => { e.stopPropagation(); props.onExport(props.tool); }}
+      className={`${props.size === 'lg' ? 'px-6 py-2.5 text-[15px]' : 'px-4 py-1.5 text-[13px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-[#3A3A3C] whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed`}
+    >
+      {copy.recycleExport}
+    </button>
+  );
+  if (!exportBtn) return <TsActionBtn {...props} t={t} />;
+  return (
+    <div className="flex items-center gap-2">
+      <TsActionBtn {...props} t={t} />
+      {exportBtn}
+    </div>
+  );
 };
 
 const THIRD_PARTY_TOOL_LOGOS = {
@@ -472,11 +497,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                     <div className={`w-6 h-6 rounded-full border-[2.5px] border-t-transparent border-[#007AFF] dark:border-[#0A84FF]`}
                       style={{ animation: 'tsSpinner .8s linear infinite' }} />
                   </div>
-                  <div className={`text-[17px] font-semibold mb-1.5 text-slate-900 dark:text-white`}>
+                  {/* break-all:容器固定 280px 宽,长路径/长插件名等无空格串须强制断行防溢出 */}
+                  <div className={`text-[17px] font-semibold mb-1.5 break-all text-slate-900 dark:text-white`}>
                     {alert.title}
                   </div>
                   {alert.subtitle && (
-                    <div className={`text-[13px] leading-relaxed text-slate-500 dark:text-slate-400`}>
+                    <div className={`text-[13px] leading-relaxed break-all text-slate-500 dark:text-slate-400`}>
                       {alert.subtitle}
                     </div>
                   )}
@@ -495,11 +521,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             ) : (
               <>
                 <div className="px-6 pt-6 pb-5 text-center">
-                  <div className={`text-[17px] font-semibold mb-1.5 text-slate-900 dark:text-white`}>
+                  <div className={`text-[17px] font-semibold mb-1.5 break-all text-slate-900 dark:text-white`}>
                     {alert.title}
                   </div>
                   {alert.subtitle ? (
-                    <div className={`text-[13px] leading-relaxed text-slate-500 dark:text-slate-400`}>
+                    <div className={`text-[13px] leading-relaxed break-all text-slate-500 dark:text-slate-400`}>
                       {alert.subtitle}
                     </div>
                   ) : !alert.isError && (
@@ -859,6 +885,127 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const downloadSpec = () => {
         invokeTauri('export_plugin_spec').catch(() => {});
       };
+      // 回收站：用户上传的插件卸载后进入回收站，可恢复或彻底删除
+      // （list 为只读命令，Web 端可看列表；恢复/删除挂 toolStoreMutations 能力门）。
+      const [showRecycleBin, setShowRecycleBin] = useState(false);
+      const [recycledPlugins, setRecycledPlugins] = useState([]);
+      // 加载态：进入子页到首包返回之间不得闪「回收站是空的」空态；recycledLoaded
+      // 标记首次加载完成（成功或失败都算，失败由 alert 提示），加载中渲染 spinner。
+      const [recycledLoading, setRecycledLoading] = useState(false);
+      const [recycledLoaded, setRecycledLoaded] = useState(false);
+      // 加载失败态：失败时列表空、但渲染「空回收站」文案会与错误提示自相矛盾
+      // ——单独标记，子页渲染失败态（重进子页或恢复/彻底删除后的重取会自动重试）。
+      const [recycledLoadFailed, setRecycledLoadFailed] = useState(false);
+      const [purgeConfirm, setPurgeConfirm] = useState(null); // { id, name }
+      // 加载代际守卫：进/出子页、恢复/彻底删除后的重取可能重叠，先发后至的失败
+      // 不得覆盖后发成功（否则空回收站会被渲染成失败态 + 假错误提示）。
+      const recycledLoadSeqRef = useRef(0);
+      const loadRecycledPlugins = () => {
+        const seq = ++recycledLoadSeqRef.current;
+        setRecycledLoading(true);
+        setRecycledLoadFailed(false);
+        invokeTauri('list_recycled_plugins').then(list => {
+          if (seq !== recycledLoadSeqRef.current) return;
+          setRecycledPlugins(Array.isArray(list) ? list : []);
+        }).catch((e) => {
+          if (seq !== recycledLoadSeqRef.current) return;
+          console.error('list_recycled_plugins failed:', e);
+          setRecycledLoadFailed(true);
+          setAlert({ visible: true, loading: false, title: storeCopy.recycleBinLoadFailed, isInstall: false, isError: true });
+        }).finally(() => {
+          if (seq !== recycledLoadSeqRef.current) return;
+          setRecycledLoading(false);
+          setRecycledLoaded(true);
+        });
+      };
+      useEffect(() => {
+        if (showRecycleBin) loadRecycledPlugins();
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch only on sub-page entry; loadRecycledPlugins closes over storeCopy (error copy only), re-creating it must not re-trigger the fetch
+      }, [showRecycleBin]);
+      // 恢复为已安装：credentials_required=true 表示该插件的 MCP 组件声明了凭据
+      // secrets（卸载时已删除），仅还原目录与登记，需提示用户重新填写凭据。
+      const handleRestoreRecycled = async (item) => {
+        if (!canMutateToolStore || !item || item.package_missing || busyRef.current) return;
+        setBusyId(item.id);
+        try {
+          const res = await invokeTauri('restore_recycled_plugin', { id: item.id });
+          await loadBackendState();
+          loadRecycledPlugins();
+          const name = item.display_name || item.id;
+          // isInstall:true → TsAlert 默认副标题为 installHint（「新工具需要在新会话中生效」），
+          // 与「恢复为已安装」语义一致；false 会落到 removeHint（「已移除…」），语义相反。
+          setAlert({
+            visible: true, loading: false,
+            title: res && res.credentials_required ? storeCopy.recycleRestoredCredentials(name) : storeCopy.recycleRestored(name),
+            isInstall: true, isError: false,
+          });
+          notifyComposerToolsChanged();
+        } catch (e) {
+          console.error('restore recycled plugin failed:', e);
+          setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+      // 彻底删除：二次确认（沿用更新确认的弹窗模式）后物理删除包文件与回收站条目。
+      // Web 只读降级 fail-closed：确认弹窗入口虽由 canMutateToolStore 门控，处理函数
+      // 自身同样拒绝（与本文件其它变更处理函数同一纪律）。
+      const doPurgeRecycled = async () => {
+        if (!canMutateToolStore || !purgeConfirm || busyRef.current) return;
+        const { id, name } = purgeConfirm;
+        setPurgeConfirm(null);
+        setBusyId(id);
+        try {
+          await invokeTauri('purge_recycled_plugin', { id });
+          loadRecycledPlugins();
+          setAlert({ visible: true, loading: false, title: storeCopy.recyclePurged(name), isInstall: false, isError: false });
+        } catch (e) {
+          console.error('purge recycled plugin failed:', e);
+          setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+      // 导出为 zip 插件包：桌面端弹原生保存对话框，返回保存路径=成功；
+      // 返回 null=用户取消（静默）；抛错=失败。package_missing 条目目录已不在，禁用导出。
+      const handleExportRecycled = async (item) => {
+        if (!canMutateToolStore || !item || item.package_missing || busyRef.current) return;
+        setBusyId(item.id);
+        try {
+          const savedPath = await invokeTauri('export_recycled_plugin', { id: item.id });
+          if (savedPath) {
+            // 标题只放文件名(完整路径在 280px 弹窗里装不下);路径降级为副标题,
+            // 由 TsAlert 的 break-all 保证长路径断行不溢出。
+            const fileName = String(savedPath).split(/[\\/]/).pop() || String(savedPath);
+            setAlert({ visible: true, loading: false, title: storeCopy.recycleExported(fileName), subtitle: String(savedPath), isInstall: false, isError: false });
+          }
+        } catch (e) {
+          console.error('export recycled plugin failed:', e);
+          setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+      // 已安装卡片「导出」：companion 技能卡先经 skillToMcp 映射为所属包 id（与可见性
+      // 写入同口径，包 id 才是后端注册表主键）；提示复用回收站导出的同款模式
+      // （标题只放文件名，完整路径进副标题，TsAlert break-all 防溢出）。
+      const handleExportInstalled = async (tool) => {
+        if (!canMutateToolStore || !tool || !tool.installed || tool.builtin || !tool.backendId || busyRef.current) return;
+        const pkgId = skillToMcp[tool.backendId] || tool.backendId;
+        setBusyId(tool.backendId);
+        try {
+          const savedPath = await invokeTauri('export_installed_plugin', { id: pkgId });
+          if (savedPath) {
+            const fileName = String(savedPath).split(/[\\/]/).pop() || String(savedPath);
+            setAlert({ visible: true, loading: false, title: storeCopy.recycleExported(fileName), subtitle: String(savedPath), isInstall: false, isError: false });
+          }
+        } catch (e) {
+          console.error('export installed plugin failed:', e);
+          setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
       const [visibilityLoaded, setVisibilityLoaded] = useState(false);
       const loadHiddenByMode = () => {
         Promise.all([
@@ -1160,8 +1307,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         // desc 已由 uiToolDetails 三语本地化，category 的 manifest 中文词汇与前端
         // 分组 id 不兼容（统一词汇属后续清理）。
         const bf = bs && bs.bundle ? bs.bundle : null;
+        // 可导出性跟随后端（list_marketplace_tools.exportable）：预置目录包 false
+        // —— 后端 export_installed_plugin 对 catalog id 一律拒绝，按钮不隐藏必然报错。
+        const tb = t.backendId ? toolBackend.find(x => x.id === t.backendId) : null;
         return {
           ...t,
+          exportable: tb ? tb.exportable !== false : true,
           version: bf && bf.version ? `v${String(bf.version).replace(/^v/i, '')}` : t.version,
           configFields: mergeConfigFields(bf ? bf.config_fields : null, t.configFields),
           logoSrc: THIRD_PARTY_TOOL_LOGOS[t.backendId] || THIRD_PARTY_TOOL_LOGOS[t.id] || null,
@@ -1192,9 +1343,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             : false,
         };
       });
-      // 自定义 MCP（上传的，不在内置 tsToolsData 里的）动态合成卡片：安装时显示、
+      // 自定义 MCP（不在内置 tsToolsData 里的后端条目）动态合成卡片：安装时显示、
       // 卸载后从 list_marketplace_tools 消失，不依赖前端硬编码。展示文案走 i18n
       // overlay（localizeTool，按 backendId 三语覆盖），后端 name/desc 兜底。
+      // userUploaded 以后端 source 为准：仅 upload（用户上传包）卸载进回收站；
+      // preset（市场预置/手写自定义 MCP 迁移登记）卸载保留目录、不进回收站；
+      // source 缺失（旧后端）取 false——宁可少提示「移入回收站」，不说谎。
       const customMcpTools = toolBackend
         .filter(x => tsToolsData.every(t => t.backendId !== x.id))
         .map(x => {
@@ -1209,7 +1363,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             latency: storeCopy.localLatency, desc: (bf && bf.description) || x.description || '',
             icon: Server, color: 'bg-gradient-to-b from-slate-400 to-slate-600',
             installed: bs ? bs.installed : !!x.installed,
-            authRequired: false, userUploaded: true,
+            authRequired: false, userUploaded: x.source === 'upload',
+            exportable: x.exportable !== false,
             actions: actionsOf(bs),
           };
           return localizeTool(base, t);
@@ -1269,6 +1424,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         .filter(x => !x.user_uploaded && !staticSkillIds.has(x.id) && !CONNECTOR_CLAIMED_SKILLS.has(x.id))
         .map(x => {
           const mcpId = skillToMcp[x.id] || null;
+          // 可导出性跟随所属包（与 handleExportInstalled 的 skillToMcp 包级映射同口径）：
+          // 预置目录包 exportable=false，按钮不隐藏则详情页点击必被后端拒绝。无配套
+          // MCP 的合成卡是纯预置技能——预置技能名受导入通道冲突保护，导出的 zip 无法
+          // 重新导入，同样不导出（后端 export_installed_plugin 对预置技能名同口径拒绝）。
+          const ownerExportable = mcpId
+            ? (toolBackend.find(b => b.id === mcpId) || {}).exportable !== false
+            : false;
           // 组合包卡的业务分类跟随配套 MCP(公文=gongwen→docs;pptx 连接器卡已删,元数据在 tsToolWelcomeData)
           const mcpEntry = mcpId
             ? (tsToolsData.find(t => t.backendId === mcpId) || tsToolWelcomeData.find(t => t.backendId === mcpId))
@@ -1293,6 +1455,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             category: mcpEntry ? (mcpEntry.category || 'skill') : 'skill',
             type: mcpId ? ((storeCopy.typeGroups || {}).bundle || 'Bundle') : 'Skill',
             companionBundle: !!mcpId,
+            exportable: ownerExportable,
             version: '—', latency: storeCopy.localLatency, desc: x.description || '',
             icon: tsSkillIconByName[x.icon] || Package, color: x.color || 'bg-gradient-to-b from-slate-400 to-slate-600',
             installed: mcpId ? (mcpInstalled || skillInstalled) : skillInstalled,
@@ -1598,7 +1761,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           const cmd = isInstalled ? 'uninstall_marketplace_skill' : 'install_marketplace_skill';
           await invokeTauri(cmd, { skillId: backendId });
           await loadBackendState();
-          setAlert({ visible: true, loading: false, title: isInstalled ? storeCopy.uninstalledQuoted(name) : storeCopy.installedQuoted(name), isInstall: !isInstalled, isError: false });
+          setAlert({ visible: true, loading: false, title: isInstalled ? (t && t.userUploaded ? storeCopy.movedToRecycleBinQuoted(name) : storeCopy.uninstalledQuoted(name)) : storeCopy.installedQuoted(name), isInstall: !isInstalled, isError: false });
           if (selectedTool && selectedTool.backendId === backendId) {
             setSelectedTool(prev => ({ ...prev, installed: !isInstalled }));
           }
@@ -2096,7 +2259,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               },
             }));
           }
-          setAlert({ visible: true, loading: false, title: storeCopy.uninstalledQuoted(name), isInstall: false, isError: false });
+          // 上传插件卸载后进回收站（预置插件直接卸载），提示文案据此区分。
+          setAlert({ visible: true, loading: false, title: tool && tool.userUploaded ? storeCopy.movedToRecycleBinQuoted(name) : storeCopy.uninstalledQuoted(name), isInstall: false, isError: false });
           if (selectedTool && selectedTool.backendId === backendId) {
             setSelectedTool(prev => ({ ...prev, installed: false, authStatus: 'not_installed', authMessage: '' }));
           }
@@ -2183,6 +2347,30 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             onCancel={() => setEditDisplay(null)}
             onConfirm={doEditDisplaySave}
           />, document.body)}
+          {/* 回收站彻底删除二次确认:物理删除包文件与回收站条目,不可恢复
+              (自绘确认,风格对齐预置技能更新确认) */}
+          {purgeConfirm && createPortal((
+            // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is covered by the dialog's cancel control
+            // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
+            <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setPurgeConfirm(null)}>
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: dialog content stopPropagation only, interaction happens on the buttons inside */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: dialog content wrapper, non-interactive container */}
+              <div className="w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]" onClick={e => e.stopPropagation()}>
+                <div className="px-6 pt-6 pb-5 text-center">
+                  <div className="text-[17px] font-semibold mb-1.5 text-slate-900 dark:text-white">{storeCopy.recyclePurgeTitle(purgeConfirm.name)}</div>
+                  <div className="text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">{storeCopy.recyclePurgeHint}</div>
+                </div>
+                <div className="border-t border-slate-200 dark:border-white/10 flex">
+                  <button type="button" onClick={() => setPurgeConfirm(null)} className="flex-1 py-3 text-[17px] text-center transition-colors text-slate-500 active:bg-slate-100 dark:text-slate-400 dark:active:bg-white/5 border-r border-slate-200 dark:border-white/10">
+                    {storeCopy.cancel}
+                  </button>
+                  <button type="button" data-testid="recycled-purge-confirm" onClick={doPurgeRecycled} className="flex-1 py-3 text-[17px] font-semibold text-center transition-colors text-rose-600 active:bg-slate-100 dark:text-rose-400 dark:active:bg-white/5">
+                    {storeCopy.recyclePurge}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ), document.body)}
           {/* 飞书扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
           {wecomQr && (() => {
             // Mirrors wecomResetFlow: backend cancel is now silent (no wecom:error
@@ -2213,6 +2401,92 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             </div>
             ), document.body);
           })()}
+          {/* 回收站子页面:点入口后整个插件中心内容区切换为回收站页面(非弹窗),
+              返回按钮回到主列表;彻底删除二次确认仍用弹窗(见上方 purgeConfirm) */}
+          {showRecycleBin && (
+          <div className="flex-1 flex flex-col bg-white dark:bg-[#131314] text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-y-auto custom-scrollbar p-4 sm:p-6 lg:p-10">
+
+            <header className="z-30 bg-white/80 dark:bg-[#131314]/80 backdrop-blur-2xl transition-colors">
+              <div className="max-w-[1400px] mx-auto border-b border-slate-200/50 pb-6 dark:border-white/10">
+                <div className="flex items-center gap-3">
+                  <button type="button" data-testid="recycle-bin-back" onClick={() => setShowRecycleBin(false)} title={storeCopy.back} aria-label={storeCopy.back}
+                    className="w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 flex items-center justify-center text-slate-600 dark:text-slate-300 transition-colors shrink-0">
+                    <ChevronLeft size={20} />
+                  </button>
+                  <h1 className="shrink-0 text-[26px] font-normal tracking-tight">{storeCopy.recycleBinTitle}</h1>
+                </div>
+              </div>
+            </header>
+
+            <main className="flex-1">
+              <div className="max-w-[1400px] mx-auto pt-5 pb-8">
+                {recycledPlugins.length > 0 ? (
+                  <ul data-testid="recycled-plugin-list" className="flex flex-col">
+                    {recycledPlugins.map((item) => {
+                      const name = item.display_name || item.id;
+                      // recycled_at 非法（旧数据/异常写入）时不渲染时间，避免透出 "Invalid Date"
+                      const recycledDate = item.recycled_at ? new Date(item.recycled_at) : null;
+                      const recycledAt = recycledDate && !Number.isNaN(recycledDate.getTime()) ? recycledDate.toLocaleString() : '';
+                      return (
+                        <li key={item.id} data-testid={`recycled-plugin-${item.id}`} className="flex items-center gap-4 py-3 border-b border-slate-100 dark:border-white/5 last:border-0">
+                          <div className="flex-1 min-w-0">
+                            <h3 className="text-[15px] font-semibold text-slate-900 dark:text-white truncate">{name}</h3>
+                            <div className="flex items-center gap-2 mt-1">
+                              <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{(storeCopy.typeGroups || {})[item.kind] || item.kind}</span>
+                              {recycledAt && <span className="text-[12px] text-slate-400 dark:text-slate-500">{storeCopy.recycledAt(recycledAt)}</span>}
+                            </div>
+                          </div>
+                          {canMutateToolStore && (
+                            <div className="flex items-center gap-2 shrink-0">
+                              <button type="button" data-testid={`recycled-restore-${item.id}`} onClick={() => handleRestoreRecycled(item)}
+                                disabled={!!item.package_missing || busyId === item.id}
+                                title={item.package_missing ? storeCopy.recycleRestoreUnavailable : undefined}
+                                className="inline-flex h-8 items-center rounded-full bg-blue-600 px-4 text-[12px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed">
+                                {storeCopy.recycleRestore}
+                              </button>
+                              <button type="button" data-testid={`recycled-export-${item.id}`} onClick={() => handleExportRecycled(item)}
+                                disabled={!!item.package_missing || busyId === item.id}
+                                title={item.package_missing ? storeCopy.recycleExportUnavailable : undefined}
+                                className="inline-flex h-8 items-center rounded-full bg-slate-100 px-4 text-[12px] font-semibold text-slate-700 shadow-sm transition-colors hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed dark:bg-[#2C2C2E] dark:text-slate-200 dark:hover:bg-[#3A3A3C]">
+                                {storeCopy.recycleExport}
+                              </button>
+                              <button type="button" data-testid={`recycled-purge-${item.id}`} onClick={() => setPurgeConfirm({ id: item.id, name })}
+                                disabled={busyId === item.id}
+                                className="inline-flex h-8 items-center rounded-full bg-slate-100 px-4 text-[12px] font-semibold text-rose-600 shadow-sm transition-colors hover:bg-slate-200 disabled:opacity-40 dark:bg-[#2C2C2E] dark:text-rose-400 dark:hover:bg-[#3A3A3C]">
+                                {storeCopy.recyclePurge}
+                              </button>
+                            </div>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : (recycledLoading || !recycledLoaded) ? (
+                  <div data-testid="recycle-bin-loading" className="py-24 text-center flex flex-col items-center">
+                    <span className="w-6 h-6 mb-4 rounded-full border-2 border-blue-500 border-t-transparent animate-spin inline-block shrink-0" />
+                    <p className="text-slate-500 dark:text-slate-400">{storeCopy.recycleBinLoading}</p>
+                  </div>
+                ) : recycledLoadFailed ? (
+                  <div data-testid="recycle-bin-load-failed" className="py-24 text-center flex flex-col items-center">
+                    <div className="w-16 h-16 mb-4 rounded-full bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center text-amber-500">
+                      <Trash2 size={28} />
+                    </div>
+                    <p className="text-slate-500 dark:text-slate-400">{storeCopy.recycleBinLoadFailed}</p>
+                  </div>
+                ) : (
+                  <div className="py-24 text-center flex flex-col items-center">
+                    <div className="w-16 h-16 mb-4 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400">
+                      <Trash2 size={28} />
+                    </div>
+                    <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-200 mb-2">{storeCopy.recycleBinEmpty}</h3>
+                    <p className="text-slate-500 dark:text-slate-400">{storeCopy.recycleBinEmptyHint}</p>
+                  </div>
+                )}
+              </div>
+            </main>
+          </div>
+          )}
+          {!showRecycleBin && (
           <div className="flex-1 flex flex-col bg-white dark:bg-[#131314] text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-y-auto custom-scrollbar p-4 sm:p-6 lg:p-10">
 
             {/* Header */}
@@ -2329,6 +2603,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                             <Check size={14} className="mr-1.5 opacity-70" />
                             <span>{storeCopy.installedOnly}</span>
                           </button>
+                          <button type="button" data-testid="tool-store-recycle-bin" onClick={() => setShowRecycleBin(true)} title={storeCopy.recycleBin}
+                            className="h-9 whitespace-nowrap shrink-0 inline-flex items-center rounded-full px-3.5 text-[13px] font-semibold transition-colors bg-[#F2F2F7] text-[#000] hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-[#fff] dark:hover:bg-[#3A3A3C]">
+                            <Trash2 size={14} className="mr-1.5 opacity-70" />
+                            <span>{storeCopy.recycleBin}</span>
+                          </button>
                           <span className="shrink-0 hidden sm:flex items-center gap-1.5 text-[12px] text-slate-400 dark:text-slate-500 pl-1">
                             {storeCopy.guide.dragHintShort}
                             <button type="button" onClick={() => setShowGuide(true)} aria-label={storeCopy.guide.title} title={storeCopy.guide.title}
@@ -2411,7 +2690,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                         </div>
                                       );
                                     }
-                                    return <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} copy={storeCopy} t={t} />;
+                                    return <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} onExport={handleExportInstalled} copy={storeCopy} t={t} />;
                                   })()}
                                 </div>
                               </div>
@@ -2440,6 +2719,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               </div>
             </main>
           </div>
+          )}
 
           {/* 插件指南弹窗：拖入安装说明 + 插件包介绍 + 规范文档下载 */}
           {showGuide && createPortal((
@@ -2525,7 +2805,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       <div className="flex flex-col items-end gap-1.5">
                         {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : selectedTool.dingtalkCli ? dingtalkFlow : selectedTool.tmeetCli ? tmeetFlow : null; return (externalAuthAvailable && sf && (sf.phase === 'running' || sf.phase === 'qr'))
                           ? <FeishuMini flow={sf} onClick={() => {}} copy={storeCopy.mini} />
-                          : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} size="lg" copy={storeCopy} t={t} />; })()}
+                          : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} onExport={handleExportInstalled} size="lg" copy={storeCopy} t={t} />; })()}
                         {((selectedTool.feishuCli && !feishuConnected) || (selectedTool.wecomCli && !wecomConnected) || (selectedTool.dingtalkCli && !dingtalkConnected) || (selectedTool.tmeetCli && !tmeetConnected)) && <span className="text-[11px] text-slate-400">{storeCopy.firstUseOnlineInstall}</span>}
                       </div>
                     </div>

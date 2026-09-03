@@ -170,6 +170,12 @@ for (const command of [
   'web_access_enable',
   // 上传包展示名/说明编辑写 bundles.json 并可能回写 SKILL.md：写操作桌面专用。
   'update_bundle_display_meta',
+  // 回收站恢复/彻底删除与两种包导出都是桌面端写操作（原生保存对话框 + 文件系统
+  // 变更）：Web 端回收站只读，仅放行 list_recycled_plugins，写命令留在桌面端。
+  'restore_recycled_plugin',
+  'purge_recycled_plugin',
+  'export_recycled_plugin',
+  'export_installed_plugin',
 ]) {
   assert.equal(allowed.has(command), false, `${command} must remain desktop-only`);
 }
@@ -740,6 +746,21 @@ assert.match(toolStoreView, /if \(!can\('toolStoreMutations'\)\) \{/);
 assert.match(toolStoreView, /const canMutateToolStore = can\('toolStoreMutations'\);/);
 assert.ok((toolStoreView.match(/if \(!canMutateToolStore\) return;/g) || []).length >= 4,
   'all tool install, uninstall, and import handlers must fail closed in WebUI');
+// 回收站 Web 只读降级：list_recycled_plugins 为只读命令（access-policy 放行），
+// 恢复/导出/彻底删除的动作按钮整块挂 canMutateToolStore 门控，处理函数自身
+// fail-closed（含 purge——其确认弹窗入口虽由门控按钮触发，处理函数仍须自守）。
+assert.match(toolStoreView,
+  /\{canMutateToolStore && \(\s*<div className="flex items-center gap-2 shrink-0">[\s\S]{0,900}recycled-restore-[\s\S]{0,900}recycled-export-[\s\S]{0,900}recycled-purge-/,
+  'recycle bin restore/export/purge buttons must be gated behind canMutateToolStore');
+assert.match(toolStoreView,
+  /const handleRestoreRecycled = async \(item\) => \{\s*if \(!canMutateToolStore/,
+  'restore handler must fail closed in WebUI');
+assert.match(toolStoreView,
+  /const handleExportRecycled = async \(item\) => \{\s*if \(!canMutateToolStore/,
+  'recycled export handler must fail closed in WebUI');
+assert.match(toolStoreView,
+  /const doPurgeRecycled = async \(\) => \{\s*if \(!canMutateToolStore/,
+  'purge handler must fail closed in WebUI');
 assert.match(knowledgeView, /const canDownloadArtifacts = !isWeb \|\| can\('artifactDownload'\);/);
 assert.match(knowledgeView, /const canPickHostFiles = !isWeb \|\| can\('hostFilePicker'\);/);
 assert.match(knowledgeView, /const outputSessionId = o\.sessionId \|\| o\.session_id \|\| null;/);

@@ -872,6 +872,13 @@ s5: { title:'Visual Design', subtitle:'Design-system-grade webpages / banners / 
 Object.assign(dictEn.uiToolStore, {
   groupByType:'By Type', groupByBusiness:'By Domain',
   typeGroups:{ bundle:'Plugin Bundles', mcp:'MCP', skill:'Skills', cli:'CLI Integrations', api:'API & Webhook', upcoming:'Coming Soon' },
+  recycleBin:'Recycle Bin', recycleBinTitle:'Plugin Recycle Bin', recycleBinEmpty:'Recycle bin is empty', recycleBinEmptyHint:'Uploaded plugins you uninstall are moved here; you can restore or permanently delete them.',
+  recycleBinLoadFailed:'Failed to load the recycle bin. Please retry.', recycleBinLoading:'Loading recycle bin…', recycledAt:time=>`Recycled at ${time}`,
+  recycleRestore:'Restore', recycleRestoreUnavailable:'Package files are missing and cannot be restored', recyclePurge:'Delete Permanently',
+  recyclePurgeTitle:name=>`Permanently delete "${name}"?`, recyclePurgeHint:'This cannot be undone. The plugin package files will be permanently removed.',
+  recycleRestored:name=>`"${name}" restored`, recycleRestoredCredentials:name=>`"${name}" restored. Its credentials were removed on uninstall—please fill them in again.`, recyclePurged:name=>`"${name}" permanently deleted`,
+  recycleExport:'Export', recycleExportUnavailable:'Package files are missing and cannot be exported', recycleExported:name=>`Exported as ${name}`,
+  movedToRecycleBinQuoted:name=>`"${name}" uninstalled and moved to the recycle bin`,
 });
 
 Object.assign(dictEn, {
