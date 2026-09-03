@@ -336,21 +336,39 @@ pub async fn get_super_permission_status() -> Result<bool, String> {
 }
 
 /// 切换超级权限。开启时 pkexec 弹系统密码框写 sudoers，关闭时 pkexec 删文件。
-/// 切换后同步当前 session 让新 system prompt 立即生效（注入/抹掉 sudo 引导段）。
-/// 返回真实生效状态（pkexec 失败/取消时不会变）。
+/// After toggling, rebuild and hot-refresh the execpolicy ruleset of every
+/// running engine (sudo hard-deny is added/removed with the toggle); the
+/// session's sudo guidance state is injected live by the per-turn reminder
+/// (the static prompt renders only at spawn and is not hot-refreshed).
+/// Returns the real effective state (unchanged when pkexec fails/is cancelled).
+///
+/// Holds the process-wide [`crate::platform::super_permission::TOGGLE_LOCK`]
+/// for the whole sequence: disk-state read → pkexec write/remove →
+/// `refresh_permission_rulesets` rebuild + broadcast run serialized as one
+/// unit, so concurrent toggles no longer interleave and the sudo hard-deny
+/// ruleset is never rebuilt from a stale sudo snapshot (the narrow
+/// stale-snapshot window registered in safety_deny_rules is closed).
+/// Toggling is a low-frequency user action, so holding the lock across the
+/// slow pkexec call is acceptable; the lock is held only here, the guard is
+/// scoped to the function, and an early pkexec error return releases it
+/// automatically without blocking other Tauri commands.
 #[tauri::command]
 pub async fn set_super_permission(
     enabled: bool,
     pool: State<'_, EnginePool>,
 ) -> Result<bool, String> {
+    let _toggle_guard = crate::platform::super_permission::TOGGLE_LOCK.lock().await;
     if enabled {
         crate::platform::super_permission::enable()?;
     } else {
         crate::platform::super_permission::disable()?;
     }
-    // 多 session 并发:重写所有已起 engine 的 session 专属 instructions(含新 sudo 引导块),
-    // engine 下个 turn rehydrate 时从 disk 重读 → 「下次 turn 生效」。低频操作,不为即时
-    // 生效去 SyncSession 打断在跑的 turn。未起的 session 首次 spawn 时自然带上新引导。
+    // refresh_all_instructions is a deliberate no-op today (engine_pool.rs):
+    // the static prompt renders once at engine spawn and the sudo guidance
+    // state is not part of the static segment — it is injected live by the
+    // per-turn reminder (super_permission::turn_reminder), so the toggle takes
+    // effect on the next turn. Keep this call as a hook point: if instructions
+    // hot-refresh is ever restored, the toggle sequence is the right trigger.
     pool.refresh_all_instructions().await;
     // sudo hard-deny rules are added/removed with the toggle state (deny sudo
     // while off / allow while on): recompute and hot-refresh the execpolicy

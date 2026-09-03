@@ -6,8 +6,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-PUBLISHED_HEAD="f853f8f1566c57e6be40d5439a222a932aa79ef5"
-PUBLISHED_COMMITS=37
+PUBLISHED_HEAD="aaae5133bdcac60bbefc141e7030f1022c681f67"
+PUBLISHED_COMMITS=46
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -17,21 +17,21 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 r13 公开四主题基线拓扑 ──"
+bold "── Layer 0: v0.9.5 r14 public four-theme baseline topology ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
   expected_commits="$PUBLISHED_COMMITS"
-  green "  ✓ CodeWhale gitlink 指向 r13 四主题公开基线 $PUBLISHED_HEAD"
+  green "  ✓ CodeWhale gitlink points at the r14 four-theme public baseline $PUBLISHED_HEAD"
 else
   expected_commits=""
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r13 公开 head $PUBLISHED_HEAD"
+  red "  ✗ CodeWhale HEAD is ${actual_head:-<unreadable>}, expected r14 public head $PUBLISHED_HEAD"
   fail=1
 fi
 
 if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null; then
-  green "  ✓ 当前公开 gitlink 继承官方 v0.9.5"
+  green "  ✓ r14 public baseline descends from official v0.9.5"
 else
-  red "  ✗ 当前 gitlink 未继承官方 v0.9.5 $EXPECTED_UPSTREAM"
+  red "  ✗ r14 public baseline does not descend from official v0.9.5 $EXPECTED_UPSTREAM"
   fail=1
 fi
 
@@ -39,7 +39,7 @@ commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev
 if [[ -n "$expected_commits" && "$commit_count" == "$expected_commits" ]]; then
   green "  ✓ v0.9.5 之上 $expected_commits 个登记提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，登记拓扑应为 ${expected_commits:-37}"
+  red "  ✗ ${commit_count:-<unreadable>} commits on top of v0.9.5; valid r14 topology expects ${expected_commits:-46}"
   fail=1
 fi
 
@@ -95,6 +95,13 @@ fingerprints=(
   "T2|File 写入 64 KiB 上限               |CodeWhale/crates/tui/src/tools/file.rs|const WRITE_FILE_MAX_CONTENT_BYTES: usize = 64 * 1024;"
   "T2|写入上限落盘前拒绝回归              |CodeWhale/crates/tui/src/tools/file/tests/tools.rs|async fn forkguard_file_content_caps_reject_before_writing"
   "T2|多行危险命令分段阻断回归            |CodeWhale/crates/tui/src/command_safety.rs|fn forkguard_multiline_still_blocks_destructive_segments"
+  "T2|cmd.exe single-letter / flag skip     |CodeWhale/crates/execpolicy/src/lib.rs|fn is_single_letter_slash_flag"
+  "T2|deny mid-rule wildcard skips tokens   |CodeWhale/crates/execpolicy/src/lib.rs|if rule_tokens[j] == \"*\" {"
+  "T2|deny command word .exe suffix fold    |CodeWhale/crates/execpolicy/src/lib.rs|basename.strip_suffix(\".exe\")"
+  "T2|engine clones share live rulesets     |CodeWhale/crates/execpolicy/src/lib.rs|rulesets: Arc<RwLock<Vec<Ruleset>>>"
+  "T2|File absolute-path rule exact match   |CodeWhale/crates/execpolicy/src/lib.rs|fn absolute_path_rule_matches"
+  "T2|subagent tool calls pass execpolicy   |CodeWhale/crates/tui/src/core/engine.rs|pub(crate) fn exec_shell_ask_rule_decision_for_engine"
+  "T2|subagent execpolicy deny regression   |CodeWhale/crates/tui/src/tools/subagent/tests.rs|async fn forkguard_subagent_execpolicy_deny_matches_main_line"
   "T2|schema 约束 JSON 容器修复           |CodeWhale/crates/tui/src/core/engine/dispatch.rs|pub(super) fn normalize_schema_json_containers("
   "T2|嵌套容器修复保持 primitive 不变     |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_schema_bound_json_container_repair_accepts_nested_payload"
   "T2|容器修复拒绝越限与类型不匹配        |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_schema_bound_json_container_repair_rejects_wrong_or_unbounded_values"

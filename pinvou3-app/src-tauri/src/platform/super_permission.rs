@@ -14,6 +14,25 @@
 //!
 //! 维护：卸载 .deb 时由 `prerm` 删 `/etc/sudoers.d/pinvou3`，避免遗留授权。
 
+/// Process-wide toggle mutex: the full super-permission toggle sequence
+/// (`is_enabled()` disk read → pkexec write/remove of the sudoers file →
+/// engine ruleset rebuild + broadcast) must run as a whole under the lock.
+///
+/// Without serialization, two concurrent toggles interleave the pkexec write
+/// with the sudo-state snapshot, and the later `refresh_permission_rulesets`
+/// may rebuild and broadcast a ruleset from a stale sudo snapshot, leaving
+/// running engines with the wrong sudo face until the next rebuild/restart.
+/// Toggling is a low-frequency user action, so holding the lock across the
+/// slow pkexec call is acceptable; only the toggle sequence holds the lock and
+/// other commands are not blocked.
+///
+/// Coverage boundary: a process-wide lock cannot serialize out-of-process
+/// changes (root shells, a second app instance, `.deb` `prerm` removal).
+/// Those are not defended against — `is_enabled()` re-reads the disk on every
+/// call, and the per-turn reminder plus the next ruleset refresh self-heal to
+/// the real state.
+pub(crate) static TOGGLE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub fn is_enabled() -> bool {
     crate::platform::os::super_permission_is_enabled()
 }
@@ -47,4 +66,47 @@ pub fn enable() -> Result<(), String> {
 
 pub fn disable() -> Result<(), String> {
     crate::platform::os::disable_super_permission()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    /// TOGGLE_LOCK must be truly exclusive: the critical section of concurrent
+    /// toggles (disk read → sudoers write → ruleset broadcast) must never
+    /// overlap. Probe the process-wide lock directly (no pkexec/disk): several
+    /// tasks each enter the critical section under the lock, and the
+    /// in-process counter peak must stay at 1.
+    #[tokio::test]
+    async fn toggle_lock_serializes_concurrent_critical_sections() {
+        let in_critical = Arc::new(AtomicUsize::new(0));
+        let max_concurrent = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let in_critical = Arc::clone(&in_critical);
+            let max_concurrent = Arc::clone(&max_concurrent);
+            handles.push(tokio::spawn(async move {
+                let _guard = TOGGLE_LOCK.lock().await;
+                let observed = in_critical.fetch_add(1, Ordering::SeqCst) + 1;
+                max_concurrent.fetch_max(observed, Ordering::SeqCst);
+                // Deliberate yield: if the lock were broken, other tasks would
+                // slip into the critical section here and the peak would hit 2+.
+                tokio::task::yield_now().await;
+                in_critical.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("toggle lock probe task panicked");
+        }
+        assert_eq!(in_critical.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            max_concurrent.load(Ordering::SeqCst),
+            1,
+            "critical sections overlapped: TOGGLE_LOCK is not mutually exclusive"
+        );
+    }
 }
