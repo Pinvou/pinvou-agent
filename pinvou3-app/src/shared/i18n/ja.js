@@ -457,7 +457,7 @@ const jaBase = {
         sidebarCollapse: 'サイドバーを折りたたむ', sidebarExpand: 'サイドバーを展開',
         skillPrefill: name => `${name} を使ってやりたいこと: `,
         queuedTag: '待機中', queuedCancel: '取り消し', queuedPrioritize: '次に送信', queuedEdit: '待機中のメッセージを編集',
-        queuedSave: '保存', queuedEditCancel: '編集をキャンセル', queuedActionFailed: '操作を完了できませんでした。メッセージは現在の応答に入っている可能性があります。後でもう一度お試しください。', queuedEmpty: 'メッセージを空にはできません',
+        queuedSave: '保存', queuedEditCancel: '編集をキャンセル', queuedActionFailed: '操作を完了できませんでした。メッセージは現在の応答に入っている可能性があります。後でもう一度お試しください。', queuedEmpty: 'メッセージを空にはできません', queuedEditInterrupted: 'キュー内のメッセージが保存前にキューから外れたため、編集内容は反映されませんでした',
         queueMsg: '今すぐ送信', queueMsgTip: '生成中：テキストは可能ならこのターンに注入（不可時はキュー）、添付は常にキュー',
         interruptMsg: '割り込み送信', interruptMsgTip: '現在のAIタスクを中断して即座に送信',
         attachParsing: '解析中…', attachFailed: '失敗', attachProtectedLocation: 'ファイルの場所は保護されています', attachAdd: 'ファイルを添付',

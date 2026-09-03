@@ -2908,6 +2908,119 @@ async function editQueuedDroppedBeforeTimeoutRestoresOriginal() {
   assert.strictEqual(harness.calls.filter(function (call) { return call.cmd === "chat"; }).length, 0);
 }
 
+async function editQueuedSteerUnchangedTextKeepsSteer() {
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const sid = "chat-queue-edit-noop";
+  assert.strictEqual(await bridge.sessions.switchToSession(sid), true);
+  harness.emit("chat:turn_started", { session_id: sid });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-edit-noop-1"; };
+  harness.handlers.withdraw_steer = function () { return "retired"; };
+
+  await bridge.chat.sendMessage("same text");
+  await tick();
+  await tick();
+  const queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
+  assert.strictEqual(await bridge.chat.editQueued(sid, queuedId, "same text"), true);
+
+  const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 1);
+  assert.strictEqual(view.queued[0].steered, true, "a no-op save keeps the live steer transport");
+  assert.strictEqual(view.queued[0].steerId, "steer-edit-noop-1");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "withdraw_steer"; }).length,
+    0,
+    "an unchanged text never withdraws the engine copy"
+  );
+}
+
+async function prioritizeQueuedSteerPromotesVisuallyWithoutWithdrawal() {
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const sid = "chat-queue-prioritize-steer";
+  assert.strictEqual(await bridge.sessions.switchToSession(sid), true);
+  harness.emit("chat:turn_started", { session_id: sid });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-prio-1"; };
+  harness.handlers.ingest_file = function () {
+    return { path: "/managed/local-first.txt", basename: "local-first.txt" };
+  };
+  await bridge.attachments.addAttachmentByPath("local-first.txt");
+  await bridge.chat.sendMessage("local first");
+  await tick();
+  await bridge.chat.sendMessage("steered second");
+  await tick();
+  await tick();
+  let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.deepStrictEqual(
+    Array.from(view.queued, function (item) { return item.text; }),
+    ["local first", "steered second"],
+    "the attachment chip queues locally ahead of the steered chip"
+  );
+  const steeredId = view.queued[1].id;
+
+  assert.strictEqual(await bridge.chat.prioritizeQueued(sid, steeredId), true);
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.deepStrictEqual(
+    Array.from(view.queued, function (item) { return item.text; }),
+    ["steered second", "local first"],
+    "the steered chip moves to the queue front"
+  );
+  assert.strictEqual(view.queued[0].steered, true, "promotion is visual only: the chip stays steered");
+  assert.strictEqual(view.queued[0].steerId, "steer-prio-1");
+  assert.strictEqual(
+    harness.calls.filter(function (call) {
+      return call.cmd === "withdraw_steer" || call.cmd === "chat" || call.cmd === "cancel_generation";
+    }).length,
+    0,
+    "promoting the first steer never touches the transport"
+  );
+}
+
+async function prioritizeQueuedSteerBehindSteerRefuses() {
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const sid = "chat-queue-prioritize-refuse";
+  assert.strictEqual(await bridge.sessions.switchToSession(sid), true);
+  harness.emit("chat:turn_started", { session_id: sid });
+  await tick();
+  let steerSeq = 0;
+  harness.handlers.steer_chat = function () {
+    steerSeq += 1;
+    return "steer-prio-refuse-" + steerSeq;
+  };
+  await bridge.chat.sendMessage("first steer");
+  await tick();
+  await tick();
+  await bridge.chat.sendMessage("second steer");
+  await tick();
+  await tick();
+  let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.deepStrictEqual(
+    Array.from(view.queued, function (item) { return item.text; }),
+    ["first steer", "second steer"]
+  );
+  const secondId = view.queued[1].id;
+
+  assert.strictEqual(
+    await bridge.chat.prioritizeQueued(sid, secondId),
+    false,
+    "a steer cannot leapfrog an earlier engine-side steer"
+  );
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.deepStrictEqual(
+    Array.from(view.queued, function (item) { return item.text; }),
+    ["first steer", "second steer"],
+    "a refused promotion leaves the queue untouched"
+  );
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "withdraw_steer"; }).length,
+    0,
+    "the refusal never withdraws either copy"
+  );
+}
+
 async function interruptQueuedSteeredChipWithdrawsBeforeSending() {
   // ⚡ on a steered chip: withdraw_steer first (prevent a leftover engine
   // copy injecting later as a duplicate), then cancel + chat.
@@ -8477,6 +8590,9 @@ Promise.resolve()
   .then(editQueuedSteerRefusesUncertainWithdrawal)
   .then(editQueuedDroppedBeforeNotPendingRestoresOriginal)
   .then(editQueuedDroppedBeforeTimeoutRestoresOriginal)
+  .then(editQueuedSteerUnchangedTextKeepsSteer)
+  .then(prioritizeQueuedSteerPromotesVisuallyWithoutWithdrawal)
+  .then(prioritizeQueuedSteerBehindSteerRefuses)
   .then(interruptQueuedSteeredChipWithdrawsBeforeSending)
   .then(interruptQueuedFailureRestoresChipToQueue)
   .then(interruptQueuedWhileIdleSendsWithoutCancel)

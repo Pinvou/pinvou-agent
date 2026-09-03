@@ -856,7 +856,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         }
         return '';
       };
-      const queued = (bs && bs.queued) || []; // 排队待发消息（当前 session 生成中时积压）
+      // 排队待发消息（当前 session 生成中时积压）。Same stability contract as
+      // chatItems above: the effect reconciling an interrupted queue edit
+      // depends on this array by reference.
+      const queued = useMemo(() => (bs && bs.queued) || [], [bs]);
       const [queuedEdits, setQueuedEdits] = useState({});
       const [queuedActions, setQueuedActions] = useState({});
       const [queuedActionErrors, setQueuedActionErrors] = useState({});
@@ -878,6 +881,36 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         queuedEditInputRef.current.focus();
         queuedEditInputRef.current.select();
       }, [queuedEditFocusKey]);
+      // The queue drains itself on turn end while an editor may be open: the
+      // item is sent with its pre-edit text, so a modified draft would be
+      // discarded silently. Disclose it once through the shared action-error
+      // notice. A successful save or an explicit cancel removes the entry
+      // while the item is still queued, so neither lands here.
+      useEffect(() => {
+        if (!queuedEditCandidate || !activeSessionId) return;
+        if (queued.some(item => item && item.id === queuedEditCandidate.id)) return;
+        const lostEntry = queuedEditCandidate;
+        const lostSessionId = activeSessionId;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- the queue lives in the external bridge store; when a flushed item takes an open editor with it, the stale entry must be dropped and the lost draft disclosed in the same commit
+        setQueuedEdits(current => {
+          if (!current[lostSessionId] || current[lostSessionId].id !== lostEntry.id) return current;
+          const next = { ...current };
+          delete next[lostSessionId];
+          return next;
+        });
+        if (String(lostEntry.text || '') !== String(lostEntry.initial || '')) {
+          const notice = { queuedId: lostEntry.id, text: t.queuedEditInterrupted };
+          setQueuedActionErrors(current => ({ ...current, [lostSessionId]: notice }));
+          window.setTimeout(() => {
+            setQueuedActionErrors(current => {
+              if (current[lostSessionId] !== notice) return current;
+              const next = { ...current };
+              delete next[lostSessionId];
+              return next;
+            });
+          }, 5000);
+        }
+      }, [queuedEditCandidate, queued, activeSessionId, t]);
       const ctxTokens = (bs && bs.tokens) || null; // {input, max}，chat:usage 每轮更新
       const ctxPct = ctxTokens && ctxTokens.max > 0 ? ctxTokens.input / ctxTokens.max : 0;
       const fmtCtxTok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
@@ -2496,7 +2529,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                         aria-label={t.queuedEdit}
                         onChange={(event) => setQueuedEdits(current => ({
                           ...current,
-                          [activeSessionId]: { id: q.id, text: event.target.value },
+                          [activeSessionId]: { ...current[activeSessionId], text: event.target.value },
                         }))}
                         onKeyDown={(event) => {
                           if (event.key === 'Escape') {
@@ -2553,7 +2586,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                           });
                           setQueuedEdits(current => ({
                             ...current,
-                            [activeSessionId]: { id: q.id, text: String(q.text || '') },
+                            [activeSessionId]: { id: q.id, text: String(q.text || ''), initial: String(q.text || '') },
                           }));
                         }}
                           data-testid={`queued-message-edit-action-${q.id}`}

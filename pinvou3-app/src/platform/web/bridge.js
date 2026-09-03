@@ -5510,6 +5510,8 @@
       item.meta = Object.assign({}, item.meta, { pinvouPayloadText: metaPayloadText });
     }
     notify();
+    // Parity with the desktop bridge: both mutations drain an idle queue.
+    if (!isBusyFor(sid)) flushQueued(sid);
     return true;
   }
 

@@ -1051,7 +1051,7 @@
       // original user text back explicitly; the user can retry the change.
       const withdrawnText = takeWithdrawn(sid, item.steerId);
       runSyncOnSession(sid, function () {
-        addSystemItem("鈿狅笍 " + bt("steerFailed"));
+        addSystemItem("⚠️ " + bt("steerFailed"));
       });
       restoreSteerText(sid, withdrawnText === undefined ? item.text : withdrawnText);
       notify();
@@ -1075,6 +1075,13 @@
     try {
       const initialQueue = steeredQueueFor(sid);
       const initialIndex = queuedItemIndex(initialQueue, queuedId);
+      if (mutation === "edit" && initialIndex >= 0 &&
+          String(nextText == null ? "" : nextText).trim() === initialQueue[initialIndex].text) {
+        // A no-op save must not demote a live steer to a next-turn local
+        // send: the withdrawal below is real and irreversible, so an
+        // unchanged text short-circuits before the transport is touched.
+        return true;
+      }
       if (mutation === "prioritize" && initialIndex >= 0 && initialQueue[initialIndex].steered) {
         // A steer is already ordered in the engine's current-turn inbox. It
         // may move ahead of local-only items in the visual queue without any
