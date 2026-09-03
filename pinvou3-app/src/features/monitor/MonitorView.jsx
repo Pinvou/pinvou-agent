@@ -2,88 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Brain, Clock, Cpu, Database, RotateCcw, Server } from '../../components/icons.jsx';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { bridge } from '../../hooks/useBridge.js';
+import { formatCompactCount } from '../../shared/format-number.js';
+import { useConversationSecondClock } from '../conversation/ConversationTimeline.jsx';
 
 // 界面语言 → BCP 47 locale，用于时钟等本地化格式化
 const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
-
-const ClearStatsHold = ({ _theme, t, onClear }) => { // eslint-disable-line no-unused-vars -- theme kept for the existing props contract
-      const HOLD_MS = 850;
-      const [fillPct, setFillPct] = useState(0);
-      const [phase, setPhase] = useState('idle');  // idle | holding | done
-      const rafRef = useRef(0);
-      const holdStartRef = useRef(0);
-      const committedRef = useRef(false);
-      const activeRef = useRef(false);
-      const resetTimerRef = useRef(0);
-
-      const commit = () => {
-        if (committedRef.current) return;
-        committedRef.current = true;
-        activeRef.current = false;
-        cancelAnimationFrame(rafRef.current);
-        setFillPct(100);
-        setPhase('done');
-        onClear && onClear();
-        resetTimerRef.current = setTimeout(() => {
-          setFillPct(0);
-          setPhase('idle');
-          committedRef.current = false;
-        }, 900);
-      };
-      const tick = (now) => {
-        const p = Math.min((now - holdStartRef.current) / HOLD_MS, 1);
-        setFillPct(p * 100);
-        if (p >= 1) { commit(); return; }
-        rafRef.current = requestAnimationFrame(tick);
-      };
-      const begin = () => {
-        if (activeRef.current || committedRef.current) return;
-        activeRef.current = true;
-        setPhase('holding');
-        holdStartRef.current = performance.now();
-        rafRef.current = requestAnimationFrame(tick);
-      };
-      const cancel = () => {
-        if (!activeRef.current || committedRef.current) return;
-        activeRef.current = false;
-        cancelAnimationFrame(rafRef.current);
-        setPhase('idle');
-        setFillPct(0);
-      };
-      useEffect(() => () => { cancelAnimationFrame(rafRef.current); clearTimeout(resetTimerRef.current); }, []);
-
-      const label = phase === 'done' ? t.clearDone : phase === 'holding' ? t.clearHolding : t.clearHold;
-      const toneClass = phase === 'done'
-        ? 'text-[#1f9d51] border-[#bfe7cc] dark:text-[#93D5A6] dark:border-[#2c5234]'
-        : phase === 'holding'
-          ? 'text-[#dc2f44] border-[#f1c4cb] dark:text-[#F28B82] dark:border-[#7a3b3b]'
-          : 'text-[#5b6473] border-[#e3e7ec] hover:bg-[#fafbfc] dark:text-[#C4C7C5] dark:border-[#3c4043] dark:hover:bg-[#2a2b2d]';
-      return (
-        <button
-          type="button"
-          aria-label={t.clearHold}
-          onMouseDown={(e) => { e.preventDefault(); begin(); }}
-          onMouseUp={cancel}
-          onMouseLeave={cancel}
-          onTouchStart={(e) => { e.preventDefault(); begin(); }}
-          onTouchEnd={(e) => { e.preventDefault(); cancel(); }}
-          onTouchCancel={cancel}
-          onKeyDown={(e) => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); begin(); } }}
-          onKeyUp={(e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); cancel(); } }}
-          onBlur={cancel}
-          className={`relative overflow-hidden flex-shrink-0 inline-flex items-center text-[13px] font-medium px-4 py-2 rounded-[9px] border select-none transition-colors ${toneClass} bg-white dark:bg-[#1a1b1c]`}
-        >
-          <span
-            className="absolute left-0 top-0 bottom-0 z-0 bg-[#fce7ea] dark:bg-[rgba(220,47,68,0.24)]"
-            style={{ width: fillPct + '%', transition: activeRef.current ? 'none' : 'width .22s ease' }} // eslint-disable-line react-hooks/refs -- read activeRef to disable the CSS transition during the long-press animation; rAF already drives repaint, so the read timing is safe
-          ></span>
-          <span className="relative z-[1] inline-flex items-center gap-1.5">
-            <RotateCcw size={15} style={{ animation: phase === 'done' ? 'tsSpinner .5s ease' : 'none' }} />
-            {label}
-          </span>
-        </button>
-      );
-    };
 
     const MONITOR_BRAND_ICONS = {
       qwen: 'brand-icons/qwen.svg',
@@ -110,12 +33,6 @@ const ClearStatsHold = ({ _theme, t, onClear }) => { // eslint-disable-line no-u
       return null;
     };
     const monitorClampPct = (n) => Math.max(0, Math.min(100, Math.round(Number(n) || 0)));
-    const monitorShortNum = (n) => {
-      if (n == null || !Number.isFinite(n)) return '—';
-      if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
-      if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
-      return String(Math.round(n));
-    };
     const monitorTokenPair = (value) => {
       const parts = String(value || '').split('/').map(s => s.trim());
       return { output: parts[0] || '—', input: parts[1] || '—' };
@@ -349,12 +266,6 @@ const ClearStatsHold = ({ _theme, t, onClear }) => { // eslint-disable-line no-u
       const clearRafRef = useRef(0);
       const reduceMotionRef = useRef(window.matchMedia('(prefers-reduced-motion: reduce)').matches);
       useEffect(() => () => cancelAnimationFrame(clearRafRef.current), []);
-      const fmtTokLocal = (n) => {
-        if (n == null) return '—';
-        if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
-        if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
-        return String(Math.round(n));
-      };
       const doClear = useCallback(() => {
         const reallyClear = () => { if (bridge.available && bridge.monitor.clearMonitorStats) bridge.monitor.clearMonitorStats(); };
         const raw = vllmRaw;
@@ -369,7 +280,7 @@ const ClearStatsHold = ({ _theme, t, onClear }) => { // eslint-disable-line no-u
             kv: from.kv == null ? '0%' : (from.kv * k).toFixed(1) + '%',
             ttft: from.ttftS == null ? '0 s' : (from.ttftS * k).toFixed(2) + ' s',
             tps: from.tps == null ? '0 tok/s' : (from.tps * k).toFixed(1) + ' tok/s',
-            tokTotal: fmtTokLocal(Math.round(from.gen * k)) + ' / ' + fmtTokLocal(Math.round(from.prompt * k)),
+            tokTotal: formatCompactCount(Math.round(from.gen * k)) + ' / ' + formatCompactCount(Math.round(from.prompt * k)),
           });
           if (p >= 1) { reallyClear(); setClearOverride(null); return; }
           clearRafRef.current = requestAnimationFrame(step);
@@ -378,7 +289,8 @@ const ClearStatsHold = ({ _theme, t, onClear }) => { // eslint-disable-line no-u
       }, [vllmRaw]);
 
       const [history, setHistory] = useState(cloneMonitorHistory);
-      const [clockNow, setClockNow] = useState(new Date());
+      // 视图挂载期间的 1s 墙钟(无条件走表,与原 setInterval 语义一致);值为 ms,渲染处转 Date。
+      const clockNow = useConversationSecondClock(true);
       const [isModelClearing, setIsModelClearing] = useState(false);
       const modelClearTimerRef = useRef(null);
       useEffect(() => {
@@ -413,10 +325,6 @@ const ClearStatsHold = ({ _theme, t, onClear }) => { // eslint-disable-line no-u
         });
       // eslint-disable-next-line react-hooks/exhaustive-deps -- fmt mirrors the polling object and the sampled values are already in deps; adding fmt would re-sample on every poll object change
       }, [vllmMaxLen, vllmQueue, vllmTtft, vllmTps, vllmKv, clearOverride, updatedAt]);
-      useEffect(() => {
-        const timer = setInterval(() => setClockNow(new Date()), 1000);
-        return () => clearInterval(timer);
-      }, []);
       const handleModelClearStart = () => {
         setIsModelClearing(true);
         if (modelClearTimerRef.current) clearTimeout(modelClearTimerRef.current);
@@ -493,7 +401,7 @@ const ClearStatsHold = ({ _theme, t, onClear }) => { // eslint-disable-line no-u
 
                 <div className="flex items-center gap-1.5 bg-white/60 dark:bg-[#1C1C1E] backdrop-blur-[40px] rounded-full p-1.5 shadow-[0_4px_20px_rgb(0,0,0,0.04)] dark:shadow-[0_18px_46px_rgba(0,0,0,0.5)] ring-1 ring-black/[0.03] dark:ring-white/[0.055]">
                   <div className="flex items-center gap-2 px-4 text-[14px] font-semibold font-mono tracking-wider text-black/70 dark:text-white/70">
-                    <Clock size={16} className="text-black/40 dark:text-white/40" /> {clockNow.toLocaleTimeString(MONITOR_CLOCK_LOCALE[t.langTag] || 'zh-CN', { hour12: false })}
+                    <Clock size={16} className="text-black/40 dark:text-white/40" /> {new Date(clockNow).toLocaleTimeString(MONITOR_CLOCK_LOCALE[t.langTag] || 'zh-CN', { hour12: false })}
                   </div>
                 </div>
               </header>
@@ -652,5 +560,5 @@ const ClearStatsHold = ({ _theme, t, onClear }) => { // eslint-disable-line no-u
     // ==========================================
     // 统一排版原语：卡片 / 行(label 左 + 控件右) / 纵向输入字段 / 分段选择 / 改动操作条
 
-export { ClearStatsHold, MONITOR_BRAND_ICONS, monitorModelIcon, monitorProcessorIcon, monitorClampPct, monitorShortNum, monitorTokenPair, monitorShortProcessorName, MonitorBrandIcon, MonitorCard, MonitorSectionHeader, MonitorComputeHeader, MonitorSegmentedBar, MonitorRing, MonitorSparkline, MonitorMetricCard, getMonitorHistoryStore, cloneMonitorHistory, MonitorActivityBars, MonitorView };
+export { MONITOR_BRAND_ICONS, monitorModelIcon, monitorProcessorIcon, monitorClampPct, monitorTokenPair, monitorShortProcessorName, MonitorBrandIcon, MonitorCard, MonitorSectionHeader, MonitorComputeHeader, MonitorSegmentedBar, MonitorRing, MonitorSparkline, MonitorMetricCard, getMonitorHistoryStore, cloneMonitorHistory, MonitorActivityBars, MonitorView };
 /* eslint-enable sonarjs/cognitive-complexity -- legacy view; tracked separately */
