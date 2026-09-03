@@ -1273,7 +1273,7 @@ export function CodexAcpView({
   // code 会话权限模式全局偏好（{ last_mode, yolo_confirmed }，null=未拉到）：
   // 驱动草稿态/刷新途中的默认 mode 展示，以及首次切 yolo 的一次性确认门。
   const [codePermPrefs, setCodePermPrefs] = useState(null);
-  // 待确认的 yolo 切换请求（{ draft, chipBusy }）；非 null 时渲染确认卡。
+  // 待确认的 yolo 切换请求（{ draft }）；非 null 时渲染确认卡。
   const [pendingYoloSwitch, setPendingYoloSwitch] = useState(null);
   const [yoloConfirmBusy, setYoloConfirmBusy] = useState(false);
   // 知识库集合列表与 embedding 安装态由 ComposerKbSelector 内部经 bridge.knowledge
@@ -1755,21 +1755,21 @@ export function CodexAcpView({
     } catch (err) { showError(err); }
   }
 
-  /// Plan↔Yolo：对齐聊天页语义——切回 Yolo 时若 turn 在跑先取消
-  /// （用代码车道已有的 cancel_generation 显式 sessionId 调用，不经 bridge）。
+  /// Plan↔Yolo 只改变后续 turn 使用的模式。正在运行的 turn 保持提交时捕获
+  /// 的模式并继续流式输出，切换权限配置不应隐式取消用户的回答。
   ///
   /// 首次切 yolo 的一次性确认门（全局记忆，产品已拍板）：未确认先弹卡，
   /// 【确认】调 confirm_code_yolo 写入全局标志后按原路径切换；【取消】留在
   /// 当前 mode。确认是 UI 层语义，后端 exit_plan_to_yolo 不强制门控。
-  async function switchNativeMode(target, { isPlan, busy: chipBusy } = {}) {
+  async function switchNativeMode(target, { isPlan } = {}) {
     if (target === 'yolo' && isPlan) {
       const prefs = await refreshCodePermPrefs();
       if (needsYoloConfirmation(prefs)) {
-        setPendingYoloSwitch({ draft: !activeId, chipBusy: Boolean(chipBusy) });
+        setPendingYoloSwitch({ draft: !activeId });
         return;
       }
     }
-    await performNativeModeSwitch(target, { isPlan, chipBusy });
+    await performNativeModeSwitch(target, { isPlan });
   }
 
   /// 草稿态暂存 mode 选择：本地暂存（新建会话时应用）+ 刷新 code lane 全局
@@ -1782,7 +1782,7 @@ export function CodexAcpView({
   }
 
   /// mode chip 切换的实际执行路径（不含 yolo 确认门）。
-  async function performNativeModeSwitch(target, { isPlan, chipBusy } = {}) {
+  async function performNativeModeSwitch(target, { isPlan } = {}) {
     if (!activeId) {
       stageDraftMode(target);
       return;
@@ -1792,7 +1792,6 @@ export function CodexAcpView({
       if (target === 'plan' && !isPlan) {
         await invoke('set_plan_mode_next', { sessionId: activeId });
       } else if (target === 'yolo' && isPlan) {
-        if (chipBusy) await invoke('cancel_generation', { sessionId: activeId });
         await invoke('exit_plan_to_yolo', { sessionId: activeId });
       }
       await refreshNativeControls(activeId);
@@ -1811,7 +1810,7 @@ export function CodexAcpView({
       if (pending.draft) {
         stageDraftMode('yolo');
       } else {
-        await performNativeModeSwitch('yolo', { isPlan: true, chipBusy: pending.chipBusy });
+        await performNativeModeSwitch('yolo', { isPlan: true });
       }
     } catch (err) {
       showError(err);
