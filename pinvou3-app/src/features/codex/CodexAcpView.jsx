@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -68,6 +68,15 @@ import {
   finalizePreparedSessionCreation,
   resolveNativeModelId,
 } from './native-session-handoff.js';
+import {
+  checkpointRefreshKey,
+  reloadSessionAfterRewind,
+  rewindEntriesByTurnId,
+  rewindNoticeText,
+  rewindUndoAvailable,
+  useSessionCheckpoints,
+} from './checkpoints.js';
+import { RewindChip, RewindConfirmDialog, RewindUndoChip, RewindUndoConfirmDialog } from './RewindChip.jsx';
 import {
   ConversationActivityIndicator,
   ConversationMarkdown,
@@ -1276,12 +1285,57 @@ export function CodexAcpView({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the version counter of the mutable lane object; it must stay in deps to trigger re-projection
     [isNativeAgent, activeNativeLane, activeId, nativeLaneTick],
   );
-  const visibleTurns = isNativeAgent
-    ? (nativeProjection ? nativeProjection.turns : EMPTY_CONVERSATION_TURNS)
-    : projection.turns;
+  const visibleTurns = useMemo(
+    () => (isNativeAgent
+      ? (nativeProjection ? nativeProjection.turns : EMPTY_CONVERSATION_TURNS)
+      : projection.turns),
+    [isNativeAgent, nativeProjection, projection.turns],
+  );
   const busy = isNativeAgent
     ? Boolean(activeNativeLane && activeNativeLane.busy)
     : projection.turns.some(turn => turn.status === 'running');
+  // 「回退到第 N 轮」入口（仅原生代码车道）：checkpoint 列表 + turn 边界对齐。
+  // 回退编排（rewind_to_turn）由 confirmRewind 发起；成功后走既有 loadSession
+  // 重载（磁盘对话已截断、engine 已被后端回收重注水）。refreshKey 含 busy 边沿：
+  // 新 turn 的快照在 turn 开始时由 Rust 写入，发送瞬间的拉取可能拿到旧列表，
+  // busy→idle（turn 完成）重拉后入口变体才收敛（联调 Bug A）。ACP 车道与聊天页
+  // 不渲染入口（设计 §7）。
+  const rewindCheckpoints = useSessionCheckpoints({
+    sessionId: activeId,
+    enabled: isNativeAgent && Boolean(activeId),
+    refreshKey: checkpointRefreshKey({ turnCount: visibleTurns.length, busy }),
+  });
+  const rewindEntries = useMemo(
+    () => (isNativeAgent ? rewindEntriesByTurnId(visibleTurns, rewindCheckpoints.checkpoints) : new Map()),
+    [isNativeAgent, visibleTurns, rewindCheckpoints.checkpoints],
+  );
+  // 待确认的回退目标（{ keepTurns, checkpoint, conversationOnly }）；非 null 时渲染确认弹窗。
+  const [rewindTarget, setRewindTarget] = useState(null);
+  const [rewindError, setRewindError] = useState('');
+  const [rewinding, setRewinding] = useState(false);
+  // 回退/撤销是全局单 flight：in-flight 按 sessionId 记账到 ref（state 只是
+  // UI 镜像）。切会话的复位 effect 只清 UI 标志；旧 promise 的 finally 仅在
+  // ref 仍指向本次调用时才清——否则 A 在途时切 B 发起回退，A settle 的
+  // finally 会把 B 的守卫标志抹掉（评审 M2）。
+  const rewindInFlightRef = useRef(null);
+  const rewindUndoInFlightRef = useRef(null);
+  // 「撤销回退」：入口可见性由 rewindCheckpoints.undoState（rewind_undo_state）
+  // 驱动，null 不渲染。确认弹窗由本地条目副本 rewindUndoEntry 驱动（打开时快照
+  // undoState）——后端可反悔状态会因 refreshKey 边沿/记录消费随时变 null，若
+  // 弹窗直接挂在其上，「撤销已生效但重载失败」的重试窗口会被边沿击穿（弹窗关、
+  // 错误吞、重试通道丢）。reloadFailed 重试期内弹窗与 undoState 生命周期解耦。
+  const rewindUndoState = rewindCheckpoints.undoState;
+  const [rewindUndoEntry, setRewindUndoEntry] = useState(null);
+  const [rewindUndoError, setRewindUndoError] = useState('');
+  const [rewindUndoing, setRewindUndoing] = useState(false);
+  useEffect(() => {
+    // 可反悔状态消失（回退后发了新轮/记录被消费）时收回弹窗；reloadFailed
+    // 重试窗口豁免（弹窗由本地副本驱动，重试只补重载、不再发 undo）。
+    if (!rewindUndoAvailable(rewindUndoState)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot mirror of the undo-state lifecycle; same pattern as the session-switch reset below
+      setRewindUndoEntry(current => (current && current.reloadFailed ? current : null));
+    }
+  }, [rewindUndoState]);
   // Equivalent to [...visibleTurns].reverse().find(status === 'running'): scan backwards for the last
   // running turn, memoized on the turns reference (both turns branches come from memoized projections,
   // and the draft empty state uses the module-level constant array), so no reversed copy is rebuilt per render.
@@ -1375,6 +1429,14 @@ export function CodexAcpView({
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously collapse the subagent panel on session switch; one-shot mirror
     setSubagentPanel(null);
+    setRewindTarget(null);
+    setRewindError('');
+    setRewindUndoEntry(null);
+    setRewindUndoError('');
+    // in-flight 标志一并复位：回退/撤销进行中切会话时，旧 promise 的 UI 写入
+    // 已被 activeIdRef 守卫拦住，标志留着只会把新会话的入口一直禁用。
+    setRewinding(false);
+    setRewindUndoing(false);
   }, [activeId]);
   useEffect(() => {
     if (typeof window === 'undefined' || !isNativeAgent) return;
@@ -1941,6 +2003,159 @@ export function CodexAcpView({
   function rebaseAcpEventSeqTracker(sessionId, timeline) {
     const maxSeq = (timeline || []).reduce((max, event) => Math.max(max, Number(event?.seq) || 0), 0);
     acpEventSeqTrackerRef.current.rebase(sessionId, maxSeq);
+  }
+
+  // 打开回退确认弹窗；有快照的目标懒加载 diff 预览（「将撤销的变更」摘要）。
+  function openRewindDialog(entry) {
+    setRewindError('');
+    setRewindTarget(entry);
+    if (entry.checkpoint) rewindCheckpoints.preview(entry.checkpoint.id);
+  }
+
+  // 确认回退：rewind_to_turn 编排（恢复代码 + 截断对话 + engine 回收重注水，
+  // 含本会话/跨会话忙碌门）。成功后先重载再收口（联调 Bug B）：loadSession 走
+  // 既有路径按磁盘截断后内容重注水，成败都强制 bump tick 兜底重投影；重载
+  // 失败留在弹窗如实上屏（弹窗不在重载前关闭，错误不再被吞进不可见状态）。
+  // 重载失败时回退已在后端生效：刷新 checkpoint/undo 状态让「撤销回退」入口
+  // 出现（用户自救通道），并把目标标记为 reloadFailed——重试只补重载，不会
+  // 对已截断的对话再发一次 rewind_to_turn（那会必败且文案令人困惑）。
+  async function confirmRewind() {
+    const target = rewindTarget;
+    if (!target || !activeId || rewinding) return;
+    // 单 flight（跨操作类型）：本会话/另一会话的回退或撤销任一在途时不静默
+    // 吞点击，如实上屏（评审 M9）；两个 ref 分别记账回退与撤销，后端执行根
+    // flag 对跨类型并发兜底拒绝（评审 finding：本地门也按跨类型检查，注释
+    // 与行为口径一致）。
+    if (rewindInFlightRef.current || rewindUndoInFlightRef.current) {
+      setRewindError(codexCopy.rewindInFlightBusy);
+      return;
+    }
+    const sessionId = activeId;
+    rewindInFlightRef.current = sessionId;
+    setRewinding(true);
+    setRewindError('');
+    try {
+      const result = target.reloadFailed
+        ? null
+        : await invoke('rewind_to_turn', {
+          sessionId,
+          keepTurns: target.keepTurns,
+          conversationOnly: target.conversationOnly,
+        });
+      const { error: reloadError } = await reloadSessionAfterRewind({
+        // reload 前置归属检查（评审 M4）：回退/撤销在途时用户切到其它会话，
+        // loadSession(原会话) 会把 activeIdRef 改回原会话、作废新会话的在途
+        // 加载并冻结其流式输出。已切走则跳过重载——磁盘已是目标状态，切回时
+        // loadSession 自然重注水；notice 补发走 pendingNotice 暂存。
+        reload: () => (activeIdRef.current === sessionId
+          ? loadSession(sessionId)
+          : Promise.resolve(null)),
+        bumpTick: () => setNativeLaneTick(tick => tick + 1),
+      });
+      // 跨会话竞态：await 期间会话被程序化切换（remote control）时，UI 收口
+      // 动作只认原会话；重载/状态刷新已由上面的调用按 sessionId 定向完成。
+      // 已知取舍：若重载失败且暂存了 pendingNotice，此早退（或用户切会话触发
+      // 的 [activeId] 复位）会丢弃补发——回到该会话时时间线按磁盘重注水，仅
+      // 少一条内联提示；undo 侧有 refresh 重查 rewind_undo_state 的自愈兜底，
+      // rewind 的 notice 无等价物（仅写内存 lane，不落盘）。而「重载失败+用户
+      // 取消重试」路径不补发是有意的：彼时屏上仍是截断前的陈旧时间线，补发
+      // 「已回退」反而误导。
+      if (activeIdRef.current !== sessionId) return;
+      if (reloadError) {
+        // 回退已在后端生效：把成功结果随目标暂存（pendingNotice），重试只补
+        // 重载、成功后补发提示——避免整条流走完时间线却没有「已回退」确认项。
+        // 重试再失败时保留既有暂存（result 为 null 的重试路径不得覆盖）。
+        setRewindTarget({
+          ...target,
+          reloadFailed: true,
+          pendingNotice: result
+            ? rewindNoticeText(codexCopy, result, target.keepTurns)
+            : (target.pendingNotice ?? null),
+        });
+        setRewindError(reloadError);
+        rewindCheckpoints.refresh();
+        return;
+      }
+      setRewindTarget(null);
+      const notice = result
+        ? rewindNoticeText(codexCopy, result, target.keepTurns)
+        : target.pendingNotice;
+      if (notice) {
+        appendNativeSystemItem(getNativeLane(sessionId), notice);
+        setNativeLaneTick(tick => tick + 1);
+      }
+      // 入口可用性随新时间线重算（refreshKey 的 turns/busy 变化通常已触发，此处兜底）。
+      rewindCheckpoints.refresh();
+    } catch (err) {
+      setRewindError(String(err && err.message ? err.message : err));
+    } finally {
+      // 仅当 in-flight 记账仍指向本次调用才清除：切会话后旧 promise 的
+      // finally 不得抹掉新会话（或新调用）的守卫标志（评审 M2）。
+      if (rewindInFlightRef.current === sessionId) {
+        rewindInFlightRef.current = null;
+        setRewinding(false);
+      }
+    }
+  }
+
+  // 撤销回退：undo_last_rewind（恢复代码到绑定回滚点（仅对话降级则跳过）+
+  // 对话从备份还原 + engine 重建）；成功后复用 reloadSessionAfterRewind 重载编排
+  // （与回退后同语义：先重载、成败都 bumpTick、成功才关弹窗），失败错误留在弹窗
+  // 上屏。弹窗状态走本地副本 rewindUndoEntry：重载失败时撤销已在后端生效（记录
+  // 已消费，undoState 随后收敛为 null），把 entry 标记 reloadFailed 留在屏上——
+  // 重试只补重载，不会再发一次必败的 undo_last_rewind。
+  async function confirmRewindUndo() {
+    const entry = rewindUndoEntry;
+    if (!entry || !activeId || rewindUndoing) return;
+    // 与 confirmRewind 同款跨类型单 flight：回退/撤销任一在途时如实上屏（评审 M9）。
+    if (rewindUndoInFlightRef.current || rewindInFlightRef.current) {
+      setRewindUndoError(codexCopy.rewindInFlightBusy);
+      return;
+    }
+    const sessionId = activeId;
+    const reloadOnly = Boolean(entry.reloadFailed);
+    rewindUndoInFlightRef.current = sessionId;
+    setRewindUndoing(true);
+    setRewindUndoError('');
+    try {
+      if (!reloadOnly) {
+        await invoke('undo_last_rewind', { sessionId });
+      }
+      const { error: reloadError } = await reloadSessionAfterRewind({
+        // reload 前置归属检查（评审 M4）：回退/撤销在途时用户切到其它会话，
+        // loadSession(原会话) 会把 activeIdRef 改回原会话、作废新会话的在途
+        // 加载并冻结其流式输出。已切走则跳过重载——磁盘已是目标状态，切回时
+        // loadSession 自然重注水；notice 补发走 pendingNotice 暂存。
+        reload: () => (activeIdRef.current === sessionId
+          ? loadSession(sessionId)
+          : Promise.resolve(null)),
+        bumpTick: () => setNativeLaneTick(tick => tick + 1),
+      });
+      // 跨会话竞态：await 期间会话被程序化切换时不再写原会话的 UI 状态。
+      if (activeIdRef.current !== sessionId) return;
+      if (reloadError) {
+        setRewindUndoEntry({ ...entry, reloadFailed: true });
+        setRewindUndoError(reloadError);
+        // 与回退侧对齐：刷新让 undoState 收敛（记录已消费 → null），用户取消
+        // 弹窗后「撤销回退」入口不会以陈旧状态残留。弹窗由本地 entry 驱动，
+        // 不受 undoState 收敛影响（复位 effect 豁免 reloadFailed 条目）。
+        rewindCheckpoints.refresh();
+        return;
+      }
+      setRewindUndoEntry(null);
+      appendNativeSystemItem(getNativeLane(sessionId), codexCopy.rewindUndoDone);
+      setNativeLaneTick(tick => tick + 1);
+      // refresh 连带重查 rewind_undo_state：撤销后不可再反悔，入口随之消失。
+      rewindCheckpoints.refresh();
+    } catch (err) {
+      setRewindUndoError(String(err && err.message ? err.message : err));
+    } finally {
+      // 与 confirmRewind 同款：in-flight 记账仍指向本次调用才清除。
+      if (rewindUndoInFlightRef.current === sessionId) {
+        rewindUndoInFlightRef.current = null;
+        setRewindUndoing(false);
+      }
+    }
   }
 
   // Self-healing for envelope-seq gaps in the web live stream: after the
@@ -3399,52 +3614,63 @@ export function CodexAcpView({
             )}
             {visibleTurns.map(turn => (useUnifiedConversationUi || isNativeAgent)
               ? (
-                  <ConversationTurn
-                    key={turn.id}
-                    turn={turn}
-                    now={now}
-                    copy={t.uiConversation}
-                    pendingByTool={pendingByTool}
-                    onRespond={respond}
-                    responding={responding}
-                    assistantAvatar={(
-                      <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center text-[#1F1F1F] dark:text-[#E3E3E3]">
-                        <AcpAgentLogo agentId={activeAgentId} className="h-5 w-5" title={activeAgentName} />
-                      </div>
+                  <Fragment key={turn.id}>
+                    {isNativeAgent && rewindEntries.has(turn.id) && (
+                      // 原生车道 turn 边界回退入口：turn N+1 前的 chip =「回退到第 N 轮」；
+                      // 无快照的边界为「仅回退对话」变体（rewindEntriesByTurnId 判定）。
+                      <RewindChip
+                        entry={rewindEntries.get(turn.id)}
+                        disabled={busy || rewinding || rewindUndoing}
+                        copy={codexCopy}
+                        onOpen={openRewindDialog}
+                      />
                     )}
-                    renderItem={isNativeAgent
-                      ? (item) => renderNativeItem(item)
-                      : (item) => item.type === 'elicitation'
-                        ? (
-                            <ElicitationCard
-                              elicitation={item.elicitation}
-                              pending={pendingByElicitation[item.elicitation.elicitationId]}
-                              onRespond={respondElicitation}
-                              responding={responding}
-                              copy={codexCopy}
-                              conversationCopy={t.uiConversation}
-                            />
-                          )
+                    <ConversationTurn
+                      turn={turn}
+                      now={now}
+                      copy={t.uiConversation}
+                      pendingByTool={pendingByTool}
+                      onRespond={respond}
+                      responding={responding}
+                      assistantAvatar={(
+                        <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center text-[#1F1F1F] dark:text-[#E3E3E3]">
+                          <AcpAgentLogo agentId={activeAgentId} className="h-5 w-5" title={activeAgentName} />
+                        </div>
+                      )}
+                      renderItem={isNativeAgent
+                        ? (item) => renderNativeItem(item)
+                        : (item) => item.type === 'elicitation'
+                          ? (
+                              <ElicitationCard
+                                elicitation={item.elicitation}
+                                pending={pendingByElicitation[item.elicitation.elicitationId]}
+                                onRespond={respondElicitation}
+                                responding={responding}
+                                copy={codexCopy}
+                                conversationCopy={t.uiConversation}
+                              />
+                            )
+                          : undefined}
+                      renderToolItem={isNativeAgent
+                        ? (item) => item.legacyItem
+                          && !isSearchTool(item.tool)
+                          && !isFetchTool(item.tool)
+                          ? (
+                              <ToolCard
+                                item={{ ...item.legacyItem, sessionId: activeId }}
+                                sessionId={activeId}
+                                theme={theme}
+                                t={t}
+                                variant="timeline"
+                              />
+                            )
+                          : undefined
                         : undefined}
-                    renderToolItem={isNativeAgent
-                      ? (item) => item.legacyItem
-                        && !isSearchTool(item.tool)
-                        && !isFetchTool(item.tool)
-                        ? (
-                            <ToolCard
-                              item={{ ...item.legacyItem, sessionId: activeId }}
-                              sessionId={activeId}
-                              theme={theme}
-                              t={t}
-                              variant="timeline"
-                            />
-                          )
-                        : undefined
-                      : undefined}
-                    agentLabel={activeAgentName}
-                    onOpenExternal={(url) => openAcpExternalUrl(url).catch(showError)}
-                    onOpenResource={isWeb ? undefined : openWorkspaceResource}
-                  />
+                      agentLabel={activeAgentName}
+                      onOpenExternal={(url) => openAcpExternalUrl(url).catch(showError)}
+                      onOpenResource={isWeb ? undefined : openWorkspaceResource}
+                    />
+                  </Fragment>
                 )
               : (
                   <Turn key={turn.id} turn={turn} now={now}
@@ -3459,6 +3685,16 @@ export function CodexAcpView({
                     onOpenExternal={(url) => openAcpExternalUrl(url).catch(showError)}
                     onOpenResource={isWeb ? undefined : openWorkspaceResource} />
                 ))}
+            {isNativeAgent && rewindUndoAvailable(rewindUndoState) && (
+              // 「撤销回退」入口：渲染在时间线末尾（回退成功的内联提示其后），
+              // 与 RewindChip 同门控（仅原生代码车道）；undoState 为 null 即消失。
+              <RewindUndoChip
+                state={rewindUndoState}
+                disabled={busy || rewinding || rewindUndoing}
+                copy={codexCopy}
+                onOpen={(state) => { setRewindUndoError(''); setRewindUndoEntry({ ...state, reloadFailed: false }); }}
+              />
+            )}
           </div>
         </div>
 
@@ -4010,6 +4246,36 @@ export function CodexAcpView({
             busy={yoloConfirmBusy}
             onConfirm={confirmPendingYoloSwitch}
             onCancel={() => setPendingYoloSwitch(null)}
+          />
+        )}
+        {rewindTarget && (
+          // 「回退到第 N 轮」确认弹窗：变更摘要（懒加载 diff）+ 对话截断位置 +
+          // 错误如实上屏；确认后 confirmRewind 走 rewind_to_turn 编排。
+          <RewindConfirmDialog
+            entry={rewindTarget}
+            previewState={rewindTarget.checkpoint
+              ? rewindCheckpoints.previews[rewindTarget.checkpoint.id]
+              : null}
+            error={rewindError}
+            busy={rewinding}
+            theme={theme}
+            copy={codexCopy}
+            onCancel={() => { if (!rewinding) setRewindTarget(null); }}
+            onConfirm={confirmRewind}
+          />
+        )}
+        {rewindUndoEntry && (
+          // 「撤销回退」轻量确认：说明将恢复代码（有绑定回滚点时）与被截掉的
+          // N 轮对话；reloadFailed 时降级为「重试加载」语义。本地副本驱动，
+          // 与 undoState 生命周期解耦（见状态声明处注释）。
+          <RewindUndoConfirmDialog
+            state={rewindUndoEntry}
+            error={rewindUndoError}
+            busy={rewindUndoing}
+            theme={theme}
+            copy={codexCopy}
+            onCancel={() => { if (!rewindUndoing) setRewindUndoEntry(null); }}
+            onConfirm={confirmRewindUndo}
           />
         )}
         {(activeSession || (!isWeb && draftWorkspacePath)) && (

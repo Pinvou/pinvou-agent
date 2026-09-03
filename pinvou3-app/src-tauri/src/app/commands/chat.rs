@@ -291,6 +291,76 @@ pub(crate) async fn chat_with_reservation(
     );
     full = prepared_delegation.content;
     let mode = mode_state.mode;
+    // 原生代码会话每个 turn 开始前对执行根打 checkpoint（影子 git，数据落账本根，
+    // 机制见 features/code_checkpoints）。快照必须先于引擎写文件，因此在 send 前
+    // 同步等待；失败不阻断 turn——如实记日志，该轮只是没有回退入口（设计 §5
+    // 降级语义）。
+    // created_snapshot_id 记录本轮成功登记的快照：发送失败时它是「未成活」
+    // 快照——重试同号 turn 的 first-wins 对齐会锚到失败那次（内容还可能混入两次
+    // 尝试之间的外部改动），发送失败路径按 id 精确作废（见下方 Err 分支；按 id
+    // 也覆盖计数失败导致的 None 序号快照）。
+    let mut created_snapshot_id: Option<String> = None;
+    if store.is_code_session(&sid) {
+        let store_count = store.clone();
+        let sid_count = sid.clone();
+        let checkpoint_ledger = roots.ledger.clone();
+        let checkpoint_execution = roots.execution.clone();
+        let label = display_content.clone();
+        let snapshot = tauri::async_runtime::spawn_blocking(move || {
+            // 执行根体积门（对齐底座 snapshot 机制）：超过 2GB 的目录不做快照——
+            // 全量 add -A 的 IO 与影子仓库存储都不划算，该轮如实没有回退入口
+            // （返回 None 表示主动跳过，与快照失败区分）。
+            if !crate::features::code_checkpoints::execution_root_within_snapshot_budget(
+                &checkpoint_execution,
+                &checkpoint_ledger,
+            ) {
+                return Ok(None);
+            }
+            // turn 序号用 is_user_turn_prompt 同口径计数（tool_result 不计入），
+            // 计数失败（会话加载失败等）登记 None，前端按顺序兜底对齐。会话 JSON
+            // 读取是阻塞 IO，与快照同驻 spawn_blocking。
+            let turn_number = store_count
+                .load(&sid_count)
+                .map(|session| {
+                    crate::features::code_checkpoints::count_user_turns(&session.messages) + 1
+                })
+                .ok();
+            crate::features::code_checkpoints::create_checkpoint(
+                &checkpoint_ledger,
+                &checkpoint_execution,
+                turn_number,
+                crate::features::code_checkpoints::CheckpointKind::Turn,
+                &label,
+            )
+            .map(Some)
+        })
+        .await;
+        match snapshot {
+            Ok(Ok(Some(meta))) => {
+                created_snapshot_id = Some(meta.id);
+            }
+            Ok(Ok(None)) => {
+                log::info!(
+                    "[pinvou3][chat] checkpoint skipped sid={sid}: execution root over snapshot size budget or not fully readable (see earlier checkpoint estimate log)"
+                );
+            }
+            Ok(Err(error)) => {
+                // git alias 冲突（大小写不敏感目录下 Makefile/makefile 共存）会让
+                // 该会话每轮快照都失败、永久没有回退入口——error 级显式上报，
+                // 不静默 warn（评审 M1）。
+                if format!("{error:#}").contains("alias") {
+                    log::error!(
+                        "[pinvou3][chat] checkpoint failed (git alias conflict, session has no rewind entries) sid={sid}: {error:#}"
+                    );
+                } else {
+                    log::warn!("[pinvou3][chat] checkpoint failed sid={sid}: {error:#}")
+                }
+            }
+            Err(error) => {
+                log::warn!("[pinvou3][chat] checkpoint task failed sid={sid}: {error}")
+            }
+        }
+    }
     let send_started_at = std::time::Instant::now();
     crate::features::assistant::timing::start_turn(&sid);
     log::info!(
@@ -347,6 +417,23 @@ pub(crate) async fn chat_with_reservation(
                 "send_error",
                 Some(&format!("{e:#}")),
             );
+            // 发送失败：作废本轮「未成活」快照（按 id 精确删除），让重试的同号
+            // Turn 快照成为 first-wins 对齐锚（清理性质，失败仅记日志）。
+            if let Some(snapshot_id) = created_snapshot_id {
+                let checkpoint_ledger = roots.ledger.clone();
+                let sid_invalidate = sid.clone();
+                let _ = tauri::async_runtime::spawn_blocking(move || {
+                    if let Err(error) = crate::features::code_checkpoints::drop_checkpoint(
+                        &checkpoint_ledger,
+                        &snapshot_id,
+                    ) {
+                        log::warn!(
+                            "[pinvou3][chat] drop unsent-turn checkpoint failed sid={sid_invalidate}: {error:#}"
+                        );
+                    }
+                })
+                .await;
+            }
             log::error!(
                 "[pinvou3][chat] engine send failed sid={} send_elapsed_ms={} total_elapsed_ms={} error={:#}",
                 sid,

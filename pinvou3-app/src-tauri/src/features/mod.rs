@@ -1,6 +1,7 @@
 pub mod assistant;
 pub(crate) mod behavior_telemetry;
 pub(crate) mod browser;
+pub(crate) mod code_checkpoints;
 pub(crate) mod codex_acp;
 pub(crate) mod connectors;
 pub(crate) mod deliverables;

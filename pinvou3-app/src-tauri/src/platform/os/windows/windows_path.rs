@@ -77,6 +77,11 @@ pub fn filesystem_path_identity_key(path: &str) -> String {
     path.replace('\\', "/").to_lowercase()
 }
 
+/// Windows 空设备名（git 等外部工具的「读空配置」入参）。
+pub fn null_device() -> &'static str {
+    "NUL"
+}
+
 pub fn python_command() -> String {
     if let Ok(p) = std::env::var("PINVOU3_PYTHON") {
         if !p.is_empty() && is_valid_python_candidate(Path::new(&p)) {

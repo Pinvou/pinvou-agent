@@ -4,7 +4,8 @@ use std::process::Command;
 
 // Unix 通用 helper 从 posix.rs 继承（Wave 3 去重）。
 pub use super::super::posix::{
-    filesystem_path_identity_key, path_component_eq, platform_compat_path, python_command,
+    filesystem_path_identity_key, null_device, path_component_eq, platform_compat_path,
+    python_command,
 };
 
 pub fn user_home_dir() -> PathBuf {
