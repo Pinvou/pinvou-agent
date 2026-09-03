@@ -32,7 +32,9 @@ const fallbackPlatform = Object.freeze({
   capabilities: DEFAULT_DESKTOP_CAPABILITIES,
 });
 
-export const platform = window.PinvouPlatform || fallbackPlatform;
+// Node 测试环境（node --test 直接 import 依赖本模块的逻辑文件）没有 window，
+// 按桌面兜底（canInvoke 返回 true，与桌面行为一致）。
+export const platform = (typeof window !== 'undefined' && window.PinvouPlatform) || fallbackPlatform;
 export const isWeb = platform.kind === 'web' || platform.isWeb === true;
 
 export function can(capability) {

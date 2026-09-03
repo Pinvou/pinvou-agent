@@ -25,6 +25,7 @@
 //! - `mode_state` —— per-session 模式状态机（mode/plan/persona/skill）
 //! - `injections` —— 一次性注入与 plan-claim 的事务 checkout guard
 //! - `sidecars` —— skill 绑定 / 模型 / 置顶 / 收起 的独立 sidecar 落盘
+//! - `rewind` —— 代码模式回退的对话截断与 `_rewound_turns.json` 备份
 //! - `validators` —— id / workspace / 路径校验与小型 helper
 //!
 //! 子模块通过 `impl SessionStore` 续写方法（Rust 允许同一 struct 的 impl 块
@@ -35,6 +36,7 @@ pub(crate) mod diagnostics;
 mod injections;
 pub(crate) mod mode_state;
 mod retention;
+mod rewind;
 mod scheduled;
 mod sidecars;
 mod store;
@@ -63,6 +65,8 @@ use parking_lot::{Mutex, RwLock};
 pub use self::mode_state::{
     MountedCollection, MountedCollectionsSnapshot, MountedRemoteCollection, SessionModeState,
 };
+/// Re-export the turn-rewind outcome (consumed by the rewind command surface).
+pub use self::rewind::{RewoundTurnsRecord, TruncateToTurnOutcome};
 /// Re-export scheduled-run types so the historical
 /// `crate::features::sessions::X` paths stay stable.
 pub use self::scheduled::{

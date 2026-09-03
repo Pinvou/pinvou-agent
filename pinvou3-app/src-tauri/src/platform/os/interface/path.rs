@@ -28,6 +28,11 @@ pub fn python_command() -> String {
     super::super::platform::python_command()
 }
 
+/// Null device path for external tools (git empty config etc.).
+pub fn null_device() -> &'static str {
+    super::super::platform::null_device()
+}
+
 pub fn configure_onnxruntime_dylib() -> Result<(), String> {
     super::super::platform::configure_onnxruntime_dylib()
 }

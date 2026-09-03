@@ -55,6 +55,8 @@
     "test:marketplace-oauth": "node tests/marketplace_oauth_logic.test.js",
     "test:composer-tools": "node tests/composer_tool_menu_logic.test.js",
     "test:code-permission-state": "node tests/code_permission_state.test.mjs",
+    "test:codex-checkpoints": "node tests/codex_checkpoints_logic.test.mjs",
+    "test:codex-workspace-tree": "node tests/codex_workspace_tree_logic.test.mjs",
     "test:model-reasoning": "node tests/model_reasoning_render.test.mjs",
     "test:codex-acp-macos-runtime": "node tests/codex_acp_macos_runtime_smoke.js",
     "test:codex-acp-windows-runtime": "node tests/codex_acp_windows_runtime_smoke.js",

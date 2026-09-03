@@ -264,6 +264,8 @@ impl SessionStore {
         for id in ids {
             self.notify_session_purged(id);
         }
+        // 回退备份 sidecar 同样随会话清理（best-effort，见其实现注释）。
+        Self::purge_rewound_turns_backups(ids);
     }
 
     pub(crate) fn purge_all_scheduled_side_maps(&self) {
