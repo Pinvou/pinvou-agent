@@ -2971,6 +2971,7 @@ function workspaceDisplayName(path) {
                       </div>
                       {/* 全部/代码 胶囊 + 一键折叠(分组)按钮:位于「任务列表」标题下方 */}
                       <div className="flex items-center justify-between gap-2 px-1">
+                        {/* biome-ignore lint/a11y/useSemanticElements: toggle-button pair in an ARIA group, not form controls; a <fieldset> would need its default styles reset */}
                         <div className="flex items-center gap-0.5" role="group" aria-label={t.sidebarTaskStyle}>
                         <button
                           type="button"
