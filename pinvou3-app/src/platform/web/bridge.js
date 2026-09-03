@@ -4749,6 +4749,49 @@
       ? String(text) + "\n\n" + attachmentLine
       : attachmentLine;
   }
+  function queuedPayloadEnvelope(userText, payloadText, meta) {
+    const user = String(userText || "");
+    const payload = String(payloadText == null ? user : payloadText);
+    if (!user) return { before: payload, after: "" };
+    const requested = meta && meta.pinvouPayloadText
+      ? String(meta.pinvouPayloadText).trim()
+      : "";
+    let index = -1;
+    if (requested) {
+      const requestedIndex = payload.indexOf(requested);
+      let userIndex = -1;
+      if (requested.startsWith(user)) userIndex = 0;
+      else if (requested.endsWith(user)) userIndex = requested.length - user.length;
+      else if (requested.indexOf(user) === requested.lastIndexOf(user)) userIndex = requested.indexOf(user);
+      if (requestedIndex >= 0 && userIndex >= 0) index = requestedIndex + userIndex;
+    } else if (payload === user || payload.endsWith(user)) {
+      index = payload.length - user.length;
+    } else if (payload.indexOf(user) === payload.lastIndexOf(user)) {
+      index = payload.indexOf(user);
+    }
+    if (index < 0) return payload === user ? { before: "", after: "" } : null;
+    return {
+      before: payload.slice(0, index),
+      after: payload.slice(index + user.length),
+    };
+  }
+  function makeQueuedMessage(id, userText, payloadText, displayText, attachments, meta, restrictTools) {
+    return {
+      id,
+      text: userText,
+      payloadText,
+      payloadEnvelope: queuedPayloadEnvelope(userText, payloadText, meta),
+      displayText,
+      attachments,
+      meta,
+      restrictTools,
+    };
+  }
+  function rebuiltQueuedPayload(item, userText) {
+    const envelope = item && item.payloadEnvelope;
+    if (!envelope || typeof envelope.before !== "string" || typeof envelope.after !== "string") return null;
+    return envelope.before + userText + envelope.after;
+  }
   // 桌宠窗口靠全局事件感知回合起止。turn_start 补齐"发送 → 首 token"的空窗
   // (chat:delta 之前引擎在思考,宠物不该干站着);turn_end 只兜 invoke 直接失败
   // 这种不会有 chat:done 的路径。JS emit 是全局广播,宠物窗口 listen 收得到。
@@ -4905,7 +4948,7 @@
       ? formatAttachmentDisplayText(item.text, attachments)
       : item.displayText;
     notify();
-    doSendFor(sid, item.text, displayText, attachments, item.meta || null, !!item.restrictTools, true)
+    doSendFor(sid, item.payloadText == null ? item.text : item.payloadText, displayText, attachments, item.meta || null, !!item.restrictTools, true)
       .catch(function () {
         const retryQueue = sid === state.activeSessionId
           ? state.queued
@@ -4929,14 +4972,9 @@
     const targetQueue = targetBuffer && targetBuffer.queued;
     if (isBusyFor(sid) || (targetQueue && targetQueue.length > 0)) {
       runSyncOnSession(sid, function () {
-        state.queued.push({
-          id: ++itemIdSeq,
-          text: content,
-          displayText: content,
-          attachments: [],
-          meta: meta || null,
-          restrictTools: false,
-        });
+        state.queued.push(makeQueuedMessage(
+          ++itemIdSeq, content, content, content, [], meta || null, false
+        ));
       });
       notify();
       if (!isBusyFor(sid)) flushQueued(sid);
@@ -4951,14 +4989,9 @@
     targetBuffer = getBuffer(sid);
     if (isBusyFor(sid) || (targetBuffer.queued && targetBuffer.queued.length > 0)) {
       runSyncOnSession(sid, function () {
-        state.queued.push({
-          id: ++itemIdSeq,
-          text: content,
-          displayText: content,
-          attachments: [],
-          meta: meta || null,
-          restrictTools: false,
-        });
+        state.queued.push(makeQueuedMessage(
+          ++itemIdSeq, content, content, content, [], meta || null, false
+        ));
       });
       notify();
       if (!isBusyFor(sid)) flushQueued(sid);
@@ -5290,14 +5323,15 @@
       state.activeSkill = consumed.activeSkill;
     }
     function queuePrepared(prepared) {
-      state.queued.push({
-        id: ++itemIdSeq,
-        text: prepared.payloadText,
+      state.queued.push(makeQueuedMessage(
+        ++itemIdSeq,
+        text,
+        prepared.payloadText,
         displayText,
-        attachments: attachmentsPayload,
-        meta: meta || null,
-        restrictTools: prepared.restrictTools,
-      });
+        attachmentsPayload,
+        meta || null,
+        prepared.restrictTools,
+      ));
       state.attachments = state.attachments.filter(function (attachment) {
         return !readyAttachments.includes(attachment);
       });
@@ -5452,8 +5486,15 @@
     if (!item) return false;
     const text = String(nextText == null ? "" : nextText).trim();
     if (!text && !(item.attachments || []).length) return false;
+    const payloadText = rebuiltQueuedPayload(item, text);
+    if (payloadText === null) return false;
     item.text = text;
+    item.payloadText = payloadText;
     item.displayText = formatAttachmentDisplayText(text, item.attachments || []);
+    // biome-ignore lint/suspicious/noPrototypeBuiltins: repo targets ES2021; Object.hasOwn is ES2022
+    if (item.meta && Object.prototype.hasOwnProperty.call(item.meta, "pinvouPayloadText")) {
+      item.meta = Object.assign({}, item.meta, { pinvouPayloadText: payloadText });
+    }
     notify();
     return true;
   }

@@ -2633,6 +2633,62 @@ async function queuedMessageActionsReorderAndEditPlainItems(bridgeKind) {
   );
 }
 
+async function queuedSceneEditRebuildsInternalPayload(bridgeKind) {
+  const harness = createBridgeHarness(Object.create(null), bridgeKind === "web" ? {
+    bridgeKind: "web",
+    webSupportedCommands: [
+      "web_access_chat", "web_access_load_session_chunk", "web_access_cancel_session_download",
+      "web_access_list_sessions", "web_access_list_archived_sessions", "web_access_status",
+    ],
+  } : undefined);
+  const bridge = harness.bridge;
+  const sid = "chat-queued-scene-" + bridgeKind;
+  assert.strictEqual(await bridge.sessions.switchToSession(sid), true);
+  harness.emit("chat:turn_started", { session_id: sid });
+  await tick();
+  if (bridgeKind === "tauri") {
+    harness.handlers.steer_chat = function () { return "steer-scene-edit"; };
+    harness.handlers.withdraw_steer = function () { return "retired"; };
+  }
+
+  const original = "HTML";
+  const internalGuide = "PRIVATE HTML SCENE GUIDE: load a capability before answering";
+  const originalPayload = internalGuide + "\n\nUser requirement:\n" + original;
+  const meta = {
+    pinvouScene: "work:personal-workbench",
+    pinvouPayloadText: originalPayload,
+    marker: "preserved",
+  };
+  assert.strictEqual(await bridge.chat.sendMessage(original, meta), true);
+  await tick();
+  await tick();
+  let view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 1);
+  assert.strictEqual(view.queued[0].text, original, bridgeKind + ": edit value is user text only");
+  assert.ok(!view.queued[0].displayText.includes(internalGuide), bridgeKind + ": private guide is absent from queue UI text");
+  assert.ok(view.queued[0].payloadText.includes(internalGuide), bridgeKind + ": private guide remains in the model payload");
+
+  assert.strictEqual(await bridge.chat.editQueued(sid, view.queued[0].id, "edited scene request"), true);
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued[0].text, "edited scene request");
+  assert.strictEqual(
+    view.queued[0].payloadText,
+    internalGuide + "\n\nUser requirement:\nedited scene request",
+    bridgeKind + ": edit rebuilds the model payload inside its original scene envelope"
+  );
+  assert.strictEqual(view.queued[0].meta.marker, "preserved", bridgeKind + ": unrelated metadata survives editing");
+  assert.strictEqual(view.queued[0].meta.pinvouScene, "work:personal-workbench", bridgeKind + ": scene routing survives editing");
+  assert.strictEqual(view.queued[0].meta.pinvouPayloadText, view.queued[0].payloadText);
+
+  await harness.emit("chat:done", { session_id: sid });
+  await tick();
+  await tick();
+  const command = bridgeKind === "web" ? "web_access_chat" : "chat";
+  const delivery = harness.calls.find(function (call) { return call.cmd === command; });
+  assert.ok(delivery, bridgeKind + ": edited queue item is delivered after the active turn");
+  assert.strictEqual(delivery.args.message, internalGuide + "\n\nUser requirement:\nedited scene request");
+}
+
 async function editQueuedSteerWithdrawsBeforeChangingPayload() {
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
@@ -2701,6 +2757,78 @@ async function editQueuedSteerRefusesUncertainWithdrawal() {
     !view.chatItems.some(function (item) { return String(item.text || "").includes("must not be sent"); }),
     "the rejected edit never reaches the transcript"
   );
+}
+
+async function editQueuedDroppedBeforeNotPendingRestoresOriginal() {
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const sid = "chat-queue-edit-dropped-not-pending";
+  const withdraw = deferred();
+  assert.strictEqual(await bridge.sessions.switchToSession(sid), true);
+  harness.emit("chat:turn_started", { session_id: sid });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-edit-dropped-not-pending"; };
+  harness.handlers.withdraw_steer = function () { return withdraw.promise; };
+
+  await bridge.chat.sendMessage("original before dropped race");
+  await tick();
+  await tick();
+  const queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
+  const editing = bridge.chat.editQueued(sid, queuedId, "edited text must not leak");
+  await tick();
+  await harness.emit("chat:steer_dropped", {
+    session_id: sid,
+    steer_id: "steer-edit-dropped-not-pending",
+  });
+  withdraw.resolve("not_pending");
+  assert.strictEqual(await editing, false);
+  await tick();
+
+  const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 0);
+  assert.strictEqual(view.composerDraft, "original before dropped race", "the original user text is restored exactly once");
+  assert.ok(!view.composerDraft.includes("edited text must not leak"));
+  assert.strictEqual(harness.calls.filter(function (call) { return call.cmd === "chat"; }).length, 0);
+}
+
+async function editQueuedDroppedBeforeTimeoutRestoresOriginal() {
+  const timeouts = [];
+  const harness = createBridgeHarness(null, {
+    setTimeout: function (fn, ms) {
+      timeouts.push({ fn, ms });
+      return timeouts.length;
+    },
+    clearTimeout: function () {},
+  });
+  const bridge = harness.bridge;
+  const sid = "chat-queue-edit-dropped-timeout";
+  assert.strictEqual(await bridge.sessions.switchToSession(sid), true);
+  harness.emit("chat:turn_started", { session_id: sid });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-edit-dropped-timeout"; };
+  harness.handlers.withdraw_steer = function () { return new Promise(function () {}); };
+
+  await bridge.chat.sendMessage("original before timeout race");
+  await tick();
+  await tick();
+  const queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
+  const editing = bridge.chat.editQueued(sid, queuedId, "timed out edit must not leak");
+  await tick();
+  await harness.emit("chat:steer_dropped", {
+    session_id: sid,
+    steer_id: "steer-edit-dropped-timeout",
+  });
+  const withdrawTimers = timeouts.filter(function (timer) { return timer.ms === 25000; });
+  assert.ok(withdrawTimers.length > 0, "queue mutation arms the bounded withdrawal timeout");
+  withdrawTimers[withdrawTimers.length - 1].fn();
+  assert.strictEqual(await editing, false);
+  await tick();
+
+  const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 0);
+  assert.strictEqual(view.composerDraft, "original before timeout race", "timeout reconciliation restores once");
+  assert.ok(!view.composerDraft.includes("timed out edit must not leak"));
+  assert.strictEqual(harness.calls.filter(function (call) { return call.cmd === "chat"; }).length, 0);
 }
 
 async function interruptQueuedSteeredChipWithdrawsBeforeSending() {
@@ -8265,8 +8393,12 @@ Promise.resolve()
   .then(attachmentQueuedChipCancelNeverTouchesEngine)
   .then(function () { return queuedMessageActionsReorderAndEditPlainItems("tauri"); })
   .then(function () { return queuedMessageActionsReorderAndEditPlainItems("web"); })
+  .then(function () { return queuedSceneEditRebuildsInternalPayload("tauri"); })
+  .then(function () { return queuedSceneEditRebuildsInternalPayload("web"); })
   .then(editQueuedSteerWithdrawsBeforeChangingPayload)
   .then(editQueuedSteerRefusesUncertainWithdrawal)
+  .then(editQueuedDroppedBeforeNotPendingRestoresOriginal)
+  .then(editQueuedDroppedBeforeTimeoutRestoresOriginal)
   .then(interruptQueuedSteeredChipWithdrawsBeforeSending)
   .then(interruptQueuedFailureRestoresChipToQueue)
   .then(interruptQueuedWhileIdleSendsWithoutCancel)

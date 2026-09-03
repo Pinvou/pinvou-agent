@@ -60,9 +60,6 @@ const CHAT_PANEL_LOADERS = Object.freeze({
   artifacts: () => import('../artifacts/ArtifactsPanel.jsx'),
   subagent: () => import('../multiagent/SubagentTranscriptPanel.jsx'),
 });
-const EMPTY_QUEUED_EDIT = /** @type {{ sessionId: string|null, id: number|string|null, text: string }} */ ({ sessionId: null, id: null, text: '' });
-const EMPTY_QUEUED_ACTION = /** @type {{ sessionId: string|null, id: number|string|null }} */ ({ sessionId: null, id: null });
-const EMPTY_QUEUED_ACTION_ERROR = /** @type {{ sessionId: string|null, queuedId: number|string|null, text: string }} */ ({ sessionId: null, queuedId: null, text: '' });
 const LazyArtifactsPanel = React.lazy(() => CHAT_PANEL_LOADERS.artifacts().then((m) => ({ default: m.ArtifactsPanel })));
 const LazySubagentTranscriptPanel = React.lazy(() => CHAT_PANEL_LOADERS.subagent().then((m) => ({ default: m.SubagentTranscriptPanel })));
 const prefetchChatPanel = (key) => {
@@ -860,19 +857,27 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         return '';
       };
       const queued = (bs && bs.queued) || []; // 排队待发消息（当前 session 生成中时积压）
-      const [queuedEditState, setQueuedEdit] = useState(EMPTY_QUEUED_EDIT);
-      const [queuedAction, setQueuedAction] = useState(EMPTY_QUEUED_ACTION);
-      const [queuedActionErrorState, setQueuedActionError] = useState(EMPTY_QUEUED_ACTION_ERROR);
+      const [queuedEdits, setQueuedEdits] = useState({});
+      const [queuedActions, setQueuedActions] = useState({});
+      const [queuedActionErrors, setQueuedActionErrors] = useState({});
+      const queuedEditInputRef = useRef(null);
       // ChatView survives session switches. Key transient queue UI state by
       // session instead of clearing it from an effect: a slow withdrawal in
       // session A must not disable or surface an error in newly active B.
-      const queuedEdit = queuedEditState.id != null && queuedEditState.sessionId === activeSessionId
-        ? queuedEditState
+      const queuedEditCandidate = activeSessionId ? queuedEdits[activeSessionId] || null : null;
+      const queuedEdit = queuedEditCandidate && queued.some(item => item && item.id === queuedEditCandidate.id)
+        ? queuedEditCandidate
         : null;
-      const queuedActionBusy = !!(queuedAction.id != null && queuedAction.sessionId === activeSessionId);
-      const queuedActionError = queuedActionErrorState.text && queuedActionErrorState.sessionId === activeSessionId
-        ? queuedActionErrorState.text
-        : '';
+      const queuedAction = activeSessionId ? queuedActions[activeSessionId] || null : null;
+      const queuedActionBusy = !!(queuedAction && queuedAction.id != null);
+      const queuedActionErrorState = activeSessionId ? queuedActionErrors[activeSessionId] || null : null;
+      const queuedActionError = queuedActionErrorState ? queuedActionErrorState.text : '';
+      const queuedEditFocusKey = queuedEdit ? `${activeSessionId}:${queuedEdit.id}` : '';
+      useLayoutEffect(() => {
+        if (!queuedEditFocusKey || !queuedEditInputRef.current) return;
+        queuedEditInputRef.current.focus();
+        queuedEditInputRef.current.select();
+      }, [queuedEditFocusKey]);
       const ctxTokens = (bs && bs.tokens) || null; // {input, max}，chat:usage 每轮更新
       const ctxPct = ctxTokens && ctxTokens.max > 0 ? ctxTokens.input / ctxTokens.max : 0;
       const fmtCtxTok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
@@ -1931,18 +1936,31 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         await bridge.chat.interruptAndSendQueued(activeSessionId, queuedId);
       }
 
-      /** @param {number|string} queuedId @param {() => boolean|Promise<boolean>} action */
+      /**
+       * @param {number|string} queuedId Queue item identifier.
+       * @param {() => boolean|Promise<boolean>} action Session-scoped bridge operation.
+       */
       async function runQueuedAction(queuedId, action) {
         if (isMultiAgentReadOnly || queuedActionBusy) return false;
         const actionSessionId = activeSessionId;
-        setQueuedActionError(EMPTY_QUEUED_ACTION_ERROR);
-        setQueuedAction({ sessionId: actionSessionId, id: queuedId });
-        /** @param {string} text */
+        if (!actionSessionId) return false;
+        setQueuedActionErrors(current => {
+          const next = { ...current };
+          delete next[actionSessionId];
+          return next;
+        });
+        setQueuedActions(current => ({ ...current, [actionSessionId]: { id: queuedId } }));
+        /** @param {string} text Failure message to display. */
         const showFailure = (text) => {
-          const notice = { sessionId: actionSessionId, queuedId, text };
-          setQueuedActionError(notice);
+          const notice = { queuedId, text };
+          setQueuedActionErrors(current => ({ ...current, [actionSessionId]: notice }));
           window.setTimeout(() => {
-            setQueuedActionError(current => (current === notice ? EMPTY_QUEUED_ACTION_ERROR : current));
+            setQueuedActionErrors(current => {
+              if (current[actionSessionId] !== notice) return current;
+              const next = { ...current };
+              delete next[actionSessionId];
+              return next;
+            });
           }, 5000);
         };
         try {
@@ -1954,28 +1972,37 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           showFailure(t.queuedActionFailed);
           return false;
         } finally {
-          setQueuedAction(current => (
-            current && current.sessionId === actionSessionId && current.id === queuedId ? EMPTY_QUEUED_ACTION : current
-          ));
+          setQueuedActions(current => {
+            if (!current[actionSessionId] || current[actionSessionId].id !== queuedId) return current;
+            const next = { ...current };
+            delete next[actionSessionId];
+            return next;
+          });
         }
       }
 
-      /** @param {number|string} queuedId */
+      /** @param {number|string} queuedId Queue item identifier. */
       function handlePrioritizeQueued(queuedId) {
         if (!bridge.chat || typeof bridge.chat.prioritizeQueued !== 'function') return;
         void runQueuedAction(queuedId, () => bridge.chat.prioritizeQueued(activeSessionId, queuedId));
       }
 
-      /** @param {any} item */
+      /** @param {{id: number|string, attachments?: unknown[]}} item Queue item being edited. */
       async function handleSaveQueuedEdit(item) {
         if (!queuedEdit || queuedEdit.id !== item.id) return;
-        const editSessionId = queuedEdit.sessionId;
+        const editSessionId = activeSessionId;
+        if (!editSessionId) return;
         const nextText = String(queuedEdit.text || '').trim();
         if (!nextText && !(item.attachments || []).length) {
-          const notice = { sessionId: activeSessionId, queuedId: item.id, text: t.queuedEmpty };
-          setQueuedActionError(notice);
+          const notice = { queuedId: item.id, text: t.queuedEmpty };
+          setQueuedActionErrors(current => ({ ...current, [editSessionId]: notice }));
           window.setTimeout(() => {
-            setQueuedActionError(current => (current === notice ? EMPTY_QUEUED_ACTION_ERROR : current));
+            setQueuedActionErrors(current => {
+              if (current[editSessionId] !== notice) return current;
+              const next = { ...current };
+              delete next[editSessionId];
+              return next;
+            });
           }, 5000);
           return;
         }
@@ -1984,9 +2011,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           bridge.chat.editQueued(editSessionId, item.id, nextText)
         ));
         if (completed) {
-          setQueuedEdit(current => (
-            current && current.sessionId === editSessionId && current.id === item.id ? EMPTY_QUEUED_EDIT : current
-          ));
+          setQueuedEdits(current => {
+            if (!current[editSessionId] || current[editSessionId].id !== item.id) return current;
+            const next = { ...current };
+            delete next[editSessionId];
+            return next;
+          });
         }
       }
 
@@ -2460,13 +2490,23 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                     {queuedEdit && queuedEdit.id === q.id ? (
                       <textarea
                         data-testid={`queued-message-edit-${q.id}`}
+                        ref={queuedEditInputRef}
                         value={queuedEdit.text}
                         rows={2}
-                        autoFocus
-                        onChange={(event) => setQueuedEdit({ sessionId: activeSessionId, id: q.id, text: event.target.value })}
+                        aria-label={t.queuedEdit}
+                        onChange={(event) => setQueuedEdits(current => ({
+                          ...current,
+                          [activeSessionId]: { id: q.id, text: event.target.value },
+                        }))}
                         onKeyDown={(event) => {
-                          if (event.key === 'Escape') setQueuedEdit(EMPTY_QUEUED_EDIT);
-                          if (event.key === 'Enter' && !event.shiftKey && !isImeComposing(/** @type {any} */ (event))) {
+                          if (event.key === 'Escape') {
+                            setQueuedEdits(current => {
+                              const next = { ...current };
+                              delete next[activeSessionId];
+                              return next;
+                            });
+                          }
+                          if (event.key === 'Enter' && !event.shiftKey && !isImeComposing(event)) {
                             event.preventDefault();
                             void handleSaveQueuedEdit(q);
                           }
@@ -2485,7 +2525,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                           className="w-6 h-6 shrink-0 rounded-full flex items-center justify-center text-emerald-600 hover:bg-emerald-500/10 disabled:opacity-40 dark:text-emerald-400">
                           <Check size={14} />
                         </button>
-                        <button type="button" onClick={() => setQueuedEdit(EMPTY_QUEUED_EDIT)}
+                        <button type="button" onClick={() => setQueuedEdits(current => {
+                          const next = { ...current };
+                          delete next[activeSessionId];
+                          return next;
+                        })}
                           disabled={queuedActionBusy}
                           aria-label={t.queuedEditCancel} title={t.queuedEditCancel}
                           className="w-6 h-6 shrink-0 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-black/5 disabled:opacity-40 dark:text-[#C4C7C5] dark:hover:bg-white/10">
@@ -2501,7 +2545,17 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                           className="w-6 h-6 shrink-0 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-black/5 disabled:opacity-40 dark:text-[#C4C7C5] dark:hover:bg-white/10">
                           <PinIcon size={14} />
                         </button>
-                        <button type="button" onClick={() => { setQueuedActionError(EMPTY_QUEUED_ACTION_ERROR); setQueuedEdit({ sessionId: activeSessionId, id: q.id, text: String(q.text || '') }); }}
+                        <button type="button" onClick={() => {
+                          setQueuedActionErrors(current => {
+                            const next = { ...current };
+                            delete next[activeSessionId];
+                            return next;
+                          });
+                          setQueuedEdits(current => ({
+                            ...current,
+                            [activeSessionId]: { id: q.id, text: String(q.text || '') },
+                          }));
+                        }}
                           data-testid={`queued-message-edit-action-${q.id}`}
                           disabled={queuedActionBusy || !!queuedEdit || isMultiAgentReadOnly}
                           aria-label={t.queuedEdit} title={t.queuedEdit}
