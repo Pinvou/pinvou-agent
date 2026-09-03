@@ -65,4 +65,18 @@ function formatSessionDate(ts, language) {
         : cachedFormatter(L.locale, 'ymd', { year: 'numeric', month: 'short', day: 'numeric' }).format(date);
     }
 
-export { formatSessionDate, localDateKey, formatDateGroupLabel };
+    // 绝对本地日期 / 日期时间（YYYY-MM-DD / YYYY-MM-DD HH:mm）。此前
+    // artifacts / scheduled / knowledge 各自内联 padStart 拼装同型串，收敛到此处。
+    // missing 用于空值 / 非法时间戳占位（各视图原本分别返回 '' / '—' / 文案）。
+    function formatLocalDate(ts, missing = '') {
+      const key = localDateKey(ts);
+      return key === 'unknown' ? missing : key;
+    }
+    function formatLocalDateTime(ts, missing = '') {
+      const key = localDateKey(ts);
+      if (key === 'unknown') return missing;
+      const d = new Date(ts);
+      return `${key} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    }
+
+export { formatSessionDate, localDateKey, formatDateGroupLabel, formatLocalDate, formatLocalDateTime };

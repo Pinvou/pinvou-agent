@@ -62,7 +62,16 @@ function useAnchoredPosition(open, triggerRef, active) {
 // 点击弹层外部永远落不到关闭层上。改为 document 级捕获阶段 pointerdown 检测：
 // 命中面板或触发按钮（insideRefs）时忽略，否则关闭。触发按钮必须传入，否则
 // 弹层打开时再点触发按钮会先被外点关闭、随后 toggle 又把它重新打开。
-function useOutsidePointerClose(open, onClose, insideRefs) {
+//
+// opts 支持迁移此前各视图手写的同型监听组（不传时保持原行为）：
+//   escape               —— 同时监听 Escape 关闭（默认 document 冒泡）
+//   escapeOnWindow       —— Escape 改挂在 window 上（部分历史站点在 window 监听）
+//   escapeCapture        —— Escape 用捕获阶段（右键菜单族需要先于菜单项快捷键）
+//   preventEscapeDefault —— Escape 时 preventDefault（阻止滚动等默认行为）
+//   viewportClose        —— window resize / 任意滚动（捕获）即关闭（fixed 定位
+//                           菜单的锚点坐标会随视口变化失效）
+function useOutsidePointerClose(open, onClose, insideRefs, opts = {}) {
+  const { escape: escapeClose = false, escapeOnWindow = false, escapeCapture = false, preventEscapeDefault = false, viewportClose = false } = opts;
   const onCloseRef = useRef(onClose);
   const insideRefsRef = useRef(insideRefs);
   // latest-ref sync: write back in an effect, not during render, to avoid
@@ -80,8 +89,29 @@ function useOutsidePointerClose(open, onClose, insideRefs) {
       if (!inside) onCloseRef.current();
     };
     document.addEventListener('pointerdown', handlePointerDown, true);
-    return () => document.removeEventListener('pointerdown', handlePointerDown, true);
-  }, [open]);
+    const escapeTarget = escapeOnWindow ? window : document;
+    const handleEscape = escapeClose
+      ? (event) => {
+        if (event.key !== 'Escape') return;
+        if (preventEscapeDefault) event.preventDefault();
+        onCloseRef.current();
+      }
+      : null;
+    if (handleEscape) escapeTarget.addEventListener('keydown', handleEscape, escapeCapture);
+    const handleViewport = viewportClose ? () => onCloseRef.current() : null;
+    if (handleViewport) {
+      window.addEventListener('resize', handleViewport);
+      window.addEventListener('scroll', handleViewport, true);
+    }
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true);
+      if (handleEscape) escapeTarget.removeEventListener('keydown', handleEscape, escapeCapture);
+      if (handleViewport) {
+        window.removeEventListener('resize', handleViewport);
+        window.removeEventListener('scroll', handleViewport, true);
+      }
+    };
+  }, [open, escapeClose, escapeOnWindow, escapeCapture, preventEscapeDefault, viewportClose]);
 }
 
 // composer 下拉外壳。桌面端保持原来的就地 absolute 下拉（外观行为不变）；移动 WebUI
