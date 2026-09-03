@@ -80,10 +80,12 @@ assert.match(
   /function abandonPreparedAttachments\(\)[\s\S]*?discardManagedAttachment\(attachment\.result\)/,
   'switching sessions during draft adoption must release attachments already moved into the old session',
 );
-assert.match(
-  tauriChatBridgeSource,
-  /if \(state\.activeSessionId !== sid\) \{\s*abandonPreparedAttachments\(\);\s*return;/,
-  'an attachment send interrupted by navigation must not leave a stale chip for the next session',
+assert.equal(
+  (tauriChatBridgeSource.match(
+    /if \(state\.activeSessionId !== sid\) \{\s*abandonPreparedAttachments\(\);\s*(?:\/\/[^\n]*\n\s*)*restoreSteerText\(sid, text\);\s*return "restored";/g,
+  ) || []).length,
+  4,
+  'every navigation-interrupted send branch must release attachments and return the draft to its own session (#406), leaving no stale chip for the next session',
 );
 assert.match(desktopUploadSource, /workspace\.join\("attachments"\)/);
 assert.match(desktopUploadSource, /draft_attachment_workspace/);

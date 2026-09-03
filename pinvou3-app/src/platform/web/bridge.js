@@ -5203,18 +5203,26 @@
     runFirstTurnSubmission(submission);
   }
 
+  // Return protocol (issue #406; mirrors the tauri bridge's sendMessage):
+  // - true         dispatched: sent or queued for delivery.
+  // - "restored"   nothing dispatched, but the text is already back in the
+  //                composer (bridge-side restore) — the caller must not
+  //                restore again, it would duplicate the draft.
+  // - false        nothing dispatched and the text was NOT restored
+  //                (notice-only early returns / admission rejected) — the
+  //                caller owns putting the draft back.
   async function sendMessage(text, meta) {
     text = (text || "").trim();
     const readyAttachments = state.attachments.filter(function (a) { return a.status === "ready" && a.result; });
-    if (!text && readyAttachments.length === 0) return;
+    if (!text && readyAttachments.length === 0) return false;
     // 还有解析中/上传中的附件 → 等
     if (state.attachments.some(function (a) { return a.status === "parsing"; })) {
       addSystemItem(bt("attachStillParsing"));
-      return;
+      return false;
     }
     if (state.attachments.some(function (a) { return a.status === "uploading"; })) {
       addSystemItem(bt("attachStillUploading"));
-      return;
+      return false;
     }
 
     const displayText = formatAttachmentDisplayText(text, readyAttachments);
@@ -5224,9 +5232,9 @@
       const existingFirstTurn = state.chatItems.some(function (item) {
         return item && item.type === "user" && !!item.deliveryState;
       });
-      if (existingFirstTurn) return;
+      if (existingFirstTurn) return false;
       submitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta);
-      return;
+      return true;
     }
 
     if (!state.activeSessionId) {
@@ -5241,7 +5249,10 @@
       // the next message during the await.
       if (!materialized) {
         prefillComposer(text, true);
-        return;
+        // The prefill IS the restore; "restored" stops the caller from doing
+        // it a second time (the prefill lands asynchronously and would then
+        // append a duplicate).
+        return "restored";
       }
     }
     const sid = state.activeSessionId;
@@ -5299,25 +5310,35 @@
       const queuedPreparation = consumeUiTurnState();
       queuePrepared(queuedPreparation);
       if (!isBusyFor(sid)) flushQueued(sid);
-      return;
+      return true;
     }
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
         !(await reconcileRemoteTurn(sid))) {
-      if (state.activeSessionId !== sid) return;
+      if (state.activeSessionId !== sid) {
+        // The user navigated away during the hydrate: the text goes back to
+        // the session it was typed in (buffer draft), never into the session
+        // now on screen — "restored" keeps the caller from prefilling it
+        // there (issue #406).
+        restoreComposerText(sid, text);
+        return "restored";
+      }
       recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
         operation: "send",
       }, authoritySyncBufferSnapshot(sid, activeTurnBuffer)));
       addAuthoritySyncNotice(bt("turnSyncRetry"));
-      return;
+      return false;
     }
     // The authoritative hydrate above is asynchronous. Never let an input that
     // originated in Session A drift into Session B if the user navigated away.
-    if (state.activeSessionId !== sid) return;
+    if (state.activeSessionId !== sid) {
+      restoreComposerText(sid, text);
+      return "restored";
+    }
     if (isBusyFor(sid) || state.queued.length > 0) {
       const racedQueuePreparation = consumeUiTurnState();
       queuePrepared(racedQueuePreparation);
       if (!isBusyFor(sid)) flushQueued(sid);
-      return;
+      return true;
     }
 
     const preparation = consumeUiTurnState();
@@ -5335,10 +5356,15 @@
         return !readyAttachments.includes(attachment);
       });
       notify();
-    } else {
-      restoreUiTurnState(preparation.snapshot);
-      notify();
+      return true;
     }
+    // Admission rejected (notice already surfaced by doSendFor): nothing was
+    // dispatched, so the cleared composer draft is the caller's to restore
+    // (issue #406 — it used to resolve undefined here and the draft was
+    // silently lost).
+    restoreUiTurnState(preparation.snapshot);
+    notify();
+    return false;
   }
   function getComposerDraft() {
     return String(state.composerDraft || "");
@@ -5360,6 +5386,30 @@
       append: !!append,
     };
     notify();
+  }
+  // Session-scoped composer text restore for sends abandoned by a session
+  // switch mid-send (issue #406; mirrors the tauri bridge's restoreSteerText).
+  // A bare setComposerDraft is invisible (the composer is React-local state
+  // that only re-reads the store on [activeSessionId, draftEpoch]). Active
+  // session: append at the store level with a "\n" separator and bump
+  // draftEpoch so the draft-restore effect re-reads the accumulated draft.
+  // Background session: write the session buffer only — setComposerDraft
+  // targets the active working set and would leak background text into the
+  // active draft.
+  function restoreComposerText(sid, text) {
+    const value = String(text || "");
+    if (!sid || !value) return;
+    if (sid === state.activeSessionId) {
+      const current = String(state.composerDraft || "");
+      setComposerDraft(current ? current + "\n" + value : value);
+      state.draftEpoch = (state.draftEpoch || 0) + 1;
+      notify();
+      return;
+    }
+    const buffer = sessionStates[sid];
+    if (!buffer) return;
+    const current = String(buffer.composerDraft || "");
+    buffer.composerDraft = current ? current + "\n" + value : value;
   }
   // Undo one queued message (the ✕ on its chip). Attachment handles carried
   // by the queued item are released in lockstep, matching the discard
