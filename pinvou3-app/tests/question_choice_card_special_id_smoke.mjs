@@ -52,7 +52,9 @@ try {
     appType: 'mpa',
     logLevel: 'error',
     plugins: [react()],
-    server: { host: '127.0.0.1', port: 0, strictPort: false },
+    // One-shot smoke page: file watching is never used and only ENOSPC-flakes
+    // server startup on hosts with low inotify limits.
+    server: { host: '127.0.0.1', port: 0, strictPort: false, watch: null },
   });
   await vite.listen();
   const address = vite.httpServer.address();
