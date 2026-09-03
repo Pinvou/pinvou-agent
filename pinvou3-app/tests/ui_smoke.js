@@ -1666,6 +1666,61 @@ async function expand(page) {
       && !document.querySelector('[data-testid="sidebar-primary-nav-expand"]'));
   rec('①a-6 HomeModeSwitcher 切回工作模式退出 code 模式', exitedCodeMode, String(exitedCodeMode));
 
+  // 全部/代码胶囊:三态默认(未选择时 storage 为空且普通模式按「全部」渲染)、
+  // 点击即持久化并切换列表形态;一键折叠按钮聚合当前可见分组的真实状态,
+  // 标签随「全部展开↔存在折叠」翻转。结束前清掉 storage,不污染后续用例。
+  await expand(page); await sleep(300);
+  const sidebarPillState = await page.evaluate(async () => {
+    const settle = () => new Promise(resolve => { setTimeout(resolve, 150); });
+    const inSidebar = (node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.left < 330;
+    };
+    const pillAll = [...document.querySelectorAll('[data-testid="sidebar-task-pill-all"]')].find(inSidebar);
+    const pillCode = [...document.querySelectorAll('[data-testid="sidebar-task-pill-code"]')].find(inSidebar);
+    if (!pillAll || !pillCode) return { found: false };
+    const pressed = (node) => node.getAttribute('aria-pressed') === 'true';
+    const todayLabelVisible = () => [...document.querySelectorAll('span')]
+      .some(node => /^今天 \(\d+\)$/.test((node.textContent || '').trim()) && inSidebar(node));
+    const collapseLabel = () =>
+      document.querySelector('[data-testid="sidebar-collapse-all-groups"]')?.getAttribute('aria-label') || '';
+    const result = {
+      found: true,
+      freshStoredAbsent: localStorage.getItem('pinvou_sidebar_code_style') === null,
+      freshAllPressed: pressed(pillAll) && !pressed(pillCode),
+      freshTodayShown: todayLabelVisible(),
+    };
+    pillCode.click(); await settle();
+    result.codeStored = localStorage.getItem('pinvou_sidebar_code_style') === 'code';
+    result.codePressed = pressed(pillCode) && !pressed(pillAll);
+    result.codeTodayHidden = !todayLabelVisible();
+    pillAll.click(); await settle();
+    result.allStored = localStorage.getItem('pinvou_sidebar_code_style') === 'normal';
+    result.allPressed = pressed(pillAll) && !pressed(pillCode);
+    result.allTodayShown = todayLabelVisible();
+    const before = collapseLabel();
+    const collapseButton = document.querySelector('[data-testid="sidebar-collapse-all-groups"]');
+    result.allCollapseVisible = !!collapseButton && !!before;
+    let labelFlips = false;
+    if (collapseButton) {
+      collapseButton.click(); await settle();
+      const mid = collapseLabel();
+      collapseButton.click(); await settle();
+      const after = collapseLabel();
+      labelFlips = !!before && !!mid && mid !== before && after === before;
+    }
+    result.collapseLabelFlips = labelFlips;
+    localStorage.removeItem('pinvou_sidebar_code_style');
+    return result;
+  });
+  rec('①a-7 任务列表胶囊三态默认/持久化与一键折叠翻转',
+    sidebarPillState.found
+      && sidebarPillState.freshStoredAbsent && sidebarPillState.freshAllPressed && sidebarPillState.freshTodayShown
+      && sidebarPillState.codeStored && sidebarPillState.codePressed && sidebarPillState.codeTodayHidden
+      && sidebarPillState.allStored && sidebarPillState.allPressed && sidebarPillState.allTodayShown
+      && sidebarPillState.allCollapseVisible && sidebarPillState.collapseLabelFlips,
+    JSON.stringify(sidebarPillState));
+
   // 模型表单可能包含尚未保存的名称、地址和密钥，点击遮罩层不能意外丢失草稿；
   // 只有显式点击“取消”才关闭。
   const modelModalOpened = await page.evaluate(() => {
