@@ -779,8 +779,8 @@ mod pinvou_scene_event_tests {
 
     #[test]
     fn scene_events_accept_ppt_design_scene() {
-        // PPT 设计场景标签必须被后端接受并持久化，
-        // 否则 sidecar 重载后该消息的 PPT 标签会丢失。
+        // The design:ppt scene label must be accepted and persisted by the
+        // backend, or the label on that message is lost after sidecar reload.
         let normalized = normalize_pinvou_scene_events(serde_json::json!([
             { "pos": 4, "scene": "design:ppt" }
         ]))
