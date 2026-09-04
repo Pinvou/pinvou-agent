@@ -1722,7 +1722,11 @@ async function expand(page) {
         snapshots = `s0=${s0} s1=${s1} s2=${s2}`;
         const lbl = (s) => s.split('|')[0];
         const rows = (s) => s.split('|')[1] === 'true';
-        // 种子会话全部落在「今天」单组:初始即全展开,s0 的 label 即「全展开」基准
+        // 种子会话全部落在「今天」单组:初始即全展开,s0 的 label 即「全展开」基准。
+        // 耦合前提:上方种子中非置顶会话全带今日时间戳、旧种子被默认「置顶优先」
+        // 排序提升出日期组,故此处恰好只有一个可折叠组,label 才能充当
+        // 「全展开⇔行渲染」的代理。若未来加入更早的非置顶种子,这里需改为逐组
+        // 追踪渲染行,而不能继续以 s0 的 label 为基准。
         const expandedLabel = lbl(s0);
         labelFlips = !!lbl(s0) && !!lbl(s1) && lbl(s1) !== lbl(s0) && lbl(s2) === lbl(s0);
         // 每个快照里 label 聚合与行渲染必须一致(全展开⇔行渲染),且初始行确实可见
