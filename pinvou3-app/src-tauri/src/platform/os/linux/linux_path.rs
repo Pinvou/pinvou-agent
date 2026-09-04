@@ -118,26 +118,25 @@ pub fn apply_user_npm_prefix(cmd: &mut Command) {
 
 /// 退出收割用的树杀。连接器 CLI 是 npm shim(shell 脚本→node 子进程),spawn 侧
 /// 已用 `process_group(0)` 让 shim 独立成组,这里按负 pid 杀整组,否则单杀 shim
-/// 的 pid 会把 node 孙进程孤儿化(与 platform::process::kill_process_tree 同语义,
-/// 走 connector_cli_command 保持 PATH 解析一致)。若进程恰未成组(旧登记),
-/// 追加一次单 pid 兜底。
+/// 的 pid 会把 node 孙进程孤儿化(与 platform::process::kill_process_tree 同语义)。
+/// 若进程恰未成组(旧登记),追加一次单 pid 兜底。
+///
+/// 直接走 kill(2),不再 spawn 外部 /usr/bin/kill:procps-ng 4.0.4 的参数解析会把
+/// `kill -9 -<pgid>` 的合法负 pid 错当 `-1` 处理（向内核发起 kill(-1)，杀光当前
+/// 用户全部进程——本机桌面会话两次因此被整台带走，2026-09-04 audit 取证实锤）。
 pub fn kill_pid_tree(pid: u32) {
     if pid <= 1 {
         // pid<=1 expands to the kernel kill(0/-1) special semantics, which
-        // signals every process of this user (once took down the whole
-        // desktop session). Refuse and leave a backtrace on disk.
+        // signals every process of this user. Refuse and leave a backtrace
+        // on disk.
         crate::platform::process::log_refused_user_wide_kill("linux kill_pid_tree", pid);
         return;
     }
-    let group_arg = format!("-{pid}");
-    let out = connector_cli_command("", "kill")
-        .args(["-9", group_arg.as_str()])
-        .output();
-    let group_ok = out.map(|o| o.status.success()).unwrap_or(false);
+    // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
+    let group_ok = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) } == 0;
     if !group_ok {
-        let _ = connector_cli_command("", "kill")
-            .args(["-9", &pid.to_string()])
-            .output();
+        // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
+        let _ = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
     }
 }
 

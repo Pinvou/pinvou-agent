@@ -252,19 +252,22 @@ pub(crate) fn std_process_group_leader(command: &mut Command) {
 }
 
 /// `kill -9 -<pid<=1>` hits the kernel kill(0/-1) special semantics: it
-/// signals the whole process group / every process of this user. The
-/// desktop session was once taken down with it (Xorg, gnome-shell and
-/// systemd --user, ending in a black screen back at the lock screen).
-/// Refuse and write the call site to disk so the upstream caller that
-/// produced the invalid pid can be identified.
+/// signals the whole process group / every process of this user. Group
+/// kills are issued through kill(2) directly (never delegated to external
+/// kill binaries whose argument parsers may misroute negative pids —
+/// procps-ng 4.0.4 turned `kill -9 -<pgid>` into kill(-1) and twice took
+/// down the whole desktop session). This guard is the last line of
+/// defense: refuse pid<=1 and write the call site to disk so an upstream
+/// caller that produced the invalid pid can be identified.
 ///
-/// The log is appended to `temp_dir()` (still /tmp on Linux) so scenes
-/// from multiple refusals (e.g. the timeout and cancel paths firing in
-/// sequence) all survive; a literal /tmp would resolve to the current
-/// drive root on Windows and fail silently when the directory is
-/// missing. Release builds strip symbols (`strip = "symbols"`), so
-/// backtraces may be addresses only — resolve them with os/process/time
-/// against a debug build of the same version.
+/// The log is appended to the private per-user `~/.pinvou3/logs/` so
+/// scenes from multiple refusals (e.g. the timeout and cancel paths
+/// firing in sequence) all survive, and no other local user can pre-create
+/// a symlink or same-named directory there to steer the write or disable
+/// the diagnostic (that is possible in the shared world-writable
+/// `temp_dir()` on Linux). Release builds strip symbols
+/// (`strip = "symbols"`), so backtraces may be addresses only — resolve
+/// them with os/process/time against a debug build of the same version.
 pub(crate) fn log_refused_user_wide_kill(site: &str, pid: u32) {
     use std::io::Write as _;
 
@@ -275,8 +278,14 @@ pub(crate) fn log_refused_user_wide_kill(site: &str, pid: u32) {
         std::time::SystemTime::now(),
         std::backtrace::Backtrace::force_capture(),
     );
-    let path = std::env::temp_dir().join("pinvou-refused-user-wide-kill.log");
+    let path = crate::platform::paths::refused_kill_log();
     eprintln!("[pinvou3] {report}log: {}\n", path.display());
+    // Best effort only: stderr already carries the full report, so a failed
+    // file write (hostile path, unwritable home, ...) loses the durable copy
+    // but never the diagnostic itself, and must not affect the kill refusal.
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     let _ = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -286,9 +295,19 @@ pub(crate) fn log_refused_user_wide_kill(site: &str, pid: u32) {
 
 /// 按 pid 杀进程树：Windows 用 taskkill 杀整棵树（脚本会再起子 shell，单杀
 /// 父进程会留下继续运行的子进程）；其他平台按进程组杀（负 pid）——安装进程
-/// 以 `process_group(0)` 独立成组，`kill -9 -pgid` 连 curl | bash / npm 派生
-/// 的子进程一起终止，不孤儿化（评审中危项）。
-pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<Output> {
+/// 以 `process_group(0)` 独立成组，组杀连 curl | bash / npm 派生的子进程一起
+/// 终止，不孤儿化（评审中危项）。
+///
+/// Unix 必须直接走 kill(2)，不得 spawn 外部 `/usr/bin/kill`：procps-ng 4.0.4
+/// 的参数解析会把 `kill -9 -<pgid>` 的合法负 pid 错当 `-1` 处理（向内核发起
+/// kill(-1)，杀光当前用户全部进程——2026-09-04 本机桌面会话两次被整台带走，
+/// audit 取证 argv 正确而系统调用为 kill(-1)，实锤）。`pid <= 1` 的拒绝仍在
+/// 最前面：组杀已是直接系统调用，一旦误传 0/1 同样等价于 kill(0/-1) 全组/
+/// 全用户语义，这里是最后一道防线。
+///
+/// 进程组已不存在（ESRCH）视为成功——目标已死即目的达成，调用方无需为
+/// 「取消时进程恰好已退出」记失败日志。
+pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<()> {
     if pid <= 1 {
         log_refused_user_wide_kill("kill_process_tree", pid);
         return Err(std::io::Error::new(
@@ -298,17 +317,29 @@ pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<Output> {
             ),
         ));
     }
-    let pid_arg = pid.to_string();
     if crate::platform::capabilities::is_windows() {
         external_command(Path::new("taskkill"))
-            .args(["/PID", pid_arg.as_str(), "/T", "/F"])
-            .output()
-    } else {
-        let group_arg = format!("-{pid_arg}");
-        external_command(Path::new("kill"))
-            .args(["-9", group_arg.as_str()])
-            .output()
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output()?;
+        return Ok(());
     }
+    #[cfg(unix)]
+    {
+        // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
+        let sent = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+        if sent != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                return Ok(());
+            }
+            return Err(error);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+    }
+    Ok(())
 }
 
 pub(crate) struct HiddenTokioCommand;
@@ -392,6 +423,37 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
+    /// Run `check` with `PINVOU3_HOME` redirected to a fresh per-test
+    /// directory so refusal-log writes stay out of the developer's real
+    /// `~/.pinvou3/`. Borrows the crate-wide `ENV_LOCK` because the value
+    /// is process-global (same pattern as the `paths::tests` env tests).
+    fn with_temp_pinvou_home<T>(check: impl FnOnce(&std::path::Path) -> T) -> T {
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-kill-refusal-log-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&root).expect("create temp PINVOU3_HOME");
+        let previous = std::env::var_os("PINVOU3_HOME");
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+
+        let result = check(&root);
+
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("PINVOU3_HOME", value),
+                None => std::env::remove_var("PINVOU3_HOME"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        result
+    }
+
     /// `kill -9 -0` / `kill -9 -1` hit the kernel kill(0/-1) special
     /// semantics (signal the whole group / every process of this user;
     /// the desktop session was once taken down this way): pid<=1 must be
@@ -399,15 +461,170 @@ mod tests {
     /// external kill, and the error must name the refusal reason.
     #[test]
     fn kill_process_tree_refuses_user_wide_group_targets() {
-        for pid in [0_u32, 1] {
-            let error = kill_process_tree(pid)
-                .expect_err("pid<=1 must be refused, never expanded to kill -9 -pid");
+        with_temp_pinvou_home(|_home| {
+            for pid in [0_u32, 1] {
+                let error = kill_process_tree(pid)
+                    .expect_err("pid<=1 must be refused, never expanded to kill -9 -pid");
+                let message = error.to_string();
+                assert!(
+                    message.contains("refused")
+                        && message.contains(&format!("kill_process_tree({pid})")),
+                    "refusal message must name pid={pid}, got: {message}"
+                );
+            }
+        });
+    }
+
+    /// The forensic report must land inside the private per-user home (never
+    /// the shared temp dir) and appends must accumulate: a second refusal
+    /// adds a scene without erasing the first.
+    #[test]
+    fn refused_kill_log_lands_in_private_home_and_appends() {
+        with_temp_pinvou_home(|home| {
+            log_refused_user_wide_kill("append-scene", 0);
+            log_refused_user_wide_kill("append-scene", 1);
+
+            let path = crate::platform::paths::refused_kill_log();
+            assert!(
+                path.starts_with(home),
+                "log must stay under PINVOU3_HOME, got: {}",
+                path.display()
+            );
+            let logged = std::fs::read_to_string(&path).expect("refusal log must exist");
+            assert_eq!(
+                logged.matches("refused append-scene").count(),
+                2,
+                "both refusal scenes must survive, got: {logged:?}"
+            );
+            assert!(logged.contains("backtrace:"));
+        });
+    }
+
+    /// A hostile path (the log location pre-created as a directory) must not
+    /// disable the kill refusal, panic, or corrupt state: the diagnostic
+    /// degrades to stderr while the guard still refuses pid<=1 unchanged.
+    #[test]
+    fn refused_kill_log_survives_hostile_path() {
+        with_temp_pinvou_home(|_home| {
+            let path = crate::platform::paths::refused_kill_log();
+            std::fs::create_dir_all(&path).expect("pre-create hostile directory at the log path");
+
+            log_refused_user_wide_kill("hostile-scene", 0);
+
+            assert!(path.is_dir(), "hostile path must be left untouched");
+            let error = kill_process_tree(1)
+                .expect_err("pid<=1 must still be refused when the log write fails");
             let message = error.to_string();
             assert!(
-                message.contains("refused")
-                    && message.contains(&format!("kill_process_tree({pid})")),
-                "refusal message must name pid={pid}, got: {message}"
+                message.contains("refused") && message.contains("kill_process_tree(1)"),
+                "refusal message must be unchanged, got: {message}"
             );
+        });
+    }
+
+    /// Unix group kills must go through kill(2) directly. This is the
+    /// regression test for the 2026-09-04 desktop-session massacres: the
+    /// timeout path spawned external `/usr/bin/kill -9 -<pgid>` and
+    /// procps-ng 4.0.4 misparsed the valid negative pid as -1 (kill(-1)
+    /// signals every process of this user). A fake `kill` is placed first
+    /// on PATH: if the implementation ever spawns an external kill again,
+    /// the marker file appears and the test fails — before considering
+    /// what that binary would do to the machine.
+    #[cfg(unix)]
+    #[test]
+    fn kill_process_tree_terminates_group_without_spawning_external_kill() {
+        use std::sync::Mutex;
+
+        static PATH_LOCK: Mutex<()> = Mutex::new(());
+        let _path_lock = PATH_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+        let work = std::env::temp_dir().join(format!(
+            "pinvou3-kill-process-tree-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&work).expect("create test work dir");
+        let marker = work.join("external-kill-invoked");
+        let sleep_pid_file = work.join("sleep-pid");
+        let fake_kill_bin = work.join("kill");
+        std::fs::write(
+            &fake_kill_bin,
+            format!("#!/bin/sh\necho \"$@\" >> {}\nexit 42\n", marker.display()),
+        )
+        .expect("write fake kill");
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&fake_kill_bin, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake kill");
+
+        let previous_path = std::env::var_os("PATH");
+        let mut split_path = previous_path
+            .as_ref()
+            .map(|value| std::env::split_paths(value).collect::<Vec<_>>())
+            .unwrap_or_default();
+        split_path.insert(0, work.clone());
+        // SAFETY: this test serializes on PATH_LOCK; a prepended dir cannot
+        // break other tests that merely resolve commands through PATH.
+        unsafe { std::env::set_var("PATH", std::env::join_paths(&split_path).unwrap()) };
+
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            &format!("sleep 30 & echo $! > {}; wait", sleep_pid_file.display()),
+        ]);
+        std_process_group_leader(&mut command);
+        let mut child = command.spawn().expect("spawn sh group leader");
+        let sh_pid = child.id();
+
+        let mut sleep_pid = None;
+        for _ in 0..40 {
+            if let Ok(text) = std::fs::read_to_string(&sleep_pid_file) {
+                if let Ok(value) = text.trim().parse::<u32>() {
+                    sleep_pid = Some(value);
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
+        let sleep_pid = sleep_pid.expect("descendant must report its pid");
+
+        let kill_result = kill_process_tree(sh_pid);
+        let _ = child.wait();
+
+        // SAFETY: libc::kill with sig=0 only probes liveness; no memory is touched.
+        let alive = |pid: u32| unsafe { libc::kill(pid as i32, 0) == 0 };
+        let mut both_dead = !alive(sh_pid) && !alive(sleep_pid);
+        for _ in 0..100 {
+            if both_dead {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            both_dead = !alive(sh_pid) && !alive(sleep_pid);
+        }
+        // The orphaned descendant is a member of this test's process tree;
+        // make sure no stray sleeper survives even if the asserts fail.
+        // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
+        let _ = unsafe { libc::kill(sleep_pid as i32, libc::SIGKILL) };
+
+        // SAFETY: holding PATH_LOCK; restoring the saved value.
+        unsafe {
+            match previous_path {
+                Some(value) => std::env::set_var("PATH", value),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&work);
+
+        assert!(
+            kill_result.is_ok(),
+            "group kill must succeed for a live group: {kill_result:?}"
+        );
+        assert!(
+            both_dead,
+            "group leader {sh_pid} and descendant {sleep_pid} must both die"
+        );
+        assert!(
+            !marker.exists(),
+            "an external kill was spawned; group kills must use kill(2) directly"
+        );
     }
 }

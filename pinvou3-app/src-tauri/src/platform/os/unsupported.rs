@@ -231,22 +231,40 @@ pub fn apply_user_npm_prefix(_cmd: &mut Command) {}
 /// 退出收割用的树杀(macOS 走此实现)。连接器 CLI 是 npm shim(shell→node),
 /// spawn 侧已 `process_group(0)` 成组,这里按负 pid 杀整组;单杀 shim pid 会把
 /// node 孙进程孤儿化。组杀失败(进程未成组的旧登记)追加单 pid 兜底。
+///
+/// Unix 直接走 kill(2),不委托外部 /usr/bin/kill:外部工具的参数解析可能把合法
+/// 负 pid 错路由成 kill(-1)(procps-ng 4.0.4 在 Linux 上即如此,曾杀光整个
+/// 桌面会话);kill(2) 语义与其完全一致且不经过任何解析器。非 unix 合约分支
+/// 仅参与编译、无实际平台绑定,保留外部调用形态。
 pub fn kill_pid_tree(pid: u32) {
     if pid <= 1 {
         // pid<=1 expands to the kernel kill(0/-1) special semantics, which
-        // signals every process of this user (once took down the whole
-        // desktop session). Refuse and leave a backtrace on disk.
+        // signals every process of this user. Refuse and leave a backtrace
+        // on disk.
         crate::platform::process::log_refused_user_wide_kill("unsupported kill_pid_tree", pid);
         return;
     }
-    let group_arg = format!("-{pid}");
-    let group_ok = Command::new("kill")
-        .args(["-9", group_arg.as_str()])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if !group_ok {
-        let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+    #[cfg(unix)]
+    {
+        // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
+        let group_ok = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) } == 0;
+        if !group_ok {
+            // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
+            let _ = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        }
+        return;
+    }
+    #[cfg(not(unix))]
+    {
+        let group_arg = format!("-{pid}");
+        let group_ok = Command::new("kill")
+            .args(["-9", group_arg.as_str()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !group_ok {
+            let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+        }
     }
 }
 
