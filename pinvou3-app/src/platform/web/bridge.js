@@ -4498,6 +4498,11 @@
         let item = state.chatItems.find(function (it) {
           return it.type === "tool" && it.taskId === job.id;
         });
+        if (!item && job.origin_tool_call_id) {
+          item = state.chatItems.find(function (it) {
+            return it.type === "tool" && it.toolId === job.origin_tool_call_id;
+          });
+        }
         if (!item && running) {
           const command = String(job.command || "");
           const candidates = state.chatItems.filter(function (it) {
@@ -4515,6 +4520,11 @@
           if (item) item.shellHistoryReconciled = true;
         }
         if (!item && !running && suppressUnmatchedTerminal) return;
+        // An identified completed root job must only update its origin card.
+        // If compaction or reload removed that card, do not append historical
+        // output at the current tail. Keep running jobs visible through a
+        // synthetic card; their live status must not disappear after reload.
+        if (!item && !running && job.origin_tool_call_id && !job.owner_agent_id) return;
         if (!item) {
           item = {
             type: "tool", toolId: "shell-task:" + job.id, name: "bash",
@@ -4529,6 +4539,8 @@
         item.taskId = job.id;
         item.sessionId = sid;
         item.shellStatus = job.status;
+        item.originToolCallId = job.origin_tool_call_id || null;
+        item.originTurnId = job.origin_turn_id || null;
         item.exitCode = job.exit_code;
         item.elapsedMs = job.elapsed_ms;
         if (!item.shellHistoryReconciled || item.output == null || running) {
