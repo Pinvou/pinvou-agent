@@ -854,9 +854,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         }
       }, [pinvouMode]);
       useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the locally selected element when the design scope switches
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the locally selected element when the design scope switches or fullscreen editing ends (the fullscreen panel unmounts without running its own exit hook)
         setSelectedDesignElement(null);
-      }, [designScopeKey]);
+      }, [designScopeKey, artifactsFullscreen]);
       const clearPersonalWorkbenchTemplateDraft = useCallback(() => {
         if (personalWorkbenchTemplateIdRef.current || findPersonalWorkbenchTemplateDraft(inputTextRef.current)) setInputText('');
         personalWorkbenchTemplateIdRef.current = null;

@@ -238,12 +238,14 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         injectDesignRuntime(frame);
       };
 
-      // 退出编辑模式的边界：销毁 iframe 内运行时并复位 AI 调整状态
-      // （不取消主会话生成——AI 改文件仍可继续，只是不再可视化编辑）。
+      // 退出编辑模式的边界：销毁 iframe 内运行时并复位 AI 调整状态与选中
+      // 元素（不取消主会话生成——AI 改文件仍可继续，只是不再可视化编辑）。
+      // 选中元素不清的话，主输入框 placeholder 会一直停在「调整选中元素」。
       function exitDesignEditMode() {
         destroyDesignRuntime();
         setDesignEditMode(false);
         setDesignAiStatePatch({ status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0 });
+        if (onDesignElementSelected) onDesignElementSelected(null);
       }
 
       useEffect(() => {
