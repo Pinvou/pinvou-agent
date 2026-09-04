@@ -135,11 +135,11 @@ test('the settings smoke no longer stubs native confirm', () => {
 });
 
 test('feedback/memory confirm copy exists in zh/en/ja', () => {
-  const expectedAnyway = { zh: '仍要关闭', en: 'Close anyway', ja: '閉じる' };
+  // 只断言键存在（对齐 acp_providers_contract 的键存在模式）；冻结具体译文会让正常文案微调打红 CI。
   for (const language of ['zh', 'en', 'ja']) {
     const d = dict[language];
     assert.ok(d.feedbackCloseConfirm, `${language}.feedbackCloseConfirm 必须存在`);
-    assert.equal(d.feedbackCloseAnyway, expectedAnyway[language], `${language}.feedbackCloseAnyway 文案不符`);
+    assert.ok(d.feedbackCloseAnyway, `${language}.feedbackCloseAnyway 必须存在（反馈关闭确认按钮）`);
     assert.ok(d.cancel, `${language}.cancel 必须存在（反馈关闭取消按钮）`);
     assert.ok(d.uiSettingsView, `${language}.uiSettingsView 必须存在`);
     assert.ok(d.uiSettingsView.memoryDeleteConfirm, `${language}.uiSettingsView.memoryDeleteConfirm 必须存在`);
