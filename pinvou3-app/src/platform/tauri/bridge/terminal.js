@@ -232,6 +232,10 @@
     for (let i = 0; i < state.chatItems.length; i++) {
       const item = state.chatItems[i];
       if (item.type !== "tool" || item.toolId !== toolId) continue;
+      // chat:shell_task_status can repeat for an already finalized task;
+      // re-merging would append the tails a second time, so leave items in a
+      // terminal state untouched.
+      if (item.state === "done" || item.state === "failed") return true;
       const status = payload.status || "Failed";
       const success = status === "Completed";
       item.success = success;
@@ -423,10 +427,16 @@
     );
   }
 
+  // Live and background shell output are display-only; completion replaces
+  // the tail with the normal full result. Both paths must share one cap so a
+  // verbose process cannot grow renderer memory without bound.
+  const MAX_LIVE_OUTPUT_CHARS = 128 * 1024;
+
   function reconcileBackgroundTerminalOutput(previous, payload) {
     let output = String(previous == null ? "" : previous);
     output = mergeTerminalTail(output, normalizeTerminalTail(payload.stdout_tail, ""));
     output = mergeTerminalTail(output, normalizeTerminalTail(payload.stderr_tail, "[STDERR] "));
+    if (output.length > MAX_LIVE_OUTPUT_CHARS) output = "…\n" + output.slice(-MAX_LIVE_OUTPUT_CHARS);
     return output;
   }
 
@@ -447,8 +457,7 @@
       );
       // A verbose long-running process must not grow renderer memory without
       // bound. Completion replaces this tail with the normal full result.
-      const maxLiveChars = 128 * 1024;
-      if (output.length > maxLiveChars) output = "…\n" + output.slice(-maxLiveChars);
+      if (output.length > MAX_LIVE_OUTPUT_CHARS) output = "…\n" + output.slice(-MAX_LIVE_OUTPUT_CHARS);
       item.output = output;
       item.liveOutput = true;
       return true;

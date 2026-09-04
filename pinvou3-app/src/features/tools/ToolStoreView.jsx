@@ -1270,27 +1270,37 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       useEffect(() => {
         const ev = isTauriAvailable() ? tauriEvents : null;
         if (!ev) return;
+        let disposed = false;
         const unlisten = [];
-        ev.listen('wecom:qr', (e) => {
+        // 注册是异步的:卸载后才 resolve 的监听必须立刻反注册,
+        // 否则 push 进数组也无人消费,监听泄漏。
+        const track = (p) => p.then((u) => {
+          if (disposed) { try { u(); } catch { /* silent: listeners may already be stale at unmount */ } return; }
+          unlisten.push(u);
+        });
+        track(ev.listen('wecom:qr', (e) => {
           const p = e.payload || {};
           // 二维码到了 → 清掉一直显示的"正在生成…"loading,再弹出二维码弹窗。
           setAlert(a => ({ ...a, visible: false, loading: false }));
           setWecomQr({ qr: p.qr_data_url, url: p.url, phase: p.phase });
-        }).then(u => { unlisten.push(u); });
-        ev.listen('wecom:connected', () => {
+        }));
+        track(ev.listen('wecom:connected', () => {
           setWecomQr(null); setBusyId(null);
           // 连上 → 按规则写技能(默认启用),企微技能即刻对模型可见;连接态经 readiness 重取。
           invokeTauri('wecom_apply_skills').catch(() => {});
           loadBackendState();
           setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(storeCopy.toolNames.wecom), subtitle: '', isInstall: true, isError: false, toolId: 'wecom' });
           notifyComposerToolsChanged();
-        }).then(u => { unlisten.push(u); });
-        ev.listen('wecom:error', (e) => {
+        }));
+        track(ev.listen('wecom:error', (e) => {
           const p = e.payload || {};
           setWecomQr(null); setBusyId(null);
           setAlert({ visible: true, loading: false, title: storeCopy.connectFailed(storeCopy.toolNames.wecom), subtitle: String(p.message || '').slice(0, 240), isError: true });
-        }).then(u => { unlisten.push(u); });
-        return () => { unlisten.forEach(u => { try { u(); } catch { /* silent: listeners may already be stale at unmount */ } }); };
+        }));
+        return () => {
+          disposed = true;
+          unlisten.forEach(u => { try { u(); } catch { /* silent: listeners may already be stale at unmount */ } });
+        };
       // eslint-disable-next-line react-hooks/exhaustive-deps -- subscription mounts/unmounts only with externalAuthAvailable; the copy snapshot is read on demand by the callback, so resubscribing is unnecessary
       }, [externalAuthAvailable]);
 

@@ -39,6 +39,11 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
  */
 
 const kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false };
+// 全量文档表(kb_documents limit:0)无上限,模块级缓存只保留有界切片:
+// 重挂载先秒显前若干条,完整数据由 loadColls() 挂载后重拉覆盖,
+// 避免整表在视图卸载后仍常驻整个窗口生命周期。
+const KB_ALL_DOCS_CACHE_CAP = 2000;
+const capCachedAllDocs = (docs) => (docs.length > KB_ALL_DOCS_CACHE_CAP ? docs.slice(0, KB_ALL_DOCS_CACHE_CAP) : docs);
 
 const MODEL_PROGRESS_RADIUS = 31;
 const MODEL_PROGRESS_CIRCUMFERENCE = 2 * Math.PI * MODEL_PROGRESS_RADIUS;
@@ -457,6 +462,14 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors into local state right after reading the backend snapshot, avoiding first-frame flicker
         if (sub === 'output') refreshOutputs();
       }, [sub, outputArtifactKey, refreshOutputs]);
+      // 视图按需条件渲染,卸载后模块级缓存会存活整个窗口周期:产出物索引是
+      // 无上限大表,卸载时释放;轻量字段(stats/embedInfo/scan 游标等)保留。
+      // 重挂载由 sub='output' 的既有 refreshOutputs() 路径重拉;outputsLoaded
+      // 归位让骨架屏接管,避免闪现「空状态」。
+      useEffect(() => () => {
+        kbCache.outputs = [];
+        kbCache.outputsLoaded = false;
+      }, []);
       const filteredOutputs = React.useMemo(() => {
         const q = outQuery.trim().toLowerCase();
         return outputs.filter((o) => {
@@ -675,7 +688,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           setActiveColl((current) => (current ? c.find((item) => item.id === current.id) || null : null));
           kbCache.colls = c;
         } catch { /* silently degrade */ }
-        try { const d = await inv('kb_documents', { collectionId: 0, limit: 0 }) || []; setAllDocs(d); kbCache.allDocs = d; } catch { /* silently degrade */ }
+        try { const d = await inv('kb_documents', { collectionId: 0, limit: 0 }) || []; setAllDocs(d); kbCache.allDocs = capCachedAllDocs(d); } catch { /* silently degrade */ }
         try { const ei = await inv('kb_embed_info'); setEmbedInfo(ei); kbCache.embedInfo = ei; } catch { /* silently degrade */ }
         try { const m = await inv('kb_model_status'); setKbModel(m); kbCache.model = m; } catch { /* silently degrade */ }
         try { replaceIndexState(await inv('kb_index_status')); } catch { /* silently degrade */ }
@@ -849,7 +862,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         setDocs((current) => current.filter((item) => item.id !== document.id));
         setAllDocs((current) => {
           const next = current.filter((item) => item.id !== document.id);
-          kbCache.allDocs = next;
+          kbCache.allDocs = capCachedAllDocs(next);
           return next;
         });
         setColls((current) => current.map((collection) => (collection.id === document.collectionId ? {
