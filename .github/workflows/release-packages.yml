@@ -98,9 +98,15 @@ jobs:
       # 必须用 ${{ github.workspace }} 绝对路径:Cargo 按自身进程 cwd 解析相对路径,
       # 构建步骤 working-directory 为 pinvou3-app,相对路径会被双拼成不存在的路径。
       # lld:BFD ld 处理大型 Rust binary 内存效率差,是 link OOM 独立主因(同 arm64);
-      # release profile 的 thin LTO 让 rustc 给依赖 crate 传 -C linker-plugin-lto
-      # (生成 LLVM bitcode),link 阶段必须用支持 bitcode 的链接器。
-      RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+      # BFD 亦无 --icf,支持不了下一行的相同代码折叠。thin LTO 本身由 rustc 执行
+      # (最终单元 -C lto=thin),与链接器身份无关,机制详见 Cargo.toml
+      # [profile.release] 注释。
+      # --icf=safe:lld 相同代码折叠(相似代码段合并,体积优化)。safe 档只折叠
+      # 「地址确定未被取用」的函数,规避 Rust 语义下函数地址同一性的边界情形
+      # (rust#160267)。RUSTFLAGS 是 env 级注入,同时覆盖本 job 内的 tauri 主构建
+      # 与 knowledge-host 独立构建(后者 profile 已在 pinvou-knowledge/Cargo.toml)。
+      # remap-path-prefix:产物内嵌的构建机绝对路径(panic location 等)归一为 /。
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--icf=safe -C remap-path-prefix=${{ github.workspace }}=/"
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
     steps:
       - name: Checkout (含 submodule)
@@ -172,6 +178,12 @@ jobs:
         working-directory: pinvou3-app
         run: node scripts/tauri/build.js build --bundles deb
 
+      # tauri bundler 硬编码 data.tar 为 gzip-6(tauri.conf 无压缩配置项);
+      # 重打包为 xz -9 缩小包体。内容零改动,sha256 在其后的「校验产物」步骤计算。
+      - name: deb 重打包 (data.tar gzip-6 → xz -9)
+        working-directory: pinvou3-app/src-tauri/target/release/bundle/deb
+        run: bash "$GITHUB_WORKSPACE/scripts/repack-deb-xz.sh" "pinvou3_${VERSION}_amd64.deb"
+
       # tauri deb 产物默认名 pinvou3_<version>_amd64.deb,重命名为统一全平台命名
       # pinvou-agent_<version>-linux-x64.deb(与制品 zip 名对齐)。
       - name: 校验产物 + 统一命名 + sha256
@@ -217,9 +229,12 @@ jobs:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
       # release profile 已在 Cargo.toml 设为 thin LTO(原 fat 在 ubuntu 16GB 上
       # link 内存越线被 SIGTERM),ARM 不再用 env 覆盖 profile。
-      # lld 是必需的:thin LTO 让 rustc 给依赖 crate 传 -C linker-plugin-lto
-      # (生成 LLVM bitcode,link 阶段做跨 crate 合并),BFD ld 无法处理 LLVM bitcode。
-      RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+      # lld 是必需的:BFD 对大二进制 link 内存效率差(OOM 实证),且 BFD 无 --icf、
+      # 支持不了 --icf=safe。thin LTO 本身由 rustc 执行,与链接器身份无关
+      # (机制详见 Cargo.toml [profile.release] 注释)。
+      # --icf=safe / remap-path-prefix 同 build-linux-x64(safe 折叠规避 fn 地址
+      # 同一性边界 rust#160267;RUSTFLAGS env 同时覆盖 tauri 主构建与 knowledge-host)。
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--icf=safe -C remap-path-prefix=${{ github.workspace }}=/"
       # release 编译 codewhale-tui 的 SIGBUS 同源风险防护(同 build-linux-x64,
       # 正式入口按平台注入 RUSTC_WRAPPER,见 config.toml 注释)。
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
@@ -282,6 +297,11 @@ jobs:
       - name: 构建 deb
         working-directory: pinvou3-app
         run: node scripts/tauri/build.js build --bundles deb
+
+      # deb 重打包 (data.tar gzip-6 → xz -9),同 build-linux-x64。
+      - name: deb 重打包 (data.tar gzip-6 → xz -9)
+        working-directory: pinvou3-app/src-tauri/target/release/bundle/deb
+        run: bash "$GITHUB_WORKSPACE/scripts/repack-deb-xz.sh" "pinvou3_${VERSION}_arm64.deb"
 
       # tauri deb 产物默认名 pinvou3_<version>_arm64.deb,重命名为统一全平台命名
       # pinvou-agent_<version>-linux-arm64.deb(与制品 zip 名对齐)。
@@ -437,6 +457,9 @@ jobs:
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
       VERSION: ${{ needs.check-version-bump.outputs.version }}
+      # 产物内嵌的构建机绝对路径(panic location 等)归一为 /。Apple ld/ld-prime
+      # 无 ICF 能力,macOS 无需(也无法)注入 icf 参数;-dead_strip 由 rustc 默认传入。
+      RUSTFLAGS: "-C remap-path-prefix=${{ github.workspace }}=/"
       # v0.9.5 升级后 release(thin-LTO O3)编译 codewhale-tui 时 rustc/LLVM 栈溢出
       # (SIGBUS,run 31558490865 实证)。.cargo/config.toml 不设置 rustc-wrapper
       # (全局键无法按平台条件化),由本 macOS 发布 job 显式注入 RUSTC_WRAPPER
@@ -470,19 +493,10 @@ jobs:
           # 只在 main 保存(对齐 pr-check 的配额保护策略);PR 侧只读,不写 2GB+ 缓存。
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # macOS 27+ 兼容:dyld 新增 LINKEDIT 字符串池 8 字节对齐校验,而 release 默认
-      # strip=debuginfo 会让 proc-macro dylib dlopen 被拒 → E0463(macOS ≤26 无此校验)。
-      # runner 目前是 macos-15(不受影响),但 GitHub 升级 runner 到 macOS 27+ 时若缺此
-      # 注入,tauri build 会硬失败。同 mac-build.yml 的 workaround。
-      - name: macOS 27+ strip workaround
-        run: |
-          if [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 27 ] 2>/dev/null; then
-            echo "CARGO_PROFILE_RELEASE_STRIP=none" >> "$GITHUB_ENV"
-            echo "RUSTFLAGS=-C strip=none" >> "$GITHUB_ENV"
-            echo "⚠️ macOS $(sw_vers -productVersion) → 注入 strip=none(绕过 dyld 对齐校验)"
-          else
-            echo "✓ macOS $(sw_vers -productVersion),保留默认 strip"
-          fi
+      # macOS 27+ strip=none 规避已移除:rust-toolchain.toml 钉住的 1.98.0 包含
+      # Mach-O __LINKEDIT 8 字节对齐修复(rust#157750,LLVM backport #158410),
+      # strip="symbols" 在 macOS 全版本恢复安全,产物不再保留符号表/调试映射。
+      # 详见 docs/binary-size-optimization.md。
 
       - name: Node.js
         uses: actions/setup-node@v7
@@ -547,6 +561,26 @@ jobs:
           fi
 
           test -f "$DMG" || { echo "❌ dmg 产物不存在: $DMG"; exit 1; }
+
+          # 压缩升级:tauri dmg(bundler 的 bundle_dmg)是 UDZO/zlib,且未传
+          # -imagekey zlib-level → hdiutil 默认压缩级别 1(重速度)。转 ULMO(LZMA)
+          # 对 app 载荷通常再省 20-40%;ULMO 需 macOS 10.15+ 挂载(本项目最低 11.0)。
+          # ad-hoc 签名(signingIdentity="-")下 dmg 本身不签名,容器转换不破坏
+          # 任何签名;.app 内层签名不受外层容器格式影响。转换失败降级保留原 dmg。
+          DMG_FORMAT=$(hdiutil imageinfo -format "$DMG" 2>/dev/null || echo UNKNOWN)
+          if [ "$DMG_FORMAT" != "ULMO" ]; then
+            DMG_BEFORE=$(stat -f%z "$DMG")
+            # hdiutil convert 的 -o 目标名会被追加 .dmg 扩展(out.ulmo → out.ulmo.dmg),
+            # 故 mv 的源固定为 "$DMG.ulmo.dmg"。
+            rm -f "$DMG.ulmo.dmg"
+            if hdiutil convert "$DMG" -format ULMO -o "$DMG.ulmo" >/dev/null; then
+              mv -f "$DMG.ulmo.dmg" "$DMG"
+              echo "dmg 压缩升级 ${DMG_FORMAT}→ULMO: ${DMG_BEFORE} -> $(stat -f%z "$DMG") bytes"
+            else
+              rm -f "$DMG.ulmo.dmg"
+              echo "⚠️ ULMO 转换失败,保留原 ${DMG_FORMAT} dmg"
+            fi
+          fi
 
           # 校验 universal dmg 双架构完整性 + 写 checksum 文件(随 artifact 附带)
           BIN="src-tauri/target/universal-apple-darwin/release/bundle/macos/pinvou3.app/Contents/MacOS/pinvou3-tauri"

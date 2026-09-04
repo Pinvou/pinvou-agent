@@ -126,3 +126,19 @@ unwrap_used = "warn"
 expect_used = "warn"
 unwrap_in_result = "warn"
 exit = "warn"
+
+# =============================================================================
+# 发布优化 Profile —— pinvou-knowledge-server 独立 ELF 随 Linux deb 分发
+# =============================================================================
+# 该二进制由 pinvou3-app/scripts/tauri/knowledge-host.js 以
+# `cargo build --manifest-path pinvou-knowledge/Cargo.toml --release` 单独构建
+# (独立 target dir,不在 src-tauri workspace 内),此前走 cargo 默认 release:
+# 无 LTO、符号表全保留。对齐主应用 release profile 的体积策略:thin LTO 跨
+# crate 内联 + 链接期剥符号。作为 src-tauri 的依赖编译时本节被 Cargo 忽略
+# (profile 只由顶层构建 workspace 决定),故不影响主应用产物。
+# debug 不声明:cargo release 默认即 false。ICF/lld 由 CI job 的 RUSTFLAGS
+# (-fuse-ld=lld + -Wl,--icf=safe)注入,本文件不硬编码链接器。
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

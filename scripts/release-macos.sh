@@ -46,6 +46,22 @@ if [ ! -f "$SOURCE" ]; then
   exit 1
 fi
 
+# 与 release-packages.yml 相同的压缩升级:tauri 产出的 UDZO 未设 zlib-level
+# (hdiutil 默认级别 1),转 ULMO(LZMA) 通常再省 20-40%;需 macOS 10.15+ 挂载。
+# ad-hoc 签名下 dmg 本身不签名,容器转换不破坏任何签名。
+DMG_FORMAT="$(hdiutil imageinfo -format "$SOURCE" 2>/dev/null || echo UNKNOWN)"
+if [ "$DMG_FORMAT" != "ULMO" ]; then
+  # hdiutil convert 的 -o 目标名会被追加 .dmg 扩展,故 mv 源固定为 "$SOURCE.ulmo.dmg"。
+  rm -f "$SOURCE.ulmo.dmg"
+  if hdiutil convert "$SOURCE" -format ULMO -o "$SOURCE.ulmo" >/dev/null; then
+    mv -f "$SOURCE.ulmo.dmg" "$SOURCE"
+    echo "dmg 压缩升级 ${DMG_FORMAT}→ULMO"
+  else
+    rm -f "$SOURCE.ulmo.dmg"
+    echo "⚠️ ULMO 转换失败,保留原 ${DMG_FORMAT} dmg"
+  fi
+fi
+
 cp "$SOURCE" "$ASSET"
 shasum -a 256 "$ASSET" > "$ASSET.sha256"
 gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
