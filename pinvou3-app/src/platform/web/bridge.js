@@ -4424,6 +4424,19 @@
       runningCommandCounts[command] = (runningCommandCounts[command] || 0) + 1;
     });
     runSyncOnSession(sid, function () {
+      // A wait tool only observes existing work and cannot create a job, and
+      // the manager retains completed jobs across later waits, so an
+      // unmatched terminal snapshot beside a trailing wait card belongs to
+      // earlier work and must not be appended after newer results. Decide
+      // once per poll from the pre-poll timeline: the synthetic card of a
+      // running job from this same batch (the manager lists running jobs
+      // first) would otherwise disarm the guard for the jobs after it.
+      // Accepted limits until stable origin identity lands: a start tool can
+      // still race with a very short detached job whose first snapshot is
+      // terminal (the guard is off when the latest card is a start tool), and
+      // a brand-new subagent job started after the wait card is conservatively
+      // hidden like retained older work.
+      const suppressUnmatchedTerminal = latestShellToolIsWaitObserver();
       (jobs || []).forEach(function (job) {
         const status = String(job.status || "").toLowerCase();
         const running = status === "running";
@@ -4447,12 +4460,7 @@
           });
           if (item) item.shellHistoryReconciled = true;
         }
-        // A wait tool only observes existing work and cannot create a new job.
-        // The manager retains completed jobs across later waits, so an
-        // unmatched terminal snapshot here belongs to earlier work and must
-        // not be appended beside the wait result. A start tool can still race
-        // with a very short detached job, whose first snapshot is terminal.
-        if (!item && !running && latestShellToolIsWaitObserver()) return;
+        if (!item && !running && suppressUnmatchedTerminal) return;
         if (!item) {
           item = {
             type: "tool", toolId: "shell-task:" + job.id, name: "exec_shell",
