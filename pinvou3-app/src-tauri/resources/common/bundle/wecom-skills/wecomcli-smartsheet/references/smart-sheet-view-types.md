@@ -79,7 +79,6 @@ wecom-cli smartsheet views list --json '{"docid": "<docid>", "sheet_title": "<�
 wecom-cli smartsheet views update --json '{
   "docid": "<docid>",
   "sheet_title": "<子表名称>",
-  "type": "update",
   "views": [{
     "view_id": "<view_id>",
     "col_infos": [

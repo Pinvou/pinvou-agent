@@ -333,7 +333,7 @@ wecom-cli smartsheet records list --json '{"docid": "<docid>", "sheet_title": "<
 > - `wecom-cli smartsheet fields list`（本接口）：已知目标子表，需要**分页或过滤**查询字段详情，或需要字段属性、选项、完整字段信息时
 
 ```bash
-wecom-cli smartsheet fields list --json '{"docid": "<docid>", "sheet_title": "<子表名称>"}'
+wecom-cli smartsheet fields list --json '{"docid": "<docid>", "sheet_title": "<子表名称>", "limit": 100}'
 ```
 
 **请求参数 (JSON 格式传入)：**
@@ -355,7 +355,7 @@ wecom-cli smartsheet fields list --json '{"docid": "<docid>", "sheet_title": "<�
 查询指定子表的视图列表。
 
 ```bash
-wecom-cli smartsheet views list --json '{"docid": "<docid>", "sheet_title": "<子表名称>"}'
+wecom-cli smartsheet views list --json '{"docid": "<docid>", "sheet_title": "<子表名称>", "limit": 100}'
 ```
 
 **请求参数 (JSON 格式传入)：**
@@ -376,7 +376,7 @@ wecom-cli smartsheet views list --json '{"docid": "<docid>", "sheet_title": "<�
 查询指定仪表盘子表的图表列表。
 
 ```bash
-wecom-cli smartsheet charts list --json '{"docid": "<docid>", "sheet_title": "<仪表盘子表名称>"}'
+wecom-cli smartsheet charts list --json '{"docid": "<docid>", "sheet_title": "<仪表盘子表名称>", "limit": 100}'
 ```
 
 **请求参数 (JSON 格式传入)：**

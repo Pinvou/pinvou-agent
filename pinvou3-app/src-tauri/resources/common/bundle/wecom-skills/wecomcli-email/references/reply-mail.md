@@ -50,7 +50,7 @@
 
 ## 步骤五：处理附件和内嵌图片（如有）
 
-如果回复中需要带附件或内嵌图片，参考 [send-mail](send-mail.md) 的"步骤四：处理附件"和"步骤五：处理内嵌图片"，**二选一，优先 `media_id`**：已有 `media_id` 直接复用；仅当只有本地文件、且没有现成 `media_id` 时才用 `file_path`。
+如果回复中需要带附件或内嵌图片，参考 [send-mail](send-mail.md)：`media_id` 与 `file_path` 二选一、禁止同时填，`media_id` 禁止自行构造，详见 send-mail.md 步骤四。
 
 内嵌图片的占位符引用同样要出现在步骤四写入的 Markdown 正文文件里——严格写成 `![]($xxx$)`（方括号留空，不带 alt 和 title，首尾 `$` 是协议的一部分，不能省），并在 `inline_images[]` 里用完全相同的含 `$` 字符串填 `content_id`，再用 `media_id` 或 `file_path` 关联图片内容（二选一，优先 `media_id`）。
 
@@ -134,5 +134,5 @@ wecom-cli mail send --json '{
 - **收件人直接复用邮件接口返回的发件人邮箱**：定位邮件时参考 [search-mail](./search-mail.md) 搜索邮件或参考 [get-mail](./get-mail.md) 获取邮件详情，已返回 `sender.email`，直接填入 `to.emails`，禁止为了"解析收件人"去查通讯录（通讯录模糊搜索可能匹配同音不同人，导致邮件发给错误的人）
 - **回复正文必填**：回复邮件不能留空
 - **主题必填且必须构造**：接口不会自动拼 `Re: ` 前缀，技能自己负责把 `subject` 构造为 `"回复：" + 原邮件主题`；原主题已有 `回复：`/`Re:` 前缀时直接沿用。因此在步骤一定位邮件时就要把 `subject` 一起记下来
-- 附件/内嵌图片优先 `media_id`，其次 `file_path`：`attachments` / `inline_images` 每一项**二选一**填 `media_id` 或 `file_path`，**优先 `media_id`**——已有 `media_id` 直接复用；仅无现成 `media_id` 时才填 `file_path`，CLI 自动上传。`media_id` 必须来自接口真实返回值，禁止自行构造
+- 附件/内嵌图片：`media_id` 与 `file_path` 二选一、禁止同时填，`media_id` 禁止自行构造；详见 [send-mail](send-mail.md) 步骤四
 - **邮件总大小不超过 50MB**：正文文件 + 所有附件合计不能超过 50MB，上传失败时提醒用户检查是否超限

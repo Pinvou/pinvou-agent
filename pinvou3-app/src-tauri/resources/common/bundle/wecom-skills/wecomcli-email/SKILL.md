@@ -207,9 +207,9 @@ metadata:
 ## 跨接口产品决策
 
 - **收件人 userid 兜底**：通过 `wecomcli-contact` 查询收件人时，优先取其邮箱填入 `to.emails`；**若该用户没有邮箱，则使用其 `userid` 填入 `to.userids` 尝试投递**。不得以"没有邮箱"为由直接拒绝发送/回复/转发
-- **回复收件人不查通讯录**：回复时直接使用原邮件接口返回的 `sender.email`，不再通过 `wecomcli-contact` 按人名查询（通讯录模糊搜索可能匹配到同音不同字的人，导致发错）
+- **回复收件人不查通讯录**：回复时直接使用原邮件接口返回的 `sender.email`，不再通过 `wecomcli-contact` 按人名查询（通讯录模糊搜索可能匹配到同音不同字的人，导致发错）；`sender.email` 为空时按 reply-mail 工作流走通讯录兜底
 - **查看附件/内嵌图必须用 `wecomcli-media` 技能的 `media download` 接口**：处理邮件中的图片（png/jpg/gif 等）和文档附件时，先基于 `media_id` 调用 `media download` 下载到本地拿到 `file_path`，再读取其内容；解析结果用于回答，**不要把 `media_id` 或本地路径展示给用户**
-- **发送本地附件/内嵌图不需要手动上传**：`attachments` / `inline_images` 的每一项直接填 `file_path`，CLI 会自动完成上传，**不要**为了拿 `media_id` 而额外调用 `wecomcli-media`；仅当已有现成 `media_id`（用户提供或其他接口返回）时才优先复用 `media_id`，且 `media_id` 必须来自接口真实返回值，禁止自行构造
+- **发送本地附件/内嵌图不需要手动上传**：`attachments` / `inline_images` 每一项 `media_id` 与 `file_path` 禁止同时填，`media_id` 禁止自行构造；填法优先级与自动上传规则详见 send-mail.md 步骤四
 
 ## 平台限制
 
