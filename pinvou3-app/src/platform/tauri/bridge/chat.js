@@ -460,6 +460,13 @@
             // must not).
             errorText = window.PinvouBridgeMessages.redactRawError(errorText, state);
           }
+          // session_model_binding_stale:<missing id> (engine_pool.rs
+          // SESSION_MODEL_BINDING_STALE_ERROR) → localized copy carrying the id.
+          if (errorText.indexOf("session_model_binding_stale") === 0) {
+            errorText = bt("sessionModelStale")(
+              errorText.slice("session_model_binding_stale:".length).trim(),
+            );
+          }
           addSystemItem(concurrentTurn
             ? bt("turnAlreadyInProgress")
             : "⚠️ " + errorText, {
