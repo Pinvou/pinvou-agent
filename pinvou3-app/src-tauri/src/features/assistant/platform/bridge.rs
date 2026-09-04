@@ -449,9 +449,11 @@ impl Pinvou3Bridge {
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
                 crate::platform::super_permission::instruction_block(),
             )
-            // 用户记忆段随 memory 开关填充或删除（默认关闭 + en/ja 强制关闭，见
-            // memory_section 注释）。在 session 渲染层替换而非 OnceLock 的
-            // instructions_md 内，设置变更后新会话即生效；旧会话 prompt 不变。
+            // The user memory section is filled or dropped with the memory toggle (off by
+            // default plus force-off for en/ja, see the memory_section comment). Replaced
+            // at the session render layer rather than inside the OnceLock instructions_md,
+            // so a setting change takes effect on new sessions; old session prompts are
+            // left unchanged.
             .replace(
                 "{{PINVOU3_MEMORY_SECTION}}\n",
                 bundle::memory_section(crate::features::memory::memory_enabled()),

@@ -34,9 +34,11 @@ use super::util::{
 
 const LLM_REVIEW_TIMEOUT: StdDuration = StdDuration::from_secs(75);
 
-/// auto_write / auto_update 置信度门槛：`_RELAXED` 后缀为用户明确要求记住
-/// （explicit_remember）时的放宽值。代码判定与提示词都必须从这一组常量取值，
-/// 避免提示词与实现漂移；清洗下限 0.70 与敏感过滤不在此列，保持不变。
+/// auto_write / auto_update confidence thresholds: the `_RELAXED` suffix marks the
+/// relaxed values used when the user explicitly asked to remember (explicit_remember).
+/// Both code decisions and the prompt must read from this one set of constants, so
+/// prompt and implementation cannot drift; the 0.70 sanitization floor and
+/// sensitive-content filtering are not part of this group and stay unchanged.
 pub(super) const PROFILE_AUTO_WRITE_THRESHOLD: f32 = 0.92;
 pub(super) const PROFILE_AUTO_WRITE_THRESHOLD_RELAXED: f32 = 0.85;
 pub(super) const TIMED_AUTO_THRESHOLD: f32 = 0.86;
@@ -44,10 +46,13 @@ pub(super) const TIMED_AUTO_THRESHOLD_RELAXED: f32 = 0.80;
 pub(super) const WORK_CONTEXT_AUTO_THRESHOLD: f32 = 0.94;
 pub(super) const WORK_CONTEXT_AUTO_THRESHOLD_RELAXED: f32 = 0.90;
 
-/// 按轮复盘的系统提示词模板。基线与放宽的置信度门槛都从同一组常量渲染
-/// （[`llm_review_prompt`] / [`explicit_signal_prompt`]）：若提示词仍教旧门槛
-/// （例如放宽后基线段漏改），守规模型会在放宽带内输出 pending_confirm，
-/// 代码侧的调整等于失效。花括号哨兵走 replace 而非 format!，避免转义 JSON 示例。
+/// System prompt template for the per-turn review. Baseline and relaxed confidence
+/// thresholds are both rendered from the same set of constants
+/// ([`llm_review_prompt`] / [`explicit_signal_prompt`]): if the prompt still taught
+/// stale thresholds (e.g. the baseline section was missed after a relaxation), a
+/// rule-following model would emit pending_confirm inside the relaxed band, making
+/// the code-side adjustment a no-op. Brace sentinels go through `replace` instead of
+/// `format!` to avoid escaping the JSON examples.
 pub(super) const LLM_REVIEW_PROMPT_TEMPLATE: &str = r#"你是 pinvou 的后台记忆整理器。你只做一件事：复盘刚刚这一轮对话，并对照已有记忆，输出是否需要保存、更新或跳过记忆。不要回答用户问题，不要解释你的判断。
 
 你必须只输出 JSON，不要解释。格式：
@@ -130,7 +135,8 @@ ttl_days 规则：
 如果没有值得记的内容，输出 {"items":[]}。
 "#;
 
-/// 渲染后的复盘系统提示词：基线门槛从常量取值（见 [`LLM_REVIEW_PROMPT_TEMPLATE`]）。
+/// Rendered review system prompt: baseline thresholds are filled in from constants
+/// (see [`LLM_REVIEW_PROMPT_TEMPLATE`]).
 pub(super) fn llm_review_prompt() -> String {
     LLM_REVIEW_PROMPT_TEMPLATE
         .replace(
@@ -144,11 +150,13 @@ pub(super) fn llm_review_prompt() -> String {
         .replace("{{TIMED_AUTO_GATE}}", &TIMED_AUTO_THRESHOLD.to_string())
 }
 
-/// trigger 为 explicit_user_signal 时追加到系统提示的硬约束：用户明确要求记住
-/// 的内容不允许被 skip 掉，敏感边界保持不变；同时复述放宽后的置信度门槛。
-/// 门槛放宽以 explicit_remember 为准（见 [`apply_llm_memory_review`]），提示词
-/// 必须从同一组常量取值：若提示词仍教基线门槛，守规模型会在放宽区间输出
-/// pending_confirm，代码侧的放宽等于失效。
+/// Hard constraint appended to the system prompt when trigger is explicit_user_signal:
+/// content the user explicitly asked to remember must not be skipped, and the
+/// sensitive boundary stays unchanged; the relaxed confidence thresholds are also
+/// restated. Relaxation is keyed on explicit_remember (see [`apply_llm_memory_review`]),
+/// and the prompt must read from the same constants: if the prompt still taught the
+/// baseline thresholds, a rule-following model would emit pending_confirm inside
+/// the relaxed band, making the code-side relaxation a no-op.
 pub(super) fn explicit_signal_prompt() -> String {
     format!(
         "\n\n本轮 trigger 为 explicit_user_signal：用户明确要求记住或表达了长期偏好。\
@@ -285,8 +293,9 @@ pub async fn review_turn_candidates_with_llm(
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>();
     let explicit_signal = has_memory_review_signal(&user);
-    // 写后果（门槛放宽 + 禁止 skip 硬约束）由窄口径的明确记录请求驱动；
-    // 宽集只决定是否发起复盘（见 has_explicit_remember_signal 文档）。
+    // Write consequences (threshold relaxation + the no-skip hard constraint) are
+    // driven by the narrow explicit remember request; the wide set only decides
+    // whether a review is initiated (see the has_explicit_remember_signal docs).
     let explicit_remember = has_explicit_remember_signal(&user);
     let delivery_complete =
         capture.delivery_complete || assistant_suggests_delivery_complete(&user, &assistant);
@@ -391,8 +400,8 @@ pub async fn review_turn_candidates_with_llm(
 }
 
 pub(super) fn has_memory_review_signal(user: &str) -> bool {
-    // CJK 词素无大小写之分，直接在原文匹配；ASCII 短语在 to_lowercase 后匹配，
-    // 覆盖 "Remember" / "REMEMBER" 等大小写变体。
+    // CJK morphemes have no case, so match against the raw text; ASCII phrases match
+    // after to_lowercase, covering case variants like "Remember" / "REMEMBER".
     let lower = user.to_lowercase();
     [
         "记住",
@@ -442,10 +451,14 @@ pub(super) fn has_memory_review_signal(user: &str) -> bool {
         || contains_imperative_remember(&lower)
 }
 
-/// 窄口径的“用户明确要求记住”判定：只有记录请求短语本身命中时，才追加
-/// “禁止 skip”硬约束并放宽 auto_write 置信度门槛。[`has_memory_review_signal`]
-/// 的宽集（最近 / 正在 / 继续 / 优先 等状态词）仍负责“是否发起复盘”——它们
-/// 只说明本轮可能有值得记的内容，不构成明确的记录请求，不承担放宽的写后果。
+/// Narrow-scope "user explicitly asked to remember" detection: only when a
+/// remember-request phrase itself hits do we append the "no skip" hard constraint
+/// and relax the auto_write confidence thresholds. The wide set in
+/// [`has_memory_review_signal`] (status words like "最近" (recently) / "正在"
+/// (currently) / "继续" (continue) / "优先" (prefer)) still decides whether a
+/// review is initiated — those words only mean this turn might contain memorable
+/// content, not an explicit record request, so they carry no relaxed write
+/// consequences.
 pub(super) fn has_explicit_remember_signal(user: &str) -> bool {
     let lower = user.to_lowercase();
     [
@@ -465,10 +478,11 @@ pub(super) fn has_explicit_remember_signal(user: &str) -> bool {
         || contains_imperative_remember(&lower)
 }
 
-/// "remember" 仅在祈使位置匹配（句首、标点之后或 "please" 之后的词首）：
-/// explicit_user_signal 在本模块携带 auto_write 门槛放宽的实际写后果，而
-/// "Do you remember...?" / "I don't remember ..." 这类陈述、疑问句中的
-/// remember 并不是记录请求，宁窄勿宽。
+/// "remember" matches only in imperative position (word-initial at sentence start,
+/// after punctuation, or after "please"): explicit_user_signal carries the actual
+/// write consequence of relaxing auto_write thresholds in this module, while
+/// remember inside statements and questions like "Do you remember...?" /
+/// "I don't remember ..." is not a record request — err on the narrow side.
 fn contains_imperative_remember(lower: &str) -> bool {
     const NEEDLE: &str = "remember";
     let mut from = 0;
@@ -613,9 +627,10 @@ async fn request_llm_memory_review(
     // for non-Chinese UIs by enforce_memory_locale_policy; see the
     // memory_output_language_directive docs for reachability).
     let mut prompt = llm_review_prompt();
-    // 用 explicit_remember（而非 trigger）驱动硬约束：门槛放宽以 explicit_remember
-    // 为准，两者必须同开同关，否则会出现“门槛已放宽但 prompt 未禁止 skip”的
-    // 不一致回合（如 explicit_signal 与 delivery_complete 并存时）。
+    // Drive the hard constraint with explicit_remember (not trigger): relaxation is
+    // keyed on explicit_remember, so the two must toggle together; otherwise a turn
+    // could end up with "thresholds relaxed but the prompt not forbidding skip"
+    // (e.g. when explicit_signal and delivery_complete coexist).
     if explicit_remember {
         prompt.push_str(&explicit_signal_prompt());
     }
@@ -673,10 +688,11 @@ async fn request_llm_memory_review(
     parse_llm_memory_review(content)
 }
 
-/// 应用已解析的复盘结果。`explicit_remember` 表示本轮命中了用户明确的“记住”
-/// 类记录请求（窄口径 [`has_explicit_remember_signal`]）：auto_write /
-/// auto_update 的置信度门槛按模块顶部常量放宽（profile / timed / work_context），
-/// 清洗下限 0.70 与敏感过滤不变。
+/// Apply a parsed review result. `explicit_remember` means this turn hit an explicit
+/// "remember" (记住) style record request (narrow scope, [`has_explicit_remember_signal`]):
+/// the auto_write / auto_update confidence thresholds are relaxed per the module-top
+/// constants (profile / timed / work_context); the 0.70 sanitization floor and
+/// sensitive filtering are unchanged.
 pub(super) fn apply_llm_memory_review(
     review: LlmMemoryReview,
     explicit_remember: bool,
@@ -812,7 +828,8 @@ pub(super) fn sanitize_llm_memory_item(
             _ => return None,
         };
         content = super::util::clean_memory_label(&clean_profile_memory_content(&content, &topic))?;
-        // 用户明确要求记住时称呼类记忆门槛放宽（常量单一来源，见模块顶部）。
+        // Profile-memory threshold relaxed when the user explicitly asked to remember
+        // (single source of truth: the module-top constants).
         let profile_auto_write_threshold = if explicit_remember {
             PROFILE_AUTO_WRITE_THRESHOLD_RELAXED
         } else {

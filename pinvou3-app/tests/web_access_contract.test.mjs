@@ -192,9 +192,10 @@ for (const command of [
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (KB import controls)`);
 }
 
-// 记忆整理是全局动作（无会话作用域，与 get_memory_overview 同面）：设置页
-// 「AI 整理记忆」按钮与「上次整理」历史回读在 WebUI 同样可用，任一遗漏都会
-// 让按钮以 command_not_allowed 静默失败。
+// Memory organize is a global action (no session scope, same surface as
+// get_memory_overview): the settings "AI 整理记忆" (AI organize memory) button and
+// the "上次整理" (last organized) history read must work on WebUI too; missing
+// either one makes the button fail silently with command_not_allowed.
 for (const command of ['organize_memory', 'get_memory_organize_history']) {
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (memory organize)`);
 }

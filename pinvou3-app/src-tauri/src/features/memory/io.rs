@@ -1142,10 +1142,12 @@ pub(super) fn write_timed_memory_file(
     write_text_atomic(path, &lines)
 }
 
-/// 在写锁内重载并回写单个 timed store：normalize / 去重 / 容量压实后原子落盘。
-/// 读-改-写全程持 [`write_lock`]，与 `update_timed_memory` 等写入口互斥；
-/// organize 的应用后压实用它替代裸 load+write，避免两步之间按轮复盘刚写入
-/// 的条目被旧列表整文件覆盖。
+/// Reload and rewrite a single timed store under the write lock: normalize /
+/// dedupe / capacity compaction, then an atomic write. The whole read-modify-write
+/// holds [`write_lock`], mutually exclusive with write entry points like
+/// `update_timed_memory`; organize's post-apply compaction uses this instead of a
+/// bare load+write, so entries the per-turn review just wrote between the two
+/// steps are not overwritten wholesale by the old list.
 pub fn compact_timed_memory_store(kind: &str) -> io::Result<()> {
     let _guard = write_lock().lock();
     let kind = normalize_timed_memory_kind(kind);
@@ -1519,8 +1521,9 @@ pub fn refresh_recent_work_expiry() -> io::Result<usize> {
         + refresh_timed_memory_expiry_unlocked("recent_activity", now)?)
 }
 
-/// 仅刷新 current_focus / recent_activity 的过期归档。organize 等独立入口在
-/// 全量扫描前调用，与 `refresh_recent_work_expiry` 同样各自短暂持有写锁。
+/// Refresh expiry archiving for current_focus / recent_activity only. Called by
+/// standalone entry points like organize before a full scan; like
+/// `refresh_recent_work_expiry`, it briefly holds the write lock on its own.
 pub fn refresh_timed_memory_expiry() -> io::Result<usize> {
     let _guard = write_lock().lock();
     let now = Utc::now();

@@ -66,7 +66,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         icon: FileChartLine, color: '#AF52DE', image: weeklyReviewImage
       },
       {
-        // kind 由 createScheduledTask 单独透传（仅创建时携带，编辑流不会回发）。
+        // kind: threaded through createScheduledTask at create time only; edit flows never resend.
         id: 'memory-organize', name: '记忆整理', schedule: '工作日 9:30',
         description: '定期整理长期记忆：合并重复、清理过时、修正表述',
         rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=30',
@@ -679,8 +679,10 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         const matches = savedModels.filter(model => model.model === task.model);
         return matches.length === 1 ? matches[0].id : '';
       };
-      // 记忆整理模板与设置页手动入口同口径：记忆关闭（默认 / en、ja 强制关闭）
-      // 时不展示，否则任务创建成功但每次触发都记一条 "memory disabled" 失败。
+      // The "记忆整理" (memory organize) template uses the same gate as the manual
+      // settings entry: hidden while memory is disabled (off by default, and forced
+      // off for en/ja); otherwise the task would be created successfully but log a
+      // "memory disabled" failure on every trigger.
       const memoryEnabled = !!(appState.settings && appState.settings.memory_enabled);
       const visibleSuggestions = SCHEDULED_TASK_TEMPLATES
         .filter(template => template.kind !== 'memory_organize' || memoryEnabled)

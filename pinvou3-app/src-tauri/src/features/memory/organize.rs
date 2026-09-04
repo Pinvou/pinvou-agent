@@ -1,10 +1,12 @@
-//! 记忆整理优化（organize）：全量扫描六类记忆存储 → LLM 产出 delete / update /
-//! merge 动作 → 逐条清洗校验后应用，并把每次整理报告写入
-//! `organize_history.json`（有界数组，保留最近 20 条）。
+//! Memory organize (`organize`): scan all six memory stores in full → the LLM
+//! produces delete / update / merge actions → each action is sanitized, validated,
+//! and applied, and every run's report is appended to `organize_history.json`
+//! (a bounded array keeping the most recent 20 entries).
 //!
-//! 与 `llm_review` 的按轮复盘不同：整理是用户主动触发的全量 pass，目标是合并
-//! 重复、改写过时表述、删除低价值条目，而不记录任何新信息；profile（用户身份
-//! 字段）不在整理范围。
+//! Unlike the per-turn review in `llm_review`: organize is a user-initiated full
+//! pass whose goal is to merge duplicates, rewrite stale wording, and drop
+//! low-value items without recording any new information; profile (user identity
+//! fields) is out of scope.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
@@ -36,9 +38,11 @@ use super::util::{
 const LLM_ORGANIZE_TIMEOUT: StdDuration = StdDuration::from_secs(75);
 const ORGANIZE_HISTORY_MAX_REPORTS: usize = 20;
 
-/// 进程级单飞守卫：手动按钮与定时任务可能并发触发两次整理，io 层虽然并发
-/// 安全，但两个 pass 会基于各自（最长 75 秒前的）快照交叉应用破坏性动作，
-/// 这里直接拒绝后到者。pub(super) 供并发拒绝测试预占锁。
+/// Process-wide single-flight guard: the manual button and the scheduled task can
+/// trigger two organize runs concurrently. The io layer is concurrency-safe, but
+/// the two passes would interleave destructive actions based on their own (up to
+/// 75-second-old) snapshots, so the latecomer is rejected outright. `pub(super)`
+/// lets the concurrency-rejection test pre-occupy the lock.
 pub(super) static ORGANIZE_IN_FLIGHT: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 pub(super) const MEMORY_ORGANIZE_PROMPT: &str = r#"你是 pinvou 的后台记忆整理器。你只做一件事：对照已有的全部记忆存储，输出整理优化动作（合并重复、改写过时表述、删除低价值条目）。不要回答用户问题，不要解释你的判断，不要记录任何新信息。
@@ -76,11 +80,12 @@ pub(super) const MEMORY_ORGANIZE_PROMPT: &str = r#"你是 pinvou 的后台记忆
 8. 没有可整理的内容时输出 {"actions":[]}。
 "#;
 
-/// 一次记忆整理的报告。`scanned` 固定含六类存储的条目数；`deleted` /
-/// `updated` / `merged` 按 kind 计数且互不重叠：`merged` 只记 merge 中被
-/// 合并移除的源条目，`deleted` 只记 delete 动作移除的条目，三者求和即实际
-/// 改动的条目数。
-/// Deserialize 供 `organize_history.json` 的有界历史回读使用。
+/// Report of one organize run. `scanned` always carries per-store item counts;
+/// `deleted` / `updated` / `merged` are counted per kind and never overlap:
+/// `merged` counts only source items absorbed and removed by a merge, `deleted`
+/// only items removed by delete actions; the three sums equal the number of
+/// items actually changed.
+/// `Deserialize` supports the bounded history readback from `organize_history.json`.
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct MemoryOrganizeReport {
     pub started_at: String,
@@ -95,10 +100,12 @@ pub struct MemoryOrganizeReport {
     pub warnings: Vec<String>,
 }
 
-/// 整理入口：机械预清理 → 全量快照 → LLM 整理动作 → 清洗校验 → 应用 → 落历史。
-/// `cancel` 由定时任务入口传入（手动按钮没有可取消的宿主，传 `None`）：入口
-/// 与“LLM 返回后、动作应用前”各检查一次，保证已取消的运行不留下已应用的
-/// 破坏性动作。
+/// Organize entry point: mechanical pre-cleanup → full snapshot → LLM organize
+/// actions → sanitize/validate → apply → persist history.
+/// `cancel` comes from the scheduled-task entry point (the manual button has no
+/// cancellable host and passes `None`): checked once at entry and once after the
+/// LLM returns but before any action is applied, so a canceled run never leaves
+/// destructive actions already applied behind.
 pub async fn organize_memory_with_llm(
     bridge: &(impl MemoryReviewModel + ?Sized),
     cancel: Option<&CancellationToken>,
@@ -133,7 +140,8 @@ pub async fn organize_memory_with_llm(
             "model": bridge.memory_model(),
         }),
     );
-    // 机械预清理：过期归档。各 pub 入口各自短暂持有写锁，幂等可重入。
+    // Mechanical pre-cleanup: expire-and-archive stale entries. Each pub entry
+    // briefly holds the write lock on its own; idempotent and reentrant.
     io::refresh_recent_work_expiry().context("refresh recent work expiry")?;
     io::refresh_timed_memory_expiry().context("refresh timed memory expiry")?;
     let snapshot = OrganizeSnapshot::load().context("load memory stores for organize")?;
@@ -168,9 +176,10 @@ pub async fn organize_memory_with_llm(
             return Err(error);
         }
     };
-    // 取消边界：LLM 返回后、任何 delete/update/merge 应用前。LLM 等待期的取消
-    // 由 executor 侧 select 丢弃本 future 兜住；这里兜住 select 无法打断的
-    // 同步段——保证“已取消”的 run 不会留下已应用的动作。
+    // Cancellation boundary: after the LLM returns, before any delete/update/merge
+    // is applied. Cancellation during the LLM wait is covered by the executor-side
+    // select dropping this future; this covers the synchronous section select cannot
+    // interrupt — a canceled run never leaves applied actions behind.
     if cancel.is_some_and(|cancel| cancel.is_cancelled()) {
         append_memory_review_diagnostic(
             "organize",
@@ -211,7 +220,8 @@ pub async fn organize_memory_with_llm(
     Ok(report)
 }
 
-/// 报告收尾：先落历史（失败转 warning），再写完成诊断。
+/// Report finalization: persist history first (failure becomes a warning), then
+/// write the completion diagnostic.
 fn finish_organize_report(report: &mut MemoryOrganizeReport) {
     if let Err(error) = persist_organize_report(report) {
         let detail = format!("persist organize history: {error}");
@@ -232,13 +242,15 @@ fn finish_organize_report(report: &mut MemoryOrganizeReport) {
     );
 }
 
-/// 最近的整理报告，新的在前；文件缺失或损坏时返回空。
+/// Most recent organize reports, newest first; empty when the file is missing or
+/// corrupt.
 pub fn load_organize_history() -> Vec<MemoryOrganizeReport> {
     let Ok(raw) = std::fs::read_to_string(io::organize_history_path()) else {
         return Vec::new();
     };
-    // 逐条容错解析：单条损坏（部分写入 / 手工编辑）只丢那一条，不把整份历史
-    // 静默清零。顶层结构坏了仍回退空。
+    // Tolerant per-entry parsing: one corrupt entry (partial write / manual edit)
+    // drops only that entry instead of silently wiping the whole history. A broken
+    // top-level structure still falls back to empty.
     let Ok(values) = serde_json::from_str::<Vec<serde_json::Value>>(&raw) else {
         return Vec::new();
     };
@@ -256,7 +268,8 @@ fn persist_organize_report(report: &MemoryOrganizeReport) -> std::io::Result<()>
     write_json_atomic(&io::organize_history_path(), &history)
 }
 
-/// 六类存储的一次性快照：LLM 输入、id 存在性校验与 scanned 计数都基于它。
+/// One-shot snapshot of the six stores: LLM input, id existence validation, and
+/// the scanned counts are all based on it.
 pub(super) struct OrganizeSnapshot {
     profile: MemoryProfile,
     preferences: Vec<PreferenceFile>,
@@ -275,8 +288,10 @@ impl OrganizeSnapshot {
             work_context: io::load_work_context()?,
             current_focus: io::load_current_focus()?,
             recent_activity: io::load_recent_activity()?,
-            // 只装载未决议候选：ignored/confirmed 已有用户决定，无整理价值，
-            // 也不应随整理请求再次外发给模型（与按轮复盘的 pending 口径一致）。
+            // Load only undecided candidates: ignored/confirmed items already carry a
+            // user decision, have nothing left to organize, and must not be sent to the
+            // model again with an organize request (same pending scope as the per-turn
+            // review).
             pending: io::load_pending_memory()?
                 .into_iter()
                 .filter(|item| item.status == super::types::PENDING_STATUS_PENDING)
@@ -285,7 +300,8 @@ impl OrganizeSnapshot {
         })
     }
 
-    /// profile 之外的五类可整理存储是否全为空（全空则无需调 LLM）。
+    /// Whether the five organizable stores besides profile are all empty (no LLM
+    /// call if so).
     fn stores_empty(&self) -> bool {
         self.preferences.is_empty()
             && self.work_context.is_empty()
@@ -294,7 +310,7 @@ impl OrganizeSnapshot {
             && self.pending.is_empty()
     }
 
-    /// profile 是否有任何内容（scanned["profile"] 只区分 0/1）。
+    /// Whether profile has any content (`scanned["profile"]` only distinguishes 0/1).
     fn profile_has_content(&self) -> bool {
         let profile = &self.profile;
         !profile.identity.call_name.is_empty()
@@ -378,12 +394,14 @@ pub(super) struct LlmOrganizeAction {
     pub(super) content: String,
     #[serde(default)]
     pub(super) reason: String,
-    // 说明：LLM 输出中的 "topic" 字段会被 serde 静默忽略——整理不允许迁移
-    // 条目主题（见 update_organize_item），避免模型自拟 topic 折叠进默认桶后
-    // 静默覆盖桶内无关条目。
+    // Note: a "topic" field in the LLM output is silently ignored by serde — organize
+    // must not migrate item topics (see `update_organize_item`), which prevents a
+    // model-invented topic from folding into the default bucket and silently
+    // overwriting unrelated items in it.
 }
 
-/// 校验后待执行的动作：ids 已确认存在于快照，content 已清洗并通过质量过滤。
+/// A validated action pending execution: ids confirmed to exist in the snapshot,
+/// content sanitized and past the quality filters.
 #[derive(Debug, Clone)]
 pub(super) struct OrganizeAction {
     op: String,
@@ -392,8 +410,9 @@ pub(super) struct OrganizeAction {
     content: String,
 }
 
-/// 校验单条 LLM 整理动作：kind 白名单、id 存在性、op-arity、content 清洗与
-/// 分 kind 质量过滤。被丢弃时记 warning（敏感内容计 `skipped_sensitive`）。
+/// Validate one LLM organize action: kind whitelist, id existence, op arity,
+/// content sanitization, and per-kind quality filters. Dropped actions record a
+/// warning (sensitive content counts toward `skipped_sensitive`).
 pub(super) fn validate_organize_action(
     raw: LlmOrganizeAction,
     snapshot: &OrganizeSnapshot,
@@ -409,7 +428,8 @@ pub(super) fn validate_organize_action(
         return drop_action(format!("organize: drop unknown op {:?}", op));
     }
     let kind = clean_text(&raw.kind, 24);
-    // profile 与未知 kind 都不在整理范围（profile 动作按提示词约定直接丢弃）。
+    // Both profile and unknown kinds are outside organize scope (profile actions are
+    // dropped outright per the prompt contract).
     if !matches!(
         kind.as_str(),
         "preference" | "work_context" | "current_focus" | "recent_activity" | "pending"
@@ -439,9 +459,11 @@ pub(super) fn validate_organize_action(
     if op == "update" && ids.len() != 1 {
         return drop_action(format!("organize: drop update {kind} without exactly 1 id"));
     }
-    // 已过期归档的 timed 条目只允许删除：update/merge 走 io 入口会把
-    // status/last_hit 无条件重置为 active/now（update_timed_memory），等于把刚
-    // 归档的条目按原 ttl_days 整窗复活，与提示词规则 6「保持原有过期设置」相悖。
+    // Expired/archived timed items allow delete only: the io update/merge entry
+    // points unconditionally reset status/last_hit to active/now (update_timed_memory),
+    // reviving a just-archived item for a whole window at its original ttl_days —
+    // contradicting prompt rule 6 (「保持原有过期设置」, "keep the original expiry
+    // setting").
     if op != "delete" && matches!(kind.as_str(), "current_focus" | "recent_activity") {
         let items = if kind == "current_focus" {
             &snapshot.current_focus
@@ -469,16 +491,17 @@ pub(super) fn validate_organize_action(
             *skipped_sensitive += 1;
             return None;
         }
-        // 记忆块标记是渲染层的结构边界（render.rs 的 <pinvou_user_memory> 块）：
-        // 含该标记的内容可在运行时记忆块内伪造或提前闭合边界，把模型可见的
-        // 「记忆」变成注入通道，一律丢弃。
+        // Memory-block markers are the render layer's structural boundary (the
+        // <pinvou_user_memory> block in render.rs): content containing one could forge
+        // or prematurely close that boundary inside the runtime memory block, turning
+        // the model-visible "memory" into an injection channel. Always dropped.
         if content.contains("pinvou_user_memory") {
             return drop_action(
                 "organize: drop content containing memory block markers".to_string(),
             );
         }
         content = clean_candidate_sentence(&content, 180);
-        // 与 sanitize_llm_memory_item 同款的分 kind 质量过滤。
+        // Per-kind quality filters, same as sanitize_llm_memory_item.
         match kind.as_str() {
             "preference" => {
                 if looks_sensitive_or_task_like(&content) || content.chars().count() < 6 {
@@ -496,8 +519,8 @@ pub(super) fn validate_organize_action(
                 }
             }
             _ => {
-                // current_focus / recent_activity：一次性任务口吻且不是进展/交付
-                // 状态的表述不适合作为记忆内容。
+                // current_focus / recent_activity: one-off task phrasing that is not a
+                // progress/delivery status makes poor memory content.
                 if looks_task_like(&content) && !looks_recent_work_status(&content) {
                     return drop_action(
                         "organize: drop timed content that looks like a one-off task".to_string(),
@@ -511,9 +534,11 @@ pub(super) fn validate_organize_action(
             ));
         }
     }
-    // LLM 自拟的 topic 不参与应用：未知 topic 会被归一化折叠进默认桶
-    // （answer_style / task_pattern），io 层按 topic 派生目标 id 迁移条目，
-    // 会静默覆盖桶内无关条目且不计入报告。条目主题保持原样（见 prompt 规则 7）。
+    // LLM-invented topics are not applied: an unknown topic gets normalized into the
+    // default buckets (answer_style / task_pattern); the io layer derives a target id
+    // from the topic and migrates the item, silently overwriting unrelated items in
+    // the bucket without counting them in the report. Item topics stay as-is (see
+    // prompt rule 7).
     let _reason = clean_text(&raw.reason, 120);
     Some(OrganizeAction {
         op,
@@ -523,8 +548,9 @@ pub(super) fn validate_organize_action(
     })
 }
 
-/// 逐条应用已校验动作。每条动作走 io 既有加锁入口（各自持有写锁），单条失败
-/// 记 warning 继续，不中断整批。
+/// Apply validated actions one by one. Each action goes through the existing
+/// locked io entry points (each takes the write lock itself); a single failure
+/// records a warning and continues instead of aborting the batch.
 fn apply_organize_actions(
     actions: &[OrganizeAction],
 ) -> (
@@ -572,7 +598,8 @@ fn apply_organize_actions(
                 }
             }
             "merge" => {
-                // 保留第一个 id 作为主条目：更新为合并内容，其余删除。
+                // Keep the first id as the primary item: update it to the merged
+                // content, delete the rest.
                 let (keep, rest) = match action.ids.split_first() {
                     Some(split) => split,
                     None => continue,
@@ -597,14 +624,16 @@ fn apply_organize_actions(
                     }
                 }
                 if !keep_updated {
-                    // 合并内容尚未落库，此时删除其余源条目会造成不可逆的
-                    // 信息丢失；整条动作按失败处理，源条目原样保留。
+                    // The merged content is not persisted yet; deleting the other source
+                    // items now would lose data irreversibly. Treat the whole action as
+                    // failed and leave the source items untouched.
                     continue;
                 }
                 for id in rest {
                     match delete_organize_item(&action.kind, id) {
-                        // 被合并移除的条目只计 merged，不与 deleted 重复计数：
-                        // 三个口径互不重叠，求和即实际改动的条目数。
+                        // Items absorbed by a merge count only as merged, never
+                        // double-counted as deleted: the three counters are disjoint and
+                        // sum to the number of items actually changed.
                         Ok(true) => *merged.entry(action.kind.clone()).or_default() += 1,
                         Ok(false) => {
                             warnings.push(format!(
@@ -613,8 +642,9 @@ fn apply_organize_actions(
                             ));
                         }
                         Err(error) => {
-                            // 可区分于 delete 动作的失败：merge 半失败时 keep 已更新、
-                            // 该源条目残留，报告需能直接定位是 merge 的清理删除。
+                            // Distinguishable from a delete-action failure: on a half-failed
+                            // merge, keep is already updated and this source item lingers, so
+                            // the report must pinpoint it as a merge's cleanup delete.
                             warnings.push(format!(
                                 "organize: merge {} cleanup delete {id}: {error}",
                                 action.kind
@@ -633,17 +663,20 @@ fn delete_organize_item(kind: &str, id: &str) -> std::io::Result<bool> {
     match kind {
         "preference" => io::delete_preference(id),
         "work_context" => io::delete_work_context(id),
-        // pending 删除等价于用户忽略：置 ignored 而非物理移除，保留审计痕迹。
+        // Deleting a pending item equals the user ignoring it: mark it ignored instead
+        // of physically removing it, preserving an audit trail.
         "pending" => io::ignore_pending_memory(id).map(|event| event.is_some()),
         _ => io::delete_timed_memory(kind, id),
     }
 }
 
 fn update_organize_item(kind: &str, id: &str, content: &str) -> Result<bool> {
-    // topic 一律保持原样（patch.topic = None）：io 层按 topic 派生目标 id 做
-    // 主题迁移，LLM 自拟 topic 会折叠进默认桶并静默覆盖桶内无关条目；merge
-    // 的语义是收敛重复项到保留条目所在的桶，同样不需要迁移。ttl 不在整理
-    // 范围内：current_focus / recent_activity 保持原 ttl。
+    // Topic always stays as-is (patch.topic = None): the io layer derives a target id
+    // from the topic to migrate items, and an LLM-invented topic would fold into the
+    // default bucket and silently overwrite unrelated items there. Merge means
+    // consolidating duplicates into the kept item's bucket, so no migration is needed
+    // either. ttl is out of organize scope: current_focus / recent_activity keep
+    // their original ttl.
     let patch = MemoryTextPatch {
         topic: None,
         text: Some(content.to_string()),
@@ -662,10 +695,12 @@ fn update_organize_item(kind: &str, id: &str, content: &str) -> Result<bool> {
     }
 }
 
-/// 应用完成后对两类 timed store 再做一次规范化 / 去重 / 容量压实，清掉
-/// update/merge 留下的重复或超限条目。压实走 io 层加锁入口：load 与整文件
-/// 回写必须同锁，否则快照间隙里按轮复盘刚写入的条目会被旧列表覆盖丢失。
-/// 失败记 warning，不影响主流程。
+/// After applying, run one more normalize / dedupe / capacity compaction over the
+/// two timed stores to clear duplicates or over-cap items left behind by
+/// update/merge. Compaction goes through the locked io entry point: load and the
+/// whole-file rewrite must hold the same lock, otherwise items the per-turn review
+/// just wrote during the snapshot gap would be overwritten and lost with the old
+/// list. Failures record a warning and do not affect the main flow.
 fn compact_timed_stores(warnings: &mut Vec<String>) {
     for kind in ["current_focus", "recent_activity"] {
         if let Err(error) = io::compact_timed_memory_store(kind) {
@@ -687,7 +722,7 @@ async fn request_llm_organize_actions(
     let provider = bridge.memory_provider();
     let preset = bridge.memory_model_preset();
     let model_name = if provider == "vllm" {
-        // 与按轮复盘同款：served-name 探测使用同源推理密钥。
+        // Same as the per-turn review: served-name probing uses the same inference key.
         crate::features::monitor::probe_vllm_model_info(
             &base_url,
             Some(bridge.memory_api_key().as_str()),
@@ -703,7 +738,8 @@ async fn request_llm_organize_actions(
         Some(suffix) => format!("{MEMORY_ORGANIZE_PROMPT}{suffix}"),
         None => MEMORY_ORGANIZE_PROMPT.to_string(),
     };
-    // Anthropic 官方端点走 Messages 协议直连（同 llm_review 的按轮复盘）。
+    // The official Anthropic endpoint uses a native Messages protocol direct call
+    // (same as llm_review's per-turn review).
     if preset == ModelPreset::Anthropic {
         let content = crate::core::model_endpoint::post_anthropic_messages(
             &client,
@@ -753,13 +789,15 @@ async fn request_llm_organize_actions(
     parse_llm_organize_actions(&content)
 }
 
-/// 宽松解析：直接 JSON 失败时回退提取首尾大括号之间的对象（同 parse_llm_memory_review）。
+/// Lenient parsing: if direct JSON parsing fails, fall back to extracting the object
+/// between the first and last braces (same as parse_llm_memory_review).
 fn parse_llm_organize_actions(content: &str) -> Result<Vec<LlmOrganizeAction>> {
     let trimmed = content.trim();
     if trimmed.is_empty() {
-        // 空 content（缺 choices / content 非字符串 / refusal / 内容过滤）是
-        // 传输或模型侧异常，不是「无动作」：按失败处理，避免产出假的
-        // no_change 成功报告。语义上的无动作是输出 {"actions":[]}。
+        // Empty content (missing choices / non-string content / refusal / content
+        // filtering) is a transport- or model-side anomaly, not "no actions": treat it
+        // as a failure to avoid producing a fake successful no_change report. A
+        // semantic no-op is emitting {"actions":[]}.
         return Err(anyhow!("memory organize returned an empty response"));
     }
     match serde_json::from_str::<LlmOrganizeActions>(trimmed) {

@@ -305,8 +305,9 @@ impl Pinvou3Bundle {
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
                 crate::platform::super_permission::instruction_block(),
             )
-            // 用户记忆段按当前 memory 开关填充或删除（落盘副本非 LLM 实时路径，
-            // 这里只为防占位符原文残留在 disk 文件，与 TITLE_LANG 同理）。
+            // The user memory section is filled or dropped per the current memory toggle
+            // (the on-disk copy is not the LLM's live path; this only keeps the placeholder
+            // text out of the file on disk, same as TITLE_LANG).
             .replace(
                 "{{PINVOU3_MEMORY_SECTION}}\n",
                 super::memory_section(crate::features::memory::memory_enabled()),

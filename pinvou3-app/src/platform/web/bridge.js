@@ -2783,7 +2783,7 @@
       // kind is create-time task metadata (currently only "memory_organize"; the
       // backend rejects anything else). It deliberately stays out of
       // SCHEDULED_TASK_WRITABLE_FIELDS so edit flows can never resend it.
-      // 与 tauri 桥保持同一契约（审计对齐）。
+      // Kept identical to the tauri bridge contract (audit alignment).
       const kind = input && typeof input.kind === "string" ? input.kind.trim() : "";
       const selectAfterCreate = !input || input.selectAfterCreate !== false;
       const backendInput = scheduledTaskBackendInput(input);
@@ -7745,17 +7745,22 @@
       if (sid === state.activeSessionId) addSystemItem(bt("memoryNeverFailed") + e);
     }
   }
-  // AI 整理记忆（与 tauri memory.js 同一契约）：整理全局记忆数据，入口仍捕获
-  // 会话，成功/失败只写回发起会话的面板；成功走 applyMemoryWriteState 收敛
-  // runtime/warnings 并重拉 overview，报告由调用方从返回值取。失败直接继续
-  // 抛出：memory.error 是加载失败专用通道（设置页横幅会把它渲染成通用的
-  // “加载失败”文案），整理失败的原因由调用方的 catch 就近透传，不污染该通道。
+  // AI organize memory ("AI 整理记忆"; same contract as tauri memory.js):
+  // operates on global memory data; the entry point still captures the session
+  // so success and failure are written back only to the originating session's
+  // panel. On success, reconcile runtime/warnings via applyMemoryWriteState and
+  // refetch the overview; the caller reads the report from the return value. On
+  // failure, rethrow: memory.error is the dedicated load-failure channel (the
+  // settings banner renders it as the generic "加载失败" (load failed) copy),
+  // so the organize failure reason is surfaced by the caller's catch and must
+  // not pollute that channel.
   async function organizeMemory() {
     if (!invoke) return null;
-    const sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(与 tauri 对齐)
+    const sid = state.activeSessionId; // same as saveMemoryProfilePatch: after switching away, never write to B's panel
     const result = await invoke("organize_memory");
     if (sid === state.activeSessionId && result) applyMemoryWriteState(result);
-    // 整理会合并/删除条目：重拉 overview 刷新面板；返回原始载荷。
+    // Organizing can merge/delete entries: refetch the overview to refresh the
+    // panel; return the raw payload.
     await loadMemoryOverview();
     return result;
   }

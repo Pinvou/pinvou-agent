@@ -133,8 +133,10 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 pub const BUNDLE_VERSION: &str = concat!("0.27-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
-/// 骨架 = 身份/底线/用户记忆(占位)/工具与事实通用纪律/怎么干/红线/输出，三个占位行：
-/// `{{PINVOU3_MEMORY_SECTION}}`（§用户记忆 位，按 memory 开关填充，见 [`memory_section`]）、
+/// skeleton = identity / baseline / user memory (placeholder) / tool-and-fact discipline /
+/// how-to / red lines / output; three placeholder lines:
+/// `{{PINVOU3_MEMORY_SECTION}}` at the 「用户记忆」 slot, filled per the memory toggle
+/// (see [`memory_section`]),
 /// `{{PINVOU3_MODE_ENV_SECTION}}`（§工作环境 位）与
 /// `{{PINVOU3_MODE_ARTIFACT_RULE}}`（§工具与事实 的成品条位）。
 /// 拆分说明：work 专属的 §工作环境(L10-13) 与 present_artifact 条(L18) 在原文中
@@ -142,20 +144,25 @@ pub const BUNDLE_VERSION: &str = concat!("0.27-", env!("BUNDLE_INSTRUCTIONS_HASH
 pub const INSTRUCTIONS_SHARED_MD: &str =
     include_str!("../../../../resources/common/bundle/instructions-shared.md");
 
-/// 「用户记忆」段正文（启用态填充 `{{PINVOU3_MEMORY_SECTION}}` 占位行，尾部带节间空行）。
-/// 长期记忆是可选能力：默认关闭，且非简体中文用户被 prefs 的
-/// `enforce_memory_locale_policy` 强制关闭。若该段无条件进骨架，关闭记忆的用户说
-/// 「记住」时模型会按指引确认「已记下」，而后台不会写任何记忆，恰好违反段内
-/// 第 3 条「不编造已记住的内容」。故骨架只留占位行，由 session 渲染层按
-/// `memory_enabled` 决定填正文或删除整行；不进 `instructions_md` 的 OnceLock，
-/// 与 `{{PINVOU3_SUDO_INSTRUCTION}}` 同生命周期（设置变更后新会话生效）。
+/// Body of the 「用户记忆」 (user memory) section; fills the `{{PINVOU3_MEMORY_SECTION}}`
+/// placeholder line when enabled, trailing inter-section blank line included.
+/// Long-term memory is an optional capability: off by default, and force-disabled for
+/// non-Simplified-Chinese users by prefs' `enforce_memory_locale_policy`. If the section
+/// went into the skeleton unconditionally, a memory-disabled user saying 「记住」
+/// ("remember this") would get the guided confirmation 「已记下」 ("noted") while the
+/// background writes no memory — exactly violating rule 3 of the section, 「不编造已记住
+/// 的内容」 ("never fabricate remembered content"). So the skeleton keeps only the
+/// placeholder line, and the session render layer fills the body or drops the whole line
+/// based on `memory_enabled`; it stays out of the `instructions_md` OnceLock and shares
+/// `{{PINVOU3_SUDO_INSTRUCTION}}`'s lifecycle (setting changes take effect on new sessions).
 const MEMORY_SECTION_MD: &str = "## 用户记忆\n\
 - 用户明确要你记住(「记住」「记一下」「帮我记下」/\"remember this\" 之类):**简短确认已记下,同轮照常把任务做完**;要点由应用后台在回合结束后写入长期记忆(个别情况会先请用户确认),无需你复述或调用工具。\n\
 - 对「以后都…」这类没有明说「记」的偏好表述:自然回应即可,不要断言已记住,是否入库由后台判断。\n\
 - **不编造、不夸大已记住的内容**;不确定是否已记住就如实说,别假装记得。与当下指令冲突时以当下指令为准(权威顺序见「底线」)。\n\n";
 
-/// `{{PINVOU3_MEMORY_SECTION}}` 占位行（含换行）的填充物：记忆开启时为
-/// [`MEMORY_SECTION_MD`]，关闭时空串（配合占位行自身的换行，整行消失）。
+/// Fill for the `{{PINVOU3_MEMORY_SECTION}}` placeholder line (newline included): the
+/// [`MEMORY_SECTION_MD`] when memory is on, an empty string when off (the placeholder
+/// line's own newline makes the whole line disappear).
 pub(crate) fn memory_section(enabled: bool) -> &'static str {
     if enabled { MEMORY_SECTION_MD } else { "" }
 }
@@ -746,7 +753,8 @@ mod tests {
         let tools_at = INSTRUCTIONS_SHARED_MD.find("## 工具与事实").unwrap();
         let how_at = INSTRUCTIONS_SHARED_MD.find("## 怎么干").unwrap();
         assert!(env_at < tools_at && tools_at < artifact_at && artifact_at < how_at);
-        // §用户记忆 占位行紧跟 §底线、在模式层环境段之前（见「底线」权威顺序的引用位）。
+        // The 「用户记忆」 placeholder line sits right after 「底线」 and before the
+        // mode-layer environment section (see where the baseline's authority order is cited).
         let bottom_at = INSTRUCTIONS_SHARED_MD.find("## 底线").unwrap();
         let memory_at = INSTRUCTIONS_SHARED_MD
             .find("{{PINVOU3_MEMORY_SECTION}}")
@@ -756,15 +764,19 @@ mod tests {
 
     #[test]
     fn memory_section_renders_verbatim_when_enabled_and_vanishes_when_disabled() {
-        // 启用态：整段正文原样进骨架，无占位残留；段紧跟底线节。
+        // Enabled: the whole section body lands in the skeleton verbatim with no
+        // placeholder left; the section directly follows the baseline section.
         let enabled =
             INSTRUCTIONS_SHARED_MD.replace("{{PINVOU3_MEMORY_SECTION}}\n", memory_section(true));
         assert!(enabled.contains(MEMORY_SECTION_MD));
         assert!(!enabled.contains("{{PINVOU3_MEMORY_SECTION}}"));
         assert!(enabled.contains("语气平实,少感叹号与最高级。\n\n## 用户记忆\n"));
-        // 段尾空行接住模式层环境段占位行，保持原有节间空行。
+        // The section's trailing blank line catches the mode-layer environment placeholder,
+        // preserving the original inter-section blank line.
         assert!(enabled.contains("权威顺序见「底线」)。\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"));
-        // 关闭态：整行消失，不留空行与占位残留；底线节与模式层环境段之间仍恰一个空行。
+        // Disabled: the whole line disappears, no blank line or placeholder left; exactly
+        // one blank line remains between the baseline section and the mode-layer
+        // environment section.
         let disabled =
             INSTRUCTIONS_SHARED_MD.replace("{{PINVOU3_MEMORY_SECTION}}\n", memory_section(false));
         assert!(!disabled.contains("用户记忆"));

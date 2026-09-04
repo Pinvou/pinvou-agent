@@ -685,8 +685,9 @@ impl VersionedJsonStore<ScheduledTaskUiMetadataRegistry> {
 pub(crate) type ScheduledTaskKindStore = VersionedJsonStore<ScheduledTaskKindRegistry>;
 
 impl VersionedJsonStore<ScheduledTaskKindRegistry> {
-    /// 读取任务种类。目前只有 `memory_organize` 是受支持的种类；文件里遗留的
-    /// 其他值一律视为普通聊天任务（返回 None），与创建侧的白名单校验呼应。
+    /// Reads the task kind. Only `memory_organize` is a supported kind for now; any other
+    /// value left in the file is treated as an ordinary chat task (returns None),
+    /// mirroring the creation-side allow-list.
     pub(crate) fn kind_for(&self, automation_id: &str) -> Option<String> {
         self.registry
             .read()
@@ -696,7 +697,7 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
             .filter(|kind| kind == SCHEDULED_TASK_KIND_MEMORY_ORGANIZE)
     }
 
-    /// None 删除该任务的种类记录（回到普通聊天任务）。
+    /// None removes the task's kind record (back to an ordinary chat task).
     pub(crate) fn set_kind(&self, automation_id: &str, kind: Option<String>) -> Result<()> {
         if automation_id.trim().is_empty() {
             bail!("scheduled automation id cannot be empty");

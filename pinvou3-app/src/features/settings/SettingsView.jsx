@@ -118,10 +118,10 @@ const memoryTypeLabel = (kind, detailCopy) => kind === 'current_focus' ? detailC
   : kind === 'work_context' ? detailCopy.memoryTypes.work_context
   : detailCopy.memoryTypes.preference;
 
-// organize_memory 报告里的 {kind:count} 映射 → 条目总数(卡片摘要只需要总量)。
+// Sums the {kind:count} map in an organize_memory report (card summary needs only the total).
 const memoryOrganizeCount = value => Object.values(value && typeof value === 'object' ? value : {})
   .reduce((sum, n) => sum + (Number(n) || 0), 0);
-// finished_at ISO 时间 → 本地时间展示;解析失败退回原文,不抛错。
+// finished_at ISO time → local display; on parse failure fall back to the raw value (never throws).
 const memoryOrganizeTime = value => {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
@@ -334,7 +334,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         setMenuFor(null); // eslint-disable-line react-hooks/set-state-in-effect -- clear menu and search when switching tabs or closing the modal
         setQuery('');
       }, [tab, open]);
-      // 上次整理时间在卡片打开时读取一次；成功整理后由 organizeNow 刷新。
+      // Last-organized time: read once on card open; organizeNow refreshes it after success.
       useEffect(() => {
         if (!bridge.available || !bridge.memory.loadOrganizeHistory) return;
         let cancelled = false;
@@ -342,7 +342,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           if (cancelled) return;
           const finished = Array.isArray(history) && history[0] && history[0].finished_at;
           if (finished) setLastOrganizedAt(memoryOrganizeTime(finished));
-        }).catch(() => {}); // 上次整理时间仅为展示信息,读取失败降级为不显示
+        }).catch(() => {}); // display-only; degrade to hidden on read failure
         return () => { cancelled = true; };
       }, []);
 
@@ -401,7 +401,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             const finished = Array.isArray(history) && history[0] && history[0].finished_at;
             if (finished) setLastOrganizedAt(memoryOrganizeTime(finished));
           }
-        } catch { /* organizeMemory 失败只抛出不写状态；本组件为未挂载的遗留导出，失败就地吞掉 */ } finally {
+        } catch { /* failures only throw, no state write; legacy unmounted export swallows them */ } finally {
           setOrganizing(false);
         }
       };
@@ -2373,9 +2373,10 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             : t.uiSettingsView.memoryOrganizeSummary(count(report.merged), count(report.updated), count(report.deleted)));
           loadMemoryOrganizeHistory();
         } catch (error) {
-          // organizeMemory 失败只抛出不写状态：memory.error 是加载失败专用
-          // 通道（统一渲染为“加载失败”文案，错因误导），具体原因在这里就近
-          // 透传到整理结果行。
+          // organizeMemory failures only throw without writing state: memory.error
+          // is the dedicated load-failure channel (rendered uniformly as the
+          // "加载失败" (load failed) copy, which would mislead about the cause),
+          // so the concrete reason is surfaced right here to the organize result line.
           const reason = (error && error.message) || String(error);
           setMemoryOrganizeMessage(t.uiSettingsView.memoryOrganizeFailed(reason));
         } finally {

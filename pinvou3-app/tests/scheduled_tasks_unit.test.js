@@ -3,7 +3,8 @@
  * Static and behavioral regression checks for the scheduled-task frontend shell.
  *
  * Run: node --test pinvou3-app/tests/scheduled_tasks_unit.test.js
- * 定时任务页现在暴露四个模板（三个办公模板 + 记忆整理，见 memory_organize kind 断言）。
+ * The scheduled-task page now exposes four templates (three office templates + the
+ * "记忆整理" (memory organize) template; see the memory_organize kind assertion).
  */
 const assert = require('assert');
 const fs = require('fs');

@@ -12,7 +12,7 @@
 //! - `util` —— 文本清洗 / stable id / 原子写盘等跨模块底层原语
 //! - `io` —— profile 单文件 + 4 JSONL store + 2 目录 store 的读写
 //! - `llm_review` —— LLM 后台记忆复盘（提示词、调用、清洗、自动落库）+ 启发式兜底
-//! - `organize` —— 全量记忆整理优化（LLM delete/update/merge 批量应用）+ 历史报告
+//! - `organize` —— full-pass memory organize (batch-apply LLM delete/update/merge) + report history
 //! - `render` —— 注入块 / 设备快照文档 / runtime prompt 文件管理
 //!
 //! pub 面在本文件集中 re-export，外部 `crate::features::memory::X` 调用路径不变。
@@ -56,7 +56,7 @@ pub use self::io::{
 // ---- LLM 后台复盘（llm_review）----
 pub use self::llm_review::review_turn_candidates_with_llm;
 
-// ---- 全量整理优化（organize）----
+// ---- Full-pass memory organize (organize) ----
 pub use self::organize::{MemoryOrganizeReport, load_organize_history, organize_memory_with_llm};
 
 // ---- 渲染 / runtime prompt 文件管理（render）----
