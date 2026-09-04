@@ -5043,6 +5043,72 @@
     return { accepted: true, queued: false, completion };
   }
 
+  // ── 辅助对话（aux chat）─────────────────────────────────────────
+  // 与桌面端 platform/tauri/bridge/aux-chat.js 同形：辅助会话被后端从
+  // list_sessions 过滤（不进 state.sessions），不能复用 sendMessageToSession；
+  // 回合事件仍由既有 chat:* 监听按 session_id 路由进 per-session buffer。
+  const auxIdByTask = Object.create(null); // 域内私有索引：discard 按 auxId 清本地 buffer
+  function auxChatIsAuxSession(id) {
+    return typeof id === "string" && id.indexOf("aux-") === 0;
+  }
+  function auxChatEmptySnapshot() {
+    return { chatItems: [], busy: false, queued: [] };
+  }
+  async function auxChatEnsure(taskId) {
+    const task = String(taskId || "").trim();
+    if (!task) throw new Error(bt("targetSessionMissing"));
+    const metadata = await invoke("get_or_create_aux_session", { sessionId: task });
+    const auxId = metadata && typeof metadata.id === "string" ? metadata.id : "";
+    if (!auxChatIsAuxSession(auxId)) throw new Error(bt("sessionDataInvalid"));
+    auxIdByTask[task] = auxId;
+    await ensureSessionBufferLoaded(auxId);
+    return auxId;
+  }
+  async function auxChatSend(auxId, text) {
+    const sid = String(auxId || "").trim();
+    const message = String(text || "").trim();
+    if (!auxChatIsAuxSession(sid)) throw new Error(bt("targetSessionMissing"));
+    if (!message) throw new Error(bt("replyContentEmpty"));
+    await ensureSessionBufferLoaded(sid);
+    const buf = sessionStates[sid];
+    // 辅助会话不走排队（queue 是用户输入语义）：忙/有排队直接拒绝，调用方自行重试。
+    if (isBusyFor(sid) || (buf && Array.isArray(buf.queued) && buf.queued.length > 0)) {
+      throw new Error(bt("turnAlreadyInProgress"));
+    }
+    // 命令口径与 doSendFor 一致：Web 走 web_access_chat（附件句柄信道），桌面走 chat。
+    return IS_WEB
+      ? invoke("web_access_chat", { message, attachmentHandles: [], sessionId: sid, restrictTools: true })
+      : invoke("chat", { message, attachments: [], sessionId: sid, restrictTools: true });
+  }
+  // 同步快照：未加载（无 buffer）返回空结构，不抛错、不触发加载。数组浅拷贝防
+  // 调用方改穿内部 buffer。
+  function auxChatSnapshot(auxId) {
+    const sid = String(auxId || "").trim();
+    if (!sid) return auxChatEmptySnapshot();
+    if (sid === state.activeSessionId) {
+      return {
+        chatItems: [...(state.chatItems || [])],
+        busy: !!state.busy,
+        queued: [...(state.queued || [])],
+      };
+    }
+    const buf = sessionStates[sid];
+    if (!buf) return auxChatEmptySnapshot();
+    return {
+      chatItems: Array.isArray(buf.chatItems) ? [...buf.chatItems] : [],
+      busy: !!buf.busy,
+      queued: Array.isArray(buf.queued) ? [...buf.queued] : [],
+    };
+  }
+  async function auxChatDiscard(taskId) {
+    const task = String(taskId || "").trim();
+    if (!task) throw new Error(bt("targetSessionMissing"));
+    await invoke("discard_aux_session", { sessionId: task });
+    const auxId = auxIdByTask[task];
+    delete auxIdByTask[task];
+    if (auxId) purgeSessionBuffer(auxId);
+  }
+
   function findFirstTurnItem(clientMessageId) {
     return state.chatItems.find(function (item) {
       return item && item.clientMessageId === clientMessageId;
@@ -9609,6 +9675,11 @@
     init,
     sendMessage,
     sendMessageToSession,
+    auxChatEnsure,
+    auxChatSend,
+    auxChatSnapshot,
+    auxChatDiscard,
+    auxChatIsAuxSession,
     getComposerDraft,
     setComposerDraft,
     retryFirstTurn,

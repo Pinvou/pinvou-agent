@@ -44,6 +44,10 @@ static POST_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
 /// oldest is evicted by [`super::retention::SessionStore::enforce_session_retention_locked`].
 pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
 
+/// 辅助对话的内部默认标题(中文常量):辅助会话不进普通会话列表,该标题只
+/// 用于详情视图与落盘记录,不随 UI 语言切换。
+pub(crate) const AUX_SESSION_TITLE: &str = "辅助对话";
+
 impl SessionStore {
     /// Repair persisted tool histories only at process boot, before any
     /// session engine can own an in-flight tool call. Runtime reads use the
@@ -115,6 +119,7 @@ impl SessionStore {
         store.load_session_models();
         store.load_pinned_sessions();
         store.load_hidden_sessions();
+        store.load_aux_sessions();
         store.load_session_mode_states();
         {
             let _mutation = store.scheduled_mutation.lock();
@@ -145,6 +150,7 @@ impl SessionStore {
         store.load_session_models();
         store.load_pinned_sessions();
         store.load_hidden_sessions();
+        store.load_aux_sessions();
         store.load_session_mode_states();
         {
             let _mutation = store.scheduled_mutation.lock();
@@ -176,6 +182,7 @@ impl SessionStore {
             session_models: Arc::new(RwLock::new(HashMap::new())),
             pinned_sessions: Arc::new(RwLock::new(HashMap::new())),
             hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
+            aux_sessions: Arc::new(RwLock::new(HashMap::new())),
             execution_root_resolver: Arc::new(RwLock::new(None)),
             code_session_predicate: Arc::new(RwLock::new(None)),
             session_mode_states: Arc::new(RwLock::new(HashMap::new())),
@@ -239,10 +246,14 @@ impl SessionStore {
         // load them normally, but remain owned by the Scheduled Tasks surface.
         // 多智能体是普通会话的持久开关，不是独立会话类型；这里只隔离定时
         // 会话，其余历史统一进入普通列表。
+        // 辅助对话(aux- 前缀)同样共享 durable store 以便详情/历史正常加载,
+        // 但它依附于主会话、由辅助对话面板单独打开,不进普通会话列表。
         // benchmark 构建中,评测会话(eval_ 前缀,含 GAIA 私有题目)不进用户历史:
         // 正常路径由评测运行器清理,崩溃残留也不能把私密题目带进会话列表。
         // 默认桌面构建不保留这项前缀语义,避免 benchmark 未启用时改变普通会话列表。
-        out.retain(|metadata| !metadata.id.starts_with("sched-"));
+        out.retain(|metadata| {
+            !metadata.id.starts_with("sched-") && !metadata.id.starts_with("aux-")
+        });
         #[cfg(feature = "benchmark-hooks")]
         out.retain(|metadata| !metadata.id.starts_with("eval_"));
         out.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
@@ -272,8 +283,17 @@ impl SessionStore {
     }
 
     pub fn delete(&self, id: &str) -> Result<()> {
+        // 辅助会话不是 scheduled 会话,这里的拒删守卫对级联目标天然生效、
+        // 也不会被辅助对话路径绕过。
         if self.is_scheduled_session(id)? {
             bail!("Scheduled-run sessions are deleted through their automation");
+        }
+        // 辅助对话级联:删主会话时先删其辅助会话。映射的键恒为主会话 id、
+        // 辅助会话自身不再持有映射,故递归深度恒为 1;辅助会话删除提交后,
+        // purge_session_side_maps 的双向清理会顺带摘掉这条 主→辅 映射。
+        if let Some(aux_id) = self.aux_session_id(id) {
+            self.delete(&aux_id)
+                .with_context(|| format!("delete aux session {aux_id} of {id}"))?;
         }
         // 上游 delete_session 先删会话 JSON 再清目录:目录清理失败时 JSON 已
         // 不在盘上但错误会向上传播——按「已发起删除即可能变更盘面」失效快照,
@@ -521,6 +541,49 @@ impl SessionStore {
             });
         }
         Ok(session)
+    }
+
+    /// 创建 `parent_id` 的辅助对话(`aux-` 前缀 id,与 sched- 先例同款带前缀
+    /// 创建路径):标题固定为「辅助对话」的内部默认标题,模型与工作区继承主会话,
+    /// `parent_session_id` 回指主会话,最后把 主→辅 映射落入 `_aux_sessions.json`。
+    /// 任一步失败都回滚已落盘的会话 JSON,避免留下重启后无法回收的孤儿 aux 会话。
+    /// 复用语义(已有映射且目标仍在盘上时直接复用)由命令层
+    /// `get_or_create_aux_session` 决定,不在本函数内。
+    pub fn create_aux_session(&self, parent_id: &str) -> Result<SessionMetadata> {
+        let parent = self
+            .load(parent_id)
+            .with_context(|| format!("load parent session {parent_id} for aux creation"))?;
+        let id = format!("aux-{}", generate_session_id());
+        let mut session = create_saved_session_with_id_and_mode(
+            id.clone(),
+            &[],
+            &parent.metadata.model,
+            &parent.metadata.workspace,
+            0,
+            None,
+            None,
+        );
+        session.metadata.title = AUX_SESSION_TITLE.to_string();
+        session.metadata.parent_session_id = Some(parent_id.to_string());
+        if let Err(error) = self.save(&session) {
+            let rollback = self.delete(&id);
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(rollback_error) => {
+                    anyhow::anyhow!("{error:#}; rollback aux Session {id}: {rollback_error:#}")
+                }
+            });
+        }
+        if let Err(error) = self.set_aux_session(parent_id, Some(id.clone())) {
+            let rollback = self.delete(&id);
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(rollback_error) => {
+                    anyhow::anyhow!("{error:#}; rollback aux Session {id}: {rollback_error:#}")
+                }
+            });
+        }
+        Ok(session.metadata)
     }
 
     pub fn update_messages(&self, id: &str, messages: Vec<Message>) -> Result<()> {
