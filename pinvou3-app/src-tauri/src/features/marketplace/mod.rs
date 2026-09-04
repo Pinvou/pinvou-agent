@@ -3167,11 +3167,13 @@ mod tests {
         });
     }
 
-    /// 全局禁用列表落盘往返:存→读一致;清空→读空;没文件→读空。
+    /// 全局禁用列表落盘往返:存→读一致;清空→读空。
+    /// （全模式 DenyAll 后无文件≠读空——未初始化默认全关，故先显式初始化。）
     #[test]
     fn disabled_connectors_persist_roundtrip() {
         with_temp_home(|| {
-            assert!(load_disabled_connectors().is_empty()); // 无文件 → 空
+            save_disabled_connectors(&[]); // 初始化 plain 为空集（全开基线）
+            assert!(load_disabled_connectors().is_empty());
             save_disabled_connectors(&["weather".to_string(), "pptx".to_string()]);
             assert_eq!(
                 load_disabled_connectors(),
@@ -3195,8 +3197,8 @@ mod tests {
         with_temp_home(|| {
             // 模拟已装 2 个连接器。
             write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
-            // 未初始化:code 默认全禁——已装连接器 ∪ 内置 CLI 四连接器 ∪ 已装技能包
-            // （scope.rs DenyAll 扩集是有意语义）;plain 仍按空处理。
+            // 未初始化:plain/code 均默认全禁（全模式 DenyAll 收敛）——已装连接器
+            // ∪ 内置 CLI 四连接器 ∪ 已装技能包（scope.rs DenyAll 扩集是有意语义）。
             let deny_all_default = || {
                 vec![
                     "weather".to_string(),
@@ -3207,7 +3209,10 @@ mod tests {
                     "tmeet".to_string(),
                 ]
             };
-            assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Plain),
+                deny_all_default()
+            );
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
                 deny_all_default()
@@ -3310,8 +3315,8 @@ mod tests {
     }
 
     /// 旧对象 `code_initialized=false` 时,code 数组被忽略、按 DenyAll 默认全禁
-    /// (与迁移前逐字节一致);plain 列表即使无 initialized 标记也必须生效
-    /// (AllowAll 无兜底,落盘即真相)。
+    /// (与迁移前逐字节一致);plain 列表被读时迁移初始化为落盘真相（锁定旧
+    /// AllowAll 语义下的实际开关状态）。
     #[test]
     fn legacy_object_uninitialized_code_keeps_deny_all_default() {
         with_temp_home(|| {
@@ -3409,6 +3414,67 @@ mod tests {
                 vec!["pptx".to_string()]
             );
             assert!(load_disabled_connectors_for(ConnectorScope::Code).is_empty());
+        });
+    }
+
+    /// plain 收敛 DenyAll 的读时迁移（升级）：旧版 disabled_bundles.json（无
+    /// `plain_defaults_migrated` 字段、plain 未初始化）→ plain 初始化为落盘
+    /// 列表（缺省空 = 旧 AllowAll 语义全开），升级后开关状态不变。
+    #[test]
+    fn plain_deny_all_migration_preserves_upgrade_state() {
+        with_temp_home(|| {
+            write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
+            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            // 旧版文件：code 已初始化（用户管过 code 开关），plain 从未碰过。
+            std::fs::write(&path, r#"{"scopes":{"code":[]},"initialized":["code"]}"#).unwrap();
+            // 迁移后 plain 保持旧语义（全开），而不是 DenyAll 兜底全关。
+            assert_eq!(load_disabled_connectors(), Vec::<String>::new());
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(file.plain_defaults_migrated, "迁移标记应置位: {file:?}");
+            assert!(
+                file.initialized.contains("plain"),
+                "plain 应被初始化: {file:?}"
+            );
+        });
+    }
+
+    /// plain 收敛 DenyAll 的读时迁移（全新装机）：无任何文件 → 只置标记不
+    /// 初始化 plain，未初始化 scope 按 DenyAll 兜底（默认全关）；不产生落盘。
+    #[test]
+    fn plain_deny_all_fresh_install_defaults_off() {
+        with_temp_home(|| {
+            write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
+            assert_eq!(
+                load_disabled_connectors(),
+                vec![
+                    "weather".to_string(),
+                    "pptx".to_string(),
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ],
+                "全新装机 plain 未初始化 → DenyAll 默认全关（已装 ∪ 内置 CLI）"
+            );
+            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            assert!(!path.exists(), "全新装机的纯读路径不应落盘");
+        });
+    }
+
+    /// 旧版双文件时代升级（legacy 文件存在）→ plain 初始化锁定迁移后的落盘
+    /// 状态（空 = 全开），不走 DenyAll 兜底。
+    #[test]
+    fn plain_deny_all_migration_from_legacy_files_preserves_all_on() {
+        with_temp_home(|| {
+            write_installed_ids(&["weather".to_string()]);
+            let legacy = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+            std::fs::write(&legacy, r#"["weather"]"#).unwrap();
+            assert_eq!(load_disabled_connectors(), vec!["weather".to_string()]);
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(file.plain_defaults_migrated);
+            assert!(file.initialized.contains("plain"));
         });
     }
 

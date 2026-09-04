@@ -217,9 +217,10 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
   `SessionMode` 的 kebab-case 名；旧版裸数组与 `{ plain, code,
   code_initialized }` 对象读时自动迁移）。
 - **安全默认**：某 scope 未初始化时（用户从未改过该类会话开关），按其模式的
-  包默认策略兜底（`SessionMode::pack_default_policy`）——code 为 DenyAll：
-  默认禁用**所有已安装连接器**（外部能力显式开启）；plain 为 AllowAll：
-  默认全开。一旦用户改过该 scope 开关（进入 `initialized`），以落盘列表为准。
+  包默认策略兜底（`SessionMode::pack_default_policy`）——plain 与 code 均为
+  DenyAll：默认禁用**所有已安装连接器**（外部能力显式开启；plain 的存量装机
+  由读时迁移锁定升级前状态，见 `docs/capability-governance.md`）。一旦用户
+  改过该 scope 开关（进入 `initialized`），以落盘列表为准。
 - 安装连接器后：DenyAll 且已初始化的 scope 中新装连接器默认仍关闭（自动加入
   禁用集）；未初始化无需落盘（读取时按「默认全禁已装连接器」兜底）。卸载
   连接器时从所有 scope 禁用集移除残留 id（含运行时清理路径）。
