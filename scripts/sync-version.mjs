@@ -16,6 +16,10 @@
 //      cargo metadata/build --locked, and every build then silently rewrites the lock)
 //   6. The "version" field of pinvou3-app/package.json
 //   7. The root "version" and packages[""].version of pinvou3-app/package-lock.json (skipped when the file does not exist)
+//   8. Both member entries (pinvou3-tauri and pinvou-knowledge) in
+//      pinvou-cli/Cargo.lock (that standalone workspace vendors both release
+//      crates as path dependencies; a stale lock breaks `cargo --locked`
+//      builds there — the drift #415 had to fix by hand)
 
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -42,6 +46,7 @@ function repoPaths(repoRoot) {
     knowledgeCargoToml: resolve(repoRoot, 'pinvou-knowledge/Cargo.toml'),
     knowledgeCargoLock: resolve(repoRoot, 'pinvou-knowledge/Cargo.lock'),
     srcTauriCargoLock: resolve(repoRoot, 'pinvou3-app/src-tauri/Cargo.lock'),
+    cliCargoLock: resolve(repoRoot, 'pinvou-cli/Cargo.lock'),
     packageJson: resolve(repoRoot, 'pinvou3-app/package.json'),
     packageLock: resolve(repoRoot, 'pinvou3-app/package-lock.json'),
   };
@@ -185,6 +190,11 @@ export function main(repoRoot = REPO_ROOT, { checkOnly = CHECK_ONLY } = {}) {
     // them separately lets --check pinpoint which package lags behind.
     { name: 'pinvou3-app/src-tauri/Cargo.lock(pinvou3-tauri)', read: () => readCargoLockVersion(paths.srcTauriCargoLock, 'pinvou3-tauri'), write: () => writeCargoLockVersion(paths.srcTauriCargoLock, 'pinvou3-tauri', target) },
     { name: 'pinvou3-app/src-tauri/Cargo.lock(pinvou-knowledge)', read: () => readCargoLockVersion(paths.srcTauriCargoLock, 'pinvou-knowledge'), write: () => writeCargoLockVersion(paths.srcTauriCargoLock, 'pinvou-knowledge', target) },
+    // The standalone pinvou-cli workspace lock records both release crates as path
+    // dependencies too; registering them separately lets --check pinpoint which
+    // package lags behind (the drift #415 fixed by hand).
+    { name: 'pinvou-cli/Cargo.lock(pinvou3-tauri)', read: () => readCargoLockVersion(paths.cliCargoLock, 'pinvou3-tauri'), write: () => writeCargoLockVersion(paths.cliCargoLock, 'pinvou3-tauri', target) },
+    { name: 'pinvou-cli/Cargo.lock(pinvou-knowledge)', read: () => readCargoLockVersion(paths.cliCargoLock, 'pinvou-knowledge'), write: () => writeCargoLockVersion(paths.cliCargoLock, 'pinvou-knowledge', target) },
     { name: 'pinvou3-app/package.json', read: () => readJsonVersion(paths.packageJson), write: () => writeJsonVersion(paths.packageJson, target) },
   ];
   // package-lock.json 可能不存在（未提交 lock 等场景），存在才纳入同步/校验
