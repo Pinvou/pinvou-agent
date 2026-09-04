@@ -1,6 +1,10 @@
-# 由私有 Windows 发布流水线在构建机上调用(仓库内无 CI 引用属预期)。
-# 输入产物名与 release-packages.yml 的 tauri nsis 默认名
-# pinvou3_<version>_x64-setup.exe 一致。
+# Invoked by the private Windows release pipeline on a build machine (no CI
+# reference inside this repo is expected). The input artifact name matches the
+# release-packages.yml tauri nsis default: pinvou3_<version>_x64-setup.exe.
+# Requires pwsh: CompressionLevel::SmallestSize does not exist on .NET
+# Framework, so Windows PowerShell 5.1 would fail mid-run without the
+# explicit version requirement below.
+#requires -Version 6
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)]
