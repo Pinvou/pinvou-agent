@@ -930,8 +930,8 @@ try {
   'Codex must show the shared composer timer only while the active turn is running');
   assert.ok(codexView.includes('data-testid="acp-session-loading"')
     && codexView.includes('const [sessionLoading, setSessionLoading] = useState(false)')
-    && codexView.includes('disabled={!sessionReady')
-    && codexView.includes('if (activeId && !sessionReady) return;')
+    && codexView.includes('disabled={!!nativeVoice.editPreview || !sessionReady')
+    && codexView.includes('if (activeId && !sessionReady) return false;')
     && !codexView.includes('setError(codexCopy.sessionSyncing)')
     && !codexView.includes('throw new Error(codexCopy.sessionSyncing)'),
   'ACP session restoration must show a loading state and suppress sending without reporting a red error');
@@ -966,7 +966,8 @@ try {
     && codexView.includes('triggerTestId="native-tools"')
     && codexView.includes('scope="code"')
     && codexView.includes('mountedId={nativeMountedId}')
-    && codexView.includes('data-testid="codex-voice-input"'),
+    && codexView.includes('<VoiceComposerButton')
+    && codexView.includes('testId="codex-voice-input"'),
   'the native lane must mount the shared composer controls (work/design style) plus the voice input button behind the native-agent gate');
   assert.ok(codexView.includes('renderToolItem={isNativeAgent')
     && !codexView.includes('renderToolItem={isNativeAgent && nativeMultiAgentEnabled')
@@ -990,14 +991,26 @@ try {
   assert.ok(codexView.includes('nativeVoiceInputRef = useRef(nativeVoiceInput)')
     && codexView.includes('bridge.voice.cancelVoiceInput()')
     && (codexView.includes("voice.status === 'requesting_permission'")
-      || codexView.includes("'requesting_permission', 'recording', 'transcribing'")),
+      || codexView.includes("'requesting_permission', 'recording', 'transcribing'")
+      || codexView.includes('isVoiceActive(voice)')),
   'the code page must cancel an in-flight voice input before unmount so results cannot be written back to a detached composer');
   // 语音失败提示条须带 ChatView 同款「去依赖体检」入口（recognition_failed + 本地
   // ASR 可安装 + onGotoSettings 时渲染 voiceGotoDeps 按钮）。
+  const voiceNoticeSource = readFileSync(path.join(root, 'src', 'features', 'voice-composer', 'VoiceNoticeBar.jsx'), 'utf8');
   assert.ok(codexView.includes("can('localModelSetup') && can('dependencyInstall')")
-    && codexView.includes('nativeVoiceInput.category === \'recognition_failed\'')
-    && codexView.includes('t.voiceGotoDeps'),
+    && codexView.includes('<VoiceComposerStatus')
+    && codexView.includes('canInstallLocalAsr={nativeVoiceCanInstallAsr}')
+    && voiceNoticeSource.includes("voiceInput.category === 'recognition_failed'")
+    && voiceNoticeSource.includes('copy.voiceGotoDeps'),
   'the code page voice notice must offer the dependency-check shortcut on recognition failure like ChatView');
+  assert.ok(codexView.includes('useComposerVoiceInput({')
+    && codexView.includes('function canSendNativeVoiceTask(outgoing)')
+    && codexView.includes("if (!String(outgoing || '').trim()) return false;")
+    && codexView.includes('busy || working || activeRuntimeBusy || workspaceUnavailable || sessionSyncing')
+    && codexView.includes('if (!activeId && !draftWorkspacePath) return false;')
+    && codexView.includes("attachments.some(attachment => attachment.status === 'parsing')")
+    && codexView.includes('sendTask: async outgoing => send(outgoing)'),
+  'Codex voice task mode must go through the shared hook, code-lane risk gate, and real send result before reporting success');
   // plain（非 native）车道仍走自绘 CodexComposerConfigSelect 配置组，不随 native 车道
   // 迁移到共享组件；共享 config select 保留 ACP testid 契约。
   assert.ok(codexView.includes('data-testid="codex-composer-configs"')

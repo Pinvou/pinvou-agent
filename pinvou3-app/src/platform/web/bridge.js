@@ -99,6 +99,9 @@
       }
     });
   }
+  function normalizeVoiceMode(mode) {
+    return mode === "task" ? "task" : mode === "edit" ? "edit" : "dictation";
+  }
   function webRequestId(prefix) {
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
       return prefix + "_" + window.crypto.randomUUID(); // safari14-ok: guarded above
@@ -495,22 +498,30 @@
       depsNotInstallable: "The missing items cannot be installed automatically. Install the offline components per the dependency notes, then re-check.",
       voicePermissionDenied: "Microphone access was denied. Allow this app to use the microphone in system settings, then try again.",
       voiceNoDevice: "No available microphone detected. Check that the recording device is enabled and not in use.",
+      voiceDeviceTimeout: "Microphone detection timed out; no recording device found. Check the device connection and the system microphone settings, then try again.",
       voiceConstraintUnsupported: "Could not start recording: the current microphone or WebView does not support the required audio configuration. Try again; if it still fails, check microphone settings or update system components.",
       voiceEmptyResult: "No speech recognized. Move closer to the microphone and try again.",
       voiceContextMismatch: "Recognition finished, but the active session changed, so the result was not inserted.",
       voiceTimeout: "Voice input timed out. Please try again.",
       voiceRecognitionFailed: "Speech recognition failed. Please try again later.",
+      voiceRecordingTooLong: "Recording is too long. Please shorten it and try again.",
+      voiceAudioInvalid: "The recorded audio is invalid. Please record again.",
+      voiceMicUnavailable: "The microphone is in use by another app. Close it or pick another microphone, then try again.",
       voiceInputFailed: "Voice input failed. Check the microphone and try again.",
       voiceCancelled: "Voice input cancelled",
       voiceTranscribing: "Recognizing speech…",
       voiceTooShort: "Recording too short. Please try again.",
       voiceWritten: "Voice text inserted into the input box",
+      voiceTaskSent: "Voice task sent",
+      voiceEditNoChange: "Voice edit made no changes; original text kept",
+      voiceEditPostprocessFailed: "Voice edit processing failed; your input was not changed. Please try again.",
       voiceNeedDesktopAsr: "Install the speech recognition component on the desktop first, then use the microphone from the browser.",
       voiceRequestingPermission: "Requesting microphone permission…",
       voiceNoMicCapture: "This WebView does not support microphone capture.",
       voiceNoAudioRecording: "This WebView does not support audio recording.",
+      voiceNeedSession: "Select or start a session before using voice input.",
       voiceAudioStartBlocked: "The browser did not allow audio capture to start. Click the microphone again.",
-      voiceRecording: "Recording… click again to stop",
+      voiceRecording: "Recording… press again to stop",
     },
     ja: {
       newChatFailed: "⚠️ 新規チャットの作成に失敗: ", loadChatFailed: "⚠️ チャットの読み込みに失敗: ", deleteFailed: "⚠️ 削除に失敗: ",
@@ -617,22 +628,30 @@
       depsNotInstallable: "不足項目はワンクリックでインストールできません。依存関係の案内に従ってオフラインコンポーネントをインストールし、再検出してください。",
       voicePermissionDenied: "マイクへのアクセスが拒否されました。システム設定でこのアプリのマイク使用を許可してから再試行してください。",
       voiceNoDevice: "利用可能なマイクが検出されませんでした。録音デバイスが有効か、他で使用されていないか確認してください。",
+      voiceDeviceTimeout: "マイク検出がタイムアウトし、録音デバイスが見つかりませんでした。デバイスの接続とシステムのマイク設定を確認して再試行してください。",
       voiceConstraintUnsupported: "録音を開始できません：現在のマイクまたは WebView が必要な録音設定に対応していません。再試行し、それでも失敗する場合はマイク設定を確認するかシステムコンポーネントを更新してください。",
       voiceEmptyResult: "音声を認識できませんでした。マイクに近づいて再試行してください。",
       voiceContextMismatch: "認識は完了しましたが、セッションが切り替わったため結果は自動入力されませんでした。",
       voiceTimeout: "音声入力がタイムアウトしました。もう一度お試しください。",
       voiceRecognitionFailed: "音声認識に失敗しました。しばらくしてから再試行してください。",
+      voiceRecordingTooLong: "録音が長すぎます。短くして再試行してください。",
+      voiceAudioInvalid: "録音データが無効です。もう一度録音してください。",
+      voiceMicUnavailable: "マイクは他のアプリで使用中です。使用中のアプリを終了するか、別のマイクを選んでから再試行してください。",
       voiceInputFailed: "音声入力に失敗しました。マイクを確認して再試行してください。",
       voiceCancelled: "音声入力をキャンセルしました",
       voiceTranscribing: "音声を認識中…",
       voiceTooShort: "録音が短すぎます。もう一度お試しください。",
       voiceWritten: "音声を入力欄に書き込みました",
+      voiceTaskSent: "音声タスクを送信しました",
+      voiceEditNoChange: "音声編集による変更はありません。原文を保持しました",
+      voiceEditPostprocessFailed: "音声編集の処理に失敗しました。入力は変更されていません。再試行してください。",
       voiceNeedDesktopAsr: "先にデスクトップ側で音声認識コンポーネントをインストールしてから、ブラウザーでマイクを使用してください。",
       voiceRequestingPermission: "マイクの権限を要求中…",
       voiceNoMicCapture: "現在の WebView はマイク入力に対応していません。",
       voiceNoAudioRecording: "現在の WebView は音声録音に対応していません。",
+      voiceNeedSession: "音声入力を使う前に、セッションを選択または新規作成してください。",
       voiceAudioStartBlocked: "ブラウザーが音声キャプチャの開始を許可しませんでした。マイクをもう一度クリックしてください。",
-      voiceRecording: "録音中です。もう一度クリックすると終了します",
+      voiceRecording: "録音中です。もう一度押すと終了します",
     },
     zh: {
       newChatFailed: "⚠️ 新建对话失败: ", loadChatFailed: "⚠️ 加载对话失败: ", deleteFailed: "⚠️ 删除失败: ",
@@ -739,22 +758,30 @@
       depsNotInstallable: "当前缺失项无法一键安装，请按依赖说明安装离线组件后重新检测。",
       voicePermissionDenied: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。",
       voiceNoDevice: "未检测到可用麦克风，请检查录音设备是否启用或被占用。",
+      voiceDeviceTimeout: "麦克风检测超时，未发现可用录音设备。请检查设备连接和系统麦克风设置后重试。",
       voiceConstraintUnsupported: "无法启动录音：当前麦克风或 WebView 不支持所需的录音配置。请重试；若仍失败，请检查麦克风设置或更新系统组件。",
       voiceEmptyResult: "未识别到语音内容，请靠近麦克风后重试。",
       voiceContextMismatch: "识别已完成，但当前会话已切换，结果未自动写入。",
       voiceTimeout: "本次语音输入超时，请重试。",
       voiceRecognitionFailed: "语音识别失败，请稍后重试。",
+      voiceRecordingTooLong: "录音过长，请缩短后重试。",
+      voiceAudioInvalid: "录音数据无效，请重新录制。",
+      voiceMicUnavailable: "麦克风被其他应用占用，请关闭占用它的应用或更换麦克风后重试。",
       voiceInputFailed: "语音输入失败，请检查麦克风后重试。",
       voiceCancelled: "已取消语音输入",
       voiceTranscribing: "正在识别语音…",
       voiceTooShort: "录音时间过短，请重试。",
       voiceWritten: "语音已写入输入框",
+      voiceTaskSent: "语音任务已发送",
+      voiceEditNoChange: "语音编辑无变化，已保留原文",
+      voiceEditPostprocessFailed: "语音编辑整理失败，当前输入未修改，请重试。",
       voiceNeedDesktopAsr: "请先在桌面端安装语音识别组件，再从浏览器使用麦克风。",
       voiceRequestingPermission: "正在请求麦克风权限…",
       voiceNoMicCapture: "当前 WebView 不支持麦克风采集。",
       voiceNoAudioRecording: "当前 WebView 不支持音频录制。",
+      voiceNeedSession: "请先选择或新建一个会话，再使用语音输入。",
       voiceAudioStartBlocked: "浏览器未允许启动音频采集，请再次点击麦克风。",
-      voiceRecording: "正在录音，再点一次结束",
+      voiceRecording: "正在录音，再按一次结束",
     },
   };
   function bt(key) {
@@ -9066,17 +9093,53 @@
     error.stage = stage;
     return error;
   }
+  // Same as the tauri lane: stable error codes of the Rust remote-control voice commands →
+  // trilingual copy keys, codes take precedence over rawMessage (Chinese engineering prose
+  // goes to diagnostics only).
+  const VOICE_ERROR_CODE_KEYS = {
+    asr_timeout: "voiceTimeout",
+    asr_no_speech: "voiceEmptyResult",
+    asr_engine_missing: "voiceRecognitionFailed",
+    asr_engine_start_failed: "voiceRecognitionFailed",
+    asr_engine_error: "voiceRecognitionFailed",
+    asr_runtime_error: "voiceRecognitionFailed",
+    asr_cli_failed: "voiceRecognitionFailed",
+    asr_parse_failed: "voiceRecognitionFailed",
+    asr_join_failed: "voiceInputFailed",
+    recording_too_long: "voiceRecordingTooLong",
+    audio_invalid: "voiceAudioInvalid",
+    audio_empty: "voiceAudioInvalid",
+    temp_file_unavailable: "voiceInputFailed",
+    temp_file_write_failed: "voiceInputFailed",
+    session_mismatch: "voiceContextMismatch",
+    session_load_failed: "voiceContextMismatch",
+  };
+
   function normalizeVoiceError(err, fallbackStage) {
     const name = String((err && err.name) || "");
     const rawCategory = (err && err.category) || "";
     const rawStage = (err && err.stage) || fallbackStage || "recording";
     const rawMessage = String((err && (err.message || err.toString && err.toString())) || err || "");
     const constraint = String((err && err.constraint) || "");
+    const emptyResultLike = /ASR empty result|empty result|backend returned no usable|no usable result|failed \(exit 6\)|exit 6/i.test(rawMessage);
+    const codeKey = (err && err.code && VOICE_ERROR_CODE_KEYS[err.code]) || "";
     if (name === "NotAllowedError" || name === "SecurityError" || rawCategory === "permission_denied") {
       return { category: "permission_denied", stage: "permission", message: bt("voicePermissionDenied") };
     }
-    if (name === "NotFoundError" || name === "DevicesNotFoundError" || rawCategory === "device_unavailable") {
+    if (rawCategory === "device_unavailable") {
+      // device_unavailable with a custom message (e.g. probe timeout) shows the original first, matching the tauri lane.
+      return { category: "device_unavailable", stage: "device", message: rawMessage || bt("voiceNoDevice") };
+    }
+    if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+      // Browser DOMException messages are always non-empty and unlocalized; same policy as
+      // the tauri lane: always use the trilingual guidance copy, not the browser text.
       return { category: "device_unavailable", stage: "device", message: bt("voiceNoDevice") };
+    }
+    // Chrome reports "microphone busy with another app" as NotReadableError / TrackStartError,
+    // distinct from "no device"; the browser message is English, so map it to dedicated
+    // trilingual copy.
+    if (name === "NotReadableError" || name === "TrackStartError") {
+      return { category: "device_unavailable", stage: "device", message: bt("voiceMicUnavailable") };
     }
     // WebKitGTK 可能把不支持的音频约束报为 OverconstrainedError / "Invalid constraint"。
     // 这和没有录音设备不同：设备可能存在，只是不支持 channelCount、降噪等配置。
@@ -9088,8 +9151,13 @@
         diagnostic: constraint ? "unsupported media constraint: " + constraint : "unsupported media constraint",
       };
     }
-    if (rawCategory === "empty_result") {
-      return { category: "empty_result", stage: rawStage, message: bt("voiceEmptyResult") };
+    if (rawCategory === "empty_result" || emptyResultLike) {
+      return {
+        category: "empty_result",
+        stage: rawStage,
+        message: bt("voiceEmptyResult"),
+        diagnostic: rawMessage || "",
+      };
     }
     if (rawCategory === "context_mismatch") {
       return { category: "context_mismatch", stage: "writeback", message: bt("voiceContextMismatch") };
@@ -9098,7 +9166,16 @@
       return { category: "timeout", stage: "recording", message: bt("voiceTimeout") };
     }
     if (rawCategory === "recognition_failed") {
-      return { category: "recognition_failed", stage: rawStage, message: rawMessage || bt("voiceRecognitionFailed") };
+      if (codeKey) {
+        return { category: rawCategory, stage: rawStage, message: bt(codeKey), diagnostic: rawMessage };
+      }
+      return { category: rawCategory, stage: rawStage, message: rawMessage || bt("voiceRecognitionFailed") };
+    }
+    // Remote-control RPC errors rebuilt by bootstrap carry code/category but may not match
+    // any category branch above; with a stable error code, map to trilingual copy by code and
+    // demote the Chinese original to diagnostics (same policy as the tauri lane's tail branch).
+    if (codeKey) {
+      return { category: rawCategory || "recording_failed", stage: rawStage, message: bt(codeKey), diagnostic: rawMessage };
     }
     return {
       category: rawCategory || "recording_failed",
@@ -9115,6 +9192,13 @@
   function cleanupVoiceInputSession(session) {
     if (!session) return;
     if (session.timeoutId) clearTimeout(session.timeoutId);
+    if (session.permissionTimeoutId) clearTimeout(session.permissionTimeoutId);
+    session.permissionTimeoutId = null;
+    if (session.cancelPermissionRequest) {
+      const cancelPermissionRequest = session.cancelPermissionRequest;
+      session.cancelPermissionRequest = null;
+      try { cancelPermissionRequest(); } catch { /* permission request already settled */ }
+    }
     // 先摘掉音频回调：webkit2gtk 的 WebAudio 是 GStreamer 后端，ScriptProcessorNode 的
     // onaudioprocess 跑在音频线程，若在 disconnect/close 期间再触发一次、访问已释放的
     // 缓冲，会让 WebProcess 段错误（表现为「识别出文字后 app 崩溃」）。务必先置 null。
@@ -9134,6 +9218,43 @@
     if (ctx && ctx.state !== "closed") {
       setTimeout(function () { try { ctx.close().catch(function () {}); } catch { /* audio context already closed */ } }, 0);
     }
+  }
+
+  // The remote-control lane has two 1MiB gates: first an envelope pre-check on serialized
+  // inputs in the RPC dispatch layer (manager/mod.rs MAX_RPC_REQUEST_BYTES), then the
+  // post-decode validation in remote_control.rs. After base64's 4/3 expansion, a 30s WAV
+  // (0.92MiB → ~1.22MiB as characters) is always rejected by the first gate
+  // (request_too_large); 20s ≈ 0.64MiB → ~0.85MiB of characters, leaving enough envelope
+  // headroom, so this lane caps at 20s (the desktop lane has no relay limit and keeps 60s).
+  const VOICE_RECORDING_MAX_DURATION_MS = 20000;
+  const VOICE_DEVICE_REQUEST_TIMEOUT_MS = 8000;
+
+  function requestVoiceMedia(session, constraints, timeoutMs) {
+    let abandoned = false;
+    const mediaPromise = navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
+      if (abandoned || activeVoiceInput !== session) {
+        stopMediaTracks(stream);
+        throw voiceFlowError("cancelled", "permission", bt("voiceCancelled"));
+      }
+      return stream;
+    });
+    const timeoutPromise = new Promise(function (_, reject) {
+      session.permissionTimeoutId = setTimeout(function () {
+        abandoned = true;
+        reject(voiceFlowError("device_unavailable", "device", bt("voiceDeviceTimeout")));
+      }, timeoutMs || VOICE_DEVICE_REQUEST_TIMEOUT_MS);
+    });
+    const cancelPromise = new Promise(function (_, reject) {
+      session.cancelPermissionRequest = function () {
+        abandoned = true;
+        reject(voiceFlowError("cancelled", "permission", bt("voiceCancelled")));
+      };
+    });
+    return Promise.race([mediaPromise, timeoutPromise, cancelPromise]).finally(function () {
+      if (session.permissionTimeoutId) clearTimeout(session.permissionTimeoutId);
+      session.permissionTimeoutId = null;
+      session.cancelPermissionRequest = null;
+    });
   }
 
   function mergeFloatChunks(chunks) {
@@ -9203,7 +9324,12 @@
       return;
     }
 
-    setVoiceInputStatus("transcribing", { message: bt("voiceTranscribing"), stage: "transcribing" });
+    let mode = normalizeVoiceMode(session.mode);
+    // Defense in depth: the mode was already downgraded at session creation (edit rewritten
+    // to dictation on the start side); keep this fallback so uncorrected raw ASR text cannot
+    // overwrite the draft through the replace preview.
+    if (mode === "edit") mode = "dictation";
+    setVoiceInputStatus("transcribing", { message: bt("voiceTranscribing"), stage: "transcribing", mode });
     cleanupVoiceInputSession(session);
 
     try {
@@ -9218,17 +9344,13 @@
       const pcm = downsamplePcm(raw, session.sampleRate, 16000);
       const wav = encodeWav(pcm, 16000);
       const wavBytes = new Uint8Array(wav);
-      const res = IS_WEB
-        ? await invoke("web_access_transcribe_voice_audio", {
-            audioBase64: encodeBase64Bytes(wavBytes),
-            sessionId: session.sessionId,
-          })
-        : await invoke("transcribe_voice_audio", {
-            request: {
-              audio_bytes: [...wavBytes],
-              session_id: session.sessionId,
-            },
-          });
+      // This file is loaded only on the web remote-control lane; the backend's
+      // transcribe_voice_audio now takes a base64 input and the old audio_bytes JSON array
+      // branch was removed from the backend contract, so no dead branch is kept here.
+      const res = await invoke("web_access_transcribe_voice_audio", {
+        audioBase64: encodeBase64Bytes(wavBytes),
+        sessionId: session.sessionId,
+      });
       if (activeVoiceInput !== session) return;
       const text = String((res && res.text) || "").trim();
       if (!text) throw voiceFlowError("empty_result", "transcribing", "未识别到语音内容");
@@ -9236,9 +9358,39 @@
         throw voiceFlowError("context_mismatch", "writeback", "voice result discarded because active session changed");
       }
       if (typeof session.writeback === "function") {
-        session.writeback(text, session.draftBeforeStart);
+        await session.writeback(text, session.draftBeforeStart, {
+          mode,
+          rawText: text,
+          diagnostic: {
+            mode,
+            normalize_strategy: "web_asr_only",
+            // Same as desktop: persist only metadata such as lengths in diagnostics, never the full transcript.
+            raw_text_length: text.length,
+            final_text_length: text.length,
+            // The web lane has no local high-risk term list or LLM post-processing
+            // (web_asr_only), so the desktop's task_send_blocked high-risk gate cannot be
+            // computed; hardcoding false here only keeps the diagnostic field shape aligned
+            // with desktop. Note: the current caller writeback chain only blocks multi-agent
+            // read-only and over-length truncation, with no high-risk term screening — a
+            // latent divergence from the desktop lane. Today no UI entry reaches web voice in
+            // task mode (the mic button is fixed to dictation and gesture auto-upgrade stops
+            // at edit), so the divergence is unreachable; if a web task entry is opened later,
+            // first copy the desktop's
+            // VOICE_SUSPICIOUS_ASR_TERMS/hasVoiceHighRiskResidual into this bridge (classic
+            // scripts cannot share modules) and compute task_send_blocked from their result.
+            task_send_blocked: false,
+          },
+        });
+        // Same policy as the desktop lane: the user may have cancelled during the writeback
+        // await window (cancel clears activeVoiceInput and sets cancelled); never overwrite
+        // that terminal cancelled state with completed.
+        if (activeVoiceInput !== session) return;
       }
-      setVoiceInputStatus("completed", { message: bt("voiceWritten"), completedAt: Date.now() });
+      setVoiceInputStatus("completed", {
+        message: mode === "task" ? (bt("voiceTaskSent") || bt("voiceWritten")) : bt("voiceWritten"),
+        completedAt: Date.now(),
+        mode,
+      });
       emitVoiceDiagnostic("writeback", "info", "voice text written back", "语音已写入输入框", "");
     } catch (err) {
       const normalized = normalizeVoiceError(err, "transcribing");
@@ -9278,6 +9430,14 @@
     notify();
   }
 
+  // The web lane has no local ASR model download (startVoiceInput fails fast with
+  // dependency_unavailable when missing), so there is no interruptible install process;
+  // keep a same-named cancel entry as desktop that just collapses the install dialog and
+  // resolves, avoiding a TypeError when ChatView calls it on web.
+  async function cancelVoiceAsrSetup() {
+    closeVoiceAsrSetup();
+  }
+
   // 知识库 embedding 模型按需下载（下载 → 校验 → 解压部署 → 热加载），进度走
   // kb_model:progress 事件。resolve 时模型已就绪，调用方据 status.installed 收起 gate。
   async function downloadKbModel(repair) {
@@ -9313,13 +9473,45 @@
     invoke("kb_model_cancel").catch(function () {});
   }
 
-  async function startVoiceInput(draftText, writeback) {
+  // Same as desktop: invoke the beforePermission callback before requesting the microphone
+  // (shortcut-intro first-use gate). Returns true to continue recording; false means the
+  // gate refused (session cleaned up and reset to idle) or the session was already cancelled.
+  async function passVoiceBeforePermissionGate(session, options) {
+    if (!options || typeof options.beforePermission !== "function") return true;
+    const shouldContinue = await options.beforePermission({
+      mode: session.mode,
+      sessionId: session.sessionId,
+      draftBeforeStart: session.draftBeforeStart,
+    });
+    if (activeVoiceInput !== session) return false;
+    if (shouldContinue !== false) return true;
+    cleanupVoiceInputSession(session);
+    activeVoiceInput = null;
+    setVoiceInputStatus("idle", { message: "", stage: null, sessionId: null });
+    return false;
+  }
+
+  async function startVoiceInput(draftText, writeback, options) {
     if (activeVoiceInput && state.voiceInput.status === "recording") {
       finishVoiceInput(false, false);
       return;
     }
     if (activeVoiceInput) {
       finishVoiceInput(true, false);
+      return;
+    }
+    // The remote-control lane backend requires an explicit sessionId for that command
+    // (rpc.rs Required("sessionId")); recording from the welcome page (no session yet) would
+    // always fail with untranslated English. Fail fast with trilingual copy before opening
+    // the mic instead of recording for nothing.
+    if (!state.activeSessionId) {
+      setVoiceInputStatus("failed", {
+        message: bt("voiceNeedSession"),
+        error: "session_required",
+        category: "session_unavailable",
+        stage: "permission",
+        completedAt: Date.now(),
+      });
       return;
     }
 
@@ -9365,22 +9557,30 @@
       // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
     }
 
+    // The web lane has no LLM post-processing (web_asr_only), so edit instructions cannot be
+    // executed: downgrade to dictation at session creation (status display and writeback path
+    // stay consistent end to end) instead of waiting until the finish side after the user
+    // recorded a whole clip expecting "voice edit".
+    const sessionMode = normalizeVoiceMode(options && options.mode);
     const session = {
       id: Date.now().toString(36),
       sessionId: state.activeSessionId || null,
       draftBeforeStart: String(draftText || ""),
       writeback,
+      mode: sessionMode === "edit" ? "dictation" : sessionMode,
       chunks: [],
       sampleRate: 16000,
       startedAt: Date.now(),
       audioContext: primedAudioContext,
     };
     activeVoiceInput = session;
+    if (!await passVoiceBeforePermissionGate(session, options)) return;
     setVoiceInputStatus("requesting_permission", {
       message: bt("voiceRequestingPermission"),
       sessionId: session.sessionId,
       startedAt: session.startedAt,
       stage: "permission",
+      mode: session.mode,
     });
     emitVoiceDiagnostic("permission", "info", "requesting microphone permission", "", "");
 
@@ -9391,7 +9591,7 @@
       if (!AudioCtor) {
         throw voiceFlowError("recording_failed", "recording", bt("voiceNoAudioRecording"));
       }
-      session.stream = await navigator.mediaDevices.getUserMedia({
+      session.stream = await requestVoiceMedia(session, {
         audio: {
           channelCount: 1,
           echoCancellation: true,
@@ -9422,12 +9622,25 @@
       session.source.connect(session.processor);
       session.processor.connect(session.zeroGain);
       session.zeroGain.connect(session.audioContext.destination);
-      session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, 10000);
-      setVoiceInputStatus("recording", { message: bt("voiceRecording"), stage: "recording" });
+      session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, VOICE_RECORDING_MAX_DURATION_MS);
+      // Unplugging / device disconnect ends the track (stop() does not fire onended, so no
+      // recursive teardown); same as the desktop lane: finish immediately with what was
+      // recorded instead of idling until the duration cap.
+      session.stream.getTracks().forEach(function (track) {
+        track.onended = function () {
+          if (activeVoiceInput === session) finishVoiceInput(false);
+        };
+      });
+      setVoiceInputStatus("recording", { message: bt("voiceRecording"), stage: "recording", mode: session.mode });
       emitVoiceDiagnostic("recording", "info", "recording started", "", "");
     } catch (err) {
       cleanupVoiceInputSession(session);
-      if (activeVoiceInput === session) activeVoiceInput = null;
+      // finishVoiceInput(cancelled) has already torn the session down as cancelled and cleared
+      // activeVoiceInput; when the user cancels while permission is pending, this catch arrives
+      // afterwards, and an early return without the session check would overwrite the
+      // cancellation with failed.
+      if (activeVoiceInput !== session) return;
+      activeVoiceInput = null;
       const normalized = normalizeVoiceError(err, "recording");
       setVoiceInputStatus("failed", {
         message: normalized.message,
@@ -9618,6 +9831,7 @@
     editQueued,
     startVoiceInput,
     installVoiceAsr,
+    cancelVoiceAsrSetup,
     closeVoiceAsrSetup,
     downloadKbModel,
     cancelKbModel,

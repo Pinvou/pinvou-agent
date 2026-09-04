@@ -1,0 +1,24 @@
+{
+  "_provenance": {
+    "corpus_type": "real_pipeline_observation",
+    "description": "真实录音走生产管线捕获的观测样本：raw_text 为 ASR 原始输出观测值，final_text 为管线最终写回观测值，llm_ms 为观测耗时。null 的含义以各样本 note 为准：早期手工记录样本未捕获耗时，不能据此断定「未调用 LLM」。与 voice-normalize-labeled-samples.json 的手写理想值不同，本文件的值均为实际发生结果。"
+  },
+  "samples": [
+    {
+      "id": "gold_price_chart",
+      "mode": "dictation",
+      "raw_text": "帮我搜索一下今日的惊吓，变成变，并且做一个数据分析格式化的图标。",
+      "final_text": "查一下今天的进价，然后做成数据，可以做数据分析可视化的表格。",
+      "llm_ms": null,
+      "note": "早期手工记录，未捕获 llm_ms（null 在此表示未记录而非未调用 LLM）；final_text 含「惊吓→进价」纠错与整句重构，超出 JS 确定性规则能力，为 LLM 参与后的写回观测值。"
+    },
+    {
+      "id": "stock_volatility_chart",
+      "mode": "dictation",
+      "raw_text": "嗯，查一下最近的股票波动生成数据分析，只是发了一个图表吧。",
+      "final_text": "嗯，查一下最近的股票波动生成数据分析，只是发了一个图表吧。",
+      "llm_ms": null,
+      "note": "早期手工记录，未捕获 llm_ms（null 在此表示未记录而非未调用 LLM）；final_text 与 raw_text 相同，而现管线对该 raw 的分类为 run_llm 且规则纠错必然改写文本，任何车道都不可能原样写回，推断采集自更早的管线版本，保留仅作历史观测参考。"
+    }
+  ]
+}

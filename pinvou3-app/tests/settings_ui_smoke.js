@@ -160,6 +160,7 @@ function injectSource() {
           showSuperPermissionSettings: false,
           usesBundledDependencyInstaller: true,
           taskCompletionNotificationsDefault: true,
+          voiceShortcutNative: true,
         });
         case 'get_settings': return Promise.resolve(settings);
         case 'update_settings':
@@ -426,6 +427,28 @@ async function modalWidth(page, headingText) {
   await page.waitForFunction(() => document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') === 'settings', { timeout: 8000 });
   await sleep(400);
   rec('① 设置页可打开且无错误边界', await page.evaluate(() => document.body.innerText.includes('通用') && !document.body.innerText.includes('设置页加载失败')));
+
+  const voiceShortcutRow = await page.evaluate(() => {
+    const row = [...document.querySelectorAll('div')].filter(node => (node.textContent || '').includes('启用 Alt 唤醒语音') && node.querySelector('[role="switch"]')).pop();
+    const button = row && row.querySelector('[role="switch"]');
+    return {
+      exists: !!row,
+      enabled: !!button && !button.disabled,
+      nativeDesc: !!row && (row.textContent || '').includes('Alt 可语音输入；输入框已有文本时'),
+      unsupportedDescHidden: !!row && !(row.textContent || '').includes('仅 Windows 支持'),
+    };
+  });
+  rec('①e voice shortcut row renders enabled (not greyed out) on a supported platform', Object.values(voiceShortcutRow).every(Boolean), JSON.stringify(voiceShortcutRow));
+
+  // The info entry reuses the first-use intro card: clicking it must open the
+  // intro modal (without triggering ASR checks, downloads, or recording).
+  await page.click('[data-testid="voice-shortcut-info"]');
+  await page.waitForFunction(() => document.querySelector('#voice-shortcut-intro-title'), { timeout: 4000 });
+  rec('①f shortcut info entry opens the intro card', await page.evaluate(() =>
+    (document.querySelector('#voice-shortcut-intro-title')?.textContent || '').length > 0));
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('#voice-shortcut-intro-title'), { timeout: 4000 });
+  rec('①g Esc closes the intro card', true);
 
   await page.click('[data-testid="settings-section-memory"]');
   await page.waitForFunction(() => (document.querySelector('[data-testid="memory-profile-call-name"]')?.textContent || '').includes('升级前称呼'));

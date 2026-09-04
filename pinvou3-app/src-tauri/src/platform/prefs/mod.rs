@@ -491,6 +491,16 @@ pub struct UserPrefs {
     pub sidebar: SidebarPrefs,
     pub code_permission: CodePermissionPrefs,
     pub mode_defaults: ModeDefaultPrefs,
+    /// Global Alt voice shortcut switch (native keyboard hook, currently
+    /// effective on Windows only; other platforms keep the in-window Alt
+    /// fallback path). Off by default; the user must opt in. The authoritative
+    /// persistence lives in settings.json (frontend localStorage is only a
+    /// mirror): `set_voice_shortcut_enabled` writes through a field-level
+    /// transaction, and at startup lib.rs setup replays it into the native
+    /// hook's AtomicBool — preventing the setting from being lost when WebView
+    /// storage is cleared, and races where a later multi-window mount invoke
+    /// overwrites an earlier one.
+    pub voice_shortcut_enabled: bool,
     pub advanced: AdvancedPrefs,
 }
 
@@ -1204,6 +1214,21 @@ mod tests {
     }
 
     #[test]
+    fn voice_shortcut_enabled_defaults_off_and_round_trips() {
+        // Older settings.json lacks the field: the serde container-level
+        // default falls back to false (off by default).
+        let legacy = UserPrefs::parse_settings(Some(r#"{"theme":"genesis"}"#), Some("zh-CN"));
+        assert!(!legacy.voice_shortcut_enabled);
+        let enabled = UserPrefs::parse_settings(
+            Some(r#"{"theme":"genesis","voice_shortcut_enabled":true}"#),
+            Some("zh-CN"),
+        );
+        assert!(enabled.voice_shortcut_enabled);
+        let serialized = serde_json::to_string(&enabled).expect("UserPrefs serialize");
+        assert!(serialized.contains("\"voice_shortcut_enabled\":true"));
+    }
+
+    #[test]
     fn migrate_creates_default_model_for_fresh_prefs() {
         let mut prefs = UserPrefs::default();
         prefs.migrate_models();
@@ -1603,6 +1628,7 @@ mod tests {
             sidebar: SidebarPrefs::default(),
             code_permission: CodePermissionPrefs::default(),
             mode_defaults: ModeDefaultPrefs::default(),
+            voice_shortcut_enabled: false,
             advanced: AdvancedPrefs {
                 allow_shell: Some(false),
                 max_output_tokens: Some(8192),

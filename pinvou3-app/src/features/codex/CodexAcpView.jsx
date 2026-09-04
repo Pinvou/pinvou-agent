@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import {
-  AlertTriangle, Brain, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, Mic, Monitor, Paperclip,
+  AlertTriangle, Brain, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, Monitor, Paperclip,
   Plus, RefreshCw, Send, Sparkles, StopCircle, Terminal, Upload, User, Wrench,
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
@@ -96,6 +96,18 @@ import {
   ComposerKbSelector,
   ComposerModeChip,
 } from '../chat/composer-controls.jsx';
+import {
+  VoiceComposerButton,
+  VoiceEditPreview,
+  VoiceComposerPillLayer,
+  VoiceComposerStatus,
+} from '../voice-composer/VoiceComposerControls.jsx';
+import {
+  isVoiceActive,
+  isVoiceBusy,
+  normalizeVoiceMode,
+} from '../voice-composer/voice-ui-policy.mjs';
+import { useComposerVoiceInput } from '../voice-composer/useComposerVoiceInput.js';
 import { visibleUserModels } from '../../shared/model-options.js';
 import { selectorMainLabel } from '../settings/model-catalog.js';
 import {
@@ -1110,6 +1122,16 @@ export function CodexAcpView({
   const [draftWorkspaceHandle, setDraftWorkspaceHandle] = useState(null);
   const [recentWorkspaces, setRecentWorkspaces] = useState(loadRecentWorkspaces);
   const [draftControlsCache, setDraftControlsCache] = useState(loadDraftControlsCache);
+  const [voiceAsrPopoverOpen, setVoiceAsrPopoverOpen] = useState(false);
+  const voiceAsrPopoverRef = useRef(null);
+  const voiceComposerTextareaRef = useRef(null);
+  // Mounted-state ref: after unmount/view switch, reject in-flight ASR/LLM callbacks from
+  // writing back (the hook's isStillActive defense line).
+  const composerMountedRef = useRef(true);
+  useEffect(() => {
+    composerMountedRef.current = true;
+    return () => { composerMountedRef.current = false; };
+  }, []);
   // 草稿态（会话未创建）下用户预选的配置：{ [agentId]: { model?, mode?, configs: { [id]: value } } }
   const [draftConfigSelections, setDraftConfigSelections] = useState({});
   const [showScrollBottom, setShowScrollBottom] = useState(false);
@@ -2445,37 +2467,76 @@ export function CodexAcpView({
     }));
   }
 
-  // ── 语音输入（与 ChatView 同款：bridge.voice 一次录音 → 本地 ASR → 写回 draft）。
-  // 代码车道不物化聊天会话，语音状态仍由 bridge 全局管理（bs.voiceInput），写回走代码页 draft。
+  // ── Voice input (shared composer UI: bridge.voice one-shot recording → local ASR → write back / direct-send into the code page draft).
   const nativeVoiceInput = (bs && bs.voiceInput) || { status: 'idle' };
-  const nativeVoiceActive = ['requesting_permission', 'recording', 'transcribing'].includes(nativeVoiceInput.status);
-  const nativeVoiceRecording = nativeVoiceInput.status === 'recording';
-  const nativeVoiceBusy = nativeVoiceInput.status === 'transcribing';
-  const nativeVoiceDisabled = !bridge.available || nativeVoiceBusy;
+  const nativeVoiceMode = normalizeVoiceMode(nativeVoiceInput.mode);
+  const nativeVoiceActive = isVoiceActive(nativeVoiceInput);
+  const nativeVoiceBusy = isVoiceBusy(nativeVoiceInput);
+  const nativeVoiceDisabled = !bridge.available || nativeVoiceBusy || working || activeRuntimeBusy;
   const nativeVoiceCanInstallAsr = can('localModelSetup') && can('dependencyInstall');
-  const nativeVoiceLabel = nativeVoiceInput.status === 'recording'
-    ? t.voiceStop
-    : nativeVoiceInput.status === 'failed'
-      ? t.voiceRetry
-      : nativeVoiceInput.status === 'requesting_permission'
-        ? t.voiceCancel
-        : nativeVoiceInput.status === 'transcribing'
-          ? t.voiceTranscribing
-          : t.voiceStart;
-  function handleNativeVoiceClick() {
-    if (!bridge.available) return;
-    if (nativeVoiceInput.status === 'requesting_permission') {
-      bridge.voice.cancelVoiceInput();
-      return;
+  const nativeVoiceAsrSetup = (bs && bs.voiceAsrSetup) || { open: false };
+  const nativeVoiceAsrBusy = !!(nativeVoiceAsrSetup.installing || nativeVoiceAsrSetup.cancelling);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- close the install popover when busy state clears; mirrors ChatView pattern
+    if (!nativeVoiceAsrBusy) setVoiceAsrPopoverOpen(false);
+  }, [nativeVoiceAsrBusy]);
+
+  // Outside-click close for the ASR progress popover is handled inside VoiceComposerButton
+  // via useOutsidePointerClose (passed in via onCloseAsrPopover); the view no longer attaches
+  // duplicate listeners.
+
+  // Return focus to the composer input after recording ends / writeback completes (leaving
+  // any of the four active states).
+  const nativeVoiceWasActiveRef = useRef(false);
+  useEffect(() => {
+    const wasActive = nativeVoiceWasActiveRef.current;
+    nativeVoiceWasActiveRef.current = nativeVoiceActive;
+    if (wasActive && !nativeVoiceActive && voiceComposerTextareaRef.current) {
+      voiceComposerTextareaRef.current.focus();
     }
-    if (nativeVoiceBusy) return;
-    bridge.voice.startVoiceInput(draft, (text) => setDraft(prev => bridge.voice.appendVoiceText(prev, text)));
+  }, [nativeVoiceActive]);
+
+  function canSendNativeVoiceTask(outgoing) {
+    if (!String(outgoing || '').trim()) return false;
+    if (busy || working || activeRuntimeBusy || workspaceUnavailable || sessionSyncing) return false;
+    if (!activeId && !draftWorkspacePath) return false;
+    if (attachments.some(attachment => attachment.status === 'parsing')) return false;
+    if (activeId && !sessionReady) return false;
+    if (!isNativeAgent && !activeStatus?.authenticated) return false;
+    return true;
   }
+
+  const nativeVoice = useComposerVoiceInput({
+    targetId: 'codex-composer',
+    ownerKind: 'codex',
+    bridge,
+    voiceInput: nativeVoiceInput,
+    voiceBusy: nativeVoiceBusy || working || activeRuntimeBusy,
+    workspaceId: draftWorkspacePath || activeId || 'temporary',
+    sessionId: activeId || null,
+    getDraft: () => draft,
+    setDraft,
+    appendDraft: bridge.voice.appendVoiceText,
+    isStillActive: () => composerMountedRef.current,
+    resolveMode: (mode, context) => {
+      if (mode === 'dictation' && context && context.source !== 'button'
+        && String(context.draft || '').trim()) {
+        return 'edit';
+      }
+      return mode;
+    },
+    canStart: () => !busy && !working && !activeRuntimeBusy,
+    canSendTask: canSendNativeVoiceTask,
+    sendTask: async outgoing => send(outgoing),
+  });
+  const handleNativeVoiceTrigger = nativeVoice.triggerVoice;
+
   function handleNativeVoiceCancel() {
-    if (bridge.available) bridge.voice.cancelVoiceInput();
+    nativeVoice.cancelVoice();
   }
   function handleNativeVoiceClose() {
-    if (bridge.available) bridge.voice.clearVoiceInput();
+    nativeVoice.closeVoice();
   }
 
   // 离开代码页（切模式/视图，组件卸载）时可靠取消进行中的语音输入：
@@ -2487,8 +2548,7 @@ export function CodexAcpView({
   useEffect(() => {
     return () => {
       const voice = nativeVoiceInputRef.current;
-      if (voice && ['requesting_permission', 'recording', 'transcribing'].includes(voice.status)
-        && bridge.available) {
+      if (voice && isVoiceActive(voice) && bridge.available) {
         bridge.voice.cancelVoiceInput();
       }
     };
@@ -2922,8 +2982,12 @@ export function CodexAcpView({
     }
   }
 
-  async function send() {
-    const message = draft.trim();
+  async function send(messageOverride) {
+    const hasMessageOverride = typeof messageOverride === 'string';
+    if (!hasMessageOverride && nativeVoice && nativeVoice.editPreview) {
+      return nativeVoice.applyVoiceEditPreview({ send: true });
+    }
+    const message = String(hasMessageOverride ? messageOverride : draft).trim();
     const attachmentsAtSend = attachments;
     const readyAttachments = attachments.filter(attachment => (
       attachment.status === 'ready' && attachment.result
@@ -2932,24 +2996,23 @@ export function CodexAcpView({
     const draftAgentAtSend = draftAgentId;
     const draftConfigAtSend = draftConfigSelections[draftAgentAtSend];
     if ((!message && !readyAttachments.length && !workspaceReferences.length)
-      || busy || working || activeRuntimeBusy || configApplying) return;
+      || busy || working || activeRuntimeBusy || configApplying) return false;
     if (!isNativeAgent && !activeStatus?.authenticated) {
       setError(codexCopy.loginRequiredBeforeSend);
-      return;
+      return false;
     }
     if (attachments.some(attachment => ['parsing', 'uploading'].includes(attachment.status))) {
       setError(codexCopy.attachmentsParsing);
-      return;
+      return false;
     }
-    if (workspaceUnavailable) return;
-    if (activeId && !sessionReady) return;
+    if (workspaceUnavailable) return false;
+    if (activeId && !sessionReady) return false;
     if (isNativeAgent) {
-      await sendNative(message, readyAttachments);
-      return;
+      return sendNative(message, readyAttachments);
     }
     let targetId = activeId;
     let operation = beginAcpSendOperation(targetId);
-    if (!operation) return;
+    if (!operation) return false;
     setError('');
     try {
       if (!targetId) {
@@ -3009,6 +3072,8 @@ export function CodexAcpView({
         workspaceReferencesAtSend,
         reference => reference,
       ));
+      // Voice sendTask treats === false as failure: a real acceptance must explicitly report success.
+      return true;
     } catch (err) {
       if (canApplyAcpSendOperation(operation)) {
         showError(err);
@@ -3019,6 +3084,7 @@ export function CodexAcpView({
         // untouched, but never swallow the failure silently.
         console.error('[codex] background ACP send failed', err);
       }
+      return false;
     } finally {
       finishAcpSendOperation(operation);
     }
@@ -3033,7 +3099,7 @@ export function CodexAcpView({
     let targetId = activeId;
     const materializingDraft = !targetId;
     let operation = beginAcpSendOperation(targetId);
-    if (!operation) return;
+    if (!operation) return false;
     setError('');
     try {
       if (!targetId) {
@@ -3122,6 +3188,8 @@ export function CodexAcpView({
         workspaceReferencesAtSend,
         reference => reference,
       ));
+      // Voice sendTask treats === false as failure: a real acceptance must explicitly report success.
+      return true;
     } catch (err) {
       if (materializingDraft) clearNativeDraftControls(nativeDraftControlsAtSend);
       if (canApplyAcpSendOperation(operation)) {
@@ -3133,6 +3201,7 @@ export function CodexAcpView({
         // untouched, but never swallow the failure silently.
         console.error('[codex] background native send failed', err);
       }
+      return false;
     } finally {
       finishAcpSendOperation(operation);
     }
@@ -3741,7 +3810,34 @@ export function CodexAcpView({
               </div>
             )}
             {error && <div className="mb-2 px-3 text-[11px] text-red-500 break-words">{error}</div>}
+            <VoiceComposerStatus
+              voiceInput={nativeVoiceInput}
+              voiceMode={nativeVoiceMode}
+              copy={t}
+              chatCopy={t.uiChat}
+              dark={theme === 'dark'}
+              voiceAsrReadyNotice={false}
+              canInstallLocalAsr={nativeVoiceCanInstallAsr}
+              onGotoSettings={onGotoSettings}
+              onRetry={() => handleNativeVoiceTrigger(nativeVoiceMode, { source: 'button' })}
+              onCancel={handleNativeVoiceCancel}
+              onClose={handleNativeVoiceClose}
+            />
             <div className="relative rounded-[24px] border border-black/[0.08] dark:border-white/10 bg-white/85 dark:bg-[#1B1C1E]/90 backdrop-blur-xl shadow-lg px-4 pt-3 pb-2.5 focus-within:border-blue-400/50">
+              <VoiceComposerPillLayer
+                voiceInput={nativeVoiceInput}
+                voiceMode={nativeVoiceMode}
+                copy={t}
+                onCancel={handleNativeVoiceCancel}
+                onConfirm={() => handleNativeVoiceTrigger(nativeVoiceMode)}
+              />
+              <VoiceEditPreview
+                preview={nativeVoice.editPreview}
+                copy={t}
+                onApply={() => nativeVoice.applyVoiceEditPreview()}
+                onApplyAndSend={() => nativeVoice.applyVoiceEditPreview({ send: true })}
+                onCancel={nativeVoice.cancelVoiceEditPreview}
+              />
               <ConversationActivityIndicator
                 turn={activeConversationTurn}
                 now={now}
@@ -3762,36 +3858,6 @@ export function CodexAcpView({
                   formatAttachmentLimitError(value, t.uiAttachments) || String(value || '')
                 )}
               />
-              {nativeVoiceInput.status !== 'idle' && nativeVoiceInput.message && (
-                <div className={`flex items-center justify-between gap-2 mb-2 px-3 py-2 rounded-2xl text-[12px] ${
-                  nativeVoiceInput.status === 'failed'
-                    ? (theme === 'dark' ? 'bg-[#3A1F1F] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]')
-                    : (theme === 'dark' ? 'bg-[#1E2B3A] text-[#A8C7FA]' : 'bg-[#E8F0FE] text-[#174EA6]')
-                }`}>
-                  <span className="min-w-0 truncate">
-                    {nativeVoiceInput.status === 'requesting_permission' ? t.voiceRequesting
-                      : nativeVoiceInput.status === 'recording' ? t.voiceRecording
-                      : nativeVoiceInput.status === 'transcribing' ? t.voiceTranscribing
-                      : nativeVoiceInput.status === 'completed' ? t.voiceCompleted
-                      : nativeVoiceInput.message}
-                  </span>
-                  <div className="flex items-center gap-1 shrink-0">
-                    {nativeVoiceInput.status === 'failed' && nativeVoiceInput.category === 'recognition_failed'
-                      && nativeVoiceCanInstallAsr && onGotoSettings && (
-                      <button type="button" onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium ${theme === 'dark' ? 'bg-white/10 hover:bg-white/20' : 'bg-black/5 hover:bg-black/10'}`}>{t.voiceGotoDeps}</button>
-                    )}
-                    {nativeVoiceInput.status === 'failed' && (
-                      <button type="button" onClick={handleNativeVoiceClick} className={`px-2 py-1 rounded-full ${theme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{t.voiceRetry}</button>
-                    )}
-                    {nativeVoiceActive && (
-                      <button type="button" onClick={handleNativeVoiceCancel} className={`px-2 py-1 rounded-full ${theme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{t.voiceCancel}</button>
-                    )}
-                    {!nativeVoiceActive && (
-                      <button type="button" onClick={handleNativeVoiceClose} title={t.voiceClose} className={`w-6 h-6 rounded-full flex items-center justify-center ${theme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>×</button>
-                    )}
-                  </div>
-                </div>
-              )}
               {workspaceReferences.length > 0 && (
                 <div className="mb-2 flex flex-wrap items-center gap-1.5">
                   {workspaceReferences.map(path => (
@@ -3827,9 +3893,21 @@ export function CodexAcpView({
                   ))}
                 </div>
               )}
-              <textarea value={draft} onChange={event => setDraft(event.target.value)}
+              <textarea ref={voiceComposerTextareaRef} value={draft} onChange={event => setDraft(event.target.value)}
                 onPaste={handlePaste}
                 onKeyDown={event => {
+                  if (nativeVoice.editPreview) {
+                    if (event.key === 'Escape') {
+                      event.preventDefault();
+                      nativeVoice.cancelVoiceEditPreview();
+                      return;
+                    }
+                    if (event.key === 'Enter' && !event.shiftKey && !isImeComposing(event)) {
+                      event.preventDefault();
+                      nativeVoice.applyVoiceEditPreview({ send: event.ctrlKey || event.metaKey });
+                      return;
+                    }
+                  }
                   // 输入法合成期间(例如中文输入法敲回车确认候选词)不要触发发送,
                   // 否则一次回车会既上屏又发送。与 ChatView / PetWindow 保持一致。
                   if (event.key === 'Enter' && !event.shiftKey && !isImeComposing(event)) {
@@ -3938,24 +4016,10 @@ export function CodexAcpView({
                       </button>
                     </ComposerPopover>
                   </div>
-                  <button
-                    type="button"
-                    data-testid="codex-voice-input"
-                    onClick={handleNativeVoiceClick}
-                    disabled={nativeVoiceDisabled}
-                    aria-label={nativeVoiceLabel}
-                    title={nativeVoiceLabel}
-                    className={`${
-                      nativeVoiceRecording
-                        ? 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors bg-[#C5221F] text-white hover:bg-[#A50E0E] border border-transparent'
-                        : nativeVoiceActive
-                          ? `${COMPOSER_ICON_BUTTON_CLASS} text-[#174EA6] dark:text-[#A8C7FA]`
-                          : COMPOSER_ICON_BUTTON_CLASS
-                    } ${nativeVoiceDisabled ? 'opacity-70 cursor-wait' : ''}`}>
-                    <Mic size={18} />
-                  </button>
-                  {/* 斜杠命令菜单依赖 ACP 的 available_commands_update，原生车道不经 ACP、
-                      命令永不到达；在原生车道隐藏按钮，避免一个永远禁用且提示会误导的控件。 */}
+                                    {/* The slash-command menu depends on ACP's available_commands_update; the
+                      native lane bypasses ACP so commands never arrive. Hide the button on the
+                      native lane to avoid a control that is permanently disabled with a
+                      misleading tooltip. */}
                   {!isNativeAgent && (
                     <button type="button" ref={commandMenuTriggerRef} onClick={() => setCommandOpen(value => !value)}
                       disabled={!availableCommands.length}
@@ -4225,10 +4289,36 @@ export function CodexAcpView({
                 {busy ? (
                   <button type="button" onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
                 ) : (
-                  <button type="button" onClick={send} disabled={!sessionReady || (!draft.trim() && attachments.every(attachment => attachment.status !== 'ready') && !workspaceReferences.length) || working || activeRuntimeBusy || Boolean(configApplying) || (!isNativeAgent && (!activeStatus || !activeStatus.installed || !activeStatus.authenticated))}
-                    className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
-                    <Send size={16} />
-                  </button>
+                  <>
+                    <VoiceComposerButton
+                      refProp={voiceAsrPopoverRef}
+                      voiceInput={nativeVoiceInput}
+                      voiceMode={nativeVoiceMode}
+                      voiceAsrSetup={nativeVoiceAsrSetup}
+                      voiceAsrPopoverOpen={voiceAsrPopoverOpen}
+                      copy={t}
+                      disabled={nativeVoiceDisabled}
+                      testId="codex-voice-input"
+                      onClick={() => handleNativeVoiceTrigger('dictation', { source: 'button' })}
+                      onToggleAsrPopover={() => setVoiceAsrPopoverOpen(open => !open)}
+                      onCloseAsrPopover={() => setVoiceAsrPopoverOpen(false)}
+                      onCancelAsr={() => {
+                        // Close the popover first to show a terminal state, then best-effort cancel
+                        // the install; a failed cancel still leaves no unresponsive popover.
+                        setVoiceAsrPopoverOpen(false);
+                        if (bridge.available && bridge.voice.cancelVoiceAsrSetup) {
+                          bridge.voice.cancelVoiceAsrSetup();
+                        }
+                      }}
+                    />
+                    {/* While a voice rewrite preview is open, disable the primary send: sending is
+                        funneled into the preview card (apply and send), so buttons based on draft
+                        cannot send the raw text or double-send during the preview. */}
+                    <button type="button" onClick={() => send()} disabled={!!nativeVoice.editPreview || !sessionReady || (!draft.trim() && attachments.every(attachment => attachment.status !== 'ready') && !workspaceReferences.length) || working || activeRuntimeBusy || Boolean(configApplying) || (!isNativeAgent && (!activeStatus || !activeStatus.installed || !activeStatus.authenticated))}
+                      className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
+                      <Send size={16} />
+                    </button>
+                  </>
                 )}
               </div>
             </div>

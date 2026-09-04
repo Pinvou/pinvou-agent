@@ -1062,13 +1062,32 @@ pub fn run() {
             // 桌宠:settings.json 里 pet.enabled 为真时随主窗口一起拉起。
             pet_window::spawn_if_enabled(app.handle());
 
+            // On Windows, Alt+Space is intercepted by the system menu first and
+            // the WebView keydown is unreliable. Translate it into a frontend
+            // event at the native layer, keeping the WebView shortcut as the
+            // fallback path.
+            crate::features::voice_shortcut::install(app.handle().clone());
+            // Startup replay: settings.json's voice_shortcut_enabled is the
+            // authoritative persistence of the switch (frontend localStorage is
+            // only a mirror); sync it into the native-layer AtomicBool right
+            // after the hook is installed.
+            crate::features::voice_shortcut::set_enabled(
+                crate::platform::prefs::UserPrefs::load().voice_shortcut_enabled,
+            );
+
             startup::mark("setup:done");
             Ok(())
         })
         .on_window_event(|window, event| {
-            // 主窗口销毁 → 一并关掉桌宠,否则只剩宠物窗口时 app 不退出。
-            if window.label() == "main" {
-                if let tauri::WindowEvent::Destroyed = event {
+            if let tauri::WindowEvent::Destroyed = event {
+                // When a recording window is closed outright, the frontend has
+                // no chance to deregister; leaving it registered would keep the
+                // native shortcut routing Alt gestures into a destroyed window
+                // (a global swallow-keys black hole).
+                crate::features::voice_shortcut::forget_recording_window(window.label());
+                // Main window destroyed → close the pet window too, otherwise
+                // the app never exits while only the pet window remains.
+                if window.label() == "main" {
                     pet_window::close_with_main(window.app_handle());
                 }
             }
@@ -1214,10 +1233,13 @@ pub fn run() {
             commands::settings::test_image_input_capability,
             commands::settings::test_search_provider,
             commands::voice::transcribe_voice_audio,
+            commands::voice::postprocess_voice_text,
             commands::voice::reset_microphone_permission,
             commands::voice::voice_asr_status,
             commands::voice::install_voice_asr,
             commands::voice::cancel_voice_asr,
+            commands::voice::set_voice_shortcut_enabled,
+            commands::voice::set_voice_shortcut_recording,
             commands::sessions::list_sessions,
             commands::sessions::create_session,
             commands::sessions::load_session,
