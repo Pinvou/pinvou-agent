@@ -1,6 +1,6 @@
 # CodeWhale Fork Modification Register
 
-> Updated: 2026-09-01. Public maintenance baseline: upstream `v0.9.5` r13, published through CodeWhale PR #32; the parent gitlink lands via parent PR #370. Canonical Chinese register: [`docs/fork-modifications.md`](fork-modifications.md). This English page is a condensed summary; the Chinese version is the complete, authoritative register.
+> Updated: 2026-09-04. Public maintenance baseline: upstream `v0.9.5` r13, published through CodeWhale PR #32; an exact, unpublished r14 candidate adds Shell task-origin reconciliation. Canonical Chinese register: [`docs/fork-modifications.md`](fork-modifications.md). This English page is a condensed summary; the Chinese version is the complete, authoritative register.
 >
 > 2026-08-22 corrections: (1) the parent gitlink bump from r6 (`3bbf8421`) to r7 happened in parent PR #285 (`95502ac8`), not in PR #302 — PR #302 started from a pre-#285 main and merged without touching the gitlink; PR #305 later advanced the published baseline to r8. (2) PR #302 (capability-bundle unification, parent commit `c75f2fb2`) updated the parent-side scope model — the single `disabled_bundles.json` (package id × mode, plus `hidden_scopes`) replaced the separate `disabled_connectors.json` / `disabled_skills.json` files.
 
@@ -10,18 +10,24 @@
 |---|---|
 | Upstream | `v0.9.5` at `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
 | Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `f853f8f1` (r13: r12 plus PR #32 GAIA benchmark isolation) |
+| Unpublished candidate | r14 candidate `5a5bf363` (stable Shell tool-call/turn origin) |
 | Merged fixes | Existing `#9`, `#11`, `#12`, `#13`, `#15`, `#16`, `#17`, and `#19`, plus r11 PRs `#18`, `#21`, `#22`, `#25`, `#26`, `#27`, `#29`, `#30`, r12 PRs `#33`, `#35`, and r13 PR `#32`, are merged |
-| Published status | `pinvou3-clean` and immutable tag `pinvou-v0.9.5-r13` resolve to `f853f8f1566c57e6be40d5439a222a932aa79ef5`; `r1` through `r13` remain immutable; the parent gitlink is aligned by PR #370 |
+| Published status | `pinvou3-clean` and immutable tag `pinvou-v0.9.5-r13` resolve to `f853f8f1566c57e6be40d5439a222a932aa79ef5`; `r1` through `r13` remain immutable; the development parent gitlink temporarily points to the exact r14 candidate under review |
 | Previous baseline backup | Tag `pinvou-v0.9.0-r4` and branch `backup/pinvou3-clean-v0.9.0-r4`, both at `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| Drift | r13 baseline totals 110 files, `+10895/-1195` (net 9,700 added lines); r12→r13 is 6 files, `+1088/-1` |
+| Drift | r13 baseline totals 110 files, `+10895/-1195` (net 9,700 added lines); r12→r13 is 6 files, `+1088/-1`; the r14 candidate is 7 files, `+133/-7` over r13 |
 | Organization | Four current long-lived topics; PR #13 removes the product-specific orchestration topic |
-| Guard inventory | r13 has 63 CodeWhale `forkguard_*` tests, including six GAIA benchmark-isolation tests, plus generic tool/route compatibility regressions and parent fingerprints/behavior tests |
+| Guard inventory | r13 has 63 CodeWhale `forkguard_*` tests, including six GAIA benchmark-isolation tests; the r14 candidate adds two Shell-origin behavior tests (65 total) plus parent timeline-projection coverage |
 
 ### r12 provider-native search and keyless Bing tail (engine side merged)
 
 - CodeWhale PR #33 (six commits merged at `4f612e548`): adds provider-native search adapters for DeepSeek Responses, Model Studio Token Plan (Qwen), Moonshot/Kimi (K2.6 builtin `$web_search`, K3 official Formula protocol, Kimi Code `/search`), Z.AI/Zhipu (global `search-prime` / China `search_std`), and Xiaomi MiMo. Capability gating is exact to provider+model+official endpoint+product surface and fails closed; K3 Formula gets a dedicated 180-second budget and an 8-call limit. The reviewer-found loose endpoint matching (whole-URL lowercasing, unlimited trailing slashes) was tightened in the closing commit `4f612e548` via `is_exact_url_route`. Fingerprint anchors: `documented_server_side_web_search_for_route`, `WEB_SEARCH_FORMULA_URI`.
 - CodeWhale PR #35 (merged at `9c5f4f19`): the keyless chain tail after API-backed providers switches from DuckDuckGo to Bing (live measurements show DDG is DNS-poisoned and SNI-reset in mainland China while Bing serves both global and China endpoints keyless); the all-backends-down error now suggests API-backed `[search]` providers; adds `forkguard_api_provider_chain_tail_is_bing` (forkguard total 56→57).
 - r12 parent-side integration (PR #375): gitlink → `9c5f4f19`, settings-page search-source guidance copy (i18n zh/en/ja), and comment corrections in `prefs/search.rs` plus the matching `bridge.rs` injection-site comment and test docstring (the engine default is still DuckDuckGo; the app-side default Bing comes from the bridge's explicit `EngineConfig` injection).
+
+### r14 candidate Shell task-origin reconciliation (unpublished)
+
+- The engine stamps Shell work with its originating tool call and turn. Job snapshots and completion events expose those stable identities, allowing hosts to reconcile updates at the original transcript position instead of guessing from command text. The Pinvou bridge preserves a safe legacy fallback, keeps unmatched running jobs visible after compaction or reload, and prevents identified completed root jobs from being appended at the current timeline tail when their origin card is no longer loaded.
+- Candidate guards: `forkguard_background_shell_job_preserves_origin_identity` covers identity on snapshots and completion events, while `forkguard_tool_context_for_call_preserves_turn_and_sets_call_origin` covers the engine dispatch stamp. Parent coverage includes `forkguard_shell_monitor_assigns_identical_commands_by_stable_origin` and `shell_task_projection.test.mjs`.
 
 ### r11 provider, MCP, steer, and platform boundaries (published)
 

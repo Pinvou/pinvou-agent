@@ -243,6 +243,65 @@ test('a brand-new subagent job first seen terminal after an older wait card is c
   assert.equal(harness.notifications(), 0);
 });
 
+test('runtime origin identity reconciles a completed job at its original tool card', () => {
+  const harness = createTerminal([{
+    type: 'tool',
+    toolId: 'tool-old',
+    name: 'exec_shell',
+    state: 'done',
+    args: { command: 'different rendered command' },
+    output: 'starting',
+  }, {
+    type: 'tool',
+    toolId: 'current-wait',
+    name: 'exec_shell_wait',
+    state: 'done',
+    output: '13',
+  }]);
+
+  harness.terminal.applyShellSnapshots('session-current', [snapshot({
+    origin_tool_call_id: 'tool-old',
+    origin_turn_id: 'turn-old',
+  })]);
+
+  assert.equal(harness.chatItems.length, 2);
+  assert.equal(harness.chatItems[0].taskId, 'shell-old');
+  assert.equal(harness.chatItems[0].originToolCallId, 'tool-old');
+  assert.equal(harness.chatItems[0].originTurnId, 'turn-old');
+  assert.match(harness.chatItems[0].output, /old task failed/);
+  assert.equal(harness.chatItems[1].output, '13');
+});
+
+test('identified running root jobs stay visible when their origin card is not loaded', () => {
+  const harness = createTerminal();
+
+  const running = harness.terminal.applyShellSnapshots('session-current', [snapshot({
+    status: 'running',
+    exit_code: null,
+    origin_tool_call_id: 'tool-before-compaction',
+    origin_turn_id: 'turn-old',
+  })]);
+
+  assert.equal(running, true);
+  assert.equal(harness.chatItems.length, 1);
+  assert.equal(harness.chatItems[0].toolId, 'shell-task:shell-old');
+  assert.equal(harness.chatItems[0].state, 'running');
+  assert.equal(harness.notifications(), 1);
+});
+
+test('identified completed root jobs without their origin card stay out of the current tail', () => {
+  const harness = createTerminal();
+
+  const running = harness.terminal.applyShellSnapshots('session-current', [snapshot({
+    origin_tool_call_id: 'tool-before-compaction',
+    origin_turn_id: 'turn-old',
+  })]);
+
+  assert.equal(running, false);
+  assert.equal(harness.chatItems.length, 0);
+  assert.equal(harness.notifications(), 0);
+});
+
 test('the web bridge keeps the same stale-completion guard', () => {
   const webBridge = fs.readFileSync(
     path.join(appRoot, 'src', 'platform', 'web', 'bridge.js'),
@@ -266,5 +325,9 @@ test('the web bridge keeps the same stale-completion guard', () => {
   assert.match(
     webBridge,
     /item\.name === "Bash" && item\.args != null && item\.args\.action === "wait"/,
+  );
+  assert.match(
+    webBridge,
+    /if \(!item && !running && job\.origin_tool_call_id && !job\.owner_agent_id\) return;/,
   );
 });

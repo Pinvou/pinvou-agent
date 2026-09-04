@@ -1057,6 +1057,8 @@ mod tests {
             linked_task_id: None,
             owner_agent_id: owner_agent_id.map(str::to_string),
             owner_agent_name: owner_agent_id.map(str::to_string),
+            origin_tool_call_id: None,
+            origin_turn_id: None,
         }
     }
 

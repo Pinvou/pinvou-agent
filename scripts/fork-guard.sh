@@ -8,6 +8,8 @@ APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
 PUBLISHED_HEAD="f853f8f1566c57e6be40d5439a222a932aa79ef5"
 PUBLISHED_COMMITS=37
+CANDIDATE_HEAD="5a5bf363ebeb720410f30e400c3de44abab71de6"
+CANDIDATE_COMMITS=38
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -22,9 +24,12 @@ actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
   expected_commits="$PUBLISHED_COMMITS"
   green "  ✓ CodeWhale gitlink 指向 r13 四主题公开基线 $PUBLISHED_HEAD"
+elif [[ "$actual_head" == "$CANDIDATE_HEAD" ]]; then
+  expected_commits="$CANDIDATE_COMMITS"
+  green "  ✓ CodeWhale gitlink 指向登记的 r14 未发布候选 $CANDIDATE_HEAD"
 else
   expected_commits=""
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r13 公开 head $PUBLISHED_HEAD"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r13 公开 head $PUBLISHED_HEAD 或 r14 候选 $CANDIDATE_HEAD"
   fail=1
 fi
 
@@ -116,6 +121,9 @@ fingerprints=(
   "T2|全链失败建议配置 API 搜索后端      |CodeWhale/crates/tui/src/tools/web/backend.rs|configure an API-backed [search] provider"
   "T2|cancel 只杀本轮前台 shell          |CodeWhale/crates/tui/src/tools/shell.rs|fn kill_running_turn_foreground"
   "T2|前台范围 kill 不误杀后台回归        |CodeWhale/crates/tui/src/tools/shell/tests.rs|fn kill_running_turn_foreground_scopes_to_this_turns_unowned_foreground_shells"
+  "T2|Shell job 保留稳定来源身份            |CodeWhale/crates/tui/src/tools/shell.rs|pub origin_tool_call_id: Option<String>"
+  "T2|Engine 分发盖章来源工具调用         |CodeWhale/crates/tui/src/core/engine/turn_loop.rs|fn tool_context_for_call("
+  "T2|Shell 来源身份行为回归              |CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_background_shell_job_preserves_origin_identity"
   "T3|ambient project authority 密封       |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_runtime_loader_ignores_ambient_project_authority"
   "T3|Permissions 100 KiB 窄例外回归      |CodeWhale/crates/tui/src/prompts.rs|fn forkguard_instruction_fragment_preserves_content_beyond_default_cap"
   "T3|disabled Skill 不可见且不可加载      |CodeWhale/crates/tui/src/skills/tests.rs|fn forkguard_disabled_skill_is_neither_rendered_nor_loadable"
@@ -160,6 +168,9 @@ fingerprints=(
   "APP|落盘兜底编辑截断与底座同口径        |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn forkguard_admitted_display_fallback_edit_cuts_before_trailing_tool_result"
   "APP|不支持的最新用户内容不可回退到旧轮  |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn forkguard_admitted_display_fallback_does_not_skip_unsupported_user_turn"
   "APP|拒绝编辑终态触发权威历史回滚        |pinvou3-app/src-tauri/src/features/assistant/engine.rs|\"operation_rejected\": operation_rejected"
+  "APP|Shell 快照按来源工具卡原位回写      |pinvou3-app/src/platform/tauri/bridge/terminal.js|it.toolId === job.origin_tool_call_id"
+  "APP|Shell 监控按来源区分同命令任务       |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|fn forkguard_shell_monitor_assigns_identical_commands_by_stable_origin"
+  "APP|历史 Shell 终态不追加到当前时间线   |pinvou3-app/tests/shell_task_projection.test.mjs|completed historical shell jobs are not inserted into the current timeline"
 )
 
 # r13 同时包含 r12 搜索边界与正式发布的 GAIA 评测隔离扩展。
