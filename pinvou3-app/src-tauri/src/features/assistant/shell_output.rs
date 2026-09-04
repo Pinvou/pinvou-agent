@@ -539,6 +539,23 @@ mod tests {
     }
 
     #[test]
+    fn legacy_fallback_skips_a_foreign_origin_with_the_same_command() {
+        let mut state = MonitorState::default();
+        track(&mut state, "tool-current", "same command");
+        let mut foreign = snapshot("job-foreign", "same command", ShellStatus::Running);
+        foreign.origin_tool_call_id = Some("tool-other".to_string());
+        let legacy = snapshot("job-legacy", "same command", ShellStatus::Running);
+
+        state.assign_unclaimed_tasks(&[foreign, legacy]);
+
+        assert_eq!(
+            state.tools["tool-current"].task_id.as_deref(),
+            Some("job-legacy")
+        );
+        assert!(!state.claimed_tasks.contains("job-foreign"));
+    }
+
+    #[test]
     fn holds_incomplete_utf8_replacement_until_a_stable_snapshot() {
         assert_eq!(
             appended_stable_delta("", "中\u{fffd}", true),
