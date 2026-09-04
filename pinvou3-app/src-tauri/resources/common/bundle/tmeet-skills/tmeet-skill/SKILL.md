@@ -98,11 +98,13 @@ tmeet
 | 用户提供的筛选条件 | 应选用的命令 |
 |------|------|
 | **仅时间范围**（仅有起止时间，无任何关键词） | `list` 类命令 |
+| **已知会议号 / 会议 ID** | `meeting get` |
 | **包含关键词**（会议主题、会议号、创建人、备注等），无论是否同时带时间范围 | `search` 命令 |
 
 ### 会议查询
 
 - **仅时间** → 使用 `tmeet meeting list`（待开始/进行中）或 `tmeet meeting list-ended`（已结束）
+- **已知会议号 / 会议 ID** → 使用 `tmeet meeting get`（获取会议详情；录制/回放查询亦先按会议号分流，见录制查询路由总则）
 - **含关键词**（主题 / 会议号 / 创建人 / 备注等） → 使用 `tmeet meeting search`，并通过对应参数指定关键词；可与时间范围组合
 
 ### 录制查询
@@ -127,11 +129,13 @@ tmeet
   |------|---------|
   | `meeting cancel` | 取消会议，不可恢复 |
   | `meeting update` | 修改会议信息（时间、主题等），影响所有参会人 |
+  | `meeting create`（携带 `--invitees` 时） | 最多 100 人，受邀者会收到会议通知；须按「受邀人管理类写操作的二次确认模板」二次确认 |
   | `meeting invitees-add` | 向会议中添加受邀成员，被邀请者会收到会议通知；执行前必须展示目标会议与成员名单并获得明确确认 |
   | `meeting invitees-remove` | 从会议中移除受邀成员 |
   | `meeting invitees-replace` | 整体替换会议受邀成员列表（未在新列表中的成员会被移除） |
   | `control call` | 主动呼叫成员入会，会向目标成员发起会议邀请通话，对其产生实际打扰 |
   | `control kick` | 将成员踢出会议，立即生效；**目标成员的 `open_id` / `ms_open_id` 必须来自 `report participants`，严禁使用 `contact search` 结果** |
+  | `control waiting-room` | 等候室管理（移入会议/移回等候室/移出踢出）；`expel` 等同踢人，执行前必须列明目标成员 |
   | `auth logout` | 清除本地登录凭证 |
   | `record permission-apply-commit` | 正式提交录制权限申请，会触发审批流程（必须先执行 `record permission-apply-prepare` 并向用户展示申请信息确认）|
 
