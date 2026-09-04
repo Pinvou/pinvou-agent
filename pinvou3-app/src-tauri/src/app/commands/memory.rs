@@ -45,6 +45,13 @@ pub struct MemoryOverviewState {
     pub sources: BTreeMap<String, MemorySourceStatus>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryOrganizeState {
+    pub report: crate::features::memory::MemoryOrganizeReport,
+    pub runtime: Option<crate::features::memory::RuntimeMemorySnapshot>,
+    pub warnings: Vec<MemoryWarning>,
+}
+
 fn resolve_memory_session_id(session_id: Option<String>, store: &SessionStore) -> Option<String> {
     session_id.or_else(|| store.active_id())
 }
@@ -123,6 +130,170 @@ fn memory_warning(code: &str, source: &str, detail: impl Into<String>) -> Memory
         source: source.to_string(),
         detail: detail.into(),
     }
+}
+
+/// Loaded results for the eight authoritative memory sources, shared by
+/// get_memory_overview and the post-organize snapshot refresh.
+struct MemorySources {
+    profile: crate::features::memory::MemoryProfile,
+    preferences: Vec<crate::features::memory::PreferenceFile>,
+    work_context: Vec<crate::features::memory::WorkContextFile>,
+    current_focus: Vec<crate::features::memory::TimedMemoryItem>,
+    recent_activity: Vec<crate::features::memory::TimedMemoryItem>,
+    recent_work: Vec<crate::features::memory::RecentWorkItem>,
+    pending: Vec<crate::features::memory::PendingMemoryItem>,
+    never: Vec<crate::features::memory::NeverMemoryItem>,
+}
+
+/// Loads every authoritative source one by one, recording warnings and
+/// per-source status. Shared by get_memory_overview and the post-organize
+/// snapshot refresh so the two loading paths cannot drift apart.
+fn load_memory_sources() -> (
+    MemorySources,
+    Vec<MemoryWarning>,
+    BTreeMap<String, MemorySourceStatus>,
+) {
+    let mut warnings = Vec::new();
+    let mut sources = BTreeMap::new();
+    let profile = load_memory_source(
+        "profile",
+        crate::features::memory::load_profile(),
+        &mut warnings,
+        &mut sources,
+    );
+    let preferences = load_topic_memory_source(
+        "preferences",
+        crate::features::memory::list_preferences_with_cleanup(),
+        &mut warnings,
+        &mut sources,
+    );
+    let work_context = load_topic_memory_source(
+        "work_context",
+        crate::features::memory::load_work_context_with_cleanup(),
+        &mut warnings,
+        &mut sources,
+    );
+    let current_focus = load_memory_source(
+        "current_focus",
+        crate::features::memory::load_current_focus(),
+        &mut warnings,
+        &mut sources,
+    );
+    let recent_activity = load_memory_source(
+        "recent_activity",
+        crate::features::memory::load_recent_activity(),
+        &mut warnings,
+        &mut sources,
+    );
+    let recent_work = load_memory_source(
+        "recent_work",
+        crate::features::memory::load_recent_work(),
+        &mut warnings,
+        &mut sources,
+    );
+    let pending = load_memory_source(
+        "pending",
+        crate::features::memory::load_pending_memory(),
+        &mut warnings,
+        &mut sources,
+    );
+    let never = load_memory_source(
+        "never",
+        crate::features::memory::load_never_memory(),
+        &mut warnings,
+        &mut sources,
+    );
+    (
+        MemorySources {
+            profile,
+            preferences,
+            work_context,
+            current_focus,
+            recent_activity,
+            recent_work,
+            pending,
+            never,
+        },
+        warnings,
+        sources,
+    )
+}
+
+/// Refreshes the `snapshot.md` device snapshot document, reusing the
+/// get_memory_overview loading and snapshot-write helpers. Failures are
+/// returned as warnings and do not disturb the caller's main flow.
+///
+/// Same gate as overview: write only when every authoritative source is
+/// available — when an individual source fails to read, `load_memory_source`
+/// returns an empty default, and writing anyway would wipe that memory
+/// category from snapshot.md. `runtime_render_failed` means the caller
+/// already attempted a runtime render and it failed (e.g. the organize
+/// command's best-effort pre-render); rendering is not retried and no
+/// snapshot is written (same policy as overview, where an unavailable runtime
+/// defers the refresh).
+fn refresh_memory_snapshot_document(
+    session_id: Option<String>,
+    store: &SessionStore,
+    runtime: Option<&crate::features::memory::RuntimeMemorySnapshot>,
+    runtime_render_failed: bool,
+) -> Vec<MemoryWarning> {
+    let (sources, mut warnings, status) = load_memory_sources();
+    let authoritative_sources_available = status.values().all(|source| source.available);
+    let MemorySources {
+        profile,
+        preferences,
+        work_context,
+        current_focus,
+        recent_activity,
+        recent_work,
+        pending,
+        never,
+    } = sources;
+    let mut runtime_available = !runtime_render_failed;
+    let runtime = match (runtime, resolve_memory_session_id(session_id, store)) {
+        (Some(snapshot), _) => Some(snapshot.clone()),
+        (None, Some(sid)) if !runtime_render_failed => {
+            match crate::features::memory::runtime_snapshot(&sid) {
+                Ok(snapshot) => Some(snapshot),
+                Err(error) => {
+                    let detail = format!("render runtime memory: {error}");
+                    eprintln!("[memory] {detail}");
+                    warnings.push(memory_warning("runtime_refresh_failed", "runtime", detail));
+                    runtime_available = false;
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    if authoritative_sources_available && runtime_available {
+        if let Err(error) = crate::features::memory::write_memory_snapshot_document(
+            &profile,
+            &preferences,
+            &work_context,
+            &current_focus,
+            &recent_activity,
+            &recent_work,
+            &pending,
+            &never,
+            runtime.as_ref(),
+        ) {
+            let detail = format!("write memory snapshot: {error}");
+            eprintln!("[memory] {detail}");
+            warnings.push(memory_warning(
+                "snapshot_refresh_failed",
+                "snapshot",
+                detail,
+            ));
+        }
+    } else {
+        warnings.push(memory_warning(
+            "snapshot_refresh_deferred",
+            "snapshot",
+            "memory sources unavailable; snapshot refresh deferred",
+        ));
+    }
+    warnings
 }
 
 fn load_memory_source<T: Default>(
@@ -213,56 +384,17 @@ pub async fn get_memory_overview(
     session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<MemoryOverviewState, String> {
-    let mut warnings = Vec::new();
-    let mut sources = BTreeMap::new();
-    let profile = load_memory_source(
-        "profile",
-        crate::features::memory::load_profile(),
-        &mut warnings,
-        &mut sources,
-    );
-    let preferences = load_topic_memory_source(
-        "preferences",
-        crate::features::memory::list_preferences_with_cleanup(),
-        &mut warnings,
-        &mut sources,
-    );
-    let work_context = load_topic_memory_source(
-        "work_context",
-        crate::features::memory::load_work_context_with_cleanup(),
-        &mut warnings,
-        &mut sources,
-    );
-    let current_focus = load_memory_source(
-        "current_focus",
-        crate::features::memory::load_current_focus(),
-        &mut warnings,
-        &mut sources,
-    );
-    let recent_activity = load_memory_source(
-        "recent_activity",
-        crate::features::memory::load_recent_activity(),
-        &mut warnings,
-        &mut sources,
-    );
-    let recent_work = load_memory_source(
-        "recent_work",
-        crate::features::memory::load_recent_work(),
-        &mut warnings,
-        &mut sources,
-    );
-    let pending = load_memory_source(
-        "pending",
-        crate::features::memory::load_pending_memory(),
-        &mut warnings,
-        &mut sources,
-    );
-    let never = load_memory_source(
-        "never",
-        crate::features::memory::load_never_memory(),
-        &mut warnings,
-        &mut sources,
-    );
+    let (sources_loaded, mut warnings, mut sources) = load_memory_sources();
+    let MemorySources {
+        profile,
+        preferences,
+        work_context,
+        current_focus,
+        recent_activity,
+        recent_work,
+        pending,
+        never,
+    } = sources_loaded;
     let authoritative_sources_available = sources.values().all(|status| status.available);
     let runtime = match resolve_memory_session_id(session_id, &store) {
         Some(sid) => match crate::features::memory::runtime_snapshot(&sid) {
@@ -365,6 +497,79 @@ pub async fn get_memory_overview(
         warnings,
         sources,
     })
+}
+
+/// Organizes and prunes memory: scans all six stores in full, has the LLM
+/// produce delete/update/merge actions, and applies them. The frontend should
+/// keep the button disabled while memory is off; the `memory_enabled` guard
+/// here stays as a backstop.
+#[tauri::command]
+pub async fn organize_memory(
+    app: AppHandle,
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
+) -> Result<MemoryOrganizeState, String> {
+    if !crate::features::memory::memory_enabled() {
+        return Err("memory disabled".to_string());
+    }
+    // Resolved like chat's image routing: a fresh bridge bound to the session's
+    // model (including local vLLM served-name probing and runtime credential
+    // preparation). Without an active session yet (e.g. a brand-new draft),
+    // degrade to the pool's shared bridge with global prefs loaded directly,
+    // the same `get_image_input_capability` fallback.
+    let bridge = match resolve_memory_session_id(None, &store) {
+        Some(sid) => pool.fresh_bridge_for(&sid).await.map_err(|error| {
+            // The `fresh_bridge_for` error chain can carry endpoint/credential
+            // probing details; pass it through `redact_secret` before returning
+            // to the frontend, same policy as `sanitize_command_error` in
+            // settings.rs.
+            format!(
+                "organize memory: resolve bridge for {sid}: {}",
+                crate::platform::credential_store::redact_secret(&format!("{error:#}"))
+            )
+        })?,
+        None => {
+            let mut bridge = pool.bridge.clone();
+            bridge.prefs = UserPrefs::load();
+            bridge.session_model = None;
+            bridge
+        }
+    };
+    // The manual button has no cancellable owner, so pass None for cancel (only
+    // the scheduled-task entry point passes a token).
+    let report = crate::features::memory::organize_memory_with_llm(&bridge, None)
+        .await
+        .map_err(|error| {
+            format!(
+                "organize memory: {}",
+                crate::platform::credential_store::redact_secret(&format!("{error:#}"))
+            )
+        })?;
+    let (runtime, mut warnings) = refresh_memory_runtime_best_effort(None, &store, &app);
+    // If the best-effort pre-render already failed, do not let the snapshot
+    // refresh retry (avoiding a duplicate same-code warning and a second
+    // failed render); the snapshot is skipped as deferred.
+    let runtime_render_failed = warnings
+        .iter()
+        .any(|warning| warning.code == "runtime_refresh_failed");
+    warnings.extend(refresh_memory_snapshot_document(
+        None,
+        &store,
+        runtime.as_ref(),
+        runtime_render_failed,
+    ));
+    Ok(MemoryOrganizeState {
+        report,
+        runtime,
+        warnings,
+    })
+}
+
+/// Most recent memory organize reports, newest first; empty when organize has
+/// never run.
+#[tauri::command]
+pub fn get_memory_organize_history() -> Vec<crate::features::memory::MemoryOrganizeReport> {
+    crate::features::memory::load_organize_history()
 }
 
 #[tauri::command]

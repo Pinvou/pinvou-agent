@@ -13,12 +13,16 @@ use tokio_util::sync::CancellationToken;
 
 use crate::features::assistant::engine_pool::{EnginePool, ScheduledTurnCompletion};
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
+use crate::features::memory::MemoryOrganizeReport;
+use crate::features::scheduled::tasks::SCHEDULED_TASK_KIND_MEMORY_ORGANIZE;
 use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
 use crate::platform::prefs::{SavedModel, UserPrefs};
 
 type StartedCallback =
     Box<dyn FnMut(String) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send>;
 type ModelIdResolver = Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>;
+/// automation_id → task kind (None = ordinary chat task).
+type KindResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 /// The narrow boundary between base-owned task execution and Pinvou's scheduled
 /// conversation storage/engine runtime. Keeping this injectable lets executor
@@ -41,6 +45,12 @@ pub(crate) trait ScheduledConversationRuntime: Send + Sync {
         cancel: CancellationToken,
         on_started: StartedCallback,
     ) -> Result<ScheduledTurnCompletion>;
+
+    /// Runs one app-side memory organization pass (the run body of a `memory_organize`
+    /// kind task). Unlike a conversation turn: no session is created and the engine is
+    /// not involved. See [`ScheduledChatExecutor::execute_memory_organize`] for
+    /// cancellation semantics.
+    async fn organize_memory(&self, cancel: CancellationToken) -> Result<MemoryOrganizeReport>;
 }
 
 /// Production implementation backed by the existing session store and engine
@@ -100,30 +110,131 @@ impl ScheduledConversationRuntime for EngineScheduledRuntime {
             })
             .await
     }
+
+    async fn organize_memory(&self, cancel: CancellationToken) -> Result<MemoryOrganizeReport> {
+        // Same policy as the chat command layer's organize_memory: refuse up front when
+        // memory is disabled.
+        if !crate::features::memory::memory_enabled() {
+            anyhow::bail!("memory disabled");
+        }
+        // Same bridge resolution as commands::memory's organize_memory: with an active
+        // session use its bound model (fresh bridge, incl. runtime credential prep);
+        // otherwise fall back to the shared bridge plus a direct read of global prefs.
+        let bridge = match self.store.active_id() {
+            Some(session_id) => self.pool.fresh_bridge_for(&session_id).await?,
+            None => {
+                let mut bridge = self.pool.bridge.clone();
+                bridge.prefs = UserPrefs::load();
+                bridge.session_model = None;
+                bridge
+            }
+        };
+        crate::features::memory::organize_memory_with_llm(&bridge, Some(&cancel)).await
+    }
 }
 
 /// Host executor installed into CodeWhale's `TaskManager` for scheduled
 /// automations. Scheduling and durable task/run state remain base-owned.
 pub(crate) struct ScheduledChatExecutor {
     runtime: Arc<dyn ScheduledConversationRuntime>,
+    kind_resolver: Option<KindResolver>,
 }
 
 impl ScheduledChatExecutor {
     pub(crate) fn new(runtime: Arc<dyn ScheduledConversationRuntime>) -> Self {
-        Self { runtime }
+        Self {
+            runtime,
+            kind_resolver: None,
+        }
+    }
+
+    /// Injects the automation_id → kind resolver (production reads the task-kinds sidecar).
+    pub(crate) fn with_kind_resolver(mut self, kind_resolver: KindResolver) -> Self {
+        self.kind_resolver = Some(kind_resolver);
+        self
     }
 
     pub(crate) fn from_services(
         store: SessionStore,
         pool: EnginePool,
         model_id_resolver: ModelIdResolver,
+        kind_resolver: Option<KindResolver>,
     ) -> Self {
-        Self::new(Arc::new(EngineScheduledRuntime::new(
+        let executor = Self::new(Arc::new(EngineScheduledRuntime::new(
             store,
             pool,
             Some(model_id_resolver),
-        )))
+        )));
+        match kind_resolver {
+            Some(resolver) => executor.with_kind_resolver(resolver),
+            None => executor,
+        }
     }
+
+    fn kind_for(&self, automation_id: &str) -> Option<String> {
+        self.kind_resolver
+            .as_ref()
+            .and_then(|resolver| resolver(automation_id))
+    }
+
+    /// One run of the `memory_organize` kind: no session is created, no engine turn is
+    /// issued, and no ThreadCreated / ThreadLinked events are emitted — the run lifecycle
+    /// only needs the base Task's terminal state (reconcile writes a Task whose
+    /// thread_id/turn_id are unset back to the run record); the organize report itself is
+    /// viewed via the memory history commands, keeping run records clean.
+    ///
+    /// Cancellation semantics: the select makes cancellation take effect immediately
+    /// instead of waiting up to 75s for the organize call to return (otherwise the 15s
+    /// terminal-state wait when deleting a running task would almost certainly time out).
+    /// The cancel branch drops the in-flight future, aborting the unanswered LLM request
+    /// with it. A cancellation after the LLM has returned but before actions are applied
+    /// is caught by organize's pre-apply check; only the synchronous apply segment
+    /// (milliseconds) cannot be interrupted — that case records the run as canceled, and
+    /// the report has already landed in organize_history.json for auditing.
+    async fn execute_memory_organize(&self, cancel: CancellationToken) -> TaskExecutionResult {
+        let organized = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => None,
+            organized = self.runtime.organize_memory(cancel.clone()) => Some(organized),
+        };
+        let organized = match organized {
+            Some(organized) => organized,
+            None => return canceled(),
+        };
+        if cancel.is_cancelled() {
+            return canceled();
+        }
+        match organized {
+            Ok(report) => TaskExecutionResult {
+                status: TaskStatus::Completed,
+                result_text: Some(memory_organize_summary(&report)),
+                error: None,
+            },
+            Err(error) => TaskExecutionResult {
+                status: TaskStatus::Failed,
+                result_text: None,
+                error: Some(format!("memory organize: {error:#}")),
+            },
+        }
+    }
+}
+
+/// A human-readable summary at run completion (goes only into the base Task's
+/// result_summary, never into the run record).
+fn memory_organize_summary(report: &MemoryOrganizeReport) -> String {
+    let total =
+        |counts: &std::collections::BTreeMap<String, u32>| counts.values().copied().sum::<u32>();
+    let scanned = total(&report.scanned);
+    if report.no_change {
+        return format!("Memory organize completed: scanned {scanned}, no changes needed");
+    }
+    format!(
+        "Memory organize completed: scanned {scanned}, deleted {}, updated {}, merged {}, skipped sensitive {}",
+        total(&report.deleted),
+        total(&report.updated),
+        total(&report.merged),
+        report.skipped_sensitive,
+    )
 }
 
 #[async_trait]
@@ -139,6 +250,11 @@ impl TaskExecutor for ScheduledChatExecutor {
             .conversation_key()
             .unwrap_or_else(|| task.id())
             .to_string();
+        // Memory organize tasks branch off here: no session creation, no model binding
+        // resolution.
+        if self.kind_for(&automation_id).as_deref() == Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE) {
+            return self.execute_memory_organize(cancel).await;
+        }
         let model = task.model().to_string();
         let model_id = self.runtime.model_id_for_automation(&automation_id, &model);
         let profile = ScheduledRunProfile {
@@ -260,7 +376,7 @@ fn canceled() -> TaskExecutionResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{HashMap, VecDeque};
+    use std::collections::{BTreeMap, HashMap, VecDeque};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -304,6 +420,9 @@ mod tests {
         model_bindings: Mutex<HashMap<(String, String), String>>,
         next_session: AtomicUsize,
         yolo_allow_shell: AtomicBool,
+        organize_calls: AtomicUsize,
+        organize_error: Mutex<Option<String>>,
+        organize_hang_after_cancel: AtomicBool,
         started: Notify,
     }
 
@@ -337,12 +456,28 @@ mod tests {
                 model_bindings: Mutex::new(HashMap::new()),
                 next_session: AtomicUsize::new(1),
                 yolo_allow_shell: AtomicBool::new(true),
+                organize_calls: AtomicUsize::new(0),
+                organize_error: Mutex::new(None),
+                organize_hang_after_cancel: AtomicBool::new(false),
                 started: Notify::new(),
             }
         }
 
         fn set_yolo_allow_shell(&self, allow_shell: bool) {
             self.yolo_allow_shell.store(allow_shell, Ordering::SeqCst);
+        }
+
+        fn set_organize_hang_after_cancel(&self, hang: bool) {
+            self.organize_hang_after_cancel
+                .store(hang, Ordering::SeqCst);
+        }
+
+        fn set_organize_error(&self, error: Option<String>) {
+            *self.organize_error.lock().unwrap() = error;
+        }
+
+        fn organize_call_count(&self) -> usize {
+            self.organize_calls.load(Ordering::SeqCst)
         }
 
         fn profiles(&self) -> Vec<(String, ScheduledRunProfile)> {
@@ -440,6 +575,38 @@ mod tests {
                 Script::SendError { error } => bail!(error),
             }
         }
+
+        async fn organize_memory(&self, cancel: CancellationToken) -> Result<MemoryOrganizeReport> {
+            self.organize_calls.fetch_add(1, Ordering::SeqCst);
+            if self.organize_hang_after_cancel.load(Ordering::SeqCst) {
+                // Simulate a long-running LLM call that never returns: notify the test that
+                // organize has started, then trigger cancellation and hang forever. Before
+                // the fix the executor waited here, so the 15s terminal-state wait when
+                // deleting a running task almost certainly timed out.
+                self.started.notify_one();
+                cancel.cancel();
+                std::future::pending::<()>().await;
+            }
+            if let Some(error) = self.organize_error.lock().unwrap().clone() {
+                bail!(error);
+            }
+            Ok(organize_report())
+        }
+    }
+
+    fn organize_report() -> MemoryOrganizeReport {
+        MemoryOrganizeReport {
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            finished_at: "2026-01-01T00:01:00Z".to_string(),
+            model: "test-model".to_string(),
+            scanned: BTreeMap::from([("preferences".to_string(), 3)]),
+            deleted: BTreeMap::new(),
+            updated: BTreeMap::new(),
+            merged: BTreeMap::new(),
+            skipped_sensitive: 0,
+            no_change: true,
+            warnings: Vec::new(),
+        }
     }
 
     fn completion(
@@ -456,8 +623,8 @@ mod tests {
         }
     }
 
-    async fn manager_with_runtime(
-        runtime: Arc<ScriptedRuntime>,
+    async fn manager_with_executor(
+        executor: Arc<ScheduledChatExecutor>,
     ) -> Result<(TestRoot, SharedTaskManager)> {
         let root = TestRoot::new()?;
         let config = TaskManagerConfig {
@@ -469,9 +636,14 @@ mod tests {
             allow_shell: false,
             trust_mode: false,
         };
-        let executor = Arc::new(ScheduledChatExecutor::new(runtime));
         let manager = TaskManager::start_with_executor(config, executor).await?;
         Ok((root, manager))
+    }
+
+    async fn manager_with_runtime(
+        runtime: Arc<ScriptedRuntime>,
+    ) -> Result<(TestRoot, SharedTaskManager)> {
+        manager_with_executor(Arc::new(ScheduledChatExecutor::new(runtime))).await
     }
 
     async fn wait_for_terminal_state(
@@ -879,6 +1051,102 @@ mod tests {
         let profiles = runtime.profiles();
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].1.model, "deleted-model");
+        manager.shutdown();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn memory_organize_run_completes_without_a_session_or_engine_turn() -> Result<()> {
+        let runtime = Arc::new(ScriptedRuntime::new([]));
+        let executor = Arc::new(
+            ScheduledChatExecutor::new(runtime.clone()).with_kind_resolver(Arc::new(|_| {
+                Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string())
+            })),
+        );
+        let (_root, manager) = manager_with_executor(executor).await?;
+
+        let queued = manager.add_task(request("organize memory")).await?;
+        let finished =
+            wait_for_terminal_state(&manager, &queued.id, std::time::Duration::from_secs(5))
+                .await?;
+
+        assert_eq!(finished.status, TaskStatus::Completed);
+        assert!(finished.error.is_none());
+        assert_eq!(
+            finished.result_summary.as_deref(),
+            Some("Memory organize completed: scanned 3, no changes needed"),
+        );
+        // Organize runs create no session and run no engine turn: thread/turn stay unset.
+        assert_eq!(finished.thread_id, None, "must not create a session");
+        assert_eq!(finished.turn_id, None);
+        assert!(
+            runtime.profiles().is_empty(),
+            "create_session must not be called"
+        );
+        assert!(runtime.calls().is_empty(), "run_turn must not be called");
+        assert_eq!(runtime.organize_call_count(), 1);
+        manager.shutdown();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn memory_organize_failure_maps_to_a_failed_run() -> Result<()> {
+        let runtime = Arc::new(ScriptedRuntime::new([]));
+        runtime.set_organize_error(Some("model unavailable".to_string()));
+        let executor = Arc::new(
+            ScheduledChatExecutor::new(runtime.clone()).with_kind_resolver(Arc::new(|_| {
+                Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string())
+            })),
+        );
+        let (_root, manager) = manager_with_executor(executor).await?;
+
+        let queued = manager.add_task(request("organize memory")).await?;
+        let finished =
+            wait_for_terminal_state(&manager, &queued.id, std::time::Duration::from_secs(5))
+                .await?;
+
+        assert_eq!(finished.status, TaskStatus::Failed);
+        assert_eq!(
+            finished.error.as_deref(),
+            Some("memory organize: model unavailable")
+        );
+        assert_eq!(finished.thread_id, None);
+        assert!(
+            runtime.profiles().is_empty(),
+            "failed organize must not leave a session either"
+        );
+        manager.shutdown();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn memory_organize_run_cancels_without_waiting_for_the_llm_call() -> Result<()> {
+        let runtime = Arc::new(ScriptedRuntime::new([]));
+        runtime.set_organize_hang_after_cancel(true);
+        let executor = Arc::new(
+            ScheduledChatExecutor::new(runtime.clone()).with_kind_resolver(Arc::new(|_| {
+                Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string())
+            })),
+        );
+        let (_root, manager) = manager_with_executor(executor).await?;
+
+        let queued = manager.add_task(request("organize memory")).await?;
+        // Wait for the runtime to enter the never-returning organize call, then cancel:
+        // before the fix the executor kept waiting on the 75s organize call itself, so the
+        // 15s terminal-state wait when deleting a running task always timed out.
+        runtime.started.notified().await;
+        manager.cancel_task(&queued.id).await?;
+        let finished =
+            wait_for_terminal_state(&manager, &queued.id, std::time::Duration::from_secs(5))
+                .await?;
+
+        assert_eq!(finished.status, TaskStatus::Canceled);
+        assert_eq!(finished.thread_id, None);
+        assert_eq!(
+            runtime.organize_call_count(),
+            1,
+            "cancel must not wait for the in-flight organize call"
+        );
         manager.shutdown();
         Ok(())
     }

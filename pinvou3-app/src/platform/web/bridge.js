@@ -2780,8 +2780,14 @@
   async function createScheduledTask(input) {
     return runScheduledTaskAction("create", async function () {
       const templateId = input && typeof input.templateId === "string" ? input.templateId.trim() : "";
+      // kind is create-time task metadata (currently only "memory_organize"; the
+      // backend rejects anything else). It deliberately stays out of
+      // SCHEDULED_TASK_WRITABLE_FIELDS so edit flows can never resend it.
+      // Kept identical to the tauri bridge contract (audit alignment).
+      const kind = input && typeof input.kind === "string" ? input.kind.trim() : "";
       const selectAfterCreate = !input || input.selectAfterCreate !== false;
       const backendInput = scheduledTaskBackendInput(input);
+      if (kind) backendInput.kind = kind;
       const created = await invoke("create_scheduled_task", { input: backendInput });
       if (!created || !created.id) {
         throw new Error(bt("scheduledCreateNoId"));
@@ -7739,6 +7745,29 @@
       if (sid === state.activeSessionId) addSystemItem(bt("memoryNeverFailed") + e);
     }
   }
+  // AI organize memory ("AI 整理记忆"; same contract as tauri memory.js):
+  // operates on global memory data; the entry point still captures the session
+  // so success and failure are written back only to the originating session's
+  // panel. On success, reconcile runtime/warnings via applyMemoryWriteState and
+  // refetch the overview; the caller reads the report from the return value. On
+  // failure, rethrow: memory.error is the dedicated load-failure channel (the
+  // settings banner renders it as the generic "加载失败" (load failed) copy),
+  // so the organize failure reason is surfaced by the caller's catch and must
+  // not pollute that channel.
+  async function organizeMemory() {
+    if (!invoke) return null;
+    const sid = state.activeSessionId; // same as saveMemoryProfilePatch: after switching away, never write to B's panel
+    const result = await invoke("organize_memory");
+    if (sid === state.activeSessionId && result) applyMemoryWriteState(result);
+    // Organizing can merge/delete entries: refetch the overview to refresh the
+    // panel; return the raw payload.
+    await loadMemoryOverview();
+    return result;
+  }
+  async function loadOrganizeHistory() {
+    if (!invoke) return [];
+    return invoke("get_memory_organize_history");
+  }
   // ── 思考指示器状态（每次阶段切换重置计时）──────────────────────
   function startThinking() { state.thinking = { active: true, phase: "thinking", toolName: "", startedAt: Date.now() }; }
   function thinkingTool(name) { state.thinking = { active: true, phase: "tool", toolName: name || "", startedAt: Date.now() }; }
@@ -9766,6 +9795,8 @@
     confirmMemoryCandidate,
     ignoreMemoryCandidate,
     neverMemoryCandidate,
+    organizeMemory,
+    loadOrganizeHistory,
     // AI 造卡开场引导卡:落一条展示气泡 + 记一条 persona 事件(随会话持久化)。
     // 走 personaEvents 时间线,冷重载时 rerenderFromMessages 按 pos 还原 → 切会话/重启不丢。
     postCardCreatorIntro,

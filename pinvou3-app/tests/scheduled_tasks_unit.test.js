@@ -3,6 +3,8 @@
  * Static and behavioral regression checks for the scheduled-task frontend shell.
  *
  * Run: node --test pinvou3-app/tests/scheduled_tasks_unit.test.js
+ * The scheduled-task page now exposes four templates (three office templates + the
+ * "记忆整理" (memory organize) template; see the memory_organize kind assertion).
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -532,17 +534,18 @@ mustNotContain("每周资料整理提醒");
 assert.ok(!scheduledViewSource.includes('>Templates<'), 'the obsolete Templates placeholder must not return');
 mustNotContain("模板库会在后续接入");
 mustNotContain('title="编辑"');
-assert.strictEqual((scheduledTemplateSource.match(/rrule:\s*'FREQ=/g) || []).length, 3, 'the suggestion area should contain exactly three templates');
+assert.strictEqual((scheduledTemplateSource.match(/rrule:\s*'FREQ=/g) || []).length, 4, 'the suggestion area should contain exactly four templates');
 assert.strictEqual((scheduledTemplateSource.match(/mode:\s*'(?:agent|plan|yolo)'/g) || []).length, 0, 'templates should not expose a selectable execution mode');
 assert.strictEqual((scheduledTemplateSource.match(/allowShell|trustMode/g) || []).length, 0, 'templates must not expose task-level permission settings');
 assert.strictEqual((scheduledTemplateSource.match(/autoApprove/g) || []).length, 0, 'approval is fixed to YOLO in the backend; the frontend must not expose or send autoApprove');
-assert.strictEqual((scheduledTemplateSource.match(/paused:\s*false/g) || []).length, 3, 'templates activate immediately: no workspace prerequisite remains');
+assert.strictEqual((scheduledTemplateSource.match(/paused:\s*false/g) || []).length, 4, 'templates activate immediately: no workspace prerequisite remains');
 assert.strictEqual((scheduledTemplateSource.match(/workspace|cwds/g) || []).length, 0, 'templates must not carry a workspace concept');
 assert.ok(
   /name: '每日早报'/.test(scheduledTemplateSource) &&
     /name: '事项督办'/.test(scheduledTemplateSource) &&
-    /name: '工作周报'/.test(scheduledTemplateSource),
-  'the suggestion area should use the three office-oriented task names'
+    /name: '工作周报'/.test(scheduledTemplateSource) &&
+    /name: '记忆整理'/.test(scheduledTemplateSource),
+  'the suggestion area should use the office-oriented task names plus the memory organizer'
 );
 assert.ok(
   (scheduledTemplateSource.match(/不要扫描用户目录/g) || []).length === 3 &&
@@ -551,7 +554,7 @@ assert.ok(
   'office templates should be source-driven, read-only, and independent of user directories'
 );
 assert.ok(
-  (scheduledTemplateSource.match(/description:\s*'/g) || []).length === 3 &&
+  (scheduledTemplateSource.match(/description:\s*'/g) || []).length === 4 &&
     /\{template\.description\}/.test(indexHtml) &&
     !/>\{template\.prompt\}<\/span>/.test(indexHtml),
   'suggestion cards should show concise descriptions instead of full execution prompts'
@@ -568,7 +571,7 @@ assert.ok(
 );
 assert.ok(
   !scheduledTemplateSource.includes("id: 'project-health'") && !scheduledTemplateSource.includes("id: 'material-digest'"),
-  'only the three Codex-style suggested templates should remain'
+  'removed legacy templates must not return'
 );
 assert.ok(
   !/选定[^']*(项目|目录)/.test(scheduledTemplateSource) &&
@@ -582,10 +585,10 @@ assert.ok(
   'selecting a template should confirm through the second-level sheet and create with fixed Yolo mode and no permission UI'
 );
 assert.ok(
-  /const visibleSuggestions\s*=\s*SCHEDULED_TASK_TEMPLATES(?:;|\.map\()/.test(indexHtml) &&
-    !/const visibleSuggestions\s*=\s*SCHEDULED_TASK_TEMPLATES\.filter/.test(indexHtml) &&
+  /const visibleSuggestions\s*=\s*SCHEDULED_TASK_TEMPLATES/.test(indexHtml) &&
+    !/const visibleSuggestions\s*=\s*SCHEDULED_TASK_TEMPLATES\.filter\([^;]*(realTasks|scheduledTasks|createdTemplateIds|task\.templateId)/.test(indexHtml) &&
     /visibleSuggestions\.map\(template/.test(indexHtml),
-  'suggested templates should remain visible after users create matching scheduled tasks'
+  'suggested templates should remain visible after users create matching scheduled tasks (only the memory-enabled gate may hide the memory organizer template)'
 );
 assert.ok(
   /scheduled-task-template-sources-v1/.test(tauriBridge) &&
@@ -593,6 +596,14 @@ assert.ok(
     !/SCHEDULED_TASK_WRITABLE_FIELDS[^;]*templateId/.test(tauriBridge) &&
     /templateId:\s*template\.id/.test(indexHtml),
   'template source ids should persist in the frontend sidecar without leaking into the base automation request'
+);
+assert.ok(
+  /kind:\s*'memory_organize'/.test(scheduledTemplateSource) &&
+    /kind:\s*template\.kind \|\| undefined/.test(indexHtml) &&
+    /kind:\s*createForm\.kind \|\| undefined/.test(indexHtml) &&
+    /if \(kind\) backendInput\.kind = kind;/.test(tauriBridge) &&
+    !/SCHEDULED_TASK_WRITABLE_FIELDS\s*=\s*\[[^\]]*["']kind["']/.test(tauriBridge),
+  'the memory-organize template should pass task kind on create only; edit flows must never resend it'
 );
 
 function deferred() {

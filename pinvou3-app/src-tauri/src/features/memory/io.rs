@@ -78,6 +78,10 @@ pub fn snapshot_path() -> PathBuf {
     paths::user_memory_snapshot()
 }
 
+pub fn organize_history_path() -> PathBuf {
+    paths::user_memory_organize_history()
+}
+
 pub fn pending_memory_path() -> PathBuf {
     paths::user_memory_pending()
 }
@@ -1138,6 +1142,20 @@ pub(super) fn write_timed_memory_file(
     write_text_atomic(path, &lines)
 }
 
+/// Reload and rewrite a single timed store under the write lock: normalize /
+/// dedupe / capacity compaction, then an atomic write. The whole read-modify-write
+/// holds [`write_lock`], mutually exclusive with write entry points like
+/// `update_timed_memory`; organize's post-apply compaction uses this instead of a
+/// bare load+write, so entries the per-turn review just wrote between the two
+/// steps are not overwritten wholesale by the old list.
+pub fn compact_timed_memory_store(kind: &str) -> io::Result<()> {
+    let _guard = write_lock().lock();
+    let kind = normalize_timed_memory_kind(kind);
+    let path = timed_memory_path(&kind);
+    let items = load_timed_memory_file(&path, &kind)?;
+    write_timed_memory_file(&path, &items, &kind)
+}
+
 fn compact_timed_memory_items(mut items: Vec<TimedMemoryItem>, kind: &str) -> Vec<TimedMemoryItem> {
     let kind = normalize_timed_memory_kind(kind);
     items.sort_by(|a, b| {
@@ -1500,6 +1518,16 @@ pub fn refresh_recent_work_expiry() -> io::Result<usize> {
     let now = Utc::now();
     Ok(refresh_recent_work_expiry_unlocked(now)?
         + refresh_timed_memory_expiry_unlocked("current_focus", now)?
+        + refresh_timed_memory_expiry_unlocked("recent_activity", now)?)
+}
+
+/// Refresh expiry archiving for current_focus / recent_activity only. Called by
+/// standalone entry points like organize before a full scan; like
+/// `refresh_recent_work_expiry`, it briefly holds the write lock on its own.
+pub fn refresh_timed_memory_expiry() -> io::Result<usize> {
+    let _guard = write_lock().lock();
+    let now = Utc::now();
+    Ok(refresh_timed_memory_expiry_unlocked("current_focus", now)?
         + refresh_timed_memory_expiry_unlocked("recent_activity", now)?)
 }
 

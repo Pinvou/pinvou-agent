@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
-import { Check, ChevronDown, ChevronRight, ClipboardCheck, Clock, FileChartLine, MessageCircle, Newspaper, Plus, X } from '../../components/icons.jsx';
+import { Check, ChevronDown, ChevronRight, ClipboardCheck, Clock, Database, FileChartLine, MessageCircle, Newspaper, Plus, X } from '../../components/icons.jsx';
 import { bridge, useBridgeState } from '../../hooks/useBridge.js';
 import { visibleUserModels } from '../../shared/model-options.js';
 import { selectorMainLabel } from '../settings/model-catalog.js';
@@ -8,6 +8,7 @@ import { can } from '../../shared/platform.js';
 import dailyBriefImage from '../../assets/scheduled/daily-brief.jpg';
 import followUpMonitorImage from '../../assets/scheduled/follow-up-monitor.jpg';
 import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
+import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
 
 /**
  * Scheduled task row record as delivered by `appState.scheduledTasks`
@@ -63,6 +64,16 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         prompt: '根据已连接飞书或企微中的本周日程、待办和办公消息生成工作周报，包含进展、遗留、风险和下周计划。不要扫描用户目录或自动发送。',
         paused: false,
         icon: FileChartLine, color: '#AF52DE', image: weeklyReviewImage
+      },
+      {
+        // kind: threaded through createScheduledTask at create time only; edit flows never resend.
+        id: 'memory-organize', name: '记忆整理', schedule: '工作日 9:30',
+        description: '定期整理长期记忆：合并重复、清理过时、修正表述',
+        rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=30',
+        prompt: '定期整理我的长期记忆：合并重复条目，删除过时或失效的内容，修正含糊表述，让记忆保持简洁准确。此任务自动运行，无需打开对话；仅整理记忆，不发送消息，不做其他修改。',
+        paused: false,
+        kind: 'memory_organize',
+        icon: Database, color: '#F9AB00', image: memoryOrganizeImage
       },
     ];
 
@@ -506,7 +517,10 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
     };
 
     const ScheduledTasksView = ({ theme, t, onOpenChat, onGotoModelSettings }) => {
-      const bs = useBridgeState(['scheduled', 'models']);
+      // The settings slice is required here: the memory-organize template card
+      // is gated on bs.settings.memory_enabled; without the domain the field
+      // is always undefined and the card can never render.
+      const bs = useBridgeState(['scheduled', 'models', 'settings']);
       const appState = bs || {};
       const realTasks = appState.scheduledTasks || [];
       const rawSelectedDetail = appState.scheduledTaskDetail || null;
@@ -665,10 +679,17 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         const matches = savedModels.filter(model => model.model === task.model);
         return matches.length === 1 ? matches[0].id : '';
       };
-      const visibleSuggestions = SCHEDULED_TASK_TEMPLATES.map(template => ({
-        ...template,
-        ...scheduledCopy.templateMap[template.id],
-      }));
+      // The "记忆整理" (memory organize) template uses the same gate as the manual
+      // settings entry: hidden while memory is disabled (off by default, and forced
+      // off for en/ja); otherwise the task would be created successfully but log a
+      // "memory disabled" failure on every trigger.
+      const memoryEnabled = !!(appState.settings && appState.settings.memory_enabled);
+      const visibleSuggestions = SCHEDULED_TASK_TEMPLATES
+        .filter(template => template.kind !== 'memory_organize' || memoryEnabled)
+        .map(template => ({
+          ...template,
+          ...scheduledCopy.templateMap[template.id],
+        }));
       const detailFormIsValid = !!detailForm &&
         !!String(detailForm.name || '').trim() &&
         !!String(detailForm.prompt || '').trim() &&
@@ -843,6 +864,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           prompt: template.prompt,
           rrule: template.rrule,
           paused: !!template.paused,
+          kind: template.kind || undefined,
         });
       }
 
@@ -896,6 +918,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
             modelId: activeModel && activeModel.id || null,
             mode: 'yolo',
             paused: !!createForm.paused,
+            kind: createForm.kind || undefined,
             selectAfterCreate: false,
           });
           if (bridge.scheduled.selectScheduledTask) bridge.scheduled.selectScheduledTask(null);

@@ -2303,6 +2303,8 @@
   const confirmMemoryCandidate = memoryFeature.confirmMemoryCandidate;
   const ignoreMemoryCandidate = memoryFeature.ignoreMemoryCandidate;
   const neverMemoryCandidate = memoryFeature.neverMemoryCandidate;
+  const organizeMemory = memoryFeature.organizeMemory;
+  const loadOrganizeHistory = memoryFeature.loadOrganizeHistory;
   const artifactsFeature = installBridgeFeature("artifacts", { state, notify, invoke, bt, addSystemItem, dialogOpen, basename, isDeliverable, isAbsPath, sessionStates, discardManagedAttachment });
   const artifactInfo = artifactsFeature.artifactInfo;
   const readArtifactText = artifactsFeature.readArtifactText;
@@ -2700,6 +2702,8 @@
       confirmMemoryCandidate,
       ignoreMemoryCandidate,
       neverMemoryCandidate,
+      organizeMemory,
+      loadOrganizeHistory,
     },
     updater: {
       checkForUpdate,

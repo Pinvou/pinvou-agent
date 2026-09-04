@@ -263,6 +263,8 @@ command_protocol!(
     [
         "update_memory_profile",
         "get_memory_overview",
+        "organize_memory",
+        "get_memory_organize_history",
         "confirm_pending_memory",
         "ignore_pending_memory",
         "never_pending_memory",

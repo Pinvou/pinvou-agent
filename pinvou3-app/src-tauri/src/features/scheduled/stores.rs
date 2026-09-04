@@ -35,6 +35,10 @@ fn scheduled_model_binding_schema_version() -> u32 {
     SCHEDULED_MODEL_BINDING_SCHEMA_VERSION
 }
 
+fn scheduled_task_kind_schema_version() -> u32 {
+    SCHEDULED_TASK_KIND_SCHEMA_VERSION
+}
+
 fn scheduled_task_ui_metadata_schema_version() -> u32 {
     SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION
 }
@@ -62,6 +66,29 @@ impl Default for ScheduledTaskModelBindingRegistry {
     fn default() -> Self {
         Self {
             schema_version: SCHEDULED_MODEL_BINDING_SCHEMA_VERSION,
+            tasks: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ScheduledTaskKindEntry {
+    pub(crate) kind: String,
+    pub(crate) updated_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ScheduledTaskKindRegistry {
+    #[serde(default = "scheduled_task_kind_schema_version")]
+    pub(crate) schema_version: u32,
+    #[serde(default)]
+    pub(crate) tasks: HashMap<String, ScheduledTaskKindEntry>,
+}
+
+impl Default for ScheduledTaskKindRegistry {
+    fn default() -> Self {
+        Self {
+            schema_version: SCHEDULED_TASK_KIND_SCHEMA_VERSION,
             tasks: HashMap::new(),
         }
     }
@@ -383,6 +410,25 @@ impl VersionedRegistry for ScheduledHistoryArchiveRegistry {
     }
 }
 
+impl VersionedRegistry for ScheduledTaskKindRegistry {
+    const SUPPORTED_VERSION: u32 = SCHEDULED_TASK_KIND_SCHEMA_VERSION;
+    const QUARANTINE: QuarantineStrategy = QuarantineStrategy::Rename;
+    const LABEL: &'static str = "scheduled task kind";
+    const QUARANTINE_FALLBACK_NAME: &'static str = "task-kinds.json";
+    const WARN_SUFFIX: &'static str = "; scheduled tasks will run as ordinary chat tasks";
+
+    fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    fn migrate(self) -> Self {
+        Self {
+            schema_version: SCHEDULED_TASK_KIND_SCHEMA_VERSION,
+            tasks: self.tasks,
+        }
+    }
+}
+
 impl VersionedRegistry for ScheduledTaskModelBindingRegistry {
     const SUPPORTED_VERSION: u32 = SCHEDULED_MODEL_BINDING_SCHEMA_VERSION;
     const QUARANTINE: QuarantineStrategy = QuarantineStrategy::Rename;
@@ -599,6 +645,86 @@ impl VersionedJsonStore<ScheduledTaskUiMetadataRegistry> {
             match previous {
                 Some(metadata) => {
                     registry.tasks.insert(automation_id.to_string(), metadata);
+                }
+                None => {
+                    registry.tasks.remove(automation_id);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn remove(&self, automation_id: &str) -> Result<()> {
+        let mut registry = self.registry.write();
+        let Some(previous) = registry.tasks.remove(automation_id) else {
+            return Ok(());
+        };
+        if let Err(error) = self.persist(&registry) {
+            registry.tasks.insert(automation_id.to_string(), previous);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn compact(&self, automation_ids: &HashSet<String>) -> Result<()> {
+        let mut registry = self.registry.write();
+        let before = registry.tasks.clone();
+        registry.tasks.retain(|id, _| automation_ids.contains(id));
+        if registry.tasks == before {
+            return Ok(());
+        }
+        if let Err(error) = self.persist(&registry) {
+            registry.tasks = before;
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+
+pub(crate) type ScheduledTaskKindStore = VersionedJsonStore<ScheduledTaskKindRegistry>;
+
+impl VersionedJsonStore<ScheduledTaskKindRegistry> {
+    /// Reads the task kind. Only `memory_organize` is a supported kind for now; any other
+    /// value left in the file is treated as an ordinary chat task (returns None),
+    /// mirroring the creation-side allow-list.
+    pub(crate) fn kind_for(&self, automation_id: &str) -> Option<String> {
+        self.registry
+            .read()
+            .tasks
+            .get(automation_id)
+            .map(|entry| entry.kind.clone())
+            .filter(|kind| kind == SCHEDULED_TASK_KIND_MEMORY_ORGANIZE)
+    }
+
+    /// None removes the task's kind record (back to an ordinary chat task).
+    pub(crate) fn set_kind(&self, automation_id: &str, kind: Option<String>) -> Result<()> {
+        if automation_id.trim().is_empty() {
+            bail!("scheduled automation id cannot be empty");
+        }
+        let kind = kind
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let mut registry = self.registry.write();
+        let previous = registry.tasks.get(automation_id).cloned();
+        match kind {
+            Some(kind) => {
+                registry.tasks.insert(
+                    automation_id.to_string(),
+                    ScheduledTaskKindEntry {
+                        kind,
+                        updated_at: chrono::Utc::now().to_rfc3339(),
+                    },
+                );
+            }
+            None => {
+                registry.tasks.remove(automation_id);
+            }
+        }
+        if let Err(error) = self.persist(&registry) {
+            match previous {
+                Some(entry) => {
+                    registry.tasks.insert(automation_id.to_string(), entry);
                 }
                 None => {
                     registry.tasks.remove(automation_id);

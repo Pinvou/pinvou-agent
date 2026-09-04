@@ -449,6 +449,15 @@ impl Pinvou3Bridge {
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
                 crate::platform::super_permission::instruction_block(),
             )
+            // The user memory section is filled or dropped with the memory toggle (off by
+            // default plus force-off for en/ja, see the memory_section comment). Replaced
+            // at the session render layer rather than inside the OnceLock instructions_md,
+            // so a setting change takes effect on new sessions; old session prompts are
+            // left unchanged.
+            .replace(
+                "{{PINVOU3_MEMORY_SECTION}}\n",
+                bundle::memory_section(crate::features::memory::memory_enabled()),
+            )
             // present_artifact 的 title 语言随 locale(原写死「中文 title」会把英文 UI 的产物
             // 标题/描述/后续总结整段拽回中文,见 prefs::title_language_name 注释)。
             .replace(
@@ -1417,7 +1426,10 @@ impl Pinvou3Bridge {
     pub fn instructions(&self) -> Vec<InstructionSource> {
         let mut out: Vec<InstructionSource> = vec![InstructionSource::Inline {
             name: "pinvou3:bundle/instructions".to_string(),
-            content: instructions_md().to_string(),
+            content: instructions_md().replace(
+                "{{PINVOU3_MEMORY_SECTION}}\n",
+                bundle::memory_section(crate::features::memory::memory_enabled()),
+            ),
         }];
         let user = paths::user_instructions();
         if user.is_file() {

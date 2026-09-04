@@ -33,7 +33,27 @@ use super::util::{
 };
 
 const LLM_REVIEW_TIMEOUT: StdDuration = StdDuration::from_secs(75);
-pub(super) const LLM_REVIEW_PROMPT: &str = r#"你是 pinvou 的后台记忆整理器。你只做一件事：复盘刚刚这一轮对话，并对照已有记忆，输出是否需要保存、更新或跳过记忆。不要回答用户问题，不要解释你的判断。
+
+/// auto_write / auto_update confidence thresholds: the `_RELAXED` suffix marks the
+/// relaxed values used when the user explicitly asked to remember (explicit_remember).
+/// Both code decisions and the prompt must read from this one set of constants, so
+/// prompt and implementation cannot drift; the 0.70 sanitization floor and
+/// sensitive-content filtering are not part of this group and stay unchanged.
+pub(super) const PROFILE_AUTO_WRITE_THRESHOLD: f32 = 0.92;
+pub(super) const PROFILE_AUTO_WRITE_THRESHOLD_RELAXED: f32 = 0.85;
+pub(super) const TIMED_AUTO_THRESHOLD: f32 = 0.86;
+pub(super) const TIMED_AUTO_THRESHOLD_RELAXED: f32 = 0.80;
+pub(super) const WORK_CONTEXT_AUTO_THRESHOLD: f32 = 0.94;
+pub(super) const WORK_CONTEXT_AUTO_THRESHOLD_RELAXED: f32 = 0.90;
+
+/// System prompt template for the per-turn review. Baseline and relaxed confidence
+/// thresholds are both rendered from the same set of constants
+/// ([`llm_review_prompt`] / [`explicit_signal_prompt`]): if the prompt still taught
+/// stale thresholds (e.g. the baseline section was missed after a relaxation), a
+/// rule-following model would emit pending_confirm inside the relaxed band, making
+/// the code-side adjustment a no-op. Brace sentinels go through `replace` instead of
+/// `format!` to avoid escaping the JSON examples.
+pub(super) const LLM_REVIEW_PROMPT_TEMPLATE: &str = r#"你是 pinvou 的后台记忆整理器。你只做一件事：复盘刚刚这一轮对话，并对照已有记忆，输出是否需要保存、更新或跳过记忆。不要回答用户问题，不要解释你的判断。
 
 你必须只输出 JSON，不要解释。格式：
 {
@@ -101,10 +121,10 @@ ttl_days 规则：
 - recent_activity 默认使用 14。
 
 自动写入边界：
-- profile 只有在用户非常明确表达，且 confidence >= 0.92 时才允许 auto_write。
+- profile 只有在用户非常明确表达，且 confidence >= {{PROFILE_AUTO_GATE}} 时才允许 auto_write。
 - preference 默认 pending_confirm。
-- work_context 默认 pending_confirm；只有用户明确要求记住、内容低敏且 confidence >= 0.94 时，才允许 auto_write 或 auto_update。
-- current_focus / recent_activity 内容清楚、低敏且 confidence >= 0.86 时，默认使用 auto_write 或 auto_update；只有不确定、较敏感或用户可能不希望记录时才使用 pending_confirm。
+- work_context 默认 pending_confirm；只有用户明确要求记住、内容低敏且 confidence >= {{WORK_CONTEXT_AUTO_GATE}} 时，才允许 auto_write 或 auto_update。
+- current_focus / recent_activity 内容清楚、低敏且 confidence >= {{TIMED_AUTO_GATE}} 时，默认使用 auto_write 或 auto_update；只有不确定、较敏感或用户可能不希望记录时才使用 pending_confirm。
 
 近期记忆质量：
 - current_focus 要写“用户正在推进什么，以及为什么后续还可能有用”。
@@ -114,6 +134,39 @@ ttl_days 规则：
 
 如果没有值得记的内容，输出 {"items":[]}。
 "#;
+
+/// Rendered review system prompt: baseline thresholds are filled in from constants
+/// (see [`LLM_REVIEW_PROMPT_TEMPLATE`]).
+pub(super) fn llm_review_prompt() -> String {
+    LLM_REVIEW_PROMPT_TEMPLATE
+        .replace(
+            "{{PROFILE_AUTO_GATE}}",
+            &PROFILE_AUTO_WRITE_THRESHOLD.to_string(),
+        )
+        .replace(
+            "{{WORK_CONTEXT_AUTO_GATE}}",
+            &WORK_CONTEXT_AUTO_THRESHOLD.to_string(),
+        )
+        .replace("{{TIMED_AUTO_GATE}}", &TIMED_AUTO_THRESHOLD.to_string())
+}
+
+/// Hard constraint appended to the system prompt when trigger is explicit_user_signal:
+/// content the user explicitly asked to remember must not be skipped, and the
+/// sensitive boundary stays unchanged; the relaxed confidence thresholds are also
+/// restated. Relaxation is keyed on explicit_remember (see [`apply_llm_memory_review`]),
+/// and the prompt must read from the same constants: if the prompt still taught the
+/// baseline thresholds, a rule-following model would emit pending_confirm inside
+/// the relaxed band, making the code-side relaxation a no-op.
+pub(super) fn explicit_signal_prompt() -> String {
+    format!(
+        "\n\n本轮 trigger 为 explicit_user_signal：用户明确要求记住或表达了长期偏好。\
+         用户明确要求记住的内容必须落在输出里（auto_write / auto_update / pending_confirm 之一），\
+         不要输出 skip；仍不得记录敏感信息。\
+         本轮置信度门槛已放宽：profile confidence >= {PROFILE_AUTO_WRITE_THRESHOLD_RELAXED} 即可 auto_write；\
+         work_context confidence >= {WORK_CONTEXT_AUTO_THRESHOLD_RELAXED} 即可 auto_write / auto_update；\
+         current_focus / recent_activity confidence >= {TIMED_AUTO_THRESHOLD_RELAXED}。"
+    )
+}
 
 /// Output-language directive for the memory review prompt, appended to the
 /// system prompt according to the UI locale.
@@ -240,6 +293,10 @@ pub async fn review_turn_candidates_with_llm(
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>();
     let explicit_signal = has_memory_review_signal(&user);
+    // Write consequences (threshold relaxation + the no-skip hard constraint) are
+    // driven by the narrow explicit remember request; the wide set only decides
+    // whether a review is initiated (see the has_explicit_remember_signal docs).
+    let explicit_remember = has_explicit_remember_signal(&user);
     let delivery_complete =
         capture.delivery_complete || assistant_suggests_delivery_complete(&user, &assistant);
     let skip_reason = if user.is_empty() {
@@ -275,6 +332,8 @@ pub async fn review_turn_candidates_with_llm(
         "triggered",
         json!({
             "trigger": trigger,
+            "explicit_signal": explicit_signal,
+            "explicit_remember": explicit_remember,
             "provider": bridge.memory_provider(),
             "model": bridge.memory_model(),
             "user_chars": user.chars().count(),
@@ -287,6 +346,7 @@ pub async fn review_turn_candidates_with_llm(
         &user,
         &assistant,
         trigger,
+        explicit_remember,
         &delivery_summary,
     )
     .await
@@ -308,7 +368,7 @@ pub async fn review_turn_candidates_with_llm(
             .entry(clean_text(&item.action, 24))
             .or_default() += 1;
     }
-    let outcome = match apply_llm_memory_review(review) {
+    let outcome = match apply_llm_memory_review(review, explicit_remember) {
         Ok(outcome) => outcome,
         Err(error) => {
             append_memory_review_diagnostic(
@@ -340,6 +400,9 @@ pub async fn review_turn_candidates_with_llm(
 }
 
 pub(super) fn has_memory_review_signal(user: &str) -> bool {
+    // CJK morphemes have no case, so match against the raw text; ASCII phrases match
+    // after to_lowercase, covering case variants like "Remember" / "REMEMBER".
+    let lower = user.to_lowercase();
     [
         "记住",
         "以后",
@@ -352,6 +415,12 @@ pub(super) fn has_memory_review_signal(user: &str) -> bool {
         "我不喜欢",
         "我偏好",
         "我的习惯",
+        "记一下",
+        "帮我记",
+        "记录一下",
+        "记着",
+        "记好",
+        "记牢",
         "默认",
         "优先",
         "尽量",
@@ -376,6 +445,61 @@ pub(super) fn has_memory_review_signal(user: &str) -> bool {
     ]
     .iter()
     .any(|needle| user.contains(needle))
+        || ["keep in mind", "don't forget", "do not forget"]
+            .iter()
+            .any(|needle| lower.contains(needle))
+        || contains_imperative_remember(&lower)
+}
+
+/// Narrow-scope "user explicitly asked to remember" detection: only when a
+/// remember-request phrase itself hits do we append the "no skip" hard constraint
+/// and relax the auto_write confidence thresholds. The wide set in
+/// [`has_memory_review_signal`] (status words like "最近" (recently) / "正在"
+/// (currently) / "继续" (continue) / "优先" (prefer)) still decides whether a
+/// review is initiated — those words only mean this turn might contain memorable
+/// content, not an explicit record request, so they carry no relaxed write
+/// consequences.
+pub(super) fn has_explicit_remember_signal(user: &str) -> bool {
+    let lower = user.to_lowercase();
+    [
+        "记住",
+        "记一下",
+        "帮我记",
+        "记录一下",
+        "记着",
+        "记好",
+        "记牢",
+    ]
+    .iter()
+    .any(|needle| user.contains(needle))
+        || ["keep in mind", "don't forget", "do not forget"]
+            .iter()
+            .any(|needle| lower.contains(needle))
+        || contains_imperative_remember(&lower)
+}
+
+/// "remember" matches only in imperative position (word-initial at sentence start,
+/// after punctuation, or after "please"): explicit_user_signal carries the actual
+/// write consequence of relaxing auto_write thresholds in this module, while
+/// remember inside statements and questions like "Do you remember...?" /
+/// "I don't remember ..." is not a record request — err on the narrow side.
+fn contains_imperative_remember(lower: &str) -> bool {
+    const NEEDLE: &str = "remember";
+    let mut from = 0;
+    while let Some(pos) = lower[from..].find(NEEDLE) {
+        let start = from + pos;
+        let after = &lower[start + NEEDLE.len()..];
+        let word_end = !after.starts_with(|c: char| c.is_ascii_alphabetic());
+        let before = lower[..start].trim_end();
+        let lead = before.is_empty()
+            || before.ends_with(['.', ',', '!', '?', ';', ':'])
+            || before.ends_with("please");
+        if word_end && lead {
+            return true;
+        }
+        from = start + NEEDLE.len();
+    }
+    false
 }
 
 pub(super) fn assistant_suggests_delivery_complete(user: &str, assistant: &str) -> bool {
@@ -436,6 +560,7 @@ async fn request_llm_memory_review(
     user: &str,
     assistant: &str,
     trigger: &str,
+    explicit_remember: bool,
     delivery_summary: &[String],
 ) -> Result<LlmMemoryReview> {
     let client = Client::builder()
@@ -501,10 +626,17 @@ async fn request_llm_memory_review(
     // output_language_directive precedent (defense-in-depth: memory is disabled
     // for non-Chinese UIs by enforce_memory_locale_policy; see the
     // memory_output_language_directive docs for reachability).
-    let prompt = match memory_output_language_directive(&bridge.memory_locale_tag()) {
-        Some(suffix) => format!("{LLM_REVIEW_PROMPT}{suffix}"),
-        None => LLM_REVIEW_PROMPT.to_string(),
-    };
+    let mut prompt = llm_review_prompt();
+    // Drive the hard constraint with explicit_remember (not trigger): relaxation is
+    // keyed on explicit_remember, so the two must toggle together; otherwise a turn
+    // could end up with "thresholds relaxed but the prompt not forbidding skip"
+    // (e.g. when explicit_signal and delivery_complete coexist).
+    if explicit_remember {
+        prompt.push_str(&explicit_signal_prompt());
+    }
+    if let Some(suffix) = memory_output_language_directive(&bridge.memory_locale_tag()) {
+        prompt.push_str(&suffix);
+    }
     // Anthropic 官方端点是 Messages 协议（x-api-key 鉴权，system 独立字段，
     // 无 response_format），走原生直连；其余 preset 仍走 OpenAI chat/completions。
     if preset == ModelPreset::Anthropic {
@@ -556,10 +688,28 @@ async fn request_llm_memory_review(
     parse_llm_memory_review(content)
 }
 
-pub(super) fn apply_llm_memory_review(review: LlmMemoryReview) -> Result<MemoryReviewOutcome> {
+/// Apply a parsed review result. `explicit_remember` means this turn hit an explicit
+/// "remember" (记住) style record request (narrow scope, [`has_explicit_remember_signal`]):
+/// the auto_write / auto_update confidence thresholds are relaxed per the module-top
+/// constants (profile / timed / work_context); the 0.70 sanitization floor and
+/// sensitive filtering are unchanged.
+pub(super) fn apply_llm_memory_review(
+    review: LlmMemoryReview,
+    explicit_remember: bool,
+) -> Result<MemoryReviewOutcome> {
+    let timed_auto_threshold = if explicit_remember {
+        TIMED_AUTO_THRESHOLD_RELAXED
+    } else {
+        TIMED_AUTO_THRESHOLD
+    };
+    let work_context_auto_threshold = if explicit_remember {
+        WORK_CONTEXT_AUTO_THRESHOLD_RELAXED
+    } else {
+        WORK_CONTEXT_AUTO_THRESHOLD
+    };
     let mut outcome = MemoryReviewOutcome::default();
     for raw in review.items {
-        let Some(decision) = sanitize_llm_memory_item(raw) else {
+        let Some(decision) = sanitize_llm_memory_item(raw, explicit_remember) else {
             continue;
         };
         let suggestion = decision.suggestion;
@@ -573,7 +723,7 @@ pub(super) fn apply_llm_memory_review(review: LlmMemoryReview) -> Result<MemoryR
             suggestion.kind.as_str(),
             "current_focus" | "recent_activity"
         ) && matches!(decision.action.as_str(), "auto_write" | "auto_update")
-            && decision.confidence >= 0.86
+            && decision.confidence >= timed_auto_threshold
         {
             match io::upsert_timed_memory_locked(
                 &suggestion.kind,
@@ -596,7 +746,7 @@ pub(super) fn apply_llm_memory_review(review: LlmMemoryReview) -> Result<MemoryR
         }
         if suggestion.kind == "work_context"
             && matches!(decision.action.as_str(), "auto_write" | "auto_update")
-            && decision.confidence >= 0.94
+            && decision.confidence >= work_context_auto_threshold
         {
             match io::upsert_work_context_locked(&suggestion, decision.confidence) {
                 Ok(item) => outcome.events.push(MemoryWriteEvent {
@@ -619,7 +769,10 @@ pub(super) fn apply_llm_memory_review(review: LlmMemoryReview) -> Result<MemoryR
     Ok(outcome)
 }
 
-pub(super) fn sanitize_llm_memory_item(raw: LlmMemoryItem) -> Option<SanitizedMemoryDecision> {
+pub(super) fn sanitize_llm_memory_item(
+    raw: LlmMemoryItem,
+    explicit_remember: bool,
+) -> Option<SanitizedMemoryDecision> {
     let action = clean_text(&raw.action, 24);
     if action == "skip" || raw.confidence < 0.70 {
         return None;
@@ -675,7 +828,14 @@ pub(super) fn sanitize_llm_memory_item(raw: LlmMemoryItem) -> Option<SanitizedMe
             _ => return None,
         };
         content = super::util::clean_memory_label(&clean_profile_memory_content(&content, &topic))?;
-        if action == "auto_write" && raw.confidence < 0.92 {
+        // Profile-memory threshold relaxed when the user explicitly asked to remember
+        // (single source of truth: the module-top constants).
+        let profile_auto_write_threshold = if explicit_remember {
+            PROFILE_AUTO_WRITE_THRESHOLD_RELAXED
+        } else {
+            PROFILE_AUTO_WRITE_THRESHOLD
+        };
+        if action == "auto_write" && raw.confidence < profile_auto_write_threshold {
             return None;
         }
     } else if matches!(kind.as_str(), "current_focus" | "recent_activity") {

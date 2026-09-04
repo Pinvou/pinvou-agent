@@ -16,7 +16,10 @@ const state = {
 };
 let response;
 let rejectOverview = false;
-const invoke = async command => {
+// organizeMemory chains an overview refetch; record args per command, not just the last call.
+const invokeArgsByCommand = new Map();
+const invoke = async (command, ...rest) => {
+  invokeArgsByCommand.set(command, [command, ...rest]);
   if (command === 'get_memory_overview' && rejectOverview) throw new Error('overview unavailable');
   return typeof response === 'function' ? response(command) : response;
 };
@@ -114,3 +117,41 @@ rejectOverview = true;
 await api.confirmMemoryCandidate('pending-1');
 assert.deepEqual(state.memory.pending, [], 'committed confirmation must survive overview failure');
 rejectOverview = false;
+
+// ── AI organize memory contract ("AI 整理记忆") ──────────────────────────────────────────────
+// organize_memory must be invoked with no args and resolve the backend payload
+// { report, runtime, warnings } as-is; the overview is refetched afterwards to
+// reconcile the panel.
+const organizePayload = {
+  report: {
+    started_at: '2026-09-03T09:00:00Z', finished_at: '2026-09-03T09:00:05Z', model: 'test-model',
+    scanned: { preference: 3 }, deleted: { preference: 1 }, updated: { preference: 1 }, merged: { preference: 2 },
+    skipped_sensitive: 1, no_change: false, warnings: [],
+  },
+  runtime: null,
+  warnings: [],
+};
+response = command => command === 'organize_memory'
+  ? organizePayload
+  : overview({ preferences: [{ id: 'pref-new', text: 'detailed' }] });
+const organizeResult = await api.organizeMemory();
+assert.equal(organizeResult, organizePayload, 'organizeMemory must resolve the organize_memory payload');
+assert.deepEqual(invokeArgsByCommand.get('organize_memory'), ['organize_memory'], 'organize_memory must be invoked without args');
+assert.equal(state.memory.error, null, 'successful organize must clear the panel error');
+
+// Failure: rethrow, and never write memory.error — that is the dedicated
+// load-failure channel (the settings banner renders it as the generic
+// "加载失败" (load failed) copy, which would mislead); the organize failure
+// reason is surfaced by the caller's catch.
+response = command => {
+  if (command === 'organize_memory') throw new Error('organize memory: model unavailable');
+  return overview();
+};
+await assert.rejects(api.organizeMemory(), /organize memory: model unavailable/, 'organize failures must propagate');
+assert.equal(state.memory.error, null, 'organize failure must not pollute the memory.error load-failure channel');
+
+// Organize history: pass through the get_memory_organize_history array (newest first).
+const historyPayload = [{ finished_at: '2026-09-03T09:00:05Z' }, { finished_at: '2026-09-02T09:00:00Z' }];
+response = command => command === 'get_memory_organize_history' ? historyPayload : overview();
+assert.equal(await api.loadOrganizeHistory(), historyPayload, 'loadOrganizeHistory must pass the history array through');
+assert.deepEqual(invokeArgsByCommand.get('get_memory_organize_history'), ['get_memory_organize_history']);
