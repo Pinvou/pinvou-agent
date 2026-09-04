@@ -439,13 +439,16 @@ pub async fn checkout_codex_workspace_branch(
     let root = codex_workspace_root(session_id.as_deref(), workspace_path.as_deref(), &acp_pool)?;
     let mode = workspace::BranchSwitchMode::parse(&mode)
         .map_err(|error| format!("切换 Codex 工作区分支失败: {error:#}"))?;
-    // 跨会话防护：同一工作区上任意会话（含发起方之外的其他会话）有在途回合时
-    // 拒绝切换，避免运行中的 Agent 把后续编辑落到错误分支。前端只挡当前会话，
-    // 后端这里做强制兜底（ACP 与原生 code 会话统一看 assistant::timing 的在途登记）。
-    let running = acp_pool
-        .agents()
-        .code_sessions_in_workspace(&root)
-        .into_iter()
+    // Cross-session guard: reject the switch while any session bound to this
+    // workspace (including sessions other than the caller) has a turn in
+    // flight, so a running agent cannot land later edits on the wrong branch.
+    // The frontend only gates the current session; this backend check consults
+    // the shared assistant::timing in-flight registry for both ACP and native
+    // code sessions. Best-effort: a turn admitted after the in-task recheck
+    // below can still race the git commands.
+    let workspace_sessions = acp_pool.agents().code_sessions_in_workspace(&root);
+    let running = workspace_sessions
+        .iter()
         .filter(|session_id| crate::features::assistant::timing::has_active_turn(session_id))
         .count();
     if running > 0 {
@@ -454,6 +457,18 @@ pub async fn checkout_codex_workspace_branch(
         ));
     }
     tauri::async_runtime::spawn_blocking(move || {
+        // Recheck inside the task to narrow the admission window between the
+        // outer check and the first git mutation: a turn started in between
+        // would otherwise run concurrently with the checkout.
+        let running = workspace_sessions
+            .iter()
+            .filter(|session_id| crate::features::assistant::timing::has_active_turn(session_id))
+            .count();
+        if running > 0 {
+            return Err(format!(
+                "该工作区有 {running} 个会话正在运行，请等待运行结束后再切换分支"
+            ));
+        }
         workspace::checkout_workspace_branch(&root, &branch, mode, commit_message.as_deref())
             .map_err(|error| format!("切换 Codex 工作区分支失败: {error:#}"))
     })
