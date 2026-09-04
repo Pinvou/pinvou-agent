@@ -79,7 +79,7 @@ function Add-Utf8NoBomEntry {
 
     $entry = $Archive.CreateEntry(
         $EntryName,
-        [System.IO.Compression.CompressionLevel]::Optimal
+        [System.IO.Compression.CompressionLevel]::SmallestSize
     )
     $entryStream = $entry.Open()
     try {
@@ -219,7 +219,7 @@ try {
             $innerArchive,
             $source,
             "Files\Pinvou3\$exeName",
-            [System.IO.Compression.CompressionLevel]::Optimal
+            [System.IO.Compression.CompressionLevel]::SmallestSize
         ) | Out-Null
         Add-Utf8NoBomEntry -Archive $innerArchive -EntryName 'OtaInfo.json' -Text (ConvertTo-CrlfJson $otaInfo)
     } finally {
@@ -257,7 +257,7 @@ try {
             $outerArchive,
             $fullPackPath,
             'FullPack.zip',
-            [System.IO.Compression.CompressionLevel]::Optimal
+            [System.IO.Compression.CompressionLevel]::SmallestSize
         ) | Out-Null
         Add-Utf8NoBomEntry -Archive $outerArchive -EntryName 'UpdatePackInfo.json' -Text (ConvertTo-CrlfJson $updatePackInfo)
     } finally {
