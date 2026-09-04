@@ -789,6 +789,29 @@ mod tests {
         assert_eq!(window, None);
     }
 
+    /// 单元素列表且恰为配置名：走「列表中命中」分支，原样保留并取其窗口
+    /// （与单模型跟随分支结果一致，锁死行为防止分支顺序改动悄悄改变窗口来源）。
+    #[test]
+    fn served_model_single_entry_equal_to_configured_keeps_name_and_window() {
+        let entries = vec![served_entry("qwen36_35b_256k", Some(262_144))];
+        let (name, window) = resolve_served_model_from_entries("qwen36_35b_256k", &entries);
+        assert_eq!(name, "qwen36_35b_256k");
+        assert_eq!(window, Some(262_144));
+    }
+
+    /// 命中条目未暴露 `max_model_len`（服务端没给）：名字照常解析，窗口为
+    /// `None` 回退声明值/启发式，不得编造窗口。
+    #[test]
+    fn served_model_matched_entry_without_window_propagates_none() {
+        let entries = vec![
+            served_entry("first-downloaded", None),
+            served_entry("user-picked", None),
+        ];
+        let (name, window) = resolve_served_model_from_entries("user-picked", &entries);
+        assert_eq!(name, "user-picked");
+        assert_eq!(window, None);
+    }
+
     #[test]
     fn prom_metric_extracts_value_with_labels() {
         let text = "# HELP foo\n\
