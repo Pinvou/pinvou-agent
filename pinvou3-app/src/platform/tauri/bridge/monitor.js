@@ -129,12 +129,52 @@
     return { running, waiting };
   }
 
+  // MonitorView 只消费 state.monitor._fmt（含 vllmRaw 一层嵌套），浅等即显示
+  // 等价。轮询每秒跑一次，快照显示等价时不再赋值 + notify，避免监控页开着时
+  // 每秒一次的全量 App 重渲染。数值有天然抖动（cpu/gpu 百分比等），比较给
+  // 0.5 容差（宁可多发一次，也不许卡住不发）；计数经 toFixed/round 后多为
+  // 字符串，按精确比较。updatedAt 是轮询 tick 标记（无 UI 渲染，仅作采样
+  // 触发器），必须排除，否则每秒都「有变化」；页面时钟由 MonitorView 本地
+  // 1s 计时器驱动，不依赖它。
+  function monitorFmtEqual(prev, next) {
+    if (prev === next) return true;
+    if (!prev || !next) return false;
+    const numEq = function (a, b) {
+      if (a === b) return true;
+      return typeof a === "number" && typeof b === "number"
+        && Number.isFinite(a) && Number.isFinite(b)
+        && Math.abs(a - b) <= 0.5;
+    };
+    const keys = Object.keys(next);
+    if (keys.length !== Object.keys(prev).length) return false;
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (key === "updatedAt") continue;
+      const a = prev[key];
+      const b = next[key];
+      if (a && b && typeof a === "object" && typeof b === "object") {
+        const inner = Object.keys(b);
+        if (inner.length !== Object.keys(a).length) return false;
+        let same = true;
+        for (let j = 0; j < inner.length; j++) {
+          if (!numEq(a[inner[j]], b[inner[j]])) { same = false; break; }
+        }
+        if (!same) return false;
+        continue;
+      }
+      if (!numEq(a, b)) return false;
+    }
+    return true;
+  }
+
   // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
   async function pollMonitor() {
     if (monitorPollInFlight) return;
     monitorPollInFlight = true;
     try {
       const snap = await invoke("get_monitor_snapshot");
+      // 上一轮出错 → 本轮必须通知一次,让「读取失败」横幅切换回正常面板。
+      const hadMonitorError = !!state.monitorError;
       state.monitorError = null;
       // GPU util sliding window
       if (snap.gpu) {
@@ -249,8 +289,12 @@
         maxModelLen = snap.vllm.max_model_len;
         state.tokens.max = maxModelLen;
       }
-      state.monitor = snap;
-      notify();
+      // 显示等价的快照不覆盖 state.monitor、不 notify（首帧或上一轮出错时必须发）。
+      const prevFmt = state.monitor && state.monitor._fmt;
+      if (hadMonitorError || !prevFmt || !monitorFmtEqual(prevFmt, snap._fmt)) {
+        state.monitor = snap;
+        notify();
+      }
     } catch (e) {
       state.monitorError = e && e.message ? e.message : String(e || "monitor poll failed");
       console.warn("monitor poll failed", e);
