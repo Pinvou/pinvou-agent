@@ -267,6 +267,11 @@ pub(crate) fn std_process_group_leader(command: &mut Command) {
 ///
 /// 进程组已不存在（ESRCH）视为成功——目标已死即目的达成，调用方无需为
 /// 「取消时进程恰好已退出」记失败日志。
+///
+/// `pid <= 1` 或无法以正数收入 `i32` 的 pid 一律拒绝（`InvalidInput`）：
+/// kill(2) 对 0 与 -1 有特殊语义（0 = 调用方所在整组，-1 = 当前用户全部
+/// 进程），`as i32` 回绕出的负 pid 同理。边界在本函数自检，不依赖调用方
+/// 审计。
 pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<()> {
     if crate::platform::capabilities::is_windows() {
         external_command(Path::new("taskkill"))
@@ -276,8 +281,14 @@ pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<()> {
     }
     #[cfg(unix)]
     {
+        let Some(group) = i32::try_from(pid).ok().filter(|group| *group > 1) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("refusing user-wide process group kill for pid {pid}"),
+            ));
+        };
         // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
-        let sent = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+        let sent = unsafe { libc::kill(-group, libc::SIGKILL) };
         if sent != 0 {
             let error = std::io::Error::last_os_error();
             if error.raw_os_error() == Some(libc::ESRCH) {

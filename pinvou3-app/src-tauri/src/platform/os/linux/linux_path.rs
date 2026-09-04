@@ -126,12 +126,19 @@ pub fn apply_user_npm_prefix(cmd: &mut Command) {
 /// `scripts/architecture-guard.py` 强制检查:procps-ng 4.0.4 的参数解析会把
 /// `kill -9 -<pgid>` 的合法负 pid 错当 `-1` 处理(kill(-1) 杀光当前用户全部
 /// 进程,2026-09-04 本机桌面会话两次被整台带走,audit 取证实锤)。
+///
+/// `pid <= 1` 或无法以正数收入 `i32` 的 pid 直接忽略:kill(2) 对 0 与 -1 有
+/// 特殊语义(0 = 调用方所在整组,-1 = 当前用户全部进程),边界在本函数自检,
+/// 不依赖调用方审计。
 pub fn kill_pid_tree(pid: u32) {
+    let Some(group) = i32::try_from(pid).ok().filter(|group| *group > 1) else {
+        return;
+    };
     // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
-    let group_ok = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) } == 0;
+    let group_ok = unsafe { libc::kill(-group, libc::SIGKILL) } == 0;
     if !group_ok {
         // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
-        let _ = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        let _ = unsafe { libc::kill(group, libc::SIGKILL) };
     }
 }
 

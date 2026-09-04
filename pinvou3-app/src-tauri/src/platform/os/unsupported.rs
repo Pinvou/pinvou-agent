@@ -239,19 +239,32 @@ pub fn apply_user_npm_prefix(_cmd: &mut Command) {}
 /// 合法负 pid 错路由成 kill(-1)(procps-ng 4.0.4 在 Linux 上即如此,曾杀光
 /// 整个桌面会话);kill(2) 语义与其完全一致且不经过任何解析器。非 unix 合约
 /// 分支仅参与编译、无实际平台绑定,保留外部调用形态。
+///
+/// `pid <= 1` 或无法以正数收入 `i32` 的 pid 一律拒绝:kill(2) 对 0 与 -1 有
+/// 特殊语义(0 = 调用方所在整组,-1 = 当前用户全部进程),边界在本函数自检,
+/// 不依赖调用方审计。
 pub fn kill_pid_tree(pid: u32) {
     #[cfg(unix)]
     {
+        let Some(group) = i32::try_from(pid).ok().filter(|group| *group > 1) else {
+            return;
+        };
         // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
-        let group_ok = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) } == 0;
+        let group_ok = unsafe { libc::kill(-group, libc::SIGKILL) } == 0;
         if !group_ok {
             // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
-            let _ = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+            let _ = unsafe { libc::kill(group, libc::SIGKILL) };
         }
         return;
     }
     #[cfg(not(unix))]
     {
+        // Compile-only contract branch; keep the same refusal so a future
+        // binding cannot inherit the kill(0/-1) special semantics through
+        // the external binary either.
+        if pid <= 1 {
+            return;
+        }
         let group_arg = format!("-{pid}");
         let group_ok = Command::new("kill")
             .args(["-9", group_arg.as_str()])
