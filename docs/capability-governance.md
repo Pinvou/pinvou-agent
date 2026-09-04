@@ -118,8 +118,15 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
 
 | 模式 | 包默认策略 | 含义 |
 |---|---|---|
-| plain | AllowAll | 全开 |
+| plain | **DenyAll** | 全禁（工具开关全量收敛：外部能力一律显式开启） |
 | code | **DenyAll** | 全禁（外部能力显式开启，封泄露面/攻击面） |
+
+plain 从 AllowAll 翻为 DenyAll 时的**存量迁移**（读时迁移，见
+`scope.rs::load_disabled_bundles_file_locked`）：旧版文件（无
+`plain_defaults_migrated` 字段）或旧双文件时代的装机，plain 被初始化为
+落盘列表——锁定升级前 AllowAll 语义下的真实开关状态（缺省空 = 全开），
+升级后用户无感；全新装机只置迁移标记不初始化，未初始化 plain 按 DenyAll
+兜底（默认全关）。
 
 用户数据语义（三条线一致）：
 
