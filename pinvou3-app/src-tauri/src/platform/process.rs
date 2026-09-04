@@ -475,7 +475,9 @@ mod tests {
                 None => std::env::remove_var("PATH"),
             }
         }
-        let _ = std::fs::remove_dir_all(&work);
+        // Read before cleanup: removing the work dir deletes the marker with
+        // it, which would make the assertion below vacuously pass.
+        let marker_content = std::fs::read_to_string(&marker).ok();
 
         assert!(
             kill_result.is_ok(),
@@ -486,8 +488,11 @@ mod tests {
             "group leader {sh_pid} and descendant {sleep_pid} must both die"
         );
         assert!(
-            !marker.exists(),
-            "an external kill was spawned; group kills must use kill(2) directly"
+            marker_content.is_none(),
+            "an external kill was spawned (argv log: {marker_content:?}); \
+             group kills must use kill(2) directly"
         );
+
+        let _ = std::fs::remove_dir_all(&work);
     }
 }
