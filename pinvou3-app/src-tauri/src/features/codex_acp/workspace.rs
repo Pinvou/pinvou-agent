@@ -1671,13 +1671,10 @@ mod tests {
         fs::write(root.path().join("file.txt"), "v1-dirty").unwrap();
         fs::write(root.path().join("scratch.txt"), "scratch").unwrap();
         // 空提交信息被拒绝。
-        assert!(checkout_workspace_branch(
-            root.path(),
-            "feature",
-            BranchSwitchMode::Commit,
-            Some("  ")
-        )
-        .is_err());
+        assert!(
+            checkout_workspace_branch(root.path(), "feature", BranchSwitchMode::Commit, Some("  "))
+                .is_err()
+        );
         let result = checkout_workspace_branch(
             root.path(),
             "feature",
