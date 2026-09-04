@@ -37,7 +37,12 @@
     for (let i = state.chatItems.length - 1; i >= 0; i--) {
       const item = state.chatItems[i];
       if (item && item.type === "tool" && isShellExecutionTool(item.name)) {
-        return SHELL_WAIT_TOOL_NAMES.includes(item.name);
+        // Since engine v0.9.3 the wait observer is the canonical Bash tool
+        // with action="wait"; the exec_shell_wait/exec_wait names survive
+        // only in replayed legacy sessions. Cards carry the action both live
+        // (chat:tool_start) and after history replay.
+        return SHELL_WAIT_TOOL_NAMES.includes(item.name) ||
+          (item.name === "Bash" && item.args != null && item.args.action === "wait");
       }
     }
     return false;
