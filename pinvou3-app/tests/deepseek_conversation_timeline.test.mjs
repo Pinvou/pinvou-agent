@@ -506,8 +506,6 @@ try {
     && chatView.includes('isFollowing: () => autoScrollRef.current')
     && chatView.includes('onMeasured: () => {'),
     'bottom-following conversations must recover after delayed layout and window visibility changes');
-  assert.ok(chatView.includes('<ThinkingBubble'), 'the original rendering path must remain available as a fallback');
-  assert.ok(chatView.includes("pinvou_conversation_ui_v2"), 'the local rollback switch must be explicit');
 
   console.log('deepseek_conversation_timeline: ok');
 } finally {

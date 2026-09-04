@@ -45,11 +45,6 @@
     /* content-visibility 离屏渲染优化兜底：ChatBubble 对部分类型（空流式 assistant、
        已忽略的记忆候选、未知类型）返回 null，其 wrapper 变成空 div。空的
        content-visibility 容器离屏时仍按 contain-intrinsic-size 占位（auto 600px），
-       污染 scrollHeight 造成长会话滚动条缩跳与滚底跳变（Chromium 与 Safari 18+ 均复现）。
-       :empty 让空 wrapper 完全移出布局；reasoning 等明确不渲染项已在 legacy 列表 map
-       处跳过（见 ChatView.jsx），本规则兜底其余返回 null 的情况，无需与 ChatBubble
-       内部分支保持同步。 */
-    .cv-bubble:empty { display: none; }
 
     /* Chat message styles */
     .msg-md h1,.msg-md h2,.msg-md h3,.msg-md h4 { font-weight:600; margin:0.6em 0 0.3em; }

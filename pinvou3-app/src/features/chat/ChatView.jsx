@@ -5,7 +5,7 @@ import {
   isSubagentPanelPublicationCurrent,
 } from './subagent-panel-publication.mjs';
 import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, Mic, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
-import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
+import { bridge } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { formatCompactCount } from '../../shared/format-number.js';
@@ -139,16 +139,7 @@ import {
   ComposerModeChip,
 } from './composer-controls.jsx';
 
-const UNIFIED_CONVERSATION_UI_KEY = 'pinvou_conversation_ui_v2';
 const MULTI_AGENT_ENABLED = can('multiAgent');
-
-function unifiedConversationUiEnabled() {
-  try {
-    return localStorage.getItem(UNIFIED_CONVERSATION_UI_KEY) !== 'false';
-  } catch {
-    return true;
-  }
-}
 
 // 回车提交守卫(主输入框 / 排队消息编辑 / 用户气泡内编辑三处共用):Shift+Enter 仍
 // 换行;输入法合成期间的回车是"确认候选词上屏",不得同时触发提交——否则一次回车
@@ -836,7 +827,6 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // 按钮误启用。Set 让各会话独立记录，配合后端 turn generation 守护，
       // 消除跨轮误取消窗口）。
       const [cancellingSessionIds, setCancellingSessionIds] = useState(() => new Set());
-      const activeModelLocal = activeModelIsLocal(bs);
       const hasMessages = chatItems.length > 0;
       const attachments = (bs && bs.attachments) || [];
       const formatAttachmentError = (error) => {
@@ -1166,11 +1156,6 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const scheduledRunContext = bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === bs.activeSessionId
         ? bs.scheduledRunContext
         : null;
-      // The rollback switch is read once at mount: the app has no write path for this key (only the
-      // smoke test writes localStorage before the page loads and then reloads the whole page), so
-      // reading localStorage synchronously per render is pure overhead; reading it into state at mount
-      // keeps the observable behavior unchanged.
-      const [useUnifiedConversationUi] = useState(unifiedConversationUiEnabled);
       // Conversation projection and derived collections. ChatView re-renders on every keystroke
       // (composer state), every streaming chunk, and every clock tick; this O(messages) group of
       // projection/filter/scan steps used to rerun in full inside the render body each time. Bridge
@@ -1196,7 +1181,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         let lastUserId = null;
         for (let i = chatItems.length - 1; i >= 0; i--) { if (chatItems[i].type === 'user') { lastUserId = chatItems[i].id; break; } }
         const conversationProjection = projectDeepSeekConversation({
-          chatItems: conversationItemsForMode(visibleChatItems, useUnifiedConversationUi),
+          chatItems: conversationItemsForMode(visibleChatItems),
           busy,
           thinking: chatThinking,
           tokens: ctxTokens,
@@ -1211,9 +1196,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         for (let i = turns.length - 1; i >= 0; i--) {
           if (turns[i].status === 'running') { activeConversationTurn = turns[i]; break; }
         }
-        return { visibleChatItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
-      }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, useUnifiedConversationUi, chatThinking, turnTimeline, activeSessionId]);
-      const { visibleChatItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
+        return { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
+      }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, chatThinking, turnTimeline, activeSessionId]);
+      const { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
 
       // External entries can prefill the composer and focus its end.
       // Template/navigation entries (KnowledgeView "continue in chat",
@@ -2331,8 +2316,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
 
             {hasMessages && (
               <div ref={conversationContentRef} className="max-w-[800px] w-full min-w-0 mx-auto space-y-4">
-                {useUnifiedConversationUi ? (
-                  <ConversationTimeline
+                <ConversationTimeline
                     turns={conversationProjection.turns}
                     copy={t.uiConversation}
                     agentLabel={chatViewCopy.agentName}
@@ -2342,36 +2326,6 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                     renderToolItem={handleTimelineRenderToolItem}
                     onOpenExternal={openChatExternalUrl}
                   />
-                ) : (
-                  <>
-                    {visibleChatItems.map((item) => {
-                      // reasoning 由统一 UI 的 ConversationTimeline 负责，legacy 路径不展示；
-                      // ChatBubble 不认识该类型会返回 null。其余 ChatBubble 返回 null 的情况
-                      // （空流式 assistant、已忽略的记忆候选、未知类型）由 .cv-bubble:empty
-                      // 兜底。空内容绝不能被 content-visibility wrapper 包裹：离屏时空 div 会按
-                      // contain-intrinsic-size 各占 600px，污染 scrollHeight 造成滚动条缩跳与
-                      // 滚底跳变（http://localhost 无关，Safari 18+/Chromium 均复现）。
-                      if (item.type === 'reasoning') return null;
-                      return (
-                        <div key={item.id} className="cv-bubble" style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 600px' }}>
-                          <ChatBubble
-                            item={item}
-                            sessionId={activeSessionId}
-                            theme={theme}
-                            t={t}
-                            onPrefill={(text) => setInputText(text)}
-                            onSend={sendChatMessage}
-                            editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
-                            onOpenEditor={onOpenEditor}
-                            isLatestArtifact={latestArtifactIds.has(item.id)}
-                            allowScheduledTaskDraft={isScheduledTaskCreationChat}
-                          />
-                        </div>
-                      );
-                    })}
-                    {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} isLocal={activeModelLocal} />}
-                  </>
-                )}
                 {/* 实体占位必须覆盖输入框和其上方渐变区，保证滚到底时最后一张卡
                     完整停在渐变之外，而不是虽然能滚到却被遮罩淡化。 */}
                 <div data-testid="chat-bottom-spacer" aria-hidden="true" className="w-full shrink-0"
@@ -3297,41 +3251,6 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
       );
     };
 
-    // 思考指示器：Braille 转圈 + 思考中/调用工具 + 计时（每阶段切换重置）
-    const BRAILLE = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    // eslint-disable-next-line no-unused-vars -- theme is injected uniformly by the caller; keep the contract slot
-const ThinkingBubble = ({ thinking, _theme, t, isLocal }) => {
-      const [frame, setFrame] = useState(0);
-      const [elapsed, setElapsed] = useState(0);
-      const phase = thinking ? thinking.phase : 'thinking';
-      const toolName = thinking ? thinking.toolName : '';
-      // eslint-disable-next-line react-hooks/purity -- falling back to the current time when the backend omits startedAt is this thinking indicator's established behavior
-      const startedAt = (thinking && thinking.startedAt) || Date.now();
-      useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the animation frame and timer on phase switch
-        setFrame(0); setElapsed(0);
-        const id = setInterval(() => {
-          setFrame(f => (f + 1) % BRAILLE.length);
-          setElapsed(Math.floor((Date.now() - startedAt) / 1000));
-        }, 100);
-        return () => clearInterval(id);
-      }, [startedAt, phase, toolName]);
-      let text;
-      if (phase === 'tool' && toolName) {
-        text = t.thinkingCall(toolName, elapsed);
-      } else {
-        const suffix = elapsed >= 120 ? ` · ${t.hintSlow120(isLocal)}` : elapsed >= 30 ? ` · ${t.hintSlow30(isLocal)}` : '';
-        text = `${t.thinkingLabel}... ${elapsed}s${suffix}`;
-      }
-      return (
-        <div className="flex justify-start">
-          <div className={`text-[13px] font-mono px-3 py-1.5 rounded-full ${'bg-[#F0F4F9] text-[#0B57D0] dark:bg-[#1E1F20] dark:text-[#A8C7FA]'}`}>
-            {BRAILLE[frame]} {text}
-          </div>
-        </div>
-      );
-    };
-
     // ③ 卡牌制造专家: 从助手消息渲染后的 html 里抠出 ```persona-card 草稿块 → 解析成卡。
     function htmlUnescape(s) {
       return String(s).replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&quot;','"').replaceAll(/&#(?:39|x27);/gi,"'").replaceAll('&amp;','&');
@@ -3708,4 +3627,4 @@ const ThinkingBubble = ({ thinking, _theme, t, isLocal }) => {
     // 产物类型 → { 角标/标签文字, tile 配色, lucide 内联 SVG 路径 }（零下载；仅无封面紧凑态显图标）。
     // 配色/字形照搬 产物卡图标预览.html（唯一权威）。
 
-export { ToolWelcomeCard, ComposerKbSelector, ComposerModeChip, ChatView, fallbackCopyText, copyClipboardText, readClipboardText, SelectionCopyButton, TextareaContextMenu, UserBubble, BRAILLE, ThinkingBubble, htmlUnescape, asDraft, asScheduledTaskDraft, extractBalancedJson, parseJsonChain, parseLooseJson, parsePersonaDraft, parseScheduledTaskDraft, parseCardQuestion, optionAnswer, hideStreamingDraft, ChatBubble };
+export { ToolWelcomeCard, ComposerKbSelector, ComposerModeChip, ChatView, fallbackCopyText, copyClipboardText, readClipboardText, SelectionCopyButton, TextareaContextMenu, UserBubble, htmlUnescape, asDraft, asScheduledTaskDraft, extractBalancedJson, parseJsonChain, parseLooseJson, parsePersonaDraft, parseScheduledTaskDraft, parseCardQuestion, optionAnswer, hideStreamingDraft, ChatBubble };

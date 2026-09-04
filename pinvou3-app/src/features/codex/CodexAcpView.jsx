@@ -1,10 +1,9 @@
-import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import {
-  AlertTriangle, Brain, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, Mic, Monitor, Paperclip,
-  Plus, RefreshCw, Send, Sparkles, StopCircle, Terminal, Upload, User, Wrench,
+  Brain, Check, ChevronDown, FileText, FolderOpen, Mic, Monitor, Paperclip,
+  Plus, RefreshCw, Send, Sparkles, StopCircle, Upload, User,
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
@@ -43,9 +42,8 @@ import {
   createAcpGapResyncScheduler,
   mergeAcpTimelineSnapshot,
   updateAcpAttachmentDraft,
-  commandExecutionDetails,
   projectAcpTimeline,
-  resolveAcpSessionControls, unifiedConversationUiEnabled,
+  resolveAcpSessionControls,
 } from './acp-state.js';
 import {
   applyNativeChatEvent,
@@ -85,14 +83,10 @@ import {
   useDialogFocusRestore,
 } from './RewindChip.jsx';
 import {
-  CompactItemRow,
   ConversationActivityIndicator,
   ConversationMarkdown,
+  ConversationStatusBadge,
   ConversationTurn,
-  PlanBlock,
-  StructuredValue,
-  TerminalBlock,
-  WorkspaceResourceButtons,
   useConversationSecondClock,
 } from '../conversation/ConversationTimeline.jsx';
 import {
@@ -100,8 +94,6 @@ import {
   startConversationBottomFollower,
   transitionConversationScrollState,
 } from '../conversation/conversation-scroll.js';
-import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
-import { assistantResponseAvailable, assistantResponseText } from '../conversation/message-clipboard.js';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/composer-shared.jsx';
 import {
   COMPOSER_ICON_BUTTON_CLASS,
@@ -114,13 +106,9 @@ import { pathBasename } from '../../shared/path-utils.js';
 import { selectorMainLabel } from '../settings/model-catalog.js';
 import {
   captureConversationScrollPosition,
-  collectToolWorkspaceResources,
-  elapsedMs,
   isFetchTool,
   isSearchTool,
   restoreConversationScrollPosition,
-  terminalStatus,
-  toolWorkspaceResources,
 } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { PlanLayer, ToolCard, cardBoxCls, cardBtnCls } from '../tools/tool-renderers.jsx';
@@ -345,194 +333,6 @@ function CodexComposerConfigSelect({
           </>
         )}
       </ComposerPopover>
-    </div>
-  );
-}
-
-function StatusBadge({ status, copy }) {
-  const done = ['Completed', 'completed', 'end_turn'].includes(status);
-  const failed = ['Failed', 'failed', 'Refused'].includes(status);
-  const label = done
-    ? copy.completed
-    : failed
-      ? copy.failed
-      : status === 'Interrupted'
-        ? copy.interrupted
-        : status === 'LimitReached'
-          ? copy.limitReached
-          : copy.processing;
-  return (
-    <span className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full ${
-      done ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'
-        : failed ? 'bg-red-500/10 text-red-600 dark:text-red-300'
-          : 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
-    }`}>
-      {done ? <CheckCircle2 size={12} /> : failed ? <AlertTriangle size={12} /> : <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />}
-      {label}
-    </span>
-  );
-}
-
-// elapsedMs / terminalStatus / TerminalBlock / StructuredValue / CompactItemRow /
-// PlanBlock 与 ChatView 时间线同源，统一从 conversation 模块导入（CompactItemRow
-// 补齐 warning 色调分支，terminalStatus 归一 'done'）。
-
-function CommandExecutionItem({ item, now, copy }) {
-  const details = commandExecutionDetails(item.tool);
-  const state = terminalStatus(item.status, details.exitCode);
-  const [open, setOpen] = useState(false);
-  const detailsId = useId();
-  const countHint = details.commandCount > 1 ? ` · ${copy.segments(details.commandCount)}` : '';
-  const duration = copy.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
-  const exitHint = details.exitCode == null ? '' : ` · exit ${details.exitCode}`;
-  const outcome = state === 'running'
-    ? `${copy.running} · ${duration}`
-    : state === 'failed'
-      ? `${copy.executionFailed}${exitHint}`
-      : `${copy.executionFinished}${exitHint} · ${duration}`;
-  return (
-    <div className={`rounded-xl border ${state === 'failed' ? 'border-red-500/20' : 'border-black/[0.05] dark:border-white/[0.07]'} bg-white/45 dark:bg-white/[0.015]`}>
-      <CompactItemRow icon={<Terminal size={13} />} title={details.summary}
-        meta={`${outcome}${countHint}`} status={state} open={open} controlsId={detailsId}
-        onToggle={() => setOpen(value => !value)} />
-      {open && (
-        <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
-          <TerminalBlock label={copy.command} text={details.command} />
-          {details.cwd && (
-            <div className="mt-2 text-[10px] text-gray-400">
-              {copy.workingDirectory} <span className="ml-1 font-mono text-gray-600 dark:text-gray-300">{details.cwd}</span>
-            </div>
-          )}
-          <TerminalBlock label={copy.output} text={details.output} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function GenericToolItem({ item, now, copy, cv, onOpenResource }) {
-  const tool = item.tool || {};
-  const state = terminalStatus(item.status);
-  const [open, setOpen] = useState(false);
-  const detailsId = useId();
-  const duration = copy.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
-  const label = item.type === 'file_change' ? copy.fileChange : (tool.kind || cv.codexTool);
-  const stateLabel = state === 'running'
-    ? `${copy.inProgress} · ${duration}`
-    : state === 'failed'
-      ? copy.failed
-      : `${cv.ended} · ${duration}`;
-  const resources = toolWorkspaceResources(tool);
-  return (
-    <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-white/45 dark:bg-white/[0.015]">
-      <CompactItemRow icon={<Wrench size={13} />} title={tool.title || label}
-        meta={`${label} · ${stateLabel}`}
-        status={state} open={open} controlsId={detailsId}
-        onToggle={() => setOpen(value => !value)} />
-      <WorkspaceResourceButtons resources={resources} onOpenResource={onOpenResource} />
-      {open && (
-        <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
-          <StructuredValue label={copy.arguments} value={tool.rawInput} />
-          <StructuredValue label={copy.result} value={tool.rawOutput == null ? tool.content : tool.rawOutput} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ToolGroup({ group, now, copy, cv, onOpenResource }) {
-  const items = group.items || [];
-  const running = items.some(item => terminalStatus(item.status) === 'running');
-  const failed = items.some(item => terminalStatus(
-    item.status,
-    item.type === 'command_execution' ? commandExecutionDetails(item.tool).exitCode : null,
-  ) === 'failed');
-  const [open, setOpen] = useState(false);
-  const detailsId = useId();
-  const hasDetails = items.length > 0;
-  const resources = collectToolWorkspaceResources(items);
-  return (
-    <div className="min-w-0 max-w-full">
-      <button type="button" onClick={() => setOpen(value => !value)}
-        data-testid="conversation-tool-group-summary"
-        aria-expanded={hasDetails ? Boolean(open) : undefined}
-        aria-controls={hasDetails && open ? detailsId : undefined}
-        className="w-full h-9 px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
-        <span className={`w-1.5 h-1.5 rounded-full ${failed ? 'bg-red-500' : running ? 'bg-blue-500 animate-pulse' : 'bg-gray-300 dark:bg-gray-600'}`} />
-        <span>{running ? copy.executing : failed ? cv.stepsFailed : copy.executionSteps} · {items.length}</span>
-        <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
-      </button>
-      <WorkspaceResourceButtons resources={resources} onOpenResource={onOpenResource} />
-      {open && hasDetails && (
-        <div id={detailsId} data-testid="conversation-tool-group-content" className="min-w-0 max-w-full ml-3 pl-3 border-l border-black/[0.06] dark:border-white/[0.08] space-y-1.5 pb-1">
-          {items.map(item => item.type === 'command_execution'
-            ? <CommandExecutionItem key={item.id} item={item} now={now} copy={copy} />
-            : <GenericToolItem key={item.id} item={item} now={now} copy={copy} cv={cv} onOpenResource={onOpenResource} />)}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ReasoningItem({ item, now, copy }) {
-  const running = item.status === 'in_progress';
-  const [open, setOpen] = useState(false);
-  const detailsId = useId();
-  const hasDetails = Boolean(item.text);
-  const duration = copy.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
-  return (
-    <div className="min-w-0 max-w-full">
-      <button type="button" onClick={() => setOpen(value => !value)}
-        data-testid="conversation-reasoning-toggle"
-        aria-expanded={hasDetails ? Boolean(open) : undefined}
-        aria-controls={hasDetails && open ? detailsId : undefined}
-        className="w-full h-9 px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
-        <span className={`w-1.5 h-1.5 rounded-full bg-violet-500 ${running ? 'animate-pulse' : ''}`} />
-        <span>{running ? copy.thinking : copy.thoughtCompleted} · {duration}</span>
-        <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
-      </button>
-      {open && hasDetails && <div id={detailsId} data-testid="conversation-reasoning-content" className="min-w-0 max-w-full ml-3 pl-3 py-1 border-l border-violet-500/15 text-[12px] leading-6 text-gray-500 dark:text-gray-300 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{item.text}</div>}
-    </div>
-  );
-}
-
-function PermissionCard({ permission, pending, onRespond, responding, agentName, copy }) {
-  const request = permission.request || {};
-  const tool = request.toolCall || {};
-  const options = request.options || [];
-  const actionable = !!pending && !permission.resolved;
-  return (
-    <div className="rounded-2xl border border-amber-500/25 bg-amber-500/[0.06] p-4">
-      <div className="flex items-start gap-3">
-        <AlertTriangle size={18} className="text-amber-500 mt-0.5 shrink-0" />
-        <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">{copy.permissionRequest(agentName)}</div>
-          <div className="mt-1 min-w-0 max-w-full text-[12px] text-gray-500 dark:text-gray-400 break-words [overflow-wrap:anywhere]">{tool.title || copy.protectedOperation}</div>
-          {tool.rawInput && tool.rawInput.command
-            ? <TerminalBlock label={copy.command} text={String(tool.rawInput.command)} />
-            : <StructuredValue label={copy.operationArguments} value={tool.rawInput} />}
-          <div className="mt-3 flex flex-wrap gap-2">
-            {options.map(option => (
-              <button type="button" key={option.optionId} disabled={!actionable || responding}
-                onClick={() => onRespond(permission.toolCallId, option.optionId)}
-                className={`max-w-full min-w-0 whitespace-normal break-all px-3 py-1.5 rounded-xl text-[12px] leading-5 font-medium transition-colors ${
-                  String(option.kind || '').startsWith('allow')
-                    ? 'bg-blue-600 text-white hover:bg-blue-700'
-                    : 'bg-black/[0.06] dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15'
-                } disabled:opacity-45 disabled:cursor-not-allowed`}>
-                {option.optionId === 'allow_once'
-                  ? copy.allowOnce
-                  : option.optionId === 'allow_always'
-                    ? copy.allowSession
-                    : option.optionId === 'reject_once'
-                      ? copy.reject
-                      : option.name}
-              </button>
-            ))}
-          </div>
-          {!actionable && <div className="mt-2 text-[11px] text-gray-400">{permission.resolved ? copy.handled : copy.expired}</div>}
-        </div>
-      </div>
     </div>
   );
 }
@@ -807,127 +607,6 @@ function NativeYoloConfirmCard({ theme, t, busy, onConfirm, onCancel }) {
   );
 }
 
-function TurnItem({
-  item,
-  now,
-  agentName,
-  copy,
-  cv,
-  pendingByTool,
-  pendingByElicitation,
-  onRespond,
-  onRespondElicitation,
-  responding,
-  onOpenExternal,
-  onOpenResource,
-}) {
-  if (item.type === 'reasoning') return <ReasoningItem item={item} now={now} copy={copy} />;
-  if (item.type === 'tool_group') return <ToolGroup group={item} now={now} copy={copy} cv={cv} onOpenResource={onOpenResource} />;
-  if (item.type === 'plan') return <PlanBlock plan={item.plan} copy={copy} />;
-  if (item.type === 'permission') {
-    return (
-      <PermissionCard permission={item.permission}
-        pending={pendingByTool[item.permission.toolCallId]}
-        onRespond={onRespond} responding={responding} agentName={agentName} copy={copy} />
-    );
-  }
-  if (item.type === 'elicitation') {
-    return (
-      <ElicitationCard elicitation={item.elicitation}
-        pending={pendingByElicitation[item.elicitation.elicitationId]}
-        onRespond={onRespondElicitation}
-        responding={responding} />
-    );
-  }
-  if (item.type === 'agent_message') {
-    const commentary = item.phase === 'commentary';
-    // streaming = the projection's in_progress convention (ACP/deepseek projections agree): while text
-    // can still grow, render through the throttle; when it ends, useThrottledValue replays the full text verbatim.
-    return commentary
-      ? <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
-          streaming={item.status === 'in_progress'}
-          className="text-[13px] leading-6 text-gray-500 dark:text-gray-400" />
-      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
-          streaming={item.status === 'in_progress'} />;
-  }
-  return null;
-}
-
-function Turn({
-  turn,
-  now,
-  agentId,
-  agentName,
-  copy,
-  cv,
-  pendingByTool,
-  pendingByElicitation,
-  onRespond,
-  onRespondElicitation,
-  responding,
-  onOpenExternal,
-  onOpenResource,
-}) {
-  const waitingPermission = turn.permissions.some(permission => !permission.resolved);
-  const waitingInput = turn.elicitations.some(elicitation => !elicitation.resolved);
-  const running = turn.status === 'running';
-  const duration = copy.elapsed(elapsedMs(turn.startedAt, turn.completedAt, now));
-  const assistantAvailable = assistantResponseAvailable(turn);
-  return (
-    <section className="space-y-4">
-      {(turn.userText || turn.userAttachments.length > 0) && (
-        <div className="flex justify-end">
-          <div className="max-w-[78%] rounded-[20px] rounded-br-md bg-[#E9EEF6] dark:bg-[#2A2B2E] px-4 py-3 text-[14px] leading-6 whitespace-pre-wrap break-words">
-            {turn.userText && <div>{turn.userText}</div>}
-            {turn.userAttachments.length > 0 && (
-              <div className={`flex flex-wrap gap-1.5 ${turn.userText ? 'mt-2' : ''}`}>
-                {turn.userAttachments.map((attachment, index) => (
-                  <span key={`${attachment.name || 'attachment'}-${index}`}
-                    className="inline-flex max-w-full items-center gap-1 rounded-lg bg-white/65 dark:bg-white/[0.07] px-2 py-1 text-[11px] leading-4">
-                    <FileTypeIcon name={attachment.name} className="h-4 w-4 shrink-0" />
-                    <span className="truncate">{attachment.name || copy.attachment}</span>
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-      <div className="flex items-start gap-3">
-        <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center text-[#1F1F1F] dark:text-[#E3E3E3]">
-          <AcpAgentLogo agentId={agentId} className="h-5 w-5" title={agentName} />
-        </div>
-        <div className="min-w-0 flex-1 space-y-1">
-          {running && (
-            <div className={`h-9 flex items-center gap-2 text-[12px] ${waitingPermission || waitingInput ? 'text-amber-600 dark:text-amber-300' : 'text-gray-500 dark:text-gray-400'}`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${waitingPermission || waitingInput ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
-              {waitingPermission ? copy.waitingPermission : waitingInput ? copy.waitingInputShort : cv.processing} · {duration}
-            </div>
-          )}
-          {turn.presentation.map((item, index) => (
-            <TurnItem key={item.id || `${item.type}-${index}`} item={item} now={now}
-              agentName={agentName} copy={copy} cv={cv}
-              pendingByTool={pendingByTool} pendingByElicitation={pendingByElicitation}
-              onRespond={onRespond} onRespondElicitation={onRespondElicitation}
-              responding={responding} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource} />
-          ))}
-          {!running && (assistantAvailable || turn.completedAt || turn.error) && <AssistantMessageFooter>
-            {assistantAvailable && (
-              <AssistantMessageActions resolveText={() => assistantResponseText(turn)} copy={copy} />
-            )}
-            {(turn.completedAt || turn.error) && <>
-              <StatusBadge status={turn.status} copy={copy} />
-              <span className="text-[11px] text-gray-400">{duration}</span>
-              {turn.usage && <span className="text-[11px] text-gray-400">{copy.contextUsage(Number(turn.usage.used || 0).toLocaleString(), Number(turn.usage.size || 0).toLocaleString())}</span>}
-              {turn.error && <span className="text-[11px] text-red-500">{turn.error}</span>}
-            </>}
-          </AssistantMessageFooter>}
-        </div>
-      </div>
-    </section>
-  );
-}
-
 // eslint-disable-next-line sonarjs/cognitive-complexity -- ACP code main view: session/event/draft/attachment/scroll lifecycles share one set of ref+state; refactoring is high-risk
 export function CodexAcpView({
   theme,
@@ -965,7 +644,6 @@ export function CodexAcpView({
   const [workspaceDockActivation, setWorkspaceDockActivation] = useState(0);
   const [subagentPanel, setSubagentPanel] = useState(null);
   const [workspaceChangeCount, setWorkspaceChangeCount] = useState(0);
-  const useUnifiedConversationUi = unifiedConversationUiEnabled();
   const [localConfigApplying, setConfigApplying] = useState('');
   const acpConfigOperationTrackerRef = useRef(null);
   if (!acpConfigOperationTrackerRef.current) {
@@ -3401,7 +3079,7 @@ export function CodexAcpView({
             </div>
           </div>
           {configApplying && <span className="text-[10px] text-blue-500 animate-pulse">{codexCopy.applyingConfig}</span>}
-          {busy && <StatusBadge status="running" copy={t.uiConversation} />}
+          {busy && <ConversationStatusBadge status="running" copy={t.uiConversation} />}
           <button
             type="button"
             onClick={toggleWorkspacePanel}
@@ -3518,8 +3196,7 @@ export function CodexAcpView({
                 </div>
               </div>
             )}
-            {visibleTurns.map(turn => (useUnifiedConversationUi || isNativeAgent)
-              ? (
+            {visibleTurns.map(turn => (
                   <Fragment key={turn.id}>
                     {isNativeAgent && rewindEntries.has(turn.id) && (
                       // 原生车道 turn 边界回退入口：turn N+1 前的 chip =「回退到第 N 轮」；
@@ -3577,19 +3254,6 @@ export function CodexAcpView({
                       onOpenResource={isWeb ? undefined : openWorkspaceResource}
                     />
                   </Fragment>
-                )
-              : (
-                  <Turn key={turn.id} turn={turn} now={now}
-                    agentId={activeAgentId} agentName={activeAgentName}
-                    copy={t.uiConversation}
-                    cv={t.uiCodexView}
-                    pendingByTool={pendingByTool}
-                    pendingByElicitation={pendingByElicitation}
-                    onRespond={respond}
-                    onRespondElicitation={respondElicitation}
-                    responding={responding}
-                    onOpenExternal={(url) => openAcpExternalUrl(url).catch(showError)}
-                    onOpenResource={isWeb ? undefined : openWorkspaceResource} />
                 ))}
             {isNativeAgent && rewindUndoAvailable(rewindUndoState) && (
               // 「撤销回退」入口：渲染在时间线末尾（回退成功的内联提示其后），

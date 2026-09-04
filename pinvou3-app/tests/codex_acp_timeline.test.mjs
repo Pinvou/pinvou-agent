@@ -646,16 +646,6 @@ try {
     path.join(root, 'src', 'features', 'codex', 'runtimeNoticeState.js'),
     'utf8',
   );
-  assert.ok(codexView.includes('copy.permissionRequest(agentName)')
-    && codexView.includes('tool.title || copy.protectedOperation')
-    && codexView.includes('label={copy.command}')
-    && codexView.includes('copy.operationArguments')
-    && codexView.includes('copy.allowOnce')
-    && codexView.includes('copy.allowSession')
-    && codexView.includes('copy.reject')
-    && codexView.includes('copy.handled')
-    && codexView.includes('copy.expired'),
-  'the legacy ACP permission card must use the shared zh/en/ja conversation copy');
   const codexWorkspace = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexWorkspacePanel.jsx'), 'utf8');
   const runtimeStatus = readFileSync(path.join(root, 'src', 'features', 'codex', 'runtimeStatus.js'), 'utf8');
   const resizableSidePanel = readFileSync(path.join(root, 'src', 'components', 'layout', 'ResizableSidePanel.jsx'), 'utf8');
@@ -667,9 +657,17 @@ try {
   const conversationView = readFileSync(path.join(root, 'src', 'features', 'conversation', 'ConversationTimeline.jsx'), 'utf8');
   const baseStyles = readFileSync(path.join(root, 'src', 'styles', 'base.css'), 'utf8');
   const boundedPermissionOptionClass = 'max-w-full min-w-0 whitespace-normal break-all';
-  assert.ok(codexView.includes(boundedPermissionOptionClass)
-    && conversationView.includes(boundedPermissionOptionClass),
-  'long ACP permission option labels must wrap inside both unified and legacy permission cards');
+  // 权限卡选项换行契约由共享时间线实现单点承载。
+  assert.ok(conversationView.includes(boundedPermissionOptionClass),
+  'long ACP permission option labels must wrap inside the shared permission card');
+
+  // 权限卡唯一实现在 ConversationTimeline（codex 旧 PermissionCard 已随旧时间线删除），
+  // i18n copy 契约改钉共享实现。
+  assert.ok(conversationView.includes('c.permissionRequest(')
+    && conversationView.includes('c.protectedOperation')
+    && conversationView.includes('c.allowOnce')
+    && conversationView.includes('c.handled'),
+  'the shared ACP permission card must use the zh/en/ja conversation copy');
   assert.ok(conversationView.includes('function runningToolLabel(item, copy)')
     && conversationView.includes("return copy.shellCommand;")
     && !conversationView.includes('runningItem.tool.name || runningItem.tool.title')
@@ -677,11 +675,10 @@ try {
     && conversationView.includes('min-w-0 flex-1 truncate'),
   'running tool groups must use bounded semantic labels instead of rendering raw command titles');
   const boundedLongTextClass = 'whitespace-pre-wrap break-words [overflow-wrap:anywhere]';
-  assert.ok(codexView.includes(boundedLongTextClass)
-    && conversationView.includes(boundedLongTextClass)
-    // TerminalBlock（含 max-h-80 边界）已由两条时间线共享单源实现，见 ConversationTimeline.jsx。
+  // 长文本边界契约由共享时间线实现单点承载（codex 旧转写组件已删除）。
+  assert.ok(conversationView.includes(boundedLongTextClass)
     && conversationView.includes('max-h-80 max-w-full overflow-auto whitespace-pre'),
-  'reasoning, plan, permission, and terminal content must stay within both timeline implementations');
+  'reasoning, plan, permission, and terminal content must stay within the shared timeline');
   assert.ok(codexView.includes("open_codex_workspace_resource")
     && conversationView.includes('onOpenResource={onOpenResource}')
     && codexWorkspace.includes("const loadedDirectories = ['', ...expanded]")

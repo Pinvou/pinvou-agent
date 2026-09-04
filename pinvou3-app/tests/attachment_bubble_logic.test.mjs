@@ -247,7 +247,6 @@ const codexSource = await readFile(
   new URL('../src/features/codex/CodexAcpView.jsx', import.meta.url),
   'utf8',
 );
-assert.match(codexSource, /FileTypeIcon name=\{attachment\.name\}/);
 assert.doesNotMatch(codexSource, /<span>📎<\/span>/);
 
 const sessionsSource = await readFile(
