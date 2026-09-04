@@ -40,7 +40,7 @@ Do not use shell commands or environment inspection for credentials. Call the na
 
 ## File Upload Guard
 
-Only upload files when the file type is supported by IMA OpenAPI and the user has clearly chosen the destination knowledge base. Preserve original file bytes and original filename. If duplicate names are detected, ask whether to keep both with a timestamped filename or cancel; replacing is not supported.
+Local file upload is not an `ima_openapi` capability: only web page import via `import_urls` and collecting existing notes via `add_knowledge` are supported. Do not promise the user that local files can be uploaded; if the user asks to upload local files, explain this limitation instead.
 
 ## User-Facing Output
 

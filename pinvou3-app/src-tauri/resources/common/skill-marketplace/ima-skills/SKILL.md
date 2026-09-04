@@ -7,7 +7,7 @@ display_name: "腾讯 ima"
 
 # 腾讯 ima OpenAPI
 
-Use this skill when the user asks to search, read, create, append, upload, or organize content in Tencent IMA notes or IMA knowledge bases.
+Use this skill when the user asks to search, read, create, append, import (web page import), or organize content in Tencent IMA notes or IMA knowledge bases.
 
 ## Credential Rules
 
@@ -24,7 +24,7 @@ To verify access or perform any IMA operation, call `ima_openapi`. If it reports
 Read the relevant child instruction before operating:
 
 - Notes: read `notes/SKILL.md` for note search, list, read, create, or append.
-- Knowledge base: read `knowledge-base/SKILL.md` for knowledge-base search, browsing, upload, URL import, add note to knowledge base, or get media info.
+- Knowledge base: read `knowledge-base/SKILL.md` for knowledge-base search, browsing, URL import, add note to knowledge base, or get media info.
 - Cross-module tasks: read both child instructions before acting.
 
 ## Native Tool
@@ -47,4 +47,4 @@ Always parse the response JSON. IMA business success uses `code: 0`; for any non
 - Never expose `knowledge_base_id`, `media_id`, `folder_id`, `note_id`, Client ID, API Key, or HTTP headers unless the user explicitly needs a technical debug artifact and credentials are redacted.
 - Ask before irreversible writes when the target note or knowledge base is ambiguous.
 - For note writes, validate UTF-8 text and filter local image references.
-- For knowledge-base file uploads, preserve the original file bytes and original filename.
+- Local file upload is not an `ima_openapi` capability: only web page import via `import_urls` and collecting existing notes via `add_knowledge` are supported. Do not promise the user that local files can be uploaded.

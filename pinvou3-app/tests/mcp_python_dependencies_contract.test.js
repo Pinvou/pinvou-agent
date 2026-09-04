@@ -10,7 +10,7 @@ const manifest = (id) => JSON.parse(read(`resources/mcp-servers/${id}/manifest.j
 
 const expected = new Map([
   ['gongwen', { imports: ['docx', 'lxml'], wheels: 3 }],
-  ['pptx', { imports: ['pptx', 'lxml', 'PIL', 'xlsxwriter'], wheels: 5 }],
+  ['pptx', { imports: ['pptx', 'lxml', 'PIL'], wheels: 4 }],
 ]);
 
 const reviewedWheelPins = new Map([
@@ -43,12 +43,6 @@ const reviewedWheelPins = new Map([
     filename: 'pillow-12.3.0-cp313-cp313-win_amd64.whl',
     url: 'https://files.pythonhosted.org/packages/a6/9b/7a58e61d62be561da3a356fe2384d4059a6345fc130e23ef1c36a5b81d24/pillow-12.3.0-cp313-cp313-win_amd64.whl',
     sha256: '1cca606cd25738df4ed873d5ad46bbdb3d83b5cbca291f6b4ff13a4df6b0bbe8',
-  }],
-  ['XlsxWriter', {
-    version: '3.2.9',
-    filename: 'xlsxwriter-3.2.9-py3-none-any.whl',
-    url: 'https://files.pythonhosted.org/packages/3a/0c/3662f4a66880196a590b202f0db82d919dd2f89e99a27fadef91c4a33d41/xlsxwriter-3.2.9-py3-none-any.whl',
-    sha256: '9a5db42bc5dff014806c58a20b9eae7322a134abb6fce3c92c181bfb275ec5b3',
   }],
 ]);
 
