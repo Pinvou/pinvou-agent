@@ -482,6 +482,10 @@ pub struct ModeDefaultPrefs {
 #[serde(default)]
 pub struct UserPrefs {
     pub theme: Theme,
+    /// Color-scheme preference: `system` follows the OS (decided by the
+    /// frontend, light when undeterminable), light/dark are explicit picks.
+    /// Introduced later than `theme`; when missing from old settings, `load`
+    /// derives it from `theme`, while fresh installs keep the `system` default.
     pub color_scheme: ColorScheme,
     pub language: Language,
     pub memory_enabled: bool,
@@ -497,6 +501,11 @@ pub struct UserPrefs {
 struct ParsedSettings {
     prefs: UserPrefs,
     allow_normalization_persist: bool,
+    /// Set when `color_scheme` was just derived from `theme` because the old
+    /// settings lacked the key (see the parse comment). Counted into the
+    /// normalization persist gate so the derived value lands on disk at the
+    /// first load and the file becomes self-describing.
+    color_scheme_derived: bool,
 }
 
 fn should_persist_normalization(allow_persist: bool, requested: bool, changed: bool) -> bool {
@@ -522,6 +531,7 @@ impl UserPrefs {
             return ParsedSettings {
                 prefs: Self::defaults_for_system_locale(system_locale),
                 allow_normalization_persist: false,
+                color_scheme_derived: false,
             };
         };
         let value: serde_json::Value = match serde_json::from_str(raw) {
@@ -533,12 +543,23 @@ impl UserPrefs {
                 return ParsedSettings {
                     prefs: Self::defaults_for_system_locale(system_locale),
                     allow_normalization_persist: false,
+                    color_scheme_derived: false,
                 };
             }
         };
         let has_language = value
             .as_object()
             .is_some_and(|settings| settings.contains_key("language"));
+        // `color_scheme` is the color-scheme preference (system = follow the
+        // OS). The field was introduced later than `theme`: when old settings
+        // lack the key we cannot tell "the user explicitly picked theme" from
+        // "never touched (default genesis, dark)", so derive from the legacy
+        // effective appearance to keep the upgrade invisible; only a true
+        // fresh install (no settings.json, handled by the default branch
+        // above) stays on System and follows the OS.
+        let has_color_scheme = value
+            .as_object()
+            .is_some_and(|settings| settings.contains_key("color_scheme"));
         let mut prefs: Self = match serde_json::from_value(value) {
             Ok(prefs) => prefs,
             Err(error) => {
@@ -548,15 +569,25 @@ impl UserPrefs {
                 return ParsedSettings {
                     prefs: Self::defaults_for_system_locale(system_locale),
                     allow_normalization_persist: false,
+                    color_scheme_derived: false,
                 };
             }
         };
         if !has_language {
             prefs.language = Language::from_system_locale(system_locale);
         }
+        let mut color_scheme_derived = false;
+        if !has_color_scheme {
+            prefs.color_scheme = match prefs.theme {
+                Theme::LiquidLight => ColorScheme::Light,
+                Theme::Genesis | Theme::LiquidDark => ColorScheme::Dark,
+            };
+            color_scheme_derived = true;
+        }
         ParsedSettings {
             prefs,
             allow_normalization_persist: true,
+            color_scheme_derived,
         }
     }
 
@@ -571,6 +602,7 @@ impl UserPrefs {
         let system_locale = crate::platform::os::current_system_locale();
         let mut parsed = Self::parse_settings_with_state(raw.as_deref(), system_locale.as_deref());
         let allow_normalization_persist = parsed.allow_normalization_persist;
+        let color_scheme_derived = parsed.color_scheme_derived;
         let prefs = &mut parsed.prefs;
         // 必须在 migrate_models/normalize 改写前记录；否则只能修正本次运行的内存值，
         // save gate 看不到变化，旧域名会永久留在 settings.json 中、每次启动重复迁移。
@@ -596,7 +628,8 @@ impl UserPrefs {
         let normalization_changed = minimax_endpoint_changed
             || local_model_alias_changed
             || migration.settings_sanitized
-            || memory_policy_changed;
+            || memory_policy_changed
+            || color_scheme_derived;
         if should_persist_normalization(
             allow_normalization_persist,
             persist_normalized,
@@ -1719,6 +1752,112 @@ mod tests {
         let prefs = UserPrefs::parse_settings(Some(r#"{"theme":"genesis"}"#), Some("ja-JP"));
         assert_eq!(prefs.theme, Theme::Genesis);
         assert_eq!(prefs.language, Language::Ja);
+    }
+
+    /// Old settings (no color_scheme key) derive the preference from the legacy
+    /// effective appearance in `theme`, keeping the upgrade invisible; only a
+    /// true fresh install (no settings.json → default branch) stays on System.
+    #[test]
+    fn legacy_settings_derive_color_scheme_from_theme() {
+        for (raw, expected) in [
+            (r#"{"theme":"genesis"}"#, ColorScheme::Dark),
+            (r#"{"theme":"liquid-dark"}"#, ColorScheme::Dark),
+            (r#"{"theme":"liquid-light"}"#, ColorScheme::Light),
+        ] {
+            let parsed = UserPrefs::parse_settings_with_state(Some(raw), Some("en-US"));
+            assert_eq!(parsed.prefs.color_scheme, expected, "raw: {raw}");
+            assert!(parsed.color_scheme_derived, "raw: {raw}");
+            assert!(parsed.allow_normalization_persist, "raw: {raw}");
+        }
+    }
+
+    /// An explicitly saved color_scheme (including system = follow the OS) is
+    /// never overwritten by the theme derivation.
+    #[test]
+    fn explicit_color_scheme_is_never_rederived() {
+        for (raw, expected) in [
+            (
+                r#"{"theme":"liquid-light","color_scheme":"system"}"#,
+                ColorScheme::System,
+            ),
+            (
+                r#"{"theme":"genesis","color_scheme":"light"}"#,
+                ColorScheme::Light,
+            ),
+            (
+                r#"{"theme":"genesis","color_scheme":"dark"}"#,
+                ColorScheme::Dark,
+            ),
+        ] {
+            let parsed = UserPrefs::parse_settings_with_state(Some(raw), Some("en-US"));
+            assert_eq!(parsed.prefs.color_scheme, expected, "raw: {raw}");
+            assert!(!parsed.color_scheme_derived, "raw: {raw}");
+        }
+    }
+
+    /// Fresh install (no settings.json): color_scheme stays System and no
+    /// normalization write-back fires.
+    #[test]
+    fn fresh_settings_keep_color_scheme_system() {
+        let parsed = UserPrefs::parse_settings_with_state(None, Some("en-US"));
+        assert_eq!(parsed.prefs.color_scheme, ColorScheme::System);
+        assert!(!parsed.color_scheme_derived);
+        assert!(!parsed.allow_normalization_persist);
+    }
+
+    /// load writes the derived value for old settings back exactly once so the
+    /// file becomes self-describing; settings with an explicit color_scheme
+    /// are never rewritten.
+    #[test]
+    fn load_persists_derived_color_scheme_once() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        let temporary_home = std::env::temp_dir().join(format!(
+            "pinvou3-prefs-color-scheme-derive-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&temporary_home);
+        std::fs::create_dir_all(&temporary_home).expect("create temporary prefs home");
+        // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &temporary_home) };
+
+        let settings_path = super::super::paths::settings_path();
+        std::fs::write(&settings_path, r#"{"theme":"liquid-light"}"#).expect("write legacy prefs");
+
+        let loaded = UserPrefs::load();
+        assert_eq!(loaded.color_scheme, ColorScheme::Light);
+        let persisted = std::fs::read_to_string(&settings_path).expect("read normalized prefs");
+        assert!(
+            persisted.contains(r#""color_scheme": "light""#),
+            "persisted: {persisted}"
+        );
+
+        // An explicitly saved system value is not rewritten by load.
+        std::fs::write(
+            &settings_path,
+            r#"{"theme":"genesis","color_scheme":"system"}"#,
+        )
+        .expect("write explicit prefs");
+        let loaded = UserPrefs::load();
+        assert_eq!(loaded.color_scheme, ColorScheme::System);
+        let persisted = std::fs::read_to_string(&settings_path).expect("read explicit prefs");
+        let value: serde_json::Value = serde_json::from_str(&persisted).expect("parse persisted");
+        assert_eq!(
+            value.get("color_scheme").and_then(|v| v.as_str()),
+            Some("system"),
+            "persisted: {persisted}"
+        );
+
+        let _ = std::fs::remove_dir_all(&temporary_home);
+        match old_home {
+            // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
     }
 
     #[test]
