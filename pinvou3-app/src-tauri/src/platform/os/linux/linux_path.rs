@@ -122,6 +122,12 @@ pub fn apply_user_npm_prefix(cmd: &mut Command) {
 /// 走 connector_cli_command 保持 PATH 解析一致)。若进程恰未成组(旧登记),
 /// 追加一次单 pid 兜底。
 pub fn kill_pid_tree(pid: u32) {
+    if pid <= 1 {
+        // pid≤1 拼出的 `kill -9 -pid` 命中内核 kill(0/-1) 语义，会杀光本用户
+        // 全部进程（曾导致整个桌面会话被带走）。拒绝并留调用栈现场。
+        crate::platform::process::log_refused_user_wide_kill("linux kill_pid_tree", pid);
+        return;
+    }
     let group_arg = format!("-{pid}");
     let out = connector_cli_command("", "kill")
         .args(["-9", group_arg.as_str()])

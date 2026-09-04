@@ -232,6 +232,12 @@ pub fn apply_user_npm_prefix(_cmd: &mut Command) {}
 /// spawn 侧已 `process_group(0)` 成组,这里按负 pid 杀整组;单杀 shim pid 会把
 /// node 孙进程孤儿化。组杀失败(进程未成组的旧登记)追加单 pid 兜底。
 pub fn kill_pid_tree(pid: u32) {
+    if pid <= 1 {
+        // pid≤1 拼出的 `kill -9 -pid` 命中内核 kill(0/-1) 语义，会杀光本用户
+        // 全部进程（曾导致整个桌面会话被带走）。拒绝并留调用栈现场。
+        crate::platform::process::log_refused_user_wide_kill("unsupported kill_pid_tree", pid);
+        return;
+    }
     let group_arg = format!("-{pid}");
     let group_ok = Command::new("kill")
         .args(["-9", group_arg.as_str()])

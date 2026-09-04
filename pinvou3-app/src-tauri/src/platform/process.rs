@@ -251,11 +251,35 @@ pub(crate) fn std_process_group_leader(command: &mut Command) {
     }
 }
 
+/// `kill -9 -<pid≤1>` 会命中内核 kill(0/-1) 的特殊语义：杀光整个进程组 /
+/// 本用户的全部进程。桌面会话曾因此被整锅带走（Xorg、gnome-shell、
+/// systemd --user 连带黑屏回锁屏）。拒绝执行并把调用栈落盘，用于定位
+/// 真正传入非法 pid 的上游调用方。
+pub(crate) fn log_refused_user_wide_kill(site: &str, pid: u32) {
+    let report = format!(
+        "refused {site}: pid={pid} (would expand to `kill -9 -{pid}`)\nprocess={}\ntime={:?}\nbacktrace:\n{:?}\n",
+        std::process::id(),
+        std::time::SystemTime::now(),
+        std::backtrace::Backtrace::force_capture(),
+    );
+    eprintln!("[pinvou3] {report}");
+    let _ = std::fs::write("/tmp/pinvou-refused-user-wide-kill.log", report);
+}
+
 /// 按 pid 杀进程树：Windows 用 taskkill 杀整棵树（脚本会再起子 shell，单杀
 /// 父进程会留下继续运行的子进程）；其他平台按进程组杀（负 pid）——安装进程
 /// 以 `process_group(0)` 独立成组，`kill -9 -pgid` 连 curl | bash / npm 派生
 /// 的子进程一起终止，不孤儿化（评审中危项）。
 pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<Output> {
+    if pid <= 1 {
+        log_refused_user_wide_kill("kill_process_tree", pid);
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!(
+                "refused kill_process_tree({pid}): negative-group kill would signal every process of this user"
+            ),
+        ));
+    }
     let pid_arg = pid.to_string();
     if crate::platform::capabilities::is_windows() {
         external_command(Path::new("taskkill"))
@@ -348,5 +372,21 @@ mod tests {
 
         assert!(error.contains("timed out after"));
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// `kill -9 -0` / `kill -9 -1` 命中内核 kill(0/-1) 特殊语义（杀整组 /
+    /// 本用户全部进程，桌面会话曾因此被带走）：pid≤1 必须被拒绝，不 spawn
+    /// 外部 kill，且错误信息指明拒绝原因。
+    #[test]
+    fn kill_process_tree_refuses_user_wide_group_targets() {
+        for pid in [0_u32, 1] {
+            let error = kill_process_tree(pid)
+                .expect_err("pid≤1 must be refused, never expanded to kill -9 -pid");
+            let message = error.to_string();
+            assert!(
+                message.contains("refused") && message.contains(&pid.to_string()),
+                "拒绝信息须写明 pid={pid}，实得：{message}"
+            );
+        }
     }
 }
