@@ -123,8 +123,9 @@ pub fn apply_user_npm_prefix(cmd: &mut Command) {
 /// 追加一次单 pid 兜底。
 pub fn kill_pid_tree(pid: u32) {
     if pid <= 1 {
-        // pid≤1 拼出的 `kill -9 -pid` 命中内核 kill(0/-1) 语义，会杀光本用户
-        // 全部进程（曾导致整个桌面会话被带走）。拒绝并留调用栈现场。
+        // pid<=1 expands to the kernel kill(0/-1) special semantics, which
+        // signals every process of this user (once took down the whole
+        // desktop session). Refuse and leave a backtrace on disk.
         crate::platform::process::log_refused_user_wide_kill("linux kill_pid_tree", pid);
         return;
     }

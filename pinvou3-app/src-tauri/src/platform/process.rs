@@ -251,19 +251,37 @@ pub(crate) fn std_process_group_leader(command: &mut Command) {
     }
 }
 
-/// `kill -9 -<pid≤1>` 会命中内核 kill(0/-1) 的特殊语义：杀光整个进程组 /
-/// 本用户的全部进程。桌面会话曾因此被整锅带走（Xorg、gnome-shell、
-/// systemd --user 连带黑屏回锁屏）。拒绝执行并把调用栈落盘，用于定位
-/// 真正传入非法 pid 的上游调用方。
+/// `kill -9 -<pid<=1>` hits the kernel kill(0/-1) special semantics: it
+/// signals the whole process group / every process of this user. The
+/// desktop session was once taken down with it (Xorg, gnome-shell and
+/// systemd --user, ending in a black screen back at the lock screen).
+/// Refuse and write the call site to disk so the upstream caller that
+/// produced the invalid pid can be identified.
+///
+/// The log is appended to `temp_dir()` (still /tmp on Linux) so scenes
+/// from multiple refusals (e.g. the timeout and cancel paths firing in
+/// sequence) all survive; a literal /tmp would resolve to the current
+/// drive root on Windows and fail silently when the directory is
+/// missing. Release builds strip symbols (`strip = "symbols"`), so
+/// backtraces may be addresses only — resolve them with os/process/time
+/// against a debug build of the same version.
 pub(crate) fn log_refused_user_wide_kill(site: &str, pid: u32) {
+    use std::io::Write as _;
+
     let report = format!(
-        "refused {site}: pid={pid} (would expand to `kill -9 -{pid}`)\nprocess={}\ntime={:?}\nbacktrace:\n{:?}\n",
+        "refused {site}: pid={pid} (would expand to `kill -9 -{pid}`)\nprocess={} os={}\ntime={:?}\nbacktrace:\n{:?}\n",
         std::process::id(),
+        std::env::consts::OS,
         std::time::SystemTime::now(),
         std::backtrace::Backtrace::force_capture(),
     );
-    eprintln!("[pinvou3] {report}");
-    let _ = std::fs::write("/tmp/pinvou-refused-user-wide-kill.log", report);
+    let path = std::env::temp_dir().join("pinvou-refused-user-wide-kill.log");
+    eprintln!("[pinvou3] {report}log: {}\n", path.display());
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| file.write_all(report.as_bytes()));
 }
 
 /// 按 pid 杀进程树：Windows 用 taskkill 杀整棵树（脚本会再起子 shell，单杀
@@ -274,7 +292,7 @@ pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<Output> {
     if pid <= 1 {
         log_refused_user_wide_kill("kill_process_tree", pid);
         return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
+            std::io::ErrorKind::InvalidInput,
             format!(
                 "refused kill_process_tree({pid}): negative-group kill would signal every process of this user"
             ),
@@ -374,18 +392,21 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
-    /// `kill -9 -0` / `kill -9 -1` 命中内核 kill(0/-1) 特殊语义（杀整组 /
-    /// 本用户全部进程，桌面会话曾因此被带走）：pid≤1 必须被拒绝，不 spawn
-    /// 外部 kill，且错误信息指明拒绝原因。
+    /// `kill -9 -0` / `kill -9 -1` hit the kernel kill(0/-1) special
+    /// semantics (signal the whole group / every process of this user;
+    /// the desktop session was once taken down this way): pid<=1 must be
+    /// refused, never expanded to `kill -9 -pid`, without spawning an
+    /// external kill, and the error must name the refusal reason.
     #[test]
     fn kill_process_tree_refuses_user_wide_group_targets() {
         for pid in [0_u32, 1] {
             let error = kill_process_tree(pid)
-                .expect_err("pid≤1 must be refused, never expanded to kill -9 -pid");
+                .expect_err("pid<=1 must be refused, never expanded to kill -9 -pid");
             let message = error.to_string();
             assert!(
-                message.contains("refused") && message.contains(&pid.to_string()),
-                "拒绝信息须写明 pid={pid}，实得：{message}"
+                message.contains("refused")
+                    && message.contains(&format!("kill_process_tree({pid})")),
+                "refusal message must name pid={pid}, got: {message}"
             );
         }
     }
