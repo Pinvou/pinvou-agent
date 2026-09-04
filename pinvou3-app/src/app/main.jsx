@@ -2,7 +2,7 @@ import { lazy, startTransition as scheduleViewTransition, Suspense, useCallback,
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
-import { Edit2, BarChart2, Settings, Smartphone, Clock, Package, Search, ChevronDown, Menu, MoreHorizontal, Check, Filter, Layers, MessageSquare, X, XIcon, Globe, BookOpen, Puzzle, PetPawIcon, FolderOpen, IconList } from '../components/icons.jsx';
+import { Edit2, BarChart2, Settings, Smartphone, Clock, Package, Search, ChevronDown, Menu, MoreHorizontal, Check, Filter, Layers, MessageSquare, X, XIcon, Globe, BookOpen, Puzzle, PetPawIcon } from '../components/icons.jsx';
 import { ArchiveConfirmDialog, ArchiveToast, NavItem, RecentItem } from '../components/layout/NavigationComponents.jsx';
 import { SidePanelLayoutProvider } from '../components/layout/ResizableSidePanel.jsx';
 import {
@@ -1532,42 +1532,55 @@ function workspaceDisplayName(path) {
       // 日期组展开状态:未点过的组按默认值走(今天展开、以往折叠),点过后记住用户选择
       const [dateGroupOpen, setDateGroupOpen] = useState({});
       // Code-style sidebar: enabled by default in code mode (folder grouping +
-      // collapsed primary nav); the bottom-right button switches back to the standard
-      // style. The choice is persisted and survives re-entering code mode.
+      // collapsed primary nav); the 全部/代码 pill switches style explicitly.
+      // null means the user never picked: standard list outside code mode, code
+      // style inside code mode (the long-standing default). Once picked, the
+      // choice is persisted and applies in every mode.
       const [sidebarCodeStyle, setSidebarCodeStyle] = useState(() => {
         try {
-          return localStorage.getItem('pinvou_sidebar_code_style') === 'normal' ? 'normal' : 'code';
+          const stored = localStorage.getItem('pinvou_sidebar_code_style');
+          return stored === 'normal' || stored === 'code' ? stored : null;
         } catch {
-          return 'code';
+          return null;
         }
       });
-      const toggleSidebarCodeStyle = useCallback(() => {
-        setSidebarCodeStyle(prev => {
-          const next = prev === 'code' ? 'normal' : 'code';
-          try {
-            localStorage.setItem('pinvou_sidebar_code_style', next);
-          } catch {
-            // When the WebView disables storage, still allow switching for this window.
-          }
-          return next;
-        });
+      // The 全部/代码 pill drives both state and the persisted choice in one place.
+      const setSidebarCodeStylePersisted = useCallback((next) => {
+        setSidebarCodeStyle(next);
+        try {
+          localStorage.setItem('pinvou_sidebar_code_style', next);
+        } catch {
+          // When the WebView disables storage, still allow switching for this window.
+        }
       }, []);
       // Folder group expand state: all expanded by default; once toggled, remember the choice
       const [folderGroupOpen, setFolderGroupOpen] = useState({});
-      // In code style the primary nav collapses to a single row by default; expanding is
-      // remembered for the session (reset when code mode exits)
+      // In code style the primary nav collapses to a single expand row by default;
+      // expanding is remembered for the session (reset when code mode exits)
       const [codeNavExpanded, setCodeNavExpanded] = useState(false);
       // Code mode is a mode, not a page: after entering, navigating to output/monitor
       // pages keeps code mode — the sidebar stays code-styled and New chat still creates
       // code sessions; only explicitly switching back to work/design, or opening a normal
       // chat session, exits it.
       const [codeModeOn, setCodeModeOn] = useState(false);
-      const codeStyleActive = codeModeOn && sidebarCodeStyle === 'code';
+      // 任务列表的展示形态由 全部/代码 胶囊决定;未显式选择(null)时普通模式
+      // 默认「全部」标准列表、code 模式默认 code 样式(沿用既有默认)。
+      // codeStyleActive 仍用于主导航折叠等 code 模式专属行为。
+      const sidebarCodeListActive = sidebarCodeStyle === null ? codeModeOn : sidebarCodeStyle === 'code';
+      const codeStyleActive = codeModeOn && sidebarCodeListActive;
       // Exiting code mode resets the primary-nav collapse bar, so the next entry starts
       // from the default collapsed form.
       useEffect(() => {
         if (!codeModeOn) setCodeNavExpanded(false);
       }, [codeModeOn]);
+      // code 形态下「代码会话」筛选等同「全部」、「定时任务」恒为空(菜单已隐藏这两项);
+      // 进入 code 形态时若仍挂着这两个筛选,复位为「全部」,避免列表莫名变空。
+      // 用 layout effect 在首帧绘制前完成复位,避免闪现一帧空的「暂无任务」列表。
+      useLayoutEffect(() => {
+        if (sidebarCodeListActive && (taskListFilter === 'code' || taskListFilter === 'scheduled')) {
+          setTaskListFilter('all');
+        }
+      }, [sidebarCodeListActive, taskListFilter]);
       const [archiveConfirm, setArchiveConfirm] = useState(null);
       const [archiveToast, setArchiveToast] = useState(false);
       const [settingsToast, setSettingsToast] = useState('');
@@ -1679,8 +1692,12 @@ function workspaceDisplayName(path) {
       const sidebarTaskFilterOptions = [
         { id: 'all', label: t.sidebarTaskFilterAll },
         { id: 'pinned', label: t.sidebarTaskFilterPinned },
-        { id: 'code', label: t.sidebarTaskFilterCode },
-        { id: 'scheduled', label: t.sidebarTaskFilterScheduled },
+        // code 形态(胶囊选中「代码」)下列表恒为代码会话:「代码会话」筛选等同
+        // 「全部」、「定时任务」恒为空——两个选项都是死胡同,只在标准形态提供。
+        ...(sidebarCodeListActive ? [] : [
+          { id: 'code', label: t.sidebarTaskFilterCodeSessions },
+          { id: 'scheduled', label: t.sidebarTaskFilterScheduled },
+        ]),
       ];
       const sidebarTaskSortOptions = [
         { id: 'pinned_first', label: t.sidebarTaskSortPinnedFirst },
@@ -1745,13 +1762,13 @@ function workspaceDisplayName(path) {
       // groups and rows both sort by latest activity descending, temporary sessions merge
       // into one bottom group; with "pinned first", pinned code sessions hoist above the
       // folder groups.
-      const sidebarCodeTasks = codeStyleActive
+      const sidebarCodeTasks = sidebarCodeListActive
         ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex')
         : [];
       const sidebarFolderPinned = taskListSort === 'pinned_first'
         ? sidebarCodeTasks.filter(chat => !!chat.pinned)
         : [];
-      const sidebarFolderGroups = codeStyleActive
+      const sidebarFolderGroups = sidebarCodeListActive
         ? groupSessionsByFolder(
             sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)))
         : [];
@@ -2519,6 +2536,29 @@ function workspaceDisplayName(path) {
 
       // 侧栏任务列表按日期折叠(默认开;settings.sidebar.date_grouping === false 时平铺)
       const sidebarDateGrouping = !bs || !bs.settings || !bs.settings.sidebar || bs.settings.sidebar.date_grouping !== false;
+      // 一键折叠/展开「任务列表」下的全部分组:直接写入各组的展开 map,
+      // 不引入总开关变量;按钮状态由当前可见组的真实聚合推导——
+      // 全部展开显示「折叠」,其余(含全折叠/混合)显示「展开」,
+      // 手动逐组操作后按钮也不会与实际状态脱节。
+      const visibleTaskGroupOpens = sidebarCodeListActive
+        ? sidebarFolderGroups.map(g => folderGroupOpen[g.key] ?? true)
+        : (sidebarDateGrouping ? sidebarTaskGroups.map(g => dateGroupOpen[g.key] ?? (g.key === todayDateKey)) : []);
+      const allTaskGroupsExpanded = visibleTaskGroupOpens.length > 0 && visibleTaskGroupOpens.every(Boolean);
+      const setAllTaskGroups = (open) => {
+        if (sidebarCodeListActive) {
+          setFolderGroupOpen(prev => {
+            const next = { ...prev };
+            for (const g of sidebarFolderGroups) next[g.key] = open;
+            return next;
+          });
+        } else if (sidebarDateGrouping) {
+          setDateGroupOpen(prev => {
+            const next = { ...prev };
+            for (const g of sidebarTaskGroups) next[g.key] = open;
+            return next;
+          });
+        }
+      };
       // 日期分组/平铺两种布局共用的任务项渲染
       const renderSidebarTaskItem = (chat) => {
         const detachKind = chat.taskKind === 'codex' ? 'codex-session' : 'session';
@@ -2776,8 +2816,8 @@ function workspaceDisplayName(path) {
 
             {/* Navigation — shrink-0 keeps it from scrolling; no matter how long the
                 list is, it never squeezes the nav. In code style it collapses to a single
-                collapse bar by default, but New chat stays pinned; the remaining nav items
-                can be collapsed again at the bottom after expanding. */}
+                expand row by default; the remaining nav items can be collapsed again at
+                the bottom after expanding. */}
             <div data-testid="sidebar-primary-nav" className={`shrink-0 flex flex-col gap-0.5 mt-1.5 max-sm:gap-0 max-sm:mt-1 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
               <NavItem
                 icon={<Edit2 size={18} />} label={t.newChat}
@@ -2905,18 +2945,24 @@ function workspaceDisplayName(path) {
               <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 flex flex-col">
                 <div data-testid="sidebar-recents" className="pt-5 pb-2 max-sm:pt-2">
                   <div ref={taskFilterRef} className="relative mb-2">
-                    <div className={`group h-8 px-4 flex items-center justify-between rounded-full text-[13px] font-semibold ${
+                    {/* 第一行:「任务列表」标题 + 查看全部/筛选按钮;
+                        第二行:全部/代码 胶囊 + 一键折叠(分组)按钮。
+                        胶囊选择任务列表展示形态(标准列表 / code 样式按文件夹分组),
+                        与是否处于 code 模式无关;折叠按钮切换下方任务分组
+                        (日期组 / 文件夹组)的整体展开状态。 */}
+                    <div className={`group flex flex-col gap-1 rounded-2xl text-[13px] font-semibold ${
                       activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'
                     }`}>
-                      <span className="truncate">
-                        {t.sidebarTaskList} ({codeStyleActive ? sidebarCodeTasks.length : sidebarTaskHistory.length})
-                      </span>
-                      <span className="flex items-center">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="h-8 px-1 min-w-0 truncate flex items-center">
+                          {t.sidebarTaskList} ({sidebarCodeListActive ? sidebarCodeTasks.length : sidebarTaskHistory.length})
+                        </span>
+                        <span className="flex items-center shrink-0">
                         {/* 对话管理页入口:悬停任务列表行显现(触屏常显),替代原搜索入口 */}
                         <button
                           type="button"
                           onClick={() => navigateFromScheduledRun('search')}
-                          className={`mr-1 h-6 px-2 shrink-0 rounded-full text-[12px] font-normal transition-opacity opacity-0 group-hover:opacity-100 max-sm:opacity-100 ${activeTheme === 'dark' ? 'text-[#A8C7FA] hover:bg-[#282A2C]' : 'text-[#0B57D0] hover:bg-[#E1E5EA]'}`}
+                          className={`ml-1 h-6 px-2 shrink-0 rounded-full text-[12px] font-normal transition-opacity opacity-0 group-hover:opacity-100 max-sm:opacity-100 ${activeTheme === 'dark' ? 'text-[#A8C7FA] hover:bg-[#282A2C]' : 'text-[#0B57D0] hover:bg-[#E1E5EA]'}`}
                         >
                           {t.sidebarViewAll}
                         </button>
@@ -2933,12 +2979,64 @@ function workspaceDisplayName(path) {
                         >
                           <Filter size={15} />
                         </button>
-                      </span>
+                        </span>
+                      </div>
+                      {/* 全部/代码 胶囊 + 一键折叠(分组)按钮:位于「任务列表」标题下方。
+                          flex-wrap 兜底:ja 等语言在 220px 最小宽度下此行已无富余
+                          (实测正好占满),字体渲染偏宽的环境让折叠按钮换行而非溢出。 */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+                        {/* biome-ignore lint/a11y/useSemanticElements: toggle-button pair in an ARIA group, not form controls; a <fieldset> would need its default styles reset */}
+                        <div className="flex items-center gap-0.5" role="group" aria-label={t.sidebarTaskStyle}>
+                        <button
+                          type="button"
+                          data-testid="sidebar-task-pill-all"
+                          aria-pressed={!sidebarCodeListActive}
+                          onClick={() => { setSidebarCodeStylePersisted('normal'); setTaskFilterOpen(false); }}
+                          className={`h-6 px-2.5 rounded-full text-[12px] font-normal transition-colors ${
+                            sidebarCodeListActive
+                              ? (activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]')
+                              : (activeTheme === 'dark' ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#E1E5EA] text-[#0B57D0]')
+                          }`}
+                        >
+                          {t.sidebarTaskFilterAll}
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="sidebar-task-pill-code"
+                          aria-pressed={sidebarCodeListActive}
+                          onClick={() => { setSidebarCodeStylePersisted('code'); setTaskFilterOpen(false); }}
+                          className={`h-6 px-2.5 rounded-full text-[12px] font-normal transition-colors ${
+                            sidebarCodeListActive
+                              ? (activeTheme === 'dark' ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#E1E5EA] text-[#0B57D0]')
+                              : (activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]')
+                          }`}
+                        >
+                          {t.sidebarTaskFilterCode}
+                        </button>
+                        </div>
+                        {/* 一键折叠/展开全部任务分组(日期组或文件夹组);
+                            无可分组列表(平铺/空列表)时不渲染,避免空操作 */}
+                        {visibleTaskGroupOpens.length > 0 && (
+                        <button
+                          type="button"
+                          data-testid="sidebar-collapse-all-groups"
+                          onClick={() => setAllTaskGroups(!allTaskGroupsExpanded)}
+                          title={allTaskGroupsExpanded ? t.sidebarCollapseAll : t.sidebarExpandAll}
+                          aria-label={allTaskGroupsExpanded ? t.sidebarCollapseAll : t.sidebarExpandAll}
+                          className={`h-6 px-2 shrink-0 whitespace-nowrap rounded-full text-[12px] font-normal transition-colors ${
+                            activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'
+                          }`}
+                        >
+                          <ChevronDown size={13} className={`inline -mt-0.5 transition-transform ${allTaskGroupsExpanded ? '' : 'rotate-180'}`} />
+                          {allTaskGroupsExpanded ? t.sidebarCollapseAll : t.sidebarExpandAll}
+                        </button>
+                        )}
+                      </div>
                     </div>
                     {taskFilterOpen && (
                       <div
                         data-testid="sidebar-task-filter-menu"
-                        className={`absolute right-0 top-9 z-50 w-44 overflow-hidden rounded-2xl border p-1.5 shadow-xl ${
+                        className={`absolute right-0 top-16 z-50 w-44 overflow-hidden rounded-2xl border p-1.5 shadow-xl ${
                           activeTheme === 'dark' ? 'border-white/10 bg-[#202124]' : 'border-black/10 bg-white'
                         }`}
                       >
@@ -2975,7 +3073,7 @@ function workspaceDisplayName(path) {
                     )}
                   </div>
                   <div className="space-y-1">
-                    {codeStyleActive ? (
+                    {sidebarCodeListActive ? (
                       (sidebarFolderPinned.length > 0 || sidebarFolderGroups.length > 0) ? (
                         <>
                           {sidebarFolderPinned.length > 0 && (
@@ -3130,20 +3228,6 @@ function workspaceDisplayName(path) {
                       {hasUpdate && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#EA4335]" />}
                     </button>
                   </div>
-                )}
-                {/* Sidebar style toggle in code mode: separate from the left icon group,
-                    pinned to the sidebar's bottom-right corner */}
-                {isSidebarOpen && codeModeOn && (
-                  <button
-                    type="button"
-                    data-testid="sidebar-code-style-toggle"
-                    onClick={toggleSidebarCodeStyle}
-                    title={sidebarCodeStyle === 'code' ? t.sidebarCodeStyleOff : t.sidebarCodeStyleOn}
-                    aria-label={sidebarCodeStyle === 'code' ? t.sidebarCodeStyleOff : t.sidebarCodeStyleOn}
-                    className={`ml-auto relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${sidebarCodeStyle === 'code' ? (activeTheme === 'dark' ? 'bg-[#004A77] text-[#C2E7FF] hover:bg-[#0B5C8F]' : 'bg-[#D3E3FD] text-[#0B57D0] hover:bg-[#C2DAFC]') : (activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]')}`}
-                  >
-                    {sidebarCodeStyle === 'code' ? <FolderOpen size={18} /> : <IconList size={18} />}
-                  </button>
                 )}
               </div>
             </div>

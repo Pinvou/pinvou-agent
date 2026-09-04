@@ -1666,6 +1666,90 @@ async function expand(page) {
       && !document.querySelector('[data-testid="sidebar-primary-nav-expand"]'));
   rec('①a-6 HomeModeSwitcher 切回工作模式退出 code 模式', exitedCodeMode, String(exitedCodeMode));
 
+  // 全部/代码胶囊:三态默认(未选择时 storage 为空且普通模式按「全部」渲染)、
+  // 点击即持久化并切换列表形态;一键折叠按钮聚合当前可见分组的真实状态,
+  // 标签随「全部展开↔存在折叠」翻转。结束前清掉 storage,不污染后续用例。
+  await expand(page); await sleep(300);
+  const sidebarPillState = await page.evaluate(async () => {
+    const settle = () => new Promise(resolve => { setTimeout(resolve, 150); });
+    const inSidebar = (node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.left < 330;
+    };
+    const pillAll = [...document.querySelectorAll('[data-testid="sidebar-task-pill-all"]')].find(inSidebar);
+    const pillCode = [...document.querySelectorAll('[data-testid="sidebar-task-pill-code"]')].find(inSidebar);
+    if (!pillAll || !pillCode) return { found: false };
+    const pressed = (node) => node.getAttribute('aria-pressed') === 'true';
+    const todayLabelVisible = () => [...document.querySelectorAll('span')]
+      .some(node => /^今天 \(\d+\)$/.test((node.textContent || '').trim()) && inSidebar(node));
+    const collapseLabel = () =>
+      document.querySelector('[data-testid="sidebar-collapse-all-groups"]')?.getAttribute('aria-label') || '';
+    // 折叠的真实 DOM 效果:组容器(首个子元素为组头 button)折叠时不再渲染行容器
+    const todayRowsRendered = () => {
+      const group = [...document.querySelectorAll('div')].find(node =>
+        node.children.length >= 1 && node.children[0]?.tagName === 'BUTTON'
+        && /^今天 \(\d+\)$/.test((node.children[0].textContent || '').trim()) && inSidebar(node));
+      return !!group && group.children.length >= 2;
+    };
+    const result = {
+      found: true,
+      freshStoredAbsent: localStorage.getItem('pinvou_sidebar_code_style') === null,
+      freshAllPressed: pressed(pillAll) && !pressed(pillCode),
+      freshTodayShown: todayLabelVisible(),
+    };
+    try {
+      pillCode.click(); await settle();
+      result.codeStored = localStorage.getItem('pinvou_sidebar_code_style') === 'code';
+      result.codePressed = pressed(pillCode) && !pressed(pillAll);
+      result.codeTodayHidden = !todayLabelVisible();
+      pillAll.click(); await settle();
+      result.allStored = localStorage.getItem('pinvou_sidebar_code_style') === 'normal';
+      result.allPressed = pressed(pillAll) && !pressed(pillCode);
+      result.allTodayShown = todayLabelVisible();
+      const before = collapseLabel();
+      const collapseButton = document.querySelector('[data-testid="sidebar-collapse-all-groups"]');
+      result.allCollapseVisible = !!collapseButton && !!before;
+      let labelFlips = false;
+      let domToggles = false;
+      let snapshots = '';
+      if (collapseButton) {
+        const snap = () => collapseLabel() + '|' + todayRowsRendered();
+        const s0 = snap();
+        collapseButton.click(); await settle();
+        const s1 = snap();
+        collapseButton.click(); await settle();
+        const s2 = snap();
+        snapshots = `s0=${s0} s1=${s1} s2=${s2}`;
+        const lbl = (s) => s.split('|')[0];
+        const rows = (s) => s.split('|')[1] === 'true';
+        // 种子会话全部落在「今天」单组:初始即全展开,s0 的 label 即「全展开」基准。
+        // 耦合前提:上方种子中非置顶会话全带今日时间戳、旧种子被默认「置顶优先」
+        // 排序提升出日期组,故此处恰好只有一个可折叠组,label 才能充当
+        // 「全展开⇔行渲染」的代理。若未来加入更早的非置顶种子,这里需改为逐组
+        // 追踪渲染行,而不能继续以 s0 的 label 为基准。
+        const expandedLabel = lbl(s0);
+        labelFlips = !!lbl(s0) && !!lbl(s1) && lbl(s1) !== lbl(s0) && lbl(s2) === lbl(s0);
+        // 每个快照里 label 聚合与行渲染必须一致(全展开⇔行渲染),且初始行确实可见
+        const coherent = (s) => (lbl(s) === expandedLabel) === rows(s);
+        domToggles = rows(s0) === true && coherent(s0) && coherent(s1) && coherent(s2);
+      }
+      result.collapseLabelFlips = labelFlips;
+      result.collapseDomToggles = domToggles;
+      result.snapshots = snapshots;
+    } finally {
+      localStorage.removeItem('pinvou_sidebar_code_style');
+    }
+    return result;
+  });
+  rec('①a-7 任务列表胶囊三态默认/持久化与一键折叠翻转',
+    sidebarPillState.found
+      && sidebarPillState.freshStoredAbsent && sidebarPillState.freshAllPressed && sidebarPillState.freshTodayShown
+      && sidebarPillState.codeStored && sidebarPillState.codePressed && sidebarPillState.codeTodayHidden
+      && sidebarPillState.allStored && sidebarPillState.allPressed && sidebarPillState.allTodayShown
+      && sidebarPillState.allCollapseVisible && sidebarPillState.collapseLabelFlips
+      && sidebarPillState.collapseDomToggles,
+    JSON.stringify(sidebarPillState));
+
   // 模型表单可能包含尚未保存的名称、地址和密钥，点击遮罩层不能意外丢失草稿；
   // 只有显式点击“取消”才关闭。
   const modelModalOpened = await page.evaluate(() => {
