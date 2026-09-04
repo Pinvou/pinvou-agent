@@ -58,6 +58,7 @@ pub struct PlatformCapabilities {
     pub browser_native_display: bool,
     pub browser_agent_automation: bool,
     pub browser_cdp: bool,
+    pub voice_shortcut_native: bool,
 }
 
 impl PlatformCapabilities {
@@ -90,6 +91,7 @@ impl PlatformCapabilities {
             browser_native_display: browser_ready,
             browser_agent_automation: browser_ready,
             browser_cdp: capabilities.browser_cdp,
+            voice_shortcut_native: capabilities.voice_shortcut_native,
         }
     }
 }
@@ -163,6 +165,10 @@ mod platform_capability_tests {
         assert!(!capabilities.browser_native_display || expected.browser_native_display);
         assert!(!capabilities.browser_agent_automation || expected.browser_agent_automation);
         assert_eq!(capabilities.browser_cdp, expected.browser_cdp);
+        assert_eq!(
+            capabilities.voice_shortcut_native,
+            expected.voice_shortcut_native
+        );
     }
 
     #[test]

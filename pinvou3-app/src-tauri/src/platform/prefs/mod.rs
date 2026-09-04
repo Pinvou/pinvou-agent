@@ -491,6 +491,12 @@ pub struct UserPrefs {
     pub sidebar: SidebarPrefs,
     pub code_permission: CodePermissionPrefs,
     pub mode_defaults: ModeDefaultPrefs,
+    /// 全局 Alt 语音快捷键开关(原生键盘钩子,当前仅 Windows 生效;其余平台
+    /// 保留窗口内 Alt 降级路径)。默认关闭,需用户主动开启。权威持久化在
+    /// settings.json(前端 localStorage 只是镜像):`set_voice_shortcut_enabled`
+    /// 走字段级事务写入,启动时在 lib.rs setup 回放到原生钩子的 AtomicBool,
+    /// 避免清 WebView 存储后设置丢失、多窗 mount 后到 invoke 覆盖先到者。
+    pub voice_shortcut_enabled: bool,
     pub advanced: AdvancedPrefs,
 }
 
@@ -1204,6 +1210,20 @@ mod tests {
     }
 
     #[test]
+    fn voice_shortcut_enabled_defaults_off_and_round_trips() {
+        // 旧 settings.json 无该字段:serde 容器级 default 兜底为 false(默认关闭)。
+        let legacy = UserPrefs::parse_settings(Some(r#"{"theme":"genesis"}"#), Some("zh-CN"));
+        assert!(!legacy.voice_shortcut_enabled);
+        let enabled = UserPrefs::parse_settings(
+            Some(r#"{"theme":"genesis","voice_shortcut_enabled":true}"#),
+            Some("zh-CN"),
+        );
+        assert!(enabled.voice_shortcut_enabled);
+        let serialized = serde_json::to_string(&enabled).expect("UserPrefs serialize");
+        assert!(serialized.contains("\"voice_shortcut_enabled\":true"));
+    }
+
+    #[test]
     fn migrate_creates_default_model_for_fresh_prefs() {
         let mut prefs = UserPrefs::default();
         prefs.migrate_models();
@@ -1603,6 +1623,7 @@ mod tests {
             sidebar: SidebarPrefs::default(),
             code_permission: CodePermissionPrefs::default(),
             mode_defaults: ModeDefaultPrefs::default(),
+            voice_shortcut_enabled: false,
             advanced: AdvancedPrefs {
                 allow_shell: Some(false),
                 max_output_tokens: Some(8192),

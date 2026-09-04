@@ -1062,13 +1062,25 @@ pub fn run() {
             // 桌宠:settings.json 里 pet.enabled 为真时随主窗口一起拉起。
             pet_window::spawn_if_enabled(app.handle());
 
+            // Windows 的 Alt+Space 会先被系统菜单截获，WebView keydown 不稳定。
+            // 在原生层转成前端事件，保留 WebView 快捷键作为降级路径。
+            crate::features::voice_shortcut::install(app.handle().clone());
+            // 启动回放:settings.json 的 voice_shortcut_enabled 是开关的权威持久化
+            // (前端 localStorage 只是镜像),装完钩子即同步进原生层 AtomicBool。
+            crate::features::voice_shortcut::set_enabled(
+                crate::platform::prefs::UserPrefs::load().voice_shortcut_enabled,
+            );
+
             startup::mark("setup:done");
             Ok(())
         })
         .on_window_event(|window, event| {
-            // 主窗口销毁 → 一并关掉桌宠,否则只剩宠物窗口时 app 不退出。
-            if window.label() == "main" {
-                if let tauri::WindowEvent::Destroyed = event {
+            if let tauri::WindowEvent::Destroyed = event {
+                // 录音中的窗口被直接关闭时前端来不及解除登记;不清掉会让原生
+                // 快捷键把 Alt 手势一直路由进已销毁窗口(全局吞键黑洞)。
+                crate::features::voice_shortcut::forget_recording_window(window.label());
+                // 主窗口销毁 → 一并关掉桌宠,否则只剩宠物窗口时 app 不退出。
+                if window.label() == "main" {
                     pet_window::close_with_main(window.app_handle());
                 }
             }
@@ -1214,10 +1226,13 @@ pub fn run() {
             commands::settings::test_image_input_capability,
             commands::settings::test_search_provider,
             commands::voice::transcribe_voice_audio,
+            commands::voice::postprocess_voice_text,
             commands::voice::reset_microphone_permission,
             commands::voice::voice_asr_status,
             commands::voice::install_voice_asr,
             commands::voice::cancel_voice_asr,
+            commands::voice::set_voice_shortcut_enabled,
+            commands::voice::set_voice_shortcut_recording,
             commands::sessions::list_sessions,
             commands::sessions::create_session,
             commands::sessions::load_session,

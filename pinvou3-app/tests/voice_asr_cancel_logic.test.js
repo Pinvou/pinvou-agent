@@ -46,7 +46,11 @@ vm.runInContext(
 
   const chatPath = path.join(__dirname, "..", "src", "features", "chat", "ChatView.jsx");
   const chatSource = fs.readFileSync(chatPath, "utf8");
-  assert.match(chatSource, /onClick=\{\(\) => bridge\.voice\.cancelVoiceAsrSetup\(\)\}/);
+  assert.match(
+    chatSource,
+    /onClick=\{\(\) => \{ pendingVoiceAfterIntroRef\.current = null; bridge\.voice\.cancelVoiceAsrSetup\?\.\(\); \}\}/,
+    "the setup dialog cancel button must also drop the pending voice intent",
+  );
   assert.match(chatSource, /disabled=\{su\.cancelling\}/);
   assert.match(chatSource, /const chatCopy = t\.uiChat;/);
   assert.match(
@@ -57,15 +61,48 @@ vm.runInContext(
   assert.match(chatSource, /\{!su\.installing && \(/);
 
   const voiceInputStart = bridgeSource.indexOf("  async function startVoiceInput(");
-  const installingGuard = bridgeSource.indexOf("if (state.voiceAsrSetup.installing)", voiceInputStart);
-  const statusCheck = bridgeSource.indexOf('invoke("voice_asr_status")', voiceInputStart);
+  const voiceInputEnd = bridgeSource.indexOf("\n  function cancelVoiceInput", voiceInputStart);
   assert.notStrictEqual(voiceInputStart, -1, "startVoiceInput must exist");
-  assert.ok(installingGuard > voiceInputStart, "startVoiceInput must guard an active ASR download");
-  assert.ok(installingGuard < statusCheck, "active download guard must run before dependency detection");
-  assert.match(
-    bridgeSource.slice(installingGuard, statusCheck),
-    /Object\.assign\(\{\}, state\.voiceAsrSetup, \{ open: true \}\);[\s\S]*?notify\(\);[\s\S]*?return;/,
+  assert.notStrictEqual(voiceInputEnd, -1, "startVoiceInput boundary must exist");
+
+  const guardContext = {
+    activeVoiceInput: null,
+    invokes: [],
+    notifyCount: 0,
+    invoke: async (command) => {
+      guardContext.invokes.push(command);
+    },
+    notify: () => {
+      guardContext.notifyCount += 1;
+    },
+    state: {
+      voiceAsrSetup: {
+        open: true,
+        installing: true,
+        cancelling: false,
+        progress: { stage: "model", downloaded: 3, total: 10 },
+        error: null,
+      },
+    },
+  };
+  vm.createContext(guardContext);
+  vm.runInContext(
+    `${bridgeSource.slice(voiceInputStart, voiceInputEnd)}\nthis.startVoiceInput = startVoiceInput;`,
+    guardContext,
+    { filename: bridgePath },
   );
+
+  await guardContext.startVoiceInput("草稿", () => {});
+  assert.deepStrictEqual(guardContext.invokes, [], "active ASR download guard must skip dependency detection");
+  assert.strictEqual(guardContext.state.voiceAsrSetup.open, true, "active ASR download guard must preserve the setup open state");
+  assert.strictEqual(guardContext.state.voiceAsrSetup.installing, true, "active ASR download guard must keep the installing state");
+  assert.strictEqual(guardContext.state.voiceAsrSetup.cancelling, false, "active ASR download guard must keep the cancelling state");
+  assert.deepStrictEqual(
+    guardContext.state.voiceAsrSetup.progress,
+    { stage: "model", downloaded: 3, total: 10 },
+    "active ASR download guard must keep the download progress",
+  );
+  assert.strictEqual(guardContext.notifyCount, 1, "active ASR download guard must only re-render without touching setup state");
 
   console.log("voice_asr_cancel_logic: ok");
 // eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure

@@ -5,7 +5,7 @@ import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
 import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
 import { bridge, isLocalModel } from '../../hooks/useBridge.js';
-import { can } from '../../shared/platform.js';
+import { can, isWeb } from '../../shared/platform.js';
 import qwenIcon from '../../brand-icons/qwen.svg';
 import {
   MODEL_PRESET_DEFS, PROVIDER_KIND_CODING_PLAN, PROVIDER_KIND_OFFICIAL_API, PROVIDER_KIND_CUSTOM,
@@ -22,6 +22,17 @@ import {
 import { CommunityPanel } from './CommunityPanel.jsx';
 import { COMMUNITY_DISCUSSIONS_URL, COMMUNITY_QQ_GROUP_NAME, COMMUNITY_QQ_GROUP_NUMBER, COMMUNITY_QQ_QR_IMAGE_SRC } from './community-config.js';
 import { ProvidersSection } from './ProvidersSection.jsx';
+import {
+  VOICE_POSTPROCESS_ENABLED_KEY,
+  VOICE_SHORTCUT_ENABLED_KEY,
+  VOICE_SHORTCUT_SETTINGS_EVENT,
+  setVoicePostprocessEnabled,
+  setVoiceShortcutEnabled,
+  setVoiceShortcutIntroSeen,
+  voicePostprocessEnabled,
+  voiceShortcutEnabled,
+} from '../chat/voice-shortcut-settings.mjs';
+import { VoiceShortcutIntroModal } from '../voice-composer/VoiceShortcutIntroModal.jsx';
 
 function isReadonlyModel(model) {
   return !!(model && (model.readonly || model.system));
@@ -1916,7 +1927,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       );
     };
     /** @param {{ checked: boolean, onChange: (checked: boolean) => void }} props - Switch state. */
-    const IOSSwitch = ({ checked, onChange }) => <Toggle checked={checked} onChange={onChange} size="md" />;
+    const IOSSwitch = ({ checked, onChange, disabled }) => <Toggle checked={checked} onChange={onChange} disabled={disabled} size="md" />;
     /** @param {{ id: string, icon: import('react').ReactNode, label: string, dot?: boolean, active: boolean, onSelect: (id: string) => void }} props - Sidebar section entry. */
     const SectionButton = ({ id, icon, label, dot, active, onSelect }) => (
       <button
@@ -2093,6 +2104,9 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const canConfigureDesktopNotifications = can('desktopNotifications');
       const canManageModels = can('modelManagement');
       const acpProvidersTabVisible = !!platformCapabilities.codexAcpSupported;
+      // 全局 Alt 语音快捷键的原生钩子仅 Windows 生效;其余平台置灰并说明
+      // (窗口内 Alt 降级路径仍可用),避免给 macOS/Linux 用户一个无效开关。
+      const voiceShortcutNativeAvailable = !!platformCapabilities.voiceShortcutNative;
       const canPickHostFiles = can('hostFilePicker');
       const [editingModel, setEditingModel] = useState(null);
       const [modelDeleteConfirm, setModelDeleteConfirm] = useState(/** @type {SettingsModelEntry | null} */ (null));
@@ -2109,6 +2123,9 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const versionUpdateRef = useRef(null);
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
       const memorySettingsVisible = !!(bs && bs.settings && bs.settings.language === 'zh-Hans');
+      const [voiceShortcutsEnabled, setVoiceShortcutsEnabled] = useState(() => voiceShortcutEnabled());
+      const [voiceShortcutIntroOpen, setVoiceShortcutIntroOpen] = useState(false);
+      const [voicePostprocessOn, setVoicePostprocessOn] = useState(() => voicePostprocessEnabled());
       const feedbackTypes = [
         { key: 'issue', label: t.feedbackIssue },
         { key: 'suggestion', label: t.feedbackSuggestion },
@@ -2141,6 +2158,60 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         const timer = window.setTimeout(() => setFeedbackNotice(''), 2600);
         return () => window.clearTimeout(timer);
       }, [feedbackNotice]);
+      useEffect(() => {
+        function syncVoiceShortcutSetting(event) {
+          // 其他键的 storage 变化不触发重读;key===null 的 clear 对权威开关
+          // (Rust 侧 settings.json,启动回放)没有说明力,同样忽略,与 Router
+          // 的 exact-key 过滤同口径,避免清存储后镜像缺省 false 覆写展示态。
+          if (event && event.type === 'storage' && event.key
+            && event.key !== VOICE_SHORTCUT_ENABLED_KEY
+            && event.key !== VOICE_POSTPROCESS_ENABLED_KEY) return;
+          if (event && event.type === 'storage' && !event.key) return;
+          if (event && event.detail && typeof event.detail.enabled === 'boolean') {
+            setVoiceShortcutsEnabled(event.detail.enabled);
+            return;
+          }
+          if (event && event.detail && typeof event.detail.postprocessEnabled === 'boolean') {
+            setVoicePostprocessOn(event.detail.postprocessEnabled);
+            return;
+          }
+          setVoiceShortcutsEnabled(voiceShortcutEnabled());
+          setVoicePostprocessOn(voicePostprocessEnabled());
+        }
+        window.addEventListener(VOICE_SHORTCUT_SETTINGS_EVENT, syncVoiceShortcutSetting);
+        window.addEventListener('storage', syncVoiceShortcutSetting);
+        return () => {
+          window.removeEventListener(VOICE_SHORTCUT_SETTINGS_EVENT, syncVoiceShortcutSetting);
+          window.removeEventListener('storage', syncVoiceShortcutSetting);
+        };
+      }, []);
+      function handleVoiceShortcutsEnabledChange(enabled) {
+        setVoiceShortcutsEnabled(!!enabled);
+        setVoiceShortcutEnabled(!!enabled);
+      }
+      function handleVoicePostprocessEnabledChange(enabled) {
+        setVoicePostprocessOn(!!enabled);
+        setVoicePostprocessEnabled(!!enabled);
+      }
+      function markVoiceShortcutIntroSeen() {
+        setVoiceShortcutIntroSeen(true);
+      }
+      function handleVoiceShortcutInfoOpen(event) {
+        if (event) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        setVoiceShortcutIntroOpen(true);
+      }
+      function handleVoiceShortcutInfoClose() {
+        markVoiceShortcutIntroSeen();
+        setVoiceShortcutIntroOpen(false);
+      }
+      function handleVoiceShortcutInfoEnable(enabled) {
+        handleVoiceShortcutsEnabledChange(!!enabled);
+        markVoiceShortcutIntroSeen();
+        setVoiceShortcutIntroOpen(false);
+      }
       const resetFeedback = () => {
         setFeedbackDraft({ type: 'issue', title: '', description: '', attachments: [] });
         setFeedbackStatus({ state: 'idle', message: '', receipt: null });
@@ -2395,7 +2466,25 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         if (!bridge.available || !bridge.settings.setSelectedPet) return Promise.resolve();
         return bridge.settings.setSelectedPet(id);
       };
-      const renderGeneral = () => (
+      const renderGeneral = () => {
+        const voiceShortcutLabel = (
+          <span className="inline-flex min-w-0 items-center gap-1.5">
+            <span className="truncate">{t.uiSettings.voiceShortcutEnable}</span>
+            <button
+              type="button"
+              data-testid="voice-shortcut-info"
+              aria-label={t.uiSettings.voiceShortcutHelp}
+              title={t.uiSettings.voiceShortcutHelp}
+              onClick={handleVoiceShortcutInfoOpen}
+              className={`inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full text-[12px] font-semibold leading-none transition-colors ${
+                'bg-[#E5E5EA] text-[#6E6E73] hover:bg-[#D1D1D6] active:bg-[#C7C7CC] dark:bg-white/[0.10] dark:text-[#C7C7CC] dark:hover:bg-white/[0.16] dark:active:bg-white/[0.20]'
+              }`}
+            >
+              ?
+            </button>
+          </span>
+        );
+        return (
         <>
           <IOSSection title={t.uiSettings.appearance}>
             <IOSRow label={t.uiSettings.language} desc={t.uiSettings.languageDesc}>
@@ -2416,6 +2505,33 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
               <IOSSwitch checked={taskCompletedNotif} onChange={setTaskCompletedNotif} />
             </IOSRow>
           </IOSSection>
+          )}
+          <IOSSection title={t.uiSettings.voiceShortcuts}>
+            <IOSRow label={voiceShortcutLabel} desc={voiceShortcutNativeAvailable ? t.uiSettings.voiceShortcutEnableDesc : (isWeb ? t.uiSettings.voiceShortcutWebDesc : t.uiSettings.voiceShortcutUnsupportedDesc)}>
+              {/* 非 Windows 平台窗口内 Alt 仍是可用能力(全局钩子除外),开关必须
+                  始终可操作;叠加 nativeAvailable 会让 intro 里开启后无法在此关闭。 */}
+              <IOSSwitch checked={voiceShortcutsEnabled} onChange={handleVoiceShortcutsEnabledChange} />
+            </IOSRow>
+            {/* The web lane has no smart-organize pipeline at all (no
+                postprocess invoke in the web bridge), so rendering the
+                toggle there would be a dead switch contradicting
+                voiceShortcutWebDesc. */}
+            {!isWeb && (
+              <IOSRow label={t.uiSettings.voicePostprocess} desc={t.uiSettings.voicePostprocessDesc}>
+                <IOSSwitch checked={voicePostprocessOn} onChange={handleVoicePostprocessEnabledChange} />
+              </IOSRow>
+            )}
+          </IOSSection>
+          {voiceShortcutIntroOpen && (
+            <VoiceShortcutIntroModal
+              isDark={activeTheme === 'dark'}
+              copy={t}
+              shortcutEnabled={voiceShortcutsEnabled}
+              closeLabel={t.voiceIntroDone}
+              primaryLabel={voiceShortcutsEnabled ? t.voiceIntroDone : (t.voiceShortcutEnableTitle || t.uiSettings.voiceShortcutEnable)}
+              onClose={handleVoiceShortcutInfoClose}
+              onToggleShortcut={handleVoiceShortcutInfoEnable}
+            />
           )}
           {canUsePet && (
           <section className="mb-6">
@@ -2444,7 +2560,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           </section>
           )}
         </>
-      );
+        );
+      };
       const renderModels = () => (
         <>
           {acpProvidersTabVisible && (

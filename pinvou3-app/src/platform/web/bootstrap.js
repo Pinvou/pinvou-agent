@@ -10,6 +10,8 @@
     webAccessAdmin: false, desktopNotifications: false, hostFilePicker: true, artifactDownload: true,
     browserMicrophone: true,
     sessionModelSwitch: true,
+    // 全局 Alt 语音快捷键是 Windows 原生键盘钩子;浏览器远程端没有原生层,恒 false。
+    voiceShortcutNative: false,
     modelManagement: false,
     toolStoreMutations: false,
     // Zap-send needs the desktop EnginePool command channel; hide the button on web.
@@ -436,6 +438,7 @@
       if (message.ok === false) {
         const error = new Error(message.error || errorText("rpcFailed"));
         error.code = message.error_code || "rpc_failed";
+        if (message.error_category) error.category = message.error_category;
         error.requestId = entry.id;
         entry.reject(error);
       } else entry.resolve(message.result);

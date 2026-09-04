@@ -491,7 +491,16 @@ function createFakeHost(fixture) {
     try {
       for (const name of readdirSync(requestDirectory)) {
         if (!name.endsWith('.json') || handled.has(name)) continue;
-        const request = JSON.parse(readFileSync(join(requestDirectory, name), 'utf8'));
+        let raw;
+        try {
+          raw = readFileSync(join(requestDirectory, name), 'utf8');
+        } catch (error) {
+          // The wrapper renames a request file (claim/cancel tombstone) between
+          // our readdir and read; a vanished file has nothing left to handle.
+          if (error?.code !== 'ENOENT') throw error;
+          continue;
+        }
+        const request = JSON.parse(raw);
         if (state.deferredOperations.has(request.operation)) continue;
         handled.add(name);
         state.operationCalls.set(

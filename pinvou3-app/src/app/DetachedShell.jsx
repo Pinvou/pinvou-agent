@@ -2,6 +2,7 @@ import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { CodexAcpView as LazyCodexAcpView } from '../features/codex/LazyCodexAcpView.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
 import { VIEW_LOADERS } from './view-loaders.js';
+import { VoiceShortcutRouter } from '../features/voice-composer/VoiceShortcutRouter.jsx';
 // 撕离窗与主窗口共用同一批懒加载视图 chunk(rolldown 自动共享),工厂统一走
 // view-loaders.js 的 VIEW_LOADERS。静态 import 会让对应视图被钉回主 chunk,
 // every view here goes through lazy; each window only actually loads the chunk
@@ -171,6 +172,7 @@ export function DetachedShell({ kind, id }) {
   const View = DETACHED_VIEWS[kind] || DETACHED_VIEWS.monitor;
   return (
     <div className={`h-screen w-screen flex flex-col bg-white text-[#1F1F1F] dark:bg-[#1B1C1D] dark:text-[#E3E3E3]`}>
+      <VoiceShortcutRouter />
       <div
         data-tauri-drag-region
         className="h-9 shrink-0 flex items-center px-3 text-[13px] font-medium select-none"

@@ -107,12 +107,15 @@ const expectedProtocolHashes = {
   memory: '541f1b0c05aeee20d8fb4a19048cbd2f55cad84444363694cbe17263d0425228',
   monitor: '01bf9a7c9b9b3f313cf49e975e6503627ff373caed0f4b3be07a6a98492a7c43',
   personas: 'd16d99104c45bb3e7a6585862b0ba30936bf31a4fef2238453a0a0a35e3c1806',
-  remoteControl: '0001038f6e32075aa5dbc3253ad2c3dfff207b8fe0bf1c65d710dc37b2937ee1',
+  // Recomputed for the voice error-code relay: web_access_rpc_respond gains
+  // errorCode/errorCategory so structured VoiceCommandError identity reaches
+  // the browser lane's trilingual mapping instead of only the message text.
+  remoteControl: '0f3bbabae65f0551e335354019de7f97578fde257829505ad74c13196b173fc5',
   scheduled: '7d6ca9783925a5071a364097ebdf0112511f9503b5e4534346b9fda6873ec036',
   sessions: '7dd63b9cb4ab7b7e03f81abc0822baa9bd1dd61f27fa8b8d2df009126d1c6c60',
   settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
   updater: '86412d40999a268d3d92dc4fe97e3fe465de08745423be820f38a462d79aaced',
-  voice: '281399c4de7cdc3adf2f50a422ea5725cb98cbf175e1de8beb0d610655d0028a',
+  voice: 'c4675825a0a7e33fb310ac0d1c7f066e055c24cf71c8a03d37550868b6c8d7b2',
 };
 
 for (const [domain, files] of Object.entries(protocolSources)) {

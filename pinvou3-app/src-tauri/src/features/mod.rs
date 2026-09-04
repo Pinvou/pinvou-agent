@@ -26,3 +26,4 @@ pub mod sessions;
 pub(crate) mod shared_knowledge_host;
 pub(crate) mod updater;
 pub(crate) mod voice;
+pub(crate) mod voice_shortcut;

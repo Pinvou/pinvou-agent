@@ -11,6 +11,9 @@ pub(crate) struct DesktopCapabilities {
     pub(crate) browser_native_display: bool,
     pub(crate) browser_agent_automation: bool,
     pub(crate) browser_cdp: bool,
+    /// 全局 Alt 语音快捷键的原生键盘钩子:仅 Windows 实现(Alt+Space 会被
+    /// 系统菜单截获,必须原生钩子);其余平台原生层 no-op,仅窗口内 Alt 可用。
+    pub(crate) voice_shortcut_native: bool,
 }
 
 /// Sole production-release switch for macOS BrowserCore. Keep it `false` until physical
@@ -54,6 +57,7 @@ pub(crate) fn current() -> DesktopCapabilities {
         browser_native_display: browser_product_enabled(),
         browser_agent_automation: browser_product_enabled(),
         browser_cdp: cfg!(target_os = "windows"),
+        voice_shortcut_native: cfg!(target_os = "windows"),
     }
 }
 
@@ -103,6 +107,7 @@ mod tests {
             browser_product_enabled()
         );
         assert_eq!(capabilities.browser_cdp, is_windows());
+        assert_eq!(capabilities.voice_shortcut_native, is_windows());
     }
 
     #[test]

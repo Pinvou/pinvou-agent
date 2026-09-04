@@ -431,6 +431,7 @@ struct RpcCompletion {
     result: Value,
     error: Option<String>,
     error_code: Option<String>,
+    error_category: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1815,6 +1816,8 @@ impl RemoteControlManager {
         ok: bool,
         result: Option<Value>,
         error: Option<String>,
+        error_code: Option<String>,
+        error_category: Option<String>,
     ) -> Result<(), String> {
         validate_bridge_generation(generation)?;
         let (sender, response) = {
@@ -1832,7 +1835,7 @@ impl RemoteControlManager {
                 Some(RpcCacheEntry::Complete { .. }) => return Ok(()),
                 None => return Err(format!("unknown Web RPC request: {request_id}")),
             };
-            let completion = bounded_rpc_completion(ok, result, error);
+            let completion = bounded_rpc_completion(ok, result, error, error_code, error_category);
             inner.rpc_cache.insert(
                 request_id.to_string(),
                 RpcCacheEntry::Complete {
@@ -3871,10 +3874,35 @@ mod tests {
             true,
             Some(Value::String("x".repeat(MAX_RPC_RESPONSE_BYTES + 1))),
             None,
+            None,
+            None,
         );
         assert!(!completion.ok);
         assert_eq!(completion.error_code.as_deref(), Some("response_too_large"));
         assert!(serde_json::to_vec(&completion.result).unwrap().len() < 1024);
+    }
+
+    #[test]
+    fn js_rpc_completions_carry_error_code_and_category_to_the_browser() {
+        // The desktop proxy strips the structured VoiceCommandError object down
+        // to its message; the code/category must ride the completion so the web
+        // lane's normalizeVoiceError can map the trilingual copy.
+        let completion = bounded_rpc_completion(
+            false,
+            None,
+            Some("识别超时，请重试".to_string()),
+            Some("asr_timeout".to_string()),
+            Some("timeout".to_string()),
+        );
+        let response = rpc_response("endpoint-1", "lease-1", "req-1", &completion);
+        assert_eq!(response["error_code"], "asr_timeout");
+        assert_eq!(response["error_category"], "timeout");
+        assert_eq!(response["error"], "识别超时，请重试");
+        // Structured completions from the manager itself carry no category.
+        let internal = rpc_error_completion("response_too_large", "too large");
+        let internal_response = rpc_response("endpoint-1", "lease-1", "req-2", &internal);
+        assert_eq!(internal_response["error_code"], "response_too_large");
+        assert!(internal_response["error_category"].is_null());
     }
 
     #[test]

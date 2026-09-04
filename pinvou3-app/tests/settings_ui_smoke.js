@@ -160,6 +160,7 @@ function injectSource() {
           showSuperPermissionSettings: false,
           usesBundledDependencyInstaller: true,
           taskCompletionNotificationsDefault: true,
+          voiceShortcutNative: true,
         });
         case 'get_settings': return Promise.resolve(settings);
         case 'update_settings':
@@ -426,6 +427,27 @@ async function modalWidth(page, headingText) {
   await page.waitForFunction(() => document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') === 'settings', { timeout: 8000 });
   await sleep(400);
   rec('① 设置页可打开且无错误边界', await page.evaluate(() => document.body.innerText.includes('通用') && !document.body.innerText.includes('设置页加载失败')));
+
+  const voiceShortcutRow = await page.evaluate(() => {
+    const row = [...document.querySelectorAll('div')].filter(node => (node.textContent || '').includes('启用 Alt 唤醒语音') && node.querySelector('[role="switch"]')).pop();
+    const button = row && row.querySelector('[role="switch"]');
+    return {
+      exists: !!row,
+      enabled: !!button && !button.disabled,
+      nativeDesc: !!row && (row.textContent || '').includes('Alt 可语音输入；输入框已有文本时'),
+      unsupportedDescHidden: !!row && !(row.textContent || '').includes('仅 Windows 支持'),
+    };
+  });
+  rec('①e 语音快捷键行在支持平台正常渲染（未置灰）', Object.values(voiceShortcutRow).every(Boolean), JSON.stringify(voiceShortcutRow));
+
+  // 说明入口复用首用引导卡:点击后应弹出引导弹窗(不触发 ASR 检查/下载/录音)。
+  await page.click('[data-testid="voice-shortcut-info"]');
+  await page.waitForFunction(() => document.querySelector('#voice-shortcut-intro-title'), { timeout: 4000 });
+  rec('①f 快捷键说明入口弹出引导卡', await page.evaluate(() =>
+    (document.querySelector('#voice-shortcut-intro-title')?.textContent || '').length > 0));
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('#voice-shortcut-intro-title'), { timeout: 4000 });
+  rec('①g Esc 可关闭引导卡', true);
 
   await page.click('[data-testid="settings-section-memory"]');
   await page.waitForFunction(() => (document.querySelector('[data-testid="memory-profile-call-name"]')?.textContent || '').includes('升级前称呼'));

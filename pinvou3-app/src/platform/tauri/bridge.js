@@ -335,7 +335,7 @@
     vllmBootstrapError: null, // 失败原因(pkexec stderr / 超时透传)
     vllmSetupDismissed: false,// 本次会话内点了「跳过」,不再弹(不写持久标记)
     voiceInput: {
-      status: "idle",         // idle | requesting_permission | recording | transcribing | completed | cancelled | failed
+      status: "idle",         // idle | requesting_permission | recording | transcribing | postprocessing | completed | cancelled | failed
       message: "",
       error: null,
       category: null,
@@ -489,8 +489,20 @@
       voiceCancelled: "Voice input cancelled",
       voiceDeviceTimeout: "Microphone detection timed out; no recording device found. Check the device connection and the system microphone settings, then try again.",
       voiceTranscribing: "Transcribing…",
+      voicePostprocessing: "Polishing voice text…",
+      voiceTaskPostprocessing: "Rewriting voice task…",
+      voiceStructuredPostprocessing: "Structuring voice text…",
+      voiceEditPostprocessing: "Editing current input…",
       voiceRecordingTooShort: "Recording is too short. Please try again.",
+      voiceRecordingTooLong: "Recording is too long. Please shorten it and try again.",
+      voiceAudioInvalid: "The recorded audio is invalid. Please record again.",
+      voiceMicUnavailable: "The microphone is in use by another app. Close it or pick another microphone, then try again.",
       voiceWrittenBack: "Transcribed text inserted into the input box",
+      voiceTaskSent: "Voice task sent",
+      voiceEditPreviewReady: "Voice edit ready to review",
+      voiceEditNoChange: "Voice edit made no changes; original text kept",
+      voiceEditPostprocessFailed: "Voice edit processing failed; your input was not changed. Please try again.",
+      voiceEditPostprocessDisabled: "Smart organize is off, so voice edit is unavailable; your input was not changed. Enable smart organize in Settings to use voice edit.",
       voiceCheckingDevice: "Checking microphone…",
       voiceRequestingPermission: "Requesting microphone permission…",
       voiceWebviewNoMic: "This WebView does not support microphone capture.",
@@ -576,8 +588,20 @@
       voiceCancelled: "音声入力をキャンセルしました",
       voiceDeviceTimeout: "マイク検出がタイムアウトし、録音デバイスが見つかりませんでした。デバイスの接続とシステムのマイク設定を確認して再試行してください。",
       voiceTranscribing: "音声を認識中…",
+      voicePostprocessing: "音声テキストを整えています…",
+      voiceTaskPostprocessing: "音声タスクを整理しています…",
+      voiceStructuredPostprocessing: "リストに整理中…",
+      voiceEditPostprocessing: "現在の入力を編集しています…",
       voiceRecordingTooShort: "録音時間が短すぎます。再試行してください。",
+      voiceRecordingTooLong: "録音が長すぎます。短くして再試行してください。",
+      voiceAudioInvalid: "録音データが無効です。もう一度録音してください。",
+      voiceMicUnavailable: "マイクは他のアプリで使用中です。使用中のアプリを終了するか、別のマイクを選んでから再試行してください。",
       voiceWrittenBack: "音声を入力ボックスに書き込みました",
+      voiceTaskSent: "音声タスクを送信しました",
+      voiceEditPreviewReady: "音声編集を確認してください",
+      voiceEditNoChange: "音声編集による変更はありません。原文を保持しました",
+      voiceEditPostprocessFailed: "音声編集の処理に失敗しました。入力は変更されていません。再試行してください。",
+      voiceEditPostprocessDisabled: "スマート整理がオフのため音声編集は利用できません。入力は変更されていません。設定でスマート整理を有効にすると利用できます。",
       voiceCheckingDevice: "マイクデバイスを確認中…",
       voiceRequestingPermission: "マイクの権限をリクエスト中…",
       voiceWebviewNoMic: "この WebView はマイク入力に対応していません。",
@@ -663,8 +687,20 @@
       voiceCancelled: "已取消语音输入",
       voiceDeviceTimeout: "麦克风检测超时，未发现可用录音设备。请检查设备连接和系统麦克风设置后重试。",
       voiceTranscribing: "正在识别语音…",
+      voicePostprocessing: "正在整理语音文本…",
+      voiceTaskPostprocessing: "正在整理语音任务…",
+      voiceStructuredPostprocessing: "正在整理成条目…",
+      voiceEditPostprocessing: "正在编辑当前输入…",
       voiceRecordingTooShort: "录音时间过短，请重试。",
+      voiceRecordingTooLong: "录音过长，请缩短后重试。",
+      voiceAudioInvalid: "录音数据无效，请重新录制。",
+      voiceMicUnavailable: "麦克风被其他应用占用，请关闭占用它的应用或更换麦克风后重试。",
       voiceWrittenBack: "语音已写入输入框",
+      voiceTaskSent: "语音任务已发送",
+      voiceEditPreviewReady: "语音编辑待确认",
+      voiceEditNoChange: "语音编辑无变化，已保留原文",
+      voiceEditPostprocessFailed: "语音编辑整理失败，当前输入未修改，请重试。",
+      voiceEditPostprocessDisabled: "智能整理已关闭，语音编辑不可用；当前输入未修改。可在设置中开启智能整理后使用语音编辑。",
       voiceCheckingDevice: "正在检测麦克风设备…",
       voiceRequestingPermission: "正在请求麦克风权限…",
       voiceWebviewNoMic: "当前 WebView 不支持麦克风采集。",
@@ -2382,6 +2418,8 @@
   const closeVoiceAsrSetup = voiceFeature.closeVoiceAsrSetup;
   const cancelVoiceInput = voiceFeature.cancelVoiceInput;
   const clearVoiceInput = voiceFeature.clearVoiceInput;
+  const setVoiceShortcutEnabled = voiceFeature.setVoiceShortcutEnabled;
+  const syncVoiceShortcutRecording = voiceFeature.syncVoiceShortcutRecording;
   const appendVoiceText = voiceFeature.appendVoiceText;
   const runVoiceInputDebugAssertions = voiceFeature.runVoiceInputDebugAssertions;
   const knowledgeModelFeature = installBridgeFeature("knowledge-model", { state, notify, invoke, listen });
@@ -2521,6 +2559,8 @@
       closeVoiceAsrSetup,
       cancelVoiceInput,
       clearVoiceInput,
+      setVoiceShortcutEnabled,
+      syncVoiceShortcutRecording,
       appendVoiceText,
       runVoiceInputDebugAssertions,
     },

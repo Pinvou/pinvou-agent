@@ -33,7 +33,7 @@ const context = vm.createContext({
     return {
       ok: true,
       json: async () => ({
-        allowed_commands: ['list_sessions'],
+        allowed_commands: ['list_sessions', 'web_access_transcribe_voice_audio'],
         allowed_events: ['chat:delta'],
       }),
     };
@@ -51,6 +51,11 @@ async function invoke(command, args) {
   invokeCalls.push([command, args]);
   if (command === 'web_access_rpc_begin') return true;
   if (command === 'list_sessions') return [{ id: 'session-1', title: '测试对话' }];
+  if (command === 'web_access_transcribe_voice_audio') {
+    // 模拟 Rust 命令以结构化 VoiceCommandError 对象拒绝(带稳定错误码)。
+    const structuredVoiceError = { code: 'asr_timeout', category: 'timeout', message: '识别超时，请缩短录音后重试' };
+    throw structuredVoiceError;
+  }
   if (command === 'web_access_rpc_respond') {
     responses.push(args);
     return null;
@@ -109,6 +114,29 @@ assert.deepEqual(JSON.parse(JSON.stringify(responses.at(-1))), {
   ok: true,
   result: [{ id: 'session-1', title: '测试对话' }],
   error: null,
+  errorCode: null,
+  errorCategory: null,
+});
+
+// 结构化桌面命令错误(如 VoiceCommandError)必须把稳定 code/category 透传给
+// 浏览器车道,否则 normalizeVoiceError 的错误码→三语文案映射不可达,中文原文
+// 会直通 en/ja 用户。
+await listeners.get('web_access:rpc_request')({
+  payload: {
+    request_id: 'request-2',
+    bridge_generation: readyGeneration,
+    command: 'web_access_transcribe_voice_audio',
+    args: { audio_base64: 'AAAA', session_id: 'session-1' },
+  },
+});
+assert.deepEqual(JSON.parse(JSON.stringify(responses.at(-1))), {
+  requestId: 'request-2',
+  generation: readyGeneration,
+  ok: false,
+  result: null,
+  error: '识别超时，请缩短录音后重试',
+  errorCode: 'asr_timeout',
+  errorCategory: 'timeout',
 });
 
 await listeners.get('web_access:status')({

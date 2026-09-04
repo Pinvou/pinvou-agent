@@ -262,11 +262,21 @@ pub fn web_access_rpc_respond(
     ok: bool,
     result: Option<Value>,
     error: Option<String>,
+    error_code: Option<String>,
+    error_category: Option<String>,
     window: WebviewWindow,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<(), String> {
     require_main_webview(&window)?;
-    manager.complete_rpc(&request_id, &generation, ok, result, error)
+    manager.complete_rpc(
+        &request_id,
+        &generation,
+        ok,
+        result,
+        error,
+        error_code,
+        error_category,
+    )
 }
 
 /// Publish a subscribed application event that is only observable in the
@@ -1507,8 +1517,10 @@ pub async fn web_access_save_session_messages_chunk(
     Ok(None)
 }
 
-/// Base64 keeps a normal 10-second WAV comfortably below the RPC envelope;
-/// the raw desktop command's JSON byte array is several times larger.
+/// Base64 keeps the 20-second web-lane WAV (~853 KB) comfortably below the
+/// 1 MiB RPC request precheck (and the 2 MiB relay inbound frame cap).
+/// 桌面命令(`transcribe_voice_audio`)同样走 base64 入参;此处完成解码与
+/// 大小校验后直接复用其字节级识别路径。
 #[tauri::command]
 pub async fn web_access_transcribe_voice_audio(
     audio_base64: String,
@@ -1517,6 +1529,7 @@ pub async fn web_access_transcribe_voice_audio(
 ) -> Result<super::voice::VoiceTranscriptionResponse, super::voice::VoiceCommandError> {
     crate::features::sessions::validate_session_id(&session_id).map_err(|error| {
         super::voice::VoiceCommandError::new(
+            "session_mismatch",
             "context_mismatch",
             "transcribing",
             format!("invalid Session id: {error:#}"),
@@ -1524,6 +1537,7 @@ pub async fn web_access_transcribe_voice_audio(
     })?;
     store.load(&session_id).map_err(|error| {
         super::voice::VoiceCommandError::new(
+            "session_load_failed",
             "context_mismatch",
             "transcribing",
             format!("load Session {session_id}: {error:#}"),
@@ -1533,6 +1547,7 @@ pub async fn web_access_transcribe_voice_audio(
         .decode(audio_base64)
         .map_err(|error| {
             super::voice::VoiceCommandError::new(
+                "audio_invalid",
                 "recording_failed",
                 "transcribing",
                 format!("解码远程控制语音音频失败：{error}"),
@@ -1540,13 +1555,15 @@ pub async fn web_access_transcribe_voice_audio(
         })?;
     if audio_bytes.len() > 1024 * 1024 {
         return Err(super::voice::VoiceCommandError::new(
+            "recording_too_long",
             "recording_failed",
             "transcribing",
             "远程控制语音音频超过 1 MiB",
         ));
     }
-    super::voice::transcribe_voice_audio(super::voice::VoiceTranscriptionRequest { audio_bytes })
-        .await
+    // 本地命令已改走 base64 入参(audio_bytes JSON 数组的 IPC 开销过大);
+    // 此处已完成解码与大小校验,直接复用解码后路径。
+    super::voice::transcribe_voice_audio_bytes(audio_bytes).await
 }
 
 /// Read a bounded chunk from a Session-owned artifact. The resolver rejects
