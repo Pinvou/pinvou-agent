@@ -318,7 +318,7 @@ test('native host setup reports real milestones to a blocking progress dialog', 
   assert.match(remoteKnowledgeView, /role="progressbar"/u);
   assert.match(remoteKnowledgeView, /shared-kb-host-progress-error/u);
   assert.doesNotMatch(remoteKnowledgeView, /closeDisabled=\{!\['complete', 'failed'\]\.includes\(hostProgress\.phase\)\}/u);
-  // install/upgrade/reconnect 已合并为 runHostOperation 骨架，成功覆写守卫按 operation 参数化。
+  // install/upgrade/reconnect have been merged into the runHostOperation skeleton; the success-overwrite guard is parameterized by operation.
   assert.match(remoteKnowledgeView, /current\?\.operation === operation/u);
 });
 

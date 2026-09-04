@@ -1,20 +1,20 @@
-// 本地/私网 openai_compatible 端点的「思考深度档位」共享件：探测 hook +
-// 档位胶囊选择器。原生于 SettingsView.jsx（表单入口，400ms 防抖）与
-// composer-shared.jsx（会话模型弹层入口，不防抖），两处机制一致仅参数与
-// 排版不同，抽到本模块消重。探测/选择行为与两处原实现一致。
+// Shared module for the "thinking depth tiers" of local/private-network openai_compatible endpoints:
+// probe hook + tier pill selector. Originated in SettingsView.jsx (form entry, 400ms debounce) and
+// composer-shared.jsx (session model popover entry, no debounce) with identical mechanics differing only
+// in params and layout, extracted here to dedupe. Probe/selection behavior matches both originals.
 import { useEffect, useState } from 'react';
 import { bridge } from '../../hooks/useBridge.js';
 
-// 探测本地服务类型（vllm/ollama/lmstudio/generic）并返回 { probedKind, probePending }。
-// - enabled=false（端点非本地/私网）时同步清空探测窗口，档位回落到按模型目录；
-// - probePending 自探测排程起即为 true（含防抖窗口）：窗口内不下发档位，
-//   避免用户在「探测未定」时选中/保存误导档位；探测不可达（bridge 不支持/
-//   调用失败）由 then/catch/finally 复位为 null + pending=false，落到默认四档；
-// - debounceMs>0 时防抖排程（表单 base_url/api_key 是逐键输入 state，不防抖
-//   会逐键触发探测，Rust 侧缓存 key 含端口/路径，每个中间态都是新 key、各自
-//   串行探测最坏 ~12s）；debounceMs=0 时与原会话弹层实现一致，effect 内同步发起；
-// - trimInputs：表单入口探测前 trim（与原实现一致，依赖数组仍是原始输入，
-//   纯空白变化仍会重排程探测）；会话弹层入口传保存值，无需 trim。
+// Probes the local server kind (vllm/ollama/lmstudio/generic) and returns { probedKind, probePending }.
+// - enabled=false (endpoint not local/private-network) synchronously clears the probe window; tiers fall back to the model catalog;
+// - probePending is true from the moment a probe is scheduled (debounce window included): no tiers are offered inside the window,
+//   so the user cannot pick/save a misleading tier while the probe is undecided; an unreachable probe (bridge
+//   unsupported/call failed) is reset by then/catch/finally to null + pending=false, landing on the default four tiers;
+// - debounceMs>0 schedules a debounced probe (the form's base_url/api_key are per-keystroke input state; without debouncing
+//   every keystroke would fire a probe, and the Rust-side cache key includes port/path, so every intermediate state is a
+//   new key probed serially, ~12s worst case); debounceMs=0 matches the original session popover, firing inline in the effect;
+// - trimInputs: the form entry trims before probing (as the original did; the dependency array still holds the raw inputs,
+//   so whitespace-only changes still reschedule the probe); the session popover entry passes saved values and needs no trim.
 export function useLocalServerKindProbe({ enabled, baseUrl, apiKey = '', modelId = null, debounceMs = 0, trimInputs = false }) {
   const [probedKind, setProbedKind] = useState(null);
   const [probePending, setProbePending] = useState(false);
@@ -47,12 +47,12 @@ export function useLocalServerKindProbe({ enabled, baseUrl, apiKey = '', modelId
         // falsely reports "thinking tiers are not supported".
         bridge.models.probeLocalServerKind(probeBaseUrl, probeApiKey, modelId)
           .then((kind) => { if (!cancelled) setProbedKind(kind); })
-          // 探测调用本身失败（命令被拒/版本不支持）≠ 探测出 generic：
-          // 置回 null 走 localProbeTiersForKind 的默认四档，不误报「不支持」。
+          // The probe call itself failing (command rejected/unsupported version) != probing generic:
+          // reset to null to take localProbeTiersForKind's default four tiers, not a false "unsupported".
           .catch(() => { if (!cancelled) setProbedKind(null); })
           .finally(() => { if (!cancelled) setProbePending(false); });
       } else {
-        // web 预览无探测能力：保持默认四档（与旧行为一致），不误报不支持。
+        // Web preview has no probing capability: keep the default four tiers (matches the old behavior), no false "unsupported".
         if (!cancelled) setProbedKind(null);
         if (!cancelled) setProbePending(false);
       }
@@ -67,25 +67,25 @@ export function useLocalServerKindProbe({ enabled, baseUrl, apiKey = '', modelId
   return { probedKind, probePending };
 }
 
-// 档位提示的 zh 兜底串：与 i18n 文案同语义，仅 t.uiSettingsDetail 缺 key 时
-// 兜底（与抽离前两处调用的内联兜底一致）。
+// zh fallback strings for the tier hints: same semantics as the i18n copy, used only when
+// t.uiSettingsDetail lacks the key (matching the inline fallbacks at both call sites before extraction).
 const TIER_FALLBACK_COPY = {
   pending: '正在探测服务类型…',
   alwaysOn: '该模型思考始终开启，无法关闭',
   unsupported: '该端点不支持思考档位调节',
 };
 
-// 档位胶囊选择器：tiers 非空渲染胶囊组，为空渲染「探测中/常开/不支持」提示行。
-// variant 只切换排版与色调（composer=会话弹层紧凑胶囊，form=表单右对齐行），
-// DOM 结构与类串与两处原实现逐字一致；错误行（如 effortSaveError）与标题/
-// 前置标签仍由调用方渲染——弹层与表单的错误行、行布局位置不同。
-//   t          - i18n 文案（档位名取 form: t.uiSettingsDetail.reasoningEffortTiers /
-//                composer: t.thinkingDepthTiers；提示行取 t.uiSettingsDetail）
-//   tiers      - 档位列表（空 = 渲染提示行）
-//   selected   - 当前高亮档位（已按档位表归一的显示值）
+// Tier pill selector: non-empty tiers render the pill group, empty tiers render a hint line ("probing"/"always
+// on"/"unsupported"). variant only switches layout and tone (composer = compact session-popover pills, form =
+// right-aligned form row); the DOM structure and class strings are verbatim from the two original implementations.
+// The error line (e.g. effortSaveError) and title/leading label stay with the caller — popover and form place those differently.
+//   t          - i18n copy (tier names from form: t.uiSettingsDetail.reasoningEffortTiers /
+//                composer: t.thinkingDepthTiers; hint lines from t.uiSettingsDetail)
+//   tiers      - tier list (empty = render the hint line)
+//   selected   - currently highlighted tier (display value already normalized against the tier table)
 //   onSelect   - (tier) => void
-//   pending    - 探测进行中（提示行灰色「正在探测服务类型…」）
-//   noControlThinking - 「思考始终开启，无法关闭」提示（优先级高于「不支持」）
+//   pending    - probe in progress (gray "probing service type…" hint line)
+//   noControlThinking - "thinking is always on and cannot be disabled" hint (takes precedence over "unsupported")
 //   variant    - 'composer' | 'form'
 export function ReasoningTierPicker({ t, tiers, selected, onSelect, pending, noControlThinking, variant = 'composer' }) {
   if (!Array.isArray(tiers) || tiers.length === 0) {

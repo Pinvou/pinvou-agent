@@ -143,10 +143,10 @@ const StatusPill = ({ s, t }) => {
   return <span className={`text-[12px] font-medium ${v[2]}`}>{v[0]} {v[1]}</span>;
 };
 /**
- * 产出物操作按钮组(网格卡片与列表行共用)。
- * - `compact`: 行内布局(右对齐,无 mt-3);`small`: 12px 文字档(列表行内按钮原尺寸);
- * - `stopPropagation`: 整行可点开预览时,按钮点击不再冒泡触发行点击;
- * - `wrapperClassName`: 覆盖容器类(列表行需要 shrink-0 布局)。
+ * Artifact action button group (shared by grid cards and list rows).
+ * - `compact`: inline layout (right-aligned, no mt-3); `small`: 12px text tier (original size of in-row buttons);
+ * - `stopPropagation`: when the whole row opens the preview, button clicks no longer bubble into the row click;
+ * - `wrapperClassName`: overrides the container class (list rows need a shrink-0 layout).
  * @param {{ o: KnowledgeOutput, compact?: boolean, small?: boolean, stopPropagation?: boolean, wrapperClassName?: string, t: { kbOutContinue: string, kbOutNewProject: string, kbOutOpenFolder: string, uiKnowledge: { downloadOutput: string } }, continueOutput: (output: KnowledgeOutput) => void, newOutputProject: (output: KnowledgeOutput) => void, openFolder: (path: string) => void, canOpenSystemFiles?: boolean, canDownloadArtifacts?: boolean }} props - Output row actions and their handlers.
  */
 const OutputActions = ({ o, compact, small, stopPropagation, wrapperClassName, t, continueOutput, newOutputProject, openFolder, canOpenSystemFiles, canDownloadArtifacts }) => {
@@ -177,10 +177,10 @@ const OutputActions = ({ o, compact, small, stopPropagation, wrapperClassName, t
       </div>
       );
     };
-// ---- 本页特征内的共用小组件(模块作用域:类型跨渲染稳定,避免每次渲染重建导致子树重挂载) ----
-/** 文件表 / 产出物列表共用的整行外壳类(点击行打开预览)。 */
+// ---- Shared mini-widgets within this feature (module scope: element types stable across renders, avoiding per-render rebuilds that remount subtrees) ----
+/** Whole-row shell classes shared by the file table / artifact list (row click opens the preview). */
 const TABLE_ROW_CLASS = 'group py-4 border-b cursor-pointer border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A]';
-/** 文件表 / 产出物列表共用排序:主键 mtime(按 dir 升降),同时间按名称 localeCompare 稳定排序。 */
+/** Sort shared by the file table / artifact list: primary key mtime (dir asc/desc), ties broken by name via localeCompare for a stable order. */
 const sortByTimeDesc = (list, dir) => {
   const d = dir === 'asc' ? 1 : -1;
   return [...list].sort((a, b) => {
@@ -189,7 +189,7 @@ const sortByTimeDesc = (list, dir) => {
     return String(a.name || '').localeCompare(String(b.name || ''));
   });
 };
-/** 分类 chip 行(文件类型卡 / 产出物分类共用):横向滚动容器 + 激活态圆角 chip,可选计数列。 */
+/** Category chip row (shared by file-type cards / artifact categories): horizontally scrolling container + rounded active chips, optional count column. */
 const ChipTabs = ({ items, value, onChange, countOf }) => (
   <div className="flex overflow-x-auto gap-2 no-scrollbar scroll-smooth">
     {items.map((c) => {
@@ -204,7 +204,7 @@ const ChipTabs = ({ items, value, onChange, countOf }) => (
     })}
   </div>
 );
-/** 加载骨架行(文件 / 产出物列表共用):图标占位方块 + 逐行递减宽度的灰条,参数对齐两处原样式。 */
+/** Loading skeleton row (shared by file / artifact lists): icon placeholder block + gray bars with per-row decreasing width; params match both original styles. */
 const SkeletonRows = ({ panelClassName, panelStyle, icon = 'w-7 h-7', start = 60, step = 6 }) => (
   <div className={`rounded-2xl overflow-hidden ${panelClassName}`} style={panelStyle}>
     {Array.from({ length: 6 }).map((_, i) => (
@@ -215,7 +215,7 @@ const SkeletonRows = ({ panelClassName, panelStyle, icon = 'w-7 h-7', start = 60
     ))}
   </div>
 );
-/** 产出物空状态(3 处共用):Archive 图标块 + 主/副文案;紧凑档(列表筛选无结果)由调用方传 action 重置按钮。 */
+/** Artifact empty state (3 call sites): Archive icon block + primary/secondary copy; the compact variant (no list-filter hits) gets its reset button via the caller's action. */
 const KbEmptyState = ({ muted, card, ink, title, hint, action, compact }) => (
   <div className={`text-center ${compact ? 'py-14' : 'py-20'} ${muted}`}>
     <div className={`${compact ? 'w-12 h-12 mx-auto rounded-2xl grid place-items-center mb-3' : 'w-14 h-14 mx-auto rounded-2xl grid place-items-center mb-4'} ${card}`}><Archive size={compact ? 20 : 24} /></div>
@@ -224,7 +224,7 @@ const KbEmptyState = ({ muted, card, ink, title, hint, action, compact }) => (
     {action || null}
   </div>
 );
-/** 表头「时间」排序按钮(文件表 / 产出物列表共用):点击切换升降序,Chevron 随之旋转。 */
+/** Header time-sort button (shared by file table / artifact list): click toggles asc/desc, chevron rotates accordingly. */
 const SortableTimeHeader = ({ t, dir, onToggle, justifySelfStart }) => (
   <button
     type="button"
@@ -236,9 +236,9 @@ const SortableTimeHeader = ({ t, dir, onToggle, justifySelfStart }) => (
   </button>
 );
 /**
- * 知识页模态外壳(删除知识集 / 移除文档确认 / 新建知识集 / 加入知识库 四处共用):
- * 半透明遮罩点击关闭,内容区 stopPropagation;confirmDoc 需要 role="dialog" 语义,
- * 加入知识库浮层宽 380,其余 400,均由 props 承载。
+ * Knowledge modal shell (shared by four sites: delete collection / remove-document confirm / new collection / add-to-collection):
+ * translucent backdrop closes on click, content stops propagation; confirmDoc needs role="dialog" semantics,
+ * the add-to-collection popover is 380 wide and the rest 400 — all carried by props.
  */
 const KbDialog = ({ onClose, testId, role, ariaModal, width = 'w-[400px]', children }) => (
   // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal cancel button
@@ -397,7 +397,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // ---------- 共用 ----------
       const openFile = (p) => canOpenSystemFiles ? inv('open_in_system', { path: p }).catch(() => {}) : Promise.resolve(false);
       const openFolder = (p) => canOpenSystemFiles ? inv('open_containing_folder', { path: p }).catch(() => {}) : Promise.resolve(false);
-      // 字节 / 日期格式化收敛到 shared(formatBytes GB 档由原两位小数并为一位;fmtDate 入参为秒,需转毫秒)。
+      // Byte / date formatting consolidated into shared (formatBytes GB tier unified from 2 decimals to 1; fmtDate takes seconds and converts to ms).
       const fmtSize = (b) => formatBytes(b, { missing: '' });
       const fmtDate = (s) => formatLocalDate(s ? s * 1000 : null);
       const fmtOutputDate = (s) => {
@@ -433,7 +433,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       const CAT_COLOR = { all:'#6a6a78', doc:'#2f6beb', sheet:'#18a957', ppt:'#e0773a', pdf:'#d63a3a', img:'#d6589a', zip:'#8a6ad6' };
       // 每个类型卡的独立图标(对齐设计稿,不再全用 FileText)
       const CAT_ICON = { all:GridIcon, doc:FileText, sheet:TableIcon, ppt:PresentationIcon, pdf:FileText, img:ImageIcon, zip:Archive };
-      // 知识库 → 按分类/名稳定配色(对齐设计稿彩色卡片图标);取色逻辑收敛到 shared,本页保留 9 色长调色板。
+      // knowledge -> stable color by category/name (matches the mock's colorful card icons); coloring lives in shared, this page passes its 9-color extended palette.
       const COLL_PALETTE = ['#3f7bf0','#7b5fe6','#1aa07a','#d6873e','#d6589a','#4b7bd6','#e0903a','#2b9d7a','#7d6ae6'];
       const collColor = (c) => stableAccentColor(c && (c.category || c.name), COLL_PALETTE);
 
@@ -918,7 +918,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           kbCache.allDocs = next;
           return next;
         });
-        // 集合计数乐观更新(docCount/chunkCount/totalBytes 随删除同步下调,钳制 ≥0)收敛到 shared。
+        // Optimistic collection-count update (docCount/chunkCount/totalBytes all lowered on delete, clamped >= 0) consolidated into shared.
         setColls((current) => applyDocumentDelta(current, document.collectionId, document, -1));
         try {
           await inv('kb_remove_document', { docId: document.id });
@@ -936,9 +936,9 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       };
       // 点知识库卡片=就地聚焦该集(再点同卡/「全部」取消),下方文件表随之切换。不再跳二级详情页。
       const openColl = (c) => { if (activeColl && activeColl.id === c.id) setActiveColl(null); else { setActiveColl(c); loadDocs(c.id); } };
-      // 选文件/文件夹加入知识库(原 doAdd/dzPick 合并):kind='files' 走文件多选;kind='folders' 走目录选择，
-      // 后端 WalkDir 递归展开。singleCollectionShortcut=知识库页底部入口:仅一个知识集直接加,多个/无则走
-      // 「加入知识库」浮层;否则 collectionId 为聚焦态工具栏指定的目标集。
+      // Pick files/folders to add to a collection (merges the old doAdd/dzPick): kind='files' opens the file multi-select; kind='folders' opens directory selection,
+      // expanded recursively by the backend WalkDir. singleCollectionShortcut = the bottom entry on the KB page: with exactly one collection add directly; with several or none go through
+      // the add-to-collection popover; otherwise collectionId is the target collection chosen by the focused-state toolbar.
       const pickAndAdd = async (kind, { collectionId, singleCollectionShortcut } = {}) => {
         if (!canPickHostFiles || indexing) return;
         const picker = bridge && bridge.files && (kind === 'folders' ? bridge.files.pickFolders : bridge.files.pickFiles);
@@ -955,15 +955,15 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       };
       // 「+ 添加 ▾」下拉菜单：文件 / 文件夹。portal 到 body 以免被 overflow-y-auto 裁剪。
       const [addMenu, setAddMenu] = useState(null); // null | {left,top,width,src}
-      const addMenuRef = useRef(null); // 菜单本体(portal 到 body):outside-close 用 contains 判定点在菜单内不关闭
+      const addMenuRef = useRef(null); // menu itself (ported to body): outside-close uses contains so a click inside the menu does not close it
       const openAddMenu = (src, el) => {
         const r = el.getBoundingClientRect(); const w = 188, h = 96;
         const left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8));
         const top = (r.bottom + 6 + h > window.innerHeight) ? Math.max(8, r.top - h - 6) : Math.max(8, r.bottom + 6);
         setAddMenu({ left, top, width: w, src });
       };
-      // 点外(pointerdown 捕获 + contains 判定) / Esc(preventDefault) / resize / 滚动(捕获) 统一关闭,
-      // 复用共享 hook,替换原手写监听 effect。
+      // Outside pointer (pointerdown capture + contains) / Esc (preventDefault) / resize / scroll (capture) all close uniformly,
+      // via the shared hook, replacing the original hand-written listener effect.
       useOutsidePointerClose(!!addMenu, () => setAddMenu(null), [addMenuRef], { escape: true, escapeOnWindow: true, preventEscapeDefault: true, viewportClose: true });
       const chooseAdd = (kind) => { const src = addMenu && addMenu.src; setAddMenu(null); if (src === 'coll') pickAndAdd(kind, { collectionId: activeColl && activeColl.id }); else pickAndAdd(kind, { singleCollectionShortcut: true }); };
       const folderPickerAvailable = !!(bridge && bridge.files && bridge.files.pickFolders);

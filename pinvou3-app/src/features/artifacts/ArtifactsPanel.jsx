@@ -109,7 +109,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       const designAiLastPrompt = currentDesignAiState.lastPrompt || '';
       const designAiPendingPath = currentDesignAiState.pendingPath || '';
       const designAiStartedAt = Number(currentDesignAiState.startedAt || 0);
-      // 1s 计时:仅在设计 AI 请求进行中(sending/running)时走表;挂载/激活即同步基线。
+      // 1s tick: only while a design AI request is in flight (sending/running); the baseline syncs on mount/activation.
       const designAiNow = useConversationSecondClock(designAiStatus === 'sending' || designAiStatus === 'running');
       const designAiElapsedSec = designAiStartedAt > 0 ? Math.max(0, Math.round((designAiNow - designAiStartedAt) / 1000)) : 0;
       const setDesignAiStatePatch = (patchOrUpdater) => {

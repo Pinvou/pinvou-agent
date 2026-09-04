@@ -249,21 +249,21 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       );
     };
 
-    // ── 连接器连接流程(工厂收敛 feishu/wecom/dingtalk/tmeet 四份逐字镜像) ──
-    // ToolStoreView 随左栏切换会卸载;连接是长流程(装 CLI ~40s + 扫码),进度/监听/
-    // 秒表若放组件 useState,一离开工具商店就全丢 → 回来按钮又变“连接”。故 store
-    // 挂在模块级单例,活在组件生命周期之外;组件只订阅它做镜像渲染。
-    // 四个连接器此前的 store 单例/监听安装器/connect·disconnect·resetFlow·retry
-    // 四联体逐字相同,行为差异全部收敛为 createConnectorFlow 的配置项(逐项对应原
-    // 实现,勿随手“统一”):
-    //   twoStep        飞书两段扫码:ensure_cli 后推进 connect 步再 begin;其余单段。
-    //   progressEvent  仅飞书有 feishu:progress 细粒度进度事件(后端推进度)。
-    //   qrStepsExtra   飞书 QR 事件额外把 connect 步标 done(两段式第一步已完成)。
-    //   qrPayloadExtra QR 事件附加字段:钉钉 user_code;腾讯会议 browserAuth 标记。
-    //   openAuthUrl    腾讯会议 QR 事件带 url 时直接开浏览器(内嵌码常渲染失败的兜底)。
-    //   connectedMode  apply=发后即忘写技能(feishu/wecom);applyAwait=await 写技能、
-    //                  失败转流程错误(dingtalk);readinessAwait=先 bundle_readiness
-    //                  复核真实登录态再写技能(tmeet)。
+    // ── Connector connection flows (factory consolidating the four verbatim feishu/wecom/dingtalk/tmeet mirrors) ──
+    // ToolStoreView unmounts on left-column switches; connecting is a long flow (CLI install ~40s + QR scan) and progress/listeners/
+    // stopwatch in component useState would all be lost on leaving the tool store → the button flips back to "Connect". So the store
+    // hangs off a module-level singleton living outside the component lifecycle; components only subscribe to mirror it into rendering.
+    // The four connectors' previous store singleton/listener installer/connect·disconnect·resetFlow·retry quartets were verbatim
+    // identical; every behavioral difference is collapsed into a createConnectorFlow config option (each maps to the original
+    // implementation — do not casually "unify" them):
+    //   twoStep        Feishu two-stage QR scan: after ensure_cli advance the connect step, then begin; the rest single-stage.
+    //   progressEvent  Only feishu has the fine-grained feishu:progress event (backend-driven progress).
+    //   qrStepsExtra   Feishu's QR event additionally marks the connect step done (two-stage stage one already finished).
+    //   qrPayloadExtra Extra fields on the QR event: dingtalk user_code; tmeet browserAuth flag.
+    //   openAuthUrl    When tmeet's QR event carries a url, open the browser directly (embedded-QR render fallback).
+    //   connectedMode  apply=fire-and-forget skill write (feishu/wecom); applyAwait=await the skill write,
+    //                  turning failure into a flow error (dingtalk); readinessAwait=re-verify the real login
+    //                  state via bundle_readiness before writing skills (tmeet).
     /* eslint-disable unicorn/no-this-outside-of-class -- module-level connection store singleton; object-literal methods reference itself via this, and converting to a class would just move the same complexity */
     const createFlowStore = () => ({
       flow: null,
@@ -291,8 +291,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
     const createConnectorFlow = (cfg) => {
       const conn = cfg.conn;
-      // 后端连接事件只注册一次(幂等,跨 ToolStoreView 多次挂载不重复注册)。
-      // connFailed/skillsFailed/authIncomplete 与原实现一致:取首次安装时的 copy 快照。
+      // Backend connection events register only once (idempotent; no duplicate registration across repeated ToolStoreView mounts).
+      // connFailed/skillsFailed/authIncomplete match the original implementation: take the copy snapshot from the first install.
       const ensureListeners = (copy = {}) => {
         if (conn.listenersReady) return;
         const connFailed = copy.connFailed;
@@ -334,15 +334,15 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         ev.listen(cfg.events.connected, cfg.connectedMode === 'apply' ? () => {
           conn.stopTick();
           conn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
-          // 连上 → 按规则写技能(默认启用)+ 广播刷新;跟视图无关,放全局做。
+          // Connected → write skills per the rules (enabled by default) + broadcast refresh; view-independent, so it lives in the global listener.
           invokeTauri(cfg.commands.applySkills).catch(() => {});
-          // 稍后自动收起流程卡(详情里的“已连接”态改由连接态派生驱动)
+          // Auto-collapse the flow card later (the detail dialog's "Connected" state is now driven by derived connection state)
           setTimeout(() => conn.setFlow(null), 1800);
         } : async () => {
           conn.stopTick();
           try {
             if (cfg.readiness) {
-              // 二次确认真实登录态(统一 readiness;原 tmeet_status 调用已退役)
+              // Double-check the real login state (unified readiness; the old tmeet_status call is retired)
               const status = await invokeTauri('bundle_readiness', { bundleId: cfg.readiness.bundleId });
               if (!(status && status.ready)) {
                 throw new Error(authIncomplete);
@@ -361,21 +361,21 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           conn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } }; });
         });
       };
-      // 组件侧处理四联体:deps = { setBusyId, storeCopy, detailCopy }(组件闭包按调用
-      // 时注入,与原组件内四联体同语义)。busyId 在事件回调/错误分支里清。
+      // Component-side quartet handlers: deps = { setBusyId, storeCopy, detailCopy } (injected from the component closure
+      // at call time, same semantics as the original in-component quartet). busyId is cleared in event callbacks/error branches.
       const connect = async ({ setBusyId, storeCopy, detailCopy }) => {
         setBusyId(cfg.key);
         ensureListeners(storeCopy);
-        // 开流程卡(无阻塞弹窗):先起“准备运行时”步。写进跨视图 store,切走不丢。
+        // Open the flow card (non-blocking dialog): start the "Prepare runtime" step. Written to the cross-view store, it survives switching away.
         conn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
-        // 客户端秒表 + 爬行条:后端 progress 事件有真实 pct 时会覆盖;没有也不至于像卡死。
+        // Client-side stopwatch + crawling bar: the backend progress event overrides with a real pct when present; without one this still avoids looking frozen.
         conn.startTick();
         try {
-          // ① 确保 CLI(首次使用在线安装)
+          // ① Ensure CLI (installed online on first use)
           conn.setFlow(f => ({ ...f, active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...(f && f.steps), runtime: 'done', cli: 'active' } }));
           await invokeTauri(cfg.commands.ensureCli);
           conn.setFlow(cfg.twoStep
-            // ② 连接编排(两段式:推进 connect 步,后端 emit qr / connected / error)
+            // ② Connection orchestration (two-stage: advance the connect step; the backend emits qr / connected / error)
             ? f => ({ ...f, active: 'connect', pct: 100, steps: { ...(f && f.steps), cli: 'done', connect: 'active' } })
             : f => ({ ...f, pct: 100, steps: { ...(f && f.steps), cli: 'done' } }));
           await invokeTauri(cfg.commands.begin);
@@ -389,19 +389,19 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           });
         }
       };
-      // 取消/关闭流程卡:置取消 + kill 子进程 + 清状态。
+      // Cancel/close the flow card: mark cancelled + kill child processes + clear state.
       const resetFlow = ({ setBusyId }) => {
         conn.stopTick();
         invokeTauri(cfg.commands.cancel).catch(() => {});
         conn.setFlow(null); setBusyId(null);
       };
-      // 重试:ensure_cli 幂等,直接重跑整个连接流程。
+      // Retry: ensure_cli is idempotent, so simply rerun the whole connection flow.
       const retry = (deps) => { connect(deps); };
       const disconnect = async ({ setBusyId, storeCopy, detailCopy, loadBackendState, setAlert }) => {
         setBusyId(cfg.key);
         try {
           await invokeTauri(cfg.commands.logout);
-          // 断开 → 撤掉技能(should_show 变 false)+ 广播刷新;连接态经 readiness 重取。
+          // Disconnect → withdraw skills (should_show flips to false) + broadcast refresh; connection state is re-fetched via readiness.
           await invokeTauri(cfg.commands.applySkills).catch(() => {});
           await loadBackendState();
           setAlert({ visible: true, loading: false, title: cfg.disconnectedTitle({ storeCopy, detailCopy }), isInstall: false, isError: false });
@@ -461,14 +461,14 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       disconnectedTitle: ({ detailCopy }) => detailCopy.actions.disconnectedTmeet,
     });
     const ensureTmeetListeners = tmeetFlowApi.ensureListeners;
-    // CLI 连接器卡的路由表(ToolStoreView.handleAction 消费;顺序即原 if 链顺序)。
+    // Routing table for the CLI connector cards (consumed by ToolStoreView.handleAction; order mirrors the original if-chain order).
     const CONNECTOR_FLOW_APIS = { feishu: feishuFlowApi, wecom: wecomFlowApi, dingtalk: dingtalkFlowApi, tmeet: tmeetFlowApi };
     const CLI_FLOW_TOOLS = { feishu: { cliKey: 'feishuCli' }, wecom: { cliKey: 'wecomCli' }, dingtalk: { cliKey: 'dingtalkCli' }, tmeet: { cliKey: 'tmeetCli' } };
 
-    // 订阅跨视图 store 的组件级镜像 effect(四连接器共用):把 store 状态镜像进本
-    // 组件渲染,并在完成/失败时做组件级收尾(弹窗、刷新连接态)。真正的事件监听/
-    // 秒表在模块级 conn 单例里,切视图不丢。tmeet 的完成提示走 detailCopy 专词,
-    // 经 doneTitle 注入;其余连接器传 storeCopy.connectedTool(...) 的求值结果。
+    // Component-level mirror effect subscribing to the cross-view store (shared by the four connectors):
+    // mirrors store state into local rendering and finalizes on done/failure (alert dialog, connection-state
+    // refresh). The real listeners/stopwatch live in the module-level conn singleton, surviving view switches.
+    // tmeet's done toast uses a detailCopy phrase via doneTitle; others pass evaluated storeCopy.connectedTool(...).
     const useConnectorFlowSubscription = ({ enabled, conn, ensureListeners, setFlow, storeCopy, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle, toolId }) => {
       useEffect(() => {
         if (!enabled) return;
@@ -489,15 +489,15 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             prevPhase = ph;
           }
         });
-        setFlow(conn.flow); // (重)挂载即水合当前进度
+        setFlow(conn.flow); // hydrate the current progress on (re)mount
         return unsub;
       // eslint-disable-next-line react-hooks/exhaustive-deps -- subscription mounts/unmounts only with externalAuthAvailable; the copy snapshot is read on demand by the callback, so resubscribing is unnecessary
       }, [enabled]);
     };
 
-    // z-[200] 模态蒙层:半透明黑 + 背景模糊;传 onClose 时点击蒙层关窗(不传则蒙层
-    // 不响应点击,如配置弹窗/Obsidian 引导)。内容层的 stopPropagation、Escape 守卫
-    // 等交互语义留在各弹窗内部,蒙层只负责铺底与可选的点击关窗。
+    // z-[200] modal backdrop: translucent black + background blur; clicking closes the dialog when onClose is
+    // passed (otherwise inert, e.g. config dialog/Obsidian guide). Content-layer semantics (stopPropagation,
+    // Escape guard) stay inside each dialog; the backdrop only paints and optionally closes on click.
     const ModalBackdrop = ({ onClose, onKeyDown, children }) => (
       // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
       <div
@@ -846,9 +846,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       );
     };
 
-    // 行内二次确认弹窗骨架(预置技能更新确认 / 回收站彻底删除确认共用):
-    // 蒙层点击关窗 + 内容 stopPropagation + 并排双按钮。confirmTone 'blue'|'rose'
-    // 对应两处的确认键配色;confirmTestId 仅回收站彻底删除确认需要(测试钉住)。
+    // Inline double-confirm dialog skeleton (shared by the preset skill update confirm and the trash permanent-delete
+    // confirm): backdrop click-to-close + content stopPropagation + two side-by-side buttons. confirmTone 'blue'|'rose'
+    // picks each site's confirm key color; confirmTestId is only needed by the trash permanent-delete confirm (test pin).
     const SheetRowConfirm = ({ title, desc, cancelLabel, confirmLabel, confirmTone = 'blue', confirmTestId, onConfirm, onCancel }) => (
       // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is covered by the dialog's cancel/confirm buttons
       // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
@@ -1221,7 +1221,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       useEffect(() => { loadBackendState(); }, []);
 
       // 订阅跨视图 store：把 store 状态镜像进本组件渲染，并在完成/失败时做组件级收尾
-      //（弹窗、刷新连接态）。真正的事件监听/秒表在模块级 conn 单例里，切视图不丢。
+      // (alert dialog, connection-state refresh). The real listeners/stopwatch live in the module-level conn singleton, surviving view switches.
       useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: feishuConn, ensureListeners: ensureFeishuListeners, setFlow: setFeishuFlow, storeCopy, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.feishu), toolId: 'feishu' });
 
       // 订阅企业微信 store(镜像飞书):镜像进渲染 + 完成/失败收尾
@@ -1230,7 +1230,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 订阅钉钉 store(镜像企微):镜像进渲染 + 完成/失败收尾
       useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: dingtalkConn, ensureListeners: ensureDingtalkListeners, setFlow: setDingtalkFlow, storeCopy, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.dingtalk), toolId: 'dingtalk' });
 
-      // 订阅腾讯会议 store(镜像钉钉):镜像进渲染 + 完成/失败收尾(完成提示走专词)
+      // Subscribe to the tmeet store (mirrors the dingtalk one): mirror into rendering + done/failure finalization (done toast uses a dedicated phrase)
       useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: tmeetConn, ensureListeners: ensureTmeetListeners, setFlow: setTmeetFlow, storeCopy, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: detailCopy.actions.connectedTmeet, toolId: 'tmeet' });
 
       // 企微连接编排事件:后端推进度,前端驱动 UI。
@@ -1928,14 +1928,14 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }
       };
 
-      // 连接器流程处理函数:工厂产物 + 组件闭包注入(镜像原 connect*/disconnect*/
-      // *ResetFlow*/*Retry 四联体;事件驱动,busyId 在事件回调/错误分支里清)。
+      // Connector flow handlers: factory products + component closure injection (mirroring the original
+      // connect*/disconnect*/*ResetFlow*/*Retry quartets; event-driven, busyId cleared in event/error branches).
       const flowDeps = { setBusyId, storeCopy, detailCopy, loadBackendState, setAlert };
       const connectConnector = (key) => CONNECTOR_FLOW_APIS[key].connect(flowDeps);
       const disconnectConnector = (key) => CONNECTOR_FLOW_APIS[key].disconnect(flowDeps);
       const resetConnectorFlow = (key) => CONNECTOR_FLOW_APIS[key].resetFlow(flowDeps);
       const retryConnector = (key) => { connectConnector(key); };
-      // "Open in browser" 失败时的兜底提示(如 external-url 白名单拒绝);此前静默。
+      // Fallback toast when "Open in browser" fails (e.g. the external-url allowlist rejects it); previously this failed silently.
       const browserOpenFailed = () => setAlert({ visible: true, loading: false, title: storeCopy.openBrowserFailed, isInstall: false, isError: true });
 
       // 安装/卸载入口
@@ -1958,10 +1958,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         else if (skillCards.some(s => s.backendId === backendId) && tsToolsData.every(t => t.backendId !== backendId)) return handleSkillAction(backendId, isInstalled);
         const requestedTool = findLocalizedTool(backendId);
         if (!externalAuthAvailable && isRestrictedExternalAuthTool(requestedTool)) return;
-        // 飞书/企微/钉钉/腾讯会议走 CLI 连接流程,不走 marketplace install:
-        // 未连接 → 弹详情弹窗(里面有进度卡)+ 触发连接(飞书为 config init --new,
-        // 浏览器自动建 app + 两段扫码,不收表单;两段/单段扫码、单段 OAuth 的编排
-        // 差异在各连接器监听器里)。路由表顺序即原 if 链顺序。
+        // feishu/wecom/dingtalk/tmeet use the CLI connection flow, not marketplace install:
+        // not connected → open the detail dialog (progress card inside) + start connecting (feishu runs config init
+        // --new: browser creates the app + two-stage QR scan, no form; two-stage/single-stage QR and single-stage
+        // OAuth orchestration differ per connector listener). Routing-table order mirrors the original if-chain order.
         const cliFlowTool = CLI_FLOW_TOOLS[backendId];
         if (cliFlowTool) {
           if (isInstalled) return disconnectConnector(backendId);
@@ -2051,8 +2051,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         return () => { document.body.style.overflow = 'unset'; };
       }, [selectedTool]);
 
-      // 详情页「已连接」横幅(五个连接器同构,只有一处视觉壳):CLI 连接器要求
-      // 连接态就绪且流程卡已收起;ima 无流程卡,只看连接态。条件互斥,至多显示一条。
+      // Detail page "Connected" banner (five connectors, one shared visual shell): CLI connectors need the connection
+      // state ready and the flow card collapsed; ima has no flow card, connection state only. Mutually exclusive, at most one shows.
       const connectedBanners = [
         { show: !!selectedTool?.feishuCli && feishuConnected && !feishuFlow, text: storeCopy.connectedBanner(storeCopy.toolNames.feishu) },
         { show: !!selectedTool?.wecomCli && wecomConnected && !wecomFlow, text: storeCopy.connectedBanner(storeCopy.toolNames.wecom) },

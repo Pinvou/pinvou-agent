@@ -128,9 +128,9 @@ const AcFmtIcon = FileTypeIcon;
 
     const toolBasename = (p) => {
       if (typeof p !== 'string' || !p) return '';
-      // 与 shared/path-utils 的 pathBasename 同一实现:剥尾分隔符后取末段,空结果
-      // 回退原路径(全分隔符串,如 '///')。原内联版只按 '/' 切;pathBasename 额外
-      // 兼容 '\\' 分隔(Windows 路径取到的末段名更准确)。
+      // Same implementation as shared/path-utils' pathBasename: strip trailing separators, take the last segment,
+      // fall back to the original path on empty result (all-separator string like '///'). The old inline version
+      // only split on '/'; pathBasename also handles '\\' (more accurate last segment for Windows paths).
       return pathBasename(p, { collapseTrailing: true, fallback: p });
     };
 

@@ -657,12 +657,12 @@ try {
   const conversationView = readFileSync(path.join(root, 'src', 'features', 'conversation', 'ConversationTimeline.jsx'), 'utf8');
   const baseStyles = readFileSync(path.join(root, 'src', 'styles', 'base.css'), 'utf8');
   const boundedPermissionOptionClass = 'max-w-full min-w-0 whitespace-normal break-all';
-  // 权限卡选项换行契约由共享时间线实现单点承载。
+  // The permission-card option wrapping contract is now carried solely by the shared timeline implementation.
   assert.ok(conversationView.includes(boundedPermissionOptionClass),
   'long ACP permission option labels must wrap inside the shared permission card');
 
-  // 权限卡唯一实现在 ConversationTimeline（codex 旧 PermissionCard 已随旧时间线删除），
-  // i18n copy 契约改钉共享实现。
+  // The permission card's only implementation is ConversationTimeline (the legacy codex
+  // PermissionCard was removed along with the old timeline); the i18n copy contract is pinned to the shared implementation.
   assert.ok(conversationView.includes('c.permissionRequest(')
     && conversationView.includes('c.protectedOperation')
     && conversationView.includes('c.allowOnce')
@@ -675,7 +675,7 @@ try {
     && conversationView.includes('min-w-0 flex-1 truncate'),
   'running tool groups must use bounded semantic labels instead of rendering raw command titles');
   const boundedLongTextClass = 'whitespace-pre-wrap break-words [overflow-wrap:anywhere]';
-  // 长文本边界契约由共享时间线实现单点承载（codex 旧转写组件已删除）。
+  // The long-text bounding contract is now carried solely by the shared timeline implementation (the legacy codex transcript component was removed).
   assert.ok(conversationView.includes(boundedLongTextClass)
     && conversationView.includes('max-h-80 max-w-full overflow-auto whitespace-pre'),
   'reasoning, plan, permission, and terminal content must stay within the shared timeline');
@@ -793,7 +793,7 @@ try {
   // 契约（2026-08-12 更新）：Design 入口必须回到 ChatView design 模式；从 code
   // 页切回时保留原工作会话（不强制 createNewSession，否则新建 plain 会话把
   // 用户切过的 Plan 顶成 Yolo），仅草稿态才新建会话。
-  // design 与 work 分支已合并为单条参数化路径（行为不变），契约按合并后形状断言。
+  // The design and work branches were merged into a single parameterized path (behavior unchanged); the contract asserts the merged shape.
   assert.match(main,
     /else if \(mode === 'design' \|\| mode === 'work'\) \{[\s\S]*?savePinvouModeState\(\{ mode \}[^;]*;[\s\S]*?createNewSession\(\);[\s\S]*?setCurrentView\('chat'\)/,
     'selecting Design from the shared mode entry must return to ChatView design mode');
@@ -817,8 +817,8 @@ try {
     && chatView.includes('<PinvouLogo className="h-5 w-5" title={chatViewCopy.agentName}')
     && codexView.includes('<AcpAgentLogo agentId={activeAgentId} className="h-5 w-5"'),
   'assistant avatars must use the Pinvou and selected ACP Agent identity marks');
-  // 文案回退已收敛到 dict.zh.uiConversation（ConversationTimeline 以 copy 键引用），
-  // 断言「键在时间线中被消费 + zh 词条存在」。
+  // Copy fallback has been consolidated into dict.zh.uiConversation (ConversationTimeline references
+  // it via copy keys); assert that the key is consumed in the timeline and the zh entry exists.
   const conversationZhDict = readFileSync(path.join(root, 'src', 'shared', 'i18n', 'zh.js'), 'utf8');
   assert.ok(conversationView.includes('c.thinking') && conversationZhDict.includes("thinking:'思考中'"),
     'running reasoning must expose a timer label');

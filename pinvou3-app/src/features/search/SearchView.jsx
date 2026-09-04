@@ -20,7 +20,7 @@ import { sessionRoute } from '../../shared/session-management.js';
 // Stable empty-array default: an inline [] is a new reference on every render, which makes memoized children re-render repeatedly.
 const EMPTY_ARCHIVED = [];
 
-// 批量多选的圆形勾选框:行内勾选(大)与全选(小)共用同一套描边/填充样式
+// Round checkbox for bulk multi-select: the in-row check (large) and select-all (small) share one stroke/fill style set
 const CircleCheck = ({ checked, size }) => (
   <span className={`${
     size === 'sm' ? 'w-4 h-4' : 'w-5 h-5'
@@ -262,7 +262,7 @@ export const SearchView = ({ theme, history, t, language, archived = EMPTY_ARCHI
       <div className="flex-1 min-h-0 flex flex-col px-6 pt-16 pb-6">
         <div className="max-w-[960px] w-full mx-auto flex flex-col flex-1 min-h-0 relative">
 
-          {/* Centered Search Bar(与 iOS 标准搜索框统一,原为更大的圆角胶囊) */}
+          {/* Centered Search Bar (unified with the iOS-standard search field; was a larger rounded capsule) */}
           <IosSearchField
             value={query}
             onChange={e => setQuery(e.target.value)}

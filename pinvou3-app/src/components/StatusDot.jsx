@@ -1,6 +1,6 @@
-// 状态小圆点：transcript / 工具行 / 会话列表此前 12+ 处逐字重复同一组
-// 「1.5px 圆点 + 语义色」span（灰待机 / 蓝脉冲运行 / 红失败 / 翠绿完成 / 琥珀等待）。
-// tone 枚举到具体色值（避免 className 覆盖与默认色打架）；色板之外的特例继续内联。
+// Status dot: transcript / tool rows / session lists previously repeated the same span verbatim in 12+ places
+// (1.5px dot + semantic color: gray idle / blue pulsing running / red failed / emerald done / amber waiting).
+// The tone enum maps to concrete colors (so className overrides cannot fight the default); out-of-palette cases stay inline.
 const TONES = {
   idle: 'bg-gray-300 dark:bg-gray-600',
   run: 'bg-blue-500 animate-pulse',

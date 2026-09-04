@@ -68,9 +68,9 @@ async function settleDocumentStatusBatches(documentIds, deadline, requestBatch) 
     : []));
 }
 
-// 页面级与 owner 面板共用一条成功 / 错误通知。两份原样保留的差异：页面级 role 固定
-// status、正文 break-all、朴素关闭按钮；owner 面板错误时 role=alert、正文 break-words、
-// 图标关闭按钮带 aria-label。role 可显式覆盖，未传时错误 alert、成功 status。
+// Page-level and owner panel share one success / error notice. Differences preserved as-is: page level pins
+// role=status, a break-all body and a plain close button; the owner panel uses role=alert + a break-words body on errors,
+// and an icon close button with aria-label. role can be overridden explicitly; defaults are alert for errors, status for success.
 function NoticeBanner({ notice, onClose, role, owner = false, closeLabel }) {
   if (!notice) return null;
   const error = notice.type === 'error';
@@ -621,8 +621,8 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [closeOwnerPanel, confirmation, documentToTrash, finishConfirmation, isBusy, joinFeedback?.status, showCollectionCreator, showConnector, showOwnerPanel, showPublishDialog, showRecoveryCode, showRestoreDialog, showUploadDialog, uploadHasStarted]);
-  // “添加内容”菜单的 Escape / 点外关闭；escapeOnWindow 保持原先 window 级 keydown 监听，
-  // 与上方弹层 Escape 优先级链（closeOnEscape）的先后次序不变。
+  // Escape / outside-click close for the add-content menu; escapeOnWindow keeps the original window-level keydown listener,
+  // preserving the original ordering against the popover Escape chain above (closeOnEscape).
   useOutsidePointerClose(
     showUploadSourceMenu,
     () => setShowUploadSourceMenu(false),
@@ -737,9 +737,9 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     await refreshPendingJoins();
   }
 
-  // install / upgrade / reconnect 三个宿主操作的公共骨架：在飞防重入、busyCounts 计数、
-  // hostProgress 阶段推进、成功后 1.2s 清除。差异以参数表达：install/reconnect 成功后
-  // selectServer；失败进度 install/upgrade 沿用 current.percent || 5，reconnect 固定 100。
+  // Common skeleton for the install / upgrade / reconnect host operations: in-flight re-entry guard, busyCounts bookkeeping,
+  // hostProgress phase advancement, and a 1.2s clear after success. Differences are parameterized: install/reconnect
+  // selectServer on success; on failure install/upgrade keep current.percent || 5 while reconnect pins 100.
   async function runHostOperation({
     busyKey,
     operation,

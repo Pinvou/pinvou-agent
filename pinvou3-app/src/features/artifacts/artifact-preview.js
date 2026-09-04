@@ -1,27 +1,27 @@
 import { bridge } from '../../hooks/useBridge.js';
 
-// ArtifactsPanel 与 FilePreviewModal 的预览取数阶梯完全同构：
-// exists 检查 → md/html/text 走 readArtifactText → 其余 kind 走 renderArtifactVisual
-// （modal 另有 json pretty-print 与 image base64 两条扩展分支）。此处只共享
-// 「取数 + 状态机」，返回各调用方 setPv / setPreview 直接消费的预览状态；
-// 渲染 JSX 仍由各调用方自己负责（office iframe 的 sandbox 差异、可编辑 md、
-// unsupported 兜底卡等不在此收敛）。
+// ArtifactsPanel and FilePreviewModal had isomorphic preview-fetch ladders:
+// exists check -> md/html/text via readArtifactText -> other kinds via renderArtifactVisual
+// (the modal adds two extension branches: json pretty-print and image base64). Only the
+// fetch + state machine is shared here, returning preview state consumed directly by each caller's setPv / setPreview;
+// rendering JSX stays with the callers (office iframe sandbox differences, editable md,
+// the unsupported fallback card, etc. are not consolidated here).
 
-// 有文本读取通道的 kind；其余 kind 走 renderArtifactVisual 可视化渲染。
+// Kinds with a text-read channel; all other kinds render visually via renderArtifactVisual.
 const TEXT_PREVIEW_KINDS = ['md', 'html', 'text'];
 
 /**
- * @param {string} path - artifact 绝对路径（路径内含 session id，可唯一寻址）
- * @param {string|undefined} sessionId - 桥接会话域。按 path 取数的调用方（ArtifactsPanel）
- *   传 undefined：bridge 侧 `sessionId || activeSessionId`，与不传参逐字等价。
- * @param {{includeJson?: boolean, includeImage?: boolean, includeInfo?: boolean, isCancelled?: () => boolean}} [options] - 每调用方的阶梯扩展与取消探测，默认全关（等价 FilePreviewModal 原阶梯；ArtifactsPanel 原阶梯每档带 info，须传 includeInfo: true）
- * @param {boolean} [options.includeJson] - .json 后缀尝试 pretty-print，kind 改判 'json'（解析失败按原文展示）
- * @param {boolean} [options.includeImage] - image kind 走 readArtifactImageB64，读失败降级为 imageError
- * @param {boolean} [options.includeInfo] - 成功态附带 info（{kind,text,info} / {kind,visual,info} / {missing,info}）；
- *   关闭时保持 FilePreviewModal 原有的无 info 形状，且 visual 分支 kind 为 `info.kind || 'other'`
- * @param {() => boolean} [options.isCancelled] - 阶梯中途查询取消：为真立即停止后续桥接调用，
- *   调用方再以自己的 cancelled 标志丢弃返回值（与原两处 effect 的 cancelled/alive 检查同位）
- * @returns {Promise<object>} 预览状态：{loading 由调用方管理} / {missing[,info]} / {kind,text[,info]} /
+ * @param {string} path - absolute artifact path (embeds the session id, so it is uniquely addressable)
+ * @param {string|undefined} sessionId - bridge session scope. Callers fetching by path (ArtifactsPanel)
+ *   pass undefined: the bridge resolves `sessionId || activeSessionId`, verbatim-equal to omitting the argument.
+ * @param {{includeJson?: boolean, includeImage?: boolean, includeInfo?: boolean, isCancelled?: () => boolean}} [options] - per-caller ladder extensions and cancellation probe, all off by default (equals the original FilePreviewModal ladder; the original ArtifactsPanel ladder attached info on every branch and must pass includeInfo: true)
+ * @param {boolean} [options.includeJson] - try pretty-print for the .json suffix, re-kind as 'json' (falls back to raw text on parse failure)
+ * @param {boolean} [options.includeImage] - image kinds go through readArtifactImageB64, degrading to imageError on read failure
+ * @param {boolean} [options.includeInfo] - attach info on success ({kind,text,info} / {kind,visual,info} / {missing,info});
+ *   when off, the shape stays the original info-less FilePreviewModal one, and visual branches use kind `info.kind || 'other'`
+ * @param {() => boolean} [options.isCancelled] - mid-ladder cancellation probe: when true, stop further bridge calls immediately;
+ *   the caller additionally drops the result with its own cancelled flag (same slot as the original effects' cancelled/alive checks)
+ * @returns {Promise<object>} preview state: {loading managed by the caller} / {missing[,info]} / {kind,text[,info]} /
  *   {kind:'image',dataUrl} / {kind:'image',imageError} / {kind,visual[,info]} / {error}
  */
 export async function loadArtifactPreview(path, sessionId, options = {}) {

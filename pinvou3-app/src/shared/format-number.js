@@ -1,13 +1,13 @@
 /**
- * format-number.js — React 侧可 ESM 导入的紧凑数字 / 字节格式化。
+ * format-number.js — compact-count / byte formatting importable as ESM from React code.
  *
- * plain-script bridge 侧的同类实现收敛在 shared/format-utils.js（window.PinvouFormatUtils，
- * 经典脚本无法 import，故此处与其保持同语义的独立副本）；此前 ChatView / CodexAcpView /
- * MonitorView / 各列表视图各自内联的实现统一改引本模块。
+ * The plain-script bridge keeps its counterpart in shared/format-utils.js (window.PinvouFormatUtils —
+ * classic scripts cannot import, so this module stays a semantically-equal standalone copy); the
+ * inline copies previously forked across ChatView / CodexAcpView / MonitorView / list views now import this module.
  */
 
-// 与 format-utils.js fmtTok 同语义：≥1e6 → 1.0M，≥1e3 → 1.0k，其余取整。
-// 非有限值统一回退占位符（各视图原先分别返回 '—' 或直接展示 NaN）。
+// Same semantics as fmtTok in format-utils.js: >=1e6 -> 1.0M, >=1e3 -> 1.0k, otherwise rounded.
+// Non-finite values uniformly fall back to the missing sentinel (views previously returned '—' or rendered raw NaN).
 export function formatCompactCount(n) {
   if (n == null || !Number.isFinite(n)) return '—';
   if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
@@ -15,8 +15,8 @@ export function formatCompactCount(n) {
   return String(Math.round(n));
 }
 
-// 字节数 → B/KB/MB/GB（1024 进制，一位小数）。missing 用于空值占位，
-// 各视图原本分别返回 '' / '—' / '0 B'，迁移时按原显示传参。
+// Bytes -> B/KB/MB/GB (1024-based, one decimal). `missing` is the empty-value sentinel;
+// views originally returned '' / '—' / '0 B' respectively — pass each site's original display when migrating.
 export function formatBytes(bytes, { missing = '' } = {}) {
   if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return missing;
   if (bytes < 1024) return `${bytes} B`;
