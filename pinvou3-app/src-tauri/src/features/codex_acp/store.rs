@@ -363,8 +363,11 @@ impl SessionAgentStore {
             .unwrap_or_default()
     }
 
-    /// 返回绑定到指定项目工作区的 code 会话 id（ACP 与原生代码会话；
-    /// 双方路径都规范化后比较，容忍符号链接/尾斜杠差异）。
+    /// Returns session ids bound to the given project workspace for
+    /// code-capable sessions: ACP sessions in any mode (they execute file
+    /// edits in the project directory even in plain mode) and native sessions
+    /// in code mode. Both paths are canonicalized before comparison,
+    /// tolerating symlink/trailing-slash differences.
     pub fn code_sessions_in_workspace(&self, root: &Path) -> Vec<String> {
         let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
         self.records
