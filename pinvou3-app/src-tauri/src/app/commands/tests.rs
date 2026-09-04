@@ -529,7 +529,7 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
     );
 
     uninstall_marketplace_skill_sync("visualizer").unwrap();
-    // 卸载清除两个 scope 禁用集残留（与连接器同语义）→ 重装后默认启用。
+    // 卸载清除两个 scope 禁用集残留（与连接器同语义）。
     assert!(
         !sm::load_disabled_skills_for(ConnectorScope::Plain)
             .iter()
@@ -537,11 +537,13 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
         "卸载应从禁用集清除残留 id"
     );
     install_marketplace_skill_sync("visualizer").unwrap();
+    // 全模式 DenyAll（工具开关默认全关）后，重装视同新装：已初始化的 scope
+    // 默认保持关闭，由用户显式开启（与连接器「新装默认关」语义一致）。
     assert!(
-        sm::enabled_skills_for(ConnectorScope::Plain, None)
+        sm::load_disabled_skills_for(ConnectorScope::Plain)
             .iter()
-            .any(|(n, _)| n == "visualizer"),
-        "卸载清除残留后重装默认启用（与连接器卸载语义一致）"
+            .any(|id| id == "visualizer"),
+        "重装后 plain scope 默认关闭（DenyAll 收敛语义）"
     );
 
     match previous {
