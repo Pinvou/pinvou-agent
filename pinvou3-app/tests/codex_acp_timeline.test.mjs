@@ -551,12 +551,17 @@ try {
     /if \(type === 'turn_started'\) \{[\s\S]*?refreshCodexSessions\(\)\.catch\(\(\) => \{\}\);[\s\S]*?\} else if \(type === 'turn_completed'\)/,
     'an accepted ACP turn must refresh the shared recent-session list while it is still running',
   );
-  assert.ok(main.includes("{ id: 'code', label: t.sidebarTaskFilterCode }")
+  assert.ok(main.includes("{ id: 'code', label: t.sidebarTaskFilterCodeSessions }")
     && main.includes("if (taskListFilter === 'code') return chat.taskKind === 'codex';")
+    && i18n.includes("sidebarTaskFilterCodeSessions: '代码会话'")
+    && i18n.includes("sidebarTaskFilterCodeSessions: 'Code sessions'")
+    && i18n.includes("sidebarTaskFilterCodeSessions: 'コードセッション'")
+    && main.includes("{t.sidebarTaskFilterCode}")
     && i18n.includes("sidebarTaskFilterCode: '代码'")
     && i18n.includes("sidebarTaskFilterCode: 'Code'")
     && i18n.includes("sidebarTaskFilterCode: 'コード'"),
-  'the task-list Code filter must show only Codex sessions in every supported locale');
+  'the task-list Code filter must show only Codex sessions in every supported locale, '
+    + 'with a label distinct from the All/Code list-shape pill');
   assert.ok(main.includes('leadingIcon: <PinvouLogo')
     && main.includes('<AcpAgentLogo agentId={session.agent_id} className="h-[18px] w-[18px]"')
     && main.includes('<Clock size={18} />'),
