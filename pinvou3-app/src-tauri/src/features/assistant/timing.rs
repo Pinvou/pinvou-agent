@@ -1494,7 +1494,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // edition 2024 起 set_var 为 unsafe；测试进程单线程持有 ENV_LOCK，安全。
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-active-turn-guard";
         assert!(!has_active_turn(sid));
