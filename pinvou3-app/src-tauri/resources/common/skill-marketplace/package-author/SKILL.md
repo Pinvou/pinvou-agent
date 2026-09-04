@@ -53,7 +53,7 @@ description: 当用户要把手头的工具打包/标准化成 pinvou 插件包�
   "manifest_version": 1,                // 必填，=1
   "id": "weather-insight",              // 必填，[a-z0-9-_]{1,64} 全小写
   "name": "天气洞察",                    // 必填，展示名
-  "version": "1.0.0",                   // 可选
+  "version": "1.0.0",                   // 可选（当前为预留字段，不驱动升级；更新包内容需更换包 id，或先删除 ~/.pinvou3/bundles/<id>/ 再导入）
   "description": "聚合天气查询与解读",     // 可选
   "icon": "icon.svg",                   // 可选，相对根，icon.svg/icon.png
   "components": {                       // 多组件用
@@ -92,9 +92,9 @@ description: 当用户要把手头的工具打包/标准化成 pinvou 插件包�
 
 硬规则：
 - 入口脚本**命名为 `server.py`**、`args: ["server.py"]`（安装时被重写为包内绝对路径）。
-- 依赖 pip 包 → `"pip_dependencies": ["requests"]`。
+- 依赖 pip 包 → `"pip_dependencies": ["requests"]`（上传/导入安装路径不会自动执行 pip 安装，须提醒用户自行安装）。
 - 密钥/Token **不写明文**：走 `config_fields`（`secret:true`）或 `secret_env`/`secret_headers`。
-- 远程 HTTP/OAuth server：用 `servers:[{name,url,oauth?}]` 取代 `command`/`args`。
+- 远程 HTTP/OAuth server：仍须保留 `"command": ""` 与 `"args": []`（manifest 必填字段），另以 `servers:[{name,url,scopes?,oauth?}]` 声明远程端点。
 
 ---
 

@@ -6,12 +6,12 @@
   "icon": "line-chart",
   "category": "金融数据",
   "mcp_tools": [
-    "hithink_market_query", "hithink_zhishu_query",
-    "hithink_finance_query", "hithink_macro_query",
-    "hithink_management_query", "hithink_business_query",
-    "hithink_event_query", "hithink_astock_selector",
-    "hithink_sector_selector", "hithink_industry_query",
-    "news_search", "announcement_search"
+    "mcp_iwencai_hithink_market_query", "mcp_iwencai_hithink_zhishu_query",
+    "mcp_iwencai_hithink_finance_query", "mcp_iwencai_hithink_macro_query",
+    "mcp_iwencai_hithink_management_query", "mcp_iwencai_hithink_business_query",
+    "mcp_iwencai_hithink_event_query", "mcp_iwencai_hithink_astock_selector",
+    "mcp_iwencai_hithink_sector_selector", "mcp_iwencai_hithink_industry_query",
+    "mcp_iwencai_news_search", "mcp_iwencai_announcement_search"
   ],
   "command": "python",
   "args": ["server.py"],
@@ -26,12 +26,12 @@
     { "key": "IWENCAI_API_KEY", "label": "问财 API Key", "required": true, "target": "env", "secret": true }
   ],
   "routing_rules": [
-    "股票/股价/行情/涨跌/K线/走势/市盈率/基本面/个股/选股/板块/大盘/指数/宏观/CPI/GDP/公告/财报 → `hithink_*` / `news_search` / `announcement_search`，不要用 `web_search`"
+    "股票/股价/行情/涨跌/K线/走势/市盈率/基本面/个股/选股/板块/大盘/指数/宏观/CPI/GDP/公告/财报 → `mcp_iwencai_*` / `mcp_iwencai_news_search` / `mcp_iwencai_announcement_search`，不要用 `web_search`"
   ],
   "tool_table_entries": [
-    "| 金融行情 | `hithink_market_query` / `hithink_zhishu_query` (同花顺问财,自然语言查询) |",
-    "| 财务/选股 | `hithink_finance_query` / `hithink_astock_selector` (同花顺问财) |",
-    "| 新闻/公告 | `news_search` / `announcement_search` (同花顺问财) |"
+    "| 金融行情 | `mcp_iwencai_hithink_market_query` / `mcp_iwencai_hithink_zhishu_query` (同花顺问财,自然语言查询) |",
+    "| 财务/选股 | `mcp_iwencai_hithink_finance_query` / `mcp_iwencai_hithink_astock_selector` (同花顺问财) |",
+    "| 新闻/公告 | `mcp_iwencai_news_search` / `mcp_iwencai_announcement_search` (同花顺问财) |"
   ],
   "pip_dependencies": []
 }
