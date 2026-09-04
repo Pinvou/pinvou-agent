@@ -6,7 +6,7 @@
 
 **面向工作、设计与代码的开源桌面 AI Agent 工作台。**
 
-[English](README.md) · [简体中文](README.zh-CN.md)
+[English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
 [![CI](https://github.com/Pinvou/pinvou-agent/actions/workflows/pr-check.yml/badge.svg)](https://github.com/Pinvou/pinvou-agent/actions/workflows/pr-check.yml)
 [![License: MIT](https://img.shields.io/github/license/Pinvou/pinvou-agent)](LICENSE)
@@ -22,7 +22,7 @@
   </a>
 </p>
 <p align="center">
-  <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4"><strong>▶ 观看 90 秒功能演示：7 月 17—23 日功能更新</strong></a>
+  <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4"><strong>▶ 观看 90 秒功能演示（中文）</strong></a>
 </p>
 
 </div>
@@ -109,10 +109,10 @@ Pinvou Agent 支持**本地 vLLM** 和任意 **OpenAI-compatible API**。应用�
 ```bash
 export DEEPSEEK_BASE_URL="http://127.0.0.1:8000/v1"
 export DEEPSEEK_API_KEY="local-no-auth"
-export DEEPSEEK_MODEL="qwen36_35b_256k"
+export DEEPSEEK_MODEL="your-model-name"
 ```
 
-模型地址、模型名和密钥也可以直接在应用设置中管理。对于非本机的明文 HTTP 端点，开发环境还需显式设置 `DEEPSEEK_ALLOW_INSECURE_HTTP=1`。
+模型地址、模型名和密钥也可以直接在应用设置中管理。对于可信开发网络内的非本机明文 HTTP 端点，开发环境还需显式设置 `DEEPSEEK_ALLOW_INSECURE_HTTP=1`。
 
 ## 🚀 快速开始
 
@@ -124,7 +124,7 @@ export DEEPSEEK_MODEL="qwen36_35b_256k"
 - [Tauri 2 系统依赖](https://v2.tauri.app/start/prerequisites/)
 - 一个可访问的 OpenAI-compatible 模型端点
 
-源码树支持 **Linux、Windows 和 macOS**；Linux 发布包的目标基线为 Ubuntu 22.04 及以上（glibc 2.35+，x86_64 与 arm64；deb 另要求 WebKitGTK 2.40+，已应用标准更新源的 22.04 系统均满足），macOS 发布包为 universal（Apple Silicon + Intel）构建、要求 macOS 11.0+。语音识别引擎可按构建配置打包；文件解析（PDF / Office / OCR / 压缩包等）依赖可选外部工具，可通过 Homebrew、apt 或各工具官网安装。
+源码树支持 **Linux、Windows 和 macOS**；Linux 发布包的目标基线为 Ubuntu 22.04 及以上（glibc 2.35+，x86_64 与 arm64；deb 另要求 WebKitGTK 2.40+，已应用标准更新源的 22.04 系统均满足），macOS 发布包为 universal（Apple Silicon + Intel）构建、要求 macOS 11.0+。语音识别引擎可按构建配置打包；文件解析（PDF / Office / OCR / 压缩包等）依赖可选外部工具，可通过 Homebrew、apt 或各工具官网安装（见 `pinvou3-app/INSTALL.md`）。
 
 ### 启动应用
 
@@ -218,7 +218,7 @@ docs/                 架构设计、验证报告与维护文档
 - [第三方许可声明](THIRD_PARTY_NOTICES.md)
 - [商标使用规则](TRADEMARKS.md)
 - [SBOM 说明](docs/sbom.md)
-- [工具市场设计](docs/工具市场.md)
+- [工具市场概览](docs/工具市场.md)
 
 ## 🔗 友情链接
 

@@ -437,6 +437,14 @@
     en: {
       newChatFailed: "⚠️ Failed to create chat: ", loadChatFailed: "⚠️ Failed to load chat: ", deleteFailed: "⚠️ Delete failed: ",
       personaUnequipped: "🎴 Expert card removed: ",
+      reviewFixHeader: "Apply the review notes below — **revise only the targeted sections, do not rewrite the whole document**:",
+      reviewVerifyHeader: "The items below involve external facts — **verify first, cite your sources, and don't edit from memory**:",
+      reviewAdoptHeader: "The following decisions are final — update the artifacts accordingly:",
+      reviewAskHeader: "For the pending items below, ask me formally via request_user_input instead of guessing:",
+      reviewFillHeader: "The artifact is still missing the dimensions below — add them (keep everything else; add only, don't rewrite):",
+      reviewFillFooter: "(For anything involving external facts, verify before writing and cite sources — don't fabricate from memory.)",
+      planStuckReplanPrompt: "Use the todo_write tool to lay out the full plan steps — don't call write tools directly.",
+      planStuckGoPrompt: "Continue the task per the plan discussed above — write files / run commands directly; no more plan discussion.",
       planHistorical: "📜 Past plan", planSuperseded: "📜 Superseded by a newer plan",
       attachStillParsing: "⚠️ Attachment still parsing, try again shortly",
       imageUnsupported: "The current model does not support images. Switch to an image-capable model, or configure a vision model in model settings.",
@@ -516,6 +524,14 @@
     ja: {
       newChatFailed: "⚠️ 新規チャットの作成に失敗: ", loadChatFailed: "⚠️ チャットの読み込みに失敗: ", deleteFailed: "⚠️ 削除に失敗: ",
       personaUnequipped: "🎴 エキスパートカードを外しました: ",
+      reviewFixHeader: "下のレビュー意見に従い、**該当するセクションのみを修正してください。全文の書き直しはしないでください**：",
+      reviewVerifyHeader: "以下の項目は外部事実に関わります。**必ず検証してから修正し、根拠を示してください（記憶に頼った編集はしないでください）**：",
+      reviewAdoptHeader: "以下の事項は確定しました。この通り成果物を更新してください：",
+      reviewAskHeader: "以下の未確定項目については、推測せず request_user_input で正式に私に質問してください：",
+      reviewFillHeader: "成果物には以下の観点が不足しています。補足してください（既存部分は保持し、追記のみで書き換えないでください）：",
+      reviewFillFooter: "（外部事実に関わる部分は、検証してから記述し、根拠を示してください。記憶からの創作はしないでください。）",
+      planStuckReplanPrompt: "todo_write ツールで計画の全ステップを出力してください。書き込み系ツールを直接実行しないでください。",
+      planStuckGoPrompt: "上で議論した計画に従ってタスクを続行してください。ファイルの書き込みやコマンドの実行を直接行い、計画の再議論はしないでください。",
       planHistorical: "📜 過去のプラン", planSuperseded: "📜 新しいプランで上書きされました",
       attachStillParsing: "⚠️ 添付ファイルを解析中です。少し待ってから送信してください",
       imageUnsupported: "現在のモデルは画像に対応していません。画像対応モデルに切り替えるか、モデル設定でビジョンモデルを構成してください。",
@@ -595,6 +611,14 @@
     zh: {
       newChatFailed: "⚠️ 新建对话失败: ", loadChatFailed: "⚠️ 加载对话失败: ", deleteFailed: "⚠️ 删除失败: ",
       personaUnequipped: "🎴 已卸下专家卡牌: ",
+      reviewFixHeader: "请按下面的检阅意见，**只定向修改对应段落，不要全文重写**：",
+      reviewVerifyHeader: "以下几条涉及外部事实，**先查证再改、标明依据，别凭记忆直接改**：",
+      reviewAdoptHeader: "以下事项我已拍板，按此更新产物：",
+      reviewAskHeader: "以下待定项请用 request_user_input 正式问我，别自己猜：",
+      reviewFillHeader: "以下维度产物还缺，请补充进去（保留其余、只增不改）：",
+      reviewFillFooter: "（涉及外部事实的，先查证再写、标依据，别凭记忆编。）",
+      planStuckReplanPrompt: "请用 todo_write 工具输出完整方案步骤,不要直接调写工具。",
+      planStuckGoPrompt: "按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。",
       planHistorical: "📜 历史方案", planSuperseded: "📜 已被新方案覆盖",
       attachStillParsing: "⚠️ 附件还在解析,请稍后再发",
       imageUnsupported: "当前模型不支持图片。请切换到支持图片的模型，或在模型设置中配置视觉模型。",
@@ -676,6 +700,12 @@
     const lang = state.settings && state.settings.language;
     const m = lang === "en" ? BT_TABLE.en : lang === "ja" ? BT_TABLE.ja : BT_TABLE.zh;
     return m[key] === undefined ? BT_TABLE.zh[key] : m[key];
+  }
+  // Transfer badges are restored from message text, but messages persist in the
+  // UI language used at send time; replay must match all three variants instead
+  // of only the current language. Used for the review/plan wording keys.
+  function textMatchesBtKey(text, key) {
+    return text.includes(BT_TABLE.zh[key]) || text.includes(BT_TABLE.en[key]) || text.includes(BT_TABLE.ja[key]);
   }
   // 默认会话标题哨兵:三语兜底标题都视为占位(自动改名/显示映射的依据),
   // 与 web 桥和 main.jsx 的同款判断保持一致。
@@ -1897,8 +1927,8 @@
           })) uitem2.steeredMidTurn = true;
           const scene = pinvouSceneForMessagePos(mi);
           if (scene) uitem2.pinvouScene = scene;
-          if (utext.includes("以下维度产物还缺")) uitem2.pinvouTransfer = "悟";
-          else if (utext.includes("请按下面的检阅意见") || utext.includes("以下事项我已拍板") || utext.includes("request_user_input 正式问我")) uitem2.pinvouTransfer = "品";
+          if (textMatchesBtKey(utext, "reviewFillHeader")) uitem2.pinvouTransfer = "悟";
+          else if (textMatchesBtKey(utext, "reviewFixHeader") || textMatchesBtKey(utext, "reviewAdoptHeader") || textMatchesBtKey(utext, "reviewAskHeader")) uitem2.pinvouTransfer = "品";
           addChatItem(uitem2);
         }
         // tool_result（只回填普通工具卡；选择卡/方案卡的结果已在 tool_use 处还原）

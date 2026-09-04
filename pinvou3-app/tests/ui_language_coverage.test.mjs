@@ -196,4 +196,26 @@ const personas = source('features/personas/Personas.jsx');
 assert.match(personas, /\{t\.cpMyCards\}/);
 assert.doesNotMatch(personas, /ExpertTeamsPanel|expertPoolTeamTab|expertPoolIndividualTab/);
 
+// 设计检查器字体预设:数据侧 label 保留中文原名(选中态比较键),展示走 labelKey;
+// 每个预设都必须声明 labelKey 且三语词典都有该 key,否则 en/ja 用户会看到中文原名。
+const fontPresets = source('features/artifacts/DesignInspectorPanel.jsx');
+const fontLabelKeys = [...fontPresets.matchAll(/labelKey: '(\w+)'/g)].map(m => m[1]);
+assert.ok(fontLabelKeys.length >= 9, `font presets should declare labelKey, found ${fontLabelKeys.length}`);
+for (const language of ['zh', 'en', 'ja']) {
+  for (const key of fontLabelKeys) {
+    assert.ok(dict[language].uiArtifacts[key], `${language}.uiArtifacts.${key} must exist`);
+  }
+}
+
+// 个人工作台模板 chip:每个模板 id 三语都要有展示名;数据侧 zh title 只是
+// 草稿匹配与消息 meta 的正本,不直接展示给 en/ja 用户。
+const workbench = source('features/chat/personal-workbench-scene.js');
+const workbenchTemplateIds = [...workbench.matchAll(/\n {4}id: '([\w-]+)',/g)].map(m => m[1]);
+assert.equal(workbenchTemplateIds.length, 7, `expected 7 workbench templates, found ${workbenchTemplateIds.length}`);
+for (const language of ['zh', 'en', 'ja']) {
+  for (const id of workbenchTemplateIds) {
+    assert.ok(dict[language].uiChatScenes.workbenchTemplates[id], `${language}.uiChatScenes.workbenchTemplates.${id} must exist`);
+  }
+}
+
 console.log('UI language coverage tests passed');

@@ -31,6 +31,15 @@ const normalizeNumber = (value, unit = 'px') => {
 
 const isHexColor = (value) => /^#[0-9a-f]{6}$/i.test(String(value || '').trim());
 
+// design-runtime.js posts fixed English group labels in mutation records;
+// they are grouping keys, so localize only at render time via these di* keys.
+const DI_CHANGE_GROUP_LABEL_KEYS = {
+  'Edit': 'diChangeGroupEdit',
+  'Text Edit': 'diChangeGroupTextEdit',
+  'Resize': 'diChangeGroupResize',
+  'Move': 'diChangeGroupMove',
+};
+
 const COLOR_PRESETS = [
   '#000000', '#ffffff', '#8e8e93', '#d1d1d6',
   '#ff3b30', '#ff9500', '#ffcc00', '#34c759',
@@ -40,14 +49,14 @@ const COLOR_PRESETS = [
 
 const FONT_PRESETS = [
   { label: '系统默认', labelKey: 'diFontSystem', group: 'System', value: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
-  { label: '微软雅黑', group: 'Chinese', value: '"Microsoft YaHei", "PingFang SC", sans-serif' },
-  { label: '苹方', group: 'Chinese', value: '"PingFang SC", "Microsoft YaHei", sans-serif' },
-  { label: '宋体', group: 'Chinese', value: 'SimSun, "Songti SC", serif' },
-  { label: '黑体', group: 'Chinese', value: 'SimHei, "Heiti SC", sans-serif' },
-  { label: '楷体', group: 'Chinese', value: 'KaiTi, "Kaiti SC", serif' },
-  { label: '仿宋', group: 'Chinese', value: 'FangSong, "FangSong SC", serif' },
-  { label: '思源黑体', group: 'Chinese', value: '"Source Han Sans SC", "Noto Sans CJK SC", sans-serif' },
-  { label: '思源宋体', group: 'Chinese', value: '"Source Han Serif SC", "Noto Serif CJK SC", serif' },
+  { label: '微软雅黑', labelKey: 'diFontYaHei', group: 'Chinese', value: '"Microsoft YaHei", "PingFang SC", sans-serif' },
+  { label: '苹方', labelKey: 'diFontPingFang', group: 'Chinese', value: '"PingFang SC", "Microsoft YaHei", sans-serif' },
+  { label: '宋体', labelKey: 'diFontSimSun', group: 'Chinese', value: 'SimSun, "Songti SC", serif' },
+  { label: '黑体', labelKey: 'diFontSimHei', group: 'Chinese', value: 'SimHei, "Heiti SC", sans-serif' },
+  { label: '楷体', labelKey: 'diFontKaiTi', group: 'Chinese', value: 'KaiTi, "Kaiti SC", serif' },
+  { label: '仿宋', labelKey: 'diFontFangSong', group: 'Chinese', value: 'FangSong, "FangSong SC", serif' },
+  { label: '思源黑体', labelKey: 'diFontSourceHanSans', group: 'Chinese', value: '"Source Han Sans SC", "Noto Sans CJK SC", sans-serif' },
+  { label: '思源宋体', labelKey: 'diFontSourceHanSerif', group: 'Chinese', value: '"Source Han Serif SC", "Noto Serif CJK SC", serif' },
   { label: 'Arial', group: 'Latin', value: 'Arial, Helvetica, sans-serif' },
   { label: 'Helvetica', group: 'Latin', value: 'Helvetica, Arial, sans-serif' },
   { label: 'Inter', group: 'Latin', value: 'Inter, system-ui, sans-serif' },
@@ -376,7 +385,10 @@ const DesignInspectorPanel = ({ t, selectedElement, changes = EMPTY_CHANGES, onA
   };
   const groupedChanges = changes.reduce((acc, change) => {
     const key = change.groupId || `${change.selector || 'unknown'}:${change.id}`;
-    if (!acc[key]) acc[key] = { key, label: change.groupLabel || change.elementLabel || change.selector || L.diChangeFallback, items: [] };
+    if (!acc[key]) {
+      const groupLabelKey = DI_CHANGE_GROUP_LABEL_KEYS[change.groupLabel];
+      acc[key] = { key, label: (groupLabelKey && L[groupLabelKey]) || change.groupLabel || change.elementLabel || change.selector || L.diChangeFallback, items: [] };
+    }
     acc[key].items.push(change);
     return acc;
   }, {});
@@ -626,7 +638,7 @@ const DesignInspectorPanel = ({ t, selectedElement, changes = EMPTY_CHANGES, onA
                     <div className="mb-1 truncate font-semibold">{group.label} · {group.items.length}</div>
                     {group.items.slice(-6).map((change) => (
                       <div key={change.id} className="truncate">
-                        {change.type === 'text' ? 'text' : change.property}: {change.oldValue || L.diEmpty} -&gt; {change.newValue || L.diEmpty}
+                        {change.type === 'text' ? L.diChangeTypeText : change.property}: {change.oldValue || L.diEmpty} -&gt; {change.newValue || L.diEmpty}
                       </div>
                     ))}
                   </div>
