@@ -243,6 +243,82 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
                 ],
             )
 
+    def test_rust_scanner_rejects_external_group_kill_spawn(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            rust_root = root / "pinvou3-app/src-tauri/src"
+            platform = rust_root / "platform/process.rs"
+            platform.parent.mkdir(parents=True)
+            platform.write_text(
+                'fn run() {\n'
+                '    Command::new("kill");\n'
+                '    Command::new("/usr/bin/kill");\n'
+                '    Path::new("kill");\n'
+                '    connector_cli_command(cmd, "kill");\n'
+                '    Command::new("taskkill");\n'
+                '}\n',
+                encoding="utf-8",
+            )
+
+            rules, _ = self.guard.scan_rust(root)
+
+            # The generic `::new("kill")` pattern overlaps the Command/Path
+            # specific ones, so those three shapes count twice each.
+            self.assertEqual(
+                7,
+                rules["rust_external_group_kill_spawn"][
+                    "pinvou3-app/src-tauri/src/platform/process.rs"
+                ],
+            )
+
+    def test_external_group_kill_stub_exception_requires_header_marker_and_reason(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            rust_root = root / "pinvou3-app/src-tauri/src"
+            allowed = rust_root / "platform/allowed.rs"
+            rejected = rust_root / "platform/rejected.rs"
+            late = rust_root / "platform/late.rs"
+            for path in [allowed, rejected, late]:
+                path.parent.mkdir(parents=True, exist_ok=True)
+            probe = 'fn run() { Command::new("kill"); }\n'
+            allowed.write_text(
+                "// architecture-guard: allow-external-group-kill-stub"
+                " -- compile-only contract stub, no real platform binds it\n"
+                + probe,
+                encoding="utf-8",
+            )
+            late.write_text(
+                "// header filler\n" * 20
+                + "// architecture-guard: allow-external-group-kill-stub -- too late\n"
+                + probe,
+                encoding="utf-8",
+            )
+            rejected.write_text(
+                "// architecture-guard: allow-external-group-kill-stub\n" + probe,
+                encoding="utf-8",
+            )
+
+            rules, _ = self.guard.scan_rust(root)
+
+            self.assertNotIn(
+                "pinvou3-app/src-tauri/src/platform/allowed.rs",
+                rules["rust_external_group_kill_spawn"],
+            )
+            # The probe hits both the Command-specific and the generic
+            # `::new("kill")` pattern, so it counts twice per file.
+            self.assertEqual(
+                2,
+                rules["rust_external_group_kill_spawn"][
+                    "pinvou3-app/src-tauri/src/platform/rejected.rs"
+                ],
+            )
+            self.assertEqual(
+                2,
+                rules["rust_external_group_kill_spawn"][
+                    "pinvou3-app/src-tauri/src/platform/late.rs"
+                ],
+            )
+
     def test_guard_does_not_track_file_line_counts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
