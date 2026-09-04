@@ -92,6 +92,16 @@ pub struct WorkspaceDiff {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceBranches {
+    pub git: bool,
+    pub current: Option<String>,
+    pub branches: Vec<String>,
+    /// 未提交更改条目数（git status），供前端在切换前提示确认。
+    pub dirty_count: usize,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct WorkspacePromptReference {
     pub relative_path: String,
@@ -338,6 +348,151 @@ pub fn workspace_changes(session_id: &str, root: &Path) -> Result<WorkspaceChang
         baseline_available,
         changes,
     })
+}
+
+fn is_git_workspace(root: &Path) -> bool {
+    git_root(root).is_some_and(|git_root| git_root == root)
+}
+
+pub fn workspace_branches(root: &Path) -> Result<WorkspaceBranches> {
+    let root = canonical_workspace(root)?;
+    if !is_git_workspace(&root) {
+        return Ok(WorkspaceBranches {
+            git: false,
+            current: None,
+            branches: Vec::new(),
+            dirty_count: 0,
+        });
+    }
+    let current = git_branch(&root);
+    // 按最近提交时间倒序（committerdate），与 IDE 的分支列表习惯一致；
+    // 不再按名称排序。
+    let output = git_output(
+        &root,
+        &[
+            "branch",
+            "--sort=-committerdate",
+            "--format=%(refname:short)",
+        ],
+    )?;
+    let branches = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let dirty_count = git_status_entries(&root)?.len();
+    Ok(WorkspaceBranches {
+        git: true,
+        current,
+        branches,
+        dirty_count,
+    })
+}
+
+/// 脏工作区分支切换策略：carry = 直接 checkout（更改随工作区携带，冲突时
+/// 整体失败）；stash = 先 `git stash -u` 暂存，切换后自动 pop 恢复；
+/// commit = 先把全部更改（含未跟踪文件）提交到当前分支，再切换。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchSwitchMode {
+    Carry,
+    Stash,
+    Commit,
+}
+
+impl BranchSwitchMode {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "carry" => Ok(Self::Carry),
+            "stash" => Ok(Self::Stash),
+            "commit" => Ok(Self::Commit),
+            _ => bail!("未知的分支切换模式: {value}"),
+        }
+    }
+}
+
+/// 进程级互斥：串行化分支切换的完整 git 序列。并发调用（双开窗口、连点）会
+/// 把两次切换的 stash push/checkout/pop 交错成跨分支、跨 stash 条目的中间态，
+/// 回滚与报错都无法对应到单次操作。
+static CHECKOUT_LOCK: Mutex<()> = Mutex::new(());
+
+pub fn checkout_workspace_branch(
+    root: &Path,
+    branch: &str,
+    mode: BranchSwitchMode,
+    commit_message: Option<&str>,
+) -> Result<WorkspaceBranches> {
+    let _checkout_guard = CHECKOUT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let root = canonical_workspace(root)?;
+    if !is_git_workspace(&root) {
+        bail!("当前工作区不是 Git 仓库");
+    }
+    let branch = branch.trim();
+    // 拒绝以 '-' 开头的分支名，避免被 git 误解析为选项。
+    if branch.is_empty() || branch.starts_with('-') {
+        bail!("无效的分支名: {branch}");
+    }
+    // 只允许切换到已存在的本地分支。否则当传入名字恰好是工作区内的文件
+    // 路径时，`git checkout <name>` 会按 pathspec 从索引还原该文件，静默
+    // 丢弃未提交更改。
+    let known = git_output(&root, &["branch", "--format=%(refname:short)"])?;
+    if !known.lines().map(str::trim).any(|name| name == branch) {
+        bail!("分支不存在: {branch}");
+    }
+    if git_status_entries(&root)?.is_empty() {
+        git_output(&root, &["checkout", branch])?;
+        return workspace_branches(&root);
+    }
+    match mode {
+        BranchSwitchMode::Carry => {
+            git_output(&root, &["checkout", branch])?;
+        }
+        BranchSwitchMode::Stash => {
+            // 暂存（含未跟踪文件）→ 切换 → 恢复。checkout 失败时先 pop 恢复
+            // 现场再报错；恢复也失败时必须说明更改仍完好保存在 stash 中，避免
+            // 现场看似丢失。切换后的 pop 冲突时 git 会保留该 stash 条目；注意
+            // 未跟踪文件可能仅存在于该条目中，必须先确认内容再清理，不能直接
+            // 引导 drop。
+            git_output(
+                &root,
+                &[
+                    "stash",
+                    "push",
+                    "--include-untracked",
+                    "-m",
+                    "pinvou: branch switch",
+                ],
+            )?;
+            if let Err(error) = git_output(&root, &["checkout", branch]) {
+                if let Err(pop_error) = git_output(&root, &["stash", "pop"]) {
+                    bail!(
+                        "切换到 {branch} 失败，且自动恢复暂存的更改也失败；你的更改完好\
+                         保留在 stash 中（git stash list 查看，git stash pop 恢复）。\
+                         切换错误: {error:#}；恢复错误: {pop_error:#}"
+                    );
+                }
+                return Err(error);
+            }
+            if let Err(error) = git_output(&root, &["stash", "pop"]) {
+                bail!(
+                    "已切换到 {branch}，但恢复暂存的更改失败：冲突内容已应用到工作区，\
+                     该 stash 条目已保留。清理前先执行 git stash show -u stash@{{0}} 确认\
+                     内容——未跟踪文件可能仅存在于该条目中，直接 git stash drop 会丢失\
+                     它们: {error:#}"
+                );
+            }
+        }
+        BranchSwitchMode::Commit => {
+            let message = commit_message.map(str::trim).unwrap_or("");
+            if message.is_empty() {
+                bail!("提交信息不能为空");
+            }
+            git_output(&root, &["add", "-A"])?;
+            git_output(&root, &["commit", "-m", message])?;
+            git_output(&root, &["checkout", branch])?;
+        }
+    }
+    workspace_branches(&root)
 }
 
 /// diff 内存缓存：键 = (session_id, 相对路径)，值 = 文件指纹 + diff 文本。
@@ -1368,6 +1523,329 @@ mod tests {
                 && change.origin == "session"
         }));
         let _ = fs::remove_file(baseline_path(&session_id));
+    }
+
+    /// 初始化一个含 main + feature 两个分支的 git 仓库；git 不可用时返回 None 跳过。
+    fn init_git_repo(label: &str) -> Option<TestDir> {
+        let root = TestDir::new(label);
+        let run = |args: &[&str]| {
+            crate::platform::process::HiddenCommand::new("git")
+                .current_dir(root.path())
+                .args(args)
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        };
+        if !run(&["init", "-b", "main"]) {
+            return None;
+        }
+        // stash/commit 都会创建提交对象，测试环境未必有全局身份，仓库级配置兜底。
+        if !run(&["config", "user.email", "test@example.com"])
+            || !run(&["config", "user.name", "test"])
+        {
+            return None;
+        }
+        fs::write(root.path().join("file.txt"), "v1").unwrap();
+        for args in [
+            &["add", "."][..],
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-m",
+                "init",
+            ][..],
+            &["branch", "feature"][..],
+        ] {
+            if !run(args) {
+                return None;
+            }
+        }
+        Some(root)
+    }
+
+    #[test]
+    fn workspace_branches_lists_local_branches() {
+        let Some(root) = init_git_repo("branches") else {
+            return;
+        };
+        let result = workspace_branches(root.path()).unwrap();
+        assert!(result.git);
+        assert_eq!(result.current.as_deref(), Some("main"));
+        assert!(result.branches.contains(&"main".to_string()));
+        assert!(result.branches.contains(&"feature".to_string()));
+    }
+
+    #[test]
+    fn workspace_branches_sorts_by_recent_commit() {
+        let Some(root) = init_git_repo("branches-recency") else {
+            return;
+        };
+        // 在 feature 上多一个提交：feature 的 committerdate 更新，应排在 main 前。
+        git_output(root.path(), &["checkout", "feature"]).unwrap();
+        fs::write(root.path().join("file.txt"), "v2").unwrap();
+        git_output(
+            root.path(),
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-am",
+                "v2",
+            ],
+        )
+        .unwrap();
+        git_output(root.path(), &["checkout", "main"]).unwrap();
+        let result = workspace_branches(root.path()).unwrap();
+        assert_eq!(result.branches.first().map(String::as_str), Some("feature"));
+    }
+
+    #[test]
+    fn workspace_branches_reports_non_git_workspace() {
+        let root = TestDir::new("branches-non-git");
+        let result = workspace_branches(root.path()).unwrap();
+        assert!(!result.git);
+        assert!(result.current.is_none());
+        assert!(result.branches.is_empty());
+    }
+
+    #[test]
+    fn checkout_workspace_branch_switches_current_branch() {
+        let Some(root) = init_git_repo("checkout") else {
+            return;
+        };
+        let result =
+            checkout_workspace_branch(root.path(), "feature", BranchSwitchMode::Carry, None)
+                .unwrap();
+        assert_eq!(result.current.as_deref(), Some("feature"));
+        // 空分支名与选项注入被拒绝。
+        assert!(
+            checkout_workspace_branch(root.path(), "  ", BranchSwitchMode::Carry, None).is_err()
+        );
+        assert!(
+            checkout_workspace_branch(root.path(), "--force", BranchSwitchMode::Carry, None)
+                .is_err()
+        );
+        // 未知模式被拒绝。
+        assert!(BranchSwitchMode::parse("discard").is_err());
+    }
+
+    /// 不存在的分支名若恰是工作区文件路径，裸 `git checkout <name>` 会按
+    /// pathspec 还原该文件、丢弃未提交更改；必须先校验分支存在。
+    #[test]
+    fn checkout_workspace_branch_rejects_non_branch_pathspec() {
+        let Some(root) = init_git_repo("checkout-pathspec") else {
+            return;
+        };
+        fs::write(root.path().join("file.txt"), "v1-dirty").unwrap();
+        assert!(
+            checkout_workspace_branch(root.path(), "file.txt", BranchSwitchMode::Carry, None)
+                .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("file.txt")).unwrap(),
+            "v1-dirty"
+        );
+        assert_eq!(git_branch(root.path()).as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn checkout_workspace_branch_stash_mode_restores_changes() {
+        let Some(root) = init_git_repo("checkout-stash") else {
+            return;
+        };
+        // 未跟踪文件 + 已跟踪文件修改，stash 模式应全部携带并恢复。
+        fs::write(root.path().join("file.txt"), "v1-dirty").unwrap();
+        fs::write(root.path().join("scratch.txt"), "scratch").unwrap();
+        let result =
+            checkout_workspace_branch(root.path(), "feature", BranchSwitchMode::Stash, None)
+                .unwrap();
+        assert_eq!(result.current.as_deref(), Some("feature"));
+        assert_eq!(
+            fs::read_to_string(root.path().join("file.txt")).unwrap(),
+            "v1-dirty"
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("scratch.txt")).unwrap(),
+            "scratch"
+        );
+        assert_eq!(result.dirty_count, 2);
+        // stash 已 pop，stash 列表应为空。
+        let stash_list = git_output(root.path(), &["stash", "list"]).unwrap();
+        assert!(stash_list.trim().is_empty());
+    }
+
+    /// Stash restore conflict: the switch succeeds, the stash entry is kept,
+    /// and the working tree is left with conflict markers; the command fails
+    /// without rolling the branch back.
+    #[test]
+    fn checkout_workspace_branch_stash_pop_conflict_keeps_stash_entry() {
+        let Some(root) = init_git_repo("checkout-stash-conflict") else {
+            return;
+        };
+        // feature commits file.txt = v2; restoring the uncommitted main-side
+        // edit on top of it conflicts by construction.
+        git_output(root.path(), &["checkout", "feature"]).unwrap();
+        fs::write(root.path().join("file.txt"), "v2").unwrap();
+        git_output(
+            root.path(),
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-am",
+                "v2",
+            ],
+        )
+        .unwrap();
+        git_output(root.path(), &["checkout", "main"]).unwrap();
+        fs::write(root.path().join("file.txt"), "v1-dirty").unwrap();
+        assert!(
+            checkout_workspace_branch(root.path(), "feature", BranchSwitchMode::Stash, None)
+                .is_err()
+        );
+        let state = workspace_branches(root.path()).unwrap();
+        assert_eq!(state.current.as_deref(), Some("feature"));
+        let stash_list = git_output(root.path(), &["stash", "list"]).unwrap();
+        assert!(!stash_list.trim().is_empty());
+        let content = fs::read_to_string(root.path().join("file.txt")).unwrap();
+        assert!(content.contains("<<<<<<<"));
+    }
+
+    /// Stash 模式下 checkout 失败：应先 pop 恢复现场再报错——更改回到工作区、
+    /// stash 列表清空、分支保持不变。checkout 失败用「目标分支指向的提交对象
+    /// 缺失」构造：git 对 ignored 文件/目录阻挡、只读目录等自然场景会静默
+    /// 处理甚至返回 0，对象缺失才是确定性的非零失败，且能通过本地分支名校验。
+    #[test]
+    fn checkout_workspace_branch_stash_mode_restores_changes_on_checkout_failure() {
+        let Some(root) = init_git_repo("checkout-stash-failure") else {
+            return;
+        };
+        git_output(root.path(), &["checkout", "feature"]).unwrap();
+        fs::write(root.path().join("file.txt"), "v2").unwrap();
+        git_output(
+            root.path(),
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-am",
+                "v2",
+            ],
+        )
+        .unwrap();
+        git_output(root.path(), &["checkout", "main"]).unwrap();
+        // 删除 feature 提交的松散对象：ref 仍在（分支列表校验可过），checkout 必败。
+        let dangling = git_output(root.path(), &["rev-parse", "feature"]).unwrap();
+        let dangling = dangling.trim();
+        let object_path = root
+            .path()
+            .join(".git/objects")
+            .join(&dangling[..2])
+            .join(&dangling[2..]);
+        fs::remove_file(&object_path).unwrap();
+
+        fs::write(root.path().join("file.txt"), "v1-dirty").unwrap();
+        assert!(
+            checkout_workspace_branch(root.path(), "feature", BranchSwitchMode::Stash, None)
+                .is_err()
+        );
+        // 现场已恢复：dirty 更改回到工作区，stash 已 pop，仍在 main。
+        assert_eq!(
+            fs::read_to_string(root.path().join("file.txt")).unwrap(),
+            "v1-dirty"
+        );
+        let stash_list = git_output(root.path(), &["stash", "list"]).unwrap();
+        assert!(stash_list.trim().is_empty());
+        // 不能用 workspace_branches 断言分支：其 --sort=-committerdate 需要读取
+        // 全部分支的提交对象，悬空的 feature ref 会让它整体报错。
+        assert_eq!(git_branch(root.path()).as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn workspace_branches_reports_detached_head_without_current() {
+        let Some(root) = init_git_repo("branches-detached") else {
+            return;
+        };
+        git_output(root.path(), &["checkout", "--detach"]).unwrap();
+        let result = workspace_branches(root.path()).unwrap();
+        assert!(result.git);
+        assert_eq!(result.current, None);
+        assert!(result.branches.contains(&"main".to_string()));
+    }
+
+    #[test]
+    fn checkout_workspace_branch_commit_mode_commits_before_switch() {
+        let Some(root) = init_git_repo("checkout-commit") else {
+            return;
+        };
+        fs::write(root.path().join("file.txt"), "v1-dirty").unwrap();
+        fs::write(root.path().join("scratch.txt"), "scratch").unwrap();
+        // 空提交信息被拒绝。
+        assert!(
+            checkout_workspace_branch(root.path(), "feature", BranchSwitchMode::Commit, Some("  "))
+                .is_err()
+        );
+        let result = checkout_workspace_branch(
+            root.path(),
+            "feature",
+            BranchSwitchMode::Commit,
+            Some("wip: before switch"),
+        )
+        .unwrap();
+        assert_eq!(result.current.as_deref(), Some("feature"));
+        // 更改已提交到 main（原分支），目标分支工作区是干净的。
+        assert_eq!(result.dirty_count, 0);
+        let main_log = git_output(root.path(), &["log", "-1", "--format=%s", "main"]).unwrap();
+        assert_eq!(main_log.trim(), "wip: before switch");
+        assert_eq!(
+            fs::read_to_string(root.path().join("file.txt")).unwrap(),
+            "v1"
+        );
+    }
+
+    #[test]
+    fn checkout_workspace_branch_carry_conflict_keeps_workspace() {
+        let Some(root) = init_git_repo("checkout-conflict") else {
+            return;
+        };
+        // feature 分支上 file.txt 改为 v2 并提交；main 上未提交修改同一文件，
+        // carry 模式切换必然被 git 拒绝且工作区保持原样。
+        git_output(root.path(), &["checkout", "feature"]).unwrap();
+        fs::write(root.path().join("file.txt"), "v2").unwrap();
+        git_output(
+            root.path(),
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-am",
+                "v2",
+            ],
+        )
+        .unwrap();
+        git_output(root.path(), &["checkout", "main"]).unwrap();
+        fs::write(root.path().join("file.txt"), "v1-dirty").unwrap();
+        assert!(
+            checkout_workspace_branch(root.path(), "feature", BranchSwitchMode::Carry, None)
+                .is_err()
+        );
+        let state = workspace_branches(root.path()).unwrap();
+        assert_eq!(state.current.as_deref(), Some("main"));
+        assert_eq!(
+            fs::read_to_string(root.path().join("file.txt")).unwrap(),
+            "v1-dirty"
+        );
     }
 
     #[test]

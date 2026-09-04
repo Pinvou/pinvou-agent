@@ -12,7 +12,8 @@ use tauri::State;
 use crate::features::assistant::engine_pool::EnginePool;
 use crate::features::codex_acp::reader_window::{self, ReaderOpenRequest};
 use crate::features::codex_acp::workspace::{
-    self, WorkspaceChanges, WorkspaceDiff, WorkspaceEntry, WorkspaceListing, WorkspacePreview,
+    self, WorkspaceBranches, WorkspaceChanges, WorkspaceDiff, WorkspaceEntry, WorkspaceListing,
+    WorkspacePreview,
 };
 use crate::features::codex_acp::{
     AcpAgentDescriptor, AcpEventEnvelope, AcpPool, AgentBackend, CodexAcpPendingElicitation,
@@ -409,6 +410,70 @@ pub async fn get_codex_workspace_diff(
     })
     .await
     .map_err(|error| format!("读取 Codex 文件差异任务失败: {error}"))?
+}
+
+#[tauri::command]
+pub async fn list_codex_workspace_branches(
+    session_id: Option<String>,
+    workspace_path: Option<String>,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<WorkspaceBranches, String> {
+    let root = codex_workspace_root(session_id.as_deref(), workspace_path.as_deref(), &acp_pool)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        workspace::workspace_branches(&root)
+            .map_err(|error| format!("读取 Codex 工作区分支失败: {error:#}"))
+    })
+    .await
+    .map_err(|error| format!("读取 Codex 工作区分支任务失败: {error}"))?
+}
+
+#[tauri::command]
+pub async fn checkout_codex_workspace_branch(
+    session_id: Option<String>,
+    workspace_path: Option<String>,
+    branch: String,
+    mode: String,
+    commit_message: Option<String>,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<WorkspaceBranches, String> {
+    let root = codex_workspace_root(session_id.as_deref(), workspace_path.as_deref(), &acp_pool)?;
+    let mode = workspace::BranchSwitchMode::parse(&mode)
+        .map_err(|error| format!("切换 Codex 工作区分支失败: {error:#}"))?;
+    // Cross-session guard: reject the switch while any session bound to this
+    // workspace (including sessions other than the caller) has a turn in
+    // flight, so a running agent cannot land later edits on the wrong branch.
+    // The frontend only gates the current session; this backend check consults
+    // the shared assistant::timing in-flight registry for both ACP and native
+    // code sessions. Best-effort: a turn admitted after the in-task recheck
+    // below can still race the git commands.
+    let workspace_sessions = acp_pool.agents().code_sessions_in_workspace(&root);
+    let running = workspace_sessions
+        .iter()
+        .filter(|session_id| crate::features::assistant::timing::has_active_turn(session_id))
+        .count();
+    if running > 0 {
+        return Err(format!(
+            "该工作区有 {running} 个会话正在运行，请等待运行结束后再切换分支"
+        ));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        // Recheck inside the task to narrow the admission window between the
+        // outer check and the first git mutation: a turn started in between
+        // would otherwise run concurrently with the checkout.
+        let running = workspace_sessions
+            .iter()
+            .filter(|session_id| crate::features::assistant::timing::has_active_turn(session_id))
+            .count();
+        if running > 0 {
+            return Err(format!(
+                "该工作区有 {running} 个会话正在运行，请等待运行结束后再切换分支"
+            ));
+        }
+        workspace::checkout_workspace_branch(&root, &branch, mode, commit_message.as_deref())
+            .map_err(|error| format!("切换 Codex 工作区分支失败: {error:#}"))
+    })
+    .await
+    .map_err(|error| format!("切换 Codex 工作区分支任务失败: {error}"))?
 }
 
 #[tauri::command]

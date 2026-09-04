@@ -205,6 +205,15 @@ pub fn finish_turn(session_id: &str, status: &str, error: Option<&str>) {
     finish_turn_with_usage(session_id, status, error, None);
 }
 
+/// 是否有未收口的在途回合（start_turn 已登记、finish_turn 未弹出）。
+/// 用于跨会话安全守卫（如禁止在同工作区会话运行中切换 Git 分支）。
+pub fn has_active_turn(session_id: &str) -> bool {
+    active_turns()
+        .lock()
+        .map(|map| map.get(session_id).is_some_and(|queue| !queue.is_empty()))
+        .unwrap_or(false)
+}
+
 /// Records post-compaction context usage without creating a turn.
 ///
 /// Manual and automatic compaction do not call `start_turn`, and `TurnComplete` carries zero
@@ -1469,6 +1478,31 @@ mod tests {
         assert_eq!(catalog.catalog_count, 2);
         assert_eq!(catalog.catalog_bytes, catalog_json.len() as u64);
         assert_eq!(catalog.catalog_sha256.len(), 64);
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    /// 分支切换等破坏性操作的跨会话守卫依据：start_turn 登记后视为在途，
+    /// finish_turn 收口后放行。
+    #[test]
+    fn has_active_turn_reflects_in_flight_sessions() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-active-turn-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // edition 2024 起 set_var 为 unsafe；测试进程单线程持有 ENV_LOCK，安全。
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let sid = "session-active-turn-guard";
+        assert!(!has_active_turn(sid));
+        start_turn(sid);
+        assert!(has_active_turn(sid));
+        finish_turn(sid, "completed", None);
+        assert!(!has_active_turn(sid));
 
         let _ = std::fs::remove_dir_all(tmp);
     }
