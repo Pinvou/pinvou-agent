@@ -150,7 +150,11 @@ function injectSource() {
     var dependencyCheckResponse = [];
     var memoryOverview = {
       profile: { version: 1, revision: 3, identity: { call_name: '升级前称呼', assistant_alias: 'PINVOU' }, conventions: {} },
-      preferences: [], work_context: [], current_focus: [], recent_activity: [], recent_work: [], pending: [], never: [],
+      preferences: [
+        { id: 'pref-to-delete', text: '待删除的偏好记忆', status: 'active' },
+        { id: 'pref-to-keep', text: '保留的偏好记忆', status: 'active' },
+      ],
+      work_context: [], current_focus: [], recent_activity: [], recent_work: [], pending: [], never: [],
       runtime: null, snapshot_path: '', warnings: [],
       sources: {
         profile: { available: true }, preferences: { available: true }, work_context: { available: true },
@@ -270,6 +274,11 @@ function injectSource() {
             runtime: null,
             warnings: [{ code: 'runtime_refresh_failed', source: 'runtime', detail: 'runtime cache locked' }],
           });
+        case 'delete_memory_preference':
+          memoryOverview = Object.assign({}, memoryOverview, {
+            preferences: (memoryOverview.preferences || []).filter(function (item) { return item.id !== args.id; }),
+          });
+          return Promise.resolve(null);
         default: return Promise.resolve(null);
       }
     }
@@ -482,6 +491,19 @@ async function modalWidth(page, headingText) {
     const buttons = dialog ? [...dialog.querySelectorAll('button')] : [];
     if (buttons.length) buttons[0].click();
   });
+
+  // ①e 记忆删除：行内删除按钮 → 应用内二级确认弹窗（WebView2 无原生 confirm）
+  // → 确认后真正调用删除命令并从列表移除，相邻条目不受影响。
+  await page.waitForFunction(() => !!document.querySelector('[data-testid="memory-item-delete"]'));
+  await page.click('[data-testid="memory-item-delete"]');
+  await page.waitForFunction(() => !!document.querySelector('[data-testid="memory-delete-confirm"]'));
+  await page.click('[data-testid="memory-delete-confirm-ok"]');
+  await page.waitForFunction(() => !document.querySelector('[data-testid="memory-delete-confirm"]'));
+  await page.waitForFunction(() => !document.body.innerText.includes('待删除的偏好记忆'), { timeout: 5000 });
+  rec('①e 记忆删除经应用内确认后真正移除条目', await page.evaluate(() =>
+    !document.body.innerText.includes('待删除的偏好记忆')
+      && document.body.innerText.includes('保留的偏好记忆')
+      && window.__SETTINGS_TEST__.calls.some(function (item) { return item.cmd === 'delete_memory_preference'; })));
 
   await clickSettingsSection(page, '更新');
   await page.evaluate(async () => {

@@ -934,6 +934,8 @@ dictZh.uiSettingsDetail.memoryLoadFailed = '记忆资料加载失败，请重试
 
 dictZh.uiSettingsDetail.memorySaveFailed = '记忆资料保存失败，请重试';
 
+dictZh.uiSettingsDetail.memoryDeleteFailed = '记忆删除失败，请重试';
+
 dictZh.uiSettingsDetail.memorySourceUnavailable = '部分记忆资料暂时不可用，已保留上次成功加载的内容';
 
 dictZh.uiSettingsDetail.memoryRuntimeRefreshFailed = '记忆已保存，但当前会话的记忆上下文暂未刷新';
