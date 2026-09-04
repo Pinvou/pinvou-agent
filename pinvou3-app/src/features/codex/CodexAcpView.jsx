@@ -1,10 +1,9 @@
-import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import {
-  AlertTriangle, Brain, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, Mic, Monitor, Paperclip,
-  Plus, RefreshCw, Send, Sparkles, StopCircle, Terminal, Upload, User, Wrench,
+  Brain, Check, ChevronDown, FileText, FolderOpen, Mic, Monitor, Paperclip,
+  Plus, RefreshCw, Send, Sparkles, StopCircle, Upload, User,
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
@@ -43,9 +42,8 @@ import {
   createAcpGapResyncScheduler,
   mergeAcpTimelineSnapshot,
   updateAcpAttachmentDraft,
-  commandExecutionDetails,
   projectAcpTimeline,
-  resolveAcpSessionControls, unifiedConversationUiEnabled,
+  resolveAcpSessionControls,
 } from './acp-state.js';
 import {
   applyNativeChatEvent,
@@ -76,20 +74,26 @@ import {
   rewindUndoAvailable,
   useSessionCheckpoints,
 } from './checkpoints.js';
-import { RewindChip, RewindConfirmDialog, RewindUndoChip, RewindUndoConfirmDialog } from './RewindChip.jsx';
+import {
+  RewindChip,
+  RewindConfirmDialog,
+  RewindUndoChip,
+  RewindUndoConfirmDialog,
+  useDialogEscapeKey,
+  useDialogFocusRestore,
+} from './RewindChip.jsx';
 import {
   ConversationActivityIndicator,
   ConversationMarkdown,
+  ConversationStatusBadge,
   ConversationTurn,
-  WorkspaceResourceButtons,
+  useConversationSecondClock,
 } from '../conversation/ConversationTimeline.jsx';
 import {
   measureConversationScrollGeometry,
   startConversationBottomFollower,
   transitionConversationScrollState,
 } from '../conversation/conversation-scroll.js';
-import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
-import { assistantResponseAvailable, assistantResponseText } from '../conversation/message-clipboard.js';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/composer-shared.jsx';
 import {
   COMPOSER_ICON_BUTTON_CLASS,
@@ -97,20 +101,21 @@ import {
   ComposerModeChip,
 } from '../chat/composer-controls.jsx';
 import { visibleUserModels } from '../../shared/model-options.js';
+import { formatCompactCount } from '../../shared/format-number.js';
+import { pathBasename } from '../../shared/path-utils.js';
 import { selectorMainLabel } from '../settings/model-catalog.js';
 import {
   captureConversationScrollPosition,
-  collectToolWorkspaceResources,
   isFetchTool,
   isSearchTool,
   restoreConversationScrollPosition,
-  toolWorkspaceResources,
 } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { PlanLayer, ToolCard, cardBoxCls, cardBtnCls } from '../tools/tool-renderers.jsx';
 import { notifyChatRoundCommitted } from '../tools/tool-events.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { formatAttachmentLimitError } from '../attachments/attachment-limit-errors.js';
+import { collectClipboardImages, readPasteImageAsBytes } from '../attachments/paste-image.js';
 import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import { bridge } from '../../hooks/useBridge.js';
@@ -161,15 +166,8 @@ const EMPTY_CONVERSATION_TURNS = [];
 const EMPTY_SESSIONS = [];
 
 function workspaceName(path, unknownDirectory) {
-  // eslint-disable-next-line sonarjs/super-linear-regex -- trailing [\\/]+ strips path separators; single char class, so backtracking is linear
-  const normalized = String(path || '').replace(/[\\/]+$/, '');
-  if (!normalized) return unknownDirectory;
-  return normalized.split(/[\\/]/).filter(Boolean).pop() || normalized;
-}
-
-// token 缩写与主聊天 ChatView 的 fmtCtxTok 同款（1.2k / 3.4M）。
-function fmtNativeCtxTok(n) {
-  return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
+  // Trailing-separator stripping + Windows drive-letter path semantics live in shared/path-utils (same as the former inline code).
+  return pathBasename(path, { collapseTrailing: true, fallback: unknownDirectory });
 }
 
 function loadRecentWorkspaces() {
@@ -335,279 +333,6 @@ function CodexComposerConfigSelect({
           </>
         )}
       </ComposerPopover>
-    </div>
-  );
-}
-
-function StatusBadge({ status, copy }) {
-  const done = ['Completed', 'completed', 'end_turn'].includes(status);
-  const failed = ['Failed', 'failed', 'Refused'].includes(status);
-  const label = done
-    ? copy.completed
-    : failed
-      ? copy.failed
-      : status === 'Interrupted'
-        ? copy.interrupted
-        : status === 'LimitReached'
-          ? copy.limitReached
-          : copy.processing;
-  return (
-    <span className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full ${
-      done ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'
-        : failed ? 'bg-red-500/10 text-red-600 dark:text-red-300'
-          : 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
-    }`}>
-      {done ? <CheckCircle2 size={12} /> : failed ? <AlertTriangle size={12} /> : <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />}
-      {label}
-    </span>
-  );
-}
-
-function elapsedMs(start, end, now) {
-  const from = Date.parse(start || '');
-  const to = Date.parse(end || '') || now;
-  if (!Number.isFinite(from) || !Number.isFinite(to)) return 0;
-  return Math.max(0, to - from);
-}
-
-function terminalStatus(status, exitCode = null) {
-  const normalized = String(status || '').toLowerCase();
-  if (normalized === 'failed' || (exitCode != null && exitCode !== 0)) return 'failed';
-  if (['completed', 'cancelled', 'canceled'].includes(normalized)) return 'completed';
-  return 'running';
-}
-
-function TerminalBlock({ label, text }) {
-  if (!text) return null;
-  return (
-    <div className="mt-3 min-w-0 max-w-full">
-      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-gray-400">{label}</div>
-      <pre className="max-h-80 max-w-full overflow-auto whitespace-pre rounded-xl bg-[#F4F5F7] dark:bg-black/30 px-3 py-2.5 text-[12px] leading-5 font-mono text-gray-700 dark:text-gray-200">{text}</pre>
-    </div>
-  );
-}
-
-function StructuredValue({ label, value }) {
-  if (value == null || value === '' || (Array.isArray(value) && !value.length)) return null;
-  if (typeof value !== 'object') return <TerminalBlock label={label} text={String(value)} />;
-  const entries = Object.entries(value);
-  if (!entries.length) return null;
-  return (
-    <div className="mt-3">
-      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-gray-400">{label}</div>
-      <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] overflow-hidden">
-        {entries.map(([key, entry]) => (
-          <div key={key} className="grid grid-cols-[120px_minmax(0,1fr)] border-b last:border-b-0 border-black/[0.05] dark:border-white/[0.06] text-[11px]">
-            <div className="px-3 py-2 bg-black/[0.025] dark:bg-white/[0.025] text-gray-400 font-mono">{key}</div>
-            <pre className="px-3 py-2 overflow-x-auto whitespace-pre-wrap font-mono text-gray-700 dark:text-gray-200">
-              {typeof entry === 'string' ? entry : JSON.stringify(entry, null, 2)}
-            </pre>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function CompactItemRow({ icon, title, meta, status, open, onToggle, controlsId }) {
-  const tone = status === 'failed'
-    ? 'text-red-500 bg-red-500/10'
-    : status === 'running'
-      ? 'text-blue-500 bg-blue-500/10'
-      : 'text-gray-500 bg-black/[0.04] dark:bg-white/[0.06]';
-  return (
-    <button type="button" onClick={onToggle}
-      data-testid="conversation-compact-item-toggle"
-      aria-expanded={controlsId ? Boolean(open) : undefined}
-      aria-controls={controlsId && open ? controlsId : undefined}
-      className="w-full min-w-0 min-h-10 overflow-hidden px-2.5 py-2 flex items-center gap-2.5 text-left rounded-xl hover:bg-black/[0.025] dark:hover:bg-white/[0.035]">
-      <span className={`w-6 h-6 shrink-0 rounded-lg flex items-center justify-center ${tone}`}>{icon}</span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[12px] font-medium">{title}</span>
-        {meta && <span className="block mt-0.5 text-[10px] text-gray-400">{meta}</span>}
-      </span>
-      {status === 'running' && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />}
-      <ChevronDown size={13} className={`shrink-0 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
-    </button>
-  );
-}
-
-function CommandExecutionItem({ item, now, copy }) {
-  const details = commandExecutionDetails(item.tool);
-  const state = terminalStatus(item.status, details.exitCode);
-  const [open, setOpen] = useState(false);
-  const detailsId = useId();
-  const countHint = details.commandCount > 1 ? ` · ${copy.segments(details.commandCount)}` : '';
-  const duration = copy.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
-  const exitHint = details.exitCode == null ? '' : ` · exit ${details.exitCode}`;
-  const outcome = state === 'running'
-    ? `${copy.running} · ${duration}`
-    : state === 'failed'
-      ? `${copy.executionFailed}${exitHint}`
-      : `${copy.executionFinished}${exitHint} · ${duration}`;
-  return (
-    <div className={`rounded-xl border ${state === 'failed' ? 'border-red-500/20' : 'border-black/[0.05] dark:border-white/[0.07]'} bg-white/45 dark:bg-white/[0.015]`}>
-      <CompactItemRow icon={<Terminal size={13} />} title={details.summary}
-        meta={`${outcome}${countHint}`} status={state} open={open} controlsId={detailsId}
-        onToggle={() => setOpen(value => !value)} />
-      {open && (
-        <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
-          <TerminalBlock label={copy.command} text={details.command} />
-          {details.cwd && (
-            <div className="mt-2 text-[10px] text-gray-400">
-              {copy.workingDirectory} <span className="ml-1 font-mono text-gray-600 dark:text-gray-300">{details.cwd}</span>
-            </div>
-          )}
-          <TerminalBlock label={copy.output} text={details.output} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function GenericToolItem({ item, now, copy, cv, onOpenResource }) {
-  const tool = item.tool || {};
-  const state = terminalStatus(item.status);
-  const [open, setOpen] = useState(false);
-  const detailsId = useId();
-  const duration = copy.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
-  const label = item.type === 'file_change' ? copy.fileChange : (tool.kind || cv.codexTool);
-  const stateLabel = state === 'running'
-    ? `${copy.inProgress} · ${duration}`
-    : state === 'failed'
-      ? copy.failed
-      : `${cv.ended} · ${duration}`;
-  const resources = toolWorkspaceResources(tool);
-  return (
-    <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-white/45 dark:bg-white/[0.015]">
-      <CompactItemRow icon={<Wrench size={13} />} title={tool.title || label}
-        meta={`${label} · ${stateLabel}`}
-        status={state} open={open} controlsId={detailsId}
-        onToggle={() => setOpen(value => !value)} />
-      <WorkspaceResourceButtons resources={resources} onOpenResource={onOpenResource} />
-      {open && (
-        <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
-          <StructuredValue label={copy.arguments} value={tool.rawInput} />
-          <StructuredValue label={copy.result} value={tool.rawOutput == null ? tool.content : tool.rawOutput} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ToolGroup({ group, now, copy, cv, onOpenResource }) {
-  const items = group.items || [];
-  const running = items.some(item => terminalStatus(item.status) === 'running');
-  const failed = items.some(item => terminalStatus(
-    item.status,
-    item.type === 'command_execution' ? commandExecutionDetails(item.tool).exitCode : null,
-  ) === 'failed');
-  const [open, setOpen] = useState(false);
-  const detailsId = useId();
-  const hasDetails = items.length > 0;
-  const resources = collectToolWorkspaceResources(items);
-  return (
-    <div className="min-w-0 max-w-full">
-      <button type="button" onClick={() => setOpen(value => !value)}
-        data-testid="conversation-tool-group-summary"
-        aria-expanded={hasDetails ? Boolean(open) : undefined}
-        aria-controls={hasDetails && open ? detailsId : undefined}
-        className="w-full h-9 px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
-        <span className={`w-1.5 h-1.5 rounded-full ${failed ? 'bg-red-500' : running ? 'bg-blue-500 animate-pulse' : 'bg-gray-300 dark:bg-gray-600'}`} />
-        <span>{running ? copy.executing : failed ? cv.stepsFailed : copy.executionSteps} · {items.length}</span>
-        <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
-      </button>
-      <WorkspaceResourceButtons resources={resources} onOpenResource={onOpenResource} />
-      {open && hasDetails && (
-        <div id={detailsId} data-testid="conversation-tool-group-content" className="min-w-0 max-w-full ml-3 pl-3 border-l border-black/[0.06] dark:border-white/[0.08] space-y-1.5 pb-1">
-          {items.map(item => item.type === 'command_execution'
-            ? <CommandExecutionItem key={item.id} item={item} now={now} copy={copy} />
-            : <GenericToolItem key={item.id} item={item} now={now} copy={copy} cv={cv} onOpenResource={onOpenResource} />)}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ReasoningItem({ item, now, copy }) {
-  const running = item.status === 'in_progress';
-  const [open, setOpen] = useState(false);
-  const detailsId = useId();
-  const hasDetails = Boolean(item.text);
-  const duration = copy.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
-  return (
-    <div className="min-w-0 max-w-full">
-      <button type="button" onClick={() => setOpen(value => !value)}
-        data-testid="conversation-reasoning-toggle"
-        aria-expanded={hasDetails ? Boolean(open) : undefined}
-        aria-controls={hasDetails && open ? detailsId : undefined}
-        className="w-full h-9 px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
-        <span className={`w-1.5 h-1.5 rounded-full bg-violet-500 ${running ? 'animate-pulse' : ''}`} />
-        <span>{running ? copy.thinking : copy.thoughtCompleted} · {duration}</span>
-        <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
-      </button>
-      {open && hasDetails && <div id={detailsId} data-testid="conversation-reasoning-content" className="min-w-0 max-w-full ml-3 pl-3 py-1 border-l border-violet-500/15 text-[12px] leading-6 text-gray-500 dark:text-gray-300 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{item.text}</div>}
-    </div>
-  );
-}
-
-function PlanBlock({ plan, copy }) {
-  const entries = plan && plan.entries || [];
-  if (!entries.length) return null;
-  return (
-    <div data-testid="conversation-plan" className="min-w-0 max-w-full rounded-2xl border border-violet-500/15 bg-violet-500/[0.04] p-3.5">
-      <div className="text-[12px] font-semibold text-violet-600 dark:text-violet-300 mb-2">{copy.plan}</div>
-      <div className="space-y-2">
-        {entries.map((entry, index) => (
-          <div key={index} className="min-w-0 flex items-start gap-2 text-[13px]">
-            <span className={`mt-1.5 w-2 h-2 shrink-0 rounded-full ${
-              entry.status === 'completed' ? 'bg-emerald-500' : entry.status === 'in_progress' ? 'bg-blue-500 animate-pulse' : 'bg-gray-300 dark:bg-gray-600'
-            }`} />
-            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{entry.content}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function PermissionCard({ permission, pending, onRespond, responding, agentName, copy }) {
-  const request = permission.request || {};
-  const tool = request.toolCall || {};
-  const options = request.options || [];
-  const actionable = !!pending && !permission.resolved;
-  return (
-    <div className="rounded-2xl border border-amber-500/25 bg-amber-500/[0.06] p-4">
-      <div className="flex items-start gap-3">
-        <AlertTriangle size={18} className="text-amber-500 mt-0.5 shrink-0" />
-        <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">{copy.permissionRequest(agentName)}</div>
-          <div className="mt-1 min-w-0 max-w-full text-[12px] text-gray-500 dark:text-gray-400 break-words [overflow-wrap:anywhere]">{tool.title || copy.protectedOperation}</div>
-          {tool.rawInput && tool.rawInput.command
-            ? <TerminalBlock label={copy.command} text={String(tool.rawInput.command)} />
-            : <StructuredValue label={copy.operationArguments} value={tool.rawInput} />}
-          <div className="mt-3 flex flex-wrap gap-2">
-            {options.map(option => (
-              <button type="button" key={option.optionId} disabled={!actionable || responding}
-                onClick={() => onRespond(permission.toolCallId, option.optionId)}
-                className={`max-w-full min-w-0 whitespace-normal break-all px-3 py-1.5 rounded-xl text-[12px] leading-5 font-medium transition-colors ${
-                  String(option.kind || '').startsWith('allow')
-                    ? 'bg-blue-600 text-white hover:bg-blue-700'
-                    : 'bg-black/[0.06] dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15'
-                } disabled:opacity-45 disabled:cursor-not-allowed`}>
-                {option.optionId === 'allow_once'
-                  ? copy.allowOnce
-                  : option.optionId === 'allow_always'
-                    ? copy.allowSession
-                    : option.optionId === 'reject_once'
-                      ? copy.reject
-                      : option.name}
-              </button>
-            ))}
-          </div>
-          {!actionable && <div className="mt-2 text-[11px] text-gray-400">{permission.resolved ? copy.handled : copy.expired}</div>}
-        </div>
-      </div>
     </div>
   );
 }
@@ -829,17 +554,9 @@ function NativeYoloConfirmCard({ theme, t, busy, onConfirm, onCancel }) {
   const dialogRef = useRef(null);
   // 打开即聚焦卡片（键盘可达），Esc 视为取消——与 NativePlanCard 内联卡不同，
   // 这是一张全屏模态，必须挡住底层控件，故补 role=dialog/aria-modal/键盘交互。
-  useEffect(() => {
-    dialogRef.current?.focus();
-    const onKey = (e) => {
-      if (e.key === 'Escape' && !busy) {
-        e.preventDefault();
-        onCancel();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [busy, onCancel]);
+  // Focus/Escape interaction shares the same hook pair as RewindChip's two confirm dialogs (focus restored on unmount).
+  useDialogFocusRestore(dialogRef);
+  useDialogEscapeKey(busy, onCancel);
   // portal 到 <body>：该卡片渲染在 composer 容器内，而容器的 backdrop-blur 会成为
   // `position: fixed` 的包含块，不 portal 的话全屏模态只会盖住输入框区域，
   // 点击遮罩取消也随之失效。
@@ -890,127 +607,6 @@ function NativeYoloConfirmCard({ theme, t, busy, onConfirm, onCancel }) {
   );
 }
 
-function TurnItem({
-  item,
-  now,
-  agentName,
-  copy,
-  cv,
-  pendingByTool,
-  pendingByElicitation,
-  onRespond,
-  onRespondElicitation,
-  responding,
-  onOpenExternal,
-  onOpenResource,
-}) {
-  if (item.type === 'reasoning') return <ReasoningItem item={item} now={now} copy={copy} />;
-  if (item.type === 'tool_group') return <ToolGroup group={item} now={now} copy={copy} cv={cv} onOpenResource={onOpenResource} />;
-  if (item.type === 'plan') return <PlanBlock plan={item.plan} copy={copy} />;
-  if (item.type === 'permission') {
-    return (
-      <PermissionCard permission={item.permission}
-        pending={pendingByTool[item.permission.toolCallId]}
-        onRespond={onRespond} responding={responding} agentName={agentName} copy={copy} />
-    );
-  }
-  if (item.type === 'elicitation') {
-    return (
-      <ElicitationCard elicitation={item.elicitation}
-        pending={pendingByElicitation[item.elicitation.elicitationId]}
-        onRespond={onRespondElicitation}
-        responding={responding} />
-    );
-  }
-  if (item.type === 'agent_message') {
-    const commentary = item.phase === 'commentary';
-    // streaming = the projection's in_progress convention (ACP/deepseek projections agree): while text
-    // can still grow, render through the throttle; when it ends, useThrottledValue replays the full text verbatim.
-    return commentary
-      ? <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
-          streaming={item.status === 'in_progress'}
-          className="text-[13px] leading-6 text-gray-500 dark:text-gray-400" />
-      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
-          streaming={item.status === 'in_progress'} />;
-  }
-  return null;
-}
-
-function Turn({
-  turn,
-  now,
-  agentId,
-  agentName,
-  copy,
-  cv,
-  pendingByTool,
-  pendingByElicitation,
-  onRespond,
-  onRespondElicitation,
-  responding,
-  onOpenExternal,
-  onOpenResource,
-}) {
-  const waitingPermission = turn.permissions.some(permission => !permission.resolved);
-  const waitingInput = turn.elicitations.some(elicitation => !elicitation.resolved);
-  const running = turn.status === 'running';
-  const duration = copy.elapsed(elapsedMs(turn.startedAt, turn.completedAt, now));
-  const assistantAvailable = assistantResponseAvailable(turn);
-  return (
-    <section className="space-y-4">
-      {(turn.userText || turn.userAttachments.length > 0) && (
-        <div className="flex justify-end">
-          <div className="max-w-[78%] rounded-[20px] rounded-br-md bg-[#E9EEF6] dark:bg-[#2A2B2E] px-4 py-3 text-[14px] leading-6 whitespace-pre-wrap break-words">
-            {turn.userText && <div>{turn.userText}</div>}
-            {turn.userAttachments.length > 0 && (
-              <div className={`flex flex-wrap gap-1.5 ${turn.userText ? 'mt-2' : ''}`}>
-                {turn.userAttachments.map((attachment, index) => (
-                  <span key={`${attachment.name || 'attachment'}-${index}`}
-                    className="inline-flex max-w-full items-center gap-1 rounded-lg bg-white/65 dark:bg-white/[0.07] px-2 py-1 text-[11px] leading-4">
-                    <FileTypeIcon name={attachment.name} className="h-4 w-4 shrink-0" />
-                    <span className="truncate">{attachment.name || copy.attachment}</span>
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-      <div className="flex items-start gap-3">
-        <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center text-[#1F1F1F] dark:text-[#E3E3E3]">
-          <AcpAgentLogo agentId={agentId} className="h-5 w-5" title={agentName} />
-        </div>
-        <div className="min-w-0 flex-1 space-y-1">
-          {running && (
-            <div className={`h-9 flex items-center gap-2 text-[12px] ${waitingPermission || waitingInput ? 'text-amber-600 dark:text-amber-300' : 'text-gray-500 dark:text-gray-400'}`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${waitingPermission || waitingInput ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
-              {waitingPermission ? copy.waitingPermission : waitingInput ? copy.waitingInputShort : cv.processing} · {duration}
-            </div>
-          )}
-          {turn.presentation.map((item, index) => (
-            <TurnItem key={item.id || `${item.type}-${index}`} item={item} now={now}
-              agentName={agentName} copy={copy} cv={cv}
-              pendingByTool={pendingByTool} pendingByElicitation={pendingByElicitation}
-              onRespond={onRespond} onRespondElicitation={onRespondElicitation}
-              responding={responding} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource} />
-          ))}
-          {!running && (assistantAvailable || turn.completedAt || turn.error) && <AssistantMessageFooter>
-            {assistantAvailable && (
-              <AssistantMessageActions resolveText={() => assistantResponseText(turn)} copy={copy} />
-            )}
-            {(turn.completedAt || turn.error) && <>
-              <StatusBadge status={turn.status} copy={copy} />
-              <span className="text-[11px] text-gray-400">{duration}</span>
-              {turn.usage && <span className="text-[11px] text-gray-400">{copy.contextUsage(Number(turn.usage.used || 0).toLocaleString(), Number(turn.usage.size || 0).toLocaleString())}</span>}
-              {turn.error && <span className="text-[11px] text-red-500">{turn.error}</span>}
-            </>}
-          </AssistantMessageFooter>}
-        </div>
-      </div>
-    </section>
-  );
-}
-
 // eslint-disable-next-line sonarjs/cognitive-complexity -- ACP code main view: session/event/draft/attachment/scroll lifecycles share one set of ref+state; refactoring is high-risk
 export function CodexAcpView({
   theme,
@@ -1048,8 +644,6 @@ export function CodexAcpView({
   const [workspaceDockActivation, setWorkspaceDockActivation] = useState(0);
   const [subagentPanel, setSubagentPanel] = useState(null);
   const [workspaceChangeCount, setWorkspaceChangeCount] = useState(0);
-  const [now, setNow] = useState(Date.now());
-  const useUnifiedConversationUi = unifiedConversationUiEnabled();
   const [localConfigApplying, setConfigApplying] = useState('');
   const acpConfigOperationTrackerRef = useRef(null);
   if (!acpConfigOperationTrackerRef.current) {
@@ -1294,6 +888,9 @@ export function CodexAcpView({
   const busy = isNativeAgent
     ? Boolean(activeNativeLane && activeNativeLane.busy)
     : projection.turns.some(turn => turn.status === 'running');
+  // Per-second clock shared with ChatView: on busy activation the baseline is synced before the
+  // interval starts; no timer while inactive; cleared on unmount (consolidates the old top ticker).
+  const now = useConversationSecondClock(busy);
   // 「回退到第 N 轮」入口（仅原生代码车道）：checkpoint 列表 + turn 边界对齐。
   // 回退编排（rewind_to_turn）由 confirmRewind 发起；成功后走既有 loadSession
   // 重载（磁盘对话已截断、engine 已被后端回收重注水）。refreshKey 含 busy 边沿：
@@ -2309,7 +1906,7 @@ export function CodexAcpView({
     if (!path || !sessionId) return;
     const id = `codex-attachment-${++attachmentIdRef.current}`;
     cancelledAttachmentIdsRef.current.delete(id);
-    const basename = String(path).split(/[\\/]/).filter(Boolean).pop() || String(path);
+    const basename = pathBasename(path, { collapseTrailing: true, fallback: String(path) });
     updateAttachments(sessionId, current => [
       ...current,
       { id, basename, status: 'parsing', result: null, error: null },
@@ -2495,25 +2092,19 @@ export function CodexAcpView({
   }, []);
 
   function handlePaste(event) {
-    // WebKit's DataTransferItemList has no Symbol.iterator; spreading throws TypeError, so Array.from is required.
-    // eslint-disable-next-line unicorn/prefer-spread -- DataTransferItemList is not iterable on any Safari/WKWebView version
-    const items = Array.from(event.clipboardData && event.clipboardData.items || []);
-    const images = items.filter(item => item.type && item.type.startsWith('image/'));
+    // WebKit-safe filter + image File extraction shared with the chat paste path;
+    // whether to swallow the event is decided here (single preventDefault below).
+    const images = collectClipboardImages(event);
     if (!images.length) return;
     if (!deviceFileUploadAvailable && !canInvoke('save_paste_image')) return;
     event.preventDefault();
-    images.forEach(item => {
-      const file = item.getAsFile();
-      if (!file) return;
+    images.forEach(file => {
       if (deviceFileUploadAvailable) {
         uploadDeviceFiles([file]).catch(showError);
         return;
       }
       // Safari 14 has no Blob#arrayBuffer; the paste-image bridge path keeps FileReader-based reading
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const bytes = [...new Uint8Array(reader.result)];
-        const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+      readPasteImageAsBytes(file).then(async ({ bytes, ext }) => {
         try {
           const path = await invoke('save_paste_image', {
             filename: `paste-${Date.now()}.${ext}`,
@@ -2529,8 +2120,10 @@ export function CodexAcpView({
             showError(err);
           }
         }
-      };
-      reader.readAsArrayBuffer(file);
+      }, (readError) => {
+        // The former inline FileReader had no onerror handler: read failures stay silent, diagnostic log only.
+        console.error('Codex paste image read failed:', readError);
+      });
     });
   }
 
@@ -2736,14 +2329,6 @@ export function CodexAcpView({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- poll only on the login-in-progress edge; refreshStatus reference changes must not restart the poll chain
   }, [activeAgentId, activeStatus?.login_in_progress]);
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- set the elapsed-time baseline immediately, then advance it every second via timer
-    setNow(Date.now());
-    if (!busy) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [busy]);
 
   // 切会话/回草稿时关掉记忆弹层（徽标内容按新会话 lane 自动切换）。
   useEffect(() => {
@@ -3494,7 +3079,7 @@ export function CodexAcpView({
             </div>
           </div>
           {configApplying && <span className="text-[10px] text-blue-500 animate-pulse">{codexCopy.applyingConfig}</span>}
-          {busy && <StatusBadge status="running" copy={t.uiConversation} />}
+          {busy && <ConversationStatusBadge status="running" copy={t.uiConversation} />}
           <button
             type="button"
             onClick={toggleWorkspacePanel}
@@ -3611,8 +3196,7 @@ export function CodexAcpView({
                 </div>
               </div>
             )}
-            {visibleTurns.map(turn => (useUnifiedConversationUi || isNativeAgent)
-              ? (
+            {visibleTurns.map(turn => (
                   <Fragment key={turn.id}>
                     {isNativeAgent && rewindEntries.has(turn.id) && (
                       // 原生车道 turn 边界回退入口：turn N+1 前的 chip =「回退到第 N 轮」；
@@ -3670,19 +3254,6 @@ export function CodexAcpView({
                       onOpenResource={isWeb ? undefined : openWorkspaceResource}
                     />
                   </Fragment>
-                )
-              : (
-                  <Turn key={turn.id} turn={turn} now={now}
-                    agentId={activeAgentId} agentName={activeAgentName}
-                    copy={t.uiConversation}
-                    cv={t.uiCodexView}
-                    pendingByTool={pendingByTool}
-                    pendingByElicitation={pendingByElicitation}
-                    onRespond={respond}
-                    onRespondElicitation={respondElicitation}
-                    responding={responding}
-                    onOpenExternal={(url) => openAcpExternalUrl(url).catch(showError)}
-                    onOpenResource={isWeb ? undefined : openWorkspaceResource} />
                 ))}
             {isNativeAgent && rewindUndoAvailable(rewindUndoState) && (
               // 「撤销回退」入口：渲染在时间线末尾（回退成功的内联提示其后），
@@ -4020,8 +3591,8 @@ export function CodexAcpView({
                           data-testid="native-usage-chip"
                           onClick={() => compactNativeSession().catch(showError)}
                           disabled={busy || working || nativeCompacting}
-                          title={codexCopy.nativeUsageTitle(fmtNativeCtxTok(nativeTokensInput), nativeCtxPct)}
-                          aria-label={codexCopy.nativeUsageTitle(fmtNativeCtxTok(nativeTokensInput), nativeCtxPct)}
+                          title={codexCopy.nativeUsageTitle(formatCompactCount(nativeTokensInput), nativeCtxPct)}
+                          aria-label={codexCopy.nativeUsageTitle(formatCompactCount(nativeTokensInput), nativeCtxPct)}
                           className="relative inline-flex h-8 items-center gap-1.5 overflow-hidden rounded-xl border border-black/[0.07] bg-black/[0.025] px-2.5 text-[11px] font-semibold text-[#1F1F1F] transition-all hover:-translate-y-px hover:shadow-sm disabled:cursor-default disabled:opacity-50 dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#E8EAED]"
                         >
                           {nativeCtxPct != null && (
@@ -4031,7 +3602,7 @@ export function CodexAcpView({
                               style={{ width: `${nativeCtxPct}%` }}
                             />
                           )}
-                          <span className="relative">{nativeCompacting ? codexCopy.compactStart : fmtNativeCtxTok(nativeTokensInput)}</span>
+                          <span className="relative">{nativeCompacting ? codexCopy.compactStart : formatCompactCount(nativeTokensInput)}</span>
                         </button>
                       )}
                       {nativeMemoryItems.length > 0 && (

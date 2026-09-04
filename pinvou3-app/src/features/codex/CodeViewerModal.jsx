@@ -3,13 +3,14 @@ import { createPortal } from 'react-dom';
 import {
   AppWindow, Check, Copy, ExternalLink, FolderOpen, Link, X,
 } from '../../components/icons.jsx';
+import { useCopyFlash } from '../../hooks/useCopyFlash.js';
+import { pathBasename } from '../../shared/path-utils.js';
 import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
 import {
+  CODE_VIEWER_ICON_BUTTON,
   CodeViewerContent,
-  clampViewerFontSize,
-  rememberViewerFontSize,
-  savedViewerFontSize,
   useCodeHighlight,
+  useViewerFontSize,
   viewerFontSizeBounds,
 } from './CodeViewerContent.jsx';
 
@@ -72,10 +73,10 @@ export function CodeViewerModal({
   const dialogRef = useRef(null);
   const resizeCleanupRef = useRef(null);
   const [size, setSize] = useState(savedViewerSize);
-  const [fontSize, setFontSize] = useState(savedViewerFontSize);
-  const [copied, setCopied] = useState('');
+  const [fontSize, adjustViewerFontSize] = useViewerFontSize();
+  const [copied, copyText] = useCopyFlash(1200);
 
-  const fileName = preview?.name || name || String(relativePath || '').split('/').pop() || '';
+  const fileName = preview?.name || name || pathBasename(relativePath);
 
   // diff 模式：把 WorkspaceDiff 适配为文本预览对象，复用 CodeViewerContent 的文本分支
   // （空文本保留旧 PreviewPane 的 noDiff 兜底，diff 为虚拟视图、无文件可定位/打开）。
@@ -106,18 +107,6 @@ export function CodeViewerModal({
   useEffect(() => () => {
     if (resizeCleanupRef.current) resizeCleanupRef.current();
   }, []);
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(''), 1200);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
-
-  function copyText(target, value) {
-    if (!value) return;
-    navigator.clipboard?.writeText(value);
-    setCopied(target);
-  }
 
   function startViewerResize(direction, event) {
     event.preventDefault();
@@ -172,16 +161,6 @@ export function CodeViewerModal({
     rememberViewerSize(nextSize);
   }
 
-  function adjustViewerFontSize(delta) {
-    setFontSize((current) => {
-      const next = clampViewerFontSize(current + delta);
-      rememberViewerFontSize(next);
-      return next;
-    });
-  }
-
-  const iconButton = 'w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-40 disabled:hover:bg-transparent';
-
   return createPortal(
     <div data-testid="code-viewer-modal" className="fixed inset-0 z-[300] flex items-center justify-center">
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; keyboard path handled by Escape and the title-bar close button */}
@@ -212,7 +191,7 @@ export function CodeViewerModal({
             type="button"
             onClick={() => adjustViewerFontSize(-1)}
             disabled={fontSize <= fontBounds.min}
-            className={`${iconButton} text-[12px] font-medium tracking-tight`}
+            className={`${CODE_VIEWER_ICON_BUTTON} text-[12px] font-medium tracking-tight`}
             title={copy.fontDecrease}
             aria-label={copy.fontDecrease}
             data-testid="code-viewer-font-decrease"
@@ -223,7 +202,7 @@ export function CodeViewerModal({
             type="button"
             onClick={() => adjustViewerFontSize(1)}
             disabled={fontSize >= fontBounds.max}
-            className={`${iconButton} text-[12px] font-medium tracking-tight`}
+            className={`${CODE_VIEWER_ICON_BUTTON} text-[12px] font-medium tracking-tight`}
             title={copy.fontIncrease}
             aria-label={copy.fontIncrease}
             data-testid="code-viewer-font-increase"
@@ -234,7 +213,7 @@ export function CodeViewerModal({
             type="button"
             onClick={() => copyText('content', renderPreview?.kind === 'text' ? renderPreview.text : '')}
             disabled={renderPreview?.kind !== 'text'}
-            className={iconButton}
+            className={CODE_VIEWER_ICON_BUTTON}
             title={copied === 'content' ? copy.copied : copy.copyContent}
           >
             {copied === 'content' ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}
@@ -242,18 +221,18 @@ export function CodeViewerModal({
           <button
             type="button"
             onClick={() => copyText('path', relativePath)}
-            className={iconButton}
+            className={CODE_VIEWER_ICON_BUTTON}
             title={copied === 'path' ? copy.copied : copy.copyPath}
           >
             {copied === 'path' ? <Check size={13} className="text-emerald-500" /> : <Link size={13} />}
           </button>
           {!diff && onReveal && (
-            <button type="button" onClick={onReveal} className={iconButton} title={copy.reveal}>
+            <button type="button" onClick={onReveal} className={CODE_VIEWER_ICON_BUTTON} title={copy.reveal}>
               <FolderOpen size={13} />
             </button>
           )}
           {!diff && onOpen && (
-            <button type="button" onClick={onOpen} className={iconButton} title={copy.open}>
+            <button type="button" onClick={onOpen} className={CODE_VIEWER_ICON_BUTTON} title={copy.open}>
               <ExternalLink size={13} />
             </button>
           )}
@@ -261,7 +240,7 @@ export function CodeViewerModal({
             <button
               type="button"
               onClick={onOpenInNewWindow}
-              className={iconButton}
+              className={CODE_VIEWER_ICON_BUTTON}
               aria-label={copy.openInNewWindow}
               title={copy.openInNewWindow}
               data-testid="code-viewer-open-in-new-window"
@@ -269,7 +248,7 @@ export function CodeViewerModal({
               <AppWindow size={13} />
             </button>
           )}
-          <button type="button" onClick={onClose} className={iconButton} aria-label={copy.closeViewer} title={copy.closeViewer}>
+          <button type="button" onClick={onClose} className={CODE_VIEWER_ICON_BUTTON} aria-label={copy.closeViewer} title={copy.closeViewer}>
             <X size={14} />
           </button>
         </div>

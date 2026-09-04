@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, Filter, PinIcon, Search, X } from '../../components/icons.jsx';
+import { Check, Filter, PinIcon, X } from '../../components/icons.jsx';
+import { IosSearchField } from '../../components/IosControls.jsx';
+import { useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
 import { ArchivedDeleteConfirmDialog, RecentItem } from '../../components/layout/NavigationComponents.jsx';
 import { SessionAttachmentTitle } from '../attachments/SessionAttachmentTitle.jsx';
 import {
@@ -17,6 +19,19 @@ import { sessionRoute } from '../../shared/session-management.js';
 // 左侧只保留有匹配的日期,点击日期平滑滚动到右侧对应分组。
 // Stable empty-array default: an inline [] is a new reference on every render, which makes memoized children re-render repeatedly.
 const EMPTY_ARCHIVED = [];
+
+// Round checkbox for bulk multi-select: the in-row check (large) and select-all (small) share one stroke/fill style set
+const CircleCheck = ({ checked, size }) => (
+  <span className={`${
+    size === 'sm' ? 'w-4 h-4' : 'w-5 h-5'
+  } shrink-0 rounded-full border flex items-center justify-center transition-colors ${
+    checked
+      ? 'bg-[#0B57D0] border-[#0B57D0] text-white'
+      : 'border-[#C4C7C5] dark:border-[#5F6368]'
+  }`}>
+    {checked && <Check size={size === 'sm' ? 11 : 13} />}
+  </span>
+);
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- session management page: filter/sort/group/batch-select form one cohesive pipeline; splitting it would introduce a lot of pass-through state
 export const SearchView = ({ theme, history, t, language, archived = EMPTY_ARCHIVED, showArchived: showArchivedProp, onShowArchivedConsumed, onSelect, onOpenCodex, onOpenScheduledRun, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onArchiveMany, onDeleteMany, onRestoreArchived, onRestoreMany }) => {
@@ -89,24 +104,11 @@ export const SearchView = ({ theme, history, t, language, archived = EMPTY_ARCHI
     });
 
   // 筛选菜单:点外部/Escape 关闭(与侧栏筛选菜单同款交互)
-  useEffect(() => {
-    if (!filterOpen) return;
-    const closeOnPointerDown = (event) => {
-      if (filterRef.current && !filterRef.current.contains(event.target)) setFilterOpen(false);
-    };
-    const closeOnEscape = (event) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        setFilterOpen(false);
-      }
-    };
-    document.addEventListener('pointerdown', closeOnPointerDown);
-    window.addEventListener('keydown', closeOnEscape);
-    return () => {
-      document.removeEventListener('pointerdown', closeOnPointerDown);
-      window.removeEventListener('keydown', closeOnEscape);
-    };
-  }, [filterOpen]);
+  useOutsidePointerClose(filterOpen, () => setFilterOpen(false), [filterRef], {
+    escape: true,
+    escapeOnWindow: true,
+    preventEscapeDefault: true,
+  });
 
   // 按本地日历日分组:组内时间倒序,组间日期倒序,无时间戳落 'unknown' 沉底
   const dateGroups = [];
@@ -185,13 +187,7 @@ export const SearchView = ({ theme, history, t, language, archived = EMPTY_ARCHI
           onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggleSelect(chat.id); } }}
           className="flex items-center gap-3 px-4 py-[10px] cursor-pointer rounded-[16px] transition-colors hover:bg-[#F0F4F9] dark:hover:bg-[#1E1F20]"
         >
-          <span className={`w-5 h-5 shrink-0 rounded-full border flex items-center justify-center transition-colors ${
-            selected
-              ? 'bg-[#0B57D0] border-[#0B57D0] text-white'
-              : 'border-[#C4C7C5] dark:border-[#5F6368]'
-          }`}>
-            {selected && <Check size={13} />}
-          </span>
+          <CircleCheck checked={selected} />
           {chat.pinned && <PinIcon size={12} className="shrink-0 rotate-45 text-[#8A8F94] dark:text-[#9AA0A6]" />}
           <span className="flex-1 min-w-0 truncate text-[15px] text-[#1F1F1F] dark:text-[#E3E3E3]">{chat.titleContent || chat.title}</span>
           <span className="text-[13px] shrink-0 text-[#444746] dark:text-[#C4C7C5]">{chat.date}</span>
@@ -266,29 +262,15 @@ export const SearchView = ({ theme, history, t, language, archived = EMPTY_ARCHI
       <div className="flex-1 min-h-0 flex flex-col px-6 pt-16 pb-6">
         <div className="max-w-[960px] w-full mx-auto flex flex-col flex-1 min-h-0 relative">
 
-          {/* Centered Search Bar */}
-          <div className="shrink-0 flex items-center gap-3 px-6 py-4 rounded-full mb-4 transition-colors bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E3E3E3]">
-            <Search size={22} className="text-[#444746] dark:text-[#C4C7C5]" />
-            <input
-              ref={inputRef}
-              type="text"
-              placeholder={t.searchPlaceholder}
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              className="flex-1 bg-transparent border-none outline-none text-[16px] placeholder:text-[16px] placeholder:text-[#444746] dark:placeholder:text-[#C4C7C5]"
-            />
-            {query ? (
-              <button
-                type="button"
-                aria-label={t.clearSearch}
-                title={t.clearSearch}
-                onClick={() => { setQuery(''); inputRef.current && inputRef.current.focus(); }}
-                className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center transition-colors text-[#444746] hover:bg-[#DDE3EA] dark:text-[#C4C7C5] dark:hover:bg-[#333537]"
-              >
-                <X size={16} />
-              </button>
-            ) : null}
-          </div>
+          {/* Centered Search Bar (unified with the iOS-standard search field; was a larger rounded capsule) */}
+          <IosSearchField
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder={t.searchPlaceholder}
+            inputRef={inputRef}
+            clearLabel={t.clearSearch}
+            className="shrink-0 mb-4"
+          />
 
           {/* 工具行:「对话|已收纳」切换(批量模式下换成全选) + 批量管理开关;与搜索框同宽对齐 */}
           <div className="shrink-0 h-9 mb-2 flex items-center justify-between">
@@ -298,13 +280,7 @@ export const SearchView = ({ theme, history, t, language, archived = EMPTY_ARCHI
                 onClick={toggleSelectAll}
                 className="h-8 px-2 flex items-center gap-2 rounded-full text-[13px] transition-colors text-[#444746] hover:bg-[#F0F4F9] dark:text-[#C4C7C5] dark:hover:bg-[#1E1F20]"
               >
-                <span className={`w-4 h-4 shrink-0 rounded-full border flex items-center justify-center transition-colors ${
-                  allVisibleSelected
-                    ? 'bg-[#0B57D0] border-[#0B57D0] text-white'
-                    : 'border-[#C4C7C5] dark:border-[#5F6368]'
-                }`}>
-                  {allVisibleSelected && <Check size={11} />}
-                </span>
+                <CircleCheck checked={allVisibleSelected} size="sm" />
                 <span>{t.searchSelectAll} · {t.searchSelectedCount(selectedIds.size)}</span>
               </button>
             ) : (

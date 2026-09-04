@@ -16,8 +16,8 @@ const FILE_LIST_LIMIT = 8;
 // 弹窗焦点：挂载时夺取一次（父组件内联 onCancel 每渲染换新身份，若 focus 放进
 // 带依赖的 effect，弹窗打开期间任意父级重渲染都会把焦点从按钮拽回容器），卸载
 // 时归还先前焦点元素（触发元素可能已随时间线重载重建，isConnected 守卫；
-// focus 分离元素是规范允许的 no-op）。两个确认弹窗共用。
-function useDialogFocusRestore(dialogRef) {
+// focusing a detached element is a spec-permitted no-op). Shared by the two confirm dialogs and NativeYoloConfirmCard.
+export function useDialogFocusRestore(dialogRef) {
   useEffect(() => {
     const previous = document.activeElement;
     dialogRef.current?.focus();
@@ -27,8 +27,8 @@ function useDialogFocusRestore(dialogRef) {
   }, [dialogRef]);
 }
 
-// Escape 关闭（busy 时禁用）。两个确认弹窗共用。
-function useDialogEscapeKey(busy, onCancel) {
+// Escape to close (disabled while busy). Shared by the two confirm dialogs and NativeYoloConfirmCard.
+export function useDialogEscapeKey(busy, onCancel) {
   useEffect(() => {
     const onKey = (event) => {
       if (event.key === 'Escape' && !busy) {

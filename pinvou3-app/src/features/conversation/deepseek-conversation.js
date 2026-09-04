@@ -12,9 +12,8 @@ const SHELL_TOOLS = new Set([
   'Bash',
 ]);
 
-export function conversationItemsForMode(chatItems = [], unified = true) {
+export function conversationItemsForMode(chatItems = []) {
   const items = Array.isArray(chatItems) ? chatItems : [];
-  if (!unified) return items;
   return items.filter(item => !(item && item.legacyConversationOnly));
 }
 

@@ -1,5 +1,6 @@
-import { useMemo, useSyncExternalStore } from 'react';
+import { useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { RefreshCw } from '../../components/icons.jsx';
+import { pathBasename } from '../../shared/path-utils.js';
 import {
   getSyntaxHighlightVersion,
   highlightCode,
@@ -40,9 +41,26 @@ export function viewerFontSizeBounds() {
   return { min: VIEWER_MIN_FONT_SIZE, max: VIEWER_MAX_FONT_SIZE };
 }
 
+// Font-size state + A-/A+ adjustment: shared by the modal (CodeViewerModal) and the standalone
+// reader (ReaderApp), persisted via the same VIEWER_FONT_SIZE_KEY (the two inline copies were identical).
+export function useViewerFontSize() {
+  const [fontSize, setFontSize] = useState(savedViewerFontSize);
+  const adjustViewerFontSize = useCallback((delta) => {
+    setFontSize((current) => {
+      const next = clampViewerFontSize(current + delta);
+      rememberViewerFontSize(next);
+      return next;
+    });
+  }, []);
+  return [fontSize, adjustViewerFontSize];
+}
+
+// Unified style for the title-bar icon buttons (shared by the modal and reader A-/A+/copy/open/close buttons).
+export const CODE_VIEWER_ICON_BUTTON = 'w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-40 disabled:hover:bg-transparent';
+
 // 高亮语言提示：优先扩展名（app.jsx → jsx），无扩展名时用完整文件名（Dockerfile / Makefile）。
 function languageHintForFile(name) {
-  const base = String(name || '').split(/[\\/]/u).pop() || '';
+  const base = pathBasename(name);
   const dot = base.lastIndexOf('.');
   if (dot > 0) return base.slice(dot + 1).toLowerCase();
   return base.toLowerCase();

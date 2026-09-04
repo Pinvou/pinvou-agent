@@ -357,7 +357,9 @@ try {
   assert.ok(questionChoiceCard.includes("type={question.multiSelect ? 'checkbox' : 'radio'}")
     && questionChoiceCard.includes('onClick={submit}'),
   'the shared card must expose explicit radio/checkbox choices and an explicit submit action');
-  assert.ok(conversationView.includes('查看原始数据'),
+  // The "view raw data" copy fallback has been consolidated into dict.zh.uiConversation.viewRaw.
+  const conversationZhDict = readFileSync(path.join(root, 'src', 'shared', 'i18n', 'zh.js'), 'utf8');
+  assert.ok(conversationView.includes('c.viewRaw') && conversationZhDict.includes("viewRaw:'查看原始数据'"),
     'model-facing compacted payloads must be secondary diagnostic details');
   // Steered mid-turn messages are not turn admissions: they must never
   // consume a timing record or inherit a phantom lifecycle. Live repros
@@ -504,8 +506,6 @@ try {
     && chatView.includes('isFollowing: () => autoScrollRef.current')
     && chatView.includes('onMeasured: () => {'),
     'bottom-following conversations must recover after delayed layout and window visibility changes');
-  assert.ok(chatView.includes('<ThinkingBubble'), 'the original rendering path must remain available as a fallback');
-  assert.ok(chatView.includes("pinvou_conversation_ui_v2"), 'the local rollback switch must be explicit');
 
   console.log('deepseek_conversation_timeline: ok');
 } finally {

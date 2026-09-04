@@ -1,5 +1,7 @@
 import React, { useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
+import { StatusDot } from '../../components/StatusDot.jsx';
+import { dict } from '../../shared/i18n.js';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
 import { useThrottledValue } from './useThrottledValue.js';
@@ -28,95 +30,25 @@ import {
 import { AssistantMessageActions, AssistantMessageFooter } from './AssistantMessageActions.jsx';
 import { assistantResponseAvailable, assistantResponseText } from './message-clipboard.js';
 
-const DEFAULT_COPY = {
-  completed: '已完成',
-  failed: '失败',
-  interrupted: '已中断',
-  limitReached: '达到限制',
-  processing: '处理中',
-  processingActive: '正在处理',
-  callingTool: name => `正在调用 ${name}`,
-  waitingPermission: '等待授权',
-  waitingInput: '等待你的输入',
-  waitingInputShort: '等待输入',
-  goLatest: label => `${label}，前往最新消息`,
-  elapsed: milliseconds => {
-    const seconds = Math.max(0, Math.floor(milliseconds / 1000));
-    if (seconds < 60) return `${seconds}秒`;
-    const minutes = Math.floor(seconds / 60);
-    const remaining = seconds % 60;
-    return remaining ? `${minutes}分${remaining}秒` : `${minutes}分`;
-  },
-  segments: count => `${count} 段`,
-  running: '执行中',
-  executionFailed: '执行失败',
-  executionFinished: '执行结束',
-  command: '命令',
-  workingDirectory: '工作目录',
-  output: '输出',
-  webContent: '网页内容',
-  iwencaiNews: '同花顺新闻',
-  webSearch: '网页搜索',
-  search: '搜索',
-  textContent: '文本',
-  webPage: '网页',
-  shellCommand: '执行 Shell 命令',
-  results: count => `${count} 条结果`,
-  recognizedResults: count => `识别到 ${count} 条结果`,
-  returnedResults: '已返回结果',
-  inProgress: '进行中',
-  searchCompacted: '搜索结果已交给 Agent 处理；当前压缩结果中没有可稳定提取的条目。',
-  resultSummaryOnly: '为控制上下文长度，这里只展示可识别的结果摘要。',
-  collapseRaw: '收起原始数据',
-  viewRaw: '查看原始数据',
-  rawData: '原始数据',
-  requestFailed: '请求失败',
-  returned: '已返回',
-  contentTruncated: '内容已截断',
-  contentPreview: '内容预览',
-  responseTruncated: '响应内容超过本次抓取上限，Agent 使用的是截断后的内容。',
-  fileChange: '文件变更',
-  tool: '工具',
-  arguments: '参数',
-  result: '结果',
-  executing: '正在执行',
-  executionSteps: '执行步骤',
-  items: count => `${count} 项`,
-  failedItems: count => `${count} 项失败`,
-  thinking: '思考中',
-  thoughtCompleted: '思考完成',
-  plan: '执行计划',
-  permissionRequest: agent => `${agent} 请求权限`,
-  protectedOperation: '执行受保护操作',
-  operationArguments: '操作参数',
-  allowOnce: '允许一次',
-  allowSession: '本会话允许',
-  reject: '拒绝',
-  handled: '已处理',
-  expired: '该请求已过期',
-  usage: (input, output) => `输入 ${input} · 输出 ${output}`,
-  contextUsage: (used, size) => `上下文 ${used} / ${size}`,
-  attachment: '附件',
-  operations: (count, failedCount) => {
-    const suffix = failedCount ? ` · ${failedCount} 项失败` : '';
-    return `执行 ${count} 项${suffix}`;
-  },
-  copyReply: '复制回复',
-  copyReplySuccess: '已复制',
-  copyReplyFailed: '复制失败',
-};
+// Fallback copy derives from the zh dictionary instead of duplicating its strings here:
+// dictionary tweaks in shared/i18n propagate automatically, and a caller that forgets to
+// pass its own uiConversation now sees real zh strings rather than a hand-copied table.
+// Key-set diff (refactor): every key the timeline reads exists in dict.zh.uiConversation,
+// so no literal overlay is needed; the defensive `|| {}` only guards the impossible case
+// of a missing dict section (same style as other `x || {}` fallbacks in the codebase).
+const FALLBACK_COPY = dict.zh?.uiConversation || {};
 
-// conversationCopy(copy) merges the ~70-key default copy table with the caller's
+// conversationCopy(copy) merges the fallback copy table with the caller's
 // overrides; it used to run once per component per render, so long transcripts
 // rebuilt that object for every turn on every keystroke/stream chunk. The merged
 // table is immutable and `copy` identities are stable (i18n dict tables), so cache
 // the merge per source table (same WeakMap trick as ChatView's legacyMarkdownCache).
 const conversationCopyCache = new WeakMap();
 function conversationCopy(copy) {
-  if (!copy) return DEFAULT_COPY;
+  if (!copy) return FALLBACK_COPY;
   const cached = conversationCopyCache.get(copy);
   if (cached) return cached;
-  const merged = { ...DEFAULT_COPY, ...copy };
+  const merged = { ...FALLBACK_COPY, ...copy };
   conversationCopyCache.set(copy, merged);
   return merged;
 }
@@ -275,7 +207,7 @@ export function ConversationActivityIndicator({
   return <div role="status" aria-live="polite" className={sharedClass}>{content}</div>;
 }
 
-function TerminalBlock({ label, text }) {
+export function TerminalBlock({ label, text }) {
   if (!text) return null;
   return (
     <div className="mt-3 min-w-0 max-w-full">
@@ -285,7 +217,7 @@ function TerminalBlock({ label, text }) {
   );
 }
 
-function StructuredValue({ label, value }) {
+export function StructuredValue({ label, value }) {
   if (value == null || value === '' || (Array.isArray(value) && !value.length)) return null;
   if (typeof value !== 'object') return <TerminalBlock label={label} text={String(value)} />;
   const entries = Object.entries(value);
@@ -307,7 +239,7 @@ function StructuredValue({ label, value }) {
   );
 }
 
-function CompactItemRow({ icon, title, meta, status, open, onToggle, controlsId }) {
+export function CompactItemRow({ icon, title, meta, status, open, onToggle, controlsId }) {
   const tone = status === 'failed'
     ? 'text-red-500 bg-red-500/10'
     : status === 'warning'
@@ -326,7 +258,7 @@ function CompactItemRow({ icon, title, meta, status, open, onToggle, controlsId 
         <span className="block truncate text-[12px] font-medium">{title}</span>
         {meta && <span className="block mt-0.5 text-[10px] text-gray-400">{meta}</span>}
       </span>
-      {status === 'running' && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />}
+      {status === 'running' && <StatusDot tone="run" />}
       <ChevronDown size={13} className={`shrink-0 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
     </button>
   );
@@ -627,7 +559,7 @@ function ToolGroup({ group, now, renderToolItem, onOpenExternal, onOpenResource,
         aria-expanded={hasDetails ? Boolean(expanded) : undefined}
         aria-controls={hasDetails && expanded ? detailsId : undefined}
         className="w-full min-w-0 h-9 overflow-hidden px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
-        <span className={`w-1.5 h-1.5 shrink-0 rounded-full ${failed ? 'bg-red-500' : running ? 'bg-blue-500 animate-pulse' : 'bg-gray-300 dark:bg-gray-600'}`} />
+        <StatusDot tone={failed ? 'fail' : running ? 'run' : 'idle'} />
         <span className="min-w-0 flex-1 truncate">{summary}</span>
         <ChevronDown size={13} className={`shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`} />
       </button>
@@ -681,7 +613,7 @@ function ReasoningItem({ item, now, copy }) {
   );
 }
 
-function PlanBlock({ plan, copy }) {
+export function PlanBlock({ plan, copy }) {
   const c = conversationCopy(copy);
   const entries = plan && plan.entries || [];
   if (!entries.length) return null;
@@ -691,9 +623,11 @@ function PlanBlock({ plan, copy }) {
       <div className="space-y-2">
         {entries.map((entry, index) => (
           <div key={index} className="min-w-0 flex items-start gap-2 text-[13px]">
-            <span className={`mt-1.5 w-2 h-2 shrink-0 rounded-full ${
-              entry.status === 'completed' ? 'bg-emerald-500' : entry.status === 'in_progress' ? 'bg-blue-500 animate-pulse' : 'bg-gray-300 dark:bg-gray-600'
-            }`} />
+            <StatusDot
+              size="md"
+              tone={entry.status === 'completed' ? 'ok' : entry.status === 'in_progress' ? 'run' : 'idle'}
+              className="mt-1.5"
+            />
             <span className="min-w-0 flex-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{entry.content}</span>
           </div>
         ))}
@@ -959,7 +893,7 @@ function ConversationTurnView({
         <div className="min-w-0 flex-1 space-y-1">
           {running && (
             <div className={`h-9 flex items-center gap-2 text-[12px] ${waitingAttention ? 'text-amber-600 dark:text-amber-300' : 'text-gray-500 dark:text-gray-400'}`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${waitingAttention ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
+              <StatusDot tone={waitingAttention ? 'warn' : 'okPulse'} />
               {waitingPermission ? c.waitingPermission : waitingInput ? c.waitingInputShort : (turn.activityToolName ? c.callingTool(turn.activityToolName) : c.processingActive)} · {duration}
             </div>
           )}

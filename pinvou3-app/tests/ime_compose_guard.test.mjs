@@ -41,18 +41,24 @@ const petWindow = src('features', 'pet', 'PetWindow.jsx');
 
 // --- 源码契约:每条"Enter → 业务动作"路径都调用 isImeComposing ----------------
 // --- features/chat:发送 / 提交 -------------------------------------------------
-// 主输入框 handleKeyDown:Enter 发送需带守卫。
+// Main input handleKeyDown: Enter-to-send must carry the guard. The guard has been
+// consolidated into isPlainEnter (Enter + non-shift + non-IME composition); predicate definition and consumption sites are asserted separately.
+assertGuard(
+  'isPlainEnter predicate',
+  chatView,
+  /const isPlainEnter = \(e\) => e\.key === ['"]Enter['"] && !e\.shiftKey && !isImeComposing\(e\);/,
+);
 assertGuard(
   '主输入框 handleKeyDown',
   chatView,
-  /function handleKeyDown\([^)]*\)\s*\{[\s\S]*e\.key === ['"]Enter['"][\s\S]*!isImeComposing\(e\)[\s\S]*handleSend\(\)/,
+  /function handleKeyDown\([^)]*\)\s*\{[\s\S]*if \(isPlainEnter\(e\)\)[\s\S]*handleSend\(\)/,
 );
 
-// 消息编辑框内联 onKeyDown:Enter 提交重发也需带守卫。
+// Inline onKeyDown in the message editor: Enter-to-resubmit must also carry the guard (via isPlainEnter).
 assertGuard(
   '消息编辑框 Enter 提交',
   chatView,
-  /onKeyDown=\{e => \{ if \(e\.key === ['"]Enter['"] && !e\.shiftKey && !isImeComposing\(e\)\) \{ e\.preventDefault\(\); commit\(\); \}/,
+  /onKeyDown=\{e => \{ if \(isPlainEnter\(e\)\) \{ e\.preventDefault\(\); commit\(\); \}/,
 );
 
 // --- features/codex:发送 ------------------------------------------------------

@@ -47,7 +47,6 @@ import {
   selectArtifactsPane,
   settleBrowserOpen,
 } from '../features/browser/browser-pane-state.mjs';
-import { SettingsErrorBoundary } from '../features/settings/SettingsErrorBoundary.jsx';
 import { ViewErrorBoundary } from '../shared/ViewErrorBoundary.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
 import { createPinvouModeScopeKey, savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
@@ -1948,7 +1947,10 @@ function workspaceDisplayName(path) {
           updateActiveCodexSession(null);
           setCodexDraftEpoch(value => value + 1);
           setCurrentView('codex');
-        } else if (mode === 'design') {
+        } else if (mode === 'design' || mode === 'work') {
+          // The design / work branches were copy-paste differing only in the written mode value; merged into
+          // one parameterized path. Execution order unchanged: close code state -> compute scopeKey ->
+          // write modeState -> session creation / probe sync -> switch to chat.
           setCodeModeOn(false);
           // 仅草稿态（无活跃会话）才开新会话：从 code 页切回时 bridge 的
           // activeSessionId 仍是原工作会话，强制 createNewSession 会新建一个
@@ -1959,21 +1961,10 @@ function workspaceDisplayName(path) {
           const scopeKey = bridge.activeSessionId
             ? createPinvouModeScopeKey(bridge.activeSessionId)
             : undefined;
-          savePinvouModeState({ mode: 'design' }, undefined, scopeKey);
+          savePinvouModeState({ mode }, undefined, scopeKey);
           if (bridge.available && !bridge.activeSessionId) bridge.sessions.createNewSession();
           // code 页期间原工作会话的 mode 可能已被修改（code 页独立链路），
           // 切回前拉一次实测值，避免 ChatView 挂载后显示旧 modeState。
-          if (bridge.available && bridge.activeSessionId) {
-            bridge.interaction.syncModeState().catch(() => {});
-          }
-          setCurrentView('chat');
-        } else if (mode === 'work') {
-          setCodeModeOn(false);
-          const scopeKey = bridge.activeSessionId
-            ? createPinvouModeScopeKey(bridge.activeSessionId)
-            : undefined;
-          savePinvouModeState({ mode: 'work' }, undefined, scopeKey);
-          if (bridge.available && !bridge.activeSessionId) bridge.sessions.createNewSession();
           if (bridge.available && bridge.activeSessionId) {
             bridge.interaction.syncModeState().catch(() => {});
           }
@@ -2666,6 +2657,34 @@ function workspaceDisplayName(path) {
         return () => { disposed = true; };
       }, [browserOverlayIntent, runBrowserUiTransition]);
 
+      // The 11 props identical across ChatView's two mount points (main chat / scheduled-run chat) are
+      // consolidated into one block; each mount point writes only its differing props (prefill / focus tick / code-mode entry),
+      // so two long prop lists cannot silently drift after copy-paste.
+      // The props below are NOT consolidated and stay as JSX literals (source-string contracts: tests regex-assert
+      // that main.jsx contains these literals; see the individual test files):
+      // - onBackScheduledRun：scheduled_tasks_unit.test.js
+      // - browserDockAvailable / rightDockActivePanelId /
+      //   onRightDockPanelSelectionChange：browser_native_surface.test.mjs
+      const chatViewBaseProps = {
+        theme: activeTheme,
+        t,
+        bs,
+        onOpenEditor: handleOpenPersonaEditor,
+        justInstalledTool,
+        setJustInstalledTool,
+        onGotoSettings: () => openSettingsSection('general'),
+        onGotoModelSettings: () => openSettingsSection('model'),
+        onGotoTools: () => navigateFromScheduledRun('toolStore'),
+        browserDockOpen: browserPaneOpen,
+        onOpenBrowserDock: openBrowserDock,
+      };
+      // The three byte-identical empty states in the sidebar task list (task groups / date groups / flat list) share one node.
+      const sidebarTaskEmptyNode = (
+        <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
+          {t.sidebarTaskEmpty}
+        </div>
+      );
+
       return (
         <div data-testid="app-root" data-current-view={currentView} data-platform={isWeb ? 'web' : 'desktop'}
           className={`flex flex-col h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
@@ -3108,9 +3127,7 @@ function workspaceDisplayName(path) {
                           })}
                         </>
                       ) : (
-                        <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
-                          {t.sidebarTaskEmpty}
-                        </div>
+                        sidebarTaskEmptyNode
                       )
                     ) : sidebarDateGrouping ? (sidebarPinnedHoisted.length > 0 || sidebarTaskGroups.length > 0) ? (
                       <>
@@ -3141,15 +3158,11 @@ function workspaceDisplayName(path) {
                         })}
                       </>
                     ) : (
-                      <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
-                        {t.sidebarTaskEmpty}
-                      </div>
+                      sidebarTaskEmptyNode
                     ) : (
                       <div className="space-y-0.5">
                         {sidebarTaskHistory.length > 0 ? sidebarTaskHistory.map(renderSidebarTaskItem) : (
-                          <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
-                            {t.sidebarTaskEmpty}
-                          </div>
+                          sidebarTaskEmptyNode
                         )}
                       </div>
                     )}
@@ -3281,7 +3294,7 @@ function workspaceDisplayName(path) {
               <Suspense fallback={<ViewFallback />}>
             {currentView === 'monitor' && <LazyMonitorView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'settings' && (
-              <SettingsErrorBoundary theme={activeTheme} t={t}>
+              <ViewErrorBoundary heading={t.uiSettingsDetail.settingsLoadFailed} t={t}>
                 <LazySettingsView
                   activeTheme={activeTheme} setActiveTheme={handleSetTheme}
                   language={language} setLanguage={handleSetLanguage}
@@ -3313,7 +3326,7 @@ function workspaceDisplayName(path) {
                   initialSection={settingsInitialSection}
                   onCloseSettings={() => navigateFromScheduledRun(settingsReturnViewRef.current || 'chat')}
                 />
-              </SettingsErrorBoundary>
+              </ViewErrorBoundary>
             )}
             {isCompactShell && browserActive && currentView === 'browser' && (
               <BrowserView
@@ -3326,7 +3339,21 @@ function workspaceDisplayName(path) {
             )}
             {currentView === 'toolStore' && <LazyToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <LazyCardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => { setCodeModeOn(false); setCurrentView('chat'); }} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
-            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} prefillAppend={chatPrefillAppend} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => { setChatPrefill(''); setChatPrefillAppend(false); }} onOpenEditor={handleOpenPersonaEditor} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} browserDockAvailable={browserDockAvailable} browserDockOpen={browserPaneOpen} rightDockActivePanelId={browserDockSelectedPanelId} onRightDockPanelSelectionChange={selectRightDockPanel} onOpenBrowserDock={openBrowserDock} />}
+            {currentView === 'chat' && (
+              <ChatView
+                {...chatViewBaseProps}
+                prefill={chatPrefill}
+                prefillAppend={chatPrefillAppend}
+                focusComposerTick={petFocusComposerTick}
+                onPrefillConsumed={() => { setChatPrefill(''); setChatPrefillAppend(false); }}
+                onBackScheduledRun={() => navigateFromScheduledRun('scheduled')}
+                codeModeAvailable={codexAcpSupported}
+                onSwitchHomeMode={handleSwitchHomeMode}
+                browserDockAvailable={browserDockAvailable}
+                rightDockActivePanelId={browserDockSelectedPanelId}
+                onRightDockPanelSelectionChange={selectRightDockPanel}
+              />
+            )}
             {codexAcpSupported && currentView === 'codex' && (
               <CodexAcpView
                 theme={activeTheme}
@@ -3346,7 +3373,7 @@ function workspaceDisplayName(path) {
             )}
             {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (
               bs && bs.scheduledRunContext ? (
-                <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={handleOpenPersonaEditor} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} browserDockAvailable={browserDockAvailable} browserDockOpen={browserPaneOpen} rightDockActivePanelId={browserDockSelectedPanelId} onRightDockPanelSelectionChange={selectRightDockPanel} onOpenBrowserDock={openBrowserDock} />
+                <ChatView {...chatViewBaseProps} prefill="" onPrefillConsumed={() => {}} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} browserDockAvailable={browserDockAvailable} rightDockActivePanelId={browserDockSelectedPanelId} onRightDockPanelSelectionChange={selectRightDockPanel} />
               ) : (
                 <LazyScheduledTasksView theme={activeTheme} t={t} onOpenChat={() => { setCodeModeOn(false); setCurrentView('chat'); }} onGotoModelSettings={() => openSettingsSection('model')} />
               )

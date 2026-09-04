@@ -472,8 +472,6 @@ export const dictZh = {
         composerBuiltinAuto: '内置·自动', composerSkillInUse: '使用中', composerSkillAllDisabled: '该会话类型的所有技能已关闭，可在上方打开', composerModeControlled: '受模式控制', composerReadonlySwitch: '受模式控制，不可手动切换',
         composerProjectSkills: '项目技能', composerProjectSkillsDesc: '扫描项目内置skills', composerProjectSkillsWarning: '项目内技能文本可能包含恶意指令（提示注入），仅对可信项目开启', composerProjectSkillsHelpTitle: '项目技能说明', composerProjectSkillsHelpBody: '开启后，绑定项目的代码会话会扫描项目内约定目录中的技能文件，模型即可加载并使用这些技能。', composerProjectSkillsHelpDirsLabel: '扫描目录（优先级从高到低）', composerProjectSkillsHelpDirs: '.agents/skills\n.pinvou/skills\nskills\n.opencode/skills\n.claude/skills\n.cursor/skills\n.codewhale/skills',
         resend: '重新发送', editResend: '编辑并重发', messageSending: '发送中…', messageAccepted: '已发送', messageFailed: '发送失败', messageOutcomeUnknown: '发送状态待确认，请检查会话列表', selectAllMsg: '全选', copyMsg: '复制', pasteMsg: '粘贴', copied: '已复制', backToBottom: '回到底部',
-        thinkingLabel: '思考中', thinkingCall: (tool, s) => `调用 ${tool}... ${s}s`,
-        hintSlow30: isLocal => isLocal ? '本地模型生成中' : '生成中…', hintSlow120: isLocal => isLocal ? '本地模型在生成长内容,请耐心等' : '正在生成长内容,请耐心等',
         artifactLabel: '成品', clickToOpen: '点击打开 →',
         toolRunning: '运行中...', toolDone: '完成', toolFailed: '失败', shellCancelFailed: '取消失败',
         tsDone: '已完成', tsInProgress: '进行中', tsPending: '待办', tsLine: '行',
@@ -827,8 +825,6 @@ dictZh.uiArtifacts = {
   diVisibility:'可见性', diVisCollapse:'折叠', diCursor:'光标',
   diChangesLog:n=>`设计变更 ${n}`, diEmpty:'空',
 };
-
-dictZh.uiCodexView = { ended:'已结束', stepsFailed:'执行步骤包含失败', processing:'正在处理', codexTool:'Codex 工具' };
 
 Object.assign(dictZh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`, deviceUploadTooLarge:name=>`${name} 超过 20 MB 附件上限`, deviceUploadEmpty:name=>`${name} 是空文件，无法添加`, deviceUploadUnavailable:'当前无法从此设备上传附件', deviceUploadInvalid:name=>`${name} 不是有效附件`, deviceUploadFailed:name=>`${name} 上传失败，请重试`, deviceUploadDigestInvalid:'附件完整性校验值无效，请重试', deviceUploadIntegrityMismatch:'附件内容在传输中损坏，请重新上传' });
 

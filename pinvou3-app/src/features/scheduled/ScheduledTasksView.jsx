@@ -2,8 +2,10 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { Check, ChevronDown, ChevronRight, ClipboardCheck, Clock, FileChartLine, MessageCircle, Newspaper, Plus, X } from '../../components/icons.jsx';
 import { bridge, useBridgeState } from '../../hooks/useBridge.js';
+import { formatLocalDateTime } from '../../shared/date-utils.js';
 import { visibleUserModels } from '../../shared/model-options.js';
 import { selectorMainLabel } from '../settings/model-catalog.js';
+import { useConversationSecondClock } from '../conversation/ConversationTimeline.jsx';
 import { can } from '../../shared/platform.js';
 import dailyBriefImage from '../../assets/scheduled/daily-brief.jpg';
 import followUpMonitorImage from '../../assets/scheduled/follow-up-monitor.jpg';
@@ -140,6 +142,47 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       return WEEKDAY_CODES.filter(day => requested.has(day));
     };
 
+    // Anchored-popup geometry shared by ScheduledSelect and ScheduledTimeWheel: identical
+    // horizontal viewport clamp and flip-up/below placement. The flip *decision* stays at
+    // each call site on purpose — the select compares an estimated menu height against the
+    // space above and below (and derives a maxHeight), while the wheel tests its fixed
+    // height against the space below only (historical drift, kept verbatim).
+    const anchoredPopupLeft = (rect, width) =>
+      Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+    const anchoredPopupFlipTop = (rect, liftedHeight) => Math.max(8, rect.top - liftedHeight - 6);
+    const anchoredPopupBelowTop = (rect) => Math.max(8, rect.bottom + 6);
+    // Outside-click / Escape / viewport-change wiring for anchored popups; returns the
+    // unlisten cleanup for the caller's effect. Per-site drift is preserved via parameters:
+    // ScheduledSelect listens for Escape on `window` with preventDefault, ScheduledTimeWheel
+    // on `document` without it.
+    const bindAnchoredDismiss = ({ rootRef, menuRef, reposition, close, escapeOnWindow, preventDefaultEscape }) => {
+      const closeOutside = (event) => {
+        if (
+          rootRef.current && !rootRef.current.contains(event.target) &&
+          menuRef.current && !menuRef.current.contains(event.target)
+        ) close();
+      };
+      const closeOnEscape = (event) => {
+        if (event.key === 'Escape') {
+          if (preventDefaultEscape) event.preventDefault();
+          close();
+        }
+      };
+      const updateOnViewportChange = () => reposition();
+      document.addEventListener('pointerdown', closeOutside);
+      if (escapeOnWindow) window.addEventListener('keydown', closeOnEscape);
+      else document.addEventListener('keydown', closeOnEscape);
+      window.addEventListener('resize', updateOnViewportChange);
+      window.addEventListener('scroll', updateOnViewportChange, true);
+      return () => {
+        document.removeEventListener('pointerdown', closeOutside);
+        if (escapeOnWindow) window.removeEventListener('keydown', closeOnEscape);
+        else document.removeEventListener('keydown', closeOnEscape);
+        window.removeEventListener('resize', updateOnViewportChange);
+        window.removeEventListener('scroll', updateOnViewportChange, true);
+      };
+    };
+
     const ScheduledSelect = ({
       value, options, onChange, testId, ariaLabel, theme, minWidth = 180,
       multiple = false, minSelected = 0, onClose, emptyLabel = '—', separator = '、',
@@ -179,12 +222,12 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         const spaceBelow = window.innerHeight - rect.bottom - 8;
         const spaceAbove = rect.top - 8;
         const openUp = spaceBelow < estimatedHeight && spaceAbove > spaceBelow;
-        const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
-        const top = openUp
-          ? Math.max(8, rect.top - Math.min(estimatedHeight, spaceAbove) - 6)
-          : Math.max(8, rect.bottom + 6);
-        const maxHeight = Math.max(44, Math.min(256, openUp ? spaceAbove - 6 : spaceBelow - 6));
-        return { left, top, minWidth: width, maxHeight };
+        return {
+          left: anchoredPopupLeft(rect, width),
+          top: openUp ? anchoredPopupFlipTop(rect, Math.min(estimatedHeight, spaceAbove)) : anchoredPopupBelowTop(rect),
+          minWidth: width,
+          maxHeight: Math.max(44, Math.min(256, openUp ? spaceAbove - 6 : spaceBelow - 6)),
+        };
       };
       const updateMenuPosition = () => {
         const nextStyle = calculateMenuPosition();
@@ -195,29 +238,10 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         if (!open) return;
         // eslint-disable-next-line react-hooks/set-state-in-effect -- position the dropdown synchronously on open; must complete in the same frame to avoid flicker
         updateMenuPosition();
-        const closeOutside = (event) => {
-          if (
-            rootRef.current && !rootRef.current.contains(event.target) &&
-            menuRef.current && !menuRef.current.contains(event.target)
-          ) closeMenu();
-        };
-        const closeOnEscape = (event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault();
-            closeMenu();
-          }
-        };
-        const updateOnViewportChange = () => updateMenuPosition();
-        document.addEventListener('pointerdown', closeOutside);
-        window.addEventListener('keydown', closeOnEscape);
-        window.addEventListener('resize', updateOnViewportChange);
-        window.addEventListener('scroll', updateOnViewportChange, true);
-        return () => {
-          document.removeEventListener('pointerdown', closeOutside);
-          window.removeEventListener('keydown', closeOnEscape);
-          window.removeEventListener('resize', updateOnViewportChange);
-          window.removeEventListener('scroll', updateOnViewportChange, true);
-        };
+        return bindAnchoredDismiss({
+          rootRef, menuRef, reposition: updateMenuPosition, close: closeMenu,
+          escapeOnWindow: true, preventDefaultEscape: true,
+        });
       // eslint-disable-next-line react-hooks/exhaustive-deps -- legacy structure: reattach the listener only when open changes; the callback closure keeps its mount-time snapshot
       }, [open]);
 
@@ -351,36 +375,22 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         const rect = anchor.getBoundingClientRect();
         const width = 142;
         const height = WHEEL_VISIBLE_H + 18;
-        const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
-        const top = rect.bottom + 6 + height > window.innerHeight
-          ? Math.max(8, rect.top - height - 6)
-          : Math.max(8, rect.bottom + 6);
-        setMenuStyle({ left, top });
+        setMenuStyle({
+          left: anchoredPopupLeft(rect, width),
+          // keep this site's historical toggle logic (known drift from ScheduledSelect's estimate — do not merge)
+          top: rect.bottom + 6 + height > window.innerHeight
+            ? anchoredPopupFlipTop(rect, height)
+            : anchoredPopupBelowTop(rect),
+        });
       };
 
       useEffect(() => {
         if (!open) return;
         updateMenuPosition();
-        const closeOutside = (event) => {
-          if (
-            rootRef.current && !rootRef.current.contains(event.target) &&
-            menuRef.current && !menuRef.current.contains(event.target)
-          ) setOpen(false);
-        };
-        const closeOnEscape = (event) => {
-          if (event.key === 'Escape') setOpen(false);
-        };
-        const updateOnViewportChange = () => updateMenuPosition();
-        document.addEventListener('pointerdown', closeOutside);
-        document.addEventListener('keydown', closeOnEscape);
-        window.addEventListener('resize', updateOnViewportChange);
-        window.addEventListener('scroll', updateOnViewportChange, true);
-        return () => {
-          document.removeEventListener('pointerdown', closeOutside);
-          document.removeEventListener('keydown', closeOnEscape);
-          window.removeEventListener('resize', updateOnViewportChange);
-          window.removeEventListener('scroll', updateOnViewportChange, true);
-        };
+        return bindAnchoredDismiss({
+          rootRef, menuRef, reposition: updateMenuPosition, close: () => setOpen(false),
+          escapeOnWindow: false, preventDefaultEscape: false,
+        });
       }, [open]);
 
       // isDark dynamic-value: 保留 — surface 供 linear-gradient(模板插值)用;boxShadow 复杂多停保留。
@@ -421,6 +431,16 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
 
     // Scheduled-task subcomponents (module scope: types stay stable across renders, avoiding per-render rebuilds that remount subtrees)
     const mutedValue = 'text-[#3C3C43]/60 dark:text-[#EBEBF5]/60';
+    // Shared scaffolding for the create/detail dialogs: field styles, field-label rows, backdrop + panel frame, footer surface.
+    // Per-site differences (min-height, max-width, footer layout) stay at the call sites; the header close button stays per-site
+    // because tests pin its data-testid literal — not componentized.
+    const dialogFieldLabelClass = `mb-1.5 block text-[13px] font-medium ${mutedValue}`;
+    const dialogInputClass = 'w-full rounded-[14px] px-4 py-3 text-[15px] outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B] dark:bg-[#2C2C2E] dark:text-white dark:placeholder:text-[#EBEBF5]/30';
+    const dialogTextareaClass = 'w-full resize-none rounded-[14px] px-4 py-3 text-[15px] leading-6 outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B] dark:bg-[#2C2C2E] dark:text-white dark:placeholder:text-[#EBEBF5]/30';
+    const dialogOverlayClass = 'fixed inset-0 z-[200] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[6px]';
+    const dialogBodyClass = 'min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-5 custom-scrollbar';
+    const dialogPanelClass = (maxWidth) => `mx-4 flex max-h-[calc(100vh-48px)] w-full ${maxWidth} flex-col overflow-hidden rounded-[28px] shadow-[0_18px_60px_rgba(0,0,0,0.22)] bg-white dark:bg-[#1C1C1E]`;
+    const dialogFooterSurface = (separator) => `border-t px-6 py-4 ${separator} bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-xl`;
     /** @param {{ task: ScheduledTask, toggleTask: (event: { stopPropagation(): void }, task: ScheduledTask) => Promise<void>, busyAction?: string | null, scheduledCopy: ScheduledCopy }} props - Task switch state and actions. */
     const MacSwitch = ({ task, toggleTask, busyAction, scheduledCopy }) => {
       const checked = task.status === 'active';
@@ -529,7 +549,8 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       }));
       const canOpenTaskFolder = can('externalSystemOpen');
       const [taskFilter, setTaskFilter] = useState('all');
-      const [clockNow, setClockNow] = useState(() => Date.now());
+      // Second-level clock shared with the conversation timeline: always active, drives the preview nextRunAt and the runs-soon countdown.
+      const clockNow = useConversationSecondClock(true);
       const [previewSelectedId, setPreviewSelectedId] = useState(null);
       const [previewTaskStatus, setPreviewTaskStatus] = useState({});
       const [previewCreatedTasks, setPreviewCreatedTasks] = useState([]);
@@ -579,11 +600,6 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       }, []);
 
       useEffect(() => {
-        const timer = setInterval(() => setClockNow(Date.now()), 1000);
-        return () => clearInterval(timer);
-      }, []);
-
-      useEffect(() => {
         if (!createForm) return;
         const closeOnEscape = (event) => {
           if (event.key === 'Escape' && !busyAction) setCreateForm(null);
@@ -612,10 +628,10 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const bodyText = 'text-[#1F1F1F] dark:text-[#E3E3E3]';
       const fmtDateTime = (value) => {
         if (!value) return scheduledCopy.notScheduled;
-        const d = new Date(value);
-        if (Number.isNaN(d.getTime())) return value;
-        const p = (n) => String(n).padStart(2, '0');
-        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+        // Input is an ISO string: convert to a ms timestamp first, then hand off to the shared local-time formatter;
+        // invalid time strings render as-is (historical behavior; formatLocalDateTime's missing sentinel only covers empty values).
+        const ms = new Date(value).getTime();
+        return Number.isNaN(ms) ? value : formatLocalDateTime(ms, scheduledCopy.notScheduled);
       };
       const statusLabel = (value) => {
         if (value === 'active') return scheduledCopy.active;
@@ -1198,10 +1214,10 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       ) : null;
 
       const CreateTaskDialog = () => createForm ? renderModal(
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[6px]">
+        <div className={dialogOverlayClass}>
           <form aria-labelledby="scheduled-create-dialog-title"
             data-testid="scheduled-create-dialog" onSubmit={submitCustomTask}
-            className={`mx-4 flex max-h-[calc(100vh-48px)] w-full max-w-[480px] flex-col overflow-hidden rounded-[28px] shadow-[0_18px_60px_rgba(0,0,0,0.22)] bg-white dark:bg-[#1C1C1E]`}>
+            className={dialogPanelClass('max-w-[480px]')}>
             <div className="flex shrink-0 items-start justify-between gap-4 px-6 pb-4 pt-6">
               <div className="min-w-0">
                 <h2 id="scheduled-create-dialog-title" className={`truncate text-[22px] font-semibold leading-7 ${bodyText}`}>
@@ -1216,24 +1232,24 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               </button>
             </div>
 
-            <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-5 custom-scrollbar">
+            <div className={dialogBodyClass}>
               {/* Static regression anchors for shared create schedule rows:
                 testId="scheduled-create-repeat"
               */}
               <label className="block">
-                <span className={`mb-1.5 block text-[13px] font-medium ${mutedValue}`}>{scheduledCopy.taskName}</span>
+                <span className={dialogFieldLabelClass}>{scheduledCopy.taskName}</span>
                 <input data-testid="scheduled-create-name" value={createForm.name}
                   onChange={event => setCreateForm(current => ({...current, name: event.target.value}))}
                   placeholder={scheduledCopy.taskNamePlaceholder}
-                  className={`min-h-12 w-full rounded-[14px] px-4 py-3 text-[15px] outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B] dark:bg-[#2C2C2E] dark:text-white dark:placeholder:text-[#EBEBF5]/30`} />
+                  className={`min-h-12 ${dialogInputClass}`} />
               </label>
 
               <label className="block">
-                <span className={`mb-1.5 block text-[13px] font-medium ${mutedValue}`}>{scheduledCopy.taskPrompt}</span>
+                <span className={dialogFieldLabelClass}>{scheduledCopy.taskPrompt}</span>
                 <textarea data-testid="scheduled-create-prompt" value={createForm.prompt}
                   onChange={event => setCreateForm(current => ({...current, prompt: event.target.value}))}
                   placeholder={scheduledCopy.taskPromptPlaceholder} rows="3"
-                  className={`min-h-[112px] w-full resize-none rounded-[14px] px-4 py-3 text-[15px] leading-6 outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B] dark:bg-[#2C2C2E] dark:text-white dark:placeholder:text-[#EBEBF5]/30`} />
+                  className={`min-h-[112px] ${dialogTextareaClass}`} />
               </label>
 
               <div data-testid="scheduled-create-settings" className={`overflow-visible rounded-[16px] ${iosInsetSurface}`}>
@@ -1248,7 +1264,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
 
             </div>
 
-            <div className={`flex shrink-0 justify-end gap-3 border-t px-6 py-4 ${iosSeparator} bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-xl`}>
+            <div className={`flex shrink-0 justify-end gap-3 ${dialogFooterSurface(iosSeparator)}`}>
               <button type="submit" data-testid="scheduled-create-submit"
                 disabled={!!busyAction || !String(createForm.name || '').trim() || !String(createForm.prompt || '').trim()}
                 className="h-11 rounded-full bg-[#007AFF] px-6 text-[15px] font-medium text-white shadow-sm transition-colors hover:bg-[#0066D6] disabled:opacity-40">
@@ -1363,13 +1379,13 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const MyTasksSection = makeMyTasksSection({ scheduledCopy, taskFilter, setTaskFilter, error, filtered, loading, renderTaskRow });
 
       const DetailTaskDialog = () => (selected && detailForm) ? renderModal(
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[6px]">
+        <div className={dialogOverlayClass}>
           <div
             data-testid="scheduled-detail"
             role="dialog"
             aria-modal="true"
             aria-labelledby="scheduled-detail-title-heading"
-            className={`mx-4 flex max-h-[calc(100vh-48px)] w-full max-w-[560px] flex-col overflow-hidden rounded-[28px] shadow-[0_18px_60px_rgba(0,0,0,0.22)] bg-white dark:bg-[#1C1C1E]`}
+            className={dialogPanelClass('max-w-[560px]')}
           >
             <div data-testid="scheduled-detail-toolbar" className="flex shrink-0 items-start justify-between gap-4 px-6 pb-4 pt-6">
               <div className="min-w-0">
@@ -1397,21 +1413,21 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-5 custom-scrollbar">
+            <div className={dialogBodyClass}>
               <label data-testid="scheduled-detail-title" className="block">
-                <span className={`mb-1.5 block text-[13px] font-medium ${mutedValue}`}>{scheduledCopy.taskName}</span>
+                <span className={dialogFieldLabelClass}>{scheduledCopy.taskName}</span>
                 <input data-testid="scheduled-live-title" value={detailForm.name}
                   onChange={e => editTextField('name', e.target.value)} onBlur={() => finishTextField('name')}
                   aria-label={scheduledCopy.taskNameAria}
-                  className={`min-h-12 w-full rounded-[14px] px-4 py-3 text-[15px] outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B] dark:bg-[#2C2C2E] dark:text-white dark:placeholder:text-[#EBEBF5]/30`} />
+                  className={`min-h-12 ${dialogInputClass}`} />
               </label>
 
               <label data-testid="scheduled-detail-prompt" className="block">
-                <span className={`mb-1.5 block text-[13px] font-medium ${mutedValue}`}>{scheduledCopy.taskPrompt}</span>
+                <span className={dialogFieldLabelClass}>{scheduledCopy.taskPrompt}</span>
                 <textarea data-testid="scheduled-live-prompt" value={detailForm.prompt}
                   onChange={e => editTextField('prompt', e.target.value)} onBlur={() => finishTextField('prompt')}
                   rows="5" aria-label={scheduledCopy.taskPromptAria} placeholder={scheduledCopy.taskPromptPlaceholder}
-                  className={`min-h-[132px] w-full resize-none rounded-[14px] px-4 py-3 text-[15px] leading-6 outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B] dark:bg-[#2C2C2E] dark:text-white dark:placeholder:text-[#EBEBF5]/30`} />
+                  className={`min-h-[132px] ${dialogTextareaClass}`} />
               </label>
 
               <div data-testid="scheduled-detail-settings" className={`overflow-visible rounded-[16px] ${iosInsetSurface}`}>
@@ -1521,7 +1537,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               </section>
             </div>
 
-            <div className={`flex shrink-0 flex-wrap items-center justify-between gap-3 border-t px-6 py-4 ${iosSeparator} bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-xl`}>
+            <div className={`flex shrink-0 flex-wrap items-center justify-between gap-3 ${dialogFooterSurface(iosSeparator)}`}>
               <button type="button" data-testid="scheduled-detail-delete"
                 onClick={(event) => requestDeleteTask(event, selected)}
                 disabled={!!busyAction}

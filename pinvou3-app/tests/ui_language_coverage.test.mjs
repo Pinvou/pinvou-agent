@@ -23,7 +23,6 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiHomeMode',
     'uiAttachments',
     'uiCodex',
-    'uiCodexView',
     'uiCodexWorkspace',
     'uiAcpProviders',
     'uiArtifacts',
@@ -126,15 +125,16 @@ const viewLoaders = source('app/view-loaders.js');
 assert.match(viewLoaders, new RegExp("toolStore: \\(\\) => import\\('\\.\\./features/tools/ToolStoreView\\.jsx'\\)"));
 assert.match(main, /<LazyToolStoreView[^>]*t=\{t\}/);
 assert.match(main, /<WebConnectionStatus[^>]*t=\{t\}/);
-assert.match(main, /<SettingsErrorBoundary[^>]*t=\{t\}/);
+assert.match(main, /<ViewErrorBoundary[^>]*heading=\{t\.uiSettingsDetail\.settingsLoadFailed\}[^>]*t=\{t\}/);
 assert.match(viewLoaders, new RegExp("codex: \\(\\) => import\\('\\.\\./features/codex/CodexAcpView\\.jsx'\\)"));
 // The main window renders codex through the LazyCodexAcpView wrapper (which
 // internally consumes the same view-loaders chunk); its error fallback copy
 // still flows through i18n.
 assert.match(main, /<CodexAcpView[^>]*t=\{t\}/);
-const settingsErrorBoundary = source('features/settings/SettingsErrorBoundary.jsx');
-assert.match(settingsErrorBoundary, /settingsCopy\.settingsLoadFailed/);
-assert.doesNotMatch(settingsErrorBoundary, />设置页加载失败</);
+// The settings error boundary has been merged into the shared ViewErrorBoundary; its title flows through i18n via the heading prop.
+const viewErrorBoundary = source('shared/ViewErrorBoundary.jsx');
+assert.match(viewErrorBoundary, /this\.props\.heading \|\| copy\.viewLoadFailed/);
+assert.doesNotMatch(viewErrorBoundary, />设置页加载失败</);
 
 const petWindow = source('features/pet/PetWindow.jsx');
 assert.match(petWindow, /invokeTauri\(['"]get_settings['"]\)/);

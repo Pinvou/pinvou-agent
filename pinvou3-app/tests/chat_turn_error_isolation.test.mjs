@@ -136,14 +136,9 @@ const legacyFinalError = {
   legacyConversationOnly: true,
 };
 assert.deepEqual(
-  conversationItemsForMode([legacyFinalError], false),
-  [legacyFinalError],
-  '旧版会话界面必须继续显示最终错误',
-);
-assert.deepEqual(
-  conversationItemsForMode([legacyFinalError], true),
+  conversationItemsForMode([legacyFinalError]),
   [],
-  '新版时间线已呈现最终错误，不应重复投影兼容气泡',
+  'the timeline already renders the final error; the compatibility bubble must not be projected again',
 );
 
 const doneSection = chatEventsSource.slice(
@@ -169,7 +164,7 @@ assert.match(
   desktopBridgeSource,
   /if \(item\.turnErrorNotice && !item\.legacyConversationOnly\) return false/,
 );
-assert.match(chatViewSource, /conversationItemsForMode\(visibleChatItems, useUnifiedConversationUi\)/);
+assert.match(chatViewSource, /conversationItemsForMode\(visibleChatItems\)/);
 
 assert.match(webBridgeSource, /turnErrorNotice && item\.text === notice/);
 assert.match(

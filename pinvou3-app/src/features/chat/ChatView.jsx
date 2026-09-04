@@ -5,14 +5,15 @@ import {
   isSubagentPanelPublicationCurrent,
 } from './subagent-panel-publication.mjs';
 import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, Mic, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
-import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
+import { bridge } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { formatCompactCount } from '../../shared/format-number.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import { AppIcon, DEPT_ORDER, deptLabelFor, personaText } from '../personas/persona-shared.jsx';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/composer-shared.jsx';
-import { ComposerPopover, POPOVER_SURFACE } from '../../components/ComposerPopover.jsx';
+import { ComposerPopover, POPOVER_SURFACE, useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { ViewErrorBoundary } from '../../shared/ViewErrorBoundary.jsx';
 import { ArtifactCard, localizeTool, tsToolsData, tsToolWelcomeData } from '../tools/tool-common.jsx';
@@ -41,6 +42,7 @@ import {
   restoreConversationScrollPosition,
 } from '../conversation/conversation-model.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
+import { collectClipboardImages, readPasteImageAsBytes } from '../attachments/paste-image.js';
 import { formatAttachmentLimitError } from '../attachments/attachment-limit-errors.js';
 import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
 import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
@@ -132,20 +134,17 @@ import { canPrepareSceneCapabilities, prepareSceneCapabilities, requiredCapabili
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
   COMPOSER_ICON_BUTTON_CLASS,
+  COMPOSER_MENU_ENTRY_CLASS,
   ComposerKbSelector,
   ComposerModeChip,
 } from './composer-controls.jsx';
 
-const UNIFIED_CONVERSATION_UI_KEY = 'pinvou_conversation_ui_v2';
 const MULTI_AGENT_ENABLED = can('multiAgent');
 
-function unifiedConversationUiEnabled() {
-  try {
-    return localStorage.getItem(UNIFIED_CONVERSATION_UI_KEY) !== 'false';
-  } catch {
-    return true;
-  }
-}
+// Enter-to-submit guard (shared by the main input, queued-message edit, and in-bubble edit):
+// Shift+Enter still inserts a newline; Enter during IME composition confirms the candidate text
+// and must not also trigger submit — otherwise one Enter both commits and sends. Matches PetWindow.
+const isPlainEnter = (e) => e.key === 'Enter' && !e.shiftKey && !isImeComposing(e);
 
 // Second-clock wrapper for the composer activity indicator: the tick used to live on ChatView
 // top-level state, so while busy the whole ChatView (including all transcript coordination)
@@ -330,7 +329,6 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         if (files && files.length && bridge.available) bridge.attachments.uploadDeviceFiles(files);
         event.target.value = '';
       }
-      const entryCls = 'w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group';
       return (
         <div className="relative">
           <button type="button" ref={triggerRef} onClick={onTriggerClick} title={t.attachAdd} className={COMPOSER_ICON_BUTTON_CLASS}>
@@ -338,12 +336,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           </button>
           <input ref={fileInputRef} type="file" multiple className="hidden" data-testid="device-file-input" onChange={onFilesChosen} />
           <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
-            desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-56 bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
-            <button type="button" onClick={pickFromDevice} className={entryCls}>
+            desktopClassName={`absolute bottom-full left-0 mb-2 z-50 w-56 ${POPOVER_SURFACE}`}>
+            <button type="button" onClick={pickFromDevice} className={COMPOSER_MENU_ENTRY_CLASS}>
               <Upload size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
               {t.attachFromDevice}
             </button>
-            <button type="button" onClick={pickFromHost} className={entryCls}>
+            <button type="button" onClick={pickFromHost} className={COMPOSER_MENU_ENTRY_CLASS}>
               <Monitor size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
               {t.attachFromHost}
             </button>
@@ -519,6 +517,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
     }) => {
       const [menuOpen, setMenuOpen] = useState(false);
       const rootRef = useRef(null);
+      // Outside-pointer close (contains guard on a document-captured pointerdown) plus Escape
+      // close, via ComposerPopover's shared listener group; rootRef covers trigger button and panel.
+      useOutsidePointerClose(menuOpen, () => setMenuOpen(false), [rootRef], { escape: true });
       const browserSelected = browserAvailable && (
         activePanelId === 'browser'
         || (activePanelId !== 'artifact-preview' && browserOpen)
@@ -526,22 +527,6 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const selectedId = browserSelected ? 'browser' : 'artifact-preview';
       const selectedLabel = browserSelected ? browserLabel : artifactsLabel;
       const SelectedIcon = browserSelected ? Globe : Package;
-
-      useEffect(() => {
-        if (!menuOpen) return;
-        const onPointerDown = (event) => {
-          if (!rootRef.current?.contains(event.target)) setMenuOpen(false);
-        };
-        const onKeyDown = (event) => {
-          if (event.key === 'Escape') setMenuOpen(false);
-        };
-        document.addEventListener('pointerdown', onPointerDown);
-        document.addEventListener('keydown', onKeyDown);
-        return () => {
-          document.removeEventListener('pointerdown', onPointerDown);
-          document.removeEventListener('keydown', onKeyDown);
-        };
-      }, [menuOpen]);
 
       const openPanel = (panelId) => {
         setMenuOpen(false);
@@ -645,16 +630,15 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
     // applyShellSnapshots / markBackgroundToolItem），点击弹出列表可查看输出、取消任务。
     const BackgroundTaskRow = ({ task, t, chatCopy }) => {
       const { cancelling, cancelError, cancel } = useShellTaskCancel(t);
-      // 计时基线：轮询 reconcile 只在有新输出时改卡片，安静任务的 elapsedMs
-      // 不会变化，走秒由指示器用"基线值 + 本地流逝"自推（每行一个 1s interval，
-      // 仅浮层展开时挂载）。不把秒级 tick 塞进全局 chatItems reconcile——那会让
-      // 整个 ChatView 在后台任务存续期间每秒重渲染一次（second-clock 曾因此
-      // 从 ChatView 顶层移走，见 LiveConversationActivityIndicator 上方注释）。
-      const [now, setNow] = useState(() => Date.now());
-      useEffect(() => {
-        const timer = setInterval(() => setNow(Date.now()), 1000);
-        return () => clearInterval(timer);
-      }, []);
+      // Timing baseline: the polling reconcile only touches the card when new output arrives, so
+      // a quiet task's elapsedMs never changes; per-second movement is derived by the indicator
+      // from "baseline + locally elapsed time" (one 1s clock per row, mounted only while the
+      // popover is expanded). The second tick reuses ConversationTimeline's second clock (timer
+      // created only while active, cleaned up on unmount). Do not fold the second tick into the
+      // global chatItems reconcile — that would re-render all of ChatView every second while a
+      // background task lives (why the second clock left ChatView top level; see the comment
+      // above LiveConversationActivityIndicator).
+      const now = useConversationSecondClock(true);
       // 服务端 elapsedMs 变化（新输出触发 reconcile）时，渲染期同步换基线
       // （React "adjust state when a prop changes" 模式）；基线时间戳直接用
       // now 状态，保证渲染纯度。
@@ -845,7 +829,6 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // 按钮误启用。Set 让各会话独立记录，配合后端 turn generation 守护，
       // 消除跨轮误取消窗口）。
       const [cancellingSessionIds, setCancellingSessionIds] = useState(() => new Set());
-      const activeModelLocal = activeModelIsLocal(bs);
       const hasMessages = chatItems.length > 0;
       const attachments = (bs && bs.attachments) || [];
       const formatAttachmentError = (error) => {
@@ -882,6 +865,22 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         queuedEditInputRef.current.focus();
         queuedEditInputRef.current.select();
       }, [queuedEditFocusKey]);
+      // Shared flash for queued-action notices: write the keyed notice, then auto-delete after
+      // the ttl. Deletion must verify entry identity (object reference): when a newer notice was
+      // written to the same session in the meantime, a stale timer must not clear it. Timers are
+      // deliberately not cancelled on unmount/session switch (existing contract) — the identity
+      // guard stops stale deletes.
+      const flashQueuedNotice = useCallback((sessionId, notice, ttl = 5000) => {
+        setQueuedActionErrors(current => ({ ...current, [sessionId]: notice }));
+        window.setTimeout(() => {
+          setQueuedActionErrors(current => {
+            if (current[sessionId] !== notice) return current;
+            const next = { ...current };
+            delete next[sessionId];
+            return next;
+          });
+        }, ttl);
+      }, []);
       // The queue drains itself on turn end while an editor may be open: the
       // item is sent with its pre-edit text, so a modified draft would be
       // discarded silently. Disclose it once through the shared action-error
@@ -900,21 +899,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           return next;
         });
         if (String(lostEntry.text || '') !== String(lostEntry.initial || '')) {
-          const notice = { queuedId: lostEntry.id, text: t.queuedEditInterrupted };
-          setQueuedActionErrors(current => ({ ...current, [lostSessionId]: notice }));
-          window.setTimeout(() => {
-            setQueuedActionErrors(current => {
-              if (current[lostSessionId] !== notice) return current;
-              const next = { ...current };
-              delete next[lostSessionId];
-              return next;
-            });
-          }, 5000);
+          flashQueuedNotice(lostSessionId, { queuedId: lostEntry.id, text: t.queuedEditInterrupted });
         }
-      }, [queuedEditCandidate, queued, activeSessionId, t]);
+      }, [queuedEditCandidate, queued, activeSessionId, t, flashQueuedNotice]);
       const ctxTokens = (bs && bs.tokens) || null; // {input, max}，chat:usage 每轮更新
       const ctxPct = ctxTokens && ctxTokens.max > 0 ? ctxTokens.input / ctxTokens.max : 0;
-      const fmtCtxTok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
       const artifactItems = (bs && bs.artifacts) || [];
       const artifactCount = artifactItems.length;
       const latestArtifact = artifactItems[artifactItems.length - 1] || null;
@@ -1170,11 +1159,6 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const scheduledRunContext = bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === bs.activeSessionId
         ? bs.scheduledRunContext
         : null;
-      // The rollback switch is read once at mount: the app has no write path for this key (only the
-      // smoke test writes localStorage before the page loads and then reloads the whole page), so
-      // reading localStorage synchronously per render is pure overhead; reading it into state at mount
-      // keeps the observable behavior unchanged.
-      const [useUnifiedConversationUi] = useState(unifiedConversationUiEnabled);
       // Conversation projection and derived collections. ChatView re-renders on every keystroke
       // (composer state), every streaming chunk, and every clock tick; this O(messages) group of
       // projection/filter/scan steps used to rerun in full inside the render body each time. Bridge
@@ -1200,7 +1184,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         let lastUserId = null;
         for (let i = chatItems.length - 1; i >= 0; i--) { if (chatItems[i].type === 'user') { lastUserId = chatItems[i].id; break; } }
         const conversationProjection = projectDeepSeekConversation({
-          chatItems: conversationItemsForMode(visibleChatItems, useUnifiedConversationUi),
+          chatItems: conversationItemsForMode(visibleChatItems),
           busy,
           thinking: chatThinking,
           tokens: ctxTokens,
@@ -1215,9 +1199,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         for (let i = turns.length - 1; i >= 0; i--) {
           if (turns[i].status === 'running') { activeConversationTurn = turns[i]; break; }
         }
-        return { visibleChatItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
-      }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, useUnifiedConversationUi, chatThinking, turnTimeline, activeSessionId]);
-      const { visibleChatItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
+        return { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
+      }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, chatThinking, turnTimeline, activeSessionId]);
+      const { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
 
       // External entries can prefill the composer and focus its end.
       // Template/navigation entries (KnowledgeView "continue in chat",
@@ -1986,16 +1970,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         setQueuedActions(current => ({ ...current, [actionSessionId]: { id: queuedId } }));
         /** @param {string} text Failure message to display. */
         const showFailure = (text) => {
-          const notice = { queuedId, text };
-          setQueuedActionErrors(current => ({ ...current, [actionSessionId]: notice }));
-          window.setTimeout(() => {
-            setQueuedActionErrors(current => {
-              if (current[actionSessionId] !== notice) return current;
-              const next = { ...current };
-              delete next[actionSessionId];
-              return next;
-            });
-          }, 5000);
+          flashQueuedNotice(actionSessionId, { queuedId, text });
         };
         try {
           const completed = await action();
@@ -2028,16 +2003,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         if (!editSessionId) return;
         const nextText = String(queuedEdit.text || '').trim();
         if (!nextText && !(item.attachments || []).length) {
-          const notice = { queuedId: item.id, text: t.queuedEmpty };
-          setQueuedActionErrors(current => ({ ...current, [editSessionId]: notice }));
-          window.setTimeout(() => {
-            setQueuedActionErrors(current => {
-              if (current[editSessionId] !== notice) return current;
-              const next = { ...current };
-              delete next[editSessionId];
-              return next;
-            });
-          }, 5000);
+          flashQueuedNotice(editSessionId, { queuedId: item.id, text: t.queuedEmpty });
           return;
         }
         if (!bridge.chat || typeof bridge.chat.editQueued !== 'function') return;
@@ -2055,9 +2021,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       }
 
       function handleKeyDown(e) {
-        // 输入法合成期间(例如中文输入法敲回车确认候选词上屏)不要触发发送,
-        // 否则一次回车会既上屏又发送消息。与 PetWindow 处理保持一致。
-        if (e.key === 'Enter' && !e.shiftKey && !isImeComposing(e)) {
+        if (isPlainEnter(e)) {
           e.preventDefault();
           handleSend();
         }
@@ -2219,23 +2183,15 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         if (bridge.available) bridge.voice.clearVoiceInput();
       }
 
-      function handlePaste(e) {
+      async function handlePaste(e) {
         if (isWeb) return;
-        // WebKit's DataTransferItemList has no Symbol.iterator; for...of/spread throws TypeError, so Array.from is required.
-        // eslint-disable-next-line unicorn/prefer-spread -- DataTransferItemList is not iterable on any Safari/WKWebView version
-        const items = Array.from((e.clipboardData && e.clipboardData.items) || []);
-        for (const it of items) {
-          if (!(it.type && it.type.indexOf('image/') === 0)) {
-            continue;
-          }
-
-          const file = it.getAsFile();
-          if (!file) continue;
-          e.preventDefault();
-          const reader = new FileReader();
-          reader.onload = () => {
-            const bytes = [...new Uint8Array(reader.result)];
-            const ext = (file.type.split('/')[1] || 'png');
+        // WebKit-compatible image filtering + FileReader byte reads (incl. jpeg→jpg normalization) live in the shared module.
+        const images = collectClipboardImages(e);
+        if (!images.length) return;
+        e.preventDefault();
+        for (const file of images) {
+          try {
+            const { bytes, ext } = await readPasteImageAsBytes(file);
             if (bridge.available) {
               bridge.attachments.addPasteImage(
                 `paste-${Date.now()}.${ext}`,
@@ -2243,13 +2199,38 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 formatAttachmentError,
               );
             }
-          };
-          reader.readAsArrayBuffer(file);
+          } catch { /* A single failed read is silently dropped, as before; the rest of the pasted images proceed */ }
         }
       }
 
       const responsiveGutterStyle = {
         paddingInline: 'clamp(16px, calc((100% - 800px) / 2), 160px)',
+      };
+
+      // The two ArtifactsPanel mounts (fullscreen portal / right Dock) share the same 18-prop
+      // list through this single source; isFullscreen and onToggleFullscreen are passed per
+      // mount point: collapsed (false) in fullscreen, expanded (true) in the Dock.
+      const artifactsPanelProps = {
+        bs,
+        t,
+        onClose: closeArtifactsPanel,
+        isWide: true,
+        preferredArtifactPath: activeArtifactPath,
+        onPreviewArtifact: handlePreviewArtifact,
+        onGotoSettings,
+        designMode: pinvouMode === 'design',
+        designCommand,
+        selectedDesignElement,
+        designChanges: visibleDesignChanges,
+        onDesignRuntimeStatus: handleDesignRuntimeStatus,
+        onDesignElementSelected: handleDesignElementSelected,
+        onDesignChangeApplied: handleDesignChangeApplied,
+        onDesignMutation: handleDesignMutation,
+        onDesignApplyChange: handleApplyDesignChange,
+        onDesignClearChanges: handleClearDesignChanges,
+        onDesignAiSubmit: handleDesignAiSubmit,
+        designAiState,
+        onDesignAiStateChange: updateDesignAiState,
       };
 
       return (
@@ -2338,8 +2319,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
 
             {hasMessages && (
               <div ref={conversationContentRef} className="max-w-[800px] w-full min-w-0 mx-auto space-y-4">
-                {useUnifiedConversationUi ? (
-                  <ConversationTimeline
+                <ConversationTimeline
                     turns={conversationProjection.turns}
                     copy={t.uiConversation}
                     agentLabel={chatViewCopy.agentName}
@@ -2349,36 +2329,6 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                     renderToolItem={handleTimelineRenderToolItem}
                     onOpenExternal={openChatExternalUrl}
                   />
-                ) : (
-                  <>
-                    {visibleChatItems.map((item) => {
-                      // reasoning 由统一 UI 的 ConversationTimeline 负责，legacy 路径不展示；
-                      // ChatBubble 不认识该类型会返回 null。其余 ChatBubble 返回 null 的情况
-                      // （空流式 assistant、已忽略的记忆候选、未知类型）由 .cv-bubble:empty
-                      // 兜底。空内容绝不能被 content-visibility wrapper 包裹：离屏时空 div 会按
-                      // contain-intrinsic-size 各占 600px，污染 scrollHeight 造成滚动条缩跳与
-                      // 滚底跳变（http://localhost 无关，Safari 18+/Chromium 均复现）。
-                      if (item.type === 'reasoning') return null;
-                      return (
-                        <div key={item.id} className="cv-bubble" style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 600px' }}>
-                          <ChatBubble
-                            item={item}
-                            sessionId={activeSessionId}
-                            theme={theme}
-                            t={t}
-                            onPrefill={(text) => setInputText(text)}
-                            onSend={sendChatMessage}
-                            editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
-                            onOpenEditor={onOpenEditor}
-                            isLatestArtifact={latestArtifactIds.has(item.id)}
-                            allowScheduledTaskDraft={isScheduledTaskCreationChat}
-                          />
-                        </div>
-                      );
-                    })}
-                    {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} isLocal={activeModelLocal} />}
-                  </>
-                )}
                 {/* 实体占位必须覆盖输入框和其上方渐变区，保证滚到底时最后一张卡
                     完整停在渐变之外，而不是虽然能滚到却被遮罩淡化。 */}
                 <div data-testid="chat-bottom-spacer" aria-hidden="true" className="w-full shrink-0"
@@ -2541,7 +2491,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                               return next;
                             });
                           }
-                          if (event.key === 'Enter' && !event.shiftKey && !isImeComposing(event)) {
+                          if (isPlainEnter(event)) {
                             event.preventDefault();
                             void handleSaveQueuedEdit(q);
                           }
@@ -2859,7 +2809,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 ctxPct >= 0.9 ? 'text-[#C5221F] dark:text-[#F28B82]'
                 : ctxPct >= 0.75 ? 'text-[#B06000] dark:text-[#F9AB00]'
                 : 'text-[#9AA0A6] dark:text-[#5F6368]'}`}>
-                {t.ctxUsage} {ctxTokens.input > 0 ? fmtCtxTok(ctxTokens.input) : '—'} / {fmtCtxTok(ctxTokens.max)} · {Math.round(ctxPct * 100)}%
+                {t.ctxUsage} {ctxTokens.input > 0 ? formatCompactCount(ctxTokens.input) : '—'} / {formatCompactCount(ctxTokens.max)} · {Math.round(ctxPct * 100)}%
               </div>
             )}
             <div className="flex items-center justify-center mt-3">
@@ -2877,30 +2827,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               data-testid="artifact-fullscreen-panel">
               <ViewErrorBoundary t={t} variant="panel">
               <PanelSuspense>
-              <LazyArtifactsPanel
-                bs={bs}
-                t={t}
-                onClose={closeArtifactsPanel}
-                isWide={true}
-                isFullscreen={true}
-                onToggleFullscreen={() => setArtifactsFullscreen(false)}
-                preferredArtifactPath={activeArtifactPath}
-                onPreviewArtifact={handlePreviewArtifact}
-                onGotoSettings={onGotoSettings}
-                designMode={pinvouMode === 'design'}
-                designCommand={designCommand}
-                selectedDesignElement={selectedDesignElement}
-                designChanges={visibleDesignChanges}
-                onDesignRuntimeStatus={handleDesignRuntimeStatus}
-                onDesignElementSelected={handleDesignElementSelected}
-                onDesignChangeApplied={handleDesignChangeApplied}
-                onDesignMutation={handleDesignMutation}
-                onDesignApplyChange={handleApplyDesignChange}
-                onDesignClearChanges={handleClearDesignChanges}
-                onDesignAiSubmit={handleDesignAiSubmit}
-                designAiState={designAiState}
-                onDesignAiStateChange={updateDesignAiState}
-              />
+              <LazyArtifactsPanel {...artifactsPanelProps} isFullscreen={true} onToggleFullscreen={() => setArtifactsFullscreen(false)} />
               </PanelSuspense>
               </ViewErrorBoundary>
             </div>,
@@ -2916,30 +2843,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             >
               <ViewErrorBoundary t={t} variant="panel">
               <PanelSuspense>
-                <LazyArtifactsPanel
-                  bs={bs}
-                  t={t}
-                  onClose={closeArtifactsPanel}
-                  isWide={true}
-                  isFullscreen={false}
-                  onToggleFullscreen={() => setArtifactsFullscreen(true)}
-                  preferredArtifactPath={activeArtifactPath}
-                  onPreviewArtifact={handlePreviewArtifact}
-                  onGotoSettings={onGotoSettings}
-                  designMode={pinvouMode === 'design'}
-                  designCommand={designCommand}
-                  selectedDesignElement={selectedDesignElement}
-                  designChanges={visibleDesignChanges}
-                  onDesignRuntimeStatus={handleDesignRuntimeStatus}
-                  onDesignElementSelected={handleDesignElementSelected}
-                  onDesignChangeApplied={handleDesignChangeApplied}
-                  onDesignMutation={handleDesignMutation}
-                  onDesignApplyChange={handleApplyDesignChange}
-                  onDesignClearChanges={handleClearDesignChanges}
-                  onDesignAiSubmit={handleDesignAiSubmit}
-                  designAiState={designAiState}
-                  onDesignAiStateChange={updateDesignAiState}
-                />
+                <LazyArtifactsPanel {...artifactsPanelProps} isFullscreen={false} onToggleFullscreen={() => setArtifactsFullscreen(true)} />
               </PanelSuspense>
               </ViewErrorBoundary>
             </RightDockPanel>
@@ -3225,7 +3129,7 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
               {/* biome-ignore lint/a11y/noAutofocus: focus the editor immediately on entering message-edit mode; focus is the edit intent */}
               <textarea autoFocus value={val} onChange={e => setVal(e.target.value)}
                 rows={Math.min(6, Math.max(1, val.split('\n').length))}
-                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !isImeComposing(e)) { e.preventDefault(); commit(); } else if (e.key === 'Escape') { setEditing(false); setVal(item.text); } }}
+                onKeyDown={e => { if (isPlainEnter(e)) { e.preventDefault(); commit(); } else if (e.key === 'Escape') { setEditing(false); setVal(item.text); } }}
                 className={`w-full min-w-0 max-w-full break-words [overflow-wrap:anywhere] rounded-[16px] px-4 py-2 text-[15px] outline-none ${
                   unified
                     ? 'bg-[#E9EEF6] text-[#1F1F1F] dark:bg-[#2A2B2E] dark:text-[#E3E3E3]'
@@ -3350,41 +3254,6 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
       );
     };
 
-    // 思考指示器：Braille 转圈 + 思考中/调用工具 + 计时（每阶段切换重置）
-    const BRAILLE = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    // eslint-disable-next-line no-unused-vars -- theme is injected uniformly by the caller; keep the contract slot
-const ThinkingBubble = ({ thinking, _theme, t, isLocal }) => {
-      const [frame, setFrame] = useState(0);
-      const [elapsed, setElapsed] = useState(0);
-      const phase = thinking ? thinking.phase : 'thinking';
-      const toolName = thinking ? thinking.toolName : '';
-      // eslint-disable-next-line react-hooks/purity -- falling back to the current time when the backend omits startedAt is this thinking indicator's established behavior
-      const startedAt = (thinking && thinking.startedAt) || Date.now();
-      useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the animation frame and timer on phase switch
-        setFrame(0); setElapsed(0);
-        const id = setInterval(() => {
-          setFrame(f => (f + 1) % BRAILLE.length);
-          setElapsed(Math.floor((Date.now() - startedAt) / 1000));
-        }, 100);
-        return () => clearInterval(id);
-      }, [startedAt, phase, toolName]);
-      let text;
-      if (phase === 'tool' && toolName) {
-        text = t.thinkingCall(toolName, elapsed);
-      } else {
-        const suffix = elapsed >= 120 ? ` · ${t.hintSlow120(isLocal)}` : elapsed >= 30 ? ` · ${t.hintSlow30(isLocal)}` : '';
-        text = `${t.thinkingLabel}... ${elapsed}s${suffix}`;
-      }
-      return (
-        <div className="flex justify-start">
-          <div className={`text-[13px] font-mono px-3 py-1.5 rounded-full ${'bg-[#F0F4F9] text-[#0B57D0] dark:bg-[#1E1F20] dark:text-[#A8C7FA]'}`}>
-            {BRAILLE[frame]} {text}
-          </div>
-        </div>
-      );
-    };
-
     // ③ 卡牌制造专家: 从助手消息渲染后的 html 里抠出 ```persona-card 草稿块 → 解析成卡。
     function htmlUnescape(s) {
       return String(s).replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&quot;','"').replaceAll(/&#(?:39|x27);/gi,"'").replaceAll('&amp;','&');
@@ -3411,58 +3280,65 @@ const ThinkingBubble = ({ thinking, _theme, t, isLocal }) => {
     // 不强求 ```persona-card 标签 —— 小模型常打 ```json 或不打标签,放宽识别更鲁棒。
     // 形状校验(name+body)避免把别的 JSON 误判成草稿。明确 persona-card 标签的优先。
     // 返回 { draft, html }:html 是把那段原始 JSON 块抹掉后的版本(用户只看友好草稿卡,不看机器载荷)。
-    function parsePersonaDraft(html) {
-      if (!html || !html.includes('{')) return { draft: null, html };
+    // Shared <pre><code> scan skeleton for the three protocol blocks (persona-card /
+    // scheduled-task-draft / card-question): per block, take the code text and validate it
+    // via validate(parseLooseJson(raw)); return { payload, html } with html stripped of the
+    // chosen raw block. Priority: the first explicitly tagged block (tagPattern hit on the
+    // <pre>/<code> attributes) wins immediately; otherwise fall back to the first parseable
+    // block. With taggedOnly, only tagged blocks count — no first-block fallback (card-question's
+    // existing semantics). A validate throw (non-JSON block) is treated as a skip: parseLooseJson
+    // itself never throws; this catches unexpected exceptions from custom validate, matching the
+    // old persona-side try/catch.
+    function scanProtocolCodeBlocks(html, { tagPattern, validate, taggedOnly = false }) {
+      const miss = { payload: null, html };
+      if (!html) return miss;
+      if (taggedOnly ? !tagPattern.test(html) : !html.includes('{')) return miss;
       const re = /<pre([^>]*)>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g;
-      let m; let chosen = null; let chosenDraft = null;
+      let m; let chosen = null; let chosenPayload = null;
       // biome-ignore lint/suspicious/noAssignInExpressions: assignment doubles as the loop condition; refactoring hurts readability
       while ((m = re.exec(html))) {
+        const tagged = tagPattern.test(m[1] + m[2]);
+        if (taggedOnly && !tagged) continue;
         const raw = highlightedCodeText(m[3]).trim();
         if (raw.charAt(0) !== '{') continue;
+        let payload = null;
         try {
-          const draft = asDraft(parseLooseJson(raw));
-          if (!draft) continue;
-          if (/persona-card/i.test(m[1] + m[2])) { chosen = m[0]; chosenDraft = draft; break; } // 明确标签优先
-          if (!chosenDraft) { chosen = m[0]; chosenDraft = draft; }
+          payload = validate(parseLooseJson(raw));
         } catch { /* 非 JSON 块,跳过 */ }
+        if (!payload) continue;
+        if (tagged) { chosen = m[0]; chosenPayload = payload; break; } // tagged block wins
+        if (!chosenPayload) { chosen = m[0]; chosenPayload = payload; }
       }
-      if (!chosenDraft) return { draft: null, html };
-      return { draft: chosenDraft, html: html.replace(chosen, '') };
+      if (!chosenPayload) return miss;
+      return { payload: chosenPayload, html: html.replace(chosen, '') };
+    }
+    function parsePersonaDraft(html) {
+      const { payload, html: rest } = scanProtocolCodeBlocks(html, {
+        tagPattern: /persona-card/i,
+        validate: asDraft,
+      });
+      return { draft: payload, html: rest };
     }
     function parseScheduledTaskDraft(html) {
-      if (!html || !html.includes('{')) return { draft: null, html };
-      const re = /<pre([^>]*)>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g;
-      let m; let chosen = null; let chosenDraft = null;
-      // biome-ignore lint/suspicious/noAssignInExpressions: assignment doubles as the loop condition; refactoring hurts readability
-      while ((m = re.exec(html))) {
-        const raw = highlightedCodeText(m[3]).trim();
-        if (raw.charAt(0) !== '{') continue;
-        const draft = asScheduledTaskDraft(parseLooseJson(raw));
-        if (!draft) continue;
-        if (/scheduled-task-draft/i.test(m[1] + m[2])) { chosen = m[0]; chosenDraft = draft; break; }
-        if (!chosenDraft) { chosen = m[0]; chosenDraft = draft; }
-      }
-      if (!chosenDraft) return { draft: null, html };
-      return { draft: chosenDraft, html: html.replace(chosen, '') };
+      const { payload, html: rest } = scanProtocolCodeBlocks(html, {
+        tagPattern: /scheduled-task-draft/i,
+        validate: asScheduledTaskDraft,
+      });
+      return { draft: payload, html: rest };
     }
     // 卡牌制造专家追问时,若问题有可选项,会输出一个 ```card-question 块 {question, options[]}。
     // 抠出来 → 渲染成可点击的 iOS 选项卡;点选项即把它作为回答发送。返回 { q, html(抹掉块) }。
     function parseCardQuestion(html) {
-      if (!html || !/card-question/i.test(html)) return { q: null, html };
-      const re = /<pre([^>]*)>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g;
-      let m;
-      // biome-ignore lint/suspicious/noAssignInExpressions: assignment doubles as the loop condition; refactoring hurts readability
-      while ((m = re.exec(html))) {
-        if (!/card-question/i.test(m[1] + m[2])) continue;
-        const raw = highlightedCodeText(m[3]).trim();
-        if (raw.charAt(0) !== '{') continue;
-        const d = parseLooseJson(raw);
-        if (d && d.question && Array.isArray(d.options)) {
+      const { payload, html: rest } = scanProtocolCodeBlocks(html, {
+        tagPattern: /card-question/i,
+        taggedOnly: true,
+        validate: (d) => {
+          if (!d || !d.question || !Array.isArray(d.options)) return null;
           const opts = d.options.filter(function (o) { return typeof o === 'string' && o.trim(); });
-          if (opts.length) return { q: { question: String(d.question), options: opts }, html: html.replace(m[0], '') };
-        }
-      }
-      return { q: null, html };
+          return opts.length ? { question: String(d.question), options: opts } : null;
+        },
+      });
+      return { q: payload, html: rest };
     }
     // 点选项时实际发送的回答:取"短标签 —— 说明"里的短标签;没分隔符就发整句。
     function optionAnswer(opt) {
@@ -3756,4 +3632,4 @@ const ThinkingBubble = ({ thinking, _theme, t, isLocal }) => {
     // 产物类型 → { 角标/标签文字, tile 配色, lucide 内联 SVG 路径 }（零下载；仅无封面紧凑态显图标）。
     // 配色/字形照搬 产物卡图标预览.html（唯一权威）。
 
-export { ToolWelcomeCard, ComposerKbSelector, ComposerModeChip, ChatView, fallbackCopyText, copyClipboardText, readClipboardText, SelectionCopyButton, TextareaContextMenu, UserBubble, BRAILLE, ThinkingBubble, htmlUnescape, asDraft, asScheduledTaskDraft, extractBalancedJson, parseJsonChain, parseLooseJson, parsePersonaDraft, parseScheduledTaskDraft, parseCardQuestion, optionAnswer, hideStreamingDraft, ChatBubble };
+export { ToolWelcomeCard, ComposerKbSelector, ComposerModeChip, ChatView, fallbackCopyText, copyClipboardText, readClipboardText, SelectionCopyButton, TextareaContextMenu, UserBubble, htmlUnescape, asDraft, asScheduledTaskDraft, extractBalancedJson, parseJsonChain, parseLooseJson, parsePersonaDraft, parseScheduledTaskDraft, parseCardQuestion, optionAnswer, hideStreamingDraft, ChatBubble };
