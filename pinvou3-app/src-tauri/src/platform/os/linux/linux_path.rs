@@ -118,19 +118,27 @@ pub fn apply_user_npm_prefix(cmd: &mut Command) {
 
 /// 退出收割用的树杀。连接器 CLI 是 npm shim(shell 脚本→node 子进程),spawn 侧
 /// 已用 `process_group(0)` 让 shim 独立成组,这里按负 pid 杀整组,否则单杀 shim
-/// 的 pid 会把 node 孙进程孤儿化(与 platform::process::kill_process_tree 同语义,
-/// 走 connector_cli_command 保持 PATH 解析一致)。若进程恰未成组(旧登记),
-/// 追加一次单 pid 兜底。
+/// 的 pid 会把 node 孙进程孤儿化(与 platform::process::kill_process_tree 同语义)。
+/// 若进程恰未成组(旧登记),追加一次单 pid 兜底。
+///
+/// **严禁**委托外部 kill 可执行文件(直接 spawn 或经 connector_cli_command 间接
+/// 调用均含)执行组杀,后续模块开发一律直调系统调用,并由
+/// `scripts/architecture-guard.py` 强制检查:procps-ng 4.0.4 的参数解析会把
+/// `kill -9 -<pgid>` 的合法负 pid 错当 `-1` 处理(kill(-1) 杀光当前用户全部
+/// 进程,2026-09-04 本机桌面会话两次被整台带走,audit 取证实锤)。
+///
+/// `pid <= 1` 或无法以正数收入 `i32` 的 pid 直接忽略:kill(2) 对 0 与 -1 有
+/// 特殊语义(0 = 调用方所在整组,-1 = 当前用户全部进程),边界在本函数自检,
+/// 不依赖调用方审计。
 pub fn kill_pid_tree(pid: u32) {
-    let group_arg = format!("-{pid}");
-    let out = connector_cli_command("", "kill")
-        .args(["-9", group_arg.as_str()])
-        .output();
-    let group_ok = out.map(|o| o.status.success()).unwrap_or(false);
+    let Some(group) = i32::try_from(pid).ok().filter(|group| *group > 1) else {
+        return;
+    };
+    // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
+    let group_ok = unsafe { libc::kill(-group, libc::SIGKILL) } == 0;
     if !group_ok {
-        let _ = connector_cli_command("", "kill")
-            .args(["-9", &pid.to_string()])
-            .output();
+        // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
+        let _ = unsafe { libc::kill(group, libc::SIGKILL) };
     }
 }
 

@@ -312,6 +312,7 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]]]:
         "rust_platform_details_outside_adapter": Counter(),
         "rust_tauri_commands_outside_app": Counter(),
         "rust_tauri_handler_outside_app": Counter(),
+        "rust_external_group_kill_spawn": Counter(),
     }
     aliases = rust_aliases(root)
     rust_root = root / "pinvou3-app/src-tauri/src"
@@ -321,6 +322,19 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]]]:
     feature_edge_counts: Counter[tuple[str, str]] = Counter()
     tauri_command_pattern = re.compile(r"#\s*\[\s*tauri\s*::\s*command\b")
     tauri_handler_pattern = re.compile(r"generate_handler\s*!\s*\[(.*?)\]", re.DOTALL)
+    # Process-group kills must be issued through kill(2) directly. Never
+    # spawn an external `kill` binary: procps-ng 4.0.4 misparses the valid
+    # negative pid in `kill -9 -<pgid>` as -1 (kill(-1) signals every process
+    # of the user and took down whole desktop sessions; see
+    # platform::process::kill_process_tree). The rule applies to every Rust
+    # file: unsupported.rs also carries the live macOS kill_pid_tree, so no
+    # file-level exception may waive it.
+    external_group_kill_patterns = [
+        re.compile(r'Command\s*::\s*new\s*\(\s*"(?:[^"]*/)?kill"'),
+        re.compile(r'::\s*new\s*\(\s*"(?:[^"]*/)?kill"\s*\)'),
+        re.compile(r'Path\s*::\s*new\s*\(\s*"(?:[^"]*/)?kill"'),
+        re.compile(r'connector_cli_command\s*\(\s*[^,()]*,\s*"kill"'),
+    ]
     platform_detail_patterns = [
         re.compile(r"\bpowershell(?:\.exe)?\b", re.IGNORECASE),
         re.compile(r"\bxdg-open\b"),
@@ -371,6 +385,11 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]]]:
         command_count = len(tauri_command_pattern.findall(text))
         if command_count and "/app/commands/" not in f"/{relative}":
             rules["rust_tauri_commands_outside_app"][relative] += command_count
+        external_kill_count = sum(
+            len(pattern.findall(text)) for pattern in external_group_kill_patterns
+        )
+        if external_kill_count:
+            rules["rust_external_group_kill_spawn"][relative] += external_kill_count
         for handler in tauri_handler_pattern.findall(text):
             for entry in re.findall(
                 r"(?:^|,)\s*([A-Za-z_][A-Za-z0-9_:]*)\s*(?=,|$)", handler
