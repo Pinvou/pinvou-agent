@@ -68,7 +68,7 @@
 
 | Reference | 描述 |
 |-----------|------|
-| [sheet-workbook](sheet/sheet-workbook.md) | 管理表格文档与工作表。当用户说"创建表格"、"有哪些工作表"、"新建/重命名/隐藏/冻结/复制/删除工作表"、"显示/隐藏网格线"时使用；`info` 可回读冻结行列，`--include groups` 回读分组，其他行列结构按需使用对应 `--include`。命令：`create`/`list`/`info`/`new`/`update`/`copy`/`delete-sheet`/`show-gridline`/`hide-gridline` |
+| [sheet-workbook](sheet/sheet-workbook.md) | 管理表格文档与工作表。当用户说"创建表格"、"有哪些工作表"、"新建/重命名/隐藏/冻结/复制/删除工作表"、"显示/隐藏网格线"时使用；`info` 可回读冻结行列，`--include groups` 回读分组，其他行列结构按需使用对应 `--include`。命令：`create`/`create-with-data`/`list`/`info`/`new`/`update`/`copy`/`delete-sheet`/`show-gridline`/`hide-gridline` |
 | [sheet-read-data](sheet/sheet-read-data.md) | 读取工作表数据。当用户说"读数据"、"看表格内容"、"查看数据"时使用。推荐 `csv-get`（CSV 格式、token 低、防爆保护）；需按 table/dataframe 结构读取列名、data、dtypes、formats 时用 `table-get`；需 value + dataValidation / hyperlink / richText / cellStyles 等 per-cell 元数据时用 `range read`。大范围数据建议分页读取（单次 ≤5000 单元格）。命令：`csv-get`/`table-get`/`range read` |
 | [sheet-write-data](sheet/sheet-write-data.md) | 写入数据到工作表。当用户说"写数据"、"填表"、"更新单元格"、"写公式"、"超链接"、"写值同时设样式/数据验证"、"追加数据"、"导入CSV"、"写入结构化 table"时使用。大批量 CSV 值/公式（>5行或>20单元格，且无需富格式）必须用 `csv-put` 而非 `range update`；结构化 table/dataframe 输入用 `table-put`。命令：`range update`/`append`/`csv-put`/`table-put` |
 | [sheet-formula](sheet/sheet-formula.md) | 公式写入、文本回读、错误聚合与结果抽样。当用户说"写公式"、"计算列"、"辅助列"、"总计/占比/增长率/查找计算"、"校验公式"、"检查公式错误"时使用。命令：`range update` / `csv-put` / `range read --value-render-option formula/raw_value` / `formula-verify` |
@@ -82,7 +82,7 @@
 | [sheet-filter](sheet/sheet-filter.md) | 全局筛选。当用户说"筛选"、"过滤"、"只看某些行"（未说"筛选视图"）时使用。禁止用"删除不符合条件的行"代替筛选。命令：`filter get`/`create`/`delete`/`update`/`clear-criteria`/`sort` |
 | [sheet-filter-view](sheet/sheet-filter-view.md) | 筛选视图（个人化，不影响协作者）。当用户明确说"筛选视图"时使用，与全局筛选相互独立。命令：`filter-view list`/`create`/`update`/`delete`/`info`/`update-criteria`/`delete-criteria`/`list-criteria`/`get-criteria` |
 | [sheet-conditional-format](sheet/sheet-conditional-format.md) | 条件格式规则。触发词：标红/标黄/高亮/突出/标记/数据条/色阶/颜色随数据变 → **强制**走条件格式，禁止 `range set-style` 静态样式替代。命令：`cond-format list`/`create`/`update`/`delete` |
-| [sheet-export](sheet/sheet-export.md) | 导出表格为 xlsx。当用户说“导出”、“下载xlsx”、“存为Excel”时使用。单命令一站式，CLI 内部自动轮询，禁止 Agent 侧重试。命令：`export` |
+| [sheet-export](sheet/sheet-export.md) | 导出表格为 xlsx。当用户说“导出”、“下载xlsx”、“存为Excel”时使用。单命令一站式，CLI 内部自动轮询，禁止 Agent 侧重试。命令：`export`/`export-csv` |
 | [sheet-import](sheet/sheet-import.md) | 导入本地表格文件为在线电子表格。当用户说“导入表格”、“把xlsx传成在线表格”、“上传Excel变在线表格”时使用。Agent 入口为 `import create`，`import` 保留兼容；超时后只用 `import get` 续查，禁止重新创建或用 `drive upload` 代替。命令：`import create`/`import get` |
 | [sheet-chart](sheet/sheet-chart.md) | 浮动图表管理。当用户说“画图/数据可视化/趋势图/对比图/占比图/柱形图/折线图/饼图”时使用。禁止用本地脚本生成静态图片替代。命令：`chart list`/`create`/`update`/`delete` |
 | [sheet-pivot-table](sheet/sheet-pivot-table.md) | 透视表管理。当用户说“透视表/分组汇总/交叉分析/按X统计Y”时使用。禁止用公式拼汇总表替代。命令：`pivot-table list`/`create`/`update`/`delete` |
@@ -228,10 +228,10 @@ Flags:
 | "写入单元格" | `dws sheet range update --node <nodeId或URL> --sheet-id <sheetId> --range A1:B2 --values '[[..]]'` |
 | "写入超链接" | `dws sheet range update --node <nodeId或URL> --sheet-id <sheetId> --range A1 --values '[[{"type":"text","text":"显示文本","hyperlink":{"type":"path","link":"https://..."}}]]'` |
 | "追加一行" | `dws sheet append --node <nodeId或URL> --sheet-id <sheetId> --values '[[..]]'` |
-| "查找 / 替换" | `dws sheet find --node <nodeId或URL> --sheet-id <sheetId> --query "<关键词>"` / `dws sheet replace --node <nodeId或URL> --sheet-id <sheetId> --find "<旧值>" --replacement "<新值>"` |
-| "精确匹配搜索 / 完全等于" | `dws sheet find --node <nodeId或URL> --sheet-id <sheetId> --query "<关键词>" --match-entire-cell` |
-| "搜索公式文本" | `dws sheet find --node <nodeId或URL> --sheet-id <sheetId> --query "<公式片段>" --match-formula` |
-| "正则搜索 / 不区分大小写" | `dws sheet find --node <nodeId或URL> --sheet-id <sheetId> --query "<regexp>" --use-regexp --match-case=false` |
+| "查找 / 替换" | `dws sheet find --node <nodeId或URL> --sheet-id <sheetId> --find "<关键词>"` / `dws sheet replace --node <nodeId或URL> --sheet-id <sheetId> --find "<旧值>" --replacement "<新值>"` |
+| "精确匹配搜索 / 完全等于" | `dws sheet find --node <nodeId或URL> --sheet-id <sheetId> --find "<关键词>" --match-entire-cell` |
+| "搜索公式文本" | `dws sheet find --node <nodeId或URL> --sheet-id <sheetId> --find "<公式片段>" --match-formula` |
+| "正则搜索 / 不区分大小写" | `dws sheet find --node <nodeId或URL> --sheet-id <sheetId> --find "<regexp>" --use-regexp --match-case=false` |
 | "插入图片到单元格" | `dws sheet write-image --node <nodeId或URL> --sheet-id <sheetId> --range A1 --file <图片路径>` |
 | "创建浮动图片" | 先 `dws sheet media-upload --node <nodeId或URL> --file <图片路径>` 获取 `resourceUrl`，再 `dws sheet create-float-image --node <nodeId或URL> --sheet-id <sheetId> --src "<resourceUrl>" --range A1 --width <宽> --height <高>` |
 

@@ -14,7 +14,7 @@ JSONML 是文档内容树的序列化格式：
 ```
 
 - `tag` — 字符串，节点类型标识
-- `attrs` — 可选对象，节点属性（写入时**强烈建议**始终传 `{}` 而非省略）
+- `attrs` — 对象，写入时必须提供（可为空对象 `{}`，但不可省略）
 - `children` — 子节点数组；可以是嵌套节点或（仅 inline 上下文中）字符串
 
 文档 body 是一个以 `"root"` 为根的 JSONML 节点，`dws doc read --content-format jsonml` 返回此格式：
@@ -130,7 +130,7 @@ Suggestion: ["span",{"data-type":"text"},["span",{"data-type":"leaf"},"<your tex
 ## 块级节点
 
 所有 block 节点的 tag 白名单（validator `validBlockTags`）：
-`p` / `h1` / `h2` / `h3` / `h4` / `h5` / `h6` / `hr` / `table` / `code` / `container` / `embed` / `onlineVideo` / `card` / `toc` / `refblock` / `cangjie-voidblock` / `cangjie-container`
+`p` / `h1` / `h2` / `h3` / `h4` / `h5` / `h6` / `hr` / `table` / `code` / `container` / `embed` / `onlineVideo` / `card` / `toc` / `refblock` / `cangjie-voidblock` / `cangjie-container` / `img`
 
 未在白名单的 tag 会触发 `未知的块级 tag` 警告，并给出基于编辑距离 (Levenshtein ≤2) 的最接近建议（如 `"containr"` → `did you mean "container"?`）。
 

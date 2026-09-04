@@ -3,7 +3,7 @@
 批量添加字段到钉钉 AI 表格数据表（新版 schema）
 
 用法:
-    python bulk_add_fields.py <baseId> <tableId> fields.json
+    python3 scripts/bulk_add_fields.py <baseId> <tableId> fields.json
 
 fields.json 格式:
     [

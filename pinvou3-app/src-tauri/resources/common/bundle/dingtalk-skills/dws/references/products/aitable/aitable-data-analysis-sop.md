@@ -74,6 +74,7 @@ dws aitable record query \
 - **必须配合 `--field-ids`** 限制返回字段，减少数据量
 - 对于大表（>1000条），先告知用户可能耗时
 - `--all` 会自动处理分页，无需手动翻页
+- `--all` 受 `--page-limit` 默认 50 页（5000 条）约束；结束后检查 `hasMore`，为真则用 `--cursor` 续拉
 
 ## 3. filters 快速参考
 

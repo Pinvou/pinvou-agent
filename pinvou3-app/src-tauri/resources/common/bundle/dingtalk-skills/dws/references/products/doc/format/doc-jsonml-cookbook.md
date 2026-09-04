@@ -59,7 +59,7 @@
 每个节点是一个 JSON 数组：`[tagName, attributes?, ...children]`
 
 - **第一个元素**是字符串，表示标签名（如 `"p"`, `"h1"`, `"span"`, `"container"`）
-- **第二个元素**（可选）是一个 JSON 对象，表示属性（如 `{"uuid": "abc"}`）。如果无属性，可以直接进入子节点
+- **第二个元素**是 attrs 对象，必须存在（无属性时传空对象 `{}`）
 - **随后的元素**是子节点，可以是纯字符串（仅限 leaf span 内），也可以是另一个 JSONML 数组
 - **所有 `[` 必须有对应 `]`，所有 `{` 必须有对应 `}`，数组元素之间用 `,` 分隔，最后一个元素后不加 `,`**
 
@@ -86,7 +86,7 @@
 
 - **text 容器**：`["span", {"data-type": "text"}, ...leaves]` — 包裹所有文本 leaf
 - **leaf 节点**：`["span", {"data-type": "leaf", ...格式属性}, "文字"]` — 实际文本，可带 bold/italic 等
-- 一个 block 节点只有一个 text 容器，但可以有多个 leaf（不同格式的文字片段）
+- 一个 block 节点通常只有一个 text 容器；含 `a`/`img` 等 inline 节点时可有多个（与 schema.md 完整示例一致），每个 text 容器内可有多个 leaf（不同格式的文字片段）
 
 **简写**：无格式纯文本可以省略格式属性：
 ```json
@@ -255,18 +255,18 @@ dws doc block insert --node <DOC_ID> --content-format jsonml \
 
 # 黄色警告块（多段落）
 dws doc block insert --node <DOC_ID> --content-format jsonml \
-  --element '["container", {"uuid": "co2", "subType": "colorBlocks", "metadata": {"bgcolor": "#FFF2CC", "border": "#FFE599"}}, ["p", {"uuid": "co2p1"}, ["span", {"data-type": "text"}, ["span", {"data-type": "leaf"}, "⚠️ 注意事项"]]], ["p", {"uuid": "co2p2"}, ["span", {"data-type": "text"}, ["span", {"data-type": "leaf"}, "请仔细阅读以下内容"]]]]'
+  --element '["container", {"uuid": "co2", "subType": "colorBlocks", "metadata": {"bgcolor": "#FFF6D9", "border": "#FFE69C"}}, ["p", {"uuid": "co2p1"}, ["span", {"data-type": "text"}, ["span", {"data-type": "leaf"}, "⚠️ 注意事项"]]], ["p", {"uuid": "co2p2"}, ["span", {"data-type": "text"}, ["span", {"data-type": "leaf"}, "请仔细阅读以下内容"]]]]'
 ```
 
-**常用颜色预设**：
+**常用颜色预设**（取值与语义以 [doc-style-guideline.md §5 语义色表](../style/doc-style-guideline.md#五颜色与视觉语义) 为准）：
 
-| 含义 | bgcolor | border |
+| 语义 | bgcolor | border |
 |------|---------|--------|
-| 信息（蓝） | `#E8F2FE` | `#B3D4FC` |
-| 成功（绿） | `#E6F7E6` | `#B7EB8F` |
-| 警告（黄） | `#FFF2CC` | `#FFE599` |
-| 危险（红） | `#FFF1F0` | `#FFA39E` |
-| 紫色 | `#F3E8FF` | `#D3ADF7` |
+| 信息说明（ℹ️） | `#E8F2FE` | `#B3D4FC` |
+| 推荐结论（✅） | `#E3F8E2` | `#B7E4B5` |
+| 待确认/警告（❗） | `#FFF6D9` | `#FFE69C` |
+| 风险/错误（⚠️/❌） | `#FDE2E0` | `#F5C2C7` |
+| 中性辅助 | `#F4F5F7` | `#DEE2E6` |
 
 ## 代码块 (code)
 

@@ -46,22 +46,23 @@ URL 路径中包含 `/i/p/` 即为分享短链（无论后面是否还有子路�
 
 **不要调用 `dws doc` 任何子命令**（包括 `doc info`、`doc read` 等），`dws` 无法解析此格式。
 
-- **需要获取文档内容时**：使用 `read_url` 工具直接读取该链接
+- **需要获取文档内容时**：使用宿主提供的网页读取能力读取该链接
 - **其他操作（如移动、复制、权限管理等）**：告知用户此链接为分享短链，无法直接执行复制、移动、权限管理等操作。如需保存该文档内容，建议用户在钉钉客户端中打开该页面，手动复制文本内容，然后可通过 `dws doc create` 创建一篇新文档并将内容写入
 
 ```
-# 需要读取文档内容时（无论 /i/p/ 后面有没有子路径，都用 read_url）
-read_url("https://alidocs.dingtalk.com/i/p/Y7kmbokZp3pgGLq2")
-read_url("https://alidocs.dingtalk.com/i/p/Y7kmbokZp3pgGLq2/docs/AY39rGpMPmeVNpXZevZm8OZkXKnaoNQ7")
+# 需要读取文档内容时（无论 /i/p/ 后面有没有子路径，
+# 都用宿主提供的网页读取能力读取以下链接）
+https://alidocs.dingtalk.com/i/p/Y7kmbokZp3pgGLq2
+https://alidocs.dingtalk.com/i/p/Y7kmbokZp3pgGLq2/docs/AY39rGpMPmeVNpXZevZm8OZkXKnaoNQ7
 
 # 禁止（以下全部会失败，dws 无法解析任何含 /i/p/ 的 URL）
 dws doc info --node "https://alidocs.dingtalk.com/i/p/Y7kmbokZp3pgGLq2" --format json
 dws doc read --node "https://alidocs.dingtalk.com/i/p/Y7kmbokZp3pgGLq2/docs/AY39rGpMPmeVNpXZevZm8OZkXKnaoNQ7" --format json
 ```
 
-### 当 `read_url` 返回内容不完整时
+### 当网页读取返回内容不完整时
 
-钉钉文档分享页是动态渲染的，`read_url` 可能只能获取到页面标题等有限信息，无法获取文档正文。此时**禁止猜测原因**（如"权限不足""文档为空""文档已删除"等），**禁止建议用户"提供 `/i/nodes/` 格式链接"**（分享短链和节点链接是不同体系，普通用户无法自行转换）。应直接告知用户：
+钉钉文档分享页是动态渲染的，网页读取可能只能获取到页面标题等有限信息，无法获取文档正文。此时**禁止猜测原因**（如"权限不足""文档为空""文档已删除"等），**禁止建议用户"提供 `/i/nodes/` 格式链接"**（分享短链和节点链接是不同体系，普通用户无法自行转换）。应直接告知用户：
 
 > 这个链接是钉钉文档的分享短链，由于页面是动态渲染的，我无法通过该链接直接获取文档的完整正文内容。
 >
@@ -135,13 +136,13 @@ dws doc list --folder "https://alidocs.dingtalk.com/i/nodes/ghi789" --format jso
 
 | extension / contentType | 读取 | 写入 | 删除 | 导出 | 权限 | 媒体 |
 |-------------------------|------|------|------|------|------|------|
-| **adoc**（在线文档） | `doc read` | `doc update` / `doc block update` | ⚠️ `doc delete` | ⚠️ `doc export` (→ docx) | ⚠️ `doc permission *` | ⚠️ `doc media download/insert` |
+| **adoc**（在线文档） | `doc read` | `doc update` / `doc block update` | ⚠️ `doc delete` | ⚠️ `doc export` (→ docx / markdown / pdf) | ⚠️ `doc permission *` | ⚠️ `doc media download/insert` |
 | **axls**（在线电子表格） | `sheet range read` / `sheet list` | `sheet range update` / `sheet append` | ⚠️ `doc delete`（节点删除） | `sheet export`（单命令一站式：提交→轮询→下载，可选 `--output` 落盘） | ⚠️ `doc permission *`（节点级，跨产品） | 不适用 |
 | **able**（在线多维表） | `aitable base get` / `aitable record query` | `aitable record create/update` | ⚠️ `doc delete`（节点删除）或 `aitable base delete --yes` | `aitable export data --scope all --export-format excel --format json`（取 downloadUrl，`--output` 不落盘） | ⚠️ `doc permission *`（节点级） | `aitable attachment upload` |
 | **xlsx / xls / xlsm / csv**（本地表格文件） | `drive download` → 本地用 xlsx skill 解析 | 不支持服务端写（先下载改本地再上传） | ⚠️ `doc delete`（节点删除） | 不需要（本身就是 xlsx） | ⚠️ `doc permission *` | 不适用 |
 | **普通文件** (nodeType=file) | `drive download` | 不支持服务端写 | ⚠️ `doc delete` | 不需要 | ⚠️ `doc permission *` | 不适用 |
 | **文件夹** (nodeType=folder) | `doc list --folder <URL>` | `doc create --folder <URL> ...` | ⚠️ `doc delete` | 不适用 | ⚠️ `doc permission *` | 不适用 |
-| **分享短链** `/i/p/<short>` | `read_url` 兜底（外部工具） | 不适用 | 不适用 | 不适用 | 不适用 | 不适用 |
+| **分享短链** `/i/p/<short>` | 宿主网页读取能力兜底 | 不适用 | 不适用 | 不适用 | 不适用 | 不适用 |
 
 ### 使用方式
 

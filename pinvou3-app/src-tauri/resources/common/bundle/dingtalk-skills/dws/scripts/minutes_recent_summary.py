@@ -3,10 +3,10 @@
 获取最近 N 条听记的 AI 摘要并合并输出
 
 用法:
-    python minutes_recent_summary.py          # 最近 5 条
-    python minutes_recent_summary.py --max 10 # 最近 10 条
-    python minutes_recent_summary.py --output summary.md
-    python minutes_recent_summary.py --dry-run
+    python3 scripts/minutes_recent_summary.py          # 最近 5 条（路径相对 Skill 根目录，执行时拼成完整路径）
+    python3 scripts/minutes_recent_summary.py --max 10 # 最近 10 条
+    python3 scripts/minutes_recent_summary.py --output summary.md
+    python3 scripts/minutes_recent_summary.py --dry-run
 """
 
 import sys

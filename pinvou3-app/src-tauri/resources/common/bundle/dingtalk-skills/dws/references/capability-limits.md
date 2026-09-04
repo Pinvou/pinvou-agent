@@ -6,7 +6,7 @@
 
 | 不支持的操作 | 说明 |
 |------------|------|
-| 撤回个人身份发送的消息 | 只有 `send-by-bot` 发送的消息才能通过 `recall-by-bot` 撤回。个人身份 (`chat message send`) 发送的消息无法通过 API 撤回 |
+| 撤回个人消息 | 个人消息仅可撤回本人发送的消息（`chat message recall`，需 openConversationId+openMessageId，见 products/chat.md）；机器人消息走 `chat message recall-by-bot` |
 
 ## doc
 

@@ -597,7 +597,7 @@ AI 基于已拉取的转写数据，**本地完成**聚类与摘要（无需新�
 >  确认后我会执行：`dws minutes speaker replace --id <taskUuid> --from "发言人1" --to "李总"`"
 
 - 用户确认 → 立即调用 `dws minutes speaker replace --id <taskUuid> --from "发言人1" --to "李总" --format json`，并在执行成功后告知用户："已将本篇听记的『发言人1』全部替换为『李总』，纪要与待办中的发言人也已同步更新。"
-- 用户希望同时关联通讯录 → 引导用户提供钉钉 UID，调用时附加 `--target-uid <uid>`
+- 用户希望同时关联通讯录 → AI 先 `contact user search` 查询 dingUid，唯一命中时带 `--target-uid`；无法唯一命中才请用户在候选中选择
 - 用户拒绝 → 不替换，可询问是否还有其他发言人需要关联，否则结束流程
 
 **严禁的行为：**
@@ -702,7 +702,7 @@ Step 7: 引导用户替换发言人（调用 speaker replace 写回听记）
 
 | 路径 | 命令 | 得到什么 |
 |------|------|----------|
-| ① 通讯录组织架构 | `dws contact user search --keyword "目标人名"` → 部门/职级/上级/真名 | 职能大类（技术/产品/设计/管理）+ 是否存在该人 |
+| ① 通讯录组织架构 | `dws contact user search --query "目标人名"` → 部门/职级/上级/真名 | 职能大类（技术/产品/设计/管理）+ 是否存在该人 |
 | ② 本人创建的文档 | `dws doc search --keyword "目标人名/真名"` 至少获取 3 篇标题 | 角色精确信号（PM写PRD、研发写技术方案、设计师写视觉规范）|
 | ③ 近期日程类型 | `dws calendar event list` | 职能边界（参加什么类型的会）|
 | ④ 聊天记录 | `dws chat message list` 获取与目标人的近期 IM 消息 | 语言风格/工作内容/职责线索 |
@@ -988,6 +988,8 @@ Flags:
 3. 如果返回结果为空（无内容），**继续等待 5 秒**后重试
 4. **最大轮询次数不超过 20 次**（即最长等待约 100 秒）
 5. 如果 20 次轮询后仍然为空，视为**任务未完成或无内容**，告知用户："发言人段落总结任务可能仍在处理中，请稍后再试。"
+
+**等待的合规实现**：禁止 shell 睡眠/等待命令（如 `timeout /t 5`、`Start-Sleep`）；以逐次调用 `speaker summary get` 的自然间隔轮询，首次返回空即视为需继续轮询。
 
 ```
 伪代码：
@@ -1507,7 +1509,7 @@ tagId 可通过 `dws minutes tag list` 获取。
    - 唯一高置信命中 → 提示用户："『发言人1』很可能就是你说的『李总』，是否需要执行 `dws minutes speaker replace --id <taskUuid> --from "发言人1" --to "李总"`？"
    - 多候选 → 列出所有命中的发言人编号 + 命中关键词，让用户挑选
    - 无匹配 → 请用户补充更具体的关键词或直接给出"发言人编号 → 真实姓名"的映射
-4. **用户确认后**才调用 `speaker replace` 写回；如同时希望关联通讯录，引导用户提供 UID，附加 `--target-uid <uid>`
+4. **用户确认后**才调用 `speaker replace` 写回；如同时希望关联通讯录，AI 先 `contact user search` 查询 dingUid，唯一命中时带 `--target-uid`；无法唯一命中才请用户在候选中选择
 
 **自然语言示例（必须能正确识别为"模糊匹配 → 确认 → 替换"链路）：**
 - "李总主要讲了战略规划"
@@ -1941,7 +1943,7 @@ loop:
 - 如果用户传入听记 URL（格式: `https://shanji.dingtalk.com/app/transcribes/<taskUuid>`），直接从路径末段提取 taskUuid 作为 `--id` 参数，无需再调用 list 查询
 - `list mine`、`list shared`、`list all` 统一走 `list_by_keyword_and_time_range` 链路，通过 `belongingConditionId` 区分（`created` / `shared` / `noLimit`）
 - 三个 list 命令均支持 `--max`、`--next-token` 分页及 `--query`、`--start`、`--end` 筛选
-- `list mine`、`list shared` 默认每页 20 条，`list all` 默认每页 10 条
+- `list mine`、`list shared`、`list all` 默认每页 10 条
 - `get summary` 返回 AI 生成的结构化 Markdown 摘要
 - `get transcription` 的 `--direction` 控制时间排序: 0=正序(默认), 1=倒序；当用户明确要求查看/分析转写原文时，默认自动翻页拉取全部原文（不需要用户手动说"拉第一页"），如果用户意图不是专门看原文（如查列表、看摘要），则不应主动调用此命令
 - `get transcription` 默认按"时间线"返回各段落，**拉完后 AI 必须主动追问用户"是否需要按发言人分组聚类并提取核心内容"**；用户确认后 AI 在本地完成聚类与摘要，并进一步引导用户通过关键词模糊匹配（如"李总主要讲了战略规划"）确认"发言人编号 ↔ 真实姓名"的映射，最终调用 `speaker replace` 写回。完整工作流见对应命令章节的"四阶段工作流"
@@ -2012,8 +2014,8 @@ loop:
 
 | 脚本 | 场景 | 用法 |
 |------|------|------|
-| [minutes_recent_summary.py](../../scripts/minutes_recent_summary.py) | 获取最近听记的 AI 摘要并合并 | `python3 minutes_recent_summary.py --max 5` |
-| [minutes_extract_todos.py](../../scripts/minutes_extract_todos.py) | 从听记中提取待办事项汇总 | `python3 minutes_extract_todos.py --max 5` |
+| [minutes_recent_summary.py](../../scripts/minutes_recent_summary.py) | 获取最近听记的 AI 摘要并合并 | `python3 scripts/minutes_recent_summary.py --max 5` |
+| [minutes_extract_todos.py](../../scripts/minutes_extract_todos.py) | 从听记中提取待办事项汇总 | `python3 scripts/minutes_extract_todos.py --max 5` |
 
 ## 反例 / 回归案例
 
@@ -2215,7 +2217,7 @@ https://shanji.dingtalk.com/app/transcribes/<taskUuid> 分析下木兰讲了什�
 
 | 路径 | 命令 | 结果 |
 |------|------|------|
-| ① 通讯录组织架构 | `dws contact user search --keyword "木兰"` | 木兰 = **王佳明**，X 事业群-X 事业部-X-X-**产品设计部**，上级临渊（王临一）|
+| ① 通讯录组织架构 | `dws contact user search --query "木兰"` | 木兰 = **王佳明**，X 事业群-X 事业部-X-X-**产品设计部**，上级临渊（王临一）|
 | ② 文档产出 | `dws doc search --keyword "王佳明"`（按需）| 多为设计稿/原型，进一步印证设计师角色 |
 
 **Step 5：定向匹配 + 置信度判断**
@@ -2320,7 +2322,7 @@ Step 2 **[禁止]** 看到全是匿名编号 → 没有继续走 Step 3-4，反�
 |--------|------------|------|
 | 在转写文本里 grep "木兰" 字符串作为存在性判断 | 铁律 1 | 99% 听记的发言人都是匿名编号，搜不到字面是默认场景，根本不构成"没参会"的证据 |
 | 用 AI 摘要的"参与人=拾光"推断"木兰没参会" | 铁律 2 | AI 摘要"参与人"字段只截取最显著的 1-2 人，**不是**完整参会名册 |
-| 全程没调用过一次 `dws contact user search --keyword "木兰"` | 铁律 3 | 通讯录查询是 Step 4 的必跑项，单次调用就能拿到"木兰=王佳明，产品设计部" |
+| 全程没调用过一次 `dws contact user search --query "木兰"` | 铁律 3 | 通讯录查询是 Step 4 的必跑项，单次调用就能拿到"木兰=王佳明，产品设计部" |
 | 一旦字面搜不到就放弃身份推断，把任务甩给用户 | 铁律 4 | 这恰恰把发言人识别功能的核心价值（把匿名编号映射到真实人）完全抹掉了 |
 
 **[正确] 应该这样执行（与案例 6 一致）：**
@@ -2328,7 +2330,7 @@ Step 2 **[禁止]** 看到全是匿名编号 → 没有继续走 Step 3-4，反�
 1. **Step 1**：从 URL 提取 taskUuid → `dws minutes get transcription` 自动翻页拉全部
 2. **Step 2**：检查 `speakerNick` 字段是否含"木兰"——发现全是匿名编号 → **不要在转写文本里 grep "木兰"，立即并发触发 Step 3 + Step 4 ①**
 3. **Step 3**（与 Step 4 ① 并发）：在转写里做发言人画像（每位发言人的发言量、主题、互斥线索）
-4. **Step 4 ①**（与 Step 3 并发，必跑）：`dws contact user search --keyword "木兰"` → 拿到"木兰=王佳明，产品设计部，上级临渊"
+4. **Step 4 ①**（与 Step 3 并发，必跑）：`dws contact user search --query "木兰"` → 拿到"木兰=王佳明，产品设计部，上级临渊"
 5. **Step 5**：把"产品设计部 + 设计师角色"信号回投到画像 → 锁定发言人1（UI/交互设计视角高度匹配）+ 与拾光的同部门协作信号 → 置信度 ≈ 75% → 走分支 A
 6. **Step 5 用户确认**：展示发言人1 的代表性片段请用户确认
 7. **Step 6**：四段式结构化总结（核心观点/关注点/Action Item/立场态度）
@@ -2343,7 +2345,7 @@ Step 2 **[禁止]** 看到全是匿名编号 → 没有继续走 Step 3-4，反�
 3. **`dws contact user search` 是 Step 4 ① 的必跑项，单次调用就能突破死局**：本案例的整个失败链路只要有 1 次通讯录查询就能立即扭转——拿到"木兰=王佳明，产品设计部"后，Step 5 的角色匹配就有了锚点，再也不会得出"没参会"的错误结论。
 
 4. **想说"找不到 X"前的四个自检问题**（任何一个回答"没"都禁止给"找不到"结论）：
-   - 通讯录查了吗？(`dws contact user search --keyword "X"`)
+   - 通讯录查了吗？(`dws contact user search --query "X"`)
    - 文档查了吗？(`dws doc search --keyword "X"`)
    - 聊天记录查了吗？(`dws chat message list`)
    - 基于角色在转写里做模式匹配了吗？（设计师 vs 研发 vs 管理者的发言特征）

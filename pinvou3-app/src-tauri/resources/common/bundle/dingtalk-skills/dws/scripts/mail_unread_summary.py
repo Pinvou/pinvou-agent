@@ -94,7 +94,7 @@ def main():
         print('错误：无法获取邮箱地址')
         sys.exit(1)
 
-    today = datetime.now(TZ).strftime('%Y-%m-%dT00:00:00Z')
+    today = datetime.now(TZ).strftime('%Y-%m-%dT00:00:00+08:00')
     kql = f'isRead:false AND date>{today}'
 
     print(f'🔍 搜索未读邮件...\n')
