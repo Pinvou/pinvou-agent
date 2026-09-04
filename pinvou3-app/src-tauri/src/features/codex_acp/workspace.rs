@@ -461,8 +461,8 @@ pub fn checkout_workspace_branch(
             }
             if let Err(error) = git_output(&root, &["stash", "pop"]) {
                 bail!(
-                    "已切换到 {branch}，但恢复暂存的更改失败（该 stash 已保留，可在仓库内手动 \
-                     git stash pop 解决）: {error:#}"
+                    "已切换到 {branch}，但恢复暂存的更改失败（冲突内容已应用到工作区，\
+                     该 stash 条目已保留；解决冲突后执行 git stash drop 清理）: {error:#}"
                 );
             }
         }
@@ -1661,6 +1661,45 @@ mod tests {
         // stash 已 pop，stash 列表应为空。
         let stash_list = git_output(root.path(), &["stash", "list"]).unwrap();
         assert!(stash_list.trim().is_empty());
+    }
+
+    /// Stash restore conflict: the switch succeeds, the stash entry is kept,
+    /// and the working tree is left with conflict markers; the command fails
+    /// without rolling the branch back.
+    #[test]
+    fn checkout_workspace_branch_stash_pop_conflict_keeps_stash_entry() {
+        let Some(root) = init_git_repo("checkout-stash-conflict") else {
+            return;
+        };
+        // feature commits file.txt = v2; restoring the uncommitted main-side
+        // edit on top of it conflicts by construction.
+        git_output(root.path(), &["checkout", "feature"]).unwrap();
+        fs::write(root.path().join("file.txt"), "v2").unwrap();
+        git_output(
+            root.path(),
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-am",
+                "v2",
+            ],
+        )
+        .unwrap();
+        git_output(root.path(), &["checkout", "main"]).unwrap();
+        fs::write(root.path().join("file.txt"), "v1-dirty").unwrap();
+        assert!(
+            checkout_workspace_branch(root.path(), "feature", BranchSwitchMode::Stash, None)
+                .is_err()
+        );
+        let state = workspace_branches(root.path()).unwrap();
+        assert_eq!(state.current.as_deref(), Some("feature"));
+        let stash_list = git_output(root.path(), &["stash", "list"]).unwrap();
+        assert!(!stash_list.trim().is_empty());
+        let content = fs::read_to_string(root.path().join("file.txt")).unwrap();
+        assert!(content.contains("<<<<<<<"));
     }
 
     #[test]
