@@ -8,6 +8,7 @@
 //! - `_session_models.json` — session_id -> SavedModel.id override.
 //! - `_pinned_sessions.json` — pinned conversation id list with timestamps.
 //! - `_hidden_sessions.json` — collapsed conversation id list with timestamps.
+//! - `_aux_sessions.json` — main session_id -> aux (`aux-` prefixed) session_id.
 //!
 //! Mode / pinvou_review / plan-phase remain in-memory only by design.
 
@@ -21,6 +22,7 @@ use chrono::Utc;
 const SESSION_MODELS_FILE: &str = "_session_models.json";
 const PINNED_SESSIONS_FILE: &str = "_pinned_sessions.json";
 const HIDDEN_SESSIONS_FILE: &str = "_hidden_sessions.json";
+const AUX_SESSIONS_FILE: &str = "_aux_sessions.json";
 
 impl SessionStore {
     pub fn session_model_id(&self, id: &str) -> Option<String> {
@@ -267,6 +269,76 @@ impl SessionStore {
             }
             Ok(_) => eprintln!("[sessions] load_hidden_sessions failed: invalid shape"),
             Err(e) => eprintln!("[sessions] load_hidden_sessions failed: {e}"),
+        }
+    }
+
+    /// 辅助对话映射查询：主会话 id → 辅助会话（`aux-` 前缀）id。
+    pub fn aux_session_id(&self, main_id: &str) -> Option<String> {
+        self.aux_sessions.read().get(main_id).cloned()
+    }
+
+    /// 写入/清除 主→辅 映射并落盘；落盘失败回滚内存，与 `set_session_model_id`
+    /// 同事务语义——不留"看似成功、重启即丢失"的内存态。
+    pub fn set_aux_session(&self, main_id: &str, aux_id: Option<String>) -> Result<()> {
+        let mut aux_sessions = self.aux_sessions.write();
+        let previous = aux_sessions.get(main_id).cloned();
+        match aux_id {
+            Some(aux_id) => {
+                aux_sessions.insert(main_id.to_string(), aux_id);
+            }
+            None => {
+                aux_sessions.remove(main_id);
+            }
+        }
+        if let Err(error) = Self::persist_aux_sessions(&aux_sessions) {
+            match previous {
+                Some(previous) => {
+                    aux_sessions.insert(main_id.to_string(), previous);
+                }
+                None => {
+                    aux_sessions.remove(main_id);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn persist_aux_sessions(aux_sessions: &HashMap<String, String>) -> Result<()> {
+        let file = crate::platform::paths::sessions_root().join(AUX_SESSIONS_FILE);
+        if aux_sessions.is_empty() {
+            return match std::fs::remove_file(&file) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error).with_context(|| format!("remove {}", file.display())),
+            };
+        }
+        let payload =
+            serde_json::to_vec_pretty(aux_sessions).context("serialize aux session bindings")?;
+        deepseek_tui::utils::write_atomic(&file, &payload)
+            .with_context(|| format!("persist aux session bindings to {}", file.display()))
+    }
+
+    pub fn save_aux_sessions(&self) {
+        if let Err(error) = Self::persist_aux_sessions(&self.aux_sessions.read()) {
+            eprintln!("[sessions] save_aux_sessions failed: {error:#}");
+        }
+    }
+
+    pub fn load_aux_sessions(&self) {
+        let file = crate::platform::paths::sessions_root().join(AUX_SESSIONS_FILE);
+        if !file.exists() {
+            return;
+        }
+        let content = match std::fs::read_to_string(&file) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        match serde_json::from_str::<HashMap<String, String>>(&content) {
+            Ok(map) => {
+                *self.aux_sessions.write() = map;
+            }
+            Err(e) => eprintln!("[sessions] load_aux_sessions failed: {e}"),
         }
     }
 }

@@ -96,6 +96,7 @@ fn reopen_store(store: &SessionStore) -> Result<SessionStore> {
     reopened.load_session_models();
     reopened.load_pinned_sessions();
     reopened.load_hidden_sessions();
+    reopened.load_aux_sessions();
     reopened.load_session_mode_states();
     {
         let _mutation = reopened.scheduled_mutation.lock();
@@ -3581,4 +3582,173 @@ fn truncate_reports_compaction_summary_residue_in_system_prompt() {
         .truncate_to_user_turn(&without_marker.metadata.id, 1, None)
         .expect("rewind without marker");
     assert!(!outcome.had_compaction, "普通 system_prompt 不得误报");
+}
+
+// ===================== 辅助对话(aux session):sidecar / 列表隔离 / 级联删除 =====================
+
+/// `_aux_sessions.json` 的读写与重启往返;空表落盘时删除文件。
+#[test]
+fn aux_session_sidecar_round_trips_across_restart() {
+    let (store, _g) = isolated_store();
+    let sidecar = paths::sessions_root().join("_aux_sessions.json");
+
+    store
+        .set_aux_session("main-1", Some("aux-1".to_string()))
+        .expect("persist aux mapping");
+    assert_eq!(store.aux_session_id("main-1").as_deref(), Some("aux-1"));
+    assert!(sidecar.is_file());
+
+    let reopened = reopen_store(&store).expect("reboot");
+    assert_eq!(
+        reopened.aux_session_id("main-1").as_deref(),
+        Some("aux-1"),
+        "辅助对话映射必须随重启恢复"
+    );
+
+    reopened
+        .set_aux_session("main-1", None)
+        .expect("clear aux mapping");
+    assert!(reopened.aux_session_id("main-1").is_none());
+    assert!(!sidecar.exists(), "映射清空后 _aux_sessions.json 不得残留");
+}
+
+/// 落盘失败必须回滚内存(与 session_model 同款事务语义),不留内存-only 映射。
+#[test]
+fn aux_session_update_rolls_back_memory_when_sidecar_write_fails() {
+    let (store, _g) = isolated_store();
+    store
+        .set_aux_session("main-1", Some("aux-old".to_string()))
+        .expect("persist initial mapping");
+    let sidecar = paths::sessions_root().join("_aux_sessions.json");
+    std::fs::remove_file(&sidecar).expect("remove initial sidecar");
+    std::fs::create_dir(&sidecar).expect("block sidecar path with a directory");
+
+    let error = store
+        .set_aux_session("main-1", Some("aux-new".to_string()))
+        .expect_err("an unwritable sidecar must fail the aux transaction");
+
+    assert!(error.to_string().contains("persist aux session bindings"));
+    assert_eq!(
+        store.aux_session_id("main-1").as_deref(),
+        Some("aux-old"),
+        "failed persistence must not leave a memory-only aux mapping"
+    );
+}
+
+/// 创建辅助对话:`aux-` 前缀 id、固定中文默认标题、parent_session_id 回指
+/// 主会话、模型/工作区继承主会话,且不进普通会话列表。
+#[test]
+fn aux_sessions_are_hidden_from_chat_list() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .create_aux_session(&main.metadata.id)
+        .expect("create aux session");
+
+    assert!(aux.id.starts_with("aux-"));
+    assert_eq!(aux.title, super::store::AUX_SESSION_TITLE);
+    assert_eq!(
+        aux.parent_session_id.as_deref(),
+        Some(main.metadata.id.as_str())
+    );
+    assert_eq!(aux.model, main.metadata.model);
+    assert_eq!(aux.workspace, main.metadata.workspace);
+    assert_eq!(
+        store.aux_session_id(&main.metadata.id).as_deref(),
+        Some(aux.id.as_str())
+    );
+
+    let listed = store.list().expect("list chats");
+    assert!(listed.iter().any(|item| item.id == main.metadata.id));
+    assert!(
+        !listed.iter().any(|item| item.id == aux.id),
+        "辅助对话不得进入普通会话列表"
+    );
+
+    // 重启后映射仍在,列表隔离不变。
+    let reopened = reopen_store(&store).expect("reboot");
+    assert_eq!(
+        reopened.aux_session_id(&main.metadata.id).as_deref(),
+        Some(aux.id.as_str())
+    );
+    let listed = reopened.list().expect("list chats after reboot");
+    assert!(!listed.iter().any(|item| item.id == aux.id));
+}
+
+/// 删主会话级联删辅助会话,并摘掉 主→辅 映射。
+#[test]
+fn delete_main_session_cascades_to_aux_session() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .create_aux_session(&main.metadata.id)
+        .expect("create aux session");
+
+    store.delete(&main.metadata.id).expect("delete main");
+
+    assert!(store.load(&main.metadata.id).is_err());
+    assert!(store.load(&aux.id).is_err(), "删主会话必须级联删掉辅助会话");
+    assert!(
+        store.aux_session_id(&main.metadata.id).is_none(),
+        "级联删除后映射不得残留"
+    );
+    let sidecar = paths::sessions_root().join("_aux_sessions.json");
+    assert!(!sidecar.exists(), "最后一条映射摘掉后 sidecar 应被删除");
+}
+
+/// 单独删辅助会话:清掉映射条目,主会话不受影响。
+#[test]
+fn delete_aux_session_clears_mapping() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .create_aux_session(&main.metadata.id)
+        .expect("create aux session");
+
+    store.delete(&aux.id).expect("delete aux");
+
+    assert!(store.load(&aux.id).is_err());
+    assert!(store.load(&main.metadata.id).is_ok(), "主会话必须保留");
+    assert!(
+        store.aux_session_id(&main.metadata.id).is_none(),
+        "删辅助会话必须清掉映射条目"
+    );
+}
+
+/// purge_session_side_maps 对 aux 映射双向清理:键(主会话)或值(辅助会话)
+/// 命中被删集合都移除,有变化才落盘。
+#[test]
+fn purge_session_side_maps_clears_aux_bidirectionally() {
+    let (store, _g) = isolated_store();
+    store
+        .set_aux_session("main-1", Some("aux-1".to_string()))
+        .expect("mapping 1");
+    store
+        .set_aux_session("main-2", Some("aux-2".to_string()))
+        .expect("mapping 2");
+    let sidecar = paths::sessions_root().join("_aux_sessions.json");
+
+    // 键命中:主会话被删。
+    store.purge_session_side_maps(&["main-1".to_string()]);
+    assert!(store.aux_session_id("main-1").is_none());
+    assert_eq!(store.aux_session_id("main-2").as_deref(), Some("aux-2"));
+    let on_disk: std::collections::HashMap<String, String> =
+        serde_json::from_str(&std::fs::read_to_string(&sidecar).expect("sidecar after key purge"))
+            .expect("parse sidecar");
+    assert!(!on_disk.contains_key("main-1"), "purge 后必须落盘");
+    assert_eq!(on_disk.get("main-2").map(String::as_str), Some("aux-2"));
+
+    // 值命中:辅助会话被删。
+    store.purge_session_side_maps(&["aux-2".to_string()]);
+    assert!(store.aux_session_id("main-2").is_none());
+    assert!(!sidecar.exists(), "映射清空后 sidecar 应被删除");
+
+    // 无命中:不动内存也不落盘(映射已空,无副作用可断言,只需不 panic)。
+    store.purge_session_side_maps(&["unrelated".to_string()]);
 }
