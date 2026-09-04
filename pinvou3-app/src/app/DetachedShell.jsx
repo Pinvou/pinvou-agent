@@ -32,8 +32,10 @@ function useDetachedBase() {
     'settings', 'personas',
   ]);
   const [language, setLanguage] = useState(initialSystemLanguage);
-  // 深浅色与主窗口同口径:偏好 system=跟随系统(实时),判不出浅色;撕离窗无设置入口,
-  // 偏好只在 bootstrap 从主设置读一次,之后随系统变化仍实时跟随(system 档)。
+  // Same color-scheme semantics as the main window: `system` follows the OS
+  // live (light when undeterminable). Detached windows have no settings entry,
+  // so the preference is read once from the main settings at bootstrap and
+  // keeps following system flips afterwards (while on `system`).
   const systemDark = useSystemDarkMode();
   const [colorScheme, setColorScheme] = useState('system');
   const activeTheme = resolveTheme(colorScheme, systemDark);

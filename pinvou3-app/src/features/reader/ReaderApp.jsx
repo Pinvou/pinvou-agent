@@ -4,6 +4,7 @@ import {
 } from '../../components/icons.jsx';
 import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
 import { invokeTauri, listenTauri, tauriEvents } from '../../platform/tauri/client.js';
+import { useSystemDarkMode } from '../../hooks/useSystemDarkMode.js';
 import { normalizeColorScheme, resolveTheme } from '../../shared/color-scheme.js';
 import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG } from '../../shared/i18n.js';
 import {
@@ -53,8 +54,12 @@ export function ReaderApp() {
   const [copied, setCopied] = useState('');
   const fontBounds = viewerFontSizeBounds();
   const loadedKeysRef = useRef(new Set());
+  // Appearance follows the app preference; while it is `system` the reader must
+  // track OS theme flips live, same as the main and detached windows.
+  const systemDark = useSystemDarkMode();
+  const [colorScheme, setColorScheme] = useState('system');
 
-  // 语言与主题跟随主设置（语言监听与桌宠窗口同一模式；主题在加载时应用一次）。
+  // Language follows the main settings (same listener pattern as the pet window).
   useEffect(() => {
     let disposed = false;
     let unlisten = null;
@@ -62,9 +67,7 @@ export function ReaderApp() {
       if (disposed) return;
       const lang = TAG_TO_LANG[settings?.language] || initialSystemLanguage();
       ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
-      // 深浅跟随应用偏好:显式 light/dark 直接用;system/缺失跟随系统,判不出浅色
-      // (与主窗口 shared/color-scheme.js 同口径)。阅读器无设置入口,加载时应用一次。
-      document.documentElement.classList.toggle('dark', resolveTheme(normalizeColorScheme(settings?.color_scheme)) === 'dark');
+      setColorScheme(normalizeColorScheme(settings?.color_scheme));
     }).catch(() => {});
     tauriEvents.listen('ui:language_changed', (event) => {
       const next = event.payload?.language;
@@ -78,6 +81,12 @@ export function ReaderApp() {
       if (unlisten) unlisten();
     };
   }, []);
+
+  // Re-apply when the preference resolves and on every system flip while `system`;
+  // explicit light/dark ignore systemDark.
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', resolveTheme(colorScheme, systemDark) === 'dark');
+  }, [colorScheme, systemDark]);
 
   useEffect(() => {
     document.title = copy.readerTitle;

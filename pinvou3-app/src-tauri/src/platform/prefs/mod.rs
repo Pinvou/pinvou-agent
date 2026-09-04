@@ -482,8 +482,10 @@ pub struct ModeDefaultPrefs {
 #[serde(default)]
 pub struct UserPrefs {
     pub theme: Theme,
-    /// 深浅色偏好:system=跟随系统(前端判断,判不出时浅色),light/dark=显式选择。
-    /// 引入晚于 `theme`;旧档缺失时 load 按 theme 推导,首次安装保持 system 默认。
+    /// Color-scheme preference: `system` follows the OS (decided by the
+    /// frontend, light when undeterminable), light/dark are explicit picks.
+    /// Introduced later than `theme`; when missing from old settings, `load`
+    /// derives it from `theme`, while fresh installs keep the `system` default.
     pub color_scheme: ColorScheme,
     pub language: Language,
     pub memory_enabled: bool,
@@ -499,8 +501,10 @@ pub struct UserPrefs {
 struct ParsedSettings {
     prefs: UserPrefs,
     allow_normalization_persist: bool,
-    /// 旧档缺 `color_scheme` 时刚从 `theme` 推导过一次(见 parse 内注释)。
-    /// 计入 normalization 持久化门槛,让推导值首次 load 即落盘,文件自描述。
+    /// Set when `color_scheme` was just derived from `theme` because the old
+    /// settings lacked the key (see the parse comment). Counted into the
+    /// normalization persist gate so the derived value lands on disk at the
+    /// first load and the file becomes self-describing.
     color_scheme_derived: bool,
 }
 
@@ -546,10 +550,13 @@ impl UserPrefs {
         let has_language = value
             .as_object()
             .is_some_and(|settings| settings.contains_key("language"));
-        // `color_scheme` 是「深浅色偏好」(system=跟随系统)。字段晚于 `theme` 引入:
-        // 旧档没有该 key 时,无法区分「用户显式选过 theme」和「从未动过(默认
-        // genesis 深色)」,统一按旧生效外观推导,升级后界面深浅不变;只有真正
-        // 首次安装(无 settings.json,走上面的默认分支)才保持 System 跟随系统。
+        // `color_scheme` is the color-scheme preference (system = follow the
+        // OS). The field was introduced later than `theme`: when old settings
+        // lack the key we cannot tell "the user explicitly picked theme" from
+        // "never touched (default genesis, dark)", so derive from the legacy
+        // effective appearance to keep the upgrade invisible; only a true
+        // fresh install (no settings.json, handled by the default branch
+        // above) stays on System and follows the OS.
         let has_color_scheme = value
             .as_object()
             .is_some_and(|settings| settings.contains_key("color_scheme"));
@@ -1747,8 +1754,9 @@ mod tests {
         assert_eq!(prefs.language, Language::Ja);
     }
 
-    /// 旧档(无 color_scheme key)按旧生效外观从 theme 推导深浅偏好,升级后界面不变;
-    /// 仅真正首次安装(无 settings.json → 默认分支)保持 System 跟随系统。
+    /// Old settings (no color_scheme key) derive the preference from the legacy
+    /// effective appearance in `theme`, keeping the upgrade invisible; only a
+    /// true fresh install (no settings.json → default branch) stays on System.
     #[test]
     fn legacy_settings_derive_color_scheme_from_theme() {
         for (raw, expected) in [
@@ -1763,7 +1771,8 @@ mod tests {
         }
     }
 
-    /// 显式写过的 color_scheme(含 system=跟随系统)永不被 theme 推导覆盖。
+    /// An explicitly saved color_scheme (including system = follow the OS) is
+    /// never overwritten by the theme derivation.
     #[test]
     fn explicit_color_scheme_is_never_rederived() {
         for (raw, expected) in [
@@ -1786,7 +1795,8 @@ mod tests {
         }
     }
 
-    /// 首次安装(无 settings.json):color_scheme 保持 System,且不触发 normalization 回写。
+    /// Fresh install (no settings.json): color_scheme stays System and no
+    /// normalization write-back fires.
     #[test]
     fn fresh_settings_keep_color_scheme_system() {
         let parsed = UserPrefs::parse_settings_with_state(None, Some("en-US"));
@@ -1795,8 +1805,9 @@ mod tests {
         assert!(!parsed.allow_normalization_persist);
     }
 
-    /// load 对旧档的推导值一次性回写,settings.json 此后自描述;
-    /// 已显式保存过 color_scheme 的档位不再改写。
+    /// load writes the derived value for old settings back exactly once so the
+    /// file becomes self-describing; settings with an explicit color_scheme
+    /// are never rewritten.
     #[test]
     fn load_persists_derived_color_scheme_once() {
         let _guard = ENV_LOCK
@@ -1824,7 +1835,7 @@ mod tests {
             "persisted: {persisted}"
         );
 
-        // 已显式保存的 system 不被 load 改写。
+        // An explicitly saved system value is not rewritten by load.
         std::fs::write(
             &settings_path,
             r#"{"theme":"genesis","color_scheme":"system"}"#,

@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react';
 import { systemPrefersDark } from '../shared/color-scheme.js';
 
 /**
- * 跟随系统「深浅色」偏好,且监听运行中的变化(不是只读挂载时快照)。
- * colorScheme 为 system 时,系统切换需实时映射到界面主题,故主窗口/撕离窗
- * 常驻订阅;检测不可用时恒为 false(浅色兜底),与 shared/color-scheme.js 同口径。
+ * Track the OS light/dark preference, including runtime changes (not just a
+ * mount-time snapshot). While the color-scheme preference is `system`, OS flips
+ * must map to the UI theme live, so long-lived windows stay subscribed.
+ * Returns false when detection is unavailable (light fallback), matching
+ * shared/color-scheme.js.
  */
 export function useSystemDarkMode() {
   const [dark, setDark] = useState(systemPrefersDark);

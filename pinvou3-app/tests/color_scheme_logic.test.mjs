@@ -8,13 +8,15 @@ import {
   systemPrefersDark,
 } from '../src/shared/color-scheme.js';
 
-// 产品口径:首次安装跟随系统;判不出系统偏好按浅色;显式 light/dark 不再跟随系统。
+// Product rules: fresh installs follow the system; an undeterminable system
+// preference means light; explicit light/dark stop following the system.
 
 test('normalizeColorScheme maps explicit light/dark and normalizes everything else to system', () => {
   assert.equal(normalizeColorScheme('light'), 'light');
   assert.equal(normalizeColorScheme('dark'), 'dark');
   assert.equal(normalizeColorScheme('system'), 'system');
-  // 旧档缺失字段、后端兜底对象、未来未知档位都归跟随系统。
+  // Missing legacy fields, bridge fallback objects, and unknown future values
+  // all normalize to following the system.
   for (const value of [undefined, null, '', 'unknown', 'genesis']) {
     assert.equal(normalizeColorScheme(value), 'system', `value: ${String(value)}`);
   }
@@ -28,7 +30,8 @@ test('resolveTheme maps explicit schemes without consulting the system', () => {
 test('resolveTheme follows system for the system preference, light when undeterminable', () => {
   assert.equal(resolveTheme('system', true), 'dark');
   assert.equal(resolveTheme('system', false), 'light');
-  // 未知值与 system 同口径:判不出偏好即跟随系统 → 判不出系统 → 浅色。
+  // Unknown values share the system semantics: undeterminable preference
+  // means follow the system → undeterminable system → light.
   assert.equal(resolveTheme(undefined, false), 'light');
   assert.equal(resolveTheme(undefined, true), 'dark');
 });
@@ -36,12 +39,12 @@ test('resolveTheme follows system for the system preference, light when undeterm
 test('resolveTheme detects the system live when systemDark is omitted', () => {
   const original = globalThis.window;
   try {
-    // 无 window(matchMedia 不可用)→ 浅色兜底。
+    // No window (matchMedia unavailable) → light fallback.
     delete globalThis.window;
     assert.equal(resolveTheme('system'), 'light');
     assert.equal(systemPrefersDark(), false);
 
-    // 有 matchMedia:按查询结果判定。
+    // matchMedia present: decide by the query result.
     globalThis.window = {
       matchMedia: (query) => ({
         matches: query === '(prefers-color-scheme: dark)',

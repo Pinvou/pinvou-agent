@@ -227,8 +227,10 @@ function workspaceDisplayName(path) {
       const [activeChat, setActiveChat] = useState(null);
       const [currentView, setCurrentViewState] = useState('chat');
       const [sessionSyncEpoch, setSessionSyncEpoch] = useState(0);
-      // 深浅色偏好:system=跟随系统(首次安装默认,系统切换实时跟随),light/dark=显式选择。
-      // activeTheme 是解析后的实际渲染主题,判定不出系统偏好时浅色(见 shared/color-scheme.js)。
+      // Color-scheme preference: `system` follows the OS (fresh-install default,
+      // live tracking), light/dark are explicit picks. activeTheme is the resolved
+      // theme to render; light when the system preference is undeterminable
+      // (see shared/color-scheme.js).
       const systemDark = useSystemDarkMode();
       const [colorScheme, setColorScheme] = useState('system');
       const activeTheme = resolveTheme(colorScheme, systemDark);
@@ -1257,7 +1259,9 @@ function workspaceDisplayName(path) {
       const initUiPrefsFromSettings = (settings) => {
         if (isWeb) {
           bootedLanguageRef.current = language;
-          // Web 端深浅偏好存浏览器本地;未选择(首次访问/存储禁用)跟随系统,判不出浅色。
+          // On web the color-scheme preference lives in localStorage; with no
+          // choice made (first visit / storage disabled) follow the system,
+          // light when undeterminable.
           let storedScheme = null;
           try { storedScheme = window.localStorage.getItem(COLOR_SCHEME_STORAGE_KEY); } catch { /* silently degrade when WebView disables storage */ }
           setColorScheme(normalizeColorScheme(storedScheme));
@@ -1267,9 +1271,11 @@ function workspaceDisplayName(path) {
           if (lang && lang !== language) ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
           // engine 已用此语言启动,作为「需重启」基线(切语言不重启 engine,见 commands.rs)
           bootedLanguageRef.current = lang || language;
-          // 深浅偏好的权威是 color_scheme(light/dark/system);首次安装为 system 跟随系统。
-          // theme(genesis/liquid-light/liquid-dark)是旧字段,旧档缺 color_scheme 时后端已按
-          // 它推导补齐(prefs.rs),前端不再读 theme,避免两处口径分叉。
+          // `color_scheme` (light/dark/system) is the authoritative preference;
+          // fresh installs keep `system`. `theme` (genesis/liquid-light/liquid-dark)
+          // is the legacy field: the backend derives color_scheme from it once for
+          // old settings missing the key (prefs.rs), and the frontend no longer
+          // reads `theme`, so the two cannot diverge.
           setColorScheme(normalizeColorScheme(settings.color_scheme));
         }
         const notifications = settings.notifications || {};
@@ -2412,8 +2418,9 @@ function workspaceDisplayName(path) {
           return;
         }
         if (bridge.available) {
-          // color_scheme 是偏好权威(system/light/dark);theme 同步解析值,兼容只认
-          // 旧字段的消费方(如降级运行的旧版本)。
+          // `color_scheme` is the authoritative preference (system/light/dark);
+          // `theme` mirrors the resolved value so consumers that only know the
+          // legacy field (e.g. an older build running after a downgrade) keep rendering.
           bridge.settings.saveSettings({
             theme: resolveTheme(scheme, systemDark) === 'dark' ? 'genesis' : 'liquid-light',
             color_scheme: scheme,
