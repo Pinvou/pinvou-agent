@@ -3088,6 +3088,12 @@ impl AcpPool {
     pub async fn evict(&self, session_id: &str) {
         self.cancel_pending_permissions(session_id).await;
         self.cancel_pending_elicitations(session_id).await;
+        // 辅助索引映射此前只增不删：真正删除的会话条目会永久滞留。这里随
+        // 回收一并移除是安全的——`is_acp_metadata` 在 list() 时会按持久化
+        // 元数据（agents 索引或 `* (ACP)` model 字符串）按需重建该条目，启动
+        // 时也会按会话元数据整体重建。存活的会话（升级重启、模型探针）下一轮 list()
+        // 即自愈；空闲回收走 `evict_if_idle`，不经过本路径、映射原样保留。
+        self.acp_metadata_backends.write().remove(session_id);
         if let Some(runtime) = self.sessions.lock().await.remove(session_id) {
             runtime.shutdown().await;
         }

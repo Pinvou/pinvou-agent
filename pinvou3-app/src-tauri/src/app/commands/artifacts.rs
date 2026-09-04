@@ -337,6 +337,11 @@ pub async fn read_artifact_image_b64(path: String) -> Result<String, String> {
     if !p.is_file() {
         return Err(format!("图片不存在: {path}"));
     }
+    // 先验大小再整读：超过上限的文件整读进内存纯属浪费，提前按同一错误
+    // 形态拒绝（与下方读后校验保持一致，防两查之间文件被写大的极端情况）。
+    if std::fs::metadata(&p).map(|meta| meta.len()).unwrap_or(0) > 25_000_000 {
+        return Err("图片过大(>25MB),请用外部打开".into());
+    }
     let bytes = std::fs::read(&p).map_err(|e| format!("读取失败: {e}"))?;
     if bytes.len() > 25_000_000 {
         return Err("图片过大(>25MB),请用外部打开".into());

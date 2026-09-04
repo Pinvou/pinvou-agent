@@ -15,16 +15,24 @@
 //! 不在 workspace/artifacts 子目录下的事件(如 `sessions/<id>.json` session 元数据本身)忽略。
 //!
 //! Debouncing：notify 后端(inotify)对单个文件写入可能 fire 多次事件
-//! (Create + 多次 Modify(Data) + 最后 Modify(Metadata))。watcher 端不 debounce,
-//! 由前端按 path 去重(trackArtifact 已经处理重复 path)。
+//! (Create + 多次 Modify(Data) + 最后 Modify(Metadata))。产物事件(artifact:disk)
+//! watcher 端不 debounce,由前端按 path 去重(trackArtifact 已经处理重复 path)。
+//! 例外：顶层 `sched-*.json` 在一次定时运行里随每条消息整体重写,成片事件只
+//! 应换来一次刷新,因此按 path 做 400ms 尾沿去抖(scheduled_task:run_updated
+//! 只驱动前端刷新,payload 的 event 字段无消费者,延迟发射不损语义)。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
+
+/// 顶层 `sched-*.json` 事件的尾沿去抖窗口：最后一次事件后静默满窗口才发射。
+const SCHED_DEBOUNCE: Duration = Duration::from_millis(400);
 
 /// 启动后台 watcher 线程。spawn 后 return,watcher 自己跑直到 app 退出。
 pub fn spawn(app: AppHandle, sessions_root: PathBuf) {
@@ -55,16 +63,55 @@ pub fn spawn(app: AppHandle, sessions_root: PathBuf) {
         }
         eprintln!("[file_watcher] watching {}", sessions_root.display());
 
-        for result in rx {
-            match result {
-                Ok(event) => handle_event(&app, &event, &sessions_root),
-                Err(e) => eprintln!("[file_watcher] event error: {e}"),
+        // sched-*.json 的待发射表：session_id -> (路径, 最后一次事件时刻)。
+        // 主循环在等下一条事件与等最早到期之间 recv_timeout，到期的先发射。
+        let mut pending_sched: HashMap<String, (PathBuf, Instant)> = HashMap::new();
+        loop {
+            let now = Instant::now();
+            let due: Vec<String> = pending_sched
+                .iter()
+                .filter(|(_, (_, at))| now.duration_since(*at) >= SCHED_DEBOUNCE)
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in due {
+                if let Some((path, _)) = pending_sched.remove(&id) {
+                    emit_scheduled_run_updated(&app, &id, path.exists());
+                }
+            }
+            let deadline = pending_sched
+                .values()
+                .map(|(_, at)| *at + SCHED_DEBOUNCE)
+                .min();
+            let event = match deadline {
+                Some(deadline) => {
+                    match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                        Ok(result) => Some(result),
+                        Err(mpsc::RecvTimeoutError::Timeout) => None,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+                None => match rx.recv() {
+                    Ok(result) => Some(result),
+                    Err(_) => break,
+                },
+            };
+            match event {
+                Some(Ok(event)) => {
+                    handle_event(&app, &event, &sessions_root, &mut pending_sched);
+                }
+                Some(Err(e)) => eprintln!("[file_watcher] event error: {e}"),
+                None => continue,
             }
         }
     });
 }
 
-fn handle_event(app: &AppHandle, ev: &Event, root: &Path) {
+fn handle_event(
+    app: &AppHandle,
+    ev: &Event,
+    root: &Path,
+    pending_sched: &mut HashMap<String, (PathBuf, Instant)>,
+) {
     // 只处理这几类事件:
     // - Create        → 新文件
     // - Modify(Data)  → 文件写入
@@ -79,16 +126,9 @@ fn handle_event(app: &AppHandle, ev: &Event, root: &Path) {
     }
     for path in &ev.paths {
         if let Some(session_id) = scheduled_session_id(path, root) {
-            let payload = json!({
-                "sessionId": session_id,
-                "event": if path.exists() { "upsert" } else { "removed" },
-            });
-            let _ = app.emit("scheduled_task:run_updated", payload.clone());
-            crate::platform::app_events::forward_app_event(
-                app,
-                "scheduled_task:run_updated",
-                payload,
-            );
+            // 只登记、不立即发射：由主循环尾沿去抖后统一发出；event 语义
+            // （upsert/removed）延迟到发射时刻按 path 存在性现判。
+            pending_sched.insert(session_id, (path.clone(), Instant::now()));
             continue;
         }
         let Some((session_id, rel)) = parse_session_relative(path, root) else {
@@ -138,6 +178,17 @@ fn handle_event(app: &AppHandle, ev: &Event, root: &Path) {
     }
 }
 
+/// 发射一次定时运行刷新事件。`exists` 在发射时刻按 path 现判，保留原有
+/// upsert/removed 语义（当前前端两个监听方都只据此触发刷新、不读 event）。
+fn emit_scheduled_run_updated(app: &AppHandle, session_id: &str, exists: bool) {
+    let payload = json!({
+        "sessionId": session_id,
+        "event": if exists { "upsert" } else { "removed" },
+    });
+    let _ = app.emit("scheduled_task:run_updated", payload.clone());
+    crate::platform::app_events::forward_app_event(app, "scheduled_task:run_updated", payload);
+}
+
 /// Match only the top-level persisted JSON for a scheduled conversation.
 /// Sidecars and workspace files are deliberately excluded.
 fn scheduled_session_id(path: &Path, root: &Path) -> Option<String> {
@@ -170,6 +221,11 @@ fn should_skip(basename: &str) -> bool {
         return true;
     }
     if basename.ends_with(".tmp") || basename.ends_with(".bak") {
+        return true;
+    }
+    // 工作流内部审计流水（assistant/audit.rs，逐条 TokenUsage 追加），纯基础
+    // 设施、前端零消费；不跳过会随每次子代理事件刷一遍产物面板。
+    if basename == "workflow_audit.jsonl" {
         return true;
     }
     false
@@ -217,6 +273,7 @@ mod tests {
         assert!(should_skip(".hidden")); // 通用 dot file
         assert!(should_skip(".bashrc.swp")); // vim swap
         assert!(should_skip("draft.tmp"));
+        assert!(should_skip("workflow_audit.jsonl")); // 工作流内部审计流水
         assert!(!should_skip("report.docx"));
         assert!(!should_skip("人类文档.docx")); // 正常中文文件名
         assert!(!should_skip("plan.md"));
