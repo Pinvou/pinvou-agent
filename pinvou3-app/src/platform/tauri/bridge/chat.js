@@ -1158,8 +1158,8 @@
   }
 
   // ── Pinvou v4 召唤式检阅:Boss 主动呼叫,审当前 session 前面的工作 ──
-  // 设计 docs/品悟v4-常驻检阅助手设计.md。纯召唤、不替 Boss 决策。
-  // 审查卡进 chatItems(当前会话可见);跨会话持久化(进 messages/独立存储)是 §6 后续增强。
+  // 纯召唤、不替 Boss 决策。
+  // 审查卡进 chatItems(当前会话可见);跨会话持久化(进 messages/独立存储)是后续增强。
   async function summonPinvou(focus, mode) {
     if (!state.activeSessionId) { addSystemItem(bt("summonNeedsSession")); return; }
     if (state.pinvouSummoning) return;
@@ -1227,30 +1227,30 @@
     const ask = actions.filter(function (a) { return a.t === "ask"; });
     const parts = [];
     if (fix.length) {
-      parts.push("请按下面的检阅意见，**只定向修改对应段落，不要全文重写**：");
+      parts.push(bt("reviewFixHeader"));
       fix.forEach(function (a) { parts.push("- " + a.text); });
     }
     if (verify.length) {
       if (parts.length) parts.push("");
-      parts.push("以下几条涉及外部事实，**先查证再改、标明依据，别凭记忆直接改**：");
+      parts.push(bt("reviewVerifyHeader"));
       verify.forEach(function (a) { parts.push("- " + a.text); });
     }
     if (adopt.length) {
       if (parts.length) parts.push("");
-      parts.push("以下事项我已拍板，按此更新产物：");
+      parts.push(bt("reviewAdoptHeader"));
       adopt.forEach(function (a) { parts.push("- " + (a.topic ? a.topic + "：" : "") + a.pick); });
     }
     if (ask.length) {
       if (parts.length) parts.push("");
-      parts.push("以下待定项请用 request_user_input 正式问我，别自己猜：");
+      parts.push(bt("reviewAskHeader"));
       ask.forEach(function (a) { parts.push("- " + a.topic); });
     }
     const fill = actions.filter(function (a) { return a.t === "fill"; });
     if (fill.length) {
       if (parts.length) parts.push("");
-      parts.push("以下维度产物还缺，请补充进去（保留其余、只增不改）：");
+      parts.push(bt("reviewFillHeader"));
       fill.forEach(function (a) { parts.push("- " + a.dimension + (a.suggestion ? "：" + a.suggestion : "")); });
-      parts.push("（涉及外部事实的，先查证再写、标依据，别凭记忆编。）");
+      parts.push(bt("reviewFillFooter"));
     }
     // 已切走则放弃发指令（修订指令属于检阅会话，漂进别的会话会误导其上下文）。
     if (parts.length && reviewSid && state.activeSessionId === reviewSid) sendMessage(parts.join("\n"), { pinvouTransfer: isWu ? "悟" : "品" });

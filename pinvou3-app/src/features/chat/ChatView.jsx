@@ -441,7 +441,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       );
     };
 
-    const PersonalWorkbenchTemplatePicker = ({ selectedIndex, onSelect, templates }) => {
+    const PersonalWorkbenchTemplatePicker = ({ selectedIndex, onSelect, templates, copy }) => {
       return (
         <div
           data-testid="personal-workbench-template-picker"
@@ -450,9 +450,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           <div className="flex max-w-full items-center gap-2 overflow-x-auto px-1 py-1">
             {templates.map((template, index) => {
               const selected = selectedIndex === index;
+              const label = copy?.workbenchTemplates?.[template.id] || template.title;
               return (
                 <button
-                  key={template.title}
+                  key={template.id}
                   type="button"
                   data-testid={`personal-workbench-template-${index}`}
                   aria-pressed={selected}
@@ -463,7 +464,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                       : 'bg-[#EEF0F2] text-[#3C4043] hover:bg-[#E3E5E8] hover:text-[#1D1D1F] dark:bg-[#2A2B2D] dark:text-[#C7C7CC] dark:hover:bg-[#333537] dark:hover:text-white'
                   }`}
                 >
-                  {template.title}
+                  {label}
                 </button>
               );
             })}
@@ -2498,6 +2499,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   selectedIndex={PERSONAL_WORKBENCH_TEMPLATES.findIndex(template => template.id === personalWorkbenchTemplateId)}
                   onSelect={handlePersonalWorkbenchTemplateSelect}
                   templates={PERSONAL_WORKBENCH_TEMPLATES}
+                  copy={t.uiChatScenes}
                 />
               )}
               {pinvouMode === 'design' && !conversationStarted && (

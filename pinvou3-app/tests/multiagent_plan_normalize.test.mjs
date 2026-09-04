@@ -643,7 +643,7 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   );
   assert.match(i18nSource, /关闭会回收引擎，并取消仍在运行的子智能体/, '中文开关文案必须如实说明关闭会取消');
   assert.match(i18nSource, /turning it off recycles the engine and cancels any subagents still running/, '英文开关文案必须如实说明关闭会取消');
-  assert.match(i18nSource, /オフにするとエンジンを回収し、実行中のサブエージェントをキャンセルする/, '日文开关文案必须如实说明关闭会取消');
+  assert.match(i18nSource, /オフにするとエンジンを解放し、実行中のサブエージェントをキャンセルします/, '日文开关文案必须如实说明关闭会取消（回収は中国語「回收」の直訳で不自然なため、解放で表現）');
   assert.doesNotMatch(
     i18nSource,
     /关闭不影响在跑的子智能体|turning it off never interrupts running subagents|オフにしても実行中のサブエージェントは中断されない/,
