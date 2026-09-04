@@ -66,7 +66,9 @@ function injectSource() {
         return Promise.resolve("我想创建一个 Pinvou 定时任务。请通过提问帮我确定方案。信息完整后输出 scheduled-task-draft 参数，系统会立即创建任务，不需要第二次确认。");
       }
       switch (cmd) {
-        case 'get_settings': return Promise.resolve({ theme: 'liquid-light', language: 'zh-Hans' });
+        // The memory-organize template card only renders when memory_enabled
+        // is on (zh-Hans only); the assertions expect all four template cards.
+        case 'get_settings': return Promise.resolve({ theme: 'liquid-light', language: 'zh-Hans', memory_enabled: true });
         case 'get_effective_model_config': return Promise.resolve({ model: 'Test', base_url: 'http://127.0.0.1:8000/v1', api_key_set: false });
         case 'list_models': return Promise.resolve({
           models: [

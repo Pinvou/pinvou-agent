@@ -517,7 +517,10 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
     };
 
     const ScheduledTasksView = ({ theme, t, onOpenChat, onGotoModelSettings }) => {
-      const bs = useBridgeState(['scheduled', 'models']);
+      // The settings slice is required here: the memory-organize template card
+      // is gated on bs.settings.memory_enabled; without the domain the field
+      // is always undefined and the card can never render.
+      const bs = useBridgeState(['scheduled', 'models', 'settings']);
       const appState = bs || {};
       const realTasks = appState.scheduledTasks || [];
       const rawSelectedDetail = appState.scheduledTaskDetail || null;
