@@ -100,7 +100,12 @@ const expectedProtocolHashes = {
   // (chat-events.js). Recomputed for explicit artifact presentation: a
   // successful present_artifact tool_end now emits a session-scoped request
   // that opens the preview even when the existing card is updated in place.
-  chat: 'e5a97c56781d34f0ea8d7ef17825fa45295abb10ce2a82cada6eadad5b2bf2ab',
+  // Recomputed for the streaming markdown render throttle
+  // (perf/memory-footprint-optimization): the chat:delta / chat:tool_start /
+  // chat:done listener bodies gained the trailing-edge render flush/schedule
+  // plus the unpaired-toolMeta terminal sweep — no new invoke or listen
+  // entries, only body-internal edits, so this is a capture-text refresh.
+  chat: '01cb02ba1ef7ad0cce8c83b1cdb52e424a034912b6bc0ad706f3e5b4884b9856',
   dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
   interaction: '3f275b9c4fc77ebf42a56df1c84d638ca5f1f8a3b80612efebeddf1a39f14efd',
   knowledge: '9105a42c6b69f04d0bc28b6a72e0746648110a44823891ded3261cdcbc99766b',

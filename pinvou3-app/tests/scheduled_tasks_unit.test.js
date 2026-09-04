@@ -150,7 +150,7 @@ assert.ok(
   'ordinary session navigation must hide the native browser before publishing the chat route and loading the remote session'
 );
 assert.ok(
-  /async function navigateFromScheduledRun\(nextView[\s\S]{0,520}runBrowserUiTransition[\s\S]{0,260}await bridge\.scheduled\.exitScheduledRunChat\(\)[\s\S]{0,160}!exited \|\| !isCurrent\(\)[\s\S]{0,200}setCurrentView\(nextView\)[\s\S]{0,360}hideMode: bs && bs\.scheduledRunContext[\s\S]{0,80}'workspace'/.test(indexHtml),
+  /const navigateFromScheduledRun = useCallback\(async \(nextView[\s\S]{0,520}runBrowserUiTransition[\s\S]{0,260}await bridge\.scheduled\.exitScheduledRunChat\(\)[\s\S]{0,160}!exited \|\| !isCurrent\(\)[\s\S]{0,260}setCurrentView\(nextView\)[\s\S]{0,360}hideMode: bs && bs\.scheduledRunContext[\s\S]{0,80}'workspace'/.test(indexHtml),
   'leaving a scheduled run must hide the native browser before restoring its return session and publishing the next route'
 );
 assert.ok(
@@ -417,7 +417,7 @@ assert.ok(
     !/data-testid="scheduled-task-action-menu"/.test(indexHtml) &&
     !/data-testid="scheduled-detail-actions"/.test(indexHtml) &&
     /scheduledRunHistory\.map/.test(indexHtml) &&
-    /<RecentItem[\s\S]{0,900}chat=\{chat\}[\s\S]{0,900}handleOpenScheduledRunShortcut\(chat\.scheduledRun\)/.test(indexHtml) &&
+    /<RecentItem[\s\S]{0,900}chat=\{chat\}[\s\S]{0,900}handleOpenScheduledRunShortcut\(c\.scheduledRun\)/.test(indexHtml) &&
     /onContextMenu=\{openContextMenu\}/.test(indexHtml) &&
     /onTogglePinned && onTogglePinned\(chat\.id, !chat\.pinned\)/.test(indexHtml) &&
     /setConfirming\(true\)/.test(indexHtml) &&
@@ -1293,11 +1293,15 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
   }
   await tick();
 
-  assert.strictEqual(updates, 1001, "stream boundaries and deltas should remain immediately observable");
-  assert.strictEqual(secondSubscriberUpdates, 1001,
+  // 节流契约（perf/memory-footprint-optimization）：每个 delta 仍立即 notify 一次
+  // （下限 1001 守住「流式边界与 delta 立即可观察」的原始回归方向）；在此之上，
+  // chat:delta 的流式 markdown 尾沿节流定时器（~180ms）可能在长流期间插入最多
+  // 数次额外的渲染快照（≤ 时长/180ms），属预期而非合并丢失。
+  assert.ok(updates >= 1001, "stream boundaries and deltas should remain immediately observable");
+  assert.ok(secondSubscriberUpdates >= 1001,
     "all subscribers should receive one immediate update per stream boundary and delta");
-  assert.strictEqual(snapshots.length, 1001, "the regression must retain every persistent snapshot");
-  assert.strictEqual(secondSubscriberSnapshots.length, 1001,
+  assert.ok(snapshots.length >= 1001, "the regression must retain every persistent snapshot");
+  assert.ok(secondSubscriberSnapshots.length >= 1001,
     "the second subscriber must retain every same-round snapshot for identity checks");
   assert.strictEqual(
     harness.getStructuredCloneCalls(),

@@ -215,6 +215,31 @@
       context.pendingAssistantText = "";
       context.pendingAssistantBlocks = [];
     }
+    // chat:done 终态清扫：删除没有配对 tool_result 的 toolMeta 条目。forwarder
+    // 对同一 session 顺序投递邮箱事件，done 之后本 turn 不会再有 chat:tool_end
+    // （下一轮工具用全新 id），interrupt/error 轮的在途条目（args 可达数十 KB）
+    // 永远等不到消费者，只会随会话缓冲常驻。必须在 preserveInterruptedAssistant
+    // Presentation / flushAssistantMessageToHistory 之后调用：那时 pendingAssistant
+    // Blocks 已清空或全部入史，state.messages 即最终口径，按 tool_result 配对判定。
+    function sweepUnpairedToolMeta() {
+      const meta = context.toolMeta;
+      const ids = Object.keys(meta || {});
+      if (!ids.length) return;
+      const paired = Object.create(null);
+      for (let i = 0; i < state.messages.length; i++) {
+        const blocks = state.messages[i] && state.messages[i].content;
+        if (!Array.isArray(blocks)) continue;
+        for (let j = 0; j < blocks.length; j++) {
+          const block = blocks[j];
+          if (block && block.type === "tool_result" && block.tool_use_id) {
+            paired[block.tool_use_id] = true;
+          }
+        }
+      }
+      ids.forEach(function (id) {
+        if (!paired[id]) delete meta[id];
+      });
+    }
     const markTurnDirtyArtifact = context.markTurnDirtyArtifact;
     const trackArtifact = context.trackArtifact;
     const untrackArtifact = context.untrackArtifact;
@@ -318,6 +343,7 @@
       }
       state.busy = true;
       if (!state.thinking.active) startThinking();
+      flushPendingStreamRender(); // 新 turn 复位流状态前，旧流气泡先出最终 html
       context.currentStreamText = "";
       context.currentStreamId = 0;
     });
@@ -545,7 +571,70 @@
     }
   }
 
+  // ── 流式 markdown 渲染节流 ────────────────────────────────────────
+  // Rust 每个引擎 delta 都发一个 chat:delta（forwarder 无合帧），此前每个 delta
+  // 都对【全部累计文本】做一次 marked+DOMPurify+hljs 全量重解析 → 长回复 O(n²)。
+  // 流式期间改为 ~180ms 尾沿重渲一次（尾沿定时器保证最后一个 delta 之后仍会渲染，
+  // 不丢尾帧）；首个 delta（气泡新建或 html 尚空）仍立即渲染。
+  // 不变量：所有终结/迁移该流式气泡的路径（chat:done/error/interrupt、
+  // chat:tool_start、转 reasoning、新 user message 复位、会话缓冲清除）必须先
+  // flushPendingStreamRender 同步出最终 html —— 否则尾沿定时器会在气泡终结后才
+  // 触发，用过期快照覆盖权威文本。定时器按 session 隔离：active 与后台会话可能
+  // 同时流式，共用一个定时器会渲染错工作集。
+  const STREAM_RENDER_THROTTLE_MS = 180;
+  const streamRenderTimers = Object.create(null); // sid → 尾沿重渲定时器
+
+  function renderStreamItemHtml() {
+    const item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
+    if (!item) return false;
+    item.text = context.currentStreamText;
+    item.html = renderMarkdown(context.currentStreamText);
+    return true;
+  }
+
+  // 只允许在 onSessionEvent/runSyncOnSession 的同步体内调用：此时
+  // state.activeSessionId 已被路由为事件所属 session，才能作为定时器表 key
+  // 与工作集一一对应。
+  function flushPendingStreamRender() {
+    const sid = state.activeSessionId;
+    if (sid && streamRenderTimers[sid]) {
+      clearTimeout(streamRenderTimers[sid]);
+      delete streamRenderTimers[sid];
+    }
+    // 流文本为空时不出渲染：保住「空流泡（optimistic 空 html）被终结路径移除」
+    // 的既有行为，也不给空气泡伪造 html。
+    if (!context.currentStreamId || !context.currentStreamText) return false;
+    return renderStreamItemHtml();
+  }
+
+  function scheduleStreamRender(sid) {
+    // 无 sid 或宿主没有定时器（部分测试沙箱）时退回逐 delta 渲染的旧行为。
+    if (!sid || typeof setTimeout !== "function") {
+      if (context.currentStreamId && context.currentStreamText) renderStreamItemHtml();
+      return;
+    }
+    if (streamRenderTimers[sid]) return; // 已有待渲尾沿：本次 delta 只攒文本
+    streamRenderTimers[sid] = setTimeout(function () {
+      delete streamRenderTimers[sid];
+      let rendered = false;
+      // 定时器在事件循环空闲点触发，必须重新进入该 session 的工作集再渲染；
+      // 流已终结（currentStreamId 复位）说明终态路径已同步 flush，直接跳过。
+      runSyncOnSession(sid, function () {
+        if (!context.currentStreamId || !context.currentStreamText) return;
+        rendered = renderStreamItemHtml();
+      });
+      if (rendered) notify(); // 后台会话在 runSyncOnSession 内被 suppress，补一次
+    }, STREAM_RENDER_THROTTLE_MS);
+  }
+
+  function cancelStreamRenderTimers(purgedSid) {
+    if (!purgedSid || !streamRenderTimers[purgedSid]) return;
+    clearTimeout(streamRenderTimers[purgedSid]);
+    delete streamRenderTimers[purgedSid];
+  }
+
   function finalizeAssistantStreamBeforeReasoning() {
+    flushPendingStreamRender();
     flushPendingTextBlock();
     const item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
     if (item) {
@@ -623,7 +712,8 @@
     const item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
     if (item) {
       item.text = context.currentStreamText;
-      item.html = renderMarkdown(context.currentStreamText);
+      // 气泡首个 delta（html 尚空）立即渲染；后续只攒文本，html 交给节流尾沿
+      if (!item.html) item.html = renderMarkdown(context.currentStreamText);
       item.streaming = true;
     } else {
       // New bubble needed (after tool card)
@@ -637,6 +727,7 @@
         streaming: true,
       });
     }
+    scheduleStreamRender(e.payload && e.payload.session_id || state.activeSessionId);
     notify();
   }); });
 
@@ -662,6 +753,7 @@
     context.pendingAssistantBlocks.push({ type: "tool_use", id: p.id, name: p.name, input: p.args || {} });
 
     // Finalize current streaming bubble
+    flushPendingStreamRender(); // 工具卡接管前同步出最终 html，并取消待渲尾沿
     const streamItem = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
     if (streamItem) {
       streamItem.streaming = false;
@@ -947,10 +1039,13 @@
         }
       }
       window.PinvouBridgeMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
+      // 终态先同步出流式气泡的最终 html（含 interrupted 保留展示），并取消待渲尾沿
+      flushPendingStreamRender();
       const terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
       const interrupted = ["interrupted", "cancelled", "canceled"].includes(terminalStatus);
       if (interrupted) preserveInterruptedAssistantPresentation();
       else flushAssistantMessageToHistory();
+      sweepUnpairedToolMeta();
       // Refresh artifacts written in this turn in place when already presented.
       // Add only the first card for artifacts the model did not present, and
       // skip artifacts already presented in this turn or changed repeatedly.
@@ -1354,6 +1449,8 @@
       latestTimelineCompletion,
       authoritativeTimelineMissesKnownCompletion,
       refreshAuthoritativeTurnTimeline,
+      // 会话缓冲清除（evict/delete）时由 bridge.js 调用，取消该 sid 的待渲尾沿
+      cancelStreamRenderTimers,
     };
   };
 })();

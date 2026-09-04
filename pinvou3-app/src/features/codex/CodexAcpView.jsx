@@ -81,6 +81,7 @@ import {
   ConversationActivityIndicator,
   ConversationMarkdown,
   ConversationTurn,
+  useConversationSecondClock,
   WorkspaceResourceButtons,
 } from '../conversation/ConversationTimeline.jsx';
 import {
@@ -368,6 +369,23 @@ function elapsedMs(start, end, now) {
   const to = Date.parse(end || '') || now;
   if (!Number.isFinite(from) || !Number.isFinite(to)) return 0;
   return Math.max(0, to - from);
+}
+
+// 秒级时钟曾挂在 CodexAcpView 顶层 state(busy 时每秒重渲整个 4000+ 行视图),
+// 现按 ChatView 的 LiveConversationActivityIndicator 同款模式下沉:只有真正在显示
+// "已耗时" 的运行中指示器自己持有时钟,每秒只重渲这一小块子树。
+function LiveConversationActivityIndicator({ turn, onRequestAttention, className, copy }) {
+  const running = !!turn && turn.status === 'running';
+  const now = useConversationSecondClock(running);
+  return (
+    <ConversationActivityIndicator
+      turn={turn}
+      now={now}
+      onRequestAttention={onRequestAttention}
+      className={className}
+      copy={copy}
+    />
+  );
 }
 
 function terminalStatus(status, exitCode = null) {
@@ -954,7 +972,12 @@ function Turn({
   const waitingPermission = turn.permissions.some(permission => !permission.resolved);
   const waitingInput = turn.elicitations.some(elicitation => !elicitation.resolved);
   const running = turn.status === 'running';
-  const duration = copy.elapsed(elapsedMs(turn.startedAt, turn.completedAt, now));
+  // The per-second tick is scoped to this turn subtree (same pattern as ConversationTurnView):
+  // the parent may still pass a ticking `now` (`now || tickNow` precedence); when omitted, an
+  // internal clock drives elapsed time, re-rendering only this one turn per second.
+  const tickNow = useConversationSecondClock(running);
+  const effectiveNow = now || tickNow;
+  const duration = copy.elapsed(elapsedMs(turn.startedAt, turn.completedAt, effectiveNow));
   const assistantAvailable = assistantResponseAvailable(turn);
   return (
     <section className="space-y-4">
@@ -988,7 +1011,7 @@ function Turn({
             </div>
           )}
           {turn.presentation.map((item, index) => (
-            <TurnItem key={item.id || `${item.type}-${index}`} item={item} now={now}
+            <TurnItem key={item.id || `${item.type}-${index}`} item={item} now={effectiveNow}
               agentName={agentName} copy={copy} cv={cv}
               pendingByTool={pendingByTool} pendingByElicitation={pendingByElicitation}
               onRespond={onRespond} onRespondElicitation={onRespondElicitation}
@@ -1048,7 +1071,9 @@ export function CodexAcpView({
   const [workspaceDockActivation, setWorkspaceDockActivation] = useState(0);
   const [subagentPanel, setSubagentPanel] = useState(null);
   const [workspaceChangeCount, setWorkspaceChangeCount] = useState(0);
-  const [now, setNow] = useState(Date.now());
+  // 秒级 now 已下沉:ConversationTurn 内置 useConversationSecondClock、legacy Turn 同款
+  // 内置时钟、composer 指示器经 LiveConversationActivityIndicator 各自持有 tick,
+  // busy 时不再整视图每秒重渲。
   const useUnifiedConversationUi = unifiedConversationUiEnabled();
   const [localConfigApplying, setConfigApplying] = useState('');
   const acpConfigOperationTrackerRef = useRef(null);
@@ -2619,6 +2644,11 @@ export function CodexAcpView({
 
   // 原生（品悟）会话的 engine 事件：按 session 推进对应 lane，仅当前会话 bump 渲染；
   // turn 边界顺手刷新会话列表（标题/时间戳），与 acp:event 的 turn_completed 处理对齐。
+  // 注意:nativeLaneTick 是全视图共用的版本号——lane 是可变 ref 对象,除时间线投影外,
+  // 记忆弹层/底栏控件(直接读 lane 字段)与自动滚动 effect(2786 附近)都依赖此 bump。
+  // 把"每个 token 全视图重渲"收敛到单 lane 订阅组件,需要把 visibleTurns 及其全部
+  // 回调(respond/renderNativeItem/pendingByTool/rewind 系列等)沉到子组件,契约面太宽,
+  // 风险不匹配本项;时间线本身已有 ConversationTurn 深比较兜底,未变 turn 不重渲。
   useEffect(() => {
     let disposed = false;
     let unlisteners = [];
@@ -2737,13 +2767,8 @@ export function CodexAcpView({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- poll only on the login-in-progress edge; refreshStatus reference changes must not restart the poll chain
   }, [activeAgentId, activeStatus?.login_in_progress]);
 
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- set the elapsed-time baseline immediately, then advance it every second via timer
-    setNow(Date.now());
-    if (!busy) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [busy]);
+  // 秒级时钟下沉至各显示子树(见 LiveConversationActivityIndicator / Turn /
+  // ConversationTurnView),顶层不再持有 1Hz tick。
 
   // 切会话/回草稿时关掉记忆弹层（徽标内容按新会话 lane 自动切换）。
   useEffect(() => {
@@ -3626,7 +3651,6 @@ export function CodexAcpView({
                     )}
                     <ConversationTurn
                       turn={turn}
-                      now={now}
                       copy={t.uiConversation}
                       pendingByTool={pendingByTool}
                       onRespond={respond}
@@ -3672,7 +3696,7 @@ export function CodexAcpView({
                   </Fragment>
                 )
               : (
-                  <Turn key={turn.id} turn={turn} now={now}
+                  <Turn key={turn.id} turn={turn}
                     agentId={activeAgentId} agentName={activeAgentName}
                     copy={t.uiConversation}
                     cv={t.uiCodexView}
@@ -3742,9 +3766,8 @@ export function CodexAcpView({
             )}
             {error && <div className="mb-2 px-3 text-[11px] text-red-500 break-words">{error}</div>}
             <div className="relative rounded-[24px] border border-black/[0.08] dark:border-white/10 bg-white/85 dark:bg-[#1B1C1E]/90 backdrop-blur-xl shadow-lg px-4 pt-3 pb-2.5 focus-within:border-blue-400/50">
-              <ConversationActivityIndicator
+              <LiveConversationActivityIndicator
                 turn={activeConversationTurn}
-                now={now}
                 onRequestAttention={scrollConversationToBottom}
                 className="mb-0.5"
                 copy={t.uiConversation}

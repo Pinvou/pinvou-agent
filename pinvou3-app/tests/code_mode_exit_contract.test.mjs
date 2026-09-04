@@ -47,7 +47,7 @@ assertClearBefore(
 // fails the user is still on the active code session, and an entry-side clear
 // would leave it behind the standard sidebar.
 {
-  const head = windowFrom('async function handleOpenScheduledRunShortcut(run)', 700);
+  const head = windowFrom('const handleOpenScheduledRunShortcut = useCallback(async (run) => {', 700);
   const fallbackAt = head.indexOf('if (!bridge.available || !bridge.scheduled.openScheduledRunChat)');
   assert.ok(fallbackAt > -1, 'handleOpenScheduledRunShortcut: fallback branch marker not found');
   assert.ok(
