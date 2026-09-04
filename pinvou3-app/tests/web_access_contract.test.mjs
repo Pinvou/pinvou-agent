@@ -176,6 +176,10 @@ for (const command of [
   'purge_recycled_plugin',
   'export_recycled_plugin',
   'export_installed_plugin',
+  // Workspace branch view/checkout run local git mutations (add -A / commit /
+  // stash / checkout): desktop-only, the web client rejects them explicitly.
+  'list_codex_workspace_branches',
+  'checkout_codex_workspace_branch',
 ]) {
   assert.equal(allowed.has(command), false, `${command} must remain desktop-only`);
 }
