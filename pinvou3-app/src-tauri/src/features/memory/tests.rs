@@ -2803,11 +2803,7 @@ async fn organize_memory_empty_model_response_fails_instead_of_no_change() {
     fs::create_dir_all(&preference_dir).unwrap();
     write_json_atomic(
         &preference_dir.join("pref_empty.json"),
-        &preference_fixture(
-            &"pref_empty".to_string(),
-            "answer_style",
-            "回答默认先给结论",
-        ),
+        &preference_fixture("pref_empty", "answer_style", "回答默认先给结论"),
     )
     .unwrap();
     let bridge = FakeOrganizeModel {
