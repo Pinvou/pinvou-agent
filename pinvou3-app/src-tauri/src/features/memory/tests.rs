@@ -1772,7 +1772,10 @@ fn memory_review_reasoning_controls_keep_kimi_gate_on_url_path() {
 
 use std::collections::BTreeMap;
 
-use super::llm_review::LLM_REVIEW_EXPLICIT_SIGNAL_PROMPT;
+use super::llm_review::{
+    PROFILE_AUTO_WRITE_THRESHOLD_RELAXED, TIMED_AUTO_THRESHOLD_RELAXED,
+    WORK_CONTEXT_AUTO_THRESHOLD_RELAXED, explicit_signal_prompt,
+};
 use super::organize::{
     LlmOrganizeAction, MEMORY_ORGANIZE_PROMPT, OrganizeSnapshot, load_organize_history,
     organize_memory_with_llm, validate_organize_action,
@@ -1818,10 +1821,24 @@ fn review_signal_detects_explicit_remember_phrases() {
 
 #[test]
 fn explicit_signal_prompt_is_appended_wording_contract() {
-    // explicit_user_signal 的硬约束措辞：不允许 skip，敏感边界保持。
-    assert!(LLM_REVIEW_EXPLICIT_SIGNAL_PROMPT.contains("explicit_user_signal"));
-    assert!(LLM_REVIEW_EXPLICIT_SIGNAL_PROMPT.contains("不要输出 skip"));
-    assert!(LLM_REVIEW_EXPLICIT_SIGNAL_PROMPT.contains("仍不得记录敏感信息"));
+    // explicit_user_signal 的硬约束措辞：不允许 skip，敏感边界保持，且复述放宽
+    // 后的置信度门槛（常量单一来源——代码侧放宽到多少，提示词就教多少）。
+    let prompt = explicit_signal_prompt();
+    assert!(prompt.contains("explicit_user_signal"));
+    assert!(prompt.contains("不要输出 skip"));
+    assert!(prompt.contains("仍不得记录敏感信息"));
+    let profile_gate = format!("confidence >= {PROFILE_AUTO_WRITE_THRESHOLD_RELAXED}");
+    let work_context_gate = format!("confidence >= {WORK_CONTEXT_AUTO_THRESHOLD_RELAXED}");
+    let timed_gate = format!("confidence >= {TIMED_AUTO_THRESHOLD_RELAXED}");
+    assert!(
+        prompt.contains(&profile_gate),
+        "missing relaxed profile gate {profile_gate}"
+    );
+    assert!(
+        prompt.contains(&work_context_gate),
+        "missing relaxed work_context gate"
+    );
+    assert!(prompt.contains(&timed_gate), "missing relaxed timed gate");
 }
 
 #[test]
@@ -1830,6 +1847,9 @@ fn organize_prompt_encodes_scope_rules() {
     assert!(MEMORY_ORGANIZE_PROMPT.contains("禁止输出 kind=profile"));
     assert!(MEMORY_ORGANIZE_PROMPT.contains("pending 只允许 delete"));
     assert!(MEMORY_ORGANIZE_PROMPT.contains("不要为了整理而整理"));
+    assert!(MEMORY_ORGANIZE_PROMPT.contains("不要试图改变条目的 topic"));
+    // schema 不再暴露 topic 字段：整理不允许迁移条目主题。
+    assert!(!MEMORY_ORGANIZE_PROMPT.contains("\"topic\""));
     assert!(MEMORY_ORGANIZE_PROMPT.contains("{\"actions\":[]}"));
 }
 
@@ -2193,6 +2213,68 @@ async fn organize_memory_merges_duplicates_and_deletes_stale_focus() {
     assert_eq!(history[0].finished_at, report.finished_at);
     assert_eq!(history[0].deleted["current_focus"], 1);
     assert_eq!(history[0].updated["preference"], 1);
+}
+
+#[tokio::test]
+async fn organize_update_ignores_model_topic_and_never_migrates_buckets() {
+    let _home = IsolatedPinvouHome::new("organize-update-topic-locked");
+    enable_memory_for_tests();
+    let preference_dir = paths::user_memory_preferences_dir();
+    fs::create_dir_all(&preference_dir).unwrap();
+    let id_answer = "pref_answer".to_string();
+    let id_workflow = "pref_workflow".to_string();
+    write_json_atomic(
+        &preference_dir.join(format!("{id_answer}.json")),
+        &preference_fixture(&id_answer, "answer_style", "回答保持简洁"),
+    )
+    .unwrap();
+    write_json_atomic(
+        &preference_dir.join(format!("{id_workflow}.json")),
+        &preference_fixture(
+            &id_workflow,
+            "workflow_preference",
+            "流程类任务先建清单再执行",
+        ),
+    )
+    .unwrap();
+
+    // 模型对 update 自拟未知 topic（"editor" 会被归一化折叠进 answer_style
+    // 默认桶）：整理必须忽略它，条目留在原桶，桶内无关条目不得被覆盖。
+    let actions = json!({
+        "actions": [
+            {
+                "op": "update",
+                "kind": "preference",
+                "ids": [id_workflow],
+                "topic": "editor",
+                "content": "流程类任务先建清单再执行，编辑器偏好分屏",
+                "reason": "补充编辑器偏好"
+            }
+        ]
+    });
+    let bridge = FakeOrganizeModel {
+        base_url: spawn_chat_completions_stub(actions.to_string()),
+    };
+
+    let report = organize_memory_with_llm(&bridge, None).await.unwrap();
+
+    assert_eq!(report.updated["preference"], 1);
+    let preferences = list_preferences().unwrap();
+    assert_eq!(
+        preferences.len(),
+        2,
+        "answer_style bucket item must survive"
+    );
+    let answer = preferences
+        .iter()
+        .find(|item| item.topic == "answer_style")
+        .unwrap();
+    assert_eq!(answer.text, "回答保持简洁");
+    let workflow = preferences
+        .iter()
+        .find(|item| item.topic == "workflow_preference")
+        .unwrap();
+    assert_eq!(workflow.text, "流程类任务先建清单再执行，编辑器偏好分屏");
 }
 
 #[tokio::test]

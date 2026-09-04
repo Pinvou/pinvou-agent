@@ -26,8 +26,7 @@ use super::llm_review::{
 };
 use super::types::{
     MemoryProfile, MemoryReviewModel, MemoryTextPatch, NeverMemoryItem, PendingMemoryItem,
-    PreferenceFile, TimedMemoryItem, WorkContextFile, normalize_preference_topic,
-    normalize_timed_memory_topic, normalize_work_context_topic,
+    PreferenceFile, TimedMemoryItem, WorkContextFile,
 };
 use super::util::{
     clean_candidate_sentence, clean_id, clean_text, looks_recent_work_status, looks_sensitive,
@@ -51,7 +50,6 @@ pub(super) const MEMORY_ORGANIZE_PROMPT: &str = r#"你是 pinvou 的后台记忆
       "op": "delete | update | merge",
       "kind": "preference | work_context | current_focus | recent_activity | pending",
       "ids": ["待操作条目的 id，必须来自输入"],
-      "topic": "可选：整理后的 topic",
       "content": "update / merge 必填：整理后的完整记忆内容；delete 可省略",
       "reason": "一句话说明"
     }
@@ -74,7 +72,7 @@ pub(super) const MEMORY_ORGANIZE_PROMPT: &str = r#"你是 pinvou 的后台记忆
 4. pending 只允许 delete（删除重复、过期或已被正式记忆覆盖的候选），不允许把 pending 升级为正式记忆，也不允许对它 update 或 merge。
 5. 禁止输出 kind=profile 的动作：用户身份字段不在整理范围。
 6. current_focus / recent_activity 的更新不修改 ttl_days，保持原有过期设置。
-7. ids 必须引用输入中存在的 id；merge 至少给 2 个 id（第一个是保留的主条目），update 恰好给 1 个 id。
+7. ids 必须引用输入中存在的 id；merge 至少给 2 个 id（第一个是保留的主条目），update 恰好给 1 个 id。不要试图改变条目的 topic：条目归属的主题保持不变，整理只合并、改写或删除内容。
 8. 没有可整理的内容时输出 {"actions":[]}。
 "#;
 
@@ -369,11 +367,12 @@ pub(super) struct LlmOrganizeAction {
     #[serde(default)]
     pub(super) ids: Vec<String>,
     #[serde(default)]
-    pub(super) topic: String,
-    #[serde(default)]
     pub(super) content: String,
     #[serde(default)]
     pub(super) reason: String,
+    // 说明：LLM 输出中的 "topic" 字段会被 serde 静默忽略——整理不允许迁移
+    // 条目主题（见 update_organize_item），避免模型自拟 topic 折叠进默认桶后
+    // 静默覆盖桶内无关条目。
 }
 
 /// 校验后待执行的动作：ids 已确认存在于快照，content 已清洗并通过质量过滤。
@@ -382,7 +381,6 @@ pub(super) struct OrganizeAction {
     op: String,
     kind: String,
     ids: Vec<String>,
-    topic: Option<String>,
     content: String,
 }
 
@@ -476,20 +474,14 @@ pub(super) fn validate_organize_action(
             ));
         }
     }
-    let raw_topic = clean_text(&raw.topic, 40);
-    let topic = (!raw_topic.is_empty()).then(|| match kind.as_str() {
-        "preference" => normalize_preference_topic(&raw_topic),
-        "work_context" => normalize_work_context_topic(&raw_topic),
-        "current_focus" | "recent_activity" => normalize_timed_memory_topic(&kind, &raw_topic),
-        // pending 仅 delete，topic 不会被使用。
-        _ => raw_topic,
-    });
+    // LLM 自拟的 topic 不参与应用：未知 topic 会被归一化折叠进默认桶
+    // （answer_style / task_pattern），io 层按 topic 派生目标 id 迁移条目，
+    // 会静默覆盖桶内无关条目且不计入报告。条目主题保持原样（见 prompt 规则 7）。
     let _reason = clean_text(&raw.reason, 120);
     Some(OrganizeAction {
         op,
         kind,
         ids,
-        topic,
         content,
     })
 }
@@ -529,8 +521,7 @@ fn apply_organize_actions(
             }
             "update" => {
                 let id = &action.ids[0];
-                match update_organize_item(&action.kind, id, action.topic.clone(), &action.content)
-                {
+                match update_organize_item(&action.kind, id, &action.content) {
                     Ok(true) => *updated.entry(action.kind.clone()).or_default() += 1,
                     Ok(false) => {
                         warnings.push(format!(
@@ -550,12 +541,7 @@ fn apply_organize_actions(
                     None => continue,
                 };
                 let mut keep_updated = false;
-                match update_organize_item(
-                    &action.kind,
-                    keep,
-                    action.topic.clone(),
-                    &action.content,
-                ) {
+                match update_organize_item(&action.kind, keep, &action.content) {
                     Ok(true) => {
                         keep_updated = true;
                         *updated.entry(action.kind.clone()).or_default() += 1;
@@ -612,15 +598,13 @@ fn delete_organize_item(kind: &str, id: &str) -> std::io::Result<bool> {
     }
 }
 
-fn update_organize_item(
-    kind: &str,
-    id: &str,
-    topic: Option<String>,
-    content: &str,
-) -> Result<bool> {
-    // ttl 不在整理范围内：current_focus / recent_activity 保持原 ttl。
+fn update_organize_item(kind: &str, id: &str, content: &str) -> Result<bool> {
+    // topic 一律保持原样（patch.topic = None）：io 层按 topic 派生目标 id 做
+    // 主题迁移，LLM 自拟 topic 会折叠进默认桶并静默覆盖桶内无关条目；merge
+    // 的语义是收敛重复项到保留条目所在的桶，同样不需要迁移。ttl 不在整理
+    // 范围内：current_focus / recent_activity 保持原 ttl。
     let patch = MemoryTextPatch {
-        topic,
+        topic: None,
         text: Some(content.to_string()),
         ttl_days: None,
     };

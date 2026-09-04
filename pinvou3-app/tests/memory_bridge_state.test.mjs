@@ -138,14 +138,15 @@ assert.equal(organizeResult, organizePayload, 'organizeMemory must resolve the o
 assert.deepEqual(invokeArgsByCommand.get('organize_memory'), ['organize_memory'], 'organize_memory must be invoked without args');
 assert.equal(state.memory.error, null, 'successful organize must clear the panel error');
 
-// 失败：写入带 bt 前缀的 memory.error（卡片既有错误行呈现）并继续抛出。
+// 失败：直接继续抛出，且不得写入 memory.error——那是加载失败专用通道，
+// 设置页横幅会把它渲染成通用的“加载失败”文案（错因误导）；整理失败的
+// 原因由调用方的 catch 就近透传。
 response = command => {
   if (command === 'organize_memory') throw new Error('organize memory: model unavailable');
   return overview();
 };
 await assert.rejects(api.organizeMemory(), /organize memory: model unavailable/, 'organize failures must propagate');
-assert.match(state.memory.error, /^memoryOrganizeFailed/, 'failure must surface through the memory.error channel');
-assert.match(state.memory.error, /organize memory: model unavailable/);
+assert.equal(state.memory.error, null, 'organize failure must not pollute the memory.error load-failure channel');
 
 // 整理历史：透传 get_memory_organize_history 的数组（最新在前）。
 const historyPayload = [{ finished_at: '2026-09-03T09:00:05Z' }, { finished_at: '2026-09-02T09:00:00Z' }];
