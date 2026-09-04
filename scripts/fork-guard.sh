@@ -6,8 +6,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-PUBLISHED_HEAD="f853f8f1566c57e6be40d5439a222a932aa79ef5"
-PUBLISHED_COMMITS=37
+EXPECTED_HEAD="5a5bf363ebeb720410f30e400c3de44abab71de6"
+EXPECTED_COMMITS=38
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -17,14 +17,12 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 r13 公开四主题基线拓扑 ──"
+bold "── 第 0 层：v0.9.5 r14 候选四主题基线拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
-if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
-  expected_commits="$PUBLISHED_COMMITS"
-  green "  ✓ CodeWhale gitlink 指向 r13 四主题公开基线 $PUBLISHED_HEAD"
+if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
+  green "  ✓ CodeWhale gitlink 指向登记的 r14 未发布候选 $EXPECTED_HEAD"
 else
-  expected_commits=""
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r13 公开 head $PUBLISHED_HEAD"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r14 候选 $EXPECTED_HEAD"
   fail=1
 fi
 
@@ -36,10 +34,10 @@ else
 fi
 
 commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev/null || true)"
-if [[ -n "$expected_commits" && "$commit_count" == "$expected_commits" ]]; then
-  green "  ✓ v0.9.5 之上 $expected_commits 个登记提交"
+if [[ "$commit_count" == "$EXPECTED_COMMITS" ]]; then
+  green "  ✓ v0.9.5 之上 $EXPECTED_COMMITS 个登记提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，登记拓扑应为 ${expected_commits:-37}"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，登记拓扑应为 $EXPECTED_COMMITS"
   fail=1
 fi
 
@@ -116,6 +114,10 @@ fingerprints=(
   "T2|全链失败建议配置 API 搜索后端      |CodeWhale/crates/tui/src/tools/web/backend.rs|configure an API-backed [search] provider"
   "T2|cancel 只杀本轮前台 shell          |CodeWhale/crates/tui/src/tools/shell.rs|fn kill_running_turn_foreground"
   "T2|前台范围 kill 不误杀后台回归        |CodeWhale/crates/tui/src/tools/shell/tests.rs|fn kill_running_turn_foreground_scopes_to_this_turns_unowned_foreground_shells"
+  "T2|Shell job 保留稳定来源身份            |CodeWhale/crates/tui/src/tools/shell.rs|pub origin_tool_call_id: Option<String>"
+  "T2|Engine 分发盖章来源工具调用         |CodeWhale/crates/tui/src/core/engine/turn_loop.rs|fn tool_context_for_call("
+  "T2|Shell 来源身份行为回归              |CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_background_shell_job_preserves_origin_identity"
+  "T2|Engine 来源身份行为回归             |CodeWhale/crates/tui/src/core/engine/turn_loop.rs|fn forkguard_tool_context_for_call_preserves_turn_and_sets_call_origin"
   "T3|ambient project authority 密封       |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_runtime_loader_ignores_ambient_project_authority"
   "T3|Permissions 100 KiB 窄例外回归      |CodeWhale/crates/tui/src/prompts.rs|fn forkguard_instruction_fragment_preserves_content_beyond_default_cap"
   "T3|disabled Skill 不可见且不可加载      |CodeWhale/crates/tui/src/skills/tests.rs|fn forkguard_disabled_skill_is_neither_rendered_nor_loadable"
@@ -160,6 +162,9 @@ fingerprints=(
   "APP|落盘兜底编辑截断与底座同口径        |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn forkguard_admitted_display_fallback_edit_cuts_before_trailing_tool_result"
   "APP|不支持的最新用户内容不可回退到旧轮  |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn forkguard_admitted_display_fallback_does_not_skip_unsupported_user_turn"
   "APP|拒绝编辑终态触发权威历史回滚        |pinvou3-app/src-tauri/src/features/assistant/engine.rs|\"operation_rejected\": operation_rejected"
+  "APP|Shell 快照按来源工具卡原位回写      |pinvou3-app/src/platform/tauri/bridge/terminal.js|it.toolId === job.origin_tool_call_id"
+  "APP|Shell 监控按来源区分同命令任务       |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|fn forkguard_shell_monitor_assigns_identical_commands_by_stable_origin"
+  "APP|历史 Shell 终态不追加到当前时间线   |pinvou3-app/tests/shell_task_projection.test.mjs|completed historical shell jobs are not inserted into the current timeline"
 )
 
 # r13 同时包含 r12 搜索边界与正式发布的 GAIA 评测隔离扩展。

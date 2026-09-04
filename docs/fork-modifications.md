@@ -4,25 +4,30 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-09-01 · v0.9.5 r13 基线，父仓 gitlink 由 PR #370 接入）
+## 0. 当前状态（2026-09-04 · v0.9.5 r14 候选，父仓 gitlink 待发布接入）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
 | 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，r13 head `f853f8f1`（r12 + #32 GAIA 评测隔离扩展） |
+| 未发布候选 | r14 candidate `5a5bf363`（Shell 任务稳定来源身份） |
 | 已合并修复 | 既有 `#9`、`#11`、`#12`、`#13`、`#15`、`#16`、`#17`、`#19`，以及 r11 的 `#18`、`#21`、`#22`、`#25`、`#26`、`#27`、`#29`、`#30`，r12 的 `#33`、`#35`，r13 的 `#32` 均已合并 |
-| 发布状态 | `pinvou3-clean` 与不可变 tag `pinvou-v0.9.5-r13` 均指向 `f853f8f1566c57e6be40d5439a222a932aa79ef5`；`r1` 至 `r13` 保持不可变；父仓 gitlink 由 PR #370 对齐 r13 |
+| 发布状态 | `pinvou3-clean` 与不可变 tag `pinvou-v0.9.5-r13` 均指向 `f853f8f1566c57e6be40d5439a222a932aa79ef5`；`r1` 至 `r13` 保持不可变；r14 候选正在审核且尚未打标签，父仓开发分支临时指向精确候选提交 |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
-| drift | r13 基线合计 `110 files, +10895/-1195`（净增 9700 行）；r12→r13 为 `6 files, +1088/-1` |
-| 守护 | r13 为 63 条 CodeWhale `forkguard_*` 行为测试（含 6 条 GAIA 评测隔离测试）+ 通用工具/路由兼容回归 + 父仓指纹/行为测试 |
-| 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配、拒绝编辑的终态/权威历史对账、压缩后用量即时刷新与持久化回填、严格直连模型大小写桥接回归、搜索源设置页引导文案，以及 operator-owned 未登记云端模型（自定义 openai-compatible 端点）的显式输出路由事实声明与官方端点 fail-closed 守护（承 PR #216） |
+| drift | r13 基线合计 `110 files, +10895/-1195`（净增 9700 行）；r12→r13 为 `6 files, +1088/-1`；r14 候选相对 r13 为 `7 files, +133/-7` |
+| 守护 | r13 为 63 条 CodeWhale `forkguard_*` 行为测试（含 6 条 GAIA 评测隔离测试）；r14 候选新增 2 条 Shell 来源身份行为测试（合计 65 条）及父仓时间线投影测试 |
+| 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配、拒绝编辑的终态/权威历史对账、压缩后用量即时刷新与持久化回填、严格直连模型大小写桥接回归、搜索源设置页引导文案、Shell 快照按来源工具卡回写与历史终态隔离，以及 operator-owned 未登记云端模型（自定义 openai-compatible 端点）的显式输出路由事实声明与官方端点 fail-closed 守护（承 PR #216） |
 
 ### r12 厂商原生搜索与免 key 兜底 Bing 化（已合入底座）
 
 - CodeWhale PR #33（六提交 rebase 后以 `4f612e548` 汇入）：新增 DeepSeek Responses、Model Studio Token Plan（Qwen）、Moonshot/Kimi（K2.6 内建 `$web_search`、K3 官方 Formula 协议、Kimi Code `/search`）、Z.AI/智谱（全球 `search-prime` / 中国 `search_std`）、Xiaomi MiMo 的厂商原生搜索适配。能力按"厂商+模型+官方端点+产品面"四重精确匹配 fail-closed，K3 Formula 独立 180 秒预算与 8 次调用上限；评审发现的端点匹配宽松（整 URL 小写、无限剥尾斜杠）由收官提交 `4f612e548` 引入 `is_exact_url_route` 收紧。指纹锚点：`documented_server_side_web_search_for_route`、`WEB_SEARCH_FORMULA_URI`。
 - CodeWhale PR #35（`9c5f4f19` 汇入）：API 后端（Tavily/Bocha/Metaso/Baidu/SearXNG/Volcengine/Sofya）失败后的免 key 链尾由 DuckDuckGo 换成 Bing（实测 DDG 在中国大陆 DNS 污染 + SNI 重置不可达，Bing 全球与国内端点均免 key 可达）；全链失败错误追加 API 后端配置建议；新增 `forkguard_api_provider_chain_tail_is_bing`（forkguard 总数 56→57）。
 - r12 父仓配套（PR #375）：gitlink → `9c5f4f19`、设置页搜索源引导文案（i18n 三语）、`prefs/search.rs` 注释勘误与 `bridge.rs` 注入点注释/测试 docstring 同步勘误（底座默认仍为 DuckDuckGo，应用侧默认 Bing 由 bridge 构造 `EngineConfig` 时显式注入）。
+
+### r14 Shell 任务来源身份候选（未发布）
+
+- Shell job snapshot/completion event 增加创建它的 `origin_tool_call_id` 与 `origin_turn_id`；Engine 在实际分发前按工具调用盖章。应用桥优先回写来源卡；压缩或重载后来源卡缺失时，仍为运行中任务补可见状态卡，但不把已识别的历史终态根任务追加到当前时间线尾部。旧运行时保留安全的兼容回退。
 
 ### r11 Provider、MCP、steer 与平台边界（已发布）
 
@@ -137,8 +142,8 @@
 
 ### T2：工具兼容与命令执行安全
 
-- **commits**：`595adce47e2d1bcf895d7bfd6426c074eb969324`、`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`（`#12`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`#13`）、`d127aed113529dc93754d044b9f352e9746f6b83`（`#15`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`#16` 的 Shell 取消边界）、`44730dfe596b70f86ae2f928959877a3e3f494e4`（`#27`）、`665b46cd9e67326459223aa662931bd36d726004`（`#29`）、`04e109af4b4786a0d49fbbeefdd77af15a9f495e`（`#22`）、`4831c3797b76485a912b056c76a4cff22f0a2863`（`#25`）、`e68a185c2ba07f327bd8b63bbfea6a70a96f33ea`（`#26`）、`ecfd68acc056b95b06d98312753a712e4c0755db`、`603eeadcdab65d71d62a5ac32b6700207433fe5c`、`eb25a255a92f7385a3fde74f1f44626cdd068125`、`8c243e7ea7094fff189ab12582aea0460b655d06`、`8111f8150bc6b103da685f6abc3f26143b3bb207`、`4f612e548090616f8206154e37c9895404a8998b`（以上六项为 `#33` 厂商原生搜索）、`9c5f4f19b0acbc960889778a5873c7fb038b1378`（`#35` 免 key 链尾 Bing 化）、`f853f8f1566c57e6be40d5439a222a932aa79ef5`（`#32` GAIA 评测隔离扩展）。
-- **核心文件**：`core/engine.rs`、`core/engine/tool_setup.rs`、`core/ops.rs`、`tools/file.rs`、`command_safety.rs`、`tools/shell.rs`、`docs/TOOL_SURFACE.md`。
+- **commits**：`595adce47e2d1bcf895d7bfd6426c074eb969324`、`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`（`#12`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`#13`）、`d127aed113529dc93754d044b9f352e9746f6b83`（`#15`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`#16` 的 Shell 取消边界）、`44730dfe596b70f86ae2f928959877a3e3f494e4`（`#27`）、`665b46cd9e67326459223aa662931bd36d726004`（`#29`）、`04e109af4b4786a0d49fbbeefdd77af15a9f495e`（`#22`）、`4831c3797b76485a912b056c76a4cff22f0a2863`（`#25`）、`e68a185c2ba07f327bd8b63bbfea6a70a96f33ea`（`#26`）、`ecfd68acc056b95b06d98312753a712e4c0755db`、`603eeadcdab65d71d62a5ac32b6700207433fe5c`、`eb25a255a92f7385a3fde74f1f44626cdd068125`、`8c243e7ea7094fff189ab12582aea0460b655d06`、`8111f8150bc6b103da685f6abc3f26143b3bb207`、`4f612e548090616f8206154e37c9895404a8998b`（以上六项为 `#33` 厂商原生搜索）、`9c5f4f19b0acbc960889778a5873c7fb038b1378`（`#35` 免 key 链尾 Bing 化）、`f853f8f1566c57e6be40d5439a222a932aa79ef5`（`#32` GAIA 评测隔离扩展）、`5a5bf363ebeb720410f30e400c3de44abab71de6`（r14 候选 Shell 任务来源身份）。
+- **核心文件**：`core/engine.rs`、`core/engine/turn_loop.rs`、`core/engine/tool_setup.rs`、`core/ops.rs`、`tools/spec.rs`、`tools/file.rs`、`command_safety.rs`、`tools/shell.rs`、`docs/TOOL_SURFACE.md`。
 - **内容**：
   - `EngineConfig.extra_tools` 让宿主工具在 Plan、Agent、Yolo 等 turn registry 中一致注册。
   - `SetDisallowedTools` 支持工具商店、知识库和会话策略在不重建 Engine 的情况下动态收窄工具面。
@@ -146,6 +151,7 @@
   - `File` 写入保持 64 KiB 单次内容上限，并在落盘前拒绝超限输入。
   - 多行 Shell 按 segment 检查；破坏性命令在自动批准模式下仍被阻断。
   - Engine 取消路径按 turn id 终止当前轮未被宿主接管的前台 Shell，不依赖工具 future drop；后台/宿主管理的任务保持原有所有权边界。
+  - Engine 分发为 Shell 工作写入稳定的来源 tool call/turn identity；job snapshot 与 completion event 同步携带来源身份，宿主可按身份增量对账，不再用命令文本推测任务归属。
   - schema 约束的 JSON 容器兼容、工具续轮 provider 角色顺序和已知内部 runtime suffix 展示清理继续沿用 r6 行为。
   - Moonshot 工具 schema 按单个不兼容工具降级并发出一次用户可见诊断；具名选择不得指向已省略工具。宿主 MCP 密钥 resolver 不写进程环境，禁用 server 在 pool、catalog、直接调用、reload 与子智能体继承入口统一不可见。
   - Windows Shell 跨 poll 保留增量解码状态，避免拆分 UTF-8 序列被替换；h2/lru 安全更新不改变公开接口。
@@ -156,6 +162,7 @@
 - **上游计划**：逐轮权限、可信根覆盖、只读 action 投影和最终 dispatch 门禁是通用嵌入能力。当前 fork 版本已随 r8 发布；后续从最新 `Hmbown/CodeWhale` main 提交独立上游 PR。Pinvou profile 名称与 GAIA 工具名单继续留在 app；上游接收后删除 fork 对应实现和本地指纹。
 - **边界**：不包含 Skill 来源、Automation 或产品角色协议。
 - **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`、registry prompt、Custom allowlist alias、`forkguard_session_trusted_roots_override_persisted_workspace_trust`、`forkguard_dispatch_allowlist_rejects_forged_calls_before_all_dispatch_backends`、`forkguard_read_only_turn_rejects_write_action_at_final_dispatch`、`forkguard_restricted_agent_uses_read_only_file_schema`、`forkguard_queued_control_op_keeps_restricted_turn_authority`、`forkguard_queued_goal_continuation_and_mcp_reload_keeps_restricted_turn_authority`、`forkguard_restricted_turn_defers_idle_subagent_completion_until_new_message`、`forkguard_restricted_agent_uses_hardened_read_only_shell_context`、`forkguard_restricted_turn_defers_idle_shell_wake_until_new_message`、`forkguard_restricted_turn_hooks_require_explicit_host_opt_in`、`forkguard_restricted_tool_audit_redacts_private_sentinel`。
+- **r14 候选守护**：`forkguard_background_shell_job_preserves_origin_identity` 验证 job snapshot 与完成事件保留稳定来源身份，`forkguard_tool_context_for_call_preserves_turn_and_sets_call_origin` 验证 Engine 分发时保留 turn 并写入 call origin；父仓 `forkguard_shell_monitor_assigns_identical_commands_by_stable_origin` 验证同命令并发任务不串绑，`shell_task_projection.test.mjs` 验证历史终态不追加、来源卡原位回写，以及来源卡缺失时运行中任务仍可见。
 
 ### T3：嵌入上下文与技能来源
 

@@ -205,8 +205,19 @@ impl MonitorState {
         for (_, tool_id, command) in pending {
             let candidate = snapshots.iter().find(|job| {
                 job.owner_agent_id.is_none()
-                    && job.command == command
+                    && job.origin_tool_call_id.as_deref() == Some(tool_id.as_str())
                     && !self.claimed_tasks.contains(&job.id)
+            });
+            // Compatibility for runtimes predating stable task origins. Never
+            // bind a job that carries a different explicit origin merely
+            // because its rendered command text happens to match.
+            let candidate = candidate.or_else(|| {
+                snapshots.iter().find(|job| {
+                    job.owner_agent_id.is_none()
+                        && job.origin_tool_call_id.is_none()
+                        && job.command == command
+                        && !self.claimed_tasks.contains(&job.id)
+                })
             });
             let Some(candidate) = candidate else {
                 continue;
@@ -426,6 +437,8 @@ mod tests {
             linked_task_id: None,
             owner_agent_id: None,
             owner_agent_name: None,
+            origin_tool_call_id: None,
+            origin_turn_id: None,
         }
     }
 
@@ -439,6 +452,22 @@ mod tests {
             stdout_tail: stdout.to_string(),
             stderr_tail: String::new(),
         }
+    }
+
+    fn track(state: &mut MonitorState, tool_id: &str, command: &str) {
+        let order = state.next_order;
+        state.next_order = state.next_order.saturating_add(1);
+        state.tools.insert(
+            tool_id.to_string(),
+            TrackedTool {
+                command: command.to_string(),
+                order,
+                task_id: None,
+                emitted_stdout: String::new(),
+                emitted_stderr: String::new(),
+                keep_after_tool_end: false,
+            },
+        );
     }
 
     #[test]
@@ -478,6 +507,52 @@ mod tests {
                 content: "three\n".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn forkguard_shell_monitor_assigns_identical_commands_by_stable_origin() {
+        let mut state = MonitorState::default();
+        for tool_id in ["tool-1", "tool-2"] {
+            track(&mut state, tool_id, "same command");
+        }
+        let mut second = snapshot("job-2", "same command", ShellStatus::Running);
+        second.origin_tool_call_id = Some("tool-2".to_string());
+        let mut first = snapshot("job-1", "same command", ShellStatus::Running);
+        first.origin_tool_call_id = Some("tool-1".to_string());
+
+        state.assign_unclaimed_tasks(&[second, first]);
+
+        assert_eq!(state.tools["tool-1"].task_id.as_deref(), Some("job-1"));
+        assert_eq!(state.tools["tool-2"].task_id.as_deref(), Some("job-2"));
+    }
+
+    #[test]
+    fn explicit_origin_never_falls_back_to_a_matching_command() {
+        let mut state = MonitorState::default();
+        track(&mut state, "tool-current", "same command");
+        let mut old = snapshot("job-old", "same command", ShellStatus::Running);
+        old.origin_tool_call_id = Some("tool-old".to_string());
+
+        state.assign_unclaimed_tasks(&[old]);
+
+        assert_eq!(state.tools["tool-current"].task_id, None);
+    }
+
+    #[test]
+    fn legacy_fallback_skips_a_foreign_origin_with_the_same_command() {
+        let mut state = MonitorState::default();
+        track(&mut state, "tool-current", "same command");
+        let mut foreign = snapshot("job-foreign", "same command", ShellStatus::Running);
+        foreign.origin_tool_call_id = Some("tool-other".to_string());
+        let legacy = snapshot("job-legacy", "same command", ShellStatus::Running);
+
+        state.assign_unclaimed_tasks(&[foreign, legacy]);
+
+        assert_eq!(
+            state.tools["tool-current"].task_id.as_deref(),
+            Some("job-legacy")
+        );
+        assert!(!state.claimed_tasks.contains("job-foreign"));
     }
 
     #[test]
