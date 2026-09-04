@@ -1573,6 +1573,13 @@ function workspaceDisplayName(path) {
       useEffect(() => {
         if (!codeModeOn) setCodeNavExpanded(false);
       }, [codeModeOn]);
+      // code 形态下「代码会话」筛选等同「全部」、「定时任务」恒为空(菜单已隐藏这两项);
+      // 进入 code 形态时若仍挂着这两个筛选,复位为「全部」,避免列表莫名变空。
+      useEffect(() => {
+        if (sidebarCodeListActive && (taskListFilter === 'code' || taskListFilter === 'scheduled')) {
+          setTaskListFilter('all');
+        }
+      }, [sidebarCodeListActive, taskListFilter]);
       const [archiveConfirm, setArchiveConfirm] = useState(null);
       const [archiveToast, setArchiveToast] = useState(false);
       const [settingsToast, setSettingsToast] = useState('');
@@ -1684,8 +1691,12 @@ function workspaceDisplayName(path) {
       const sidebarTaskFilterOptions = [
         { id: 'all', label: t.sidebarTaskFilterAll },
         { id: 'pinned', label: t.sidebarTaskFilterPinned },
-        { id: 'code', label: t.sidebarTaskFilterCode },
-        { id: 'scheduled', label: t.sidebarTaskFilterScheduled },
+        // code 形态(胶囊选中「代码」)下列表恒为代码会话:「代码会话」筛选等同
+        // 「全部」、「定时任务」恒为空——两个选项都是死胡同,只在标准形态提供。
+        ...(sidebarCodeListActive ? [] : [
+          { id: 'code', label: t.sidebarTaskFilterCodeSessions },
+          { id: 'scheduled', label: t.sidebarTaskFilterScheduled },
+        ]),
       ];
       const sidebarTaskSortOptions = [
         { id: 'pinned_first', label: t.sidebarTaskSortPinnedFirst },
@@ -3009,7 +3020,7 @@ function workspaceDisplayName(path) {
                           onClick={() => setAllTaskGroups(!allTaskGroupsExpanded)}
                           title={allTaskGroupsExpanded ? t.sidebarCollapseAll : t.sidebarExpandAll}
                           aria-label={allTaskGroupsExpanded ? t.sidebarCollapseAll : t.sidebarExpandAll}
-                          className={`h-6 px-2 shrink-0 rounded-full text-[12px] font-normal transition-colors ${
+                          className={`h-6 px-2 shrink-0 whitespace-nowrap rounded-full text-[12px] font-normal transition-colors ${
                             activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'
                           }`}
                         >
