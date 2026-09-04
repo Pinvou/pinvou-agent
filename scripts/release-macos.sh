@@ -46,19 +46,22 @@ if [ ! -f "$SOURCE" ]; then
   exit 1
 fi
 
-# 与 release-packages.yml 相同的压缩升级:tauri 产出的 UDZO 未设 zlib-level
-# (hdiutil 默认级别 1),转 ULMO(LZMA) 通常再省 20-40%;需 macOS 10.15+ 挂载。
-# ad-hoc 签名下 dmg 本身不签名,容器转换不破坏任何签名。
+# Same compression upgrade as release-packages.yml: tauri emits UDZO without
+# zlib-level (hdiutil default level 1); converting to ULMO (LZMA) typically
+# saves another 20-40%. Mounting ULMO needs macOS 10.15+. Under an ad-hoc
+# signature the dmg itself is not signed, so a container conversion breaks
+# no signature.
 DMG_FORMAT="$(hdiutil imageinfo -format "$SOURCE" 2>/dev/null || echo UNKNOWN)"
 if [ "$DMG_FORMAT" != "ULMO" ]; then
-  # hdiutil convert 的 -o 目标名会被追加 .dmg 扩展,故 mv 源固定为 "$SOURCE.ulmo.dmg"。
+  # hdiutil convert appends .dmg to the -o target name, hence the fixed
+  # mv source "$SOURCE.ulmo.dmg".
   rm -f "$SOURCE.ulmo.dmg"
   if hdiutil convert "$SOURCE" -format ULMO -o "$SOURCE.ulmo" >/dev/null; then
     mv -f "$SOURCE.ulmo.dmg" "$SOURCE"
-    echo "dmg 压缩升级 ${DMG_FORMAT}→ULMO"
+    echo "dmg compression upgraded ${DMG_FORMAT}→ULMO"
   else
     rm -f "$SOURCE.ulmo.dmg"
-    echo "⚠️ ULMO 转换失败,保留原 ${DMG_FORMAT} dmg"
+    echo "⚠️ ULMO conversion failed, keeping the original ${DMG_FORMAT} dmg"
   fi
 fi
 

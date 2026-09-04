@@ -443,8 +443,11 @@ lto = false
 codegen-units = 16
 incremental = true
 # 冒烟构建从不进发布产物:显式保留行号表,让 CI 冒烟失败时的 panic 回溯可定位到行
-# (release 已改 debug=false,不再隐式继承)。
+# (release 已改 debug=false,不再隐式继承)。strip 必须显式回 none:继承 release 的
+# strip="symbols" 会在链接期把行号表连同符号表一起剥掉(rustc 语义上 symbols 是
+# debuginfo 的超集),行号表永远不会真正进入冒烟产物。
 debug = "line-tables-only"
+strip = "none"
 
 # Dev profile:line-tables-only 编译提速、overflow-checks 在调试期暴露整数回绕。
 [profile.dev]

@@ -128,16 +128,20 @@ unwrap_in_result = "warn"
 exit = "warn"
 
 # =============================================================================
-# 发布优化 Profile —— pinvou-knowledge-server 独立 ELF 随 Linux deb 分发
+# Release optimization profile — the standalone pinvou-knowledge-server ELF
+# shipped inside the Linux deb
 # =============================================================================
-# 该二进制由 pinvou3-app/scripts/tauri/knowledge-host.js 以
-# `cargo build --manifest-path pinvou-knowledge/Cargo.toml --release` 单独构建
-# (独立 target dir,不在 src-tauri workspace 内),此前走 cargo 默认 release:
-# 无 LTO、符号表全保留。对齐主应用 release profile 的体积策略:thin LTO 跨
-# crate 内联 + 链接期剥符号。作为 src-tauri 的依赖编译时本节被 Cargo 忽略
-# (profile 只由顶层构建 workspace 决定),故不影响主应用产物。
-# debug 不声明:cargo release 默认即 false。ICF/lld 由 CI job 的 RUSTFLAGS
-# (-fuse-ld=lld + -Wl,--icf=safe)注入,本文件不硬编码链接器。
+# This binary is built separately by pinvou3-app/scripts/tauri/knowledge-host.js
+# via `cargo build --manifest-path pinvou-knowledge/Cargo.toml --release`
+# (its own target dir, outside the src-tauri workspace); it previously used
+# cargo's default release profile: no LTO, symbol table fully kept. This
+# aligns it with the main app's release size policy: thin LTO for cross-crate
+# inlining plus link-time symbol stripping. When compiled as a src-tauri
+# dependency this section is ignored by Cargo (profiles come from the
+# top-level build workspace), so the main app artifacts are unaffected.
+# debug is not declared: the cargo release default is already false. ICF/lld
+# are injected by the CI job's RUSTFLAGS (-fuse-ld=lld + -Wl,--icf=safe);
+# this file deliberately hardcodes no linker.
 [profile.release]
 lto = "thin"
 codegen-units = 1

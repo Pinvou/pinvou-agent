@@ -27,7 +27,7 @@ if [ ! -f "$SOURCE" ]; then
   exit 1
 fi
 
-# 与 release-packages.yml 相同的最大压缩重打包(data.tar gzip-6 → xz -9)。
+# Same maximum-compression repack as release-packages.yml (data.tar gzip-6 → xz -9).
 "$REPO_ROOT/scripts/repack-deb-xz.sh" "$SOURCE"
 
 cp "$SOURCE" "$ASSET"

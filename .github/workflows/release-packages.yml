@@ -102,8 +102,9 @@ jobs:
       # (最终单元 -C lto=thin),与链接器身份无关,机制详见 Cargo.toml
       # [profile.release] 注释。
       # --icf=safe:lld 相同代码折叠(相似代码段合并,体积优化)。safe 档只折叠
-      # 「地址确定未被取用」的函数,规避 Rust 语义下函数地址同一性的边界情形
-      # (rust#160267)。RUSTFLAGS 是 env 级注入,同时覆盖本 job 内的 tauri 主构建
+      # 「地址确定未被取用」的函数。ICF 与 Rust 函数地址同一性的边界是已知问题
+      # (rust#160267 即一例:safe 档下也曾误编译,根因在 LLVM 侧已修),故取
+      # 保守档而非 all。RUSTFLAGS 是 env 级注入,同时覆盖本 job 内的 tauri 主构建
       # 与 knowledge-host 独立构建(后者 profile 已在 pinvou-knowledge/Cargo.toml)。
       # remap-path-prefix:产物内嵌的构建机绝对路径(panic location 等)归一为 /。
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--icf=safe -C remap-path-prefix=${{ github.workspace }}=/"
@@ -232,8 +233,9 @@ jobs:
       # lld 是必需的:BFD 对大二进制 link 内存效率差(OOM 实证),且 BFD 无 --icf、
       # 支持不了 --icf=safe。thin LTO 本身由 rustc 执行,与链接器身份无关
       # (机制详见 Cargo.toml [profile.release] 注释)。
-      # --icf=safe / remap-path-prefix 同 build-linux-x64(safe 折叠规避 fn 地址
-      # 同一性边界 rust#160267;RUSTFLAGS env 同时覆盖 tauri 主构建与 knowledge-host)。
+      # --icf=safe / remap-path-prefix 同 build-linux-x64(保守档的取舍与 fn 地址
+      # 同一性的已知边界 rust#160267 见该 job 注释;RUSTFLAGS env 同时覆盖 tauri
+      # 主构建与 knowledge-host)。
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--icf=safe -C remap-path-prefix=${{ github.workspace }}=/"
       # release 编译 codewhale-tui 的 SIGBUS 同源风险防护(同 build-linux-x64,
       # 正式入口按平台注入 RUSTC_WRAPPER,见 config.toml 注释)。
