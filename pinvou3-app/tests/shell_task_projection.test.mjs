@@ -141,6 +141,63 @@ test('a fast detached job can still appear after its start tool', () => {
   assert.match(harness.chatItems[1].output, /done fast/);
 });
 
+test('the guard is not disarmed by a running job projected in the same poll', () => {
+  const harness = createTerminal([{
+    type: 'tool',
+    toolId: 'current-wait',
+    name: 'exec_shell_wait',
+    state: 'done',
+    output: '13',
+  }]);
+
+  const running = harness.terminal.applyShellSnapshots('session-current', [
+    snapshot({
+      id: 'shell-live',
+      command: 'long task',
+      status: 'running',
+      exit_code: null,
+      stdout_len: 0,
+      stderr_len: 0,
+      stdout_tail: '',
+      stderr_tail: '',
+    }),
+    snapshot(),
+  ]);
+
+  assert.equal(running, true);
+  assert.equal(harness.chatItems.length, 2);
+  assert.equal(harness.chatItems[1].toolId, 'shell-task:shell-live');
+  assert.equal(harness.chatItems[1].state, 'running');
+  assert.equal(harness.chatItems.some(item => item.toolId === 'shell-task:shell-old'), false);
+  assert.equal(harness.notifications(), 1);
+});
+
+test('a brand-new subagent job first seen terminal after an older wait card is conservatively hidden', () => {
+  // Accepted limit until origin identity lands: the timeline alone cannot
+  // tell this job apart from retained older work, so it stays hidden.
+  const harness = createTerminal([{
+    type: 'tool',
+    toolId: 'old-wait',
+    name: 'exec_shell_wait',
+    state: 'done',
+    output: 'ok',
+  }]);
+
+  const running = harness.terminal.applyShellSnapshots('session-current', [snapshot({
+    id: 'shell-fast-subagent',
+    command: 'echo hi',
+    status: 'completed',
+    exit_code: 0,
+    stdout_tail: 'hi',
+    stderr_tail: '',
+  })]);
+
+  assert.equal(running, false);
+  assert.equal(harness.chatItems.length, 1);
+  assert.equal(harness.chatItems[0].toolId, 'old-wait');
+  assert.equal(harness.notifications(), 0);
+});
+
 test('the web bridge keeps the same stale-completion guard', () => {
   const webBridge = fs.readFileSync(
     path.join(appRoot, 'src', 'platform', 'web', 'bridge.js'),
@@ -148,6 +205,16 @@ test('the web bridge keeps the same stale-completion guard', () => {
   );
   assert.match(
     webBridge,
-    /if \(!item && !running && latestShellToolIsWaitObserver\(\)\) return;/,
+    /if \(!item && !running && suppressUnmatchedTerminal\) return;/,
+  );
+  // The web helper scans a different name set (its SHELL_TOOL_NAMES lacks the
+  // wait names), so the union clause is the real cross-bridge parity point.
+  assert.match(
+    webBridge,
+    /\(isShellExecutionTool\(item\.name\) \|\| SHELL_WAIT_TOOL_NAMES\.includes\(item\.name\)\)/,
+  );
+  assert.match(
+    webBridge,
+    /const suppressUnmatchedTerminal = latestShellToolIsWaitObserver\(\);/,
   );
 });
