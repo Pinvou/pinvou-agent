@@ -23,7 +23,6 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiHomeMode',
     'uiAttachments',
     'uiCodex',
-    'uiCodexView',
     'uiCodexWorkspace',
     'uiAcpProviders',
     'uiArtifacts',

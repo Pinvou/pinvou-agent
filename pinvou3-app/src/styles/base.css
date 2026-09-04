@@ -42,10 +42,6 @@
       .max-sm-hide-scrollbar::-webkit-scrollbar { display: none; }
     }
 
-    /* content-visibility 离屏渲染优化兜底：ChatBubble 对部分类型（空流式 assistant、
-       已忽略的记忆候选、未知类型）返回 null，其 wrapper 变成空 div。空的
-       content-visibility 容器离屏时仍按 contain-intrinsic-size 占位（auto 600px），
-
     /* Chat message styles */
     .msg-md h1,.msg-md h2,.msg-md h3,.msg-md h4 { font-weight:600; margin:0.6em 0 0.3em; }
     .msg-md h1 { font-size:1.4em; } .msg-md h2 { font-size:1.2em; } .msg-md h3 { font-size:1.05em; }
