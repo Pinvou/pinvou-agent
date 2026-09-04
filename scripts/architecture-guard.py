@@ -326,9 +326,9 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]]]:
     # spawn an external `kill` binary: procps-ng 4.0.4 misparses the valid
     # negative pid in `kill -9 -<pgid>` as -1 (kill(-1) signals every process
     # of the user and took down whole desktop sessions; see
-    # platform::process::kill_process_tree). File-level exception kind:
-    # `architecture-guard: allow-external-group-kill-stub` for compile-only
-    # contract stubs.
+    # platform::process::kill_process_tree). The rule applies to every Rust
+    # file: unsupported.rs also carries the live macOS kill_pid_tree, so no
+    # file-level exception may waive it.
     external_group_kill_patterns = [
         re.compile(r'Command\s*::\s*new\s*\(\s*"(?:[^"]*/)?kill"'),
         re.compile(r'::\s*new\s*\(\s*"(?:[^"]*/)?kill"\s*\)'),
@@ -385,12 +385,11 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]]]:
         command_count = len(tauri_command_pattern.findall(text))
         if command_count and "/app/commands/" not in f"/{relative}":
             rules["rust_tauri_commands_outside_app"][relative] += command_count
-        if not file_exception_allowed(text, "external-group-kill-stub"):
-            external_kill_count = sum(
-                len(pattern.findall(text)) for pattern in external_group_kill_patterns
-            )
-            if external_kill_count:
-                rules["rust_external_group_kill_spawn"][relative] += external_kill_count
+        external_kill_count = sum(
+            len(pattern.findall(text)) for pattern in external_group_kill_patterns
+        )
+        if external_kill_count:
+            rules["rust_external_group_kill_spawn"][relative] += external_kill_count
         for handler in tauri_handler_pattern.findall(text):
             for entry in re.findall(
                 r"(?:^|,)\s*([A-Za-z_][A-Za-z0-9_:]*)\s*(?=,|$)", handler

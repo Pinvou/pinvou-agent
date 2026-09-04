@@ -271,51 +271,35 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
                 ],
             )
 
-    def test_external_group_kill_stub_exception_requires_header_marker_and_reason(self):
+    def test_rust_scanner_rejects_kill_in_stub_shaped_file(self):
+        """unsupported.rs carries the live macOS kill_pid_tree (cfg(unix)),
+        so the former allow-external-group-kill-stub file exception was
+        removed; prove a stub-shaped file with the same cfg arms — an
+        external kill next to a live unix arm — is now still flagged."""
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             rust_root = root / "pinvou3-app/src-tauri/src"
-            allowed = rust_root / "platform/allowed.rs"
-            rejected = rust_root / "platform/rejected.rs"
-            late = rust_root / "platform/late.rs"
-            for path in [allowed, rejected, late]:
-                path.parent.mkdir(parents=True, exist_ok=True)
-            probe = 'fn run() { Command::new("kill"); }\n'
-            allowed.write_text(
-                "// architecture-guard: allow-external-group-kill-stub"
-                " -- compile-only contract stub, no real platform binds it\n"
-                + probe,
-                encoding="utf-8",
-            )
-            late.write_text(
-                "// header filler\n" * 20
-                + "// architecture-guard: allow-external-group-kill-stub -- too late\n"
-                + probe,
-                encoding="utf-8",
-            )
-            rejected.write_text(
-                "// architecture-guard: allow-external-group-kill-stub\n" + probe,
+            stub = rust_root / "platform/os/unsupported.rs"
+            stub.parent.mkdir(parents=True)
+            stub.write_text(
+                "/// macOS binds the cfg(unix) arm via glob re-export.\n"
+                "pub fn kill_pid_tree(pid: u32) {\n"
+                "    #[cfg(unix)]\n"
+                "    { let _ = pid; }\n"
+                "    #[cfg(not(unix))]\n"
+                '    { Command::new("kill").args(["-9", "-42"]).output(); }\n'
+                "}\n",
                 encoding="utf-8",
             )
 
             rules, _ = self.guard.scan_rust(root)
 
-            self.assertNotIn(
-                "pinvou3-app/src-tauri/src/platform/allowed.rs",
-                rules["rust_external_group_kill_spawn"],
-            )
             # The probe hits both the Command-specific and the generic
-            # `::new("kill")` pattern, so it counts twice per file.
+            # `::new("kill")` pattern, so it counts twice.
             self.assertEqual(
                 2,
                 rules["rust_external_group_kill_spawn"][
-                    "pinvou3-app/src-tauri/src/platform/rejected.rs"
-                ],
-            )
-            self.assertEqual(
-                2,
-                rules["rust_external_group_kill_spawn"][
-                    "pinvou3-app/src-tauri/src/platform/late.rs"
+                    "pinvou3-app/src-tauri/src/platform/os/unsupported.rs"
                 ],
             )
 
