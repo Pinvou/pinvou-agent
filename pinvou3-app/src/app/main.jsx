@@ -1575,7 +1575,8 @@ function workspaceDisplayName(path) {
       }, [codeModeOn]);
       // code 形态下「代码会话」筛选等同「全部」、「定时任务」恒为空(菜单已隐藏这两项);
       // 进入 code 形态时若仍挂着这两个筛选,复位为「全部」,避免列表莫名变空。
-      useEffect(() => {
+      // 用 layout effect 在首帧绘制前完成复位,避免闪现一帧空的「暂无任务」列表。
+      useLayoutEffect(() => {
         if (sidebarCodeListActive && (taskListFilter === 'code' || taskListFilter === 'scheduled')) {
           setTaskListFilter('all');
         }
@@ -2980,8 +2981,10 @@ function workspaceDisplayName(path) {
                         </button>
                         </span>
                       </div>
-                      {/* 全部/代码 胶囊 + 一键折叠(分组)按钮:位于「任务列表」标题下方 */}
-                      <div className="flex items-center justify-between gap-2 px-1">
+                      {/* 全部/代码 胶囊 + 一键折叠(分组)按钮:位于「任务列表」标题下方。
+                          flex-wrap 兜底:ja 等语言在 220px 最小宽度下此行已无富余
+                          (实测正好占满),字体渲染偏宽的环境让折叠按钮换行而非溢出。 */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 px-1">
                         {/* biome-ignore lint/a11y/useSemanticElements: toggle-button pair in an ARIA group, not form controls; a <fieldset> would need its default styles reset */}
                         <div className="flex items-center gap-0.5" role="group" aria-label={t.sidebarTaskStyle}>
                         <button
