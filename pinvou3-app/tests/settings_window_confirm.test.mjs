@@ -2,7 +2,9 @@
  * 设置页原生 confirm 回归契约（Tauri WebView2 下系统 window.confirm 实测不弹）：
  * SettingsView 的记忆删除与反馈关闭两条流程必须走应用内自绘二级确认弹窗
  * （与 ProviderFormModal / ModelDeleteDialog / SearchDeleteDialog 同款配方），
- * 不得再依赖原生 confirm。静态读源码断言 + 三语词典 parity，照
+ * 不得再依赖原生 confirm。记忆删除的入口是「记忆」分节列表行的删除按钮
+ * （MemorySettingsCard 已随死代码移除，删除能力由活跃分节承接）。
+ * 静态读源码断言 + 三语词典 parity，照
  * acp_providers_contract.test.js 的 window.confirm 断言模式。
  */
 import assert from 'node:assert/strict';
@@ -46,6 +48,13 @@ test('memory delete routes through the in-app confirm dialog', () => {
   assert.match(SETTINGS_VIEW, /data-testid="memory-delete-confirm"/, '记忆删除二级确认弹窗必须存在');
   assert.match(SETTINGS_VIEW, /data-testid="memory-delete-confirm-ok"/, '记忆删除确认按钮必须带 testid');
 
+  // 删除入口必须挂在记忆分节的行内操作上（列表行的删除按钮路由进 deleteItem）
+  assert.match(
+    SETTINGS_VIEW,
+    /data-testid="memory-item-delete" onClick=\{\(\) => deleteItem\(item\)\}/,
+    '记忆列表行必须提供路由进 deleteItem 的删除按钮',
+  );
+
   // deleteItem 只记录待删条目，不得直接删除
   const deleteItem = sliceSource(
     SETTINGS_VIEW,
@@ -60,7 +69,7 @@ test('memory delete routes through the in-app confirm dialog', () => {
   const confirmHandler = sliceSource(
     SETTINGS_VIEW,
     'const confirmDeleteItem = async item => {',
-    'const archiveItem',
+    'const editProfile',
   );
   assert.match(
     confirmHandler,
@@ -137,5 +146,6 @@ test('feedback/memory confirm copy exists in zh/en/ja', () => {
     assert.ok(d.uiSettingsDetail, `${language}.uiSettingsDetail 必须存在`);
     assert.ok(d.uiSettingsDetail.delete, `${language}.uiSettingsDetail.delete 必须存在（记忆删除确认按钮）`);
     assert.ok(d.uiSettingsDetail.cancel, `${language}.uiSettingsDetail.cancel 必须存在（记忆删除取消按钮）`);
+    assert.ok(d.uiSettingsDetail.memoryDeleteFailed, `${language}.uiSettingsDetail.memoryDeleteFailed 必须存在（记忆删除失败横幅）`);
   }
 });
