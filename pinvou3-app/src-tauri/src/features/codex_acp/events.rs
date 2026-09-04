@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,6 +27,14 @@ const HOST_PATH_REDACTION: &str = "[host path omitted]";
 /// Upper bound for waiting on a missing predecessor sequence before ordered
 /// Web delivery skips the gap and keeps the session pipeline responsive.
 const WEB_DELIVERY_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Buffered append window for the cached timeline handle. Between the
+/// synchronous turn-boundary flushes below, the BufWriter reaches the OS at
+/// least once per full window, so streamed chunk bytes never linger unbounded.
+const TIMELINE_APPEND_BUFFER_BYTES: usize = 64 * 1024;
+/// Tail window parsed for the resume sequence when a session reopens;
+/// journals larger than it skip everything before the window
+/// (see `load_timeline_last_seq`).
+const TIMELINE_TAIL_BYTES: u64 = 256 * 1024;
 
 /// Codex ACP 页面唯一消费的事件合同。
 ///
@@ -685,6 +693,7 @@ pub struct EventBridge {
     event_order: Arc<Mutex<()>>,
     web_delivery: OrderedWebDelivery,
     tools: Arc<Mutex<HashMap<String, ToolCall>>>,
+    timeline_writer: Arc<Mutex<TimelineWriter>>,
 }
 
 #[derive(Clone)]
@@ -738,10 +747,11 @@ impl OrderedWebDelivery {
 
 impl EventBridge {
     pub fn new(app: AppHandle, pinvou_session_id: String) -> Self {
-        let last_seq = load_timeline(&pinvou_session_id)
-            .ok()
-            .and_then(|events| events.last().map(|event| event.seq))
-            .unwrap_or(0);
+        // Session reopen only needs the resume point; reading the journal tail
+        // instead of parsing the whole file keeps reopen cheap for long
+        // sessions, with a full-scan fallback when the tail is inconclusive.
+        let last_seq = load_timeline_last_seq(&pinvou_session_id).unwrap_or(0);
+        let timeline_writer = Arc::new(Mutex::new(TimelineWriter::new(&pinvou_session_id)));
         Self {
             app,
             pinvou_session_id,
@@ -751,6 +761,7 @@ impl EventBridge {
             event_order: Arc::new(Mutex::new(())),
             web_delivery: OrderedWebDelivery::new(last_seq),
             tools: Arc::new(Mutex::new(HashMap::new())),
+            timeline_writer,
         }
     }
 
@@ -799,6 +810,12 @@ impl EventBridge {
     /// 本方法只处理当前 timeline 已存在的孤儿回合。正常的同进程活跃回合仍由
     /// `prompt()` 返回后调用 `finish_turn()` 收口。
     pub fn interrupt_orphaned_turns(&self, reason: &str) -> usize {
+        // Orphan detection must pair turn_started/turn_completed events that
+        // can live arbitrarily far apart, so this scan is inherently over the
+        // full journal. Flush this bridge's append buffer first so the scan
+        // reads the current on-disk state (turn boundaries are already
+        // flushed synchronously; this only covers buffered chunk events).
+        let _ = self.timeline_writer.lock().flush();
         let events = match load_timeline(&self.pinvou_session_id) {
             Ok(events) => events,
             Err(error) => {
@@ -955,7 +972,15 @@ impl EventBridge {
                     data,
                 },
             };
-            if let Err(error) = append_timeline(&envelope) {
+            // Turn boundaries and terminal runtime errors are the journal's
+            // crash-recovery anchors: they flush synchronously so resume and
+            // orphan-turn recovery never depend on buffered chunk bytes.
+            // Everything else rides the TIMELINE_APPEND_BUFFER_BYTES window.
+            let flush_timeline = matches!(
+                event_type,
+                "turn_started" | "turn_completed" | "runtime_error"
+            );
+            if let Err(error) = self.append_timeline(&envelope, flush_timeline) {
                 eprintln!(
                     "[pinvou3-app] append Codex ACP timeline failed for {}: {error:#}",
                     self.pinvou_session_id
@@ -1006,6 +1031,11 @@ impl EventBridge {
                 None => {}
             });
         envelope
+    }
+
+    /// Append one envelope to the session journal through the cached handle.
+    fn append_timeline(&self, event: &AcpEventEnvelope, flush_after: bool) -> Result<()> {
+        self.timeline_writer.lock().append(event, flush_after)
     }
 }
 
@@ -1091,21 +1121,100 @@ pub fn patch_acp_state(session_id: &str, patch: Value) -> Result<()> {
     persist_acp_state(session_id, state)
 }
 
-fn append_timeline(event: &AcpEventEnvelope) -> Result<()> {
-    let path = timeline_path(&event.session_id)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("创建 ACP timeline 目录 {} 失败", parent.display()))?;
+/// Cached append handle for one session's ACP timeline journal.
+///
+/// `EventBridge` is the single writer for its session's journal and every
+/// clone shares the same `Arc<Mutex<TimelineWriter>>`, so the open file is
+/// kept across envelopes instead of paying an open/write/flush syscall trio
+/// per streamed token. Readers are unaffected: lines are still appended as
+/// whole newline-terminated JSON lines. Dropping the last bridge clone flushes
+/// the remaining buffer best-effort (BufWriter Drop ignores errors and never
+/// panics).
+struct TimelineWriter {
+    session_id: String,
+    writer: Option<BufWriter<File>>,
+}
+
+impl TimelineWriter {
+    fn new(session_id: &str) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+            writer: None,
+        }
     }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .with_context(|| format!("打开 ACP timeline {} 失败", path.display()))?;
-    serde_json::to_writer(&mut file, event)?;
-    file.write_all(b"\n")?;
-    file.flush()?;
-    Ok(())
+
+    fn append(&mut self, event: &AcpEventEnvelope, flush_after: bool) -> Result<()> {
+        // Serialize first: a write failure then can only leave a torn line,
+        // never a half-serialized event mixed into the retry below.
+        let mut line = serde_json::to_vec(event)?;
+        line.push(b'\n');
+        if let Err(error) = self.write_line(&line, flush_after) {
+            // The cached handle may be stale (the journal was removed or
+            // replaced externally, or the descriptor broke): reopen once and
+            // retry. A partially written line is skipped by readers as
+            // malformed, the same way a crash mid-append is recovered.
+            self.writer = None;
+            self.open()?;
+            self.write_line(&line, flush_after)
+                .with_context(|| format!("重试写入 ACP timeline 失败: {error}"))?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        match self.writer.as_mut() {
+            Some(writer) => Ok(writer.flush()?),
+            None => Ok(()),
+        }
+    }
+
+    fn write_line(&mut self, line: &[u8], flush_after: bool) -> Result<()> {
+        {
+            let writer = self.writer_mut()?;
+            writer.write_all(line)?;
+            if flush_after {
+                writer.flush()?;
+            }
+        }
+        if flush_after && !self.journal_exists() {
+            // POSIX appends into an externally removed file keep succeeding
+            // into the unlinked inode without an error, so only the rare
+            // flush points pay one existence check to re-anchor durability.
+            // Reopening recreates the file; the just-flushed line stays lost
+            // with the deleted journal instead of being duplicated.
+            self.writer = None;
+            self.open()?;
+        }
+        Ok(())
+    }
+
+    fn writer_mut(&mut self) -> Result<&mut BufWriter<File>> {
+        if self.writer.is_none() {
+            self.open()?;
+        }
+        self.writer.as_mut().context("ACP timeline 写入句柄不可用")
+    }
+
+    fn journal_exists(&self) -> bool {
+        timeline_path(&self.session_id).is_ok_and(|path| path.exists())
+    }
+
+    fn open(&mut self) -> Result<()> {
+        // Directory creation and open stay out of the per-envelope hot path;
+        // they only run on first use and on reopen after a failure.
+        let path = timeline_path(&self.session_id)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("创建 ACP timeline 目录 {} 失败", parent.display()))?;
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("打开 ACP timeline {} 失败", path.display()))?;
+        self.writer = Some(BufWriter::with_capacity(TIMELINE_APPEND_BUFFER_BYTES, file));
+        Ok(())
+    }
 }
 
 pub fn load_timeline(session_id: &str) -> Result<Vec<AcpEventEnvelope>> {
@@ -1131,6 +1240,70 @@ pub fn load_timeline(session_id: &str) -> Result<Vec<AcpEventEnvelope>> {
         }
     }
     Ok(events)
+}
+
+/// Resolve the newest durable sequence by parsing only the journal tail.
+///
+/// Session reopen (`EventBridge::new`) only needs the resume point, which
+/// always lives in the last complete line: sequence allocation and journal
+/// appends happen under the bridge's ordering lock. Small files, unreadable
+/// files, and tails without one complete parseable line fall back to the
+/// authoritative full `load_timeline` scan.
+fn load_timeline_last_seq(session_id: &str) -> Option<u64> {
+    let path = match timeline_path(session_id) {
+        Ok(path) => path,
+        Err(_) => return None,
+    };
+    match load_timeline_last_seq_from_path(&path) {
+        Ok(Some(seq)) => Some(seq),
+        _ => load_timeline(session_id)
+            .ok()
+            .and_then(|events| events.last().map(|event| event.seq)),
+    }
+}
+
+fn load_timeline_last_seq_from_path(path: &Path) -> Result<Option<u64>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let file = fs::File::open(path)
+        .with_context(|| format!("读取 ACP timeline {} 失败", path.display()))?;
+    let file_len = file.metadata()?.len();
+    if file_len == 0 {
+        return Ok(None);
+    }
+    let from_tail = file_len > TIMELINE_TAIL_BYTES;
+    let mut reader = BufReader::new(file);
+    if from_tail {
+        reader
+            .seek(SeekFrom::Start(file_len - TIMELINE_TAIL_BYTES))
+            .with_context(|| format!("跳转 ACP timeline {} 失败", path.display()))?;
+        // The window may open mid-line; skip to the next line boundary so
+        // parsing starts at a whole event (one earlier line changes nothing:
+        // the maximum seq sits at the end).
+        let mut skipped = Vec::new();
+        reader.read_until(b'\n', &mut skipped)?;
+    }
+    let mut last_seq: Option<u64> = None;
+    loop {
+        let mut line = Vec::new();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        if line.last() != Some(&b'\n') {
+            // A trailing fragment is an in-flight or crash-truncated append;
+            // the event never completed durably, so it must not be resumed.
+            break;
+        }
+        let Ok(event) = serde_json::from_slice::<AcpEventEnvelope>(&line) else {
+            continue;
+        };
+        last_seq = Some(match last_seq {
+            Some(current) => current.max(event.seq),
+            None => event.seq,
+        });
+    }
+    Ok(last_seq)
 }
 
 #[derive(Debug)]
@@ -1213,7 +1386,8 @@ fn load_web_timeline_page_from_path(
         }
         line_number += 1;
         let line_end = reader.stream_position()?;
-        // append_timeline writes JSON and the newline separately. A concurrent
+        // The journal writer may still be mid-line: an event larger than the
+        // append buffer reaches the file in several writes. A concurrent
         // reader can briefly observe the final JSON fragment; never advance a
         // durable cursor past that incomplete event.
         if !line.ends_with('\n') {
@@ -1886,6 +2060,91 @@ mod tests {
         assert!(
             orphaned_turn_ids(&events).is_empty(),
             "re-running recovery after terminal events must be a no-op"
+        );
+    }
+
+    #[test]
+    fn timeline_tail_reader_returns_the_last_complete_sequence() {
+        let timeline = TempTimeline::create(&[
+            event(1, Some("turn-1"), "turn_started"),
+            event(2, Some("turn-1"), "turn_completed"),
+        ]);
+        assert_eq!(
+            load_timeline_last_seq_from_path(timeline.path()).unwrap(),
+            Some(2)
+        );
+
+        // A trailing fragment without a newline (in-flight buffered write or a
+        // crash mid-append) must not be mistaken for a durable resume point.
+        let serialized = serde_json::to_vec(&message_event(3, "in-flight")).unwrap();
+        timeline.append(&serialized[..serialized.len() / 2]);
+        assert_eq!(
+            load_timeline_last_seq_from_path(timeline.path()).unwrap(),
+            Some(2)
+        );
+
+        timeline.append(&serialized[serialized.len() / 2..]);
+        timeline.append(b"\n");
+        assert_eq!(
+            load_timeline_last_seq_from_path(timeline.path()).unwrap(),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn timeline_tail_reader_skips_malformed_complete_lines() {
+        let timeline = TempTimeline::create(&[event(1, None, "turn_started")]);
+        timeline.append(b"{not json}\n");
+        timeline.append(&serde_json::to_vec(&event(7, None, "runtime_error")).unwrap());
+        timeline.append(b"\n");
+        assert_eq!(
+            load_timeline_last_seq_from_path(timeline.path()).unwrap(),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn timeline_tail_reader_reports_empty_and_missing_journals() {
+        let empty = TempTimeline::create(&[]);
+        assert_eq!(
+            load_timeline_last_seq_from_path(empty.path()).unwrap(),
+            None
+        );
+        let missing = Path::new("/nonexistent/pinvou-acp-tail-case.jsonl");
+        assert_eq!(load_timeline_last_seq_from_path(missing).unwrap(), None);
+    }
+
+    #[test]
+    fn timeline_tail_reader_parses_only_the_window_and_still_finds_the_end() {
+        // The first line alone exceeds the tail window, so the reader must
+        // seek into its middle, skip the cut line, and still return the newest
+        // sequence from the events after it.
+        let oversized = message_event(1, &"x".repeat(TIMELINE_TAIL_BYTES as usize + 1024));
+        let timeline = TempTimeline::create(&[oversized]);
+        for seq in 2..=6_u64 {
+            let chunk = event(seq, Some("turn-1"), "agent_message_chunk");
+            timeline.append(&serde_json::to_vec(&chunk).unwrap());
+            timeline.append(b"\n");
+        }
+        assert_eq!(
+            load_timeline_last_seq_from_path(timeline.path()).unwrap(),
+            Some(6)
+        );
+    }
+
+    #[test]
+    fn timeline_tail_reader_falls_back_when_the_window_holds_no_complete_line() {
+        // A single line longer than the tail window with no trailing newline:
+        // the window contains no complete line, so the reader must report no
+        // resume point (the caller falls back to the full scan) instead of
+        // guessing from the fragment.
+        let oversized = message_event(1, &"x".repeat(TIMELINE_TAIL_BYTES as usize + 1024));
+        let serialized = serde_json::to_vec(&oversized).unwrap();
+        let timeline = TempTimeline::create(&[]);
+        timeline.append(&serialized[..serialized.len() - 1]);
+        assert_eq!(
+            load_timeline_last_seq_from_path(timeline.path()).unwrap(),
+            None
         );
     }
 }
