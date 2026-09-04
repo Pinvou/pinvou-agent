@@ -366,6 +366,13 @@ impl ScheduledTaskState {
         let requires_model_binding = requested_model_id.is_some();
         // 种类先于任何持久化校验/归一化，垃圾值直接拒绝（与 mode 校验同风格）。
         let requested_kind = canonical_scheduled_kind(input.kind.clone())?;
+        // 记忆整理任务与设置页手动入口同口径：记忆关闭（默认 / en-ja 强制关闭）
+        // 时拒绝创建，否则任务创建成功但每次触发都记一条 "memory disabled" 失败。
+        if requested_kind.as_deref() == Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE)
+            && !crate::features::memory::memory_enabled()
+        {
+            return Err("memory organize tasks require memory to be enabled".to_string());
+        }
         let created = manager
             .create_automation(build_create_request(
                 input,
@@ -3236,6 +3243,15 @@ mod tests {
         let previous = std::env::var("PINVOU3_HOME").ok();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        // lifecycle 面向已开记忆的用户：先开记忆（创建门控见
+        // memory_organize_task_creation_requires_memory_enabled）。
+        let settings = crate::platform::paths::settings_path();
+        std::fs::create_dir_all(settings.parent().unwrap()).expect("settings dir");
+        std::fs::write(
+            &settings,
+            "{\"language\":\"zh-Hans\",\"memory_enabled\":true}",
+        )
+        .expect("write settings");
         let sessions = SessionStore::boot().expect("session store");
         sessions
             .reconcile_scheduled_profiles()
@@ -4419,6 +4435,99 @@ mod tests {
                 .await
                 .get_automation(&created.id)
                 .is_err()
+        );
+
+        match previous {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // 记忆整理任务与设置页手动入口同口径：记忆关闭（默认 / en-ja 强制关闭）
+    // 时拒绝创建，否则任务创建成功但每次触发都记一条 "memory disabled" 失败。
+    #[tokio::test]
+    async fn memory_organize_task_creation_requires_memory_enabled() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_home();
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        let sessions = SessionStore::boot().expect("session store");
+        sessions
+            .reconcile_scheduled_profiles()
+            .expect("reconcile scheduled profiles");
+        let read_state =
+            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
+                .expect("read state");
+        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
+            .expect("model bindings");
+        let task_kinds =
+            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
+        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
+            .expect("ui metadata");
+        let manager =
+            open_scheduled_automation_manager(scheduled_automation_root()).expect("automations");
+        let state = ScheduledTaskState {
+            automations: Arc::new(tokio::sync::Mutex::new(manager)),
+            task_manager: None,
+            sessions,
+            read_state,
+            model_bindings,
+            task_kinds,
+            ui_metadata,
+            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
+                .expect("history archive"),
+            operation_locks: ParkingMutex::new(HashMap::new()),
+            pool: None,
+            fallback_model: default_automation_model(None),
+            scheduler_cancel: None,
+            scheduler_handle: None,
+            retention_handle: None,
+        };
+        let input = |kind: Option<String>| CreateScheduledTaskInput {
+            name: "记忆整理".to_string(),
+            prompt: "整理长期记忆".to_string(),
+            rrule: "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=30".to_string(),
+            cwds: vec![dir.join("workspace").to_string_lossy().into_owned()],
+            kind,
+            model: None,
+            model_id: None,
+            mode: Some("agent".to_string()),
+            allow_shell: Some(false),
+            trust_mode: Some(false),
+            auto_approve: Some(false),
+            paused: Some(false),
+        };
+
+        // 默认配置（memory_enabled=false）：创建被拒绝。
+        let refused = state
+            .create_for_test(input(Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string())))
+            .await;
+        assert!(
+            refused.is_err(),
+            "memory organize tasks must be refused while memory is disabled"
+        );
+
+        // 开启记忆后同输入创建成功。
+        let settings = crate::platform::paths::settings_path();
+        std::fs::create_dir_all(settings.parent().unwrap()).expect("settings dir");
+        std::fs::write(
+            &settings,
+            "{\"language\":\"zh-Hans\",\"memory_enabled\":true}",
+        )
+        .expect("write settings");
+        let created = state
+            .create_for_test(input(Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string())))
+            .await
+            .expect("create with memory enabled");
+        assert_eq!(
+            created.kind.as_deref(),
+            Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE)
         );
 
         match previous {

@@ -305,6 +305,12 @@ impl Pinvou3Bundle {
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
                 crate::platform::super_permission::instruction_block(),
             )
+            // 用户记忆段按当前 memory 开关填充或删除（落盘副本非 LLM 实时路径，
+            // 这里只为防占位符原文残留在 disk 文件，与 TITLE_LANG 同理）。
+            .replace(
+                "{{PINVOU3_MEMORY_SECTION}}\n",
+                super::memory_section(crate::features::memory::memory_enabled()),
+            )
             // 落盘副本无 per-session locale,默认填中文兜底(LLM 实际走 mod.rs 的 inline 渲染,
             // 那里按 locale 填);此处仅防 {{PINVOU3_TITLE_LANG}} 占位符原文残留在 disk 文件。
             .replace("{{PINVOU3_TITLE_LANG}}", "简体中文");

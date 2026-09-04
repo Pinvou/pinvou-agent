@@ -44,7 +44,11 @@ pub(super) const TIMED_AUTO_THRESHOLD_RELAXED: f32 = 0.80;
 pub(super) const WORK_CONTEXT_AUTO_THRESHOLD: f32 = 0.94;
 pub(super) const WORK_CONTEXT_AUTO_THRESHOLD_RELAXED: f32 = 0.90;
 
-pub(super) const LLM_REVIEW_PROMPT: &str = r#"你是 pinvou 的后台记忆整理器。你只做一件事：复盘刚刚这一轮对话，并对照已有记忆，输出是否需要保存、更新或跳过记忆。不要回答用户问题，不要解释你的判断。
+/// 按轮复盘的系统提示词模板。基线与放宽的置信度门槛都从同一组常量渲染
+/// （[`llm_review_prompt`] / [`explicit_signal_prompt`]）：若提示词仍教旧门槛
+/// （例如放宽后基线段漏改），守规模型会在放宽带内输出 pending_confirm，
+/// 代码侧的调整等于失效。花括号哨兵走 replace 而非 format!，避免转义 JSON 示例。
+pub(super) const LLM_REVIEW_PROMPT_TEMPLATE: &str = r#"你是 pinvou 的后台记忆整理器。你只做一件事：复盘刚刚这一轮对话，并对照已有记忆，输出是否需要保存、更新或跳过记忆。不要回答用户问题，不要解释你的判断。
 
 你必须只输出 JSON，不要解释。格式：
 {
@@ -112,10 +116,10 @@ ttl_days 规则：
 - recent_activity 默认使用 14。
 
 自动写入边界：
-- profile 只有在用户非常明确表达，且 confidence >= 0.92 时才允许 auto_write。
+- profile 只有在用户非常明确表达，且 confidence >= {{PROFILE_AUTO_GATE}} 时才允许 auto_write。
 - preference 默认 pending_confirm。
-- work_context 默认 pending_confirm；只有用户明确要求记住、内容低敏且 confidence >= 0.94 时，才允许 auto_write 或 auto_update。
-- current_focus / recent_activity 内容清楚、低敏且 confidence >= 0.86 时，默认使用 auto_write 或 auto_update；只有不确定、较敏感或用户可能不希望记录时才使用 pending_confirm。
+- work_context 默认 pending_confirm；只有用户明确要求记住、内容低敏且 confidence >= {{WORK_CONTEXT_AUTO_GATE}} 时，才允许 auto_write 或 auto_update。
+- current_focus / recent_activity 内容清楚、低敏且 confidence >= {{TIMED_AUTO_GATE}} 时，默认使用 auto_write 或 auto_update；只有不确定、较敏感或用户可能不希望记录时才使用 pending_confirm。
 
 近期记忆质量：
 - current_focus 要写“用户正在推进什么，以及为什么后续还可能有用”。
@@ -125,6 +129,20 @@ ttl_days 规则：
 
 如果没有值得记的内容，输出 {"items":[]}。
 "#;
+
+/// 渲染后的复盘系统提示词：基线门槛从常量取值（见 [`LLM_REVIEW_PROMPT_TEMPLATE`]）。
+pub(super) fn llm_review_prompt() -> String {
+    LLM_REVIEW_PROMPT_TEMPLATE
+        .replace(
+            "{{PROFILE_AUTO_GATE}}",
+            &PROFILE_AUTO_WRITE_THRESHOLD.to_string(),
+        )
+        .replace(
+            "{{WORK_CONTEXT_AUTO_GATE}}",
+            &WORK_CONTEXT_AUTO_THRESHOLD.to_string(),
+        )
+        .replace("{{TIMED_AUTO_GATE}}", &TIMED_AUTO_THRESHOLD.to_string())
+}
 
 /// trigger 为 explicit_user_signal 时追加到系统提示的硬约束：用户明确要求记住
 /// 的内容不允许被 skip 掉，敏感边界保持不变；同时复述放宽后的置信度门槛。
@@ -594,7 +612,7 @@ async fn request_llm_memory_review(
     // output_language_directive precedent (defense-in-depth: memory is disabled
     // for non-Chinese UIs by enforce_memory_locale_policy; see the
     // memory_output_language_directive docs for reachability).
-    let mut prompt = LLM_REVIEW_PROMPT.to_string();
+    let mut prompt = llm_review_prompt();
     // 用 explicit_remember（而非 trigger）驱动硬约束：门槛放宽以 explicit_remember
     // 为准，两者必须同开同关，否则会出现“门槛已放宽但 prompt 未禁止 skip”的
     // 不一致回合（如 explicit_signal 与 delivery_complete 并存时）。

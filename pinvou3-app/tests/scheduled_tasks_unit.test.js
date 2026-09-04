@@ -584,10 +584,10 @@ assert.ok(
   'selecting a template should confirm through the second-level sheet and create with fixed Yolo mode and no permission UI'
 );
 assert.ok(
-  /const visibleSuggestions\s*=\s*SCHEDULED_TASK_TEMPLATES(?:;|\.map\()/.test(indexHtml) &&
-    !/const visibleSuggestions\s*=\s*SCHEDULED_TASK_TEMPLATES\.filter/.test(indexHtml) &&
+  /const visibleSuggestions\s*=\s*SCHEDULED_TASK_TEMPLATES/.test(indexHtml) &&
+    !/const visibleSuggestions\s*=\s*SCHEDULED_TASK_TEMPLATES\.filter\([^;]*(realTasks|scheduledTasks|createdTemplateIds|task\.templateId)/.test(indexHtml) &&
     /visibleSuggestions\.map\(template/.test(indexHtml),
-  'suggested templates should remain visible after users create matching scheduled tasks'
+  'suggested templates should remain visible after users create matching scheduled tasks (only the memory-enabled gate may hide the memory organizer template)'
 );
 assert.ok(
   /scheduled-task-template-sources-v1/.test(tauriBridge) &&

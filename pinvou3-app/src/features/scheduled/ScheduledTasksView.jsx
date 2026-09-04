@@ -676,10 +676,15 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         const matches = savedModels.filter(model => model.model === task.model);
         return matches.length === 1 ? matches[0].id : '';
       };
-      const visibleSuggestions = SCHEDULED_TASK_TEMPLATES.map(template => ({
-        ...template,
-        ...scheduledCopy.templateMap[template.id],
-      }));
+      // 记忆整理模板与设置页手动入口同口径：记忆关闭（默认 / en、ja 强制关闭）
+      // 时不展示，否则任务创建成功但每次触发都记一条 "memory disabled" 失败。
+      const memoryEnabled = !!(appState.settings && appState.settings.memory_enabled);
+      const visibleSuggestions = SCHEDULED_TASK_TEMPLATES
+        .filter(template => template.kind !== 'memory_organize' || memoryEnabled)
+        .map(template => ({
+          ...template,
+          ...scheduledCopy.templateMap[template.id],
+        }));
       const detailFormIsValid = !!detailForm &&
         !!String(detailForm.name || '').trim() &&
         !!String(detailForm.prompt || '').trim() &&

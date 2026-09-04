@@ -732,7 +732,7 @@ dictJa.uiSettingsView = {
   memorySyncing: '同期中',
   memorySync: 'メモリを同期',
   memoryOrganize: 'AI でメモリを整理',
-  memoryOrganizeDesc: '重複を統合し、古い項目を整理して、長期メモリを簡潔で正確に保ちます',
+  memoryOrganizeDesc: '重複を統合し、古い項目を削除して、長期メモリを簡潔で正確に保ちます',
   memoryOrganizing: '整理中',
   memoryOrganizeNoChange: 'メモリはすでに整っています。今回の変更はありません',
   memoryOrganizeSummary: (merged, updated, deleted) => `統合 ${merged} 件、更新 ${updated} 件、削除 ${deleted} 件`,

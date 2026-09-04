@@ -219,12 +219,20 @@ fn load_memory_sources() -> (
 
 /// 复用 get_memory_overview 的装载与快照写入 helper，刷新 `snapshot.md` 设备
 /// 快照文档。失败以 warning 返回，不影响调用方主流程。
+///
+/// 与 overview 同一道「权威源全部可用才写」的闸门：个别源读取失败时
+/// `load_memory_source` 返回空缺省值，照写会把 snapshot.md 里该类记忆清空。
+/// `runtime_render_failed` 表示调用方已尝试过运行时渲染并失败（如 organize
+/// 命令的 best-effort 预渲染），此时不再重试渲染，也不写快照（与 overview 的
+/// runtime 不可用即 deferred 同口径）。
 fn refresh_memory_snapshot_document(
     session_id: Option<String>,
     store: &SessionStore,
     runtime: Option<&crate::features::memory::RuntimeMemorySnapshot>,
+    runtime_render_failed: bool,
 ) -> Vec<MemoryWarning> {
-    let (sources, mut warnings, _) = load_memory_sources();
+    let (sources, mut warnings, status) = load_memory_sources();
+    let authoritative_sources_available = status.values().all(|source| source.available);
     let MemorySources {
         profile,
         preferences,
@@ -235,36 +243,48 @@ fn refresh_memory_snapshot_document(
         pending,
         never,
     } = sources;
+    let mut runtime_available = !runtime_render_failed;
     let runtime = match (runtime, resolve_memory_session_id(session_id, store)) {
         (Some(snapshot), _) => Some(snapshot.clone()),
-        (None, Some(sid)) => match crate::features::memory::runtime_snapshot(&sid) {
-            Ok(snapshot) => Some(snapshot),
-            Err(error) => {
-                let detail = format!("render runtime memory: {error}");
-                eprintln!("[memory] {detail}");
-                warnings.push(memory_warning("runtime_refresh_failed", "runtime", detail));
-                None
+        (None, Some(sid)) if !runtime_render_failed => {
+            match crate::features::memory::runtime_snapshot(&sid) {
+                Ok(snapshot) => Some(snapshot),
+                Err(error) => {
+                    let detail = format!("render runtime memory: {error}");
+                    eprintln!("[memory] {detail}");
+                    warnings.push(memory_warning("runtime_refresh_failed", "runtime", detail));
+                    runtime_available = false;
+                    None
+                }
             }
-        },
-        (None, None) => None,
+        }
+        _ => None,
     };
-    if let Err(error) = crate::features::memory::write_memory_snapshot_document(
-        &profile,
-        &preferences,
-        &work_context,
-        &current_focus,
-        &recent_activity,
-        &recent_work,
-        &pending,
-        &never,
-        runtime.as_ref(),
-    ) {
-        let detail = format!("write memory snapshot: {error}");
-        eprintln!("[memory] {detail}");
+    if authoritative_sources_available && runtime_available {
+        if let Err(error) = crate::features::memory::write_memory_snapshot_document(
+            &profile,
+            &preferences,
+            &work_context,
+            &current_focus,
+            &recent_activity,
+            &recent_work,
+            &pending,
+            &never,
+            runtime.as_ref(),
+        ) {
+            let detail = format!("write memory snapshot: {error}");
+            eprintln!("[memory] {detail}");
+            warnings.push(memory_warning(
+                "snapshot_refresh_failed",
+                "snapshot",
+                detail,
+            ));
+        }
+    } else {
         warnings.push(memory_warning(
-            "snapshot_refresh_failed",
+            "snapshot_refresh_deferred",
             "snapshot",
-            detail,
+            "memory sources unavailable; snapshot refresh deferred",
         ));
     }
     warnings
@@ -488,10 +508,14 @@ pub async fn organize_memory(
     // served name 探测与运行时凭据准备）。尚无活跃会话（如全新草稿）时退化为
     // pool 共享 bridge + 全局 prefs 直读，同 get_image_input_capability 兜底。
     let bridge = match resolve_memory_session_id(None, &store) {
-        Some(sid) => pool
-            .fresh_bridge_for(&sid)
-            .await
-            .map_err(|error| format!("organize memory: resolve bridge for {sid}: {error:#}"))?,
+        Some(sid) => pool.fresh_bridge_for(&sid).await.map_err(|error| {
+            // fresh_bridge_for 的错误链可含端点/凭据探测信息，与 settings.rs
+            // 的 sanitize_command_error 同口径过 redact_secret 再回给前端。
+            format!(
+                "organize memory: resolve bridge for {sid}: {}",
+                crate::platform::credential_store::redact_secret(&format!("{error:#}"))
+            )
+        })?,
         None => {
             let mut bridge = pool.bridge.clone();
             bridge.prefs = UserPrefs::load();
@@ -502,12 +526,23 @@ pub async fn organize_memory(
     // 手动按钮没有可取消的宿主，cancel 传 None（定时任务入口才传 token）。
     let report = crate::features::memory::organize_memory_with_llm(&bridge, None)
         .await
-        .map_err(|error| format!("organize memory: {error:#}"))?;
+        .map_err(|error| {
+            format!(
+                "organize memory: {}",
+                crate::platform::credential_store::redact_secret(&format!("{error:#}"))
+            )
+        })?;
     let (runtime, mut warnings) = refresh_memory_runtime_best_effort(None, &store, &app);
+    // best-effort 预渲染已失败时不再让快照刷新重试（避免同码 warning 双份 +
+    // 二次失败渲染），快照按 deferred 口径跳过。
+    let runtime_render_failed = warnings
+        .iter()
+        .any(|warning| warning.code == "runtime_refresh_failed");
     warnings.extend(refresh_memory_snapshot_document(
         None,
         &store,
         runtime.as_ref(),
+        runtime_render_failed,
     ));
     Ok(MemoryOrganizeState {
         report,

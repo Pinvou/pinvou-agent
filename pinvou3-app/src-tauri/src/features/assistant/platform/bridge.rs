@@ -449,6 +449,13 @@ impl Pinvou3Bridge {
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
                 crate::platform::super_permission::instruction_block(),
             )
+            // 用户记忆段随 memory 开关填充或删除（默认关闭 + en/ja 强制关闭，见
+            // memory_section 注释）。在 session 渲染层替换而非 OnceLock 的
+            // instructions_md 内，设置变更后新会话即生效；旧会话 prompt 不变。
+            .replace(
+                "{{PINVOU3_MEMORY_SECTION}}\n",
+                bundle::memory_section(crate::features::memory::memory_enabled()),
+            )
             // present_artifact 的 title 语言随 locale(原写死「中文 title」会把英文 UI 的产物
             // 标题/描述/后续总结整段拽回中文,见 prefs::title_language_name 注释)。
             .replace(
@@ -1417,7 +1424,10 @@ impl Pinvou3Bridge {
     pub fn instructions(&self) -> Vec<InstructionSource> {
         let mut out: Vec<InstructionSource> = vec![InstructionSource::Inline {
             name: "pinvou3:bundle/instructions".to_string(),
-            content: instructions_md().to_string(),
+            content: instructions_md().replace(
+                "{{PINVOU3_MEMORY_SECTION}}\n",
+                bundle::memory_section(crate::features::memory::memory_enabled()),
+            ),
         }];
         let user = paths::user_instructions();
         if user.is_file() {
