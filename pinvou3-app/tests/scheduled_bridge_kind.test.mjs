@@ -4,10 +4,11 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
-// 记忆整理模板的 kind 线束契约（行为级）：
-// - kind 仅随 createScheduledTask 进入 create_scheduled_task 的 input；
-// - updateScheduledTask / scheduledTaskBackendInput 永不携带 kind
-//   （kind 是 create-only 元数据，SCHEDULED_TASK_WRITABLE_FIELDS 故意不含它）。
+// Behavioral contract for how the "记忆整理" (memory organize) template's kind
+// is threaded:
+// - kind travels only via createScheduledTask into the create_scheduled_task input;
+// - updateScheduledTask / scheduledTaskBackendInput never carry kind
+//   (kind is create-only metadata; SCHEDULED_TASK_WRITABLE_FIELDS deliberately omits it).
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const source = fs.readFileSync(path.join(root, 'src/platform/tauri/bridge/scheduled.js'), 'utf8');
 const windowObject = { __PINVOU_TAURI_BRIDGE_FEATURES__: {} };

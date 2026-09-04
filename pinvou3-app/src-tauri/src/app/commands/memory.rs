@@ -132,7 +132,8 @@ fn memory_warning(code: &str, source: &str, detail: impl Into<String>) -> Memory
     }
 }
 
-/// get_memory_overview 与整理后的快照刷新共用的八类权威源装载结果。
+/// Loaded results for the eight authoritative memory sources, shared by
+/// get_memory_overview and the post-organize snapshot refresh.
 struct MemorySources {
     profile: crate::features::memory::MemoryProfile,
     preferences: Vec<crate::features::memory::PreferenceFile>,
@@ -144,8 +145,9 @@ struct MemorySources {
     never: Vec<crate::features::memory::NeverMemoryItem>,
 }
 
-/// 逐源加载全部权威源并记录 warning / source status，供 get_memory_overview
-/// 与整理后的快照刷新共用，避免两处装载口径漂移。
+/// Loads every authoritative source one by one, recording warnings and
+/// per-source status. Shared by get_memory_overview and the post-organize
+/// snapshot refresh so the two loading paths cannot drift apart.
 fn load_memory_sources() -> (
     MemorySources,
     Vec<MemoryWarning>,
@@ -217,14 +219,18 @@ fn load_memory_sources() -> (
     )
 }
 
-/// 复用 get_memory_overview 的装载与快照写入 helper，刷新 `snapshot.md` 设备
-/// 快照文档。失败以 warning 返回，不影响调用方主流程。
+/// Refreshes the `snapshot.md` device snapshot document, reusing the
+/// get_memory_overview loading and snapshot-write helpers. Failures are
+/// returned as warnings and do not disturb the caller's main flow.
 ///
-/// 与 overview 同一道「权威源全部可用才写」的闸门：个别源读取失败时
-/// `load_memory_source` 返回空缺省值，照写会把 snapshot.md 里该类记忆清空。
-/// `runtime_render_failed` 表示调用方已尝试过运行时渲染并失败（如 organize
-/// 命令的 best-effort 预渲染），此时不再重试渲染，也不写快照（与 overview 的
-/// runtime 不可用即 deferred 同口径）。
+/// Same gate as overview: write only when every authoritative source is
+/// available — when an individual source fails to read, `load_memory_source`
+/// returns an empty default, and writing anyway would wipe that memory
+/// category from snapshot.md. `runtime_render_failed` means the caller
+/// already attempted a runtime render and it failed (e.g. the organize
+/// command's best-effort pre-render); rendering is not retried and no
+/// snapshot is written (same policy as overview, where an unavailable runtime
+/// defers the refresh).
 fn refresh_memory_snapshot_document(
     session_id: Option<String>,
     store: &SessionStore,
@@ -493,8 +499,10 @@ pub async fn get_memory_overview(
     })
 }
 
-/// 整理优化记忆：全量扫描六类存储，LLM 产出 delete/update/merge 并应用。
-/// 前端在 memory 关闭时应保持按钮禁用；这里仍做 memory_enabled 守卫。
+/// Organizes and prunes memory: scans all six stores in full, has the LLM
+/// produce delete/update/merge actions, and applies them. The frontend should
+/// keep the button disabled while memory is off; the `memory_enabled` guard
+/// here stays as a backstop.
 #[tauri::command]
 pub async fn organize_memory(
     app: AppHandle,
@@ -504,13 +512,17 @@ pub async fn organize_memory(
     if !crate::features::memory::memory_enabled() {
         return Err("memory disabled".to_string());
     }
-    // 与 chat 的图片路由同一套解析：fresh bridge 按会话绑定模型（含本地 vLLM
-    // served name 探测与运行时凭据准备）。尚无活跃会话（如全新草稿）时退化为
-    // pool 共享 bridge + 全局 prefs 直读，同 get_image_input_capability 兜底。
+    // Resolved like chat's image routing: a fresh bridge bound to the session's
+    // model (including local vLLM served-name probing and runtime credential
+    // preparation). Without an active session yet (e.g. a brand-new draft),
+    // degrade to the pool's shared bridge with global prefs loaded directly,
+    // the same `get_image_input_capability` fallback.
     let bridge = match resolve_memory_session_id(None, &store) {
         Some(sid) => pool.fresh_bridge_for(&sid).await.map_err(|error| {
-            // fresh_bridge_for 的错误链可含端点/凭据探测信息，与 settings.rs
-            // 的 sanitize_command_error 同口径过 redact_secret 再回给前端。
+            // The `fresh_bridge_for` error chain can carry endpoint/credential
+            // probing details; pass it through `redact_secret` before returning
+            // to the frontend, same policy as `sanitize_command_error` in
+            // settings.rs.
             format!(
                 "organize memory: resolve bridge for {sid}: {}",
                 crate::platform::credential_store::redact_secret(&format!("{error:#}"))
@@ -523,7 +535,8 @@ pub async fn organize_memory(
             bridge
         }
     };
-    // 手动按钮没有可取消的宿主，cancel 传 None（定时任务入口才传 token）。
+    // The manual button has no cancellable owner, so pass None for cancel (only
+    // the scheduled-task entry point passes a token).
     let report = crate::features::memory::organize_memory_with_llm(&bridge, None)
         .await
         .map_err(|error| {
@@ -533,8 +546,9 @@ pub async fn organize_memory(
             )
         })?;
     let (runtime, mut warnings) = refresh_memory_runtime_best_effort(None, &store, &app);
-    // best-effort 预渲染已失败时不再让快照刷新重试（避免同码 warning 双份 +
-    // 二次失败渲染），快照按 deferred 口径跳过。
+    // If the best-effort pre-render already failed, do not let the snapshot
+    // refresh retry (avoiding a duplicate same-code warning and a second
+    // failed render); the snapshot is skipped as deferred.
     let runtime_render_failed = warnings
         .iter()
         .any(|warning| warning.code == "runtime_refresh_failed");
@@ -551,7 +565,8 @@ pub async fn organize_memory(
     })
 }
 
-/// 最近的记忆整理报告，新的在前；从未整理过时返回空数组。
+/// Most recent memory organize reports, newest first; empty when organize has
+/// never run.
 #[tauri::command]
 pub fn get_memory_organize_history() -> Vec<crate::features::memory::MemoryOrganizeReport> {
     crate::features::memory::load_organize_history()

@@ -21,7 +21,7 @@ use crate::platform::prefs::{SavedModel, UserPrefs};
 type StartedCallback =
     Box<dyn FnMut(String) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send>;
 type ModelIdResolver = Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>;
-/// automation_id → 任务种类（None = 普通聊天任务）。
+/// automation_id → task kind (None = ordinary chat task).
 type KindResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 /// The narrow boundary between base-owned task execution and Pinvou's scheduled
@@ -46,9 +46,10 @@ pub(crate) trait ScheduledConversationRuntime: Send + Sync {
         on_started: StartedCallback,
     ) -> Result<ScheduledTurnCompletion>;
 
-    /// 执行一次 app 侧记忆整理（`memory_organize` 种类任务的运行体）。
-    /// 与对话轮不同：不创建会话、不经过引擎。取消语义见
-    /// [`ScheduledChatExecutor::execute_memory_organize`]。
+    /// Runs one app-side memory organization pass (the run body of a `memory_organize`
+    /// kind task). Unlike a conversation turn: no session is created and the engine is
+    /// not involved. See [`ScheduledChatExecutor::execute_memory_organize`] for
+    /// cancellation semantics.
     async fn organize_memory(&self, cancel: CancellationToken) -> Result<MemoryOrganizeReport>;
 }
 
@@ -111,13 +112,14 @@ impl ScheduledConversationRuntime for EngineScheduledRuntime {
     }
 
     async fn organize_memory(&self, cancel: CancellationToken) -> Result<MemoryOrganizeReport> {
-        // 与 chat 命令层的 organize_memory 同口径：memory 关闭时先拒绝。
+        // Same policy as the chat command layer's organize_memory: refuse up front when
+        // memory is disabled.
         if !crate::features::memory::memory_enabled() {
             anyhow::bail!("memory disabled");
         }
-        // 与 commands::memory 的 organize_memory 同一套 bridge 解析：有活跃会话
-        // 时按该会话绑定模型（fresh bridge，含运行时凭据准备）；否则退化为共享
-        // bridge + 全局 prefs 直读。
+        // Same bridge resolution as commands::memory's organize_memory: with an active
+        // session use its bound model (fresh bridge, incl. runtime credential prep);
+        // otherwise fall back to the shared bridge plus a direct read of global prefs.
         let bridge = match self.store.active_id() {
             Some(session_id) => self.pool.fresh_bridge_for(&session_id).await?,
             None => {
@@ -146,7 +148,7 @@ impl ScheduledChatExecutor {
         }
     }
 
-    /// 注入 automation_id → kind 解析（生产实现读 task-kinds sidecar）。
+    /// Injects the automation_id → kind resolver (production reads the task-kinds sidecar).
     pub(crate) fn with_kind_resolver(mut self, kind_resolver: KindResolver) -> Self {
         self.kind_resolver = Some(kind_resolver);
         self
@@ -175,16 +177,20 @@ impl ScheduledChatExecutor {
             .and_then(|resolver| resolver(automation_id))
     }
 
-    /// `memory_organize` 种类的一次运行：不建会话、不发引擎轮，也不发
-    /// ThreadCreated / ThreadLinked 事件——run 生命周期只需要底座 Task 的终态
-    /// （reconcile 会把 thread_id/turn_id 缺省的 Task 状态回写到 run 记录），
-    /// 整理报告本身经记忆历史命令查看，运行记录保持干净。
+    /// One run of the `memory_organize` kind: no session is created, no engine turn is
+    /// issued, and no ThreadCreated / ThreadLinked events are emitted — the run lifecycle
+    /// only needs the base Task's terminal state (reconcile writes a Task whose
+    /// thread_id/turn_id are unset back to the run record); the organize report itself is
+    /// viewed via the memory history commands, keeping run records clean.
     ///
-    /// 取消语义：select 让取消即时生效，不必等最长 75s 的整理调用返回（否则
-    /// 删除运行中任务的 15s 终态等待几乎必然超时）；取消分支丢弃在途 future，
-    /// 连同未返回的 LLM 请求一起中止。LLM 已返回、应用动作前的取消由
-    /// organize 内部的应用前检查兜住；仅剩同步应用段（毫秒级）无法打断，
-    /// 该情形按取消记录 run，报告已落 organize_history.json 可审计。
+    /// Cancellation semantics: the select makes cancellation take effect immediately
+    /// instead of waiting up to 75s for the organize call to return (otherwise the 15s
+    /// terminal-state wait when deleting a running task would almost certainly time out).
+    /// The cancel branch drops the in-flight future, aborting the unanswered LLM request
+    /// with it. A cancellation after the LLM has returned but before actions are applied
+    /// is caught by organize's pre-apply check; only the synchronous apply segment
+    /// (milliseconds) cannot be interrupted — that case records the run as canceled, and
+    /// the report has already landed in organize_history.json for auditing.
     async fn execute_memory_organize(&self, cancel: CancellationToken) -> TaskExecutionResult {
         let organized = tokio::select! {
             biased;
@@ -213,7 +219,8 @@ impl ScheduledChatExecutor {
     }
 }
 
-/// 运行完成时的一段人读摘要（仅进入底座 Task 的 result_summary，不落 run 记录）。
+/// A human-readable summary at run completion (goes only into the base Task's
+/// result_summary, never into the run record).
 fn memory_organize_summary(report: &MemoryOrganizeReport) -> String {
     let total =
         |counts: &std::collections::BTreeMap<String, u32>| counts.values().copied().sum::<u32>();
@@ -243,7 +250,8 @@ impl TaskExecutor for ScheduledChatExecutor {
             .conversation_key()
             .unwrap_or_else(|| task.id())
             .to_string();
-        // 记忆整理任务在这里分流：不创建会话、不解析模型绑定。
+        // Memory organize tasks branch off here: no session creation, no model binding
+        // resolution.
         if self.kind_for(&automation_id).as_deref() == Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE) {
             return self.execute_memory_organize(cancel).await;
         }
@@ -571,9 +579,10 @@ mod tests {
         async fn organize_memory(&self, cancel: CancellationToken) -> Result<MemoryOrganizeReport> {
             self.organize_calls.fetch_add(1, Ordering::SeqCst);
             if self.organize_hang_after_cancel.load(Ordering::SeqCst) {
-                // 模拟长时间无返回的 LLM 调用：通知测试已进入整理，再触发取消
-                // 并永久挂起。修复前 executor 会等在这里，删除运行中任务的
-                // 15s 终态等待几乎必然超时。
+                // Simulate a long-running LLM call that never returns: notify the test that
+                // organize has started, then trigger cancellation and hang forever. Before
+                // the fix the executor waited here, so the 15s terminal-state wait when
+                // deleting a running task almost certainly timed out.
                 self.started.notify_one();
                 cancel.cancel();
                 std::future::pending::<()>().await;
@@ -1067,7 +1076,7 @@ mod tests {
             finished.result_summary.as_deref(),
             Some("Memory organize completed: scanned 3, no changes needed"),
         );
-        // 整理类运行不建会话也不跑引擎轮：thread/turn 保持缺省。
+        // Organize runs create no session and run no engine turn: thread/turn stay unset.
         assert_eq!(finished.thread_id, None, "must not create a session");
         assert_eq!(finished.turn_id, None);
         assert!(
@@ -1122,8 +1131,9 @@ mod tests {
         let (_root, manager) = manager_with_executor(executor).await?;
 
         let queued = manager.add_task(request("organize memory")).await?;
-        // 等 runtime 进入永不返回的整理调用，再取消：修复前 executor 会一直
-        // 等 75s 的整理调用本身，删除运行中任务的 15s 终态等待必然超时。
+        // Wait for the runtime to enter the never-returning organize call, then cancel:
+        // before the fix the executor kept waiting on the 75s organize call itself, so the
+        // 15s terminal-state wait when deleting a running task always timed out.
         runtime.started.notified().await;
         manager.cancel_task(&queued.id).await?;
         let finished =

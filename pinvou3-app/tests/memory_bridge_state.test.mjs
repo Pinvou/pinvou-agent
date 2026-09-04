@@ -16,7 +16,7 @@ const state = {
 };
 let response;
 let rejectOverview = false;
-// organizeMemory 内部会续发 overview 重拉,按命令名记录入参而不是只记最后一次。
+// organizeMemory chains an overview refetch; record args per command, not just the last call.
 const invokeArgsByCommand = new Map();
 const invoke = async (command, ...rest) => {
   invokeArgsByCommand.set(command, [command, ...rest]);
@@ -118,9 +118,10 @@ await api.confirmMemoryCandidate('pending-1');
 assert.deepEqual(state.memory.pending, [], 'committed confirmation must survive overview failure');
 rejectOverview = false;
 
-// ── AI 整理记忆契约 ──────────────────────────────────────────────
-// organize_memory 必须以无参形式调用，并原样 resolve 后端载荷
-// { report, runtime, warnings }；整理后重拉 overview 收敛面板。
+// ── AI organize memory contract ("AI 整理记忆") ──────────────────────────────────────────────
+// organize_memory must be invoked with no args and resolve the backend payload
+// { report, runtime, warnings } as-is; the overview is refetched afterwards to
+// reconcile the panel.
 const organizePayload = {
   report: {
     started_at: '2026-09-03T09:00:00Z', finished_at: '2026-09-03T09:00:05Z', model: 'test-model',
@@ -138,9 +139,10 @@ assert.equal(organizeResult, organizePayload, 'organizeMemory must resolve the o
 assert.deepEqual(invokeArgsByCommand.get('organize_memory'), ['organize_memory'], 'organize_memory must be invoked without args');
 assert.equal(state.memory.error, null, 'successful organize must clear the panel error');
 
-// 失败：直接继续抛出，且不得写入 memory.error——那是加载失败专用通道，
-// 设置页横幅会把它渲染成通用的“加载失败”文案（错因误导）；整理失败的
-// 原因由调用方的 catch 就近透传。
+// Failure: rethrow, and never write memory.error — that is the dedicated
+// load-failure channel (the settings banner renders it as the generic
+// "加载失败" (load failed) copy, which would mislead); the organize failure
+// reason is surfaced by the caller's catch.
 response = command => {
   if (command === 'organize_memory') throw new Error('organize memory: model unavailable');
   return overview();
@@ -148,7 +150,7 @@ response = command => {
 await assert.rejects(api.organizeMemory(), /organize memory: model unavailable/, 'organize failures must propagate');
 assert.equal(state.memory.error, null, 'organize failure must not pollute the memory.error load-failure channel');
 
-// 整理历史：透传 get_memory_organize_history 的数组（最新在前）。
+// Organize history: pass through the get_memory_organize_history array (newest first).
 const historyPayload = [{ finished_at: '2026-09-03T09:00:05Z' }, { finished_at: '2026-09-02T09:00:00Z' }];
 response = command => command === 'get_memory_organize_history' ? historyPayload : overview();
 assert.equal(await api.loadOrganizeHistory(), historyPayload, 'loadOrganizeHistory must pass the history array through');

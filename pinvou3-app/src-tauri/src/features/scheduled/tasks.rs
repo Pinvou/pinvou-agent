@@ -33,7 +33,8 @@ const SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION: u32 = 1;
 // strips the legacy overbroad snapshot fields.
 const SCHEDULED_HISTORY_ARCHIVE_SCHEMA_VERSION: u32 = 2;
 const SCHEDULED_EXECUTION_MODE: &str = "yolo";
-/// 目前唯一受支持的任务种类：运行时执行 app 侧记忆整理，而不是引擎对话轮。
+/// Only supported task kind for now: runs app-side memory organization instead of an
+/// engine conversation turn.
 pub(crate) const SCHEDULED_TASK_KIND_MEMORY_ORGANIZE: &str = "memory_organize";
 
 #[path = "stores.rs"]
@@ -97,7 +98,8 @@ pub struct ScheduledTaskDto {
     pub cwds: Vec<String>,
     pub model: Option<String>,
     pub model_id: Option<String>,
-    /// 任务种类；None = 普通聊天任务，`memory_organize` = 运行时执行记忆整理。
+    /// Task kind; None = ordinary chat task, `memory_organize` = app-side memory
+    /// organize run.
     pub kind: Option<String>,
     pub mode: Option<String>,
     pub allow_shell: bool,
@@ -131,7 +133,7 @@ pub struct CreateScheduledTaskInput {
     pub model: Option<String>,
     #[serde(default)]
     pub model_id: Option<String>,
-    /// 任务种类；只接受缺省（普通聊天任务）或 "memory_organize"。
+    /// Task kind; only None (ordinary chat task) or "memory_organize" is accepted.
     #[serde(default)]
     pub kind: Option<String>,
     #[serde(default)]
@@ -364,10 +366,12 @@ impl ScheduledTaskState {
         let manager = self.automations.lock().await;
         let requested_model_id = input.model_id.clone();
         let requires_model_binding = requested_model_id.is_some();
-        // 种类先于任何持久化校验/归一化，垃圾值直接拒绝（与 mode 校验同风格）。
+        // The kind is validated before any persistence/normalization; junk values are
+        // rejected outright (same style as the mode check).
         let requested_kind = canonical_scheduled_kind(input.kind.clone())?;
-        // 记忆整理任务与设置页手动入口同口径：记忆关闭（默认 / en-ja 强制关闭）
-        // 时拒绝创建，否则任务创建成功但每次触发都记一条 "memory disabled" 失败。
+        // Memory organize tasks follow the same rule as the settings-page manual entry:
+        // refuse creation while memory is disabled (off by default, force-off for en-ja),
+        // or the task is created fine but every run logs a "memory disabled" failure.
         if requested_kind.as_deref() == Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE)
             && !crate::features::memory::memory_enabled()
         {
@@ -785,7 +789,8 @@ impl ScheduledTaskState {
                     "Deleted scheduled task {id}, but failed to remove its UI metadata: {error:#}"
                 );
             }
-            // 先构造 DTO 再清种类：删除回执里保留 kind 供前端渲染模板标记。
+            // Build the DTO before clearing the kind: the delete receipt keeps the kind so
+            // the frontend can render the template marker.
             let deleted = DeletedScheduledTaskDto {
                 task: map_scheduled_task_with_bindings(
                     deleted,
@@ -1391,7 +1396,8 @@ fn build_create_request(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(default_model);
     canonical_scheduled_mode(input.mode, None)?;
-    // 种类在创建期白名单校验（归一化结果由 create_task 持有并落 sidecar）。
+    // Kind is allow-listed at creation time (create_task owns the normalized result and
+    // persists it to the sidecar).
     canonical_scheduled_kind(input.kind)?;
     // 工作间由 automation_id 自动分配；客户端不能提供或覆盖路径。
     let status = paused_to_status(input.paused.unwrap_or(false));
@@ -1423,8 +1429,9 @@ fn build_update_request(
         input.trust_mode,
         input.auto_approve,
     );
-    // 种类是创建期决定的一次性属性：更新契约不含 kind（UpdateScheduledTaskInput
-    // 没有该字段，JSON 里多传的 kind 会被 serde 静默丢弃），永不改写 sidecar。
+    // The kind is a one-time property decided at creation: the update contract has no
+    // kind (UpdateScheduledTaskInput lacks the field, and serde silently drops an extra
+    // "kind" in the JSON), so the sidecar is never rewritten.
     canonical_scheduled_mode(input.mode, None)?;
     let status = input.paused.map(paused_to_status);
     Ok(UpdateAutomationRequest {
@@ -1461,8 +1468,9 @@ fn canonical_scheduled_mode(
     }
 }
 
-/// 种类白名单：缺省为普通聊天任务；目前只接受 `memory_organize`。
-/// 风格与 [`canonical_scheduled_mode`] 一致：trim 后精确匹配，其余一律拒绝。
+/// Kind allow-list: missing means an ordinary chat task; only `memory_organize` is
+/// accepted for now. Same style as [`canonical_scheduled_mode`]: exact match after
+/// trimming, everything else is rejected.
 fn canonical_scheduled_kind(kind: Option<String>) -> Result<Option<String>, String> {
     let Some(kind) = kind else {
         return Ok(None);
@@ -2049,7 +2057,8 @@ mod tests {
             "kind must persist across restart"
         );
 
-        // 非受支持种类（历史遗留或手工写入）读取时归一化为普通聊天任务。
+        // Unsupported kinds (legacy leftovers or hand-written) read back as an ordinary
+        // chat task.
         let mut registry = reopened.registry.read().clone();
         registry.tasks.insert(
             "automation-legacy".to_string(),
@@ -2067,7 +2076,7 @@ mod tests {
             Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE)
         );
 
-        // set_kind(None) 删除记录，回到普通聊天任务。
+        // set_kind(None) removes the record, back to an ordinary chat task.
         reloaded.set_kind("automation-1", None).expect("clear kind");
         assert_eq!(reloaded.kind_for("automation-1"), None);
         let cleared = ScheduledTaskKindStore::open(path).expect("reopen cleared store");
@@ -3231,9 +3240,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// `memory_organize` 种类的完整生命周期：垃圾种类创建期拒绝且不留任何持久
-    /// 化；合法种类落到 sidecar 并随 DTO 返回；更新契约不含 kind；删除回执仍带
-    /// kind 且 sidecar 清理干净。
+    /// Full lifecycle of the `memory_organize` kind: junk kinds are rejected at creation
+    /// and leave nothing persisted; a valid kind lands in the sidecar and comes back on
+    /// the DTO; the update contract has no kind; the delete receipt still carries the
+    /// kind and the sidecar is cleaned up.
     #[tokio::test]
     async fn memory_organize_kind_create_update_and_delete_lifecycle() {
         let _guard = crate::platform::paths::tests::ENV_LOCK
@@ -3243,8 +3253,8 @@ mod tests {
         let previous = std::env::var("PINVOU3_HOME").ok();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        // lifecycle 面向已开记忆的用户：先开记忆（创建门控见
-        // memory_organize_task_creation_requires_memory_enabled）。
+        // The lifecycle targets a user with memory enabled: turn memory on first (for the
+        // creation gate, see memory_organize_task_creation_requires_memory_enabled).
         let settings = crate::platform::paths::settings_path();
         std::fs::create_dir_all(settings.parent().unwrap()).expect("settings dir");
         std::fs::write(
@@ -3285,7 +3295,8 @@ mod tests {
             retention_handle: None,
         };
 
-        // 垃圾种类：拒绝错误与 mode 校验同风格，且任何持久化都不发生。
+        // Junk kind: the rejection error matches the mode-check style, and nothing is
+        // persisted at all.
         let error = state
             .create_for_test(CreateScheduledTaskInput {
                 name: "bad kind".to_string(),
@@ -3319,7 +3330,7 @@ mod tests {
             "rejected kind must not leave a kind entry"
         );
 
-        // 合法种类：sidecar 落库，DTO 携带 kind。
+        // Valid kind: persisted to the sidecar, DTO carries the kind.
         let created = state
             .create_for_test(CreateScheduledTaskInput {
                 name: "整理记忆".to_string(),
@@ -3353,7 +3364,8 @@ mod tests {
             "kind must persist across restart"
         );
 
-        // 更新契约不含 kind：JSON 里多传 kind 被 serde 静默丢弃，sidecar 不变。
+        // Update contract has no kind: an extra kind in the JSON is silently dropped by
+        // serde, sidecar unchanged.
         let update: UpdateScheduledTaskInput = serde_json::from_value(serde_json::json!({
             "name": "整理记忆（改名）",
             "kind": "summarize"
@@ -3374,7 +3386,7 @@ mod tests {
             Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE)
         );
 
-        // 删除回执仍带 kind 供前端渲染，sidecar 清理干净。
+        // Delete receipt still carries the kind for frontend rendering; sidecar cleaned up.
         let deleted = state
             .delete_for_test(created.id.clone())
             .await
@@ -4446,8 +4458,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    // 记忆整理任务与设置页手动入口同口径：记忆关闭（默认 / en-ja 强制关闭）
-    // 时拒绝创建，否则任务创建成功但每次触发都记一条 "memory disabled" 失败。
+    // Memory organize tasks follow the same rule as the settings-page manual entry:
+    // refuse creation while memory is disabled (off by default, force-off for en-ja),
+    // or the task is created fine but every run logs a "memory disabled" failure.
     #[tokio::test]
     async fn memory_organize_task_creation_requires_memory_enabled() {
         let _guard = crate::platform::paths::tests::ENV_LOCK
@@ -4504,7 +4517,7 @@ mod tests {
             paused: Some(false),
         };
 
-        // 默认配置（memory_enabled=false）：创建被拒绝。
+        // Default config (memory_enabled=false): creation is refused.
         let refused = state
             .create_for_test(input(Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string())))
             .await;
@@ -4513,7 +4526,7 @@ mod tests {
             "memory organize tasks must be refused while memory is disabled"
         );
 
-        // 开启记忆后同输入创建成功。
+        // With memory enabled, the same input creates successfully.
         let settings = crate::platform::paths::settings_path();
         std::fs::create_dir_all(settings.parent().unwrap()).expect("settings dir");
         std::fs::write(

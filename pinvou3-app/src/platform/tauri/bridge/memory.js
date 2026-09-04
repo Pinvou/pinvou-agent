@@ -419,20 +419,26 @@
       if (sid === state.activeSessionId) addSystemItem(bt("memoryNeverFailed") + e);
     }
   }
-  // AI 整理记忆：整理的是全局记忆数据，不依赖当前会话；但入口仍捕获会话，
-  // 成功/失败都只写回发起会话的面板（同 saveMemoryProfilePatch 的不变量，
-  // 防止 await 期间切走后把结果或错误渲染进别的对话流）。成功后沿用写流程
-  // 的 runtime/warnings 收敛（applyMemoryWriteState）并重拉 overview 刷新面板
-  // 内容；报告本身由调用方从返回值取。失败直接继续抛出：memory.error 是加载
-  // 失败专用通道（设置页横幅会把它渲染成通用的“加载失败”文案），整理失败的
-  // 原因由调用方的 catch 就近透传，不污染该通道。
+  // AI organize memory ("AI 整理记忆"): operates on global memory data and does
+  // not depend on the current session; the entry point still captures the
+  // session so success and failure are both written back only to the panel of
+  // the session that started it (same invariant as saveMemoryProfilePatch:
+  // prevents rendering results or errors into another conversation stream if
+  // the user switches away during the await). On success, reuse the write
+  // flow's runtime/warnings reconciliation (applyMemoryWriteState) and refetch
+  // the overview to refresh panel content; the caller reads the report from
+  // the return value. On failure, rethrow: memory.error is the dedicated
+  // load-failure channel (the settings banner renders it as the generic
+  // "加载失败" (load failed) copy), so the organize failure reason is
+  // surfaced by the caller's catch and must not pollute that channel.
   async function organizeMemory() {
     if (!invoke) return null;
     const sid = state.activeSessionId; // same as saveMemoryProfilePatch: after switching away, never write to B's panel
     const result = await invoke("organize_memory");
     if (sid === state.activeSessionId && result) applyMemoryWriteState(result);
-    // 整理会合并/删除条目：照其他写流程重拉 overview 刷新面板内容；
-    // 返回值保持 organize_memory 原始载荷（report/runtime/warnings）。
+    // Organizing can merge/delete entries: refetch the overview like the other
+    // write flows to refresh panel content; the return value stays the raw
+    // organize_memory payload (report/runtime/warnings).
     await loadMemoryOverview();
     return result;
   }
