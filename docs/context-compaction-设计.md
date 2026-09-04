@@ -71,7 +71,9 @@ served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口�
 1. `monitor.rs`：`probe_vllm_served_model` → `probe_vllm_model_info`，返回
    `(Option<String>, Option<u32>)`（name, max_model_len）。`parse_models_response`
    已解析两者，现在只是别丢 max——纯透传，零新增请求。
-2. `engine_pool.rs`：探测结果两个都用，name 覆盖 model（现状不变）+ 存 `max_model_len`。
+2. `engine_pool.rs`：探测结果两个都用，name 按 `resolve_served_model` 决策校正
+   （配置名在服务列表中原样保留，仅单模型服务且不含配置名才跟随，其余保留配置名让
+   `model_not_found` 显式浮现）+ 存 `max_model_len`。
 3. `SavedModel`：持久化具体部署的 `context_window_tokens` / `max_output_tokens`，与发给服务端
    的 wire model alias 解耦；设置页可为任意 OpenAI-compatible 引擎配置。
 4. `bridge/mod.rs`：声明窗口与 probe 取较小值，生成同时包含 context/output 的
