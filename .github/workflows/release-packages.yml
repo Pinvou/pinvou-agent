@@ -103,9 +103,10 @@ jobs:
       # [profile.release] 注释。
       # --icf=safe:lld 相同代码折叠(相似代码段合并,体积优化)。safe 档只折叠
       # 「地址确定未被取用」的函数。ICF 与 Rust 函数地址同一性的边界是已知问题
-      # (rust#160267 即一例:safe 档下也曾误编译,根因在 LLVM 侧已修),故取
-      # 保守档而非 all。RUSTFLAGS 是 env 级注入,同时覆盖本 job 内的 tauri 主构建
-      # 与 knowledge-host 独立构建(后者 profile 已在 pinvou-knowledge/Cargo.toml)。
+      # (rust#160267 即一例:safe 档下也曾误编译,根因在 LLVM 侧、尚未修复),
+      # 故取保守档而非 all。RUSTFLAGS 是 env 级注入,同时覆盖本 job 内的
+      # tauri 主构建与 knowledge-host 独立构建(后者 profile 已在
+      # pinvou-knowledge/Cargo.toml)。
       # remap-path-prefix:产物内嵌的构建机绝对路径(panic location 等)归一为 /。
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--icf=safe -C remap-path-prefix=${{ github.workspace }}=/"
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
