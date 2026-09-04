@@ -29,7 +29,7 @@ lark-cli base +form-detail --share-token <share_token> --format pretty
 
 ## filter 显示条件
 
-`questions[].filter` 控制题目显示/隐藏：
+`questions[].filter` 控制题目显示/隐藏。此为分享详情的返回结构；写入 `visible_rule` 时仍按 [filter-condition.md](lark-base-filter-condition.md) 的 tuple 公共协议构造：
 
 ```json
 {

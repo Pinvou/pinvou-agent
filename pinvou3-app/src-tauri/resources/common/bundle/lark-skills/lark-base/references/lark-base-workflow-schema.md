@@ -153,7 +153,7 @@
   "table_name": "订单表",
   "watched_field_name": "状态",
   "trigger_control_list": ["pasteUpdate", "automationBatchUpdate"],
-  "condition_list": [] /* AndCondition 数组 */ 
+  "condition_list": null /* 无条件时传 null，勿传 []（空数组报错） */
 }
 ```
 
@@ -170,7 +170,7 @@
 {
   "table_name": "任务表",
   "trigger_control_list": [],
-  "condition_list": []
+  "condition_list": null
 }
 ```
 
@@ -1062,6 +1062,18 @@ $.{stepId}.{fieldId}.fileToken    → 文件 Token 列表（array<string>，仅�
   ]
 }
 ```
+
+---
+
+## workflow 外层字段
+
+`+workflow-create` / `+workflow-update` 请求中，`steps` 之外的外层字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `title` | string | 是 | workflow 标题 |
+| `client_token` | string | 是 | 幂等令牌，每次请求唯一（时间戳或随机字符串），防止重复创建；缺失报 `client token is empty` |
+| `status` | string | 否 | 启停状态；取值以 `+workflow-get` 返回为准，本文档不定义枚举 |
 
 ---
 

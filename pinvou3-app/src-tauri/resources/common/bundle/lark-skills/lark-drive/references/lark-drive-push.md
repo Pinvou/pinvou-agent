@@ -102,7 +102,7 @@ lark-cli drive +push --local-dir ./repo --folder-token fldcnxxxxxxxxx \
 - 在线文档（docx / sheet / bitable / ...）和快捷方式即使本地完全没有同名文件，也**不会**进入删除候选，因为它们从来不进 `summary.uploaded` 的对齐域。
 - **远端只有的空目录、本地已删除的目录**也不会被清理 —— 这是"文件级镜像"的语义边界，命令不会对目录结构做主动收敛。
 
-第 6 章里把 `+push --delete-remote` 标了 `high-risk-write`，CLI 这边的实现等价于"未传 `--yes` 时拒绝执行 + 动态 scope 预检"，符合该约束的精神。
+[lark-shared/SKILL.md](../../lark-shared/SKILL.md) 的高风险写审批协议将 `+push --delete-remote` 标为 `high-risk-write`，CLI 这边的实现等价于"未传 `--yes` 时拒绝执行 + 动态 scope 预检"，符合该约束的精神。
 
 ## 输出 schema
 
