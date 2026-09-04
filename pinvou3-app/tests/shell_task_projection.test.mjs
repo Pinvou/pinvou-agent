@@ -218,8 +218,9 @@ test('a Bash action=run card is a start tool and does not arm the guard', () => 
 });
 
 test('a brand-new subagent job first seen terminal after an older wait card is conservatively hidden', () => {
-  // Accepted limit until origin identity lands: the timeline alone cannot
-  // tell this job apart from retained older work, so it stays hidden.
+  // The wait-observer guard cannot tell this terminal-first snapshot apart
+  // from retained older work, and the job's own origin card has not rendered
+  // yet, so it stays hidden until that card lands.
   const harness = createTerminal([{
     type: 'tool',
     toolId: 'old-wait',
@@ -235,6 +236,7 @@ test('a brand-new subagent job first seen terminal after an older wait card is c
     exit_code: 0,
     stdout_tail: 'hi',
     stderr_tail: '',
+    owner_agent_id: 'agent-secondary',
   })]);
 
   assert.equal(running, false);
@@ -300,6 +302,26 @@ test('identified completed root jobs without their origin card stay out of the c
   assert.equal(running, false);
   assert.equal(harness.chatItems.length, 0);
   assert.equal(harness.notifications(), 0);
+});
+
+test('identified completed subagent jobs without their origin card stay visible', () => {
+  // The origin suppression targets root jobs only: a subagent-owned job with
+  // a missing origin card must keep a live status card like an origin-less
+  // job, because the monitor emission handlers only update existing cards.
+  const harness = createTerminal();
+
+  const running = harness.terminal.applyShellSnapshots('session-current', [snapshot({
+    origin_tool_call_id: 'tool-before-compaction',
+    origin_turn_id: 'turn-old',
+    owner_agent_id: 'agent-secondary',
+  })]);
+
+  assert.equal(running, false);
+  assert.equal(harness.chatItems.length, 1);
+  assert.equal(harness.chatItems[0].toolId, 'shell-task:shell-old');
+  assert.equal(harness.chatItems[0].state, 'failed');
+  assert.equal(harness.chatItems[0].shellStatus, 'failed');
+  assert.equal(harness.notifications(), 1);
 });
 
 test('the web bridge keeps the same stale-completion guard', () => {
