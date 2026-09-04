@@ -577,7 +577,6 @@ dictEn.uiToolRender = {
 };
 
 dictEn.uiChatView = {
-  comingSoon:'Coming soon',
   placeholderSceneAdjust:'Describe how you want to adjust the selected element',
   placeholderSceneDataViz:'Paste data or describe metrics to generate a visualization dashboard',
   placeholderScenePoster:'Describe the visual poster you want to generate or adjust',

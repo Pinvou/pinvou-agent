@@ -579,7 +579,6 @@ dictJa.uiToolRender = {
 };
 
 dictJa.uiChatView = {
-  comingSoon:'近日公開',
   placeholderSceneAdjust:'選択した要素をどのように調整したいかを記述してください',
   placeholderSceneDataViz:'データを貼り付けるか指標を記述して、可視化ダッシュボードを生成',
   placeholderScenePoster:'生成・調整したいビジュアルポスターを記述してください',

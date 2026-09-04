@@ -3123,12 +3123,12 @@ fn mode_lane_defaults_round_trip_and_validate() {
 #[test]
 fn legacy_design_default_folds_into_work_on_load() {
     let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // pid + in-process counter: paths::tests::ENV_LOCK doc warns nanos-only
+    // names can collide across two concurrent cargo test processes.
     let tmp = std::env::temp_dir().join(format!(
-        "pinvou3-sessions-test-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
+        "pinvou3-sessions-test-{}-{}",
+        std::process::id(),
+        paths::tests::unique_suffix()
     ));
     // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
     unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
@@ -3180,12 +3180,12 @@ fn legacy_design_default_folds_into_work_on_load() {
 #[test]
 fn legacy_design_default_survives_unrelated_prefs_write() {
     let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // pid + in-process counter: paths::tests::ENV_LOCK doc warns nanos-only
+    // names can collide across two concurrent cargo test processes.
     let tmp = std::env::temp_dir().join(format!(
-        "pinvou3-sessions-test-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
+        "pinvou3-sessions-test-{}-{}",
+        std::process::id(),
+        paths::tests::unique_suffix()
     ));
     // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
     unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };

@@ -587,7 +587,6 @@ dictZh.uiToolRender = {
 
 
 dictZh.uiChatView = {
-  comingSoon:'即将上线',
   placeholderSceneAdjust:'描述你想怎么调整选中的元素',
   placeholderSceneDataViz:'粘贴数据或描述指标，生成可视化看板',
   placeholderScenePoster:'描述你想生成或调整的视觉海报',
