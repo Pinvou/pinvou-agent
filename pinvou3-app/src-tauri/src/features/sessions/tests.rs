@@ -3138,7 +3138,8 @@ fn legacy_design_default_folds_into_work_on_load() {
     assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
     // 折叠不回写磁盘：boot 后 settings.json 仍是 legacy 形状（work 键缺失、
     // design 原值保留）。
-    let on_disk = std::fs::read_to_string(paths::settings_path()).expect("read settings after boot");
+    let on_disk =
+        std::fs::read_to_string(paths::settings_path()).expect("read settings after boot");
     assert!(
         on_disk.contains("\"design\"") && !on_disk.contains("\"work\""),
         "fold must not write back to disk: {on_disk}"
