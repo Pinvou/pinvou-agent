@@ -411,12 +411,18 @@ impl BranchSwitchMode {
     }
 }
 
+/// 进程级互斥：串行化分支切换的完整 git 序列。并发调用（双开窗口、连点）会
+/// 把两次切换的 stash push/checkout/pop 交错成跨分支、跨 stash 条目的中间态，
+/// 回滚与报错都无法对应到单次操作。
+static CHECKOUT_LOCK: Mutex<()> = Mutex::new(());
+
 pub fn checkout_workspace_branch(
     root: &Path,
     branch: &str,
     mode: BranchSwitchMode,
     commit_message: Option<&str>,
 ) -> Result<WorkspaceBranches> {
+    let _checkout_guard = CHECKOUT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let root = canonical_workspace(root)?;
     if !is_git_workspace(&root) {
         bail!("当前工作区不是 Git 仓库");
@@ -442,9 +448,11 @@ pub fn checkout_workspace_branch(
             git_output(&root, &["checkout", branch])?;
         }
         BranchSwitchMode::Stash => {
-            // 暂存（含未跟踪文件）→ 切换 → 恢复。checkout 失败时先 pop
-            // 恢复现场再报错；pop 失败（与目标分支冲突）时 git 会保留该
-            // stash 条目，用户可手动解决，因此只提示、不回滚分支。
+            // 暂存（含未跟踪文件）→ 切换 → 恢复。checkout 失败时先 pop 恢复
+            // 现场再报错；恢复也失败时必须说明更改仍完好保存在 stash 中，避免
+            // 现场看似丢失。切换后的 pop 冲突时 git 会保留该 stash 条目；注意
+            // 未跟踪文件可能仅存在于该条目中，必须先确认内容再清理，不能直接
+            // 引导 drop。
             git_output(
                 &root,
                 &[
@@ -456,13 +464,21 @@ pub fn checkout_workspace_branch(
                 ],
             )?;
             if let Err(error) = git_output(&root, &["checkout", branch]) {
-                let _ = git_output(&root, &["stash", "pop"]);
+                if let Err(pop_error) = git_output(&root, &["stash", "pop"]) {
+                    bail!(
+                        "切换到 {branch} 失败，且自动恢复暂存的更改也失败；你的更改完好\
+                         保留在 stash 中（git stash list 查看，git stash pop 恢复）。\
+                         切换错误: {error:#}；恢复错误: {pop_error:#}"
+                    );
+                }
                 return Err(error);
             }
             if let Err(error) = git_output(&root, &["stash", "pop"]) {
                 bail!(
-                    "已切换到 {branch}，但恢复暂存的更改失败（冲突内容已应用到工作区，\
-                     该 stash 条目已保留；解决冲突后执行 git stash drop 清理）: {error:#}"
+                    "已切换到 {branch}，但恢复暂存的更改失败：冲突内容已应用到工作区，\
+                     该 stash 条目已保留。清理前先执行 git stash show -u stash@{{0}} 确认\
+                     内容——未跟踪文件可能仅存在于该条目中，直接 git stash drop 会丢失\
+                     它们: {error:#}"
                 );
             }
         }
@@ -1700,6 +1716,70 @@ mod tests {
         assert!(!stash_list.trim().is_empty());
         let content = fs::read_to_string(root.path().join("file.txt")).unwrap();
         assert!(content.contains("<<<<<<<"));
+    }
+
+    /// Stash 模式下 checkout 失败：应先 pop 恢复现场再报错——更改回到工作区、
+    /// stash 列表清空、分支保持不变。checkout 失败用「目标分支指向的提交对象
+    /// 缺失」构造：git 对 ignored 文件/目录阻挡、只读目录等自然场景会静默
+    /// 处理甚至返回 0，对象缺失才是确定性的非零失败，且能通过本地分支名校验。
+    #[test]
+    fn checkout_workspace_branch_stash_mode_restores_changes_on_checkout_failure() {
+        let Some(root) = init_git_repo("checkout-stash-failure") else {
+            return;
+        };
+        git_output(root.path(), &["checkout", "feature"]).unwrap();
+        fs::write(root.path().join("file.txt"), "v2").unwrap();
+        git_output(
+            root.path(),
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-am",
+                "v2",
+            ],
+        )
+        .unwrap();
+        git_output(root.path(), &["checkout", "main"]).unwrap();
+        // 删除 feature 提交的松散对象：ref 仍在（分支列表校验可过），checkout 必败。
+        let dangling = git_output(root.path(), &["rev-parse", "feature"]).unwrap();
+        let dangling = dangling.trim();
+        let object_path = root
+            .path()
+            .join(".git/objects")
+            .join(&dangling[..2])
+            .join(&dangling[2..]);
+        fs::remove_file(&object_path).unwrap();
+
+        fs::write(root.path().join("file.txt"), "v1-dirty").unwrap();
+        assert!(
+            checkout_workspace_branch(root.path(), "feature", BranchSwitchMode::Stash, None)
+                .is_err()
+        );
+        // 现场已恢复：dirty 更改回到工作区，stash 已 pop，仍在 main。
+        assert_eq!(
+            fs::read_to_string(root.path().join("file.txt")).unwrap(),
+            "v1-dirty"
+        );
+        let stash_list = git_output(root.path(), &["stash", "list"]).unwrap();
+        assert!(stash_list.trim().is_empty());
+        // 不能用 workspace_branches 断言分支：其 --sort=-committerdate 需要读取
+        // 全部分支的提交对象，悬空的 feature ref 会让它整体报错。
+        assert_eq!(git_branch(root.path()).as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn workspace_branches_reports_detached_head_without_current() {
+        let Some(root) = init_git_repo("branches-detached") else {
+            return;
+        };
+        git_output(root.path(), &["checkout", "--detach"]).unwrap();
+        let result = workspace_branches(root.path()).unwrap();
+        assert!(result.git);
+        assert_eq!(result.current, None);
+        assert!(result.branches.contains(&"main".to_string()));
     }
 
     #[test]
