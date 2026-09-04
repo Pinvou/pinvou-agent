@@ -76,7 +76,7 @@ import {
   rewindUndoAvailable,
   useSessionCheckpoints,
 } from './checkpoints.js';
-import { RewindChip, RewindConfirmDialog, RewindUndoChip, RewindUndoConfirmDialog, useDialogEscapeKey } from './RewindChip.jsx';
+import { RewindChip, RewindConfirmDialog, RewindUndoChip, RewindUndoConfirmDialog, useDialogEscapeKey, useDialogFocusRestore } from './RewindChip.jsx';
 import {
   ConversationActivityIndicator,
   ConversationMarkdown,
@@ -209,6 +209,38 @@ function BranchSelector({ copy, branches, disabled, busy, menuOpen, onToggle, on
         </div>
       )}
     </div>
+  );
+}
+
+// 分支切换弹窗外壳：与 RewindConfirmDialog / NativeYoloConfirmCard 同款——portal
+// 到 <body>（composer 容器的 backdrop-blur 会成为 fixed 后代的包含块）、焦点夺取/
+// 归还、Escape 关闭（busy 时禁用）。backdrop 是 disabled 随 busy 的按钮，切换
+// 进行中不允许点空白处把弹窗藏到后台。仅当对应弹窗打开时才挂载（调用处条件渲染）。
+function BranchDialogShell({ copy, busy, testid, labelledBy, onCancel, children }) {
+  const dialogRef = useRef(null);
+  useDialogFocusRestore(dialogRef);
+  useDialogEscapeKey(busy, onCancel);
+  return createPortal(
+    <div data-testid={testid} className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+      <button
+        type="button"
+        aria-label={copy.branchSwitchCancel}
+        className="absolute inset-0 cursor-default bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
+        disabled={busy}
+        onClick={onCancel}
+      />
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={labelledBy}
+        tabIndex={-1}
+        className="relative w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] outline-none dark:bg-[#1E1F20] dark:text-[#E8EAED]"
+      >
+        {children}
+      </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -1164,10 +1196,8 @@ export function CodexAcpView({
   useOutsidePointerClose(memoryOpen, () => setMemoryOpen(false), [memoryPanelRef, memoryTriggerRef]);
   useOutsidePointerClose(accountMenuOpen, () => setAccountMenuOpen(false), [accountMenuPanelRef, accountMenuTriggerRef]);
   useOutsidePointerClose(branchMenuOpen, () => setBranchMenuOpen(false), [branchMenuPanelRef, branchMenuTriggerRef]);
-  // Escape closes the branch dialogs. The hooks stay passive (busy) while
-  // their dialog is closed so Escape keeps reaching the composer menus.
-  useDialogEscapeKey(!pendingBranchSwitch || branchBusy, () => setPendingBranchSwitch(null));
-  useDialogEscapeKey(!commitBranchSwitch || branchBusy, () => setCommitBranchSwitch(null));
+  // 分支弹窗的 Escape/焦点处理由 BranchDialogShell 自带（仅挂载期间生效，
+  // 关闭时 Escape 继续到达 composer 菜单）。
 
   async function checkoutWorkspaceBranch(branch, mode, commitMessage) {
     if ((!activeId && !branchWorkspacePath) || !branch || branchBusy) return;
@@ -1178,6 +1208,8 @@ export function CodexAcpView({
       setError(codexCopy.branchSwitchBusyError);
       return;
     }
+    // 与其他操作一致：开始前清掉上一条错误横幅。
+    setError('');
     // Stale-response guard: a checkout still in flight while the user switches
     // to another session/draft workspace must not write the old workspace's
     // branch data into the new view (same race class as the rewind in-flight
@@ -4461,135 +4493,118 @@ export function CodexAcpView({
         )}
         {pendingBranchSwitch && (
           // 脏工作区分支切换：操作选项弹窗（自绘，Tauri WebView2 下 window.confirm 不弹）。
-          // 与 NativeYoloConfirmCard 同理挂在输入框容器外，避免 backdrop-blur 包含块限制。
-          <div
-            data-testid="codex-branch-switch-confirm"
-            className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
-            onClick={event => {
-              event.stopPropagation();
-              setPendingBranchSwitch(null);
-            }}
+          <BranchDialogShell
+            copy={codexCopy}
+            busy={branchBusy}
+            testid="codex-branch-switch-confirm"
+            labelledBy="codex-branch-switch-confirm-title"
+            onCancel={() => setPendingBranchSwitch(null)}
           >
-            <div
-              onClick={event => event.stopPropagation()}
-              role="dialog"
-              aria-modal="true"
-              className="w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]"
-            >
-              <p className="text-[13px] leading-relaxed opacity-85">
-                {codexCopy.branchSwitchDirtyConfirm(pendingBranchSwitch, branchSwitchDirtyCount)}
-              </p>
-              <div className="mt-4 flex flex-col gap-1.5">
-                {[
-                  { testid: 'codex-branch-switch-carry', label: codexCopy.branchSwitchCarry, hint: codexCopy.branchSwitchCarryHint,
-                    onClick: () => {
-                      const branch = pendingBranchSwitch;
-                      setPendingBranchSwitch(null);
-                      checkoutWorkspaceBranch(branch, 'carry');
-                    } },
-                  { testid: 'codex-branch-switch-stash', label: codexCopy.branchSwitchStash, hint: codexCopy.branchSwitchStashHint,
-                    onClick: () => {
-                      const branch = pendingBranchSwitch;
-                      setPendingBranchSwitch(null);
-                      checkoutWorkspaceBranch(branch, 'stash');
-                    } },
-                  { testid: 'codex-branch-switch-commit', label: codexCopy.branchSwitchCommit, hint: codexCopy.branchSwitchCommitHint,
-                    onClick: () => {
-                      // 进入第二步：提交信息弹窗。
-                      setCommitBranchSwitch(pendingBranchSwitch);
-                      setPendingBranchSwitch(null);
-                    } },
-                ].map(option => (
-                  <button
-                    key={option.testid}
-                    type="button"
-                    data-testid={option.testid}
-                    onClick={option.onClick}
-                    disabled={branchBusy}
-                    className="w-full rounded-xl px-3 py-2.5 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06] disabled:opacity-50"
-                  >
-                    <span className="block text-[13px] font-semibold">{option.label}</span>
-                    <span className="block text-[11px] text-gray-400 mt-0.5 leading-relaxed">{option.hint}</span>
-                  </button>
-                ))}
-              </div>
-              <div className="mt-4 flex justify-end">
+            <p id="codex-branch-switch-confirm-title" className="text-[13px] leading-relaxed opacity-85">
+              {codexCopy.branchSwitchDirtyConfirm(pendingBranchSwitch, branchSwitchDirtyCount)}
+            </p>
+            <div className="mt-4 flex flex-col gap-1.5">
+              {[
+                { testid: 'codex-branch-switch-carry', label: codexCopy.branchSwitchCarry, hint: codexCopy.branchSwitchCarryHint,
+                  onClick: () => {
+                    const branch = pendingBranchSwitch;
+                    setPendingBranchSwitch(null);
+                    checkoutWorkspaceBranch(branch, 'carry');
+                  } },
+                { testid: 'codex-branch-switch-stash', label: codexCopy.branchSwitchStash, hint: codexCopy.branchSwitchStashHint,
+                  onClick: () => {
+                    const branch = pendingBranchSwitch;
+                    setPendingBranchSwitch(null);
+                    checkoutWorkspaceBranch(branch, 'stash');
+                  } },
+                { testid: 'codex-branch-switch-commit', label: codexCopy.branchSwitchCommit, hint: codexCopy.branchSwitchCommitHint,
+                  onClick: () => {
+                    // 进入第二步：提交信息弹窗。
+                    setCommitBranchSwitch(pendingBranchSwitch);
+                    setPendingBranchSwitch(null);
+                  } },
+              ].map(option => (
                 <button
+                  key={option.testid}
                   type="button"
-                  onClick={() => setPendingBranchSwitch(null)}
+                  data-testid={option.testid}
+                  onClick={option.onClick}
                   disabled={branchBusy}
-                  className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12] disabled:opacity-50"
+                  className="w-full rounded-xl px-3 py-2.5 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06] disabled:opacity-50"
                 >
-                  {codexCopy.branchSwitchCancel}
+                  <span className="block text-[13px] font-semibold">{option.label}</span>
+                  <span className="block text-[11px] text-gray-400 mt-0.5 leading-relaxed">{option.hint}</span>
                 </button>
-              </div>
+              ))}
             </div>
-          </div>
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setPendingBranchSwitch(null)}
+                disabled={branchBusy}
+                className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12] disabled:opacity-50"
+              >
+                {codexCopy.branchSwitchCancel}
+              </button>
+            </div>
+          </BranchDialogShell>
         )}
         {commitBranchSwitch && (
           // 第二步：提交信息弹窗（「提交后切换」）。
-          <div
-            data-testid="codex-branch-commit-dialog"
-            className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
-            onClick={event => {
-              event.stopPropagation();
-              setCommitBranchSwitch(null);
-            }}
+          <BranchDialogShell
+            copy={codexCopy}
+            busy={branchBusy}
+            testid="codex-branch-commit-dialog"
+            labelledBy="codex-branch-commit-dialog-title"
+            onCancel={() => setCommitBranchSwitch(null)}
           >
-            <div
-              onClick={event => event.stopPropagation()}
-              role="dialog"
-              aria-modal="true"
-              className="w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]"
-            >
-              <p className="text-[13px] leading-relaxed opacity-85">
-                {codexCopy.branchSwitchCommitPrompt(commitBranchSwitch)}
-              </p>
-              <textarea
-                autoFocus
-                data-testid="codex-branch-switch-commit-message"
-                value={branchCommitMessage}
-                onChange={event => setBranchCommitMessage(event.target.value)}
-                onKeyDown={event => {
-                  // 多行输入：Enter 换行，Ctrl/Cmd+Enter 提交；输入法合成期间不触发。
-                  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)
-                      && !isImeComposing(event) && branchCommitMessage.trim() && !branchBusy) {
-                    const branch = commitBranchSwitch;
-                    const message = branchCommitMessage.trim();
-                    setCommitBranchSwitch(null);
-                    checkoutWorkspaceBranch(branch, 'commit', message);
-                  }
+            <p id="codex-branch-commit-dialog-title" className="text-[13px] leading-relaxed opacity-85">
+              {codexCopy.branchSwitchCommitPrompt(commitBranchSwitch)}
+            </p>
+            <textarea
+              autoFocus
+              data-testid="codex-branch-switch-commit-message"
+              value={branchCommitMessage}
+              onChange={event => setBranchCommitMessage(event.target.value)}
+              onKeyDown={event => {
+                // 多行输入：Enter 换行，Ctrl/Cmd+Enter 提交；输入法合成期间不触发。
+                if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)
+                    && !isImeComposing(event) && branchCommitMessage.trim() && !branchBusy) {
+                  const branch = commitBranchSwitch;
+                  const message = branchCommitMessage.trim();
+                  setCommitBranchSwitch(null);
+                  checkoutWorkspaceBranch(branch, 'commit', message);
+                }
+              }}
+              placeholder={codexCopy.branchSwitchCommitPlaceholder}
+              rows={4}
+              className="mt-4 w-full px-3 py-2 rounded-xl text-[13px] leading-relaxed resize-none bg-black/[0.04] dark:bg-white/[0.06] outline-none border border-transparent focus:border-[#007AFF]/60 placeholder:text-gray-400"
+            />
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setCommitBranchSwitch(null)}
+                disabled={branchBusy}
+                className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12] disabled:opacity-50"
+              >
+                {codexCopy.branchSwitchCancel}
+              </button>
+              <button
+                type="button"
+                data-testid="codex-branch-switch-commit-ok"
+                onClick={() => {
+                  const branch = commitBranchSwitch;
+                  const message = branchCommitMessage.trim();
+                  setCommitBranchSwitch(null);
+                  checkoutWorkspaceBranch(branch, 'commit', message);
                 }}
-                placeholder={codexCopy.branchSwitchCommitPlaceholder}
-                rows={4}
-                className="mt-4 w-full px-3 py-2 rounded-xl text-[13px] leading-relaxed resize-none bg-black/[0.04] dark:bg-white/[0.06] outline-none border border-transparent focus:border-[#007AFF]/60 placeholder:text-gray-400"
-              />
-              <div className="mt-5 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setCommitBranchSwitch(null)}
-                  disabled={branchBusy}
-                  className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12] disabled:opacity-50"
-                >
-                  {codexCopy.branchSwitchCancel}
-                </button>
-                <button
-                  type="button"
-                  data-testid="codex-branch-switch-commit-ok"
-                  onClick={() => {
-                    const branch = commitBranchSwitch;
-                    const message = branchCommitMessage.trim();
-                    setCommitBranchSwitch(null);
-                    checkoutWorkspaceBranch(branch, 'commit', message);
-                  }}
-                  disabled={branchBusy || !branchCommitMessage.trim()}
-                  className="h-9 px-4 rounded-full text-white text-[13px] font-semibold bg-[#007AFF] disabled:opacity-50"
-                >
-                  {codexCopy.branchSwitchCommit}
-                </button>
-              </div>
+                disabled={branchBusy || !branchCommitMessage.trim()}
+                className="h-9 px-4 rounded-full text-white text-[13px] font-semibold bg-[#007AFF] disabled:opacity-50"
+              >
+                {codexCopy.branchSwitchCommit}
+              </button>
             </div>
-          </div>
+          </BranchDialogShell>
         )}
         {(activeSession || (!isWeb && draftWorkspacePath)) && (
           <CodexWorkspacePanel
