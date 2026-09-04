@@ -1,6 +1,6 @@
 # 通讯录（组织架构）
 
-> **SKILL.md** 中 #8 仅内联 2 条 **lite**：`get-contact-self`、`search-user`。下列 recipe、专用规则与消歧请在命中 #8 且**超出**上述 lite 时阅读本文。  
+> #8 的 **lite**（`get-contact-self`、`search-person`、`search-user` 三节）见 [lite-recipes.md](./lite-recipes.md)「#8 通讯录」。下列 recipe、专用规则与消歧请在命中 #8 且**超出**上述 lite 时阅读本文。  
 > 产品命令见 [contact.md](../products/contact.md)。通用批量/并行见 [conventions.md](_common/conventions.md)。
 
 ## 专用规则（#8 非 lite 步骤必守）
@@ -29,7 +29,7 @@
 - **搜人/找人/找同事/查工号/查手机号** → 首选 **`aisearch person`**（AI 语义搜索，支持姓名/部门/职责/上下级/手机号/工号维度），见 [aisearch.md](../products/aisearch.md)。
 - **需要 userId 做后续操作 / 按手机号查 / 按 userId 查详情** → `contact`（精确查询）。
 - **纯查部门与子部门成员 / 验证归属 / 组织关系** → `contact`。
-- **终点是发消息、待办、日程** → 先用 `search-person` 或 `search-user` 取 `userId`，再进入 #1 / #2 / #3。
+- **终点是发消息、待办、日程** → 先用 `search-person` 或 `search-user` 取 `userId`，再按目标产品读 chat/todo/calendar 产品参考（[chat.md](../products/chat.md) / [todo.md](../products/todo.md) / [calendar.md](../products/calendar.md)）。
 - **联系客户 + 发邮件** → 先用 `contact` 取 `orgAuthEmail`，再走 [mail.md](../products/mail.md)。
 
 ## Recipe 速查（本表步骤，非 SKILL lite）

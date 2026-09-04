@@ -36,6 +36,10 @@
 | `formula` | ✅ | `formula` | 公式（只读字段） |
 | `unidirectionalLink` | ✅ | `linkedTableId`, `multiple` | 单向关联 |
 | `bidirectionalLink` | ✅ | `linkedTableId`, `multiple` | 双向关联 |
+| `lookup` | ✅ | 见 field.md | 引用字段（跨表取数，只读） |
+| `filterUp` | ✅ | 见 field.md | 逐层向上引用（跨表聚合，只读） |
+| `primaryDoc` | ❌ | — | 主键文档字段（文档作主键，见 field.md） |
+| AI 字段 | ✅ | 见 field.md | AI 自动计算字段（只读） |
 | `creator` | ❌ | — | 系统字段：创建人（只读） |
 | `lastModifier` | ❌ | — | 系统字段：最后编辑人（只读） |
 | `createdTime` | ❌ | — | 系统字段：创建时间（只读） |

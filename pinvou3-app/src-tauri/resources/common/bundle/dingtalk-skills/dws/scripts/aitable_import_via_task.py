@@ -7,9 +7,9 @@
 - import_records.py：走 create_records，写入已有 table。
 
 用法:
-    python scripts/aitable_import_via_task.py <baseId> <filePath>
-    python scripts/aitable_import_via_task.py <baseId> <filePath> --timeout 30
-    python scripts/aitable_import_via_task.py <baseId> <filePath> --dws /tmp/dws
+    python3 scripts/aitable_import_via_task.py <baseId> <filePath>
+    python3 scripts/aitable_import_via_task.py <baseId> <filePath> --timeout-sec 30
+    python3 scripts/aitable_import_via_task.py <baseId> <filePath> --dws /tmp/dws
 """
 
 from __future__ import annotations

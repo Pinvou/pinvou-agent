@@ -8,7 +8,7 @@
   3. 返回 fileToken，可直接用于 record create/update
 
 用法:
-    python upload_attachment.py <baseId> <filePath>
+    python3 scripts/upload_attachment.py <baseId> <filePath>
 
 输出 (JSON):
     { "fileToken": "ft_xxx", "fileName": "report.pdf", "size": 204800 }

@@ -195,20 +195,7 @@ Flags:
 
 ### behavior types 可选值
 
-| 值 | 含义 | 触发词 |
-|----|------|--------|
-| `all` | 全部类型（默认） | 今天我干了什么、我最近做过什么 |
-| `document` | 文档 | 文档、资料、方案、模板 |
-| `im` | 消息 | 消息、聊天记录、群消息、群里发了什么 |
-| `calendar` | 日程 | 日程、会议邀请、会议安排 |
-| `todo` | 待办 | 待办、任务、TODO |
-| `minute` | 会议纪要/闪记/听记 | 会议纪要、纪要、听记、闪记、录音摘要 |
-| `report` | 日志 | 仅显式出现“日志”时使用 |
-| `image` | 图片 | 图片、截图 |
-| `link` | 链接 | 链接、URL、网址 |
-| `notable` | 多维表 / AI 表格 | AI表格、多维表、notable |
-| `baike` | 企业百科 | 企业百科、百科 |
-| `mail` | 邮件 | 邮件、邮箱、mail、email |
+类型词映射与触发词**同上方 enterprise types 可选值表**（`all` / `document` / `im` / `calendar` / `todo` / `minute` / `report` / `image` / `link` / `notable` / `baike` / `mail`），behavior 不另设专属类型词。
 
 ### behavior-type 可选值
 
@@ -223,13 +210,12 @@ Flags:
 
 ### 参数提取规则
 
-- `queries` 只放内容关键词，不放时间、类型词、行为词。比如“本周我创建的智能化方案文档”中，`queries=智能化方案`。
-- `types` 放内容类型，映射规则与 enterprise 相同；所有类型词都不能留在 `--query/--queries`，多类型用逗号分隔。
-- 文档/资料/方案类型使用底层枚举 `document`（注意不是 `doc`）。`report` 仅在用户显式说“日志”时触发；“周报/日报/月报/工作汇报”不要自动映射为 `report`。
-- `mail` 仅在用户显式说“邮件/邮箱/mail/email”时触发；一旦触发，必须进入 `--types mail`。
-- `time-range` 仅当用户显式给出时间词时填写，不要根据语义猜时间。
-- `direction` 仅当用户明确指定交互对象时填写，格式为 `发起者->接收者` 或 `我<->某人`；无具体对象时留空。
-- “今天我干了什么/我最近做过什么”这类行为汇总场景，用 `--types all`，`--queries` 可留空。
+类型词映射与抽取规则同上方 enterprise 节（`queries` 只放内容关键词、类型词剥离进 `--types`、时间词仅在显式给出时进 `--time-range`）。behavior 特有差异：
+
+- `--behavior-type` 承接行为词（send/create/share/edit/receive，默认 all），行为词不留在 `--queries`
+- `--direction` 仅当用户明确指定交互对象时填写，格式为 `发起者->接收者` 或 `我<->某人`；无具体对象时留空
+- `--chat-scope` 仅 IM 类型且用户明确指定群名时填写
+- “今天我干了什么/我最近做过什么”这类行为汇总场景，用 `--types all`，`--queries` 可留空
 
 | 用户说 | queries | types | behavior-type | time-range | direction | chat-scope |
 |--------|---------|-------|---------------|------------|-----------|------------|

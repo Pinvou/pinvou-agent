@@ -3,8 +3,8 @@
 从 CSV / JSON 批量导入记录到钉钉 AI 表格（新版 schema）
 
 用法:
-    python import_records.py <baseId> <tableId> data.csv [batch_size]
-    python import_records.py <baseId> <tableId> data.json [batch_size]
+    python3 scripts/import_records.py <baseId> <tableId> data.csv [batch_size]
+    python3 scripts/import_records.py <baseId> <tableId> data.json [batch_size]
 
 说明：
 - CSV 表头默认视为 fieldId

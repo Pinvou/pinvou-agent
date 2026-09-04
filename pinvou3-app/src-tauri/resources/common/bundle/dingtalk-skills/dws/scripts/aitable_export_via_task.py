@@ -151,7 +151,7 @@ def main() -> None:
     parser.add_argument("--view-id", help="scope=view 时必填")
     parser.add_argument("--export-format", default="excel", choices=sorted(ALLOWED_FORMATS), help="导出格式")
     parser.add_argument("--timeout-sec", type=int, default=300, help="CLI 内置轮询整体超时（秒），默认 300（5 分钟）")
-    parser.add_argument("--max-polls", type=int, default=10, help="（兼容旧参数，开源 CLI 内置轮询不再使用）")
+    parser.add_argument("--max-polls", type=int, default=10, help="（轮询次数上限，默认 10）")
     parser.add_argument("--output", help="本地保存路径（不传则按 fileName 保存到当前目录）")
     parser.add_argument("--dws", default="dws", help="dws 可执行文件路径，默认 dws")
     parser.add_argument("--no-download", action="store_true", help="仅返回 downloadUrl，不下载文件")

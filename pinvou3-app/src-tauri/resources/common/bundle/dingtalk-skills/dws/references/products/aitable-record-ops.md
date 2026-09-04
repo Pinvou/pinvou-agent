@@ -123,7 +123,7 @@ dws aitable record create --base-id <BASE_ID> --table-id <TABLE_ID> \
 | singleSelect | `"fldXXX":"选项名"` | `"fldXXX":{"id":"xxx","name":"选项名"}` |
 | multipleSelect | `"fldXXX":["选项1","选项2"]` | `"fldXXX":[{"id":"xxx","name":"选项1"}]` |
 | date | `"fldXXX":"2026-03-04"` | ISO 日期字符串 |
-| user | `"fldXXX":[{"userId":"123"}]` | `"fldXXX":[{"corpId":"x","userId":"123"}]` |
+| user | `"fldXXX":[{"userId":"...","corpId":"..."}]` | `"fldXXX":[{"userId":"123","corpId":"dingxxxxxxxx"}]` |
 | attachment | `"fldXXX":[{"fileToken":"ft_xxx"}]`需先用脚本上传 | `"fldXXX":[{"url":"...","filename":"..."}]` |
 
 ### 只读字段（不要写入）

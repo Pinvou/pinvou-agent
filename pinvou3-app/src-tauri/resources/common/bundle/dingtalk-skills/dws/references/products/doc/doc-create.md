@@ -11,8 +11,8 @@
 
 > `dws doc create` 只能创建在线文字文档（adoc），**不要**用它承接所有「新建 xxx」请求。收到「创建/新建」类需求时，必须先按文件类型分流：
 >
-> - 用户说「创建表格 / 新建表格 / 建个电子表格 / 在线表格 / 销售数据表」等 → 走 [`dws sheet create`](../sheet.md#创建钉钉表格文档)（钉钉在线电子表格 `axls`），**不要**走 `doc create`
-> - 用户说「创建多维表格 / 新建 AI 表格 / 建个 base / 数据库表」等 → 走 [`dws aitable base create`](../aitable.md#创建-ai-表格)（多维表格 `able`），**不要**走 `doc create`
+> - 用户说「创建表格 / 新建表格 / 建个电子表格 / 在线表格 / 销售数据表」等 → 走 [`dws sheet create`](../sheet.md#意图表)（钉钉在线电子表格 `axls`），**不要**走 `doc create`
+> - 用户说「创建多维表格 / 新建 AI 表格 / 建个 base / 数据库表」等 → 走 [`dws aitable base create`](../aitable.md#base-base-管理)（多维表格 `able`），**不要**走 `doc create`
 > - 用户说「创建文档 / 新建文档 / 写篇文档 / 会议纪要 / 周报 / 方案」等文字型内容 → 才走 `dws doc create`
 >
 > 一句话口诀：表格 → sheet/aitable；文档 → doc。
