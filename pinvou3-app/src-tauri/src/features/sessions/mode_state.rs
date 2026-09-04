@@ -203,8 +203,9 @@ impl SessionStore {
 
     /// 无条目时的默认 mode 解析：code 会话回落全局 `code_permission.last_mode`
     /// （None = 用户从未用过 code 模式 → Plan 只读首启）；plain 会话缺省 Yolo
-    /// （work/design lane 的全局默认由前端在会话物化时应用，后端不区分这两个
-    /// lane，见 `set_mode_default`）。
+    /// (the work lane's global default is applied by the frontend when the
+    /// session is materialized; the backend no longer distinguishes plain-side
+    /// lanes — design was merged into work, see `set_mode_default`).
     pub(crate) fn resolved_default_mode(&self, id: &str) -> SerializableMode {
         if self.is_code_session(id) {
             self.code_permission
@@ -232,9 +233,10 @@ impl SessionStore {
     /// 设置 mode。砍 PlanPhase 后是 Plan/Yolo 唯一 setter(流转命令都调它),
     /// 只改 mode,保留 pinvou_review_enabled 等其他字段。
     ///
-    /// per-session 持久化（三分 lane 语义）：任何会话都写
-    /// `_session_mode_states.json`（重开恢复它自己上次的 mode）；**不再**更新
-    /// 全局 lane 默认——全局默认只由草稿态显式切换经 `set_mode_default` 写入。
+    /// Per-session persistence (two-lane semantics): every session writes
+    /// `_session_mode_states.json` (reopening restores its own last mode);
+    /// global lane defaults are **no longer** updated here — they are written
+    /// only by an explicit draft-state switch via `set_mode_default`.
     /// ACP 会话不经此命令（有自己的权限模式）。落盘失败只记日志不打断交互
     /// ——内存切换已生效，落盘只做尽力持久化。
     pub fn set_mode(&self, id: &str, mode: SerializableMode) -> Result<()> {
@@ -810,7 +812,8 @@ impl SessionStore {
     // ===================== per-session mode 持久化（所有会话） =====================
 
     /// 持久化所有会话的 per-session mode 到 `_session_mode_states.json`
-    /// 三分 lane 语义后 plain 会话也持久化；空表时删除 sidecar。
+    /// Under the two-lane semantics plain sessions persist as well; an empty
+    /// table deletes the sidecar.
     ///
     /// 原子写 + 失败可见：直接 `std::fs::write` 在进程中断时可能留下截断文件，
     /// 而 `load_session_mode_states` 对损坏文件是静默跳过——一次中断写入会让所有
@@ -872,20 +875,23 @@ impl SessionStore {
         *self.code_permission.read()
     }
 
-    /// 三个 lane 的全局默认 mode 视图（内存镜像；work/design 磁盘真相在
-    /// settings.json `mode_defaults`，code 在 `code_permission.last_mode`）。
+    /// View of the per-lane global default modes (in-memory mirror; the disk
+    /// truth for work lives in settings.json `mode_defaults.work`, for code in
+    /// `code_permission.last_mode`).
     pub fn mode_defaults(&self) -> ModeDefaultsView {
         let defaults = self.mode_defaults.read();
         ModeDefaultsView {
             work: defaults.work,
-            design: defaults.design,
             code: self.code_permission.read().last_mode,
         }
     }
 
-    /// 草稿态显式切换写入对应 lane 的全局默认 mode（三分 lane 语义：已生成
-    /// 会话的切换不碰这里）。先更新内存镜像（本次运行立即生效），再字段级
-    /// 事务写 settings.json；写盘失败只记日志（与 set_mode 的容错语义一致）。
+    /// An explicit draft-state switch writes the matching lane's global
+    /// default mode (two-lane semantics: switches in already-materialized
+    /// sessions never touch this). Updates the in-memory mirror first
+    /// (effective immediately for this run), then persists settings.json in a
+    /// field-level transaction; a write failure only logs (same tolerance as
+    /// set_mode).
     pub fn set_mode_default(&self, lane: ModeLane, mode: SerializableMode) {
         match lane {
             ModeLane::Code => {
@@ -894,15 +900,11 @@ impl SessionStore {
             ModeLane::Work => {
                 self.mode_defaults.write().work = Some(mode);
             }
-            ModeLane::Design => {
-                self.mode_defaults.write().design = Some(mode);
-            }
         }
         if let Err(error) = UserPrefs::update_transaction(|prefs| {
             match lane {
                 ModeLane::Code => prefs.code_permission.last_mode = Some(mode),
                 ModeLane::Work => prefs.mode_defaults.work = Some(mode),
-                ModeLane::Design => prefs.mode_defaults.design = Some(mode),
             }
             Ok(())
         }) {
@@ -912,8 +914,9 @@ impl SessionStore {
 
     /// accept 方案（`claim_pending_plan` 切 Yolo）确认提交后，把任务级切换纳入
     /// per-session 持久化：写 `_session_mode_states.json`（重开/切走切回恢复
-    /// Yolo）。**不**更新任何全局 lane 默认（三分 lane 语义：已生成会话的切换
-    /// 只写会话自己的记录）。
+    /// Yolo）。Global lane defaults are **not** updated (two-lane semantics: a
+    /// switch in an already-materialized session writes only that session's
+    /// own record).
     ///
     /// 只在 `PendingPlanClaim::commit`（engine 提交已确认）调用：任务真正开始
     /// 执行时才记忆，提交失败回滚（`restore_pending_plan_claim`）不碰磁盘，

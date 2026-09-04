@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 /**
- * 单一工作 / 设计 / 代码入口 smoke；代码由 HomeModeSwitcher/CodexAcpView 覆盖。
- * 依赖先运行 `npm run build:ui`。
+ * Scene entry cards + design workbench manual-toggle smoke (the replacement
+ * entries after the design lane merged into work). Covers: the two-segment
+ * (work/code) HomeModeSwitcher, empty-state scene card select/deselect,
+ * v3→v4 mode-state migration, scene routing meta and capability auto-install
+ * (document writing / data visualization / poster / personal workbench template
+ * cards), and HTML artifact fullscreen + artifact-edit-mode-toggle manual entry
+ * into visual editing (inspector dock / AI input / zoom / changes log, replay
+ * and clear rollback). Requires `npm run build:ui` first.
  */
 const fs = require('fs');
 const os = require('os');
@@ -34,7 +40,7 @@ const chromeCandidates = [
 ].filter(Boolean);
 const CHROME = process.env.CHROME || chromeCandidates.find(fs.existsSync);
 if (!CHROME) { console.error('SKIP: 未找到 chromium/chrome'); process.exit(2); }
-const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-design-mode-entry-'));
+const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-scene-cards-'));
 
 function injectSource() {
   return `(function(){
@@ -62,8 +68,9 @@ function injectSource() {
       artifacts:[{path:DRAFT_PATH,basename:'poster-draft.html'},{path:HTML_PATH,basename:'landing.html'}],
       messages:[{role:'user',content:[{type:'text',text:'做一个 landing page'}]}]
     }};
-    localStorage.setItem('pinvou_mode_state_v2', JSON.stringify({
-      draft:{mode:'work',workSubtab:'document-writing',designSubtab:'poster'},
+    // Write only the v3 key: verifies the v3→v4 migration (design lane folds into work + designSubtab→subtab).
+    localStorage.setItem('pinvou_mode_state_v3', JSON.stringify({
+      draft:{mode:'work',workSubtab:'general',designSubtab:'poster'},
       sessions:{
         'session:s-design':{mode:'design',workSubtab:'document-writing',designSubtab:'poster'}
       },
@@ -167,22 +174,85 @@ async function clickExactButton(page, text) {
     return {
       homeSwitcher: !!homeSwitcher,
       duplicateSwitcher: !!duplicateSwitcher,
-      homeHasWork: !!homeSwitcher && homeSwitcher.textContent.includes('工作'),
-      homeHasDesign: !!homeSwitcher && homeSwitcher.textContent.includes('设计'),
-      homeHasCode: !!homeSwitcher && homeSwitcher.textContent.includes('代码'),
-      workHasPptDesign: !!document.querySelector('[data-testid="work-subtab-picker-option-ppt-design"]'),
-      workHasDataVisualization: !!document.querySelector('[data-testid="work-subtab-picker-option-data-visualization"]'),
+      homeHasWork: !!document.querySelector('[data-testid="home-mode-work"]'),
+      homeHasCode: !!document.querySelector('[data-testid="home-mode-code"]'),
+      homeHasDesign: !!document.querySelector('[data-testid="home-mode-design"]'),
+      homeText: homeSwitcher ? homeSwitcher.textContent : '',
+      legacyPickers: ['work-subtab-picker', 'design-subtab-picker', 'personal-workbench-template-picker']
+        .filter((id) => !!document.querySelector(`[data-testid="${id}"]`) || !!document.querySelector(`[data-testid^="${id}-option-"]`)),
+      greeting: !!document.querySelector('[data-testid="chat-greeting"]'),
+      cardGrid: !!document.querySelector('[data-testid="scene-card-grid"]'),
+      cards: [...document.querySelectorAll('button[data-testid^="scene-card-"]')].map((node) =>
+        node.getAttribute('data-testid')
+      ),
+      cardLabels: [...document.querySelectorAll('button[data-testid^="scene-card-"]')].map((node) =>
+        (node.textContent || '').trim()
+      ),
+      templateCards: !!document.querySelector('[data-testid="personal-workbench-template-cards"]'),
       sceneTag: !!document.querySelector('[data-testid="pinvou-scene-tag"]'),
       placeholder: textarea && textarea.getAttribute('placeholder'),
     };
   });
-  rec('默认只渲染一个工作/设计/代码主入口',
-    initial.homeSwitcher && !initial.duplicateSwitcher && initial.homeHasWork && initial.homeHasDesign && initial.homeHasCode &&
-      !initial.workHasPptDesign && !initial.workHasDataVisualization && !initial.sceneTag &&
-      initial.placeholder !== '描述公文主题、文种、收发单位和关键要求',
+  rec('main entry has only work/code segments and four scene cards render below the empty-state greeting',
+    initial.homeSwitcher && !initial.duplicateSwitcher &&
+      initial.homeHasWork && initial.homeHasCode && !initial.homeHasDesign &&
+      initial.homeText.includes('工作') && initial.homeText.includes('代码') && !initial.homeText.includes('设计') &&
+      initial.legacyPickers.length === 0 &&
+      initial.greeting && initial.cardGrid &&
+      JSON.stringify(initial.cards) === JSON.stringify([
+        'scene-card-personal-workbench', 'scene-card-document-writing', 'scene-card-poster', 'scene-card-data-visualization',
+      ]) &&
+      initial.cardLabels.join('|') === '个人工作台|公文写作|海报|数据可视化' &&
+      !initial.templateCards && !initial.sceneTag &&
+      initial.placeholder === '询问 PINVOU 或输入指令',
     JSON.stringify(initial));
 
-  await page.click('[data-testid="work-subtab-picker-option-document-writing"]');
+  await page.click('[data-testid="scene-card-document-writing"]');
+  await sleep(250);
+  const sceneSelected = await page.evaluate(() => {
+    const textarea = document.querySelector('textarea');
+    const v4raw = localStorage.getItem('pinvou_mode_state_v4');
+    let v4;
+    try { v4 = v4raw ? JSON.parse(v4raw) : null; } catch { v4 = null; }
+    return {
+      placeholder: textarea && textarea.getAttribute('placeholder'),
+      tag: document.querySelector('[data-testid="pinvou-scene-tag"]')?.textContent || '',
+      clear: !!document.querySelector('[data-testid="pinvou-scene-tag-clear"]'),
+      cardPressed: document.querySelector('[data-testid="scene-card-document-writing"]')?.getAttribute('aria-pressed'),
+      templateCards: !!document.querySelector('[data-testid="personal-workbench-template-cards"]'),
+      v4,
+    };
+  });
+  rec('clicking a scene card selects the scene and shows a clearable scene tag above the input',
+    sceneSelected.placeholder === '描述公文主题、文种、收发单位和关键要求' &&
+      sceneSelected.tag.includes('公文写作') &&
+      sceneSelected.clear &&
+      sceneSelected.cardPressed === 'true' &&
+      !sceneSelected.templateCards,
+    JSON.stringify(sceneSelected));
+  rec('v3 mode state migrates to work + subtab and persists in the v4 shape',
+    !!sceneSelected.v4 &&
+      sceneSelected.v4.draft && sceneSelected.v4.draft.mode === 'work' && sceneSelected.v4.draft.subtab === 'document-writing' &&
+      sceneSelected.v4.sessions && sceneSelected.v4.sessions['session:s-design'] &&
+      sceneSelected.v4.sessions['session:s-design'].mode === 'work' &&
+      sceneSelected.v4.sessions['session:s-design'].subtab === 'poster' &&
+      Array.isArray(sceneSelected.v4.sessionOrder) && sceneSelected.v4.sessionOrder.includes('session:s-design'),
+    JSON.stringify(sceneSelected.v4));
+
+  await page.click('[data-testid="scene-card-document-writing"]');
+  await sleep(250);
+  const sceneDeselected = await page.evaluate(() => ({
+    placeholder: document.querySelector('textarea')?.getAttribute('placeholder') || '',
+    tag: !!document.querySelector('[data-testid="pinvou-scene-tag"]'),
+    cardPressed: document.querySelector('[data-testid="scene-card-document-writing"]')?.getAttribute('aria-pressed'),
+  }));
+  rec('clicking the selected scene card again deselects back to general',
+    !sceneDeselected.tag &&
+      sceneDeselected.cardPressed === 'false' &&
+      sceneDeselected.placeholder === '询问 PINVOU 或输入指令',
+    JSON.stringify(sceneDeselected));
+
+  await page.click('[data-testid="scene-card-document-writing"]');
   await sleep(250);
   await page.focus('textarea');
   await page.keyboard.type('发送后气泡标签测试');
@@ -209,7 +279,7 @@ async function clickExactButton(page, text) {
       ),
     };
   });
-  rec('发送后专业子模式显示为用户气泡只读标签且不污染 messages',
+  rec('after sending, the professional scene shows as a read-only tag on the user bubble without polluting messages',
     sentBubbleScene.tag.includes('公文写作') &&
       !sentBubbleScene.composerTag &&
       sentBubbleScene.chatCalls.length === 1 &&
@@ -246,7 +316,7 @@ async function clickExactButton(page, text) {
       requiredTool: sent.meta && sent.meta.pinvouRequiredTool,
     };
   });
-  rec('工作 general 发送不注入专业场景 meta',
+  rec('sending from work general injects no professional scene meta',
     workGeneralPayload &&
       workGeneralPayload.text === '普通工作问题' &&
       !workGeneralPayload.scene &&
@@ -255,7 +325,7 @@ async function clickExactButton(page, text) {
     JSON.stringify(workGeneralPayload));
 
   await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
-  await page.click('[data-testid="work-subtab-picker-option-personal-workbench"]');
+  await page.click('[data-testid="scene-card-personal-workbench"]');
   await sleep(250);
   const personalWorkbenchState = await page.evaluate(() => {
     const textarea = document.querySelector('textarea');
@@ -263,7 +333,8 @@ async function clickExactButton(page, text) {
       placeholder: textarea && textarea.getAttribute('placeholder'),
       textareaValue: textarea && textarea.value,
       sceneTag: document.querySelector('[data-testid="pinvou-scene-tag"]')?.textContent || '',
-      templatePicker: !!document.querySelector('[data-testid="personal-workbench-template-picker"]'),
+      legacyTemplatePicker: !!document.querySelector('[data-testid="personal-workbench-template-picker"]'),
+      templateCards: !!document.querySelector('[data-testid="personal-workbench-template-cards"]'),
       templateLabels: [...document.querySelectorAll('button[data-testid^="personal-workbench-template-"]')]
         .map(node => (node.textContent || '').trim()),
     };
@@ -286,9 +357,10 @@ async function clickExactButton(page, text) {
         .join('\n'),
     };
   });
-  rec('个人工作台自由输入走默认专家隐藏 prompt 且界面只显示用户文本',
+  rec('the personal workbench scene card expands the template card grid; free input uses the default expert hidden prompt and the UI shows only the user text',
     personalWorkbenchState.placeholder === '选择模板后可编辑完整提示词' &&
-      personalWorkbenchState.templatePicker &&
+      !personalWorkbenchState.legacyTemplatePicker &&
+      personalWorkbenchState.templateCards &&
       personalWorkbenchState.templateLabels.join('|') === '生活记录|个人账本|学习计划|任务看板|求职管理|旅行计划|运动打卡' &&
       personalWorkbenchState.sceneTag.includes('个人工作台') &&
       personalWorkbenchState.textareaValue === '' &&
@@ -326,7 +398,7 @@ async function clickExactButton(page, text) {
       textareaAfterSend: document.querySelector('textarea')?.value || '',
     };
   });
-  rec('个人工作台模板被整段替换后按自由输入处理',
+  rec('a personal workbench template fully replaced by edits is treated as free input',
     personalTemplateReplacedPayload &&
       personalTemplateReplacedPayload.text === longCustomWorkbenchPrompt &&
       personalTemplateReplacedPayload.scene === 'work:personal-workbench' &&
@@ -345,11 +417,11 @@ async function clickExactButton(page, text) {
     return {
       textareaValue: textarea && textarea.value,
       sceneTag: document.querySelector('[data-testid="pinvou-scene-tag"]')?.textContent || '',
-      templateTag: document.querySelector('[data-testid="pinvou-scene-template-tag"]')?.textContent || '',
+      templateCardPressed: document.querySelector('[data-testid="personal-workbench-template-1"]')?.getAttribute('aria-pressed'),
       hasPromptInTextarea: /真实时薪计算器|localStorage/.test(textarea && textarea.value || ''),
     };
   });
-  await page.click('[data-testid="work-subtab-picker-option-document-writing"]');
+  await page.click('[data-testid="scene-card-document-writing"]');
   await sleep(250);
   const templateDraftClearedOnSceneSwitch = await page.evaluate(() => {
     const textarea = document.querySelector('textarea');
@@ -357,17 +429,22 @@ async function clickExactButton(page, text) {
       textareaValue: textarea && textarea.value,
       placeholder: textarea && textarea.getAttribute('placeholder'),
       sceneTag: document.querySelector('[data-testid="pinvou-scene-tag"]')?.textContent || '',
+      templateCards: !!document.querySelector('[data-testid="personal-workbench-template-cards"]'),
       hasPersonalTemplatePrompt: /真实时薪计算器|个人账本|视觉要求/.test(textarea && textarea.value || ''),
     };
   });
-  rec('从个人工作台模板切到其他工作场景会清理模板草稿',
-    templateDraftClearedOnSceneSwitch.sceneTag.includes('公文写作') &&
+  rec('switching from a personal workbench template to another scene clears the template draft',
+    personalTemplateSelected.sceneTag.includes('个人工作台') &&
+      personalTemplateSelected.templateCardPressed === 'true' &&
+      personalTemplateSelected.hasPromptInTextarea &&
+      templateDraftClearedOnSceneSwitch.sceneTag.includes('公文写作') &&
       templateDraftClearedOnSceneSwitch.placeholder === '描述公文主题、文种、收发单位和关键要求' &&
       templateDraftClearedOnSceneSwitch.textareaValue === '' &&
+      !templateDraftClearedOnSceneSwitch.templateCards &&
       !templateDraftClearedOnSceneSwitch.hasPersonalTemplatePrompt,
-    JSON.stringify(templateDraftClearedOnSceneSwitch));
+    JSON.stringify({ personalTemplateSelected, templateDraftClearedOnSceneSwitch }));
 
-  await page.click('[data-testid="work-subtab-picker-option-personal-workbench"]');
+  await page.click('[data-testid="scene-card-personal-workbench"]');
   await sleep(200);
   await page.evaluate((prompt) => {
     const textarea = document.querySelector('textarea');
@@ -375,7 +452,7 @@ async function clickExactButton(page, text) {
     setter.call(textarea, prompt);
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
   }, personalTemplateSelected.textareaValue);
-  await page.click('[data-testid="work-subtab-picker-option-document-writing"]');
+  await page.click('[data-testid="scene-card-document-writing"]');
   await sleep(250);
   const restoredTemplateDraftClearedOnSceneSwitch = await page.evaluate(() => {
     const textarea = document.querySelector('textarea');
@@ -386,14 +463,14 @@ async function clickExactButton(page, text) {
       hasPersonalTemplatePrompt: /真实时薪计算器|个人账本|视觉要求/.test(textarea && textarea.value || ''),
     };
   });
-  rec('恢复的个人工作台模板草稿即使没有选中 ref 也会在切换场景时清理',
+  rec('a restored personal workbench template draft is cleared on scene switch even with no card selected',
     restoredTemplateDraftClearedOnSceneSwitch.sceneTag.includes('公文写作') &&
       restoredTemplateDraftClearedOnSceneSwitch.placeholder === '描述公文主题、文种、收发单位和关键要求' &&
       restoredTemplateDraftClearedOnSceneSwitch.textareaValue === '' &&
       !restoredTemplateDraftClearedOnSceneSwitch.hasPersonalTemplatePrompt,
     JSON.stringify(restoredTemplateDraftClearedOnSceneSwitch));
 
-  await page.click('[data-testid="work-subtab-picker-option-personal-workbench"]');
+  await page.click('[data-testid="scene-card-personal-workbench"]');
   await sleep(200);
   await page.click('[data-testid="personal-workbench-template-1"]');
   await sleep(200);
@@ -414,17 +491,11 @@ async function clickExactButton(page, text) {
       templateTitle: sent.meta && sent.meta.pinvouTemplateTitle,
       payload: sent.meta && sent.meta.pinvouPayloadText,
       textareaAfterSend: document.querySelector('textarea')?.value || '',
-      templateTagAfterSend: !!document.querySelector('[data-testid="pinvou-scene-template-tag"]'),
     };
   });
-  rec('个人工作台模板把完整 prompt 写入输入框并直接发送当前文本',
-    personalWorkbenchState.placeholder === '选择模板后可编辑完整提示词' &&
-      personalWorkbenchState.templatePicker &&
-      personalWorkbenchState.templateLabels.join('|') === '生活记录|个人账本|学习计划|任务看板|求职管理|旅行计划|运动打卡' &&
-      personalWorkbenchState.sceneTag.includes('个人工作台') &&
-      personalWorkbenchState.textareaValue === '' &&
-      personalTemplateSelected.sceneTag.includes('个人工作台') &&
-      personalTemplateSelected.templateTag === '' &&
+  rec('the personal workbench template card writes the full prompt into the input and sends the current text directly',
+    personalTemplateSelected.sceneTag.includes('个人工作台') &&
+      personalTemplateSelected.templateCardPressed === 'true' &&
       personalTemplateSelected.hasPromptInTextarea &&
       personalPayload &&
       /请制作一个名为「个人账本」/.test(personalPayload.text || '') &&
@@ -433,12 +504,11 @@ async function clickExactButton(page, text) {
       personalPayload.templateId === 'personal-ledger' &&
       personalPayload.templateTitle === '个人账本' &&
       !personalPayload.payload &&
-      personalPayload.textareaAfterSend === '' &&
-      !personalPayload.templateTagAfterSend,
-    JSON.stringify({ personalWorkbenchState, personalTemplateSelected, personalPayload }));
+      personalPayload.textareaAfterSend === '',
+    JSON.stringify({ personalTemplateSelected, personalPayload }));
 
   await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
-  await page.click('[data-testid="work-subtab-picker-option-document-writing"]');
+  await page.click('[data-testid="scene-card-document-writing"]');
   await sleep(250);
   const selectedWorkScene = await page.evaluate(() => {
     const textarea = document.querySelector('textarea');
@@ -456,7 +526,7 @@ async function clickExactButton(page, text) {
     tag: !!document.querySelector('[data-testid="pinvou-scene-tag"]'),
     text: document.querySelector('textarea')?.value || '',
   }));
-  rec('工作子模式以标签显示并可取消且保留草稿',
+  rec('the scene shows as a clearable tag and the draft is preserved',
     selectedWorkScene.placeholder === '描述公文主题、文种、收发单位和关键要求' &&
       selectedWorkScene.tag.includes('公文写作') &&
       selectedWorkScene.clear &&
@@ -464,7 +534,7 @@ async function clickExactButton(page, text) {
       clearedWorkScene.text === '写一份项目验收通知',
     JSON.stringify({ selectedWorkScene, clearedWorkScene }));
 
-  await page.click('[data-testid="work-subtab-picker-option-document-writing"]');
+  await page.click('[data-testid="scene-card-document-writing"]');
   await sleep(250);
   await page.focus('textarea');
   await page.keyboard.press('Enter');
@@ -481,9 +551,8 @@ async function clickExactButton(page, text) {
       status: document.querySelector('[data-testid="scene-capability-status"]')?.textContent || '',
     };
   });
-  rec('工作-公文写作自动准备并强制路由到 government-writing + gongwen',
-    selectedWorkScene.placeholder === '描述公文主题、文种、收发单位和关键要求' &&
-      documentPayload &&
+  rec('the document-writing scene auto-prepares and force-routes to government-writing + gongwen',
+    documentPayload &&
       documentPayload.text === '写一份项目验收通知' &&
       documentPayload.scene === 'work:document-writing' &&
       documentPayload.requiredSkill === 'government-writing' &&
@@ -495,57 +564,14 @@ async function clickExactButton(page, text) {
     JSON.stringify({ selectedWorkScene, documentPayload }));
 
   await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
-  await clickExactButton(page, '设计');
-  await sleep(250);
-  const designGeneralState = await page.evaluate(() => {
-    const textarea = document.querySelector('textarea');
-    return {
-      placeholder: textarea && textarea.getAttribute('placeholder'),
-      tag: !!document.querySelector('[data-testid="pinvou-scene-tag"]'),
-    };
-  });
-  await page.focus('textarea');
-  await page.keyboard.type('把当前页面调得更高级');
-  await page.keyboard.press('Enter');
-  await sleep(250);
-  const designGeneralPayload = await page.evaluate(() => {
-    const sent = (window.__PINVOU_TEST_SENT_MESSAGES || [])[0] || null;
-    return sent && {
-      text: sent.text,
-      scene: sent.meta && sent.meta.pinvouScene,
-      designScene: sent.meta && sent.meta.pinvouDesignScene,
-      requiredSkill: sent.meta && sent.meta.pinvouRequiredSkill,
-    };
-  });
-  rec('设计 general 保持设计语境但不注入子场景 meta',
-    designGeneralState.placeholder === '描述你想生成或调整的内容' &&
-      !designGeneralState.tag &&
-      designGeneralPayload &&
-      designGeneralPayload.text === '把当前页面调得更高级' &&
-      !designGeneralPayload.scene &&
-      !designGeneralPayload.designScene &&
-      !designGeneralPayload.requiredSkill,
-    JSON.stringify({ designGeneralState, designGeneralPayload }));
-
-  await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
-  await page.click('[data-testid="design-subtab-picker-option-data-visualization"]');
+  await page.click('[data-testid="scene-card-data-visualization"]');
   await sleep(250);
   const designDataPlaceholder = await page.evaluate(() => {
     const textarea = document.querySelector('textarea');
     return {
       placeholder: textarea && textarea.getAttribute('placeholder'),
-      workDataTab: !!document.querySelector('[data-testid="work-subtab-picker-option-data-visualization"]'),
-      designDataTab: !!document.querySelector('[data-testid="design-subtab-picker-option-data-visualization"]'),
-      posterTab: !!document.querySelector('[data-testid="design-subtab-picker-option-poster"]'),
-      pptTab: !!document.querySelector('[data-testid="design-subtab-picker-option-ppt"]'),
-      pptDisabled: document.querySelector('[data-testid="design-subtab-picker-option-ppt"]')?.disabled || false,
-      pptTitle: document.querySelector('[data-testid="design-subtab-picker-option-ppt"]')?.getAttribute('title') || '',
-      tabOrder: [...document.querySelectorAll('[data-testid^="design-subtab-picker-option-"]')].map((button) =>
-        button.textContent.trim()
-      ),
-      unavailableTabs: ['webpage', 'banner', 'logo', 'ui'].filter((key) =>
-        !!document.querySelector(`[data-testid="design-subtab-picker-option-${key}"]`)
-      ),
+      cardPressed: document.querySelector('[data-testid="scene-card-data-visualization"]')?.getAttribute('aria-pressed'),
+      tag: document.querySelector('[data-testid="pinvou-scene-tag"]')?.textContent || '',
     };
   });
   await page.focus('textarea');
@@ -563,16 +589,10 @@ async function clickExactButton(page, text) {
       installs: window.__PINVOU_TEST_INSTALLS || [],
     };
   });
-  rec('设计-数据可视化自动准备并强制路由到 visualizer',
+  rec('the data-visualization scene auto-prepares and force-routes to visualizer',
       designDataPlaceholder.placeholder === '粘贴数据或描述指标，生成可视化看板' &&
-      !designDataPlaceholder.workDataTab &&
-      designDataPlaceholder.designDataTab &&
-      designDataPlaceholder.posterTab &&
-      designDataPlaceholder.pptTab &&
-      designDataPlaceholder.pptDisabled &&
-      /PPT 生成能力修复中/.test(designDataPlaceholder.pptTitle || '') &&
-      JSON.stringify(designDataPlaceholder.tabOrder) === JSON.stringify(['海报', '数据可视化', 'PPT设计']) &&
-      designDataPlaceholder.unavailableTabs.length === 0 &&
+      designDataPlaceholder.cardPressed === 'true' &&
+      designDataPlaceholder.tag.includes('数据可视化') &&
       dataPayload &&
       dataPayload.text === '把近 7 天销售额做成趋势图' &&
       dataPayload.scene === 'design:data-visualization' &&
@@ -584,27 +604,6 @@ async function clickExactButton(page, text) {
       /Chart\.js/.test(dataPayload.payload || '') &&
       !/Excel 仪表盘/.test((dataPayload.payload || '').split('---')[0] || ''),
     JSON.stringify({ designDataPlaceholder, dataPayload }));
-  await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
-  await page.evaluate(() => {
-    const ppt = document.querySelector('[data-testid="design-subtab-picker-option-ppt"]');
-    if (ppt) ppt.click();
-  });
-  await sleep(250);
-  const disabledPptState = await page.evaluate(() => {
-    const textarea = document.querySelector('textarea');
-    return {
-      placeholder: textarea && textarea.getAttribute('placeholder'),
-      sentCount: (window.__PINVOU_TEST_SENT_MESSAGES || []).length,
-      activePpt: document.querySelector('[data-testid="design-subtab-picker-option-ppt"]')?.getAttribute('aria-disabled') === 'true',
-    };
-  });
-  rec('PPT 设计入口暂时置灰且不会触发生成路由',
-    disabledPptState.placeholder === '粘贴数据或描述指标，生成可视化看板' &&
-      disabledPptState.sentCount === 0 &&
-      disabledPptState.activePpt,
-    JSON.stringify({ disabledPptState }));
-  await page.click('[data-testid="design-subtab-picker-option-poster"]');
-  await sleep(200);
 
   await page.evaluate(() => window.TauriBridge && window.TauriBridge.sessions && window.TauriBridge.sessions.switchToSession('s-design'));
   await sleep(900);
@@ -613,22 +612,26 @@ async function clickExactButton(page, text) {
   const directPreview = await page.evaluate(() => {
     const switcher = document.querySelector('[data-testid="artifact-switcher-button"]');
     const frame = document.querySelector('[data-testid="artifact-html-preview-frame"]');
+    const fullscreenToggle = document.querySelector('[data-testid="artifact-fullscreen-toggle"]');
     return {
       switcher: !!switcher,
       switcherText: switcher && switcher.textContent,
       frame: !!frame,
-      listVisible: !!document.querySelector('[data-testid="artifact-switcher-menu"]'),
       fullscreenPanel: !!document.querySelector('[data-testid="artifact-fullscreen-panel"]'),
-      toggleTitle: document.querySelector('[data-testid="artifact-fullscreen-toggle"]')?.getAttribute('title') || '',
-      toggleText: document.querySelector('[data-testid="artifact-fullscreen-toggle"]')?.textContent || '',
+      editToggle: !!document.querySelector('[data-testid="artifact-edit-mode-toggle"]'),
+      toggleTitle: fullscreenToggle?.getAttribute('title') || '',
+      toggleLabel: fullscreenToggle?.getAttribute('aria-label') || '',
+      toggleText: (fullscreenToggle?.textContent || '').trim(),
     };
   });
-  rec('点击产物与代码直接预览最新产物',
+  rec('clicking artifacts & code previews the latest artifact directly, the fullscreen button returns to a plain icon, and no edit-mode entry exists outside fullscreen',
     directPreview.switcher && directPreview.frame &&
       /landing\.html/.test(directPreview.switcherText || '') &&
       !directPreview.fullscreenPanel &&
-      directPreview.toggleText === '编辑模式' &&
-      directPreview.toggleTitle === '进入编辑模式：放大预览并编辑选中元素',
+      !directPreview.editToggle &&
+      directPreview.toggleTitle === '全屏显示' &&
+      directPreview.toggleLabel === '全屏显示产物预览' &&
+      directPreview.toggleText === '',
     JSON.stringify(directPreview));
   await page.evaluate(() => {
     const frame = document.querySelector('[data-testid="artifact-html-preview-frame"]');
@@ -637,7 +640,7 @@ async function clickExactButton(page, text) {
   });
   await sleep(100);
   const externalPreviewLinks = await page.evaluate(() => window.__PINVOU_TEST_EXTERNAL_URLS || []);
-  rec('产物 HTML 外链由宿主交给系统浏览器命令且 iframe 不跳转',
+  rec('artifact HTML external links are handed by the host to the system-browser command and the iframe does not navigate',
     externalPreviewLinks.length === 1
       && externalPreviewLinks[0] === 'https://example.com/docs',
     JSON.stringify(externalPreviewLinks));
@@ -647,7 +650,7 @@ async function clickExactButton(page, text) {
     exists: !!document.querySelector('[data-testid="artifact-switcher-menu"]'),
     items: [...document.querySelectorAll('[data-testid="artifact-switcher-item"]')].map((node) => node.textContent || ''),
   }));
-  rec('预览页顶部提供 iOS 风格产物切换菜单',
+  rec('the preview header provides an iOS-style artifact switcher menu',
     artifactMenu.exists && artifactMenu.items.length === 2 &&
       artifactMenu.items.some((text) => /poster-draft\.html/.test(text)) &&
       artifactMenu.items.some((text) => /landing\.html/.test(text)),
@@ -662,7 +665,7 @@ async function clickExactButton(page, text) {
     const switcher = document.querySelector('[data-testid="artifact-switcher-button"]');
     return switcher && switcher.textContent || '';
   });
-  rec('产物切换菜单可切换到其他产物',
+  rec('the artifact switcher menu can switch to other artifacts',
     /poster-draft\.html/.test(switchedDraft),
     JSON.stringify({ switchedDraft }));
   await page.click('[data-testid="artifact-switcher-button"]');
@@ -678,22 +681,22 @@ async function clickExactButton(page, text) {
   const design = await page.evaluate(() => {
     const textarea = document.querySelector('textarea');
     const homeSwitcher = document.querySelector('[data-testid="home-mode-switcher"]');
-    const designPicker = document.querySelector('[data-testid="design-subtab-picker"]');
+    const cardGrid = document.querySelector('[data-testid="scene-card-grid"]');
     const sceneTag = document.querySelector('[data-testid="pinvou-scene-tag"]');
     const userSceneTag = document.querySelector('[data-testid="user-message-scene-tag"]');
     return {
       statusHidden: !document.querySelector('[data-testid="design-mode-status"]'),
       placeholder: textarea && textarea.getAttribute('placeholder'),
       homeSwitcher: !!homeSwitcher,
-      designPicker: !!designPicker,
+      cardGrid: !!cardGrid,
       sceneTag: sceneTag && sceneTag.textContent,
       userSceneTag: userSceneTag && userSceneTag.textContent,
     };
   });
-  rec('非空会话从共享 sidecar 恢复历史消息只读标签',
+  rec('a non-empty session restores historical message read-only tags from the shared sidecar, and the scene restores to poster from the migrated mode state',
     design.statusHidden &&
       !design.homeSwitcher &&
-      !design.designPicker &&
+      !design.cardGrid &&
       !design.sceneTag &&
       /海报/.test(design.userSceneTag || '') &&
       design.placeholder === '描述你想生成或调整的视觉海报',
@@ -721,7 +724,7 @@ async function clickExactButton(page, text) {
       payload: sent.meta && sent.meta.pinvouPayloadText,
     };
   });
-  rec('视觉海报发送时模型 payload 注入海报约束和自检要求',
+  rec('sending a visual poster injects poster constraints and self-check requirements into the model payload',
       posterPayload &&
       posterPayload.text === '设计一张科技峰会海报' &&
       posterPayload.pinvouScene === 'design:poster' &&
@@ -734,8 +737,42 @@ async function clickExactButton(page, text) {
       /海报自检/.test(posterPayload.payload || ''),
     JSON.stringify(posterPayload));
 
+  // Enter fullscreen: the edit-mode manual toggle appears, but edit mode is not entered by default
   await page.click('[data-testid="artifact-fullscreen-toggle"]');
-  await sleep(350);
+  await sleep(400);
+  const fullscreenIdle = await page.evaluate(() => {
+    const editToggle = document.querySelector('[data-testid="artifact-edit-mode-toggle"]');
+    const fullscreenToggle = document.querySelector('[data-testid="artifact-fullscreen-toggle"]');
+    return {
+      panel: !!document.querySelector('[data-testid="artifact-fullscreen-panel"]'),
+      editToggle: !!editToggle,
+      editText: (editToggle?.textContent || '').trim(),
+      editTitle: editToggle?.getAttribute('title') || '',
+      editLabel: editToggle?.getAttribute('aria-label') || '',
+      editPressed: editToggle?.getAttribute('aria-pressed'),
+      toggleTitle: fullscreenToggle?.getAttribute('title') || '',
+      toggleLabel: fullscreenToggle?.getAttribute('aria-label') || '',
+      inspector: !!document.querySelector('[data-testid="artifact-design-inspector-host"]'),
+      composer: !!document.querySelector('[data-testid="artifact-design-ai-composer"]'),
+      zoomControls: !!document.querySelector('[data-testid="artifact-html-zoom-controls"]'),
+      footer: !!document.querySelector('[data-testid="artifact-meta-footer"]'),
+    };
+  });
+  rec('after fullscreen the edit-mode manual toggle appears and edit mode is off by default',
+    fullscreenIdle.panel && fullscreenIdle.editToggle &&
+      fullscreenIdle.editText === '编辑模式' &&
+      fullscreenIdle.editTitle === '进入编辑模式：放大预览并编辑选中元素' &&
+      fullscreenIdle.editLabel === '进入编辑模式：放大预览并编辑选中元素' &&
+      fullscreenIdle.editPressed === 'false' &&
+      fullscreenIdle.toggleTitle === '退出全屏' &&
+      fullscreenIdle.toggleLabel === '退出全屏并回到右侧预览' &&
+      !fullscreenIdle.inspector && !fullscreenIdle.composer && !fullscreenIdle.zoomControls &&
+      !fullscreenIdle.footer,
+    JSON.stringify(fullscreenIdle));
+
+  // Click the edit-mode toggle: inject the design runtime, render the inspector dock / AI input / zoom controls
+  await page.click('[data-testid="artifact-edit-mode-toggle"]');
+  await sleep(450);
 
   const inspectorPlacement = await page.evaluate(() => {
     const composer = document.querySelector('[data-testid="chat-composer-wrap"]');
@@ -755,7 +792,7 @@ async function clickExactButton(page, text) {
       text: panel && panel.textContent,
     };
   });
-  rec('设计 inspector 作为实底 dock 渲染在产物预览区',
+  rec('the design inspector renders as a solid dock in the artifact preview area',
     inspectorPlacement.host && inspectorPlacement.panel && inspectorPlacement.preview &&
       !inspectorPlacement.panelInComposer && inspectorPlacement.panelInArtifactHost &&
       inspectorPlacement.hostPosition !== 'absolute' &&
@@ -764,6 +801,7 @@ async function clickExactButton(page, text) {
 
   const fullscreen = await page.evaluate(() => {
     const panel = document.querySelector('[data-testid="artifact-fullscreen-panel"]');
+    const editToggle = document.querySelector('[data-testid="artifact-edit-mode-toggle"]');
     const toggle = document.querySelector('[data-testid="artifact-fullscreen-toggle"]');
     const preview = document.querySelector('[data-testid="artifact-preview-content"]');
     const inspector = document.querySelector('[data-testid="artifact-design-inspector-host"]');
@@ -781,8 +819,10 @@ async function clickExactButton(page, text) {
       panelHeight: panelRect && Math.round(panelRect.height),
       windowWidth: window.innerWidth,
       windowHeight: window.innerHeight,
+      editText: (editToggle?.textContent || '').trim(),
+      editTitle: editToggle?.getAttribute('title') || '',
+      editPressed: editToggle?.getAttribute('aria-pressed'),
       toggleTitle: toggle && toggle.getAttribute('title'),
-      toggleLabel: toggle && toggle.getAttribute('aria-label'),
       inspector: !!inspector,
       footer: !!document.querySelector('[data-testid="artifact-meta-footer"]'),
       inspectorWidth: inspectorRect && Math.round(inspectorRect.width),
@@ -793,18 +833,20 @@ async function clickExactButton(page, text) {
       scale: frame && Number(frame.dataset.zoomScale || 0),
     };
   });
-  rec('产物预览支持编辑模式全屏显示',
+  rec('the artifact preview supports edit-mode fullscreen display',
     fullscreen.panel && fullscreen.inspector &&
-      fullscreen.toggleTitle === '退出编辑模式并回到右侧预览' &&
-      fullscreen.toggleLabel === '退出编辑模式并回到右侧预览' &&
+      fullscreen.editText === '退出编辑' &&
+      fullscreen.editTitle === '退出编辑模式并回到右侧预览' &&
+      fullscreen.editPressed === 'true' &&
+      fullscreen.toggleTitle === '退出全屏' &&
       fullscreen.panelTop === 36 && fullscreen.panelLeft === 0 &&
       fullscreen.panelWidth === fullscreen.windowWidth &&
       fullscreen.panelHeight === fullscreen.windowHeight - 36,
     JSON.stringify(fullscreen));
-  rec('全屏设计模式隐藏文件详情并固定右侧 inspector',
+  rec('fullscreen design mode hides file details and pins the inspector on the right',
     !fullscreen.footer && fullscreen.inspectorRightOfPreview && fullscreen.inspectorWidth >= 300 && fullscreen.inspectorWidth <= 340,
     JSON.stringify(fullscreen));
-  rec('全屏设计模式默认提供完整显示缩放',
+  rec('fullscreen design mode provides fit-to-view zoom by default',
     fullscreen.zoomControls && fullscreen.zoomText.includes('适应窗口') && !fullscreen.zoomText.includes('适应宽度') && !fullscreen.zoomText.includes('原始大小') &&
       fullscreen.zoomText.includes('-') && fullscreen.zoomText.includes('+'),
     JSON.stringify(fullscreen));
@@ -818,7 +860,7 @@ async function clickExactButton(page, text) {
       aiPlaceholder: document.querySelector('[data-testid="artifact-design-ai-input"]')?.getAttribute('placeholder') || '',
     };
   });
-  rec('全屏设计预览提供 AI 输入框',
+  rec('the fullscreen design preview provides an AI input',
     simplifiedInspector.aiComposer &&
       simplifiedInspector.aiPlaceholder === '描述你想怎么调整这张设计' &&
       !simplifiedInspector.advanced,
@@ -832,22 +874,42 @@ async function clickExactButton(page, text) {
     status: document.querySelector('[data-testid="artifact-design-ai-status"]')?.textContent || '',
     composer: !!document.querySelector('[data-testid="artifact-design-ai-composer"]'),
   }));
+  // Leave fullscreen: the fullscreen panel instance unmounts, edit mode ends with it, and the edit-mode entry disappears
   await page.click('[data-testid="artifact-fullscreen-toggle"]');
-  await sleep(180);
+  await sleep(250);
+  const exitedFullscreen = await page.evaluate(() => ({
+    fullscreenPanel: !!document.querySelector('[data-testid="artifact-fullscreen-panel"]'),
+    composer: !!document.querySelector('[data-testid="artifact-design-ai-composer"]'),
+    editToggle: !!document.querySelector('[data-testid="artifact-edit-mode-toggle"]'),
+    toggleTitle: document.querySelector('[data-testid="artifact-fullscreen-toggle"]')?.getAttribute('title') || '',
+  }));
+  // Re-enter fullscreen: edit mode is off by default and must be opened manually again
   await page.click('[data-testid="artifact-fullscreen-toggle"]');
+  await sleep(450);
+  const reenteredFullscreen = await page.evaluate(() => ({
+    fullscreenPanel: !!document.querySelector('[data-testid="artifact-fullscreen-panel"]'),
+    composer: !!document.querySelector('[data-testid="artifact-design-ai-composer"]'),
+    editText: (document.querySelector('[data-testid="artifact-edit-mode-toggle"]')?.textContent || '').trim(),
+    editPressed: document.querySelector('[data-testid="artifact-edit-mode-toggle"]')?.getAttribute('aria-pressed'),
+  }));
+  await page.click('[data-testid="artifact-edit-mode-toggle"]');
   await sleep(450);
   const aiStatusAfterFullscreenToggle = await page.evaluate(() => ({
     status: document.querySelector('[data-testid="artifact-design-ai-status"]')?.textContent || '',
     composer: !!document.querySelector('[data-testid="artifact-design-ai-composer"]'),
   }));
-  rec('全屏 AI 状态在退出并重新进入全屏后不丢失',
+  rec('leaving fullscreen exits edit mode automatically, and the fullscreen AI state survives reopening',
     aiStatusBeforeFullscreenToggle.composer &&
       /调整中/.test(aiStatusBeforeFullscreenToggle.status) &&
       /把整体氛围调得更醒目/.test(aiStatusBeforeFullscreenToggle.status) &&
+      !exitedFullscreen.fullscreenPanel && !exitedFullscreen.composer && !exitedFullscreen.editToggle &&
+      exitedFullscreen.toggleTitle === '全屏显示' &&
+      reenteredFullscreen.fullscreenPanel && !reenteredFullscreen.composer &&
+      reenteredFullscreen.editText === '编辑模式' && reenteredFullscreen.editPressed === 'false' &&
       aiStatusAfterFullscreenToggle.composer &&
       /调整中/.test(aiStatusAfterFullscreenToggle.status) &&
       /把整体氛围调得更醒目/.test(aiStatusAfterFullscreenToggle.status),
-    JSON.stringify({ aiStatusBeforeFullscreenToggle, aiStatusAfterFullscreenToggle }));
+    JSON.stringify({ aiStatusBeforeFullscreenToggle, exitedFullscreen, reenteredFullscreen, aiStatusAfterFullscreenToggle }));
   const aiComposerCompact = await page.evaluate(() => {
     const composer = document.querySelector('[data-testid="artifact-design-ai-composer"]');
     const rect = composer && composer.getBoundingClientRect();
@@ -856,7 +918,7 @@ async function clickExactButton(page, text) {
       status: document.querySelector('[data-testid="artifact-design-ai-status"]')?.textContent || '',
     };
   });
-  rec('全屏 AI 执行态保持紧凑输入框形态',
+  rec('the fullscreen AI busy state keeps the compact input form',
     aiComposerCompact.height > 0 && aiComposerCompact.height <= 68 &&
       /调整中/.test(aiComposerCompact.status) &&
       /把整体氛围调得更醒目/.test(aiComposerCompact.status),
@@ -880,7 +942,7 @@ async function clickExactButton(page, text) {
       overflow: scrollStyle && scrollStyle.overflow,
     };
   });
-  rec('完整显示模式下画布垂直居中，避免底部大片留黑',
+  rec('in fit-to-view mode the canvas is vertically centered, avoiding a large black band at the bottom',
     fitCenter && fitCenter.frameHeight > 0 && fitCenter.previewHeight > fitCenter.frameHeight &&
       Math.abs(fitCenter.topGap - fitCenter.bottomGap) < Math.max(60, fitCenter.previewHeight * 0.12) &&
       fitCenter.overflow === 'hidden',
@@ -955,10 +1017,10 @@ async function clickExactButton(page, text) {
   await sleep(100);
   await page.click('[data-testid="artifact-html-zoom-fit"]');
   await sleep(250);
-  rec('全屏缩放按钮会改变固定画布比例',
+  rec('the fullscreen zoom buttons change the fixed canvas ratio',
     fullscreen.scale > 0 && actualScale === 1 && actualOverflow === 'auto' && Math.abs(actualScale - fullscreen.scale) > 0.01,
     JSON.stringify({ fit: fullscreen.scale, actual: actualScale, actualOverflow }));
-  rec('全屏缩放支持加减自由缩放并可回到完整显示',
+  rec('fullscreen zoom supports +/- free zooming and can return to fit-to-view',
     customZoomIn.mode === 'custom' && customZoomIn.scale > actualScale &&
       customZoomOut.mode === 'custom' && customZoomOut.scale < customZoomIn.scale &&
       Math.abs(fitAgainScale - fullscreen.scale) < 0.01 &&
@@ -966,17 +1028,44 @@ async function clickExactButton(page, text) {
       iframeCtrlWheelZoom.mode === 'custom' && iframeCtrlWheelZoom.scale > fitAgainScale,
     JSON.stringify({ customZoomIn, customZoomOut, fitAgainScale, ctrlWheelZoom, iframeCtrlWheelZoom, fit: fullscreen.scale }));
 
+  // Exit edit mode but keep the fullscreen preview
+  await page.click('[data-testid="artifact-edit-mode-toggle"]');
+  await sleep(300);
+  const exitedEditMode = await page.evaluate(() => {
+    const editToggle = document.querySelector('[data-testid="artifact-edit-mode-toggle"]');
+    return {
+      fullscreenPanel: !!document.querySelector('[data-testid="artifact-fullscreen-panel"]'),
+      frame: !!document.querySelector('[data-testid="artifact-html-preview-frame"]'),
+      inspector: !!document.querySelector('[data-testid="artifact-design-inspector-host"]'),
+      composer: !!document.querySelector('[data-testid="artifact-design-ai-composer"]'),
+      zoomControls: !!document.querySelector('[data-testid="artifact-html-zoom-controls"]'),
+      editText: (editToggle?.textContent || '').trim(),
+      editTitle: editToggle?.getAttribute('title') || '',
+      editPressed: editToggle?.getAttribute('aria-pressed'),
+    };
+  });
+  rec('exiting edit mode keeps the fullscreen preview and removes the inspector and zoom controls',
+    exitedEditMode.fullscreenPanel && exitedEditMode.frame &&
+      !exitedEditMode.inspector && !exitedEditMode.composer && !exitedEditMode.zoomControls &&
+      exitedEditMode.editText === '编辑模式' &&
+      exitedEditMode.editTitle === '进入编辑模式：放大预览并编辑选中元素' &&
+      exitedEditMode.editPressed === 'false',
+    JSON.stringify(exitedEditMode));
+
   await page.click('[data-testid="artifact-fullscreen-toggle"]');
   await sleep(350);
   const collapsed = await page.evaluate(() => ({
     fullscreenPanel: !!document.querySelector('[data-testid="artifact-fullscreen-panel"]'),
+    frame: !!document.querySelector('[data-testid="artifact-html-preview-frame"]'),
+    editToggle: !!document.querySelector('[data-testid="artifact-edit-mode-toggle"]'),
     toggleTitle: document.querySelector('[data-testid="artifact-fullscreen-toggle"]')?.getAttribute('title') || '',
-    toggleText: document.querySelector('[data-testid="artifact-fullscreen-toggle"]')?.textContent || '',
+    toggleText: (document.querySelector('[data-testid="artifact-fullscreen-toggle"]')?.textContent || '').trim(),
   }));
-  rec('编辑模式预览支持退出恢复右侧栏',
-    !collapsed.fullscreenPanel &&
-      collapsed.toggleText === '编辑模式' &&
-      collapsed.toggleTitle === '进入编辑模式：放大预览并编辑选中元素',
+  rec('leaving fullscreen restores the right sidebar and the edit-mode entry disappears',
+    !collapsed.fullscreenPanel && collapsed.frame &&
+      !collapsed.editToggle &&
+      collapsed.toggleTitle === '全屏显示' &&
+      collapsed.toggleText === '',
     JSON.stringify(collapsed));
 
   await page.click('[data-testid="artifact-close"]');
@@ -986,20 +1075,23 @@ async function clickExactButton(page, text) {
   const manualOpen = await page.evaluate(() => ({
     fullscreenPanel: !!document.querySelector('[data-testid="artifact-fullscreen-panel"]'),
     artifactPanel: !!document.querySelector('[data-testid="artifact-fullscreen-toggle"]'),
+    editToggle: !!document.querySelector('[data-testid="artifact-edit-mode-toggle"]'),
     toggleTitle: document.querySelector('[data-testid="artifact-fullscreen-toggle"]')?.getAttribute('title') || '',
-    toggleText: document.querySelector('[data-testid="artifact-fullscreen-toggle"]')?.textContent || '',
     switcherText: document.querySelector('[data-testid="artifact-switcher-button"]')?.textContent || '',
     frame: !!document.querySelector('[data-testid="artifact-html-preview-frame"]'),
   }));
-  rec('设计模式下手动点击产物与代码不再默认全屏',
+  rec('manually clicking artifacts & code only opens the right preview, without auto-fullscreen or edit mode',
     !manualOpen.fullscreenPanel && manualOpen.artifactPanel &&
-      manualOpen.toggleText === '编辑模式' &&
-      manualOpen.toggleTitle === '进入编辑模式：放大预览并编辑选中元素' &&
+      !manualOpen.editToggle &&
+      manualOpen.toggleTitle === '全屏显示' &&
       manualOpen.frame && /landing\.html/.test(manualOpen.switcherText),
     JSON.stringify(manualOpen));
 
+  // Open the artifacts panel → fullscreen → click artifact-edit-mode-toggle to enter visual editing
   await page.click('[data-testid="artifact-fullscreen-toggle"]');
-  await sleep(350);
+  await sleep(400);
+  await page.click('[data-testid="artifact-edit-mode-toggle"]');
+  await sleep(500);
 
   const frameHandle = await page.$('[data-testid="artifact-html-preview-frame"]');
   let frame = frameHandle && await frameHandle.contentFrame();
@@ -1021,7 +1113,7 @@ async function clickExactButton(page, text) {
     advancedVisible: !!document.querySelector('[data-testid="design-advanced-content"]'),
     aiPlaceholder: document.querySelector('[data-testid="artifact-design-ai-input"]')?.getAttribute('placeholder') || '',
   }));
-  rec('设计 runtime 注入后可选中 iframe 内元素并展示用户化摘要',
+  rec('after the design runtime is injected, elements inside the iframe can be selected with a humanized summary',
     !!frame && selectedStatus.title.includes('已选中文字') &&
       !selectedStatus.detailsVisible && !selectedStatus.panelText.includes('body >') &&
       selectedStatus.panelText.includes('常用编辑') &&
@@ -1045,7 +1137,7 @@ async function clickExactButton(page, text) {
       payload: sent.meta && sent.meta.pinvouPayloadText,
     };
   });
-  rec('全屏 AI 输入框发送时携带选中元素上下文并复用设计场景',
+  rec('the fullscreen AI input carries the selected-element context on send and reuses the poster scene',
     designAiSent &&
       /当前选中的/i.test(designAiSent.text || '') &&
       /把标题颜色改成蓝色/.test(designAiSent.text || '') &&
@@ -1058,7 +1150,7 @@ async function clickExactButton(page, text) {
     exists: !!document.querySelector('[data-testid="design-selected-details"]'),
     text: document.querySelector('[data-testid="design-selected-details"]')?.textContent || '',
   }));
-  rec('选中元素技术 selector 默认隐藏，点详情后可查看',
+  rec('the selected element technical selector is hidden by default and viewable via details',
     selectedDetails.exists && selectedDetails.text.includes('h1') && selectedDetails.text.includes('hero-title'),
     JSON.stringify(selectedDetails));
   await page.click('[data-testid="design-selected-details-toggle"]');
@@ -1070,26 +1162,28 @@ async function clickExactButton(page, text) {
     marginBand: !!document.querySelector('[data-pinvou-design-margin]'),
     paddingBand: !!document.querySelector('[data-pinvou-design-padding]'),
   })) : null;
-  rec('设计 runtime 选中态提供尺寸标签、盒模型带和 8 个缩放手柄',
+  rec('the design runtime selection provides a size badge, box-model strip, and 8 resize handles',
     runtimeOverlay && runtimeOverlay.handles === 8 && runtimeOverlay.dimensionLabel && runtimeOverlay.marginBand && runtimeOverlay.paddingBand,
     JSON.stringify(runtimeOverlay));
 
-  const originalFontFamily = frame ? await frame.evaluate(() => {
+  // Capture the pre-edit computed size too: the unstyled h1 inherits the
+  // host browser's defaults (32px in most locales, 24px on zh-CN Windows),
+  // so the clear-check must compare against the captured value instead of a
+  // hardcoded px.
+  const originalMetrics = frame ? await frame.evaluate(() => {
     const h1 = document.querySelector('h1.hero-title');
-    return h1 ? getComputedStyle(h1).fontFamily : '';
-  }) : '';
+    const style = h1 ? getComputedStyle(h1) : null;
+    return { fontFamily: style ? style.fontFamily : '', fontSize: style ? style.fontSize : '' };
+  }) : { fontFamily: '', fontSize: '' };
+  const originalFontFamily = originalMetrics.fontFamily;
+  const originalFontSize = originalMetrics.fontSize;
 
-  await page.click('[data-testid="design-text-input"]');
-  await page.keyboard.down('Control');
-  await page.keyboard.press('A');
-  await page.keyboard.up('Control');
+  // Synthetic Ctrl/Cmd+A keystrokes are unreliable in Chrome on macOS; select all via DOM el.select() instead.
+  await page.$eval('[data-testid="design-text-input"]', (el) => { el.focus(); el.select(); });
   await page.keyboard.type('Pinvou 可视化编辑');
   await page.keyboard.press('Enter');
   await sleep(350);
-  await page.click('[data-testid="design-font-size-input"]');
-  await page.keyboard.down('Control');
-  await page.keyboard.press('A');
-  await page.keyboard.up('Control');
+  await page.$eval('[data-testid="design-font-size-input"]', (el) => { el.focus(); el.select(); });
   await page.keyboard.type('40');
   await page.keyboard.press('Tab');
   await sleep(350);
@@ -1126,7 +1220,7 @@ async function clickExactButton(page, text) {
     const log = document.querySelector('[data-testid="design-changes-log"]');
     return { exists: !!log, text: log && log.textContent };
   });
-  rec('设计面板可临时修改文案、字号、颜色和字体并记录 changes log',
+  rec('the design panel can temporarily modify text, font size, color, and family, recording a changes log',
     edited && edited.text === 'Pinvou 可视化编辑' && edited.fontSize === '40px' &&
       /0,\s*122,\s*255/.test(edited.color || '') && /Georgia/i.test(edited.fontFamily || '') &&
       changesCollapsed && changesLog.exists && changesLog.text.includes('设计变更') &&
@@ -1141,6 +1235,21 @@ async function clickExactButton(page, text) {
     if (item) item.click();
   });
   await sleep(500);
+  const editModeExitedOnSwitch = await page.evaluate(() => {
+    const editToggle = document.querySelector('[data-testid="artifact-edit-mode-toggle"]');
+    return {
+      switcherText: document.querySelector('[data-testid="artifact-switcher-button"]')?.textContent || '',
+      editText: (editToggle?.textContent || '').trim(),
+      editPressed: editToggle?.getAttribute('aria-pressed'),
+      inspector: !!document.querySelector('[data-testid="artifact-design-inspector-host"]'),
+    };
+  });
+  rec('switching artifacts exits edit mode automatically',
+    /poster-draft\.html/.test(editModeExitedOnSwitch.switcherText || '') &&
+      editModeExitedOnSwitch.editText === '编辑模式' &&
+      editModeExitedOnSwitch.editPressed === 'false' &&
+      !editModeExitedOnSwitch.inspector,
+    JSON.stringify(editModeExitedOnSwitch));
   await page.click('[data-testid="artifact-switcher-button"]');
   await sleep(100);
   await page.evaluate(() => {
@@ -1149,6 +1258,9 @@ async function clickExactButton(page, text) {
     if (item) item.click();
   });
   await sleep(700);
+  // Switch back and re-enter edit mode: the design runtime is re-injected and manual edits are replayed from the changes log
+  await page.click('[data-testid="artifact-edit-mode-toggle"]');
+  await sleep(500);
   const returnedFrameHandle = await page.$('[data-testid="artifact-html-preview-frame"]');
   frame = returnedFrameHandle && await returnedFrameHandle.contentFrame();
   if (frame) {
@@ -1176,7 +1288,7 @@ async function clickExactButton(page, text) {
     const log = document.querySelector('[data-testid="design-changes-log"]');
     return { exists: !!log, text: log && log.textContent };
   });
-  rec('切换产物再返回后恢复手工修改和 changes log',
+  rec('after switching artifacts, returning and re-entering edit mode restores manual edits and the changes log',
     restoredAfterArtifactSwitch &&
       restoredAfterArtifactSwitch.text === 'Pinvou 可视化编辑' &&
       restoredAfterArtifactSwitch.fontSize === '40px' &&
@@ -1199,12 +1311,12 @@ async function clickExactButton(page, text) {
     };
   }) : null;
   const logAfterClear = await page.evaluate(() => !!document.querySelector('[data-testid="design-changes-log"]'));
-  rec('清空修改后恢复预览并清空 changes log',
-    cleared && cleared.text === 'Pinvou Design' && cleared.fontSize === '32px' &&
+  rec('clearing changes restores the preview and empties the changes log',
+    cleared && cleared.text === 'Pinvou Design' && cleared.fontSize === originalFontSize &&
       /0,\s*0,\s*0/.test(cleared.color || '') && cleared.fontFamily === originalFontFamily && !logAfterClear,
-    JSON.stringify({ cleared, originalFontFamily, logAfterClear }));
+    JSON.stringify({ cleared, originalFontFamily, originalFontSize, logAfterClear }));
 
-  rec('页面无未处理 JavaScript 异常', errors.length === 0, errors.slice(0, 2).join(' | '));
+  rec('no unhandled JavaScript exceptions on the page', errors.length === 0, errors.slice(0, 2).join(' | '));
 
   await browser.close();
   fs.rmSync(PROFILE, { recursive: true, force: true });

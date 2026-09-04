@@ -773,6 +773,23 @@ mod pinvou_scene_event_tests {
             ])
         );
     }
+
+    #[test]
+    fn legacy_design_scene_names_stay_valid() {
+        // The design lane has been merged into the work lane, but the scene
+        // marker strings design:poster / design:data-visualization are
+        // historical persisted data and must stay accepted by the whitelist.
+        for scene in ["design:poster", "design:data-visualization"] {
+            let normalized = normalize_pinvou_scene_events(serde_json::json!([
+                { "pos": 1, "scene": scene }
+            ]))
+            .expect("legacy design scene must stay valid");
+            assert_eq!(
+                normalized,
+                serde_json::json!([{ "pos": 1, "scene": scene }])
+            );
+        }
+    }
 }
 
 /// 扫描 session workspace 目录,返回实际存在的产物文件绝对路径(过滤隐藏/临时文件)。

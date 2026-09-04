@@ -305,13 +305,18 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 ### 8.7 权限默认值与两层持久化（2026-08-06）
 
-> **修订注记（2026-08-22）**：本节的"两层持久化"语义已被 PR #263（三工作区三分
-> lane）取代，现行语义以 `docs/code-mode-解耦与权限持久化-改动说明.md` 第六节与
+> **修订注记（2026-08-22）**：本节的"两层持久化"语义已被 PR #263（工作区 lane
+> 语义）取代，现行语义以 `docs/code-mode-解耦与权限持久化-改动说明.md` 第六节与
 > `features/sessions/mode_state.rs` 为准。主要变化：① per-session mode 持久化
 > 现覆盖**所有会话**（含 plain），文件更名为 `~/.pinvou3/sessions/_session_mode_states.json`
 > （旧 `_code_mode_states.json` 回退读一次）；② `accept_plan` 的任务级 yolo 切换
 > 已纳入 per-session 持久化（确认提交后写入）；③ 全局 lane 默认只由草稿态显式
 > 切换经 `set_mode_default` 写入。下文保留 2026-08-06 语义作历史参考。
+>
+> **Update (2026-09)**: the design lane has been merged into the work lane,
+> so lane semantics went from three lanes to two (work/code); a legacy
+> `mode_defaults.design` is folded into the work mirror as a one-time read
+> at startup and is never written separately anymore.
 
 原生 code 会话的 Plan/Yolo 默认值与记忆策略（plain 会话行为不变：mode 仅驻
 内存、默认 Yolo、不落盘）：

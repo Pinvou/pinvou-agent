@@ -772,9 +772,12 @@ try {
   assert.ok(homeModeSwitcher.includes("labelKey: 'work'") && homeModeSwitcher.includes("labelKey: 'code'")
     && homeModeSwitcher.includes("selectedAgentId || 'codex'"),
   'the home composer must expose Work/Code modes and the current Codex code agent');
-  assert.ok(homeModeSwitcher.includes("key: 'design'")
-    && homeModeSwitcher.includes('HOME_DESIGN_MODE_ENABLED = true'),
-  'Design must share the real home mode entry with Work and Code');
+  assert.ok(homeModeSwitcher.includes("key: 'work'") && homeModeSwitcher.includes("key: 'code'")
+    && homeModeSwitcher.includes("testId: 'home-mode-work'")
+    && homeModeSwitcher.includes("testId: 'home-mode-code'")
+    && !homeModeSwitcher.includes("key: 'design'")
+    && !homeModeSwitcher.includes('HOME_DESIGN_MODE_ENABLED'),
+  'the home mode entry must keep only Work/Code segments after the design lane merged into work');
   assert.ok(homeModeSwitcher.includes('function normalizeCodeAgents(codeAgents, selectedAgentId)')
     && homeModeSwitcher.includes("agent?.agent_id || agent?.id")
     && homeModeSwitcher.includes("agent?.agent_name || agent?.display_name || agent?.name")
@@ -793,18 +796,20 @@ try {
     && main.includes("setCurrentView('codex')"),
   'selecting Codex must continue to enter the existing Codex draft page');
   const acpAgentLogo = readFileSync(path.join(root, 'src', 'features', 'codex', 'AcpAgentLogo.jsx'), 'utf8');
-  // 契约（2026-08-12 更新）：Design 入口必须回到 ChatView design 模式；从 code
-  // 页切回时保留原工作会话（不强制 createNewSession，否则新建 plain 会话把
-  // 用户切过的 Plan 顶成 Yolo），仅草稿态才新建会话。
+  // Contract (updated after the design lane merged into work): the Work
+  // entry returns to ChatView work mode; switching back from the code page
+  // keeps the original work session (no forced createNewSession — that
+  // would create a new plain session and clobber the user's chosen Plan
+  // with Yolo); a new session is created only in the draft state.
   assert.match(main,
-    /else if \(mode === 'design'\) \{[\s\S]*?savePinvouModeState\(\{ mode: 'design' \}[^;]*;[\s\S]*?createNewSession\(\);[\s\S]*?setCurrentView\('chat'\)/,
-    'selecting Design from the shared mode entry must return to ChatView design mode');
+    /else if \(mode === 'work'\) \{[\s\S]*?savePinvouModeState\(\{ mode: 'work' \}[^;]*;[\s\S]*?createNewSession\(\);[\s\S]*?setCurrentView\('chat'\)/,
+    'selecting Work from the shared mode entry must return to ChatView work mode');
   assert.ok(
     main.includes("if (bridge.available && !bridge.activeSessionId) bridge.sessions.createNewSession();"),
-    '从 code 页切回 design 时保留原工作会话，仅草稿态新建');
+    'switching back from code to work keeps the original work session; only the draft state creates a new one');
   assert.ok(
     main.includes("createPinvouModeScopeKey(bridge.activeSessionId)"),
-    '切回 design 时 pinvou 模式按会话 scope 保存，ChatView 挂载才能读回');
+    'the pinvou mode is saved under the session scope when switching back to work so ChatView can read it after mounting');
   assert.ok(codexLogo.includes("brand-icons/openai.svg")
     && acpAgentLogo.includes('<CodexLogo')
     && acpAgentLogo.includes("brand-icons/claude.png")
@@ -967,7 +972,7 @@ try {
     && codexView.includes('scope="code"')
     && codexView.includes('mountedId={nativeMountedId}')
     && codexView.includes('data-testid="codex-voice-input"'),
-  'the native lane must mount the shared composer controls (work/design style) plus the voice input button behind the native-agent gate');
+  'the native lane must mount the shared composer controls (work lane style) plus the voice input button behind the native-agent gate');
   assert.ok(codexView.includes('renderToolItem={isNativeAgent')
     && !codexView.includes('renderToolItem={isNativeAgent && nativeMultiAgentEnabled')
     && codexView.includes('{subagentPanel && activeSession && isNativeAgent && (')

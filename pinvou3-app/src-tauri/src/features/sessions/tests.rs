@@ -2974,7 +2974,7 @@ fn code_session_default_follows_code_lane_default() {
     let (store, _g) = isolated_store();
     with_code_sessions(&store, &["code-1", "code-2"]);
     // 已生成会话显式切 yolo：只写 per-session 记录，不碰全局 lane 默认
-    // （三分 lane 语义）→ 新 code 会话默认不跟随。
+    // (two-lane semantics) → a new code session's default does not follow.
     store
         .set_mode("code-1", SerializableMode::Yolo)
         .expect("switch yolo");
@@ -3026,8 +3026,9 @@ fn code_mode_persists_per_session_across_restart() {
 }
 
 /// accept 方案确认提交（commit）后，会话的 Yolo 纳入 per-session 持久化；
-/// 不碰任何全局 lane 默认（三分 lane 语义）；提交失败回滚（rollback）不落盘，
-/// 内存回 Plan 与磁盘保持一致。
+/// no global lane default is touched (two-lane semantics); a failed-commit
+/// rollback writes nothing to disk, and the in-memory Plan stays consistent
+/// with disk.
 #[test]
 fn code_session_accepted_yolo_persists_on_commit_not_rollback() {
     let (store, _g) = isolated_store();
@@ -3072,7 +3073,8 @@ fn plain_session_mode_persists_across_restart() {
         .set_mode("plain-1", SerializableMode::Plan)
         .expect("plain plan");
     assert_eq!(store.mode_state("plain-1").mode, SerializableMode::Plan);
-    // 三分 lane 语义：plain 会话也写 sidecar；但不动任何全局 lane 默认。
+    // Two-lane semantics: plain sessions write the sidecar too, but no
+    // global lane default is touched.
     let file = paths::sessions_root().join("_session_mode_states.json");
     let on_disk: HashMap<String, SerializableMode> =
         serde_json::from_str(&std::fs::read_to_string(&file).expect("read sidecar"))
@@ -3080,22 +3082,23 @@ fn plain_session_mode_persists_across_restart() {
     assert_eq!(on_disk.get("plain-1"), Some(&SerializableMode::Plan));
     assert!(store.code_permission_prefs().last_mode.is_none());
     assert_eq!(store.mode_defaults().work, None);
-    assert_eq!(store.mode_defaults().design, None);
     // 重启后 plain 会话恢复自己的 Plan（语义 3：每个对话保存自己的 mode）。
     let reopened = reopen_store(&store).expect("reboot");
     assert_eq!(reopened.mode_state("plain-1").mode, SerializableMode::Plan);
 }
 
-/// work/design lane 全局默认的读写与持久化；非法 lane 字符串必须报错。
+/// Read/write/persistence of the work/code lane global defaults; an invalid
+/// lane string must error (the design lane was merged into work, so
+/// `parse("design")` must be rejected).
 #[test]
 fn mode_lane_defaults_round_trip_and_validate() {
     let (store, _g) = isolated_store();
     assert_eq!(store.mode_defaults().work, None);
-    store.set_mode_default(ModeLane::Work, SerializableMode::Plan);
-    store.set_mode_default(ModeLane::Design, SerializableMode::Yolo);
-    assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
-    assert_eq!(store.mode_defaults().design, Some(SerializableMode::Yolo));
     assert_eq!(store.mode_defaults().code, None);
+    store.set_mode_default(ModeLane::Work, SerializableMode::Plan);
+    store.set_mode_default(ModeLane::Code, SerializableMode::Yolo);
+    assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
+    assert_eq!(store.mode_defaults().code, Some(SerializableMode::Yolo));
     // 落盘 settings.json + 重启后镜像恢复。
     assert_eq!(
         UserPrefs::load().mode_defaults.work,
@@ -3103,16 +3106,119 @@ fn mode_lane_defaults_round_trip_and_validate() {
     );
     let reopened = reopen_store(&store).expect("reboot");
     assert_eq!(reopened.mode_defaults().work, Some(SerializableMode::Plan));
-    assert_eq!(
-        reopened.mode_defaults().design,
-        Some(SerializableMode::Yolo)
-    );
+    assert_eq!(reopened.mode_defaults().code, Some(SerializableMode::Yolo));
     // lane 字符串校验（命令层入口防 IPC 直调写未知 lane）。
     assert!(ModeLane::parse("work").is_ok());
-    assert!(ModeLane::parse("design").is_ok());
     assert!(ModeLane::parse("code").is_ok());
+    // The design lane has been merged into work: the legacy lane name is no
+    // longer accepted.
+    assert!(ModeLane::parse("design").is_err());
     assert!(ModeLane::parse(" CodE ").is_err());
     assert!(ModeLane::parse("").is_err());
+}
+
+/// Read fold of the design lane into work: when legacy settings.json has only
+/// `mode_defaults.design`, the loaded work mirror takes the design value;
+/// when work already has a value, design does not override it.
+#[test]
+fn legacy_design_default_folds_into_work_on_load() {
+    let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // pid + in-process counter: paths::tests::ENV_LOCK doc warns nanos-only
+    // names can collide across two concurrent cargo test processes.
+    let tmp = std::env::temp_dir().join(format!(
+        "pinvou3-sessions-test-{}-{}",
+        std::process::id(),
+        paths::tests::unique_suffix()
+    ));
+    // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+    unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+    std::fs::create_dir_all(&tmp).expect("create tmp home");
+    // work empty → the fold takes the design value (never written back).
+    std::fs::write(
+        paths::settings_path(),
+        r#"{ "mode_defaults": { "design": "plan" } }"#,
+    )
+    .expect("write legacy settings");
+    let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+    assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
+    // The fold is not written back: after boot, settings.json keeps its
+    // legacy shape (work key absent, design value preserved).
+    let on_disk =
+        std::fs::read_to_string(paths::settings_path()).expect("read settings after boot");
+    assert!(
+        on_disk.contains("\"design\"") && !on_disk.contains("\"work\""),
+        "fold must not write back to disk: {on_disk}"
+    );
+
+    // work already set → design does not override.
+    std::fs::write(
+        paths::settings_path(),
+        r#"{ "mode_defaults": { "work": "yolo", "design": "plan" } }"#,
+    )
+    .expect("write settings with work");
+    let reopened = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("reboot");
+    assert_eq!(reopened.mode_defaults().work, Some(SerializableMode::Yolo));
+
+    // work already set and design missing → the work value stands, no
+    // fallback to the default.
+    std::fs::write(
+        paths::settings_path(),
+        r#"{ "mode_defaults": { "work": "plan" } }"#,
+    )
+    .expect("write settings without design");
+    let reopened = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("reboot");
+    assert_eq!(reopened.mode_defaults().work, Some(SerializableMode::Plan));
+    drop(guard);
+}
+
+/// The fold is not written back to disk, so the design field must round-trip
+/// verbatim through whole-preferences writes: any unrelated preferences
+/// write (here, the code yolo confirmation flag) must not erase the design
+/// value from settings.json — otherwise a restart leaves the fold without a
+/// source and the user's explicitly chosen default is silently lost
+/// (regression: the field was once skip_serializing, which evaporated it).
+#[test]
+fn legacy_design_default_survives_unrelated_prefs_write() {
+    let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // pid + in-process counter: paths::tests::ENV_LOCK doc warns nanos-only
+    // names can collide across two concurrent cargo test processes.
+    let tmp = std::env::temp_dir().join(format!(
+        "pinvou3-sessions-test-{}-{}",
+        std::process::id(),
+        paths::tests::unique_suffix()
+    ));
+    // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+    unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+    std::fs::create_dir_all(&tmp).expect("create tmp home");
+    std::fs::write(
+        paths::settings_path(),
+        r#"{ "mode_defaults": { "design": "plan" } }"#,
+    )
+    .expect("write legacy settings");
+    let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+    assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
+
+    // A whole-preferences write of an unrelated field (no semantic write to
+    // mode_defaults).
+    UserPrefs::update_transaction(|prefs| {
+        prefs.code_permission.yolo_confirmed = true;
+        Ok(())
+    })
+    .expect("unrelated pref write should save");
+
+    let on_disk =
+        std::fs::read_to_string(paths::settings_path()).expect("read settings after write");
+    assert!(
+        on_disk.contains("\"design\""),
+        "legacy design value must survive unrelated pref writes: {on_disk}"
+    );
+
+    // After a restart the fold source is still there and the work mirror
+    // keeps taking the design value.
+    drop(store);
+    let reopened = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("reboot");
+    assert_eq!(reopened.mode_defaults().work, Some(SerializableMode::Plan));
+    drop(guard);
 }
 
 /// 旧版 `_code_mode_states.json`（只含 code 会话的时代产物）在新文件缺失时

@@ -24,8 +24,8 @@ const VISUAL_POSTER_AUDIT = `生成完成前执行海报自检：
 8. 画面是否有足够留白，没有把内容塞满整张画布。
 如有问题，先自行修正再交付，并在回复中用简短「海报自检」说明结果。`;
 
-function shouldUseVisualPosterScene(mode, subtab) {
-  return mode === 'design' && subtab === VISUAL_POSTER_SCENE_KEY;
+function shouldUseVisualPosterScene(subtab) {
+  return subtab === VISUAL_POSTER_SCENE_KEY;
 }
 
 function buildVisualPosterPayloadText(text) {

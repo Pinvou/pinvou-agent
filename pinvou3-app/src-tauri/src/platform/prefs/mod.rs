@@ -450,8 +450,10 @@ impl Default for SidebarPrefs {
 /// 品悟原生 code 会话权限模式的全局记忆。产品语义（已拍板）：
 /// - 从未用过 code 模式时，新建 code 会话默认 Plan（只读）；
 /// - 新建 code 会话的默认 mode = code lane 的全局 last_mode；
-/// - last_mode 只由「code 页草稿态显式切换」写入（已生成会话的切换只写
-///   会话自己的记录，不再渗全局——三分 lane 语义复审拍板）；
+/// - last_mode is written only by an explicit draft-state switch on the code
+///   page (a switch inside an already-materialized session writes only that
+///   session's own record and never leaks into globals — the two-lane
+///   semantics settled in review);
 /// - 首次切 yolo 弹一次性确认卡，确认后全局记住、之后切换不再弹。
 ///
 /// 不进设置 UI；写入走字段级事务（同 PetPrefs），per-session mode 另存
@@ -466,14 +468,27 @@ pub struct CodePermissionPrefs {
     pub yolo_confirmed: bool,
 }
 
-/// 工作（work）/ 设计（design）两个 plain lane 的全局默认 mode。
-/// 与 code lane（`code_permission.last_mode`）并列——三个工作区 lane 各有
-/// 独立全局默认；只由对应 lane 草稿态的显式切换写入，已生成会话的切换不碰。
-/// None = 该 lane 从未显式选过 → 缺省 Yolo（与 plain 历史默认一致）。
+/// The work lane's global default mode.
+/// Parallel to the code lane (`code_permission.last_mode`) — each workspace
+/// lane keeps an independent global default; written only by an explicit
+/// draft-state switch in the matching lane, never touched by switches inside
+/// already-materialized sessions.
+/// None = the lane was never explicitly chosen → default Yolo (matching the
+/// historical plain default).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModeDefaultPrefs {
     pub work: Option<SerializableMode>,
+    /// Kept only for backward-compatible reads of legacy settings.json (the
+    /// design lane was merged into work): at startup, if work is empty this
+    /// field backfills the work in-memory mirror (read fold, see
+    /// `features/sessions/store.rs::from_paths`); it never receives a
+    /// semantic write.
+    /// Must round-trip verbatim through whole-preferences writes (no
+    /// skip_serializing): the fold is not written back to disk, so if an
+    /// unrelated preferences write dropped this field, one write plus a
+    /// restart before the user explicitly sets work would leave the fold
+    /// without a source and silently lose the explicitly chosen default.
     pub design: Option<SerializableMode>,
 }
 

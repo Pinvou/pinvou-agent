@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
-import { ExternalLink, FolderOpen, Maximize2, Minimize2, XCircle } from '../../components/icons.jsx';
+import { Edit2, ExternalLink, FolderOpen, Maximize2, Minimize2, XCircle } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { ScaledHtmlPreview } from '../settings/composer-shared.jsx';
@@ -65,9 +65,12 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
     const EMPTY_DESIGN_CHANGES = [];
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- unified preview/design workbench panel: every state-machine branch maps to a preview kind or a design runtime event; splitting would sever the pv/sel linkage
-    const ArtifactsPanel = ({ bs, t, onClose, isWide, onGotoSettings, isFullscreen = false, onToggleFullscreen, preferredArtifactPath, onPreviewArtifact, designMode = false, designCommand, selectedDesignElement, designChanges = EMPTY_DESIGN_CHANGES, onDesignRuntimeStatus, onDesignElementSelected, onDesignChangeApplied, onDesignMutation, onDesignApplyChange, onDesignClearChanges, onDesignAiSubmit, designAiState, onDesignAiStateChange }) => {
+    const ArtifactsPanel = ({ bs, t, onClose, isWide, onGotoSettings, isFullscreen = false, onToggleFullscreen, preferredArtifactPath, onPreviewArtifact, designCommand, selectedDesignElement, designChanges = EMPTY_DESIGN_CHANGES, onDesignElementSelected, onDesignChangeApplied, onDesignMutation, onDesignApplyChange, onDesignClearChanges, onDesignAiSubmit, designAiState, onDesignAiStateChange }) => {
       const uiA = t.uiArtifacts;
-      const showDesignWorkbench = isFullscreen && designMode;
+      // Visual editing (design workbench) is now a manual in-panel toggle:
+      // no longer triggered by the session lane — any HTML artifact can
+      // enter "edit mode" once fullscreen.
+      const [designEditMode, setDesignEditMode] = useState(false);
       const canOpenContainingFolder = can('externalSystemOpen');
       const canDownloadArtifacts = can('artifactDownload');
       const artifacts = (bs && bs.artifacts) || [];
@@ -88,6 +91,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       const [artifactMenuOpen, setArtifactMenuOpen] = useState(false);
       const [localDesignAiState, setLocalDesignAiState] = useState({ text: '', status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0 });
       const [designAiNow, setDesignAiNow] = useState(() => Date.now());
+      const showDesignWorkbench = isFullscreen && designEditMode && pv.kind === 'html';
       const mdPreviewRef = useRef(null);
       const designFrameRef = useRef(null);
       const designRuntimeScriptRef = useRef(null);
@@ -96,9 +100,6 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       // eslint-disable-next-line react-hooks/refs -- latest-ref sync: read only in callbacks/events (publishing design changes); render output does not depend on it
       designChangesRef.current = designChanges;
 
-      function setDesignStatus(status, error) {
-        if (onDesignRuntimeStatus) onDesignRuntimeStatus(status, error);
-      }
       const currentZoomOption = HTML_ZOOM_OPTIONS.find((option) => option.key === htmlZoomMode) || HTML_ZOOM_OPTIONS[0];
       const setPresetZoomMode = (mode) => {
         setHtmlZoomMode(mode);
@@ -224,14 +225,13 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
 
       function injectDesignRuntime(frame) {
         designFrameRef.current = frame || null;
-        if (!designMode || !frame || !frame.contentWindow) return;
-        setDesignStatus('injecting');
+        if (!showDesignWorkbench || !frame || !frame.contentWindow) return;
         try {
           if (!designRuntimeScriptRef.current) designRuntimeScriptRef.current = buildDesignRuntimeScript();
           const script = designRuntimeScriptRef.current;
           frame.contentWindow.eval(script);
         } catch (error) {
-          setDesignStatus('error', String(error && error.message || error));
+          console.warn('[pinvou3][artifacts] design runtime inject failed', error);
         }
       }
 
@@ -239,18 +239,42 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         injectDesignRuntime(frame);
       };
 
+      // Exit-edit-mode boundary: destroy the iframe runtime and reset the
+      // AI-adjustment state and the selected element (the main session's
+      // generation is not cancelled — AI file edits may continue, just
+      // without visual editing). If the selected element is not cleared, the
+      // composer placeholder stays stuck on "adjust selected element".
+      function exitDesignEditMode() {
+        destroyDesignRuntime();
+        setDesignEditMode(false);
+        setDesignAiStatePatch({ status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0 });
+        if (onDesignElementSelected) onDesignElementSelected(null);
+      }
+
       useEffect(() => {
-        if (!designMode) {
+        if (!showDesignWorkbench) {
           destroyDesignRuntime();
-          setDesignStatus('idle');
           return;
         }
         injectDesignRuntime(designFrameRef.current);
         // eslint-disable-next-line react-hooks/exhaustive-deps -- re-inject only when the preview document identity changes; depending on the inject function itself would break that trigger timing
-      }, [designMode, tab, pv.kind, pv.text, pv.visual && pv.visual.html]);
+      }, [showDesignWorkbench, tab, pv.kind, pv.text, pv.visual && pv.visual.html]);
+
+      // Auto-exit edit mode on artifact switch / tab switch / leaving
+      // fullscreen: record the scope on entering edit mode, and exit as soon
+      // as the scope changes (including a different artifact).
+      const designEditScopeKey = sel && sel.path ? `${tab}:${sel.path}:${isFullscreen}` : null;
+      const designEditEnteredScopeRef = useRef(null);
+      useEffect(() => {
+        if (!designEditMode) return;
+        if (!isFullscreen || tab !== 'preview' || designEditEnteredScopeRef.current !== designEditScopeKey) {
+          exitDesignEditMode();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- reset only on scope switches; designEditMode itself is set by user action
+      }, [designEditScopeKey]);
 
       useEffect(() => {
-        if (!designMode || !designCommand || !designCommand.seq) return;
+        if (!showDesignWorkbench || !designCommand || !designCommand.seq) return;
         if (designCommand.kind === 'apply') {
           const ok = postDesignCommand({
             type: DESIGN_MESSAGE_TYPES.APPLY_CHANGE,
@@ -263,7 +287,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           postDesignCommand({ type: DESIGN_MESSAGE_TYPES.CLEAR_CHANGES });
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps -- trigger once per command sequence number; the designCommand object/callback is a new reference on every render
-      }, [designMode, designCommand && designCommand.seq]);
+      }, [showDesignWorkbench, designCommand && designCommand.seq]);
 
       useEffect(() => {
         const onMessage = (event) => {
@@ -271,15 +295,12 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           if (!data || data.source !== 'pinvou-design-runtime') return;
           if (designFrameRef.current && event.source !== designFrameRef.current.contentWindow) return;
           if (data.type === DESIGN_MESSAGE_TYPES.READY) {
-            setDesignStatus('ready');
             replayDesignChanges();
           } else if (data.type === DESIGN_MESSAGE_TYPES.ELEMENT_SELECTED) {
             const element = data.payload && data.payload.element;
             if (onDesignElementSelected) onDesignElementSelected(element || null);
           } else if (data.type === DESIGN_MESSAGE_TYPES.ERROR) {
-            setDesignStatus('error', data.payload && data.payload.error);
-          } else if (data.type === DESIGN_MESSAGE_TYPES.DESTROYED) {
-            setDesignStatus('idle');
+            console.warn('[pinvou3][artifacts] design runtime error', data.payload && data.payload.error);
           } else if (data.type === DESIGN_MESSAGE_TYPES.CHANGE_APPLIED) {
             if (onDesignChangeApplied) onDesignChangeApplied(data.payload || {});
           } else if (data.type === DESIGN_MESSAGE_TYPES.ELEMENT_MUTATED && onDesignMutation) onDesignMutation(data.payload || {});
@@ -290,7 +311,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           destroyDesignRuntime();
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps -- the event listener only needs to mount once; callbacks are forwarded via ref/params, and adding them as deps would repeatedly rebind and replay design changes
-      }, [onDesignElementSelected, onDesignRuntimeStatus, onDesignMutation]);
+      }, [onDesignElementSelected, onDesignMutation]);
 
       async function flushMarkdownPreview() {
         if (tab !== 'preview' || pv.kind !== 'md' || !mdPreviewRef.current) return true;
@@ -687,25 +708,37 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             <div className={`flex items-center justify-between px-3 py-2.5 border-b border-black/10 dark:border-white/10`}>
               {renderArtifactSwitcher()}
               <div className="flex items-center gap-1.5">
+                {isFullscreen && tab === 'preview' && pv.kind === 'html' && (
+                  <button type="button"
+                    onClick={() => {
+                      if (designEditMode) {
+                        exitDesignEditMode();
+                      } else {
+                        designEditEnteredScopeRef.current = designEditScopeKey;
+                        setDesignEditMode(true);
+                      }
+                    }}
+                    data-testid="artifact-edit-mode-toggle"
+                    aria-pressed={designEditMode}
+                    aria-label={designEditMode ? uiA.fsExitEdit : uiA.fsEnterEdit}
+                    title={designEditMode ? uiA.fsExitEdit : uiA.fsEnterEdit}
+                    className={`h-8 rounded-full inline-flex items-center gap-1.5 px-3 text-[13px] font-semibold transition-colors shadow-sm ${
+                      designEditMode
+                        ? 'bg-[#007AFF] text-white hover:bg-[#0066D6]'
+                        : 'bg-[#F2F2F7] text-[#1D1D1F] hover:bg-[#E5E5EA] ring-1 ring-black/[0.04] dark:bg-white/10 dark:text-[#F5F5F7] dark:hover:bg-white/15 dark:ring-white/10'
+                    }`}>
+                    <Edit2 size={15} />
+                    <span>{designEditMode ? uiA.fsExitEditShort : uiA.fsEditMode}</span>
+                  </button>
+                )}
                 {onToggleFullscreen && (
                   <button type="button"
                     onClick={onToggleFullscreen}
                     data-testid="artifact-fullscreen-toggle"
-                    aria-label={designMode
-                      ? (isFullscreen ? uiA.fsExitEdit : uiA.fsEnterEdit)
-                      : (isFullscreen ? uiA.fsExitFullBack : uiA.fsEnterPreview)}
-                    title={designMode
-                      ? (isFullscreen ? uiA.fsExitEdit : uiA.fsEnterEdit)
-                      : (isFullscreen ? uiA.fsExit : uiA.fsEnter)}
-                    className={designMode
-                      ? `h-8 rounded-full inline-flex items-center gap-1.5 px-3 text-[13px] font-semibold transition-colors shadow-sm ${
-                          isFullscreen
-                            ? 'bg-[#007AFF] text-white hover:bg-[#0066D6]'
-                            : 'bg-[#F2F2F7] text-[#1D1D1F] hover:bg-[#E5E5EA] ring-1 ring-black/[0.04] dark:bg-white/10 dark:text-[#F5F5F7] dark:hover:bg-white/15 dark:ring-white/10'
-                        }`
-                      : `w-8 h-8 rounded-full flex items-center justify-center hover:bg-[#F0F4F9] text-[#444746] dark:hover:bg-[#333537] dark:text-[#C4C7C5]`}>
-                    {isFullscreen ? <Minimize2 size={designMode ? 15 : 17} /> : <Maximize2 size={designMode ? 15 : 17} />}
-                    {designMode && <span>{isFullscreen ? uiA.fsExitEditShort : uiA.fsEditMode}</span>}
+                    aria-label={isFullscreen ? uiA.fsExitFullBack : uiA.fsEnterPreview}
+                    title={isFullscreen ? uiA.fsExit : uiA.fsEnter}
+                    className={`w-8 h-8 rounded-full flex items-center justify-center hover:bg-[#F0F4F9] text-[#444746] dark:hover:bg-[#333537] dark:text-[#C4C7C5]`}>
+                    {isFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
                   </button>
                 )}
                 <button type="button"
