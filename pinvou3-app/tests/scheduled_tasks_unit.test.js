@@ -16,7 +16,7 @@ const indexHtml = [
   'components/layout/NavigationComponents.jsx',
   'features/chat/ChatView.jsx',
   'features/scheduled/ScheduledTasksView.jsx',
-  'features/conversation/ConversationTimeline.jsx' // 秒级倒计时 tick 已收敛到 useConversationSecondClock
+  'features/conversation/ConversationTimeline.jsx' // second-level countdown tick has been consolidated into useConversationSecondClock
 ].map(file => fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8')).join('\n');
 const tauriBridgeFeatureNames = [
   'artifact-tracker', 'chat', 'chat-events', 'sessions', 'terminal', 'scheduled', 'monitor', 'settings', 'memory', 'artifacts', 'personas', 'updater',

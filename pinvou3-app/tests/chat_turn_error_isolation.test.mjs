@@ -138,7 +138,7 @@ const legacyFinalError = {
 assert.deepEqual(
   conversationItemsForMode([legacyFinalError]),
   [],
-  '时间线已呈现最终错误，不应重复投影兼容气泡',
+  'the timeline already renders the final error; the compatibility bubble must not be projected again',
 );
 
 const doneSection = chatEventsSource.slice(

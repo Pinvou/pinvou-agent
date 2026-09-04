@@ -1277,8 +1277,8 @@ export default function PetWindow({
     }
   };
 
-  // 回复输入框随内容自动伸缩(与 ChatView 主输入框共用同一 hook):
-  // pet.css 已钳制 textarea min-height:18px / max-height:52px,hook 再按 scrollHeight 收敛。
+  // Reply textarea auto-grows with content (same hook as ChatView's main input):
+  // pet.css already clamps the textarea to min-height:18px / max-height:52px; the hook then converges via scrollHeight.
   const replyInputRef = useRef(null);
   useAutoResizeTextarea(replyInputRef, cardUi.draft, { min: 0, max: 52 });
 

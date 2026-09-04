@@ -65,9 +65,9 @@ function formatSessionDate(ts, language) {
         : cachedFormatter(L.locale, 'ymd', { year: 'numeric', month: 'short', day: 'numeric' }).format(date);
     }
 
-    // 绝对本地日期 / 日期时间（YYYY-MM-DD / YYYY-MM-DD HH:mm）。此前
-    // artifacts / scheduled / knowledge 各自内联 padStart 拼装同型串，收敛到此处。
-    // missing 用于空值 / 非法时间戳占位（各视图原本分别返回 '' / '—' / 文案）。
+    // Absolute local date / datetime (YYYY-MM-DD / YYYY-MM-DD HH:mm). artifacts /
+    // scheduled / knowledge previously each inlined padStart assembly of the same shapes; consolidated here.
+    // `missing` is the sentinel for empty / invalid timestamps (views originally returned '' / '—' / copy).
     function formatLocalDate(ts, missing = '') {
       const key = localDateKey(ts);
       return key === 'unknown' ? missing : key;

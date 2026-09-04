@@ -1,7 +1,7 @@
-// 列表 / 面板空态：居中标题 + 可选图标容器 + 可选提示与操作。此前 tools / knowledge /
-// remote-knowledge / conversation 等各自手写同构块（同文件内最多 4 份逐字重复）。
-// 各视图的留白与图标容器样式不同，经 className props 对齐原样式；差异过大时
-// 调用方仍应做特征内本地抽取而不是硬塞进本组件。
+// Empty state for lists / panels: centered title + optional icon container + optional hint and action.
+// tools / knowledge / remote-knowledge / conversation previously hand-rolled isomorphic blocks (up to 4 verbatim copies in one file).
+// Per-view spacing and icon-container styling are aligned via className props; when the differences are too large,
+// callers should still extract locally within their feature instead of forcing this component to fit.
 
 /**
  * @param {{
@@ -9,8 +9,8 @@
  *   title: React.ReactNode,
  *   hint?: React.ReactNode,
  *   action?: React.ReactNode,
- *   className?: string,        // 外层容器追加类（留白、文字色 token 等）
- *   iconClassName?: string,    // 图标容器类（尺寸/圆角/底色），空 icon 时忽略
+ *   className?: string,        // extra classes on the outer container (spacing, text-color tokens, ...)
+ *   iconClassName?: string,    // icon container classes (size/radius/background); ignored without icon
  *   titleClassName?: string,
  *   hintClassName?: string,
  *   testId?: string,

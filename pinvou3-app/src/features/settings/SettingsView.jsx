@@ -795,8 +795,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       // （vllm→四档、ollama→off/high、lmstudio/generic→不支持），避免 UI
       // 显示档位但 wire 层空操作的「调了个寂寞」。
       const isLocalCompatible = preset === 'openai_compatible' && baseUrlUsesLocalOrPrivate(baseUrl.trim());
-      // 表单入口：baseUrl/apiKey 是逐键输入 state，探测防抖 400ms（停键才发），
-      // 探测前 trim 与原始输入依赖语义见 useLocalServerKindProbe。
+      // Form entry: baseUrl/apiKey are per-keystroke input state, so the probe is debounced 400ms (fires only
+      // after typing stops); for the pre-probe trim and raw-input dependency semantics see useLocalServerKindProbe.
       const { probedKind, probePending } = useLocalServerKindProbe({
         enabled: isLocalCompatible,
         baseUrl,
@@ -1284,10 +1284,10 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           {trailing}
         </div>
       );
-      // API Key 输入行（三处同构：云厂商预设 / 自定义云 Key / 本地 Key）：行内容
-      // 逐字一致——显隐按钮走 toggleApiKeyVisibility（编辑态可揭示已存密钥），
-      // 输入非空即置 keyAction='replace'；withBorder 只差行分隔线（表单组内
-      // 唯一行无分隔线，多行行带 border-b last:border-b-0）。
+      // API Key input row (three isomorphic sites: cloud provider preset / custom cloud key / local key): the row
+      // content is verbatim identical — the show/hide button goes through toggleApiKeyVisibility (edit mode can
+      // reveal the stored key), and non-empty input sets keyAction='replace'; withBorder only differs in the row
+      // divider (a lone row in a form group has none, multi-row groups carry border-b last:border-b-0).
       const renderApiKeyField = ({ withBorder = false }) => (
         <div className={withBorder ? `min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}` : 'min-h-[54px] flex items-center gap-3 px-4 py-2.5'}>
           {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
@@ -1983,8 +1983,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         </div>
       </div>
     );
-    // iOS 风格确认弹层（堆叠按钮：上方红色确认、下方蓝色取消；背景点击不关闭）。
-    // 模型删除/搜索源删除两处同构；RestartDialog（两列 grid、更宽）不在此列。
+    // iOS-style confirm dialog (stacked buttons: red confirm on top, blue cancel below; backdrop click does not close).
+    // Two isomorphic sites: model delete / search source delete; RestartDialog (two-column grid, wider) is not one of them.
     const SheetConfirmDialog = ({ title, desc, confirmLabel, cancelLabel, onConfirm, onCancel }) => (
       <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
         <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>

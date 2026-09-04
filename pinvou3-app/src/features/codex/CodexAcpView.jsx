@@ -166,7 +166,7 @@ const EMPTY_CONVERSATION_TURNS = [];
 const EMPTY_SESSIONS = [];
 
 function workspaceName(path, unknownDirectory) {
-  // 尾分隔符剥离 + Windows 盘符路径语义收敛到 shared/path-utils（原内联实现同款）。
+  // Trailing-separator stripping + Windows drive-letter path semantics live in shared/path-utils (same as the former inline code).
   return pathBasename(path, { collapseTrailing: true, fallback: unknownDirectory });
 }
 
@@ -554,7 +554,7 @@ function NativeYoloConfirmCard({ theme, t, busy, onConfirm, onCancel }) {
   const dialogRef = useRef(null);
   // 打开即聚焦卡片（键盘可达），Esc 视为取消——与 NativePlanCard 内联卡不同，
   // 这是一张全屏模态，必须挡住底层控件，故补 role=dialog/aria-modal/键盘交互。
-  // 焦点/Escape 交互与 RewindChip 的两个确认弹窗共用同一对 hook（卸载时归还焦点）。
+  // Focus/Escape interaction shares the same hook pair as RewindChip's two confirm dialogs (focus restored on unmount).
   useDialogFocusRestore(dialogRef);
   useDialogEscapeKey(busy, onCancel);
   // portal 到 <body>：该卡片渲染在 composer 容器内，而容器的 backdrop-blur 会成为
@@ -888,8 +888,8 @@ export function CodexAcpView({
   const busy = isNativeAgent
     ? Boolean(activeNativeLane && activeNativeLane.busy)
     : projection.turns.some(turn => turn.status === 'running');
-  // 每秒时钟与 ChatView 同源：busy 激活时先同步基线再走 interval，非激活不建定时器，
-  // 卸载清理（原顶部 ticker 的收敛版）。
+  // Per-second clock shared with ChatView: on busy activation the baseline is synced before the
+  // interval starts; no timer while inactive; cleared on unmount (consolidates the old top ticker).
   const now = useConversationSecondClock(busy);
   // 「回退到第 N 轮」入口（仅原生代码车道）：checkpoint 列表 + turn 边界对齐。
   // 回退编排（rewind_to_turn）由 confirmRewind 发起；成功后走既有 loadSession
@@ -2121,7 +2121,7 @@ export function CodexAcpView({
           }
         }
       }, (readError) => {
-        // 原内联 FileReader 未挂 onerror：读失败保持静默，仅留诊断日志。
+        // The former inline FileReader had no onerror handler: read failures stay silent, diagnostic log only.
         console.error('Codex paste image read failed:', readError);
       });
     });

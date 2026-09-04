@@ -1,12 +1,12 @@
-// 路径工具：此前 codex 视图 / 工具商店 / 设置 / reader 各自内联 split(/[\\/]/).pop()
-// 的 basename 提取，尾斜杠与 Windows 分隔符处理互有漂移，收敛到本模块。
+// Path utils: the codex view / tool store / settings / reader each previously inlined split(/[\\/]/).pop()
+// basename extraction with drifting trailing-slash and Windows-separator handling; consolidated here.
 
 /**
- * 取路径最后一段。'\\' 与 '/' 都视为分隔符（Windows 路径）。
- * @param {string|null} path - 文件 / 目录路径；空值按空串处理
+ * Returns the last path segment. Both '\\' and '/' are separators (Windows paths).
+ * @param {string|null} path - file / directory path; null/undefined is treated as ''
  * @param {{ collapseTrailing?: boolean, fallback?: string }} [opts]
- *   collapseTrailing —— 先剥掉末尾分隔符（目录路径取目录名本身，如 /a/b/ → b）；
- *   fallback —— 结果为空串时的占位（如 t.unknownDirectory）。
+ *   collapseTrailing — strip trailing separators first (a directory path yields its own name, e.g. /a/b/ -> b);
+ *   fallback — sentinel used when the result is '' (e.g. t.unknownDirectory).
  */
 export function pathBasename(path, { collapseTrailing = false, fallback = '' } = {}) {
   let value = String(path || '');

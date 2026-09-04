@@ -1,17 +1,17 @@
-// 知识库本地 / 远程两个视图共用的纯逻辑：集合头像取色、文档增删后的集合计数
-// 乐观更新。此前两处逐字重复（取色板前 6 色与 codePoint 求和哈希完全一致）。
+// Pure logic shared by the knowledge / remote-knowledge views: collection avatar coloring and
+// optimistic collection-count updates after doc changes; the two copies were verbatim (identical first-6 palette and codePoint-sum hash).
 
 const ACCENT_PALETTE = ['#3f7bf0', '#7b5fe6', '#1aa07a', '#d6873e', '#d6589a', '#4b7bd6'];
 
-/** 按集合名 / 类别稳定取色：同输入恒同色，两视图因此天然同色。可传入加长调色板。 */
+/** Stable color per collection name / category: same input always yields the same color, so both views match naturally. Accepts an extended palette. */
 export function stableAccentColor(value, palette = ACCENT_PALETTE) {
   const hash = [...String(value || '')].reduce((total, ch) => total + ch.codePointAt(0), 0);
   return palette[Math.abs(hash) % palette.length];
 }
 
 /**
- * 文档增删 / 移入回收站后的集合计数乐观更新（docCount/chunkCount/totalBytes 一起平移，
- * 钳制到 ≥0）。countDelta 为 +1 / -1（回收站恢复 / 彻底删除同理）。
+ * Optimistic collection-count update after document add/remove/soft-delete (docCount/chunkCount/totalBytes
+ * shift together, clamped to >= 0). countDelta is +1 / -1 (recycle-bin restore / permanent delete alike).
  */
 export function applyDocumentDelta(collections, collectionId, doc, countDelta) {
   return (collections || []).map((collection) => (

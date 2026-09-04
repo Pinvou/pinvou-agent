@@ -141,9 +141,9 @@ import {
 
 const MULTI_AGENT_ENABLED = can('multiAgent');
 
-// 回车提交守卫(主输入框 / 排队消息编辑 / 用户气泡内编辑三处共用):Shift+Enter 仍
-// 换行;输入法合成期间的回车是"确认候选词上屏",不得同时触发提交——否则一次回车
-// 既上屏又发送。与 PetWindow 的处理保持一致。
+// Enter-to-submit guard (shared by the main input, queued-message edit, and in-bubble edit):
+// Shift+Enter still inserts a newline; Enter during IME composition confirms the candidate text
+// and must not also trigger submit — otherwise one Enter both commits and sends. Matches PetWindow.
 const isPlainEnter = (e) => e.key === 'Enter' && !e.shiftKey && !isImeComposing(e);
 
 // Second-clock wrapper for the composer activity indicator: the tick used to live on ChatView
@@ -517,8 +517,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
     }) => {
       const [menuOpen, setMenuOpen] = useState(false);
       const rootRef = useRef(null);
-      // 外点关闭(document 捕获 pointerdown 的 contains 守卫)+ Escape 关闭,收进
-      // ComposerPopover 的共享监听组;rootRef 同时覆盖触发按钮与菜单面板。
+      // Outside-pointer close (contains guard on a document-captured pointerdown) plus Escape
+      // close, via ComposerPopover's shared listener group; rootRef covers trigger button and panel.
       useOutsidePointerClose(menuOpen, () => setMenuOpen(false), [rootRef], { escape: true });
       const browserSelected = browserAvailable && (
         activePanelId === 'browser'
@@ -630,12 +630,14 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
     // applyShellSnapshots / markBackgroundToolItem），点击弹出列表可查看输出、取消任务。
     const BackgroundTaskRow = ({ task, t, chatCopy }) => {
       const { cancelling, cancelError, cancel } = useShellTaskCancel(t);
-      // 计时基线:轮询 reconcile 只在有新输出时改卡片,安静任务的 elapsedMs
-      // 不会变化,走秒由指示器用"基线值 + 本地流逝"自推(每行一个 1s 时钟,
-      // 仅浮层展开时挂载)。秒级 tick 复用 ConversationTimeline 的 second clock
-      // (激活才建定时器,卸载清理)。不把秒级 tick 塞进全局 chatItems reconcile
-      // ——那会让整个 ChatView 在后台任务存续期间每秒重渲染一次(second-clock
-      // 曾因此从 ChatView 顶层移走,见 LiveConversationActivityIndicator 上方注释)。
+      // Timing baseline: the polling reconcile only touches the card when new output arrives, so
+      // a quiet task's elapsedMs never changes; per-second movement is derived by the indicator
+      // from "baseline + locally elapsed time" (one 1s clock per row, mounted only while the
+      // popover is expanded). The second tick reuses ConversationTimeline's second clock (timer
+      // created only while active, cleaned up on unmount). Do not fold the second tick into the
+      // global chatItems reconcile — that would re-render all of ChatView every second while a
+      // background task lives (why the second clock left ChatView top level; see the comment
+      // above LiveConversationActivityIndicator).
       const now = useConversationSecondClock(true);
       // 服务端 elapsedMs 变化（新输出触发 reconcile）时，渲染期同步换基线
       // （React "adjust state when a prop changes" 模式）；基线时间戳直接用
@@ -863,10 +865,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         queuedEditInputRef.current.focus();
         queuedEditInputRef.current.select();
       }, [queuedEditFocusKey]);
-      // 排队操作提示的统一闪现:写入 keyed notice 后按 ttl 自动删除。删除前必须
-      // 校验条目身份(对象引用):期间又有新提示写入同一 session 时,旧计时器不得
-      // 误清新提示。计时器不做清理(不随卸载/切换取消)是既有契约——悬挂删除被
-      // 身份守护挡下。
+      // Shared flash for queued-action notices: write the keyed notice, then auto-delete after
+      // the ttl. Deletion must verify entry identity (object reference): when a newer notice was
+      // written to the same session in the meantime, a stale timer must not clear it. Timers are
+      // deliberately not cancelled on unmount/session switch (existing contract) — the identity
+      // guard stops stale deletes.
       const flashQueuedNotice = useCallback((sessionId, notice, ttl = 5000) => {
         setQueuedActionErrors(current => ({ ...current, [sessionId]: notice }));
         window.setTimeout(() => {
@@ -2182,7 +2185,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
 
       async function handlePaste(e) {
         if (isWeb) return;
-        // WebKit 兼容筛图 + FileReader 读字节(含 jpeg→jpg 扩展名归一)收进共享模块。
+        // WebKit-compatible image filtering + FileReader byte reads (incl. jpeg→jpg normalization) live in the shared module.
         const images = collectClipboardImages(e);
         if (!images.length) return;
         e.preventDefault();
@@ -2196,7 +2199,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 formatAttachmentError,
               );
             }
-          } catch { /* 单张读取失败按原行为静默丢弃,不阻断其余粘贴图片 */ }
+          } catch { /* A single failed read is silently dropped, as before; the rest of the pasted images proceed */ }
         }
       }
 
@@ -2204,9 +2207,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         paddingInline: 'clamp(16px, calc((100% - 800px) / 2), 160px)',
       };
 
-      // ArtifactsPanel 的两处挂载(全屏 portal / 右侧 Dock)共享同一串 18 项 props,
-      // 收进单一来源;isFullscreen 与 onToggleFullscreen 方向按挂载点各传:
-      // 全屏态收起(false)、Dock 态展开(true)。
+      // The two ArtifactsPanel mounts (fullscreen portal / right Dock) share the same 18-prop
+      // list through this single source; isFullscreen and onToggleFullscreen are passed per
+      // mount point: collapsed (false) in fullscreen, expanded (true) in the Dock.
       const artifactsPanelProps = {
         bs,
         t,
@@ -3277,13 +3280,15 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
     // 不强求 ```persona-card 标签 —— 小模型常打 ```json 或不打标签,放宽识别更鲁棒。
     // 形状校验(name+body)避免把别的 JSON 误判成草稿。明确 persona-card 标签的优先。
     // 返回 { draft, html }:html 是把那段原始 JSON 块抹掉后的版本(用户只看友好草稿卡,不看机器载荷)。
-    // 三类协议块(persona-card / scheduled-task-draft / card-question)共用的
-    // <pre><code> 扫描骨架:逐块取 code 文本 → validate(parseLooseJson(raw)) 校验
-    // 成载荷,返回 { payload, html }(html 为抹掉选中原始块后的版本)。优先级:
-    // 显式标签块(tagPattern 命中 <pre>/<code> 属性)即选即停;否则退回首个可解析块。
-    // taggedOnly 时只认显式标签块,无首块回退(card-question 的既有语义)。
-    // validate 抛错(非 JSON 块)按跳过处理——parseLooseJson 本身不抛,兜住的是
-    // 自定义 validate 的意外异常,与原先 persona 侧 try/catch 等价。
+    // Shared <pre><code> scan skeleton for the three protocol blocks (persona-card /
+    // scheduled-task-draft / card-question): per block, take the code text and validate it
+    // via validate(parseLooseJson(raw)); return { payload, html } with html stripped of the
+    // chosen raw block. Priority: the first explicitly tagged block (tagPattern hit on the
+    // <pre>/<code> attributes) wins immediately; otherwise fall back to the first parseable
+    // block. With taggedOnly, only tagged blocks count — no first-block fallback (card-question's
+    // existing semantics). A validate throw (non-JSON block) is treated as a skip: parseLooseJson
+    // itself never throws; this catches unexpected exceptions from custom validate, matching the
+    // old persona-side try/catch.
     function scanProtocolCodeBlocks(html, { tagPattern, validate, taggedOnly = false }) {
       const miss = { payload: null, html };
       if (!html) return miss;
@@ -3301,7 +3306,7 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
           payload = validate(parseLooseJson(raw));
         } catch { /* 非 JSON 块,跳过 */ }
         if (!payload) continue;
-        if (tagged) { chosen = m[0]; chosenPayload = payload; break; } // 明确标签优先
+        if (tagged) { chosen = m[0]; chosenPayload = payload; break; } // tagged block wins
         if (!chosenPayload) { chosen = m[0]; chosenPayload = payload; }
       }
       if (!chosenPayload) return miss;

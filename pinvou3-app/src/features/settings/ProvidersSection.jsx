@@ -46,10 +46,10 @@ function KeyDot({ hasCredential, copy }) {
   );
 }
 
-// 确认卡片弹层（背景点击关闭 + 卡片 stopPropagation + 右对齐胶囊按钮页脚）。
-// Provider 删除/CLI 卸载两处同构；卸载的「同时清理配置」复选框经 children 传入。
-// 确认回调沿用调用方语义：remove/uninstall 自己先 setXxx(null) 再 await（点击
-// 确认即关弹窗，失败走红错区），本组件不感知关闭时序。
+// Confirm card dialog (backdrop click closes + card stopPropagation + right-aligned pill button footer). Two
+// isomorphic sites: provider delete / CLI uninstall; the uninstall "also clean up config" checkbox comes in via
+// children. The confirm callback keeps the caller's semantics: remove/uninstall setXxx(null) before awaiting
+// (confirm closes the dialog, failure lands in the red error area); this component knows nothing of close timing.
 function CardConfirm({ title, desc, children, confirmLabel, cancelLabel, confirmTestId, confirmDisabled, onConfirm, onCancel, width }) {
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the cancel button inside the dialog

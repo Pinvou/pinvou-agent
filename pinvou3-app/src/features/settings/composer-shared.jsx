@@ -112,8 +112,8 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       const effectiveId = currentSessionModelId || activeModelId;
       const current = savedModels.find(m => m.id === effectiveId);
       // 本地/私网 openai_compatible 端点：探测服务类型，按探测结果下发真实档位
-      // （vllm→四档、ollama→off/high、lmstudio/generic→不支持提示）。凭据为
-      // 保存值、不随键入变化，无需防抖（表单入口才需要 400ms，见 hook 注释）。
+      // (vllm → four tiers, ollama → off/high, lmstudio/generic → unsupported hint). Credentials are saved values
+      // that do not change per keystroke, so no debounce is needed (only the form entry needs 400ms, see the hook comment).
       const currentBaseUrl = current ? (current.base_url || '') : '';
       const currentModelId = current ? current.id : null;
       const isLocalCompatible = !!current && current.preset === 'openai_compatible' && baseUrlUsesLocalOrPrivate(currentBaseUrl);

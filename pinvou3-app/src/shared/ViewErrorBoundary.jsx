@@ -5,7 +5,7 @@ import React from 'react';
 // 边界提供「重新加载页面」入口(reload 会重新执行 import,绕开缓存)。
 // 默认整页口径(viewLoadFailed/viewReload);variant="panel" 是面板槽位口径
 // (panelLoadFailed,嵌进面板位而非占满视图,ChatView 懒面板等局部挂载用)。
-// heading 可覆盖默认标题(设置页边界沿用「设置页加载失败」文案,其余走 viewLoadFailed)。
+// `heading` overrides the default title (the settings boundary keeps its own failure heading; all others fall back to viewLoadFailed).
 // 文案均走 i18n 三语,不引入单语言硬编码。
 export class ViewErrorBoundary extends React.Component {
   constructor(props) {

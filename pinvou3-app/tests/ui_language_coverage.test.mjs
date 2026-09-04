@@ -131,7 +131,7 @@ assert.match(viewLoaders, new RegExp("codex: \\(\\) => import\\('\\.\\./features
 // internally consumes the same view-loaders chunk); its error fallback copy
 // still flows through i18n.
 assert.match(main, /<CodexAcpView[^>]*t=\{t\}/);
-// 设置页错误边界已并入共享 ViewErrorBoundary；标题经 heading prop 走 i18n。
+// The settings error boundary has been merged into the shared ViewErrorBoundary; its title flows through i18n via the heading prop.
 const viewErrorBoundary = source('shared/ViewErrorBoundary.jsx');
 assert.match(viewErrorBoundary, /this\.props\.heading \|\| copy\.viewLoadFailed/);
 assert.doesNotMatch(viewErrorBoundary, />设置页加载失败</);

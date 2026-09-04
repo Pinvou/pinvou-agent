@@ -377,7 +377,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         const height = WHEEL_VISIBLE_H + 18;
         setMenuStyle({
           left: anchoredPopupLeft(rect, width),
-          // 翻转判定保留本站点的历史写法(与 ScheduledSelect 的估算逻辑存在既有漂移,勿合并)
+          // keep this site's historical toggle logic (known drift from ScheduledSelect's estimate — do not merge)
           top: rect.bottom + 6 + height > window.innerHeight
             ? anchoredPopupFlipTop(rect, height)
             : anchoredPopupBelowTop(rect),
@@ -431,9 +431,9 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
 
     // Scheduled-task subcomponents (module scope: types stay stable across renders, avoiding per-render rebuilds that remount subtrees)
     const mutedValue = 'text-[#3C3C43]/60 dark:text-[#EBEBF5]/60';
-    // Create/detail 对话框共用脚手架:字段样式、字段标签行、遮罩 + 面板框体、底栏表面。
-    // 各站点的差异(min-height、max-width、底栏布局)留在调用处;头部的关闭按钮因测试
-    // 要求 data-testid 字面量留在各自站点,不做组件化。
+    // Shared scaffolding for the create/detail dialogs: field styles, field-label rows, backdrop + panel frame, footer surface.
+    // Per-site differences (min-height, max-width, footer layout) stay at the call sites; the header close button stays per-site
+    // because tests pin its data-testid literal — not componentized.
     const dialogFieldLabelClass = `mb-1.5 block text-[13px] font-medium ${mutedValue}`;
     const dialogInputClass = 'w-full rounded-[14px] px-4 py-3 text-[15px] outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B] dark:bg-[#2C2C2E] dark:text-white dark:placeholder:text-[#EBEBF5]/30';
     const dialogTextareaClass = 'w-full resize-none rounded-[14px] px-4 py-3 text-[15px] leading-6 outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B] dark:bg-[#2C2C2E] dark:text-white dark:placeholder:text-[#EBEBF5]/30';
@@ -549,7 +549,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       }));
       const canOpenTaskFolder = can('externalSystemOpen');
       const [taskFilter, setTaskFilter] = useState('all');
-      // 与会话时间线共享的秒级时钟:常驻激活,驱动预览 nextRunAt 与“即将运行”倒计时。
+      // Second-level clock shared with the conversation timeline: always active, drives the preview nextRunAt and the runs-soon countdown.
       const clockNow = useConversationSecondClock(true);
       const [previewSelectedId, setPreviewSelectedId] = useState(null);
       const [previewTaskStatus, setPreviewTaskStatus] = useState({});
@@ -628,8 +628,8 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const bodyText = 'text-[#1F1F1F] dark:text-[#E3E3E3]';
       const fmtDateTime = (value) => {
         if (!value) return scheduledCopy.notScheduled;
-        // 输入是 ISO 字符串,先转毫秒时间戳再交给共享的本地时间格式化;
-        // 非法时间串保留原样展示(历史行为,formatLocalDateTime 的 missing 仅兜底空值)。
+        // Input is an ISO string: convert to a ms timestamp first, then hand off to the shared local-time formatter;
+        // invalid time strings render as-is (historical behavior; formatLocalDateTime's missing sentinel only covers empty values).
         const ms = new Date(value).getTime();
         return Number.isNaN(ms) ? value : formatLocalDateTime(ms, scheduledCopy.notScheduled);
       };

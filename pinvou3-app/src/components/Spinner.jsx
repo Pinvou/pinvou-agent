@@ -1,7 +1,7 @@
-// 收敛此前 15+ 处手写的圆环加载指示。两种视觉形态：
-//   arc —— 细环 + 同色系亮弧（border-current/20 border-t-current 一族）
-//   top —— 实色环 + 顶部透明缺口（border-X border-t-transparent 一族）
-// 颜色经 tone 枚举提供（避免 className 覆盖与默认色打架）；特殊配色继续用内联 span。
+// Consolidates the 15+ hand-rolled ring spinners. Two visual forms:
+//   arc — thin ring + same-hue bright arc (the border-current/20 border-t-current family)
+//   top — solid ring + transparent top notch (the border-X border-t-transparent family)
+// Colors come via the tone enum (so className overrides cannot fight the default); exotic colors keep using inline spans.
 const TONES = {
   arc: {
     current: 'border-current/20 border-t-current',

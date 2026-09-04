@@ -437,7 +437,7 @@ assert.match(nativeHandler, /commands::assistant_response::open_assistant_share_
 assert.doesNotMatch(actions, /targetRef|querySelector/);
 assert.doesNotMatch(clipboard, /querySelectorAll|data-assistant-copy-source/);
 assert.match(timeline, /<AssistantMessageFooter>[\s\S]*?<AssistantMessageActions resolveText=\{\(\) => assistantResponseText\(turn\)\} copy=\{c\}/);
-// codex 旧 Turn 页脚已随旧时间线删除；完成态回复操作契约由统一时间线单点承载。
+// The legacy codex Turn footer was removed along with the old timeline; the completed-response actions contract is carried solely by the unified timeline.
 const conversationTimeline = source('features/conversation/ConversationTimeline.jsx');
 assert.match(conversationTimeline, /<AssistantMessageActions resolveText=\{\(\) => assistantResponseText\(turn\)\} copy=\{c\}/);
 

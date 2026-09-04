@@ -1948,9 +1948,9 @@ function workspaceDisplayName(path) {
           setCodexDraftEpoch(value => value + 1);
           setCurrentView('codex');
         } else if (mode === 'design' || mode === 'work') {
-          // design 与 work 两分支原为复制粘贴，仅写入的 mode 值不同，合并为
-          // 单条参数化路径；执行顺序不变：关 code 态 → 计算 scopeKey →
-          // 写 modeState → 会话创建/实测同步 → 切 chat。
+          // The design / work branches were copy-paste differing only in the written mode value; merged into
+          // one parameterized path. Execution order unchanged: close code state -> compute scopeKey ->
+          // write modeState -> session creation / probe sync -> switch to chat.
           setCodeModeOn(false);
           // 仅草稿态（无活跃会话）才开新会话：从 code 页切回时 bridge 的
           // activeSessionId 仍是原工作会话，强制 createNewSession 会新建一个
@@ -2657,11 +2657,11 @@ function workspaceDisplayName(path) {
         return () => { disposed = true; };
       }, [browserOverlayIntent, runBrowserUiTransition]);
 
-      // ChatView 两个挂载点（主聊天 / scheduled-run 聊天）完全一致的 11 个 props
-      // 收敛为一份；各挂载点只写自己的差异 props（prefill/焦点 tick/代码模式入口），
-      // 避免两份长 prop 列表复制粘贴后悄悄漂移。
-      // 以下 props 不收敛，保留 JSX 字面量（源码字符串契约，测试以正则断言
-      // main.jsx 必须包含这些字面量，详见各测试文件）：
+      // The 11 props identical across ChatView's two mount points (main chat / scheduled-run chat) are
+      // consolidated into one block; each mount point writes only its differing props (prefill / focus tick / code-mode entry),
+      // so two long prop lists cannot silently drift after copy-paste.
+      // The props below are NOT consolidated and stay as JSX literals (source-string contracts: tests regex-assert
+      // that main.jsx contains these literals; see the individual test files):
       // - onBackScheduledRun：scheduled_tasks_unit.test.js
       // - browserDockAvailable / rightDockActivePanelId /
       //   onRightDockPanelSelectionChange：browser_native_surface.test.mjs
@@ -2678,7 +2678,7 @@ function workspaceDisplayName(path) {
         browserDockOpen: browserPaneOpen,
         onOpenBrowserDock: openBrowserDock,
       };
-      // 侧边栏任务列表三处字节相同的空态（任务分组 / 日期分组 / 平铺列表）共用同一节点。
+      // The three byte-identical empty states in the sidebar task list (task groups / date groups / flat list) share one node.
       const sidebarTaskEmptyNode = (
         <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
           {t.sidebarTaskEmpty}

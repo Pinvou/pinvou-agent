@@ -63,13 +63,13 @@ function useAnchoredPosition(open, triggerRef, active) {
 // 命中面板或触发按钮（insideRefs）时忽略，否则关闭。触发按钮必须传入，否则
 // 弹层打开时再点触发按钮会先被外点关闭、随后 toggle 又把它重新打开。
 //
-// opts 支持迁移此前各视图手写的同型监听组（不传时保持原行为）：
-//   escape               —— 同时监听 Escape 关闭（默认 document 冒泡）
-//   escapeOnWindow       —— Escape 改挂在 window 上（部分历史站点在 window 监听）
-//   escapeCapture        —— Escape 用捕获阶段（右键菜单族需要先于菜单项快捷键）
-//   preventEscapeDefault —— Escape 时 preventDefault（阻止滚动等默认行为）
-//   viewportClose        —— window resize / 任意滚动（捕获）即关闭（fixed 定位
-//                           菜单的锚点坐标会随视口变化失效）
+// `opts` supports migrating the hand-rolled listener sets previously written per view (omitted = original behavior):
+//   escape               — also listen for Escape to close (document bubble phase by default)
+//   escapeOnWindow       — attach the Escape listener to window instead (some legacy sites listened there)
+//   escapeCapture        — Escape on the capture phase (context-menu family must run before menu-item shortcuts)
+//   preventEscapeDefault — preventDefault on Escape (blocks scrolling and other defaults)
+//   viewportClose        — close on window resize / any scroll (capture) (fixed-position
+//                           menu anchor coordinates go stale as the viewport changes)
 function useOutsidePointerClose(open, onClose, insideRefs, opts = {}) {
   const { escape: escapeClose = false, escapeOnWindow = false, escapeCapture = false, preventEscapeDefault = false, viewportClose = false } = opts;
   const onCloseRef = useRef(onClose);

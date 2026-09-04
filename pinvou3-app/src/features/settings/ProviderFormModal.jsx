@@ -8,9 +8,9 @@ import {
   ACP_MODEL_1M_VARIANTS, ACP_MODEL_PRESETS, ACP_PROVIDER_PRESETS, CLAUDE_MODEL_SLOT_IDS,
 } from './acp-provider-catalog.js';
 
-// ModelSuggestInput 与 PresetSelect 共享的下拉机制：150ms blur 延迟关闭、Esc
-// 关闭、onMouseDown 选中。保持 blur-timeout 方案（不换 outside-pointer 检测）：
-// 选中发生在 blur 之后、计时器到点之前，时序语义是既有行为。
+// Dropdown mechanism shared by ModelSuggestInput and PresetSelect: 150ms blur-delayed close,
+// Esc to close, onMouseDown to select. Keep the blur-timeout approach (not outside-pointer detection):
+// selection happens after blur and before the timer fires, and that timing semantics is existing behavior.
 function useSuggestDropdown() {
   const [open, setOpen] = useState(false);
   return {
@@ -21,7 +21,7 @@ function useSuggestDropdown() {
   };
 }
 
-// 下拉面板（两个选择器同款面板样式，仅最大高度不同）。
+// Dropdown panel (same panel styling for both selectors; only the max height differs).
 function SuggestPanel({ testId, maxHeightClass, children }) {
   return (
     <div
@@ -33,7 +33,7 @@ function SuggestPanel({ testId, maxHeightClass, children }) {
   );
 }
 
-// 选项 onMouseDown + preventDefault：在触发元素 blur 前完成选中并收起面板。
+// Option onMouseDown + preventDefault: complete selection and collapse the panel before the trigger element blurs.
 const selectViaMouseDown = (select, setOpen) => event => {
   event.preventDefault();
   select();

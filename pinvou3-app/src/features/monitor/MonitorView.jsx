@@ -289,7 +289,7 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
       }, [vllmRaw]);
 
       const [history, setHistory] = useState(cloneMonitorHistory);
-      // 视图挂载期间的 1s 墙钟(无条件走表,与原 setInterval 语义一致);值为 ms,渲染处转 Date。
+      // 1s wall clock while the view is mounted (ticks unconditionally, matching the original setInterval semantics); value is ms, converted to Date at render.
       const clockNow = useConversationSecondClock(true);
       const [isModelClearing, setIsModelClearing] = useState(false);
       const modelClearTimerRef = useRef(null);

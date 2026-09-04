@@ -52,8 +52,8 @@ function WorkspaceTree({
   copy,
 }) {
   const entries = entriesByDirectory[directory] || [];
-  // 复制行路径 + 「已复制」反馈（1200ms 复位）收敛到 useCopyFlash（原内联
-  // setTimeout 直连 navigator.clipboard，无 execCommand 回退）。
+  // Copy-row-path + "copied" feedback (1200ms reset) consolidated into useCopyFlash (the inline
+  // version wrote straight to navigator.clipboard via setTimeout, with no execCommand fallback).
   const [copiedPath, copyRowPath] = useCopyFlash(1200);
 
   return entries.map(entry => {
