@@ -27,9 +27,25 @@
   }
 
   const SHELL_TOOL_NAMES = ["exec_shell", "exec_shell_wait", "exec_wait", "task_shell_start", "task_shell_wait", "shell", "Bash"];
+  const SHELL_WAIT_TOOL_NAMES = ["exec_shell_wait", "exec_wait", "task_shell_wait"];
 
   function isShellExecutionTool(name) {
     return SHELL_TOOL_NAMES.includes(name);
+  }
+
+  function latestShellToolIsWaitObserver() {
+    for (let i = state.chatItems.length - 1; i >= 0; i--) {
+      const item = state.chatItems[i];
+      if (item && item.type === "tool" && isShellExecutionTool(item.name)) {
+        // Since engine v0.9.3 the wait observer is the canonical Bash tool
+        // with action="wait"; the exec_shell_wait/exec_wait names survive
+        // only in replayed legacy sessions. Cards carry the action both live
+        // (chat:tool_start) and after history replay.
+        return SHELL_WAIT_TOOL_NAMES.includes(item.name) ||
+          (item.name === "Bash" && item.args != null && item.args.action === "wait");
+      }
+    }
+    return false;
   }
 
   function mentionsShellTool(text) {
@@ -107,6 +123,19 @@
       runningCommandCounts[command] = (runningCommandCounts[command] || 0) + 1;
     });
     runSyncOnSession(sid, function () {
+      // A wait tool only observes existing work and cannot create a job, and
+      // the manager retains completed jobs across later waits, so an
+      // unmatched terminal snapshot beside a trailing wait card belongs to
+      // earlier work and must not be appended after newer results. Decide
+      // once per poll from the pre-poll timeline: the synthetic card of a
+      // running job from this same batch (the manager lists running jobs
+      // first) would otherwise disarm the guard for the jobs after it.
+      // Accepted limits until stable origin identity lands: a start tool can
+      // still race with a very short detached job whose first snapshot is
+      // terminal (the guard is off when the latest card is a start tool), and
+      // a brand-new subagent job started after the wait card is conservatively
+      // hidden like retained older work.
+      const suppressUnmatchedTerminal = latestShellToolIsWaitObserver();
       (jobs || []).forEach(function (job) {
         const status = String(job.status || "").toLowerCase();
         const running = status === "running";
@@ -130,9 +159,7 @@
           });
           if (item) item.shellHistoryReconciled = true;
         }
-        // A detached job may have been started by a subagent, so no matching
-        // top-level tool card exists. Completed jobs must also get a card: the
-        // first poll may happen after a short detached process already exited.
+        if (!item && !running && suppressUnmatchedTerminal) return;
         if (!item) {
           item = {
             type: "tool", toolId: "shell-task:" + job.id, name: "exec_shell",
