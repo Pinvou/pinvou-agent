@@ -2104,8 +2104,9 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const canConfigureDesktopNotifications = can('desktopNotifications');
       const canManageModels = can('modelManagement');
       const acpProvidersTabVisible = !!platformCapabilities.codexAcpSupported;
-      // 全局 Alt 语音快捷键的原生钩子仅 Windows 生效;其余平台置灰并说明
-      // (窗口内 Alt 降级路径仍可用),避免给 macOS/Linux 用户一个无效开关。
+      // The native hook for the global Alt voice shortcut only works on Windows; grey the
+      // toggle out with an explanation on other platforms (the in-window Alt fallback path
+      // still works) so macOS/Linux users never get a dead switch.
       const voiceShortcutNativeAvailable = !!platformCapabilities.voiceShortcutNative;
       const canPickHostFiles = can('hostFilePicker');
       const [editingModel, setEditingModel] = useState(null);
@@ -2160,9 +2161,10 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       }, [feedbackNotice]);
       useEffect(() => {
         function syncVoiceShortcutSetting(event) {
-          // 其他键的 storage 变化不触发重读;key===null 的 clear 对权威开关
-          // (Rust 侧 settings.json,启动回放)没有说明力,同样忽略,与 Router
-          // 的 exact-key 过滤同口径,避免清存储后镜像缺省 false 覆写展示态。
+          // storage changes for other keys do not trigger a re-read; a clear with key===null
+          // says nothing about the authoritative switch (Rust-side settings.json, replayed at
+          // startup) and is ignored too — same exact-key filtering as the Router, so a cleared
+          // store's default-false mirror cannot overwrite the display state.
           if (event && event.type === 'storage' && event.key
             && event.key !== VOICE_SHORTCUT_ENABLED_KEY
             && event.key !== VOICE_POSTPROCESS_ENABLED_KEY) return;
@@ -2508,8 +2510,10 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           )}
           <IOSSection title={t.uiSettings.voiceShortcuts}>
             <IOSRow label={voiceShortcutLabel} desc={voiceShortcutNativeAvailable ? t.uiSettings.voiceShortcutEnableDesc : (isWeb ? t.uiSettings.voiceShortcutWebDesc : t.uiSettings.voiceShortcutUnsupportedDesc)}>
-              {/* 非 Windows 平台窗口内 Alt 仍是可用能力(全局钩子除外),开关必须
-                  始终可操作;叠加 nativeAvailable 会让 intro 里开启后无法在此关闭。 */}
+              {/* On non-Windows platforms, in-window Alt remains an available capability
+                  (except the global hook), so the toggle must stay operable; ANDing in
+                  nativeAvailable would make it impossible to turn the shortcut off here
+                  after enabling it in the intro. */}
               <IOSSwitch checked={voiceShortcutsEnabled} onChange={handleVoiceShortcutsEnabledChange} />
             </IOSRow>
             {/* The web lane has no smart-organize pipeline at all (no

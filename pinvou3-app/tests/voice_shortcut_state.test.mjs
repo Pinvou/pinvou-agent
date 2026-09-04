@@ -139,8 +139,9 @@ assert.deepStrictEqual(
   { type: 'cancel' },
   'Escape must cancel a pending permission request',
 );
-// Alt+Esc(系统窗口循环切换)透传批内的 Esc 属于组合键成员,不得取消录音;
-// 裸 Esc(无挂起 Alt)仍是取消。与 Alt+Tab 同口径(Other 键只清 pending)。
+// Alt+Esc (system window cycling): an Esc passed through inside the combo is
+// a combo member and must not cancel a recording; a bare Esc (no pending Alt)
+// still cancels. Same policy as Alt+Tab (Other keys only clear pending).
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'recording', mode: 'task', pendingAlt: true }),
   { type: 'clear_pending' },

@@ -12,7 +12,7 @@
     const notify = context.notify;
     const invoke = context.invoke;
     const bt = context.bt;
-  // ── 语音输入（WebView one-shot 录音 → 本地 SenseVoice/FunASR ASR；Linux webview 录音授权见 lib.rs setup）──────────────
+  // ── Voice input (WebView one-shot recording → local SenseVoice/FunASR ASR; Linux webview mic permission setup see lib.rs)──────────────
   let activeVoiceInput = null;
   const VOICE_DEVICE_PROBE_TIMEOUT_MS = 1500;
   const VOICE_DEVICE_REQUEST_TIMEOUT_MS = 8000;
@@ -31,8 +31,9 @@
       : Date.now();
   }
 
-  // 智能整理开关,默认开启;key 与 features/chat/voice-shortcut-settings.mjs
-  // 保持一致(经典脚本无法 import 该模块),改 key 时必须两侧同步。
+  // Smart post-process toggle, enabled by default; the key must stay in sync with
+  // features/chat/voice-shortcut-settings.mjs (classic scripts cannot import that module),
+  // so any key change must be applied on both sides.
   function isVoicePostprocessEnabled() {
     try {
       return !localStorage || localStorage.getItem("pinvou_voice_postprocess_enabled_v1") !== "false";
@@ -159,7 +160,8 @@
     if (!value.trim()) return value;
     value = value
       .replaceAll(/^[嗯啊呃额][，,、\s]+/g, "")
-      // 进价→金价只覆盖行情查询语境；「今天的进价比昨天低」这类真实比价输入不得误纠。
+      // The 进价→金价 correction only covers market-quote context; genuine price-comparison
+      // input like "今天的进价比昨天低" must not be miscorrected.
       .replaceAll(/今日进价(?![比高低更涨跌贵])/g, "今日金价")
       .replaceAll(/今天的进价(?![比高低更涨跌贵])/g, "今天的金价")
       .replaceAll('数据分析图标', "数据分析图表")
@@ -167,8 +169,8 @@
       .replaceAll('销售暑假', "销售数据")
       .replaceAll(/屁屁提|PPTT/g, "PPT")
       .replaceAll('截止事件', "截止时间")
-      // 「负责任」多为形容词（他很负责任/负责任的老师），仅在不带程度副词前缀、不接「的」时
-      // 才按名词误识别纠正为「负责人」。
+      // "负责任" is usually adjectival (他很负责任 / 负责任的老师); only correct it to the noun
+      // "负责人" when no degree-adverb prefix precedes it and it is not followed by "的".
       .replaceAll('负责任', function (match, offset, whole) {
         const prev = whole.charAt(offset - 1);
         const next = whole.charAt(offset + match.length);
@@ -204,8 +206,9 @@
       .replaceAll('示例情求', "示例请求")
       .replaceAll('高贴票', "高铁票")
       .replaceAll('副款风险', "付款风险")
-      // 「交互风险」本身是合法表述（交互设计风险），确定性规则无法区分，不在规则层纠正，
-      // 交由 LLM 对照原始 ASR 判断。
+      // "交互风险" (interaction risk) is a valid phrase on its own (as in interaction-design
+      // risk); deterministic rules cannot tell them apart, so it is not corrected at the rule
+      // layer and the LLM judges it against the raw ASR text.
       .replaceAll('各列三跳', "各列三条")
       .replaceAll('客诉投诉', "客服投诉")
       .replaceAll(/产品先(?![上发做进推试跑])/g, "产品线")
@@ -214,7 +217,8 @@
       .replaceAll(/语音输出(?!的)/g, "语音输入")
       .replaceAll('模型下崽体验', "模型下载体验")
       .replaceAll('知识裤', "知识库")
-      // 「报消」常是跨词误命中（上报|消费者、预报|消息），前缀为上/预/补/申时不纠正。
+      // "报消" is often a cross-word false hit (上报|消费者, 预报|消息); skip the correction
+      // when preceded by 上/预/补/申.
       .replaceAll('报消', function (match, offset, whole) {
         if ("上预补申".includes(whole.charAt(offset - 1))) return match;
         return "报销";
@@ -260,9 +264,11 @@
       return false;
     }
     const protectedTerms = voiceProtectedTermsIn(corrected);
-    // LLM 把规则误纠恢复为原始 ASR 用词时（如「表哥」被规则改成「表格」又被 LLM 改回），
-    // 最终文本天然缺少规则产物。以原始 ASR 为基线对最终文本重放同一套确定性规则再校验：
-    // 语义等价的恢复被放行，真正丢掉术语的输出仍会拒绝。
+    // When the LLM reverts a rule correction back to the original ASR wording (e.g. "表哥"
+    // corrected to "表格" by the rules, then changed back by the LLM), the final text
+    // naturally lacks the rule output. Re-apply the same deterministic rules to the final
+    // text against the raw ASR baseline before validating: semantically equivalent
+    // restorations pass, outputs that truly dropped a term are still rejected.
     const finalChecked = applyVoiceDeterministicCorrections(finalValue, raw);
     const missingProtected = protectedTerms.filter(function (term) {
       return !finalChecked.includes(term);
@@ -317,9 +323,10 @@
     fn.call(console, "[voice-input]", event);
   }
 
-  // Rust 侧 VoiceCommandError 的稳定错误码 → 桥内三语文案 key。错误码优先于
-  // rawMessage:Rust 的 message 是中文工程原文,只应进日志/诊断,不应直通
-  // en/ja 用户界面(评审遗留:约 12 条中文文案直通)。
+  // Stable VoiceCommandError codes from the Rust side → trilingual copy keys inside the
+  // bridge. Codes take precedence over rawMessage: the Rust message is Chinese engineering
+  // prose, meant for logs/diagnostics only, never passed straight to en/ja UIs
+  // (review leftover: ~12 Chinese strings still pass through).
   const VOICE_ERROR_CODE_KEYS = {
     asr_timeout: "voiceTimeout",
     asr_no_speech: "voiceEmptyResult",
@@ -356,13 +363,15 @@
     if (name === "NotFoundError" || name === "DevicesNotFoundError") {
       return { category: "device_unavailable", stage: "device", message: bt("voiceNoDevice") };
     }
-    // Chrome 把"麦克风被其他应用占用"报为 NotReadableError / TrackStartError,
-    // 与"没有设备"不同;浏览器原文是英文,映射成三语专用文案。
+    // Chrome reports "microphone busy with another app" as NotReadableError / TrackStartError,
+    // distinct from "no device"; the browser message is English, so map it to dedicated
+    // trilingual copy.
     if (name === "NotReadableError" || name === "TrackStartError") {
       return { category: "device_unavailable", stage: "device", message: bt("voiceMicUnavailable") };
     }
-    // WebKitGTK 可能把不支持的音频约束报为 OverconstrainedError / "Invalid constraint"。
-    // 这和没有录音设备不同：设备可能存在，只是不支持 channelCount、降噪等配置。
+    // WebKitGTK may report unsupported audio constraints as OverconstrainedError / "Invalid constraint".
+    // This is different from having no recording device: the device may exist, it just does
+    // not support channelCount, noise suppression, and similar configurations.
     if (name === "OverconstrainedError" || name === "ConstraintNotSatisfiedError" || /invalid constraint/i.test(rawMessage)) {
       return {
         category: "constraint_unsupported",
@@ -386,8 +395,9 @@
       return { category: "timeout", stage: "recording", message: bt("voiceTimeout") };
     }
     if (rawCategory === "recognition_failed") {
-      // 有稳定错误码按码映射三语文案,中文原文降级为诊断;无码的历史错误才
-      // 退回 rawMessage(仅中文工程原文,历史行为)。
+      // With a stable error code, map to trilingual copy by code and demote the Chinese
+      // original to diagnostics; only legacy errors without a code fall back to rawMessage
+      // (Chinese engineering prose only, kept for historical behavior).
       if (codeKey) {
         return { category: rawCategory, stage: rawStage, message: bt(codeKey), diagnostic: rawMessage };
       }
@@ -428,9 +438,10 @@
       session.cancelPermissionRequest = null;
       try { cancelPermissionRequest(); } catch { /* a cancel-callback error must not block cleanup */ }
     }
-    // 先摘掉音频回调：webkit2gtk 的 WebAudio 是 GStreamer 后端，ScriptProcessorNode 的
-    // onaudioprocess 跑在音频线程，若在 disconnect/close 期间再触发一次、访问已释放的
-    // 缓冲，会让 WebProcess 段错误（表现为「识别出文字后 app 崩溃」）。务必先置 null。
+    // Detach the audio callback first: webkit2gtk's WebAudio is backed by GStreamer, and
+    // ScriptProcessorNode's onaudioprocess runs on the audio thread. If it fires once more
+    // during disconnect/close and touches freed buffers, WebProcess segfaults (seen as
+    // "the app crashes after text was recognized"). Always null it first.
     try { if (session.processor) session.processor.onaudioprocess = null; } catch { /* release failure only affects this page's audio */ }
     try { if (session.processor) session.processor.disconnect(); } catch { /* release failure only affects this page's audio */ }
     try { if (session.source) session.source.disconnect(); } catch { /* release failure only affects this page's audio */ }
@@ -440,8 +451,9 @@
     session.source = null;
     session.zeroGain = null;
     session.stream = null;
-    // close() 触发 GStreamer 管线异步拆解，与上面的 disconnect/track.stop 在同一拍里竞争最易崩；
-    // 摘干净节点后挪到下一个事件循环再关，并吞掉 close 的异常。
+    // close() tears the GStreamer pipeline down asynchronously and races with the
+    // disconnect/track.stop above in the same tick, which crashes most easily; once the
+    // nodes are fully detached, close on the next event-loop turn and swallow close errors.
     const ctx = session.audioContext;
     session.audioContext = null;
     if (ctx && ctx.state !== "closed") {
@@ -552,8 +564,9 @@
     return buffer;
   }
 
-  // 60s 16kHz 16bit WAV 约 1.9MB；按 JSON 数字数组跨 IPC 会产生约 192 万元素、多份拷贝，
-  // 峰值内存 ~25MB。改为标准 base64 字符串（带 padding），与 web 车道 encodeBase64Bytes 同款分块编码。
+  // A 60s 16kHz 16bit WAV is ~1.9MB; shipping it across IPC as a JSON number array means
+  // ~1.92M elements, multiple copies, ~25MB peak memory. Use a standard base64 string
+  // (with padding), the same chunked encoding as the web lane's encodeBase64Bytes.
   function encodeVoiceBase64Bytes(bytes) {
     let binary = "";
     const chunkSize = 0x8000;
@@ -565,7 +578,8 @@
     return window.btoa(binary);
   }
 
-  // 模型偶尔用 ``` 围栏包裹整段输出；只剥整包围栏，保留 dictation 合法的 Markdown 列表内容。
+  // The model occasionally wraps the whole output in a ``` fence; strip only fully enclosing
+  // fences, keeping legitimate Markdown list content for dictation.
   function stripVoicePostprocessFences(text) {
     const value = String(text || "").trim();
     const fenced = value.match(/^```[^\n]*\r?\n([\s\S]*?)```\s*$/);
@@ -580,8 +594,9 @@
       const request = invoke("postprocess_voice_text", {
         request: {
           text: correctedText,
-          // 原始 ASR 一并下发：模型需要对照原文才能撤销确定性规则的误纠（如「表哥」→「表格」）。
-          // 旧后端结构体未加 deny_unknown_fields，会安全忽略该字段。
+          // Send the raw ASR text along too: the model needs the original to undo deterministic
+          // rule miscorrections (e.g. "表哥"→"表格"). Old backend structs lack deny_unknown_fields
+          // and safely ignore this field.
           raw_text: String(rawText || correctedText || ""),
           mode: normalizedMode,
           session_id: sessionId || null,
@@ -596,7 +611,8 @@
           }, timeoutMs || voicePostprocessTimeoutMs(normalizedMode, correctedText));
         }),
       ]);
-      // finish_reason=length 的截断输出不允许静默写回（可能截到 60-70% 绕过 55% 收缩红线），回退规则文本。
+      // Truncated output (finish_reason=length) must not be written back silently (it may cut
+      // to 60-70% and slip past the 55% shrink red line); fall back to the rule text.
       if (res && res.truncated) {
         throw voiceFlowError("postprocess_truncated", "postprocess", "voice postprocess output truncated (finish_reason=length)");
       }
@@ -630,8 +646,9 @@
   async function finishVoiceInput(cancelled, timedOut) {
     const session = activeVoiceInput;
     if (!session) return;
-    // 录音会话结束（取消/完成/出错统一收口于此），解除跨窗录音互斥的本窗占用。
-    // 带 session token:迟到收尾不得抹掉新会话的登记。
+    // The recording session ends here (cancel/finish/error all funnel through this point);
+    // release this window's cross-window recording mutex claim.
+    // Carries a session token: a late teardown must not erase a new session's registration.
     syncVoiceShortcutRecording(null, session.sessionId);
     if (cancelled) {
       cleanupVoiceInputSession(session);
@@ -674,8 +691,10 @@
       const mode = normalizeVoiceMode(session.mode);
       const ruleText = applyVoiceDeterministicCorrections(text, text);
       const rawSuspiciousTerms = voiceContainsAny(text, VOICE_SUSPICIOUS_ASR_TERMS);
-      // 分类必须基于原始 ASR：若用纠错后文本分类，带确定性规则的 suspicious 词（负责任、
-      // 表哥、语音输出…）在分类前已消失，短句 dictation 会走 use_asr 把误纠静默写回输入框。
+      // Classification must use the raw ASR text: if the corrected text were classified, the
+      // suspicious terms covered by deterministic rules (负责任, 表哥, 语音输出, ...) would be
+      // gone before classification, and short dictation would take the use_asr path, silently
+      // writing miscorrections back into the input box.
       const strategy = classifyVoiceText(text, mode);
       let postprocessResult;
       if (strategy.strategy === "skip_empty") {
@@ -715,11 +734,13 @@
           text
         );
       } else {
-        // 用户关闭智能整理:不把识别文本发给模型服务,只保留本地规则纠错结果。
-        // edit 车道没有 LLM 参与就不存在“编辑结果”——规则纠错修的是口述指令
-        // 本身,把它当改写产物送进预览、确认后整段替换草稿是错误语义,因此与
-        // LLM 失败同口径标记 fallbackReason,走 editPostprocessFailed 通知,
-        // 草稿保持不动。听写车道不受影响,仍写回规则纠错文本。
+        // Smart post-processing is off: do not send the recognized text to the model service;
+        // keep only the local rule-based correction result. On the edit lane there is no
+        // "edit result" without the LLM — rule correction fixes the spoken instruction itself,
+        // and feeding that into the replace preview as a rewrite product that overwrites the
+        // whole draft on confirm would be wrong semantics. So mark fallbackReason the same way
+        // as an LLM failure, surface editPostprocessFailed, and leave the draft untouched.
+        // The dictation lane is unaffected and still writes back the rule-corrected text.
         postprocessResult = {
           text: ruleText,
           source: "skipped_postprocess_disabled",
@@ -744,7 +765,8 @@
       const editUnchanged = mode === "edit"
         && !!String(finalText || "").trim()
         && String(finalText || "").trim() === String(session.draftBeforeStart || "").trim();
-      // edit 模式 LLM 失败时 finalText 为空，不能复用「未识别到语音内容」的空结果文案。
+      // When the LLM fails in edit mode, finalText is empty; do not reuse the
+      // "未识别到语音内容" empty-result copy.
       const editPostprocessFailed = mode === "edit" && !!postprocessResult.fallbackReason;
       const diagnostic = {
         mode,
@@ -774,8 +796,9 @@
           rawText: text,
           diagnostic,
         });
-        // writeback await 窗口内用户可能已取消(cancel 把 activeVoiceInput 置空并置 cancelled),
-        // 此时不得再用 completed 覆盖取消终态。
+        // The user may have cancelled during the writeback await window (cancel clears
+        // activeVoiceInput and sets cancelled); never overwrite that terminal cancelled
+        // state with completed here.
         if (activeVoiceInput !== session) return;
       }
       setVoiceInputStatus("completed", {
@@ -810,8 +833,9 @@
     }
   }
 
-  // 一键安装本地语音识别依赖（模型下载 + 缺 ffmpeg 走 pkexec apt），进度走
-  // voice_asr:progress 事件。装完 ready 自动关框。
+  // One-click install of the local ASR dependencies (model download; missing ffmpeg goes
+  // through pkexec apt), progress via the voice_asr:progress event. Auto-close the dialog
+  // once the status is ready.
   async function installVoiceAsr() {
     if (state.voiceAsrSetup.installing) return;
     state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { open: false, installing: true, cancelling: false, error: null, progress: { stage: "start" } });
@@ -880,16 +904,18 @@
       return;
     }
 
-    // 模型下载期间再次触发语音时保留原下载会话，不能用新的依赖检测结果
-    // 覆盖 installing/cancelling/progress。open 状态也保持原样：
-    // 自动下载走按钮 loading + 小 popover，手动修复安装才保留安装框。
+    // While a model download is running, re-triggering voice input keeps the original
+    // download session; a fresh dependency probe must not overwrite
+    // installing/cancelling/progress. Keep the open state as-is too: auto-install uses the
+    // button loading state + small popover, only manual repair keeps the install dialog.
     if (state.voiceAsrSetup.installing) {
       notify();
       return;
     }
 
-    // 点击后立即进入可见、可取消的检测态。模型状态查询首次可能需要读取模型文件，
-    // 如果等查询结束后才更新 UI，Windows 上会表现为按钮点击后没有任何反馈。
+    // Enter a visible, cancellable probing state immediately on click. The first model status
+    // query may need to read model files; updating the UI only after the query finishes makes
+    // the button look unresponsive on Windows.
     const session = {
       id: Date.now().toString(36),
       sessionId: state.activeSessionId || null,
@@ -910,11 +936,13 @@
     });
     emitVoiceDiagnostic("device", "info", "checking voice input environment", "", "");
 
-    // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
+    // First run / missing components: probe local ASR dependencies first; if anything is
+    // missing, show the install dialog instead of recording.
     try {
       const asrStatus = await invoke("voice_asr_status");
       if (activeVoiceInput !== session) return;
-      // 未装好即弹安装引导；installable 决定当前平台是否提供内置安装入口。
+      // Not ready: pop the install guide; installable decides whether this platform offers
+      // the built-in install entry.
       if (asrStatus && !asrStatus.ready) {
         cleanupVoiceInputSession(session);
         activeVoiceInput = null;
@@ -935,7 +963,8 @@
       }
     } catch {
       if (activeVoiceInput !== session) return;
-      // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
+      // Probe failure (e.g. mock environment / old backend) must not block; continue with the
+      // original recording path (env vars / fallback engine)
     }
 
     if (options && typeof options.beforePermission === "function") {
@@ -999,15 +1028,17 @@
       session.processor.connect(session.zeroGain);
       session.zeroGain.connect(session.audioContext.destination);
       session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, VOICE_RECORDING_MAX_DURATION_MS);
-      // 拔麦/设备断开时 track 结束(stop() 不触发 onended,收尾无递归),
-      // 用已录内容立即收尾,不再空转到时长上限。
+      // Unplugging / device disconnect ends the track (stop() does not fire onended, so no
+      // recursive teardown); finish immediately with what was recorded instead of idling
+      // until the duration cap.
       session.stream.getTracks().forEach(function (track) {
         track.onended = function () {
           if (activeVoiceInput === session) finishVoiceInput(false);
         };
       });
       setVoiceInputStatus("recording", { message: bt("voiceRecording"), stage: "recording" });
-      // 录音正式开始后登记本窗 label;A 窗录音中 B 窗的 Alt 手势会被定向到 A 窗停止。
+      // Once recording actually starts, register this window's label; while window A records,
+      // window B's Alt gesture is routed to window A to stop it.
       syncVoiceShortcutRecording(currentVoiceWindowLabel(), session.sessionId);
       invoke("track_behavior_event", {
         request: {
@@ -1084,8 +1115,10 @@
     return true;
   }
 
-  // 跨窗录音互斥:录音生命周期把本窗口 label 同步给原生快捷键钩子,Rust 侧据此把
-  // 其他窗口的 Alt 手势定向到录音窗停止,绝不双开。旧后端未注册该命令时静默忽略。
+  // Cross-window recording mutex: the recording lifecycle syncs this window's label to the
+  // native shortcut hook, and Rust uses it to route other windows' Alt gestures to the
+  // recording window as a stop, never double-starting. Silently ignored by old backends
+  // without the command.
   function currentVoiceWindowLabel() {
     try {
       const windowApi = window.__TAURI__ && window.__TAURI__.window;
@@ -1095,9 +1128,10 @@
     return "";
   }
 
-  // 会话 token:录音登记时带上会话 id,收尾清除时仅当 token 仍匹配才下发,
-  // 防止上一会话迟到的收尾(异步窗口/竞态)把新会话刚登记的互斥 label 抹掉。
-  // 无 token 的清除(快捷键 Router 清陈旧登记)始终放行。
+  // Session token: registration carries the session id, and teardown only dispatches the
+  // clear when the token still matches, preventing a previous session's late teardown
+  // (async window/race) from wiping the mutex label the new session just registered.
+  // Token-less clears (the shortcut Router purging stale registrations) always pass.
   let voiceShortcutRecordingToken = null;
 
   function syncVoiceShortcutRecording(label, token) {

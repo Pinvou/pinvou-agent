@@ -491,11 +491,15 @@ pub struct UserPrefs {
     pub sidebar: SidebarPrefs,
     pub code_permission: CodePermissionPrefs,
     pub mode_defaults: ModeDefaultPrefs,
-    /// 全局 Alt 语音快捷键开关(原生键盘钩子,当前仅 Windows 生效;其余平台
-    /// 保留窗口内 Alt 降级路径)。默认关闭,需用户主动开启。权威持久化在
-    /// settings.json(前端 localStorage 只是镜像):`set_voice_shortcut_enabled`
-    /// 走字段级事务写入,启动时在 lib.rs setup 回放到原生钩子的 AtomicBool,
-    /// 避免清 WebView 存储后设置丢失、多窗 mount 后到 invoke 覆盖先到者。
+    /// Global Alt voice shortcut switch (native keyboard hook, currently
+    /// effective on Windows only; other platforms keep the in-window Alt
+    /// fallback path). Off by default; the user must opt in. The authoritative
+    /// persistence lives in settings.json (frontend localStorage is only a
+    /// mirror): `set_voice_shortcut_enabled` writes through a field-level
+    /// transaction, and at startup lib.rs setup replays it into the native
+    /// hook's AtomicBool — preventing the setting from being lost when WebView
+    /// storage is cleared, and races where a later multi-window mount invoke
+    /// overwrites an earlier one.
     pub voice_shortcut_enabled: bool,
     pub advanced: AdvancedPrefs,
 }
@@ -1211,7 +1215,8 @@ mod tests {
 
     #[test]
     fn voice_shortcut_enabled_defaults_off_and_round_trips() {
-        // 旧 settings.json 无该字段:serde 容器级 default 兜底为 false(默认关闭)。
+        // Older settings.json lacks the field: the serde container-level
+        // default falls back to false (off by default).
         let legacy = UserPrefs::parse_settings(Some(r#"{"theme":"genesis"}"#), Some("zh-CN"));
         assert!(!legacy.voice_shortcut_enabled);
         let enabled = UserPrefs::parse_settings(

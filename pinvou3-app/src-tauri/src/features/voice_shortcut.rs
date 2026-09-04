@@ -15,42 +15,50 @@ enum VoiceShortcutEvent {
     TriggerDictation,
 }
 
-/// 全局 Alt 语音快捷键的手势状态(仅 Windows 低层钩子写入)。
+/// Gesture state for the global Alt voice shortcut (written only by the
+/// Windows low-level hook).
 ///
-/// Alt 按下即吞(tap-hold):若之后出现组合键,平台层补发一次合成 Alt down
-/// (`inject_alt_down`)恢复系统/WebView 的 Alt+组合键行为;若空按,则在抬起时
-/// 吞掉 up 并触发听写。WebView 要幺看到完整的 down/up 对,要幺两者都看不到,
-/// 不会残留"Alt 仍按住"的修饰键状态。
+/// Alt down is swallowed immediately (tap-hold): if a combo key follows, the
+/// platform layer replays a synthetic Alt down (`inject_alt_down`) to restore
+/// system/WebView Alt+combo behavior; if it was a bare tap, the up is
+/// swallowed and dictation triggers. The WebView sees either a full down/up
+/// pair or neither, and no "Alt still held" modifier state is left behind.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct VoiceShortcutState {
     alt_down: bool,
     alt_pending: bool,
-    /// 已为组合键按 [Alt↓, 组合键↓] 保序重放(平台层在 SendInput 成功后置位),
-    /// 真实 Alt up 必须放行与之配对。
+    /// The [Alt↓, combo↓] ordered replay has been issued for a combo key (the
+    /// platform layer sets this after SendInput succeeds); the real Alt up must
+    /// be let through to pair with it.
     alt_forwarded: bool,
-    /// 本次手势内 Space down 已被吞;只有配对吞掉 up,不误吞 Alt 按下前
-    /// 就已按下的 Space 的 up(否则系统级 VK_SPACE 卡在按下态)。
+    /// Space down was swallowed within this gesture; its up must be swallowed
+    /// in pairs only, never the up of a Space that was already held before Alt
+    /// went down (otherwise the system-level VK_SPACE gets stuck pressed).
     space_swallowed: bool,
-    /// Alt 按下时的前台窗口句柄(0 = 未知);抬起时比对,防止按住 Alt 切窗后
-    /// 在新窗口松手误触。
+    /// Foreground window handle at Alt down (0 = unknown); compared at Alt up
+    /// so releasing Alt after alt-tabbing to another window does not misfire.
     alt_hwnd: isize,
-    /// 上一个事件的 KBDLLHOOKSTRUCT.time(毫秒 tick;0 = 尚无事件),供陈旧
-    /// 手势兜底(UAC/锁屏丢 keyup 后状态卡死)。
+    /// KBDLLHOOKSTRUCT.time of the previous event (millisecond tick; 0 = no
+    /// event yet), used as the stale-gesture fallback (state stuck after
+    /// UAC/lock-screen eats a keyup).
     last_event_ms: u32,
 }
 
-/// 事件间隔超过该阈值即视为上一手势已死(UAC/锁屏吞掉了 keyup),整体复位。
-/// 正常按住时 OS 自动重复会持续刷新事件流,不会触发;系统禁用自动重复的
-/// 无障碍配置下,超过 2s 的超长按住不再触发(可接受的兜底代价)。
+/// An inter-event gap above this threshold means the previous gesture is dead
+/// (UAC/lock-screen swallowed the keyup) and the whole state resets. While
+/// held normally, OS auto-repeat keeps refreshing the event stream and never
+/// trips it; with accessibility settings that disable auto-repeat, a held
+/// press longer than 2s no longer triggers (an accepted fallback cost).
 const STALE_GESTURE_MS: u32 = 2000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct VoiceShortcutDecision {
     event: Option<VoiceShortcutEvent>,
     suppress: bool,
-    /// 当前组合键 down 已被吞:平台层须用单次 SendInput 按 [Alt↓, 组合键↓]
-    /// 保序重放(成功后确认 alt_forwarded),否则系统会因 Alt down 被吞而收不到
-    /// 该组合键(Alt+Tab / Alt+F4 失效)。
+    /// The current combo down was swallowed: the platform layer must replay
+    /// [Alt↓, combo↓] in order with a single SendInput (confirming
+    /// alt_forwarded on success), otherwise the system never sees the combo
+    /// because Alt down was swallowed (Alt+Tab / Alt+F4 break).
     inject_alt_down: bool,
 }
 
@@ -71,7 +79,8 @@ impl VoiceShortcutDecision {
         }
     }
 
-    /// 吞掉当前组合键 down,交平台层保序重放。
+    /// Swallow the current combo down and let the platform layer replay it in
+    /// order.
     const fn forward_combo() -> Self {
         Self {
             event: None,
@@ -81,9 +90,10 @@ impl VoiceShortcutDecision {
     }
 }
 
-/// `active` = 本次击键归快捷键手势接管(开关开启且前台是本进程目标窗口)。
-/// `foreground_hwnd` 为当前前台窗口句柄(0 = 无前台窗口)。
-/// `time_ms` 为 KBDLLHOOKSTRUCT.time(毫秒 tick,允许回绕)。
+/// `active` = this keystroke belongs to the shortcut gesture (switch on and
+/// the foreground window is one of this process's target windows).
+/// `foreground_hwnd` is the current foreground window handle (0 = none).
+/// `time_ms` is KBDLLHOOKSTRUCT.time (millisecond tick, wrap-around allowed).
 fn handle_voice_shortcut_key(
     state: &mut VoiceShortcutState,
     key: VoiceShortcutKey,
@@ -92,16 +102,19 @@ fn handle_voice_shortcut_key(
     foreground_hwnd: isize,
     time_ms: u32,
 ) -> VoiceShortcutDecision {
-    // 陈旧手势兜底:UAC/锁屏等场景 keyup 丢失会让 alt_down 卡住,下一个手势
-    // 的首个事件会被误判为长按重复或幽灵触发。事件间隔超过阈值即整体复位,
-    // 再按新事件正常处理(tick 回绕用 wrapping_sub)。
+    // Stale-gesture fallback: a lost keyup (UAC/lock-screen etc.) can leave
+    // alt_down stuck, so the first event of the next gesture would be
+    // misread as a long-press repeat or ghost trigger. A gap above the
+    // threshold resets everything and the event is then handled as fresh
+    // (tick wrap-around handled with wrapping_sub).
     if state.last_event_ms != 0 && time_ms.wrapping_sub(state.last_event_ms) > STALE_GESTURE_MS {
         *state = VoiceShortcutState::default();
     }
     state.last_event_ms = time_ms;
 
     if !active {
-        // 手势落到非目标窗口:不吞键,仅在 Alt 抬起时复位,避免状态泄漏到下一次手势。
+        // Gesture landed on a non-target window: swallow nothing, only reset
+        // on Alt up so state cannot leak into the next gesture.
         if key == VoiceShortcutKey::Alt && !key_down {
             *state = VoiceShortcutState::default();
         }
@@ -111,7 +124,9 @@ fn handle_voice_shortcut_key(
     match (key, key_down) {
         (VoiceShortcutKey::Alt, true) => {
             if state.alt_down {
-                // 长按自动重复:未转发的继续吞,已转发的放行(与合成 down 保持一致)。
+                // Long-press auto-repeat: keep swallowing when not forwarded,
+                // let through when forwarded (consistent with the synthetic
+                // down).
                 return if state.alt_forwarded {
                     VoiceShortcutDecision::pass()
                 } else {
@@ -134,35 +149,43 @@ fn handle_voice_shortcut_key(
             let forwarded = state.alt_forwarded;
             *state = VoiceShortcutState::default();
             if forwarded {
-                // 组合键路径:真实 up 放行,与合成 down 配对;pending 已被组合键清除,不会触发。
+                // Combo path: the real up is let through to pair with the
+                // synthetic down; pending was cleared by the combo, so no
+                // trigger.
                 VoiceShortcutDecision::pass()
             } else {
-                // 空按(或组合键仅 Space):down 已吞,up 成对吞掉并触发。
+                // Bare tap (or a combo of Space only): down was swallowed, so
+                // swallow the up in pairs and trigger.
                 VoiceShortcutDecision::suppress(
                     trigger.then_some(VoiceShortcutEvent::TriggerDictation),
                 )
             }
         }
         (VoiceShortcutKey::Space, true) if state.alt_down => {
-            // Alt+Space 会弹窗口系统菜单:成对吞掉 down/up,且不为它补发 Alt down。
+            // Alt+Space opens the window system menu: swallow down/up as a
+            // pair and do not inject an Alt down for it.
             state.alt_pending = false;
             state.space_swallowed = true;
             VoiceShortcutDecision::suppress(None)
         }
-        // 只配对吞「down 已被吞」的 Space up;Alt 按下前就已按下的 Space,
-        // 它的 down 早已放行,up 必须同样放行,否则系统级卡键。
+        // Only swallow the Space up whose down was already swallowed; for a
+        // Space held before Alt went down, its down was already let through,
+        // so the up must be let through too or the system-level key sticks.
         (VoiceShortcutKey::Space, false) if state.alt_down && state.space_swallowed => {
             state.alt_pending = false;
             VoiceShortcutDecision::suppress(None)
         }
-        // Alt+Esc(系统窗口循环切换)与普通组合键同口径:不重放会以裸 Esc 漏进
-        // WebView,且 pending 残留会在 Alt up 时误触发听写。
+        // Alt+Esc (system window cycling) is treated the same as a regular
+        // combo: without the replay a bare Esc leaks into the WebView, and
+        // leftover pending would mis-trigger dictation at Alt up.
         (VoiceShortcutKey::Other | VoiceShortcutKey::Escape, true) if state.alt_down => {
             if state.alt_pending {
                 state.alt_pending = false;
                 if !state.alt_forwarded {
-                    // alt_forwarded 由平台层在 [Alt↓, 组合键↓] 保序重放成功后确认;
-                    // 重放失败保持未转发,真实 Alt up 按未转发路径吞掉收尾,不留残态。
+                    // alt_forwarded is confirmed by the platform layer after the
+                    // [Alt↓, combo↓] ordered replay succeeds; if the replay
+                    // fails it stays unforwarded, the real Alt up is wrapped up
+                    // along the unforwarded path, and no state is left behind.
                     return VoiceShortcutDecision::forward_combo();
                 }
             }
@@ -176,19 +199,28 @@ fn handle_voice_shortcut_key(
 struct VoiceShortcutTriggerPayload {
     mode: &'static str,
     source: &'static str,
-    /// 目标窗口 label(挂载了 VoiceShortcutRouter 的窗口),前端校验与本窗一致才消费。
+    /// Target window label (a window mounting VoiceShortcutRouter); the
+    /// frontend consumes it only after checking it matches its own window.
     window_label: String,
-    /// 路由依据:"recording"(定向录音窗,用于停止/互斥)或 "focused"(聚焦窗,
-    /// 正常触发)。前端据此刻别「以录音窗身份被路由但自身已无活跃会话」的陈旧
-    /// 登记(WebView 重载后 JS 会话重建而原生登记未清),清除后丢弃,不再后台幽灵开麦。
+    /// Routing basis: "recording" (the targeted recording window, used for
+    /// stop/mutual exclusion) or "focused" (the focused window, a normal
+    /// trigger). The frontend uses this to spot a stale recording-window
+    /// registration ("routed as the recording window but no longer has an
+    /// active session" — the JS session is rebuilt after a WebView reload
+    /// while the native registration was not cleared), clear it, and drop the
+    /// event instead of ghost-opening the microphone in the background.
     route: &'static str,
 }
 
-/// 当前录音中的窗口 label(前端在录音开始/结束时通过命令同步)。
-/// 用于跨窗录音互斥:A 窗录音中,B 窗的 Alt 手势定向到 A 窗(停止),绝不双开。
+/// Label of the window currently recording (synced by the frontend via a
+/// command when recording starts/ends).
+/// Used for cross-window recording mutual exclusion: while window A records,
+/// window B's Alt gesture is routed to A (to stop it) and never opens a
+/// second session.
 static RECORDING_LABEL: Mutex<Option<String>> = Mutex::new(None);
 
-/// 由 `set_voice_shortcut_recording` 命令调用;前端在录音开始/结束/出错时带上本窗口 label 同步。
+/// Called by the `set_voice_shortcut_recording` command; the frontend syncs
+/// its own window label when recording starts/ends/fails.
 pub(crate) fn set_recording_label(label: Option<String>) {
     if let Ok(mut guard) = RECORDING_LABEL.lock() {
         *guard = label.filter(|value| !value.trim().is_empty());
@@ -205,24 +237,30 @@ fn clear_recording_label() {
     }
 }
 
-/// 窗口销毁时主动解除登记:录音中的窗口被直接关闭时,前端来不及走
-/// finishVoiceInput 收口;若不清掉,原生钩子会把 Alt 手势一直路由进已销毁
-/// 窗口(emit 对已销毁窗口不报错,失败兜底不会触发,等效全局吞键黑洞)。
+/// Deregister proactively when a window is destroyed: if a recording window is
+/// closed outright, the frontend never gets to run the finishVoiceInput
+/// teardown. If the label is not cleared, the native hook keeps routing Alt
+/// gestures into the destroyed window (emit does not error on a destroyed
+/// window and the failure fallback never fires — effectively a global
+/// swallow-keys black hole).
 pub(crate) fn forget_recording_window(label: &str) {
     if recording_label().as_deref() == Some(label) {
         clear_recording_label();
     }
 }
 
-/// 只有主窗与撕离窗(DetachedShell)挂载 VoiceShortcutRouter、能消费快捷键事件;
-/// 桌宠(pet)、code-reader、artifact 等窗口不在白名单:不吞键、不 emit。
+/// Only the main window and detached windows (DetachedShell) mount
+/// VoiceShortcutRouter and can consume shortcut events; pet, code-reader,
+/// artifact and similar windows are not whitelisted: no swallowing, no emit.
 fn is_voice_shortcut_router_window(label: &str) -> bool {
     label == "main" || label.starts_with("detached-")
 }
 
-/// Alt 空按触发的路由:录音中的窗口优先(定向停止、跨窗互斥),
-/// 否则定向到聚焦的白名单窗口;两者都没有则返回 None(不吞键、不 emit)。
-/// 返回值附带路由依据,供前端区分陈旧的录音窗登记(见 payload.route)。
+/// Routing for a bare Alt tap: the recording window wins (targeted stop,
+/// cross-window mutual exclusion), otherwise the gesture targets the focused
+/// whitelisted window; with neither, returns None (no swallowing, no emit).
+/// The return value carries the routing basis so the frontend can tell apart a
+/// stale recording-window registration (see payload.route).
 fn resolve_trigger_target(
     recording_label: Option<&str>,
     focused_router_label: Option<&str>,
@@ -243,7 +281,8 @@ pub(crate) fn set_enabled(enabled: bool) {
     platform::set_enabled(enabled);
 }
 
-/// 定向 emit:只发到目标窗口,无聚焦/无目标窗口时静默丢弃(不再全窗广播)。
+/// Targeted emit: send only to the target window; silently dropped when there
+/// is no focused/target window (no more broadcast to all windows).
 fn emit_shortcut_event(
     app: &AppHandle,
     event: VoiceShortcutEvent,
@@ -275,7 +314,9 @@ fn emit_shortcut_event(
                         window_label,
                         error
                     );
-                    // 目标窗口已销毁:若它还被记为录音窗,清掉陈旧 label,避免后续手势被黑洞。
+                    // Target window already destroyed: if it is still recorded
+                    // as the recording window, clear the stale label so later
+                    // gestures are not black-holed.
                     if recording_label().as_deref() == Some(window_label) {
                         clear_recording_label();
                     }
@@ -335,20 +376,23 @@ mod tests {
         assert_eq!(combo, VoiceShortcutDecision::forward_combo());
         assert!(combo.suppress);
 
-        // 平台层 SendInput 成功后确认 alt_forwarded(重放 [Alt↓, 组合键↓] 完成)。
+        // The platform layer confirms alt_forwarded after SendInput succeeds
+        // (the [Alt↓, combo↓] replay is complete).
         state.alt_forwarded = true;
 
-        // 同一组合期间第二个按键不再补发。
+        // A second key during the same combo must not inject again.
         let combo2 =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Other, true, true, HWND_A, 0);
         assert_eq!(combo2, VoiceShortcutDecision::pass());
 
-        // 组合键后 Alt 自动重复 down 放行,与合成 down 一致。
+        // Alt auto-repeat down after a combo is let through, consistent with
+        // the synthetic down.
         let repeat =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, true, true, HWND_A, 0);
         assert_eq!(repeat, VoiceShortcutDecision::pass());
 
-        // 真实 up 放行配对,不触发听写。
+        // The real up is let through to pair with the synthetic down; no
+        // dictation trigger.
         let up =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, false, true, HWND_A, 0);
         assert_eq!(up, VoiceShortcutDecision::pass());
@@ -360,13 +404,15 @@ mod tests {
         let mut state = VoiceShortcutState::default();
         handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, true, true, HWND_A, 0);
 
-        // Alt+Esc 与普通组合键同口径:吞掉并保序重放 [Alt↓, Esc↓],Esc 不裸漏。
+        // Alt+Esc is treated like a regular combo: swallow and replay
+        // [Alt↓, Esc↓] in order, so Esc does not leak through bare.
         let escape =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Escape, true, true, HWND_A, 0);
         assert_eq!(escape, VoiceShortcutDecision::forward_combo());
         state.alt_forwarded = true;
 
-        // 真实 Alt up 放行并与合成 down 配对,不触发听写。
+        // The real Alt up is let through to pair with the synthetic down; no
+        // dictation trigger.
         let alt_up =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, false, true, HWND_A, 0);
         assert_eq!(alt_up, VoiceShortcutDecision::pass());
@@ -376,14 +422,16 @@ mod tests {
 
     #[test]
     fn combo_replay_failure_leaves_no_residue() {
-        // SendInput 失败:alt_forwarded 未被平台层确认,组合键已丢,真实 Alt up
-        // 按未转发路径吞掉收尾,不触发、状态复位,不留"Alt 仍按住"残态。
+        // SendInput failure: alt_forwarded was never confirmed by the platform
+        // layer and the combo is lost; the real Alt up is wrapped up along the
+        // unforwarded path — no trigger, state reset, no "Alt still held"
+        // residue.
         let mut state = VoiceShortcutState::default();
         handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, true, true, HWND_A, 0);
         let combo =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Other, true, true, HWND_A, 0);
         assert_eq!(combo, VoiceShortcutDecision::forward_combo());
-        // (不模拟平台层确认)
+        // (the platform-layer confirmation is not simulated)
 
         let combo_up =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Other, false, true, HWND_A, 0);
@@ -398,8 +446,10 @@ mod tests {
 
     #[test]
     fn stale_gesture_resets_after_lost_keyup() {
-        // UAC/锁屏吞掉 keyup:下一事件与上一事件间隔远超阈值,整体复位。
-        // 此后到达的 Alt up 不再幽灵触发听写,随后的新手势完整可用。
+        // UAC/lock-screen swallowed the keyup: the gap to the previous event
+        // far exceeds the threshold, so everything resets.
+        // A later Alt up no longer ghost-triggers dictation, and the next
+        // gesture works in full.
         let mut state = VoiceShortcutState::default();
         handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, true, true, HWND_A, 1000);
 
@@ -412,12 +462,14 @@ mod tests {
             90000,
         );
         assert_eq!(ghost_up, VoiceShortcutDecision::pass());
-        // 手势态已复位(last_event_ms 保留当前 tick 供后续间隔判定)。
+        // Gesture state is reset (last_event_ms keeps the current tick for
+        // later gap checks).
         assert!(!state.alt_down);
         assert!(!state.alt_pending);
         assert!(!state.alt_forwarded);
 
-        // 新手势:down 吞、up 触发,行为与首次完全一致。
+        // New gesture: down swallowed, up triggers — identical to the first
+        // time.
         let down =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, true, true, HWND_A, 90500);
         assert!(down.suppress);
@@ -434,7 +486,8 @@ mod tests {
 
     #[test]
     fn alt_repeat_within_gesture_does_not_trip_stale_reset() {
-        // 正常按住:OS 自动重复持续刷新事件流,间隔远小于阈值,不触发复位。
+        // Held normally: OS auto-repeat keeps refreshing the event stream with
+        // gaps far below the threshold, so no reset is triggered.
         let mut state = VoiceShortcutState::default();
         handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, true, true, HWND_A, 1000);
         let repeat =
@@ -466,8 +519,9 @@ mod tests {
 
     #[test]
     fn space_up_pressed_before_alt_is_not_swallowed() {
-        // Space 在 Alt 之前按下:down 已放行(钩子只见 Alt+Space 才吞),
-        // 期间按住 Alt 再松 Space,up 必须放行,否则系统级 VK_SPACE 卡在按下态。
+        // Space pressed before Alt: its down was already let through (the hook
+        // only swallows Alt+Space), so while Alt is held the Space up must be
+        // let through too, or the system-level VK_SPACE sticks pressed.
         let mut state = VoiceShortcutState::default();
         let space_down =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Space, true, true, HWND_A, 0);
@@ -479,7 +533,8 @@ mod tests {
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Space, false, true, HWND_A, 0);
         assert_eq!(space_up, VoiceShortcutDecision::pass());
 
-        // 同一手势内随后真正按下的 Alt+Space 仍成对吞掉。
+        // A genuine Alt+Space pressed later within the same gesture is still
+        // swallowed as a pair.
         let pair_down =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Space, true, true, HWND_A, 0);
         assert_eq!(pair_down, VoiceShortcutDecision::suppress(None));
@@ -512,7 +567,8 @@ mod tests {
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, true, true, HWND_A, 0);
         assert!(down.suppress);
 
-        // 按住 Alt 切到同进程另一窗口后松手:不触发;down 已吞,up 成对吞掉。
+        // Hold Alt, switch to another window of the same process, release: no
+        // trigger; the down was swallowed, so the up is swallowed in pairs.
         let up =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, false, true, HWND_B, 0);
         assert_eq!(up.event, None);
@@ -545,7 +601,8 @@ mod tests {
     fn gesture_state_resets_when_focus_leaves_target_mid_hold() {
         let mut state = VoiceShortcutState::default();
         handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, true, true, HWND_A, 0);
-        // 按住 Alt 焦点离开目标窗口:期间按键全部放行,Alt 抬起时复位状态。
+        // Hold Alt while focus leaves the target window: keys in between are
+        // all let through, and state resets at Alt up.
         let other =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Other, true, false, HWND_B, 0);
         assert_eq!(other, VoiceShortcutDecision::pass());

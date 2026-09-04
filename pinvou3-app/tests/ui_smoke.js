@@ -1027,8 +1027,9 @@ async function expand(page) {
   await clickText(page, '新对话');
   await sleep(250);
 
-  // 语音入口收敛到 composer：平板尺寸也不渲染页面级悬浮球；
-  // 麦克风保留在发送按钮旁，录音反馈由 composer 内胶囊承载。
+  // Voice entry is consolidated into the composer: no page-level floating
+  // bubble even at tablet width; the mic stays next to the send button, and
+  // recording feedback is carried by the in-composer pill.
   await page.setViewport({ width: 1000, height: 800, deviceScaleFactor: 1 });
   await sleep(350);
   const composerVoiceEntry = await page.evaluate(() => {
@@ -1055,7 +1056,7 @@ async function expand(page) {
     };
   });
   rec(
-    '⓪b composer 麦克风位于发送按钮旁且不渲染悬浮语音球',
+    '⓪b composer mic sits beside the send button and no floating voice bubble renders',
     !composerVoiceEntry.floatingFound
       && composerVoiceEntry.composerFound
       && composerVoiceEntry.sendFound
@@ -1073,9 +1074,12 @@ async function expand(page) {
       window.TauriBridge.voice.closeVoiceAsrSetup();
     }
     await new Promise(resolve => setTimeout(resolve, 120));
-    // 首次点击会弹出一次性语音引导弹层(fixed 全屏遮罩)。此 smoke 不覆盖引导交互,
-    // 但必须显式关掉它:遮罩会吞掉后续用例依赖的真实 puppeteer 点击(如 ①a-3 的
-    // 任务筛选按钮)。点关闭按钮同时会把 intro-seen 写回 React 状态与 localStorage。
+    // The first click opens the one-time voice intro modal (a fixed fullscreen
+    // overlay). This smoke does not cover the intro interaction, but the modal
+    // must be explicitly dismissed: the overlay swallows the real puppeteer
+    // clicks later cases depend on (e.g. the ①a-3 task filter button).
+    // Clicking the close button also writes intro-seen back to React state
+    // and localStorage.
     const introClose = [...document.querySelectorAll('button')]
       .find(b => (b.getAttribute('aria-label') || '').includes('关闭语音快捷键'));
     if (introClose) {
@@ -1089,7 +1093,7 @@ async function expand(page) {
     };
   });
   rec(
-    '⓪b-2 composer 麦克风点击进入语音能力探测',
+    '⓪b-2 clicking the composer mic starts the voice capability probe',
     composerVoiceInvoke.clicked && composerVoiceInvoke.invoked && composerVoiceInvoke.introDismissed,
     JSON.stringify(composerVoiceInvoke),
   );

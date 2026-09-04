@@ -1,7 +1,9 @@
-# generate-voice-gold-audio.ps1 — 用系统 TTS 把标注语料合成为 wav，供人工听感重跑语音链路。
-# 定位：dev-only 手工辅助，产物（wav/manifest）不进 CI、不构成质量门禁。
-# 朗读口径：优先 spoken_text（假设的说话人原文），缺失时回退 asr_text；
-# 不读 gold_text —— gold_text 是手写理想目标文本，TTS 念它会丢掉语料刻意构造的 ASR 错词。
+# generate-voice-gold-audio.ps1 — Synthesizes the labeled corpus into wav files with the system TTS,
+# for manually re-listening through the voice pipeline.
+# Positioning: dev-only manual aid; its artifacts (wav/manifest) never enter CI and are not a quality gate.
+# Reading source: prefers spoken_text (the hypothesized speaker's original words), falling back to asr_text when missing;
+# gold_text is never read — it is the hand-written ideal target text, and TTS reading it would lose the ASR
+# misrecognitions the corpus deliberately constructs.
 param(
   [string]$FixturePath = "tests/fixtures/voice-normalize-labeled-samples.json",
   [string]$OutputDir = "tests/fixtures/voice-audio-samples",
@@ -24,7 +26,7 @@ if (-not (Test-Path -LiteralPath $fixtureFullPath)) {
 
 New-Item -ItemType Directory -Force -Path $outputFullDir | Out-Null
 
-# fixture 顶层为 { _provenance, samples } 包裹对象(与 eval 共用),需解包 samples 再迭代。
+# The fixture's top level is a { _provenance, samples } wrapper object (shared with eval); unwrap samples before iterating.
 $fixtureDoc = Get-Content -LiteralPath $fixtureFullPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $samples = $fixtureDoc.samples
 $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
@@ -59,7 +61,7 @@ $ratePattern = @{
 $manifest = @()
 
 foreach ($sample in $samples) {
-  # spoken_text 是说话人原文口径；缺失时回退 asr_text。不读 gold_text（理想目标值，非朗读口径）。
+  # spoken_text is the speaker's original-words source; fall back to asr_text when missing. gold_text (the ideal target, not a reading source) is never read.
   $spokenText = $sample.spoken_text
   if ([string]::IsNullOrWhiteSpace($spokenText)) {
     $spokenText = $sample.asr_text

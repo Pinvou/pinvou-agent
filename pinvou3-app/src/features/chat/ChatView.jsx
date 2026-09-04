@@ -821,11 +821,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         function handleVoiceShortcutSettings() {
           setVoiceShortcutEnabledState(voiceShortcutEnabled());
         }
-        // 撕离窗口（独立 window）里改快捷键设置只写 localStorage，本窗口收不到
-        // CustomEvent，只能靠 storage 事件同步。与 Router 同口径只认本功能的
-        // key：event.key 为 null 是 localStorage.clear()，对权威开关（Rust 侧
-        // settings.json，启动回放）没有说明力，忽略之，避免清存储后镜像缺省
-        // false 覆写本地展示态。
+        // Detached windows (standalone window) write shortcut setting changes only to
+        // localStorage, so this window never sees the CustomEvent and must sync via the
+        // storage event. Same policy as the Router: only accept this feature's key.
+        // event.key === null means localStorage.clear(), which says nothing about the
+        // authoritative switch (Rust-side settings.json, replayed at startup); ignore it so a
+        // cleared store's default-false mirror cannot overwrite the local display state.
         function handleVoiceShortcutStorage(event) {
           if (!event || event.key !== VOICE_SHORTCUT_ENABLED_KEY) return;
           handleVoiceShortcutSettings();
@@ -1803,13 +1804,15 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const voiceInputRef = useRef(voiceInput);
       // eslint-disable-next-line react-hooks/refs -- latest-voice-status mirror read by the unmount cancel guard only
       voiceInputRef.current = voiceInput;
-      // 挂载状态 ref：卸载/切视图后拒绝在途 ASR/LLM 回调写回（hook 的 isStillActive 防线）。
+      // Mounted-state ref: after unmount/view switch, reject in-flight ASR/LLM callbacks from
+      // writing back (the hook's isStillActive defense line).
       const composerMountedRef = useRef(true);
       useEffect(() => {
         composerMountedRef.current = true;
         return () => { composerMountedRef.current = false; };
       }, []);
-      // 录音结束/写回完成（四活跃态退出）后把焦点还给 composer 输入框。
+      // Return focus to the composer input after recording ends / writeback completes
+      // (leaving any of the four active states).
       const voiceWasActiveRef = useRef(false);
       useEffect(() => {
         const wasActive = voiceWasActiveRef.current;
@@ -1833,8 +1836,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         // eslint-disable-next-line react-hooks/set-state-in-effect -- close the install popover whenever the busy state clears; mirrors main's dialog dismiss pattern
         if (!voiceAsrBusy) setVoiceAsrPopoverOpen(false);
       }, [voiceAsrBusy]);
-      // ASR 进度弹层外点关闭由 VoiceComposerButton 内部 useOutsidePointerClose 承担
-      // (通过 onCloseAsrPopover 传入),视图层不再挂重复监听。
+      // Outside-click close for the ASR progress popover is handled inside VoiceComposerButton
+      // via useOutsidePointerClose (passed in via onCloseAsrPopover); the view no longer
+      // attaches duplicate listeners.
       useEffect(() => {
         const sessionKey = `${activeSessionId || 'draft'}:${draftEpoch}`;
         if (justInstalledTool) {
@@ -2113,7 +2117,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           return requestVoiceShortcutIntroAfterAsr(context && context.mode);
         },
         sendTask: async outgoing => {
-          // 语音直发同样过长度门禁:超长时截断回写输入框、不发送(口径同 handleSend)。
+          // Direct voice task send passes the same length gate: on overflow, truncate and write
+          // back into the input box without sending (same policy as handleSend).
           const constrained = constrainChatInput(outgoing);
           if (constrained.truncated) {
             setInputText(constrained.text);
@@ -2127,7 +2132,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           }
         },
         onTaskAccepted: (sentText) => {
-          // await 发送窗口内用户可能又敲了新内容,仅在草稿未被改动时清空。
+          // The user may have typed new content during the await send window; clear only when
+          // the draft was not modified.
           setInputText(prev => (prev === sentText ? '' : prev));
           personalWorkbenchTemplateIdRef.current = null;
           setPersonalWorkbenchTemplateId(null);
@@ -2790,8 +2796,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   onCloseAsrPopover={() => setVoiceAsrPopoverOpen(false)}
                   onCancelAsr={() => {
                     setVoiceAsrPopoverOpen(false);
-                    // 用户主动放弃安装:清掉挂起的语音意图,避免之后任一次安装
-                    // 完成时把陈旧意图自动续呼成一次无用户意图的录音。
+                    // User abandoned the install: clear the pending voice intent so a later
+                    // install completion cannot auto-resume the stale intent into a recording
+                    // the user never asked for.
                     pendingVoiceAfterIntroRef.current = null;
                     bridge.voice.cancelVoiceAsrSetup?.();
                   }}
@@ -2802,8 +2809,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   // The send button while busy = steer into the current turn
                   // (with attachments, local queuing); zap-send moved onto the
                   // queued chips (one per entry), not the send area.
-                  // 语音改写预览期间禁用主发送:发送入口收口到预览卡(应用并发送),
-                  // 避免基于 inputText 的按钮在预览期发原文/双击重发。
+                  // While a voice rewrite preview is open, disable the primary send: sending is
+                  // funneled into the preview card (apply and send), so buttons based on
+                  // inputText cannot send the raw text or double-send during the preview.
 
                   const ready = canSend && !sceneCapabilityPreparing && !chatVoice.editPreview;
                   const isQueue = busy && ready;

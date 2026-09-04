@@ -115,7 +115,10 @@ const expectedProtocolHashes = {
   sessions: '7dd63b9cb4ab7b7e03f81abc0822baa9bd1dd61f27fa8b8d2df009126d1c6c60',
   settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
   updater: '86412d40999a268d3d92dc4fe97e3fe465de08745423be820f38a462d79aaced',
-  voice: 'c4675825a0a7e33fb310ac0d1c7f066e055c24cf71c8a03d37550868b6c8d7b2',
+  // Recomputed for the comment-only English translation of the voice bridge
+  // (PR-added Chinese comments inside the postprocess_voice_text invoke
+  // span are part of the hashed source; no invoke/listen surface changed).
+  voice: '2a2e8d12150ca86bb970ad099e7b72ab6491768bbc42354cd5ecc800c891c733',
 };
 
 for (const [domain, files] of Object.entries(protocolSources)) {

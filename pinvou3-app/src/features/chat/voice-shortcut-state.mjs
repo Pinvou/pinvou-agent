@@ -8,9 +8,9 @@ function normalizeVoiceShortcutMode(mode) {
 function isPlainAltKey(event) {
   return event
     && event.key === 'Alt'
-    // 右 Alt 与 Rust 钩子同口径(VK_RMENU 归 Other):留给 AltGr/输入法,
-    // 不触发语音快捷键。location 2 = DOM_KEY_LOCATION_RIGHT;个别环境
-    // location 缺失时以 code 兜底。
+    // Right Alt matches the Rust hook's policy (VK_RMENU classified as Other): reserved for
+    // AltGr/IME, does not trigger the voice shortcut. location 2 = DOM_KEY_LOCATION_RIGHT;
+    // fall back to code in environments where location is missing.
     && event.location !== 2
     && event.code !== 'AltRight'
     && !event.ctrlKey
@@ -28,8 +28,9 @@ function isAltSpaceKey(event) {
 }
 
 function shouldIgnoreVoiceShortcutEvent(event) {
-  // IME 合成期间的按键(含 WKWebView 延迟派发的 keyCode 229 回车/Esc)只属于
-  // 输入法候选窗口,不得触发语音快捷键;按住不放产生的 repeat 同理过滤。
+  // Keys during IME composition (including the delayed keyCode 229 Enter/Esc dispatched by
+  // WKWebView) belong to the IME candidate window and must not trigger the voice shortcut;
+  // auto-repeat from holding a key is filtered for the same reason.
   return !event || event.repeat || Boolean(event.defaultPrevented) || isImeComposing(event);
 }
 
@@ -40,9 +41,10 @@ function isActiveVoiceShortcutStatus(status) {
     || status === 'postprocessing';
 }
 
-// Windows 组合键透传在组合键 keydown 的同一事件批内注入合成 Alt down
-//(SendInput 同步补发),留一点调度余量;人类「按字母后 50ms 内完成一次
-// Alt 空按」在物理上不可达,故窗口只需覆盖调度抖动。
+// Windows combo passthrough injects a synthetic Alt down within the same event batch as the
+// combo keydown (sent synchronously via SendInput), so leave some scheduling slack; a human
+// "completing a bare Alt tap within 50ms of pressing a letter" is physically unreachable,
+// so the window only needs to cover scheduling jitter.
 const INJECTED_COMBO_WINDOW_MS = 50;
 
 function voiceShortcutActionForKeyDown(event, current) {
@@ -54,9 +56,10 @@ function voiceShortcutActionForKeyDown(event, current) {
   }
 
   if (isPlainAltKey(event)) {
-    // Alt down 紧跟着一个非 Alt keydown(同一注入批)时,它是组合键透传
-    // 补发的合成 Alt down:整段手势按注入对待,真实 Alt up 到来时直接清除
-    // 而不是触发(防「先松 Alt 后松组合键」顺序的 ghost 听写)。
+    // When an Alt down is immediately followed by a non-Alt keydown (same injected batch),
+    // it is the synthetic Alt down re-sent by combo passthrough: treat the whole gesture as
+    // injected, so the real Alt up clears it instead of triggering (preventing a ghost
+    // dictation from the "release Alt before the combo key" order).
     const injected = typeof state.lastNonAltKeyDownAt === 'number'
       && typeof state.now === 'number'
       && state.now - state.lastNonAltKeyDownAt >= 0
@@ -64,9 +67,10 @@ function voiceShortcutActionForKeyDown(event, current) {
     return injected ? { type: 'pending_alt', injected: true } : { type: 'pending_alt' };
   }
 
-  // 挂起的 Alt 手势期间,任何其他键(含 Esc)都是组合键成员:清 pending、
-  // 不触发也不取消。否则 Alt+Esc(系统窗口循环切换)透传批内的 Esc 会在
-  // 录音中把会话一并取消,与 Alt+Tab(Other 键只清 pending)口径不一。
+  // While an Alt gesture is pending, any other key (including Esc) is a combo member:
+  // clear pending, neither trigger nor cancel. Otherwise the Esc inside the passthrough
+  // batch of Alt+Esc (system window cycling) would cancel an active recording too,
+  // inconsistent with Alt+Tab (Other keys only clear pending).
   if (state.pendingAlt) return { type: 'clear_pending' };
 
   if (event && event.key === 'Escape') {
@@ -89,20 +93,23 @@ function voiceShortcutActionForKeyUp(event, current) {
     return { type: 'clear_pending' };
   }
   if (state.pendingInjected) {
-    // 反向释放序 [combo down, Alt down (injected), real Alt up, combo up]:
-    // Alt up 先到,但该 pending 已被标记为注入序列,清除而不触发。
+    // Reverse release order [combo down, Alt down (injected), real Alt up, combo up]:
+    // Alt up arrives first, but this pending was marked as an injected sequence — clear
+    // it without triggering.
     return { type: 'clear_pending' };
   }
   const status = state.status || 'idle';
-  // 权限申请挂起期间松开 Alt 与原生路径一致:取消这次挂起的语音启动,而不是再触发一次。
+  // Releasing Alt while a permission request is pending matches the native path: cancel the
+  // pending voice start instead of triggering it again.
   if (status === 'requesting_permission') return { type: 'cancel' };
   const mode = normalizeVoiceShortcutMode(state.mode);
   if (status === 'recording') return { type: 'trigger', mode };
   return { type: 'trigger', mode: 'dictation' };
 }
 
-// 快捷键引导弹窗打开期间,Esc 交给弹窗自身处理(等同于点 X 关闭),
-// 路由层不应同时取消挂起的语音启动。弹窗挂载/卸载时由弹窗组件维护该标记。
+// While the shortcut intro modal is open, Esc belongs to the modal itself (same as clicking
+// X to close); the router must not cancel a pending voice start at the same time. The modal
+// component maintains this flag on mount/unmount.
 let shortcutIntroOpen = false;
 
 function setVoiceShortcutIntroOpen(open) {

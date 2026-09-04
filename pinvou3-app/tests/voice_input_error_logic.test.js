@@ -25,15 +25,16 @@ const settingsSource = fs.readFileSync(settingsPath, "utf8");
 const webBridgeSource = fs.readFileSync(path.join(__dirname, "..", "src", "platform", "web", "bridge.js"), "utf8");
 const rustShortcutPlatformPath = path.join(__dirname, "..", "src-tauri", "src", "features", "voice_shortcut", "platform", "mod.rs");
 const rustShortcutPlatformSource = fs.existsSync(rustShortcutPlatformPath) ? fs.readFileSync(rustShortcutPlatformPath, "utf8") : "";
-// voice.js 的文案走 bridge.js 的 BT_TABLE（bt(key)，按语言取词、中文兜底）；
-// 这里从 bridge.js 抽出 zh 表构造 bt，保持断言面向真实文案。
+// voice.js copy comes from bridge.js's BT_TABLE (bt(key): per-language lookup
+// with a Chinese fallback); extract the zh table from bridge.js here to build
+// bt so assertions target real copy.
 const bridgeMainSource = fs.readFileSync(path.join(__dirname, "..", "src", "platform", "tauri", "bridge.js"), "utf8");
 const zhTableMatch = bridgeMainSource.match(/ {4}zh: \{([\s\S]*?)\r?\n {4}\},\r?\n {2}\};/);
 assert.notStrictEqual(zhTableMatch, null, "bridge.js BT_TABLE zh block must exist");
 const zhTable = new Function(`return ({${zhTableMatch[1]}});`)();
 const bt = (key) => zhTable[key] !== undefined ? zhTable[key] : key;
-// 切片须包含 VOICE_ERROR_CODE_KEYS:带 code 的错误断言依赖该表(短路求值曾
-// 掩盖缺失)。
+// The slice must include VOICE_ERROR_CODE_KEYS: code-bearing error assertions
+// depend on that table (short-circuit evaluation once masked its absence).
 const start = source.indexOf("  const VOICE_ERROR_CODE_KEYS = {");
 const end = source.indexOf("\n  function stopMediaTracks(", start);
 
@@ -148,12 +149,12 @@ assert.strictEqual(
 assert.strictEqual(
   ruleContext.applyVoiceDeterministicCorrections("产品名config 是什么", ""),
   "产品名config 是什么",
-  "产品名con 备选必须有尾部边界，不得吃半截英文单词",
+  "产品名con correction alternative must have a trailing boundary and not eat half an English word",
 );
 assert.strictEqual(
   ruleContext.applyVoiceDeterministicCorrections("产品名con 是什么", ""),
   "产品名 Pinvou 是什么",
-  "产品名con 误识别仍应被纠正",
+  "产品名con misrecognition must still be corrected",
 );
 const evalScriptSource = fs.readFileSync(path.join(__dirname, "..", "scripts", "voice-normalize-eval.mjs"), "utf8");
 assert.match(
@@ -293,14 +294,15 @@ assert.match(
   /static SHORTCUT_ENABLED: AtomicBool = AtomicBool::new\(false\);/,
   "native voice shortcut hook must default off",
 );
-// tap-hold 状态机重构后,开关门控上移到 keyboard_hook_proc 入口:
-// disabled 时全局击键直接放行,绝不进入手势判定。
+// After the tap-hold state machine refactor, the enable gate moved up to the
+// keyboard_hook_proc entry: when disabled, global keystrokes pass straight
+// through and never reach gesture handling.
 assert.match(
   rustShortcutPlatformSource,
   /fn keyboard_hook_proc[\s\S]*?if !shortcut_enabled\(\) \{[\s\S]*?return call_next_hook[\s\S]*?handle_voice_shortcut_key\(/,
   "native voice shortcut hook must gate all keystrokes by the synced settings state before gesture handling",
 );
-// 跨窗录音互斥:触发目标优先解析到录音中的窗口。
+// Cross-window recording mutual exclusion: the trigger target resolves to the recording window first.
 assert.match(
   rustShortcutPlatformSource,
   /resolve_trigger_target\(recording_label\(\)\.as_deref\(\)/,
@@ -316,19 +318,27 @@ assert.match(
   /listenTauri\('voice-shortcut:trigger'[\s\S]*?isVoiceShortcutEventForThisWindow\(payload\)[\s\S]*?const recording = status === 'recording';[\s\S]*?if \(recording\) \{[\s\S]*?target\.trigger\(mode, \{ source: 'shortcut-stop', preserveMode: true \}\);[\s\S]*?target\.trigger\('dictation'\)/,
   "native voice shortcut trigger must check the window label and allow recording Alt stop",
 );
-// 原生按「录音窗」路由到本窗但本窗无活跃录音:WebView 重载/恢复后 JS 会话已
-// 重建而原生登记未清(forget_recording_window 只覆盖窗口销毁)。必须清掉陈旧
-// 登记并丢弃手势,否则任意窗口的 Alt 会被持续路由进后台窗口幽灵开麦,直到该
-// 会话自然结束才自愈。route==='focused' 的正常触发不受影响。
+// Native routed the event to this window as the "recording window", but this
+// window has no active recording: after a WebView reload/restore the JS
+// session was rebuilt while the native registration was never cleared
+// (forget_recording_window only covers window destruction). The stale
+// registration must be cleared and the gesture dropped; otherwise Alt in any
+// window keeps getting routed into a background window, ghost-starting a mic
+// session until that session naturally ends. Normal route==='focused'
+// triggers are unaffected.
 assert.match(
   routerSource,
   /payload\.route === 'recording' && !recording[\s\S]*?syncVoiceShortcutRecording\(null\)[\s\S]*?return;/,
   "voice shortcut router must clear a stale native recording registration instead of ghost-starting a recording in a background window",
 );
-// 原生事件只在 Rust 侧开关开启时才会发出(hook 入口 !shortcut_enabled() 短路),
-// 权威门控在原生层已完成;localStorage 镜像只服务窗口内键手势通道。若在原生
-// 事件路径叠加镜像检查,WebView 存储被清(镜像缺省 false)后,权威开启的快捷键
-// 会被原生吞键但前端丢弃事件,静默失灵直到重新拨开关。
+// Native events are only emitted when the Rust-side toggle is on (the hook
+// entry short-circuits on !shortcut_enabled()), so the authoritative gate has
+// already run at the native layer; the localStorage mirror only serves the
+// in-window key-gesture channel. If the native event path also checked the
+// mirror, then after the WebView storage is cleared (mirror defaults to
+// false) an authoritatively enabled shortcut would be swallowed by the native
+// hook yet its events dropped by the frontend, silently failing until the
+// toggle is flipped again.
 assert.doesNotMatch(
   routerSource,
   /listenTauri\('voice-shortcut:trigger'[\s\S]*voiceShortcutEnabled\(\)/,
@@ -359,9 +369,11 @@ assert.match(
   /const sessionId = createVoiceSessionId\(current\.targetId\);[\s\S]*?voiceSessionIdRef\.current = sessionId;[\s\S]*?setVoiceSessionId\(sessionId\);/,
   "shared composer voice hook must create a voiceSessionId when recording starts",
 );
-// 会话/工作区切换不清当前视图,遗留的语音改写预览属于旧上下文:把它的 next
-// 应用进新会话草稿、甚至经 sendTask 发进新会话都是跨上下文数据污染,身份
-// 变化必须自动取消预览(用户显式的 apply/cancel 不受影响)。
+// Session/workspace switches do not clear the current view, so a leftover
+// voice rewrite preview belongs to the old context: applying its next into
+// the new session's draft — or sending it into the new session via sendTask —
+// is cross-context data pollution. An identity change must auto-cancel the
+// preview (explicit user apply/cancel is unaffected).
 assert.match(
   voiceHookSource,
   /voiceContextIdentityRef[\s\S]*?previous === null \|\| previous === identity[\s\S]*?if \(editPreviewRef\.current\) \{[\s\S]*?setEditPreview\(null\);[\s\S]*?closeVoice\(\);/,
@@ -384,9 +396,11 @@ assert.match(
   /if \(editPreviewRef\.current\) setEditPreview\(null\);/,
   "triggerVoice must dispose a pending edit preview before starting a fresh session",
 );
-// 智能整理关闭时 edit 车道没有 LLM 可用(postprocess_disabled 必然以失败告终),
-// dictation→edit 的自动升级必须被抑制:保持听写、回写规则纠错文本,与 web
-// 车道 asr_only 降级同口径。覆盖 resolveMode 与内建兜底两条升级路径。
+// With smart organize off, the edit lane has no LLM available
+// (postprocess_disabled is guaranteed to fail), so the dictation→edit auto
+// upgrade must be suppressed: stay in dictation and write back the
+// rule-corrected text, matching the web lane's asr_only downgrade. Covers
+// both upgrade paths: resolveMode and the built-in fallback.
 assert.match(
   triggerBody,
   /resolved === 'edit' && nextMode === 'dictation' && !voicePostprocessEnabled\(\)\) \{\s*nextMode = 'dictation';/,
@@ -397,9 +411,12 @@ assert.match(
   /nextMode = voicePostprocessEnabled\(\) \? 'edit' : 'dictation';/,
   "smart organize off must suppress the fallback dictation→edit upgrade",
 );
-// 预览按录音起点快照(original)整段替换草稿,而挂起期间输入框仍可手编;
-// 草稿已偏离 original 时,应用前必须拦截(废弃预览、草稿原样),否则用户
-// 手打/粘贴内容会被基于旧原文的改写静默覆盖(与"新会话废弃过期预览"同族)。
+// The preview replaces the whole draft from the recording-start snapshot
+// (original), while the input stays hand-editable while the preview hangs.
+// If the draft has drifted from original, apply must be intercepted first
+// (discard the preview, keep the draft); otherwise manually typed/pasted
+// content would be silently overwritten by a rewrite based on the old
+// original (same family as "a new session discards a stale preview").
 const applyBodyStart = voiceHookSource.indexOf("const applyVoiceEditPreview = useCallback");
 const applyBodyEnd = voiceHookSource.indexOf("current.setDraft(next)", applyBodyStart);
 assert.ok(
@@ -417,8 +434,10 @@ assert.match(
   /setEditPreview\(null\)/,
   "a drifted draft must dispose the stale preview instead of replacing the draft",
 );
-// 直接测 createVoiceSessionRandomPart 的真实随机性质(旧断言检的是模板包装
-// createVoiceSessionId,且可选匹配失败时退化为空串、doesNotMatch 恒真)。
+// Exercise the real randomness of createVoiceSessionRandomPart directly (the
+// old assertion checked the template wrapper createVoiceSessionId, whose
+// optional match degrades to an empty string on failure, making doesNotMatch
+// vacuously true).
 const randomPartStart = voiceHookSource.indexOf("let fallbackVoiceSessionCounter = 0;");
 const randomPartEnd = voiceHookSource.indexOf("\nfunction createVoiceSessionId(", randomPartStart);
 assert.ok(
@@ -507,14 +526,15 @@ assert.match(
   /function normalizeVoiceMode\(mode\) \{[\s\S]*?mode === "edit" \? "edit"/,
   "web bridge must preserve edit mode instead of folding it into dictation",
 );
-// Web 车道无 LLM 后处理，writeback 前必须把 edit 降级为追加听写，
-// 否则未纠错的 ASR 原文会经替换预览整体覆盖草稿。
+// The web lane has no LLM postprocess, so edit must be downgraded to
+// appended dictation before writeback; otherwise the uncorrected raw ASR
+// text would replace the whole draft via the replace preview.
 assert.match(
   webBridgeSource,
   /finishVoiceInput[\s\S]*?if \(mode === "edit"\) mode = "dictation";[\s\S]*?session\.writeback/,
   "web voice writeback must downgrade edit to dictation instead of replacing the draft with raw ASR",
 );
-// edit 的 writeback 只设置待确认预览、并未落盘，完成态必须用 PreviewReady 而非 Applied。
+// edit writeback only sets a pending preview and does not commit, so the completion state must use PreviewReady, not Applied.
 assert.match(
   source,
   /mode === "edit" \? bt\("voiceEditPreviewReady"\)/,
@@ -525,19 +545,19 @@ assert.doesNotMatch(
   /mode === "edit" \? bt\("voiceEditApplied"\)/,
   "edit writeback only opens a preview, so the applied notice must not fire at writeback time",
 );
-// 预览 apply/cancel 收尾后清掉已完成通知，避免残留的「待确认」文案误导用户。
+// After the preview apply/cancel finishes, clear the completed notice so a leftover "pending review" message cannot mislead the user.
 assert.match(
   voiceHookSource,
   /const applyVoiceEditPreview[\s\S]*?setEditPreview\(null\);[\s\S]*?closeVoice\(\);[\s\S]*?if \(!options\.send\) return true;/,
   "applying or canceling the voice edit preview must clear the stale voice notice",
 );
-// Windows LL 钩子回调受 LowLevelHooksTimeout 约束，禁止同步 stderr 打印。
+// Windows low-level hook callbacks are bound by LowLevelHooksTimeout; synchronous stderr printing is forbidden.
 assert.doesNotMatch(
   rustShortcutPlatformSource,
   /eprintln!/,
   "voice shortcut hook callbacks must not write to stderr synchronously",
 );
-// voice 的 reasoning dialect 与 review/memory 一样委托 core，不再手抄第 4 份。
+// Voice's reasoning dialect delegates to core like review/memory; no more hand-copied fourth version.
 assert.match(
   rustVoiceSource,
   /crate::core::reasoning_dialect::reasoning_dialect_from_base_url\(base_url, model\)/,
@@ -554,8 +574,9 @@ assert.doesNotMatch(
   "voice edit preview must not add single-language fallback copy in the component",
 );
 assert.match(rustVoiceSource, /struct VoiceTempWav/);
-// 临时 WAV 用 tempfile::NamedTempFile:不可预测文件名、0600 权限、drop 即删除;
-// 禁止回到 pid+毫秒自拼名(可预测且 0644 可读)。
+// Temp WAVs use tempfile::NamedTempFile: unpredictable name, 0600 perms,
+// deleted on drop; never revert to self-built pid+millisecond names
+// (predictable and world-readable at 0644).
 assert.match(
   rustVoiceSource,
   /file: tempfile::NamedTempFile[\s\S]*?tempfile::Builder::new\(\)[\s\S]*?\.tempfile\(\)\?/,
@@ -669,8 +690,10 @@ vm.runInContext(
   await new Promise((resolve) => { setTimeout(resolve, 0); });
   assert.strictEqual(stoppedTracks, 1, "late microphone stream must be stopped after timeout");
 
-  // 权限挂起期间用户取消：cancelPromise 先把会话收尾（cancelled + activeVoiceInput=null），
-  // 随后到达的 startVoiceInput catch 必须靠 session 早退退出，不得把状态覆盖成 failed。
+  // User cancels while permission is pending: cancelPromise finalizes the
+  // session first (cancelled + activeVoiceInput=null); the startVoiceInput
+  // catch that lands afterwards must exit early via the session check and
+  // must not overwrite the state with failed.
   getUserMedia = () => new Promise(() => {});
   const cancelSession = {};
   mediaContext.activeVoiceInput = cancelSession;
@@ -682,7 +705,8 @@ vm.runInContext(
   );
   mediaContext.activeVoiceInput = null;
   const webStartAt = webBridgeSource.indexOf("  async function startVoiceInput(");
-  // web 桥里 cancelVoiceInput 是普通 function;旧锚写 async 会 indexOf 到 -1、slice 至 EOF。
+  // In the web bridge cancelVoiceInput is a plain function; the old anchor
+  // wrote "async", which indexOf'd to -1 and sliced to EOF.
   const webCatchEnd = webBridgeSource.indexOf("  function cancelVoiceInput", webStartAt);
   assert.ok(webCatchEnd > webStartAt, "web cancelVoiceInput anchor must exist after startVoiceInput");
   const webCatch = webBridgeSource.slice(
@@ -695,7 +719,7 @@ vm.runInContext(
     /if \(activeVoiceInput !== session\) return;/,
     "web startVoiceInput catch must exit early when the session was already cancelled",
   );
-  // requestVoiceMedia 超时引用 bt("voiceDeviceTimeout")，web 车道三语表都必须定义该 key。
+  // The requestVoiceMedia timeout references bt("voiceDeviceTimeout"); all three language tables on the web lane must define that key.
   for (const lang of ["en", "ja", "zh"]) {
     const tableMatch = webBridgeSource.match(new RegExp(`^    ${lang}: \\{([\\s\\S]*?)\\r?\\n    \\},`, "m"));
     assert.notStrictEqual(tableMatch, null, `web BT_TABLE ${lang} block must exist`);
@@ -796,8 +820,10 @@ assert.doesNotMatch(
     "permission denial retry hint must keep the actionable guidance",
   );
 
-// ── PR#248 评审回归：高误伤确定性规则的最小上下文守卫 ──
-// 以下均为合法输入，确定性纠错必须原样保留（评审实测误伤清单）。
+// ── PR#248 review regression: minimal-context guard for high-collateral
+// deterministic rules ──
+// Every input below is legitimate; deterministic corrections must preserve
+// them verbatim (real false-positive list from review).
 const legitimateSentences = [
   "他很负责任。",
   "爷爷是位很负责任的老师。",
@@ -819,7 +845,7 @@ legitimateSentences.forEach(function (sentence) {
     "legitimate input must not be mangled by deterministic corrections: " + sentence,
   );
 });
-// 守卫不得误杀真实纠错场景。
+// The guard must not kill genuine correction scenarios.
 assert.strictEqual(
   ruleContext.applyVoiceDeterministicCorrections("查一下今日进价。", ""),
   "查一下今日金价。",
@@ -835,7 +861,7 @@ assert.strictEqual(
   "请用语音输入功能",
   "standalone 语音输出 must still be corrected",
 );
-// 分类必须基于原始 ASR 文本，否则带规则的 suspicious 词在分类前消失、误纠直达输入框。
+// Classification must run on the raw ASR text; otherwise rule-suspicious words disappear before classification and miscorrections reach the input box.
 assert.match(
   source,
   /classifyVoiceText\(text, mode\)/,
@@ -846,7 +872,7 @@ assert.doesNotMatch(
   /classifyVoiceText\(ruleText/,
   "voice classification must not run on rule-corrected text",
 );
-// protected 校验：LLM 把规则误纠（表哥→表格）恢复为原始用词时必须放行，真正丢词仍拒绝。
+// Protected validation: when the LLM reverts a rule miscorrection (表哥→表格) to the original wording it must pass; genuinely dropping the word is still rejected.
 assert.strictEqual(
   ruleContext.validateVoicePostprocessOutput("我表哥", "我表格", "我表哥", "dictation"),
   true,
@@ -867,31 +893,31 @@ assert.strictEqual(
   true,
   "LLM keeping the corrected protected terms must pass validation",
 );
-// postprocess 请求必须携带原始 ASR，模型才能撤销确定性规则的误纠。
+// The postprocess request must carry the raw ASR so the model can undo deterministic-rule miscorrections.
 assert.match(
   source,
   /raw_text: String\(rawText \|\| correctedText \|\| ""\)/,
   "postprocess request must carry the raw ASR text alongside the corrected text",
 );
-// LLM 整段 markdown 围栏输出必须剥掉后再写回。
+// LLM output wrapped in a full markdown fence must be stripped before writeback.
 assert.match(
   source,
   /stripVoicePostprocessFences\(res && res\.text/,
   "LLM postprocess output must be stripped of wrapping markdown fences",
 );
-// finish_reason=length 的截断输出必须回退，不得静默写回。
+// Output truncated with finish_reason=length must fall back and never be silently written back.
 assert.match(
   source,
   /res && res\.truncated[\s\S]*?postprocess_truncated/,
   "truncated LLM output must fall back instead of being written back",
 );
-// edit 模式 LLM 失败不得误报空结果文案。
+// An LLM failure in edit mode must not reuse the empty-result copy.
 assert.match(
   source,
   /editPostprocessFailed[\s\S]*?bt\("voiceEditPostprocessFailed"\)/,
   "edit-mode LLM failure must not reuse the empty-result copy",
 );
-// 智能整理开关关闭时,桥不得把识别文本发给模型服务(仅保留规则纠错)。
+// With the smart organize toggle off, the bridge must not send recognized text to the model service (rule corrections only).
 assert.match(
   source,
   /else if \(isVoicePostprocessEnabled\(\)\)[\s\S]*?postprocessVoiceText\(/,
@@ -912,8 +938,9 @@ assert.match(
   /fallbackReason: mode === "edit" \? "postprocess_disabled" : "",/,
   "edit sessions with smart organize off must fail like postprocess failures instead of previewing rule text",
 );
-// postprocess_disabled 的失败是确定性的(通用文案「请重试」必然再失败),
-// 必须有专属诚实文案,告知原因与出路。
+// The postprocess_disabled failure is deterministic (the generic "please
+// retry" copy would just fail again), so it needs its own honest copy that
+// explains the cause and the way out.
 assert.match(
   source,
   /postprocessResult\.fallbackReason === "postprocess_disabled"\s*\?\s*bt\("voiceEditPostprocessDisabled"\)/,
@@ -930,7 +957,7 @@ assert.match(
   "bridge gate must read the same localStorage key as the settings module",
 );
 
-// 60s 录音必须按 base64 跨 IPC，禁止 JSON 数字数组。
+// 60s recordings must cross IPC as base64; JSON number arrays are forbidden.
 assert.match(
   source,
   /encodeVoiceBase64Bytes\(new Uint8Array\(wav\)\)[\s\S]*?audio_base64: audioBase64/,
@@ -942,7 +969,7 @@ assert.doesNotMatch(
   "voice audio must not cross IPC as a JSON number array",
 );
 
-// 跨窗录音互斥接线:录音开始登记本窗 label,finishVoiceInput 统一收口清除,旧后端静默忽略。
+// Cross-window recording mutex wiring: recording start registers this window's label, finishVoiceInput clears it in one place, and old backends silently ignore it.
 assert.match(
   source,
   /invoke\("set_voice_shortcut_recording", \{ label: label \|\| null \}\)\)\.catch\(function \(\) \{\}\)/,
@@ -958,8 +985,10 @@ assert.match(
   /async function finishVoiceInput\(cancelled, timedOut\) \{[\s\S]*?if \(!session\) return;[\s\S]*?syncVoiceShortcutRecording\(null, session\.sessionId\)/,
   "finishVoiceInput must clear the recording label (token-guarded) on every exit path",
 );
-// storage 监听 exact-key 过滤(三处):null key(localStorage.clear())与无关 key
-// 对权威设置没有说明力,必须被忽略,否则清存储瞬间镜像缺省 false 会覆写展示态。
+// Storage listeners filter by exact key (three places): a null key
+// (localStorage.clear()) and unrelated keys say nothing about the
+// authoritative setting and must be ignored; otherwise the mirror's default
+// false at the instant storage is cleared would overwrite the displayed state.
 assert.match(
   routerSource,
   /function handleShortcutStorageEvent\(event\) \{[\s\S]*?event\.key !== VOICE_SHORTCUT_ENABLED_KEY\) return;/,
@@ -976,15 +1005,15 @@ assert.match(
   "settings voice storage mirror must ignore null-key and unrelated-key storage events",
 );
 
-// token 守卫:登记带 token,清除仅在 token 匹配时下发——迟到收尾不得抹掉新会话登记。
+// Token guard: registration carries a token and the clear is only sent when the token matches — a late finish must not erase a newer session's registration.
 assert.match(
   source,
   /let voiceShortcutRecordingToken = null;[\s\S]*?if \(label\) \{[\s\S]*?voiceShortcutRecordingToken = token \|\| null;[\s\S]*?\} else if \(token && voiceShortcutRecordingToken && token !== voiceShortcutRecordingToken\) \{[\s\S]*?return;/,
   "recording label clear must be token-guarded so a late finish cannot erase a newer session registration",
 );
 
-// ===== 错误码端到端:desktop→web RPC 透传 + 两车道映射守卫 =====
-// (1) tauri 车道:稳定错误码优先于中文 rawMessage(直接行为断言)。
+// ===== Error codes end to end: desktop→web RPC passthrough + both-lane mapping guards =====
+// (1) tauri lane: the stable error code takes precedence over the Chinese rawMessage (direct behavior assertions).
 const codedJoin = normalizeVoiceError({
   code: "asr_join_failed",
   category: "recognition_failed",
@@ -1012,9 +1041,11 @@ assert.strictEqual(
 );
 assert.strictEqual(codedTooLong.diagnostic, "录音时长超过上限（60 秒）");
 
-// (2) web 车道:远控 RPC 透传后,bootstrap 重建的 Error 带 code/category;
-// normalizeVoiceError 必须按码出三语文案——带 category 走专属分支,只带 code
-// 时由收尾 codeKey 分支兜底(与 tauri 车道同口径)。
+// (2) web lane: after remote-control RPC passthrough, the bootstrap-rebuilt
+// Error carries code/category; normalizeVoiceError must map by code to
+// trilingual copy — with a category it takes the dedicated branch, and with
+// only a code the final codeKey branch catches it (same semantics as the
+// tauri lane).
 const webVoiceStart = webBridgeSource.indexOf("  const VOICE_ERROR_CODE_KEYS = {");
 const webVoiceEnd = webBridgeSource.indexOf("\n  function stopMediaTracks(", webVoiceStart);
 assert.ok(webVoiceStart >= 0 && webVoiceEnd > webVoiceStart, "web voice error-mapping block must exist");
@@ -1057,8 +1088,10 @@ assert.strictEqual(
   webBt("voiceContextMismatch"),
 );
 
-// (3) 漂移守卫:Rust 全量 VoiceCommandError 错误码必须同时出现在两车道映射表,
-// 且两车道表 key 集合一致——新增错误码忘配映射时此处即红,不再静默退回中文原文。
+// (3) Drift guard: every Rust VoiceCommandError error code must appear in
+// both lanes' mapping tables, and the two key sets must stay identical —
+// adding a code without a mapping turns this red instead of silently falling
+// back to the Chinese raw message.
 const rustVoiceErrorSources = `${rustVoiceSource}\n${fs.readFileSync(
   path.join(__dirname, "..", "src-tauri", "src", "app", "commands", "remote_control.rs"),
   "utf8",
@@ -1091,8 +1124,10 @@ for (const code of tauriVoiceCodeKeys) {
   assert.ok(webVoiceCodeKeys.has(code), `web VOICE_ERROR_CODE_KEYS is missing tauri code "${code}"`);
 }
 
-// (4) 透传链守卫:desktop 代理须把结构化 code/category 交给 respondToWebAccess,
-// Rust 命令须接收并写进 rpc_response——缺任何一环,web 映射对 Rust 错误不可达。
+// (4) Passthrough-chain guard: the desktop proxy must hand the structured
+// code/category to respondToWebAccess, and the Rust command must receive them
+// and write them into rpc_response — with any link missing, the web mapping
+// is unreachable for Rust errors.
 const remoteControlSource = fs.readFileSync(
   path.join(__dirname, "..", "src", "platform", "tauri", "bridge", "remote-control.js"),
   "utf8",

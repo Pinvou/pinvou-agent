@@ -9093,8 +9093,9 @@
     error.stage = stage;
     return error;
   }
-  // 与 tauri 车道同款:Rust 远控语音命令的稳定错误码 → 三语文案 key,错误码
-  // 优先于 rawMessage(中文工程原文只进诊断)。
+  // Same as the tauri lane: stable error codes of the Rust remote-control voice commands →
+  // trilingual copy keys, codes take precedence over rawMessage (Chinese engineering prose
+  // goes to diagnostics only).
   const VOICE_ERROR_CODE_KEYS = {
     asr_timeout: "voiceTimeout",
     asr_no_speech: "voiceEmptyResult",
@@ -9126,16 +9127,17 @@
       return { category: "permission_denied", stage: "permission", message: bt("voicePermissionDenied") };
     }
     if (rawCategory === "device_unavailable") {
-      // 带自定义 message 的 device_unavailable（如检测超时）优先展示原文，与 tauri 车道一致。
+      // device_unavailable with a custom message (e.g. probe timeout) shows the original first, matching the tauri lane.
       return { category: "device_unavailable", stage: "device", message: rawMessage || bt("voiceNoDevice") };
     }
     if (name === "NotFoundError" || name === "DevicesNotFoundError") {
-      // 浏览器 DOMException 的 message 恒非空且未本地化;与 tauri 车道同口径,
-      // 恒用三语指引文案而非浏览器原文。
+      // Browser DOMException messages are always non-empty and unlocalized; same policy as
+      // the tauri lane: always use the trilingual guidance copy, not the browser text.
       return { category: "device_unavailable", stage: "device", message: bt("voiceNoDevice") };
     }
-    // Chrome 把"麦克风被其他应用占用"报为 NotReadableError / TrackStartError,
-    // 与"没有设备"不同;浏览器原文是英文,映射成三语专用文案。
+    // Chrome reports "microphone busy with another app" as NotReadableError / TrackStartError,
+    // distinct from "no device"; the browser message is English, so map it to dedicated
+    // trilingual copy.
     if (name === "NotReadableError" || name === "TrackStartError") {
       return { category: "device_unavailable", stage: "device", message: bt("voiceMicUnavailable") };
     }
@@ -9169,9 +9171,9 @@
       }
       return { category: rawCategory, stage: rawStage, message: rawMessage || bt("voiceRecognitionFailed") };
     }
-    // 远控 RPC 错误经 bootstrap 重建后带 code/category,但可能不属于上述任何
-    // category 分支;有稳定错误码按码映射三语文案,中文原文降级为诊断(与 tauri
-    // 车道收尾分支同口径)。
+    // Remote-control RPC errors rebuilt by bootstrap carry code/category but may not match
+    // any category branch above; with a stable error code, map to trilingual copy by code and
+    // demote the Chinese original to diagnostics (same policy as the tauri lane's tail branch).
     if (codeKey) {
       return { category: rawCategory || "recording_failed", stage: rawStage, message: bt(codeKey), diagnostic: rawMessage };
     }
@@ -9218,11 +9220,12 @@
     }
   }
 
-  // 远控车道有两道 1MiB 闸:第一道是 RPC 分发层对序列化入参的信封预检
-  // (manager/mod.rs MAX_RPC_REQUEST_BYTES),第二道才是 remote_control.rs 的
-  // 解码后校验。base64 膨胀 4/3 后,30s WAV(0.92MiB→约 1.22MiB 字符)必被
-  // 第一道拒收(request_too_large);20s≈0.64MiB→约 0.85MiB 字符,留足信封
-  // 余量,故本车道上限 20s(桌面车道无该中继限制,保持 60s)。
+  // The remote-control lane has two 1MiB gates: first an envelope pre-check on serialized
+  // inputs in the RPC dispatch layer (manager/mod.rs MAX_RPC_REQUEST_BYTES), then the
+  // post-decode validation in remote_control.rs. After base64's 4/3 expansion, a 30s WAV
+  // (0.92MiB → ~1.22MiB as characters) is always rejected by the first gate
+  // (request_too_large); 20s ≈ 0.64MiB → ~0.85MiB of characters, leaving enough envelope
+  // headroom, so this lane caps at 20s (the desktop lane has no relay limit and keeps 60s).
   const VOICE_RECORDING_MAX_DURATION_MS = 20000;
   const VOICE_DEVICE_REQUEST_TIMEOUT_MS = 8000;
 
@@ -9322,8 +9325,9 @@
     }
 
     let mode = normalizeVoiceMode(session.mode);
-    // 纵深防御:会话创建时已降级(edit 在 start 侧改写为 dictation),这里保留
-    // 兜底,避免未纠错的 ASR 原文经替换预览整体覆盖草稿。
+    // Defense in depth: the mode was already downgraded at session creation (edit rewritten
+    // to dictation on the start side); keep this fallback so uncorrected raw ASR text cannot
+    // overwrite the draft through the replace preview.
     if (mode === "edit") mode = "dictation";
     setVoiceInputStatus("transcribing", { message: bt("voiceTranscribing"), stage: "transcribing", mode });
     cleanupVoiceInputSession(session);
@@ -9340,8 +9344,9 @@
       const pcm = downsamplePcm(raw, session.sampleRate, 16000);
       const wav = encodeWav(pcm, 16000);
       const wavBytes = new Uint8Array(wav);
-      // 本文件仅 web 远控车道加载;后端 transcribe_voice_audio 已改为 base64
-      // 入参,旧的 audio_bytes JSON 数组分支已从后端契约移除,不再保留死分支。
+      // This file is loaded only on the web remote-control lane; the backend's
+      // transcribe_voice_audio now takes a base64 input and the old audio_bytes JSON array
+      // branch was removed from the backend contract, so no dead branch is kept here.
       const res = await invoke("web_access_transcribe_voice_audio", {
         audioBase64: encodeBase64Bytes(wavBytes),
         sessionId: session.sessionId,
@@ -9359,22 +9364,26 @@
           diagnostic: {
             mode,
             normalize_strategy: "web_asr_only",
-            // 与桌面端一致：诊断只持久化长度等元信息，不落识别全文。
+            // Same as desktop: persist only metadata such as lengths in diagnostics, never the full transcript.
             raw_text_length: text.length,
             final_text_length: text.length,
-            // web 车道没有本地高危词表与 LLM 后处理（web_asr_only），无法计算桌面端的
-            // task_send_blocked 高危拦截；此处固定 false 仅保持诊断字段形状与桌面端一致。
-            // 注意：当前调用方 writeback 链路只拦截多智能体只读与超长截断，并没有
-            // 高危词筛查——与桌面车道存在潜伏分叉。今天没有任何 UI 入口以 task 模式
-            // 进入 web 语音（麦克风按钮固定 dictation、手势自动升级只到 edit），分叉
-            // 不可达；若未来放开 web task 入口，必须先把桌面
-            // VOICE_SUSPICIOUS_ASR_TERMS/hasVoiceHighRiskResidual 复制进本桥（经典
-            // 脚本无法共享模块）并按其结果计算 task_send_blocked。
+            // The web lane has no local high-risk term list or LLM post-processing
+            // (web_asr_only), so the desktop's task_send_blocked high-risk gate cannot be
+            // computed; hardcoding false here only keeps the diagnostic field shape aligned
+            // with desktop. Note: the current caller writeback chain only blocks multi-agent
+            // read-only and over-length truncation, with no high-risk term screening — a
+            // latent divergence from the desktop lane. Today no UI entry reaches web voice in
+            // task mode (the mic button is fixed to dictation and gesture auto-upgrade stops
+            // at edit), so the divergence is unreachable; if a web task entry is opened later,
+            // first copy the desktop's
+            // VOICE_SUSPICIOUS_ASR_TERMS/hasVoiceHighRiskResidual into this bridge (classic
+            // scripts cannot share modules) and compute task_send_blocked from their result.
             task_send_blocked: false,
           },
         });
-        // 与桌面车道同口径:writeback await 窗口内用户可能已取消(取消把
-        // activeVoiceInput 置空并置 cancelled),不得再用 completed 覆盖取消终态。
+        // Same policy as the desktop lane: the user may have cancelled during the writeback
+        // await window (cancel clears activeVoiceInput and sets cancelled); never overwrite
+        // that terminal cancelled state with completed.
         if (activeVoiceInput !== session) return;
       }
       setVoiceInputStatus("completed", {
@@ -9421,9 +9430,10 @@
     notify();
   }
 
-  // Web 车道没有本地 ASR 模型下载（缺失时 startVoiceInput 直接报 dependency_unavailable），
-  // 不存在可中断的安装进程；保留与桌面端同名的取消入口，收起安装框后直接 resolve，
-  // 避免 ChatView 在 web 上调用时抛 TypeError。
+  // The web lane has no local ASR model download (startVoiceInput fails fast with
+  // dependency_unavailable when missing), so there is no interruptible install process;
+  // keep a same-named cancel entry as desktop that just collapses the install dialog and
+  // resolves, avoiding a TypeError when ChatView calls it on web.
   async function cancelVoiceAsrSetup() {
     closeVoiceAsrSetup();
   }
@@ -9463,8 +9473,9 @@
     invoke("kb_model_cancel").catch(function () {});
   }
 
-  // 与桌面端一致：申请麦克风前先回调 beforePermission（shortcut-intro 首用门控）。
-  // 返回 true 继续录音；false 表示门控拒绝（已清理会话并复位 idle）或会话已被取消。
+  // Same as desktop: invoke the beforePermission callback before requesting the microphone
+  // (shortcut-intro first-use gate). Returns true to continue recording; false means the
+  // gate refused (session cleaned up and reset to idle) or the session was already cancelled.
   async function passVoiceBeforePermissionGate(session, options) {
     if (!options || typeof options.beforePermission !== "function") return true;
     const shouldContinue = await options.beforePermission({
@@ -9489,9 +9500,10 @@
       finishVoiceInput(true, false);
       return;
     }
-    // 远控车道后端对该命令要求显式 sessionId(rpc.rs Required("sessionId"));
-    // 欢迎页(尚无会话)录音必然失败,且错误是未翻译的英文原文。开麦前直接以
-    // 三语文案快速失败,不录白录。
+    // The remote-control lane backend requires an explicit sessionId for that command
+    // (rpc.rs Required("sessionId")); recording from the welcome page (no session yet) would
+    // always fail with untranslated English. Fail fast with trilingual copy before opening
+    // the mic instead of recording for nothing.
     if (!state.activeSessionId) {
       setVoiceInputStatus("failed", {
         message: bt("voiceNeedSession"),
@@ -9545,9 +9557,10 @@
       // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
     }
 
-    // Web 车道没有 LLM 后处理（web_asr_only），edit 指令无从执行:在会话创建
-    // 时就降级为听写(状态展示、写回路径全程一致),不再等录完整个会话到
-    // finish 侧才降级——那会让用户带着「语音编辑」的预期录完一整条。
+    // The web lane has no LLM post-processing (web_asr_only), so edit instructions cannot be
+    // executed: downgrade to dictation at session creation (status display and writeback path
+    // stay consistent end to end) instead of waiting until the finish side after the user
+    // recorded a whole clip expecting "voice edit".
     const sessionMode = normalizeVoiceMode(options && options.mode);
     const session = {
       id: Date.now().toString(36),
@@ -9610,8 +9623,9 @@
       session.processor.connect(session.zeroGain);
       session.zeroGain.connect(session.audioContext.destination);
       session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, VOICE_RECORDING_MAX_DURATION_MS);
-      // 拔麦/设备断开时 track 结束(stop() 不触发 onended,收尾无递归),
-      // 与桌面车道同款:用已录内容立即收尾,不再空转到时长上限。
+      // Unplugging / device disconnect ends the track (stop() does not fire onended, so no
+      // recursive teardown); same as the desktop lane: finish immediately with what was
+      // recorded instead of idling until the duration cap.
       session.stream.getTracks().forEach(function (track) {
         track.onended = function () {
           if (activeVoiceInput === session) finishVoiceInput(false);
@@ -9621,8 +9635,10 @@
       emitVoiceDiagnostic("recording", "info", "recording started", "", "");
     } catch (err) {
       cleanupVoiceInputSession(session);
-      // finishVoiceInput(cancelled) 已把会话收尾为 cancelled 并清掉 activeVoiceInput；
-      // 权限挂起期间用户取消时本 catch 会在其后到达，不带 session 早退会把取消覆盖成 failed。
+      // finishVoiceInput(cancelled) has already torn the session down as cancelled and cleared
+      // activeVoiceInput; when the user cancels while permission is pending, this catch arrives
+      // afterwards, and an early return without the session check would overwrite the
+      // cancellation with failed.
       if (activeVoiceInput !== session) return;
       activeVoiceInput = null;
       const normalized = normalizeVoiceError(err, "recording");

@@ -10,7 +10,8 @@
     webAccessAdmin: false, desktopNotifications: false, hostFilePicker: true, artifactDownload: true,
     browserMicrophone: true,
     sessionModelSwitch: true,
-    // 全局 Alt 语音快捷键是 Windows 原生键盘钩子;浏览器远程端没有原生层,恒 false。
+    // The global Alt voice shortcut is a Windows native keyboard hook; the browser remote
+    // end has no native layer, so always false.
     voiceShortcutNative: false,
     modelManagement: false,
     toolStoreMutations: false,

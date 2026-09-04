@@ -1125,7 +1125,8 @@ export function CodexAcpView({
   const [voiceAsrPopoverOpen, setVoiceAsrPopoverOpen] = useState(false);
   const voiceAsrPopoverRef = useRef(null);
   const voiceComposerTextareaRef = useRef(null);
-  // 挂载状态 ref:卸载/切视图后拒绝在途 ASR/LLM 回调写回(hook 的 isStillActive 防线)。
+  // Mounted-state ref: after unmount/view switch, reject in-flight ASR/LLM callbacks from
+  // writing back (the hook's isStillActive defense line).
   const composerMountedRef = useRef(true);
   useEffect(() => {
     composerMountedRef.current = true;
@@ -2466,7 +2467,7 @@ export function CodexAcpView({
     }));
   }
 
-  // ── 语音输入（共享 composer UI：bridge.voice 一次录音 → 本地 ASR → 写回/直发代码页 draft）。
+  // ── Voice input (shared composer UI: bridge.voice one-shot recording → local ASR → write back / direct-send into the code page draft).
   const nativeVoiceInput = (bs && bs.voiceInput) || { status: 'idle' };
   const nativeVoiceMode = normalizeVoiceMode(nativeVoiceInput.mode);
   const nativeVoiceActive = isVoiceActive(nativeVoiceInput);
@@ -2481,10 +2482,12 @@ export function CodexAcpView({
     if (!nativeVoiceAsrBusy) setVoiceAsrPopoverOpen(false);
   }, [nativeVoiceAsrBusy]);
 
-  // ASR 进度弹层外点关闭由 VoiceComposerButton 内部 useOutsidePointerClose 承担
-  // (通过 onCloseAsrPopover 传入),视图层不再挂重复监听。
+  // Outside-click close for the ASR progress popover is handled inside VoiceComposerButton
+  // via useOutsidePointerClose (passed in via onCloseAsrPopover); the view no longer attaches
+  // duplicate listeners.
 
-  // 录音结束/写回完成(四活跃态退出)后把焦点还给 composer 输入框。
+  // Return focus to the composer input after recording ends / writeback completes (leaving
+  // any of the four active states).
   const nativeVoiceWasActiveRef = useRef(false);
   useEffect(() => {
     const wasActive = nativeVoiceWasActiveRef.current;
@@ -3069,7 +3072,7 @@ export function CodexAcpView({
         workspaceReferencesAtSend,
         reference => reference,
       ));
-      // 语音 sendTask 以 === false 判失败:真实受理后必须显式回报成功。
+      // Voice sendTask treats === false as failure: a real acceptance must explicitly report success.
       return true;
     } catch (err) {
       if (canApplyAcpSendOperation(operation)) {
@@ -3185,7 +3188,7 @@ export function CodexAcpView({
         workspaceReferencesAtSend,
         reference => reference,
       ));
-      // 语音 sendTask 以 === false 判失败:真实受理后必须显式回报成功。
+      // Voice sendTask treats === false as failure: a real acceptance must explicitly report success.
       return true;
     } catch (err) {
       if (materializingDraft) clearNativeDraftControls(nativeDraftControlsAtSend);
@@ -4013,8 +4016,10 @@ export function CodexAcpView({
                       </button>
                     </ComposerPopover>
                   </div>
-                                    {/* 斜杠命令菜单依赖 ACP 的 available_commands_update，原生车道不经 ACP、
-                      命令永不到达；在原生车道隐藏按钮，避免一个永远禁用且提示会误导的控件。 */}
+                                    {/* The slash-command menu depends on ACP's available_commands_update; the
+                      native lane bypasses ACP so commands never arrive. Hide the button on the
+                      native lane to avoid a control that is permanently disabled with a
+                      misleading tooltip. */}
                   {!isNativeAgent && (
                     <button type="button" ref={commandMenuTriggerRef} onClick={() => setCommandOpen(value => !value)}
                       disabled={!availableCommands.length}
@@ -4298,15 +4303,17 @@ export function CodexAcpView({
                       onToggleAsrPopover={() => setVoiceAsrPopoverOpen(open => !open)}
                       onCloseAsrPopover={() => setVoiceAsrPopoverOpen(false)}
                       onCancelAsr={() => {
-                        // 先关弹层给终态,再尽力取消安装;取消失败也不会留下无响应的弹层。
+                        // Close the popover first to show a terminal state, then best-effort cancel
+                        // the install; a failed cancel still leaves no unresponsive popover.
                         setVoiceAsrPopoverOpen(false);
                         if (bridge.available && bridge.voice.cancelVoiceAsrSetup) {
                           bridge.voice.cancelVoiceAsrSetup();
                         }
                       }}
                     />
-                    {/* 语音改写预览期间禁用主发送:发送入口收口到预览卡(应用并发送),
-                        避免基于 draft 的按钮在预览期发原文/双击重发。 */}
+                    {/* While a voice rewrite preview is open, disable the primary send: sending is
+                        funneled into the preview card (apply and send), so buttons based on draft
+                        cannot send the raw text or double-send during the preview. */}
                     <button type="button" onClick={() => send()} disabled={!!nativeVoice.editPreview || !sessionReady || (!draft.trim() && attachments.every(attachment => attachment.status !== 'ready') && !workspaceReferences.length) || working || activeRuntimeBusy || Boolean(configApplying) || (!isNativeAgent && (!activeStatus || !activeStatus.installed || !activeStatus.authenticated))}
                       className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
                       <Send size={16} />

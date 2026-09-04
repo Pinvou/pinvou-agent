@@ -15,22 +15,25 @@ function VoiceShortcutIntroModal({
 }) {
   const dialogRef = useRef(null);
   const onCloseRef = useRef(onClose);
-  // web 车道是 web_asr_only:无智能整理、Alt 有文本时静默降级为追加听写,
-  // 语音编辑卡不再展示,避免承诺 web 上不存在的能力。
+  // The web lane is web_asr_only: no smart post-processing, and Alt with text silently
+  // downgrades to append dictation, so the voice-edit card is no longer shown — avoid
+  // promising capabilities that do not exist on web.
   const editSupported = !isWeb;
   const canEnable = !shortcutEnabled && typeof onToggleShortcut === 'function';
   const resolvedCloseLabel = closeLabel || copy.voiceIntroGotIt;
   const resolvedPrimaryLabel = primaryLabel
     || (canEnable ? (copy.voiceIntroEnable || copy.voiceIntroStart) : (copy.voiceIntroDone || copy.voiceIntroStart || copy.voiceIntroGotIt));
 
-  // latest-ref sync: 视图每次渲染都会重建 onClose,经 ref 读取避免下方弹窗
-  // 生命周期 effect 反复重挂(重挂会把焦点抢回主按钮)。
+  // latest-ref sync: the view rebuilds onClose on every render; reading it through the ref
+  // keeps the modal lifecycle effect below from re-running constantly (a re-run would steal
+  // focus back to the primary button).
   useEffect(() => {
     onCloseRef.current = onClose;
   });
 
-  // 弹窗打开期间:标记给快捷键路由(Esc 让路给弹窗)、自动聚焦主按钮、
-  // 捕获 Esc 关闭与 Tab 焦点循环,卸载时归还焦点。只在挂载/卸载时运行一次。
+  // While the modal is open: flag it for the shortcut router (Esc yields to the modal),
+  // auto-focus the primary button, capture Esc to close plus Tab focus cycling, and restore
+  // focus on unmount. Runs once per mount/unmount only.
   useEffect(() => {
     setVoiceShortcutIntroOpen(true);
     const dialog = dialogRef.current;
