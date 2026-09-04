@@ -1169,17 +1169,12 @@ async function clickExactButton(page, text) {
     return h1 ? getComputedStyle(h1).fontFamily : '';
   }) : '';
 
-  await page.click('[data-testid="design-text-input"]');
-  await page.keyboard.down('Control');
-  await page.keyboard.press('A');
-  await page.keyboard.up('Control');
+  // macOS Chrome 里 Ctrl/Cmd+A 的键盘合成不可靠，直接用 DOM select 全选。
+  await page.$eval('[data-testid="design-text-input"]', (el) => { el.focus(); el.select(); });
   await page.keyboard.type('Pinvou 可视化编辑');
   await page.keyboard.press('Enter');
   await sleep(350);
-  await page.click('[data-testid="design-font-size-input"]');
-  await page.keyboard.down('Control');
-  await page.keyboard.press('A');
-  await page.keyboard.up('Control');
+  await page.$eval('[data-testid="design-font-size-input"]', (el) => { el.focus(); el.select(); });
   await page.keyboard.type('40');
   await page.keyboard.press('Tab');
   await sleep(350);

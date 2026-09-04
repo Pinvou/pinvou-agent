@@ -172,6 +172,22 @@ assert.strictEqual(migratedV3Document.mode, 'work');
 assert.strictEqual(migratedV3Document.subtab, 'document-writing');
 assert.strictEqual(loadPinvouModeState(v3Storage, 'session-data').subtab, 'data-visualization');
 
+// v3 draft 的 work 分支：mode:'work' 直接取旧 workSubtab（与 design 分支对称）。
+const v3WorkDraftStorage = {
+  values: {
+    pinvou_mode_state_v3: JSON.stringify({
+      draft: { mode: 'work', workSubtab: 'document-writing', designSubtab: 'poster' },
+      sessions: {},
+      sessionOrder: [],
+    }),
+  },
+  getItem(key) { return this.values[key] || null; },
+  setItem(key, value) { this.values[key] = value; },
+};
+const migratedV3WorkDraft = loadPinvouModeState(v3WorkDraftStorage);
+assert.strictEqual(migratedV3WorkDraft.mode, 'work');
+assert.strictEqual(migratedV3WorkDraft.subtab, 'document-writing');
+
 // v2 → v4：先沿用旧 v2→v3 语义（draft 作用域的 document-writing/poster 重置为
 // general，session 作用域不动），再做 v3 折叠。
 const previousStorage = {
