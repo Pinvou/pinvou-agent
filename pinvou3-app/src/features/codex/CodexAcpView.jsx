@@ -76,7 +76,7 @@ import {
   rewindUndoAvailable,
   useSessionCheckpoints,
 } from './checkpoints.js';
-import { RewindChip, RewindConfirmDialog, RewindUndoChip, RewindUndoConfirmDialog } from './RewindChip.jsx';
+import { RewindChip, RewindConfirmDialog, RewindUndoChip, RewindUndoConfirmDialog, useDialogEscapeKey } from './RewindChip.jsx';
 import {
   ConversationActivityIndicator,
   ConversationMarkdown,
@@ -1164,6 +1164,10 @@ export function CodexAcpView({
   useOutsidePointerClose(memoryOpen, () => setMemoryOpen(false), [memoryPanelRef, memoryTriggerRef]);
   useOutsidePointerClose(accountMenuOpen, () => setAccountMenuOpen(false), [accountMenuPanelRef, accountMenuTriggerRef]);
   useOutsidePointerClose(branchMenuOpen, () => setBranchMenuOpen(false), [branchMenuPanelRef, branchMenuTriggerRef]);
+  // Escape closes the branch dialogs. The hooks stay passive (busy) while
+  // their dialog is closed so Escape keeps reaching the composer menus.
+  useDialogEscapeKey(!pendingBranchSwitch || branchBusy, () => setPendingBranchSwitch(null));
+  useDialogEscapeKey(!commitBranchSwitch || branchBusy, () => setCommitBranchSwitch(null));
 
   async function checkoutWorkspaceBranch(branch, mode, commitMessage) {
     if ((!activeId && !branchWorkspacePath) || !branch || branchBusy) return;
@@ -1174,6 +1178,11 @@ export function CodexAcpView({
       setError(codexCopy.branchSwitchBusyError);
       return;
     }
+    // Stale-response guard: a checkout still in flight while the user switches
+    // to another session/draft workspace must not write the old workspace's
+    // branch data into the new view (same race class as the rewind in-flight
+    // guards).
+    const contextAtStart = branchContextRef.current;
     setBranchBusy(true);
     try {
       const next = await checkoutAcpWorkspaceBranch({
@@ -1183,11 +1192,17 @@ export function CodexAcpView({
         mode: mode || 'carry',
         commitMessage: commitMessage || null,
       });
+      if (branchContextRef.current !== contextAtStart) return;
       setWorkspaceBranches(next);
       // 分支切换后工作区内容已变化，触发工作区面板刷新更改列表。
       setWorkspaceRefreshTick(tick => tick + 1);
     } catch (err) {
+      if (branchContextRef.current !== contextAtStart) return;
       showError(err);
+      // Partial-success failures (e.g. a conflicting stash pop) switch the
+      // branch anyway; reload so the pill does not keep showing the old name
+      // until the menu is reopened.
+      loadWorkspaceBranches();
     } finally {
       setBranchBusy(false);
     }
@@ -1196,9 +1211,11 @@ export function CodexAcpView({
   async function handleBranchSelect(branch) {
     // busy 不在此静默拦截：交给 checkoutWorkspaceBranch 统一提示「Agent 运行中」，
     // 避免菜单开着时回合开始的竞态下点击无反馈。
-    if ((!activeId && !branchWorkspacePath) || !branch
-        || branch === workspaceBranches?.current || branchBusy) return;
+    if ((!activeId && !branchWorkspacePath) || !branch || branchBusy) return;
     setBranchMenuOpen(false);
+    // Selecting the current branch has nothing to switch, but the menu above
+    // still closes.
+    if (branch === workspaceBranches?.current) return;
     // 脏工作区先确认再切换（dirtyCount 由分支扫描一并返回，草稿态同样可用）。
     const dirtyCount = workspaceBranches?.dirtyCount || 0;
     if (dirtyCount > 0) {
@@ -1213,6 +1230,10 @@ export function CodexAcpView({
   const [draftWorkspacePath, setDraftWorkspacePath] = useState(null);
   // 会话内用 sessionId 解析工作区；草稿态（会话未创建）直接扫描已选目录。
   const branchWorkspacePath = activeId ? null : draftWorkspacePath;
+  // Branch context marker mirrored from activeId/branchWorkspacePath; checkout
+  // results are only applied while the context that started them is still
+  // active (see the stale-response guard in checkoutWorkspaceBranch).
+  const branchContextRef = useRef('');
   // 分支数据加载序号：会话切换与菜单打开都会触发加载，晚到的旧响应按序号丢弃。
   const branchLoadSeqRef = useRef(0);
   const loadWorkspaceBranches = useCallback(() => {
@@ -1229,6 +1250,7 @@ export function CodexAcpView({
   // 会话或草稿工作区变化时加载分支（仅桌面端；非 git 工作区返回 git:false，控件自动隐藏）。
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect -- 会话/草稿切换必须同步丢弃上一工作区的菜单、弹窗与分支数据，异步重载前不能显示旧工作区状态 */
+    branchContextRef.current = activeId ? `session:${activeId}` : `draft:${branchWorkspacePath || ''}`;
     setBranchMenuOpen(false);
     setPendingBranchSwitch(null);
     setCommitBranchSwitch(null);
@@ -4450,6 +4472,8 @@ export function CodexAcpView({
           >
             <div
               onClick={event => event.stopPropagation()}
+              role="dialog"
+              aria-modal="true"
               className="w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]"
             >
               <p className="text-[13px] leading-relaxed opacity-85">
@@ -4514,6 +4538,8 @@ export function CodexAcpView({
           >
             <div
               onClick={event => event.stopPropagation()}
+              role="dialog"
+              aria-modal="true"
               className="w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]"
             >
               <p className="text-[13px] leading-relaxed opacity-85">

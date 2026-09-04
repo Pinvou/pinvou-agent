@@ -27,8 +27,8 @@ function useDialogFocusRestore(dialogRef) {
   }, [dialogRef]);
 }
 
-// Escape 关闭（busy 时禁用）。两个确认弹窗共用。
-function useDialogEscapeKey(busy, onCancel) {
+// Escape 关闭（busy 时禁用）。两个确认弹窗共用；CodexAcpView 的分支切换弹窗也复用。
+export function useDialogEscapeKey(busy, onCancel) {
   useEffect(() => {
     const onKey = (event) => {
       if (event.key === 'Escape' && !busy) {
