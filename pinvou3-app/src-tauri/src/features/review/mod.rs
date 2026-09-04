@@ -744,27 +744,53 @@ fn full_transcript(messages: &[Message]) -> String {
 
 /// Section-header prefixes of B1 transfer messages (resolvePinvouReview: after
 /// the Pinvou review dialog checks "let AI fix" and similar actions, both
-/// frontend bridges assemble the message identically and send it back to the
-/// main session as the Boss). The message is composed of up to five sections,
-/// one per checked action, and **any of them can lead** (checking only verify
-/// makes the message start with "以下几条涉及外部事实"), so matching must cover
-/// all prefixes instead of a single starts_with. Keep in sync with
-/// resolvePinvouReview in `pinvou3-app/src/platform/tauri/bridge/chat.js` and
-/// `pinvou3-app/src/platform/web/bridge.js`. The old prefix found in historical
-/// comments ("请参考下面 Pinvou 的检阅意见") has never been sent by any frontend
-/// since the open-source baseline (e34024e6) — both bridges always used
-/// "请按下面的检阅意见" — so no compatibility branch is needed.
+/// frontend bridges assemble the message in the UI language — the three
+/// BT_TABLE blocks are identical across the tauri/web bridges — and send it
+/// back to the main session as the Boss). The message is composed of up to
+/// five sections, one per checked action, and **any of them can lead**
+/// (checking only verify makes the message start with "以下几条涉及外部事实" /
+/// "The items below involve external facts" / "以下の項目は外部事実に関わります"),
+/// so matching must cover all prefixes instead of a single starts_with, in
+/// every UI language. Keep in sync with resolvePinvouReview in
+/// `pinvou3-app/src/platform/tauri/bridge/chat.js` and
+/// `pinvou3-app/src/platform/web/bridge.js`; the
+/// `b1_transfer_prefixes_stay_in_sync_with_bridge_sources` test fails when a
+/// bridge copy changes without this table following. The old zh-only prefix
+/// found in historical comments ("请参考下面 Pinvou 的检阅意见") has never been
+/// sent by any frontend since the open-source baseline (e34024e6) — both
+/// bridges always used "请按下面的检阅意见" — so no compatibility branch is
+/// needed beyond the zh entries below.
 const B1_TRANSFER_PREFIXES: &[&str] = &[
-    // fix section header
+    // zh fix section header (zh entries kept for historical sessions)
     "请按下面的检阅意见",
-    // verify section header
+    // zh verify section header
     "以下几条涉及外部事实",
-    // adopt section header
+    // zh adopt section header
     "以下事项我已拍板",
-    // ask section header
+    // zh ask section header
     "以下待定项请用 request_user_input 正式问我",
-    // fill section header
+    // zh fill section header
     "以下维度产物还缺",
+    // en fix section header
+    "Apply the review notes below",
+    // en verify section header
+    "The items below involve external facts",
+    // en adopt section header
+    "The following decisions are final",
+    // en ask section header
+    "For the pending items below, ask me formally",
+    // en fill section header
+    "The artifact is still missing the dimensions below",
+    // ja fix section header
+    "下のレビュー意見に従い",
+    // ja verify section header
+    "以下の項目は外部事実に関わります",
+    // ja adopt section header
+    "以下の事項は確定しました",
+    // ja ask section header
+    "以下の未確定項目については",
+    // ja fill section header
+    "成果物には以下の観点が不足しています",
 ];
 
 /// 确定性投影（§4.2，超长降级用）：Boss 原话全留 / request_user_input 决策 /
@@ -780,14 +806,15 @@ fn project(messages: &[Message]) -> String {
         for b in &m.content {
             match b {
                 // B1 transfer messages (fixed section headers assembled by
-                // resolvePinvouReview) are the Pinvou review feedback from the
-                // previous round, not the Boss's original request — project them
-                // out, otherwise stale numbers quoted there get read as "the AI's
-                // current state"; adopted decisions already live in the artifact
-                // files (the artifacts are the truth). The frontend (identical in
-                // the tauri/web bridges) composes one section per checked action
-                // and any of the five headers can lead, so all must be recognized;
-                // see the B1_TRANSFER_PREFIXES docs.
+                // resolvePinvouReview in the UI language) are the Pinvou
+                // review feedback from the previous round, not the Boss's
+                // original request — project them out, otherwise stale numbers
+                // quoted there get read as "the AI's current state"; adopted
+                // decisions already live in the artifact files (the artifacts
+                // are the truth). The frontend (identical in the tauri/web
+                // bridges) composes one section per checked action and any of
+                // the five headers can lead, so all must be recognized in
+                // every language; see the B1_TRANSFER_PREFIXES docs.
                 ContentBlock::Text { text, .. }
                     if is_user
                         && !B1_TRANSFER_PREFIXES
@@ -1270,7 +1297,9 @@ mod tests {
         // Both frontend bridges (tauri/chat.js, web/bridge.js) compose
         // resolvePinvouReview sections per checked action and any of the five
         // headers can lead — build one case per real prefix (strings taken
-        // verbatim from the bridge sources).
+        // verbatim from the bridge sources). Since the trilingual copy audit
+        // the bridges assemble the sections in the UI language, so every
+        // localized header variant must be recognized too.
         let real_prefixes = [
             (
                 "fix",
@@ -1289,6 +1318,46 @@ mod tests {
                 "fill",
                 "以下维度产物还缺，请补充进去（保留其余、只增不改）：",
             ),
+            (
+                "fix/en",
+                "Apply the review notes below — **revise only the targeted sections, do not rewrite the whole document**:",
+            ),
+            (
+                "verify/en",
+                "The items below involve external facts — **verify first, cite your sources, and don't edit from memory**:",
+            ),
+            (
+                "adopt/en",
+                "The following decisions are final — update the artifacts accordingly:",
+            ),
+            (
+                "ask/en",
+                "For the pending items below, ask me formally via request_user_input instead of guessing:",
+            ),
+            (
+                "fill/en",
+                "The artifact is still missing the dimensions below — add them (keep everything else; add only, don't rewrite):",
+            ),
+            (
+                "fix/ja",
+                "下のレビュー意見に従い、**該当するセクションのみを修正してください。全文の書き直しはしないでください**：",
+            ),
+            (
+                "verify/ja",
+                "以下の項目は外部事実に関わります。**必ず検証してから修正し、根拠を示してください（記憶に頼った編集はしないでください）**：",
+            ),
+            (
+                "adopt/ja",
+                "以下の事項は確定しました。この通り成果物を更新してください：",
+            ),
+            (
+                "ask/ja",
+                "以下の未確定項目については、推測せず request_user_input で正式に私に質問してください：",
+            ),
+            (
+                "fill/ja",
+                "成果物には以下の観点が不足しています。補足してください（既存部分は保持し、追記のみで書き換えないでください）：",
+            ),
         ];
         for (kind, prefix) in real_prefixes {
             let messages = vec![
@@ -1305,6 +1374,32 @@ mod tests {
             assert!(
                 !p.contains("5-7w"),
                 "transfer message led by the {kind} header (with last round's stale numbers) must be excluded: {p}"
+            );
+        }
+    }
+
+    #[test]
+    fn b1_transfer_prefixes_stay_in_sync_with_bridge_sources() {
+        // The five section headers are owned by the frontend bridges
+        // (resolvePinvouReview, en/ja/zh BT_TABLE blocks). When a bridge copy
+        // changes its wording, this fails until B1_TRANSFER_PREFIXES follows;
+        // the projection test above covers the reverse direction.
+        let tauri_bridge = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/platform/tauri/bridge.js"
+        ));
+        let web_bridge = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/platform/web/bridge.js"
+        ));
+        for prefix in B1_TRANSFER_PREFIXES {
+            assert!(
+                tauri_bridge.contains(prefix),
+                "prefix absent from the tauri bridge source: {prefix}"
+            );
+            assert!(
+                web_bridge.contains(prefix),
+                "prefix absent from the web bridge source: {prefix}"
             );
         }
     }
