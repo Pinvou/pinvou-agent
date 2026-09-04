@@ -350,7 +350,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (!sel || !sel.path || !pv.loading) return;
         let cancelled = false;
         (async () => {
-          const result = await loadArtifactPreview(sel.path, undefined, { isCancelled: () => cancelled });
+          const result = await loadArtifactPreview(sel.path, undefined, { includeInfo: true, isCancelled: () => cancelled });
           if (!cancelled) setPv(result);
         })();
         return () => { cancelled = true; };

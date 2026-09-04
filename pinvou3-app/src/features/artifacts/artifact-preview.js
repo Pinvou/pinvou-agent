@@ -14,7 +14,7 @@ const TEXT_PREVIEW_KINDS = ['md', 'html', 'text'];
  * @param {string} path - artifact 绝对路径（路径内含 session id，可唯一寻址）
  * @param {string|undefined} sessionId - 桥接会话域。按 path 取数的调用方（ArtifactsPanel）
  *   传 undefined：bridge 侧 `sessionId || activeSessionId`，与不传参逐字等价。
- * @param {{includeJson?: boolean, includeImage?: boolean, includeInfo?: boolean, isCancelled?: () => boolean}} [options] - 每调用方的阶梯扩展与取消探测，默认全关（等价 ArtifactsPanel 原阶梯）
+ * @param {{includeJson?: boolean, includeImage?: boolean, includeInfo?: boolean, isCancelled?: () => boolean}} [options] - 每调用方的阶梯扩展与取消探测，默认全关（等价 FilePreviewModal 原阶梯；ArtifactsPanel 原阶梯每档带 info，须传 includeInfo: true）
  * @param {boolean} [options.includeJson] - .json 后缀尝试 pretty-print，kind 改判 'json'（解析失败按原文展示）
  * @param {boolean} [options.includeImage] - image kind 走 readArtifactImageB64，读失败降级为 imageError
  * @param {boolean} [options.includeInfo] - 成功态附带 info（{kind,text,info} / {kind,visual,info} / {missing,info}）；
