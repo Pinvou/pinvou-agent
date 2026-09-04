@@ -423,25 +423,18 @@
   // 成功/失败都只写回发起会话的面板（同 saveMemoryProfilePatch 的不变量，
   // 防止 await 期间切走后把结果或错误渲染进别的对话流）。成功后沿用写流程
   // 的 runtime/warnings 收敛（applyMemoryWriteState）并重拉 overview 刷新面板
-  // 内容；报告本身由调用方从返回值取。失败时写入带 memoryOrganizeFailed
-  // 前缀的 memory.error（卡片既有错误行呈现）并继续抛出。
+  // 内容；报告本身由调用方从返回值取。失败直接继续抛出：memory.error 是加载
+  // 失败专用通道（设置页横幅会把它渲染成通用的“加载失败”文案），整理失败的
+  // 原因由调用方的 catch 就近透传，不污染该通道。
   async function organizeMemory() {
     if (!invoke) return null;
     const sid = state.activeSessionId; // same as saveMemoryProfilePatch: after switching away, never write to B's panel
-    try {
-      const result = await invoke("organize_memory");
-      if (sid === state.activeSessionId && result) applyMemoryWriteState(result);
-      // 整理会合并/删除条目：照其他写流程重拉 overview 刷新面板内容；
-      // 返回值保持 organize_memory 原始载荷（report/runtime/warnings）。
-      await loadMemoryOverview();
-      return result;
-    } catch (e) {
-      if (sid === state.activeSessionId) {
-        state.memory = Object.assign({}, state.memory, { error: bt("memoryOrganizeFailed") + e });
-        notify();
-      }
-      throw e;
-    }
+    const result = await invoke("organize_memory");
+    if (sid === state.activeSessionId && result) applyMemoryWriteState(result);
+    // 整理会合并/删除条目：照其他写流程重拉 overview 刷新面板内容；
+    // 返回值保持 organize_memory 原始载荷（report/runtime/warnings）。
+    await loadMemoryOverview();
+    return result;
   }
   async function loadOrganizeHistory() {
     if (!invoke) return [];

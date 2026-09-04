@@ -401,7 +401,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             const finished = Array.isArray(history) && history[0] && history[0].finished_at;
             if (finished) setLastOrganizedAt(memoryOrganizeTime(finished));
           }
-        } catch { /* 失败已由 bridge 写入 memory.error,卡片既有错误行负责呈现 */ } finally {
+        } catch { /* organizeMemory 失败只抛出不写状态；本组件为未挂载的遗留导出，失败就地吞掉 */ } finally {
           setOrganizing(false);
         }
       };
@@ -2373,9 +2373,9 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             : t.uiSettingsView.memoryOrganizeSummary(count(report.merged), count(report.updated), count(report.deleted)));
           loadMemoryOrganizeHistory();
         } catch (error) {
-          // organizeMemory 已把失败写入 memory.error，但 memory.error 的统一
-          // 渲染是通用的“加载失败”文案，会吞掉具体原因；这里把原因透传到
-          // 整理结果行。
+          // organizeMemory 失败只抛出不写状态：memory.error 是加载失败专用
+          // 通道（统一渲染为“加载失败”文案，错因误导），具体原因在这里就近
+          // 透传到整理结果行。
           const reason = (error && error.message) || String(error);
           setMemoryOrganizeMessage(t.uiSettingsView.memoryOrganizeFailed(reason));
         } finally {

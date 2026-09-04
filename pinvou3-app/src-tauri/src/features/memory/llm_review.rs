@@ -33,6 +33,17 @@ use super::util::{
 };
 
 const LLM_REVIEW_TIMEOUT: StdDuration = StdDuration::from_secs(75);
+
+/// auto_write / auto_update 置信度门槛：`_RELAXED` 后缀为用户明确要求记住
+/// （explicit_remember）时的放宽值。代码判定与提示词都必须从这一组常量取值，
+/// 避免提示词与实现漂移；清洗下限 0.70 与敏感过滤不在此列，保持不变。
+pub(super) const PROFILE_AUTO_WRITE_THRESHOLD: f32 = 0.92;
+pub(super) const PROFILE_AUTO_WRITE_THRESHOLD_RELAXED: f32 = 0.85;
+pub(super) const TIMED_AUTO_THRESHOLD: f32 = 0.86;
+pub(super) const TIMED_AUTO_THRESHOLD_RELAXED: f32 = 0.80;
+pub(super) const WORK_CONTEXT_AUTO_THRESHOLD: f32 = 0.94;
+pub(super) const WORK_CONTEXT_AUTO_THRESHOLD_RELAXED: f32 = 0.90;
+
 pub(super) const LLM_REVIEW_PROMPT: &str = r#"你是 pinvou 的后台记忆整理器。你只做一件事：复盘刚刚这一轮对话，并对照已有记忆，输出是否需要保存、更新或跳过记忆。不要回答用户问题，不要解释你的判断。
 
 你必须只输出 JSON，不要解释。格式：
@@ -116,8 +127,20 @@ ttl_days 规则：
 "#;
 
 /// trigger 为 explicit_user_signal 时追加到系统提示的硬约束：用户明确要求记住
-/// 的内容不允许被 skip 掉，敏感边界保持不变。
-pub(super) const LLM_REVIEW_EXPLICIT_SIGNAL_PROMPT: &str = "\n\n本轮 trigger 为 explicit_user_signal：用户明确要求记住或表达了长期偏好。用户明确要求记住的内容必须落在输出里（auto_write / auto_update / pending_confirm 之一），不要输出 skip；仍不得记录敏感信息。";
+/// 的内容不允许被 skip 掉，敏感边界保持不变；同时复述放宽后的置信度门槛。
+/// 门槛放宽以 explicit_remember 为准（见 [`apply_llm_memory_review`]），提示词
+/// 必须从同一组常量取值：若提示词仍教基线门槛，守规模型会在放宽区间输出
+/// pending_confirm，代码侧的放宽等于失效。
+pub(super) fn explicit_signal_prompt() -> String {
+    format!(
+        "\n\n本轮 trigger 为 explicit_user_signal：用户明确要求记住或表达了长期偏好。\
+         用户明确要求记住的内容必须落在输出里（auto_write / auto_update / pending_confirm 之一），\
+         不要输出 skip；仍不得记录敏感信息。\
+         本轮置信度门槛已放宽：profile confidence >= {PROFILE_AUTO_WRITE_THRESHOLD_RELAXED} 即可 auto_write；\
+         work_context confidence >= {WORK_CONTEXT_AUTO_THRESHOLD_RELAXED} 即可 auto_write / auto_update；\
+         current_focus / recent_activity confidence >= {TIMED_AUTO_THRESHOLD_RELAXED}。"
+    )
+}
 
 /// Output-language directive for the memory review prompt, appended to the
 /// system prompt according to the UI locale.
@@ -576,7 +599,7 @@ async fn request_llm_memory_review(
     // 为准，两者必须同开同关，否则会出现“门槛已放宽但 prompt 未禁止 skip”的
     // 不一致回合（如 explicit_signal 与 delivery_complete 并存时）。
     if explicit_remember {
-        prompt.push_str(LLM_REVIEW_EXPLICIT_SIGNAL_PROMPT);
+        prompt.push_str(&explicit_signal_prompt());
     }
     if let Some(suffix) = memory_output_language_directive(&bridge.memory_locale_tag()) {
         prompt.push_str(&suffix);
@@ -634,14 +657,22 @@ async fn request_llm_memory_review(
 
 /// 应用已解析的复盘结果。`explicit_remember` 表示本轮命中了用户明确的“记住”
 /// 类记录请求（窄口径 [`has_explicit_remember_signal`]）：auto_write /
-/// auto_update 的置信度门槛相应放宽（profile 0.92→0.85、timed 0.86→0.80、
-/// work_context 0.94→0.90），清洗下限 0.70 与敏感过滤不变。
+/// auto_update 的置信度门槛按模块顶部常量放宽（profile / timed / work_context），
+/// 清洗下限 0.70 与敏感过滤不变。
 pub(super) fn apply_llm_memory_review(
     review: LlmMemoryReview,
     explicit_remember: bool,
 ) -> Result<MemoryReviewOutcome> {
-    let timed_auto_threshold = if explicit_remember { 0.80 } else { 0.86 };
-    let work_context_auto_threshold = if explicit_remember { 0.90 } else { 0.94 };
+    let timed_auto_threshold = if explicit_remember {
+        TIMED_AUTO_THRESHOLD_RELAXED
+    } else {
+        TIMED_AUTO_THRESHOLD
+    };
+    let work_context_auto_threshold = if explicit_remember {
+        WORK_CONTEXT_AUTO_THRESHOLD_RELAXED
+    } else {
+        WORK_CONTEXT_AUTO_THRESHOLD
+    };
     let mut outcome = MemoryReviewOutcome::default();
     for raw in review.items {
         let Some(decision) = sanitize_llm_memory_item(raw, explicit_remember) else {
@@ -763,8 +794,12 @@ pub(super) fn sanitize_llm_memory_item(
             _ => return None,
         };
         content = super::util::clean_memory_label(&clean_profile_memory_content(&content, &topic))?;
-        // 用户明确要求记住时称呼类记忆门槛 0.92 → 0.85。
-        let profile_auto_write_threshold = if explicit_remember { 0.85 } else { 0.92 };
+        // 用户明确要求记住时称呼类记忆门槛放宽（常量单一来源，见模块顶部）。
+        let profile_auto_write_threshold = if explicit_remember {
+            PROFILE_AUTO_WRITE_THRESHOLD_RELAXED
+        } else {
+            PROFILE_AUTO_WRITE_THRESHOLD
+        };
         if action == "auto_write" && raw.confidence < profile_auto_write_threshold {
             return None;
         }

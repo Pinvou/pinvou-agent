@@ -468,7 +468,6 @@
       memoryWriteFailed: "Failed to write memory: ",
       memoryIgnoreFailed: "Failed to ignore memory: ",
       memoryNeverFailed: "Failed to update the never-ask setting: ",
-      memoryOrganizeFailed: "Failed to organize memory: ",
       planTicketExpired: "⚠️ The plan ticket has expired. Regenerate the plan before running it",
       downloadLimitSuffix: size => " (current file " + size + " MiB)",
       downloadLimitError: suffix => "Remote artifact downloads are limited to 256 MiB" + suffix + ". Open the file directly on the desktop.",
@@ -591,7 +590,6 @@
       memoryWriteFailed: "メモリの書き込みに失敗：",
       memoryIgnoreFailed: "メモリの無視に失敗：",
       memoryNeverFailed: "「今後表示しない」の設定に失敗：",
-      memoryOrganizeFailed: "メモリの整理に失敗：",
       planTicketExpired: "⚠️ プランの認証情報が失効しました。プランを再生成してから実行してください",
       downloadLimitSuffix: size => "（現在のファイル " + size + " MiB）",
       downloadLimitError: suffix => "リモート制御での成果物ダウンロード上限は 256 MiB です" + suffix + "。デスクトップ側で直接開いてください。",
@@ -714,7 +712,6 @@
       memoryWriteFailed: "记忆写入失败：",
       memoryIgnoreFailed: "忽略记忆失败：",
       memoryNeverFailed: "设置不再提示失败：",
-      memoryOrganizeFailed: "记忆整理失败：",
       planTicketExpired: "⚠️ 方案凭证已失效，请重新生成方案后再执行",
       downloadLimitSuffix: size => "（当前文件 " + size + " MiB）",
       downloadLimitError: suffix => "远程控制单个产物下载上限为 256 MiB" + suffix + "，请在桌面端直接打开该文件。",
@@ -7750,24 +7747,17 @@
   }
   // AI 整理记忆（与 tauri memory.js 同一契约）：整理全局记忆数据，入口仍捕获
   // 会话，成功/失败只写回发起会话的面板；成功走 applyMemoryWriteState 收敛
-  // runtime/warnings 并重拉 overview，报告由调用方从返回值取。失败写入带
-  // memoryOrganizeFailed 前缀的 memory.error（卡片既有错误行呈现）并继续抛出。
+  // runtime/warnings 并重拉 overview，报告由调用方从返回值取。失败直接继续
+  // 抛出：memory.error 是加载失败专用通道（设置页横幅会把它渲染成通用的
+  // “加载失败”文案），整理失败的原因由调用方的 catch 就近透传，不污染该通道。
   async function organizeMemory() {
     if (!invoke) return null;
     const sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(与 tauri 对齐)
-    try {
-      const result = await invoke("organize_memory");
-      if (sid === state.activeSessionId && result) applyMemoryWriteState(result);
-      // 整理会合并/删除条目：重拉 overview 刷新面板；返回原始载荷。
-      await loadMemoryOverview();
-      return result;
-    } catch (e) {
-      if (sid === state.activeSessionId) {
-        state.memory = Object.assign({}, state.memory, { error: bt("memoryOrganizeFailed") + e });
-        notify();
-      }
-      throw e;
-    }
+    const result = await invoke("organize_memory");
+    if (sid === state.activeSessionId && result) applyMemoryWriteState(result);
+    // 整理会合并/删除条目：重拉 overview 刷新面板；返回原始载荷。
+    await loadMemoryOverview();
+    return result;
   }
   async function loadOrganizeHistory() {
     if (!invoke) return [];
