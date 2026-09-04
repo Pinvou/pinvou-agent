@@ -6,7 +6,7 @@
 //!
 //! **不提取的 helper**（各有平台差异，保留在各自文件）：
 //! - `user_home_dir`：linux 硬编码 `/tmp`（品悟临时产物目录），macOS 用 `temp_dir()`
-//! - `kill_pid_tree`：linux 经 `connector_cli_command("", "kill")` 路由，macOS 用 `Command::new("kill")`
+//! - `kill_pid_tree`：linux 与 macOS 的组杀实现现已统一为直调 kill(2)，不再委托外部 kill 命令
 //! - `connector_cli_command` / `apply_user_npm_prefix`：有结构性差异
 //!
 //! `validate_upload_location` 不提取：其 body 调用 `user_home_dir()`，后者按平台不同。

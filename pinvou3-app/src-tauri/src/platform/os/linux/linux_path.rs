@@ -121,17 +121,12 @@ pub fn apply_user_npm_prefix(cmd: &mut Command) {
 /// 的 pid 会把 node 孙进程孤儿化(与 platform::process::kill_process_tree 同语义)。
 /// 若进程恰未成组(旧登记),追加一次单 pid 兜底。
 ///
-/// 直接走 kill(2),不再 spawn 外部 /usr/bin/kill:procps-ng 4.0.4 的参数解析会把
-/// `kill -9 -<pgid>` 的合法负 pid 错当 `-1` 处理（向内核发起 kill(-1)，杀光当前
-/// 用户全部进程——本机桌面会话两次因此被整台带走，2026-09-04 audit 取证实锤）。
+/// **严禁**委托外部 kill 可执行文件(直接 spawn 或经 connector_cli_command 间接
+/// 调用均含)执行组杀,后续模块开发一律直调系统调用,并由
+/// `scripts/architecture-guard.py` 强制检查:procps-ng 4.0.4 的参数解析会把
+/// `kill -9 -<pgid>` 的合法负 pid 错当 `-1` 处理(kill(-1) 杀光当前用户全部
+/// 进程,2026-09-04 本机桌面会话两次被整台带走,audit 取证实锤)。
 pub fn kill_pid_tree(pid: u32) {
-    if pid <= 1 {
-        // pid<=1 expands to the kernel kill(0/-1) special semantics, which
-        // signals every process of this user. Refuse and leave a backtrace
-        // on disk.
-        crate::platform::process::log_refused_user_wide_kill("linux kill_pid_tree", pid);
-        return;
-    }
     // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
     let group_ok = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) } == 0;
     if !group_ok {

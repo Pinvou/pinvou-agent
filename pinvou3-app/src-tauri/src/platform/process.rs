@@ -251,72 +251,23 @@ pub(crate) fn std_process_group_leader(command: &mut Command) {
     }
 }
 
-/// `kill -9 -<pid<=1>` hits the kernel kill(0/-1) special semantics: it
-/// signals the whole process group / every process of this user. Group
-/// kills are issued through kill(2) directly (never delegated to external
-/// kill binaries whose argument parsers may misroute negative pids —
-/// procps-ng 4.0.4 turned `kill -9 -<pgid>` into kill(-1) and twice took
-/// down the whole desktop session). This guard is the last line of
-/// defense: refuse pid<=1 and write the call site to disk so an upstream
-/// caller that produced the invalid pid can be identified.
-///
-/// The log is appended to the private per-user `~/.pinvou3/logs/` so
-/// scenes from multiple refusals (e.g. the timeout and cancel paths
-/// firing in sequence) all survive, and no other local user can pre-create
-/// a symlink or same-named directory there to steer the write or disable
-/// the diagnostic (that is possible in the shared world-writable
-/// `temp_dir()` on Linux). Release builds strip symbols
-/// (`strip = "symbols"`), so backtraces may be addresses only — resolve
-/// them with os/process/time against a debug build of the same version.
-pub(crate) fn log_refused_user_wide_kill(site: &str, pid: u32) {
-    use std::io::Write as _;
-
-    let report = format!(
-        "refused {site}: pid={pid} (would expand to `kill -9 -{pid}`)\nprocess={} os={}\ntime={:?}\nbacktrace:\n{:?}\n",
-        std::process::id(),
-        std::env::consts::OS,
-        std::time::SystemTime::now(),
-        std::backtrace::Backtrace::force_capture(),
-    );
-    let path = crate::platform::paths::refused_kill_log();
-    eprintln!("[pinvou3] {report}log: {}\n", path.display());
-    // Best effort only: stderr already carries the full report, so a failed
-    // file write (hostile path, unwritable home, ...) loses the durable copy
-    // but never the diagnostic itself, and must not affect the kill refusal.
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .and_then(|mut file| file.write_all(report.as_bytes()));
-}
-
 /// 按 pid 杀进程树：Windows 用 taskkill 杀整棵树（脚本会再起子 shell，单杀
 /// 父进程会留下继续运行的子进程）；其他平台按进程组杀（负 pid）——安装进程
 /// 以 `process_group(0)` 独立成组，组杀连 curl | bash / npm 派生的子进程一起
 /// 终止，不孤儿化（评审中危项）。
 ///
-/// Unix 必须直接走 kill(2)，不得 spawn 外部 `/usr/bin/kill`：procps-ng 4.0.4
-/// 的参数解析会把 `kill -9 -<pgid>` 的合法负 pid 错当 `-1` 处理（向内核发起
-/// kill(-1)，杀光当前用户全部进程——2026-09-04 本机桌面会话两次被整台带走，
-/// audit 取证 argv 正确而系统调用为 kill(-1)，实锤）。`pid <= 1` 的拒绝仍在
-/// 最前面：组杀已是直接系统调用，一旦误传 0/1 同样等价于 kill(0/-1) 全组/
-/// 全用户语义，这里是最后一道防线。
+/// **严禁**在本 crate 任何位置直接或间接（如经 connector_cli_command 以 kill 为
+/// 程序名）spawn 外部 kill 可执行文件执行组杀，后续模块开发一律
+/// 使用本函数 / `kill_pid_tree`（内部直接走 kill(2)）。这是硬性规则并由
+/// `scripts/architecture-guard.py` 强制：procps-ng 4.0.4 的参数解析会把
+/// `kill -9 -<pgid>` 的合法负 pid 错当 `-1` 处理（向内核发起 kill(-1)，杀光
+/// 当前用户全部进程——2026-09-04 本机桌面会话两次被整台带走，audit 取证
+/// argv 正确而系统调用为 kill(-1)，实锤）。任何新平台的组杀实现同理必须
+/// 直调系统调用，不得委托外部工具。
 ///
 /// 进程组已不存在（ESRCH）视为成功——目标已死即目的达成，调用方无需为
 /// 「取消时进程恰好已退出」记失败日志。
 pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<()> {
-    if pid <= 1 {
-        log_refused_user_wide_kill("kill_process_tree", pid);
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "refused kill_process_tree({pid}): negative-group kill would signal every process of this user"
-            ),
-        ));
-    }
     if crate::platform::capabilities::is_windows() {
         external_command(Path::new("taskkill"))
             .args(["/PID", &pid.to_string(), "/T", "/F"])
@@ -421,105 +372,6 @@ mod tests {
 
         assert!(error.contains("timed out after"));
         assert!(started.elapsed() < Duration::from_secs(5));
-    }
-
-    /// Run `check` with `PINVOU3_HOME` redirected to a fresh per-test
-    /// directory so refusal-log writes stay out of the developer's real
-    /// `~/.pinvou3/`. Borrows the crate-wide `ENV_LOCK` because the value
-    /// is process-global (same pattern as the `paths::tests` env tests).
-    fn with_temp_pinvou_home<T>(check: impl FnOnce(&std::path::Path) -> T) -> T {
-        let _env_lock = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let root = std::env::temp_dir().join(format!(
-            "pinvou3-kill-refusal-log-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        std::fs::create_dir_all(&root).expect("create temp PINVOU3_HOME");
-        let previous = std::env::var_os("PINVOU3_HOME");
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-
-        let result = check(&root);
-
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("PINVOU3_HOME", value),
-                None => std::env::remove_var("PINVOU3_HOME"),
-            }
-        }
-        let _ = std::fs::remove_dir_all(&root);
-        result
-    }
-
-    /// `kill -9 -0` / `kill -9 -1` hit the kernel kill(0/-1) special
-    /// semantics (signal the whole group / every process of this user;
-    /// the desktop session was once taken down this way): pid<=1 must be
-    /// refused, never expanded to `kill -9 -pid`, without spawning an
-    /// external kill, and the error must name the refusal reason.
-    #[test]
-    fn kill_process_tree_refuses_user_wide_group_targets() {
-        with_temp_pinvou_home(|_home| {
-            for pid in [0_u32, 1] {
-                let error = kill_process_tree(pid)
-                    .expect_err("pid<=1 must be refused, never expanded to kill -9 -pid");
-                let message = error.to_string();
-                assert!(
-                    message.contains("refused")
-                        && message.contains(&format!("kill_process_tree({pid})")),
-                    "refusal message must name pid={pid}, got: {message}"
-                );
-            }
-        });
-    }
-
-    /// The forensic report must land inside the private per-user home (never
-    /// the shared temp dir) and appends must accumulate: a second refusal
-    /// adds a scene without erasing the first.
-    #[test]
-    fn refused_kill_log_lands_in_private_home_and_appends() {
-        with_temp_pinvou_home(|home| {
-            log_refused_user_wide_kill("append-scene", 0);
-            log_refused_user_wide_kill("append-scene", 1);
-
-            let path = crate::platform::paths::refused_kill_log();
-            assert!(
-                path.starts_with(home),
-                "log must stay under PINVOU3_HOME, got: {}",
-                path.display()
-            );
-            let logged = std::fs::read_to_string(&path).expect("refusal log must exist");
-            assert_eq!(
-                logged.matches("refused append-scene").count(),
-                2,
-                "both refusal scenes must survive, got: {logged:?}"
-            );
-            assert!(logged.contains("backtrace:"));
-        });
-    }
-
-    /// A hostile path (the log location pre-created as a directory) must not
-    /// disable the kill refusal, panic, or corrupt state: the diagnostic
-    /// degrades to stderr while the guard still refuses pid<=1 unchanged.
-    #[test]
-    fn refused_kill_log_survives_hostile_path() {
-        with_temp_pinvou_home(|_home| {
-            let path = crate::platform::paths::refused_kill_log();
-            std::fs::create_dir_all(&path).expect("pre-create hostile directory at the log path");
-
-            log_refused_user_wide_kill("hostile-scene", 0);
-
-            assert!(path.is_dir(), "hostile path must be left untouched");
-            let error = kill_process_tree(1)
-                .expect_err("pid<=1 must still be refused when the log write fails");
-            let message = error.to_string();
-            assert!(
-                message.contains("refused") && message.contains("kill_process_tree(1)"),
-                "refusal message must be unchanged, got: {message}"
-            );
-        });
     }
 
     /// Unix group kills must go through kill(2) directly. This is the

@@ -12,6 +12,8 @@ use std::process::Command;
 
 // macOS 侧由 `macos_system::current_system_locale` 显式实现阴影本符号,该目标下
 // unused(unused_imports=deny 会拦);其余 unsupported 平台它是唯一来源,保留。
+// architecture-guard: allow-external-group-kill-stub -- kill_pid_tree 的非 unix
+// 合约分支仅参与编译、无实际平台绑定(真实平台全部直调 kill(2));见其文档。
 #[cfg(not(target_os = "macos"))]
 pub(crate) use super::locale::current_system_locale;
 
@@ -232,18 +234,12 @@ pub fn apply_user_npm_prefix(_cmd: &mut Command) {}
 /// spawn 侧已 `process_group(0)` 成组,这里按负 pid 杀整组;单杀 shim pid 会把
 /// node 孙进程孤儿化。组杀失败(进程未成组的旧登记)追加单 pid 兜底。
 ///
-/// Unix 直接走 kill(2),不委托外部 /usr/bin/kill:外部工具的参数解析可能把合法
-/// 负 pid 错路由成 kill(-1)(procps-ng 4.0.4 在 Linux 上即如此,曾杀光整个
-/// 桌面会话);kill(2) 语义与其完全一致且不经过任何解析器。非 unix 合约分支
-/// 仅参与编译、无实际平台绑定,保留外部调用形态。
+/// **严禁**委托外部 `/usr/bin/kill` 执行组杀,后续模块开发一律直调系统调用,
+/// 并由 `scripts/architecture-guard.py` 强制检查:外部工具的参数解析可能把
+/// 合法负 pid 错路由成 kill(-1)(procps-ng 4.0.4 在 Linux 上即如此,曾杀光
+/// 整个桌面会话);kill(2) 语义与其完全一致且不经过任何解析器。非 unix 合约
+/// 分支仅参与编译、无实际平台绑定,保留外部调用形态。
 pub fn kill_pid_tree(pid: u32) {
-    if pid <= 1 {
-        // pid<=1 expands to the kernel kill(0/-1) special semantics, which
-        // signals every process of this user. Refuse and leave a backtrace
-        // on disk.
-        crate::platform::process::log_refused_user_wide_kill("unsupported kill_pid_tree", pid);
-        return;
-    }
     #[cfg(unix)]
     {
         // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.

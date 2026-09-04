@@ -21,6 +21,13 @@ python scripts/architecture-guard.py
 - `#[tauri::command]` 必须位于 `app/commands/` 路径下，`generate_handler!` 条目以
   `commands::`（或 `crate::app::commands::`）前缀引用。
 - `resources/common` 不得混入 PE、ELF 等平台专属二进制。
+- **禁止 spawn 外部 `kill` 可执行文件执行进程组/进程树终止**（`Command::new("kill")`、
+  `Path::new("kill")`、`connector_cli_command(_, "kill")` 等形态），组杀一律通过
+  `libc::kill(2)` 直调（`platform::process::kill_process_tree` /
+  `platform::os::kill_pid_tree`）。背景：procps-ng 4.0.4 会把 `kill -9 -<pgid>` 的
+  合法负 pid 错解析成 `kill(-1)`，杀光当前用户全部进程（2026-09-04 实际事故）。
+  仅参与编译、无实际平台绑定的合约存根可用
+  `architecture-guard: allow-external-group-kill-stub` 文件级例外。
 
 门禁只约束可以稳定、客观检测的架构边界，不以文件行数或仓库总代码量作为模块化
 合规条件。模块是否需要拆分，应依据职责、依赖、状态耦合和独立测试能力，遵循根目录
@@ -34,6 +41,7 @@ python scripts/architecture-guard.py
 ```rust
 // architecture-guard: allow-target-cfg -- 第三方类型仅在 Windows 目标存在
 // architecture-guard: allow-platform-detail -- 此处只负责解析外部平台标识
+// architecture-guard: allow-external-group-kill-stub -- 仅参与编译的合约存根,无实际平台绑定
 ```
 
 例外必须保持最小范围并补充覆盖该场景的测试；缺少理由、位于文件头之外或仅为绕过

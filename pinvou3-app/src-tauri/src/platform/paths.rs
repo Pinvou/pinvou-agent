@@ -40,18 +40,6 @@ pub fn memory_review_log() -> PathBuf {
     pinvou3_home().join("logs").join("memory-review.log")
 }
 
-/// `~/.pinvou3/logs/pinvou-refused-user-wide-kill.log` — forensic log for
-/// refused user-wide process-group kills. Deliberately not `temp_dir()`:
-/// on Linux that is a shared world-writable directory where a pre-created
-/// symlink or same-named directory could both steer the appended backtrace
-/// into an arbitrary file writable by this user and silently disable the
-/// diagnostic.
-pub fn refused_kill_log() -> PathBuf {
-    pinvou3_home()
-        .join("logs")
-        .join("pinvou-refused-user-wide-kill.log")
-}
-
 pub fn bundle_root() -> PathBuf {
     pinvou3_home().join("bundle")
 }
