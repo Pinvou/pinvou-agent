@@ -402,7 +402,6 @@ for (const language of ['zh', 'en', 'ja']) {
 
 const chatView = source('features/chat/ChatView.jsx');
 const timeline = source('features/conversation/ConversationTimeline.jsx');
-const codexView = source('features/codex/CodexAcpView.jsx');
 const actions = source('features/conversation/AssistantMessageActions.jsx');
 const clipboard = source('features/conversation/message-clipboard.js');
 const exportLogic = source('features/conversation/assistant-response-export.js');
@@ -438,6 +437,8 @@ assert.match(nativeHandler, /commands::assistant_response::open_assistant_share_
 assert.doesNotMatch(actions, /targetRef|querySelector/);
 assert.doesNotMatch(clipboard, /querySelectorAll|data-assistant-copy-source/);
 assert.match(timeline, /<AssistantMessageFooter>[\s\S]*?<AssistantMessageActions resolveText=\{\(\) => assistantResponseText\(turn\)\} copy=\{c\}/);
-assert.match(codexView, /<AssistantMessageFooter>[\s\S]*?<AssistantMessageActions resolveText=\{\(\) => assistantResponseText\(turn\)\} copy=\{copy\}/);
+// codex 旧 Turn 页脚已随旧时间线删除；完成态回复操作契约由统一时间线单点承载。
+const conversationTimeline = source('features/conversation/ConversationTimeline.jsx');
+assert.match(conversationTimeline, /<AssistantMessageActions resolveText=\{\(\) => assistantResponseText\(turn\)\} copy=\{c\}/);
 
 console.log('assistant message actions tests passed');
