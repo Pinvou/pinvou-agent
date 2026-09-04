@@ -146,7 +146,8 @@ pub struct SessionStore {
     code_permission: Arc<RwLock<CodePermissionPrefs>>,
     /// settings.json `mode_defaults`（work lane 全局默认）的进程内镜像，
     /// 与 `code_permission` 同款镜像语义。启动加载时把旧 `mode_defaults.design`
-    /// 折叠进 work（见 `store.rs::from_paths`），此后 design 字段只读不写。
+    /// 折叠进 work（见 `store.rs::from_paths`），此后 design 字段不再参与任何
+    /// 语义写入（原值仅随全量偏好写盘保真保留，供旧折叠源持续可用）。
     mode_defaults: Arc<RwLock<ModeDefaultPrefs>>,
     /// `_multi_agent.json` 的持久化互斥：内存快照与 tmp+rename 必须在同一临界
     /// 区内完成。少了它，两个并发保存会各自读到不同时刻的快照，**后完成写盘的

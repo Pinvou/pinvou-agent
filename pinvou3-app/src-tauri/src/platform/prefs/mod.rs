@@ -476,8 +476,10 @@ pub struct ModeDefaultPrefs {
     pub work: Option<SerializableMode>,
     /// 仅为向后兼容读取旧 settings.json 保留（design lane 已并入 work）：
     /// 启动加载时若 work 为空则用本字段回填 work 内存镜像（读取折叠，见
-    /// `features/sessions/store.rs::from_paths`）；不再写入、不再序列化。
-    #[serde(skip_serializing)]
+    /// `features/sessions/store.rs::from_paths`）；不再有任何语义写入。
+    /// 必须随全量偏好写盘保真 round-trip（不能 skip_serializing）：折叠不
+    /// 回写磁盘，若本字段在无关偏好写盘时被丢弃，用户显式写入 work 前的
+    /// 一次写盘 + 重启就会让折叠无源，显式选过的默认静默丢失。
     pub design: Option<SerializableMode>,
 }
 

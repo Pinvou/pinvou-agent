@@ -164,7 +164,10 @@ impl SessionStore {
         let prefs_snapshot = UserPrefs::load();
         // design lane 已并入 work lane：旧 settings.json 里 `mode_defaults.design`
         // 有值而 work 为空时，用 design 值回填 work 内存镜像（一次性读取折叠，
-        // 不回写磁盘；下次用户写盘自然只落 work）。work 已有值时 design 不覆盖。
+        // 不回写磁盘；此后显式切换只落 work）。work 已有值时 design 不覆盖。
+        // design 字段本身必须随全量偏好写盘保真 round-trip：折叠源在用户显式
+        // 写入 work 之前是磁盘上唯一的默认值，被无关偏好写盘蒸发掉的话，
+        // 重启后就再也折叠不回来（见 `ModeDefaultPrefs::design` 注释）。
         let mut mode_defaults_snapshot = prefs_snapshot.mode_defaults;
         if mode_defaults_snapshot.work.is_none() {
             mode_defaults_snapshot.work = mode_defaults_snapshot.design;

@@ -3136,6 +3136,13 @@ fn legacy_design_default_folds_into_work_on_load() {
     .expect("write legacy settings");
     let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
     assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
+    // 折叠不回写磁盘：boot 后 settings.json 仍是 legacy 形状（work 键缺失、
+    // design 原值保留）。
+    let on_disk = std::fs::read_to_string(paths::settings_path()).expect("read settings after boot");
+    assert!(
+        on_disk.contains("\"design\"") && !on_disk.contains("\"work\""),
+        "fold must not write back to disk: {on_disk}"
+    );
 
     // work 已有值 → design 不覆盖。
     std::fs::write(
@@ -3145,6 +3152,61 @@ fn legacy_design_default_folds_into_work_on_load() {
     .expect("write settings with work");
     let reopened = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("reboot");
     assert_eq!(reopened.mode_defaults().work, Some(SerializableMode::Yolo));
+
+    // work 已有值而 design 缺失 → work 原值保持，不回退缺省。
+    std::fs::write(
+        paths::settings_path(),
+        r#"{ "mode_defaults": { "work": "plan" } }"#,
+    )
+    .expect("write settings without design");
+    let reopened = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("reboot");
+    assert_eq!(reopened.mode_defaults().work, Some(SerializableMode::Plan));
+    drop(guard);
+}
+
+/// 折叠不回写磁盘，因此 design 字段必须随全量偏好写盘保真 round-trip：
+/// 任意一次无关偏好写盘（此处以 code yolo 确认标志为例）都不得把 design
+/// 值从 settings.json 抹掉——否则重启后折叠无源，用户显式选过的默认
+/// 静默丢失（回归：design 字段曾被 skip_serializing 导致该场景蒸发）。
+#[test]
+fn legacy_design_default_survives_unrelated_prefs_write() {
+    let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let tmp = std::env::temp_dir().join(format!(
+        "pinvou3-sessions-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+    unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+    std::fs::create_dir_all(&tmp).expect("create tmp home");
+    std::fs::write(
+        paths::settings_path(),
+        r#"{ "mode_defaults": { "design": "plan" } }"#,
+    )
+    .expect("write legacy settings");
+    let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+    assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
+
+    // 无关偏好字段的全量写盘（不触碰 mode_defaults 的任何语义写入）。
+    UserPrefs::update_transaction(|prefs| {
+        prefs.code_permission.yolo_confirmed = true;
+        Ok(())
+    })
+    .expect("unrelated pref write should save");
+
+    let on_disk =
+        std::fs::read_to_string(paths::settings_path()).expect("read settings after write");
+    assert!(
+        on_disk.contains("\"design\""),
+        "legacy design value must survive unrelated pref writes: {on_disk}"
+    );
+
+    // 重启后折叠源仍在，work 镜像继续取到 design 值。
+    drop(store);
+    let reopened = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("reboot");
+    assert_eq!(reopened.mode_defaults().work, Some(SerializableMode::Plan));
     drop(guard);
 }
 
