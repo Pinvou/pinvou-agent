@@ -472,8 +472,6 @@ const jaBase = {
         composerBuiltinAuto: '内蔵 · 自動', composerSkillInUse: '使用中', composerSkillAllDisabled: 'このセッション種別の全スキルがオフです。上で有効にできます', composerModeControlled: 'モードで制御', composerReadonlySwitch: 'モードで制御され、手動で切り替え不可',
         composerProjectSkills: 'プロジェクトスキル', composerProjectSkillsDesc: 'プロジェクト内蔵スキルをスキャン', composerProjectSkillsWarning: 'プロジェクト内のスキルには悪意のある指示（プロンプトインジェクション）が含まれる可能性があります。信頼できるプロジェクトでのみ有効にしてください', composerProjectSkillsHelpTitle: 'プロジェクトスキルについて', composerProjectSkillsHelpBody: '有効にすると、プロジェクトに紐づくコードセッションがプロジェクト内の規約ディレクトリにあるスキルをスキャンし、モデルがそれらを読み込んで利用できるようになります。', composerProjectSkillsHelpDirsLabel: 'スキャン対象ディレクトリ（優先度の高い順）', composerProjectSkillsHelpDirs: '.agents/skills\n.pinvou/skills\nskills\n.opencode/skills\n.claude/skills\n.cursor/skills\n.codewhale/skills',
         resend: '再送信', editResend: '編集して再送信', messageSending: '送信中…', messageAccepted: '送信済み', messageFailed: '送信に失敗しました', messageOutcomeUnknown: '送信状態を確認できません。会話一覧を確認してください。', selectAllMsg: 'すべて選択', copyMsg: 'コピー', pasteMsg: '貼り付け', copied: 'コピー済み', backToBottom: '一番下へ',
-        thinkingLabel: '思考中', thinkingCall: (tool, s) => `${tool} を実行中... ${s}s`,
-        hintSlow30: isLocal => isLocal ? 'ローカルモデルが生成中' : '生成中…', hintSlow120: isLocal => isLocal ? 'ローカルモデルが長い内容を生成中です。しばらくお待ちください' : '長い内容を生成中です。しばらくお待ちください',
         artifactLabel: '成果物', clickToOpen: 'クリックで開く →',
         toolRunning: '実行中...', toolDone: '完了', toolFailed: '失敗', shellCancelFailed: 'キャンセルに失敗しました',
         tsDone: '完了', tsInProgress: '進行中', tsPending: '未着手', tsLine: '行',
@@ -802,8 +800,6 @@ dictJa.uiArtifacts = {
   diVisibility:'可視性', diVisCollapse:'折りたたみ', diCursor:'カーソル',
   diChangesLog:n=>`デザイン変更 ${n} 件`, diEmpty:'空',
 };
-
-dictJa.uiCodexView = { ended:'終了', stepsFailed:'失敗を含む実行手順', processing:'処理中', codexTool:'Codex ツール' };
 
 Object.assign(dictJa.uiAttachments, { uploading:pct=>`アップロード中 ${pct}%`, deviceUploadTooLarge:name=>`${name} は添付ファイル上限の 20 MB を超えています`, deviceUploadEmpty:name=>`${name} は空のため添付できません`, deviceUploadUnavailable:'現在、このデバイスから添付ファイルをアップロードできません', deviceUploadInvalid:name=>`${name} は有効な添付ファイルではありません`, deviceUploadFailed:name=>`${name} をアップロードできませんでした。もう一度お試しください。`, deviceUploadDigestInvalid:'添付ファイルの整合性ダイジェストが無効です。もう一度お試しください', deviceUploadIntegrityMismatch:'添付ファイルの内容が転送中に破損しました。再度アップロードしてください' });
 

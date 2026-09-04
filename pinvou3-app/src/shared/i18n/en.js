@@ -473,8 +473,6 @@ export const dictEn = {
         composerBuiltinAuto: 'Built-in · Auto', composerSkillInUse: 'In use', composerSkillAllDisabled: 'All skills for this session type are off — enable them above', composerModeControlled: 'Controlled by mode', composerReadonlySwitch: 'Controlled by mode, cannot be toggled manually',
         composerProjectSkills: 'Project skills', composerProjectSkillsDesc: 'Scan built-in project skills', composerProjectSkillsWarning: 'Project skill files may contain malicious instructions (prompt injection) — enable only for trusted projects', composerProjectSkillsHelpTitle: 'About project skills', composerProjectSkillsHelpBody: 'When enabled, code sessions bound to a project scan the project\'s convention skill directories, and the model can load and use those skills.', composerProjectSkillsHelpDirsLabel: 'Scanned directories (highest priority first)', composerProjectSkillsHelpDirs: '.agents/skills\n.pinvou/skills\nskills\n.opencode/skills\n.claude/skills\n.cursor/skills\n.codewhale/skills',
         resend: 'Resend', editResend: 'Edit & resend', messageSending: 'Sending…', messageAccepted: 'Sent', messageFailed: 'Send failed', messageOutcomeUnknown: 'Send status is unknown. Check the conversation list.', selectAllMsg: 'Select all', copyMsg: 'Copy', pasteMsg: 'Paste', copied: 'Copied', backToBottom: 'Back to bottom',
-        thinkingLabel: 'Thinking', thinkingCall: (tool, s) => `Calling ${tool}... ${s}s`,
-        hintSlow30: isLocal => isLocal ? 'local model generating' : 'generating…', hintSlow120: isLocal => isLocal ? 'local model is generating long content, hang tight' : 'generating long content, hang tight',
         artifactLabel: 'Artifact', clickToOpen: 'Open →',
         toolRunning: 'Running...', toolDone: 'Done', toolFailed: 'Failed', shellCancelFailed: 'Cancel failed',
         tsDone: 'completed', tsInProgress: 'in progress', tsPending: 'pending', tsLine: 'L',
@@ -800,8 +798,6 @@ dictEn.uiArtifacts = {
   diVisibility:'Visibility', diVisCollapse:'Collapse', diCursor:'Cursor',
   diChangesLog:n=>`Design changes: ${n}`, diEmpty:'empty',
 };
-
-dictEn.uiCodexView = { ended:'Finished', stepsFailed:'Steps include failures', processing:'Processing', codexTool:'Codex tool' };
 
 Object.assign(dictEn.uiAttachments, { uploading:pct=>`Uploading ${pct}%`, deviceUploadTooLarge:name=>`${name} exceeds the 20 MB attachment limit`, deviceUploadEmpty:name=>`${name} is empty and cannot be attached`, deviceUploadUnavailable:'Uploading from this device is currently unavailable', deviceUploadInvalid:name=>`${name} is not a valid attachment`, deviceUploadFailed:name=>`${name} could not be uploaded. Try again.`, deviceUploadDigestInvalid:'The attachment integrity digest was invalid. Try again', deviceUploadIntegrityMismatch:'The attachment content was corrupted in transit. Upload it again' });
 
