@@ -1783,6 +1783,8 @@ const DEFAULT_ENABLED_SEARCH_PROVIDERS = ['bing'];
           if (receipt && receipt.status === 'submitted') {
             setFeedbackNotice(receipt.message || t.feedbackSubmitted);
             resetFeedback();
+            // 提交成功不经 closeFeedback 出口；不复位确认层会在重开面板时残留幽灵确认层。
+            setFeedbackCloseConfirm(false);
             setFeedbackOpen(false);
             return;
           }
@@ -1910,6 +1912,8 @@ const DEFAULT_ENABLED_SEARCH_PROVIDERS = ['bing'];
         setMemorySaving(true);
         setMemoryEditorError('');
         setProfileSaveError('');
+        // 删除失败横幅不粘滞：横幅链里它优先级最高，保存动作要能让位给最新错误
+        setMemoryDeleteError('');
         try {
           if (memoryEditor.mode === 'memory') {
             if (!text || !bridge.memory.updateMemoryItem) return;
@@ -1931,6 +1935,7 @@ const DEFAULT_ENABLED_SEARCH_PROVIDERS = ['bing'];
         if (!item || !bridge.memory.deleteMemoryItem) return;
         // Tauri WebView2 下系统 window.confirm 实测不弹；应用内自绘弹窗无此限制
         // （同 ProviderFormModal / ToolStoreView），先记下待删条目，确认后再真正删除。
+        setMemoryDeleteError('');
         setMemoryDeleteConfirm(item);
       };
       /** @param {MemoryItem} item - 已确认删除的记忆条目（唯一调用 deleteMemoryItem 的确认路径）。 */
@@ -1941,8 +1946,8 @@ const DEFAULT_ENABLED_SEARCH_PROVIDERS = ['bing'];
           setMemoryDeleteError('');
         } catch (error) {
           // bridge 已把错误写入 bs.memory 并重抛；这里落横幅（删除失败语义），
-          // 避免浮动 promise 拒绝噪声。
-          setMemoryDeleteError(String(error || ''));
+          // 避免浮动 promise 拒绝噪声。兜底非空，保证横幅必然渲染。
+          setMemoryDeleteError(String(error?.message || error || 'delete failed'));
         }
       };
       const editProfile = key => {
