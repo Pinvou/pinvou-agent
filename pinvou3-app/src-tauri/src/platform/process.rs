@@ -253,20 +253,55 @@ pub(crate) fn std_process_group_leader(command: &mut Command) {
 
 /// 按 pid 杀进程树：Windows 用 taskkill 杀整棵树（脚本会再起子 shell，单杀
 /// 父进程会留下继续运行的子进程）；其他平台按进程组杀（负 pid）——安装进程
-/// 以 `process_group(0)` 独立成组，`kill -9 -pgid` 连 curl | bash / npm 派生
-/// 的子进程一起终止，不孤儿化（评审中危项）。
-pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<Output> {
-    let pid_arg = pid.to_string();
+/// 以 `process_group(0)` 独立成组，组杀连 curl | bash / npm 派生的子进程一起
+/// 终止，不孤儿化（评审中危项）。
+///
+/// **严禁**在本 crate 任何位置直接或间接（如经 connector_cli_command 以 kill 为
+/// 程序名）spawn 外部 kill 可执行文件执行组杀，后续模块开发一律
+/// 使用本函数 / `kill_pid_tree`（内部直接走 kill(2)）。这是硬性规则并由
+/// `scripts/architecture-guard.py` 强制：procps-ng 4.0.4 的参数解析会把
+/// `kill -9 -<pgid>` 的合法负 pid 错当 `-1` 处理（向内核发起 kill(-1)，杀光
+/// 当前用户全部进程——2026-09-04 本机桌面会话两次被整台带走，audit 取证
+/// argv 正确而系统调用为 kill(-1)，实锤）。任何新平台的组杀实现同理必须
+/// 直调系统调用，不得委托外部工具。
+///
+/// 进程组已不存在（ESRCH）视为成功——目标已死即目的达成，调用方无需为
+/// 「取消时进程恰好已退出」记失败日志。
+///
+/// `pid <= 1` 或无法以正数收入 `i32` 的 pid 一律拒绝（`InvalidInput`）：
+/// kill(2) 对 0 与 -1 有特殊语义（0 = 调用方所在整组，-1 = 当前用户全部
+/// 进程），`as i32` 回绕出的负 pid 同理。边界在本函数自检，不依赖调用方
+/// 审计。
+pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<()> {
     if crate::platform::capabilities::is_windows() {
         external_command(Path::new("taskkill"))
-            .args(["/PID", pid_arg.as_str(), "/T", "/F"])
-            .output()
-    } else {
-        let group_arg = format!("-{pid_arg}");
-        external_command(Path::new("kill"))
-            .args(["-9", group_arg.as_str()])
-            .output()
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output()?;
+        return Ok(());
     }
+    #[cfg(unix)]
+    {
+        let Some(group) = i32::try_from(pid).ok().filter(|group| *group > 1) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("refusing user-wide process group kill for pid {pid}"),
+            ));
+        };
+        // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
+        let sent = unsafe { libc::kill(-group, libc::SIGKILL) };
+        if sent != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                return Ok(());
+            }
+            return Err(error);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+    }
+    Ok(())
 }
 
 pub(crate) struct HiddenTokioCommand;
@@ -348,5 +383,116 @@ mod tests {
 
         assert!(error.contains("timed out after"));
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// Unix group kills must go through kill(2) directly. This is the
+    /// regression test for the 2026-09-04 desktop-session massacres: the
+    /// timeout path spawned external `/usr/bin/kill -9 -<pgid>` and
+    /// procps-ng 4.0.4 misparsed the valid negative pid as -1 (kill(-1)
+    /// signals every process of this user). A fake `kill` is placed first
+    /// on PATH: if the implementation ever spawns an external kill again,
+    /// the marker file appears and the test fails — before considering
+    /// what that binary would do to the machine.
+    #[cfg(unix)]
+    #[test]
+    fn kill_process_tree_terminates_group_without_spawning_external_kill() {
+        use std::sync::Mutex;
+
+        static PATH_LOCK: Mutex<()> = Mutex::new(());
+        let _path_lock = PATH_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+        let work = std::env::temp_dir().join(format!(
+            "pinvou3-kill-process-tree-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&work).expect("create test work dir");
+        let marker = work.join("external-kill-invoked");
+        let sleep_pid_file = work.join("sleep-pid");
+        let fake_kill_bin = work.join("kill");
+        std::fs::write(
+            &fake_kill_bin,
+            format!("#!/bin/sh\necho \"$@\" >> {}\nexit 42\n", marker.display()),
+        )
+        .expect("write fake kill");
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&fake_kill_bin, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake kill");
+
+        let previous_path = std::env::var_os("PATH");
+        let mut split_path = previous_path
+            .as_ref()
+            .map(|value| std::env::split_paths(value).collect::<Vec<_>>())
+            .unwrap_or_default();
+        split_path.insert(0, work.clone());
+        // SAFETY: this test serializes on PATH_LOCK; a prepended dir cannot
+        // break other tests that merely resolve commands through PATH.
+        unsafe { std::env::set_var("PATH", std::env::join_paths(&split_path).unwrap()) };
+
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            &format!("sleep 30 & echo $! > {}; wait", sleep_pid_file.display()),
+        ]);
+        std_process_group_leader(&mut command);
+        let mut child = command.spawn().expect("spawn sh group leader");
+        let sh_pid = child.id();
+
+        let mut sleep_pid = None;
+        for _ in 0..40 {
+            if let Ok(text) = std::fs::read_to_string(&sleep_pid_file) {
+                if let Ok(value) = text.trim().parse::<u32>() {
+                    sleep_pid = Some(value);
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let sleep_pid = sleep_pid.expect("descendant must report its pid");
+
+        let kill_result = kill_process_tree(sh_pid);
+        let _ = child.wait();
+
+        // SAFETY: libc::kill with sig=0 only probes liveness; no memory is touched.
+        let alive = |pid: u32| unsafe { libc::kill(pid as i32, 0) == 0 };
+        let mut both_dead = !alive(sh_pid) && !alive(sleep_pid);
+        for _ in 0..100 {
+            if both_dead {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            both_dead = !alive(sh_pid) && !alive(sleep_pid);
+        }
+        // The orphaned descendant is a member of this test's process tree;
+        // make sure no stray sleeper survives even if the asserts fail.
+        // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
+        let _ = unsafe { libc::kill(sleep_pid as i32, libc::SIGKILL) };
+
+        // SAFETY: holding PATH_LOCK; restoring the saved value.
+        unsafe {
+            match previous_path {
+                Some(value) => std::env::set_var("PATH", value),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+        // Read before cleanup: removing the work dir deletes the marker with
+        // it, which would make the assertion below vacuously pass.
+        let marker_content = std::fs::read_to_string(&marker).ok();
+
+        assert!(
+            kill_result.is_ok(),
+            "group kill must succeed for a live group: {kill_result:?}"
+        );
+        assert!(
+            both_dead,
+            "group leader {sh_pid} and descendant {sleep_pid} must both die"
+        );
+        assert!(
+            marker_content.is_none(),
+            "an external kill was spawned (argv log: {marker_content:?}); \
+             group kills must use kill(2) directly"
+        );
+
+        let _ = std::fs::remove_dir_all(&work);
     }
 }

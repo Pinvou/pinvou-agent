@@ -231,15 +231,38 @@ pub fn apply_user_npm_prefix(_cmd: &mut Command) {}
 /// 退出收割用的树杀(macOS 走此实现)。连接器 CLI 是 npm shim(shell→node),
 /// spawn 侧已 `process_group(0)` 成组,这里按负 pid 杀整组;单杀 shim pid 会把
 /// node 孙进程孤儿化。组杀失败(进程未成组的旧登记)追加单 pid 兜底。
+///
+/// **严禁**委托外部 `/usr/bin/kill` 执行组杀,后续模块开发一律直调系统调用,
+/// 并由 `scripts/architecture-guard.py` 强制检查:外部工具的参数解析可能把
+/// 合法负 pid 错路由成 kill(-1)(procps-ng 4.0.4 在 Linux 上即如此,曾杀光
+/// 整个桌面会话);kill(2) 语义与其完全一致且不经过任何解析器。非 unix 目标
+/// 无 POSIX 进程组语义,合约分支遵循本文件「未支持能力」约定显式不做任何事,
+/// 全文件保持受 guard 检查,不得再引入外部 kill 调用形态。
+///
+/// `pid <= 1` 或无法以正数收入 `i32` 的 pid 一律拒绝:kill(2) 对 0 与 -1 有
+/// 特殊语义(0 = 调用方所在整组,-1 = 当前用户全部进程),边界在本函数自检,
+/// 不依赖调用方审计。
 pub fn kill_pid_tree(pid: u32) {
-    let group_arg = format!("-{pid}");
-    let group_ok = Command::new("kill")
-        .args(["-9", group_arg.as_str()])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if !group_ok {
-        let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+    #[cfg(unix)]
+    {
+        let Some(group) = i32::try_from(pid).ok().filter(|group| *group > 1) else {
+            return;
+        };
+        // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
+        let group_ok = unsafe { libc::kill(-group, libc::SIGKILL) } == 0;
+        if !group_ok {
+            // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched.
+            let _ = unsafe { libc::kill(group, libc::SIGKILL) };
+        }
+        return;
+    }
+    #[cfg(not(unix))]
+    {
+        // Non-unix targets have no POSIX process-group semantics; per this
+        // file's unsupported-capability contract the branch does nothing
+        // instead of delegating to an external tool. It stays under the
+        // architecture guard, so an external kill must never return here.
+        let _ = pid;
     }
 }
 
