@@ -210,7 +210,7 @@ for (const language of ['zh', 'en', 'ja']) {
 // 个人工作台模板 chip:每个模板 id 三语都要有展示名;数据侧 zh title 只是
 // 草稿匹配与消息 meta 的正本,不直接展示给 en/ja 用户。
 const workbench = source('features/chat/personal-workbench-scene.js');
-const workbenchTemplateIds = [...workbench.matchAll(/\n    id: '([\w-]+)',/g)].map(m => m[1]);
+const workbenchTemplateIds = [...workbench.matchAll(/\n {4}id: '([\w-]+)',/g)].map(m => m[1]);
 assert.equal(workbenchTemplateIds.length, 7, `expected 7 workbench templates, found ${workbenchTemplateIds.length}`);
 for (const language of ['zh', 'en', 'ja']) {
   for (const id of workbenchTemplateIds) {
