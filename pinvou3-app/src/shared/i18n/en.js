@@ -395,7 +395,7 @@ export const dictEn = {
         feedbackAttachmentHint: 'Supports png, jpg, jpeg, gif, webp, mp4, mov, webm; up to 5 files.',
         feedbackPrivacy: 'This sends your text, selected files, and non-sensitive app context. Chats and keys are not attached automatically.',
         feedbackSubmit: 'Submit', feedbackSubmitting: 'Submitting…', feedbackSubmitted: 'Feedback submitted. Thank you.',
-        feedbackRetry: 'Retry', feedbackCloseConfirm: 'Feedback draft has not been submitted. Close it?',
+        feedbackRetry: 'Retry', feedbackCloseConfirm: 'Feedback draft has not been submitted. Close it?', feedbackCloseAnyway: 'Close anyway',
         feedbackBodyRequired: 'Please enter feedback details.', feedbackUnsupportedFile: 'Unsupported attachment format.',
         feedbackTooManyFiles: 'You can attach up to 5 files.', feedbackPickUnavailable: 'File picker is unavailable.',
         chatGreeting: "Hi, what's good?", artifacts: 'Artifacts', placeholder: 'Ask PINVOU or enter a command', disclaimer: 'PINVOU may display inaccurate info, so double-check.', ctxUsage: 'Context',
@@ -893,6 +893,8 @@ Object.assign(dictEn, {
 dictEn.uiSettingsDetail.memoryLoadFailed = 'Failed to load memory profile. Please try again.';
 
 dictEn.uiSettingsDetail.memorySaveFailed = 'Failed to save memory profile. Please try again.';
+
+dictEn.uiSettingsDetail.memoryDeleteFailed = 'Failed to delete memory. Please try again.';
 
 dictEn.uiSettingsDetail.memorySourceUnavailable = 'Some memory sources are temporarily unavailable. The last successfully loaded content is preserved.';
 

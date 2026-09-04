@@ -33,6 +33,24 @@ assert.doesNotMatch(
   /loaded !== false/,
   'unknown model state must not be treated as loaded during automatic fill',
 );
+// 记忆删除/反馈关闭必须走应用内自绘二级确认弹窗（Tauri WebView2 下系统
+// window.confirm 实测不弹；详情见 tests/settings_window_confirm.test.mjs）。
+assert.doesNotMatch(
+  settingsViewSource,
+  /window\.confirm\s*\(/,
+  '设置页不得调用 window.confirm（Tauri WebView2 下不弹，须走应用内自绘确认弹窗）',
+);
+for (const confirmTestId of [
+  'memory-delete-confirm',
+  'memory-delete-confirm-ok',
+  'feedback-close-confirm',
+  'feedback-close-confirm-ok',
+]) {
+  assert.ok(
+    settingsViewSource.includes(`data-testid="${confirmTestId}"`),
+    `缺少应用内二级确认弹窗标识: ${confirmTestId}`,
+  );
+}
 
 function loadPuppeteer() {
   try { return require('puppeteer-core'); } catch { /* fall through */ }
@@ -132,7 +150,11 @@ function injectSource() {
     var dependencyCheckResponse = [];
     var memoryOverview = {
       profile: { version: 1, revision: 3, identity: { call_name: '升级前称呼', assistant_alias: 'PINVOU' }, conventions: {} },
-      preferences: [], work_context: [], current_focus: [], recent_activity: [], recent_work: [], pending: [], never: [],
+      preferences: [
+        { id: 'pref-to-delete', text: '待删除的偏好记忆', status: 'active' },
+        { id: 'pref-to-keep', text: '保留的偏好记忆', status: 'active' },
+      ],
+      work_context: [{ id: 'wc-to-delete', text: '待删除的工作上下文', status: 'active' }], current_focus: [], recent_activity: [], recent_work: [], pending: [], never: [],
       runtime: null, snapshot_path: '', warnings: [],
       sources: {
         profile: { available: true }, preferences: { available: true }, work_context: { available: true },
@@ -144,8 +166,10 @@ function injectSource() {
     var failMemoryUpdate = false;
     var pendingDownloadResolve = null;
     function record(cmd, args) { calls.push({ cmd: cmd, args: args || null }); }
+    // 注意：这里故意不 stub window.confirm。SettingsView 已全部改用应用内自绘二级确认
+    // （Tauri WebView2 下原生 confirm 不弹）；若有人复现原生 confirm，headless 下会
+    // 自动 dismiss 并导致流程断言失败，而不是被假 stub 掩盖。
     window.alert = function (message) { record('window_alert', { message: message }); };
-    window.confirm = function (message) { record('window_confirm', { message: message }); return true; };
     function emit(name, payload) {
       return Promise.all((handlers[name] || []).slice().map(function (handler) {
         return handler({ payload: payload || {} });
@@ -250,6 +274,16 @@ function injectSource() {
             runtime: null,
             warnings: [{ code: 'runtime_refresh_failed', source: 'runtime', detail: 'runtime cache locked' }],
           });
+        case 'delete_memory_preference':
+          memoryOverview = Object.assign({}, memoryOverview, {
+            preferences: (memoryOverview.preferences || []).filter(function (item) { return item.id !== args.id; }),
+          });
+          return Promise.resolve(null);
+        case 'delete_work_context_memory':
+          memoryOverview = Object.assign({}, memoryOverview, {
+            work_context: (memoryOverview.work_context || []).filter(function (item) { return item.id !== args.id; }),
+          });
+          return Promise.resolve(null);
         default: return Promise.resolve(null);
       }
     }
@@ -462,6 +496,33 @@ async function modalWidth(page, headingText) {
     const buttons = dialog ? [...dialog.querySelectorAll('button')] : [];
     if (buttons.length) buttons[0].click();
   });
+
+  // ①e 记忆删除：行内删除按钮 → 应用内二级确认弹窗（WebView2 无原生 confirm）
+  // → 确认后真正调用删除命令并从列表移除，相邻条目不受影响。
+  await page.waitForFunction(() => !!document.querySelector('[data-testid="memory-item-delete"]'));
+  await page.click('[data-testid="memory-item-delete"]');
+  await page.waitForFunction(() => !!document.querySelector('[data-testid="memory-delete-confirm"]'));
+  await page.click('[data-testid="memory-delete-confirm-ok"]');
+  await page.waitForFunction(() => !document.querySelector('[data-testid="memory-delete-confirm"]'));
+  await page.waitForFunction(() => !document.body.innerText.includes('待删除的偏好记忆'), { timeout: 5000 });
+  rec('①e 记忆删除经应用内确认后真正移除条目', await page.evaluate(() =>
+    !document.body.innerText.includes('待删除的偏好记忆')
+      && document.body.innerText.includes('保留的偏好记忆')
+      && window.__SETTINGS_TEST__.calls.some(function (item) { return item.cmd === 'delete_memory_preference'; })));
+
+  // ①f 工作上下文行删除走同一确认路径（bridge 按 kind 映射调用 delete_work_context_memory）。
+  // ①e 已移除首条偏好，长期记忆列表剩余删除按钮的最后一个即工作上下文行。
+  await page.evaluate(() => {
+    const buttons = [...document.querySelectorAll('[data-testid="memory-item-delete"]')];
+    if (buttons.length) buttons[buttons.length - 1].click();
+  });
+  await page.waitForFunction(() => !!document.querySelector('[data-testid="memory-delete-confirm"]'));
+  await page.click('[data-testid="memory-delete-confirm-ok"]');
+  await page.waitForFunction(() => !document.body.innerText.includes('待删除的工作上下文'), { timeout: 5000 });
+  rec('①f 工作上下文删除经同一确认路径', await page.evaluate(() =>
+    !document.body.innerText.includes('待删除的工作上下文')
+      && document.body.innerText.includes('保留的偏好记忆')
+      && window.__SETTINGS_TEST__.calls.some(function (item) { return item.cmd === 'delete_work_context_memory'; })));
 
   await clickSettingsSection(page, '更新');
   await page.evaluate(async () => {
@@ -1782,6 +1843,47 @@ async function modalWidth(page, headingText) {
     dialogClosed: !document.querySelector('[data-feedback-dialog="true"]'),
   }));
   rec('⑰ 提交反馈成功使用应用内 toast，不弹系统 alert', feedbackTyped === '反馈弹窗测试' && feedbackSubmit.nativeAlertCalls === 0 && feedbackSubmit.submitCalls === 1 && feedbackSubmit.toast && feedbackSubmit.dialogClosed, JSON.stringify({ feedbackTyped, ...feedbackSubmit }));
+  await sleep(200);
+
+  // ⑰.5 脏草稿关闭：走应用内确认层（Tauri WebView2 无原生 confirm）；
+  // 取消保留草稿与面板，确认后才真正关闭，且全程不误提交。
+  await clickExact(page, '提交反馈');
+  await sleep(250);
+  await page.evaluate(() => {
+    const textarea = document.querySelector('[data-feedback-dialog="true"] textarea[placeholder*="请描述"]');
+    if (!textarea) return;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    textarea.focus();
+    setter.call(textarea, '关闭确认测试');
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.evaluate(() => {
+    const modal = document.querySelector('[data-feedback-dialog="true"]');
+    const button = modal && [...modal.querySelectorAll('button')].find(node => (node.textContent || '').trim() === '取消');
+    if (button) button.click();
+  });
+  await page.waitForFunction(() => !!document.querySelector('[data-testid="feedback-close-confirm"]'));
+  await page.evaluate(() => {
+    const layer = document.querySelector('[data-testid="feedback-close-confirm"]');
+    const button = layer && [...layer.querySelectorAll('button')].find(node => (node.textContent || '').trim() === '取消');
+    if (button) button.click();
+  });
+  await page.waitForFunction(() => !document.querySelector('[data-testid="feedback-close-confirm"]'));
+  const feedbackCloseGuard = await page.evaluate(() => ({
+    panelStillOpen: !!document.querySelector('[data-feedback-dialog="true"]'),
+    draftKept: (document.querySelector('[data-feedback-dialog="true"] textarea[placeholder*="请描述"]')?.value || '') === '关闭确认测试',
+  }));
+  await page.evaluate(() => {
+    const modal = document.querySelector('[data-feedback-dialog="true"]');
+    const button = modal && [...modal.querySelectorAll('button')].find(node => (node.textContent || '').trim() === '取消');
+    if (button) button.click();
+  });
+  await page.waitForFunction(() => !!document.querySelector('[data-testid="feedback-close-confirm"]'));
+  await page.click('[data-testid="feedback-close-confirm-ok"]');
+  await page.waitForFunction(() => !document.querySelector('[data-testid="feedback-close-confirm"]') && !document.querySelector('[data-feedback-dialog="true"]'));
+  const feedbackCloseSubmitCalls = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'submit_feedback').length);
+  rec('⑰.5 脏草稿关闭走应用内确认层：取消保留草稿，确认后真正关闭且不误提交', feedbackCloseGuard.panelStillOpen && feedbackCloseGuard.draftKept && feedbackCloseSubmitCalls === 1, JSON.stringify({ ...feedbackCloseGuard, submitCalls: feedbackCloseSubmitCalls }));
   await sleep(200);
 
   await page.setViewport({ width: 760, height: 620 });

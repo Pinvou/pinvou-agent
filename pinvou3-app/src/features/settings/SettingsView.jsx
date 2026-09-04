@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, Globe, Lightbulb, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Sparkles, Trash2, User, Users, Wrench, X } from '../../components/icons.jsx';
+import { useEffect, useRef, useState } from 'react';
+import { Check, ChevronDown, Code, Cpu, Database, Globe, MessageSquare, Plus, RefreshCw, Search, Sparkles, Users, Wrench, X } from '../../components/icons.jsx';
 import { Toggle } from '../../components/Toggle.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
@@ -61,180 +61,12 @@ function visibleSortedModels(models) {
  * @property {string} kind - Memory list kind the item belongs to.
  * @property {string} text - Memory body text.
  * @property {string} [status] - Lifecycle status ('active' items are shown).
- * @property {number} [confidence] - Confidence score; absent for auto memory.
- * @property {string} [updated_at] - Last update ISO timestamp.
- * @property {string} [created_at] - Creation ISO timestamp.
- * @property {string} [last_seen_at] - Last seen ISO timestamp.
- * @property {string} [last_used_at] - Last used ISO timestamp.
- */
-
-/**
- * Memory-card strings from `t.uiSettingsView`.
- * @typedef {object} MemoryCardCopy
- * @property {string} memoryTimeSaved - Copy when no timestamp exists.
- * @property {string} memoryTimeToday - Copy for same-day updates.
- * @property {(days: number) => string} memoryTimeDaysAgo - Copy N days back.
- * @property {(month: number, day: number) => string} memoryTimeDate - Copy for older dates.
- * @property {string} memorySource - Source line prefix.
- * @property {string} memoryMoreActions - Overflow menu button title.
- * @property {string} memoryArchive - Archive menu item label.
- * @property {string} memoryConfidenceAuto - Confidence label: auto.
- * @property {string} memoryConfidenceHigh - Confidence label: high.
- * @property {string} memoryConfidenceMid - Confidence label: mid.
- * @property {string} memoryConfidenceLow - Confidence label: low.
- */
-
-/**
- * Memory detail-dialog strings from `t.uiSettingsDetail`.
- * @typedef {object} MemoryDetailCopy
- * @property {{ current_focus: string, recent_activity: string, work_context: string, preference: string }} memoryTypes - Kind display names.
- * @property {string} edit - Edit menu item label.
- * @property {string} delete - Delete menu item label.
  */
 
 // Stable default: avoid creating a fresh array literal on every render (react/no-unstable-default-props).
 /** @type {SettingsModelEntry[]} */
 const EMPTY_MODELS = [];
 const DEFAULT_ENABLED_SEARCH_PROVIDERS = ['bing'];
-
-// Shared style constants and Memory hub helpers: hoisted to module scope so the row component type
-// stays stable, avoiding per-render MemoryRow rebuilds that remount subtrees.
-const subText = 'text-[#444746] dark:text-[#C4C7C5]';
-const faintText = 'text-[#6B7280] dark:text-[#8F969E]';
-const border = 'border-[#DDE3EA] dark:border-[#333537]';
-const cardBg = 'bg-white border-[#DDE3EA] dark:bg-[#17191D] dark:border-white/[0.08]';
-const panelBg = 'bg-[#F8FAFD] text-[#1F1F1F] dark:bg-[#1F2023] dark:text-[#E8EAED]';
-const inputBg = 'bg-white border-[#DDE3EA] text-[#1F1F1F] placeholder:text-[#8A9099] dark:bg-[#131314] dark:border-[#3C4043] dark:text-[#E8EAED] dark:placeholder:text-[#777D86]';
-const ghostBtn = 'bg-[#E1E5EA] text-[#1F1F1F] hover:bg-[#D3D9E0] dark:bg-white/[0.07] dark:text-[#E3E3E3] dark:hover:bg-white/[0.11]';
-const dangerBtn = 'text-[#C5221F] hover:bg-[#FCE8E6] dark:text-[#F28B82] dark:hover:bg-[#3A2425]';
-const primaryBtn = 'bg-[#0B57D0] text-white hover:bg-[#1967D2] dark:bg-[#A8C7FA] dark:text-[#041E49] dark:hover:bg-[#C2D7FB]';
-const selectedTab = 'bg-[#E8F0FE] border-[#B8D1FF] text-[#0B57D0] dark:bg-[rgba(43,119,255,0.16)] dark:border-[rgba(70,145,255,0.35)] dark:text-[#D8E8FF]';
-/**
- * @param {string} kind - Memory item kind.
- * @param {MemoryDetailCopy} detailCopy - Localized settings detail copy.
- */
-const memoryTypeLabel = (kind, detailCopy) => kind === 'current_focus' ? detailCopy.memoryTypes.current_focus
-  : kind === 'recent_activity' ? detailCopy.memoryTypes.recent_activity
-  : kind === 'work_context' ? detailCopy.memoryTypes.work_context
-  : detailCopy.memoryTypes.preference;
-/** @param {string} kind - Memory item kind. */
-const memoryTypeTone = kind => kind === 'work_context' ? 'text-[#8AB4F8] bg-[#1A73E8]/[0.13]'
-  : kind === 'current_focus' ? 'text-[#FDD663] bg-[#FDD663]/[0.12]'
-  : kind === 'recent_activity' ? 'text-[#81C995] bg-[#34A853]/[0.12]'
-  : kind === 'profile' ? 'text-[#C58AF9] bg-[#A142F4]/[0.12]'
-  : 'text-[#A8C7FA] bg-[#A8C7FA]/[0.12]';
-/**
- * @param {MemoryItem} item - Memory item with timestamps.
- * @param {MemoryCardCopy} copy - Localized memory card copy.
- */
-const formatMemoryTime = (item, copy) => {
-  const raw = item.updated_at || item.created_at || item.last_seen_at || item.last_used_at;
-  if (!raw) return copy.memoryTimeSaved;
-  const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) return copy.memoryTimeSaved;
-  const diff = Date.now() - date.getTime();
-  const day = 24 * 60 * 60 * 1000;
-  if (diff >= 0 && diff < day) return copy.memoryTimeToday;
-  if (diff >= day && diff < 7 * day) return copy.memoryTimeDaysAgo(Math.floor(diff / day));
-  return copy.memoryTimeDate(date.getMonth() + 1, date.getDate());
-};
-/**
- * @param {MemoryItem} item - Memory item with a confidence score.
- * @param {MemoryCardCopy} copy - Localized memory card copy.
- */
-const confidenceText = (item, copy) => {
-  const n = Number(item.confidence);
-  if (!Number.isFinite(n)) return copy.memoryConfidenceAuto;
-  if (n >= 0.85) return copy.memoryConfidenceHigh;
-  if (n >= 0.65) return copy.memoryConfidenceMid;
-  return copy.memoryConfidenceLow;
-};
-/**
- * @param {{
- *   item: MemoryItem, copy: MemoryCardCopy, detailCopy: MemoryDetailCopy,
- *   menuFor: string | null, setMenuFor: (next: string | null) => void,
- *   startEdit: (item: MemoryItem) => void, archiveItem: (item: MemoryItem) => void,
- *   deleteItem: (item: MemoryItem) => void,
- * }} props - Memory item and the card callbacks it closes over.
- */
-const MemoryRow = ({ item, copy, detailCopy, menuFor, setMenuFor, startEdit, archiveItem, deleteItem }) => {
-  // Select the imported icon component directly by kind (no factory function, keeping the component statically identifiable).
-  const Icon = item.kind === 'current_focus' ? Lightbulb
-    : item.kind === 'recent_activity' ? RefreshCw
-    : item.kind === 'work_context' ? Briefcase
-    : item.kind === 'profile' ? User
-    : Sparkles;
-  const rowKey = `${item.kind}:${item.id}`;
-  return (
-    <div className={`group relative rounded-2xl border px-4 py-4 ${cardBg} shadow-[0_12px_34px_rgba(0,0,0,0.16)]`}>
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 mb-3">
-            <span className={`w-7 h-7 rounded-full flex items-center justify-center ${memoryTypeTone(item.kind)}`}><Icon size={14} /></span>
-            <span className="text-[13px] font-medium">{memoryTypeLabel(item.kind, detailCopy)}</span>
-            <span className={`ml-auto text-[11px] ${faintText}`}>{formatMemoryTime(item, copy)}</span>
-          </div>
-          <div className="text-[14px] leading-relaxed break-words">{item.text}</div>
-          <div className={`mt-3 text-[12px] ${faintText}`}>
-            {copy.memorySource} · {confidenceText(item, copy)}
-          </div>
-        </div>
-        <button type="button"
-          title={copy.memoryMoreActions}
-          onClick={(e) => {
-            e.stopPropagation();
-            setMenuFor(menuFor === rowKey ? null : rowKey);
-          }}
-          className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-colors text-[#5F6368] hover:bg-black/[0.06] dark:text-[#AEB4BC] dark:hover:bg-white/[0.08] dark:hover:text-[#F2F3F5]`}
-        >
-          <MoreHorizontal size={17} />
-        </button>
-      </div>
-      {menuFor === rowKey && (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard path handled by the real buttons inside the menu
-        // biome-ignore lint/a11y/noStaticElementInteractions: menu positioning container; menu items are real buttons
-        <div onClick={(e) => e.stopPropagation()} className={`absolute right-4 top-12 z-10 min-w-[118px] rounded-xl border ${border} bg-white text-[#1F1F1F] dark:bg-[#24262B] dark:text-[#E8EAED] shadow-2xl overflow-hidden`}>
-          <button type="button" onClick={() => startEdit(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] hover:bg-black/[0.04] dark:hover:bg-white/[0.07]`}><Edit2 size={14} />{detailCopy.edit}</button>
-          {(item.kind === 'current_focus' || item.kind === 'recent_activity') && (
-            <button type="button" onClick={() => archiveItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] hover:bg-black/[0.04] dark:hover:bg-white/[0.07]`}><Archive size={14} />{copy.memoryArchive}</button>
-          )}
-          <button type="button" onClick={() => deleteItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${dangerBtn}`}><Trash2 size={14} />{detailCopy.delete}</button>
-        </div>
-      )}
-    </div>
-  );
-};
-
-const SCard = React.forwardRef( // eslint-disable-line react/display-name -- forwardRef display component; no display-name debugging need
-  ({ title, titleAdornment, children, id, style }, ref) => (
-      <section ref={ref} id={id} style={style} className={`rounded-[24px] p-6 bg-[#F0F4F9] dark:bg-[#1E1F20]`}>
-        <h2 className="text-[18px] font-medium mb-6 flex items-center gap-2">
-          <span>{title}</span>
-          {titleAdornment}
-        </h2>
-        {children}
-      </section>
-    ));
-
-    const SRow = ({ label, desc, children }) => (
-      <div className="flex items-center justify-between gap-8">
-        <div className="min-w-0">
-          <span className="text-[16px] block mb-1">{label}</span>
-          {desc && <span className={`text-[13px] block text-[#444746] dark:text-[#C4C7C5]`}>{desc}</span>}
-        </div>
-        <div className="shrink-0">{children}</div>
-      </div>
-    );
-
-    const SField = ({ label, ...inputProps }) => (
-      <div>
-        <span className={`text-[14px] block mb-2 text-[#444746] dark:text-[#C4C7C5]`}>{label}</span>
-        <input
-          {...inputProps}
-          className={`w-full px-4 py-2 rounded-lg text-[14px] outline-none transition-colors bg-white text-[#1F1F1F] border border-[#C4C7C5] focus:border-[#0B57D0] dark:bg-[#131314] dark:text-[#E3E3E3] dark:border-[#444746] dark:focus:border-[#A8C7FA]`}
-        />
-      </div>
-    );
 
     const SSegmented = ({ options, value, onChange }) => (
       <div data-testid="settings-segmented" className={`p-1 rounded-full flex flex-wrap justify-end gap-1 max-w-full max-sm:w-full max-sm:flex-nowrap bg-[#E1E5EA] dark:bg-[#131314]`}>
@@ -250,278 +82,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       </div>
     );
 
-    // 「需重启」统一表达：改动后才出现，一句说明 + 一个动作，替代常驻大按钮和斜体小字
-    const SActionBar = ({ message, actionLabel, onAction }) => (
-      <div className={`flex items-center justify-between gap-4 px-4 py-3 rounded-xl bg-white dark:bg-[#131314]`}>
-        <span className={`text-[13px] text-[#444746] dark:text-[#C4C7C5]`}>{message}</span>
-        <button type="button"
-          onClick={onAction}
-          className={`text-[13px] font-medium px-4 py-2 rounded-full whitespace-nowrap transition-colors bg-[#0B57D0] text-white hover:bg-[#1967D2] dark:bg-[#A8C7FA] dark:text-[#041E49] dark:hover:bg-[#C2D7FB]`}
-        >{actionLabel}</button>
-      </div>
-    );
-
-      // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
-    const MemorySettingsCard = ({ bs, memoryEnabled, onMemoryEnabledChange, t }) => {
-      const copy = t.uiSettingsView;
-      const detailCopy = t.uiSettingsDetail;
-      const unselectedTrack = 'justify-start bg-[#DADCE0] dark:bg-[#3C4043]';
-      const memory = (bs && bs.memory) || {};
-      const profile = memory.profile || {};
-      const identity = profile.identity || {};
-      const preferences = memory.preferences || [];
-      const workContext = memory.work_context || [];
-      const currentFocus = (memory.current_focus || []).filter(item => item.status === 'active');
-      const recentActivity = (memory.recent_activity || []).filter(item => item.status === 'active');
-      const [open, setOpen] = useState(false);
-      const [tab, setTab] = useState('long_term');
-      const [query, setQuery] = useState('');
-      const [menuFor, setMenuFor] = useState(/** @type {string | null} */ (null));
-      const [draft, setDraft] = useState({
-        call_name: identity.call_name || '',
-        assistant_alias: identity.assistant_alias || '',
-      });
-      const [editing, setEditing] = useState(null);
-      const [saving, setSaving] = useState(false);
-      const profileCount = (identity.call_name ? 1 : 0) + (identity.assistant_alias ? 1 : 0);
-      const profileSummary = [
-        identity.call_name ? copy.profileCallName(identity.call_name) : '',
-        identity.assistant_alias ? copy.profileAssistantAlias(identity.assistant_alias) : '',
-      ].filter(Boolean).join(' · ');
-      const total = preferences.length + workContext.length + currentFocus.length + recentActivity.length;
-      const longTermItems = [
-        ...preferences.map(item => ({ ...item, kind: 'preference' })),
-        ...workContext.map(item => ({ ...item, kind: 'work_context' })),
-      ];
-      const recentItems = [
-        ...currentFocus.map(item => ({ ...item, kind: 'current_focus' })),
-        ...recentActivity.map(item => ({ ...item, kind: 'recent_activity' })),
-      ];
-      const longTermCount = profileCount + longTermItems.length;
-      const recentCount = recentItems.length;
-      const tabs = [
-        { key: 'long_term', label: detailCopy.longMemory, count: longTermCount, icon: Database },
-        { key: 'recent', label: copy.memoryTabRecent, count: recentCount, icon: RefreshCw },
-      ];
-      const tabMeta = tabs.find(x => x.key === tab) || tabs[0];
-      const normalizedQuery = query.trim().toLowerCase();
-      const searchMatch = text => !normalizedQuery || String(text || '').toLowerCase().includes(normalizedQuery);
-
-      useEffect(() => {
-        if (!bridge.available || !bridge.memory.loadMemoryOverview) return;
-        bridge.memory.loadMemoryOverview();
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: completing it would cause duplicate requests or polling loops
-      }, [bs && bs.activeSessionId]);
-      useEffect(() => {
-        setDraft({ // eslint-disable-line react-hooks/set-state-in-effect -- sync draft echo when identity fields change; controlled mirror
-          call_name: identity.call_name || '',
-          assistant_alias: identity.assistant_alias || '',
-        });
-      }, [identity.call_name, identity.assistant_alias]);
-      useEffect(() => {
-        setMenuFor(null); // eslint-disable-line react-hooks/set-state-in-effect -- clear menu and search when switching tabs or closing the modal
-        setQuery('');
-      }, [tab, open]);
-
-      const reload = () => bridge.available && bridge.memory.loadMemoryOverview && bridge.memory.loadMemoryOverview();
-      const saveProfile = async () => {
-        if (!bridge.available || !bridge.memory.saveMemoryProfilePatch) return;
-        setSaving(true);
-        try {
-          await bridge.memory.saveMemoryProfilePatch({
-            call_name: draft.call_name,
-            assistant_alias: draft.assistant_alias,
-          });
-        } finally {
-          setSaving(false);
-        }
-      };
-      const startEdit = item => {
-        setMenuFor(null);
-        setEditing({
-          kind: item.kind,
-          id: item.id,
-          text: item.text || item.content || '',
-        });
-      };
-      const saveEdit = async () => {
-        if (!editing || !bridge.memory.updateMemoryItem) return;
-        setSaving(true);
-        try {
-          await bridge.memory.updateMemoryItem(editing.kind, editing.id, {
-            text: editing.text,
-          });
-          setEditing(null);
-        } finally {
-          setSaving(false);
-        }
-      };
-      const deleteItem = async item => {
-        setMenuFor(null);
-        if (!item || !bridge.memory.deleteMemoryItem) return;
-        if (!window.confirm(copy.memoryDeleteConfirm)) return;
-        await bridge.memory.deleteMemoryItem(item.kind, item.id);
-      };
-      const archiveItem = async item => {
-        setMenuFor(null);
-        if (!item || !bridge.memory.archiveRecentWorkMemory) return;
-        await bridge.memory.archiveRecentWorkMemory(item.id);
-      };
-      const activeList = tab === 'recent' ? recentItems : longTermItems;
-      const filteredList = activeList.filter(item => searchMatch(item.text || item.content));
-
-      return (
-        <>
-          <SCard title={copy.memoryCardTitle}>
-            <div className="flex items-center justify-between gap-4">
-              <div className="min-w-0">
-                <div className={`text-[14px] font-medium text-[#1F1F1F] dark:text-[#E8EAED]`}>
-                  {memoryEnabled ? copy.memoryEnabled : copy.memoryDisabled}
-                </div>
-                <div className={`mt-1 text-[13px] leading-relaxed ${subText}`}>
-                  {memoryEnabled
-                    ? (memory.loading ? copy.memoryLoading : (profileSummary ? copy.memorySummaryWithProfile(profileSummary, total) : copy.memorySummary(total)))
-                    : copy.memoryOffDesc}
-                </div>
-                {memory.error && <div className="mt-2 text-[13px] text-[#EA4335]">{memory.error}</div>}
-              </div>
-              <div className="shrink-0 flex items-center gap-2">
-                <button type="button"
-                  onClick={() => onMemoryEnabledChange && onMemoryEnabledChange(!memoryEnabled)}
-                  role="switch"
-                  aria-checked={!!memoryEnabled}
-                  title={memoryEnabled ? copy.memoryTurnOff : copy.memoryTurnOn}
-                  className={`w-12 h-7 rounded-full p-1 flex items-center transition-colors ${memoryEnabled ? 'justify-end bg-[#0B57D0]' : unselectedTrack}`}
-                >
-                  <span className="block w-5 h-5 rounded-full bg-white shadow" />
-                </button>
-                {memoryEnabled && (
-                  <button type="button" onClick={() => { setOpen(true); reload(); }} className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${primaryBtn}`}>
-                    {copy.memoryViewManage}
-                  </button>
-                )}
-              </div>
-            </div>
-          </SCard>
-
-          {open && (
-            <div className="fixed inset-0 z-[80] flex items-center justify-center px-4 py-6">
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the modal header close button */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
-              <div className="absolute inset-0 bg-black/55" onClick={() => setOpen(false)} />
-              <div className={`relative w-full max-w-[980px] max-h-[88vh] overflow-hidden rounded-[22px] border ${border} ${panelBg} shadow-2xl`}>
-                <div className={`flex items-center justify-between gap-4 px-6 py-4 border-b ${border}`}>
-                  <div>
-                    <div className="text-[19px] font-semibold">{copy.memoryCenterTitle}</div>
-                    <div className={`text-[12px] mt-1 ${subText}`}>{copy.memoryCenterDesc}</div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button type="button" onClick={reload} disabled={!!memory.loading} className={`inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-full ${ghostBtn}`}><RefreshCw size={13} className={memory.loading ? 'animate-spin' : ''} />{memory.loading ? copy.memorySyncing : copy.memorySync}</button>
-                    <button type="button" onClick={() => setOpen(false)} className={`w-8 h-8 rounded-full flex items-center justify-center ${ghostBtn}`}><X size={15} /></button>
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-[190px_1fr] min-h-[420px] max-h-[calc(88vh-73px)]">
-                  <div className={`border-b md:border-b-0 md:border-r ${border} p-3 overflow-auto`}>
-                    <div className="space-y-1">
-                      {tabs.map(({ key, label, count, icon: TabIcon }) => (
-                        <button type="button"
-                          key={key}
-                          onClick={() => setTab(key)}
-      // eslint-disable-next-line sonarjs/no-nested-template-literals -- nested templates map 1:1 to the i18n copy structure; flattening hurts readability
-                          className={`w-full flex items-center gap-2 text-left px-3 py-2 rounded-full border text-[13px] transition-colors ${tab === key ? selectedTab : `border-transparent hover:bg-black/[0.04] dark:hover:bg-white/[0.06]`}`}
-                        >
-                          <TabIcon size={15} className="shrink-0" />
-                          <span className="min-w-0 flex-1 truncate">{label}</span>
-                          <span className="text-[11px] opacity-75">{count}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  {/* biome-ignore lint/a11y/useKeyWithClickEvents: blank-area click collapses the menu; keyboard path handled by the menu items and trigger button */}
-                  {/* biome-ignore lint/a11y/noStaticElementInteractions: blank-area click-to-collapse region; non-interactive container */}
-                  <div className="p-5 overflow-auto" onClick={() => setMenuFor(null)}>
-                    {!memoryEnabled && (
-                      <div className={`mb-4 rounded-2xl border px-4 py-3 bg-white border-[#DDE3EA] dark:bg-white/[0.04] dark:border-white/[0.08]`}>
-                        <div className={`text-[13px] leading-relaxed ${subText}`}>{copy.memoryOffNotice}</div>
-                      </div>
-                    )}
-                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-5">
-                      <div>
-                        <div className="text-[16px] font-semibold">{tabMeta.label}</div>
-                        <div className={`text-[12px] mt-1 ${faintText}`}>{tab === 'long_term' ? copy.memoryLongTermTabDesc : copy.memoryRecentTabDesc} · {copy.memoryItemCount(tabMeta.count)}</div>
-                      </div>
-                      <div className={`h-10 min-w-0 md:w-[260px] flex items-center gap-2 rounded-full border px-3 ${inputBg}`}>
-                        <Search size={15} className={faintText} />
-                        <input value={query} onChange={e => setQuery(e.target.value)} onClick={e => e.stopPropagation()} placeholder={copy.memorySearchPlaceholder} className="w-full bg-transparent outline-none text-[13px]" />
-                      </div>
-                    </div>
-
-                    {tab === 'long_term' ? (
-                      <div className="space-y-4">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          <SField label={copy.memoryCallNameLabel} value={draft.call_name} onChange={e => setDraft({ ...draft, call_name: e.target.value })} placeholder={copy.memoryCallNamePlaceholder} />
-                          <SField label={copy.memoryAssistantAliasLabel} value={draft.assistant_alias} onChange={e => setDraft({ ...draft, assistant_alias: e.target.value })} placeholder={copy.memoryAssistantAliasPlaceholder} />
-                        </div>
-                        <div className="flex justify-end">
-                          <button type="button" onClick={saveProfile} disabled={saving} className={`text-[12px] font-medium px-4 py-2 rounded-full ${primaryBtn} ${saving ? 'opacity-50' : ''}`}>{saving ? detailCopy.saving : detailCopy.save}</button>
-                        </div>
-                        {filteredList.length === 0 ? (
-                          <div className={`text-[13px] ${subText}`}>{query.trim() ? copy.memoryNoMatchLongTerm : copy.memoryEmptyLongTerm}</div>
-                        ) : (
-                          <div className="space-y-3">{filteredList.map(item => <MemoryRow key={`${item.kind}:${item.id}`} item={item} copy={copy} detailCopy={detailCopy} menuFor={menuFor} setMenuFor={setMenuFor} startEdit={startEdit} archiveItem={archiveItem} deleteItem={deleteItem} />)}</div>
-                        )}
-                        <div className={`rounded-2xl border px-4 py-3 bg-white/70 border-[#DDE3EA] dark:bg-white/[0.03] dark:border-white/[0.06]`}>
-                          <div className={`text-[12px] leading-relaxed ${faintText}`}>{copy.memoryLongTermHint}</div>
-                        </div>
-                      </div>
-                    ) : filteredList.length === 0 ? (
-                      <div className={`text-[13px] ${subText}`}>{query.trim() ? copy.memoryNoMatchRecent : copy.memoryEmptyRecent}</div>
-                    ) : (
-                      <div className="space-y-3">
-                        {filteredList.map(item => <MemoryRow key={`${item.kind}:${item.id}`} item={item} copy={copy} detailCopy={detailCopy} menuFor={menuFor} setMenuFor={setMenuFor} startEdit={startEdit} archiveItem={archiveItem} deleteItem={deleteItem} />)}
-                        <div className={`rounded-2xl border px-4 py-3 bg-white/70 border-[#DDE3EA] dark:bg-white/[0.03] dark:border-white/[0.06]`}>
-                          <div className={`text-[12px] leading-relaxed ${faintText}`}>{copy.memoryRecentHint}</div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {editing && (
-            <div className="fixed inset-0 z-[90] flex items-center justify-center px-4">
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the modal cancel button */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
-              <div className="absolute inset-0 bg-black/60" onClick={() => setEditing(null)} />
-              <div className={`relative w-full max-w-[560px] rounded-[18px] border ${border} ${panelBg} p-5 shadow-2xl`}>
-                <div className="flex items-center justify-between gap-3 mb-4">
-                  <div>
-                    <div className="text-[16px] font-semibold">{detailCopy.editTitle(memoryTypeLabel(editing.kind, detailCopy))}</div>
-                    <div className={`text-[12px] mt-1 ${subText}`}>{copy.memoryEditDesc}</div>
-                  </div>
-                  <button type="button" onClick={() => setEditing(null)} className={`w-8 h-8 rounded-full flex items-center justify-center ${ghostBtn}`}><X size={15} /></button>
-                </div>
-                <div className="space-y-3">
-                  <label className="block">
-                    <span className={`block text-[12px] mb-1.5 ${subText}`}>{detailCopy.content}</span>
-                    <textarea value={editing.text} onChange={e => setEditing({ ...editing, text: e.target.value })} rows={5} className={`w-full rounded-xl border px-3 py-2 text-[14px] outline-none resize-none ${inputBg}`} />
-                  </label>
-                </div>
-                <div className="mt-5 flex justify-end gap-2">
-                  <button type="button" onClick={() => setEditing(null)} className={`text-[13px] px-4 py-2 rounded-full ${ghostBtn}`}>{detailCopy.cancel}</button>
-                  <button type="button" onClick={saveEdit} disabled={saving || !editing.text.trim()} className={`text-[13px] font-medium px-4 py-2 rounded-full ${primaryBtn} ${(saving || !editing.text.trim()) ? 'opacity-50' : ''}`}>{saving ? detailCopy.saving : detailCopy.save}</button>
-                </div>
-              </div>
-            </div>
-          )}
-
-        </>
-      );
-    };
-
-      // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
     const ProviderIcon = ({ preset, vendor, providerKind, model, compact = false }) => {
       const modelId = String(model || '').toLowerCase();
       if (preset === 'local_vllm' && modelId.includes('qwen')) {
@@ -2073,6 +1634,20 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         </div>
       </div>
     );
+    /** @param {{ item: MemoryItem, copy: { memoryDeleteConfirm: string }, detailCopy: { delete: string, cancel: string }, onConfirmDelete: (item: MemoryItem) => void, setMemoryDeleteConfirm: (next: MemoryItem | null) => void }} props - Delete-memory confirm state and actions. Tauri WebView2 下系统 window.confirm 不弹，故与模型/搜索删除一样使用应用内自绘二级确认。 */
+    const MemoryDeleteDialog = ({ item, copy, detailCopy, onConfirmDelete, setMemoryDeleteConfirm }) => (
+      <div data-testid="memory-delete-confirm" className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
+        <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
+          <div className="px-5 pt-5 pb-4 text-center">
+            <h3 className="text-[17px] leading-6 font-semibold">{copy.memoryDeleteConfirm}</h3>
+          </div>
+          <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
+            <button type="button" data-testid="memory-delete-confirm-ok" onClick={() => { onConfirmDelete(item); setMemoryDeleteConfirm(null); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{detailCopy.delete}</button>
+            <button type="button" onClick={() => setMemoryDeleteConfirm(null)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{detailCopy.cancel}</button>
+          </div>
+        </div>
+      </div>
+    );
 
     // eslint-disable-next-line no-unused-vars, sonarjs/cognitive-complexity -- contract slot parameters kept; the settings page aggregates many form branches, splitting needs a dedicated design
     const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = DEFAULT_ENABLED_SEARCH_PROVIDERS, onAddSearchProvider, onDeleteSearchProvider, _searchApiKey, setSearchApiKey, _searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, _searchNeedsRestart, _languageNeedsRestart, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
@@ -2106,6 +1681,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const [feedbackDraft, setFeedbackDraft] = useState({ type: 'issue', title: '', description: '', attachments: [] });
       const [feedbackStatus, setFeedbackStatus] = useState({ state: 'idle', message: '', receipt: null });
       const [feedbackNotice, setFeedbackNotice] = useState('');
+      const [feedbackCloseConfirm, setFeedbackCloseConfirm] = useState(false);
       const versionUpdateRef = useRef(null);
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
       const memorySettingsVisible = !!(bs && bs.settings && bs.settings.language === 'zh-Hans');
@@ -2147,7 +1723,13 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       };
       const closeFeedback = () => {
         const dirty = feedbackDraft.title.trim() || feedbackDraft.description.trim() || feedbackDraft.attachments.length > 0;
-        if (dirty && feedbackStatus.state !== 'submitted' && !window.confirm(t.feedbackCloseConfirm)) return;
+        if (dirty && feedbackStatus.state !== 'submitted' && !feedbackCloseConfirm) {
+          // Tauri WebView2 下系统 window.confirm 实测不弹；应用内自绘弹窗无此限制
+          // （同 ProviderFormModal / MemoryDeleteDialog），先弹应用内确认层再真正关闭。
+          setFeedbackCloseConfirm(true);
+          return;
+        }
+        setFeedbackCloseConfirm(false);
         setFeedbackOpen(false);
         if (feedbackStatus.state === 'submitted') resetFeedback();
       };
@@ -2201,6 +1783,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           if (receipt && receipt.status === 'submitted') {
             setFeedbackNotice(receipt.message || t.feedbackSubmitted);
             resetFeedback();
+            // 提交成功不经 closeFeedback 出口；不复位确认层会在重开面板时残留幽灵确认层。
+            setFeedbackCloseConfirm(false);
             setFeedbackOpen(false);
             return;
           }
@@ -2306,6 +1890,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const [memorySaving, setMemorySaving] = useState(false);
       const [memoryEditorError, setMemoryEditorError] = useState('');
       const [profileSaveError, setProfileSaveError] = useState('');
+      const [memoryDeleteConfirm, setMemoryDeleteConfirm] = useState(/** @type {MemoryItem | null} */ (null));
+      const [memoryDeleteError, setMemoryDeleteError] = useState('');
       const openMemoryItemViewer = item => {
         setMemoryEditor({
           mode: 'memory',
@@ -2326,6 +1912,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         setMemorySaving(true);
         setMemoryEditorError('');
         setProfileSaveError('');
+        // 删除失败横幅不粘滞：横幅链里它优先级最高，保存动作要能让位给最新错误
+        setMemoryDeleteError('');
         try {
           if (memoryEditor.mode === 'memory') {
             if (!text || !bridge.memory.updateMemoryItem) return;
@@ -2340,6 +1928,26 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           setProfileSaveError(String(error));
         } finally {
           setMemorySaving(false);
+        }
+      };
+      /** @param {MemoryItem} item - 记忆条目；只记录待删项，确认后由 confirmDeleteItem 真正删除。 */
+      const deleteItem = item => {
+        if (!item || !bridge.memory.deleteMemoryItem) return;
+        // Tauri WebView2 下系统 window.confirm 实测不弹；应用内自绘弹窗无此限制
+        // （同 ProviderFormModal / ToolStoreView），先记下待删条目，确认后再真正删除。
+        setMemoryDeleteError('');
+        setMemoryDeleteConfirm(item);
+      };
+      /** @param {MemoryItem} item - 已确认删除的记忆条目（唯一调用 deleteMemoryItem 的确认路径）。 */
+      const confirmDeleteItem = async item => {
+        if (!item || !bridge.memory.deleteMemoryItem) return;
+        try {
+          await bridge.memory.deleteMemoryItem(item.kind, item.id);
+          setMemoryDeleteError('');
+        } catch (error) {
+          // bridge 已把错误写入 bs.memory 并重抛；这里落横幅（删除失败语义），
+          // 避免浮动 promise 拒绝噪声。兜底非空，保证横幅必然渲染。
+          setMemoryDeleteError(String(error?.message || error || 'delete failed'));
         }
       };
       const editProfile = key => {
@@ -2543,7 +2151,10 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             <div className="min-w-0 flex-1">
               <div className={`text-[15px] leading-6 whitespace-pre-wrap break-words line-clamp-3 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{text}</div>
             </div>
-            <button type="button" onClick={() => openMemoryItemViewer(item)} className={`shrink-0 mt-0.5 text-[14px] px-3 py-1.5 rounded-full ${actionButton('blue')}`}>{settingsCopy.view}</button>
+            <div className="shrink-0 mt-0.5 flex items-center gap-2">
+              <button type="button" onClick={() => openMemoryItemViewer(item)} className={`text-[14px] px-3 py-1.5 rounded-full ${actionButton('blue')}`}>{settingsCopy.view}</button>
+              <button type="button" data-testid="memory-item-delete" onClick={() => deleteItem(item)} className={`text-[14px] px-3 py-1.5 rounded-full ${actionButton('red')}`}>{settingsCopy.delete}</button>
+            </div>
           </div>
         );
       }) : <IOSRow label={empty} />;
@@ -2556,7 +2167,11 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           </IOSSection>
           {memoryEnabled && (
             <>
-              {profileSaveError ? (
+              {memoryDeleteError ? (
+                <div data-testid="memory-settings-error" role="alert" aria-live="polite" className="mb-4 rounded-[14px] bg-[#FF3B30]/10 px-4 py-3 text-[13px] leading-5 text-[#FF3B30]">
+                  {settingsCopy.memoryDeleteFailed}
+                </div>
+              ) : profileSaveError ? (
                 <div data-testid="memory-settings-error" role="alert" aria-live="polite" className="mb-4 rounded-[14px] bg-[#FF3B30]/10 px-4 py-3 text-[13px] leading-5 text-[#FF3B30]">
                   {settingsCopy.memorySaveFailed}
                 </div>
@@ -2800,6 +2415,16 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           )}
           {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} settingsCopy={settingsCopy} onDeleteModel={onDeleteModel} setModelDeleteConfirm={setModelDeleteConfirm} />}
           {searchDeleteConfirm && <SearchDeleteDialog source={searchDeleteConfirm} settingsCopy={settingsCopy} onDeleteSearchProvider={onDeleteSearchProvider} setSearchDeleteConfirm={setSearchDeleteConfirm} setRestartDialog={setRestartDialog} />}
+          {/* 删除二级确认：与 ModelDeleteDialog / SearchDeleteDialog 同款 iOS 弹窗配方（背景点击不关闭） */}
+          {memoryDeleteConfirm && (
+            <MemoryDeleteDialog
+              item={memoryDeleteConfirm}
+              copy={t.uiSettingsView}
+              detailCopy={settingsCopy}
+              onConfirmDelete={confirmDeleteItem}
+              setMemoryDeleteConfirm={setMemoryDeleteConfirm}
+            />
+          )}
           {searchPickerOpen && (
             // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal cancel button
             // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
@@ -2974,6 +2599,20 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
               </div>
             </div>
           )}
+          {/* 关闭反馈的二级确认层：盖在反馈面板（z-[100]）之上，配方同 MemoryDeleteDialog（背景点击不关闭） */}
+          {feedbackOpen && feedbackCloseConfirm && (
+            <div data-testid="feedback-close-confirm" className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
+              <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
+                <div className="px-5 pt-5 pb-4 text-center">
+                  <h3 className="text-[17px] leading-6 font-semibold">{t.feedbackCloseConfirm}</h3>
+                </div>
+                <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
+                  <button type="button" data-testid="feedback-close-confirm-ok" onClick={() => { setFeedbackCloseConfirm(false); closeFeedback(); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{t.feedbackCloseAnyway}</button>
+                  <button type="button" onClick={() => setFeedbackCloseConfirm(false)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{t.cancel}</button>
+                </div>
+              </div>
+            </div>
+          )}
           {feedbackNotice && (
             <div className="fixed left-1/2 bottom-8 z-[130] -translate-x-1/2 px-4 py-2.5 rounded-full bg-black/80 text-white text-[14px] shadow-xl backdrop-blur-md">
               {feedbackNotice}
@@ -2989,4 +2628,4 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
     // ==========================================
     // 安装工具后新建会话弹出的介绍卡片（纯前端，不发 LLM query，点 chip 才发消息）
 
-export { SCard, SRow, SField, SSegmented, SActionBar, MemorySettingsCard, MODEL_PRESET_DEFS, presetOptionsI18n, presetProviderLabel, WebAccessModal, ModelFormModal, SettingsView };
+export { SSegmented, MODEL_PRESET_DEFS, presetOptionsI18n, presetProviderLabel, WebAccessModal, ModelFormModal, SettingsView };
