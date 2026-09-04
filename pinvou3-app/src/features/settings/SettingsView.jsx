@@ -277,6 +277,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const [tab, setTab] = useState('long_term');
       const [query, setQuery] = useState('');
       const [menuFor, setMenuFor] = useState(/** @type {string | null} */ (null));
+      const [memoryDeleteConfirm, setMemoryDeleteConfirm] = useState(/** @type {MemoryItem | null} */ (null));
       const [draft, setDraft] = useState({
         call_name: identity.call_name || '',
         assistant_alias: identity.assistant_alias || '',
@@ -356,10 +357,15 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           setSaving(false);
         }
       };
-      const deleteItem = async item => {
+      const deleteItem = item => {
         setMenuFor(null);
         if (!item || !bridge.memory.deleteMemoryItem) return;
-        if (!window.confirm(copy.memoryDeleteConfirm)) return;
+        // Tauri WebView2 下系统 window.confirm 实测不弹；应用内自绘弹窗无此限制
+        // （同 ProviderFormModal / ToolStoreView），改为先记下待删条目，确认后再真正删除。
+        setMemoryDeleteConfirm(item);
+      };
+      const confirmDeleteItem = async item => {
+        if (!item || !bridge.memory.deleteMemoryItem) return;
         await bridge.memory.deleteMemoryItem(item.kind, item.id);
       };
       const archiveItem = async item => {
@@ -515,6 +521,17 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                 </div>
               </div>
             </div>
+          )}
+
+          {/* 删除二级确认：与 ModelDeleteDialog / SearchDeleteDialog 同款 iOS 弹窗配方（背景点击不关闭） */}
+          {memoryDeleteConfirm && (
+            <MemoryDeleteDialog
+              item={memoryDeleteConfirm}
+              copy={copy}
+              detailCopy={detailCopy}
+              onConfirmDelete={confirmDeleteItem}
+              setMemoryDeleteConfirm={setMemoryDeleteConfirm}
+            />
           )}
 
         </>
@@ -2073,6 +2090,20 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         </div>
       </div>
     );
+    /** @param {{ item: MemoryItem, copy: { memoryDeleteConfirm: string }, detailCopy: { delete: string, cancel: string }, onConfirmDelete: (item: MemoryItem) => void, setMemoryDeleteConfirm: (next: MemoryItem | null) => void }} props - Delete-memory confirm state and actions. Tauri WebView2 下系统 window.confirm 不弹，故与模型/搜索删除一样使用应用内自绘二级确认。 */
+    const MemoryDeleteDialog = ({ item, copy, detailCopy, onConfirmDelete, setMemoryDeleteConfirm }) => (
+      <div data-testid="memory-delete-confirm" className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
+        <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
+          <div className="px-5 pt-5 pb-4 text-center">
+            <h3 className="text-[17px] leading-6 font-semibold">{copy.memoryDeleteConfirm}</h3>
+          </div>
+          <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
+            <button type="button" data-testid="memory-delete-confirm-ok" onClick={() => { onConfirmDelete(item); setMemoryDeleteConfirm(null); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{detailCopy.delete}</button>
+            <button type="button" onClick={() => setMemoryDeleteConfirm(null)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{detailCopy.cancel}</button>
+          </div>
+        </div>
+      </div>
+    );
 
     // eslint-disable-next-line no-unused-vars, sonarjs/cognitive-complexity -- contract slot parameters kept; the settings page aggregates many form branches, splitting needs a dedicated design
     const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = DEFAULT_ENABLED_SEARCH_PROVIDERS, onAddSearchProvider, onDeleteSearchProvider, _searchApiKey, setSearchApiKey, _searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, _searchNeedsRestart, _languageNeedsRestart, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
@@ -2106,6 +2137,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const [feedbackDraft, setFeedbackDraft] = useState({ type: 'issue', title: '', description: '', attachments: [] });
       const [feedbackStatus, setFeedbackStatus] = useState({ state: 'idle', message: '', receipt: null });
       const [feedbackNotice, setFeedbackNotice] = useState('');
+      const [feedbackCloseConfirm, setFeedbackCloseConfirm] = useState(false);
       const versionUpdateRef = useRef(null);
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
       const memorySettingsVisible = !!(bs && bs.settings && bs.settings.language === 'zh-Hans');
@@ -2147,7 +2179,13 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       };
       const closeFeedback = () => {
         const dirty = feedbackDraft.title.trim() || feedbackDraft.description.trim() || feedbackDraft.attachments.length > 0;
-        if (dirty && feedbackStatus.state !== 'submitted' && !window.confirm(t.feedbackCloseConfirm)) return;
+        if (dirty && feedbackStatus.state !== 'submitted' && !feedbackCloseConfirm) {
+          // Tauri WebView2 下系统 window.confirm 实测不弹；应用内自绘弹窗无此限制
+          // （同 ProviderFormModal / MemoryDeleteDialog），先弹应用内确认层再真正关闭。
+          setFeedbackCloseConfirm(true);
+          return;
+        }
+        setFeedbackCloseConfirm(false);
         setFeedbackOpen(false);
         if (feedbackStatus.state === 'submitted') resetFeedback();
       };
@@ -2970,6 +3008,20 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                     <button type="button" onClick={submitFeedbackDraft} disabled={feedbackStatus.state === 'submitting'} className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold disabled:opacity-35">
                       {feedbackStatus.state === 'submitting' ? t.feedbackSubmitting : t.feedbackSubmit}
                     </button>
+                </div>
+              </div>
+            </div>
+          )}
+          {/* 关闭反馈的二级确认层：盖在反馈面板（z-[100]）之上，配方同 MemoryDeleteDialog（背景点击不关闭） */}
+          {feedbackOpen && feedbackCloseConfirm && (
+            <div data-testid="feedback-close-confirm" className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
+              <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
+                <div className="px-5 pt-5 pb-4 text-center">
+                  <h3 className="text-[17px] leading-6 font-semibold">{t.feedbackCloseConfirm}</h3>
+                </div>
+                <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
+                  <button type="button" data-testid="feedback-close-confirm-ok" onClick={() => { setFeedbackCloseConfirm(false); closeFeedback(); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{t.feedbackCloseAnyway}</button>
+                  <button type="button" onClick={() => setFeedbackCloseConfirm(false)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{t.cancel}</button>
                 </div>
               </div>
             </div>

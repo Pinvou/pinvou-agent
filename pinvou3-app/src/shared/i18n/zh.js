@@ -394,7 +394,7 @@ export const dictZh = {
         feedbackAttachmentHint: '支持 png、jpg、jpeg、gif、webp、mp4、mov、webm；最多 5 个。',
         feedbackPrivacy: '提交会发送你填写的内容、所选附件和非敏感环境摘要，不会自动附带聊天记录或密钥。',
         feedbackSubmit: '提交反馈', feedbackSubmitting: '提交中…', feedbackSubmitted: '反馈已提交，感谢你的帮助。',
-        feedbackRetry: '重试提交', feedbackCloseConfirm: '反馈内容尚未提交，确定关闭吗？',
+        feedbackRetry: '重试提交', feedbackCloseConfirm: '反馈内容尚未提交，确定关闭吗？', feedbackCloseAnyway: '仍要关闭',
         feedbackBodyRequired: '请填写反馈说明。', feedbackUnsupportedFile: '附件格式不支持。',
         feedbackTooManyFiles: '最多只能上传 5 个附件。', feedbackPickUnavailable: '当前环境无法打开文件选择器。',
         chatGreeting: '你好，今天想聊点什么？', artifacts: '产物与代码', placeholder: '询问 PINVOU 或输入指令', disclaimer: 'PINVOU 可能会生成不准确的信息，请仔细核实。', ctxUsage: '上下文',

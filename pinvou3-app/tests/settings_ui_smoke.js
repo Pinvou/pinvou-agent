@@ -33,6 +33,24 @@ assert.doesNotMatch(
   /loaded !== false/,
   'unknown model state must not be treated as loaded during automatic fill',
 );
+// 记忆删除/反馈关闭必须走应用内自绘二级确认弹窗（Tauri WebView2 下系统
+// window.confirm 实测不弹；详情见 tests/settings_window_confirm.test.mjs）。
+assert.doesNotMatch(
+  settingsViewSource,
+  /window\.confirm\s*\(/,
+  '设置页不得调用 window.confirm（Tauri WebView2 下不弹，须走应用内自绘确认弹窗）',
+);
+for (const confirmTestId of [
+  'memory-delete-confirm',
+  'memory-delete-confirm-ok',
+  'feedback-close-confirm',
+  'feedback-close-confirm-ok',
+]) {
+  assert.ok(
+    settingsViewSource.includes(`data-testid="${confirmTestId}"`),
+    `缺少应用内二级确认弹窗标识: ${confirmTestId}`,
+  );
+}
 
 function loadPuppeteer() {
   try { return require('puppeteer-core'); } catch { /* fall through */ }
@@ -144,8 +162,10 @@ function injectSource() {
     var failMemoryUpdate = false;
     var pendingDownloadResolve = null;
     function record(cmd, args) { calls.push({ cmd: cmd, args: args || null }); }
+    // 注意：这里故意不 stub window.confirm。SettingsView 已全部改用应用内自绘二级确认
+    // （Tauri WebView2 下原生 confirm 不弹）；若有人复现原生 confirm，headless 下会
+    // 自动 dismiss 并导致流程断言失败，而不是被假 stub 掩盖。
     window.alert = function (message) { record('window_alert', { message: message }); };
-    window.confirm = function (message) { record('window_confirm', { message: message }); return true; };
     function emit(name, payload) {
       return Promise.all((handlers[name] || []).slice().map(function (handler) {
         return handler({ payload: payload || {} });
