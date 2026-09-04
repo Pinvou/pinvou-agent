@@ -312,7 +312,7 @@
   }
   async function exitPlanToYolo() {
     const sid = state.activeSessionId;
-    // 草稿态：不物化会话，改写本 lane 全局默认（三分 lane 语义）。
+    // 草稿态：不物化会话，改写本 lane 全局默认（两分 lane 语义）。
     if (!sid) { await setDraftMode("yolo"); return; }
     try {
       // invoke 形状保持 { sessionId: state.activeSessionId }（协议指纹按文本
@@ -324,7 +324,7 @@
   }
   // 灯泡 toggle：plan ↔ yolo
   async function setPlanModeNext() {
-    // 草稿态：不物化会话，改写本 lane 全局默认（三分 lane 语义；旧实现会先
+    // 草稿态：不物化会话，改写本 lane 全局默认（两分 lane 语义；旧实现会先
     // ensureSession 物化——草稿页点 Plan 凭空造出空会话）。
     const sid = state.activeSessionId;
     if (!sid) { await setDraftMode("plan"); return; }

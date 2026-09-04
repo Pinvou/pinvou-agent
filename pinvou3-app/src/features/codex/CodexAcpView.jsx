@@ -1773,7 +1773,7 @@ export function CodexAcpView({
   }
 
   /// 草稿态暂存 mode 选择：本地暂存（新建会话时应用）+ 刷新 code lane 全局
-  /// 默认（三分 lane 语义：草稿切换写全局；已生成会话的切换不碰全局）。
+  /// 默认（两分 lane 语义：草稿切换写全局；已生成会话的切换不碰全局）。
   function stageDraftMode(target) {
     setNativeDraftControls(current => ({ ...current, mode: target }));
     invoke('set_mode_default', { lane: 'code', mode: target })

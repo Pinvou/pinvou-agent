@@ -3062,7 +3062,7 @@
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
     if (!state.activeSessionId && state.messages.length === 0 && state.chatItems.length === 0) {
       state.composerDraft = "";
-      // 草稿 mode 显示 = 当前 lane 全局默认（三分 lane 语义）。
+      // 草稿 mode 显示 = 当前 lane 全局默认（两分 lane 语义）。
       state.modeState = currentDraftModeState();
       notify();
       return;
@@ -7243,7 +7243,7 @@
   async function syncModeState() {
     const sid = state.activeSessionId;
     if (!sid) {
-      // 草稿态：显示当前 lane 的全局默认（三分 lane 语义），不再恒 yolo。
+      // 草稿态：显示当前 lane 的全局默认（两分 lane 语义），不再恒 yolo。
       state.modeState = currentDraftModeState();
       return;
     }
@@ -7890,7 +7890,7 @@
   }
   async function exitPlanToYolo() {
     const sid = state.activeSessionId;
-    // 草稿态：不物化会话，改写本 lane 全局默认（三分 lane 语义）。
+    // 草稿态：不物化会话，改写本 lane 全局默认（两分 lane 语义）。
     if (!sid) { await setDraftMode("yolo"); return; }
     try {
       // invoke 形状保持 { sessionId: state.activeSessionId }（协议指纹按文本
@@ -7902,7 +7902,7 @@
   }
   // 灯泡 toggle：plan ↔ yolo
   async function setPlanModeNext() {
-    // 草稿态：不物化会话，改写本 lane 全局默认（三分 lane 语义；旧实现会先
+    // 草稿态：不物化会话，改写本 lane 全局默认（两分 lane 语义；旧实现会先
     // ensureSession 物化——草稿页点 Plan 凭空造出空会话）。
     const sid = state.activeSessionId;
     if (!sid) { await setDraftMode("plan"); return; }

@@ -560,7 +560,7 @@
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
     if (!state.activeSessionId && state.messages.length === 0 && state.chatItems.length === 0) {
       state.composerDraft = "";
-      // 草稿 mode 显示 = 当前 lane 全局默认（三分 lane 语义）。
+      // 草稿 mode 显示 = 当前 lane 全局默认（两分 lane 语义）。
       state.modeState = currentDraftModeState();
       notify();
       return;
@@ -569,7 +569,7 @@
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
     // freshBuffer 的 modeState 是通用缺省（yolo）；草稿显示须覆盖为本 lane
-    // 全局默认（work/design 各自的 last_mode）。
+    // 全局默认（work lane 的 last_mode）。
     state.modeState = currentDraftModeState();
     notify();
   }
