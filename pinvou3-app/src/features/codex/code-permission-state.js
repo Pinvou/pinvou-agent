@@ -2,7 +2,7 @@
 // 1. 用户从未用过 code 模式时，新建品悟原生 code 会话默认 Plan（只读）；
 // 2. 新建 code 会话的默认 mode = code lane 全局 last_mode——只由 code 页
 //    **草稿态**显式切换写入；已生成会话的切换只写会话自己的记录，不渗全局
-//    （三分 lane 语义：工作/设计/代码各记各的）；
+//    （两分 lane 语义：工作/代码各记各的；design lane 已并入 work）；
 // 3. 首次切 yolo 弹一次性确认卡（"全自动读写项目目录、可执行 shell、无逐步审批"），
 //    确认后全局记住，之后任何会话 Plan↔yolo 切换不再弹。
 // 事实源在后端（get_mode_state / get_code_permission_prefs / confirm_code_yolo），

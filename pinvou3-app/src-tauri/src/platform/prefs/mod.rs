@@ -451,7 +451,7 @@ impl Default for SidebarPrefs {
 /// - 从未用过 code 模式时，新建 code 会话默认 Plan（只读）；
 /// - 新建 code 会话的默认 mode = code lane 的全局 last_mode；
 /// - last_mode 只由「code 页草稿态显式切换」写入（已生成会话的切换只写
-///   会话自己的记录，不再渗全局——三分 lane 语义复审拍板）；
+///   会话自己的记录，不再渗全局——两分 lane 语义复审拍板）；
 /// - 首次切 yolo 弹一次性确认卡，确认后全局记住、之后切换不再弹。
 ///
 /// 不进设置 UI；写入走字段级事务（同 PetPrefs），per-session mode 另存
@@ -466,14 +466,18 @@ pub struct CodePermissionPrefs {
     pub yolo_confirmed: bool,
 }
 
-/// 工作（work）/ 设计（design）两个 plain lane 的全局默认 mode。
-/// 与 code lane（`code_permission.last_mode`）并列——三个工作区 lane 各有
+/// 工作（work）lane 的全局默认 mode。
+/// 与 code lane（`code_permission.last_mode`）并列——两个工作区 lane 各有
 /// 独立全局默认；只由对应 lane 草稿态的显式切换写入，已生成会话的切换不碰。
 /// None = 该 lane 从未显式选过 → 缺省 Yolo（与 plain 历史默认一致）。
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModeDefaultPrefs {
     pub work: Option<SerializableMode>,
+    /// 仅为向后兼容读取旧 settings.json 保留（design lane 已并入 work）：
+    /// 启动加载时若 work 为空则用本字段回填 work 内存镜像（读取折叠，见
+    /// `features/sessions/store.rs::from_paths`）；不再写入、不再序列化。
+    #[serde(skip_serializing)]
     pub design: Option<SerializableMode>,
 }
 

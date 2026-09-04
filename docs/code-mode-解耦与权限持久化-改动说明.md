@@ -166,13 +166,15 @@ code 会话执行根是用户真实项目目录，但此前权限语义有两个
 - **行为变化面（刻意，仅原生 code 会话）**：新会话默认 Plan（原 Yolo）；mode 持久化（原重启回弹）；切 yolo 一次性确认卡。plain/work 与 ACP 零变化。
 - **遗留**：S-1 档 2（危险命令护栏，防注入/防幻觉命令，与本方案互补）、S-3（危险路径拦截 + 非 git 警告）、写绑定目录外确认——见剩余项评估。
 
-### 六、语义修订（2026-08-12，三分 lane + 会话独立持久化）
+### 六、语义修订（2026-08-12，lane 语义 + 会话独立持久化；2026-09 起 design 并入 work 改两分）
 
 真机回归发现两层语义在三种工作区模式（工作/设计/代码）下互相渗透、体验混乱，复审后拍板修订为：
 
-1. **草稿态切 mode → 刷新本 lane 全局默认**：工作/设计/代码各有独立全局 last_mode（work/design 存 settings.json `mode_defaults.*`，code 沿用 `code_permission.last_mode`）。
+> **2026-09 更新**：设计（design）lane 并入工作（work）lane，lane 语义由三分改为两分（work/code）。`ModeLane::Design` 变体删除；旧 settings.json 的 `mode_defaults.design` 仅在启动加载时一次性折叠进 work 内存镜像（work 为空时回填，不回写磁盘，此后只落 work）。场景标记字符串 `design:poster`/`design:data-visualization` 是历史持久数据，场景白名单保持合法不变。
+
+1. **草稿态切 mode → 刷新本 lane 全局默认**：工作/代码各有独立全局默认（work 存 settings.json `mode_defaults.work`，code 沿用 `code_permission.last_mode`；原 design 默认读取折叠进 work，不再单独写入）。
 2. **已生成会话切 mode → 只写会话自己的记录**，不再渗全局（`set_mode` 不再调 `record_code_last_mode`；`accept_plan` commit 也只写 per-session——原「任务级切换不记忆」条目同步废止，任务级 yolo 现纳入 per-session 持久化）。
 3. **每个对话保存自己的 mode**：plain 会话废除"恒内存不持久化"，per-session 落盘扩到所有会话；sidecar 文件更名 `_session_mode_states.json`（旧 `_code_mode_states.json` 启动时回退读一次）。
-4. **新会话默认 = 本 lane 全局默认**：code 由后端 `resolved_default_mode` 解析；work/design 由前端在会话物化（`ensureSession`）时应用（后端不区分这两个 lane）；缺省 code→Plan、work/design→Yolo 不变。
+4. **新会话默认 = 本 lane 全局默认**：code 由后端 `resolved_default_mode` 解析；work 由前端在会话物化（`ensureSession`）时应用（后端不再区分 plain 侧 lane）；缺省 code→Plan、work→Yolo 不变。
 
 配套改动：新命令 `get_mode_defaults`/`set_mode_default`（web access-policy 已登记）；草稿态 chip 切换不再物化会话（旧实现 `ensureSession` 会凭空造空会话）；ChatView 经 `bridge.interaction.setModeLane` 显式同步 lane（bridge 不读 localStorage）；CodexAcpView 草稿切换即写 code lane 默认，`applyNativeDraftControls` 末尾补 `refreshNativeControls` 收口（修「发消息后 chip 回旧值」）；plain 会话 mode 重启后恢复。

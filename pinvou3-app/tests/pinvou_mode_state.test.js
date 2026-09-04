@@ -23,18 +23,20 @@ vm.createContext(ctx);
 vm.runInContext(`${code}
 this.PINVOU_MODE_STORAGE_KEY = PINVOU_MODE_STORAGE_KEY;
 this.PINVOU_MODES = PINVOU_MODES;
+this.SUBTABS = SUBTABS;
+this.UNROUTED_SUBTAB = UNROUTED_SUBTAB;
 this.createPinvouModeScopeKey = createPinvouModeScopeKey;
 this.createPinvouModeState = createPinvouModeState;
 this.hasPinvouModeState = hasPinvouModeState;
 this.loadPinvouModeState = loadPinvouModeState;
-this.normalizeDesignSubtab = normalizeDesignSubtab;
 this.normalizePinvouMode = normalizePinvouMode;
-this.normalizeWorkSubtab = normalizeWorkSubtab;
+this.normalizeSubtab = normalizeSubtab;
 this.reducePinvouModeState = reducePinvouModeState;
 this.savePinvouModeState = savePinvouModeState;
 ${personalWorkbenchCode}
 ${workSceneCode}
 this.shouldUseDocumentWritingScene = shouldUseDocumentWritingScene;
+this.shouldUseDataVisualizationScene = shouldUseDataVisualizationScene;
 this.shouldUsePersonalWorkbenchScene = shouldUsePersonalWorkbenchScene;`, ctx, {
   filename: logicPath,
 });
@@ -42,59 +44,76 @@ this.shouldUsePersonalWorkbenchScene = shouldUsePersonalWorkbenchScene;`, ctx, {
 const {
   PINVOU_MODE_STORAGE_KEY,
   PINVOU_MODES,
+  SUBTABS,
+  UNROUTED_SUBTAB,
   createPinvouModeScopeKey,
   createPinvouModeState,
   hasPinvouModeState,
   loadPinvouModeState,
-  normalizeDesignSubtab,
   normalizePinvouMode,
-  normalizeWorkSubtab,
+  normalizeSubtab,
   reducePinvouModeState,
   savePinvouModeState,
   shouldUseDocumentWritingScene,
+  shouldUseDataVisualizationScene,
   shouldUsePersonalWorkbenchScene,
 } = ctx;
 
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
-assert.deepStrictEqual(plain(PINVOU_MODES), ['work', 'design']);
+// design lane 已并入 work：lane 只剩 work，任何历史值（含 design）都折叠为 work。
+assert.deepStrictEqual(plain(PINVOU_MODES), ['work']);
+assert.strictEqual(PINVOU_MODE_STORAGE_KEY, 'pinvou_mode_state_v4');
+assert.deepStrictEqual(plain(SUBTABS), [
+  'general',
+  'personal-workbench',
+  'document-writing',
+  'poster',
+  'data-visualization',
+]);
+assert.strictEqual(UNROUTED_SUBTAB, 'general');
 
-assert.strictEqual(normalizePinvouMode('design'), 'design');
+assert.strictEqual(normalizePinvouMode('work'), 'work');
+assert.strictEqual(normalizePinvouMode('design'), 'work');
 assert.strictEqual(normalizePinvouMode('code'), 'work');
 assert.strictEqual(normalizePinvouMode('invalid'), 'work');
-assert.strictEqual(normalizeWorkSubtab('invalid'), 'general');
-assert.strictEqual(normalizeWorkSubtab('personal-workbench'), 'personal-workbench');
-assert.strictEqual(normalizeDesignSubtab('invalid'), 'general');
+assert.strictEqual(normalizeSubtab('invalid'), 'general');
+assert.strictEqual(normalizeSubtab('personal-workbench'), 'personal-workbench');
+assert.strictEqual(normalizeSubtab('poster'), 'poster');
+assert.strictEqual(normalizeSubtab('data-visualization'), 'data-visualization');
 
 let state = createPinvouModeState();
 assert.strictEqual(state.mode, 'work');
-assert.strictEqual(state.workSubtab, 'general');
-assert.strictEqual(state.designSubtab, 'general');
+assert.strictEqual(state.subtab, 'general');
+assert.strictEqual(state.workSubtab, undefined);
+assert.strictEqual(state.designSubtab, undefined);
+assert.strictEqual(state.selectedDesignElementId, undefined);
+assert.strictEqual(state.designRuntimeStatus, undefined);
 assert.strictEqual(
-  shouldUseDocumentWritingScene(state.mode, state.workSubtab),
+  shouldUseDocumentWritingScene(state.subtab),
   false,
 );
 assert.strictEqual(
-  shouldUsePersonalWorkbenchScene(state.mode, 'personal-workbench'),
+  shouldUsePersonalWorkbenchScene('personal-workbench'),
   true,
 );
-assert.strictEqual(state.selectedDesignElementId, undefined);
-assert.strictEqual(state.designRuntimeStatus, 'idle');
+assert.strictEqual(
+  shouldUseDataVisualizationScene('data-visualization'),
+  true,
+);
 
 state = reducePinvouModeState(state, { type: 'set-mode', mode: 'design' });
-assert.strictEqual(state.mode, 'design');
-assert.strictEqual(state.designRuntimeStatus, 'idle');
+assert.strictEqual(state.mode, 'work', '历史 design 值必须折叠为 work');
 
-state = reducePinvouModeState(state, { type: 'set-design-subtab', subtab: 'data-visualization' });
-assert.strictEqual(state.designSubtab, 'data-visualization');
+state = reducePinvouModeState(state, { type: 'set-subtab', subtab: 'data-visualization' });
+assert.strictEqual(state.subtab, 'data-visualization');
 
-state = reducePinvouModeState(state, { type: 'set-selected-design-element', elementId: 'hero-title' });
-assert.strictEqual(state.selectedDesignElementId, 'hero-title');
-
-state = reducePinvouModeState(state, { type: 'set-mode', mode: 'code' });
+state = reducePinvouModeState(state, { type: 'set-mode', mode: 'work' });
 assert.strictEqual(state.mode, 'work');
-assert.strictEqual(state.selectedDesignElementId, undefined);
-assert.strictEqual(state.designRuntimeStatus, 'idle');
+assert.strictEqual(state.subtab, 'data-visualization');
+
+state = reducePinvouModeState(state, { type: 'set-design-subtab', subtab: 'poster' });
+assert.strictEqual(state.subtab, 'data-visualization', '已删除的 action type 不再生效');
 
 const memoryStorage = {
   values: {},
@@ -104,35 +123,57 @@ const memoryStorage = {
 savePinvouModeState(state, memoryStorage);
 assert.deepStrictEqual(JSON.parse(memoryStorage.values[PINVOU_MODE_STORAGE_KEY]).draft, {
   mode: 'work',
-  workSubtab: 'general',
-  designSubtab: 'data-visualization',
+  subtab: 'data-visualization',
 });
 state = loadPinvouModeState(memoryStorage);
-assert.strictEqual(state.mode, 'work');
-assert.strictEqual(state.designSubtab, 'data-visualization');
-assert.strictEqual(state.selectedDesignElementId, undefined);
-assert.strictEqual(state.designRuntimeStatus, 'idle');
+assert.deepStrictEqual(plain(state), { mode: 'work', subtab: 'data-visualization' });
 
 const posterScope = createPinvouModeScopeKey('session-poster');
 const dataScope = createPinvouModeScopeKey('session-data');
-savePinvouModeState({ mode: 'design', designSubtab: 'poster' }, memoryStorage, posterScope);
-savePinvouModeState({ mode: 'design', designSubtab: 'data-visualization' }, memoryStorage, dataScope);
+savePinvouModeState({ mode: 'work', subtab: 'poster' }, memoryStorage, posterScope);
+savePinvouModeState({ mode: 'work', subtab: 'data-visualization' }, memoryStorage, dataScope);
 assert.strictEqual(hasPinvouModeState(memoryStorage, posterScope), true);
 assert.strictEqual(hasPinvouModeState(memoryStorage, dataScope), true);
-assert.strictEqual(loadPinvouModeState(memoryStorage, posterScope).designSubtab, 'poster');
-assert.strictEqual(loadPinvouModeState(memoryStorage, dataScope).designSubtab, 'data-visualization');
+assert.strictEqual(hasPinvouModeState(memoryStorage), false);
+assert.strictEqual(loadPinvouModeState(memoryStorage, posterScope).subtab, 'poster');
+assert.strictEqual(loadPinvouModeState(memoryStorage, dataScope).subtab, 'data-visualization');
 const unknownSessionState = loadPinvouModeState(memoryStorage, createPinvouModeScopeKey('unknown'));
 assert.strictEqual(unknownSessionState.mode, 'work');
-assert.strictEqual(unknownSessionState.workSubtab, 'general');
+assert.strictEqual(unknownSessionState.subtab, 'general');
 assert.strictEqual(
-  shouldUseDocumentWritingScene(unknownSessionState.mode, unknownSessionState.workSubtab),
+  shouldUseDocumentWritingScene(unknownSessionState.subtab),
   false,
 );
 assert.strictEqual(
-  shouldUseDocumentWritingScene(state.mode, 'document-writing'),
+  shouldUseDocumentWritingScene('document-writing'),
   true,
 );
 
+// v3 → v4：mode:'design' 折叠为 mode:'work' + 旧 designSubtab；mode:'work' 取旧 workSubtab。
+const v3Storage = {
+  values: {
+    pinvou_mode_state_v3: JSON.stringify({
+      draft: { mode: 'design', workSubtab: 'personal-workbench', designSubtab: 'poster' },
+      sessions: {
+        'session-document': { mode: 'work', workSubtab: 'document-writing', designSubtab: 'poster' },
+        'session-data': { mode: 'design', workSubtab: 'document-writing', designSubtab: 'data-visualization' },
+      },
+      sessionOrder: ['session-document', 'session-data'],
+    }),
+  },
+  getItem(key) { return this.values[key] || null; },
+  setItem(key, value) { this.values[key] = value; },
+};
+const migratedV3Draft = loadPinvouModeState(v3Storage);
+assert.strictEqual(migratedV3Draft.mode, 'work');
+assert.strictEqual(migratedV3Draft.subtab, 'poster');
+const migratedV3Document = loadPinvouModeState(v3Storage, 'session-document');
+assert.strictEqual(migratedV3Document.mode, 'work');
+assert.strictEqual(migratedV3Document.subtab, 'document-writing');
+assert.strictEqual(loadPinvouModeState(v3Storage, 'session-data').subtab, 'data-visualization');
+
+// v2 → v4：先沿用旧 v2→v3 语义（draft 作用域的 document-writing/poster 重置为
+// general，session 作用域不动），再做 v3 折叠。
 const previousStorage = {
   values: {
     pinvou_mode_state_v2: JSON.stringify({
@@ -148,10 +189,22 @@ const previousStorage = {
   setItem(key, value) { this.values[key] = value; },
 };
 const migratedDraft = loadPinvouModeState(previousStorage);
-assert.strictEqual(migratedDraft.workSubtab, 'general');
-assert.strictEqual(migratedDraft.designSubtab, 'general');
-assert.strictEqual(loadPinvouModeState(previousStorage, 'session-document').workSubtab, 'document-writing');
-assert.strictEqual(loadPinvouModeState(previousStorage, 'session-poster').designSubtab, 'poster');
+assert.strictEqual(migratedDraft.mode, 'work');
+assert.strictEqual(migratedDraft.subtab, 'general');
+assert.strictEqual(loadPinvouModeState(previousStorage, 'session-document').subtab, 'document-writing');
+assert.strictEqual(loadPinvouModeState(previousStorage, 'session-poster').subtab, 'poster');
+
+// v1 legacy 草稿：只有最旧的单值草稿时也能读出并把 design 折叠为 work。
+const legacyStorage = {
+  values: {
+    pinvou_mode_state_v1: JSON.stringify({ mode: 'design' }),
+  },
+  getItem(key) { return this.values[key] || null; },
+  setItem(key, value) { this.values[key] = value; },
+};
+const legacyDraft = loadPinvouModeState(legacyStorage);
+assert.strictEqual(legacyDraft.mode, 'work');
+assert.strictEqual(legacyDraft.subtab, 'general');
 
 memoryStorage.values[PINVOU_MODE_STORAGE_KEY] = '{bad json';
 assert.strictEqual(loadPinvouModeState(memoryStorage).mode, 'work');

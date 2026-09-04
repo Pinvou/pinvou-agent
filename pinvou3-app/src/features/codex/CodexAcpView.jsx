@@ -3968,7 +3968,7 @@ export function CodexAcpView({
                       title={availableCommands.length ? codexCopy.commandsAvailable : codexCopy.commandsAfterSession}>/</button>
                   )}
                   {isNativeAgent && (
-                    // 原生（品悟）车道的底栏控件：与工作/设计页共用同一套共享 composer
+                    // 原生（品悟）车道的底栏控件：与工作页共用同一套共享 composer
                     // 控件（ComposerModeChip / ComposerModelSelector / ComposerKbSelector，
                     // 显式会话态驱动 props 绕开 bridge 聊天 active 绑定）；行为（直调
                     // per-session 命令、草稿暂存、busy 禁用、归属保护）不变。Plan 说明：

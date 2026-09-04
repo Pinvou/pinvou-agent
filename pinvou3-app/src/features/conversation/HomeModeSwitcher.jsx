@@ -1,12 +1,10 @@
-import { Briefcase, Code, Palette, Settings } from '../../components/icons.jsx';
+import { Briefcase, Code, Settings } from '../../components/icons.jsx';
 import { AcpAgentLogo } from '../codex/AcpAgentLogo.jsx';
 import { IosSegmentedControl } from '../../components/IosControls.jsx';
 
-const HOME_DESIGN_MODE_ENABLED = true;
-
+// design lane 已并入 work：lane 只剩工作/代码两段。
 const HOME_MODE_OPTIONS = [
   { key: 'work', labelKey: 'work', Icon: Briefcase, testId: 'home-mode-work' },
-  { key: 'design', labelKey: 'design', Icon: Palette, testId: 'home-mode-design', enabled: HOME_DESIGN_MODE_ENABLED },
   { key: 'code', labelKey: 'code', Icon: Code, testId: 'home-mode-code' },
 ];
 

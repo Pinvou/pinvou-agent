@@ -38,12 +38,12 @@ const DATA_VISUALIZATION_AUDIT = `生成完成前执行数据可视化自检：
 4. 图表标题、指标口径、图例、结论是否清晰。
 如有问题，先自行修正再交付，并在回复中用简短「可视化自检」说明结果。`;
 
-function shouldUseDocumentWritingScene(mode, subtab) {
-  return mode === 'work' && subtab === WORK_DOCUMENT_SCENE_KEY;
+function shouldUseDocumentWritingScene(subtab) {
+  return subtab === WORK_DOCUMENT_SCENE_KEY;
 }
 
-function shouldUseDataVisualizationScene(mode, subtab) {
-  return mode === 'design' && subtab === DESIGN_DATA_VISUALIZATION_SCENE_KEY;
+function shouldUseDataVisualizationScene(subtab) {
+  return subtab === DESIGN_DATA_VISUALIZATION_SCENE_KEY;
 }
 
 function buildWorkScenePayloadText(text, context, audit) {

@@ -2974,7 +2974,7 @@ fn code_session_default_follows_code_lane_default() {
     let (store, _g) = isolated_store();
     with_code_sessions(&store, &["code-1", "code-2"]);
     // 已生成会话显式切 yolo：只写 per-session 记录，不碰全局 lane 默认
-    // （三分 lane 语义）→ 新 code 会话默认不跟随。
+    // （两分 lane 语义）→ 新 code 会话默认不跟随。
     store
         .set_mode("code-1", SerializableMode::Yolo)
         .expect("switch yolo");
@@ -3026,7 +3026,7 @@ fn code_mode_persists_per_session_across_restart() {
 }
 
 /// accept 方案确认提交（commit）后，会话的 Yolo 纳入 per-session 持久化；
-/// 不碰任何全局 lane 默认（三分 lane 语义）；提交失败回滚（rollback）不落盘，
+/// 不碰任何全局 lane 默认（两分 lane 语义）；提交失败回滚（rollback）不落盘，
 /// 内存回 Plan 与磁盘保持一致。
 #[test]
 fn code_session_accepted_yolo_persists_on_commit_not_rollback() {
@@ -3072,7 +3072,7 @@ fn plain_session_mode_persists_across_restart() {
         .set_mode("plain-1", SerializableMode::Plan)
         .expect("plain plan");
     assert_eq!(store.mode_state("plain-1").mode, SerializableMode::Plan);
-    // 三分 lane 语义：plain 会话也写 sidecar；但不动任何全局 lane 默认。
+    // 两分 lane 语义：plain 会话也写 sidecar；但不动任何全局 lane 默认。
     let file = paths::sessions_root().join("_session_mode_states.json");
     let on_disk: HashMap<String, SerializableMode> =
         serde_json::from_str(&std::fs::read_to_string(&file).expect("read sidecar"))
@@ -3080,22 +3080,22 @@ fn plain_session_mode_persists_across_restart() {
     assert_eq!(on_disk.get("plain-1"), Some(&SerializableMode::Plan));
     assert!(store.code_permission_prefs().last_mode.is_none());
     assert_eq!(store.mode_defaults().work, None);
-    assert_eq!(store.mode_defaults().design, None);
     // 重启后 plain 会话恢复自己的 Plan（语义 3：每个对话保存自己的 mode）。
     let reopened = reopen_store(&store).expect("reboot");
     assert_eq!(reopened.mode_state("plain-1").mode, SerializableMode::Plan);
 }
 
-/// work/design lane 全局默认的读写与持久化；非法 lane 字符串必须报错。
+/// work/code lane 全局默认的读写与持久化；非法 lane 字符串必须报错
+/// （design lane 已并入 work，`parse("design")` 必须拒绝）。
 #[test]
 fn mode_lane_defaults_round_trip_and_validate() {
     let (store, _g) = isolated_store();
     assert_eq!(store.mode_defaults().work, None);
-    store.set_mode_default(ModeLane::Work, SerializableMode::Plan);
-    store.set_mode_default(ModeLane::Design, SerializableMode::Yolo);
-    assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
-    assert_eq!(store.mode_defaults().design, Some(SerializableMode::Yolo));
     assert_eq!(store.mode_defaults().code, None);
+    store.set_mode_default(ModeLane::Work, SerializableMode::Plan);
+    store.set_mode_default(ModeLane::Code, SerializableMode::Yolo);
+    assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
+    assert_eq!(store.mode_defaults().code, Some(SerializableMode::Yolo));
     // 落盘 settings.json + 重启后镜像恢复。
     assert_eq!(
         UserPrefs::load().mode_defaults.work,
@@ -3103,16 +3103,49 @@ fn mode_lane_defaults_round_trip_and_validate() {
     );
     let reopened = reopen_store(&store).expect("reboot");
     assert_eq!(reopened.mode_defaults().work, Some(SerializableMode::Plan));
-    assert_eq!(
-        reopened.mode_defaults().design,
-        Some(SerializableMode::Yolo)
-    );
+    assert_eq!(reopened.mode_defaults().code, Some(SerializableMode::Yolo));
     // lane 字符串校验（命令层入口防 IPC 直调写未知 lane）。
     assert!(ModeLane::parse("work").is_ok());
-    assert!(ModeLane::parse("design").is_ok());
     assert!(ModeLane::parse("code").is_ok());
+    // design lane 已并入 work：旧 lane 名不再被接受。
+    assert!(ModeLane::parse("design").is_err());
     assert!(ModeLane::parse(" CodE ").is_err());
     assert!(ModeLane::parse("").is_err());
+}
+
+/// design lane 并入 work 的读取折叠：旧 settings.json 只有 `mode_defaults.design`
+/// 时，加载后 work 镜像取到 design 值；work 已有值时 design 不覆盖。
+#[test]
+fn legacy_design_default_folds_into_work_on_load() {
+    let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let tmp = std::env::temp_dir().join(format!(
+        "pinvou3-sessions-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+    unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+    std::fs::create_dir_all(&tmp).expect("create tmp home");
+    // work 为空 → 折叠取 design 值（不回写磁盘）。
+    std::fs::write(
+        paths::settings_path(),
+        r#"{ "mode_defaults": { "design": "plan" } }"#,
+    )
+    .expect("write legacy settings");
+    let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+    assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
+
+    // work 已有值 → design 不覆盖。
+    std::fs::write(
+        paths::settings_path(),
+        r#"{ "mode_defaults": { "work": "yolo", "design": "plan" } }"#,
+    )
+    .expect("write settings with work");
+    let reopened = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("reboot");
+    assert_eq!(reopened.mode_defaults().work, Some(SerializableMode::Yolo));
+    drop(guard);
 }
 
 /// 旧版 `_code_mode_states.json`（只含 code 会话的时代产物）在新文件缺失时

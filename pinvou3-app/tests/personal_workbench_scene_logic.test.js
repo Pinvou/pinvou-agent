@@ -8,10 +8,15 @@ const logicPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'persona
 const code = fs.readFileSync(logicPath, 'utf8')
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '');
+const visualPosterPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'visual-poster-scene.js');
+const visualPosterCode = fs.readFileSync(visualPosterPath, 'utf8')
+  .replace(/\bexport\s+\{[^}]+\};?/g, '')
+  .replace(/\bexport\s+/g, '');
 
 const ctx = {};
 vm.createContext(ctx);
 vm.runInContext(`${code}
+${visualPosterCode}
 this.PERSONAL_WORKBENCH_SCENE_ID = PERSONAL_WORKBENCH_SCENE_ID;
 this.PERSONAL_WORKBENCH_SCENE_KEY = PERSONAL_WORKBENCH_SCENE_KEY;
 this.PERSONAL_WORKBENCH_SCENE_NAME = PERSONAL_WORKBENCH_SCENE_NAME;
@@ -23,7 +28,8 @@ this.findPersonalWorkbenchTemplateDraft = findPersonalWorkbenchTemplateDraft;
 this.getPersonalWorkbenchTemplate = getPersonalWorkbenchTemplate;
 this.getPersonalWorkbenchTemplateById = getPersonalWorkbenchTemplateById;
 this.isPersonalWorkbenchTemplateDraftForTemplate = isPersonalWorkbenchTemplateDraftForTemplate;
-this.shouldUsePersonalWorkbenchScene = shouldUsePersonalWorkbenchScene;`, ctx, {
+this.shouldUsePersonalWorkbenchScene = shouldUsePersonalWorkbenchScene;
+this.shouldUseVisualPosterScene = shouldUseVisualPosterScene;`, ctx, {
   filename: logicPath,
 });
 
@@ -40,6 +46,7 @@ const {
   getPersonalWorkbenchTemplateById,
   isPersonalWorkbenchTemplateDraftForTemplate,
   shouldUsePersonalWorkbenchScene,
+  shouldUseVisualPosterScene,
 } = ctx;
 
 assert.strictEqual(PERSONAL_WORKBENCH_SCENE_ID, 39);
@@ -56,9 +63,13 @@ assert.deepStrictEqual(Array.from(PERSONAL_WORKBENCH_TEMPLATES, item => item.tit
 ]);
 assert.strictEqual(PERSONAL_WORKBENCH_TEMPLATES.length, 7);
 
-assert.strictEqual(shouldUsePersonalWorkbenchScene('work', 'personal-workbench'), true);
-assert.strictEqual(shouldUsePersonalWorkbenchScene('work', 'document-writing'), false);
-assert.strictEqual(shouldUsePersonalWorkbenchScene('design', 'personal-workbench'), false);
+// design lane 并入 work 后场景判定只看 subtab（单参数）。
+assert.strictEqual(shouldUsePersonalWorkbenchScene('personal-workbench'), true);
+assert.strictEqual(shouldUsePersonalWorkbenchScene('document-writing'), false);
+assert.strictEqual(shouldUsePersonalWorkbenchScene('poster'), false);
+assert.strictEqual(shouldUseVisualPosterScene('poster'), true);
+assert.strictEqual(shouldUseVisualPosterScene('personal-workbench'), false);
+assert.strictEqual(shouldUseVisualPosterScene('data-visualization'), false);
 assert.strictEqual(getPersonalWorkbenchTemplate(1).title, '个人账本');
 assert.strictEqual(getPersonalWorkbenchTemplate(99), null);
 assert.strictEqual(getPersonalWorkbenchTemplateById('personal-ledger').title, '个人账本');

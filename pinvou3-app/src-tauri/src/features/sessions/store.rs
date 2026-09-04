@@ -162,6 +162,13 @@ impl SessionStore {
         let manager = SessionManager::new(sessions_dir.clone())
             .with_context(|| format!("SessionManager::new({}) failed", sessions_dir.display()))?;
         let prefs_snapshot = UserPrefs::load();
+        // design lane 已并入 work lane：旧 settings.json 里 `mode_defaults.design`
+        // 有值而 work 为空时，用 design 值回填 work 内存镜像（一次性读取折叠，
+        // 不回写磁盘；下次用户写盘自然只落 work）。work 已有值时 design 不覆盖。
+        let mut mode_defaults_snapshot = prefs_snapshot.mode_defaults;
+        if mode_defaults_snapshot.work.is_none() {
+            mode_defaults_snapshot.work = mode_defaults_snapshot.design;
+        }
         let store = Self {
             manager: Arc::new(manager),
             scheduled_profiles: Arc::new(RwLock::new(HashMap::new())),
@@ -180,7 +187,7 @@ impl SessionStore {
             code_session_predicate: Arc::new(RwLock::new(None)),
             session_mode_states: Arc::new(RwLock::new(HashMap::new())),
             code_permission: Arc::new(RwLock::new(prefs_snapshot.code_permission)),
-            mode_defaults: Arc::new(RwLock::new(prefs_snapshot.mode_defaults)),
+            mode_defaults: Arc::new(RwLock::new(mode_defaults_snapshot)),
             session_purged_hooks: Arc::new(RwLock::new(Vec::new())),
             session_deleted_hooks: Arc::new(RwLock::new(Vec::new())),
         };

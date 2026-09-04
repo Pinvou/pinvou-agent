@@ -1511,8 +1511,8 @@ function loadInteractionRuntime() {
     pendingDraftMultiAgent: false,
     chatItems: [],
     messages: [],
-    // 三分 lane：草稿态 mode = 本 lane 全局默认。
-    modeDefaults: { work: null, design: null, code: null },
+    // 两分 lane（design 已并入 work）：草稿态 mode = 本 lane 全局默认。
+    modeDefaults: { work: null, code: null },
     modeLane: 'work',
   };
   const deferred = {};
@@ -1558,7 +1558,7 @@ function loadInteractionRuntime() {
     getBuffer() { return null; },
     // 与 bridge.js 同构的草稿态显示解析：当前 lane 全局默认，缺省 yolo。
     currentDraftModeState() {
-      const lane = state.modeLane === 'design' ? 'design' : 'work';
+      const lane = state.modeLane === 'code' ? 'code' : 'work';
       const d = state.modeDefaults && state.modeDefaults[lane];
       return { mode: d || 'yolo', multiAgent: false };
     },
@@ -1675,13 +1675,13 @@ test('setPlanModeNext 权威写回作废在途旧读取：chip 切 Plan 不被�
     'chip 切换的权威值不得被在途旧读取砸回 Yolo（P1 敞口）');
 });
 
-// ── 三分 lane 语义回归：草稿写全局默认、会话写自己、lane 各自独立 ─────
+// ── 两分 lane 语义回归：草稿写全局默认、会话写自己、lane 各自独立 ─────
 test('草稿态切 Plan：写本 lane 全局默认且不物化会话、不调 per-session 命令', async () => {
   const rt = loadInteractionRuntime();
   rt.state.activeSessionId = null; // 草稿态
   const set = rt.defer('set_mode_default');
   const p = rt.api.setPlanModeNext();
-  set.resolve({ work: 'plan', design: null, code: null });
+  set.resolve({ work: 'plan', code: null });
   await p;
   assert.ok(rt.calls.includes('set_mode_default'), '草稿切换必须写 lane 全局默认');
   assert.equal(rt.invokeArgs.set_mode_default.lane, 'work');
@@ -1692,23 +1692,27 @@ test('草稿态切 Plan：写本 lane 全局默认且不物化会话、不调 pe
   assert.equal(rt.state.modeState.mode, 'plan', '草稿显示跟随新默认');
 });
 
-test('lane 切换即刷新草稿显示；草稿切换写当前 lane（work/design 互不影响）', async () => {
+test('lane 切换即刷新草稿显示；草稿切换写当前 lane（work/code 互不影响）', async () => {
   const rt = loadInteractionRuntime();
   rt.state.activeSessionId = null;
-  rt.state.modeDefaults = { work: 'plan', design: null, code: null };
-  // work → design：草稿显示从 work 默认 plan 变为 design 缺省 yolo。
-  rt.api.setModeLane('design');
+  rt.state.modeDefaults = { work: 'plan', code: null };
+  // work → code：草稿显示从 work 默认 plan 变为 code 缺省 yolo。
+  rt.api.setModeLane('code');
   assert.equal(rt.state.modeState.mode, 'yolo');
   rt.api.setModeLane('work');
   assert.equal(rt.state.modeState.mode, 'plan');
-  // design lane 下切 plan：写 design 默认，work 默认不动。
+  // 历史值 'design' 折叠为 work，不再有独立 design lane。
   rt.api.setModeLane('design');
+  assert.equal(rt.state.modeLane, 'work');
+  assert.equal(rt.state.modeState.mode, 'plan');
+  // code lane 下切 plan：写 code 默认，work 默认不动。
+  rt.api.setModeLane('code');
   const set = rt.defer('set_mode_default');
   const p = rt.api.setDraftMode('plan');
-  set.resolve({ work: 'plan', design: 'plan', code: null });
+  set.resolve({ work: 'plan', code: 'plan' });
   await p;
-  assert.equal(rt.invokeArgs.set_mode_default.lane, 'design');
-  assert.equal(rt.state.modeDefaults.design, 'plan');
+  assert.equal(rt.invokeArgs.set_mode_default.lane, 'code');
+  assert.equal(rt.state.modeDefaults.code, 'plan');
   assert.equal(rt.state.modeDefaults.work, 'plan');
   assert.equal(rt.state.modeState.mode, 'plan');
 });
@@ -1728,11 +1732,11 @@ test('已生成会话切 mode：只走 per-session 命令，不碰任何全局 l
 test('refreshModeDefaults：草稿态按当前 lane 默认刷新显示', async () => {
   const rt = loadInteractionRuntime();
   rt.state.activeSessionId = null;
-  rt.state.modeLane = 'design';
+  rt.state.modeLane = 'code';
   const get = rt.defer('get_mode_defaults');
   const p = rt.api.refreshModeDefaults();
-  get.resolve({ work: 'yolo', design: 'plan', code: 'plan' });
+  get.resolve({ work: 'yolo', code: 'plan' });
   await p;
-  assert.equal(rt.state.modeDefaults.design, 'plan');
-  assert.equal(rt.state.modeState.mode, 'plan', 'design lane 草稿显示自己的全局默认');
+  assert.equal(rt.state.modeDefaults.code, 'plan');
+  assert.equal(rt.state.modeState.mode, 'plan', 'code lane 草稿显示自己的全局默认');
 });

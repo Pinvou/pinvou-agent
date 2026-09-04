@@ -79,7 +79,7 @@
   async function syncModeState() {
     const sid = state.activeSessionId;
     if (!sid) {
-      // 草稿态：显示当前 lane 的全局默认（三分 lane 语义），不再恒 yolo。
+      // 草稿态：显示当前 lane 的全局默认（两分 lane 语义），不再恒 yolo。
       state.modeState = currentDraftModeState();
       return;
     }
@@ -109,7 +109,7 @@
     }
   }
 
-  // ── lane 全局默认（工作/设计/代码三分，复审拍板）─────────────────
+  // ── lane 全局默认（工作/代码两分；design lane 已并入 work）─────────
   // 草稿态 mode = 本 lane 全局默认；草稿切换只写全局默认（不物化会话），
   // 已生成会话的切换只写会话自己的记录（set_plan_mode_next 等 per-session
   // 命令，后端不再渗全局）。
@@ -125,7 +125,7 @@
   }
   // ChatView 随 pinvouMode 传入当前 lane；草稿态立即按新 lane 默认刷新显示。
   function setModeLane(lane) {
-    const next = lane === "design" ? "design" : "work";
+    const next = lane === "code" ? "code" : "work";
     if (state.modeLane === next) return;
     state.modeLane = next;
     if (!state.activeSessionId) {
@@ -136,7 +136,7 @@
   // 草稿态 chip 切换：写本 lane 全局默认（setDraftMode 不物化会话——
   // 物化时由 ensureSession 把 lane 默认应用到新会话）。
   async function setDraftMode(target) {
-    const lane = state.modeLane === "design" ? "design" : "work";
+    const lane = state.modeLane === "code" ? "code" : "work";
     try {
       const defaults = await invoke("set_mode_default", { lane, mode: target });
       if (defaults) state.modeDefaults = defaults;

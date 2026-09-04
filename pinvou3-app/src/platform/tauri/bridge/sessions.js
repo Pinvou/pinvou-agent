@@ -643,11 +643,11 @@
         }
         await refreshHistoryList();
         await syncModeState();
-        // 三分 lane 语义：后端 plain 缺省恒 Yolo、不区分 work/design 两个 lane；
+        // 两分 lane 语义：后端 plain 缺省恒 Yolo、lane 只剩 work/code；
         // 新会话所在 lane 的全局默认为 plan 时，在物化此刻显式应用（写入即成为
         // 该会话自己的 per-session 记录，全局默认不受影响）。
         const laneDefault = state.modeDefaults
-          && state.modeDefaults[state.modeLane === "design" ? "design" : "work"];
+          && state.modeDefaults[state.modeLane === "code" ? "code" : "work"];
         // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
         // 可能已切走，对当前 active 会话执行 set_plan_mode_next 会改错对象。
         if (laneDefault === "plan") {
