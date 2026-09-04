@@ -178,9 +178,12 @@ pub struct Pinvou3Bridge {
     /// RuntimeModelProvider 为本次引擎准备的内存凭据。Some 时是最终值，不能再被
     /// 环境变量或本地凭据库覆盖；Debug 由包装类型强制脱敏。
     pub runtime_model_credential: Option<RuntimeModelCredential>,
-    /// 本地 vLLM `/v1/models` 探测到的 `max_model_len`(上下文窗口)。EnginePool spawn
-    /// 时由 `probe_vllm_model_info` 注入。Some → 与 SavedModel 声明取较小值后填入
-    /// active_route_limits，并与 output profile 一起推导压缩阈值。
+    /// 本地 vLLM `/v1/models` 探测到的 `max_model_len`(上下文窗口)。Injected at
+    /// EnginePool spawn by `resolve_served_model` (the matched entry's own
+    /// window; `None` when the configured name is absent from the list or the
+    /// probe fails). Some → min() with the SavedModel declaration fills
+    /// active_route_limits, and compaction thresholds derive from it together
+    /// with the output profile.
     pub probed_context_tokens: Option<u32>,
     /// 本地 loopback 端点（OpenAI 兼容 preset）探测出的服务类型（Ollama / vLLM /
     /// LM Studio / 通用）。EnginePool spawn 时由 `probe_local_server_kind` 注入；

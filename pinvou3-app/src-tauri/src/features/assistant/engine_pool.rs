@@ -1144,29 +1144,35 @@ impl EnginePool {
                 .await,
             );
         }
-        // 本地 vLLM:发请求的 model 名以 vLLM 实际 served name 为准(探测 /v1/models),
-        // 免去写死 qwen36_35b_256k 与 --served-model-name 不一致的 model_not_found。
-        // 探测失败(vLLM 没起)保持配置值;云端 provider 不探测。OpenAI 兼容端点
-        // 探测出 vLLM 时同样享受 served name 跟随（provider() 已映射为 "vllm"）。
+        // Local vLLM: correct the request model name against the server's
+        // actual served list (resolve_served_model). A configured name the
+        // server lists must be kept verbatim — LM Studio/Ollama list every
+        // downloaded model in /v1/models, so the first entry is unrelated to
+        // the user's pick, and substituting it is exactly the reported
+        // "conversation names A, engine loads B" chain break. Only follow the
+        // served name on a single-model server that does not expose the
+        // configured name. On probe failure (vLLM down) keep the configured
+        // value; cloud providers are not probed. OpenAI-compatible endpoints
+        // detected as vLLM take the same path (provider() maps them to
+        // "vllm").
         if bridge.provider() == "vllm" {
             // The served-name probe carries the same inference-same-origin
             // credential (authenticated vLLM 401s on /v1/models; on probe
             // failure the configured model name is kept).
             let api_key = bridge.api_key();
-            let (served, max_len) = crate::features::monitor::probe_vllm_model_info(
-                &bridge.base_url(),
-                Some(api_key.as_str()),
-            )
-            .await;
-            if let Some(served) = served.filter(|_| !pins_scheduled_model) {
-                if let Some(mut model) = bridge.effective_model_owned() {
-                    if model.model != served {
-                        model.model = served;
-                        bridge.session_model = Some(model);
-                    }
+            if let Some(mut model) = bridge.effective_model_owned() {
+                let (served, max_len) = crate::features::monitor::resolve_served_model(
+                    &bridge.base_url(),
+                    Some(api_key.as_str()),
+                    &model.model,
+                )
+                .await;
+                if served != model.model && !pins_scheduled_model {
+                    model.model = served;
+                    bridge.session_model = Some(model);
                 }
+                bridge.probed_context_tokens = max_len;
             }
-            bridge.probed_context_tokens = max_len;
         }
         bridge
     }
@@ -2721,6 +2727,13 @@ fn resolve_scheduled_model(
     Ok(selected.clone())
 }
 
+/// Stable error code surfaced when a session's bound saved model no longer
+/// exists (deleted, or regenerated with a fresh id by a detection re-run).
+/// The missing model id follows after ": "; the frontend maps this prefix to
+/// tri-lingual copy (BT_TABLE `sessionModelStale`) instead of showing the raw
+/// backend string.
+const SESSION_MODEL_BINDING_STALE_ERROR: &str = "session_model_binding_stale";
+
 fn resolve_spawn_model(
     models: &[SavedModel],
     scheduled_profile: Option<&ScheduledRunProfile>,
@@ -2733,7 +2746,17 @@ fn resolve_spawn_model(
             .transpose();
     }
     if let Some(model_id) = interactive_model_override {
-        return Ok(models.iter().find(|model| model.id == model_id).cloned());
+        // Same policy as scheduled tasks and the probe path: once a session's
+        // bound model config is deleted or regenerated (re-running detection
+        // mints fresh ids), never fall back silently to the global active
+        // model — the user picked A while the engine would run B. Fail loudly
+        // so the user re-selects; the chain must not substitute silently.
+        let selected = models
+            .iter()
+            .find(|model| model.id == model_id)
+            .cloned()
+            .with_context(|| format!("{SESSION_MODEL_BINDING_STALE_ERROR}: {model_id}"))?;
+        return Ok(Some(selected));
     }
     scheduled_profile
         .map(|profile| resolve_scheduled_model(models, profile))
@@ -2762,12 +2785,12 @@ where
 mod scheduled_model_tests {
     use super::{
         EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions, Pinvou3Bridge,
-        PreparedRuntimeState, ScheduledUnattendedGuard, SessionShellManagers,
-        SessionTurnLifecycles, SessionTurnLocks, SessionTurnShellTasks, TranscriptOperation,
-        cancel_turn_with_gates, default_model_for_new_session_from, delete_chat_session_with_gate,
-        delete_scheduled_run_with_gate, delete_then_forget, evict_if_idle_with_gates,
-        generation_matches, identity_for_active_model, identity_for_saved_model,
-        quiesce_engine_before_reclaim, resolve_eval_model_selection_from,
+        PreparedRuntimeState, SESSION_MODEL_BINDING_STALE_ERROR, ScheduledUnattendedGuard,
+        SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks, SessionTurnShellTasks,
+        TranscriptOperation, cancel_turn_with_gates, default_model_for_new_session_from,
+        delete_chat_session_with_gate, delete_scheduled_run_with_gate, delete_then_forget,
+        evict_if_idle_with_gates, generation_matches, identity_for_active_model,
+        identity_for_saved_model, quiesce_engine_before_reclaim, resolve_eval_model_selection_from,
         resolve_runtime_model_override, resolve_scheduled_model, resolve_spawn_model,
         scheduled_profile_after_turn_gate, should_still_reap_after_snapshot, should_sync_session,
         user_display_message,
@@ -3331,6 +3354,34 @@ mod scheduled_model_tests {
         ];
         assert!(resolve_scheduled_model(&models, &profile(Some("missing"), "wire-model")).is_err());
         assert!(resolve_scheduled_model(&models, &profile(Some("wanted"), "wire-model")).is_err());
+    }
+
+    /// Session-scoped model selection follows the same policy as scheduled
+    /// tasks: once the bound config is deleted or regenerated (a detection
+    /// re-run mints fresh ids), the stale binding must surface a stable-code
+    /// error instead of silently falling back to the global active model —
+    /// otherwise the user picks A while the engine loads B (the local LM
+    /// Studio chain break reported by users).
+    #[test]
+    fn interactive_override_missing_id_never_falls_back_to_active() {
+        let models = vec![model("active", "active-model")];
+        let error = resolve_spawn_model(&models, None, Some("deleted-id"), false)
+            .expect_err("stale session binding must surface, not fall back to active");
+        let message = error.to_string();
+        assert!(
+            message.starts_with(SESSION_MODEL_BINDING_STALE_ERROR)
+                && message.contains("deleted-id"),
+            "error must carry the stable code and the missing config id, got: {message}"
+        );
+        // An override that still exists resolves as usual.
+        let models = vec![model("active", "active-model"), model("kept", "kept-wire")];
+        assert_eq!(
+            resolve_spawn_model(&models, None, Some("kept"), false)
+                .expect("resolvable override")
+                .expect("selected model")
+                .id,
+            "kept"
+        );
     }
 
     #[test]

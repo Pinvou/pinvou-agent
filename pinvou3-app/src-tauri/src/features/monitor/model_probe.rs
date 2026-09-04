@@ -589,22 +589,75 @@ fn vllm_target_kind(upstream: &str) -> &'static str {
     "remote"
 }
 
-/// 轻量探测本地 vLLM:一次 `/v1/models` 拿两样——实际 served 模型名 + `max_model_len`
-/// (上下文窗口)。名字用于发请求(免写死名字与 `--served-model-name` 不一致的
-/// model_not_found);窗口用于填 `active_route_limits.context_tokens`,让压缩阈值按真实
-/// 窗口推导(见 docs/context-compaction-设计.md)。探测失败(vLLM 没起/超时)返回
-/// `(None, None)`, and the caller falls back to the configured values plus the
-/// name hint. See `core::model_endpoint::apply_bearer` for `bearer` semantics:
-/// authenticated vLLM (`--api-key`) 401s on `/v1/models` without credentials,
+/// Lightweight local vLLM probe: one `/v1/models` fetch yields two things —
+/// the actual served model name and `max_model_len` (context window). The
+/// name is for monitor display only; the model name used for inference must
+/// go through [`resolve_served_model`] (this function returns the first list
+/// entry, which is only correct for single-model vLLM servers). The window
+/// fills `active_route_limits.context_tokens` so compaction thresholds derive
+/// from the real window (see docs/context-compaction-设计.md). On probe
+/// failure (vLLM down/timeout) returns `(None, None)`, and the caller falls
+/// back to the configured values plus the name hint. See
+/// `core::model_endpoint::apply_bearer` for `bearer` semantics: authenticated
+/// vLLM (`--api-key`) 401s on `/v1/models` without credentials,
 /// so pass a key from the same origin as real inference.
 pub async fn probe_vllm_model_info(
     base_url: &str,
     bearer: Option<&str>,
 ) -> (Option<String>, Option<u32>) {
-    // HTTP 层与 URL 拼装复用 core 的共享探测（避免 /v1/models 口径漂移）。
+    // HTTP layer and URL assembly reuse the shared core probe (no /v1/models
+    // semantics drift).
     match crate::core::model_endpoint::fetch_v1_models(base_url, bearer).await {
         Some(v) => parse_models_response(v).unwrap_or((None, None)),
         None => (None, None),
+    }
+}
+
+/// Final link of the "probe → user picks → use the pick" chain: decides the
+/// model name a local OpenAI-compatible engine actually sends. LM Studio /
+/// Ollama return **every downloaded model** in `/v1/models` (a multi-entry
+/// list whose first entry is unrelated to the user's pick in Pinvou), so:
+/// - configured name present in the list → keep it verbatim (an unloaded
+///   model is JIT-loaded by the engine, which is the user's explicit choice;
+///   overwriting the configured name with the first entry is exactly the
+///   reported "conversation names A, engine loads B" break);
+/// - configured name absent and the server exposes exactly one model →
+///   follow that name (the pre-existing fix for real vLLM renamed via
+///   `--served-model-name`, preserved unchanged);
+/// - otherwise (probe failure / multi-entry list without the configured
+///   name) → keep the configured name so inference surfaces `model_not_found`
+///   explicitly, never silently switching to any other listed model.
+/// Returns `(model name to send, that model's context window)`; when the
+/// configured name is kept the window is `None` (the model is not in the
+/// list, so another model's window must not drive compaction thresholds).
+fn resolve_served_model_from_entries(
+    configured: &str,
+    entries: &[crate::core::model_endpoint::OpenAiModelInfo],
+) -> (String, Option<u32>) {
+    if let Some(matched) = entries.iter().find(|model| model.id == configured) {
+        return (configured.to_string(), matched.max_model_len);
+    }
+    if let [single] = entries {
+        return (single.id.clone(), single.max_model_len);
+    }
+    (configured.to_string(), None)
+}
+
+/// Fetches `/v1/models` and decides the actual model name via
+/// [`resolve_served_model_from_entries`]. On probe failure returns the
+/// configured name with a `None` window. `bearer` semantics match
+/// [`probe_vllm_model_info`] (inference-same-origin key).
+pub async fn resolve_served_model(
+    base_url: &str,
+    bearer: Option<&str>,
+    configured: &str,
+) -> (String, Option<u32>) {
+    match crate::core::model_endpoint::fetch_v1_models(base_url, bearer)
+        .await
+        .and_then(crate::core::model_endpoint::parse_models_response_list)
+    {
+        Some(entries) => resolve_served_model_from_entries(configured, &entries),
+        None => (configured.to_string(), None),
     }
 }
 
@@ -698,6 +751,81 @@ mod tests {
         let (id, max) = parse_models_response(json).unwrap();
         assert_eq!(id.as_deref(), Some("/model"));
         assert_eq!(max, Some(65536));
+    }
+
+    fn served_entry(
+        id: &str,
+        max_model_len: Option<u32>,
+    ) -> crate::core::model_endpoint::OpenAiModelInfo {
+        crate::core::model_endpoint::OpenAiModelInfo {
+            id: id.to_string(),
+            max_model_len,
+            loaded: None,
+        }
+    }
+
+    /// LM Studio shape: `/v1/models` lists every downloaded model (multi-entry).
+    /// A user-picked model found in the list must be used verbatim with its own
+    /// window, never displaced by the first entry (root cause of the reported
+    /// "conversation names A, engine loads B" break).
+    #[test]
+    fn served_model_keeps_configured_name_found_in_multi_model_list() {
+        let entries = vec![
+            served_entry("first-downloaded", Some(4096)),
+            served_entry("user-picked", Some(131_072)),
+        ];
+        let (name, window) = resolve_served_model_from_entries("user-picked", &entries);
+        assert_eq!(name, "user-picked");
+        assert_eq!(window, Some(131_072));
+    }
+
+    /// Real vLLM scenario: after a `--served-model-name` change the list holds
+    /// a single unfamiliar name → follow it (pre-existing fix, preserved).
+    #[test]
+    fn served_model_follows_single_unknown_name() {
+        let entries = vec![served_entry("served-name", Some(65536))];
+        let (name, window) = resolve_served_model_from_entries("qwen36_35b_256k", &entries);
+        assert_eq!(name, "served-name");
+        assert_eq!(window, Some(65536));
+    }
+
+    /// Multi-entry list without the configured name (stale/hand-edited config):
+    /// keep the configured name so inference surfaces `model_not_found`
+    /// explicitly, never silently switching to any listed model; the window
+    /// must not be borrowed from another model either (compaction thresholds
+    /// would derive from the wrong window).
+    #[test]
+    fn served_model_keeps_configured_name_when_absent_from_multi_model_list() {
+        let entries = vec![served_entry("a", Some(4096)), served_entry("b", Some(8192))];
+        let (name, window) = resolve_served_model_from_entries("gone", &entries);
+        assert_eq!(name, "gone");
+        assert_eq!(window, None);
+    }
+
+    /// Single entry that equals the configured name: takes the "found in list"
+    /// branch, keeping the name and its window (same outcome as the
+    /// single-model follow branch — pinned so reordering branches cannot
+    /// silently change where the window comes from).
+    #[test]
+    fn served_model_single_entry_equal_to_configured_keeps_name_and_window() {
+        let entries = vec![served_entry("qwen36_35b_256k", Some(262_144))];
+        let (name, window) = resolve_served_model_from_entries("qwen36_35b_256k", &entries);
+        assert_eq!(name, "qwen36_35b_256k");
+        assert_eq!(window, Some(262_144));
+    }
+
+    /// Matched entry without `max_model_len` (server does not expose it): the
+    /// name still resolves and the window stays `None`, falling back to the
+    /// declared/inferred value — never fabricate a window.
+    #[test]
+    fn served_model_matched_entry_without_window_propagates_none() {
+        let entries = vec![
+            served_entry("first-downloaded", None),
+            served_entry("user-picked", None),
+        ];
+        let (name, window) = resolve_served_model_from_entries("user-picked", &entries);
+        assert_eq!(name, "user-picked");
+        assert_eq!(window, None);
     }
 
     #[test]

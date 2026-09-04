@@ -448,14 +448,17 @@ async fn request_llm_memory_review(
     let preset = bridge.memory_model_preset();
     let model_name = if provider == "vllm" {
         // The served-name probe uses an inference-same-origin key:
-        // authenticated vLLM 401s on /v1/models.
-        crate::features::monitor::probe_vllm_model_info(
+        // authenticated vLLM 401s on /v1/models. resolve_served_model keeps a
+        // configured name the server lists (LM Studio/Ollama expose every
+        // downloaded model; the first entry is unrelated to the user's pick)
+        // and only follows the served name on single-model servers.
+        crate::features::monitor::resolve_served_model(
             &base_url,
             Some(bridge.memory_api_key().as_str()),
+            &bridge.memory_model(),
         )
         .await
         .0
-        .unwrap_or_else(|| bridge.memory_model())
     } else {
         bridge.memory_model()
     };
