@@ -1,6 +1,10 @@
-// 空态欢迎语下方的场景/模板卡片入口（design lane 并入 work 后取代输入区上方的
-// SubModePicker/PersonalWorkbenchTemplatePicker 三段堆叠，输入区只留工作/代码切换器）。
-// 点场景卡 = 选择/再点取消该场景；点模板卡 = 把模板完整提示词填进输入框供编辑。
+// Scene/template card entries under the empty-state greeting (after the
+// design lane was merged into work they replace the three-deck stack of
+// SubModePicker/PersonalWorkbenchTemplatePicker above the input area; the
+// input area keeps only the work/code switcher).
+// Clicking a scene card selects it / clicking again clears it; clicking a
+// template card fills the composer with the template's full prompt for
+// editing.
 
 function SceneCardGrid({ items, activeKey, onSelect }) {
   return (

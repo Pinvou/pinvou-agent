@@ -170,7 +170,18 @@ code 会话执行根是用户真实项目目录，但此前权限语义有两个
 
 真机回归发现两层语义在三种工作区模式（工作/设计/代码）下互相渗透、体验混乱，复审后拍板修订为：
 
-> **2026-09 更新**：设计（design）lane 并入工作（work）lane，lane 语义由三分改为两分（work/code）。`ModeLane::Design` 变体删除；旧 settings.json 的 `mode_defaults.design` 仅在启动加载时一次性折叠进 work 内存镜像（work 为空时回填，不回写磁盘，此后只落 work；design 字段原值随全量偏好写盘保真 round-trip 而非跳过序列化——折叠源在用户显式写入 work 前不能被无关偏好写盘蒸发，否则重启后默认值静默丢失）。场景标记字符串 `design:poster`/`design:data-visualization` 是历史持久数据，场景白名单保持合法不变。
+> **Update (2026-09)**: the design lane has been merged into the work lane,
+> so lane semantics went from three lanes to two (work/code). The
+> `ModeLane::Design` variant was removed; a legacy settings.json
+> `mode_defaults.design` is folded into the work in-memory mirror as a
+> one-time read at startup (backfilled only when work is empty, never
+> written back to disk — afterwards only work is written; the design field
+> round-trips verbatim through whole-preferences writes instead of being
+> skipped in serialization, because the fold source must not be evaporated
+> by an unrelated preferences write before the user explicitly sets work,
+> or the default would be silently lost after a restart). The scene marker
+> strings `design:poster`/`design:data-visualization` are historical
+> persisted data and stay valid in the scene whitelist unchanged.
 
 1. **草稿态切 mode → 刷新本 lane 全局默认**：工作/代码各有独立全局默认（work 存 settings.json `mode_defaults.work`，code 沿用 `code_permission.last_mode`；原 design 默认读取折叠进 work，不再单独写入）。
 2. **已生成会话切 mode → 只写会话自己的记录**，不再渗全局（`set_mode` 不再调 `record_code_last_mode`；`accept_plan` commit 也只写 per-session——原「任务级切换不记忆」条目同步废止，任务级 yolo 现纳入 per-session 持久化）。

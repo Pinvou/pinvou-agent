@@ -313,9 +313,10 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 > 已纳入 per-session 持久化（确认提交后写入）；③ 全局 lane 默认只由草稿态显式
 > 切换经 `set_mode_default` 写入。下文保留 2026-08-06 语义作历史参考。
 >
-> **2026-09 更新**：design lane 并入 work lane，lane 语义由三分改为两分
-> （work/code）；旧 `mode_defaults.design` 启动时一次性读取折叠进 work 镜像，
-> 不再单独写入。
+> **Update (2026-09)**: the design lane has been merged into the work lane,
+> so lane semantics went from three lanes to two (work/code); a legacy
+> `mode_defaults.design` is folded into the work mirror as a one-time read
+> at startup and is never written separately anymore.
 
 原生 code 会话的 Plan/Yolo 默认值与记忆策略（plain 会话行为不变：mode 仅驻
 内存、默认 Yolo、不落盘）：

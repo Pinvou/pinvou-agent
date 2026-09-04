@@ -162,12 +162,17 @@ impl SessionStore {
         let manager = SessionManager::new(sessions_dir.clone())
             .with_context(|| format!("SessionManager::new({}) failed", sessions_dir.display()))?;
         let prefs_snapshot = UserPrefs::load();
-        // design lane 已并入 work lane：旧 settings.json 里 `mode_defaults.design`
-        // 有值而 work 为空时，用 design 值回填 work 内存镜像（一次性读取折叠，
-        // 不回写磁盘；此后显式切换只落 work）。work 已有值时 design 不覆盖。
-        // design 字段本身必须随全量偏好写盘保真 round-trip：折叠源在用户显式
-        // 写入 work 之前是磁盘上唯一的默认值，被无关偏好写盘蒸发掉的话，
-        // 重启后就再也折叠不回来（见 `ModeDefaultPrefs::design` 注释）。
+        // The design lane has been merged into the work lane: when legacy
+        // settings.json has `mode_defaults.design` set and work is empty,
+        // backfill the work in-memory mirror from the design value (a
+        // one-time read fold, never written back to disk; explicit switches
+        // afterwards land on work only). When work already has a value,
+        // design does not override it.
+        // The design field itself must round-trip verbatim through
+        // whole-preferences writes: until the user explicitly writes work,
+        // it is the only default value on disk — if an unrelated preferences
+        // write evaporated it, a restart could never fold it back (see the
+        // `ModeDefaultPrefs::design` comment).
         let mut mode_defaults_snapshot = prefs_snapshot.mode_defaults;
         if mode_defaults_snapshot.work.is_none() {
             mode_defaults_snapshot.work = mode_defaults_snapshot.design;

@@ -560,7 +560,8 @@
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
     if (!state.activeSessionId && state.messages.length === 0 && state.chatItems.length === 0) {
       state.composerDraft = "";
-      // 草稿 mode 显示 = 当前 lane 全局默认（两分 lane 语义）。
+      // Draft mode display = the current lane's global default (two-lane
+      // semantics).
       state.modeState = currentDraftModeState();
       notify();
       return;
@@ -568,8 +569,9 @@
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
-    // freshBuffer 的 modeState 是通用缺省（yolo）；草稿显示须覆盖为本 lane
-    // 全局默认（work lane 的 last_mode）。
+    // freshBuffer's modeState is the generic default (yolo); the draft
+    // display must be overridden with this lane's global default (the work
+    // lane's last_mode).
     state.modeState = currentDraftModeState();
     notify();
   }
@@ -643,9 +645,11 @@
         }
         await refreshHistoryList();
         await syncModeState();
-        // 两分 lane 语义：后端 plain 缺省恒 Yolo、lane 只剩 work/code；
-        // 新会话所在 lane 的全局默认为 plan 时，在物化此刻显式应用（写入即成为
-        // 该会话自己的 per-session 记录，全局默认不受影响）。
+        // Two-lane semantics: the backend's plain default is always Yolo and
+        // lanes are only work/code; when the materializing session's lane
+        // global default is plan, apply it right now (the write becomes that
+        // session's own per-session record; the global default is
+        // unaffected).
         const laneDefault = state.modeDefaults
           && state.modeDefaults[state.modeLane === "code" ? "code" : "work"];
         // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户

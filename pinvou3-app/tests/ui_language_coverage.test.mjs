@@ -54,7 +54,8 @@ for (const language of ['zh', 'en', 'ja']) {
   assert.ok(dict[language].uiChat.sceneModes.documentWriting, `${language}.uiChat.sceneModes.documentWriting must exist`);
   assert.ok(dict[language].uiChat.sceneModes.poster, `${language}.uiChat.sceneModes.poster must exist`);
   assert.ok(dict[language].uiChat.sceneModes.dataVisualization, `${language}.uiChat.sceneModes.dataVisualization must exist`);
-  // design lane 并入 work 后退役的 sceneModes 键必须保持删除。
+  // The sceneModes keys retired by the design-lane merge into work must
+  // stay deleted.
   for (const deadKey of ['pptDesign', 'pptUnavailable', 'designGeneralPlaceholder']) {
     assert.equal(dict[language].uiChat.sceneModes[deadKey], undefined, `${language}.uiChat.sceneModes.${deadKey} is retired and must stay deleted`);
   }

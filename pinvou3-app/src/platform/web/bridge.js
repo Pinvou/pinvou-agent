@@ -214,13 +214,15 @@
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
     modeState: { mode: "yolo" },
-    // 工作区 lane（work/code）的全局默认 mode（null=该 lane 未显式
-    // 选过；缺省 code→plan、work→yolo）。草稿态 chip 显示与切换的事实源，
-    // 启动时经 get_mode_defaults 拉取；草稿切换经 set_mode_default 写回。
+    // Per-lane (work/code) global default modes (null = the lane was never
+    // explicitly chosen; defaults code→plan, work→yolo). Source of truth for
+    // the draft-state chip display and switches: fetched at startup via
+    // get_mode_defaults, written back on draft switches via set_mode_default.
     modeDefaults: { work: null, code: null },
-    // 当前聊天页所处 lane（work；code 页车道有自己的草稿控件逻辑）。
-    // lane 是纯前端概念，由 ChatView 随 pinvouMode 显式传入，bridge 不读
-    // localStorage。
+    // The lane the current chat page is in (work; the code page lane has its
+    // own draft-control logic). The lane is a pure frontend concept, passed
+    // in explicitly by ChatView with pinvouMode; the bridge never reads
+    // localStorage.
     modeLane: "work",
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
     planSnapshot: { plan: null, todos: null },
@@ -3062,7 +3064,8 @@
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
     if (!state.activeSessionId && state.messages.length === 0 && state.chatItems.length === 0) {
       state.composerDraft = "";
-      // 草稿 mode 显示 = 当前 lane 全局默认（两分 lane 语义）。
+      // Draft mode display = the current lane's global default (two-lane
+      // semantics).
       state.modeState = currentDraftModeState();
       notify();
       return;
@@ -3070,8 +3073,9 @@
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
-    // freshBuffer 的 modeState 是通用缺省（yolo）；草稿显示须覆盖为本 lane
-    // 全局默认（work lane 的 last_mode）。
+    // freshBuffer's modeState is the generic default (yolo); the draft
+    // display must be overridden with this lane's global default (the work
+    // lane's last_mode).
     state.modeState = currentDraftModeState();
     notify();
   }
@@ -3115,9 +3119,11 @@
         getBuffer(meta.id).sessionRevision = String(meta.transcript_revision || meta.transcriptRevision || "");
         await refreshHistoryList();
         await syncModeState();
-        // 两分 lane 语义：后端 plain 缺省恒 Yolo、lane 只剩 work/code；
-        // 新会话所在 lane 的全局默认为 plan 时，在物化此刻显式应用（写入即成为
-        // 该会话自己的 per-session 记录，全局默认不受影响）。
+        // Two-lane semantics: the backend's plain default is always Yolo and
+        // lanes are only work/code; when the materializing session's lane
+        // global default is plan, apply it right now (the write becomes that
+        // session's own per-session record; the global default is
+        // unaffected).
         const laneDefault = state.modeDefaults
           && state.modeDefaults[state.modeLane === "code" ? "code" : "work"];
         // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
@@ -7243,7 +7249,8 @@
   async function syncModeState() {
     const sid = state.activeSessionId;
     if (!sid) {
-      // 草稿态：显示当前 lane 的全局默认（两分 lane 语义），不再恒 yolo。
+      // Draft state: show the current lane's global default (two-lane
+      // semantics), no longer a constant yolo.
       state.modeState = currentDraftModeState();
       return;
     }
@@ -7265,7 +7272,7 @@
     }
   }
 
-  // ── lane 全局默认（工作/代码两分，与 tauri bridge 对齐）───────────
+  // ── lane global defaults (work/code split, aligned with the tauri bridge) ───────
   // 草稿态（无 active 会话）的 modeState：取当前 lane 的全局默认，缺省 yolo。
   function currentDraftModeState() {
     const lane = state.modeLane === "code" ? "code" : "work";
@@ -7890,7 +7897,8 @@
   }
   async function exitPlanToYolo() {
     const sid = state.activeSessionId;
-    // 草稿态：不物化会话，改写本 lane 全局默认（两分 lane 语义）。
+    // Draft state: do not materialize a session; rewrite this lane's global
+    // default (two-lane semantics).
     if (!sid) { await setDraftMode("yolo"); return; }
     try {
       // invoke 形状保持 { sessionId: state.activeSessionId }（协议指纹按文本
@@ -7902,8 +7910,9 @@
   }
   // 灯泡 toggle：plan ↔ yolo
   async function setPlanModeNext() {
-    // 草稿态：不物化会话，改写本 lane 全局默认（两分 lane 语义；旧实现会先
-    // ensureSession 物化——草稿页点 Plan 凭空造出空会话）。
+    // Draft state: do not materialize a session; rewrite this lane's global
+    // default (two-lane semantics; the old implementation called ensureSession
+    // first — clicking Plan on the draft page conjured an empty session).
     const sid = state.activeSessionId;
     if (!sid) { await setDraftMode("plan"); return; }
     try {
@@ -9569,7 +9578,8 @@
       window.PinvouWebClient.markStateReady();
     }
     if (hasCapability("superPermission")) await refreshSuperPerm();
-    // lane 全局默认（work/code）是草稿态 mode chip 的事实源，启动即拉取。
+    // The per-lane global defaults (work/code) are the source of truth for
+    // the draft-state mode chip; fetched at startup.
     refreshModeDefaults().catch(function () {});
     loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
     pollBackendStatus();

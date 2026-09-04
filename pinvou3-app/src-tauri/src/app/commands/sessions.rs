@@ -776,8 +776,9 @@ mod pinvou_scene_event_tests {
 
     #[test]
     fn legacy_design_scene_names_stay_valid() {
-        // design lane 已并入 work lane，但场景标记字符串 design:poster /
-        // design:data-visualization 是历史持久数据，必须继续被白名单接受。
+        // The design lane has been merged into the work lane, but the scene
+        // marker strings design:poster / design:data-visualization are
+        // historical persisted data and must stay accepted by the whitelist.
         for scene in ["design:poster", "design:data-visualization"] {
             let normalized = normalize_pinvou_scene_events(serde_json::json!([
                 { "pos": 1, "scene": scene }

@@ -49,13 +49,18 @@ import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js
 import { deriveRunningShellTasks, formatElapsedMs, tailOutputLines } from './background-tasks.js';
 import { useShellTaskCancel } from './shell-task-cancel.js';
 import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
-// 重面板惰性化:ArtifactsPanel(产物预览/可视化编辑才出现)与 SubagentTranscriptPanel
-// (专家卡点开才出现)各带一串专属依赖(design-runtime/EditableMarkdownPreview/
-// subagent-conversation 等,合计 ~130KB 源码),条件渲染本就存在。预取挂在打开
-// 动作同 tick,首次打开仍可能挂起一个微任务级窗口——因此各挂载点必须配局部
-// Suspense(面板形状 fallback)与局部 ErrorBoundary,把挂起/失败限制在面板槽位,
-// 不冒泡到应用级边界闪断整视图(口径同 LazyCodexAcpView/WebAccessModal)。
-// 动态 import 收口在本表(口径同 app/view-loaders.js 的 VIEW_LOADERS)。
+// Heavy-panel laziness: ArtifactsPanel (only appears for artifact preview /
+// visual editing) and SubagentTranscriptPanel (only when an expert card is
+// opened) each carry a chain of dedicated dependencies (design-runtime /
+// EditableMarkdownPreview / subagent-conversation etc., ~130KB of source in
+// total), so conditional rendering already exists. Prefetching fires on the
+// same tick as the open action, and a first open can still suspend for a
+// microtask-scale window — so every mount point must pair a local Suspense
+// (panel-shaped fallback) with a local ErrorBoundary, keeping the
+// suspension/failure contained to the panel slot instead of bubbling to the
+// app-level boundary and flashing the whole view (same approach as
+// LazyCodexAcpView/WebAccessModal). Dynamic imports are centralized in this
+// table (same approach as VIEW_LOADERS in app/view-loaders.js).
 const CHAT_PANEL_LOADERS = Object.freeze({
   artifacts: () => import('../artifacts/ArtifactsPanel.jsx'),
   subagent: () => import('../multiagent/SubagentTranscriptPanel.jsx'),
@@ -174,8 +179,10 @@ function LiveConversationActivityIndicator({ turn, onRequestAttention, className
   );
 }
 
-// design lane 并入 work 后的统一场景表：场景只表达"这条消息的专业语境"，
-// 与 lane 无关；场景卡片在空态欢迎语下方渲染（scene-cards.jsx）。
+// Unified scene table after the design lane was merged into work: a scene
+// only expresses "the professional context of this message" and is
+// lane-independent; scene cards render below the empty-state greeting
+// (scene-cards.jsx).
 const SCENE_TABS = [
   { key: PERSONAL_WORKBENCH_SCENE_KEY, labelKey: 'personalWorkbench', Icon: Briefcase },
   { key: 'document-writing', labelKey: 'documentWriting', Icon: FileText },
@@ -846,8 +853,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         setPinvouModeState(restored);
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: re-evaluate migration only on session/message-count changes; adding chatItems would rerun on every streaming delta
       }, [activeSessionId, chatItems.length]);
-      // 把当前工作区 lane 同步给 bridge：lane 只剩 work/code 两分（design 已并入
-      // work），lane 是纯前端概念，bridge 自身不读 localStorage。
+      // Sync the current workspace lane to the bridge: lanes are now only
+      // work/code (design was merged into work); the lane is a pure frontend
+      // concept and the bridge itself never reads localStorage.
       useEffect(() => {
         if (bridge.available && bridge.interaction && bridge.interaction.setModeLane) {
           bridge.interaction.setModeLane(pinvouMode);
@@ -2147,7 +2155,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 <h1 data-testid="chat-greeting" className={`${isWeb ? 'text-[28px] leading-[1.35] px-2 [text-wrap:balance] sm:text-[44px] sm:leading-normal sm:px-0' : 'text-[34px] md:text-[44px] leading-tight whitespace-normal break-words'} font-normal mb-2 ${'text-[#1F1F1F] dark:text-[#E3E3E3]'}`}>
                   {t.chatGreeting}
                 </h1>
-                {/* 场景入口卡片：取代输入区上方的场景 tab 堆叠，输入区保持干净 */}
+                {/* Scene entry cards: replace the scene-tab stack above the
+                    input area so the composer stays clean */}
                 <SceneCardGrid
                   items={sceneTabs}
                   activeKey={sceneSubtab}

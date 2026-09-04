@@ -1950,18 +1950,22 @@ function workspaceDisplayName(path) {
           setCurrentView('codex');
         } else if (mode === 'work') {
           setCodeModeOn(false);
-          // 仅草稿态（无活跃会话）才开新会话：从 code 页切回时 bridge 的
-          // activeSessionId 仍是原工作会话，强制 createNewSession 会新建一个
-          // plain 会话（默认 Yolo），把用户切过的 Plan 顶掉——表现为「从代码
-          // 切回工作，审批模式变回 Yolo」。保留原会话，ChatView 挂载后
-          // 显示其实测 mode。
+          // Only the draft state (no active session) starts a new session:
+          // when switching back from the code page, bridge's activeSessionId
+          // is still the original work session; forcing createNewSession
+          // would create a new plain session (default Yolo) and clobber the
+          // user's chosen Plan — surfacing as "switch back from code to work
+          // and the approval mode reverts to Yolo". Keep the original
+          // session; ChatView shows its measured mode after mounting.
           const scopeKey = bridge.activeSessionId
             ? createPinvouModeScopeKey(bridge.activeSessionId)
             : undefined;
           savePinvouModeState({ mode: 'work' }, undefined, scopeKey);
           if (bridge.available && !bridge.activeSessionId) bridge.sessions.createNewSession();
-          // code 页期间原工作会话的 mode 可能已被修改（code 页独立链路），
-          // 切回前拉一次实测值，避免 ChatView 挂载后显示旧 modeState。
+          // While on the code page the original work session's mode may have
+          // changed (the code page has its own chain), so pull a fresh value
+          // before switching back — ChatView must not mount with a stale
+          // modeState.
           if (bridge.available && bridge.activeSessionId) {
             bridge.interaction.syncModeState().catch(() => {});
           }

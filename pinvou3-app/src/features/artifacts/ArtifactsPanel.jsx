@@ -67,8 +67,9 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
     // eslint-disable-next-line sonarjs/cognitive-complexity -- unified preview/design workbench panel: every state-machine branch maps to a preview kind or a design runtime event; splitting would sever the pv/sel linkage
     const ArtifactsPanel = ({ bs, t, onClose, isWide, onGotoSettings, isFullscreen = false, onToggleFullscreen, preferredArtifactPath, onPreviewArtifact, designCommand, selectedDesignElement, designChanges = EMPTY_DESIGN_CHANGES, onDesignElementSelected, onDesignChangeApplied, onDesignMutation, onDesignApplyChange, onDesignClearChanges, onDesignAiSubmit, designAiState, onDesignAiStateChange }) => {
       const uiA = t.uiArtifacts;
-      // 可视化编辑（设计工作台）改为面板内手动开关：不再由会话 lane 触发，
-      // 任何 HTML 产物全屏后都可以点「编辑模式」进入。
+      // Visual editing (design workbench) is now a manual in-panel toggle:
+      // no longer triggered by the session lane — any HTML artifact can
+      // enter "edit mode" once fullscreen.
       const [designEditMode, setDesignEditMode] = useState(false);
       const canOpenContainingFolder = can('externalSystemOpen');
       const canDownloadArtifacts = can('artifactDownload');
@@ -238,9 +239,11 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         injectDesignRuntime(frame);
       };
 
-      // 退出编辑模式的边界：销毁 iframe 内运行时并复位 AI 调整状态与选中
-      // 元素（不取消主会话生成——AI 改文件仍可继续，只是不再可视化编辑）。
-      // 选中元素不清的话，主输入框 placeholder 会一直停在「调整选中元素」。
+      // Exit-edit-mode boundary: destroy the iframe runtime and reset the
+      // AI-adjustment state and the selected element (the main session's
+      // generation is not cancelled — AI file edits may continue, just
+      // without visual editing). If the selected element is not cleared, the
+      // composer placeholder stays stuck on "adjust selected element".
       function exitDesignEditMode() {
         destroyDesignRuntime();
         setDesignEditMode(false);
@@ -257,8 +260,9 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         // eslint-disable-next-line react-hooks/exhaustive-deps -- re-inject only when the preview document identity changes; depending on the inject function itself would break that trigger timing
       }, [showDesignWorkbench, tab, pv.kind, pv.text, pv.visual && pv.visual.html]);
 
-      // 切产物/切 tab/退出全屏时自动退出编辑模式：进入编辑时记录 scope，
-      // scope 变化（含换产物）即退出。
+      // Auto-exit edit mode on artifact switch / tab switch / leaving
+      // fullscreen: record the scope on entering edit mode, and exit as soon
+      // as the scope changes (including a different artifact).
       const designEditScopeKey = sel && sel.path ? `${tab}:${sel.path}:${isFullscreen}` : null;
       const designEditEnteredScopeRef = useRef(null);
       useEffect(() => {

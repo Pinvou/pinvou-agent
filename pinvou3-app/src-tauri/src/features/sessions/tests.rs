@@ -2974,7 +2974,7 @@ fn code_session_default_follows_code_lane_default() {
     let (store, _g) = isolated_store();
     with_code_sessions(&store, &["code-1", "code-2"]);
     // 已生成会话显式切 yolo：只写 per-session 记录，不碰全局 lane 默认
-    // （两分 lane 语义）→ 新 code 会话默认不跟随。
+    // (two-lane semantics) → a new code session's default does not follow.
     store
         .set_mode("code-1", SerializableMode::Yolo)
         .expect("switch yolo");
@@ -3026,8 +3026,9 @@ fn code_mode_persists_per_session_across_restart() {
 }
 
 /// accept 方案确认提交（commit）后，会话的 Yolo 纳入 per-session 持久化；
-/// 不碰任何全局 lane 默认（两分 lane 语义）；提交失败回滚（rollback）不落盘，
-/// 内存回 Plan 与磁盘保持一致。
+/// no global lane default is touched (two-lane semantics); a failed-commit
+/// rollback writes nothing to disk, and the in-memory Plan stays consistent
+/// with disk.
 #[test]
 fn code_session_accepted_yolo_persists_on_commit_not_rollback() {
     let (store, _g) = isolated_store();
@@ -3072,7 +3073,8 @@ fn plain_session_mode_persists_across_restart() {
         .set_mode("plain-1", SerializableMode::Plan)
         .expect("plain plan");
     assert_eq!(store.mode_state("plain-1").mode, SerializableMode::Plan);
-    // 两分 lane 语义：plain 会话也写 sidecar；但不动任何全局 lane 默认。
+    // Two-lane semantics: plain sessions write the sidecar too, but no
+    // global lane default is touched.
     let file = paths::sessions_root().join("_session_mode_states.json");
     let on_disk: HashMap<String, SerializableMode> =
         serde_json::from_str(&std::fs::read_to_string(&file).expect("read sidecar"))
@@ -3085,8 +3087,9 @@ fn plain_session_mode_persists_across_restart() {
     assert_eq!(reopened.mode_state("plain-1").mode, SerializableMode::Plan);
 }
 
-/// work/code lane 全局默认的读写与持久化；非法 lane 字符串必须报错
-/// （design lane 已并入 work，`parse("design")` 必须拒绝）。
+/// Read/write/persistence of the work/code lane global defaults; an invalid
+/// lane string must error (the design lane was merged into work, so
+/// `parse("design")` must be rejected).
 #[test]
 fn mode_lane_defaults_round_trip_and_validate() {
     let (store, _g) = isolated_store();
@@ -3107,14 +3110,16 @@ fn mode_lane_defaults_round_trip_and_validate() {
     // lane 字符串校验（命令层入口防 IPC 直调写未知 lane）。
     assert!(ModeLane::parse("work").is_ok());
     assert!(ModeLane::parse("code").is_ok());
-    // design lane 已并入 work：旧 lane 名不再被接受。
+    // The design lane has been merged into work: the legacy lane name is no
+    // longer accepted.
     assert!(ModeLane::parse("design").is_err());
     assert!(ModeLane::parse(" CodE ").is_err());
     assert!(ModeLane::parse("").is_err());
 }
 
-/// design lane 并入 work 的读取折叠：旧 settings.json 只有 `mode_defaults.design`
-/// 时，加载后 work 镜像取到 design 值；work 已有值时 design 不覆盖。
+/// Read fold of the design lane into work: when legacy settings.json has only
+/// `mode_defaults.design`, the loaded work mirror takes the design value;
+/// when work already has a value, design does not override it.
 #[test]
 fn legacy_design_default_folds_into_work_on_load() {
     let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -3128,7 +3133,7 @@ fn legacy_design_default_folds_into_work_on_load() {
     // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
     unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
     std::fs::create_dir_all(&tmp).expect("create tmp home");
-    // work 为空 → 折叠取 design 值（不回写磁盘）。
+    // work empty → the fold takes the design value (never written back).
     std::fs::write(
         paths::settings_path(),
         r#"{ "mode_defaults": { "design": "plan" } }"#,
@@ -3136,8 +3141,8 @@ fn legacy_design_default_folds_into_work_on_load() {
     .expect("write legacy settings");
     let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
     assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
-    // 折叠不回写磁盘：boot 后 settings.json 仍是 legacy 形状（work 键缺失、
-    // design 原值保留）。
+    // The fold is not written back: after boot, settings.json keeps its
+    // legacy shape (work key absent, design value preserved).
     let on_disk =
         std::fs::read_to_string(paths::settings_path()).expect("read settings after boot");
     assert!(
@@ -3145,7 +3150,7 @@ fn legacy_design_default_folds_into_work_on_load() {
         "fold must not write back to disk: {on_disk}"
     );
 
-    // work 已有值 → design 不覆盖。
+    // work already set → design does not override.
     std::fs::write(
         paths::settings_path(),
         r#"{ "mode_defaults": { "work": "yolo", "design": "plan" } }"#,
@@ -3154,7 +3159,8 @@ fn legacy_design_default_folds_into_work_on_load() {
     let reopened = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("reboot");
     assert_eq!(reopened.mode_defaults().work, Some(SerializableMode::Yolo));
 
-    // work 已有值而 design 缺失 → work 原值保持，不回退缺省。
+    // work already set and design missing → the work value stands, no
+    // fallback to the default.
     std::fs::write(
         paths::settings_path(),
         r#"{ "mode_defaults": { "work": "plan" } }"#,
@@ -3165,10 +3171,12 @@ fn legacy_design_default_folds_into_work_on_load() {
     drop(guard);
 }
 
-/// 折叠不回写磁盘，因此 design 字段必须随全量偏好写盘保真 round-trip：
-/// 任意一次无关偏好写盘（此处以 code yolo 确认标志为例）都不得把 design
-/// 值从 settings.json 抹掉——否则重启后折叠无源，用户显式选过的默认
-/// 静默丢失（回归：design 字段曾被 skip_serializing 导致该场景蒸发）。
+/// The fold is not written back to disk, so the design field must round-trip
+/// verbatim through whole-preferences writes: any unrelated preferences
+/// write (here, the code yolo confirmation flag) must not erase the design
+/// value from settings.json — otherwise a restart leaves the fold without a
+/// source and the user's explicitly chosen default is silently lost
+/// (regression: the field was once skip_serializing, which evaporated it).
 #[test]
 fn legacy_design_default_survives_unrelated_prefs_write() {
     let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -3190,7 +3198,8 @@ fn legacy_design_default_survives_unrelated_prefs_write() {
     let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
     assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
 
-    // 无关偏好字段的全量写盘（不触碰 mode_defaults 的任何语义写入）。
+    // A whole-preferences write of an unrelated field (no semantic write to
+    // mode_defaults).
     UserPrefs::update_transaction(|prefs| {
         prefs.code_permission.yolo_confirmed = true;
         Ok(())
@@ -3204,7 +3213,8 @@ fn legacy_design_default_survives_unrelated_prefs_write() {
         "legacy design value must survive unrelated pref writes: {on_disk}"
     );
 
-    // 重启后折叠源仍在，work 镜像继续取到 design 值。
+    // After a restart the fold source is still there and the work mirror
+    // keeps taking the design value.
     drop(store);
     let reopened = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("reboot");
     assert_eq!(reopened.mode_defaults().work, Some(SerializableMode::Plan));

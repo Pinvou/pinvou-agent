@@ -87,17 +87,23 @@ pub enum SessionKind {
 
 /// pinvou3 session 存储：包 SessionManager + active id 跟踪 + per-session mode 状态。
 ///
-/// mode 状态分两层（两分 lane 语义，复审拍板；design lane 已并入 work）：
-/// - per-session：任何会话显式切 mode（`set_mode`）都持久化到
-///   `~/.pinvou3/sessions/_session_mode_states.json`（重开会话恢复它自己上次的
-///   mode）；已生成会话的切换**不再**触碰任何全局默认。
-/// - 全局默认按 lane 两分：工作 → settings.json `mode_defaults.work`（旧
-///   `mode_defaults.design` 值启动时折叠进 work 镜像），
-///   代码 → `code_permission.last_mode`（从未用过 code 模式 → Plan 只读）。
-///   只由对应 lane **草稿态**的显式切换写入（`set_mode_default`）；新会话默认
-///   mode = 本 lane 全局默认（code 由 `resolved_default_mode` 解析，work
-///   由前端在会话物化时应用）。yolo 一次性确认标志
-///   `code_permission.yolo_confirmed` 同样在 settings.json，由确认命令写入。
+/// Mode state lives on two layers (two-lane semantics, settled in review;
+/// the design lane has been merged into work):
+/// - per-session: any session's explicit mode switch (`set_mode`) persists to
+///   `~/.pinvou3/sessions/_session_mode_states.json` (reopening a session
+///   restores its own last mode); a switch inside an already-materialized
+///   session **never** touches any global default.
+/// - global defaults split per lane: work → settings.json
+///   `mode_defaults.work` (a legacy `mode_defaults.design` value is folded
+///   into the work mirror at startup),
+///   code → `code_permission.last_mode` (never used code mode → Plan
+///   read-only). Written only by an explicit **draft-state** switch in the
+///   matching lane (`set_mode_default`); a new session's default
+///   mode = its lane's global default (code resolved by
+///   `resolved_default_mode`, work applied by the frontend at session
+///   materialization). The one-shot yolo confirmation flag
+///   `code_permission.yolo_confirmed` also lives in settings.json, written by
+///   the confirmation command.
 /// 其余运行时交互状态（pending_plan、persona、知识库挂载等）仍 in-memory only。
 ///
 /// `auto_continue_count`：M2 弱模型加固——Executing 态 LLM 调一次工具就停时,
@@ -136,18 +142,22 @@ pub struct SessionStore {
     /// 与 Engine bridge / 远程端共用同一份 `SessionAgentStore` 闭包，由 app 组合根
     /// (lib.rs) 注入；None = 无 code 会话判定（测试/启动早期），全部按 plain 语义。
     code_session_predicate: Arc<RwLock<Option<CodeSessionPredicate>>>,
-    /// `_session_mode_states.json` 的内存事实源：存所有会话的显式 mode（两分
-    /// lane 语义后 plain 会话也持久化）。启动时 load 合并进 `mode_states`；
-    /// set_mode / 删除会话 / 保留策略清理时维护并落盘。
+    /// In-memory source of truth for `_session_mode_states.json`: every
+    /// session's explicit mode (under two-lane semantics plain sessions
+    /// persist too). Loaded and merged into `mode_states` at startup;
+    /// maintained and flushed by set_mode / session deletion / retention
+    /// policy cleanup.
     session_mode_states: Arc<RwLock<HashMap<String, SerializableMode>>>,
     /// settings.json `code_permission` 的进程内镜像。`mode_state` 在 chat 发送
     /// 路径上每轮被调，默认值解析只读这块内存（加锁读，不触盘）；写入经
     /// `UserPrefs::update_transaction` 落盘后同步本镜像。
     code_permission: Arc<RwLock<CodePermissionPrefs>>,
-    /// settings.json `mode_defaults`（work lane 全局默认）的进程内镜像，
-    /// 与 `code_permission` 同款镜像语义。启动加载时把旧 `mode_defaults.design`
-    /// 折叠进 work（见 `store.rs::from_paths`），此后 design 字段不再参与任何
-    /// 语义写入（原值仅随全量偏好写盘保真保留，供旧折叠源持续可用）。
+    /// In-process mirror of settings.json `mode_defaults` (the work lane's
+    /// global default), mirroring `code_permission` semantics. At startup the
+    /// legacy `mode_defaults.design` is folded into work (see
+    /// `store.rs::from_paths`); afterwards the design field participates in
+    /// no semantic writes (the original value is preserved verbatim by
+    /// whole-preferences writes so the legacy fold source stays available).
     mode_defaults: Arc<RwLock<ModeDefaultPrefs>>,
     /// `_multi_agent.json` 的持久化互斥：内存快照与 tmp+rename 必须在同一临界
     /// 区内完成。少了它，两个并发保存会各自读到不同时刻的快照，**后完成写盘的

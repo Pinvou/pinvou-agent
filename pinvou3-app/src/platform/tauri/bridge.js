@@ -257,13 +257,15 @@
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
     modeState: { mode: "yolo" },
-    // 工作区 lane（work/code）的全局默认 mode（null=该 lane 未显式
-    // 选过；缺省 code→plan、work→yolo）。草稿态 chip 显示与切换的事实源，
-    // 启动时经 get_mode_defaults 拉取；草稿切换经 set_mode_default 写回。
+    // Per-lane (work/code) global default modes (null = the lane was never
+    // explicitly chosen; defaults code→plan, work→yolo). Source of truth for
+    // the draft-state chip display and switches: fetched at startup via
+    // get_mode_defaults, written back on draft switches via set_mode_default.
     modeDefaults: { work: null, code: null },
-    // 当前聊天页所处 lane（work；code 页车道有自己的草稿控件逻辑）。
-    // lane 是纯前端概念，由 ChatView 随 pinvouMode 显式传入，bridge 不读
-    // localStorage。
+    // The lane the current chat page is in (work; the code page lane has its
+    // own draft-control logic). The lane is a pure frontend concept, passed
+    // in explicitly by ChatView with pinvouMode; the bridge never reads
+    // localStorage.
     modeLane: "work",
     // 草稿态寄存的多智能体开关意图：不物化会话，首条消息创建会话时落后端。
     pendingDraftMultiAgent: false,
@@ -1145,8 +1147,10 @@
     });
   }
 
-  // 草稿态（无 active 会话）的 modeState：取当前 lane 的全局默认，缺省 yolo
-  // （与后端 plain 缺省方向一致）。两分 lane 语义：草稿显示 = 本 lane 全局默认。
+  // The draft-state (no active session) modeState: take the current lane's
+  // global default, falling back to yolo (aligned with the backend's plain
+  // default direction). Two-lane semantics: the draft display = this lane's
+  // global default.
   function currentDraftModeState() {
     const lane = state.modeLane === "code" ? "code" : "work";
     const d = state.modeDefaults && state.modeDefaults[lane];
@@ -2460,7 +2464,8 @@
       startupMark("bridge:draft_entered");
     }
     if (needsSessionRuntime) {
-      // lane 全局默认（work/code）是草稿态 mode chip 的事实源，启动即拉取。
+      // The per-lane global defaults (work/code) are the source of truth
+      // for the draft-state mode chip; fetched at startup.
       startupAwait("bridge:refresh_mode_defaults", refreshModeDefaults);
     }
     if (!isDetachedWindow || detachedWindowKind === "session" || detachedWindowKind === "cardpool") {
@@ -2606,8 +2611,9 @@
       probeLocalServerKind,
     },
     interaction: { toggleSuperPerm,
-      // modeState 权威读取（评审 P1 后纳入公开面：main.jsx 从 code 页切回
-      // 工作时拉一次实测值，避免 ChatView 挂载后显示旧 modeState）
+      // Authoritative modeState read (exposed after review P1: main.jsx
+      // pulls a fresh value when switching back from the code page to work,
+      // so ChatView does not mount with a stale modeState)
     syncModeState,
       // Plan/YOLO
     acceptPlan,

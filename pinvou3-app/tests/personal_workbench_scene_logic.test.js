@@ -63,7 +63,8 @@ assert.deepStrictEqual(Array.from(PERSONAL_WORKBENCH_TEMPLATES, item => item.tit
 ]);
 assert.strictEqual(PERSONAL_WORKBENCH_TEMPLATES.length, 7);
 
-// design lane 并入 work 后场景判定只看 subtab（单参数）。
+// After the design lane merged into work, scene detection looks only at
+// the subtab (single argument).
 assert.strictEqual(shouldUsePersonalWorkbenchScene('personal-workbench'), true);
 assert.strictEqual(shouldUsePersonalWorkbenchScene('document-writing'), false);
 assert.strictEqual(shouldUsePersonalWorkbenchScene('poster'), false);

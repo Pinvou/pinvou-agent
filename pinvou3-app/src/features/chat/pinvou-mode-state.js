@@ -1,5 +1,6 @@
-// design lane 已并入 work：lane 只剩 work（code lane 不持久化在这里）。
-// 任何历史值（含 'design'）读取时都折叠为 work。
+// The design lane has been merged into work: only work remains here (the
+// code lane does not persist through this module). Any historical value
+// (including 'design') folds into work on read.
 const PINVOU_MODES = ['work'];
 
 const PINVOU_MODE_STORAGE_KEY = 'pinvou_mode_state_v4';
@@ -11,7 +12,8 @@ const MAX_SESSION_MODE_STATES = 200;
 
 const UNROUTED_SUBTAB = 'general';
 const DEFAULT_SUBTAB = UNROUTED_SUBTAB;
-// 合并后的场景清单：work 原有（个人工作台/公文写作）+ design 并入（海报/数据可视化）。
+// Merged scene list: work's originals (personal workbench / document
+// writing) + the design additions folded in (poster / data visualization).
 const SUBTABS = [UNROUTED_SUBTAB, 'personal-workbench', 'document-writing', 'poster', 'data-visualization'];
 
 function normalizePinvouMode(value) {
@@ -43,8 +45,9 @@ function persistedPinvouModeState(value) {
   };
 }
 
-// v3/v2 时代的 entry 形状是 {mode, workSubtab, designSubtab}：
-// mode==='design' 取 designSubtab，否则取 workSubtab，折叠进单一 subtab。
+// The v3/v2 era entry shape was {mode, workSubtab, designSubtab}:
+// mode==='design' took designSubtab, otherwise workSubtab — folded into the
+// single subtab here.
 function upgradeLegacyEntry(entry) {
   const input = entry && typeof entry === 'object' ? entry : {};
   const subtab = input.mode === 'design' ? input.designSubtab : input.workSubtab;
@@ -86,13 +89,13 @@ function parsedModeStoreFromRaw(raw) {
   return parsedModeStoreFromRawWith(raw, persistedPinvouModeState);
 }
 
-// v3 → v4：entry 折叠（design → work + designSubtab）。
+// v3 → v4: entry fold (design → work + designSubtab).
 function migrateV3ModeStore(raw) {
   return parsedModeStoreFromRawWith(raw, upgradeLegacyEntry);
 }
 
-// v2 → v4：先套用旧 v2→v3 语义（draft 作用域的场景选择重置为 general，
-// 会话作用域不动），再做 v3→v4 的 entry 折叠。
+// v2 → v4: first apply the old v2→v3 semantics (draft-scoped scene choices
+// reset to general, session scopes untouched), then the v3→v4 entry fold.
 function migrateV2ModeStore(raw) {
   const migrated = parsedModeStoreFromRawWith(raw, upgradeLegacyEntry);
   const draftSubtab = migrated.draft.subtab;

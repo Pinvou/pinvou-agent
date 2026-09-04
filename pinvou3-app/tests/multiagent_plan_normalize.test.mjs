@@ -1511,7 +1511,8 @@ function loadInteractionRuntime() {
     pendingDraftMultiAgent: false,
     chatItems: [],
     messages: [],
-    // 两分 lane（design 已并入 work）：草稿态 mode = 本 lane 全局默认。
+    // Two lanes (design merged into work): the draft-state mode = this
+    // lane's global default.
     modeDefaults: { work: null, code: null },
     modeLane: 'work',
   };
@@ -1675,7 +1676,8 @@ test('setPlanModeNext 权威写回作废在途旧读取：chip 切 Plan 不被�
     'chip 切换的权威值不得被在途旧读取砸回 Yolo（P1 敞口）');
 });
 
-// ── 两分 lane 语义回归：草稿写全局默认、会话写自己、lane 各自独立 ─────
+// ── Two-lane semantics regression: draft switches write the global default,
+//    session switches write their own record, lanes stay independent ─────
 test('草稿态切 Plan：写本 lane 全局默认且不物化会话、不调 per-session 命令', async () => {
   const rt = loadInteractionRuntime();
   rt.state.activeSessionId = null; // 草稿态
@@ -1692,20 +1694,23 @@ test('草稿态切 Plan：写本 lane 全局默认且不物化会话、不调 pe
   assert.equal(rt.state.modeState.mode, 'plan', '草稿显示跟随新默认');
 });
 
-test('lane 切换即刷新草稿显示；草稿切换写当前 lane（work/code 互不影响）', async () => {
+test('lane switch refreshes the draft display; a draft switch writes the current lane (work/code stay independent)', async () => {
   const rt = loadInteractionRuntime();
   rt.state.activeSessionId = null;
   rt.state.modeDefaults = { work: 'plan', code: null };
-  // work → code：草稿显示从 work 默认 plan 变为 code 缺省 yolo。
+  // work → code: the draft display changes from work's default plan to
+  // code's default yolo.
   rt.api.setModeLane('code');
   assert.equal(rt.state.modeState.mode, 'yolo');
   rt.api.setModeLane('work');
   assert.equal(rt.state.modeState.mode, 'plan');
-  // 历史值 'design' 折叠为 work，不再有独立 design lane。
+  // The historical value 'design' folds into work; there is no separate
+  // design lane anymore.
   rt.api.setModeLane('design');
   assert.equal(rt.state.modeLane, 'work');
   assert.equal(rt.state.modeState.mode, 'plan');
-  // code lane 下切 plan：写 code 默认，work 默认不动。
+  // Switch plan under the code lane: writes code's default, work's default
+  // is untouched.
   rt.api.setModeLane('code');
   const set = rt.defer('set_mode_default');
   const p = rt.api.setDraftMode('plan');
@@ -1738,5 +1743,5 @@ test('refreshModeDefaults：草稿态按当前 lane 默认刷新显示', async (
   get.resolve({ work: 'yolo', code: 'plan' });
   await p;
   assert.equal(rt.state.modeDefaults.code, 'plan');
-  assert.equal(rt.state.modeState.mode, 'plan', 'code lane 草稿显示自己的全局默认');
+  assert.equal(rt.state.modeState.mode, 'plan', 'the code lane draft shows its own global default');
 });

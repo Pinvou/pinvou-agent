@@ -61,7 +61,8 @@ const {
 
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
-// design lane 已并入 work：lane 只剩 work，任何历史值（含 design）都折叠为 work。
+// The design lane has been merged into work: only work remains, and any
+// historical value (including design) folds into work.
 assert.deepStrictEqual(plain(PINVOU_MODES), ['work']);
 assert.strictEqual(PINVOU_MODE_STORAGE_KEY, 'pinvou_mode_state_v4');
 assert.deepStrictEqual(plain(SUBTABS), [
@@ -103,7 +104,7 @@ assert.strictEqual(
 );
 
 state = reducePinvouModeState(state, { type: 'set-mode', mode: 'design' });
-assert.strictEqual(state.mode, 'work', '历史 design 值必须折叠为 work');
+assert.strictEqual(state.mode, 'work', 'historical design values must fold into work');
 
 state = reducePinvouModeState(state, { type: 'set-subtab', subtab: 'data-visualization' });
 assert.strictEqual(state.subtab, 'data-visualization');
@@ -113,7 +114,7 @@ assert.strictEqual(state.mode, 'work');
 assert.strictEqual(state.subtab, 'data-visualization');
 
 state = reducePinvouModeState(state, { type: 'set-design-subtab', subtab: 'poster' });
-assert.strictEqual(state.subtab, 'data-visualization', '已删除的 action type 不再生效');
+assert.strictEqual(state.subtab, 'data-visualization', 'the removed action type must have no effect');
 
 const memoryStorage = {
   values: {},
@@ -149,7 +150,8 @@ assert.strictEqual(
   true,
 );
 
-// v3 → v4：mode:'design' 折叠为 mode:'work' + 旧 designSubtab；mode:'work' 取旧 workSubtab。
+// v3 → v4: mode:'design' folds into mode:'work' + the old designSubtab;
+// mode:'work' takes the old workSubtab.
 const v3Storage = {
   values: {
     pinvou_mode_state_v3: JSON.stringify({
@@ -172,7 +174,8 @@ assert.strictEqual(migratedV3Document.mode, 'work');
 assert.strictEqual(migratedV3Document.subtab, 'document-writing');
 assert.strictEqual(loadPinvouModeState(v3Storage, 'session-data').subtab, 'data-visualization');
 
-// v3 draft 的 work 分支：mode:'work' 直接取旧 workSubtab（与 design 分支对称）。
+// v3 draft's work branch: mode:'work' takes the old workSubtab directly
+// (symmetric with the design branch).
 const v3WorkDraftStorage = {
   values: {
     pinvou_mode_state_v3: JSON.stringify({
@@ -188,8 +191,9 @@ const migratedV3WorkDraft = loadPinvouModeState(v3WorkDraftStorage);
 assert.strictEqual(migratedV3WorkDraft.mode, 'work');
 assert.strictEqual(migratedV3WorkDraft.subtab, 'document-writing');
 
-// v2 → v4：先沿用旧 v2→v3 语义（draft 作用域的 document-writing/poster 重置为
-// general，session 作用域不动），再做 v3 折叠。
+// v2 → v4: first apply the old v2→v3 semantics (draft-scoped
+// document-writing/poster reset to general, session scopes untouched),
+// then the v3 fold.
 const previousStorage = {
   values: {
     pinvou_mode_state_v2: JSON.stringify({
@@ -210,7 +214,8 @@ assert.strictEqual(migratedDraft.subtab, 'general');
 assert.strictEqual(loadPinvouModeState(previousStorage, 'session-document').subtab, 'document-writing');
 assert.strictEqual(loadPinvouModeState(previousStorage, 'session-poster').subtab, 'poster');
 
-// v1 legacy 草稿：只有最旧的单值草稿时也能读出并把 design 折叠为 work。
+// v1 legacy draft: readable even with only the oldest single-value draft,
+// with design folding into work.
 const legacyStorage = {
   values: {
     pinvou_mode_state_v1: JSON.stringify({ mode: 'design' }),
