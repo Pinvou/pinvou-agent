@@ -13,6 +13,7 @@ const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const sourceRoot = path.join(appRoot, 'src');
 const distRoot = path.join(appRoot, 'dist');
 const distIndexPath = path.join(distRoot, 'index.html');
+const webDistIndexPath = path.resolve(appRoot, '../remote-control-relay/web/dist/index.html');
 
 test('classic runtime script parser recognizes only real HTML attributes', () => {
   const html = `
@@ -89,9 +90,32 @@ test('Vite build contains every local classic runtime script referenced by index
   const sourceIndex = fs.readFileSync(path.join(sourceRoot, 'index.html'), 'utf8');
 
   const expected = localClassicScriptPaths(sourceIndex).sort(); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
-  const built = localClassicScriptPaths(fs.readFileSync(distIndexPath, 'utf8')).sort(); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
+  const distIndex = fs.readFileSync(distIndexPath, 'utf8');
+  const built = localClassicScriptPaths(distIndex).sort(); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
   assert.ok(expected.length > 0, 'index.html must retain classic runtime scripts');
-  assert.deepEqual(built, expected, 'built index classic runtime references changed');
+  // The conditional platform transform strips the other platform's bridge tags
+  // per mode, so the desktop index references a subset of the shared source
+  // list rather than an exact copy. New references must still come from the
+  // shared source manifest.
+  assert.deepEqual(
+    built.filter((relative) => !expected.includes(relative)),
+    [],
+    'built index introduced classic runtime references absent from source index',
+  );
+  assert.ok(
+    built.some((relative) => relative.startsWith('platform/tauri/')),
+    'desktop index must keep the tauri bridge scripts',
+  );
+  for (const prefix of ['platform/web/']) {
+    assert.ok(
+      built.every((relative) => !relative.startsWith(prefix)),
+      `desktop index must not reference ${prefix} scripts: ${built.filter((relative) => relative.startsWith(prefix)).join(', ')}`,
+    );
+  }
+  assert.ok(
+    distIndex.includes('window.PinvouPlatform = Object.freeze({ kind: "desktop", isWeb: false })'),
+    'desktop index must inline the desktop platform marker replacing bootstrap.js',
+  );
 
   for (const relative of expected) {
     const sourcePath = resolveContainedRuntimePath(sourceRoot, relative);
@@ -104,4 +128,31 @@ test('Vite build contains every local classic runtime script referenced by index
       `runtime build asset differs from source: ${relative}`,
     );
   }
+});
+
+test('web build index strips tauri-only bridge scripts', {
+  skip: fs.existsSync(webDistIndexPath) ? false : 'run npm run build:web to verify web artifacts',
+}, () => {
+  const sourceIndex = fs.readFileSync(path.join(sourceRoot, 'index.html'), 'utf8');
+  const expected = localClassicScriptPaths(sourceIndex);
+  const webIndex = fs.readFileSync(webDistIndexPath, 'utf8');
+  const built = localClassicScriptPaths(webIndex);
+
+  assert.deepEqual(
+    built.filter((relative) => !expected.includes(relative)),
+    [],
+    'web index introduced classic runtime references absent from source index',
+  );
+  assert.ok(
+    built.every((relative) => !relative.startsWith('platform/tauri/')),
+    `web index must not reference platform/tauri/ scripts: ${built.filter((relative) => relative.startsWith('platform/tauri/')).join(', ')}`,
+  );
+  for (const relative of ['platform/web/bootstrap.js', 'platform/web/bridge.js', 'shared/bridge-messages.js']) {
+    assert.ok(built.includes(relative), `web index must keep ${relative}`);
+  }
+  assert.equal(
+    webIndex.includes('window.PinvouPlatform = Object.freeze({ kind: "desktop", isWeb: false })'),
+    false,
+    'web index must not inline the desktop platform marker',
+  );
 });

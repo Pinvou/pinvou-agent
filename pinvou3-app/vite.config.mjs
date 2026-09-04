@@ -33,6 +33,75 @@ export const staticRuntimeScripts = new Set([
 ]);
 export const staticRuntimeScriptPrefixes = ['platform/tauri/bridge/', 'platform/web/bridge/'];
 
+// Desktop marker injected in place of platform/web/bootstrap.js. It replicates
+// bootstrap.js's only desktop side effect (the `window.__TAURI__` branch at the
+// top of that file) verbatim: kind/isWeb without a capabilities map, so
+// shared/platform.js keeps merging in DEFAULT_DESKTOP_CAPABILITIES exactly as
+// before. Kept ES2021-clean and attribute-free so audit-compat and CSP stay
+// unaffected.
+export const desktopPlatformMarkerScript = '<script>'
+  + 'if (window.__TAURI__) { window.PinvouPlatform = Object.freeze({ kind: "desktop", isWeb: false }); }'
+  + '</script>';
+
+const scriptSrcLinePattern = /<script\b[^>]*?\ssrc=["']([^"']*)["'][^>]*>/u;
+
+// Resolve the runtime-relative path of a single-line classic `<script src>`
+// tag, or null for anything else (inline scripts, module entries, external
+// URLs). Mirrors localClassicScriptPaths normalization so both layers agree.
+function lineScriptRuntimePath(line) {
+  const match = scriptSrcLinePattern.exec(line);
+  if (!match) return null;
+  const src = match[1].trim();
+  if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/iu.test(src)) return null;
+  const withoutBase = src.replace(/^%BASE_URL%/u, '').replace(/^\/+/u, '');
+  const relative = withoutBase.split(/[?#]/u, 1)[0] || null;
+  // Build/dev base rewriting may prefix the deployment base (the web relay
+  // serves under e.g. /pinvou3/remote/), so the runtime-relative path starts
+  // at the platform segment, not at the leading slash.
+  const platformAt = relative.indexOf('/platform/');
+  return platformAt >= 0 ? relative.slice(platformAt + 1) : relative;
+}
+
+// The desktop and web builds ship one shared index.html; every window of both
+// products previously parsed BOTH platforms' bridge code (~0.5 MB per window
+// on the losing side) and each bridge returned immediately through its
+// platform guard. This pure transform keeps each build's own bridge tags in
+// their original order and drops the other platform's:
+//   - desktop (every mode except `web`, including the dev server): removes the
+//     five `platform/web/` tags, replacing bootstrap.js in place with the
+//     desktop marker above (its sole desktop side effect).
+//   - web (`--mode web`): removes the `platform/tauri/` fragment tags and
+//     platform/tauri/bridge.js. On web those scripts parse and no-op today:
+//     the fragments only fill `window.__PINVOU_TAURI_BRIDGE_FEATURES__`, whose
+//     sole reader (platform/tauri/bridge.js) returns before any side effect
+//     when PinvouPlatform.kind === "web" (set earlier by the retained
+//     platform/web/bootstrap.js).
+// Build-time `%BASE_URL%`/base rewriting runs before this hook in both the dev
+// and build HTML pipelines, and the path normalization above accepts both the
+// raw placeholder and a rewritten base. Tag order of everything retained is
+// untouched, so execution-order semantics are preserved on both sides.
+export function transformIndexHtmlForPlatform(webBuild, html) {
+  return html.split('\n').map((line) => {
+    const relative = lineScriptRuntimePath(line);
+    if (!relative) return line;
+    if (webBuild) {
+      return relative.startsWith('platform/tauri/') ? '' : line;
+    }
+    if (!relative.startsWith('platform/web/')) return line;
+    if (relative === 'platform/web/bootstrap.js') return desktopPlatformMarkerScript;
+    return '';
+  }).join('\n');
+}
+
+function conditionalPlatformScripts(webBuild) {
+  return {
+    name: 'pinvou-conditional-platform-scripts',
+    transformIndexHtml(html) {
+      return transformIndexHtmlForPlatform(webBuild, html);
+    },
+  };
+}
+
 // Verbatim-copied static assets referenced by string paths instead of ESM
 // imports (JSX `src="..."` literals, `resolveAppAssetUrl('...')`, CSS url(), or
 // dynamic prefixes like `file-icons/theme/${iconFile}` and
@@ -139,7 +208,7 @@ export default defineConfig(({ mode }) => {
     port: Number(process.env.PINVOU3_UI_DEV_PORT || 1420),
     strictPort: true,
   },
-  plugins: [react(), copyRuntimeAssets(), enforceAcpLazyChunk()],
+  plugins: [react(), copyRuntimeAssets(), enforceAcpLazyChunk(), conditionalPlatformScripts(webBuild)],
   build: {
     outDir: webBuild ? '../../remote-control-relay/web/dist' : '../dist',
     emptyOutDir: true,
