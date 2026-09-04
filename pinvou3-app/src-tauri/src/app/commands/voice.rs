@@ -8,10 +8,11 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug, Deserialize)]
 pub struct VoiceTranscriptionRequest {
-    /// 标准 base64(带 padding)编码的 WAV,由 WebView 录音产出。取代旧的
-    /// `audio_bytes: Vec<u8>` JSON 数字数组——60s/16kHz/16bit 单声道约
-    /// 1.92MB,逐元素反序列化会产生 192 万个 JSON 值、峰值内存 ~25MB;
-    /// base64 只是一次字符串解码。
+    /// Standard padded-base64-encoded WAV produced by the WebView recorder.
+    /// Replaces the old `audio_bytes: Vec<u8>` JSON number array — 60s of
+    /// 16kHz/16-bit mono is about 1.92MB, and per-element deserialization of
+    /// that means 1.92M JSON values and ~25MB peak memory; base64 is just one
+    /// string decode.
     pub audio_base64: String,
 }
 
@@ -27,8 +28,10 @@ pub struct VoicePostprocessRequest {
     pub mode: String,
     pub session_id: Option<String>,
     pub draft_text: Option<String>,
-    /// 原始 ASR 全文(规则纠错前)。存在且与 `text` 不同时随 prompt 一并下发,
-    /// 供模型对照原文撤销确定性规则的误纠(如「表哥」→「表格」)。
+    /// Raw ASR transcript (before rule-based correction). When present and
+    /// different from `text`, it is sent along in the prompt so the model can
+    /// undo deterministic rule mis-corrections against the original (e.g.
+    /// "表哥" → "表格").
     pub raw_text: Option<String>,
 }
 
@@ -37,8 +40,9 @@ pub struct VoicePostprocessResponse {
     pub text: String,
     pub mode: String,
     pub source: String,
-    /// 模型输出因 max_tokens 截断(finish_reason=length);前端据此回退、不写回。
-    /// serde default 兼容旧调用方构造。
+    /// The model output was truncated by max_tokens (finish_reason=length);
+    /// the frontend falls back on this and skips write-back. The serde default
+    /// keeps older caller constructions compatible.
     #[serde(default)]
     pub truncated: bool,
 }
@@ -47,8 +51,9 @@ pub struct VoicePostprocessResponse {
 pub struct VoiceCommandError {
     pub category: String,
     pub stage: String,
-    /// 机器可判定的稳定错误码:前端据此映射三语文案。message 里的中文原文
-    /// 只作为日志/诊断原文保留,不再直通 en/ja 用户界面。
+    /// Stable machine-decidable error code: the frontend maps it to trilingual
+    /// copy. The text in `message` is kept only as the raw log/diagnostic
+    /// string and is no longer passed through to en/ja user interfaces.
     pub code: String,
     pub message: String,
 }
@@ -71,10 +76,12 @@ pub(crate) fn set_voice_shortcut_enabled(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// 跨窗录音互斥:前端在录音开始/结束/出错时同步本窗口 label,原生快捷键
-/// 钩子据此决定触发目标窗口(实现见 voice_shortcut::set_recording_label)。
-/// 只允许窗口登记自己的 label,防止故障/被攻破的 renderer 把任意窗口钉成
-/// 录音窗劫持全局 Alt 手势。
+/// Cross-window recording mutual exclusion: the frontend syncs its own window
+/// label when recording starts/ends/fails, and the native shortcut hook uses
+/// it to pick the trigger target window (see
+/// voice_shortcut::set_recording_label). A window may only register its own
+/// label, so a broken or compromised renderer cannot pin an arbitrary window
+/// as the recording window and hijack the global Alt gesture.
 #[tauri::command]
 pub(crate) fn set_voice_shortcut_recording(
     window: tauri::WebviewWindow,
@@ -157,8 +164,9 @@ pub(super) fn apply_local_asr_model_env(
     }
 }
 
-/// 临时 WAV 文件:`NamedTempFile` 生成不可预测文件名,Unix 下 0600 权限
-/// (旧的 pid+毫秒自拼名可预测且 0644 可读),drop 即删除。
+/// Temporary WAV file: `NamedTempFile` generates an unpredictable file name
+/// with 0600 permissions on Unix (the old hand-built pid+millisecond name was
+/// predictable and world-readable at 0644); the file is deleted on drop.
 struct VoiceTempWav {
     file: tempfile::NamedTempFile,
 }
@@ -179,8 +187,10 @@ impl VoiceTempWav {
 
 struct LocalAsrOutput {
     text: String,
-    /// 识别后端来源（system_speech / pinvou-webview-sensevoice-local / local_cli），
-    /// 透传到 VoiceTranscriptionResponse.source 供前端/排查区分。
+    /// Recognition backend source (system_speech /
+    /// pinvou-webview-sensevoice-local / local_cli), passed through to
+    /// VoiceTranscriptionResponse.source so the frontend/triage can tell them
+    /// apart.
     source: String,
 }
 
@@ -222,23 +232,27 @@ fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, Voice
                 crate::features::voice::asr_missing_message().to_string(),
             )
         } else {
-            // 工程细节(io error)进日志,用户可见文案与 macOS 中文风格统一、泛化。
+            // The io error detail goes to the log; the user-visible copy stays
+            // generic, consistent with the macOS lane's copy style.
             log::warn!(
                 target: "pinvou.voice",
                 "[voice_transcribe] local ASR spawn failed: {e}"
             );
             (
                 "asr_engine_start_failed",
-                "本地语音识别引擎启动失败，请检查识别组件安装后重试".to_string(),
+                "Local speech recognition engine failed to start; check the recognition component installation and retry".to_string(),
             )
         };
         VoiceCommandError::new(code, "recognition_failed", "transcribing", message)
     })?;
 
-    // stdout/stderr 必须与等待轮询并发排空:轮询期间不读管道,模型加载日志
-    // 一旦写满 OS 管道缓冲(~64KB),子进程会永远阻塞在 write 上,轮询侧只能
-    // 等到超时并误报。两个排空线程保证子进程始终可写;超时路径 kill 后管道
-    // 关闭,线程随即退出,join 不会悬挂。
+    // stdout/stderr must be drained concurrently with the wait polling: if the
+    // pipes are not read while polling, model-loading logs fill the OS pipe
+    // buffer (~64KB) and the child blocks forever on write, leaving the
+    // polling side to wait for the timeout and misreport. The two drain
+    // threads keep the child writable at all times; on the timeout path the
+    // kill closes the pipes, the threads exit right away, and join cannot
+    // hang.
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
     let stdout_drain = std::thread::spawn(move || {
@@ -267,7 +281,7 @@ fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, Voice
                         "recognition_failed",
                         "transcribing",
                         format!(
-                            "本地语音识别超时（{} 秒），请确认识别模型与运行时可用",
+                            "Local speech recognition timed out ({} s); confirm the recognition model and runtime are available",
                             timeout.as_secs()
                         ),
                     ));
@@ -283,13 +297,14 @@ fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, Voice
                     "asr_runtime_error",
                     "recognition_failed",
                     "transcribing",
-                    "本地语音识别过程异常，请重试",
+                    "Local speech recognition failed unexpectedly; please retry",
                 ));
             }
         }
     };
-    // 三条路径统一收尾:超时/等待失败也先 kill+wait 再 join;对已退出的子进程
-    // 调 kill/wait 是无害收尾。
+    // All three paths wrap up the same way: on timeout/wait failure too, kill
+    // + wait before joining; calling kill/wait on an already-exited child is a
+    // harmless no-op.
     let _ = child.kill();
     let _ = child.wait();
     let stdout = stdout_drain.join().unwrap_or_default();
@@ -301,8 +316,9 @@ fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, Voice
 
     if !status.success() {
         let exit_code = status.code();
-        // 隐私:stdout/stderr 可能含识别出的语音片段,日志只记长度与退出码;
-        // 用户可见文案泛化,与 macOS 中文风格统一。
+        // Privacy: stdout/stderr may contain recognized speech fragments, so
+        // the log records only lengths and the exit code; the user-visible
+        // copy stays generic, consistent with the macOS lane's copy style.
         log::warn!(
             target: "pinvou.voice",
             "[voice_transcribe] local ASR failed exit={:?} stdout_len={} stderr_len={}",
@@ -310,26 +326,28 @@ fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, Voice
             stdout.len(),
             stderr.len()
         );
-        // 退出码 6 = CLI 的「未识别到语音」约定(前端 emptyResultLike 亦按 exit 6
-        // 归类);在源头直接给 empty_result 类别,前端无需再从英文错误文本猜测。
+        // Exit code 6 = the CLI's "no speech recognized" convention (the
+        // frontend's emptyResultLike check also classifies by exit 6); return
+        // the empty_result category at the source so the frontend no longer
+        // has to guess from English error text.
         if exit_code == Some(6) {
             return Err(VoiceCommandError::new(
                 "asr_no_speech",
                 "empty_result",
                 "transcribing",
-                "未识别到语音内容，请靠近麦克风重试",
+                "No speech content recognized; move closer to the microphone and retry",
             ));
         }
         return Err(VoiceCommandError::new(
             "asr_cli_failed",
             "recognition_failed",
             "transcribing",
-            "本地语音识别失败，请重试",
+            "Local speech recognition failed; please retry",
         ));
     }
 
     let text = parse_local_asr_text(&stdout, &stderr).ok_or_else(|| {
-        // 同上:失败日志不带进程输出原文,只记长度。
+        // As above: the failure log carries no raw process output, only lengths.
         log::warn!(
             target: "pinvou.voice",
             "[voice_transcribe] local ASR returned no usable text: stdout_len={} stderr_len={}",
@@ -340,7 +358,7 @@ fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, Voice
             "asr_parse_failed",
             "empty_result",
             "transcribing",
-            "本地语音识别未返回可用文本，请重试",
+            "Local speech recognition returned no usable text; please retry",
         )
     })?;
 
@@ -356,8 +374,10 @@ fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, Voice
 pub async fn transcribe_voice_audio(
     request: VoiceTranscriptionRequest,
 ) -> Result<VoiceTranscriptionResponse, VoiceCommandError> {
-    // 解码前的长度预检:正常 60s 录音约 1.9MiB WAV(≈2.6MB base64),4MiB 已含
-    // 充分裕量;不设上限会让异常 renderer 借无界 base64 解码制造内存压力。
+    // Length pre-check before decoding: a normal 60s recording is ~1.9MiB of
+    // WAV (≈2.6MB base64), so 4MiB already leaves ample headroom; without a
+    // cap a misbehaving renderer could create memory pressure via unbounded
+    // base64 decoding.
     const MAX_TRANSCRIBE_AUDIO_BYTES: usize = 4 * 1024 * 1024;
     let max_base64_chars = (MAX_TRANSCRIBE_AUDIO_BYTES / 3 + 1) * 4;
     if request.audio_base64.len() > max_base64_chars {
@@ -365,7 +385,7 @@ pub async fn transcribe_voice_audio(
             "recording_too_long",
             "recording_failed",
             "recording",
-            "语音录音过长，请缩短后重试",
+            "Voice recording too long; shorten it and retry",
         ));
     }
     let audio_bytes = base64::engine::general_purpose::STANDARD
@@ -379,14 +399,15 @@ pub async fn transcribe_voice_audio(
                 "audio_invalid",
                 "recording_failed",
                 "recording",
-                "语音音频数据无效，请重新录制",
+                "Invalid voice audio data; please record again",
             )
         })?;
     transcribe_voice_audio_bytes(audio_bytes).await
 }
 
-/// 解码后的 WAV 字节走统一识别路径。远程控制
-/// (`web_access_transcribe_voice_audio`) 自带校验与解码,直接复用本函数。
+/// Decoded WAV bytes go through the unified recognition path. Remote control
+/// (`web_access_transcribe_voice_audio`) brings its own validation and
+/// decoding and reuses this function directly.
 pub(crate) async fn transcribe_voice_audio_bytes(
     audio_bytes: Vec<u8>,
 ) -> Result<VoiceTranscriptionResponse, VoiceCommandError> {
@@ -395,7 +416,7 @@ pub(crate) async fn transcribe_voice_audio_bytes(
             "audio_empty",
             "recording_failed",
             "recording",
-            "录音为空或已损坏，请重新录制",
+            "Recording is empty or corrupted; please record again",
         ));
     }
 
@@ -409,7 +430,7 @@ pub(crate) async fn transcribe_voice_audio_bytes(
                 "temp_file_unavailable",
                 "recording_failed",
                 "recording",
-                "无法创建临时音频文件，请重试",
+                "Could not create temporary audio file; please retry",
             )
         })?;
         std::fs::write(wav_file.path(), &audio_bytes).map_err(|e| {
@@ -421,17 +442,21 @@ pub(crate) async fn transcribe_voice_audio_bytes(
                 "temp_file_write_failed",
                 "recording_failed",
                 "recording",
-                "临时音频文件写入失败，请重试",
+                "Failed to write temporary audio file; please retry",
             )
         })?;
-        // 识别路径分支（平台中立）：
-        //   macOS  → 系统 Speech 框架（免模型下载、免 ffmpeg、首次即用）
-        //   Linux/Windows → 内置 SenseVoice（否则回退 CLI）
-        // 平台选择封装在 `features::voice::recognize_native`（platform/ 适配器），
-        // 此处只按返回值分发，不出现 cfg(target_os)。
+        // Recognition path branching (platform-neutral):
+        //   macOS         → system Speech framework (no model download, no
+        //                    ffmpeg, usable on first run)
+        //   Linux/Windows → bundled SenseVoice (otherwise fall back to the CLI)
+        // Platform selection is encapsulated in
+        // `features::voice::recognize_native` (a platform/ adapter); this site
+        // only dispatches on the return value and contains no cfg(target_os).
         let result = {
-            // 识别语言跟随 UI 语言偏好（首次启动时由系统 locale 决定）：避免 UI 与
-            // 识别模型语言错配，例如中文 UI 却把中文音频当英文解析。
+            // The recognition language follows the UI language preference
+            // (decided by the system locale on first launch): this avoids a
+            // UI/model language mismatch, e.g. a Chinese UI parsing Chinese
+            // audio as English.
             let locale_tag = crate::platform::prefs::UserPrefs::load()
                 .language
                 .speech_recognition_locale();
@@ -468,7 +493,7 @@ pub(crate) async fn transcribe_voice_audio_bytes(
             "asr_join_failed",
             "recognition_failed",
             "transcribing",
-            "本地语音识别任务异常，请重试",
+            "Local speech recognition task failed unexpectedly; please retry",
         )
     })??;
 
@@ -480,8 +505,10 @@ pub(crate) async fn transcribe_voice_audio_bytes(
 
 fn normalize_voice_postprocess_mode(mode: &str) -> &'static str {
     match mode.trim() {
-        // "rewrite" 是更早管线的遗留别名,前端 normalizeVoiceMode 已把它归入
-        // dictation 兜底;这里保持两端一致,避免 Rust 侧把同一请求升级成 task。
+        // "rewrite" is a legacy alias from an earlier pipeline; the frontend's
+        // normalizeVoiceMode already folds it into the dictation fallback. Keep
+        // both sides consistent so the Rust side does not escalate the same
+        // request to task.
         "task" | "task_rewrite" => "task",
         "edit" | "voice_edit" | "draft_edit" => "edit",
         _ => "dictation",
@@ -624,10 +651,13 @@ fn voice_postprocess_timeout(mode: &str, raw_text: &str) -> Duration {
     }
 }
 
-/// 拼装 user 消息。各段用 <<<…>>> 定界符隔离:草稿/ASR 正文本身可能含
-/// 「ASR 文本：」等字样,裸拼接会让模型把草稿误当指令(串位)。
-/// `asr_raw_text`(原始识别)与纠错后文本不同时一并下发:规则纠错可能有误,
-/// 模型可对照原文恢复被误纠的实体。
+/// Assemble the user message. Sections are isolated with <<<…>>> delimiters:
+/// the draft/ASR body itself may contain markers like "ASR 文本：", and bare
+/// concatenation would let the model mistake the draft for an instruction
+/// (section cross-talk). `asr_raw_text` (the raw recognition) is sent along
+/// when it differs from the corrected text: rule-based correction can be
+/// wrong, and the model can restore mis-corrected entities against the
+/// original.
 fn voice_postprocess_user_content(
     corrected_text: &str,
     asr_raw_text: Option<&str>,
@@ -650,8 +680,10 @@ fn voice_postprocess_user_content(
         "ASR 文本（规则纠错后）：\n<<<ASR_TEXT>>>\n{}\n<<<END>>>",
         corrected_text.trim()
     ));
-    // 输出语言钉回原文语言:prompt 与示例均为中文,否则英文/日文用户的口述
-    // 会被模型顺手翻译成中文结果再写回输入框。
+    // Pin the output language back to the source language: the prompts and
+    // examples are written in Chinese, so without this an en/ja user's
+    // dictation would come back translated into Chinese and be written into
+    // the input box.
     sections.push(
         "无论系统提示中的规则如何，输出必须使用 ASR 文本（及已有文本）原本的语言，不要翻译成其他语言。"
             .to_string(),
@@ -670,11 +702,16 @@ fn voice_postprocess_retry_prompt(mode: &str) -> &'static str {
 }
 
 fn voice_postprocess_max_tokens(mode: &str, retry: bool) -> u32 {
-    // 预算按「典型输入(短句到百字)的最坏输出」取值:edit 需容纳整篇改写
-    // 草稿,dictation/task 需容纳整理后的结构化列表。它覆盖不了 4000 字符
-    // 裁断上限下最坏 CJK 输出的完整展开——超长输入会以 finish_reason=length
-    // 走「拒绝 → 重试(+512) → 回退规则纠错文本」的安全降级链,不会静默写回
-    // 半截改写,但智能整理对超长输入不生效;目标覆盖多长的输入是产品取舍。
+    // The budget is sized for the worst-case output of typical input (short
+    // sentences up to a few hundred characters): edit must fit a full draft
+    // rewrite, dictation/task must fit the restructured list. It does not
+    // cover the full expansion of the worst-case CJK output under the
+    // 4000-character input cap — oversized inputs instead take the safe
+    // degradation chain of "reject → retry (+512) → fall back to the
+    // rule-corrected text" via finish_reason=length, so a half-finished
+    // rewrite is never silently written back, but smart restructuring does not
+    // apply to oversized input; how much input to cover is a product
+    // trade-off.
     let base = match mode {
         "edit" => 2048,
         "task" => 768,
@@ -683,7 +720,8 @@ fn voice_postprocess_max_tokens(mode: &str, retry: bool) -> u32 {
     if retry { base + 512 } else { base }
 }
 
-/// 进入 LLM 前的输入裁断上限(字符):ASR 文本与输入框草稿都不应无界透传。
+/// Input truncation cap (characters) before the LLM: neither the ASR text nor
+/// the input-box draft should be passed through unbounded.
 const VOICE_POSTPROCESS_MAX_INPUT_CHARS: usize = 4000;
 
 fn truncate_voice_postprocess_input(text: &str) -> String {
@@ -707,15 +745,19 @@ fn sanitize_voice_postprocess_output(text: &str) -> String {
     strip_voice_markdown_fence(cleaned).trim().to_string()
 }
 
-/// 剥掉开头的 `<think>…</think>` 推理段。方言参数只覆盖已识别厂商
-/// (qwen/deepseek 等);自定义 OpenAI 兼容网关上的其他思考模型仍会输出推理
-/// 文本,这是输出端兜底,防止思考文本原样写进输入框。仅处理「开头」的思考
-/// 块:开头未闭合(截断)时按空输出处理,交给空输出契约丢弃;正文中段的裸
-/// `<think>` 视为字面内容,不动。
+/// Strip a leading `<think>…</think>` reasoning block. The dialect controls
+/// only cover recognized vendors (qwen/deepseek etc.); other thinking models
+/// behind custom OpenAI-compatible gateways still emit reasoning text, so this
+/// is the output-side fallback that keeps thinking text out of the input box.
+/// Only a leading block is handled: an unclosed leading block (truncation) is
+/// treated as empty output and dropped by the empty-output contract; a bare
+/// `<think>` in the middle of the body is literal content and left untouched.
 fn strip_leading_thinking_block(text: &str) -> &str {
-    // BOM(U+FEFF)不是 White_Space,trim_start 不剥;若不在此处一并剥掉,
-    // 「BOM+<think>…」会因 strip_prefix 失配整段漏剥(BOM 要到 sanitize 后续
-    // 步骤才被剥,届时 think 块已过不了这一关)。空白与 BOM 任意交错都容忍。
+    // BOM (U+FEFF) is not White_Space, so trim_start does not strip it; if it
+    // is not stripped here too, "BOM + <think>…" fails the strip_prefix match
+    // and the whole block leaks (the BOM is only stripped later in sanitize,
+    // by which point the think block has already passed this gate). Any
+    // interleaving of whitespace and BOM is tolerated.
     let trimmed = text.trim_start_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
     let Some(rest) = trimmed.strip_prefix("<think>") else {
         return text;
@@ -727,9 +769,11 @@ fn strip_leading_thinking_block(text: &str) -> &str {
     }
 }
 
-/// 面向前端的错误摘要:reqwest 错误的 Display 携带完整 URL(可能含内网地址
-/// 或嵌入式凭据),经 rawMessage 直通会落进前端诊断并持久化到 localStorage。
-/// 这里只保留错误类别与 HTTP 状态码;完整错误链仅进本地日志。
+/// Frontend-facing error summary: a reqwest error's Display carries the full
+/// URL (possibly an intranet address or embedded credentials), and passing it
+/// through rawMessage would land it in frontend diagnostics persisted to
+/// localStorage. Keep only the error class and HTTP status here; the full
+/// error chain goes to the local log only.
 fn summarize_voice_postprocess_error(error: &anyhow::Error) -> String {
     for cause in error.chain() {
         let Some(request_error) = cause.downcast_ref::<reqwest::Error>() else {
@@ -746,8 +790,9 @@ fn summarize_voice_postprocess_error(error: &anyhow::Error) -> String {
         }
         return "model endpoint request failed".to_string();
     }
-    // 非 HTTP 错误(模型/凭据配置缺失等):最外层 context 已是人工写的短句,
-    // 不会再带 URL,可安全透传。
+    // Non-HTTP errors (missing model/credential configuration etc.): the
+    // outermost context is already a short human-written sentence and carries
+    // no URL, so it is safe to pass through.
     error.to_string()
 }
 
@@ -767,13 +812,16 @@ fn strip_wrapping_quote(text: &str, quote: char) -> &str {
     stripped
 }
 
-/// 剥掉最外层整包 ``` 围栏(```lang\n…\n```):模型偶把整份输出包进代码块,
-/// 直接写回会把围栏带进输入框。只剥整包一层,内部合法 Markdown 列表保留。
+/// Strip one outer fully-wrapping ``` fence (```lang\n…\n```): models
+/// occasionally wrap the entire output in a code block, and writing it back
+/// verbatim would carry the fences into the input box. Only one fully-wrapping
+/// layer is stripped; legitimate Markdown lists inside are preserved.
 fn strip_voice_markdown_fence(text: &str) -> &str {
     let Some(inner) = text.strip_prefix("```") else {
         return text;
     };
-    // 首行是可选语言标识;没有换行说明不是整包围栏。
+    // The first line is an optional language tag; no newline means this is not
+    // a fully-wrapping fence.
     let Some(newline) = inner.find('\n') else {
         return text;
     };
@@ -946,9 +994,11 @@ async fn voice_postprocess_bridge(
     Ok(bridge)
 }
 
-/// 返回 (清洗后文本, 是否因 max_tokens 截断)。截断判定:OpenAI 兼容端点看
-/// choices[0].finish_reason == "length";Anthropic 端点的 stop_reason 未透出
-/// (post_anthropic_messages 只回文本),暂恒 false。
+/// Returns (sanitized text, whether truncated by max_tokens). Truncation
+/// detection: OpenAI-compatible endpoints report
+/// choices[0].finish_reason == "length"; the Anthropic endpoint's stop_reason
+/// is not surfaced (post_anthropic_messages returns text only), so it stays
+/// false for now.
 async fn call_voice_postprocess_model(
     bridge: &crate::features::assistant::platform::bridge::Pinvou3Bridge,
     mode: &str,
@@ -1038,9 +1088,11 @@ async fn call_voice_postprocess_model(
     Ok((sanitize_voice_postprocess_output(&content), truncated))
 }
 
-/// 同一时刻至多一个在途整理请求:该命令会以用户密钥调用付费模型端点,
-/// 不设并发闸时异常/故障 renderer 可借高频调用烧配额;前端本身串行,
-/// 正常路径不会碰到该闸(并发冲突方降级为规则纠错文本)。
+/// At most one in-flight postprocess request at a time: this command calls a
+/// paid model endpoint with the user's key, and without a concurrency gate a
+/// broken or compromised renderer could burn quota with high-frequency calls.
+/// The frontend is serial anyway, so the normal path never hits the gate (the
+/// conflicting caller falls back to the rule-corrected text).
 static VOICE_POSTPROCESS_INFLIGHT: AtomicBool = AtomicBool::new(false);
 
 struct VoicePostprocessSlot;
@@ -1070,7 +1122,8 @@ pub async fn postprocess_voice_text(
         return Err("voice postprocess busy".to_string());
     }
     let _slot = VoicePostprocessSlot;
-    // 进入模型前裁断:ASR 文本与输入框草稿都不应无界透传给 LLM。
+    // Truncate before the model: neither the ASR text nor the input-box draft
+    // should reach the LLM unbounded.
     let raw_text = truncate_voice_postprocess_input(request.text.trim());
     let mode = normalize_voice_postprocess_mode(&request.mode);
     let asr_raw_text = request
@@ -1118,8 +1171,8 @@ pub async fn postprocess_voice_text(
             ));
         }
     };
-    // vllm 的 /v1/models 探测自带 3s 超时;两次 attempt 共用这一次探测结果,
-    // 重试不再额外多花 3s。
+    // vllm's /v1/models probe carries its own 3s timeout; both attempts share
+    // this one probe result, so the retry does not pay another 3s.
     let model_name = if bridge.provider() == "vllm" {
         // The served-name probe uses an inference-same-origin key:
         // authenticated vLLM 401s on /v1/models.
@@ -1133,8 +1186,10 @@ pub async fn postprocess_voice_text(
     } else {
         bridge.model()
     };
-    // 前端按同一份 voice_postprocess_timeout 预算对整次 invoke 计时;Rust 两次
-    // attempt 共用该预算,每次只拿剩余额度,避免两次各自用满导致总耗时翻倍。
+    // The frontend times the whole invoke against the same
+    // voice_postprocess_timeout budget; both Rust attempts share that budget,
+    // each taking only the remaining headroom, so the total latency does not
+    // double from each attempt spending the full budget.
     let budget = voice_postprocess_timeout(mode, &raw_text);
     if started_at.elapsed() >= budget {
         // Symmetric with the retry guard below: bridge preparation and the

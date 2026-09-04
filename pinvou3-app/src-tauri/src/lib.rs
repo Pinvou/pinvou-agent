@@ -1062,11 +1062,15 @@ pub fn run() {
             // 桌宠:settings.json 里 pet.enabled 为真时随主窗口一起拉起。
             pet_window::spawn_if_enabled(app.handle());
 
-            // Windows 的 Alt+Space 会先被系统菜单截获，WebView keydown 不稳定。
-            // 在原生层转成前端事件，保留 WebView 快捷键作为降级路径。
+            // On Windows, Alt+Space is intercepted by the system menu first and
+            // the WebView keydown is unreliable. Translate it into a frontend
+            // event at the native layer, keeping the WebView shortcut as the
+            // fallback path.
             crate::features::voice_shortcut::install(app.handle().clone());
-            // 启动回放:settings.json 的 voice_shortcut_enabled 是开关的权威持久化
-            // (前端 localStorage 只是镜像),装完钩子即同步进原生层 AtomicBool。
+            // Startup replay: settings.json's voice_shortcut_enabled is the
+            // authoritative persistence of the switch (frontend localStorage is
+            // only a mirror); sync it into the native-layer AtomicBool right
+            // after the hook is installed.
             crate::features::voice_shortcut::set_enabled(
                 crate::platform::prefs::UserPrefs::load().voice_shortcut_enabled,
             );
@@ -1076,10 +1080,13 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
-                // 录音中的窗口被直接关闭时前端来不及解除登记;不清掉会让原生
-                // 快捷键把 Alt 手势一直路由进已销毁窗口(全局吞键黑洞)。
+                // When a recording window is closed outright, the frontend has
+                // no chance to deregister; leaving it registered would keep the
+                // native shortcut routing Alt gestures into a destroyed window
+                // (a global swallow-keys black hole).
                 crate::features::voice_shortcut::forget_recording_window(window.label());
-                // 主窗口销毁 → 一并关掉桌宠,否则只剩宠物窗口时 app 不退出。
+                // Main window destroyed → close the pet window too, otherwise
+                // the app never exits while only the pet window remains.
                 if window.label() == "main" {
                     pet_window::close_with_main(window.app_handle());
                 }

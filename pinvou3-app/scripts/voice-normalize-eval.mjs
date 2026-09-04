@@ -1,30 +1,31 @@
 #!/usr/bin/env node
 /**
- * voice-normalize-eval.mjs — 语音听写「转写+纠错+LLM 整理」链路的离线评测脚本。
+ * voice-normalize-eval.mjs — Offline evaluation harness for the voice dictation pipeline
+ * (transcription + correction + LLM post-processing).
  *
- * 定位：dev-only 手工评测，不进 CI，结果不构成质量门禁。
+ * Positioning: dev-only manual evaluation; not run in CI; results are not a quality gate.
  *
- * 生产对齐方式（本文件不维护任何生产逻辑的手抄副本）：
- * - 纠错/分类/校验：用 vm 从 src/platform/tauri/bridge/voice.js 切片抽取生产函数
- *   （applyVoiceDeterministicCorrections / classifyVoiceText / validateVoicePostprocessOutput /
- *   stripVoicePostprocessFences / normalizeVoiceMode），方式同
- *   tests/voice_input_error_logic.test.js 的切片抽取。分类与生产一致地基于原始 ASR 文本。
- * - LLM prompt 常量与 max_tokens：运行时从 src-tauri/src/app/commands/voice.rs 解析
- *   voice_postprocess_prompt（r#"…"# 常量）与 voice_postprocess_max_tokens；解析失败直接报错，
- *   不静默回退到旧副本。eval 不做生产的一次重试，使用 retry=false 的基础 max_tokens。
- * - user 消息拼装镜像 voice.rs 的 voice_postprocess_user_content（Rust 代码无法 vm 抽取，
- *   仅做字符串拼装镜像，见 buildEvalUserContent 注释）。
- * - eval 不对 LLM 输出做二次确定性纠正（生产明令禁止，见 voice.js finishVoiceInput：
- *   candidateText 直接取 postprocessResult.text），只做 sanitize + 生产校验 + 失败回退规则文本。
+ * How production alignment works (this file keeps no hand-copied duplicates of production logic):
+ * - Correction/classification/validation: the production functions are slice-extracted from
+ *   src/platform/tauri/bridge/voice.js via vm (applyVoiceDeterministicCorrections / classifyVoiceText /
+ *   validateVoicePostprocessOutput / stripVoicePostprocessFences / normalizeVoiceMode), the same way
+ *   tests/voice_input_error_logic.test.js extracts slices. Classification uses the raw ASR text, matching production.
+ * - LLM prompt constants and max_tokens: parsed at runtime from src-tauri/src/app/commands/voice.rs
+ *   (voice_postprocess_prompt, the r#"…"# constants, and voice_postprocess_max_tokens); parse failures throw
+ *   instead of silently falling back to a stale copy. eval does not perform production's one retry and uses the base max_tokens (retry=false).
+ * - The user message assembly mirrors voice.rs's voice_postprocess_user_content (Rust code cannot be vm-extracted,
+ *   so only the string assembly is mirrored; see the buildEvalUserContent comment).
+ * - eval does not apply a second deterministic correction pass to LLM output (explicitly forbidden in production, see voice.js finishVoiceInput:
+ *   candidateText takes postprocessResult.text directly); it only sanitizes + runs production validation + falls back to the rule text on failure.
  *
- * LLM 凭据读取范围（仅 conditional_llm 策略需要）：
- * - 优先读环境变量 PINVOU_VOICE_EVAL_BASE_URL / PINVOU_VOICE_EVAL_API_KEY /
- *   PINVOU_VOICE_EVAL_MODEL；三者齐全即直接使用，不触任何其他凭据来源。
- * - 环境变量不全时回退读 ~/.pinvou3/settings.json 的 active model 配置；其中 api_key 缺失时，
- *   仅在 Windows 上通过 Advapi32 CredRead 读取凭据管理器中单个指定条目
- *   （target = `model:<id>.pinvou3-model-api-key`，见 loadPinvouActiveModelConfig），
- *   读到的值只作为当次请求的 Authorization 头使用，不打印、不记录、不写文件。
- *   非 Windows 平台不读任何系统凭据存储。
+ * LLM credential read scope (needed only by the conditional_llm strategy):
+ * - Prefers the PINVOU_VOICE_EVAL_BASE_URL / PINVOU_VOICE_EVAL_API_KEY /
+ *   PINVOU_VOICE_EVAL_MODEL environment variables; when all three are set they are used directly and no other credential source is touched.
+ * - When the environment variables are incomplete, fall back to the active model config in ~/.pinvou3/settings.json; if its api_key is missing,
+ *   then on Windows only, read a single named entry from Credential Manager via Advapi32 CredRead
+ *   (target = `model:<id>.pinvou3-model-api-key`, see loadPinvouActiveModelConfig);
+ *   the value is used only as the Authorization header of that request — never printed, logged, or written to a file.
+ *   Non-Windows platforms read no system credential store.
  */
 import fs from 'node:fs';
 import process from 'node:process';
@@ -39,42 +40,44 @@ const VOICE_BRIDGE_PATH = 'src/platform/tauri/bridge/voice.js';
 const VOICE_RUST_PATH = 'src-tauri/src/app/commands/voice.rs';
 const PINVOU_SETTINGS_PATH = path.join(os.homedir(), '.pinvou3', 'settings.json');
 
-const USAGE = `用法: node scripts/voice-normalize-eval.mjs [选项]  （dev-only，不进 CI）
+const USAGE = `Usage: node scripts/voice-normalize-eval.mjs [options]  (dev-only, not run in CI)
 
-选项:
-  --cases <path>        标注语料，默认 ${DEFAULT_CASES_PATH}
-  --observed <path>     真实观测样本（json/jsonl）；提供后默认 strategy=observed
+Options:
+  --cases <path>        Labeled corpus, default ${DEFAULT_CASES_PATH}
+  --observed <path>     Real observed samples (json/jsonl); when given, strategy defaults to observed
   --strategy <name>     asr_only | rules_only | conditional_llm | observed
-                        （默认：有 --observed 则 observed，否则 conditional_llm）
-  --classify-check      只跑生产 classifyVoiceText 的分类对照，不调 LLM，打印每条决策
-  --help                打印本说明
+                        (default: observed when --observed is given, otherwise conditional_llm)
+  --classify-check      Run only the classification comparison against the production classifyVoiceText; no LLM calls; prints every decision
+  --help                Print this help
 
-说明: 纠错/分类/校验函数 vm 抽取自 ${VOICE_BRIDGE_PATH}；
-LLM prompt 与 max_tokens 解析自 ${VOICE_RUST_PATH}。
-conditional_llm 需要 PINVOU_VOICE_EVAL_BASE_URL / PINVOU_VOICE_EVAL_API_KEY /
-PINVOU_VOICE_EVAL_MODEL，否则回退 ~/.pinvou3/settings.json 的 active model。`;
+Notes: the correction/classification/validation functions are vm-extracted from ${VOICE_BRIDGE_PATH};
+the LLM prompt and max_tokens are parsed from ${VOICE_RUST_PATH}.
+conditional_llm requires PINVOU_VOICE_EVAL_BASE_URL / PINVOU_VOICE_EVAL_API_KEY /
+PINVOU_VOICE_EVAL_MODEL, otherwise it falls back to the active model in ~/.pinvou3/settings.json.`;
 
 /**
- * 从 voice.js 抽取生产实现。切片锚点与 tests/voice_input_error_logic.test.js 保持一致；
- * 锚点或守卫规则缺失时直接抛错（宁可使 eval 不可用，也不衡量一条漂移的管线）。
+ * Extract the production implementations from voice.js. The slice anchors stay in sync with
+ * tests/voice_input_error_logic.test.js; if an anchor or guard rule goes missing, throw immediately
+ * (better to make eval unusable than to measure a drifted pipeline).
  */
 function extractVoiceProductionLogic() {
   const source = fs.readFileSync(VOICE_BRIDGE_PATH, 'utf8');
   const start = source.indexOf('  function normalizeVoiceMode(mode) {');
   const end = source.indexOf('\n  function logVoicePipeline(', start);
   if (start === -1 || end === -1) {
-    throw new Error(`voice.js 切片锚点缺失（normalizeVoiceMode/logVoicePipeline），无法对齐生产: ${VOICE_BRIDGE_PATH}`);
+    throw new Error(`voice.js slice anchors missing (normalizeVoiceMode/logVoicePipeline); cannot align with production: ${VOICE_BRIDGE_PATH}`);
   }
   const fenceStart = source.indexOf('  function stripVoicePostprocessFences(text) {');
   const fenceEnd = source.indexOf('\n  async function postprocessVoiceText(', fenceStart);
   if (fenceStart === -1 || fenceEnd === -1) {
-    throw new Error(`voice.js 切片锚点缺失（stripVoicePostprocessFences/postprocessVoiceText），无法对齐生产: ${VOICE_BRIDGE_PATH}`);
+    throw new Error(`voice.js slice anchors missing (stripVoicePostprocessFences/postprocessVoiceText); cannot align with production: ${VOICE_BRIDGE_PATH}`);
   }
   const slice = source.slice(start, end);
-  // 与 tests/voice_input_error_logic.test.js 的漂移守卫对齐：抽取到的生产切片必须仍含
-  // 边界版 Pinvou 纠错规则；若生产规则改名/删除，eval 立即报错而不是继续衡量旧行为。
+  // Mirrors the drift guard in tests/voice_input_error_logic.test.js: the extracted production slice must still
+  // contain the boundary-aware Pinvou correction rule; if the production rule is renamed or removed, eval fails
+  // immediately instead of continuing to measure the stale behavior.
   if (!/产品名con(?![a-zA-Z])/.test(slice)) {
-    throw new Error('voice.js 切片缺少边界版 Pinvou 纠错规则（产品名con(?![a-zA-Z])），生产规则可能已变化，请先同步 eval');
+    throw new Error('voice.js slice is missing the boundary-aware Pinvou correction rule (产品名con(?![a-zA-Z])); the production rule may have changed — sync eval first');
   }
   const context = { performance: { now: () => 0 }, Date };
   vm.createContext(context);
@@ -92,30 +95,31 @@ this.stripVoicePostprocessFences = stripVoicePostprocessFences;`,
 }
 
 /**
- * 从 voice.rs 解析生产 LLM 配置：三个 mode 的 postprocess prompt 常量（顺序 edit/task/dictation，
- * 与 voice_postprocess_prompt 的 if/else if/else 分支一致）和基础 max_tokens（retry=false）。
+ * Parse the production LLM config from voice.rs: the postprocess prompt constants for the three modes
+ * (in edit/task/dictation order, matching voice_postprocess_prompt's if/else if/else branches)
+ * and the base max_tokens (retry=false).
  */
 function extractVoicePostprocessLlmConfig() {
   const rust = fs.readFileSync(VOICE_RUST_PATH, 'utf8');
   const promptStart = rust.indexOf('fn voice_postprocess_prompt(');
   const promptEnd = rust.indexOf('\nfn voice_postprocess_timeout(', promptStart);
   if (promptStart === -1 || promptEnd === -1) {
-    throw new Error(`voice.rs 缺少 voice_postprocess_prompt，无法对齐生产 prompt: ${VOICE_RUST_PATH}`);
+    throw new Error(`voice.rs is missing voice_postprocess_prompt; cannot align with the production prompt: ${VOICE_RUST_PATH}`);
   }
   const blocks = [...rust.slice(promptStart, promptEnd).matchAll(/r#"([\s\S]*?)"#/g)].map(m => m[1]);
   if (blocks.length !== 3) {
-    throw new Error(`voice.rs voice_postprocess_prompt 应含 3 个 r#"…"# prompt 块（edit/task/dictation），实际解析到 ${blocks.length} 个`);
+    throw new Error(`voice.rs voice_postprocess_prompt should contain 3 r#"…"# prompt blocks (edit/task/dictation), but parsed ${blocks.length}`);
   }
   const mtStart = rust.indexOf('fn voice_postprocess_max_tokens(');
   if (mtStart === -1) {
-    throw new Error(`voice.rs 缺少 voice_postprocess_max_tokens，无法对齐生产 max_tokens: ${VOICE_RUST_PATH}`);
+    throw new Error(`voice.rs is missing voice_postprocess_max_tokens; cannot align with the production max_tokens: ${VOICE_RUST_PATH}`);
   }
   const mtBody = rust.slice(mtStart, mtStart + 500);
   const edit = mtBody.match(/"edit"\s*=>\s*(\d+)/u);
   const task = mtBody.match(/"task"\s*=>\s*(\d+)/u);
   const fallback = mtBody.match(/_\s*=>\s*(\d+)/u);
   if (!edit || !task || !fallback) {
-    throw new Error('voice.rs voice_postprocess_max_tokens 的 edit/task/default 分支解析失败');
+    throw new Error('failed to parse the edit/task/default branches of voice.rs voice_postprocess_max_tokens');
   }
   return {
     prompts: { edit: blocks[0], task: blocks[1], dictation: blocks[2] },
@@ -124,9 +128,10 @@ function extractVoicePostprocessLlmConfig() {
 }
 
 /**
- * 镜像 voice.rs voice_postprocess_user_content 的分段拼装（Rust 代码无法 vm 抽取）。
- * 生产在规则纠错后文本与原始 ASR 不同时会附带原始识别段，供模型撤销误纠；
- * eval 无输入框草稿，省略 DRAFT_TEXT 段。若生产改动该函数格式需同步此处。
+ * Mirrors the sectioned assembly of voice.rs voice_postprocess_user_content (Rust code cannot be vm-extracted).
+ * When the post-rule-correction text differs from the raw ASR, production appends the raw recognition section so
+ * the model can undo wrong corrections; eval has no input-box draft, so the DRAFT_TEXT section is omitted.
+ * If production changes this function's format, update this mirror.
  */
 function buildEvalUserContent(correctedText, rawText) {
   const corrected = String(correctedText || '').trim();
@@ -140,12 +145,13 @@ function buildEvalUserContent(correctedText, rawText) {
 }
 
 /**
- * 镜像 voice.rs sanitize_voice_postprocess_output：剥开头成对 `<think>` 推理段
- * （voice.rs strip_leading_thinking_block）+ trim + 去 BOM + 每种引号只剥最外层
- * 一对（孤立引号保留、空包裹对剥为空），再复用生产 stripVoicePostprocessFences
- * （vm 抽取）剥整包围栏。不得用剥所有首尾引号的正则替代——那会与生产在
- * `以引号结尾"`、`''text''`、`"text` 等边界上漂移，eval 的校验/评分字符串就和
- * 实际写回输入框的内容不一致了。
+ * Mirrors voice.rs sanitize_voice_postprocess_output: strip a leading paired `<think>` reasoning block
+ * (voice.rs strip_leading_thinking_block) + trim + remove the BOM + strip only the outermost pair of each
+ * quote kind (lone quotes are kept, an empty wrapping pair strips to empty), then reuse the production
+ * stripVoicePostprocessFences (vm-extracted) to strip full fences. Do not replace this with a regex that
+ * strips all leading/trailing quotes — that would drift from production on edges like `ends with a quote"`,
+ * `''text''`, and `"text`, and eval's validation/scoring strings would then no longer match what actually
+ * gets written back into the input box.
  */
 function sanitizeEvalLlmOutput(text, production) {
   const withoutThinking = stripLeadingThinkingBlock(String(text || ''));
@@ -154,9 +160,9 @@ function sanitizeEvalLlmOutput(text, production) {
     .replace(/^[\uFEFF]+|[\uFEFF]+$/g, '')
     .trim();
   const unquoted = stripOneWrappingQuote(stripOneWrappingQuote(bomStripped, '"'), "'");
-  // 生产链剥围栏两次(Rust strip_voice_markdown_fence 一次 + 前端
-  // stripVoicePostprocessFences 一次);镜像剥到不动点,至少覆盖生产的
-  // 双重剥离(三层以上嵌套围栏在真实输出中未观测到)。
+  // The production chain strips fences twice (Rust strip_voice_markdown_fence once + the frontend
+  // stripVoicePostprocessFences once); the mirror strips to a fixpoint, covering at least the production's
+  // double strip (fences nested three or more levels deep have not been observed in real output).
   let unFenced = unquoted;
   for (;;) {
     const next = production.stripVoicePostprocessFences(unFenced);
@@ -166,17 +172,18 @@ function sanitizeEvalLlmOutput(text, production) {
   return unFenced.trim();
 }
 
-// 镜像 voice.rs 的 trim_start 语义:Rust char::is_whitespace
-// (Unicode White_Space)与 JS \s 的空白类不同——\s 含 U+FEFF 不含 U+0085,
-// Rust 相反。这里用 Rust 的精确空白类(另含生产侧一并容忍的 U+FEFF)镜像,
-// 避免极端前缀上镜像与生产漂移。
+// Mirrors voice.rs's trim_start semantics: Rust char::is_whitespace
+// (Unicode White_Space) and JS \s use different whitespace classes — \s includes U+FEFF but not U+0085,
+// and Rust is the opposite. This mirrors Rust's exact whitespace class (plus the U+FEFF that production
+// also tolerates) to avoid drift between the mirror and production on extreme prefixes.
 // eslint-disable-next-line no-control-regex -- U+000B/U+000C are White_Space in Rust's char::is_whitespace, which this class mirrors exactly
 const RUST_WS_OR_BOM_START = /^(?:[\t\n\u000B\u000C\r\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]|\uFEFF)+/;
 
-// 镜像 voice.rs strip_leading_thinking_block：只处理开头的成对
-// `<think>…</think>`（容忍前导空白与 BOM，空白类与 Rust is_whitespace 一致，
-// 另含生产侧一并容忍的 U+FEFF），开头未闭合视为空输出（交给空输出
-// 契约），正文中段的裸 `<think>` 视为字面内容不动。
+// Mirrors voice.rs strip_leading_thinking_block: only handles a leading paired
+// `<think>…</think>` (tolerating leading whitespace and BOM; the whitespace classes match Rust is_whitespace,
+// plus the U+FEFF that production also tolerates). An unclosed block at the start is treated as empty output
+// (handed to the empty-output contract), and a bare `<think>` in the middle of the body is treated as literal
+// content and left untouched.
 function stripLeadingThinkingBlock(text) {
   const trimmed = text.replace(RUST_WS_OR_BOM_START, '');
   if (!trimmed.startsWith('<think>')) return text;
@@ -186,8 +193,8 @@ function stripLeadingThinkingBlock(text) {
   return rest.slice(end + '</think>'.length).replace(RUST_WS_OR_BOM_START, '');
 }
 
-// 镜像 voice.rs strip_wrapping_quote：单字符视为歧义输出保留；只剥同种引号
-// 的一对外层配对（先剥前缀再剥后缀，`'text"` 这类混用引号原样保留）。
+// Mirrors voice.rs strip_wrapping_quote: a single character is treated as ambiguous output and kept; strips only
+// one outer pair of the same quote kind (prefix first, then suffix — mixed quotes like `'text"` are kept as-is).
 function stripOneWrappingQuote(text, quote) {
   if ([...text].length === 1) return text;
   if (!text.startsWith(quote) || !text.endsWith(quote)) return text;
@@ -218,7 +225,7 @@ function loadJsonOrJsonl(filePath) {
   if (filePath.endsWith('.jsonl')) return raw.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
   const parsed = JSON.parse(raw);
   if (Array.isArray(parsed)) return parsed;
-  // 文件级 _provenance 元信息 + samples 数组的对象形态
+  // Object shape with file-level _provenance metadata + a samples array
   if (parsed && Array.isArray(parsed.samples)) return parsed.samples;
   return [parsed];
 }
@@ -242,7 +249,7 @@ function normalizeCase(sample) {
     gold_text: sample.gold_text || '',
     expected_final_text: sample.expected_final_text || sample.expected_text || sample.gold_text || '',
     allow_empty_final: !!sample.allow_empty_final,
-    // false 表示 expected_final_text 与生产 prompt 输出形态不一致，expected_match 仅作信息展示
+    // false means expected_final_text does not match the production prompt's output shape; expected_match is informational only
     expected_match_scored: sample.expected_match_scored !== false,
     expected,
     forbidden,
@@ -323,8 +330,9 @@ function scoreOutput(testCase, output) {
   const forbiddenPenalty = testCase.forbidden.length ? forbiddenHits.length / testCase.forbidden.length : 0;
   const expectedNorm = normalizeTextForCompare(testCase.expected_final_text);
   const outputNorm = normalizeTextForCompare(text);
-  // expected_match 仅作信息展示，不参与 score/失败判定：dictation 样本的 expected_final_text
-  // 是单句理想值，与生产 dictation prompt 的 Markdown 列表输出形态不同（fixture _provenance 已标注）。
+  // expected_match is informational only and does not affect the score/failure verdict: the expected_final_text of
+  // dictation samples is a single-sentence ideal, which differs from the Markdown list shape the production dictation
+  // prompt emits (noted in the fixture _provenance).
   const expectedMatch = testCase.expected_match_scored && expectedNorm ? outputNorm === expectedNorm : null;
   const score = Math.max(0, Math.round((expectedScore - forbiddenPenalty) * 100));
   return {
@@ -340,8 +348,9 @@ function scoreOutput(testCase, output) {
 }
 
 function readWindowsCredential(target) {
-  // 读取范围：仅读凭据管理器中 target 指定的单条凭据；返回值只用作 Authorization 头，
-  // 不打印、不记录、不写文件。非 Windows 平台或读取失败返回空串。
+  // Read scope: reads only the single Credential Manager entry named by target; the return value is used only as the
+  // Authorization header — never printed, logged, or written to a file. Returns an empty string on non-Windows
+  // platforms or when the read fails.
   if (process.platform !== 'win32' || !target) return '';
   const escapedTarget = String(target).replace(/'/g, "''");
   const script = String.raw`
@@ -407,7 +416,7 @@ function loadPinvouActiveModelConfig() {
     const service = credentialRef.service || 'pinvou3-model-api-key';
     const account = credentialRef.account || `model:${model.id}`;
     const target = `${account}.${service}`;
-    // 环境变量优先：PINVOU_VOICE_EVAL_API_KEY 已提供时不触凭据管理器
+    // Environment variables win: when PINVOU_VOICE_EVAL_API_KEY is provided, Credential Manager is not touched
     const apiKey = process.env.PINVOU_VOICE_EVAL_API_KEY || model.api_key || readWindowsCredential(target);
     return {
       baseUrl: model.base_url,
@@ -427,16 +436,16 @@ function resolveEvalModelConfig() {
     model: process.env.PINVOU_VOICE_EVAL_MODEL,
     source: 'env',
   };
-  // 环境变量三者齐全即直接使用，不读 settings.json、不触凭据管理器
+  // When all three environment variables are set, use them directly: no settings.json read, no Credential Manager access
   if (envConfig.baseUrl && envConfig.apiKey && envConfig.model) return envConfig;
   return loadPinvouActiveModelConfig() || envConfig;
 }
 
 /**
- * 对齐生产 openai-compatible 请求（voice.rs call_voice_postprocess_model）：
- * system = 生产 mode prompt，user = voice_postprocess_user_content 拼装，
- * temperature=0，max_tokens=生产基础值（retry=false），stream=false。
- * finish_reason=length 与生产一致视为截断失败（抛错走回退）。
+ * Mirrors the production openai-compatible request (voice.rs call_voice_postprocess_model):
+ * system = the production mode prompt, user = the voice_postprocess_user_content assembly,
+ * temperature=0, max_tokens = the production base value (retry=false), stream=false.
+ * finish_reason=length is treated as a truncation failure, matching production (throws so the fallback runs).
  */
 async function callOpenAiCompatible(correctedText, rawText, mode, production, llmConfig) {
   const config = resolveEvalModelConfig();
@@ -466,7 +475,7 @@ async function callOpenAiCompatible(correctedText, rawText, mode, production, ll
   const value = await response.json();
   const choice = value?.choices?.[0];
   if (choice?.finish_reason === 'length') {
-    throw new Error('llm_truncated: finish_reason=length（与生产一致，截断输出不写回）');
+    throw new Error('llm_truncated: finish_reason=length (matches production; truncated output is not written back)');
   }
   const output = String(choice?.message?.content || '').trim();
   return { output, llm_ms: Math.round(performance.now() - started), source: config.source };
@@ -494,7 +503,7 @@ function runClassifyCheck(cases, production) {
   const counts = {};
   for (const row of rows) counts[row.strategy] = (counts[row.strategy] || 0) + 1;
   console.log(JSON.stringify({ samples: rows.length, strategy_counts: counts }, null, 2));
-  console.log(`对照说明: eval 的分类决策即 voice.js 生产 classifyVoiceText 的 vm 抽取调用，与生产同代码、构造性一致（本批 ${rows.length} 条，无第二份实现可比对，不构成独立验证）。`);
+  console.log(`Comparison note: eval's classification decisions are vm-extracted calls of voice.js's production classifyVoiceText — same code as production and constructively identical (${rows.length} samples in this batch; there is no second implementation to compare against, so this is not independent verification).`);
 }
 
 async function main() {
@@ -533,7 +542,7 @@ async function main() {
     } else {
       const rawText = testCase.raw;
       const ruleText = production.applyVoiceDeterministicCorrections(rawText, rawText);
-      // 与生产一致：分类基于原始 ASR 文本（voice.js finishVoiceInput 的注释说明了对纠错后文本分类的静默误纠风险）
+      // Matches production: classification is based on the raw ASR text (the comment in voice.js finishVoiceInput explains the silent wrong-correction risk of classifying the corrected text)
       const classified = production.classifyVoiceText(rawText, testCase.mode);
       decision = classified.reason || classified.strategy;
       if (evalStrategy === 'asr_only') {
@@ -550,7 +559,7 @@ async function main() {
         try {
           llmCalled = true;
           const result = await callOpenAiCompatible(ruleText, rawText, testCase.mode, production, llmConfig);
-          // 与生产一致：LLM 输出不再过第二遍确定性规则，sanitize 后直接走生产校验，失败回退规则文本
+          // Matches production: LLM output does not go through a second deterministic rule pass; after sanitize it goes straight to production validation, falling back to the rule text on failure
           const candidate = sanitizeEvalLlmOutput(result.output, production);
           const valid = production.validateVoicePostprocessOutput(rawText, ruleText, candidate, testCase.mode);
           output = valid ? candidate : ruleText;

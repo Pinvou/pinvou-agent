@@ -44,7 +44,7 @@ setVoiceShortcutIntroSeen(true, storage);
 assert.strictEqual(storage.getItem(VOICE_SHORTCUT_INTRO_SEEN_KEY), 'true');
 assert.strictEqual(voiceShortcutIntroSeen(storage), true);
 
-// 智能整理开关:缺省开启(隐私告知在设置文案中,关闭才停发 LLM 请求)。
+// Smart organize toggle: defaults on (the privacy notice lives in the settings copy; only turning it off stops LLM requests).
 assert.strictEqual(voicePostprocessEnabled(storage), true, 'voice postprocess must default on');
 setVoicePostprocessEnabled(false, storage);
 assert.strictEqual(storage.getItem(VOICE_POSTPROCESS_ENABLED_KEY), 'false');

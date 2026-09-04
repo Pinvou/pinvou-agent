@@ -39,9 +39,10 @@ function setVoiceShortcutIntroSeen(value, storage) {
   writeBooleanSetting(VOICE_SHORTCUT_INTRO_SEEN_KEY, !!value, storage);
 }
 
-// 智能整理(纠错+结构化)开关,默认开启。注意:tauri 桥(经典脚本)无法 import
-// 本模块,它按同一 key 直读 localStorage(见 platform/tauri/bridge/voice.js),
-// 改 key 时必须两侧同步。
+// Smart post-processing (correction + structuring) toggle, enabled by default. Note: the
+// tauri bridge (classic script) cannot import this module; it reads localStorage directly
+// with the same key (see platform/tauri/bridge/voice.js), so a key change must be applied
+// on both sides.
 function voicePostprocessEnabled(storage) {
   return readBooleanSetting(VOICE_POSTPROCESS_ENABLED_KEY, true, storage);
 }

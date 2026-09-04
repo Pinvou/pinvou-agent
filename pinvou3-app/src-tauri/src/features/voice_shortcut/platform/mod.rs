@@ -43,15 +43,18 @@ static EVENT_SENDER: OnceLock<
 static SHORTCUT_ENABLED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "windows")]
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
-/// 路由窗口(主窗 + 撕离窗)的 HWND 缓存,供钩子线程零阻塞查询。
-/// Tauri 窗口 getter 需要主线程消息回传,不能在低层钩子回调里调用,
-/// 故由独立线程在开关开启时低频刷新。
+/// HWND cache of the router windows (main + detached), queried by the hook
+/// thread without blocking. Tauri's window getters require a main-thread
+/// message round-trip and cannot be called from a low-level hook callback, so
+/// a dedicated thread refreshes the cache at a low frequency while the switch
+/// is on.
 #[cfg(target_os = "windows")]
 static ROUTER_WINDOWS: Mutex<Vec<(isize, String)>> = Mutex::new(Vec::new());
 
 #[cfg(target_os = "windows")]
 pub(super) fn install(app: AppHandle) {
-    // 允许重装:泵线程异常退出(GetMessageW 出错 / WM_QUIT)会卸钩子并复位 INSTALLED。
+    // Reinstall is allowed: an abnormal pump-thread exit (GetMessageW error /
+    // WM_QUIT) unhooks and resets INSTALLED.
     if INSTALLED
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -109,9 +112,11 @@ pub(super) fn install(app: AppHandle) {
     });
 }
 
-/// pump 线程死亡后的有界自动重装:GetMessageW 失败/退出会永久摘掉低层钩子,
-/// 此前只能静默失效到重启。延迟 1s 后经 APP_HANDLE 重装,整个应用生命周期
-/// 最多重试 3 次,用尽后记录 error(快捷键失效需重启,日志可见)。
+/// Bounded auto-reinstall after the pump thread dies: a GetMessageW failure/
+/// exit permanently removes the low-level hook, which previously meant silent
+/// breakage until restart. After a 1s delay the hook is reinstalled via
+/// APP_HANDLE, at most 3 times per app lifetime; once exhausted, an error is
+/// logged (the shortcut stays broken until restart, visible in the log).
 #[cfg(target_os = "windows")]
 static PUMP_RESTARTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 #[cfg(target_os = "windows")]
@@ -153,7 +158,8 @@ pub(super) fn set_enabled(enabled: bool) {
             *state = VoiceShortcutState::default();
         }
     } else if let Some(app) = APP_HANDLE.get() {
-        // 开启时立即补一次 HWND 缓存,避免首轮 200ms 刷新窗口内快捷键无响应。
+        // Refresh the HWND cache immediately on enable so the shortcut is not
+        // unresponsive during the first 200ms refresh window.
         let app = app.clone();
         std::thread::spawn(move || refresh_router_window_hwnds(&app));
     }
@@ -211,13 +217,15 @@ unsafe extern "system" fn keyboard_hook_proc(
         return call_next_hook(code, w_param, l_param);
     }
 
-    // 门控顺序:开关优先于一切 Win32 查询,disabled 时全局击键直接放行。
+    // Gate ordering: the switch takes precedence over any Win32 query; while
+    // disabled, all keystrokes pass straight through.
     if !shortcut_enabled() {
         return call_next_hook(code, w_param, l_param);
     }
 
     let info = unsafe { &*(l_param as *const KBDLLHOOKSTRUCT) };
-    // 注入键(SendInput 合成,含本模块为组合键补发的 Alt down)不参与手势判定。
+    // Injected keys (SendInput synthetics, including the Alt down this module
+    // replays for combos) never take part in gesture detection.
     if info.flags & LLKHF_INJECTED != 0 {
         return call_next_hook(code, w_param, l_param);
     }
@@ -240,10 +248,13 @@ unsafe extern "system" fn keyboard_hook_proc(
             info.time,
         );
         if decision.inject_alt_down {
-            // 组合键 down 已被吞:用单次 SendInput 按 [Alt↓, 组合键↓] 保序重放,
-            // 系统/WebView 看到的修饰键顺序与真实按下一致,Alt+Tab/Alt+F4 正常。
-            // 重放成功才确认 alt_forwarded(真实 Alt up 放行与之配对);失败则保持
-            // 未转发,组合键丢失,真实 Alt up 按未转发路径吞掉收尾,不留残态。
+            // The combo down was swallowed: replay [Alt↓, combo↓] in order
+            // with a single SendInput, so the system/WebView sees the modifier
+            // order of a real press and Alt+Tab/Alt+F4 keep working. Only a
+            // successful replay confirms alt_forwarded (the real Alt up is let
+            // through to pair with it); on failure it stays unforwarded, the
+            // combo is lost, the real Alt up is wrapped up along the
+            // unforwarded path, and no state is left behind.
             if replay_combo_with_alt(info.vkCode as VIRTUAL_KEY) {
                 state.alt_forwarded = true;
             }
@@ -266,9 +277,12 @@ unsafe extern "system" fn keyboard_hook_proc(
     call_next_hook(code, w_param, l_param)
 }
 
-/// 本次击键是否归快捷键手势接管,以及触发时的目标窗口:
-/// 仅本进程前台窗口才接管;录音中的窗口优先(跨窗互斥:定向到录音窗停止,绝不双开),
-/// 否则要求聚焦窗口在 Router 白名单(主窗/撕离窗)内;都不是则不吞键、不 emit。
+/// Whether this keystroke is taken over by the shortcut gesture, and the
+/// target window on trigger: only a foreground window of this process is taken
+/// over; the recording window wins (cross-window mutual exclusion: targeted to
+/// the recording window to stop it, never a second session), otherwise the
+/// focused window must be in the Router whitelist (main/detached); with
+/// neither, no swallowing and no emit.
 #[cfg(target_os = "windows")]
 fn hook_target_label(foreground: HWND) -> Option<(String, &'static str)> {
     if foreground.is_null() || !foreground_is_current_app(foreground) {
@@ -288,12 +302,16 @@ fn focused_router_label(foreground: HWND) -> Option<String> {
         .map(|(_, label)| label.clone())
 }
 
-/// tap-hold 补偿:组合键 down 已被吞,这里用单次 SendInput 注入两条目
-/// [Alt↓, 组合键↓] 保序重放,让系统与 WebView 看到与真实按下一致的修饰键
-/// 顺序(先 Alt 后组合键;旧实现先放行组合键再补发 Alt,Alt+Tab/Alt+F4 会因
-/// 顺序颠倒而失效)。组合键 up 与真实 Alt up 到达时放行,完成整个序列。
-/// 注入键带 LLKHF_INJECTED,钩子入口直接放行,不会递归触发手势逻辑。
-/// 返回是否全部注入成功。
+/// tap-hold compensation: the combo down was swallowed, so inject the two-entry
+/// [Alt↓, combo↓] sequence with a single SendInput, replayed in order, so the
+/// system and WebView see the same modifier order as a real press (Alt first,
+/// then the combo; the old implementation let the combo through first and
+/// injected Alt afterwards, which broke Alt+Tab/Alt+F4 due to the reversed
+/// order). The combo up and the real Alt up are let through as they arrive,
+/// completing the sequence.
+/// Injected keys carry LLKHF_INJECTED and are let straight through at the hook
+/// entry, so they cannot recursively re-trigger gesture logic.
+/// Returns whether all entries were injected successfully.
 #[cfg(target_os = "windows")]
 fn replay_combo_with_alt(combo_vk: VIRTUAL_KEY) -> bool {
     let inputs = [
@@ -345,7 +363,8 @@ fn call_next_hook(code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
 fn voice_shortcut_key(vk: VIRTUAL_KEY) -> VoiceShortcutKey {
     match vk {
         VK_MENU | VK_LMENU => VoiceShortcutKey::Alt,
-        // 右 Alt / AltGr 不触发语音快捷键,留给输入法和组合键。
+        // Right Alt / AltGr does not trigger the voice shortcut; it stays with
+        // the input method and combos.
         VK_RMENU => VoiceShortcutKey::Other,
         VK_SPACE => VoiceShortcutKey::Space,
         VK_ESCAPE => VoiceShortcutKey::Escape,

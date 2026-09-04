@@ -11,8 +11,10 @@ pub(crate) struct DesktopCapabilities {
     pub(crate) browser_native_display: bool,
     pub(crate) browser_agent_automation: bool,
     pub(crate) browser_cdp: bool,
-    /// 全局 Alt 语音快捷键的原生键盘钩子:仅 Windows 实现(Alt+Space 会被
-    /// 系统菜单截获,必须原生钩子);其余平台原生层 no-op,仅窗口内 Alt 可用。
+    /// Native keyboard hook for the global Alt voice shortcut: implemented on
+    /// Windows only (Alt+Space is intercepted by the system menu, so a native
+    /// hook is required); on other platforms the native layer is a no-op and
+    /// only the in-window Alt fallback is available.
     pub(crate) voice_shortcut_native: bool,
 }
 

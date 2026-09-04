@@ -52,7 +52,7 @@ async function invoke(command, args) {
   if (command === 'web_access_rpc_begin') return true;
   if (command === 'list_sessions') return [{ id: 'session-1', title: '测试对话' }];
   if (command === 'web_access_transcribe_voice_audio') {
-    // 模拟 Rust 命令以结构化 VoiceCommandError 对象拒绝(带稳定错误码)。
+    // Simulate the Rust command rejecting with a structured VoiceCommandError object (carrying a stable error code).
     const structuredVoiceError = { code: 'asr_timeout', category: 'timeout', message: '识别超时，请缩短录音后重试' };
     throw structuredVoiceError;
   }
@@ -118,9 +118,10 @@ assert.deepEqual(JSON.parse(JSON.stringify(responses.at(-1))), {
   errorCategory: null,
 });
 
-// 结构化桌面命令错误(如 VoiceCommandError)必须把稳定 code/category 透传给
-// 浏览器车道,否则 normalizeVoiceError 的错误码→三语文案映射不可达,中文原文
-// 会直通 en/ja 用户。
+// Structured desktop command errors (e.g. VoiceCommandError) must forward
+// their stable code/category to the browser lane; otherwise the
+// normalizeVoiceError code→trilingual-copy mapping is unreachable and the
+// Chinese raw message reaches en/ja users verbatim.
 await listeners.get('web_access:rpc_request')({
   payload: {
     request_id: 'request-2',

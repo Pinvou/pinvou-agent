@@ -20,8 +20,9 @@ function activeStatus(status) {
 let fallbackVoiceSessionCounter = 0;
 
 function createVoiceSessionRandomPart() {
-  // 该文件会被契约测试以 vm 切片加载,裸引用 crypto 在无注入的上下文里会
-  // ReferenceError;经 globalThis 读取以获得 Web Crypto 真随机,缺失时才降级。
+  // Contract tests load this file in a vm slice; a bare crypto reference throws a
+  // ReferenceError in a context without injections. Read it via globalThis to get Web Crypto
+  // true randomness, falling back only when it is missing.
   const cryptoApi = (typeof globalThis !== 'undefined' && globalThis.crypto) || null;
   if (cryptoApi && typeof cryptoApi.randomUUID === 'function') {
     return cryptoApi.randomUUID();
@@ -43,10 +44,12 @@ function trimDraft(value) {
   return String(value || '').trim();
 }
 
-// 任务直发未被接受(守卫拦截或抛错)时抛给桥接层:bridge finishVoiceInput 的
-// catch 会把它归一化成失败通知,而不是继续显示「语音任务已发送」的假成功。
-// message 留空并覆写 toString,让 normalizeVoiceError 落到现有三语通用文案
-// voiceInputFailed;后续可由 bridge 为 send_failed 类别映射专用文案。
+// Thrown to the bridge layer when direct task send is not accepted (blocked by a guard or
+// threw): the catch in bridge finishVoiceInput normalizes it into a failure notification
+// instead of leaving the fake "voice task sent" success showing.
+// message is left empty and toString overridden so normalizeVoiceError lands on the existing
+// trilingual generic copy voiceInputFailed; the bridge can map dedicated copy for the
+// send_failed category later.
 function createVoiceTaskSendError() {
   const error = new Error('');
   error.category = 'send_failed';
@@ -55,11 +58,13 @@ function createVoiceTaskSendError() {
   return error;
 }
 
-// 任务发送收尾:透传 sendTask 的真实结果。契约上 sendTask 应 resolve 布尔值;
-// 显式 false 或抛错视为未接受(失败经 onTaskBlocked('send') 通知),历史实现
-// 不发回结论(undefined)时保持既有「已受理」行为,避免把成功误报成失败。
-// await 窗口内草稿被用户改动时跳过 onTaskAccepted,避免无条件清空吞掉新输入。
-// 在途去重与失败呈现由调用方负责。
+// Task-send teardown: pass through sendTask's real result. By contract sendTask resolves a
+// boolean; an explicit false or a throw counts as not accepted (failure notified via
+// onTaskBlocked('send')), while legacy implementations returning no verdict (undefined) keep
+// the existing "accepted" behavior so a success is not misreported as a failure.
+// Skip onTaskAccepted when the draft changed during the await window, so an unconditional
+// clear cannot swallow the new input.
+// In-flight dedup and failure rendering are the caller's responsibility.
 async function deliverVoiceTask(current, text, context, inFlightRef) {
   inFlightRef.current = true;
   let accepted;
@@ -94,9 +99,10 @@ function useComposerVoiceInput(adapter) {
   // eslint-disable-next-line react-hooks/refs -- latest edit preview mirror for the send path
   editPreviewRef.current = editPreview;
 
-  // bridge 的 cancelVoiceInput/clearVoiceInput 在有进行中会话时语义分叉:cancel 只把
-  // 会话收尾成 cancelled(不可见残留态),clear 才会复位 idle。这里统一成「取消 + 复位」,
-  // 保证取消/关闭后都不留 cancelled 残留。
+  // bridge cancelVoiceInput/clearVoiceInput diverge while a session is in flight: cancel only
+  // ends the session as cancelled (an invisible residue state), while clear actually resets to
+  // idle. Combine both here as "cancel + reset" so no cancelled residue remains after
+  // cancel/close.
   const cancelVoice = useCallback(() => {
     const current = adapterRef.current || {};
     if (!current.bridge || !current.bridge.available) return;
@@ -137,12 +143,15 @@ function useComposerVoiceInput(adapter) {
       setEditPreview(null);
       return false;
     }
-    // 发送在途时的重复触发(双击、全局 Enter 与 textarea Enter 同时命中)直接忽略,防止双发。
+    // Ignore repeat triggers while a send is in flight (double click, or global Enter and
+    // textarea Enter firing together) to prevent double sends.
     if (options.send && taskSendInFlightRef.current) return false;
-    // 预览以录音开始时的草稿快照(original)为改写基线,而预览挂起期间输入框
-    // 仍可手编。草稿已偏离 original 时,确认会拿基于旧原文的改写整段覆盖草稿、
-    // 静默丢弃用户手打内容(与新语音会话废弃过期预览同族)——在应用前最后
-    // 一道拦下:废弃预览,草稿保持原样。
+    // The preview rewrites against the draft snapshot taken at recording start (original),
+    // but the input box stays hand-editable while the preview is pending. If the draft has
+    // drifted from original, confirming would overwrite the whole draft with a rewrite based
+    // on the old text, silently discarding what the user typed (same family as a new voice
+    // session discarding a stale preview) — this is the last gate before applying: discard
+    // the preview and keep the draft as-is.
     if (typeof current.getDraft === 'function'
       && trimDraft(current.getDraft()) !== preview.original) {
       setEditPreview(null);
@@ -212,9 +221,10 @@ function useComposerVoiceInput(adapter) {
       return;
     }
 
-    // 与 dictation 分支一致,以最新草稿为基座函数式合并:录音/转写期间用户补打
-    // 的字不能被旧的 draftBeforeStart 快照覆盖。adapter 每次渲染都会刷新
-    // adapterRef,这里的 getDraft() 拿到的是写回时刻的最新输入。
+    // Same as the dictation branch: merge functionally on top of the latest draft. Characters
+    // the user typed during recording/transcription must not be overwritten by the stale
+    // draftBeforeStart snapshot. adapter refreshes adapterRef on every render, so getDraft()
+    // here returns the latest input at writeback time.
     const baseDraft = typeof current.getDraft === 'function' ? current.getDraft() : (draftBeforeStart || '');
     const outgoing = appendDraft(baseDraft, recognized);
     if (!String(outgoing || '').trim()) return;
@@ -230,8 +240,9 @@ function useComposerVoiceInput(adapter) {
     if (typeof current.sendTask !== 'function' || taskSendInFlightRef.current) return;
     const accepted = await deliverVoiceTask(current, outgoing, context, taskSendInFlightRef);
     if (!accepted) {
-      // send 的守卫静默 return 时也要让用户看到失败:草稿保留在输入框,并抛给
-      // bridge 把「任务已发送」的假成功通知翻成失败通知。
+      // When send's guard returns silently, the user still must see the failure: keep the
+      // draft in the input box and throw to the bridge so the fake "task sent" success
+      // notification is flipped into a failure notification.
       throw createVoiceTaskSendError();
     }
   }, [clearStaleVoiceState]);
@@ -256,10 +267,11 @@ function useComposerVoiceInput(adapter) {
         draft: typeof current.getDraft === 'function' ? current.getDraft() : '',
         voiceInput,
       }));
-      // 智能整理关闭时 edit 车道没有 LLM 可用(postprocess_disabled 必然以
-      // 失败告终),dictation→edit 的自动升级只会把"必失败的编辑"强加给
-      // 听写手势;保持听写、回写规则纠错文本,与 web 车道 asr_only 降级同
-      // 口径。显式请求的 edit(非升级)不受此门约束,失败语义照旧。
+      // With smart post-processing off, the edit lane has no LLM available (postprocess_disabled
+      // always fails), so auto-upgrading dictation→edit would force a doomed edit onto the
+      // dictation gesture; stay on dictation and write back the rule-corrected text, matching
+      // the web lane's asr_only downgrade. An explicitly requested edit (not an upgrade) is
+      // not subject to this gate and keeps its usual failure semantics.
       if (resolved === 'edit' && nextMode === 'dictation' && !voicePostprocessEnabled()) {
         nextMode = 'dictation';
       } else {
@@ -267,7 +279,7 @@ function useComposerVoiceInput(adapter) {
       }
     } else if (!preserveActiveMode && nextMode === 'dictation' && options.source !== 'button'
       && trimDraft(typeof current.getDraft === 'function' ? current.getDraft() : '')) {
-      // 智能整理关闭时保持听写(理由同上:postprocess_disabled 必失败)。
+      // Stay on dictation when smart post-processing is off (same reason as above: postprocess_disabled always fails).
       nextMode = voicePostprocessEnabled() ? 'edit' : 'dictation';
     }
     if (!bridge || !bridge.available) return false;
@@ -362,10 +374,11 @@ function useComposerVoiceInput(adapter) {
     return () => window.removeEventListener('keydown', handleEditPreviewKeyDown, true);
   }, [editPreview, cancelVoiceEditPreview, applyVoiceEditPreview]);
 
-  // 会话/工作区/目标身份变化时,遗留的语音改写预览属于旧上下文:把它的 next
-  // 应用进新会话草稿、甚至经 sendTask 发进新会话都是跨上下文数据污染,身份
-  // 变化即自动取消(用户显式的 apply/cancel 不受影响)。首帧(previous 为
-  // null)只登记身份,不触发取消。
+  // When the session/workspace/target identity changes, a leftover voice rewrite preview
+  // belongs to the old context: applying its next into the new session's draft, or sending
+  // it into the new session via sendTask, would be cross-context data pollution, so cancel
+  // it automatically on identity change (explicit user apply/cancel is unaffected). On the
+  // first frame (previous is null) only register the identity, without cancelling.
   const voiceContextIdentityRef = useRef(null);
   useEffect(() => {
     const identity = [

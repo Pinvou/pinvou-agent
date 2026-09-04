@@ -49,9 +49,10 @@ function VoiceComposerButton({
   const recording = isVoiceRecording(voiceInput);
   const label = asrBusy.busy ? asrBusy.label : primaryVoiceLabel(voiceInput, voiceMode, copy);
   const asrPopoverVisible = asrBusy.busy && voiceAsrPopoverOpen;
-  // ASR 进度弹层的外点关闭统一走 useOutsidePointerClose(与 ComposerPopover 同一套
-  // document 级捕获 pointerdown 检测);refProp 包裹弹层与触发按钮,作为 inside 区域。
-  // 视图传入 onCloseAsrPopover 后,视图侧不必再各自维护 ad-hoc mousedown/pointerdown 监听。
+  // Outside-click close for the ASR progress popover goes through useOutsidePointerClose
+  // (the same document-level capture pointerdown detection as ComposerPopover); refProp wraps
+  // the popover and trigger button as the inside area. Once the view passes onCloseAsrPopover,
+  // the view side no longer maintains its own ad-hoc mousedown/pointerdown listeners.
   useOutsidePointerClose(
     asrPopoverVisible && typeof onCloseAsrPopover === 'function',
     onCloseAsrPopover || (() => {}),

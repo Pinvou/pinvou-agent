@@ -1519,8 +1519,9 @@ pub async fn web_access_save_session_messages_chunk(
 
 /// Base64 keeps the 20-second web-lane WAV (~853 KB) comfortably below the
 /// 1 MiB RPC request precheck (and the 2 MiB relay inbound frame cap).
-/// 桌面命令(`transcribe_voice_audio`)同样走 base64 入参;此处完成解码与
-/// 大小校验后直接复用其字节级识别路径。
+/// The desktop command (`transcribe_voice_audio`) also takes a base64 payload;
+/// after decoding and the size check here, it reuses that byte-level
+/// recognition path directly.
 #[tauri::command]
 pub async fn web_access_transcribe_voice_audio(
     audio_base64: String,
@@ -1561,8 +1562,9 @@ pub async fn web_access_transcribe_voice_audio(
             "远程控制语音音频超过 1 MiB",
         ));
     }
-    // 本地命令已改走 base64 入参(audio_bytes JSON 数组的 IPC 开销过大);
-    // 此处已完成解码与大小校验,直接复用解码后路径。
+    // The local command has switched to a base64 payload (a `audio_bytes` JSON
+    // number array costs too much over IPC); decoding and the size check
+    // already happened above, so go straight to the decoded path.
     super::voice::transcribe_voice_audio_bytes(audio_bytes).await
 }
 
