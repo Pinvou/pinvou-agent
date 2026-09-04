@@ -1127,6 +1127,15 @@
       loadWorkingSetFrom(restoreBuffer);
     }
   }
+  // 辅助对话域：复用 chat/sessions 的注入件（isBusyFor、getBuffer 系、
+  // ensureSessionBufferLoaded、purgeSessionBuffer），不自建状态与事件监听。
+  const auxChatFeature = installBridgeFeature("auxChat", {
+    state, invoke, bt, sessionStates,
+    ensureSessionBufferLoaded,
+    purgeSessionBuffer,
+    isBusyFor,
+  });
+
   // ── modeState 权威写回收敛点（评审 P1）────────────────────────────
   // 任何「invoke 返回 / 事件负载」带来的权威 modeState 更新都必须走
   // applyAuthoritativeModeState：内部统一 bump per-session epoch（作废
@@ -2513,6 +2522,13 @@
       interruptAndSendQueued,
       cancelGeneration,
       cancelShellTask,
+    },
+    auxChat: {
+      ensure: auxChatFeature.ensure,
+      send: auxChatFeature.send,
+      snapshot: auxChatFeature.snapshot,
+      discard: auxChatFeature.discard,
+      isAuxSession: auxChatFeature.isAuxSession,
     },
     voice: {
       startVoiceInput,

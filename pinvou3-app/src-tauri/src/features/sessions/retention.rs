@@ -254,6 +254,20 @@ impl SessionStore {
             self.save_hidden_sessions();
         }
 
+        let removed_aux = {
+            let mut aux_sessions = self.aux_sessions.write();
+            let before = aux_sessions.len();
+            // 双向清理:键(主会话)或值(辅助会话)命中被删集合都移除——删主会话
+            // 与单独删辅助会话两条路径都不得留下幽灵映射。
+            aux_sessions.retain(|main_id, aux_id| {
+                !contains(main_id.as_str()) && !contains(aux_id.as_str())
+            });
+            aux_sessions.len() != before
+        };
+        if removed_aux {
+            self.save_aux_sessions();
+        }
+
         // Keys of process-level turn-state maps (timing/pending_user_input)
         // accumulate per session id and are cleaned by the purge hook
         // registered by the app composition root (see SessionPurgedHook;

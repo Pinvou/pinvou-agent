@@ -127,6 +127,10 @@ pub struct SessionStore {
     /// 从左侧任务列表收起的会话:session_id -> hidden_at。独立落盘到
     /// `_hidden_sessions.json`,不改 SavedSession 结构。
     pub(crate) hidden_sessions: Arc<RwLock<HashMap<String, String>>>,
+    /// 辅助对话映射:主会话 session_id -> 辅助会话 session_id(`aux-` 前缀)。
+    /// 独立落盘到 `_aux_sessions.json`;辅助会话不进普通会话列表,随主会话
+    /// 删除级联清理(见 store.rs `delete`)。
+    pub(crate) aux_sessions: Arc<RwLock<HashMap<String, String>>>,
     /// 原生代码会话绑定的项目目录解析器,由 app 组合根(lib.rs)在 AcpPool 就绪
     /// 后注入;None = 无代码会话项目绑定,所有会话的执行根都是会话私有目录。
     /// 账本根(附件/审计/产物/远程授权)不受其影响,恒为会话私有目录。

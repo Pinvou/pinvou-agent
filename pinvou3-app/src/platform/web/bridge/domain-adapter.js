@@ -133,6 +133,13 @@
     state: { get, getMany, subscribe, subscribeMany },
     platform: {},
     chat: domain(["sendMessage", "sendMessageToSession", "getComposerDraft", "setComposerDraft", "retryFirstTurn", "prefillComposer", "removeQueued", "prioritizeQueued", "editQueued", "cancelGeneration", "cancelShellTask"]),
+    auxChat: domain([], {
+      ensure: "auxChatEnsure",
+      send: "auxChatSend",
+      snapshot: "auxChatSnapshot",
+      discard: "auxChatDiscard",
+      isAuxSession: "auxChatIsAuxSession",
+    }),
     voice: domain(["startVoiceInput", "installVoiceAsr", "closeVoiceAsrSetup", "cancelVoiceInput", "clearVoiceInput", "appendVoiceText", "runVoiceInputDebugAssertions"]),
     knowledge: domain(["downloadKbModel", "cancelKbModel", "mountCollection", "setCollectionEnabled", "removeCollection", "unmountCollection", "listCollections", "kbModelStatus"]),
     scheduled: domain(["loadScheduledTasks", "readScheduledTask", "loadScheduledTaskRuns", "loadScheduledTaskRecentRuns", "selectScheduledTask", "refreshScheduledTaskData", "clearScheduledTaskSelection", "dismissScheduledTaskError", "createScheduledTask", "updateScheduledTask", "pauseScheduledTask", "resumeScheduledTask", "toggleScheduledTaskPinned", "deleteScheduledTask", "runScheduledTaskNow", "pickFolder", "startScheduledTaskChat", "confirmScheduledTaskDraft", "clearScheduledTaskDraft", "openScheduledRunChat", "exitScheduledRunChat"]),

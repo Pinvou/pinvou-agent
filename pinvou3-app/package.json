@@ -62,6 +62,7 @@
     "test:codex-acp-windows-runtime": "node tests/codex_acp_windows_runtime_smoke.js",
     "test:session-management": "node tests/session_management_logic.test.mjs",
     "test:multiagent-plan": "node --test tests/multiagent_plan_normalize.test.mjs",
+    "test:aux-chat": "node --test tests/aux_chat_state.test.mjs",
     "test:chat-input-limit": "node tests/chat_input_limit_logic.test.js",
     "test:background-tasks": "node tests/background_tasks_logic.test.js",
     "test:ime-compose-guard": "node tests/ime_compose_guard.test.mjs",

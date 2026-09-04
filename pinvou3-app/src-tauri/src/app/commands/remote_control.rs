@@ -1840,6 +1840,61 @@ mod tests {
         assert!(ensure_web_chat_session_supported(true).is_err());
     }
 
+    /// web_access_chat_for_session 的会话门槛(validate_session_id → multi_agent
+    /// 拒绝 → store.load 存在性)不经过 list()。辅助对话(aux- 前缀)被
+    /// store.list() 过滤出普通会话列表,但三道门槛对它天然全部通过——WebUI
+    /// auxChat 域(auxChatSend → web_access_chat)不会被可见性过滤误伤。
+    #[test]
+    fn web_chat_preflight_accepts_aux_sessions() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-web-aux-preflight-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+        // serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
+            root.join("scheduled"),
+        )
+        .expect("session store");
+        let main = store
+            .create_new("model".to_string(), None, root.clone())
+            .expect("create main session");
+        let aux = store
+            .create_aux_session(&main.metadata.id)
+            .expect("create aux session");
+
+        // 前提:列表隔离生效,辅助会话不在普通会话列表里。
+        assert!(
+            !store
+                .list()
+                .expect("list sessions")
+                .iter()
+                .any(|metadata| metadata.id == aux.id),
+            "aux sessions must stay out of the ordinary chat list"
+        );
+        // web_access_chat_for_session 的三道会话门槛逐一通过:
+        crate::features::sessions::validate_session_id(&aux.id).expect("aux id charset");
+        ensure_web_chat_session_supported(store.mode_state(&aux.id).multi_agent)
+            .expect("aux sessions are never multi-agent");
+        store.load(&aux.id).expect("aux session loads by id");
+
+        match previous {
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn web_code_sessions_accept_only_acp_agents() {
         assert_eq!(web_acp_agent_id(None).unwrap(), "codex");
