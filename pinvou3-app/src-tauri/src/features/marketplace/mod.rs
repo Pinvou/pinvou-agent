@@ -56,6 +56,25 @@ const JOURNAL_REMOVE_RETRY_DELAY: Duration = Duration::from_millis(120);
 static FAIL_NEXT_INSTALLED_WRITE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// 「下一次 installed.json 写失败」注入的复位守卫：作用域结束（含 panic
+/// unwind 或安装路径提前失败、未消费注入）时自动清零，防止标志泄漏到后续
+/// 测试（曾在 install 早于 save_installed 失败时泄漏，击穿无关用例）。
+#[cfg(test)]
+pub(crate) struct InstalledWriteFailureGuard;
+
+#[cfg(test)]
+impl Drop for InstalledWriteFailureGuard {
+    fn drop(&mut self) {
+        FAIL_NEXT_INSTALLED_WRITE.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_installed_write_for_test() -> InstalledWriteFailureGuard {
+    FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+    InstalledWriteFailureGuard
+}
+
 #[cfg(test)]
 static FAIL_NEXT_JOURNAL_REMOVAL: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -2105,7 +2124,7 @@ mod tests {
                 }"#,
             );
 
-            FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _installed_write_guard = fail_next_installed_write_for_test();
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             let error = manager
                 .install("half-install", &std::collections::HashMap::new())
@@ -2159,7 +2178,7 @@ mod tests {
             )
             .unwrap();
 
-            FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _installed_write_guard = fail_next_installed_write_for_test();
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             assert!(
                 manager
@@ -2742,7 +2761,7 @@ mod tests {
             )
             .unwrap();
             let installed_before = manager_installed_bytes();
-            FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _installed_write_guard = fail_next_installed_write_for_test();
 
             let errors = manager
                 .repair_installed_python_tools_with_python(&python)
