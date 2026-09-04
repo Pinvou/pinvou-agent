@@ -1014,13 +1014,14 @@ impl EnginePool {
         tools
     }
 
-    /// 该会话的项目执行根（绑项目 code 会话 = 项目目录）。解析失败 → None
-    /// （项目级技能不参与组合目录，行为与未绑定一致）。
+    /// 该会话的项目技能来源根：仅当会话绑定了真实目录（原生 code 会话的项目
+    /// 目录，或普通 chat 会话的用户工作目录绑定——双根分叉即绑定信号）时返回
+    /// 该目录；未绑定/解析失败 → None（项目级技能不参与组合目录）。
     fn project_workspace_for(&self, session_id: &str) -> Option<std::path::PathBuf> {
         self.store
             .session_roots(session_id)
             .ok()
-            .map(|roots| roots.execution)
+            .and_then(|roots| (roots.ledger != roots.execution).then_some(roots.execution))
     }
 
     /// skill 双 scope 治理：事件驱动**增量重写**所有在线会话的组合目录

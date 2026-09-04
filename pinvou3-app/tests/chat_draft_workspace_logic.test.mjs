@@ -184,6 +184,52 @@ test('enterDraft：复位草稿工作区选择（含已在干净草稿态的提�
   assert.equal(rt.state.draftWorkspacePath, null);
 });
 
+// ── ensureSession：多智能体开关落盘失败的草稿回退 ──────────────────────────
+
+test('ensureSession：多智能体开关失败回退草稿保留目录绑定与开关意图', async () => {
+  const invokeLog = [];
+  const rt = loadSessionsFeature({
+    invoke(name, args) {
+      invokeLog.push([name, args]);
+      if (name === 'set_multi_agent_mode') return Promise.reject(new Error('persist down'));
+      if (name === 'create_session') return Promise.resolve({ id: 'chat-new' });
+      return Promise.resolve(name === 'list_sessions' || name === 'list_archived_sessions' ? [] : {});
+    },
+  });
+  rt.api.setDraftWorkspace('/work/project');
+  rt.state.pendingDraftMultiAgent = true;
+  const id = await rt.api.ensureSession();
+  assert.equal(id, null, '开关落盘失败必须中止物化');
+  // 空会话已回滚删除。
+  assert.deepEqual(
+    invokeLog.filter(call => call[0] === 'delete_session').map(call => JSON.parse(JSON.stringify(call[1]))),
+    [{ id: 'chat-new' }],
+  );
+  // 回退草稿保留失败前的寄存意图：目录绑定不丢，重试不必重选。
+  assert.equal(rt.state.activeSessionId, null);
+  assert.equal(rt.state.draftWorkspacePath, '/work/project');
+  assert.equal(rt.state.pendingDraftMultiAgent, true);
+  assert.equal(rt.state.modeState.multiAgent, true);
+});
+
+test('ensureSession：多智能体开关失败回退草稿同时保留显式 mode 暂存', async () => {
+  const rt = loadSessionsFeature({
+    invoke(name) {
+      if (name === 'set_multi_agent_mode') return Promise.reject(new Error('persist down'));
+      if (name === 'create_session') return Promise.resolve({ id: 'chat-new' });
+      return Promise.resolve(name === 'list_sessions' || name === 'list_archived_sessions' ? [] : {});
+    },
+  });
+  rt.api.setDraftWorkspace('/work/project');
+  rt.state.pendingDraftMode = 'plan';
+  rt.state.pendingDraftMultiAgent = true;
+  const id = await rt.api.ensureSession();
+  assert.equal(id, null);
+  assert.equal(rt.state.pendingDraftMode, 'plan', '显式 mode 暂存不得丢失');
+  assert.equal(rt.state.modeState.mode, 'plan', 'mode 显示按暂存值恢复');
+  assert.equal(rt.state.draftWorkspacePath, '/work/project');
+});
+
 // ── pickDraftWorkspace：系统目录对话框 ──────────────────────────
 
 test('pickDraftWorkspace：选中后写回草稿选择并记入最近列表', async () => {

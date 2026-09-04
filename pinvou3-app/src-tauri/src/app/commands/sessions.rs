@@ -371,6 +371,18 @@ pub async fn create_session(
     Ok(metadata)
 }
 
+/// 查询普通 chat 会话的用户工作目录绑定（无绑定 → None）。前端据此对绑定会话
+/// 套用 code lane 安全姿态（Plan 首启 / YOLO 一次性确认）并展示绑定目录指示。
+#[tauri::command]
+pub async fn get_session_workspace_binding(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<Option<String>, String> {
+    Ok(store
+        .session_workspace_binding(&session_id)
+        .map(|path| path.display().to_string()))
+}
+
 /// Desktop `load_session` response: same shape as `SavedSession` plus the
 /// authoritative transcript revision, mirroring the Web download path
 /// (`WebSavedSession`). The frontend reconciles remote turns by this

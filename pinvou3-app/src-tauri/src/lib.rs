@@ -896,10 +896,19 @@ pub fn run() {
                     // 解析到项目目录；账本根（附件/审计/产物）恒为会话私有目录。
                     // 解析实现统一下沉在 SessionStore::session_roots，bridge 与
                     // SessionStore 注入同一份 resolver 闭包，两侧结果一致。
+                    // resolver 未命中原生代码会话的项目绑定时，回退普通 chat 会话的
+                    // 用户工作目录绑定（会话私有目录内的 per-session sidecar
+                    // `workspace-binding.json`）——绑定会话的双根语义、AGENTS.md
+                    // 注入与提示词环境段对两类会话一致。
                     let execution_root_resolver: crate::features::sessions::ExecutionRootResolver =
                         std::sync::Arc::new({
                             let agents = code_session_agents.clone();
-                            move |session_id: &str| agents.code_project_workspace(session_id)
+                            let store = store_for_engine.clone();
+                            move |session_id: &str| {
+                                agents
+                                    .code_project_workspace(session_id)
+                                    .or_else(|| store.session_workspace_binding(session_id))
+                            }
                         });
                     pool.bridge
                         .set_execution_root_resolver(execution_root_resolver.clone());
@@ -1220,6 +1229,7 @@ pub fn run() {
             commands::voice::cancel_voice_asr,
             commands::sessions::list_sessions,
             commands::sessions::create_session,
+            commands::sessions::get_session_workspace_binding,
             commands::sessions::load_session,
             commands::sessions::delete_session,
             commands::sessions::rename_session,

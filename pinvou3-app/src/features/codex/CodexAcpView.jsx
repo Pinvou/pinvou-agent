@@ -1,5 +1,4 @@
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import {
@@ -108,6 +107,7 @@ import {
 } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { PlanLayer, ToolCard, cardBoxCls, cardBtnCls } from '../tools/tool-renderers.jsx';
+import { YoloConfirmCard } from '../../shared/yolo-confirm-card.jsx';
 import { notifyChatRoundCommitted } from '../tools/tool-events.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { formatAttachmentLimitError } from '../attachments/attachment-limit-errors.js';
@@ -791,75 +791,6 @@ function NativePlanCard({ item, theme, t, copy, modePlan, busy, onAccept, onDisc
         <div className={`text-[13px] font-medium ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>{statusText}</div>
       )}
     </div>
-  );
-}
-
-// 首次切 yolo 的一次性确认卡（全局记忆）：语义 = "该模式下模型将对你的项目目录
-// 全自动读写、可执行 shell，无逐步审批"；确认后全局记住、不再弹（与 VS Code 同款
-// UI 层确认，后端不强制门控）。按钮样式复用方案审批卡的 cardBtnCls。
-function NativeYoloConfirmCard({ theme, t, busy, onConfirm, onCancel }) {
-  const isDark = theme === 'dark';
-  const dialogRef = useRef(null);
-  // 打开即聚焦卡片（键盘可达），Esc 视为取消——与 NativePlanCard 内联卡不同，
-  // 这是一张全屏模态，必须挡住底层控件，故补 role=dialog/aria-modal/键盘交互。
-  useEffect(() => {
-    dialogRef.current?.focus();
-    const onKey = (e) => {
-      if (e.key === 'Escape' && !busy) {
-        e.preventDefault();
-        onCancel();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [busy, onCancel]);
-  // portal 到 <body>：该卡片渲染在 composer 容器内，而容器的 backdrop-blur 会成为
-  // `position: fixed` 的包含块，不 portal 的话全屏模态只会盖住输入框区域，
-  // 点击遮罩取消也随之失效。
-  return createPortal(
-    <div data-testid="native-yolo-confirm" className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <button
-        type="button"
-        aria-label={t.modeYoloConfirmCancel}
-        className="absolute inset-0 cursor-default bg-black/30 backdrop-blur-[2px]"
-        disabled={busy}
-        onClick={onCancel}
-      />
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="native-yolo-confirm-title"
-        tabIndex={-1}
-        className={`relative w-full max-w-[420px] rounded-2xl border p-4 shadow-xl backdrop-blur-xl outline-none ${
-          isDark ? 'border-white/10 bg-[#202124]/95' : 'border-black/[0.08] bg-white/95'
-        }`}>
-        <div id="native-yolo-confirm-title" className={`text-[14px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
-          {t.modeYoloConfirmTitle}
-        </div>
-        <div className={`mt-2 text-[13px] leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
-          {t.modeYoloConfirmBody}
-        </div>
-        <div className="mt-2 text-[12px] text-[#C5221F] dark:text-red-400">{t.modeYoloConfirmHint}</div>
-        <div className="mt-4 flex items-center justify-end gap-2">
-          <button
-            type="button"
-            data-testid="native-yolo-confirm-cancel"
-            className={cardBtnCls()}
-            disabled={busy}
-            onClick={onCancel}
-          >{t.modeYoloConfirmCancel}</button>
-          <button
-            type="button"
-            data-testid="native-yolo-confirm-ok"
-            className={cardBtnCls('danger')}
-            disabled={busy}
-            onClick={onConfirm}
-          >{t.modeYoloConfirmOk}</button>
-        </div>
-      </div>
-    </div>,
-    document.body,
   );
 }
 
@@ -4212,9 +4143,15 @@ export function CodexAcpView({
           // 首次切 yolo 的一次性确认卡（全局记忆）；确认后继续切换，取消留在 Plan。
           // 必须挂在输入框容器外：该容器带 backdrop-blur-xl，会按 Filter Effects L2
           // 成为 fixed 后代的包含块，把全屏模态锁进输入框条内（fixed inset-0 相对它解析）。
-          <NativeYoloConfirmCard
+          <YoloConfirmCard
             theme={theme}
-            t={t}
+            copy={{
+              title: t.modeYoloConfirmTitle,
+              body: t.modeYoloConfirmBody,
+              hint: t.modeYoloConfirmHint,
+              ok: t.modeYoloConfirmOk,
+              cancel: t.modeYoloConfirmCancel,
+            }}
             busy={yoloConfirmBusy}
             onConfirm={confirmPendingYoloSwitch}
             onCancel={() => setPendingYoloSwitch(null)}

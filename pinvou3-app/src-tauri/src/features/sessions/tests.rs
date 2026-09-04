@@ -97,7 +97,7 @@ fn reopen_store(store: &SessionStore) -> Result<SessionStore> {
     reopened.load_pinned_sessions();
     reopened.load_hidden_sessions();
     reopened.load_session_mode_states();
-    reopened.load_session_workspaces();
+    reopened.migrate_legacy_session_workspaces();
     {
         let _mutation = reopened.scheduled_mutation.lock();
         reopened.enforce_session_retention_locked()?;
@@ -390,50 +390,100 @@ fn delete_session_removes_workspace_binding() {
     store
         .bind_session_workspace(&s.metadata.id, bound_dir.clone())
         .expect("bind");
-    let sidecar = paths::sessions_root().join("_session_workspaces.json");
+    let sidecar = paths::sessions_root()
+        .join(&s.metadata.id)
+        .join("workspace-binding.json");
     assert!(sidecar.is_file());
 
     store.delete(&s.metadata.id).expect("delete");
     assert!(store.session_workspace_binding(&s.metadata.id).is_none());
-    // 最后一条绑定被移除后 sidecar 文件一并删除。
+    // 绑定随会话目录一并删除（无独立全局残留）。
     assert!(!sidecar.exists());
 
     let _ = std::fs::remove_dir_all(&bound_dir);
 }
 
 #[test]
-fn load_session_workspaces_drops_ghost_entries() {
+fn bind_session_workspace_requires_existing_session_record() {
     let (store, _g) = isolated_store();
-    let s = store
-        .create_new("/model".into(), None, std::env::temp_dir())
-        .expect("create");
-    let bound_dir = unique_temp_dir("user-workspace-ghost");
+    let bound_dir = unique_temp_dir("user-workspace-no-record");
     std::fs::create_dir_all(&bound_dir).expect("create bound dir");
-    store
-        .bind_session_workspace(&s.metadata.id, bound_dir.clone())
-        .expect("bind");
-    // 模拟进程外删除会话后的残留:对应 `<id>.json` 不存在的绑定。
-    store
-        .bind_session_workspace("ghost-session-id", bound_dir.clone())
-        .expect("bind ghost");
-
-    store.load_session_workspaces();
+    // 绑定是会话的从属数据：未知 id 拒绝绑定，且不得凭空创建会话目录。
+    assert!(
+        store
+            .bind_session_workspace("ghost-session-id", bound_dir.clone())
+            .is_err()
+    );
+    assert!(!paths::sessions_root().join("ghost-session-id").exists());
     assert!(
         store
             .session_workspace_binding("ghost-session-id")
             .is_none()
     );
+
+    let _ = std::fs::remove_dir_all(&bound_dir);
+}
+
+#[test]
+fn workspace_binding_sidecar_ignores_residue_of_deleted_session() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let bound_dir = unique_temp_dir("user-workspace-residue");
+    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
+    store
+        .bind_session_workspace(&s.metadata.id, bound_dir.clone())
+        .expect("bind");
+    // 模拟部分删除失败留下的残留：会话 JSON 已删、目录（含 sidecar）还在。
+    let record = paths::sessions_root().join(format!("{}.json", s.metadata.id));
+    std::fs::remove_file(&record).expect("remove record");
+    store.session_workspaces.write().clear();
+    assert!(
+        store.session_workspace_binding(&s.metadata.id).is_none(),
+        "会话记录已删时残留 sidecar 不得复活绑定"
+    );
+
+    let _ = std::fs::remove_dir_all(&bound_dir);
+}
+
+#[test]
+fn migrate_legacy_session_workspaces_converges_to_per_session_sidecars() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let bound_dir = unique_temp_dir("user-workspace-migrate");
+    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
+    // 收敛前的存量格式：全局表 {session_id: path}，含活会话与 ghost 条目。
+    let legacy = paths::sessions_root().join("_session_workspaces.json");
+    std::fs::write(
+        &legacy,
+        serde_json::to_string_pretty(&std::collections::HashMap::from([
+            (s.metadata.id.clone(), bound_dir.clone()),
+            ("ghost-session-id".to_string(), bound_dir.clone()),
+        ]))
+        .expect("serialize legacy"),
+    )
+    .expect("write legacy");
+
+    store.migrate_legacy_session_workspaces();
+    // 活会话条目收敛为 per-session sidecar；内存缓存清空后仍可从 sidecar
+    // 读回（读穿透），execution 根解析不受影响。
+    store.session_workspaces.write().clear();
     assert_eq!(
         store.session_workspace_binding(&s.metadata.id),
         Some(bound_dir.clone())
     );
-    // ghost 清理后重写文件:盘面与内存一致。
-    let sidecar = paths::sessions_root().join("_session_workspaces.json");
-    let on_disk: std::collections::HashMap<String, PathBuf> =
-        serde_json::from_str(&std::fs::read_to_string(&sidecar).expect("read sidecar"))
-            .expect("parse sidecar");
-    assert!(!on_disk.contains_key("ghost-session-id"));
-    assert_eq!(on_disk.get(&s.metadata.id), Some(&bound_dir));
+    let sidecar = paths::sessions_root()
+        .join(&s.metadata.id)
+        .join("workspace-binding.json");
+    assert!(sidecar.is_file());
+    let roots = store.session_roots(&s.metadata.id).expect("roots");
+    assert_eq!(roots.execution, bound_dir);
+    // ghost 条目不迁移（不为已删会话创建目录），旧表迁移完成后删除。
+    assert!(!paths::sessions_root().join("ghost-session-id").exists());
+    assert!(!legacy.exists());
 
     let _ = std::fs::remove_dir_all(&bound_dir);
 }
@@ -3133,6 +3183,41 @@ fn code_session_default_follows_code_lane_default() {
     assert_eq!(store.mode_state("code-1").mode, SerializableMode::Yolo);
     store.set_mode_default(ModeLane::Code, SerializableMode::Plan);
     assert_eq!(store.mode_state("code-2").mode, SerializableMode::Plan);
+}
+
+/// 绑定用户工作目录的普通 chat 会话：默认 mode 对齐 code 安全姿态（首启
+/// Plan、跟随 code lane 全局默认）；未绑定 plain 会话维持 Yolo。
+#[test]
+fn workspace_bound_plain_session_defaults_to_plan_like_code() {
+    let (store, _g) = isolated_store();
+    let bound = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create bound");
+    let bound_dir = unique_temp_dir("user-workspace-mode-default");
+    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
+    store
+        .bind_session_workspace(&bound.metadata.id, bound_dir.clone())
+        .expect("bind");
+
+    // 从未用过（全局 last_mode=None）→ Plan 只读首启；未绑定 plain 维持 Yolo。
+    assert_eq!(
+        store.mode_state(&bound.metadata.id).mode,
+        SerializableMode::Plan
+    );
+    assert_eq!(
+        store.mode_state("plain-unbound").mode,
+        SerializableMode::Yolo
+    );
+
+    // code lane 全局默认对绑定普通会话同样生效。
+    store.set_mode_default(ModeLane::Code, SerializableMode::Yolo);
+    assert_eq!(
+        store.mode_state(&bound.metadata.id).mode,
+        SerializableMode::Yolo
+    );
+    store.set_mode_default(ModeLane::Code, SerializableMode::Plan);
+
+    let _ = std::fs::remove_dir_all(&bound_dir);
 }
 
 #[test]

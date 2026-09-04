@@ -948,6 +948,10 @@ dictZh.uiChatWorkspace = {
   defaultWorkspace:'默认工作区', defaultWorkspaceDesc:'使用 Pinvou 管理的会话目录',
   chooseDirectory:'选择目录…', chooseDirectoryDesc:'让 Agent 直接在该目录中工作',
   recentDirectories:'最近使用', chooseDirectoryDialog:'选择工作目录', unknownDirectory:'未知目录',
+  // 绑定工作目录会话首切 YOLO 的一次性确认卡（语义对齐 code 模式 uiCodex 的
+  // modeYoloConfirm*，但措辞是「工作目录」而非「项目目录」，故独立成键）。
+  yoloConfirmTitle:'切换到 YOLO 模式？', yoloConfirmBody:'该模式下模型将对你的工作目录全自动读写、可执行 shell 命令，无逐步审批。',
+  yoloConfirmHint:'确认后全局记住，以后切换不再提示。', yoloConfirmOk:'确认切换', yoloConfirmCancel:'取消',
 };
 
 // 静态桥脚本（vite 原样拷贝，不能 ES import）经此读取共享词典，

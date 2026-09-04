@@ -914,6 +914,11 @@ dictJa.uiChatWorkspace = {
   defaultWorkspace:'既定のワークスペース', defaultWorkspaceDesc:'Pinvou が管理するセッション用ディレクトリを使用します',
   chooseDirectory:'ディレクトリを選択…', chooseDirectoryDesc:'そのディレクトリで Agent を直接作業させます',
   recentDirectories:'最近使用した項目', chooseDirectoryDialog:'作業ディレクトリを選択', unknownDirectory:'不明なディレクトリ',
+  // 作業ディレクトリに紐付けたセッションで初めて YOLO に切り替える際の
+  // 一度きりの確認カード（uiCodex の modeYoloConfirm* と同じ意味だが、
+  // 「プロジェクトディレクトリ」ではなく「作業ディレクトリ」の表現のため別キー）。
+  yoloConfirmTitle:'YOLO モードに切り替えますか？', yoloConfirmBody:'このモードでは、モデルが作業ディレクトリを全自動で読み書きし、shell コマンドを実行できます。段階的な承認はありません。',
+  yoloConfirmHint:'確認後はグローバルに記憶され、今後は表示されません。', yoloConfirmOk:'確認', yoloConfirmCancel:'キャンセル',
 };
 
 dictJa.uiSettingsDetail.memoryLoadFailed = 'メモリプロフィールの読み込みに失敗しました。再試行してください。';

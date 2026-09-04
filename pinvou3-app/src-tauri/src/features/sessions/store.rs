@@ -116,7 +116,7 @@ impl SessionStore {
         store.load_pinned_sessions();
         store.load_hidden_sessions();
         store.load_session_mode_states();
-        store.load_session_workspaces();
+        store.migrate_legacy_session_workspaces();
         {
             let _mutation = store.scheduled_mutation.lock();
             if recover_interrupted_tools {
@@ -432,7 +432,7 @@ impl SessionStore {
         for (id, state) in m.iter_mut() {
             if state.mode == SerializableMode::Yolo
                 && !persisted.contains(id)
-                && self.is_code_session(id)
+                && (self.is_code_session(id) || self.session_workspace_binding(id).is_some())
             {
                 state.mode = SerializableMode::Plan;
             }

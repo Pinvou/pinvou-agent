@@ -27,7 +27,8 @@
 //! - `sidecars` —— skill 绑定 / 模型 / 置顶 / 收起 的独立 sidecar 落盘
 //! - `rewind` —— 代码模式回退的对话截断与 `_rewound_turns.json` 备份
 //! - `validators` —— id / workspace / 路径校验与小型 helper
-//! - `workspace_bindings` —— 普通 chat 会话用户工作目录绑定的 sidecar 落盘
+//! - `workspace_bindings` —— 普通 chat 会话用户工作目录绑定的 per-session sidecar
+//!   （会话目录内 `workspace-binding.json`）与存量全局表迁移
 //!
 //! 子模块通过 `impl SessionStore` 续写方法（Rust 允许同一 struct 的 impl 块
 //! 散布在子模块里），并直接读 `&self` 的私有字段——struct 字段对后代模块
@@ -133,10 +134,12 @@ pub struct SessionStore {
     /// 后注入;None = 无代码会话项目绑定,所有会话的执行根都是会话私有目录。
     /// 账本根(附件/审计/产物/远程授权)不受其影响,恒为会话私有目录。
     pub(crate) execution_root_resolver: Arc<RwLock<Option<ExecutionRootResolver>>>,
-    /// 普通 chat 会话的用户工作目录绑定:session_id → 用户选择的目录。独立落盘到
-    /// `_session_workspaces.json`,不改 SavedSession 结构。`session_roots` 在
-    /// resolver 未命中时回退查这里:命中即 execution=绑定目录、ledger=会话私有
-    /// 目录(与原生代码会话绑定同款双根语义)。
+    /// 普通 chat 会话的用户工作目录绑定读缓存:session_id → 用户选择的目录。
+    /// 权威存储是会话私有目录内的 per-session sidecar `workspace-binding.json`
+    /// （见 workspace_bindings.rs，不改 SavedSession 结构）；缓存 bind 时写入、
+    /// 读 miss 时从 sidecar 回填。`session_roots` 在 resolver 未命中时回退查
+    /// 这里:命中即 execution=绑定目录、ledger=会话私有目录(与原生代码会话
+    /// 绑定同款双根语义)。
     pub(crate) session_workspaces: Arc<RwLock<HashMap<String, PathBuf>>>,
     /// 品悟原生 code 会话判定（ACP 会话恒为 plain，见 codex_acp store）。
     /// 与 Engine bridge / 远程端共用同一份 `SessionAgentStore` 闭包，由 app 组合根

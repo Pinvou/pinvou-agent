@@ -102,7 +102,7 @@ const expectedProtocolHashes = {
   // that opens the preview even when the existing card is updated in place.
   chat: 'e5a97c56781d34f0ea8d7ef17825fa45295abb10ce2a82cada6eadad5b2bf2ab',
   dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
-  interaction: '3f275b9c4fc77ebf42a56df1c84d638ca5f1f8a3b80612efebeddf1a39f14efd',
+  interaction: '1623223fb298ff2d959ad24887bd423edc1d39bab63520aafd3e150afc4be12d',
   knowledge: '9105a42c6b69f04d0bc28b6a72e0746648110a44823891ded3261cdcbc99766b',
   memory: '541f1b0c05aeee20d8fb4a19048cbd2f55cad84444363694cbe17263d0425228',
   monitor: '01bf9a7c9b9b3f313cf49e975e6503627ff373caed0f4b3be07a6a98492a7c43',
@@ -111,7 +111,10 @@ const expectedProtocolHashes = {
   scheduled: '7d6ca9783925a5071a364097ebdf0112511f9503b5e4534346b9fda6873ec036',
   // Recomputed for the normal-chat draft workspace selector: create_session
   // now carries the optional workspacePath payload (bridge/sessions.js).
-  sessions: 'a695b49ae35d8ee69eb4795f5dd769dded901463e36908c1b2416977ceb9fbc5',
+  // Recomputed again for workspace-bound sessions: get_session_workspace_binding
+  // query + bound-draft staged mode application (set_plan_mode_next /
+  // exit_plan_to_yolo) at materialization.
+  sessions: 'b619613998b48112fab4437b7b7f6b70283ead5e0eefa664e823bc2315f115b7',
   settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
   updater: '86412d40999a268d3d92dc4fe97e3fe465de08745423be820f38a462d79aaced',
   voice: '281399c4de7cdc3adf2f50a422ea5725cb98cbf175e1de8beb0d610655d0028a',

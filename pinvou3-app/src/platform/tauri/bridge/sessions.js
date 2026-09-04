@@ -559,6 +559,8 @@
     state.scheduledTaskPendingGuide = null; // 换了对话,未发送的定时任务引导词作废
     // 新草稿从关闭状态开始：寄存意图作废，开关行显示同步复位。
     state.pendingDraftMultiAgent = false;
+    // 绑定草稿的显式 mode 暂存同属寄存意图，随草稿一并作废。
+    state.pendingDraftMode = null;
     // 新草稿回到默认工作区：上一份草稿的目录选择不带入（两个提前返回分支共用此复位）。
     state.draftWorkspacePath = null;
 
@@ -607,6 +609,10 @@
   function setDraftWorkspace(path) {
     if (state.activeSessionId) return;
     state.draftWorkspacePath = path || null;
+    // 绑定/解绑即切换草稿 mode 显示 lane（绑定 → code lane，解绑 → 回本 lane
+    // 默认）；解绑时上一份绑定草稿的显式 mode 暂存一并作废，不带入未绑定草稿。
+    if (!state.draftWorkspacePath) state.pendingDraftMode = null;
+    state.modeState = currentDraftModeState();
     notify();
   }
   // 系统目录选择对话框：选中后记入最近列表并写回草稿选择，返回选中的 path；
@@ -619,6 +625,19 @@
     rememberDraftWorkspaceRecent(path);
     setDraftWorkspace(path);
     return path;
+  }
+
+  // 已生成会话的工作目录绑定（普通聊天绑定目录会话，安全姿态对齐 code 模式）：
+  // 返回绑定的完整路径；未绑定 / Web 与远程端无此命令 / 查询失败一律按 null
+  // 处理（UI 不显示绑定指示，YOLO 确认门也不因此误触发）。
+  async function getSessionWorkspaceBinding(sessionId) {
+    if (!sessionId) return null;
+    try {
+      const binding = await invoke("get_session_workspace_binding", { sessionId });
+      return typeof binding === "string" && binding ? binding : null;
+    } catch {
+      return null;
+    }
   }
 
   // 草稿态首次有实质内容时真正向后端创建 session 并切为 active;已有 active 直接返回。
@@ -639,7 +658,9 @@
       try {
         // 草稿选定的工作目录随物化一并下发；null = 后端现状（会话私有目录）。
         // 参数在 invoke 同步求值时捕获，await 期间的后续选择不影响本次创建。
-        const meta = await invoke("create_session", { workspacePath: state.draftWorkspacePath || null });
+        // boundWorkspace 同步捕获：物化后的 lane 默认应用以本次创建是否绑定为准。
+        const boundWorkspace = state.draftWorkspacePath || null;
+        const meta = await invoke("create_session", { workspacePath: boundWorkspace });
         // create_session 等待期间用户可能已发送/清空输入，必须读取最新值，
         // 不能把 await 前的已发送文本带入新 session。
         const composerDraft = state.composerDraft || "";
@@ -650,6 +671,7 @@
         // 仍为 null 但导航 token 已前移——两种导航都中止物化（三审 P1）。
         if (state.activeSessionId || navToken !== sessionSwitchRequestToken) {
           state.pendingDraftMultiAgent = false;
+          state.pendingDraftMode = null;
           sessionStates[meta.id] = freshBuffer();
           sessionStates[meta.id].loadedFromDisk = true;
           return null;
@@ -658,6 +680,10 @@
         // 清：switchActiveTo 会把寄存意图当作已消费。
         const pendingMultiAgent = state.pendingDraftMultiAgent === true;
         state.pendingDraftMultiAgent = false;
+        // 绑定草稿的显式 mode 暂存同样先取后清（读取最新值：await 期间的
+        // 显式切换也算用户意图，与 pendingMultiAgent 同一约定）。
+        const stagedDraftMode = state.pendingDraftMode;
+        state.pendingDraftMode = null;
         // 物化已提交：目录选择随会话落地，清除草稿选择；create_session 失败
         // （外层 catch 路径）则保留选择以便用户重试。
         state.draftWorkspacePath = null;
@@ -680,9 +706,13 @@
               // 空会话残留可手动删除，不掩盖主错误。
             }
             enterDraft();
+            // 回退草稿保留寄存意图：绑定与显式 mode 暂存被 enterDraft 复位，
+            // 须按失败前取到的值原样恢复——重试物化不偏离用户显式选择。
             state.pendingDraftMultiAgent = true;
+            state.draftWorkspacePath = boundWorkspace;
+            state.pendingDraftMode = stagedDraftMode || null;
             state.modeState = {
-              mode: (state.modeState && state.modeState.mode) || "yolo",
+              mode: stagedDraftMode || currentDraftModeState().mode,
               multiAgent: true,
             };
             addSystemItem(bt("switchModeFailed") + toggleError);
@@ -693,6 +723,26 @@
         }
         await refreshHistoryList();
         await syncModeState();
+        if (boundWorkspace) {
+          // 绑定工作目录的会话安全姿态对齐 code 模式：后端已为绑定会话按
+          // code lane 全局默认解析 mode，此处不再把 work/design lane 默认经
+          // set_plan_mode_next 套用；仅当用户在草稿态显式暂存过 mode 选择时
+          // 按暂存值应用（切 yolo 的一次性确认门在草稿切换时已由 ChatView 过过）。
+          if (stagedDraftMode === "plan" || stagedDraftMode === "yolo") {
+            // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间
+            // 用户可能已切走，对当前 active 会话执行 mode 命令会改错对象。
+            try {
+              const stagedModeState = stagedDraftMode === "plan"
+                ? await invoke("set_plan_mode_next", { sessionId: meta.id })
+                : await invoke("exit_plan_to_yolo", { sessionId: meta.id });
+              applyAuthoritativeModeState(meta.id, stagedModeState);
+            } catch (stagedModeError) {
+              runSyncOnSession(meta.id, function () {
+                addSystemItem(bt("switchModeFailed") + stagedModeError);
+              });
+            }
+          }
+        } else {
         // 三分 lane 语义：后端 plain 缺省恒 Yolo、不区分 work/design 两个 lane；
         // 新会话所在 lane 的全局默认为 plan 时，在物化此刻显式应用（写入即成为
         // 该会话自己的 per-session 记录，全局默认不受影响）。
@@ -709,6 +759,7 @@
               addSystemItem(bt("switchModeFailed") + laneModeError);
             });
           }
+        }
         }
         await syncActivePersona();
         await syncMountedCollection();
@@ -1424,6 +1475,7 @@
       createNewSession,
       setDraftWorkspace,
       pickDraftWorkspace,
+      getSessionWorkspaceBinding,
       ensureSession,
       reportSessionSwitchFailure,
       hydratedMessageKey,

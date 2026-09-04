@@ -43,7 +43,7 @@
   属安全评审事项。
 - **模式能力静态表 `MODE_TABLE`**（`features/assistant/session_policy.rs`）：
   每模式一行 `ModeCapabilities { unavailable_tools,
-  skills_empty_hides_load_skill, project_skills_opt_in }`，编译期常量、
+  skills_empty_hides_load_skill }`，编译期常量、
   查表取数（取代散落的 match 臂），新增模式漏填由穷尽性测试兜底
   （测试遍历的 `SessionMode::ALL` 由编译期穷尽哨兵绑定到枚举变体，
   漏挂即编译失败）。
@@ -128,9 +128,11 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
   已做过选择的用户（`initialized` 集合标记初始化）；
 - 未知条目（工具下架、上游改名残留）静默忽略，写回时清理。
 
-项目级技能（`.agents/skills` 等）保持**独立开关**、各 scope 默认关：
-项目内文本是 prompt-injection 面，信任级别与包装机技能不同，开启路径
-展示注入风险警告。
+项目级技能（`.agents/skills` 等）保持**独立开关**、默认关：项目内文本是
+prompt-injection 面，信任级别与包装机技能不同，开启路径展示注入风险警告。
+参与范围**跟绑定不跟模式**：仅绑定了真实目录的会话（原生 code 会话的项目
+目录、普通 chat 会话的用户工作目录绑定）在开关开启时扫描项目技能；未绑定
+会话（含 code 临时工作区）不扫描。
 
 ### 3.3 生效通道
 

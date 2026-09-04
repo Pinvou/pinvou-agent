@@ -7292,6 +7292,13 @@
       notify();
     }
   }
+  // 桌面端绑定工作目录会话的配套查询在 Web 端无对应后端（Web/远程会话不
+  // 返回目录绑定）：同名桩方法保持两端 bridge API 对称——绑定查询恒 null
+  // （UI 不显示绑定指示、YOLO 确认门不触发），code 权限偏好读取恒 null、
+  // 确认写入为 no-op。
+  async function getSessionWorkspaceBinding() { return null; }
+  async function getCodePermissionPrefs() { return null; }
+  async function confirmCodeYolo() { return null; }
   // 草稿态 chip 切换：写本 lane 全局默认（不物化会话——物化时由
   // ensureSession 把 lane 默认应用到新会话）。
   async function setDraftMode(target) {
@@ -9701,6 +9708,10 @@
     setDraftMode,
     setModeLane,
     refreshModeDefaults,
+    // 桌面专属能力的 Web 桩（绑定目录会话 / YOLO 确认门，两端 API 对称）
+    getSessionWorkspaceBinding,
+    getCodePermissionPrefs,
+    confirmCodeYolo,
     planStuckReplan,
     planStuckGo,
     // 用户交互
