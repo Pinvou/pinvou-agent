@@ -740,7 +740,7 @@
   const PINVOU_SCENE_EVENTS_STORAGE_PREFIX = "pinvou_scene_events_v1:";
   function normalizePinvouScene(scene) {
     scene = String(scene || "").trim();
-    return /^(work:document-writing|work:personal-workbench|design:poster|design:data-visualization)$/.test(scene) ? scene : "";
+    return /^(work:document-writing|work:personal-workbench|design:poster|design:data-visualization|design:ppt)$/.test(scene) ? scene : "";
   }
   function pinvouSceneStorageKey(sid) {
     return PINVOU_SCENE_EVENTS_STORAGE_PREFIX + String(sid || "").trim();

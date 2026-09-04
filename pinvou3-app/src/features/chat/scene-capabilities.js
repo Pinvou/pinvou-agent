@@ -31,6 +31,11 @@ const SCENE_CAPABILITY_DEFINITIONS = {
     tools: [],
     skills: ['visualizer'],
   },
+  'design:ppt': {
+    key: 'pptDesign',
+    tools: ['pptx'],
+    skills: ['pptx'],
+  },
 };
 
 function requiredCapabilitiesForMeta(meta) {
