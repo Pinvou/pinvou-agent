@@ -620,10 +620,16 @@ impl SessionStore {
         *self.active.write() = id;
     }
 
+    /// Persist one authoritative engine snapshot for an ordinary chat session.
+    ///
+    /// Takes `state` by reference so event-forwarder callers can keep the
+    /// snapshot alive in an `Arc` for the terminal path without a second deep
+    /// copy; the transcript clone into the durable record happens here, once
+    /// per persist.
     pub fn persist_chat_engine_state(
         &self,
         id: &str,
-        state: ChatEngineState,
+        state: &ChatEngineState,
     ) -> Result<SavedSession> {
         let _mutation = self.scheduled_mutation.lock();
         if self.scheduled_profiles.read().contains_key(id) {
@@ -637,9 +643,9 @@ impl SessionStore {
             .with_context(|| format!("load chat session {id} for engine persistence"))?;
         session.metadata.updated_at = Utc::now();
         session.metadata.message_count = state.messages.len();
-        session.metadata.model = state.model;
-        session.metadata.workspace = state.workspace;
-        session.messages = state.messages;
+        session.metadata.model = state.model.clone();
+        session.metadata.workspace = state.workspace.clone();
+        session.messages = state.messages.clone();
         session.system_prompt = persisted_system_prompt(state.system_prompt.as_ref());
 
         self.persist_then_reconcile_with(

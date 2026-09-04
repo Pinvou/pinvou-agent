@@ -371,7 +371,7 @@ fn ordinary_session_updated_snapshot_is_persisted_authoritatively() {
     let saved = store
         .persist_chat_engine_state(
             &session.metadata.id,
-            chat_engine_state(authoritative.clone()),
+            &chat_engine_state(authoritative.clone()),
         )
         .expect("persist ordinary SessionUpdated");
 
@@ -3566,7 +3566,7 @@ fn truncate_reports_compaction_summary_residue_in_system_prompt() {
         "前文摘要：Conversation Summary (Auto-Generated)\n……".to_string(),
     ));
     store
-        .persist_chat_engine_state(&with_marker.metadata.id, state)
+        .persist_chat_engine_state(&with_marker.metadata.id, &state)
         .expect("persist with marker");
     store
         .update_messages(&without_marker.metadata.id, messages())
