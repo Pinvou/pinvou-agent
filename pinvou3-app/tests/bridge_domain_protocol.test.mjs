@@ -109,8 +109,13 @@ const expectedProtocolHashes = {
   // v0.9.12 rereview fix that persists toolName/reason/risk with each
   // ToolGateDecision so history replay retains the structured audit detail.
   // Recomputed again when the shell background-task projection learned the
-  // canonical v0.9.12 `bash` name while retaining legacy replay aliases.
-  chat: '908516b590b380becfc66db8bf9d147547193b95f5d809e3fddb7d4170c7391d',
+  // canonical v0.9.12 `bash` name while retaining legacy replay aliases. And
+  // again for the streaming markdown render throttle: the chat:delta /
+  // chat:tool_start / chat:done listener bodies gained the trailing-edge
+  // render flush/schedule plus the unpaired-toolMeta terminal sweep — no new
+  // invoke or listen entries, only body-internal edits, so this is a
+  // capture-text refresh.
+  chat: '1f036190b5f21a9da231d01f57c4b1209bff78c91d87d8398fdca3767e427520',
   dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
   interaction: '3f275b9c4fc77ebf42a56df1c84d638ca5f1f8a3b80612efebeddf1a39f14efd',
   knowledge: '9105a42c6b69f04d0bc28b6a72e0746648110a44823891ded3261cdcbc99766b',

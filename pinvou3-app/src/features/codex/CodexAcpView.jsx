@@ -426,6 +426,23 @@ function CodexComposerConfigSelect({
   );
 }
 
+// 秒级时钟曾挂在 CodexAcpView 顶层 state(busy 时每秒重渲整个 4000+ 行视图),
+// 现按 ChatView 的 LiveConversationActivityIndicator 同款模式下沉:只有真正在显示
+// "已耗时" 的运行中指示器自己持有时钟,每秒只重渲这一小块子树。
+function LiveConversationActivityIndicator({ turn, onRequestAttention, className, copy }) {
+  const running = !!turn && turn.status === 'running';
+  const now = useConversationSecondClock(running);
+  return (
+    <ConversationActivityIndicator
+      turn={turn}
+      now={now}
+      onRequestAttention={onRequestAttention}
+      className={className}
+      copy={copy}
+    />
+  );
+}
+
 function ElicitationCard({ elicitation, pending, onRespond, responding, copy, conversationCopy }) {
   const request = elicitation.request || {};
   const schema = request.requestedSchema || {};
@@ -1143,9 +1160,9 @@ export function CodexAcpView({
   const busy = isNativeAgent
     ? Boolean(activeNativeLane && activeNativeLane.busy)
     : projection.turns.some(turn => turn.status === 'running');
-  // Per-second clock shared with ChatView: on busy activation the baseline is synced before the
-  // interval starts; no timer while inactive; cleared on unmount (consolidates the old top ticker).
-  const now = useConversationSecondClock(busy);
+  // The per-second clock lives in the display subtrees (ConversationTurnView's internal
+  // useConversationSecondClock, LiveConversationActivityIndicator below), so busy no longer
+  // re-renders the whole view at 1Hz; no top-level `now` is passed down.
   // 「回退到第 N 轮」入口（仅原生代码车道）：checkpoint 列表 + turn 边界对齐。
   // 回退编排（rewind_to_turn）由 confirmRewind 发起；成功后走既有 loadSession
   // 重载（磁盘对话已截断、engine 已被后端回收重注水）。refreshKey 含 busy 边沿：
@@ -2507,6 +2524,11 @@ export function CodexAcpView({
 
   // 原生（品悟）会话的 engine 事件：按 session 推进对应 lane，仅当前会话 bump 渲染；
   // turn 边界顺手刷新会话列表（标题/时间戳），与 acp:event 的 turn_completed 处理对齐。
+  // 注意:nativeLaneTick 是全视图共用的版本号——lane 是可变 ref 对象,除时间线投影外,
+  // 记忆弹层/底栏控件(直接读 lane 字段)与自动滚动 effect(2786 附近)都依赖此 bump。
+  // 把"每个 token 全视图重渲"收敛到单 lane 订阅组件,需要把 visibleTurns 及其全部
+  // 回调(respond/renderNativeItem/pendingByTool/rewind 系列等)沉到子组件,契约面太宽,
+  // 风险不匹配本项;时间线本身已有 ConversationTurn 深比较兜底,未变 turn 不重渲。
   useEffect(() => {
     let disposed = false;
     let unlisteners = [];
@@ -3556,7 +3578,6 @@ export function CodexAcpView({
                     )}
                     <ConversationTurn
                       turn={turn}
-                      now={now}
                       copy={t.uiConversation}
                       pendingByTool={pendingByTool}
                       onRespond={respond}
@@ -3686,9 +3707,8 @@ export function CodexAcpView({
                 onApplyAndSend={() => nativeVoice.applyVoiceEditPreview({ send: true })}
                 onCancel={nativeVoice.cancelVoiceEditPreview}
               />
-              <ConversationActivityIndicator
+              <LiveConversationActivityIndicator
                 turn={activeConversationTurn}
-                now={now}
                 onRequestAttention={scrollConversationToBottom}
                 className="mb-0.5"
                 copy={t.uiConversation}
