@@ -27,6 +27,7 @@ const conversationJa = {
   attachment:'添付ファイル', operations:(count,failedCount)=>`${count} 件実行${failedCount?` · ${failedCount} 件失敗`:''}`, copyReply:'返信をコピー', copyReplySuccess:'コピーしました', copyReplyFailed:'コピーに失敗しました',
   exportReply:'エクスポート', exportReplyTitle:'返信をエクスポート', exportMarkdown:'Markdown 文書', exportMarkdownHint:'既定。元の書式を保持', exportHtml:'HTML 文書', exportHtmlHint:'ブラウザーでの閲覧に最適', exportSuccess:'エクスポートしました', exportFailed:'エクスポートに失敗しました', exportTooLarge:'返信がエクスポートのサイズ上限を超えています',
   shareReply:'共有', shareReplyTitle:'返信を共有', shareSystem:'システム共有', shareSystemHint:'インストール済みの通信アプリを選択', shareApps:'内容をコピーしてアプリを開く', shareSuccess:'共有しました', shareCopiedOpen:app=>`内容をコピーし、${app}を開きました。貼り付けて送信してください`, shareCopiedWeb:app=>`内容をコピーしました。${app}を開いて貼り付けてください`, shareFailed:'共有に失敗しました', shareUnavailable:'システム共有を利用できないため、内容をコピーしました', shareTargets:{wechat:'WeChat',wecom:'WeCom',feishu:'Feishu',dingtalk:'DingTalk',qq:'QQ'},
+  technicalDetails:'技術詳細',
 };
 
 const codexJa = {
@@ -917,7 +918,7 @@ Object.assign(dictJa.uiSettingsDetail, {
   addProvider:provider=>`${provider} を追加`, editProvider:provider=>`${provider} を編集`,
   autoDetectLocalModel:'ローカルモデルを自動検出',
   codingPlanTestUnavailable:'現在このプロバイダーの接続テストはできませんが、設定は保存できます',
-  connectionMessages:{ ok:'接続に成功しました', auth_invalid:'API Key が無効です。確認して再入力してください', auth_forbidden:'この API Key にはアクセス権がありません', rate_limited:'リクエストが多すぎるか、割り当てが不足しています。後でもう一度お試しください', endpoint_not_found:'エンドポイントを利用できません', method_not_allowed:'エンドポイントはテストリクエストに対応していません', http_error:'接続に失敗しました。設定を確認して再試行してください', unknown:'接続に失敗しました。後でもう一度お試しください' },
+  connectionMessages:{ ok:'接続に成功しました', auth_invalid:'API Key が無効です。確認して再入力してください', auth_forbidden:'この API Key にはアクセス権がありません', billing:'アカウント残高が不足しています。チャージするか、別のモデルに切り替えてください', rate_limited:'リクエストが多すぎるか、割り当てが不足しています。後でもう一度お試しください', redirect:'サービスアドレスがリダイレクトされ、可用性を確認できませんでした', request_invalid:'リクエスト形式が受け付けられませんでした。モデル設定を確認してください', timeout:'接続がタイムアウトしました。ネットワークまたはローカルサービスの起動を確認してください', tls_error:'セキュリティ証明書の検証に失敗しました。プロキシまたはネットワーク環境を確認してください', dns_failed:'サービスアドレスを解決できませんでした。ネットワークを確認してください', connection_refused:'サービスに接続できませんでした。ローカルのモデルサービスが起動しているか確認してください', server_unavailable:'サービスが一時的に利用できません。後でもう一度お試しください', endpoint_not_found:'エンドポイントを利用できません', method_not_allowed:'エンドポイントはテストリクエストに対応していません', http_error:'接続に失敗しました。設定を確認して再試行してください', unknown:'接続に失敗しました。後でもう一度お試しください' },
   catalogSections:{ coding_plan:'Coding Plan', official_api:'公式 API', custom:'カスタム互換エンドポイント' },
   providerCatalog:{
     local:{title:'ローカルモデル',desc:'ローカルサービスのデフォルトモデル'}, glm_coding_plan:{title:'Zhipu Coding Plan / GLM Coding Plan',configTitle:'Zhipu Coding Plan',desc:'コーディングと Agent 向けの専用エンドポイント'},

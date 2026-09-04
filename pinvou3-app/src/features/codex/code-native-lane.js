@@ -12,7 +12,7 @@
 // plan_card 的终态文案存 statusKey（approved/discarded/superseded/historical），
 // 三语文案在渲染层按 key 组装（与 compactPhase 同一约定）。
 
-import { projectDeepSeekConversation } from '../conversation/deepseek-conversation.js';
+import { projectDeepSeekConversation, conversationItemsForMode } from '../conversation/deepseek-conversation.js';
 import { isInternalRuntimeEnvelopeText, isInternalUserMessage } from '../../shared/internal-message.mjs';
 
 export function createNativeLane() {
@@ -121,6 +121,85 @@ export function appendNativeSystemItem(lane, text) {
   lane.items.push({ id: nextId(lane), type: 'system', text: String(text || ''), time: timeStr() });
 }
 
+/// 当前回合的起始下标(最后一个 user 项之后)。bridge 在每次发送时会清掉上一
+/// 回合的 turnErrorNotice 项(chat.js),原生 lane 则保留完整历史:错误去重与
+/// 终态升级若不限定回合作用域,新回合的同身份错误会被并进上一回合的旧项。
+function currentTurnStart(lane) {
+  for (let i = lane.items.length - 1; i >= 0; i -= 1) {
+    if (lane.items[i] && lane.items[i].type === 'user') return i + 1;
+  }
+  return 0;
+}
+
+/// 回退裸串展示前的无条件脱敏:门控漏判的网关/代理自定义 body、provider
+/// 原始报文仍会以系统项/红字上屏,分类允许漏判,凭证不允许漏。
+/// helper 缺失(classic script 未加载)时原样返回,降级为既有行为。
+function redactDisplayError(error, options = {}) {
+  if (!error) return error;
+  const helper = globalThis.PinvouModelServiceErrors;
+  if (!helper || typeof helper.redactTechnicalDetail !== 'function') return error;
+  return helper.redactTechnicalDetail(String(error), options.language);
+}
+
+/// 原生泳道的模型服务错误气泡，与 bridge-messages.addModelServiceErrorNotice 同语义：
+/// 门控（isModelServiceError）通过才接管；去重按错误身份（kind+技术详情）而非文本，
+/// 同回合 transient→done 措辞升级原地生效；终态且时间线终态记录确实带 error 时
+/// （terminalRecord），本回合所有模型服务错误气泡一并标记 legacyConversationOnly，
+/// 投影层（projectNativeLane 经 conversationItemsForMode 过滤）据此隐藏气泡，只留
+/// 时间线错误卡；无时间线记录时气泡保留可见（否则静默吞错）。非模型错误返回 false
+/// 由调用方走裸串回退。helper 缺失（classic script 未加载）时同样回退。
+function upsertNativeModelServiceNotice(lane, payload, terminal, options, terminalRecord) {
+  const helper = globalThis.PinvouModelServiceErrors;
+  const error = payload && payload.error;
+  if (!error || !helper || typeof helper.build !== 'function'
+      || typeof helper.isModelServiceError !== 'function') return false;
+  if (!helper.isModelServiceError(error)) return false;
+  const language = options && options.language;
+  const userError = helper.build(error, {
+    language,
+    terminal,
+    providerLabel: typeof helper.providerLabelFromState === 'function'
+      ? helper.providerLabelFromState(options && options.modelServiceState, language)
+      : '',
+  });
+  const notice = helper.noticeText(userError);
+  const nextDetail = userError.technicalDetail;
+  const start = currentTurnStart(lane);
+  let existing = null;
+  for (let i = start; i < lane.items.length; i += 1) {
+    const item = lane.items[i];
+    if (!item || !item.userError || item.userError.kind !== userError.kind) continue;
+    const existingDetail = item.userError.technicalDetail;
+    if ((existingDetail || nextDetail) ? existingDetail === nextDetail : true) {
+      existing = item;
+      break;
+    }
+  }
+  const hideForTimeline = Boolean(terminal && terminalRecord && terminalRecord.error);
+  let target = existing;
+  if (target) {
+    target.text = notice;
+    target.userError = userError;
+    if (hideForTimeline) target.legacyConversationOnly = true;
+  } else {
+    target = { id: nextId(lane), type: 'system', text: notice, time: timeStr(), userError };
+    if (hideForTimeline) target.legacyConversationOnly = true;
+    lane.items.push(target);
+  }
+  // 终态接管时,当前回合其余模型服务 transient 气泡(身份与终态不同,如先
+  // idle timeout 后 HTTP 402)一并隐藏:它们的"会继续重试"措辞与终态矛盾。
+  // 去重循环从 currentTurnStart 起,上一回合的气泡不在作用域内。
+  if (hideForTimeline) {
+    for (let i = start; i < lane.items.length; i += 1) {
+      const item = lane.items[i];
+      if (item && item !== target && item.userError && !item.legacyConversationOnly) {
+        item.legacyConversationOnly = true;
+      }
+    }
+  }
+  return true;
+}
+
 /// plan_card 状态迁移（批准/放弃/新方案覆盖），供事件与视图动作共用。
 function resolvePlanCard(card, cardState, statusKey) {
   card.cardState = cardState;
@@ -144,8 +223,12 @@ function openTimelineStart(lane, withinMs = 0) {
 }
 
 function recordTurnStarted(lane, turnId) {
+  // 同毫秒连续两回合(自动化/快速连发)Date.now() 会生成相同 id:第二条
+  // user_start 会被 openTimelineStart 误判为已完结回合,终态记录与错误卡
+  // 整体失效。补回合序号保证 id 唯一(与 bridge 侧 turnIndex 同思路)。
+  lane.turnSeq = (lane.turnSeq || 0) + 1;
   lane.timeline.push({
-    turn_id: turnId || `ui_native_${Date.now()}`,
+    turn_id: turnId || `ui_native_${Date.now()}_${lane.turnSeq}`,
     event: 'user_start',
     timestamp: Date.now(),
     ui_turn_index: visibleUserTurnIndex(lane),
@@ -154,15 +237,19 @@ function recordTurnStarted(lane, turnId) {
 
 function recordTurnCompleted(lane, payload) {
   const open = openTimelineStart(lane);
-  if (!open) return;
-  lane.timeline.push({
+  if (!open) return null;
+  const record = {
     turn_id: open.turn_id,
     event: 'assistant_done',
     timestamp: Date.now(),
     status: payload && payload.status || (payload && payload.error ? 'Failed' : 'Completed'),
     error: payload && payload.error || null,
     ui_turn_index: open.ui_turn_index,
-  });
+  };
+  lane.timeline.push(record);
+  // 返回值供终态错误气泡的隐藏决策使用:只有确实写入了带 error 的时间线
+  // 终态记录,气泡才能交给时间线错误卡接管(否则隐藏=静默吞错)。
+  return record;
 }
 
 function finalizeStream(lane) {
@@ -208,7 +295,7 @@ export function removeLocalUserMessage(lane, id) {
 /// chat:* 事件 → lane 状态。payload 一律带 session_id（后端 forwarder 打 tag）。
 /// 返回是否有可视变化；无变化时 React 侧不必 bump 渲染。
 // eslint-disable-next-line sonarjs/cognitive-complexity -- chat:* event dispatch: each event maps to one lane state transition; the switch branches are the event contract
-export function applyNativeChatEvent(lane, name, payload) {
+export function applyNativeChatEvent(lane, name, payload, options = {}) {
   const p = payload || {};
   switch (name) {
     case 'chat:user_message': {
@@ -408,8 +495,19 @@ export function applyNativeChatEvent(lane, name, payload) {
     }
     case 'chat:transient_error': {
       if (!p.error) return false;
-      const notice = `⚠️ ${p.error}`;
-      if (lane.items.some(item => item && item.type === 'system' && item.text === notice)) return false;
+      // 回退裸串也先脱敏(门控漏判的网关/provider 报文不得带凭证上屏)。
+      const displayError = redactDisplayError(p.error, options);
+      // 模型服务错误走统一分类/脱敏/三语气泡；本地工具错误保持裸串回退。
+      if (upsertNativeModelServiceNotice(lane, p, false, options)) return true;
+      const notice = `⚠️ ${displayError}`;
+      // 同文本去重限定当前回合(与上方身份去重同作用域)。
+      const start = currentTurnStart(lane);
+      let duplicate = false;
+      for (let i = start; i < lane.items.length; i += 1) {
+        const item = lane.items[i];
+        if (item && item.type === 'system' && item.text === notice) { duplicate = true; break; }
+      }
+      if (duplicate) return false;
       lane.items.push({ id: nextId(lane), type: 'system', text: notice, time: timeStr() });
       return true;
     }
@@ -501,11 +599,39 @@ export function applyNativeChatEvent(lane, name, payload) {
     case 'chat:done': {
       finalizeReasoning(lane);
       finalizeStream(lane);
-      recordTurnCompleted(lane, p);
+      const terminalRecord = recordTurnCompleted(lane, p);
       lane.busy = false;
       lane.thinking = null;
-      if (p.error) {
-        lane.items.push({ id: nextId(lane), type: 'system', text: `⚠️ ${p.error}`, time: timeStr() });
+      if (p.error && !upsertNativeModelServiceNotice(lane, p, true, options, terminalRecord)) {
+        // 终态：同身份 transient 气泡原地升级为终态措辞并转 legacyConversationOnly
+        //（时间线错误卡接管）；非模型错误与 bridge chat:done 回退同语义——
+        // 同文本瞬态项原地隐藏（时间线以裸 error 小字展示），不追加第二条。
+        // 隐藏的前提同样是时间线终态记录确实写入且带 error,否则保留气泡可见。
+        // 回退裸串与 transient 回退用同一脱敏文本,同文本去重才能命中。
+        const timelineTakesOver = Boolean(terminalRecord && terminalRecord.error);
+        const notice = `⚠️ ${redactDisplayError(p.error, options)}`;
+        const start = currentTurnStart(lane);
+        let existing = null;
+        for (let i = start; i < lane.items.length; i += 1) {
+          const item = lane.items[i];
+          if (item && item.type === 'system' && item.text === notice) { existing = item; break; }
+        }
+        if (existing) {
+          if (timelineTakesOver) existing.legacyConversationOnly = true;
+        } else {
+          const item = { id: nextId(lane), type: 'system', text: notice, time: timeStr() };
+          if (timelineTakesOver) item.legacyConversationOnly = true;
+          lane.items.push(item);
+        }
+      } else if (!p.error) {
+        // 成功(或无错误)终态:回合已恢复完成,当前回合 transient 模型服务气泡的
+        // "会继续重试"声明过时,与 bridge settleModelServiceErrorNotices 同语义
+        // 统一隐藏;裸串回退项(对已发生错误的陈述)保留既有行为。
+        const start = currentTurnStart(lane);
+        for (let i = start; i < lane.items.length; i += 1) {
+          const item = lane.items[i];
+          if (item && item.userError && !item.legacyConversationOnly) item.legacyConversationOnly = true;
+        }
       }
       return true;
     }
@@ -718,13 +844,18 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
 }
 
 /// lane → ConversationTimeline 使用的 turn 投影。
-export function projectNativeLane(lane, sessionId) {
+export function projectNativeLane(lane, sessionId, options = {}) {
+  // legacyConversationOnly 项(终态错误气泡)在此处过滤:标记只被
+  // conversationItemsForMode 消费,原生泳道没有 legacy 模式,恒按 unified 过滤,
+  // 否则终态升级后气泡与时间线错误卡同时显示。
   return projectDeepSeekConversation({
-    chatItems: lane ? lane.items : [],
+    chatItems: conversationItemsForMode(lane ? lane.items : [], true),
     busy: Boolean(lane && lane.busy),
     thinking: lane ? lane.thinking : null,
     tokens: lane ? lane.tokens : null,
     sessionId,
     timelineEvents: lane ? lane.timeline : [],
+    language: options.language,
+    modelServiceState: options.modelServiceState || null,
   });
 }

@@ -1151,6 +1151,13 @@ export function CodexAcpView({
   const activeIdRef = useRef(activeId);
   const lastActiveSessionIdRef = useRef(activeId);
   if (activeId) lastActiveSessionIdRef.current = activeId;
+  // 原生泳道事件订阅 mount 一次，错误提示的友好文案需要当前界面语言与模型配置；
+  // 经 ref 透传最新值，避免闭包捕获过期 bridge state（与 activeIdRef 同款模式）。
+  const nativeEventContextRef = useRef({ language: null, modelServiceState: null });
+  nativeEventContextRef.current = {
+    language: bs && bs.settings && bs.settings.language,
+    modelServiceState: bs,
+  };
   useLayoutEffect(() => {
     // loadSession may optimistically point this ref at a just-created session before
     // the parent commits activeId. Do not overwrite that handoff from an intermediate
@@ -1160,7 +1167,11 @@ export function CodexAcpView({
     acpConfigOperationTracker.switchSession(activeId);
     acpSendOperationTracker.switchSession(activeId || DRAFT_ATTACHMENT_KEY);
   }, [acpConfigOperationTracker, acpSendOperationTracker, activeId]);
-  const projection = useMemo(() => projectAcpTimeline(events), [events]);
+  const acpModelServiceLanguage = bs && bs.settings && bs.settings.language;
+  const projection = useMemo(
+    () => projectAcpTimeline(events, { language: acpModelServiceLanguage }),
+    [events, acpModelServiceLanguage],
+  );
   // 草稿态（!activeId）没有会话，退回使用该 agent 缓存的配置快照来预展示选项。
   const draftControlsInfo = activeId ? null : draftControlsCache[draftAgentId] || null;
   const sessionControlsInfo = sessionInfoSessionId === activeId ? sessionInfo : null;
@@ -1279,11 +1290,33 @@ export function CodexAcpView({
   // 知识库集合列表与 embedding 安装态由 ComposerKbSelector 内部经 bridge.knowledge
   // （kb_collection_list / kb_model_status，全局只读、不带会话）自行加载，代码页
   // 不再重复拉取（PR #214 统一底栏控件时移除 nativeKb* 本地变量）。
+  // projectNativeLane 只消费 bs 的模型服务相关字段(providerLabelFromState 读
+  // currentSessionModelId/activeModelId/savedModels/effectiveModelConfig/
+  // activeProvider,语言读 settings.language)。bs 是整体快照,流式 chunk 每次
+  // notify 都换引用,直接依赖会让 useMemo 在流式期间全程失效、全量重投影;
+  // 这里把依赖收窄为被消费字段的引用。
+  const nativeModelServiceLanguage = bs && bs.settings && bs.settings.language;
+  const nativeModelServiceState = useMemo(
+    () => (bs ? {
+      currentSessionModelId: bs.currentSessionModelId,
+      activeModelId: bs.activeModelId,
+      savedModels: bs.savedModels,
+      effectiveModelConfig: bs.effectiveModelConfig,
+      activeProvider: bs.activeProvider,
+    } : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只跟踪 providerLabelFromState 实际消费的字段引用,而非整个 bs 快照
+    [bs && bs.currentSessionModelId, bs && bs.activeModelId, bs && bs.savedModels, bs && bs.effectiveModelConfig, bs && bs.activeProvider],
+  );
   const nativeProjection = useMemo(
-    () => (isNativeAgent ? projectNativeLane(activeNativeLane, activeId) : null),
+    () => (isNativeAgent ? projectNativeLane(activeNativeLane, activeId, {
+      // 与主聊天 ChatView 同款:时间线错误卡的友好文案按界面语言构建,
+      // provider 标签从 bridge state 推导(内部仍以错误文本里的厂商信号优先)。
+      language: nativeModelServiceLanguage,
+      modelServiceState: nativeModelServiceState,
+    }) : null),
     // nativeLaneTick 是 lane 内容变化的版本号（lane 本体是可变对象，靠 tick 触发重投影）。
     // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the version counter of the mutable lane object; it must stay in deps to trigger re-projection
-    [isNativeAgent, activeNativeLane, activeId, nativeLaneTick],
+    [isNativeAgent, activeNativeLane, activeId, nativeLaneTick, nativeModelServiceLanguage, nativeModelServiceState],
   );
   const visibleTurns = useMemo(
     () => (isNativeAgent
@@ -2627,7 +2660,7 @@ export function CodexAcpView({
       const sessionId = payload.session_id;
       if (!sessionId || !nativeSessionIdsRef.current.has(sessionId)) return;
       const lane = getNativeLane(sessionId);
-      const changed = applyNativeChatEvent(lane, name, payload);
+      const changed = applyNativeChatEvent(lane, name, payload, nativeEventContextRef.current);
       if (name === 'chat:turn_started' || name === 'chat:done') {
         refreshSessions().catch(() => {});
       }

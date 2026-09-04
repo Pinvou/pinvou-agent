@@ -68,9 +68,17 @@ function updateActivity(state, sid, status, now, changes = {}) {
 
 function errorText(payload) {
   const error = payload && payload.error;
-  if (typeof error === 'string') return error;
-  if (error && typeof error.message === 'string') return error.message;
-  return '';
+  const raw = typeof error === 'string'
+    ? error
+    : (error && typeof error.message === 'string' ? error.message : '');
+  if (!raw) return '';
+  // The pet window also receives raw model-service failure bodies
+  // (potentially credential-bearing); redact before display. If the helper
+  // is missing (pet.html without the shared script), return raw and keep
+  // the previous behavior.
+  const helper = typeof globalThis !== 'undefined' && globalThis.PinvouModelServiceErrors;
+  if (!helper || typeof helper.redactTechnicalDetail !== 'function') return raw;
+  return helper.redactTechnicalDetail(raw);
 }
 
 // 活动卡正文与标题兜底默认中文；UI 边界(PetWindow)按当前语言从 i18n 的

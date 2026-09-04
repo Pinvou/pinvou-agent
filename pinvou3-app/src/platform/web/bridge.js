@@ -106,6 +106,12 @@
     // eslint-disable-next-line sonarjs/pseudo-random -- not security-sensitive: only generates request dedup IDs; collisions are safely retryable
     return prefix + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
   }
+  function webTurnTerminal() {
+    return window.PinvouWebTurnTerminal || {};
+  }
+  function bridgeMessages() {
+    return window.PinvouBridgeMessages || {};
+  }
 
   // ── Markdown rendering (vendor scripts loaded in index.html) ─────
   // 抹平裸 <script>/<style>/<iframe> 等危险标签:它们一旦被 marked 透传成真 HTML,
@@ -4818,6 +4824,13 @@
     if (text.indexOf("image_input_unsupported") === 0) {
       return text.includes("能力未知") ? bt("imageUnknown") : bt("imageUnsupported");
     }
+    // Same policy as the tauri bridge: redact raw submit-failure bodies
+    // before display (classification may miss, credentials must not). Pass
+    // state so the placeholder matches the UI language. If the helper is
+    // missing, return raw and keep the previous behavior.
+    if (window.PinvouBridgeMessages && typeof window.PinvouBridgeMessages.redactRawError === "function") {
+      return window.PinvouBridgeMessages.redactRawError(text, state);
+    }
     return text;
   }
 
@@ -6301,29 +6314,54 @@
     runSyncOnSession(sid, function () {
       if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
       const error = e.payload && e.payload.error;
-      window.PinvouWebTurnTerminal.recordCompleted(
-        state,
-        latestOpenTimelineStart(),
-        e.payload || {}
-      );
+      const terminal = webTurnTerminal();
+      let terminalRecord = null;
+      if (typeof terminal.recordCompleted === "function") {
+        terminalRecord = terminal.recordCompleted(
+          state,
+          latestOpenTimelineStart(),
+          e.payload || {}
+        );
+      }
       // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
       // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
       if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
       if (error) {
-        const finalNotice = "⚠️ " + error;
-        const finalNoticeItem = state.chatItems.find(function (item) {
-          return item && item.turnErrorNotice && item.text === finalNotice;
-        });
-        if (finalNoticeItem) {
-          finalNoticeItem.legacyConversationOnly = true;
-        } else {
-          addSystemItem(finalNotice, {
-            turnErrorNotice: true,
-            legacyConversationOnly: true,
+        const messages = bridgeMessages();
+        if (!(typeof messages.addModelServiceErrorNotice === "function" && messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, true, terminalRecord))) {
+          // 与 addModelServiceErrorNotice 同一前提:只有时间线终态记录确实带
+          // error 时才隐藏气泡(时间线以裸 error 小字接管),否则保留可见。
+          const timelineTakesOver = !!(terminalRecord && terminalRecord.error);
+          // 回退气泡与 transient 回退必须用同一脱敏文本,find 去重才不会因
+          // 措辞不同而漏匹配、产生双气泡。
+          const displayError = typeof messages.redactRawError === "function"
+            ? messages.redactRawError(error, state)
+            : error;
+          const finalNotice = "⚠️ " + displayError;
+          const finalNoticeItem = state.chatItems.find(function (item) {
+            return item && item.turnErrorNotice && item.text === finalNotice;
           });
+          if (finalNoticeItem) {
+            if (timelineTakesOver) finalNoticeItem.legacyConversationOnly = true;
+          } else {
+            addSystemItem(finalNotice, {
+              turnErrorNotice: true,
+              legacyConversationOnly: timelineTakesOver,
+            });
+          }
+        }
+      } else {
+        // 成功(或无错误)终态:回合已恢复完成,本回合 transient 气泡的
+        // "系统会继续重试"声明过时,统一隐藏(发送时已清空上一回合项)。
+        const messages = bridgeMessages();
+        if (typeof messages.settleModelServiceErrorNotices === "function") {
+          messages.settleModelServiceErrorNotices(state);
         }
       }
-      window.PinvouBridgeMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
+      const shellMessages = bridgeMessages();
+      if (typeof shellMessages.showShellCleanupFailure === "function") {
+        shellMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
+      }
       const terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
       const interrupted = ["interrupted", "cancelled", "canceled"].includes(terminalStatus);
       if (interrupted) preserveInterruptedAssistantPresentation();
@@ -6494,11 +6532,17 @@
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
     const error = e.payload && e.payload.error;
     if (error) {
-      const notice = "⚠️ " + error;
-      const duplicate = state.chatItems.some(function (item) {
-        return item && item.turnErrorNotice && item.text === notice;
-      });
-      if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
+      const messages = bridgeMessages();
+      if (!(typeof messages.addModelServiceErrorNotice === "function" && messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, false))) {
+        const displayError = typeof messages.redactRawError === "function"
+          ? messages.redactRawError(error, state)
+          : error;
+        const notice = "⚠️ " + displayError;
+        const duplicate = state.chatItems.some(function (item) {
+          return item && item.turnErrorNotice && item.text === notice;
+        });
+        if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
+      }
     }
     // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
     // 兜底启动检测被绕过/中途删 key 的场景。

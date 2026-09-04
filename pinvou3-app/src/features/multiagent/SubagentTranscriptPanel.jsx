@@ -14,6 +14,7 @@ import {
   visibleSubagentTreeRows,
   windowSubagentTranscript,
 } from './subagent-conversation.mjs';
+import { timelineDisplayError } from '../conversation/deepseek-conversation.js';
 import {
   isTranscriptChunk,
   mergeTranscriptMessages,
@@ -95,6 +96,8 @@ export function SubagentTranscriptPanel({
   selectionRequestId,
   t,
   theme,
+  language,
+  modelServiceState,
   onClose,
 }) {
   const copy = t.uiMultiAgent;
@@ -268,8 +271,12 @@ export function SubagentTranscriptPanel({
     ],
   );
   const projected = useMemo(
-    () => projectSubagentTranscript({ messages: messages || [], agent: projectedAgent }),
-    [messages, projectedAgent],
+    () => projectSubagentTranscript({
+      messages: messages || [],
+      agent: projectedAgent,
+      options: { language, modelServiceState },
+    }),
+    [messages, projectedAgent, language, modelServiceState],
   );
   const transcriptWindow = useMemo(
     () => windowSubagentTranscript(projected, visibleTranscriptItems),
@@ -363,7 +370,11 @@ export function SubagentTranscriptPanel({
                 ? 'text-red-600 dark:text-red-400'
                 : 'text-amber-600 dark:text-amber-400'
             }`}>
-              {copy.agentNoTranscript(agent && agent.error)}
+              {copy.agentNoTranscript(
+                agent && agent.error
+                  ? timelineDisplayError(agent.error, { language })
+                  : null,
+              )}
             </div>
           ) : messages === null && agent && agent.has_transcript === false && !agent.done ? (
             <div className="text-[12px] text-gray-400">{copy.agentPending}</div>

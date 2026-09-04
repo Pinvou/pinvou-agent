@@ -67,6 +67,10 @@
         .catch(function () {});
     }
 
+    function bridgeMessages() {
+      return window.PinvouBridgeMessages || {};
+    }
+
     function visibleUserTurnIndex() {
       const count = state.chatItems.filter(function (item) { return item && item.type === "user"; }).length;
       return Math.max(0, count - 1);
@@ -109,21 +113,36 @@
     function recordTurnCompleted(payload) {
       const openStart = latestOpenTimelineStart();
       const turnId = state.activeTurnTimelineId || (openStart && openStart.turn_id);
-      if (!turnId) return;
+      if (!turnId) return null;
+      if (payload && payload.error && !(payload.user_error || payload.userError)) {
+        const messages = bridgeMessages();
+        const userError = typeof messages.modelServiceUserError === "function"
+          ? messages.modelServiceUserError(payload, state)
+          : null;
+        if (userError) {
+          payload.user_error = userError;
+          payload.userError = userError;
+        }
+      }
       const timestamp = Date.now();
       const start = openStart || (state.turnTimeline || []).find(function (event) {
         return event && event.turn_id === turnId && event.event === "user_start";
       });
-      state.turnTimeline = [...(state.turnTimeline || []), {
+      const record = {
         turn_id: turnId,
         event: "assistant_done",
         timestamp,
         ts: new Date(timestamp).toISOString(),
         status: payload && payload.status || (payload && payload.error ? "Failed" : "Completed"),
         error: payload && payload.error || null,
+        user_error: payload && (payload.user_error || payload.userError) || null,
         ui_turn_index: start && start.ui_turn_index,
-      }];
+      };
+      state.turnTimeline = [...(state.turnTimeline || []), record];
       state.activeTurnTimelineId = null;
+      // 返回值供终态错误气泡的隐藏决策使用:只有确实写入了带 error 的时间线
+      // 终态记录,气泡才能交给时间线错误卡接管(否则隐藏=静默吞错)。
+      return record;
     }
 
     function latestTimelineCompletion(events) {
@@ -930,23 +949,46 @@
     if (!requiresAuthorityReconcile) markScheduledInitialTurnTerminal(sid);
     runSyncOnSession(sid, function () {
       const error = e.payload && e.payload.error;
-      recordTurnCompleted(e.payload || {});
+      const terminalRecord = recordTurnCompleted(e.payload || {});
       refreshEffectiveModelConfigAfterAuthError(error);
       if (error) {
-        const finalNotice = "⚠️ " + error;
-        const finalNoticeItem = state.chatItems.find(function (item) {
-          return item && item.turnErrorNotice && item.text === finalNotice;
-        });
-        if (finalNoticeItem) {
-          finalNoticeItem.legacyConversationOnly = true;
-        } else {
-          addSystemItem(finalNotice, {
-            turnErrorNotice: true,
-            legacyConversationOnly: true,
+        const messages = bridgeMessages();
+        const addedModelServiceNotice = typeof messages.addModelServiceErrorNotice === "function" &&
+          messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, true, terminalRecord);
+        if (!addedModelServiceNotice) {
+          // 与 addModelServiceErrorNotice 同一前提:只有时间线终态记录确实带
+          // error 时才隐藏气泡(时间线以裸 error 小字接管),否则保留可见。
+          const timelineTakesOver = !!(terminalRecord && terminalRecord.error);
+          // 回退气泡与 transient 回退必须用同一脱敏文本,find 去重才不会因
+          // 措辞不同而漏匹配、产生双气泡。
+          const displayError = typeof messages.redactRawError === "function"
+            ? messages.redactRawError(error, state)
+            : error;
+          const finalNotice = "⚠️ " + displayError;
+          const finalNoticeItem = state.chatItems.find(function (item) {
+            return item && item.turnErrorNotice && item.text === finalNotice;
           });
+          if (finalNoticeItem) {
+            if (timelineTakesOver) finalNoticeItem.legacyConversationOnly = true;
+          } else {
+            addSystemItem(finalNotice, {
+              turnErrorNotice: true,
+              legacyConversationOnly: timelineTakesOver,
+            });
+          }
+        }
+      } else {
+        // 成功(或无错误)终态:回合已恢复完成,本回合 transient 气泡的
+        // "系统会继续重试"声明过时,统一隐藏(发送时已清空上一回合项)。
+        const messages = bridgeMessages();
+        if (typeof messages.settleModelServiceErrorNotices === "function") {
+          messages.settleModelServiceErrorNotices(state);
         }
       }
-      window.PinvouBridgeMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
+      const shellMessages = bridgeMessages();
+      if (typeof shellMessages.showShellCleanupFailure === "function") {
+        shellMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
+      }
       const terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
       const interrupted = ["interrupted", "cancelled", "canceled"].includes(terminalStatus);
       if (interrupted) preserveInterruptedAssistantPresentation();
@@ -1115,11 +1157,19 @@
     const error = e.payload && e.payload.error;
     refreshEffectiveModelConfigAfterAuthError(error);
     if (error) {
-      const notice = "⚠️ " + error;
-      const duplicate = state.chatItems.some(function (item) {
-        return item && item.turnErrorNotice && item.text === notice;
-      });
-      if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
+      const messages = bridgeMessages();
+      const addedModelServiceNotice = typeof messages.addModelServiceErrorNotice === "function" &&
+        messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, false);
+      if (!addedModelServiceNotice) {
+        const displayError = typeof messages.redactRawError === "function"
+          ? messages.redactRawError(error, state)
+          : error;
+        const notice = "⚠️ " + displayError;
+        const duplicate = state.chatItems.some(function (item) {
+          return item && item.turnErrorNotice && item.text === notice;
+        });
+        if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
+      }
     }
   }); });
 

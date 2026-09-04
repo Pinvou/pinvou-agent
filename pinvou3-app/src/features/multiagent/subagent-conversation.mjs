@@ -14,6 +14,10 @@
  */
 
 import { presentConversationItems } from '../conversation/conversation-model.js';
+// Same model-service gate / redaction / trilingual copy as the main chat
+// timeline: subagents call the same model API, so billing/auth failures must
+// not put raw provider bodies (potentially credential-bearing) on screen.
+import { timelineDisplayError, timelineUserError } from '../conversation/deepseek-conversation.js';
 import { isInternalUserMessage } from '../../shared/internal-message.mjs';
 
 // CodeWhale 的直接子智能体 id 由 UUID 前 8 位生成（agent_ + 8 位十六进制）。
@@ -151,7 +155,7 @@ function turnStatusFromAgent(agent) {
  * 把裸消息数组整形成单个 turn（一个子智能体 = 一次任务 = 一个 turn）。
  * `agent` 是落盘摘要（mergeAgentSnapshots 输出），提供终态与错误。
  */
-export function projectSubagentTranscript({ messages, agent }) {
+export function projectSubagentTranscript({ messages, agent, options = {} }) {
   const items = [];
   const byToolUseId = new Map();
   let userText = null;
@@ -234,13 +238,20 @@ export function projectSubagentTranscript({ messages, agent }) {
   const failedOperationCount = operationItems
     .filter((item) => item.status === 'failed').length;
 
+  // When the gate takes over, ConversationTimeline gets the friendly error
+  // card (userError); the raw error is red text fallback and is redacted
+  // first. If the classic-script helper is missing, timelineUserError /
+  // timelineDisplayError degrade to null / raw text, matching main chat.
+  const rawError = (agent && agent.error) || null;
+
   const turn = {
     id: (agent && agent.agentId) || 'subagent',
     status: turnStatusFromAgent(agent),
     lifecycleKnown: !!(agent && agent.done),
     startedAt: null,
     completedAt: null,
-    error: (agent && agent.error) || null,
+    error: timelineDisplayError(rawError, options),
+    userError: timelineUserError({ error: rawError }, options),
     userText,
     items,
     presentation: presentConversationItems(items),
