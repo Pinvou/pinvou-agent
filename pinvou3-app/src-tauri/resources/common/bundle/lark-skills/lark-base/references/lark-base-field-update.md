@@ -131,7 +131,7 @@ PUT /open-apis/base/v3/bases/:base_token/tables/:table_id/fields/:field_id
 
 #### 无状态字段可直接转换
 
-- `created_at`、`created_by`、`updated_at`、`updated_by`、`formula`、`lookup`: 这类字段值由系统或计算逻辑生成，不承载独立存储数据；可以执行类型转换，不必担心破坏原始记录值，但仍要做下游读回验证。
+- `created_at`、`created_by`、`updated_at`、`updated_by`、`formula`、`lookup`: 这类字段值由系统或计算逻辑生成，不承载独立存储数据；可以执行类型转换，但目标类型仍受下方黑名单（`any -> checkbox` / `any -> user` 等）约束，不必担心破坏原始记录值，但仍要做下游读回验证。
 
 ### 一律不要用 CLI 转换
 

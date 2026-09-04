@@ -161,7 +161,7 @@ lark-cli calendar calendars primary
 # 获取日程分享链接
 lark-cli calendar events share_info --params '{"calendar_id":"<calendar_id>","event_id":"<event_id>"}'
 
-# 删除日程
+# 删除日程为高风险写：先按 lark-shared 审批协议向用户确认影响范围再执行
 lark-cli calendar events delete --params '{"calendar_id":"<calendar_id>","event_id":"<event_id>","need_notification":false}'
 ```
 
