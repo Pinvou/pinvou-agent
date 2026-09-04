@@ -589,38 +589,47 @@ fn vllm_target_kind(upstream: &str) -> &'static str {
     "remote"
 }
 
-/// 轻量探测本地 vLLM:一次 `/v1/models` 拿两样——实际 served 模型名 + `max_model_len`
-/// (上下文窗口)。名字用于监控展示;推理请求的模型名必须走 [`resolve_served_model`]
-/// (本函数取列表首元素,只对单模型 vLLM 服务正确)。窗口用于填
-/// `active_route_limits.context_tokens`,让压缩阈值按真实窗口推导(见
-/// docs/context-compaction-设计.md)。探测失败(vLLM 没起/超时)返回
-/// `(None, None)`, and the caller falls back to the configured values plus the
-/// name hint. See `core::model_endpoint::apply_bearer` for `bearer` semantics:
-/// authenticated vLLM (`--api-key`) 401s on `/v1/models` without credentials,
+/// Lightweight local vLLM probe: one `/v1/models` fetch yields two things —
+/// the actual served model name and `max_model_len` (context window). The
+/// name is for monitor display only; the model name used for inference must
+/// go through [`resolve_served_model`] (this function returns the first list
+/// entry, which is only correct for single-model vLLM servers). The window
+/// fills `active_route_limits.context_tokens` so compaction thresholds derive
+/// from the real window (see docs/context-compaction-设计.md). On probe
+/// failure (vLLM down/timeout) returns `(None, None)`, and the caller falls
+/// back to the configured values plus the name hint. See
+/// `core::model_endpoint::apply_bearer` for `bearer` semantics: authenticated
+/// vLLM (`--api-key`) 401s on `/v1/models` without credentials,
 /// so pass a key from the same origin as real inference.
 pub async fn probe_vllm_model_info(
     base_url: &str,
     bearer: Option<&str>,
 ) -> (Option<String>, Option<u32>) {
-    // HTTP 层与 URL 拼装复用 core 的共享探测（避免 /v1/models 口径漂移）。
+    // HTTP layer and URL assembly reuse the shared core probe (no /v1/models
+    // semantics drift).
     match crate::core::model_endpoint::fetch_v1_models(base_url, bearer).await {
         Some(v) => parse_models_response(v).unwrap_or((None, None)),
         None => (None, None),
     }
 }
 
-/// 「探测 → 用户选择 → 使用所选」链路的最后一环：决定本地 OpenAI 兼容引擎
-/// 实际发请求的模型名。LM Studio / Ollama 的 `/v1/models` 返回**全部已下载
-/// 模型**（多元素列表，首元素与用户在品悟里选的模型无关），因此：
-/// - 配置名已在列表中 → 原样使用（未加载的模型由引擎 JIT 载入，那是用户的
-///   显式选择；取首元素顶替配置名正是用户反馈的「对话指定模型与实际加载
-///   模型不一致」）；
-/// - 配置名不在列表且服务恰好只暴露一个模型 → 跟随该名（真 vLLM 改
-///   `--served-model-name` 后写死配置名失效的既有修复场景，保持不变）；
-/// - 其余（探测失败 / 多元素列表且不含配置名）→ 保持配置名，让推理端显式
-///   报 model_not_found，绝不静默换成列表里任一其他模型。
-/// 返回 `(发请求用的模型名, 该模型的上下文窗口)`；配置名被保留时窗口为
-/// `None`（列表里没有该模型，不能拿别的模型的窗口推压缩阈值）。
+/// Final link of the "probe → user picks → use the pick" chain: decides the
+/// model name a local OpenAI-compatible engine actually sends. LM Studio /
+/// Ollama return **every downloaded model** in `/v1/models` (a multi-entry
+/// list whose first entry is unrelated to the user's pick in Pinvou), so:
+/// - configured name present in the list → keep it verbatim (an unloaded
+///   model is JIT-loaded by the engine, which is the user's explicit choice;
+///   overwriting the configured name with the first entry is exactly the
+///   reported "conversation names A, engine loads B" break);
+/// - configured name absent and the server exposes exactly one model →
+///   follow that name (the pre-existing fix for real vLLM renamed via
+///   `--served-model-name`, preserved unchanged);
+/// - otherwise (probe failure / multi-entry list without the configured
+///   name) → keep the configured name so inference surfaces `model_not_found`
+///   explicitly, never silently switching to any other listed model.
+/// Returns `(model name to send, that model's context window)`; when the
+/// configured name is kept the window is `None` (the model is not in the
+/// list, so another model's window must not drive compaction thresholds).
 fn resolve_served_model_from_entries(
     configured: &str,
     entries: &[crate::core::model_endpoint::OpenAiModelInfo],
@@ -634,9 +643,10 @@ fn resolve_served_model_from_entries(
     (configured.to_string(), None)
 }
 
-/// 抓取 `/v1/models` 并按 [`resolve_served_model_from_entries`] 决策实际模型名。
-/// 探测失败时返回配置名 + `None` 窗口。`bearer` 语义同
-/// [`probe_vllm_model_info`]（同源推理密钥）。
+/// Fetches `/v1/models` and decides the actual model name via
+/// [`resolve_served_model_from_entries`]. On probe failure returns the
+/// configured name with a `None` window. `bearer` semantics match
+/// [`probe_vllm_model_info`] (inference-same-origin key).
 pub async fn resolve_served_model(
     base_url: &str,
     bearer: Option<&str>,
@@ -754,9 +764,10 @@ mod tests {
         }
     }
 
-    /// LM Studio 形态：`/v1/models` 返回全部已下载模型（多元素列表）。用户选的
-    /// 模型在列表中 → 必须原样使用并取它自己的窗口，绝不能被首元素顶替
-    /// （用户反馈「对话指定模型与实际加载模型不一致」的根因）。
+    /// LM Studio shape: `/v1/models` lists every downloaded model (multi-entry).
+    /// A user-picked model found in the list must be used verbatim with its own
+    /// window, never displaced by the first entry (root cause of the reported
+    /// "conversation names A, engine loads B" break).
     #[test]
     fn served_model_keeps_configured_name_found_in_multi_model_list() {
         let entries = vec![
@@ -768,8 +779,8 @@ mod tests {
         assert_eq!(window, Some(131_072));
     }
 
-    /// 真 vLLM 场景：改了 `--served-model-name` 后列表只剩一个陌生名字 →
-    /// 跟随该名（既有修复行为保持不变）。
+    /// Real vLLM scenario: after a `--served-model-name` change the list holds
+    /// a single unfamiliar name → follow it (pre-existing fix, preserved).
     #[test]
     fn served_model_follows_single_unknown_name() {
         let entries = vec![served_entry("served-name", Some(65536))];
@@ -778,9 +789,11 @@ mod tests {
         assert_eq!(window, Some(65536));
     }
 
-    /// 多元素列表且不含配置名（配置失效/被手改）：保留配置名让推理端显式报
-    /// model_not_found，绝不静默换成列表里的任何模型；窗口也不能拿别的模型的
-    /// 顶替（否则压缩阈值按错误窗口推导）。
+    /// Multi-entry list without the configured name (stale/hand-edited config):
+    /// keep the configured name so inference surfaces `model_not_found`
+    /// explicitly, never silently switching to any listed model; the window
+    /// must not be borrowed from another model either (compaction thresholds
+    /// would derive from the wrong window).
     #[test]
     fn served_model_keeps_configured_name_when_absent_from_multi_model_list() {
         let entries = vec![served_entry("a", Some(4096)), served_entry("b", Some(8192))];
@@ -789,8 +802,10 @@ mod tests {
         assert_eq!(window, None);
     }
 
-    /// 单元素列表且恰为配置名：走「列表中命中」分支，原样保留并取其窗口
-    /// （与单模型跟随分支结果一致，锁死行为防止分支顺序改动悄悄改变窗口来源）。
+    /// Single entry that equals the configured name: takes the "found in list"
+    /// branch, keeping the name and its window (same outcome as the
+    /// single-model follow branch — pinned so reordering branches cannot
+    /// silently change where the window comes from).
     #[test]
     fn served_model_single_entry_equal_to_configured_keeps_name_and_window() {
         let entries = vec![served_entry("qwen36_35b_256k", Some(262_144))];
@@ -799,8 +814,9 @@ mod tests {
         assert_eq!(window, Some(262_144));
     }
 
-    /// 命中条目未暴露 `max_model_len`（服务端没给）：名字照常解析，窗口为
-    /// `None` 回退声明值/启发式，不得编造窗口。
+    /// Matched entry without `max_model_len` (server does not expose it): the
+    /// name still resolves and the window stays `None`, falling back to the
+    /// declared/inferred value — never fabricate a window.
     #[test]
     fn served_model_matched_entry_without_window_propagates_none() {
         let entries = vec![
