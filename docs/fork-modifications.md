@@ -4,6 +4,22 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
+## T2 candidate: shell environment guidance
+
+- Integration status: [parent PR #443](https://github.com/Pinvou/pinvou-agent/pull/443) must remain draft. Independent source review accepted the scoped changes, but release integration is blocked: `scripts/verify-public-submodule.sh` requires the official immutable `pinvou-v0.9.5-r13` tag at `f853f8f1566c57e6be40d5439a222a932aa79ef5`, whereas the candidate parent gitlink is `0d409a97802179f1df9bcdbef185c1bfb5dc23e2`. Passing source tests or fork fingerprints does not satisfy this public-release gate.
+- Release dependency: an authorized `Pinvou/CodeWhale` maintainer must integrate [fork PR #42](https://github.com/Pinvou/CodeWhale/pull/42) and publish an actual new immutable release tag containing the fix. The authenticated `zhuowp` identity lacks push permission to that official repository. After publication, align the parent gitlink, public-submodule verifier, fork guard, and release inventory with the verified tag and SHA, then rerun the integration checks before marking the parent ready. Do not move r13, invent a future tag, or relax the verifier to accept a contributor ref.
+- The reusable upstream contribution is [Hmbown/CodeWhale#5900](https://github.com/Hmbown/CodeWhale/pull/5900). Its source review and compiled verification are separate from the fork release dependency; upstream acceptance alone does not publish the required Pinvou release.
+- Review: [Pinvou/CodeWhale#42](https://github.com/Pinvou/CodeWhale/pull/42), from `zhuowp/CodeWhale:fix/shell-environment-guidance`. This is a pinned review candidate, not a new r14 release.
+
+- The model-visible `Bash` description and `command` parameter now share guidance from the existing execution dispatcher. PowerShell, cmd, POSIX sh, Bash, zsh, and other custom shells receive matching syntax guidance. Tool names, permissions, execution, aliases, and read-only argv behavior remain compatible.
+- The parent gitlink pins candidate `0d409a97802179f1df9bcdbef185c1bfb5dc23e2` (r13 plus one T2 commit; 38 commits above v0.9.5). Candidate drift: 111 files, +11100/-1197. This is a reusable upstream contribution; the released r13 maintenance branch and immutable tag below remain unchanged. Upstream main still contained the login-shell-only description when inspected on 2026-09-05.
+- Coverage: `shell_guidance_matches_each_interpreter`, `forkguard_shell_catalog_guidance_matches_execution`, and the opt-in `export_shell_guidance_eval_fixture` for live model comparisons. The application removes Unix-specific default examples from shared instructions, browser HTTP verification, and attachment analysis guidance.
+- Live-model methodology, measured results, and verification limits: [shell guidance evaluation](shell-guidance-evaluation.md).
+- Review follow-up: preserve zsh's `=command` warning and provide Bash/POSIX quoting, pipelines, heredocs or syntax exclusions, and utility-portability guidance. Unix `$SHELL` paths represented as `Custom` receive the same guidance as built-in Bash/sh variants; cmd and fish have their own syntax notes. Covered by `shell_guidance_preserves_unix_shell_contracts`.
+- Guidance selection uses one `match`, with a PowerShell-family guard shared with execution and a dedicated text constant. This structural refactor preserves custom PowerShell detection and model-visible wording.
+- All shell-specific guidance now lives in named constants, including cmd, fish, and the shared fallback. A before/after comparison across 14 shell cases confirmed identical output after constant extraction.
+- Following the 40-call curl ablation, remove the tool-level curl alias reminder only. Preserve the other PowerShell guidance and application instructions used in that experiment; both arms achieved 19/20 correct executions with no shell mismatch errors.
+
 ## 0. 当前状态（2026-09-01 · v0.9.5 r13 基线，父仓 gitlink 由 PR #370 接入）
 
 | 项 | 当前值 |

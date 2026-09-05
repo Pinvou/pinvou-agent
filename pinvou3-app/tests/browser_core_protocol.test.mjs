@@ -105,7 +105,8 @@ test('work instructions define a durable and verified loopback preview workflow'
   assert.match(instructions, /127\.0\.0\.1/);
   assert.match(instructions, /background=true/);
   assert.match(instructions, /Do not.*shell `&` or `nohup`/i);
-  assert.match(instructions, /`curl`.*HTTP 200/i);
+  assert.match(instructions, /HTTP client compatible with the declared shell.*HTTP 200/i);
+  assert.match(instructions, /`curl\.exe` for native curl flags on Windows/);
   assert.match(instructions, /mcp_browser_list_pages/);
   assert.match(instructions, /never guess an id such as `1`/i);
   assert.match(instructions, /mcp_browser_take_snapshot/);

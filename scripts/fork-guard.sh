@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.5 clean re-fork guard: published four-theme baseline.
+# CodeWhale v0.9.5 clean re-fork guard: pinned four-theme baseline.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-PUBLISHED_HEAD="f853f8f1566c57e6be40d5439a222a932aa79ef5"
-PUBLISHED_COMMITS=37
+PINNED_HEAD="0d409a97802179f1df9bcdbef185c1bfb5dc23e2"
+PINNED_COMMITS=38
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -17,14 +17,14 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 r13 公开四主题基线拓扑 ──"
+bold "-- Layer 0: v0.9.5 pinned four-theme topology --"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
-if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
-  expected_commits="$PUBLISHED_COMMITS"
-  green "  ✓ CodeWhale gitlink 指向 r13 四主题公开基线 $PUBLISHED_HEAD"
+if [[ "$actual_head" == "$PINNED_HEAD" ]]; then
+  expected_commits="$PINNED_COMMITS"
+  green "  PASS CodeWhale HEAD matches pinned candidate $PINNED_HEAD"
 else
   expected_commits=""
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r13 公开 head $PUBLISHED_HEAD"
+  red "  FAIL CodeWhale HEAD ${actual_head:-<unreadable>} differs from pinned candidate $PINNED_HEAD"
   fail=1
 fi
 
@@ -39,13 +39,16 @@ commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev
 if [[ -n "$expected_commits" && "$commit_count" == "$expected_commits" ]]; then
   green "  ✓ v0.9.5 之上 $expected_commits 个登记提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，登记拓扑应为 ${expected_commits:-37}"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，登记拓扑应为 ${expected_commits:-38}"
   fail=1
 fi
 
 bold "── 第 1 层：四主题与父仓指纹 ──"
 # 格式：主题|说明|文件（相对父仓根）|grep -F 固定串
 fingerprints=(
+  "T2|Unix shell guidance preservation test|CodeWhale/crates/tui/src/tools/shell/guidance.rs|fn shell_guidance_preserves_unix_shell_contracts"
+  "T2|Shell guidance uses execution dispatcher|CodeWhale/crates/tui/src/tools/shell/guidance.rs|command_guidance(global_dispatcher().kind())"
+  "T2|Shell catalog execution contract test |CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_shell_catalog_guidance_matches_execution"
   "T1|v0.9.5 library 只公开宿主入口       |CodeWhale/crates/tui/src/lib.rs|pub mod automation_manager;"
   "T1|宿主可重载 Fleet roster             |CodeWhale/crates/tui/src/lib.rs|pub use fleet::roster::FleetRoster;"
   "T1|Fleet roster 宿主入口回归           |CodeWhale/crates/tui/src/lib.rs|fn forkguard_host_can_load_workspace_fleet_roster"
