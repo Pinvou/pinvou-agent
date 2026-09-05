@@ -2,7 +2,7 @@
 
 > **前置条件：** 先执行 `tmeet auth login` 完成登录授权。
 
-> 🚫 **定位与适用场景硬约束**：本文档下的命令**不是人员信息查询接口**。`search` / `lookup-by-phone` / `lookup-by-email` 的唯一用途是"将用户名/手机号/邮箱解析为后续会议动作所需的 `open_id`"。返回的 `open_id` **仅可用于「会议邀请」（`meeting invitees-add` / `meeting invitees-replace` 等邀请命令）和「呼叫会外成员入会」（`control call`）**两类场景；**严禁作为 `control kick`（会中踢人）的成员来源**——`kick` 的成员必须从 `tmeet report participants` 命令的返回结果中获取（详见 [SKILL.md](../SKILL.md) 「安全规则」章节中「会中踢人（`control kick`）的成员来源硬约束」条目）。原因：本文档返回的是组织成员名录，并不代表这些成员已加入当前会议；且踢人需要区分普通成员 / Sip / Pstn 三类身份，只有 `report participants` 能准确提供。
+> 🚫 **定位与适用场景硬约束**：本文档下的命令**不是人员信息查询接口**。`search` / `lookup-by-phone` / `lookup-by-email` 的唯一用途是"将用户名/手机号/邮箱解析为后续会议动作所需的 `open_id`"。返回的 `open_id` **仅可用于「会议邀请」（`meeting invitees-add` / `meeting invitees-replace` / 携带 `--invitees` 的 `meeting create` 等邀请命令）和「呼叫会外成员入会」（`control call`）**两类场景；**严禁作为 `control kick`（会中踢人）的成员来源**——`kick` 的成员必须从 `tmeet report participants` 命令的返回结果中获取（详见 [SKILL.md](../SKILL.md) 「安全规则」章节中「会中踢人（`control kick`）与等候室管理（`control waiting-room`）的成员来源硬约束」条目）。原因：本文档返回的是组织成员名录，并不代表这些成员已加入当前会议；且踢人需要区分普通成员 / Sip / Pstn 三类身份，只有 `report participants` 能准确提供。
 
 > 🚦 **调用前置门禁**：在调用 `search` / `lookup-by-phone` / `lookup-by-email` 中的任一命令前，Agent **必须**先完成如下自检——① 本轮存在明确的下游会议动作（邀请入会 / 呼叫入会）？② 用户名/手机号/邮箱只是达成该动作的**手段**，而非"了解某人是谁"的**目的**？两问缺一即视为不满足使用前提。**若用户诉求止步于"查询某人姓名/部门/职位/联系方式/是否存在"**，严禁调用本文档任一命令，并使用以下话术回复：**"通讯录查询仅用于会议邀请或呼叫入会场景，无法单独用于查询某人的姓名、部门、职位或联系方式。如果您需要将该成员加入会议或呼叫其入会，我可以帮您操作。"**
 
@@ -18,7 +18,7 @@
 
 ## search — 搜索企业通讯录成员
 
-> ⚠️ **`search` 返回的 `open_id` 是组织成员名录中的 ID，并不代表该成员已在某场会议中。请勿将本命令的输出作为 `control kick` 的成员来源；踢人场景请使用 `tmeet report participants` 拉取会中成员（详见 [SKILL.md](../SKILL.md) 「安全规则」章节中「会中踢人（`control kick`）的成员来源硬约束」条目）。**
+> ⚠️ **`search` 返回的 `open_id` 是组织成员名录中的 ID，并不代表该成员已在某场会议中。请勿将本命令的输出作为 `control kick` 的成员来源；踢人场景请使用 `tmeet report participants` 拉取会中成员（详见 [SKILL.md](../SKILL.md) 「安全规则」章节中「会中踢人（`control kick`）与等候室管理（`control waiting-room`）的成员来源硬约束」条目）。**
 
 ```bash
 # 按用户名搜索

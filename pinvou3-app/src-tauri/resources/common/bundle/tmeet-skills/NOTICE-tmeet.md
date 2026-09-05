@@ -61,8 +61,8 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 技能文档命令树与参数均已对照 tmeet 1.0.15 实测 help 核验（含 1.0.15 新增的
 `meeting search`、`control waiting-room`），无发现不符。为适配品悟运行形态，在
 上游 tag v1.0.15 的 `skills/tmeet-skill/` 基础上做了以下修改（1-4、6 的 SKILL.md
-部分仅限 `SKILL.md`；第 5 条与第 6 条另涉 `references/tmeet-record.md` /
-`references/tmeet-auth.md` 各一处措辞修正，其余 references/ 与上游逐字节一致，
+部分仅限 `SKILL.md`；第 5 条另涉 `references/tmeet-record.md` 一处、第 6 条
+另涉 `references/tmeet-auth.md` 两处措辞修正，其余 references/ 与上游逐字节一致，
 已经上游 tag diff 逐文件复核。第六轮核验注 2026-08-16：上述「其余 references
 逐字节一致」经 /tmp 上游 v1.0.15 快照重验仍成立——tmeet-meeting/contact/
 tshoot/report/control 五篇与上游一致，record.md / auth.md 的差异即第 5、6 条
@@ -161,9 +161,13 @@ tshoot/report/control 五篇与上游一致，record.md / auth.md 的差异即�
     表行要求执行前列明目标成员。
 16. **SKILL.md 成员来源硬约束扩到 `control waiting-room`**：原「会中踢人
     （`control kick`）的成员来源硬约束」bullet 扩为 kick 与 waiting-room
-    共用，目标成员 `open_id` / `ms_open_id` 必须来自 `report participants`
-    或 `report waiting-room-log`（与 `references/tmeet-control.md`
-    waiting-room 节既有 🔒 约束口径一致），严禁使用通讯录查询结果。
+    共用，目标成员 `open_id` / `ms_open_id` 严禁使用通讯录查询结果；
+    kick 仅限 `report participants`，waiting-room 按操作类型取
+    `report participants`（`back-to-waiting`，目标为会中成员）或
+    `report waiting-room-log`（`enter-meeting` / `expel`，目标为等候室成员），
+    与 `references/tmeet-control.md` kick / waiting-room 两节既有 🔒 约束
+    口径一致（第九轮审查代修按操作类型分列，消除并集表述对 kick 来源的
+    放宽与对 `back-to-waiting` 的来源误导）。
 17. **`references/tmeet-tshoot.md` `--upload` 补隐私提示**：1.0.15 源码将
     完整命令行以 INFO 级写入本地日志（`cmd/root.go`），日志可能含会议号、
     联系人等敏感信息，参数说明补「上传前提示用户确认后再上传」。
@@ -173,6 +177,15 @@ tshoot/report/control 五篇与上游一致，record.md / auth.md 的差异即�
 19. **`references/tmeet-control.md` waiting-room 节确认要求补强**：⚠️ 行补
     「`expel`（移出踢出）等同踢人，执行前必须列明目标成员」，与 SKILL.md
     确认表补行（第 15 条）口径一致。
+
+第九轮审查注 2026-09-05（重审代修，不新增登记条目，重放基线仍为第 1-19 条）：
+SKILL.md 成员来源硬约束 bullet 按操作类型分列（第 16 条已同步改写）；
+`references/tmeet-contact.md` 两处指名引用同步第 16 条 bullet 新标题，并在
+前置门禁场景示例与 SKILL.md「通讯录搜索仅限特定场景使用」示例中补入携带
+`--invitees` 的 `meeting create`（与第 14 条确认行闭环，`tmeet-meeting.md`
+create 节 `--invitees` 参数行同步补 openid 来源指引）；`tmeet-meeting.md`
+create 节警示链接文字补「」、SKILL.md 会议查询路由行补「录制查询路由总则」
+链接；本声明首段第 5/6 条范围句修正（auth.md 实为两处）。
 
 本轮不改动 SKILL.md frontmatter `version: 1.0.15`：该版本号钉扎上游 tag
 v1.0.15 基线，与 `tmeet.rs` 的 `TMEET_NPM_SPEC`（`@tencentcloud/tmeet@1.0.15`）
