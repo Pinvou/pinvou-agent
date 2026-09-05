@@ -3278,14 +3278,15 @@ impl AcpPool {
         result
     }
 
-    pub fn timeline(&self, session_id: &str) -> Result<Vec<AcpEventEnvelope>> {
+    pub async fn timeline(&self, session_id: &str) -> Result<Vec<AcpEventEnvelope>> {
         if !self.is_acp(session_id) {
             bail!("当前会话不是 ACP 会话");
         }
+        self.flush_session_journal(session_id).await;
         load_timeline(session_id)
     }
 
-    pub(crate) fn web_timeline_page(
+    pub(crate) async fn web_timeline_page(
         &self,
         session_id: &str,
         after_seq: u64,
@@ -3297,6 +3298,7 @@ impl AcpPool {
         if !self.is_acp(session_id) {
             bail!("当前会话不是 ACP 会话");
         }
+        self.flush_session_journal(session_id).await;
         load_web_timeline_page(
             session_id,
             after_seq,
@@ -3305,6 +3307,22 @@ impl AcpPool {
             max_page_bytes,
             max_event_bytes,
         )
+    }
+
+    // 读盘前 best-effort 排空该会话 journal 的缓冲窗：turn 边界之外，活跃 turn 的
+    // chunk 事件最多可在 BufWriter 内滞留 64KB；不先 flush，重连重放/时间线读取会
+    // 短暂看到滞后于内存投影的视图。锁内只克隆 bridge（Arc），flush 在锁外进行。
+    // 会话不在运行时（仅存历史 journal）时无需 flush，盘上即全部持久状态。
+    async fn flush_session_journal(&self, session_id: &str) {
+        let bridge = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|session| session.bridge.clone());
+        if let Some(bridge) = bridge {
+            bridge.flush_journal();
+        }
     }
 
     pub async fn pending_permissions_for(
