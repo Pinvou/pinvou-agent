@@ -1304,7 +1304,7 @@ mod tests {
             ),
             (
                 include_str!("../../../../resources/mcp-servers/pptx/manifest.json"),
-                4,
+                5,
                 "pptx",
             ),
         ];
