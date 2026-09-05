@@ -1513,6 +1513,9 @@ const NAV_PREFETCH = {
         .filter(chat => chat.pinned)
         .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt))), [chatHistory]);
       const bridgeScheduledTaskRecentRuns = bs && bs.scheduledTaskRecentRuns;
+      // bridge.available is deliberately not a dependency: the flag is assigned
+      // once when the bridge script installs window.TauriBridge and never
+      // reassigned, so the preview branch below cannot go stale afterwards.
       const scheduledRunShortcuts = useMemo(() => (bridgeScheduledTaskRecentRuns && bridgeScheduledTaskRecentRuns.length)
         ? bridgeScheduledTaskRecentRuns
         : (bridge.available ? [] : PREVIEW_SCHEDULED_RUN_SHORTCUTS.map(run => ({ ...run, taskName: t[run.taskNameKey] || run.taskNameKey }))), [bridgeScheduledTaskRecentRuns, t]);
