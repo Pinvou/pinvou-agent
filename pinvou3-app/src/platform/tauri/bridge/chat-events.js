@@ -337,6 +337,9 @@
               break;
             }
           }
+          // 流节流不变量：flush 必须先于流状态复位。此时旧流气泡已随上面的
+          // splice 删除，flush 无渲染目标，只负责取消该会话的尾沿定时器。
+          flushPendingStreamRender();
           resetPendingAssistant();
         }
         addChatItem({ type: "user", text: content, time: timeStr() });
