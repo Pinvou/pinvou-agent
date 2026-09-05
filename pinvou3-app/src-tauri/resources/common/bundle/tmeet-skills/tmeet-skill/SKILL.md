@@ -91,19 +91,21 @@ tmeet
     └── feedback                  # 反馈工具缺失/失败/能力不足等问题至平台（Agent 自助上报）
 ```
 
-## 查询命令选择准则（list vs search）
+## 查询命令选择准则
 
-查询会议或录制时，需根据用户提供的筛选条件，**正确选择 `list` 类命令还是 `search` 命令**：
+查询会议或录制时，需根据用户提供的筛选条件，**正确选择 `list` 类命令、`meeting get` 还是 `search` 命令**：
 
 | 用户提供的筛选条件 | 应选用的命令 |
 |------|------|
 | **仅时间范围**（仅有起止时间，无任何关键词） | `list` 类命令 |
-| **包含关键词**（会议主题、会议号、创建人、备注等），无论是否同时带时间范围 | `search` 命令 |
+| **已知会议号 / 会议 ID** | `meeting get` |
+| **包含关键词**（会议主题、创建人、备注等），无论是否同时带时间范围 | `search` 命令 |
 
 ### 会议查询
 
 - **仅时间** → 使用 `tmeet meeting list`（待开始/进行中）或 `tmeet meeting list-ended`（已结束）
-- **含关键词**（主题 / 会议号 / 创建人 / 备注等） → 使用 `tmeet meeting search`，并通过对应参数指定关键词；可与时间范围组合
+- **已知会议号 / 会议 ID** → 使用 `tmeet meeting get`（获取会议详情；录制/回放查询亦先按会议号 / 会议 ID 分流，见[「录制查询路由总则」](references/tmeet-record.md#录制查询路由总则)）
+- **含关键词**（主题 / 创建人 / 备注等） → 使用 `tmeet meeting search`，并通过对应参数指定关键词；可与时间范围组合
 
 ### 录制查询
 
@@ -127,11 +129,13 @@ tmeet
   |------|---------|
   | `meeting cancel` | 取消会议，不可恢复 |
   | `meeting update` | 修改会议信息（时间、主题等），影响所有参会人 |
+  | `meeting create`（携带 `--invitees` 时） | 最多 100 人，受邀者会收到会议通知；执行前必须展示会议主题、时间与完整受邀成员名单（成员回显遵循「成员回显格式」）并获得明确确认 |
   | `meeting invitees-add` | 向会议中添加受邀成员，被邀请者会收到会议通知；执行前必须展示目标会议与成员名单并获得明确确认 |
   | `meeting invitees-remove` | 从会议中移除受邀成员 |
   | `meeting invitees-replace` | 整体替换会议受邀成员列表（未在新列表中的成员会被移除） |
   | `control call` | 主动呼叫成员入会，会向目标成员发起会议邀请通话，对其产生实际打扰 |
   | `control kick` | 将成员踢出会议，立即生效；**目标成员的 `open_id` / `ms_open_id` 必须来自 `report participants`，严禁使用 `contact search` 结果** |
+  | `control waiting-room` | 等候室管理（移入会议/移回等候室/移出踢出）；`expel` 等同踢人，执行前必须列明目标成员 |
   | `auth logout` | 清除本地登录凭证 |
   | `record permission-apply-commit` | 正式提交录制权限申请，会触发审批流程（必须先执行 `record permission-apply-prepare` 并向用户展示申请信息确认）|
 
@@ -153,9 +157,9 @@ tmeet
 
 - **必填参数缺失时，必须向用户确认补充，禁止自行填充**：若执行命令所需的必填参数未由用户提供，**不得自行推断或填充默认值**，必须明确告知用户缺少哪些参数并请求补充，待用户提供后再执行命令。
 
-- **通讯录搜索仅限特定场景使用**：`contact search` / `contact lookup-by-phone` / `contact lookup-by-email` **仅可用于“会议邀请”（如 `meeting invitees-add`、`meeting invitees-replace`）、“呼叫成员入会”（`control call`）两类场景**，用于将用户名解析为对应的 `openId`。**严禁在其他场景下调用 `contact search`**（例如：仅为查看某人部门/职位、查询联系方式、好奇某人信息等与会议邀请/呼叫无关的场景），不得将通讯录作为通用人员信息查询接口使用。
+- **通讯录搜索仅限特定场景使用**：`contact search` / `contact lookup-by-phone` / `contact lookup-by-email` **仅可用于“会议邀请”（如 `meeting invitees-add`、`meeting invitees-replace`、携带 `--invitees` 的 `meeting create`）、“呼叫成员入会”（`control call`）两类场景**，用于将用户名解析为对应的 `openId`。**严禁在其他场景下调用 `contact search`**（例如：仅为查看某人部门/职位、查询联系方式、好奇某人信息等与会议邀请/呼叫无关的场景），不得将通讯录作为通用人员信息查询接口使用。
 
-- **会中踢人（`control kick`）的成员来源硬约束**：`control kick` 的 `--users` / `--sip-users` / `--pstn-users` 参数值（即 `open_id` / `ms_open_id`）**必须从 `tmeet report participants` 返回的会中参会人列表中获取**，**严禁使用 `contact search` / `contact lookup-by-phone` / `contact lookup-by-email` 等通讯录查询结果作为踢人来源**。原因：通讯录返回的是组织成员名录，并不代表他们已加入当前会议；且踢人需要区分普通成员 / Sip / Pstn 三类身份，这些信息只有 `report participants` 能准确提供。正确调用顺序：`tmeet report participants` → 按姓名等描述筛选出目标参会人 → 向用户确认 → `tmeet control kick`。
+- **会中踢人（`control kick`）与等候室管理（`control waiting-room`）的成员来源硬约束**：`control kick` 的 `--users` / `--sip-users` / `--pstn-users` 参数值（即 `open_id` / `ms_open_id`）**必须从 `tmeet report participants` 返回的会中参会人列表中获取**；`control waiting-room` 的同类参数值**必须按操作类型获取**——`back-to-waiting` 的目标为会中成员，取自 `tmeet report participants`；`enter-meeting` / `expel` 的目标为等候室成员，取自 `tmeet report waiting-room-log`——**严禁使用 `contact search` / `contact lookup-by-phone` / `contact lookup-by-email` 等通讯录查询结果作为成员来源**。原因：通讯录返回的是组织成员名录，并不代表他们已加入当前会议或在等候室中；且操作需要区分普通成员 / Sip / Pstn 三类身份，这些信息只有 `report participants` / `report waiting-room-log` 能准确提供。正确调用顺序：按操作类型先执行 `tmeet report participants` 或 `tmeet report waiting-room-log` → 按姓名等描述筛选出目标成员 → 向用户确认 → `tmeet control kick` / `tmeet control waiting-room`。
 
 - **多结果必须由用户确认，禁止自行猜测**：当任一查询/搜索类命令返回 **多条候选结果**（典型如 `contact search` 命中多名同名/同部门成员）时，**严禁**模型基于职位、部门、入职时间、匹配度等任何维度自行选择某一条继续后续操作（如 `meeting invitees-add`、`control call`、`control kick` 等）。必须将候选项的关键信息以清晰列表形式展示给用户，并明确询问"请确认要选择哪一项"，待用户明确指定后再继续执行。即便其中某条结果看起来"明显更匹配"，也必须等待用户确认，不得跳过该步骤。
 

@@ -61,15 +61,18 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 技能文档命令树与参数均已对照 tmeet 1.0.15 实测 help 核验（含 1.0.15 新增的
 `meeting search`、`control waiting-room`），无发现不符。为适配品悟运行形态，在
 上游 tag v1.0.15 的 `skills/tmeet-skill/` 基础上做了以下修改（1-4、6 的 SKILL.md
-部分仅限 `SKILL.md`；第 5 条与第 6 条另涉 `references/tmeet-record.md` /
-`references/tmeet-auth.md` 各一处措辞修正，其余 references/ 与上游逐字节一致，
+部分仅限 `SKILL.md`；第 5 条另涉 `references/tmeet-record.md` 一处、第 6 条
+另涉 `references/tmeet-auth.md` 两处措辞修正，其余 references/ 与上游逐字节一致，
 已经上游 tag diff 逐文件复核。第六轮核验注 2026-08-16：上述「其余 references
 逐字节一致」经 /tmp 上游 v1.0.15 快照重验仍成立——tmeet-meeting/contact/
 tshoot/report/control 五篇与上游一致，record.md / auth.md 的差异即第 5、6 条
 所述内容。第七轮审查注 2026-08-27：本轮新增第 7-12 条文档缺陷修复，触及
 `SKILL.md` 与 `references/tmeet-contact.md` / `tmeet-meeting.md` /
 `tmeet-record.md` / `tmeet-tshoot.md` 四篇，此后上游同步的重放基线为第 1-12
-条，上一段「其余 references 逐字节一致」仅描述第 1-6 条完成时点的状态）：
+条，上一段「其余 references 逐字节一致」仅描述第 1-6 条完成时点的状态。
+第八轮审查注 2026-09-05：本轮新增第 13-19 条文档缺陷修复，触及 `SKILL.md`
+与 `references/tmeet-meeting.md` / `tmeet-control.md` / `tmeet-tshoot.md`
+三篇，此后上游同步的重放基线为第 1-19 条）：
 
 1. **frontmatter `description` 重写**：上游 description 长 327 字符，超过品悟
    SkillRegistry 的 280 字符截断上限，压缩为 211 字符，并按品悟契约改为
@@ -130,6 +133,59 @@ tshoot/report/control 五篇与上游一致，record.md / auth.md 的差异即�
     `--meeting-code` 要求仅数字无短横线（同文件 search 参数表与
     `tmeet-meeting.md` `--meeting-code` 均注明「仅数字，无短横线」），现于该
     示例处补一句去短横线提醒（如 `683-872-007` → `683872007`）。
+
+以下第 13-19 条为 2026-09-05 第八轮文档审查（doc audit）修复，全部为确定性
+文档缺陷（矛盾/错误/遗漏），不改变命令与参数语义：
+
+13. **SKILL.md 查询路由补「已知会议号 / 会议 ID」三分流**：上游 SKILL.md
+    「查询命令选择准则」表仅 list/search 二路，与上游自身的
+    `references/tmeet-meeting.md` 选择提示及 `references/tmeet-record.md`
+    「录制查询路由总则」（均含「会议号 / 会议 ID → `meeting get`」）矛盾。
+    SKILL.md 选择准则表补「已知会议号 / 会议 ID → `meeting get`」行、「会议
+    查询」节补对应 bullet（含指向「录制查询路由总则」的交叉引用）；同时移除
+    选择准则表「包含关键词」行与「会议查询」bullet 关键词清单中的「会议号」、
+    章节标题去「（list vs search）」尾巴并同步 `tmeet-meeting.md` 的回链锚点，
+    消除同输入同时命中 get/search 两行的歧义（关键词清单与
+    `tmeet-meeting.md`「主题 / 创建人 / 备注」口径一致）。`meeting search
+    --meeting-code` 作为参数能力的陈述（命令树注释、search 参数表与示例）
+    保留不变。
+14. **SKILL.md 强制二次确认表补 `meeting create`（携带 `--invitees` 时）行**：
+    上游确认表漏列；1.0.15 help/源码（`cmd/meeting/create.go`）注明 invitees
+    上限 100，与 `invitees-add` 同为向真人发送会议通知的打扰类写操作。确认
+    要求采用行内自带写法（展示会议主题、时间与完整受邀成员名单并获明确确认），
+    不套用「受邀人管理类写操作的二次确认模板」——该模板作用域钉死三条
+    invitees 命令，且其展示字段（会议号）对尚未创建的会议不可实例化。
+15. **SKILL.md 强制二次确认表补 `control waiting-room` 行**：上游确认表
+    漏列；1.0.15 新增的等候室管理含 `expel`（移出踢出）等对真人产生实际影响
+    的操作（实测 help 三操作类型 enter-meeting / back-to-waiting / expel），
+    表行要求执行前列明目标成员。
+16. **SKILL.md 成员来源硬约束扩到 `control waiting-room`**：原「会中踢人
+    （`control kick`）的成员来源硬约束」bullet 扩为 kick 与 waiting-room
+    共用，目标成员 `open_id` / `ms_open_id` 严禁使用通讯录查询结果；
+    kick 仅限 `report participants`，waiting-room 按操作类型取
+    `report participants`（`back-to-waiting`，目标为会中成员）或
+    `report waiting-room-log`（`enter-meeting` / `expel`，目标为等候室成员），
+    与 `references/tmeet-control.md` kick / waiting-room 两节既有 🔒 约束
+    口径一致（第九轮审查代修按操作类型分列，消除并集表述对 kick 来源的
+    放宽与对 `back-to-waiting` 的来源误导）。
+17. **`references/tmeet-tshoot.md` `--upload` 补隐私提示**：1.0.15 源码将
+    完整命令行以 INFO 级写入本地日志（`cmd/root.go`），日志可能含会议号、
+    联系人等敏感信息，参数说明补「上传前提示用户确认后再上传」。
+18. **`references/tmeet-meeting.md` create 节补确认警示**：与同文件
+    update / cancel 及三条 invitees 节的 ⚠️ 写法对齐，补「携带 `--invitees`
+    时为高风险写操作」确认要求并指向 SKILL.md 安全规则确认表。
+19. **`references/tmeet-control.md` waiting-room 节确认要求补强**：⚠️ 行补
+    「`expel`（移出踢出）等同踢人，执行前必须列明目标成员」，与 SKILL.md
+    确认表补行（第 15 条）口径一致。
+
+第九轮审查注 2026-09-05（重审代修，不新增登记条目，重放基线仍为第 1-19 条）：
+SKILL.md 成员来源硬约束 bullet 按操作类型分列（第 16 条已同步改写）；
+`references/tmeet-contact.md` 两处指名引用同步第 16 条 bullet 新标题，并在
+前置门禁场景示例与 SKILL.md「通讯录搜索仅限特定场景使用」示例中补入携带
+`--invitees` 的 `meeting create`（与第 14 条确认行闭环，`tmeet-meeting.md`
+create 节 `--invitees` 参数行同步补 openid 来源指引）；`tmeet-meeting.md`
+create 节警示链接文字补「」、SKILL.md 会议查询路由行补「录制查询路由总则」
+链接；本声明首段第 5/6 条范围句修正（auth.md 实为两处）。
 
 本轮不改动 SKILL.md frontmatter `version: 1.0.15`：该版本号钉扎上游 tag
 v1.0.15 基线，与 `tmeet.rs` 的 `TMEET_NPM_SPEC`（`@tencentcloud/tmeet@1.0.15`）
