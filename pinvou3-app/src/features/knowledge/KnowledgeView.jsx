@@ -434,10 +434,14 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         { key: 'ppt', label: t.kbOutCatPpt, color: '#e0773a', icon: PresentationIcon },
       ];
       const outCatMeta = (k) => OUTPUT_CATS.find((c) => c.key === k) || OUTPUT_CATS[0];
+      const outputsDisposedRef = useRef(false);
       const refreshOutputs = useCallback(async () => {
         const list = bridge && bridge.artifacts.listDeliverableIndex
           ? await bridge.artifacts.listDeliverableIndex().catch(() => [])
           : await inv('list_deliverable_index').catch(() => []);
+        // 卸载清理已释放大表：unmount 前发起的在途请求 resolve 后不得把索引
+        // 回写进模块级缓存，否则抵消清理意图（unmount 后 setOutputs 是 no-op，无害）。
+        if (outputsDisposedRef.current) return;
         const nextList = list || [];
         const nextSig = outputListSig(nextList);
         if (nextSig !== outputsSigRef.current) {
@@ -465,8 +469,9 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // 视图按需条件渲染,卸载后模块级缓存会存活整个窗口周期:产出物索引是
       // 无上限大表,卸载时释放;轻量字段(stats/embedInfo/scan 游标等)保留。
       // 重挂载由 sub='output' 的既有 refreshOutputs() 路径重拉;outputsLoaded
-      // 归位让骨架屏接管,避免闪现「空状态」。
+      // 归位让骨架屏接管,避免闪现「空状态」。disposed 标志拦下在途回写。
       useEffect(() => () => {
+        outputsDisposedRef.current = true;
         kbCache.outputs = [];
         kbCache.outputsLoaded = false;
       }, []);
