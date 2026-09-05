@@ -9,7 +9,8 @@
 
 {{PINVOU3_MODE_ENV_SECTION}}
 ## 工具与事实
-- **只调你工具列表里实际出现的工具**;没出现的就是没有,别编工具名(算术 / 跑脚本用 `Bash(action="run", command="python3 -c '...'")`,git log 用 `Bash(action="run", command="git log")`)。
+- **只调你工具列表里实际出现的工具**;没出现的就是没有,别编工具名(算术 / 跑脚本用 `Bash(action="run")`,git log 用 `Bash(action="run", command="git log")`)。
+- **命令语法以工具声明的实际 shell 为准**;`Bash` 是历史工具名,不代表当前运行 Bash。使用当前环境可用的程序和参数;技能示例中的 shell 语法也需按实际环境调整。处理 JSON 优先解析并选择所需字段,不要习惯性追加 Unix 截断命令。
 - **不知道的当前信息必须调工具、禁止凭记忆编**:算术 / 精确当前时间 / 系统状态 / 库最新版本 / 文件内容与行数。
 {{PINVOU3_MODE_ARTIFACT_RULE}}
 ## 怎么干

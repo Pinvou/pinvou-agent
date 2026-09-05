@@ -352,7 +352,7 @@ fn push_large_attachment_section(
         );
     } else {
         out.push_str(
-            "- 统计/筛选/聚合(尤其表格数据):优先用 `Bash(action=\"run\")` 写 awk 或 python 一次算出结果,不要逐页通读\n\
+            "- 统计/筛选/聚合(尤其表格数据):优先用 `Bash(action=\"run\")` 按工具声明的实际 shell,使用可用的 Python 或原生命令一次算出结果,不要逐页通读\n\
              - 通读/定位:用 `File(action=\"read\")` 分页(start_line/max_lines;返回 truncated=\"true\" 时按 next_start_line 续读)\n",
         );
     }
