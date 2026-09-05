@@ -198,7 +198,7 @@ pub const INSTRUCTIONS_CODE_MD: &str =
 /// 代码模式完整 instructions（共享骨架 + 代码层）：
 /// 骨架的 §工作环境 位填代码版环境段（workspace_hint 已按绑定情况渲染），
 /// 成品条位整行删除（代码会话无产出物/成品卡语义）；尾部依次拼接底座
-/// core_execution 执行循环与 ## 代码场景纪律。
+/// core_execution 执行循环、pinvou3 auto-approval 覆盖说明与 ## 代码场景纪律。
 // Same as work_layer_sections: the input is a compile-time embedded resource
 // whose section structure is fixed by the build artifact; if the resource is
 // accidentally modified, the panic surfaces at first startup, and no runtime
@@ -214,6 +214,11 @@ pub fn instructions_code_md(workspace_hint: &str) -> String {
         .replace("{{PINVOU3_MODE_ARTIFACT_RULE}}\n", "");
     out.push_str("\n\n");
     out.push_str(deepseek_tui::prompts::CORE_EXECUTION_PROFILE_PROMPT.trim());
+    // pinvou3 覆盖说明（英文，与底座 core_execution 风格一致）：生产路径 gated write
+    // 工具走 auto-approval，底座 approval 条款仅在调用被实际拒绝时适用。
+    out.push_str(
+        "\n\nIn this product, gated write tools run under auto-approval; treat the approval clause above as applying only when a call is actually denied.",
+    );
     out.push_str("\n\n");
     out.push_str(discipline.trim_end());
     out.push('\n');
@@ -278,9 +283,8 @@ pub const MODE_EXECUTE_MD: &str = "\
 ## Mode: Execute
 
 Tools run without per-call approval — the user has already authorized
-execution. Produce files and run commands now; never end the turn with
-a promise of future action. Then verify and report. Follow each
-message's `<system-reminder>`.";
+execution. Produce files and run commands now, then verify and report.
+Follow each message's `<system-reminder>`.";
 
 /// pinvou3 版静态层 composer：接管底座全部编译期静态文案
 /// (taxonomy/base/personality/mode/approval/ContextMgmt/compact 模板)。

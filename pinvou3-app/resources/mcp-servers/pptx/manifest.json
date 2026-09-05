@@ -10,7 +10,7 @@
   "args": ["server.py"],
   "env": {},
   "config_fields": [],
-  "pip_dependencies": ["python-pptx"],
+  "pip_dependencies": ["python-pptx", "Pillow"],
   "python_dependencies": {
     "schema_version": 1,
     "targets": [

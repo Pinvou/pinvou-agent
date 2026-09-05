@@ -634,7 +634,7 @@ TOOL_DEFS = [{
                     "- kpi: {layout, title, items:[{num, label},...]}  ← 最多4个大数字\n"
                     "- chart: {layout, title, chartType:'bar'|'pie'|'line', categories:[字符串,...], series:[{name, data:[数字,...]},...]}\n"
                     "- table: {layout, title, headers:[字符串,...], rows:[[单元格,...],...]}\n"
-                    "- image: {layout, title, bullets:[字符串,...], caption}\n"
+                    "- image: {layout, title, bullets:[字符串,...], caption, image:<本地图片绝对路径，可选>}\n"
                     "- end: {layout, title, subtitle}  ← 结尾页\n"
                     "正文要有真实内容/数据,不要只放标题。"
                 ),
