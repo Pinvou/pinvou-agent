@@ -200,6 +200,52 @@ function renderLegacyMarkdownCached(item, syntaxVersion) {
   return html;
 }
 
+// 与 legacyMarkdownCache 同思路:ChatBubble 输入框每个按键、流式每个 delta、秒级 tick
+// 都会全量重渲,而 assistant 气泡每渲染要跑三轮 pre/code 正则解析(persona 草稿、定时
+// 任务草稿、card-question 追问)+流式折叠。整条链是
+// (html, streaming, allowScheduledTaskDraft, streamingDraftLabel) 的纯函数,按 item 键控
+// 缓存、四元组未变直接复用;流式期间 item 随 delta 换新引用,缓存自然失效,行为不变。
+const assistantParseCache = new WeakMap();
+function parseAssistantBubblesCached(item, html, streaming, allowScheduledTaskDraft, streamingDraftLabel) {
+  const cached = assistantParseCache.get(item);
+  if (cached
+    && cached.html === html
+    && cached.streaming === streaming
+    && cached.allowScheduledTaskDraft === allowScheduledTaskDraft
+    && cached.streamingDraftLabel === streamingDraftLabel) {
+    return cached.parsed;
+  }
+  const pd = streaming ? { draft: null, html: hideStreamingDraft(html, streamingDraftLabel) } : parsePersonaDraft(html);
+  const sd = (streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);
+  const cq = streaming ? { q: null, html: sd.html } : parseCardQuestion(sd.html);
+  const parsed = { pd, sd, cq };
+  assistantParseCache.set(item, { html, streaming, allowScheduledTaskDraft, streamingDraftLabel, parsed });
+  return parsed;
+}
+
+// 记忆状态映射表只依赖当前语言词典 t(字典表为模块单例),按 t 缓存,
+// 避免每个气泡每次渲染都重建同一张表。
+const memoryStatusLabelsCache = new WeakMap();
+function getMemoryStatusLabels(t) {
+  let labels = memoryStatusLabelsCache.get(t);
+  if (!labels) {
+    const chatCopy = t.uiChat;
+    const chatViewCopy = t.uiChatView;
+    labels = {
+      '已忽略': chatCopy.ignoreOnce,
+      '不再提示': chatCopy.neverAsk,
+      '已记住': chatViewCopy.memStatusRemembered,
+      '已归档': chatViewCopy.memStatusArchived,
+      '已删除': chatViewCopy.memStatusDeleted,
+      '记忆已更新': chatCopy.memoryUpdated,
+      '记忆已归档': chatViewCopy.memStatusArchivedNotice,
+      '记忆已删除': chatViewCopy.memStatusDeletedNotice,
+    };
+    memoryStatusLabelsCache.set(t, labels);
+  }
+  return labels;
+}
+
 function localizeSceneTabs(items, copy) {
   return items.map(item => ({
     ...item,
@@ -2366,7 +2412,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                             sessionId={activeSessionId}
                             theme={theme}
                             t={t}
-                            onPrefill={(text) => setInputText(text)}
+                            onPrefill={setInputText}
                             onSend={sendChatMessage}
                             editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
                             onOpenEditor={onOpenEditor}
@@ -2415,7 +2461,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   .slice(-2)
                   .map((item) => (
                     <div key={item.id} className="pointer-events-auto w-full flex justify-end">
-                      <ChatBubble item={item} sessionId={activeSessionId} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={sendChatMessage} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
+                      <ChatBubble item={item} sessionId={activeSessionId} theme={theme} t={t} onPrefill={setInputText} onSend={sendChatMessage} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
                     </div>
                   ))}
               </div>
@@ -3480,20 +3526,10 @@ const ThinkingBubble = ({ thinking, _theme, t, isLocal }) => {
     }
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bubble dispatches rendering by message type; split refactor tracked separately
-    const ChatBubble = ({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true }) => {
+    const ChatBubble = React.memo(function ChatBubble({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true }) {
       const chatCopy = t.uiChat;
-      const chatViewCopy = t.uiChatView;
       // 后端持久化的记忆状态值是固定中文数据，仅在 UI 边界映射为当前语言；未识别值原样透传
-      const memoryStatusLabels = {
-        '已忽略': chatCopy.ignoreOnce,
-        '不再提示': chatCopy.neverAsk,
-        '已记住': chatViewCopy.memStatusRemembered,
-        '已归档': chatViewCopy.memStatusArchived,
-        '已删除': chatViewCopy.memStatusDeleted,
-        '记忆已更新': chatCopy.memoryUpdated,
-        '记忆已归档': chatViewCopy.memStatusArchivedNotice,
-        '记忆已删除': chatViewCopy.memStatusDeletedNotice,
-      };
+      const memoryStatusLabels = getMemoryStatusLabels(t);
       const localizedMemoryStatus = (label) => memoryStatusLabels[label] || label;
       const assistantSelectionHostRef = useRef(null);
       const assistantSelectionTargetRef = useRef(null);
@@ -3530,9 +3566,9 @@ const ThinkingBubble = ({ thinking, _theme, t, isLocal }) => {
           ? renderLegacyMarkdownCached(item, syntaxVersion)
           : (item.html || '');
         const streamingDraftLabel = /scheduled-task-draft/.test(html) ? t.uiChatExtra.draftingScheduled : (t && t.cpDesigning);
-        const pd = item.streaming ? { draft: null, html: hideStreamingDraft(html, streamingDraftLabel) } : parsePersonaDraft(html);
-        const sd = (item.streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);
-        const cq = item.streaming ? { q: null, html: sd.html } : parseCardQuestion(sd.html);
+        // 三轮解析链纯函数化并按 item 缓存(见 parseAssistantBubblesCached):
+        // memo 击穿(流式 delta/syntaxVersion bump)时也只重算真正变化的气泡。
+        const { pd, cq } = parseAssistantBubblesCached(item, html, !!item.streaming, allowScheduledTaskDraft, streamingDraftLabel);
         const assistantCopyAvailable = !item.streaming
           && [item.text, item.html].some(value => String(value || '').trim());
         // 草稿是否已存入(按名字在已加载的卡池里找同名自制卡 → 派生"已存入",免单独持久化)
@@ -3748,7 +3784,11 @@ const ThinkingBubble = ({ thinking, _theme, t, isLocal }) => {
       }
 
       return null;
-    };
+    });
+    // ChatBubble memo 化:inputText 挂在 ChatView 顶层,每个按键都整视图重渲;legacy
+    // 气泡列表 O(n),memo 后未变化的气泡只剩 prop 浅比较。调用点回调均为稳定引用
+    // (setInputText/sendChatMessage/onOpenEditor),item 由 bridge 会话数据保持引用稳定;
+    // syntaxVersion 订阅在组件内部,memo 不会阻断懒语言注册后的重渲染。
 
     // ==========================================
     // Artifact Card — present_artifact 成品卡（点击打开预览）

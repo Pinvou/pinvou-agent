@@ -281,6 +281,7 @@ export function ProvidersSection({ t }) {
   // 为输出最新一行，80ms 限流）。只消费当前标签页 Agent 的事件，避免切页串扰。
   useEffect(() => {
     if (!isTauriAvailable()) return;
+    let disposed = false;
     let unlisten = null;
     tauriEvents
       .listen('acp:install-progress', event => {
@@ -294,9 +295,12 @@ export function ProvidersSection({ t }) {
         }
       })
       .then(fn => {
+        // 注册是异步的：卸载后才 resolve 时必须立刻反注册，否则监听泄漏。
+        if (disposed) { fn(); return; }
         unlisten = fn;
       });
     return () => {
+      disposed = true;
       if (unlisten) unlisten();
     };
   }, []);

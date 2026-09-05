@@ -65,8 +65,15 @@ pub(crate) fn spawn_event_forwarder(
         let mut turn_tracker = TurnCompletionTracker::default();
         let mut scheduled_engine_total_tokens = 0_u64;
         let mut scheduled_persistence_error: Option<String> = None;
-        let mut latest_chat_engine_state: Option<ChatEngineState> = None;
+        // 快照用 Arc 共享:SessionUpdated 事件携带的全量 transcript 不再为留存
+        // 终态快照而整份深拷贝,TurnComplete 处也只克隆 Arc。
+        let mut latest_chat_engine_state: Option<Arc<ChatEngineState>> = None;
         let mut chat_persistence_error: Option<String> = None;
+        // 最近一次成功落盘快照的 transcript revision 缓存:仅在“最新快照已成功
+        // 落盘且此后无新快照”时为 Some。终态用它判定终态落盘与最后一次
+        // per-message 落盘内容完全相同,从而跳过重复写盘并复用 revision(见
+        // TurnComplete 臂);任何新快照、落盘失败或哈希失败都会清空它。
+        let mut last_persisted_chat_revision: Option<String> = None;
         let mut active_transcript_seen = false;
         // A typed preflight rejection completes the admitted lifecycle without
         // changing engine history. Preserve that distinction through
@@ -459,23 +466,31 @@ pub(crate) fn spawn_event_forwarder(
                         let (messages, matched_active_rule) =
                             turn_lifecycle.sanitize_messages(messages);
                         active_transcript_seen |= matched_active_rule;
-                        let state = ChatEngineState {
+                        let state = Arc::new(ChatEngineState {
                             messages,
                             system_prompt,
                             model,
                             workspace,
-                        };
-                        latest_chat_engine_state = Some(state.clone());
+                        });
+                        // 落盘前先失效 revision 缓存:此刻最新内容尚未落盘,
+                        // 旧缓存不能被终态臂误读为“最新快照已持久”。
+                        last_persisted_chat_revision = None;
+                        latest_chat_engine_state = Some(Arc::clone(&state));
                         let store_for_save = store.clone();
                         let session_for_save = session_id.clone();
                         match tokio::task::spawn_blocking(move || {
-                            store_for_save.persist_chat_engine_state(&session_for_save, state)
+                            store_for_save.persist_chat_engine_state(&session_for_save, &state)
                         })
                         .await
                         {
                             Ok(Ok(saved)) => {
                                 chat_persistence_error = None;
-                                if let Ok(revision) = transcript_revision(&saved.messages) {
+                                // revision 对本次落盘内容只计算一次,同时缓存给
+                                // 终态臂复用(Err 时缓存为 None,终态退回原落盘
+                                // 路径),不再对相同内容二次哈希。
+                                let revision = transcript_revision(&saved.messages).ok();
+                                last_persisted_chat_revision = revision.clone();
+                                if let Some(revision) = revision {
                                     emit_transcript_committed(
                                         &app,
                                         &session_id,
@@ -774,14 +789,36 @@ pub(crate) fn spawn_event_forwarder(
                             // and the optimistic admission fallback.
                             None
                         } else if active_transcript_seen {
-                            latest_chat_engine_state.clone().map(|state| {
-                                let store_for_save = store.clone();
-                                let session_for_save = session_id.clone();
-                                tokio::task::spawn_blocking(move || {
-                                    store_for_save
-                                        .persist_chat_engine_state(&session_for_save, state)
-                                })
-                            })
+                            // 终态快照与最后一次 SessionUpdated 落盘共用同一份
+                            // Arc,内容不可能再变化;revision 缓存命中说明同内容
+                            // 已成功落盘,此时再 load→serialize→write 一次是纯
+                            // 重复。跳过写盘,用缓存 revision 复发 terminal_fallback
+                            // 事件(载荷与原实现完全一致,事件序列不变);缓存
+                            // 未命中(最近一次落盘/哈希失败)时保留原终态落盘
+                            // 重试,失败照旧转化为 Failed 终态。
+                            match last_persisted_chat_revision.take() {
+                                Some(revision) => {
+                                    let message_count = latest_chat_engine_state
+                                        .as_ref()
+                                        .map_or(0, |state| state.messages.len());
+                                    emit_transcript_committed(
+                                        &app,
+                                        &session_id,
+                                        revision,
+                                        "terminal_fallback",
+                                        message_count,
+                                    );
+                                    None
+                                }
+                                None => latest_chat_engine_state.clone().map(|state| {
+                                    let store_for_save = store.clone();
+                                    let session_for_save = session_id.clone();
+                                    tokio::task::spawn_blocking(move || {
+                                        store_for_save
+                                            .persist_chat_engine_state(&session_for_save, &state)
+                                    })
+                                }),
+                            }
                         } else {
                             turn_lifecycle.active_transcript_fallback().map(|fallback| {
                                 let store_for_save = store.clone();
@@ -838,6 +875,9 @@ pub(crate) fn spawn_event_forwarder(
                     // rejection repersist a stale snapshot.
                     active_transcript_seen = false;
                     latest_chat_engine_state = None;
+                    // revision 缓存与快照同属本轮所有权窗口,一并失效,防止
+                    // 跨 turn 误判“最新快照已持久”。
+                    last_persisted_chat_revision = None;
                     // Keep the shell scope cancellable throughout persistence.
                     // Final cleanup runs before terminal admission is claimed;
                     // Engine reclaim can therefore still win an await race and

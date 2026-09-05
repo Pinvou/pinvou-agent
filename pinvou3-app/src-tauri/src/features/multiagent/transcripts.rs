@@ -138,8 +138,13 @@ fn transcript_is_blocked(path: &Path) -> bool {
     let mut guard = cache
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // 满员只逐出一条而不是整表清空：burst 式失效会让清单轮询在下一轮把全部
+    // transcript 重新整读一遍（缓存雪崩）。哈希表无序，逐出任意一条即可收敛。
     if guard.len() >= BLOCKED_CACHE_LIMIT && !guard.contains_key(path) {
-        guard.clear();
+        if let Some((evicted, _)) = guard.iter().next() {
+            let evicted = evicted.clone();
+            guard.remove(&evicted);
+        }
     }
     guard.insert(path.to_path_buf(), (stamp, blocked));
     blocked

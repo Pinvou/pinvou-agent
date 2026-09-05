@@ -523,12 +523,13 @@ pub async fn cancel_codex_acp(
 }
 
 #[tauri::command]
-pub fn get_codex_acp_timeline(
+pub async fn get_codex_acp_timeline(
     session_id: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<Vec<AcpEventEnvelope>, String> {
     acp_pool
         .timeline(&session_id)
+        .await
         .map_err(|error| format!("读取 Codex ACP timeline 失败: {error:#}"))
 }
 

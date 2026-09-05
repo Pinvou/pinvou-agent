@@ -3088,6 +3088,12 @@ impl AcpPool {
     pub async fn evict(&self, session_id: &str) {
         self.cancel_pending_permissions(session_id).await;
         self.cancel_pending_elicitations(session_id).await;
+        // 辅助索引映射此前只增不删：真正删除的会话条目会永久滞留。这里随
+        // 回收一并移除是安全的——`is_acp_metadata` 在 list() 时会按持久化
+        // 元数据（agents 索引或 `* (ACP)` model 字符串）按需重建该条目，启动
+        // 时也会按会话元数据整体重建。存活的会话（升级重启、模型探针）下一轮 list()
+        // 即自愈；空闲回收走 `evict_if_idle`，不经过本路径、映射原样保留。
+        self.acp_metadata_backends.write().remove(session_id);
         if let Some(runtime) = self.sessions.lock().await.remove(session_id) {
             runtime.shutdown().await;
         }
@@ -3272,14 +3278,15 @@ impl AcpPool {
         result
     }
 
-    pub fn timeline(&self, session_id: &str) -> Result<Vec<AcpEventEnvelope>> {
+    pub async fn timeline(&self, session_id: &str) -> Result<Vec<AcpEventEnvelope>> {
         if !self.is_acp(session_id) {
             bail!("当前会话不是 ACP 会话");
         }
+        self.flush_session_journal(session_id).await;
         load_timeline(session_id)
     }
 
-    pub(crate) fn web_timeline_page(
+    pub(crate) async fn web_timeline_page(
         &self,
         session_id: &str,
         after_seq: u64,
@@ -3291,6 +3298,7 @@ impl AcpPool {
         if !self.is_acp(session_id) {
             bail!("当前会话不是 ACP 会话");
         }
+        self.flush_session_journal(session_id).await;
         load_web_timeline_page(
             session_id,
             after_seq,
@@ -3299,6 +3307,22 @@ impl AcpPool {
             max_page_bytes,
             max_event_bytes,
         )
+    }
+
+    // 读盘前 best-effort 排空该会话 journal 的缓冲窗：turn 边界之外，活跃 turn 的
+    // chunk 事件最多可在 BufWriter 内滞留 64KB；不先 flush，重连重放/时间线读取会
+    // 短暂看到滞后于内存投影的视图。锁内只克隆 bridge（Arc），flush 在锁外进行。
+    // 会话不在运行时（仅存历史 journal）时无需 flush，盘上即全部持久状态。
+    async fn flush_session_journal(&self, session_id: &str) {
+        let bridge = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|session| session.bridge.clone());
+        if let Some(bridge) = bridge {
+            bridge.flush_journal();
+        }
     }
 
     pub async fn pending_permissions_for(

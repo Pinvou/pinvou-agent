@@ -16,7 +16,16 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter};
 
-const POLL_INTERVAL: Duration = Duration::from_millis(80);
+// 轮询间隔是上游缺游标 API 下的部分缓解：每 tick 底座 `inspect_job` 都会整
+// 克隆+解码全部输出（根治需要 CodeWhale 提供游标式读取，此处改不动），拉长
+// 周期直接摊薄该常数；配合 `observe_jobs` 的字节长度短路与镜像上限兜底。
+const POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// 单个任务已回显镜像（emitted_stdout+emitted_stderr）的累计上限。镜像只为
+/// 前缀增量计算服务，超限后停止增长并停发增量（见 `reconcile`）：实时展示
+/// 由前端自身尾部截断兜住，终态 BackgroundFinished 仍携带权威 tail，聊天里
+/// 的最终输出不受影响。上游提供游标 API 后应移除此兜底。
+const EMITTED_MIRROR_CAP_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone)]
 pub(crate) struct ShellOutputMonitor {
@@ -38,6 +47,9 @@ struct MonitorState {
     tools: HashMap<String, TrackedTool>,
     claimed_tasks: HashSet<String>,
     next_order: u64,
+    /// task_id -> 上一轮观察到的累计输出字节数（快照 stdout_len+stderr_len）。
+    /// 字节数没变且仍在运行时跳过 `inspect_job` 的整克隆+解码（短路面）。
+    last_output_bytes: HashMap<String, usize>,
 }
 
 #[derive(Debug)]
@@ -124,7 +136,9 @@ impl ShellOutputMonitor {
     pub(crate) fn tool_completed(&self, tool_id: &str, background_task_id: Option<&str>) {
         let mut state = self.state.lock();
         let Some(task_id) = background_task_id else {
-            state.tools.remove(tool_id);
+            if let Some(task_id) = state.tools.remove(tool_id).and_then(|tool| tool.task_id) {
+                state.last_output_bytes.remove(&task_id);
+            }
             return;
         };
         state.claimed_tasks.insert(task_id.to_string());
@@ -187,8 +201,27 @@ fn observe_jobs(
         .collect::<Vec<_>>();
     Ok(tracked
         .into_iter()
-        .filter_map(|task_id| manager.inspect_job(&task_id).ok())
-        .map(ObservedJob::from)
+        .filter_map(|task_id| {
+            // `inspect_job` 每次都整克隆+解码全部输出（上游缺游标 API）。
+            // `list_jobs` 快照自带累计字节数且本调用内已 poll 过：仍在运行
+            // 且总字节数没变时，解码结果必与上一轮相同、增量必为空，直接
+            // 跳过本次整读。终态不短路，收口事件照常发出。
+            if let Some(snapshot) = snapshots.iter().find(|job| job.id == task_id) {
+                let total = snapshot.stdout_len.saturating_add(snapshot.stderr_len);
+                if snapshot.status == ShellStatus::Running
+                    && state.last_output_bytes.get(&task_id) == Some(&total)
+                {
+                    return None;
+                }
+            }
+            let detail = manager.inspect_job(&task_id).ok()?;
+            let total = detail
+                .snapshot
+                .stdout_len
+                .saturating_add(detail.snapshot.stderr_len);
+            state.last_output_bytes.insert(task_id, total);
+            Some(ObservedJob::from(detail))
+        })
         .collect())
 }
 
@@ -238,32 +271,45 @@ impl MonitorState {
                 continue;
             };
 
-            if let Some(delta) = appended_stable_delta(
-                &tool.emitted_stdout,
-                &job.stdout,
-                job.status == ShellStatus::Running,
-            ) {
-                tool.emitted_stdout.push_str(&delta);
-                if !delta.is_empty() {
-                    emissions.push(MonitorEmission::Delta {
-                        tool_id: tool_id.clone(),
-                        stream: "stdout",
-                        content: delta,
-                    });
+            // 镜像超限的兜底：不再增长镜像、也不再逐 tick 做全量前缀增量
+            // （strip_prefix 是 O(总输出)，短路后本 tick 代价归零）。前端实时
+            // 展示自身有尾部截断；终态 BackgroundFinished 仍走权威 tail，
+            // 最终落到聊天的输出不受影响。注意这是软上限：跨限那一 tick 的
+            // 整块 delta 仍会先入镜像（判定在追加前做），实际峰值 ≈ cap +
+            // 单个轮询周期的增量。
+            let mirror_over_cap = tool
+                .emitted_stdout
+                .len()
+                .saturating_add(tool.emitted_stderr.len())
+                > EMITTED_MIRROR_CAP_BYTES;
+            if !mirror_over_cap {
+                if let Some(delta) = appended_stable_delta(
+                    &tool.emitted_stdout,
+                    &job.stdout,
+                    job.status == ShellStatus::Running,
+                ) {
+                    tool.emitted_stdout.push_str(&delta);
+                    if !delta.is_empty() {
+                        emissions.push(MonitorEmission::Delta {
+                            tool_id: tool_id.clone(),
+                            stream: "stdout",
+                            content: delta,
+                        });
+                    }
                 }
-            }
-            if let Some(delta) = appended_stable_delta(
-                &tool.emitted_stderr,
-                &job.stderr,
-                job.status == ShellStatus::Running,
-            ) {
-                tool.emitted_stderr.push_str(&delta);
-                if !delta.is_empty() {
-                    emissions.push(MonitorEmission::Delta {
-                        tool_id: tool_id.clone(),
-                        stream: "stderr",
-                        content: delta,
-                    });
+                if let Some(delta) = appended_stable_delta(
+                    &tool.emitted_stderr,
+                    &job.stderr,
+                    job.status == ShellStatus::Running,
+                ) {
+                    tool.emitted_stderr.push_str(&delta);
+                    if !delta.is_empty() {
+                        emissions.push(MonitorEmission::Delta {
+                            tool_id: tool_id.clone(),
+                            stream: "stderr",
+                            content: delta,
+                        });
+                    }
                 }
             }
 
@@ -280,7 +326,9 @@ impl MonitorState {
             }
         }
         for tool_id in finished {
-            self.tools.remove(&tool_id);
+            if let Some(task_id) = self.tools.remove(&tool_id).and_then(|tool| tool.task_id) {
+                self.last_output_bytes.remove(&task_id);
+            }
         }
         emissions
     }
@@ -365,6 +413,7 @@ fn emit_owner_reclaimed(app: &AppHandle, session_id: &str, state: &mut MonitorSt
         })
         .collect::<Vec<_>>();
     state.tools.clear();
+    state.last_output_bytes.clear();
     for (tool_id, task_id) in background {
         emit_shell_task_status(
             app,
@@ -526,6 +575,50 @@ mod tests {
             snapshot("new", "same", ShellStatus::Running),
         ]);
         assert_eq!(state.tools["tool-1"].task_id.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn oversized_mirror_stops_deltas_but_completion_still_fires() {
+        let mut state = MonitorState::default();
+        state.tools.insert(
+            "tool-1".to_string(),
+            TrackedTool {
+                command: "build".to_string(),
+                order: 0,
+                task_id: Some("job-1".to_string()),
+                emitted_stdout: "x".repeat(EMITTED_MIRROR_CAP_BYTES + 1),
+                emitted_stderr: String::new(),
+                keep_after_tool_end: true,
+            },
+        );
+        // 镜像超限：运行中的新输出不再产生增量，镜像也不再被撑大。
+        assert!(
+            state
+                .reconcile(vec![observed("job-1", ShellStatus::Running, "more\n")])
+                .is_empty()
+        );
+        assert_eq!(
+            state.tools["tool-1"].emitted_stdout.len(),
+            EMITTED_MIRROR_CAP_BYTES + 1
+        );
+        // 终态收口不受兜底影响：BackgroundFinished 仍带权威 tail。
+        let emissions = state.reconcile(vec![observed(
+            "job-1",
+            ShellStatus::Completed,
+            "more\ndone\n",
+        )]);
+        assert_eq!(
+            emissions,
+            vec![MonitorEmission::BackgroundFinished {
+                tool_id: "tool-1".to_string(),
+                task_id: "job-1".to_string(),
+                status: ShellStatus::Completed,
+                exit_code: Some(0),
+                stdout_tail: "more\ndone\n".to_string(),
+                stderr_tail: String::new(),
+            }]
+        );
+        assert!(!state.tools.contains_key("tool-1"));
     }
 
     #[test]

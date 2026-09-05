@@ -1036,6 +1036,13 @@
       if (id && typeof chatFeature.purgeSteerState === "function") {
         chatFeature.purgeSteerState(id);
       }
+      // 流式 markdown 渲染的尾沿定时器按 sid 记在 chat-events 内部表里；缓冲
+      // 被逐出/删除时一并取消，避免定时器在缓冲重建后再触发（虽然回调内有
+      // currentStreamId 守卫，但清掉才不留下跨生命周期的悬挂 timer）。
+      // chatEventsFeature 在本文件更下方初始化；purge 只在运行期发生，无 TDZ 问题。
+      if (id && chatEventsFeature && typeof chatEventsFeature.cancelStreamRenderTimers === "function") {
+        chatEventsFeature.cancelStreamRenderTimers(id);
+      }
     },
     runSyncOnSession, persistMessagesFor,
     resetPendingAssistant: function (...args) { return resetPendingAssistant(...args); },
@@ -1831,15 +1838,13 @@
   function rerenderFromMessages(opts) {
     state.chatItems = [];
     itemIdSeq = 0;
-    // Replay re-adds every historical tool_use's metadata (including
-    // write/patch's large args) to toolMeta for tool_result backfill and
-    // never deletes after backfill — the residue resides in the buffer
-    // with the working set, and memory is bounded by the 32-entry
-    // all-session LRU cap. Durable replay clears first (when not live
-    // hydrating), reclaiming only orphan entries left by interrupted
-    // turns (the live event path itself stays insert/delete balanced);
-    // the replay then rebuilds the needed entries for the historical
-    // tool_uses inside messages.
+    // Replay rebuilds toolMeta only for historical tool_uses that still have a
+    // matching tool_result to backfill (write/patch's large args otherwise
+    // duplicate the whole transcript inside the 32-entry all-session LRU).
+    // Durable replay clears first (when not live hydrating), reclaiming only
+    // orphan entries left by interrupted turns (the live event path itself
+    // stays insert/delete balanced); entries are deleted again right after
+    // their tool_result backfill lookup — nothing reads them afterwards.
     if (!(opts && opts.keepLiveToolMeta)) toolMeta = {};
     // 卡牌事件按 pos 插回原位(pos=事件发生时的 messages 数)。让重载历史不割裂。
     const pe = Array.isArray(state.personaEvents) ? state.personaEvents : [];
@@ -1950,6 +1955,9 @@
               updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
             }
           }
+          // 回填即删：meta 只服务于这一次 tool_result 还原（迟到的重复 tool_end
+          // 会被 toolCallAlreadyFinished 早退），残留会让历史 args 常驻会话缓冲。
+          delete toolMeta[c.tool_use_id];
         }
         continue;
       }
@@ -1977,7 +1985,12 @@
             addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
             textBuf = "";
           }
-          toolMeta[b.id] = { name: b.name, args: b.input };
+          // 只为仍有 tool_result 待回填的历史 tool_use 重建 meta（上方回填循环
+          // 消费后立即删除）；无结果的中断轮残留没有任何消费者，不再插入。
+          // live hydration(keepLiveToolMeta) 例外：在途工具的 tool_end 事件仍需读 meta。
+          if (resultById[b.id] || (opts && opts.keepLiveToolMeta)) {
+            toolMeta[b.id] = { name: b.name, args: b.input };
+          }
           // request_user_input → 还原只读选择卡（问题来自 input，选项高亮来自 result）
           if (b.name === "request_user_input") {
             const qs = (b.input && b.input.questions) || [];
@@ -2126,7 +2139,7 @@
     return invoke("cancel_shell_task", { sessionId, taskId });
   }
 
-  installBridgeFeature("chat-events", {
+  const chatEventsFeature = installBridgeFeature("chat-events", {
     state, listen, invoke, turnUsageDirty,
     sessionStates, renderMarkdown, bt,
     notify, onSessionEvent, runSyncOnSession,
