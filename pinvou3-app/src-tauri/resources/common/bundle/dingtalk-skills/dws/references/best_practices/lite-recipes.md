@@ -58,12 +58,12 @@
 
 ### query-doc
 
-1. `doc search --query "<关键词>"` → `nodeId`
+1. `drive search --query "<关键词>"` → `nodeId`
 2. `doc read --node <nodeId>`（按需；大文档只抽章节）
 
 ### list-folder-docs
 
-`doc list --workspace <WS_ID>` 或 `--folder <FOLDER_ID>`
+`drive list --workspace <WS_ID>` 或 `--folder <FOLDER_ID>`
 
 ## #5 工作汇报
 

@@ -31,8 +31,8 @@
 | `taskUuid` | `minutes list` | `minutes get summary/info/batch --id(s)` |
 | `userId` | `aisearch person` / `contact user search` / `contact dept list-members` | `contact user get --ids`、`todo --executors`、`calendar --users` |
 | `deptId` | `contact dept search` | `contact dept list-members --depts`；多子部门时对每个子部门分别 `dept search` 取 id |
-| `nodeId` | `doc search` | `doc read/update/copy/move/rename --node` |
-| `nodeId` | `doc list` 中的 folder 类型节点 / `doc folder create` | `doc list --folder`、`doc create --folder`、`doc upload --folder`、`doc copy/move --folder` |
+| `nodeId` | `drive search` | `doc read/update/copy/move/rename --node` |
+| `nodeId` | `drive list` 中的 folder 类型节点 / `drive mkdir` | `drive list --folder`、`doc create --folder`、`doc upload --folder`、`doc copy/move --folder` |
 | `eventId` | `calendar event list` | `calendar event get/update --id` |
 | `processInstanceId` | `oa approval list-*` | `oa approval detail/approve --instance-id` |
 | `openConversationId` | `chat search` | `chat message list/send --group` |
@@ -42,4 +42,4 @@
 | `dentryUuid` | `drive list` / `drive mkdir` | `drive info/download --file-id`、`drive list/mkdir/upload --parent-id` |
 | `dentryId` | `drive info` 的数字字段 | 仅用于 `chat message send --dentry-id` |
 
-**ID 边界硬约束**：`dentryId` 通常是纯数字，只表示聊天文件消息需要的钉盘条目数字 ID；它不是父目录 ID。遇到 `drive --parent-id`、`doc --folder`、`doc --node` 时，只能使用 `dentryUuid` / `nodeId` / 文档 URL。若当前上下文只有数字型 `dentryId`，必须先重新 `drive list` / `doc list` / `doc search` 获取正确 ID，不能把该数字直接代入后续命令。
+**ID 边界硬约束**：`dentryId` 通常是纯数字，只表示聊天文件消息需要的钉盘条目数字 ID；它不是父目录 ID。遇到 `drive --parent-id`、`doc --folder`、`doc --node` 时，只能使用 `dentryUuid` / `nodeId` / 文档 URL。若当前上下文只有数字型 `dentryId`，必须先重新 `drive list` / `drive search` 获取正确 ID，不能把该数字直接代入后续命令。
