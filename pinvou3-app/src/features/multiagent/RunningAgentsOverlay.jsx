@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { bridge } from '../../hooks/useBridge.js';
 import { can } from '../../shared/platform.js';
+import {
+  RECENT_TERMINAL_MS,
+  entryKey,
+  isTerminal,
+  overlayVisibleEntries,
+  pruneOverlayEntries,
+  statusPresentation,
+} from './overlay-model.mjs';
 
 /**
  * 蜂群运行小窗（右上角，ADR-0006 蜂群改造）：当前会话有未终态子智能体时
@@ -8,11 +16,13 @@ import { can } from '../../shared/platform.js';
  * 状态点 + 简短状态），点击条目派发 `pinvou:open-subagent` 打开其只读执行
  * 记录面板；收起/展开选择记入 localStorage。
  *
- * 状态源三层（与行内专家卡同一哲学：实时事件可能丢，落盘投影是权威）：
+ * 状态源两层（与行内专家卡同一哲学：实时事件可能丢，落盘投影是权威）：
  * - `pinvou:subagent-update`（bridge 转发的实时进展/完成事件）；
- * - `pinvou:subagent-ledger-update`（共享轮询广播的落盘快照）；
- * - 本组件自持的 `listSubagentTranscripts` 轮询兜底——只在存在未终态条目时
- *   轮询（3s 节流），全部终态即停表，会话切换时补一次冷启动快照。
+ * - 本组件自持的 `listSubagentTranscripts` 轮询兜底——只在存在未终态条目
+ *   （或会话刚切换还没有数据）时轮询（3s 节流），全部终态即停；轮询读到的
+ *   整份 ledger 快照另经 `pinvou:subagent-ledger-update` 广播：spawn 计数行
+ *   取代行内专家卡后，行内卡原有的共享轮询不再有常驻 watcher，本组件是
+ *   运行期唯一的常驻广播源，行内协调卡的后代树投影依赖它。
  *
  * 边框情绪价值：蜂群关闭 = 蓝边框，蜂群开启 = 紫边框（深浅色各配一档）；
  * 运行中状态点带呼吸动画，完成后短暂保持绿色成功态再淡出列表。
@@ -20,27 +30,10 @@ import { can } from '../../shared/platform.js';
 
 const COLLAPSE_STORAGE_KEY = 'pinvou3.swarmOverlay.collapsed';
 const POLL_INTERVAL_MS = 3000;
-// 终态条目在列表里短暂停留的时长（成功态可见窗口）。
-const RECENT_TERMINAL_MS = 3500;
 
 const swarmBorder = on => (on
   ? 'border-[#7C3AED]/50 dark:border-[#A78BFA]/45'
   : 'border-[#0B57D0]/45 dark:border-[#A8C7FA]/40');
-
-const entryKey = (sessionId, agentId) => `${sessionId || ''}\u0000${agentId || ''}`;
-
-function isTerminal(entry) {
-  return !!entry && !!entry.done && !entry.blocked;
-}
-
-function statusPresentation(entry, copy) {
-  const statusToken = String(entry && entry.status || '').toLowerCase();
-  if (entry && entry.done && entry.failed) return { text: copy.agentCard.failed, dot: 'failed' };
-  if (entry && entry.done && entry.blocked) return { text: copy.blockedTag, dot: 'blocked' };
-  if (entry && entry.done) return { text: copy.agentCard.completed, dot: 'done' };
-  if (['queued', 'pending', 'starting'].includes(statusToken)) return { text: copy.pendingTag, dot: 'running' };
-  return { text: entry && entry.status && !/\s/.test(String(entry.status)) ? entry.status : copy.agentCard.working, dot: 'running' };
-}
 
 const dotClass = {
   running: 'bg-[#0B57D0] dark:bg-[#A8C7FA] animate-pulse',
@@ -48,21 +41,6 @@ const dotClass = {
   done: 'bg-[#137333] dark:bg-[#93D5A6]',
   failed: 'bg-[#C5221F] dark:bg-[#F28B82]',
 };
-
-/**
- * 覆盖层可见性：有未终态条目，或刚结束的终态条目还在成功态展示窗口内。
- * @param {Array} entries 当前会话的条目列表
- * @param {number} now 时钟（测试注入）
- */
-export function overlayVisibleEntries(entries, now) {
-  const active = [];
-  const recent = [];
-  for (const entry of entries || []) {
-    if (!isTerminal(entry)) active.push(entry);
-    else if (entry.completedAt && now - entry.completedAt < RECENT_TERMINAL_MS) recent.push(entry);
-  }
-  return { active, recent };
-}
 
 export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) => {
   const copy = t.uiMultiAgent;
@@ -89,7 +67,9 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
       const next = { ...prev, ...detail, sessionId: sessionIdIn };
       if (detail.done && !(prev && prev.done)) next.completedAt = Date.now();
       if (!detail.done) delete next.completedAt;
-      return { ...previous, [key]: next };
+      const merged = { ...previous, [key]: next };
+      const pruned = pruneOverlayEntries(merged);
+      return pruned || merged;
     });
   }, []);
 
@@ -128,7 +108,21 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
     };
   }, [enabled, mergeEntry, sessionId]);
 
-  // 轮询兜底：仅当存在未终态条目（或会话刚切换还没数据）时轮询；全终态停表。
+  const sessionEntries = useMemo(
+    () => Object.values(entries).filter(entry => entry.sessionId === sessionId),
+    [entries, sessionId],
+  );
+  // 会话内是否存在未终态条目：驱动轮询兜底的启停（见下方 effect）。
+  const sessionHasActive = useMemo(
+    () => sessionEntries.some(entry => !isTerminal(entry)),
+    [sessionEntries],
+  );
+
+  // 轮询兜底：有未终态条目（或会话刚切换还没有数据）时轮询落盘投影，全部
+  // 终态即停。重启是声明式的：新条目进入运行态时 `sessionHasActive` 翻回
+  // true，本 effect 重跑——不存在「停表后无法唤醒」的死状态。单次读数失败
+  // （bridge 返回 null 而不是 []）是瞬时故障：不停表，下一轮照常重试（与
+  // SubagentTranscriptPanel 同口径）。
   useEffect(() => {
     if (!enabled || !sessionId) return;
     let stopped = false;
@@ -136,38 +130,39 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
     const poll = async () => {
       timer = null;
       if (stopped) return;
-      const current = Object.values(entriesRef.current)
-        .filter(entry => entry.sessionId === sessionId);
-      const hasActive = current.some(entry => !isTerminal(entry));
-      const known = current.length > 0;
-      if (known && !hasActive) return; // 全终态：停表，等下一条实时事件再唤醒
       try {
         const list = await bridge.multiAgent.listSubagentTranscripts(sessionId);
-        if (stopped || !Array.isArray(list)) return;
-        for (const summary of list) {
-          if (!summary || !summary.agent_id) continue;
-          mergeEntry(sessionId, {
-            sessionId,
-            agentId: summary.agent_id,
-            role: summary.role || null,
-            status: summary.status || null,
-            done: !!summary.done,
-            failed: !!summary.failed,
-            blocked: !!summary.blocked,
-            source: 'ledger',
-          });
+        if (stopped) return;
+        if (Array.isArray(list)) {
+          for (const summary of list) {
+            if (!summary || !summary.agent_id) continue;
+            mergeEntry(sessionId, {
+              sessionId,
+              agentId: summary.agent_id,
+              role: summary.role || null,
+              status: summary.status || null,
+              done: !!summary.done,
+              failed: !!summary.failed,
+              blocked: !!summary.blocked,
+              source: 'ledger',
+            });
+          }
+          // 整份快照广播一次，供行内协调卡投影自己的后代树。
+          window.dispatchEvent(new CustomEvent('pinvou:subagent-ledger-update', {
+            detail: { sessionId, agents: list },
+          }));
         }
       } catch {
         // 单次轮询失败不致命，下一轮重试。
       }
-      if (!stopped) timer = setTimeout(poll, POLL_INTERVAL_MS);
+      if (!stopped && sessionHasActive) timer = setTimeout(poll, POLL_INTERVAL_MS);
     };
     timer = setTimeout(poll, 0);
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
     };
-  }, [enabled, mergeEntry, sessionId]);
+  }, [enabled, mergeEntry, sessionId, sessionHasActive]);
 
   // 会话切换时丢弃其他会话的条目，避免跨会话串台。
   useEffect(() => {
@@ -184,14 +179,10 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
     });
   }, [sessionId]);
 
-  const sessionEntries = useMemo(
-    () => Object.values(entries).filter(entry => entry.sessionId === sessionId),
-    [entries, sessionId],
-  );
-  // eslint-disable-next-line react-hooks/purity -- 成功态展示窗口按真实时钟判定，tick 到点后重算一次
-  const { active, recent } = overlayVisibleEntries(sessionEntries, Date.now());
   // 成功态展示窗口到期后自醒一次，把已展示完的终态条目淡出列表。
   const [, setRecentTick] = useState(0);
+  // eslint-disable-next-line react-hooks/purity -- 成功态展示窗口按真实时钟判定，tick 到点后重算一次
+  const { active, recent } = overlayVisibleEntries(sessionEntries, Date.now());
   useEffect(() => {
     if (recent.length === 0) return;
     const timer = setTimeout(() => setRecentTick(value => value + 1), RECENT_TERMINAL_MS + 100);
