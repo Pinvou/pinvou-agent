@@ -153,7 +153,7 @@
   "table_name": "订单表",
   "watched_field_name": "状态",
   "trigger_control_list": ["pasteUpdate", "automationBatchUpdate"],
-  "condition_list": [] /* AndCondition 数组 */ 
+  "condition_list": null /* 无条件时传 null，勿传 []（空数组报错） */
 }
 ```
 
@@ -170,7 +170,7 @@
 {
   "table_name": "任务表",
   "trigger_control_list": [],
-  "condition_list": []
+  "condition_list": null
 }
 ```
 
@@ -981,6 +981,7 @@ $.{stepId}.{fieldId}.fileToken    → 文件 Token 列表（array<string>，仅�
 ```json
 {
   "title": "新订单自动通知",
+  "client_token": "<每次请求唯一的幂等令牌>",
   "steps": [
     {
       "id": "step_1",
@@ -1062,6 +1063,18 @@ $.{stepId}.{fieldId}.fileToken    → 文件 Token 列表（array<string>，仅�
   ]
 }
 ```
+
+---
+
+## workflow 外层字段
+
+`+workflow-create` / `+workflow-update` 请求中，`steps` 之外的外层字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `title` | string | 否（建议携带） | workflow 标题；官方示例均携带，创建时建议始终提供 |
+| `client_token` | string | `+workflow-create` 必填 | 幂等令牌，每次请求唯一（时间戳或随机字符串），防止重复创建；缺失报 `client token is empty`。`+workflow-update` 的 help 提示与排查表均未要求 |
+| `status` | string | 否 | 启停状态；取值以 `+workflow-get` 返回为准，本文档不定义枚举。注意：`+workflow-update` 传 `status` 不会启停 workflow，启停须单独调用 `+workflow-enable` / `+workflow-disable` |
 
 ---
 

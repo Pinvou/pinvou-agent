@@ -74,7 +74,7 @@ No extra API call is needed — the consumer fetches it automatically. If empty,
 | `date_picker` | `option` (date string) + `timezone` | e.g. `"2024-04-01 +0800"` |
 | `picker_time` | `option` (time string) + `timezone` | e.g. `"08:30 +0800"` |
 | `picker_datetime` | `option` (datetime string) + `timezone` | e.g. `"2024-04-29 07:07 +0800"` |
-| `select_img` | `option` (single) or `options` (multi) | Image picker |
+| `select_img` | `options` (both single- and multi-select callbacks use this field; see [card/components/select_img.md](card/components/select_img.md)) | Image picker |
 
 ## Key constraints
 

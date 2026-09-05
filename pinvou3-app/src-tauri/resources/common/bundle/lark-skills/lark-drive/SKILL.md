@@ -177,9 +177,9 @@ lark-cli drive <resource> <method> [flags] # 调用 API
 
 ### permission.members
 
-  - `auth` — 
+  - `auth` — 公共访问/协作权限设置修改前的 manage-public 权限预检；详见 [references/lark-drive-workflow-permission-governance.md](references/lark-drive-workflow-permission-governance.md)
   - `create` — 增加协作者权限
-  - `transfer_owner` — 
+  - `transfer_owner` — owner 转移，高风险写：需 `--yes` 并走 permission_governance 确认（见 [references/lark-drive-workflow-permission-governance.md](references/lark-drive-workflow-permission-governance.md)）
 
 ### metas
 

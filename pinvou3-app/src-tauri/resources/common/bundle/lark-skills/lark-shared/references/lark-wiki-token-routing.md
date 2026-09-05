@@ -4,7 +4,10 @@ Wiki URL 中的 `/wiki/<token>` 是节点 token，不一定是底层文档、表
 
 ## 推荐方式
 
-优先使用 `lark-drive` 的 `drive +inspect`：
+按用途分工：
+
+- 仅解析 `space_id` / `node_token`：用 `wiki +node-get`（见 [`../../lark-wiki/SKILL.md`](../../lark-wiki/SKILL.md)）。
+- 需要底层对象路由、评论、导出等：用 `lark-drive` 的 `drive +inspect`：
 
 ```bash
 lark-cli drive +inspect --url 'https://xxx.feishu.cn/wiki/<wiki_token>'

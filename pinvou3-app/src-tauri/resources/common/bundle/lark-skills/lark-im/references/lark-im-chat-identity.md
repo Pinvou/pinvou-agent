@@ -45,9 +45,9 @@ If a bot creates a group and `--users` includes users who are mutually invisible
 
 ### Insufficient Privileges
 
-- **232016 / 232002 / 232017:** the current identity is not the owner or an admin -> switch to the owner identity
+- **232016 / 232002 / 232017:** the current identity is not the owner or an admin -> report the failure to the user and, only with the user's explicit consent, switch to the owner identity
 - **232011:** the current user is not in the group -> use a group-member identity, or join the group first
-- **232024:** the bot and the target user are mutually invisible -> switch to `--as user`
+- **232024:** the bot and the target user are mutually invisible -> report to the user and switch to `--as user` only with the user's explicit consent
 
 ## References
 
