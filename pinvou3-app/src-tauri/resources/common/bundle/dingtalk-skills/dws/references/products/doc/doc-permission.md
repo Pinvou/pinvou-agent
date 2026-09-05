@@ -28,7 +28,7 @@ Flags:
 > **重要约束**：
 >
 > - 仅支持 USER 类型授权。
-> - 角色枚举严格大写：`MANAGER` / `EDITOR` / `DOWNLOADER` / `READER`（`OWNER` 不可通过此接口添加）。
+> - 角色值大小写不敏感（CLI 内部统一规范化为大写）：`MANAGER` / `EDITOR` / `DOWNLOADER` / `READER`（`OWNER` 不可通过此接口添加）。
 > - 操作者需在该节点具备「可编辑（EDITOR）」及以上角色（OWNER / MANAGER / EDITOR）。
 > - 授权对象是文档节点本身，不需要也不应该用 `wiki member add`（那个是知识库容器级授权）。
 

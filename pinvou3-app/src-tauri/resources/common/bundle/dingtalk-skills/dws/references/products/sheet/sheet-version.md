@@ -51,7 +51,7 @@ Flags:
       --node string    表格文档 ID 或 URL (必填)
       --version int    目标版本号 (必填，从 version list 获取)
 ```
-把表格回滚到指定历史版本。**危险操作**：会覆盖当前内容，默认弹出二次确认；AI Agent 或脚本执行时可加全局 `--yes` 跳过确认。
+把表格回滚到指定历史版本。**危险操作**：会覆盖当前内容，默认弹出二次确认；须先向用户确认后方可追加 `--yes`（全局确认门禁见 SKILL.md）。
 
 ## 上下文传递
 
@@ -63,7 +63,7 @@ Flags:
 
 ## 注意事项
 
-- ★ 回滚 `version revert` 会**覆盖当前表格内容**，属危险操作，默认二次确认；确认无误再执行，脚本/Agent 场景加 `--yes`
+- ★ 回滚 `version revert` 会**覆盖当前表格内容**，属危险操作，默认二次确认；须先向用户确认后方可追加 `--yes`（全局确认门禁见 SKILL.md）
 - ★ `--version` 必须来自 `version list` 的真实返回，禁止臆测版本号
 - 底层复用 doc 域的历史版本能力（`save_doc_version` / `list_doc_versions` / `revert_doc_version`），`--node` 传在线电子表格文档即可
 - 回滚后应用独立读命令（`csv-get` / `range read`）回读确认，避免"写返回不等于完成"

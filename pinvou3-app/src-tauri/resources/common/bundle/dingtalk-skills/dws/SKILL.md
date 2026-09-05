@@ -16,14 +16,14 @@ metadata:
 > ⚠️ 命令与 flag 以当前 dws 二进制为准:`dws <cmd> --help` 是 Cobra flags 事实源,Agent 选命令/参数约束/安全确认以 leaf Schema(`--compact`)为准,与本文档冲突时以二者为准。
 
 ## 严格禁止 (NEVER DO)
-- 不要使用 dws 命令以外的方式操作（禁止 curl、HTTP API、浏览器）。**唯一例外**：aitable 导入/导出链路返回的预签名 `uploadUrl`/`downloadUrl`（`import upload` 申请的上传凭证、`export data` 返回的下载地址）允许用 curl 直传/直下（见 [aitable-export-import.md](./references/products/aitable/aitable-export-import.md)）；除此之外禁止
+- 不要使用 dws 命令以外的方式操作（禁止 curl、HTTP API、浏览器）。**唯一例外**：aitable 导入/导出/附件上传链路返回的预签名 `uploadUrl`/`downloadUrl`（`import upload` 申请的上传凭证、`export data` 返回的下载地址、`attachment upload` 返回的上传地址）允许用 curl 直传/直下（见 [aitable-export-import.md](./references/products/aitable/aitable-export-import.md) 与 [aitable-attachment.md](./references/products/aitable/aitable-attachment.md)）；除此之外禁止
 - 不要编造 UUID、ID 等标识符，必须从命令返回中提取
 - 不要猜测字段名/参数值，操作前必须先查询确认
 
 ## 严格要求 (MUST DO)
 - 所有命令必须加 `--format json` 以获取可解析输出
 - 危险操作必须先向用户确认，用户同意后才加 `--yes` 执行
-- 直接调用 dws 批量接口（如 `record update`）时单次批量不超过 30 条记录；使用 [scripts/import_records.py](./scripts/import_records.py) 批量导入时按脚本默认 50 条/批（其 `DEFAULT_BATCH_SIZE=50`，上限 100）
+- 直接调用 dws 批量接口（如 `record update`）时单次硬上限 100 条（各 record 分册同）；Agent 直连建议每批 ≤30 条以便失败重试；使用 [scripts/import_records.py](./scripts/import_records.py) 批量导入时按脚本默认 50 条/批（其 `DEFAULT_BATCH_SIZE=50`，上限 100）
 - 所有命令必须**严格遵循**对应产品参考文档里面规定的参数格式（参数与参数值之间用空格隔开）
 - **脚本只用于明确覆盖的复合任务**：[scripts/](./scripts/) 下的脚本可封装 AI 表格批量导入导出、钉盘目录树等流程；当公开 `+` Shortcut 已提供目标唯一解析、分页/部分失败 ledger 和确认语义时，优先 Shortcut。Chat 历史导出与机器人广播已完全下沉 Runtime，不再发布兼容脚本
 - **脚本调用约定**：统一用 `python3` 调用（多数 macOS/Linux 环境没有裸 `python` 命令）；文档中的 `scripts/...` 是相对本 Skill 根目录（`SKILL.md` 所在目录）的路径，实际执行时应拼成完整路径（如 `python3 <Skill根目录>/scripts/attendance_report_monthly.py ...`），**不要假设当前工作目录（CWD）已在 Skill 根目录**
@@ -89,7 +89,7 @@ metadata:
 | `devdoc`          | 开放平台文档：搜索开发文档                                        | [devdoc.md](./references/products/devdoc.md)                   |
 | `ding`            | DING消息：发送/撤回（应用内/短信/电话）                              | [ding.md](./references/products/ding.md)                       |
 | `doc`             | 钉钉文档：搜索/浏览/读写/块级编辑/评论/文件创建/复制/移动/重命名/**删除/导出 docx/权限管理/媒体上传下载**       | [doc.md](./references/products/doc.md)                         |
-| `drive`           | 钉钉云盘：文件列表/元数据/文件夹/上传(两步)/下载                        | [drive.md](./references/products/drive.md)                     |
+| `drive`           | 钉钉云盘：文件列表/元数据/文件夹/上传（凭证→OSS 直传→提交 三步，`drive upload` 一步封装）/下载                        | [drive.md](./references/products/drive.md)                     |
 | `hrbrain`         | 组织大脑：人才池管理/员工档案专项模块查询（元数据/批量数据/标签/职业历程/绩效）/结构化高级人才搜索（原始条件表达式）；区别于 `contact` 的基础通讯录档案与 `aisearch` 的通用语义找人 | [hrbrain.md](./references/products/hrbrain.md)                 |
 | `markdown`        | 原生 Markdown 文件：读取/创建/全量覆盖/字面量或 RE2 局部替换              | [markdown.md](./references/products/markdown.md)               |
 | `minutes`         | AI听记：听记列表/摘要/关键词/转写/待办/思维导图/发言人/发言人段落总结/热词/录音控制/成员权限/上传 | [minutes.md](./references/products/minutes.md)                 |
@@ -156,10 +156,16 @@ metadata:
 | `aitable` | `view delete` | 删除视图 |
 | `aitable` | `record delete` | 删除记录（支持批量） |
 | `aitable` | `chart delete` / `dashboard delete` | 删除图表/仪表盘 |
+| `aitable` | `workflow disable` | 停用自动化工作流（影响业务自动化） |
+| `aitable` | `advperm disable` | 停用高级权限总开关（关闭后全员回退默认权限） |
+| `aitable` | `advperm role-delete` | 删除自定义角色（不可逆，系统角色禁删） |
 | `calendar` | `event delete` | 删除日程，所有参与者同步取消 |
 | `calendar` | `participant delete` | 移除日程参与者 |
 | `calendar` | `room delete` | 取消会议室预定 |
 | `chat` | `group members remove` | 移除群成员 |
+| `chat` | `group dismiss` | 解散群聊（不可恢复） |
+| `chat` | `group upgrade-to-external` | 升级为外部群（组织外可见，影响成员与信息安全边界） |
+| `chat` | `clear-messages` | 清空会话聊天记录 |
 | `chat` | `message recall-by-bot` | 撤回机器人已发消息 |
 | `doc` | `delete` | **删除整篇文档/文件**到回收站（与 `block delete` 不同，本命令删除整个 node） |
 | `doc` | `block delete` | 删除文档单个块（不可恢复） |

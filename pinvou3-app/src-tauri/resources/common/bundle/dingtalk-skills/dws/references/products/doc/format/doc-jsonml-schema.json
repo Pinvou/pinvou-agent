@@ -1,4 +1,5 @@
 {
+  "_note": "legacy 结构示例，仅供 shape 参考；校验规范以 doc-jsonml-schema.md 为准",
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "DingTalk Document JSONML Body Schema",
   "description": "钉钉文档 body JSONML 的结构校验 schema",

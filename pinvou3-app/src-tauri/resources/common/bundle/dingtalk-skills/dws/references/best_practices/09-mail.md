@@ -1,6 +1,6 @@
 # 邮件
 
-> **SKILL.md** 中 #9 内联 4 条 **lite**：`mail-list-mailbox`、`mail-search`、`mail-send`、`mail-reply-forward`，见 [lite-recipes.md](./lite-recipes.md)。下列 recipe、专用规则与消歧请在命中 #9 且**超出**上述 lite 时阅读本文。
+> #9 内联 4 条 **lite**：`mail-list-mailbox`、`mail-search`、`mail-send`、`mail-reply-forward`，见 [lite-recipes.md](./lite-recipes.md)「#9 邮件」。下列 recipe、专用规则与消歧请在命中 #9 且**超出**上述 lite 时阅读本文。
 > 产品命令见 [mail.md](../products/mail.md)。通用批量/并行见 [conventions.md](./_common/conventions.md)。
 
 ## 专用规则（#9 非 lite 步骤必守）

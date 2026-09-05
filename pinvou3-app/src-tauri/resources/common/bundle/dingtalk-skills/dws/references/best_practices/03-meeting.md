@@ -1,6 +1,6 @@
 # 会议管理（日程与会议室）
 
-> **lite 速查表**含 `list-today-meetings`、`check-users-busy`（见 [SKILL.md](../../SKILL.md) 中「Lite Recipe 清单」→ [lite-recipes.md](./lite-recipes.md)）；视频会议 `start-conference` 当前 CLI 不支持。列表类操作须遵循 [calendar.md](../products/calendar.md) **「CLI 命令树与黄金路径」**，禁止无子命令的 `dws calendar` 或臆造 `calendar list`（见该文 **「反模式（禁止）」**）。**`schedule-meeting` 不做内联**：须读本文件 **「两准则」「搜房失败硬门禁」** 及下表 **schedule-meeting** 行全文。
+> **lite 速查表**含 `list-today-meetings`、`check-users-busy`（见 [lite-recipes.md](./lite-recipes.md)「#3 会议日程」）；视频会议 `start-conference` 当前 CLI 不支持。列表类操作须遵循 [calendar.md](../products/calendar.md) **「CLI 命令树与黄金路径」**，禁止无子命令的 `dws calendar` 或臆造 `calendar list`（见该文 **「反模式（禁止）」**）。**`schedule-meeting` 不做内联**：须读本文件 **「两准则」「搜房失败硬门禁」** 及下表 **schedule-meeting** 行全文。
 > **听记、会后待办、摘要分享** 见 [07-minutes.md](./07-minutes.md)。
 
 ## 日程与会议室两准则（强制）

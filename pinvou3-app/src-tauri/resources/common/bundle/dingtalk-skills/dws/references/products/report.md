@@ -87,7 +87,7 @@ dws report entry get --report-id <reportId> --format json
 
 ## 日志列表展示规范
 
-面向用户展示时，默认不要把 `reportId` / `report_id` / `report_Id` 作为主列。日志 ID 只给 Agent 后续调用 `detail` / `stats` 使用，用户一般不需要看。
+面向用户展示时，默认不要把 `reportId` / `report_id` / `report_Id` 作为主列。日志 ID 只给 Agent 后续调用 `entry get` / `entry stats` 使用，用户一般不需要看。
 
 优先展示这些字段：
 
@@ -404,8 +404,8 @@ dws report outbox list --cursor 0 --size 20 --format json
 
 | 脚本 | 场景 | 用法 |
 |------|------|------|
-| [report_inbox_today.py](../../scripts/report_inbox_today.py) | 查看今天（近 N 天）收到的日志列表，可选逐条拉取正文 | `python3 report_inbox_today.py [--days 1] [--detail] [--dry-run]` |
-| [report_received_today.py](../../scripts/report_received_today.py) | 同 `report_inbox_today.py`（上游重复发布的等价脚本，功能一致） | `python3 report_received_today.py [--days 1] [--detail] [--dry-run]` |
+| [report_inbox_today.py](../../scripts/report_inbox_today.py) | 查看今天（近 N 天）收到的日志列表，可选逐条拉取正文 | `python3 scripts/report_inbox_today.py [--days 1] [--detail] [--dry-run]` |
+| [report_received_today.py](../../scripts/report_received_today.py) | 同 `report_inbox_today.py`（上游重复发布的等价脚本，功能一致） | `python3 scripts/report_received_today.py [--days 1] [--detail] [--dry-run]` |
 
 
 

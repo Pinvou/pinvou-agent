@@ -12,11 +12,11 @@
   4. 输出日历表格式的排班表 Excel（行=员工，列=日期，单元格=班次名称）
 
 用法:
-    python attendance_schedule_export.py \
+    python3 scripts/attendance_schedule_export.py \
         --users userId1,userId2,userId3 \
         --start 2026-05-19 --end 2026-05-23
 
-    python attendance_schedule_export.py \
+    python3 scripts/attendance_schedule_export.py \
         --users userId1,userId2 \
         --start 2026-05-01 --end 2026-05-31 \
         --output my_schedule.xlsx

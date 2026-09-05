@@ -327,6 +327,8 @@
 | `createdTime` | 创建时间 |
 | `lastModifiedTime` | 最后编辑时间 |
 | `formula` | 公式字段（系统计算） |
+| 自动编号字段 | 系统自增编号 |
+| lookup/filterUp 引用字段 | 引用其他表数据的计算字段 |
 | AI 字段 | 由 AI 自动计算 |
 
 ## 常见错误速查

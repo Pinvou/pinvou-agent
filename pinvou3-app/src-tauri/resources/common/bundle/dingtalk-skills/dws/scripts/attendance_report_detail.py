@@ -30,7 +30,7 @@
   - 分批限制：≤100 人/次（check result），时间跨度 ≤1 个月
 
 用法:
-  python attendance_report_detail.py \
+  python3 scripts/attendance_report_detail.py \
     --users userId1,userId2,...  \
     --start "2026-03-01" \
     --end   "2026-03-31" \
@@ -62,7 +62,7 @@ CHECK_MAX_DAYS_PER_SLICE = 31       # check result/record: 跨度 ≤ 1 个月
 CHECK_RESULT_PAGE_SIZE = 1000       # check result: --limit 最大值
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 固定表头（与 SKILL.md 明细预定义列集合对齐）
+# 固定表头（与 attendance-report.md「预定义列集合」对齐）
 # ─────────────────────────────────────────────────────────────────────────────
 
 # 基础信息列

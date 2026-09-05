@@ -3,13 +3,13 @@
 发送带抄送的邮件（自动获取发件地址、校验参数）
 
 用法:
-    python mail_send_with_cc.py \
+    python3 scripts/mail_send_with_cc.py \
         --to colleague@company.com \
         --cc boss@company.com,team@company.com \
         --subject "周报" \
         --body "本周完成任务A和任务B"
 
-    python mail_send_with_cc.py --dry-run \
+    python3 scripts/mail_send_with_cc.py --dry-run \
         --to a@b.com --subject "test" --body "hello"
 """
 

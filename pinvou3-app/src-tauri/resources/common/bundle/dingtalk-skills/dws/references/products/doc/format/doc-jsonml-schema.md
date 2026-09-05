@@ -420,7 +420,7 @@ Suggestion: ["span",{"data-type":"text"},["span",{"data-type":"leaf"},"<your tex
 所有 inline 节点 tag 白名单（validator `validInlineTags`）：
 `text`（legacy） / `a` / `img` / `span` / `tag` / `inlineCode` / `br` / `cangjie-textinline` / `cangjie-voidinline`
 
-block tag 也可出现在 inline 上下文（如 `img` 既是 block 又是 inline）。未在白名单的 tag 会触发警告并给出 Levenshtein 建议。
+注意：`img` / `a` 等 inline 节点可作为 block 节点的子节点、与 text 容器并列，但它们**不是块级 tag**（不在上方块级白名单中）。未在白名单的 tag 会触发警告并给出 Levenshtein 建议。
 
 ### a（链接）
 
@@ -443,7 +443,7 @@ block tag 也可出现在 inline 上下文（如 `img` 既是 block 又是 inlin
 
 ### img（图片）
 
-- **tag**: `"img"`（既可作 block 也可作 inline 子节点）
+- **tag**: `"img"`（inline 子节点，可出现在 `p` / `h1`-`h6` / `a` 内；不是块级 tag）
 - **attrs**（全部 optional，但 src 语义必传）:
   - `src?: string` — 图片地址
   - `width?: number` — 宽度（px）

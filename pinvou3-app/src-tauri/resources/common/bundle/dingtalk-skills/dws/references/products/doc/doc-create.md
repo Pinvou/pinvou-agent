@@ -11,8 +11,8 @@
 
 > `dws doc create` 只能创建在线文字文档（adoc），**不要**用它承接所有「新建 xxx」请求。收到「创建/新建」类需求时，必须先按文件类型分流：
 >
-> - 用户说「创建表格 / 新建表格 / 建个电子表格 / 在线表格 / 销售数据表」等 → 走 [`dws sheet create`](../sheet.md#创建钉钉表格文档)（钉钉在线电子表格 `axls`），**不要**走 `doc create`
-> - 用户说「创建多维表格 / 新建 AI 表格 / 建个 base / 数据库表」等 → 走 [`dws aitable base create`](../aitable.md#创建-ai-表格)（多维表格 `able`），**不要**走 `doc create`
+> - 用户说「创建表格 / 新建表格 / 建个电子表格 / 在线表格 / 销售数据表」等 → 走 [`dws sheet create`](../sheet.md#意图表)（钉钉在线电子表格 `axls`），**不要**走 `doc create`
+> - 用户说「创建多维表格 / 新建 AI 表格 / 建个 base / 数据库表」等 → 走 [`dws aitable base create`](../aitable.md#base-base-管理)（多维表格 `able`），**不要**走 `doc create`
 > - 用户说「创建文档 / 新建文档 / 写篇文档 / 会议纪要 / 周报 / 方案」等文字型内容 → 才走 `dws doc create`
 >
 > 一句话口诀：表格 → sheet/aitable；文档 → doc。
@@ -44,7 +44,7 @@ Flags:
 - 不传 `--folder` 和 `--workspace` 时，默认创建在「我的文档」根目录。
 - `--folder` 仅接受文档文件夹 `nodeId` / `dentryUuid` / alidocs 文件夹 URL；**禁止**传入 drive `dentryId`、`parentId`、`spaceId` 这类纯数字 ID。
 - 输入方式选择见 [`./doc-update.md` §内容写入管道](./doc-update.md#内容写入管道createupdate-共用)（与 update 共用）。短文本字面量可 `--content`，多行/表格/特殊字符必须 `--content-file` 或 `--content -`。
-- 长内容（>30000 字符）CLI 自动分片：先创建空文档拿 `nodeId`，再按 markdown 标题边界切分后逐片 append；调用方无需手动编排。
+- 长内容（>10000 字符）CLI 自动分片：先创建空文档拿 `nodeId`，再按 markdown 标题边界切分后逐片 append；调用方无需手动编排。
 
 ## 上下文传递
 

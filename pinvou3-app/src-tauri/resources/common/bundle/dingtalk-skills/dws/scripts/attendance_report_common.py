@@ -549,7 +549,7 @@ def resolve_users_from_input(raw_ids: list[str]) -> list[str]:
     """
     智能解析 --users 输入：自动区分部门ID和员工userId。
 
-    Wukong Agent 经常把部门ID当 userId 传入。本函数尝试对每个ID调用
+    Agent 经常把部门ID当 userId 传入。本函数尝试对每个ID调用
     `dws contact dept list-members` 获取成员列表：
       - 如果成功且返回了员工，说明该ID是部门ID，展开为员工userId列表
       - 如果失败或无结果，说明该ID本身就是userId，原样保留
@@ -1623,44 +1623,18 @@ def _embed_images_in_columns(
     # openpyxl 的 Image 类内部依赖 Pillow（模块加载时检测），
     # 如果 Pillow 不可用，OpenpyxlImage() 会抛出：
     #   ImportError: You must install Pillow to fetch image objects
-    # 这里提前检测，不可用时尝试自动安装，避免逐张图片重复报错。
+    # 这里提前检测：缺失时打印安装提示并退出（不自动装包，
+    # 对齐 attendance_report_checkin.py 的依赖检查模式）。
     from openpyxl.drawing.image import PILImage as _openpyxl_pil_check
     if not _openpyxl_pil_check:
-        warn(
-            "[image] openpyxl 检测到 Pillow 未安装，尝试自动安装..."
+        print(
+            "[ERROR] 缺少依赖：Pillow\n"
+            "  请先安装：pip install Pillow\n"
+            "安装后重新执行本脚本。\n"
+            "（图片嵌入需要 Pillow，脚本不会自动安装第三方包）",
+            file=sys.stderr,
         )
-        import subprocess, sys
-        try:
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "Pillow"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=60,
-            )
-            log("[image] Pillow 安装成功，重新加载 openpyxl.drawing.image...")
-            # 安装后需要重新加载模块，让 openpyxl 重新检测 Pillow
-            import importlib
-            import openpyxl.drawing.image as _img_mod
-            importlib.reload(_img_mod)
-            from openpyxl.drawing.image import Image as OpenpyxlImage  # noqa: F811
-            from openpyxl.drawing.image import PILImage as _recheck
-            if not _recheck:
-                warn(
-                    "[image] Pillow 安装后 openpyxl 仍无法检测到，"
-                    "图片将显示为可点击链接。请手动执行: pip install Pillow"
-                )
-                _replace_all_image_urls_with_hyperlinks(
-                    ws, headers, rows, image_column_names, first_data_row,
-                )
-                return
-        except Exception as install_err:
-            warn(
-                f"[image] Pillow 自动安装失败: {install_err}\n"
-                "图片将显示为可点击链接。请手动执行: pip install Pillow"
-            )
-            _replace_all_image_urls_with_hyperlinks(
-                ws, headers, rows, image_column_names, first_data_row,
-            )
-            return
+        sys.exit(1)
 
     # 找到目标列索引（1-based）
     name_to_col_idx: dict[str, int] = {}

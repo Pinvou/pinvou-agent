@@ -334,6 +334,7 @@ Example:
 Flags:
       --start string        开始时间 ISO-8601 (可选，不传则默认当前时间+1分钟缓冲）
       --end string          结束时间 ISO-8601 (可选，不传则默认当前时间+1 小时)
+      --available           仅返回该时段空闲的会议室 (可选，布尔开关、无需传值；仅按时间段搜索时有效)
       --group-id string     会议室分组ID（可选，留空查根目录；超100条时需按分组查询；仅按时间段搜索时有效）
       --room-name string    会议室名称（按名称搜索时必填；按时间段搜索时可选，用于过滤）
       --limit string        页大小 (可选，不填默认 100，超过 100 按 100 处理；仅按时间段搜索时有效)
@@ -725,9 +726,9 @@ dws calendar event list --start "2026-03-10T14:00:00+08:00" --end "2026-03-10T15
 
 | 脚本 | 场景 | 用法 |
 |------|------|------|
-| [calendar_today_agenda.py](../../scripts/calendar_today_agenda.py) | 查看今天/明天/本周日程安排 | `python3 calendar_today_agenda.py today` |
-| [calendar_schedule_meeting.py](../../scripts/calendar_schedule_meeting.py) | 一键创建日程+添加参会人+预定会议室；无空闲会议室时脚本打印 `⚠ 该时段无空闲会议室` 警告并**正常退出（exit 0）**，上层须检查输出中的 ⚠ 标记（不要以退出码判定订房成败） | `python3 calendar_schedule_meeting.py --title "复盘会" --start "2026-03-15T14:00" --end "2026-03-15T15:00" --users userId1 --book-room` |
-| [calendar_free_slot_finder.py](../../scripts/calendar_free_slot_finder.py) | 查询多人共同空闲时段 | `python3 calendar_free_slot_finder.py --users userId1,userId2 --date 2026-03-15` |
+| [calendar_today_agenda.py](../../scripts/calendar_today_agenda.py) | 查看今天/明天/本周日程安排 | `python3 scripts/calendar_today_agenda.py today` |
+| [calendar_schedule_meeting.py](../../scripts/calendar_schedule_meeting.py) | 一键创建日程+添加参会人+预定会议室；无空闲会议室时脚本打印 `⚠ 该时段无空闲会议室` 警告并**正常退出（exit 0）**，上层须检查输出中的 ⚠ 标记（不要以退出码判定订房成败） | `python3 scripts/calendar_schedule_meeting.py --title "复盘会" --start "2026-03-15T14:00" --end "2026-03-15T15:00" --users userId1 --book-room` |
+| [calendar_free_slot_finder.py](../../scripts/calendar_free_slot_finder.py) | 查询多人共同空闲时段 | `python3 scripts/calendar_free_slot_finder.py --users userId1,userId2 --date 2026-03-15` |
 
 ## 相关产品
 

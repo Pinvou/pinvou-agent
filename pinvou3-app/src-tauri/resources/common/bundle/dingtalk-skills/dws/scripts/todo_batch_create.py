@@ -3,8 +3,8 @@
 从 JSON 文件批量创建待办（含优先级、截止时间、执行者）
 
 用法:
-    python todo_batch_create.py todos.json
-    python todo_batch_create.py todos.json --dry-run
+    python3 scripts/todo_batch_create.py todos.json
+    python3 scripts/todo_batch_create.py todos.json --dry-run
 
 todos.json 格式:
     [

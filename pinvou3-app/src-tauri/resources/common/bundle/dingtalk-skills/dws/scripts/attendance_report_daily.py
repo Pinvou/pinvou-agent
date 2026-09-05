@@ -30,7 +30,7 @@
   - 缺少 workDate 的记录会归入 "_no_date"，并 warn
 
 用法:
-  python attendance_report_daily.py \
+  python3 scripts/attendance_report_daily.py \
     --users userId1,userId2,...  \
     --start "2026-03-01 00:00:00" \
     --end   "2026-03-31 23:59:59" \
@@ -50,7 +50,7 @@ from typing import Any
 
 import attendance_report_common as cmn
 
-# 默认关注字段 — 与 SKILL.md「每日统计预定义列集合」严格对齐（共 33 个）
+# 默认关注字段 — 与 attendance-report.md「预定义列集合」对齐（每日统计 31 个）
 # 字段名必须和 `dws attendance report columns` 返回的 name 精确匹配
 DEFAULT_KEYWORDS = [
     "班次",
