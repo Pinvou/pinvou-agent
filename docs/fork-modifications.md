@@ -61,6 +61,14 @@
 - Desktop 默认 feature 仍为 `local-embed`，不会编译上述评测分支；默认构建已单独通过。代理通配符信任、IPv6 fake-IP 特判和其他全局网络策略不在 r13 中。
 - 新增 6 条 `forkguard_benchmark_*` 行为测试并登记精确发布指纹；父仓 fork guard 在 r13 公开基线下始终执行这些带 feature 的测试，不再保留未发布候选放行。
 
+### r14 候选：蜂群限流自适应调度（CodeWhale PR #43，待发布）
+
+- CodeWhale PR #43（head `6d81cfa83`，含评审修复；候选基线 `8fd81f471`）为子智能体 launch gate 增加限流自适应调度，是父仓 PR #444「蜂群模式」的配对底座改动：蜂群把并发顶到底座硬上限（128 并发 / 1024 准入）后，并行 429 成为稳态，需要发射端反馈控制。
+- `launch_gate` 从固定容量 `tokio::sync::Semaphore` 改为自定义 `DynamicGate`（`tools/subagent/governor.rs`，可收缩容量；`Semaphore` 收缩只能换 `Arc`，有 permit 在手时静默失效）。waiter 经 oneshot 接收**已计数**的 permit，被取消的 waiter 不会吞掉唤醒——permit 随未来 drop，其 `Drop` 把槽位重派给下一个 waiter。
+- 新增 `RateLimitGovernor`（引擎级共享，经 `SubAgentRuntime` 派生树继承；manager 在 `spawn_background_with_assignment_options` 汇聚点为全部 spawn 路径统一 stamp）：60s 滑动窗口统计 429 率，AIMD——≥2 次或比例 >30% 容量减半，≥4 次暂停新 launch（排队原因 `queued: waiting for provider rate-limit recovery`）；限流事件老化后按「连续成功」或**时间驱动探针**（排队子智能体周期调用 `recover_if_window_drained`，避免在飞集群清空后队列冻结到各自 wall-time 超时）以 1/4 容量恢复、加性回升。运行时改 launch 并发经 governor 生效，不会静默解除暂停。
+- 429 重试尊重 `Retry-After`；无则 full jitter 指数退避（250ms 起、cap 120s）错峰防惊群；`QuotaExhausted` 不算临时限流，走既有失败路径。
+- 新增 `forkguard_rate_limit_governor_*`、`forkguard_dynamic_gate_*` 行为测试；父仓指纹登记为 T5（`scripts/fork-guard.sh`）。合并后发布 tag `pinvou-v0.9.5-r14` 并由父仓收尾更新 `PUBLISHED_HEAD`/`PUBLISHED_COMMITS`（37→39，含评审修复 commit）；在此之前 `verify-public-submodule.sh` 与 fork-guard 第 0 层按候选期设计保持红。
+
 ### 父仓 gitlink 同步勘误（2026-08-22 更正）
 
 - 早期版本此处曾记载"PR #302 把父仓 gitlink 从 r6 (`3bbf8421`) 一次性 bump 到 r7"。

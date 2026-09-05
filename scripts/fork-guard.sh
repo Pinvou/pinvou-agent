@@ -174,6 +174,10 @@ fingerprints+=(
   "T2|评测工具预算截断受轮次测试约束      |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_benchmark_budget_truncates_batch_and_clears_followup_tool_surface"
   "T2|评测 final-only 熔断有界            |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_benchmark_final_only_rejects_repeated_tool_only_responses"
   "T2|评测参数修复经真实轮次执行          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_benchmark_turn_repairs_file_aliases_before_execution"
+  "T5|可收缩 launch gate 模块            |CodeWhale/crates/tui/src/tools/subagent/governor.rs|pub(crate) struct DynamicGate"
+  "T5|限流 AIMD 调度器                    |CodeWhale/crates/tui/src/tools/subagent/governor.rs|pub(crate) struct RateLimitGovernor"
+  "T5|fleet governor 全 spawn 路径接线    |CodeWhale/crates/tui/src/tools/subagent/mod.rs|runtime.governor = Some(Arc::clone(&self.governor));"
+  "T5|限流自愈受行为测试约束              |CodeWhale/crates/tui/src/tools/subagent/governor.rs|fn forkguard_rate_limit_governor_pauses_and_time_recovers_after_window_drains"
 )
 
 for fp in "${fingerprints[@]}"; do
