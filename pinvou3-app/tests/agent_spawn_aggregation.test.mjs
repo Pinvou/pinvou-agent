@@ -3,10 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   annotateAgentSpawnGroups,
-  annotateTurnSpawnGroups,
   isAgentSpawnChatItem,
-  isAgentSpawnProjectedItem,
-  spawnGroupAgentIds,
 } from '../src/features/multiagent/spawn-aggregation.mjs';
 
 const spawnItem = (id, extra = {}) => ({
@@ -84,44 +81,10 @@ test('annotateAgentSpawnGroups 不改动未进组的条目引用', () => {
   assert.equal(annotated[0], plain);
 });
 
-test('统一时间线车道：投影条目按 turn 内相邻 spawn 聚合并透传', () => {
-  const turn = {
-    id: 't1',
-    status: 'running',
-    items: [
-      { type: 'tool', id: 'i1', legacyItem: spawnItem('aaaa0001') },
-      { type: 'text', id: 'i2' },
-      { type: 'tool', id: 'i3', tool: { name: 'agent', rawInput: { action: 'start', prompt: 'x' } } },
-    ],
-  };
-  const [annotated] = annotateTurnSpawnGroups([turn]);
-  assert.equal(annotated.items[0].spawnGroup.count, 1);
-  assert.equal(annotated.items[2].spawnGroup.count, 1, '文本块断组');
-
-  const running = {
-    id: 't2',
-    status: 'running',
-    items: [
-      { type: 'tool', id: 'j1', legacyItem: spawnItem('aaaa0001') },
-      { type: 'tool', id: 'j2', legacyItem: spawnItem('aaaa0002') },
-    ],
-  };
-  const [, annotatedRunning] = annotateTurnSpawnGroups([turn, running]);
-  assert.equal(annotatedRunning.items[0].spawnGroup.count, 2);
-  assert.equal(annotatedRunning.items[1].spawnGroupHidden, true);
-  assert.equal(isAgentSpawnProjectedItem({ type: 'tool', tool: { name: 'agent', rawInput: { action: 'wait' } } }), false);
-});
-
-test('无 spawn 的 turns 原样返回（引用相等，不触发重渲染）', () => {
-  const turns = [{ id: 't1', items: [{ type: 'text', id: 'i1' }] }];
-  assert.equal(annotateTurnSpawnGroups(turns), turns);
-});
-
-test('spawnGroupAgentIds 只收集成功返回的正式实例 id', () => {
-  const ids = spawnGroupAgentIds([
-    spawnItem('aaaa0001'),
-    spawnItem('aaaa0002', { state: 'running', output: null }),
-    spawnItem('aaaa0003', { success: false, output: 'Error: contention with agent_bbbb0004' }),
-  ]);
-  assert.deepEqual(ids, ['agent_aaaa0001']);
+test('无 spawn 的条目按引用原样返回（数组是新建的，条目不换引用）', () => {
+  const plain = { type: 'user', text: 'hi' };
+  const items = [plain];
+  const annotated = annotateAgentSpawnGroups(items);
+  assert.notEqual(annotated, items, '数组总是新建');
+  assert.equal(annotated[0], plain, '条目保持原引用');
 });

@@ -7,36 +7,25 @@
  * 时只让计数 x 原地递增，不产生新的文本行；spawn 之间夹着任何其他内容块
  * 时自然断组开新行。
  *
- * 两条车道共用：
- * - legacy ChatBubble 车道：对可见 chatItems（{type:'tool', name, args}）做
- *   `annotateAgentSpawnGroups`，ToolCard 直接读 item.spawnGroup /
- *   item.spawnGroupHidden；
- * - 统一 ConversationTimeline 车道：投影后的 turn items（{tool, legacyItem}）
- *   做 `annotateTurnSpawnGroups`，ChatView 的 renderToolItem 把组标记透传给
- *   ToolCard。
+ * 标注只做一次：在投影输入（可见 chatItems）上执行
+ * `annotateAgentSpawnGroups`。两条车道都经它拿到结果——legacy ChatBubble
+ * 车道直接读条目上的 spawnGroup / spawnGroupHidden；统一
+ * ConversationTimeline 车道的投影条目把整条 chat item 挂在 `legacyItem`
+ * 上（deepseek-conversation 的 projectItem），ToolCard 读
+ * `item.legacyItem.spawnGroup`。不要在投影后的 turns 上再补一次标注：
+ * turn.presentation 持有的是未标注的原始投影条目，二次标注到不了渲染层。
  *
  * 判定与 conversation 层的 `isExpertDelegationCall` 同源：status/wait/cancel
  * 等协调操作不是 spawn，永远不进计数行。
  */
 
 import { isAgentWaitCall, isExpertDelegationCall } from '../conversation/conversation-model.js';
-import { extractSubagentId } from './subagent-conversation.mjs';
 
-/** legacy 车道的裸 chat tool 条目是否是 spawn 型 agent 调用。 */
+/** 裸 chat tool 条目是否是 spawn 型 agent 调用。 */
 export function isAgentSpawnChatItem(item) {
   if (!item || item.type !== 'tool') return false;
   if (isAgentWaitCall(item.name, item.args)) return false;
   return isExpertDelegationCall(item.name, item.args);
-}
-
-/** 统一时间线车道的投影 tool 条目是否是 spawn 型 agent 调用。 */
-export function isAgentSpawnProjectedItem(item) {
-  if (!item || item.type !== 'tool') return false;
-  const legacy = item.legacyItem;
-  if (legacy) return isAgentSpawnChatItem(legacy);
-  const tool = item.tool || {};
-  if (isAgentWaitCall(tool.name, tool.rawInput)) return false;
-  return isExpertDelegationCall(tool.name, tool.rawInput);
 }
 
 function spawnGroupOf(item) {
@@ -73,57 +62,4 @@ export function annotateAgentSpawnGroups(items) {
     result.push(item);
   }
   return result;
-}
-
-/**
- * 聚合投影 turns 中的连续 spawn 序列（turn 内相邻的投影 tool 条目）。
- * 标记落在投影条目本身（`spawnGroup` / `spawnGroupHidden`），由 ChatView 的
- * renderToolItem 透传给 ToolCard；不改写 legacyItem（它可能被其他渲染路径
- * 共享）。
- *
- * @returns {Array} 新 turns 数组；turn 浅拷贝，items 数组重建。
- */
-export function annotateTurnSpawnGroups(turns) {
-  if (!Array.isArray(turns)) return turns;
-  let changed = false;
-  const nextTurns = turns.map(turn => {
-    const items = Array.isArray(turn && turn.items) ? turn.items : [];
-    const nextItems = [];
-    let group = null;
-    let turnChanged = false;
-    for (const item of items) {
-      if (isAgentSpawnProjectedItem(item)) {
-        turnChanged = true;
-        if (!group) {
-          group = spawnGroupOf(item);
-          nextItems.push({ ...item, spawnGroup: group });
-        } else {
-          group.count += 1;
-          if (item.legacyItem
-            ? (item.legacyItem.success === false || item.legacyItem.state === 'failed')
-            : false) group.failed += 1;
-          nextItems.push({ ...item, spawnGroupHidden: true });
-        }
-        continue;
-      }
-      group = null;
-      nextItems.push(item);
-    }
-    if (!turnChanged) return turn;
-    changed = true;
-    return { ...turn, items: nextItems };
-  });
-  return changed ? nextTurns : turns;
-}
-
-/** 计数行展示用：组内已成功 spawn 的实例 id（无 id 的运行中调用不计入）。 */
-export function spawnGroupAgentIds(items) {
-  if (!Array.isArray(items)) return [];
-  const ids = [];
-  for (const item of items) {
-    if (!isAgentSpawnChatItem(item)) continue;
-    const agentId = extractSubagentId(item && item.output);
-    if (agentId) ids.push(agentId);
-  }
-  return ids;
 }
