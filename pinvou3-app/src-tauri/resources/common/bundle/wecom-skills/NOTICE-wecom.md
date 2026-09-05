@@ -229,8 +229,9 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
     无法确认再追问(原「请用户提供更多信息缩小范围」与 wecomcli-contact
     「只展示前 5 位」相悖;上游 v1.2.0 仍未修)。
 11. **media_id/file_path 规则收敛**:email SKILL.md/forward-mail/reply-mail
-    重复表述收敛指向 send-mail.md 步骤四(互斥禁止同填、禁止自行构造、
-    优先级与自动上传);指向补「步骤四(附件)/步骤五(内嵌图)」。
+    重复表述收敛指向 send-mail.md 步骤四(附件)与步骤五(内嵌图片)
+    (互斥禁止同填、禁止自行构造、优先级与自动上传),全部指路点位
+    统一补齐两步骤。
 12. **851003 webhook 兜底收敛**:smartsheet SKILL.md 规则 4 与
     smart-sheet-edit.md 重复段收敛到 smart-sheet-webhook.md(零信息损失;
     归因「可见范围超 10 人」离线不可证,由 webhook.md 保留原文)。
@@ -257,6 +258,10 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
     值,`doc` 仅为 `file_types` 入参枚举)。
 20. **views update 示例保留顶层 `"type": "update"`**:schema 顶层 `type`
     为合法字段(add/update/delete 枚举)且与子命令一致,维持上游原文。
+21. **回复收件人兜底口径补登记**:email SKILL.md「回复收件人不查通讯录」
+    条补「`sender.email` 为空时按 reply-mail 工作流走通讯录兜底」,
+    与 reply-mail.md 既有工作流对齐(原条目未覆盖发件人邮箱为空的
+    例外路径,初版漏登记,复审补齐)。
 
 ### 各技能重放基线
 
