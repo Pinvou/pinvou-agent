@@ -577,7 +577,7 @@
   // 流式期间改为 ~180ms 尾沿重渲一次（尾沿定时器保证最后一个 delta 之后仍会渲染，
   // 不丢尾帧）；首个 delta（气泡新建或 html 尚空）仍立即渲染。
   // 不变量：所有终结/迁移该流式气泡的路径（chat:done/error/interrupt、
-  // chat:tool_start、转 reasoning、新 user message 复位、会话缓冲清除）必须先
+  // chat:tool_start、chat:tool_end、转 reasoning、新 user message 复位、会话缓冲清除）必须先
   // flushPendingStreamRender 同步出最终 html —— 否则尾沿定时器会在气泡终结后才
   // 触发，用过期快照覆盖权威文本。定时器按 session 隔离：active 与后台会话可能
   // 同时流式，共用一个定时器会渲染错工作集。
@@ -827,6 +827,7 @@
     if (meta && (meta.name === "exec_shell" || meta.name === "Bash") && backgroundTaskId) {
       markBackgroundToolItem(p.id, p.session_id, backgroundTaskId, p.output);
       delete context.toolMeta[p.id];
+      flushPendingStreamRender(); // terminal path: emit final html before the reset
       context.currentStreamText = ""; context.currentStreamId = 0;
       notify();
       return;
@@ -839,6 +840,7 @@
         { resolved: true, cardState: p.success ? "submitted" : "cancelled" }
       );
       delete context.toolMeta[p.id];
+      flushPendingStreamRender(); // terminal path: emit final html before the reset
       context.currentStreamText = ""; context.currentStreamId = 0;
       notify();
       return;
@@ -867,6 +869,7 @@
         // 不走 write_file 的工具(如 make_pptx)→ 卡有、面板无」。trackArtifact 已去重。
         if (presentedPath) trackArtifact(presentedPath);
         delete context.toolMeta[p.id];
+        flushPendingStreamRender(); // terminal path: emit final html before the reset
         context.currentStreamText = ""; context.currentStreamId = 0;
         notify();
         // Card identity and panel presentation are separate concerns: updating an
@@ -889,6 +892,7 @@
         output: p.output, success: false, state: "done",
       });
       delete context.toolMeta[p.id];
+      flushPendingStreamRender(); // terminal path: emit final html before the reset
       context.currentStreamText = ""; context.currentStreamId = 0;
       notify();
       return;
@@ -972,6 +976,7 @@
       }
 
     delete context.toolMeta[p.id];
+    flushPendingStreamRender(); // terminal path: emit final html before the reset
     context.currentStreamText = "";
     context.currentStreamId = 0;
     notify();
