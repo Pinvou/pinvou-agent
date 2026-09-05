@@ -1088,14 +1088,14 @@ pub struct WebAcpTimelinePage {
 /// Return one bounded page of the authoritative ACP timeline after projecting
 /// out desktop-only adapter metadata and credential-bearing diagnostic fields.
 #[tauri::command]
-pub fn web_access_get_codex_acp_timeline(
+pub async fn web_access_get_codex_acp_timeline(
     session_id: String,
     after_seq: Option<u64>,
     after_cursor: Option<u64>,
     limit: Option<usize>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<WebAcpTimelinePage, String> {
-    let outcome = (|| {
+    let outcome = (|| async {
         let limit = limit.unwrap_or(DEFAULT_WEB_ACP_TIMELINE_PAGE_EVENTS);
         if limit == 0 || limit > MAX_WEB_ACP_TIMELINE_PAGE_EVENTS {
             return Err(format!(
@@ -1111,6 +1111,7 @@ pub fn web_access_get_codex_acp_timeline(
                 MAX_WEB_ACP_TIMELINE_PAGE_BYTES,
                 MAX_WEB_ACP_TIMELINE_EVENT_BYTES,
             )
+            .await
             .map_err(|error| format!("{error:#}"))?;
         Ok(WebAcpTimelinePage {
             next_after_seq: page.events.last().map(|event| event.seq),
@@ -1119,7 +1120,7 @@ pub fn web_access_get_codex_acp_timeline(
             events: page.events,
         })
     })();
-    web_acp_result(WebAcpOperation::Timeline, outcome)
+    web_acp_result(WebAcpOperation::Timeline, outcome.await)
 }
 
 fn project_acp_pending_permission_for_web(

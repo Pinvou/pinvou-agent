@@ -976,6 +976,7 @@ impl EventBridge {
             // crash-recovery anchors: they flush synchronously so resume and
             // orphan-turn recovery never depend on buffered chunk bytes.
             // Everything else rides the TIMELINE_APPEND_BUFFER_BYTES window.
+            // runtime_error is a defensive anchor: no emitter exists today.
             let flush_timeline = matches!(
                 event_type,
                 "turn_started" | "turn_completed" | "runtime_error"
@@ -998,6 +999,10 @@ impl EventBridge {
                 _ => None,
             };
             if let Some(status) = last_status {
+                // state.lastSeq is a best-effort cursor: it is written outside
+                // the journal flush set, so after a crash it may point past the
+                // durable journal tail. No reader consumes it for resume today;
+                // if one ever does, these event types must join the flush set.
                 if let Err(error) = patch_acp_state(
                     &self.pinvou_session_id,
                     json!({ "lastStatus": status, "lastSeq": envelope.seq }),
@@ -1036,6 +1041,15 @@ impl EventBridge {
     /// Append one envelope to the session journal through the cached handle.
     fn append_timeline(&self, event: &AcpEventEnvelope, flush_after: bool) -> Result<()> {
         self.timeline_writer.lock().append(event, flush_after)
+    }
+
+    /// Best-effort flush of the append buffer so journal readers outside the
+    /// emit path (`AcpPool::timeline` / `AcpPool::web_timeline_page`) never
+    /// observe a pre-buffer view of an active turn. Turn boundaries already
+    /// flush synchronously; this only drains the buffered chunk window.
+    /// Failures are swallowed: the reader falls back to whatever is durable.
+    pub fn flush_journal(&self) {
+        let _ = self.timeline_writer.lock().flush();
     }
 }
 
@@ -1149,10 +1163,13 @@ impl TimelineWriter {
         let mut line = serde_json::to_vec(event)?;
         line.push(b'\n');
         if let Err(error) = self.write_line(&line, flush_after) {
-            // The cached handle may be stale (the journal was removed or
-            // replaced externally, or the descriptor broke): reopen once and
-            // retry. A partially written line is skipped by readers as
-            // malformed, the same way a crash mid-append is recovered.
+            // The cached handle may be stale (the journal file was removed
+            // externally, or the descriptor broke): reopen once and retry.
+            // Note this only covers error-producing breakage; rename-style
+            // rotation keeps the old handle silently appending to the unlinked
+            // inode until the next flush-point existence check re-anchors it.
+            // A partially written line is skipped by readers as malformed,
+            // the same way a crash mid-append is recovered.
             self.writer = None;
             self.open()?;
             self.write_line(&line, flush_after)
@@ -2146,5 +2163,152 @@ mod tests {
             load_timeline_last_seq_from_path(timeline.path()).unwrap(),
             None
         );
+    }
+
+    /// Redirect the sessions root to a per-test directory so TimelineWriter's
+    /// `timeline_path` resolves inside a disposable sandbox. Holds the
+    /// crate-wide ENV_LOCK for the whole test (PINVOU3_HOME is process-wide)
+    /// and restores the previous value on drop.
+    struct TempSessionsRoot {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        root: PathBuf,
+        previous: Option<String>,
+    }
+
+    impl TempSessionsRoot {
+        fn new(tag: &str) -> Self {
+            let guard = crate::platform::paths::tests::ENV_LOCK
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let root = std::env::temp_dir().join(format!(
+                "pinvou3-acp-timeline-writer-{}-{tag}",
+                std::process::id(),
+            ));
+            fs::create_dir_all(&root).expect("create temporary sessions root");
+            let previous = std::env::var("PINVOU3_HOME").ok();
+            // SAFETY: this struct holds platform::paths::tests::ENV_LOCK; env writes are serialized in-process.
+            unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+            Self {
+                _guard: guard,
+                root,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for TempSessionsRoot {
+        fn drop(&mut self) {
+            // SAFETY: this struct holds platform::paths::tests::ENV_LOCK; env writes are serialized in-process.
+            match &self.previous {
+                Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+            }
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn writer_event(seq: u64, event_type: &str) -> AcpEventEnvelope {
+        let mut envelope = event(seq, Some("turn-writer"), event_type);
+        envelope.session_id = "acp-writer-sandbox".into();
+        envelope
+    }
+
+    fn journal_len() -> u64 {
+        timeline_path("acp-writer-sandbox")
+            .expect("resolve sandbox journal path")
+            .metadata()
+            .map(|meta| meta.len())
+            .unwrap_or(0)
+    }
+
+    fn journal_lines() -> Vec<String> {
+        let path = timeline_path("acp-writer-sandbox").expect("resolve sandbox journal path");
+        if !path.exists() {
+            return Vec::new();
+        }
+        fs::read_to_string(path)
+            .expect("read sandbox journal")
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn timeline_writer_buffers_chunks_until_an_explicit_flush() {
+        let _root = TempSessionsRoot::new("buffer");
+        let mut writer = TimelineWriter::new("acp-writer-sandbox");
+
+        // A buffered chunk append opens the journal lazily but must not put
+        // any bytes on disk: the 64KB window is far from full.
+        writer
+            .append(&writer_event(1, "agent_message_chunk"), false)
+            .expect("append buffered chunk");
+        assert_eq!(journal_len(), 0);
+        assert!(journal_lines().is_empty());
+
+        // An explicit flush (turn boundary / reader entry) drains the whole
+        // buffer, including the earlier chunk line.
+        writer.flush().expect("flush journal buffer");
+        let lines = journal_lines();
+        assert_eq!(lines.len(), 1);
+        let persisted: AcpEventEnvelope = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(persisted.seq, 1);
+    }
+
+    #[test]
+    fn timeline_writer_flush_after_persists_buffered_and_current_lines() {
+        let _root = TempSessionsRoot::new("flush-after");
+        let mut writer = TimelineWriter::new("acp-writer-sandbox");
+
+        writer
+            .append(&writer_event(1, "agent_message_chunk"), false)
+            .expect("append buffered chunk");
+        writer
+            .append(&writer_event(2, "turn_started"), true)
+            .expect("append boundary event");
+
+        let lines = journal_lines();
+        assert_eq!(lines.len(), 2, "boundary flush drains earlier chunks too");
+        let first: AcpEventEnvelope = serde_json::from_str(&lines[0]).unwrap();
+        let second: AcpEventEnvelope = serde_json::from_str(&lines[1]).unwrap();
+        assert_eq!(first.seq, 1);
+        assert_eq!(second.event.event_type, "turn_started");
+    }
+
+    #[test]
+    fn timeline_writer_reanchors_when_the_journal_is_removed_externally() {
+        let _root = TempSessionsRoot::new("reanchor");
+        let mut writer = TimelineWriter::new("acp-writer-sandbox");
+
+        writer
+            .append(&writer_event(1, "turn_started"), true)
+            .expect("append first boundary");
+        let journal = timeline_path("acp-writer-sandbox").expect("resolve journal path");
+        fs::remove_file(&journal).expect("remove the journal externally");
+
+        // The flush-point existence check re-anchors onto a fresh file; the
+        // line written into the unlinked inode stays lost (documented
+        // trade-off), and the recreated journal starts empty.
+        writer
+            .append(&writer_event(2, "turn_completed"), true)
+            .expect("append after external removal");
+        assert!(journal.exists(), "flush point must recreate the journal");
+        assert!(
+            journal_lines().is_empty(),
+            "the line lost with the removed inode must not be duplicated"
+        );
+
+        // The re-anchored handle keeps appending normally afterwards.
+        writer
+            .append(&writer_event(3, "agent_message_chunk"), false)
+            .expect("append buffered after re-anchor");
+        writer
+            .append(&writer_event(4, "turn_started"), true)
+            .expect("append boundary after re-anchor");
+        let seqs: Vec<u64> = journal_lines()
+            .iter()
+            .map(|line| serde_json::from_str::<AcpEventEnvelope>(line).unwrap().seq)
+            .collect();
+        assert_eq!(seqs, vec![3, 4]);
     }
 }

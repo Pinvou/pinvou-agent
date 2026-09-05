@@ -274,7 +274,9 @@ impl MonitorState {
             // 镜像超限的兜底：不再增长镜像、也不再逐 tick 做全量前缀增量
             // （strip_prefix 是 O(总输出)，短路后本 tick 代价归零）。前端实时
             // 展示自身有尾部截断；终态 BackgroundFinished 仍走权威 tail，
-            // 最终落到聊天的输出不受影响。
+            // 最终落到聊天的输出不受影响。注意这是软上限：跨限那一 tick 的
+            // 整块 delta 仍会先入镜像（判定在追加前做），实际峰值 ≈ cap +
+            // 单个轮询周期的增量。
             let mirror_over_cap = tool
                 .emitted_stdout
                 .len()
