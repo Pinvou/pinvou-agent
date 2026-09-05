@@ -399,9 +399,9 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
         "probe persona must be projected into [fleet.profiles]"
     );
     let mut engine_config =
-        bridge.build_engine_config_for_multi_agent("code-a", roots_a.clone(), &snapshot);
+        bridge.build_engine_config_for_multi_agent("code-a", roots_a.clone(), &snapshot, true);
     let second_config =
-        bridge.build_engine_config_for_multi_agent("code-b", roots_b.clone(), &snapshot);
+        bridge.build_engine_config_for_multi_agent("code-b", roots_b.clone(), &snapshot, true);
     assert_eq!(
         engine_config.subagent_state_root.as_ref(),
         Some(&roots_a.ledger)
