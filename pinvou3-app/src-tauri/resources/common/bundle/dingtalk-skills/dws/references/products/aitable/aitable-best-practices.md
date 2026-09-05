@@ -12,7 +12,7 @@
 
 ## 2. 查询执行契约与任务选路
 
-三条要点：优先 `--filters` 在服务端过滤，不要拉全量后在 context 里手动统计；`has_more=true` 时数据可能不完整，禁止下全局结论；全量导出为文件走 `export data`（脚本 `aitable_export_via_task.py`），不要 `--all` 拉全量再写文件。完整契约与选路表见 [aitable-data-analysis-sop.md](./aitable-data-analysis-sop.md)。
+四条要点：优先 `--filters` 在服务端过滤，不要拉全量后在 context 里手动统计；`has_more=true` 时数据可能不完整，禁止下全局结论；字段名（fieldId）必须来自 `table get` 真实返回，不要猜测；全量导出为文件走 `export data`（脚本 `aitable_export_via_task.py`），不要 `--all` 拉全量再写文件。查询细则（`--all`/`--page-limit`/filters 写法）见 [aitable-record-query.md](./aitable-record-query.md)，分析任务选路见 [aitable-data-analysis-sop.md](./aitable-data-analysis-sop.md)。
 
 ## 4. 创建/修改后回读确认
 

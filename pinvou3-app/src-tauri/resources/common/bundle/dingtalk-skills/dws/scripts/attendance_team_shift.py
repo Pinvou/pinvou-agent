@@ -3,10 +3,10 @@
 查询团队成员本周排班和出勤统计
 
 用法:
-    python attendance_team_shift.py --users userId1,userId2,userId3
-    python attendance_team_shift.py --users userId1,userId2 \
+    python3 scripts/attendance_team_shift.py --users userId1,userId2,userId3
+    python3 scripts/attendance_team_shift.py --users userId1,userId2 \
         --from 2026-03-10 --to 2026-03-14
-    python attendance_team_shift.py --users userId1 --dry-run
+    python3 scripts/attendance_team_shift.py --users userId1 --dry-run
 """
 
 import sys

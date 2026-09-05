@@ -25,23 +25,23 @@ Usage:
   dws sheet find [flags]
 Example:
   # 基本搜索
-  dws sheet find --node <NODE_ID> --sheet-id <SHEET_ID> --find "销售额"
+  dws sheet find --node <NODE_ID> --sheet-id <SHEET_ID> --query "销售额"
 
   # 在指定范围内搜索
-  dws sheet find --node <NODE_ID> --sheet-id <SHEET_ID> --find "合计" --range "A1:D100"
+  dws sheet find --node <NODE_ID> --sheet-id <SHEET_ID> --query "合计" --range "A1:D100"
 
   # 正则表达式搜索（不区分大小写）
-  dws sheet find --node <NODE_ID> --sheet-id <SHEET_ID> --find "^total" --use-regexp --match-case=false
+  dws sheet find --node <NODE_ID> --sheet-id <SHEET_ID> --query "^total" --use-regexp --match-case=false
 
   # 精确匹配整个单元格内容
-  dws sheet find --node <NODE_ID> --sheet-id <SHEET_ID> --find "完成" --match-entire-cell
+  dws sheet find --node <NODE_ID> --sheet-id <SHEET_ID> --query "完成" --match-entire-cell
 
   # 搜索公式文本
-  dws sheet find --node <NODE_ID> --sheet-id <SHEET_ID> --find "SUM" --match-formula
+  dws sheet find --node <NODE_ID> --sheet-id <SHEET_ID> --query "SUM" --match-formula
 Flags:
       --node string         表格文档 ID 或 URL (必填)
       --sheet-id string     工作表 ID 或名称 (必填)
-      --find string         搜索文本 (必填)
+      --query string        搜索文本 (必填，别名: --find)
       --range string        搜索范围，A1 表示法 (如 A1:D10)
       --match-case          区分大小写 (默认 true)
       --match-entire-cell   精确匹配整个单元格内容

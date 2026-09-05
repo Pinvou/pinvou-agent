@@ -353,6 +353,8 @@ python3 scripts/attendance_schedule_import.py \
 
 排休时 `classId` 传 0，`isRest` 传 `Y`。
 
+> 注意：直连命令曾支持的 `checkBeginTime` / `checkEndTime` 参数**不会进入后端 payload**（实际打卡时段以 `classId` 对应班次为准），脚本亦不接收这两个参数，传入无效。
+
 ## API 返回结构注意事项（Agent 必读）
 
 > 以下是实际执行中多次踩坑的关键数据结构说明。**禁止凭直觉假设字段在顶层**，必须按本节描述的嵌套路径提取。

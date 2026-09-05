@@ -44,7 +44,7 @@ Flags:
 - 不传 `--folder` 和 `--workspace` 时，默认创建在「我的文档」根目录。
 - `--folder` 仅接受文档文件夹 `nodeId` / `dentryUuid` / alidocs 文件夹 URL；**禁止**传入 drive `dentryId`、`parentId`、`spaceId` 这类纯数字 ID。
 - 输入方式选择见 [`./doc-update.md` §内容写入管道](./doc-update.md#内容写入管道createupdate-共用)（与 update 共用）。短文本字面量可 `--content`，多行/表格/特殊字符必须 `--content-file` 或 `--content -`。
-- 长内容（>30000 字符）CLI 自动分片：先创建空文档拿 `nodeId`，再按 markdown 标题边界切分后逐片 append；调用方无需手动编排。
+- 长内容（>10000 字符）CLI 自动分片：先创建空文档拿 `nodeId`，再按 markdown 标题边界切分后逐片 append；调用方无需手动编排。
 
 ## 上下文传递
 

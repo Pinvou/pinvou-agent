@@ -3,8 +3,8 @@
 按部门名称搜索并列出所有成员（自动 deptId 解析）
 
 用法:
-    python contact_dept_members.py --query "技术部"
-    python contact_dept_members.py --query "产品" --dry-run
+    python3 scripts/contact_dept_members.py --query "技术部"
+    python3 scripts/contact_dept_members.py --query "产品" --dry-run
 """
 
 import sys

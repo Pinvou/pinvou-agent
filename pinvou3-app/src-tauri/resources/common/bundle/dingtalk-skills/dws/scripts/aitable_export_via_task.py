@@ -7,9 +7,9 @@
 - 自动保存导出文件到本地（可选 --output）。
 
 用法:
-    python scripts/aitable_export_via_task.py <baseId> --scope all
-    python scripts/aitable_export_via_task.py <baseId> --scope table --table-id <tableId>
-    python scripts/aitable_export_via_task.py <baseId> --scope view --table-id <tableId> --view-id <viewId>
+    python3 scripts/aitable_export_via_task.py <baseId> --scope all
+    python3 scripts/aitable_export_via_task.py <baseId> --scope table --table-id <tableId>
+    python3 scripts/aitable_export_via_task.py <baseId> --scope view --table-id <tableId> --view-id <viewId>
 """
 
 from __future__ import annotations

@@ -3,11 +3,11 @@
 查看今天/明天/本周的日程安排
 
 用法:
-    python calendar_today_agenda.py              # 今天
-    python calendar_today_agenda.py today        # 今天
-    python calendar_today_agenda.py tomorrow     # 明天
-    python calendar_today_agenda.py week         # 本周
-    python calendar_today_agenda.py --dry-run    # 仅显示命令
+    python3 scripts/calendar_today_agenda.py              # 今天
+    python3 scripts/calendar_today_agenda.py today        # 今天
+    python3 scripts/calendar_today_agenda.py tomorrow     # 明天
+    python3 scripts/calendar_today_agenda.py week         # 本周
+    python3 scripts/calendar_today_agenda.py --dry-run    # 仅显示命令
 """
 
 import sys

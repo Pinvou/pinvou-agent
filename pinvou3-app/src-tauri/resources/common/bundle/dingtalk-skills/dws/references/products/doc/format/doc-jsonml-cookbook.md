@@ -59,7 +59,7 @@
 每个节点是一个 JSON 数组：`[tagName, attributes?, ...children]`
 
 - **第一个元素**是字符串，表示标签名（如 `"p"`, `"h1"`, `"span"`, `"container"`）
-- **第二个元素**是 attrs 对象，必须存在（无属性时传空对象 `{}`）
+- **第二个元素**（可选）是一个 JSON 对象，表示属性（如 `{"uuid": "abc"}`）。如果无属性，可以直接进入子节点（仍建议传空对象 `{}` 保持形态统一）
 - **随后的元素**是子节点，可以是纯字符串（仅限 leaf span 内），也可以是另一个 JSONML 数组
 - **所有 `[` 必须有对应 `]`，所有 `{` 必须有对应 `}`，数组元素之间用 `,` 分隔，最后一个元素后不加 `,`**
 
@@ -103,7 +103,7 @@
    - ✅ `["p", {"uuid": "x"}, ["span", {"data-type": "text"}, ["span", {"data-type": "leaf"}, "hello"]]]`
    - ❌ `["p", {"uuid": "x"}, "hello"]` — validator 会报错，请手动包成 ✅ 的形式
    - ⚠️ `["p", {"uuid": "x"}, ["text", {}, "hello"]]` — `text` 是历史 inline tag，validator 不会报错，但建议改写为 ✅ 形式以与 `dws doc read --content-format jsonml` 的输出保持一致
-3. **attrs 对象必须存在**（即使为空）：`["p", {}, ...]` 不能省略 `{}`
+3. **attrs 建议始终提供**（可为空对象 `{}`，validator 对省略 attrs 不报错，但统一形态便于回读比对）
 
 > **严格模式（缺省）**：CLI 不做结构修复，裸字符串等错误会被 validator 以 `JSONPath + Suggestion` 形式逐条报错。如果输入来自 LLM 且可能有 JSON 语法错误（缺括号/逗号），用 `--fix-jsonml` 启用 JSON 语法修复。
 

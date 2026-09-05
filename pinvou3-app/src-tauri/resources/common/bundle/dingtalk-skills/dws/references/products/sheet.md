@@ -228,10 +228,10 @@ Flags:
 | "写入单元格" | `dws sheet range update --node <nodeId或URL> --sheet-id <sheetId> --range A1:B2 --values '[[..]]'` |
 | "写入超链接" | `dws sheet range update --node <nodeId或URL> --sheet-id <sheetId> --range A1 --values '[[{"type":"text","text":"显示文本","hyperlink":{"type":"path","link":"https://..."}}]]'` |
 | "追加一行" | `dws sheet append --node <nodeId或URL> --sheet-id <sheetId> --values '[[..]]'` |
-| "查找 / 替换" | `dws sheet find --node <nodeId或URL> --sheet-id <sheetId> --find "<关键词>"` / `dws sheet replace --node <nodeId或URL> --sheet-id <sheetId> --find "<旧值>" --replacement "<新值>"` |
-| "精确匹配搜索 / 完全等于" | `dws sheet find --node <nodeId或URL> --sheet-id <sheetId> --find "<关键词>" --match-entire-cell` |
-| "搜索公式文本" | `dws sheet find --node <nodeId或URL> --sheet-id <sheetId> --find "<公式片段>" --match-formula` |
-| "正则搜索 / 不区分大小写" | `dws sheet find --node <nodeId或URL> --sheet-id <sheetId> --find "<regexp>" --use-regexp --match-case=false` |
+| "查找 / 替换" | `dws sheet find --node <nodeId或URL> --sheet-id <sheetId> --query "<关键词>"` / `dws sheet replace --node <nodeId或URL> --sheet-id <sheetId> --find "<旧值>" --replacement "<新值>"` |
+| "精确匹配搜索 / 完全等于" | `dws sheet find --node <nodeId或URL> --sheet-id <sheetId> --query "<关键词>" --match-entire-cell` |
+| "搜索公式文本" | `dws sheet find --node <nodeId或URL> --sheet-id <sheetId> --query "<公式片段>" --match-formula` |
+| "正则搜索 / 不区分大小写" | `dws sheet find --node <nodeId或URL> --sheet-id <sheetId> --query "<regexp>" --use-regexp --match-case=false` |
 | "插入图片到单元格" | `dws sheet write-image --node <nodeId或URL> --sheet-id <sheetId> --range A1 --file <图片路径>` |
 | "创建浮动图片" | 先 `dws sheet media-upload --node <nodeId或URL> --file <图片路径>` 获取 `resourceUrl`，再 `dws sheet create-float-image --node <nodeId或URL> --sheet-id <sheetId> --src "<resourceUrl>" --range A1 --width <宽> --height <高>` |
 
