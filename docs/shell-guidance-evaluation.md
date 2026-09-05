@@ -27,7 +27,12 @@ ref or guessing a future release tag would not resolve the dependency.
 [Upstream PR #5900](https://github.com/Hmbown/CodeWhale/pull/5900) adapts the fix
 to the newer model-visible lowercase `bash` surface, preserving its foreground,
 timeout, and approval contracts. Its source repairs were approved in the
-independent review; compilation checks are pending. The local model results
+independent review. On upstream commit `47c719b8a`, the library target compiled
+and passed 23 guidance-related tests plus 10 lowercase-shell contract tests.
+Tests used `RUST_MIN_STACK=16777216`, following the upstream development
+convention. The lowercase group initially had one missing-`cat` prerequisite
+failure; appending the installed Git `usr/bin` directory to the test process
+PATH resolved it without code changes. The local model results
 below measure the older fork surface, not that newer upstream integration.
 Upstream acceptance also does not replace publication of the Pinvou release.
 
