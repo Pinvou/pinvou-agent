@@ -32,7 +32,7 @@
 - `<cite type="user" user-id="ou_xxx"/>`：@人，会渲染为用户头像；必须显式传入用户 `open_id`，不得用纯文本名字冒充 @人。
 - `<cite type="doc" doc-id="DOC_TOKEN"/>`：@文档，会渲染为文档标题。
 - `<cite type="citation"><a href="URL" url-type="N"></a></cite>`：参考文献容器，仅含多个 `<a>`。`url-type` 标识链接类型：`5`（WebURL）须在`<a></a>`中填写渲染标题；`1`（Docx）、`6`（Minutes）、`12`（Base）、`13`（Sheet）可留空。
-- `<whiteboard></whiteboard>`：`type | src` 二选一。`type=blank` 为新建；`type=mermaid|plantuml|svg` 时，支持 `path=@./file` 导入，也支持在标签内直接写入内容；`src=token` 表示复制已有画板。复杂图需读取 [`lark-doc-whiteboard.md`](lark-doc-whiteboard.md)；（新建空白画板受画板工作流约束/禁止，见 [`lark-doc-whiteboard.md`](lark-doc-whiteboard.md)）
+- `<whiteboard></whiteboard>`：`type | src` 二选一。`type=blank` 为新建；`type=mermaid|plantuml|svg` 时，支持 `path=@./file` 导入，也支持在标签内直接写入内容；`src=token` 表示复制已有画板。复杂图需读取 [`lark-doc-whiteboard.md`](lark-doc-whiteboard.md)；新建空白画板受画板工作流约束/禁止（见该文档）
 - `<grid><column width-ratio="0.5"><p>左栏</p></column><column width-ratio="0.5"><p>右栏</p></column></grid>`：各列 `width-ratio` 之和为 1。
 - `<callout emoji="💡" background-color="light-*" border-color="*"><p>高亮块内容</p></callout>`：子块仅支持 `p`、`ol`、`ul`、`checkbox`、行内标签；禁止 `<table>`、`<img>`、`<pre>`、`<hr>`、`<grid>`、`<whiteboard>`、等其他块级标签或资源块。可选 `text-color`。
 - 其他扩展标签 `html5-block`、`bookmark`、`button`、`time`、`sheet`、`task`、`chat_card`、`sub-page-list`、`okr` 见 [`lark-doc-xml-extended-blocks.md`](lark-doc-xml-extended-blocks.md)。

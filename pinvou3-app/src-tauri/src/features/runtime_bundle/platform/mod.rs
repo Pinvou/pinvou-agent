@@ -139,7 +139,21 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 ///       required for connected users to refresh at startup (otherwise
 ///       the refresh waits for the post-first-frame
 ///       refresh_connector_auth_gates backfill).
-pub const BUNDLE_VERSION: &str = concat!("0.30-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.31: lark-skills model-facing doc-audit partition fixes, 21
+///       findings across eight packs (PR #439, registered in
+///       lark-skills/NOTICE.md, verified against CLI behavior and
+///       upstream main): identity-switch consent gates, condition_list
+///       null semantics, workflow outer-field contract, dropdown color
+///       semantics, wiki token-routing split, task search routing, and
+///       deduplications. Next free slot after 0.29 (lark-skills #439,
+///       reserved in review) and 0.30 (wecom #438, on main); the
+///       extracted-VERSION gate is inequality-only, so landing order
+///       and skipped numbers stay safe. Skill trees are excluded from
+///       the content hash, so the semantic bump is required for
+///       connected users to refresh at startup (otherwise the refresh
+///       waits for the post-first-frame refresh_connector_auth_gates
+///       backfill).
+pub const BUNDLE_VERSION: &str = concat!("0.31-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// 骨架 = 身份/底线/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：
