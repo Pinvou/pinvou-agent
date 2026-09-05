@@ -19,6 +19,11 @@ import { ArtifactCard, localizeTool, tsToolsData, tsToolWelcomeData } from '../t
 import { RightDockPanel, useRightDockOcclusion } from '../../components/layout/RightDock.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
 import {
+  annotateAgentSpawnGroups,
+  annotateTurnSpawnGroups,
+} from '../multiagent/spawn-aggregation.mjs';
+import { RunningAgentsOverlay } from '../multiagent/RunningAgentsOverlay.jsx';
+import {
   ConversationActivityIndicator,
   ConversationTimeline,
   useConversationSecondClock,
@@ -1199,8 +1204,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         )).join('\u0000');
         let lastUserId = null;
         for (let i = chatItems.length - 1; i >= 0; i--) { if (chatItems[i].type === 'user') { lastUserId = chatItems[i].id; break; } }
+        // 蜂群改造：连续 spawn 型 agent 调用聚合为一条计数行（标注 spawnGroup /
+        // spawnGroupHidden）。标注同时覆盖 legacy ChatBubble 车道与投影输入；
+        // 统一时间线车道在投影后再按 turn 内相邻条目补一次标注。
+        const spawnAnnotatedItems = annotateAgentSpawnGroups(visibleChatItems);
         const conversationProjection = projectDeepSeekConversation({
-          chatItems: conversationItemsForMode(visibleChatItems, useUnifiedConversationUi),
+          chatItems: conversationItemsForMode(spawnAnnotatedItems, useUnifiedConversationUi),
           busy,
           thinking: chatThinking,
           tokens: ctxTokens,
@@ -1208,14 +1217,18 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           timelineEvents: turnTimeline,
           allowScheduledTaskDraft: isScheduledTaskCreationChat,
         });
+        const annotatedProjection = {
+          ...conversationProjection,
+          turns: annotateTurnSpawnGroups(conversationProjection.turns),
+        };
         // Equivalent to [...turns].reverse().find(turn => turn.status === 'running'):
         // scan backwards for the last running turn, skipping the full reversed copy.
         let activeConversationTurn = null;
-        const turns = conversationProjection.turns;
+        const turns = annotatedProjection.turns;
         for (let i = turns.length - 1; i >= 0; i--) {
           if (turns[i].status === 'running') { activeConversationTurn = turns[i]; break; }
         }
-        return { visibleChatItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
+        return { visibleChatItems: spawnAnnotatedItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection: annotatedProjection, activeConversationTurn };
       }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, useUnifiedConversationUi, chatThinking, turnTimeline, activeSessionId]);
       const { visibleChatItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
 
@@ -1391,6 +1404,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // modeState.multiAgent 经 get_mode_state 双端同步（开关已持久化）。
       const isMultiAgentReadOnly = !MULTI_AGENT_ENABLED
         && !!(bs && bs.modeState && bs.modeState.multiAgent);
+      // 蜂群模式开关的只读镜像：右上角运行小窗的边框情绪配色（开=紫/关=蓝）。
+      const swarmModeOn = !!(bs && bs.modeState && bs.modeState.multiAgent);
       const artifactsVisible = Boolean(activeSessionId && artifactsOpen);
       const artifactFullscreenPublicationReady = useRightDockOcclusion(
         'artifact-fullscreen',
@@ -1729,7 +1744,14 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const handleTimelineRenderToolItem = useCallback((item) => (item.legacyItem
         && !isSearchTool(item.tool)
         && !isFetchTool(item.tool)
-        ? <ToolCard item={item.legacyItem} sessionId={activeSessionId} t={t} variant="timeline" />
+        ? <ToolCard
+            item={item.legacyItem}
+            sessionId={activeSessionId}
+            t={t}
+            variant="timeline"
+            spawnGroup={item.spawnGroup}
+            spawnGroupHidden={item.spawnGroupHidden}
+          />
         : undefined), [activeSessionId, t]);
       const timelineAssistantAvatar = useMemo(() => (
         <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center">
@@ -2279,6 +2301,14 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               )}
             </div>
             <div className="flex items-center gap-2">
+              {activeSessionId && (
+                <RunningAgentsOverlay
+                  sessionId={activeSessionId}
+                  theme={theme}
+                  t={t}
+                  swarmOn={swarmModeOn}
+                />
+              )}
               {activeSessionId && (
                 <ChatRightDockSwitcher
                   theme={theme}
