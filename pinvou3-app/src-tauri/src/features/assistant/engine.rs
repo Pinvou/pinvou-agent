@@ -1436,8 +1436,14 @@ impl AppEngine {
         let mut engine_config = match expert_snapshot.as_deref() {
             Some(snapshot) => {
                 // 多智能体面：装配专家名册和专用资源上限；工具面仍与普通会话
-                // 完全一致，普通会话不继承这些限制。
-                bridge.build_engine_config_for_multi_agent(session_id, roots, snapshot)
+                // 完全一致，普通会话不继承这些限制。swarm 开关与会话
+                // multi_agent 开关同源（上面刚读取的 mode_state）。
+                bridge.build_engine_config_for_multi_agent(
+                    session_id,
+                    roots,
+                    snapshot,
+                    multi_agent_enabled,
+                )
             }
             None => bridge.build_engine_config_for_session_roots(session_id, roots),
         };
