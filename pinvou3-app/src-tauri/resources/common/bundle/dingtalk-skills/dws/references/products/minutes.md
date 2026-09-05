@@ -703,7 +703,7 @@ Step 7: 引导用户替换发言人（调用 speaker replace 写回听记）
 | 路径 | 命令 | 得到什么 |
 |------|------|----------|
 | ① 通讯录组织架构 | `dws contact user search --query "目标人名"` → 部门/职级/上级/真名 | 职能大类（技术/产品/设计/管理）+ 是否存在该人 |
-| ② 本人创建的文档 | `dws doc search --keyword "目标人名/真名"` 至少获取 3 篇标题 | 角色精确信号（PM写PRD、研发写技术方案、设计师写视觉规范）|
+| ② 本人创建的文档 | `dws drive search --query "目标人名/真名"` 至少获取 3 篇标题 | 角色精确信号（PM写PRD、研发写技术方案、设计师写视觉规范）|
 | ③ 近期日程类型 | `dws calendar event list` | 职能边界（参加什么类型的会）|
 | ④ 聊天记录 | `dws chat message list` 获取与目标人的近期 IM 消息 | 语言风格/工作内容/职责线索 |
 
@@ -2218,7 +2218,7 @@ https://shanji.dingtalk.com/app/transcribes/<taskUuid> 分析下木兰讲了什�
 | 路径 | 命令 | 结果 |
 |------|------|------|
 | ① 通讯录组织架构 | `dws contact user search --query "木兰"` | 木兰 = **王佳明**，X 事业群-X 事业部-X-X-**产品设计部**，上级临渊（王临一）|
-| ② 文档产出 | `dws doc search --keyword "王佳明"`（按需）| 多为设计稿/原型，进一步印证设计师角色 |
+| ② 文档产出 | `dws drive search --query "王佳明"`（按需）| 多为设计稿/原型，进一步印证设计师角色 |
 
 **Step 5：定向匹配 + 置信度判断**
 
@@ -2346,7 +2346,7 @@ Step 2 **[禁止]** 看到全是匿名编号 → 没有继续走 Step 3-4，反�
 
 4. **想说"找不到 X"前的四个自检问题**（任何一个回答"没"都禁止给"找不到"结论）：
    - 通讯录查了吗？(`dws contact user search --query "X"`)
-   - 文档查了吗？(`dws doc search --keyword "X"`)
+   - 文档查了吗？(`dws drive search --query "X"`)
    - 聊天记录查了吗？(`dws chat message list`)
    - 基于角色在转写里做模式匹配了吗？（设计师 vs 研发 vs 管理者的发言特征）
 

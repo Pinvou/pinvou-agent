@@ -68,7 +68,7 @@ dws doc read --node "https://alidocs.dingtalk.com/i/p/Y7kmbokZp3pgGLq2/docs/AY39
 >
 > 你可以：
 > 1. 在钉钉客户端中打开该文档，将正文内容复制粘贴给我
-> 2. 如果文档已保存在你的文档空间中，可以告诉我文档名称，我通过 `dws doc search` 搜索后再读取
+> 2. 如果文档已保存在你的文档空间中，可以告诉我文档名称，我通过 `dws drive search` 搜索后再读取
 
 ---
 
@@ -93,7 +93,7 @@ Step 3 → 按下方路由规则映射到对应产品
 | `contentType=ALIDOC`, `extension=able` | `aitable` | 将 nodeId 作为 baseId，按 [aitable.md](./products/aitable.md) 操作 |
 | `contentType=DOCUMENT`, `extension=xlsx` / `xls` / `xlsm` / `csv` | `doc` | 必须用 `dws drive download` 下载到本地处理，禁止走 `sheet`（非在线表格，sheet 命令无法操作） |
 | `contentType≠ALIDOC`, `nodeType=file` | `doc` | 调用 `dws drive download` 下载，返回文件下载链接 |
-| `nodeType=folder` | `doc` | 调用 `dws doc list --folder <ID>` 列出指定文件夹直接子节点列表 |
+| `nodeType=folder` | `drive` | 调用 `dws drive list --folder <ID>` 列出指定文件夹直接子节点列表 |
 | 以上均不匹配 | — | 告知用户当前暂不支持该类型 |
 
 > axls vs xlsx 关键区分：
@@ -117,7 +117,7 @@ dws drive download --node "https://alidocs.dingtalk.com/i/nodes/xlsx456"
 dws drive download --node "https://alidocs.dingtalk.com/i/nodes/def456"
 
 # 返回 nodeType=folder → 文件夹，列出子节点
-dws doc list --folder "https://alidocs.dingtalk.com/i/nodes/ghi789" --format json
+dws drive list --folder "https://alidocs.dingtalk.com/i/nodes/ghi789" --format json
 ```
 
 ### 何时可跳过探测
@@ -141,7 +141,7 @@ dws doc list --folder "https://alidocs.dingtalk.com/i/nodes/ghi789" --format jso
 | **able**（在线多维表） | `aitable base get` / `aitable record query` | `aitable record create/update` | ⚠️ `doc delete`（节点删除）或 `aitable base delete --yes` | `aitable export data --scope all --export-format excel --format json`（取 downloadUrl，`--output` 不落盘） | ⚠️ `doc permission *`（节点级） | `aitable attachment upload` |
 | **xlsx / xls / xlsm / csv**（本地表格文件） | `drive download` → 本地用 xlsx skill 解析 | 不支持服务端写（先下载改本地再上传） | ⚠️ `doc delete`（节点删除） | 不需要（本身就是 xlsx） | ⚠️ `doc permission *` | 不适用 |
 | **普通文件** (nodeType=file) | `drive download` | 不支持服务端写 | ⚠️ `doc delete` | 不需要 | ⚠️ `doc permission *` | 不适用 |
-| **文件夹** (nodeType=folder) | `doc list --folder <URL>` | `doc create --folder <URL> ...` | ⚠️ `doc delete` | 不适用 | ⚠️ `doc permission *` | 不适用 |
+| **文件夹** (nodeType=folder) | `drive list --folder <URL>` | `doc create --folder <URL> ...` | ⚠️ `doc delete` | 不适用 | ⚠️ `doc permission *` | 不适用 |
 | **分享短链** `/i/p/<short>` | 宿主网页读取能力兜底 | 不适用 | 不适用 | 不适用 | 不适用 | 不适用 |
 
 ### 使用方式
