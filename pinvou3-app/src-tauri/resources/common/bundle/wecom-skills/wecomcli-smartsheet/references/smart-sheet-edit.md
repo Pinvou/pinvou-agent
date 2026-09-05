@@ -65,7 +65,7 @@
 1. 调用 `wecom-cli smartsheet create` 创建智能表格，并同时传入 `sheet_title` + `fields`
 2. 从返回值获取 `docid` 和所有字段的 `field_title`
 3. 按 `references/smart-sheet-view-types.md` 中「新建字段时的列宽判断规则」和「列宽调整接口调用方式」完成列宽写入
-4. 后续如需调整，再调用 `wecom-cli smartsheet sheets update` 做增量修改
+4. 后续如需调整子表名称，再调用 `wecom-cli smartsheet sheets update`；调整列定义使用 `fields` 命令
 
 **示例（创建时直接初始化字段）：**
 
@@ -81,7 +81,7 @@ wecom-cli smartsheet create --json '{"name": "任务跟踪表", "sheet_title": "
 4. 用 `wecom-cli smartsheet fields add` 补充缺失字段
 5. 按 `references/smart-sheet-view-types.md` 中「新建字段时的列宽判断规则」和「列宽调整接口调用方式」对所有新增字段完成列宽写入
 
-根据文档 ID，新建、更新、删除工作表及字段（支持批处理）。
+根据文档 ID，新建、更新、删除工作表（支持批处理）。
 
 
 ```bash
@@ -156,13 +156,13 @@ wecom-cli smartsheet sheets add --json '{"docid": "s3_AcDeFg", "sheet_title": "�
 
 #### 场景 2：修改子表名称
 
-修改已有子表的名称，可同时修改列。
+修改已有子表的名称。
 
 **参数要求：**
 
 - `sheet_title`：**必传**，定位目标子表；修改子表名称时传当前名称，新名称用 `new_sheet_title` 传入
 - `new_sheet_title`：**必传**，新的子表名称
-- `fields`：可选，可同时修改列定义
+- `fields`：仅 `sheets add` 新增子表时可传（见上方「请求参数」表与「情形分类总览」）；修改已有子表的列定义统一使用 `fields` 命令，不经 `sheets update` 传入
 
 **示例：**
 
@@ -208,7 +208,7 @@ wecom-cli smartsheet fields delete --json '{"docid": "<docid>", "sheet_title": "
 | --- | --- | --- | --- |
 | `docid` | string | 是 | 文档 ID |
 | `sheet_title` | string | 是 | 目标子表名称 |
-| `fields` | Field[] | 是 | 字段列表，结构与 `sheets update` 中的 `fields` 完全相同 |
+| `fields` | Field[] | 是 | 字段列表，结构与 `sheets add` 中的 `fields` 完全相同 |
 
 **Field 字段填写规则：**
 
@@ -329,15 +329,7 @@ wecom-cli smartsheet records delete --json '{"docid": "<docid>", "sheet_title": 
 
 #### `851003 no authority` 的 Webhook 兜底
 
-`wecom-cli smartsheet records add` 或 `wecom-cli smartsheet records update` 返回 `errcode: 851003`，或 `errmsg` 包含 `no authority` 时，通常表示企业可见范围超过 10 人，CLI 写入接口受到规模限制。此时：
-
-1. 停止重试 CLI 写入；
-2. 完整阅读 `references/smart-sheet-webhook.md`；
-3. 临时向用户索取目标子表的 Webhook 完整 URL 和「接收外部数据」页面的 schema 示例 JSON；
-4. 使用 Webhook 专用字段格式构造并发送请求；
-5. 写入完成后仍按 `references/smart-sheet-read.md` 读取目标数据进行验证。
-
-仅新增和更新记录使用该兜底。删除记录、结构操作、参数错误、字段错误、文档不存在等场景不应切换 Webhook。Webhook 更新还受额外限制：只能更新此前通过 Webhook 写入的记录，不能更新人工创建或通过普通接口创建的记录。
+触发判据：`wecom-cli smartsheet records add` / `records update` 返回 `errcode: 851003`，或 `errmsg` 包含 `no authority` 时，停止重试 CLI 写入，完整阅读 `references/smart-sheet-webhook.md` 后按其流程处理（该兜底仅适用于新增和更新记录，适用范围与限制详见 webhook.md）。
 
 ### 四、视图操作（smartsheet views add / update / delete）
 
@@ -387,7 +379,7 @@ wecom-cli smartsheet views delete --json '{"docid": "<docid>", "sheet_title": "<
 > 图表都有自己的布局位置（layout，由x，y坐标和宽高决定）。在修改图表时，必须确保 layout 不与现有的任意一个图表重叠。
 
 ```bash
-wecom-cli smartsheet charts add --json '{"docid": "<docid>", "sheet_title": "<仪表盘名称>", "charts": [{"id": "<图表ID>", "type": "<图表类型>", "datasource": "<数据表名称>", "layout": {"xy": [0, 0], "width_height": [3, 4]}}]}'
+wecom-cli smartsheet charts add --json '{"docid": "<docid>", "sheet_title": "<仪表盘名称>", "charts": [{"type": "<图表类型>", "datasource": "<数据表名称>", "layout": {"xy": [0, 0], "width_height": [3, 4]}}]}'
 wecom-cli smartsheet charts update --json '{"docid": "<docid>", "sheet_title": "<子表名称>", "charts": [{"id": "<图表ID>", ...}]}'
 wecom-cli smartsheet charts delete --json '{"docid": "<docid>", "sheet_title": "<子表名称>", "charts": [{"id": "<图表ID>"}]}'
 ```

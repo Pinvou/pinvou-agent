@@ -72,7 +72,7 @@ wecom-cli media upload --json '{"file_path": "/tmp/example.pdf"}'
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|:----:|---|
 | `file_path` | string | 是 | 需要上传的文件的本地路径 |
-| `type` | string | 否 | 媒体类型：`image`(图片)/`voice`(语音)/`video`(视频)/`file`(文件)，可选传入；发送消息时以上传响应返回的 `type` 为准 |
+| `type` | string | 否 | 媒体类型：`image`(图片)/`voice`(语音，源文件仅支持 AMR 格式)/`video`(视频)/`file`(文件)，可选传入；发送消息时以上传响应返回的 `type` 为准 |
 
 **返回**
 

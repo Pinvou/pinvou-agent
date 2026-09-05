@@ -11,6 +11,12 @@
 
 > **`build_docx.py` 位置**：（即与 当前 `references/` 同级的 `scripts/` 目录下）
 
+**用法约定**：
+
+- JSONL 须写入宿主可读目录（`WECOMAGENT_READABLE_DIRS`），否则报路径越权
+- 产物固定写入可写目录的 `docx/` 子目录，实际路径以脚本 stdout 的 `Successfully built` 行为准
+- spec 文件名建议用 ASCII 字符并与目标文档标题一致（非 ASCII 词干会被替换为 `document`）
+
 # JSONL 书写规范
 
 ## 格式
@@ -20,8 +26,8 @@
   ```json
   {"action": "<函数名>", "params": {<入参对象>}}
   ```
-- 每个 JSON 对象必须压缩到单行
-- 整个 `.jsonl` 文件中不得出现空行（行与行之间直接相连）
+- 每个 JSON 对象建议压缩到单行
+- 解析器也容忍空行、注释行与多行 pretty-print
 
 ## 所有 action 一览
 
@@ -55,7 +61,7 @@
 |---|---|---|
 | `text` | string | 文本 |
 | `bold` / `italic` / `underline` | bool | 粗体 / 斜体 / 下划线 |
-| `color_hex` | string | 字色（6 位 hex，无 `#`） |
+| `color_hex` | string | 字色（6 位 hex，可选前导 `#`，解析器两者都接受） |
 | `size_pt` | number | 字号 |
 | `font` | string | 西文字体 |
 | `east_asia_font` | string | 中文字体 |
@@ -90,7 +96,7 @@ Title / Subtitle（封面级）：
 {"action": "add_paragraph", "params": {"text": "编号 1",   "style": "List Number"}}
 ```
 
-混排格式（同样要压缩到单行）：
+混排格式（建议同样压缩到单行）：
 ```jsonl
 {"action": "add_paragraph", "params": {"runs": [{"text": "重要："}, {"text": "请按时提交", "bold": true, "color_hex": "C00000"}, {"text": "，谢谢配合。"}]}}
 ```
@@ -128,7 +134,7 @@ Cell 对象支持的字段与 `add_paragraph.runs` 的元素字段完全一致�
 
 > **重要**：单元格内**无法做"段内局部高亮"**（即一句话里只标红其中几个字）。如有此类需求，请把高亮文本拆出表格，作为表格上方/下方的独立 `add_paragraph + runs` 段落。
 
-写 `data`（二维数组），只描述每行内容，首行加粗即可。**整条 JSON 必须压缩到单行**：
+写 `data`（二维数组），只描述每行内容，首行加粗即可。**整条 JSON 建议压缩到单行**：
 
 ```jsonl
 {"action": "add_table", "params": {"data": [[{"text": "字段", "bold": true}, {"text": "类型", "bold": true}, {"text": "说明", "bold": true}], ["docid", "string", "文档 ID"], ["url", "string", "访问链接"]]}}

@@ -116,11 +116,8 @@ metadata:
 | ID 类型 | 获取方式 |
 | --- | --- |
 | docid | 按上方「如何获取文档 ID（docid）」的统一规则获取 |
-| sheet_id | 读取 `references/smart-sheet-read.md`，通过子表列表的返回结果中提取 `sheets[].sheet_id` |
-| field_id | 读取 `references/smart-sheet-read.md`，通过字段列表的返回结果获取 |
-| sheet_title | 用户提供的子表名称，或读取 `references/smart-sheet-read.md` 后通过子表列表的返回结果中提取 `sheets[].title` |
-| field_title | 用户提供的字段名称，或读取 `references/smart-sheet-read.md` 后通过子表/字段列表的返回结果中提取 `fields[].field_title` |
-| record_id | 读取 `references/smart-sheet-read.md`，通过记录查询结果中提取 `RECORD_ID` |
+
+sheet_id/field_id/record_id 等获取方式见 `references/smart-sheet-read.md`「文档与资源标识」。
 
 ## 执行前置协议（强制）
 
@@ -144,7 +141,7 @@ metadata:
 1. **参数名 `docid` 全小写无下划线**——写成 `doc_id` 会导致调用失败；若上下文变量为 `doc_id`，调用前映射为 `docid`
 2. **字段类型/属性/枚举值以 reference 文档为准**——`references/smart-sheet-field-types.md`（字段类型与属性）、`references/smart-sheet-view-types.md`（视图/过滤/排序）、`references/smart-sheet-record-values.md`（记录值格式）、`references/smart-sheet-chart-types.md`（图表）；凭记忆猜测参数名/枚举值/属性结构均视为违规
 3. **布尔值必须是 JSON 原生 `true`/`false`**——`property_xxx` 中的布尔字段严禁传字符串 `"true"`/`"false"`
-4. **记录写入权限兜底**——`records add` / `records update` 返回 `errcode: 851003` 或 `errmsg` 包含 `no authority` 时，通常是企业可见范围超过 10 人导致的写入限制。此时不要重复调用 CLI，改按 `references/smart-sheet-webhook.md` 向用户临时索取 Webhook 完整 URL 和 schema 示例 JSON，再通过 Webhook 写入。其他错误不切换 Webhook，按原错误排查。
+4. **记录写入权限兜底**——触发判据：`records add` / `records update` 返回 `errcode: 851003` 或 `errmsg` 包含 `no authority`。此时停止重试 CLI，完整阅读 `references/smart-sheet-webhook.md` 后按其流程处理；其他错误不切换 Webhook，适用范围与限制详见 webhook.md。
 
 ### 交互规范
 

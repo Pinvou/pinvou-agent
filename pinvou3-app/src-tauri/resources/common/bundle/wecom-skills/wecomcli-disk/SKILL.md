@@ -162,7 +162,7 @@ wecom-cli disk files search --json '{"keywords": ["季度汇报"], "search_type"
   | `space_keywords` | 不限空间时 | 用户说"在 XX 空间 / XX 团队盘里搜" → 填空间名关键词（本接口不接受 `space_id`） |
 
 - **`keywords` 不要混入文件类型后缀**：用户说「搜一下 Excel 报告」「找 PPT 方案」时，文件类型后缀（Excel/PPT/Word/PDF）交给 `file_types` 过滤，`keywords` 只保留业务关键词（如「报告」「方案」）。例：「Excel 报告」→ `keywords:["报告"]` + `file_types:["sheet","offline_excel"]`。
-- **`file_types` 口语→枚举映射**：见上方「文件类型枚举」表中的「用户口语表达」列。
+- **`file_types` 口语→枚举映射**：见上方「可选参数传值策略」表的 `file_types` 行（用户口语 → `file_types` 取值的映射）。
 - **分页续传**：`has_more=true` 时用 `next_cursor` 作为下一次调用的 `cursor`；首次调用 `cursor` 传空串。
 - **不支持时间范围过滤**：本接口没有 `begin_time` / `end_time` 字段，禁止伪造；若用户给出"最近 3 天 / 上周 / 本月"等时间范围，先按 `sort_by=modify_time`, `sort_order=desc` 拉取，再由客户端根据 `update_time` 二次筛选。
 - **结果总结顺序跟随排序方向**：`sort_order=desc`（默认，新→旧）时，向用户总结结果也应从最新到最旧展示，不要颠倒顺序。
@@ -380,7 +380,7 @@ wecom-cli disk folders create --json '{"folder_id": "FOLDER_ID", "folder_name": 
 
 | 依赖技能 | 何时触发 | 使用被依赖 skill 做什么 |
 |---|---|---|
-| `wecomcli-doc` | 搜索命中项 `type=word` / `doc`，用户要"读一下内容" | 拿返回的 `docid` 交给 `wecom-cli doc 'contents get'` 读取正文（`docid` 以 `a1_` / `b1_` 开头的除外，走 `wecomcli-smartpage`） |
+| `wecomcli-doc` | 搜索命中项 `type=word`（在线文档；入参 `file_types` 才用 `doc`），用户要"读一下内容" | 拿返回的 `docid` 交给 `wecom-cli doc 'contents get'` 读取正文（`docid` 以 `a1_` / `b1_` 开头的除外，走 `wecomcli-smartpage`） |
 | `wecomcli-sheet` | 搜索命中项 `type=sheet`（在线表格），用户要读内容 | 拿返回的 `docid` 交给 `wecomcli-sheet` 对应读取接口 |
 | `wecomcli-smartsheet` | 搜索命中项 `type=smartsheet`（智能表格），用户要读内容 | 拿返回的 `docid` 交给 `wecomcli-smartsheet` 对应读取接口 |
 | `wecomcli-smartpage` | 搜索命中项 `type=smartpage`（智能主页），或 `type=word` 且 `docid` 以 `a1_` / `b1_` 开头，用户要读内容 | 拿返回的 `docid` 交给 `wecomcli-smartpage` 对应读取接口 |
