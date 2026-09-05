@@ -401,20 +401,35 @@ get_unwrap = "deny"
 # =============================================================================
 # panic="unwind"(非 abort):底座 CodeWhale 用 catch_unwind 做工具调用 panic 隔离,
 # 改 abort 会破坏「单次工具 panic 不拖垮整个会话」的设计。
+# 相同代码折叠(ICF)/死代码消除的分平台现状(均无需在本文件加链接参数):
+# - Linux:发布 job 注入 lld + -Wl,--icf=safe(RUSTFLAGS,见 release-packages.yml);
+#   死代码段消除由 rustc 默认 --gc-sections 承担。
+# - Windows MSVC:rustc 在 opt-level>0 时已自动传 /OPT:REF,ICF,无需重复。
+# - macOS:Apple ld/ld-prime 无 ICF 能力;rustc 默认已传 -dead_strip。
 [profile.release]
 opt-level = 3
 # Thin LTO 替代 fat:fat 在 ubuntu 16GB runner 上编译 codewhale-tui + tauri 全图
 # 会 link 越线被 SIGTERM(merge_group run 实证)。thin 内存峰值与耗时远低于 fat,
 # 运行时优化损失可忽略(官方:大型项目 thin 常优于 fat)。
-# 注:cargo 在 lto="thin" 时给依赖 crate 传 -C linker-plugin-lto(生成 LLVM bitcode,
-# 把跨 crate LTO 推迟到 link 阶段),故 release 构建 link 阶段必须用支持 LLVM bitcode
-# 的链接器(lld);release-packages 的 Linux 发布 job 已注入 -fuse-ld=lld。
+# 机制澄清(cargo 1.98 verbose 实证 + rustc 文档):最终 bin 单元拿 -C lto=thin
+# —— ThinLTO 由 rustc 自己执行;依赖 crate 拿 -C linker-plugin-lto,其 .o 是纯
+# LLVM bitcode(连 Apple objdump 都不认作 Mach-O),由 rustc 读取参与 LTO,该
+# flag 并不要求链接器支持 plugin(rustc 文档:「rustc can also read its own
+# object files produced with -Clinker-plugin-lto」)。因此 thin LTO 在三端
+# (Apple ld / MSVC link.exe / lld)都真实生效,与链接器身份无关。
+# Linux 发布 job 注入 -fuse-ld=lld 的真正原因:BFD ld 对大二进制 link 内存效率差
+# (OOM 实证),且 BFD 无 --icf、支持不了相同代码折叠(见 ICF 注释)。
 lto = "thin"
 codegen-units = 1
-# macOS 27+ 发布链路会注入 CARGO_PROFILE_RELEASE_STRIP=none 绕过 dyld 对齐 bug,
-# 本设置主要作用于 Linux deb / Windows MSI 产物。
+# 发布产物零调试信息三件套:debug=false(rustc 不生成 DWARF/行号表)+
+# strip="symbols"(ELF 链接期 --strip-all;MSVC 上为 no-op,调试信息本就在
+# 不随包分发的 PDB 里)。1.98.0 已含 Mach-O __LINKEDIT 8 字节对齐修复
+# (rust#157750,LLVM backport #158410),macOS 恢复与 Linux/Windows 统一 strip,
+# 不再需要 macOS 27+ 的 strip=none 注入(相关 workflow step 已删)。
+# 需要符号化崩溃时:macOS 用 split-debuginfo="packed" 出 dSYM、Linux 出 .dwp、
+# Windows 直接取 target/ 下的 PDB —— 均属独立调试工件,不入任何发布产物。
 strip = "symbols"
-debug = "line-tables-only"
+debug = false
 panic = "unwind"
 incremental = false
 
@@ -427,7 +442,12 @@ inherits = "release"
 lto = false
 codegen-units = 16
 incremental = true
-# debug 不再重复声明:release 已是 line-tables-only,继承即同值。
+# 冒烟构建从不进发布产物:显式保留行号表,让 CI 冒烟失败时的 panic 回溯可定位到行
+# (release 已改 debug=false,不再隐式继承)。strip 必须显式回 none:继承 release 的
+# strip="symbols" 会在链接期把行号表连同符号表一起剥掉(rustc 语义上 symbols 是
+# debuginfo 的超集),行号表永远不会真正进入冒烟产物。
+debug = "line-tables-only"
+strip = "none"
 
 # Dev profile:line-tables-only 编译提速、overflow-checks 在调试期暴露整数回绕。
 [profile.dev]
