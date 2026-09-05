@@ -187,13 +187,84 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
     皆无;而 `meeting search` 回包含 `timezone`(`ScheduleTimezone`,--doc 坐实)。
     补返回字段 `meetings[].timezone` 行与"时区标注"约束条,与 calendar 侧镜像。
 
+### 文档缺陷修复(2026-09-05,全量第二轮:十个技能)
+
+模型向文档全量审计第二轮(wecomcli 分区),修复原则与前两轮相同:仅消除
+矛盾/虚构/漂移/断链,并为取消/删除类破坏性操作补轻量确认口径。全部条目
+经钉扎二进制(wecom-cli 1.1.0,--help/--doc/--schema/--dry-run)与上游
+`cd0480e0` 文档/源码逐条核实后登记。
+
+1. **smartpage 逾期判断模板方向写反**:`IF([完成日期] < TODAY(), "未逾期",
+   …)` 两分支互换(ISBLANK 空值守卫保留;上游 v1.2.0 仍未修)。
+2. **meeting `sub_meeting_id` 适用范围两处相反**:术语段原写「仅 original
+   get 需指定」,与同文件参数速查表及 meeting-list.md 既有「meeting get
+   周期会议需加」矛盾(--doc:周期会议场景下必传);统一为两者都需,
+   上下文传递表两行「用于」列同步补 `meeting get`。
+3. **smartsheet `sheets update` fields 口径**:场景 2「可同时修改列」与
+   请求参数表「仅 sheets add 可传」互斥,统一为后者;措辞用约定式(改列
+   统一走 `fields` 命令,不经 `sheets update` 传入)而非能力断言(二进制
+   --doc 明示 update 亦接受 fields,add/update 共用同一 schema);
+   `fields update` 参数表的结构引用同步改指 `sheets add`。
+4. **charts add 示例删除服务端生成的 `id`**(schema:新增时由服务端生成、
+   更新/删除时必传;与同文件 JSON 示例对齐)。
+5. **取消/删除确认口径**:meeting SKILL.md 规则 2 拆分(创建直接执行/取消
+   先复述确认,标题改「写操作执行口径」,原因段随拆分改写)、calendar
+   SKILL.md 规则 2 镜像拆分、calendar-cancel、todo-delete 补确认步骤,
+   sheet SKILL.md 新增「写操作确认」小节;meeting SKILL.md 前置条件与
+   核心场景 4 工作流摘要同步;todo 确认话术按创建人/非创建人条件化
+   (非创建人删除=仅本人退出,不影响其他参与人,上游同文档口径)。
+6. **doc-create.md 补 build_docx.py 沙箱约定**:JSONL 须写入
+   `WECOMAGENT_READABLE_DIRS` 可读目录否则报路径越权;产物写首个可写根的
+   `docx/` 子目录,实际路径以 stdout `Successfully built` 行为准;spec
+   文件名建议 ASCII 且与标题一致(非 ASCII 词干替换为 `document`);
+   「必须单行/不得空行」改为「建议单行,解析器容忍空行、`#` 与 `//`
+   注释行、多行 pretty-print」(解析器实测),同文件残留「必须/要压缩到
+   单行」两处同步收口;`color_hex` 补「可选前导 `#`」。
+7. **media upload `voice` 补「源文件仅支持 AMR」**(message 技能同约束镜像)。
+8. **get-mail.md 返回示例补 `ori_mail_id`**(schema 实证;上游文档明文该
+   字段用于对应回请求的 `mail_id`)。
+9. **search-mail 补 100 封上限衔接**(带关键字搜索上限见 email SKILL.md
+   平台限制;total_count 超上限时按 notice 语义说明,不再徒劳翻页)。
+10. **send-mail >5 候选对齐 contact 规则**:超过 5 位先展示前 5 位供选择,
+    无法确认再追问(原「请用户提供更多信息缩小范围」与 wecomcli-contact
+    「只展示前 5 位」相悖;上游 v1.2.0 仍未修)。
+11. **media_id/file_path 规则收敛**:email SKILL.md/forward-mail/reply-mail
+    重复表述收敛指向 send-mail.md 步骤四(互斥禁止同填、禁止自行构造、
+    优先级与自动上传);指向补「步骤四(附件)/步骤五(内嵌图)」。
+12. **851003 webhook 兜底收敛**:smartsheet SKILL.md 规则 4 与
+    smart-sheet-edit.md 重复段收敛到 smart-sheet-webhook.md(零信息损失;
+    归因「可见范围超 10 人」离线不可证,由 webhook.md 保留原文)。
+13. **smartsheet SKILL.md ID 获取表去重**:6 行收敛指向 smart-sheet-read.md
+    「文档与资源标识」既有章节。
+14. **smartpage 按钮公式引用统一控件名**:mdx-syntax.md 两处「[页面名.控件
+    id]」改「[页面名.控件名]优先、无 `name` 才回退 id」,与
+    formula-reference.md「优先语义化引用,避免直接使用控件id」对齐;
+    ADDRECORD 示例裸字段改全前缀(formula-reference 明令禁止裸字段)。
+15. **smartpage-edit 48KB 分流条件补齐三处**:「传 page_id 必回 file_path」
+    旧断言改为「≤48KB 内联 content_file_inner,>48KB 落盘 file_path」,
+    与本文件字段表及二进制 doc 对齐。
+16. **输出示例星期后缀删除**:meeting-list/calendar-agenda「(周二)/
+    (周一)」违反 [REQUIRED] 时间格式模板;meeting-search.md 两处同款
+    残留一并删除(展示规范明文搜索同样适用)。
+17. **smart-sheet-record-values**:location 行补「当前无法写入,提醒用户
+    手动插入」(与同文件详情节既有结论对齐);images/files upload 示例
+    docid `a1_xxx`→`s3_xxx`(`a1_` 是 smartpage 前缀,上游示例笔误)。
+18. **smartsheet fields/views/charts list 示例补 `"limit": 100`**(与
+    smart-sheet-read.md 命令调用格式块及 records list 示例既有形态一致)。
+19. **disk SKILL.md 指针与依赖表修正**:file_types 映射原指向「文件类型
+    枚举」表的「用户口语表达」列(该列不存在,断链),改指「可选参数传值
+    策略」表;wecomcli-doc 依赖行触发条件修正(返回 `type` 枚举无 `doc`
+    值,`doc` 仅为 `file_types` 入参枚举)。
+20. **views update 示例保留顶层 `"type": "update"`**:schema 顶层 `type`
+    为合法字段(add/update/delete 枚举)且与子命令一致,维持上游原文。
+
 ### 各技能重放基线
 
 14 个技能全部 = 上游 `cd0480e0`(v1.1.0 发布提交,npm 1.1.0 同源),技能目录与
-上游同名同构;本地分叉为上文「本轮品悟适配清单」六类,与同日两轮审计登记
-「路由口径统一与文档缺陷修复(2026-08-27)」(sheet/smartsheet/smartpage 三
-技能)及「文档缺陷修复(2026-08-27,calendar/meeting/email/message/media 五
-技能)」。
+上游同名同构;本地分叉为上文「本轮品悟适配清单」六类,审计登记「路由口径
+统一与文档缺陷修复(2026-08-27)」(sheet/smartsheet/smartpage 三技能)、
+「文档缺陷修复(2026-08-27,calendar/meeting/email/message/media 五技能)」
+及「文档缺陷修复(2026-09-05,全量第二轮:十个技能)」。
 
 > 对账命令(仓库根执行):
 > ```

@@ -65,7 +65,7 @@
 1. 调用 `wecom-cli smartsheet create` 创建智能表格，并同时传入 `sheet_title` + `fields`
 2. 从返回值获取 `docid` 和所有字段的 `field_title`
 3. 按 `references/smart-sheet-view-types.md` 中「新建字段时的列宽判断规则」和「列宽调整接口调用方式」完成列宽写入
-4. 后续如需调整，再调用 `wecom-cli smartsheet sheets update` 做增量修改
+4. 后续如需调整子表名称，再调用 `wecom-cli smartsheet sheets update`；调整列定义使用 `fields` 命令
 
 **示例（创建时直接初始化字段）：**
 
@@ -162,7 +162,7 @@ wecom-cli smartsheet sheets add --json '{"docid": "s3_AcDeFg", "sheet_title": "�
 
 - `sheet_title`：**必传**，定位目标子表；修改子表名称时传当前名称，新名称用 `new_sheet_title` 传入
 - `new_sheet_title`：**必传**，新的子表名称
-- `fields`：仅 `sheets add` 新增子表时可传（见上方「请求参数」表与「情形分类总览」），`sheets update` 不支持修改列定义
+- `fields`：仅 `sheets add` 新增子表时可传（见上方「请求参数」表与「情形分类总览」）；修改已有子表的列定义统一使用 `fields` 命令，不经 `sheets update` 传入
 
 **示例：**
 
@@ -208,7 +208,7 @@ wecom-cli smartsheet fields delete --json '{"docid": "<docid>", "sheet_title": "
 | --- | --- | --- | --- |
 | `docid` | string | 是 | 文档 ID |
 | `sheet_title` | string | 是 | 目标子表名称 |
-| `fields` | Field[] | 是 | 字段列表，结构与 `sheets update` 中的 `fields` 完全相同 |
+| `fields` | Field[] | 是 | 字段列表，结构与 `sheets add` 中的 `fields` 完全相同 |
 
 **Field 字段填写规则：**
 

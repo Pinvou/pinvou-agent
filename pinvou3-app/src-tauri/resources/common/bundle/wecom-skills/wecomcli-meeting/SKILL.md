@@ -104,7 +104,7 @@ metadata:
 ## 前置条件
 
 - 需要企业微信账号且已登录
-- 取消/更新操作不预先按"是否本人创建"拦截，直接执行命令、由接口返回结果判断能否操作
+- 取消/更新操作不预先按"是否本人创建"拦截，由接口返回结果判断能否操作（取消前另须按规则 2 复述会议主题与时间并获确认）
 - 参会人 userid（前缀为 `wo`）组装为 `[{"userid": "woxxx"}]` 对象数组格式传入；用户提供的是姓名时通过 `读取 wecomcli-contact 技能` 解析为 userid
 
 ## 核心场景
@@ -139,7 +139,7 @@ metadata:
 
 ### 4. 取消会议
 
-**CRITICAL — 执行前必须先读取参考文档**：收到取消会议意图后，第一步立即读取 [`meeting-cancel`](references/meeting-cancel.md)，按其中的完整工作流（定位会议 → 状态检查 → 周期判断 → 执行取消 → 按返回结果判断）执行，禁止在未读取参考文档的情况下直接发起任何操作。
+**CRITICAL — 执行前必须先读取参考文档**：收到取消会议意图后，第一步立即读取 [`meeting-cancel`](references/meeting-cancel.md)，按其中的完整工作流（定位会议 → 状态检查 → 周期判断 → 复述主题与时间并获确认 → 执行取消 → 按返回结果判断）执行，禁止在未读取参考文档的情况下直接发起任何操作。
 
 > 详见 [meeting-cancel](references/meeting-cancel.md)
 
@@ -198,12 +198,12 @@ metadata:
 - **禁止**把姓名当 userid 拼接，**禁止**凭记忆或猜测编造 userid。
 - `open_vid` 和 `userid` 是同一概念的不同叫法，其他系统返回的 `open_vid` 可直接作为 `userid` 使用。
 
-### 规则 2: 写操作直接执行
+### 规则 2: 写操作执行口径
 
 - 创建会议时，参数就绪后直接执行，无需向用户展示摘要或询问确认。
 - 取消会议前向用户复述会议主题与时间并获确认；参数就绪后执行。
 - 结果返回时**禁止暴露 userid**，只展示人名。
-- **原因**：上层交互已完整展示操作内容并完成确认，此处再展示一遍会造成冗余；userid 是系统内部标识，对用户没有实际意义，展示反而容易造成困惑。
+- **原因**：创建类操作的信息已在上层交互完整展示并确认，执行阶段再复述一遍冗余；取消会议属破坏性操作，复述主题与时间并获确认可防止误取消；userid 是系统内部标识，对用户没有实际意义，展示反而容易造成困惑。
 
 ### 规则 3: 参数补全
 
@@ -265,8 +265,8 @@ wecom-cli meeting [action] --json '{"key": "value"}'
 |------|-------------|------|
 | `search` | `meetings[].meeting_id` | `get` 查详情、`cancel` 取消会议 |
 | `list` | `created_meetings[].meeting_id` / `attended_meetings[].meeting_id` | `get` 查详情、`cancel` 取消会议 |
-| `search` | `meetings[].meeting_id`（周期会议加 `meetings[].sub_meeting_id`） | `original get` 拉取会议转写原文 |
-| `list` | `created_meetings[].meeting_id` / `attended_meetings[].meeting_id`（周期会议加对应 `sub_meeting_id`） | `original get` 拉取会议转写原文 |
+| `search` | `meetings[].meeting_id`（周期会议加 `meetings[].sub_meeting_id`） | `original get` 拉取会议转写原文、`meeting get` 获取周期会议某场详情 |
+| `list` | `created_meetings[].meeting_id` / `attended_meetings[].meeting_id`（周期会议加对应 `sub_meeting_id`） | `original get` 拉取会议转写原文、`meeting get` 获取周期会议某场详情 |
 | `list` | `created_meetings` / `attended_meetings` | 展示会议列表时区分"我创建的"与"我参加的"（不用于取消/更新的权限判断） |
 | wecomcli-contact 技能搜索 | `userid`（`wo` 前缀） | `create` 的 `attendees` 数组 |
 | `get` | `meeting_status` | 判断会议状态（`"init"` / `"started"` / `"end"`） |

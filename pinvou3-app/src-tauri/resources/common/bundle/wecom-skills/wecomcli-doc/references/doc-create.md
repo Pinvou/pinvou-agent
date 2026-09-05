@@ -96,7 +96,7 @@ Title / Subtitle（封面级）：
 {"action": "add_paragraph", "params": {"text": "编号 1",   "style": "List Number"}}
 ```
 
-混排格式（同样要压缩到单行）：
+混排格式（建议同样压缩到单行）：
 ```jsonl
 {"action": "add_paragraph", "params": {"runs": [{"text": "重要："}, {"text": "请按时提交", "bold": true, "color_hex": "C00000"}, {"text": "，谢谢配合。"}]}}
 ```
@@ -134,7 +134,7 @@ Cell 对象支持的字段与 `add_paragraph.runs` 的元素字段完全一致�
 
 > **重要**：单元格内**无法做"段内局部高亮"**（即一句话里只标红其中几个字）。如有此类需求，请把高亮文本拆出表格，作为表格上方/下方的独立 `add_paragraph + runs` 段落。
 
-写 `data`（二维数组），只描述每行内容，首行加粗即可。**整条 JSON 必须压缩到单行**：
+写 `data`（二维数组），只描述每行内容，首行加粗即可。**整条 JSON 建议压缩到单行**：
 
 ```jsonl
 {"action": "add_table", "params": {"data": [[{"text": "字段", "bold": true}, {"text": "类型", "bold": true}, {"text": "说明", "bold": true}], ["docid", "string", "文档 ID"], ["url", "string", "访问链接"]]}}
