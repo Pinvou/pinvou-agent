@@ -292,7 +292,7 @@ def main():
         print(__doc__)
         print('用法示例:')
         print(
-            '  python import_records.py basexxx tablexxx data.csv 50'
+            '  python3 scripts/import_records.py basexxx tablexxx data.csv 50'
         )
         sys.exit(1)
 

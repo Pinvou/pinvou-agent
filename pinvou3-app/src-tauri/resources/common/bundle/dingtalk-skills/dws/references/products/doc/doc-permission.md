@@ -21,14 +21,14 @@ Example:
 Flags:
       --node string        目标文档/文件夹的 ID 或 URL (必填)
       --users string       被授权的用户 userId 列表，逗号分隔 (必填，单次最多 30 个)
-      --role string        授予的角色 (必填，须传全大写): MANAGER (管理者) / EDITOR (可编辑) / DOWNLOADER (可下载) / READER (可阅读)
+      --role string        授予的角色 (必填，大小写不敏感): MANAGER (管理者) / EDITOR (可编辑) / DOWNLOADER (可下载) / READER (可阅读)
       --workspace string   所属知识库 ID (选填，仅用于辅助构造返回的 docUrl，业务实际依赖 nodeId)
 ```
 
 > **重要约束**：
 >
 > - 仅支持 USER 类型授权。
-> - 角色枚举严格大写：`MANAGER` / `EDITOR` / `DOWNLOADER` / `READER`（`OWNER` 不可通过此接口添加）。
+> - 角色值大小写不敏感（CLI 内部统一规范化为大写）：`MANAGER` / `EDITOR` / `DOWNLOADER` / `READER`（`OWNER` 不可通过此接口添加）。
 > - 操作者需在该节点具备「可编辑（EDITOR）」及以上角色（OWNER / MANAGER / EDITOR）。
 > - 授权对象是文档节点本身，不需要也不应该用 `wiki member add`（那个是知识库容器级授权）。
 
@@ -45,7 +45,7 @@ Example:
 Flags:
       --node string        目标文档/文件夹的 ID 或 URL (必填)
       --users string       目标用户 userId 列表，逗号分隔 (必填，单次最多 30 个)
-      --role string        新角色 (必填，须传全大写): MANAGER / EDITOR / DOWNLOADER / READER
+      --role string        新角色 (必填，大小写不敏感): MANAGER / EDITOR / DOWNLOADER / READER
       --workspace string   所属知识库 ID (选填)
 ```
 

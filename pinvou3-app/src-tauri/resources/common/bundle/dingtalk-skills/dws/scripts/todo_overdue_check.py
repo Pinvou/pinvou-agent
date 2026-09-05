@@ -3,8 +3,8 @@
 扫描已过截止时间但未完成的待办，输出逾期清单
 
 用法:
-    python todo_overdue_check.py
-    python todo_overdue_check.py --dry-run
+    python3 scripts/todo_overdue_check.py
+    python3 scripts/todo_overdue_check.py --dry-run
 """
 
 import sys

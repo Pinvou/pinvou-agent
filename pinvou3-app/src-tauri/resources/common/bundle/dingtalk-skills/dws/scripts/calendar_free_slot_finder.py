@@ -3,12 +3,12 @@
 查询多人共同空闲时段，推荐最佳会议时间
 
 用法:
-    python calendar_free_slot_finder.py \
+    python3 scripts/calendar_free_slot_finder.py \
         --users userId1,userId2,userId3 \
         --date 2026-03-15 \
         --duration 60
 
-    python calendar_free_slot_finder.py \
+    python3 scripts/calendar_free_slot_finder.py \
         --users userId1,userId2 \
         --date 2026-03-15 \
         --start-hour 9 --end-hour 18 \

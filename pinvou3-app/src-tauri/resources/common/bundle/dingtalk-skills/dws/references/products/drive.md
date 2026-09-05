@@ -452,7 +452,7 @@ dws wiki node create --type folder --name "文件夹名" --workspace <WORKSPACE_
 
 ### 权限管理（文档节点级）
 
-> **分工边界**：钉盘文件与「我的文档」用 `drive permission add`；alidocs 文档节点用 `doc permission add`（见 [doc.md](./doc.md)「添加文档权限」，表述以 wiki.md「关键区分」为准）。
+> **分工边界**：`drive permission add` 仅适用于文档空间节点（含「我的文档」），**不适用于钉盘普通文件**；与 `doc permission add` 同能力（同一后端）。知识库整体授权用 `wiki member add`（容器级，见 [doc.md](./doc.md)「添加文档权限」与 wiki.md「关键区分」）。
 
 ```
 Usage:

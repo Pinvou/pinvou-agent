@@ -3,9 +3,9 @@
 查询今天未读邮件并汇总（自动获取邮箱地址）
 
 用法:
-    python mail_unread_summary.py
-    python mail_unread_summary.py --size 30
-    python mail_unread_summary.py --dry-run
+    python3 scripts/mail_unread_summary.py
+    python3 scripts/mail_unread_summary.py --size 30
+    python3 scripts/mail_unread_summary.py --dry-run
 """
 
 import sys

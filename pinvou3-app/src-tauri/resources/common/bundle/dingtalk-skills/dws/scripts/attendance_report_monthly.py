@@ -29,7 +29,7 @@
   - 复杂字段（dict/list）→ 拼接（最多 5 条）
 
 用法:
-  python attendance_report_monthly.py \
+  python3 scripts/attendance_report_monthly.py \
     --users userId1,userId2,...  \
     --start "2026-03-01 00:00:00" \
     --end   "2026-03-31 23:59:59" \

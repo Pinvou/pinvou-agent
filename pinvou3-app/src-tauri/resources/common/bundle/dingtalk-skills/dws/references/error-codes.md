@@ -44,7 +44,7 @@
 ## approval 高频错误
 
 - approve/reject 缺少 taskId — 未先获取审批任务 → 先 `oa approval tasks --instance-id <ID>` 获取 taskId
-- list-initiated 缺少 processCode — 未查询审批表单 → 先 `approval list-forms` 获取 processCode
+- list-initiated 缺少 processCode — 未查询审批表单 → 先 `oa approval list-forms` 获取 processCode
 - 撤销审批失败 — 非本人发起的审批 → `revoke` 只能撤销自己发起的审批
 
 ---

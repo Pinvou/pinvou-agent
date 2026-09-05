@@ -30,7 +30,7 @@
   - 分批限制：≤100 人/次（check result），时间跨度 ≤1 个月
 
 用法:
-  python attendance_report_detail.py \
+  python3 scripts/attendance_report_detail.py \
     --users userId1,userId2,...  \
     --start "2026-03-01" \
     --end   "2026-03-31" \

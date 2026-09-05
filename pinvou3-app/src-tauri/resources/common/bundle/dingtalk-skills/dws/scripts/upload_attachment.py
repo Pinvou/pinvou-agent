@@ -160,10 +160,10 @@ def main():
     if len(sys.argv) != 3:
         print(__doc__)
         print('用法:')
-        print('  python upload_attachment.py <baseId> <filePath>')
+        print('  python3 scripts/upload_attachment.py <baseId> <filePath>')
         print()
         print('示例:')
-        print('  python upload_attachment.py G1DKw2zgV2bEk6PMSBooNxlEVB5r9YAn ./report.pdf')
+        print('  python3 scripts/upload_attachment.py G1DKw2zgV2bEk6PMSBooNxlEVB5r9YAn ./report.pdf')
         print()
         print('然后在 record create 中使用返回的 fileToken:')
         print('  dws aitable record create --base-id <BASE_ID> --table-id <TABLE_ID> \\')

@@ -14,10 +14,10 @@ Agent 负责意图判断和人员获取，本脚本自包含：数据查询 → 
   4. write_excel 输出
 
 用法:
-  python attendance_report_record.py --type leave --users <userId1,userId2> --start 2026-04-01 --end 2026-04-30
-  python attendance_report_record.py --type trip --users <userId1,userId2> --start 2026-04-01 --end 2026-04-30
-  python attendance_report_record.py --type out --users <userId1> --start 2026-05-01 --end 2026-05-31
-  python attendance_report_record.py --type patch --users <userId1> --start 2026-05-01 --end 2026-05-31
+  python3 scripts/attendance_report_record.py --type leave --users <userId1,userId2> --start 2026-04-01 --end 2026-04-30
+  python3 scripts/attendance_report_record.py --type trip --users <userId1,userId2> --start 2026-04-01 --end 2026-04-30
+  python3 scripts/attendance_report_record.py --type out --users <userId1> --start 2026-05-01 --end 2026-05-31
+  python3 scripts/attendance_report_record.py --type patch --users <userId1> --start 2026-05-01 --end 2026-05-31
 
 支持类型: leave(请假), trip(出差), out(外出), patch(补卡)
 """

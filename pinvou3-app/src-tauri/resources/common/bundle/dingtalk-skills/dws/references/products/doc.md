@@ -396,14 +396,14 @@ Usage:
 
 ### 内容写入管道（create / update 共用）
 
-> **关键原则**：CLI 内置自动分片——内容超过 30000 字符时自动按 markdown 结构切分后逐片写入（H1 → H2 → H3 → 空行 → 硬切；单分片超时自动减半重试，最小 5000 字符），对调用方透明。
+> **关键原则**：CLI 内置自动分片——内容超过 10000 字符时自动按 markdown 结构切分后逐片写入（H1 → H2 → H3 → 空行 → 硬切），对调用方透明。
 > **CLI 不自动回读；写入完成后必须主动回读确认（硬约束，见下文）。**
 
 - 输入方式：短文本（<2KB，无换行/表格/特殊字符）用 `--content`；长文本/含换行/表格/特殊字符**必须**用 `--content-file`；管道/heredoc 用 `--content -`
 - 写入成功返回 `{"success": true, "nodeId": "xxx", "chunksWritten": N}`；写完用 `dws doc read --node <nodeId>` 回读校验，发现缺失用 `--mode append` 补写；**禁止**在未回读的情况下向用户报告"已完成 / 更新成功"
-- 分片写入持续超时且减半到最小阈值仍失败时返回 `CONTENT_TRUNCATED`：已写入部分可 `doc read` 查看，从断点处 `--mode append` 续写
+- 某片写入超时后 CLI 不自动重试（直接返回「服务端提交状态未知」错误，避免重复创建/重复追加）：先 `doc read` 确认实际写入状态，仅在确认未提交后从断点处 `--mode append` 续写
 
-完整 Flags、输入方式表、进度输出示例与 CONTENT_TRUNCATED 处理见 [doc/doc-update.md](./doc/doc-update.md)「内容写入管道」。
+完整 Flags、输入方式表、进度输出示例与写入超时处置见 [doc/doc-update.md](./doc/doc-update.md)「内容写入管道」。
 
 ### 删除文档/文件到回收站
 
@@ -452,7 +452,7 @@ Flags:
 
 ### 添加文档权限（节点级授权）
 
-> **分工边界**：alidocs 文档节点用 `doc permission add`；钉盘文件与「我的文档」用 `drive permission add`（见 [drive.md](./drive.md)「权限管理」，表述以 wiki.md「关键区分」为准）。
+> **分工边界**：`doc permission add` 与 `drive permission add` 同能力（同一后端），均只适用于文档空间节点、不适用于钉盘普通文件（「我的文档」下的文档两者皆可）；知识库整体授权用 `wiki member add`（容器级，「我的文档」个人空间不支持，见 [wiki.md](./wiki.md)「关键区分」）。
 ```
 Usage:
   dws doc permission add [flags]
