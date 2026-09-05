@@ -162,8 +162,8 @@ test('多智能体能力门禁与会话策略契约（multiagent_desktop_scope �
   );
   assert.match(
     toolRenderersSource,
-    /if \(typeof window === 'undefined' \|\| !agentId\) return;/,
-    '子智能体面板轮询必须有宿主与 agentId 双守卫',
+    /if \(typeof window === 'undefined'\) return;\s*\/\/ agentId 为 null 是合法请求：打开面板的列表态（蜂群计数行的入口）。\s*if \(!agentId && agentId !== null\) return;/,
+    '子智能体面板轮询必须有宿主与 agentId 双守卫；agentId=null 允许打开面板列表态（蜂群计数行入口）',
   );
   assert.match(
     toolRenderersSource,
@@ -299,19 +299,26 @@ test('停止按钮与引擎回收都级联取消子智能体', () => {
 // ── 会话级开关 + 每轮委派提醒（Rust 源结构契约） ─────────────────────────────
 
 test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委派提醒', () => {
-  assert.match(commandSource, /fn delegation_reminder_with_roles\(roles: Vec<String>, limits: &DelegationLimits\)/, 'Work and native Code multi-agent sessions generate the delegation reminder from the same per-turn candidate roster');
-  // Per-turn reminder numbers must come from the session tier (DelegationLimits),
-  // not from hardcoded literals: Work sessions run 4 concurrent / 8 admitted,
-  // native Code sessions 6 / 12 (same constants the engine config installs).
+  // 蜂群改造：提醒生成仍走同一份每轮候选名册；数量上限随蜂群开关解除。
+  assert.match(commandSource, /fn delegation_reminder_with_roles\(roles: Vec<String>, limits: Option<&DelegationLimits>\)/, 'Work and native Code multi-agent sessions generate the delegation reminder from the same per-turn candidate roster');
+  // Reminder numbers must come from DelegationLimits, not hardcoded literals:
+  // swarm off = the shared 4/8 tier sourced from the bridge constants (the
+  // same values the engine config installs); swarm on = None (caps lifted,
+  // the reminder states no number).
   assert.match(
     commandSource,
-    /pub\(crate\) struct DelegationLimits \{[\s\S]{0,160}pub max_concurrent: usize,[\s\S]{0,160}pub max_admitted: usize,[\s\S]{0,160}\}/,
-    'reminder numbers are carried by DelegationLimits so both tiers can be asserted',
+    /pub\(crate\) struct DelegationLimits \{[\s\S]{0,300}pub max_concurrent: usize,[\s\S]{0,300}pub max_admitted: usize,[\s\S]{0,300}\}/,
+    'reminder numbers are carried by DelegationLimits so both regimes can be asserted',
   );
   assert.match(
     commandSource,
-    /pub\(crate\) fn delegation_limits_for\(pool: &EnginePool, session_id: &str\) -> DelegationLimits \{[\s\S]{0,400}pool\.is_code_session\(session_id\)/,
-    'tier selection must reuse the same is_code_session predicate as the engine config',
+    /pub\(crate\) fn delegation_limits_for\(swarm: bool\) -> Option<DelegationLimits> \{[\s\S]{0,500}MULTI_AGENT_MAX_CONCURRENT[\s\S]{0,300}MULTI_AGENT_MAX_ADMITTED/,
+    'tier numbers must reuse the bridge constants the engine config installs; swarm on yields None',
+  );
+  assert.match(
+    commandSource,
+    /match limits \{[\s\S]{0,400}None =>/,
+    'swarm-on reminder must not state any concurrency number (caps are lifted)',
   );
   assert.match(commandSource, /pub\(crate\) fn prepare_delegation_turn\(/, '普通发送与方案接受必须复用同一轮提醒/名册快照组装');
   assert.match(commandSource, /snapshot\.available_role_lines\(task\)/, '候选提醒必须从本轮名册快照筛选，避免提示与实际派工错位');
@@ -410,11 +417,10 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   assert.match(assistantBridgeSource, /MULTI_AGENT_MAX_SPAWN_DEPTH:\s*u32\s*=\s*2/);
   // Tier constants are pub(crate): the per-turn delegation reminder reads the
   // same single source of truth as build_engine_config_for_multi_agent.
-  // Work tier runs 4 concurrent / 8 admitted; native Code tier 6 / 12.
-  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_WORK_MAX_CONCURRENT: usize = 4;/, 'Work tier direct-child concurrency is 4');
-  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_WORK_MAX_ADMITTED: usize = 8;/, 'Work tier tree-wide admission is 8');
-  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_CODE_MAX_CONCURRENT: usize = 6;/, 'Code tier direct-child concurrency is 6');
-  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_CODE_MAX_ADMITTED: usize = 12;/, 'Code tier tree-wide admission is 12');
+  // 蜂群改造：Work 与 native Code 合并为单一共享档 4/8；蜂群开启时引擎配置
+  // 顶到底座硬上限（提醒不再给数字），关闭时回到这一档。
+  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_MAX_CONCURRENT: usize = 4;/, 'Shared tier direct-child concurrency is 4');
+  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_MAX_ADMITTED: usize = 8;/, 'Shared tier tree-wide admission is 8');
   assert.match(
     assistantBridgeSource,
     /build_multi_agent_send_message_op[\s\S]{0,700}build_multi_agent_hook_executor/,
@@ -1031,10 +1037,22 @@ test('agent 工具调用渲染成行内专家卡，点击打开只读面板', ()
     /function ToolItem[\s\S]*?const custom = renderToolItem && renderToolItem\(item\)/,
     '独立工具项与工具组必须共用产品级工具渲染器',
   );
+  // 蜂群改造：spawn 型委派不再直接渲染专家卡 banner，而是走聚合计数行
+  // （AgentSpawnCountRow）；协调操作（status/wait/cancel）仍走专家卡安静行。
   assert.match(
     toolRenderersSource,
-    /if \(EXPERT_CARD_ENABLED && \(item\.name === 'agent' \|\| isAgentWaitCall\(item\.name, item\.args\)\)\) \{\s*return <ExpertAgentCard/,
-    'agent 委派与新旧 wait 调用共用产品级展示，并按 capability 门禁（Web 无 multiAgent bridge）',
+    /const delegation = isExpertDelegationCall\(item\.name, item\.args\);\s*if \(delegation\) \{[\s\S]{0,600}return \(\s*<AgentSpawnCountRow/,
+    'spawn 型委派按 capability 门禁渲染聚合计数行（Web 无 multiAgent bridge 时走通用工具卡）',
+  );
+  assert.match(
+    toolRenderersSource,
+    /if \(hidden\) return null;/,
+    '同一聚合序列的非首条 spawn 不重复渲染文本行（计数原地递增）',
+  );
+  assert.match(
+    toolRenderersSource,
+    /return <ExpertAgentCard item=\{item\} t=\{t\} sessionId=\{sessionId\} \/>;/,
+    'status/wait/cancel 协调操作仍走专家卡安静单行，不冒充新委派',
   );
   assert.match(
     toolRenderersSource,

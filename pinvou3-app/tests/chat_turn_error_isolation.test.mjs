@@ -169,7 +169,10 @@ assert.match(
   desktopBridgeSource,
   /if \(item\.turnErrorNotice && !item\.legacyConversationOnly\) return false/,
 );
-assert.match(chatViewSource, /conversationItemsForMode\(visibleChatItems, useUnifiedConversationUi\)/);
+// 蜂群改造：投影输入先经 spawn 聚合标注（annotateAgentSpawnGroups），再进
+// conversationItemsForMode；错误隔离条目仍必须在两条车道都可见。
+assert.match(chatViewSource, /annotateAgentSpawnGroups\(visibleChatItems\)/);
+assert.match(chatViewSource, /conversationItemsForMode\(spawnAnnotatedItems, useUnifiedConversationUi\)/);
 
 assert.match(webBridgeSource, /turnErrorNotice && item\.text === notice/);
 assert.match(
