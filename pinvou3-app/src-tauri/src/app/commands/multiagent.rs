@@ -20,7 +20,9 @@ pub(crate) const SWARM_MODE_PROMPT: &str = "This is a system message. User has a
 ///
 /// 蜂群模式开启时数量上限解除（`delegation_limits_for` 返回 `None`，提醒文案
 /// 不再给出数字）；未开启时为统一一档：Work 与 Code 会话同为直属并发 4 /
-/// 全树准入 8。
+/// 全树准入 8。注意：生产接线上 `expert_snapshot` 只在 multi_agent 开启时
+/// 才存在，因此「未开启」一档目前仅由测试与防御性调用触达，其数字只约束
+/// 提醒文案与引擎配置的一致性。
 pub(crate) struct DelegationLimits {
     /// Max direct children running at the same time (launch_concurrency).
     pub max_concurrent: usize,
@@ -32,7 +34,10 @@ pub(crate) struct DelegationLimits {
 /// the caps are lifted (engine config pins the base's own hard ceilings), so
 /// the reminder must not state any number. `Some` = swarm off: the single
 /// shared tier (4/8) comes from the bridge constants instead of a second copy
-/// here, so the reminder cannot drift from the engine config.
+/// here, so the reminder cannot drift from the engine config. (The swarm-off
+/// tier is not reachable from production wiring today — see
+/// [`DelegationLimits`]; it stays the defensive regime for a non-swarm
+/// multi-agent session should one ever be introduced.)
 pub(crate) fn delegation_limits_for(swarm: bool) -> Option<DelegationLimits> {
     if swarm {
         None

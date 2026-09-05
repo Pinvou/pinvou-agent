@@ -18,10 +18,7 @@ import { ViewErrorBoundary } from '../../shared/ViewErrorBoundary.jsx';
 import { ArtifactCard, localizeTool, tsToolsData, tsToolWelcomeData } from '../tools/tool-common.jsx';
 import { RightDockPanel, useRightDockOcclusion } from '../../components/layout/RightDock.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
-import {
-  annotateAgentSpawnGroups,
-  annotateTurnSpawnGroups,
-} from '../multiagent/spawn-aggregation.mjs';
+import { annotateAgentSpawnGroups } from '../multiagent/spawn-aggregation.mjs';
 import { RunningAgentsOverlay } from '../multiagent/RunningAgentsOverlay.jsx';
 import {
   ConversationActivityIndicator,
@@ -1205,8 +1202,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         let lastUserId = null;
         for (let i = chatItems.length - 1; i >= 0; i--) { if (chatItems[i].type === 'user') { lastUserId = chatItems[i].id; break; } }
         // 蜂群改造：连续 spawn 型 agent 调用聚合为一条计数行（标注 spawnGroup /
-        // spawnGroupHidden）。标注同时覆盖 legacy ChatBubble 车道与投影输入；
-        // 统一时间线车道在投影后再按 turn 内相邻条目补一次标注。
+        // spawnGroupHidden）。标注在投影输入上做一次：legacy ChatBubble 车道
+        // 直接读条目标注，统一时间线车道经投影条目的 legacyItem 读到同一份。
         const spawnAnnotatedItems = annotateAgentSpawnGroups(visibleChatItems);
         const conversationProjection = projectDeepSeekConversation({
           chatItems: conversationItemsForMode(spawnAnnotatedItems, useUnifiedConversationUi),
@@ -1217,18 +1214,14 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           timelineEvents: turnTimeline,
           allowScheduledTaskDraft: isScheduledTaskCreationChat,
         });
-        const annotatedProjection = {
-          ...conversationProjection,
-          turns: annotateTurnSpawnGroups(conversationProjection.turns),
-        };
         // Equivalent to [...turns].reverse().find(turn => turn.status === 'running'):
         // scan backwards for the last running turn, skipping the full reversed copy.
         let activeConversationTurn = null;
-        const turns = annotatedProjection.turns;
+        const turns = conversationProjection.turns;
         for (let i = turns.length - 1; i >= 0; i--) {
           if (turns[i].status === 'running') { activeConversationTurn = turns[i]; break; }
         }
-        return { visibleChatItems: spawnAnnotatedItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection: annotatedProjection, activeConversationTurn };
+        return { visibleChatItems: spawnAnnotatedItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
       }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, useUnifiedConversationUi, chatThinking, turnTimeline, activeSessionId]);
       const { visibleChatItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
 
@@ -1749,8 +1742,6 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             sessionId={activeSessionId}
             t={t}
             variant="timeline"
-            spawnGroup={item.spawnGroup}
-            spawnGroupHidden={item.spawnGroupHidden}
           />
         : undefined), [activeSessionId, t]);
       const timelineAssistantAvatar = useMemo(() => (

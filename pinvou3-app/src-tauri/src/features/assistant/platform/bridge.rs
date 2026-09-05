@@ -71,7 +71,9 @@ const SEPARATE_REASONING_FIELD: &str = "separate_field";
 // CodeWhale. With swarm off there is one shared tier (Work and Code sessions
 // alike): 4 concurrent direct children, 8 tree-wide admitted — the extra
 // admitted slots form a small queue buffer so a bursty fanout queues instead
-// of being rejected outright.
+// of being rejected outright. (The swarm-off tier is not reachable from
+// production wiring today — multi-agent engine configs are only built for
+// sessions with the switch on; it is the defensive regime pinned by tests.)
 const MULTI_AGENT_MAX_SPAWN_DEPTH: u32 = 2;
 pub(crate) const MULTI_AGENT_MAX_CONCURRENT: usize = 4;
 pub(crate) const MULTI_AGENT_MAX_ADMITTED: usize = 8;
@@ -1996,8 +1998,11 @@ impl Pinvou3Bridge {
             cfg.max_admitted_subagents = deepseek_tui::config::MAX_SUBAGENT_ADMISSION;
             cfg.launch_concurrency = deepseek_tui::config::MAX_SUBAGENTS;
         } else {
-            // 显式用户配置只做上限，不抬高更保守的值（包括 0 = 禁用）；未配置时
-            // 使用蜂群关闭档的产品默认。
+            // 蜂群关闭档：生产接线不会走到（见 `delegation_limits_for` 与
+            // engine 侧 expert_snapshot 的构造条件），仅由测试与防御性调用
+            // 触达。显式用户配置只做上限，不抬高更保守的值；注意「0 = 禁用」
+            // 在运行时并不成立——底座 SubAgentManager 构造会把 max_agents
+            // clamp 到 1..=MAX_SUBAGENTS，Some(0) 实际表现为 1 并发可用。
             cfg.max_subagents = self
                 .prefs
                 .advanced
