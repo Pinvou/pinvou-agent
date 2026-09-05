@@ -4,6 +4,33 @@ This change keeps the `Bash` tool name, schema fields, permissions, execution
 dispatcher, and background lifecycle compatible. Only model-facing guidance is
 changed. Application instructions no longer prescribe Unix-only defaults.
 
+## Integration review status
+
+Independent source review accepted the scoped repairs. This does not establish
+release readiness: [parent PR #443](https://github.com/Pinvou/pinvou-agent/pull/443)
+must remain draft while its public-submodule gate is blocked.
+`scripts/verify-public-submodule.sh` requires the official immutable
+`pinvou-v0.9.5-r13` tag, whose commit is
+`f853f8f1566c57e6be40d5439a222a932aa79ef5`; the candidate parent gitlink is
+`0d409a97802179f1df9bcdbef185c1bfb5dc23e2`. These commits differ, so the candidate
+does not satisfy that gate even though its focused source tests passed.
+
+An authorized `Pinvou/CodeWhale` maintainer must integrate
+[fork PR #42](https://github.com/Pinvou/CodeWhale/pull/42) and publish a new
+immutable release tag containing the fix. The authenticated `zhuowp` identity
+lacks push permission to the official repository. Once that release exists,
+align the parent gitlink, verifier, fork guard, and release documentation with
+the actual tag and SHA, then rerun the integration checks before marking the
+parent ready. The current r13 tag must stay immutable; accepting a contributor
+ref or guessing a future release tag would not resolve the dependency.
+
+[Upstream PR #5900](https://github.com/Hmbown/CodeWhale/pull/5900) adapts the fix
+to the newer model-visible lowercase `bash` surface, preserving its foreground,
+timeout, and approval contracts. Its source repairs were approved in the
+independent review; compilation checks are pending. The local model results
+below measure the older fork surface, not that newer upstream integration.
+Upstream acceptance also does not replace publication of the Pinvou release.
+
 ## Final scope
 
 - CodeWhale: derive model-visible tool and command guidance from the existing

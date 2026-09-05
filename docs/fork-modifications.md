@@ -6,6 +6,9 @@
 
 ## T2 candidate: shell environment guidance
 
+- Integration status: [parent PR #443](https://github.com/Pinvou/pinvou-agent/pull/443) must remain draft. Independent source review accepted the scoped changes, but release integration is blocked: `scripts/verify-public-submodule.sh` requires the official immutable `pinvou-v0.9.5-r13` tag at `f853f8f1566c57e6be40d5439a222a932aa79ef5`, whereas the candidate parent gitlink is `0d409a97802179f1df9bcdbef185c1bfb5dc23e2`. Passing source tests or fork fingerprints does not satisfy this public-release gate.
+- Release dependency: an authorized `Pinvou/CodeWhale` maintainer must integrate [fork PR #42](https://github.com/Pinvou/CodeWhale/pull/42) and publish an actual new immutable release tag containing the fix. The authenticated `zhuowp` identity lacks push permission to that official repository. After publication, align the parent gitlink, public-submodule verifier, fork guard, and release inventory with the verified tag and SHA, then rerun the integration checks before marking the parent ready. Do not move r13, invent a future tag, or relax the verifier to accept a contributor ref.
+- The reusable upstream contribution is [Hmbown/CodeWhale#5900](https://github.com/Hmbown/CodeWhale/pull/5900). Its source review and pending compilation checks are separate from the fork release dependency; upstream acceptance alone does not publish the required Pinvou release.
 - Review: [Pinvou/CodeWhale#42](https://github.com/Pinvou/CodeWhale/pull/42), from `zhuowp/DeepSeek-TUI:fix/shell-environment-guidance`. This is a pinned review candidate, not a new r14 release.
 
 - The model-visible `Bash` description and `command` parameter now share guidance from the existing execution dispatcher. PowerShell, cmd, POSIX sh, Bash, zsh, and other custom shells receive matching syntax guidance. Tool names, permissions, execution, aliases, and read-only argv behavior remain compatible.
