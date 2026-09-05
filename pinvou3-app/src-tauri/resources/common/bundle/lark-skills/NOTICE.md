@@ -532,6 +532,10 @@ sync 需逐条重放。四域 SKILL.md frontmatter version 1.0.0 → 1.0.1
   `im:chat:create_by_user`、bot 身份需 `im:chat:create`)。`chats.create`
   行保持 `im:chat:create`(原生方法 CLI dry-run 实测拒绝 `--as user`,
   user 身份建群属 `+chat-create` 快捷命令)。
+- **lark-im/SKILL.md**:`chats.create` 行(上游原文 bot-only)补
+  「user 身份建群仅经 `+chat-create` 快捷命令(需
+  `im:chat:create_by_user`)」,与 scopes 表、上游 +chat-create 参考
+  一致(原生方法 CLI dry-run 实测拒绝 `--as user`)。
 - **lark-shared/references/lark-wiki-token-routing.md**:「优先
   drive +inspect」改为按用途分工(仅解析 space_id/node_token 用
   `wiki +node-get`;底层对象路由/评论/导出用 `drive +inspect`)。
