@@ -5,7 +5,6 @@ description: "【何时用:仅当用户明确指向飞书/Lark(发到飞书、�
 metadata:
   requires:
     bins: ["lark-cli"]
-    skills: ["lark-shared"]
   cliHelp: "lark-cli drive --help"
 ---
 

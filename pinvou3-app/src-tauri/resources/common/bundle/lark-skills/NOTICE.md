@@ -479,3 +479,75 @@ sync 需逐条重放。四域 SKILL.md frontmatter version 1.0.0 → 1.0.1
   `--rrule` 行补「系统绝对不支持 COUNT,如需限制重复次数,必须转为
   UNTIL」(update.md/suggestion.md/room-find.md 三处均有,唯 create.md
   缺失;create 是 rrule 的首入口,缺失风险最高)。
+
+### 模型向文档审计 lark 分区修复(2026-09-05,PR #439)
+
+模型向文档全量审计的 lark 分区,21 处修复;评审中以真实 CLI 实测
+(dry-run/help/schema)+上游 main 源码逐条核证,下列为留存的本地分叉,
+下次 sync 需逐条重放:
+
+- **lark-base/SKILL.md**:user 身份资源级无访问时的 bot 重试一次,补
+  「经用户明确同意」前置,对齐 lark-shared「禁止仅因权限错误切换身份」
+  禁令。
+- **lark-base/references/lark-base-field-update.md**:无状态字段类型
+  转换补「目标类型仍受下方黑名单(`any -> checkbox` / `any -> user` 等)
+  约束」,消除与黑名单小节的矛盾。
+- **lark-base/references/lark-base-form-detail.md**:`questions[].filter`
+  注明为分享详情返回结构,写入 `visible_rule` 须按 filter-condition
+  tuple 公共协议构造(两者形态不同:对象 vs tuple,operator 集合也不同)。
+- **lark-base/references/lark-base-workflow-guide.md / -schema.md**:
+  guide 补外层字段小节链接;schema `condition_list` 示例 `[]` → `null`
+  (无条件时传 null,空数组报错,对齐 guide 排查表);新增「workflow 外层
+  字段」表:`title` 建议携带(必填无据)、`client_token` 为
+  `+workflow-create` 必填(缺失报 `client token is empty`,update 的
+  help/排查表均未要求)、`status` 以 `+workflow-get` 返回为准且
+  update 传 status 不改变启停(启停走 `+workflow-enable`/`+workflow-disable`);
+  完整示例补 `client_token` 占位。
+- **lark-base/references/lookup-field-guide.md**:`aggregate = null` →
+  省略即默认 `raw_value`(对齐本文件参数表 default)。
+- **lark-calendar/SKILL.md 与 references/lark-calendar-recurring.md**:
+  删除日程补 lark-shared 安全规则确认前置(写入/删除操作前必须确认
+  用户意图;该命令 CLI 风险级为 write 而非 high-risk-write,故不引
+  exit 10 审批协议措辞)。
+- **lark-calendar/references/lark-calendar-schedule-fuzzy-time.md**:
+  多时间块展示格式大段重复收敛为引用 room-find「输出格式」节,保留
+  多选项叠加三条差异要点(`[选项 N]` 递增分组、参会人均空闲标注、
+  征求选项提示)。
+- **lark-doc/references/lark-doc-xml.md**:whiteboard 行补「新建空白
+  画板受画板工作流约束/禁止」提示(约束见 whiteboard.md,禁止新建的
+  强条款在本域 SKILL.md)。
+- **lark-drive/SKILL.md**:`permission.members auth` 补 manage-public
+  预检说明(实测 action 枚举含 `manage_public`);`transfer_owner` 补
+  高风险确认(`--yes` + permission governance EXEC_CONFIRM 流程)。
+- **lark-drive/references/lark-drive-pull.md / lark-drive-push.md**:
+  悬空引用「第 6 章」改为 lark-shared 安全规则口径(两命令 CLI 风险级
+  为 write,`--yes` 缺失走 validation 拒绝而非 exit 10 门禁)。
+- **lark-im/references/lark-im-card-action-reply.md**:`select_img`
+  回调字段统一为 `options`(单选/多选一致,对齐组件 SSOT select_img.md)。
+- **lark-im/references/lark-im-chat-identity.md / lark-im-chat-update.md**:
+  232016/232002/232017/232024 处置补「先报告用户,经明确同意才切换
+  身份」,对齐 lark-shared 身份延续禁令。
+- **lark-im/references/lark-im-scopes.md**:新增「快捷命令」节(如
+  `+messages-search` 需 `search:message`;`+chat-create` user 身份需
+  `im:chat:create_by_user`、bot 身份需 `im:chat:create`)。`chats.create`
+  行保持 `im:chat:create`(原生方法 CLI dry-run 实测拒绝 `--as user`,
+  user 身份建群属 `+chat-create` 快捷命令)。
+- **lark-shared/references/lark-wiki-token-routing.md**:「优先
+  drive +inspect」改为按用途分工(仅解析 space_id/node_token 用
+  `wiki +node-get`;底层对象路由/评论/导出用 `drive +inspect`)。
+- **lark-sheets/references/lark-sheets-batch-update.md**:配色语义
+  改为「默认即生效,`--highlight=false` 时忽略 `--colors`」(对齐 CLI
+  help「Applies on its own」与 write-cells SSOT,原「必须配
+  `--highlight=true`」有误)。
+- **lark-sheets/references/lark-sheets-visual-standards.md**:图表防
+  重叠补「`+chart-list` 返回 `position.row` 基准与 `+chart-create`
+  入参可能不同(0/1-based),按 chart.md 口径换算」。
+- **lark-task/references/lark-task-get-my-tasks.md**:路由改为列表
+  场景用本命令、关键词搜索优先 `+search`(对齐 SKILL.md 搜索指导);
+  用户名解析改 `lark-cli contact +search-user`(lark-contact 未随包
+  收录)。
+
+评审中否决的 PR 原稿两处(登记防回潮):chats.create 标注 user/bot
+双身份(CLI 实测仅 bot,见上);lark-im/lark-drive frontmatter 增补
+`skills: ["lark-shared"]`(引擎只消费 name/description,该键无实效,
+按上文「保持上游原样」登记决定不加)。
