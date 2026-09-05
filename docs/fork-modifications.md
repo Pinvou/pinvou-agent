@@ -4,6 +4,19 @@
 > 维护策略见 [`fork-policy.md`](fork-policy.md)，升级证据见 [`codewhale-upgrade-0.9.5-to-0.9.12.md`](codewhale-upgrade-0.9.5-to-0.9.12.md)。
 > English: [`fork-modifications.en.md`](fork-modifications.en.md)
 
+## T2 candidate: shell environment guidance
+
+- Review: [Pinvou/CodeWhale#42](https://github.com/Pinvou/CodeWhale/pull/42), from `zhuowp/DeepSeek-TUI:fix/shell-environment-guidance`. This is a pinned review candidate, not a new r14 release.
+
+- The `Bash` tool description and `command` parameter now share guidance from the existing execution dispatcher. PowerShell, cmd, POSIX sh, Bash, zsh, and other custom shells receive matching syntax guidance. Tool names, permissions, execution, aliases, and read-only argv behavior remain compatible. On the v0.9.12 re-port, the model-visible lowercase `bash` contract surface is unchanged; extending the aligned guidance to that surface is a separate scope decision for review.
+- The parent gitlink pins candidate `70eba057d4cbc1e13646272c56bb1d9ba0d487ae` (branch `codex/shell-guidance-v0912`: the released v0.9.12 r1 head `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf` plus one re-ported T2 commit, 16 commits above the official `v0.9.12` tag). Candidate drift above r1: 3 files, +207/-2. This is a reusable upstream contribution; the released v0.9.12 r1 maintenance branch and immutable tag below remain unchanged. Upstream main still contained the login-shell-only description when inspected on 2026-09-05.
+- Coverage: `shell_guidance_matches_each_interpreter`, `forkguard_shell_catalog_guidance_matches_execution`, and the opt-in `export_shell_guidance_eval_fixture` for live model comparisons. The application removes Unix-specific default examples from shared instructions, browser HTTP verification, and attachment analysis guidance.
+- Live-model methodology, measured results, and verification limits: [shell guidance evaluation](shell-guidance-evaluation.md).
+- Review follow-up: preserve zsh's `=command` warning and provide Bash/POSIX quoting, pipelines, heredocs or syntax exclusions, and utility-portability guidance. Unix `$SHELL` paths represented as `Custom` receive the same guidance as built-in Bash/sh variants; cmd and fish have their own syntax notes. Covered by `shell_guidance_preserves_unix_shell_contracts`.
+- Guidance selection uses one `match`, with a PowerShell-family guard shared with execution and a dedicated text constant. This structural refactor preserves custom PowerShell detection and model-visible wording.
+- All shell-specific guidance now lives in named constants, including cmd, fish, and the shared fallback. A before/after comparison across 14 shell cases confirmed identical output after constant extraction.
+- Following the 40-call curl ablation, remove the tool-level curl alias reminder only. Preserve the other PowerShell guidance and application instructions used in that experiment; both arms achieved 19/20 correct executions with no shell mismatch errors.
+
 ## 0. 当前状态（2026-09-11 · r1 基线 + 13 个登记提交，r2 收口未切 tag）
 
 | 项 | 当前值 |
