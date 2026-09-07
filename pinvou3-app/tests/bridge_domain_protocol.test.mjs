@@ -117,8 +117,11 @@ const expectedProtocolHashes = {
   // capture-text refresh. Recomputed again for the chat:tool_end listener
   // bodies emitting the final stream html via flushPendingStreamRender
   // before resetting the stream state (same throttle invariant, still no new
-  // invoke or listen entries).
-  chat: '66184c9e4bafb1227cdbcec9d2dc91f77f026cf6cb3a841352b1d5154d62ed19',
+  // invoke or listen entries). Recomputed again for the review-follow-up
+  // comment translations inside the captured listener bodies (same
+  // capture-text refresh; the comment-stripped signature list is
+  // byte-identical to the previous state).
+  chat: 'd9b18bcde6f40b5ff1644c1bccc388b70632a9f49444de44524c24b39830959c',
   dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
   interaction: '3f275b9c4fc77ebf42a56df1c84d638ca5f1f8a3b80612efebeddf1a39f14efd',
   knowledge: '9105a42c6b69f04d0bc28b6a72e0746648110a44823891ded3261cdcbc99766b',
