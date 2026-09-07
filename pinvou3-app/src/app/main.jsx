@@ -1,4 +1,4 @@
-import { lazy, startTransition as scheduleViewTransition, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, startTransition as scheduleViewTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
@@ -126,7 +126,7 @@ let appFirstRenderMarked = false;
 const APP_BRIDGE_STATE_DOMAINS = [
   'platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor',
   'settings', 'models', 'vllm', 'interaction', 'personas',
-  'memory', 'remoteControl', 'updater', 'dependencies',
+  'memory', 'remoteControl', 'updater', 'dependencies', 'projects',
 ];
 
 function emitPetEvent(ev, name, payload) {
@@ -1774,20 +1774,24 @@ function workspaceDisplayName(path) {
       // project-root auto-grouping / implicit folder bucketing); without any
       // created project the result is byte-identical to the legacy folder
       // grouping. With "pinned first", pinned code sessions hoist above groups.
-      const sidebarCodeTasks = sidebarCodeListActive
+      // The grouping chain is memoized end to end: tier-2 inside
+      // groupSessionsWithProjects is O(sessions × projects × roots) and the
+      // project count grows with later stack phases (review #448 finding 8).
+      const sidebarCodeTasks = useMemo(() => (sidebarCodeListActive
         ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex')
-        : [];
-      const sidebarFolderPinned = taskListSort === 'pinned_first'
+        : []), [sidebarCodeListActive, sidebarTaskHistory]);
+      const sidebarFolderPinned = useMemo(() => (taskListSort === 'pinned_first'
         ? sidebarCodeTasks.filter(chat => !!chat.pinned)
-        : [];
+        : []), [taskListSort, sidebarCodeTasks]);
+      const sidebarUnpinnedCodeTasks = useMemo(() => sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)), [sidebarCodeTasks, sidebarFolderPinned]);
       const sidebarProjectsData = bs && bs.projectsList;
-      const sidebarFolderGroups = sidebarCodeListActive
+      const sidebarFolderGroups = useMemo(() => (sidebarCodeListActive
         ? groupSessionsWithProjects(
-            sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)),
+            sidebarUnpinnedCodeTasks,
             sidebarProjectsData ? sidebarProjectsData.projects : [],
             sidebarProjectsData ? sidebarProjectsData.assignments : {},
           )
-        : [];
+        : []), [sidebarCodeListActive, sidebarUnpinnedCodeTasks, sidebarProjectsData]);
 
       // latest-ref mirror: the pet-snapshot broadcast effect only subscribes to bs.sessions/sessionBusy/language,
       // while snapshot contents (id/title/working) are read via refs to reduce effect resubscription.
@@ -2332,7 +2336,8 @@ function workspaceDisplayName(path) {
       }
 
       // ── 项目层:分组归档是纯逻辑层操作,永不触碰会话的工作目录绑定。──
-      // 失败走统一的 sessionBatchFailed toast;bridge.projects 仅桌面存在。
+      // 失败走专用的 opFailed toast(借用会话批处理文案会让报错指向错误
+      // 的操作对象);bridge.projects 仅桌面存在。
       async function runProjectOp(op) {
         if (!bridge.available || !bridge.projects || projectOpsBusy) return;
         setProjectOpsBusy(true);
@@ -2340,7 +2345,7 @@ function workspaceDisplayName(path) {
           await op(bridge.projects);
         } catch (error) {
           console.warn('project operation failed', error);
-          setSettingsToast(t.sessionBatchFailed(1));
+          setSettingsToast(t.uiProjects.opFailed);
         } finally {
           setProjectOpsBusy(false);
         }
@@ -2350,10 +2355,17 @@ function workspaceDisplayName(path) {
       const handleDeleteProject = (projectId) => runProjectOp(p => p.deleteProject(projectId));
       // 移动归属:纯归档操作(工作目录绑定不动);目标 root 不覆盖会话目录时由
       // 选择器先走"添加文件夹"确认,再带着 addFolder 标记落到这里。
+      // 确认框展示的是侧栏投影的目录,命令实际加的是后端活记录——outcomes
+      // 里的 added_root 是权威答案,有值时在 toast 里如实呈现(评审 #449
+      // finding 9:两侧不得静默分叉)。
       const handleMoveSessionToProject = (sessionId, projectId, addWorkspaceRoot) => runProjectOp(async (p) => {
-        await p.moveSessionToProject(sessionId, projectId, addWorkspaceRoot);
+        const outcome = await p.moveSessionToProject(sessionId, projectId, addWorkspaceRoot);
         setMoveToProjectSession(null);
-        setSettingsToast(t.uiProjects.movedNotice);
+        setSettingsToast(
+          outcome && outcome.added_root
+            ? t.uiProjects.movedNoticeWithFolder(outcome.added_root)
+            : t.uiProjects.movedNotice,
+        );
       });
       // 拖拽落点:root 已覆盖的直接移动;未覆盖的带着预置目标打开选择器,
       // 进入"添加文件夹"确认(menu 路径则不带预置)。
@@ -2641,8 +2653,8 @@ function workspaceDisplayName(path) {
             onTogglePinned={handleToggleSessionPinned}
             onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
             onArchive={handleArchiveSession}
-            onMoveToProject={chat.taskKind === 'codex' && bridge.projects ? (() => { setMoveToPresetProject(null); setMoveToProjectSession(chat); }) : undefined}
-            dndPayload={chat.taskKind === 'codex' && bridge.projects ? { sessionId: chat.id } : undefined}
+            onMoveToProject={chat.taskKind === 'codex' && bridge.projects ? (target) => { setMoveToPresetProject(null); setMoveToProjectSession(target); } : undefined}
+            dndPayload={chat.taskKind === 'codex' && bridge.projects && sidebarCodeListActive ? { sessionId: chat.id } : undefined}
             dndDisabled={!!dragAvatar}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
@@ -3180,7 +3192,9 @@ function workspaceDisplayName(path) {
                                   title={group.kind === 'folder' ? group.path : undefined}
                                   busy={projectOpsBusy}
                                   testId="sidebar-folder-group"
-                                  onConvert={group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
+                                  // bridge.projects 仅桌面存在:web 上目录组不渲染
+                                  // 死入口(点击无反馈违反显式不支持约定)。
+                                  onConvert={bridge.projects && group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
                                   onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
                                   onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
                                   onDropSession={group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
